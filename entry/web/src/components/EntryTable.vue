@@ -13,23 +13,6 @@ const emit = defineEmits(['update', 'delete'])
 const editingRow = ref(null)
 const editForm = ref({ num: '', univ: '', team: '' })
 
-const enrolledToday = (enroll) => {
-  if (!enroll || !enroll.length) return false
-  const today = new Date().toISOString().slice(0, 10)
-  return enroll.some(date => date.startsWith(today))
-}
-
-const formatDate = (dateStr) => {
-  if (!dateStr) return ''
-  const date = new Date(dateStr)
-  return date.toLocaleDateString('ko-KR', { 
-    month: 'short', 
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
-
 function startEdit(entry) {
   editingRow.value = entry.num
   editForm.value = { 
@@ -80,13 +63,12 @@ function handleKeydown(e) {
           <th class="col-num">번호</th>
           <th class="col-univ">학교</th>
           <th class="col-team">팀명</th>
-          <th class="col-enroll">출석</th>
           <th class="col-actions">관리</th>
         </tr>
       </thead>
       <tbody>
         <tr v-if="entries.length === 0">
-          <td colspan="5" class="empty-state">
+          <td colspan="4" class="empty-state">
             <div class="empty-content">
               <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
@@ -98,7 +80,7 @@ function handleKeydown(e) {
         <tr 
           v-for="entry in entries" 
           :key="entry.num"
-          :class="{ 'editing': editingRow === entry.num, 'enrolled-today': enrolledToday(entry.enroll) }"
+          :class="{ 'editing': editingRow === entry.num }"
         >
           <template v-if="editingRow === entry.num">
             <td class="col-num">
@@ -125,11 +107,6 @@ function handleKeydown(e) {
                 @keydown="handleKeydown"
               />
             </td>
-            <td class="col-enroll">
-              <span class="enroll-badge" :class="{ active: enrolledToday(entry.enroll) }">
-                {{ entry.enroll?.length || 0 }}회
-              </span>
-            </td>
             <td class="col-actions">
               <div class="action-buttons">
                 <button class="btn btn-success btn-icon" @click="saveEdit" title="저장">
@@ -152,16 +129,6 @@ function handleKeydown(e) {
             </td>
             <td class="col-univ">{{ entry.univ }}</td>
             <td class="col-team">{{ entry.team }}</td>
-            <td class="col-enroll">
-              <div class="enroll-info">
-                <span class="enroll-badge" :class="{ active: enrolledToday(entry.enroll) }">
-                  {{ entry.enroll?.length || 0 }}회
-                </span>
-                <span v-if="entry.enroll?.length" class="enroll-last" :title="entry.enroll.map(formatDate).join('\n')">
-                  {{ formatDate(entry.enroll[entry.enroll.length - 1]) }}
-                </span>
-              </div>
-            </td>
             <td class="col-actions">
               <div class="action-buttons">
                 <button class="btn btn-ghost btn-icon" @click="startEdit(entry)" title="수정">
@@ -224,14 +191,6 @@ function handleKeydown(e) {
   background: rgba(59, 130, 246, 0.1);
 }
 
-.entry-table tbody tr.enrolled-today {
-  background: rgba(16, 185, 129, 0.08);
-}
-
-.entry-table tbody tr.enrolled-today:hover {
-  background: rgba(16, 185, 129, 0.15);
-}
-
 .col-num {
   width: 80px;
 }
@@ -242,10 +201,6 @@ function handleKeydown(e) {
 
 .col-team {
   min-width: 200px;
-}
-
-.col-enroll {
-  width: 140px;
 }
 
 .col-actions {
@@ -265,34 +220,6 @@ function handleKeydown(e) {
   font-weight: 600;
   font-size: 0.8125rem;
   color: var(--accent-primary);
-}
-
-.enroll-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.enroll-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.125rem 0.5rem;
-  background: var(--bg-primary);
-  border-radius: 12px;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--text-tertiary);
-  width: fit-content;
-}
-
-.enroll-badge.active {
-  background: rgba(16, 185, 129, 0.2);
-  color: var(--accent-success);
-}
-
-.enroll-last {
-  font-size: 0.6875rem;
-  color: var(--text-tertiary);
 }
 
 .action-buttons {

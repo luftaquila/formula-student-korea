@@ -5,14 +5,12 @@ const isOpen = ref(false)
 
 const services = [
   { name: '홈', href: '/', icon: 'home' },
-  { name: '등록 대기열', href: '/enroll', icon: 'enroll' },
   { name: '검차 대기열', href: '/queue', icon: 'queue' },
   { name: '에너지미터', href: '/energymeter', icon: 'energy' },
   { name: '규정집', href: '/rules', icon: 'rules' },
 ]
 
 const officials = [
-  { name: '등록 관리', href: '/enroll/admin', icon: 'enroll-admin' },
   { name: '검차 관리', href: '/queue/admin', icon: 'queue-admin' },
   { name: '계측 제어', href: '/traffic', icon: 'traffic' },
   { name: '경기 기록', href: '/record', icon: 'record' },
@@ -94,11 +92,9 @@ function close() {
 function getIcon(type) {
   const icons = {
     'home': '🏠',
-    'enroll': '📋',
     'queue': '🔧',
     'energy': '⚡',
     'rules': '📖',
-    'enroll-admin': '📝',
     'queue-admin': '🛠️',
     'traffic': '🚦',
     'record': '📊',

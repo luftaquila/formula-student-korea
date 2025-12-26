@@ -16,10 +16,6 @@ export default defineConfig({
       '/upload': {
         target: 'http://localhost:9000',
         changeOrigin: true
-      },
-      '/enroll': {
-        target: 'http://localhost:9000',
-        changeOrigin: true
       }
     }
   },

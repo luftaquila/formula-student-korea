@@ -76,11 +76,3 @@ export function getDownloadUrl() {
   return '/api/entries?download'
 }
 
-/**
- * 엔트리 등록 (출석 체크)
- */
-export async function enrollEntry(num) {
-  await request(`/api/entries/${num}/enroll`, {
-    method: 'POST',
-  })
-}

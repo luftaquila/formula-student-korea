@@ -6,13 +6,16 @@ import Database from 'better-sqlite3';
 /* ============================================
    Database 초기화
    ============================================ */
+if (!fs.existsSync('./data')) {
+  fs.mkdirSync('./data', { recursive: true });
+}
+
 const db = new Database('./data/entry.db');
 
 db.exec(`CREATE TABLE IF NOT EXISTS entry (
   num INTEGER PRIMARY KEY,
   univ TEXT NOT NULL,
-  team TEXT NOT NULL,
-  enroll TEXT DEFAULT '[]'
+  team TEXT NOT NULL
 );`);
 
 process.on('exit', () => db.close());
@@ -114,7 +117,7 @@ app.get('/api/entries', (req, res) => {
   const result = dbRun(() => {
     const data = {};
     for (const row of db.prepare("SELECT * FROM entry").all()) {
-      data[row.num] = { univ: row.univ, team: row.team, enroll: JSON.parse(row.enroll) };
+      data[row.num] = { univ: row.univ, team: row.team };
     }
     return data;
   });
@@ -165,7 +168,7 @@ app.post('/api/entries', (req, res) => {
   }
 
   const result = dbRun(() => 
-    db.prepare("INSERT INTO entry (num, univ, team, enroll) VALUES (?, ?, ?, '[]')")
+    db.prepare("INSERT INTO entry (num, univ, team) VALUES (?, ?, ?)")
       .run(numValidation.value, dataValidation.univ, dataValidation.team)
   );
 
@@ -197,7 +200,6 @@ app.patch('/api/entries/:num', (req, res) => {
   const newNum = newNumValidation.value;
   const numChanged = prevNum !== newNum;
 
-  // 번호가 변경된 경우 먼저 번호 업데이트
   if (numChanged) {
     const numResult = dbRun(() => db.prepare("UPDATE entry SET num = ? WHERE num = ?").run(newNum, prevNum));
 
@@ -210,7 +212,6 @@ app.patch('/api/entries/:num', (req, res) => {
     }
   }
 
-  // 데이터 업데이트
   const result = dbRun(() => 
     db.prepare("UPDATE entry SET univ = ?, team = ? WHERE num = ?")
       .run(dataValidation.univ, dataValidation.team, newNum)
@@ -247,40 +248,6 @@ app.delete('/api/entries/:num', (req, res) => {
   res.status(200).send();
 });
 
-// POST /api/entries/:num/enroll - 엔트리 등록 (출석)
-app.post('/api/entries/:num/enroll', (req, res) => {
-  const numValidation = validateEntryNum(req.params.num);
-  if (!numValidation.valid) {
-    return res.status(400).send(numValidation.error);
-  }
-
-  const result = dbRun(() => db.prepare("SELECT enroll FROM entry WHERE num = ?").get(numValidation.value));
-
-  if (!result.success) {
-    return res.status(result.status).send(result.error);
-  }
-
-  if (!result.result) {
-    return res.status(404).send('존재하지 않는 엔트리 번호입니다.');
-  }
-
-  const today = new Date().toISOString().slice(0, 10);
-  if (JSON.parse(result.result.enroll).some(date => date.startsWith(today))) {
-    return res.status(400).send('이미 오늘 등록된 엔트리입니다.');
-  }
-
-  const updateResult = dbRun(() => 
-    db.prepare(`UPDATE entry SET enroll = json_insert(enroll, '$[#]', ?) WHERE num = ?`)
-      .run(new Date().toISOString(), numValidation.value)
-  );
-
-  if (!updateResult.success) {
-    return res.status(updateResult.status).send(updateResult.error);
-  }
-
-  res.status(200).send();
-});
-
 // POST /api/entries/bulk - 엔트리 일괄 업로드 (DB 교체)
 app.post('/api/entries/bulk', (req, res) => {
   const validation = validateBulkData(req.body.data);
@@ -291,7 +258,7 @@ app.post('/api/entries/bulk', (req, res) => {
   const result = dbRun(() => {
     db.transaction(() => {
       db.prepare("DELETE FROM entry").run();
-      const query = db.prepare("INSERT INTO entry (num, univ, team, enroll) VALUES (?, ?, ?, '[]')");
+      const query = db.prepare("INSERT INTO entry (num, univ, team) VALUES (?, ?, ?)");
       for (const [k, v] of Object.entries(validation.data)) {
         query.run(Number(k), v.univ, v.team);
       }
@@ -303,47 +270,6 @@ app.post('/api/entries/bulk', (req, res) => {
   }
 
   res.status(200).send();
-});
-
-/* ============================================
-   레거시 API 라우트 (하위 호환성)
-   ============================================ */
-
-// GET /all -> /api/entries
-app.get('/all', (req, res) => res.redirect(307, `/api/entries${req.url.includes('?') ? '?' + req.url.split('?')[1] : ''}`));
-
-// GET /team/:num -> /api/entries/:num  
-app.get('/team/:num', (req, res) => res.redirect(307, `/api/entries/${req.params.num}`));
-
-// POST /team -> /api/entries
-app.post('/team', (req, res) => {
-  req.url = '/api/entries';
-  app.handle(req, res);
-});
-
-// PATCH /team -> /api/entries/:num
-app.patch('/team', (req, res) => {
-  const num = req.body.num_changed ? req.body.prev : req.body.num;
-  req.url = `/api/entries/${num}`;
-  app.handle(req, res);
-});
-
-// DELETE /team -> /api/entries/:num
-app.delete('/team', (req, res) => {
-  req.url = `/api/entries/${req.body.num}`;
-  app.handle(req, res);
-});
-
-// POST /enroll -> /api/entries/:num/enroll
-app.post('/enroll', (req, res) => {
-  req.url = `/api/entries/${req.body.num}/enroll`;
-  app.handle(req, res);
-});
-
-// POST /upload -> /api/entries/bulk
-app.post('/upload', (req, res) => {
-  req.url = '/api/entries/bulk';
-  app.handle(req, res);
 });
 
 /* ============================================
