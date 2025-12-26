@@ -202,7 +202,9 @@ export const useSerialStore = defineStore('serial', () => {
       startClock()
     }
 
-    // Add to records for display
+    // Add to records for display (스키드패드 모드에서는 센서 1만)
+    if (currentMode.value === 'skidpad' && sensor !== 1) return
+    
     const time = start.value.tick ? tick - start.value.tick : tick - green.value.tick
     records.value.push({ sensor, tick, time, timestamp })
   }

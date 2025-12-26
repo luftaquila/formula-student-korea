@@ -24,11 +24,6 @@ const routes = [
     path: '/record',
     name: 'Record',
     component: () => import('../views/RecordView.vue')
-  },
-  {
-    path: '/entry',
-    name: 'Entry',
-    component: () => import('../views/EntryView.vue')
   }
 ]
 

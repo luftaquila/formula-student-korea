@@ -53,7 +53,6 @@ async function handleSubmit() {
             v-model.number="form.num"
             type="number" 
             class="form-input"
-            placeholder="1"
             min="0"
             required
           />
@@ -64,7 +63,6 @@ async function handleSubmit() {
             v-model="form.univ"
             type="text" 
             class="form-input"
-            placeholder="서울대학교"
             required
           />
         </div>
@@ -74,7 +72,6 @@ async function handleSubmit() {
             v-model="form.team"
             type="text" 
             class="form-input"
-            placeholder="Racing Team"
             required
           />
         </div>

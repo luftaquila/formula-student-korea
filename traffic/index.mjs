@@ -218,15 +218,14 @@ app.post('/api/records', (req, res) => {
           num INTEGER NOT NULL,
           univ TEXT NOT NULL,
           team TEXT NOT NULL,
-          lane TEXT,
           type TEXT NOT NULL,
           result INTEGER NOT NULL,
           detail TEXT
         );`);
       }
 
-      db.prepare(`INSERT INTO '${name}' (time, num, univ, team, lane, type, result, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(data.time, data.entry.num, data.entry.univ, data.entry.team, data.lane, data.type, data.result, data.detail);
+      db.prepare(`INSERT INTO '${name}' (time, num, univ, team, type, result, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(data.time, data.entry.num, data.entry.univ, data.entry.team, data.type, data.result, data.detail);
     })();
   });
 
@@ -317,4 +316,4 @@ app.use((req, res, next) => {
 /* ============================================
    서버 시작
    ============================================ */
-app.listen(7000);
+app.listen(8000);

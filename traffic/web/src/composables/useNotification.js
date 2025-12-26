@@ -9,12 +9,12 @@ function getNotyf() {
       duration: 3500,
       types: [
         {
-          type: 'warn',
-          background: 'orange',
+          type: 'warning',
+          background: '#f59e0b',
           icon: {
-            className: 'fa fa-exclamation-triangle',
+            className: 'notyf__icon--warning',
             tagName: 'i',
-            color: 'white'
+            text: ''
           }
         }
       ]
@@ -30,6 +30,6 @@ export function useNotification() {
     notyf,
     success: (message) => notyf.success(message),
     error: (message) => notyf.error(message),
-    warn: (message) => notyf.open({ type: 'warn', message })
+    warning: (message) => notyf.open({ type: 'warning', message })
   }
 }

@@ -12,9 +12,9 @@ const services = [
 
 const officials = [
   { name: '검차 관리', href: '/queue/admin', icon: 'queue-admin' },
-  { name: '계측 시스템', href: '/traffic', icon: 'traffic' },
+  { name: '계측 시스템', href: '/traffic', icon: 'traffic', active: true },
   { name: '경기 기록', href: '/record', icon: 'record' },
-  { name: '엔트리 관리', href: '/entry', icon: 'entry', active: true },
+  { name: '엔트리 관리', href: '/entry', icon: 'entry' },
 ]
 
 function toggle() {

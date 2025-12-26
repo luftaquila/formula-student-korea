@@ -1,8 +1,9 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
-import { fetchRecords, fetchRecord } from '../composables/useApi'
+import { fetchRecords, fetchRecord, fetchControllers, deleteRecord, deleteControllers } from '../composables/useApi'
 import { useNotification } from '../composables/useNotification'
 import { msToClockStr } from '../stores/serial'
+import * as XLSX from 'xlsx'
 
 const { notyf } = useNotification()
 
@@ -10,8 +11,40 @@ const recordFiles = ref([])
 const selectedFile = ref(null)
 const records = ref([])
 const loading = ref(false)
+const sortKey = ref(null)
+const sortOrder = ref('asc')
 
 const currentYear = computed(() => new Date().getFullYear())
+const isControllerLog = computed(() => selectedFile.value === 'controller')
+
+const sortedRecords = computed(() => {
+  if (!sortKey.value || !records.value.length) return records.value
+  
+  return [...records.value].sort((a, b) => {
+    let aVal = a[sortKey.value]
+    let bVal = b[sortKey.value]
+    
+    // 시간 필드 처리
+    if (sortKey.value === 'time' || sortKey.value === 'timestamp') {
+      aVal = new Date(aVal).getTime()
+      bVal = new Date(bVal).getTime()
+    }
+    // 숫자 필드 처리
+    else if (sortKey.value === 'num' || sortKey.value === 'result') {
+      aVal = Number(aVal) || 0
+      bVal = Number(bVal) || 0
+    }
+    // 문자열 필드 처리
+    else {
+      aVal = String(aVal || '').toLowerCase()
+      bVal = String(bVal || '').toLowerCase()
+    }
+    
+    if (aVal < bVal) return sortOrder.value === 'asc' ? -1 : 1
+    if (aVal > bVal) return sortOrder.value === 'asc' ? 1 : -1
+    return 0
+  })
+})
 
 onMounted(async () => {
   await loadFileList()
@@ -19,9 +52,10 @@ onMounted(async () => {
 
 async function loadFileList() {
   try {
-    recordFiles.value = await fetchRecords()
+    const files = await fetchRecords()
+    recordFiles.value = ['controller', ...files]
   } catch (e) {
-    notyf.error(`기록 목록을 불러오지 못했습니다.<br>${e}`)
+    notyf.error(`기록 목록을 불러오지 못했습니다.`)
   }
 }
 
@@ -29,14 +63,107 @@ async function loadRecords() {
   if (!selectedFile.value) return
 
   loading.value = true
+  sortKey.value = null
+  sortOrder.value = 'asc'
   try {
-    records.value = await fetchRecord(selectedFile.value)
+    if (selectedFile.value === 'controller') {
+      records.value = await fetchControllers()
+    } else {
+      records.value = await fetchRecord(selectedFile.value)
+    }
   } catch (e) {
-    notyf.error(`기록을 불러오지 못했습니다.<br>${e}`)
+    notyf.error(`기록을 불러오지 못했습니다.`)
     records.value = []
   } finally {
     loading.value = false
   }
+}
+
+async function handleDelete() {
+  if (!selectedFile.value) return
+  if (!confirm(`"${selectedFile.value}" 기록을 삭제하시겠습니까?`)) return
+
+  try {
+    if (isControllerLog.value) {
+      await deleteControllers()
+    } else {
+      await deleteRecord(selectedFile.value)
+    }
+    notyf.success('기록이 삭제되었습니다.')
+    selectedFile.value = null
+    records.value = []
+    await loadFileList()
+  } catch (e) {
+    notyf.error(`삭제 실패: ${e.message}`)
+  }
+}
+
+function downloadCSV() {
+  if (!sortedRecords.value.length) return
+
+  let headers, rows
+  if (isControllerLog.value) {
+    headers = ['시간', '데이터']
+    rows = sortedRecords.value.map(r => [formatTime(r.timestamp), r.data])
+  } else {
+    headers = ['시간', '번호', '학교', '팀', '유형', '기록', '상세']
+    rows = sortedRecords.value.map(r => [
+      formatTime(r.time), r.num, r.univ, r.team, r.type, formatResult(r.result), r.detail || ''
+    ])
+  }
+
+  const csvContent = [headers, ...rows]
+    .map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+    .join('\n')
+
+  const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' })
+  downloadBlob(blob, `${selectedFile.value}.csv`)
+}
+
+function downloadXLSX() {
+  if (!sortedRecords.value.length) return
+
+  let headers, rows
+  if (isControllerLog.value) {
+    headers = ['시간', '데이터']
+    rows = sortedRecords.value.map(r => [formatTime(r.timestamp), r.data])
+  } else {
+    headers = ['시간', '번호', '학교', '팀', '유형', '기록', '상세']
+    rows = sortedRecords.value.map(r => [
+      formatTime(r.time), r.num, r.univ, r.team, r.type, formatResult(r.result), r.detail || ''
+    ])
+  }
+
+  const wsData = [headers, ...rows]
+  const ws = XLSX.utils.aoa_to_sheet(wsData)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Records')
+  XLSX.writeFile(wb, `${selectedFile.value}.xlsx`)
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+function handleSort(key) {
+  if (sortKey.value === key) {
+    sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortKey.value = key
+    sortOrder.value = 'asc'
+  }
+}
+
+function getSortIcon(key) {
+  if (sortKey.value !== key) return '↕'
+  return sortOrder.value === 'asc' ? '↑' : '↓'
 }
 
 function formatTime(time) {
@@ -49,65 +176,445 @@ function formatResult(result) {
 </script>
 
 <template>
-  <div class="container">
-    <div class="configuration">
-      <h1>📋 경기 기록</h1>
-      <div class="mode-description">저장된 경기 기록을 조회합니다.</div>
-      <article>
-        <h2><i class="fa fw fa-folder-open"></i>기록 파일</h2>
-        <div>
-          <select v-model="selectedFile" class="file-select" @change="loadRecords">
-            <option disabled :value="null">파일 선택</option>
-            <option v-for="file in recordFiles" :key="file" :value="file">{{ file }}</option>
-          </select>
+  <div class="page-layout">
+    <aside class="sidebar">
+      <div class="card">
+        <div class="card-header">
+          <h3>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/>
+              <line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+            기록 파일 선택
+          </h3>
         </div>
-      </article>
-    </div>
+        <div class="card-body">
+          <div class="form-group">
+            <label class="form-label">기록 파일</label>
+            <select v-model="selectedFile" class="form-input" @change="loadRecords">
+              <option disabled :value="null">파일을 선택하세요</option>
+              <option v-for="file in recordFiles" :key="file" :value="file">{{ file }}</option>
+            </select>
+          </div>
+          
+          <div v-if="records.length" class="action-buttons">
+            <div class="btn-row">
+              <button class="btn btn-secondary" @click="downloadCSV" title="CSV 다운로드">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                CSV
+              </button>
+              <button class="btn btn-secondary" @click="downloadXLSX" title="Excel 다운로드">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                XLSX
+              </button>
+            </div>
+            <button class="btn btn-danger btn-block" @click="handleDelete">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                <line x1="10" y1="11" x2="10" y2="17"/>
+                <line x1="14" y1="11" x2="14" y2="17"/>
+              </svg>
+              삭제
+            </button>
+          </div>
+        </div>
+      </div>
+    </aside>
 
-    <div class="monitor">
-      <h1 class="event-title">{{ currentYear }} FSK 기록</h1>
-      <article v-if="loading" class="loading"><i class="fa fa-spinner fa-spin"></i> 로딩 중...</article>
-      <article v-else-if="records.length > 0" class="records-table-container">
-        <table class="records-table">
+    <section class="content">
+      <div class="table-header">
+        <div class="table-title-area">
+          <h2>{{ selectedFile || '기록' }}</h2>
+          <span v-if="records.length" class="entry-count">{{ records.length }}개</span>
+        </div>
+      </div>
+
+      <div v-if="loading" class="loading-container">
+        <div class="loading-spinner"></div>
+        <p>데이터를 불러오는 중...</p>
+      </div>
+
+      <div v-else-if="records.length > 0" class="table-wrapper">
+        <!-- 컨트롤러 로그 테이블 -->
+        <table v-if="isControllerLog" class="data-table">
           <thead>
-            <tr><th>시간</th><th>번호</th><th>학교</th><th>팀</th><th>유형</th><th>레인</th><th>기록</th><th>상세</th></tr>
+            <tr>
+              <th class="sortable" @click="handleSort('timestamp')">
+                시간 <span class="sort-icon">{{ getSortIcon('timestamp') }}</span>
+              </th>
+              <th class="sortable" @click="handleSort('data')">
+                데이터 <span class="sort-icon">{{ getSortIcon('data') }}</span>
+              </th>
+            </tr>
           </thead>
           <tbody>
-            <tr v-for="(record, index) in records" :key="index">
-              <td>{{ formatTime(record.time) }}</td>
-              <td>{{ record.num }}</td>
-              <td>{{ record.univ }}</td>
-              <td>{{ record.team }}</td>
-              <td>{{ record.type }}</td>
-              <td>{{ record.lane }}</td>
-              <td class="result">{{ formatResult(record.result) }}</td>
-              <td>{{ record.detail }}</td>
+            <tr v-for="(record, index) in sortedRecords" :key="index">
+              <td class="time-cell">{{ formatTime(record.timestamp) }}</td>
+              <td class="controller-data">{{ record.data }}</td>
             </tr>
           </tbody>
         </table>
-      </article>
-      <article v-else class="no-records"><p>기록 파일을 선택하세요.</p></article>
-    </div>
+
+        <!-- 경기 기록 테이블 -->
+        <table v-else class="data-table">
+          <thead>
+            <tr>
+              <th class="sortable" @click="handleSort('time')">
+                시간 <span class="sort-icon">{{ getSortIcon('time') }}</span>
+              </th>
+              <th class="sortable" @click="handleSort('num')">
+                번호 <span class="sort-icon">{{ getSortIcon('num') }}</span>
+              </th>
+              <th class="sortable" @click="handleSort('univ')">
+                학교 <span class="sort-icon">{{ getSortIcon('univ') }}</span>
+              </th>
+              <th class="sortable" @click="handleSort('team')">
+                팀 <span class="sort-icon">{{ getSortIcon('team') }}</span>
+              </th>
+              <th class="sortable" @click="handleSort('type')">
+                유형 <span class="sort-icon">{{ getSortIcon('type') }}</span>
+              </th>
+              <th class="sortable" @click="handleSort('result')">
+                기록 <span class="sort-icon">{{ getSortIcon('result') }}</span>
+              </th>
+              <th class="sortable" @click="handleSort('detail')">
+                상세 <span class="sort-icon">{{ getSortIcon('detail') }}</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(record, index) in sortedRecords" :key="index">
+              <td class="time-cell">{{ formatTime(record.time) }}</td>
+              <td><span class="entry-number">{{ record.num }}</span></td>
+              <td>{{ record.univ }}</td>
+              <td>{{ record.team }}</td>
+              <td><span class="type-badge" :class="record.type">{{ record.type }}</span></td>
+              <td class="result-cell">{{ formatResult(record.result) }}</td>
+              <td class="detail-cell">{{ record.detail }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div v-else class="empty-state-container">
+        <div class="empty-icon">📂</div>
+        <p>기록 파일을 선택하세요</p>
+      </div>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.container { display: flex; width: 96%; padding: 1rem; }
-.configuration, .monitor { padding: 1rem; padding-bottom: 0; }
-.configuration { width: 28rem; flex-shrink: 0; }
-.monitor { flex-grow: 1; text-align: center; padding-top: 3rem; }
-.mode-description { height: 3rem; margin-top: 1.5rem; margin-bottom: 2.5rem; }
-article { margin-left: 1rem; margin-bottom: 2.5rem; }
-.monitor article { margin-left: 0; margin-top: 3rem; }
-article h2 { font-size: 1.3rem; margin-left: 1rem; margin-bottom: 1rem; }
-.configuration article > div { margin-left: 3rem; line-height: 1.7rem; }
-.event-title { font-size: 3rem; font-weight: bold; }
-.file-select { width: 20rem; height: 2rem; font-size: 1rem; }
-.records-table-container { overflow-x: auto; padding: 0 1rem; }
-.records-table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
-.records-table th, .records-table td { padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid #ddd; }
-.records-table th { background-color: #313443; color: white; font-weight: 500; }
-.records-table tbody tr:hover { background-color: #f5f5f5; }
-.records-table .result { font-family: "Departure Mono"; font-weight: bold; }
-.loading, .no-records { font-size: 1.2rem; color: #666; }
+.page-layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 2rem;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.content {
+  background: var(--bg-card);
+  border-radius: 16px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.card {
+  background: var(--bg-card);
+  border-radius: 16px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.card-header {
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.card-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.header-icon { width: 18px; height: 18px; }
+.card-body { padding: 1.25rem; }
+
+.form-group { margin-bottom: 1rem; }
+
+.action-buttons {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.btn-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.btn-row .btn {
+  flex: 1;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  border: none;
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn:hover {
+  opacity: 0.9;
+}
+
+.btn-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn-secondary {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+
+.btn-secondary:hover {
+  background: var(--bg-hover);
+}
+
+.btn-danger {
+  background: var(--accent-danger);
+  color: white;
+}
+
+.form-label {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 0.375rem;
+}
+
+.form-input {
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.table-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.table-title-area {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.table-title-area h2 {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.entry-count {
+  background: var(--accent-primary);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.625rem;
+  border-radius: 12px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4rem;
+  color: var(--text-secondary);
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 1rem;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.data-table th {
+  padding: 0.875rem 1rem;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.data-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease;
+}
+
+.data-table th.sortable:hover {
+  background: var(--bg-hover);
+}
+
+.sort-icon {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+  opacity: 0.5;
+  font-size: 0.75rem;
+  margin-left: 0.25rem;
+}
+
+.data-table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: middle;
+}
+
+.data-table tbody tr {
+  transition: background-color 0.15s ease;
+}
+
+.data-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.time-cell {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+}
+
+.entry-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  padding: 0.25rem 0.5rem;
+  background: var(--bg-primary);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  font-size: 0.8125rem;
+  color: var(--accent-primary);
+}
+
+.type-badge {
+  display: inline-flex;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.type-badge.accel { background: rgba(59, 130, 246, 0.1); color: var(--accent-primary); }
+.type-badge.gymkhana { background: rgba(139, 92, 246, 0.1); color: var(--accent-secondary); }
+.type-badge.skidpad { background: rgba(245, 158, 11, 0.1); color: var(--accent-warning); }
+
+.result-cell {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  color: var(--accent-success);
+}
+
+.detail-cell {
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.controller-data {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.empty-state-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4rem;
+  color: var(--text-tertiary);
+}
+
+.empty-icon {
+  font-size: 4rem;
+  opacity: 0.5;
+  margin-bottom: 1rem;
+}
+
+@media (max-width: 1024px) {
+  .page-layout { grid-template-columns: 1fr; }
+}
 </style>

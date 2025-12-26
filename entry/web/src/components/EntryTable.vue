@@ -12,6 +12,43 @@ const emit = defineEmits(['update', 'delete'])
 
 const editingRow = ref(null)
 const editForm = ref({ num: '', univ: '', team: '' })
+const sortKey = ref(null)
+const sortOrder = ref('asc')
+
+const sortedEntries = computed(() => {
+  if (!sortKey.value || !props.entries.length) return props.entries
+  
+  return [...props.entries].sort((a, b) => {
+    let aVal = a[sortKey.value]
+    let bVal = b[sortKey.value]
+    
+    if (sortKey.value === 'num') {
+      aVal = Number(aVal) || 0
+      bVal = Number(bVal) || 0
+    } else {
+      aVal = String(aVal || '').toLowerCase()
+      bVal = String(bVal || '').toLowerCase()
+    }
+    
+    if (aVal < bVal) return sortOrder.value === 'asc' ? -1 : 1
+    if (aVal > bVal) return sortOrder.value === 'asc' ? 1 : -1
+    return 0
+  })
+})
+
+function handleSort(key) {
+  if (sortKey.value === key) {
+    sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortKey.value = key
+    sortOrder.value = 'asc'
+  }
+}
+
+function getSortIcon(key) {
+  if (sortKey.value !== key) return '↕'
+  return sortOrder.value === 'asc' ? '↑' : '↓'
+}
 
 function startEdit(entry) {
   editingRow.value = entry.num
@@ -60,14 +97,20 @@ function handleKeydown(e) {
     <table class="entry-table">
       <thead>
         <tr>
-          <th class="col-num">번호</th>
-          <th class="col-univ">학교</th>
-          <th class="col-team">팀명</th>
+          <th class="col-num sortable" @click="handleSort('num')">
+            번호 <span class="sort-icon">{{ getSortIcon('num') }}</span>
+          </th>
+          <th class="col-univ sortable" @click="handleSort('univ')">
+            학교 <span class="sort-icon">{{ getSortIcon('univ') }}</span>
+          </th>
+          <th class="col-team sortable" @click="handleSort('team')">
+            팀명 <span class="sort-icon">{{ getSortIcon('team') }}</span>
+          </th>
           <th class="col-actions">관리</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-if="entries.length === 0">
+        <tr v-if="sortedEntries.length === 0">
           <td colspan="4" class="empty-state">
             <div class="empty-content">
               <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -78,7 +121,7 @@ function handleKeydown(e) {
           </td>
         </tr>
         <tr 
-          v-for="entry in entries" 
+          v-for="entry in sortedEntries" 
           :key="entry.num"
           :class="{ 'editing': editingRow === entry.num }"
         >
@@ -173,6 +216,25 @@ function handleKeydown(e) {
   white-space: nowrap;
 }
 
+.entry-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease;
+}
+
+.entry-table th.sortable:hover {
+  background: var(--bg-hover);
+}
+
+.sort-icon {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+  opacity: 0.5;
+  font-size: 0.75rem;
+  margin-left: 0.25rem;
+}
+
 .entry-table td {
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border-color);
@@ -196,11 +258,11 @@ function handleKeydown(e) {
 }
 
 .col-univ {
-  width: 160px;
+  width: 200px;
 }
 
 .col-team {
-  min-width: 200px;
+  width: 200px;
 }
 
 .col-actions {

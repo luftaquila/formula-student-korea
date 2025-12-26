@@ -152,7 +152,7 @@ onMounted(loadEntries)
 
 .header {
   background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
-  padding: 1.5rem 2rem;
+  padding: 1rem 2rem;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
 
