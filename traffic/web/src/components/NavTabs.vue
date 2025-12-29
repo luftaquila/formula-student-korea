@@ -1,9 +1,8 @@
 <script setup>
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useSerialStore } from '../stores/serial'
 
 const route = useRoute()
-const router = useRouter()
 const serial = useSerialStore()
 
 const navItems = [
@@ -12,26 +11,20 @@ const navItems = [
   { id: 'skidpad', label: '⏱️ 스키드패드', path: '/skidpad' },
   { id: 'record', label: '📋 기록', path: '/record' }
 ]
-
-function handleNavClick(e, path) {
-  e.preventDefault()
-  if (serial.green.active) return
-  router.push(path)
-}
 </script>
 
 <template>
   <nav class="nav-tabs">
-    <a 
+    <router-link
       v-for="item in navItems" 
       :key="item.id"
-      :href="item.path"
+      :to="item.path"
       class="nav-tab"
       :class="{ active: route.path === item.path, disabled: serial.green.active }"
-      @click="handleNavClick($event, item.path)"
+      @click="(e) => { if (serial.green.active) e.preventDefault() }"
     >
       {{ item.label }}
-    </a>
+    </router-link>
   </nav>
 </template>
 

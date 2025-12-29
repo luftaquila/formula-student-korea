@@ -1,4 +1,4 @@
-const BASE_URL = ''
+const BASE_URL = import.meta.env.PROD ? '/entry' : ''
 
 /**
  * 공통 fetch 래퍼

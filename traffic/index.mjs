@@ -44,7 +44,7 @@ app.use(pinoHttp({
 /* ============================================
    설정
    ============================================ */
-const ENTRY_SERVER = process.env.ENTRY_SERVER || 'http://localhost:9000';
+const ENTRY_SERVER = process.env.ENTRY_SERVER || 'http://localhost:9100';
 
 /* ============================================
    Validation 헬퍼
@@ -316,4 +316,4 @@ app.use((req, res, next) => {
 /* ============================================
    서버 시작
    ============================================ */
-app.listen(8000);
+app.listen(9200);

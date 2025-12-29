@@ -1,12 +1,11 @@
 {
-  "name": "fsk-entry-web",
+  "name": "fsk-landing",
   "private": true,
   "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build --mode production",
-    "build:dev": "vite build --mode development",
+    "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -17,3 +16,4 @@
     "vite": "^7.3.0"
   }
 }
+

@@ -3,7 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { fetchRecords, fetchRecord, fetchControllers, deleteRecord, deleteControllers } from '../composables/useApi'
 import { useNotification } from '../composables/useNotification'
 import { msToClockStr } from '../stores/serial'
-import * as XLSX from 'xlsx'
+import ExcelJS from 'exceljs'
 
 const { notyf } = useNotification()
 
@@ -120,25 +120,45 @@ function downloadCSV() {
   downloadBlob(blob, `${selectedFile.value}.csv`)
 }
 
-function downloadXLSX() {
+async function downloadXLSX() {
   if (!sortedRecords.value.length) return
 
   let headers, rows
+
   if (isControllerLog.value) {
-    headers = ['시간', '데이터']
-    rows = sortedRecords.value.map(r => [formatTime(r.timestamp), r.data])
+    headers = ["시간", "데이터"]
+    rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data])
   } else {
-    headers = ['시간', '번호', '학교', '팀', '유형', '기록', '상세']
-    rows = sortedRecords.value.map(r => [
-      formatTime(r.time), r.num, r.univ, r.team, r.type, formatResult(r.result), r.detail || ''
+    headers = ["시간", "번호", "학교", "팀", "유형", "기록", "상세"]
+    rows = sortedRecords.value.map((r) => [
+      formatTime(r.time),
+      r.num,
+      r.univ,
+      r.team,
+      r.type,
+      formatResult(r.result),
+      r.detail || "",
     ])
   }
 
-  const wsData = [headers, ...rows]
-  const ws = XLSX.utils.aoa_to_sheet(wsData)
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, ws, 'Records')
-  XLSX.writeFile(wb, `${selectedFile.value}.xlsx`)
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet("Records")
+
+  ws.addRow(headers)
+  ws.addRows(rows)
+
+  const buf = await wb.xlsx.writeBuffer()
+  const blob = new Blob([buf], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  })
+
+  const filename = `${selectedFile.value}.xlsx`
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 function downloadBlob(blob, filename) {

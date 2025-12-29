@@ -1,27 +1,26 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-export default defineConfig({
-  plugins: [vue()],
-  server: {
-    proxy: {
-      '/all': {
-        target: 'http://localhost:9000',
-        changeOrigin: true
-      },
-      '/team': {
-        target: 'http://localhost:9000',
-        changeOrigin: true
-      },
-      '/upload': {
-        target: 'http://localhost:9000',
-        changeOrigin: true
+export default defineConfig(({ mode }) => {
+  // Only use base path in production mode
+  // In development mode (including build:dev), base is empty
+  const isProduction = mode === 'production'
+  
+  return {
+    base: isProduction ? '/entry/' : '',
+    plugins: [vue()],
+    server: {
+      proxy: {
+        '/api': {
+          target: 'http://localhost:9100',
+          changeOrigin: true
+        }
       }
+    },
+    build: {
+      outDir: 'dist',
+      emptyOutDir: true
     }
-  },
-  build: {
-    outDir: 'dist',
-    emptyOutDir: true
   }
 })
 

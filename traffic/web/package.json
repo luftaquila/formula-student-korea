@@ -5,20 +5,21 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && npm run copy-assets",
+    "build": "vite build --mode production && npm run copy-assets",
+    "build:dev": "vite build --mode development && npm run copy-assets",
     "copy-assets": "node -e \"require('fs').copyFileSync('favicon.ico', 'dist/favicon.ico')\"",
     "preview": "vite preview"
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^6.7.2",
+    "@fortawesome/fontawesome-free": "^7.1.0",
+    "exceljs": "^4.4.0",
     "notyf": "^3.10.0",
-    "pinia": "^2.3.0",
-    "vue": "^3.5.13",
-    "vue-router": "^4.5.0",
-    "xlsx": "^0.18.5"
+    "pinia": "^3.0.4",
+    "vue": "^3.5.26",
+    "vue-router": "^4.6.4"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.2.1",
-    "vite": "^6.0.5"
+    "@vitejs/plugin-vue": "^6.0.3",
+    "vite": "^7.3.0"
   }
 }

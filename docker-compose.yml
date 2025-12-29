@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  entry:
+    build:
+      context: ./entry
+      dockerfile: Dockerfile
+    container_name: fsk-entry
+    volumes:
+      - ./entry/data:/home/node/fsk-entry/data
+    restart: unless-stopped
+    networks:
+      - fsk-network
+
+  traffic:
+    build:
+      context: ./traffic
+      dockerfile: Dockerfile
+    container_name: fsk-traffic
+    environment:
+      - ENTRY_SERVER=http://entry:9100
+    volumes:
+      - ./traffic/data:/home/node/fsk-traffic/data
+    depends_on:
+      - entry
+    restart: unless-stopped
+    networks:
+      - fsk-network
+
+  energymeter:
+    build:
+      context: ./energymeter
+      dockerfile: Dockerfile
+    container_name: fsk-energymeter
+    restart: unless-stopped
+    networks:
+      - fsk-network
+
+  nginx:
+    build:
+      context: ./landing
+      dockerfile: Dockerfile
+    container_name: fsk-nginx
+    ports:
+      - "9000:9000"
+    depends_on:
+      - entry
+      - traffic
+      - energymeter
+    restart: unless-stopped
+    networks:
+      - fsk-network
+
+networks:
+  fsk-network:
+    driver: bridge
+

@@ -3,7 +3,7 @@ import { ref, onMounted, watch } from 'vue'
 
 const isDark = ref(false)
 
-onMounted(() => {
+function loadTheme() {
   const saved = localStorage.getItem('theme')
   if (saved) {
     isDark.value = saved === 'dark'
@@ -11,7 +11,21 @@ onMounted(() => {
     isDark.value = window.matchMedia('(prefers-color-scheme: dark)').matches
   }
   applyTheme()
-  
+}
+
+function applyTheme() {
+  const theme = isDark.value ? 'dark' : 'light'
+  document.documentElement.setAttribute('data-theme', theme)
+  localStorage.setItem('theme', theme)
+  // Trigger storage event for other tabs/services
+  window.dispatchEvent(new StorageEvent('storage', {
+    key: 'theme',
+    newValue: theme
+  }))
+}
+
+onMounted(() => {
+  loadTheme()
   // Listen for theme changes from other services
   window.addEventListener('storage', (e) => {
     if (e.key === 'theme') {
@@ -23,18 +37,7 @@ onMounted(() => {
 
 watch(isDark, () => {
   applyTheme()
-  const theme = isDark.value ? 'dark' : 'light'
-  localStorage.setItem('theme', theme)
-  // Trigger storage event for other tabs/services
-  window.dispatchEvent(new StorageEvent('storage', {
-    key: 'theme',
-    newValue: theme
-  }))
 })
-
-function applyTheme() {
-  document.documentElement.setAttribute('data-theme', isDark.value ? 'dark' : 'light')
-}
 
 function toggle() {
   isDark.value = !isDark.value
@@ -84,6 +87,18 @@ function toggle() {
   width: 20px;
   height: 20px;
   color: white;
+}
+
+@media (max-width: 480px) {
+  .theme-toggle {
+    width: 36px;
+    height: 36px;
+  }
+  
+  .icon {
+    width: 18px;
+    height: 18px;
+  }
 }
 </style>
 
