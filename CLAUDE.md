@@ -63,10 +63,16 @@ docker-compose up -d
 
 ## Authentication
 
-Nginx handles HTTP Basic Auth via `.htpasswd` file. Protected routes:
+Nginx handles HTTP Basic Auth with two permission levels:
+
+**Admin only** (`.htpasswd.admin`):
 - `/entry/*` - Entry management (except `/entry/api` which is public for queue service)
 - `/traffic/*` - Traffic management
-- `/queue/admin`, `/queue/register`, `/queue/priority` - Queue admin routes
+
+**Admin + Official** (`.htpasswd.official`):
+- `/queue/admin`, `/queue/register`, `/queue/priority` - Queue management routes
+
+Admin users must be added to both files. Official users only need `.htpasswd.official`.
 
 Public routes: `/`, `/queue`, `/energymeter`
 

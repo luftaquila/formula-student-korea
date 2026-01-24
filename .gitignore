@@ -1,3 +1,5 @@
 .env
 .htpasswd
+.htpasswd.admin
+.htpasswd.official
 data/

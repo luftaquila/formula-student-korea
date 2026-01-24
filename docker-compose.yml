@@ -39,6 +39,8 @@ services:
       context: .
       dockerfile: queue/Dockerfile
     container_name: fsk-queue
+    env_file:
+      - .env
     environment:
       - ENTRY_SERVER=http://entry:9100
     volumes:
@@ -57,7 +59,8 @@ services:
     ports:
       - "9000:9000"
     volumes:
-      - ./.htpasswd:/etc/nginx/.htpasswd:ro
+      - ./.htpasswd.admin:/etc/nginx/.htpasswd.admin:ro
+      - ./.htpasswd.official:/etc/nginx/.htpasswd.official:ro
     depends_on:
       - entry
       - traffic
