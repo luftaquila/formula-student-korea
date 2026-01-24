@@ -34,6 +34,21 @@ services:
     networks:
       - fsk-network
 
+  queue:
+    build:
+      context: ./queue
+      dockerfile: Dockerfile
+    container_name: fsk-queue
+    environment:
+      - ENTRY_SERVER=http://entry:9100
+    volumes:
+      - ./queue/data:/home/node/fsk-queue/data
+    depends_on:
+      - entry
+    restart: unless-stopped
+    networks:
+      - fsk-network
+
   nginx:
     build:
       context: ./landing
@@ -45,6 +60,7 @@ services:
       - entry
       - traffic
       - energymeter
+      - queue
     restart: unless-stopped
     networks:
       - fsk-network

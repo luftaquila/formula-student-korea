@@ -1,28 +1,42 @@
 <script setup>
-import { onMounted } from "vue";
+import { ref } from "vue";
 import { useRoute } from "vue-router";
+import Toast from "./components/Toast.vue";
 import ThemeToggle from "./components/ThemeToggle.vue";
-import NavTabs from "./components/NavTabs.vue";
 import NavMenu from "./components/NavMenu.vue";
-import { useEntryStore } from "./stores/entry";
 
+const toast = ref(null);
 const route = useRoute();
-const entryStore = useEntryStore();
 
-onMounted(() => {
-  entryStore.loadEntries();
-});
+const pageInfo = {
+  "/": { title: "검차 순번 조회", icon: "magnifying-glass" },
+  "/admin": { title: "검차 대기열 관리", icon: "list-check" },
+  "/register": { title: "검차 대기열 등록", icon: "plus" },
+  "/priority": { title: "우선순위 관리", icon: "star" },
+};
+
+function getPageTitle() {
+  return pageInfo[route.path]?.title || "검차 대기열";
+}
+
+function showToast(message, type) {
+  toast.value?.show(message, type);
+}
+
+// Expose toast for child components
+defineExpose({ toast });
 </script>
 
 <template>
   <div class="app-container">
+    <Toast ref="toast" />
+
     <header class="header">
       <div class="header-content">
         <a href="/" class="logo">
-          <span class="logo-icon">🚦</span>
-          <h1>FSK 계측 시스템</h1>
+          <span class="logo-icon">🔧</span>
+          <h1>FSK {{ getPageTitle() }}</h1>
         </a>
-        <NavTabs />
         <div class="header-actions">
           <ThemeToggle />
           <NavMenu />
@@ -31,7 +45,9 @@ onMounted(() => {
     </header>
 
     <main class="main-content">
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <component :is="Component" :show-toast="showToast" />
+      </router-view>
     </main>
   </div>
 </template>
@@ -54,14 +70,12 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 2rem;
 }
 
 .logo {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  flex-shrink: 0;
   text-decoration: none;
 }
 
@@ -82,19 +96,12 @@ onMounted(() => {
   display: flex;
   gap: 0.75rem;
   align-items: center;
-  flex-shrink: 0;
 }
 
 .main-content {
   max-width: 1400px;
   margin: 0 auto;
   padding: 2rem;
-}
-
-@media (max-width: 1024px) {
-  .header-content {
-    flex-wrap: wrap;
-  }
 }
 
 @media (max-width: 640px) {
@@ -105,6 +112,7 @@ onMounted(() => {
   .header-content {
     flex-direction: column;
     gap: 1rem;
+    text-align: center;
   }
 
   .main-content {

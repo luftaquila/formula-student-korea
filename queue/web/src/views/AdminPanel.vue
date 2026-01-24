@@ -1,0 +1,651 @@
+<script setup>
+import { ref, onMounted, computed, watch } from "vue";
+import { useRouter } from "vue-router";
+import {
+  fetchEntries,
+  fetchAllInspections,
+  fetchInspectionQueue,
+  toggleInspectionActive,
+  enterFromQueue,
+  cancelFromQueue,
+  resetInspectionHistory,
+  fetchSmsSettings,
+  setSmsSettings,
+  fetchSmsRankSettings,
+  setSmsRankSettings,
+  fetchCancelPenaltySettings,
+  setCancelPenaltySettings,
+} from "../api";
+import { useSSE } from "../composables/useSSE";
+
+const props = defineProps(["showToast"]);
+const router = useRouter();
+
+const { activeInspections, lastQueueUpdate } = useSSE();
+
+const entries = ref({});
+const inspections = ref([]);
+const currentQueue = ref([]);
+const currentTab = ref("");
+const smsEnabled = ref(false);
+const smsRank = ref(3);
+const cancelPenalty = ref(10);
+const loading = ref(true);
+
+const activeInspectionTypes = computed(() => activeInspections.value.map((i) => i.type));
+
+// Watch for queue updates from SSE
+watch(lastQueueUpdate, async (update) => {
+  if (update && (update.type === currentTab.value || !currentTab.value)) {
+    await refreshQueue(currentTab.value || update.type);
+  }
+});
+
+// Watch for active inspections changes
+watch(
+  activeInspections,
+  async (newVal) => {
+    if (newVal.length > 0 && !currentTab.value) {
+      const savedTab = localStorage.getItem("admin_tab");
+      if (savedTab && activeInspectionTypes.value.includes(savedTab)) {
+        currentTab.value = savedTab;
+      } else {
+        currentTab.value = newVal[0].type;
+        localStorage.setItem("admin_tab", currentTab.value);
+      }
+      await refreshQueue(currentTab.value);
+    }
+  },
+  { immediate: true },
+);
+
+onMounted(async () => {
+  try {
+    entries.value = await fetchEntries();
+    inspections.value = await fetchAllInspections();
+    const sms = await fetchSmsSettings();
+    smsEnabled.value = sms.value;
+    const smsRankData = await fetchSmsRankSettings();
+    smsRank.value = smsRankData.value;
+    const penaltyData = await fetchCancelPenaltySettings();
+    cancelPenalty.value = penaltyData.value;
+
+    // Restore saved tab
+    const savedTab = localStorage.getItem("admin_tab");
+    if (savedTab && activeInspectionTypes.value.includes(savedTab)) {
+      currentTab.value = savedTab;
+      await refreshQueue(savedTab);
+    } else if (activeInspections.value.length > 0) {
+      currentTab.value = activeInspections.value[0].type;
+      localStorage.setItem("admin_tab", currentTab.value);
+      await refreshQueue(currentTab.value);
+    }
+  } catch (e) {
+    props.showToast?.("초기 데이터를 가져올 수 없습니다.", "error");
+  }
+  loading.value = false;
+});
+
+async function refreshQueue(type) {
+  if (!type) return;
+  try {
+    currentQueue.value = await fetchInspectionQueue(type);
+  } catch (e) {
+    props.showToast?.("대기열을 가져올 수 없습니다.", "error");
+  }
+}
+
+function selectTab(type) {
+  currentTab.value = type;
+  localStorage.setItem("admin_tab", type);
+  refreshQueue(type);
+}
+
+async function toggleActive(type, e) {
+  try {
+    await toggleInspectionActive(type, e.target.checked);
+    // SSE will handle the update
+  } catch (e) {
+    props.showToast?.("활성화 상태를 변경할 수 없습니다.", "error");
+  }
+}
+
+async function enterEntry(num) {
+  try {
+    await enterFromQueue(currentTab.value, num);
+    props.showToast?.(`엔트리 ${num}번 입장`, "success");
+    await refreshQueue(currentTab.value);
+  } catch (e) {
+    props.showToast?.(e.message, "error");
+  }
+}
+
+async function cancelEntry(num) {
+  if (!confirm(`엔트리 ${num}번을 취소하시겠습니까?\n${cancelPenalty.value}분간 페널티가 적용됩니다.`)) return;
+
+  try {
+    await cancelFromQueue(currentTab.value, num);
+    props.showToast?.(`엔트리 ${num}번 취소 (${cancelPenalty.value}분 페널티)`, "info");
+    await refreshQueue(currentTab.value);
+  } catch (e) {
+    props.showToast?.(e.message, "error");
+  }
+}
+
+async function toggleSms() {
+  try {
+    await setSmsSettings(!smsEnabled.value);
+    const sms = await fetchSmsSettings();
+    smsEnabled.value = sms.value;
+    props.showToast?.("SMS 설정을 변경했습니다.", "success");
+  } catch (e) {
+    props.showToast?.(e.message, "error");
+  }
+}
+
+async function updateSmsRank(e) {
+  const value = parseInt(e.target.value, 10);
+  if (isNaN(value) || value < 1 || value > 10) return;
+
+  try {
+    await setSmsRankSettings(value);
+    smsRank.value = value;
+    props.showToast?.(`SMS 알림 순번을 ${value}번으로 변경했습니다.`, "success");
+  } catch (e) {
+    props.showToast?.(e.message, "error");
+  }
+}
+
+async function updateCancelPenalty(e) {
+  const value = parseInt(e.target.value, 10);
+  if (isNaN(value) || value < 0 || value > 60) return;
+
+  try {
+    await setCancelPenaltySettings(value);
+    cancelPenalty.value = value;
+    props.showToast?.(`취소 페널티를 ${value}분으로 변경했습니다.`, "success");
+  } catch (e) {
+    props.showToast?.(e.message, "error");
+  }
+}
+
+async function resetHistory(type, name) {
+  if (!confirm(`${name} 검차의 초검/재검 이력을 초기화하시겠습니까?\n모든 팀이 초검으로 간주됩니다.`)) return;
+
+  try {
+    await resetInspectionHistory(type);
+    props.showToast?.(`${name} 검차 이력을 초기화했습니다.`, "success");
+    // SSE will handle queue update
+  } catch (e) {
+    props.showToast?.(e.message, "error");
+  }
+}
+
+function formatPhone(phone) {
+  return phone.replace(/(\d{3})(\d{4})(\d{4})/, "$1-$2-$3");
+}
+
+function formatTime(timestamp) {
+  const date = new Date(timestamp);
+  return `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}:${date.getSeconds().toString().padStart(2, "0")}`;
+}
+
+function goToRegister() {
+  router.push("/register");
+}
+
+function goToPriority() {
+  router.push("/priority");
+}
+</script>
+
+<template>
+  <div class="admin-panel">
+    <!-- Top Actions -->
+    <div class="top-actions">
+      <button class="btn btn-primary" @click="goToRegister">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+        검차 등록
+      </button>
+      <button class="btn btn-ghost" @click="goToPriority">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+          <polygon
+            points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"
+          />
+        </svg>
+        우선순위 관리
+      </button>
+    </div>
+
+    <div class="admin-grid">
+      <!-- Queue Panel -->
+      <div class="card queue-panel">
+        <div class="card-header">
+          <div class="header-left">
+            <h3>📋 검차 대기열</h3>
+            <span class="queue-count">{{ currentQueue.length }}팀 대기중</span>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs-container">
+          <div class="tabs">
+            <button
+              v-for="item in activeInspections"
+              :key="item.type"
+              class="tab"
+              :class="{ active: currentTab === item.type }"
+              @click="selectTab(item.type)"
+            >
+              {{ item.name }}
+            </button>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div v-if="loading" class="loading">
+            <div class="loading-spinner"></div>
+          </div>
+          <div v-else-if="currentQueue.length > 0" class="queue-list">
+            <div v-for="(item, index) in currentQueue" :key="item.num" class="queue-item">
+              <div class="queue-item-header">
+                <div class="queue-item-left">
+                  <span class="entry-num">{{ item.num }}</span>
+                  <span class="entry-detail">{{ entries[item.num]?.univ }} {{ entries[item.num]?.team }}</span>
+                </div>
+                <div class="queue-item-badges">
+                  <span v-if="item.is_reinspection" class="badge badge-warning">재검</span>
+                  <span v-else class="badge badge-success">초검</span>
+                  <span v-if="item.priority < 999" class="badge badge-primary">{{ item.priority }}순위</span>
+                </div>
+              </div>
+              <div class="queue-item-footer">
+                <div class="queue-item-meta">
+                  <a :href="`tel:${item.phone}`" class="entry-phone">{{ formatPhone(item.phone) }}</a>
+                  <span class="entry-time">{{ formatTime(item.timestamp) }}</span>
+                </div>
+                <div class="action-buttons">
+                  <button class="btn btn-success btn-icon btn-sm" @click="enterEntry(item.num)" title="입장">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+                      <polyline points="10 17 15 12 10 7" />
+                      <line x1="15" y1="12" x2="3" y2="12" />
+                    </svg>
+                  </button>
+                  <button class="btn btn-danger btn-icon btn-sm" @click="cancelEntry(item.num)" title="취소">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-else class="empty-state">대기중인 엔트리가 없습니다.</div>
+        </div>
+      </div>
+
+      <!-- Settings Panel -->
+      <div class="card settings-panel">
+        <div class="card-header">
+          <h3>⚙️ 설정</h3>
+        </div>
+        <div class="card-body">
+          <!-- SMS Setting -->
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">SMS 알림 활성화</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" :checked="smsEnabled" @change="toggleSms" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <!-- SMS Rank Setting -->
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">SMS 알림 순번</span>
+            </div>
+            <div class="setting-input">
+              <input type="number" :value="smsRank" min="1" max="10" @change="updateSmsRank" />
+              <span>번</span>
+            </div>
+          </div>
+
+          <!-- Cancel Penalty Setting -->
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">취소 페널티</span>
+            </div>
+            <div class="setting-input">
+              <input type="number" :value="cancelPenalty" min="0" max="60" @change="updateCancelPenalty" />
+              <span>분</span>
+            </div>
+          </div>
+
+          <hr class="divider" />
+
+          <!-- Active Inspections -->
+          <div class="setting-section">
+            <div v-for="item in inspections" :key="item.type" class="setting-item inspection-setting">
+              <div class="setting-info">
+                <span class="setting-label">{{ item.name }}</span>
+              </div>
+              <div class="setting-actions">
+                <label class="toggle">
+                  <input type="checkbox" :checked="item.active" @change="toggleActive(item.type, $event)" />
+                  <span class="toggle-slider"></span>
+                </label>
+                <button
+                  class="btn btn-ghost btn-sm"
+                  @click="resetHistory(item.type, item.name)"
+                  title="초검/재검 이력 초기화"
+                >
+                  초기화
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.admin-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.top-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.admin-grid {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 1.5rem;
+}
+
+.queue-panel .card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.queue-count {
+  background: var(--accent-primary);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.625rem;
+  border-radius: 12px;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.tabs-container {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  overflow-x: auto;
+}
+
+/* Queue List */
+.queue-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.queue-item {
+  padding: 0.875rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.queue-item:last-child {
+  border-bottom: none;
+}
+
+.queue-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.queue-item-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.queue-item-badges {
+  display: flex;
+  gap: 0.375rem;
+  flex-shrink: 0;
+}
+
+.queue-item-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.queue-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.entry-num {
+  font-weight: 700;
+  font-size: 1.125rem;
+  font-family: "JetBrains Mono", monospace;
+  flex-shrink: 0;
+}
+
+.entry-detail {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.entry-phone {
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
+  font-family: "JetBrains Mono", monospace;
+  text-decoration: none;
+}
+
+.entry-phone:hover {
+  color: var(--accent-primary);
+  text-decoration: underline;
+}
+
+.entry-time {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.loading {
+  display: flex;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.empty-state {
+  text-align: center;
+  color: var(--text-tertiary);
+  padding: 3rem;
+}
+
+/* Settings Panel */
+.setting-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 0;
+}
+
+.setting-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.setting-label {
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+.setting-desc {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 0.5rem 0;
+}
+
+.setting-section {
+  margin-top: 0.5rem;
+}
+
+.setting-section-title {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 0.375rem;
+  flex-shrink: 0;
+}
+
+.setting-input {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.setting-input input {
+  width: 60px;
+  padding: 0.375rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  text-align: center;
+  font-size: 0.875rem;
+  font-family: "JetBrains Mono", monospace;
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.setting-input input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
+.setting-input input::-webkit-outer-spin-button,
+.setting-input input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.setting-input span {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.inspection-setting {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.setting-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+@media (max-width: 1024px) {
+  .admin-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .queue-item {
+    padding: 0.75rem;
+  }
+
+  .queue-item-header {
+    flex-wrap: wrap;
+  }
+
+  .queue-item-left {
+    flex: 1;
+  }
+
+  .entry-num {
+    font-size: 1rem;
+  }
+
+  .entry-detail {
+    font-size: 0.8125rem;
+  }
+
+  .queue-item-footer {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .queue-item-meta {
+    flex: 1;
+    gap: 0.75rem;
+  }
+
+  .entry-phone {
+    font-size: 0.75rem;
+  }
+}
+</style>

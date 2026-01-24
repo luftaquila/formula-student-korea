@@ -92,10 +92,10 @@ onMounted(loadEntries);
 
     <header class="header">
       <div class="header-content">
-        <div class="logo">
+        <a href="/" class="logo">
           <span class="logo-icon">🏁</span>
           <h1>FSK 엔트리 관리</h1>
-        </div>
+        </a>
         <div class="header-actions">
           <ThemeToggle />
           <NavMenu />
@@ -159,6 +159,7 @@ onMounted(loadEntries);
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  text-decoration: none;
 }
 
 .logo-icon {
