@@ -51,6 +51,16 @@ services:
     networks:
       - fsk-network
 
+  rules:
+    image: caddy:alpine
+    container_name: fsk-rules
+    volumes:
+      - ./rules/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./rules/data:/srv/rules:ro
+    restart: unless-stopped
+    networks:
+      - fsk-network
+
   nginx:
     build:
       context: .
@@ -66,6 +76,7 @@ services:
       - traffic
       - energymeter
       - queue
+      - rules
     restart: unless-stopped
     networks:
       - fsk-network
