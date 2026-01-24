@@ -1,8 +1,19 @@
 <template>
-  <a :href="path" class="service-card">
-    <div class="icon">{{ icon }}</div>
+  <a
+    :href="path"
+    :target="external ? '_blank' : undefined"
+    :rel="external ? 'noopener noreferrer' : undefined"
+    class="service-card"
+  >
+    <div v-if="svgIcon" class="icon icon-svg" v-html="svgIcon"></div>
+    <div v-else class="icon">{{ icon }}</div>
     <h2>{{ title }}</h2>
     <p>{{ description }}</p>
+    <svg v-if="external" class="external-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <polyline points="15 3 21 3 21 9" />
+      <line x1="10" y1="14" x2="21" y2="3" />
+    </svg>
   </a>
 </template>
 
@@ -12,15 +23,21 @@ defineProps({
   description: String,
   path: String,
   icon: String,
+  svgIcon: String,
+  external: {
+    type: Boolean,
+    default: false,
+  },
 });
 </script>
 
 <style scoped>
 .service-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 3rem 2rem;
+  padding: 2.5rem 2rem;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 20px;
@@ -38,51 +55,58 @@ defineProps({
 }
 
 .icon {
-  font-size: 4rem;
-  margin-bottom: 1rem;
+  font-size: 3.5rem;
+  margin-bottom: 1.5rem;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
+  line-height: 1;
+  height: 3.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-svg :deep(svg) {
+  width: 3.5rem;
+  height: 3.5rem;
 }
 
 h2 {
-  font-size: 1.5rem;
+  font-size: 1.25rem;
   font-weight: 600;
   margin-bottom: 0.5rem;
   color: var(--text-primary);
 }
 
 p {
-  font-size: 1rem;
+  font-size: 0.9rem;
   color: var(--text-secondary);
   text-align: center;
 }
 
+.external-icon {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  width: 16px;
+  height: 16px;
+  color: var(--text-tertiary);
+  opacity: 0.6;
+}
+
 @media (max-width: 768px) {
   .service-card {
-    padding: 2rem 1.5rem;
+    padding: 2.5rem 1.5rem 2rem;
   }
 
   .icon {
     font-size: 3rem;
-    margin-bottom: 0.75rem;
+    height: 3rem;
+    margin-bottom: 1.25rem;
   }
 
-  h2 {
-    font-size: 1.25rem;
-  }
-
-  p {
-    font-size: 0.9rem;
-  }
-}
-
-@media (max-width: 480px) {
-  .service-card {
-    padding: 1.5rem 1rem;
-  }
-
-  .icon {
-    font-size: 2.5rem;
-    margin-bottom: 0.5rem;
+  .icon-svg :deep(svg) {
+    width: 3rem;
+    height: 3rem;
   }
 
   h2 {
@@ -90,7 +114,32 @@ p {
   }
 
   p {
-    font-size: 0.875rem;
+    font-size: 0.85rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .service-card {
+    padding: 2rem 1rem 1.5rem;
+  }
+
+  .icon {
+    font-size: 2.5rem;
+    height: 2.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .icon-svg :deep(svg) {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+
+  h2 {
+    font-size: 1rem;
+  }
+
+  p {
+    font-size: 0.8rem;
   }
 }
 </style>

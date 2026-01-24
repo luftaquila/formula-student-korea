@@ -90,16 +90,4 @@ function toggle() {
   height: 20px;
   color: white;
 }
-
-@media (max-width: 480px) {
-  .theme-toggle {
-    width: 36px;
-    height: 36px;
-  }
-
-  .icon {
-    width: 18px;
-    height: 18px;
-  }
-}
 </style>

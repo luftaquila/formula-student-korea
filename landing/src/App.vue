@@ -13,11 +13,31 @@
       </div>
     </header>
     <main class="main">
-      <div class="services">
-        <ServiceCard title="Entry" description="엔트리 관리 시스템" path="/entry" icon="📝" />
-        <ServiceCard title="Traffic" description="트래픽 관리 시스템" path="/traffic" icon="🚦" />
-        <ServiceCard title="Energymeter" description="에너지미터 뷰어" path="/energymeter" icon="⚡" />
-      </div>
+      <section class="section">
+        <h2 class="section-title">Services</h2>
+        <div class="services">
+          <ServiceCard title="검차 대기열" description="" path="/queue" icon="🔧" />
+          <ServiceCard title="에너지미터" description="" path="/energymeter" icon="⚡" />
+          <ServiceCard title="대회 규정집" description="" path="/rules" icon="📖" external />
+          <ServiceCard
+            title="자작자동차포럼"
+            description=""
+            path="https://dnf.luftaquila.io"
+            :svgIcon="forumSvg"
+            external
+          />
+        </div>
+      </section>
+
+      <section v-if="showOfficials" class="section">
+        <h2 class="section-title">Officials</h2>
+        <div class="services">
+          <ServiceCard title="엔트리 관리" description="" path="/entry" icon="🏁" />
+          <ServiceCard title="검차 시스템" description="" path="/queue/admin" icon="🛠️" />
+          <ServiceCard title="계측 시스템" description="" path="/traffic" icon="🚦" />
+          <ServiceCard title="전광판" description="" path="/scoreboard" icon="📺" />
+        </div>
+      </section>
     </main>
   </div>
 </template>
@@ -26,6 +46,8 @@
 import ServiceCard from "./components/ServiceCard.vue";
 import ThemeToggle from "./components/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
+import { showOfficials } from "@shared/officialsStore.js";
+import { forumSvg } from "@shared/nav-config.js";
 </script>
 
 <style scoped>
@@ -80,16 +102,31 @@ import NavMenu from "@shared/NavMenu.vue";
 .main {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: 2rem;
+  gap: 3rem;
+}
+
+.section {
+  width: 100%;
+  max-width: 1200px;
+}
+
+.section-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 1.5rem;
+  padding-left: 0.5rem;
+  border-left: 3px solid var(--accent-primary);
 }
 
 .services {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 2rem;
-  max-width: 1200px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.5rem;
   width: 100%;
 }
 
@@ -104,35 +141,26 @@ import NavMenu from "@shared/NavMenu.vue";
     text-align: center;
   }
 
-  .logo h1 {
-    font-size: 1.25rem;
+  .main {
+    padding: 2.5rem 1rem;
+    gap: 2rem;
+    justify-content: flex-start;
   }
 
-  .main {
-    padding: 1.5rem 1rem;
+  .section-title {
+    font-size: 1.125rem;
   }
 
   .services {
-    grid-template-columns: 1fr;
-    gap: 1.5rem;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
   }
 }
 
 @media (max-width: 480px) {
-  .header {
-    padding: 1rem;
-  }
-
-  .logo h1 {
-    font-size: 1.125rem;
-  }
-
   .main {
     padding: 1rem;
-  }
-
-  .services {
-    gap: 1rem;
+    gap: 1.5rem;
   }
 }
 </style>

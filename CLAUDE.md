@@ -4,18 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Formula Student Korea Service Hub - a microservices-based web application for managing vehicle entry registration, traffic controller data, and energy meter monitoring for Formula Student Korea events.
+Formula Student Korea Service Hub - a microservices-based web application for managing vehicle entry registration, inspection queue, traffic controller data, and energy meter monitoring for Formula Student Korea events.
 
 ## Architecture
 
-Four independent services deployed via Docker Compose behind an Nginx reverse proxy (port 9000):
+Five independent services deployed via Docker Compose behind an Nginx reverse proxy (port 9000):
 
 - **landing/** - Landing page and reverse proxy gateway (Vue 3 + Nginx)
 - **entry/** - Vehicle entry registration API + web UI (Express + Vue 3, port 9100)
+- **queue/** - Inspection queue management API + web UI (Express + Vue 3, port 9300)
 - **traffic/** - Traffic control and telemetry API + web UI (Express + Vue 3, port 9200)
 - **energymeter/** - Energy meter data viewer (Git submodule, Vue 3, port 9400)
 
-The traffic service depends on and communicates with the entry service via `ENTRY_SERVER` environment variable.
+**Shared components** in `shared/` are imported directly by other services:
+- `NavMenu.vue` - Navigation drawer component used across all frontends
+- `nav-config.js` - Service menu configuration
+- `officialsStore.js` - Shared state for officials-only menu visibility
+
+Service dependencies (via `ENTRY_SERVER` environment variable):
+- traffic → entry
+- queue → entry
 
 ## Tech Stack
 
@@ -26,11 +34,17 @@ The traffic service depends on and communicates with the entry service via `ENTR
 
 ## Build Commands
 
-### Frontend Development (any web service)
+### Frontend Development
 ```bash
-cd landing|entry/web|traffic/web|energymeter/viewer
+cd landing|entry/web|queue/web|traffic/web|energymeter/viewer
 npm run dev        # Dev server with hot reload
 npm run build      # Production build
+```
+
+### Backend Development
+```bash
+cd entry|queue|traffic
+node index.mjs     # Run API server directly
 ```
 
 ### Docker Deployment
@@ -41,17 +55,28 @@ docker-compose up -d
 
 ## Key Files
 
-- `landing/nginx.conf` - Route configuration for all services
+- `landing/nginx.conf` - Route configuration and authentication rules for all services
 - `entry/index.mjs` - Entry service API server
+- `queue/index.mjs` - Queue service API server
 - `traffic/index.mjs` - Traffic service API server
 - `docker-compose.yml` - Service orchestration
 
+## Authentication
+
+Nginx handles HTTP Basic Auth via `.htpasswd` file. Protected routes:
+- `/entry/*` - Entry management (except `/entry/api` which is public for queue service)
+- `/traffic/*` - Traffic management
+- `/queue/admin`, `/queue/register`, `/queue/priority` - Queue admin routes
+
+Public routes: `/`, `/queue`, `/energymeter`
+
 ## Environment-Aware Builds
 
-Production builds use service-specific base paths (`/entry/`, `/traffic/`, `/energymeter/`) configured in each service's `vite.config.js`. Development builds use empty base paths with Vite proxy routing to backend APIs.
+Production builds use service-specific base paths (`/entry/`, `/queue/`, `/traffic/`, `/energymeter/`) configured in each service's `vite.config.js`. Development builds use empty base paths with Vite proxy routing to backend APIs.
 
 ## Data Storage
 
 SQLite databases stored in volume-mounted directories:
 - `entry/data/` - entry.db, entry.log
+- `queue/data/` - queue.db, queue.log
 - `traffic/data/` - traffic.db, traffic.log

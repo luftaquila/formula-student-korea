@@ -9,10 +9,10 @@ const toast = ref(null);
 const route = useRoute();
 
 const pageInfo = {
-  "/": { title: "검차 순번 조회", icon: "magnifying-glass" },
+  "/": { title: "검차 대기열", icon: "magnifying-glass" },
   "/admin": { title: "검차 대기열 관리", icon: "list-check" },
   "/register": { title: "검차 대기열 등록", icon: "plus" },
-  "/priority": { title: "우선순위 관리", icon: "star" },
+  "/priority": { title: "검차 우선순위 관리", icon: "star" },
 };
 
 function getPageTitle() {
