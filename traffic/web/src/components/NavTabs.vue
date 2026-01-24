@@ -1,27 +1,31 @@
 <script setup>
-import { useRoute } from 'vue-router'
-import { useSerialStore } from '../stores/serial'
+import { useRoute } from "vue-router";
+import { useSerialStore } from "../stores/serial";
 
-const route = useRoute()
-const serial = useSerialStore()
+const route = useRoute();
+const serial = useSerialStore();
 
 const navItems = [
-  { id: 'accel', label: '🏎️ 가속', path: '/accel' },
-  { id: 'gymkhana', label: '🏁 짐카나', path: '/gymkhana' },
-  { id: 'skidpad', label: '⏱️ 스키드패드', path: '/skidpad' },
-  { id: 'record', label: '📋 기록', path: '/record' }
-]
+  { id: "accel", label: "🏎️ 가속", path: "/accel" },
+  { id: "gymkhana", label: "🏁 짐카나", path: "/gymkhana" },
+  { id: "skidpad", label: "⏱️ 스키드패드", path: "/skidpad" },
+  { id: "record", label: "📋 기록", path: "/record" },
+];
 </script>
 
 <template>
   <nav class="nav-tabs">
     <router-link
-      v-for="item in navItems" 
+      v-for="item in navItems"
       :key="item.id"
       :to="item.path"
       class="nav-tab"
       :class="{ active: route.path === item.path, disabled: serial.green.active }"
-      @click="(e) => { if (serial.green.active) e.preventDefault() }"
+      @click="
+        (e) => {
+          if (serial.green.active) e.preventDefault();
+        }
+      "
     >
       {{ item.label }}
     </router-link>
@@ -74,11 +78,10 @@ const navItems = [
     flex-wrap: wrap;
     justify-content: center;
   }
-  
+
   .nav-tab {
     padding: 0.375rem 0.75rem;
     font-size: 0.8125rem;
   }
 }
 </style>
-

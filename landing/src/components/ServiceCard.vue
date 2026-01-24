@@ -11,8 +11,8 @@ defineProps({
   title: String,
   description: String,
   path: String,
-  icon: String
-})
+  icon: String,
+});
 </script>
 
 <style scoped>
@@ -60,16 +60,16 @@ p {
   .service-card {
     padding: 2rem 1.5rem;
   }
-  
+
   .icon {
     font-size: 3rem;
     margin-bottom: 0.75rem;
   }
-  
+
   h2 {
     font-size: 1.25rem;
   }
-  
+
   p {
     font-size: 0.9rem;
   }
@@ -79,19 +79,18 @@ p {
   .service-card {
     padding: 1.5rem 1rem;
   }
-  
+
   .icon {
     font-size: 2.5rem;
     margin-bottom: 0.5rem;
   }
-  
+
   h2 {
     font-size: 1.125rem;
   }
-  
+
   p {
     font-size: 0.875rem;
   }
 }
 </style>
-

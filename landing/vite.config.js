@@ -1,14 +1,13 @@
-import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
+import { defineConfig } from "vite";
+import vue from "@vitejs/plugin-vue";
 
 export default defineConfig({
   plugins: [vue()],
   server: {
-    port: 9000
+    port: 9000,
   },
   build: {
-    outDir: 'dist',
-    emptyOutDir: true
-  }
-})
-
+    outDir: "dist",
+    emptyOutDir: true,
+  },
+});

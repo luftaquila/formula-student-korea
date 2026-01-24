@@ -6,32 +6,17 @@
     </header>
     <main class="main">
       <div class="services">
-        <ServiceCard
-          title="Entry"
-          description="엔트리 관리 시스템"
-          path="/entry"
-          icon="📝"
-        />
-        <ServiceCard
-          title="Traffic"
-          description="트래픽 관리 시스템"
-          path="/traffic"
-          icon="🚦"
-        />
-        <ServiceCard
-          title="Energymeter"
-          description="에너지미터 뷰어"
-          path="/energymeter"
-          icon="⚡"
-        />
+        <ServiceCard title="Entry" description="엔트리 관리 시스템" path="/entry" icon="📝" />
+        <ServiceCard title="Traffic" description="트래픽 관리 시스템" path="/traffic" icon="🚦" />
+        <ServiceCard title="Energymeter" description="에너지미터 뷰어" path="/energymeter" icon="⚡" />
       </div>
     </main>
   </div>
 </template>
 
 <script setup>
-import ServiceCard from './components/ServiceCard.vue'
-import ThemeToggle from './components/ThemeToggle.vue'
+import ServiceCard from "./components/ServiceCard.vue";
+import ThemeToggle from "./components/ThemeToggle.vue";
 </script>
 
 <style scoped>
@@ -84,15 +69,15 @@ import ThemeToggle from './components/ThemeToggle.vue'
     flex-direction: column;
     text-align: center;
   }
-  
+
   .header h1 {
     font-size: 1.5rem;
   }
-  
+
   .main {
     padding: 1.5rem 1rem;
   }
-  
+
   .services {
     grid-template-columns: 1fr;
     gap: 1.5rem;
@@ -103,18 +88,17 @@ import ThemeToggle from './components/ThemeToggle.vue'
   .header {
     padding: 1rem;
   }
-  
+
   .header h1 {
     font-size: 1.25rem;
   }
-  
+
   .main {
     padding: 1rem;
   }
-  
+
   .services {
     gap: 1rem;
   }
 }
 </style>
-

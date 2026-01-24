@@ -1,93 +1,93 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed } from "vue";
 
 const props = defineProps({
   entries: {
     type: Array,
-    required: true
-  }
-})
+    required: true,
+  },
+});
 
-const emit = defineEmits(['update', 'delete'])
+const emit = defineEmits(["update", "delete"]);
 
-const editingRow = ref(null)
-const editForm = ref({ num: '', univ: '', team: '' })
-const sortKey = ref(null)
-const sortOrder = ref('asc')
+const editingRow = ref(null);
+const editForm = ref({ num: "", univ: "", team: "" });
+const sortKey = ref(null);
+const sortOrder = ref("asc");
 
 const sortedEntries = computed(() => {
-  if (!sortKey.value || !props.entries.length) return props.entries
-  
+  if (!sortKey.value || !props.entries.length) return props.entries;
+
   return [...props.entries].sort((a, b) => {
-    let aVal = a[sortKey.value]
-    let bVal = b[sortKey.value]
-    
-    if (sortKey.value === 'num') {
-      aVal = Number(aVal) || 0
-      bVal = Number(bVal) || 0
+    let aVal = a[sortKey.value];
+    let bVal = b[sortKey.value];
+
+    if (sortKey.value === "num") {
+      aVal = Number(aVal) || 0;
+      bVal = Number(bVal) || 0;
     } else {
-      aVal = String(aVal || '').toLowerCase()
-      bVal = String(bVal || '').toLowerCase()
+      aVal = String(aVal || "").toLowerCase();
+      bVal = String(bVal || "").toLowerCase();
     }
-    
-    if (aVal < bVal) return sortOrder.value === 'asc' ? -1 : 1
-    if (aVal > bVal) return sortOrder.value === 'asc' ? 1 : -1
-    return 0
-  })
-})
+
+    if (aVal < bVal) return sortOrder.value === "asc" ? -1 : 1;
+    if (aVal > bVal) return sortOrder.value === "asc" ? 1 : -1;
+    return 0;
+  });
+});
 
 function handleSort(key) {
   if (sortKey.value === key) {
-    sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
+    sortOrder.value = sortOrder.value === "asc" ? "desc" : "asc";
   } else {
-    sortKey.value = key
-    sortOrder.value = 'asc'
+    sortKey.value = key;
+    sortOrder.value = "asc";
   }
 }
 
 function getSortIcon(key) {
-  if (sortKey.value !== key) return '↕'
-  return sortOrder.value === 'asc' ? '↑' : '↓'
+  if (sortKey.value !== key) return "↕";
+  return sortOrder.value === "asc" ? "↑" : "↓";
 }
 
 function startEdit(entry) {
-  editingRow.value = entry.num
-  editForm.value = { 
-    num: entry.num, 
-    univ: entry.univ, 
+  editingRow.value = entry.num;
+  editForm.value = {
+    num: entry.num,
+    univ: entry.univ,
     team: entry.team,
-    originalNum: entry.num
-  }
+    originalNum: entry.num,
+  };
 }
 
 function cancelEdit() {
-  editingRow.value = null
-  editForm.value = { num: '', univ: '', team: '' }
+  editingRow.value = null;
+  editForm.value = { num: "", univ: "", team: "" };
 }
 
 function saveEdit() {
-  const numChanged = editForm.value.num !== editForm.value.originalNum
-  emit('update', {
+  const numChanged = editForm.value.num !== editForm.value.originalNum;
+  emit("update", {
     num: editForm.value.num,
     univ: editForm.value.univ,
     team: editForm.value.team,
     num_changed: numChanged,
-    prev: editForm.value.originalNum
-  })
-  cancelEdit()
+    prev: editForm.value.originalNum,
+  });
+  cancelEdit();
 }
 
 function handleDelete(num) {
   if (confirm(`${num}번 엔트리를 삭제하시겠습니까?`)) {
-    emit('delete', num)
+    emit("delete", num);
   }
 }
 
 function handleKeydown(e) {
-  if (e.key === 'Enter') {
-    saveEdit()
-  } else if (e.key === 'Escape') {
-    cancelEdit()
+  if (e.key === "Enter") {
+    saveEdit();
+  } else if (e.key === "Escape") {
+    cancelEdit();
   }
 }
 </script>
@@ -98,13 +98,13 @@ function handleKeydown(e) {
       <thead>
         <tr>
           <th class="col-num sortable" @click="handleSort('num')">
-            번호 <span class="sort-icon">{{ getSortIcon('num') }}</span>
+            번호 <span class="sort-icon">{{ getSortIcon("num") }}</span>
           </th>
           <th class="col-univ sortable" @click="handleSort('univ')">
-            학교 <span class="sort-icon">{{ getSortIcon('univ') }}</span>
+            학교 <span class="sort-icon">{{ getSortIcon("univ") }}</span>
           </th>
           <th class="col-team sortable" @click="handleSort('team')">
-            팀명 <span class="sort-icon">{{ getSortIcon('team') }}</span>
+            팀명 <span class="sort-icon">{{ getSortIcon("team") }}</span>
           </th>
           <th class="col-actions">관리</th>
         </tr>
@@ -114,53 +114,36 @@ function handleKeydown(e) {
           <td colspan="4" class="empty-state">
             <div class="empty-content">
               <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                <path
+                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+                />
               </svg>
               <p>등록된 엔트리가 없습니다</p>
             </div>
           </td>
         </tr>
-        <tr 
-          v-for="entry in sortedEntries" 
-          :key="entry.num"
-          :class="{ 'editing': editingRow === entry.num }"
-        >
+        <tr v-for="entry in sortedEntries" :key="entry.num" :class="{ editing: editingRow === entry.num }">
           <template v-if="editingRow === entry.num">
             <td class="col-num">
-              <input 
-                v-model.number="editForm.num" 
-                type="number" 
-                class="edit-input"
-                @keydown="handleKeydown"
-              />
+              <input v-model.number="editForm.num" type="number" class="edit-input" @keydown="handleKeydown" />
             </td>
             <td class="col-univ">
-              <input 
-                v-model="editForm.univ" 
-                type="text" 
-                class="edit-input"
-                @keydown="handleKeydown"
-              />
+              <input v-model="editForm.univ" type="text" class="edit-input" @keydown="handleKeydown" />
             </td>
             <td class="col-team">
-              <input 
-                v-model="editForm.team" 
-                type="text" 
-                class="edit-input"
-                @keydown="handleKeydown"
-              />
+              <input v-model="editForm.team" type="text" class="edit-input" @keydown="handleKeydown" />
             </td>
             <td class="col-actions">
               <div class="action-buttons">
                 <button class="btn btn-success btn-icon" @click="saveEdit" title="저장">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="20 6 9 17 4 12"/>
+                    <polyline points="20 6 9 17 4 12" />
                   </svg>
                 </button>
                 <button class="btn btn-ghost btn-icon" @click="cancelEdit" title="취소">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <line x1="18" y1="6" x2="6" y2="18"/>
-                    <line x1="6" y1="6" x2="18" y2="18"/>
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
                   </svg>
                 </button>
               </div>
@@ -176,14 +159,14 @@ function handleKeydown(e) {
               <div class="action-buttons">
                 <button class="btn btn-ghost btn-icon" @click="startEdit(entry)" title="수정">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
-                    <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+                    <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
                   </svg>
                 </button>
                 <button class="btn btn-danger btn-icon" @click="handleDelete(entry.num)" title="삭제">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="3 6 5 6 21 6"/>
-                    <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
                   </svg>
                 </button>
               </div>
@@ -278,7 +261,7 @@ function handleKeydown(e) {
   padding: 0.25rem 0.5rem;
   background: var(--bg-primary);
   border-radius: 6px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-weight: 600;
   font-size: 0.8125rem;
   color: var(--accent-primary);
@@ -341,4 +324,3 @@ function handleKeydown(e) {
   font-size: 0.9375rem;
 }
 </style>
-

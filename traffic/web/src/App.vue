@@ -1,17 +1,17 @@
 <script setup>
-import { onMounted } from 'vue'
-import { useRoute } from 'vue-router'
-import ThemeToggle from './components/ThemeToggle.vue'
-import NavTabs from './components/NavTabs.vue'
-import NavMenu from './components/NavMenu.vue'
-import { useEntryStore } from './stores/entry'
+import { onMounted } from "vue";
+import { useRoute } from "vue-router";
+import ThemeToggle from "./components/ThemeToggle.vue";
+import NavTabs from "./components/NavTabs.vue";
+import NavMenu from "./components/NavMenu.vue";
+import { useEntryStore } from "./stores/entry";
 
-const route = useRoute()
-const entryStore = useEntryStore()
+const route = useRoute();
+const entryStore = useEntryStore();
 
 onMounted(() => {
-  entryStore.loadEntries()
-})
+  entryStore.loadEntries();
+});
 </script>
 
 <template>
@@ -100,12 +100,12 @@ onMounted(() => {
   .header {
     padding: 1rem;
   }
-  
+
   .header-content {
     flex-direction: column;
     gap: 1rem;
   }
-  
+
   .main-content {
     padding: 1rem;
   }

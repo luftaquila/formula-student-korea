@@ -1,98 +1,108 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
-import { useEntryStore } from '../stores/entry'
-import { useSerialStore, msToClockStr } from '../stores/serial'
-import { useNotification } from '../composables/useNotification'
-import { addRecord } from '../composables/useApi'
+import { ref, computed, onMounted, watch } from "vue";
+import { useEntryStore } from "../stores/entry";
+import { useSerialStore, msToClockStr } from "../stores/serial";
+import { useNotification } from "../composables/useNotification";
+import { addRecord } from "../composables/useApi";
 
-const { notyf } = useNotification()
-const entryStore = useEntryStore()
-const serial = useSerialStore()
+const { notyf } = useNotification();
+const entryStore = useEntryStore();
+const serial = useSerialStore();
 
-const eventName = ref('')
-const selectedTeamLane1 = ref(null)
-const selectedTeamLane2 = ref(null)
-const savedRecords = ref({ 1: null, 2: null })
+const eventName = ref("");
+const selectedTeamLane1 = ref(null);
+const selectedTeamLane2 = ref(null);
+const savedRecords = ref({ 1: null, 2: null });
 
-const displayRecords = ref({ 1: [], 2: [] })
+const displayRecords = ref({ 1: [], 2: [] });
 
 async function onSensor({ sensor, tick, greenTick }) {
-  const entry = sensor === 1 ? entry1.value : entry2.value
-  const result = tick - greenTick
+  const entry = sensor === 1 ? entry1.value : entry2.value;
+  const result = tick - greenTick;
 
   // 유효한 기록 측정 시 센서 1초 쿨다운
-  serial.setSensorCooldown(sensor)
-  displayRecords.value[sensor].push({ result, time: msToClockStr(result) })
+  serial.setSensorCooldown(sensor);
+  displayRecords.value[sensor].push({ result, time: msToClockStr(result) });
 
   // 이미 저장된 경우 세션당 1회만 저장
-  if (savedRecords.value[sensor]) return
+  if (savedRecords.value[sensor]) return;
 
   // 자동 저장 조건: 이벤트 이름과 해당 레인의 참가팀이 선택된 경우만
   if (!eventName.value.trim() || !entry) {
-    return
+    return;
   }
 
   const recordData = {
     time: new Date(),
-    type: 'gymkhana',
+    type: "gymkhana",
     entry: { num: entry.num, univ: entry.univ, team: entry.team },
     result,
-    detail: `레인 ${sensor}`
-  }
+    detail: `레인 ${sensor}`,
+  };
 
   try {
-    await addRecord(eventName.value.trim(), recordData)
-    savedRecords.value[sensor] = { result, time: msToClockStr(result) }
-    notyf.success(`${sensor}번 레인 기록 저장: ${msToClockStr(result)}`)
+    await addRecord(eventName.value.trim(), recordData);
+    savedRecords.value[sensor] = { result, time: msToClockStr(result) };
+    notyf.success(`${sensor}번 레인 기록 저장: ${msToClockStr(result)}`);
   } catch (e) {
-    notyf.error(`기록 저장 실패: ${e.message}`)
+    notyf.error(`기록 저장 실패: ${e.message}`);
   }
 }
 
 onMounted(() => {
-  serial.setMode('gymkhana', onSensor)
-  if (!entryStore.isLoaded) entryStore.loadEntries()
-})
+  serial.setMode("gymkhana", onSensor);
+  if (!entryStore.isLoaded) entryStore.loadEntries();
+});
 
-const currentYear = computed(() => new Date().getFullYear())
-const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || 'Gymkhana'}`)
-const entry1 = computed(() => entryStore.getEntryByNum(selectedTeamLane1.value))
-const entry2 = computed(() => entryStore.getEntryByNum(selectedTeamLane2.value))
-const entryDisplay1 = computed(() => entry1.value ? `#${entry1.value.num} ${entry1.value.univ} ${entry1.value.team}` : '')
-const entryDisplay2 = computed(() => entry2.value ? `#${entry2.value.num} ${entry2.value.univ} ${entry2.value.team}` : '')
-const isLocked = computed(() => serial.green.active)
-const entries = computed(() => entryStore.entries)
-const canAutoSave = computed(() => eventName.value.trim() && (selectedTeamLane1.value || selectedTeamLane2.value))
+const currentYear = computed(() => new Date().getFullYear());
+const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || "Gymkhana"}`);
+const entry1 = computed(() => entryStore.getEntryByNum(selectedTeamLane1.value));
+const entry2 = computed(() => entryStore.getEntryByNum(selectedTeamLane2.value));
+const entryDisplay1 = computed(() =>
+  entry1.value ? `#${entry1.value.num} ${entry1.value.univ} ${entry1.value.team}` : "",
+);
+const entryDisplay2 = computed(() =>
+  entry2.value ? `#${entry2.value.num} ${entry2.value.univ} ${entry2.value.team}` : "",
+);
+const isLocked = computed(() => serial.green.active);
+const entries = computed(() => entryStore.entries);
+const canAutoSave = computed(() => eventName.value.trim() && (selectedTeamLane1.value || selectedTeamLane2.value));
 
 watch(selectedTeamLane1, (newVal) => {
   if (newVal && newVal === selectedTeamLane2.value) {
-    selectedTeamLane1.value = null
-    notyf.error('이미 다른 레인에 선택된 팀입니다.')
+    selectedTeamLane1.value = null;
+    notyf.error("이미 다른 레인에 선택된 팀입니다.");
   }
-})
+});
 
 watch(selectedTeamLane2, (newVal) => {
   if (newVal && newVal === selectedTeamLane1.value) {
-    selectedTeamLane2.value = null
-    notyf.error('이미 다른 레인에 선택된 팀입니다.')
+    selectedTeamLane2.value = null;
+    notyf.error("이미 다른 레인에 선택된 팀입니다.");
   }
-})
+});
 
-function handleConnect() { serial.connect() }
+function handleConnect() {
+  serial.connect();
+}
 function handleGreen() {
   if (!canAutoSave.value) {
-    notyf.open({ type: 'warning', message: '테스트 모드' })
+    notyf.open({ type: "warning", message: "테스트 모드" });
   }
-  savedRecords.value = { 1: null, 2: null }
-  displayRecords.value = { 1: [], 2: [] }
-  serial.sendGreen()
+  savedRecords.value = { 1: null, 2: null };
+  displayRecords.value = { 1: [], 2: [] };
+  serial.sendGreen();
 }
-function handleRed() { serial.sendRed() }
-function handleOff() { serial.sendOff() }
+function handleRed() {
+  serial.sendRed();
+}
+function handleOff() {
+  serial.sendOff();
+}
 function handleReset() {
-  savedRecords.value = { 1: null, 2: null }
-  displayRecords.value = { 1: [], 2: [] }
-  serial.reset()
+  savedRecords.value = { 1: null, 2: null };
+  displayRecords.value = { 1: [], 2: [] };
+  serial.reset();
 }
 </script>
 
@@ -104,23 +114,25 @@ function handleReset() {
         <div class="card-header">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
-              <rect x="2" y="7" width="20" height="14" rx="2"/>
-              <path d="M12 3v4M8 7V5M16 7V5"/>
+              <rect x="2" y="7" width="20" height="14" rx="2" />
+              <path d="M12 3v4M8 7V5M16 7V5" />
             </svg>
             컨트롤러
           </h3>
         </div>
         <div class="card-body">
-          <button 
-            class="btn btn-block" 
+          <button
+            class="btn btn-block"
             :class="serial.connected ? 'btn-success' : 'btn-danger'"
             :disabled="serial.connected"
             @click="handleConnect"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-              <path d="M6 5v14M18 5v14M6 5a2 2 0 012-2h8a2 2 0 012 2M6 19a2 2 0 002 2h8a2 2 0 002-2M9 9h1M9 12h1M9 15h1M14 9h1M14 12h1M14 15h1"/>
+              <path
+                d="M6 5v14M18 5v14M6 5a2 2 0 012-2h8a2 2 0 012 2M6 19a2 2 0 002 2h8a2 2 0 002-2M9 9h1M9 12h1M9 15h1M14 9h1M14 12h1M14 15h1"
+              />
             </svg>
-            {{ serial.connected ? '연결됨' : '컨트롤러 연결' }}
+            {{ serial.connected ? "연결됨" : "컨트롤러 연결" }}
           </button>
         </div>
       </div>
@@ -130,18 +142,32 @@ function handleReset() {
         <div class="card-header">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
-              <rect x="6" y="2" width="12" height="20" rx="2"/>
-              <circle cx="12" cy="8" r="2"/>
-              <circle cx="12" cy="16" r="2"/>
+              <rect x="6" y="2" width="12" height="20" rx="2" />
+              <circle cx="12" cy="8" r="2" />
+              <circle cx="12" cy="16" r="2" />
             </svg>
             신호등 제어
           </h3>
         </div>
         <div class="card-body">
           <div class="btn-group">
-            <button class="btn btn-success" :disabled="!serial.connected || serial.green.active" @click="handleGreen">녹색등</button>
-            <button class="btn btn-ghost" :disabled="!serial.connected || serial.lightColor === 'grey'" @click="handleOff">OFF</button>
-            <button class="btn btn-danger" :disabled="!serial.connected || serial.lightColor === 'red'" @click="handleRed">적색등</button>
+            <button class="btn btn-success" :disabled="!serial.connected || serial.green.active" @click="handleGreen">
+              녹색등
+            </button>
+            <button
+              class="btn btn-ghost"
+              :disabled="!serial.connected || serial.lightColor === 'grey'"
+              @click="handleOff"
+            >
+              OFF
+            </button>
+            <button
+              class="btn btn-danger"
+              :disabled="!serial.connected || serial.lightColor === 'red'"
+              @click="handleRed"
+            >
+              적색등
+            </button>
           </div>
         </div>
       </div>
@@ -151,8 +177,10 @@ function handleReset() {
         <div class="card-header">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"
+              />
             </svg>
             경기 설정
           </h3>
@@ -160,7 +188,7 @@ function handleReset() {
         <div class="card-body">
           <div class="form-group">
             <label class="form-label">이벤트 이름</label>
-            <input v-model="eventName" type="text" class="form-input" :disabled="isLocked">
+            <input v-model="eventName" type="text" class="form-input" :disabled="isLocked" />
           </div>
           <div class="form-group">
             <label class="form-label">레인 1 참가팀</label>
@@ -180,7 +208,9 @@ function handleReset() {
               </option>
             </select>
           </div>
-          <button class="btn btn-warning btn-block" :disabled="!serial.records.length" @click="handleReset">초기화</button>
+          <button class="btn btn-warning btn-block" :disabled="!serial.records.length" @click="handleReset">
+            초기화
+          </button>
         </div>
       </div>
     </aside>
@@ -207,7 +237,12 @@ function handleReset() {
           </div>
           <div class="card-body">
             <div v-if="displayRecords[1].length" class="record-list">
-              <div v-for="(r, i) in displayRecords[1]" :key="i" class="record-item" :class="{ 'is-saved': savedRecords[1] && savedRecords[1].result === r.result }">
+              <div
+                v-for="(r, i) in displayRecords[1]"
+                :key="i"
+                class="record-item"
+                :class="{ 'is-saved': savedRecords[1] && savedRecords[1].result === r.result }"
+              >
                 +{{ r.time }}
                 <span v-if="savedRecords[1] && savedRecords[1].result === r.result" class="save-indicator">💾</span>
               </div>
@@ -215,7 +250,7 @@ function handleReset() {
             <div v-else class="empty-state">대기 중...</div>
           </div>
         </div>
-        
+
         <div v-if="selectedTeamLane2" class="lane-card card">
           <div class="card-header">
             <h3>
@@ -225,7 +260,12 @@ function handleReset() {
           </div>
           <div class="card-body">
             <div v-if="displayRecords[2].length" class="record-list">
-              <div v-for="(r, i) in displayRecords[2]" :key="i" class="record-item" :class="{ 'is-saved': savedRecords[2] && savedRecords[2].result === r.result }">
+              <div
+                v-for="(r, i) in displayRecords[2]"
+                :key="i"
+                class="record-item"
+                :class="{ 'is-saved': savedRecords[2] && savedRecords[2].result === r.result }"
+              >
                 +{{ r.time }}
                 <span v-if="savedRecords[2] && savedRecords[2].result === r.result" class="save-indicator">💾</span>
               </div>
@@ -279,10 +319,17 @@ function handleReset() {
   gap: 0.5rem;
 }
 
-.header-icon { width: 18px; height: 18px; }
-.card-body { padding: 1.25rem; }
+.header-icon {
+  width: 18px;
+  height: 18px;
+}
+.card-body {
+  padding: 1.25rem;
+}
 
-.form-group { margin-bottom: 1rem; }
+.form-group {
+  margin-bottom: 1rem;
+}
 .form-label {
   display: block;
   font-size: 0.8125rem;
@@ -321,17 +368,45 @@ function handleReset() {
   transition: all 0.2s ease;
 }
 
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-block { width: 100%; }
-.btn-icon { width: 16px; height: 16px; }
-.btn-success { background: var(--accent-success); color: white; }
-.btn-danger { background: var(--accent-danger); color: white; }
-.btn-warning { background: var(--accent-warning); color: white; }
-.btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border-color); }
-.btn-group { display: flex; gap: 0.5rem; }
-.btn-group .btn { flex: 1; }
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-block {
+  width: 100%;
+}
+.btn-icon {
+  width: 16px;
+  height: 16px;
+}
+.btn-success {
+  background: var(--accent-success);
+  color: white;
+}
+.btn-danger {
+  background: var(--accent-danger);
+  color: white;
+}
+.btn-warning {
+  background: var(--accent-warning);
+  color: white;
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+.btn-group {
+  display: flex;
+  gap: 0.5rem;
+}
+.btn-group .btn {
+  flex: 1;
+}
 
-.monitor-header { text-align: center; }
+.monitor-header {
+  text-align: center;
+}
 
 .event-title {
   font-size: 2.5rem;
@@ -363,13 +438,19 @@ function handleReset() {
   transition: background-color 0.2s ease;
 }
 
-.traffic-light.green { background: #10b981; box-shadow: 0 0 20px rgba(16, 185, 129, 0.5); }
-.traffic-light.red { background: #ef4444; box-shadow: 0 0 20px rgba(239, 68, 68, 0.5); }
+.traffic-light.green {
+  background: #10b981;
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.5);
+}
+.traffic-light.red {
+  background: #ef4444;
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.5);
+}
 
 .clock {
   font-size: 3rem;
   font-weight: 700;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   color: var(--text-primary);
 }
 
@@ -401,7 +482,7 @@ function handleReset() {
   padding: 0.5rem 1rem;
   background: var(--bg-secondary);
   border-radius: 8px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 1.125rem;
   font-weight: 600;
   text-align: center;
@@ -424,9 +505,19 @@ function handleReset() {
 }
 
 @media (max-width: 1024px) {
-  .page-layout { grid-template-columns: 1fr; }
-  .sidebar { flex-direction: row; flex-wrap: wrap; }
-  .sidebar .card { flex: 1; min-width: 280px; }
-  .lanes-section { grid-template-columns: 1fr; }
+  .page-layout {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .sidebar .card {
+    flex: 1;
+    min-width: 280px;
+  }
+  .lanes-section {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

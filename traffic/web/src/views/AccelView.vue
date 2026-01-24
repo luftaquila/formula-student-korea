@@ -1,92 +1,100 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { useEntryStore } from '../stores/entry'
-import { useSerialStore, msToClockStr } from '../stores/serial'
-import { useNotification } from '../composables/useNotification'
-import { addRecord } from '../composables/useApi'
+import { ref, computed, onMounted } from "vue";
+import { useEntryStore } from "../stores/entry";
+import { useSerialStore, msToClockStr } from "../stores/serial";
+import { useNotification } from "../composables/useNotification";
+import { addRecord } from "../composables/useApi";
 
-const { notyf } = useNotification()
-const entryStore = useEntryStore()
-const serial = useSerialStore()
+const { notyf } = useNotification();
+const entryStore = useEntryStore();
+const serial = useSerialStore();
 
-const eventName = ref('')
-const selectedTeam = ref(null)
-const startRecord = ref(null)
-const savedRecord = ref(null)
-const displayRecord = ref(null)
+const eventName = ref("");
+const selectedTeam = ref(null);
+const startRecord = ref(null);
+const savedRecord = ref(null);
+const displayRecord = ref(null);
 
 async function onSensor({ sensor, tick, greenTick }) {
   // 모든 센서에 쿨다운 적용
-  serial.setSensorCooldown(sensor)
+  serial.setSensorCooldown(sensor);
 
   if (sensor === 1) {
     if (!startRecord.value) {
-      startRecord.value = { tick }
+      startRecord.value = { tick };
     }
   } else if (sensor === 2 && startRecord.value) {
     // 이미 기록이 있으면 무시 (세션당 1회만)
-    if (displayRecord.value) return
+    if (displayRecord.value) return;
 
-    const result = tick - startRecord.value.tick
-    const entry = selectedEntry.value
+    const result = tick - startRecord.value.tick;
+    const entry = selectedEntry.value;
 
-    displayRecord.value = { result, time: msToClockStr(result) }
+    displayRecord.value = { result, time: msToClockStr(result) };
 
     // 자동 저장 조건: 이벤트 이름과 참가팀 모두 선택된 경우
     if (!eventName.value.trim() || !entry) {
-      return
+      return;
     }
 
     const recordData = {
       time: new Date(),
-      type: 'accel',
+      type: "accel",
       entry: { num: entry.num, univ: entry.univ, team: entry.team },
       result,
-      detail: `${startRecord.value.tick - greenTick} ms delayed start`
-    }
+      detail: `${startRecord.value.tick - greenTick} ms delayed start`,
+    };
 
     try {
-      await addRecord(eventName.value.trim(), recordData)
-      savedRecord.value = { result, time: msToClockStr(result) }
-      notyf.success(`기록 저장: ${msToClockStr(result)}`)
+      await addRecord(eventName.value.trim(), recordData);
+      savedRecord.value = { result, time: msToClockStr(result) };
+      notyf.success(`기록 저장: ${msToClockStr(result)}`);
     } catch (e) {
-      notyf.error(`기록 저장 실패: ${e.message}`)
+      notyf.error(`기록 저장 실패: ${e.message}`);
     }
   }
 }
 
 onMounted(() => {
-  serial.setMode('accel', onSensor)
-  if (!entryStore.isLoaded) entryStore.loadEntries()
-})
+  serial.setMode("accel", onSensor);
+  if (!entryStore.isLoaded) entryStore.loadEntries();
+});
 
-const currentYear = computed(() => new Date().getFullYear())
-const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || 'Acceleration'}`)
-const selectedEntry = computed(() => selectedTeam.value ? entryStore.getEntryByNum(selectedTeam.value) : null)
-const entryDisplay = computed(() => selectedEntry.value ? `#${selectedEntry.value.num} ${selectedEntry.value.univ} ${selectedEntry.value.team}` : '')
-const isLocked = computed(() => serial.green.active)
-const startRecords = computed(() => serial.records.filter(r => r.sensor === 1))
-const endRecords = computed(() => serial.records.filter(r => r.sensor === 2))
-const entries = computed(() => entryStore.entries)
-const canAutoSave = computed(() => eventName.value.trim() && selectedTeam.value)
+const currentYear = computed(() => new Date().getFullYear());
+const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || "Acceleration"}`);
+const selectedEntry = computed(() => (selectedTeam.value ? entryStore.getEntryByNum(selectedTeam.value) : null));
+const entryDisplay = computed(() =>
+  selectedEntry.value ? `#${selectedEntry.value.num} ${selectedEntry.value.univ} ${selectedEntry.value.team}` : "",
+);
+const isLocked = computed(() => serial.green.active);
+const startRecords = computed(() => serial.records.filter((r) => r.sensor === 1));
+const endRecords = computed(() => serial.records.filter((r) => r.sensor === 2));
+const entries = computed(() => entryStore.entries);
+const canAutoSave = computed(() => eventName.value.trim() && selectedTeam.value);
 
-function handleConnect() { serial.connect() }
+function handleConnect() {
+  serial.connect();
+}
 function handleGreen() {
   if (!canAutoSave.value) {
-    notyf.open({ type: 'warning', message: '테스트 모드' })
+    notyf.open({ type: "warning", message: "테스트 모드" });
   }
-  startRecord.value = null
-  savedRecord.value = null
-  displayRecord.value = null
-  serial.sendGreen()
+  startRecord.value = null;
+  savedRecord.value = null;
+  displayRecord.value = null;
+  serial.sendGreen();
 }
-function handleRed() { serial.sendRed() }
-function handleOff() { serial.sendOff() }
+function handleRed() {
+  serial.sendRed();
+}
+function handleOff() {
+  serial.sendOff();
+}
 function handleReset() {
-  startRecord.value = null
-  savedRecord.value = null
-  displayRecord.value = null
-  serial.reset()
+  startRecord.value = null;
+  savedRecord.value = null;
+  displayRecord.value = null;
+  serial.reset();
 }
 </script>
 
@@ -98,23 +106,25 @@ function handleReset() {
         <div class="card-header">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
-              <rect x="2" y="7" width="20" height="14" rx="2"/>
-              <path d="M12 3v4M8 7V5M16 7V5"/>
+              <rect x="2" y="7" width="20" height="14" rx="2" />
+              <path d="M12 3v4M8 7V5M16 7V5" />
             </svg>
             컨트롤러
           </h3>
         </div>
         <div class="card-body">
-          <button 
-            class="btn btn-block" 
+          <button
+            class="btn btn-block"
             :class="serial.connected ? 'btn-success' : 'btn-danger'"
             :disabled="serial.connected"
             @click="handleConnect"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-              <path d="M6 5v14M18 5v14M6 5a2 2 0 012-2h8a2 2 0 012 2M6 19a2 2 0 002 2h8a2 2 0 002-2M9 9h1M9 12h1M9 15h1M14 9h1M14 12h1M14 15h1"/>
+              <path
+                d="M6 5v14M18 5v14M6 5a2 2 0 012-2h8a2 2 0 012 2M6 19a2 2 0 002 2h8a2 2 0 002-2M9 9h1M9 12h1M9 15h1M14 9h1M14 12h1M14 15h1"
+              />
             </svg>
-            {{ serial.connected ? '연결됨' : '컨트롤러 연결' }}
+            {{ serial.connected ? "연결됨" : "컨트롤러 연결" }}
           </button>
         </div>
       </div>
@@ -124,9 +134,9 @@ function handleReset() {
         <div class="card-header">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
-              <rect x="6" y="2" width="12" height="20" rx="2"/>
-              <circle cx="12" cy="8" r="2"/>
-              <circle cx="12" cy="16" r="2"/>
+              <rect x="6" y="2" width="12" height="20" rx="2" />
+              <circle cx="12" cy="8" r="2" />
+              <circle cx="12" cy="16" r="2" />
             </svg>
             신호등 제어
           </h3>
@@ -136,10 +146,18 @@ function handleReset() {
             <button class="btn btn-success" :disabled="!serial.connected || serial.green.active" @click="handleGreen">
               녹색등
             </button>
-            <button class="btn btn-ghost" :disabled="!serial.connected || serial.lightColor === 'grey'" @click="handleOff">
+            <button
+              class="btn btn-ghost"
+              :disabled="!serial.connected || serial.lightColor === 'grey'"
+              @click="handleOff"
+            >
               OFF
             </button>
-            <button class="btn btn-danger" :disabled="!serial.connected || serial.lightColor === 'red'" @click="handleRed">
+            <button
+              class="btn btn-danger"
+              :disabled="!serial.connected || serial.lightColor === 'red'"
+              @click="handleRed"
+            >
               적색등
             </button>
           </div>
@@ -151,17 +169,18 @@ function handleReset() {
         <div class="card-header">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"
+              />
             </svg>
             경기 설정
           </h3>
         </div>
         <div class="card-body">
-          <p class="hint-text">이벤트 이름이 같은 경기는 같은 파일에 기록됩니다.</p>
           <div class="form-group">
             <label class="form-label">이벤트 이름</label>
-            <input v-model="eventName" type="text" class="form-input" :disabled="isLocked">
+            <input v-model="eventName" type="text" class="form-input" :disabled="isLocked" />
           </div>
           <div class="form-group">
             <label class="form-label">참가팀</label>
@@ -174,10 +193,10 @@ function handleReset() {
           </div>
           <button class="btn btn-warning btn-block" :disabled="!serial.records.length" @click="handleReset">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-              <path d="M3 12a9 9 0 019-9 9.75 9.75 0 016.74 2.74L21 8"/>
-              <path d="M21 3v5h-5"/>
-              <path d="M21 12a9 9 0 01-9 9 9.75 9.75 0 01-6.74-2.74L3 16"/>
-              <path d="M3 21v-5h5"/>
+              <path d="M3 12a9 9 0 019-9 9.75 9.75 0 016.74 2.74L21 8" />
+              <path d="M21 3v5h-5" />
+              <path d="M21 12a9 9 0 01-9 9 9.75 9.75 0 01-6.74-2.74L3 16" />
+              <path d="M3 21v-5h5" />
             </svg>
             초기화
           </button>
@@ -217,7 +236,7 @@ function handleReset() {
             <div v-else class="empty-state">대기 중...</div>
           </div>
         </div>
-        
+
         <div class="record-card card">
           <div class="card-header"><h3>🏁 도착점 (센서 2)</h3></div>
           <div class="card-body">
@@ -421,7 +440,7 @@ function handleReset() {
 
 .team-badge {
   font-weight: 700;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   color: var(--text-primary);
 }
 
@@ -464,7 +483,7 @@ function handleReset() {
 .clock {
   font-size: 3rem;
   font-weight: 700;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   color: var(--text-primary);
 }
 
@@ -485,7 +504,7 @@ function handleReset() {
   padding: 0.5rem 1rem;
   background: var(--bg-secondary);
   border-radius: 8px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 1.125rem;
   font-weight: 600;
   text-align: center;
@@ -518,7 +537,7 @@ function handleReset() {
   padding: 0.75rem 1rem;
   background: var(--bg-secondary);
   border-radius: 8px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 1.5rem;
   font-weight: 700;
   text-align: center;
@@ -543,17 +562,17 @@ function handleReset() {
   .page-layout {
     grid-template-columns: 1fr;
   }
-  
+
   .sidebar {
     flex-direction: row;
     flex-wrap: wrap;
   }
-  
+
   .sidebar .card {
     flex: 1;
     min-width: 280px;
   }
-  
+
   .records-section {
     grid-template-columns: 1fr;
   }

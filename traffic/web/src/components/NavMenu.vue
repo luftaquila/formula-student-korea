@@ -1,28 +1,28 @@
 <script setup>
-import { ref } from 'vue'
+import { ref } from "vue";
 
-const isOpen = ref(false)
+const isOpen = ref(false);
 
 const services = [
-  { name: '홈', href: '/', icon: 'home' },
-  { name: '검차 대기열', href: '/queue', icon: 'queue' },
-  { name: '에너지미터', href: '/energymeter', icon: 'energy' },
-  { name: '규정집', href: '/rules', icon: 'rules' },
-]
+  { name: "홈", href: "/", icon: "home" },
+  { name: "검차 대기열", href: "/queue", icon: "queue" },
+  { name: "에너지미터", href: "/energymeter", icon: "energy" },
+  { name: "규정집", href: "/rules", icon: "rules" },
+];
 
 const officials = [
-  { name: '검차 관리', href: '/queue/admin', icon: 'queue-admin' },
-  { name: '계측 시스템', href: '/traffic', icon: 'traffic', active: true },
-  { name: '경기 기록', href: '/record', icon: 'record' },
-  { name: '엔트리 관리', href: '/entry', icon: 'entry' },
-]
+  { name: "검차 관리", href: "/queue/admin", icon: "queue-admin" },
+  { name: "계측 시스템", href: "/traffic", icon: "traffic", active: true },
+  { name: "경기 기록", href: "/record", icon: "record" },
+  { name: "엔트리 관리", href: "/entry", icon: "entry" },
+];
 
 function toggle() {
-  isOpen.value = !isOpen.value
+  isOpen.value = !isOpen.value;
 }
 
 function close() {
-  isOpen.value = false
+  isOpen.value = false;
 }
 </script>
 
@@ -30,9 +30,9 @@ function close() {
   <div class="nav-menu">
     <button class="menu-btn" @click="toggle" title="메뉴">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <line x1="3" y1="6" x2="21" y2="6"/>
-        <line x1="3" y1="12" x2="21" y2="12"/>
-        <line x1="3" y1="18" x2="21" y2="18"/>
+        <line x1="3" y1="6" x2="21" y2="6" />
+        <line x1="3" y1="12" x2="21" y2="12" />
+        <line x1="3" y1="18" x2="21" y2="18" />
       </svg>
     </button>
 
@@ -40,24 +40,24 @@ function close() {
       <Transition name="fade">
         <div v-if="isOpen" class="overlay" @click="close"></div>
       </Transition>
-      
+
       <Transition name="slide">
         <div v-if="isOpen" class="drawer">
           <div class="drawer-header">
             <span class="drawer-title">FSK Services</span>
             <button class="close-btn" @click="close">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"/>
-                <line x1="6" y1="6" x2="18" y2="18"/>
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
               </svg>
             </button>
           </div>
-          
+
           <nav class="drawer-nav">
             <div class="nav-section">
               <span class="nav-section-title">Services</span>
-              <a 
-                v-for="item in services" 
+              <a
+                v-for="item in services"
                 :key="item.href"
                 :href="item.href"
                 class="nav-item"
@@ -67,11 +67,11 @@ function close() {
                 <span>{{ item.name }}</span>
               </a>
             </div>
-            
+
             <div class="nav-section">
               <span class="nav-section-title">Officials</span>
-              <a 
-                v-for="item in officials" 
+              <a
+                v-for="item in officials"
                 :key="item.href"
                 :href="item.href"
                 class="nav-item"
@@ -91,16 +91,16 @@ function close() {
 <script>
 function getIcon(type) {
   const icons = {
-    'home': '🏠',
-    'queue': '🔧',
-    'energy': '⚡',
-    'rules': '📖',
-    'queue-admin': '🛠️',
-    'traffic': '🚦',
-    'record': '📊',
-    'entry': '🏁',
-  }
-  return icons[type] || '📌'
+    home: "🏠",
+    queue: "🔧",
+    energy: "⚡",
+    rules: "📖",
+    "queue-admin": "🛠️",
+    traffic: "🚦",
+    record: "📊",
+    entry: "🏁",
+  };
+  return icons[type] || "📌";
 }
 </script>
 
@@ -258,4 +258,3 @@ function getIcon(type) {
   transform: translateX(100%);
 }
 </style>
-

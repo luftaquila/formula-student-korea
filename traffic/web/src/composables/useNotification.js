@@ -1,6 +1,6 @@
-import { Notyf } from 'notyf'
+import { Notyf } from "notyf";
 
-let notyfInstance = null
+let notyfInstance = null;
 
 function getNotyf() {
   if (!notyfInstance) {
@@ -9,27 +9,27 @@ function getNotyf() {
       duration: 3500,
       types: [
         {
-          type: 'warning',
-          background: '#f59e0b',
+          type: "warning",
+          background: "#f59e0b",
           icon: {
-            className: 'notyf__icon--warning',
-            tagName: 'i',
-            text: ''
-          }
-        }
-      ]
-    })
+            className: "notyf__icon--warning",
+            tagName: "i",
+            text: "",
+          },
+        },
+      ],
+    });
   }
-  return notyfInstance
+  return notyfInstance;
 }
 
 export function useNotification() {
-  const notyf = getNotyf()
+  const notyf = getNotyf();
 
   return {
     notyf,
     success: (message) => notyf.success(message),
     error: (message) => notyf.error(message),
-    warning: (message) => notyf.open({ type: 'warning', message })
-  }
+    warning: (message) => notyf.open({ type: "warning", message }),
+  };
 }

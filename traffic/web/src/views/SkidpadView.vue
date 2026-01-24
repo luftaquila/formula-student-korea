@@ -1,92 +1,100 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { useEntryStore } from '../stores/entry'
-import { useSerialStore, msToClockStr } from '../stores/serial'
-import { useNotification } from '../composables/useNotification'
-import { addRecord } from '../composables/useApi'
+import { ref, computed, onMounted } from "vue";
+import { useEntryStore } from "../stores/entry";
+import { useSerialStore, msToClockStr } from "../stores/serial";
+import { useNotification } from "../composables/useNotification";
+import { addRecord } from "../composables/useApi";
 
-const { notyf } = useNotification()
-const entryStore = useEntryStore()
-const serial = useSerialStore()
+const { notyf } = useNotification();
+const entryStore = useEntryStore();
+const serial = useSerialStore();
 
-const eventName = ref('')
-const selectedTeam = ref(null)
-const lapTimes = ref([])
-const lastTick = ref(null)
-const savedLap = ref(null)
+const eventName = ref("");
+const selectedTeam = ref(null);
+const lapTimes = ref([]);
+const lastTick = ref(null);
+const savedLap = ref(null);
 
 async function onSensor({ sensor, tick, startTick }) {
-  if (sensor !== 1) return
+  if (sensor !== 1) return;
 
-  const prevTick = lastTick.value ?? startTick
+  const prevTick = lastTick.value ?? startTick;
   if (prevTick === null) {
-    lastTick.value = tick
-    return
+    lastTick.value = tick;
+    return;
   }
 
-  const lapTime = tick - prevTick
-  lastTick.value = tick
+  const lapTime = tick - prevTick;
+  lastTick.value = tick;
 
-  const entry = selectedEntry.value
-  const lapNumber = lapTimes.value.length + 1
+  const entry = selectedEntry.value;
+  const lapNumber = lapTimes.value.length + 1;
 
   // 유효한 기록 측정 시 센서 1초 쿨다운
-  serial.setSensorCooldown(sensor)
-  lapTimes.value.push({ lap: lapNumber, time: lapTime, display: msToClockStr(lapTime) })
+  serial.setSensorCooldown(sensor);
+  lapTimes.value.push({ lap: lapNumber, time: lapTime, display: msToClockStr(lapTime) });
 
   // 자동 저장 조건: 이벤트 이름과 참가팀 모두 선택된 경우 + 세션당 1회만
   if (!eventName.value.trim() || !entry || savedLap.value) {
-    return
+    return;
   }
 
   const recordData = {
     time: new Date(),
-    type: 'skidpad',
+    type: "skidpad",
     entry: { num: entry.num, univ: entry.univ, team: entry.team },
     result: lapTime,
-    detail: `Lap ${lapNumber}`
-  }
+    detail: `Lap ${lapNumber}`,
+  };
 
   try {
-    await addRecord(eventName.value.trim(), recordData)
-    savedLap.value = { lap: lapNumber, time: lapTime, display: msToClockStr(lapTime) }
-    notyf.success(`Lap ${lapNumber} 저장: ${msToClockStr(lapTime)}`)
+    await addRecord(eventName.value.trim(), recordData);
+    savedLap.value = { lap: lapNumber, time: lapTime, display: msToClockStr(lapTime) };
+    notyf.success(`Lap ${lapNumber} 저장: ${msToClockStr(lapTime)}`);
   } catch (e) {
-    notyf.error(`기록 저장 실패: ${e.message}`)
+    notyf.error(`기록 저장 실패: ${e.message}`);
   }
 }
 
 onMounted(() => {
-  serial.setMode('skidpad', onSensor)
-  if (!entryStore.isLoaded) entryStore.loadEntries()
-})
+  serial.setMode("skidpad", onSensor);
+  if (!entryStore.isLoaded) entryStore.loadEntries();
+});
 
-const currentYear = computed(() => new Date().getFullYear())
-const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || 'Skidpad'}`)
-const selectedEntry = computed(() => selectedTeam.value ? entryStore.getEntryByNum(selectedTeam.value) : null)
-const entryDisplay = computed(() => selectedEntry.value ? `#${selectedEntry.value.num} ${selectedEntry.value.univ} ${selectedEntry.value.team}` : '')
-const isLocked = computed(() => serial.green.active)
-const totalTime = computed(() => msToClockStr(lapTimes.value.reduce((sum, lap) => sum + lap.time, 0)))
-const entries = computed(() => entryStore.entries)
-const canAutoSave = computed(() => eventName.value.trim() && selectedTeam.value)
+const currentYear = computed(() => new Date().getFullYear());
+const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || "Skidpad"}`);
+const selectedEntry = computed(() => (selectedTeam.value ? entryStore.getEntryByNum(selectedTeam.value) : null));
+const entryDisplay = computed(() =>
+  selectedEntry.value ? `#${selectedEntry.value.num} ${selectedEntry.value.univ} ${selectedEntry.value.team}` : "",
+);
+const isLocked = computed(() => serial.green.active);
+const totalTime = computed(() => msToClockStr(lapTimes.value.reduce((sum, lap) => sum + lap.time, 0)));
+const entries = computed(() => entryStore.entries);
+const canAutoSave = computed(() => eventName.value.trim() && selectedTeam.value);
 
-function handleConnect() { serial.connect() }
+function handleConnect() {
+  serial.connect();
+}
 function handleGreen() {
   if (!canAutoSave.value) {
-    notyf.open({ type: 'warning', message: '테스트 모드' })
+    notyf.open({ type: "warning", message: "테스트 모드" });
   }
-  lapTimes.value = []
-  lastTick.value = null
-  savedLap.value = null
-  serial.sendGreen()
+  lapTimes.value = [];
+  lastTick.value = null;
+  savedLap.value = null;
+  serial.sendGreen();
 }
-function handleRed() { serial.sendRed() }
-function handleOff() { serial.sendOff() }
+function handleRed() {
+  serial.sendRed();
+}
+function handleOff() {
+  serial.sendOff();
+}
 function handleReset() {
-  lapTimes.value = []
-  lastTick.value = null
-  savedLap.value = null
-  serial.reset()
+  lapTimes.value = [];
+  lastTick.value = null;
+  savedLap.value = null;
+  serial.reset();
 }
 </script>
 
@@ -97,18 +105,25 @@ function handleReset() {
         <div class="card-header">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
-              <rect x="2" y="7" width="20" height="14" rx="2"/>
-              <path d="M12 3v4M8 7V5M16 7V5"/>
+              <rect x="2" y="7" width="20" height="14" rx="2" />
+              <path d="M12 3v4M8 7V5M16 7V5" />
             </svg>
             컨트롤러
           </h3>
         </div>
         <div class="card-body">
-          <button class="btn btn-block" :class="serial.connected ? 'btn-success' : 'btn-danger'" :disabled="serial.connected" @click="handleConnect">
+          <button
+            class="btn btn-block"
+            :class="serial.connected ? 'btn-success' : 'btn-danger'"
+            :disabled="serial.connected"
+            @click="handleConnect"
+          >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-              <path d="M6 5v14M18 5v14M6 5a2 2 0 012-2h8a2 2 0 012 2M6 19a2 2 0 002 2h8a2 2 0 002-2M9 9h1M9 12h1M9 15h1M14 9h1M14 12h1M14 15h1"/>
+              <path
+                d="M6 5v14M18 5v14M6 5a2 2 0 012-2h8a2 2 0 012 2M6 19a2 2 0 002 2h8a2 2 0 002-2M9 9h1M9 12h1M9 15h1M14 9h1M14 12h1M14 15h1"
+              />
             </svg>
-            {{ serial.connected ? '연결됨' : '컨트롤러 연결' }}
+            {{ serial.connected ? "연결됨" : "컨트롤러 연결" }}
           </button>
         </div>
       </div>
@@ -117,18 +132,32 @@ function handleReset() {
         <div class="card-header">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
-              <rect x="6" y="2" width="12" height="20" rx="2"/>
-              <circle cx="12" cy="8" r="2"/>
-              <circle cx="12" cy="16" r="2"/>
+              <rect x="6" y="2" width="12" height="20" rx="2" />
+              <circle cx="12" cy="8" r="2" />
+              <circle cx="12" cy="16" r="2" />
             </svg>
             신호등 제어
           </h3>
         </div>
         <div class="card-body">
           <div class="btn-group">
-            <button class="btn btn-success" :disabled="!serial.connected || serial.green.active" @click="handleGreen">녹색등</button>
-            <button class="btn btn-ghost" :disabled="!serial.connected || serial.lightColor === 'grey'" @click="handleOff">OFF</button>
-            <button class="btn btn-danger" :disabled="!serial.connected || serial.lightColor === 'red'" @click="handleRed">적색등</button>
+            <button class="btn btn-success" :disabled="!serial.connected || serial.green.active" @click="handleGreen">
+              녹색등
+            </button>
+            <button
+              class="btn btn-ghost"
+              :disabled="!serial.connected || serial.lightColor === 'grey'"
+              @click="handleOff"
+            >
+              OFF
+            </button>
+            <button
+              class="btn btn-danger"
+              :disabled="!serial.connected || serial.lightColor === 'red'"
+              @click="handleRed"
+            >
+              적색등
+            </button>
           </div>
         </div>
       </div>
@@ -137,8 +166,10 @@ function handleReset() {
         <div class="card-header">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"
+              />
             </svg>
             경기 설정
           </h3>
@@ -146,7 +177,7 @@ function handleReset() {
         <div class="card-body">
           <div class="form-group">
             <label class="form-label">이벤트 이름</label>
-            <input v-model="eventName" type="text" class="form-input" :disabled="isLocked">
+            <input v-model="eventName" type="text" class="form-input" :disabled="isLocked" />
           </div>
           <div class="form-group">
             <label class="form-label">참가팀</label>
@@ -157,7 +188,9 @@ function handleReset() {
               </option>
             </select>
           </div>
-          <button class="btn btn-warning btn-block" :disabled="!serial.records.length" @click="handleReset">초기화</button>
+          <button class="btn btn-warning btn-block" :disabled="!serial.records.length" @click="handleReset">
+            초기화
+          </button>
         </div>
       </div>
     </aside>
@@ -189,8 +222,15 @@ function handleReset() {
         <div class="card-body">
           <div v-if="lapTimes.length === 0" class="empty-state">센서 통과 대기 중...</div>
           <div v-else class="lap-list">
-            <div v-for="lap in lapTimes" :key="lap.lap" class="lap-item" :class="{ 'is-saved': savedLap && savedLap.lap === lap.lap }">
-              <span class="lap-number">Lap {{ lap.lap }} <span v-if="savedLap && savedLap.lap === lap.lap">💾</span></span>
+            <div
+              v-for="lap in lapTimes"
+              :key="lap.lap"
+              class="lap-item"
+              :class="{ 'is-saved': savedLap && savedLap.lap === lap.lap }"
+            >
+              <span class="lap-number"
+                >Lap {{ lap.lap }} <span v-if="savedLap && savedLap.lap === lap.lap">💾</span></span
+              >
               <span class="lap-time">{{ lap.display }}</span>
             </div>
             <div class="total-row">
@@ -254,10 +294,17 @@ function handleReset() {
   gap: 0.5rem;
 }
 
-.header-icon { width: 18px; height: 18px; }
-.card-body { padding: 1.25rem; }
+.header-icon {
+  width: 18px;
+  height: 18px;
+}
+.card-body {
+  padding: 1.25rem;
+}
 
-.form-group { margin-bottom: 1rem; }
+.form-group {
+  margin-bottom: 1rem;
+}
 .form-label {
   display: block;
   font-size: 0.8125rem;
@@ -296,17 +343,45 @@ function handleReset() {
   transition: all 0.2s ease;
 }
 
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-block { width: 100%; }
-.btn-icon { width: 16px; height: 16px; }
-.btn-success { background: var(--accent-success); color: white; }
-.btn-danger { background: var(--accent-danger); color: white; }
-.btn-warning { background: var(--accent-warning); color: white; }
-.btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border-color); }
-.btn-group { display: flex; gap: 0.5rem; }
-.btn-group .btn { flex: 1; }
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-block {
+  width: 100%;
+}
+.btn-icon {
+  width: 16px;
+  height: 16px;
+}
+.btn-success {
+  background: var(--accent-success);
+  color: white;
+}
+.btn-danger {
+  background: var(--accent-danger);
+  color: white;
+}
+.btn-warning {
+  background: var(--accent-warning);
+  color: white;
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+.btn-group {
+  display: flex;
+  gap: 0.5rem;
+}
+.btn-group .btn {
+  flex: 1;
+}
 
-.monitor-header { text-align: center; }
+.monitor-header {
+  text-align: center;
+}
 
 .event-title {
   font-size: 2.5rem;
@@ -332,7 +407,7 @@ function handleReset() {
 
 .team-badge {
   font-weight: 700;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   color: var(--text-primary);
 }
 
@@ -341,7 +416,9 @@ function handleReset() {
   font-weight: 400;
 }
 
-.timer-section { text-align: center; }
+.timer-section {
+  text-align: center;
+}
 
 .timer-display {
   display: flex;
@@ -360,13 +437,19 @@ function handleReset() {
   transition: background-color 0.2s ease;
 }
 
-.traffic-light.green { background: #10b981; box-shadow: 0 0 20px rgba(16, 185, 129, 0.5); }
-.traffic-light.red { background: #ef4444; box-shadow: 0 0 20px rgba(239, 68, 68, 0.5); }
+.traffic-light.green {
+  background: #10b981;
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.5);
+}
+.traffic-light.red {
+  background: #ef4444;
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.5);
+}
 
 .clock {
   font-size: 3rem;
   font-weight: 700;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   color: var(--text-primary);
 }
 
@@ -404,7 +487,7 @@ function handleReset() {
 
 .lap-time {
   font-size: 1.125rem;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-weight: 700;
   color: var(--accent-success);
 }
@@ -428,7 +511,7 @@ function handleReset() {
 
 .total-value {
   font-size: 1.25rem;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-weight: 700;
   color: var(--accent-primary);
 }
@@ -443,14 +526,22 @@ function handleReset() {
   padding: 0.375rem 0.75rem;
   background: var(--bg-secondary);
   border-radius: 6px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 0.875rem;
   color: var(--text-secondary);
 }
 
 @media (max-width: 1024px) {
-  .page-layout { grid-template-columns: 1fr; }
-  .sidebar { flex-direction: row; flex-wrap: wrap; }
-  .sidebar .card { flex: 1; min-width: 280px; }
+  .page-layout {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .sidebar .card {
+    flex: 1;
+    min-width: 280px;
+  }
 }
 </style>

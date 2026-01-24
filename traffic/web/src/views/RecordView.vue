@@ -1,135 +1,112 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
-import { fetchRecords, fetchRecord, fetchControllers, deleteRecord, deleteControllers } from '../composables/useApi'
-import { useNotification } from '../composables/useNotification'
-import { msToClockStr } from '../stores/serial'
-import ExcelJS from 'exceljs'
+import { ref, onMounted, computed } from "vue";
+import { fetchRecords, fetchRecord, fetchControllers, deleteRecord, deleteControllers } from "../composables/useApi";
+import { useNotification } from "../composables/useNotification";
+import { msToClockStr } from "../stores/serial";
+import ExcelJS from "exceljs";
 
-const { notyf } = useNotification()
+const { notyf } = useNotification();
 
-const recordFiles = ref([])
-const selectedFile = ref(null)
-const records = ref([])
-const loading = ref(false)
-const sortKey = ref(null)
-const sortOrder = ref('asc')
+const recordFiles = ref([]);
+const selectedFile = ref(null);
+const records = ref([]);
+const loading = ref(false);
+const sortKey = ref(null);
+const sortOrder = ref("asc");
 
-const currentYear = computed(() => new Date().getFullYear())
-const isControllerLog = computed(() => selectedFile.value === 'controller')
+const currentYear = computed(() => new Date().getFullYear());
+const isControllerLog = computed(() => selectedFile.value === "controller");
 
 const sortedRecords = computed(() => {
-  if (!sortKey.value || !records.value.length) return records.value
-  
+  if (!sortKey.value || !records.value.length) return records.value;
+
   return [...records.value].sort((a, b) => {
-    let aVal = a[sortKey.value]
-    let bVal = b[sortKey.value]
-    
+    let aVal = a[sortKey.value];
+    let bVal = b[sortKey.value];
+
     // 시간 필드 처리
-    if (sortKey.value === 'time' || sortKey.value === 'timestamp') {
-      aVal = new Date(aVal).getTime()
-      bVal = new Date(bVal).getTime()
+    if (sortKey.value === "time" || sortKey.value === "timestamp") {
+      aVal = new Date(aVal).getTime();
+      bVal = new Date(bVal).getTime();
     }
     // 숫자 필드 처리
-    else if (sortKey.value === 'num' || sortKey.value === 'result') {
-      aVal = Number(aVal) || 0
-      bVal = Number(bVal) || 0
+    else if (sortKey.value === "num" || sortKey.value === "result") {
+      aVal = Number(aVal) || 0;
+      bVal = Number(bVal) || 0;
     }
     // 문자열 필드 처리
     else {
-      aVal = String(aVal || '').toLowerCase()
-      bVal = String(bVal || '').toLowerCase()
+      aVal = String(aVal || "").toLowerCase();
+      bVal = String(bVal || "").toLowerCase();
     }
-    
-    if (aVal < bVal) return sortOrder.value === 'asc' ? -1 : 1
-    if (aVal > bVal) return sortOrder.value === 'asc' ? 1 : -1
-    return 0
-  })
-})
+
+    if (aVal < bVal) return sortOrder.value === "asc" ? -1 : 1;
+    if (aVal > bVal) return sortOrder.value === "asc" ? 1 : -1;
+    return 0;
+  });
+});
 
 onMounted(async () => {
-  await loadFileList()
-})
+  await loadFileList();
+});
 
 async function loadFileList() {
   try {
-    const files = await fetchRecords()
-    recordFiles.value = ['controller', ...files]
+    const files = await fetchRecords();
+    recordFiles.value = ["controller", ...files];
   } catch (e) {
-    notyf.error(`기록 목록을 불러오지 못했습니다.`)
+    notyf.error(`기록 목록을 불러오지 못했습니다.`);
   }
 }
 
 async function loadRecords() {
-  if (!selectedFile.value) return
+  if (!selectedFile.value) return;
 
-  loading.value = true
-  sortKey.value = null
-  sortOrder.value = 'asc'
+  loading.value = true;
+  sortKey.value = null;
+  sortOrder.value = "asc";
   try {
-    if (selectedFile.value === 'controller') {
-      records.value = await fetchControllers()
+    if (selectedFile.value === "controller") {
+      records.value = await fetchControllers();
     } else {
-      records.value = await fetchRecord(selectedFile.value)
+      records.value = await fetchRecord(selectedFile.value);
     }
   } catch (e) {
-    notyf.error(`기록을 불러오지 못했습니다.`)
-    records.value = []
+    notyf.error(`기록을 불러오지 못했습니다.`);
+    records.value = [];
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
 async function handleDelete() {
-  if (!selectedFile.value) return
-  if (!confirm(`"${selectedFile.value}" 기록을 삭제하시겠습니까?`)) return
+  if (!selectedFile.value) return;
+  if (!confirm(`"${selectedFile.value}" 기록을 삭제하시겠습니까?`)) return;
 
   try {
     if (isControllerLog.value) {
-      await deleteControllers()
+      await deleteControllers();
     } else {
-      await deleteRecord(selectedFile.value)
+      await deleteRecord(selectedFile.value);
     }
-    notyf.success('기록이 삭제되었습니다.')
-    selectedFile.value = null
-    records.value = []
-    await loadFileList()
+    notyf.success("기록이 삭제되었습니다.");
+    selectedFile.value = null;
+    records.value = [];
+    await loadFileList();
   } catch (e) {
-    notyf.error(`삭제 실패: ${e.message}`)
+    notyf.error(`삭제 실패: ${e.message}`);
   }
 }
 
 function downloadCSV() {
-  if (!sortedRecords.value.length) return
+  if (!sortedRecords.value.length) return;
 
-  let headers, rows
+  let headers, rows;
   if (isControllerLog.value) {
-    headers = ['시간', '데이터']
-    rows = sortedRecords.value.map(r => [formatTime(r.timestamp), r.data])
+    headers = ["시간", "데이터"];
+    rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
   } else {
-    headers = ['시간', '번호', '학교', '팀', '유형', '기록', '상세']
-    rows = sortedRecords.value.map(r => [
-      formatTime(r.time), r.num, r.univ, r.team, r.type, formatResult(r.result), r.detail || ''
-    ])
-  }
-
-  const csvContent = [headers, ...rows]
-    .map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
-    .join('\n')
-
-  const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' })
-  downloadBlob(blob, `${selectedFile.value}.csv`)
-}
-
-async function downloadXLSX() {
-  if (!sortedRecords.value.length) return
-
-  let headers, rows
-
-  if (isControllerLog.value) {
-    headers = ["시간", "데이터"]
-    rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data])
-  } else {
-    headers = ["시간", "번호", "학교", "팀", "유형", "기록", "상세"]
+    headers = ["시간", "번호", "학교", "팀", "유형", "기록", "상세"];
     rows = sortedRecords.value.map((r) => [
       formatTime(r.time),
       r.num,
@@ -138,60 +115,89 @@ async function downloadXLSX() {
       r.type,
       formatResult(r.result),
       r.detail || "",
-    ])
+    ]);
   }
 
-  const wb = new ExcelJS.Workbook()
-  const ws = wb.addWorksheet("Records")
+  const csvContent = [headers, ...rows]
+    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
 
-  ws.addRow(headers)
-  ws.addRows(rows)
+  const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+  downloadBlob(blob, `${selectedFile.value}.csv`);
+}
 
-  const buf = await wb.xlsx.writeBuffer()
+async function downloadXLSX() {
+  if (!sortedRecords.value.length) return;
+
+  let headers, rows;
+
+  if (isControllerLog.value) {
+    headers = ["시간", "데이터"];
+    rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
+  } else {
+    headers = ["시간", "번호", "학교", "팀", "유형", "기록", "상세"];
+    rows = sortedRecords.value.map((r) => [
+      formatTime(r.time),
+      r.num,
+      r.univ,
+      r.team,
+      r.type,
+      formatResult(r.result),
+      r.detail || "",
+    ]);
+  }
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Records");
+
+  ws.addRow(headers);
+  ws.addRows(rows);
+
+  const buf = await wb.xlsx.writeBuffer();
   const blob = new Blob([buf], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  })
+  });
 
-  const filename = `${selectedFile.value}.xlsx`
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement("a")
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
+  const filename = `${selectedFile.value}.xlsx`;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function handleSort(key) {
   if (sortKey.value === key) {
-    sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
+    sortOrder.value = sortOrder.value === "asc" ? "desc" : "asc";
   } else {
-    sortKey.value = key
-    sortOrder.value = 'asc'
+    sortKey.value = key;
+    sortOrder.value = "asc";
   }
 }
 
 function getSortIcon(key) {
-  if (sortKey.value !== key) return '↕'
-  return sortOrder.value === 'asc' ? '↑' : '↓'
+  if (sortKey.value !== key) return "↕";
+  return sortOrder.value === "asc" ? "↑" : "↓";
 }
 
 function formatTime(time) {
-  return new Date(time).toLocaleString('ko-KR')
+  return new Date(time).toLocaleString("ko-KR");
 }
 
 function formatResult(result) {
-  return msToClockStr(result)
+  return msToClockStr(result);
 }
 </script>
 
@@ -202,10 +208,10 @@ function formatResult(result) {
         <div class="card-header">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
-              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
-              <line x1="16" y1="13" x2="8" y2="13"/>
-              <line x1="16" y1="17" x2="8" y2="17"/>
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="16" y1="13" x2="8" y2="13" />
+              <line x1="16" y1="17" x2="8" y2="17" />
             </svg>
             기록 파일 선택
           </h3>
@@ -218,32 +224,32 @@ function formatResult(result) {
               <option v-for="file in recordFiles" :key="file" :value="file">{{ file }}</option>
             </select>
           </div>
-          
+
           <div v-if="records.length" class="action-buttons">
             <div class="btn-row">
               <button class="btn btn-secondary" @click="downloadCSV" title="CSV 다운로드">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                  <polyline points="7 10 12 15 17 10"/>
-                  <line x1="12" y1="15" x2="12" y2="3"/>
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
                 </svg>
                 CSV
               </button>
               <button class="btn btn-secondary" @click="downloadXLSX" title="Excel 다운로드">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                  <polyline points="7 10 12 15 17 10"/>
-                  <line x1="12" y1="15" x2="12" y2="3"/>
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
                 </svg>
                 XLSX
               </button>
             </div>
             <button class="btn btn-danger btn-block" @click="handleDelete">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-                <polyline points="3 6 5 6 21 6"/>
-                <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-                <line x1="10" y1="11" x2="10" y2="17"/>
-                <line x1="14" y1="11" x2="14" y2="17"/>
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+                <line x1="10" y1="11" x2="10" y2="17" />
+                <line x1="14" y1="11" x2="14" y2="17" />
               </svg>
               삭제
             </button>
@@ -255,7 +261,7 @@ function formatResult(result) {
     <section class="content">
       <div class="table-header">
         <div class="table-title-area">
-          <h2>{{ selectedFile || '기록' }}</h2>
+          <h2>{{ selectedFile || "기록" }}</h2>
           <span v-if="records.length" class="entry-count">{{ records.length }}개</span>
         </div>
       </div>
@@ -271,10 +277,10 @@ function formatResult(result) {
           <thead>
             <tr>
               <th class="sortable" @click="handleSort('timestamp')">
-                시간 <span class="sort-icon">{{ getSortIcon('timestamp') }}</span>
+                시간 <span class="sort-icon">{{ getSortIcon("timestamp") }}</span>
               </th>
               <th class="sortable" @click="handleSort('data')">
-                데이터 <span class="sort-icon">{{ getSortIcon('data') }}</span>
+                데이터 <span class="sort-icon">{{ getSortIcon("data") }}</span>
               </th>
             </tr>
           </thead>
@@ -291,35 +297,39 @@ function formatResult(result) {
           <thead>
             <tr>
               <th class="sortable" @click="handleSort('time')">
-                시간 <span class="sort-icon">{{ getSortIcon('time') }}</span>
+                시간 <span class="sort-icon">{{ getSortIcon("time") }}</span>
               </th>
               <th class="sortable" @click="handleSort('num')">
-                번호 <span class="sort-icon">{{ getSortIcon('num') }}</span>
+                번호 <span class="sort-icon">{{ getSortIcon("num") }}</span>
               </th>
               <th class="sortable" @click="handleSort('univ')">
-                학교 <span class="sort-icon">{{ getSortIcon('univ') }}</span>
+                학교 <span class="sort-icon">{{ getSortIcon("univ") }}</span>
               </th>
               <th class="sortable" @click="handleSort('team')">
-                팀 <span class="sort-icon">{{ getSortIcon('team') }}</span>
+                팀 <span class="sort-icon">{{ getSortIcon("team") }}</span>
               </th>
               <th class="sortable" @click="handleSort('type')">
-                유형 <span class="sort-icon">{{ getSortIcon('type') }}</span>
+                유형 <span class="sort-icon">{{ getSortIcon("type") }}</span>
               </th>
               <th class="sortable" @click="handleSort('result')">
-                기록 <span class="sort-icon">{{ getSortIcon('result') }}</span>
+                기록 <span class="sort-icon">{{ getSortIcon("result") }}</span>
               </th>
               <th class="sortable" @click="handleSort('detail')">
-                상세 <span class="sort-icon">{{ getSortIcon('detail') }}</span>
+                상세 <span class="sort-icon">{{ getSortIcon("detail") }}</span>
               </th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(record, index) in sortedRecords" :key="index">
               <td class="time-cell">{{ formatTime(record.time) }}</td>
-              <td><span class="entry-number">{{ record.num }}</span></td>
+              <td>
+                <span class="entry-number">{{ record.num }}</span>
+              </td>
               <td>{{ record.univ }}</td>
               <td>{{ record.team }}</td>
-              <td><span class="type-badge" :class="record.type">{{ record.type }}</span></td>
+              <td>
+                <span class="type-badge" :class="record.type">{{ record.type }}</span>
+              </td>
               <td class="result-cell">{{ formatResult(record.result) }}</td>
               <td class="detail-cell">{{ record.detail }}</td>
             </tr>
@@ -377,10 +387,17 @@ function formatResult(result) {
   gap: 0.5rem;
 }
 
-.header-icon { width: 18px; height: 18px; }
-.card-body { padding: 1.25rem; }
+.header-icon {
+  width: 18px;
+  height: 18px;
+}
+.card-body {
+  padding: 1.25rem;
+}
 
-.form-group { margin-bottom: 1rem; }
+.form-group {
+  margin-bottom: 1rem;
+}
 
 .action-buttons {
   margin-top: 1rem;
@@ -493,7 +510,7 @@ function formatResult(result) {
   font-weight: 600;
   padding: 0.25rem 0.625rem;
   border-radius: 12px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
 }
 
 .loading-container {
@@ -515,7 +532,11 @@ function formatResult(result) {
   margin-bottom: 1rem;
 }
 
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 .table-wrapper {
   overflow-x: auto;
@@ -583,7 +604,7 @@ function formatResult(result) {
   padding: 0.25rem 0.5rem;
   background: var(--bg-primary);
   border-radius: 6px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-weight: 600;
   font-size: 0.8125rem;
   color: var(--accent-primary);
@@ -598,12 +619,21 @@ function formatResult(result) {
   text-transform: uppercase;
 }
 
-.type-badge.accel { background: rgba(59, 130, 246, 0.1); color: var(--accent-primary); }
-.type-badge.gymkhana { background: rgba(139, 92, 246, 0.1); color: var(--accent-secondary); }
-.type-badge.skidpad { background: rgba(245, 158, 11, 0.1); color: var(--accent-warning); }
+.type-badge.accel {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--accent-primary);
+}
+.type-badge.gymkhana {
+  background: rgba(139, 92, 246, 0.1);
+  color: var(--accent-secondary);
+}
+.type-badge.skidpad {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--accent-warning);
+}
 
 .result-cell {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-weight: 700;
   color: var(--accent-success);
 }
@@ -614,7 +644,7 @@ function formatResult(result) {
 }
 
 .controller-data {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 0.8125rem;
   color: var(--text-secondary);
 }
@@ -635,6 +665,8 @@ function formatResult(result) {
 }
 
 @media (max-width: 1024px) {
-  .page-layout { grid-template-columns: 1fr; }
+  .page-layout {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

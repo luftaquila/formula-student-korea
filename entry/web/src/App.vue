@@ -1,94 +1,95 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
-import EntryTable from './components/EntryTable.vue'
-import EntryForm from './components/EntryForm.vue'
-import FileManager from './components/FileManager.vue'
-import Toast from './components/Toast.vue'
-import ThemeToggle from './components/ThemeToggle.vue'
-import NavMenu from './components/NavMenu.vue'
-import { fetchEntries, addEntry, updateEntry, deleteEntry, uploadEntries } from './api'
+import { ref, onMounted, computed } from "vue";
+import EntryTable from "./components/EntryTable.vue";
+import EntryForm from "./components/EntryForm.vue";
+import FileManager from "./components/FileManager.vue";
+import Toast from "./components/Toast.vue";
+import ThemeToggle from "./components/ThemeToggle.vue";
+import NavMenu from "./components/NavMenu.vue";
+import { fetchEntries, addEntry, updateEntry, deleteEntry, uploadEntries } from "./api";
 
-const entries = ref({})
-const loading = ref(true)
-const toast = ref(null)
-const searchQuery = ref('')
+const entries = ref({});
+const loading = ref(true);
+const toast = ref(null);
+const searchQuery = ref("");
 
 const entriesArray = computed(() => {
   return Object.entries(entries.value)
     .map(([num, data]) => ({ num: Number(num), ...data }))
-    .sort((a, b) => a.num - b.num)
-})
+    .sort((a, b) => a.num - b.num);
+});
 
 const filteredEntries = computed(() => {
-  if (!searchQuery.value.trim()) return entriesArray.value
-  const query = searchQuery.value.toLowerCase()
-  return entriesArray.value.filter(entry =>
-    entry.num.toString().includes(query) ||
-    entry.univ.toLowerCase().includes(query) ||
-    entry.team.toLowerCase().includes(query)
-  )
-})
+  if (!searchQuery.value.trim()) return entriesArray.value;
+  const query = searchQuery.value.toLowerCase();
+  return entriesArray.value.filter(
+    (entry) =>
+      entry.num.toString().includes(query) ||
+      entry.univ.toLowerCase().includes(query) ||
+      entry.team.toLowerCase().includes(query),
+  );
+});
 
-const totalCount = computed(() => entriesArray.value.length)
+const totalCount = computed(() => entriesArray.value.length);
 
 async function loadEntries() {
-  loading.value = true
+  loading.value = true;
   try {
-    entries.value = await fetchEntries()
+    entries.value = await fetchEntries();
   } catch (e) {
-    toast.value?.show(e.message, 'error')
+    toast.value?.show(e.message, "error");
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
 async function handleAdd(entry) {
   try {
-    await addEntry(entry)
-    toast.value?.show(`${entry.num}번 엔트리를 추가했습니다.`, 'success')
-    await loadEntries()
+    await addEntry(entry);
+    toast.value?.show(`${entry.num}번 엔트리를 추가했습니다.`, "success");
+    await loadEntries();
   } catch (e) {
-    toast.value?.show(e.message, 'error')
+    toast.value?.show(e.message, "error");
   }
 }
 
 async function handleUpdate(entry) {
   try {
-    await updateEntry(entry)
-    toast.value?.show(`${entry.num}번 엔트리를 수정했습니다.`, 'success')
-    await loadEntries()
+    await updateEntry(entry);
+    toast.value?.show(`${entry.num}번 엔트리를 수정했습니다.`, "success");
+    await loadEntries();
   } catch (e) {
-    toast.value?.show(e.message, 'error')
+    toast.value?.show(e.message, "error");
   }
 }
 
 async function handleDelete(num) {
   try {
-    await deleteEntry(num)
-    toast.value?.show(`${num}번 엔트리를 삭제했습니다.`, 'success')
-    await loadEntries()
+    await deleteEntry(num);
+    toast.value?.show(`${num}번 엔트리를 삭제했습니다.`, "success");
+    await loadEntries();
   } catch (e) {
-    toast.value?.show(e.message, 'error')
+    toast.value?.show(e.message, "error");
   }
 }
 
 async function handleUpload(data) {
   try {
-    await uploadEntries(data)
-    toast.value?.show('엔트리 목록을 업로드했습니다.', 'success')
-    await loadEntries()
+    await uploadEntries(data);
+    toast.value?.show("엔트리 목록을 업로드했습니다.", "success");
+    await loadEntries();
   } catch (e) {
-    toast.value?.show(e.message, 'error')
+    toast.value?.show(e.message, "error");
   }
 }
 
-onMounted(loadEntries)
+onMounted(loadEntries);
 </script>
 
 <template>
   <div class="app-container">
     <Toast ref="toast" />
-    
+
     <header class="header">
       <div class="header-content">
         <div class="logo">
@@ -116,29 +117,19 @@ onMounted(loadEntries)
           </div>
           <div class="search-box">
             <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="11" cy="11" r="8"/>
-              <path d="m21 21-4.35-4.35"/>
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.35-4.35" />
             </svg>
-            <input 
-              v-model="searchQuery"
-              type="text" 
-              placeholder="검색..." 
-              class="search-input"
-            />
+            <input v-model="searchQuery" type="text" placeholder="검색..." class="search-input" />
           </div>
         </div>
-        
+
         <div v-if="loading" class="loading-container">
           <div class="loading-spinner"></div>
           <p>데이터를 불러오는 중...</p>
         </div>
-        
-        <EntryTable 
-          v-else
-          :entries="filteredEntries"
-          @update="handleUpdate"
-          @delete="handleDelete"
-        />
+
+        <EntryTable v-else :entries="filteredEntries" @update="handleUpdate" @delete="handleDelete" />
       </section>
     </main>
   </div>
@@ -240,7 +231,7 @@ onMounted(loadEntries)
   font-weight: 600;
   padding: 0.25rem 0.625rem;
   border-radius: 12px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
 }
 
 .search-box {
@@ -299,19 +290,21 @@ onMounted(loadEntries)
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 1024px) {
   .main-content {
     grid-template-columns: 1fr;
   }
-  
+
   .sidebar {
     flex-direction: row;
     flex-wrap: wrap;
   }
-  
+
   .sidebar > :deep(*) {
     flex: 1;
     min-width: 280px;
@@ -322,26 +315,25 @@ onMounted(loadEntries)
   .header {
     padding: 1rem;
   }
-  
+
   .header-content {
     flex-direction: column;
     gap: 1rem;
     text-align: center;
   }
-  
+
   .main-content {
     padding: 1rem;
   }
-  
+
   .table-header {
     flex-direction: column;
     gap: 1rem;
     align-items: stretch;
   }
-  
+
   .search-input {
     width: 100%;
   }
 }
 </style>
-
