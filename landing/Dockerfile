@@ -4,13 +4,18 @@ FROM node:22-alpine AS landing-builder
 WORKDIR /home/node/fsk-landing
 
 # Copy package files
-COPY package*.json ./
+COPY landing/package*.json ./
 
 # Install dependencies
 RUN npm ci
 
 # Copy source files
-COPY . .
+COPY landing/src ./src
+COPY landing/index.html ./
+COPY landing/vite.config.js ./
+
+# Copy shared folder
+COPY shared ../shared
 
 # Build application
 RUN npm run build
@@ -22,7 +27,6 @@ FROM nginx:alpine
 COPY --from=landing-builder /home/node/fsk-landing/dist /usr/share/nginx/html
 
 # Copy nginx config
-COPY nginx.conf /etc/nginx/nginx.conf
+COPY landing/nginx.conf /etc/nginx/nginx.conf
 
 EXPOSE 9000
-

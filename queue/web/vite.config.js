@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
+import { resolve } from "path";
 
 export default defineConfig(({ mode }) => {
   const isProduction = mode === "production";
@@ -23,6 +24,11 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: "dist",
       emptyOutDir: true,
+    },
+    resolve: {
+      alias: {
+        "@shared": resolve(__dirname, "../../shared"),
+      },
     },
   };
 });

@@ -3,7 +3,7 @@ import { ref } from "vue";
 import { useRoute } from "vue-router";
 import Toast from "./components/Toast.vue";
 import ThemeToggle from "./components/ThemeToggle.vue";
-import NavMenu from "./components/NavMenu.vue";
+import NavMenu from "@shared/NavMenu.vue";
 
 const toast = ref(null);
 const route = useRoute();
@@ -39,7 +39,7 @@ defineExpose({ toast });
         </a>
         <div class="header-actions">
           <ThemeToggle />
-          <NavMenu />
+          <NavMenu :currentPath="'/queue' + route.path" />
         </div>
       </div>
     </header>

@@ -5,7 +5,7 @@ import EntryForm from "./components/EntryForm.vue";
 import FileManager from "./components/FileManager.vue";
 import Toast from "./components/Toast.vue";
 import ThemeToggle from "./components/ThemeToggle.vue";
-import NavMenu from "./components/NavMenu.vue";
+import NavMenu from "@shared/NavMenu.vue";
 import { fetchEntries, addEntry, updateEntry, deleteEntry, uploadEntries } from "./api";
 
 const entries = ref({});
@@ -98,7 +98,7 @@ onMounted(loadEntries);
         </a>
         <div class="header-actions">
           <ThemeToggle />
-          <NavMenu />
+          <NavMenu currentPath="/entry" />
         </div>
       </div>
     </header>

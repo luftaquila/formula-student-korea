@@ -3,7 +3,7 @@ import { onMounted } from "vue";
 import { useRoute } from "vue-router";
 import ThemeToggle from "./components/ThemeToggle.vue";
 import NavTabs from "./components/NavTabs.vue";
-import NavMenu from "./components/NavMenu.vue";
+import NavMenu from "@shared/NavMenu.vue";
 import { useEntryStore } from "./stores/entry";
 
 const route = useRoute();
@@ -25,7 +25,7 @@ onMounted(() => {
         <NavTabs />
         <div class="header-actions">
           <ThemeToggle />
-          <NavMenu />
+          <NavMenu currentPath="/traffic" />
         </div>
       </div>
     </header>

@@ -1,8 +1,8 @@
 services:
   entry:
     build:
-      context: ./entry
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: entry/Dockerfile
     container_name: fsk-entry
     volumes:
       - ./entry/data:/home/node/fsk-entry/data
@@ -12,8 +12,8 @@ services:
 
   traffic:
     build:
-      context: ./traffic
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: traffic/Dockerfile
     container_name: fsk-traffic
     environment:
       - ENTRY_SERVER=http://entry:9100
@@ -36,8 +36,8 @@ services:
 
   queue:
     build:
-      context: ./queue
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: queue/Dockerfile
     container_name: fsk-queue
     environment:
       - ENTRY_SERVER=http://entry:9100
@@ -51,8 +51,8 @@ services:
 
   nginx:
     build:
-      context: ./landing
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: landing/Dockerfile
     container_name: fsk-nginx
     ports:
       - "9000:9000"
@@ -68,4 +68,3 @@ services:
 networks:
   fsk-network:
     driver: bridge
-

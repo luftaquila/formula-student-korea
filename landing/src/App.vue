@@ -1,8 +1,16 @@
 <template>
-  <div class="app">
+  <div class="app-container">
     <header class="header">
-      <h1>Formula Student Korea</h1>
-      <ThemeToggle />
+      <div class="header-content">
+        <a href="/" class="logo">
+          <span class="logo-icon">🏁</span>
+          <h1>Formula Student Korea</h1>
+        </a>
+        <div class="header-actions">
+          <ThemeToggle />
+          <NavMenu currentPath="/" />
+        </div>
+      </div>
     </header>
     <main class="main">
       <div class="services">
@@ -17,10 +25,11 @@
 <script setup>
 import ServiceCard from "./components/ServiceCard.vue";
 import ThemeToggle from "./components/ThemeToggle.vue";
+import NavMenu from "@shared/NavMenu.vue";
 </script>
 
 <style scoped>
-.app {
+.app-container {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -29,22 +38,43 @@ import ThemeToggle from "./components/ThemeToggle.vue";
 }
 
 .header {
-  padding: 2rem;
   background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+  padding: 1rem 2rem;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.header-content {
+  max-width: 1400px;
+  margin: 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 1rem;
 }
 
-.header h1 {
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  text-decoration: none;
+}
+
+.logo-icon {
   font-size: 2rem;
-  font-weight: 700;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+}
+
+.logo h1 {
   color: white;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+  font-size: 1.5rem;
+  font-weight: 700;
   margin: 0;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
 }
 
 .main {
@@ -65,13 +95,17 @@ import ThemeToggle from "./components/ThemeToggle.vue";
 
 @media (max-width: 768px) {
   .header {
-    padding: 1.5rem;
+    padding: 1rem;
+  }
+
+  .header-content {
     flex-direction: column;
+    gap: 1rem;
     text-align: center;
   }
 
-  .header h1 {
-    font-size: 1.5rem;
+  .logo h1 {
+    font-size: 1.25rem;
   }
 
   .main {
@@ -89,8 +123,8 @@ import ThemeToggle from "./components/ThemeToggle.vue";
     padding: 1rem;
   }
 
-  .header h1 {
-    font-size: 1.25rem;
+  .logo h1 {
+    font-size: 1.125rem;
   }
 
   .main {

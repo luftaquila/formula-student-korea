@@ -1,21 +1,43 @@
 <script setup>
 import { ref } from "vue";
+import { services, officials, getIcon } from "./nav-config.js";
+
+const props = defineProps({
+  currentPath: {
+    type: String,
+    default: "/",
+  },
+});
 
 const isOpen = ref(false);
 
-const services = [
-  { name: "홈", href: "/", icon: "home" },
-  { name: "검차 대기열", href: "/queue", icon: "queue" },
-  { name: "에너지미터", href: "/energymeter", icon: "energy" },
-  { name: "규정집", href: "/rules", icon: "rules" },
-];
+function isActive(href) {
+  // Landing page
+  if (props.currentPath === "/" && href === "/") {
+    return true;
+  }
 
-const officials = [
-  { name: "검차 관리", href: "/queue/admin", icon: "queue-admin" },
-  { name: "계측 시스템", href: "/traffic", icon: "traffic", active: true },
-  { name: "경기 기록", href: "/record", icon: "record" },
-  { name: "엔트리 관리", href: "/entry", icon: "entry" },
-];
+  // Queue service
+  if (props.currentPath.startsWith("/queue")) {
+    if (href === "/queue") {
+      return props.currentPath === "/queue" || props.currentPath === "/queue/";
+    }
+    if (href === "/queue/admin") {
+      return (
+        props.currentPath === "/queue/admin" ||
+        props.currentPath === "/queue/register" ||
+        props.currentPath === "/queue/priority"
+      );
+    }
+  }
+
+  // Other services - match by prefix
+  if (href !== "/" && props.currentPath.startsWith(href)) {
+    return true;
+  }
+
+  return false;
+}
 
 function toggle() {
   isOpen.value = !isOpen.value;
@@ -61,7 +83,7 @@ function close() {
                 :key="item.href"
                 :href="item.href"
                 class="nav-item"
-                :class="{ active: item.active }"
+                :class="{ active: isActive(item.href) }"
               >
                 <span class="nav-icon">{{ getIcon(item.icon) }}</span>
                 <span>{{ item.name }}</span>
@@ -75,7 +97,7 @@ function close() {
                 :key="item.href"
                 :href="item.href"
                 class="nav-item"
-                :class="{ active: item.active }"
+                :class="{ active: isActive(item.href) }"
               >
                 <span class="nav-icon">{{ getIcon(item.icon) }}</span>
                 <span>{{ item.name }}</span>
@@ -87,22 +109,6 @@ function close() {
     </Teleport>
   </div>
 </template>
-
-<script>
-function getIcon(type) {
-  const icons = {
-    home: "🏠",
-    queue: "🔧",
-    energy: "⚡",
-    rules: "📖",
-    "queue-admin": "🛠️",
-    traffic: "🚦",
-    record: "📊",
-    entry: "🏁",
-  };
-  return icons[type] || "📌";
-}
-</script>
 
 <style scoped>
 .menu-btn {
