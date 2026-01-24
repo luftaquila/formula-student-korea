@@ -11,6 +11,7 @@ RUN npm ci
 
 # Copy source files
 COPY landing/src ./src
+COPY landing/public ./public
 COPY landing/index.html ./
 COPY landing/vite.config.js ./
 
