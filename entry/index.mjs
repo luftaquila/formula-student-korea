@@ -254,6 +254,17 @@ app.delete("/api/entries/:num", (req, res) => {
   res.status(200).send();
 });
 
+// DELETE /api/entries - 모든 엔트리 삭제
+app.delete("/api/entries", (req, res) => {
+  const result = dbRun(() => db.prepare("DELETE FROM entry").run());
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  res.status(200).send();
+});
+
 // POST /api/entries/bulk - 엔트리 일괄 업로드 (DB 교체)
 app.post("/api/entries/bulk", (req, res) => {
   const validation = validateBulkData(req.body.data);

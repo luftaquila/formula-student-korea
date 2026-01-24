@@ -6,7 +6,7 @@ import FileManager from "./components/FileManager.vue";
 import Toast from "./components/Toast.vue";
 import ThemeToggle from "./components/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
-import { fetchEntries, addEntry, updateEntry, deleteEntry, uploadEntries } from "./api";
+import { fetchEntries, addEntry, updateEntry, deleteEntry, deleteAllEntries, uploadEntries } from "./api";
 
 const entries = ref({});
 const loading = ref(true);
@@ -83,6 +83,16 @@ async function handleUpload(data) {
   }
 }
 
+async function handleDeleteAll() {
+  try {
+    await deleteAllEntries();
+    toast.value?.show("모든 엔트리를 삭제했습니다.", "success");
+    await loadEntries();
+  } catch (e) {
+    toast.value?.show(e.message, "error");
+  }
+}
+
 onMounted(loadEntries);
 </script>
 
@@ -106,7 +116,7 @@ onMounted(loadEntries);
     <main class="main-content">
       <aside class="sidebar">
         <EntryForm @submit="handleAdd" />
-        <FileManager @upload="handleUpload" />
+        <FileManager @upload="handleUpload" @delete-all="handleDeleteAll" />
       </aside>
 
       <section class="content">

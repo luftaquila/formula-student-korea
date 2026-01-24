@@ -60,6 +60,15 @@ export async function deleteEntry(num) {
 }
 
 /**
+ * 모든 엔트리 삭제
+ */
+export async function deleteAllEntries() {
+  await request("/api/entries", {
+    method: "DELETE",
+  });
+}
+
+/**
  * JSON 파일로 엔트리 일괄 업로드
  */
 export async function uploadEntries(data) {
@@ -73,5 +82,5 @@ export async function uploadEntries(data) {
  * 엔트리 JSON 다운로드 URL
  */
 export function getDownloadUrl() {
-  return "/api/entries?download";
+  return `${BASE_URL}/api/entries?download`;
 }

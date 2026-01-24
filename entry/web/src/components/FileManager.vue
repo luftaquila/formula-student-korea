@@ -2,7 +2,7 @@
 import { ref } from "vue";
 import { getDownloadUrl } from "../api";
 
-const emit = defineEmits(["upload"]);
+const emit = defineEmits(["upload", "delete-all"]);
 
 const fileInput = ref(null);
 const selectedFile = ref(null);
@@ -50,6 +50,12 @@ async function handleUpload() {
     clearFile();
   } finally {
     isUploading.value = false;
+  }
+}
+
+function handleDeleteAll() {
+  if (confirm("모든 엔트리를 삭제하시겠습니까?")) {
+    emit("delete-all");
   }
 }
 </script>
@@ -123,6 +129,20 @@ async function handleUpload() {
           </svg>
           JSON 다운로드
         </a>
+      </div>
+
+      <!-- Delete All Section -->
+      <div class="section">
+        <label class="form-label">엔트리 전체 삭제</label>
+        <button class="btn btn-danger delete-all-btn" @click="handleDeleteAll">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+            <line x1="10" y1="11" x2="10" y2="17" />
+            <line x1="14" y1="11" x2="14" y2="17" />
+          </svg>
+          전체 삭제
+        </button>
       </div>
     </div>
   </div>
@@ -234,12 +254,14 @@ async function handleUpload() {
 }
 
 .upload-btn,
-.download-btn {
+.download-btn,
+.delete-all-btn {
   width: 100%;
 }
 
 .upload-btn svg,
-.download-btn svg {
+.download-btn svg,
+.delete-all-btn svg {
   width: 18px;
   height: 18px;
 }
