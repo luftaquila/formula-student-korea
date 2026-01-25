@@ -51,13 +51,53 @@ app.use(
 const ENTRY_SERVER = process.env.ENTRY_SERVER || "http://localhost:9100";
 
 /* ============================================
+   SSE (Server-Sent Events) 설정
+   ============================================ */
+const sseClients = new Set();
+
+function broadcastEvent(event, data) {
+  const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of sseClients) {
+    client.write(message);
+  }
+}
+
+function getRecordFiles() {
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'controller'")
+    .all();
+  return tables.map((table) => table.name);
+}
+
+// SSE 엔드포인트
+app.get("/api/events", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  // 연결 시 초기 데이터 전송
+  const recordFiles = getRecordFiles();
+  res.write(`event: init\ndata: ${JSON.stringify({ recordFiles })}\n\n`);
+
+  sseClients.add(res);
+
+  req.on("close", () => {
+    sseClients.delete(res);
+  });
+});
+
+/* ============================================
    Validation 헬퍼
    ============================================ */
 function validateRecordName(name) {
   if (name === undefined || name === null || typeof name !== "string" || name.trim() === "") {
     return { valid: false, error: "올바르지 않은 기록 이름입니다." };
   }
-  return { valid: true, value: name.trim() };
+  // 파일 경로에 사용할 수 없는 문자들을 .으로 치환
+  const sanitized = name.trim().replace(/[/\\:*?"<>|]/g, ".");
+  return { valid: true, value: sanitized };
 }
 
 function validateRecordData(data) {
@@ -242,6 +282,9 @@ app.post("/api/records", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  // SSE 브로드캐스트
+  broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles() });
+
   res.status(201).send();
 });
 
@@ -259,6 +302,9 @@ app.delete("/api/records/:name", (req, res) => {
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
+
+  // SSE 브로드캐스트
+  broadcastEvent("records", { type: "delete", name, recordFiles: getRecordFiles() });
 
   res.status(200).send();
 });

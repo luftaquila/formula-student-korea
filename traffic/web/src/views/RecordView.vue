@@ -1,26 +1,46 @@
 <script setup>
-import { ref, onMounted, computed } from "vue";
-import { fetchRecords, fetchRecord, fetchControllers, deleteRecord, deleteControllers } from "../composables/useApi";
+import { ref, computed, watch, onMounted } from "vue";
+import { fetchRecord, fetchControllers, deleteRecord, deleteControllers } from "../composables/useApi";
 import { useNotification } from "../composables/useNotification";
+import { useSSE } from "../composables/useSSE";
 import { msToClockStr } from "../stores/serial";
 import ExcelJS from "exceljs";
 
 const { notyf } = useNotification();
+const { recordFiles, selectedFile, lastUpdate } = useSSE();
 
-const recordFiles = ref([]);
-const selectedFile = ref(null);
 const records = ref([]);
 const loading = ref(false);
 const sortKey = ref(null);
 const sortOrder = ref("asc");
 
+// 유형 필터 (기본: 모두 선택)
+const typeFilters = ref({
+  가속: true,
+  짐카나: true,
+  스키드패드: true,
+});
+
+// 컴포넌트 마운트 시 이전에 선택한 파일이 있으면 로드
+onMounted(() => {
+  if (selectedFile.value) {
+    loadRecords();
+  }
+});
+
 const currentYear = computed(() => new Date().getFullYear());
 const isControllerLog = computed(() => selectedFile.value === "controller");
 
-const sortedRecords = computed(() => {
-  if (!sortKey.value || !records.value.length) return records.value;
+// 필터링된 레코드
+const filteredRecords = computed(() => {
+  if (isControllerLog.value) return records.value;
+  return records.value.filter((r) => typeFilters.value[r.type]);
+});
 
-  return [...records.value].sort((a, b) => {
+const sortedRecords = computed(() => {
+  if (!sortKey.value || !filteredRecords.value.length) return filteredRecords.value;
+
+  return [...filteredRecords.value].sort((a, b) => {
     let aVal = a[sortKey.value];
     let bVal = b[sortKey.value];
 
@@ -46,18 +66,12 @@ const sortedRecords = computed(() => {
   });
 });
 
-onMounted(async () => {
-  await loadFileList();
-});
-
-async function loadFileList() {
-  try {
-    const files = await fetchRecords();
-    recordFiles.value = ["controller", ...files];
-  } catch (e) {
-    notyf.error(`기록 목록을 불러오지 못했습니다.`);
+// 새 기록이 추가되면 자동으로 새로고침
+watch(lastUpdate, (update) => {
+  if (update && selectedFile.value && update.name === selectedFile.value) {
+    loadRecords();
   }
-}
+});
 
 async function loadRecords() {
   if (!selectedFile.value) return;
@@ -92,7 +106,6 @@ async function handleDelete() {
     notyf.success("기록이 삭제되었습니다.");
     selectedFile.value = null;
     records.value = [];
-    await loadFileList();
   } catch (e) {
     notyf.error(`삭제 실패: ${e.message}`);
   }
@@ -106,7 +119,7 @@ function downloadCSV() {
     headers = ["시간", "데이터"];
     rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
   } else {
-    headers = ["시간", "번호", "학교", "팀", "유형", "기록", "상세"];
+    headers = ["시간", "엔트리", "학교", "팀", "경기", "기록", "상세"];
     rows = sortedRecords.value.map((r) => [
       formatTime(r.time),
       r.num,
@@ -135,7 +148,7 @@ async function downloadXLSX() {
     headers = ["시간", "데이터"];
     rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
   } else {
-    headers = ["시간", "번호", "학교", "팀", "유형", "기록", "상세"];
+    headers = ["시간", "엔트리", "학교", "팀", "경기", "기록", "상세"];
     rows = sortedRecords.value.map((r) => [
       formatTime(r.time),
       r.num,
@@ -198,6 +211,11 @@ function formatTime(time) {
 
 function formatResult(result) {
   return msToClockStr(result);
+}
+
+function getTypeClass(type) {
+  const typeMap = { 가속: "accel", 짐카나: "gymkhana", 스키드패드: "skidpad" };
+  return typeMap[type] || type;
 }
 </script>
 
@@ -262,7 +280,21 @@ function formatResult(result) {
       <div class="table-header">
         <div class="table-title-area">
           <h2>{{ selectedFile || "기록" }}</h2>
-          <span v-if="records.length" class="entry-count">{{ records.length }}개</span>
+          <span v-if="filteredRecords.length" class="entry-count">{{ filteredRecords.length }}개</span>
+        </div>
+        <div v-if="records.length && !isControllerLog" class="type-filters">
+          <label class="filter-checkbox">
+            <input type="checkbox" v-model="typeFilters['가속']" />
+            <span class="filter-label accel">가속</span>
+          </label>
+          <label class="filter-checkbox">
+            <input type="checkbox" v-model="typeFilters['짐카나']" />
+            <span class="filter-label gymkhana">짐카나</span>
+          </label>
+          <label class="filter-checkbox">
+            <input type="checkbox" v-model="typeFilters['스키드패드']" />
+            <span class="filter-label skidpad">스키드패드</span>
+          </label>
         </div>
       </div>
 
@@ -300,7 +332,7 @@ function formatResult(result) {
                 시간 <span class="sort-icon">{{ getSortIcon("time") }}</span>
               </th>
               <th class="sortable" @click="handleSort('num')">
-                번호 <span class="sort-icon">{{ getSortIcon("num") }}</span>
+                엔트리 <span class="sort-icon">{{ getSortIcon("num") }}</span>
               </th>
               <th class="sortable" @click="handleSort('univ')">
                 학교 <span class="sort-icon">{{ getSortIcon("univ") }}</span>
@@ -309,7 +341,7 @@ function formatResult(result) {
                 팀 <span class="sort-icon">{{ getSortIcon("team") }}</span>
               </th>
               <th class="sortable" @click="handleSort('type')">
-                유형 <span class="sort-icon">{{ getSortIcon("type") }}</span>
+                경기 <span class="sort-icon">{{ getSortIcon("type") }}</span>
               </th>
               <th class="sortable" @click="handleSort('result')">
                 기록 <span class="sort-icon">{{ getSortIcon("result") }}</span>
@@ -328,7 +360,7 @@ function formatResult(result) {
               <td>{{ record.univ }}</td>
               <td>{{ record.team }}</td>
               <td>
-                <span class="type-badge" :class="record.type">{{ record.type }}</span>
+                <span class="type-badge" :class="getTypeClass(record.type)">{{ record.type }}</span>
               </td>
               <td class="result-cell">{{ formatResult(record.result) }}</td>
               <td class="detail-cell">{{ record.detail }}</td>
@@ -511,6 +543,46 @@ function formatResult(result) {
   padding: 0.25rem 0.625rem;
   border-radius: 12px;
   font-family: "JetBrains Mono", monospace;
+}
+
+.type-filters {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.filter-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  cursor: pointer;
+}
+
+.filter-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.filter-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+
+.filter-label.accel {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--accent-primary);
+}
+
+.filter-label.gymkhana {
+  background: rgba(139, 92, 246, 0.1);
+  color: var(--accent-secondary);
+}
+
+.filter-label.skidpad {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--accent-warning);
 }
 
 .loading-container {

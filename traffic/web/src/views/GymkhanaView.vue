@@ -24,6 +24,9 @@ async function onSensor({ sensor, tick, greenTick }) {
   serial.setSensorCooldown(sensor);
   displayRecords.value[sensor].push({ result, time: msToClockStr(result) });
 
+  // 첫 번째 측정은 무시 (두 번째 측정부터 저장)
+  if (displayRecords.value[sensor].length === 1) return;
+
   // 이미 저장된 경우 세션당 1회만 저장
   if (savedRecords.value[sensor]) return;
 
@@ -32,12 +35,13 @@ async function onSensor({ sensor, tick, greenTick }) {
     return;
   }
 
+  const firstRecord = displayRecords.value[sensor][0];
   const recordData = {
     time: new Date(),
-    type: "gymkhana",
+    type: "짐카나",
     entry: { num: entry.num, univ: entry.univ, team: entry.team },
     result,
-    detail: `레인 ${sensor}`,
+    detail: `레인 ${sensor} / ${firstRecord.result} ms delay`,
   };
 
   try {
@@ -208,7 +212,7 @@ function handleReset() {
               </option>
             </select>
           </div>
-          <button class="btn btn-warning btn-block" :disabled="!serial.records.length" @click="handleReset">
+          <button class="btn btn-warning btn-block" :disabled="!serial.records.length && !serial.green.active" @click="handleReset">
             초기화
           </button>
         </div>

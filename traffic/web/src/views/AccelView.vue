@@ -39,10 +39,10 @@ async function onSensor({ sensor, tick, greenTick }) {
 
     const recordData = {
       time: new Date(),
-      type: "accel",
+      type: "가속",
       entry: { num: entry.num, univ: entry.univ, team: entry.team },
       result,
-      detail: `${startRecord.value.tick - greenTick} ms delayed start`,
+      detail: `${startRecord.value.tick - greenTick} ms delay`,
     };
 
     try {
@@ -191,7 +191,7 @@ function handleReset() {
               </option>
             </select>
           </div>
-          <button class="btn btn-warning btn-block" :disabled="!serial.records.length" @click="handleReset">
+          <button class="btn btn-warning btn-block" :disabled="!serial.records.length && !serial.green.active" @click="handleReset">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
               <path d="M3 12a9 9 0 019-9 9.75 9.75 0 016.74 2.74L21 8" />
               <path d="M21 3v5h-5" />
@@ -515,16 +515,6 @@ function handleReset() {
   text-align: center;
   color: var(--text-tertiary);
   font-style: italic;
-}
-
-/* Saved */
-.saved-section .card-header {
-  background: rgba(16, 185, 129, 0.1);
-  border-color: rgba(16, 185, 129, 0.2);
-}
-
-.saved-section .card-header h3 {
-  color: var(--accent-success);
 }
 
 .saved-list {

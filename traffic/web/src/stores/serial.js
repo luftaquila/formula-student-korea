@@ -3,13 +3,13 @@ import { ref, computed } from "vue";
 import { useNotification } from "../composables/useNotification";
 import { addControllerLog } from "../composables/useApi";
 
-// Utility function for time formatting
+// Utility function for time formatting (분:초.밀리초, 분은 60 이상 가능)
 export function msToClockStr(ms) {
-  const hours = String(Math.floor(ms / (1000 * 60 * 60))).padStart(2, "0");
-  const minutes = String(Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60))).padStart(2, "0");
+  const totalMinutes = Math.floor(ms / (1000 * 60));
+  const minutes = String(totalMinutes).padStart(2, "0");
   const seconds = String(Math.floor((ms % (1000 * 60)) / 1000)).padStart(2, "0");
   const millis = String(ms % 1000).padStart(3, "0");
-  return `${hours}:${minutes}:${seconds}.${millis}`;
+  return `${minutes}:${seconds}.${millis}`;
 }
 
 export const useSerialStore = defineStore("serial", () => {

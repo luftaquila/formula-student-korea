@@ -13,7 +13,8 @@ const eventName = ref("");
 const selectedTeam = ref(null);
 const lapTimes = ref([]);
 const lastTick = ref(null);
-const savedLap = ref(null);
+const lap2Time = ref(null);
+const savedRecord = ref(null);
 
 async function onSensor({ sensor, tick, startTick }) {
   if (sensor !== 1) return;
@@ -34,25 +35,35 @@ async function onSensor({ sensor, tick, startTick }) {
   serial.setSensorCooldown(sensor);
   lapTimes.value.push({ lap: lapNumber, time: lapTime, display: msToClockStr(lapTime) });
 
-  // 자동 저장 조건: 이벤트 이름과 참가팀 모두 선택된 경우 + 세션당 1회만
-  if (!eventName.value.trim() || !entry || savedLap.value) {
+  // 자동 저장 조건: 이벤트 이름과 참가팀 모두 선택된 경우
+  if (!eventName.value.trim() || !entry) {
     return;
   }
 
-  const recordData = {
-    time: new Date(),
-    type: "skidpad",
-    entry: { num: entry.num, univ: entry.univ, team: entry.team },
-    result: lapTime,
-    detail: `Lap ${lapNumber}`,
-  };
+  // 랩 2: 시간만 저장해두고 실제 저장은 하지 않음
+  if (lapNumber === 2) {
+    lap2Time.value = lapTime;
+    return;
+  }
 
-  try {
-    await addRecord(eventName.value.trim(), recordData);
-    savedLap.value = { lap: lapNumber, time: lapTime, display: msToClockStr(lapTime) };
-    notyf.success(`Lap ${lapNumber} 저장: ${msToClockStr(lapTime)}`);
-  } catch (e) {
-    notyf.error(`기록 저장 실패: ${e.message}`);
+  // 랩 4: 랩 2와 합쳐서 저장
+  if (lapNumber === 4 && lap2Time.value !== null && !savedRecord.value) {
+    const totalTime = lap2Time.value + lapTime;
+    const recordData = {
+      time: new Date(),
+      type: "스키드패드",
+      entry: { num: entry.num, univ: entry.univ, team: entry.team },
+      result: totalTime,
+      detail: `${msToClockStr(lap2Time.value)} / ${msToClockStr(lapTime)}`,
+    };
+
+    try {
+      await addRecord(eventName.value.trim(), recordData);
+      savedRecord.value = { total: totalTime, lap2: lap2Time.value, lap4: lapTime };
+      notyf.success(`스키드패드 저장: ${msToClockStr(totalTime)}`);
+    } catch (e) {
+      notyf.error(`기록 저장 실패: ${e.message}`);
+    }
   }
 }
 
@@ -81,7 +92,8 @@ function handleGreen() {
   }
   lapTimes.value = [];
   lastTick.value = null;
-  savedLap.value = null;
+  lap2Time.value = null;
+  savedRecord.value = null;
   serial.sendGreen();
 }
 function handleRed() {
@@ -93,7 +105,8 @@ function handleOff() {
 function handleReset() {
   lapTimes.value = [];
   lastTick.value = null;
-  savedLap.value = null;
+  lap2Time.value = null;
+  savedRecord.value = null;
   serial.reset();
 }
 </script>
@@ -188,7 +201,7 @@ function handleReset() {
               </option>
             </select>
           </div>
-          <button class="btn btn-warning btn-block" :disabled="!serial.records.length" @click="handleReset">
+          <button class="btn btn-warning btn-block" :disabled="!serial.records.length && !serial.green.active" @click="handleReset">
             초기화
           </button>
         </div>
@@ -226,10 +239,10 @@ function handleReset() {
               v-for="lap in lapTimes"
               :key="lap.lap"
               class="lap-item"
-              :class="{ 'is-saved': savedLap && savedLap.lap === lap.lap }"
+              :class="{ 'is-saved': savedRecord && (lap.lap === 2 || lap.lap === 4) }"
             >
               <span class="lap-number"
-                >Lap {{ lap.lap }} <span v-if="savedLap && savedLap.lap === lap.lap">💾</span></span
+                >Lap {{ lap.lap }} <span v-if="savedRecord && (lap.lap === 2 || lap.lap === 4)">💾</span></span
               >
               <span class="lap-time">{{ lap.display }}</span>
             </div>

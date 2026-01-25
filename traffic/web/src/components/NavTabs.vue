@@ -18,14 +18,9 @@ const navItems = [
     <router-link
       v-for="item in navItems"
       :key="item.id"
-      :to="item.path"
+      :to="serial.green.active ? route.path : item.path"
       class="nav-tab"
       :class="{ active: route.path === item.path, disabled: serial.green.active }"
-      @click="
-        (e) => {
-          if (serial.green.active) e.preventDefault();
-        }
-      "
     >
       {{ item.label }}
     </router-link>
