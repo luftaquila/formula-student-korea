@@ -96,6 +96,28 @@ function handleReset() {
   displayRecord.value = null;
   serial.reset();
 }
+
+async function handleDNF() {
+  const entry = selectedEntry.value;
+  if (!eventName.value.trim() || !entry) {
+    notyf.error("이벤트 이름과 팀을 선택해주세요.");
+    return;
+  }
+
+  const recordData = {
+    time: new Date(),
+    type: "가속",
+    entry: { num: entry.num, univ: entry.univ, team: entry.team },
+    result: -1,
+  };
+
+  try {
+    await addRecord(eventName.value.trim(), recordData);
+    notyf.success("DNF 기록 저장");
+  } catch (e) {
+    notyf.error(`DNF 저장 실패: ${e.message}`);
+  }
+}
 </script>
 
 <template>
@@ -191,7 +213,10 @@ function handleReset() {
               </option>
             </select>
           </div>
-          <button class="btn btn-warning btn-block" :disabled="!serial.records.length && !serial.green.active" @click="handleReset">
+          <button class="btn btn-danger btn-block" :disabled="!canAutoSave || (!serial.records.length && !serial.green.active)" @click="handleDNF">
+            DNF
+          </button>
+          <button class="btn btn-warning btn-block mt-1" :disabled="!serial.records.length && !serial.green.active" @click="handleReset">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
               <path d="M3 12a9 9 0 019-9 9.75 9.75 0 016.74 2.74L21 8" />
               <path d="M21 3v5h-5" />
@@ -409,6 +434,10 @@ function handleReset() {
 
 .btn-group .btn {
   flex: 1;
+}
+
+.mt-1 {
+  margin-top: 0.5rem;
 }
 
 /* Monitor */

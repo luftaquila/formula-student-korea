@@ -109,6 +109,28 @@ function handleReset() {
   savedRecord.value = null;
   serial.reset();
 }
+
+async function handleDNF() {
+  const entry = selectedEntry.value;
+  if (!eventName.value.trim() || !entry) {
+    notyf.error("이벤트 이름과 팀을 선택해주세요.");
+    return;
+  }
+
+  const recordData = {
+    time: new Date(),
+    type: "스키드패드",
+    entry: { num: entry.num, univ: entry.univ, team: entry.team },
+    result: -1,
+  };
+
+  try {
+    await addRecord(eventName.value.trim(), recordData);
+    notyf.success("DNF 기록 저장");
+  } catch (e) {
+    notyf.error(`DNF 저장 실패: ${e.message}`);
+  }
+}
 </script>
 
 <template>
@@ -201,7 +223,10 @@ function handleReset() {
               </option>
             </select>
           </div>
-          <button class="btn btn-warning btn-block" :disabled="!serial.records.length && !serial.green.active" @click="handleReset">
+          <button class="btn btn-danger btn-block" :disabled="!canAutoSave || (!serial.records.length && !serial.green.active)" @click="handleDNF">
+            DNF
+          </button>
+          <button class="btn btn-warning btn-block mt-1" :disabled="!serial.records.length && !serial.green.active" @click="handleReset">
             초기화
           </button>
         </div>
@@ -390,6 +415,10 @@ function handleReset() {
 }
 .btn-group .btn {
   flex: 1;
+}
+
+.mt-1 {
+  margin-top: 0.5rem;
 }
 
 .monitor-header {

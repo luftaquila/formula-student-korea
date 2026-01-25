@@ -210,6 +210,7 @@ function formatTime(time) {
 }
 
 function formatResult(result) {
+  if (result < 0) return "DNF";
   return msToClockStr(result);
 }
 
@@ -331,7 +332,7 @@ function getTypeClass(type) {
               <th class="sortable" @click="handleSort('time')">
                 시간 <span class="sort-icon">{{ getSortIcon("time") }}</span>
               </th>
-              <th class="sortable" @click="handleSort('num')">
+              <th class="sortable center" @click="handleSort('num')">
                 엔트리 <span class="sort-icon">{{ getSortIcon("num") }}</span>
               </th>
               <th class="sortable" @click="handleSort('univ')">
@@ -340,10 +341,10 @@ function getTypeClass(type) {
               <th class="sortable" @click="handleSort('team')">
                 팀 <span class="sort-icon">{{ getSortIcon("team") }}</span>
               </th>
-              <th class="sortable" @click="handleSort('type')">
+              <th class="sortable center" @click="handleSort('type')">
                 경기 <span class="sort-icon">{{ getSortIcon("type") }}</span>
               </th>
-              <th class="sortable" @click="handleSort('result')">
+              <th class="sortable center" @click="handleSort('result')">
                 기록 <span class="sort-icon">{{ getSortIcon("result") }}</span>
               </th>
               <th class="sortable" @click="handleSort('detail')">
@@ -354,15 +355,15 @@ function getTypeClass(type) {
           <tbody>
             <tr v-for="(record, index) in sortedRecords" :key="index">
               <td class="time-cell">{{ formatTime(record.time) }}</td>
-              <td>
+              <td class="center">
                 <span class="entry-number">{{ record.num }}</span>
               </td>
               <td>{{ record.univ }}</td>
               <td>{{ record.team }}</td>
-              <td>
+              <td class="center">
                 <span class="type-badge" :class="getTypeClass(record.type)">{{ record.type }}</span>
               </td>
-              <td class="result-cell">{{ formatResult(record.result) }}</td>
+              <td class="result-cell center" :class="{ 'is-dnf': record.result < 0 }">{{ formatResult(record.result) }}</td>
               <td class="detail-cell">{{ record.detail }}</td>
             </tr>
           </tbody>
@@ -630,6 +631,11 @@ function getTypeClass(type) {
   white-space: nowrap;
 }
 
+.data-table th.center,
+.data-table td.center {
+  text-align: center;
+}
+
 .data-table th.sortable {
   cursor: pointer;
   user-select: none;
@@ -708,6 +714,10 @@ function getTypeClass(type) {
   font-family: "JetBrains Mono", monospace;
   font-weight: 700;
   color: var(--accent-success);
+}
+
+.result-cell.is-dnf {
+  color: var(--accent-danger);
 }
 
 .detail-cell {

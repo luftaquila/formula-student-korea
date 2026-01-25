@@ -108,6 +108,28 @@ function handleReset() {
   displayRecords.value = { 1: [], 2: [] };
   serial.reset();
 }
+
+async function handleDNF(lane) {
+  const entry = lane === 1 ? entry1.value : entry2.value;
+  if (!eventName.value.trim() || !entry) {
+    notyf.error("이벤트 이름과 해당 레인의 팀을 선택해주세요.");
+    return;
+  }
+
+  const recordData = {
+    time: new Date(),
+    type: "짐카나",
+    entry: { num: entry.num, univ: entry.univ, team: entry.team },
+    result: -1,
+  };
+
+  try {
+    await addRecord(eventName.value.trim(), recordData);
+    notyf.success(`${lane}번 레인 DNF 기록 저장`);
+  } catch (e) {
+    notyf.error(`DNF 저장 실패: ${e.message}`);
+  }
+}
 </script>
 
 <template>
@@ -212,7 +234,15 @@ function handleReset() {
               </option>
             </select>
           </div>
-          <button class="btn btn-warning btn-block" :disabled="!serial.records.length && !serial.green.active" @click="handleReset">
+          <div class="btn-group">
+            <button class="btn btn-danger" :disabled="!eventName.trim() || !selectedTeamLane1 || (!serial.records.length && !serial.green.active)" @click="handleDNF(1)">
+              1번 DNF
+            </button>
+            <button class="btn btn-danger" :disabled="!eventName.trim() || !selectedTeamLane2 || (!serial.records.length && !serial.green.active)" @click="handleDNF(2)">
+              2번 DNF
+            </button>
+          </div>
+          <button class="btn btn-warning btn-block mt-1" :disabled="!serial.records.length && !serial.green.active" @click="handleReset">
             초기화
           </button>
         </div>
@@ -406,6 +436,10 @@ function handleReset() {
 }
 .btn-group .btn {
   flex: 1;
+}
+
+.mt-1 {
+  margin-top: 0.5rem;
 }
 
 .monitor-header {
