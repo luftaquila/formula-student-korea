@@ -16,7 +16,7 @@ const EVENT_TYPES = ["가속", "짐카나", "스키드패드"];
 
 // Generate unique key for a record
 function getRecordKey(record) {
-  return `${record.entry}-${record.type}-${record.time}-${record.result}`;
+  return `${record.num}-${record.type}-${record.time}-${record.result}`;
 }
 
 // Fetch records when file changes
@@ -109,7 +109,7 @@ function formatKoreanTime(dateString) {
 function isBestRecord(record) {
   const best = bestRecords.value[record.type];
   if (!best) return false;
-  return best.entry === record.entry && best.result === record.result && best.time === record.time;
+  return best.num === record.num && best.result === record.result && best.time === record.time;
 }
 
 // Format result time as MM:SS.mmm or SS.mmm
@@ -206,7 +206,7 @@ onUnmounted(() => {
           <section class="best-section" v-if="availableTypes.length > 0">
             <div class="best-grid" :class="`cols-${availableTypes.length}`">
               <div v-for="type in availableTypes" :key="type" class="best-card">
-                <div class="best-type">{{ type }}</div>
+                <div class="best-type">{{ type }} 최고 기록</div>
                 <template v-if="bestRecords[type]">
                   <div class="best-info">
                     <div class="best-univ">{{ bestRecords[type].univ }}</div>
@@ -240,7 +240,7 @@ onUnmounted(() => {
                     }"
                   >
                     <td>{{ formatKoreanTime(record.time) }}</td>
-                    <td class="mono">{{ record.entry }}</td>
+                    <td class="mono col-entry">{{ record.num }}</td>
                     <td>{{ record.univ }} {{ record.team }}</td>
                     <td class="col-type">{{ record.type }}</td>
                     <td class="mono record-result col-result">{{ formatResult(record.result) }}</td>
@@ -562,6 +562,7 @@ onUnmounted(() => {
   }
 }
 
+.col-entry,
 .col-type,
 .col-result {
   text-align: center !important;
