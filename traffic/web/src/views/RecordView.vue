@@ -1,6 +1,12 @@
 <script setup>
 import { ref, computed, watch, onMounted } from "vue";
-import { fetchRecord, fetchControllers, deleteRecord, deleteControllers, invalidateRecord } from "../composables/useApi";
+import {
+  fetchRecord,
+  fetchControllers,
+  deleteRecord,
+  deleteControllers,
+  invalidateRecord,
+} from "../composables/useApi";
 import { useNotification } from "../composables/useNotification";
 import { useSSE } from "../composables/useSSE";
 import { msToClockStr } from "../stores/serial";
@@ -372,7 +378,11 @@ async function handleInvalidate(record) {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(record, index) in sortedRecords" :key="record.rowid" :class="{ 'is-invalidated': record.invalidated }">
+            <tr
+              v-for="(record, index) in sortedRecords"
+              :key="record.rowid"
+              :class="{ 'is-invalidated': record.invalidated }"
+            >
               <td class="time-cell">{{ formatTime(record.time) }}</td>
               <td class="center">
                 <span class="entry-number">{{ record.num }}</span>
@@ -382,7 +392,9 @@ async function handleInvalidate(record) {
               <td class="center">
                 <span class="type-badge" :class="getTypeClass(record.type)">{{ record.type }}</span>
               </td>
-              <td class="result-cell center" :class="{ 'is-dnf': record.result < 0 }">{{ formatResult(record.result) }}</td>
+              <td class="result-cell center" :class="{ 'is-dnf': record.result < 0 }">
+                {{ formatResult(record.result) }}
+              </td>
               <td class="detail-cell">{{ record.detail }}</td>
               <td class="center">
                 <button

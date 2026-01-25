@@ -213,10 +213,18 @@ async function handleDNF() {
               </option>
             </select>
           </div>
-          <button class="btn btn-danger btn-block" :disabled="!canAutoSave || (!serial.records.length && !serial.green.active)" @click="handleDNF">
+          <button
+            class="btn btn-danger btn-block"
+            :disabled="!canAutoSave || (!serial.records.length && !serial.green.active)"
+            @click="handleDNF"
+          >
             DNF
           </button>
-          <button class="btn btn-warning btn-block mt-1" :disabled="!serial.records.length && !serial.green.active" @click="handleReset">
+          <button
+            class="btn btn-warning btn-block mt-1"
+            :disabled="!serial.records.length && !serial.green.active"
+            @click="handleReset"
+          >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
               <path d="M3 12a9 9 0 019-9 9.75 9.75 0 016.74 2.74L21 8" />
               <path d="M21 3v5h-5" />

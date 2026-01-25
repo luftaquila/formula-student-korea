@@ -223,10 +223,18 @@ async function handleDNF() {
               </option>
             </select>
           </div>
-          <button class="btn btn-danger btn-block" :disabled="!canAutoSave || (!serial.records.length && !serial.green.active)" @click="handleDNF">
+          <button
+            class="btn btn-danger btn-block"
+            :disabled="!canAutoSave || (!serial.records.length && !serial.green.active)"
+            @click="handleDNF"
+          >
             DNF
           </button>
-          <button class="btn btn-warning btn-block mt-1" :disabled="!serial.records.length && !serial.green.active" @click="handleReset">
+          <button
+            class="btn btn-warning btn-block mt-1"
+            :disabled="!serial.records.length && !serial.green.active"
+            @click="handleReset"
+          >
             초기화
           </button>
         </div>

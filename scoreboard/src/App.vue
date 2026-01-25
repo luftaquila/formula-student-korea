@@ -33,9 +33,7 @@ async function loadRecords(isUpdate = false) {
     // Detect new records on SSE update
     if (isUpdate && records.value.length > 0) {
       const oldKeys = new Set(records.value.map(getRecordKey));
-      const newKeys = data
-        .filter(r => !oldKeys.has(getRecordKey(r)))
-        .map(getRecordKey);
+      const newKeys = data.filter((r) => !oldKeys.has(getRecordKey(r))).map(getRecordKey);
 
       if (newKeys.length > 0) {
         newRecordKeys.value = new Set(newKeys);
@@ -111,9 +109,7 @@ function formatKoreanTime(dateString) {
 function isBestRecord(record) {
   const best = bestRecords.value[record.type];
   if (!best) return false;
-  return best.entry === record.entry &&
-         best.result === record.result &&
-         best.time === record.time;
+  return best.entry === record.entry && best.result === record.result && best.time === record.time;
 }
 
 // Format result time as MM:SS.mmm or SS.mmm
@@ -234,7 +230,15 @@ onUnmounted(() => {
             <div class="recent-table-wrapper">
               <table class="recent-table">
                 <tbody>
-                  <tr v-for="record in recentRecords" :key="getRecordKey(record)" :class="{ dnf: record.result < 0, 'best-row': isBestRecord(record), 'new-record': isNewRecord(record) }">
+                  <tr
+                    v-for="record in recentRecords"
+                    :key="getRecordKey(record)"
+                    :class="{
+                      dnf: record.result < 0,
+                      'best-row': isBestRecord(record),
+                      'new-record': isNewRecord(record),
+                    }"
+                  >
                     <td>{{ formatKoreanTime(record.time) }}</td>
                     <td class="mono">{{ record.entry }}</td>
                     <td>{{ record.univ }} {{ record.team }}</td>
@@ -248,9 +252,7 @@ onUnmounted(() => {
         </div>
 
         <!-- Exit fullscreen hint -->
-        <div v-if="isFullscreen" class="fullscreen-hint">
-          ESC를 눌러 전체화면 종료
-        </div>
+        <div v-if="isFullscreen" class="fullscreen-hint">ESC를 눌러 전체화면 종료</div>
       </div>
     </main>
   </div>

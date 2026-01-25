@@ -235,14 +235,26 @@ async function handleDNF(lane) {
             </select>
           </div>
           <div class="btn-group">
-            <button class="btn btn-danger" :disabled="!eventName.trim() || !selectedTeamLane1 || (!serial.records.length && !serial.green.active)" @click="handleDNF(1)">
+            <button
+              class="btn btn-danger"
+              :disabled="!eventName.trim() || !selectedTeamLane1 || (!serial.records.length && !serial.green.active)"
+              @click="handleDNF(1)"
+            >
               1번 DNF
             </button>
-            <button class="btn btn-danger" :disabled="!eventName.trim() || !selectedTeamLane2 || (!serial.records.length && !serial.green.active)" @click="handleDNF(2)">
+            <button
+              class="btn btn-danger"
+              :disabled="!eventName.trim() || !selectedTeamLane2 || (!serial.records.length && !serial.green.active)"
+              @click="handleDNF(2)"
+            >
               2번 DNF
             </button>
           </div>
-          <button class="btn btn-warning btn-block mt-1" :disabled="!serial.records.length && !serial.green.active" @click="handleReset">
+          <button
+            class="btn btn-warning btn-block mt-1"
+            :disabled="!serial.records.length && !serial.green.active"
+            @click="handleReset"
+          >
             초기화
           </button>
         </div>
