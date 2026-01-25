@@ -70,17 +70,23 @@ services:
     networks:
       - fsk-network
 
+  # Production (default) - use traefik reverse proxy
   nginx:
-    build:
+    build: &nginx-build
       context: .
       dockerfile: landing/Dockerfile
     container_name: fsk-nginx
-    ports:
-      - "9000:9000"
-    volumes:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.fsk.rule=Host(`${DOMAIN_NAME}`)"
+      - "traefik.http.routers.fsk.entrypoints=websecure"
+      - "traefik.http.routers.fsk.tls=true"
+      - "traefik.http.routers.fsk.tls.certresolver=le"
+      - "traefik.http.services.fsk.loadbalancer.server.port=9000"
+    volumes: &nginx-volumes
       - ./.htpasswd.admin:/etc/nginx/.htpasswd.admin:ro
       - ./.htpasswd.official:/etc/nginx/.htpasswd.official:ro
-    depends_on:
+    depends_on: &nginx-depends
       - entry
       - traffic
       - energymeter
@@ -88,9 +94,28 @@ services:
       - queue
       - rules
     restart: unless-stopped
+    env_file:
+      - .env
+    networks:
+      - fsk-network
+      - traefik
+
+  # Local development - expose port 9000
+  nginx-local:
+    build: *nginx-build
+    container_name: fsk-nginx-local
+    profiles:
+      - local
+    ports:
+      - "9000:9000"
+    volumes: *nginx-volumes
+    depends_on: *nginx-depends
+    restart: unless-stopped
     networks:
       - fsk-network
 
 networks:
   fsk-network:
     driver: bridge
+  traefik:
+    external: true

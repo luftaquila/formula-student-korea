@@ -37,8 +37,25 @@ Note: Admin users should be added to both files.
 
 ### Run
 
+#### Production (Traefik)
+
+By default, the service is configured to use Traefik reverse proxy. Set `DOMAIN_NAME` in `.env` file.
+
+```bash
+# .env
+DOMAIN_NAME=fsk.example.com
+```
+
 ```bash
 docker compose up -d
+```
+
+#### Local Development
+
+Use `--profile local` to expose port 9000 directly.
+
+```bash
+docker compose --profile local up -d
 ```
 
 The service will be available at `http://localhost:9000`.
