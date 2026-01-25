@@ -69,17 +69,22 @@ watch(lastUpdate, (update) => {
   }
 });
 
-// Get available event types from current records
+// 유효한 기록만 필터링 (무효화되지 않은 기록)
+const validRecords = computed(() => {
+  return records.value.filter((r) => !r.invalidated);
+});
+
+// Get available event types from current valid records
 const availableTypes = computed(() => {
-  const types = new Set(records.value.map((r) => r.type));
+  const types = new Set(validRecords.value.map((r) => r.type));
   return EVENT_TYPES.filter((t) => types.has(t));
 });
 
-// Best records by event type (result > 0, minimum value)
+// Best records by event type (result > 0, minimum value, not invalidated)
 const bestRecords = computed(() => {
   const best = {};
   availableTypes.value.forEach((type) => {
-    const valid = records.value.filter((r) => r.type === type && r.result > 0);
+    const valid = validRecords.value.filter((r) => r.type === type && r.result > 0);
     if (valid.length) {
       best[type] = valid.reduce((a, b) => (a.result < b.result ? a : b));
     }
@@ -87,9 +92,9 @@ const bestRecords = computed(() => {
   return best;
 });
 
-// Recent records sorted by time (newest first)
+// Recent records sorted by time (newest first, not invalidated)
 const recentRecords = computed(() => {
-  return [...records.value].sort((a, b) => new Date(b.time) - new Date(a.time));
+  return [...validRecords.value].sort((a, b) => new Date(b.time) - new Date(a.time));
 });
 
 // Format time as "오후 2시 30분"

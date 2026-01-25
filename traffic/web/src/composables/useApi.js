@@ -100,6 +100,16 @@ export async function deleteRecord(name) {
   });
 }
 
+/**
+ * 기록 무효화 토글
+ */
+export async function invalidateRecord(name, rowid) {
+  const res = await request(`/api/records/${encodeURIComponent(name)}/${rowid}`, {
+    method: "PATCH",
+  });
+  return res.json();
+}
+
 /* ============================================
    Controller API
    ============================================ */

@@ -232,7 +232,14 @@ app.get("/api/records/:name", (req, res) => {
 
   const name = decodeURIComponent(validation.value);
 
-  const result = dbRun(() => db.prepare(`SELECT * FROM '${name}'`).all());
+  const result = dbRun(() => {
+    // 기존 테이블에 invalidated 컬럼이 없으면 추가
+    const columns = db.prepare(`PRAGMA table_info('${name}')`).all();
+    if (!columns.some((c) => c.name === "invalidated")) {
+      db.exec(`ALTER TABLE '${name}' ADD COLUMN invalidated INTEGER DEFAULT 0`);
+    }
+    return db.prepare(`SELECT rowid, * FROM '${name}'`).all();
+  });
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
@@ -268,8 +275,15 @@ app.post("/api/records", (req, res) => {
           team TEXT NOT NULL,
           type TEXT NOT NULL,
           result INTEGER NOT NULL,
-          detail TEXT
+          detail TEXT,
+          invalidated INTEGER DEFAULT 0
         );`);
+      } else {
+        // 기존 테이블에 invalidated 컬럼이 없으면 추가
+        const columns = db.prepare(`PRAGMA table_info('${name}')`).all();
+        if (!columns.some((c) => c.name === "invalidated")) {
+          db.exec(`ALTER TABLE '${name}' ADD COLUMN invalidated INTEGER DEFAULT 0`);
+        }
       }
 
       db.prepare(
@@ -286,6 +300,43 @@ app.post("/api/records", (req, res) => {
   broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles() });
 
   res.status(201).send();
+});
+
+// PATCH /api/records/:name/:rowid - 기록 무효화 토글
+app.patch("/api/records/:name/:rowid", (req, res) => {
+  const validation = validateRecordName(req.params.name);
+  if (!validation.valid) {
+    return res.status(400).send(validation.error);
+  }
+
+  const name = decodeURIComponent(validation.value);
+  const rowid = parseInt(req.params.rowid, 10);
+
+  if (isNaN(rowid)) {
+    return res.status(400).send("올바르지 않은 rowid입니다.");
+  }
+
+  const result = dbRun(() => {
+    // 현재 상태 조회
+    const row = db.prepare(`SELECT invalidated FROM '${name}' WHERE rowid = ?`).get(rowid);
+    if (!row) {
+      throw new Error("기록을 찾을 수 없습니다.");
+    }
+
+    // 무효화 상태 토글
+    const newStatus = row.invalidated ? 0 : 1;
+    db.prepare(`UPDATE '${name}' SET invalidated = ? WHERE rowid = ?`).run(newStatus, rowid);
+    return { invalidated: newStatus };
+  });
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  // SSE 브로드캐스트
+  broadcastEvent("records", { type: "update", name, recordFiles: getRecordFiles() });
+
+  res.json(result.result);
 });
 
 // DELETE /api/records/:name - 기록 테이블 삭제

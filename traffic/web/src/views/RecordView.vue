@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch, onMounted } from "vue";
-import { fetchRecord, fetchControllers, deleteRecord, deleteControllers } from "../composables/useApi";
+import { fetchRecord, fetchControllers, deleteRecord, deleteControllers, invalidateRecord } from "../composables/useApi";
 import { useNotification } from "../composables/useNotification";
 import { useSSE } from "../composables/useSSE";
 import { msToClockStr } from "../stores/serial";
@@ -234,6 +234,20 @@ function getTypeClass(type) {
   const typeMap = { 가속: "accel", 짐카나: "gymkhana", 스키드패드: "skidpad" };
   return typeMap[type] || type;
 }
+
+async function handleInvalidate(record) {
+  try {
+    const result = await invalidateRecord(selectedFile.value, record.rowid);
+    // 로컬 상태 업데이트
+    const idx = records.value.findIndex((r) => r.rowid === record.rowid);
+    if (idx !== -1) {
+      records.value[idx].invalidated = result.invalidated;
+    }
+    notyf.success(result.invalidated ? "기록이 무효화되었습니다." : "기록이 복원되었습니다.");
+  } catch (e) {
+    notyf.error(`무효화 실패: ${e.message}`);
+  }
+}
 </script>
 
 <template>
@@ -354,10 +368,11 @@ function getTypeClass(type) {
               <th class="sortable" @click="handleSort('detail')">
                 상세 <span class="sort-icon">{{ getSortIcon("detail") }}</span>
               </th>
+              <th class="center">무효화</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(record, index) in sortedRecords" :key="index">
+            <tr v-for="(record, index) in sortedRecords" :key="record.rowid" :class="{ 'is-invalidated': record.invalidated }">
               <td class="time-cell">{{ formatTime(record.time) }}</td>
               <td class="center">
                 <span class="entry-number">{{ record.num }}</span>
@@ -369,6 +384,19 @@ function getTypeClass(type) {
               </td>
               <td class="result-cell center" :class="{ 'is-dnf': record.result < 0 }">{{ formatResult(record.result) }}</td>
               <td class="detail-cell">{{ record.detail }}</td>
+              <td class="center">
+                <button
+                  class="btn-invalidate"
+                  :class="{ active: record.invalidated }"
+                  @click="handleInvalidate(record)"
+                  :title="record.invalidated ? '복원' : '무효화'"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                  </svg>
+                </button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -689,6 +717,58 @@ function getTypeClass(type) {
 .detail-cell {
   color: var(--text-primary);
   font-size: 0.875rem;
+}
+
+/* 무효화된 행 스타일 */
+.data-table tbody tr.is-invalidated {
+  opacity: 0.4;
+}
+
+.data-table tbody tr.is-invalidated td {
+  text-decoration: line-through;
+  text-decoration-color: var(--text-tertiary);
+}
+
+.data-table tbody tr.is-invalidated .btn-invalidate {
+  text-decoration: none;
+}
+
+/* 무효화 버튼 */
+.btn-invalidate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-invalidate svg {
+  width: 16px;
+  height: 16px;
+}
+
+.btn-invalidate:hover {
+  background: var(--bg-hover);
+  color: var(--accent-danger);
+  border-color: var(--accent-danger);
+}
+
+.btn-invalidate.active {
+  background: var(--accent-danger);
+  color: white;
+  border-color: var(--accent-danger);
+}
+
+.btn-invalidate.active:hover {
+  background: var(--accent-success);
+  border-color: var(--accent-success);
 }
 
 .controller-data {
