@@ -1,0 +1,22 @@
+{
+  "name": "fsk-scoreboard",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build --mode production && npm run copy-assets",
+    "build:dev": "vite build --mode development && npm run copy-assets",
+    "copy-assets": "node -e \"require('fs').copyFileSync('favicon.ico', 'dist/favicon.ico')\"",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "notyf": "^3.10.0",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.26"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.3",
+    "vite": "^7.3.0"
+  }
+}
