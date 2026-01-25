@@ -125,7 +125,7 @@ function clearState(message) {
       <!-- Query Section -->
       <div class="card query-card">
         <div class="card-header">
-          <h3>🔍 내 순번 조회</h3>
+          <h3>🔍 대기 순번 조회</h3>
         </div>
         <div class="card-body">
           <div class="form-group">
@@ -172,16 +172,16 @@ function clearState(message) {
       <!-- Result Section -->
       <div class="card result-card">
         <div class="card-header">
-          <h3>📋 조회 결과</h3>
+          <h3>📋 실시간 대기 순번</h3>
         </div>
-        <div class="card-body">
-          <div class="result-row">
-            <span class="result-label">검차</span>
-            <span class="result-value">{{ queueName }}</span>
-          </div>
-          <div class="result-row">
-            <span class="result-label">순번</span>
-            <span class="result-value highlight">{{ rank }}</span>
+        <div class="card-body result-body">
+          <div class="result-display">
+            <template v-if="queueName !== '-'">
+              <span>{{ queueName }} 검차</span>
+              <span class="result-rank">{{ rank }}</span>
+              <span>번</span>
+            </template>
+            <span v-else>-</span>
           </div>
         </div>
       </div>
@@ -190,7 +190,7 @@ function clearState(message) {
     <!-- Active Queues -->
     <div class="card queues-card">
       <div class="card-header">
-        <h3>🛎️ 실시간 대기열 현황</h3>
+        <h3>🛎️ 전체 대기열 현황</h3>
       </div>
       <div class="card-body">
         <div v-if="loading" class="loading">
@@ -264,6 +264,10 @@ function clearState(message) {
   text-align: center;
 }
 
+.input-col.flex-1 .form-input {
+  text-align: center;
+}
+
 /* Hide number input spinners */
 .entry-input::-webkit-outer-spin-button,
 .entry-input::-webkit-inner-spin-button {
@@ -299,32 +303,30 @@ function clearState(message) {
   visibility: hidden;
 }
 
-.result-row {
+.result-card {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
+}
+
+.result-body {
+  flex: 1;
+  display: flex;
   align-items: center;
-  padding: 1rem 0;
-  border-bottom: 1px solid var(--border-color);
+  justify-content: center;
+  padding: 0.75rem 1rem;
 }
 
-.result-row:last-child {
-  border-bottom: none;
-}
-
-.result-label {
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.result-value {
+.result-display {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
   font-size: 1.25rem;
   font-weight: 600;
-  font-family: "JetBrains Mono", monospace;
 }
 
-.result-value.highlight {
+.result-rank {
   color: var(--accent-primary);
-  font-size: 1.5rem;
+  margin-left: 0.5rem;
 }
 
 .loading {
