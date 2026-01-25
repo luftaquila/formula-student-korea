@@ -66,13 +66,29 @@ const sortedRecords = computed(() => {
   });
 });
 
-// 새 기록이 추가되면 자동으로 새로고침
+// 새 기록이 추가되면 자동으로 새로고침 (정렬 상태 유지)
 watch(lastUpdate, (update) => {
   if (update && selectedFile.value && update.name === selectedFile.value) {
-    loadRecords();
+    refreshRecords();
   }
 });
 
+// 새 기록 추가 시 데이터만 갱신 (정렬 상태 유지)
+async function refreshRecords() {
+  if (!selectedFile.value) return;
+
+  try {
+    if (selectedFile.value === "controller") {
+      records.value = await fetchControllers();
+    } else {
+      records.value = await fetchRecord(selectedFile.value);
+    }
+  } catch (e) {
+    notyf.error(`기록을 불러오지 못했습니다.`);
+  }
+}
+
+// 파일 선택 시 데이터 로드 (정렬 상태 초기화)
 async function loadRecords() {
   if (!selectedFile.value) return;
 
@@ -222,62 +238,50 @@ function getTypeClass(type) {
 
 <template>
   <div class="page-layout">
-    <aside class="sidebar">
-      <div class="card">
-        <div class="card-header">
-          <h3>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
-              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-              <line x1="16" y1="13" x2="8" y2="13" />
-              <line x1="16" y1="17" x2="8" y2="17" />
-            </svg>
-            기록 파일 선택
-          </h3>
+    <section class="content">
+      <!-- 파일 선택 툴바 -->
+      <div class="file-toolbar">
+        <div class="toolbar-left">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="toolbar-icon">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="16" y1="13" x2="8" y2="13" />
+            <line x1="16" y1="17" x2="8" y2="17" />
+          </svg>
+          <select v-model="selectedFile" class="form-select" @change="loadRecords">
+            <option disabled :value="null">파일을 선택하세요</option>
+            <option v-for="file in recordFiles" :key="file" :value="file">{{ file }}</option>
+          </select>
         </div>
-        <div class="card-body">
-          <div class="form-group">
-            <label class="form-label">기록 파일</label>
-            <select v-model="selectedFile" class="form-input" @change="loadRecords">
-              <option disabled :value="null">파일을 선택하세요</option>
-              <option v-for="file in recordFiles" :key="file" :value="file">{{ file }}</option>
-            </select>
-          </div>
-
-          <div v-if="records.length" class="action-buttons">
-            <div class="btn-row">
-              <button class="btn btn-secondary" @click="downloadCSV" title="CSV 다운로드">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-                  <polyline points="7 10 12 15 17 10" />
-                  <line x1="12" y1="15" x2="12" y2="3" />
-                </svg>
-                CSV
-              </button>
-              <button class="btn btn-secondary" @click="downloadXLSX" title="Excel 다운로드">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-                  <polyline points="7 10 12 15 17 10" />
-                  <line x1="12" y1="15" x2="12" y2="3" />
-                </svg>
-                XLSX
-              </button>
-            </div>
-            <button class="btn btn-danger btn-block" @click="handleDelete">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-                <line x1="10" y1="11" x2="10" y2="17" />
-                <line x1="14" y1="11" x2="14" y2="17" />
-              </svg>
-              삭제
-            </button>
-          </div>
+        <div v-if="records.length" class="toolbar-right">
+          <button class="btn btn-secondary" @click="downloadCSV" title="CSV 다운로드">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            CSV
+          </button>
+          <button class="btn btn-secondary" @click="downloadXLSX" title="Excel 다운로드">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            XLSX
+          </button>
+          <button class="btn btn-danger" @click="handleDelete">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+              <line x1="10" y1="11" x2="10" y2="17" />
+              <line x1="14" y1="11" x2="14" y2="17" />
+            </svg>
+            삭제
+          </button>
         </div>
       </div>
-    </aside>
 
-    <section class="content">
       <div class="table-header">
         <div class="table-title-area">
           <h2>{{ selectedFile || "기록" }}</h2>
@@ -380,15 +384,9 @@ function getTypeClass(type) {
 
 <style scoped>
 .page-layout {
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 2rem;
-}
-
-.sidebar {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 0;
 }
 
 .content {
@@ -398,54 +396,50 @@ function getTypeClass(type) {
   overflow: hidden;
 }
 
-.card {
-  background: var(--bg-card);
-  border-radius: 16px;
-  box-shadow: var(--shadow-card);
-  overflow: hidden;
-}
-
-.card-header {
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid var(--border-color);
+/* File Toolbar */
+.file-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
   background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
 }
 
-.card-header h3 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.toolbar-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.form-select {
+  min-width: 240px;
+  padding: 0.5rem 0.875rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.form-select:focus {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.toolbar-right {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-}
-
-.header-icon {
-  width: 18px;
-  height: 18px;
-}
-.card-body {
-  padding: 1.25rem;
-}
-
-.form-group {
-  margin-bottom: 1rem;
-}
-
-.action-buttons {
-  margin-top: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.btn-row {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.btn-row .btn {
-  flex: 1;
 }
 
 .btn {
@@ -471,10 +465,6 @@ function getTypeClass(type) {
   height: 16px;
 }
 
-.btn-block {
-  width: 100%;
-}
-
 .btn-secondary {
   background: var(--bg-secondary);
   color: var(--text-primary);
@@ -488,30 +478,6 @@ function getTypeClass(type) {
 .btn-danger {
   background: var(--accent-danger);
   color: white;
-}
-
-.form-label {
-  display: block;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--text-secondary);
-  margin-bottom: 0.375rem;
-}
-
-.form-input {
-  width: 100%;
-  padding: 0.625rem 0.875rem;
-  background: var(--bg-input);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  color: var(--text-primary);
-  font-size: 0.875rem;
-}
-
-.form-input:focus {
-  outline: none;
-  border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
 
 .table-header {
@@ -746,9 +712,29 @@ function getTypeClass(type) {
   margin-bottom: 1rem;
 }
 
-@media (max-width: 1024px) {
-  .page-layout {
-    grid-template-columns: 1fr;
+@media (max-width: 768px) {
+  .file-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+  }
+
+  .toolbar-left {
+    width: 100%;
+  }
+
+  .form-select {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .toolbar-right {
+    flex-wrap: wrap;
+  }
+
+  .toolbar-right .btn {
+    flex: 1;
+    min-width: 80px;
   }
 }
 </style>
