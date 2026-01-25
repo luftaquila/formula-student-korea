@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, watch } from "vue";
+import { ref, onMounted, computed } from "vue";
 import { useRouter } from "vue-router";
 import {
   fetchEntries,
@@ -16,27 +16,16 @@ const router = useRouter();
 
 const entries = ref({});
 const inspections = ref([]);
-const priorities = ref({});
-const currentTab = ref("");
+const allPriorities = ref({}); // { inspectionType: { num: priority, ... }, ... }
 const loading = ref(true);
 const searchQuery = ref("");
 
-// Convert priorities array to object for easy lookup
-const priorityMap = computed(() => {
-  const map = {};
-  for (const p of Object.values(priorities.value)) {
-    map[p.num] = p.priority;
-  }
-  return map;
-});
-
-// Convert entries object to sorted array with priority info
+// Convert entries object to sorted array
 const entriesArray = computed(() => {
   return Object.entries(entries.value)
     .map(([num, data]) => ({
       num: Number(num),
       ...data,
-      priority: priorityMap.value[num] || null,
     }))
     .sort((a, b) => a.num - b.num);
 });
@@ -53,37 +42,46 @@ const filteredEntries = computed(() => {
   );
 });
 
-// Entries with priority set
-const prioritizedEntries = computed(() => {
-  return entriesArray.value.filter((e) => e.priority !== null).sort((a, b) => a.priority - b.priority);
-});
+// Get priority for a specific entry and inspection type
+function getPriority(num, type) {
+  return allPriorities.value[type]?.[num] ?? null;
+}
 
-// Watch tab changes
-watch(currentTab, async (newTab) => {
-  if (newTab) {
-    await refreshPriorities(newTab);
-  }
-});
+// Check if any priority is set for a given inspection type
+function hasAnyPriority(type) {
+  const priorities = allPriorities.value[type];
+  return priorities && Object.keys(priorities).length > 0;
+}
 
 onMounted(async () => {
   try {
     entries.value = await fetchEntries();
     inspections.value = await fetchAllInspections();
 
-    if (inspections.value.length > 0) {
-      currentTab.value = inspections.value[0].type;
-    }
+    // Fetch priorities for all inspection types
+    await refreshAllPriorities();
   } catch (e) {
     error("데이터를 가져올 수 없습니다.");
   }
   loading.value = false;
 });
 
-async function refreshPriorities(type) {
+async function refreshAllPriorities() {
   try {
-    const data = await fetchPriorities(type);
-    priorities.value = data.reduce((acc, p) => {
-      acc[p.num] = p;
+    const priorityPromises = inspections.value.map(async (inspection) => {
+      const data = await fetchPriorities(inspection.type);
+      return {
+        type: inspection.type,
+        priorities: data.reduce((acc, p) => {
+          acc[p.num] = p.priority;
+          return acc;
+        }, {}),
+      };
+    });
+
+    const results = await Promise.all(priorityPromises);
+    allPriorities.value = results.reduce((acc, result) => {
+      acc[result.type] = result.priorities;
       return acc;
     }, {});
   } catch (e) {
@@ -91,19 +89,27 @@ async function refreshPriorities(type) {
   }
 }
 
-function selectTab(type) {
-  currentTab.value = type;
+async function refreshPrioritiesForType(type) {
+  try {
+    const data = await fetchPriorities(type);
+    allPriorities.value[type] = data.reduce((acc, p) => {
+      acc[p.num] = p.priority;
+      return acc;
+    }, {});
+  } catch (e) {
+    error("우선순위 정보를 가져올 수 없습니다.");
+  }
 }
 
-async function updatePriority(num, value) {
+async function updatePriority(type, num, value) {
   const priority = Number(value);
 
   if (!value || value === "") {
     // Remove priority
     try {
-      await removePriority(currentTab.value, num);
+      await removePriority(type, num);
       success(`${num}번 우선순위 해제`);
-      await refreshPriorities(currentTab.value);
+      await refreshPrioritiesForType(type);
     } catch (e) {
       // Ignore if not exists
     }
@@ -116,22 +122,23 @@ async function updatePriority(num, value) {
   }
 
   try {
-    await setPriority(currentTab.value, num, priority);
-    success(`${num}번 우선순위 ${priority}로 설정`);
-    await refreshPriorities(currentTab.value);
+    await setPriority(type, num, priority);
+    const inspectionName = inspections.value.find((i) => i.type === type)?.name || type;
+    success(`${num}번 ${inspectionName} 우선순위 ${priority}로 설정`);
+    await refreshPrioritiesForType(type);
   } catch (e) {
     error(e.message);
   }
 }
 
-async function resetAll() {
-  const inspectionName = inspections.value.find((i) => i.type === currentTab.value)?.name || currentTab.value;
+async function resetAll(type) {
+  const inspectionName = inspections.value.find((i) => i.type === type)?.name || type;
   if (!confirm(`${inspectionName} 검차의 모든 우선순위를 초기화하시겠습니까?`)) return;
 
   try {
-    await resetAllPriorities(currentTab.value);
+    await resetAllPriorities(type);
     success(`${inspectionName} 우선순위를 초기화했습니다.`);
-    await refreshPriorities(currentTab.value);
+    await refreshPrioritiesForType(type);
   } catch (e) {
     error(e.message);
   }
@@ -151,128 +158,120 @@ function goBack() {
       돌아가기
     </button>
 
-    <div class="priority-layout">
-      <!-- Left: Entry List with Priority Input -->
-      <div class="card entries-card">
-        <div class="card-header">
-          <div class="header-left">
-            <h3>팀 목록</h3>
-            <span class="count-badge">{{ entriesArray.length }}개 팀</span>
-          </div>
-          <div class="header-right">
-            <button class="btn btn-danger btn-sm" @click="resetAll" :disabled="prioritizedEntries.length === 0">
-              전체 초기화
-            </button>
-            <div class="search-box">
-              <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="11" cy="11" r="8" />
-                <path d="m21 21-4.35-4.35" />
-              </svg>
-              <input v-model="searchQuery" type="text" placeholder="검색..." class="search-input" />
-            </div>
-          </div>
+    <!-- Rules -->
+    <div class="rules-banner">
+      <div class="rules-title">
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          width="18"
+          height="18"
+        >
+          <circle cx="12" cy="12" r="10" />
+          <path d="M12 16v-4" />
+          <path d="M12 8h.01" />
+        </svg>
+        우선순위 규칙
+      </div>
+      <div class="rules-list">
+        <div class="rule-item">
+          <span class="rule-number">1</span>
+          <span class="rule-text"><strong>초검/재검</strong></span>
         </div>
-
-        <!-- Inspection Tabs -->
-        <div class="tabs-container">
-          <div class="tabs">
-            <button
-              v-for="item in inspections"
-              :key="item.type"
-              class="tab"
-              :class="{ active: currentTab === item.type }"
-              @click="selectTab(item.type)"
-            >
-              {{ item.name }}
-            </button>
-          </div>
+        <div class="rule-item">
+          <span class="rule-number">2</span>
+          <span class="rule-text"><strong>우선순위</strong></span>
         </div>
+        <div class="rule-item">
+          <span class="rule-number">3</span>
+          <span class="rule-text"><strong>선착순</strong></span>
+        </div>
+      </div>
+    </div>
 
-        <div class="card-body">
-          <div v-if="loading" class="loading">
-            <div class="loading-spinner"></div>
-          </div>
-          <div v-else class="entries-list">
-            <div
-              v-for="entry in filteredEntries"
-              :key="entry.num"
-              class="entry-row"
-              :class="{ 'has-priority': entry.priority !== null }"
-            >
-              <div class="entry-info">
-                <span class="entry-num">{{ entry.num }}</span>
-                <span class="entry-divider">-</span>
-                <span class="entry-name">{{ entry.univ }} {{ entry.team }}</span>
-              </div>
-              <div class="priority-input-wrap">
-                <input
-                  type="number"
-                  class="priority-input"
-                  :class="{ active: entry.priority !== null }"
-                  :value="entry.priority"
-                  placeholder="-"
-                  min="1"
-                  @change="updatePriority(entry.num, $event.target.value)"
-                  @focus="$event.target.select()"
-                />
-                <span class="priority-label">순위</span>
-              </div>
-            </div>
-            <div v-if="filteredEntries.length === 0" class="empty-state">검색 결과가 없습니다.</div>
+    <!-- Entry Table with Priority Inputs -->
+    <div class="card entries-card">
+      <div class="card-header">
+        <div class="header-left">
+          <h3>팀별 우선순위 설정</h3>
+          <span class="count-badge">{{ entriesArray.length }}개 팀</span>
+        </div>
+        <div class="header-right">
+          <div class="search-box">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.35-4.35" />
+            </svg>
+            <input v-model="searchQuery" type="text" placeholder="검색..." class="search-input" />
           </div>
         </div>
       </div>
 
-      <!-- Right: Priority Summary & Rules -->
-      <div class="side-panel">
-        <!-- Priority Summary -->
-        <div class="card summary-card">
-          <div class="card-header">
-            <h3>우선순위 설정 현황</h3>
-          </div>
-          <div class="card-body">
-            <div v-if="prioritizedEntries.length === 0" class="empty-state small">설정된 우선순위가 없습니다.</div>
-            <div v-else class="priority-list">
-              <div v-for="entry in prioritizedEntries" :key="entry.num" class="priority-item">
-                <span class="priority-rank">{{ entry.priority }}</span>
-                <div class="priority-info">
-                  <span class="priority-num">{{ entry.num }}</span>
-                  <span class="priority-divider">-</span>
-                  <span class="priority-name">{{ entry.univ }} {{ entry.team }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
+      <div class="card-body">
+        <div v-if="loading" class="loading">
+          <div class="loading-spinner"></div>
         </div>
-
-        <!-- Rules -->
-        <div class="card rules-card">
-          <div class="card-header">
-            <h3>우선순위 규칙</h3>
-          </div>
-          <div class="card-body">
-            <div class="rule-item">
-              <span class="rule-number">1</span>
-              <div class="rule-content">
-                <strong>초검 우선</strong>
-                <p>처음 검차받는 팀이 재검 팀보다 먼저</p>
-              </div>
-            </div>
-            <div class="rule-item">
-              <span class="rule-number">2</span>
-              <div class="rule-content">
-                <strong>우선순위 적용</strong>
-                <p>같은 그룹 내 낮은 숫자가 먼저</p>
-              </div>
-            </div>
-            <div class="rule-item">
-              <span class="rule-number">3</span>
-              <div class="rule-content">
-                <strong>선착순</strong>
-                <p>우선순위 같으면 등록 순서대로</p>
-              </div>
-            </div>
-          </div>
+        <div v-else class="table-container">
+          <table class="priority-table">
+            <thead>
+              <tr>
+                <th class="col-num">번호</th>
+                <th class="col-team">팀</th>
+                <th v-for="inspection in inspections" :key="inspection.type" class="col-priority">
+                  <div class="th-content">
+                    <span>{{ inspection.name }}</span>
+                    <button
+                      class="btn-reset"
+                      @click="resetAll(inspection.type)"
+                      :disabled="!hasAnyPriority(inspection.type)"
+                      title="초기화"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        width="14"
+                        height="14"
+                      >
+                        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                        <path d="M3 3v5h5" />
+                      </svg>
+                    </button>
+                  </div>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="entry in filteredEntries" :key="entry.num">
+                <td class="col-num">
+                  <span class="entry-num">{{ entry.num }}</span>
+                </td>
+                <td class="col-team">
+                  <span class="entry-name">{{ entry.univ }} {{ entry.team }}</span>
+                </td>
+                <td v-for="inspection in inspections" :key="inspection.type" class="col-priority">
+                  <input
+                    type="number"
+                    class="priority-input"
+                    :class="{ active: getPriority(entry.num, inspection.type) !== null }"
+                    :value="getPriority(entry.num, inspection.type)"
+                    placeholder="-"
+                    min="1"
+                    @change="updatePriority(inspection.type, entry.num, $event.target.value)"
+                    @focus="$event.target.select()"
+                  />
+                </td>
+              </tr>
+              <tr v-if="filteredEntries.length === 0">
+                <td :colspan="2 + inspections.length" class="empty-state">검색 결과가 없습니다.</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -283,23 +282,69 @@ function goBack() {
 .priority-page {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 1rem;
 }
 
 .back-btn {
   align-self: flex-start;
 }
 
-.priority-layout {
-  display: grid;
-  grid-template-columns: 1fr 360px;
-  gap: 1.5rem;
-  align-items: start;
+/* Rules Banner */
+.rules-banner {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+}
+
+.rules-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 0.9375rem;
+  margin-bottom: 0.75rem;
+  color: var(--text-primary);
+}
+
+.rules-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+}
+
+.rule-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.rule-number {
+  width: 20px;
+  height: 20px;
+  background: var(--border-color);
+  color: var(--text-secondary);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.6875rem;
+  flex-shrink: 0;
+}
+
+.rule-text {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.rule-text strong {
+  color: var(--text-primary);
 }
 
 /* Entries Card */
 .entries-card {
-  max-height: calc(100vh - 200px);
+  max-height: calc(100vh - 260px);
   display: flex;
   flex-direction: column;
 }
@@ -364,79 +409,111 @@ function goBack() {
   border-color: var(--accent-primary);
 }
 
-.tabs-container {
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--border-color);
-  overflow-x: auto;
-  flex-shrink: 0;
-}
-
 .entries-card .card-body {
-  overflow-y: auto;
+  overflow: auto;
   flex: 1;
   padding: 0;
 }
 
-.entries-list {
-  display: flex;
-  flex-direction: column;
+/* Table */
+.table-container {
+  overflow-x: auto;
 }
 
-.entry-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.875rem 1.25rem;
+.priority-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 600px;
+}
+
+.priority-table th,
+.priority-table td {
+  padding: 0.75rem 1rem;
+  text-align: left;
   border-bottom: 1px solid var(--border-color);
-  transition: background 0.15s ease;
 }
 
-.entry-row:hover {
+.priority-table th {
+  background: var(--bg-secondary);
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.priority-table tbody tr:hover {
   background: var(--bg-hover);
 }
 
-.entry-row.has-priority {
-  background: rgba(59, 130, 246, 0.05);
+.col-num {
+  width: 70px;
+  text-align: center !important;
 }
 
-.entry-row.has-priority:hover {
-  background: rgba(59, 130, 246, 0.1);
+.col-team {
+  width: auto;
 }
 
-.entry-info {
+.col-priority {
+  width: 110px;
+  min-width: 110px;
+  text-align: center !important;
+  white-space: nowrap;
+}
+
+.th-content {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 0.5rem;
+}
+
+.btn-reset {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-reset:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.btn-reset:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .entry-num {
   font-weight: 700;
-  font-size: 1.125rem;
+  font-size: 1rem;
   font-family: "JetBrains Mono", monospace;
-}
-
-.entry-divider {
-  color: var(--text-tertiary);
 }
 
 .entry-name {
   color: var(--text-secondary);
-  font-size: 0.9375rem;
-}
-
-.priority-input-wrap {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  font-size: 0.875rem;
 }
 
 .priority-input {
-  width: 64px;
-  padding: 0.5rem;
+  width: 60px;
+  padding: 0.375rem 0.5rem;
   text-align: center;
   border: 2px solid var(--border-color);
   border-radius: 8px;
-  font-size: 1rem;
+  font-size: 0.9375rem;
   font-weight: 600;
   font-family: "JetBrains Mono", monospace;
   background: var(--bg-input);
@@ -464,124 +541,6 @@ function goBack() {
 .priority-input::-webkit-outer-spin-button,
 .priority-input::-webkit-inner-spin-button {
   -webkit-appearance: none;
-  margin: 0;
-}
-
-.priority-label {
-  font-size: 0.8125rem;
-  color: var(--text-tertiary);
-}
-
-/* Side Panel */
-.side-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.summary-card .card-body {
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.priority-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.priority-item {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.75rem;
-  background: var(--bg-secondary);
-  border-radius: 10px;
-}
-
-.priority-rank {
-  width: 36px;
-  height: 36px;
-  background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
-  color: white;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 0.875rem;
-  flex-shrink: 0;
-}
-
-.priority-info {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-  flex: 1;
-}
-
-.priority-num {
-  font-weight: 600;
-  font-family: "JetBrains Mono", monospace;
-  flex-shrink: 0;
-}
-
-.priority-divider {
-  color: var(--text-tertiary);
-  flex-shrink: 0;
-}
-
-.priority-name {
-  font-size: 0.875rem;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Rules */
-.rules-card .card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.rule-item {
-  display: flex;
-  gap: 0.75rem;
-  padding: 0.75rem;
-  background: var(--bg-secondary);
-  border-radius: 10px;
-}
-
-.rule-number {
-  width: 28px;
-  height: 28px;
-  background: var(--border-color);
-  color: var(--text-secondary);
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 0.75rem;
-  flex-shrink: 0;
-}
-
-.rule-content {
-  min-width: 0;
-}
-
-.rule-content strong {
-  display: block;
-  font-size: 0.875rem;
-  margin-bottom: 0.125rem;
-}
-
-.rule-content p {
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
   margin: 0;
 }
 
@@ -613,39 +572,11 @@ function goBack() {
   padding: 2rem;
 }
 
-.empty-state.small {
-  padding: 1.5rem;
-  font-size: 0.875rem;
-}
-
 /* Responsive */
-@media (max-width: 1024px) {
-  .priority-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .side-panel {
-    flex-direction: row;
-  }
-
-  .side-panel > * {
-    flex: 1;
-  }
-}
-
-@media (max-width: 640px) {
-  .side-panel {
+@media (max-width: 768px) {
+  .rules-list {
     flex-direction: column;
-  }
-
-  .entry-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.75rem;
-  }
-
-  .priority-input-wrap {
-    align-self: flex-end;
+    gap: 0.5rem;
   }
 
   .header-right {
@@ -654,6 +585,17 @@ function goBack() {
 
   .search-input {
     width: 150px;
+  }
+
+  .col-priority {
+    width: 100px;
+    min-width: 100px;
+  }
+
+  .priority-input {
+    width: 50px;
+    padding: 0.25rem 0.375rem;
+    font-size: 0.875rem;
   }
 }
 </style>
