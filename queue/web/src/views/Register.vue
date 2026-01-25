@@ -2,8 +2,9 @@
 import { ref, onMounted, computed } from "vue";
 import { fetchEntries, registerToQueue } from "../api";
 import { useSSE } from "../composables/useSSE";
+import { useNotification } from "../composables/useNotification";
 
-const props = defineProps(["showToast"]);
+const { success, error, warning } = useNotification();
 
 const { activeInspections } = useSSE();
 
@@ -24,7 +25,7 @@ onMounted(async () => {
   try {
     entries.value = await fetchEntries();
   } catch (e) {
-    props.showToast?.("데이터를 가져올 수 없습니다.", "error");
+    error("데이터를 가져올 수 없습니다.");
   }
   loading.value = false;
 });
@@ -49,38 +50,38 @@ async function submit() {
   const phoneDigits = phone.value.replace(/-/g, "");
 
   if (!num) {
-    props.showToast?.("엔트리 번호를 입력하세요.", "error");
+    error("엔트리 번호를 입력하세요.");
     return;
   }
 
   if (!entries.value[num]) {
-    props.showToast?.("존재하지 않는 엔트리 번호입니다.", "error");
+    error("존재하지 않는 엔트리 번호입니다.");
     return;
   }
 
   if (!phoneDigits) {
-    props.showToast?.("전화번호를 입력하세요.", "error");
+    error("전화번호를 입력하세요.");
     return;
   }
 
   if (!/^010\d{8}$/.test(phoneDigits)) {
-    props.showToast?.("유효하지 않은 전화번호입니다.", "error");
+    error("유효하지 않은 전화번호입니다.");
     return;
   }
 
   if (!inspection.value) {
-    props.showToast?.("검차 종류를 선택하세요.", "error");
+    error("검차 종류를 선택하세요.");
     return;
   }
 
   if (!agreed.value) {
-    props.showToast?.("개인정보 수집 및 이용에 동의해주세요.", "error");
+    error("개인정보 수집 및 이용에 동의해주세요.");
     return;
   }
 
   try {
     await registerToQueue(inspection.value, num, phoneDigits);
-    props.showToast?.(`${num}번 엔트리가 등록되었습니다.`, "success");
+    success(`${num}번 엔트리가 등록되었습니다.`);
 
     // Reset form
     entryNum.value = "";
@@ -94,13 +95,13 @@ async function submit() {
       if (penalty.until && penalty.remaining !== undefined) {
         const untilDate = new Date(penalty.until);
         const timeStr = `${untilDate.getHours().toString().padStart(2, "0")}시 ${untilDate.getMinutes().toString().padStart(2, "0")}분`;
-        props.showToast?.(`취소 페널티 적용중입니다.\n${penalty.remaining}분 뒤 ${timeStr}에 해제됩니다.`, "error");
+        error(`취소 페널티 적용중입니다.\n${penalty.remaining}분 뒤 ${timeStr}에 해제됩니다.`);
         return;
       }
     } catch {
       // JSON 파싱 실패시 일반 에러 메시지
     }
-    props.showToast?.(e.message, "error");
+    error(e.message);
   }
 }
 
@@ -109,7 +110,7 @@ function resetForm() {
   phone.value = "010";
   inspection.value = "";
   agreed.value = false;
-  props.showToast?.("입력이 초기화되었습니다.", "info");
+  warning("입력이 초기화되었습니다.");
 }
 </script>
 

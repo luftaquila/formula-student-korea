@@ -1,6 +1,7 @@
 import { createApp } from "vue";
 import App from "./App.vue";
 import "./styles/main.css";
+import "notyf/notyf.min.css";
 
 // Apply theme on mount
 const saved = localStorage.getItem("theme");

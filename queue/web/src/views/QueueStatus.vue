@@ -2,8 +2,9 @@
 import { ref, onMounted, watch } from "vue";
 import { fetchEntries, fetchQueueState } from "../api";
 import { useSSE } from "../composables/useSSE";
+import { useNotification } from "../composables/useNotification";
 
-const props = defineProps(["showToast"]);
+const { error } = useNotification();
 
 const { activeInspections, lastQueueUpdate } = useSSE();
 
@@ -28,7 +29,7 @@ onMounted(async () => {
   try {
     entries.value = await fetchEntries();
   } catch (e) {
-    props.showToast?.("엔트리 정보를 가져올 수 없습니다.", "error");
+    error("엔트리 정보를 가져올 수 없습니다.");
   }
 
   // Restore saved state
@@ -108,7 +109,7 @@ async function query() {
 
 function clearState(message) {
   if (message) {
-    props.showToast?.(message, "error");
+    error(message);
   }
   queueName.value = "-";
   rank.value = "-";

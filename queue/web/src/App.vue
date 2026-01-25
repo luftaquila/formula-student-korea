@@ -1,11 +1,8 @@
 <script setup>
-import { ref } from "vue";
 import { useRoute } from "vue-router";
-import Toast from "./components/Toast.vue";
 import ThemeToggle from "./components/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 
-const toast = ref(null);
 const route = useRoute();
 
 const pageInfo = {
@@ -18,19 +15,10 @@ const pageInfo = {
 function getPageTitle() {
   return pageInfo[route.path]?.title || "검차 대기열";
 }
-
-function showToast(message, type) {
-  toast.value?.show(message, type);
-}
-
-// Expose toast for child components
-defineExpose({ toast });
 </script>
 
 <template>
   <div class="app-container">
-    <Toast ref="toast" />
-
     <header class="header">
       <div class="header-content">
         <a href="/" class="logo">
@@ -45,9 +33,7 @@ defineExpose({ toast });
     </header>
 
     <main class="main-content">
-      <router-view v-slot="{ Component }">
-        <component :is="Component" :show-toast="showToast" />
-      </router-view>
+      <router-view />
     </main>
   </div>
 </template>

@@ -3,14 +3,15 @@ import { ref, onMounted, computed } from "vue";
 import EntryTable from "./components/EntryTable.vue";
 import EntryForm from "./components/EntryForm.vue";
 import FileManager from "./components/FileManager.vue";
-import Toast from "./components/Toast.vue";
 import ThemeToggle from "./components/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import { fetchEntries, addEntry, updateEntry, deleteEntry, deleteAllEntries, uploadEntries } from "./api";
+import { useNotification } from "./composables/useNotification";
+
+const { success, error } = useNotification();
 
 const entries = ref({});
 const loading = ref(true);
-const toast = ref(null);
 const searchQuery = ref("");
 
 const entriesArray = computed(() => {
@@ -37,7 +38,7 @@ async function loadEntries() {
   try {
     entries.value = await fetchEntries();
   } catch (e) {
-    toast.value?.show(e.message, "error");
+    error(e.message);
   } finally {
     loading.value = false;
   }
@@ -46,50 +47,50 @@ async function loadEntries() {
 async function handleAdd(entry) {
   try {
     await addEntry(entry);
-    toast.value?.show(`${entry.num}번 엔트리를 추가했습니다.`, "success");
+    success(`${entry.num}번 엔트리를 추가했습니다.`);
     await loadEntries();
   } catch (e) {
-    toast.value?.show(e.message, "error");
+    error(e.message);
   }
 }
 
 async function handleUpdate(entry) {
   try {
     await updateEntry(entry);
-    toast.value?.show(`${entry.num}번 엔트리를 수정했습니다.`, "success");
+    success(`${entry.num}번 엔트리를 수정했습니다.`);
     await loadEntries();
   } catch (e) {
-    toast.value?.show(e.message, "error");
+    error(e.message);
   }
 }
 
 async function handleDelete(num) {
   try {
     await deleteEntry(num);
-    toast.value?.show(`${num}번 엔트리를 삭제했습니다.`, "success");
+    success(`${num}번 엔트리를 삭제했습니다.`);
     await loadEntries();
   } catch (e) {
-    toast.value?.show(e.message, "error");
+    error(e.message);
   }
 }
 
 async function handleUpload(data) {
   try {
     await uploadEntries(data);
-    toast.value?.show("엔트리 목록을 업로드했습니다.", "success");
+    success("엔트리 목록을 업로드했습니다.");
     await loadEntries();
   } catch (e) {
-    toast.value?.show(e.message, "error");
+    error(e.message);
   }
 }
 
 async function handleDeleteAll() {
   try {
     await deleteAllEntries();
-    toast.value?.show("모든 엔트리를 삭제했습니다.", "success");
+    success("모든 엔트리를 삭제했습니다.");
     await loadEntries();
   } catch (e) {
-    toast.value?.show(e.message, "error");
+    error(e.message);
   }
 }
 
@@ -98,8 +99,6 @@ onMounted(loadEntries);
 
 <template>
   <div class="app-container">
-    <Toast ref="toast" />
-
     <header class="header">
       <div class="header-content">
         <a href="/" class="logo">

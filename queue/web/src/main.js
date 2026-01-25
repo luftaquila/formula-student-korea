@@ -2,6 +2,7 @@ import { createApp } from "vue";
 import { createRouter, createWebHistory } from "vue-router";
 import App from "./App.vue";
 import "./styles/main.css";
+import "notyf/notyf.min.css";
 
 // Routes
 import QueueStatus from "./views/QueueStatus.vue";

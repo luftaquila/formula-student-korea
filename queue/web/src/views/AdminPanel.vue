@@ -17,8 +17,9 @@ import {
   setCancelPenaltySettings,
 } from "../api";
 import { useSSE } from "../composables/useSSE";
+import { useNotification } from "../composables/useNotification";
 
-const props = defineProps(["showToast"]);
+const { success, error, warning } = useNotification();
 const router = useRouter();
 
 const { activeInspections, lastQueueUpdate } = useSSE();
@@ -81,7 +82,7 @@ onMounted(async () => {
       await refreshQueue(currentTab.value);
     }
   } catch (e) {
-    props.showToast?.("초기 데이터를 가져올 수 없습니다.", "error");
+    error("초기 데이터를 가져올 수 없습니다.");
   }
   loading.value = false;
 });
@@ -91,7 +92,7 @@ async function refreshQueue(type) {
   try {
     currentQueue.value = await fetchInspectionQueue(type);
   } catch (e) {
-    props.showToast?.("대기열을 가져올 수 없습니다.", "error");
+    error("대기열을 가져올 수 없습니다.");
   }
 }
 
@@ -106,17 +107,17 @@ async function toggleActive(type, e) {
     await toggleInspectionActive(type, e.target.checked);
     // SSE will handle the update
   } catch (e) {
-    props.showToast?.("활성화 상태를 변경할 수 없습니다.", "error");
+    error("활성화 상태를 변경할 수 없습니다.");
   }
 }
 
 async function enterEntry(num) {
   try {
     await enterFromQueue(currentTab.value, num);
-    props.showToast?.(`엔트리 ${num}번 입장`, "success");
+    success(`엔트리 ${num}번 입장`);
     await refreshQueue(currentTab.value);
   } catch (e) {
-    props.showToast?.(e.message, "error");
+    error(e.message);
   }
 }
 
@@ -125,10 +126,10 @@ async function cancelEntry(num) {
 
   try {
     await cancelFromQueue(currentTab.value, num);
-    props.showToast?.(`엔트리 ${num}번 취소 (${cancelPenalty.value}분 페널티)`, "info");
+    warning(`엔트리 ${num}번 취소 (${cancelPenalty.value}분 페널티)`);
     await refreshQueue(currentTab.value);
   } catch (e) {
-    props.showToast?.(e.message, "error");
+    error(e.message);
   }
 }
 
@@ -137,9 +138,9 @@ async function toggleSms() {
     await setSmsSettings(!smsEnabled.value);
     const sms = await fetchSmsSettings();
     smsEnabled.value = sms.value;
-    props.showToast?.("SMS 설정을 변경했습니다.", "success");
+    success("SMS 설정을 변경했습니다.");
   } catch (e) {
-    props.showToast?.(e.message, "error");
+    error(e.message);
   }
 }
 
@@ -150,9 +151,9 @@ async function updateSmsRank(e) {
   try {
     await setSmsRankSettings(value);
     smsRank.value = value;
-    props.showToast?.(`SMS 알림 순번을 ${value}번으로 변경했습니다.`, "success");
+    success(`SMS 알림 순번을 ${value}번으로 변경했습니다.`);
   } catch (e) {
-    props.showToast?.(e.message, "error");
+    error(e.message);
   }
 }
 
@@ -163,9 +164,9 @@ async function updateCancelPenalty(e) {
   try {
     await setCancelPenaltySettings(value);
     cancelPenalty.value = value;
-    props.showToast?.(`취소 페널티를 ${value}분으로 변경했습니다.`, "success");
+    success(`취소 페널티를 ${value}분으로 변경했습니다.`);
   } catch (e) {
-    props.showToast?.(e.message, "error");
+    error(e.message);
   }
 }
 
@@ -174,10 +175,10 @@ async function resetHistory(type, name) {
 
   try {
     await resetInspectionHistory(type);
-    props.showToast?.(`${name} 검차 이력을 초기화했습니다.`, "success");
+    success(`${name} 검차 이력을 초기화했습니다.`);
     // SSE will handle queue update
   } catch (e) {
-    props.showToast?.(e.message, "error");
+    error(e.message);
   }
 }
 

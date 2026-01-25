@@ -9,8 +9,9 @@ import {
   removePriority,
   resetAllPriorities,
 } from "../api";
+import { useNotification } from "../composables/useNotification";
 
-const props = defineProps(["showToast"]);
+const { success, error } = useNotification();
 const router = useRouter();
 
 const entries = ref({});
@@ -73,7 +74,7 @@ onMounted(async () => {
       currentTab.value = inspections.value[0].type;
     }
   } catch (e) {
-    props.showToast?.("데이터를 가져올 수 없습니다.", "error");
+    error("데이터를 가져올 수 없습니다.");
   }
   loading.value = false;
 });
@@ -86,7 +87,7 @@ async function refreshPriorities(type) {
       return acc;
     }, {});
   } catch (e) {
-    props.showToast?.("우선순위 정보를 가져올 수 없습니다.", "error");
+    error("우선순위 정보를 가져올 수 없습니다.");
   }
 }
 
@@ -101,7 +102,7 @@ async function updatePriority(num, value) {
     // Remove priority
     try {
       await removePriority(currentTab.value, num);
-      props.showToast?.(`${num}번 우선순위 해제`, "success");
+      success(`${num}번 우선순위 해제`);
       await refreshPriorities(currentTab.value);
     } catch (e) {
       // Ignore if not exists
@@ -110,16 +111,16 @@ async function updatePriority(num, value) {
   }
 
   if (isNaN(priority) || priority < 1) {
-    props.showToast?.("우선순위는 1 이상의 숫자여야 합니다.", "error");
+    error("우선순위는 1 이상의 숫자여야 합니다.");
     return;
   }
 
   try {
     await setPriority(currentTab.value, num, priority);
-    props.showToast?.(`${num}번 우선순위 ${priority}로 설정`, "success");
+    success(`${num}번 우선순위 ${priority}로 설정`);
     await refreshPriorities(currentTab.value);
   } catch (e) {
-    props.showToast?.(e.message, "error");
+    error(e.message);
   }
 }
 
@@ -129,10 +130,10 @@ async function resetAll() {
 
   try {
     await resetAllPriorities(currentTab.value);
-    props.showToast?.(`${inspectionName} 우선순위를 초기화했습니다.`, "success");
+    success(`${inspectionName} 우선순위를 초기화했습니다.`);
     await refreshPriorities(currentTab.value);
   } catch (e) {
-    props.showToast?.(e.message, "error");
+    error(e.message);
   }
 }
 
