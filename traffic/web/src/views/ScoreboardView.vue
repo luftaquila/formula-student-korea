@@ -1,11 +1,14 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
-import { useSSE } from "./composables/useSSE";
-import { fetchRecord } from "./composables/useApi";
-import ThemeToggle from "./components/ThemeToggle.vue";
-import NavMenu from "@shared/NavMenu.vue";
+import { useSSE } from "../composables/useSSE";
+import { fetchRecord } from "../composables/useApi";
 
-const { recordFiles, selectedFile, lastUpdate, connected } = useSSE();
+const { recordFiles: allRecordFiles, selectedFile, lastUpdate, connected } = useSSE();
+
+// Filter out controller from record files for scoreboard
+const recordFiles = computed(() => {
+  return allRecordFiles.value.filter((file) => file !== "controller");
+});
 
 const records = ref([]);
 const loading = ref(false);
@@ -139,6 +142,12 @@ function toggleFullscreen() {
 
 function handleFullscreenChange() {
   isFullscreen.value = !!document.fullscreenElement;
+  // Emit event to parent to hide header
+  if (isFullscreen.value) {
+    document.body.classList.add("scoreboard-fullscreen");
+  } else {
+    document.body.classList.remove("scoreboard-fullscreen");
+  }
 }
 
 onMounted(() => {
@@ -151,23 +160,16 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  document.body.classList.remove("scoreboard-fullscreen");
 });
 </script>
 
 <template>
-  <div class="app-container">
-    <!-- Header -->
-    <header class="header" v-show="!isFullscreen">
-      <div class="header-content">
-        <a href="/" class="logo">
-          <span class="logo-icon">📺</span>
-          <h1>FSK 전광판</h1>
-        </a>
-        <div class="header-actions">
-          <span class="connection-status" :class="{ connected }">
-            {{ connected ? "연결됨" : "연결 끊김" }}
-          </span>
-
+  <div class="scoreboard-page">
+    <div class="scoreboard-container">
+      <!-- Controls (above display area, hidden in fullscreen) -->
+      <div v-show="!isFullscreen" class="controls">
+        <div class="control-group">
           <select v-model="selectedFile" class="form-select">
             <option :value="null" disabled>파일 선택</option>
             <option v-for="file in recordFiles" :key="file" :value="file">
@@ -175,177 +177,95 @@ onUnmounted(() => {
             </option>
           </select>
 
-          <button class="btn-icon" @click="toggleFullscreen" title="전체화면">
+          <button class="btn btn-secondary" @click="toggleFullscreen" title="전체화면">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
             </svg>
           </button>
-
-          <ThemeToggle />
-          <NavMenu currentPath="/scoreboard" />
         </div>
       </div>
-    </header>
 
-    <!-- Display Area (3:2 ratio) -->
-    <main class="display-wrapper" :class="{ fullscreen: isFullscreen }">
-      <div ref="displayArea" class="display-area">
-        <!-- No file selected -->
-        <div v-if="!selectedFile" class="empty-state">
-          <p></p>
-        </div>
+      <!-- Display Area (3:2 ratio) -->
+      <div class="display-wrapper">
+        <div ref="displayArea" class="display-area">
+          <!-- No file selected -->
+          <div v-if="!selectedFile" class="empty-state"></div>
 
-        <!-- No records -->
-        <div v-else-if="records.length === 0 && !loading" class="empty-state">
-          <p>기록이 없습니다</p>
-        </div>
+          <!-- No records -->
+          <div v-else-if="records.length === 0 && !loading" class="empty-state">
+            <p>기록이 없습니다</p>
+          </div>
 
-        <!-- Scoreboard content -->
-        <div v-else class="scoreboard">
-          <!-- Best Records Section -->
-          <section class="best-section" v-if="availableTypes.length > 0">
-            <div class="best-grid" :class="`cols-${availableTypes.length}`">
-              <div v-for="type in availableTypes" :key="type" class="best-card">
-                <div class="best-type">{{ type }} 최고 기록</div>
-                <template v-if="bestRecords[type]">
-                  <div class="best-info">
-                    <div class="best-univ">{{ bestRecords[type].univ }}</div>
-                    <div class="best-team">{{ bestRecords[type].team }}</div>
-                  </div>
-                  <div class="best-time mono">{{ formatResult(bestRecords[type].result) }}</div>
-                </template>
-                <template v-else>
-                  <div class="best-info">
-                    <div class="best-univ">-</div>
-                    <div class="best-team">-</div>
-                  </div>
-                  <div class="best-time mono">--:--.---</div>
-                </template>
+          <!-- Scoreboard content -->
+          <div v-else class="scoreboard">
+            <!-- Best Records Section -->
+            <section class="best-section" v-if="availableTypes.length > 0">
+              <div class="best-grid" :class="`cols-${availableTypes.length}`">
+                <div v-for="type in availableTypes" :key="type" class="best-card">
+                  <div class="best-type">{{ type }} 최고 기록</div>
+                  <template v-if="bestRecords[type]">
+                    <div class="best-info">
+                      <div class="best-univ">{{ bestRecords[type].univ }}</div>
+                      <div class="best-team">{{ bestRecords[type].team }}</div>
+                    </div>
+                    <div class="best-time mono">{{ formatResult(bestRecords[type].result) }}</div>
+                  </template>
+                  <template v-else>
+                    <div class="best-info">
+                      <div class="best-univ">-</div>
+                      <div class="best-team">-</div>
+                    </div>
+                    <div class="best-time mono">--:--.---</div>
+                  </template>
+                </div>
               </div>
-            </div>
-          </section>
+            </section>
 
-          <!-- Recent Records Section -->
-          <section class="recent-section">
-            <div class="recent-table-wrapper">
-              <table class="recent-table">
-                <tbody>
-                  <tr
-                    v-for="record in recentRecords"
-                    :key="getRecordKey(record)"
-                    :class="{
-                      dnf: record.result < 0,
-                      'best-row': isBestRecord(record),
-                      'new-record': isNewRecord(record),
-                    }"
-                  >
-                    <td>{{ formatKoreanTime(record.time) }}</td>
-                    <td class="mono col-entry">{{ record.num }}</td>
-                    <td>{{ record.univ }} {{ record.team }}</td>
-                    <td class="col-type">{{ record.type }}</td>
-                    <td class="mono record-result col-result">{{ formatResult(record.result) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
+            <!-- Recent Records Section -->
+            <section class="recent-section">
+              <div class="recent-table-wrapper">
+                <table class="recent-table">
+                  <tbody>
+                    <tr
+                      v-for="record in recentRecords"
+                      :key="getRecordKey(record)"
+                      :class="{
+                        dnf: record.result < 0,
+                        'best-row': isBestRecord(record),
+                        'new-record': isNewRecord(record),
+                      }"
+                    >
+                      <td>{{ formatKoreanTime(record.time) }}</td>
+                      <td class="mono col-entry">{{ record.num }}</td>
+                      <td>{{ record.univ }} {{ record.team }}</td>
+                      <td class="col-type">{{ record.type }}</td>
+                      <td class="mono record-result col-result">{{ formatResult(record.result) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
         </div>
-
-        <!-- Exit fullscreen hint -->
-        <div v-if="isFullscreen" class="fullscreen-hint">ESC를 눌러 전체화면 종료</div>
       </div>
-    </main>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.app-container {
-  min-height: 100vh;
+.scoreboard-page {
   display: flex;
   flex-direction: column;
-  background: var(--bg-primary);
-}
-
-/* Header */
-.header {
-  background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
-  padding: 1rem 2rem;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-  flex-shrink: 0;
-}
-
-.header-content {
-  max-width: 1400px;
-  margin: 0 auto;
-  display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 2rem;
+  min-height: 0;
 }
 
-.logo {
+.scoreboard-container {
+  width: 100%;
+  max-width: 1200px;
   display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-shrink: 0;
-  text-decoration: none;
-}
-
-.logo-icon {
-  font-size: 2rem;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
-}
-
-.logo h1 {
-  color: white;
-  font-size: 1.5rem;
-  font-weight: 700;
-  margin: 0;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
-}
-
-.header-actions {
-  display: flex;
-  gap: 0.75rem;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.connection-status {
-  padding: 0.25rem 0.75rem;
-  border-radius: 999px;
-  font-size: 0.75rem;
-  font-weight: 500;
-  background: rgba(255, 255, 255, 0.2);
-  color: white;
-}
-
-.connection-status.connected {
-  background: var(--accent-success);
-}
-
-.btn-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  background: rgba(255, 255, 255, 0.15);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 10px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  color: white;
-}
-
-.btn-icon:hover {
-  background: rgba(255, 255, 255, 0.25);
-  transform: scale(1.05);
-}
-
-.form-select {
-  min-width: 200px;
+  flex-direction: column;
+  gap: 3rem;
 }
 
 /* Display Area */
@@ -354,11 +274,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 2rem;
-}
-
-.display-wrapper.fullscreen {
-  padding: 0;
+  min-height: 0;
 }
 
 .display-area {
@@ -374,12 +290,16 @@ onUnmounted(() => {
   position: relative;
 }
 
-.fullscreen .display-area {
+:global(.scoreboard-fullscreen) .display-area {
   max-width: none;
   aspect-ratio: auto;
   height: 100vh;
   width: 100vw;
   border-radius: 0;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9999;
 }
 
 /* Empty State */
@@ -389,7 +309,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   color: var(--text-tertiary);
-  font-size: var(--font-size-record);
+  font-size: var(--font-size-record, 1.5rem);
 }
 
 /* Scoreboard */
@@ -402,7 +322,7 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.fullscreen .scoreboard {
+:global(.scoreboard-fullscreen) .scoreboard {
   padding: 2rem;
   gap: 2.5rem;
 }
@@ -440,12 +360,12 @@ onUnmounted(() => {
   flex-direction: column;
 }
 
-.fullscreen .best-card {
+:global(.scoreboard-fullscreen) .best-card {
   padding: 1.5rem 2rem;
 }
 
 .best-type {
-  font-size: var(--font-size-record);
+  font-size: var(--font-size-record, 1.5rem);
   font-weight: 600;
   opacity: 0.9;
   margin-bottom: auto;
@@ -454,7 +374,7 @@ onUnmounted(() => {
 .best-info {
   margin-top: 1rem;
   margin-bottom: 1rem;
-  min-height: calc(var(--font-size-record) * 3);
+  min-height: calc(var(--font-size-record, 1.5rem) * 3);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -463,14 +383,14 @@ onUnmounted(() => {
 
 .best-univ,
 .best-team {
-  font-size: var(--font-size-record);
+  font-size: var(--font-size-record, 1.5rem);
   font-weight: 500;
   opacity: 0.95;
   line-height: 1.4;
 }
 
 .best-time {
-  font-size: calc(var(--font-size-best) * 0.85);
+  font-size: calc(var(--font-size-best, 3rem) * 0.85);
   font-weight: 700;
   text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
   margin-top: auto;
@@ -501,7 +421,7 @@ onUnmounted(() => {
 .recent-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: var(--font-size-table);
+  font-size: var(--font-size-table, 1.25rem);
   font-weight: 600;
 }
 
@@ -511,7 +431,7 @@ onUnmounted(() => {
   border-bottom: 1px solid var(--border-color);
 }
 
-.fullscreen .recent-table td {
+:global(.scoreboard-fullscreen) .recent-table td {
   padding: 1rem 1.5rem;
 }
 
@@ -587,41 +507,103 @@ onUnmounted(() => {
   opacity: 1;
 }
 
-/* Responsive */
-@media (max-width: 1024px) {
-  .header-content {
-    flex-wrap: wrap;
-  }
+/* Controls */
+.controls {
+  width: 100%;
+  background: var(--bg-card);
+  border-radius: 16px;
+  box-shadow: var(--shadow-card);
+  padding: 1rem 1.5rem;
 }
 
-@media (max-width: 768px) {
-  .header {
-    padding: 1rem;
-  }
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
 
-  .header-content {
-    flex-direction: column;
-    gap: 1rem;
-  }
+.connection-status {
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--accent-danger);
+}
 
-  .logo h1 {
-    font-size: 1.25rem;
-  }
+.connection-status.connected {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--accent-success);
+}
 
-  .display-wrapper {
-    padding: 1rem;
-  }
+.form-select {
+  min-width: 200px;
+  padding: 0.5rem 0.875rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
 
-  .scoreboard {
-    padding: 1rem;
-  }
+.form-select:focus {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
 
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  border: none;
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-secondary {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+
+.btn-secondary:hover {
+  background: var(--bg-hover);
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
   .best-grid.cols-3 {
     grid-template-columns: 1fr;
   }
 
   .best-grid.cols-2 {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .scoreboard {
+    padding: 1rem;
+  }
+
+  .controls {
+    padding: 1rem;
+  }
+
+  .control-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .form-select {
+    width: 100%;
   }
 }
 </style>

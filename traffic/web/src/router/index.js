@@ -25,6 +25,11 @@ const routes = [
     name: "Record",
     component: () => import("../views/RecordView.vue"),
   },
+  {
+    path: "/scoreboard",
+    name: "Scoreboard",
+    component: () => import("../views/ScoreboardView.vue"),
+  },
 ];
 
 const router = createRouter({

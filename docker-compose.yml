@@ -34,15 +34,6 @@ services:
     networks:
       - fsk-network
 
-  scoreboard:
-    build:
-      context: .
-      dockerfile: scoreboard/Dockerfile
-    container_name: fsk-scoreboard
-    restart: unless-stopped
-    networks:
-      - fsk-network
-
   queue:
     build:
       context: .
@@ -90,7 +81,6 @@ services:
       - entry
       - traffic
       - energymeter
-      - scoreboard
       - queue
       - rules
     restart: unless-stopped

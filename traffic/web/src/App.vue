@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import ThemeToggle from "./components/ThemeToggle.vue";
 import NavTabs from "./components/NavTabs.vue";
@@ -8,15 +8,28 @@ import { useEntryStore } from "./stores/entry";
 
 const route = useRoute();
 const entryStore = useEntryStore();
+const isScoreboardFullscreen = ref(false);
+
+function handleFullscreenChange() {
+  isScoreboardFullscreen.value = document.body.classList.contains("scoreboard-fullscreen");
+}
 
 onMounted(() => {
   entryStore.loadEntries();
+  // Watch for scoreboard fullscreen state
+  const observer = new MutationObserver(handleFullscreenChange);
+  observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+  handleFullscreenChange();
+});
+
+onUnmounted(() => {
+  document.body.classList.remove("scoreboard-fullscreen");
 });
 </script>
 
 <template>
   <div class="app-container">
-    <header class="header">
+    <header class="header" v-show="!isScoreboardFullscreen">
       <div class="header-content">
         <a href="/" class="logo">
           <span class="logo-icon">🚦</span>

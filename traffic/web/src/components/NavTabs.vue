@@ -10,6 +10,7 @@ const navItems = [
   { id: "gymkhana", label: "🏁 짐카나", path: "/gymkhana" },
   { id: "skidpad", label: "⏱️ 스키드패드", path: "/skidpad" },
   { id: "record", label: "📋 기록", path: "/record" },
+  { id: "scoreboard", label: "📺 전광판", path: "/scoreboard" },
 ];
 </script>
 
