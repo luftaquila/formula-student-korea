@@ -56,7 +56,9 @@ services:
     container_name: fsk-rules
     volumes:
       - ./rules/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./rules/data:/srv/rules:ro
+      - ./rules/template.html:/etc/caddy/template.html:ro
+      - ./rules/data:/srv/rules
+      - ./rules/README.md:/srv/rules/README.md:ro
     restart: unless-stopped
     networks:
       - fsk-network

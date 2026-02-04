@@ -2,6 +2,8 @@
 	redir /rules /rules/
 	handle_path /rules/* {
 		root * /srv/rules
-		file_server browse
+		file_server {
+      browse /etc/caddy/template.html
+    }
 	}
 }
