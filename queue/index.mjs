@@ -514,6 +514,9 @@ app.post("/api/admin/register/:type", async (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  // 대기열 이벤트 로그 기록
+  db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run("register", num, type, Date.now());
+
   // SSE 브로드캐스트: 대기열 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
   broadcastEvent("queue", { type, activeInspections });
@@ -649,6 +652,9 @@ app.post("/api/admin/cancel/:type", (req, res) => {
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
+
+  // 대기열 이벤트 로그 기록
+  db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run("cancel", num, type, Date.now());
 
   // SSE 브로드캐스트: 대기열 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
