@@ -1,13 +1,14 @@
 <script setup>
-import { ref, onMounted, computed, watch } from "vue";
+import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
   fetchEntries,
   fetchAllInspections,
   fetchInspectionQueue,
   toggleInspectionActive,
-  enterFromQueue,
   cancelFromQueue,
+  enterBooth,
+  exitBooth,
   resetInspectionHistory,
   fetchSmsSettings,
   setSmsSettings,
@@ -22,7 +23,7 @@ import { useNotification } from "../composables/useNotification";
 const { success, error, warning } = useNotification();
 const router = useRouter();
 
-const { activeInspections, lastQueueUpdate } = useSSE();
+const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate } = useSSE();
 
 const entries = ref({});
 const inspections = ref([]);
@@ -32,14 +33,34 @@ const smsEnabled = ref(false);
 const smsRank = ref(3);
 const cancelPenalty = ref(10);
 const loading = ref(true);
+const boothSelectedTeam = ref({});
+const elapsedTimes = ref({});
+let elapsedTimers = {};
 
 const activeInspectionTypes = computed(() => activeInspections.value.map((i) => i.type));
+
+const currentBooths = computed(() => {
+  if (!currentTab.value || !allBooths.value[currentTab.value]) return [];
+  return allBooths.value[currentTab.value];
+});
 
 // Watch for queue updates from SSE
 watch(lastQueueUpdate, async (update) => {
   if (update && (update.type === currentTab.value || !currentTab.value)) {
     await refreshQueue(currentTab.value || update.type);
   }
+});
+
+// Watch for booth updates from SSE
+watch(lastBoothUpdate, (update) => {
+  if (update && update.type === currentTab.value) {
+    syncElapsedTimers();
+  }
+});
+
+// Re-sync timers when tab changes
+watch(currentTab, () => {
+  syncElapsedTimers();
 });
 
 // Watch for active inspections changes
@@ -111,14 +132,59 @@ async function toggleActive(type, e) {
   }
 }
 
-async function enterEntry(num) {
+async function enterBoothAction(boothNum) {
+  const num = boothSelectedTeam.value[boothNum];
+  if (!num) return;
   try {
-    await enterFromQueue(currentTab.value, num);
-    success(`엔트리 ${num}번 입장`);
+    await enterBooth(currentTab.value, boothNum, num);
+    success(`엔트리 ${num}번 부스 ${boothNum} 입장`);
+    boothSelectedTeam.value[boothNum] = null;
     await refreshQueue(currentTab.value);
   } catch (e) {
     error(e.message);
   }
+}
+
+async function exitBoothAction(boothNum) {
+  const booth = currentBooths.value.find((b) => b.booth_num === boothNum);
+  if (!booth || !booth.occupied_by) return;
+  try {
+    await exitBooth(currentTab.value, boothNum);
+    success(`엔트리 ${booth.occupied_by}번 부스 ${boothNum} 퇴장`);
+    await refreshQueue(currentTab.value);
+  } catch (e) {
+    error(e.message);
+  }
+}
+
+function syncElapsedTimers() {
+  // Clear all existing timers
+  Object.values(elapsedTimers).forEach(clearInterval);
+  elapsedTimers = {};
+  elapsedTimes.value = {};
+
+  const booths = currentBooths.value;
+  for (const booth of booths) {
+    if (booth.occupied_by && booth.entered_at) {
+      const key = `${currentTab.value}-${booth.booth_num}`;
+      elapsedTimes.value[key] = formatElapsed(booth.entered_at);
+      elapsedTimers[key] = setInterval(() => {
+        elapsedTimes.value[key] = formatElapsed(booth.entered_at);
+      }, 1000);
+    }
+  }
+}
+
+function formatElapsed(enteredAt) {
+  const diff = Math.max(0, Math.floor((Date.now() - enteredAt) / 1000));
+  const min = Math.floor(diff / 60).toString().padStart(2, "0");
+  const sec = (diff % 60).toString().padStart(2, "0");
+  return `${min}:${sec}`;
+}
+
+function clearAllTimers() {
+  Object.values(elapsedTimers).forEach(clearInterval);
+  elapsedTimers = {};
 }
 
 async function cancelEntry(num) {
@@ -191,6 +257,10 @@ function formatTime(timestamp) {
   return `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}:${date.getSeconds().toString().padStart(2, "0")}`;
 }
 
+onUnmounted(() => {
+  clearAllTimers();
+});
+
 function goToRegister() {
   router.push("/register");
 }
@@ -249,43 +319,92 @@ function goToPriority() {
           <div v-if="loading" class="loading">
             <div class="loading-spinner"></div>
           </div>
-          <div v-else-if="currentQueue.length > 0" class="queue-list">
-            <div v-for="(item, index) in currentQueue" :key="item.num" class="queue-item">
-              <div class="queue-item-header">
-                <div class="queue-item-left">
-                  <span class="entry-num">{{ item.num }}</span>
-                  <span class="entry-detail">{{ entries[item.num]?.univ }} {{ entries[item.num]?.team }}</span>
-                </div>
-                <div class="queue-item-badges">
-                  <span v-if="item.is_reinspection" class="badge badge-warning">재검</span>
-                  <span v-else class="badge badge-success">초검</span>
-                  <span v-if="item.priority < 999" class="badge badge-primary">{{ item.priority }}순위</span>
-                </div>
+          <template v-else>
+            <!-- Booth Status Section -->
+            <div v-if="currentBooths.length > 0" class="booth-section">
+              <div class="booth-section-header">
+                <span class="booth-section-title">부스 현황</span>
               </div>
-              <div class="queue-item-footer">
-                <div class="queue-item-meta">
-                  <a :href="`tel:${item.phone}`" class="entry-phone">{{ formatPhone(item.phone) }}</a>
-                  <span class="entry-time">{{ formatTime(item.timestamp) }}</span>
-                </div>
-                <div class="action-buttons">
-                  <button class="btn btn-success btn-icon btn-sm" @click="enterEntry(item.num)" title="입장">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-                      <polyline points="10 17 15 12 10 7" />
-                      <line x1="15" y1="12" x2="3" y2="12" />
-                    </svg>
-                  </button>
-                  <button class="btn btn-danger btn-icon btn-sm" @click="cancelEntry(item.num)" title="취소">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                      <line x1="18" y1="6" x2="6" y2="18" />
-                      <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                  </button>
+              <div class="booth-cards">
+                <div
+                  v-for="booth in currentBooths"
+                  :key="booth.booth_num"
+                  class="booth-card"
+                  :class="{ 'booth-inactive': !booth.active, 'booth-occupied': booth.occupied_by }"
+                >
+                  <div class="booth-card-header">
+                    <span class="booth-num">부스 {{ booth.booth_num }}</span>
+                    <span v-if="!booth.active" class="badge badge-muted">비활성</span>
+                    <span v-else-if="booth.occupied_by" class="badge badge-warning">사용중</span>
+                    <span v-else class="badge badge-success">비어있음</span>
+                  </div>
+                  <div v-if="booth.active && booth.occupied_by" class="booth-card-body">
+                    <div class="booth-team-info">
+                      <span class="booth-team-num">{{ booth.occupied_by }}</span>
+                      <span class="booth-team-name">{{ entries[booth.occupied_by]?.univ }} {{ entries[booth.occupied_by]?.team }}</span>
+                    </div>
+                    <div class="booth-elapsed">{{ elapsedTimes[`${currentTab}-${booth.booth_num}`] || '00:00' }}</div>
+                    <button class="btn btn-danger btn-sm booth-action-btn" @click="exitBoothAction(booth.booth_num)">
+                      퇴장
+                    </button>
+                  </div>
+                  <div v-else-if="booth.active" class="booth-card-body">
+                    <select
+                      class="booth-select"
+                      v-model="boothSelectedTeam[booth.booth_num]"
+                    >
+                      <option :value="null" disabled>팀 선택</option>
+                      <option v-for="item in currentQueue" :key="item.num" :value="item.num">
+                        {{ item.num }} - {{ entries[item.num]?.univ }} {{ entries[item.num]?.team }}
+                      </option>
+                    </select>
+                    <button
+                      class="btn btn-success btn-sm booth-action-btn"
+                      :disabled="!boothSelectedTeam[booth.booth_num]"
+                      @click="enterBoothAction(booth.booth_num)"
+                    >
+                      입장
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-          <div v-else class="empty-state">대기중인 엔트리가 없습니다.</div>
+
+            <!-- Queue Section -->
+            <div class="queue-section-header">
+              <span class="booth-section-title">대기열</span>
+            </div>
+            <div v-if="currentQueue.length > 0" class="queue-list">
+              <div v-for="(item, index) in currentQueue" :key="item.num" class="queue-item">
+                <div class="queue-item-header">
+                  <div class="queue-item-left">
+                    <span class="entry-num">{{ item.num }}</span>
+                    <span class="entry-detail">{{ entries[item.num]?.univ }} {{ entries[item.num]?.team }}</span>
+                  </div>
+                  <div class="queue-item-badges">
+                    <span v-if="item.is_reinspection" class="badge badge-warning">재검</span>
+                    <span v-else class="badge badge-success">초검</span>
+                    <span v-if="item.priority < 999" class="badge badge-primary">{{ item.priority }}순위</span>
+                  </div>
+                </div>
+                <div class="queue-item-footer">
+                  <div class="queue-item-meta">
+                    <a :href="`tel:${item.phone}`" class="entry-phone">{{ formatPhone(item.phone) }}</a>
+                    <span class="entry-time">{{ formatTime(item.timestamp) }}</span>
+                  </div>
+                  <div class="action-buttons">
+                    <button class="btn btn-danger btn-icon btn-sm" @click="cancelEntry(item.num)" title="취소">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-else class="empty-state">대기중인 엔트리가 없습니다.</div>
+          </template>
         </div>
       </div>
 
@@ -608,6 +727,124 @@ function goToPriority() {
   gap: 0.75rem;
 }
 
+/* Booth Section */
+.booth-section {
+  border-bottom: 1px solid var(--border-color);
+}
+
+.booth-section-header,
+.queue-section-header {
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.booth-section-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.booth-cards {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+}
+
+.booth-card {
+  flex: 1;
+  min-width: 160px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: var(--bg-primary);
+}
+
+.booth-card.booth-inactive {
+  background: var(--bg-tertiary, var(--bg-secondary));
+  opacity: 0.6;
+}
+
+.booth-card.booth-occupied {
+  border-color: var(--accent-warning, #f59e0b);
+}
+
+.booth-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.booth-num {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.badge-muted {
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  font-size: 0.6875rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+}
+
+.booth-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.booth-team-info {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.booth-team-num {
+  font-weight: 700;
+  font-size: 1rem;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.booth-team-name {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.booth-elapsed {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--accent-warning, #f59e0b);
+  text-align: center;
+}
+
+.booth-select {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  background: var(--bg-input, var(--bg-primary));
+  color: var(--text-primary);
+}
+
+.booth-select:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
+.booth-action-btn {
+  width: 100%;
+}
+
 @media (max-width: 1024px) {
   .admin-grid {
     grid-template-columns: 1fr;
@@ -615,6 +852,14 @@ function goToPriority() {
 }
 
 @media (max-width: 640px) {
+  .booth-cards {
+    flex-direction: column;
+  }
+
+  .booth-card {
+    min-width: unset;
+  }
+
   .queue-item {
     padding: 0.75rem;
   }

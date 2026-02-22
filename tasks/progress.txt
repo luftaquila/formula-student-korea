@@ -114,3 +114,29 @@
   - `COALESCE(SUM(...), 0)` prevents null totalOccupyTime when no completed booth sessions exist
   - Stats endpoints are placed in a new "Admin - 통계" section between booth management and settings sections
 ---
+
+## 2026-02-23 - US-010
+- What was implemented: Added 9 frontend API client functions for booth management, public booth status, and statistics endpoints
+- Files changed: queue/web/src/api.js
+- **Learnings for future iterations:**
+  - Public booth functions (`getPublicBooths`, `getAllPublicBooths`) are in a separate "Public API - 부스 현황" section since they hit `/api/booths/` not `/api/admin/booths/`
+  - Admin booth functions (`getBooths`, `updateBoothConfig`, `toggleBooth`, `enterBooth`, `exitBooth`) are in "Admin API - 부스 관리" section
+  - Stats functions (`getStats`, `getTeamStats`) use `URLSearchParams` to build optional query strings for from/to/inspection filters
+  - All functions follow the existing `request()` wrapper pattern - functions that return data call `res.json()`, mutation-only functions just `await` the request
+  - `exitBooth` sends POST with no body (just `method: "POST"`) since the backend identifies the booth by URL params
+---
+
+## 2026-02-23 - US-011
+- What was implemented: Added booth management section to AdminPanel with booth cards above queue list, enter/exit controls, and real-time elapsed time tracking
+- Files changed: queue/web/src/views/AdminPanel.vue
+- **Learnings for future iterations:**
+  - AdminPanel now imports `allBooths` and `lastBoothUpdate` from useSSE, and `enterBooth`/`exitBooth` from api.js (old `enterFromQueue` import removed)
+  - Booth cards use `currentBooths` computed property derived from `allBooths[currentTab]` - auto-updates when tab changes or SSE booth event fires
+  - Elapsed time tracking uses a `elapsedTimers` plain object (not ref) for setInterval IDs and `elapsedTimes` ref (keyed by `${type}-${boothNum}`) for display values
+  - `syncElapsedTimers()` clears all timers and re-creates them - called on tab change and booth SSE update, keeping timers in sync with booth state
+  - `onUnmounted` calls `clearAllTimers()` to prevent timer leaks
+  - `boothSelectedTeam` ref tracks per-booth dropdown selection, reset to null after successful enter
+  - The old enter button (green check) was removed from queue items; only cancel button remains
+  - Card body has two v-if branches: occupied (team info + elapsed + exit button) and empty active (select dropdown + enter button); inactive booths show no body
+  - Mobile layout stacks booth cards vertically via `flex-direction: column` in the 640px media query
+---
