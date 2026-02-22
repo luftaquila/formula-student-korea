@@ -356,6 +356,38 @@ app.get("/api/state/:num", async (req, res) => {
   res.json(result.result);
 });
 
+// GET /api/booths/:type - 공개 부스 상태 조회
+app.get("/api/booths/all", (req, res) => {
+  const result = dbRun(() => {
+    const allBooths = {};
+    for (const k of Object.keys(inspections)) {
+      allBooths[k] = getBoothsForType(k);
+    }
+    return allBooths;
+  });
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  res.json(result.result);
+});
+
+app.get("/api/booths/:type", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+
+  const result = dbRun(() => getBoothsForType(req.params.type));
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  res.json(result.result);
+});
+
 /* ============================================
    API 라우트: Admin - 검차 관리
    ============================================ */

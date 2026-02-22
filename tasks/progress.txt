@@ -80,3 +80,13 @@
   - booth_log uses `exited_at IS NULL` to match the active log entry when updating exit time
   - The old `POST /api/admin/enter/:type` endpoint remains for backward compatibility (will be deprecated in US-008)
 ---
+
+## 2026-02-23 - US-007
+- What was implemented: Added two public booth status API endpoints: GET /api/booths/all (all booths grouped by type) and GET /api/booths/:type (booths for single type)
+- Files changed: queue/index.mjs
+- **Learnings for future iterations:**
+  - Public booth endpoints placed in the Public API section (before Admin routes), reusing `getBoothsForType()` helper
+  - `/api/booths/all` must be defined BEFORE `/api/booths/:type` to avoid Express matching "all" as a `:type` param
+  - `getBoothsForType` is a function declaration so it's hoisted - can be called from any route handler regardless of definition order in the file
+  - `validateInspection()` returns 400 for invalid types, which satisfies the invalid type requirement
+---
