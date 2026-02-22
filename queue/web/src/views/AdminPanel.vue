@@ -11,7 +11,6 @@ import {
   exitBooth,
   updateBoothConfig,
   toggleBooth,
-  resetInspectionHistory,
   fetchSmsSettings,
   setSmsSettings,
   fetchSmsRankSettings,
@@ -40,6 +39,11 @@ const elapsedTimes = ref({});
 let elapsedTimers = {};
 
 const activeInspectionTypes = computed(() => activeInspections.value.map((i) => i.type));
+
+const currentTabName = computed(() => {
+  const item = activeInspections.value.find((i) => i.type === currentTab.value);
+  return item ? item.name : "";
+});
 
 const currentBooths = computed(() => {
   if (!currentTab.value || !allBooths.value[currentTab.value]) return [];
@@ -139,7 +143,7 @@ async function enterBoothAction(boothNum) {
   if (!num) return;
   try {
     await enterBooth(currentTab.value, boothNum, num);
-    success(`엔트리 ${num}번 부스 ${boothNum} 입장`);
+    success(`엔트리 ${num}번 ${currentTabName.value}${boothNum} 입차`);
     boothSelectedTeam.value[boothNum] = null;
     await refreshQueue(currentTab.value);
   } catch (e) {
@@ -152,7 +156,7 @@ async function exitBoothAction(boothNum) {
   if (!booth || !booth.occupied_by) return;
   try {
     await exitBooth(currentTab.value, boothNum);
-    success(`엔트리 ${booth.occupied_by}번 부스 ${boothNum} 퇴장`);
+    success(`엔트리 ${booth.occupied_by}번 ${currentTabName.value}${boothNum} 출차`);
     await refreshQueue(currentTab.value);
   } catch (e) {
     error(e.message);
@@ -238,18 +242,6 @@ async function updateCancelPenalty(e) {
   }
 }
 
-async function resetHistory(type, name) {
-  if (!confirm(`${name} 검차의 초검/재검 이력을 초기화하시겠습니까?\n모든 팀이 초검으로 간주됩니다.`)) return;
-
-  try {
-    await resetInspectionHistory(type);
-    success(`${name} 검차 이력을 초기화했습니다.`);
-    // SSE will handle queue update
-  } catch (e) {
-    error(e.message);
-  }
-}
-
 async function updateBoothCount(type, ev) {
   const value = parseInt(ev.target.value, 10);
   if (isNaN(value) || value < 1) return;
@@ -268,7 +260,7 @@ async function toggleBoothActive(type, boothNum, ev) {
   const active = ev.target.checked;
   try {
     await toggleBooth(type, boothNum, active);
-    success(`부스 ${boothNum} ${active ? "활성화" : "비활성화"}`);
+    success(`${currentTabName.value}${boothNum} ${active ? "활성화" : "비활성화"}`);
   } catch (err) {
     error(err.message);
     // Revert toggle
@@ -318,7 +310,7 @@ function goToStats() {
             points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"
           />
         </svg>
-        우선순위 관리
+        우선순위
       </button>
       <button class="btn btn-ghost" @click="goToStats">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
@@ -373,10 +365,19 @@ function goToStats() {
                   :class="{ 'booth-inactive': !booth.active, 'booth-occupied': booth.occupied_by }"
                 >
                   <div class="booth-card-header">
-                    <span class="booth-num">부스 {{ booth.booth_num }}</span>
+                    <span class="booth-num">{{ currentTabName }}{{ booth.booth_num }}</span>
                     <span v-if="!booth.active" class="badge badge-muted">비활성</span>
-                    <span v-else-if="booth.occupied_by" class="badge badge-warning">사용중</span>
-                    <span v-else class="badge badge-success">비어있음</span>
+                    <span v-else-if="booth.occupied_by" class="badge badge-warning">검차중</span>
+                    <span v-else class="badge badge-success">입차 가능</span>
+                    <label class="toggle toggle-sm booth-toggle">
+                      <input
+                        type="checkbox"
+                        :checked="booth.active"
+                        :disabled="booth.active && !!booth.occupied_by"
+                        @change="toggleBoothActive(currentTab, booth.booth_num, $event)"
+                      />
+                      <span class="toggle-slider"></span>
+                    </label>
                   </div>
                   <div v-if="booth.active && booth.occupied_by" class="booth-card-body">
                     <div class="booth-team-info">
@@ -385,7 +386,7 @@ function goToStats() {
                     </div>
                     <div class="booth-elapsed">{{ elapsedTimes[`${currentTab}-${booth.booth_num}`] || '00:00' }}</div>
                     <button class="btn btn-danger btn-sm booth-action-btn" @click="exitBoothAction(booth.booth_num)">
-                      퇴장
+                      출차
                     </button>
                   </div>
                   <div v-else-if="booth.active" class="booth-card-body">
@@ -403,7 +404,7 @@ function goToStats() {
                       :disabled="!boothSelectedTeam[booth.booth_num]"
                       @click="enterBoothAction(booth.booth_num)"
                     >
-                      입장
+                      입차
                     </button>
                   </div>
                 </div>
@@ -493,14 +494,8 @@ function goToStats() {
           <div class="setting-section">
             <div v-for="item in inspections" :key="item.type" class="inspection-setting-group">
               <div class="setting-item inspection-setting">
-                <div class="setting-info">
+                <div class="setting-info-left">
                   <span class="setting-label">{{ item.name }}</span>
-                </div>
-                <div class="setting-actions">
-                  <label class="toggle">
-                    <input type="checkbox" :checked="item.active" @change="toggleActive(item.type, $event)" />
-                    <span class="toggle-slider"></span>
-                  </label>
                   <div class="setting-input">
                     <input
                       type="number"
@@ -510,31 +505,11 @@ function goToStats() {
                     />
                     <span>부스</span>
                   </div>
-                  <button
-                    class="btn btn-ghost btn-sm"
-                    @click="resetHistory(item.type, item.name)"
-                    title="초검/재검 이력 초기화"
-                  >
-                    초기화
-                  </button>
                 </div>
-              </div>
-              <div v-if="allBooths[item.type]?.length > 0" class="booth-toggle-list">
-                <div
-                  v-for="booth in allBooths[item.type]"
-                  :key="booth.booth_num"
-                  class="booth-toggle-item"
-                >
-                  <span class="booth-toggle-label">부스 {{ booth.booth_num }}</span>
-                  <label class="toggle toggle-sm">
-                    <input
-                      type="checkbox"
-                      :checked="booth.active"
-                      @change="toggleBoothActive(item.type, booth.booth_num, $event)"
-                    />
-                    <span class="toggle-slider"></span>
-                  </label>
-                </div>
+                <label class="toggle">
+                  <input type="checkbox" :checked="item.active" @change="toggleActive(item.type, $event)" />
+                  <span class="toggle-slider"></span>
+                </label>
               </div>
             </div>
           </div>
@@ -789,7 +764,7 @@ function goToStats() {
   gap: 0.5rem;
 }
 
-.setting-actions {
+.setting-info-left {
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -808,22 +783,9 @@ function goToStats() {
   margin-bottom: 0;
 }
 
-.booth-toggle-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.375rem 0.75rem;
-  padding: 0.375rem 0 0.25rem 0.5rem;
-}
-
-.booth-toggle-item {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.booth-toggle-label {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
+.toggle.toggle-sm {
+  width: 32px;
+  height: 18px;
 }
 
 .toggle-sm .toggle-slider {
@@ -834,10 +796,17 @@ function goToStats() {
 .toggle-sm .toggle-slider::before {
   width: 14px;
   height: 14px;
+  bottom: 2px;
+  left: 2px;
 }
 
 .toggle-sm input:checked + .toggle-slider::before {
   transform: translateX(14px);
+}
+
+.toggle-sm input:disabled + .toggle-slider {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* Booth Section */
@@ -887,9 +856,13 @@ function goToStats() {
 
 .booth-card-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 0.5rem;
   margin-bottom: 0.5rem;
+}
+
+.booth-toggle {
+  margin-left: auto;
 }
 
 .booth-num {
