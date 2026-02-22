@@ -9,6 +9,8 @@ import {
   cancelFromQueue,
   enterBooth,
   exitBooth,
+  updateBoothConfig,
+  toggleBooth,
   resetInspectionHistory,
   fetchSmsSettings,
   setSmsSettings,
@@ -248,6 +250,32 @@ async function resetHistory(type, name) {
   }
 }
 
+async function updateBoothCount(type, ev) {
+  const value = parseInt(ev.target.value, 10);
+  if (isNaN(value) || value < 1) return;
+  try {
+    await updateBoothConfig(type, value);
+    success(`부스 수를 ${value}개로 변경했습니다.`);
+  } catch (err) {
+    error(err.message);
+    // Revert input to current booth count
+    const booths = allBooths.value[type];
+    if (booths) ev.target.value = booths.length;
+  }
+}
+
+async function toggleBoothActive(type, boothNum, ev) {
+  const active = ev.target.checked;
+  try {
+    await toggleBooth(type, boothNum, active);
+    success(`부스 ${boothNum} ${active ? "활성화" : "비활성화"}`);
+  } catch (err) {
+    error(err.message);
+    // Revert toggle
+    ev.target.checked = !active;
+  }
+}
+
 function formatPhone(phone) {
   return phone.replace(/(\d{3})(\d{4})(\d{4})/, "$1-$2-$3");
 }
@@ -451,22 +479,50 @@ function goToPriority() {
 
           <!-- Active Inspections -->
           <div class="setting-section">
-            <div v-for="item in inspections" :key="item.type" class="setting-item inspection-setting">
-              <div class="setting-info">
-                <span class="setting-label">{{ item.name }}</span>
+            <div v-for="item in inspections" :key="item.type" class="inspection-setting-group">
+              <div class="setting-item inspection-setting">
+                <div class="setting-info">
+                  <span class="setting-label">{{ item.name }}</span>
+                </div>
+                <div class="setting-actions">
+                  <label class="toggle">
+                    <input type="checkbox" :checked="item.active" @change="toggleActive(item.type, $event)" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <div class="setting-input">
+                    <input
+                      type="number"
+                      :value="allBooths[item.type]?.length || 1"
+                      min="1"
+                      @change="updateBoothCount(item.type, $event)"
+                    />
+                    <span>부스</span>
+                  </div>
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    @click="resetHistory(item.type, item.name)"
+                    title="초검/재검 이력 초기화"
+                  >
+                    초기화
+                  </button>
+                </div>
               </div>
-              <div class="setting-actions">
-                <label class="toggle">
-                  <input type="checkbox" :checked="item.active" @change="toggleActive(item.type, $event)" />
-                  <span class="toggle-slider"></span>
-                </label>
-                <button
-                  class="btn btn-ghost btn-sm"
-                  @click="resetHistory(item.type, item.name)"
-                  title="초검/재검 이력 초기화"
+              <div v-if="allBooths[item.type]?.length > 0" class="booth-toggle-list">
+                <div
+                  v-for="booth in allBooths[item.type]"
+                  :key="booth.booth_num"
+                  class="booth-toggle-item"
                 >
-                  초기화
-                </button>
+                  <span class="booth-toggle-label">부스 {{ booth.booth_num }}</span>
+                  <label class="toggle toggle-sm">
+                    <input
+                      type="checkbox"
+                      :checked="booth.active"
+                      @change="toggleBoothActive(item.type, booth.booth_num, $event)"
+                    />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
               </div>
             </div>
           </div>
@@ -725,6 +781,51 @@ function goToPriority() {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+}
+
+/* Booth Settings */
+.inspection-setting-group {
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.inspection-setting-group:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+
+.booth-toggle-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 0.75rem;
+  padding: 0.375rem 0 0.25rem 0.5rem;
+}
+
+.booth-toggle-item {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.booth-toggle-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.toggle-sm .toggle-slider {
+  width: 32px;
+  height: 18px;
+}
+
+.toggle-sm .toggle-slider::before {
+  width: 14px;
+  height: 14px;
+}
+
+.toggle-sm input:checked + .toggle-slider::before {
+  transform: translateX(14px);
 }
 
 /* Booth Section */
