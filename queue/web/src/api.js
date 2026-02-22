@@ -164,6 +164,14 @@ export async function resetInspectionHistory(type) {
   });
 }
 
+export async function setInspectionIgnore(type, field, value) {
+  await request(`/api/admin/inspection/${type}/ignore`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ field, value }),
+  });
+}
+
 /* ============================================
    Admin API - 통계
    ============================================ */

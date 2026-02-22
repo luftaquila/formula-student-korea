@@ -8,6 +8,8 @@ import {
   setPriority,
   removePriority,
   resetAllPriorities,
+  resetInspectionHistory,
+  setInspectionIgnore,
 } from "../api";
 import { useNotification } from "../composables/useNotification";
 
@@ -144,6 +146,30 @@ async function resetAll(type) {
   }
 }
 
+async function resetHistory(type) {
+  const inspectionName = inspections.value.find((i) => i.type === type)?.name || type;
+  if (!confirm(`${inspectionName} 검차의 초검/재검 이력을 초기화하시겠습니까?\n모든 팀이 초검으로 간주됩니다.`)) return;
+
+  try {
+    await resetInspectionHistory(type);
+    success(`${inspectionName} 검차 이력을 초기화했습니다.`);
+  } catch (e) {
+    error(e.message);
+  }
+}
+
+async function toggleIgnore(type, field, currentValue) {
+  try {
+    await setInspectionIgnore(type, field, !currentValue);
+    // Refresh inspections to get updated flags
+    inspections.value = await fetchAllInspections();
+    const label = field === "ignore_priority" ? "우선순위" : "초검/재검";
+    success(`${label} ${!currentValue ? "무시" : "적용"}`);
+  } catch (e) {
+    error(e.message);
+  }
+}
+
 function goBack() {
   router.push("/admin");
 }
@@ -189,6 +215,49 @@ function goBack() {
         <div class="rule-item">
           <span class="rule-number">3</span>
           <span class="rule-text"><strong>선착순</strong></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Inspection Settings -->
+    <div class="card settings-card">
+      <div class="card-header">
+        <h3>검차별 설정</h3>
+      </div>
+      <div class="card-body">
+        <div v-for="item in inspections" :key="item.type" class="inspection-config">
+          <span class="config-name">{{ item.name }}</span>
+          <div class="config-toggles">
+            <label class="config-toggle" :class="{ disabled: item.ignore_reinspection }">
+              <span class="config-toggle-label">초검/재검</span>
+              <label class="toggle toggle-sm">
+                <input
+                  type="checkbox"
+                  :checked="!item.ignore_reinspection"
+                  @change="toggleIgnore(item.type, 'ignore_reinspection', item.ignore_reinspection)"
+                />
+                <span class="toggle-slider"></span>
+              </label>
+            </label>
+            <label class="config-toggle" :class="{ disabled: item.ignore_priority }">
+              <span class="config-toggle-label">우선순위</span>
+              <label class="toggle toggle-sm">
+                <input
+                  type="checkbox"
+                  :checked="!item.ignore_priority"
+                  @change="toggleIgnore(item.type, 'ignore_priority', item.ignore_priority)"
+                />
+                <span class="toggle-slider"></span>
+              </label>
+            </label>
+          </div>
+          <button
+            class="btn btn-ghost btn-sm"
+            @click="resetHistory(item.type)"
+            title="초검/재검 이력 초기화"
+          >
+            이력 초기화
+          </button>
         </div>
       </div>
     </div>
@@ -340,6 +409,79 @@ function goBack() {
 
 .rule-text strong {
   color: var(--text-primary);
+}
+
+/* Settings Card */
+.settings-card .card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.inspection-config {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.inspection-config:last-child {
+  border-bottom: none;
+}
+
+.config-name {
+  font-weight: 600;
+  font-size: 0.875rem;
+  min-width: 5rem;
+}
+
+.config-toggles {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.config-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  cursor: pointer;
+}
+
+.config-toggle.disabled {
+  opacity: 0.5;
+}
+
+.config-toggle-label {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.toggle.toggle-sm {
+  width: 32px;
+  height: 18px;
+}
+
+.toggle-sm .toggle-slider {
+  width: 32px;
+  height: 18px;
+}
+
+.toggle-sm .toggle-slider::before {
+  width: 14px;
+  height: 14px;
+  bottom: 2px;
+  left: 2px;
+}
+
+.toggle-sm input:checked + .toggle-slider::before {
+  transform: translateX(14px);
+}
+
+.inspection-config .btn {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 /* Entries Card */

@@ -262,6 +262,15 @@ function dbRun(fn) {
  * 대기열 조회 쿼리 (정렬 순서: 초검 > 재검, 우선순위 높음 > 낮음, 선착순)
  */
 function getQueueQuery(inspection) {
+  const meta = db.prepare("SELECT ignore_priority, ignore_reinspection FROM inspection WHERE type = ?").get(inspection);
+  const ignoreReinspection = meta?.ignore_reinspection;
+  const ignorePriority = meta?.ignore_priority;
+
+  const orderClauses = [];
+  if (!ignoreReinspection) orderClauses.push("is_reinspection ASC");
+  if (!ignorePriority) orderClauses.push("priority ASC");
+  orderClauses.push("t.timestamp ASC");
+
   return `
     SELECT t.*,
       CASE WHEN EXISTS (
@@ -270,7 +279,7 @@ function getQueueQuery(inspection) {
       COALESCE(p.priority, 999) AS priority
     FROM ${inspection} AS t
     LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ?
-    ORDER BY is_reinspection ASC, priority ASC, t.timestamp ASC
+    ORDER BY ${orderClauses.join(", ")}
   `;
 }
 
@@ -278,23 +287,35 @@ function getQueueQuery(inspection) {
  * 특정 엔트리의 대기열 순위 조회
  */
 function getQueueRank(inspection, num) {
+  const meta = db.prepare("SELECT ignore_priority, ignore_reinspection FROM inspection WHERE type = ?").get(inspection);
+  const ignoreReinspection = meta?.ignore_reinspection;
+  const ignorePriority = meta?.ignore_priority;
+
+  const orderClauses = [];
+  if (!ignoreReinspection) orderClauses.push(`CASE WHEN EXISTS (
+              SELECT 1 FROM inspection_history h WHERE h.num = t.num AND h.inspection = ?
+            ) THEN 1 ELSE 0 END ASC`);
+  if (!ignorePriority) orderClauses.push("COALESCE(p.priority, 999) ASC");
+  orderClauses.push("t.timestamp ASC");
+
+  // Build params: each reinspection clause needs inspection param
+  const params = [];
+  if (!ignoreReinspection) params.push(inspection);
+  params.push(inspection); // for LEFT JOIN
+  params.push(num); // for WHERE
+
   const result = db
     .prepare(`
     SELECT sub.rank FROM (
       SELECT t.num,
         ROW_NUMBER() OVER (
-          ORDER BY
-            CASE WHEN EXISTS (
-              SELECT 1 FROM inspection_history h WHERE h.num = t.num AND h.inspection = ?
-            ) THEN 1 ELSE 0 END ASC,
-            COALESCE(p.priority, 999) ASC,
-            t.timestamp ASC
+          ORDER BY ${orderClauses.join(", ")}
         ) AS rank
       FROM ${inspection} AS t
       LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ?
     ) AS sub WHERE sub.num = ?
   `)
-    .get(inspection, inspection, num);
+    .get(...params);
 
   return result ? result.rank : null;
 }
@@ -1255,22 +1276,26 @@ app.get("/api/admin/stats/:num", (req, res) => {
       ORDER BY entered_at ASC
     `).all(...boothLogParams);
 
-    const timeline = boothLogs.map((entry) => {
-      const registerEvent = db.prepare(`
-        SELECT timestamp FROM queue_log
-        WHERE num = ? AND inspection = ? AND event = 'register' AND timestamp <= ?
-        ORDER BY timestamp DESC LIMIT 1
-      `).get(num, entry.inspection, entry.enteredAt);
+    const boothEvents = [];
+    for (const row of boothLogs) {
+      boothEvents.push({
+        event: "enter",
+        inspection: row.inspection,
+        boothNum: row.boothNum,
+        timestamp: row.enteredAt,
+      });
+      if (row.exitedAt) {
+        boothEvents.push({
+          event: "exit",
+          inspection: row.inspection,
+          boothNum: row.boothNum,
+          timestamp: row.exitedAt,
+          duration: row.exitedAt - row.enteredAt,
+        });
+      }
+    }
 
-      return {
-        inspection: entry.inspection,
-        boothNum: entry.boothNum,
-        registeredAt: registerEvent ? registerEvent.timestamp : null,
-        enteredAt: entry.enteredAt,
-        exitedAt: entry.exitedAt,
-        occupyDuration: entry.exitedAt ? entry.exitedAt - entry.enteredAt : null,
-      };
-    });
+    const timeline = [...regCancelEvents, ...boothEvents].sort((a, b) => a.timestamp - b.timestamp);
 
     return {
       summary: {
