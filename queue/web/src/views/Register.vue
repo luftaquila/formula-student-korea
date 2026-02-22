@@ -1,12 +1,15 @@
 <script setup>
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { fetchEntries, registerToQueue } from "../api";
 import { useSSE } from "../composables/useSSE";
 import { useNotification } from "../composables/useNotification";
 
 const { success, error, warning } = useNotification();
 
-const { activeInspections } = useSSE();
+const { activeInspections, allBooths, lastBoothUpdate } = useSSE();
+
+const elapsedTimes = ref({});
+let elapsedTimers = {};
 
 const entries = ref({});
 const loading = ref(true);
@@ -41,9 +44,50 @@ function onPhoneInput(e) {
   phone.value = formatPhone(e.target.value);
 }
 
+const currentBooths = computed(() => {
+  if (!inspection.value || !allBooths.value[inspection.value]) return [];
+  return allBooths.value[inspection.value];
+});
+
 function selectInspection(type) {
   inspection.value = type;
+  syncElapsedTimers();
 }
+
+function syncElapsedTimers() {
+  Object.values(elapsedTimers).forEach(clearInterval);
+  elapsedTimers = {};
+  elapsedTimes.value = {};
+
+  const booths = currentBooths.value;
+  for (const booth of booths) {
+    if (booth.occupied_by && booth.entered_at) {
+      const key = `${inspection.value}-${booth.booth_num}`;
+      elapsedTimes.value[key] = formatElapsed(booth.entered_at);
+      elapsedTimers[key] = setInterval(() => {
+        elapsedTimes.value[key] = formatElapsed(booth.entered_at);
+      }, 1000);
+    }
+  }
+}
+
+function formatElapsed(enteredAt) {
+  const diff = Math.max(0, Math.floor((Date.now() - enteredAt) / 1000));
+  const min = Math.floor(diff / 60).toString().padStart(2, "0");
+  const sec = (diff % 60).toString().padStart(2, "0");
+  return `${min}:${sec}`;
+}
+
+function clearAllTimers() {
+  Object.values(elapsedTimers).forEach(clearInterval);
+  elapsedTimers = {};
+}
+
+watch(lastBoothUpdate, (update) => {
+  if (update && update.type === inspection.value) {
+    syncElapsedTimers();
+  }
+});
 
 async function submit() {
   const num = entryNum.value;
@@ -88,6 +132,8 @@ async function submit() {
     phone.value = "010";
     inspection.value = "";
     agreed.value = false;
+    clearAllTimers();
+    elapsedTimes.value = {};
   } catch (e) {
     // 페널티 에러인 경우 로컬 시간으로 포맷
     try {
@@ -110,8 +156,14 @@ function resetForm() {
   phone.value = "010";
   inspection.value = "";
   agreed.value = false;
+  clearAllTimers();
+  elapsedTimes.value = {};
   warning("입력이 초기화되었습니다.");
 }
+
+onUnmounted(() => {
+  clearAllTimers();
+});
 </script>
 
 <template>
@@ -134,6 +186,32 @@ function resetForm() {
             </button>
           </div>
           <div v-if="activeInspections.length === 0" class="no-inspections">현재 활성화된 검차가 없습니다.</div>
+        </div>
+
+        <!-- Booth Status Cards -->
+        <div v-if="inspection && currentBooths.length > 0" class="booth-status">
+          <label>부스 현황</label>
+          <div class="booth-cards">
+            <div
+              v-for="booth in currentBooths"
+              :key="booth.booth_num"
+              class="booth-card"
+              :class="{ 'booth-inactive': !booth.active, 'booth-occupied': booth.active && booth.occupied_by }"
+            >
+              <div class="booth-card-num">부스 {{ booth.booth_num }}</div>
+              <template v-if="!booth.active">
+                <div class="booth-card-status inactive">비활성</div>
+              </template>
+              <template v-else-if="booth.occupied_by">
+                <div class="booth-card-status occupied">사용중</div>
+                <div class="booth-card-team">{{ booth.occupied_by }}번</div>
+                <div class="booth-card-elapsed">{{ elapsedTimes[`${inspection}-${booth.booth_num}`] || '00:00' }}</div>
+              </template>
+              <template v-else>
+                <div class="booth-card-status empty">비어있음</div>
+              </template>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -527,6 +605,92 @@ function resetForm() {
   cursor: not-allowed;
 }
 
+/* Booth Status */
+.booth-status {
+  background: var(--bg-card);
+  border-radius: 16px;
+  padding: 1.5rem;
+  box-shadow: var(--shadow-card);
+  margin-top: 1rem;
+}
+
+.booth-status label {
+  display: block;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 1rem;
+}
+
+.booth-cards {
+  display: flex;
+  gap: 1rem;
+}
+
+.booth-card {
+  flex: 1;
+  border: 3px solid var(--border-color);
+  border-radius: 16px;
+  padding: 1.25rem;
+  background: var(--bg-secondary);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.booth-card.booth-inactive {
+  background: var(--bg-tertiary, var(--bg-secondary));
+  opacity: 0.5;
+}
+
+.booth-card.booth-occupied {
+  border-color: var(--accent-warning, #f59e0b);
+}
+
+.booth-card-num {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.booth-card-status {
+  font-size: 1rem;
+  font-weight: 600;
+  padding: 0.25rem 0.75rem;
+  border-radius: 8px;
+}
+
+.booth-card-status.empty {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-success);
+}
+
+.booth-card-status.occupied {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-warning, #f59e0b);
+}
+
+.booth-card-status.inactive {
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+}
+
+.booth-card-team {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--text-primary);
+}
+
+.booth-card-elapsed {
+  font-size: 1.75rem;
+  font-weight: 700;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--accent-warning, #f59e0b);
+}
+
 /* Responsive */
 @media (max-width: 900px) {
   .kiosk-content {
@@ -541,6 +705,10 @@ function resetForm() {
 @media (max-width: 600px) {
   .inspection-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .booth-cards {
+    flex-direction: column;
   }
 
   .kiosk-input {
