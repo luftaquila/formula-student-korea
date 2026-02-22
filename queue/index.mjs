@@ -560,7 +560,8 @@ app.post("/api/admin/register/:type", async (req, res) => {
   res.status(201).send();
 });
 
-// POST /api/admin/enter/:type - 대기열에서 엔트리 입장 (검차 시작)
+// [DEPRECATED] POST /api/admin/enter/:type - 대기열에서 엔트리 입장 (검차 시작)
+// Use POST /api/admin/booths/:type/:boothNum/enter instead for booth-based entry
 app.post("/api/admin/enter/:type", (req, res) => {
   const typeValidation = validateInspection(req.params.type);
   if (!typeValidation.valid) {
@@ -813,15 +814,23 @@ app.delete("/api/admin/history/:type", (req, res) => {
     return res.status(400).send(typeValidation.error);
   }
 
-  const result = dbRun(() => db.prepare("DELETE FROM inspection_history WHERE inspection = ?").run(req.params.type));
+  const type = typeValidation.value;
+
+  const result = dbRun(() => {
+    db.prepare("DELETE FROM inspection_history WHERE inspection = ?").run(type);
+
+    // 부스 상태 초기화: 해당 검차 종류의 모든 부스 점유 해제
+    db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ?").run(type);
+  });
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
 
-  // SSE 브로드캐스트: 이력 초기화 -> 대기열 순서 변경
+  // SSE 브로드캐스트: 이력 초기화 -> 대기열 순서 변경 및 부스 상태 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
-  broadcastEvent("queue", { type: req.params.type, activeInspections });
+  broadcastEvent("queue", { type, activeInspections });
+  broadcastEvent("booth", { type, booths: getBoothsForType(type) });
 
   res.status(200).send();
 });
