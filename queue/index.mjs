@@ -32,8 +32,18 @@ db.transaction(() => {
     type TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     length INTEGER NOT NULL DEFAULT 0,
-    active BOOLEAN NOT NULL DEFAULT TRUE
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    ignore_priority BOOLEAN NOT NULL DEFAULT FALSE,
+    ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE
   );`);
+
+  // 마이그레이션: 기존 테이블에 컬럼 추가
+  try {
+    db.exec(`ALTER TABLE inspection ADD COLUMN ignore_priority BOOLEAN NOT NULL DEFAULT FALSE`);
+  } catch (e) { /* already exists */ }
+  try {
+    db.exec(`ALTER TABLE inspection ADD COLUMN ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE`);
+  } catch (e) { /* already exists */ }
 
   // 팀별 검차별 우선순위 테이블 (1이 가장 높음, 숫자가 클수록 낮음)
   db.exec(`CREATE TABLE IF NOT EXISTS team_priority (
@@ -766,6 +776,35 @@ app.delete("/api/admin/history/:type", (req, res) => {
   res.status(200).send();
 });
 
+// PUT /api/admin/inspection/:type/ignore - 검차별 우선순위/초검재검 무시 설정
+app.put("/api/admin/inspection/:type/ignore", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+
+  const type = typeValidation.value;
+  const { field, value } = req.body;
+
+  if (!["ignore_priority", "ignore_reinspection"].includes(field)) {
+    return res.status(400).send("유효하지 않은 필드입니다.");
+  }
+
+  const result = dbRun(() => {
+    db.prepare(`UPDATE inspection SET ${field} = ? WHERE type = ?`).run(value ? 1 : 0, type);
+  });
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  // SSE 브로드캐스트: 설정 변경 -> 대기열 순서 변경
+  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  broadcastEvent("queue", { type, activeInspections });
+
+  res.status(200).send();
+});
+
 /* ============================================
    API 라우트: Admin - 부스 관리
    ============================================ */
@@ -1196,6 +1235,19 @@ app.get("/api/admin/stats/:num", (req, res) => {
       ${boothLogOccupyWhere}
     `).get(...boothLogOccupyParams);
 
+    // Register and cancel events from queue_log
+    const regCancelEvents = db.prepare(`
+      SELECT event, inspection, timestamp
+      FROM queue_log
+      ${queueLogWhere} AND event IN ('register', 'cancel')
+      ORDER BY timestamp ASC
+    `).all(...queueLogParams).map((row) => ({
+      event: row.event,
+      inspection: row.inspection,
+      timestamp: row.timestamp,
+    }));
+
+    // Enter/exit events from booth_log
     const boothLogs = db.prepare(`
       SELECT inspection, booth_num as boothNum, entered_at as enteredAt, exited_at as exitedAt
       FROM booth_log
