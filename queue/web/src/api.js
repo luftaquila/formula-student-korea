@@ -43,6 +43,19 @@ export async function fetchQueueState(num, phone) {
 }
 
 /* ============================================
+   Public API - 부스 현황
+   ============================================ */
+export async function getPublicBooths(type) {
+  const res = await request(`/api/booths/${type}`);
+  return res.json();
+}
+
+export async function getAllPublicBooths() {
+  const res = await request("/api/booths/all");
+  return res.json();
+}
+
+/* ============================================
    Admin API - 검차 관리
    ============================================ */
 export async function fetchAllInspections() {
@@ -87,6 +100,41 @@ export async function cancelFromQueue(type, num) {
 }
 
 /* ============================================
+   Admin API - 부스 관리
+   ============================================ */
+export async function getBooths(type) {
+  const res = await request(`/api/admin/booths/${type}`);
+  return res.json();
+}
+
+export async function updateBoothConfig(type, count) {
+  await request(`/api/admin/booths/${type}/config`, {
+    method: "PATCH",
+    body: JSON.stringify({ count }),
+  });
+}
+
+export async function toggleBooth(type, boothNum, active) {
+  await request(`/api/admin/booths/${type}/${boothNum}`, {
+    method: "PATCH",
+    body: JSON.stringify({ active }),
+  });
+}
+
+export async function enterBooth(type, boothNum, num) {
+  await request(`/api/admin/booths/${type}/${boothNum}/enter`, {
+    method: "POST",
+    body: JSON.stringify({ num }),
+  });
+}
+
+export async function exitBooth(type, boothNum) {
+  await request(`/api/admin/booths/${type}/${boothNum}/exit`, {
+    method: "POST",
+  });
+}
+
+/* ============================================
    Admin API - 팀 우선순위 관리
    ============================================ */
 export async function fetchPriorities(type) {
@@ -121,6 +169,29 @@ export async function resetInspectionHistory(type) {
   await request(`/api/admin/history/${type}`, {
     method: "DELETE",
   });
+}
+
+/* ============================================
+   Admin API - 통계
+   ============================================ */
+export async function getStats(params = {}) {
+  const query = new URLSearchParams();
+  if (params.from) query.set("from", params.from);
+  if (params.to) query.set("to", params.to);
+  if (params.inspection) query.set("inspection", params.inspection);
+  const qs = query.toString();
+  const res = await request(`/api/admin/stats${qs ? `?${qs}` : ""}`);
+  return res.json();
+}
+
+export async function getTeamStats(num, params = {}) {
+  const query = new URLSearchParams();
+  if (params.from) query.set("from", params.from);
+  if (params.to) query.set("to", params.to);
+  if (params.inspection) query.set("inspection", params.inspection);
+  const qs = query.toString();
+  const res = await request(`/api/admin/stats/${num}${qs ? `?${qs}` : ""}`);
+  return res.json();
 }
 
 /* ============================================
