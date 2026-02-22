@@ -468,22 +468,34 @@ app.post("/api/admin/register/:type", async (req, res) => {
       const current = db.prepare("SELECT * FROM current WHERE num = ?").get(num);
 
       if (current) {
-        // 배터리+섀시 동시 등록 허용
-        if (
-          (current.inspection === "battery" && type === "chassis") ||
-          (current.inspection === "chassis" && type === "battery")
-        ) {
+        const currentTypes = current.inspection.split(",");
+
+        if (currentTypes.includes(type)) {
+          const name = inspections[type];
+          errorResponse = { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
+          return;
+        }
+
+        // 보고서는 다른 검차와 항상 동시 등록 가능
+        if (type === "report") {
           current.inspection += `,${type}`;
           db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(current.inspection, num);
         } else {
-          const name = current.inspection.includes(",")
-            ? current.inspection
-                .split(",")
-                .map((i) => inspections[i])
-                .join(", ")
-            : inspections[current.inspection];
-          errorResponse = { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
-          return;
+          const nonReportTypes = currentTypes.filter((t) => t !== "report");
+
+          if (
+            nonReportTypes.length === 0 ||
+            (nonReportTypes.length === 1 && nonReportTypes[0] === "battery" && type === "chassis") ||
+            (nonReportTypes.length === 1 && nonReportTypes[0] === "chassis" && type === "battery")
+          ) {
+            // 보고서만 등록 또는 배터리+섀시 동시 등록 허용
+            current.inspection += `,${type}`;
+            db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(current.inspection, num);
+          } else {
+            const name = currentTypes.map((i) => inspections[i]).join(", ");
+            errorResponse = { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
+            return;
+          }
         }
       } else {
         db.prepare("INSERT INTO current (num, phone, inspection) VALUES (?, ?, ?)").run(num, phone, type);
@@ -550,9 +562,9 @@ app.post("/api/admin/enter/:type", (req, res) => {
 
       const current = db.prepare("SELECT * FROM current WHERE num = ?").get(num);
 
-      if (current.inspection.includes(",")) {
-        const remaining = current.inspection.split(",").filter((i) => i !== type)[0];
-        db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(remaining, num);
+      const remaining = current.inspection.split(",").filter((i) => i !== type);
+      if (remaining.length > 0) {
+        db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(remaining.join(","), num);
       } else {
         db.prepare("DELETE FROM current WHERE num = ?").run(num);
       }
@@ -621,9 +633,9 @@ app.post("/api/admin/cancel/:type", (req, res) => {
 
       const current = db.prepare("SELECT * FROM current WHERE num = ?").get(num);
 
-      if (current.inspection.includes(",")) {
-        const remaining = current.inspection.split(",").filter((i) => i !== type)[0];
-        db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(remaining, num);
+      const remaining = current.inspection.split(",").filter((i) => i !== type);
+      if (remaining.length > 0) {
+        db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(remaining.join(","), num);
       } else {
         db.prepare("DELETE FROM current WHERE num = ?").run(num);
       }
