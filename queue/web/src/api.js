@@ -85,13 +85,6 @@ export async function registerToQueue(type, num, phone) {
   });
 }
 
-export async function enterFromQueue(type, num) {
-  await request(`/api/admin/enter/${type}`, {
-    method: "POST",
-    body: JSON.stringify({ num }),
-  });
-}
-
 export async function cancelFromQueue(type, num) {
   await request(`/api/admin/cancel/${type}`, {
     method: "POST",
