@@ -6,19 +6,29 @@ import {
   deleteRecord,
   deleteControllers,
   invalidateRecord,
+  addRecord,
 } from "../composables/useApi";
 import { useNotification } from "../composables/useNotification";
 import { useSSE } from "../composables/useSSE";
+import { useEntryStore } from "../stores/entry";
 import { msToClockStr } from "../stores/serial";
 import ExcelJS from "exceljs";
 
 const { notyf } = useNotification();
 const { recordFiles, selectedFile, lastUpdate } = useSSE();
+const entryStore = useEntryStore();
 
 const records = ref([]);
 const loading = ref(false);
 const sortKey = ref(null);
 const sortOrder = ref("asc");
+
+// 수동 기록 추가 폼 상태
+const showAddForm = ref(false);
+const addType = ref("가속");
+const addEntry = ref(null);
+const addResult = ref("");
+const addDetail = ref("");
 
 // 유형 필터 (기본: 모두 선택)
 const typeFilters = ref({
@@ -27,8 +37,9 @@ const typeFilters = ref({
   스키드패드: true,
 });
 
-// 컴포넌트 마운트 시 이전에 선택한 파일이 있으면 로드
+// 컴포넌트 마운트 시 엔트리 로드 및 이전에 선택한 파일이 있으면 로드
 onMounted(() => {
+  if (!entryStore.isLoaded) entryStore.loadEntries();
   if (selectedFile.value) {
     loadRecords();
   }
@@ -254,6 +265,43 @@ async function handleInvalidate(record) {
     notyf.error(`무효화 실패: ${e.message}`);
   }
 }
+
+async function handleAddRecord() {
+  if (!selectedFile.value || !addEntry.value) return;
+
+  const entry = entryStore.getEntryByNum(addEntry.value);
+  if (!entry) {
+    notyf.error("엔트리를 찾을 수 없습니다.");
+    return;
+  }
+
+  const resultValue = Number(addResult.value);
+  if (isNaN(resultValue)) {
+    notyf.error("기록은 숫자로 입력해야 합니다.");
+    return;
+  }
+
+  try {
+    // 서버가 "FSK {year} " 접두사를 자동으로 붙이므로 제거
+    const nameForApi = selectedFile.value.replace(/^FSK \d{4} /, "");
+    await addRecord(nameForApi, {
+      time: new Date().toISOString(),
+      type: addType.value,
+      entry: { num: entry.num, univ: entry.univ, team: entry.team },
+      result: resultValue,
+      detail: addDetail.value || undefined,
+    });
+    notyf.success("기록이 추가되었습니다.");
+    // 폼 초기화
+    addType.value = "가속";
+    addEntry.value = null;
+    addResult.value = "";
+    addDetail.value = "";
+    showAddForm.value = false;
+  } catch (e) {
+    notyf.error(`기록 추가 실패: ${e.message}`);
+  }
+}
 </script>
 
 <template>
@@ -290,6 +338,13 @@ async function handleInvalidate(record) {
             </svg>
             XLSX
           </button>
+          <button v-if="!isControllerLog" class="btn btn-primary" @click="showAddForm = !showAddForm">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            추가
+          </button>
           <button class="btn btn-danger" @click="handleDelete">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
               <polyline points="3 6 5 6 21 6" />
@@ -320,6 +375,50 @@ async function handleInvalidate(record) {
             <input type="checkbox" v-model="typeFilters['스키드패드']" />
             <span class="filter-label skidpad">스키드패드</span>
           </label>
+        </div>
+      </div>
+
+      <!-- 수동 기록 추가 폼 -->
+      <div v-if="showAddForm && !isControllerLog" class="add-form">
+        <div class="add-form-fields">
+          <div class="form-group">
+            <label class="form-label">경기 유형</label>
+            <select v-model="addType" class="form-select">
+              <option value="가속">가속</option>
+              <option value="짐카나">짐카나</option>
+              <option value="스키드패드">스키드패드</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">엔트리</label>
+            <select v-model="addEntry" class="form-select">
+              <option disabled :value="null">선택</option>
+              <option v-for="e in entryStore.entryList" :key="e.num" :value="e.num">
+                {{ e.num }} {{ e.univ }} {{ e.team }}
+              </option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">기록 (ms)</label>
+            <input
+              v-model="addResult"
+              type="number"
+              class="form-input"
+              placeholder="밀리초 (-1 = DNF)"
+            />
+          </div>
+          <div class="form-group">
+            <label class="form-label">상세</label>
+            <input
+              v-model="addDetail"
+              type="text"
+              class="form-input"
+              placeholder="선택 사항"
+            />
+          </div>
+          <button class="btn btn-primary add-form-submit" @click="handleAddRecord" :disabled="!addEntry || addResult === ''">
+            추가
+          </button>
         </div>
       </div>
 
@@ -804,6 +903,73 @@ async function handleInvalidate(record) {
   margin-bottom: 1rem;
 }
 
+/* 추가 버튼 */
+.btn-primary {
+  background: var(--accent-primary);
+  color: white;
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 수동 기록 추가 폼 */
+.add-form {
+  padding: 1rem 1.5rem;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.add-form-fields {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0;
+}
+
+.form-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 0;
+}
+
+.form-input {
+  padding: 0.5rem 0.875rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.add-form-fields .form-select,
+.add-form-fields .form-input {
+  line-height: 1.2;
+}
+
+.add-form-submit {
+  align-self: flex-end;
+  white-space: nowrap;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--accent-primary);
+  font-size: 0.875rem;
+  margin: 0;
+}
+
 @media (max-width: 768px) {
   .file-toolbar {
     flex-direction: column;
@@ -827,6 +993,20 @@ async function handleInvalidate(record) {
   .toolbar-right .btn {
     flex: 1;
     min-width: 80px;
+  }
+
+  .add-form-fields {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .form-group {
+    width: 100%;
+  }
+
+  .form-group .form-select,
+  .form-group .form-input {
+    width: 100%;
   }
 }
 </style>
