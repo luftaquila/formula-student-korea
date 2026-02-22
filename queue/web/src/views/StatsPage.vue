@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from "vue";
 import { useRouter } from "vue-router";
-import { fetchEntries, fetchAllInspections, getStats } from "../api";
+import { fetchEntries, fetchAllInspections, getStats, getTeamStats } from "../api";
 import { useNotification } from "../composables/useNotification";
 
 const { error } = useNotification();
@@ -17,6 +17,11 @@ const fetching = ref(false);
 const filterFrom = ref("");
 const filterTo = ref("");
 const filterInspection = ref("");
+
+// Timeline detail
+const expandedTeam = ref(null);
+const teamTimeline = ref([]);
+const timelineLoading = ref(false);
 
 // Sort
 const sortKey = ref("");
@@ -77,6 +82,8 @@ async function fetchStats() {
 }
 
 function onFilterChange() {
+  expandedTeam.value = null;
+  teamTimeline.value = [];
   fetchStats();
 }
 
@@ -87,6 +94,46 @@ function formatDuration(ms) {
   const m = Math.floor((totalSec % 3600) / 60).toString().padStart(2, "0");
   const s = (totalSec % 60).toString().padStart(2, "0");
   return `${h}:${m}:${s}`;
+}
+
+function formatTime(ts) {
+  if (!ts) return "-";
+  const d = new Date(ts);
+  return d.toLocaleString("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function inspectionName(type) {
+  const found = inspections.value.find((i) => i.type === type);
+  return found ? found.name : type;
+}
+
+async function toggleTeamDetail(num) {
+  if (expandedTeam.value === num) {
+    expandedTeam.value = null;
+    teamTimeline.value = [];
+    return;
+  }
+  expandedTeam.value = num;
+  timelineLoading.value = true;
+  try {
+    const params = {};
+    if (filterFrom.value) params.from = new Date(filterFrom.value).getTime();
+    if (filterTo.value) params.to = new Date(filterTo.value).getTime();
+    if (filterInspection.value) params.inspection = filterInspection.value;
+    const data = await getTeamStats(num, params);
+    teamTimeline.value = data.timeline;
+  } catch (e) {
+    error("타임라인을 가져올 수 없습니다.");
+    teamTimeline.value = [];
+  }
+  timelineLoading.value = false;
 }
 
 function goBack() {
@@ -171,18 +218,93 @@ function goBack() {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in sortedStats" :key="row.num">
-                <td class="col-num">
-                  <span class="entry-num">{{ row.num }}</span>
-                </td>
-                <td class="col-team">
-                  <span class="entry-name">{{ entries[row.num]?.univ }} {{ entries[row.num]?.team }}</span>
-                </td>
-                <td class="col-stat">{{ row.registrations }}</td>
-                <td class="col-stat">{{ row.cancellations }}</td>
-                <td class="col-stat">{{ row.entries }}</td>
-                <td class="col-time mono">{{ formatDuration(row.totalOccupyTime) }}</td>
-              </tr>
+              <template v-for="row in sortedStats" :key="row.num">
+                <tr
+                  class="clickable-row"
+                  :class="{ 'expanded-row': expandedTeam === row.num }"
+                  @click="toggleTeamDetail(row.num)"
+                >
+                  <td class="col-num">
+                    <span class="entry-num">{{ row.num }}</span>
+                  </td>
+                  <td class="col-team">
+                    <span class="entry-name">{{ entries[row.num]?.univ }} {{ entries[row.num]?.team }}</span>
+                  </td>
+                  <td class="col-stat">{{ row.registrations }}</td>
+                  <td class="col-stat">{{ row.cancellations }}</td>
+                  <td class="col-stat">{{ row.entries }}</td>
+                  <td class="col-time mono">{{ formatDuration(row.totalOccupyTime) }}</td>
+                </tr>
+                <!-- Timeline detail row -->
+                <tr v-if="expandedTeam === row.num" class="detail-row">
+                  <td colspan="6">
+                    <div class="timeline-section">
+                      <div class="timeline-header">
+                        <h4>
+                          #{{ row.num }} {{ entries[row.num]?.univ }} {{ entries[row.num]?.team }} 타임라인
+                        </h4>
+                        <button class="btn btn-ghost btn-sm" @click.stop="toggleTeamDetail(row.num)">닫기</button>
+                      </div>
+                      <div v-if="timelineLoading" class="loading">
+                        <div class="loading-spinner"></div>
+                      </div>
+                      <div v-else-if="teamTimeline.length === 0" class="timeline-empty">
+                        타임라인 데이터가 없습니다.
+                      </div>
+                      <!-- Desktop table -->
+                      <table v-else class="timeline-table desktop-timeline">
+                        <thead>
+                          <tr>
+                            <th>검차</th>
+                            <th>부스</th>
+                            <th>등록 시각</th>
+                            <th>입장 시각</th>
+                            <th>퇴장 시각</th>
+                            <th>소요 시간</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="(evt, idx) in teamTimeline" :key="idx">
+                            <td>{{ inspectionName(evt.inspection) }}</td>
+                            <td class="mono">{{ evt.boothNum }}</td>
+                            <td class="mono">{{ formatTime(evt.registeredAt) }}</td>
+                            <td class="mono">{{ formatTime(evt.enteredAt) }}</td>
+                            <td class="mono">{{ formatTime(evt.exitedAt) }}</td>
+                            <td class="mono">{{ evt.occupyDuration ? formatDuration(evt.occupyDuration) : "-" }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      <!-- Mobile cards -->
+                      <div v-if="teamTimeline.length > 0" class="mobile-timeline">
+                        <div v-for="(evt, idx) in teamTimeline" :key="idx" class="timeline-card">
+                          <div class="timeline-card-header">
+                            <span class="timeline-type">{{ inspectionName(evt.inspection) }}</span>
+                            <span class="timeline-booth mono">부스 {{ evt.boothNum }}</span>
+                          </div>
+                          <div class="timeline-card-body">
+                            <div class="timeline-field">
+                              <span class="timeline-label">등록</span>
+                              <span class="mono">{{ formatTime(evt.registeredAt) }}</span>
+                            </div>
+                            <div class="timeline-field">
+                              <span class="timeline-label">입장</span>
+                              <span class="mono">{{ formatTime(evt.enteredAt) }}</span>
+                            </div>
+                            <div class="timeline-field">
+                              <span class="timeline-label">퇴장</span>
+                              <span class="mono">{{ formatTime(evt.exitedAt) }}</span>
+                            </div>
+                            <div class="timeline-field">
+                              <span class="timeline-label">소요</span>
+                              <span class="mono">{{ evt.occupyDuration ? formatDuration(evt.occupyDuration) : "-" }}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </template>
               <tr v-if="sortedStats.length === 0">
                 <td colspan="6" class="empty-state">
                   {{ fetching ? "데이터를 불러오는 중..." : "통계 데이터가 없습니다." }}
@@ -386,6 +508,148 @@ function goBack() {
   padding: 2rem;
 }
 
+/* Clickable Rows */
+.clickable-row {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.clickable-row:hover {
+  background: var(--bg-hover);
+}
+
+.expanded-row {
+  background: var(--bg-secondary);
+}
+
+.expanded-row:hover {
+  background: var(--bg-secondary);
+}
+
+/* Detail Row */
+.detail-row td {
+  padding: 0 !important;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.detail-row:hover {
+  background: none !important;
+}
+
+/* Timeline Section */
+.timeline-section {
+  padding: 1rem 1.25rem;
+  background: var(--bg-secondary);
+}
+
+.timeline-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.timeline-header h4 {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.btn-sm {
+  padding: 0.25rem 0.625rem;
+  font-size: 0.75rem;
+}
+
+.timeline-empty {
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: 1.5rem 0;
+}
+
+/* Timeline Table (Desktop) */
+.timeline-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.timeline-table th,
+.timeline-table td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.timeline-table th {
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.timeline-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Mobile Timeline (hidden by default, shown on mobile) */
+.mobile-timeline {
+  display: none;
+}
+
+.timeline-card {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.timeline-card:last-child {
+  margin-bottom: 0;
+}
+
+.timeline-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.timeline-type {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.timeline-booth {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.timeline-card-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.375rem;
+}
+
+.timeline-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.timeline-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.timeline-field .mono {
+  font-size: 0.8125rem;
+}
+
 /* Responsive */
 @media (max-width: 640px) {
   .filter-bar {
@@ -394,6 +658,14 @@ function goBack() {
 
   .filter-input {
     width: 100%;
+  }
+
+  .desktop-timeline {
+    display: none;
+  }
+
+  .mobile-timeline {
+    display: block;
   }
 }
 </style>

@@ -140,3 +140,40 @@
   - Card body has two v-if branches: occupied (team info + elapsed + exit button) and empty active (select dropdown + enter button); inactive booths show no body
   - Mobile layout stacks booth cards vertically via `flex-direction: column` in the 640px media query
 ---
+
+## 2026-02-23 - US-012
+- What was implemented: Added booth count number input and individual booth on/off toggles to the settings panel for each inspection type
+- Files changed: queue/web/src/views/AdminPanel.vue
+- **Learnings for future iterations:**
+  - Booth count uses `allBooths[item.type]?.length || 1` as the display value since booth count equals the array length from SSE data
+  - `updateBoothConfig` and `toggleBooth` API functions were already available from US-010, just needed to import them
+  - Error handling reverts input value on failure: number input reverts to current booth count, checkbox reverts checked state
+  - `.toggle-sm` class creates a smaller toggle switch for the individual booth toggles (32x18px vs default size)
+  - `.inspection-setting-group` wraps each inspection's settings row + booth toggle list with a border separator between groups
+  - Variable name shadowing with `e` (event param) and `error` (notification function) - use `ev`/`err` to avoid collision
+---
+
+## 2026-02-23 - US-013
+- What was implemented: Added statistics page with date/inspection filters and sortable summary table, plus route and navigation button
+- Files changed: queue/web/src/views/StatsPage.vue (new), queue/web/src/main.js, queue/web/src/App.vue, queue/web/src/views/AdminPanel.vue
+- **Learnings for future iterations:**
+  - Stats page follows the same pattern as Priority.vue: back button, filter section, card with table
+  - `getStats` API function accepts optional `from`, `to`, `inspection` params via URLSearchParams
+  - Date filter inputs use `datetime-local` type, converted to unix timestamp with `new Date(value).getTime()` before sending to API
+  - Sort is implemented client-side with `sortKey`/`sortAsc` refs and a `sortedStats` computed property
+  - `formatDuration(ms)` converts milliseconds to `HH:MM:SS` format for display
+  - The `pageInfo` object in App.vue needs updating when adding new routes (for header title)
+  - The bar chart SVG icon uses simple `<path>` elements for 3 vertical bars
+---
+
+## 2026-02-23 - US-014
+- What was implemented: Added team timeline detail view to statistics page - clicking a team row expands an inline detail section showing inspection timeline with booth number, timestamps, and occupy duration
+- Files changed: queue/web/src/views/StatsPage.vue
+- **Learnings for future iterations:**
+  - `getTeamStats(num, params)` returns `{ summary, timeline }` where timeline is array of `{ inspection, boothNum, registeredAt, enteredAt, exitedAt, occupyDuration }`
+  - Used `<template v-for>` wrapper to allow two sibling `<tr>` elements (data row + detail row) per iteration in table body
+  - Desktop shows timeline as a nested table; mobile (<=640px) switches to card layout using `display: none` / `display: block` toggle
+  - `@click.stop` on the close button prevents the event from bubbling to the parent row's toggle handler
+  - Filter changes reset expanded state (`expandedTeam = null`) to avoid stale timeline data
+  - `inspectionName()` helper maps type strings to Korean names using the already-fetched inspections array
+---
