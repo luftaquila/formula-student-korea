@@ -10,6 +10,7 @@ const pageInfo = {
   "/admin": { title: "검차 대기열 관리", icon: "list-check" },
   "/register": { title: "검차 대기열 등록", icon: "plus" },
   "/priority": { title: "검차 우선순위 관리", icon: "star" },
+  "/stats": { title: "검차 통계", icon: "chart-bar" },
 };
 
 function getPageTitle() {

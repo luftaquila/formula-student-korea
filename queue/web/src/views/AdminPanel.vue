@@ -296,6 +296,10 @@ function goToRegister() {
 function goToPriority() {
   router.push("/priority");
 }
+
+function goToStats() {
+  router.push("/stats");
+}
 </script>
 
 <template>
@@ -315,6 +319,14 @@ function goToPriority() {
           />
         </svg>
         우선순위 관리
+      </button>
+      <button class="btn btn-ghost" @click="goToStats">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+          <path d="M18 20V10" />
+          <path d="M12 20V4" />
+          <path d="M6 20v-6" />
+        </svg>
+        통계
       </button>
     </div>
 
