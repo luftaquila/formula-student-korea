@@ -1,12 +1,73 @@
 <script setup>
-import { ref, onMounted, watch } from "vue";
+import { ref, onMounted, onUnmounted, watch } from "vue";
 import { fetchEntries, fetchQueueState } from "../api";
 import { useSSE } from "../composables/useSSE";
 import { useNotification } from "../composables/useNotification";
 
 const { error } = useNotification();
 
-const { activeInspections, lastQueueUpdate } = useSSE();
+const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate } = useSSE();
+
+const expandedTypes = ref({});
+const elapsedTimes = ref({});
+let elapsedTimers = {};
+
+function toggleType(type) {
+  expandedTypes.value[type] = !expandedTypes.value[type];
+  if (expandedTypes.value[type]) {
+    syncTimersForType(type);
+  } else {
+    clearTimersForType(type);
+  }
+}
+
+function syncTimersForType(type) {
+  clearTimersForType(type);
+  const booths = allBooths.value[type] || [];
+  for (const booth of booths) {
+    if (booth.occupied_by && booth.entered_at) {
+      const key = `${type}-${booth.booth_num}`;
+      elapsedTimes.value[key] = formatElapsed(booth.entered_at);
+      elapsedTimers[key] = setInterval(() => {
+        elapsedTimes.value[key] = formatElapsed(booth.entered_at);
+      }, 1000);
+    }
+  }
+}
+
+function clearTimersForType(type) {
+  const booths = allBooths.value[type] || [];
+  for (const booth of booths) {
+    const key = `${type}-${booth.booth_num}`;
+    if (elapsedTimers[key]) {
+      clearInterval(elapsedTimers[key]);
+      delete elapsedTimers[key];
+    }
+    delete elapsedTimes.value[key];
+  }
+}
+
+function clearAllTimers() {
+  Object.values(elapsedTimers).forEach(clearInterval);
+  elapsedTimers = {};
+}
+
+function formatElapsed(enteredAt) {
+  const diff = Math.max(0, Math.floor((Date.now() - enteredAt) / 1000));
+  const min = Math.floor(diff / 60).toString().padStart(2, "0");
+  const sec = (diff % 60).toString().padStart(2, "0");
+  return `${min}:${sec}`;
+}
+
+watch(lastBoothUpdate, (update) => {
+  if (update && expandedTypes.value[update.type]) {
+    syncTimersForType(update.type);
+  }
+});
+
+onUnmounted(() => {
+  clearAllTimers();
+});
 
 const entries = ref({});
 const loading = ref(true);
@@ -219,6 +280,71 @@ function clearState(message) {
       </div>
     </div>
 
+    <!-- Booth Status -->
+    <div class="card booth-section">
+      <div class="card-header">
+        <h3>🏢 부스 현황</h3>
+      </div>
+      <div class="card-body">
+        <div v-if="loading" class="loading">
+          <div class="loading-spinner"></div>
+          <p>데이터를 불러오는 중...</p>
+        </div>
+        <div v-else-if="activeInspections.length === 0" class="empty-state">
+          현재 활성화된 검차가 없습니다.
+        </div>
+        <div v-else class="accordion">
+          <div
+            v-for="item in activeInspections"
+            :key="item.type"
+            class="accordion-item"
+          >
+            <button class="accordion-header" @click="toggleType(item.type)">
+              <span class="accordion-title">{{ item.name }}</span>
+              <span class="accordion-meta">
+                <span class="badge badge-secondary">{{ (allBooths[item.type] || []).length }}개 부스</span>
+                <svg
+                  class="accordion-arrow"
+                  :class="{ expanded: expandedTypes[item.type] }"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  width="20"
+                  height="20"
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </span>
+            </button>
+            <div v-if="expandedTypes[item.type]" class="accordion-body">
+              <div class="booth-grid">
+                <div
+                  v-for="booth in (allBooths[item.type] || [])"
+                  :key="booth.booth_num"
+                  class="booth-item"
+                  :class="{ 'booth-inactive': !booth.active, 'booth-occupied': booth.active && booth.occupied_by }"
+                >
+                  <div class="booth-num">부스 {{ booth.booth_num }}</div>
+                  <template v-if="!booth.active">
+                    <span class="booth-status-tag inactive">비활성</span>
+                  </template>
+                  <template v-else-if="booth.occupied_by">
+                    <span class="booth-status-tag occupied">사용중</span>
+                    <span class="booth-team">{{ booth.occupied_by }}번</span>
+                    <span class="booth-elapsed">{{ elapsedTimes[`${item.type}-${booth.booth_num}`] || '00:00' }}</span>
+                  </template>
+                  <template v-else>
+                    <span class="booth-status-tag empty">비어있음</span>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Tips -->
     <div class="tips">
       <p>전화번호는 등록 시 입력한 알림 받을 번호입니다.</p>
@@ -372,8 +498,137 @@ function clearState(message) {
   margin: 0.25rem 0;
 }
 
+/* Accordion */
+.accordion {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.accordion-item {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.accordion-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.875rem 1rem;
+  background: var(--bg-secondary);
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.accordion-header:hover {
+  background: var(--bg-hover, var(--bg-secondary));
+}
+
+.accordion-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.accordion-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.accordion-arrow {
+  transition: transform 0.2s ease;
+  color: var(--text-tertiary);
+}
+
+.accordion-arrow.expanded {
+  transform: rotate(180deg);
+}
+
+.accordion-body {
+  padding: 1rem;
+  border-top: 1px solid var(--border-color);
+}
+
+/* Booth Grid */
+.booth-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+
+.booth-item {
+  border: 2px solid var(--border-color);
+  border-radius: 10px;
+  padding: 0.875rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.375rem;
+  background: var(--bg-card);
+}
+
+.booth-item.booth-inactive {
+  opacity: 0.5;
+  background: var(--bg-secondary);
+}
+
+.booth-item.booth-occupied {
+  border-color: var(--accent-warning, #f59e0b);
+}
+
+.booth-num {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.booth-status-tag {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.125rem 0.5rem;
+  border-radius: 6px;
+}
+
+.booth-status-tag.empty {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-success);
+}
+
+.booth-status-tag.occupied {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-warning, #f59e0b);
+}
+
+.booth-status-tag.inactive {
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+}
+
+.booth-team {
+  font-size: 1rem;
+  font-weight: 700;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--text-primary);
+}
+
+.booth-elapsed {
+  font-size: 1.125rem;
+  font-weight: 700;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--accent-warning, #f59e0b);
+}
+
 @media (max-width: 640px) {
   .status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .booth-grid {
     grid-template-columns: 1fr;
   }
 }
