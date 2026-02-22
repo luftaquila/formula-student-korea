@@ -185,7 +185,11 @@ app.get("/api/events", (req, res) => {
 
   // 연결 시 초기 데이터 전송
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
-  res.write(`event: init\ndata: ${JSON.stringify({ activeInspections })}\n\n`);
+  const allBooths = {};
+  for (const k of Object.keys(inspections)) {
+    allBooths[k] = db.prepare("SELECT booth_num, active, occupied_by, entered_at FROM booth WHERE inspection = ? ORDER BY booth_num").all(k);
+  }
+  res.write(`event: init\ndata: ${JSON.stringify({ activeInspections, allBooths })}\n\n`);
 
   sseClients.add(res);
 
