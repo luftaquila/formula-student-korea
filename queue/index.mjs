@@ -914,6 +914,153 @@ app.patch("/api/admin/booths/:type/:boothNum", (req, res) => {
   res.status(200).send();
 });
 
+// POST /api/admin/booths/:type/:boothNum/enter - 대기열에서 부스로 입장
+app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+
+  const numValidation = validateEntryNum(req.body.num);
+  if (!numValidation.valid) {
+    return res.status(400).send(numValidation.error);
+  }
+
+  const type = typeValidation.value;
+  const num = numValidation.value;
+  const boothNum = parseInt(req.params.boothNum, 10);
+
+  if (isNaN(boothNum) || boothNum < 1) {
+    return res.status(400).send("올바르지 않은 부스 번호입니다.");
+  }
+
+  // SMS 발송용: 삭제 전 N번째 대기자 조회
+  const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
+  const prev = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(type, type, smsRank - 1);
+
+  const result = dbRun(() => {
+    db.transaction(() => {
+      // 대기열에 팀이 있는지 확인
+      const queueEntry = db.prepare(`SELECT * FROM ${type} WHERE num = ?`).get(num);
+      if (!queueEntry) {
+        throw { status: 400, message: "대기열에 존재하지 않는 엔트리입니다." };
+      }
+
+      // 부스 확인
+      const booth = db.prepare("SELECT * FROM booth WHERE inspection = ? AND booth_num = ?").get(type, boothNum);
+      if (!booth) {
+        throw { status: 400, message: "존재하지 않는 부스입니다." };
+      }
+      if (!booth.active) {
+        throw { status: 400, message: "비활성화된 부스입니다." };
+      }
+      if (booth.occupied_by !== null) {
+        throw { status: 400, message: "이미 사용 중인 부스입니다." };
+      }
+
+      const now = Date.now();
+
+      // 대기열에서 제거 및 길이 감소
+      db.prepare(`DELETE FROM ${type} WHERE num = ?`).run(num);
+      db.prepare("UPDATE inspection SET length = length - 1 WHERE type = ?").run(type);
+
+      // 부스 점유
+      db.prepare("UPDATE booth SET occupied_by = ?, entered_at = ? WHERE inspection = ? AND booth_num = ?").run(
+        num, now, type, boothNum
+      );
+
+      // 부스 로그 기록
+      db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, created_at) VALUES (?, ?, ?, ?, ?)").run(
+        num, type, boothNum, now, now
+      );
+
+      // 대기열 이벤트 로그 기록
+      db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run(
+        "enter", num, type, now
+      );
+
+      // current 테이블에서 해당 검차 종류 제거
+      const current = db.prepare("SELECT * FROM current WHERE num = ?").get(num);
+      if (current) {
+        const remaining = current.inspection.split(",").filter((i) => i !== type);
+        if (remaining.length > 0) {
+          db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(remaining.join(","), num);
+        } else {
+          db.prepare("DELETE FROM current WHERE num = ?").run(num);
+        }
+      }
+    })();
+  });
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  // SSE 브로드캐스트: 부스 및 대기열 변경
+  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  broadcastEvent("booth", { type, booths: getBoothsForType(type) });
+  broadcastEvent("queue", { type, activeInspections });
+
+  res.status(200).send();
+
+  // SMS 발송 (N번째 대기자에게)
+  sendSmsNotification(type, prev);
+});
+
+// POST /api/admin/booths/:type/:boothNum/exit - 부스에서 퇴장 (검차 완료)
+app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+
+  const type = typeValidation.value;
+  const boothNum = parseInt(req.params.boothNum, 10);
+
+  if (isNaN(boothNum) || boothNum < 1) {
+    return res.status(400).send("올바르지 않은 부스 번호입니다.");
+  }
+
+  const result = dbRun(() => {
+    db.transaction(() => {
+      const booth = db.prepare("SELECT * FROM booth WHERE inspection = ? AND booth_num = ?").get(type, boothNum);
+      if (!booth) {
+        throw { status: 400, message: "존재하지 않는 부스입니다." };
+      }
+      if (booth.occupied_by === null) {
+        throw { status: 400, message: "비어있는 부스입니다." };
+      }
+
+      const now = Date.now();
+      const num = booth.occupied_by;
+
+      // 부스 비우기
+      db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ? AND booth_num = ?").run(
+        type, boothNum
+      );
+
+      // 부스 로그 퇴장 시간 기록
+      db.prepare(
+        "UPDATE booth_log SET exited_at = ? WHERE num = ? AND inspection = ? AND booth_num = ? AND exited_at IS NULL"
+      ).run(now, num, type, boothNum);
+
+      // 검차 이력에 추가 (재검 판단용)
+      db.prepare("INSERT INTO inspection_history (num, inspection, timestamp) VALUES (?, ?, ?)").run(num, type, now);
+    })();
+  });
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  // SSE 브로드캐스트: 부스 및 대기열 변경
+  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  broadcastEvent("booth", { type, booths: getBoothsForType(type) });
+  broadcastEvent("queue", { type, activeInspections });
+
+  res.status(200).send();
+});
+
 /* ============================================
    API 라우트: 설정
    ============================================ */

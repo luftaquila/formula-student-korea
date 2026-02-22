@@ -12,6 +12,8 @@
 - SSE `init` event data includes `allBooths` object keyed by inspection type; `broadcastEvent("booth", { type, booths })` for real-time booth updates
 - Frontend `useSSE.js` exports: `activeInspections`, `lastQueueUpdate`, `allBooths`, `lastBoothUpdate`, `connected`
 - `getBoothsForType(type)` helper in index.mjs returns booth array for an inspection type - use for all booth queries and SSE broadcasts
+- Booth enter/exit endpoints broadcast BOTH 'booth' and 'queue' SSE events; SMS notification sent after response for enter
+- booth_log tracks active occupancy with `exited_at IS NULL`; exit updates this row
 
 ---
 
@@ -65,4 +67,16 @@
   - Booth toggle PATCH prevents deactivating an occupied booth (checks `occupied_by !== null`)
   - All three endpoints broadcast `broadcastEvent("booth", { type, booths })` after mutation
   - Error pattern: `throw { status: 400, message: "..." }` inside `dbRun()` callback gets caught and returned properly
+---
+
+## 2026-02-23 - US-006
+- What was implemented: Added booth enter and exit API endpoints for assigning teams to booths and releasing them
+- Files changed: queue/index.mjs
+- **Learnings for future iterations:**
+  - Enter endpoint (`POST /api/admin/booths/:type/:boothNum/enter`) does everything in a single transaction: validates queue entry and booth state, removes from queue, decrements inspection length, occupies booth, logs to booth_log and queue_log, cleans up current table
+  - Exit endpoint (`POST /api/admin/booths/:type/:boothNum/exit`) clears booth, updates booth_log with exited_at, and inserts inspection_history for re-inspection tracking
+  - SMS notification reuses the same pattern as the old enter endpoint: fetch sms_rank-th person BEFORE the transaction, call `sendSmsNotification()` AFTER response
+  - Both endpoints broadcast both 'booth' and 'queue' SSE events since both booth state and queue state change
+  - booth_log uses `exited_at IS NULL` to match the active log entry when updating exit time
+  - The old `POST /api/admin/enter/:type` endpoint remains for backward compatibility (will be deprecated in US-008)
 ---
