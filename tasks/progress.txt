@@ -1,0 +1,68 @@
+## Codebase Patterns
+- Database initialization is in a single `db.transaction()` block at startup in `queue/index.mjs`
+- Use `INSERT OR IGNORE` for default data to ensure idempotency on restart
+- Use `CREATE TABLE IF NOT EXISTS` for all table creation
+- The `inspections` object at the top of `index.mjs` defines all inspection types with Korean names
+- Per-inspection queue tables are created dynamically by looping over `Object.entries(inspections)`
+- Server runs on port 9300, test with `timeout 5 node index.mjs` (exit code 124 = success)
+- Working directory when running commands is `queue/` not the repo root
+- The `current` table `inspection` field is a comma-separated list when a team has multiple simultaneous registrations
+- Report inspection is exempt from duplicate constraints: it can coexist with any other inspection
+- When removing a type from `current.inspection`, always use `split(",").filter().join(",")` pattern to handle N types (not just 2)
+- SSE `init` event data includes `allBooths` object keyed by inspection type; `broadcastEvent("booth", { type, booths })` for real-time booth updates
+- Frontend `useSSE.js` exports: `activeInspections`, `lastQueueUpdate`, `allBooths`, `lastBoothUpdate`, `connected`
+- `getBoothsForType(type)` helper in index.mjs returns booth array for an inspection type - use for all booth queries and SSE broadcasts
+
+---
+
+## 2026-02-23 - US-001
+- What was implemented: Added 4 new database tables (booth_config, booth, booth_log, queue_log) and default booth data creation per inspection type
+- Files changed: queue/index.mjs
+- **Learnings for future iterations:**
+  - All table creation happens in the existing startup transaction block (lines 29-97)
+  - Default booth data (1 booth per inspection type) is created in the same loop that creates per-type queue tables
+  - The `data/` directory is auto-created if missing, and `queue.db` is created by better-sqlite3 on first access
+  - Clean up test `data/queue.db` and `data/queue.log` after local testing since these are gitignored
+---
+
+## 2026-02-23 - US-002
+- What was implemented: Modified register, cancel, and enter endpoints to exempt report inspection from duplicate registration constraints
+- Files changed: queue/index.mjs
+- **Learnings for future iterations:**
+  - Registration logic in register handler now has 3 branches: report type (always allowed), non-report with battery/chassis compatibility check, and error
+  - Cancel and enter endpoints both have the same `current.inspection` cleanup logic - both updated from `filter(...)[0]` to `filter(...).join(",")` to support >2 simultaneous types
+  - Simultaneous registration combos now possible: report+any, battery+chassis, report+battery+chassis
+  - The `currentTypes.includes(type)` check at the top prevents duplicate registration for the same type
+---
+
+## 2026-02-23 - US-003
+- What was implemented: Added queue_log event recording to register and cancel handlers
+- Files changed: queue/index.mjs
+- **Learnings for future iterations:**
+  - queue_log inserts are placed AFTER the transaction and error checks, before SSE broadcast - this keeps them outside the main transaction so they don't affect rollback behavior
+  - Pattern for queue_log insert: `db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run(eventName, num, type, Date.now())`
+  - Future stories (US-006 enter/exit) will also need queue_log inserts with event='enter'
+---
+
+## 2026-02-23 - US-004
+- What was implemented: Added booth data to SSE init event and booth event handler to frontend useSSE composable
+- Files changed: queue/index.mjs, queue/web/src/composables/useSSE.js
+- **Learnings for future iterations:**
+  - `broadcastEvent` already supports arbitrary event types - no changes needed to the function itself for 'booth' events
+  - The SSE init event now sends `allBooths` alongside `activeInspections`; booth query selects `booth_num, active, occupied_by, entered_at`
+  - To broadcast booth updates for a type: `broadcastEvent("booth", { type, booths })` where booths is the array from the booth table query
+  - Frontend `allBooths` is a reactive object keyed by inspection type; `lastBoothUpdate` has `{ type, timestamp }` shape
+  - `getBoothsForType(type)` helper function returns booth array for a given inspection type - reuse for SSE broadcast and GET endpoint
+---
+
+## 2026-02-23 - US-005
+- What was implemented: Added 3 booth management API endpoints: GET booth list, PATCH booth count config, PATCH booth active toggle
+- Files changed: queue/index.mjs
+- **Learnings for future iterations:**
+  - Added `getBoothsForType(type)` helper to DRY up booth queries - used by GET endpoint, SSE init, and all booth mutation endpoints for SSE broadcast
+  - Booth config PATCH uses `booth_config.count` to track current count, then adds/removes booths accordingly
+  - When decreasing booth count, occupied booths throw a 400 error with a message identifying the problematic booth number
+  - Booth toggle PATCH prevents deactivating an occupied booth (checks `occupied_by !== null`)
+  - All three endpoints broadcast `broadcastEvent("booth", { type, booths })` after mutation
+  - Error pattern: `throw { status: 400, message: "..." }` inside `dbRun()` callback gets caught and returned properly
+---

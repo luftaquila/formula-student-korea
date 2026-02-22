@@ -795,6 +795,126 @@ app.delete("/api/admin/history/:type", (req, res) => {
 });
 
 /* ============================================
+   API 라우트: Admin - 부스 관리
+   ============================================ */
+
+// 부스 목록 조회 헬퍼
+function getBoothsForType(type) {
+  return db.prepare("SELECT booth_num, active, occupied_by, entered_at FROM booth WHERE inspection = ? ORDER BY booth_num").all(type);
+}
+
+// GET /api/admin/booths/:type - 검차별 부스 목록 조회
+app.get("/api/admin/booths/:type", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+
+  const result = dbRun(() => getBoothsForType(req.params.type));
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  res.json(result.result);
+});
+
+// PATCH /api/admin/booths/:type/config - 부스 수 변경
+app.patch("/api/admin/booths/:type/config", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+
+  const type = typeValidation.value;
+  const count = parseInt(req.body.count, 10);
+
+  if (isNaN(count) || count < 1) {
+    return res.status(400).send("부스 수는 1 이상이어야 합니다.");
+  }
+
+  const result = dbRun(() => {
+    const config = db.prepare("SELECT count FROM booth_config WHERE inspection = ?").get(type);
+    const currentCount = config.count;
+
+    if (count > currentCount) {
+      // 부스 추가
+      for (let i = currentCount + 1; i <= count; i++) {
+        db.prepare("INSERT INTO booth (inspection, booth_num) VALUES (?, ?)").run(type, i);
+      }
+    } else if (count < currentCount) {
+      // 부스 삭제 (높은 번호부터, 점유 중인 부스는 삭제 불가)
+      const boothsToRemove = db.prepare(
+        "SELECT booth_num, occupied_by FROM booth WHERE inspection = ? ORDER BY booth_num DESC LIMIT ?"
+      ).all(type, currentCount - count);
+
+      for (const booth of boothsToRemove) {
+        if (booth.occupied_by !== null) {
+          throw { status: 400, message: `부스 ${booth.booth_num}번이 사용 중이므로 삭제할 수 없습니다.` };
+        }
+      }
+
+      for (const booth of boothsToRemove) {
+        db.prepare("DELETE FROM booth WHERE inspection = ? AND booth_num = ?").run(type, booth.booth_num);
+      }
+    }
+
+    db.prepare("UPDATE booth_config SET count = ? WHERE inspection = ?").run(count, type);
+  });
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  // SSE 브로드캐스트: 부스 상태 변경
+  const booths = getBoothsForType(type);
+  broadcastEvent("booth", { type, booths });
+
+  res.status(200).send();
+});
+
+// PATCH /api/admin/booths/:type/:boothNum - 부스 활성화/비활성화 토글
+app.patch("/api/admin/booths/:type/:boothNum", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+
+  const type = typeValidation.value;
+  const boothNum = parseInt(req.params.boothNum, 10);
+
+  if (isNaN(boothNum) || boothNum < 1) {
+    return res.status(400).send("올바르지 않은 부스 번호입니다.");
+  }
+
+  const result = dbRun(() => {
+    const booth = db.prepare("SELECT * FROM booth WHERE inspection = ? AND booth_num = ?").get(type, boothNum);
+
+    if (!booth) {
+      throw { status: 400, message: "존재하지 않는 부스입니다." };
+    }
+
+    if (req.body.active === false && booth.occupied_by !== null) {
+      throw { status: 400, message: "사용 중인 부스는 비활성화할 수 없습니다." };
+    }
+
+    db.prepare("UPDATE booth SET active = ? WHERE inspection = ? AND booth_num = ?").run(
+      req.body.active === true ? 1 : 0, type, boothNum
+    );
+  });
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  // SSE 브로드캐스트: 부스 상태 변경
+  const booths = getBoothsForType(type);
+  broadcastEvent("booth", { type, booths });
+
+  res.status(200).send();
+});
+
+/* ============================================
    API 라우트: 설정
    ============================================ */
 
