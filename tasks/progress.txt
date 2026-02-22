@@ -14,6 +14,8 @@
 - `getBoothsForType(type)` helper in index.mjs returns booth array for an inspection type - use for all booth queries and SSE broadcasts
 - Booth enter/exit endpoints broadcast BOTH 'booth' and 'queue' SSE events; SMS notification sent after response for enter
 - booth_log tracks active occupancy with `exited_at IS NULL`; exit updates this row
+- When resetting/clearing data for an inspection type, remember to also reset booth state and broadcast both 'queue' and 'booth' SSE events
+- For dynamic SQL filters (optional query params), build arrays of conditions/params and join with AND: `conditions.join(" AND ")`
 
 ---
 
@@ -89,4 +91,26 @@
   - `/api/booths/all` must be defined BEFORE `/api/booths/:type` to avoid Express matching "all" as a `:type` param
   - `getBoothsForType` is a function declaration so it's hoisted - can be called from any route handler regardless of definition order in the file
   - `validateInspection()` returns 400 for invalid types, which satisfies the invalid type requirement
+---
+
+## 2026-02-23 - US-008
+- What was implemented: Deprecated old enter endpoint with comment, added booth reset to history clear handler
+- Files changed: queue/index.mjs
+- **Learnings for future iterations:**
+  - Old `POST /api/admin/enter/:type` endpoint kept functional but marked with `[DEPRECATED]` comment pointing to booth-based alternative
+  - History clear (`DELETE /api/admin/history/:type`) now resets all booths for that type: `UPDATE booth SET occupied_by=NULL, entered_at=NULL WHERE inspection=?`
+  - History clear broadcasts both 'queue' and 'booth' SSE events since booth state changes too
+  - booth_log records with NULL exited_at from before the reset remain as-is (incomplete records are acceptable)
+---
+
+## 2026-02-23 - US-009
+- What was implemented: Added two statistics API endpoints: GET /api/admin/stats (all teams) and GET /api/admin/stats/:num (per-team with timeline)
+- Files changed: queue/index.mjs
+- **Learnings for future iterations:**
+  - Stats endpoints use dynamic SQL WHERE clause construction with arrays of conditions and params to handle optional filters (from, to, inspection)
+  - GET /api/admin/stats merges queue_log aggregates (registrations, cancellations, entries) with booth_log aggregates (totalOccupyTime) using a Map keyed by team num
+  - GET /api/admin/stats/:num builds timeline from booth_log entries, enriched with registeredAt from the closest preceding queue_log register event via correlated subquery
+  - For booth_log occupy time, use `exited_at IS NOT NULL` filter separately from the timeline query (timeline includes in-progress entries too)
+  - `COALESCE(SUM(...), 0)` prevents null totalOccupyTime when no completed booth sessions exist
+  - Stats endpoints are placed in a new "Admin - 통계" section between booth management and settings sections
 ---

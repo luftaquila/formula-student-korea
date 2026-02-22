@@ -1103,6 +1103,211 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
 });
 
 /* ============================================
+   API 라우트: Admin - 통계
+   ============================================ */
+
+// GET /api/admin/stats - 전체 팀별 통계 조회
+app.get("/api/admin/stats", (req, res) => {
+  const { from, to, inspection } = req.query;
+
+  if (inspection) {
+    const typeValidation = validateInspection(inspection);
+    if (!typeValidation.valid) {
+      return res.status(400).send(typeValidation.error);
+    }
+  }
+
+  const queueLogConditions = [];
+  const queueLogParams = [];
+  const boothLogConditions = ["exited_at IS NOT NULL"];
+  const boothLogParams = [];
+
+  if (from) {
+    queueLogConditions.push("timestamp >= ?");
+    queueLogParams.push(Number(from));
+    boothLogConditions.push("entered_at >= ?");
+    boothLogParams.push(Number(from));
+  }
+  if (to) {
+    queueLogConditions.push("timestamp <= ?");
+    queueLogParams.push(Number(to));
+    boothLogConditions.push("exited_at <= ?");
+    boothLogParams.push(Number(to));
+  }
+  if (inspection) {
+    queueLogConditions.push("inspection = ?");
+    queueLogParams.push(inspection);
+    boothLogConditions.push("inspection = ?");
+    boothLogParams.push(inspection);
+  }
+
+  const queueLogWhere = queueLogConditions.length ? `WHERE ${queueLogConditions.join(" AND ")}` : "";
+  const boothLogWhere = `WHERE ${boothLogConditions.join(" AND ")}`;
+
+  const result = dbRun(() => {
+    const queueStats = db.prepare(`
+      SELECT num,
+        SUM(CASE WHEN event = 'register' THEN 1 ELSE 0 END) as registrations,
+        SUM(CASE WHEN event = 'cancel' THEN 1 ELSE 0 END) as cancellations,
+        SUM(CASE WHEN event = 'enter' THEN 1 ELSE 0 END) as entries
+      FROM queue_log
+      ${queueLogWhere}
+      GROUP BY num
+    `).all(...queueLogParams);
+
+    const boothStats = db.prepare(`
+      SELECT num, SUM(exited_at - entered_at) as totalOccupyTime
+      FROM booth_log
+      ${boothLogWhere}
+      GROUP BY num
+    `).all(...boothLogParams);
+
+    const statsMap = new Map();
+    for (const row of queueStats) {
+      statsMap.set(row.num, {
+        num: row.num,
+        registrations: row.registrations,
+        cancellations: row.cancellations,
+        entries: row.entries,
+        totalOccupyTime: 0,
+      });
+    }
+    for (const row of boothStats) {
+      if (statsMap.has(row.num)) {
+        statsMap.get(row.num).totalOccupyTime = row.totalOccupyTime;
+      } else {
+        statsMap.set(row.num, {
+          num: row.num,
+          registrations: 0,
+          cancellations: 0,
+          entries: 0,
+          totalOccupyTime: row.totalOccupyTime,
+        });
+      }
+    }
+
+    return Array.from(statsMap.values());
+  });
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  res.json(result.result);
+});
+
+// GET /api/admin/stats/:num - 팀별 상세 통계 및 타임라인 조회
+app.get("/api/admin/stats/:num", (req, res) => {
+  const numValidation = validateEntryNum(req.params.num);
+  if (!numValidation.valid) {
+    return res.status(400).send(numValidation.error);
+  }
+
+  const num = numValidation.value;
+  const { from, to, inspection } = req.query;
+
+  if (inspection) {
+    const typeValidation = validateInspection(inspection);
+    if (!typeValidation.valid) {
+      return res.status(400).send(typeValidation.error);
+    }
+  }
+
+  const queueLogConditions = ["num = ?"];
+  const queueLogParams = [num];
+  const boothLogConditions = ["num = ?"];
+  const boothLogParams = [num];
+  const boothLogOccupyConditions = ["num = ?", "exited_at IS NOT NULL"];
+  const boothLogOccupyParams = [num];
+
+  if (from) {
+    queueLogConditions.push("timestamp >= ?");
+    queueLogParams.push(Number(from));
+    boothLogConditions.push("entered_at >= ?");
+    boothLogParams.push(Number(from));
+    boothLogOccupyConditions.push("entered_at >= ?");
+    boothLogOccupyParams.push(Number(from));
+  }
+  if (to) {
+    queueLogConditions.push("timestamp <= ?");
+    queueLogParams.push(Number(to));
+    boothLogConditions.push("exited_at <= ?");
+    boothLogParams.push(Number(to));
+    boothLogOccupyConditions.push("exited_at <= ?");
+    boothLogOccupyParams.push(Number(to));
+  }
+  if (inspection) {
+    queueLogConditions.push("inspection = ?");
+    queueLogParams.push(inspection);
+    boothLogConditions.push("inspection = ?");
+    boothLogParams.push(inspection);
+    boothLogOccupyConditions.push("inspection = ?");
+    boothLogOccupyParams.push(inspection);
+  }
+
+  const queueLogWhere = `WHERE ${queueLogConditions.join(" AND ")}`;
+  const boothLogWhere = `WHERE ${boothLogConditions.join(" AND ")}`;
+  const boothLogOccupyWhere = `WHERE ${boothLogOccupyConditions.join(" AND ")}`;
+
+  const result = dbRun(() => {
+    const queueSummary = db.prepare(`
+      SELECT
+        SUM(CASE WHEN event = 'register' THEN 1 ELSE 0 END) as registrations,
+        SUM(CASE WHEN event = 'cancel' THEN 1 ELSE 0 END) as cancellations,
+        SUM(CASE WHEN event = 'enter' THEN 1 ELSE 0 END) as entries
+      FROM queue_log
+      ${queueLogWhere}
+    `).get(...queueLogParams);
+
+    const occupyResult = db.prepare(`
+      SELECT COALESCE(SUM(exited_at - entered_at), 0) as totalOccupyTime
+      FROM booth_log
+      ${boothLogOccupyWhere}
+    `).get(...boothLogOccupyParams);
+
+    const boothLogs = db.prepare(`
+      SELECT inspection, booth_num as boothNum, entered_at as enteredAt, exited_at as exitedAt
+      FROM booth_log
+      ${boothLogWhere}
+      ORDER BY entered_at ASC
+    `).all(...boothLogParams);
+
+    const timeline = boothLogs.map((entry) => {
+      const registerEvent = db.prepare(`
+        SELECT timestamp FROM queue_log
+        WHERE num = ? AND inspection = ? AND event = 'register' AND timestamp <= ?
+        ORDER BY timestamp DESC LIMIT 1
+      `).get(num, entry.inspection, entry.enteredAt);
+
+      return {
+        inspection: entry.inspection,
+        boothNum: entry.boothNum,
+        registeredAt: registerEvent ? registerEvent.timestamp : null,
+        enteredAt: entry.enteredAt,
+        exitedAt: entry.exitedAt,
+        occupyDuration: entry.exitedAt ? entry.exitedAt - entry.enteredAt : null,
+      };
+    });
+
+    return {
+      summary: {
+        registrations: queueSummary.registrations || 0,
+        cancellations: queueSummary.cancellations || 0,
+        entries: queueSummary.entries || 0,
+        totalOccupyTime: occupyResult.totalOccupyTime,
+      },
+      timeline,
+    };
+  });
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  res.json(result.result);
+});
+
+/* ============================================
    API 라우트: 설정
    ============================================ */
 
