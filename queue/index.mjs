@@ -72,7 +72,43 @@ db.transaction(() => {
     PRIMARY KEY (num, inspection)
   );`);
 
-  // 검차 종류별 대기열 테이블 생성
+  // 부스 설정 테이블
+  db.exec(`CREATE TABLE IF NOT EXISTS booth_config (
+    inspection TEXT PRIMARY KEY,
+    count INTEGER DEFAULT 1
+  );`);
+
+  // 부스 상태 테이블
+  db.exec(`CREATE TABLE IF NOT EXISTS booth (
+    inspection TEXT,
+    booth_num INTEGER,
+    active BOOLEAN DEFAULT TRUE,
+    occupied_by INTEGER NULL,
+    entered_at INTEGER NULL,
+    PRIMARY KEY (inspection, booth_num)
+  );`);
+
+  // 부스 사용 로그 테이블
+  db.exec(`CREATE TABLE IF NOT EXISTS booth_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    num INTEGER,
+    inspection TEXT,
+    booth_num INTEGER,
+    entered_at INTEGER,
+    exited_at INTEGER NULL,
+    created_at INTEGER
+  );`);
+
+  // 대기열 이벤트 로그 테이블
+  db.exec(`CREATE TABLE IF NOT EXISTS queue_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event TEXT,
+    num INTEGER,
+    inspection TEXT,
+    timestamp INTEGER
+  );`);
+
+  // 검차 종류별 대기열 테이블 생성 및 부스 기본 데이터 생성
   for (const [k, v] of Object.entries(inspections)) {
     db.prepare(`INSERT OR IGNORE INTO inspection (type, name) VALUES (?, ?)`).run(k, v);
     db.exec(`CREATE TABLE IF NOT EXISTS ${k} (
@@ -80,6 +116,10 @@ db.transaction(() => {
       phone TEXT NOT NULL,
       timestamp INTEGER NOT NULL
     );`);
+
+    // 부스 기본 설정: 검차 종류당 1개 부스
+    db.prepare(`INSERT OR IGNORE INTO booth_config (inspection, count) VALUES (?, 1)`).run(k);
+    db.prepare(`INSERT OR IGNORE INTO booth (inspection, booth_num) VALUES (?, 1)`).run(k);
   }
 
   db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`).run("sms", "FALSE");
