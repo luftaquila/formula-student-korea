@@ -8,48 +8,25 @@ const { error } = useNotification();
 
 const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate } = useSSE();
 
-const expandedTypes = ref({});
 const elapsedTimes = ref({});
 let elapsedTimers = {};
 
-function toggleType(type) {
-  expandedTypes.value[type] = !expandedTypes.value[type];
-  if (expandedTypes.value[type]) {
-    syncTimersForType(type);
-  } else {
-    clearTimersForType(type);
-  }
-}
-
-function syncTimersForType(type) {
-  clearTimersForType(type);
-  const booths = allBooths.value[type] || [];
-  for (const booth of booths) {
-    if (booth.occupied_by && booth.entered_at) {
-      const key = `${type}-${booth.booth_num}`;
-      elapsedTimes.value[key] = formatElapsed(booth.entered_at);
-      elapsedTimers[key] = setInterval(() => {
-        elapsedTimes.value[key] = formatElapsed(booth.entered_at);
-      }, 1000);
-    }
-  }
-}
-
-function clearTimersForType(type) {
-  const booths = allBooths.value[type] || [];
-  for (const booth of booths) {
-    const key = `${type}-${booth.booth_num}`;
-    if (elapsedTimers[key]) {
-      clearInterval(elapsedTimers[key]);
-      delete elapsedTimers[key];
-    }
-    delete elapsedTimes.value[key];
-  }
-}
-
-function clearAllTimers() {
+function syncAllTimers() {
   Object.values(elapsedTimers).forEach(clearInterval);
   elapsedTimers = {};
+  elapsedTimes.value = {};
+  for (const type of Object.keys(allBooths.value)) {
+    const booths = allBooths.value[type] || [];
+    for (const booth of booths) {
+      if (booth.occupied_by && booth.entered_at) {
+        const key = `${type}-${booth.booth_num}`;
+        elapsedTimes.value[key] = formatElapsed(booth.entered_at);
+        elapsedTimers[key] = setInterval(() => {
+          elapsedTimes.value[key] = formatElapsed(booth.entered_at);
+        }, 1000);
+      }
+    }
+  }
 }
 
 function formatElapsed(enteredAt) {
@@ -59,14 +36,17 @@ function formatElapsed(enteredAt) {
   return `${min}:${sec}`;
 }
 
-watch(lastBoothUpdate, (update) => {
-  if (update && expandedTypes.value[update.type]) {
-    syncTimersForType(update.type);
-  }
+watch(lastBoothUpdate, () => {
+  syncAllTimers();
 });
 
+watch(allBooths, () => {
+  syncAllTimers();
+}, { deep: true });
+
 onUnmounted(() => {
-  clearAllTimers();
+  Object.values(elapsedTimers).forEach(clearInterval);
+  elapsedTimers = {};
 });
 
 const entries = ref({});
@@ -104,6 +84,7 @@ onMounted(async () => {
   }
 
   loading.value = false;
+  syncAllTimers();
 });
 
 function updateTeamName() {
@@ -248,7 +229,7 @@ function clearState(message) {
       </div>
     </div>
 
-    <!-- Active Queues -->
+    <!-- Active Queues & Booth Status -->
     <div class="card queues-card">
       <div class="card-header">
         <h3>🛎️ 전체 대기열 현황</h3>
@@ -258,66 +239,20 @@ function clearState(message) {
           <div class="loading-spinner"></div>
           <p>데이터를 불러오는 중...</p>
         </div>
-        <table v-else class="data-table">
-          <thead>
-            <tr>
-              <th>검차 종류</th>
-              <th>대기 팀 수</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in activeInspections" :key="item.type">
-              <td>{{ item.name }}</td>
-              <td>
-                <span class="badge badge-primary">{{ item.length }} 팀</span>
-              </td>
-            </tr>
-            <tr v-if="activeInspections.length === 0">
-              <td colspan="2" class="empty-state">현재 활성화된 검차가 없습니다.</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Booth Status -->
-    <div class="card booth-section">
-      <div class="card-header">
-        <h3>🏢 부스 현황</h3>
-      </div>
-      <div class="card-body">
-        <div v-if="loading" class="loading">
-          <div class="loading-spinner"></div>
-          <p>데이터를 불러오는 중...</p>
-        </div>
         <div v-else-if="activeInspections.length === 0" class="empty-state">
           현재 활성화된 검차가 없습니다.
         </div>
-        <div v-else class="accordion">
-          <div
-            v-for="item in activeInspections"
-            :key="item.type"
-            class="accordion-item"
-          >
-            <button class="accordion-header" @click="toggleType(item.type)">
-              <span class="accordion-title">{{ item.name }}</span>
-              <span class="accordion-meta">
-                <span class="badge badge-secondary">{{ (allBooths[item.type] || []).length }}개 부스</span>
-                <svg
-                  class="accordion-arrow"
-                  :class="{ expanded: expandedTypes[item.type] }"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  width="20"
-                  height="20"
-                >
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </span>
-            </button>
-            <div v-if="expandedTypes[item.type]" class="accordion-body">
+        <template v-else>
+          <div class="booth-sections">
+            <div
+              v-for="item in activeInspections"
+              :key="item.type"
+              class="booth-type-section"
+            >
+              <div class="booth-type-header">
+                <span class="booth-type-title">{{ item.name }}</span>
+                <span class="badge badge-primary">{{ item.length }}팀 대기</span>
+              </div>
               <div class="booth-grid">
                 <div
                   v-for="booth in (allBooths[item.type] || [])"
@@ -325,23 +260,24 @@ function clearState(message) {
                   class="booth-item"
                   :class="{ 'booth-inactive': !booth.active, 'booth-occupied': booth.active && booth.occupied_by }"
                 >
-                  <div class="booth-num">부스 {{ booth.booth_num }}</div>
-                  <template v-if="!booth.active">
-                    <span class="booth-status-tag inactive">비활성</span>
-                  </template>
-                  <template v-else-if="booth.occupied_by">
-                    <span class="booth-status-tag occupied">사용중</span>
-                    <span class="booth-team">{{ booth.occupied_by }}번</span>
-                    <span class="booth-elapsed">{{ elapsedTimes[`${item.type}-${booth.booth_num}`] || '00:00' }}</span>
-                  </template>
-                  <template v-else>
-                    <span class="booth-status-tag empty">비어있음</span>
-                  </template>
+                  <div class="booth-num">{{ item.name }}{{ booth.booth_num }}</div>
+                  <div class="booth-status-body">
+                    <template v-if="!booth.active">
+                      <span class="booth-status-tag inactive">비활성</span>
+                    </template>
+                    <template v-else-if="booth.occupied_by">
+                      <span class="booth-status-tag occupied">검차중</span>
+                      <span class="booth-elapsed">{{ elapsedTimes[`${item.type}-${booth.booth_num}`] || '00:00' }}</span>
+                    </template>
+                    <template v-else>
+                      <span class="booth-status-tag empty">입차 가능</span>
+                    </template>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
+        </template>
       </div>
     </div>
 
@@ -498,59 +434,25 @@ function clearState(message) {
   margin: 0.25rem 0;
 }
 
-/* Accordion */
-.accordion {
+/* Booth Sections */
+.booth-sections {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 1.25rem;
+  margin-top: 1.25rem;
 }
 
-.accordion-item {
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.accordion-header {
-  width: 100%;
+.booth-type-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0.875rem 1rem;
-  background: var(--bg-secondary);
-  border: none;
-  cursor: pointer;
-  transition: background 0.2s ease;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
 }
 
-.accordion-header:hover {
-  background: var(--bg-hover, var(--bg-secondary));
-}
-
-.accordion-title {
+.booth-type-title {
   font-size: 1rem;
   font-weight: 600;
   color: var(--text-primary);
-}
-
-.accordion-meta {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.accordion-arrow {
-  transition: transform 0.2s ease;
-  color: var(--text-tertiary);
-}
-
-.accordion-arrow.expanded {
-  transform: rotate(180deg);
-}
-
-.accordion-body {
-  padding: 1rem;
-  border-top: 1px solid var(--border-color);
 }
 
 /* Booth Grid */
@@ -570,6 +472,15 @@ function clearState(message) {
   align-items: center;
   gap: 0.375rem;
   background: var(--bg-card);
+}
+
+.booth-status-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
 }
 
 .booth-item.booth-inactive {
@@ -609,13 +520,6 @@ function clearState(message) {
   color: var(--text-tertiary);
 }
 
-.booth-team {
-  font-size: 1rem;
-  font-weight: 700;
-  font-family: "JetBrains Mono", monospace;
-  color: var(--text-primary);
-}
-
 .booth-elapsed {
   font-size: 1.125rem;
   font-weight: 700;
@@ -629,7 +533,7 @@ function clearState(message) {
   }
 
   .booth-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 </style>

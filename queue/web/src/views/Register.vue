@@ -49,6 +49,11 @@ const currentBooths = computed(() => {
   return allBooths.value[inspection.value];
 });
 
+const inspectionName = computed(() => {
+  const item = activeInspections.value.find((i) => i.type === inspection.value);
+  return item ? item.name : "";
+});
+
 function selectInspection(type) {
   inspection.value = type;
   syncElapsedTimers();
@@ -198,18 +203,19 @@ onUnmounted(() => {
               class="booth-card"
               :class="{ 'booth-inactive': !booth.active, 'booth-occupied': booth.active && booth.occupied_by }"
             >
-              <div class="booth-card-num">부스 {{ booth.booth_num }}</div>
-              <template v-if="!booth.active">
-                <div class="booth-card-status inactive">비활성</div>
-              </template>
-              <template v-else-if="booth.occupied_by">
-                <div class="booth-card-status occupied">사용중</div>
-                <div class="booth-card-team">{{ booth.occupied_by }}번</div>
-                <div class="booth-card-elapsed">{{ elapsedTimes[`${inspection}-${booth.booth_num}`] || '00:00' }}</div>
-              </template>
-              <template v-else>
-                <div class="booth-card-status empty">비어있음</div>
-              </template>
+              <div class="booth-card-num">{{ inspectionName }}{{ booth.booth_num }}</div>
+              <div class="booth-card-body-content">
+                <template v-if="!booth.active">
+                  <div class="booth-card-status inactive">비활성</div>
+                </template>
+                <template v-else-if="booth.occupied_by">
+                  <div class="booth-card-status occupied">검차중</div>
+                  <div class="booth-card-elapsed">{{ elapsedTimes[`${inspection}-${booth.booth_num}`] || '00:00' }}</div>
+                </template>
+                <template v-else>
+                  <div class="booth-card-status empty">입차 가능</div>
+                </template>
+              </div>
             </div>
           </div>
         </div>
@@ -640,6 +646,15 @@ onUnmounted(() => {
   gap: 0.5rem;
 }
 
+.booth-card-body-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
 .booth-card.booth-inactive {
   background: var(--bg-tertiary, var(--bg-secondary));
   opacity: 0.5;
@@ -677,13 +692,6 @@ onUnmounted(() => {
   color: var(--text-tertiary);
 }
 
-.booth-card-team {
-  font-size: 1.5rem;
-  font-weight: 700;
-  font-family: "JetBrains Mono", monospace;
-  color: var(--text-primary);
-}
-
 .booth-card-elapsed {
   font-size: 1.75rem;
   font-weight: 700;
@@ -708,7 +716,8 @@ onUnmounted(() => {
   }
 
   .booth-cards {
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .kiosk-input {
