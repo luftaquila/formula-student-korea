@@ -101,11 +101,12 @@ export async function deleteRecord(name) {
 }
 
 /**
- * 기록 무효화 토글
+ * 기록 필드 업데이트 (invalidated, scoreboard, note)
  */
-export async function invalidateRecord(name, rowid) {
+export async function updateRecord(name, rowid, field, value) {
   const res = await request(`/api/records/${encodeURIComponent(name)}/${rowid}`, {
     method: "PATCH",
+    body: JSON.stringify({ field, value }),
   });
   return res.json();
 }

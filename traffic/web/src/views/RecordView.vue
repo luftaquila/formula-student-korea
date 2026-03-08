@@ -5,7 +5,7 @@ import {
   fetchControllers,
   deleteRecord,
   deleteControllers,
-  invalidateRecord,
+  updateRecord,
   addRecord,
 } from "../composables/useApi";
 import { useNotification } from "../composables/useNotification";
@@ -152,7 +152,7 @@ function downloadCSV() {
     headers = ["시간", "데이터"];
     rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
   } else {
-    headers = ["시간", "엔트리", "학교", "팀", "경기", "기록", "상세"];
+    headers = ["시간", "엔트리", "학교", "팀", "경기", "기록", "상세", "무효화", "전광판"];
     rows = sortedRecords.value.map((r) => [
       formatTime(r.time),
       r.num,
@@ -161,6 +161,8 @@ function downloadCSV() {
       r.type,
       formatResult(r.result),
       r.detail || "",
+      r.invalidated ? "Y" : "N",
+      r.scoreboard ? "Y" : "N",
     ]);
   }
 
@@ -181,7 +183,7 @@ async function downloadXLSX() {
     headers = ["시간", "데이터"];
     rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
   } else {
-    headers = ["시간", "엔트리", "학교", "팀", "경기", "기록", "상세"];
+    headers = ["시간", "엔트리", "학교", "팀", "경기", "기록", "상세", "무효화", "전광판"];
     rows = sortedRecords.value.map((r) => [
       formatTime(r.time),
       r.num,
@@ -190,6 +192,8 @@ async function downloadXLSX() {
       r.type,
       formatResult(r.result),
       r.detail || "",
+      r.invalidated ? "Y" : "N",
+      r.scoreboard ? "Y" : "N",
     ]);
   }
 
@@ -252,17 +256,42 @@ function getTypeClass(type) {
   return typeMap[type] || type;
 }
 
+function applyUpdateResult(record, result) {
+  const idx = records.value.findIndex((r) => r.rowid === record.rowid);
+  if (idx !== -1) {
+    records.value[idx].invalidated = result.invalidated;
+    records.value[idx].scoreboard = result.scoreboard;
+  }
+}
+
 async function handleInvalidate(record) {
   try {
-    const result = await invalidateRecord(selectedFile.value, record.rowid);
-    // 로컬 상태 업데이트
-    const idx = records.value.findIndex((r) => r.rowid === record.rowid);
-    if (idx !== -1) {
-      records.value[idx].invalidated = result.invalidated;
-    }
+    const result = await updateRecord(selectedFile.value, record.rowid, "invalidated");
+    applyUpdateResult(record, result);
     notyf.success(result.invalidated ? "기록이 무효화되었습니다." : "기록이 복원되었습니다.");
   } catch (e) {
     notyf.error(`무효화 실패: ${e.message}`);
+  }
+}
+
+async function handleDetailChange(record, value) {
+  try {
+    const result = await updateRecord(selectedFile.value, record.rowid, "detail", value);
+    const idx = records.value.findIndex((r) => r.rowid === record.rowid);
+    if (idx !== -1) {
+      records.value[idx].detail = result.detail;
+    }
+  } catch (e) {
+    notyf.error(`상세 저장 실패: ${e.message}`);
+  }
+}
+
+async function handleScoreboardToggle(record) {
+  try {
+    const result = await updateRecord(selectedFile.value, record.rowid, "scoreboard");
+    applyUpdateResult(record, result);
+  } catch (e) {
+    notyf.error(`전광판 설정 실패: ${e.message}`);
   }
 }
 
@@ -289,7 +318,7 @@ async function handleAddRecord() {
       type: addType.value,
       entry: { num: entry.num, univ: entry.univ, team: entry.team },
       result: resultValue,
-      detail: addDetail.value || undefined,
+      detail: addDetail.value ? `${addDetail.value} (수동)` : "(수동)",
     });
     notyf.success("기록이 추가되었습니다.");
     // 폼 초기화
@@ -458,7 +487,7 @@ async function handleAddRecord() {
               <th class="sortable center" @click="handleSort('num')">
                 엔트리 <span class="sort-icon">{{ getSortIcon("num") }}</span>
               </th>
-              <th class="sortable" @click="handleSort('univ')">
+              <th class="sortable col-univ" @click="handleSort('univ')">
                 학교 <span class="sort-icon">{{ getSortIcon("univ") }}</span>
               </th>
               <th class="sortable" @click="handleSort('team')">
@@ -474,6 +503,7 @@ async function handleAddRecord() {
                 상세 <span class="sort-icon">{{ getSortIcon("detail") }}</span>
               </th>
               <th class="center">무효화</th>
+              <th class="center">전광판</th>
             </tr>
           </thead>
           <tbody>
@@ -486,7 +516,7 @@ async function handleAddRecord() {
               <td class="center">
                 <span class="entry-number">{{ record.num }}</span>
               </td>
-              <td>{{ record.univ }}</td>
+              <td class="col-univ">{{ record.univ }}</td>
               <td>{{ record.team }}</td>
               <td class="center">
                 <span class="type-badge" :class="getTypeClass(record.type)">{{ record.type }}</span>
@@ -494,7 +524,14 @@ async function handleAddRecord() {
               <td class="result-cell center" :class="{ 'is-dnf': record.result < 0 }">
                 {{ formatResult(record.result) }}
               </td>
-              <td class="detail-cell">{{ record.detail }}</td>
+              <td class="detail-cell">
+                <input
+                  class="detail-input"
+                  type="text"
+                  :value="record.detail || ''"
+                  @change="handleDetailChange(record, $event.target.value)"
+                />
+              </td>
               <td class="center">
                 <button
                   class="btn-invalidate"
@@ -505,6 +542,20 @@ async function handleAddRecord() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="10" />
                     <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                  </svg>
+                </button>
+              </td>
+              <td class="center">
+                <button
+                  class="btn-scoreboard"
+                  :class="{ active: record.scoreboard }"
+                  @click="handleScoreboardToggle(record)"
+                  :title="record.scoreboard ? '전광판 숨김' : '전광판 표시'"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                    <line x1="8" y1="21" x2="16" y2="21" />
+                    <line x1="12" y1="17" x2="12" y2="21" />
                   </svg>
                 </button>
               </td>
@@ -830,6 +881,35 @@ async function handleAddRecord() {
   font-size: 0.875rem;
 }
 
+.detail-input {
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+}
+
+.detail-input:hover {
+  border-color: var(--border-color);
+}
+
+.detail-input:focus {
+  outline: none;
+  background: var(--bg-input);
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.col-univ {
+  max-width: 8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 무효화된 행 스타일 */
 .data-table tbody tr.is-invalidated {
   opacity: 0.4;
@@ -840,7 +920,9 @@ async function handleAddRecord() {
   text-decoration-color: var(--text-tertiary);
 }
 
-.data-table tbody tr.is-invalidated .btn-invalidate {
+.data-table tbody tr.is-invalidated .btn-invalidate,
+.data-table tbody tr.is-invalidated .btn-scoreboard,
+.data-table tbody tr.is-invalidated .detail-input {
   text-decoration: none;
 }
 
@@ -880,6 +962,44 @@ async function handleAddRecord() {
 .btn-invalidate.active:hover {
   background: var(--accent-success);
   border-color: var(--accent-success);
+}
+
+/* 전광판 버튼 */
+.btn-scoreboard {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-decoration: none !important;
+}
+
+.btn-scoreboard svg {
+  width: 16px;
+  height: 16px;
+}
+
+.btn-scoreboard:hover {
+  background: var(--bg-hover);
+  color: var(--accent-primary);
+  border-color: var(--accent-primary);
+}
+
+.btn-scoreboard.active {
+  background: var(--accent-primary);
+  color: white;
+  border-color: var(--accent-primary);
+}
+
+.btn-scoreboard.active:hover {
+  opacity: 0.8;
 }
 
 .controller-data {

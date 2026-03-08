@@ -233,10 +233,14 @@ app.get("/api/records/:name", (req, res) => {
   const name = decodeURIComponent(validation.value);
 
   const result = dbRun(() => {
-    // 기존 테이블에 invalidated 컬럼이 없으면 추가
+    // 기존 테이블에 누락된 컬럼 추가
     const columns = db.prepare(`PRAGMA table_info('${name}')`).all();
     if (!columns.some((c) => c.name === "invalidated")) {
       db.exec(`ALTER TABLE '${name}' ADD COLUMN invalidated INTEGER DEFAULT 0`);
+    }
+    if (!columns.some((c) => c.name === "scoreboard")) {
+      db.exec(`ALTER TABLE '${name}' ADD COLUMN scoreboard INTEGER DEFAULT 1`);
+      db.exec(`UPDATE '${name}' SET scoreboard = 0 WHERE invalidated = 1`);
     }
     return db.prepare(`SELECT rowid, * FROM '${name}'`).all();
   });
@@ -276,13 +280,18 @@ app.post("/api/records", (req, res) => {
           type TEXT NOT NULL,
           result INTEGER NOT NULL,
           detail TEXT,
-          invalidated INTEGER DEFAULT 0
+          invalidated INTEGER DEFAULT 0,
+          scoreboard INTEGER DEFAULT 1
         );`);
       } else {
-        // 기존 테이블에 invalidated 컬럼이 없으면 추가
+        // 기존 테이블에 누락된 컬럼 추가
         const columns = db.prepare(`PRAGMA table_info('${name}')`).all();
         if (!columns.some((c) => c.name === "invalidated")) {
           db.exec(`ALTER TABLE '${name}' ADD COLUMN invalidated INTEGER DEFAULT 0`);
+        }
+        if (!columns.some((c) => c.name === "scoreboard")) {
+          db.exec(`ALTER TABLE '${name}' ADD COLUMN scoreboard INTEGER DEFAULT 1`);
+          db.exec(`UPDATE '${name}' SET scoreboard = 0 WHERE invalidated = 1`);
         }
       }
 
@@ -302,7 +311,7 @@ app.post("/api/records", (req, res) => {
   res.status(201).send();
 });
 
-// PATCH /api/records/:name/:rowid - 기록 무효화 토글
+// PATCH /api/records/:name/:rowid - 기록 필드 업데이트
 app.patch("/api/records/:name/:rowid", (req, res) => {
   const validation = validateRecordName(req.params.name);
   if (!validation.valid) {
@@ -316,17 +325,35 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
     return res.status(400).send("올바르지 않은 rowid입니다.");
   }
 
+  const { field, value } = req.body;
+  if (!["invalidated", "scoreboard", "detail"].includes(field)) {
+    return res.status(400).send("올바르지 않은 필드입니다.");
+  }
+
   const result = dbRun(() => {
-    // 현재 상태 조회
-    const row = db.prepare(`SELECT invalidated FROM '${name}' WHERE rowid = ?`).get(rowid);
+    const row = db.prepare(`SELECT invalidated, scoreboard FROM '${name}' WHERE rowid = ?`).get(rowid);
     if (!row) {
       throw new Error("기록을 찾을 수 없습니다.");
     }
 
-    // 무효화 상태 토글
-    const newStatus = row.invalidated ? 0 : 1;
-    db.prepare(`UPDATE '${name}' SET invalidated = ? WHERE rowid = ?`).run(newStatus, rowid);
-    return { invalidated: newStatus };
+    if (field === "invalidated") {
+      const newStatus = row.invalidated ? 0 : 1;
+      if (newStatus === 1) {
+        // 무효화 ON → 전광판도 자동 OFF
+        db.prepare(`UPDATE '${name}' SET invalidated = 1, scoreboard = 0 WHERE rowid = ?`).run(rowid);
+        return { invalidated: 1, scoreboard: 0 };
+      } else {
+        db.prepare(`UPDATE '${name}' SET invalidated = 0 WHERE rowid = ?`).run(rowid);
+        return { invalidated: 0, scoreboard: row.scoreboard };
+      }
+    } else if (field === "scoreboard") {
+      const newStatus = row.scoreboard ? 0 : 1;
+      db.prepare(`UPDATE '${name}' SET scoreboard = ? WHERE rowid = ?`).run(newStatus, rowid);
+      return { invalidated: row.invalidated, scoreboard: newStatus };
+    } else if (field === "detail") {
+      db.prepare(`UPDATE '${name}' SET detail = ? WHERE rowid = ?`).run(value ?? null, rowid);
+      return { invalidated: row.invalidated, scoreboard: row.scoreboard, detail: value ?? null };
+    }
   });
 
   if (!result.success) {

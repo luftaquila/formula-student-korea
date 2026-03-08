@@ -46,7 +46,7 @@ watch(lastUpdate, (update) => {
 });
 
 const validRecords = computed(() => {
-  return records.value.filter((r) => !r.invalidated);
+  return records.value.filter((r) => r.scoreboard);
 });
 
 const availableTypes = computed(() => {
