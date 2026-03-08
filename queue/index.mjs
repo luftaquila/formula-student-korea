@@ -1097,6 +1097,36 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
    API 라우트: Admin - 통계
    ============================================ */
 
+// GET /api/admin/stats/timerange - 특정 연도의 로그 시간 범위 조회
+app.get("/api/admin/stats/timerange", (req, res) => {
+  const year = Number(req.query.year) || new Date().getFullYear();
+  const yearStart = new Date(year, 0, 1).getTime();
+  const yearEnd = new Date(year + 1, 0, 1).getTime() - 1;
+
+  const result = dbRun(() => {
+    const q = db.prepare(
+      "SELECT MIN(timestamp) as minTs, MAX(timestamp) as maxTs FROM queue_log WHERE timestamp >= ? AND timestamp <= ?"
+    ).get(yearStart, yearEnd);
+    const b = db.prepare(
+      "SELECT MIN(entered_at) as minTs, MAX(COALESCE(exited_at, entered_at)) as maxTs FROM booth_log WHERE entered_at >= ? AND entered_at <= ?"
+    ).get(yearStart, yearEnd);
+
+    const mins = [q?.minTs, b?.minTs].filter(Boolean);
+    const maxs = [q?.maxTs, b?.maxTs].filter(Boolean);
+
+    return {
+      from: mins.length ? Math.min(...mins) : null,
+      to: maxs.length ? Math.max(...maxs) : null,
+    };
+  });
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  res.json(result.result);
+});
+
 // GET /api/admin/stats - 전체 팀별 통계 조회
 app.get("/api/admin/stats", (req, res) => {
   const { from, to, inspection } = req.query;

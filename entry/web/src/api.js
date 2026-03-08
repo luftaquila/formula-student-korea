@@ -22,19 +22,31 @@ async function request(endpoint, options = {}) {
   return res;
 }
 
+function yearParam(year, prefix = "?") {
+  return year != null ? `${prefix}year=${year}` : "";
+}
+
+/**
+ * 사용 가능한 연도 목록 조회
+ */
+export async function fetchYears() {
+  const res = await request("/api/years");
+  return res.json();
+}
+
 /**
  * 모든 엔트리 목록 조회
  */
-export async function fetchEntries() {
-  const res = await request("/api/entries");
+export async function fetchEntries(year) {
+  const res = await request(`/api/entries${yearParam(year)}`);
   return res.json();
 }
 
 /**
  * 엔트리 추가
  */
-export async function addEntry({ num, univ, team }) {
-  await request("/api/entries", {
+export async function addEntry({ num, univ, team }, year) {
+  await request(`/api/entries${yearParam(year)}`, {
     method: "POST",
     body: JSON.stringify({ num, univ, team }),
   });
@@ -43,8 +55,8 @@ export async function addEntry({ num, univ, team }) {
 /**
  * 엔트리 수정
  */
-export async function updateEntry({ num, univ, team, prev }) {
-  await request(`/api/entries/${prev}`, {
+export async function updateEntry({ num, univ, team, prev }, year) {
+  await request(`/api/entries/${prev}${yearParam(year)}`, {
     method: "PATCH",
     body: JSON.stringify({ num, univ, team }),
   });
@@ -53,8 +65,8 @@ export async function updateEntry({ num, univ, team, prev }) {
 /**
  * 엔트리 삭제
  */
-export async function deleteEntry(num) {
-  await request(`/api/entries/${num}`, {
+export async function deleteEntry(num, year) {
+  await request(`/api/entries/${num}${yearParam(year)}`, {
     method: "DELETE",
   });
 }
@@ -62,8 +74,8 @@ export async function deleteEntry(num) {
 /**
  * 모든 엔트리 삭제
  */
-export async function deleteAllEntries() {
-  await request("/api/entries", {
+export async function deleteAllEntries(year) {
+  await request(`/api/entries${yearParam(year)}`, {
     method: "DELETE",
   });
 }
@@ -71,8 +83,8 @@ export async function deleteAllEntries() {
 /**
  * JSON 파일로 엔트리 일괄 업로드
  */
-export async function uploadEntries(data) {
-  await request("/api/entries/bulk", {
+export async function uploadEntries(data, year) {
+  await request(`/api/entries/bulk${yearParam(year)}`, {
     method: "POST",
     body: JSON.stringify({ data }),
   });
@@ -81,6 +93,6 @@ export async function uploadEntries(data) {
 /**
  * 엔트리 JSON 다운로드 URL
  */
-export function getDownloadUrl() {
-  return `${BASE_URL}/api/entries?download`;
+export function getDownloadUrl(year) {
+  return `${BASE_URL}/api/entries?download${year != null ? `&year=${year}` : ""}`;
 }

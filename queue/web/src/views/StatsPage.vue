@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from "vue";
 import { useRouter } from "vue-router";
-import { fetchEntries, fetchAllInspections, getStats, getTeamStats } from "../api";
+import { fetchEntries, fetchEntryYears, fetchAllInspections, getStatsTimerange, getStats, getTeamStats } from "../api";
 import { useNotification } from "../composables/useNotification";
 
 const { error } = useNotification();
@@ -12,6 +12,10 @@ const inspections = ref([]);
 const statsData = ref([]);
 const loading = ref(true);
 const fetching = ref(false);
+
+// Year
+const selectedYear = ref(new Date().getFullYear());
+const availableYears = ref([]);
 
 // Filters
 const filterFrom = ref("");
@@ -56,10 +60,54 @@ function sortIndicator(key) {
   return sortAsc.value ? " ▲" : " ▼";
 }
 
+function toLocalDate(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const Y = d.getFullYear();
+  const M = String(d.getMonth() + 1).padStart(2, "0");
+  const D = String(d.getDate()).padStart(2, "0");
+  return `${Y}-${M}-${D}`;
+}
+
+function parseLocalDate(str) {
+  if (!str) return null;
+  const [y, m, d] = str.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d).getTime();
+}
+
+async function applyYearRange(year) {
+  try {
+    const range = await getStatsTimerange(year);
+    filterFrom.value = toLocalDate(range.from);
+    filterTo.value = toLocalDate(range.to);
+  } catch (e) {
+    filterFrom.value = "";
+    filterTo.value = "";
+  }
+}
+
+async function onYearChange() {
+  expandedTeam.value = null;
+  teamTimeline.value = [];
+  try {
+    entries.value = await fetchEntries(selectedYear.value);
+  } catch (e) {
+    error("엔트리 정보를 가져올 수 없습니다.");
+  }
+  await applyYearRange(selectedYear.value);
+  await fetchStats();
+}
+
 onMounted(async () => {
   try {
-    entries.value = await fetchEntries();
+    availableYears.value = await fetchEntryYears();
+    if (availableYears.value.length && !availableYears.value.includes(selectedYear.value)) {
+      selectedYear.value = availableYears.value[0];
+    }
+    entries.value = await fetchEntries(selectedYear.value);
     inspections.value = await fetchAllInspections();
+    await applyYearRange(selectedYear.value);
     await fetchStats();
   } catch (e) {
     error("데이터를 가져올 수 없습니다.");
@@ -71,8 +119,10 @@ async function fetchStats() {
   fetching.value = true;
   try {
     const params = {};
-    if (filterFrom.value) params.from = new Date(filterFrom.value).getTime();
-    if (filterTo.value) params.to = new Date(filterTo.value).getTime();
+    const fromTs = parseLocalDate(filterFrom.value);
+    const toTs = parseLocalDate(filterTo.value);
+    if (fromTs) params.from = fromTs;
+    if (toTs) params.to = toTs + 86400000 - 1;
     if (filterInspection.value) params.inspection = filterInspection.value;
     statsData.value = await getStats(params);
   } catch (e) {
@@ -123,8 +173,10 @@ async function toggleTeamDetail(num) {
   timelineLoading.value = true;
   try {
     const params = {};
-    if (filterFrom.value) params.from = new Date(filterFrom.value).getTime();
-    if (filterTo.value) params.to = new Date(filterTo.value).getTime();
+    const fromTs = parseLocalDate(filterFrom.value);
+    const toTs = parseLocalDate(filterTo.value);
+    if (fromTs) params.from = fromTs;
+    if (toTs) params.to = toTs + 86400000 - 1;
     if (filterInspection.value) params.inspection = filterInspection.value;
     const data = await getTeamStats(num, params);
     teamTimeline.value = data.timeline;
@@ -163,9 +215,15 @@ function goBack() {
     <!-- Filters -->
     <div class="filter-bar">
       <div class="filter-group">
+        <label class="filter-label">엔트리</label>
+        <select class="filter-input" v-model.number="selectedYear" @change="onYearChange">
+          <option v-for="y in availableYears" :key="y" :value="y">{{ y }}년</option>
+        </select>
+      </div>
+      <div class="filter-group">
         <label class="filter-label">시작</label>
         <input
-          type="datetime-local"
+          type="date"
           class="filter-input"
           v-model="filterFrom"
           @change="onFilterChange"
@@ -174,7 +232,7 @@ function goBack() {
       <div class="filter-group">
         <label class="filter-label">종료</label>
         <input
-          type="datetime-local"
+          type="date"
           class="filter-input"
           v-model="filterTo"
           @change="onFilterChange"

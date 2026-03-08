@@ -12,11 +12,38 @@ if (!fs.existsSync("./data")) {
 
 const db = new Database("./data/entry.db");
 
-db.exec(`CREATE TABLE IF NOT EXISTS entry (
-  num INTEGER PRIMARY KEY,
-  univ TEXT NOT NULL,
-  team TEXT NOT NULL
-);`);
+// 기존 entry 테이블이 있으면 올해 테이블로 마이그레이션
+const legacy = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entry'").get();
+if (legacy) {
+  db.exec(`ALTER TABLE entry RENAME TO entry_${new Date().getFullYear()}`);
+}
+
+// 연도별 테이블 헬퍼
+function getTableName(year) {
+  const y = Number(year) || new Date().getFullYear();
+  if (!/^\d{4}$/.test(String(y)) || y < 2000 || y > 2099) {
+    throw new Error("올바르지 않은 연도입니다.");
+  }
+  return `entry_${y}`;
+}
+
+function ensureYearTable(year) {
+  const tableName = getTableName(year);
+  db.exec(`CREATE TABLE IF NOT EXISTS '${tableName}' (
+    num INTEGER PRIMARY KEY, univ TEXT NOT NULL, team TEXT NOT NULL
+  )`);
+  return tableName;
+}
+
+function getAvailableYears() {
+  return db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'entry_%' ORDER BY name DESC")
+    .all()
+    .map(t => Number(t.name.replace('entry_', '')))
+    .filter(y => !isNaN(y));
+}
+
+// 올해 테이블 보장
+ensureYearTable(new Date().getFullYear());
 
 process.on("exit", () => db.close());
 process.on("SIGHUP", () => process.exit(128 + 1));
@@ -113,14 +140,23 @@ function dbRun(fn) {
 }
 
 /* ============================================
-   API 라우트: /api/entries
+   API 라우트: /api/years, /api/entries
    ============================================ */
+
+// GET /api/years - 사용 가능한 연도 목록
+app.get("/api/years", (req, res) => {
+  res.json(getAvailableYears());
+});
 
 // GET /api/entries - 모든 엔트리 조회
 app.get("/api/entries", (req, res) => {
+  const year = req.query.year || new Date().getFullYear();
+  let tableName;
+  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+
   const result = dbRun(() => {
     const data = {};
-    for (const row of db.prepare("SELECT * FROM entry").all()) {
+    for (const row of db.prepare(`SELECT * FROM '${tableName}'`).all()) {
       data[row.num] = { univ: row.univ, team: row.team };
     }
     return data;
@@ -131,7 +167,7 @@ app.get("/api/entries", (req, res) => {
   }
 
   if (req.query.download !== undefined) {
-    res.setHeader("Content-Disposition", 'attachment; filename="entry.json"');
+    res.setHeader("Content-Disposition", `attachment; filename="entry_${year}.json"`);
     res.setHeader("Content-Type", "application/json");
     res.send(JSON.stringify(result.result, null, 2));
   } else {
@@ -141,12 +177,16 @@ app.get("/api/entries", (req, res) => {
 
 // GET /api/entries/:num - 특정 엔트리 조회
 app.get("/api/entries/:num", (req, res) => {
+  const year = req.query.year || new Date().getFullYear();
+  let tableName;
+  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+
   const numValidation = validateEntryNum(req.params.num);
   if (!numValidation.valid) {
     return res.status(400).send(numValidation.error);
   }
 
-  const result = dbRun(() => db.prepare("SELECT * FROM entry WHERE num = ?").get(numValidation.value));
+  const result = dbRun(() => db.prepare(`SELECT * FROM '${tableName}' WHERE num = ?`).get(numValidation.value));
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
@@ -161,6 +201,10 @@ app.get("/api/entries/:num", (req, res) => {
 
 // POST /api/entries - 새 엔트리 추가
 app.post("/api/entries", (req, res) => {
+  const year = req.query.year || new Date().getFullYear();
+  let tableName;
+  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+
   const numValidation = validateEntryNum(req.body.num);
   if (!numValidation.valid) {
     return res.status(400).send(numValidation.error);
@@ -173,7 +217,7 @@ app.post("/api/entries", (req, res) => {
 
   const result = dbRun(() =>
     db
-      .prepare("INSERT INTO entry (num, univ, team) VALUES (?, ?, ?)")
+      .prepare(`INSERT INTO '${tableName}' (num, univ, team) VALUES (?, ?, ?)`)
       .run(numValidation.value, dataValidation.univ, dataValidation.team),
   );
 
@@ -186,6 +230,10 @@ app.post("/api/entries", (req, res) => {
 
 // PATCH /api/entries/:num - 엔트리 수정
 app.patch("/api/entries/:num", (req, res) => {
+  const year = req.query.year || new Date().getFullYear();
+  let tableName;
+  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+
   const prevNumValidation = validateEntryNum(req.params.num);
   if (!prevNumValidation.valid) {
     return res.status(400).send(prevNumValidation.error);
@@ -206,7 +254,7 @@ app.patch("/api/entries/:num", (req, res) => {
   const numChanged = prevNum !== newNum;
 
   if (numChanged) {
-    const numResult = dbRun(() => db.prepare("UPDATE entry SET num = ? WHERE num = ?").run(newNum, prevNum));
+    const numResult = dbRun(() => db.prepare(`UPDATE '${tableName}' SET num = ? WHERE num = ?`).run(newNum, prevNum));
 
     if (!numResult.success) {
       return res.status(numResult.status).send(numResult.error);
@@ -219,7 +267,7 @@ app.patch("/api/entries/:num", (req, res) => {
 
   const result = dbRun(() =>
     db
-      .prepare("UPDATE entry SET univ = ?, team = ? WHERE num = ?")
+      .prepare(`UPDATE '${tableName}' SET univ = ?, team = ? WHERE num = ?`)
       .run(dataValidation.univ, dataValidation.team, newNum),
   );
 
@@ -236,12 +284,16 @@ app.patch("/api/entries/:num", (req, res) => {
 
 // DELETE /api/entries/:num - 엔트리 삭제
 app.delete("/api/entries/:num", (req, res) => {
+  const year = req.query.year || new Date().getFullYear();
+  let tableName;
+  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+
   const numValidation = validateEntryNum(req.params.num);
   if (!numValidation.valid) {
     return res.status(400).send(numValidation.error);
   }
 
-  const result = dbRun(() => db.prepare("DELETE FROM entry WHERE num = ?").run(numValidation.value));
+  const result = dbRun(() => db.prepare(`DELETE FROM '${tableName}' WHERE num = ?`).run(numValidation.value));
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
@@ -256,7 +308,11 @@ app.delete("/api/entries/:num", (req, res) => {
 
 // DELETE /api/entries - 모든 엔트리 삭제
 app.delete("/api/entries", (req, res) => {
-  const result = dbRun(() => db.prepare("DELETE FROM entry").run());
+  const year = req.query.year || new Date().getFullYear();
+  let tableName;
+  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+
+  const result = dbRun(() => db.prepare(`DELETE FROM '${tableName}'`).run());
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
@@ -267,6 +323,10 @@ app.delete("/api/entries", (req, res) => {
 
 // POST /api/entries/bulk - 엔트리 일괄 업로드 (DB 교체)
 app.post("/api/entries/bulk", (req, res) => {
+  const year = req.query.year || new Date().getFullYear();
+  let tableName;
+  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+
   const validation = validateBulkData(req.body.data);
   if (!validation.valid) {
     return res.status(400).send(validation.error);
@@ -274,8 +334,8 @@ app.post("/api/entries/bulk", (req, res) => {
 
   const result = dbRun(() => {
     db.transaction(() => {
-      db.prepare("DELETE FROM entry").run();
-      const query = db.prepare("INSERT INTO entry (num, univ, team) VALUES (?, ?, ?)");
+      db.prepare(`DELETE FROM '${tableName}'`).run();
+      const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team) VALUES (?, ?, ?)`);
       for (const [k, v] of Object.entries(validation.data)) {
         query.run(Number(k), v.univ, v.team);
       }

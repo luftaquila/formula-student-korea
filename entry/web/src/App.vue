@@ -1,11 +1,11 @@
 <script setup>
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import EntryTable from "./components/EntryTable.vue";
 import EntryForm from "./components/EntryForm.vue";
 import FileManager from "./components/FileManager.vue";
 import ThemeToggle from "./components/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
-import { fetchEntries, addEntry, updateEntry, deleteEntry, deleteAllEntries, uploadEntries } from "./api";
+import { fetchYears, fetchEntries, addEntry, updateEntry, deleteEntry, deleteAllEntries, uploadEntries } from "./api";
 import { useNotification } from "./composables/useNotification";
 
 const { success, error } = useNotification();
@@ -13,6 +13,8 @@ const { success, error } = useNotification();
 const entries = ref({});
 const loading = ref(true);
 const searchQuery = ref("");
+const selectedYear = ref(new Date().getFullYear());
+const availableYears = ref([]);
 
 const entriesArray = computed(() => {
   return Object.entries(entries.value)
@@ -33,10 +35,21 @@ const filteredEntries = computed(() => {
 
 const totalCount = computed(() => entriesArray.value.length);
 
+async function loadYears() {
+  try {
+    availableYears.value = await fetchYears();
+    if (availableYears.value.length && !availableYears.value.includes(selectedYear.value)) {
+      selectedYear.value = availableYears.value[0];
+    }
+  } catch (e) {
+    error(e.message);
+  }
+}
+
 async function loadEntries() {
   loading.value = true;
   try {
-    entries.value = await fetchEntries();
+    entries.value = await fetchEntries(selectedYear.value);
   } catch (e) {
     error(e.message);
   } finally {
@@ -46,7 +59,7 @@ async function loadEntries() {
 
 async function handleAdd(entry) {
   try {
-    await addEntry(entry);
+    await addEntry(entry, selectedYear.value);
     success(`${entry.num}번 엔트리를 추가했습니다.`);
     await loadEntries();
   } catch (e) {
@@ -56,7 +69,7 @@ async function handleAdd(entry) {
 
 async function handleUpdate(entry) {
   try {
-    await updateEntry(entry);
+    await updateEntry(entry, selectedYear.value);
     success(`${entry.num}번 엔트리를 수정했습니다.`);
     await loadEntries();
   } catch (e) {
@@ -66,7 +79,7 @@ async function handleUpdate(entry) {
 
 async function handleDelete(num) {
   try {
-    await deleteEntry(num);
+    await deleteEntry(num, selectedYear.value);
     success(`${num}번 엔트리를 삭제했습니다.`);
     await loadEntries();
   } catch (e) {
@@ -76,7 +89,7 @@ async function handleDelete(num) {
 
 async function handleUpload(data) {
   try {
-    await uploadEntries(data);
+    await uploadEntries(data, selectedYear.value);
     success("엔트리 목록을 업로드했습니다.");
     await loadEntries();
   } catch (e) {
@@ -86,7 +99,7 @@ async function handleUpload(data) {
 
 async function handleDeleteAll() {
   try {
-    await deleteAllEntries();
+    await deleteAllEntries(selectedYear.value);
     success("모든 엔트리를 삭제했습니다.");
     await loadEntries();
   } catch (e) {
@@ -94,7 +107,12 @@ async function handleDeleteAll() {
   }
 }
 
-onMounted(loadEntries);
+watch(selectedYear, loadEntries);
+
+onMounted(async () => {
+  await loadYears();
+  await loadEntries();
+});
 </script>
 
 <template>
@@ -115,13 +133,16 @@ onMounted(loadEntries);
     <main class="main-content">
       <aside class="sidebar">
         <EntryForm @submit="handleAdd" />
-        <FileManager @upload="handleUpload" @delete-all="handleDeleteAll" />
+        <FileManager :year="selectedYear" @upload="handleUpload" @delete-all="handleDeleteAll" />
       </aside>
 
       <section class="content">
         <div class="table-header">
           <div class="table-title-area">
             <h2>엔트리 목록</h2>
+            <select v-model.number="selectedYear" class="year-select">
+              <option v-for="y in availableYears" :key="y" :value="y">{{ y }}년</option>
+            </select>
             <span class="entry-count">{{ totalCount }}개</span>
           </div>
           <div class="search-box">
@@ -232,6 +253,24 @@ onMounted(loadEntries);
   font-size: 1.125rem;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.year-select {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.year-select:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 
 .entry-count {

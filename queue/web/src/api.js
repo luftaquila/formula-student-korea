@@ -23,9 +23,16 @@ async function request(endpoint, options = {}) {
 /* ============================================
    Entry API (외부 서비스)
    ============================================ */
-export async function fetchEntries() {
-  const res = await fetch(`${ENTRY_URL}/api/entries`);
+export async function fetchEntries(year) {
+  const qs = year != null ? `?year=${year}` : "";
+  const res = await fetch(`${ENTRY_URL}/api/entries${qs}`);
   if (!res.ok) throw new Error("엔트리 정보를 가져올 수 없습니다.");
+  return res.json();
+}
+
+export async function fetchEntryYears() {
+  const res = await fetch(`${ENTRY_URL}/api/years`);
+  if (!res.ok) throw new Error("연도 정보를 가져올 수 없습니다.");
   return res.json();
 }
 
@@ -175,6 +182,12 @@ export async function setInspectionIgnore(type, field, value) {
 /* ============================================
    Admin API - 통계
    ============================================ */
+export async function getStatsTimerange(year) {
+  const qs = year != null ? `?year=${year}` : "";
+  const res = await request(`/api/admin/stats/timerange${qs}`);
+  return res.json();
+}
+
 export async function getStats(params = {}) {
   const query = new URLSearchParams();
   if (params.from) query.set("from", params.from);

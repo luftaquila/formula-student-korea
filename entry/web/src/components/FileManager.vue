@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { getDownloadUrl } from "../api";
 
+const props = defineProps({ year: { type: Number, default: () => new Date().getFullYear() } });
 const emit = defineEmits(["upload", "delete-all"]);
 
 const fileInput = ref(null);
@@ -121,7 +122,7 @@ function handleDeleteAll() {
       <!-- Download Section -->
       <div class="section">
         <label class="form-label">엔트리 다운로드</label>
-        <a :href="getDownloadUrl()" class="btn btn-ghost download-btn">
+        <a :href="getDownloadUrl(props.year)" class="btn btn-ghost download-btn">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
             <polyline points="7 10 12 15 17 10" />
