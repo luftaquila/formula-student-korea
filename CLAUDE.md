@@ -8,11 +8,12 @@ Formula Student Korea Service Hub - a microservices-based web application for ma
 
 ## Architecture
 
-Five independent services deployed via Docker Compose behind an Nginx reverse proxy (port 9000):
+Six independent services deployed via Docker Compose behind an Nginx reverse proxy (port 9000):
 
 - **landing/** - Landing page and reverse proxy gateway (Vue 3 + Nginx)
 - **entry/** - Vehicle entry registration API + web UI (Express + Vue 3, port 9100)
 - **queue/** - Inspection queue management API + web UI (Express + Vue 3, port 9300)
+- **inspection/** - Inspection sheet management API + web UI (Express + Vue 3, port 9600)
 - **traffic/** - Traffic control and telemetry API + web UI (Express + Vue 3, port 9200)
 - **energymeter/** - Energy meter data viewer (Git submodule, Vue 3, port 9400)
 
@@ -24,6 +25,7 @@ Five independent services deployed via Docker Compose behind an Nginx reverse pr
 Service dependencies (via `ENTRY_SERVER` environment variable):
 - traffic → entry
 - queue → entry
+- inspection → entry
 
 ## Tech Stack
 
@@ -36,21 +38,21 @@ Service dependencies (via `ENTRY_SERVER` environment variable):
 
 ### Frontend Development
 ```bash
-cd landing|entry/web|queue/web|traffic/web|energymeter/viewer
+cd landing|entry/web|queue/web|inspection/web|traffic/web|energymeter/viewer
 npm run dev        # Dev server with hot reload
 npm run build      # Production build
 ```
 
 ### Backend Development
 ```bash
-cd entry|queue|traffic
+cd entry|queue|inspection|traffic
 node index.mjs     # Run API server directly
 ```
 
 ### Docker Deployment
 ```bash
-docker-compose build
-docker-compose up -d
+podman compose --profile local build    # Build all containers
+podman compose --profile local up -d    # Start all containers (local dev)
 ```
 
 ## Key Files
@@ -58,31 +60,36 @@ docker-compose up -d
 - `landing/nginx.conf` - Route configuration and authentication rules for all services
 - `entry/index.mjs` - Entry service API server
 - `queue/index.mjs` - Queue service API server
+- `inspection/index.mjs` - Inspection sheet service API server
 - `traffic/index.mjs` - Traffic service API server
 - `docker-compose.yml` - Service orchestration
 
 ## Authentication
 
-Nginx handles HTTP Basic Auth with two permission levels:
+Nginx handles HTTP Basic Auth with two permission levels. See README.md for the full route-permission matrix.
 
 **Admin only** (`.htpasswd.admin`):
-- `/entry/*` - Entry management (except `/entry/api` which is public for queue service)
-- `/traffic/*` - Traffic management
+- `/entry/*` - Entry management (except `/entry/api` which is public)
+- `/traffic/api` (non-event, non-record endpoints), `/traffic/*` - Traffic management
 
-**Admin + Official** (`.htpasswd.official`):
-- `/queue/admin`, `/queue/register`, `/queue/priority` - Queue management routes
+**Official** (`.htpasswd.official`):
+- `/queue/admin`, `/queue/register`, `/queue/priority`, `/queue/stats` - Queue management routes
+- `/queue/api/admin` - Queue admin API
+- `/inspection/*` - Inspection sheet service
+- `/traffic/api/events`, `/traffic/api/records/:id` - Traffic SSE and records
 
-Admin users must be added to both files. Official users only need `.htpasswd.official`.
+Admin users must be added to both `.htpasswd.admin` and `.htpasswd.official`. Official users only need `.htpasswd.official`.
 
-Public routes: `/`, `/queue`, `/energymeter`
+Public routes: `/`, `/queue`, `/queue/api`, `/entry/api`, `/energymeter`, `/rules`
 
 ## Environment-Aware Builds
 
-Production builds use service-specific base paths (`/entry/`, `/queue/`, `/traffic/`, `/energymeter/`) configured in each service's `vite.config.js`. Development builds use empty base paths with Vite proxy routing to backend APIs.
+Production builds use service-specific base paths (`/entry/`, `/queue/`, `/inspection/`, `/traffic/`, `/energymeter/`) configured in each service's `vite.config.js`. Development builds use empty base paths with Vite proxy routing to backend APIs.
 
 ## Data Storage
 
 SQLite databases stored in volume-mounted directories:
 - `entry/data/` - entry.db, entry.log
 - `queue/data/` - queue.db, queue.log
+- `inspection/data/` - sheet.db, sheet.log
 - `traffic/data/` - traffic.db, traffic.log

@@ -1,0 +1,449 @@
+import fs from "fs";
+import express from "express";
+import pinoHttp from "pino-http";
+import Database from "better-sqlite3";
+
+/* ============================================
+   Database 초기화
+   ============================================ */
+if (!fs.existsSync("./data")) {
+  fs.mkdirSync("./data", { recursive: true });
+}
+
+const db = new Database("./data/sheet.db");
+
+db.transaction(() => {
+  // 검차 시트 템플릿 테이블 (4단계 계층: category → subcategory → group → item)
+  db.exec(`CREATE TABLE IF NOT EXISTS sheet_template (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    year INTEGER NOT NULL,
+    level TEXT NOT NULL CHECK(level IN ('category', 'subcategory', 'group', 'item')),
+    parent_id INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    name TEXT NOT NULL,
+    answer_type TEXT CHECK(answer_type IN ('passfail', 'number', 'text') OR answer_type IS NULL),
+    remarks TEXT DEFAULT '',
+    FOREIGN KEY (parent_id) REFERENCES sheet_template(id) ON DELETE CASCADE
+  );`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_st_year ON sheet_template(year);`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_st_parent ON sheet_template(parent_id);`);
+
+  // 컬럼 마이그레이션
+  const cols = db.prepare("PRAGMA table_info(sheet_template)").all();
+  if (!cols.find(c => c.name === "unit")) {
+    db.exec(`ALTER TABLE sheet_template ADD COLUMN unit TEXT DEFAULT ''`);
+  }
+  if (!cols.find(c => c.name === "pdf_include")) {
+    db.exec(`ALTER TABLE sheet_template ADD COLUMN pdf_include INTEGER DEFAULT 1`);
+  }
+
+  // 검차 시트 답변 테이블
+  db.exec(`CREATE TABLE IF NOT EXISTS sheet_answer (
+    year INTEGER NOT NULL,
+    team_num INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,
+    value TEXT DEFAULT '',
+    memo TEXT DEFAULT '',
+    PRIMARY KEY (year, team_num, item_id),
+    FOREIGN KEY (item_id) REFERENCES sheet_template(id) ON DELETE CASCADE
+  );`);
+
+  // 검차 시트 큰 카테고리별 결과 테이블
+  db.exec(`CREATE TABLE IF NOT EXISTS sheet_category_result (
+    year INTEGER NOT NULL,
+    team_num INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    result TEXT DEFAULT '' CHECK(result IN ('PASS', 'FAIL', '')),
+    PRIMARY KEY (year, team_num, category_id),
+    FOREIGN KEY (category_id) REFERENCES sheet_template(id) ON DELETE CASCADE
+  );`);
+
+  // 검차 시트 큰 카테고리별 검차관 테이블
+  db.exec(`CREATE TABLE IF NOT EXISTS sheet_inspector (
+    year INTEGER NOT NULL,
+    team_num INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    inspector TEXT DEFAULT '',
+    PRIMARY KEY (year, team_num, category_id),
+    FOREIGN KEY (category_id) REFERENCES sheet_template(id) ON DELETE CASCADE
+  );`);
+})();
+
+process.on("exit", () => db.close());
+process.on("SIGHUP", () => process.exit(128 + 1));
+process.on("SIGINT", () => process.exit(128 + 2));
+process.on("SIGTERM", () => process.exit(128 + 15));
+
+/* ============================================
+   Express 앱 설정
+   ============================================ */
+const app = express();
+app.use(express.json());
+app.use(express.static("./web/dist"));
+app.use(express.urlencoded({ extended: true }));
+app.use((req, res, next) => {
+  if (req.headers.authorization) {
+    req.headers.authuser = Buffer.from(req.headers.authorization.split(" ")[1], "base64")
+      .toString("utf-8")
+      .split(":")[0];
+  }
+  next();
+});
+app.use(
+  pinoHttp({
+    stream: fs.createWriteStream("./data/sheet.log", { flags: "a" }),
+    customProps: (req, res) => ({ reqBody: req.body }),
+  }),
+);
+
+/* ============================================
+   DB 헬퍼
+   ============================================ */
+function dbRun(fn) {
+  try {
+    return { success: true, result: fn() };
+  } catch (e) {
+    if (e.code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
+      return { success: false, status: 400, error: "이미 존재하는 항목입니다." };
+    }
+    if (e.status && e.message) {
+      return { success: false, status: e.status, error: e.message };
+    }
+    return { success: false, status: 500, error: `DB 오류: ${e.message || e}` };
+  }
+}
+
+/* ============================================
+   API 라우트: 검차 시트
+   ============================================ */
+
+// GET /api/sheet/template - 연도별 템플릿 트리 반환
+app.get("/api/sheet/template", (req, res) => {
+  const year = Number(req.query.year);
+  if (!year) return res.status(400).send("연도를 지정해야 합니다.");
+
+  const result = dbRun(() => {
+    const rows = db.prepare("SELECT * FROM sheet_template WHERE year = ? ORDER BY sort_order").all(year);
+    const map = {};
+    for (const r of rows) map[r.id] = r;
+
+    const tree = [];
+    for (const r of rows) {
+      if (r.level === "category") {
+        tree.push({ ...r, subcategories: [] });
+      }
+    }
+    for (const r of rows) {
+      if (r.level === "subcategory" && map[r.parent_id]) {
+        const cat = tree.find(c => c.id === r.parent_id);
+        if (cat) cat.subcategories.push({ ...r, groups: [] });
+      }
+    }
+    for (const r of rows) {
+      if (r.level === "group" && map[r.parent_id]) {
+        for (const cat of tree) {
+          const sub = cat.subcategories.find(s => s.id === r.parent_id);
+          if (sub) { sub.groups.push({ ...r, items: [] }); break; }
+        }
+      }
+    }
+    for (const r of rows) {
+      if (r.level === "item" && map[r.parent_id]) {
+        outer: for (const cat of tree) {
+          for (const sub of cat.subcategories) {
+            const grp = sub.groups.find(g => g.id === r.parent_id);
+            if (grp) { grp.items.push(r); break outer; }
+          }
+        }
+      }
+    }
+    return tree;
+  });
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
+});
+
+// POST /api/sheet/template - 노드 생성
+app.post("/api/sheet/template", (req, res) => {
+  const { year, level, parent_id, name, sort_order, answer_type, remarks, unit, pdf_include } = req.body;
+  if (!year || !level || !name) return res.status(400).send("필수 필드가 누락되었습니다.");
+
+  const result = dbRun(() =>
+    db.prepare(
+      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(year, level, parent_id || null, sort_order || 0, name, answer_type || null, remarks || "", unit || "", pdf_include ?? 1)
+  );
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json({ id: result.result.lastInsertRowid });
+});
+
+// PUT /api/sheet/template/:id - 노드 수정
+app.put("/api/sheet/template/:id", (req, res) => {
+  const id = Number(req.params.id);
+  const { name, sort_order, answer_type, remarks, unit, pdf_include } = req.body;
+
+  const fields = [];
+  const params = [];
+  if (name !== undefined) { fields.push("name = ?"); params.push(name); }
+  if (sort_order !== undefined) { fields.push("sort_order = ?"); params.push(sort_order); }
+  if (answer_type !== undefined) { fields.push("answer_type = ?"); params.push(answer_type || null); }
+  if (remarks !== undefined) { fields.push("remarks = ?"); params.push(remarks); }
+  if (unit !== undefined) { fields.push("unit = ?"); params.push(unit); }
+  if (pdf_include !== undefined) { fields.push("pdf_include = ?"); params.push(pdf_include ? 1 : 0); }
+
+  if (!fields.length) return res.status(400).send("수정할 필드가 없습니다.");
+  params.push(id);
+
+  const result = dbRun(() =>
+    db.prepare(`UPDATE sheet_template SET ${fields.join(", ")} WHERE id = ?`).run(...params)
+  );
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.status(200).send();
+});
+
+// DELETE /api/sheet/template/:id - 노드 삭제 (CASCADE)
+app.delete("/api/sheet/template/:id", (req, res) => {
+  const id = Number(req.params.id);
+
+  const result = dbRun(() => {
+    db.pragma("foreign_keys = ON");
+    return db.prepare("DELETE FROM sheet_template WHERE id = ?").run(id);
+  });
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.result.changes) return res.status(404).send("노드를 찾을 수 없습니다.");
+  res.status(200).send();
+});
+
+// POST /api/sheet/template/reorder - 형제 노드 순서 변경
+app.post("/api/sheet/template/reorder", (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items)) return res.status(400).send("items 배열이 필요합니다.");
+
+  const result = dbRun(() => {
+    const stmt = db.prepare("UPDATE sheet_template SET sort_order = ? WHERE id = ?");
+    db.transaction(() => {
+      for (const item of items) {
+        stmt.run(item.sort_order, item.id);
+      }
+    })();
+  });
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.status(200).send();
+});
+
+// POST /api/sheet/template/copy - 연도간 템플릿 복사
+app.post("/api/sheet/template/copy", (req, res) => {
+  const { from_year, to_year } = req.body;
+  if (!from_year || !to_year) return res.status(400).send("from_year, to_year가 필요합니다.");
+
+  const result = dbRun(() => {
+    const existing = db.prepare("SELECT COUNT(*) as cnt FROM sheet_template WHERE year = ?").get(to_year);
+    if (existing.cnt > 0) throw { status: 400, message: "대상 연도에 이미 템플릿이 존재합니다." };
+
+    const rows = db.prepare("SELECT * FROM sheet_template WHERE year = ? ORDER BY id").all(from_year);
+    if (!rows.length) throw { status: 400, message: "원본 연도에 템플릿이 없습니다." };
+
+    db.transaction(() => {
+      const idMap = {};
+      const stmt = db.prepare(
+        "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      );
+      for (const r of rows) {
+        const newParent = r.parent_id ? idMap[r.parent_id] : null;
+        const info = stmt.run(to_year, r.level, newParent, r.sort_order, r.name, r.answer_type, r.remarks, r.unit || "", r.pdf_include ?? 1);
+        idMap[r.id] = info.lastInsertRowid;
+      }
+    })();
+  });
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.status(201).send();
+});
+
+// POST /api/sheet/template/import - JSON 파일로 템플릿 가져오기
+app.post("/api/sheet/template/import", (req, res) => {
+  const { year, template } = req.body;
+  if (!year || !Array.isArray(template)) return res.status(400).send("year, template 배열이 필요합니다.");
+
+  const result = dbRun(() => {
+    db.pragma("foreign_keys = ON");
+    db.prepare("DELETE FROM sheet_template WHERE year = ? AND level = 'category'").run(year);
+
+    const stmt = db.prepare(
+      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    );
+
+    db.transaction(() => {
+      for (let ci = 0; ci < template.length; ci++) {
+        const cat = template[ci];
+        const catInfo = stmt.run(year, "category", null, ci, cat.name, null, cat.remarks || "", "", cat.pdf_include ?? 1);
+        const catId = catInfo.lastInsertRowid;
+
+        if (!Array.isArray(cat.subcategories)) continue;
+        for (let si = 0; si < cat.subcategories.length; si++) {
+          const sub = cat.subcategories[si];
+          const subInfo = stmt.run(year, "subcategory", catId, si, sub.name, null, sub.remarks || "", "", 1);
+          const subId = subInfo.lastInsertRowid;
+
+          if (!Array.isArray(sub.groups)) continue;
+          for (let gi = 0; gi < sub.groups.length; gi++) {
+            const grp = sub.groups[gi];
+            const grpInfo = stmt.run(year, "group", subId, gi, grp.name, null, grp.remarks || "", "", 1);
+            const grpId = grpInfo.lastInsertRowid;
+
+            if (!Array.isArray(grp.items)) continue;
+            for (let ii = 0; ii < grp.items.length; ii++) {
+              const item = grp.items[ii];
+              stmt.run(year, "item", grpId, ii, item.name, item.answer_type || "passfail", item.remarks || "", item.unit || "", 1);
+            }
+          }
+        }
+      }
+    })();
+  });
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.status(201).send();
+});
+
+// GET /api/sheet/summary - 모든 팀의 카테고리별 요약
+app.get("/api/sheet/summary", (req, res) => {
+  const year = Number(req.query.year);
+  if (!year) return res.status(400).send("연도를 지정해야 합니다.");
+
+  const result = dbRun(() => {
+    const categories = db.prepare(
+      "SELECT id, name FROM sheet_template WHERE year = ? AND level = 'category' ORDER BY sort_order"
+    ).all(year);
+
+    const inspectors = db.prepare(
+      "SELECT team_num, category_id, inspector FROM sheet_inspector WHERE year = ?"
+    ).all(year);
+
+    const results = db.prepare(
+      "SELECT team_num, category_id, result FROM sheet_category_result WHERE year = ?"
+    ).all(year);
+
+    const teams = {};
+    for (const row of inspectors) {
+      if (!teams[row.team_num]) teams[row.team_num] = { inspectors: {}, results: {} };
+      teams[row.team_num].inspectors[row.category_id] = row.inspector;
+    }
+    for (const row of results) {
+      if (!teams[row.team_num]) teams[row.team_num] = { inspectors: {}, results: {} };
+      teams[row.team_num].results[row.category_id] = row.result;
+    }
+
+    return { categories, teams };
+  });
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
+});
+
+// GET /api/sheet/data/:year/:num - 팀의 모든 시트 데이터 반환
+app.get("/api/sheet/data/:year/:num", (req, res) => {
+  const year = Number(req.params.year);
+  const num = Number(req.params.num);
+
+  const result = dbRun(() => {
+    const answers = db.prepare(
+      "SELECT item_id, value, memo FROM sheet_answer WHERE year = ? AND team_num = ?"
+    ).all(year, num);
+
+    const categoryResults = db.prepare(
+      "SELECT category_id, result FROM sheet_category_result WHERE year = ? AND team_num = ?"
+    ).all(year, num);
+
+    const inspectors = db.prepare(
+      "SELECT category_id, inspector FROM sheet_inspector WHERE year = ? AND team_num = ?"
+    ).all(year, num);
+
+    const answersMap = {};
+    for (const a of answers) answersMap[a.item_id] = { value: a.value, memo: a.memo };
+
+    const resultsMap = {};
+    for (const r of categoryResults) resultsMap[r.category_id] = r.result;
+
+    const inspectorsMap = {};
+    for (const i of inspectors) inspectorsMap[i.category_id] = i.inspector;
+
+    return { answers: answersMap, results: resultsMap, inspectors: inspectorsMap };
+  });
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
+});
+
+// PUT /api/sheet/answer - 답변 upsert
+app.put("/api/sheet/answer", (req, res) => {
+  const { year, team_num, item_id, value } = req.body;
+
+  const result = dbRun(() =>
+    db.prepare(
+      "INSERT INTO sheet_answer (year, team_num, item_id, value) VALUES (?, ?, ?, ?) ON CONFLICT(year, team_num, item_id) DO UPDATE SET value = excluded.value"
+    ).run(year, team_num, item_id, value ?? "")
+  );
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.status(200).send();
+});
+
+// PUT /api/sheet/memo - 메모 upsert
+app.put("/api/sheet/memo", (req, res) => {
+  const { year, team_num, item_id, memo } = req.body;
+
+  const result = dbRun(() =>
+    db.prepare(
+      "INSERT INTO sheet_answer (year, team_num, item_id, memo) VALUES (?, ?, ?, ?) ON CONFLICT(year, team_num, item_id) DO UPDATE SET memo = excluded.memo"
+    ).run(year, team_num, item_id, memo ?? "")
+  );
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.status(200).send();
+});
+
+// PUT /api/sheet/category-result - 카테고리 결과 upsert
+app.put("/api/sheet/category-result", (req, res) => {
+  const { year, team_num, category_id, result: catResult } = req.body;
+
+  const r = dbRun(() =>
+    db.prepare(
+      "INSERT INTO sheet_category_result (year, team_num, category_id, result) VALUES (?, ?, ?, ?) ON CONFLICT(year, team_num, category_id) DO UPDATE SET result = excluded.result"
+    ).run(year, team_num, category_id, catResult ?? "")
+  );
+
+  if (!r.success) return res.status(r.status).send(r.error);
+  res.status(200).send();
+});
+
+// PUT /api/sheet/inspector - 검차관 upsert
+app.put("/api/sheet/inspector", (req, res) => {
+  const { year, team_num, category_id, inspector } = req.body;
+
+  const result = dbRun(() =>
+    db.prepare(
+      "INSERT INTO sheet_inspector (year, team_num, category_id, inspector) VALUES (?, ?, ?, ?) ON CONFLICT(year, team_num, category_id) DO UPDATE SET inspector = excluded.inspector"
+    ).run(year, team_num, category_id, inspector ?? "")
+  );
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.status(200).send();
+});
+
+/* ============================================
+   SPA Fallback - Vue Router 지원
+   ============================================ */
+app.get("/{*splat}", (req, res) => {
+  res.sendFile("index.html", { root: "./web/dist" });
+});
+
+/* ============================================
+   서버 시작
+   ============================================ */
+app.listen(9600);

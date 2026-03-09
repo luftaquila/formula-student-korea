@@ -4,19 +4,62 @@ Formula Student Korea Service Hub
 
 ## Services
 
-| Service | Description | Port |
-|---------|-------------|------|
-| landing | Landing page & Nginx reverse proxy | 9000 |
-| entry | Vehicle entry registration API + Web UI | 9100 |
-| queue | Inspection queue management API + Web UI | 9300 |
-| traffic | Traffic controller & telemetry API + Web UI | 9200 |
-| energymeter | Energy meter data viewer | 9400 |
+| Service | Path | Description | Port |
+|---------|------|-------------|------|
+| landing | `/` | Landing page & Nginx reverse proxy | 9000 |
+| entry | `/entry` | Vehicle entry registration API + Web UI | 9100 |
+| queue | `/queue` | Inspection queue management API + Web UI | 9300 |
+| inspection | `/inspection` | Inspection sheet management API + Web UI | 9600 |
+| traffic | `/traffic` | Traffic controller & telemetry API + Web UI | 9200 |
+| energymeter | `/energymeter` | Energy meter data viewer | 9400 |
+| rules | `/rules` | Rules file server (Caddy) | 9500 |
+
+## Route Permission Matrix
+
+Nginx HTTP Basic Auth로 라우트별 접근 권한을 관리합니다.
+
+### Public
+
+| Route | Description |
+|-------|-------------|
+| `/` | Landing page |
+| `/queue` | Inspection queue public view |
+| `/queue/api` | Inspection queue public API |
+| `/entry/api` | Entry public API (used by queue, sheet, traffic) |
+| `/energymeter` | Energy meter viewer |
+| `/rules` | Rules file server |
+
+### Official
+
+| Route | Description |
+|-------|-------------|
+| `/queue/admin` | Queue admin page |
+| `/queue/register` | Queue registration page |
+| `/queue/priority` | Queue priority management |
+| `/queue/stats` | Queue statistics |
+| `/queue/api/admin` | Queue admin API |
+| `/inspection` | Inspection sheet |
+| `/inspection/api` | Inspection sheet API |
+| `/traffic/api/events` | Traffic SSE event stream |
+| `/traffic/api/records/:id` | Traffic record query API |
+
+### Admin
+
+Admin users must be registered in both `.htpasswd.admin` and `.htpasswd.official`.
+
+| Route | Description |
+|-------|-------------|
+| `/entry` | Entry management page |
+| `/entry/assets` | Entry static assets |
+| `/traffic` | Traffic management page |
+| `/traffic/assets` | Traffic static assets |
+| `/traffic/api` | Traffic admin API (except events, records) |
 
 ## Getting Started
 
 ### Prerequisites
 
-- Docker & Docker Compose
+- Podman & Podman Compose (or Docker & Docker Compose)
 
 ### Configuration
 
@@ -47,7 +90,7 @@ DOMAIN_NAME=fsk.example.com
 ```
 
 ```bash
-docker compose up -d
+podman compose up -d
 ```
 
 #### Local Development
@@ -55,7 +98,7 @@ docker compose up -d
 Use `--profile local` to expose port 9000 directly.
 
 ```bash
-docker compose --profile local up -d
+podman compose --profile local up -d
 ```
 
 The service will be available at `http://localhost:9000`.

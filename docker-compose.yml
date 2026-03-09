@@ -51,6 +51,21 @@ services:
     networks:
       - fsk-network
 
+  inspection:
+    build:
+      context: .
+      dockerfile: inspection/Dockerfile
+    container_name: fsk-inspection
+    environment:
+      - ENTRY_SERVER=http://entry:9100
+    volumes:
+      - ./inspection/data:/home/node/fsk-inspection/data
+    depends_on:
+      - entry
+    restart: unless-stopped
+    networks:
+      - fsk-network
+
   rules:
     image: caddy:alpine
     container_name: fsk-rules
@@ -84,6 +99,7 @@ services:
       - traffic
       - energymeter
       - queue
+      - inspection
       - rules
     restart: unless-stopped
     env_file:

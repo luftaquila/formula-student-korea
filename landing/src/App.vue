@@ -33,7 +33,8 @@
         <h2 class="section-title">Officials</h2>
         <div class="services">
           <ServiceCard title="엔트리 관리" description="" path="/entry" icon="🏁" />
-          <ServiceCard title="검차 시스템" description="" path="/queue/admin" icon="🛠️" />
+          <ServiceCard title="검차 대기 관리" description="" path="/queue/admin" icon="🛠️" />
+          <ServiceCard title="인스펙션 시트" description="" path="/inspection" icon="📋" />
           <ServiceCard title="계측 시스템" description="" path="/traffic" icon="🚦" />
           <ServiceCard title="클라우드" description="" path="https://cloud.fsk.luftaquila.io" icon="☁️" external />
         </div>
