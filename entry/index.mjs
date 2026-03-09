@@ -12,6 +12,13 @@ if (!fs.existsSync("./data")) {
 
 const db = new Database("./data/entry.db");
 
+// 차량 유형 테이블 (전역, 연도 무관)
+db.exec(`CREATE TABLE IF NOT EXISTS vehicle_types (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  sort_order INTEGER NOT NULL DEFAULT 0
+)`);
+
 // 기존 entry 테이블이 있으면 올해 테이블로 마이그레이션
 const legacy = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entry'").get();
 if (legacy) {
@@ -30,7 +37,7 @@ function getTableName(year) {
 function ensureYearTable(year) {
   const tableName = getTableName(year);
   db.exec(`CREATE TABLE IF NOT EXISTS '${tableName}' (
-    num INTEGER PRIMARY KEY, univ TEXT NOT NULL, team TEXT NOT NULL
+    num INTEGER PRIMARY KEY, univ TEXT NOT NULL, team TEXT NOT NULL, type TEXT DEFAULT NULL
   )`);
   return tableName;
 }
@@ -44,6 +51,13 @@ function getAvailableYears() {
 
 // 올해 테이블 보장
 ensureYearTable(new Date().getFullYear());
+
+// 기존 테이블에 type 컬럼 마이그레이션
+for (const year of getAvailableYears()) {
+  const tableName = getTableName(year);
+  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN type TEXT DEFAULT NULL`); }
+  catch (e) { /* column already exists */ }
+}
 
 process.on("exit", () => db.close());
 process.on("SIGHUP", () => process.exit(128 + 1));
@@ -83,14 +97,21 @@ function validateEntryNum(num) {
   return { valid: true, value: parsed };
 }
 
-function validateEntryData({ univ, team }) {
+function validateEntryData({ univ, team, type }) {
   if (univ === undefined || univ.trim() === "") {
     return { valid: false, error: "올바르지 않은 학교명입니다." };
   }
   if (team === undefined || team.trim() === "") {
     return { valid: false, error: "올바르지 않은 팀명입니다." };
   }
-  return { valid: true, univ: univ.trim(), team: team.trim() };
+  const validatedType = type || null;
+  if (validatedType) {
+    const exists = db.prepare("SELECT id FROM vehicle_types WHERE name = ?").get(validatedType);
+    if (!exists) {
+      return { valid: false, error: "존재하지 않는 차량 유형입니다." };
+    }
+  }
+  return { valid: true, univ: univ.trim(), team: team.trim(), type: validatedType };
 }
 
 function validateBulkData(data) {
@@ -157,7 +178,7 @@ app.get("/api/entries", (req, res) => {
   const result = dbRun(() => {
     const data = {};
     for (const row of db.prepare(`SELECT * FROM '${tableName}'`).all()) {
-      data[row.num] = { univ: row.univ, team: row.team };
+      data[row.num] = { univ: row.univ, team: row.team, type: row.type };
     }
     return data;
   });
@@ -217,8 +238,8 @@ app.post("/api/entries", (req, res) => {
 
   const result = dbRun(() =>
     db
-      .prepare(`INSERT INTO '${tableName}' (num, univ, team) VALUES (?, ?, ?)`)
-      .run(numValidation.value, dataValidation.univ, dataValidation.team),
+      .prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`)
+      .run(numValidation.value, dataValidation.univ, dataValidation.team, dataValidation.type),
   );
 
   if (!result.success) {
@@ -267,8 +288,8 @@ app.patch("/api/entries/:num", (req, res) => {
 
   const result = dbRun(() =>
     db
-      .prepare(`UPDATE '${tableName}' SET univ = ?, team = ? WHERE num = ?`)
-      .run(dataValidation.univ, dataValidation.team, newNum),
+      .prepare(`UPDATE '${tableName}' SET univ = ?, team = ?, type = ? WHERE num = ?`)
+      .run(dataValidation.univ, dataValidation.team, dataValidation.type, newNum),
   );
 
   if (!result.success) {
@@ -335,9 +356,9 @@ app.post("/api/entries/bulk", (req, res) => {
   const result = dbRun(() => {
     db.transaction(() => {
       db.prepare(`DELETE FROM '${tableName}'`).run();
-      const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team) VALUES (?, ?, ?)`);
+      const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`);
       for (const [k, v] of Object.entries(validation.data)) {
-        query.run(Number(k), v.univ, v.team);
+        query.run(Number(k), v.univ, v.team, v.type || null);
       }
     })();
   });
@@ -346,6 +367,59 @@ app.post("/api/entries/bulk", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  res.status(200).send();
+});
+
+/* ============================================
+   API 라우트: /api/vehicle-types
+   ============================================ */
+
+// GET /api/vehicle-types - 차량 유형 목록
+app.get("/api/vehicle-types", (req, res) => {
+  const result = dbRun(() => db.prepare("SELECT * FROM vehicle_types ORDER BY sort_order, id").all());
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
+});
+
+// POST /api/vehicle-types - 차량 유형 추가
+app.post("/api/vehicle-types", (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim()) {
+    return res.status(400).send("유형 이름을 입력해주세요.");
+  }
+  const maxOrder = db.prepare("SELECT MAX(sort_order) as max FROM vehicle_types").get();
+  const nextOrder = (maxOrder?.max ?? -1) + 1;
+  const result = dbRun(() =>
+    db.prepare("INSERT INTO vehicle_types (name, sort_order) VALUES (?, ?)").run(name.trim(), nextOrder),
+  );
+  if (!result.success) {
+    if (result.error.includes("UNIQUE")) {
+      return res.status(400).send("이미 존재하는 차량 유형입니다.");
+    }
+    return res.status(result.status).send(result.error);
+  }
+  res.status(201).json({ id: result.result.lastInsertRowid, name: name.trim(), sort_order: nextOrder });
+});
+
+// DELETE /api/vehicle-types/:id - 차량 유형 삭제
+app.delete("/api/vehicle-types/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).send("올바르지 않은 ID입니다.");
+
+  const type = db.prepare("SELECT name FROM vehicle_types WHERE id = ?").get(id);
+  if (!type) return res.status(404).send("존재하지 않는 차량 유형입니다.");
+
+  const result = dbRun(() => {
+    db.transaction(() => {
+      db.prepare("DELETE FROM vehicle_types WHERE id = ?").run(id);
+      for (const year of getAvailableYears()) {
+        const tableName = getTableName(year);
+        db.prepare(`UPDATE '${tableName}' SET type = NULL WHERE type = ?`).run(type.name);
+      }
+    })();
+  });
+
+  if (!result.success) return res.status(result.status).send(result.error);
   res.status(200).send();
 });
 

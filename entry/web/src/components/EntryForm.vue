@@ -1,12 +1,17 @@
 <script setup>
 import { ref } from "vue";
 
+defineProps({
+  vehicleTypes: { type: Array, default: () => [] },
+});
+
 const emit = defineEmits(["submit"]);
 
 const form = ref({
   num: "",
   univ: "",
   team: "",
+  type: "",
 });
 
 const isSubmitting = ref(false);
@@ -23,9 +28,10 @@ async function handleSubmit() {
       num: Number(form.value.num),
       univ: form.value.univ.trim(),
       team: form.value.team.trim(),
+      type: form.value.type || null,
     });
 
-    form.value = { num: "", univ: "", team: "" };
+    form.value = { num: "", univ: "", team: "", type: "" };
   } finally {
     isSubmitting.value = false;
   }
@@ -58,6 +64,13 @@ async function handleSubmit() {
         <div class="form-group">
           <label class="form-label">팀명</label>
           <input v-model="form.team" type="text" class="form-input" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label">차량 유형</label>
+          <select v-model="form.type" class="form-input">
+            <option value="">선택 안함</option>
+            <option v-for="vt in vehicleTypes" :key="vt.id" :value="vt.name">{{ vt.name }}</option>
+          </select>
         </div>
         <button
           type="submit"

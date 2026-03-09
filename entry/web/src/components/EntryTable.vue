@@ -6,12 +6,16 @@ const props = defineProps({
     type: Array,
     required: true,
   },
+  vehicleTypes: {
+    type: Array,
+    default: () => [],
+  },
 });
 
 const emit = defineEmits(["update", "delete"]);
 
 const editingRow = ref(null);
-const editForm = ref({ num: "", univ: "", team: "" });
+const editForm = ref({ num: "", univ: "", team: "", type: "" });
 const sortKey = ref(null);
 const sortOrder = ref("asc");
 
@@ -56,13 +60,14 @@ function startEdit(entry) {
     num: entry.num,
     univ: entry.univ,
     team: entry.team,
+    type: entry.type || "",
     originalNum: entry.num,
   };
 }
 
 function cancelEdit() {
   editingRow.value = null;
-  editForm.value = { num: "", univ: "", team: "" };
+  editForm.value = { num: "", univ: "", team: "", type: "" };
 }
 
 function saveEdit() {
@@ -71,6 +76,7 @@ function saveEdit() {
     num: editForm.value.num,
     univ: editForm.value.univ,
     team: editForm.value.team,
+    type: editForm.value.type || null,
     num_changed: numChanged,
     prev: editForm.value.originalNum,
   });
@@ -106,12 +112,15 @@ function handleKeydown(e) {
           <th class="col-team sortable" @click="handleSort('team')">
             팀명 <span class="sort-icon">{{ getSortIcon("team") }}</span>
           </th>
+          <th class="col-type sortable" @click="handleSort('type')">
+            유형 <span class="sort-icon">{{ getSortIcon("type") }}</span>
+          </th>
           <th class="col-actions">관리</th>
         </tr>
       </thead>
       <tbody>
         <tr v-if="sortedEntries.length === 0">
-          <td colspan="4" class="empty-state">
+          <td colspan="5" class="empty-state">
             <div class="empty-content">
               <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <path
@@ -132,6 +141,12 @@ function handleKeydown(e) {
             </td>
             <td class="col-team">
               <input v-model="editForm.team" type="text" class="edit-input" @keydown="handleKeydown" />
+            </td>
+            <td class="col-type">
+              <select v-model="editForm.type" class="edit-input" @keydown="handleKeydown">
+                <option value="">-</option>
+                <option v-for="vt in vehicleTypes" :key="vt.id" :value="vt.name">{{ vt.name }}</option>
+              </select>
             </td>
             <td class="col-actions">
               <div class="action-buttons">
@@ -155,6 +170,7 @@ function handleKeydown(e) {
             </td>
             <td class="col-univ">{{ entry.univ }}</td>
             <td class="col-team">{{ entry.team }}</td>
+            <td class="col-type">{{ entry.type || '-' }}</td>
             <td class="col-actions">
               <div class="action-buttons">
                 <button class="btn btn-ghost btn-icon" @click="startEdit(entry)" title="수정">
@@ -246,6 +262,10 @@ function handleKeydown(e) {
 
 .col-team {
   width: 200px;
+}
+
+.col-type {
+  width: 120px;
 }
 
 .col-actions {

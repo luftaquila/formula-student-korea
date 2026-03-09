@@ -3,9 +3,10 @@ import { ref, onMounted, computed, watch } from "vue";
 import EntryTable from "./components/EntryTable.vue";
 import EntryForm from "./components/EntryForm.vue";
 import FileManager from "./components/FileManager.vue";
+import VehicleTypeManager from "./components/VehicleTypeManager.vue";
 import ThemeToggle from "./components/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
-import { fetchYears, fetchEntries, addEntry, updateEntry, deleteEntry, deleteAllEntries, uploadEntries } from "./api";
+import { fetchYears, fetchEntries, addEntry, updateEntry, deleteEntry, deleteAllEntries, uploadEntries, fetchVehicleTypes, addVehicleType, deleteVehicleType } from "./api";
 import { useNotification } from "./composables/useNotification";
 
 const { success, error } = useNotification();
@@ -15,6 +16,7 @@ const loading = ref(true);
 const searchQuery = ref("");
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
+const vehicleTypes = ref([]);
 
 const entriesArray = computed(() => {
   return Object.entries(entries.value)
@@ -29,7 +31,8 @@ const filteredEntries = computed(() => {
     (entry) =>
       entry.num.toString().includes(query) ||
       entry.univ.toLowerCase().includes(query) ||
-      entry.team.toLowerCase().includes(query),
+      entry.team.toLowerCase().includes(query) ||
+      entry.type?.toLowerCase().includes(query),
   );
 });
 
@@ -107,11 +110,39 @@ async function handleDeleteAll() {
   }
 }
 
+async function loadVehicleTypes() {
+  try {
+    vehicleTypes.value = await fetchVehicleTypes();
+  } catch (e) {
+    error(e.message);
+  }
+}
+
+async function handleAddType(name) {
+  try {
+    await addVehicleType(name);
+    success(`차량 유형 '${name}'을(를) 추가했습니다.`);
+    await loadVehicleTypes();
+  } catch (e) {
+    error(e.message);
+  }
+}
+
+async function handleDeleteType(id) {
+  try {
+    await deleteVehicleType(id);
+    success("차량 유형을 삭제했습니다.");
+    await Promise.all([loadVehicleTypes(), loadEntries()]);
+  } catch (e) {
+    error(e.message);
+  }
+}
+
 watch(selectedYear, loadEntries);
 
 onMounted(async () => {
   await loadYears();
-  await loadEntries();
+  await Promise.all([loadEntries(), loadVehicleTypes()]);
 });
 </script>
 
@@ -132,8 +163,9 @@ onMounted(async () => {
 
     <main class="main-content">
       <aside class="sidebar">
-        <EntryForm @submit="handleAdd" />
+        <EntryForm :vehicle-types="vehicleTypes" @submit="handleAdd" />
         <FileManager :year="selectedYear" @upload="handleUpload" @delete-all="handleDeleteAll" />
+        <VehicleTypeManager :vehicle-types="vehicleTypes" @add="handleAddType" @delete="handleDeleteType" />
       </aside>
 
       <section class="content">
@@ -159,7 +191,7 @@ onMounted(async () => {
           <p>데이터를 불러오는 중...</p>
         </div>
 
-        <EntryTable v-else :entries="filteredEntries" @update="handleUpdate" @delete="handleDelete" />
+        <EntryTable v-else :entries="filteredEntries" :vehicle-types="vehicleTypes" @update="handleUpdate" @delete="handleDelete" />
       </section>
     </main>
   </div>

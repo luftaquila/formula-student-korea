@@ -45,20 +45,20 @@ export async function fetchEntries(year) {
 /**
  * 엔트리 추가
  */
-export async function addEntry({ num, univ, team }, year) {
+export async function addEntry({ num, univ, team, type }, year) {
   await request(`/api/entries${yearParam(year)}`, {
     method: "POST",
-    body: JSON.stringify({ num, univ, team }),
+    body: JSON.stringify({ num, univ, team, type }),
   });
 }
 
 /**
  * 엔트리 수정
  */
-export async function updateEntry({ num, univ, team, prev }, year) {
+export async function updateEntry({ num, univ, team, type, prev }, year) {
   await request(`/api/entries/${prev}${yearParam(year)}`, {
     method: "PATCH",
-    body: JSON.stringify({ num, univ, team }),
+    body: JSON.stringify({ num, univ, team, type }),
   });
 }
 
@@ -95,4 +95,32 @@ export async function uploadEntries(data, year) {
  */
 export function getDownloadUrl(year) {
   return `${BASE_URL}/api/entries?download${year != null ? `&year=${year}` : ""}`;
+}
+
+/**
+ * 차량 유형 목록 조회
+ */
+export async function fetchVehicleTypes() {
+  const res = await request("/api/vehicle-types");
+  return res.json();
+}
+
+/**
+ * 차량 유형 추가
+ */
+export async function addVehicleType(name) {
+  const res = await request("/api/vehicle-types", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+  return res.json();
+}
+
+/**
+ * 차량 유형 삭제
+ */
+export async function deleteVehicleType(id) {
+  await request(`/api/vehicle-types/${id}`, {
+    method: "DELETE",
+  });
 }
