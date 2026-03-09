@@ -246,3 +246,4 @@ export async function setCancelPenaltySettings(value) {
     body: JSON.stringify({ value }),
   });
 }
+

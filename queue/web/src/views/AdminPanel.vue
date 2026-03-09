@@ -292,6 +292,7 @@ function goToPriority() {
 function goToStats() {
   router.push("/stats");
 }
+
 </script>
 
 <template>
