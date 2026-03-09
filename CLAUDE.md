@@ -70,12 +70,14 @@ Nginx handles HTTP Basic Auth with two permission levels. See README.md for the 
 
 **Admin only** (`.htpasswd.admin`):
 - `/entry/*` - Entry management (except `/entry/api` which is public)
+- `/inspection/template` - Inspection template editor
+- `/inspection/api/sheet/template` - Inspection template API
 - `/traffic/api` (non-event, non-record endpoints), `/traffic/*` - Traffic management
 
 **Official** (`.htpasswd.official`):
 - `/queue/admin`, `/queue/register`, `/queue/priority`, `/queue/stats` - Queue management routes
 - `/queue/api/admin` - Queue admin API
-- `/inspection/*` - Inspection sheet service
+- `/inspection/*` - Inspection sheet service (except template routes above)
 - `/traffic/api/events`, `/traffic/api/records/:id` - Traffic SSE and records
 
 Admin users must be added to both `.htpasswd.admin` and `.htpasswd.official`. Official users only need `.htpasswd.official`.

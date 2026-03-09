@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, nextTick } from "vue";
+import { ref, onMounted, onBeforeUnmount, computed, nextTick, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
   fetchEntryYears,
@@ -22,9 +22,17 @@ const availableYears = ref([]);
 const template = ref([]);
 const loading = ref(true);
 const copyFromYear = ref("");
-const activeTab = ref(0);
+const activeTab = ref(Number(sessionStorage.getItem("inspectionActiveTab")) || 0);
 
 const currentCategory = computed(() => template.value[activeTab.value] || null);
+
+watch(activeTab, async (val) => {
+  sessionStorage.setItem("inspectionActiveTab", val);
+  sessionStorage.setItem("inspectionScrollY", 0);
+  window.scrollTo(0, 0);
+  await nextTick();
+  requestAnimationFrame(resizeAllTextareas);
+});
 
 const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
 
@@ -39,7 +47,21 @@ onMounted(async () => {
     error("데이터를 가져올 수 없습니다.");
   }
   loading.value = false;
+  const savedY = Number(sessionStorage.getItem("inspectionScrollY")) || 0;
+  await nextTick();
+  requestAnimationFrame(() => window.scrollTo(0, savedY));
 });
+
+let scrollTimer = null;
+function onScroll() {
+  clearTimeout(scrollTimer);
+  scrollTimer = setTimeout(() => {
+    sessionStorage.setItem("inspectionScrollY", window.scrollY);
+  }, 200);
+}
+
+onMounted(() => window.addEventListener("scroll", onScroll));
+onBeforeUnmount(() => window.removeEventListener("scroll", onScroll));
 
 async function loadTemplate() {
   try {

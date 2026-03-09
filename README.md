@@ -39,7 +39,7 @@ Nginx HTTP Basic Auth로 라우트별 접근 권한을 관리합니다.
 | `/queue/stats` | Queue statistics |
 | `/queue/api/admin` | Queue admin API |
 | `/inspection` | Inspection sheet |
-| `/inspection/api` | Inspection sheet API |
+| `/inspection/api` | Inspection sheet API (except template) |
 | `/traffic/api/events` | Traffic SSE event stream |
 | `/traffic/api/records/:id` | Traffic record query API |
 
@@ -51,6 +51,8 @@ Admin users must be registered in both `.htpasswd.admin` and `.htpasswd.official
 |-------|-------------|
 | `/entry` | Entry management page |
 | `/entry/assets` | Entry static assets |
+| `/inspection/template` | Inspection template editor |
+| `/inspection/api/sheet/template` | Inspection template API |
 | `/traffic` | Traffic management page |
 | `/traffic/assets` | Traffic static assets |
 | `/traffic/api` | Traffic admin API (except events, records) |

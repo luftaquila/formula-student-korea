@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import {
   fetchEntries,
@@ -23,7 +23,9 @@ const entry = ref(null);
 const template = ref([]);
 const sheetData = ref({ answers: {}, results: {}, inspectors: {} });
 const loading = ref(true);
-const activeTab = ref(0);
+const activeTab = ref(Number(sessionStorage.getItem("inspectionActiveTab")) || 0);
+
+watch(activeTab, (val) => sessionStorage.setItem("inspectionActiveTab", val));
 
 const isReadOnly = computed(() => year < new Date().getFullYear());
 
@@ -43,6 +45,9 @@ onMounted(async () => {
     error("데이터를 가져올 수 없습니다.");
   }
   loading.value = false;
+  const savedY = Number(sessionStorage.getItem("inspectionScrollY")) || 0;
+  await nextTick();
+  requestAnimationFrame(() => window.scrollTo(0, savedY));
 });
 
 function getAnswer(itemId) {
@@ -221,6 +226,28 @@ function scrollToTop() {
 function goBack() {
   router.push("/");
 }
+
+// ---- Scroll position persistence ----
+let scrollTimer = null;
+function onScroll() {
+  clearTimeout(scrollTimer);
+  scrollTimer = setTimeout(() => {
+    sessionStorage.setItem("inspectionScrollY", window.scrollY);
+  }, 200);
+}
+
+onMounted(() => {
+  window.addEventListener("scroll", onScroll);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("scroll", onScroll);
+});
+
+watch(activeTab, () => {
+  sessionStorage.setItem("inspectionScrollY", 0);
+  window.scrollTo(0, 0);
+});
 </script>
 
 <template>
