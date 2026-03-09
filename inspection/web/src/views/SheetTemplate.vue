@@ -12,7 +12,6 @@ import {
   importSheetTemplate,
 } from "../api";
 import { useNotification } from "../composables/useNotification";
-import { generateTemplatePdf } from "../utils/sheetPdf";
 
 const { success, error } = useNotification();
 const router = useRouter();
@@ -276,13 +275,10 @@ function subNum(i) { return String(i + 1); }
 function grpNum(i) { return String.fromCharCode(97 + i); }
 function itemNum(i) { return CIRCLED[i] || `(${i + 1})`; }
 
-// ---- PDF ----
-async function exportPdf() {
-  try {
-    await generateTemplatePdf(selectedYear.value, template.value);
-  } catch (e) {
-    error("PDF 생성에 실패했습니다.");
-  }
+// ---- Print ----
+function openPrintPage() {
+  const base = import.meta.env.PROD ? "/inspection" : "";
+  window.open(`${base}/template/print?year=${selectedYear.value}`, "_blank");
 }
 
 // ---- JSON Export / Import ----
@@ -357,7 +353,7 @@ function goBack() {
         돌아가기
       </button>
       <div class="top-actions-right">
-        <button class="btn btn-primary btn-sm" @click="exportPdf" :disabled="loading || !template.length">PDF 내보내기</button>
+        <button class="btn btn-primary btn-sm" @click="openPrintPage" :disabled="loading || !template.length">인쇄</button>
         <button class="btn btn-ghost btn-sm" @click="exportJson" :disabled="loading || !template.length">JSON 내보내기</button>
         <button v-if="!isReadOnly" class="btn btn-ghost btn-sm" @click="importJson" :disabled="loading">JSON 가져오기</button>
       </div>

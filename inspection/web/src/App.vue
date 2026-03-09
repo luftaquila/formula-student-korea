@@ -1,4 +1,5 @@
 <script setup>
+import { computed } from "vue";
 import { useRoute } from "vue-router";
 import ThemeToggle from "./components/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
@@ -8,7 +9,10 @@ const route = useRoute();
 const pageInfo = {
   "/": { title: "인스펙션 시트", icon: "clipboard" },
   "/template": { title: "인스펙션 시트 템플릿", icon: "clipboard" },
+  "/template/print": { title: "인스펙션 시트 인쇄", icon: "clipboard" },
 };
+
+const isPrintPage = computed(() => route.path === "/template/print");
 
 function getPageTitle() {
   if (route.path.match(/^\/\d+\/\d+$/)) return "인스펙션 시트";
@@ -17,7 +21,10 @@ function getPageTitle() {
 </script>
 
 <template>
-  <div class="app-container">
+  <div v-if="isPrintPage">
+    <router-view />
+  </div>
+  <div v-else class="app-container">
     <header class="header">
       <div class="header-content">
         <a href="/" class="logo">

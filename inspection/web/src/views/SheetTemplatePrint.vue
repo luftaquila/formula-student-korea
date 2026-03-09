@@ -1,0 +1,313 @@
+<script setup>
+import { ref, onMounted, computed } from "vue";
+import { useRoute } from "vue-router";
+import { fetchSheetTemplate } from "../api";
+
+const route = useRoute();
+const year = computed(() => Number(route.query.year) || new Date().getFullYear());
+const template = ref([]);
+const loading = ref(true);
+const error = ref(false);
+
+onMounted(async () => {
+  document.documentElement.setAttribute("data-theme", "light");
+
+  try {
+    template.value = (await fetchSheetTemplate(year.value)).filter(c => c.pdf_include !== 0);
+  } catch (e) {
+    error.value = true;
+  }
+  loading.value = false;
+});
+
+function print() {
+  window.print();
+}
+
+const CIRCLED = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"];
+function subNum(i) { return String(i + 1); }
+function grpNum(i) { return String(i + 1); }
+function itemNum(i) { return CIRCLED[i] || `(${i + 1})`; }
+</script>
+
+<template>
+  <div class="print-page">
+    <div v-if="loading" class="print-loading">Loading...</div>
+    <div v-else-if="error" class="print-loading">데이터를 가져올 수 없습니다.</div>
+    <template v-else>
+      <button class="print-btn no-print" @click="print">인쇄</button>
+
+      <div
+        v-for="(cat, ci) in template"
+        :key="cat.id"
+        class="page"
+        :class="{ 'page-break': ci > 0 }"
+      >
+        <h1 class="page-title">{{ year }} FSK Technical Inspection Form ({{ cat.name }})</h1>
+
+        <div class="info-section">
+          <div class="info-left">
+            <span class="info-label">엔트리 :</span>
+            <span class="info-space short"></span>
+            <span class="info-label">학교 / 팀 :</span>
+          </div>
+          <div class="info-right">
+            <span class="info-label">검차 위원 :</span>
+            <span class="info-space sign"></span>
+            <span class="info-sign">(서명)</span>
+          </div>
+        </div>
+
+        <table class="sheet-table">
+          <thead>
+            <tr>
+              <th class="col-item">항목</th>
+              <th class="col-pf">PASS</th>
+              <th class="col-pf">FAIL</th>
+              <th class="col-remarks">비고</th>
+            </tr>
+          </thead>
+          <template v-for="(sub, si) in cat.subcategories" :key="sub.id">
+            <tbody>
+              <tr class="sub-header-row">
+                <td colspan="4" class="td-sub-header">{{ subNum(si) }}. {{ sub.name }}</td>
+              </tr>
+            </tbody>
+
+            <tbody v-for="(grp, gi) in sub.groups" :key="grp.id" class="grp-tbody">
+              <tr class="grp-header-row">
+                <td colspan="4" class="td-grp-header">
+                  {{ grpNum(gi) }}) {{ grp.name }}<span v-if="grp.remarks" class="grp-remarks"> — {{ grp.remarks }}</span>
+                </td>
+              </tr>
+
+              <tr v-for="(item, ii) in grp.items" :key="item.id" class="item-row">
+                <td class="td-item-name">
+                  <span class="item-num">{{ itemNum(ii) }}</span> {{ item.name }}
+                </td>
+                <template v-if="item.answer_type === 'passfail'">
+                  <td class="td-pf"></td>
+                  <td class="td-pf"></td>
+                </template>
+                <template v-else>
+                  <td class="td-value" colspan="2">
+                    <span v-if="item.unit" class="unit-label">{{ item.unit }}</span>
+                  </td>
+                </template>
+                <td class="td-remarks">{{ item.remarks }}</td>
+              </tr>
+            </tbody>
+          </template>
+        </table>
+
+
+      </div>
+    </template>
+  </div>
+</template>
+
+<style scoped>
+.print-page {
+  background: white;
+  color: black;
+  font-family: "Noto Sans KR", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 9pt;
+  line-height: 1.5;
+}
+
+.print-loading {
+  padding: 3rem;
+  text-align: center;
+  font-size: 1.25rem;
+  color: #666;
+}
+
+.print-btn {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 1000;
+  padding: 10px 24px;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+.print-btn:hover {
+  background: #2563eb;
+}
+
+.page {
+  width: 210mm;
+  min-height: 297mm;
+  margin: 0 auto;
+  padding: 14mm 18mm 20mm;
+  position: relative;
+  background: white;
+}
+
+.page-break {
+  page-break-before: always;
+}
+
+.page-title {
+  font-size: 14pt;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 14pt;
+}
+
+/* Info section */
+.info-section {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 16pt 0 20pt;
+}
+
+.info-left,
+.info-right {
+  display: flex;
+  align-items: baseline;
+  gap: 6pt;
+}
+
+.info-label {
+  font-weight: 600;
+  font-size: 9.5pt;
+  white-space: nowrap;
+}
+
+.info-space.short {
+  display: inline-block;
+  width: 40pt;
+}
+
+.info-space.sign {
+  display: inline-block;
+  width: 80pt;
+}
+
+.info-sign {
+  font-size: 9pt;
+  white-space: nowrap;
+}
+
+/* Table */
+.sheet-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1.5px solid #000;
+  font-size: 8pt;
+  table-layout: fixed;
+}
+
+.sheet-table th,
+.sheet-table td {
+  border: 0.75px solid #000;
+  padding: 3pt 5pt;
+  vertical-align: middle;
+}
+
+.sheet-table thead th {
+  background: #f0f0f0;
+  font-weight: 700;
+  text-align: center;
+  font-size: 8.5pt;
+  padding: 4pt 5pt;
+}
+
+.col-item { /* auto - fills remaining space */ }
+.col-pf { width: 32pt; text-align: center; }
+.col-remarks { width: 120pt; }
+
+/* Group tbody */
+.grp-tbody {
+  break-inside: avoid;
+}
+
+
+/* Subcategory header */
+
+.sub-header-row td {
+  background: #d0d0d0;
+  border-top: 2px solid #000;
+}
+
+.td-sub-header {
+  font-weight: 800;
+  font-size: 9pt;
+  padding: 4pt 6pt;
+}
+
+/* Group header */
+.td-grp-header {
+  font-weight: 700;
+  font-size: 8pt;
+  padding: 3pt 6pt 3pt 14pt;
+  background: #f0f0f0;
+}
+
+.grp-remarks {
+  font-weight: 400;
+  color: #555;
+  font-size: 7.5pt;
+}
+
+/* Item */
+.td-item-name {
+  font-size: 8pt;
+  padding-left: 24pt;
+  white-space: pre-wrap;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.td-pf {
+  text-align: center;
+}
+
+.td-value {
+  text-align: right;
+  padding-right: 6pt;
+}
+
+.td-remarks {
+  font-size: 7.5pt;
+  color: #333;
+}
+
+.unit-label {
+  font-size: 7.5pt;
+  color: #444;
+}
+
+/* Screen: separate pages visually */
+@media screen {
+  .print-page {
+    background: #e5e7eb;
+    padding: 20px 0;
+  }
+
+  .page {
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    margin-bottom: 20px;
+  }
+}
+
+/* Print styles */
+@media print {
+  .no-print { display: none !important; }
+  .print-page { background: white; padding: 0; }
+  .page { width: 100%; margin: 0; padding: 10mm 15mm 15mm; box-shadow: none; min-height: auto; }
+  .page-break { page-break-before: always; }
+
+  .sheet-table { border-collapse: separate; border-spacing: 0; border: none; }
+  .sub-header-row td { border-top-width: 1.25px; }
+}
+</style>

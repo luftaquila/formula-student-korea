@@ -7,11 +7,13 @@ import "notyf/notyf.min.css";
 // Routes
 import SheetTeamList from "./views/SheetTeamList.vue";
 import SheetTemplate from "./views/SheetTemplate.vue";
+import SheetTemplatePrint from "./views/SheetTemplatePrint.vue";
 import SheetDetail from "./views/SheetDetail.vue";
 
 const routes = [
   { path: "/", component: SheetTeamList },
   { path: "/template", component: SheetTemplate },
+  { path: "/template/print", component: SheetTemplatePrint },
   { path: "/:year/:num", component: SheetDetail },
 ];
 
