@@ -70,14 +70,14 @@ function itemNum(i) { return CIRCLED[i] || `(${i + 1})`; }
           <template v-for="(sub, si) in cat.subcategories" :key="sub.id">
             <tbody>
               <tr class="sub-header-row">
-                <td colspan="4" class="td-sub-header">{{ subNum(si) }}. {{ sub.name }}</td>
+                <td colspan="4" class="td-sub-header">{{ subNum(si) }} - {{ sub.name }}</td>
               </tr>
             </tbody>
 
             <tbody v-for="(grp, gi) in sub.groups" :key="grp.id" class="grp-tbody">
               <tr class="grp-header-row">
                 <td colspan="4" class="td-grp-header">
-                  {{ grpNum(gi) }}) {{ grp.name }}<span v-if="grp.remarks" class="grp-remarks"> — {{ grp.remarks }}</span>
+                  {{ grpNum(gi) }}. {{ grp.name }}<span v-if="grp.remarks" class="grp-remarks"> — {{ grp.remarks }}</span>
                 </td>
               </tr>
 

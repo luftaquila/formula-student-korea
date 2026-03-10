@@ -114,6 +114,35 @@ function dbRun(fn) {
 }
 
 /* ============================================
+   SSE (Server-Sent Events) 설정
+   ============================================ */
+const sseClients = new Set();
+
+function broadcastEvent(event, data) {
+  const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of sseClients) {
+    client.write(message);
+  }
+}
+
+// SSE 엔드포인트
+app.get("/api/sheet/events", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  res.write(`event: init\ndata: {}\n\n`);
+
+  sseClients.add(res);
+
+  req.on("close", () => {
+    sseClients.delete(res);
+  });
+});
+
+/* ============================================
    API 라우트: 검차 시트
    ============================================ */
 
@@ -391,6 +420,9 @@ app.put("/api/sheet/answer", (req, res) => {
   );
 
   if (!result.success) return res.status(result.status).send(result.error);
+
+  broadcastEvent("answer", { year, team_num, item_id, value: value ?? "" });
+
   res.status(200).send();
 });
 
@@ -405,6 +437,9 @@ app.put("/api/sheet/memo", (req, res) => {
   );
 
   if (!result.success) return res.status(result.status).send(result.error);
+
+  broadcastEvent("memo", { year, team_num, item_id, memo: memo ?? "" });
+
   res.status(200).send();
 });
 
@@ -419,6 +454,9 @@ app.put("/api/sheet/category-result", (req, res) => {
   );
 
   if (!r.success) return res.status(r.status).send(r.error);
+
+  broadcastEvent("category-result", { year, team_num, category_id, result: catResult ?? "" });
+
   res.status(200).send();
 });
 
@@ -433,6 +471,11 @@ app.put("/api/sheet/inspector", (req, res) => {
   );
 
   if (!result.success) return res.status(result.status).send(result.error);
+
+  if (req.body.broadcast) {
+    broadcastEvent("inspector", { year, team_num, category_id, inspector: inspector ?? "" });
+  }
+
   res.status(200).send();
 });
 

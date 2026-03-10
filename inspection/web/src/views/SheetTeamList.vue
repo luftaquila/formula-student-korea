@@ -1,11 +1,13 @@
 <script setup>
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { fetchEntries, fetchEntryYears, fetchSheetSummary } from "../api";
 import { useNotification } from "../composables/useNotification";
+import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();
 const router = useRouter();
+const { lastUpdate, lastInspectorUpdate } = useSSE();
 
 const entries = ref({});
 const summary = ref({ categories: [], teams: {} });
@@ -68,6 +70,26 @@ function getResult(num, catId) {
 function getInspector(num, catId) {
   return summary.value.teams[num]?.inspectors?.[catId] || "";
 }
+
+// SSE로 카테고리 결과 실시간 반영
+watch(lastUpdate, (update) => {
+  if (!update || update.year !== selectedYear.value) return;
+  const { team_num, category_id, result } = update;
+  if (!summary.value.teams[team_num]) {
+    summary.value.teams[team_num] = { inspectors: {}, results: {} };
+  }
+  summary.value.teams[team_num].results[category_id] = result;
+});
+
+// SSE로 검차관 이름 실시간 반영
+watch(lastInspectorUpdate, (update) => {
+  if (!update || update.year !== selectedYear.value) return;
+  const { team_num, category_id, inspector } = update;
+  if (!summary.value.teams[team_num]) {
+    summary.value.teams[team_num] = { inspectors: {}, results: {} };
+  }
+  summary.value.teams[team_num].inspectors[category_id] = inspector;
+});
 </script>
 
 <template>
@@ -242,17 +264,26 @@ function getInspector(num, catId) {
   font-size: 0.75rem;
 }
 
-.col-num {
-  width: 60px;
-  text-align: center !important;
-}
-
-.col-team {
-  min-width: 150px;
-}
-
+.col-num,
+.col-team,
 .col-result {
-  min-width: 100px;
+  width: 1%;
+  white-space: nowrap;
+}
+
+.col-num {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.sheet-table thead .col-num {
+  z-index: 3;
+}
+
+.col-num,
+.col-result {
   text-align: center !important;
 }
 

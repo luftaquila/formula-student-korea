@@ -272,7 +272,7 @@ const ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI"
 const CIRCLED = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"];
 function catNum(i) { return ROMAN[i] || String(i + 1); }
 function subNum(i) { return String(i + 1); }
-function grpNum(i) { return String.fromCharCode(97 + i); }
+function grpNum(i) { return String(i + 1); }
 function itemNum(i) { return CIRCLED[i] || `(${i + 1})`; }
 
 // ---- Print ----
@@ -443,7 +443,7 @@ function goBack() {
           >
             <div class="node-row sub-row">
               <span v-if="!isReadOnly" class="drag-handle" @mousedown="onHandleMouseDown" title="드래그하여 순서 변경">⠿</span>
-              <span class="node-num sub-num">{{ subNum(si) }}.</span>
+              <span class="node-num sub-num">{{ subNum(si) }} -</span>
               <input
                 class="node-name-input sub-name"
                 v-model="sub.name"
@@ -469,7 +469,7 @@ function goBack() {
             >
               <div class="node-row grp-row">
                 <span v-if="!isReadOnly" class="drag-handle" @mousedown="onHandleMouseDown" title="드래그하여 순서 변경">⠿</span>
-                <span class="node-num grp-num">{{ grpNum(gi) }})</span>
+                <span class="node-num grp-num">{{ grpNum(gi) }}.</span>
                 <input
                   class="node-name-input grp-name"
                   v-model="grp.name"

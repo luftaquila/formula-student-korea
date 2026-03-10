@@ -11,10 +11,12 @@ import {
   updateSheetInspector,
 } from "../api";
 import { useNotification } from "../composables/useNotification";
+import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();
 const router = useRouter();
 const route = useRoute();
+const { lastUpdate, lastInspectorUpdate, lastAnswerUpdate, lastMemoUpdate } = useSSE();
 
 const year = Number(route.params.year);
 const num = Number(route.params.num);
@@ -126,6 +128,28 @@ async function onCategoryResultToggle(catId, val) {
   }
 }
 
+// 검차관 이름 자동완성 (localStorage)
+const inspectorNames = ref(JSON.parse(localStorage.getItem("inspectorNames") || "[]"));
+
+function saveInspectorName(name) {
+  if (!name || name.length < 2) return;
+  const names = new Set(inspectorNames.value);
+  names.add(name);
+  inspectorNames.value = [...names];
+  localStorage.setItem("inspectorNames", JSON.stringify(inspectorNames.value));
+}
+
+async function onInspectorBlur(catId) {
+  clearTimeout(debounceTimers[`inspector-${catId}`]);
+  const inspector = getInspector(catId);
+  saveInspectorName(inspector);
+  try {
+    await updateSheetInspector({ year, team_num: num, category_id: catId, inspector, broadcast: true });
+  } catch (e) {
+    error("저장에 실패했습니다.");
+  }
+}
+
 async function onInspectorChange(catId, inspector) {
   sheetData.value.inspectors[catId] = inspector;
   debounce(`inspector-${catId}`, async () => {
@@ -154,7 +178,7 @@ const ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI"
 const CIRCLED = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"];
 function catNum(i) { return ROMAN[i] || String(i + 1); }
 function subNum(i) { return String(i + 1); }
-function grpNum(i) { return String.fromCharCode(97 + i); }
+function grpNum(i) { return String(i + 1); }
 function itemNum(i) { return CIRCLED[i] || `(${i + 1})`; }
 
 // ---- Simple markdown rendering ----
@@ -189,7 +213,7 @@ const unansweredItems = computed(() => {
   const cat = currentCategory.value;
   if (!cat) return [];
   const result = getCategoryResult(cat.id);
-  if (!result) return [];
+  if (result !== "PASS") return [];
   const items = [];
   for (const sub of cat.subcategories || []) {
     for (const grp of sub.groups || []) {
@@ -203,8 +227,28 @@ const unansweredItems = computed(() => {
   return items;
 });
 
+// ---- Failed items ----
+const failedOpen = ref(false);
+
+const failedItems = computed(() => {
+  const cat = currentCategory.value;
+  if (!cat) return [];
+  const items = [];
+  for (const sub of cat.subcategories || []) {
+    for (const grp of sub.groups || []) {
+      for (const item of grp.items || []) {
+        if (item.answer_type === "passfail" && getAnswer(item.id) === "FAIL") {
+          items.push({ id: item.id, name: item.name, sub: sub.name, grp: grp.name });
+        }
+      }
+    }
+  }
+  return items;
+});
+
 function scrollToItem(itemId) {
   missingOpen.value = false;
+  failedOpen.value = false;
   const el = document.getElementById(`item-${itemId}`);
   if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -247,6 +291,36 @@ onBeforeUnmount(() => {
 watch(activeTab, () => {
   sessionStorage.setItem("inspectionScrollY", 0);
   window.scrollTo(0, 0);
+});
+
+// SSE로 카테고리 결과 실시간 반영 (같은 팀의 변경사항)
+watch(lastUpdate, (update) => {
+  if (!update || update.year !== year || update.team_num !== num) return;
+  sheetData.value.results[update.category_id] = update.result;
+});
+
+// SSE로 검차관 실시간 반영
+watch(lastInspectorUpdate, (update) => {
+  if (!update || update.year !== year || update.team_num !== num) return;
+  sheetData.value.inspectors[update.category_id] = update.inspector;
+});
+
+// SSE로 개별 항목 답변 실시간 반영
+watch(lastAnswerUpdate, (update) => {
+  if (!update || update.year !== year || update.team_num !== num) return;
+  if (!sheetData.value.answers[update.item_id]) {
+    sheetData.value.answers[update.item_id] = { value: "", memo: "" };
+  }
+  sheetData.value.answers[update.item_id].value = update.value;
+});
+
+// SSE로 메모 실시간 반영
+watch(lastMemoUpdate, (update) => {
+  if (!update || update.year !== year || update.team_num !== num) return;
+  if (!sheetData.value.answers[update.item_id]) {
+    sheetData.value.answers[update.item_id] = { value: "", memo: "" };
+  }
+  sheetData.value.answers[update.item_id].memo = update.memo;
 });
 </script>
 
@@ -316,6 +390,29 @@ watch(activeTab, () => {
         </Transition>
       </div>
 
+      <!-- Failed items warning -->
+      <div v-if="failedItems.length" class="failed-banner">
+        <button class="failed-toggle" @click="failedOpen = !failedOpen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="15" y1="9" x2="9" y2="15" />
+            <line x1="9" y1="9" x2="15" y2="15" />
+          </svg>
+          FAIL 항목 {{ failedItems.length }}개
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" :class="{ 'chevron-open': failedOpen }">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+        <Transition name="failed-list">
+          <div v-if="failedOpen" class="failed-list">
+            <button v-for="item in failedItems" :key="item.id" class="failed-item" @click="scrollToItem(item.id)">
+              <span class="failed-item-path">{{ item.sub }} &rsaquo; {{ item.grp }}</span>
+              <span class="failed-item-name">{{ item.name }}</span>
+            </button>
+          </div>
+        </Transition>
+      </div>
+
       <!-- Category Panel -->
       <div v-if="currentCategory" class="card category-panel">
         <div class="card-header panel-header">
@@ -325,9 +422,14 @@ watch(activeTab, () => {
               class="form-input inspector-input"
               :value="getInspector(currentCategory.id)"
               @input="onInspectorChange(currentCategory.id, $event.target.value)"
+              @blur="onInspectorBlur(currentCategory.id)"
               :disabled="isReadOnly"
               placeholder="이름"
+              list="inspector-names"
             />
+            <datalist id="inspector-names">
+              <option v-for="name in inspectorNames" :key="name" :value="name" />
+            </datalist>
           </div>
           <div class="result-toggle">
             <button
@@ -349,10 +451,10 @@ watch(activeTab, () => {
           <div v-if="!currentCategory.subcategories?.length" class="empty-state">템플릿 항목이 없습니다.</div>
 
           <div v-for="(sub, si) in currentCategory.subcategories" :key="sub.id" :id="`sub-${sub.id}`" class="subcategory-section">
-            <h4 class="subcategory-title">{{ subNum(si) }}. {{ sub.name }}</h4>
+            <h4 class="subcategory-title">{{ subNum(si) }} - {{ sub.name }}</h4>
 
             <div v-for="(grp, gi) in sub.groups" :key="grp.id" class="group-section">
-              <h5 class="group-title">{{ grpNum(gi) }}) {{ grp.name }}<span v-if="grp.remarks" class="group-remarks"> — {{ grp.remarks }}</span></h5>
+              <h5 class="group-title">{{ grpNum(gi) }}. {{ grp.name }}<span v-if="grp.remarks" class="group-remarks"> — {{ grp.remarks }}</span></h5>
 
               <div v-for="(item, ii) in grp.items" :key="item.id" :id="`item-${item.id}`" class="item-row">
                 <span class="item-num-label">{{ itemNum(ii) }}</span>
@@ -442,7 +544,7 @@ watch(activeTab, () => {
             :key="sub.id"
             class="nav-menu-item"
             @click="scrollToSub(sub.id)"
-          >{{ subNum(si) }}. {{ sub.name }}</button>
+          >{{ subNum(si) }} - {{ sub.name }}</button>
         </div>
       </Transition>
       <button class="fab" @click="navOpen = !navOpen" :class="{ active: navOpen }">
@@ -874,6 +976,95 @@ watch(activeTab, () => {
 
 .missing-list-enter-from,
 .missing-list-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+
+/* Failed items banner */
+.failed-banner {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.failed-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.625rem 1rem;
+  border: none;
+  background: none;
+  color: var(--accent-danger);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.failed-toggle:hover {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.failed-toggle .chevron-open {
+  transform: rotate(180deg);
+}
+
+.failed-toggle svg:last-child {
+  margin-left: auto;
+  transition: transform 0.2s;
+}
+
+.failed-list {
+  border-top: 1px solid rgba(239, 68, 68, 0.2);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.failed-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  width: 100%;
+  padding: 0.5rem 1rem;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.failed-item:hover {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.failed-item + .failed-item {
+  border-top: 1px solid rgba(239, 68, 68, 0.1);
+}
+
+.failed-item-path {
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+}
+
+.failed-item-name {
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.failed-list-enter-active,
+.failed-list-leave-active {
+  transition: max-height 0.2s ease, opacity 0.2s ease;
+  overflow: hidden;
+}
+
+.failed-list-enter-from,
+.failed-list-leave-to {
   max-height: 0;
   opacity: 0;
 }
