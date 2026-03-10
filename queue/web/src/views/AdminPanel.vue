@@ -6,6 +6,7 @@ import {
   fetchAllInspections,
   fetchInspectionQueue,
   toggleInspectionActive,
+  toggleInspectionVisibility,
   cancelFromQueue,
   enterBooth,
   exitBooth,
@@ -129,12 +130,23 @@ function selectTab(type) {
   refreshQueue(type);
 }
 
-async function toggleActive(type, e) {
+async function toggleActive(type, currentActive) {
   try {
-    await toggleInspectionActive(type, e.target.checked);
-    // SSE will handle the update
+    await toggleInspectionActive(type, !currentActive);
+    const item = inspections.value.find(i => i.type === type);
+    if (item) item.active = !currentActive;
   } catch (e) {
     error("활성화 상태를 변경할 수 없습니다.");
+  }
+}
+
+async function toggleVisibility(type, currentHidden) {
+  try {
+    await toggleInspectionVisibility(type, !currentHidden);
+    const item = inspections.value.find(i => i.type === type);
+    if (item) item.hidden_from_register = !currentHidden ? 1 : 0;
+  } catch (e) {
+    error("표시 상태를 변경할 수 없습니다.");
   }
 }
 
@@ -256,15 +268,13 @@ async function updateBoothCount(type, ev) {
   }
 }
 
-async function toggleBoothActive(type, boothNum, ev) {
-  const active = ev.target.checked;
+async function toggleBoothActive(type, boothNum, currentActive, ev) {
   try {
-    await toggleBooth(type, boothNum, active);
-    success(`${currentTabName.value}${boothNum} ${active ? "활성화" : "비활성화"}`);
+    await toggleBooth(type, boothNum, !currentActive);
+    success(`${currentTabName.value}${boothNum} ${!currentActive ? "활성화" : "비활성화"}`);
   } catch (err) {
     error(err.message);
-    // Revert toggle
-    ev.target.checked = !active;
+    ev.target.checked = currentActive;
   }
 }
 
@@ -273,8 +283,7 @@ function formatPhone(phone) {
 }
 
 function formatTime(timestamp) {
-  const date = new Date(timestamp);
-  return `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}:${date.getSeconds().toString().padStart(2, "0")}`;
+  return new Date(timestamp).toLocaleTimeString("ko-KR");
 }
 
 onUnmounted(() => {
@@ -375,7 +384,7 @@ function goToStats() {
                         type="checkbox"
                         :checked="booth.active"
                         :disabled="booth.active && !!booth.occupied_by"
-                        @change="toggleBoothActive(currentTab, booth.booth_num, $event)"
+                        @change="toggleBoothActive(currentTab, booth.booth_num, booth.active, $event)"
                       />
                       <span class="toggle-slider"></span>
                     </label>
@@ -507,10 +516,38 @@ function goToStats() {
                     <span>부스</span>
                   </div>
                 </div>
-                <label class="toggle">
-                  <input type="checkbox" :checked="item.active" @change="toggleActive(item.type, $event)" />
-                  <span class="toggle-slider"></span>
-                </label>
+                <div class="inspection-buttons">
+                  <button
+                    class="btn-toggle-visibility"
+                    :class="{ hidden: item.hidden_from_register }"
+                    @click="toggleVisibility(item.type, item.hidden_from_register)"
+                    :title="item.hidden_from_register ? '등록 페이지에 표시' : '등록 페이지에서 숨김'"
+                  >
+                    <svg v-if="!item.hidden_from_register" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                    <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                      <line x1="1" y1="1" x2="23" y2="23" />
+                    </svg>
+                  </button>
+                  <button
+                    class="btn-toggle-active"
+                    :class="{ active: item.active }"
+                    @click="toggleActive(item.type, item.active)"
+                    :title="item.active ? '비활성화' : '활성화'"
+                  >
+                    <svg v-if="item.active" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                      <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+                    </svg>
+                    <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -771,6 +808,14 @@ function goToStats() {
   gap: 0.75rem;
 }
 
+.setting-info-left .setting-label {
+  min-width: 3.5em;
+}
+
+.inspection-setting .setting-input input {
+  width: 40px;
+}
+
 /* Booth Settings */
 .inspection-setting-group {
   border-bottom: 1px solid var(--border-color);
@@ -782,6 +827,79 @@ function goToStats() {
   border-bottom: none;
   padding-bottom: 0;
   margin-bottom: 0;
+}
+
+.inspection-buttons {
+  display: flex;
+  gap: 0.375rem;
+}
+
+/* 표시/숨김 버튼 */
+.btn-toggle-visibility {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--accent-primary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-toggle-visibility svg {
+  width: 18px;
+  height: 18px;
+}
+
+.btn-toggle-visibility:hover {
+  background: var(--bg-hover);
+}
+
+.btn-toggle-visibility.hidden {
+  color: var(--text-tertiary);
+  border-color: var(--border-color);
+}
+
+/* 활성화 토글 버튼 */
+.btn-toggle-active {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-toggle-active svg {
+  width: 18px;
+  height: 18px;
+}
+
+.btn-toggle-active:hover {
+  background: var(--bg-hover);
+  color: var(--accent-success);
+  border-color: var(--accent-success);
+}
+
+.btn-toggle-active.active {
+  background: var(--accent-success);
+  color: white;
+  border-color: var(--accent-success);
+}
+
+.btn-toggle-active.active:hover {
+  background: var(--accent-danger);
+  border-color: var(--accent-danger);
 }
 
 .toggle.toggle-sm {

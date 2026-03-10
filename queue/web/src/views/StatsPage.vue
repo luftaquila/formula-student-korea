@@ -148,14 +148,7 @@ function formatDuration(ms) {
 
 function formatTime(ts) {
   if (!ts) return "-";
-  const d = new Date(ts);
-  const Y = d.getFullYear();
-  const M = String(d.getMonth() + 1).padStart(2, "0");
-  const D = String(d.getDate()).padStart(2, "0");
-  const h = String(d.getHours()).padStart(2, "0");
-  const m = String(d.getMinutes()).padStart(2, "0");
-  const s = String(d.getSeconds()).padStart(2, "0");
-  return `${M}/${D} ${h}:${m}:${s}`;
+  return new Date(ts).toLocaleString("ko-KR");
 }
 
 function inspectionName(type) {
@@ -319,17 +312,26 @@ function goBack() {
                       <div v-else-if="teamTimeline.length === 0" class="timeline-empty">
                         타임라인 데이터가 없습니다.
                       </div>
-                      <div v-else class="timeline-list">
-                        <div v-for="(evt, idx) in teamTimeline" :key="idx" class="timeline-event">
-                          <span class="timeline-event-time mono">{{ formatTime(evt.timestamp) }}</span>
-                          <span class="timeline-event-badge" :class="`event-${evt.event}`">{{ eventLabel(evt.event) }}</span>
-                          <span class="timeline-event-info">
-                            <span class="timeline-event-type">{{ inspectionName(evt.inspection) }}</span>
-                            <span v-if="evt.event === 'enter' && evt.boothNum" class="timeline-event-booth">{{ inspectionName(evt.inspection) }}{{ evt.boothNum }}</span>
-                            <span v-if="evt.duration" class="timeline-event-duration mono">{{ formatDuration(evt.duration) }}</span>
-                          </span>
-                        </div>
-                      </div>
+                      <table v-else class="timeline-table">
+                        <thead>
+                          <tr>
+                            <th>시간</th>
+                            <th>이벤트</th>
+                            <th>검차</th>
+                            <th>부스</th>
+                            <th>소요</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="(evt, idx) in teamTimeline" :key="idx">
+                            <td class="mono">{{ formatTime(evt.timestamp) }}</td>
+                            <td><span class="timeline-event-badge" :class="`event-${evt.event}`">{{ eventLabel(evt.event) }}</span></td>
+                            <td>{{ inspectionName(evt.inspection) }}</td>
+                            <td>{{ evt.event === 'enter' && evt.boothNum ? `${inspectionName(evt.inspection)}${evt.boothNum}` : '' }}</td>
+                            <td class="mono">{{ evt.duration ? formatDuration(evt.duration) : '' }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
                     </div>
                   </td>
                 </tr>
@@ -475,22 +477,28 @@ function goBack() {
   background: var(--bg-hover);
 }
 
-.col-num {
-  width: 70px;
-  text-align: center !important;
-}
-
-.col-team {
-  width: auto;
-}
-
-.col-stat {
-  width: 80px;
-  text-align: center !important;
-}
-
+.col-num,
+.col-team,
+.col-stat,
 .col-time {
-  width: 120px;
+  width: 1%;
+  white-space: nowrap;
+}
+
+.col-num {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.stats-table thead .col-num {
+  z-index: 3;
+}
+
+.col-num,
+.col-stat,
+.col-time {
   text-align: center !important;
 }
 
@@ -557,7 +565,7 @@ function goBack() {
 
 /* Detail Row */
 .detail-row td {
-  padding: 0 !important;
+  padding: 0.5rem 0.75rem !important;
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -567,7 +575,7 @@ function goBack() {
 
 /* Timeline Section */
 .timeline-section {
-  padding: 1rem 1.25rem;
+  padding: 0;
   background: var(--bg-secondary);
 }
 
@@ -575,7 +583,7 @@ function goBack() {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.5rem;
 }
 
 .timeline-header h4 {
@@ -595,32 +603,35 @@ function goBack() {
   padding: 1.5rem 0;
 }
 
-/* Timeline List */
-.timeline-list {
-  display: flex;
-  flex-direction: column;
+/* Timeline Table */
+.timeline-table {
+  border-collapse: collapse;
+  font-size: 0.8125rem;
 }
 
-.timeline-event {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.timeline-event:last-child {
+.timeline-table th,
+.timeline-table td {
+  padding: 0.25rem 0.75rem;
+  text-align: center;
+  white-space: nowrap;
   border-bottom: none;
 }
+
+.timeline-table th {
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
 
 .timeline-event-badge {
   font-size: 0.75rem;
   font-weight: 600;
   padding: 0.125rem 0.5rem;
   border-radius: 6px;
-  flex-shrink: 0;
   min-width: 3rem;
   text-align: center;
+  display: inline-block;
 }
 
 .event-register {
@@ -641,33 +652,6 @@ function goBack() {
 .event-cancel {
   background: rgba(239, 68, 68, 0.15);
   color: var(--accent-danger);
-}
-
-.timeline-event-info {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-}
-
-.timeline-event-type {
-  font-size: 0.8125rem;
-  color: var(--text-secondary);
-}
-
-.timeline-event-booth {
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-}
-
-.timeline-event-duration {
-  font-size: 0.75rem;
-  color: var(--accent-warning, #f59e0b);
-}
-
-.timeline-event-time {
-  font-size: 0.8125rem;
-  flex-shrink: 0;
 }
 
 /* Responsive */

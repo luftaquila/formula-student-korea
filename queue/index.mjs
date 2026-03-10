@@ -44,6 +44,9 @@ db.transaction(() => {
   try {
     db.exec(`ALTER TABLE inspection ADD COLUMN ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE`);
   } catch (e) { /* already exists */ }
+  try {
+    db.exec(`ALTER TABLE inspection ADD COLUMN hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE`);
+  } catch (e) { /* already exists */ }
 
   // 팀별 검차별 우선순위 테이블 (1이 가장 높음, 숫자가 클수록 낮음)
   db.exec(`CREATE TABLE IF NOT EXISTS team_priority (
@@ -468,6 +471,30 @@ app.patch("/api/admin/inspection/:type", (req, res) => {
   }
 
   // SSE 브로드캐스트: 활성 검차 목록 변경
+  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  broadcastEvent("inspections", { activeInspections });
+
+  res.status(200).send();
+});
+
+// PATCH /api/admin/inspection/:type/visibility - 검차 등록 페이지 표시 상태 변경
+app.patch("/api/admin/inspection/:type/visibility", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+
+  const result = dbRun(() =>
+    db
+      .prepare("UPDATE inspection SET hidden_from_register = ? WHERE type = ?")
+      .run(req.body.hidden === true ? 1 : 0, req.params.type),
+  );
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  // SSE 브로드캐스트: 활성 검차 목록 변경 (hidden 정보 포함)
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
   broadcastEvent("inspections", { activeInspections });
 

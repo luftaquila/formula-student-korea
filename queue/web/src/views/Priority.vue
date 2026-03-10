@@ -221,35 +221,53 @@ function goBack() {
 
     <!-- Inspection Settings -->
     <div class="card settings-card">
-      <div class="card-header">
+      <div class="card-header settings-header">
         <h3>검차별 설정</h3>
+        <div class="settings-legend">
+          <span class="legend-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            </svg>
+            초검/재검
+          </span>
+          <span class="legend-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+            </svg>
+            우선순위
+          </span>
+        </div>
       </div>
       <div class="card-body">
         <div v-for="item in inspections" :key="item.type" class="inspection-config">
           <span class="config-name">{{ item.name }}</span>
           <div class="config-toggles">
-            <label class="config-toggle" :class="{ disabled: item.ignore_reinspection }">
-              <span class="config-toggle-label">초검/재검</span>
-              <label class="toggle toggle-sm">
-                <input
-                  type="checkbox"
-                  :checked="!item.ignore_reinspection"
-                  @change="toggleIgnore(item.type, 'ignore_reinspection', item.ignore_reinspection)"
-                />
-                <span class="toggle-slider"></span>
-              </label>
-            </label>
-            <label class="config-toggle" :class="{ disabled: item.ignore_priority }">
-              <span class="config-toggle-label">우선순위</span>
-              <label class="toggle toggle-sm">
-                <input
-                  type="checkbox"
-                  :checked="!item.ignore_priority"
-                  @change="toggleIgnore(item.type, 'ignore_priority', item.ignore_priority)"
-                />
-                <span class="toggle-slider"></span>
-              </label>
-            </label>
+            <button
+              class="btn-config-toggle"
+              :class="{ active: !item.ignore_reinspection }"
+              @click="toggleIgnore(item.type, 'ignore_reinspection', item.ignore_reinspection)"
+              :title="item.ignore_reinspection ? '초검/재검 적용' : '초검/재검 무시'"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+            </button>
+            <button
+              class="btn-config-toggle"
+              :class="{ active: !item.ignore_priority }"
+              @click="toggleIgnore(item.type, 'ignore_priority', item.ignore_priority)"
+              :title="item.ignore_priority ? '우선순위 적용' : '우선순위 무시'"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+              </svg>
+            </button>
           </div>
           <button
             class="btn btn-ghost btn-sm"
@@ -415,13 +433,14 @@ function goBack() {
 .settings-card .card-body {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .inspection-config {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.5rem;
   padding: 0.5rem 0;
   border-bottom: 1px solid var(--border-color);
 }
@@ -434,53 +453,69 @@ function goBack() {
   font-weight: 600;
   font-size: 0.875rem;
   min-width: 5rem;
+  margin-right: auto;
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.settings-legend {
+  display: flex;
+  gap: 1rem;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
 }
 
 .config-toggles {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.5rem;
 }
 
-.config-toggle {
-  display: flex;
+.btn-config-toggle {
+  display: inline-flex;
   align-items: center;
-  gap: 0.375rem;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-tertiary);
   cursor: pointer;
+  transition: all 0.2s ease;
 }
 
-.config-toggle.disabled {
-  opacity: 0.5;
+.btn-config-toggle svg {
+  width: 16px;
+  height: 16px;
 }
 
-.config-toggle-label {
-  font-size: 0.8125rem;
-  color: var(--text-secondary);
+.btn-config-toggle:hover {
+  background: var(--bg-hover);
 }
 
-.toggle.toggle-sm {
-  width: 32px;
-  height: 18px;
+.btn-config-toggle.active {
+  background: var(--accent-primary);
+  color: white;
+  border-color: var(--accent-primary);
 }
 
-.toggle-sm .toggle-slider {
-  width: 32px;
-  height: 18px;
-}
-
-.toggle-sm .toggle-slider::before {
-  width: 14px;
-  height: 14px;
-  bottom: 2px;
-  left: 2px;
-}
-
-.toggle-sm input:checked + .toggle-slider::before {
-  transform: translateX(14px);
+.btn-config-toggle.active:hover {
+  opacity: 0.85;
 }
 
 .inspection-config .btn {
-  margin-left: auto;
   flex-shrink: 0;
 }
 
@@ -589,20 +624,27 @@ function goBack() {
   background: var(--bg-hover);
 }
 
-.col-num {
-  width: 70px;
-  text-align: center !important;
-}
-
-.col-team {
-  width: auto;
-}
-
+.col-num,
+.col-team,
 .col-priority {
-  width: 110px;
-  min-width: 110px;
-  text-align: center !important;
+  width: 1%;
   white-space: nowrap;
+}
+
+.col-num {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.priority-table thead .col-num {
+  z-index: 3;
+}
+
+.col-num,
+.col-priority {
+  text-align: center !important;
 }
 
 .th-content {
@@ -727,11 +769,6 @@ function goBack() {
 
   .search-input {
     width: 150px;
-  }
-
-  .col-priority {
-    width: 100px;
-    min-width: 100px;
   }
 
   .priority-input {

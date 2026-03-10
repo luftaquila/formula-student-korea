@@ -82,6 +82,13 @@ export async function toggleInspectionActive(type, active) {
   });
 }
 
+export async function toggleInspectionVisibility(type, hidden) {
+  await request(`/api/admin/inspection/${type}/visibility`, {
+    method: "PATCH",
+    body: JSON.stringify({ hidden }),
+  });
+}
+
 /* ============================================
    Admin API - 대기열 등록/입장/취소
    ============================================ */

@@ -8,6 +8,10 @@ const { success, error, warning } = useNotification();
 
 const { activeInspections, allBooths, lastBoothUpdate } = useSSE();
 
+const visibleInspections = computed(() =>
+  activeInspections.value.filter((i) => !i.hidden_from_register),
+);
+
 const elapsedTimes = ref({});
 let elapsedTimers = {};
 
@@ -145,7 +149,7 @@ async function submit() {
       const penalty = JSON.parse(e.message);
       if (penalty.until && penalty.remaining !== undefined) {
         const untilDate = new Date(penalty.until);
-        const timeStr = `${untilDate.getHours().toString().padStart(2, "0")}시 ${untilDate.getMinutes().toString().padStart(2, "0")}분`;
+        const timeStr = untilDate.toLocaleTimeString("ko-KR");
         error(`취소 페널티 적용중입니다.\n${penalty.remaining}분 뒤 ${timeStr}에 해제됩니다.`);
         return;
       }
@@ -180,7 +184,7 @@ onUnmounted(() => {
           <label>검차 종류 선택</label>
           <div class="inspection-grid">
             <button
-              v-for="item in activeInspections"
+              v-for="item in visibleInspections"
               :key="item.type"
               class="inspection-btn"
               :class="{ selected: inspection === item.type }"
@@ -190,7 +194,7 @@ onUnmounted(() => {
               <span class="queue-length">{{ item.length }}팀 대기중</span>
             </button>
           </div>
-          <div v-if="activeInspections.length === 0" class="no-inspections">현재 활성화된 검차가 없습니다.</div>
+          <div v-if="visibleInspections.length === 0" class="no-inspections">현재 활성화된 검차가 없습니다.</div>
         </div>
 
         <!-- Booth Status Cards -->
