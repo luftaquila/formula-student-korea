@@ -1,15 +1,13 @@
-import fs from "fs";
 import http from "http";
 import express from "express";
 import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
+import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 
 /* ============================================
    Database 초기화
    ============================================ */
-if (!fs.existsSync("./data")) {
-  fs.mkdirSync("./data", { recursive: true });
-}
+ensureDataDir();
 
 const db = new Database("./data/score.db");
 
@@ -34,32 +32,12 @@ db.transaction(() => {
   )`);
 })();
 
-process.on("exit", () => db.close());
-process.on("SIGHUP", () => process.exit(128 + 1));
-process.on("SIGINT", () => process.exit(128 + 2));
-process.on("SIGTERM", () => process.exit(128 + 15));
+setupProcessHandlers(db);
 
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = express();
-app.use(express.json());
-app.use(express.static("./web/dist"));
-app.use(express.urlencoded({ extended: true }));
-app.use((req, res, next) => {
-  if (req.headers.authorization) {
-    req.headers.authuser = Buffer.from(req.headers.authorization.split(" ")[1], "base64")
-      .toString("utf-8")
-      .split(":")[0];
-  }
-  next();
-});
-app.use(
-  pinoHttp({
-    stream: fs.createWriteStream("./data/score.log", { flags: "a" }),
-    customProps: (req, res) => ({ reqBody: req.body }),
-  }),
-);
+const app = createApp("score.log", { express, pinoHttp });
 
 /* ============================================
    설정
@@ -71,48 +49,16 @@ const TRAFFIC_SERVER = process.env.TRAFFIC_SERVER || "http://localhost:9200";
 /* ============================================
    헬퍼
    ============================================ */
-function dbRun(fn) {
-  try {
-    return { success: true, result: fn() };
-  } catch (e) {
-    if (e.code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
-      return { success: false, status: 400, error: "이미 존재하는 항목입니다." };
-    }
-    if (e.status && e.message) {
-      return { success: false, status: e.status, error: e.message };
-    }
-    return { success: false, status: 500, error: `DB 오류: ${e.message || e}` };
-  }
-}
+const dbRun = createDbRun();
 
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const sseClients = new Set();
-
-function broadcastEvent(event, data) {
-  const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const client of sseClients) {
-    client.write(message);
-  }
-}
+import { createSSEManager } from "../shared/sse.mjs";
+const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 // SSE 엔드포인트
-app.get("/api/score/events", (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders();
-
-  res.write(`event: init\ndata: {}\n\n`);
-
-  sseClients.add(res);
-
-  req.on("close", () => {
-    sseClients.delete(res);
-  });
-});
+app.get("/api/score/events", sseHandler());
 
 // Inspection 서비스 SSE 구독 → Score 클라이언트에 재전송
 function subscribeInspectionSSE() {

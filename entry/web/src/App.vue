@@ -4,7 +4,7 @@ import EntryTable from "./components/EntryTable.vue";
 import EntryForm from "./components/EntryForm.vue";
 import FileManager from "./components/FileManager.vue";
 import VehicleTypeManager from "./components/VehicleTypeManager.vue";
-import ThemeToggle from "./components/ThemeToggle.vue";
+import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import { fetchYears, fetchEntries, addEntry, updateEntry, deleteEntry, deleteAllEntries, uploadEntries, fetchVehicleTypes, addVehicleType, deleteVehicleType } from "./api";
 import { useNotification } from "./composables/useNotification";

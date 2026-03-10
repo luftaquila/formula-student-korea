@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from "vue";
 import { useRoute } from "vue-router";
-import ThemeToggle from "./components/ThemeToggle.vue";
+import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavTabs from "./components/NavTabs.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import { useEntryStore } from "./stores/entry";

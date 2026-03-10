@@ -18,10 +18,17 @@ Seven independent services deployed via Docker Compose behind an Nginx reverse p
 - **score/** - Score aggregation and management API + web UI (Express + Vue 3, port 9700)
 - **energymeter/** - Energy meter data viewer (Git submodule, Vue 3, port 9400)
 
-**Shared components** in `shared/` are imported directly by other services:
+**Shared modules** in `shared/` are imported directly by other services:
 - `NavMenu.vue` - Navigation drawer component used across all frontends
 - `nav-config.js` - Service menu configuration
 - `officialsStore.js` - Shared state for officials-only menu visibility
+- `ThemeToggle.vue` - Dark/light theme toggle button component
+- `theme-init.js` - Theme initialization (localStorage + prefers-color-scheme)
+- `styles/base.css` - Common CSS variables, resets, and component styles
+- `useSSE.js` - Frontend SSE connection factory with auto-reconnect
+- `sse.mjs` - Backend SSE manager (broadcast + endpoint handler)
+- `express-setup.mjs` - Express app factory, process handlers, DB error helper
+- `api-base.js` - Frontend API client factory with entry service helpers
 
 Service dependencies (via `ENTRY_SERVER` environment variable):
 - traffic → entry

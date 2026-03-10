@@ -1,10 +1,10 @@
-import fs from "fs";
 import http from "http";
 import https from "https";
 import crypto from "crypto";
 import express from "express";
 import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
+import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 
 const inspections = {
   battery: "배터리",
@@ -20,9 +20,7 @@ const inspections = {
 /* ============================================
    Database 초기화
    ============================================ */
-if (!fs.existsSync("./data")) {
-  fs.mkdirSync("./data", { recursive: true });
-}
+ensureDataDir();
 
 const db = new Database("./data/queue.db");
 
@@ -149,67 +147,28 @@ db.transaction(() => {
   }
 })();
 
-process.on("exit", () => db.close());
-process.on("SIGHUP", () => process.exit(128 + 1));
-process.on("SIGINT", () => process.exit(128 + 2));
-process.on("SIGTERM", () => process.exit(128 + 15));
+setupProcessHandlers(db);
 
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = express();
-app.use(express.json());
-app.use(express.static("./web/dist"));
-app.use(express.urlencoded({ extended: true }));
-app.use((req, res, next) => {
-  if (req.headers.authorization) {
-    req.headers.authuser = Buffer.from(req.headers.authorization.split(" ")[1], "base64")
-      .toString("utf-8")
-      .split(":")[0];
-  }
-  next();
-});
-app.use(
-  pinoHttp({
-    stream: fs.createWriteStream("./data/queue.log", { flags: "a" }),
-    customProps: (req, res) => ({ reqBody: req.body }),
-  }),
-);
+const app = createApp("queue.log", { express, pinoHttp });
 
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const sseClients = new Set();
-
-function broadcastEvent(event, data) {
-  const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const client of sseClients) {
-    client.write(message);
-  }
-}
+import { createSSEManager } from "../shared/sse.mjs";
+const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 // SSE 엔드포인트
-app.get("/api/events", (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders();
-
-  // 연결 시 초기 데이터 전송
+app.get("/api/events", sseHandler(() => {
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
   const allBooths = {};
   for (const k of Object.keys(inspections)) {
     allBooths[k] = db.prepare("SELECT booth_num, active, occupied_by, entered_at FROM booth WHERE inspection = ? ORDER BY booth_num").all(k);
   }
-  res.write(`event: init\ndata: ${JSON.stringify({ activeInspections, allBooths })}\n\n`);
-
-  sseClients.add(res);
-
-  req.on("close", () => {
-    sseClients.delete(res);
-  });
-});
+  return { activeInspections, allBooths };
+}));
 
 /* ============================================
    Validation 헬퍼
@@ -247,19 +206,7 @@ function validatePriority(priority) {
 /* ============================================
    DB 헬퍼
    ============================================ */
-function dbRun(fn) {
-  try {
-    return { success: true, result: fn() };
-  } catch (e) {
-    if (e.code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
-      return { success: false, status: 400, error: "이미 존재하는 항목입니다." };
-    }
-    if (e.status && e.message) {
-      return { success: false, status: e.status, error: e.message };
-    }
-    return { success: false, status: 500, error: `DB 오류: ${e.message || e}` };
-  }
-}
+const dbRun = createDbRun();
 
 /**
  * 대기열 조회 쿼리 (정렬 순서: 초검 > 재검, 우선순위 높음 > 낮음, 선착순)

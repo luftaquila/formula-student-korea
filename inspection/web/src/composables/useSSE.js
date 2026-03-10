@@ -1,82 +1,41 @@
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref } from "vue";
+import { createSSEConnection } from "@shared/useSSE.js";
 
 const API_BASE = import.meta.env.DEV ? "" : "/inspection";
+const { on, useSSE: useConnection, connected } = createSSEConnection(`${API_BASE}/api/sheet/events`);
 
 // Shared state across all components
 const lastUpdate = ref(null);
 const lastInspectorUpdate = ref(null);
 const lastAnswerUpdate = ref(null);
 const lastMemoUpdate = ref(null);
-const connected = ref(false);
 
-let eventSource = null;
-let subscribers = 0;
+on("init", () => {
+  connected.value = true;
+});
 
-function connect() {
-  if (eventSource) return;
+on("category-result", (e) => {
+  const data = JSON.parse(e.data);
+  lastUpdate.value = { ...data, timestamp: Date.now() };
+});
 
-  eventSource = new EventSource(`${API_BASE}/api/sheet/events`);
+on("inspector", (e) => {
+  const data = JSON.parse(e.data);
+  lastInspectorUpdate.value = { ...data, timestamp: Date.now() };
+});
 
-  eventSource.onopen = () => {
-    connected.value = true;
-  };
+on("answer", (e) => {
+  const data = JSON.parse(e.data);
+  lastAnswerUpdate.value = { ...data, timestamp: Date.now() };
+});
 
-  eventSource.onerror = () => {
-    connected.value = false;
-    setTimeout(() => {
-      if (subscribers > 0) {
-        eventSource?.close();
-        eventSource = null;
-        connect();
-      }
-    }, 3000);
-  };
-
-  eventSource.addEventListener("init", () => {
-    connected.value = true;
-  });
-
-  eventSource.addEventListener("category-result", (e) => {
-    const data = JSON.parse(e.data);
-    lastUpdate.value = { ...data, timestamp: Date.now() };
-  });
-
-  eventSource.addEventListener("inspector", (e) => {
-    const data = JSON.parse(e.data);
-    lastInspectorUpdate.value = { ...data, timestamp: Date.now() };
-  });
-
-  eventSource.addEventListener("answer", (e) => {
-    const data = JSON.parse(e.data);
-    lastAnswerUpdate.value = { ...data, timestamp: Date.now() };
-  });
-
-  eventSource.addEventListener("memo", (e) => {
-    const data = JSON.parse(e.data);
-    lastMemoUpdate.value = { ...data, timestamp: Date.now() };
-  });
-}
-
-function disconnect() {
-  if (eventSource) {
-    eventSource.close();
-    eventSource = null;
-    connected.value = false;
-  }
-}
+on("memo", (e) => {
+  const data = JSON.parse(e.data);
+  lastMemoUpdate.value = { ...data, timestamp: Date.now() };
+});
 
 export function useSSE() {
-  onMounted(() => {
-    subscribers++;
-    connect();
-  });
-
-  onUnmounted(() => {
-    subscribers--;
-    if (subscribers === 0) {
-      disconnect();
-    }
-  });
+  const { connected } = useConnection();
 
   return {
     lastUpdate,

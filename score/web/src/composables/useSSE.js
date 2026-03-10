@@ -1,76 +1,35 @@
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref } from "vue";
+import { createSSEConnection } from "@shared/useSSE.js";
 
 const API_BASE = import.meta.env.DEV ? "" : "/score";
+const { on, useSSE: useConnection, connected } = createSSEConnection(`${API_BASE}/api/score/events`);
 
 // Shared state across all components
 const lastInspectionUpdate = ref(null);
 const lastRecordAutoUpdate = ref(null);
 const lastRecordManualUpdate = ref(null);
-const connected = ref(false);
 
-let eventSource = null;
-let subscribers = 0;
+on("init", () => {
+  connected.value = true;
+});
 
-function connect() {
-  if (eventSource) return;
+on("inspection:category-result", (e) => {
+  const data = JSON.parse(e.data);
+  lastInspectionUpdate.value = { ...data, timestamp: Date.now() };
+});
 
-  eventSource = new EventSource(`${API_BASE}/api/score/events`);
+on("record-auto", (e) => {
+  const data = JSON.parse(e.data);
+  lastRecordAutoUpdate.value = { ...data, timestamp: Date.now() };
+});
 
-  eventSource.onopen = () => {
-    connected.value = true;
-  };
-
-  eventSource.onerror = () => {
-    connected.value = false;
-    setTimeout(() => {
-      if (subscribers > 0) {
-        eventSource?.close();
-        eventSource = null;
-        connect();
-      }
-    }, 3000);
-  };
-
-  eventSource.addEventListener("init", () => {
-    connected.value = true;
-  });
-
-  eventSource.addEventListener("inspection:category-result", (e) => {
-    const data = JSON.parse(e.data);
-    lastInspectionUpdate.value = { ...data, timestamp: Date.now() };
-  });
-
-  eventSource.addEventListener("record-auto", (e) => {
-    const data = JSON.parse(e.data);
-    lastRecordAutoUpdate.value = { ...data, timestamp: Date.now() };
-  });
-
-  eventSource.addEventListener("record-update", (e) => {
-    const data = JSON.parse(e.data);
-    lastRecordManualUpdate.value = { ...data, timestamp: Date.now() };
-  });
-}
-
-function disconnect() {
-  if (eventSource) {
-    eventSource.close();
-    eventSource = null;
-    connected.value = false;
-  }
-}
+on("record-update", (e) => {
+  const data = JSON.parse(e.data);
+  lastRecordManualUpdate.value = { ...data, timestamp: Date.now() };
+});
 
 export function useSSE() {
-  onMounted(() => {
-    subscribers++;
-    connect();
-  });
-
-  onUnmounted(() => {
-    subscribers--;
-    if (subscribers === 0) {
-      disconnect();
-    }
-  });
+  const { connected } = useConnection();
 
   return {
     lastInspectionUpdate,

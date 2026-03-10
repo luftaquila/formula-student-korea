@@ -1,6 +1,6 @@
 <script setup>
 import { useRoute } from "vue-router";
-import ThemeToggle from "./components/ThemeToggle.vue";
+import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 
 const route = useRoute();

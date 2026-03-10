@@ -1,15 +1,13 @@
-import fs from "fs";
 import path from "path";
 import express from "express";
 import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
+import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 
 /* ============================================
    Database 초기화
    ============================================ */
-if (!fs.existsSync("./data")) {
-  fs.mkdirSync("./data", { recursive: true });
-}
+ensureDataDir();
 
 const db = new Database("./data/traffic.db");
 
@@ -18,32 +16,12 @@ db.exec(`CREATE TABLE IF NOT EXISTS controller (
   data TEXT NOT NULL
 );`);
 
-process.on("exit", () => db.close());
-process.on("SIGHUP", () => process.exit(128 + 1));
-process.on("SIGINT", () => process.exit(128 + 2));
-process.on("SIGTERM", () => process.exit(128 + 15));
+setupProcessHandlers(db);
 
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = express();
-app.use(express.json());
-app.use(express.static("./web/dist"));
-app.use(express.urlencoded({ extended: true }));
-app.use((req, res, next) => {
-  if (req.headers.authorization) {
-    req.headers.authuser = Buffer.from(req.headers.authorization.split(" ")[1], "base64")
-      .toString("utf-8")
-      .split(":")[0];
-  }
-  next();
-});
-app.use(
-  pinoHttp({
-    stream: fs.createWriteStream("./data/traffic.log", { flags: "a" }),
-    customProps: (req, res) => ({ reqBody: req.body }),
-  }),
-);
+const app = createApp("traffic.log", { express, pinoHttp });
 
 /* ============================================
    설정
@@ -53,14 +31,8 @@ const ENTRY_SERVER = process.env.ENTRY_SERVER || "http://localhost:9100";
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const sseClients = new Set();
-
-function broadcastEvent(event, data) {
-  const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const client of sseClients) {
-    client.write(message);
-  }
-}
+import { createSSEManager } from "../shared/sse.mjs";
+const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 function getRecordFiles() {
   const tables = db
@@ -70,23 +42,7 @@ function getRecordFiles() {
 }
 
 // SSE 엔드포인트
-app.get("/api/events", (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders();
-
-  // 연결 시 초기 데이터 전송
-  const recordFiles = getRecordFiles();
-  res.write(`event: init\ndata: ${JSON.stringify({ recordFiles })}\n\n`);
-
-  sseClients.add(res);
-
-  req.on("close", () => {
-    sseClients.delete(res);
-  });
-});
+app.get("/api/events", sseHandler(() => ({ recordFiles: getRecordFiles() })));
 
 /* ============================================
    Validation 헬퍼
@@ -132,13 +88,7 @@ function validateControllerData({ timestamp, data }) {
 /* ============================================
    DB 헬퍼
    ============================================ */
-function dbRun(fn) {
-  try {
-    return { success: true, result: fn() };
-  } catch (e) {
-    return { success: false, status: 500, error: `DB 오류: ${e}` };
-  }
-}
+const dbRun = createDbRun();
 
 /* ============================================
    API 라우트: /api/entries (entry 서버 프록시)

@@ -46,7 +46,7 @@
 
 <script setup>
 import ServiceCard from "./components/ServiceCard.vue";
-import ThemeToggle from "./components/ThemeToggle.vue";
+import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import { showOfficials } from "@shared/officialsStore.js";
 import { forumSvg } from "@shared/nav-config.js";

@@ -1,74 +1,32 @@
-import { ref, watch, onMounted, onUnmounted } from "vue";
+import { ref, watch } from "vue";
+import { createSSEConnection } from "@shared/useSSE.js";
 
 const API_BASE = import.meta.env.DEV ? "" : "/traffic";
+const { on, useSSE: useConnection, connected } = createSSEConnection(`${API_BASE}/api/events`);
 
 // Shared state across all components
 const recordFiles = ref([]);
 const selectedFile = ref(localStorage.getItem("traffic-last-file") || null);
 const lastUpdate = ref(null);
-const connected = ref(false);
 
 watch(selectedFile, (v) => {
   if (v) localStorage.setItem("traffic-last-file", v);
   else localStorage.removeItem("traffic-last-file");
 });
 
-let eventSource = null;
-let subscribers = 0;
+on("init", (e) => {
+  const data = JSON.parse(e.data);
+  recordFiles.value = ["controller", ...data.recordFiles];
+});
 
-function connect() {
-  if (eventSource) return;
-
-  eventSource = new EventSource(`${API_BASE}/api/events`);
-
-  eventSource.onopen = () => {
-    connected.value = true;
-  };
-
-  eventSource.onerror = () => {
-    connected.value = false;
-    // Reconnect after 3 seconds
-    setTimeout(() => {
-      if (subscribers > 0) {
-        eventSource?.close();
-        eventSource = null;
-        connect();
-      }
-    }, 3000);
-  };
-
-  eventSource.addEventListener("init", (e) => {
-    const data = JSON.parse(e.data);
-    recordFiles.value = ["controller", ...data.recordFiles];
-  });
-
-  eventSource.addEventListener("records", (e) => {
-    const data = JSON.parse(e.data);
-    recordFiles.value = ["controller", ...data.recordFiles];
-    lastUpdate.value = { type: data.type, name: data.name, timestamp: Date.now() };
-  });
-}
-
-function disconnect() {
-  if (eventSource) {
-    eventSource.close();
-    eventSource = null;
-    connected.value = false;
-  }
-}
+on("records", (e) => {
+  const data = JSON.parse(e.data);
+  recordFiles.value = ["controller", ...data.recordFiles];
+  lastUpdate.value = { type: data.type, name: data.name, timestamp: Date.now() };
+});
 
 export function useSSE() {
-  onMounted(() => {
-    subscribers++;
-    connect();
-  });
-
-  onUnmounted(() => {
-    subscribers--;
-    if (subscribers === 0) {
-      disconnect();
-    }
-  });
+  const { connected } = useConnection();
 
   return {
     recordFiles,
