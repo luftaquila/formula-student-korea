@@ -1,12 +1,17 @@
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, watch, onMounted, onUnmounted } from "vue";
 
 const API_BASE = import.meta.env.DEV ? "" : "/traffic";
 
 // Shared state across all components
 const recordFiles = ref([]);
-const selectedFile = ref(null);
+const selectedFile = ref(localStorage.getItem("traffic-last-file") || null);
 const lastUpdate = ref(null);
 const connected = ref(false);
+
+watch(selectedFile, (v) => {
+  if (v) localStorage.setItem("traffic-last-file", v);
+  else localStorage.removeItem("traffic-last-file");
+});
 
 let eventSource = null;
 let subscribers = 0;

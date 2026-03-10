@@ -306,7 +306,7 @@ app.post("/api/records", (req, res) => {
   }
 
   // SSE 브로드캐스트
-  broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles() });
+  broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: { num: data.entry.num, eventType: data.type } });
 
   res.status(201).send();
 });
@@ -360,8 +360,13 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  // SSE 브로드캐스트
-  broadcastEvent("records", { type: "update", name, recordFiles: getRecordFiles() });
+  // SSE 브로드캐스트 (무효화 변경 시 팀/종목 정보 포함)
+  let record = null;
+  if (field === "invalidated") {
+    const row = db.prepare(`SELECT num, type FROM '${name}' WHERE rowid = ?`).get(rowid);
+    if (row) record = { num: row.num, eventType: row.type };
+  }
+  broadcastEvent("records", { type: "update", name, field, recordFiles: getRecordFiles(), record });
 
   res.json(result.result);
 });

@@ -594,4 +594,23 @@ async function handleDNF() {
     min-width: 280px;
   }
 }
+
+@media (max-width: 480px) {
+  .event-title {
+    font-size: 1.5rem;
+  }
+
+  .clock {
+    font-size: 1.75rem;
+  }
+
+  .traffic-light {
+    width: 32px;
+    height: 32px;
+  }
+
+  .timer-display {
+    gap: 1rem;
+  }
+}
 </style>

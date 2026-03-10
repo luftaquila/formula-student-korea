@@ -30,6 +30,9 @@ const addEntry = ref(null);
 const addResult = ref("");
 const addDetail = ref("");
 
+// 상세 인라인 편집 상태
+const editingDetailId = ref(null);
+
 // 유형 필터 (기본: 모두 선택)
 const typeFilters = ref({
   가속: true,
@@ -274,7 +277,17 @@ async function handleInvalidate(record) {
   }
 }
 
+function startDetailEdit(rowid) {
+  editingDetailId.value = rowid;
+}
+
+function detailInputRef(el) {
+  if (el) el.focus();
+}
+
 async function handleDetailChange(record, value) {
+  editingDetailId.value = null;
+  if (value === (record.detail || '')) return;
   try {
     const result = await updateRecord(selectedFile.value, record.rowid, "detail", value);
     const idx = records.value.findIndex((r) => r.rowid === record.rowid);
@@ -524,13 +537,17 @@ async function handleAddRecord() {
               <td class="result-cell center" :class="{ 'is-dnf': record.result < 0 }">
                 {{ formatResult(record.result) }}
               </td>
-              <td class="detail-cell">
+              <td class="detail-cell" @click="startDetailEdit(record.rowid)">
                 <input
+                  v-if="editingDetailId === record.rowid"
+                  :ref="detailInputRef"
                   class="detail-input"
                   type="text"
                   :value="record.detail || ''"
-                  @change="handleDetailChange(record, $event.target.value)"
+                  @blur="handleDetailChange(record, $event.target.value)"
+                  @keyup.enter="$event.target.blur()"
                 />
+                <span v-else class="detail-text">{{ record.detail || '' }}</span>
               </td>
               <td class="center">
                 <button
@@ -672,8 +689,10 @@ async function handleAddRecord() {
 
 .table-header {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
+  gap: 0.75rem;
   padding: 1.25rem 1.5rem;
   border-bottom: 1px solid var(--border-color);
   background: var(--bg-secondary);
@@ -815,6 +834,7 @@ async function handleAddRecord() {
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border-color);
   vertical-align: middle;
+  white-space: nowrap;
 }
 
 .data-table tbody tr {
@@ -879,6 +899,13 @@ async function handleAddRecord() {
 .detail-cell {
   color: var(--text-primary);
   font-size: 0.875rem;
+  cursor: text;
+}
+
+.detail-text {
+  display: inline-block;
+  min-width: 2em;
+  min-height: 1.25em;
 }
 
 .detail-input {
@@ -904,9 +931,7 @@ async function handleAddRecord() {
 }
 
 .col-univ {
-  max-width: 8em;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  width: 1%;
   white-space: nowrap;
 }
 
