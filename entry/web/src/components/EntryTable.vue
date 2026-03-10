@@ -14,10 +14,11 @@ const props = defineProps({
 
 const emit = defineEmits(["update", "delete"]);
 
-const editingRow = ref(null);
-const editForm = ref({ num: "", univ: "", team: "", type: "" });
 const sortKey = ref(null);
 const sortOrder = ref("asc");
+
+// 인라인 편집 상태: { num, field } 형태
+const editingCell = ref(null);
 
 const sortedEntries = computed(() => {
   if (!sortKey.value || !props.entries.length) return props.entries;
@@ -54,46 +55,49 @@ function getSortIcon(key) {
   return sortOrder.value === "asc" ? "↑" : "↓";
 }
 
-function startEdit(entry) {
-  editingRow.value = entry.num;
-  editForm.value = {
-    num: entry.num,
-    univ: entry.univ,
-    team: entry.team,
-    type: entry.type || "",
-    originalNum: entry.num,
-  };
+function startEdit(num, field) {
+  editingCell.value = { num, field };
 }
 
-function cancelEdit() {
-  editingRow.value = null;
-  editForm.value = { num: "", univ: "", team: "", type: "" };
+function editInputRef(el) {
+  if (el) el.focus();
 }
 
-function saveEdit() {
-  const numChanged = editForm.value.num !== editForm.value.originalNum;
-  emit("update", {
-    num: editForm.value.num,
-    univ: editForm.value.univ,
-    team: editForm.value.team,
-    type: editForm.value.type || null,
-    num_changed: numChanged,
-    prev: editForm.value.originalNum,
-  });
-  cancelEdit();
+function saveCell(entry, field, value) {
+  editingCell.value = null;
+
+  if (field === "num") {
+    const numVal = Number(value);
+    if (!numVal || numVal === entry.num) return;
+    emit("update", {
+      num: numVal,
+      univ: entry.univ,
+      team: entry.team,
+      type: entry.type || null,
+      num_changed: true,
+      prev: entry.num,
+    });
+  } else {
+    const original = entry[field] || "";
+    if (value === original) return;
+    emit("update", {
+      num: entry.num,
+      univ: field === "univ" ? value : entry.univ,
+      team: field === "team" ? value : entry.team,
+      type: field === "type" ? (value || null) : (entry.type || null),
+      num_changed: false,
+      prev: entry.num,
+    });
+  }
+}
+
+function isEditing(num, field) {
+  return editingCell.value?.num === num && editingCell.value?.field === field;
 }
 
 function handleDelete(num) {
   if (confirm(`${num}번 엔트리를 삭제하시겠습니까?`)) {
     emit("delete", num);
-  }
-}
-
-function handleKeydown(e) {
-  if (e.key === "Enter") {
-    saveEdit();
-  } else if (e.key === "Escape") {
-    cancelEdit();
   }
 }
 </script>
@@ -115,7 +119,7 @@ function handleKeydown(e) {
           <th class="col-type sortable" @click="handleSort('type')">
             유형 <span class="sort-icon">{{ getSortIcon("type") }}</span>
           </th>
-          <th class="col-actions">관리</th>
+          <th class="col-actions">삭제</th>
         </tr>
       </thead>
       <tbody>
@@ -131,63 +135,73 @@ function handleKeydown(e) {
             </div>
           </td>
         </tr>
-        <tr v-for="entry in sortedEntries" :key="entry.num" :class="{ editing: editingRow === entry.num }">
-          <template v-if="editingRow === entry.num">
-            <td class="col-num">
-              <input v-model.number="editForm.num" type="number" class="edit-input" @keydown="handleKeydown" />
-            </td>
-            <td class="col-univ">
-              <input v-model="editForm.univ" type="text" class="edit-input" @keydown="handleKeydown" />
-            </td>
-            <td class="col-team">
-              <input v-model="editForm.team" type="text" class="edit-input" @keydown="handleKeydown" />
-            </td>
-            <td class="col-type">
-              <select v-model="editForm.type" class="edit-input" @keydown="handleKeydown">
-                <option value="">-</option>
-                <option v-for="vt in vehicleTypes" :key="vt.id" :value="vt.name">{{ vt.name }}</option>
-              </select>
-            </td>
-            <td class="col-actions">
-              <div class="action-buttons">
-                <button class="btn btn-success btn-icon" @click="saveEdit" title="저장">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                </button>
-                <button class="btn btn-ghost btn-icon" @click="cancelEdit" title="취소">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
-              </div>
-            </td>
-          </template>
-          <template v-else>
-            <td class="col-num">
-              <span class="entry-number">{{ entry.num }}</span>
-            </td>
-            <td class="col-univ">{{ entry.univ }}</td>
-            <td class="col-team">{{ entry.team }}</td>
-            <td class="col-type">{{ entry.type || '-' }}</td>
-            <td class="col-actions">
-              <div class="action-buttons">
-                <button class="btn btn-ghost btn-icon" @click="startEdit(entry)" title="수정">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
-                    <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
-                  </svg>
-                </button>
-                <button class="btn btn-danger btn-icon" @click="handleDelete(entry.num)" title="삭제">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="3 6 5 6 21 6" />
-                    <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-                  </svg>
-                </button>
-              </div>
-            </td>
-          </template>
+        <tr v-for="entry in sortedEntries" :key="entry.num">
+          <!-- 번호 -->
+          <td class="col-num" @click="startEdit(entry.num, 'num')">
+            <input
+              v-if="isEditing(entry.num, 'num')"
+              :ref="editInputRef"
+              class="edit-input"
+              type="number"
+              :value="entry.num"
+              @blur="saveCell(entry, 'num', $event.target.value)"
+              @keyup.enter="$event.target.blur()"
+              @keyup.escape="editingCell = null"
+            />
+            <span v-else class="entry-number">{{ entry.num }}</span>
+          </td>
+          <!-- 학교 -->
+          <td class="col-univ editable-cell" @click="startEdit(entry.num, 'univ')">
+            <input
+              v-if="isEditing(entry.num, 'univ')"
+              :ref="editInputRef"
+              class="edit-input"
+              type="text"
+              :value="entry.univ"
+              @blur="saveCell(entry, 'univ', $event.target.value)"
+              @keyup.enter="$event.target.blur()"
+              @keyup.escape="editingCell = null"
+            />
+            <span v-else class="cell-text">{{ entry.univ }}</span>
+          </td>
+          <!-- 팀명 -->
+          <td class="col-team editable-cell" @click="startEdit(entry.num, 'team')">
+            <input
+              v-if="isEditing(entry.num, 'team')"
+              :ref="editInputRef"
+              class="edit-input"
+              type="text"
+              :value="entry.team"
+              @blur="saveCell(entry, 'team', $event.target.value)"
+              @keyup.enter="$event.target.blur()"
+              @keyup.escape="editingCell = null"
+            />
+            <span v-else class="cell-text">{{ entry.team }}</span>
+          </td>
+          <!-- 유형 -->
+          <td class="col-type editable-cell" @click="startEdit(entry.num, 'type')">
+            <select
+              v-if="isEditing(entry.num, 'type')"
+              :ref="editInputRef"
+              class="edit-input"
+              :value="entry.type || ''"
+              @change="saveCell(entry, 'type', $event.target.value)"
+              @blur="editingCell = null"
+            >
+              <option value="">-</option>
+              <option v-for="vt in vehicleTypes" :key="vt.id" :value="vt.name">{{ vt.name }}</option>
+            </select>
+            <span v-else class="cell-text">{{ entry.type || '-' }}</span>
+          </td>
+          <!-- 삭제 -->
+          <td class="col-actions">
+            <button class="btn btn-danger btn-icon" @click="handleDelete(entry.num)" title="삭제">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+              </svg>
+            </button>
+          </td>
         </tr>
       </tbody>
     </table>
@@ -248,29 +262,38 @@ function handleKeydown(e) {
   background: var(--bg-hover);
 }
 
-.entry-table tbody tr.editing {
-  background: rgba(59, 130, 246, 0.1);
+.col-num,
+.col-univ,
+.col-team,
+.col-type,
+.col-actions {
+  width: 1%;
+  white-space: nowrap;
 }
 
 .col-num {
-  width: 80px;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-card);
 }
 
-.col-univ {
-  width: 200px;
-}
-
-.col-team {
-  width: 200px;
-}
-
-.col-type {
-  width: 120px;
+.entry-table thead .col-num {
+  z-index: 3;
 }
 
 .col-actions {
-  width: 100px;
   text-align: center;
+}
+
+.editable-cell {
+  cursor: text;
+}
+
+.cell-text {
+  display: inline-block;
+  min-width: 2em;
+  min-height: 1.25em;
 }
 
 .entry-number {
@@ -285,24 +308,19 @@ function handleKeydown(e) {
   font-weight: 600;
   font-size: 0.8125rem;
   color: var(--accent-primary);
+  cursor: text;
 }
 
-.action-buttons {
-  display: flex;
-  gap: 0.375rem;
-  justify-content: center;
-}
-
-.action-buttons .btn-icon {
+.btn-icon {
   opacity: 0.7;
   transition: opacity 0.15s ease;
 }
 
-.entry-table tbody tr:hover .action-buttons .btn-icon {
+.entry-table tbody tr:hover .btn-icon {
   opacity: 1;
 }
 
-.action-buttons .btn-icon svg {
+.btn-icon svg {
   width: 16px;
   height: 16px;
 }
