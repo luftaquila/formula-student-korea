@@ -1,4 +1,5 @@
 import fs from "fs";
+import http from "http";
 import express from "express";
 import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
@@ -83,6 +84,170 @@ function dbRun(fn) {
     return { success: false, status: 500, error: `DB 오류: ${e.message || e}` };
   }
 }
+
+/* ============================================
+   SSE (Server-Sent Events) 설정
+   ============================================ */
+const sseClients = new Set();
+
+function broadcastEvent(event, data) {
+  const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of sseClients) {
+    client.write(message);
+  }
+}
+
+// SSE 엔드포인트
+app.get("/api/score/events", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  res.write(`event: init\ndata: {}\n\n`);
+
+  sseClients.add(res);
+
+  req.on("close", () => {
+    sseClients.delete(res);
+  });
+});
+
+// Inspection 서비스 SSE 구독 → Score 클라이언트에 재전송
+function subscribeInspectionSSE() {
+  const url = new URL(`${INSPECTION_SERVER}/api/sheet/events`);
+
+  const req = http.get(url, (res) => {
+    let buffer = "";
+
+    res.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const messages = buffer.split("\n\n");
+      buffer = messages.pop(); // 마지막 불완전한 메시지는 버퍼에 유지
+
+      for (const msg of messages) {
+        const eventMatch = msg.match(/^event:\s*(.+)$/m);
+        const dataMatch = msg.match(/^data:\s*(.+)$/m);
+        if (eventMatch && dataMatch) {
+          broadcastEvent(`inspection:${eventMatch[1]}`, JSON.parse(dataMatch[1]));
+        }
+      }
+    });
+
+    res.on("end", () => {
+      // 연결 끊기면 재접속
+      setTimeout(subscribeInspectionSSE, 3000);
+    });
+  });
+
+  req.on("error", () => {
+    setTimeout(subscribeInspectionSSE, 3000);
+  });
+}
+
+subscribeInspectionSSE();
+
+// Traffic 서비스 SSE 구독 → 기록 자동 선택
+function subscribeTrafficSSE() {
+  const url = new URL(`${TRAFFIC_SERVER}/api/events`);
+
+  const req = http.get(url, (res) => {
+    let buffer = "";
+
+    res.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const messages = buffer.split("\n\n");
+      buffer = messages.pop();
+
+      for (const msg of messages) {
+        const eventMatch = msg.match(/^event:\s*(.+)$/m);
+        const dataMatch = msg.match(/^data:\s*(.+)$/m);
+        if (eventMatch && dataMatch && eventMatch[1] === "records") {
+          const data = JSON.parse(dataMatch[1]);
+          if (data.record && (data.type === "add" || (data.type === "update" && data.field === "invalidated"))) {
+            autoSelectBestRecord(data.name, data.record.num, data.record.eventType);
+          }
+        }
+      }
+    });
+
+    res.on("end", () => {
+      setTimeout(subscribeTrafficSSE, 3000);
+    });
+  });
+
+  req.on("error", () => {
+    setTimeout(subscribeTrafficSSE, 3000);
+  });
+}
+
+// 무효화되지 않은 기록 중 최적 기록 자동 선택
+async function autoSelectBestRecord(tableName, teamNum, eventType) {
+  // 테이블명에서 연도 추출
+  const yearMatch = tableName.match(/^FSK (\d{4})/);
+  if (!yearMatch) return;
+  const year = Number(yearMatch[1]);
+
+  try {
+    // 해당 연도의 모든 테이블에서 이 팀/종목의 기록을 수집
+    const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`);
+    if (!tablesRes.ok) return;
+    const allTables = await tablesRes.json();
+    const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year}`));
+
+    const runs = [];
+    for (const tbl of yearTables) {
+      try {
+        const recordRes = await fetch(`${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tbl)}`);
+        if (!recordRes.ok) continue;
+        const records = await recordRes.json();
+        for (const rec of records) {
+          if (rec.type === eventType && rec.num === teamNum) {
+            runs.push({
+              table_name: tbl,
+              rowid: rec.rowid,
+              result: rec.result,
+              invalidated: rec.invalidated || 0,
+            });
+          }
+        }
+      } catch {}
+    }
+
+    // 무효화되지 않은 기록만 필터링
+    const valid = runs.filter((r) => !r.invalidated);
+
+    // 유효 기록이 없으면 선택 해제
+    if (valid.length === 0) {
+      db.prepare("DELETE FROM score_record WHERE year = ? AND event_type = ? AND team_num = ?").run(year, eventType, teamNum);
+      broadcastEvent("record-auto", { year, event_type: eventType, team_num: teamNum, selected: null });
+      return;
+    }
+
+    // DNF(-1)가 아닌 기록 중 가장 빠른 기록, 없으면 DNF
+    const nonDnf = valid.filter((r) => r.result >= 0);
+    const best = nonDnf.length > 0
+      ? nonDnf.reduce((a, b) => (a.result <= b.result ? a : b))
+      : valid[0];
+
+    db.prepare(
+      `INSERT INTO score_record (year, event_type, team_num, table_name, record_rowid)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(year, event_type, team_num)
+       DO UPDATE SET table_name = excluded.table_name, record_rowid = excluded.record_rowid`,
+    ).run(year, eventType, teamNum, best.table_name, best.rowid);
+
+    broadcastEvent("record-auto", {
+      year,
+      event_type: eventType,
+      team_num: teamNum,
+      selected: { table_name: best.table_name, rowid: best.rowid, result: best.result },
+    });
+  } catch {}
+}
+
+subscribeTrafficSSE();
 
 /* ============================================
    API 라우트
@@ -197,9 +362,68 @@ app.get("/api/score", async (req, res) => {
   }
 });
 
+// GET /api/score/records?year=YYYY&event_type=TYPE&team_num=NUM — 팀별 종목 기록 조회
+app.get("/api/score/records", async (req, res) => {
+  const year = Number(req.query.year);
+  const eventType = req.query.event_type;
+  const teamNum = Number(req.query.team_num);
+  if (!year || !eventType || !teamNum) {
+    return res.status(400).send("year, event_type, team_num 필수");
+  }
+
+  try {
+    const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`);
+    if (!tablesRes.ok) throw new Error("경기 목록을 가져올 수 없습니다.");
+    const allTables = await tablesRes.json();
+    const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year}`));
+
+    const runs = [];
+    for (const tableName of yearTables) {
+      try {
+        const recordRes = await fetch(`${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tableName)}`);
+        if (!recordRes.ok) continue;
+        const records = await recordRes.json();
+        for (const rec of records) {
+          if (rec.type === eventType && rec.num === teamNum) {
+            runs.push({
+              table_name: tableName,
+              rowid: rec.rowid,
+              result: rec.result,
+              detail: rec.detail || null,
+              invalidated: rec.invalidated || 0,
+              scoreboard: rec.scoreboard ?? 1,
+              time: rec.time,
+            });
+          }
+        }
+      } catch {}
+    }
+
+    // 기록 오름차순 정렬 (DNF=-1은 맨 뒤)
+    runs.sort((a, b) => {
+      if (a.result === -1 && b.result !== -1) return 1;
+      if (a.result !== -1 && b.result === -1) return -1;
+      return a.result - b.result;
+    });
+
+    const sel = db
+      .prepare("SELECT table_name, record_rowid FROM score_record WHERE year = ? AND event_type = ? AND team_num = ?")
+      .get(year, eventType, teamNum);
+
+    const selected = sel ? runs.find((r) => r.table_name === sel.table_name && r.rowid === sel.record_rowid) || null : null;
+
+    res.json({
+      selected: selected ? { table_name: selected.table_name, rowid: selected.rowid, result: selected.result, detail: selected.detail } : null,
+      all: runs,
+    });
+  } catch (e) {
+    res.status(500).send(`기록 조회 오류: ${e.message || e}`);
+  }
+});
+
 // PUT /api/score/record — 팀별 경기 종목 기록 선택
 app.put("/api/score/record", (req, res) => {
-  const { year, event_type, team_num, table_name, record_rowid } = req.body;
+  const { year, event_type, team_num, table_name, record_rowid, result: recResult, detail } = req.body;
   if (!year || !event_type || team_num == null || !table_name || !record_rowid) {
     return res.status(400).send("필수 필드가 누락되었습니다.");
   }
@@ -216,6 +440,12 @@ app.put("/api/score/record", (req, res) => {
   );
 
   if (!result.success) return res.status(result.status).send(result.error);
+
+  broadcastEvent("record-update", {
+    year, event_type, team_num,
+    selected: { table_name, rowid: record_rowid, result: recResult ?? null, detail: detail ?? null },
+  });
+
   res.status(200).send();
 });
 
@@ -233,6 +463,9 @@ app.delete("/api/score/record", (req, res) => {
   );
 
   if (!result.success) return res.status(result.status).send(result.error);
+
+  broadcastEvent("record-update", { year, event_type, team_num, selected: null });
+
   res.status(200).send();
 });
 

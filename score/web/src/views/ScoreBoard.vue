@@ -1,14 +1,20 @@
 <script setup>
-import { ref, onMounted, computed } from "vue";
-import { fetchEntryYears, fetchScore, selectRecord, deselectRecord } from "../api";
+import { ref, onMounted, computed, nextTick, watch } from "vue";
+import { fetchEntryYears, fetchScore, fetchTeamRecords, selectRecord, deselectRecord } from "../api";
 import { useNotification } from "../composables/useNotification";
+import { useSSE } from "../composables/useSSE";
 
 const { success, error } = useNotification();
+const { lastInspectionUpdate, lastRecordAutoUpdate, lastRecordManualUpdate } = useSSE();
 
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
 const loading = ref(true);
 const searchQuery = ref("");
+
+// 정렬 상태
+const sortKey = ref(null);
+const sortOrder = ref("asc");
 
 // 성적 데이터
 const entries = ref({});
@@ -28,12 +34,43 @@ const visibleEvents = computed(() =>
 );
 
 const entryList = computed(() => {
-  const list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
-  if (!searchQuery.value) return list.sort((a, b) => a.num - b.num);
-  const q = searchQuery.value.toLowerCase();
-  return list
-    .filter(e => String(e.num).includes(q) || (e.univ || "").toLowerCase().includes(q) || (e.team || "").toLowerCase().includes(q))
-    .sort((a, b) => a.num - b.num);
+  let list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
+  if (searchQuery.value) {
+    const q = searchQuery.value.toLowerCase();
+    list = list.filter(e => String(e.num).includes(q) || (e.univ || "").toLowerCase().includes(q) || (e.team || "").toLowerCase().includes(q));
+  }
+
+  if (!sortKey.value) return list.sort((a, b) => a.num - b.num);
+
+  return [...list].sort((a, b) => {
+    let aVal, bVal;
+
+    if (sortKey.value === "num") {
+      aVal = a.num;
+      bVal = b.num;
+    } else if (sortKey.value === "team") {
+      aVal = `${a.univ || ""} ${a.team || ""}`.toLowerCase();
+      bVal = `${b.univ || ""} ${b.team || ""}`.toLowerCase();
+    } else if (sortKey.value === "type") {
+      aVal = (a.type || "").toLowerCase();
+      bVal = (b.type || "").toLowerCase();
+    } else if (sortKey.value.startsWith("event:")) {
+      const eventType = sortKey.value.slice(6);
+      const evt = events.value.find(e => e.type === eventType);
+      const aRec = evt?.records[a.num]?.selected?.result;
+      const bRec = evt?.records[b.num]?.selected?.result;
+      // DNS(없음) → 맨 뒤, DNF(-1) → 그 앞, 나머지 숫자 비교
+      aVal = aRec == null ? Infinity : aRec === -1 ? Infinity - 1 : Number(aRec);
+      bVal = bRec == null ? Infinity : bRec === -1 ? Infinity - 1 : Number(bRec);
+    } else {
+      aVal = 0;
+      bVal = 0;
+    }
+
+    if (aVal < bVal) return sortOrder.value === "asc" ? -1 : 1;
+    if (aVal > bVal) return sortOrder.value === "asc" ? 1 : -1;
+    return 0;
+  });
 });
 
 onMounted(async () => {
@@ -64,6 +101,8 @@ async function loadData() {
     inspection.value = data.inspection;
     events.value = data.events;
     hiddenTypes.value = new Set();
+    sortKey.value = null;
+    sortOrder.value = "asc";
   } catch (e) {
     error("데이터를 가져올 수 없습니다.");
   }
@@ -97,6 +136,10 @@ function getTeamEvent(evt, num) {
   return evt.records[num] || null;
 }
 
+function formatTime(time) {
+  return new Date(time).toLocaleString("ko-KR");
+}
+
 function formatResult(result) {
   if (result === -1) return "DNF";
   if (result == null) return "-";
@@ -112,16 +155,42 @@ function formatResult(result) {
   return `${seconds}.${String(millis).padStart(3, "0")}`;
 }
 
-function toggleDropdown(evt, teamNum, e) {
+async function toggleDropdown(evt, teamNum, e) {
   e.stopPropagation();
   if (isReadOnly.value) return;
   const teamEvent = getTeamEvent(evt, teamNum);
-  if (!teamEvent || !teamEvent.all || teamEvent.all.length === 0) return;
+  if (!teamEvent) return;
 
   if (activeDropdown.value?.eventType === evt.type && activeDropdown.value?.teamNum === teamNum) {
     activeDropdown.value = null;
   } else {
+    const cell = e.currentTarget;
+
+    // 드롭다운 열 때 최신 기록 fetch
+    try {
+      const fresh = await fetchTeamRecords(selectedYear.value, evt.type, teamNum);
+      evt.records[teamNum] = fresh;
+    } catch {
+      // fetch 실패 시 기존 데이터 사용
+    }
+
+    if (!evt.records[teamNum]?.all?.length) return;
+
     activeDropdown.value = { eventType: evt.type, teamNum };
+    await nextTick();
+    const container = cell.closest('.table-container');
+    const dropdown = cell.querySelector('.record-dropdown');
+    if (dropdown && container) {
+      const cellRect = cell.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const dropdownWidth = dropdown.offsetWidth;
+      const cellCenter = cellRect.left + cellRect.width / 2;
+      if (cellCenter + dropdownWidth / 2 > containerRect.right) {
+        dropdown.style.left = 'auto';
+        dropdown.style.right = '0';
+        dropdown.style.transform = 'none';
+      }
+    }
   }
 }
 
@@ -131,7 +200,7 @@ function isDropdownOpen(evt, teamNum) {
 
 async function handleSelectRecord(evt, teamNum, run) {
   try {
-    await selectRecord(selectedYear.value, evt.type, teamNum, run.table_name, run.rowid);
+    await selectRecord(selectedYear.value, evt.type, teamNum, run.table_name, run.rowid, run.result, run.detail);
     evt.records[teamNum].selected = {
       table_name: run.table_name,
       rowid: run.rowid,
@@ -155,6 +224,63 @@ async function handleDeselectRecord(evt, teamNum) {
     error("기록 선택 해제에 실패했습니다.");
   }
 }
+
+// 정렬
+function handleSort(key) {
+  if (sortKey.value === key) {
+    sortOrder.value = sortOrder.value === "asc" ? "desc" : "asc";
+  } else {
+    sortKey.value = key;
+    sortOrder.value = "asc";
+  }
+}
+
+function getSortIcon(key) {
+  if (sortKey.value !== key) return "↕";
+  return sortOrder.value === "asc" ? "↑" : "↓";
+}
+
+// SSE로 검차 결과 실시간 반영
+watch(lastInspectionUpdate, (update) => {
+  if (!update || update.year !== selectedYear.value) return;
+  const { team_num, category_id, result } = update;
+  if (!inspection.value.teams[team_num]) {
+    inspection.value.teams[team_num] = { inspectors: {}, results: {} };
+  }
+  inspection.value.teams[team_num].results[category_id] = result;
+});
+
+// SSE로 기록 자동 선택 실시간 반영
+watch(lastRecordAutoUpdate, (update) => {
+  if (!update || update.year !== selectedYear.value) return;
+  const { event_type, team_num, selected } = update;
+  const evt = events.value.find((e) => e.type === event_type);
+  if (!evt) return;
+
+  if (!evt.records[team_num]) {
+    evt.records[team_num] = { selected: null, all: [] };
+  }
+
+  evt.records[team_num].selected = selected
+    ? { table_name: selected.table_name, rowid: selected.rowid, result: selected.result, detail: selected.detail || null }
+    : null;
+});
+
+// SSE로 다른 관리자의 기록 선택/해제 실시간 반영
+watch(lastRecordManualUpdate, (update) => {
+  if (!update || update.year !== selectedYear.value) return;
+  const { event_type, team_num, selected } = update;
+  const evt = events.value.find((e) => e.type === event_type);
+  if (!evt) return;
+
+  if (!evt.records[team_num]) {
+    evt.records[team_num] = { selected: null, all: [] };
+  }
+
+  evt.records[team_num].selected = selected
+    ? { table_name: selected.table_name, rowid: selected.rowid, result: selected.result, detail: selected.detail || null }
+    : null;
+});
 
 // 경기 유형 색상 순환
 const TYPE_COLORS = ['accel', 'gymkhana', 'skidpad'];
@@ -209,9 +335,9 @@ function shortTableName(tableName) {
           <table class="data-table score-table">
             <thead>
               <tr>
-                <th class="col-num">번호</th>
-                <th class="col-team">학교 / 팀</th>
-                <th class="col-type">유형</th>
+                <th class="col-num sortable" @click="handleSort('num')">번호 <span class="sort-icon">{{ getSortIcon('num') }}</span></th>
+                <th class="col-team sortable" @click="handleSort('team')">학교 / 팀 <span class="sort-icon">{{ getSortIcon('team') }}</span></th>
+                <th class="col-type sortable" @click="handleSort('type')">유형 <span class="sort-icon">{{ getSortIcon('type') }}</span></th>
                 <th
                   v-for="cat in inspection.categories"
                   :key="'h-insp-'+cat.id"
@@ -220,8 +346,9 @@ function shortTableName(tableName) {
                 <th
                   v-for="evt in visibleEvents"
                   :key="'h-evt-'+evt.type"
-                  class="col-event"
-                >{{ evt.type }}</th>
+                  class="col-event sortable"
+                  @click="handleSort('event:' + evt.type)"
+                >{{ evt.type }} <span class="sort-icon">{{ getSortIcon('event:' + evt.type) }}</span></th>
               </tr>
             </thead>
             <tbody>
@@ -289,7 +416,7 @@ function shortTableName(tableName) {
                         </span>
                         <span v-if="run.detail" class="run-detail">{{ run.detail }}</span>
                         <span class="run-table">{{ shortTableName(run.table_name) }}</span>
-                        <span class="run-time">{{ run.time }}</span>
+                        <span class="run-time">{{ formatTime(run.time) }}</span>
                       </div>
                     </div>
                   </div>
@@ -444,6 +571,25 @@ function shortTableName(tableName) {
   z-index: 2;
   white-space: nowrap;
   font-size: 0.75rem;
+}
+
+.score-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease;
+}
+
+.score-table th.sortable:hover {
+  background: var(--bg-hover);
+}
+
+.sort-icon {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+  opacity: 0.5;
+  font-size: 0.75rem;
+  margin-left: 0.25rem;
 }
 
 .col-num,

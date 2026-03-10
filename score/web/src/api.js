@@ -37,10 +37,15 @@ export async function fetchScore(year) {
   return res.json();
 }
 
-export async function selectRecord(year, event_type, team_num, table_name, record_rowid) {
+export async function fetchTeamRecords(year, event_type, team_num) {
+  const res = await request(`/api/score/records?year=${year}&event_type=${encodeURIComponent(event_type)}&team_num=${team_num}`);
+  return res.json();
+}
+
+export async function selectRecord(year, event_type, team_num, table_name, record_rowid, result, detail) {
   await request("/api/score/record", {
     method: "PUT",
-    body: JSON.stringify({ year, event_type, team_num, table_name, record_rowid }),
+    body: JSON.stringify({ year, event_type, team_num, table_name, record_rowid, result, detail }),
   });
 }
 
