@@ -36,6 +36,7 @@
           <ServiceCard title="검차 대기 관리" description="" path="/queue/admin" icon="🛠️" />
           <ServiceCard title="인스펙션 시트" description="" path="/inspection" icon="📋" />
           <ServiceCard title="계측 시스템" description="" path="/traffic" icon="🚦" />
+          <ServiceCard title="성적 관리" description="" path="/score" icon="📊" />
           <ServiceCard title="클라우드" description="" path="https://cloud.fsk.luftaquila.io" icon="☁️" external />
         </div>
       </section>
@@ -126,7 +127,7 @@ import { forumSvg } from "@shared/nav-config.js";
 
 .services {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 1.5rem;
   width: 100%;
 }

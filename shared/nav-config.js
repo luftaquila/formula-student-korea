@@ -11,6 +11,7 @@ export const officials = [
   { name: "검차 대기 관리", href: "/queue/admin", icon: "queue-admin" },
   { name: "인스펙션 시트", href: "/inspection", icon: "sheet" },
   { name: "계측 시스템", href: "/traffic", icon: "traffic" },
+  { name: "성적 관리", href: "/score", icon: "score" },
   { name: "클라우드", href: "https://cloud.fsk.luftaquila.io", icon: "cloud", external: true },
 ];
 
@@ -24,6 +25,7 @@ export const icons = {
   traffic: "🚦",
   entry: "🏁",
   sheet: "📋",
+  score: "📊",
   cloud: "☁️",
 };
 

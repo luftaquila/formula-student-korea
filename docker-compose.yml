@@ -66,6 +66,25 @@ services:
     networks:
       - fsk-network
 
+  score:
+    build:
+      context: .
+      dockerfile: score/Dockerfile
+    container_name: fsk-score
+    environment:
+      - ENTRY_SERVER=http://entry:9100
+      - INSPECTION_SERVER=http://inspection:9600
+      - TRAFFIC_SERVER=http://traffic:9200
+    volumes:
+      - ./score/data:/home/node/fsk-score/data
+    depends_on:
+      - entry
+      - inspection
+      - traffic
+    restart: unless-stopped
+    networks:
+      - fsk-network
+
   rules:
     image: caddy:alpine
     container_name: fsk-rules
@@ -100,6 +119,7 @@ services:
       - energymeter
       - queue
       - inspection
+      - score
       - rules
     restart: unless-stopped
     env_file:

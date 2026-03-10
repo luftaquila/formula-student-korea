@@ -37,10 +37,10 @@ defineProps({
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 2.5rem 2rem;
+  padding: 2rem 1.25rem;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
-  border-radius: 20px;
+  border-radius: 16px;
   text-decoration: none;
   color: var(--text-primary);
   transition: all 0.3s ease;
@@ -55,26 +55,28 @@ defineProps({
 }
 
 .icon {
-  font-size: 3.5rem;
-  margin-bottom: 1.5rem;
+  font-size: 3rem;
+  margin-bottom: 1.25rem;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
   line-height: 1;
-  height: 3.5rem;
+  height: 3rem;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .icon-svg :deep(svg) {
-  width: 3.5rem;
-  height: 3.5rem;
+  width: 3rem;
+  height: 3rem;
 }
 
 h2 {
-  font-size: 1.25rem;
+  font-size: 1.2rem;
   font-weight: 600;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.375rem;
   color: var(--text-primary);
+  text-align: center;
+  word-break: keep-all;
 }
 
 p {

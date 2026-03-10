@@ -8,13 +8,14 @@ Formula Student Korea Service Hub - a microservices-based web application for ma
 
 ## Architecture
 
-Six independent services deployed via Docker Compose behind an Nginx reverse proxy (port 9000):
+Seven independent services deployed via Docker Compose behind an Nginx reverse proxy (port 9000):
 
 - **landing/** - Landing page and reverse proxy gateway (Vue 3 + Nginx)
 - **entry/** - Vehicle entry registration API + web UI (Express + Vue 3, port 9100)
 - **queue/** - Inspection queue management API + web UI (Express + Vue 3, port 9300)
 - **inspection/** - Inspection sheet management API + web UI (Express + Vue 3, port 9600)
 - **traffic/** - Traffic control and telemetry API + web UI (Express + Vue 3, port 9200)
+- **score/** - Score aggregation and management API + web UI (Express + Vue 3, port 9700)
 - **energymeter/** - Energy meter data viewer (Git submodule, Vue 3, port 9400)
 
 **Shared components** in `shared/` are imported directly by other services:
@@ -26,6 +27,7 @@ Service dependencies (via `ENTRY_SERVER` environment variable):
 - traffic → entry
 - queue → entry
 - inspection → entry
+- score → entry, inspection, traffic
 
 ## Tech Stack
 
@@ -55,6 +57,11 @@ podman compose --profile local build    # Build all containers
 podman compose --profile local up -d    # Start all containers (local dev)
 ```
 
+**Important:** Nginx resolves upstream hostnames (e.g., `score:9700`) at startup and caches the IP. When a backend container is recreated (getting a new IP), nginx-local will return 502. Always restart nginx-local after rebuilding a service:
+```bash
+podman compose --profile local up -d <service> && podman compose --profile local restart nginx-local
+```
+
 ## Key Files
 
 - `landing/nginx.conf` - Route configuration and authentication rules for all services
@@ -62,6 +69,7 @@ podman compose --profile local up -d    # Start all containers (local dev)
 - `queue/index.mjs` - Queue service API server
 - `inspection/index.mjs` - Inspection sheet service API server
 - `traffic/index.mjs` - Traffic service API server
+- `score/index.mjs` - Score aggregation service API server
 - `docker-compose.yml` - Service orchestration
 
 ## Authentication
@@ -73,6 +81,7 @@ Nginx handles HTTP Basic Auth with two permission levels. See README.md for the 
 - `/inspection/template` - Inspection template editor
 - `/inspection/api/sheet/template` - Inspection template API
 - `/traffic/api` (non-event, non-record endpoints), `/traffic/*` - Traffic management
+- `/score/*` - Score management
 
 **Official** (`.htpasswd.official`):
 - `/queue/admin`, `/queue/register`, `/queue/priority`, `/queue/stats` - Queue management routes
@@ -86,7 +95,7 @@ Public routes: `/`, `/queue`, `/queue/api`, `/entry/api`, `/energymeter`, `/rule
 
 ## Environment-Aware Builds
 
-Production builds use service-specific base paths (`/entry/`, `/queue/`, `/inspection/`, `/traffic/`, `/energymeter/`) configured in each service's `vite.config.js`. Development builds use empty base paths with Vite proxy routing to backend APIs.
+Production builds use service-specific base paths (`/entry/`, `/queue/`, `/inspection/`, `/traffic/`, `/score/`, `/energymeter/`) configured in each service's `vite.config.js`. Development builds use empty base paths with Vite proxy routing to backend APIs.
 
 ## Data Storage
 
@@ -95,3 +104,4 @@ SQLite databases stored in volume-mounted directories:
 - `queue/data/` - queue.db, queue.log
 - `inspection/data/` - sheet.db, sheet.log
 - `traffic/data/` - traffic.db, traffic.log
+- `score/data/` - score.db, score.log
