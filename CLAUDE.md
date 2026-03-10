@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Formula Student Korea Service Hub - a microservices-based web application for managing vehicle entry registration, inspection queue, traffic controller data, and energy meter monitoring for Formula Student Korea events.
+Formula Student Korea Service Hub - a microservices-based web application for managing vehicle entry registration, inspection queue, traffic controller data, score aggregation, and energy meter monitoring for Formula Student Korea events.
 
 ## Architecture
 
@@ -33,6 +33,7 @@ Service dependencies (via `ENTRY_SERVER` environment variable):
 
 - **Frontend:** Vue 3, Vite, Pinia (state management), Vue Router
 - **Backend:** Node.js 22, Express.js 5, Better-SQLite3
+- **Real-time:** Server-Sent Events (SSE) for live updates across inspection, score, and traffic services
 - **Deployment:** Docker Compose with Nginx reverse proxy
 - **Logging:** Pino-HTTP
 
@@ -47,7 +48,7 @@ npm run build      # Production build
 
 ### Backend Development
 ```bash
-cd entry|queue|inspection|traffic
+cd entry|queue|inspection|traffic|score
 node index.mjs     # Run API server directly
 ```
 
@@ -82,11 +83,13 @@ Nginx handles HTTP Basic Auth with two permission levels. See README.md for the 
 - `/inspection/api/sheet/template` - Inspection template API
 - `/traffic/api` (non-event, non-record endpoints), `/traffic/*` - Traffic management
 - `/score/*` - Score management
+- `/score/api/score/events` - Score SSE event stream
 
 **Official** (`.htpasswd.official`):
 - `/queue/admin`, `/queue/register`, `/queue/priority`, `/queue/stats` - Queue management routes
 - `/queue/api/admin` - Queue admin API
 - `/inspection/*` - Inspection sheet service (except template routes above)
+- `/inspection/api/sheet/events` - Inspection SSE event stream
 - `/traffic/api/events`, `/traffic/api/records/:id` - Traffic SSE and records
 
 Admin users must be added to both `.htpasswd.admin` and `.htpasswd.official`. Official users only need `.htpasswd.official`.
