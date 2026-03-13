@@ -2,7 +2,10 @@ services:
   entry:
     build:
       context: .
-      dockerfile: entry/Dockerfile
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: entry
+        PORT: 9100
     container_name: fsk-entry
     env_file:
       - .env
@@ -15,7 +18,10 @@ services:
   traffic:
     build:
       context: .
-      dockerfile: traffic/Dockerfile
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: traffic
+        PORT: 9200
     container_name: fsk-traffic
     env_file:
       - .env
@@ -41,7 +47,10 @@ services:
   queue:
     build:
       context: .
-      dockerfile: queue/Dockerfile
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: queue
+        PORT: 9300
     container_name: fsk-queue
     env_file:
       - .env
@@ -58,7 +67,10 @@ services:
   inspection:
     build:
       context: .
-      dockerfile: inspection/Dockerfile
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: inspection
+        PORT: 9600
     container_name: fsk-inspection
     env_file:
       - .env
@@ -75,7 +87,10 @@ services:
   score:
     build:
       context: .
-      dockerfile: score/Dockerfile
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: score
+        PORT: 9700
     container_name: fsk-score
     env_file:
       - .env
@@ -96,7 +111,10 @@ services:
   auth:
     build:
       context: .
-      dockerfile: auth/Dockerfile
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: auth
+        PORT: 9800
     container_name: fsk-auth
     env_file:
       - .env

@@ -59,6 +59,30 @@ Google OAuth 2.0 + JWT 쿠키 기반 인증. 각 백엔드 서비스의 미들�
 | `/score/**` | Score management |
 | `/auth/api/users` | User management API |
 
+## Project Structure
+
+```
+├── Dockerfile.service       # Parameterized Dockerfile for all 6 backend services
+├── docker-compose.yml       # Service orchestration (ARG SERVICE/PORT per service)
+├── shared/                  # Shared modules imported by all services
+│   ├── vite-config.js       # Vite config factory (createViteConfig)
+│   ├── express-setup.mjs    # Express app factory with JWT auth middleware
+│   ├── api-base.js          # Frontend API client factory
+│   ├── styles/
+│   │   ├── base.css         # CSS variables, resets, component styles
+│   │   └── layout.css       # Common app layout (header, main-content, responsive)
+│   └── ...                  # NavMenu, ThemeToggle, SSE, etc.
+├── landing/                 # Caddy reverse proxy + landing page
+├── auth/                    # Auth service (Express + Vue 3)
+├── entry/                   # Entry service
+├── queue/                   # Queue service
+├── inspection/              # Inspection service
+├── traffic/                 # Traffic service
+├── score/                   # Score service
+├── energymeter/             # Energy meter viewer (Git submodule)
+└── rules/                   # Rules file server (Caddy)
+```
+
 ## Getting Started
 
 ### Prerequisites

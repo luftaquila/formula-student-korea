@@ -1,0 +1,14 @@
+FROM node:22-alpine
+ARG SERVICE
+ARG PORT
+WORKDIR /home/node/fsk-${SERVICE}
+COPY ${SERVICE}/package*.json ./
+COPY ${SERVICE}/web/package*.json web/
+RUN npm ci
+RUN npm --prefix web ci
+COPY ${SERVICE}/index.mjs ./
+COPY ${SERVICE}/web/ web/
+COPY shared ../shared
+RUN npm --prefix web run build
+EXPOSE ${PORT}
+CMD [ "node", "index.mjs" ]

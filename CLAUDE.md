@@ -20,17 +20,21 @@ Nine independent services deployed via Docker Compose behind a Caddy reverse pro
 - **energymeter/** - Energy meter data viewer (Git submodule, Vue 3, port 9400)
 - **rules/** - Rules file server (Caddy, port 9500)
 
+All 6 backend services (auth, entry, queue, inspection, traffic, score) use a single parameterized `Dockerfile.service` at the repo root, with `ARG SERVICE` and `ARG PORT` passed via `docker-compose.yml` build args.
+
 **Shared modules** in `shared/` are imported directly by other services:
+- `vite-config.js` - Vite config factory `createViteConfig(serviceName, servicePort, options)` — handles base path, proxy, aliases; options: `{ entryProxy, server, build, aliases }`
+- `styles/base.css` - Common CSS variables, resets, and component styles
+- `styles/layout.css` - Common app layout CSS (header, main-content, responsive) — uses `--layout-max-width` CSS variable for per-service width customization
+- `express-setup.mjs` - Express app factory with cookie parsing, JWT auth middleware, process handlers, DB error helper
+- `api-base.js` - Frontend API client factory with 401 redirect and entry service helpers
 - `NavMenu.vue` - Navigation drawer component used across all frontends
 - `nav-config.js` - Service menu configuration (services, officials, admins arrays)
 - `officialsStore.js` - Cookie-based auth state (user, showOfficials, isAdmin)
 - `ThemeToggle.vue` - Dark/light theme toggle button component
 - `theme-init.js` - Theme initialization (localStorage + prefers-color-scheme)
-- `styles/base.css` - Common CSS variables, resets, and component styles
 - `useSSE.js` - Frontend SSE connection factory with auto-reconnect
 - `sse.mjs` - Backend SSE manager (broadcast + endpoint handler)
-- `express-setup.mjs` - Express app factory with cookie parsing, JWT auth middleware, process handlers, DB error helper
-- `api-base.js` - Frontend API client factory with 401 redirect and entry service helpers
 
 Service dependencies (via `ENTRY_SERVER` environment variable):
 - traffic → entry
@@ -70,6 +74,11 @@ podman compose --profile local up -d    # Start all containers (local dev)
 
 ## Key Files
 
+- `Dockerfile.service` - Parameterized Dockerfile for all 6 backend services (uses `ARG SERVICE` and `ARG PORT`)
+- `docker-compose.yml` - Service orchestration (passes build args to `Dockerfile.service`)
+- `shared/vite-config.js` - Shared Vite config factory used by all 6 frontend builds
+- `shared/styles/layout.css` - Common app layout CSS shared across all frontends
+- `shared/express-setup.mjs` - Shared Express app factory with JWT auth middleware
 - `landing/Caddyfile` - Route configuration for all services (reverse proxy)
 - `auth/index.mjs` - Auth service API server (Google OAuth, user management)
 - `entry/index.mjs` - Entry service API server
@@ -77,9 +86,7 @@ podman compose --profile local up -d    # Start all containers (local dev)
 - `inspection/index.mjs` - Inspection sheet service API server
 - `traffic/index.mjs` - Traffic service API server
 - `score/index.mjs` - Score aggregation service API server
-- `shared/express-setup.mjs` - Shared Express app factory with JWT auth middleware
 - `rules/Caddyfile` - Rules file server configuration
-- `docker-compose.yml` - Service orchestration
 
 ## Authentication
 
@@ -127,7 +134,7 @@ See `.env.example` for all required variables:
 
 ## Environment-Aware Builds
 
-Production builds use service-specific base paths (`/auth/`, `/entry/`, `/queue/`, `/inspection/`, `/traffic/`, `/score/`, `/energymeter/`) configured in each service's `vite.config.js`. Development builds use empty base paths with Vite proxy routing to backend APIs.
+Production builds use service-specific base paths (`/auth/`, `/entry/`, `/queue/`, `/inspection/`, `/traffic/`, `/score/`, `/energymeter/`) configured via `shared/vite-config.js` factory. Each service's `vite.config.js` calls `createViteConfig(serviceName, port, options)` which auto-sets the base path in production mode. Development builds use empty base paths with Vite proxy routing to backend APIs.
 
 ## Data Storage
 
