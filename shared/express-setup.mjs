@@ -1,4 +1,5 @@
 import fs from "fs";
+import crypto from "crypto";
 
 export function ensureDataDir() {
   if (!fs.existsSync("./data")) {
@@ -6,21 +7,88 @@ export function ensureDataDir() {
   }
 }
 
-export function createApp(logFile, { express, pinoHttp }) {
+export function createJWT(payload, secret, expiresInSec = 7 * 24 * 3600) {
+  const header = { alg: "HS256", typ: "JWT" };
+  const now = Math.floor(Date.now() / 1000);
+  const body = { ...payload, iat: now, exp: now + expiresInSec };
+  const headerB64 = Buffer.from(JSON.stringify(header)).toString("base64url");
+  const bodyB64 = Buffer.from(JSON.stringify(body)).toString("base64url");
+  const data = `${headerB64}.${bodyB64}`;
+  const signature = crypto.createHmac("sha256", secret).update(data).digest("base64url");
+  return `${data}.${signature}`;
+}
+
+export function verifyJWT(token, secret) {
+  const [headerB64, payloadB64, signatureB64] = token.split(".");
+  if (!headerB64 || !payloadB64 || !signatureB64) throw new Error("Invalid token");
+  const data = `${headerB64}.${payloadB64}`;
+  const expected = crypto.createHmac("sha256", secret).update(data).digest("base64url");
+  if (expected !== signatureB64) throw new Error("Invalid signature");
+  const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
+  if (payload.exp && Date.now() / 1000 > payload.exp) throw new Error("Expired");
+  return payload;
+}
+
+export function createApp(logFile, { express, pinoHttp }, authRoleFn) {
   ensureDataDir();
 
   const app = express();
   app.use(express.json());
-  app.use(express.static("./web/dist"));
   app.use(express.urlencoded({ extended: true }));
+
+  // 1. Cookie parsing (no external dependency)
   app.use((req, res, next) => {
-    if (req.headers.authorization) {
-      req.headers.authuser = Buffer.from(req.headers.authorization.split(" ")[1], "base64")
-        .toString("utf-8")
-        .split(":")[0];
+    req.cookies = {};
+    const ch = req.headers.cookie;
+    if (ch) {
+      ch.split(";").forEach((c) => {
+        const [n, ...r] = c.split("=");
+        if (n) req.cookies[n.trim()] = decodeURIComponent(r.join("=").trim());
+      });
     }
     next();
   });
+
+  // 2. JWT user extraction (with dev mode auto-auth)
+  app.use((req, res, next) => {
+    // Internal service-to-service auth
+    if (process.env.INTERNAL_SECRET &&
+        req.headers["x-internal-service"] === process.env.INTERNAL_SECRET) {
+      req.user = { email: "internal", name: "Service", role: "admin" };
+      req.headers.authuser = "internal";
+      return next();
+    }
+    const token = req.cookies.fsk_session;
+    if (token && process.env.JWT_SECRET) {
+      try {
+        req.user = verifyJWT(token, process.env.JWT_SECRET);
+        req.headers.authuser = req.user.email;
+      } catch { /* invalid token */ }
+    } else if (!process.env.JWT_SECRET) {
+      // Dev mode: auto admin when JWT_SECRET is not set
+      req.user = { email: "dev@local", name: "Developer", role: "admin" };
+      req.headers.authuser = "dev@local";
+    }
+    next();
+  });
+
+  // 3. Auth middleware (when authRoleFn is provided)
+  if (authRoleFn) {
+    app.use((req, res, next) => {
+      const role = authRoleFn(req);
+      if (!role) return next(); // public
+      if (!req.user) return res.status(401).send("인증이 필요합니다.");
+      if (role === "admin" && req.user.role !== "admin") {
+        return res.status(403).send("권한이 없습니다.");
+      }
+      next();
+    });
+  }
+
+  // 4. Static files (after auth middleware)
+  app.use(express.static("./web/dist"));
+
+  // 5. Logging
   app.use(
     pinoHttp({
       stream: fs.createWriteStream(`./data/${logFile}`, { flags: "a" }),

@@ -1,7 +1,7 @@
 <script setup>
 import { ref } from "vue";
-import { services, officials, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
-import { showOfficials, toggleOfficials } from "./officialsStore.js";
+import { services, officials, admins, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
+import { user, showOfficials, isAdmin } from "./officialsStore.js";
 
 const props = defineProps({
   currentPath: {
@@ -46,6 +46,11 @@ function toggle() {
 
 function close() {
   isOpen.value = false;
+}
+
+async function logout() {
+  await fetch("/auth/api/logout", { method: "POST" });
+  window.location.href = "/";
 }
 </script>
 
@@ -120,11 +125,44 @@ function close() {
               </a>
             </div>
 
-            <div class="nav-section nav-section-toggle">
-              <button class="nav-item toggle-btn" @click="toggleOfficials">
-                <span class="nav-icon">{{ showOfficials ? "🔒" : "🔓" }}</span>
-                <span>{{ showOfficials ? "오피셜 메뉴 숨기기" : "오피셜 메뉴 표시" }}</span>
-              </button>
+            <div v-if="isAdmin" class="nav-section">
+              <span class="nav-section-title">Admin</span>
+              <a
+                v-for="item in admins"
+                :key="item.href"
+                :href="item.href"
+                :target="item.external ? '_blank' : undefined"
+                :rel="item.external ? 'noopener noreferrer' : undefined"
+                class="nav-item"
+                :class="{ active: isActive(item.href) }"
+              >
+                <span class="nav-icon">{{ getIcon(item.icon) }}</span>
+                <span>{{ item.name }}</span>
+                <svg
+                  v-if="item.external"
+                  class="external-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                  <polyline points="15 3 21 3 21 9" />
+                  <line x1="10" y1="14" x2="21" y2="3" />
+                </svg>
+              </a>
+            </div>
+
+            <div class="nav-section nav-section-user">
+              <div v-if="user" class="nav-item user-info">
+                <span class="nav-icon">👤</span>
+                <span>{{ user.name }}</span>
+                <button class="logout-btn" @click="logout">로그아웃</button>
+              </div>
+              <a v-else href="/auth/login" class="nav-item">
+                <span class="nav-icon">🔑</span>
+                <span>로그인</span>
+              </a>
             </div>
 
             <div class="nav-footer">
@@ -243,7 +281,7 @@ function close() {
   padding: 0.5rem 0;
 }
 
-.nav-section-toggle {
+.nav-section-user {
   margin-top: auto;
   border-top: 1px solid var(--border-color);
   padding-top: 1rem;
@@ -306,13 +344,29 @@ function close() {
   opacity: 0.5;
 }
 
-.toggle-btn {
-  width: 100%;
-  background: none;
-  border: none;
+.user-info {
+  cursor: default;
+}
+
+.user-info:hover {
+  background: transparent;
+}
+
+.logout-btn {
+  margin-left: auto;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
   cursor: pointer;
-  font-family: inherit;
-  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.logout-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .nav-footer {

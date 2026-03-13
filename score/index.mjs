@@ -37,7 +37,9 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = createApp("score.log", { express, pinoHttp });
+const app = createApp("score.log", { express, pinoHttp }, (req) => {
+  return "admin";
+});
 
 /* ============================================
    설정
@@ -45,6 +47,12 @@ const app = createApp("score.log", { express, pinoHttp });
 const ENTRY_SERVER = process.env.ENTRY_SERVER || "http://localhost:9100";
 const INSPECTION_SERVER = process.env.INSPECTION_SERVER || "http://localhost:9600";
 const TRAFFIC_SERVER = process.env.TRAFFIC_SERVER || "http://localhost:9200";
+
+function internalHeaders() {
+  const h = {};
+  if (process.env.INTERNAL_SECRET) h["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+  return h;
+}
 
 /* ============================================
    헬퍼
@@ -64,7 +72,8 @@ app.get("/api/score/events", sseHandler());
 function subscribeInspectionSSE() {
   const url = new URL(`${INSPECTION_SERVER}/api/sheet/events`);
 
-  const req = http.get(url, (res) => {
+  const options = { headers: internalHeaders() };
+  const req = http.get(url, options, (res) => {
     let buffer = "";
 
     res.on("data", (chunk) => {
@@ -98,7 +107,8 @@ subscribeInspectionSSE();
 function subscribeTrafficSSE() {
   const url = new URL(`${TRAFFIC_SERVER}/api/events`);
 
-  const req = http.get(url, (res) => {
+  const options = { headers: internalHeaders() };
+  const req = http.get(url, options, (res) => {
     let buffer = "";
 
     res.on("data", (chunk) => {
@@ -137,7 +147,7 @@ async function autoSelectBestRecord(tableName, teamNum, eventType) {
 
   try {
     // 해당 연도의 모든 테이블에서 이 팀/종목의 기록을 수집
-    const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`);
+    const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`, { headers: internalHeaders() });
     if (!tablesRes.ok) return;
     const allTables = await tablesRes.json();
     const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year}`));
@@ -145,7 +155,7 @@ async function autoSelectBestRecord(tableName, teamNum, eventType) {
     const runs = [];
     for (const tbl of yearTables) {
       try {
-        const recordRes = await fetch(`${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tbl)}`);
+        const recordRes = await fetch(`${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tbl)}`, { headers: internalHeaders() });
         if (!recordRes.ok) continue;
         const records = await recordRes.json();
         for (const rec of records) {
@@ -241,8 +251,8 @@ app.get("/api/score", async (req, res) => {
 
     // 2. Inspection 서비스에서 카테고리별 PASS/FAIL 요약 fetch
     const [inspectionRes, templateRes] = await Promise.all([
-      fetch(`${INSPECTION_SERVER}/api/sheet/summary?year=${year}`),
-      fetch(`${INSPECTION_SERVER}/api/sheet/template?year=${year}`),
+      fetch(`${INSPECTION_SERVER}/api/sheet/summary?year=${year}`, { headers: internalHeaders() }),
+      fetch(`${INSPECTION_SERVER}/api/sheet/template?year=${year}`, { headers: internalHeaders() }),
     ]);
     if (!inspectionRes.ok) throw new Error("검차 정보를 가져올 수 없습니다.");
     const inspection = await inspectionRes.json();
@@ -279,7 +289,7 @@ app.get("/api/score", async (req, res) => {
 
       if (allItemIds.length > 0) {
         try {
-          const bulkRes = await fetch(`${INSPECTION_SERVER}/api/sheet/bulk-answers?year=${year}&item_ids=${allItemIds.join(",")}`);
+          const bulkRes = await fetch(`${INSPECTION_SERVER}/api/sheet/bulk-answers?year=${year}&item_ids=${allItemIds.join(",")}`, { headers: internalHeaders() });
           if (bulkRes.ok) {
             const bulkData = await bulkRes.json(); // { [team_num]: { [item_id]: value } }
             for (const [num, items] of Object.entries(bulkData)) {
@@ -305,7 +315,7 @@ app.get("/api/score", async (req, res) => {
     inspection.report = report;
 
     // 3. Traffic 서비스에서 모든 경기 테이블 목록 fetch
-    const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`);
+    const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`, { headers: internalHeaders() });
     if (!tablesRes.ok) throw new Error("경기 목록을 가져올 수 없습니다.");
     const allTables = await tablesRes.json();
 
@@ -321,6 +331,7 @@ app.get("/api/score", async (req, res) => {
       try {
         const recordRes = await fetch(
           `${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tableName)}`,
+          { headers: internalHeaders() },
         );
         if (recordRes.ok) {
           records = await recordRes.json();
@@ -407,7 +418,7 @@ app.get("/api/score/records", async (req, res) => {
   }
 
   try {
-    const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`);
+    const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`, { headers: internalHeaders() });
     if (!tablesRes.ok) throw new Error("경기 목록을 가져올 수 없습니다.");
     const allTables = await tablesRes.json();
     const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year}`));
@@ -415,7 +426,7 @@ app.get("/api/score/records", async (req, res) => {
     const runs = [];
     for (const tableName of yearTables) {
       try {
-        const recordRes = await fetch(`${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tableName)}`);
+        const recordRes = await fetch(`${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tableName)}`, { headers: internalHeaders() });
         if (!recordRes.ok) continue;
         const records = await recordRes.json();
         for (const rec of records) {

@@ -22,7 +22,12 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = createApp("traffic.log", { express, pinoHttp });
+const app = createApp("traffic.log", { express, pinoHttp }, (req) => {
+  if (req.path === "/api/events") return "official";
+  if (req.path.match(/^\/api\/records\/.+/)) return "official";
+  if (req.path.startsWith("/api/")) return "admin";
+  return "admin"; // SPA
+});
 
 /* ============================================
    설정

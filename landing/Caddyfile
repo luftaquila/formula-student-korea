@@ -1,0 +1,55 @@
+:9000 {
+	# Auth service
+	redir /auth /auth/
+	handle_path /auth/* {
+		reverse_proxy auth:9800
+	}
+
+	# Entry service
+	redir /entry /entry/
+	handle_path /entry/* {
+		reverse_proxy entry:9100
+	}
+
+	# Queue service
+	redir /queue /queue/
+	handle_path /queue/* {
+		reverse_proxy queue:9300
+	}
+
+	# Inspection service
+	redir /inspection /inspection/
+	handle_path /inspection/* {
+		reverse_proxy inspection:9600
+	}
+
+	# Traffic service
+	redir /traffic /traffic/
+	handle_path /traffic/* {
+		reverse_proxy traffic:9200
+	}
+
+	# Score service
+	redir /score /score/
+	handle_path /score/* {
+		reverse_proxy score:9700
+	}
+
+	# Energymeter service
+	redir /energymeter /energymeter/
+	handle_path /energymeter/* {
+		reverse_proxy energymeter:9400
+	}
+
+	# Rules service (keeps /rules prefix - rules service handles it internally)
+	handle /rules* {
+		reverse_proxy rules:9500
+	}
+
+	# Landing page (static files)
+	handle {
+		root * /srv/landing
+		try_files {path} /index.html
+		file_server
+	}
+}

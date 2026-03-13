@@ -8,9 +8,10 @@ Formula Student Korea Service Hub - a microservices-based web application for ma
 
 ## Architecture
 
-Eight independent services deployed via Docker Compose behind an Nginx reverse proxy (port 9000):
+Nine independent services deployed via Docker Compose behind a Caddy reverse proxy (port 9000):
 
-- **landing/** - Landing page and reverse proxy gateway (Vue 3 + Nginx)
+- **landing/** - Landing page and reverse proxy gateway (Vue 3 + Caddy)
+- **auth/** - Authentication and user management API + web UI (Express + Vue 3, port 9800)
 - **entry/** - Vehicle entry registration API + web UI (Express + Vue 3, port 9100)
 - **queue/** - Inspection queue management API + web UI (Express + Vue 3, port 9300)
 - **inspection/** - Inspection sheet management API + web UI (Express + Vue 3, port 9600)
@@ -21,42 +22,43 @@ Eight independent services deployed via Docker Compose behind an Nginx reverse p
 
 **Shared modules** in `shared/` are imported directly by other services:
 - `NavMenu.vue` - Navigation drawer component used across all frontends
-- `nav-config.js` - Service menu configuration
-- `officialsStore.js` - Shared state for officials-only menu visibility
+- `nav-config.js` - Service menu configuration (services, officials, admins arrays)
+- `officialsStore.js` - Cookie-based auth state (user, showOfficials, isAdmin)
 - `ThemeToggle.vue` - Dark/light theme toggle button component
 - `theme-init.js` - Theme initialization (localStorage + prefers-color-scheme)
 - `styles/base.css` - Common CSS variables, resets, and component styles
 - `useSSE.js` - Frontend SSE connection factory with auto-reconnect
 - `sse.mjs` - Backend SSE manager (broadcast + endpoint handler)
-- `express-setup.mjs` - Express app factory, process handlers, DB error helper
-- `api-base.js` - Frontend API client factory with entry service helpers
+- `express-setup.mjs` - Express app factory with cookie parsing, JWT auth middleware, process handlers, DB error helper
+- `api-base.js` - Frontend API client factory with 401 redirect and entry service helpers
 
 Service dependencies (via `ENTRY_SERVER` environment variable):
 - traffic → entry
 - queue → entry
 - inspection → entry
-- score → entry, inspection, traffic
+- score → entry, inspection, traffic (uses `X-Internal-Service` header for inter-service auth)
 
 ## Tech Stack
 
 - **Frontend:** Vue 3, Vite, Pinia (state management), Vue Router
 - **Backend:** Node.js 22, Express.js 5, Better-SQLite3
+- **Auth:** Google OAuth 2.0, JWT (HMAC-SHA256) cookies, role-based access control
 - **Real-time:** Server-Sent Events (SSE) for live updates across inspection, score, and traffic services
-- **Deployment:** Docker Compose with Nginx reverse proxy
+- **Deployment:** Docker Compose with Caddy reverse proxy
 - **Logging:** Pino-HTTP
 
 ## Build Commands
 
 ### Frontend Development
 ```bash
-cd landing|entry/web|queue/web|inspection/web|traffic/web|score/web|energymeter/viewer
+cd landing|auth/web|entry/web|queue/web|inspection/web|traffic/web|score/web|energymeter/viewer
 npm run dev        # Dev server with hot reload
 npm run build      # Production build
 ```
 
 ### Backend Development
 ```bash
-cd entry|queue|inspection|traffic|score
+cd auth|entry|queue|inspection|traffic|score
 node index.mjs     # Run API server directly
 ```
 
@@ -66,52 +68,71 @@ podman compose --profile local build    # Build all containers
 podman compose --profile local up -d    # Start all containers (local dev)
 ```
 
-**Important:** Nginx resolves upstream hostnames (e.g., `score:9700`) at startup and caches the IP. When a backend container is recreated (getting a new IP), nginx-local will return 502. Always restart nginx-local after rebuilding a service:
-```bash
-podman compose --profile local up -d <service> && podman compose --profile local restart nginx-local
-```
-
 ## Key Files
 
-- `landing/nginx.conf` - Route configuration and authentication rules for all services
+- `landing/Caddyfile` - Route configuration for all services (reverse proxy)
+- `auth/index.mjs` - Auth service API server (Google OAuth, user management)
 - `entry/index.mjs` - Entry service API server
 - `queue/index.mjs` - Queue service API server
 - `inspection/index.mjs` - Inspection sheet service API server
 - `traffic/index.mjs` - Traffic service API server
 - `score/index.mjs` - Score aggregation service API server
+- `shared/express-setup.mjs` - Shared Express app factory with JWT auth middleware
 - `rules/Caddyfile` - Rules file server configuration
 - `docker-compose.yml` - Service orchestration
 
 ## Authentication
 
-Nginx handles HTTP Basic Auth with two permission levels. See README.md for the full route-permission matrix.
+Google OAuth 2.0 with JWT cookie-based sessions. Auth logic is handled by backend middleware in `shared/express-setup.mjs`. Caddy is a pure reverse proxy with no auth logic.
 
-**Admin only** (`.htpasswd.admin`):
-- `/entry/*` - Entry management (except `/entry/api` which is public)
-- `/inspection/template` - Inspection template editor
-- `/inspection/api/sheet/template` - Inspection template API
-- `/traffic/api` (non-event, non-record endpoints), `/traffic/*` - Traffic management
-- `/score/*` - Score management
-- `/score/api/score/events` - Score SSE event stream
+### Auth Flow
+1. Admin registers users (email + role) via `/auth` management page
+2. Protected API call → backend middleware verifies JWT cookie → 401 if missing/invalid
+3. Frontend `api-base.js` detects 401 → redirects to `/auth/login?redirect=...`
+4. Login page → Google OAuth → callback verifies email in DB → sets JWT + display cookies
+5. `ADMIN_EMAIL` env var: bootstraps initial admin user on auth service startup
 
-**Official** (`.htpasswd.official`):
-- `/queue/admin`, `/queue/register`, `/queue/priority`, `/queue/stats` - Queue management routes
-- `/queue/api/admin` - Queue admin API
-- `/inspection/*` - Inspection sheet service (except template routes above)
-- `/inspection/api/sheet/events` - Inspection SSE event stream
-- `/traffic/api/events`, `/traffic/api/records/:id` - Traffic SSE and records
+### Cookies
+- `fsk_session`: httpOnly JWT (`{ email, name, role, exp }`) — auth verification
+- `fsk_user`: non-httpOnly JSON (`{ name, role }`) — frontend display
+- Common: `Path=/`, `SameSite=Lax`, `Secure` in production
 
-Admin users must be added to both `.htpasswd.admin` and `.htpasswd.official`. Official users only need `.htpasswd.official`.
+### Roles (two permission levels)
+Each service's `createApp()` receives an `authRoleFn(req)` callback that returns:
+- `null` — public (no auth required)
+- `"official"` — any authenticated user (official or admin)
+- `"admin"` — admin only
 
-Public routes: `/`, `/queue`, `/queue/api`, `/queue/assets`, `/entry/api`, `/energymeter`, `/rules`
+**Dev mode:** When `JWT_SECRET` is not set, all requests are auto-authenticated as admin.
+
+### Per-service auth rules
+
+**entry** — API public, SPA admin-only
+**queue** — `/api/admin` official, everything else public
+**inspection** — `/api/sheet/template` admin, all other API/SPA official
+**traffic** — `/api/events` and `/api/records/:id` official, all other API/SPA admin
+**score** — everything admin
+**auth** — login/callback/logout public, `/api/me` official, `/api/users` admin
+
+### Inter-service communication
+Score service uses `X-Internal-Service` header (matching `INTERNAL_SECRET` env var) when calling inspection/traffic APIs. The middleware auto-authenticates these as admin.
+
+## Environment Variables
+
+See `.env.example` for all required variables:
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` — Google OAuth credentials
+- `JWT_SECRET` — HMAC key for JWT signing (omit for dev auto-auth)
+- `INTERNAL_SECRET` — Service-to-service auth token
+- `ADMIN_EMAIL` — Bootstrap admin email on first auth service start
 
 ## Environment-Aware Builds
 
-Production builds use service-specific base paths (`/entry/`, `/queue/`, `/inspection/`, `/traffic/`, `/score/`, `/energymeter/`) configured in each service's `vite.config.js`. Development builds use empty base paths with Vite proxy routing to backend APIs.
+Production builds use service-specific base paths (`/auth/`, `/entry/`, `/queue/`, `/inspection/`, `/traffic/`, `/score/`, `/energymeter/`) configured in each service's `vite.config.js`. Development builds use empty base paths with Vite proxy routing to backend APIs.
 
 ## Data Storage
 
 SQLite databases stored in volume-mounted directories:
+- `auth/data/` - auth.db, auth.log
 - `entry/data/` - entry.db, entry.log
 - `queue/data/` - queue.db, queue.log
 - `inspection/data/` - sheet.db, sheet.log

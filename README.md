@@ -6,7 +6,8 @@ Formula Student Korea Service Hub
 
 | Service | Path | Description | Port |
 |---------|------|-------------|------|
-| landing | `/` | Landing page & Nginx reverse proxy | 9000 |
+| landing | `/` | Landing page & Caddy reverse proxy | 9000 |
+| auth | `/auth` | Authentication & user management API + Web UI | 9800 |
 | entry | `/entry` | Vehicle entry registration API + Web UI | 9100 |
 | queue | `/queue` | Inspection queue management API + Web UI | 9300 |
 | inspection | `/inspection` | Inspection sheet management API + Web UI | 9600 |
@@ -15,49 +16,55 @@ Formula Student Korea Service Hub
 | energymeter | `/energymeter` | Energy meter data viewer | 9400 |
 | rules | `/rules` | Rules file server (Caddy) | 9500 |
 
-## Route Permission Matrix
+## Authentication
 
-Nginx HTTP Basic Auth로 라우트별 접근 권한을 관리합니다.
+Google OAuth 2.0 + JWT 쿠키 기반 인증. 각 백엔드 서비스의 미들웨어에서 JWT 검증.
 
-### Public
+### Roles
+
+- **Admin** - 모든 서비스 접근 가능
+- **Official** - 검차 대기 관리, 인스펙션 시트 등 접근 가능
+
+### Route Permission Matrix
+
+#### Public
 
 | Route | Description |
 |-------|-------------|
 | `/` | Landing page |
+| `/auth/login` | Login page |
 | `/queue` | Inspection queue public view |
-| `/queue/api` | Inspection queue public API |
+| `/queue/api` (except `/api/admin`) | Inspection queue public API |
 | `/entry/api` | Entry public API |
 | `/energymeter` | Energy meter viewer |
 | `/rules` | Rules file server |
 
-### Official
+#### Official
 
 | Route | Description |
 |-------|-------------|
 | `/queue/admin,register,priority,stats` | Queue management pages |
 | `/queue/api/admin` | Queue admin API |
 | `/inspection/**` | Inspection sheet (except template) |
-| `/inspection/api/sheet/events` | Inspection SSE event stream |
 | `/traffic/api/events` | Traffic SSE event stream |
 | `/traffic/api/records/:id` | Traffic record query API |
 
-### Admin
-
-Admin users must be registered in both `.htpasswd.admin` and `.htpasswd.official`.
+#### Admin
 
 | Route | Description |
 |-------|-------------|
-| `/entry/**` | Entry management |
-| `/inspection/template` | Inspection template editor / API |
+| `/entry/**` (SPA) | Entry management |
+| `/inspection/api/sheet/template` | Inspection template API |
 | `/traffic/**` | Traffic management (except official-level events, records) |
 | `/score/**` | Score management |
-| `/score/api/score/events` | Score SSE event stream |
+| `/auth/api/users` | User management API |
 
 ## Getting Started
 
 ### Prerequisites
 
 - Podman & Podman Compose (or Docker & Docker Compose)
+- Google OAuth 2.0 credentials (Client ID & Secret)
 
 ### Configuration
 
@@ -67,14 +74,24 @@ Admin users must be registered in both `.htpasswd.admin` and `.htpasswd.official
 cp .env.example .env
 ```
 
-2. Create authentication files for HTTP Basic Authentication:
+2. Configure the required environment variables in `.env`:
 
-```bash
-cp .htpasswd.example .htpasswd.admin
-cp .htpasswd.example .htpasswd.official
+```env
+# Google OAuth (https://console.cloud.google.com)
+GOOGLE_CLIENT_ID=your-client-id
+GOOGLE_CLIENT_SECRET=your-client-secret
+
+# JWT secret for session tokens (any random string)
+JWT_SECRET=your-random-secret
+
+# Internal service-to-service auth token (any random string)
+INTERNAL_SECRET=your-internal-secret
+
+# Bootstrap admin email (registered as admin on first start)
+ADMIN_EMAIL=admin@example.com
 ```
 
-Note: Admin users should be added to both files.
+Note: Google OAuth redirect URI should be set to `https://your-domain/auth/api/callback`.
 
 ### Run
 
@@ -100,3 +117,5 @@ podman compose --profile local up -d
 ```
 
 The service will be available at `http://localhost:9000`.
+
+For development without Google OAuth, omit `JWT_SECRET` from `.env` — all requests will be auto-authenticated as admin.

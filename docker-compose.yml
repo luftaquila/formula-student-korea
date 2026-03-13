@@ -4,6 +4,8 @@ services:
       context: .
       dockerfile: entry/Dockerfile
     container_name: fsk-entry
+    env_file:
+      - .env
     volumes:
       - ./entry/data:/home/node/fsk-entry/data
     restart: unless-stopped
@@ -15,6 +17,8 @@ services:
       context: .
       dockerfile: traffic/Dockerfile
     container_name: fsk-traffic
+    env_file:
+      - .env
     environment:
       - ENTRY_SERVER=http://entry:9100
     volumes:
@@ -56,6 +60,8 @@ services:
       context: .
       dockerfile: inspection/Dockerfile
     container_name: fsk-inspection
+    env_file:
+      - .env
     environment:
       - ENTRY_SERVER=http://entry:9100
     volumes:
@@ -71,6 +77,8 @@ services:
       context: .
       dockerfile: score/Dockerfile
     container_name: fsk-score
+    env_file:
+      - .env
     environment:
       - ENTRY_SERVER=http://entry:9100
       - INSPECTION_SERVER=http://inspection:9600
@@ -81,6 +89,19 @@ services:
       - entry
       - inspection
       - traffic
+    restart: unless-stopped
+    networks:
+      - fsk-network
+
+  auth:
+    build:
+      context: .
+      dockerfile: auth/Dockerfile
+    container_name: fsk-auth
+    env_file:
+      - .env
+    volumes:
+      - ./auth/data:/home/node/fsk-auth/data
     restart: unless-stopped
     networks:
       - fsk-network
@@ -98,11 +119,11 @@ services:
       - fsk-network
 
   # Production (default) - use traefik reverse proxy
-  nginx:
-    build: &nginx-build
+  caddy:
+    build: &caddy-build
       context: .
       dockerfile: landing/Dockerfile
-    container_name: fsk-nginx
+    container_name: fsk-caddy
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.fsk.rule=Host(`${DOMAIN_NAME}`)"
@@ -110,10 +131,7 @@ services:
       - "traefik.http.routers.fsk.tls=true"
       - "traefik.http.routers.fsk.tls.certresolver=le"
       - "traefik.http.services.fsk.loadbalancer.server.port=9000"
-    volumes: &nginx-volumes
-      - ./.htpasswd.admin:/etc/nginx/.htpasswd.admin:ro
-      - ./.htpasswd.official:/etc/nginx/.htpasswd.official:ro
-    depends_on: &nginx-depends
+    depends_on: &caddy-depends
       - entry
       - traffic
       - energymeter
@@ -121,6 +139,7 @@ services:
       - inspection
       - score
       - rules
+      - auth
     restart: unless-stopped
     env_file:
       - .env
@@ -129,15 +148,14 @@ services:
       - traefik
 
   # Local development - expose port 9000
-  nginx-local:
-    build: *nginx-build
-    container_name: fsk-nginx-local
+  caddy-local:
+    build: *caddy-build
+    container_name: fsk-caddy-local
     profiles:
       - local
     ports:
       - "0.0.0.0:9000:9000"
-    volumes: *nginx-volumes
-    depends_on: *nginx-depends
+    depends_on: *caddy-depends
     restart: unless-stopped
     networks:
       - fsk-network

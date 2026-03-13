@@ -152,7 +152,11 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = createApp("queue.log", { express, pinoHttp });
+const app = createApp("queue.log", { express, pinoHttp }, (req) => {
+  if (req.path.startsWith("/api/admin")) return "official";
+  if (/^\/(admin|register|priority|stats)/.test(req.path)) return "official";
+  return null; // public
+});
 
 /* ============================================
    SSE (Server-Sent Events) 설정

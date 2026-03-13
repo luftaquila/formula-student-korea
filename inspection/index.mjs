@@ -102,7 +102,11 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = createApp("sheet.log", { express, pinoHttp });
+const app = createApp("sheet.log", { express, pinoHttp }, (req) => {
+  if (req.path.startsWith("/api/sheet/template")) return "admin";
+  if (req.path.startsWith("/api/")) return "official";
+  return "official"; // SPA
+});
 
 /* ============================================
    DB 헬퍼

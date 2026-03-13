@@ -62,7 +62,10 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = createApp("entry.log", { express, pinoHttp });
+const app = createApp("entry.log", { express, pinoHttp }, (req) => {
+  if (req.path.startsWith("/api/")) return null; // public
+  return "admin"; // SPA
+});
 
 /* ============================================
    Validation 헬퍼

@@ -1,21 +1,12 @@
-import { ref } from "vue";
+import { ref, computed } from "vue";
 
-const STORAGE_KEY = "fsk_show_officials";
-
-// URL 파라미터 ?official=true 체크
-const urlParams = new URLSearchParams(window.location.search);
-const officialParam = urlParams.get("official") === "true";
-
-// URL 파라미터가 true이면 localStorage에도 저장하고 활성화
-if (officialParam) {
-  localStorage.setItem(STORAGE_KEY, "true");
+function getUserFromCookie() {
+  const match = document.cookie.match(/fsk_user=([^;]+)/);
+  if (!match) return null;
+  try { return JSON.parse(decodeURIComponent(match[1])); }
+  catch { return null; }
 }
 
-export const showOfficials = ref(
-  officialParam || localStorage.getItem(STORAGE_KEY) === "true"
-);
-
-export function toggleOfficials() {
-  showOfficials.value = !showOfficials.value;
-  localStorage.setItem(STORAGE_KEY, showOfficials.value);
-}
+export const user = ref(getUserFromCookie());
+export const showOfficials = computed(() => !!user.value);
+export const isAdmin = computed(() => user.value?.role === "admin");

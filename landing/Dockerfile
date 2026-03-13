@@ -21,13 +21,13 @@ COPY shared ../shared
 # Build application
 RUN npm run build
 
-# Final nginx image
-FROM nginx:alpine
+# Final Caddy image
+FROM caddy:alpine
+
+# Copy Caddyfile
+COPY landing/Caddyfile /etc/caddy/Caddyfile
 
 # Copy landing build
-COPY --from=landing-builder /home/node/fsk-landing/dist /usr/share/nginx/html
-
-# Copy nginx config
-COPY landing/nginx.conf /etc/nginx/nginx.conf
+COPY --from=landing-builder /home/node/fsk-landing/dist /srv/landing
 
 EXPOSE 9000

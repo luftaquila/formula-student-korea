@@ -32,11 +32,18 @@
       <section v-if="showOfficials" class="section">
         <h2 class="section-title">Officials</h2>
         <div class="services">
-          <ServiceCard title="엔트리 관리" description="" path="/entry" icon="🏁" />
           <ServiceCard title="검차 대기 관리" description="" path="/queue/admin" icon="🛠️" />
           <ServiceCard title="인스펙션 시트" description="" path="/inspection" icon="📋" />
+        </div>
+      </section>
+
+      <section v-if="isAdmin" class="section">
+        <h2 class="section-title">Admin</h2>
+        <div class="services">
+          <ServiceCard title="엔트리 관리" description="" path="/entry" icon="🏁" />
           <ServiceCard title="계측 시스템" description="" path="/traffic" icon="🚦" />
           <ServiceCard title="성적 관리" description="" path="/score" icon="📊" />
+          <ServiceCard title="계정 관리" description="" path="/auth" icon="👤" />
           <ServiceCard title="클라우드" description="" path="https://cloud.fsk.luftaquila.io" icon="☁️" external />
         </div>
       </section>
@@ -48,7 +55,7 @@
 import ServiceCard from "./components/ServiceCard.vue";
 import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
-import { showOfficials } from "@shared/officialsStore.js";
+import { showOfficials, isAdmin } from "@shared/officialsStore.js";
 import { forumSvg } from "@shared/nav-config.js";
 </script>
 
