@@ -218,7 +218,17 @@ const unansweredItems = computed(() => {
   for (const sub of cat.subcategories || []) {
     for (const grp of sub.groups || []) {
       for (const item of grp.items || []) {
-        if (!getAnswer(item.id)) {
+        if (item.answer_type === "checktable") {
+          const config = getChecktableConfig(item);
+          const val = getChecktableValue(item.id);
+          for (let ri = 0; ri < config.rows.length; ri++) {
+            for (let ci = 0; ci < config.columns.length; ci++) {
+              if (!val[`${ri}_${ci}`]) {
+                items.push({ id: item.id, name: `${config.rows[ri]} - ${config.columns[ci]}`, sub: sub.name, grp: grp.name });
+              }
+            }
+          }
+        } else if (!getAnswer(item.id)) {
           items.push({ id: item.id, name: item.name, sub: sub.name, grp: grp.name });
         }
       }
@@ -251,6 +261,40 @@ function scrollToItem(itemId) {
   failedOpen.value = false;
   const el = document.getElementById(`item-${itemId}`);
   if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// ---- Checktable helpers ----
+function getChecktableConfig(item) {
+  try {
+    const config = JSON.parse(item.remarks);
+    return { columns: config.columns || [], rows: config.rows || [] };
+  } catch {
+    return { columns: [], rows: [] };
+  }
+}
+
+function getChecktableValue(itemId) {
+  try {
+    return JSON.parse(getAnswer(itemId)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function onChecktableToggle(itemId, rowIdx, colIdx) {
+  const val = getChecktableValue(itemId);
+  const key = `${rowIdx}_${colIdx}`;
+  if (val[key]) {
+    delete val[key];
+  } else {
+    val[key] = "1";
+  }
+  const jsonStr = JSON.stringify(val);
+  if (!sheetData.value.answers[itemId]) {
+    sheetData.value.answers[itemId] = { value: "", memo: "" };
+  }
+  sheetData.value.answers[itemId].value = jsonStr;
+  updateSheetAnswer({ year, team_num: num, item_id: itemId, value: jsonStr }).catch(() => error("저장에 실패했습니다."));
 }
 
 // ---- Subcategory quick nav ----
@@ -373,7 +417,7 @@ watch(lastMemoUpdate, (update) => {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
             <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
             <line x1="12" y1="9" x2="12" y2="13" />
-            <line x1="12" y1="17" x2="12.01" y2="17" />
+            <circle cx="12" cy="17" r="0.5" fill="currentColor" />
           </svg>
           미입력 항목 {{ unansweredItems.length }}개
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" :class="{ 'chevron-open': missingOpen }">
@@ -461,7 +505,7 @@ watch(lastMemoUpdate, (update) => {
                 <div class="item-content">
                   <div class="item-info">
                     <div class="item-name"><span v-html="renderMd(item.name)"></span></div>
-                    <span v-if="item.remarks" class="item-remarks">{{ item.remarks }}</span>
+                    <span v-if="item.remarks && item.answer_type !== 'checktable'" class="item-remarks">{{ item.remarks }}</span>
                   </div>
                   <div class="item-controls">
                   <!-- PASS/FAIL toggle -->
@@ -492,7 +536,7 @@ watch(lastMemoUpdate, (update) => {
                     <span v-if="item.unit" class="unit-label">{{ item.unit }}</span>
                   </div>
                   <!-- Text input -->
-                  <div v-else class="input-with-unit">
+                  <div v-else-if="item.answer_type === 'text'" class="input-with-unit">
                     <input
                       type="text"
                       class="form-input inline-input text-input"
@@ -503,7 +547,51 @@ watch(lastMemoUpdate, (update) => {
                     />
                     <span v-if="item.unit" class="unit-label">{{ item.unit }}</span>
                   </div>
-                  <!-- Memo -->
+                  <!-- Checktable -->
+                  <div v-else-if="item.answer_type === 'checktable'" class="checktable-block">
+                    <div class="checktable-wrapper">
+                      <table class="checktable">
+                        <thead>
+                          <tr>
+                            <th></th>
+                            <th v-for="col in getChecktableConfig(item).columns" :key="col">{{ col }}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="(row, ri) in getChecktableConfig(item).rows" :key="row">
+                            <td class="checktable-row-header">{{ row }}</td>
+                            <td v-for="(col, ci) in getChecktableConfig(item).columns" :key="col" class="checktable-cell">
+                              <input
+                                type="checkbox"
+                                :checked="!!getChecktableValue(item.id)[`${ri}_${ci}`]"
+                                @change="onChecktableToggle(item.id, ri, ci)"
+                                :disabled="isReadOnly"
+                              />
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <!-- Memo (checktable: 테이블 아래, 스크롤 영역 밖) -->
+                    <input
+                      v-if="editingMemo === item.id"
+                      class="form-input memo-input"
+                      :value="getMemo(item.id)"
+                      @input="onMemoChange(item.id, $event.target.value)"
+                      @blur="finishEditMemo(item.id)"
+                      @keydown.enter="finishEditMemo(item.id)"
+                      placeholder="메모 입력"
+                      autofocus
+                    />
+                    <span
+                      v-else
+                      class="memo-text"
+                      :class="{ 'memo-empty': !getMemo(item.id) }"
+                      @click="startEditMemo(item.id)"
+                    >{{ getMemo(item.id) || "메모" }}</span>
+                  </div>
+                  <!-- Memo (기본: controls 행 내) -->
+                  <template v-if="item.answer_type !== 'checktable'">
                   <input
                     v-if="editingMemo === item.id"
                     class="form-input memo-input"
@@ -520,6 +608,7 @@ watch(lastMemoUpdate, (update) => {
                     :class="{ 'memo-empty': !getMemo(item.id) }"
                     @click="startEditMemo(item.id)"
                   >{{ getMemo(item.id) || "메모" }}</span>
+                  </template>
                   </div>
                 </div>
               </div>
@@ -828,6 +917,56 @@ watch(lastMemoUpdate, (update) => {
   font-size: 0.75rem;
   color: var(--text-tertiary);
   white-space: nowrap;
+}
+
+/* Checktable */
+.checktable-block {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.checktable-wrapper {
+  overflow-x: auto;
+}
+
+.checktable {
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  width: auto;
+}
+
+.checktable th,
+.checktable td {
+  border: 1px solid var(--border-color);
+  padding: 0.375rem 0.625rem;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.checktable th {
+  background: var(--bg-secondary);
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+
+.checktable .checktable-row-header {
+  font-weight: 600;
+  text-align: left;
+  background: var(--bg-secondary);
+  font-size: 0.75rem;
+}
+
+.checktable .checktable-cell input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.checktable .checktable-cell input:disabled {
+  cursor: default;
 }
 
 /* Memo inline */

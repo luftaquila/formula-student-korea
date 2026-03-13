@@ -28,6 +28,15 @@ const CIRCLED = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", 
 function subNum(i) { return String(i + 1); }
 function grpNum(i) { return String(i + 1); }
 function itemNum(i) { return CIRCLED[i] || `(${i + 1})`; }
+
+function getChecktableConfig(item) {
+  try {
+    const config = JSON.parse(item.remarks);
+    return { columns: config.columns || [], rows: config.rows || [] };
+  } catch {
+    return { columns: [], rows: [] };
+  }
+}
 </script>
 
 <template>
@@ -82,19 +91,40 @@ function itemNum(i) { return CIRCLED[i] || `(${i + 1})`; }
               </tr>
 
               <tr v-for="(item, ii) in grp.items" :key="item.id" class="item-row">
-                <td class="td-item-name">
-                  <span class="item-num">{{ itemNum(ii) }}</span> {{ item.name }}
-                </td>
-                <template v-if="item.answer_type === 'passfail'">
-                  <td class="td-pf"></td>
-                  <td class="td-pf"></td>
-                </template>
-                <template v-else>
-                  <td class="td-value" colspan="2">
-                    <span v-if="item.unit" class="unit-label">{{ item.unit }}</span>
+                <template v-if="item.answer_type === 'checktable'">
+                  <td :colspan="4" class="td-item-name td-checktable">
+                    <span class="item-num">{{ itemNum(ii) }}</span> {{ item.name }}
+                    <table class="checktable-print" v-if="getChecktableConfig(item).columns.length">
+                      <thead>
+                        <tr>
+                          <th></th>
+                          <th v-for="col in getChecktableConfig(item).columns" :key="col">{{ col }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in getChecktableConfig(item).rows" :key="row">
+                          <td class="ct-row-header">{{ row }}</td>
+                          <td v-for="col in getChecktableConfig(item).columns" :key="col" class="ct-cell">☐</td>
+                        </tr>
+                      </tbody>
+                    </table>
                   </td>
                 </template>
-                <td class="td-remarks">{{ item.remarks }}</td>
+                <template v-else>
+                  <td class="td-item-name">
+                    <span class="item-num">{{ itemNum(ii) }}</span> {{ item.name }}
+                  </td>
+                  <template v-if="item.answer_type === 'passfail'">
+                    <td class="td-pf"></td>
+                    <td class="td-pf"></td>
+                  </template>
+                  <template v-else>
+                    <td class="td-value" colspan="2">
+                      <span v-if="item.unit" class="unit-label">{{ item.unit }}</span>
+                    </td>
+                  </template>
+                  <td class="td-remarks">{{ item.remarks }}</td>
+                </template>
               </tr>
             </tbody>
           </template>
@@ -285,6 +315,44 @@ function itemNum(i) { return CIRCLED[i] || `(${i + 1})`; }
 .unit-label {
   font-size: 7.5pt;
   color: #444;
+}
+
+/* Checktable print */
+.td-checktable {
+  padding: 4pt 6pt;
+}
+
+.checktable-print {
+  width: auto;
+  border-collapse: collapse;
+  font-size: 7.5pt;
+  margin-top: 3pt;
+}
+
+.checktable-print th,
+.checktable-print td {
+  border: 0.75px solid #000;
+  padding: 2pt 4pt;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.checktable-print th {
+  background: #f0f0f0;
+  font-weight: 700;
+  font-size: 7pt;
+}
+
+.ct-row-header {
+  font-weight: 600;
+  text-align: left !important;
+  background: #f8f8f8;
+  font-size: 7pt;
+}
+
+.ct-cell {
+  font-size: 8pt;
+  width: 20pt;
 }
 
 /* Screen: separate pages visually */

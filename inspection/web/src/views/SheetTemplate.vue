@@ -222,7 +222,12 @@ function onNameChange(node) {
 
 async function onAnswerTypeChange(item) {
   try {
-    await updateSheetNode(item.id, { answer_type: item.answer_type });
+    if (item.answer_type === "checktable" && !item.remarks.startsWith("{")) {
+      item.remarks = JSON.stringify({ columns: [], rows: [] });
+      await updateSheetNode(item.id, { answer_type: item.answer_type, remarks: item.remarks });
+    } else {
+      await updateSheetNode(item.id, { answer_type: item.answer_type });
+    }
   } catch (e) {
     error("유형 변경에 실패했습니다.");
   }
@@ -265,6 +270,40 @@ function onItemNameInput(evt, node) {
   el.style.height = "auto";
   el.style.height = el.scrollHeight + "px";
   onNameChange(node);
+}
+
+// ---- Checktable helpers ----
+function getChecktableConfig(item) {
+  try {
+    const config = JSON.parse(item.remarks);
+    return { columns: config.columns || [], rows: config.rows || [] };
+  } catch {
+    return { columns: [], rows: [] };
+  }
+}
+
+function setChecktableConfig(item, config) {
+  item.remarks = JSON.stringify(config);
+  onRemarksChange(item);
+}
+
+let checktableTimer = null;
+function onChecktableColumnsChange(item, value) {
+  clearTimeout(checktableTimer);
+  checktableTimer = setTimeout(() => {
+    const config = getChecktableConfig(item);
+    config.columns = value.split(",").map(s => s.trim()).filter(Boolean);
+    setChecktableConfig(item, config);
+  }, 500);
+}
+
+function onChecktableRowsChange(item, value) {
+  clearTimeout(checktableTimer);
+  checktableTimer = setTimeout(() => {
+    const config = getChecktableConfig(item);
+    config.rows = value.split(",").map(s => s.trim()).filter(Boolean);
+    setChecktableConfig(item, config);
+  }, 500);
 }
 
 // ---- Numbering ----
@@ -520,6 +559,7 @@ function goBack() {
                     <option value="passfail">PASS/FAIL</option>
                     <option value="number">숫자</option>
                     <option value="text">텍스트</option>
+                    <option value="checktable">체크 테이블</option>
                   </select>
                   <input
                     v-if="item.answer_type === 'number' || item.answer_type === 'text'"
@@ -530,6 +570,7 @@ function goBack() {
                     placeholder="단위"
                   />
                   <input
+                    v-if="item.answer_type !== 'checktable'"
                     class="node-name-input remarks-input"
                     v-model="item.remarks"
                     @input="onRemarksChange(item)"
@@ -537,6 +578,47 @@ function goBack() {
                     placeholder="비고"
                   />
                   <button v-if="!isReadOnly" class="btn btn-danger btn-sm" @click="removeNode(grp.items, ii)">삭제</button>
+                </div>
+                <!-- Checktable config -->
+                <div v-if="item.answer_type === 'checktable'" class="checktable-config">
+                  <div class="checktable-field">
+                    <label class="checktable-label">열 (쉼표 구분)</label>
+                    <input
+                      class="node-name-input"
+                      :value="getChecktableConfig(item).columns.join(', ')"
+                      @input="onChecktableColumnsChange(item, $event.target.value)"
+                      :disabled="isReadOnly"
+                      placeholder="증빙자료, Pipe시트, 연료호스, ..."
+                    />
+                  </div>
+                  <div class="checktable-field">
+                    <label class="checktable-label">행 (쉼표 구분)</label>
+                    <input
+                      class="node-name-input"
+                      :value="getChecktableConfig(item).rows.join(', ')"
+                      @input="onChecktableRowsChange(item, $event.target.value)"
+                      :disabled="isReadOnly"
+                      placeholder="사전검토, 현장검토, ..."
+                    />
+                  </div>
+                  <div class="checktable-preview" v-if="getChecktableConfig(item).columns.length && getChecktableConfig(item).rows.length">
+                    <table class="checktable-preview-table">
+                      <thead>
+                        <tr>
+                          <th></th>
+                          <th v-for="col in getChecktableConfig(item).columns" :key="col">{{ col }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in getChecktableConfig(item).rows" :key="row">
+                          <td class="checktable-row-header">{{ row }}</td>
+                          <td v-for="col in getChecktableConfig(item).columns" :key="col" class="checktable-cell">
+                            <input type="checkbox" disabled />
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
 
@@ -866,6 +948,64 @@ function goBack() {
 
 .add-child-btn {
   margin-top: 0.5rem;
+}
+
+/* Checktable config */
+.checktable-config {
+  margin-top: 0.375rem;
+  padding-left: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.checktable-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.checktable-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  min-width: 90px;
+}
+
+.checktable-preview {
+  margin-top: 0.25rem;
+  overflow-x: auto;
+}
+
+.checktable-preview-table {
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+.checktable-preview-table th,
+.checktable-preview-table td {
+  border: 1px solid var(--border-color);
+  padding: 0.25rem 0.5rem;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.checktable-preview-table th {
+  background: var(--bg-secondary);
+  font-weight: 600;
+  font-size: 0.6875rem;
+}
+
+.checktable-row-header {
+  font-weight: 600;
+  text-align: left !important;
+  background: var(--bg-secondary);
+  font-size: 0.6875rem;
+}
+
+.checktable-cell input {
+  accent-color: var(--accent-primary);
 }
 
 .loading {
