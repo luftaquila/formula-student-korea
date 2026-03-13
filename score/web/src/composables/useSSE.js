@@ -6,6 +6,7 @@ const { on, useSSE: useConnection, connected } = createSSEConnection(`${API_BASE
 
 // Shared state across all components
 const lastInspectionUpdate = ref(null);
+const lastAnswerUpdate = ref(null);
 const lastRecordAutoUpdate = ref(null);
 const lastRecordManualUpdate = ref(null);
 
@@ -16,6 +17,11 @@ on("init", () => {
 on("inspection:category-result", (e) => {
   const data = JSON.parse(e.data);
   lastInspectionUpdate.value = { ...data, timestamp: Date.now() };
+});
+
+on("inspection:answer", (e) => {
+  const data = JSON.parse(e.data);
+  lastAnswerUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 on("record-auto", (e) => {
@@ -33,6 +39,7 @@ export function useSSE() {
 
   return {
     lastInspectionUpdate,
+    lastAnswerUpdate,
     lastRecordAutoUpdate,
     lastRecordManualUpdate,
     connected,

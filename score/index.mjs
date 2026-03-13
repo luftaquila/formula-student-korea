@@ -196,6 +196,35 @@ async function autoSelectBestRecord(tableName, teamNum, eventType) {
 subscribeTrafficSSE();
 
 /* ============================================
+   헬퍼: 템플릿 트리에서 카테고리 이름 기반 item 탐색
+   ============================================ */
+function findItemsInCategory(tree, categoryName, itemNames) {
+  const result = {};
+  result._allNumberItems = [];
+  result._categoryId = null;
+
+  const cat = tree.find((c) => c.name === categoryName);
+  if (!cat) return result;
+
+  result._categoryId = cat.id;
+
+  for (const sub of cat.subcategories || []) {
+    for (const grp of sub.groups || []) {
+      for (const item of grp.items || []) {
+        if (itemNames.length > 0 && itemNames.includes(item.name)) {
+          result[item.name] = item.id;
+        }
+        if (item.answer_type === "number") {
+          result._allNumberItems.push({ id: item.id, name: item.name });
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+/* ============================================
    API 라우트
    ============================================ */
 
@@ -211,9 +240,69 @@ app.get("/api/score", async (req, res) => {
     const entries = await entryRes.json();
 
     // 2. Inspection 서비스에서 카테고리별 PASS/FAIL 요약 fetch
-    const inspectionRes = await fetch(`${INSPECTION_SERVER}/api/sheet/summary?year=${year}`);
+    const [inspectionRes, templateRes] = await Promise.all([
+      fetch(`${INSPECTION_SERVER}/api/sheet/summary?year=${year}`),
+      fetch(`${INSPECTION_SERVER}/api/sheet/template?year=${year}`),
+    ]);
     if (!inspectionRes.ok) throw new Error("검차 정보를 가져올 수 없습니다.");
     const inspection = await inspectionRes.json();
+
+    // 2b. 템플릿 트리에서 코너웨이트/보고서 item ID 탐색
+    let cornerWeight = null;
+    let report = null;
+
+    if (templateRes.ok) {
+      const tree = await templateRes.json();
+
+      const cwItems = findItemsInCategory(tree, "코너웨이트", ["공차중량", "FL", "FR", "RL", "RR"]);
+      const reportItems = findItemsInCategory(tree, "보고서", []);
+
+      // 코너웨이트: 5개 항목 모두 존재해야 유효
+      if (cwItems["공차중량"] && cwItems["FL"] && cwItems["FR"] && cwItems["RL"] && cwItems["RR"]) {
+        cornerWeight = {
+          categoryId: cwItems._categoryId,
+          items: { curb: cwItems["공차중량"], fl: cwItems["FL"], fr: cwItems["FR"], rl: cwItems["RL"], rr: cwItems["RR"] },
+          teams: {},
+        };
+      }
+
+      // 보고서: number 타입 item 중 첫 번째
+      const reportNumberItem = reportItems._allNumberItems?.[0];
+      if (reportNumberItem) {
+        report = { categoryId: reportItems._categoryId, itemId: reportNumberItem.id, teams: {} };
+      }
+
+      // 벌크 답변 fetch
+      const allItemIds = [];
+      if (cornerWeight) allItemIds.push(...Object.values(cornerWeight.items));
+      if (report) allItemIds.push(report.itemId);
+
+      if (allItemIds.length > 0) {
+        try {
+          const bulkRes = await fetch(`${INSPECTION_SERVER}/api/sheet/bulk-answers?year=${year}&item_ids=${allItemIds.join(",")}`);
+          if (bulkRes.ok) {
+            const bulkData = await bulkRes.json(); // { [team_num]: { [item_id]: value } }
+            for (const [num, items] of Object.entries(bulkData)) {
+              if (cornerWeight) {
+                const cw = {};
+                if (items[cornerWeight.items.curb] !== undefined) cw.curb = items[cornerWeight.items.curb];
+                if (items[cornerWeight.items.fl] !== undefined) cw.fl = items[cornerWeight.items.fl];
+                if (items[cornerWeight.items.fr] !== undefined) cw.fr = items[cornerWeight.items.fr];
+                if (items[cornerWeight.items.rl] !== undefined) cw.rl = items[cornerWeight.items.rl];
+                if (items[cornerWeight.items.rr] !== undefined) cw.rr = items[cornerWeight.items.rr];
+                if (Object.keys(cw).length > 0) cornerWeight.teams[num] = cw;
+              }
+              if (report && items[report.itemId] !== undefined) {
+                report.teams[num] = items[report.itemId];
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    inspection.cornerWeight = cornerWeight;
+    inspection.report = report;
 
     // 3. Traffic 서비스에서 모든 경기 테이블 목록 fetch
     const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`);

@@ -351,6 +351,33 @@ app.get("/api/sheet/summary", (req, res) => {
   res.json(result.result);
 });
 
+// GET /api/sheet/bulk-answers - 벌크 답변 조회 (특정 item_id들의 팀별 값)
+app.get("/api/sheet/bulk-answers", (req, res) => {
+  const year = Number(req.query.year);
+  const itemIdsParam = req.query.item_ids;
+  if (!year || !itemIdsParam) return res.status(400).send("year, item_ids 필수");
+
+  const itemIds = itemIdsParam.split(",").map(Number).filter(n => !isNaN(n));
+  if (!itemIds.length) return res.status(400).send("유효한 item_ids가 없습니다.");
+
+  const result = dbRun(() => {
+    const placeholders = itemIds.map(() => "?").join(",");
+    const rows = db.prepare(
+      `SELECT team_num, item_id, value FROM sheet_answer WHERE year = ? AND item_id IN (${placeholders})`
+    ).all(year, ...itemIds);
+
+    const teams = {};
+    for (const row of rows) {
+      if (!teams[row.team_num]) teams[row.team_num] = {};
+      teams[row.team_num][row.item_id] = row.value;
+    }
+    return teams;
+  });
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
+});
+
 // GET /api/sheet/data/:year/:num - 팀의 모든 시트 데이터 반환
 app.get("/api/sheet/data/:year/:num", (req, res) => {
   const year = Number(req.params.year);
@@ -388,16 +415,25 @@ app.get("/api/sheet/data/:year/:num", (req, res) => {
 // PUT /api/sheet/answer - 답변 upsert
 app.put("/api/sheet/answer", (req, res) => {
   const { year, team_num, item_id, value } = req.body;
+  const newValue = value ?? "";
 
-  const result = dbRun(() =>
+  const result = dbRun(() => {
+    const prev = db.prepare(
+      "SELECT value FROM sheet_answer WHERE year = ? AND team_num = ? AND item_id = ?"
+    ).get(year, team_num, item_id);
+
     db.prepare(
       "INSERT INTO sheet_answer (year, team_num, item_id, value) VALUES (?, ?, ?, ?) ON CONFLICT(year, team_num, item_id) DO UPDATE SET value = excluded.value"
-    ).run(year, team_num, item_id, value ?? "")
-  );
+    ).run(year, team_num, item_id, newValue);
+
+    return { changed: !prev || prev.value !== newValue };
+  });
 
   if (!result.success) return res.status(result.status).send(result.error);
 
-  broadcastEvent("answer", { year, team_num, item_id, value: value ?? "" });
+  if (result.result.changed) {
+    broadcastEvent("answer", { year, team_num, item_id, value: newValue });
+  }
 
   res.status(200).send();
 });

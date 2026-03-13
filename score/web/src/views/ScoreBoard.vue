@@ -5,12 +5,14 @@ import { useNotification } from "../composables/useNotification";
 import { useSSE } from "../composables/useSSE";
 
 const { success, error } = useNotification();
-const { lastInspectionUpdate, lastRecordAutoUpdate, lastRecordManualUpdate } = useSSE();
+const { lastInspectionUpdate, lastAnswerUpdate, lastRecordAutoUpdate, lastRecordManualUpdate } = useSSE();
 
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
 const loading = ref(true);
 const searchQuery = ref("");
+const showInspection = ref(true);
+const expandedRows = ref(new Set());
 
 // 정렬 상태
 const sortKey = ref(null);
@@ -21,17 +23,10 @@ const entries = ref({});
 const inspection = ref({ categories: [], teams: {} });
 const events = ref([]); // [{ type, tables, records }]
 
-// 경기 유형 필터 (클라이언트 사이드)
-const hiddenTypes = ref(new Set());
-
 // 기록 선택 드롭다운
 const activeDropdown = ref(null); // { eventType, teamNum }
 
 const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
-
-const visibleEvents = computed(() =>
-  events.value.filter((evt) => !hiddenTypes.value.has(evt.type)),
-);
 
 const entryList = computed(() => {
   let list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
@@ -54,6 +49,16 @@ const entryList = computed(() => {
     } else if (sortKey.value === "type") {
       aVal = (a.type || "").toLowerCase();
       bVal = (b.type || "").toLowerCase();
+    } else if (sortKey.value === "cornerWeight") {
+      aVal = getCurbWeight(a.num);
+      bVal = getCurbWeight(b.num);
+      aVal = aVal != null ? Number(aVal) : Infinity;
+      bVal = bVal != null ? Number(bVal) : Infinity;
+    } else if (sortKey.value === "report") {
+      aVal = getReportScore(a.num);
+      bVal = getReportScore(b.num);
+      aVal = aVal != null ? Number(aVal) : Infinity;
+      bVal = bVal != null ? Number(bVal) : Infinity;
     } else if (sortKey.value.startsWith("event:")) {
       const eventType = sortKey.value.slice(6);
       const evt = events.value.find(e => e.type === eventType);
@@ -92,6 +97,9 @@ function handleOutsideClick(e) {
   if (activeDropdown.value && !e.target.closest(".record-cell")) {
     activeDropdown.value = null;
   }
+  if (expandedRows.value.size && !e.target.closest(".col-corner-weight")) {
+    expandedRows.value.clear();
+  }
 }
 
 async function loadData() {
@@ -100,7 +108,6 @@ async function loadData() {
     entries.value = data.entries;
     inspection.value = data.inspection;
     events.value = data.events;
-    hiddenTypes.value = new Set();
     sortKey.value = null;
     sortOrder.value = "asc";
   } catch (e) {
@@ -113,17 +120,6 @@ async function onYearChange() {
   activeDropdown.value = null;
   await loadData();
   loading.value = false;
-}
-
-// 경기 유형 필터
-function toggleType(type) {
-  const next = new Set(hiddenTypes.value);
-  if (next.has(type)) {
-    next.delete(type);
-  } else {
-    next.add(type);
-  }
-  hiddenTypes.value = next;
 }
 
 // 검차 결과
@@ -249,6 +245,29 @@ watch(lastInspectionUpdate, (update) => {
   inspection.value.teams[team_num].results[category_id] = result;
 });
 
+// SSE로 검차 답변(코너웨이트/보고서) 실시간 반영
+watch(lastAnswerUpdate, (update) => {
+  if (!update || update.year !== selectedYear.value) return;
+  const { team_num, item_id, value } = update;
+
+  // 코너웨이트 항목 매칭
+  const cw = inspection.value.cornerWeight;
+  if (cw) {
+    const keyMap = { [cw.items.curb]: "curb", [cw.items.fl]: "fl", [cw.items.fr]: "fr", [cw.items.rl]: "rl", [cw.items.rr]: "rr" };
+    const key = keyMap[item_id];
+    if (key) {
+      if (!cw.teams[team_num]) cw.teams[team_num] = {};
+      cw.teams[team_num][key] = value;
+    }
+  }
+
+  // 보고서 항목 매칭
+  const rpt = inspection.value.report;
+  if (rpt && item_id === rpt.itemId) {
+    rpt.teams[team_num] = value;
+  }
+});
+
 // SSE로 기록 자동 선택 실시간 반영
 watch(lastRecordAutoUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
@@ -281,16 +300,53 @@ watch(lastRecordManualUpdate, (update) => {
     : null;
 });
 
-// 경기 유형 색상 순환
-const TYPE_COLORS = ['accel', 'gymkhana', 'skidpad'];
-function typeColorClass(idx) {
-  return TYPE_COLORS[idx % TYPE_COLORS.length];
-}
-
 // 여러 테이블이 합쳐진 경우 짧은 테이블명
 function shortTableName(tableName) {
   const parts = tableName.split(" ");
   return parts.length > 2 ? parts.slice(2).join(" ") : tableName;
+}
+
+// 카테고리 오버라이드 판별
+function isOverriddenCategory(catId) {
+  return catId === inspection.value.cornerWeight?.categoryId || catId === inspection.value.report?.categoryId;
+}
+
+function getOverrideKey(catId) {
+  if (catId === inspection.value.cornerWeight?.categoryId) return "cornerWeight";
+  if (catId === inspection.value.report?.categoryId) return "report";
+  return null;
+}
+
+// 코너웨이트/보고서 헬퍼
+function getCurbWeight(num) {
+  return inspection.value.cornerWeight?.teams[num]?.curb ?? null;
+}
+
+function getCornerWeight(num) {
+  return inspection.value.cornerWeight?.teams[num] ?? null;
+}
+
+function getReportScore(num) {
+  return inspection.value.report?.teams[num] ?? null;
+}
+
+function getLRRatio(num) {
+  const cw = getCornerWeight(num);
+  if (!cw) return null;
+  const fl = Number(cw.fl), fr = Number(cw.fr), rl = Number(cw.rl), rr = Number(cw.rr);
+  if (!fl || !fr || !rl || !rr) return null;
+  const total = fl + fr + rl + rr;
+  const left = ((fl + rl) / total * 100).toFixed(1);
+  const right = ((fr + rr) / total * 100).toFixed(1);
+  return { left, right };
+}
+
+function toggleCornerWeight(num) {
+  if (expandedRows.value.has(num)) {
+    expandedRows.value.delete(num);
+  } else {
+    expandedRows.value.add(num);
+  }
 }
 </script>
 
@@ -307,14 +363,12 @@ function shortTableName(tableName) {
         <label class="filter-label">검색</label>
         <input class="filter-input" v-model="searchQuery" placeholder="번호 / 학교 / 팀명" />
       </div>
-      <div v-if="events.length > 0" class="filter-group filter-types">
-        <label class="filter-label">경기 유형</label>
-        <div class="type-filters">
-          <label v-for="(evt, idx) in events" :key="evt.type" class="filter-checkbox">
-            <input type="checkbox" :checked="!hiddenTypes.has(evt.type)" @change="toggleType(evt.type)" />
-            <span class="filter-tag" :class="typeColorClass(idx)">{{ evt.type }}</span>
-          </label>
-        </div>
+      <div class="filter-group">
+        <label class="filter-label">필터</label>
+        <label class="filter-checkbox">
+          <input type="checkbox" v-model="showInspection" />
+          <span>검차</span>
+        </label>
       </div>
     </div>
 
@@ -341,9 +395,12 @@ function shortTableName(tableName) {
                   v-for="cat in inspection.categories"
                   :key="'h-insp-'+cat.id"
                   class="col-inspection"
-                >{{ cat.name }}</th>
+                  :class="{ sortable: isOverriddenCategory(cat.id) }"
+                  v-show="showInspection"
+                  @click="isOverriddenCategory(cat.id) && handleSort(getOverrideKey(cat.id))"
+                >{{ cat.name }} <span v-if="isOverriddenCategory(cat.id)" class="sort-icon">{{ getSortIcon(getOverrideKey(cat.id)) }}</span></th>
                 <th
-                  v-for="evt in visibleEvents"
+                  v-for="evt in events"
                   :key="'h-evt-'+evt.type"
                   class="col-event sortable"
                   @click="handleSort('event:' + evt.type)"
@@ -352,77 +409,116 @@ function shortTableName(tableName) {
             </thead>
             <tbody>
               <tr v-for="entry in entryList" :key="entry.num">
-                <td class="col-num"><span class="entry-num">{{ entry.num }}</span></td>
-                <td class="col-team">{{ entry.univ }} {{ entry.team }}</td>
-                <td class="col-type"><span class="badge badge-primary" v-if="entry.type">{{ entry.type }}</span></td>
-                <td
-                  v-for="cat in inspection.categories"
-                  :key="'insp-'+cat.id+'-'+entry.num"
-                  class="col-inspection"
-                >
-                  <span
-                    v-if="getInspectionResult(entry.num, cat.id)"
-                    class="badge"
-                    :class="getInspectionResult(entry.num, cat.id) === 'PASS' ? 'badge-success' : 'badge-danger'"
-                  >{{ getInspectionResult(entry.num, cat.id) }}</span>
-                  <span v-else class="badge badge-empty">-</span>
-                </td>
-                <td
-                  v-for="evt in visibleEvents"
-                  :key="'evt-'+evt.type+'-'+entry.num"
-                  class="col-event record-cell"
-                  @click="toggleDropdown(evt, entry.num, $event)"
-                >
-                  <template v-if="getTeamEvent(evt, entry.num)">
-                    <span
-                      v-if="getTeamEvent(evt, entry.num).selected"
-                      class="record-value"
-                      :class="{ dnf: getTeamEvent(evt, entry.num).selected.result === -1 }"
-                    >{{ formatResult(getTeamEvent(evt, entry.num).selected.result) }}</span>
-                    <span v-else class="record-value unselected">-</span>
-                  </template>
-                  <span v-else class="record-value dns">DNS</span>
-
-                  <!-- 기록 선택 드롭다운 -->
-                  <div
-                    v-if="isDropdownOpen(evt, entry.num)"
-                    class="record-dropdown"
-                    @click.stop
-                  >
-                    <div class="dropdown-header">
-                      <span>기록 선택</span>
-                      <button
-                        v-if="getTeamEvent(evt, entry.num)?.selected"
-                        class="btn btn-sm btn-ghost"
-                        @click="handleDeselectRecord(evt, entry.num)"
-                      >선택 해제</button>
-                    </div>
-                    <div class="dropdown-list">
+                  <td class="col-num"><span class="entry-num">{{ entry.num }}</span></td>
+                  <td class="col-team">{{ entry.univ }} {{ entry.team }}</td>
+                  <td class="col-type"><span class="badge badge-primary" v-if="entry.type">{{ entry.type }}</span></td>
+                  <template v-for="cat in inspection.categories" :key="'insp-'+cat.id+'-'+entry.num">
+                    <!-- 코너웨이트 카테고리 → 공차중량 값 + 드롭다운 -->
+                    <td
+                      v-if="inspection.cornerWeight?.categoryId === cat.id"
+                      v-show="showInspection"
+                      class="col-inspection col-corner-weight"
+                      @click="toggleCornerWeight(entry.num)"
+                    >
+                      <span v-if="getCurbWeight(entry.num)" class="cw-value">{{ getCurbWeight(entry.num) }} kg</span>
+                      <span v-else class="badge badge-empty">-</span>
                       <div
-                        v-for="run in getTeamEvent(evt, entry.num).all"
-                        :key="run.table_name + '-' + run.rowid"
-                        class="dropdown-item"
-                        :class="{
-                          invalidated: run.invalidated,
-                          'no-scoreboard': !run.invalidated && !run.scoreboard,
-                          selected: getTeamEvent(evt, entry.num).selected?.rowid === run.rowid
-                            && getTeamEvent(evt, entry.num).selected?.table_name === run.table_name,
-                        }"
-                        @click="handleSelectRecord(evt, entry.num, run)"
+                        v-if="expandedRows.has(entry.num) && getCornerWeight(entry.num)"
+                        class="cw-dropdown"
+                        @click.stop
                       >
-                        <span class="run-result" :class="{ dnf: run.result === -1 }">
-                          {{ formatResult(run.result) }}
-                        </span>
-                        <span v-if="run.detail" class="run-detail">{{ run.detail }}</span>
-                        <span class="run-table">{{ shortTableName(run.table_name) }}</span>
-                        <span class="run-time">{{ formatTime(run.time) }}</span>
+                        <div class="cw-dropdown-grid">
+                          <div class="cw-cell"><span class="cw-label">FL</span><span class="cw-val">{{ getCornerWeight(entry.num).fl ? getCornerWeight(entry.num).fl + ' kg' : '-' }}</span></div>
+                          <div class="cw-cell"><span class="cw-label">FR</span><span class="cw-val">{{ getCornerWeight(entry.num).fr ? getCornerWeight(entry.num).fr + ' kg' : '-' }}</span></div>
+                          <div class="cw-cell"><span class="cw-label">RL</span><span class="cw-val">{{ getCornerWeight(entry.num).rl ? getCornerWeight(entry.num).rl + ' kg' : '-' }}</span></div>
+                          <div class="cw-cell"><span class="cw-label">RR</span><span class="cw-val">{{ getCornerWeight(entry.num).rr ? getCornerWeight(entry.num).rr + ' kg' : '-' }}</span></div>
+                          <template v-if="getLRRatio(entry.num)">
+                            <hr class="cw-divider">
+                            <div class="cw-cell"><span class="cw-label">L</span><span class="cw-val">{{ getLRRatio(entry.num).left }}%</span></div>
+                            <div class="cw-cell"><span class="cw-label">R</span><span class="cw-val">{{ getLRRatio(entry.num).right }}%</span></div>
+                          </template>
+                        </div>
+                      </div>
+                    </td>
+                    <!-- 보고서 카테고리 → 점수 값으로 덮어쓰기 -->
+                    <td
+                      v-else-if="inspection.report?.categoryId === cat.id"
+                      v-show="showInspection"
+                      class="col-inspection"
+                    >
+                      <span v-if="getReportScore(entry.num)" class="report-value">{{ getReportScore(entry.num) }}</span>
+                      <span v-else class="badge badge-empty">-</span>
+                    </td>
+                    <!-- 일반 카테고리 → PASS/FAIL -->
+                    <td
+                      v-else
+                      v-show="showInspection"
+                      class="col-inspection"
+                    >
+                      <span
+                        v-if="getInspectionResult(entry.num, cat.id)"
+                        class="badge"
+                        :class="getInspectionResult(entry.num, cat.id) === 'PASS' ? 'badge-success' : 'badge-danger'"
+                      >{{ getInspectionResult(entry.num, cat.id) }}</span>
+                      <span v-else class="badge badge-empty">-</span>
+                    </td>
+                  </template>
+                  <td
+                    v-for="evt in events"
+                    :key="'evt-'+evt.type+'-'+entry.num"
+                    class="col-event record-cell"
+                    @click="toggleDropdown(evt, entry.num, $event)"
+                  >
+                    <template v-if="getTeamEvent(evt, entry.num)">
+                      <span
+                        v-if="getTeamEvent(evt, entry.num).selected"
+                        class="record-value"
+                        :class="{ dnf: getTeamEvent(evt, entry.num).selected.result === -1 }"
+                      >{{ formatResult(getTeamEvent(evt, entry.num).selected.result) }}</span>
+                      <span v-else class="record-value unselected">-</span>
+                    </template>
+                    <span v-else class="record-value dns">DNS</span>
+
+                    <!-- 기록 선택 드롭다운 -->
+                    <div
+                      v-if="isDropdownOpen(evt, entry.num)"
+                      class="record-dropdown"
+                      @click.stop
+                    >
+                      <div class="dropdown-header">
+                        <span>기록 선택</span>
+                        <button
+                          v-if="getTeamEvent(evt, entry.num)?.selected"
+                          class="btn btn-sm btn-ghost"
+                          @click="handleDeselectRecord(evt, entry.num)"
+                        >선택 해제</button>
+                      </div>
+                      <div class="dropdown-list">
+                        <div
+                          v-for="run in getTeamEvent(evt, entry.num).all"
+                          :key="run.table_name + '-' + run.rowid"
+                          class="dropdown-item"
+                          :class="{
+                            invalidated: run.invalidated,
+                            'no-scoreboard': !run.invalidated && !run.scoreboard,
+                            selected: getTeamEvent(evt, entry.num).selected?.rowid === run.rowid
+                              && getTeamEvent(evt, entry.num).selected?.table_name === run.table_name,
+                          }"
+                          @click="handleSelectRecord(evt, entry.num, run)"
+                        >
+                          <span class="run-result" :class="{ dnf: run.result === -1 }">
+                            {{ formatResult(run.result) }}
+                          </span>
+                          <span v-if="run.detail" class="run-detail">{{ run.detail }}</span>
+                          <span class="run-table">{{ shortTableName(run.table_name) }}</span>
+                          <span class="run-time">{{ formatTime(run.time) }}</span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </td>
+                  </td>
               </tr>
               <tr v-if="entryList.length === 0">
-                <td :colspan="3 + inspection.categories.length + visibleEvents.length" class="empty-state">
+                <td :colspan="3 + inspection.categories.length + events.length" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>
@@ -458,11 +554,6 @@ function shortTableName(tableName) {
   gap: 0.375rem;
 }
 
-.filter-types {
-  flex: 1;
-  min-width: 0;
-}
-
 .filter-label {
   font-size: 0.75rem;
   font-weight: 600;
@@ -483,47 +574,6 @@ function shortTableName(tableName) {
 .filter-input:focus {
   outline: none;
   border-color: var(--accent-primary);
-}
-
-/* 경기 유형 필터 (traffic 서비스 동일 디자인) */
-.type-filters {
-  display: flex;
-  gap: 0.75rem;
-}
-
-.filter-checkbox {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  cursor: pointer;
-}
-
-.filter-checkbox input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-}
-
-.filter-tag {
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-}
-
-.filter-tag.accel {
-  background: rgba(59, 130, 246, 0.1);
-  color: var(--accent-primary);
-}
-
-.filter-tag.gymkhana {
-  background: rgba(139, 92, 246, 0.1);
-  color: var(--accent-secondary);
-}
-
-.filter-tag.skidpad {
-  background: rgba(245, 158, 11, 0.1);
-  color: var(--accent-warning);
 }
 
 .readonly-banner {
@@ -762,6 +812,96 @@ function shortTableName(tableName) {
   white-space: nowrap;
 }
 
+/* Filter checkbox */
+.filter-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  user-select: none;
+  padding: 0.5rem 0;
+}
+
+.filter-checkbox input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+/* Corner weight */
+.col-corner-weight {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+}
+
+.col-corner-weight:hover {
+  background: var(--bg-hover);
+}
+
+.cw-value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.cw-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  padding: 0.625rem 0.875rem;
+  min-width: 160px;
+}
+
+.cw-dropdown-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem 1rem;
+}
+
+.cw-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.cw-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+}
+
+.cw-val {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.cw-divider {
+  grid-column: 1 / -1;
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 0.125rem 0;
+}
+
+/* Report */
+.report-value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
 /* Loading */
 .loading {
   display: flex;
@@ -803,8 +943,5 @@ function shortTableName(tableName) {
     box-sizing: border-box;
   }
 
-  .type-filters {
-    flex-wrap: wrap;
-  }
 }
 </style>
