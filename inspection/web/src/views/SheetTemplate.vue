@@ -135,7 +135,7 @@ async function addChild(parent, level, childKey) {
     if (level === "item") data.answer_type = "passfail";
     const { id } = await createSheetNode(data);
     const newNode = { id, name: defaultName, level, sort_order: maxOrder + 1, year: selectedYear.value, parent_id: parent.id };
-    if (level === "subcategory") newNode.groups = [];
+    if (level === "subcategory") { newNode.groups = []; newNode.remarks = ""; }
     else if (level === "group") newNode.items = [];
     else if (level === "item") { newNode.answer_type = "passfail"; newNode.remarks = ""; newNode.unit = ""; }
     children.push(newNode);
@@ -489,6 +489,13 @@ function goBack() {
                 @input="onNameChange(sub)"
                 :disabled="isReadOnly"
                 placeholder="소분류명"
+              />
+              <input
+                class="node-name-input remarks-input"
+                v-model="sub.remarks"
+                @input="onRemarksChange(sub)"
+                :disabled="isReadOnly"
+                placeholder="비고"
               />
               <div class="node-actions" v-if="!isReadOnly">
                 <button class="btn btn-danger btn-sm" @click="removeNode(currentCategory.subcategories, si)">삭제</button>

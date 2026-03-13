@@ -495,7 +495,7 @@ watch(lastMemoUpdate, (update) => {
           <div v-if="!currentCategory.subcategories?.length" class="empty-state">템플릿 항목이 없습니다.</div>
 
           <div v-for="(sub, si) in currentCategory.subcategories" :key="sub.id" :id="`sub-${sub.id}`" class="subcategory-section">
-            <h4 class="subcategory-title">{{ subNum(si) }} - {{ sub.name }}</h4>
+            <h4 class="subcategory-title">{{ subNum(si) }} - {{ sub.name }}<span v-if="sub.remarks" class="subcategory-remarks"> — {{ sub.remarks }}</span></h4>
 
             <div v-for="(grp, gi) in sub.groups" :key="grp.id" class="group-section">
               <h5 class="group-title">{{ grpNum(gi) }}. {{ grp.name }}<span v-if="grp.remarks" class="group-remarks"> — {{ grp.remarks }}</span></h5>
@@ -800,6 +800,12 @@ watch(lastMemoUpdate, (update) => {
   border-bottom: 2px solid var(--accent-primary);
   word-break: keep-all;
   overflow-wrap: break-word;
+}
+
+.subcategory-remarks {
+  font-weight: 400;
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
 }
 
 .group-section {

@@ -1,0 +1,2665 @@
+[
+  {
+    "name": "코너웨이트",
+    "remarks": "",
+    "pdf_include": 0,
+    "subcategories": [
+      {
+        "name": "무게 측정",
+        "remarks": "",
+        "groups": [
+          {
+            "name": "공차중량 측정",
+            "remarks": "",
+            "items": [
+              {
+                "name": "공차중량",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "kg"
+              }
+            ]
+          },
+          {
+            "name": "코너웨이트 측정",
+            "remarks": "드라이버 포함",
+            "items": [
+              {
+                "name": "FL",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "kg"
+              },
+              {
+                "name": "FR",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "RL",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "kg"
+              },
+              {
+                "name": "RR",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "kg"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "섀시",
+    "remarks": "",
+    "pdf_include": 1,
+    "subcategories": [
+      {
+        "name": "증빙자료",
+        "remarks": "",
+        "groups": [
+          {
+            "name": "증빙자료",
+            "remarks": "",
+            "items": [
+              {
+                "name": "증빙자료",
+                "answer_type": "checktable",
+                "remarks": "{\"columns\":[\"Pipe시트\",\"연료호스\",\"냉각호스\",\"캐치탱크\",\"LV batt\",\"크래쉬존\",\"대체재료\",\"센터락\",\"기타팀별\"],\"rows\":[\"사전검토\",\"현장검토\"]}",
+                "unit": ""
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "기본사항",
+        "remarks": "",
+        "groups": [
+          {
+            "name": "동력장치",
+            "remarks": "",
+            "items": [
+              {
+                "name": "엔진 / 모터 종류",
+                "answer_type": "text",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "배기량 / 모터 출력",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "cc / kW"
+              },
+              {
+                "name": "기통수 / 모터 개수",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "개"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "드라이버 탑승 & 카울 장착",
+        "remarks": "",
+        "groups": [
+          {
+            "name": "휠 & 타이어",
+            "remarks": "(3장 6조, 7조) p.1 ~ 2",
+            "items": [
+              {
+                "name": "휠 볼트, 너트 - 체결토크 98Nm 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "안전장구",
+            "remarks": "(6장 24조, 28조 ②)",
+            "items": [
+              {
+                "name": "안전벨트\n- 항상 드라이버 팔이 차량의 구조물 내 위치, 인증품",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "머리충격 흡수 패드",
+            "remarks": "(4장 19조)",
+            "items": [
+              {
+                "name": "헬멧의 뒷부분이 중앙에 위치 & 헬멧에 눌린 상태 금지(25mm 이하 거리 유지)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "조향장치",
+            "remarks": "(3장 9조)",
+            "items": [
+              {
+                "name": "손 위치 (조향휠 잡은 상태. 메인&전방 롤후프 최상단부 연장선 안에 위치)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "롤 후프 구조",
+            "remarks": "(4장 15조, 16조) p.7~12",
+            "items": [
+              {
+                "name": "메인&전방 후프 연장선\n- 헬멧 50mm 이상, 핸들 상사점에서 드라이버 손 보호",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "드라이버",
+            "remarks": "(6장 25조, 26조) p.22",
+            "items": [
+              {
+                "name": "드라이버 시야\n- 좌우로 총 200° 이상 확보 (머리 회전, 거울 사용 가능)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "드라이버 탈출\n- 5초 이내 (드라이버 양쪽 발이 땅에 닿았을 때까지 소요시간)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "운전자 공간 ",
+            "remarks": "(4장 12조 ⑥, ⑦, 15조 p.5~9 / 6장 27조 p.22)",
+            "items": [
+              {
+                "name": "드라이버 공간 내의 작동하는 부품 경우 최대 20mm 이하의 여유 공간 허용",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "드라이버 탑승 & 카울 탈거",
+        "remarks": "",
+        "groups": [
+          {
+            "name": "측면충격보호 구조",
+            "remarks": "(4장 18조) p.14",
+            "items": [
+              {
+                "name": "상단 부재\n- 드라이버 탑승 상태, 지면에서 부재의 중심선까지 높이 300~350mm\n- 메인 롤 후프와 전방 롤 후프 연결",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "안전벨트",
+            "remarks": "(6장 23조) p.18~20",
+            "items": [
+              {
+                "name": "어깨 벨트\n- 고정 각도 : 드라이버 어깨 뒤쪽 수평선 기준 상10° 이하, 하20° 이하\n- 어깨 벨트 차체 고정부 수직 높이 : 지면에서부터 측정 시 어깨선 미만에 위치\n- 분리된 어깨 벨트만 허용 (Y, H형 금지)\n- 어깨벨트 마운트 폭 : 최소 180mm ~ 최대 230mm (그림21 : p.21)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "허리 벨트 - 좌, 우 바닥 프레임(하단 부재)에 부착 여부 확인\n- 고정점 : 시트 뒤 끝 지점에서 75mm 이내 (벨트 중심선과 시트 뒤 끝지점)\n- 고정 각도 : 지면과 벨트 중심선 45°~65° (그림20 : p.19)\n- 단, 드라이버 상반신이 지면과 60° 이하인 경우 지면과 벨트 중심선 60°~80°",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "다리사이벨트\n- 마운트 위치 : 운전자 허벅지의 바깥쪽, 벨트는 허벅지를 감싸며 고정\n- 옆에서 봤을 때 20°이내 만족 시 마운트간 간격 최소 100mm 이상 (그림22 : p.20)\n- 아닐 경우 최소 200mm 폭",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "캐치 캔",
+            "remarks": "(7장 31조 ⑧) p.26",
+            "items": [
+              {
+                "name": "방화벽 뒤 어께선 아래 위치, 케이블타이 또는 테이프 고정 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "비상 정지 스위치",
+            "remarks": "(6장 29조) p.23",
+            "items": [
+              {
+                "name": "주 비상 정지 스위치 작동\n- 모든 전기, 전자 장치 전원 차단",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "보조 비상 정지 스위치 위치\n- 운전석 내 1개, 드라이버가 조작 가능 여부 확인",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "보조 비상 정지 스위치 작동\n- 제동등 제외한 모든 전기, 전자 장치의 전원 차단",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "비상 정지 스위치 작동\n- 엔진 작동 멈춤 확인",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "드라이버 하차 & 카울 탈거",
+        "remarks": "",
+        "groups": [
+          {
+            "name": "동력원",
+            "remarks": "(2장 3조 / 7장 31조) p.1, p.24",
+            "items": [
+              {
+                "name": "C-Formula : 가솔린 4행정, 배기량 710cc 이하 내연기관\nE-Formula : 축전지 최대 전압 DC 600V, 80kW 이하의 전기 동력원",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "휠베이스 & 트레드",
+            "remarks": "(2장 4조, 5조) p.1",
+            "items": [
+              {
+                "name": "휠베이스 : 1500mm 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "좁은 트레드/넓은 트레드 : 75% 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "휠 & 타이어",
+            "remarks": "(3장 6조, 7조) p.1~2",
+            "items": [
+              {
+                "name": "휠 볼트, 너트 확인\n- 상용품 여부, 알루미늄 휠 너트 (경질 아노다이징 처리여부)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "휠 볼트, 너트 변형 여부 확인\n이중 너트와 잼너트 체결 방식 불허용",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "센터 락 (상용 휠볼트/너트 미사용 시)\n- 1) 항목 만족 및 증빙자료 검토",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "타이어\n- 드라이 & 레인, 레인 타이어 트레드 깊이 2.4mm 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "안전장구",
+            "remarks": "(6장 24조, 28조 ②) p.18~22",
+            "items": [
+              {
+                "name": "풀페이스 헬멧(바이저 오픈만 허용), 슈트, 장갑, 슈즈, 바라클라바 : 인증품(필수)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "C-Formula : ABC 분말 소화기 1kg 이상 최소 2개 보유\nE-Formula : ABC 분말 소화기 1kg 이상 최소 1개 보유",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "E-Formula\n- 리튬 배터리용 소화기 1kg 이상 최소 1개 보유\n- AMEREX(B270, B272) / DOKA(Model 6L 이상) / AFT(10/01 , 50/02)이상\n- 할론 소화기 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "각 소화기에 팀 이름, 출전번호 부착",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "기타",
+            "remarks": " (4장 20조, 21조 / 14장 72조) p.15, p.55",
+            "items": [
+              {
+                "name": "날카로운 부분 처리 (바디, 프레임, 스포일러)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "프레임 주 구조물의 어떠한 부위와 드라이버 헬멧이 닿을 경우\n프레임 패딩 : 최소 10mm 두께, 스티로폼, 스펀지 등 탄력을 지닌 재료 사용",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "차량 바디 노즈 반경 35mm 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "트랜스폰더 부착 - 주행중 탈락 방지를 위해 견고히 부착",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "머리충격 흡수 패드",
+            "remarks": "(4장 19조) p.19",
+            "items": [
+              {
+                "name": "스티로폼(Soft), 스펀지 등의 탄력있는 재료 사용",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "면적 240cm² 이상, 두께 40mm 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "견고하게 부착 (흔들림 확인 필요)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "현가장치",
+            "remarks": "(3장 8조) p.2",
+            "items": [
+              {
+                "name": "작동 (50mm 이상 : 상 - 25mm 이상, 하 - 25mm 이상)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "정상 작동 여부 : 간섭 여부 확인 (벨크랭크, 암 등)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "조향장치 ",
+            "remarks": "(3장 9조) p.2",
+            "items": [
+              {
+                "name": "퀵 릴리즈 장착 및 드라이버 운전 상태에서 조향휠 분리 가능 여부 확인",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "조향 휠 형상 확인\n- 원형 또는 타원형 형태 폐곡선 (H 모양, 단절 부분 금지)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "조향 휠 유격\n- 회전 방향 7deg 이하, 축 방향 10mm 이하",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "조향 제한 장치 확인 및 정상 작동 (최대 조향시 타이어-부품 간섭금지)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "조향휠 위치 (어떤한 조향각에서도 전방 롤후프 최상단부 보다 아래 위치)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "잭 지지점 & 퀵 잭, 푸쉬바",
+            "remarks": " (3장 11조 p.4 / 15장 77조 p.59)",
+            "items": [
+              {
+                "name": "푸쉬바 & 퀵 잭 보유 여부",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "잭 지지점\n- 지름(원형) 25mm, 길이 280mm 이상, 오렌지색, 장애물 없이 부착",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "지면부터 잭 지지점 하단 높이가 75~100mm 이하",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "바퀴 지면 이격 가능 여부(잭 지지점 200mm 리프팅 시) & 안정성 확인",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "E-Formula : 퀵 잭과 푸시바 절연 처리",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "제동장치",
+            "remarks": "(3장 10조) p.2~3",
+            "items": [
+              {
+                "name": "1개의 페달로 네 바퀴에 작동하는 제동장치 시스템",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "마스터 실린더 - 2개의 독립적인 유압회로 및 저장 용기",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "캘리퍼 - 4점식 or 3점식 (LSD, Live Axle)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "제동장치 미작동 감지장치 (BOTS)\n- C-Formula: 제동등 제외 모든 전기 & 전자장치 차단 & 엔진 작동 멈춤 확인\n- E-Formula: 제56조 차단 회로(SDC) 개방 & 모터 작동 멈춤 확인, 제동등 점등 확인",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "제동장치 미작동 감지장치 (BOTS) 정상 작동 여부 확인 및 증빙자료",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "제동등",
+            "remarks": "(3장 10조) p.3",
+            "items": [
+              {
+                "name": "위치 : 차량 중심선, 드라이버 어깨선 아래, 뒷바퀴 축 사이 교차 지점",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "면적 15 cm² 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "LED 제작품의 경우 150mm*30mm 이상, 100mm² 당 1개 이상의 LED를 포함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "점멸등 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "어떠한 부품도 제동등을 가리지 않아야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "프레임 구조 및 규격",
+            "remarks": "(4장 12조, 14조, 17조) p.4, p.7",
+            "items": [
+              {
+                "name": "드라이버 공간의 프레임 측면도 상의 트러스 구조 형태",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "메인&전방 롤 후프\n- 검사 구멍 5mm / 그 외 구멍 불허용",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "메인&전방 롤 후프, 어깨벨트 마운트용 프레임\n- Φ25X1.8t 이상, 각관 불가",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "측면 & 벌크헤드 & 롤 후프 지지대\n- Φ25X1.6t 이상, 각관 불가",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "나머지 프레임\n- Φ20X1.2t or 25X25X1.6t(각관) 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "증빙자료\n- 성분표, 시험성적서",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "메인 롤 후프\n- 하나의 부재, 밴딩주름 X, 복합소재 사용 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "대체 재료 사용시\n- 구조 대응물 양식, 각종 실험 및 해석, 영수증 등 증빙자료",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "롤 후프 구조",
+            "remarks": "(4장 15조, 16조) p.7~12",
+            "items": [
+              {
+                "name": "메인 롤 후프\n- 하나의 부재, 밴딩주름 X, 복합소재 사용 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "메인 롤 후프 기울기 10° 이하, 어깨 폭 380mm 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "메인 롤 후프 밴딩 최소 반경\n- 파이프 중심선기준 외경의 3배 이상 (75mm 이상)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "메인 롤 후프 지지대 높이\n- 최상부에서 160mm 이내, 기울기 30° 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "전방 롤 후프\n- 하나의 부재, 밴딩 주름 X, 복합소재 사용 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "전방 롤 후프 지지대\n- 2개 이상 원형 파이프 사용. 좌, 우 양쪽에서 롤 후프 지지해야 함.\n- 전방 롤 후프에서 벌크헤드까지 연결. 밴딩 불가",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "전방 롤 후프 기울기\n- 후방으로 수직축과 10° 이상 기울어졌을 시, 후프 뒤쪽으로 지지대 설치 필수",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "전방 롤 후프 밴딩 최소 반경\n- 파이프 중심선기준 외경의 3배 이상 (75mm 이상)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "전방 롤 후프 지지대 높이\n- 최상부에서 50mm 이내, 밴딩불가",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "모노코크 롤 후프 지지대\n- 마운트판 3t 철판(또는 동일 강도 AL) 위 용접, 모노코크 양면 덧대기, 직경 8mm, 강도 8.8 이상 볼트 체결 (그림11)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "탈착식 롤후프 지지대 Double-Lug\n- 마운트판 4.5t 철판, 폭 25mm 이상, 마운트 보강 여부, 볼트 10mm, 강도 10.9 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "탈착식 롤후프 지지대 Sleeved\n- 슬리브 길이 80mm 이상, 접합면 양쪽 40mm 이상, 철강재질, 고정볼트 6mm 이상, 강도 10.9 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "측면충격보호 구조",
+            "remarks": "(4장 18조) p.14",
+            "items": [
+              {
+                "name": "대각선부재\n- 상단부재와 하단부재 연결\n- 메인 롤 후프와 전방 롤 후프 연결\n- 다수의 부재로 구성 시, 대각 선 부재의 한 쪽 끝단은 트러스 구조로 연결",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "하단 부재\n- 밴딩 허용\n- 절단 후 용접 등 연결은 불허용\n- 메인&전방 롤후프 최하단부 연결",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "대체 재료 사용시\n- 구조 대응물 양식, 각종 실험 및 해석, 영수증 등 증빙자료",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "충격 완화장치",
+            "remarks": "(4장 17조) p.12~13",
+            "items": [
+              {
+                "name": "앞면 : 가로 200mm 이상 X 세로 100mm 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "뒷면 : 벌크헤드 앞면과 동일한 면으로 사용 가능\n- 벌크헤드 앞면 (파이프 외곽선 기준) 보다 작을경우 별도 (Steel 2t, AL 4t) 차폐",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "앞-뒷면 간 거리 : 200mm 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "재질 - Steel : 2mm 이상 또는 AL : 4mm 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "각 모서리 이음새 용접 등 연결 여부 & 변형 여부, 변형 시 사용불가",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "위 내용에 부합하지 아니한 경우 증빙 데이터 제출\n- 검차 시트 뒤에 첨부",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "벌크헤드",
+            "remarks": "(4장 17조) p.12",
+            "items": [
+              {
+                "name": "사각형이나 원형 등의 폐쇄된 구조",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "좌, 우측 각각 3개 이상의 프레임 부재와 연결\n- 전방 롤 후프 지지대, 프레임 하단 부재, 대각선 부재",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "벌크헤드 최상부에서 50mm 이내에 프레임 구조물 부착",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "대각선 부재\n- 충격완화장치 밀림 방지, 벌크헤드 모서리 두 점 연결",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "대체 재료 사용시\n- 구조 대응물 양식, 각종 실험 및 해석, 영수증 등 증빙자료",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "안전벨트 ",
+            "remarks": "(6장 23조) p.18~20",
+            "items": [
+              {
+                "name": "6점식 이상, 인증품 사용 시 HANS용 벨트 사용 가능",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "자체 제작 금지, 벨트 손상 없어야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "하나의 풀림장치 (퀵 릴리스 타입)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "인증 제품 필수, 인증제품이며 벨트 자체에 손상없을 시 유효기간 관계 없음",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "안전벨트 마운트",
+            "remarks": "(6장 23조) p.18",
+            "items": [
+              {
+                "name": "모든 벨트는 주 구조물에 부착",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "모든 벨트는 운전석 영역 내 위치 (방화벽 기준으로 운전석쪽에만 위치 가능)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "벨트 브라켓 부착 프레임\n- Φ25 x 1.8t (외경 x 두께) 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "벨트 브라켓 두께\n- 2t 이상, 폭 25mm 이상, 철강재료\n- 브라켓 A,B,C,D 중 최소 폭이 홀 직경의 150%를 초과 (그림18 : p.18)\n- 파이프에 직접 감아서 고정되는 경우 별도 브라켓 설치 불필요",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "벨트 고정용 볼트\n- 직경 8mm, 강도 8.8 이상 (강도8.8 미만 아이볼트 사용 금지)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "벨트 고정을 위한 볼트(아이볼트) 또는 너트(아이너트) 용접 부착 방식 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "벨트 브라켓과 볼트 설치\n- 인장하중 및 전단하중 견디는 구조 (그림19 : p.19)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "운전자 공간",
+            "remarks": "(4장 12조 ⑥, ⑦, 15조 p.5~9 / 6장 27조 p.22)",
+            "items": [
+              {
+                "name": "운전자 공간 확인 Template 1\n- 메인 롤 후프 최상단에서 상단 부재 하단까지 수직방향 통과",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "운전석 단면 확인 Template 2\n- 전방 롤 후프에서 페달의 가장 뒷면에서 100mm 떨어진 지점까지 수평 통과",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "운전자 모델 확인\n- 운전자 모델 및 팀내 가장 큰 드라이버 모두 만족",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "바닥면 폐쇄\n- 틈 3mm 이내, 발에서부터 방화벽까지 연결",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "바닥판 고정\n- 기계적 결합(볼트, 리벳 등) / 케이블타이, 와이어, 피스 고정 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "방화벽",
+            "remarks": "(6장 28조 ①) p.22",
+            "items": [
+              {
+                "name": "드라이버를 동력, 연료, 윤활, 냉각, 축전지로부터 완전히 격리, 1t 이상 금속판\n(수냉각장치 주변 방화벽은 끓는 물에 변형되지 않는 비금속 재질 허용)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "연료통 및 연료장치와 배기 시스템 사이 별도 방화벽 필수 (1t 이상)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "압력탱크와 배기 시스템 사이 별도 방화벽 필수 (1t 이상)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "방화벽은 시트로 사용 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "방화벽 구멍, 틈새 완벽 차단, 다수의 판 사용시 테이프로만 연결 불가",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "E-Formula:\n- 드라이버 & 모든 고전압 시스템 및 배선과 완전히 격리\n- 드라이버 & 휠에 위치하지 않은 모든 구동 시스템에서 완전히 격리\n- 두 개의 층으로 방화벽 구성\n- 구동시스템 쪽 : 1t 이상의 알루미늄, 차체에 접지\n- 드라이버 쪽 : 난연성의 전기적 절연 재료로 구성, CFRP는 불허용",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "체인 보호판 & 냉각팬 보호망",
+            "remarks": "(7장 31조 ⑥) p.25",
+            "items": [
+              {
+                "name": "체인 보호판\n- 2t 이상 철판, 체인폭 3배, 최소폭 80mm (체인 중심으로 좌우 40mm이상)\n- 구멍이 있는 소재 사용 불허용 / 다수의 여러 개 판으로 연결하여 구성 허용\n- 보호판의 끝부분은 구동장치(소, 대기어)의 최하단 수평선 아래까지 위치\n- 드라이버를 향해 열린 면이 없어야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "보호판 고정 볼트\n- 모든 보호판 직경 6mm 이상, 강도 8.8 이상 볼트로 고정",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "냉각용 팬이 외부로 노출 된 경우 위험 여부에 따른 손가락 보호망 설치\n(단, 팬과 신체의 접촉이 불가능한 배치일 경우 제외)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "캐치 캔",
+            "remarks": "(7장 31조 ⑧) p.26",
+            "items": [
+              {
+                "name": "내열성 재질, 기계적인 고정",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "캐치 캔\n- 냉각수, 엔진 또는 기어오일 용량의 10% 이상 또는 1리터 이상\n- 별도의 호스 설치 (드레인 호스) 필요\n- 드레인 호스 : 최소 내경 3mm, 프레임 가장 아래 부분까지 내려오게 고정 설치",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "캐치캔 고정 시 찌그러짐 없을 것, 움직임 없도록 확실히 고정될 것.",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "배터리 (Low Voltage)",
+            "remarks": "(6장 30조) p.23~24",
+            "items": [
+              {
+                "name": "차량의 프레임 내부에 위치, 안전하게 고정",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "축전지 모든 단자 절연 ( (+)극, (-)극 모두 절연 )",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "(+)극 단자 쪽 절연 필수 (ex: 스타트모터, 스타트모터 릴레이, 킬 스위치 등)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "리튬 기반 저전압 배터리\n- 난연성 케이스에 내장, 방화벽 설치, 보호회로 장착\n- 국내 판매되는 상용품 사용시 위 조건 모두 만족\n- 별도 제작 시 증빙자료 제출",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "체결장치 ",
+            "remarks": " (15장 74조) p.58",
+            "items": [
+              {
+                "name": "강도 8.8 - 조향, 제동, 안전벨트, 서스펜션, 동력계통",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "조향, 제동, 안전벨트, 서스펜션, 동력계통 볼트 또는 너트 체결 후 피치 2개 이상",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "풀림방지 체결 (74조 ③항 1,2,3,4,5 방식만 허용)\n- 조향, 제동, 안전벨트, 동력계통, 서스펜션, 공력장치, 고전압 시스템\n- 고온 발생 부위(엔진, 배기장치, 브레이크 디스크, 브레이크 캘리퍼,\n고온이 발생하는 전기적 연결부)에는 나일론 록 너트 금지\n- 노드락 와셔 & U너트 사용 허용 (단, U너트 재사용 흔적 있을 시 교체 권고)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "피스류 사용 금지 및 기타 풀림방지 체결방식 사용시 증빙자료 제출",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "공력장치 및 디퓨져",
+            "remarks": "(15장 73조) p.56~58",
+            "items": [
+              {
+                "name": "드라이버 탈출 방해하지 않을것",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "모서리 날카롭지 않을것",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "FAN 등으로 강압적으로 공기의 흐름을 만들어내는 장치 사용 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "공력장치 안전성 확인\n- 임의의 지점, 200N 하중 부여, 최대 변형량 25mm 이하, 영구 변형 5mm 이내",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "전면부\n- 앞타이어 앞 700mm 이상 돌출 금지\n- 전륜 허브중심 높이에서 차폭(타이어 바깥면) 이내에 위치\n- 전륜휠타이어 전방에는 지면에서 250mm 초과 높이로는 설치 금지 (공차상태)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "후면부\n- 뒷 타이어 뒤 250mm 이상 돌출 금지\n- 헤드레스트 가장 뒷면보다 앞으로 돌출 금지\n- 후륜 허브 중심 높이에서의 타이어 안쪽 폭 이내에 위치\n- 어떠한 부분도 지면으로부터 1.2m 초과 금지 (공차상태)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "바퀴사이 (전륜-후륜 휠중심선 사이 위치) \n- 전 후륜 휠 중심 높이에서의 휠의 바깥 면보다 돌출 금지\n- 지면으로부터 500mm 초과 금지 (공차상태)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "축전지",
+    "remarks": "",
+    "pdf_include": 1,
+    "subcategories": [
+      {
+        "name": "기본사항",
+        "remarks": "",
+        "groups": [
+          {
+            "name": "인적사항",
+            "remarks": "",
+            "items": [
+              {
+                "name": "팀장 이름/연락처",
+                "answer_type": "text",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "ESO 이름/연락처",
+                "answer_type": "text",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "차량 제원",
+            "remarks": "",
+            "items": [
+              {
+                "name": "TS Voltage (max)",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "V"
+              },
+              {
+                "name": "TS Power (max)",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "kW"
+              },
+              {
+                "name": "GLVS Voltage",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "V"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "축전지검사: 축전지박스가 열려있는 경우 세그먼트 커넥터 분리!!!!!!",
+        "remarks": "",
+        "groups": [
+          {
+            "name": "기본정보",
+            "remarks": "",
+            "items": [
+              {
+                "name": "IMD 테스트 값",
+                "answer_type": "number",
+                "remarks": "(250 * 최대 전압)",
+                "unit": "Ω"
+              },
+              {
+                "name": "TSMP 전류제한 저항값",
+                "answer_type": "number",
+                "remarks": "(0~200V: 5kΩ, 200~400V: 10kΩ, 400~600V: 15kΩ)",
+                "unit": "kΩ"
+              }
+            ]
+          },
+          {
+            "name": "셀 및 세그먼트",
+            "remarks": "최대 전압 120V 이하, 최대 에너지 6MJ 이하, 최대 12kg 이하",
+            "items": [
+              {
+                "name": "셀 최대 전압",
+                "answer_type": "number",
+                "remarks": "데이터시트 확인",
+                "unit": "V"
+              },
+              {
+                "name": "셀 전류 용량",
+                "answer_type": "number",
+                "remarks": "데이터시트 확인",
+                "unit": "Ah"
+              },
+              {
+                "name": "세그먼트 구성",
+                "answer_type": "text",
+                "remarks": "데이터시트 확인",
+                "unit": ""
+              },
+              {
+                "name": "세그먼트 질량",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "kg"
+              },
+              {
+                "name": "최대 에너지",
+                "answer_type": "number",
+                "remarks": "최대 에너지[J] = 셀 최대 전압[V] * 셀 전류 용량[Ah] * 셀 개수 * 3600",
+                "unit": "MJ"
+              }
+            ]
+          },
+          {
+            "name": "축전지 일반사항",
+            "remarks": "",
+            "items": [
+              {
+                "name": "세그먼트는 축전지박스와 기계적 결합을 통해 하중 전달 가능",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "모든 축전지박스에 고전압 경고 스티커 부착",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "BMS가 모든 셀 전압을 감시",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "BMS가 최소 20% 셀의 온도 감시",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "온도 센서\n- 셀 음극에 직접 접촉 혹은 버스바의 10mm 이내에 위치",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "고전류 경로\n- 강철볼트만을 전기적 경로로 삼아 체결 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "전기적 연결부에 플라스틱과 같은 비금속 및 변형 가능한 재료 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "고전류 경로(1A)는 기계적 결합 및 고온에 적합한 풀림 방지 사용",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "축전지 박스 내부에 BSPD 장치의 상황 감지를 위한 센서 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "축전지 전압 표시 장치 (Voltage Indicator)\n- 차량에서 분리되었을 때 잘 보이는 곳에 위치",
+                "answer_type": "passfail",
+                "remarks": "구동시스템 전압 60V 이상 시",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "HV 배선",
+            "remarks": "",
+            "items": [
+              {
+                "name": "적절한 규격의 배선: 축전지박스 내부 AIR, 전선, 단자 확인 (전류 및 전압 정격)",
+                "answer_type": "passfail",
+                "remarks": "데이터시트 확인",
+                "unit": ""
+              },
+              {
+                "name": "축전지박스 내부의 모든 HV 배선의 정격전압 >= TS 최대 전압",
+                "answer_type": "passfail",
+                "remarks": "데이터시트 확인",
+                "unit": ""
+              },
+              {
+                "name": "고전류 경로에서 납땜 연결 금지",
+                "answer_type": "passfail",
+                "remarks": "전압 감지 전선의 납땜은 허용",
+                "unit": ""
+              },
+              {
+                "name": "TS, GLVS 배선 분리: 동일한 도관, 커넥터 통과 금지 ",
+                "answer_type": "passfail",
+                "remarks": "Interlock 제외",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "세그먼트 커넥터",
+            "remarks": "",
+            "items": [
+              {
+                "name": "도구 사용없이 연결 및 분리 가능, 릴레이나 스위치 사용 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "표면: 비전도성 재질로 구성",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "물리적으로 설계된 의도와 다르게 연결될 수 없어야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "진동에 분리되지 않는 기능 포함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "축전지박스가 열려있거나 세그먼트를 제거할 때, 세그먼트 커넥터는 연결된 세그먼트들의 최대 전압과 최대 에너지가 120V, 6MJ 이하가 되도록 분리되어야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "TS 퓨즈",
+            "remarks": "",
+            "items": [
+              {
+                "name": "모든 TS 과전류 보호장치의 DC 전압 정격 >= TS 최대 전압",
+                "answer_type": "passfail",
+                "remarks": "데이터시트 확인",
+                "unit": ""
+              },
+              {
+                "name": "TS 메인 퓨즈의 전류 정격 <= AIR의 최대 차단전류",
+                "answer_type": "passfail",
+                "remarks": "데이터시트 확인",
+                "unit": ""
+              },
+              {
+                "name": "TS 메인 퓨즈의 차단용량 >= TS의 이론적인 단락전류",
+                "answer_type": "passfail",
+                "remarks": "데이터시트 확인",
+                "unit": ""
+              },
+              {
+                "name": "초기충전회로와 방전회로의 퓨징 금지",
+                "answer_type": "passfail",
+                "remarks": "데이터시트 확인",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "내부 구성 / 절연",
+            "remarks": "",
+            "items": [
+              {
+                "name": "축전지의 셀, 세그먼트의 극은 박스의 내벽으로부터 반드시 절연 (구동시스템의 최대 전압에 적합한 절연 재료 이용)",
+                "answer_type": "passfail",
+                "remarks": "데이터시트 및 실물 확인",
+                "unit": ""
+              },
+              {
+                "name": "메인 퓨즈, AIR는 축전지박스의 전도성 표면과 난연성의 (UL94-V0, FAR25 혹은 동등) 전기적 절연 재료를 이용하여 분리",
+                "answer_type": "passfail",
+                "remarks": "데이터시트 및 실물 확인",
+                "unit": ""
+              },
+              {
+                "name": "동일한 인클로저 내 TS 와 GLVS는 절연재료(캡톤, 노멕스 등)로 분리 혹은 절연거리 유지",
+                "answer_type": "passfail",
+                "remarks": "(전압 차이 100V 이하 100mm, 100V~200V 20mm, 200V~ 30mm)",
+                "unit": ""
+              },
+              {
+                "name": "세그먼트 위쪽\n- 적절한 절연 재료를 이용하여 절연",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "한 개 이상의 메인 퓨즈, 두 개 이상의 AIR (극 당 1개) 포함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "내부에 AIR, pre-charge/discharge, DC/DC Converter, BMS, IMD, TSAL, 냉각용 팬을 제외한 GLVS 미포함",
+                "answer_type": "passfail",
+                "remarks": "에너지미터는 축전지 박스 내부 배치 금지",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "PCB Isolation",
+            "remarks": "제47조",
+            "items": [
+              {
+                "name": "회로 내의 GLVS와 TS, TS와 TS 사이는 차량기술규정 제47조 4항의 필수간격을 만족해야 함 (연면거리와 공간거리)",
+                "answer_type": "passfail",
+                "remarks": "회로 도면 확인",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "축전지 기계적 구성",
+            "remarks": "",
+            "items": [
+              {
+                "name": "무게",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "kgf"
+              },
+              {
+                "name": "고정점 개수",
+                "answer_type": "number",
+                "remarks": "하중기반의 경우, 축전지박스 고정점 (0~20kg: 4개, 20~30kg: 6개, 30~40kg: 8개, 40kg~: 10개) / 코너고정의 경우 부착점 규정 참고",
+                "unit": "개"
+              },
+              {
+                "name": "굽힘하중 전달 보강재 (x축, y축 굽힘 하중 : 제65조 그림36 참고)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "바닥\n- 2mm 이상의 철판 또는 3mm 이상의 알루미늄판",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "수직 벽 및 커버\n- 1mm 이상의 철판 또는 2mm 이상의 알루미늄판",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "세그먼트를 다른 공간과 분리하는 내벽\n- 1mm 이상의 철판 혹은 2mm 알루미늄\n- 인접한 세그먼트 가릴 수 있는 최소 높이와 폭",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "제거가능한 수평한 내벽은 각 외벽과 최소 한 개 이상의 체결지점 필요",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "연속 용접이 아닌 경우 (단속 용접), 각 용접 길이는 25mm 이상\n용접길이 > 용접 사이 공간 길이",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "밀폐된 구조일 경우 압력해제장치 포함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "축전지박스가 이탈하지 않도록 기계적 결합으로 고정할 수 있어야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "배선 또는 환기를 위한 구멍 (슬릿 형상X) 만 허용, 흡습 방지 필터 및 덕트 설치",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "배선, 체결 등에 의한 구멍과 환기용 구멍 직경 10mm (혹은 동등 면적) 이하",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "회로 보드와 LV시스템 구성요소 기계적 결합 여부(접착제, 케이블타이 금지)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "패스너의 시험하중에 대한 순수전단 강도 분석",
+                "answer_type": "passfail",
+                "remarks": "구조해석자료 확인",
+                "unit": ""
+              },
+              {
+                "name": "축전지 마운트, 섀시 마운트, 모노코크 마운트 시험 하중에 대한 강도 분석",
+                "answer_type": "passfail",
+                "remarks": "구조해석자료 확인",
+                "unit": ""
+              },
+              {
+                "name": "용접 시 전단, 본드 접합 시 전단 및 인장에서 시험 하중에 대한 강도 분석",
+                "answer_type": "passfail",
+                "remarks": "구조해석자료 확인",
+                "unit": ""
+              },
+              {
+                "name": "축전지 박스 패스너 및 구조 설계 (가속도)",
+                "answer_type": "passfail",
+                "remarks": "구조해석자료 확인",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "여분 축전지",
+            "remarks": "",
+            "items": [
+              {
+                "name": "크기, 무게, 형태 동일한 여분의 축전지박스 사용",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "핸드카트",
+            "remarks": "",
+            "items": [
+              {
+                "name": "축전지박스 완전 적재 상태에서 멈춘 상태를 유지하는 브레이크 장치 장착",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "손으로 브레이크 장치 해제 시에만 이동 가능 (동력장치 금지)\n- 브레이크 장치 해제 후 쉽게 움직일 수 있어야함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "축전지박스를 진동이나 충격으로부터 보호하는 설계",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "핸드카트 이용자를 보호하는 방화벽 설치\n- 카트 바닥면과 동일한 폭 이상, 손잡이 중심 기준 30cm 상단까지의 높이\n- 사람의 다리와 몸 보호 가능\n- 1mm 두께 이상의 알루미늄, 핸드카트에 접지, 사용자 방향 난연성 재료 사용",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "배터리 박스와 접촉하는 부분의 절연처리",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "축전지박스가 이탈하지 않도록 기계적 결합으로 고정할 수 있어야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "충전기",
+            "remarks": "",
+            "items": [
+              {
+                "name": "모든 연결 부분 절연 및 비전도성 커버로 보호",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "주황색 충전 배선 사용",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "2. 축전지 테스트 (HV 테스트) !!주의!",
+        "remarks": "",
+        "groups": [
+          {
+            "name": "충전 - 일반사항",
+            "remarks": "",
+            "items": [
+              {
+                "name": "축전지 박스에 충전 시간, 담당자 전화번호 표시",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "입력(AC)과 출력(DC)은 반드시 전기적 절연 (galvanic isolation)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "충전기 하우징이 전도체인 경우 AC 입력의 접지에 반드시 연결",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "충전기 고전압 배선은 구동시스템에 해당 (단, 제49조 1항 예외)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "충전기 커넥터가 올바르게 연결되어야만 커넥터 활성화",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "제53조에 명시된 TS 및 GLVS 측정 포인트 설치 및 전류 제한 저항으로 보호",
+                "answer_type": "passfail",
+                "remarks": "TSMP 저항 참고",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "충전 - 동작",
+            "remarks": "",
+            "items": [
+              {
+                "name": "축전지 전압 표시장치 동작 확인, 전압 표시장치가 잘 보이는 위치인지 확인",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "차단 버튼 작동 시 충전 중단 및 HV 5초 이내 방전 확인",
+                "answer_type": "passfail",
+                "remarks": "동작 확인",
+                "unit": ""
+              },
+              {
+                "name": "IMD는 insulation fault 발생 이후, 30초 이내로 차단 회로를 개방\n1. 충전 중 IMDT 저항을 TSMP와 GLVS 접지에 연결\n2. IMD 30초 이내 작동, HV 5초 이내 방전 여부 확인\n3. 충전기 꺼짐 확인 / 재설정까지 충전기는 비활성 상태 유지",
+                "answer_type": "passfail",
+                "remarks": "동작 확인",
+                "unit": ""
+              },
+              {
+                "name": "충전 시, BMS 작동 확인. BMS fault 발생시 충전 중단 및 비활성 상태 유지",
+                "answer_type": "passfail",
+                "remarks": "동작 확인",
+                "unit": ""
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "전기",
+    "remarks": "",
+    "pdf_include": 1,
+    "subcategories": [
+      {
+        "name": "기본사항",
+        "remarks": "",
+        "groups": [
+          {
+            "name": "차량 제원",
+            "remarks": "",
+            "items": [
+              {
+                "name": "TS Voltage (max)",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "V"
+              },
+              {
+                "name": "TS Power (max)",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "kW"
+              },
+              {
+                "name": "GLVS Voltage",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "V"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "차량 안전 검사",
+        "remarks": "!!HVD / HV 비상 정지 스위치 키 분리 확인!!",
+        "groups": [
+          {
+            "name": "안전장비",
+            "remarks": "",
+            "items": [
+              {
+                "name": "보안경, 멀티미터, HV 절연장갑 두 켤레, 전기시스템에 적합한 절연공구",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "HV 배선",
+            "remarks": "",
+            "items": [
+              {
+                "name": "색상\n* 하우징, 인클로저 외부의 TS 배선, 전선 덮개: 주황색\n* GLVS 배선, 전선 덮개: 주황색 금지",
+                "answer_type": "passfail",
+                "remarks": "색상",
+                "unit": ""
+              },
+              {
+                "name": "위치\n* 프레임 내부에 위치, 차량의 가장 낮은 차체보다 위에 위치\n* 움직이는 부품으로 100mm 이상 이격 or 금속 재질의 보호체로 보호",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "고정\n* 전선 덮개는 움직이지 않도록 단단히 고정\n* 배선은 풀리거나 기구적 스트레스를 방지하도록 단단히 고정",
+                "answer_type": "passfail",
+                "remarks": "고정",
+                "unit": ""
+              },
+              {
+                "name": "절연\n* TS 모든 배선은 비전도성 절연 재료/덮개로 보호 (온도변화에 적합)\n* 절연테이프만을 이용한 절연 금지",
+                "answer_type": "passfail",
+                "remarks": "절연",
+                "unit": ""
+              },
+              {
+                "name": "축전지박스 외부 표면은 GLVS 접지와 전기적으로 연결",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "적절한 규격의 배선: 축전지박스외부 전선, 단자 확인 (전류 및 전압 정격)",
+                "answer_type": "passfail",
+                "remarks": "데이터시트 확인",
+                "unit": ""
+              },
+              {
+                "name": "고전류경로: 강철볼트만을 전기적 경로로 삼아 체결 금지 및 고온 적합 풀림방지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "전기적 연결부 플라스틱과 같은 비금속 및 변형 가능한 재료 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "외부 비절연 히트싱크 사용시 GLVS에 접지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "TS, GLVS 배선 분리: 동일한 도관, 커넥터 통과 금지 (Interlock 제외)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "TS를 포함하는 모든 하우징, 인클로저에 고전압 경고 스티커 부착, 고전압 표시",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "인클로저 외부 구동시스템 커넥터는 인터락 기능 필수 or 밀봉",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "에너지미터",
+            "remarks": "",
+            "items": [
+              {
+                "name": "모든 축전지 장치에서 나오는 에너지는 에너지미터를 통하여 전달되도록 배선",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "에너지미터 축전지박스 내부 장착 금지 / 15분 이내 탈착 가능(파크퍼밋)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "GLVS 퓨즈",
+            "remarks": "",
+            "items": [
+              {
+                "name": "모든 GLVS 과전류 보호장치의 DC 전압 정격 ≥ GLVS 최대 전압",
+                "answer_type": "passfail",
+                "remarks": "데이터시트 확인",
+                "unit": ""
+              },
+              {
+                "name": "GLVS 메인 퓨즈의 차단용량 ≥ GLVS의 이론적인 단락전류",
+                "answer_type": "passfail",
+                "remarks": "데이터시트 확인",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "차단회로 & 안전장치",
+            "remarks": "",
+            "items": [
+              {
+                "name": "차단회로는 AIR까지 전류를 직접 전달",
+                "answer_type": "passfail",
+                "remarks": "ESF, 회로도 확인",
+                "unit": ""
+              },
+              {
+                "name": "차단회로는 초기 충전 회로의 전류 흐름도 중단시킬 수 있어야함",
+                "answer_type": "passfail",
+                "remarks": "ESF, 회로도 확인",
+                "unit": ""
+              },
+              {
+                "name": "TSAL은 차단회로가 아닌 TS 전압에 의해 직접 연결되어 작동",
+                "answer_type": "passfail",
+                "remarks": "ESF, 회로도 확인",
+                "unit": ""
+              },
+              {
+                "name": "최소 15초 동안 최대 방전 전류를 처리 할 수 있는 방전회로",
+                "answer_type": "passfail",
+                "remarks": "ESF, 회로도 확인",
+                "unit": ""
+              },
+              {
+                "name": "HVD를 분리했을 때, Interlock이 항상 AIR을 개방하도록 설치",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "BOTS: 페달이 평소 운동 거리를 넘어설때 작동되고 손상되지 않아야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "고전류 경로(1A)는 기계적 결합 및 고온에 적합한 풀림 방지 사용",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "HVD",
+            "remarks": "",
+            "items": [
+              {
+                "name": "방해요소 없이 부품을 손으로 제거/분리하여 작동",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "\"HVD\" 명확하게 표시",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "차량 바디를 탈거하지 않고 분리 가능, 드라이버 탑승 상태에서 지면에서 350mm 이상에 위치",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "분리 후, 시스템의 절연 보장 (필요 시, 더미 커넥터와 같은 장치 이용)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "경기 준비 상태에서, 10초 이내에 제거할 수 있어야 함 (키 분리상태에서 진행)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "TSAL",
+            "remarks": "",
+            "items": [
+              {
+                "name": "메인 롤 후프의 가장 높은 지점보다 75mm 이내로 낮은 곳에 위치",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "릴레이의 실제 기구적 상태 감지 (제어 신호 사용 금지)\n* 기구적 상태 감시를 위해 회로를 사용하는 경우 제66조 2항 만족해야함.",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "무색의 투명한 케이스에 내장",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "드라이버 헬멧에 안닿는 곳, 다른 표시등에 가깝지 않게 위치, 단단하게 고정",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "BMS 표시등",
+            "remarks": "",
+            "items": [
+              {
+                "name": "운전석의 적색 BMS 표시등, \"BMS\" 명확하게 표시",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "TSMP",
+            "remarks": "",
+            "items": [
+              {
+                "name": "HV+, HV-, GLVS 접지용 바나나 잭: 차량 오른쪽, 드라이버의 어깨 높이에 위치",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "HV+, HV-: 적색, \"HV+\", \"HV-\" 명확하게 표시",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "GLVS 접지: 흑색, \"GND\" 명확하게 표시",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "공구없이 열 수 있는 절연 케이스로 보호",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "케이스가 열려 있을 때에도, 맨손 접촉으로부터 보호",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "주 비상정지 스위치",
+            "remarks": "",
+            "items": [
+              {
+                "name": "HV, LV 비상 정지 스위치: 차량 오른쪽, 드라이버의 어깨 높이에 위치",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "LV 스위치: \"LV\", \"ON\", \"OFF\" 명확하게 표시, 차량의 모든 전원 차단",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "HV 스위치: \"HV\", \"ON\", \"OFF\" 명확하게 표시, 고전압 경고 스티커 부착",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "탈착이 가능한 키 방식의 스위치 사용, 수평 방향이 ON 위치가 되도록 고정",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "보조 비상정지 스위치",
+            "remarks": "",
+            "items": [
+              {
+                "name": "Push-Pull/Push-Rotate 방식, 국제 표준 전기 심볼 스티커 부착",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "2개 : 차량의 좌우, 드라이버의 머리 높이에 위치, 최소직경 40mm",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "1개 : 운전석에 위치, 최소직경 24mm",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "비상 정지 스위치 키가 차량에서 완전 분리 가능",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "TS 부품 배치",
+            "remarks": "",
+            "items": [
+              {
+                "name": "휠 모터 : 모터 배선이 손상/분리되었을 때 차단 회로를 개방하는 Interlock 포함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "구동시스템이 롤 오버 보호 영역 안에 존재",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "APPS & 가속페달",
+            "remarks": "",
+            "items": [
+              {
+                "name": "움직이는 부분에 배선 및 다른 부품과의 간섭이 없어야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "작동 범위는 초기위치(0%)~완전히 밟은 위치(100%)에 대한 거리여야 한다.",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "밟지 않았을 때 0% 위치로 복귀해야함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "페달 리턴스프링 2개 (1개 만으로도 원복 가능해야함, 센서내부의 스프링 제외)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "페달 신호를 전송하는 배선이 간섭여부 확인(운전자 및 차량움직임)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "방화벽",
+            "remarks": "",
+            "items": [
+              {
+                "name": "배선을 포함한 모든 고전압 시스템으로부터 드라이버를 완전히 격리해야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "드라이버를 바라보는 층은 난연성의 전기적 절연 재료로 이루어져야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "방화벽의 전도성부분은 GLVS와 100mOhm(1A로 측정) 미만의 저항을 가져야한다.",
+                "answer_type": "passfail",
+                "remarks": "III. 안전TEST 에서 확인",
+                "unit": ""
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "차량 안전 TEST",
+        "remarks": "!!퀵잭을 이용하여 차의 구동륜과 지면 분리!!",
+        "groups": [
+          {
+            "name": "측정",
+            "remarks": "",
+            "items": [
+              {
+                "name": "차단회로가 개방되거나 LV 차단될 때마다 방전회로가 작동해야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "TSMP의 HV+, HV- 사이의 저항 측정",
+                "answer_type": "number",
+                "remarks": "측정값=2*전류제한저항값+방전저항값",
+                "unit": "kΩ"
+              },
+              {
+                "name": "GLVS 전압 측정",
+                "answer_type": "number",
+                "remarks": "60V DC 이하 또는 25V AC RMS 이하",
+                "unit": "V"
+              },
+              {
+                "name": "GLVS 접지와 TS 부품 전도체 사이의 저항 < 100mΩ",
+                "answer_type": "passfail",
+                "remarks": "시트 고정 마운트, 안전벨트 마운트, 방화벽, 방화벽 마운트 등",
+                "unit": ""
+              },
+              {
+                "name": "GLVS 접지저항 측정값",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "mΩ"
+              },
+              {
+                "name": "100mm 이내의 전도성이 될 가능성이 있는 소재 사이의 저항 < 100Ω",
+                "answer_type": "passfail",
+                "remarks": "완전히 코팅된 금속 혹은 탄소 섬유 부품 등",
+                "unit": ""
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "HV 테스트",
+        "remarks": "!!주의!!",
+        "groups": [
+          {
+            "name": "IMT",
+            "remarks": "",
+            "items": [
+              {
+                "name": "TSMP와 섀시 접지 사이의 절연저항 측정. 측정 전압 설정\n절연 저항 >= 500 * TS 전압",
+                "answer_type": "passfail",
+                "remarks": "최대전압<=250V : 250V 인가, 최대전압>250V : 500V 인가",
+                "unit": ""
+              },
+              {
+                "name": "HV+",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "MΩ"
+              },
+              {
+                "name": "HV-",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "MΩ"
+              }
+            ]
+          },
+          {
+            "name": "GLVS 우선작동",
+            "remarks": "",
+            "items": [
+              {
+                "name": "LV 비상정지 스위치 Off 상태에서 TS 작동 시도",
+                "answer_type": "passfail",
+                "remarks": "TSMP에서 HV 이상의 전압 발생 확인",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "TS 전압",
+            "remarks": "",
+            "items": [
+              {
+                "name": "TS 전압",
+                "answer_type": "number",
+                "remarks": "TS 작동 후, TSMP를 통해 전압 측정",
+                "unit": "V"
+              }
+            ]
+          },
+          {
+            "name": "초기충전회로",
+            "remarks": "",
+            "items": [
+              {
+                "name": "AIR이 닫히기 전에 TS 전압이 축전지 전압의 90%까지 확보되도록 초기충전함\n(AIR이 닫힌 후 작동 중지)",
+                "answer_type": "passfail",
+                "remarks": "HV 비상 정지 스위치 ON -> 멀티미터로 관측",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "TSAL",
+            "remarks": "",
+            "items": [
+              {
+                "name": "적색등 : AIR의 차량 쪽에 전압 60V DC or 50V AC 초과 전압, 2~5Hz 점등",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "녹색등 :\n1) 모든 AIR개방\n2) 초기 충전 릴레이 개방,\n3) AIR의 차량 쪽에 전압 60V DC or 50V AC 이하일 때 녹색등 점등",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "밝은 햇빛 하, 지면으로부터 높이 1.6m, 반경 3m 이내에서 명확하게 인식 가능",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "총 중심 길이 75mm이상, 광원 중심사이거리 15mm 이하",
+                "answer_type": "passfail",
+                "remarks": "애매한 경우 우천테스트에서 재확인",
+                "unit": ""
+              },
+              {
+                "name": "드라이버가 볼 수 있는 곳에 TS Off 표시등 (녹색등과 동일하게 동작)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "BMS 데이터",
+            "remarks": "",
+            "items": [
+              {
+                "name": "팀은 BMS가 모든 셀의 전압과 온도를 감시하고 있는 것을 검증해야 함",
+                "answer_type": "passfail",
+                "remarks": "데이터 확인",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "IMDT",
+            "remarks": "",
+            "items": [
+              {
+                "name": "GLVS 이외 두개 독립적인 차체 접지\n(1. 배터리박스 케이스, 2. 메인롤후프 드라이버 어깨 지점)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "IMD는 insulation fault 발생 이후, 30초 이내로 차단 회로를 개방해야 함\n1. TS 활성화\n2. IMDT 저항 박스(250 Ohm/V)를 TSMP와 GLVS 접지에 연결\n3. IMD 30초 이내 작동, HV 5초 이내 방전 여부 확인",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "HV+",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "sec"
+              },
+              {
+                "name": "HV-",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "sec"
+              },
+              {
+                "name": "운전석의 적색 IMD 표시등 작동, 햇빛 아래 인식 가능, \"IMD\" 명확하게 표시\n(RESET 되기 전까지 점등된 상태 유지)",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "IMD, BMS가 TS 비활성화",
+            "remarks": "",
+            "items": [
+              {
+                "name": "IMDT 저항 제거 시, TS는 자동으로 활성화되면 안 됨",
+                "answer_type": "passfail",
+                "remarks": "팀에서 검증",
+                "unit": ""
+              },
+              {
+                "name": "BMS 오류 발생 시, TS는 자동으로 활성화되면 안 됨",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "드라이버는 TS를 재활성화 시킬 수 없어야 함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "차단회로",
+            "remarks": "HV 5초 이내 방전",
+            "items": [
+              {
+                "name": "모든 스위치 ON -> HV 비상정지 스위치 OFF",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "모든 스위치 ON -> LV 비상정지 스위치 OFF",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "모든 스위치 ON -> 왼쪽 보조 비상정지 스위치 OFF",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "모든 스위치 ON -> 오른쪽 보조 비상정지 스위치 OFF",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "모든 스위치 ON -> 운전석 보조 비상정지 스위치 OFF",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "모든 스위치 ON -> 제동장치 미작동 감지장치(BOTS) OFF",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "모든 스위치 ON -> HVD, 휠 모터 커넥터 분리",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "RTD 상태",
+            "remarks": "",
+            "items": [
+              {
+                "name": "차단회로를 닫는 것만으로 차량이 RTD 상태에 들어가면 안 됨\n(RTD 상태: APPS 입력에 모터가 응답할 준비가 됐을 때)",
+                "answer_type": "passfail",
+                "remarks": "HV 비상 정지 스위치 ON -> RTD 상태인지 확인",
+                "unit": ""
+              },
+              {
+                "name": "TS가 활성화된 후, 차량이 RTD 상태에 진입하기 위해 드라이버는 브레이크 페달을 밟은 상태에서만 가능, 출발버튼을 누르는 것과 같은 추가적인 동작을 수행",
+                "answer_type": "passfail",
+                "remarks": "반드시 브레이크 페달을 밟고 진행",
+                "unit": ""
+              },
+              {
+                "name": "RTD가 아닌 상태에서 RTDS 발생 금지",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "RTDS 가 발생하는 중에는 동력원이 구동되지 않아야함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "RTD 상태에서 재시동시 RTD 상태는 초기화 되어야함",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "RTDS 테스트",
+            "remarks": "",
+            "items": [
+              {
+                "name": "차량이 RTD 상태에 진입할 때, 차량은 1초~3초동안 특정한 소리를 발생해야 함\n음향 레벨은 차량 주변 반경 2m에서 80dBA 이상 90dBA 이하이어야 함",
+                "answer_type": "passfail",
+                "remarks": "음향 시험 확인",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "APPS 테스트",
+            "remarks": "팀에서 검증",
+            "items": [
+              {
+                "name": "아날로그 신호의 경우, open/short에 대비하여 동작 범위 설정",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "전자 제어 장치를 사용할 경우 토크 신호를 증폭시키면 안 됨",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "BSPD",
+            "remarks": "",
+            "items": [
+              {
+                "name": "모터 제어기에서 차량을 전진시키는 양의 전류가 전달되면서 (최대 축전지 전압을 기준으로 5kW 초과), 동시에 차량에 강한 제동이 가해질 때 (압력센서 필수 사용, 기준값은 브레이크 압력이 30bar 미만인 값)\n이 상황이 0.5초 이상 지속되면 AIR을 개방",
+                "answer_type": "passfail",
+                "remarks": "팀에서 검증 (방법 중 하나는 5kW 초과의 전류와 같은 상황을 설정하는 것임)",
+                "unit": ""
+              },
+              {
+                "name": "드라이버는 TS를 재활성화 시킬 수 없어야 함\n(단, 10초 이내 제60조 1항의 상황이 해제된 상태로 유지될 시 \"시스템이\" 스스로 재활성화 가능)",
+                "answer_type": "passfail",
+                "remarks": "팀에서 검증",
+                "unit": ""
+              },
+              {
+                "name": "센서가 비정상(단락) 상황일 때 BSPD 오류 발생 여부 확인",
+                "answer_type": "passfail",
+                "remarks": "커넥터 분리 등의 방법으로 확인",
+                "unit": ""
+              },
+              {
+                "name": "제동시스템 타당성 장치 표시등 (BSPD Indicator) 장착 여부",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "우천 테스트",
+            "remarks": "",
+            "items": [
+              {
+                "name": "TS 활성화 상태에서 2분간 우천 상황 재현\n(우천 상황 중 120초, 우천 상황 이후 120초 동안 IMD 미작동시 통과)",
+                "answer_type": "passfail",
+                "remarks": "TS 활성화상태 유지 확인",
+                "unit": ""
+              }
+            ]
+          },
+          {
+            "name": "밀봉",
+            "remarks": "",
+            "items": [
+              {
+                "name": "모든 축전지박스 밀봉",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "에너지미터 하우징 밀봉",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "IMD 하우징 밀봉",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              },
+              {
+                "name": "TSAL 회로 하우징 밀봉",
+                "answer_type": "passfail",
+                "remarks": "",
+                "unit": ""
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "틸팅",
+    "remarks": "",
+    "pdf_include": 0,
+    "subcategories": []
+  },
+  {
+    "name": "소음",
+    "remarks": "",
+    "pdf_include": 0,
+    "subcategories": []
+  },
+  {
+    "name": "우천",
+    "remarks": "",
+    "pdf_include": 0,
+    "subcategories": []
+  },
+  {
+    "name": "제동",
+    "remarks": "",
+    "pdf_include": 0,
+    "subcategories": []
+  },
+  {
+    "name": "보고서",
+    "remarks": "",
+    "pdf_include": 0,
+    "subcategories": [
+      {
+        "name": "보고서평가",
+        "remarks": "",
+        "groups": [
+          {
+            "name": "점수",
+            "remarks": "",
+            "items": [
+              {
+                "name": "보고서평가 점수",
+                "answer_type": "number",
+                "remarks": "",
+                "unit": "점"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -79,7 +79,7 @@ function getChecktableConfig(item) {
           <template v-for="(sub, si) in cat.subcategories" :key="sub.id">
             <tbody>
               <tr class="sub-header-row">
-                <td colspan="4" class="td-sub-header">{{ subNum(si) }} - {{ sub.name }}</td>
+                <td colspan="4" class="td-sub-header">{{ subNum(si) }} - {{ sub.name }}<span v-if="sub.remarks" class="sub-remarks"> — {{ sub.remarks }}</span></td>
               </tr>
             </tbody>
 
@@ -273,6 +273,12 @@ function getChecktableConfig(item) {
   font-weight: 800;
   font-size: 9pt;
   padding: 4pt 6pt;
+}
+
+.sub-remarks {
+  font-weight: 400;
+  color: #555;
+  font-size: 7.5pt;
 }
 
 /* Group header */
