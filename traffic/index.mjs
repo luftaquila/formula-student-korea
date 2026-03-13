@@ -1,3 +1,4 @@
+import fs from "fs";
 import path from "path";
 import express from "express";
 import pinoHttp from "pino-http";
@@ -293,8 +294,8 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
         db.prepare(`UPDATE '${name}' SET invalidated = 1, scoreboard = 0 WHERE rowid = ?`).run(rowid);
         return { invalidated: 1, scoreboard: 0 };
       } else {
-        db.prepare(`UPDATE '${name}' SET invalidated = 0 WHERE rowid = ?`).run(rowid);
-        return { invalidated: 0, scoreboard: row.scoreboard };
+        db.prepare(`UPDATE '${name}' SET invalidated = 0, scoreboard = 1 WHERE rowid = ?`).run(rowid);
+        return { invalidated: 0, scoreboard: 1 };
       }
     } else if (field === "scoreboard") {
       const newStatus = row.scoreboard ? 0 : 1;

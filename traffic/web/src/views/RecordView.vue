@@ -271,7 +271,6 @@ async function handleInvalidate(record) {
   try {
     const result = await updateRecord(selectedFile.value, record.rowid, "invalidated");
     applyUpdateResult(record, result);
-    notyf.success(result.invalidated ? "기록이 무효화되었습니다." : "기록이 복원되었습니다.");
   } catch (e) {
     notyf.error(`무효화 실패: ${e.message}`);
   }

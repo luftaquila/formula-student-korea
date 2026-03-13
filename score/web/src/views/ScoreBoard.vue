@@ -208,7 +208,6 @@ async function handleSelectRecord(evt, teamNum, run) {
       detail: run.detail,
     };
     activeDropdown.value = null;
-    success("기록이 선택되었습니다.");
   } catch {
     error("기록 선택에 실패했습니다.");
   }
