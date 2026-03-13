@@ -8,7 +8,7 @@ Formula Student Korea Service Hub - a microservices-based web application for ma
 
 ## Architecture
 
-Seven independent services deployed via Docker Compose behind an Nginx reverse proxy (port 9000):
+Eight independent services deployed via Docker Compose behind an Nginx reverse proxy (port 9000):
 
 - **landing/** - Landing page and reverse proxy gateway (Vue 3 + Nginx)
 - **entry/** - Vehicle entry registration API + web UI (Express + Vue 3, port 9100)
@@ -17,6 +17,7 @@ Seven independent services deployed via Docker Compose behind an Nginx reverse p
 - **traffic/** - Traffic control and telemetry API + web UI (Express + Vue 3, port 9200)
 - **score/** - Score aggregation and management API + web UI (Express + Vue 3, port 9700)
 - **energymeter/** - Energy meter data viewer (Git submodule, Vue 3, port 9400)
+- **rules/** - Rules file server (Caddy, port 9500)
 
 **Shared modules** in `shared/` are imported directly by other services:
 - `NavMenu.vue` - Navigation drawer component used across all frontends
@@ -48,7 +49,7 @@ Service dependencies (via `ENTRY_SERVER` environment variable):
 
 ### Frontend Development
 ```bash
-cd landing|entry/web|queue/web|inspection/web|traffic/web|energymeter/viewer
+cd landing|entry/web|queue/web|inspection/web|traffic/web|score/web|energymeter/viewer
 npm run dev        # Dev server with hot reload
 npm run build      # Production build
 ```
@@ -78,6 +79,7 @@ podman compose --profile local up -d <service> && podman compose --profile local
 - `inspection/index.mjs` - Inspection sheet service API server
 - `traffic/index.mjs` - Traffic service API server
 - `score/index.mjs` - Score aggregation service API server
+- `rules/Caddyfile` - Rules file server configuration
 - `docker-compose.yml` - Service orchestration
 
 ## Authentication
@@ -101,7 +103,7 @@ Nginx handles HTTP Basic Auth with two permission levels. See README.md for the 
 
 Admin users must be added to both `.htpasswd.admin` and `.htpasswd.official`. Official users only need `.htpasswd.official`.
 
-Public routes: `/`, `/queue`, `/queue/api`, `/entry/api`, `/energymeter`, `/rules`
+Public routes: `/`, `/queue`, `/queue/api`, `/queue/assets`, `/entry/api`, `/energymeter`, `/rules`
 
 ## Environment-Aware Builds
 

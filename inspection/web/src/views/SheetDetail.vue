@@ -120,6 +120,10 @@ async function onMemoChange(itemId, memo) {
 async function onCategoryResultToggle(catId, val) {
   const current = getCategoryResult(catId);
   const newVal = current === val ? "" : val;
+  if (newVal && !getInspector(catId)?.trim()) {
+    error("검차관 이름을 입력해주세요.");
+    return;
+  }
   sheetData.value.results[catId] = newVal;
   try {
     await updateSheetCategoryResult({ year, team_num: num, category_id: catId, result: newVal });

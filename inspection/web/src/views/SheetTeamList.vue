@@ -18,6 +18,11 @@ const searchQuery = ref("");
 
 const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
 
+const hiddenCategories = ["코너웨이트", "보고서"];
+const visibleCategories = computed(() =>
+  summary.value.categories.filter(cat => !hiddenCategories.includes(cat.name))
+);
+
 const filteredEntries = computed(() => {
   const list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
   if (!searchQuery.value) return list.sort((a, b) => a.num - b.num);
@@ -128,7 +133,7 @@ watch(lastInspectorUpdate, (update) => {
               <tr>
                 <th class="col-num">번호</th>
                 <th class="col-team">학교 / 팀</th>
-                <template v-for="cat in summary.categories" :key="'r'+cat.id">
+                <template v-for="cat in visibleCategories" :key="'r'+cat.id">
                   <th class="col-result">{{ cat.name }}</th>
                 </template>
               </tr>
@@ -142,7 +147,7 @@ watch(lastInspectorUpdate, (update) => {
               >
                 <td class="col-num"><span class="entry-num">{{ entry.num }}</span></td>
                 <td class="col-team"><span class="entry-name">{{ entry.univ }} {{ entry.team }}</span></td>
-                <template v-for="cat in summary.categories" :key="'r'+cat.id+'-'+entry.num">
+                <template v-for="cat in visibleCategories" :key="'r'+cat.id+'-'+entry.num">
                   <td class="col-result">
                     <span
                       v-if="getResult(entry.num, cat.id)"
@@ -155,7 +160,7 @@ watch(lastInspectorUpdate, (update) => {
                 </template>
               </tr>
               <tr v-if="filteredEntries.length === 0">
-                <td :colspan="2 + summary.categories.length" class="empty-state">
+                <td :colspan="2 + visibleCategories.length" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>
