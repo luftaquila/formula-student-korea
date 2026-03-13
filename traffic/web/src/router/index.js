@@ -11,14 +11,14 @@ const routes = [
     component: () => import("../views/AccelView.vue"),
   },
   {
-    path: "/gymkhana",
-    name: "Gymkhana",
-    component: () => import("../views/GymkhanaView.vue"),
-  },
-  {
     path: "/skidpad",
     name: "Skidpad",
     component: () => import("../views/SkidpadView.vue"),
+  },
+  {
+    path: "/gymkhana",
+    name: "Gymkhana",
+    component: () => import("../views/GymkhanaView.vue"),
   },
   {
     path: "/record",

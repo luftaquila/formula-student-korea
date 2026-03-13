@@ -113,7 +113,7 @@ function handleReset() {
 async function handleDNF() {
   const entry = selectedEntry.value;
   if (!eventName.value.trim() || !entry) {
-    notyf.error("이벤트 이름과 팀을 선택해주세요.");
+    notyf.error("이벤트 이름과 팀을 선택하세요.");
     return;
   }
 

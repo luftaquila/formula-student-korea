@@ -272,6 +272,7 @@ function handleDelete(num) {
 }
 
 .col-num {
+  text-align: center;
   position: sticky;
   left: 0;
   z-index: 1;
@@ -297,17 +298,9 @@ function handleDelete(num) {
 }
 
 .entry-number {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 40px;
-  padding: 0.25rem 0.5rem;
-  background: var(--bg-primary);
-  border-radius: 6px;
+  font-weight: 700;
+  font-size: 1rem;
   font-family: "JetBrains Mono", monospace;
-  font-weight: 600;
-  font-size: 0.8125rem;
-  color: var(--accent-primary);
   cursor: text;
 }
 

@@ -357,7 +357,7 @@ app.get("/api/vehicle-types", (req, res) => {
 app.post("/api/vehicle-types", (req, res) => {
   const { name } = req.body;
   if (!name || !name.trim()) {
-    return res.status(400).send("유형 이름을 입력해주세요.");
+    return res.status(400).send("유형 이름을 입력하세요.");
   }
   const maxOrder = db.prepare("SELECT MAX(sort_order) as max FROM vehicle_types").get();
   const nextOrder = (maxOrder?.max ?? -1) + 1;

@@ -36,8 +36,8 @@ const editingDetailId = ref(null);
 // 유형 필터 (기본: 모두 선택)
 const typeFilters = ref({
   가속: true,
-  짐카나: true,
   스키드패드: true,
+  짐카나: true,
 });
 
 // 컴포넌트 마운트 시 엔트리 로드 및 이전에 선택한 파일이 있으면 로드
@@ -155,12 +155,11 @@ function downloadCSV() {
     headers = ["시간", "데이터"];
     rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
   } else {
-    headers = ["시간", "엔트리", "학교", "팀", "경기", "기록", "상세", "무효화", "전광판"];
+    headers = ["시간", "엔트리", "팀", "경기", "기록", "상세", "무효화", "전광판"];
     rows = sortedRecords.value.map((r) => [
       formatTime(r.time),
       r.num,
-      r.univ,
-      r.team,
+      `${r.univ} ${r.team}`,
       r.type,
       formatResult(r.result),
       r.detail || "",
@@ -186,12 +185,11 @@ async function downloadXLSX() {
     headers = ["시간", "데이터"];
     rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
   } else {
-    headers = ["시간", "엔트리", "학교", "팀", "경기", "기록", "상세", "무효화", "전광판"];
+    headers = ["시간", "엔트리", "팀", "경기", "기록", "상세", "무효화", "전광판"];
     rows = sortedRecords.value.map((r) => [
       formatTime(r.time),
       r.num,
-      r.univ,
-      r.team,
+      `${r.univ} ${r.team}`,
       r.type,
       formatResult(r.result),
       r.detail || "",
@@ -409,12 +407,12 @@ async function handleAddRecord() {
             <span class="filter-label accel">가속</span>
           </label>
           <label class="filter-checkbox">
-            <input type="checkbox" v-model="typeFilters['짐카나']" />
-            <span class="filter-label gymkhana">짐카나</span>
-          </label>
-          <label class="filter-checkbox">
             <input type="checkbox" v-model="typeFilters['스키드패드']" />
             <span class="filter-label skidpad">스키드패드</span>
+          </label>
+          <label class="filter-checkbox">
+            <input type="checkbox" v-model="typeFilters['짐카나']" />
+            <span class="filter-label gymkhana">짐카나</span>
           </label>
         </div>
       </div>
@@ -426,8 +424,8 @@ async function handleAddRecord() {
             <label class="form-label">경기 유형</label>
             <select v-model="addType" class="form-select">
               <option value="가속">가속</option>
-              <option value="짐카나">짐카나</option>
               <option value="스키드패드">스키드패드</option>
+              <option value="짐카나">짐카나</option>
             </select>
           </div>
           <div class="form-group">
@@ -496,26 +494,23 @@ async function handleAddRecord() {
               <th class="sortable" @click="handleSort('time')">
                 시간 <span class="sort-icon">{{ getSortIcon("time") }}</span>
               </th>
-              <th class="sortable center" @click="handleSort('num')">
-                엔트리 <span class="sort-icon">{{ getSortIcon("num") }}</span>
+              <th class="sortable center col-shrink" @click="handleSort('num')">
+                번호 <span class="sort-icon">{{ getSortIcon("num") }}</span>
               </th>
-              <th class="sortable col-univ" @click="handleSort('univ')">
-                학교 <span class="sort-icon">{{ getSortIcon("univ") }}</span>
+              <th class="sortable col-team" @click="handleSort('univ')">
+                팀 <span class="sort-icon">{{ getSortIcon("univ") }}</span>
               </th>
-              <th class="sortable" @click="handleSort('team')">
-                팀 <span class="sort-icon">{{ getSortIcon("team") }}</span>
-              </th>
-              <th class="sortable center" @click="handleSort('type')">
+              <th class="sortable center col-shrink" @click="handleSort('type')">
                 경기 <span class="sort-icon">{{ getSortIcon("type") }}</span>
               </th>
-              <th class="sortable center" @click="handleSort('result')">
+              <th class="sortable center col-shrink" @click="handleSort('result')">
                 기록 <span class="sort-icon">{{ getSortIcon("result") }}</span>
               </th>
               <th class="sortable" @click="handleSort('detail')">
                 상세 <span class="sort-icon">{{ getSortIcon("detail") }}</span>
               </th>
-              <th class="center">무효화</th>
-              <th class="center">전광판</th>
+              <th class="center col-shrink">무효화</th>
+              <th class="center col-shrink">전광판</th>
             </tr>
           </thead>
           <tbody>
@@ -525,15 +520,14 @@ async function handleAddRecord() {
               :class="{ 'is-invalidated': record.invalidated }"
             >
               <td class="time-cell">{{ formatTime(record.time) }}</td>
-              <td class="center">
+              <td class="center col-shrink">
                 <span class="entry-number">{{ record.num }}</span>
               </td>
-              <td class="col-univ">{{ record.univ }}</td>
-              <td>{{ record.team }}</td>
-              <td class="center">
+              <td class="col-team">{{ record.univ }} {{ record.team }}</td>
+              <td class="center col-shrink">
                 <span class="type-badge" :class="getTypeClass(record.type)">{{ record.type }}</span>
               </td>
-              <td class="result-cell center" :class="{ 'is-dnf': record.result < 0 }">
+              <td class="result-cell center col-shrink" :class="{ 'is-dnf': record.result < 0 }">
                 {{ formatResult(record.result) }}
               </td>
               <td class="detail-cell" @click="startDetailEdit(record.rowid)">
@@ -548,7 +542,7 @@ async function handleAddRecord() {
                 />
                 <span v-else class="detail-text">{{ record.detail || '' }}</span>
               </td>
-              <td class="center">
+              <td class="center col-shrink">
                 <button
                   class="btn-invalidate"
                   :class="{ active: record.invalidated }"
@@ -561,7 +555,7 @@ async function handleAddRecord() {
                   </svg>
                 </button>
               </td>
-              <td class="center">
+              <td class="center col-shrink">
                 <button
                   class="btn-scoreboard"
                   :class="{ active: record.scoreboard }"
@@ -845,22 +839,16 @@ async function handleAddRecord() {
 }
 
 .time-cell {
+  width: 1%;
+  white-space: nowrap;
   font-size: 0.875rem;
   color: var(--text-primary);
 }
 
 .entry-number {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 40px;
-  padding: 0.25rem 0.5rem;
-  background: var(--bg-primary);
-  border-radius: 6px;
+  font-weight: 700;
+  font-size: 1rem;
   font-family: "JetBrains Mono", monospace;
-  font-weight: 600;
-  font-size: 0.8125rem;
-  color: var(--accent-primary);
 }
 
 .type-badge {
@@ -929,9 +917,15 @@ async function handleAddRecord() {
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
 
-.col-univ {
+.col-shrink {
   width: 1%;
   white-space: nowrap;
+}
+
+.col-team {
+  width: 1%;
+  white-space: nowrap;
+  font-size: 0.8125rem;
 }
 
 /* 무효화된 행 스타일 */

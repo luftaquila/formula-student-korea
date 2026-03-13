@@ -45,7 +45,7 @@ async function fetchUsers() {
 
 async function addUser() {
   if (!newEmail.value.trim()) {
-    notyf.error("이메일을 입력해주세요.");
+    notyf.error("이메일을 입력하세요.");
     return;
   }
 

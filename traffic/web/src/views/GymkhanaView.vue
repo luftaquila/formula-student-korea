@@ -112,7 +112,7 @@ function handleReset() {
 async function handleDNF(lane) {
   const entry = lane === 1 ? entry1.value : entry2.value;
   if (!eventName.value.trim() || !entry) {
-    notyf.error("이벤트 이름과 해당 레인의 팀을 선택해주세요.");
+    notyf.error("이벤트 이름과 해당 레인의 팀을 선택하세요.");
     return;
   }
 

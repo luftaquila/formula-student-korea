@@ -121,7 +121,7 @@ async function onCategoryResultToggle(catId, val) {
   const current = getCategoryResult(catId);
   const newVal = current === val ? "" : val;
   if (newVal && !getInspector(catId)?.trim()) {
-    error("검차관 이름을 입력해주세요.");
+    error("검차관 이름을 입력하세요.");
     return;
   }
   sheetData.value.results[catId] = newVal;
@@ -837,12 +837,7 @@ watch(lastMemoUpdate, (update) => {
   display: flex;
   align-items: baseline;
   gap: 0.375rem;
-  padding: 0.5rem 0 0.5rem 0.5rem;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.item-row:last-child {
-  border-bottom: none;
+  padding: 0.625rem 0 0.625rem 0.5rem;
 }
 
 .item-num-label {
