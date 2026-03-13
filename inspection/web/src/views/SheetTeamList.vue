@@ -18,7 +18,7 @@ const searchQuery = ref("");
 
 const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
 
-const hiddenCategories = ["코너웨이트", "보고서"];
+const hiddenCategories = ["코너웨이트"];
 const visibleCategories = computed(() =>
   summary.value.categories.filter(cat => !hiddenCategories.includes(cat.name))
 );

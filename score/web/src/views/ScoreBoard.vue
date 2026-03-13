@@ -54,11 +54,6 @@ const entryList = computed(() => {
       bVal = getCurbWeight(b.num);
       aVal = aVal != null ? Number(aVal) : Infinity;
       bVal = bVal != null ? Number(bVal) : Infinity;
-    } else if (sortKey.value === "report") {
-      aVal = getReportScore(a.num);
-      bVal = getReportScore(b.num);
-      aVal = aVal != null ? Number(aVal) : Infinity;
-      bVal = bVal != null ? Number(bVal) : Infinity;
     } else if (sortKey.value.startsWith("event:")) {
       const eventType = sortKey.value.slice(6);
       const evt = events.value.find(e => e.type === eventType);
@@ -245,7 +240,7 @@ watch(lastInspectionUpdate, (update) => {
   inspection.value.teams[team_num].results[category_id] = result;
 });
 
-// SSE로 검차 답변(코너웨이트/보고서) 실시간 반영
+// SSE로 검차 답변(코너웨이트) 실시간 반영
 watch(lastAnswerUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
   const { team_num, item_id, value } = update;
@@ -261,11 +256,6 @@ watch(lastAnswerUpdate, (update) => {
     }
   }
 
-  // 보고서 항목 매칭
-  const rpt = inspection.value.report;
-  if (rpt && item_id === rpt.itemId) {
-    rpt.teams[team_num] = value;
-  }
 });
 
 // SSE로 기록 자동 선택 실시간 반영
@@ -308,26 +298,21 @@ function shortTableName(tableName) {
 
 // 카테고리 오버라이드 판별
 function isOverriddenCategory(catId) {
-  return catId === inspection.value.cornerWeight?.categoryId || catId === inspection.value.report?.categoryId;
+  return catId === inspection.value.cornerWeight?.categoryId;
 }
 
 function getOverrideKey(catId) {
   if (catId === inspection.value.cornerWeight?.categoryId) return "cornerWeight";
-  if (catId === inspection.value.report?.categoryId) return "report";
   return null;
 }
 
-// 코너웨이트/보고서 헬퍼
+// 코너웨이트 헬퍼
 function getCurbWeight(num) {
   return inspection.value.cornerWeight?.teams[num]?.curb ?? null;
 }
 
 function getCornerWeight(num) {
   return inspection.value.cornerWeight?.teams[num] ?? null;
-}
-
-function getReportScore(num) {
-  return inspection.value.report?.teams[num] ?? null;
 }
 
 function getLRRatio(num) {
@@ -439,15 +424,6 @@ function toggleCornerWeight(num) {
                           </template>
                         </div>
                       </div>
-                    </td>
-                    <!-- 보고서 카테고리 → 점수 값으로 덮어쓰기 -->
-                    <td
-                      v-else-if="inspection.report?.categoryId === cat.id"
-                      v-show="showInspection"
-                      class="col-inspection"
-                    >
-                      <span v-if="getReportScore(entry.num)" class="report-value">{{ getReportScore(entry.num) }}</span>
-                      <span v-else class="badge badge-empty">-</span>
                     </td>
                     <!-- 일반 카테고리 → PASS/FAIL -->
                     <td
@@ -893,13 +869,6 @@ function toggleCornerWeight(num) {
   border: none;
   border-top: 1px solid var(--border-color);
   margin: 0.125rem 0;
-}
-
-/* Report */
-.report-value {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.8125rem;
-  font-weight: 500;
 }
 
 /* Loading */

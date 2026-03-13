@@ -257,15 +257,13 @@ app.get("/api/score", async (req, res) => {
     if (!inspectionRes.ok) throw new Error("검차 정보를 가져올 수 없습니다.");
     const inspection = await inspectionRes.json();
 
-    // 2b. 템플릿 트리에서 코너웨이트/보고서 item ID 탐색
+    // 2b. 템플릿 트리에서 코너웨이트 item ID 탐색
     let cornerWeight = null;
-    let report = null;
 
     if (templateRes.ok) {
       const tree = await templateRes.json();
 
       const cwItems = findItemsInCategory(tree, "코너웨이트", ["공차중량", "FL", "FR", "RL", "RR"]);
-      const reportItems = findItemsInCategory(tree, "보고서", []);
 
       // 코너웨이트: 5개 항목 모두 존재해야 유효
       if (cwItems["공차중량"] && cwItems["FL"] && cwItems["FR"] && cwItems["RL"] && cwItems["RR"]) {
@@ -276,16 +274,9 @@ app.get("/api/score", async (req, res) => {
         };
       }
 
-      // 보고서: number 타입 item 중 첫 번째
-      const reportNumberItem = reportItems._allNumberItems?.[0];
-      if (reportNumberItem) {
-        report = { categoryId: reportItems._categoryId, itemId: reportNumberItem.id, teams: {} };
-      }
-
       // 벌크 답변 fetch
       const allItemIds = [];
       if (cornerWeight) allItemIds.push(...Object.values(cornerWeight.items));
-      if (report) allItemIds.push(report.itemId);
 
       if (allItemIds.length > 0) {
         try {
@@ -302,9 +293,6 @@ app.get("/api/score", async (req, res) => {
                 if (items[cornerWeight.items.rr] !== undefined) cw.rr = items[cornerWeight.items.rr];
                 if (Object.keys(cw).length > 0) cornerWeight.teams[num] = cw;
               }
-              if (report && items[report.itemId] !== undefined) {
-                report.teams[num] = items[report.itemId];
-              }
             }
           }
         } catch {}
@@ -312,7 +300,6 @@ app.get("/api/score", async (req, res) => {
     }
 
     inspection.cornerWeight = cornerWeight;
-    inspection.report = report;
 
     // 3. Traffic 서비스에서 모든 경기 테이블 목록 fetch
     const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`, { headers: internalHeaders() });
