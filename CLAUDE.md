@@ -36,18 +36,21 @@ All 6 backend services (auth, entry, queue, inspection, traffic, score) use a si
 - `useSSE.js` - Frontend SSE connection factory with auto-reconnect
 - `sse.mjs` - Backend SSE manager (broadcast + endpoint handler)
 
-Service dependencies (via `ENTRY_SERVER` environment variable):
-- traffic → entry
-- queue → entry
-- inspection → entry
-- score → entry, inspection, traffic (uses `X-Internal-Service` header for inter-service auth)
+Service dependencies (via environment variables in `docker-compose.yml`):
+- entry → auth (`AUTH_SERVER`)
+- traffic → entry (`ENTRY_SERVER`), auth (`AUTH_SERVER`)
+- queue → entry (`ENTRY_SERVER`), auth (`AUTH_SERVER`)
+- inspection → entry (`ENTRY_SERVER`), auth (`AUTH_SERVER`)
+- score → entry (`ENTRY_SERVER`), inspection (`INSPECTION_SERVER`), traffic (`TRAFFIC_SERVER`), auth (`AUTH_SERVER`)
+
+All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs middleware). Score service uses `X-Internal-Service` header for inter-service auth to inspection/traffic APIs.
 
 ## Tech Stack
 
-- **Frontend:** Vue 3, Vite, Pinia (state management), Vue Router
+- **Frontend:** Vue 3, Vite, Vue Router, Pinia (traffic, energymeter only)
 - **Backend:** Node.js 22, Express.js 5, Better-SQLite3
 - **Auth:** Google OAuth 2.0, JWT (HMAC-SHA256) cookies, role-based access control
-- **Real-time:** Server-Sent Events (SSE) for live updates across inspection, score, and traffic services
+- **Real-time:** Server-Sent Events (SSE) for live updates across inspection, queue, score, and traffic services
 - **Deployment:** Docker Compose with Caddy reverse proxy
 - **Logging:** Pino-HTTP
 
@@ -115,8 +118,8 @@ Each service's `createApp()` receives an `authRoleFn(req)` callback that returns
 ### Per-service auth rules
 
 **entry** — API public, SPA admin-only
-**queue** — `/api/admin` official, everything else public
-**inspection** — `/api/sheet/template` admin, all other API/SPA official
+**queue** — `/api/admin` and SPA management pages (`/admin`, `/register`, `/priority`, `/stats`) official, everything else public
+**inspection** — `/api/sheet/template` non-GET (POST/PUT/DELETE) admin, all other API/SPA (including GET template) official
 **traffic** — `/api/events` and `/api/records/:id` official, all other API/SPA admin
 **score** — everything admin
 **auth** — login/callback/logout public, `/api/me` official, `/api/users` admin
@@ -127,10 +130,12 @@ Score service uses `X-Internal-Service` header (matching `INTERNAL_SECRET` env v
 ## Environment Variables
 
 See `.env.example` for all required variables:
+- `DOMAIN_NAME` — Traefik reverse proxy domain (production only)
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` — Google OAuth credentials
 - `JWT_SECRET` — HMAC key for JWT signing (omit for dev auto-auth)
 - `INTERNAL_SECRET` — Service-to-service auth token
 - `ADMIN_EMAIL` — Bootstrap admin email on first auth service start
+- `NAVER_CLOUD_ACCESS_KEY`, `NAVER_CLOUD_SECRET_KEY`, `NAVER_CLOUD_SMS_SERVICE_ID`, `PHONE_NUMBER_SMS_SENDER` — Queue SMS API (optional)
 
 ## Environment-Aware Builds
 

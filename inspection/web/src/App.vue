@@ -13,7 +13,6 @@ const pageInfo = {
 };
 
 const isPrintPage = computed(() => route.path === "/template/print");
-const isWide = computed(() => route.path === "/");
 
 function getPageTitle() {
   if (route.path.match(/^\/\d+\/\d+$/)) return "인스펙션 시트";
@@ -27,7 +26,7 @@ function getPageTitle() {
   </div>
   <div v-else class="app-container">
     <header class="header">
-      <div :class="['header-content', { wide: isWide }]">
+      <div class="header-content">
         <a href="/" class="logo">
           <span class="logo-icon">📋</span>
           <h1>FSK {{ getPageTitle() }}</h1>
@@ -39,7 +38,7 @@ function getPageTitle() {
       </div>
     </header>
 
-    <main :class="['main-content', { wide: isWide }]">
+    <main class="main-content">
       <router-view />
     </main>
   </div>
@@ -48,10 +47,5 @@ function getPageTitle() {
 <style scoped>
 .app-container {
   --layout-max-width: 960px;
-}
-
-.header-content.wide,
-.main-content.wide {
-  max-width: 1400px;
 }
 </style>

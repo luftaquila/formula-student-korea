@@ -27,3 +27,9 @@ const route = useRoute();
   </div>
 </template>
 
+<style scoped>
+.app-container {
+  --layout-max-width: none;
+}
+</style>
+

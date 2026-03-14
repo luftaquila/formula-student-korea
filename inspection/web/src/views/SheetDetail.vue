@@ -26,8 +26,19 @@ const template = ref([]);
 const sheetData = ref({ answers: {}, results: {}, inspectors: {} });
 const loading = ref(true);
 const activeTab = ref(Number(sessionStorage.getItem("inspectionActiveTab")) || 0);
+const tabsRef = ref(null);
 
-watch(activeTab, (val) => sessionStorage.setItem("inspectionActiveTab", val));
+watch(activeTab, (val) => {
+  sessionStorage.setItem("inspectionActiveTab", val);
+  scrollActiveTabIntoView();
+});
+
+function scrollActiveTabIntoView() {
+  nextTick(() => {
+    const tab = tabsRef.value?.children[activeTab.value];
+    if (tab) tab.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+  });
+}
 
 const isReadOnly = computed(() => year < new Date().getFullYear());
 
@@ -49,6 +60,7 @@ onMounted(async () => {
   loading.value = false;
   const savedY = Number(sessionStorage.getItem("inspectionScrollY")) || 0;
   await nextTick();
+  scrollActiveTabIntoView();
   requestAnimationFrame(() => window.scrollTo(0, savedY));
 });
 
@@ -387,7 +399,7 @@ watch(lastMemoUpdate, (update) => {
       </div>
 
       <!-- Category Tabs -->
-      <div class="tabs" v-if="template.length > 0">
+      <div class="tabs" ref="tabsRef" v-if="template.length > 0">
         <button
           v-for="(cat, idx) in template"
           :key="cat.id"

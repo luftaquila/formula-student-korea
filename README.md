@@ -45,7 +45,7 @@ Google OAuth 2.0 + JWT 쿠키 기반 인증. 각 백엔드 서비스의 미들�
 |-------|-------------|
 | `/queue/admin,register,priority,stats` | Queue management pages |
 | `/queue/api/admin` | Queue admin API |
-| `/inspection/**` | Inspection sheet (except template) |
+| `/inspection/**` | Inspection sheet (including GET template) |
 | `/traffic/api/events` | Traffic SSE event stream |
 | `/traffic/api/records/:id` | Traffic record query API |
 
@@ -54,7 +54,7 @@ Google OAuth 2.0 + JWT 쿠키 기반 인증. 각 백엔드 서비스의 미들�
 | Route | Description |
 |-------|-------------|
 | `/entry/**` (SPA) | Entry management |
-| `/inspection/api/sheet/template` | Inspection template API |
+| `/inspection/api/sheet/template` (POST/PUT/DELETE) | Inspection template modification API |
 | `/traffic/**` | Traffic management (except official-level events, records) |
 | `/score/**` | Score management |
 | `/auth/api/users` | User management API |
