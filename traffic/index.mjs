@@ -33,6 +33,12 @@ db.exec(`CREATE TABLE IF NOT EXISTS controller (
       db.exec(`ALTER TABLE '${name}' ADD COLUMN scoreboard INTEGER DEFAULT 1`);
       db.exec(`UPDATE '${name}' SET scoreboard = 0 WHERE invalidated = 1`);
     }
+    if (!columns.some((c) => c.name === "cones")) {
+      db.exec(`ALTER TABLE '${name}' ADD COLUMN cones INTEGER DEFAULT 0`);
+    }
+    if (!columns.some((c) => c.name === "oc")) {
+      db.exec(`ALTER TABLE '${name}' ADD COLUMN oc INTEGER DEFAULT 0`);
+    }
   }
 }
 
@@ -188,6 +194,8 @@ app.post("/api/records", (req, res) => {
           type TEXT NOT NULL,
           result INTEGER NOT NULL,
           detail TEXT,
+          cones INTEGER DEFAULT 0,
+          oc INTEGER DEFAULT 0,
           invalidated INTEGER DEFAULT 0,
           scoreboard INTEGER DEFAULT 1
         );`);
@@ -229,12 +237,12 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   }
 
   const { field, value } = req.body;
-  if (!["invalidated", "scoreboard", "detail"].includes(field)) {
+  if (!["invalidated", "scoreboard", "detail", "cones", "oc"].includes(field)) {
     return res.status(400).send("올바르지 않은 필드입니다.");
   }
 
   const result = dbRun(() => {
-    const row = db.prepare(`SELECT invalidated, scoreboard FROM '${name}' WHERE rowid = ?`).get(rowid);
+    const row = db.prepare(`SELECT invalidated, scoreboard, cones, oc FROM '${name}' WHERE rowid = ?`).get(rowid);
     if (!row) {
       throw new Error("기록을 찾을 수 없습니다.");
     }
@@ -256,6 +264,10 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
     } else if (field === "detail") {
       db.prepare(`UPDATE '${name}' SET detail = ? WHERE rowid = ?`).run(value ?? null, rowid);
       return { invalidated: row.invalidated, scoreboard: row.scoreboard, detail: value ?? null };
+    } else if (field === "cones" || field === "oc") {
+      const numValue = parseInt(value, 10) || 0;
+      db.prepare(`UPDATE '${name}' SET ${field} = ? WHERE rowid = ?`).run(numValue, rowid);
+      return { [field]: numValue };
     }
   });
 

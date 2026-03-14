@@ -20,8 +20,8 @@ const entryStore = useEntryStore();
 
 const records = ref([]);
 const loading = ref(false);
-const sortKey = ref(null);
-const sortOrder = ref("asc");
+const sortKey = ref("time");
+const sortOrder = ref("desc");
 
 // 수동 기록 추가 폼 상태
 const showAddForm = ref(false);
@@ -30,8 +30,10 @@ const addEntry = ref(null);
 const addResult = ref("");
 const addDetail = ref("");
 
-// 상세 인라인 편집 상태
+// 인라인 편집 상태
 const editingDetailId = ref(null);
+const editingConesId = ref(null);
+const editingOcId = ref(null);
 
 // 유형 필터 (기본: 모두 선택)
 const typeFilters = ref({
@@ -70,7 +72,7 @@ const sortedRecords = computed(() => {
       bVal = new Date(bVal).getTime();
     }
     // 숫자 필드 처리
-    else if (sortKey.value === "num" || sortKey.value === "result") {
+    else if (["num", "result", "cones", "oc"].includes(sortKey.value)) {
       aVal = Number(aVal) || 0;
       bVal = Number(bVal) || 0;
     }
@@ -113,8 +115,8 @@ async function loadRecords() {
   if (!selectedFile.value) return;
 
   loading.value = true;
-  sortKey.value = null;
-  sortOrder.value = "asc";
+  sortKey.value = "time";
+  sortOrder.value = "desc";
   try {
     if (selectedFile.value === "controller") {
       records.value = await fetchControllers();
@@ -155,13 +157,15 @@ function downloadCSV() {
     headers = ["시간", "데이터"];
     rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
   } else {
-    headers = ["시간", "엔트리", "팀", "경기", "기록", "상세", "무효화", "전광판"];
+    headers = ["시간", "엔트리", "팀", "경기", "기록", "콘터치", "코스 이탈", "상세", "무효화", "전광판"];
     rows = sortedRecords.value.map((r) => [
       formatTime(r.time),
       r.num,
       `${r.univ} ${r.team}`,
       r.type,
       formatResult(r.result),
+      r.cones || 0,
+      r.oc || 0,
       r.detail || "",
       r.invalidated ? "Y" : "N",
       r.scoreboard ? "Y" : "N",
@@ -185,13 +189,15 @@ async function downloadXLSX() {
     headers = ["시간", "데이터"];
     rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
   } else {
-    headers = ["시간", "엔트리", "팀", "경기", "기록", "상세", "무효화", "전광판"];
+    headers = ["시간", "엔트리", "팀", "경기", "기록", "콘터치", "코스 이탈", "상세", "무효화", "전광판"];
     rows = sortedRecords.value.map((r) => [
       formatTime(r.time),
       r.num,
       `${r.univ} ${r.team}`,
       r.type,
       formatResult(r.result),
+      r.cones || 0,
+      r.oc || 0,
       r.detail || "",
       r.invalidated ? "Y" : "N",
       r.scoreboard ? "Y" : "N",
@@ -294,6 +300,52 @@ async function handleDetailChange(record, value) {
     }
   } catch (e) {
     notyf.error(`상세 저장 실패: ${e.message}`);
+  }
+}
+
+function startConesEdit(rowid) {
+  editingConesId.value = rowid;
+}
+
+function conesInputRef(el) {
+  if (el) { el.focus(); el.select(); }
+}
+
+async function handleConesChange(record, value) {
+  editingConesId.value = null;
+  const numValue = parseInt(value, 10) || 0;
+  if (numValue === (record.cones || 0)) return;
+  try {
+    const result = await updateRecord(selectedFile.value, record.rowid, "cones", String(numValue));
+    const idx = records.value.findIndex((r) => r.rowid === record.rowid);
+    if (idx !== -1) {
+      records.value[idx].cones = result.cones;
+    }
+  } catch (e) {
+    notyf.error(`콘터치 저장 실패: ${e.message}`);
+  }
+}
+
+function startOcEdit(rowid) {
+  editingOcId.value = rowid;
+}
+
+function ocInputRef(el) {
+  if (el) { el.focus(); el.select(); }
+}
+
+async function handleOcChange(record, value) {
+  editingOcId.value = null;
+  const numValue = parseInt(value, 10) || 0;
+  if (numValue === (record.oc || 0)) return;
+  try {
+    const result = await updateRecord(selectedFile.value, record.rowid, "oc", String(numValue));
+    const idx = records.value.findIndex((r) => r.rowid === record.rowid);
+    if (idx !== -1) {
+      records.value[idx].oc = result.oc;
+    }
+  } catch (e) {
+    notyf.error(`코스 이탈 저장 실패: ${e.message}`);
   }
 }
 
@@ -507,6 +559,12 @@ async function handleAddRecord() {
               <th class="sortable center col-shrink" @click="handleSort('result')">
                 기록 <span class="sort-icon">{{ getSortIcon("result") }}</span>
               </th>
+              <th class="sortable center col-shrink" @click="handleSort('cones')">
+                콘터치 <span class="sort-icon">{{ getSortIcon("cones") }}</span>
+              </th>
+              <th class="sortable center col-shrink" @click="handleSort('oc')">
+                코스 이탈 <span class="sort-icon">{{ getSortIcon("oc") }}</span>
+              </th>
               <th class="sortable" @click="handleSort('detail')">
                 상세 <span class="sort-icon">{{ getSortIcon("detail") }}</span>
               </th>
@@ -530,6 +588,32 @@ async function handleAddRecord() {
               </td>
               <td class="result-cell center col-shrink" :class="{ 'is-dnf': record.result < 0 }">
                 {{ formatResult(record.result) }}
+              </td>
+              <td class="penalty-cell center col-shrink" @click="startConesEdit(record.rowid)">
+                <input
+                  v-if="editingConesId === record.rowid"
+                  :ref="conesInputRef"
+                  class="penalty-input"
+                  type="number"
+                  min="0"
+                  :value="record.cones || 0"
+                  @blur="handleConesChange(record, $event.target.value)"
+                  @keyup.enter="$event.target.blur()"
+                />
+                <span v-else class="penalty-text">{{ record.cones || 0 }}</span>
+              </td>
+              <td class="penalty-cell center col-shrink" @click="startOcEdit(record.rowid)">
+                <input
+                  v-if="editingOcId === record.rowid"
+                  :ref="ocInputRef"
+                  class="penalty-input"
+                  type="number"
+                  min="0"
+                  :value="record.oc || 0"
+                  @blur="handleOcChange(record, $event.target.value)"
+                  @keyup.enter="$event.target.blur()"
+                />
+                <span v-else class="penalty-text">{{ record.oc || 0 }}</span>
               </td>
               <td class="detail-cell" @click="startDetailEdit(record.rowid)">
                 <input
@@ -918,6 +1002,50 @@ async function handleAddRecord() {
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
 
+.penalty-cell {
+  cursor: text;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+}
+
+.penalty-text {
+  display: inline-block;
+  min-width: 1.5em;
+  min-height: 1.25em;
+}
+
+.penalty-input {
+  width: 4em;
+  padding: 0.25rem 0.375rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.875rem;
+  text-align: center;
+  transition: all 0.2s ease;
+  -moz-appearance: textfield;
+}
+
+.penalty-input::-webkit-outer-spin-button,
+.penalty-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.penalty-input:hover {
+  border-color: var(--border-color);
+}
+
+.penalty-input:focus {
+  outline: none;
+  background: var(--bg-input);
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
 .col-shrink {
   width: 1%;
   white-space: nowrap;
@@ -941,7 +1069,8 @@ async function handleAddRecord() {
 
 .data-table tbody tr.is-invalidated .btn-invalidate,
 .data-table tbody tr.is-invalidated .btn-scoreboard,
-.data-table tbody tr.is-invalidated .detail-input {
+.data-table tbody tr.is-invalidated .detail-input,
+.data-table tbody tr.is-invalidated .penalty-input {
   text-decoration: none;
 }
 
