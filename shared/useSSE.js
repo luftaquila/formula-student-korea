@@ -15,6 +15,8 @@ export function createSSEConnection(endpointUrl) {
     }
   }
 
+  let reconnectTimer = null;
+
   function connect() {
     if (eventSource) return;
 
@@ -22,19 +24,20 @@ export function createSSEConnection(endpointUrl) {
 
     eventSource.onopen = () => {
       connected.value = true;
-      retryDelay = 1000; // Reset on successful connection
+      retryDelay = 1000;
     };
 
     eventSource.onerror = () => {
       connected.value = false;
-      const delay = retryDelay + Math.random() * 1000; // Add jitter
+      // Close immediately to prevent browser's built-in reconnection
+      eventSource?.close();
+      eventSource = null;
+      if (reconnectTimer) return; // Already scheduled
+      const delay = retryDelay + Math.random() * 1000;
       retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
-      setTimeout(() => {
-        if (subscribers > 0) {
-          eventSource?.close();
-          eventSource = null;
-          connect();
-        }
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        if (subscribers > 0) connect();
       }, delay);
     };
 
@@ -44,6 +47,10 @@ export function createSSEConnection(endpointUrl) {
   }
 
   function disconnect() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     if (eventSource) {
       eventSource.close();
       eventSource = null;
