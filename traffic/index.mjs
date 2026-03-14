@@ -35,7 +35,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS event_mode (
 // 기존 동적 테이블들에 누락 컬럼 추가 (startup에서 1회 실행)
 {
   const tables = db
-    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'controller'")
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('controller', 'event_mode')")
     .all();
   for (const { name } of tables) {
     const columns = db.prepare(`PRAGMA table_info('${name}')`).all();
@@ -72,7 +72,7 @@ const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 function getRecordFiles() {
   const tables = db
-    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'controller'")
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('controller', 'event_mode')")
     .all();
   return tables.map((table) => table.name);
 }
@@ -146,7 +146,7 @@ app.get("/api/records", (req, res) => {
   const result = dbRun(() => {
     const tables = db
       .prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'controller'",
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('controller', 'event_mode')",
       )
       .all();
     return tables.map((table) => table.name);
