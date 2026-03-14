@@ -74,7 +74,6 @@ function saveCell(entry, field, value) {
       univ: entry.univ,
       team: entry.team,
       type: entry.type || null,
-      num_changed: true,
       prev: entry.num,
     });
   } else {
@@ -85,7 +84,6 @@ function saveCell(entry, field, value) {
       univ: field === "univ" ? value : entry.univ,
       team: field === "team" ? value : entry.team,
       type: field === "type" ? (value || null) : (entry.type || null),
-      num_changed: false,
       prev: entry.num,
     });
   }

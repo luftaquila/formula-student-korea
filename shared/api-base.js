@@ -36,5 +36,5 @@ export function createApiClient(basePath) {
     return res.json();
   }
 
-  return { request, fetchEntryYears, fetchEntries, BASE_URL, ENTRY_URL };
+  return { request, fetchEntryYears, fetchEntries };
 }

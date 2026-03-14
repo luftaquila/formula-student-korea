@@ -50,7 +50,6 @@ const validateUser = (email) => !!db.prepare("SELECT 1 FROM users WHERE email = 
 
 const app = createApp("auth.log", { express, pinoHttp, validateUser }, (req) => {
   if (["/api/login", "/api/callback", "/api/logout"].includes(req.path)) return null;
-  if (req.path === "/api/me") return "official";
   if (req.path.startsWith("/api/users")) return "admin";
   return null; // SPA
 });
@@ -215,11 +214,6 @@ app.post("/api/logout", (req, res) => {
   ]);
 
   res.status(200).send();
-});
-
-// GET /api/me - 현재 로그인 사용자 정보
-app.get("/api/me", (req, res) => {
-  res.json({ email: req.user.email, name: req.user.name, role: req.user.role });
 });
 
 // GET /api/users/exists/:email - 사용자 존재 + 활성 여부 (내부 서비스용)

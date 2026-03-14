@@ -7,17 +7,6 @@ function getNotyf() {
     notyfInstance = new Notyf({
       ripple: false,
       duration: 3500,
-      types: [
-        {
-          type: "warning",
-          background: "#f59e0b",
-          icon: {
-            className: "notyf__icon--warning",
-            tagName: "i",
-            text: "",
-          },
-        },
-      ],
     });
   }
   return notyfInstance;
@@ -34,6 +23,5 @@ export function useNotification() {
     notyf,
     success: (message) => notyf.success(escapeHtml(message)),
     error: (message) => notyf.error(escapeHtml(message)),
-    warning: (message) => notyf.open({ type: "warning", message: escapeHtml(message) }),
   };
 }

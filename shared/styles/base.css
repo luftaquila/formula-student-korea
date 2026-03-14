@@ -247,37 +247,6 @@ input[type="number"] {
   color: var(--text-tertiary);
 }
 
-/* Animations */
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateX(-10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-.fade-in {
-  animation: fadeIn 0.3s ease forwards;
-}
-
-.slide-in {
-  animation: slideIn 0.3s ease forwards;
-}
-
 /* Table Styles */
 .data-table {
   width: 100%;
@@ -381,23 +350,6 @@ input[type="number"] {
   transform: translateX(20px);
 }
 
-/* Status indicator */
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.status-dot.active {
-  background: var(--accent-success);
-  box-shadow: 0 0 8px var(--accent-success);
-}
-
-.status-dot.inactive {
-  background: var(--text-tertiary);
-}
-
 /* Tabs */
 .tabs {
   display: flex;
@@ -430,10 +382,6 @@ input[type="number"] {
   color: var(--accent-primary);
   background: var(--bg-card);
   box-shadow: var(--shadow-card);
-}
-
-.tab.hidden {
-  display: none;
 }
 
 /* Notyf Warning Icon */

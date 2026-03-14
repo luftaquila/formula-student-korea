@@ -37,7 +37,6 @@ export const useSerialStore = defineStore("serial", () => {
 
   // Getters
   const isConnected = computed(() => connected.value);
-  const isGreenActive = computed(() => green.value.active);
 
   // Set current mode and callback
   function setMode(mode, callback) {
@@ -286,7 +285,6 @@ export const useSerialStore = defineStore("serial", () => {
 
     // Getters
     isConnected,
-    isGreenActive,
 
     // Actions
     setMode,

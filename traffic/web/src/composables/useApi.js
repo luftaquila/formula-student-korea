@@ -33,12 +33,6 @@ export async function fetchEntries() {
   return res.json();
 }
 
-export async function fetchEntry(num) {
-  const res = await fetch(`${ENTRY_URL}/api/entries/${num}`);
-  if (!res.ok) throw new Error("엔트리 정보를 가져올 수 없습니다.");
-  return res.json();
-}
-
 export async function addEntry({ num, univ, team }) {
   const res = await fetch(`${ENTRY_URL}/api/entries`, {
     method: "POST",
@@ -48,22 +42,9 @@ export async function addEntry({ num, univ, team }) {
   if (!res.ok) throw new Error(await res.text() || `요청 실패 (${res.status})`);
 }
 
-export async function deleteEntry(num) {
-  const res = await fetch(`${ENTRY_URL}/api/entries/${num}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(await res.text() || `요청 실패 (${res.status})`);
-}
-
 /* ============================================
    Record API
    ============================================ */
-
-/**
- * 모든 기록 테이블 목록 조회
- */
-export async function fetchRecords() {
-  const res = await request("/api/records");
-  return res.json();
-}
 
 /**
  * 특정 기록 조회

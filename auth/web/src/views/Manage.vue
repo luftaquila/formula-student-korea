@@ -602,16 +602,13 @@ onMounted(fetchUsers);
 .memo-cell {
   cursor: text;
   min-width: 0;
+  font-size: 0.8125rem;
 }
 
 .memo-text {
   display: inline-block;
   min-width: 2em;
   min-height: 1.25em;
-}
-
-.memo-cell {
-  font-size: 0.8125rem;
 }
 
 .memo-input {

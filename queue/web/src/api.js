@@ -4,32 +4,11 @@ const { request, fetchEntries, fetchEntryYears } = createApiClient("/queue");
 
 export { fetchEntries, fetchEntryYears };
 
-/* ============================================
-   Public API
-   ============================================ */
-export async function fetchActiveInspections() {
-  const res = await request("/api/active");
-  return res.json();
-}
-
 export async function fetchQueueState(num, phone) {
   const res = await request(`/api/state/${num}`, {
     method: "POST",
     body: JSON.stringify({ phone }),
   });
-  return res.json();
-}
-
-/* ============================================
-   Public API - 부스 현황
-   ============================================ */
-export async function getPublicBooths(type) {
-  const res = await request(`/api/booths/${type}`);
-  return res.json();
-}
-
-export async function getAllPublicBooths() {
-  const res = await request("/api/booths/all");
   return res.json();
 }
 
@@ -80,11 +59,6 @@ export async function cancelFromQueue(type, num) {
 /* ============================================
    Admin API - 부스 관리
    ============================================ */
-export async function getBooths(type) {
-  const res = await request(`/api/admin/booths/${type}`);
-  return res.json();
-}
-
 export async function updateBoothConfig(type, count) {
   await request(`/api/admin/booths/${type}/config`, {
     method: "PATCH",

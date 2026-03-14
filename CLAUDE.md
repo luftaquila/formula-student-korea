@@ -122,7 +122,7 @@ Each service's `createApp()` receives an `authRoleFn(req)` callback that returns
 **inspection** — `/api/sheet/template` non-GET (POST/PUT/DELETE) admin, all other API/SPA (including GET template) official
 **traffic** — `/api/events` and `/api/records/:id` official, all other API/SPA admin
 **score** — everything admin
-**auth** — login/callback/logout public, `/api/me` official, `/api/users` admin
+**auth** — login/callback/logout public, `/api/users` admin
 
 ### Inter-service communication
 Score service uses `X-Internal-Service` header (matching `INTERNAL_SECRET` env var) when calling inspection/traffic APIs. The middleware auto-authenticates these as admin.

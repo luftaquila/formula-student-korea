@@ -1,9 +1,3 @@
 @import "@shared/styles/base.css";
 @import "@shared/styles/layout.css";
 
-:root {
-  /* Scoreboard specific */
-  --font-size-best: clamp(2rem, 5vw, 4rem);
-  --font-size-record: clamp(1.2rem, 3vw, 2rem);
-  --font-size-table: clamp(1rem, 2.5vw, 1.5rem);
-}

@@ -19,6 +19,8 @@ const errorMessage = computed(() => {
       return "로그인 중 오류가 발생했습니다. 다시 시도해주세요.";
     case "no_code":
       return "인증 코드를 받지 못했습니다. 다시 시도해주세요.";
+    case "csrf_failed":
+      return "보안 검증에 실패했습니다. 다시 시도해주세요.";
     default:
       return null;
   }
