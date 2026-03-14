@@ -173,11 +173,8 @@ app.get("/api/callback", async (req, res) => {
 
     // Check if user is registered and active
     const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
-    if (!user) {
-      return res.redirect(`/auth/login?error=not_registered&redirect=${encodeURIComponent(redirectUrl)}`);
-    }
-    if (!user.active) {
-      return res.redirect(`/auth/login?error=deactivated&redirect=${encodeURIComponent(redirectUrl)}`);
+    if (!user || !user.active) {
+      return res.redirect(`/auth/login?error=access_denied&redirect=${encodeURIComponent(redirectUrl)}`);
     }
 
     // Update name from Google profile

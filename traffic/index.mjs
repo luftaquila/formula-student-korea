@@ -70,6 +70,9 @@ function validateRecordName(name) {
   }
   // 파일 경로에 사용할 수 없는 문자들을 .으로 치환
   const sanitized = name.trim().replace(/[/\\:*?"<>|']/g, ".");
+  if (!/^[A-Za-z0-9가-힣 .\-_]+$/.test(sanitized)) {
+    return { valid: false, error: "올바르지 않은 기록 이름입니다." };
+  }
   return { valid: true, value: sanitized };
 }
 

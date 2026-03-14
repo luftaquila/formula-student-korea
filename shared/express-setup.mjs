@@ -28,6 +28,8 @@ function verifyJWT(token, secret) {
   if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
     throw new Error("Invalid signature");
   }
+  const header = JSON.parse(Buffer.from(headerB64, "base64url").toString());
+  if (header.alg !== "HS256") throw new Error("Invalid algorithm");
   const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
   if (!payload.exp || Date.now() / 1000 > payload.exp) throw new Error("Expired");
   return payload;
@@ -74,6 +76,10 @@ export function createApp(logFile, deps, authRoleFn) {
     };
   }
 
+  if (!process.env.JWT_SECRET && process.env.NODE_ENV !== "production") {
+    console.warn("⚠ WARNING: JWT_SECRET not set — dev mode enabled (all requests auto-authenticated as admin)");
+  }
+
   // Pre-compute INTERNAL_SECRET hash (immutable for process lifetime)
   const internalSecret = process.env.INTERNAL_SECRET;
   const cachedSecretHash = internalSecret
@@ -98,7 +104,6 @@ export function createApp(logFile, deps, authRoleFn) {
         req.headers.authuser = req.user.email;
       } catch { /* invalid token */ }
     } else if (!process.env.JWT_SECRET && process.env.NODE_ENV !== "production") {
-      // Dev mode: auto admin when JWT_SECRET is not set
       req.user = { email: "dev@local", name: "Developer", role: "admin" };
       req.headers.authuser = "dev@local";
     }
@@ -126,6 +131,9 @@ export function createApp(logFile, deps, authRoleFn) {
       const role = authRoleFn(req);
       if (!role) return next(); // public
       if (!req.user) return res.status(401).send("인증이 필요합니다.");
+      if (!["admin", "official"].includes(req.user.role)) {
+        return res.status(403).send("권한이 없습니다.");
+      }
       if (role === "admin" && req.user.role !== "admin") {
         return res.status(403).send("권한이 없습니다.");
       }

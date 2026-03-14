@@ -1,6 +1,7 @@
 FROM node:22-alpine
 ARG SERVICE
 ARG PORT
+RUN apk add --no-cache su-exec
 WORKDIR /home/node/fsk-${SERVICE}
 COPY ${SERVICE}/package*.json ./
 COPY ${SERVICE}/web/package*.json web/
@@ -10,5 +11,8 @@ COPY ${SERVICE}/index.mjs ./
 COPY ${SERVICE}/web/ web/
 COPY shared ../shared
 RUN npm --prefix web run build && rm -rf web/node_modules
+RUN mkdir -p data && chown -R node:node .
+COPY entrypoint.sh /usr/local/bin/
 EXPOSE ${PORT}
+ENTRYPOINT ["entrypoint.sh"]
 CMD [ "node", "index.mjs" ]

@@ -9,10 +9,8 @@ const redirect = params.get("redirect") || "/";
 
 const errorMessage = computed(() => {
   switch (errorCode) {
-    case "not_registered":
-      return "등록되지 않은 계정입니다. 관리자에게 문의하세요.";
-    case "deactivated":
-      return "비활성화된 계정입니다. 관리자에게 문의하세요.";
+    case "access_denied":
+      return "접근이 거부되었습니다. 관리자에게 문의하세요.";
     case "token_failed":
     case "userinfo_failed":
     case "server_error":

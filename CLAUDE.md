@@ -77,7 +77,8 @@ podman compose --profile local up -d    # Start all containers (local dev)
 
 ## Key Files
 
-- `Dockerfile.service` - Parameterized Dockerfile for all 6 backend services (uses `ARG SERVICE` and `ARG PORT`)
+- `Dockerfile.service` - Parameterized Dockerfile for all 6 backend services (uses `ARG SERVICE` and `ARG PORT`); runs as non-root `node` user via `entrypoint.sh` + `su-exec`
+- `entrypoint.sh` - Container entrypoint: fixes `data/` ownership then drops to `node` user (works with both root Docker and podman rootless)
 - `docker-compose.yml` - Service orchestration (passes build args to `Dockerfile.service`)
 - `shared/vite-config.js` - Shared Vite config factory used by all 6 frontend builds
 - `shared/styles/layout.css` - Common app layout CSS shared across all frontends
@@ -113,7 +114,14 @@ Each service's `createApp()` receives an `authRoleFn(req)` callback that returns
 - `"official"` — any authenticated user (official or admin)
 - `"admin"` — admin only
 
-**Dev mode:** When `JWT_SECRET` is not set, all requests are auto-authenticated as admin.
+**Dev mode:** When `JWT_SECRET` is not set, all requests are auto-authenticated as admin. A one-time warning is logged at startup.
+
+**Security hardening:**
+- JWT `verifyJWT()` explicitly validates `alg: "HS256"` header
+- Auth middleware rejects tokens with unknown role values (only `admin`/`official` accepted)
+- Traffic service validates record names against whitelist regex after sanitization
+- OAuth callback returns generic `access_denied` error for both unregistered and deactivated users (prevents account enumeration)
+- Containers run Node.js as non-root `node` user (PID 1) via `su-exec` entrypoint
 
 ### Per-service auth rules
 
