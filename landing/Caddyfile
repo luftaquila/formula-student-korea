@@ -8,42 +8,49 @@
 	# Auth service
 	redir /auth /auth/
 	handle_path /auth/* {
+		request_header -X-Internal-Service
 		reverse_proxy auth:9800
 	}
 
 	# Entry service
 	redir /entry /entry/
 	handle_path /entry/* {
+		request_header -X-Internal-Service
 		reverse_proxy entry:9100
 	}
 
 	# Queue service
 	redir /queue /queue/
 	handle_path /queue/* {
+		request_header -X-Internal-Service
 		reverse_proxy queue:9300
 	}
 
 	# Inspection service
 	redir /inspection /inspection/
 	handle_path /inspection/* {
+		request_header -X-Internal-Service
 		reverse_proxy inspection:9600
 	}
 
 	# Traffic service
 	redir /traffic /traffic/
 	handle_path /traffic/* {
+		request_header -X-Internal-Service
 		reverse_proxy traffic:9200
 	}
 
 	# Score service
 	redir /score /score/
 	handle_path /score/* {
+		request_header -X-Internal-Service
 		reverse_proxy score:9700
 	}
 
 	# Energymeter service
 	redir /energymeter /energymeter/
 	handle_path /energymeter/* {
+		request_header -X-Internal-Service
 		reverse_proxy energymeter:9400
 	}
 

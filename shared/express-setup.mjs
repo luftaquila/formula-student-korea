@@ -65,7 +65,7 @@ export function createApp(logFile, deps, authRoleFn) {
         });
         return res.ok;
       } catch {
-        return true; // fail open if auth service unreachable
+        return false; // fail closed if auth service unreachable
       }
     };
   }
@@ -74,12 +74,14 @@ export function createApp(logFile, deps, authRoleFn) {
     // Internal service-to-service auth
     const secret = process.env.INTERNAL_SECRET;
     const header = req.headers["x-internal-service"];
-    if (secret && header &&
-        Buffer.byteLength(secret) === Buffer.byteLength(header) &&
-        crypto.timingSafeEqual(Buffer.from(secret), Buffer.from(header))) {
-      req.user = { email: "internal", name: "Service", role: "admin" };
-      req.headers.authuser = "internal";
-      return next();
+    if (secret && header) {
+      const secretHash = crypto.createHash("sha256").update(secret).digest();
+      const headerHash = crypto.createHash("sha256").update(header).digest();
+      if (crypto.timingSafeEqual(secretHash, headerHash)) {
+        req.user = { email: "internal", name: "Service", role: "admin" };
+        req.headers.authuser = "internal";
+        return next();
+      }
     }
     const token = req.cookies.fsk_session;
     if (token && process.env.JWT_SECRET) {

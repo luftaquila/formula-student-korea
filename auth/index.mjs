@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import express from "express";
 import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
@@ -85,6 +86,7 @@ function sanitizeRedirect(url) {
 app.get("/api/login", (req, res) => {
   const redirect = sanitizeRedirect(req.query.redirect);
   const redirectUri = getRedirectUri(req);
+  const nonce = crypto.randomBytes(16).toString("hex");
 
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID,
@@ -93,18 +95,40 @@ app.get("/api/login", (req, res) => {
     scope: "email profile",
     access_type: "online",
     prompt: "select_account",
-    state: redirect,
+    state: JSON.stringify({ redirect, nonce }),
   });
 
+  const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
+  res.setHeader("Set-Cookie", `fsk_oauth_nonce=${nonce}; HttpOnly; Path=/auth; SameSite=Lax; Max-Age=600${isSecure ? "; Secure" : ""}`);
   res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
 });
 
 // GET /api/callback - OAuth 콜백
 app.get("/api/callback", async (req, res) => {
   const { code, state } = req.query;
-  const redirectUrl = sanitizeRedirect(state);
+
+  // Parse state and verify CSRF nonce
+  let redirectUrl = "/";
+  let stateNonce = null;
+  try {
+    const parsed = JSON.parse(state);
+    redirectUrl = sanitizeRedirect(parsed.redirect);
+    stateNonce = parsed.nonce;
+  } catch {
+    redirectUrl = sanitizeRedirect(state);
+  }
+
+  const cookieNonce = req.cookies.fsk_oauth_nonce;
+  if (!stateNonce || !cookieNonce || stateNonce !== cookieNonce) {
+    return res.redirect(`/auth/login?error=csrf_failed&redirect=${encodeURIComponent(redirectUrl)}`);
+  }
+
+  // Clear nonce cookie helper
+  const isSecureNonce = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
+  const clearNonceCookie = `fsk_oauth_nonce=; HttpOnly; Path=/auth; SameSite=Lax; Max-Age=0${isSecureNonce ? "; Secure" : ""}`;
 
   if (!code) {
+    res.setHeader("Set-Cookie", clearNonceCookie);
     return res.redirect(`/auth/login?error=no_code&redirect=${encodeURIComponent(redirectUrl)}`);
   }
 
@@ -170,6 +194,7 @@ app.get("/api/callback", async (req, res) => {
     res.setHeader("Set-Cookie", [
       `fsk_session=${jwt}; HttpOnly; ${cookieOpts}`,
       `fsk_user=${encodeURIComponent(JSON.stringify({ name, role: user.role }))}; ${cookieOpts}`,
+      clearNonceCookie,
     ]);
 
     res.redirect(redirectUrl);
