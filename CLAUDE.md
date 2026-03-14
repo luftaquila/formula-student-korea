@@ -82,7 +82,7 @@ podman compose --profile local up -d    # Start all containers (local dev)
 - `shared/vite-config.js` - Shared Vite config factory used by all 6 frontend builds
 - `shared/styles/layout.css` - Common app layout CSS shared across all frontends
 - `shared/express-setup.mjs` - Shared Express app factory with JWT auth middleware
-- `landing/Caddyfile` - Route configuration for all services (reverse proxy)
+- `landing/Caddyfile` - Route configuration for all services (reverse proxy, zstd/gzip compression excluding `text/event-stream`, static asset caching)
 - `auth/index.mjs` - Auth service API server (Google OAuth, user management)
 - `entry/index.mjs` - Entry service API server
 - `queue/index.mjs` - Queue service API server
@@ -142,6 +142,8 @@ See `.env.example` for all required variables:
 Production builds use service-specific base paths (`/auth/`, `/entry/`, `/queue/`, `/inspection/`, `/traffic/`, `/score/`, `/energymeter/`) configured via `shared/vite-config.js` factory. Each service's `vite.config.js` calls `createViteConfig(serviceName, port, options)` which auto-sets the base path in production mode. Development builds use empty base paths with Vite proxy routing to backend APIs.
 
 ## Data Storage
+
+All SQLite databases use WAL mode (`journal_mode=WAL`, `synchronous=NORMAL`). Each `.db` file has accompanying `-wal` and `-shm` files that must be included in backups.
 
 SQLite databases stored in volume-mounted directories:
 - `auth/data/` - auth.db, auth.log
