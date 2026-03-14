@@ -27,17 +27,6 @@ const app = createApp("traffic.log", { express, pinoHttp }, (req) => {
 });
 
 /* ============================================
-   설정
-   ============================================ */
-const ENTRY_SERVER = process.env.ENTRY_SERVER || "http://localhost:9100";
-
-function internalHeaders() {
-  const h = {};
-  if (process.env.INTERNAL_SECRET) h["X-Internal-Service"] = process.env.INTERNAL_SECRET;
-  return h;
-}
-
-/* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
 import { createSSEManager } from "../shared/sse.mjs";
@@ -98,68 +87,6 @@ function validateControllerData({ timestamp, data }) {
    DB 헬퍼
    ============================================ */
 const dbRun = createDbRun();
-
-/* ============================================
-   API 라우트: /api/entries (entry 서버 프록시)
-   ============================================ */
-
-// GET /api/entries - 모든 엔트리 조회
-app.get("/api/entries", async (req, res) => {
-  try {
-    const response = await fetch(`${ENTRY_SERVER}/api/entries`, { headers: internalHeaders() });
-    const data = await response.json();
-    res.json(data);
-  } catch (e) {
-    res.status(500).send(`Entry 서버 연결 오류: ${e}`);
-  }
-});
-
-// GET /api/entries/:num - 특정 엔트리 조회
-app.get("/api/entries/:num", async (req, res) => {
-  try {
-    const response = await fetch(`${ENTRY_SERVER}/api/entries/${req.params.num}`, { headers: internalHeaders() });
-    if (!response.ok) {
-      return res.status(response.status).send(await response.text());
-    }
-    const data = await response.json();
-    res.json(data);
-  } catch (e) {
-    res.status(500).send(`Entry 서버 연결 오류: ${e}`);
-  }
-});
-
-// POST /api/entries - 엔트리 추가
-app.post("/api/entries", async (req, res) => {
-  try {
-    const response = await fetch(`${ENTRY_SERVER}/api/entries`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...internalHeaders() },
-      body: JSON.stringify(req.body),
-    });
-    if (!response.ok) {
-      return res.status(response.status).send(await response.text());
-    }
-    res.status(201).send();
-  } catch (e) {
-    res.status(500).send(`Entry 서버 연결 오류: ${e}`);
-  }
-});
-
-// DELETE /api/entries/:num - 엔트리 삭제
-app.delete("/api/entries/:num", async (req, res) => {
-  try {
-    const response = await fetch(`${ENTRY_SERVER}/api/entries/${req.params.num}`, {
-      method: "DELETE",
-      headers: internalHeaders(),
-    });
-    if (!response.ok) {
-      return res.status(response.status).send(await response.text());
-    }
-    res.status(200).send();
-  } catch (e) {
-    res.status(500).send(`Entry 서버 연결 오류: ${e}`);
-  }
-});
 
 /* ============================================
    API 라우트: /api/records

@@ -23,42 +23,34 @@ async function request(endpoint, options = {}) {
 }
 
 /* ============================================
-   Entry API
+   Entry API (/entry 서비스 직접 호출)
    ============================================ */
+const ENTRY_URL = import.meta.env.PROD ? "/entry" : "/entry";
 
-/**
- * 모든 엔트리 목록 조회
- */
 export async function fetchEntries() {
-  const res = await request("/api/entries");
+  const res = await fetch(`${ENTRY_URL}/api/entries`);
+  if (!res.ok) throw new Error("엔트리 정보를 가져올 수 없습니다.");
   return res.json();
 }
 
-/**
- * 특정 엔트리 조회
- */
 export async function fetchEntry(num) {
-  const res = await request(`/api/entries/${num}`);
+  const res = await fetch(`${ENTRY_URL}/api/entries/${num}`);
+  if (!res.ok) throw new Error("엔트리 정보를 가져올 수 없습니다.");
   return res.json();
 }
 
-/**
- * 엔트리 추가
- */
 export async function addEntry({ num, univ, team }) {
-  await request("/api/entries", {
+  const res = await fetch(`${ENTRY_URL}/api/entries`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ num, univ, team }),
   });
+  if (!res.ok) throw new Error(await res.text() || `요청 실패 (${res.status})`);
 }
 
-/**
- * 엔트리 삭제
- */
 export async function deleteEntry(num) {
-  await request(`/api/entries/${num}`, {
-    method: "DELETE",
-  });
+  const res = await fetch(`${ENTRY_URL}/api/entries/${num}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await res.text() || `요청 실패 (${res.status})`);
 }
 
 /* ============================================

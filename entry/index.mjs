@@ -63,6 +63,8 @@ setupProcessHandlers(db);
    Express 앱 설정
    ============================================ */
 const app = createApp("entry.log", { express, pinoHttp }, (req) => {
+  if (req.path === "/api/years") return null;
+  if (req.path === "/api/entries") return null;
   return "admin";
 });
 

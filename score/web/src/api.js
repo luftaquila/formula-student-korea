@@ -1,11 +1,8 @@
 import { createApiClient } from "@shared/api-base.js";
 
-const { request } = createApiClient("/score");
+const { request, fetchEntryYears } = createApiClient("/score");
 
-export async function fetchEntryYears() {
-  const res = await request("/api/years");
-  return res.json();
-}
+export { fetchEntryYears };
 
 /* ============================================
    Score API
