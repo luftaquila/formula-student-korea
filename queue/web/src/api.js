@@ -164,7 +164,7 @@ export async function getTeamStats(num, params = {}) {
    Settings API
    ============================================ */
 export async function fetchSmsSettings() {
-  const res = await request("/api/settings/sms");
+  const res = await request("/api/admin/settings/sms");
   return res.json();
 }
 
@@ -176,7 +176,7 @@ export async function setSmsSettings(value) {
 }
 
 export async function fetchSmsRankSettings() {
-  const res = await request("/api/settings/sms-rank");
+  const res = await request("/api/admin/settings/sms-rank");
   return res.json();
 }
 
@@ -188,7 +188,7 @@ export async function setSmsRankSettings(value) {
 }
 
 export async function fetchCancelPenaltySettings() {
-  const res = await request("/api/settings/cancel-penalty");
+  const res = await request("/api/admin/settings/cancel-penalty");
   return res.json();
 }
 

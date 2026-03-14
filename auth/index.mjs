@@ -118,7 +118,10 @@ app.get("/api/callback", async (req, res) => {
   }
 
   const cookieNonce = req.cookies.fsk_oauth_nonce;
-  if (!stateNonce || !cookieNonce || stateNonce !== cookieNonce) {
+  const nonceMatch = stateNonce && cookieNonce
+    && stateNonce.length === cookieNonce.length
+    && crypto.timingSafeEqual(Buffer.from(stateNonce), Buffer.from(cookieNonce));
+  if (!nonceMatch) {
     return res.redirect(`/auth/login?error=csrf_failed&redirect=${encodeURIComponent(redirectUrl)}`);
   }
 

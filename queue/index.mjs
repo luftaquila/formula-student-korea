@@ -1327,8 +1327,8 @@ app.get("/api/admin/stats/:num", (req, res) => {
    API 라우트: 설정
    ============================================ */
 
-// GET /api/settings/sms - SMS 설정 조회
-app.get("/api/settings/sms", (req, res) => {
+// GET /api/admin/settings/sms - SMS 설정 조회
+app.get("/api/admin/settings/sms", (req, res) => {
   const result = dbRun(() => db.prepare("SELECT value FROM settings WHERE key = ?").get("sms"));
 
   if (!result.success) {
@@ -1362,8 +1362,8 @@ app.patch("/api/admin/settings/sms", (req, res) => {
   res.status(200).send();
 });
 
-// GET /api/settings/sms-rank - SMS 알림 순번 조회
-app.get("/api/settings/sms-rank", (req, res) => {
+// GET /api/admin/settings/sms-rank - SMS 알림 순번 조회
+app.get("/api/admin/settings/sms-rank", (req, res) => {
   const result = dbRun(() => db.prepare("SELECT value FROM settings WHERE key = ?").get("sms_rank"));
 
   if (!result.success) {
@@ -1389,8 +1389,8 @@ app.patch("/api/admin/settings/sms-rank", (req, res) => {
   res.status(200).send();
 });
 
-// GET /api/settings/cancel-penalty - 취소 페널티 시간 조회
-app.get("/api/settings/cancel-penalty", (req, res) => {
+// GET /api/admin/settings/cancel-penalty - 취소 페널티 시간 조회
+app.get("/api/admin/settings/cancel-penalty", (req, res) => {
   const result = dbRun(() => db.prepare("SELECT value FROM settings WHERE key = ?").get("cancel_penalty"));
 
   if (!result.success) {

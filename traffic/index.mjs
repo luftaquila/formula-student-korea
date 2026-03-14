@@ -54,6 +54,10 @@ function validateRecordName(name) {
   return { valid: true, value: sanitized };
 }
 
+function tableExists(name) {
+  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name);
+}
+
 function validateRecordData(data) {
   if (!data || typeof data !== "object") {
     return { valid: false, error: "올바르지 않은 기록 데이터입니다." };
@@ -118,6 +122,10 @@ app.get("/api/records/:name", (req, res) => {
   }
 
   const name = validation.value;
+
+  if (!tableExists(name)) {
+    return res.status(404).send("기록을 찾을 수 없습니다.");
+  }
 
   const result = dbRun(() => {
     // 기존 테이블에 누락된 컬럼 추가
@@ -206,6 +214,11 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   }
 
   const name = validation.value;
+
+  if (!tableExists(name)) {
+    return res.status(404).send("기록을 찾을 수 없습니다.");
+  }
+
   const rowid = parseInt(req.params.rowid, 10);
 
   if (isNaN(rowid)) {
@@ -266,6 +279,10 @@ app.delete("/api/records/:name", (req, res) => {
   }
 
   const name = validation.value;
+
+  if (!tableExists(name)) {
+    return res.status(404).send("기록을 찾을 수 없습니다.");
+  }
 
   const result = dbRun(() => db.exec(`DROP TABLE IF EXISTS '${name}'`));
 

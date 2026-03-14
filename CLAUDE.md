@@ -120,7 +120,7 @@ Each service's `createApp()` receives an `authRoleFn(req)` callback that returns
 **entry** — API public, SPA admin-only
 **queue** — `/api/admin` and SPA management pages (`/admin`, `/register`, `/priority`, `/stats`) official, everything else public
 **inspection** — `/api/sheet/template` non-GET (POST/PUT/DELETE) admin, all other API/SPA (including GET template) official
-**traffic** — `/api/events` and `/api/records/:id` official, all other API/SPA admin
+**traffic** — everything admin
 **score** — everything admin
 **auth** — login/callback/logout public, `/api/users` admin
 

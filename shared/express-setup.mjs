@@ -29,7 +29,7 @@ function verifyJWT(token, secret) {
     throw new Error("Invalid signature");
   }
   const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
-  if (payload.exp && Date.now() / 1000 > payload.exp) throw new Error("Expired");
+  if (!payload.exp || Date.now() / 1000 > payload.exp) throw new Error("Expired");
   return payload;
 }
 
@@ -48,7 +48,10 @@ export function createApp(logFile, deps, authRoleFn) {
     if (ch) {
       ch.split(";").forEach((c) => {
         const [n, ...r] = c.split("=");
-        if (n) req.cookies[n.trim()] = decodeURIComponent(r.join("=").trim());
+        if (n) {
+          try { req.cookies[n.trim()] = decodeURIComponent(r.join("=").trim()); }
+          catch { /* malformed percent-encoding */ }
+        }
       });
     }
     next();
