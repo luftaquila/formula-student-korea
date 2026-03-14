@@ -10,6 +10,8 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../
 ensureDataDir();
 
 const db = new Database("./data/score.db");
+db.pragma("journal_mode = WAL");
+db.pragma("synchronous = NORMAL");
 
 db.transaction(() => {
   // 레거시 테이블 정리
@@ -69,7 +71,10 @@ function internalHeaders() {
 const dbRun = createDbRun();
 
 async function fetchYearRecords(year) {
-  const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`, { headers: internalHeaders() });
+  const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`, {
+    headers: internalHeaders(),
+    signal: AbortSignal.timeout(10000),
+  });
   if (!tablesRes.ok) throw new Error("경기 목록을 가져올 수 없습니다.");
   const allTables = await tablesRes.json();
   const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year}`));
@@ -79,7 +84,7 @@ async function fetchYearRecords(year) {
       try {
         const recordRes = await fetch(
           `${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tableName)}`,
-          { headers: internalHeaders() },
+          { headers: internalHeaders(), signal: AbortSignal.timeout(10000) },
         );
         if (recordRes.ok) return { tableName, records: await recordRes.json() };
       } catch {}
@@ -107,6 +112,7 @@ function subscribeInspectionSSE() {
 
     res.on("data", (chunk) => {
       buffer += chunk.toString();
+      if (buffer.length > 1024 * 1024) { buffer = ""; return; }
       const messages = buffer.split("\n\n");
       buffer = messages.pop(); // 마지막 불완전한 메시지는 버퍼에 유지
 
@@ -129,6 +135,7 @@ function subscribeInspectionSSE() {
     });
   });
 
+  req.setTimeout(60000, () => { req.destroy(); });
   req.on("error", () => {
     setTimeout(subscribeInspectionSSE, 3000);
   });
@@ -146,6 +153,7 @@ function subscribeTrafficSSE() {
 
     res.on("data", (chunk) => {
       buffer += chunk.toString();
+      if (buffer.length > 1024 * 1024) { buffer = ""; return; }
       const messages = buffer.split("\n\n");
       buffer = messages.pop();
 
@@ -170,6 +178,7 @@ function subscribeTrafficSSE() {
     });
   });
 
+  req.setTimeout(60000, () => { req.destroy(); });
   req.on("error", () => {
     setTimeout(subscribeTrafficSSE, 3000);
   });
@@ -277,14 +286,20 @@ app.get("/api/score", async (req, res) => {
 
   try {
     // 1. Entry 서비스에서 엔트리 목록 fetch
-    const entryRes = await fetch(`${ENTRY_SERVER}/api/entries?year=${year}`);
+    const entryRes = await fetch(`${ENTRY_SERVER}/api/entries?year=${year}`, {
+      signal: AbortSignal.timeout(10000),
+    });
     if (!entryRes.ok) throw new Error("엔트리 정보를 가져올 수 없습니다.");
     const entries = await entryRes.json();
 
     // 2. Inspection 서비스에서 카테고리별 PASS/FAIL 요약 fetch
     const [inspectionRes, templateRes] = await Promise.all([
-      fetch(`${INSPECTION_SERVER}/api/sheet/summary?year=${year}`, { headers: internalHeaders() }),
-      fetch(`${INSPECTION_SERVER}/api/sheet/template?year=${year}`, { headers: internalHeaders() }),
+      fetch(`${INSPECTION_SERVER}/api/sheet/summary?year=${year}`, {
+        headers: internalHeaders(), signal: AbortSignal.timeout(10000),
+      }),
+      fetch(`${INSPECTION_SERVER}/api/sheet/template?year=${year}`, {
+        headers: internalHeaders(), signal: AbortSignal.timeout(10000),
+      }),
     ]);
     if (!inspectionRes.ok) throw new Error("검차 정보를 가져올 수 없습니다.");
     const inspection = await inspectionRes.json();
@@ -312,7 +327,9 @@ app.get("/api/score", async (req, res) => {
 
       if (allItemIds.length > 0) {
         try {
-          const bulkRes = await fetch(`${INSPECTION_SERVER}/api/sheet/bulk-answers?year=${year}&item_ids=${allItemIds.join(",")}`, { headers: internalHeaders() });
+          const bulkRes = await fetch(`${INSPECTION_SERVER}/api/sheet/bulk-answers?year=${year}&item_ids=${allItemIds.join(",")}`, {
+            headers: internalHeaders(), signal: AbortSignal.timeout(10000),
+          });
           if (bulkRes.ok) {
             const bulkData = await bulkRes.json(); // { [team_num]: { [item_id]: value } }
             for (const [num, items] of Object.entries(bulkData)) {

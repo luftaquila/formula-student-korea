@@ -11,11 +11,30 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../
 ensureDataDir();
 
 const db = new Database("./data/traffic.db");
+db.pragma("journal_mode = WAL");
+db.pragma("synchronous = NORMAL");
 
 db.exec(`CREATE TABLE IF NOT EXISTS controller (
   timestamp TEXT NOT NULL,
   data TEXT NOT NULL
 );`);
+
+// 기존 동적 테이블들에 누락 컬럼 추가 (startup에서 1회 실행)
+{
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'controller'")
+    .all();
+  for (const { name } of tables) {
+    const columns = db.prepare(`PRAGMA table_info('${name}')`).all();
+    if (!columns.some((c) => c.name === "invalidated")) {
+      db.exec(`ALTER TABLE '${name}' ADD COLUMN invalidated INTEGER DEFAULT 0`);
+    }
+    if (!columns.some((c) => c.name === "scoreboard")) {
+      db.exec(`ALTER TABLE '${name}' ADD COLUMN scoreboard INTEGER DEFAULT 1`);
+      db.exec(`UPDATE '${name}' SET scoreboard = 0 WHERE invalidated = 1`);
+    }
+  }
+}
 
 setupProcessHandlers(db);
 
@@ -128,15 +147,6 @@ app.get("/api/records/:name", (req, res) => {
   }
 
   const result = dbRun(() => {
-    // 기존 테이블에 누락된 컬럼 추가
-    const columns = db.prepare(`PRAGMA table_info('${name}')`).all();
-    if (!columns.some((c) => c.name === "invalidated")) {
-      db.exec(`ALTER TABLE '${name}' ADD COLUMN invalidated INTEGER DEFAULT 0`);
-    }
-    if (!columns.some((c) => c.name === "scoreboard")) {
-      db.exec(`ALTER TABLE '${name}' ADD COLUMN scoreboard INTEGER DEFAULT 1`);
-      db.exec(`UPDATE '${name}' SET scoreboard = 0 WHERE invalidated = 1`);
-    }
     return db.prepare(`SELECT rowid, * FROM '${name}'`).all();
   });
 
@@ -178,16 +188,6 @@ app.post("/api/records", (req, res) => {
           invalidated INTEGER DEFAULT 0,
           scoreboard INTEGER DEFAULT 1
         );`);
-      } else {
-        // 기존 테이블에 누락된 컬럼 추가
-        const columns = db.prepare(`PRAGMA table_info('${name}')`).all();
-        if (!columns.some((c) => c.name === "invalidated")) {
-          db.exec(`ALTER TABLE '${name}' ADD COLUMN invalidated INTEGER DEFAULT 0`);
-        }
-        if (!columns.some((c) => c.name === "scoreboard")) {
-          db.exec(`ALTER TABLE '${name}' ADD COLUMN scoreboard INTEGER DEFAULT 1`);
-          db.exec(`UPDATE '${name}' SET scoreboard = 0 WHERE invalidated = 1`);
-        }
       }
 
       db.prepare(

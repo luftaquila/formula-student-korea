@@ -1,4 +1,6 @@
 :9000 {
+	encode zstd gzip
+
 	header {
 		X-Frame-Options "SAMEORIGIN"
 		X-Content-Type-Options "nosniff"
@@ -62,6 +64,10 @@
 	# Landing page (static files)
 	handle {
 		root * /srv/landing
+		@hashed path /assets/*
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		@html path /index.html
+		header @html Cache-Control "no-cache"
 		try_files {path} /index.html
 		file_server
 	}

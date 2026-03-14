@@ -10,6 +10,8 @@ import { createApp, setupProcessHandlers, createDbRun, createJWT, ensureDataDir 
 ensureDataDir();
 
 const db = new Database("./data/auth.db");
+db.pragma("journal_mode = WAL");
+db.pragma("synchronous = NORMAL");
 
 db.exec(`CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

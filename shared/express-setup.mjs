@@ -65,6 +65,7 @@ export function createApp(logFile, deps, authRoleFn) {
       try {
         const res = await fetch(`${process.env.AUTH_SERVER}/api/users/exists/${encodeURIComponent(email)}`, {
           headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
+          signal: AbortSignal.timeout(3000),
         });
         return res.ok;
       } catch {
@@ -73,14 +74,18 @@ export function createApp(logFile, deps, authRoleFn) {
     };
   }
 
+  // Pre-compute INTERNAL_SECRET hash (immutable for process lifetime)
+  const internalSecret = process.env.INTERNAL_SECRET;
+  const cachedSecretHash = internalSecret
+    ? crypto.createHash("sha256").update(internalSecret).digest()
+    : null;
+
   app.use(async (req, res, next) => {
     // Internal service-to-service auth
-    const secret = process.env.INTERNAL_SECRET;
     const header = req.headers["x-internal-service"];
-    if (secret && header) {
-      const secretHash = crypto.createHash("sha256").update(secret).digest();
+    if (cachedSecretHash && header) {
       const headerHash = crypto.createHash("sha256").update(header).digest();
-      if (crypto.timingSafeEqual(secretHash, headerHash)) {
+      if (crypto.timingSafeEqual(cachedSecretHash, headerHash)) {
         req.user = { email: "internal", name: "Service", role: "admin" };
         req.headers.authuser = "internal";
         return next();

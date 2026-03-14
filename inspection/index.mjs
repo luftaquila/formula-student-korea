@@ -9,6 +9,8 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../
 ensureDataDir();
 
 const db = new Database("./data/sheet.db");
+db.pragma("journal_mode = WAL");
+db.pragma("synchronous = NORMAL");
 
 // answer_type CHECK 제약조건에 'checktable' 추가 마이그레이션
 // FK CASCADE 문제를 피하기 위해 트랜잭션 밖에서 foreign_keys OFF 상태로 실행

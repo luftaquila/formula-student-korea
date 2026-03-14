@@ -23,6 +23,8 @@ const inspections = {
 ensureDataDir();
 
 const db = new Database("./data/queue.db");
+db.pragma("journal_mode = WAL");
+db.pragma("synchronous = NORMAL");
 
 db.transaction(() => {
   // 검차 종류 메타 테이블
@@ -145,6 +147,14 @@ db.transaction(() => {
   ) {
     db.prepare(`UPDATE settings SET value = ? WHERE key = ?`).run("FALSE", "sms");
   }
+
+  // 인덱스 생성
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ih_num_insp ON inspection_history(num, inspection)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tp_insp_prio ON team_priority(inspection, priority, num)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_active ON booth_log(num, inspection, booth_num, exited_at)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_num ON queue_log(num)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_insp_ts ON queue_log(inspection, timestamp)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_cp_num_insp ON cancel_penalty(num, inspection)`);
 })();
 
 setupProcessHandlers(db);

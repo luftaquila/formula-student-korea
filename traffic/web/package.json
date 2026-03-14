@@ -10,7 +10,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^7.1.0",
     "exceljs": "^4.4.0",
     "notyf": "^3.10.0",
     "pinia": "^3.0.4",

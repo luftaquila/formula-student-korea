@@ -12,7 +12,7 @@ import { useNotification } from "../composables/useNotification";
 import { useSSE } from "../composables/useSSE";
 import { useEntryStore } from "../stores/entry";
 import { msToClockStr } from "../stores/serial";
-import ExcelJS from "exceljs";
+
 
 const { notyf } = useNotification();
 const { recordFiles, selectedFile, lastUpdate } = useSSE();
@@ -198,6 +198,7 @@ async function downloadXLSX() {
     ]);
   }
 
+  const { default: ExcelJS } = await import("exceljs");
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("Records");
 

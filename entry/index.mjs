@@ -9,6 +9,8 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../
 ensureDataDir();
 
 const db = new Database("./data/entry.db");
+db.pragma("journal_mode = WAL");
+db.pragma("synchronous = NORMAL");
 
 // 차량 유형 테이블 (전역, 연도 무관)
 db.exec(`CREATE TABLE IF NOT EXISTS vehicle_types (
