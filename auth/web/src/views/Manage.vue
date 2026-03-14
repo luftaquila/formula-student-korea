@@ -36,6 +36,7 @@ async function fetchUsers() {
     }
     if (!res.ok) throw new Error(await res.text());
     users.value = await res.json();
+    selectedIds.value = new Set();
   } catch (e) {
     notyf.error(e.message);
   } finally {
@@ -124,6 +125,138 @@ async function handleMemoChange(user, value) {
 
 const adminCount = computed(() => users.value.filter((u) => u.role === "admin").length);
 
+// Bulk selection
+const selectedIds = ref(new Set());
+
+const allSelected = computed(() => sortedUsers.value.length > 0 && sortedUsers.value.every((u) => selectedIds.value.has(u.id)));
+
+function toggleAll() {
+  if (allSelected.value) {
+    selectedIds.value = new Set();
+  } else {
+    selectedIds.value = new Set(sortedUsers.value.map((u) => u.id));
+  }
+}
+
+function toggleOne(id) {
+  const s = new Set(selectedIds.value);
+  if (s.has(id)) s.delete(id);
+  else s.add(id);
+  selectedIds.value = s;
+}
+
+// Bulk delete
+async function bulkDelete() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  if (!confirm(`${ids.length}명의 사용자를 삭제하시겠습니까?`)) return;
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/users/bulk`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    notyf.success(`${data.deleted}명 삭제했습니다.`);
+    await fetchUsers();
+  } catch (e) {
+    notyf.error(e.message);
+  }
+}
+
+// CSV export
+function exportCSV() {
+  const header = "email,name,role,memo";
+  const rows = users.value.map((u) => [u.email, u.name || "", u.role, u.memo || ""].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
+  const csv = "\uFEFF" + [header, ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const date = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `users_${date}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// CSV upload
+function uploadCSV() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".csv";
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    const text = await file.text();
+    const rows = parseCSV(text);
+    if (rows.length === 0) { notyf.error("CSV 파일이 비어있습니다."); return; }
+
+    // Detect header row
+    let start = 0;
+    if (rows[0].some((c) => c.toLowerCase().includes("email"))) start = 1;
+
+    const users = [];
+    for (let i = start; i < rows.length; i++) {
+      const [email, role, memo] = [rows[i][0], rows[i][1], rows[i][2]];
+      if (!email || !email.trim()) continue;
+      users.push({ email: email.trim(), role: role?.trim() || "official", memo: memo?.trim() || "" });
+    }
+
+    if (users.length === 0) { notyf.error("추가할 사용자가 없습니다."); return; }
+
+    try {
+      const res = await fetch(`${BASE_URL}/api/users/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ users }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      let msg = `${data.added}명 추가`;
+      if (data.skipped > 0) msg += `, ${data.skipped}명 중복`;
+      if (data.errors.length > 0) msg += `, ${data.errors.length}건 오류`;
+      notyf.success(msg);
+      await fetchUsers();
+    } catch (e) {
+      notyf.error(e.message);
+    }
+  };
+  input.click();
+}
+
+function parseCSV(text) {
+  const rows = [];
+  let i = 0;
+  while (i < text.length) {
+    const row = [];
+    while (i < text.length) {
+      if (text[i] === '"') {
+        i++;
+        let val = "";
+        while (i < text.length) {
+          if (text[i] === '"') {
+            if (text[i + 1] === '"') { val += '"'; i += 2; }
+            else { i++; break; }
+          } else { val += text[i]; i++; }
+        }
+        row.push(val);
+        if (text[i] === ",") i++;
+      } else {
+        let val = "";
+        while (i < text.length && text[i] !== "," && text[i] !== "\n" && text[i] !== "\r") { val += text[i]; i++; }
+        row.push(val);
+        if (text[i] === ",") { i++; continue; }
+      }
+      if (text[i] === "\r") i++;
+      if (text[i] === "\n") { i++; break; }
+    }
+    if (row.length > 0 && row.some((c) => c.trim())) rows.push(row);
+  }
+  return rows;
+}
+
 // Sorting
 const sortKey = ref(null);
 const sortOrder = ref("asc");
@@ -181,7 +314,13 @@ onMounted(fetchUsers);
     <div class="card">
       <div class="card-header">
         <h3>등록된 사용자 <span class="count-badge">{{ users.length }}</span></h3>
+        <div class="header-actions">
+          <button v-if="selectedIds.size > 0" class="btn btn-sm btn-danger" @click="bulkDelete">선택 삭제 ({{ selectedIds.size }})</button>
+          <button class="btn btn-sm btn-ghost" @click="exportCSV">CSV 내보내기</button>
+          <button class="btn btn-sm btn-ghost" @click="uploadCSV">CSV 업로드</button>
+        </div>
       </div>
+
       <div class="card-body table-body">
         <div v-if="loading" class="loading">
           <div class="loading-spinner"></div>
@@ -191,6 +330,7 @@ onMounted(fetchUsers);
           <table class="data-table users-table">
             <thead>
               <tr>
+                <th class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
                 <th class="col-email sortable" @click="handleSort('email')">이메일 <span class="sort-icon">{{ getSortIcon('email') }}</span></th>
                 <th class="col-name sortable" @click="handleSort('name')">이름 <span class="sort-icon">{{ getSortIcon('name') }}</span></th>
                 <th class="col-role sortable" @click="handleSort('role')">역할 <span class="sort-icon">{{ getSortIcon('role') }}</span></th>
@@ -201,6 +341,7 @@ onMounted(fetchUsers);
             </thead>
             <tbody>
               <tr v-for="user in sortedUsers" :key="user.id">
+                <td class="col-check"><input type="checkbox" :checked="selectedIds.has(user.id)" @change="toggleOne(user.id)" /></td>
                 <td class="col-email">{{ user.email }}</td>
                 <td class="col-name">{{ user.name || "-" }}</td>
                 <td class="col-role">
@@ -222,18 +363,18 @@ onMounted(fetchUsers);
                 <td class="col-action">
                   <div class="action-btns">
                     <button
-                      class="btn btn-sm btn-outline"
+                      class="btn btn-sm btn-outline btn-role"
                       @click="changeRole(user)"
-                      :disabled="user.role === 'admin' && adminCount <= 1"
-                      :title="user.role === 'admin' && adminCount <= 1 ? '마지막 관리자는 강등할 수 없습니다' : ''"
+                      :disabled="user.protected || (user.role === 'admin' && adminCount <= 1)"
+                      :title="user.protected ? '기본 관리자의 역할은 변경할 수 없습니다' : user.role === 'admin' && adminCount <= 1 ? '마지막 관리자는 강등할 수 없습니다' : ''"
                     >
                       {{ user.role === "admin" ? "Official" : "Admin" }}
                     </button>
                     <button
                       class="btn btn-sm btn-danger"
                       @click="deleteUser(user)"
-                      :disabled="user.role === 'admin' && adminCount <= 1"
-                      :title="user.role === 'admin' && adminCount <= 1 ? '마지막 관리자는 삭제할 수 없습니다' : ''"
+                      :disabled="user.protected || (user.role === 'admin' && adminCount <= 1)"
+                      :title="user.protected ? '기본 관리자는 삭제할 수 없습니다' : user.role === 'admin' && adminCount <= 1 ? '마지막 관리자는 삭제할 수 없습니다' : ''"
                     >
                       삭제
                     </button>
@@ -241,7 +382,7 @@ onMounted(fetchUsers);
                 </td>
               </tr>
               <tr v-if="users.length === 0">
-                <td colspan="6" class="empty-state">등록된 사용자가 없습니다.</td>
+                <td colspan="7" class="empty-state">등록된 사용자가 없습니다.</td>
               </tr>
             </tbody>
           </table>
@@ -280,6 +421,30 @@ onMounted(fetchUsers);
   background: var(--bg-input);
   color: var(--text-primary);
   cursor: pointer;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-left: auto;
+}
+
+.col-check {
+  width: 1%;
+  white-space: nowrap;
+  text-align: center !important;
+}
+
+.col-check input[type="checkbox"] {
+  cursor: pointer;
+  width: 1rem;
+  height: 1rem;
 }
 
 .count-badge {
@@ -348,7 +513,6 @@ onMounted(fetchUsers);
 .col-date {
   font-size: 0.8125rem;
   color: var(--text-secondary);
-  font-family: "JetBrains Mono", monospace;
 }
 
 /* Memo click-to-edit */
@@ -390,6 +554,11 @@ onMounted(fetchUsers);
 }
 
 /* Action buttons */
+.btn-role {
+  width: 4rem;
+  text-align: center;
+}
+
 .action-btns {
   display: flex;
   gap: 0.5rem;

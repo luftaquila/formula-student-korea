@@ -16,18 +16,23 @@ db.exec(`CREATE TABLE IF NOT EXISTS users (
   name TEXT,
   role TEXT NOT NULL CHECK(role IN ('admin', 'official')),
   memo TEXT DEFAULT '',
-  created_at TEXT DEFAULT (datetime('now'))
+  created_at TEXT
 )`);
 
 // 마이그레이션: memo 컬럼 추가
 try { db.exec("ALTER TABLE users ADD COLUMN memo TEXT DEFAULT ''"); }
 catch { /* already exists */ }
 
+// 마이그레이션: created_at 기본값 제거 (최초 로그인 시점으로 변경)
+// 아직 로그인하지 않은 사용자(name IS NULL)의 created_at 초기화
+db.exec("UPDATE users SET created_at = NULL WHERE name IS NULL AND created_at IS NOT NULL");
+
 // Bootstrap: ADMIN_EMAIL이 DB에 없으면 admin으로 등록
-if (process.env.ADMIN_EMAIL) {
-  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(process.env.ADMIN_EMAIL);
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
+if (ADMIN_EMAIL) {
+  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(ADMIN_EMAIL);
   if (!existing) {
-    db.prepare("INSERT INTO users (email, role) VALUES (?, 'admin')").run(process.env.ADMIN_EMAIL);
+    db.prepare("INSERT INTO users (email, role) VALUES (?, 'admin')").run(ADMIN_EMAIL);
   }
 }
 
@@ -143,6 +148,11 @@ app.get("/api/callback", async (req, res) => {
       db.prepare("UPDATE users SET name = ? WHERE id = ?").run(name, user.id);
     }
 
+    // 최초 로그인 시 created_at 기록
+    if (!user.created_at) {
+      db.prepare("UPDATE users SET created_at = datetime('now') WHERE id = ?").run(user.id);
+    }
+
     // Set JWT cookie
     const jwt = createJWT({ email, name, role: user.role }, process.env.JWT_SECRET);
     const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
@@ -182,7 +192,7 @@ app.get("/api/me", (req, res) => {
 app.get("/api/users", (req, res) => {
   const result = dbRun(() => db.prepare("SELECT id, email, name, role, memo, created_at FROM users ORDER BY id").all());
   if (!result.success) return res.status(result.status).send(result.error);
-  res.json(result.result);
+  res.json(result.result.map((u) => ({ ...u, protected: u.email === ADMIN_EMAIL })));
 });
 
 // POST /api/users - 사용자 추가
@@ -205,6 +215,62 @@ app.post("/api/users", (req, res) => {
   res.status(201).json({ id: result.result.lastInsertRowid, email: email.trim().toLowerCase(), role });
 });
 
+// POST /api/users/bulk - 벌크 사용자 추가
+app.post("/api/users/bulk", (req, res) => {
+  const { users: rows } = req.body;
+  if (!Array.isArray(rows) || rows.length === 0) return res.status(400).send("추가할 사용자 목록이 비어있습니다.");
+
+  const insert = db.prepare("INSERT OR IGNORE INTO users (email, role, memo) VALUES (?, ?, ?)");
+  const added = [];
+  const skipped = [];
+  const errors = [];
+
+  const run = db.transaction(() => {
+    for (const row of rows) {
+      const email = (row.email || "").trim().toLowerCase();
+      if (!email) { errors.push({ row, reason: "이메일 없음" }); continue; }
+
+      const role = ["admin", "official"].includes(row.role) ? row.role : "official";
+      const memo = (row.memo || "").trim();
+
+      const result = insert.run(email, role, memo);
+      if (result.changes > 0) added.push(email);
+      else skipped.push(email);
+    }
+  });
+
+  const txResult = dbRun(() => run());
+  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+
+  res.json({ added: added.length, skipped: skipped.length, errors });
+});
+
+// DELETE /api/users/bulk - 벌크 사용자 삭제
+app.delete("/api/users/bulk", (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) return res.status(400).send("삭제할 사용자를 선택하세요.");
+
+  // ADMIN_EMAIL 보호
+  if (ADMIN_EMAIL) {
+    const protectedUser = db.prepare(`SELECT id FROM users WHERE email = ?`).get(ADMIN_EMAIL);
+    if (protectedUser && ids.includes(protectedUser.id)) return res.status(400).send("기본 관리자는 삭제할 수 없습니다.");
+  }
+
+  // 마지막 관리자 삭제 방지
+  const totalAdmins = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
+  const placeholders = ids.map(() => "?").join(",");
+  const adminsToDelete = db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND id IN (${placeholders})`).get(...ids).cnt;
+  if (totalAdmins - adminsToDelete < 1) return res.status(400).send("마지막 관리자는 삭제할 수 없습니다.");
+
+  const del = db.prepare(`DELETE FROM users WHERE id IN (${placeholders})`);
+  const run = db.transaction(() => del.run(...ids));
+
+  const txResult = dbRun(() => run());
+  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+
+  res.json({ deleted: txResult.result.changes });
+});
+
 // PATCH /api/users/:id - 역할/메모 변경
 app.patch("/api/users/:id", (req, res) => {
   const id = Number(req.params.id);
@@ -216,6 +282,9 @@ app.patch("/api/users/:id", (req, res) => {
   // 역할 변경
   if (role !== undefined) {
     if (!["admin", "official"].includes(role)) return res.status(400).send("올바르지 않은 역할입니다.");
+
+    // ADMIN_EMAIL 보호
+    if (user.email === ADMIN_EMAIL && role !== "admin") return res.status(400).send("기본 관리자의 역할은 변경할 수 없습니다.");
 
     // 마지막 admin 강등 방지
     if (user.role === "admin" && role !== "admin") {
@@ -242,6 +311,9 @@ app.delete("/api/users/:id", (req, res) => {
 
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
   if (!user) return res.status(404).send("사용자를 찾을 수 없습니다.");
+
+  // ADMIN_EMAIL 보호
+  if (user.email === ADMIN_EMAIL) return res.status(400).send("기본 관리자는 삭제할 수 없습니다.");
 
   // 마지막 admin 삭제 방지
   if (user.role === "admin") {

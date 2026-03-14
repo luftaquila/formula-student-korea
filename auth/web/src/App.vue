@@ -31,6 +31,6 @@ import NavMenu from "@shared/NavMenu.vue";
 
 <style scoped>
 .app-container {
-  --layout-max-width: 900px;
+  --layout-max-width: 1100px;
 }
 </style>
