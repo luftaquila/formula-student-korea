@@ -9,6 +9,7 @@ const navItems = [
   { id: "record", label: "📋 기록", path: "/record" },
   { id: "accel", label: "🏎️ 가속", path: "/accel" },
   { id: "skidpad", label: "⏱️ 스키드패드", path: "/skidpad" },
+  { id: "autocross", label: "🚧 오토크로스", path: "/autocross" },
   { id: "gymkhana", label: "🏁 짐카나", path: "/gymkhana" },
   { id: "scoreboard", label: "📺 전광판", path: "/scoreboard" },
 ];

@@ -17,6 +17,7 @@ const trackTemp = ref("");
 const EVENT_CONFIG = {
   가속: { label: "ACCELERATION", color: "#ffd000" },
   스키드패드: { label: "SKIDPAD", color: "#00e5ff" },
+  오토크로스: { label: "AUTOCROSS", color: "#ff6b6b" },
   짐카나: { label: "GYMKHANA", color: "#bf5af2" },
 };
 
@@ -425,6 +426,10 @@ onUnmounted(() => {
   grid-template-columns: repeat(3, 1fr);
 }
 
+.panels.cols-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+
 .panel {
   display: flex;
   flex-direction: column;
@@ -826,6 +831,7 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) {
+  .panels.cols-4,
   .panels.cols-3,
   .panels.cols-2 {
     grid-template-columns: 1fr;

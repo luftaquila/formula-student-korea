@@ -149,7 +149,7 @@ export const useSerialStore = defineStore("serial", () => {
     lastSensorTrigger.value = {};
 
     // For gymkhana, start clock immediately from green light
-    if (currentMode.value === "gymkhana") {
+    if (currentMode.value === "gymkhana" || currentMode.value === "autocross") {
       start.value.tick = green.value.tick;
       start.value.timestamp = green.value.timestamp;
       startClock();

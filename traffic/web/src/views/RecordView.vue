@@ -39,6 +39,7 @@ const editingOcId = ref(null);
 const typeFilters = ref({
   가속: true,
   스키드패드: true,
+  오토크로스: true,
   짐카나: true,
 });
 
@@ -260,7 +261,7 @@ function formatResult(result) {
 }
 
 function getTypeClass(type) {
-  const typeMap = { 가속: "accel", 짐카나: "gymkhana", 스키드패드: "skidpad" };
+  const typeMap = { 가속: "accel", 짐카나: "gymkhana", 스키드패드: "skidpad", 오토크로스: "autocross" };
   return typeMap[type] || type;
 }
 
@@ -464,6 +465,10 @@ async function handleAddRecord() {
             <span class="filter-label skidpad">스키드패드</span>
           </label>
           <label class="filter-checkbox">
+            <input type="checkbox" v-model="typeFilters['오토크로스']" />
+            <span class="filter-label autocross">오토크로스</span>
+          </label>
+          <label class="filter-checkbox">
             <input type="checkbox" v-model="typeFilters['짐카나']" />
             <span class="filter-label gymkhana">짐카나</span>
           </label>
@@ -478,6 +483,7 @@ async function handleAddRecord() {
             <select v-model="addType" class="form-select">
               <option value="가속">가속</option>
               <option value="스키드패드">스키드패드</option>
+              <option value="오토크로스">오토크로스</option>
               <option value="짐카나">짐카나</option>
             </select>
           </div>
@@ -839,6 +845,11 @@ async function handleAddRecord() {
   color: var(--accent-warning);
 }
 
+.filter-label.autocross {
+  background: rgba(255, 107, 107, 0.1);
+  color: #ff6b6b;
+}
+
 .loading-container {
   display: flex;
   flex-direction: column;
@@ -956,6 +967,10 @@ async function handleAddRecord() {
 .type-badge.skidpad {
   background: rgba(245, 158, 11, 0.1);
   color: var(--accent-warning);
+}
+.type-badge.autocross {
+  background: rgba(255, 107, 107, 0.1);
+  color: #ff6b6b;
 }
 
 .result-cell {
