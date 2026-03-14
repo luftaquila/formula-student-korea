@@ -58,7 +58,7 @@ function validateRecordName(name) {
     return { valid: false, error: "올바르지 않은 기록 이름입니다." };
   }
   // 파일 경로에 사용할 수 없는 문자들을 .으로 치환
-  const sanitized = name.trim().replace(/[/\\:*?"<>|]/g, ".");
+  const sanitized = name.trim().replace(/[/\\:*?"<>|']/g, ".");
   return { valid: true, value: sanitized };
 }
 
@@ -186,7 +186,7 @@ app.get("/api/records/:name", (req, res) => {
     return res.status(400).send(validation.error);
   }
 
-  const name = decodeURIComponent(validation.value);
+  const name = validation.value;
 
   const result = dbRun(() => {
     // 기존 테이블에 누락된 컬럼 추가
@@ -274,7 +274,7 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
     return res.status(400).send(validation.error);
   }
 
-  const name = decodeURIComponent(validation.value);
+  const name = validation.value;
   const rowid = parseInt(req.params.rowid, 10);
 
   if (isNaN(rowid)) {
@@ -334,7 +334,7 @@ app.delete("/api/records/:name", (req, res) => {
     return res.status(400).send(validation.error);
   }
 
-  const name = decodeURIComponent(validation.value);
+  const name = validation.value;
 
   const result = dbRun(() => db.exec(`DROP TABLE IF EXISTS '${name}'`));
 

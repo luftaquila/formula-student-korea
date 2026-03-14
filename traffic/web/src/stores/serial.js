@@ -66,7 +66,7 @@ export const useSerialStore = defineStore("serial", () => {
       readLoop();
       return true;
     } catch (e) {
-      notyf.error(`컨트롤러 연결에 실패했습니다.<br>${e}`);
+      notyf.error(`컨트롤러 연결에 실패했습니다. ${e}`);
       return false;
     }
   }
@@ -84,10 +84,13 @@ export const useSerialStore = defineStore("serial", () => {
 
         if (value) {
           received += new TextDecoder().decode(value);
-          let idx = received.indexOf("!");
+          let idx;
 
-          if (idx > -1) {
-            parse(received.slice(received.indexOf("$"), idx));
+          while ((idx = received.indexOf("!")) > -1) {
+            const start = received.indexOf("$");
+            if (start > -1 && start < idx) {
+              parse(received.slice(start, idx));
+            }
             received = received.slice(idx + 1);
           }
         }
@@ -99,7 +102,7 @@ export const useSerialStore = defineStore("serial", () => {
         handleDisconnect();
         notyf.error(e.message);
       } else {
-        notyf.error(`컨트롤러 데이터 수신에 실패했습니다.<br>${e}`);
+        notyf.error(`컨트롤러 데이터 수신에 실패했습니다. ${e}`);
       }
     }
   }
@@ -117,7 +120,7 @@ export const useSerialStore = defineStore("serial", () => {
     addControllerLog(new Date(), data);
 
     if (data.startsWith("$E")) {
-      notyf.error("컨트롤러 프로토콜 오류<br>컨트롤러 전원을 껐다 켜세요.");
+      notyf.error("컨트롤러 프로토콜 오류 컨트롤러 전원을 껐다 켜세요.");
     } else if (data.startsWith("$HI")) {
       connected.value = true;
       lightColor.value = "grey";

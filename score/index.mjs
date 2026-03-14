@@ -59,6 +59,26 @@ function internalHeaders() {
    ============================================ */
 const dbRun = createDbRun();
 
+async function fetchYearRecords(year) {
+  const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`, { headers: internalHeaders() });
+  if (!tablesRes.ok) throw new Error("경기 목록을 가져올 수 없습니다.");
+  const allTables = await tablesRes.json();
+  const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year}`));
+
+  return Promise.all(
+    yearTables.map(async (tableName) => {
+      try {
+        const recordRes = await fetch(
+          `${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tableName)}`,
+          { headers: internalHeaders() },
+        );
+        if (recordRes.ok) return { tableName, records: await recordRes.json() };
+      } catch {}
+      return { tableName, records: [] };
+    })
+  );
+}
+
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
@@ -82,10 +102,14 @@ function subscribeInspectionSSE() {
       buffer = messages.pop(); // 마지막 불완전한 메시지는 버퍼에 유지
 
       for (const msg of messages) {
-        const eventMatch = msg.match(/^event:\s*(.+)$/m);
-        const dataMatch = msg.match(/^data:\s*(.+)$/m);
-        if (eventMatch && dataMatch) {
-          broadcastEvent(`inspection:${eventMatch[1]}`, JSON.parse(dataMatch[1]));
+        try {
+          const eventMatch = msg.match(/^event:\s*(.+)$/m);
+          const dataMatch = msg.match(/^data:\s*(.+)$/m);
+          if (eventMatch && dataMatch) {
+            broadcastEvent(`inspection:${eventMatch[1]}`, JSON.parse(dataMatch[1]));
+          }
+        } catch (e) {
+          console.error("Inspection SSE message parse error:", e);
         }
       }
     });
@@ -117,13 +141,17 @@ function subscribeTrafficSSE() {
       buffer = messages.pop();
 
       for (const msg of messages) {
-        const eventMatch = msg.match(/^event:\s*(.+)$/m);
-        const dataMatch = msg.match(/^data:\s*(.+)$/m);
-        if (eventMatch && dataMatch && eventMatch[1] === "records") {
-          const data = JSON.parse(dataMatch[1]);
-          if (data.record && (data.type === "add" || (data.type === "update" && data.field === "invalidated"))) {
-            autoSelectBestRecord(data.name, data.record.num, data.record.eventType);
+        try {
+          const eventMatch = msg.match(/^event:\s*(.+)$/m);
+          const dataMatch = msg.match(/^data:\s*(.+)$/m);
+          if (eventMatch && dataMatch && eventMatch[1] === "records") {
+            const data = JSON.parse(dataMatch[1]);
+            if (data.record && (data.type === "add" || (data.type === "update" && data.field === "invalidated"))) {
+              autoSelectBestRecord(data.name, data.record.num, data.record.eventType);
+            }
           }
+        } catch (e) {
+          console.error("Traffic SSE message parse error:", e);
         }
       }
     });
@@ -147,28 +175,23 @@ async function autoSelectBestRecord(tableName, teamNum, eventType) {
 
   try {
     // 해당 연도의 모든 테이블에서 이 팀/종목의 기록을 수집
-    const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`, { headers: internalHeaders() });
-    if (!tablesRes.ok) return;
-    const allTables = await tablesRes.json();
-    const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year}`));
+    let allTableRecords;
+    try {
+      allTableRecords = await fetchYearRecords(year);
+    } catch { return; }
 
     const runs = [];
-    for (const tbl of yearTables) {
-      try {
-        const recordRes = await fetch(`${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tbl)}`, { headers: internalHeaders() });
-        if (!recordRes.ok) continue;
-        const records = await recordRes.json();
-        for (const rec of records) {
-          if (rec.type === eventType && rec.num === teamNum) {
-            runs.push({
-              table_name: tbl,
-              rowid: rec.rowid,
-              result: rec.result,
-              invalidated: rec.invalidated || 0,
-            });
-          }
+    for (const { tableName: tbl, records } of allTableRecords) {
+      for (const rec of records) {
+        if (rec.type === eventType && rec.num === teamNum) {
+          runs.push({
+            table_name: tbl,
+            rowid: rec.rowid,
+            result: rec.result,
+            invalidated: rec.invalidated || 0,
+          });
         }
-      } catch {}
+      }
     }
 
     // 무효화되지 않은 기록만 필터링
@@ -200,7 +223,7 @@ async function autoSelectBestRecord(tableName, teamNum, eventType) {
       team_num: teamNum,
       selected: { table_name: best.table_name, rowid: best.rowid, result: best.result },
     });
-  } catch {}
+  } catch (e) { console.error("autoSelectBestRecord:", e); }
 }
 
 subscribeTrafficSSE();
@@ -301,32 +324,13 @@ app.get("/api/score", async (req, res) => {
 
     inspection.cornerWeight = cornerWeight;
 
-    // 3. Traffic 서비스에서 모든 경기 테이블 목록 fetch
-    const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`, { headers: internalHeaders() });
-    if (!tablesRes.ok) throw new Error("경기 목록을 가져올 수 없습니다.");
-    const allTables = await tablesRes.json();
-
-    // 해당 연도 테이블만 필터링
-    const yearPrefix = `FSK ${year}`;
-    const yearTables = allTables.filter((t) => t.startsWith(yearPrefix));
+    // 3. Traffic 서비스에서 해당 연도의 모든 경기 기록 fetch
+    const allTableRecords = await fetchYearRecords(year);
 
     // 4. 모든 테이블의 기록을 합쳐서 레코드의 type 필드(경기 종목)별로 그룹핑
     const typeMap = new Map(); // 경기종목 → { num → [...runs] }
 
-    for (const tableName of yearTables) {
-      let records = [];
-      try {
-        const recordRes = await fetch(
-          `${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tableName)}`,
-          { headers: internalHeaders() },
-        );
-        if (recordRes.ok) {
-          records = await recordRes.json();
-        }
-      } catch {
-        // Traffic 서비스 연결 실패 시 빈 기록
-      }
-
+    for (const { tableName, records } of allTableRecords) {
       for (const rec of records) {
         const eventType = rec.type; // 경기 종목: 가속, 스키드패드, 짐카나 등
         if (!eventType) continue;
@@ -405,31 +409,23 @@ app.get("/api/score/records", async (req, res) => {
   }
 
   try {
-    const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`, { headers: internalHeaders() });
-    if (!tablesRes.ok) throw new Error("경기 목록을 가져올 수 없습니다.");
-    const allTables = await tablesRes.json();
-    const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year}`));
+    const allTableRecords = await fetchYearRecords(year);
 
     const runs = [];
-    for (const tableName of yearTables) {
-      try {
-        const recordRes = await fetch(`${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tableName)}`, { headers: internalHeaders() });
-        if (!recordRes.ok) continue;
-        const records = await recordRes.json();
-        for (const rec of records) {
-          if (rec.type === eventType && rec.num === teamNum) {
-            runs.push({
-              table_name: tableName,
-              rowid: rec.rowid,
-              result: rec.result,
-              detail: rec.detail || null,
-              invalidated: rec.invalidated || 0,
-              scoreboard: rec.scoreboard ?? 1,
-              time: rec.time,
-            });
-          }
+    for (const { tableName, records } of allTableRecords) {
+      for (const rec of records) {
+        if (rec.type === eventType && rec.num === teamNum) {
+          runs.push({
+            table_name: tableName,
+            rowid: rec.rowid,
+            result: rec.result,
+            detail: rec.detail || null,
+            invalidated: rec.invalidated || 0,
+            scoreboard: rec.scoreboard ?? 1,
+            time: rec.time,
+          });
         }
-      } catch {}
+      }
     }
 
     // 기록 오름차순 정렬 (DNF=-1은 맨 뒤)

@@ -23,7 +23,11 @@ export function verifyJWT(token, secret) {
   if (!headerB64 || !payloadB64 || !signatureB64) throw new Error("Invalid token");
   const data = `${headerB64}.${payloadB64}`;
   const expected = crypto.createHmac("sha256", secret).update(data).digest("base64url");
-  if (expected !== signatureB64) throw new Error("Invalid signature");
+  const expectedBuf = Buffer.from(expected);
+  const actualBuf = Buffer.from(signatureB64);
+  if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+    throw new Error("Invalid signature");
+  }
   const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
   if (payload.exp && Date.now() / 1000 > payload.exp) throw new Error("Expired");
   return payload;
@@ -52,8 +56,11 @@ export function createApp(logFile, { express, pinoHttp }, authRoleFn) {
   // 2. JWT user extraction (with dev mode auto-auth)
   app.use((req, res, next) => {
     // Internal service-to-service auth
-    if (process.env.INTERNAL_SECRET &&
-        req.headers["x-internal-service"] === process.env.INTERNAL_SECRET) {
+    const secret = process.env.INTERNAL_SECRET;
+    const header = req.headers["x-internal-service"];
+    if (secret && header &&
+        Buffer.byteLength(secret) === Buffer.byteLength(header) &&
+        crypto.timingSafeEqual(Buffer.from(secret), Buffer.from(header))) {
       req.user = { email: "internal", name: "Service", role: "admin" };
       req.headers.authuser = "internal";
       return next();
@@ -64,7 +71,7 @@ export function createApp(logFile, { express, pinoHttp }, authRoleFn) {
         req.user = verifyJWT(token, process.env.JWT_SECRET);
         req.headers.authuser = req.user.email;
       } catch { /* invalid token */ }
-    } else if (!process.env.JWT_SECRET) {
+    } else if (!process.env.JWT_SECRET && process.env.NODE_ENV !== "production") {
       // Dev mode: auto admin when JWT_SECRET is not set
       req.user = { email: "dev@local", name: "Developer", role: "admin" };
       req.headers.authuser = "dev@local";
@@ -92,7 +99,10 @@ export function createApp(logFile, { express, pinoHttp }, authRoleFn) {
   app.use(
     pinoHttp({
       stream: fs.createWriteStream(`./data/${logFile}`, { flags: "a" }),
-      customProps: (req, res) => ({ reqBody: req.body }),
+      customProps: (req, res) => {
+        if (req.path.includes("/callback") || req.path.includes("/login")) return {};
+        return { reqBody: req.body };
+      },
     }),
   );
 

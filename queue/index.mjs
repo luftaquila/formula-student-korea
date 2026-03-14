@@ -179,7 +179,7 @@ app.get("/api/events", sseHandler(() => {
    ============================================ */
 function validateEntryNum(num) {
   const parsed = Number(num);
-  if (num === "" || num === undefined || Number.isNaN(parsed) || parsed < 0) {
+  if (num === "" || num === undefined || Number.isNaN(parsed) || parsed < 0 || !Number.isInteger(parsed)) {
     return { valid: false, error: "올바르지 않은 엔트리 번호입니다." };
   }
   return { valid: true, value: parsed };
@@ -290,7 +290,7 @@ app.get("/api/active", (req, res) => {
 });
 
 // GET /api/state/:num - 대기열 상태 조회 (전화번호 검증 필요)
-app.get("/api/state/:num", async (req, res) => {
+app.post("/api/state/:num", async (req, res) => {
   const numValidation = validateEntryNum(req.params.num);
   if (!numValidation.valid) {
     return res.status(400).send(numValidation.error);
@@ -315,7 +315,7 @@ app.get("/api/state/:num", async (req, res) => {
       return { queue: undefined, rank: -1 };
     }
 
-    if (entry.phone !== req.query.phone) {
+    if (entry.phone !== req.body.phone) {
       throw { status: 400, message: "전화번호가 일치하지 않습니다." };
     }
 

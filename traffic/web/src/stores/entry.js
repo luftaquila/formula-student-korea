@@ -28,7 +28,7 @@ export const useEntryStore = defineStore("entry", () => {
       }));
       loaded.value = true;
     } catch (e) {
-      notyf.error(`엔트리 목록을 불러오지 못했습니다.<br>${e}`);
+      notyf.error(`엔트리 목록을 불러오지 못했습니다. ${e}`);
       loaded.value = false;
     } finally {
       loading.value = false;

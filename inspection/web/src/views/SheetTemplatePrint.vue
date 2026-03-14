@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, onBeforeUnmount, computed } from "vue";
 import { useRoute } from "vue-router";
 import { fetchSheetTemplate } from "../api";
 
@@ -8,8 +8,10 @@ const year = computed(() => Number(route.query.year) || new Date().getFullYear()
 const template = ref([]);
 const loading = ref(true);
 const error = ref(false);
+let previousTheme = null;
 
 onMounted(async () => {
+  previousTheme = document.documentElement.getAttribute("data-theme");
   document.documentElement.setAttribute("data-theme", "light");
 
   try {
@@ -20,23 +22,19 @@ onMounted(async () => {
   loading.value = false;
 });
 
+onBeforeUnmount(() => {
+  if (previousTheme) {
+    document.documentElement.setAttribute("data-theme", previousTheme);
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
+});
+
 function print() {
   window.print();
 }
 
-const CIRCLED = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"];
-function subNum(i) { return String(i + 1); }
-function grpNum(i) { return String(i + 1); }
-function itemNum(i) { return CIRCLED[i] || `(${i + 1})`; }
-
-function getChecktableConfig(item) {
-  try {
-    const config = JSON.parse(item.remarks);
-    return { columns: config.columns || [], rows: config.rows || [] };
-  } catch {
-    return { columns: [], rows: [] };
-  }
-}
+import { subNum, grpNum, itemNum, getChecktableConfig } from "../utils/sheet-helpers";
 </script>
 
 <template>

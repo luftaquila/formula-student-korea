@@ -208,16 +208,17 @@ async function onDrop(evt, arr, toIndex) {
 }
 
 // ---- Inline editing ----
-let saveTimer = null;
+const saveTimers = new Map();
 function onNameChange(node) {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
+  clearTimeout(saveTimers.get(node.id));
+  saveTimers.set(node.id, setTimeout(async () => {
+    saveTimers.delete(node.id);
     try {
       await updateSheetNode(node.id, { name: node.name });
     } catch (e) {
       error("이름 변경에 실패했습니다.");
     }
-  }, 500);
+  }, 500));
 }
 
 async function onAnswerTypeChange(item) {
@@ -233,16 +234,17 @@ async function onAnswerTypeChange(item) {
   }
 }
 
-let remarksTimer = null;
+const remarksTimers = new Map();
 function onRemarksChange(item) {
-  clearTimeout(remarksTimer);
-  remarksTimer = setTimeout(async () => {
+  clearTimeout(remarksTimers.get(item.id));
+  remarksTimers.set(item.id, setTimeout(async () => {
+    remarksTimers.delete(item.id);
     try {
       await updateSheetNode(item.id, { remarks: item.remarks });
     } catch (e) {
       error("비고 변경에 실패했습니다.");
     }
-  }, 500);
+  }, 500));
 }
 
 async function onPdfIncludeChange(cat) {
@@ -253,16 +255,17 @@ async function onPdfIncludeChange(cat) {
   }
 }
 
-let unitTimer = null;
+const unitTimers = new Map();
 function onUnitChange(item) {
-  clearTimeout(unitTimer);
-  unitTimer = setTimeout(async () => {
+  clearTimeout(unitTimers.get(item.id));
+  unitTimers.set(item.id, setTimeout(async () => {
+    unitTimers.delete(item.id);
     try {
       await updateSheetNode(item.id, { unit: item.unit });
     } catch (e) {
       error("단위 변경에 실패했습니다.");
     }
-  }, 500);
+  }, 500));
 }
 
 function onItemNameInput(evt, node) {
@@ -273,15 +276,6 @@ function onItemNameInput(evt, node) {
 }
 
 // ---- Checktable helpers ----
-function getChecktableConfig(item) {
-  try {
-    const config = JSON.parse(item.remarks);
-    return { columns: config.columns || [], rows: config.rows || [] };
-  } catch {
-    return { columns: [], rows: [] };
-  }
-}
-
 function setChecktableConfig(item, config) {
   item.remarks = JSON.stringify(config);
   onRemarksChange(item);
@@ -307,12 +301,7 @@ function onChecktableRowsChange(item, value) {
 }
 
 // ---- Numbering ----
-const ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV"];
-const CIRCLED = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"];
-function catNum(i) { return ROMAN[i] || String(i + 1); }
-function subNum(i) { return String(i + 1); }
-function grpNum(i) { return String(i + 1); }
-function itemNum(i) { return CIRCLED[i] || `(${i + 1})`; }
+import { catNum, subNum, grpNum, itemNum, getChecktableConfig } from "../utils/sheet-helpers";
 
 // ---- Print ----
 function openPrintPage() {

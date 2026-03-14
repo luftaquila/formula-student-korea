@@ -14,15 +14,18 @@ function handleFullscreenChange() {
   isScoreboardFullscreen.value = document.body.classList.contains("scoreboard-fullscreen");
 }
 
+let observer = null;
+
 onMounted(() => {
   entryStore.loadEntries();
   // Watch for scoreboard fullscreen state
-  const observer = new MutationObserver(handleFullscreenChange);
+  observer = new MutationObserver(handleFullscreenChange);
   observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
   handleFullscreenChange();
 });
 
 onUnmounted(() => {
+  if (observer) observer.disconnect();
   document.body.classList.remove("scoreboard-fullscreen");
 });
 </script>

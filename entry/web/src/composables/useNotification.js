@@ -23,13 +23,17 @@ function getNotyf() {
   return notyfInstance;
 }
 
+function escapeHtml(str) {
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 export function useNotification() {
   const notyf = getNotyf();
 
   return {
     notyf,
-    success: (message) => notyf.success(message),
-    error: (message) => notyf.error(message),
-    warning: (message) => notyf.open({ type: "warning", message }),
+    success: (message) => notyf.success(escapeHtml(message)),
+    error: (message) => notyf.error(escapeHtml(message)),
+    warning: (message) => notyf.open({ type: "warning", message: escapeHtml(message) }),
   };
 }

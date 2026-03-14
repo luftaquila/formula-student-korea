@@ -4,9 +4,24 @@ export function createSSEManager() {
   function broadcast(event, data) {
     const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const client of clients) {
-      client.write(message);
+      try {
+        client.write(message);
+      } catch {
+        clients.delete(client);
+      }
     }
   }
+
+  // Heartbeat to keep connections alive through proxies
+  setInterval(() => {
+    for (const client of clients) {
+      try {
+        client.write(": keepalive\n\n");
+      } catch {
+        clients.delete(client);
+      }
+    }
+  }, 30000);
 
   function handler(initDataFn) {
     return (req, res) => {

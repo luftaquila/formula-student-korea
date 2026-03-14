@@ -72,7 +72,7 @@ const app = createApp("entry.log", { express, pinoHttp }, (req) => {
    ============================================ */
 function validateEntryNum(num) {
   const parsed = Number(num);
-  if (num === "" || num === undefined || Number.isNaN(parsed) || parsed < 0) {
+  if (num === "" || num === undefined || Number.isNaN(parsed) || parsed < 0 || !Number.isInteger(parsed)) {
     return { valid: false, error: "올바르지 않은 엔트리 번호입니다." };
   }
   return { valid: true, value: parsed };
@@ -246,30 +246,28 @@ app.patch("/api/entries/:num", (req, res) => {
   const newNum = newNumValidation.value;
   const numChanged = prevNum !== newNum;
 
-  if (numChanged) {
-    const numResult = dbRun(() => db.prepare(`UPDATE '${tableName}' SET num = ? WHERE num = ?`).run(newNum, prevNum));
+  const result = dbRun(() => {
+    return db.transaction(() => {
+      if (numChanged) {
+        const numResult = db.prepare(`UPDATE '${tableName}' SET num = ? WHERE num = ?`).run(newNum, prevNum);
+        if (!numResult.changes) {
+          throw { status: 404, message: "존재하지 않는 엔트리 번호입니다." };
+        }
+      }
 
-    if (!numResult.success) {
-      return res.status(numResult.status).send(numResult.error);
-    }
+      const updateResult = db.prepare(`UPDATE '${tableName}' SET univ = ?, team = ?, type = ? WHERE num = ?`)
+        .run(dataValidation.univ, dataValidation.team, dataValidation.type, newNum);
 
-    if (!numResult.result.changes) {
-      return res.status(404).send("존재하지 않는 엔트리 번호입니다.");
-    }
-  }
+      if (!updateResult.changes) {
+        throw { status: 404, message: "존재하지 않는 엔트리 번호입니다." };
+      }
 
-  const result = dbRun(() =>
-    db
-      .prepare(`UPDATE '${tableName}' SET univ = ?, team = ?, type = ? WHERE num = ?`)
-      .run(dataValidation.univ, dataValidation.team, dataValidation.type, newNum),
-  );
+      return updateResult;
+    })();
+  });
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
-  }
-
-  if (!result.result.changes) {
-    return res.status(404).send("존재하지 않는 엔트리 번호입니다.");
   }
 
   res.status(200).send();

@@ -4,6 +4,8 @@ export function createSSEConnection(endpointUrl) {
   const connected = ref(false);
   let eventSource = null;
   let subscribers = 0;
+  let retryDelay = 1000;
+  const MAX_RETRY_DELAY = 30000;
   const pendingListeners = [];
 
   function on(eventName, handler) {
@@ -20,17 +22,20 @@ export function createSSEConnection(endpointUrl) {
 
     eventSource.onopen = () => {
       connected.value = true;
+      retryDelay = 1000; // Reset on successful connection
     };
 
     eventSource.onerror = () => {
       connected.value = false;
+      const delay = retryDelay + Math.random() * 1000; // Add jitter
+      retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
       setTimeout(() => {
         if (subscribers > 0) {
           eventSource?.close();
           eventSource = null;
           connect();
         }
-      }, 3000);
+      }, delay);
     };
 
     for (const { eventName, handler } of pendingListeners) {

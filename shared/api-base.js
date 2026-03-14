@@ -1,6 +1,6 @@
 export function createApiClient(basePath) {
   const BASE_URL = import.meta.env.PROD ? basePath : "";
-  const ENTRY_URL = import.meta.env.PROD ? "/entry" : "/entry";
+  const ENTRY_URL = "/entry";
 
   async function request(endpoint, options = {}) {
     const config = {

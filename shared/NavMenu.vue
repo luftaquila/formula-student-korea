@@ -49,8 +49,11 @@ function close() {
 }
 
 async function logout() {
-  await fetch("/auth/api/logout", { method: "POST" });
-  window.location.href = "/";
+  try {
+    await fetch("/auth/api/logout", { method: "POST" });
+  } finally {
+    window.location.href = "/";
+  }
 }
 </script>
 

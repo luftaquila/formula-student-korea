@@ -9,6 +9,6 @@ RUN npm --prefix web ci
 COPY ${SERVICE}/index.mjs ./
 COPY ${SERVICE}/web/ web/
 COPY shared ../shared
-RUN npm --prefix web run build
+RUN npm --prefix web run build && rm -rf web/node_modules
 EXPOSE ${PORT}
 CMD [ "node", "index.mjs" ]

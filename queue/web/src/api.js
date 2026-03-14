@@ -13,7 +13,10 @@ export async function fetchActiveInspections() {
 }
 
 export async function fetchQueueState(num, phone) {
-  const res = await request(`/api/state/${num}?phone=${phone}`);
+  const res = await request(`/api/state/${num}`, {
+    method: "POST",
+    body: JSON.stringify({ phone }),
+  });
   return res.json();
 }
 

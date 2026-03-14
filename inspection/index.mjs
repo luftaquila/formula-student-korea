@@ -419,6 +419,7 @@ app.get("/api/sheet/data/:year/:num", (req, res) => {
 // PUT /api/sheet/answer - 답변 upsert
 app.put("/api/sheet/answer", (req, res) => {
   const { year, team_num, item_id, value } = req.body;
+  if (!year || team_num == null || !item_id) return res.status(400).send("필수 필드가 누락되었습니다.");
   const newValue = value ?? "";
 
   const result = dbRun(() => {
@@ -445,6 +446,7 @@ app.put("/api/sheet/answer", (req, res) => {
 // PUT /api/sheet/memo - 메모 upsert
 app.put("/api/sheet/memo", (req, res) => {
   const { year, team_num, item_id, memo } = req.body;
+  if (!year || team_num == null || !item_id) return res.status(400).send("필수 필드가 누락되었습니다.");
 
   const result = dbRun(() =>
     db.prepare(
@@ -462,6 +464,7 @@ app.put("/api/sheet/memo", (req, res) => {
 // PUT /api/sheet/category-result - 카테고리 결과 upsert
 app.put("/api/sheet/category-result", (req, res) => {
   const { year, team_num, category_id, result: catResult } = req.body;
+  if (!year || team_num == null || !category_id) return res.status(400).send("필수 필드가 누락되었습니다.");
 
   const r = dbRun(() =>
     db.prepare(
@@ -479,6 +482,7 @@ app.put("/api/sheet/category-result", (req, res) => {
 // PUT /api/sheet/inspector - 검차관 upsert
 app.put("/api/sheet/inspector", (req, res) => {
   const { year, team_num, category_id, inspector } = req.body;
+  if (!year || team_num == null || !category_id) return res.status(400).send("필수 필드가 누락되었습니다.");
 
   const result = dbRun(() =>
     db.prepare(

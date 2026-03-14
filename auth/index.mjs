@@ -58,12 +58,21 @@ function getRedirectUri(req) {
 }
 
 /* ============================================
+   헬퍼
+   ============================================ */
+function sanitizeRedirect(url) {
+  if (!url || typeof url !== "string") return "/";
+  if (url.startsWith("/") && !url.startsWith("//")) return url;
+  return "/";
+}
+
+/* ============================================
    API 라우트
    ============================================ */
 
 // GET /api/login - Google OAuth 리다이렉트
 app.get("/api/login", (req, res) => {
-  const redirect = req.query.redirect || "/";
+  const redirect = sanitizeRedirect(req.query.redirect);
   const redirectUri = getRedirectUri(req);
 
   const params = new URLSearchParams({
@@ -82,7 +91,7 @@ app.get("/api/login", (req, res) => {
 // GET /api/callback - OAuth 콜백
 app.get("/api/callback", async (req, res) => {
   const { code, state } = req.query;
-  const redirectUrl = state || "/";
+  const redirectUrl = sanitizeRedirect(state);
 
   if (!code) {
     return res.redirect(`/auth/login?error=no_code&redirect=${encodeURIComponent(redirectUrl)}`);
@@ -146,6 +155,7 @@ app.get("/api/callback", async (req, res) => {
 
     res.redirect(redirectUrl);
   } catch (e) {
+    console.error("OAuth callback error:", e);
     res.redirect(`/auth/login?error=server_error&redirect=${encodeURIComponent(redirectUrl)}`);
   }
 });
