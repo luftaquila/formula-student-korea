@@ -425,6 +425,17 @@ function getCornerWeight(num) {
   return inspection.value.cornerWeight?.teams[num] ?? null;
 }
 
+function getFRRatio(num) {
+  const cw = getCornerWeight(num);
+  if (!cw) return null;
+  const fl = Number(cw.fl), fr = Number(cw.fr), rl = Number(cw.rl), rr = Number(cw.rr);
+  if (!fl || !fr || !rl || !rr) return null;
+  const total = fl + fr + rl + rr;
+  const front = ((fl + fr) / total * 100).toFixed(1);
+  const rear = ((rl + rr) / total * 100).toFixed(1);
+  return { front, rear };
+}
+
 function getLRRatio(num) {
   const cw = getCornerWeight(num);
   if (!cw) return null;
@@ -551,7 +562,10 @@ function toggleCornerWeight(num) {
                           <div class="cw-cell"><span class="cw-label">FR</span><span class="cw-val">{{ getCornerWeight(entry.num).fr ? getCornerWeight(entry.num).fr + ' kg' : '-' }}</span></div>
                           <div class="cw-cell"><span class="cw-label">RL</span><span class="cw-val">{{ getCornerWeight(entry.num).rl ? getCornerWeight(entry.num).rl + ' kg' : '-' }}</span></div>
                           <div class="cw-cell"><span class="cw-label">RR</span><span class="cw-val">{{ getCornerWeight(entry.num).rr ? getCornerWeight(entry.num).rr + ' kg' : '-' }}</span></div>
-                          <template v-if="getLRRatio(entry.num)">
+                          <template v-if="getFRRatio(entry.num)">
+                            <hr class="cw-divider">
+                            <div class="cw-cell"><span class="cw-label">F</span><span class="cw-val">{{ getFRRatio(entry.num).front }}%</span></div>
+                            <div class="cw-cell"><span class="cw-label">R</span><span class="cw-val">{{ getFRRatio(entry.num).rear }}%</span></div>
                             <hr class="cw-divider">
                             <div class="cw-cell"><span class="cw-label">L</span><span class="cw-val">{{ getLRRatio(entry.num).left }}%</span></div>
                             <div class="cw-cell"><span class="cw-label">R</span><span class="cw-val">{{ getLRRatio(entry.num).right }}%</span></div>
