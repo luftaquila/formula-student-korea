@@ -1,11 +1,11 @@
 <script setup>
 import { ref, onMounted, computed, nextTick, watch } from "vue";
-import { fetchEntryYears, fetchScore, fetchTeamRecords, selectRecord, deselectRecord, updateManualScore } from "../api";
+import { fetchEntryYears, fetchScore, fetchTeamRecords, selectRecord, deselectRecord, updateManualScore, updatePenalty } from "../api";
 import { useNotification } from "../composables/useNotification";
 import { useSSE } from "../composables/useSSE";
 
 const { success, error } = useNotification();
-const { lastInspectionUpdate, lastAnswerUpdate, lastRecordAutoUpdate, lastRecordManualUpdate, lastManualScoreUpdate } = useSSE();
+const { lastInspectionUpdate, lastAnswerUpdate, lastRecordAutoUpdate, lastRecordManualUpdate, lastManualScoreUpdate, lastPenaltyUpdate } = useSSE();
 
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
@@ -23,6 +23,7 @@ const entries = ref({});
 const inspection = ref({ categories: [], teams: {} });
 const events = ref([]); // [{ type, tables, records }]
 const manualScores = ref({}); // { team_num: { report: value, energy: value } }
+const penalties = ref({}); // { event_type: { cone_penalty, oc_penalty } }
 
 // 기록 선택 드롭다운
 const activeDropdown = ref(null); // { eventType, teamNum }
@@ -108,6 +109,7 @@ async function loadData() {
     inspection.value = data.inspection;
     events.value = data.events;
     manualScores.value = data.manualScores || {};
+    penalties.value = data.penalties || {};
     sortKey.value = null;
     sortOrder.value = "asc";
   } catch (e) {
@@ -241,6 +243,30 @@ function getManualScore(teamNum, scoreType) {
   return manualScores.value[teamNum]?.[scoreType] ?? null;
 }
 
+// 페널티 설정 저장
+async function handlePenaltySave(eventType, field, value) {
+  const numValue = value === "" ? 0 : Number(value);
+  if (isNaN(numValue) || numValue < 0) return;
+
+  const current = penalties.value[eventType] || { cone_penalty: 0, oc_penalty: 0 };
+  const oldValue = current[field] ?? 0;
+  if (numValue === oldValue) return;
+
+  if (!penalties.value[eventType]) penalties.value[eventType] = { cone_penalty: 0, oc_penalty: 0 };
+  penalties.value[eventType][field] = numValue;
+
+  try {
+    await updatePenalty(selectedYear.value, eventType, penalties.value[eventType].cone_penalty, penalties.value[eventType].oc_penalty);
+  } catch {
+    penalties.value[eventType][field] = oldValue;
+    error("페널티 설정 저장에 실패했습니다.");
+  }
+}
+
+function getPenalty(eventType, field) {
+  return penalties.value[eventType]?.[field] ?? 0;
+}
+
 // 정렬
 function handleSort(key) {
   if (sortKey.value === key) {
@@ -322,6 +348,15 @@ watch(lastManualScoreUpdate, (update) => {
   const { team_num, score_type, value } = update;
   if (!manualScores.value[team_num]) manualScores.value[team_num] = {};
   manualScores.value[team_num][score_type] = value;
+});
+
+// SSE로 페널티 설정 실시간 반영
+watch(lastPenaltyUpdate, (update) => {
+  if (!update || update.year !== selectedYear.value) return;
+  const { event_type, cone_penalty, oc_penalty } = update;
+  if (!penalties.value[event_type]) penalties.value[event_type] = {};
+  penalties.value[event_type].cone_penalty = cone_penalty;
+  penalties.value[event_type].oc_penalty = oc_penalty;
 });
 
 // 여러 테이블이 합쳐진 경우 짧은 테이블명
@@ -554,6 +589,58 @@ function toggleCornerWeight(num) {
               <tr v-if="entryList.length === 0">
                 <td :colspan="5 + inspection.categories.length + events.length" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <!-- 페널티 설정 카드 -->
+    <div class="card" v-if="events.length > 0">
+      <div class="card-header">
+        <h3>페널티 설정</h3>
+      </div>
+      <div class="card-body table-body">
+        <div class="table-container">
+          <table class="data-table penalty-table">
+            <thead>
+              <tr>
+                <th class="col-penalty-label"></th>
+                <th v-for="evt in events" :key="'penalty-h-'+evt.type" class="col-penalty-value">{{ evt.type }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="col-penalty-label">콘터치 (초/개)</td>
+                <td v-for="evt in events" :key="'penalty-cone-'+evt.type" class="col-penalty-value">
+                  <input
+                    class="penalty-input"
+                    type="number"
+                    step="any"
+                    min="0"
+                    :value="getPenalty(evt.type, 'cone_penalty')"
+                    :readonly="isReadOnly"
+                    @blur="handlePenaltySave(evt.type, 'cone_penalty', $event.target.value)"
+                    @keyup.enter="$event.target.blur()"
+                    placeholder="0"
+                  />
+                </td>
+              </tr>
+              <tr>
+                <td class="col-penalty-label">코스이탈 (초/건)</td>
+                <td v-for="evt in events" :key="'penalty-oc-'+evt.type" class="col-penalty-value">
+                  <input
+                    class="penalty-input"
+                    type="number"
+                    step="any"
+                    min="0"
+                    :value="getPenalty(evt.type, 'oc_penalty')"
+                    :readonly="isReadOnly"
+                    @blur="handlePenaltySave(evt.type, 'oc_penalty', $event.target.value)"
+                    @keyup.enter="$event.target.blur()"
+                    placeholder="0"
+                  />
                 </td>
               </tr>
             </tbody>
@@ -988,6 +1075,50 @@ function toggleCornerWeight(num) {
   text-align: center;
   color: var(--text-tertiary);
   padding: 2rem;
+}
+
+/* Penalty settings */
+.penalty-table {
+  min-width: 0;
+}
+
+.col-penalty-label {
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.col-penalty-value {
+  text-align: center !important;
+  white-space: nowrap;
+}
+
+.penalty-input {
+  width: 5rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-align: center;
+  outline: none;
+  -moz-appearance: textfield;
+}
+
+.penalty-input:focus {
+  border-color: var(--accent-primary);
+}
+
+.penalty-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.penalty-input::-webkit-outer-spin-button,
+.penalty-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 @media (max-width: 640px) {

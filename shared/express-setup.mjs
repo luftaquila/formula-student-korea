@@ -69,9 +69,11 @@ export function createApp(logFile, deps, authRoleFn) {
           headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
           signal: AbortSignal.timeout(3000),
         });
-        return res.ok;
+        if (res.ok) return true;
+        if (res.status === 404) return false; // auth가 명시적으로 사용자 없음 반환
+        return true; // 기타 오류 시 JWT 유지 (fail open)
       } catch {
-        return false; // fail closed if auth service unreachable
+        return true; // auth 서비스 일시적 연결 불가 시 JWT 유지
       }
     };
   }

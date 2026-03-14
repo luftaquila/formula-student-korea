@@ -41,6 +41,15 @@ db.transaction(() => {
     value REAL,
     PRIMARY KEY (year, team_num, score_type)
   )`);
+
+  // 경기 종목별 페널티 설정 (콘터치/코스이탈 초)
+  db.exec(`CREATE TABLE IF NOT EXISTS score_penalty (
+    year INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    cone_penalty REAL NOT NULL DEFAULT 0,
+    oc_penalty REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (year, event_type)
+  )`);
 })();
 
 setupProcessHandlers(db);
@@ -350,7 +359,18 @@ app.get("/api/score", async (req, res) => {
 
     inspection.cornerWeight = cornerWeight;
 
-    // 3. Traffic 서비스에서 해당 연도의 모든 경기 기록 fetch
+    // 3. Traffic 서비스에서 활성화된 경기 모드 및 해당 연도의 모든 경기 기록 fetch
+    let enabledModes = null;
+    try {
+      const modesRes = await fetch(`${TRAFFIC_SERVER}/api/event-modes`, {
+        headers: internalHeaders(), signal: AbortSignal.timeout(10000),
+      });
+      if (modesRes.ok) {
+        const modes = await modesRes.json();
+        enabledModes = new Set(modes.filter((m) => m.enabled).map((m) => m.event_type));
+      }
+    } catch {}
+
     const allTableRecords = await fetchYearRecords(year);
 
     // 4. 모든 테이블의 기록을 합쳐서 레코드의 type 필드(경기 종목)별로 그룹핑
@@ -395,9 +415,11 @@ app.get("/api/score", async (req, res) => {
       };
     }
 
-    // 6. 종목별로 선택된 기록 정보 첨부
+    // 6. 활성화된 경기 모드별로 기록 정보 첨부
     const events = [];
-    for (const [eventType, teamRecords] of typeMap) {
+    const eventTypes = enabledModes ? [...enabledModes] : [...typeMap.keys()];
+    for (const eventType of eventTypes) {
+      const teamRecords = typeMap.get(eventType) || {};
       const records = {};
       for (const [num, runs] of Object.entries(teamRecords)) {
         const sel = selectedMap[eventType]?.[Number(num)];
@@ -427,7 +449,14 @@ app.get("/api/score", async (req, res) => {
       manualScores[row.team_num][row.score_type] = row.value;
     }
 
-    res.json({ entries, inspection, events, manualScores });
+    // 8. 페널티 설정 조회
+    const penaltyRows = db.prepare("SELECT event_type, cone_penalty, oc_penalty FROM score_penalty WHERE year = ?").all(year);
+    const penalties = {};
+    for (const row of penaltyRows) {
+      penalties[row.event_type] = { cone_penalty: row.cone_penalty, oc_penalty: row.oc_penalty };
+    }
+
+    res.json({ entries, inspection, events, manualScores, penalties });
   } catch (e) {
     res.status(500).send(`데이터 집계 오류: ${e.message || e}`);
   }
@@ -555,6 +584,34 @@ app.put("/api/score/manual", (req, res) => {
   if (!result.success) return res.status(result.status).send(result.error);
 
   broadcastEvent("manual-score", { year, team_num, score_type, value: numValue });
+
+  res.status(200).send();
+});
+
+// PUT /api/score/penalty — 경기 종목별 페널티 설정 저장
+app.put("/api/score/penalty", (req, res) => {
+  const { year, event_type, cone_penalty, oc_penalty } = req.body;
+  if (!year || !event_type) {
+    return res.status(400).send("필수 필드가 누락되었습니다.");
+  }
+
+  const cone = cone_penalty == null ? 0 : Number(cone_penalty);
+  const oc = oc_penalty == null ? 0 : Number(oc_penalty);
+
+  const result = dbRun(() =>
+    db
+      .prepare(
+        `INSERT INTO score_penalty (year, event_type, cone_penalty, oc_penalty)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(year, event_type)
+         DO UPDATE SET cone_penalty = excluded.cone_penalty, oc_penalty = excluded.oc_penalty`,
+      )
+      .run(year, event_type, cone, oc),
+  );
+
+  if (!result.success) return res.status(result.status).send(result.error);
+
+  broadcastEvent("penalty", { year, event_type, cone_penalty: cone, oc_penalty: oc });
 
   res.status(200).send();
 });

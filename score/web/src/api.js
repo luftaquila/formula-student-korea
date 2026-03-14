@@ -37,3 +37,10 @@ export async function updateManualScore(year, team_num, score_type, value) {
     body: JSON.stringify({ year, team_num, score_type, value }),
   });
 }
+
+export async function updatePenalty(year, event_type, cone_penalty, oc_penalty) {
+  await request("/api/score/penalty", {
+    method: "PUT",
+    body: JSON.stringify({ year, event_type, cone_penalty, oc_penalty }),
+  });
+}

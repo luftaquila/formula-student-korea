@@ -1,18 +1,25 @@
 <script setup>
+import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { useSerialStore } from "../stores/serial";
+import { useSSE } from "../composables/useSSE";
 
 const route = useRoute();
 const serial = useSerialStore();
+const { eventModes } = useSSE();
 
-const navItems = [
+const allNavItems = [
   { id: "record", label: "📋 기록", path: "/record" },
-  { id: "accel", label: "🏎️ 가속", path: "/accel" },
-  { id: "skidpad", label: "⏱️ 스키드패드", path: "/skidpad" },
-  { id: "autocross", label: "🚧 오토크로스", path: "/autocross" },
-  { id: "gymkhana", label: "🏁 짐카나", path: "/gymkhana" },
+  { id: "accel", label: "🏎️ 가속", path: "/accel", eventType: "가속" },
+  { id: "skidpad", label: "⏱️ 스키드패드", path: "/skidpad", eventType: "스키드패드" },
+  { id: "autocross", label: "🚧 오토크로스", path: "/autocross", eventType: "오토크로스" },
+  { id: "gymkhana", label: "🏁 짐카나", path: "/gymkhana", eventType: "짐카나" },
   { id: "scoreboard", label: "📺 전광판", path: "/scoreboard" },
 ];
+
+const navItems = computed(() =>
+  allNavItems.filter((item) => !item.eventType || eventModes.value[item.eventType] !== false),
+);
 </script>
 
 <template>

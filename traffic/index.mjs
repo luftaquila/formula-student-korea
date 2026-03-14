@@ -19,6 +19,19 @@ db.exec(`CREATE TABLE IF NOT EXISTS controller (
   data TEXT NOT NULL
 );`);
 
+db.exec(`CREATE TABLE IF NOT EXISTS event_mode (
+  event_type TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 1
+);`);
+
+// 기본 경기 모드 시딩
+{
+  const insert = db.prepare("INSERT OR IGNORE INTO event_mode (event_type, enabled) VALUES (?, 1)");
+  for (const type of ["가속", "스키드패드", "오토크로스", "짐카나"]) {
+    insert.run(type);
+  }
+}
+
 // 기존 동적 테이블들에 누락 컬럼 추가 (startup에서 1회 실행)
 {
   const tables = db
@@ -64,8 +77,12 @@ function getRecordFiles() {
   return tables.map((table) => table.name);
 }
 
+function getEventModes() {
+  return db.prepare("SELECT event_type, enabled FROM event_mode").all();
+}
+
 // SSE 엔드포인트
-app.get("/api/events", sseHandler(() => ({ recordFiles: getRecordFiles() })));
+app.get("/api/events", sseHandler(() => ({ recordFiles: getRecordFiles(), eventModes: getEventModes() })));
 
 /* ============================================
    Validation 헬퍼
@@ -353,6 +370,33 @@ app.delete("/api/controllers", (req, res) => {
   }
 
   res.status(200).send();
+});
+
+/* ============================================
+   API 라우트: /api/event-modes
+   ============================================ */
+
+// GET /api/event-modes - 경기 모드 목록 및 활성화 상태 조회
+app.get("/api/event-modes", (req, res) => {
+  const result = dbRun(() => db.prepare("SELECT event_type, enabled FROM event_mode").all());
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
+});
+
+// PUT /api/event-modes/:type - 경기 모드 활성화/비활성화 토글
+app.put("/api/event-modes/:type", (req, res) => {
+  const eventType = req.params.type;
+  const row = db.prepare("SELECT enabled FROM event_mode WHERE event_type = ?").get(eventType);
+  if (!row) return res.status(404).send("경기 모드를 찾을 수 없습니다.");
+
+  const newEnabled = row.enabled ? 0 : 1;
+  const result = dbRun(() =>
+    db.prepare("UPDATE event_mode SET enabled = ? WHERE event_type = ?").run(newEnabled, eventType),
+  );
+  if (!result.success) return res.status(result.status).send(result.error);
+
+  broadcastEvent("event-mode", { event_type: eventType, enabled: newEnabled });
+  res.json({ event_type: eventType, enabled: newEnabled });
 });
 
 /* ============================================

@@ -8,6 +8,7 @@ const { on, useSSE: useConnection, connected } = createSSEConnection(`${API_BASE
 const recordFiles = ref([]);
 const selectedFile = ref(localStorage.getItem("traffic-last-file") || null);
 const lastUpdate = ref(null);
+const eventModes = ref({});
 
 watch(selectedFile, (v) => {
   if (v) localStorage.setItem("traffic-last-file", v);
@@ -17,12 +18,22 @@ watch(selectedFile, (v) => {
 on("init", (e) => {
   const data = JSON.parse(e.data);
   recordFiles.value = ["controller", ...data.recordFiles];
+  if (data.eventModes) {
+    const modes = {};
+    for (const m of data.eventModes) modes[m.event_type] = !!m.enabled;
+    eventModes.value = modes;
+  }
 });
 
 on("records", (e) => {
   const data = JSON.parse(e.data);
   recordFiles.value = ["controller", ...data.recordFiles];
   lastUpdate.value = { type: data.type, name: data.name, timestamp: Date.now() };
+});
+
+on("event-mode", (e) => {
+  const data = JSON.parse(e.data);
+  eventModes.value = { ...eventModes.value, [data.event_type]: !!data.enabled };
 });
 
 export function useSSE() {
@@ -32,6 +43,7 @@ export function useSSE() {
     recordFiles,
     selectedFile,
     lastUpdate,
+    eventModes,
     connected,
   };
 }

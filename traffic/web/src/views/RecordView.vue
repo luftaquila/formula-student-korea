@@ -7,6 +7,7 @@ import {
   deleteControllers,
   updateRecord,
   addRecord,
+  toggleEventMode,
 } from "../composables/useApi";
 import { useNotification } from "../composables/useNotification";
 import { useSSE } from "../composables/useSSE";
@@ -15,7 +16,7 @@ import { msToClockStr } from "../stores/serial";
 
 
 const { notyf } = useNotification();
-const { recordFiles, selectedFile, lastUpdate } = useSSE();
+const { recordFiles, selectedFile, lastUpdate, eventModes } = useSSE();
 const entryStore = useEntryStore();
 
 const records = ref([]);
@@ -359,6 +360,14 @@ async function handleScoreboardToggle(record) {
   }
 }
 
+async function handleToggleEventMode(eventType) {
+  try {
+    await toggleEventMode(eventType);
+  } catch (e) {
+    notyf.error(`경기 모드 변경 실패: ${e.message}`);
+  }
+}
+
 async function handleAddRecord() {
   if (!selectedFile.value || !addEntry.value) return;
 
@@ -399,6 +408,21 @@ async function handleAddRecord() {
 
 <template>
   <div class="page-layout">
+    <!-- 경기 모드 활성화/비활성화 -->
+    <section class="event-mode-card">
+      <div class="card-header"><h3>경기 모드 활성화</h3></div>
+      <div class="event-mode-body">
+        <button
+          v-for="(enabled, type) in eventModes"
+          :key="type"
+          class="event-mode-btn"
+          :class="[getTypeClass(type), { disabled: !enabled }]"
+          @click="handleToggleEventMode(type)"
+        >{{ type }}</button>
+      </div>
+    </section>
+
+
     <section class="content">
       <!-- 파일 선택 툴바 -->
       <div class="file-toolbar">
@@ -677,7 +701,79 @@ async function handleAddRecord() {
 .page-layout {
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 1rem;
+}
+
+/* Event Mode Card */
+.event-mode-card {
+  background: var(--bg-card);
+  border-radius: 16px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.event-mode-card .card-header {
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.event-mode-card .card-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.event-mode-body {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 1rem 1.5rem;
+}
+
+.event-mode-btn {
+  padding: 0.375rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.event-mode-btn.accel {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent-primary);
+  border-color: var(--accent-primary);
+}
+
+.event-mode-btn.skidpad {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-warning);
+  border-color: var(--accent-warning);
+}
+
+.event-mode-btn.autocross {
+  background: rgba(255, 107, 107, 0.15);
+  color: #ff6b6b;
+  border-color: #ff6b6b;
+}
+
+.event-mode-btn.gymkhana {
+  background: rgba(139, 92, 246, 0.15);
+  color: var(--accent-secondary);
+  border-color: var(--accent-secondary);
+}
+
+.event-mode-btn.disabled {
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+  border-color: var(--border-color);
+  opacity: 0.6;
+}
+
+.event-mode-btn:hover {
+  opacity: 0.8;
 }
 
 .content {

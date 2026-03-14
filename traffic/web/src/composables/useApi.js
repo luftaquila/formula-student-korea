@@ -114,3 +114,17 @@ export async function deleteControllers() {
     method: "DELETE",
   });
 }
+
+/* ============================================
+   Event Mode API
+   ============================================ */
+
+/**
+ * 경기 모드 활성화/비활성화 토글
+ */
+export async function toggleEventMode(eventType) {
+  const res = await request(`/api/event-modes/${encodeURIComponent(eventType)}`, {
+    method: "PUT",
+  });
+  return res.json();
+}
