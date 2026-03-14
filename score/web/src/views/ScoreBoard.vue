@@ -1,11 +1,11 @@
 <script setup>
 import { ref, onMounted, computed, nextTick, watch } from "vue";
-import { fetchEntryYears, fetchScore, fetchTeamRecords, selectRecord, deselectRecord } from "../api";
+import { fetchEntryYears, fetchScore, fetchTeamRecords, selectRecord, deselectRecord, updateManualScore } from "../api";
 import { useNotification } from "../composables/useNotification";
 import { useSSE } from "../composables/useSSE";
 
 const { success, error } = useNotification();
-const { lastInspectionUpdate, lastAnswerUpdate, lastRecordAutoUpdate, lastRecordManualUpdate } = useSSE();
+const { lastInspectionUpdate, lastAnswerUpdate, lastRecordAutoUpdate, lastRecordManualUpdate, lastManualScoreUpdate } = useSSE();
 
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
@@ -22,6 +22,7 @@ const sortOrder = ref("asc");
 const entries = ref({});
 const inspection = ref({ categories: [], teams: {} });
 const events = ref([]); // [{ type, tables, records }]
+const manualScores = ref({}); // { team_num: { report: value, energy: value } }
 
 // 기록 선택 드롭다운
 const activeDropdown = ref(null); // { eventType, teamNum }
@@ -54,6 +55,9 @@ const entryList = computed(() => {
       bVal = getCurbWeight(b.num);
       aVal = aVal != null ? Number(aVal) : Infinity;
       bVal = bVal != null ? Number(bVal) : Infinity;
+    } else if (sortKey.value === "report" || sortKey.value === "energy") {
+      aVal = manualScores.value[a.num]?.[sortKey.value] ?? Infinity;
+      bVal = manualScores.value[b.num]?.[sortKey.value] ?? Infinity;
     } else if (sortKey.value.startsWith("event:")) {
       const eventType = sortKey.value.slice(6);
       const evt = events.value.find(e => e.type === eventType);
@@ -103,6 +107,7 @@ async function loadData() {
     entries.value = data.entries;
     inspection.value = data.inspection;
     events.value = data.events;
+    manualScores.value = data.manualScores || {};
     sortKey.value = null;
     sortOrder.value = "asc";
   } catch (e) {
@@ -215,6 +220,27 @@ async function handleDeselectRecord(evt, teamNum) {
   }
 }
 
+// 수동 점수 저장
+async function handleManualSave(teamNum, scoreType, value) {
+  const numValue = value === "" ? null : Number(value);
+  const oldValue = manualScores.value[teamNum]?.[scoreType] ?? null;
+  if (numValue === oldValue) return;
+
+  if (!manualScores.value[teamNum]) manualScores.value[teamNum] = {};
+  manualScores.value[teamNum][scoreType] = numValue;
+
+  try {
+    await updateManualScore(selectedYear.value, teamNum, scoreType, numValue);
+  } catch {
+    manualScores.value[teamNum][scoreType] = oldValue;
+    error("점수 저장에 실패했습니다.");
+  }
+}
+
+function getManualScore(teamNum, scoreType) {
+  return manualScores.value[teamNum]?.[scoreType] ?? null;
+}
+
 // 정렬
 function handleSort(key) {
   if (sortKey.value === key) {
@@ -288,6 +314,14 @@ watch(lastRecordManualUpdate, (update) => {
   evt.records[team_num].selected = selected
     ? { table_name: selected.table_name, rowid: selected.rowid, result: selected.result, detail: selected.detail || null }
     : null;
+});
+
+// SSE로 수동 점수 실시간 반영
+watch(lastManualScoreUpdate, (update) => {
+  if (!update || update.year !== selectedYear.value) return;
+  const { team_num, score_type, value } = update;
+  if (!manualScores.value[team_num]) manualScores.value[team_num] = {};
+  manualScores.value[team_num][score_type] = value;
 });
 
 // 여러 테이블이 합쳐진 경우 짧은 테이블명
@@ -390,6 +424,8 @@ function toggleCornerWeight(num) {
                   class="col-event sortable"
                   @click="handleSort('event:' + evt.type)"
                 >{{ evt.type }} <span class="sort-icon">{{ getSortIcon('event:' + evt.type) }}</span></th>
+                <th class="col-manual sortable" @click="handleSort('report')">보고서 <span class="sort-icon">{{ getSortIcon('report') }}</span></th>
+                <th class="col-manual sortable" @click="handleSort('energy')">에너지 <span class="sort-icon">{{ getSortIcon('energy') }}</span></th>
               </tr>
             </thead>
             <tbody>
@@ -492,9 +528,31 @@ function toggleCornerWeight(num) {
                       </div>
                     </div>
                   </td>
+                  <td class="col-manual">
+                    <input
+                      class="manual-input"
+                      type="number"
+                      :value="getManualScore(entry.num, 'report')"
+                      :readonly="isReadOnly"
+                      @blur="handleManualSave(entry.num, 'report', $event.target.value)"
+                      @keyup.enter="$event.target.blur()"
+                      placeholder="-"
+                    />
+                  </td>
+                  <td class="col-manual">
+                    <input
+                      class="manual-input"
+                      type="number"
+                      :value="getManualScore(entry.num, 'energy')"
+                      :readonly="isReadOnly"
+                      @blur="handleManualSave(entry.num, 'energy', $event.target.value)"
+                      @keyup.enter="$event.target.blur()"
+                      placeholder="-"
+                    />
+                  </td>
               </tr>
               <tr v-if="entryList.length === 0">
-                <td :colspan="3 + inspection.categories.length + events.length" class="empty-state">
+                <td :colspan="5 + inspection.categories.length + events.length" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>
@@ -621,7 +679,8 @@ function toggleCornerWeight(num) {
 .col-team,
 .col-type,
 .col-inspection,
-.col-event {
+.col-event,
+.col-manual {
   width: 1%;
   white-space: nowrap;
 }
@@ -644,7 +703,8 @@ function toggleCornerWeight(num) {
 
 .col-type,
 .col-inspection,
-.col-event {
+.col-event,
+.col-manual {
   text-align: center !important;
 }
 
@@ -869,6 +929,39 @@ function toggleCornerWeight(num) {
   border: none;
   border-top: 1px solid var(--border-color);
   margin: 0.125rem 0;
+}
+
+/* Manual score inline edit */
+.manual-input {
+  width: 4rem;
+  padding: 0.125rem 0.25rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-align: center;
+  outline: none;
+  cursor: pointer;
+  -moz-appearance: textfield;
+}
+
+.manual-input:focus {
+  border-color: var(--accent-primary);
+  background: var(--bg-input);
+  cursor: text;
+}
+
+.manual-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.manual-input::-webkit-outer-spin-button,
+.manual-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 /* Loading */

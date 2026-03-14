@@ -9,6 +9,7 @@ const lastInspectionUpdate = ref(null);
 const lastAnswerUpdate = ref(null);
 const lastRecordAutoUpdate = ref(null);
 const lastRecordManualUpdate = ref(null);
+const lastManualScoreUpdate = ref(null);
 
 on("init", () => {
   connected.value = true;
@@ -34,6 +35,11 @@ on("record-update", (e) => {
   lastRecordManualUpdate.value = { ...data, timestamp: Date.now() };
 });
 
+on("manual-score", (e) => {
+  const data = JSON.parse(e.data);
+  lastManualScoreUpdate.value = { ...data, timestamp: Date.now() };
+});
+
 export function useSSE() {
   const { connected } = useConnection();
 
@@ -42,6 +48,7 @@ export function useSSE() {
     lastAnswerUpdate,
     lastRecordAutoUpdate,
     lastRecordManualUpdate,
+    lastManualScoreUpdate,
     connected,
   };
 }

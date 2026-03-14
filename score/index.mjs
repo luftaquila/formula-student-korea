@@ -30,6 +30,15 @@ db.transaction(() => {
     record_rowid INTEGER NOT NULL,
     PRIMARY KEY (year, event_type, team_num)
   )`);
+
+  // 수동 입력 점수 (보고서, 에너지 등)
+  db.exec(`CREATE TABLE IF NOT EXISTS score_manual (
+    year INTEGER NOT NULL,
+    team_num INTEGER NOT NULL,
+    score_type TEXT NOT NULL,
+    value REAL,
+    PRIMARY KEY (year, team_num, score_type)
+  )`);
 })();
 
 setupProcessHandlers(db);
@@ -393,7 +402,15 @@ app.get("/api/score", async (req, res) => {
       events.push({ type: eventType, records });
     }
 
-    res.json({ entries, inspection, events });
+    // 7. 수동 입력 점수 (보고서, 에너지) 조회
+    const manualRows = db.prepare("SELECT team_num, score_type, value FROM score_manual WHERE year = ?").all(year);
+    const manualScores = {};
+    for (const row of manualRows) {
+      if (!manualScores[row.team_num]) manualScores[row.team_num] = {};
+      manualScores[row.team_num][row.score_type] = row.value;
+    }
+
+    res.json({ entries, inspection, events, manualScores });
   } catch (e) {
     res.status(500).send(`데이터 집계 오류: ${e.message || e}`);
   }
@@ -494,6 +511,33 @@ app.delete("/api/score/record", (req, res) => {
   if (!result.success) return res.status(result.status).send(result.error);
 
   broadcastEvent("record-update", { year, event_type, team_num, selected: null });
+
+  res.status(200).send();
+});
+
+// PUT /api/score/manual — 수동 입력 점수 저장 (보고서, 에너지)
+app.put("/api/score/manual", (req, res) => {
+  const { year, team_num, score_type, value } = req.body;
+  if (!year || team_num == null || !score_type) {
+    return res.status(400).send("필수 필드가 누락되었습니다.");
+  }
+
+  const numValue = value === null || value === "" ? null : Number(value);
+
+  const result = dbRun(() =>
+    db
+      .prepare(
+        `INSERT INTO score_manual (year, team_num, score_type, value)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(year, team_num, score_type)
+         DO UPDATE SET value = excluded.value`,
+      )
+      .run(year, team_num, score_type, numValue),
+  );
+
+  if (!result.success) return res.status(result.status).send(result.error);
+
+  broadcastEvent("manual-score", { year, team_num, score_type, value: numValue });
 
   res.status(200).send();
 });

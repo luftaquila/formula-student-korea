@@ -30,3 +30,10 @@ export async function deselectRecord(year, event_type, team_num) {
     body: JSON.stringify({ year, event_type, team_num }),
   });
 }
+
+export async function updateManualScore(year, team_num, score_type, value) {
+  await request("/api/score/manual", {
+    method: "PUT",
+    body: JSON.stringify({ year, team_num, score_type, value }),
+  });
+}
