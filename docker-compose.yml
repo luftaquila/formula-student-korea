@@ -9,8 +9,12 @@ services:
     container_name: fsk-entry
     env_file:
       - .env
+    environment:
+      - AUTH_SERVER=http://auth:9800
     volumes:
       - ./entry/data:/home/node/fsk-entry/data
+    depends_on:
+      - auth
     restart: unless-stopped
     networks:
       - fsk-network
@@ -27,10 +31,12 @@ services:
       - .env
     environment:
       - ENTRY_SERVER=http://entry:9100
+      - AUTH_SERVER=http://auth:9800
     volumes:
       - ./traffic/data:/home/node/fsk-traffic/data
     depends_on:
       - entry
+      - auth
     restart: unless-stopped
     networks:
       - fsk-network
@@ -56,10 +62,12 @@ services:
       - .env
     environment:
       - ENTRY_SERVER=http://entry:9100
+      - AUTH_SERVER=http://auth:9800
     volumes:
       - ./queue/data:/home/node/fsk-queue/data
     depends_on:
       - entry
+      - auth
     restart: unless-stopped
     networks:
       - fsk-network
@@ -76,10 +84,12 @@ services:
       - .env
     environment:
       - ENTRY_SERVER=http://entry:9100
+      - AUTH_SERVER=http://auth:9800
     volumes:
       - ./inspection/data:/home/node/fsk-inspection/data
     depends_on:
       - entry
+      - auth
     restart: unless-stopped
     networks:
       - fsk-network
@@ -98,6 +108,7 @@ services:
       - ENTRY_SERVER=http://entry:9100
       - INSPECTION_SERVER=http://inspection:9600
       - TRAFFIC_SERVER=http://traffic:9200
+      - AUTH_SERVER=http://auth:9800
     volumes:
       - ./score/data:/home/node/fsk-score/data
     depends_on:

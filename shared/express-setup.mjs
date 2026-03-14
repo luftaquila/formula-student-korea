@@ -33,7 +33,8 @@ export function verifyJWT(token, secret) {
   return payload;
 }
 
-export function createApp(logFile, { express, pinoHttp }, authRoleFn) {
+export function createApp(logFile, deps, authRoleFn) {
+  const { express, pinoHttp } = deps;
   ensureDataDir();
 
   const app = express();
@@ -54,7 +55,22 @@ export function createApp(logFile, { express, pinoHttp }, authRoleFn) {
   });
 
   // 2. JWT user extraction (with dev mode auto-auth)
-  app.use((req, res, next) => {
+  // Build validateUser: direct function from deps, or auto HTTP via AUTH_SERVER
+  let validateUser = deps.validateUser || null;
+  if (!validateUser && process.env.AUTH_SERVER && process.env.INTERNAL_SECRET) {
+    validateUser = async (email) => {
+      try {
+        const res = await fetch(`${process.env.AUTH_SERVER}/api/users/exists/${encodeURIComponent(email)}`, {
+          headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
+        });
+        return res.ok;
+      } catch {
+        return true; // fail open if auth service unreachable
+      }
+    };
+  }
+
+  app.use(async (req, res, next) => {
     // Internal service-to-service auth
     const secret = process.env.INTERNAL_SECRET;
     const header = req.headers["x-internal-service"];
@@ -76,6 +92,21 @@ export function createApp(logFile, { express, pinoHttp }, authRoleFn) {
       req.user = { email: "dev@local", name: "Developer", role: "admin" };
       req.headers.authuser = "dev@local";
     }
+
+    // Validate user still exists (deleted user rejection)
+    if (req.user && validateUser) {
+      const valid = await validateUser(req.user.email);
+      if (!valid) {
+        req.user = null;
+        const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
+        const cookieOpts = `Path=/; SameSite=Lax; Max-Age=0${isSecure ? "; Secure" : ""}`;
+        res.setHeader("Set-Cookie", [
+          `fsk_session=; HttpOnly; ${cookieOpts}`,
+          `fsk_user=; ${cookieOpts}`,
+        ]);
+      }
+    }
+
     next();
   });
 

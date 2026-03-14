@@ -83,6 +83,25 @@ async function changeRole(user) {
   }
 }
 
+async function toggleActive(user) {
+  const next = !user.active;
+  const action = next ? "활성화" : "비활성화";
+  if (!confirm(`${user.email}을(를) ${action}하시겠습니까?`)) return;
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/users/${user.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active: next }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    notyf.success(`${action}했습니다.`);
+    await fetchUsers();
+  } catch (e) {
+    notyf.error(e.message);
+  }
+}
+
 async function deleteUser(user) {
   if (!confirm(`${user.email}을(를) 삭제하시겠습니까?`)) return;
 
@@ -125,6 +144,19 @@ async function handleMemoChange(user, value) {
 
 const adminCount = computed(() => users.value.filter((u) => u.role === "admin").length);
 
+// Filters
+const filterRole = ref("all");
+const filterActive = ref("all");
+
+const filteredUsers = computed(() => {
+  return users.value.filter((u) => {
+    if (filterRole.value !== "all" && u.role !== filterRole.value) return false;
+    if (filterActive.value === "active" && !u.active) return false;
+    if (filterActive.value === "inactive" && u.active) return false;
+    return true;
+  });
+});
+
 // Bulk selection
 const selectedIds = ref(new Set());
 
@@ -143,6 +175,27 @@ function toggleOne(id) {
   if (s.has(id)) s.delete(id);
   else s.add(id);
   selectedIds.value = s;
+}
+
+// Bulk deactivate
+async function bulkDeactivate() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  if (!confirm(`${ids.length}명의 사용자를 비활성화하시겠습니까?`)) return;
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/users/bulk`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, active: false }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    notyf.success(`${data.updated}명 비활성화했습니다.`);
+    await fetchUsers();
+  } catch (e) {
+    notyf.error(e.message);
+  }
 }
 
 // Bulk delete
@@ -276,10 +329,10 @@ function getSortIcon(key) {
 }
 
 const sortedUsers = computed(() => {
-  if (!sortKey.value) return users.value;
+  if (!sortKey.value) return filteredUsers.value;
   const k = sortKey.value;
   const dir = sortOrder.value === "asc" ? 1 : -1;
-  return [...users.value].sort((a, b) => {
+  return [...filteredUsers.value].sort((a, b) => {
     const va = (a[k] || "").toString().toLowerCase();
     const vb = (b[k] || "").toString().toLowerCase();
     return va < vb ? -dir : va > vb ? dir : 0;
@@ -313,8 +366,19 @@ onMounted(fetchUsers);
 
     <div class="card">
       <div class="card-header">
-        <h3>등록된 사용자 <span class="count-badge">{{ users.length }}</span></h3>
+        <h3>등록된 사용자 <span class="count-badge">{{ filteredUsers.length }}</span></h3>
         <div class="header-actions">
+          <select v-model="filterRole" class="filter-select">
+            <option value="all">전체 역할</option>
+            <option value="admin">Admin</option>
+            <option value="official">Official</option>
+          </select>
+          <select v-model="filterActive" class="filter-select">
+            <option value="all">전체 상태</option>
+            <option value="active">활성</option>
+            <option value="inactive">비활성</option>
+          </select>
+          <button v-if="selectedIds.size > 0" class="btn btn-sm btn-ghost" @click="bulkDeactivate">선택 비활성화 ({{ selectedIds.size }})</button>
           <button v-if="selectedIds.size > 0" class="btn btn-sm btn-danger" @click="bulkDelete">선택 삭제 ({{ selectedIds.size }})</button>
           <button class="btn btn-sm btn-ghost" @click="exportCSV">CSV 내보내기</button>
           <button class="btn btn-sm btn-ghost" @click="uploadCSV">CSV 업로드</button>
@@ -340,7 +404,7 @@ onMounted(fetchUsers);
               </tr>
             </thead>
             <tbody>
-              <tr v-for="user in sortedUsers" :key="user.id">
+              <tr v-for="user in sortedUsers" :key="user.id" :class="{ 'row-inactive': !user.active }">
                 <td class="col-check"><input type="checkbox" :checked="selectedIds.has(user.id)" @change="toggleOne(user.id)" /></td>
                 <td class="col-email">{{ user.email }}</td>
                 <td class="col-name">{{ user.name || "-" }}</td>
@@ -369,6 +433,15 @@ onMounted(fetchUsers);
                       :title="user.protected ? '기본 관리자의 역할은 변경할 수 없습니다' : user.role === 'admin' && adminCount <= 1 ? '마지막 관리자는 강등할 수 없습니다' : ''"
                     >
                       {{ user.role === "admin" ? "Official" : "Admin" }}
+                    </button>
+                    <button
+                      class="btn btn-sm"
+                      :class="user.active ? 'btn-ghost' : 'btn-primary'"
+                      @click="toggleActive(user)"
+                      :disabled="user.protected"
+                      :title="user.protected ? '기본 관리자는 비활성화할 수 없습니다' : ''"
+                    >
+                      {{ user.active ? "비활성화" : "활성화" }}
                     </button>
                     <button
                       class="btn btn-sm btn-danger"
@@ -433,6 +506,16 @@ onMounted(fetchUsers);
   gap: 0.5rem;
   align-items: center;
   margin-left: auto;
+}
+
+.filter-select {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  cursor: pointer;
 }
 
 .col-check {
@@ -562,6 +645,10 @@ onMounted(fetchUsers);
 .action-btns {
   display: flex;
   gap: 0.5rem;
+}
+
+.row-inactive {
+  opacity: 0.45;
 }
 
 .empty-state {

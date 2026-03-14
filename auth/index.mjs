@@ -23,6 +23,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS users (
 try { db.exec("ALTER TABLE users ADD COLUMN memo TEXT DEFAULT ''"); }
 catch { /* already exists */ }
 
+// 마이그레이션: active 컬럼 추가
+try { db.exec("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1"); }
+catch { /* already exists */ }
+
 // 마이그레이션: created_at 기본값 제거 (최초 로그인 시점으로 변경)
 // 아직 로그인하지 않은 사용자(name IS NULL)의 created_at 초기화
 db.exec("UPDATE users SET created_at = NULL WHERE name IS NULL AND created_at IS NOT NULL");
@@ -41,7 +45,9 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = createApp("auth.log", { express, pinoHttp }, (req) => {
+const validateUser = (email) => !!db.prepare("SELECT 1 FROM users WHERE email = ? AND active = 1").get(email);
+
+const app = createApp("auth.log", { express, pinoHttp, validateUser }, (req) => {
   if (["/api/login", "/api/callback", "/api/logout"].includes(req.path)) return null;
   if (req.path === "/api/me") return "official";
   if (req.path.startsWith("/api/users")) return "admin";
@@ -137,10 +143,13 @@ app.get("/api/callback", async (req, res) => {
     const email = userInfo.email;
     const name = userInfo.name || email;
 
-    // Check if user is registered
+    // Check if user is registered and active
     const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
     if (!user) {
       return res.redirect(`/auth/login?error=not_registered&redirect=${encodeURIComponent(redirectUrl)}`);
+    }
+    if (!user.active) {
+      return res.redirect(`/auth/login?error=deactivated&redirect=${encodeURIComponent(redirectUrl)}`);
     }
 
     // Update name from Google profile
@@ -188,9 +197,16 @@ app.get("/api/me", (req, res) => {
   res.json({ email: req.user.email, name: req.user.name, role: req.user.role });
 });
 
+// GET /api/users/exists/:email - 사용자 존재 + 활성 여부 (내부 서비스용)
+app.get("/api/users/exists/:email", (req, res) => {
+  const user = db.prepare("SELECT 1 FROM users WHERE email = ? AND active = 1").get(req.params.email);
+  if (!user) return res.status(404).send();
+  res.status(200).send();
+});
+
 // GET /api/users - 전체 사용자 목록
 app.get("/api/users", (req, res) => {
-  const result = dbRun(() => db.prepare("SELECT id, email, name, role, memo, created_at FROM users ORDER BY id").all());
+  const result = dbRun(() => db.prepare("SELECT id, email, name, role, memo, active, created_at FROM users ORDER BY id").all());
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result.map((u) => ({ ...u, protected: u.email === ADMIN_EMAIL })));
 });
@@ -245,6 +261,28 @@ app.post("/api/users/bulk", (req, res) => {
   res.json({ added: added.length, skipped: skipped.length, errors });
 });
 
+// PATCH /api/users/bulk - 벌크 활성/비활성
+app.patch("/api/users/bulk", (req, res) => {
+  const { ids, active } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) return res.status(400).send("사용자를 선택하세요.");
+  if (active === undefined) return res.status(400).send("active 값이 필요합니다.");
+
+  // ADMIN_EMAIL 보호
+  if (ADMIN_EMAIL && !active) {
+    const protectedUser = db.prepare("SELECT id FROM users WHERE email = ?").get(ADMIN_EMAIL);
+    if (protectedUser && ids.includes(protectedUser.id)) return res.status(400).send("기본 관리자는 비활성화할 수 없습니다.");
+  }
+
+  const placeholders = ids.map(() => "?").join(",");
+  const stmt = db.prepare(`UPDATE users SET active = ? WHERE id IN (${placeholders})`);
+  const run = db.transaction(() => stmt.run(active ? 1 : 0, ...ids));
+
+  const txResult = dbRun(() => run());
+  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+
+  res.json({ updated: txResult.result.changes });
+});
+
 // DELETE /api/users/bulk - 벌크 사용자 삭제
 app.delete("/api/users/bulk", (req, res) => {
   const { ids } = req.body;
@@ -271,10 +309,10 @@ app.delete("/api/users/bulk", (req, res) => {
   res.json({ deleted: txResult.result.changes });
 });
 
-// PATCH /api/users/:id - 역할/메모 변경
+// PATCH /api/users/:id - 역할/메모/활성 변경
 app.patch("/api/users/:id", (req, res) => {
   const id = Number(req.params.id);
-  const { role, memo } = req.body;
+  const { role, memo, active } = req.body;
 
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
   if (!user) return res.status(404).send("사용자를 찾을 수 없습니다.");
@@ -299,6 +337,13 @@ app.patch("/api/users/:id", (req, res) => {
   // 메모 변경
   if (memo !== undefined) {
     const result = dbRun(() => db.prepare("UPDATE users SET memo = ? WHERE id = ?").run(memo, id));
+    if (!result.success) return res.status(result.status).send(result.error);
+  }
+
+  // 활성/비활성 변경
+  if (active !== undefined) {
+    if (user.email === ADMIN_EMAIL) return res.status(400).send("기본 관리자는 비활성화할 수 없습니다.");
+    const result = dbRun(() => db.prepare("UPDATE users SET active = ? WHERE id = ?").run(active ? 1 : 0, id));
     if (!result.success) return res.status(result.status).send(result.error);
   }
 
