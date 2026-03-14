@@ -16,22 +16,7 @@ db.pragma("synchronous = NORMAL");
 db.transaction(() => {
   // 레거시 테이블 정리
   db.exec(`DROP TABLE IF EXISTS score_event`);
-
-  // 스키마 마이그레이션: event_type 컬럼이 없는 구버전 테이블 재생성
-  const cols = db.prepare("PRAGMA table_info(score_record)").all();
-  if (cols.length > 0 && !cols.find((c) => c.name === "event_type")) {
-    db.exec(`DROP TABLE score_record`);
-  }
-
-  // 팀별/경기 종목별 선택된 기록
-  db.exec(`CREATE TABLE IF NOT EXISTS score_record (
-    year INTEGER NOT NULL,
-    event_type TEXT NOT NULL,
-    team_num INTEGER NOT NULL,
-    table_name TEXT NOT NULL,
-    record_rowid INTEGER NOT NULL,
-    PRIMARY KEY (year, event_type, team_num)
-  )`);
+  db.exec(`DROP TABLE IF EXISTS score_record`);
 
   // 수동 입력 점수 (보고서, 에너지 등)
   db.exec(`CREATE TABLE IF NOT EXISTS score_manual (
@@ -42,13 +27,27 @@ db.transaction(() => {
     PRIMARY KEY (year, team_num, score_type)
   )`);
 
-  // 경기 종목별 페널티 설정 (콘터치/코스이탈 초)
+  // 경기 종목별 페널티 설정 (콘터치/코스이탈/출발지연 초)
   db.exec(`CREATE TABLE IF NOT EXISTS score_penalty (
     year INTEGER NOT NULL,
     event_type TEXT NOT NULL,
     cone_penalty REAL NOT NULL DEFAULT 0,
     oc_penalty REAL NOT NULL DEFAULT 0,
+    start_delay REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (year, event_type)
+  )`);
+
+  // 마이그레이션: start_delay 컬럼 추가
+  try { db.exec("ALTER TABLE score_penalty ADD COLUMN start_delay REAL NOT NULL DEFAULT 0"); }
+  catch { /* already exists */ }
+
+  // 경기 종목별 점수 설정 (총점/완주점수/컷오프)
+  db.exec(`CREATE TABLE IF NOT EXISTS score_setting (
+    year INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    setting_key TEXT NOT NULL,
+    value REAL,
+    PRIMARY KEY (year, event_type, setting_key)
   )`);
 })();
 
@@ -152,7 +151,7 @@ function subscribeInspectionSSE() {
 
 subscribeInspectionSSE();
 
-// Traffic 서비스 SSE 구독 → 기록 자동 선택
+// Traffic 서비스 SSE 구독 → Score 클라이언트에 재전송
 function subscribeTrafficSSE() {
   const url = new URL(`${TRAFFIC_SERVER}/api/events`);
 
@@ -170,11 +169,8 @@ function subscribeTrafficSSE() {
         try {
           const eventMatch = msg.match(/^event:\s*(.+)$/m);
           const dataMatch = msg.match(/^data:\s*(.+)$/m);
-          if (eventMatch && dataMatch && eventMatch[1] === "records") {
-            const data = JSON.parse(dataMatch[1]);
-            if (data.record && (data.type === "add" || (data.type === "update" && data.field === "invalidated"))) {
-              autoSelectBestRecord(data.name, data.record.num, data.record.eventType);
-            }
+          if (eventMatch && dataMatch) {
+            broadcastEvent(`traffic:${eventMatch[1]}`, JSON.parse(dataMatch[1]));
           }
         } catch (e) {
           console.error("Traffic SSE message parse error:", e);
@@ -191,66 +187,6 @@ function subscribeTrafficSSE() {
   req.on("error", () => {
     setTimeout(subscribeTrafficSSE, 3000);
   });
-}
-
-// 무효화되지 않은 기록 중 최적 기록 자동 선택
-async function autoSelectBestRecord(tableName, teamNum, eventType) {
-  // 테이블명에서 연도 추출
-  const yearMatch = tableName.match(/^FSK (\d{4})/);
-  if (!yearMatch) return;
-  const year = Number(yearMatch[1]);
-
-  try {
-    // 해당 연도의 모든 테이블에서 이 팀/종목의 기록을 수집
-    let allTableRecords;
-    try {
-      allTableRecords = await fetchYearRecords(year);
-    } catch { return; }
-
-    const runs = [];
-    for (const { tableName: tbl, records } of allTableRecords) {
-      for (const rec of records) {
-        if (rec.type === eventType && rec.num === teamNum) {
-          runs.push({
-            table_name: tbl,
-            rowid: rec.rowid,
-            result: rec.result,
-            invalidated: rec.invalidated || 0,
-          });
-        }
-      }
-    }
-
-    // 무효화되지 않은 기록만 필터링
-    const valid = runs.filter((r) => !r.invalidated);
-
-    // 유효 기록이 없으면 선택 해제
-    if (valid.length === 0) {
-      db.prepare("DELETE FROM score_record WHERE year = ? AND event_type = ? AND team_num = ?").run(year, eventType, teamNum);
-      broadcastEvent("record-auto", { year, event_type: eventType, team_num: teamNum, selected: null });
-      return;
-    }
-
-    // DNF(-1)가 아닌 기록 중 가장 빠른 기록, 없으면 DNF
-    const nonDnf = valid.filter((r) => r.result >= 0);
-    const best = nonDnf.length > 0
-      ? nonDnf.reduce((a, b) => (a.result <= b.result ? a : b))
-      : valid[0];
-
-    db.prepare(
-      `INSERT INTO score_record (year, event_type, team_num, table_name, record_rowid)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(year, event_type, team_num)
-       DO UPDATE SET table_name = excluded.table_name, record_rowid = excluded.record_rowid`,
-    ).run(year, eventType, teamNum, best.table_name, best.rowid);
-
-    broadcastEvent("record-auto", {
-      year,
-      event_type: eventType,
-      team_num: teamNum,
-      selected: { table_name: best.table_name, rowid: best.rowid, result: best.result },
-    });
-  } catch (e) { console.error("autoSelectBestRecord:", e); }
 }
 
 subscribeTrafficSSE();
@@ -388,55 +324,47 @@ app.get("/api/score", async (req, res) => {
         const num = rec.num;
         if (!group[num]) group[num] = [];
         group[num].push({
-          table_name: tableName,
-          rowid: rec.rowid,
           result: rec.result,
-          detail: rec.detail || null,
+          cones: rec.cones || 0,
+          oc: rec.oc || 0,
           invalidated: rec.invalidated || 0,
-          scoreboard: rec.scoreboard ?? 1,
-          time: rec.time,
         });
       }
     }
 
-    // 5. 로컬 DB에서 팀별 선택된 기록 조회
-    const selectedRecords = db
-      .prepare(
-        "SELECT event_type, team_num, table_name, record_rowid FROM score_record WHERE year = ?",
-      )
-      .all(year);
-
-    const selectedMap = {};
-    for (const sr of selectedRecords) {
-      if (!selectedMap[sr.event_type]) selectedMap[sr.event_type] = {};
-      selectedMap[sr.event_type][sr.team_num] = {
-        table_name: sr.table_name,
-        rowid: sr.record_rowid,
-      };
+    // 5. 페널티 설정 조회 (최고 기록 산출에 필요)
+    const penaltyRows = db.prepare("SELECT event_type, cone_penalty, oc_penalty, start_delay FROM score_penalty WHERE year = ?").all(year);
+    const penalties = {};
+    for (const row of penaltyRows) {
+      penalties[row.event_type] = { cone_penalty: row.cone_penalty, oc_penalty: row.oc_penalty, start_delay: row.start_delay };
     }
 
-    // 6. 활성화된 경기 모드별로 기록 정보 첨부
+    // 6. 활성화된 경기 모드별로 최고 기록 산출 (내구는 항상 포함)
     const events = [];
     const eventTypes = enabledModes ? [...enabledModes] : [...typeMap.keys()];
+    if (!eventTypes.includes("내구")) eventTypes.push("내구");
     for (const eventType of eventTypes) {
       const teamRecords = typeMap.get(eventType) || {};
+      const pen = penalties[eventType] || { cone_penalty: 0, oc_penalty: 0 };
       const records = {};
       for (const [num, runs] of Object.entries(teamRecords)) {
-        const sel = selectedMap[eventType]?.[Number(num)];
-        const selected = sel
-          ? runs.find((r) => r.table_name === sel.table_name && r.rowid === sel.rowid) || null
-          : null;
-        records[num] = {
-          selected: selected
-            ? {
-                table_name: selected.table_name,
-                rowid: selected.rowid,
-                result: selected.result,
-                detail: selected.detail,
-              }
-            : null,
-          all: runs,
-        };
+        const valid = runs.filter((r) => !r.invalidated);
+        if (!valid.length) {
+          records[num] = { result: null, cones: 0, oc: 0 };
+          continue;
+        }
+        const finished = valid.filter((r) => r.result >= 0);
+        if (finished.length) {
+          // 페널티 반영 시간 기준으로 최고 기록 선택
+          const best = finished.reduce((a, b) => {
+            const aAdj = a.result + a.cones * pen.cone_penalty * 1000 + a.oc * pen.oc_penalty * 1000;
+            const bAdj = b.result + b.cones * pen.cone_penalty * 1000 + b.oc * pen.oc_penalty * 1000;
+            return aAdj <= bAdj ? a : b;
+          });
+          records[num] = { result: best.result, cones: best.cones, oc: best.oc };
+        } else {
+          records[num] = { result: -1, cones: 0, oc: 0 };
+        }
       }
       events.push({ type: eventType, records });
     }
@@ -449,116 +377,18 @@ app.get("/api/score", async (req, res) => {
       manualScores[row.team_num][row.score_type] = row.value;
     }
 
-    // 8. 페널티 설정 조회
-    const penaltyRows = db.prepare("SELECT event_type, cone_penalty, oc_penalty FROM score_penalty WHERE year = ?").all(year);
-    const penalties = {};
-    for (const row of penaltyRows) {
-      penalties[row.event_type] = { cone_penalty: row.cone_penalty, oc_penalty: row.oc_penalty };
+    // 9. 점수 설정 조회
+    const settingRows = db.prepare("SELECT event_type, setting_key, value FROM score_setting WHERE year = ?").all(year);
+    const settings = {};
+    for (const row of settingRows) {
+      if (!settings[row.event_type]) settings[row.event_type] = {};
+      settings[row.event_type][row.setting_key] = row.value;
     }
 
-    res.json({ entries, inspection, events, manualScores, penalties });
+    res.json({ entries, inspection, events, manualScores, penalties, settings });
   } catch (e) {
     res.status(500).send(`데이터 집계 오류: ${e.message || e}`);
   }
-});
-
-// GET /api/score/records?year=YYYY&event_type=TYPE&team_num=NUM — 팀별 종목 기록 조회
-app.get("/api/score/records", async (req, res) => {
-  const year = Number(req.query.year);
-  const eventType = req.query.event_type;
-  const teamNum = Number(req.query.team_num);
-  if (!year || !eventType || !teamNum) {
-    return res.status(400).send("year, event_type, team_num 필수");
-  }
-
-  try {
-    const allTableRecords = await fetchYearRecords(year);
-
-    const runs = [];
-    for (const { tableName, records } of allTableRecords) {
-      for (const rec of records) {
-        if (rec.type === eventType && rec.num === teamNum) {
-          runs.push({
-            table_name: tableName,
-            rowid: rec.rowid,
-            result: rec.result,
-            detail: rec.detail || null,
-            invalidated: rec.invalidated || 0,
-            scoreboard: rec.scoreboard ?? 1,
-            time: rec.time,
-          });
-        }
-      }
-    }
-
-    // 기록 오름차순 정렬 (DNF=-1은 맨 뒤)
-    runs.sort((a, b) => {
-      if (a.result === -1 && b.result !== -1) return 1;
-      if (a.result !== -1 && b.result === -1) return -1;
-      return a.result - b.result;
-    });
-
-    const sel = db
-      .prepare("SELECT table_name, record_rowid FROM score_record WHERE year = ? AND event_type = ? AND team_num = ?")
-      .get(year, eventType, teamNum);
-
-    const selected = sel ? runs.find((r) => r.table_name === sel.table_name && r.rowid === sel.record_rowid) || null : null;
-
-    res.json({
-      selected: selected ? { table_name: selected.table_name, rowid: selected.rowid, result: selected.result, detail: selected.detail } : null,
-      all: runs,
-    });
-  } catch (e) {
-    res.status(500).send(`기록 조회 오류: ${e.message || e}`);
-  }
-});
-
-// PUT /api/score/record — 팀별 경기 종목 기록 선택
-app.put("/api/score/record", (req, res) => {
-  const { year, event_type, team_num, table_name, record_rowid, result: recResult, detail } = req.body;
-  if (!year || !event_type || team_num == null || !table_name || !record_rowid) {
-    return res.status(400).send("필수 필드가 누락되었습니다.");
-  }
-
-  const result = dbRun(() =>
-    db
-      .prepare(
-        `INSERT INTO score_record (year, event_type, team_num, table_name, record_rowid)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(year, event_type, team_num)
-         DO UPDATE SET table_name = excluded.table_name, record_rowid = excluded.record_rowid`,
-      )
-      .run(year, event_type, team_num, table_name, record_rowid),
-  );
-
-  if (!result.success) return res.status(result.status).send(result.error);
-
-  broadcastEvent("record-update", {
-    year, event_type, team_num,
-    selected: { table_name, rowid: record_rowid, result: recResult ?? null, detail: detail ?? null },
-  });
-
-  res.status(200).send();
-});
-
-// DELETE /api/score/record — 팀별 경기 종목 기록 선택 해제
-app.delete("/api/score/record", (req, res) => {
-  const { year, event_type, team_num } = req.body;
-  if (!year || !event_type || team_num == null) {
-    return res.status(400).send("필수 필드가 누락되었습니다.");
-  }
-
-  const result = dbRun(() =>
-    db
-      .prepare("DELETE FROM score_record WHERE year = ? AND event_type = ? AND team_num = ?")
-      .run(year, event_type, team_num),
-  );
-
-  if (!result.success) return res.status(result.status).send(result.error);
-
-  broadcastEvent("record-update", { year, event_type, team_num, selected: null });
-
-  res.status(200).send();
 });
 
 // PUT /api/score/manual — 수동 입력 점수 저장 (보고서, 에너지)
@@ -590,28 +420,56 @@ app.put("/api/score/manual", (req, res) => {
 
 // PUT /api/score/penalty — 경기 종목별 페널티 설정 저장
 app.put("/api/score/penalty", (req, res) => {
-  const { year, event_type, cone_penalty, oc_penalty } = req.body;
+  const { year, event_type, cone_penalty, oc_penalty, start_delay } = req.body;
   if (!year || !event_type) {
     return res.status(400).send("필수 필드가 누락되었습니다.");
   }
 
   const cone = cone_penalty == null ? 0 : Number(cone_penalty);
   const oc = oc_penalty == null ? 0 : Number(oc_penalty);
+  const delay = start_delay == null ? 0 : Number(start_delay);
 
   const result = dbRun(() =>
     db
       .prepare(
-        `INSERT INTO score_penalty (year, event_type, cone_penalty, oc_penalty)
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO score_penalty (year, event_type, cone_penalty, oc_penalty, start_delay)
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(year, event_type)
-         DO UPDATE SET cone_penalty = excluded.cone_penalty, oc_penalty = excluded.oc_penalty`,
+         DO UPDATE SET cone_penalty = excluded.cone_penalty, oc_penalty = excluded.oc_penalty, start_delay = excluded.start_delay`,
       )
-      .run(year, event_type, cone, oc),
+      .run(year, event_type, cone, oc, delay),
   );
 
   if (!result.success) return res.status(result.status).send(result.error);
 
-  broadcastEvent("penalty", { year, event_type, cone_penalty: cone, oc_penalty: oc });
+  broadcastEvent("penalty", { year, event_type, cone_penalty: cone, oc_penalty: oc, start_delay: delay });
+
+  res.status(200).send();
+});
+
+// PUT /api/score/setting — 경기 종목별 점수 설정 저장
+app.put("/api/score/setting", (req, res) => {
+  const { year, event_type, setting_key, value } = req.body;
+  if (!year || !event_type || !setting_key) {
+    return res.status(400).send("필수 필드가 누락되었습니다.");
+  }
+
+  const numValue = value == null ? null : Number(value);
+
+  const result = dbRun(() =>
+    db
+      .prepare(
+        `INSERT INTO score_setting (year, event_type, setting_key, value)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(year, event_type, setting_key)
+         DO UPDATE SET value = excluded.value`,
+      )
+      .run(year, event_type, setting_key, numValue),
+  );
+
+  if (!result.success) return res.status(result.status).send(result.error);
+
+  broadcastEvent("setting", { year, event_type, setting_key, value: numValue });
 
   res.status(200).send();
 });

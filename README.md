@@ -11,8 +11,8 @@ Formula Student Korea Service Hub
 | entry | `/entry` | Vehicle entry registration API + Web UI | 9100 |
 | queue | `/queue` | Inspection queue management API + Web UI | 9300 |
 | inspection | `/inspection` | Inspection sheet management API + Web UI | 9600 |
-| traffic | `/traffic` | Traffic controller & telemetry API + Web UI | 9200 |
-| score | `/score` | Score aggregation & management API + Web UI | 9700 |
+| traffic | `/traffic` | Traffic controller, telemetry & event mode management API + Web UI | 9200 |
+| score | `/score` | Score aggregation, penalty/scoring config & management API + Web UI | 9700 |
 | energymeter | `/energymeter` | Energy meter data viewer | 9400 |
 | rules | `/rules` | Rules file server (Caddy) | 9500 |
 
@@ -142,3 +142,17 @@ podman compose --profile local up -d
 The service will be available at `http://localhost:9000`.
 
 For development without Google OAuth, omit `JWT_SECRET` from `.env` — all requests will be auto-authenticated as admin.
+
+## Traffic: Event Mode Management
+
+Event types (가속, 스키드패드, 오토크로스, 짐카나) can be enabled/disabled from the traffic record management page. Disabled modes are hidden from traffic navigation tabs and score service tables. The "내구" (endurance) event is always shown in the score service regardless of event mode settings.
+
+## Score: Scoring System
+
+The score service provides:
+
+- **Penalty settings** — per-event cone touch, off-course, and start delay penalties (seconds)
+- **Score settings** — per-event total points, completion points, and cutoff percentage
+- **Auto-calculated scores** — based on penalty-adjusted best records using the FSK scoring formula
+- **Record/Score toggle** — switch between viewing penalty-adjusted times and calculated scores
+- **Total score** — sum of all event scores + endurance + report + energy

@@ -1165,7 +1165,7 @@ async function handleAddRecord() {
 .col-team {
   width: 1%;
   white-space: nowrap;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
 }
 
 /* 무효화된 행 스타일 */
@@ -1263,7 +1263,7 @@ async function handleAddRecord() {
 
 .controller-data {
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   color: var(--text-secondary);
 }
 

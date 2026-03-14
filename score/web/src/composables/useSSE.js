@@ -7,10 +7,10 @@ const { on, useSSE: useConnection, connected } = createSSEConnection(`${API_BASE
 // Shared state across all components
 const lastInspectionUpdate = ref(null);
 const lastAnswerUpdate = ref(null);
-const lastRecordAutoUpdate = ref(null);
-const lastRecordManualUpdate = ref(null);
+const lastTrafficRecordUpdate = ref(null);
 const lastManualScoreUpdate = ref(null);
 const lastPenaltyUpdate = ref(null);
+const lastSettingUpdate = ref(null);
 
 on("init", () => {
   connected.value = true;
@@ -26,14 +26,9 @@ on("inspection:answer", (e) => {
   lastAnswerUpdate.value = { ...data, timestamp: Date.now() };
 });
 
-on("record-auto", (e) => {
+on("traffic:records", (e) => {
   const data = JSON.parse(e.data);
-  lastRecordAutoUpdate.value = { ...data, timestamp: Date.now() };
-});
-
-on("record-update", (e) => {
-  const data = JSON.parse(e.data);
-  lastRecordManualUpdate.value = { ...data, timestamp: Date.now() };
+  lastTrafficRecordUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 on("manual-score", (e) => {
@@ -46,16 +41,21 @@ on("penalty", (e) => {
   lastPenaltyUpdate.value = { ...data, timestamp: Date.now() };
 });
 
+on("setting", (e) => {
+  const data = JSON.parse(e.data);
+  lastSettingUpdate.value = { ...data, timestamp: Date.now() };
+});
+
 export function useSSE() {
   const { connected } = useConnection();
 
   return {
     lastInspectionUpdate,
     lastAnswerUpdate,
-    lastRecordAutoUpdate,
-    lastRecordManualUpdate,
+    lastTrafficRecordUpdate,
     lastManualScoreUpdate,
     lastPenaltyUpdate,
+    lastSettingUpdate,
     connected,
   };
 }

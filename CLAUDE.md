@@ -15,8 +15,8 @@ Nine independent services deployed via Docker Compose behind a Caddy reverse pro
 - **entry/** - Vehicle entry registration API + web UI (Express + Vue 3, port 9100)
 - **queue/** - Inspection queue management API + web UI (Express + Vue 3, port 9300)
 - **inspection/** - Inspection sheet management API + web UI (Express + Vue 3, port 9600)
-- **traffic/** - Traffic control and telemetry API + web UI (Express + Vue 3, port 9200)
-- **score/** - Score aggregation and management API + web UI (Express + Vue 3, port 9700)
+- **traffic/** - Traffic control, telemetry, and event mode management API + web UI (Express + Vue 3, port 9200)
+- **score/** - Score aggregation, penalty/scoring config, and management API + web UI (Express + Vue 3, port 9700)
 - **energymeter/** - Energy meter data viewer (Git submodule, Vue 3, port 9400)
 - **rules/** - Rules file server (Caddy, port 9500)
 
@@ -43,7 +43,7 @@ Service dependencies (via environment variables in `docker-compose.yml`):
 - inspection → entry (`ENTRY_SERVER`), auth (`AUTH_SERVER`)
 - score → entry (`ENTRY_SERVER`), inspection (`INSPECTION_SERVER`), traffic (`TRAFFIC_SERVER`), auth (`AUTH_SERVER`)
 
-All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs middleware). Score service uses `X-Internal-Service` header for inter-service auth to inspection/traffic APIs.
+All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs middleware). Auth validation uses fail-open: if auth service is temporarily unreachable, JWT is trusted (only explicit 404 invalidates sessions). Score service uses `X-Internal-Service` header for inter-service auth to inspection/traffic APIs.
 
 ## Tech Stack
 
@@ -160,3 +160,41 @@ SQLite databases stored in volume-mounted directories:
 - `inspection/data/` - sheet.db, sheet.log
 - `traffic/data/` - traffic.db, traffic.log
 - `score/data/` - score.db, score.log
+
+## Traffic Service: Event Modes
+
+Event types (가속, 스키드패드, 오토크로스, 짐카나) are managed via the `event_mode` table in traffic.db. Each mode can be enabled/disabled from the traffic record management page. Disabled modes are hidden from:
+- Traffic navigation tabs (NavTabs.vue)
+- Score service scoreboard columns
+- Score service penalty/scoring settings
+
+The "내구" (endurance) event is always shown in the score service regardless of event mode settings.
+
+## Score Service: Scoring System
+
+### Database Tables
+- `score_penalty` — per-event-type penalty config: `cone_penalty`, `oc_penalty`, `start_delay` (seconds)
+- `score_setting` — per-event-type scoring config: `total` (max points), `finish` (completion points), `cutoff` (% threshold)
+- `score_manual` — manual input scores per team: `report`, `energy`
+
+### Score Calculation
+Best record per team = lowest penalty-adjusted time (excluding invalidated records):
+```
+adjusted_time = raw_result + cones × cone_penalty × 1000 + oc × oc_penalty × 1000
+```
+
+Dynamic event score formula:
+```
+score = (total - finish) × ((cutoff × best_time / my_time) - 1) / (cutoff - 1) + finish
+```
+- `cutoff` is stored as percentage (e.g., 145) and converted to ratio (1.45) for calculation
+- Teams exceeding `best_time × cutoff` receive only `finish` points
+- DNF teams receive 0 points
+- Score is clamped between `finish` and `total`, rounded to 2 decimal places
+
+Total score = sum of all dynamic event scores + endurance score + report + energy
+
+### Display Modes
+The scoreboard supports record/score toggle (persisted in localStorage):
+- **Record mode**: shows penalty-adjusted best times in MM:SS.mmm format
+- **Score mode**: shows calculated scores per event type

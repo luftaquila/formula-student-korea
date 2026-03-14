@@ -266,7 +266,7 @@ watch(lastInspectorUpdate, (update) => {
   top: 0;
   z-index: 1;
   white-space: nowrap;
-  font-size: 0.75rem;
+  font-size: 0.875rem;
 }
 
 .col-num,
@@ -294,7 +294,7 @@ watch(lastInspectorUpdate, (update) => {
 
 .inspector-name {
   display: block;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   color: var(--text-tertiary);
   margin-top: 0.125rem;
 }

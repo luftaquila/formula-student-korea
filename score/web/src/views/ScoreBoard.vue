@@ -1,18 +1,21 @@
 <script setup>
-import { ref, onMounted, computed, nextTick, watch } from "vue";
-import { fetchEntryYears, fetchScore, fetchTeamRecords, selectRecord, deselectRecord, updateManualScore, updatePenalty } from "../api";
+import { ref, onMounted, computed, watch } from "vue";
+import { fetchEntryYears, fetchScore, updateManualScore, updatePenalty, updateSetting } from "../api";
 import { useNotification } from "../composables/useNotification";
 import { useSSE } from "../composables/useSSE";
 
 const { success, error } = useNotification();
-const { lastInspectionUpdate, lastAnswerUpdate, lastRecordAutoUpdate, lastRecordManualUpdate, lastManualScoreUpdate, lastPenaltyUpdate } = useSSE();
+const { lastInspectionUpdate, lastAnswerUpdate, lastTrafficRecordUpdate, lastManualScoreUpdate, lastPenaltyUpdate, lastSettingUpdate } = useSSE();
 
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
 const loading = ref(true);
 const searchQuery = ref("");
-const showInspection = ref(true);
+const showInspection = ref(localStorage.getItem("score-show-inspection") !== "false");
+watch(showInspection, (v) => localStorage.setItem("score-show-inspection", v));
 const expandedRows = ref(new Set());
+const displayMode = ref(localStorage.getItem("score-display-mode") || "record");
+watch(displayMode, (v) => localStorage.setItem("score-display-mode", v));
 
 // 정렬 상태
 const sortKey = ref(null);
@@ -24,14 +27,38 @@ const inspection = ref({ categories: [], teams: {} });
 const events = ref([]); // [{ type, tables, records }]
 const manualScores = ref({}); // { team_num: { report: value, energy: value } }
 const penalties = ref({}); // { event_type: { cone_penalty, oc_penalty } }
+const settings = ref({}); // { event_type: { total, finish, cutoff } }
 
-// 기록 선택 드롭다운
-const activeDropdown = ref(null); // { eventType, teamNum }
+const dynamicEvents = computed(() => events.value.filter((e) => e.type !== "내구"));
+const enduranceEvent = computed(() => events.value.find((e) => e.type === "내구") || { type: "내구", records: {} });
+
+const typeFilters = ref({});
+
+const vehicleTypes = computed(() => {
+  const types = new Set();
+  for (const e of Object.values(entries.value)) {
+    if (e.type) types.add(e.type);
+  }
+  return [...types].sort();
+});
+
+// 새 유형이 나타나면 기본 활성화
+watch(vehicleTypes, (types) => {
+  for (const t of types) {
+    if (!(t in typeFilters.value)) typeFilters.value[t] = true;
+  }
+});
+
+const editingSettingCell = ref(null); // "penalty:cone_penalty:가속" or "setting:total:내구"
 
 const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
 
 const entryList = computed(() => {
   let list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
+  // 차량 유형 필터
+  if (vehicleTypes.value.length > 0) {
+    list = list.filter(e => !e.type || typeFilters.value[e.type] !== false);
+  }
   if (searchQuery.value) {
     const q = searchQuery.value.toLowerCase();
     list = list.filter(e => String(e.num).includes(q) || (e.univ || "").toLowerCase().includes(q) || (e.team || "").toLowerCase().includes(q));
@@ -56,17 +83,28 @@ const entryList = computed(() => {
       bVal = getCurbWeight(b.num);
       aVal = aVal != null ? Number(aVal) : Infinity;
       bVal = bVal != null ? Number(bVal) : Infinity;
-    } else if (sortKey.value === "report" || sortKey.value === "energy") {
+    } else if (sortKey.value === "totalScore") {
+      aVal = getTotalScore(a.num);
+      bVal = getTotalScore(b.num);
+      return sortOrder.value === "asc" ? bVal - aVal : aVal - bVal;
+    } else if (["report", "energy", "bonus", "deduction"].includes(sortKey.value)) {
       aVal = manualScores.value[a.num]?.[sortKey.value] ?? Infinity;
       bVal = manualScores.value[b.num]?.[sortKey.value] ?? Infinity;
     } else if (sortKey.value.startsWith("event:")) {
       const eventType = sortKey.value.slice(6);
       const evt = events.value.find(e => e.type === eventType);
-      const aRec = evt?.records[a.num]?.selected?.result;
-      const bRec = evt?.records[b.num]?.selected?.result;
-      // DNS(없음) → 맨 뒤, DNF(-1) → 그 앞, 나머지 숫자 비교
-      aVal = aRec == null ? Infinity : aRec === -1 ? Infinity - 1 : Number(aRec);
-      bVal = bRec == null ? Infinity : bRec === -1 ? Infinity - 1 : Number(bRec);
+      if (displayMode.value === "score") {
+        aVal = getEventScore(eventType, a.num) ?? -Infinity;
+        bVal = getEventScore(eventType, b.num) ?? -Infinity;
+        // 점수 높은 순이 기본
+        return sortOrder.value === "asc" ? bVal - aVal : aVal - bVal;
+      }
+      const aRec = evt?.records[a.num];
+      const bRec = evt?.records[b.num];
+      const aAdj = getAdjustedResult(eventType, aRec);
+      const bAdj = getAdjustedResult(eventType, bRec);
+      aVal = aAdj == null ? Infinity : aAdj === -1 ? Infinity - 1 : Number(aAdj);
+      bVal = bAdj == null ? Infinity : bAdj === -1 ? Infinity - 1 : Number(bAdj);
     } else {
       aVal = 0;
       bVal = 0;
@@ -94,9 +132,6 @@ onMounted(async () => {
 });
 
 function handleOutsideClick(e) {
-  if (activeDropdown.value && !e.target.closest(".record-cell")) {
-    activeDropdown.value = null;
-  }
   if (expandedRows.value.size && !e.target.closest(".col-corner-weight")) {
     expandedRows.value.clear();
   }
@@ -110,6 +145,7 @@ async function loadData() {
     events.value = data.events;
     manualScores.value = data.manualScores || {};
     penalties.value = data.penalties || {};
+    settings.value = data.settings || {};
     sortKey.value = null;
     sortOrder.value = "asc";
   } catch (e) {
@@ -119,7 +155,6 @@ async function loadData() {
 
 async function onYearChange() {
   loading.value = true;
-  activeDropdown.value = null;
   await loadData();
   loading.value = false;
 }
@@ -134,6 +169,73 @@ function getTeamEvent(evt, num) {
   return evt.records[num] || null;
 }
 
+// 페널티 반영 기록 (ms)
+function getAdjustedResult(eventType, rec) {
+  if (!rec || rec.result == null || rec.result === -1) return rec?.result ?? null;
+  const pen = penalties.value[eventType] || {};
+  return rec.result + (rec.cones || 0) * (pen.cone_penalty || 0) * 1000 + (rec.oc || 0) * (pen.oc_penalty || 0) * 1000;
+}
+
+// 종목별 최고 페널티 반영 기록 (가장 빠른 팀)
+function getBestAdjusted(eventType) {
+  const evt = events.value.find((e) => e.type === eventType);
+  if (!evt) return null;
+  let best = null;
+  for (const rec of Object.values(evt.records)) {
+    const adj = getAdjustedResult(eventType, rec);
+    if (adj != null && adj >= 0 && (best === null || adj < best)) best = adj;
+  }
+  return best;
+}
+
+// 점수 계산: (총점-완주) * ((컷오프*best/my)-1) / (컷오프-1) + 완주
+function getEventScore(eventType, num) {
+  const evt = events.value.find((e) => e.type === eventType);
+  if (!evt) return null;
+  const rec = evt.records[num];
+  const my = getAdjustedResult(eventType, rec);
+  if (my == null) return null;
+  if (my === -1) return 0;
+  const best = getBestAdjusted(eventType);
+  if (best == null || best <= 0) return null;
+  const s = settings.value[eventType] || {};
+  const total = s.total ?? 0;
+  const finish = s.finish ?? 0;
+  const cutoff = (s.cutoff ?? 100) / 100;
+  if (cutoff <= 1) return total;
+  // 컷오프 초과 시 완주점수만 부여
+  if (my > best * cutoff) return finish;
+  const score = (total - finish) * ((cutoff * best / my) - 1) / (cutoff - 1) + finish;
+  return Math.max(finish, Math.min(total, parseFloat(score.toFixed(2))));
+}
+
+// 총점 계산 (모든 경기 점수 + 내구 + 보고서 + 에너지)
+function getTotalScore(num) {
+  let total = 0;
+  for (const evt of dynamicEvents.value) {
+    const s = getEventScore(evt.type, num);
+    if (s != null) total += s;
+  }
+  const endurance = getEventScore("내구", num);
+  if (endurance != null) total += endurance;
+  total += manualScores.value[num]?.report ?? 0;
+  total += manualScores.value[num]?.energy ?? 0;
+  total += manualScores.value[num]?.bonus ?? 0;
+  total -= manualScores.value[num]?.deduction ?? 0;
+  return parseFloat(total.toFixed(2));
+}
+
+const typeColors = ["blue", "green", "orange", "purple", "red", "teal"];
+const typeColorMap = {};
+function getTypeColor(type) {
+  if (!type) return "blue";
+  if (!typeColorMap[type]) {
+    const idx = Object.keys(typeColorMap).length % typeColors.length;
+    typeColorMap[type] = typeColors[idx];
+  }
+  return typeColorMap[type];
+}
+
 function formatTime(time) {
   return new Date(time).toLocaleString("ko-KR");
 }
@@ -144,82 +246,10 @@ function formatResult(result) {
   const ms = Number(result);
   if (isNaN(ms)) return String(result);
   const totalMs = Math.abs(ms);
-  const minutes = Math.floor(totalMs / 60000);
-  const seconds = Math.floor((totalMs % 60000) / 1000);
-  const millis = totalMs % 1000;
-  if (minutes > 0) {
-    return `${minutes}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
-  }
-  return `${seconds}.${String(millis).padStart(3, "0")}`;
-}
-
-async function toggleDropdown(evt, teamNum, e) {
-  e.stopPropagation();
-  if (isReadOnly.value) return;
-  const teamEvent = getTeamEvent(evt, teamNum);
-  if (!teamEvent) return;
-
-  if (activeDropdown.value?.eventType === evt.type && activeDropdown.value?.teamNum === teamNum) {
-    activeDropdown.value = null;
-  } else {
-    const cell = e.currentTarget;
-
-    // 드롭다운 열 때 최신 기록 fetch
-    try {
-      const fresh = await fetchTeamRecords(selectedYear.value, evt.type, teamNum);
-      evt.records[teamNum] = fresh;
-    } catch {
-      // fetch 실패 시 기존 데이터 사용
-    }
-
-    if (!evt.records[teamNum]?.all?.length) return;
-
-    activeDropdown.value = { eventType: evt.type, teamNum };
-    await nextTick();
-    const container = cell.closest('.table-container');
-    const dropdown = cell.querySelector('.record-dropdown');
-    if (dropdown && container) {
-      const cellRect = cell.getBoundingClientRect();
-      const containerRect = container.getBoundingClientRect();
-      const dropdownWidth = dropdown.offsetWidth;
-      const cellCenter = cellRect.left + cellRect.width / 2;
-      if (cellCenter + dropdownWidth / 2 > containerRect.right) {
-        dropdown.style.left = 'auto';
-        dropdown.style.right = '0';
-        dropdown.style.transform = 'none';
-      }
-    }
-  }
-}
-
-function isDropdownOpen(evt, teamNum) {
-  return activeDropdown.value?.eventType === evt.type && activeDropdown.value?.teamNum === teamNum;
-}
-
-async function handleSelectRecord(evt, teamNum, run) {
-  try {
-    await selectRecord(selectedYear.value, evt.type, teamNum, run.table_name, run.rowid, run.result, run.detail);
-    evt.records[teamNum].selected = {
-      table_name: run.table_name,
-      rowid: run.rowid,
-      result: run.result,
-      detail: run.detail,
-    };
-    activeDropdown.value = null;
-  } catch {
-    error("기록 선택에 실패했습니다.");
-  }
-}
-
-async function handleDeselectRecord(evt, teamNum) {
-  try {
-    await deselectRecord(selectedYear.value, evt.type, teamNum);
-    evt.records[teamNum].selected = null;
-    activeDropdown.value = null;
-    success("기록 선택이 해제되었습니다.");
-  } catch {
-    error("기록 선택 해제에 실패했습니다.");
-  }
+  const minutes = String(Math.floor(totalMs / 60000)).padStart(2, "0");
+  const seconds = String(Math.floor((totalMs % 60000) / 1000)).padStart(2, "0");
+  const millis = String(Math.round(totalMs % 1000)).padStart(3, "0");
+  return `${minutes}:${seconds}.${millis}`;
 }
 
 // 수동 점수 저장
@@ -245,18 +275,20 @@ function getManualScore(teamNum, scoreType) {
 
 // 페널티 설정 저장
 async function handlePenaltySave(eventType, field, value) {
+  editingSettingCell.value = null;
   const numValue = value === "" ? 0 : Number(value);
   if (isNaN(numValue) || numValue < 0) return;
 
-  const current = penalties.value[eventType] || { cone_penalty: 0, oc_penalty: 0 };
+  const current = penalties.value[eventType] || { cone_penalty: 0, oc_penalty: 0, start_delay: 0 };
   const oldValue = current[field] ?? 0;
   if (numValue === oldValue) return;
 
-  if (!penalties.value[eventType]) penalties.value[eventType] = { cone_penalty: 0, oc_penalty: 0 };
+  if (!penalties.value[eventType]) penalties.value[eventType] = { cone_penalty: 0, oc_penalty: 0, start_delay: 0 };
   penalties.value[eventType][field] = numValue;
 
   try {
-    await updatePenalty(selectedYear.value, eventType, penalties.value[eventType].cone_penalty, penalties.value[eventType].oc_penalty);
+    const p = penalties.value[eventType];
+    await updatePenalty(selectedYear.value, eventType, p.cone_penalty, p.oc_penalty, p.start_delay);
   } catch {
     penalties.value[eventType][field] = oldValue;
     error("페널티 설정 저장에 실패했습니다.");
@@ -265,6 +297,39 @@ async function handlePenaltySave(eventType, field, value) {
 
 function getPenalty(eventType, field) {
   return penalties.value[eventType]?.[field] ?? 0;
+}
+
+function startSettingEdit(key) {
+  if (isReadOnly.value) return;
+  editingSettingCell.value = key;
+}
+
+function settingInputRef(el) {
+  if (el) { el.focus(); el.select(); }
+}
+
+// 점수 설정 저장
+async function handleSettingSave(eventType, key, value) {
+  editingSettingCell.value = null;
+  const numValue = value === "" ? null : Number(value);
+  if (numValue !== null && isNaN(numValue)) return;
+
+  const oldValue = settings.value[eventType]?.[key] ?? null;
+  if (numValue === oldValue) return;
+
+  if (!settings.value[eventType]) settings.value[eventType] = {};
+  settings.value[eventType][key] = numValue;
+
+  try {
+    await updateSetting(selectedYear.value, eventType, key, numValue);
+  } catch {
+    settings.value[eventType][key] = oldValue;
+    error("점수 설정 저장에 실패했습니다.");
+  }
+}
+
+function getSetting(eventType, key) {
+  return settings.value[eventType]?.[key] ?? null;
 }
 
 // 정렬
@@ -310,38 +375,6 @@ watch(lastAnswerUpdate, (update) => {
 
 });
 
-// SSE로 기록 자동 선택 실시간 반영
-watch(lastRecordAutoUpdate, (update) => {
-  if (!update || update.year !== selectedYear.value) return;
-  const { event_type, team_num, selected } = update;
-  const evt = events.value.find((e) => e.type === event_type);
-  if (!evt) return;
-
-  if (!evt.records[team_num]) {
-    evt.records[team_num] = { selected: null, all: [] };
-  }
-
-  evt.records[team_num].selected = selected
-    ? { table_name: selected.table_name, rowid: selected.rowid, result: selected.result, detail: selected.detail || null }
-    : null;
-});
-
-// SSE로 다른 관리자의 기록 선택/해제 실시간 반영
-watch(lastRecordManualUpdate, (update) => {
-  if (!update || update.year !== selectedYear.value) return;
-  const { event_type, team_num, selected } = update;
-  const evt = events.value.find((e) => e.type === event_type);
-  if (!evt) return;
-
-  if (!evt.records[team_num]) {
-    evt.records[team_num] = { selected: null, all: [] };
-  }
-
-  evt.records[team_num].selected = selected
-    ? { table_name: selected.table_name, rowid: selected.rowid, result: selected.result, detail: selected.detail || null }
-    : null;
-});
-
 // SSE로 수동 점수 실시간 반영
 watch(lastManualScoreUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
@@ -353,17 +386,25 @@ watch(lastManualScoreUpdate, (update) => {
 // SSE로 페널티 설정 실시간 반영
 watch(lastPenaltyUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
-  const { event_type, cone_penalty, oc_penalty } = update;
+  const { event_type, cone_penalty, oc_penalty, start_delay } = update;
   if (!penalties.value[event_type]) penalties.value[event_type] = {};
   penalties.value[event_type].cone_penalty = cone_penalty;
   penalties.value[event_type].oc_penalty = oc_penalty;
+  penalties.value[event_type].start_delay = start_delay;
 });
 
-// 여러 테이블이 합쳐진 경우 짧은 테이블명
-function shortTableName(tableName) {
-  const parts = tableName.split(" ");
-  return parts.length > 2 ? parts.slice(2).join(" ") : tableName;
-}
+// SSE로 점수 설정 실시간 반영
+watch(lastSettingUpdate, (update) => {
+  if (!update || update.year !== selectedYear.value) return;
+  const { event_type, setting_key, value } = update;
+  if (!settings.value[event_type]) settings.value[event_type] = {};
+  settings.value[event_type][setting_key] = value;
+});
+
+// SSE로 경기 기록 변경 시 데이터 재로드
+watch(lastTrafficRecordUpdate, () => {
+  loadData();
+});
 
 // 카테고리 오버라이드 판별
 function isOverriddenCategory(catId) {
@@ -406,23 +447,41 @@ function toggleCornerWeight(num) {
 
 <template>
   <div class="score-page">
-    <div class="filter-bar">
-      <div class="filter-group">
-        <label class="filter-label">엔트리</label>
-        <select class="filter-input" v-model.number="selectedYear" @change="onYearChange">
-          <option v-for="y in availableYears" :key="y" :value="y">{{ y }}년</option>
-        </select>
-      </div>
-      <div class="filter-group">
-        <label class="filter-label">검색</label>
-        <input class="filter-input" v-model="searchQuery" placeholder="번호 / 학교 / 팀명" />
-      </div>
-      <div class="filter-group">
-        <label class="filter-label">필터</label>
-        <label class="filter-checkbox">
-          <input type="checkbox" v-model="showInspection" />
-          <span>검차</span>
-        </label>
+    <div class="top-row">
+      <div class="filter-bar">
+        <div class="filter-group">
+          <label class="filter-label">엔트리</label>
+          <select class="filter-input" v-model.number="selectedYear" @change="onYearChange">
+            <option v-for="y in availableYears" :key="y" :value="y">{{ y }}년</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">검색</label>
+          <input class="filter-input" v-model="searchQuery" placeholder="번호 / 학교 / 팀명" />
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">필터</label>
+          <label class="filter-checkbox">
+            <input type="checkbox" v-model="showInspection" />
+            <span>검차</span>
+          </label>
+        </div>
+        <div class="filter-group type-filter-gap" v-if="vehicleTypes.length > 1">
+          <label class="filter-label">유형</label>
+          <div class="type-filter-group">
+            <label v-for="t in vehicleTypes" :key="t" class="filter-checkbox">
+              <input type="checkbox" v-model="typeFilters[t]" />
+              <span class="badge" :class="'badge-type-' + getTypeColor(t)">{{ t }}</span>
+            </label>
+          </div>
+        </div>
+        <div class="filter-group mode-group">
+          <label class="filter-label">표시</label>
+          <div class="mode-toggle">
+            <button class="mode-btn" :class="{ active: displayMode === 'record' }" @click="displayMode = 'record'">기록</button>
+            <button class="mode-btn" :class="{ active: displayMode === 'score' }" @click="displayMode = 'score'">점수</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -453,21 +512,25 @@ function toggleCornerWeight(num) {
                   v-show="showInspection"
                   @click="isOverriddenCategory(cat.id) && handleSort(getOverrideKey(cat.id))"
                 >{{ cat.name }} <span v-if="isOverriddenCategory(cat.id)" class="sort-icon">{{ getSortIcon(getOverrideKey(cat.id)) }}</span></th>
+                <th class="col-total sortable" @click="handleSort('totalScore')">총점 <span class="sort-icon">{{ getSortIcon('totalScore') }}</span></th>
                 <th
-                  v-for="evt in events"
+                  v-for="evt in dynamicEvents"
                   :key="'h-evt-'+evt.type"
                   class="col-event sortable"
                   @click="handleSort('event:' + evt.type)"
                 >{{ evt.type }} <span class="sort-icon">{{ getSortIcon('event:' + evt.type) }}</span></th>
+                <th class="col-event sortable" @click="handleSort('event:내구')">내구 <span class="sort-icon">{{ getSortIcon('event:내구') }}</span></th>
                 <th class="col-manual sortable" @click="handleSort('report')">보고서 <span class="sort-icon">{{ getSortIcon('report') }}</span></th>
                 <th class="col-manual sortable" @click="handleSort('energy')">에너지 <span class="sort-icon">{{ getSortIcon('energy') }}</span></th>
+                <th class="col-manual sortable" @click="handleSort('bonus')">가점 <span class="sort-icon">{{ getSortIcon('bonus') }}</span></th>
+                <th class="col-manual sortable" @click="handleSort('deduction')">감점 <span class="sort-icon">{{ getSortIcon('deduction') }}</span></th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="entry in entryList" :key="entry.num">
                   <td class="col-num"><span class="entry-num">{{ entry.num }}</span></td>
                   <td class="col-team">{{ entry.univ }} {{ entry.team }}</td>
-                  <td class="col-type"><span class="badge badge-primary" v-if="entry.type">{{ entry.type }}</span></td>
+                  <td class="col-type"><span class="badge" :class="'badge-type-' + getTypeColor(entry.type)" v-if="entry.type">{{ entry.type }}</span></td>
                   <template v-for="cat in inspection.categories" :key="'insp-'+cat.id+'-'+entry.num">
                     <!-- 코너웨이트 카테고리 → 공차중량 값 + 드롭다운 -->
                     <td
@@ -510,58 +573,40 @@ function toggleCornerWeight(num) {
                       <span v-else class="badge badge-empty">-</span>
                     </td>
                   </template>
+                  <td class="col-total">
+                    <span class="total-value">{{ getTotalScore(entry.num) }}</span>
+                  </td>
                   <td
-                    v-for="evt in events"
+                    v-for="evt in dynamicEvents"
                     :key="'evt-'+evt.type+'-'+entry.num"
-                    class="col-event record-cell"
-                    @click="toggleDropdown(evt, entry.num, $event)"
+                    class="col-event"
                   >
-                    <template v-if="getTeamEvent(evt, entry.num)">
+                    <template v-if="displayMode === 'record'">
                       <span
-                        v-if="getTeamEvent(evt, entry.num).selected"
+                        v-if="getAdjustedResult(evt.type, getTeamEvent(evt, entry.num)) != null"
                         class="record-value"
-                        :class="{ dnf: getTeamEvent(evt, entry.num).selected.result === -1 }"
-                      >{{ formatResult(getTeamEvent(evt, entry.num).selected.result) }}</span>
-                      <span v-else class="record-value unselected">-</span>
+                        :class="{ dnf: getAdjustedResult(evt.type, getTeamEvent(evt, entry.num)) === -1 }"
+                      >{{ formatResult(getAdjustedResult(evt.type, getTeamEvent(evt, entry.num))) }}</span>
+                      <span v-else class="record-value dns">-</span>
                     </template>
-                    <span v-else class="record-value dns">DNS</span>
-
-                    <!-- 기록 선택 드롭다운 -->
-                    <div
-                      v-if="isDropdownOpen(evt, entry.num)"
-                      class="record-dropdown"
-                      @click.stop
-                    >
-                      <div class="dropdown-header">
-                        <span>기록 선택</span>
-                        <button
-                          v-if="getTeamEvent(evt, entry.num)?.selected"
-                          class="btn btn-sm btn-ghost"
-                          @click="handleDeselectRecord(evt, entry.num)"
-                        >선택 해제</button>
-                      </div>
-                      <div class="dropdown-list">
-                        <div
-                          v-for="run in getTeamEvent(evt, entry.num).all"
-                          :key="run.table_name + '-' + run.rowid"
-                          class="dropdown-item"
-                          :class="{
-                            invalidated: run.invalidated,
-                            'no-scoreboard': !run.invalidated && !run.scoreboard,
-                            selected: getTeamEvent(evt, entry.num).selected?.rowid === run.rowid
-                              && getTeamEvent(evt, entry.num).selected?.table_name === run.table_name,
-                          }"
-                          @click="handleSelectRecord(evt, entry.num, run)"
-                        >
-                          <span class="run-result" :class="{ dnf: run.result === -1 }">
-                            {{ formatResult(run.result) }}
-                          </span>
-                          <span v-if="run.detail" class="run-detail">{{ run.detail }}</span>
-                          <span class="run-table">{{ shortTableName(run.table_name) }}</span>
-                          <span class="run-time">{{ formatTime(run.time) }}</span>
-                        </div>
-                      </div>
-                    </div>
+                    <template v-else>
+                      <span v-if="getEventScore(evt.type, entry.num) != null" class="score-value">{{ getEventScore(evt.type, entry.num) }}</span>
+                      <span v-else class="record-value dns">-</span>
+                    </template>
+                  </td>
+                  <td class="col-event">
+                    <template v-if="displayMode === 'record'">
+                      <span
+                        v-if="getAdjustedResult('내구', getTeamEvent(enduranceEvent, entry.num)) != null"
+                        class="record-value"
+                        :class="{ dnf: getAdjustedResult('내구', getTeamEvent(enduranceEvent, entry.num)) === -1 }"
+                      >{{ formatResult(getAdjustedResult('내구', getTeamEvent(enduranceEvent, entry.num))) }}</span>
+                      <span v-else class="record-value dns">-</span>
+                    </template>
+                    <template v-else>
+                      <span v-if="getEventScore('내구', entry.num) != null" class="score-value">{{ getEventScore('내구', entry.num) }}</span>
+                      <span v-else class="record-value dns">-</span>
+                    </template>
                   </td>
                   <td class="col-manual">
                     <input
@@ -585,9 +630,31 @@ function toggleCornerWeight(num) {
                       placeholder="-"
                     />
                   </td>
+                  <td class="col-manual">
+                    <input
+                      class="manual-input"
+                      type="number"
+                      :value="getManualScore(entry.num, 'bonus')"
+                      :readonly="isReadOnly"
+                      @blur="handleManualSave(entry.num, 'bonus', $event.target.value)"
+                      @keyup.enter="$event.target.blur()"
+                      placeholder="-"
+                    />
+                  </td>
+                  <td class="col-manual">
+                    <input
+                      class="manual-input"
+                      type="number"
+                      :value="getManualScore(entry.num, 'deduction')"
+                      :readonly="isReadOnly"
+                      @blur="handleManualSave(entry.num, 'deduction', $event.target.value)"
+                      @keyup.enter="$event.target.blur()"
+                      placeholder="-"
+                    />
+                  </td>
               </tr>
               <tr v-if="entryList.length === 0">
-                <td :colspan="5 + inspection.categories.length + events.length" class="empty-state">
+                <td :colspan="9 + inspection.categories.length + dynamicEvents.length" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>
@@ -596,55 +663,79 @@ function toggleCornerWeight(num) {
         </div>
       </div>
     </div>
-    <!-- 페널티 설정 카드 -->
-    <div class="card" v-if="events.length > 0">
-      <div class="card-header">
-        <h3>페널티 설정</h3>
+
+    <!-- 페널티 + 점수 설정 -->
+    <div class="bottom-row" v-if="events.length > 0">
+      <div class="card setting-card">
+        <div class="card-body table-body">
+          <div class="table-container">
+            <table class="data-table setting-table">
+              <thead>
+                <tr>
+                  <th class="col-setting-label">페널티 (초)</th>
+                  <th v-for="evt in dynamicEvents" :key="'penalty-h-'+evt.type" class="col-setting-value">{{ evt.type }}</th>
+                  <th class="col-setting-value">내구</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="{ field, label } in [{ field: 'cone_penalty', label: '콘터치' }, { field: 'oc_penalty', label: '코스이탈' }, { field: 'start_delay', label: '출발지연' }]" :key="field">
+                  <td class="col-setting-label">{{ label }}</td>
+                  <template v-for="evtType in [...dynamicEvents.map(e => e.type), '내구']" :key="'p-'+field+'-'+evtType">
+                    <td class="col-setting-value setting-cell" @click="startSettingEdit('p:'+field+':'+evtType)">
+                      <input
+                        v-if="editingSettingCell === 'p:'+field+':'+evtType"
+                        :ref="settingInputRef"
+                        class="setting-input"
+                        type="number"
+                        step="any"
+                        min="0"
+                        :value="getPenalty(evtType, field)"
+                        @blur="handlePenaltySave(evtType, field, $event.target.value)"
+                        @keyup.enter="$event.target.blur()"
+                      />
+                      <span v-else class="setting-text">{{ getPenalty(evtType, field) || 0 }}</span>
+                    </td>
+                  </template>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
-      <div class="card-body table-body">
-        <div class="table-container">
-          <table class="data-table penalty-table">
-            <thead>
-              <tr>
-                <th class="col-penalty-label"></th>
-                <th v-for="evt in events" :key="'penalty-h-'+evt.type" class="col-penalty-value">{{ evt.type }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td class="col-penalty-label">콘터치 (초/개)</td>
-                <td v-for="evt in events" :key="'penalty-cone-'+evt.type" class="col-penalty-value">
-                  <input
-                    class="penalty-input"
-                    type="number"
-                    step="any"
-                    min="0"
-                    :value="getPenalty(evt.type, 'cone_penalty')"
-                    :readonly="isReadOnly"
-                    @blur="handlePenaltySave(evt.type, 'cone_penalty', $event.target.value)"
-                    @keyup.enter="$event.target.blur()"
-                    placeholder="0"
-                  />
-                </td>
-              </tr>
-              <tr>
-                <td class="col-penalty-label">코스이탈 (초/건)</td>
-                <td v-for="evt in events" :key="'penalty-oc-'+evt.type" class="col-penalty-value">
-                  <input
-                    class="penalty-input"
-                    type="number"
-                    step="any"
-                    min="0"
-                    :value="getPenalty(evt.type, 'oc_penalty')"
-                    :readonly="isReadOnly"
-                    @blur="handlePenaltySave(evt.type, 'oc_penalty', $event.target.value)"
-                    @keyup.enter="$event.target.blur()"
-                    placeholder="0"
-                  />
-                </td>
-              </tr>
-            </tbody>
-          </table>
+      <div class="card setting-card">
+        <div class="card-body table-body">
+          <div class="table-container">
+            <table class="data-table setting-table">
+              <thead>
+                <tr>
+                  <th class="col-setting-label">점수</th>
+                  <th v-for="evt in dynamicEvents" :key="'score-h-'+evt.type" class="col-setting-value">{{ evt.type }}</th>
+                  <th class="col-setting-value">내구</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="{ key, label } in [{ key: 'total', label: '총점' }, { key: 'finish', label: '완주점수' }, { key: 'cutoff', label: '컷오프 (%)' }]" :key="key">
+                  <td class="col-setting-label">{{ label }}</td>
+                  <template v-for="evtType in [...dynamicEvents.map(e => e.type), '내구']" :key="'s-'+key+'-'+evtType">
+                    <td class="col-setting-value setting-cell" @click="startSettingEdit('s:'+key+':'+evtType)">
+                      <input
+                        v-if="editingSettingCell === 's:'+key+':'+evtType"
+                        :ref="settingInputRef"
+                        class="setting-input"
+                        type="number"
+                        step="any"
+                        min="0"
+                        :value="getSetting(evtType, key)"
+                        @blur="handleSettingSave(evtType, key, $event.target.value)"
+                        @keyup.enter="$event.target.blur()"
+                      />
+                      <span v-else class="setting-text">{{ getSetting(evtType, key) ?? '-' }}</span>
+                    </td>
+                  </template>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -656,6 +747,19 @@ function toggleCornerWeight(num) {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.top-row {
+  display: flex;
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.top-row > .filter-bar {
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  align-content: center;
 }
 
 .filter-bar {
@@ -740,7 +844,7 @@ function toggleCornerWeight(num) {
   top: 0;
   z-index: 2;
   white-space: nowrap;
-  font-size: 0.75rem;
+  font-size: 0.875rem;
 }
 
 .score-table th.sortable {
@@ -785,7 +889,7 @@ function toggleCornerWeight(num) {
 }
 
 .col-team {
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
 }
 
 .col-type,
@@ -795,13 +899,39 @@ function toggleCornerWeight(num) {
   text-align: center !important;
 }
 
-.col-event {
-  position: relative;
-}
-
 .entry-num {
   font-weight: 700;
   font-family: "JetBrains Mono", monospace;
+}
+
+.badge-type-blue {
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+}
+
+.badge-type-green {
+  background: rgba(34, 197, 94, 0.12);
+  color: #16a34a;
+}
+
+.badge-type-orange {
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
+}
+
+.badge-type-purple {
+  background: rgba(139, 92, 246, 0.12);
+  color: #7c3aed;
+}
+
+.badge-type-red {
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+}
+
+.badge-type-teal {
+  background: rgba(20, 184, 166, 0.12);
+  color: #0d9488;
 }
 
 .badge-empty {
@@ -809,29 +939,33 @@ function toggleCornerWeight(num) {
   color: var(--text-tertiary);
 }
 
-.record-cell {
-  cursor: pointer;
-  user-select: none;
-  position: relative;
+.col-total {
+  text-align: center !important;
+  white-space: nowrap;
+  width: 1%;
+  background: rgba(59, 130, 246, 0.04);
 }
 
-.record-cell:hover {
-  background: var(--bg-hover);
+.score-table thead .col-total {
+  font-weight: 700;
+}
+
+.total-value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--accent-primary);
 }
 
 .record-value {
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.8125rem;
-  font-weight: 500;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--accent-success);
 }
 
 .record-value.dnf {
   color: var(--accent-danger);
-  font-weight: 700;
-}
-
-.record-value.unselected {
-  color: var(--text-tertiary);
 }
 
 .record-value.dns {
@@ -839,100 +973,55 @@ function toggleCornerWeight(num) {
   font-weight: 400;
 }
 
-/* Record dropdown */
-.record-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 100;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-  min-width: 240px;
-  max-height: 300px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
+.type-filter-gap {
+  margin-left: 1rem;
 }
 
-.dropdown-header {
+.type-filter-group {
   display: flex;
-  justify-content: space-between;
+  gap: 0.5rem;
   align-items: center;
-  padding: 0.625rem 0.875rem;
-  border-bottom: 1px solid var(--border-color);
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-secondary);
+  height: 2.125rem;
 }
 
-.dropdown-list {
-  overflow-y: auto;
-  max-height: 250px;
-}
-
-.dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  padding: 0.5rem 0.875rem;
-  cursor: pointer;
-  transition: background 0.15s;
-  font-size: 0.8125rem;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.dropdown-item:last-child {
-  border-bottom: none;
-}
-
-.dropdown-item:hover {
-  background: var(--bg-hover);
-}
-
-.dropdown-item.selected {
-  background: rgba(59, 130, 246, 0.1);
-}
-
-.dropdown-item.invalidated {
-  text-decoration: line-through;
-  opacity: 0.5;
-}
-
-.dropdown-item.no-scoreboard {
-  opacity: 0.5;
-}
-
-.run-result {
-  font-family: "JetBrains Mono", monospace;
-  font-weight: 500;
-  min-width: 70px;
-}
-
-.run-result.dnf {
-  color: var(--accent-danger);
-  font-weight: 700;
-}
-
-.run-detail {
-  color: var(--text-tertiary);
-  font-size: 0.75rem;
-  flex-shrink: 0;
-}
-
-.run-table {
-  color: var(--text-tertiary);
-  font-size: 0.6875rem;
-  flex-shrink: 0;
-}
-
-.run-time {
-  color: var(--text-tertiary);
-  font-size: 0.6875rem;
+.mode-group {
   margin-left: auto;
-  white-space: nowrap;
+}
+
+/* Mode toggle */
+.mode-toggle {
+  display: flex;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+  height: 2.125rem;
+}
+
+.mode-btn {
+  padding: 0 0.75rem;
+  border: none;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mode-btn + .mode-btn {
+  border-left: 1px solid var(--border-color);
+}
+
+.mode-btn.active {
+  background: var(--accent-primary);
+  color: white;
+}
+
+.score-value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--accent-primary);
 }
 
 /* Filter checkbox */
@@ -945,7 +1034,7 @@ function toggleCornerWeight(num) {
   font-weight: 500;
   color: var(--text-primary);
   user-select: none;
-  padding: 0.5rem 0;
+  height: 2.125rem;
 }
 
 .filter-checkbox input[type="checkbox"] {
@@ -968,7 +1057,7 @@ function toggleCornerWeight(num) {
 
 .cw-value {
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 500;
 }
 
@@ -1007,7 +1096,7 @@ function toggleCornerWeight(num) {
 
 .cw-val {
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 500;
 }
 
@@ -1027,7 +1116,7 @@ function toggleCornerWeight(num) {
   background: transparent;
   color: var(--text-primary);
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 500;
   text-align: center;
   outline: none;
@@ -1077,51 +1166,94 @@ function toggleCornerWeight(num) {
   padding: 2rem;
 }
 
-/* Penalty settings */
-.penalty-table {
+/* Bottom row: penalty + score settings */
+.bottom-row {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.bottom-row > .setting-card {
+  flex: 1;
   min-width: 0;
 }
 
-.col-penalty-label {
-  white-space: nowrap;
-  font-weight: 600;
+.setting-table {
+  min-width: 0;
 }
 
-.col-penalty-value {
+.col-setting-label {
+  white-space: nowrap;
+}
+
+.setting-table thead .col-setting-label {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.setting-table tbody .col-setting-label {
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.col-setting-value {
   text-align: center !important;
   white-space: nowrap;
 }
 
-.penalty-input {
-  width: 5rem;
+.setting-input {
+  width: 3.5rem;
   padding: 0.25rem 0.5rem;
   border: 1px solid var(--border-color);
   border-radius: 6px;
   background: var(--bg-input);
   color: var(--text-primary);
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 500;
   text-align: center;
   outline: none;
   -moz-appearance: textfield;
 }
 
-.penalty-input:focus {
+.setting-input:focus {
   border-color: var(--accent-primary);
 }
 
-.penalty-input::placeholder {
+.setting-input::placeholder {
   color: var(--text-tertiary);
 }
 
-.penalty-input::-webkit-outer-spin-button,
-.penalty-input::-webkit-inner-spin-button {
+.setting-input::-webkit-outer-spin-button,
+.setting-input::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
 
+.setting-cell {
+  cursor: pointer;
+}
+
+.setting-cell:hover {
+  background: var(--bg-hover);
+}
+
+.setting-text {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+
 @media (max-width: 640px) {
+  .top-row,
+  .bottom-row {
+    flex-direction: column;
+  }
+
   .filter-bar {
     flex-direction: column;
     align-items: stretch;
