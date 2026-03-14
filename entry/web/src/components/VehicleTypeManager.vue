@@ -36,7 +36,7 @@ function handleDelete(id) {
     </div>
     <div class="card-body">
       <form class="add-form" @submit.prevent="handleAdd">
-        <input v-model="newTypeName" type="text" class="form-input" placeholder="유형 이름 (예: EV, ICV)" />
+        <input v-model="newTypeName" type="text" class="form-input" placeholder="유형 이름" />
         <button type="submit" class="btn btn-primary add-btn" :disabled="!newTypeName.trim()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="12" y1="5" x2="12" y2="19" />

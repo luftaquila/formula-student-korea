@@ -368,20 +368,24 @@ onMounted(fetchUsers);
       <div class="card-header">
         <h3>등록된 사용자 <span class="count-badge">{{ filteredUsers.length }}</span></h3>
         <div class="header-actions">
-          <select v-model="filterRole" class="filter-select">
-            <option value="all">전체 역할</option>
-            <option value="admin">Admin</option>
-            <option value="official">Official</option>
-          </select>
-          <select v-model="filterActive" class="filter-select">
-            <option value="all">전체 상태</option>
-            <option value="active">활성</option>
-            <option value="inactive">비활성</option>
-          </select>
-          <button v-if="selectedIds.size > 0" class="btn btn-sm btn-ghost" @click="bulkDeactivate">선택 비활성화 ({{ selectedIds.size }})</button>
-          <button v-if="selectedIds.size > 0" class="btn btn-sm btn-danger" @click="bulkDelete">선택 삭제 ({{ selectedIds.size }})</button>
-          <button class="btn btn-sm btn-ghost" @click="exportCSV">CSV 내보내기</button>
-          <button class="btn btn-sm btn-ghost" @click="uploadCSV">CSV 업로드</button>
+          <div class="header-filters">
+            <select v-model="filterRole" class="filter-select">
+              <option value="all">전체 역할</option>
+              <option value="admin">Admin</option>
+              <option value="official">Official</option>
+            </select>
+            <select v-model="filterActive" class="filter-select">
+              <option value="all">전체 상태</option>
+              <option value="active">활성</option>
+              <option value="inactive">비활성</option>
+            </select>
+          </div>
+          <div class="header-btns">
+            <button v-if="selectedIds.size > 0" class="btn btn-sm btn-ghost" @click="bulkDeactivate">선택 비활성화 ({{ selectedIds.size }})</button>
+            <button v-if="selectedIds.size > 0" class="btn btn-sm btn-danger" @click="bulkDelete">선택 삭제 ({{ selectedIds.size }})</button>
+            <button class="btn btn-sm btn-ghost" @click="exportCSV">CSV 내보내기</button>
+            <button class="btn btn-sm btn-ghost" @click="uploadCSV">CSV 업로드</button>
+          </div>
         </div>
       </div>
 
@@ -508,6 +512,13 @@ onMounted(fetchUsers);
   margin-left: auto;
 }
 
+.header-filters,
+.header-btns {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
 .filter-select {
   padding: 0.3rem 0.5rem;
   border: 1px solid var(--border-color);
@@ -601,7 +612,7 @@ onMounted(fetchUsers);
 /* Memo click-to-edit */
 .memo-cell {
   cursor: text;
-  min-width: 0;
+  min-width: 6rem;
   font-size: 0.8125rem;
 }
 
@@ -684,12 +695,31 @@ onMounted(fetchUsers);
     width: 100%;
   }
 
-  .col-date {
-    display: none;
+  .card-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
   }
 
-  .action-btns {
+  .header-actions {
     flex-direction: column;
+    width: 100%;
+  }
+
+  .header-filters,
+  .header-btns {
+    width: 100%;
+  }
+
+  .header-filters {
+    flex: 1;
+  }
+
+  .header-filters .filter-select {
+    flex: 1;
+  }
+
+  .col-date {
+    display: none;
   }
 }
 </style>

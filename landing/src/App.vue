@@ -43,7 +43,7 @@
           <ServiceCard title="엔트리 관리" description="" path="/entry" icon="🏁" />
           <ServiceCard title="계측 시스템" description="" path="/traffic" icon="🚦" />
           <ServiceCard title="성적 관리" description="" path="/score" icon="📊" />
-          <ServiceCard title="계정 관리" description="" path="/auth" icon="👤" />
+          <ServiceCard title="계정 관리" description="" path="/auth" icon="🔑" />
           <ServiceCard title="클라우드" description="" path="https://cloud.fsk.luftaquila.io" icon="☁️" external />
         </div>
       </section>

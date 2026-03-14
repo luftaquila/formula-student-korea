@@ -153,11 +153,6 @@ async function handleDNF(lane) {
             :disabled="serial.connected"
             @click="handleConnect"
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-              <path
-                d="M6 5v14M18 5v14M6 5a2 2 0 012-2h8a2 2 0 012 2M6 19a2 2 0 002 2h8a2 2 0 002-2M9 9h1M9 12h1M9 15h1M14 9h1M14 12h1M14 15h1"
-              />
-            </svg>
             {{ serial.connected ? "연결됨" : "컨트롤러 연결" }}
           </button>
         </div>
