@@ -1,8 +1,19 @@
 import { createApiClient } from "@shared/api-base.js";
 
-const { request, fetchEntries, fetchEntryYears } = createApiClient("/queue");
+const { request, BASE_URL } = createApiClient("/queue");
 
-export { fetchEntries, fetchEntryYears };
+export async function fetchEntries(year) {
+  const qs = year != null ? `?year=${year}` : "";
+  const res = await fetch(`${BASE_URL}/api/entries${qs}`);
+  if (!res.ok) throw new Error("엔트리 정보를 가져올 수 없습니다.");
+  return res.json();
+}
+
+export async function fetchEntryYears() {
+  const res = await fetch(`${BASE_URL}/api/years`);
+  if (!res.ok) throw new Error("연도 정보를 가져올 수 없습니다.");
+  return res.json();
+}
 
 /* ============================================
    Public API

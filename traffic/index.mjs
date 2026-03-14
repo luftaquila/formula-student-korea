@@ -23,16 +23,19 @@ setupProcessHandlers(db);
    Express 앱 설정
    ============================================ */
 const app = createApp("traffic.log", { express, pinoHttp }, (req) => {
-  if (req.path === "/api/events") return "official";
-  if (req.path.match(/^\/api\/records\/.+/)) return "official";
-  if (req.path.startsWith("/api/")) return "admin";
-  return "admin"; // SPA
+  return "admin";
 });
 
 /* ============================================
    설정
    ============================================ */
 const ENTRY_SERVER = process.env.ENTRY_SERVER || "http://localhost:9100";
+
+function internalHeaders() {
+  const h = {};
+  if (process.env.INTERNAL_SECRET) h["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+  return h;
+}
 
 /* ============================================
    SSE (Server-Sent Events) 설정
@@ -103,7 +106,7 @@ const dbRun = createDbRun();
 // GET /api/entries - 모든 엔트리 조회
 app.get("/api/entries", async (req, res) => {
   try {
-    const response = await fetch(`${ENTRY_SERVER}/api/entries`);
+    const response = await fetch(`${ENTRY_SERVER}/api/entries`, { headers: internalHeaders() });
     const data = await response.json();
     res.json(data);
   } catch (e) {
@@ -114,7 +117,7 @@ app.get("/api/entries", async (req, res) => {
 // GET /api/entries/:num - 특정 엔트리 조회
 app.get("/api/entries/:num", async (req, res) => {
   try {
-    const response = await fetch(`${ENTRY_SERVER}/api/entries/${req.params.num}`);
+    const response = await fetch(`${ENTRY_SERVER}/api/entries/${req.params.num}`, { headers: internalHeaders() });
     if (!response.ok) {
       return res.status(response.status).send(await response.text());
     }
@@ -130,7 +133,7 @@ app.post("/api/entries", async (req, res) => {
   try {
     const response = await fetch(`${ENTRY_SERVER}/api/entries`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...internalHeaders() },
       body: JSON.stringify(req.body),
     });
     if (!response.ok) {
@@ -147,6 +150,7 @@ app.delete("/api/entries/:num", async (req, res) => {
   try {
     const response = await fetch(`${ENTRY_SERVER}/api/entries/${req.params.num}`, {
       method: "DELETE",
+      headers: internalHeaders(),
     });
     if (!response.ok) {
       return res.status(response.status).send(await response.text());

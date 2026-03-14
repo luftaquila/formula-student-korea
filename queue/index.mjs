@@ -278,6 +278,35 @@ function getQueueRank(inspection, num) {
    API 라우트: Public
    ============================================ */
 
+// GET /api/years - 연도 목록 프록시 (내부 서비스 인증)
+app.get("/api/years", async (req, res) => {
+  const entryServer = process.env.ENTRY_SERVER || "http://entry:9100";
+  try {
+    const headers = {};
+    if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+    const response = await fetch(`${entryServer}/api/years`, { headers });
+    if (!response.ok) return res.status(response.status).send(await response.text());
+    res.json(await response.json());
+  } catch (e) {
+    res.status(500).send(`Entry 서버 연결 오류: ${e}`);
+  }
+});
+
+// GET /api/entries - 엔트리 목록 프록시 (내부 서비스 인증)
+app.get("/api/entries", async (req, res) => {
+  const entryServer = process.env.ENTRY_SERVER || "http://entry:9100";
+  const qs = req.query.year ? `?year=${req.query.year}` : "";
+  try {
+    const headers = {};
+    if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+    const response = await fetch(`${entryServer}/api/entries${qs}`, { headers });
+    if (!response.ok) return res.status(response.status).send(await response.text());
+    res.json(await response.json());
+  } catch (e) {
+    res.status(500).send(`Entry 서버 연결 오류: ${e}`);
+  }
+});
+
 // GET /api/active - 활성화된 검차 목록 조회
 app.get("/api/active", (req, res) => {
   const result = dbRun(() => db.prepare("SELECT * FROM inspection WHERE active = TRUE").all());
@@ -1424,9 +1453,12 @@ app.patch("/api/admin/settings/cancel-penalty", (req, res) => {
 async function getEntries() {
   const entryServer = process.env.ENTRY_SERVER || "http://entry:9100";
 
+  const options = { headers: {} };
+  if (process.env.INTERNAL_SECRET) options.headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+
   return await new Promise((resolve, reject) => {
     http
-      .get(`${entryServer}/api/entries`, (res) => {
+      .get(`${entryServer}/api/entries`, options, (res) => {
         let data = "";
         res.on("data", (chunk) => (data += chunk));
         res.on("end", () => {

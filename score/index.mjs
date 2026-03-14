@@ -64,6 +64,19 @@ function internalHeaders() {
 }
 
 /* ============================================
+   Entry 프록시 (내부 서비스 인증)
+   ============================================ */
+app.get("/api/years", async (req, res) => {
+  try {
+    const response = await fetch(`${ENTRY_SERVER}/api/years`, { headers: internalHeaders() });
+    if (!response.ok) return res.status(response.status).send(await response.text());
+    res.json(await response.json());
+  } catch (e) {
+    res.status(500).send(`Entry 서버 연결 오류: ${e}`);
+  }
+});
+
+/* ============================================
    헬퍼
    ============================================ */
 const dbRun = createDbRun();
@@ -277,7 +290,7 @@ app.get("/api/score", async (req, res) => {
 
   try {
     // 1. Entry 서비스에서 엔트리 목록 fetch
-    const entryRes = await fetch(`${ENTRY_SERVER}/api/entries?year=${year}`);
+    const entryRes = await fetch(`${ENTRY_SERVER}/api/entries?year=${year}`, { headers: internalHeaders() });
     if (!entryRes.ok) throw new Error("엔트리 정보를 가져올 수 없습니다.");
     const entries = await entryRes.json();
 

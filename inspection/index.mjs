@@ -114,6 +114,38 @@ const app = createApp("sheet.log", { express, pinoHttp }, (req) => {
 const dbRun = createDbRun();
 
 /* ============================================
+   Entry 프록시 (내부 서비스 인증)
+   ============================================ */
+const ENTRY_SERVER = process.env.ENTRY_SERVER || "http://localhost:9100";
+
+function internalHeaders() {
+  const h = {};
+  if (process.env.INTERNAL_SECRET) h["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+  return h;
+}
+
+app.get("/api/years", async (req, res) => {
+  try {
+    const response = await fetch(`${ENTRY_SERVER}/api/years`, { headers: internalHeaders() });
+    if (!response.ok) return res.status(response.status).send(await response.text());
+    res.json(await response.json());
+  } catch (e) {
+    res.status(500).send(`Entry 서버 연결 오류: ${e}`);
+  }
+});
+
+app.get("/api/entries", async (req, res) => {
+  const qs = req.query.year ? `?year=${req.query.year}` : "";
+  try {
+    const response = await fetch(`${ENTRY_SERVER}/api/entries${qs}`, { headers: internalHeaders() });
+    if (!response.ok) return res.status(response.status).send(await response.text());
+    res.json(await response.json());
+  } catch (e) {
+    res.status(500).send(`Entry 서버 연결 오류: ${e}`);
+  }
+});
+
+/* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
 import { createSSEManager } from "../shared/sse.mjs";

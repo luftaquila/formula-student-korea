@@ -1,8 +1,17 @@
 import { createApiClient } from "@shared/api-base.js";
 
-const { request, fetchEntries, fetchEntryYears } = createApiClient("/inspection");
+const { request } = createApiClient("/inspection");
 
-export { fetchEntries, fetchEntryYears };
+export async function fetchEntries(year) {
+  const qs = year != null ? `?year=${year}` : "";
+  const res = await request(`/api/entries${qs}`);
+  return res.json();
+}
+
+export async function fetchEntryYears() {
+  const res = await request("/api/years");
+  return res.json();
+}
 
 /* ============================================
    Sheet API
