@@ -324,6 +324,7 @@ app.get("/api/score", async (req, res) => {
         const num = rec.num;
         if (!group[num]) group[num] = [];
         group[num].push({
+          time: rec.time,
           result: rec.result,
           cones: rec.cones || 0,
           oc: rec.oc || 0,
@@ -348,9 +349,10 @@ app.get("/api/score", async (req, res) => {
       const pen = penalties[eventType] || { cone_penalty: 0, oc_penalty: 0 };
       const records = {};
       for (const [num, runs] of Object.entries(teamRecords)) {
+        const allRuns = runs.map((r) => ({ time: r.time, result: r.result, cones: r.cones, oc: r.oc, invalidated: r.invalidated }));
         const valid = runs.filter((r) => !r.invalidated);
         if (!valid.length) {
-          records[num] = { result: null, cones: 0, oc: 0 };
+          records[num] = { result: null, cones: 0, oc: 0, allRuns };
           continue;
         }
         const finished = valid.filter((r) => r.result >= 0);
@@ -361,9 +363,9 @@ app.get("/api/score", async (req, res) => {
             const bAdj = b.result + b.cones * pen.cone_penalty * 1000 + b.oc * pen.oc_penalty * 1000;
             return aAdj <= bAdj ? a : b;
           });
-          records[num] = { result: best.result, cones: best.cones, oc: best.oc };
+          records[num] = { result: best.result, cones: best.cones, oc: best.oc, allRuns };
         } else {
-          records[num] = { result: -1, cones: 0, oc: 0 };
+          records[num] = { result: -1, cones: 0, oc: 0, allRuns };
         }
       }
       events.push({ type: eventType, records });

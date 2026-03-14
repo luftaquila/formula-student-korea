@@ -198,3 +198,6 @@ Total score = sum of all dynamic event scores + endurance score + report + energ
 The scoreboard supports record/score toggle (persisted in localStorage):
 - **Record mode**: shows penalty-adjusted best times in MM:SS.mmm format
 - **Score mode**: shows calculated scores per event type
+
+### Expandable Detail Rows
+Clicking a team row expands a detail row showing all individual runs per event type. The `GET /api/score` response includes `allRuns` array (with `time`, `result`, `cones`, `oc`, `invalidated`) in each team's event record alongside the best record. Detail rows display event type (rowspan-grouped), timestamp, raw time, cone/OC counts, penalty-adjusted time, and status badges (best/invalidated). Supports time-order/score-order sort toggle.

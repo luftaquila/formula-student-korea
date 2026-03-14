@@ -14,6 +14,9 @@ const searchQuery = ref("");
 const showInspection = ref(localStorage.getItem("score-show-inspection") !== "false");
 watch(showInspection, (v) => localStorage.setItem("score-show-inspection", v));
 const expandedRows = ref(new Set());
+const detailExpandedTeam = ref(null);
+const detailSortMode = ref("time");
+const hoveredEvtGroup = ref(null);
 const displayMode = ref(localStorage.getItem("score-display-mode") || "record");
 watch(displayMode, (v) => localStorage.setItem("score-display-mode", v));
 
@@ -129,6 +132,7 @@ onMounted(async () => {
   loading.value = false;
 
   document.addEventListener("click", handleOutsideClick);
+
 });
 
 function handleOutsideClick(e) {
@@ -155,6 +159,7 @@ async function loadData() {
 
 async function onYearChange() {
   loading.value = true;
+  detailExpandedTeam.value = null;
   await loadData();
   loading.value = false;
 }
@@ -447,6 +452,70 @@ function getLRRatio(num) {
   return { left, right };
 }
 
+// 세부 기록 확장 행
+const allEvents = computed(() => [...dynamicEvents.value, enduranceEvent.value]);
+
+const totalColumns = computed(() => {
+  let cols = 3; // num, team, type
+  if (showInspection.value) cols += inspection.value.categories.length;
+  cols += 1; // total
+  cols += dynamicEvents.value.length; // dynamic events
+  cols += 1; // endurance
+  cols += 4; // manual scores (report, energy, bonus, deduction)
+  return cols;
+});
+
+function handleRowClick(num, event) {
+  if (event.target.closest(".col-corner-weight, .manual-input, .setting-cell, input, button, a")) return;
+  detailExpandedTeam.value = detailExpandedTeam.value === num ? null : num;
+}
+
+function getAllRuns(eventType, num) {
+  const evt = events.value.find((e) => e.type === eventType);
+  return evt?.records[num]?.allRuns || [];
+}
+
+function getRunAdjusted(eventType, run) {
+  if (!run || run.result == null || run.result < 0) return run?.result ?? null;
+  const pen = penalties.value[eventType] || {};
+  return run.result + (run.cones || 0) * (pen.cone_penalty || 0) * 1000 + (run.oc || 0) * (pen.oc_penalty || 0) * 1000;
+}
+
+function getBestRunIndex(eventType, num) {
+  const runs = getAllRuns(eventType, num);
+  const pen = penalties.value[eventType] || { cone_penalty: 0, oc_penalty: 0 };
+  let bestIdx = -1;
+  let bestAdj = Infinity;
+  for (let i = 0; i < runs.length; i++) {
+    const r = runs[i];
+    if (r.invalidated) continue;
+    if (r.result == null || r.result < 0) continue;
+    const adj = r.result + (r.cones || 0) * pen.cone_penalty * 1000 + (r.oc || 0) * pen.oc_penalty * 1000;
+    if (adj < bestAdj) { bestAdj = adj; bestIdx = i; }
+  }
+  return bestIdx;
+}
+
+function getSortedRuns(eventType, num) {
+  const runs = getAllRuns(eventType, num);
+  const indexed = runs.map((r, i) => ({ ...r, origIndex: i }));
+  if (detailSortMode.value === "score") {
+    const pen = penalties.value[eventType] || { cone_penalty: 0, oc_penalty: 0 };
+    indexed.sort((a, b) => {
+      if (a.invalidated && !b.invalidated) return 1;
+      if (!a.invalidated && b.invalidated) return -1;
+      const aAdj = a.result != null && a.result >= 0 ? a.result + (a.cones || 0) * pen.cone_penalty * 1000 + (a.oc || 0) * pen.oc_penalty * 1000 : Infinity;
+      const bAdj = b.result != null && b.result >= 0 ? b.result + (b.cones || 0) * pen.cone_penalty * 1000 + (b.oc || 0) * pen.oc_penalty * 1000 : Infinity;
+      return aAdj - bAdj;
+    });
+  }
+  return indexed;
+}
+
+function hasAnyRuns(num) {
+  return allEvents.value.some((evt) => getAllRuns(evt.type, num).length > 0);
+}
+
 function toggleCornerWeight(num) {
   if (expandedRows.value.has(num)) {
     expandedRows.value.delete(num);
@@ -538,7 +607,8 @@ function toggleCornerWeight(num) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="entry in entryList" :key="entry.num">
+              <template v-for="entry in entryList" :key="entry.num">
+              <tr class="team-row" :class="{ 'expanded-row': detailExpandedTeam === entry.num }" @click="handleRowClick(entry.num, $event)">
                   <td class="col-num"><span class="entry-num">{{ entry.num }}</span></td>
                   <td class="col-team">{{ entry.univ }} {{ entry.team }}</td>
                   <td class="col-type"><span class="badge" :class="'badge-type-' + getTypeColor(entry.type)" v-if="entry.type">{{ entry.type }}</span></td>
@@ -667,6 +737,55 @@ function toggleCornerWeight(num) {
                     />
                   </td>
               </tr>
+              <tr v-if="detailExpandedTeam === entry.num" class="detail-row">
+                <td :colspan="totalColumns">
+                  <div class="detail-content" v-if="hasAnyRuns(entry.num)">
+                    <table class="detail-runs-table">
+                      <thead>
+                        <tr>
+                          <th>종목</th>
+                          <th>시각</th>
+                          <th>기록</th>
+                          <th>콘터치</th>
+                          <th>코스 이탈</th>
+                          <th>보정</th>
+                          <th>
+                            <div class="detail-sort-toggle" @click.stop>
+                              <button class="detail-sort-btn" :class="{ active: detailSortMode === 'time' }" @click="detailSortMode = 'time'">시간순</button>
+                              <button class="detail-sort-btn" :class="{ active: detailSortMode === 'score' }" @click="detailSortMode = 'score'">성적순</button>
+                            </div>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <template v-for="evt in allEvents" :key="evt.type">
+                          <tr
+                            v-for="(run, idx) in getSortedRuns(evt.type, entry.num)"
+                            :key="evt.type + '-' + idx"
+                            :data-evt-group="entry.num + ':' + evt.type"
+                            :class="{ 'run-best': !run.invalidated && run.origIndex === getBestRunIndex(evt.type, entry.num), 'evt-first-row': idx === 0 }"
+                            @mouseenter="hoveredEvtGroup = entry.num + ':' + evt.type"
+                            @mouseleave="hoveredEvtGroup = null"
+                          >
+                            <td v-if="idx === 0" class="col-evt-type" :class="{ 'evt-group-hover': hoveredEvtGroup === entry.num + ':' + evt.type }" :rowspan="getSortedRuns(evt.type, entry.num).length">{{ evt.type }}</td>
+                            <td :class="{ 'run-invalidated': run.invalidated }">{{ run.time ? formatTime(run.time) : '-' }}</td>
+                            <td class="run-time" :class="{ 'run-invalidated': run.invalidated, 'run-dnf': run.result === -1 }">{{ run.result != null && run.result >= 0 ? formatResult(run.result) : (run.result === -1 ? 'DNF' : '-') }}</td>
+                            <td :class="{ 'run-invalidated': run.invalidated }">{{ run.cones || 0 }}</td>
+                            <td :class="{ 'run-invalidated': run.invalidated }">{{ run.oc || 0 }}</td>
+                            <td class="run-time" :class="{ 'run-invalidated': run.invalidated }">{{ !run.invalidated && run.result != null && run.result >= 0 ? formatResult(getRunAdjusted(evt.type, run)) : '-' }}</td>
+                            <td :class="{ 'run-invalidated': run.invalidated }">
+                              <span v-if="!run.invalidated && run.origIndex === getBestRunIndex(evt.type, entry.num)" class="badge badge-success">최고</span>
+                              <span v-else-if="run.invalidated" class="badge badge-danger">무효</span>
+                            </td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div v-else class="detail-empty">경기 기록이 없습니다</div>
+                </td>
+              </tr>
+              </template>
               <tr v-if="entryList.length === 0">
                 <td :colspan="9 + inspection.categories.length + dynamicEvents.length" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
@@ -1261,6 +1380,140 @@ function toggleCornerWeight(num) {
   color: var(--text-primary);
 }
 
+
+/* Team row expandable */
+.team-row {
+  cursor: pointer;
+}
+
+.team-row:hover {
+  background: var(--bg-hover);
+}
+
+.expanded-row {
+  background: rgba(59, 130, 246, 0.04);
+}
+
+.expanded-row .col-num {
+  background: rgba(59, 130, 246, 0.04);
+}
+
+/* Detail row */
+.detail-row {
+  background: var(--bg-secondary);
+}
+
+.detail-row:hover {
+  background: var(--bg-secondary);
+}
+
+.detail-row > td {
+  padding: 1.5rem 0 !important;
+}
+
+.detail-row .detail-content,
+.detail-row .detail-empty {
+  position: sticky;
+  left: 0;
+  width: 100vw;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 2rem;
+  box-sizing: border-box;
+}
+
+.detail-sort-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.detail-sort-btn {
+  padding: 0.125rem 0.5rem;
+  border: none;
+  background: var(--bg-input);
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.detail-sort-btn + .detail-sort-btn {
+  border-left: 1px solid var(--border-color);
+}
+
+.detail-sort-btn.active {
+  background: var(--accent-primary);
+  color: white;
+}
+
+.detail-runs-table {
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.detail-runs-table th,
+.detail-runs-table td {
+  padding: 0.375rem 1rem;
+  text-align: center;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.detail-runs-table .evt-first-row td {
+  border-top: 2px solid var(--border-color);
+}
+
+.detail-runs-table .evt-first-row .col-evt-type {
+  border-top: 2px solid var(--border-color);
+}
+
+.detail-runs-table th {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.detail-runs-table .col-evt-type {
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-right: 1px solid var(--border-color);
+  vertical-align: middle;
+}
+
+.detail-runs-table .col-evt-type.evt-group-hover {
+  background: var(--bg-hover);
+}
+
+.detail-runs-table .run-time,
+.detail-runs-table .run-event-time {
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 500;
+}
+
+.run-best td:not(.col-evt-type) {
+  background: rgba(34, 197, 94, 0.08);
+}
+
+td.run-invalidated {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+td.run-dnf {
+  color: var(--accent-danger);
+  font-weight: 700;
+}
+
+.detail-empty {
+  text-align: center;
+  color: var(--text-tertiary);
+  padding: 1rem;
+  font-size: 0.9375rem;
+}
 
 @media (max-width: 640px) {
   .top-row,
