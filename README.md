@@ -32,10 +32,11 @@ Google OAuth 2.0 + JWT 쿠키 기반 인증. 각 백엔드 서비스의 미들�
 | Route | Description |
 |-------|-------------|
 | `/` | Landing page |
-| `/auth/login` | Login page |
+| `/auth/login,callback,logout` | Auth login flow |
+| `/auth` (SPA) | Auth SPA pages |
 | `/queue` | Inspection queue public view |
 | `/queue/api` (except `/api/admin`) | Inspection queue public API |
-| `/entry/api` | Entry public API |
+| `/entry/api/years`, `/entry/api/entries` | Entry read-only API |
 | `/energymeter` | Energy meter viewer |
 | `/rules` | Rules file server |
 
@@ -46,13 +47,12 @@ Google OAuth 2.0 + JWT 쿠키 기반 인증. 각 백엔드 서비스의 미들�
 | `/queue/admin,register,priority,stats` | Queue management pages |
 | `/queue/api/admin` | Queue admin API |
 | `/inspection/**` | Inspection sheet (including GET template) |
-| `/auth/api/me` | Current user info API |
 
 #### Admin
 
 | Route | Description |
 |-------|-------------|
-| `/entry/**` (SPA) | Entry management |
+| `/entry/**` (except public API above) | Entry management |
 | `/inspection/api/sheet/template` (POST/PUT/DELETE) | Inspection template modification API |
 | `/traffic/**` | Traffic management |
 | `/score/**` | Score management |
