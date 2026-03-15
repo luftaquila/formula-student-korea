@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import { services, officials, admins, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
 import { user, showOfficials, isAdmin } from "./officialsStore.js";
 
@@ -11,6 +11,21 @@ const props = defineProps({
 });
 
 const isOpen = ref(false);
+const opsContacts = ref(null);
+
+async function fetchOpsContacts() {
+  try {
+    const res = await fetch("/auth/api/ops-contacts");
+    if (res.ok) {
+      const data = await res.json();
+      if (data.length) opsContacts.value = data;
+    }
+  } catch {}
+}
+
+watch(isOpen, (open) => {
+  if (open && showOfficials.value && !opsContacts.value) fetchOpsContacts();
+});
 
 function isActive(href) {
   // Landing page
@@ -85,6 +100,14 @@ async function logout() {
           </div>
 
           <nav class="drawer-nav">
+            <div v-if="showOfficials && opsContacts" class="nav-section ops-contacts-section">
+              <span class="nav-section-title">Contacts</span>
+              <div v-for="c in opsContacts" :key="c.id" class="ops-contact">
+                <span class="ops-contact-name">{{ c.name }}</span>
+                <a :href="'tel:' + c.phone" class="ops-contact-phone">{{ c.phone }}</a>
+              </div>
+            </div>
+
             <div class="nav-section">
               <span class="nav-section-title">Services</span>
               <a
@@ -156,7 +179,7 @@ async function logout() {
               </a>
             </div>
 
-            <div class="nav-section nav-section-user">
+            <div class="nav-section nav-section-bottom">
               <div v-if="user" class="nav-item user-info">
                 <span class="nav-icon">👤</span>
                 <span>{{ user.name }}</span>
@@ -166,11 +189,9 @@ async function logout() {
                 <span class="nav-icon">🔑</span>
                 <span>로그인</span>
               </a>
-            </div>
-
-            <div class="nav-footer">
-              <a href="https://github.com/luftaquila" target="_blank" rel="noopener noreferrer" class="github-link">
-                <svg viewBox="0 0 24 24" fill="currentColor">
+              <hr class="nav-divider" />
+              <a href="https://github.com/luftaquila" target="_blank" rel="noopener noreferrer" class="nav-item github-link">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="currentColor">
                   <path
                     d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"
                   />
@@ -225,7 +246,7 @@ async function logout() {
   right: 0;
   width: 300px;
   max-width: 85vw;
-  height: 100vh;
+  height: 100dvh;
   background: var(--bg-card);
   box-shadow: -4px 0 20px rgba(0, 0, 0, 0.3);
   z-index: 1001;
@@ -275,19 +296,47 @@ async function logout() {
 .drawer-nav {
   flex: 1;
   overflow-y: auto;
-  padding: 1rem 0;
+  padding: 1rem 0 0;
   display: flex;
   flex-direction: column;
+}
+
+.ops-contacts-section .ops-contact {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 1.5rem;
+}
+
+.ops-contact-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ops-contact-phone {
+  font-size: 0.8125rem;
+  color: var(--accent-primary);
+  text-decoration: none;
+}
+
+.ops-contact-phone:hover {
+  text-decoration: underline;
 }
 
 .nav-section {
   padding: 0.5rem 0;
 }
 
-.nav-section-user {
+.nav-section-bottom {
   margin-top: auto;
   border-top: 1px solid var(--border-color);
+  padding: 0;
+}
+
+.nav-section-bottom .nav-item {
   padding-top: 1rem;
+  padding-bottom: 1rem;
 }
 
 .nav-section-title {
@@ -372,29 +421,20 @@ async function logout() {
   color: var(--text-primary);
 }
 
-.nav-footer {
-  padding: 1rem 1.5rem;
+.nav-divider {
+  border: none;
   border-top: 1px solid var(--border-color);
-  margin-top: 0.5rem;
+  margin: 0;
 }
 
 .github-link {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  color: var(--text-tertiary);
-  text-decoration: none;
   font-size: 0.8125rem;
-  transition: color 0.15s ease;
+  color: var(--text-tertiary) !important;
 }
 
-.github-link:hover {
-  color: var(--text-primary);
-}
-
-.github-link svg {
-  width: 18px;
-  height: 18px;
+.github-link .nav-icon {
+  width: 1.125rem;
+  height: 1.125rem;
 }
 
 /* Transitions */

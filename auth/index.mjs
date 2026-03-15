@@ -34,6 +34,12 @@ catch { /* already exists */ }
 // 아직 로그인하지 않은 사용자(name IS NULL)의 created_at 초기화
 db.exec("UPDATE users SET created_at = NULL WHERE name IS NULL AND created_at IS NOT NULL");
 
+db.exec(`CREATE TABLE IF NOT EXISTS ops_contacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  phone TEXT NOT NULL
+)`);
+
 // Bootstrap: ADMIN_EMAIL이 DB에 없으면 admin으로 등록
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 if (ADMIN_EMAIL) {
@@ -53,6 +59,7 @@ const validateUser = (email) => !!db.prepare("SELECT 1 FROM users WHERE email = 
 const app = createApp("auth.log", { express, pinoHttp, validateUser }, (req) => {
   if (["/api/login", "/api/callback", "/api/logout"].includes(req.path)) return null;
   if (req.path.startsWith("/api/users")) return "admin";
+  if (req.path.startsWith("/api/ops-contacts") && req.method !== "GET") return "admin";
   return null; // SPA
 });
 
@@ -388,6 +395,35 @@ app.delete("/api/users/:id", (req, res) => {
   }
 
   const result = dbRun(() => db.prepare("DELETE FROM users WHERE id = ?").run(id));
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.status(200).send();
+});
+
+/* ============================================
+   운영 오피셜 연락처
+   ============================================ */
+
+// GET /api/ops-contacts - 연락처 목록
+app.get("/api/ops-contacts", (req, res) => {
+  const result = dbRun(() => db.prepare("SELECT id, name, phone FROM ops_contacts ORDER BY id").all());
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
+});
+
+// POST /api/ops-contacts - 연락처 추가
+app.post("/api/ops-contacts", (req, res) => {
+  const { name, phone } = req.body;
+  if (!name?.trim()) return res.status(400).send("이름을 입력하세요.");
+  if (!phone?.trim()) return res.status(400).send("전화번호를 입력하세요.");
+
+  const result = dbRun(() => db.prepare("INSERT INTO ops_contacts (name, phone) VALUES (?, ?)").run(name.trim(), phone.trim()));
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.status(201).json({ id: result.result.lastInsertRowid, name: name.trim(), phone: phone.trim() });
+});
+
+// DELETE /api/ops-contacts/:id - 연락처 삭제
+app.delete("/api/ops-contacts/:id", (req, res) => {
+  const result = dbRun(() => db.prepare("DELETE FROM ops_contacts WHERE id = ?").run(Number(req.params.id)));
   if (!result.success) return res.status(result.status).send(result.error);
   res.status(200).send();
 });

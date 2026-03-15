@@ -11,6 +11,11 @@ const loading = ref(true);
 const newEmail = ref("");
 const newRole = ref("official");
 
+// 운영 오피셜 연락처
+const opsContacts = ref([]);
+const newOpsName = ref("");
+const newOpsPhone = ref("");
+
 // Check auth from cookie
 function getUserFromCookie() {
   const match = document.cookie.match(/fsk_user=([^;]+)/);
@@ -339,7 +344,60 @@ const sortedUsers = computed(() => {
   });
 });
 
-onMounted(fetchUsers);
+async function fetchOpsContacts() {
+  try {
+    const res = await fetch(`${BASE_URL}/api/ops-contacts`);
+    if (res.ok) opsContacts.value = await res.json();
+  } catch {}
+}
+
+async function addOpsContact() {
+  if (!newOpsName.value.trim() || !newOpsPhone.value.trim()) {
+    notyf.error("이름과 전화번호를 모두 입력하세요.");
+    return;
+  }
+  try {
+    const res = await fetch(`${BASE_URL}/api/ops-contacts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newOpsName.value, phone: newOpsPhone.value }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const contact = await res.json();
+    opsContacts.value.push(contact);
+    newOpsName.value = "";
+    newOpsPhone.value = "";
+    notyf.success("연락처를 추가했습니다.");
+  } catch (e) {
+    notyf.error(e.message);
+  }
+}
+
+function formatPhone(value) {
+  const digits = value.replace(/[^0-9]/g, "").slice(0, 11);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7, 11)}`;
+}
+
+function onOpsPhoneInput(e) {
+  newOpsPhone.value = formatPhone(e.target.value);
+}
+
+async function deleteOpsContact(id) {
+  try {
+    const res = await fetch(`${BASE_URL}/api/ops-contacts/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(await res.text());
+    opsContacts.value = opsContacts.value.filter(c => c.id !== id);
+  } catch (e) {
+    notyf.error(e.message);
+  }
+}
+
+onMounted(() => {
+  fetchUsers();
+  fetchOpsContacts();
+});
 </script>
 
 <template>
@@ -464,6 +522,24 @@ onMounted(fetchUsers);
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <div class="card ops-card">
+      <div class="card-header"><h3>운영 오피셜 연락처</h3></div>
+      <div v-if="opsContacts.length" class="ops-list">
+        <div v-for="c in opsContacts" :key="c.id" class="ops-item">
+          <span class="ops-name">{{ c.name }}</span>
+          <a :href="'tel:' + c.phone" class="ops-phone">{{ c.phone }}</a>
+          <button class="btn btn-sm btn-danger" @click="deleteOpsContact(c.id)">삭제</button>
+        </div>
+      </div>
+      <div class="ops-add-form">
+        <form @submit.prevent="addOpsContact" class="form-row ops-form">
+          <input v-model="newOpsName" type="text" placeholder="이름" class="form-input" />
+          <input :value="newOpsPhone" @input="onOpsPhoneInput" type="tel" placeholder="전화번호" class="form-input" maxlength="13" />
+          <button type="submit" class="btn btn-primary">추가</button>
+        </form>
       </div>
     </div>
   </div>
@@ -683,6 +759,43 @@ onMounted(fetchUsers);
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* 운영 오피셜 연락처 */
+.ops-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 1.25rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.ops-name {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.ops-phone {
+  font-size: 0.875rem;
+  color: var(--accent-primary);
+  text-decoration: none;
+}
+
+.ops-phone:hover {
+  text-decoration: underline;
+}
+
+.ops-item .btn {
+  margin-left: auto;
+}
+
+.ops-add-form {
+  padding: 1rem 1.25rem;
+}
+
+.ops-form.form-row {
+  flex-direction: row;
+  margin: 0;
 }
 
 @media (max-width: 768px) {
