@@ -104,6 +104,21 @@ export function createApp(logFile, deps, authRoleFn) {
       try {
         req.user = verifyJWT(token, process.env.JWT_SECRET);
         req.headers.authuser = req.user.email;
+
+        // Sliding session: 만료까지 절반 이하 남으면 토큰 자동 갱신
+        const remaining = req.user.exp - Math.floor(Date.now() / 1000);
+        const threshold = 3 * 24 * 3600; // 3일
+        if (remaining < threshold) {
+          const { email, name, role } = req.user;
+          const newJwt = createJWT({ email, name, role }, process.env.JWT_SECRET);
+          const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
+          const cookieOpts = `Path=/; SameSite=Lax; Max-Age=${7 * 24 * 3600}${isSecure ? "; Secure" : ""}`;
+          const userPayload = encodeURIComponent(JSON.stringify({ name, role }));
+          res.setHeader("Set-Cookie", [
+            `fsk_session=${newJwt}; HttpOnly; ${cookieOpts}`,
+            `fsk_user=${userPayload}; ${cookieOpts}`,
+          ]);
+        }
       } catch { /* invalid token */ }
     } else if (!process.env.JWT_SECRET && process.env.NODE_ENV !== "production") {
       req.user = { email: "dev@local", name: "Developer", role: "admin" };
