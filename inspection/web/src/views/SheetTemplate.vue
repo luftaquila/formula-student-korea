@@ -281,23 +281,25 @@ function setChecktableConfig(item, config) {
   onRemarksChange(item);
 }
 
-let checktableTimer = null;
+const checktableTimers = new Map();
 function onChecktableColumnsChange(item, value) {
-  clearTimeout(checktableTimer);
-  checktableTimer = setTimeout(() => {
+  clearTimeout(checktableTimers.get(`col-${item.id}`));
+  checktableTimers.set(`col-${item.id}`, setTimeout(() => {
+    checktableTimers.delete(`col-${item.id}`);
     const config = getChecktableConfig(item);
     config.columns = value.split(",").map(s => s.trim()).filter(Boolean);
     setChecktableConfig(item, config);
-  }, 500);
+  }, 500));
 }
 
 function onChecktableRowsChange(item, value) {
-  clearTimeout(checktableTimer);
-  checktableTimer = setTimeout(() => {
+  clearTimeout(checktableTimers.get(`row-${item.id}`));
+  checktableTimers.set(`row-${item.id}`, setTimeout(() => {
+    checktableTimers.delete(`row-${item.id}`);
     const config = getChecktableConfig(item);
     config.rows = value.split(",").map(s => s.trim()).filter(Boolean);
     setChecktableConfig(item, config);
-  }, 500);
+  }, 500));
 }
 
 // ---- Numbering ----

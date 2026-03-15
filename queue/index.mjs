@@ -215,7 +215,7 @@ function validateInspection(type) {
 
 function validatePriority(priority) {
   const parsed = Number(priority);
-  if (priority === "" || priority === undefined || Number.isNaN(parsed) || parsed < 1) {
+  if (priority === "" || priority === undefined || Number.isNaN(parsed) || parsed < 1 || !Number.isInteger(parsed)) {
     return { valid: false, error: "우선순위는 1 이상의 정수여야 합니다." };
   }
   return { valid: true, value: parsed };
@@ -542,7 +542,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
         // 보고서는 다른 검차와 항상 동시 등록 가능
         if (type === "report") {
           current.inspection += `,${type}`;
-          db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(current.inspection, num);
+          db.prepare("UPDATE current SET inspection = ?, phone = ? WHERE num = ?").run(current.inspection, phone, num);
         } else {
           const nonReportTypes = currentTypes.filter((t) => t !== "report");
 
@@ -553,7 +553,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
           ) {
             // 보고서만 등록 또는 배터리+섀시 동시 등록 허용
             current.inspection += `,${type}`;
-            db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(current.inspection, num);
+            db.prepare("UPDATE current SET inspection = ?, phone = ? WHERE num = ?").run(current.inspection, phone, num);
           } else {
             const name = currentTypes.map((i) => inspections[i]).join(", ");
             errorResponse = { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
@@ -566,6 +566,9 @@ app.post("/api/admin/register/:type", async (req, res) => {
 
       db.prepare(`INSERT INTO ${type} (num, phone, timestamp) VALUES (?, ?, ?)`).run(num, phone, Date.now());
       db.prepare("UPDATE inspection SET length = length + 1 WHERE type = ?").run(type);
+
+      // 대기열 이벤트 로그 기록 (트랜잭션 내부)
+      db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run("register", num, type, Date.now());
     })();
   });
 
@@ -576,9 +579,6 @@ app.post("/api/admin/register/:type", async (req, res) => {
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
-
-  // 대기열 이벤트 로그 기록
-  db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run("register", num, type, Date.now());
 
   logger.log(req, "queue.register", { inspection: type, phone }, `#${num}`);
 
@@ -633,12 +633,19 @@ app.post("/api/admin/cancel/:type", (req, res) => {
 
       const current = db.prepare("SELECT * FROM current WHERE num = ?").get(num);
 
+      if (!current) {
+        throw { status: 400, message: "현재 등록 상태를 찾을 수 없습니다." };
+      }
+
       const remaining = current.inspection.split(",").filter((i) => i !== type);
       if (remaining.length > 0) {
         db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(remaining.join(","), num);
       } else {
         db.prepare("DELETE FROM current WHERE num = ?").run(num);
       }
+
+      // 대기열 이벤트 로그 기록 (트랜잭션 내부)
+      db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run("cancel", num, type, Date.now());
     })();
   });
 
@@ -649,9 +656,6 @@ app.post("/api/admin/cancel/:type", (req, res) => {
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
-
-  // 대기열 이벤트 로그 기록
-  db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run("cancel", num, type, Date.now());
 
   logger.log(req, "queue.cancel", { inspection: type }, `#${num}`);
 
@@ -785,10 +789,26 @@ app.delete("/api/admin/history/:type", (req, res) => {
   const type = typeValidation.value;
 
   const result = dbRun(() => {
-    db.prepare("DELETE FROM inspection_history WHERE inspection = ?").run(type);
+    db.transaction(() => {
+      db.prepare("DELETE FROM inspection_history WHERE inspection = ?").run(type);
 
-    // 부스 상태 초기화: 해당 검차 종류의 모든 부스 점유 해제
-    db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ?").run(type);
+      // 부스 상태 초기화: 해당 검차 종류의 모든 부스 점유 해제
+      db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ?").run(type);
+
+      // 미종료 booth_log 엔트리 종료 처리
+      db.prepare("UPDATE booth_log SET exited_at = ? WHERE inspection = ? AND exited_at IS NULL").run(Date.now(), type);
+
+      // current 테이블에서 해당 검차 종류 제거
+      const currents = db.prepare("SELECT * FROM current").all();
+      for (const row of currents) {
+        const remaining = row.inspection.split(",").filter(i => i !== type);
+        if (remaining.length > 0) {
+          db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(remaining.join(","), row.num);
+        } else {
+          db.prepare("DELETE FROM current WHERE num = ?").run(row.num);
+        }
+      }
+    })();
   });
 
   if (!result.success) {

@@ -45,6 +45,8 @@ db.pragma("synchronous = NORMAL");
   }
 }
 
+db.pragma("foreign_keys = ON");
+
 db.transaction(() => {
   // 검차 시트 템플릿 테이블 (4단계 계층: category → subcategory → group → item)
   db.exec(`CREATE TABLE IF NOT EXISTS sheet_template (
@@ -229,7 +231,6 @@ app.delete("/api/sheet/template/:id", (req, res) => {
   const id = Number(req.params.id);
 
   const result = dbRun(() => {
-    db.pragma("foreign_keys = ON");
     return db.prepare("DELETE FROM sheet_template WHERE id = ?").run(id);
   });
 
@@ -294,7 +295,6 @@ app.post("/api/sheet/template/import", (req, res) => {
   if (!year || !Array.isArray(template)) return res.status(400).send("year, template 배열이 필요합니다.");
 
   const result = dbRun(() => {
-    db.pragma("foreign_keys = ON");
     db.prepare("DELETE FROM sheet_template WHERE year = ? AND level = 'category'").run(year);
 
     const stmt = db.prepare(

@@ -92,14 +92,14 @@ export const useSerialStore = defineStore("serial", () => {
         }
       }
     } catch (e) {
-      if (reader) reader.releaseLock();
-
       if (e.name === "NetworkError") {
         handleDisconnect();
         notyf.error(e.message);
       } else {
         notyf.error(`컨트롤러 데이터 수신에 실패했습니다. ${e}`);
       }
+    } finally {
+      if (reader) reader.releaseLock();
     }
   }
 
@@ -110,6 +110,9 @@ export const useSerialStore = defineStore("serial", () => {
     port.value = null;
     stopClock();
     clockDisplay.value = "00:00:00.000";
+    records.value = [];
+    start.value = { tick: null, timestamp: null };
+    lastSensorTrigger.value = {};
   }
 
   function parse(data) {

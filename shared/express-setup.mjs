@@ -112,15 +112,24 @@ export function createApp(deps, authRoleFn) {
         const remaining = req.user.exp - Math.floor(Date.now() / 1000);
         const threshold = 3 * 24 * 3600; // 3일
         if (remaining < threshold) {
-          const { email, name, role } = req.user;
-          const newJwt = createJWT({ email, name, role }, process.env.JWT_SECRET);
+          const { email, name } = req.user;
+          // DB에서 최신 role 조회 (validateUser가 직접 함수일 때만 — auth 서비스)
+          let freshRole = req.user.role;
+          if (deps.validateUser) {
+            try {
+              const userRow = deps.db?.prepare("SELECT role FROM users WHERE email = ? AND active = 1").get(email);
+              if (userRow) freshRole = userRow.role;
+            } catch { /* fallback to JWT role */ }
+          }
+          const newJwt = createJWT({ email, name, role: freshRole }, process.env.JWT_SECRET);
           const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
           const cookieOpts = `Path=/; SameSite=Lax; Max-Age=${7 * 24 * 3600}${isSecure ? "; Secure" : ""}`;
-          const userPayload = encodeURIComponent(JSON.stringify({ name, role }));
+          const userPayload = encodeURIComponent(JSON.stringify({ name, role: freshRole }));
           res.setHeader("Set-Cookie", [
             `fsk_session=${newJwt}; HttpOnly; ${cookieOpts}`,
             `fsk_user=${userPayload}; ${cookieOpts}`,
           ]);
+          req.user.role = freshRole;
         }
       } catch { /* invalid token */ }
     } else if (!process.env.JWT_SECRET && process.env.NODE_ENV !== "production") {

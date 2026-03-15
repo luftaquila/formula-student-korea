@@ -13,6 +13,7 @@ const { success, error } = useNotification();
 
 const entries = ref({});
 const loading = ref(true);
+const addingEntry = ref(false);
 const searchQuery = ref("");
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
@@ -61,12 +62,15 @@ async function loadEntries() {
 }
 
 async function handleAdd(entry) {
+  addingEntry.value = true;
   try {
     await addEntry(entry, selectedYear.value);
     success(`${entry.num}번 엔트리를 추가했습니다.`);
     await loadEntries();
   } catch (e) {
     error(e.message);
+  } finally {
+    addingEntry.value = false;
   }
 }
 
@@ -163,7 +167,7 @@ onMounted(async () => {
 
     <main class="main-content">
       <aside class="sidebar">
-        <EntryForm :vehicle-types="vehicleTypes" @submit="handleAdd" />
+        <EntryForm :vehicle-types="vehicleTypes" :loading="addingEntry" @submit="handleAdd" />
         <FileManager :year="selectedYear" @upload="handleUpload" @delete-all="handleDeleteAll" />
         <VehicleTypeManager :vehicle-types="vehicleTypes" @add="handleAddType" @delete="handleDeleteType" />
       </aside>

@@ -82,6 +82,8 @@ function getInspector(catId) {
 
 // Debounce timers
 const debounceTimers = {};
+// 마지막으로 전송한 값 추적 (SSE self-echo 방지)
+const lastSentValues = {};
 
 function debounce(key, fn, delay = 300) {
   clearTimeout(debounceTimers[key]);
@@ -96,6 +98,7 @@ async function onAnswerChange(itemId, value) {
 
   debounce(`answer-${itemId}`, async () => {
     try {
+      lastSentValues[`answer-${itemId}`] = value;
       await updateSheetAnswer({ year, team_num: num, item_id: itemId, value });
     } catch (e) {
       error("저장에 실패했습니다.");
@@ -111,6 +114,7 @@ function onPassFailToggle(itemId, val) {
   }
   sheetData.value.answers[itemId].value = newVal;
   // passfail is immediate, no debounce
+  lastSentValues[`answer-${itemId}`] = newVal;
   updateSheetAnswer({ year, team_num: num, item_id: itemId, value: newVal }).catch(() => error("저장에 실패했습니다."));
 }
 
@@ -122,6 +126,7 @@ async function onMemoChange(itemId, memo) {
 
   debounce(`memo-${itemId}`, async () => {
     try {
+      lastSentValues[`memo-${itemId}`] = memo;
       await updateSheetMemo({ year, team_num: num, item_id: itemId, memo });
     } catch (e) {
       error("저장에 실패했습니다.");
@@ -296,6 +301,7 @@ function onChecktableToggle(itemId, rowIdx, colIdx) {
     sheetData.value.answers[itemId] = { value: "", memo: "" };
   }
   sheetData.value.answers[itemId].value = jsonStr;
+  lastSentValues[`answer-${itemId}`] = jsonStr;
   updateSheetAnswer({ year, team_num: num, item_id: itemId, value: jsonStr }).catch(() => error("저장에 실패했습니다."));
 }
 
@@ -354,18 +360,28 @@ watch(lastInspectorUpdate, (update) => {
   sheetData.value.inspectors[update.category_id] = update.inspector;
 });
 
-// SSE로 개별 항목 답변 실시간 반영
+// SSE로 개별 항목 답변 실시간 반영 (self-echo 필터)
 watch(lastAnswerUpdate, (update) => {
   if (!update || update.year !== year || update.team_num !== num) return;
+  const sentKey = `answer-${update.item_id}`;
+  if (lastSentValues[sentKey] === update.value) {
+    delete lastSentValues[sentKey];
+    return;
+  }
   if (!sheetData.value.answers[update.item_id]) {
     sheetData.value.answers[update.item_id] = { value: "", memo: "" };
   }
   sheetData.value.answers[update.item_id].value = update.value;
 });
 
-// SSE로 메모 실시간 반영
+// SSE로 메모 실시간 반영 (self-echo 필터)
 watch(lastMemoUpdate, (update) => {
   if (!update || update.year !== year || update.team_num !== num) return;
+  const sentKey = `memo-${update.item_id}`;
+  if (lastSentValues[sentKey] === update.memo) {
+    delete lastSentValues[sentKey];
+    return;
+  }
   if (!sheetData.value.answers[update.item_id]) {
     sheetData.value.answers[update.item_id] = { value: "", memo: "" };
   }

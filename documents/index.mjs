@@ -444,11 +444,28 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   const maxSize = max_file_size ? Number(max_file_size) : 52428800;
   const exts = allowed_extensions || "";
 
+  const removedTeamNums = [];
   const txResult = dbRun(() => {
     const tx = db.transaction(() => {
       db.prepare(
         "UPDATE session SET name = ?, notice = ?, start_at = ?, end_at = ?, late_end_at = ?, max_file_size = ?, allowed_extensions = ? WHERE id = ?",
       ).run(name.trim(), notice || "", start_at, end_at, late_end_at, maxSize, exts, id);
+
+      // 기존 팀 목록 조회
+      const oldTeams = db.prepare("SELECT team_num FROM session_team WHERE session_id = ?").all(id).map(r => r.team_num);
+      const newTeamsSet = new Set(teams);
+
+      // 제거되는 팀의 제출물 정리
+      for (const oldTeam of oldTeams) {
+        if (!newTeamsSet.has(oldTeam)) {
+          const subs = db.prepare("SELECT id FROM submission WHERE session_id = ? AND team_num = ?").all(id, oldTeam);
+          for (const sub of subs) {
+            db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(sub.id);
+            db.prepare("DELETE FROM submission WHERE id = ?").run(sub.id);
+          }
+          if (subs.length) removedTeamNums.push({ team: oldTeam, subIds: subs.map(s => s.id) });
+        }
+      }
 
       db.prepare("DELETE FROM session_team WHERE session_id = ?").run(id);
       const teamStmt = db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)");
@@ -458,6 +475,13 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   });
 
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+
+  // 트랜잭션 성공 후 디스크 파일 정리
+  for (const { team, subIds } of removedTeamNums) {
+    for (const subId of subIds) {
+      rmDir(path.join(UPLOADS_DIR, String(id), String(team), String(subId)));
+    }
+  }
   logger.log(req, "session.update", { id }, name.trim());
   res.status(200).send();
 });

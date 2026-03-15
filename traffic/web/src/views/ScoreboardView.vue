@@ -252,7 +252,7 @@ onUnmounted(() => {
                 <!-- Recent Records -->
                 <div class="record-section">
                   <div class="record-box">
-                    <div class="record-label">Recent Records</div>
+                    <div class="record-label">Top Records</div>
                     <div class="record-list">
                       <div v-for="record in topRecords[type]" :key="record.rowid" class="record-row">
                         <span class="record-info">

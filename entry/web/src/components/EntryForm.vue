@@ -1,8 +1,9 @@
 <script setup>
 import { ref } from "vue";
 
-defineProps({
+const props = defineProps({
   vehicleTypes: { type: Array, default: () => [] },
+  loading: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(["submit"]);
@@ -14,27 +15,19 @@ const form = ref({
   type: "",
 });
 
-const isSubmitting = ref(false);
-
 async function handleSubmit() {
   if (!form.value.num || !form.value.univ.trim() || !form.value.team.trim()) {
     return;
   }
 
-  isSubmitting.value = true;
+  emit("submit", {
+    num: Number(form.value.num),
+    univ: form.value.univ.trim(),
+    team: form.value.team.trim(),
+    type: form.value.type || null,
+  });
 
-  try {
-    emit("submit", {
-      num: Number(form.value.num),
-      univ: form.value.univ.trim(),
-      team: form.value.team.trim(),
-      type: form.value.type || null,
-    });
-
-    form.value = { num: "", univ: "", team: "", type: "" };
-  } finally {
-    isSubmitting.value = false;
-  }
+  form.value = { num: "", univ: "", team: "", type: "" };
 }
 </script>
 
@@ -75,7 +68,7 @@ async function handleSubmit() {
         <button
           type="submit"
           class="btn btn-primary submit-btn"
-          :disabled="isSubmitting || !form.num || !form.univ.trim() || !form.team.trim()"
+          :disabled="loading || !form.num || !form.univ.trim() || !form.team.trim()"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="12" y1="5" x2="12" y2="19" />

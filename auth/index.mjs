@@ -79,7 +79,7 @@ const validateUser = (email) => !!db.prepare("SELECT 1 FROM users WHERE email = 
 
 const logger = createLogger(db, "auth");
 
-const app = createApp({ express, validateUser }, (req) => {
+const app = createApp({ express, validateUser, db }, (req) => {
   if (["/api/login", "/api/callback", "/api/logout"].includes(req.path)) return null;
   if (req.path.startsWith("/api/admin")) return "admin";
   if (req.path.startsWith("/api/users")) return "admin";
@@ -329,15 +329,17 @@ app.patch("/api/users/bulk", (req, res) => {
   if (!Array.isArray(ids) || ids.length === 0) return res.status(400).send("사용자를 선택하세요.");
   if (active === undefined) return res.status(400).send("active 값이 필요합니다.");
 
+  const numIds = ids.map(Number);
+
   // ADMIN_EMAIL 보호
   if (ADMIN_EMAIL && !active) {
     const protectedUser = db.prepare("SELECT id FROM users WHERE email = ?").get(ADMIN_EMAIL);
-    if (protectedUser && ids.includes(protectedUser.id)) return res.status(400).send("기본 관리자는 비활성화할 수 없습니다.");
+    if (protectedUser && numIds.includes(protectedUser.id)) return res.status(400).send("기본 관리자는 비활성화할 수 없습니다.");
   }
 
-  const placeholders = ids.map(() => "?").join(",");
+  const placeholders = numIds.map(() => "?").join(",");
   const stmt = db.prepare(`UPDATE users SET active = ? WHERE id IN (${placeholders})`);
-  const run = db.transaction(() => stmt.run(active ? 1 : 0, ...ids));
+  const run = db.transaction(() => stmt.run(active ? 1 : 0, ...numIds));
 
   const txResult = dbRun(() => run());
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
@@ -351,20 +353,22 @@ app.delete("/api/users/bulk", (req, res) => {
   const { ids } = req.body;
   if (!Array.isArray(ids) || ids.length === 0) return res.status(400).send("삭제할 사용자를 선택하세요.");
 
+  const numIds = ids.map(Number);
+
   // ADMIN_EMAIL 보호
   if (ADMIN_EMAIL) {
     const protectedUser = db.prepare(`SELECT id FROM users WHERE email = ?`).get(ADMIN_EMAIL);
-    if (protectedUser && ids.includes(protectedUser.id)) return res.status(400).send("기본 관리자는 삭제할 수 없습니다.");
+    if (protectedUser && numIds.includes(protectedUser.id)) return res.status(400).send("기본 관리자는 삭제할 수 없습니다.");
   }
 
   // 마지막 관리자 삭제 방지
   const totalAdmins = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
-  const placeholders = ids.map(() => "?").join(",");
-  const adminsToDelete = db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND id IN (${placeholders})`).get(...ids).cnt;
+  const placeholders = numIds.map(() => "?").join(",");
+  const adminsToDelete = db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND id IN (${placeholders})`).get(...numIds).cnt;
   if (totalAdmins - adminsToDelete < 1) return res.status(400).send("마지막 관리자는 삭제할 수 없습니다.");
 
   const del = db.prepare(`DELETE FROM users WHERE id IN (${placeholders})`);
-  const run = db.transaction(() => del.run(...ids));
+  const run = db.transaction(() => del.run(...numIds));
 
   const txResult = dbRun(() => run());
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
@@ -381,35 +385,30 @@ app.patch("/api/users/:id", (req, res) => {
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
   if (!user) return res.status(404).send("사용자를 찾을 수 없습니다.");
 
-  // 역할 변경
+  // 사전 검증
   if (role !== undefined) {
     if (!VALID_ROLES.includes(role)) return res.status(400).send("올바르지 않은 역할입니다.");
-
-    // ADMIN_EMAIL 보호
     if (user.email === ADMIN_EMAIL && role !== "admin") return res.status(400).send("기본 관리자의 역할은 변경할 수 없습니다.");
-
-    // 마지막 admin 강등 방지
     if (user.role === "admin" && role !== "admin") {
       const adminCount = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
       if (adminCount <= 1) return res.status(400).send("마지막 관리자는 강등할 수 없습니다.");
     }
-
-    const result = dbRun(() => db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id));
-    if (!result.success) return res.status(result.status).send(result.error);
   }
 
-  // 메모 변경
-  if (memo !== undefined) {
-    const result = dbRun(() => db.prepare("UPDATE users SET memo = ? WHERE id = ?").run(memo, id));
-    if (!result.success) return res.status(result.status).send(result.error);
+  if (active !== undefined && user.email === ADMIN_EMAIL) {
+    return res.status(400).send("기본 관리자는 비활성화할 수 없습니다.");
   }
 
-  // 활성/비활성 변경
-  if (active !== undefined) {
-    if (user.email === ADMIN_EMAIL) return res.status(400).send("기본 관리자는 비활성화할 수 없습니다.");
-    const result = dbRun(() => db.prepare("UPDATE users SET active = ? WHERE id = ?").run(active ? 1 : 0, id));
-    if (!result.success) return res.status(result.status).send(result.error);
-  }
+  // 트랜잭션으로 원자적 업데이트
+  const result = dbRun(() => {
+    db.transaction(() => {
+      if (role !== undefined) db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id);
+      if (memo !== undefined) db.prepare("UPDATE users SET memo = ? WHERE id = ?").run(memo, id);
+      if (active !== undefined) db.prepare("UPDATE users SET active = ? WHERE id = ?").run(active ? 1 : 0, id);
+    })();
+  });
+
+  if (!result.success) return res.status(result.status).send(result.error);
 
   const changes = {};
   if (role !== undefined) changes.role = role;

@@ -129,6 +129,13 @@ function validateBulkData(data) {
     if (!keys.includes("univ") || !keys.includes("team")) {
       return { valid: false, error: "올바르지 않은 JSON 형식입니다." };
     }
+
+    if (typeof value.univ !== "string" || !value.univ.trim()) {
+      return { valid: false, error: `엔트리 ${key}: 올바르지 않은 학교명입니다.` };
+    }
+    if (typeof value.team !== "string" || !value.team.trim()) {
+      return { valid: false, error: `엔트리 ${key}: 올바르지 않은 팀명입니다.` };
+    }
   }
 
   return { valid: true, data: parsed };
