@@ -19,6 +19,7 @@
           <ServiceCard title="검차 대기열" description="" path="/queue" icon="🔧" />
           <ServiceCard title="에너지미터" description="" path="/energymeter" icon="⚡" />
           <ServiceCard title="대회 규정집" description="" path="/rules" icon="📖" external />
+          <ServiceCard title="AI 규정 챗봇" description="" path="https://pitbot.luftaquila.io" icon="💽" external />
           <ServiceCard
             title="자작자동차포럼"
             description=""
@@ -44,7 +45,6 @@
           <ServiceCard title="계측 시스템" description="" path="/traffic" icon="🚦" />
           <ServiceCard title="성적 관리" description="" path="/score" icon="📊" />
           <ServiceCard title="계정 관리" description="" path="/auth" icon="🔑" />
-          <ServiceCard title="클라우드" description="" path="https://cloud.fsk.luftaquila.io" icon="☁️" external />
         </div>
       </section>
     </main>
