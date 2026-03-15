@@ -1,8 +1,8 @@
 import http from "http";
 import express from "express";
-import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createLogger } from "../shared/logger.mjs";
 
 /* ============================================
    Database 초기화
@@ -75,9 +75,13 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = createApp("score.log", { express, pinoHttp }, (req) => {
+const logger = createLogger(db, "score");
+
+const app = createApp({ express }, (req) => {
   return "admin";
 });
+
+app.get("/api/logs", logger.queryHandler);
 
 /* ============================================
    설정
@@ -458,6 +462,7 @@ app.put("/api/score/manual", (req, res) => {
 
   if (!result.success) return res.status(result.status).send(result.error);
 
+  logger.log(req, "manual_score.update", { year, score_type, value: numValue }, `#${team_num}`);
   broadcastEvent("manual-score", { year, team_num, score_type, value: numValue });
 
   res.status(200).send();
@@ -487,6 +492,7 @@ app.put("/api/score/penalty", (req, res) => {
 
   if (!result.success) return res.status(result.status).send(result.error);
 
+  logger.log(req, "penalty.update", { year, cone: cone, oc: oc, delay }, event_type);
   broadcastEvent("penalty", { year, event_type, cone_penalty: cone, oc_penalty: oc, start_delay: delay });
 
   res.status(200).send();
@@ -514,6 +520,7 @@ app.put("/api/score/setting", (req, res) => {
 
   if (!result.success) return res.status(result.status).send(result.error);
 
+  logger.log(req, "setting.update", { year, key: setting_key, value: numValue }, event_type);
   broadcastEvent("setting", { year, event_type, setting_key, value: numValue });
 
   res.status(200).send();
@@ -557,6 +564,7 @@ app.put("/api/score/endurance", (req, res) => {
 
   if (!result.success) return res.status(result.status).send(result.error);
 
+  logger.log(req, "endurance.update", { year, field, value: dbValue }, `#${team_num}`);
   broadcastEvent("endurance", { year, team_num, field, value: dbValue });
 
   res.status(200).send();

@@ -50,9 +50,15 @@ function isActive(href) {
     }
   }
 
-  // Other services - match by prefix
-  if (href !== "/" && props.currentPath.startsWith(href)) {
+  // Other services - exact match or prefix match (but not when a more specific item exists)
+  if (href !== "/" && props.currentPath === href) {
     return true;
+  }
+  if (href !== "/" && props.currentPath.startsWith(href + "/")) {
+    // Only match prefix if no other item is a more specific match
+    const allItems = [...services, ...officials, ...admins];
+    const hasMoreSpecific = allItems.some(item => item.href !== href && item.href.startsWith(href) && props.currentPath.startsWith(item.href));
+    if (!hasMoreSpecific) return true;
   }
 
   return false;

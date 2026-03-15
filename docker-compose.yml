@@ -151,6 +151,8 @@ services:
     container_name: fsk-auth
     env_file:
       - .env
+    environment:
+      - LOG_SERVICES=entry:http://entry:9100,queue:http://queue:9300,inspection:http://inspection:9600,traffic:http://traffic:9200,score:http://score:9700,documents:http://documents:9900
     volumes:
       - ./auth/data:/home/node/fsk-auth/data
     restart: unless-stopped

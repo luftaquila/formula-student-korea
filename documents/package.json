@@ -2,7 +2,6 @@
   "dependencies": {
     "better-sqlite3": "^12.5.0",
     "busboy": "^1.6.0",
-    "express": "^5.2.1",
-    "pino-http": "^11.0.0"
+    "express": "^5.2.1"
   }
 }

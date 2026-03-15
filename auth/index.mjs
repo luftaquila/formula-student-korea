@@ -1,8 +1,8 @@
 import crypto from "crypto";
 import express from "express";
-import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, createJWT, ensureDataDir, VALID_ROLES } from "../shared/express-setup.mjs";
+import { createLogger } from "../shared/logger.mjs";
 
 /* ============================================
    Database 초기화
@@ -77,12 +77,17 @@ setupProcessHandlers(db);
    ============================================ */
 const validateUser = (email) => !!db.prepare("SELECT 1 FROM users WHERE email = ? AND active = 1").get(email);
 
-const app = createApp("auth.log", { express, pinoHttp, validateUser }, (req) => {
+const logger = createLogger(db, "auth");
+
+const app = createApp({ express, validateUser }, (req) => {
   if (["/api/login", "/api/callback", "/api/logout"].includes(req.path)) return null;
+  if (req.path.startsWith("/api/admin")) return "admin";
   if (req.path.startsWith("/api/users")) return "admin";
   if (req.path.startsWith("/api/ops-contacts") && req.method !== "GET") return "admin";
   return null; // SPA
 });
+
+app.get("/api/logs", logger.queryHandler);
 
 /* ============================================
    DB 헬퍼
@@ -202,6 +207,7 @@ app.get("/api/callback", async (req, res) => {
     // Check if user is registered and active
     const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
     if (!user || !user.active) {
+      logger.warn(req, "user.login_failed", { reason: !user ? "unregistered" : "deactivated" }, email, { email, name });
       return res.redirect(`/auth/login?error=access_denied&redirect=${encodeURIComponent(redirectUrl)}`);
     }
 
@@ -226,6 +232,8 @@ app.get("/api/callback", async (req, res) => {
       clearNonceCookie,
     ]);
 
+    logger.log(req, "user.login", { name, role: user.role }, email, { email, name, role: user.role });
+
     res.redirect(redirectUrl);
   } catch (e) {
     console.error("OAuth callback error:", e);
@@ -235,6 +243,8 @@ app.get("/api/callback", async (req, res) => {
 
 // POST /api/logout - 쿠키 삭제
 app.post("/api/logout", (req, res) => {
+  logger.log(req, "user.logout", null, req.user?.email);
+
   const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
   const cookieOpts = `Path=/; SameSite=Lax; Max-Age=0${isSecure ? "; Secure" : ""}`;
 
@@ -277,6 +287,7 @@ app.post("/api/users", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "user.create", { role }, email.trim().toLowerCase());
   res.status(201).json({ id: result.result.lastInsertRowid, email: email.trim().toLowerCase(), role });
 });
 
@@ -307,6 +318,7 @@ app.post("/api/users/bulk", (req, res) => {
   const txResult = dbRun(() => run());
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
 
+  logger.log(req, "user.create_bulk", { added: added.length, skipped: skipped.length });
   res.json({ added: added.length, skipped: skipped.length, errors });
 });
 
@@ -329,6 +341,7 @@ app.patch("/api/users/bulk", (req, res) => {
   const txResult = dbRun(() => run());
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
 
+  logger.log(req, "user.bulk_update", { count: txResult.result.changes, active: !!active });
   res.json({ updated: txResult.result.changes });
 });
 
@@ -355,6 +368,7 @@ app.delete("/api/users/bulk", (req, res) => {
   const txResult = dbRun(() => run());
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
 
+  logger.log(req, "user.bulk_delete", { count: txResult.result.changes });
   res.json({ deleted: txResult.result.changes });
 });
 
@@ -396,6 +410,12 @@ app.patch("/api/users/:id", (req, res) => {
     if (!result.success) return res.status(result.status).send(result.error);
   }
 
+  const changes = {};
+  if (role !== undefined) changes.role = role;
+  if (memo !== undefined) changes.memo = memo;
+  if (active !== undefined) changes.active = !!active;
+  logger.log(req, "user.update", changes, user.email);
+
   res.status(200).send();
 });
 
@@ -417,6 +437,7 @@ app.delete("/api/users/:id", (req, res) => {
 
   const result = dbRun(() => db.prepare("DELETE FROM users WHERE id = ?").run(id));
   if (!result.success) return res.status(result.status).send(result.error);
+  logger.log(req, "user.delete", { role: user.role }, user.email);
   res.status(200).send();
 });
 
@@ -439,14 +460,104 @@ app.post("/api/ops-contacts", (req, res) => {
 
   const result = dbRun(() => db.prepare("INSERT INTO ops_contacts (name, phone) VALUES (?, ?)").run(name.trim(), phone.trim()));
   if (!result.success) return res.status(result.status).send(result.error);
+  logger.log(req, "ops_contact.create", { phone: phone.trim() }, name.trim());
   res.status(201).json({ id: result.result.lastInsertRowid, name: name.trim(), phone: phone.trim() });
 });
 
 // DELETE /api/ops-contacts/:id - 연락처 삭제
 app.delete("/api/ops-contacts/:id", (req, res) => {
+  const contact = db.prepare("SELECT name FROM ops_contacts WHERE id = ?").get(Number(req.params.id));
   const result = dbRun(() => db.prepare("DELETE FROM ops_contacts WHERE id = ?").run(Number(req.params.id)));
   if (!result.success) return res.status(result.status).send(result.error);
+  logger.log(req, "ops_contact.delete", null, contact?.name);
   res.status(200).send();
+});
+
+/* ============================================
+   로그 집계 API
+   ============================================ */
+const LOG_SERVICES = (() => {
+  const env = process.env.LOG_SERVICES || "";
+  const map = {};
+  for (const part of env.split(",").filter(Boolean)) {
+    const idx = part.indexOf(":");
+    if (idx === -1) continue;
+    const name = part.slice(0, idx).trim();
+    const url = part.slice(idx + 1).trim();
+    if (name && url) map[name] = url;
+  }
+  return map;
+})();
+
+// GET /api/admin/logs - 전체 서비스 로그 집계
+app.get("/api/admin/logs", async (req, res) => {
+  const { service, limit: qLimit, offset: qOffset, ...filters } = req.query;
+  const limit = Math.min(Number(qLimit) || 100, 500);
+  const offset = Number(qOffset) || 0;
+
+  // Build query string for forwarding
+  const qs = new URLSearchParams();
+  qs.set("limit", "500"); // fetch max from each service for merge
+  for (const [k, v] of Object.entries(filters)) {
+    if (v) qs.set(k, v);
+  }
+
+  const results = [];
+
+  // Determine which services to query
+  const targetServices = service
+    ? (service === "auth" ? { auth: null } : { [service]: LOG_SERVICES[service] })
+    : { auth: null, ...LOG_SERVICES };
+
+  const fetches = Object.entries(targetServices).map(async ([name, url]) => {
+    if (name === "auth") {
+      // Local query (no HTTP)
+      try {
+        const localQs = new URLSearchParams(qs);
+        const fakeReq = { query: Object.fromEntries(localQs), user: req.user, headers: req.headers };
+        const conditions = [];
+        const params = [];
+        if (filters.level) { conditions.push("level = ?"); params.push(filters.level); }
+        if (filters.action) { conditions.push("action LIKE ?"); params.push(filters.action + "%"); }
+        if (filters.actor) { conditions.push("(actor_email LIKE ? OR actor_name LIKE ?)"); params.push(`%${filters.actor}%`, `%${filters.actor}%`); }
+        if (filters.from) { conditions.push("timestamp >= ?"); params.push(filters.from); }
+        if (filters.to) { conditions.push("timestamp <= ?"); params.push(filters.to); }
+        if (filters.search) { conditions.push("(action LIKE ? OR target LIKE ? OR detail LIKE ?)"); params.push(`%${filters.search}%`, `%${filters.search}%`, `%${filters.search}%`); }
+        const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+        const total = db.prepare(`SELECT COUNT(*) as cnt FROM logs ${where}`).get(...params).cnt;
+        const logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY id DESC LIMIT 500`).all(...params);
+        return { name, logs: logs.map(l => ({ ...l, _service: name })), total };
+      } catch { return { name, logs: [], total: 0 }; }
+    }
+
+    try {
+      const fetchRes = await fetch(`${url}/api/logs?${qs}`, {
+        headers: { "X-Internal-Service": process.env.INTERNAL_SECRET || "" },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!fetchRes.ok) return { name, logs: [], total: 0 };
+      const data = await fetchRes.json();
+      return { name, logs: (data.logs || []).map(l => ({ ...l, _service: name })), total: data.total || 0 };
+    } catch {
+      return { name, logs: [], total: 0 };
+    }
+  });
+
+  const allResults = await Promise.all(fetches);
+
+  // Merge all logs by timestamp descending
+  let merged = [];
+  let totalSum = 0;
+  for (const r of allResults) {
+    merged.push(...r.logs);
+    totalSum += r.total;
+  }
+  merged.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+  // Apply offset/limit on merged result
+  const paged = merged.slice(offset, offset + limit);
+
+  res.json({ logs: paged, total: totalSum, services: Object.keys(targetServices) });
 });
 
 /* ============================================

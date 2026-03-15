@@ -19,22 +19,13 @@ const entries = ref([]);
 const form = ref({
   name: "",
   notice: "",
-  start_date: "",
-  start_h: "00",
-  start_m: "00",
-  end_date: "",
-  end_h: "23",
-  end_m: "59",
-  late_end_date: "",
-  late_end_h: "23",
-  late_end_m: "59",
+  start: "",
+  end: "",
+  late_end: "",
   max_file_size_mb: 50,
   allowed_extensions: "",
   teams: [],
 });
-
-const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"));
-const minutes = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, "0"));
 
 // 차량 유형 필터
 const typeFilters = ref({});
@@ -111,20 +102,16 @@ const allFilteredSelected = computed(() => {
 });
 
 function utcToLocal(utc) {
-  if (!utc) return { date: "", h: "00", m: "00" };
+  if (!utc) return "";
   const d = new Date(utc + "Z");
   const offset = d.getTimezoneOffset();
   const local = new Date(d.getTime() - offset * 60000);
-  return {
-    date: local.toISOString().slice(0, 10),
-    h: String(local.getUTCHours()).padStart(2, "0"),
-    m: String(local.getUTCMinutes()).padStart(2, "0"),
-  };
+  return local.toISOString().slice(0, 16);
 }
 
-function localToUTC(date, h, m) {
-  if (!date) return "";
-  const d = new Date(`${date}T${h || "00"}:${m || "00"}`);
+function localToUTC(datetimeLocal) {
+  if (!datetimeLocal) return "";
+  const d = new Date(datetimeLocal);
   return d.toISOString().replace("T", " ").slice(0, 19);
 }
 
@@ -135,15 +122,12 @@ async function loadSession() {
     const data = await res.json();
     const s = data.session;
     selectedYear.value = s.year;
-    const start = utcToLocal(s.start_at);
-    const end = utcToLocal(s.end_at);
-    const lateEnd = utcToLocal(s.late_end_at);
     form.value = {
       name: s.name,
       notice: s.notice || "",
-      start_date: start.date, start_h: start.h, start_m: start.m,
-      end_date: end.date, end_h: end.h, end_m: end.m,
-      late_end_date: lateEnd.date, late_end_h: lateEnd.h, late_end_m: lateEnd.m,
+      start: utcToLocal(s.start_at),
+      end: utcToLocal(s.end_at),
+      late_end: utcToLocal(s.late_end_at),
       max_file_size_mb: Math.round(s.max_file_size / 1024 / 1024),
       allowed_extensions: s.allowed_extensions || "",
       teams: data.status.map((t) => t.team_num),
@@ -157,14 +141,12 @@ async function loadSession() {
 
 async function save() {
   if (!form.value.name.trim()) { notyf.error("세션명을 입력하세요."); return; }
-  if (!form.value.start_date || !form.value.end_date) { notyf.error("날짜를 모두 입력하세요."); return; }
+  if (!form.value.start || !form.value.end) { notyf.error("시간을 모두 입력하세요."); return; }
   if (form.value.teams.length === 0) { notyf.error("대상 팀을 선택하세요."); return; }
 
-  const startUTC = localToUTC(form.value.start_date, form.value.start_h, form.value.start_m);
-  const endUTC = localToUTC(form.value.end_date, form.value.end_h, form.value.end_m);
-  const lateEndUTC = form.value.late_end_date
-    ? localToUTC(form.value.late_end_date, form.value.late_end_h, form.value.late_end_m)
-    : "";
+  const startUTC = localToUTC(form.value.start);
+  const endUTC = localToUTC(form.value.end);
+  const lateEndUTC = form.value.late_end ? localToUTC(form.value.late_end) : "";
 
   if (endUTC <= startUTC) { notyf.error("제출 마감은 시작 이후여야 합니다."); return; }
   if (lateEndUTC && lateEndUTC < endUTC) { notyf.error("지각 마감은 제출 마감 이후여야 합니다."); return; }
@@ -249,33 +231,15 @@ onMounted(async () => {
             <div class="time-section">
               <div class="time-row">
                 <label class="time-label">시작</label>
-                <input v-model="form.start_date" type="date" class="form-input" required />
-                <div class="time-selects">
-                  <select v-model="form.start_h" class="form-select time-sel"><option v-for="h in hours" :key="h" :value="h">{{ h }}</option></select>
-                  <span class="time-unit">시</span>
-                  <select v-model="form.start_m" class="form-select time-sel"><option v-for="m in minutes" :key="m" :value="m">{{ m }}</option></select>
-                  <span class="time-unit">분</span>
-                </div>
+                <input v-model="form.start" type="datetime-local" class="form-input" required />
               </div>
               <div class="time-row">
                 <label class="time-label">마감</label>
-                <input v-model="form.end_date" type="date" class="form-input" required />
-                <div class="time-selects">
-                  <select v-model="form.end_h" class="form-select time-sel"><option v-for="h in hours" :key="h" :value="h">{{ h }}</option></select>
-                  <span class="time-unit">시</span>
-                  <select v-model="form.end_m" class="form-select time-sel"><option v-for="m in minutes" :key="m" :value="m">{{ m }}</option></select>
-                  <span class="time-unit">분</span>
-                </div>
+                <input v-model="form.end" type="datetime-local" class="form-input" required />
               </div>
               <div class="time-row">
                 <label class="time-label">지각 마감</label>
-                <input v-model="form.late_end_date" type="date" class="form-input" />
-                <div class="time-selects">
-                  <select v-model="form.late_end_h" class="form-select time-sel"><option v-for="h in hours" :key="h" :value="h">{{ h }}</option></select>
-                  <span class="time-unit">시</span>
-                  <select v-model="form.late_end_m" class="form-select time-sel"><option v-for="m in minutes" :key="m" :value="m">{{ m }}</option></select>
-                  <span class="time-unit">분</span>
-                </div>
+                <input v-model="form.late_end" type="datetime-local" class="form-input" />
               </div>
             </div>
 
@@ -387,26 +351,7 @@ onMounted(async () => {
 
 .time-row .form-input {
   width: auto;
-}
-
-.time-selects {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.time-sel {
-  padding: 0.5rem 0.375rem;
-  min-width: 3.5rem;
-  text-align: center;
-  font-family: "JetBrains Mono", monospace;
-}
-
-.time-unit {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--text-secondary);
-  flex-shrink: 0;
+  flex: 1;
 }
 
 .constraint-row {
@@ -536,14 +481,6 @@ onMounted(async () => {
 
   .time-row .form-input {
     width: 100%;
-  }
-
-  .time-selects {
-    width: 100%;
-  }
-
-  .time-sel {
-    flex: 1;
   }
 
   .constraint-row {

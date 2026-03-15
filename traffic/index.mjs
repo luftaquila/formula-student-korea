@@ -1,9 +1,9 @@
 import fs from "fs";
 import path from "path";
 import express from "express";
-import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createLogger } from "../shared/logger.mjs";
 
 /* ============================================
    Database 초기화
@@ -60,9 +60,13 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = createApp("traffic.log", { express, pinoHttp }, (req) => {
+const logger = createLogger(db, "traffic");
+
+const app = createApp({ express }, (req) => {
   return "admin";
 });
+
+app.get("/api/logs", logger.queryHandler);
 
 /* ============================================
    SSE (Server-Sent Events) 설정
@@ -228,6 +232,8 @@ app.post("/api/records", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "record.create", { entry_num: data.entry.num, type: data.type, result: data.result }, name);
+
   // SSE 브로드캐스트
   broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: { num: data.entry.num, eventType: data.type } });
 
@@ -292,6 +298,8 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "record.update", { rowid, field, value }, name);
+
   // SSE 브로드캐스트 (무효화 변경 시 팀/종목 정보 포함)
   let record = null;
   if (field === "invalidated") {
@@ -321,6 +329,8 @@ app.delete("/api/records/:name", (req, res) => {
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
+
+  logger.log(req, "record.delete", null, name);
 
   // SSE 브로드캐스트
   broadcastEvent("records", { type: "delete", name, recordFiles: getRecordFiles() });
@@ -358,6 +368,7 @@ app.post("/api/controllers", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "controller.create", { timestamp: req.body.timestamp });
   res.status(201).send();
 });
 
@@ -369,6 +380,7 @@ app.delete("/api/controllers", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "controller.delete_all");
   res.status(200).send();
 });
 
@@ -394,6 +406,8 @@ app.put("/api/event-modes/:type", (req, res) => {
     db.prepare("UPDATE event_mode SET enabled = ? WHERE event_type = ?").run(newEnabled, eventType),
   );
   if (!result.success) return res.status(result.status).send(result.error);
+
+  logger.log(req, "event_mode.toggle", { enabled: !!newEnabled }, eventType);
 
   broadcastEvent("event-mode", { event_type: eventType, enabled: newEnabled });
   res.json({ event_type: eventType, enabled: newEnabled });

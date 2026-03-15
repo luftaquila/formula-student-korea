@@ -2,10 +2,10 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import express from "express";
-import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
 import Busboy from "busboy";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createLogger } from "../shared/logger.mjs";
 
 /* ============================================
    Database 초기화
@@ -82,12 +82,16 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = createApp("documents.log", { express, pinoHttp }, (req) => {
+const logger = createLogger(db, "documents");
+
+const app = createApp({ express }, (req) => {
   if (req.path.startsWith("/api/admin")) return "chief";
   if (req.path.startsWith("/api/")) return "student";
   if (req.path.startsWith("/admin")) return "chief";
   return "student";
 });
+
+app.get("/api/logs", logger.queryHandler);
 
 const dbRun = createDbRun();
 
@@ -324,6 +328,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     }
 
     const { prevId, ...result } = txResult.result;
+    logger.log(req, "submission.create", { session_id: session.id, team_num: team.team_num, files: filesInfo.length, size: totalSize, is_late: isLate }, session.name);
     res.json(result);
   });
 
@@ -402,6 +407,7 @@ app.post("/api/admin/sessions", (req, res) => {
   });
 
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+  logger.log(req, "session.create", { year, teams: teams.length }, name.trim());
   res.status(201).json(txResult.result);
 });
 
@@ -437,6 +443,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   });
 
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+  logger.log(req, "session.update", { id }, name.trim());
   res.status(200).send();
 });
 
@@ -451,6 +458,8 @@ app.delete("/api/admin/sessions/:id", (req, res) => {
   });
 
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+
+  logger.log(req, "session.delete", { id, year: session.year }, session.name);
 
   // 파일 비동기 삭제
   rmDir(path.join(UPLOADS_DIR, String(id)));
@@ -540,6 +549,7 @@ app.post("/api/admin/student-teams", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "student_team.create", { team_num: Number(team_num), year: Number(year) }, email.trim().toLowerCase());
   res.status(201).json({ email: email.trim().toLowerCase(), team_num: Number(team_num), year: Number(year) });
 });
 
@@ -548,6 +558,7 @@ app.delete("/api/admin/student-teams/:email", (req, res) => {
   const result = dbRun(() => db.prepare("DELETE FROM student_team WHERE email = ?").run(decodeURIComponent(req.params.email)));
   if (!result.success) return res.status(result.status).send(result.error);
   if (result.result.changes === 0) return res.status(404).send("매핑을 찾을 수 없습니다.");
+  logger.log(req, "student_team.delete", null, decodeURIComponent(req.params.email));
   res.status(200).send();
 });
 

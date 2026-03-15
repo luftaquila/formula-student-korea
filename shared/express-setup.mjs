@@ -38,8 +38,8 @@ function verifyJWT(token, secret) {
   return payload;
 }
 
-export function createApp(logFile, deps, authRoleFn) {
-  const { express, pinoHttp } = deps;
+export function createApp(deps, authRoleFn) {
+  const { express } = deps;
   ensureDataDir();
 
   const app = express();
@@ -163,17 +163,6 @@ export function createApp(logFile, deps, authRoleFn) {
 
   // 4. Static files (after auth middleware)
   app.use(express.static("./web/dist"));
-
-  // 5. Logging
-  app.use(
-    pinoHttp({
-      stream: fs.createWriteStream(`./data/${logFile}`, { flags: "a" }),
-      customProps: (req, res) => {
-        if (req.path.includes("/callback") || req.path.includes("/login")) return {};
-        return { reqBody: req.body };
-      },
-    }),
-  );
 
   return app;
 }

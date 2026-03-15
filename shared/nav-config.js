@@ -19,6 +19,7 @@ export const admins = [
   { name: "계측 시스템", href: "/traffic", icon: "traffic" },
   { name: "성적 관리", href: "/score", icon: "score" },
   { name: "계정 관리", href: "/auth", icon: "auth" },
+  { name: "시스템 로그", href: "/auth/logs", icon: "logs" },
 ];
 
 export const icons = {
@@ -33,6 +34,7 @@ export const icons = {
   sheet: "📋",
   score: "📊",
   auth: "🔑",
+  logs: "📜",
   pitbot: "💽",
   documents: "📄",
   "documents-admin": "📑",

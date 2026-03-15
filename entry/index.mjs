@@ -1,7 +1,7 @@
 import express from "express";
-import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createLogger } from "../shared/logger.mjs";
 
 /* ============================================
    Database 초기화
@@ -64,11 +64,15 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = createApp("entry.log", { express, pinoHttp }, (req) => {
+const logger = createLogger(db, "entry");
+
+const app = createApp({ express }, (req) => {
   if (req.path === "/api/years") return null;
   if (req.path === "/api/entries") return null;
   return "admin";
 });
+
+app.get("/api/logs", logger.queryHandler);
 
 /* ============================================
    Validation 헬퍼
@@ -221,6 +225,7 @@ app.post("/api/entries", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "entry.create", { year, univ: dataValidation.univ, team: dataValidation.team, type: dataValidation.type }, `#${numValidation.value}`);
   res.status(201).send();
 });
 
@@ -273,6 +278,7 @@ app.patch("/api/entries/:num", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "entry.update", { year, univ: dataValidation.univ, team: dataValidation.team, type: dataValidation.type }, `#${newNum}`);
   res.status(200).send();
 });
 
@@ -297,6 +303,7 @@ app.delete("/api/entries/:num", (req, res) => {
     return res.status(404).send("존재하지 않는 엔트리 번호입니다.");
   }
 
+  logger.log(req, "entry.delete", { year }, `#${numValidation.value}`);
   res.status(200).send();
 });
 
@@ -312,6 +319,7 @@ app.delete("/api/entries", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "entry.delete_all", { year });
   res.status(200).send();
 });
 
@@ -340,6 +348,7 @@ app.post("/api/entries/bulk", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "entry.bulk_upload", { year, count: Object.keys(validation.data).length });
   res.status(200).send();
 });
 
@@ -371,6 +380,7 @@ app.post("/api/vehicle-types", (req, res) => {
     }
     return res.status(result.status).send(result.error);
   }
+  logger.log(req, "vehicle_type.create", null, name.trim());
   res.status(201).json({ id: result.result.lastInsertRowid, name: name.trim(), sort_order: nextOrder });
 });
 
@@ -393,6 +403,7 @@ app.delete("/api/vehicle-types/:id", (req, res) => {
   });
 
   if (!result.success) return res.status(result.status).send(result.error);
+  logger.log(req, "vehicle_type.delete", null, type.name);
   res.status(200).send();
 });
 

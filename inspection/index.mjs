@@ -1,7 +1,7 @@
 import express from "express";
-import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createLogger } from "../shared/logger.mjs";
 
 /* ============================================
    Database 초기화
@@ -104,11 +104,15 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = createApp("sheet.log", { express, pinoHttp }, (req) => {
+const logger = createLogger(db, "inspection");
+
+const app = createApp({ express }, (req) => {
   if (req.path.startsWith("/api/sheet/template") && req.method !== "GET") return "admin";
   if (req.path.startsWith("/api/")) return "official";
   return "official"; // SPA
 });
+
+app.get("/api/logs", logger.queryHandler);
 
 /* ============================================
    DB 헬퍼
@@ -187,6 +191,7 @@ app.post("/api/sheet/template", (req, res) => {
   );
 
   if (!result.success) return res.status(result.status).send(result.error);
+  logger.log(req, "template.create", { year, level }, name);
   res.json({ id: result.result.lastInsertRowid });
 });
 
@@ -212,6 +217,7 @@ app.put("/api/sheet/template/:id", (req, res) => {
   );
 
   if (!result.success) return res.status(result.status).send(result.error);
+  logger.log(req, "template.update", { fields: fields.map(f => f.split(" = ")[0]) }, String(id));
   res.status(200).send();
 });
 
@@ -226,6 +232,7 @@ app.delete("/api/sheet/template/:id", (req, res) => {
 
   if (!result.success) return res.status(result.status).send(result.error);
   if (!result.result.changes) return res.status(404).send("노드를 찾을 수 없습니다.");
+  logger.log(req, "template.delete", null, String(id));
   res.status(200).send();
 });
 
@@ -244,6 +251,7 @@ app.post("/api/sheet/template/reorder", (req, res) => {
   });
 
   if (!result.success) return res.status(result.status).send(result.error);
+  logger.log(req, "template.reorder", { count: items.length });
   res.status(200).send();
 });
 
@@ -273,6 +281,7 @@ app.post("/api/sheet/template/copy", (req, res) => {
   });
 
   if (!result.success) return res.status(result.status).send(result.error);
+  logger.log(req, "template.copy", { from_year, to_year });
   res.status(201).send();
 });
 
@@ -319,6 +328,7 @@ app.post("/api/sheet/template/import", (req, res) => {
   });
 
   if (!result.success) return res.status(result.status).send(result.error);
+  logger.log(req, "template.import", { year });
   res.status(201).send();
 });
 
@@ -439,6 +449,7 @@ app.put("/api/sheet/answer", (req, res) => {
   if (!result.success) return res.status(result.status).send(result.error);
 
   if (result.result.changed) {
+    logger.log(req, "answer.update", { year, item_id, value: newValue }, `#${team_num}`);
     broadcastEvent("answer", { year, team_num, item_id, value: newValue });
   }
 
@@ -458,6 +469,7 @@ app.put("/api/sheet/memo", (req, res) => {
 
   if (!result.success) return res.status(result.status).send(result.error);
 
+  logger.log(req, "memo.update", { year, item_id }, `#${team_num}`);
   broadcastEvent("memo", { year, team_num, item_id, memo: memo ?? "" });
 
   res.status(200).send();
@@ -476,6 +488,7 @@ app.put("/api/sheet/category-result", (req, res) => {
 
   if (!r.success) return res.status(r.status).send(r.error);
 
+  logger.log(req, "category_result.update", { year, category_id, result: catResult }, `#${team_num}`);
   broadcastEvent("category-result", { year, team_num, category_id, result: catResult ?? "" });
 
   res.status(200).send();
@@ -494,6 +507,7 @@ app.put("/api/sheet/inspector", (req, res) => {
 
   if (!result.success) return res.status(result.status).send(result.error);
 
+  logger.log(req, "inspector.update", { year, category_id, inspector }, `#${team_num}`);
   if (req.body.broadcast) {
     broadcastEvent("inspector", { year, team_num, category_id, inspector: inspector ?? "" });
   }

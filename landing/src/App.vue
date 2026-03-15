@@ -47,6 +47,7 @@
           <ServiceCard title="계측 시스템" description="" path="/traffic" icon="🚦" />
           <ServiceCard title="성적 관리" description="" path="/score" icon="📊" />
           <ServiceCard title="계정 관리" description="" path="/auth" icon="🔑" />
+          <ServiceCard title="시스템 로그" description="" path="/auth/logs" icon="📜" />
         </div>
       </section>
     </main>

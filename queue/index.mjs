@@ -2,9 +2,9 @@ import http from "http";
 import https from "https";
 import crypto from "crypto";
 import express from "express";
-import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createLogger } from "../shared/logger.mjs";
 
 const inspections = {
   battery: "배터리",
@@ -162,11 +162,15 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const app = createApp("queue.log", { express, pinoHttp }, (req) => {
+const logger = createLogger(db, "queue");
+
+const app = createApp({ express }, (req) => {
   if (req.path.startsWith("/api/admin")) return "official";
   if (/^\/(admin|register|priority|stats)/.test(req.path)) return "official";
   return null; // public
 });
+
+app.get("/api/logs", logger.queryHandler);
 
 /* ============================================
    SSE (Server-Sent Events) 설정
@@ -431,6 +435,8 @@ app.patch("/api/admin/inspection/:type", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "inspection.update", { active: req.body.active === true }, req.params.type);
+
   // SSE 브로드캐스트: 활성 검차 목록 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
   broadcastEvent("inspections", { activeInspections });
@@ -454,6 +460,8 @@ app.patch("/api/admin/inspection/:type/visibility", (req, res) => {
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
+
+  logger.log(req, "inspection.visibility", { active: !(req.body.hidden === true) }, req.params.type);
 
   // SSE 브로드캐스트: 활성 검차 목록 변경 (hidden 정보 포함)
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
@@ -572,6 +580,8 @@ app.post("/api/admin/register/:type", async (req, res) => {
   // 대기열 이벤트 로그 기록
   db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run("register", num, type, Date.now());
 
+  logger.log(req, "queue.register", { inspection: type, phone }, `#${num}`);
+
   // SSE 브로드캐스트: 대기열 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
   broadcastEvent("queue", { type, activeInspections });
@@ -643,6 +653,8 @@ app.post("/api/admin/cancel/:type", (req, res) => {
   // 대기열 이벤트 로그 기록
   db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run("cancel", num, type, Date.now());
 
+  logger.log(req, "queue.cancel", { inspection: type }, `#${num}`);
+
   // SSE 브로드캐스트: 대기열 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
   broadcastEvent("queue", { type, activeInspections });
@@ -699,6 +711,8 @@ app.post("/api/admin/priority/:type", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "priority.set", { inspection: req.params.type, priority: priorityValidation.value }, `#${numValidation.value}`);
+
   // SSE 브로드캐스트: 우선순위 변경 -> 대기열 순서 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
   broadcastEvent("queue", { type: req.params.type, activeInspections });
@@ -730,6 +744,8 @@ app.delete("/api/admin/priority/:type", (req, res) => {
     return res.status(400).send("존재하지 않는 우선순위 엔트리입니다.");
   }
 
+  logger.log(req, "priority.delete", { inspection: req.params.type }, `#${numValidation.value}`);
+
   // SSE 브로드캐스트: 우선순위 변경 -> 대기열 순서 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
   broadcastEvent("queue", { type: req.params.type, activeInspections });
@@ -749,6 +765,8 @@ app.delete("/api/admin/priority/:type/all", (req, res) => {
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
+
+  logger.log(req, "priority.delete_all", null, req.params.type);
 
   // SSE 브로드캐스트: 우선순위 변경 -> 대기열 순서 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
@@ -776,6 +794,8 @@ app.delete("/api/admin/history/:type", (req, res) => {
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
+
+  logger.log(req, "history.delete", null, type);
 
   // SSE 브로드캐스트: 이력 초기화 -> 대기열 순서 변경 및 부스 상태 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
@@ -806,6 +826,8 @@ app.put("/api/admin/inspection/:type/ignore", (req, res) => {
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
+
+  logger.log(req, "inspection.ignore_update", { field, value: !!value }, type);
 
   // SSE 브로드캐스트: 설정 변경 -> 대기열 순서 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
@@ -886,6 +908,8 @@ app.patch("/api/admin/booths/:type/config", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "booth.config_update", { count }, type);
+
   // SSE 브로드캐스트: 부스 상태 변경
   const booths = getBoothsForType(type);
   broadcastEvent("booth", { type, booths });
@@ -926,6 +950,8 @@ app.patch("/api/admin/booths/:type/:boothNum", (req, res) => {
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
+
+  logger.log(req, "booth.toggle", { booth: boothNum, active: req.body.active === true }, type);
 
   // SSE 브로드캐스트: 부스 상태 변경
   const booths = getBoothsForType(type);
@@ -1016,6 +1042,8 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "booth.enter", { inspection: type, booth: boothNum }, `#${num}`);
+
   // SSE 브로드캐스트: 부스 및 대기열 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
   broadcastEvent("booth", { type, booths: getBoothsForType(type) });
@@ -1072,6 +1100,8 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
+
+  logger.log(req, "booth.exit", { inspection: type, booth: boothNum }, `#${db.prepare("SELECT num FROM booth_log WHERE inspection = ? AND booth_num = ? ORDER BY id DESC LIMIT 1").get(type, boothNum)?.num || "?"}`);
 
   // SSE 브로드캐스트: 부스 및 대기열 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
@@ -1369,6 +1399,7 @@ app.patch("/api/admin/settings/sms", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "settings.sms", { enabled: req.body.value === true });
   res.status(200).send();
 });
 
@@ -1396,6 +1427,7 @@ app.patch("/api/admin/settings/sms-rank", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "settings.sms_rank", { rank });
   res.status(200).send();
 });
 
@@ -1425,6 +1457,7 @@ app.patch("/api/admin/settings/cancel-penalty", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  logger.log(req, "settings.cancel_penalty", { minutes });
   res.status(200).send();
 });
 

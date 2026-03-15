@@ -28,6 +28,7 @@ All 7 backend services (auth, entry, queue, inspection, traffic, score, document
 - `styles/base.css` - Common CSS variables, resets, and component styles
 - `styles/layout.css` - Common app layout CSS (header, main-content, responsive) — uses `--layout-max-width` CSS variable for per-service width customization
 - `express-setup.mjs` - Express app factory with cookie parsing, JWT auth middleware, process handlers, DB error helper; exports `ROLE_LEVELS` map and `VALID_ROLES` array
+- `logger.mjs` - SQLite-based semantic logger factory `createLogger(db, serviceName, maxRows)` — structured action logging with auto-cleanup and query endpoint
 - `api-base.js` - Frontend API client factory with 401 redirect and entry service helpers
 - `NavMenu.vue` - Navigation drawer component used across all frontends
 - `nav-config.js` - Service menu configuration (services, officials, admins arrays; items may have `auth` property (e.g. `"student"`, `"chief"`) to restrict visibility by role level)
@@ -54,7 +55,7 @@ All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs
 - **Auth:** Google OAuth 2.0, JWT (HMAC-SHA256) cookies, role-based access control
 - **Real-time:** Server-Sent Events (SSE) for live updates across inspection, queue, score, and traffic services
 - **Deployment:** Docker Compose with Caddy reverse proxy
-- **Logging:** Pino-HTTP
+- **Logging:** SQLite-based semantic logging (`shared/logger.mjs`)
 
 ## Build Commands
 
@@ -85,8 +86,9 @@ podman compose --profile local up -d    # Start all containers (local dev)
 - `shared/vite-config.js` - Shared Vite config factory used by all 7 frontend builds
 - `shared/styles/layout.css` - Common app layout CSS shared across all frontends
 - `shared/express-setup.mjs` - Shared Express app factory with JWT auth middleware
+- `shared/logger.mjs` - Shared SQLite semantic logger
 - `landing/Caddyfile` - Route configuration for all services (reverse proxy, zstd/gzip compression excluding `text/event-stream`, static asset caching)
-- `auth/index.mjs` - Auth service API server (Google OAuth, user management)
+- `auth/index.mjs` - Auth service API server (Google OAuth, user management, log aggregation)
 - `entry/index.mjs` - Entry service API server
 - `queue/index.mjs` - Queue service API server
 - `inspection/index.mjs` - Inspection sheet service API server
@@ -117,7 +119,7 @@ Google OAuth 2.0 with JWT cookie-based sessions. Auth logic is handled by backen
 
 Role levels are defined in `shared/express-setup.mjs` as `ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 }`. Auth middleware compares user's role level against the required role level — a user with a higher-level role can access lower-level resources.
 
-Each service's `createApp()` receives an `authRoleFn(req)` callback that returns:
+Each service's `createApp(deps, authRoleFn)` receives `deps` (`{ express, validateUser? }`) and an `authRoleFn(req)` callback that returns:
 - `null` — public (no auth required)
 - `"student"` — student or above (student, official, chief, admin)
 - `"official"` — official or above (official, chief, admin)
@@ -141,7 +143,7 @@ Each service's `createApp()` receives an `authRoleFn(req)` callback that returns
 **traffic** — everything admin
 **score** — everything admin
 **documents** — `/api/admin/*` and `/admin/*` SPA pages chief, all other API/SPA student
-**auth** — login/callback/logout and SPA public, `/api/users` (and `/api/users/*`) admin, everything else public
+**auth** — login/callback/logout and SPA public, `/api/admin/*` and `/api/users` (and `/api/users/*`) admin, everything else public
 
 ### Inter-service communication
 Score service uses `X-Internal-Service` header (matching `INTERNAL_SECRET` env var) when calling inspection/traffic APIs. The middleware auto-authenticates these as admin.
@@ -154,6 +156,7 @@ See `.env.example` for all required variables:
 - `JWT_SECRET` — HMAC key for JWT signing (omit for dev auto-auth)
 - `INTERNAL_SECRET` — Service-to-service auth token
 - `ADMIN_EMAIL` — Bootstrap admin email on first auth service start
+- `LOG_SERVICES` — Auth service log aggregation: comma-separated `name:url` pairs (e.g., `entry:http://entry:9100,queue:http://queue:9300,...`)
 - `NAVER_CLOUD_ACCESS_KEY`, `NAVER_CLOUD_SECRET_KEY`, `NAVER_CLOUD_SMS_SERVICE_ID`, `PHONE_NUMBER_SMS_SENDER` — Queue SMS API (optional)
 
 ## Environment-Aware Builds
@@ -165,13 +168,34 @@ Production builds use service-specific base paths (`/auth/`, `/entry/`, `/queue/
 All SQLite databases use WAL mode (`journal_mode=WAL`, `synchronous=NORMAL`). Each `.db` file has accompanying `-wal` and `-shm` files that must be included in backups.
 
 SQLite databases stored in volume-mounted directories:
-- `auth/data/` - auth.db, auth.log
-- `entry/data/` - entry.db, entry.log
-- `queue/data/` - queue.db, queue.log
-- `inspection/data/` - sheet.db, sheet.log
-- `traffic/data/` - traffic.db, traffic.log
-- `score/data/` - score.db, score.log
-- `documents/data/` - documents.db, documents.log, uploads/
+- `auth/data/` - auth.db
+- `entry/data/` - entry.db
+- `queue/data/` - queue.db
+- `inspection/data/` - sheet.db
+- `traffic/data/` - traffic.db
+- `score/data/` - score.db
+- `documents/data/` - documents.db, uploads/
+
+Each service's database includes a `logs` table for semantic action logging (managed by `shared/logger.mjs`).
+
+## Logging System
+
+SQLite-based semantic logging replaces the previous pino-http NDJSON file logging. Each service uses `shared/logger.mjs` to record structured action logs to a `logs` table in its own database.
+
+### Logger API
+`createLogger(db, serviceName, maxRows = 10000)` returns:
+- `log(req, action, detail?, target?, actorOverride?)` — info level
+- `warn(req, action, detail?, target?, actorOverride?)` — warn level
+- `error(req, action, detail?, target?, actorOverride?)` — error level
+- `queryHandler` — Express route handler for `GET /api/logs` (admin or internal service only)
+
+Actor is extracted from `req.user`; `actorOverride` is used when `req.user` is unavailable (e.g., OAuth callback). Detail is auto-serialized to JSON if not a string. Auto-cleanup runs hourly, keeping only the newest `maxRows` entries.
+
+### Log Aggregation
+Auth service provides `GET /api/admin/logs` which queries all services' `/api/logs` endpoints in parallel (via `LOG_SERVICES` env var) and merges results by timestamp. The admin log viewer UI is at `/auth/logs`.
+
+### Per-service Log Query
+Each service exposes `GET /api/logs` with query parameters: `limit`, `offset`, `level`, `action` (prefix match), `actor` (substring), `from`, `to`, `search` (action/target/detail). Requires admin role or `X-Internal-Service` header.
 
 ## Traffic Service: Event Modes
 
