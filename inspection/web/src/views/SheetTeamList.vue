@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { fetchEntries, fetchEntryYears, fetchSheetSummary } from "../api";
 import { useNotification } from "../composables/useNotification";
 import { useSSE } from "../composables/useSSE";
+import { isAdmin } from "@shared/officialsStore.js";
 
 const { error } = useNotification();
 const router = useRouter();
@@ -99,10 +100,6 @@ watch(lastInspectorUpdate, (update) => {
 
 <template>
   <div class="sheet-list-page">
-    <div class="top-actions">
-      <button class="btn btn-ghost" @click="router.push('/template')">템플릿 관리</button>
-    </div>
-
     <div class="filter-bar">
       <div class="filter-group">
         <label class="filter-label">엔트리</label>
@@ -113,6 +110,10 @@ watch(lastInspectorUpdate, (update) => {
       <div class="filter-group">
         <label class="filter-label">검색</label>
         <input class="filter-input" v-model="searchQuery" placeholder="번호 / 학교 / 팀명" />
+      </div>
+      <div v-if="isAdmin" class="filter-group template-action">
+        <label class="filter-label">&nbsp;</label>
+        <button class="btn btn-ghost" @click="router.push('/template')">템플릿 관리</button>
       </div>
     </div>
 
@@ -179,20 +180,19 @@ watch(lastInspectorUpdate, (update) => {
   gap: 1rem;
 }
 
-.top-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-}
-
 .filter-bar {
   display: flex;
   flex-wrap: wrap;
   gap: 1rem;
+  align-items: flex-end;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: 12px;
   padding: 1rem 1.25rem;
+}
+
+.template-action {
+  margin-left: auto;
 }
 
 .filter-group {
@@ -351,9 +351,18 @@ watch(lastInspectorUpdate, (update) => {
 @media (max-width: 640px) {
   .filter-bar {
     flex-direction: column;
+    align-items: stretch;
   }
 
   .filter-input {
+    width: 100%;
+  }
+
+  .template-action {
+    margin-left: 0;
+  }
+
+  .template-action .btn {
     width: 100%;
   }
 }

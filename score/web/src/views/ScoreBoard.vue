@@ -1397,6 +1397,7 @@ function exportData(format) {
 .bottom-row > .setting-card {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 
 .setting-table {
@@ -1405,12 +1406,18 @@ function exportData(format) {
 
 .col-setting-label {
   white-space: nowrap;
+  width: 1%;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-card);
 }
 
 .setting-table thead .col-setting-label {
   font-size: 1rem;
   font-weight: 600;
   color: var(--text-primary);
+  z-index: 3;
 }
 
 .setting-table tbody .col-setting-label {
@@ -1422,6 +1429,7 @@ function exportData(format) {
 .col-setting-value {
   text-align: center !important;
   white-space: nowrap;
+  width: 1%;
 }
 
 .setting-input {
@@ -1483,7 +1491,7 @@ function exportData(format) {
 }
 
 .expanded-row .col-num {
-  background: rgba(59, 130, 246, 0.04);
+  background: var(--bg-card);
 }
 
 /* Detail row */
@@ -1503,7 +1511,7 @@ function exportData(format) {
 .detail-row .detail-empty {
   position: sticky;
   left: 0;
-  width: 100vw;
+  max-width: 100vw;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1607,6 +1615,7 @@ td.run-dnf {
   .top-row,
   .bottom-row {
     flex-direction: column;
+    align-items: stretch;
   }
 
   .filter-bar {
@@ -1616,6 +1625,10 @@ td.run-dnf {
 
   .filter-group {
     width: 100%;
+  }
+
+  .mode-toggle {
+    width: fit-content;
   }
 
   .filter-input {

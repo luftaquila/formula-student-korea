@@ -1367,11 +1367,11 @@ async function handleAddRecord() {
 
   .toolbar-right {
     flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
-  .toolbar-right .btn {
-    flex: 1;
-    min-width: 80px;
+  .type-filters {
+    flex-wrap: wrap;
   }
 
   .add-form-fields {

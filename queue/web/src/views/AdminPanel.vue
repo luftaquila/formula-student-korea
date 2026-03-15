@@ -427,30 +427,30 @@ function goToStats() {
             </div>
             <div v-if="currentQueue.length > 0" class="queue-list">
               <div v-for="(item, index) in currentQueue" :key="item.num" class="queue-item">
-                <div class="queue-item-header">
-                  <div class="queue-item-left">
-                    <span class="entry-num">{{ item.num }}</span>
-                    <span class="entry-detail">{{ entries[item.num]?.univ }} {{ entries[item.num]?.team }}</span>
+                <div class="queue-item-content">
+                  <div class="queue-item-header">
+                    <div class="queue-item-left">
+                      <span class="entry-num">{{ item.num }}</span>
+                      <span class="entry-detail">{{ entries[item.num]?.univ }} {{ entries[item.num]?.team }}</span>
+                    </div>
+                    <div class="queue-item-badges">
+                      <span v-if="item.priority < 999" class="badge badge-primary">{{ item.priority }}순위</span>
+                    </div>
                   </div>
-                  <div class="queue-item-badges">
-                    <span v-if="item.is_reinspection" class="badge badge-warning">재검</span>
-                    <span v-else class="badge badge-success">초검</span>
-                    <span v-if="item.priority < 999" class="badge badge-primary">{{ item.priority }}순위</span>
-                  </div>
-                </div>
-                <div class="queue-item-footer">
                   <div class="queue-item-meta">
                     <a :href="`tel:${item.phone}`" class="entry-phone">{{ formatPhone(item.phone) }}</a>
                     <span class="entry-time">{{ formatTime(item.timestamp) }}</span>
+                    <span v-if="item.is_reinspection" class="badge badge-warning">재검</span>
+                    <span v-else class="badge badge-success">초검</span>
                   </div>
-                  <div class="action-buttons">
-                    <button class="btn btn-danger btn-icon btn-sm" @click="cancelEntry(item.num)" title="취소">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                        <line x1="18" y1="6" x2="6" y2="18" />
-                        <line x1="6" y1="6" x2="18" y2="18" />
-                      </svg>
-                    </button>
-                  </div>
+                </div>
+                <div class="action-buttons">
+                  <button class="btn btn-danger btn-icon btn-sm" @click="cancelEntry(item.num)" title="취소">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
                 </div>
               </div>
             </div>
@@ -611,12 +611,20 @@ function goToStats() {
 }
 
 .queue-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
   padding: 0.875rem 1rem;
   border-bottom: 1px solid var(--border-color);
 }
 
 .queue-item:last-child {
   border-bottom: none;
+}
+
+.queue-item-content {
+  flex: 1;
+  min-width: 0;
 }
 
 .queue-item-header {
@@ -638,13 +646,6 @@ function goToStats() {
   display: flex;
   gap: 0.375rem;
   flex-shrink: 0;
-}
-
-.queue-item-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.75rem;
 }
 
 .queue-item-meta {
@@ -1085,13 +1086,7 @@ function goToStats() {
     font-size: 0.8125rem;
   }
 
-  .queue-item-footer {
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-
   .queue-item-meta {
-    flex: 1;
     gap: 0.75rem;
   }
 
