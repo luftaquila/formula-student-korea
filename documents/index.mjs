@@ -108,9 +108,11 @@ function safeExt(filename) {
 }
 
 function rmDir(dir) {
-  fs.rm(dir, { recursive: true, force: true }, (err) => {
-    if (err) console.error("rmDir failed:", dir, err.message);
-  });
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (err) {
+    console.error("rmDir failed:", dir, err.message);
+  }
 }
 
 /* ============================================
@@ -320,8 +322,21 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 
     // 파일시스템 조작은 트랜잭션 성공 후 수행
     const finalDir = path.join(UPLOADS_DIR, String(session.id), String(team.team_num), String(txResult.result.id));
-    fs.mkdirSync(path.dirname(finalDir), { recursive: true });
-    fs.renameSync(tmpDir, finalDir);
+    try {
+      fs.mkdirSync(path.dirname(finalDir), { recursive: true });
+      fs.renameSync(tmpDir, finalDir);
+    } catch (fsErr) {
+      console.error("File operation failed after DB commit:", fsErr.message);
+      try {
+        db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(txResult.result.id);
+        db.prepare("DELETE FROM submission WHERE id = ?").run(txResult.result.id);
+      } catch (rollbackErr) {
+        console.error("DB rollback after file error also failed:", rollbackErr.message);
+      }
+      rmDir(tmpDir);
+      if (!res.headersSent) return res.status(500).send("파일 저장에 실패했습니다.");
+      return;
+    }
 
     if (txResult.result.prevId) {
       rmDir(path.join(UPLOADS_DIR, String(session.id), String(team.team_num), String(txResult.result.prevId)));

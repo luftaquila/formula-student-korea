@@ -1487,7 +1487,7 @@ async function getEntries() {
 
 function sendSmsNotification(type, prev) {
   try {
-    if (db.prepare(`SELECT value FROM settings WHERE key = 'sms'`).get().value !== "TRUE") {
+    if (db.prepare(`SELECT value FROM settings WHERE key = 'sms'`).get()?.value !== "TRUE") {
       return;
     }
 

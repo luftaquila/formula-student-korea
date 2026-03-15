@@ -18,27 +18,30 @@ db.pragma("synchronous = NORMAL");
   const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='sheet_template'").get();
   if (schema && !schema.sql.includes("checktable")) {
     db.pragma("foreign_keys = OFF");
-    db.transaction(() => {
-      db.exec(`CREATE TABLE sheet_template_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        year INTEGER NOT NULL,
-        level TEXT NOT NULL CHECK(level IN ('category', 'subcategory', 'group', 'item')),
-        parent_id INTEGER,
-        sort_order INTEGER NOT NULL DEFAULT 0,
-        name TEXT NOT NULL,
-        answer_type TEXT CHECK(answer_type IN ('passfail', 'number', 'text', 'checktable') OR answer_type IS NULL),
-        remarks TEXT DEFAULT '',
-        unit TEXT DEFAULT '',
-        pdf_include INTEGER DEFAULT 1,
-        FOREIGN KEY (parent_id) REFERENCES sheet_template(id) ON DELETE CASCADE
-      )`);
-      db.exec("INSERT INTO sheet_template_new SELECT id, year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include FROM sheet_template");
-      db.exec("DROP TABLE sheet_template");
-      db.exec("ALTER TABLE sheet_template_new RENAME TO sheet_template");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_st_year ON sheet_template(year)");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_st_parent ON sheet_template(parent_id)");
-    })();
-    db.pragma("foreign_keys = ON");
+    try {
+      db.transaction(() => {
+        db.exec(`CREATE TABLE sheet_template_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          year INTEGER NOT NULL,
+          level TEXT NOT NULL CHECK(level IN ('category', 'subcategory', 'group', 'item')),
+          parent_id INTEGER,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          name TEXT NOT NULL,
+          answer_type TEXT CHECK(answer_type IN ('passfail', 'number', 'text', 'checktable') OR answer_type IS NULL),
+          remarks TEXT DEFAULT '',
+          unit TEXT DEFAULT '',
+          pdf_include INTEGER DEFAULT 1,
+          FOREIGN KEY (parent_id) REFERENCES sheet_template(id) ON DELETE CASCADE
+        )`);
+        db.exec("INSERT INTO sheet_template_new SELECT id, year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include FROM sheet_template");
+        db.exec("DROP TABLE sheet_template");
+        db.exec("ALTER TABLE sheet_template_new RENAME TO sheet_template");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_st_year ON sheet_template(year)");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_st_parent ON sheet_template(parent_id)");
+      })();
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
   }
 }
 

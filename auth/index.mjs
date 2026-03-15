@@ -468,9 +468,10 @@ app.post("/api/ops-contacts", (req, res) => {
 // DELETE /api/ops-contacts/:id - 연락처 삭제
 app.delete("/api/ops-contacts/:id", (req, res) => {
   const contact = db.prepare("SELECT name FROM ops_contacts WHERE id = ?").get(Number(req.params.id));
+  if (!contact) return res.status(404).send("연락처를 찾을 수 없습니다.");
   const result = dbRun(() => db.prepare("DELETE FROM ops_contacts WHERE id = ?").run(Number(req.params.id)));
   if (!result.success) return res.status(result.status).send(result.error);
-  logger.log(req, "ops_contact.delete", null, contact?.name);
+  logger.log(req, "ops_contact.delete", null, contact.name);
   res.status(200).send();
 });
 
