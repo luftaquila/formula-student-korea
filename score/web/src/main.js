@@ -6,9 +6,11 @@ import "notyf/notyf.min.css";
 import { initTheme } from "@shared/theme-init.js";
 
 import ScoreBoard from "./views/ScoreBoard.vue";
+import EnduranceInput from "./views/EnduranceInput.vue";
 
 const routes = [
   { path: "/", component: ScoreBoard },
+  { path: "/endurance", component: EnduranceInput },
 ];
 
 const router = createRouter({

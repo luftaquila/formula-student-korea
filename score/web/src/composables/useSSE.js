@@ -11,6 +11,7 @@ const lastTrafficRecordUpdate = ref(null);
 const lastManualScoreUpdate = ref(null);
 const lastPenaltyUpdate = ref(null);
 const lastSettingUpdate = ref(null);
+const lastEnduranceUpdate = ref(null);
 
 on("init", () => {
   connected.value = true;
@@ -46,6 +47,11 @@ on("setting", (e) => {
   lastSettingUpdate.value = { ...data, timestamp: Date.now() };
 });
 
+on("endurance", (e) => {
+  const data = JSON.parse(e.data);
+  lastEnduranceUpdate.value = { ...data, timestamp: Date.now() };
+});
+
 export function useSSE() {
   const { connected } = useConnection();
 
@@ -56,6 +62,7 @@ export function useSSE() {
     lastManualScoreUpdate,
     lastPenaltyUpdate,
     lastSettingUpdate,
+    lastEnduranceUpdate,
     connected,
   };
 }

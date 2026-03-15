@@ -1,11 +1,12 @@
 <script setup>
 import { ref, onMounted, computed, watch } from "vue";
+import * as XLSX from "xlsx";
 import { fetchEntryYears, fetchScore, updateManualScore, updatePenalty, updateSetting } from "../api";
 import { useNotification } from "../composables/useNotification";
 import { useSSE } from "../composables/useSSE";
 
 const { success, error } = useNotification();
-const { lastInspectionUpdate, lastAnswerUpdate, lastTrafficRecordUpdate, lastManualScoreUpdate, lastPenaltyUpdate, lastSettingUpdate } = useSSE();
+const { lastInspectionUpdate, lastAnswerUpdate, lastTrafficRecordUpdate, lastManualScoreUpdate, lastPenaltyUpdate, lastSettingUpdate, lastEnduranceUpdate } = useSSE();
 
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
@@ -396,6 +397,7 @@ watch(lastPenaltyUpdate, (update) => {
   penalties.value[event_type].cone_penalty = cone_penalty;
   penalties.value[event_type].oc_penalty = oc_penalty;
   penalties.value[event_type].start_delay = start_delay;
+  loadData(); // 내구 result는 백엔드에서 start_delay 포함 계산되므로 재로드 필요
 });
 
 // SSE로 점수 설정 실시간 반영
@@ -404,10 +406,16 @@ watch(lastSettingUpdate, (update) => {
   const { event_type, setting_key, value } = update;
   if (!settings.value[event_type]) settings.value[event_type] = {};
   settings.value[event_type][setting_key] = value;
+  loadData();
 });
 
 // SSE로 경기 기록 변경 시 데이터 재로드
 watch(lastTrafficRecordUpdate, () => {
+  loadData();
+});
+
+// SSE로 내구 기록 변경 시 데이터 재로드
+watch(lastEnduranceUpdate, () => {
   loadData();
 });
 
@@ -523,6 +531,38 @@ function toggleCornerWeight(num) {
     expandedRows.value.add(num);
   }
 }
+
+function exportData(format) {
+  const headers = ["번호", "학교", "팀", "유형"];
+  if (showInspection.value) {
+    for (const cat of inspection.value.categories) headers.push(cat.name);
+  }
+  headers.push("총점");
+  for (const evt of dynamicEvents.value) headers.push(evt.type);
+  headers.push("내구", "보고서", "에너지", "가점", "감점");
+
+  const rows = entryList.value.map((entry) => {
+    const row = [entry.num, entry.univ || "", entry.team || "", entry.type || ""];
+    if (showInspection.value) {
+      for (const cat of inspection.value.categories) {
+        row.push(isOverriddenCategory(cat.id) ? (getCurbWeight(entry.num) ?? "") : (getInspectionResult(entry.num, cat.id) || ""));
+      }
+    }
+    row.push(getTotalScore(entry.num));
+    for (const evt of dynamicEvents.value) {
+      row.push(displayMode.value === "score" ? (getEventScore(evt.type, entry.num) ?? "") : (formatResult(getAdjustedResult(evt.type, getTeamEvent(evt, entry.num)))));
+    }
+    const endRec = getTeamEvent(enduranceEvent.value, entry.num);
+    row.push(displayMode.value === "score" ? (getEventScore("내구", entry.num) ?? "") : formatResult(getAdjustedResult("내구", endRec)));
+    row.push(getManualScore(entry.num, "report") ?? "", getManualScore(entry.num, "energy") ?? "", getManualScore(entry.num, "bonus") ?? "", getManualScore(entry.num, "deduction") ?? "");
+    return row;
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "성적표");
+  XLSX.writeFile(wb, `성적표_${selectedYear.value}.${format === "csv" ? "csv" : "xlsx"}`);
+}
 </script>
 
 <template>
@@ -539,7 +579,7 @@ function toggleCornerWeight(num) {
           <label class="filter-label">검색</label>
           <input class="filter-input" v-model="searchQuery" placeholder="번호 / 학교 / 팀명" />
         </div>
-        <div class="filter-group">
+        <div class="filter-group type-filter-gap">
           <label class="filter-label">필터</label>
           <label class="filter-checkbox">
             <input type="checkbox" v-model="showInspection" />
@@ -555,11 +595,19 @@ function toggleCornerWeight(num) {
             </label>
           </div>
         </div>
-        <div class="filter-group mode-group">
+        <div class="filter-group type-filter-gap">
           <label class="filter-label">표시</label>
           <div class="mode-toggle">
             <button class="mode-btn" :class="{ active: displayMode === 'record' }" @click="displayMode = 'record'">기록</button>
             <button class="mode-btn" :class="{ active: displayMode === 'score' }" @click="displayMode = 'score'">점수</button>
+          </div>
+        </div>
+        <div class="filter-group action-group">
+          <label class="filter-label">&nbsp;</label>
+          <div class="action-buttons">
+            <button class="action-link" @click="exportData('csv')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="action-icon"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>CSV</button>
+            <button class="action-link" @click="exportData('xlsx')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="action-icon"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>XLSX</button>
+            <router-link to="/endurance" class="action-link nav-link">내구 입력</router-link>
           </div>
         </div>
       </div>
@@ -748,7 +796,7 @@ function toggleCornerWeight(num) {
                           <th>기록</th>
                           <th>콘터치</th>
                           <th>코스 이탈</th>
-                          <th>보정</th>
+                          <th>최종</th>
                           <th>
                             <div class="detail-sort-toggle" @click.stop>
                               <button class="detail-sort-btn" :class="{ active: detailSortMode === 'time' }" @click="detailSortMode = 'time'">시간순</button>
@@ -1117,8 +1165,14 @@ function toggleCornerWeight(num) {
   height: 2.125rem;
 }
 
-.mode-group {
+.action-group {
   margin-left: auto;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 0.375rem;
+  height: 2.125rem;
 }
 
 /* Mode toggle */
@@ -1148,6 +1202,40 @@ function toggleCornerWeight(num) {
 .mode-btn.active {
   background: var(--accent-primary);
   color: white;
+}
+
+.action-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  height: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.action-link:hover {
+  background: var(--accent-primary);
+  color: white;
+  border-color: var(--accent-primary);
+}
+
+.nav-link {
+  width: 5.5rem;
+  justify-content: center;
+}
+
+.action-icon {
+  width: 14px;
+  height: 14px;
+  margin-right: 0.25rem;
+  flex-shrink: 0;
 }
 
 .score-value {

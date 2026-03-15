@@ -176,6 +176,15 @@ The "내구" (endurance) event is always shown in the score service regardless o
 - `score_penalty` — per-event-type penalty config: `cone_penalty`, `oc_penalty`, `start_delay` (seconds)
 - `score_setting` — per-event-type scoring config: `total` (max points), `finish` (completion points), `cutoff` (% threshold)
 - `score_manual` — manual input scores per team: `report`, `energy`
+- `score_endurance` — per-team endurance (내구) detailed records: `status` (DNS/DNF/DSQ/null), per-driver `time`, `start_delay`, `cones`, `oc`, `penalty` (minutes), and `driver_change_time`
+
+### Endurance (내구) Records
+Endurance records are managed via a dedicated input page (`/score/endurance`) instead of the traffic service. Each team's endurance record has two drivers with separate times, penalties, and a driver change overtime. The backend computes:
+```
+result = d1_time + d2_time + change_time + start_delay_penalty + manual_penalty
+cones = d1_cones + d2_cones, oc = d1_oc + d2_oc
+```
+The frontend then applies cone/OC penalties via `getAdjustedResult()` as with other events. Status values: DNS (no record), DNF/DSQ (result=-1), null (normal).
 
 ### Score Calculation
 Best record per team = lowest penalty-adjusted time (excluding invalidated records):

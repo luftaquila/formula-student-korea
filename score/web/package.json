@@ -12,7 +12,8 @@
   "dependencies": {
     "notyf": "^3.10.0",
     "vue": "^3.5.26",
-    "vue-router": "^4.5.1"
+    "vue-router": "^4.5.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.3",

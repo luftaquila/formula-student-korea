@@ -1,8 +1,8 @@
 import { createApiClient } from "@shared/api-base.js";
 
-const { request, fetchEntryYears } = createApiClient("/score");
+const { request, fetchEntryYears, fetchEntries } = createApiClient("/score");
 
-export { fetchEntryYears };
+export { fetchEntryYears, fetchEntries };
 
 /* ============================================
    Score API
@@ -30,5 +30,17 @@ export async function updateSetting(year, event_type, setting_key, value) {
   await request("/api/score/setting", {
     method: "PUT",
     body: JSON.stringify({ year, event_type, setting_key, value }),
+  });
+}
+
+export async function fetchEndurance(year) {
+  const res = await request(`/api/score/endurance?year=${year}`);
+  return res.json();
+}
+
+export async function updateEndurance(year, team_num, field, value) {
+  await request("/api/score/endurance", {
+    method: "PUT",
+    body: JSON.stringify({ year, team_num, field, value }),
   });
 }

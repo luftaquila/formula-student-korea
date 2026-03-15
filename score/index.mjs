@@ -49,6 +49,25 @@ db.transaction(() => {
     value REAL,
     PRIMARY KEY (year, event_type, setting_key)
   )`);
+
+  // 내구 기록 입력
+  db.exec(`CREATE TABLE IF NOT EXISTS score_endurance (
+    year INTEGER NOT NULL,
+    team_num INTEGER NOT NULL,
+    status TEXT,
+    driver1_time INTEGER,
+    driver1_start_delay INTEGER DEFAULT 0,
+    driver1_cones INTEGER DEFAULT 0,
+    driver1_oc INTEGER DEFAULT 0,
+    driver1_penalty REAL DEFAULT 0,
+    driver_change_time INTEGER,
+    driver2_time INTEGER,
+    driver2_start_delay INTEGER DEFAULT 0,
+    driver2_cones INTEGER DEFAULT 0,
+    driver2_oc INTEGER DEFAULT 0,
+    driver2_penalty REAL DEFAULT 0,
+    PRIMARY KEY (year, team_num)
+  )`);
 })();
 
 setupProcessHandlers(db);
@@ -340,11 +359,12 @@ app.get("/api/score", async (req, res) => {
       penalties[row.event_type] = { cone_penalty: row.cone_penalty, oc_penalty: row.oc_penalty, start_delay: row.start_delay };
     }
 
-    // 6. 활성화된 경기 모드별로 최고 기록 산출 (내구는 항상 포함)
+    // 6. 활성화된 경기 모드별로 최고 기록 산출 (내구는 항상 포함, score_endurance에서 별도 처리)
     const events = [];
     const eventTypes = enabledModes ? [...enabledModes] : [...typeMap.keys()];
-    if (!eventTypes.includes("내구")) eventTypes.push("내구");
-    for (const eventType of eventTypes) {
+    // 내구는 traffic에서 제외하고 score_endurance에서 별도 처리
+    const nonEnduranceTypes = eventTypes.filter((t) => t !== "내구");
+    for (const eventType of nonEnduranceTypes) {
       const teamRecords = typeMap.get(eventType) || {};
       const pen = penalties[eventType] || { cone_penalty: 0, oc_penalty: 0 };
       const records = {};
@@ -370,6 +390,29 @@ app.get("/api/score", async (req, res) => {
       }
       events.push({ type: eventType, records });
     }
+
+    // 6b. 내구 기록: score_endurance 테이블에서 조회
+    const enduranceRecords = {};
+    const enduranceRows = db.prepare("SELECT * FROM score_endurance WHERE year = ?").all(year);
+    const endurancePen = penalties["내구"] || { cone_penalty: 0, oc_penalty: 0, start_delay: 0 };
+    for (const row of enduranceRows) {
+      if (row.status === "DNS") continue; // DNS → 기록 없음
+      if (row.status === "DNF" || row.status === "DSQ") {
+        enduranceRecords[row.team_num] = { result: -1, cones: 0, oc: 0, allRuns: [] };
+        continue;
+      }
+      // 정상: 세 시간 필드 모두 입력된 경우만
+      if (row.driver1_time != null && row.driver2_time != null && row.driver_change_time != null) {
+        const startDelayMs = ((row.driver1_start_delay || 0) + (row.driver2_start_delay || 0)) * (endurancePen.start_delay || 0) * 1000;
+        const manualPenaltyMs = ((row.driver1_penalty || 0) + (row.driver2_penalty || 0)) * 1000;
+        const result = row.driver1_time + row.driver2_time + row.driver_change_time + startDelayMs + manualPenaltyMs;
+        const cones = (row.driver1_cones || 0) + (row.driver2_cones || 0);
+        const oc = (row.driver1_oc || 0) + (row.driver2_oc || 0);
+        enduranceRecords[row.team_num] = { result, cones, oc, allRuns: [] };
+      }
+      // 시간 필드 불완전 → 기록 없음 (skip)
+    }
+    events.push({ type: "내구", records: enduranceRecords });
 
     // 7. 수동 입력 점수 (보고서, 에너지) 조회
     const manualRows = db.prepare("SELECT team_num, score_type, value FROM score_manual WHERE year = ?").all(year);
@@ -472,6 +515,49 @@ app.put("/api/score/setting", (req, res) => {
   if (!result.success) return res.status(result.status).send(result.error);
 
   broadcastEvent("setting", { year, event_type, setting_key, value: numValue });
+
+  res.status(200).send();
+});
+
+// GET /api/score/endurance?year=YYYY — 내구 기록 조회
+app.get("/api/score/endurance", (req, res) => {
+  const year = Number(req.query.year);
+  if (!year) return res.status(400).send("연도를 지정해야 합니다.");
+
+  const rows = db.prepare("SELECT * FROM score_endurance WHERE year = ?").all(year);
+  const result = {};
+  for (const row of rows) {
+    const { year: _, team_num, ...data } = row;
+    result[team_num] = data;
+  }
+  res.json(result);
+});
+
+// PUT /api/score/endurance — 내구 기록 단일 필드 저장
+app.put("/api/score/endurance", (req, res) => {
+  const { year, team_num, field, value } = req.body;
+  if (!year || team_num == null || !field) {
+    return res.status(400).send("필수 필드가 누락되었습니다.");
+  }
+
+  const allowedFields = [
+    "status", "driver1_time", "driver1_start_delay", "driver1_cones", "driver1_oc", "driver1_penalty",
+    "driver_change_time", "driver2_time", "driver2_start_delay", "driver2_cones", "driver2_oc", "driver2_penalty",
+  ];
+  if (!allowedFields.includes(field)) {
+    return res.status(400).send("허용되지 않는 필드입니다.");
+  }
+
+  const dbValue = value === null || value === "" ? null : (field === "status" ? value : Number(value));
+
+  const result = dbRun(() => {
+    db.prepare("INSERT OR IGNORE INTO score_endurance (year, team_num) VALUES (?, ?)").run(year, team_num);
+    db.prepare(`UPDATE score_endurance SET ${field} = ? WHERE year = ? AND team_num = ?`).run(dbValue, year, team_num);
+  });
+
+  if (!result.success) return res.status(result.status).send(result.error);
+
+  broadcastEvent("endurance", { year, team_num, field, value: dbValue });
 
   res.status(200).send();
 });
