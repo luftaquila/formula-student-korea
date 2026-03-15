@@ -37,7 +37,6 @@ Google OAuth 2.0 + JWT 쿠키 기반 인증. 각 백엔드 서비스의 미들�
 | `/` | Landing page |
 | `/auth/login,callback,logout` | Auth login flow |
 | `/auth` (SPA) | Auth SPA pages |
-| `/auth/api/ops-contacts` (GET) | Ops contacts read API |
 | `/queue` | Inspection queue public view |
 | `/queue/api` (except `/api/admin`) | Inspection queue public API |
 | `/entry/api/years`, `/entry/api/entries` | Entry public API |
@@ -54,6 +53,7 @@ Google OAuth 2.0 + JWT 쿠키 기반 인증. 각 백엔드 서비스의 미들�
 
 | Route | Description |
 |-------|-------------|
+| `/auth/api/ops-contacts` (GET) | Ops contacts read API |
 | `/queue/admin,register,priority,stats` | Queue management pages |
 | `/queue/api/admin` | Queue admin API |
 | `/inspection/**` | Inspection sheet (including GET template) |

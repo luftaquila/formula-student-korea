@@ -84,6 +84,7 @@ const app = createApp({ express, validateUser }, (req) => {
   if (req.path.startsWith("/api/admin")) return "admin";
   if (req.path.startsWith("/api/users")) return "admin";
   if (req.path.startsWith("/api/ops-contacts") && req.method !== "GET") return "admin";
+  if (req.path.startsWith("/api/ops-contacts")) return "official";
   return null; // SPA
 });
 
