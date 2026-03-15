@@ -1,7 +1,10 @@
 <script setup>
 import { ref, watch } from "vue";
 import { services, officials, admins, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
-import { user, showOfficials, isAdmin } from "./officialsStore.js";
+import { user, isAuthenticated, showOfficials, isChief, isAdmin } from "./officialsStore.js";
+
+const roleCheck = { student: isAuthenticated, official: showOfficials, chief: isChief, admin: isAdmin };
+function canShow(item) { return !item.auth || roleCheck[item.auth]?.value; }
 
 const props = defineProps({
   currentPath: {
@@ -110,45 +113,47 @@ async function logout() {
 
             <div class="nav-section">
               <span class="nav-section-title">Services</span>
-              <a
-                v-for="item in services"
-                :key="item.href"
-                :href="item.href"
-                :target="item.external ? '_blank' : undefined"
-                :rel="item.external ? 'noopener noreferrer' : undefined"
-                class="nav-item"
-                :class="{ active: isActive(item.href) }"
-              >
-                <span v-if="isSvgIcon(item.icon)" class="nav-icon nav-icon-svg" v-html="forumSvg"></span>
-                <span v-else class="nav-icon">{{ getIcon(item.icon) }}</span>
-                <span>{{ item.name }}</span>
-                <svg
-                  v-if="item.external"
-                  class="external-icon"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
+              <template v-for="item in services" :key="item.href">
+                <a
+                  v-if="canShow(item)"
+                  :href="item.href"
+                  :target="item.external ? '_blank' : undefined"
+                  :rel="item.external ? 'noopener noreferrer' : undefined"
+                  class="nav-item"
+                  :class="{ active: isActive(item.href) }"
                 >
-                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                  <polyline points="15 3 21 3 21 9" />
-                  <line x1="10" y1="14" x2="21" y2="3" />
-                </svg>
-              </a>
+                  <span v-if="isSvgIcon(item.icon)" class="nav-icon nav-icon-svg" v-html="forumSvg"></span>
+                  <span v-else class="nav-icon">{{ getIcon(item.icon) }}</span>
+                  <span>{{ item.name }}</span>
+                  <svg
+                    v-if="item.external"
+                    class="external-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                    <polyline points="15 3 21 3 21 9" />
+                    <line x1="10" y1="14" x2="21" y2="3" />
+                  </svg>
+                </a>
+              </template>
             </div>
 
             <div v-if="showOfficials" class="nav-section">
               <span class="nav-section-title">Officials</span>
-              <a
-                v-for="item in officials"
-                :key="item.href"
-                :href="item.href"
-                class="nav-item"
-                :class="{ active: isActive(item.href) }"
-              >
-                <span class="nav-icon">{{ getIcon(item.icon) }}</span>
-                <span>{{ item.name }}</span>
-              </a>
+              <template v-for="item in officials" :key="item.href">
+                <a
+                  v-if="canShow(item)"
+                  :href="item.href"
+                  class="nav-item"
+                  :class="{ active: isActive(item.href) }"
+                >
+                  <span class="nav-icon">{{ getIcon(item.icon) }}</span>
+                  <span>{{ item.name }}</span>
+                </a>
+              </template>
             </div>
 
             <div v-if="isAdmin" class="nav-section">

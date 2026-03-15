@@ -8,7 +8,7 @@ Formula Student Korea Service Hub - a microservices-based web application for ma
 
 ## Architecture
 
-Nine independent services deployed via Docker Compose behind a Caddy reverse proxy (port 9000):
+Ten independent services deployed via Docker Compose behind a Caddy reverse proxy (port 9000):
 
 - **landing/** - Landing page and reverse proxy gateway (Vue 3 + Caddy)
 - **auth/** - Authentication and user management API + web UI (Express + Vue 3, port 9800)
@@ -17,20 +17,21 @@ Nine independent services deployed via Docker Compose behind a Caddy reverse pro
 - **inspection/** - Inspection sheet management API + web UI (Express + Vue 3, port 9600)
 - **traffic/** - Traffic control, telemetry, and event mode management API + web UI (Express + Vue 3, port 9200)
 - **score/** - Score aggregation, penalty/scoring config, and management API + web UI (Express + Vue 3, port 9700)
+- **documents/** - Document submission management API + web UI (Express + Vue 3, port 9900)
 - **energymeter/** - Energy meter data viewer (Git submodule, Vue 3, port 9400)
 - **rules/** - Rules file server (Caddy, port 9500)
 
-All 6 backend services (auth, entry, queue, inspection, traffic, score) use a single parameterized `Dockerfile.service` at the repo root, with `ARG SERVICE` and `ARG PORT` passed via `docker-compose.yml` build args.
+All 7 backend services (auth, entry, queue, inspection, traffic, score, documents) use a single parameterized `Dockerfile.service` at the repo root, with `ARG SERVICE` and `ARG PORT` passed via `docker-compose.yml` build args.
 
 **Shared modules** in `shared/` are imported directly by other services:
 - `vite-config.js` - Vite config factory `createViteConfig(serviceName, servicePort, options)` — handles base path, proxy, aliases; options: `{ entryProxy, server, build, aliases }`
 - `styles/base.css` - Common CSS variables, resets, and component styles
 - `styles/layout.css` - Common app layout CSS (header, main-content, responsive) — uses `--layout-max-width` CSS variable for per-service width customization
-- `express-setup.mjs` - Express app factory with cookie parsing, JWT auth middleware, process handlers, DB error helper
+- `express-setup.mjs` - Express app factory with cookie parsing, JWT auth middleware, process handlers, DB error helper; exports `ROLE_LEVELS` map and `VALID_ROLES` array
 - `api-base.js` - Frontend API client factory with 401 redirect and entry service helpers
 - `NavMenu.vue` - Navigation drawer component used across all frontends
-- `nav-config.js` - Service menu configuration (services, officials, admins arrays)
-- `officialsStore.js` - Cookie-based auth state (user, showOfficials, isAdmin)
+- `nav-config.js` - Service menu configuration (services, officials, admins arrays; items may have `auth` property (e.g. `"student"`, `"chief"`) to restrict visibility by role level)
+- `officialsStore.js` - Cookie-based auth state (user, isAuthenticated, showOfficials, isChief, isAdmin)
 - `ThemeToggle.vue` - Dark/light theme toggle button component
 - `theme-init.js` - Theme initialization (localStorage + prefers-color-scheme)
 - `useSSE.js` - Frontend SSE connection factory with auto-reconnect
@@ -42,6 +43,7 @@ Service dependencies (via environment variables in `docker-compose.yml`):
 - queue → entry (`ENTRY_SERVER`), auth (`AUTH_SERVER`)
 - inspection → entry (`ENTRY_SERVER`), auth (`AUTH_SERVER`)
 - score → entry (`ENTRY_SERVER`), inspection (`INSPECTION_SERVER`), traffic (`TRAFFIC_SERVER`), auth (`AUTH_SERVER`)
+- documents → entry (`ENTRY_SERVER`), auth (`AUTH_SERVER`)
 
 All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs middleware). Auth validation uses fail-open: if auth service is temporarily unreachable, JWT is trusted (only explicit 404 invalidates sessions). Score service uses `X-Internal-Service` header for inter-service auth to inspection/traffic APIs.
 
@@ -58,14 +60,14 @@ All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs
 
 ### Frontend Development
 ```bash
-cd landing|auth/web|entry/web|queue/web|inspection/web|traffic/web|score/web|energymeter/viewer
+cd landing|auth/web|entry/web|queue/web|inspection/web|traffic/web|score/web|documents/web|energymeter/viewer
 npm run dev        # Dev server with hot reload
 npm run build      # Production build
 ```
 
 ### Backend Development
 ```bash
-cd auth|entry|queue|inspection|traffic|score
+cd auth|entry|queue|inspection|traffic|score|documents
 node index.mjs     # Run API server directly
 ```
 
@@ -77,10 +79,10 @@ podman compose --profile local up -d    # Start all containers (local dev)
 
 ## Key Files
 
-- `Dockerfile.service` - Parameterized Dockerfile for all 6 backend services (uses `ARG SERVICE` and `ARG PORT`); runs as non-root `node` user via `entrypoint.sh` + `su-exec`
+- `Dockerfile.service` - Parameterized Dockerfile for all 7 backend services (uses `ARG SERVICE` and `ARG PORT`); runs as non-root `node` user via `entrypoint.sh` + `su-exec`
 - `entrypoint.sh` - Container entrypoint: fixes `data/` ownership then drops to `node` user (works with both root Docker and podman rootless)
 - `docker-compose.yml` - Service orchestration (passes build args to `Dockerfile.service`)
-- `shared/vite-config.js` - Shared Vite config factory used by all 6 frontend builds
+- `shared/vite-config.js` - Shared Vite config factory used by all 7 frontend builds
 - `shared/styles/layout.css` - Common app layout CSS shared across all frontends
 - `shared/express-setup.mjs` - Shared Express app factory with JWT auth middleware
 - `landing/Caddyfile` - Route configuration for all services (reverse proxy, zstd/gzip compression excluding `text/event-stream`, static asset caching)
@@ -90,6 +92,7 @@ podman compose --profile local up -d    # Start all containers (local dev)
 - `inspection/index.mjs` - Inspection sheet service API server
 - `traffic/index.mjs` - Traffic service API server
 - `score/index.mjs` - Score aggregation service API server
+- `documents/index.mjs` - Document submission service API server
 - `rules/Caddyfile` - Rules file server configuration
 
 ## Authentication
@@ -108,17 +111,24 @@ Google OAuth 2.0 with JWT cookie-based sessions. Auth logic is handled by backen
 - `fsk_user`: non-httpOnly JSON (`{ name, role }`) — frontend display
 - Common: `Path=/`, `SameSite=Lax`, `Secure` in production
 
-### Roles (two permission levels)
+### Roles (four permission levels, hierarchical)
+
+**Role hierarchy**: `public < student < official < chief < admin`
+
+Role levels are defined in `shared/express-setup.mjs` as `ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 }`. Auth middleware compares user's role level against the required role level — a user with a higher-level role can access lower-level resources.
+
 Each service's `createApp()` receives an `authRoleFn(req)` callback that returns:
 - `null` — public (no auth required)
-- `"official"` — any authenticated user (official or admin)
+- `"student"` — student or above (student, official, chief, admin)
+- `"official"` — official or above (official, chief, admin)
+- `"chief"` — chief or above (chief, admin)
 - `"admin"` — admin only
 
 **Dev mode:** When `JWT_SECRET` is not set, all requests are auto-authenticated as admin. A one-time warning is logged at startup.
 
 **Security hardening:**
 - JWT `verifyJWT()` explicitly validates `alg: "HS256"` header
-- Auth middleware rejects tokens with unknown role values (only `admin`/`official` accepted)
+- Auth middleware rejects tokens with unknown role values (only `student`/`official`/`chief`/`admin` accepted)
 - Traffic service validates record names against whitelist regex after sanitization
 - OAuth callback returns generic `access_denied` error for both unregistered and deactivated users (prevents account enumeration)
 - Containers run Node.js as non-root `node` user (PID 1) via `su-exec` entrypoint
@@ -130,6 +140,7 @@ Each service's `createApp()` receives an `authRoleFn(req)` callback that returns
 **inspection** — `/api/sheet/template` non-GET (POST/PUT/DELETE) admin, all other API/SPA (including GET template) official
 **traffic** — everything admin
 **score** — everything admin
+**documents** — `/api/admin/*` and `/admin/*` SPA pages chief, all other API/SPA student
 **auth** — login/callback/logout and SPA public, `/api/users` (and `/api/users/*`) admin, everything else public
 
 ### Inter-service communication
@@ -147,7 +158,7 @@ See `.env.example` for all required variables:
 
 ## Environment-Aware Builds
 
-Production builds use service-specific base paths (`/auth/`, `/entry/`, `/queue/`, `/inspection/`, `/traffic/`, `/score/`, `/energymeter/`) configured via `shared/vite-config.js` factory. Each service's `vite.config.js` calls `createViteConfig(serviceName, port, options)` which auto-sets the base path in production mode. Development builds use empty base paths with Vite proxy routing to backend APIs.
+Production builds use service-specific base paths (`/auth/`, `/entry/`, `/queue/`, `/inspection/`, `/traffic/`, `/score/`, `/documents/`, `/energymeter/`) configured via `shared/vite-config.js` factory. Each service's `vite.config.js` calls `createViteConfig(serviceName, port, options)` which auto-sets the base path in production mode. Development builds use empty base paths with Vite proxy routing to backend APIs.
 
 ## Data Storage
 
@@ -160,6 +171,7 @@ SQLite databases stored in volume-mounted directories:
 - `inspection/data/` - sheet.db, sheet.log
 - `traffic/data/` - traffic.db, traffic.log
 - `score/data/` - score.db, score.log
+- `documents/data/` - documents.db, documents.log, uploads/
 
 ## Traffic Service: Event Modes
 

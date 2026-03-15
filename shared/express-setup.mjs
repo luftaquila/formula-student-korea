@@ -1,6 +1,9 @@
 import fs from "fs";
 import crypto from "crypto";
 
+export const ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 };
+export const VALID_ROLES = Object.keys(ROLE_LEVELS);
+
 export function ensureDataDir() {
   if (!fs.existsSync("./data")) {
     fs.mkdirSync("./data", { recursive: true });
@@ -148,10 +151,10 @@ export function createApp(logFile, deps, authRoleFn) {
       const role = authRoleFn(req);
       if (!role) return next(); // public
       if (!req.user) return res.status(401).send("인증이 필요합니다.");
-      if (!["admin", "official"].includes(req.user.role)) {
+      if (!VALID_ROLES.includes(req.user.role)) {
         return res.status(403).send("권한이 없습니다.");
       }
-      if (role === "admin" && req.user.role !== "admin") {
+      if ((ROLE_LEVELS[req.user.role] || 0) < (ROLE_LEVELS[role] || Infinity)) {
         return res.status(403).send("권한이 없습니다.");
       }
       next();

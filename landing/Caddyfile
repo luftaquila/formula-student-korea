@@ -62,6 +62,13 @@
 		reverse_proxy score:9700
 	}
 
+	# Documents service
+	redir /documents /documents/
+	handle_path /documents/* {
+		request_header -X-Internal-Service
+		reverse_proxy documents:9900
+	}
+
 	# Energymeter service
 	redir /energymeter /energymeter/
 	handle_path /energymeter/* {

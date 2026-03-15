@@ -119,6 +119,28 @@ services:
     networks:
       - fsk-network
 
+  documents:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: documents
+        PORT: 9900
+    container_name: fsk-documents
+    env_file:
+      - .env
+    environment:
+      - ENTRY_SERVER=http://entry:9100
+      - AUTH_SERVER=http://auth:9800
+    volumes:
+      - ./documents/data:/home/node/fsk-documents/data
+    depends_on:
+      - entry
+      - auth
+    restart: unless-stopped
+    networks:
+      - fsk-network
+
   auth:
     build:
       context: .
@@ -167,6 +189,7 @@ services:
       - queue
       - inspection
       - score
+      - documents
       - rules
       - auth
     restart: unless-stopped

@@ -17,6 +17,7 @@
         <h2 class="section-title">Services</h2>
         <div class="services">
           <ServiceCard title="검차 대기열" description="" path="/queue" icon="🔧" />
+          <ServiceCard v-if="isAuthenticated" title="서류 제출" description="" path="/documents" icon="📄" />
           <ServiceCard title="에너지미터" description="" path="/energymeter" icon="⚡" />
           <ServiceCard title="대회 규정집" description="" path="/rules" icon="📖" external />
           <ServiceCard title="AI 규정 챗봇" description="" path="https://pitbot.luftaquila.io" icon="💽" external />
@@ -35,6 +36,7 @@
         <div class="services">
           <ServiceCard title="검차 대기 관리" description="" path="/queue/admin" icon="🛠️" />
           <ServiceCard title="인스펙션 시트" description="" path="/inspection" icon="📋" />
+          <ServiceCard v-if="isChief" title="서류 제출 관리" description="" path="/documents/admin" icon="📑" />
         </div>
       </section>
 
@@ -55,7 +57,7 @@
 import ServiceCard from "./components/ServiceCard.vue";
 import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
-import { showOfficials, isAdmin } from "@shared/officialsStore.js";
+import { isAuthenticated, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
 import { forumSvg } from "@shared/nav-config.js";
 </script>
 

@@ -2,7 +2,7 @@ import crypto from "crypto";
 import express from "express";
 import pinoHttp from "pino-http";
 import Database from "better-sqlite3";
-import { createApp, setupProcessHandlers, createDbRun, createJWT, ensureDataDir } from "../shared/express-setup.mjs";
+import { createApp, setupProcessHandlers, createDbRun, createJWT, ensureDataDir, VALID_ROLES } from "../shared/express-setup.mjs";
 
 /* ============================================
    Database 초기화
@@ -33,6 +33,27 @@ catch { /* already exists */ }
 // 마이그레이션: created_at 기본값 제거 (최초 로그인 시점으로 변경)
 // 아직 로그인하지 않은 사용자(name IS NULL)의 created_at 초기화
 db.exec("UPDATE users SET created_at = NULL WHERE name IS NULL AND created_at IS NOT NULL");
+
+// 마이그레이션: role CHECK 제약조건에 student, chief 추가
+const roleCheck = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
+if (roleCheck && !roleCheck.sql.includes("student")) {
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE users_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL,
+        name TEXT,
+        role TEXT NOT NULL CHECK(role IN ('admin', 'chief', 'official', 'student')),
+        memo TEXT DEFAULT '',
+        created_at TEXT,
+        active INTEGER DEFAULT 1
+      );
+      INSERT INTO users_new SELECT id, email, name, role, memo, created_at, active FROM users;
+      DROP TABLE users;
+      ALTER TABLE users_new RENAME TO users;
+    `);
+  })();
+}
 
 db.exec(`CREATE TABLE IF NOT EXISTS ops_contacts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,7 +264,7 @@ app.get("/api/users", (req, res) => {
 app.post("/api/users", (req, res) => {
   const { email, role } = req.body;
   if (!email || !email.trim()) return res.status(400).send("이메일을 입력하세요.");
-  if (!["admin", "official"].includes(role)) return res.status(400).send("올바르지 않은 역할입니다.");
+  if (!VALID_ROLES.includes(role)) return res.status(400).send("올바르지 않은 역할입니다.");
 
   const result = dbRun(() =>
     db.prepare("INSERT INTO users (email, role) VALUES (?, ?)").run(email.trim().toLowerCase(), role),
@@ -274,7 +295,7 @@ app.post("/api/users/bulk", (req, res) => {
       const email = (row.email || "").trim().toLowerCase();
       if (!email) { errors.push({ row, reason: "이메일 없음" }); continue; }
 
-      const role = ["admin", "official"].includes(row.role) ? row.role : "official";
+      const role = VALID_ROLES.includes(row.role) ? row.role : "official";
       const memo = (row.memo || "").trim();
 
       const result = insert.run(email, role, memo);
@@ -347,7 +368,7 @@ app.patch("/api/users/:id", (req, res) => {
 
   // 역할 변경
   if (role !== undefined) {
-    if (!["admin", "official"].includes(role)) return res.status(400).send("올바르지 않은 역할입니다.");
+    if (!VALID_ROLES.includes(role)) return res.status(400).send("올바르지 않은 역할입니다.");
 
     // ADMIN_EMAIL 보호
     if (user.email === ADMIN_EMAIL && role !== "admin") return res.status(400).send("기본 관리자의 역할은 변경할 수 없습니다.");

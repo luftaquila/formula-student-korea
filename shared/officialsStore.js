@@ -1,5 +1,8 @@
 import { ref, computed } from "vue";
 
+const ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 };
+function roleLevel(role) { return ROLE_LEVELS[role] || 0; }
+
 function getUserFromCookie() {
   const match = document.cookie.match(/fsk_user=([^;]+)/);
   if (!match) return null;
@@ -8,5 +11,7 @@ function getUserFromCookie() {
 }
 
 export const user = ref(getUserFromCookie());
-export const showOfficials = computed(() => !!user.value);
-export const isAdmin = computed(() => user.value?.role === "admin");
+export const isAuthenticated = computed(() => roleLevel(user.value?.role) >= 1);
+export const showOfficials = computed(() => roleLevel(user.value?.role) >= 2);
+export const isChief = computed(() => roleLevel(user.value?.role) >= 3);
+export const isAdmin = computed(() => roleLevel(user.value?.role) >= 4);

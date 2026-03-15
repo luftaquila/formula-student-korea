@@ -70,21 +70,29 @@ async function addUser() {
   }
 }
 
-async function changeRole(user) {
-  const nextRole = user.role === "admin" ? "official" : "admin";
-  if (!confirm(`${user.email}의 역할을 ${nextRole}(으)로 변경하시겠습니까?`)) return;
+function roleBadgeClass(role) {
+  return { student: "badge-success", official: "badge-primary", chief: "badge-warning", admin: "badge-danger" }[role] || "badge-primary";
+}
+
+async function changeRole(user, newRole) {
+  if (newRole === user.role) return;
+  if (!confirm(`${user.email}의 역할을 ${newRole}(으)로 변경하시겠습니까?`)) {
+    await fetchUsers();
+    return;
+  }
 
   try {
     const res = await fetch(`${BASE_URL}/api/users/${user.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role: nextRole }),
+      body: JSON.stringify({ role: newRole }),
     });
     if (!res.ok) throw new Error(await res.text());
     notyf.success("역할을 변경했습니다.");
     await fetchUsers();
   } catch (e) {
     notyf.error(e.message);
+    await fetchUsers();
   }
 }
 
@@ -414,7 +422,9 @@ onMounted(() => {
             required
           />
           <select v-model="newRole" class="form-select">
+            <option value="student">Student</option>
             <option value="official">Official</option>
+            <option value="chief">Chief</option>
             <option value="admin">Admin</option>
           </select>
           <button type="submit" class="btn btn-primary">추가</button>
@@ -430,7 +440,9 @@ onMounted(() => {
             <select v-model="filterRole" class="filter-select">
               <option value="all">전체 역할</option>
               <option value="admin">Admin</option>
+              <option value="chief">Chief</option>
               <option value="official">Official</option>
+              <option value="student">Student</option>
             </select>
             <select v-model="filterActive" class="filter-select">
               <option value="all">전체 상태</option>
@@ -471,7 +483,7 @@ onMounted(() => {
                 <td class="col-email">{{ user.email }}</td>
                 <td class="col-name">{{ user.name || "-" }}</td>
                 <td class="col-role">
-                  <span class="badge" :class="user.role === 'admin' ? 'badge-danger' : 'badge-primary'">{{ user.role }}</span>
+                  <span class="badge" :class="roleBadgeClass(user.role)">{{ user.role }}</span>
                 </td>
                 <td class="col-memo memo-cell" @click="startMemoEdit(user.id)">
                   <input
@@ -488,14 +500,18 @@ onMounted(() => {
                 <td class="col-date">{{ user.created_at ? new Date(user.created_at + 'Z').toLocaleString("ko-KR") : "-" }}</td>
                 <td class="col-action">
                   <div class="action-btns">
-                    <button
-                      class="btn btn-sm btn-outline btn-role"
-                      @click="changeRole(user)"
+                    <select
+                      class="role-select"
+                      :value="user.role"
+                      @change="changeRole(user, $event.target.value)"
                       :disabled="user.protected || (user.role === 'admin' && adminCount <= 1)"
                       :title="user.protected ? '기본 관리자의 역할은 변경할 수 없습니다' : user.role === 'admin' && adminCount <= 1 ? '마지막 관리자는 강등할 수 없습니다' : ''"
                     >
-                      {{ user.role === "admin" ? "Official" : "Admin" }}
-                    </button>
+                      <option value="student">Student</option>
+                      <option value="official">Official</option>
+                      <option value="chief">Chief</option>
+                      <option value="admin">Admin</option>
+                    </select>
                     <button
                       class="btn btn-sm"
                       :class="user.active ? 'btn-ghost' : 'btn-primary'"
@@ -564,16 +580,6 @@ onMounted(() => {
 
 .form-row .form-input {
   flex: 1;
-}
-
-.form-select {
-  padding: 0.625rem 0.875rem;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  font-size: 0.875rem;
-  background: var(--bg-input);
-  color: var(--text-primary);
-  cursor: pointer;
 }
 
 .card-header {
@@ -721,9 +727,14 @@ onMounted(() => {
 }
 
 /* Action buttons */
-.btn-role {
-  width: 4rem;
-  text-align: center;
+.role-select {
+  padding: 0.25rem 0.375rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  cursor: pointer;
 }
 
 .action-btns {
