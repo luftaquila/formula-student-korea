@@ -86,6 +86,7 @@ const logger = createLogger(db, "documents");
 
 const app = createApp({ express }, (req) => {
   if (req.path.startsWith("/api/admin")) return "chief";
+  if (req.path === "/api/logs") return "admin";
   if (req.path.startsWith("/api/")) return "student";
   if (req.path.startsWith("/admin")) return "chief";
   return "student";

@@ -113,6 +113,7 @@ const logger = createLogger(db, "inspection");
 
 const app = createApp({ express }, (req) => {
   if (req.path.startsWith("/api/sheet/template") && req.method !== "GET") return "admin";
+  if (req.path === "/api/logs") return "admin";
   if (req.path.startsWith("/api/")) return "official";
   return "official"; // SPA
 });

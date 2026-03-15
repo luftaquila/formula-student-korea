@@ -75,6 +75,7 @@ Google OAuth 2.0 + JWT 쿠키 기반 인증. 각 백엔드 서비스의 미들�
 | `/traffic/**` | Traffic management |
 | `/score/**` | Score management |
 | `/auth/api/users` | User management API |
+| `/*/api/logs` | Per-service log query API |
 | `/auth/api/admin/logs` | Log aggregation API |
 | `/auth/logs` | System log viewer |
 

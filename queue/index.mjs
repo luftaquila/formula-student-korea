@@ -167,6 +167,7 @@ const logger = createLogger(db, "queue");
 const app = createApp({ express }, (req) => {
   if (req.path.startsWith("/api/admin")) return "official";
   if (/^\/(admin|register|priority|stats)/.test(req.path)) return "official";
+  if (req.path === "/api/logs") return "admin";
   return null; // public
 });
 
