@@ -265,7 +265,9 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   const result = dbRun(() => {
     const row = db.prepare(`SELECT invalidated, scoreboard, cones, oc FROM '${name}' WHERE rowid = ?`).get(rowid);
     if (!row) {
-      throw new Error("기록을 찾을 수 없습니다.");
+      const err = new Error("기록을 찾을 수 없습니다.");
+      err.status = 404;
+      throw err;
     }
 
     if (field === "invalidated") {
@@ -286,7 +288,7 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
       db.prepare(`UPDATE '${name}' SET detail = ? WHERE rowid = ?`).run(value ?? null, rowid);
       return { invalidated: row.invalidated, scoreboard: row.scoreboard, detail: value ?? null };
     } else if (field === "cones" || field === "oc") {
-      const numValue = parseInt(value, 10) || 0;
+      const numValue = Math.max(0, parseInt(value, 10) || 0);
       db.prepare(`UPDATE '${name}' SET ${field} = ? WHERE rowid = ?`).run(numValue, rowid);
       return { [field]: numValue };
     }

@@ -479,6 +479,9 @@ app.put("/api/score/penalty", (req, res) => {
   const oc = oc_penalty == null ? 0 : Number(oc_penalty);
   const delay = start_delay == null ? 0 : Number(start_delay);
 
+  if (isNaN(cone) || isNaN(oc) || isNaN(delay)) return res.status(400).send("유효하지 않은 값입니다.");
+  if (cone < 0 || oc < 0 || delay < 0) return res.status(400).send("페널티 값은 음수일 수 없습니다.");
+
   const result = dbRun(() =>
     db
       .prepare(
@@ -506,6 +509,9 @@ app.put("/api/score/setting", (req, res) => {
   }
 
   const numValue = value == null ? null : Number(value);
+
+  if (numValue !== null && isNaN(numValue)) return res.status(400).send("유효하지 않은 값입니다.");
+  if (numValue !== null && numValue < 0) return res.status(400).send("설정 값은 음수일 수 없습니다.");
 
   const result = dbRun(() =>
     db
@@ -558,8 +564,10 @@ app.put("/api/score/endurance", (req, res) => {
   const dbValue = value === null || value === "" ? null : (field === "status" ? value : Number(value));
 
   const result = dbRun(() => {
-    db.prepare("INSERT OR IGNORE INTO score_endurance (year, team_num) VALUES (?, ?)").run(year, team_num);
-    db.prepare(`UPDATE score_endurance SET ${field} = ? WHERE year = ? AND team_num = ?`).run(dbValue, year, team_num);
+    db.transaction(() => {
+      db.prepare("INSERT OR IGNORE INTO score_endurance (year, team_num) VALUES (?, ?)").run(year, team_num);
+      db.prepare(`UPDATE score_endurance SET ${field} = ? WHERE year = ? AND team_num = ?`).run(dbValue, year, team_num);
+    })();
   });
 
   if (!result.success) return res.status(result.status).send(result.error);
