@@ -22,7 +22,7 @@ export const admins = [
   { name: "시스템 로그", href: "/auth/logs", icon: "logs" },
 ];
 
-export const icons = {
+const icons = {
   home: "🏠",
   queue: "🔧",
   energy: "⚡",

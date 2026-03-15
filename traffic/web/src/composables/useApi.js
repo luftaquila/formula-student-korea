@@ -25,21 +25,12 @@ async function request(endpoint, options = {}) {
 /* ============================================
    Entry API (/entry 서비스 직접 호출)
    ============================================ */
-const ENTRY_URL = import.meta.env.PROD ? "/entry" : "/entry";
+const ENTRY_URL = "/entry";
 
 export async function fetchEntries() {
   const res = await fetch(`${ENTRY_URL}/api/entries`);
   if (!res.ok) throw new Error("엔트리 정보를 가져올 수 없습니다.");
   return res.json();
-}
-
-export async function addEntry({ num, univ, team }) {
-  const res = await fetch(`${ENTRY_URL}/api/entries`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ num, univ, team }),
-  });
-  if (!res.ok) throw new Error(await res.text() || `요청 실패 (${res.status})`);
 }
 
 /* ============================================

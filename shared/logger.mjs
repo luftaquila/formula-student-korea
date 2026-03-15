@@ -103,7 +103,6 @@ export function createLogger(db, serviceName, maxRows = 10000) {
   return {
     log: (req, action, detail, target, actorOverride) => write("info", req, action, detail, target, actorOverride),
     warn: (req, action, detail, target, actorOverride) => write("warn", req, action, detail, target, actorOverride),
-    error: (req, action, detail, target, actorOverride) => write("error", req, action, detail, target, actorOverride),
     queryHandler,
   };
 }

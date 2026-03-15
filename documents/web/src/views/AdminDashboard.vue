@@ -196,11 +196,6 @@ function formatDate(d) {
   return new Date(d + "Z").toLocaleString("ko-KR");
 }
 
-function formatTime(d) {
-  if (!d) return "";
-  return new Date(d + "Z").toLocaleTimeString("ko-KR");
-}
-
 onMounted(loadYears);
 </script>
 
@@ -592,7 +587,6 @@ onMounted(loadYears);
 .cell-missed { background: rgba(239, 68, 68, 0.08); }
 .cell-none { color: var(--text-tertiary); }
 .cell-time { font-size: 0.8125rem; display: block; }
-.cell-badge { font-size: 0.625rem; }
 .cell-empty { font-size: 0.8125rem; }
 .cell-clickable { cursor: pointer; }
 

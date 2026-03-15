@@ -296,10 +296,6 @@ onUnmounted(() => {
   cursor: default;
 }
 
-.text-secondary {
-  color: var(--text-secondary);
-}
-
 .text-tertiary {
   color: var(--text-tertiary);
 }

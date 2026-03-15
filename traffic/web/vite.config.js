@@ -6,7 +6,5 @@ export default (env) => ({
   ...createViteConfig("traffic", 9200, {
     entryProxy: true,
     server: { port: 5173 },
-    build: { rollupOptions: { input: "./index.html" } },
-    aliases: { "@": "/src" },
   })(env),
 });

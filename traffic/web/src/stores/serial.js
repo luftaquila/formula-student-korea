@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref } from "vue";
 import { useNotification } from "../composables/useNotification";
 import { addControllerLog } from "../composables/useApi";
 
@@ -34,9 +34,6 @@ export const useSerialStore = defineStore("serial", () => {
   // Sensor cooldown
   const SENSOR_COOLDOWN_MS = 1000;
   const lastSensorTrigger = ref({});
-
-  // Getters
-  const isConnected = computed(() => connected.value);
 
   // Set current mode and callback
   function setMode(mode, callback) {
@@ -231,10 +228,6 @@ export const useSerialStore = defineStore("serial", () => {
     lastSensorTrigger.value[sensor] = Date.now();
   }
 
-  function clearRecords() {
-    records.value = [];
-  }
-
   async function transmit(data) {
     if (!port.value) return false;
 
@@ -274,27 +267,19 @@ export const useSerialStore = defineStore("serial", () => {
 
   return {
     // State
-    port,
     connected,
     clockDisplay,
-    start,
     green,
     lightColor,
     records,
-    currentMode,
-
-    // Getters
-    isConnected,
 
     // Actions
     setMode,
     connect,
-    transmit,
     sendGreen,
     sendRed,
     sendOff,
     reset,
-    clearRecords,
     setSensorCooldown,
   };
 });

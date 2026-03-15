@@ -63,7 +63,6 @@ const filteredEntryList = computed(() =>
   entryList.value.filter((e) => !e.type || typeFilters.value[e.type] !== false),
 );
 
-const teamNums = computed(() => entryList.value.map((e) => e.num));
 const vehicleTypes = computed(() => Object.keys(typeFilters.value).sort());
 
 // 성적표와 동일한 유형 색상

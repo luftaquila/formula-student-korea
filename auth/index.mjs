@@ -513,8 +513,6 @@ app.get("/api/admin/logs", async (req, res) => {
     if (name === "auth") {
       // Local query (no HTTP)
       try {
-        const localQs = new URLSearchParams(qs);
-        const fakeReq = { query: Object.fromEntries(localQs), user: req.user, headers: req.headers };
         const conditions = [];
         const params = [];
         if (filters.level) { conditions.push("level = ?"); params.push(filters.level); }

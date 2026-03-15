@@ -5,7 +5,7 @@ import { fetchEntryYears, fetchScore, updateManualScore, updatePenalty, updateSe
 import { useNotification } from "../composables/useNotification";
 import { useSSE } from "../composables/useSSE";
 
-const { success, error } = useNotification();
+const { error } = useNotification();
 const { lastInspectionUpdate, lastAnswerUpdate, lastTrafficRecordUpdate, lastManualScoreUpdate, lastPenaltyUpdate, lastSettingUpdate, lastEnduranceUpdate } = useSSE();
 
 const selectedYear = ref(new Date().getFullYear());
@@ -1584,8 +1584,7 @@ function exportData(format) {
   background: var(--bg-hover);
 }
 
-.detail-runs-table .run-time,
-.detail-runs-table .run-event-time {
+.detail-runs-table .run-time {
   font-family: "JetBrains Mono", monospace;
   font-weight: 500;
 }

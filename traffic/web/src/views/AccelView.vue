@@ -63,9 +63,6 @@ onMounted(() => {
 const currentYear = computed(() => new Date().getFullYear());
 const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || "Acceleration"}`);
 const selectedEntry = computed(() => (selectedTeam.value ? entryStore.getEntryByNum(selectedTeam.value) : null));
-const entryDisplay = computed(() =>
-  selectedEntry.value ? `#${selectedEntry.value.num} ${selectedEntry.value.univ} ${selectedEntry.value.team}` : "",
-);
 const isLocked = computed(() => serial.green.active);
 const startRecords = computed(() => serial.records.filter((r) => r.sensor === 1));
 const endRecords = computed(() => serial.records.filter((r) => r.sensor === 2));
@@ -286,12 +283,6 @@ async function handleDNF() {
 <style scoped>
 @import "../assets/styles/event-view.css";
 
-.hint-text {
-  font-size: 0.8125rem;
-  color: var(--text-tertiary);
-  margin-bottom: 1rem;
-}
-
 .btn-primary {
   background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
   color: white;
@@ -341,12 +332,6 @@ async function handleDNF() {
   font-size: 1.125rem;
   font-weight: 600;
   text-align: center;
-}
-
-.saved-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
 }
 
 .saved-item {

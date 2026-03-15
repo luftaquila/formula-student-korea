@@ -190,6 +190,7 @@ function handleDeleteAll() {
 }
 
 .drop-zone.has-file {
+  position: relative;
   border-style: solid;
   border-color: var(--accent-success);
   background: rgba(16, 185, 129, 0.05);
@@ -248,10 +249,6 @@ function handleDeleteAll() {
 .clear-btn svg {
   width: 14px;
   height: 14px;
-}
-
-.drop-zone.has-file {
-  position: relative;
 }
 
 .upload-btn,

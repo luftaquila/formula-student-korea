@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, watch, nextTick } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import * as XLSX from "xlsx";
 import { fetchEntryYears, fetchEntries, fetchEndurance, fetchScore, updateEndurance } from "../api";
 import { useNotification } from "../composables/useNotification";

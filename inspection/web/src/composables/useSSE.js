@@ -35,13 +35,12 @@ on("memo", (e) => {
 });
 
 export function useSSE() {
-  const { connected } = useConnection();
+  useConnection();
 
   return {
     lastUpdate,
     lastInspectorUpdate,
     lastAnswerUpdate,
     lastMemoUpdate,
-    connected,
   };
 }

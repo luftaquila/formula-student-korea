@@ -7,9 +7,9 @@ import NavMenu from "@shared/NavMenu.vue";
 const route = useRoute();
 
 const pageInfo = {
-  "/": { title: "인스펙션 시트", icon: "clipboard" },
-  "/template": { title: "인스펙션 시트 템플릿", icon: "clipboard" },
-  "/template/print": { title: "인스펙션 시트 인쇄", icon: "clipboard" },
+  "/": { title: "인스펙션 시트" },
+  "/template": { title: "인스펙션 시트 템플릿" },
+  "/template/print": { title: "인스펙션 시트 인쇄" },
 };
 
 const isPrintPage = computed(() => route.path === "/template/print");

@@ -2,7 +2,7 @@ import { ref, watch } from "vue";
 import { createSSEConnection } from "@shared/useSSE.js";
 
 const API_BASE = import.meta.env.DEV ? "" : "/traffic";
-const { on, useSSE: useConnection, connected } = createSSEConnection(`${API_BASE}/api/events`);
+const { on, useSSE: useConnection } = createSSEConnection(`${API_BASE}/api/events`);
 
 // Shared state across all components
 const recordFiles = ref([]);

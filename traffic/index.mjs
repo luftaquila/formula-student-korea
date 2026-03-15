@@ -1,5 +1,3 @@
-import fs from "fs";
-import path from "path";
 import express from "express";
 import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
@@ -416,14 +414,8 @@ app.put("/api/event-modes/:type", (req, res) => {
 /* ============================================
    SPA Fallback
    ============================================ */
-app.use((req, res, next) => {
-  if (req.method === "GET" && !req.path.includes(".")) {
-    const distPath = "./web/dist";
-    const indexPath = fs.existsSync(distPath) ? path.join(distPath, "index.html") : "./web/index.html";
-    res.sendFile(path.resolve(indexPath));
-  } else {
-    next();
-  }
+app.get("/{*splat}", (req, res) => {
+  res.sendFile("index.html", { root: "./web/dist" });
 });
 
 /* ============================================

@@ -1,12 +1,10 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from "vue";
-import { useRoute } from "vue-router";
 import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavTabs from "./components/NavTabs.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import { useEntryStore } from "./stores/entry";
 
-const route = useRoute();
 const entryStore = useEntryStore();
 const isScoreboardFullscreen = ref(false);
 

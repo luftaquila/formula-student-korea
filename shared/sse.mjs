@@ -42,5 +42,5 @@ export function createSSEManager() {
     };
   }
 
-  return { broadcast, handler, clients };
+  return { broadcast, handler };
 }

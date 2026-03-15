@@ -75,9 +75,6 @@ onMounted(() => {
 const currentYear = computed(() => new Date().getFullYear());
 const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || "Skidpad"}`);
 const selectedEntry = computed(() => (selectedTeam.value ? entryStore.getEntryByNum(selectedTeam.value) : null));
-const entryDisplay = computed(() =>
-  selectedEntry.value ? `#${selectedEntry.value.num} ${selectedEntry.value.univ} ${selectedEntry.value.team}` : "",
-);
 const isLocked = computed(() => serial.green.active);
 const totalTime = computed(() => msToClockStr(lapTimes.value.reduce((sum, lap) => sum + lap.time, 0)));
 const entries = computed(() => entryStore.entries);

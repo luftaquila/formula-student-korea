@@ -175,30 +175,6 @@ app.get("/api/entries", (req, res) => {
   }
 });
 
-// GET /api/entries/:num - 특정 엔트리 조회
-app.get("/api/entries/:num", (req, res) => {
-  const year = req.query.year || new Date().getFullYear();
-  let tableName;
-  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
-
-  const numValidation = validateEntryNum(req.params.num);
-  if (!numValidation.valid) {
-    return res.status(400).send(numValidation.error);
-  }
-
-  const result = dbRun(() => db.prepare(`SELECT * FROM '${tableName}' WHERE num = ?`).get(numValidation.value));
-
-  if (!result.success) {
-    return res.status(result.status).send(result.error);
-  }
-
-  if (!result.result) {
-    return res.status(404).send("존재하지 않는 엔트리 번호입니다.");
-  }
-
-  res.json(result.result);
-});
-
 // POST /api/entries - 새 엔트리 추가
 app.post("/api/entries", (req, res) => {
   const year = req.query.year || new Date().getFullYear();

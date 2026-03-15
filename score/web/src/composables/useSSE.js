@@ -53,7 +53,7 @@ on("endurance", (e) => {
 });
 
 export function useSSE() {
-  const { connected } = useConnection();
+  useConnection();
 
   return {
     lastInspectionUpdate,
@@ -63,6 +63,5 @@ export function useSSE() {
     lastPenaltyUpdate,
     lastSettingUpdate,
     lastEnduranceUpdate,
-    connected,
   };
 }

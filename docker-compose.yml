@@ -30,12 +30,10 @@ services:
     env_file:
       - .env
     environment:
-      - ENTRY_SERVER=http://entry:9100
       - AUTH_SERVER=http://auth:9800
     volumes:
       - ./traffic/data:/home/node/fsk-traffic/data
     depends_on:
-      - entry
       - auth
     restart: unless-stopped
     networks:
@@ -83,12 +81,10 @@ services:
     env_file:
       - .env
     environment:
-      - ENTRY_SERVER=http://entry:9100
       - AUTH_SERVER=http://auth:9800
     volumes:
       - ./inspection/data:/home/node/fsk-inspection/data
     depends_on:
-      - entry
       - auth
     restart: unless-stopped
     networks:
@@ -130,12 +126,10 @@ services:
     env_file:
       - .env
     environment:
-      - ENTRY_SERVER=http://entry:9100
       - AUTH_SERVER=http://auth:9800
     volumes:
       - ./documents/data:/home/node/fsk-documents/data
     depends_on:
-      - entry
       - auth
     restart: unless-stopped
     networks:

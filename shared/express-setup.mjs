@@ -1,7 +1,7 @@
 import fs from "fs";
 import crypto from "crypto";
 
-export const ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 };
+const ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 };
 export const VALID_ROLES = Object.keys(ROLE_LEVELS);
 
 export function ensureDataDir() {

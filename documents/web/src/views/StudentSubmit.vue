@@ -244,7 +244,7 @@ onMounted(fetchSession);
           <h3>{{ submission ? "새 제출" : "파일 업로드" }}</h3>
           <span v-if="isLate" class="badge badge-warning sub-badge">지각 제출 기간</span>
         </div>
-        <div class="card-body upload-body">
+        <div class="card-body">
 
         <div
           class="drop-zone"

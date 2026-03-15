@@ -52,7 +52,6 @@ onMounted(() => {
   }
 });
 
-const currentYear = computed(() => new Date().getFullYear());
 const isControllerLog = computed(() => selectedFile.value === "controller");
 
 // 필터링된 레코드

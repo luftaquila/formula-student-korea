@@ -417,12 +417,6 @@ onUnmounted(() => {
   visibility: hidden;
 }
 
-.input-hint {
-  margin-top: 0.75rem;
-  font-size: 0.9375rem;
-  color: var(--text-tertiary);
-}
-
 .inspection-group {
   background: var(--bg-card);
   border-radius: 16px;

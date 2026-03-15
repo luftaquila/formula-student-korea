@@ -41,8 +41,6 @@ export const useEntryStore = defineStore("entry", () => {
 
   return {
     entries,
-    loaded,
-    loading,
     entryList,
     isLoaded,
     loadEntries,

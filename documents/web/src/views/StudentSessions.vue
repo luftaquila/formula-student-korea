@@ -60,11 +60,6 @@ function formatDate(d) {
   return new Date(d + "Z").toLocaleString("ko-KR");
 }
 
-function formatExts(exts) {
-  if (!exts) return "";
-  return exts.split(",").map((e) => e.trim().toUpperCase()).filter(Boolean).join(", ");
-}
-
 onMounted(load);
 </script>
 

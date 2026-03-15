@@ -733,11 +733,6 @@ function goToStats() {
   font-size: 0.875rem;
 }
 
-.setting-desc {
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-}
-
 .divider {
   border: none;
   border-top: 1px solid var(--border-color);
@@ -746,16 +741,6 @@ function goToStats() {
 
 .setting-section {
   margin-top: 0.5rem;
-}
-
-.setting-section-title {
-  display: block;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 0.5rem;
 }
 
 .action-buttons {
