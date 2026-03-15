@@ -68,7 +68,7 @@ const logger = createLogger(db, "entry");
 
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/years") return null;
-  if (req.path === "/api/entries") return null;
+  if (req.path === "/api/entries" && req.method === "GET") return null;
   return "admin";
 });
 

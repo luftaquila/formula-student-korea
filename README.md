@@ -37,11 +37,18 @@ Google OAuth 2.0 + JWT 쿠키 기반 인증. 각 백엔드 서비스의 미들�
 | `/` | Landing page |
 | `/auth/login,callback,logout` | Auth login flow |
 | `/auth` (SPA) | Auth SPA pages |
+| `/auth/api/ops-contacts` (GET) | Ops contacts read API |
 | `/queue` | Inspection queue public view |
 | `/queue/api` (except `/api/admin`) | Inspection queue public API |
-| `/entry/api/years`, `/entry/api/entries` | Entry read-only API |
+| `/entry/api/years`, `/entry/api/entries` | Entry public API |
 | `/energymeter` | Energy meter viewer |
 | `/rules` | Rules file server |
+
+#### Student
+
+| Route | Description |
+|-------|-------------|
+| `/documents/**` | Document submission SPA + API |
 
 #### Official
 
@@ -51,11 +58,19 @@ Google OAuth 2.0 + JWT 쿠키 기반 인증. 각 백엔드 서비스의 미들�
 | `/queue/api/admin` | Queue admin API |
 | `/inspection/**` | Inspection sheet (including GET template) |
 
+#### Chief
+
+| Route | Description |
+|-------|-------------|
+| `/documents/admin` | Document submission management page |
+| `/documents/api/admin/**` | Document submission management API |
+
 #### Admin
 
 | Route | Description |
 |-------|-------------|
 | `/entry/**` (except public API above) | Entry management |
+| `/auth/api/ops-contacts` (POST/DELETE) | Ops contacts modification API |
 | `/inspection/api/sheet/template` (POST/PUT/DELETE) | Inspection template modification API |
 | `/traffic/**` | Traffic management |
 | `/score/**` | Score management |
