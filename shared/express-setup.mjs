@@ -47,6 +47,11 @@ export function createApp(deps, authRoleFn) {
     process.exit(1);
   }
 
+  if (process.env.NODE_ENV === "production" && !process.env.INTERNAL_SECRET) {
+    console.error("FATAL: INTERNAL_SECRET must be set in production. Exiting.");
+    process.exit(1);
+  }
+
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "100kb" }));
@@ -74,15 +79,19 @@ export function createApp(deps, authRoleFn) {
   if (!validateUser && process.env.AUTH_SERVER && process.env.INTERNAL_SECRET) {
     validateUser = async (email) => {
       try {
-        const res = await fetch(`${process.env.AUTH_SERVER}/api/users/exists/${encodeURIComponent(email)}`, {
+        const res = await fetch(`${process.env.AUTH_SERVER}/api/users/role/${encodeURIComponent(email)}`, {
           headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
           signal: AbortSignal.timeout(3000),
         });
-        if (res.ok) return true;
-        if (res.status === 404) return false; // auth가 명시적으로 사용자 없음 반환
-        return true; // 기타 오류 시 JWT 유지 (fail open)
+        if (res.ok) {
+          const data = await res.json();
+          return { valid: true, role: data.role };
+        }
+        if (res.status === 404) return { valid: false, role: null };
+        console.warn(`[auth] fail-open: auth returned ${res.status} for ${email}`);
+        return { valid: true, role: null };
       } catch {
-        return true; // auth 서비스 일시적 연결 불가 시 JWT 유지
+        return { valid: true, role: null }; // auth 서비스 일시적 연결 불가 시 JWT 유지
       }
     };
   }
@@ -114,40 +123,19 @@ export function createApp(deps, authRoleFn) {
         req.user = verifyJWT(token, process.env.JWT_SECRET);
         req.headers.authuser = req.user.email;
 
-        // Sliding session: 만료까지 절반 이하 남으면 토큰 자동 갱신
+        // Sliding session: 만료까지 절반 이하 남으면 토큰 자동 갱신 (role은 validateUser 블록에서 처리)
         const remaining = req.user.exp - Math.floor(Date.now() / 1000);
         const threshold = 6 * 24 * 3600; // 6일
         if (remaining < threshold) {
-          const { email, name } = req.user;
-          let freshRole = req.user.role;
-          if (deps.validateUser) {
-            // auth 서비스: 직접 DB 조회
-            try {
-              const userRow = deps.db?.prepare("SELECT role FROM users WHERE email = ? AND active = 1").get(email);
-              if (userRow) freshRole = userRow.role;
-            } catch (e) { console.warn("[auth] role refresh DB error:", e.message); }
-          } else if (process.env.AUTH_SERVER && process.env.INTERNAL_SECRET) {
-            // 비인증 서비스: auth API로 최신 역할 조회
-            try {
-              const roleRes = await fetch(
-                `${process.env.AUTH_SERVER}/api/users/role/${encodeURIComponent(email)}`,
-                { headers: { "X-Internal-Service": process.env.INTERNAL_SECRET }, signal: AbortSignal.timeout(2000) }
-              );
-              if (roleRes.ok) {
-                const data = await roleRes.json();
-                if (VALID_ROLES.includes(data.role)) freshRole = data.role;
-              }
-            } catch (e) { console.warn("[auth] role refresh fetch error:", e.message); }
-          }
-          const newJwt = createJWT({ email, name, role: freshRole }, process.env.JWT_SECRET);
+          const { email, name, role } = req.user;
+          const newJwt = createJWT({ email, name, role }, process.env.JWT_SECRET);
           const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
           const cookieOpts = `Path=/; SameSite=Lax; Max-Age=${7 * 24 * 3600}${isSecure ? "; Secure" : ""}`;
-          const userPayload = encodeURIComponent(JSON.stringify({ name, role: freshRole }));
+          const userPayload = encodeURIComponent(JSON.stringify({ name, role }));
           res.setHeader("Set-Cookie", [
             `fsk_session=${newJwt}; HttpOnly; ${cookieOpts}`,
             `fsk_user=${userPayload}; ${cookieOpts}`,
           ]);
-          req.user.role = freshRole;
         }
       } catch { /* invalid token */ }
     } else if (!process.env.JWT_SECRET && process.env.NODE_ENV !== "production") {
@@ -155,9 +143,11 @@ export function createApp(deps, authRoleFn) {
       req.headers.authuser = "dev@local";
     }
 
-    // Validate user still exists (deleted user rejection)
+    // Validate user still exists + sync role from auth
     if (req.user && validateUser) {
-      const valid = await validateUser(req.user.email);
+      const result = await validateUser(req.user.email);
+      const valid = typeof result === "object" ? result.valid : result;
+      const freshRole = typeof result === "object" ? result.role : null;
       if (!valid) {
         req.user = null;
         const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
@@ -165,6 +155,17 @@ export function createApp(deps, authRoleFn) {
         res.setHeader("Set-Cookie", [
           `fsk_session=; HttpOnly; ${cookieOpts}`,
           `fsk_user=; ${cookieOpts}`,
+        ]);
+      } else if (freshRole && freshRole !== req.user.role && process.env.JWT_SECRET) {
+        req.user.role = freshRole;
+        const { email, name } = req.user;
+        const newJwt = createJWT({ email, name, role: freshRole }, process.env.JWT_SECRET);
+        const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
+        const cookieOpts = `Path=/; SameSite=Lax; Max-Age=${7 * 24 * 3600}${isSecure ? "; Secure" : ""}`;
+        const userPayload = encodeURIComponent(JSON.stringify({ name, role: freshRole }));
+        res.setHeader("Set-Cookie", [
+          `fsk_session=${newJwt}; HttpOnly; ${cookieOpts}`,
+          `fsk_user=${userPayload}; ${cookieOpts}`,
         ]);
       }
     }

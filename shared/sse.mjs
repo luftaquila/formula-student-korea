@@ -2,7 +2,8 @@ export function createSSEManager(maxClients = 200) {
   const clients = new Set();
 
   function broadcast(event, data) {
-    const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    const safeEvent = String(event).replace(/[\r\n]/g, "");
+    const message = `event: ${safeEvent}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const client of clients) {
       try {
         client.write(message);

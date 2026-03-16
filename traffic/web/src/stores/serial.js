@@ -5,6 +5,7 @@ import { addControllerLog } from "../composables/useApi";
 
 // Utility function for time formatting (분:초.밀리초, 분은 60 이상 가능)
 export function msToClockStr(ms) {
+  if (ms < 0) ms = 0;
   const totalMinutes = Math.floor(ms / (1000 * 60));
   const minutes = String(totalMinutes).padStart(2, "0");
   const seconds = String(Math.floor((ms % (1000 * 60)) / 1000)).padStart(2, "0");

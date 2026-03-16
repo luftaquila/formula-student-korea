@@ -75,7 +75,10 @@ setupProcessHandlers(db);
 /* ============================================
    Express 앱 설정
    ============================================ */
-const validateUser = (email) => !!db.prepare("SELECT 1 FROM users WHERE email = ? AND active = 1").get(email);
+const validateUser = (email) => {
+  const user = db.prepare("SELECT role FROM users WHERE email = ? AND active = 1").get(email);
+  return user ? { valid: true, role: user.role } : { valid: false, role: null };
+};
 
 const logger = createLogger(db, "auth");
 
@@ -101,9 +104,35 @@ app.get("/api/health", (req, res) => res.send("ok"));
 const dbRun = createDbRun();
 
 /* ============================================
+   OAuth Rate Limiter
+   ============================================ */
+const loginLimiter = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of loginLimiter) {
+    if (now > entry.resetAt) loginLimiter.delete(ip);
+  }
+}, 60000);
+
+function checkLoginRate(req, res) {
+  const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
+  const now = Date.now();
+  const entry = loginLimiter.get(ip) || { count: 0, resetAt: now + 60000 };
+  if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + 60000; }
+  entry.count++;
+  loginLimiter.set(ip, entry);
+  if (entry.count > 20) {
+    res.status(429).send("요청이 너무 많습니다.");
+    return false;
+  }
+  return true;
+}
+
+/* ============================================
    Google OAuth 헬퍼
    ============================================ */
 function getRedirectUri(req) {
+  if (process.env.PUBLIC_URL) return `${process.env.PUBLIC_URL}/auth/api/callback`;
   const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
   const host = req.headers["x-forwarded-host"] || req.headers.host;
   return `${proto}://${host}/auth/api/callback`;
@@ -124,6 +153,7 @@ function sanitizeRedirect(url) {
 
 // GET /api/login - Google OAuth 리다이렉트
 app.get("/api/login", (req, res) => {
+  if (!checkLoginRate(req, res)) return;
   const redirect = sanitizeRedirect(req.query.redirect);
   const redirectUri = getRedirectUri(req);
   const nonce = crypto.randomBytes(16).toString("hex");
@@ -145,6 +175,7 @@ app.get("/api/login", (req, res) => {
 
 // GET /api/callback - OAuth 콜백
 app.get("/api/callback", async (req, res) => {
+  if (!checkLoginRate(req, res)) return;
   const { code, state } = req.query;
 
   // Parse state and verify CSRF nonce

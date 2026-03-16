@@ -70,6 +70,7 @@ const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/years") return null;
   if (req.path === "/api/entries" && req.method === "GET") return null;
+  if (req.path === "/api/vehicle-types" && req.method === "GET") return null;
   return "admin";
 });
 
@@ -89,10 +90,10 @@ function validateEntryNum(num) {
 }
 
 function validateEntryData({ univ, team, type }) {
-  if (univ === undefined || univ.trim() === "") {
+  if (typeof univ !== "string" || univ.trim() === "") {
     return { valid: false, error: "올바르지 않은 학교명입니다." };
   }
-  if (team === undefined || team.trim() === "") {
+  if (typeof team !== "string" || team.trim() === "") {
     return { valid: false, error: "올바르지 않은 팀명입니다." };
   }
   const validatedType = type || null;

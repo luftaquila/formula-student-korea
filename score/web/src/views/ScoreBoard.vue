@@ -206,13 +206,14 @@ function getEventScore(eventType, num) {
   const my = getAdjustedResult(eventType, rec);
   if (my == null) return null;
   if (my === -1) return 0;
-  const best = getBestAdjusted(eventType);
-  if (best == null || best <= 0) return null;
   const s = settings.value[eventType] || {};
   const total = s.total ?? 0;
   const finish = s.finish ?? 0;
-  const cutoff = (s.cutoff ?? 100) / 100;
-  if (cutoff <= 1) return total;
+  if (my <= 0) return finish;
+  const best = getBestAdjusted(eventType);
+  if (best == null || best <= 0) return null;
+  const cutoff = (s.cutoff ?? 0) / 100;
+  if (cutoff <= 1) return null;
   // 컷오프 초과 시 완주점수만 부여
   if (my > best * cutoff) return finish;
   const score = (total - finish) * ((cutoff * best / my) - 1) / (cutoff - 1) + finish;

@@ -61,7 +61,7 @@ export function createLogger(db, serviceName, maxRows = 10000) {
       return res.status(403).send("권한이 없습니다.");
     }
 
-    const limit = Math.min(Number(req.query.limit) || 100, 500);
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
     const offset = Number(req.query.offset) || 0;
 
     const conditions = [];

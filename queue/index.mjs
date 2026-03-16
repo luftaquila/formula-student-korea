@@ -538,24 +538,20 @@ app.post("/api/admin/register/:type", async (req, res) => {
     return res.status(500).send("엔트리를 조회할 수 없습니다.");
   }
 
-  let errorResponse = null;
-
   const result = dbRun(() => {
     db.transaction(() => {
       if (!db.prepare("SELECT active FROM inspection WHERE type = ?").get(type).active) {
-        errorResponse = { status: 400, message: "대기열이 비활성화 상태입니다." };
-        return;
+        throw { status: 400, message: "대기열이 비활성화 상태입니다." };
       }
 
       // 페널티 확인
       const penalty = db.prepare("SELECT * FROM cancel_penalty WHERE num = ? AND inspection = ?").get(num, type);
       if (penalty && penalty.until > Date.now()) {
         const remaining = Math.ceil((penalty.until - Date.now()) / 1000 / 60);
-        errorResponse = {
+        throw {
           status: 403,
           message: JSON.stringify({ remaining, until: penalty.until }),
         };
-        return;
       } else if (penalty) {
         // 만료된 페널티 삭제
         db.prepare("DELETE FROM cancel_penalty WHERE num = ? AND inspection = ?").run(num, type);
@@ -568,8 +564,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
 
         if (currentTypes.includes(type)) {
           const name = inspections[type];
-          errorResponse = { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
-          return;
+          throw { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
         }
 
         // 보고서는 다른 검차와 항상 동시 등록 가능
@@ -589,8 +584,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
             db.prepare("UPDATE current SET inspection = ?, phone = ? WHERE num = ?").run(current.inspection, phone, num);
           } else {
             const name = currentTypes.map((i) => inspections[i]).join(", ");
-            errorResponse = { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
-            return;
+            throw { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
           }
         }
       } else {
@@ -604,10 +598,6 @@ app.post("/api/admin/register/:type", async (req, res) => {
       db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run("register", num, type, Date.now());
     })();
   });
-
-  if (errorResponse) {
-    return res.status(errorResponse.status).send(errorResponse.message);
-  }
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
@@ -638,15 +628,12 @@ app.post("/api/admin/cancel/:type", (req, res) => {
   const num = numValidation.value;
   const type = typeValidation.value;
 
-  let ok = true;
-
   const result = dbRun(() => {
     db.transaction(() => {
       const ret = db.prepare(`DELETE FROM ${type} WHERE num = ?`).run(num);
 
       if (!ret.changes) {
-        ok = false;
-        return;
+        throw { status: 400, message: "존재하지 않는 엔트리입니다." };
       }
 
       db.prepare("UPDATE inspection SET length = length - 1 WHERE type = ?").run(type);
@@ -682,10 +669,6 @@ app.post("/api/admin/cancel/:type", (req, res) => {
       db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run("cancel", num, type, Date.now());
     })();
   });
-
-  if (!ok) {
-    return res.status(400).send("존재하지 않는 엔트리입니다.");
-  }
 
   if (!result.success) {
     return res.status(result.status).send(result.error);

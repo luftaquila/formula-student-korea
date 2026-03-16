@@ -146,7 +146,7 @@ function rmDir(dir) {
 
 // GET /api/sessions - 내 팀에 열린 세션 목록
 app.get("/api/sessions", (req, res) => {
-  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ?").get(req.user.email);
+  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
   if (!team) return res.json({ team: null, sessions: [] });
 
   const sessions = db.prepare(`
@@ -174,7 +174,7 @@ app.get("/api/sessions", (req, res) => {
 
 // GET /api/sessions/:id - 세션 상세
 app.get("/api/sessions/:id", (req, res) => {
-  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ?").get(req.user.email);
+  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
   if (!team) return res.status(403).send("팀이 등록되지 않았습니다.");
 
   const session = db.prepare("SELECT * FROM session WHERE id = ?").get(Number(req.params.id));
@@ -200,7 +200,7 @@ app.get("/api/sessions/:id", (req, res) => {
 
 // POST /api/sessions/:id/submit - 파일 업로드
 app.post("/api/sessions/:id/submit", (req, res) => {
-  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ?").get(req.user.email);
+  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
   if (!team) return res.status(403).send("팀이 등록되지 않았습니다.");
 
   const session = db.prepare("SELECT * FROM session WHERE id = ?").get(Number(req.params.id));
@@ -228,7 +228,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
   const busboy = Busboy({
     headers: req.headers,
     defParamCharset: "utf8",
-    limits: { files: 20 },
+    limits: { files: 100, fileSize: session.max_file_size },
   });
 
   // 허용 확장자 파싱 (DB에 "pdf,docx" 형태로 저장, 비교 시 ".pdf" 형태로)
@@ -285,7 +285,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
         }
         resolve();
       });
-      ws.on("error", (err) => reject(err));
+      ws.on("error", (err) => aborted ? resolve() : reject(err));
     });
     filePromises.push(done);
 
@@ -301,13 +301,20 @@ app.post("/api/sessions/:id/submit", (req, res) => {
       }
     });
 
+    fileStream.on("limit", () => {
+      aborted = true;
+      ws.destroy();
+      rmDir(tmpDir);
+      if (!res.headersSent) res.status(413).send(`파일 용량 제한(${Math.round(session.max_file_size / 1024 / 1024)}MB)을 초과했습니다.`);
+    });
+
     fileStream.pipe(ws);
   });
 
   busboy.on("filesLimit", () => {
     aborted = true;
     rmDir(tmpDir);
-    if (!res.headersSent) res.status(400).send("파일 수가 20개를 초과했습니다.");
+    if (!res.headersSent) res.status(400).send("파일 수가 100개를 초과했습니다.");
   });
 
   busboy.on("error", () => {
@@ -403,7 +410,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 
 // GET /api/submissions/:subId/files/:fileId - 파일 다운로드
 app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
-  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ?").get(req.user.email);
+  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
   if (!team) return res.status(403).send("팀이 등록되지 않았습니다.");
 
   const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
@@ -449,7 +456,8 @@ app.post("/api/admin/sessions", (req, res) => {
   if (late_end_at && !isoRegex.test(late_end_at)) return res.status(400).send("지연 제출 마감 날짜 형식이 올바르지 않습니다.");
   if (end_at <= start_at) return res.status(400).send("제출 마감은 시작 이후여야 합니다.");
   if (late_end_at && late_end_at < end_at) return res.status(400).send("지각 마감은 제출 마감 이후여야 합니다.");
-  if (!year) return res.status(400).send("연도를 선택하세요.");
+  const numYear = Number(year);
+  if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
   if (!Array.isArray(teams) || teams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
 
   const maxSize = max_file_size ? Number(max_file_size) : 52428800;
@@ -464,7 +472,7 @@ app.post("/api/admin/sessions", (req, res) => {
     const tx = db.transaction(() => {
       const result = db.prepare(
         "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, allowed_extensions, created_by, year) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(name.trim(), notice || "", start_at, end_at, late_end_at, maxSize, exts, req.user.email, year);
+      ).run(name.trim(), notice || "", start_at, end_at, late_end_at, maxSize, exts, req.user.email, numYear);
       const sessionId = result.lastInsertRowid;
 
       const teamStmt = db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)");
@@ -476,7 +484,7 @@ app.post("/api/admin/sessions", (req, res) => {
   });
 
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
-  logger.log(req, "session.create", { year, teams: teams.length }, name.trim());
+  logger.log(req, "session.create", { year: numYear, teams: teams.length }, name.trim());
   res.status(201).json(txResult.result);
 });
 
@@ -657,12 +665,17 @@ app.post("/api/admin/student-teams", (req, res) => {
   res.status(201).json({ email: email.trim().toLowerCase(), team_num: Number(team_num), year: Number(year) });
 });
 
-// DELETE /api/admin/student-teams/:email - 학생-팀 매핑 삭제
-app.delete("/api/admin/student-teams/:email", (req, res) => {
-  const result = dbRun(() => db.prepare("DELETE FROM student_team WHERE email = ?").run(decodeURIComponent(req.params.email)));
+// DELETE /api/admin/student-teams/:email/:year - 학생-팀 매핑 삭제
+app.delete("/api/admin/student-teams/:email/:year", (req, res) => {
+  const year = Number(req.params.year);
+  if (!Number.isInteger(year)) return res.status(400).send("올바르지 않은 연도입니다.");
+  const result = dbRun(() =>
+    db.prepare("DELETE FROM student_team WHERE email = ? AND year = ?")
+      .run(decodeURIComponent(req.params.email), year)
+  );
   if (!result.success) return res.status(result.status).send(result.error);
   if (result.result.changes === 0) return res.status(404).send("매핑을 찾을 수 없습니다.");
-  logger.log(req, "student_team.delete", null, decodeURIComponent(req.params.email));
+  logger.log(req, "student_team.delete", { year }, decodeURIComponent(req.params.email));
   res.status(200).send();
 });
 

@@ -156,7 +156,7 @@ async function assignStudent(teamNum, email) {
   const current = teamStudentMap.value[teamNum];
   if (current === email) return;
   try {
-    if (current) await request(`/api/admin/student-teams/${encodeURIComponent(current)}`, { method: "DELETE" });
+    if (current) await request(`/api/admin/student-teams/${encodeURIComponent(current)}/${selectedYear.value}`, { method: "DELETE" });
     if (email) await request("/api/admin/student-teams", {
       method: "POST",
       body: JSON.stringify({ email, team_num: teamNum, year: selectedYear.value }),
@@ -169,7 +169,7 @@ async function clearStudent(teamNum) {
   const current = teamStudentMap.value[teamNum];
   if (!current) return;
   try {
-    await request(`/api/admin/student-teams/${encodeURIComponent(current)}`, { method: "DELETE" });
+    await request(`/api/admin/student-teams/${encodeURIComponent(current)}/${selectedYear.value}`, { method: "DELETE" });
     await loadData();
   } catch (e) { notyf.error(e.message); }
 }

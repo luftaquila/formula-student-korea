@@ -178,9 +178,10 @@ function subscribeInspectionSSE() {
       for (const msg of messages) {
         try {
           const eventMatch = msg.match(/^event:\s*(.+)$/m);
-          const dataMatch = msg.match(/^data:\s*(.+)$/m);
-          if (eventMatch && dataMatch) {
-            broadcastEvent(`inspection:${eventMatch[1]}`, JSON.parse(dataMatch[1]));
+          const dataLines = msg.match(/^data:\s*(.*)$/gm);
+          if (eventMatch && dataLines) {
+            const jsonStr = dataLines.map(l => l.replace(/^data:\s*/, "")).join("\n");
+            broadcastEvent(`inspection:${eventMatch[1]}`, JSON.parse(jsonStr));
           }
         } catch (e) {
           console.error("Inspection SSE message parse error:", e);
@@ -219,9 +220,10 @@ function subscribeTrafficSSE() {
       for (const msg of messages) {
         try {
           const eventMatch = msg.match(/^event:\s*(.+)$/m);
-          const dataMatch = msg.match(/^data:\s*(.+)$/m);
-          if (eventMatch && dataMatch) {
-            broadcastEvent(`traffic:${eventMatch[1]}`, JSON.parse(dataMatch[1]));
+          const dataLines = msg.match(/^data:\s*(.*)$/gm);
+          if (eventMatch && dataLines) {
+            const jsonStr = dataLines.map(l => l.replace(/^data:\s*/, "")).join("\n");
+            broadcastEvent(`traffic:${eventMatch[1]}`, JSON.parse(jsonStr));
           }
         } catch (e) {
           console.error("Traffic SSE message parse error:", e);
@@ -519,7 +521,7 @@ app.put("/api/score/penalty", (req, res) => {
   const oc = oc_penalty == null ? 0 : Number(oc_penalty);
   const delay = start_delay == null ? 0 : Number(start_delay);
 
-  if (isNaN(cone) || isNaN(oc) || isNaN(delay)) return res.status(400).send("유효하지 않은 값입니다.");
+  if (!Number.isFinite(cone) || !Number.isFinite(oc) || !Number.isFinite(delay)) return res.status(400).send("유효하지 않은 값입니다.");
   if (cone < 0 || oc < 0 || delay < 0) return res.status(400).send("페널티 값은 음수일 수 없습니다.");
 
   const result = dbRun(() =>
@@ -554,7 +556,7 @@ app.put("/api/score/setting", (req, res) => {
 
   const numValue = value == null ? null : Number(value);
 
-  if (numValue !== null && isNaN(numValue)) return res.status(400).send("유효하지 않은 값입니다.");
+  if (numValue !== null && !Number.isFinite(numValue)) return res.status(400).send("유효하지 않은 값입니다.");
   if (numValue !== null && numValue < 0) return res.status(400).send("설정 값은 음수일 수 없습니다.");
 
   const result = dbRun(() =>

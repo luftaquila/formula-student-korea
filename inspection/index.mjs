@@ -235,13 +235,15 @@ app.put("/api/sheet/template/:id", (req, res) => {
 // DELETE /api/sheet/template/:id - 노드 삭제 (CASCADE)
 app.delete("/api/sheet/template/:id", (req, res) => {
   const id = Number(req.params.id);
+  const node = db.prepare("SELECT year FROM sheet_template WHERE id = ?").get(id);
+  if (!node) return res.status(404).send("노드를 찾을 수 없습니다.");
+  if (node.year < new Date().getFullYear()) return res.status(400).send("이전 연도 템플릿은 수정할 수 없습니다.");
 
   const result = dbRun(() => {
     return db.prepare("DELETE FROM sheet_template WHERE id = ?").run(id);
   });
 
   if (!result.success) return res.status(result.status).send(result.error);
-  if (!result.result.changes) return res.status(404).send("노드를 찾을 수 없습니다.");
   logger.log(req, "template.delete", null, String(id));
   res.status(200).send();
 });
@@ -389,6 +391,7 @@ app.get("/api/sheet/bulk-answers", (req, res) => {
 
   const itemIds = itemIdsParam.split(",").map(Number).filter(n => !isNaN(n));
   if (!itemIds.length) return res.status(400).send("유효한 item_ids가 없습니다.");
+  if (itemIds.length > 1000) return res.status(400).send("item_ids는 1000개를 초과할 수 없습니다.");
 
   const result = dbRun(() => {
     const placeholders = itemIds.map(() => "?").join(",");
@@ -449,10 +452,14 @@ app.put("/api/sheet/answer", (req, res) => {
   if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(item_id)) {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
+  if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
-  const templateItem = db.prepare("SELECT id FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
+  const templateItem = db.prepare("SELECT id, answer_type FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
   if (!templateItem) return res.status(400).send("해당 연도에 존재하지 않는 항목입니다.");
   const newValue = value ?? "";
+  if (templateItem.answer_type === "passfail" && !["", "PASS", "FAIL"].includes(newValue)) {
+    return res.status(400).send("PASS 또는 FAIL만 입력할 수 있습니다.");
+  }
 
   const result = dbRun(() => {
     const prev = db.prepare(
@@ -483,6 +490,7 @@ app.put("/api/sheet/memo", (req, res) => {
   if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(item_id)) {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
+  if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
   const templateItem = db.prepare("SELECT id FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
   if (!templateItem) return res.status(400).send("해당 연도에 존재하지 않는 항목입니다.");
@@ -508,6 +516,7 @@ app.put("/api/sheet/category-result", (req, res) => {
   if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(category_id)) {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
+  if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
   if (catResult !== undefined && catResult !== null && catResult !== "" && !["PASS", "FAIL"].includes(catResult)) {
     return res.status(400).send("결과는 PASS, FAIL 또는 비움이어야 합니다.");
   }
@@ -536,6 +545,7 @@ app.put("/api/sheet/inspector", (req, res) => {
   if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(category_id)) {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
+  if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
   const templateCat = db.prepare("SELECT id FROM sheet_template WHERE id = ? AND year = ? AND level = 'category'").get(category_id, year);
   if (!templateCat) return res.status(400).send("해당 연도에 존재하지 않는 카테고리입니다.");
