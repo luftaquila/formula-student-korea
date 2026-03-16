@@ -173,8 +173,6 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix) {
 
   function subscribe() {
     if (reconnecting) return;
-    reconnecting = false;
-    backoff = 3000;
 
     const url = new URL(`${serverUrl}${eventPath}`);
     const options = { headers: internalHeaders() };

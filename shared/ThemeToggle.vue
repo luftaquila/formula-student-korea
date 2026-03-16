@@ -1,18 +1,22 @@
 <script setup>
-import { ref, onMounted, watch } from "vue";
-import { initTheme } from "./theme-init.js";
+import { ref, onMounted, onUnmounted, watch } from "vue";
 
 const isDark = ref(false);
+let storageHandler;
 
 onMounted(() => {
-  initTheme();
   isDark.value = document.documentElement.getAttribute("data-theme") === "dark";
 
-  window.addEventListener("storage", (e) => {
+  storageHandler = (e) => {
     if (e.key === "theme") {
       isDark.value = e.newValue === "dark";
     }
-  });
+  };
+  window.addEventListener("storage", storageHandler);
+});
+
+onUnmounted(() => {
+  if (storageHandler) window.removeEventListener("storage", storageHandler);
 });
 
 watch(isDark, () => {

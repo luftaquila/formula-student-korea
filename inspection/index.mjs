@@ -151,22 +151,27 @@ app.get("/api/sheet/template", (req, res) => {
     const nodeMap = {};
     const tree = [];
 
-    // Single pass: create nodes and link to parents via map
+    // Pass 1: create all nodes
     for (const r of rows) {
       if (r.level === "category") {
-        const node = { ...r, subcategories: [] };
-        nodeMap[r.id] = node;
-        tree.push(node);
+        nodeMap[r.id] = { ...r, subcategories: [] };
       } else if (r.level === "subcategory") {
-        const node = { ...r, groups: [] };
-        nodeMap[r.id] = node;
-        const parent = nodeMap[r.parent_id];
-        if (parent) parent.subcategories.push(node);
+        nodeMap[r.id] = { ...r, groups: [] };
       } else if (r.level === "group") {
-        const node = { ...r, items: [] };
-        nodeMap[r.id] = node;
+        nodeMap[r.id] = { ...r, items: [] };
+      }
+    }
+
+    // Pass 2: link to parents (order-independent)
+    for (const r of rows) {
+      if (r.level === "category") {
+        tree.push(nodeMap[r.id]);
+      } else if (r.level === "subcategory") {
         const parent = nodeMap[r.parent_id];
-        if (parent) parent.groups.push(node);
+        if (parent) parent.subcategories.push(nodeMap[r.id]);
+      } else if (r.level === "group") {
+        const parent = nodeMap[r.parent_id];
+        if (parent) parent.groups.push(nodeMap[r.id]);
       } else if (r.level === "item") {
         const parent = nodeMap[r.parent_id];
         if (parent) parent.items.push(r);

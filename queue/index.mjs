@@ -288,9 +288,16 @@ function getQueueRank(inspection, num) {
   const ignorePriority = meta?.ignore_priority;
 
   const orderClauses = [];
-  if (!ignoreReinspection) orderClauses.push("CASE WHEN h.num IS NOT NULL THEN 1 ELSE 0 END ASC");
+  if (!ignoreReinspection) orderClauses.push(`CASE WHEN EXISTS (
+              SELECT 1 FROM inspection_history h WHERE h.num = t.num AND h.inspection = ?
+            ) THEN 1 ELSE 0 END ASC`);
   if (!ignorePriority) orderClauses.push("COALESCE(p.priority, 999) ASC");
   orderClauses.push("t.timestamp ASC");
+
+  const params = [];
+  if (!ignoreReinspection) params.push(inspection);
+  params.push(inspection); // for LEFT JOIN team_priority
+  params.push(num); // for WHERE
 
   const result = db
     .prepare(`
@@ -301,10 +308,9 @@ function getQueueRank(inspection, num) {
         ) AS rank
       FROM '${inspection}' AS t
       LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ?
-      ${!ignoreReinspection ? "LEFT JOIN inspection_history AS h ON h.num = t.num AND h.inspection = ?" : ""}
     ) AS sub WHERE sub.num = ?
   `)
-    .get(...(!ignoreReinspection ? [inspection, inspection, num] : [inspection, num]));
+    .get(...params);
 
   return result ? result.rank : null;
 }
