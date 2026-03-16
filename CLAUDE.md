@@ -38,6 +38,7 @@ All 7 backend services (auth, entry, queue, inspection, traffic, score, document
 - `theme-init.js` - Theme initialization (localStorage + prefers-color-scheme)
 - `useSSE.js` - Frontend SSE connection factory with auto-reconnect
 - `sse.mjs` - Backend SSE manager (broadcast + endpoint handler)
+- `format-phone.js` - Phone number formatting utilities; exports `formatPhone(value)` (input formatting) and `displayPhone(phone)` (display formatting)
 
 Service dependencies (via environment variables in `docker-compose.yml`):
 - entry → auth (`AUTH_SERVER`)

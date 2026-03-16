@@ -22,6 +22,7 @@ import {
 import { useSSE } from "../composables/useSSE";
 import { useNotification } from "../composables/useNotification";
 import { useBoothTimers } from "../composables/useBoothTimers";
+import { displayPhone } from "@shared/format-phone.js";
 
 const { success, error, warning } = useNotification();
 const router = useRouter();
@@ -252,9 +253,7 @@ async function toggleBoothActive(type, boothNum, currentActive, ev) {
   }
 }
 
-function formatPhone(phone) {
-  return phone.replace(/(\d{3})(\d{4})(\d{4})/, "$1-$2-$3");
-}
+
 
 function formatTime(timestamp) {
   return new Date(timestamp).toLocaleTimeString("ko-KR");
@@ -412,7 +411,7 @@ function goToStats() {
                     </div>
                   </div>
                   <div class="queue-item-meta">
-                    <a :href="`tel:${item.phone}`" class="entry-phone">{{ formatPhone(item.phone) }}</a>
+                    <a :href="`tel:${item.phone}`" class="entry-phone">{{ displayPhone(item.phone) }}</a>
                     <span class="entry-time">{{ formatTime(item.timestamp) }}</span>
                     <span v-if="item.is_reinspection" class="badge badge-warning">재검</span>
                     <span v-else class="badge badge-success">초검</span>

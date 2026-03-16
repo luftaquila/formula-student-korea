@@ -321,6 +321,7 @@ app.get("/api/users", (req, res) => {
 app.post("/api/users", (req, res) => {
   const { email, role } = req.body;
   if (!email || !email.trim()) return res.status(400).send("이메일을 입력하세요.");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return res.status(400).send("올바르지 않은 이메일 형식입니다.");
   if (!VALID_ROLES.includes(role)) return res.status(400).send("올바르지 않은 역할입니다.");
 
   const result = dbRun(() =>

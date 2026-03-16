@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from "vue";
 import { Notyf } from "notyf";
+import { formatPhone } from "@shared/format-phone.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 
@@ -382,12 +383,7 @@ async function addOpsContact() {
   }
 }
 
-function formatPhone(value) {
-  const digits = value.replace(/[^0-9]/g, "").slice(0, 11);
-  if (digits.length <= 3) return digits;
-  if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
-  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7, 11)}`;
-}
+
 
 function onOpsPhoneInput(e) {
   newOpsPhone.value = formatPhone(e.target.value);

@@ -4,6 +4,7 @@ import { fetchEntries, registerToQueue } from "../api";
 import { useSSE } from "../composables/useSSE";
 import { useNotification } from "../composables/useNotification";
 import { useBoothTimers } from "../composables/useBoothTimers";
+import { formatPhone } from "@shared/format-phone.js";
 
 const { success, error, warning } = useNotification();
 
@@ -37,12 +38,7 @@ onMounted(async () => {
   loading.value = false;
 });
 
-function formatPhone(value) {
-  const digits = value.replace(/[^0-9]/g, "");
-  if (digits.length <= 3) return digits;
-  if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
-  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7, 11)}`;
-}
+
 
 function onPhoneInput(e) {
   phone.value = formatPhone(e.target.value);

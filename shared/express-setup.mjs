@@ -216,6 +216,9 @@ export function createDbRun() {
       if (e.code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
         return { success: false, status: 400, error: "이미 존재하는 항목입니다." };
       }
+      if (e.code === "SQLITE_CONSTRAINT_UNIQUE") {
+        return { success: false, status: 400, error: "UNIQUE 제약 조건 위반입니다." };
+      }
       if (e.status && e.message) {
         return { success: false, status: e.status, error: e.message };
       }
