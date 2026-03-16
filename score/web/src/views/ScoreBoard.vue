@@ -137,6 +137,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener("click", handleOutsideClick);
+  clearTimeout(loadDataTimer);
 });
 
 function handleOutsideClick(e) {
@@ -254,11 +255,11 @@ function formatResult(result) {
   if (result == null) return "-";
   const ms = Number(result);
   if (isNaN(ms)) return String(result);
-  const totalMs = Math.abs(ms);
-  const minutes = String(Math.floor(totalMs / 60000)).padStart(2, "0");
-  const seconds = String(Math.floor((totalMs % 60000) / 1000)).padStart(2, "0");
-  const millis = String(Math.round(totalMs % 1000)).padStart(3, "0");
-  return `${minutes}:${seconds}.${millis}`;
+  const totalRounded = Math.round(Math.abs(ms));
+  const millis = String(totalRounded % 1000).padStart(3, "0");
+  const secs = Math.floor(totalRounded / 1000) % 60;
+  const mins = Math.floor(totalRounded / 60000);
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${millis}`;
 }
 
 // 수동 점수 저장
@@ -755,7 +756,7 @@ function exportData(format) {
                       class="manual-input"
                       type="number"
                       :value="getManualScore(entry.num, 'report')"
-                      :readonly="isReadOnly"
+                      :disabled="isReadOnly"
                       @blur="handleManualSave(entry.num, 'report', $event.target.value)"
                       @keyup.enter="$event.target.blur()"
                       placeholder="-"
@@ -766,7 +767,7 @@ function exportData(format) {
                       class="manual-input"
                       type="number"
                       :value="getManualScore(entry.num, 'energy')"
-                      :readonly="isReadOnly"
+                      :disabled="isReadOnly"
                       @blur="handleManualSave(entry.num, 'energy', $event.target.value)"
                       @keyup.enter="$event.target.blur()"
                       placeholder="-"
@@ -777,7 +778,7 @@ function exportData(format) {
                       class="manual-input"
                       type="number"
                       :value="getManualScore(entry.num, 'bonus')"
-                      :readonly="isReadOnly"
+                      :disabled="isReadOnly"
                       @blur="handleManualSave(entry.num, 'bonus', $event.target.value)"
                       @keyup.enter="$event.target.blur()"
                       placeholder="-"
@@ -788,7 +789,7 @@ function exportData(format) {
                       class="manual-input"
                       type="number"
                       :value="getManualScore(entry.num, 'deduction')"
-                      :readonly="isReadOnly"
+                      :disabled="isReadOnly"
                       @blur="handleManualSave(entry.num, 'deduction', $event.target.value)"
                       @keyup.enter="$event.target.blur()"
                       placeholder="-"
@@ -872,7 +873,7 @@ function exportData(format) {
                 <tr v-for="{ field, label } in [{ field: 'cone_penalty', label: '콘터치' }, { field: 'oc_penalty', label: '코스이탈' }, { field: 'start_delay', label: '출발지연' }]" :key="field">
                   <td class="col-setting-label">{{ label }}</td>
                   <template v-for="evtType in [...dynamicEvents.map(e => e.type), '내구']" :key="'p-'+field+'-'+evtType">
-                    <td class="col-setting-value setting-cell" @click="startSettingEdit('p:'+field+':'+evtType)">
+                    <td v-if="field !== 'start_delay' || evtType === '내구'" class="col-setting-value setting-cell" @click="startSettingEdit('p:'+field+':'+evtType)">
                       <input
                         v-if="editingSettingCell === 'p:'+field+':'+evtType"
                         :ref="settingInputRef"
@@ -886,6 +887,7 @@ function exportData(format) {
                       />
                       <span v-else class="setting-text">{{ getPenalty(evtType, field) || 0 }}</span>
                     </td>
+                    <td v-else class="col-setting-value">-</td>
                   </template>
                 </tr>
               </tbody>

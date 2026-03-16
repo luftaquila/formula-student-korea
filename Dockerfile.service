@@ -11,6 +11,7 @@ COPY ${SERVICE}/index.mjs ./
 COPY ${SERVICE}/web/ web/
 COPY shared ../shared
 RUN npm --prefix web run build && rm -rf web/node_modules
+ENV NODE_ENV=production
 RUN mkdir -p data && chown -R node:node .
 COPY entrypoint.sh /usr/local/bin/
 EXPOSE ${PORT}

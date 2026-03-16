@@ -16,7 +16,8 @@ watch(selectedFile, (v) => {
 });
 
 on("init", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   recordFiles.value = ["controller", ...data.recordFiles];
   if (data.eventModes) {
     const modes = {};
@@ -26,13 +27,15 @@ on("init", (e) => {
 });
 
 on("records", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   recordFiles.value = ["controller", ...data.recordFiles];
   lastUpdate.value = { type: data.type, name: data.name, timestamp: Date.now() };
 });
 
 on("event-mode", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   eventModes.value = { ...eventModes.value, [data.event_type]: !!data.enabled };
 });
 

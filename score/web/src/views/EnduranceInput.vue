@@ -124,12 +124,13 @@ function isDisabled(num) {
 
 function formatResult(ms) {
   if (ms == null) return "";
-  const totalMs = Math.abs(Number(ms));
-  if (isNaN(totalMs)) return "";
-  const minutes = String(Math.floor(totalMs / 60000)).padStart(2, "0");
-  const seconds = String(Math.floor((totalMs % 60000) / 1000)).padStart(2, "0");
-  const millis = String(Math.round(totalMs % 1000)).padStart(3, "0");
-  return `${minutes}:${seconds}.${millis}`;
+  const raw = Math.abs(Number(ms));
+  if (isNaN(raw)) return "";
+  const totalRounded = Math.round(raw);
+  const millis = String(totalRounded % 1000).padStart(3, "0");
+  const secs = Math.floor(totalRounded / 1000) % 60;
+  const mins = Math.floor(totalRounded / 60000);
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${millis}`;
 }
 
 function parseTimeInput(str) {

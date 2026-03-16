@@ -48,7 +48,7 @@ async function handleSubmit() {
       <form @submit.prevent="handleSubmit">
         <div class="form-group">
           <label class="form-label">엔트리 번호</label>
-          <input v-model.number="form.num" type="number" class="form-input" min="0" required />
+          <input v-model.number="form.num" type="number" class="form-input" min="1" required />
         </div>
         <div class="form-group">
           <label class="form-label">학교명</label>

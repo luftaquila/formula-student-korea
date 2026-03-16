@@ -80,6 +80,7 @@ const validateUser = (email) => !!db.prepare("SELECT 1 FROM users WHERE email = 
 const logger = createLogger(db, "auth");
 
 const app = createApp({ express, validateUser, db }, (req) => {
+  if (req.path === "/api/health") return null;
   if (["/api/login", "/api/callback", "/api/logout"].includes(req.path)) return null;
   if (req.path.startsWith("/api/admin")) return "admin";
   if (req.path.startsWith("/api/users")) return "admin";
@@ -91,6 +92,8 @@ const app = createApp({ express, validateUser, db }, (req) => {
 });
 
 app.get("/api/logs", logger.queryHandler);
+
+app.get("/api/health", (req, res) => res.send("ok"));
 
 /* ============================================
    DB 헬퍼
@@ -189,6 +192,7 @@ app.get("/api/callback", async (req, res) => {
     });
 
     if (!tokenRes.ok) {
+      res.setHeader("Set-Cookie", clearNonceCookie);
       return res.redirect(`/auth/login?error=token_failed&redirect=${encodeURIComponent(redirectUrl)}`);
     }
 
@@ -200,6 +204,7 @@ app.get("/api/callback", async (req, res) => {
     });
 
     if (!userInfoRes.ok) {
+      res.setHeader("Set-Cookie", clearNonceCookie);
       return res.redirect(`/auth/login?error=userinfo_failed&redirect=${encodeURIComponent(redirectUrl)}`);
     }
 
@@ -211,6 +216,7 @@ app.get("/api/callback", async (req, res) => {
     const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
     if (!user || !user.active) {
       logger.warn(req, "user.login_failed", { reason: !user ? "unregistered" : "deactivated" }, email, { email, name });
+      res.setHeader("Set-Cookie", clearNonceCookie);
       return res.redirect(`/auth/login?error=access_denied&redirect=${encodeURIComponent(redirectUrl)}`);
     }
 
@@ -240,6 +246,7 @@ app.get("/api/callback", async (req, res) => {
     res.redirect(redirectUrl);
   } catch (e) {
     console.error("OAuth callback error:", e);
+    res.setHeader("Set-Cookie", clearNonceCookie);
     res.redirect(`/auth/login?error=server_error&redirect=${encodeURIComponent(redirectUrl)}`);
   }
 });
@@ -318,6 +325,9 @@ app.post("/api/users/bulk", (req, res) => {
       if (!email) { errors.push({ row, reason: "이메일 없음" }); continue; }
 
       const role = VALID_ROLES.includes(row.role) ? row.role : "student";
+      if (!VALID_ROLES.includes(row.role)) {
+        errors.push({ row, reason: `알 수 없는 역할 "${row.role}", "student"로 설정됨` });
+      }
       const memo = (row.memo || "").trim();
 
       const result = insert.run(email, role, memo);
@@ -339,7 +349,9 @@ app.patch("/api/users/bulk", (req, res) => {
   if (!Array.isArray(ids) || ids.length === 0) return res.status(400).send("사용자를 선택하세요.");
   if (active === undefined) return res.status(400).send("active 값이 필요합니다.");
 
-  const numIds = ids.map(Number);
+  const numIds = ids.map(Number).filter(n => Number.isInteger(n) && n > 0);
+  if (numIds.length === 0) return res.status(400).send("유효한 ID가 없습니다.");
+  if (numIds.length !== ids.length) return res.status(400).send("일부 ID가 올바르지 않습니다.");
 
   // ADMIN_EMAIL 보호
   if (ADMIN_EMAIL && !active) {
@@ -363,7 +375,9 @@ app.delete("/api/users/bulk", (req, res) => {
   const { ids } = req.body;
   if (!Array.isArray(ids) || ids.length === 0) return res.status(400).send("삭제할 사용자를 선택하세요.");
 
-  const numIds = ids.map(Number);
+  const numIds = ids.map(Number).filter(n => Number.isInteger(n) && n > 0);
+  if (numIds.length === 0) return res.status(400).send("유효한 ID가 없습니다.");
+  if (numIds.length !== ids.length) return res.status(400).send("일부 ID가 올바르지 않습니다.");
 
   // ADMIN_EMAIL 보호
   if (ADMIN_EMAIL) {
@@ -508,7 +522,8 @@ app.get("/api/admin/logs", async (req, res) => {
 
   // Build query string for forwarding
   const qs = new URLSearchParams();
-  qs.set("limit", "500"); // fetch max from each service for merge
+  const fetchLimit = Math.min(offset + limit + 100, 2000);
+  qs.set("limit", String(fetchLimit));
   for (const [k, v] of Object.entries(filters)) {
     if (v) qs.set(k, v);
   }

@@ -7,15 +7,20 @@ services:
         SERVICE: entry
         PORT: 9100
     container_name: fsk-entry
-    env_file:
-      - .env
     environment:
       - AUTH_SERVER=http://auth:9800
+      - JWT_SECRET=${JWT_SECRET}
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
     volumes:
       - ./entry/data:/home/node/fsk-entry/data
     depends_on:
       - auth
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks:
       - fsk-network
 
@@ -27,15 +32,20 @@ services:
         SERVICE: traffic
         PORT: 9200
     container_name: fsk-traffic
-    env_file:
-      - .env
     environment:
       - AUTH_SERVER=http://auth:9800
+      - JWT_SECRET=${JWT_SECRET}
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
     volumes:
       - ./traffic/data:/home/node/fsk-traffic/data
     depends_on:
       - auth
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9200/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks:
       - fsk-network
 
@@ -56,17 +66,26 @@ services:
         SERVICE: queue
         PORT: 9300
     container_name: fsk-queue
-    env_file:
-      - .env
     environment:
       - ENTRY_SERVER=http://entry:9100
       - AUTH_SERVER=http://auth:9800
+      - JWT_SECRET=${JWT_SECRET}
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      - NAVER_CLOUD_ACCESS_KEY=${NAVER_CLOUD_ACCESS_KEY}
+      - NAVER_CLOUD_SECRET_KEY=${NAVER_CLOUD_SECRET_KEY}
+      - NAVER_CLOUD_SMS_SERVICE_ID=${NAVER_CLOUD_SMS_SERVICE_ID}
+      - PHONE_NUMBER_SMS_SENDER=${PHONE_NUMBER_SMS_SENDER}
     volumes:
       - ./queue/data:/home/node/fsk-queue/data
     depends_on:
       - entry
       - auth
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9300/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks:
       - fsk-network
 
@@ -78,15 +97,20 @@ services:
         SERVICE: inspection
         PORT: 9600
     container_name: fsk-inspection
-    env_file:
-      - .env
     environment:
       - AUTH_SERVER=http://auth:9800
+      - JWT_SECRET=${JWT_SECRET}
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
     volumes:
       - ./inspection/data:/home/node/fsk-inspection/data
     depends_on:
       - auth
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9600/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks:
       - fsk-network
 
@@ -98,13 +122,13 @@ services:
         SERVICE: score
         PORT: 9700
     container_name: fsk-score
-    env_file:
-      - .env
     environment:
       - ENTRY_SERVER=http://entry:9100
       - INSPECTION_SERVER=http://inspection:9600
       - TRAFFIC_SERVER=http://traffic:9200
       - AUTH_SERVER=http://auth:9800
+      - JWT_SECRET=${JWT_SECRET}
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
     volumes:
       - ./score/data:/home/node/fsk-score/data
     depends_on:
@@ -112,6 +136,11 @@ services:
       - inspection
       - traffic
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9700/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks:
       - fsk-network
 
@@ -123,15 +152,20 @@ services:
         SERVICE: documents
         PORT: 9900
     container_name: fsk-documents
-    env_file:
-      - .env
     environment:
       - AUTH_SERVER=http://auth:9800
+      - JWT_SECRET=${JWT_SECRET}
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
     volumes:
       - ./documents/data:/home/node/fsk-documents/data
     depends_on:
       - auth
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9900/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks:
       - fsk-network
 
@@ -143,13 +177,21 @@ services:
         SERVICE: auth
         PORT: 9800
     container_name: fsk-auth
-    env_file:
-      - .env
     environment:
       - LOG_SERVICES=entry:http://entry:9100,queue:http://queue:9300,inspection:http://inspection:9600,traffic:http://traffic:9200,score:http://score:9700,documents:http://documents:9900
+      - JWT_SECRET=${JWT_SECRET}
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
     volumes:
       - ./auth/data:/home/node/fsk-auth/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9800/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks:
       - fsk-network
 
@@ -189,8 +231,8 @@ services:
       - rules
       - auth
     restart: unless-stopped
-    env_file:
-      - .env
+    environment:
+      - DOMAIN_NAME=${DOMAIN_NAME}
     networks:
       - fsk-network
       - traefik
@@ -202,7 +244,7 @@ services:
     profiles:
       - local
     ports:
-      - "0.0.0.0:9000:9000"
+      - "127.0.0.1:9000:9000"
     depends_on: *caddy-depends
     restart: unless-stopped
     networks:

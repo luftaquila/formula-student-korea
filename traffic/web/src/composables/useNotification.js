@@ -30,5 +30,9 @@ function escapeHtml(str) {
 export function useNotification() {
   const notyf = getNotyf();
 
-  return { notyf };
+  return {
+    notyf,
+    error: (msg) => notyf.error({ message: escapeHtml(msg) }),
+    success: (msg) => notyf.success({ message: escapeHtml(msg) }),
+  };
 }

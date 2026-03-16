@@ -11,7 +11,8 @@ const allBooths = ref({});
 const lastBoothUpdate = ref(null);
 
 on("init", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   activeInspections.value = data.activeInspections;
   if (data.allBooths) {
     allBooths.value = data.allBooths;
@@ -19,18 +20,21 @@ on("init", (e) => {
 });
 
 on("inspections", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   activeInspections.value = data.activeInspections;
 });
 
 on("queue", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   activeInspections.value = data.activeInspections;
   lastQueueUpdate.value = { type: data.type, timestamp: Date.now() };
 });
 
 on("booth", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   allBooths.value[data.type] = data.booths;
   lastBoothUpdate.value = { type: data.type, timestamp: Date.now() };
 });

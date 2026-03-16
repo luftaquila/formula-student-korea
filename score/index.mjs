@@ -15,8 +15,12 @@ db.pragma("synchronous = NORMAL");
 
 db.transaction(() => {
   // 레거시 테이블 정리
-  db.exec(`DROP TABLE IF EXISTS score_event`);
-  db.exec(`DROP TABLE IF EXISTS score_record`);
+  const legacyTables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('score_event', 'score_record')").all();
+  if (legacyTables.length > 0) {
+    console.log(`[score] Dropping legacy tables: ${legacyTables.map(t => t.name).join(", ")}`);
+    db.exec(`DROP TABLE IF EXISTS score_event`);
+    db.exec(`DROP TABLE IF EXISTS score_record`);
+  }
 
   // 수동 입력 점수 (보고서, 에너지 등)
   db.exec(`CREATE TABLE IF NOT EXISTS score_manual (
@@ -93,10 +97,13 @@ const ENDURANCE_SQL = {
 const logger = createLogger(db, "score");
 
 const app = createApp({ express }, (req) => {
+  if (req.path === "/api/health") return null;
   return "admin";
 });
 
 app.get("/api/logs", logger.queryHandler);
+
+app.get("/api/health", (req, res) => res.send("ok"));
 
 /* ============================================
    설정
@@ -469,6 +476,11 @@ app.put("/api/score/manual", (req, res) => {
   if (!year || team_num == null || !score_type) {
     return res.status(400).send("필수 필드가 누락되었습니다.");
   }
+  const numYear = Number(year);
+  const numTeamNum = Number(team_num);
+  if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
+  if (!Number.isInteger(numTeamNum) || numTeamNum < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
+
   const keyErr = validateKey(score_type, "score_type");
   if (keyErr) return res.status(400).send(keyErr);
 
@@ -483,13 +495,13 @@ app.put("/api/score/manual", (req, res) => {
          ON CONFLICT(year, team_num, score_type)
          DO UPDATE SET value = excluded.value`,
       )
-      .run(year, team_num, score_type, numValue),
+      .run(numYear, numTeamNum, score_type, numValue),
   );
 
   if (!result.success) return res.status(result.status).send(result.error);
 
-  logger.log(req, "manual_score.update", { year, score_type, value: numValue }, `#${team_num}`);
-  broadcastEvent("manual-score", { year, team_num, score_type, value: numValue });
+  logger.log(req, "manual_score.update", { year: numYear, score_type, value: numValue }, `#${numTeamNum}`);
+  broadcastEvent("manual-score", { year: numYear, team_num: numTeamNum, score_type, value: numValue });
 
   res.status(200).send();
 });
@@ -584,6 +596,10 @@ app.put("/api/score/endurance", (req, res) => {
   if (!year || team_num == null || !field) {
     return res.status(400).send("필수 필드가 누락되었습니다.");
   }
+  const numYear = Number(year);
+  const numTeamNum = Number(team_num);
+  if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
+  if (!Number.isInteger(numTeamNum) || numTeamNum < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
 
   const allowedFields = [
     "status", "driver1_time", "driver1_start_delay", "driver1_cones", "driver1_oc", "driver1_penalty",
@@ -606,15 +622,15 @@ app.put("/api/score/endurance", (req, res) => {
 
   const result = dbRun(() => {
     db.transaction(() => {
-      db.prepare("INSERT OR IGNORE INTO score_endurance (year, team_num) VALUES (?, ?)").run(year, team_num);
-      db.prepare(ENDURANCE_SQL[field]).run(dbValue, year, team_num);
+      db.prepare("INSERT OR IGNORE INTO score_endurance (year, team_num) VALUES (?, ?)").run(numYear, numTeamNum);
+      db.prepare(ENDURANCE_SQL[field]).run(dbValue, numYear, numTeamNum);
     })();
   });
 
   if (!result.success) return res.status(result.status).send(result.error);
 
-  logger.log(req, "endurance.update", { year, field, value: dbValue }, `#${team_num}`);
-  broadcastEvent("endurance", { year, team_num, field, value: dbValue });
+  logger.log(req, "endurance.update", { year: numYear, field, value: dbValue }, `#${numTeamNum}`);
+  broadcastEvent("endurance", { year: numYear, team_num: numTeamNum, field, value: dbValue });
 
   res.status(200).send();
 });

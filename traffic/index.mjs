@@ -61,10 +61,13 @@ setupProcessHandlers(db);
 const logger = createLogger(db, "traffic");
 
 const app = createApp({ express }, (req) => {
+  if (req.path === "/api/health") return null;
   return "admin";
 });
 
 app.get("/api/logs", logger.queryHandler);
+
+app.get("/api/health", (req, res) => res.send("ok"));
 
 /* ============================================
    SSE (Server-Sent Events) 설정
@@ -124,7 +127,7 @@ function validateRecordData(data) {
     return { valid: false, error: "올바르지 않은 엔트리 데이터입니다." };
   }
 
-  if (typeof data.result !== "number" || !Number.isFinite(data.result)) {
+  if (typeof data.result !== "number" || !Number.isInteger(data.result)) {
     return { valid: false, error: "결과값이 올바르지 않습니다." };
   }
   if (data.detail !== undefined && data.detail !== null && typeof data.detail !== "string") {
@@ -330,12 +333,16 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   logger.log(req, "record.update", { rowid, field, value }, name);
 
   // SSE 브로드캐스트 (무효화 변경 시 팀/종목 정보 포함)
-  let record = null;
-  if (field === "invalidated") {
-    const row = db.prepare(`SELECT num, type FROM '${name}' WHERE rowid = ?`).get(rowid);
-    if (row) record = { num: row.num, eventType: row.type };
+  try {
+    let record = null;
+    if (field === "invalidated") {
+      const row = db.prepare(`SELECT num, type FROM '${name}' WHERE rowid = ?`).get(rowid);
+      if (row) record = { num: row.num, eventType: row.type };
+    }
+    broadcastEvent("records", { type: "update", name, field, recordFiles: getRecordFiles(), record });
+  } catch (e) {
+    console.error("[SSE broadcast]", e.message);
   }
-  broadcastEvent("records", { type: "update", name, field, recordFiles: getRecordFiles(), record });
 
   res.json(result.result);
 });

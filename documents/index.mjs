@@ -24,6 +24,27 @@ db.exec(`CREATE TABLE IF NOT EXISTS student_team (
   UNIQUE(team_num, year)
 )`);
 
+// 마이그레이션: student_team PK를 (email, year)로 변경
+{
+  const info = db.prepare("PRAGMA table_info(student_team)").all();
+  const emailCol = info.find(c => c.name === "email");
+  if (emailCol && emailCol.pk === 1) {
+    // 기존 스키마: email이 단독 PK → (email, year) 복합 PK로 마이그레이션
+    db.transaction(() => {
+      db.exec(`CREATE TABLE student_team_new (
+        email TEXT NOT NULL,
+        team_num INTEGER NOT NULL,
+        year INTEGER NOT NULL,
+        PRIMARY KEY (email, year),
+        UNIQUE(team_num, year)
+      )`);
+      db.exec("INSERT OR IGNORE INTO student_team_new SELECT email, team_num, year FROM student_team");
+      db.exec("DROP TABLE student_team");
+      db.exec("ALTER TABLE student_team_new RENAME TO student_team");
+    })();
+  }
+}
+
 db.exec(`CREATE TABLE IF NOT EXISTS session (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -85,6 +106,7 @@ setupProcessHandlers(db);
 const logger = createLogger(db, "documents");
 
 const app = createApp({ express }, (req) => {
+  if (req.path === "/api/health") return null;
   if (req.path.startsWith("/api/admin")) return "chief";
   if (req.path === "/api/logs") return "admin";
   if (req.path.startsWith("/api/")) return "student";
@@ -93,6 +115,8 @@ const app = createApp({ express }, (req) => {
 });
 
 app.get("/api/logs", logger.queryHandler);
+
+app.get("/api/health", (req, res) => res.send("ok"));
 
 const dbRun = createDbRun();
 
@@ -230,6 +254,20 @@ app.post("/api/sessions/:id/submit", (req, res) => {
       }
     }
 
+    // MIME type mismatch warning
+    const MIME_MAP = {
+      ".pdf": ["application/pdf"],
+      ".doc": ["application/msword"],
+      ".docx": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+      ".jpg": ["image/jpeg"], ".jpeg": ["image/jpeg"],
+      ".png": ["image/png"],
+      ".zip": ["application/zip", "application/x-zip-compressed"],
+    };
+    const ext = path.extname(info.filename || "").toLowerCase();
+    if (MIME_MAP[ext] && !MIME_MAP[ext].includes(info.mimeType)) {
+      console.warn(`[upload] MIME mismatch: ${info.filename} ext=${ext} mime=${info.mimeType}`);
+    }
+
     const storedName = crypto.randomUUID() + safeExt(info.filename);
     const filePath = path.join(tmpDir, storedName);
     const ws = fs.createWriteStream(filePath);
@@ -266,6 +304,12 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     fileStream.pipe(ws);
   });
 
+  busboy.on("filesLimit", () => {
+    aborted = true;
+    rmDir(tmpDir);
+    if (!res.headersSent) res.status(400).send("파일 수가 20개를 초과했습니다.");
+  });
+
   busboy.on("error", () => {
     aborted = true;
     rmDir(tmpDir);
@@ -288,11 +332,11 @@ app.post("/api/sessions/:id/submit", (req, res) => {
       return res.status(400).send("파일을 선택하세요.");
     }
 
+    // 기존 제출 조회 (트랜잭션 밖에서)
+    const prev = db.prepare("SELECT id FROM submission WHERE session_id = ? AND team_num = ? ORDER BY id DESC LIMIT 1").get(session.id, team.team_num);
+
     const txResult = dbRun(() => {
       const tx = db.transaction(() => {
-        // 기존 제출 조회
-        const prev = db.prepare("SELECT id FROM submission WHERE session_id = ? AND team_num = ? ORDER BY id DESC LIMIT 1").get(session.id, team.team_num);
-
         // 새 제출 INSERT
         const subResult = db.prepare(
           "INSERT INTO submission (session_id, team_num, submitted_by, submitted_at, total_size, is_late) VALUES (?, ?, ?, ?, ?, ?)",
@@ -305,14 +349,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
           fileStmt.run(newSubId, f.original_name, f.stored_name, f.size, f.mime_type);
         }
 
-        // 이전 제출 삭제
-        const prevId = prev ? prev.id : null;
-        if (prev) {
-          db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(prev.id);
-          db.prepare("DELETE FROM submission WHERE id = ?").run(prev.id);
-        }
-
-        return { id: newSubId, submitted_at: currentTime, is_late: isLate, total_size: totalSize, prevId };
+        return { id: newSubId, submitted_at: currentTime, is_late: isLate, total_size: totalSize, prevId: prev ? prev.id : null };
       });
       return tx();
     });
@@ -341,6 +378,12 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     }
 
     if (txResult.result.prevId) {
+      try {
+        db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(txResult.result.prevId);
+        db.prepare("DELETE FROM submission WHERE id = ?").run(txResult.result.prevId);
+      } catch (e) {
+        console.error("Failed to delete previous submission:", e.message);
+      }
       rmDir(path.join(UPLOADS_DIR, String(session.id), String(team.team_num), String(txResult.result.prevId)));
     }
 
@@ -401,6 +444,9 @@ app.post("/api/admin/sessions", (req, res) => {
   const late_end_at = req.body.late_end_at || "";
   if (!name?.trim()) return res.status(400).send("세션명을 입력하세요.");
   if (!start_at || !end_at) return res.status(400).send("시간을 모두 입력하세요.");
+  const isoRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+  if (!isoRegex.test(start_at) || !isoRegex.test(end_at)) return res.status(400).send("날짜 형식이 올바르지 않습니다.");
+  if (late_end_at && !isoRegex.test(late_end_at)) return res.status(400).send("지연 제출 마감 날짜 형식이 올바르지 않습니다.");
   if (end_at <= start_at) return res.status(400).send("제출 마감은 시작 이후여야 합니다.");
   if (late_end_at && late_end_at < end_at) return res.status(400).send("지각 마감은 제출 마감 이후여야 합니다.");
   if (!year) return res.status(400).send("연도를 선택하세요.");
@@ -445,6 +491,9 @@ app.put("/api/admin/sessions/:id", (req, res) => {
 
   if (!name?.trim()) return res.status(400).send("세션명을 입력하세요.");
   if (!start_at || !end_at) return res.status(400).send("시간을 모두 입력하세요.");
+  const isoRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+  if (!isoRegex.test(start_at) || !isoRegex.test(end_at)) return res.status(400).send("날짜 형식이 올바르지 않습니다.");
+  if (late_end_at && !isoRegex.test(late_end_at)) return res.status(400).send("지연 제출 마감 날짜 형식이 올바르지 않습니다.");
   if (end_at <= start_at) return res.status(400).send("제출 마감은 시작 이후여야 합니다.");
   if (late_end_at && late_end_at < end_at) return res.status(400).send("지각 마감은 제출 마감 이후여야 합니다.");
   if (!Array.isArray(teams) || teams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
@@ -590,11 +639,13 @@ app.get("/api/admin/student-teams", (req, res) => {
 app.post("/api/admin/student-teams", (req, res) => {
   const { email, team_num, year } = req.body;
   if (!email?.trim()) return res.status(400).send("이메일을 입력하세요.");
-  if (!team_num) return res.status(400).send("팀 번호를 입력하세요.");
-  if (!year) return res.status(400).send("연도를 선택하세요.");
+  const numTeam = Number(team_num);
+  const numYear = Number(year);
+  if (!Number.isInteger(numTeam) || numTeam < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
 
   const result = dbRun(() =>
-    db.prepare("INSERT INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run(email.trim().toLowerCase(), Number(team_num), Number(year)),
+    db.prepare("INSERT INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run(email.trim().toLowerCase(), numTeam, numYear),
   );
 
   if (!result.success) {

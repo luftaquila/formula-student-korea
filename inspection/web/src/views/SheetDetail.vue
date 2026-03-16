@@ -25,7 +25,8 @@ const entry = ref(null);
 const template = ref([]);
 const sheetData = ref({ answers: {}, results: {}, inspectors: {} });
 const loading = ref(true);
-const activeTab = ref(Number(sessionStorage.getItem("inspectionActiveTab")) || 0);
+const storedTab = Number(sessionStorage.getItem("inspectionActiveTab")) || 0;
+const activeTab = ref(storedTab);
 const tabsRef = ref(null);
 
 watch(activeTab, (val) => {
@@ -85,9 +86,15 @@ const debounceTimers = {};
 // 마지막으로 전송한 값 추적 (SSE self-echo 방지)
 const lastSentValues = {};
 
+const pendingFns = {};
+
 function debounce(key, fn, delay = 300) {
   clearTimeout(debounceTimers[key]);
-  debounceTimers[key] = setTimeout(fn, delay);
+  pendingFns[key] = fn;
+  debounceTimers[key] = setTimeout(() => {
+    delete pendingFns[key];
+    fn();
+  }, delay);
 }
 
 async function onAnswerChange(itemId, value) {
@@ -338,8 +345,12 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("scroll", onScroll);
-  for (const timer of Object.values(debounceTimers)) {
+  for (const [key, timer] of Object.entries(debounceTimers)) {
     clearTimeout(timer);
+    if (pendingFns[key]) {
+      pendingFns[key]();
+      delete pendingFns[key];
+    }
   }
 });
 
@@ -347,6 +358,10 @@ watch(activeTab, () => {
   sessionStorage.setItem("inspectionScrollY", 0);
   window.scrollTo(0, 0);
 });
+
+watch(template, (t) => {
+  if (t && t.length > 0 && activeTab.value >= t.length) activeTab.value = 0;
+}, { immediate: true });
 
 // SSE로 카테고리 결과 실시간 반영 (같은 팀의 변경사항)
 watch(lastUpdate, (update) => {

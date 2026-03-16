@@ -15,22 +15,26 @@ on("init", () => {
 });
 
 on("category-result", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   lastUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 on("inspector", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   lastInspectorUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 on("answer", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   lastAnswerUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 on("memo", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   lastMemoUpdate.value = { ...data, timestamp: Date.now() };
 });
 

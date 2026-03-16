@@ -5,6 +5,26 @@ import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
+// Rate limiter for public endpoints
+const rateLimitMap = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of rateLimitMap) {
+    if (now > entry.resetAt) rateLimitMap.delete(ip);
+  }
+}, 60000);
+
+function rateLimit(req, res, next) {
+  const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip) || { count: 0, resetAt: now + 60000 };
+  if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + 60000; }
+  entry.count++;
+  rateLimitMap.set(ip, entry);
+  if (entry.count > 30) return res.status(429).send("요청이 너무 많습니다.");
+  next();
+}
+
 const inspections = {
   battery: "배터리",
   electric: "전기",
@@ -164,6 +184,7 @@ setupProcessHandlers(db);
 const logger = createLogger(db, "queue");
 
 const app = createApp({ express }, (req) => {
+  if (req.path === "/api/health") return null;
   if (req.path.startsWith("/api/admin")) return "official";
   if (/^\/(admin|register|priority|stats)/.test(req.path)) return "official";
   if (req.path === "/api/logs") return "admin";
@@ -176,6 +197,8 @@ const app = createApp({ express }, (req) => {
 });
 
 app.get("/api/logs", logger.queryHandler);
+
+app.get("/api/health", (req, res) => res.send("ok"));
 
 /* ============================================
    SSE (Server-Sent Events) 설정
@@ -309,7 +332,7 @@ app.get("/api/active", (req, res) => {
 });
 
 // GET /api/state/:num - 대기열 상태 조회 (전화번호 검증 필요)
-app.post("/api/state/:num", async (req, res) => {
+app.post("/api/state/:num", rateLimit, async (req, res) => {
   const numValidation = validateEntryNum(req.params.num);
   if (!numValidation.valid) {
     return res.status(400).send(numValidation.error);
@@ -590,7 +613,8 @@ app.post("/api/admin/register/:type", async (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "queue.register", { inspection: type, phone }, `#${num}`);
+  const maskedPhone = phone ? phone.slice(0, 3) + "****" + phone.slice(-4) : "";
+  logger.log(req, "queue.register", { inspection: type, phone: maskedPhone }, `#${num}`);
 
   // SSE 브로드캐스트: 대기열 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
@@ -818,6 +842,10 @@ app.delete("/api/admin/history/:type", (req, res) => {
           db.prepare("DELETE FROM current WHERE num = ?").run(row.num);
         }
       }
+
+      // 대기열 테이블 정리
+      db.prepare(`DELETE FROM '${type}'`).run();
+      db.prepare("UPDATE inspection SET length = 0 WHERE type = ?").run(type);
     })();
   });
 
@@ -911,6 +939,7 @@ app.patch("/api/admin/booths/:type/config", (req, res) => {
 
   const result = dbRun(() => {
     const config = db.prepare("SELECT count FROM booth_config WHERE inspection = ?").get(type);
+    if (!config) throw { status: 400, message: "부스 설정을 찾을 수 없습니다." };
     const currentCount = config.count;
 
     if (count > currentCount) {

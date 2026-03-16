@@ -18,37 +18,44 @@ on("init", () => {
 });
 
 on("inspection:category-result", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   lastInspectionUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 on("inspection:answer", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   lastAnswerUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 on("traffic:records", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   lastTrafficRecordUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 on("manual-score", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   lastManualScoreUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 on("penalty", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   lastPenaltyUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 on("setting", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   lastSettingUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 on("endurance", (e) => {
-  const data = JSON.parse(e.data);
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
   lastEnduranceUpdate.value = { ...data, timestamp: Date.now() };
 });
 

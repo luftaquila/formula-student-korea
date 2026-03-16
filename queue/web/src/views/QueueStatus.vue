@@ -61,7 +61,7 @@ const rank = ref("-");
 
 // Watch for queue updates from SSE to refresh user's rank
 watch(lastQueueUpdate, async () => {
-  if (localStorage.getItem("queue_entry")) {
+  if (sessionStorage.getItem("queue_entry")) {
     await query();
   }
 });
@@ -74,8 +74,8 @@ onMounted(async () => {
   }
 
   // Restore saved state
-  const savedEntry = localStorage.getItem("queue_entry");
-  const savedPhone = localStorage.getItem("queue_phone");
+  const savedEntry = sessionStorage.getItem("queue_entry");
+  const savedPhone = sessionStorage.getItem("queue_phone");
   if (savedEntry && savedPhone) {
     entryNum.value = savedEntry;
     phone.value = formatPhone(savedPhone);
@@ -142,8 +142,8 @@ async function query() {
     queueName.value = result.queue;
     rank.value = result.rank;
 
-    localStorage.setItem("queue_entry", num);
-    localStorage.setItem("queue_phone", phoneDigits);
+    sessionStorage.setItem("queue_entry", num);
+    sessionStorage.setItem("queue_phone", phoneDigits);
   } catch (e) {
     clearState(e.message);
   }
@@ -156,8 +156,8 @@ function clearState(message) {
   queueName.value = "-";
   rank.value = "-";
   phone.value = "010";
-  localStorage.removeItem("queue_entry");
-  localStorage.removeItem("queue_phone");
+  sessionStorage.removeItem("queue_entry");
+  sessionStorage.removeItem("queue_phone");
 }
 </script>
 

@@ -9,7 +9,9 @@ export function createSSEConnection(endpointUrl) {
   const pendingListeners = [];
 
   function on(eventName, handler) {
-    pendingListeners.push({ eventName, handler });
+    if (!pendingListeners.some(l => l.eventName === eventName && l.handler === handler)) {
+      pendingListeners.push({ eventName, handler });
+    }
     if (eventSource) {
       eventSource.addEventListener(eventName, handler);
     }

@@ -67,12 +67,15 @@ setupProcessHandlers(db);
 const logger = createLogger(db, "entry");
 
 const app = createApp({ express }, (req) => {
+  if (req.path === "/api/health") return null;
   if (req.path === "/api/years") return null;
   if (req.path === "/api/entries" && req.method === "GET") return null;
   return "admin";
 });
 
 app.get("/api/logs", logger.queryHandler);
+
+app.get("/api/health", (req, res) => res.send("ok"));
 
 /* ============================================
    Validation 헬퍼
@@ -116,7 +119,7 @@ function validateBulkData(data) {
   }
 
   for (const key in parsed) {
-    if (!/^\d+$/.test(key)) {
+    if (!/^\d+$/.test(key) || Number(key) < 1) {
       return { valid: false, error: "올바르지 않은 JSON 형식입니다." };
     }
 
@@ -327,7 +330,7 @@ app.post("/api/entries/bulk", (req, res) => {
           const typeExists = db.prepare("SELECT id FROM vehicle_types WHERE name = ?").get(validatedType);
           if (!typeExists) throw { status: 400, message: `엔트리 ${k}: 존재하지 않는 차량 유형 '${validatedType}'` };
         }
-        query.run(Number(k), v.univ, v.team, validatedType);
+        query.run(Number(k), v.univ.trim(), v.team.trim(), validatedType);
       }
     })();
   });

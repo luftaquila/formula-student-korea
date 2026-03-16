@@ -116,7 +116,7 @@ export function createApp(deps, authRoleFn) {
 
         // Sliding session: 만료까지 절반 이하 남으면 토큰 자동 갱신
         const remaining = req.user.exp - Math.floor(Date.now() / 1000);
-        const threshold = 3 * 24 * 3600; // 3일
+        const threshold = 6 * 24 * 3600; // 6일
         if (remaining < threshold) {
           const { email, name } = req.user;
           let freshRole = req.user.role;
@@ -125,7 +125,7 @@ export function createApp(deps, authRoleFn) {
             try {
               const userRow = deps.db?.prepare("SELECT role FROM users WHERE email = ? AND active = 1").get(email);
               if (userRow) freshRole = userRow.role;
-            } catch { /* fallback to JWT role */ }
+            } catch (e) { console.warn("[auth] role refresh DB error:", e.message); }
           } else if (process.env.AUTH_SERVER && process.env.INTERNAL_SECRET) {
             // 비인증 서비스: auth API로 최신 역할 조회
             try {
@@ -137,7 +137,7 @@ export function createApp(deps, authRoleFn) {
                 const data = await roleRes.json();
                 if (VALID_ROLES.includes(data.role)) freshRole = data.role;
               }
-            } catch { /* fail-open: 기존 역할 유지 */ }
+            } catch (e) { console.warn("[auth] role refresh fetch error:", e.message); }
           }
           const newJwt = createJWT({ email, name, role: freshRole }, process.env.JWT_SECRET);
           const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
