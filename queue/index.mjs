@@ -143,7 +143,7 @@ db.transaction(() => {
   // 검차 종류별 대기열 테이블 생성 및 부스 기본 데이터 생성
   for (const [k, v] of Object.entries(inspections)) {
     db.prepare(`INSERT OR IGNORE INTO inspection (type, name) VALUES (?, ?)`).run(k, v);
-    db.exec(`CREATE TABLE IF NOT EXISTS ${k} (
+    db.exec(`CREATE TABLE IF NOT EXISTS '${k}' (
       num INTEGER PRIMARY KEY,
       phone TEXT NOT NULL,
       timestamp INTEGER NOT NULL
@@ -273,7 +273,7 @@ function getQueueQuery(inspection) {
         SELECT 1 FROM inspection_history h WHERE h.num = t.num AND h.inspection = ?
       ) THEN 1 ELSE 0 END AS is_reinspection,
       COALESCE(p.priority, 999) AS priority
-    FROM ${inspection} AS t
+    FROM '${inspection}' AS t
     LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ?
     ORDER BY ${orderClauses.join(", ")}
   `;
@@ -307,7 +307,7 @@ function getQueueRank(inspection, num) {
         ROW_NUMBER() OVER (
           ORDER BY ${orderClauses.join(", ")}
         ) AS rank
-      FROM ${inspection} AS t
+      FROM '${inspection}' AS t
       LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ?
     ) AS sub WHERE sub.num = ?
   `)
@@ -591,7 +591,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
         db.prepare("INSERT INTO current (num, phone, inspection) VALUES (?, ?, ?)").run(num, phone, type);
       }
 
-      db.prepare(`INSERT INTO ${type} (num, phone, timestamp) VALUES (?, ?, ?)`).run(num, phone, Date.now());
+      db.prepare(`INSERT INTO '${type}' (num, phone, timestamp) VALUES (?, ?, ?)`).run(num, phone, Date.now());
       db.prepare("UPDATE inspection SET length = length + 1 WHERE type = ?").run(type);
 
       // 대기열 이벤트 로그 기록 (트랜잭션 내부)
@@ -630,7 +630,7 @@ app.post("/api/admin/cancel/:type", (req, res) => {
 
   const result = dbRun(() => {
     db.transaction(() => {
-      const ret = db.prepare(`DELETE FROM ${type} WHERE num = ?`).run(num);
+      const ret = db.prepare(`DELETE FROM '${type}' WHERE num = ?`).run(num);
 
       if (!ret.changes) {
         throw { status: 400, message: "존재하지 않는 엔트리입니다." };
@@ -1013,7 +1013,7 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
   const result = dbRun(() => {
     db.transaction(() => {
       // 대기열에 팀이 있는지 확인
-      const queueEntry = db.prepare(`SELECT * FROM ${type} WHERE num = ?`).get(num);
+      const queueEntry = db.prepare(`SELECT * FROM '${type}' WHERE num = ?`).get(num);
       if (!queueEntry) {
         throw { status: 400, message: "대기열에 존재하지 않는 엔트리입니다." };
       }
@@ -1033,7 +1033,7 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
       const now = Date.now();
 
       // 대기열에서 제거 및 길이 감소
-      db.prepare(`DELETE FROM ${type} WHERE num = ?`).run(num);
+      db.prepare(`DELETE FROM '${type}' WHERE num = ?`).run(num);
       db.prepare("UPDATE inspection SET length = length - 1 WHERE type = ?").run(type);
 
       // 부스 점유

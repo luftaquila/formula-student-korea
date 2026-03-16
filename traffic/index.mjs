@@ -36,6 +36,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS event_mode (
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('controller', 'event_mode')")
     .all();
   for (const { name } of tables) {
+    if (!/^[A-Za-z0-9가-힣 .\-_]+$/.test(name)) continue;
     const columns = db.prepare(`PRAGMA table_info('${name}')`).all();
     if (!columns.some((c) => c.name === "invalidated")) {
       db.exec(`ALTER TABLE '${name}' ADD COLUMN invalidated INTEGER DEFAULT 0`);

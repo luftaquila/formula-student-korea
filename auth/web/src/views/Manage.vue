@@ -265,6 +265,7 @@ function uploadCSV() {
 
     const users = [];
     for (let i = start; i < rows.length; i++) {
+      // CSV format: email, name (ignored — set via Google OAuth), role, memo
       const [email, , role, memo] = [rows[i][0], rows[i][1], rows[i][2], rows[i][3]];
       if (!email || !email.trim()) continue;
       users.push({ email: email.trim(), role: role?.trim() || "official", memo: memo?.trim() || "" });
