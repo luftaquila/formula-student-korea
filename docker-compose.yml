@@ -244,7 +244,7 @@ services:
     profiles:
       - local
     ports:
-      - "127.0.0.1:9000:9000"
+      - "0.0.0.0:9000:9000"
     depends_on: *caddy-depends
     restart: unless-stopped
     networks:

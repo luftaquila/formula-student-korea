@@ -823,30 +823,10 @@ app.delete("/api/admin/history/:type", (req, res) => {
   const type = typeValidation.value;
 
   const result = dbRun(() => {
-    db.transaction(() => {
-      db.prepare("DELETE FROM inspection_history WHERE inspection = ?").run(type);
+    db.prepare("DELETE FROM inspection_history WHERE inspection = ?").run(type);
 
-      // 부스 상태 초기화: 해당 검차 종류의 모든 부스 점유 해제
-      db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ?").run(type);
-
-      // 미종료 booth_log 엔트리 종료 처리
-      db.prepare("UPDATE booth_log SET exited_at = ? WHERE inspection = ? AND exited_at IS NULL").run(Date.now(), type);
-
-      // current 테이블에서 해당 검차 종류 제거
-      const currents = db.prepare("SELECT * FROM current").all();
-      for (const row of currents) {
-        const remaining = row.inspection.split(",").filter(i => i !== type);
-        if (remaining.length > 0) {
-          db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(remaining.join(","), row.num);
-        } else {
-          db.prepare("DELETE FROM current WHERE num = ?").run(row.num);
-        }
-      }
-
-      // 대기열 테이블 정리
-      db.prepare(`DELETE FROM '${type}'`).run();
-      db.prepare("UPDATE inspection SET length = 0 WHERE type = ?").run(type);
-    })();
+    // 부스 상태 초기화: 해당 검차 종류의 모든 부스 점유 해제
+    db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ?").run(type);
   });
 
   if (!result.success) {
