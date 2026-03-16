@@ -330,7 +330,7 @@ app.get("/api/active", (req, res) => {
   res.json(result.result);
 });
 
-// GET /api/state/:num - 대기열 상태 조회 (전화번호 검증 필요)
+// POST /api/state/:num - 대기열 상태 조회 (전화번호 검증 필요)
 app.post("/api/state/:num", rateLimit, async (req, res) => {
   const numValidation = validateEntryNum(req.params.num);
   if (!numValidation.valid) {

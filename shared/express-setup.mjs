@@ -96,10 +96,11 @@ export function createApp(deps, authRoleFn) {
           return { valid: true, role: data.role };
         }
         if (res.status === 404) return { valid: false, role: null };
-        console.warn(`[auth] fail-open: auth returned ${res.status} for ${email}`);
-        return { valid: true, role: null };
-      } catch {
-        return { valid: true, role: null }; // auth 서비스 일시적 연결 불가 시 JWT 유지
+        console.warn(`[auth] fail-close: auth returned ${res.status} for ${email}`);
+        return { valid: false, role: null };
+      } catch (e) {
+        console.warn(`[auth] fail-close: auth unreachable for ${email}: ${e.message || e}`);
+        return { valid: false, role: null };
       }
     };
   }

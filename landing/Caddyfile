@@ -28,6 +28,7 @@
 	handle_path /auth/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
+		request_header -X-Forwarded-For
 		request_header -X-Forwarded-Host
 		reverse_proxy auth:9800
 	}
@@ -37,6 +38,7 @@
 	handle_path /entry/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
+		request_header -X-Forwarded-For
 		reverse_proxy entry:9100
 	}
 
@@ -45,6 +47,7 @@
 	handle_path /queue/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
+		request_header -X-Forwarded-For
 		reverse_proxy queue:9300
 	}
 
@@ -53,6 +56,7 @@
 	handle_path /inspection/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
+		request_header -X-Forwarded-For
 		reverse_proxy inspection:9600
 	}
 
@@ -61,6 +65,7 @@
 	handle_path /traffic/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
+		request_header -X-Forwarded-For
 		reverse_proxy traffic:9200
 	}
 
@@ -69,6 +74,7 @@
 	handle_path /score/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
+		request_header -X-Forwarded-For
 		reverse_proxy score:9700
 	}
 
@@ -77,6 +83,7 @@
 	handle_path /documents/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
+		request_header -X-Forwarded-For
 		reverse_proxy documents:9900
 	}
 
@@ -85,6 +92,7 @@
 	handle_path /energymeter/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
+		request_header -X-Forwarded-For
 		reverse_proxy energymeter:9400
 	}
 
@@ -92,6 +100,7 @@
 	handle /rules* {
 		request_header -X-Internal-Service
 		request_header -Authuser
+		request_header -X-Forwarded-For
 		reverse_proxy rules:9500
 	}
 

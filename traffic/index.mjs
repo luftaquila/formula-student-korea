@@ -102,9 +102,6 @@ function validateRecordName(name) {
   if (!/^[A-Za-z0-9가-힣 .\-_]+$/.test(sanitized)) {
     return { valid: false, error: "올바르지 않은 기록 이름입니다." };
   }
-  if (sanitized.includes("'")) {
-    return { valid: false, error: "올바르지 않은 기록 이름입니다." };
-  }
   return { valid: true, value: sanitized };
 }
 
