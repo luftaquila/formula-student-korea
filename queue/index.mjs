@@ -324,7 +324,8 @@ app.post("/api/state/:num", async (req, res) => {
       return res.status(400).send("존재하지 않는 엔트리 번호입니다.");
     }
   } catch (e) {
-    return res.status(500).send(`엔트리를 조회할 수 없습니다. ${e}`);
+    console.error("[queue] 엔트리 조회 오류:", e);
+    return res.status(500).send("엔트리를 조회할 수 없습니다.");
   }
 
   const result = dbRun(() => {
@@ -510,7 +511,8 @@ app.post("/api/admin/register/:type", async (req, res) => {
       return res.status(400).send("존재하지 않는 엔트리 번호입니다.");
     }
   } catch (e) {
-    return res.status(500).send(`엔트리를 조회할 수 없습니다. ${e}`);
+    console.error("[queue] 엔트리 조회 오류:", e);
+    return res.status(500).send("엔트리를 조회할 수 없습니다.");
   }
 
   let errorResponse = null;
@@ -848,7 +850,11 @@ app.put("/api/admin/inspection/:type/ignore", (req, res) => {
   }
 
   const result = dbRun(() => {
-    db.prepare(`UPDATE inspection SET ${field} = ? WHERE type = ?`).run(value ? 1 : 0, type);
+    if (field === "ignore_priority") {
+      db.prepare("UPDATE inspection SET ignore_priority = ? WHERE type = ?").run(value ? 1 : 0, type);
+    } else {
+      db.prepare("UPDATE inspection SET ignore_reinspection = ? WHERE type = ?").run(value ? 1 : 0, type);
+    }
   });
 
   if (!result.success) {

@@ -72,6 +72,21 @@ db.transaction(() => {
 
 setupProcessHandlers(db);
 
+const ENDURANCE_SQL = {
+  status: "UPDATE score_endurance SET status = ? WHERE year = ? AND team_num = ?",
+  driver1_time: "UPDATE score_endurance SET driver1_time = ? WHERE year = ? AND team_num = ?",
+  driver1_start_delay: "UPDATE score_endurance SET driver1_start_delay = ? WHERE year = ? AND team_num = ?",
+  driver1_cones: "UPDATE score_endurance SET driver1_cones = ? WHERE year = ? AND team_num = ?",
+  driver1_oc: "UPDATE score_endurance SET driver1_oc = ? WHERE year = ? AND team_num = ?",
+  driver1_penalty: "UPDATE score_endurance SET driver1_penalty = ? WHERE year = ? AND team_num = ?",
+  driver_change_time: "UPDATE score_endurance SET driver_change_time = ? WHERE year = ? AND team_num = ?",
+  driver2_time: "UPDATE score_endurance SET driver2_time = ? WHERE year = ? AND team_num = ?",
+  driver2_start_delay: "UPDATE score_endurance SET driver2_start_delay = ? WHERE year = ? AND team_num = ?",
+  driver2_cones: "UPDATE score_endurance SET driver2_cones = ? WHERE year = ? AND team_num = ?",
+  driver2_oc: "UPDATE score_endurance SET driver2_oc = ? WHERE year = ? AND team_num = ?",
+  driver2_penalty: "UPDATE score_endurance SET driver2_penalty = ? WHERE year = ? AND team_num = ?",
+};
+
 /* ============================================
    Express 앱 설정
    ============================================ */
@@ -443,7 +458,8 @@ app.get("/api/score", async (req, res) => {
 
     res.json({ entries, inspection, events, manualScores, penalties, settings });
   } catch (e) {
-    res.status(500).send(`데이터 집계 오류: ${e.message || e}`);
+    console.error("[score] 데이터 집계 오류:", e);
+    res.status(500).send("데이터 집계 오류가 발생했습니다.");
   }
 });
 
@@ -591,7 +607,7 @@ app.put("/api/score/endurance", (req, res) => {
   const result = dbRun(() => {
     db.transaction(() => {
       db.prepare("INSERT OR IGNORE INTO score_endurance (year, team_num) VALUES (?, ?)").run(year, team_num);
-      db.prepare(`UPDATE score_endurance SET ${field} = ? WHERE year = ? AND team_num = ?`).run(dbValue, year, team_num);
+      db.prepare(ENDURANCE_SQL[field]).run(dbValue, year, team_num);
     })();
   });
 

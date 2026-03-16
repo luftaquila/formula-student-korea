@@ -312,10 +312,14 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
     } else if (field === "detail") {
       db.prepare(`UPDATE '${name}' SET detail = ? WHERE rowid = ?`).run(value ?? null, rowid);
       return { invalidated: row.invalidated, scoreboard: row.scoreboard, detail: value ?? null };
-    } else if (field === "cones" || field === "oc") {
+    } else if (field === "cones") {
       const numValue = Math.max(0, parseInt(value, 10) || 0);
-      db.prepare(`UPDATE '${name}' SET ${field} = ? WHERE rowid = ?`).run(numValue, rowid);
-      return { [field]: numValue };
+      db.prepare(`UPDATE '${name}' SET cones = ? WHERE rowid = ?`).run(numValue, rowid);
+      return { cones: numValue };
+    } else if (field === "oc") {
+      const numValue = Math.max(0, parseInt(value, 10) || 0);
+      db.prepare(`UPDATE '${name}' SET oc = ? WHERE rowid = ?`).run(numValue, rowid);
+      return { oc: numValue };
     }
   });
 

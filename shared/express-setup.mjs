@@ -42,7 +42,13 @@ export function createApp(deps, authRoleFn) {
   const { express } = deps;
   ensureDataDir();
 
+  if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
+    console.error("FATAL: JWT_SECRET must be set in production. Exiting.");
+    process.exit(1);
+  }
+
   const app = express();
+  app.disable("x-powered-by");
   app.use(express.json({ limit: "100kb" }));
   app.use(express.urlencoded({ extended: true, limit: "100kb" }));
 
