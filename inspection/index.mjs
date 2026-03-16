@@ -148,37 +148,28 @@ app.get("/api/sheet/template", (req, res) => {
 
   const result = dbRun(() => {
     const rows = db.prepare("SELECT * FROM sheet_template WHERE year = ? ORDER BY sort_order").all(year);
-    const map = {};
-    for (const r of rows) map[r.id] = r;
-
+    const nodeMap = {};
     const tree = [];
+
+    // Single pass: create nodes and link to parents via map
     for (const r of rows) {
       if (r.level === "category") {
-        tree.push({ ...r, subcategories: [] });
-      }
-    }
-    for (const r of rows) {
-      if (r.level === "subcategory" && map[r.parent_id]) {
-        const cat = tree.find(c => c.id === r.parent_id);
-        if (cat) cat.subcategories.push({ ...r, groups: [] });
-      }
-    }
-    for (const r of rows) {
-      if (r.level === "group" && map[r.parent_id]) {
-        for (const cat of tree) {
-          const sub = cat.subcategories.find(s => s.id === r.parent_id);
-          if (sub) { sub.groups.push({ ...r, items: [] }); break; }
-        }
-      }
-    }
-    for (const r of rows) {
-      if (r.level === "item" && map[r.parent_id]) {
-        outer: for (const cat of tree) {
-          for (const sub of cat.subcategories) {
-            const grp = sub.groups.find(g => g.id === r.parent_id);
-            if (grp) { grp.items.push(r); break outer; }
-          }
-        }
+        const node = { ...r, subcategories: [] };
+        nodeMap[r.id] = node;
+        tree.push(node);
+      } else if (r.level === "subcategory") {
+        const node = { ...r, groups: [] };
+        nodeMap[r.id] = node;
+        const parent = nodeMap[r.parent_id];
+        if (parent) parent.subcategories.push(node);
+      } else if (r.level === "group") {
+        const node = { ...r, items: [] };
+        nodeMap[r.id] = node;
+        const parent = nodeMap[r.parent_id];
+        if (parent) parent.groups.push(node);
+      } else if (r.level === "item") {
+        const parent = nodeMap[r.parent_id];
+        if (parent) parent.items.push(r);
       }
     }
     return tree;

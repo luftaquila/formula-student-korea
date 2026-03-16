@@ -214,16 +214,18 @@ export const useSerialStore = defineStore("serial", () => {
 
   function startClock() {
     stopClock();
-    clockInterval.value = setInterval(() => {
+    function tick() {
       if (start.value.timestamp) {
         clockDisplay.value = msToClockStr(Date.now() - start.value.timestamp.getTime());
       }
-    }, 7);
+      clockInterval.value = requestAnimationFrame(tick);
+    }
+    clockInterval.value = requestAnimationFrame(tick);
   }
 
   function stopClock() {
     if (clockInterval.value) {
-      clearInterval(clockInterval.value);
+      cancelAnimationFrame(clockInterval.value);
       clockInterval.value = null;
     }
   }

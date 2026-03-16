@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createApp, setupProcessHandlers, createDbRun, createJWT, ensureDataDir, VALID_ROLES } from "../shared/express-setup.mjs";
+import { createApp, setupProcessHandlers, createDbRun, createJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
 /* ============================================
@@ -168,8 +168,8 @@ app.get("/api/login", (req, res) => {
     state: JSON.stringify({ redirect, nonce }),
   });
 
-  const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
-  res.setHeader("Set-Cookie", `fsk_oauth_nonce=${nonce}; HttpOnly; Path=/auth; SameSite=Lax; Max-Age=600${isSecure ? "; Secure" : ""}`);
+  const secure = isSecureConnection(req);
+  res.setHeader("Set-Cookie", `fsk_oauth_nonce=${nonce}; HttpOnly; Path=/auth; SameSite=Lax; Max-Age=600${secure ? "; Secure" : ""}`);
   res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
 });
 
@@ -198,8 +198,8 @@ app.get("/api/callback", async (req, res) => {
   }
 
   // Clear nonce cookie helper
-  const isSecureNonce = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
-  const clearNonceCookie = `fsk_oauth_nonce=; HttpOnly; Path=/auth; SameSite=Lax; Max-Age=0${isSecureNonce ? "; Secure" : ""}`;
+  const secureNonce = isSecureConnection(req);
+  const clearNonceCookie = `fsk_oauth_nonce=; HttpOnly; Path=/auth; SameSite=Lax; Max-Age=0${secureNonce ? "; Secure" : ""}`;
 
   if (!code) {
     res.setHeader("Set-Cookie", clearNonceCookie);
@@ -263,8 +263,7 @@ app.get("/api/callback", async (req, res) => {
 
     // Set JWT cookie
     const jwt = createJWT({ email, name, role: user.role }, process.env.JWT_SECRET);
-    const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
-    const cookieOpts = `Path=/; SameSite=Lax; Max-Age=${7 * 24 * 3600}${isSecure ? "; Secure" : ""}`;
+    const cookieOpts = formatCookieOpts(7 * 24 * 3600, isSecureConnection(req));
 
     res.setHeader("Set-Cookie", [
       `fsk_session=${jwt}; HttpOnly; ${cookieOpts}`,
@@ -287,8 +286,7 @@ app.post("/api/logout", (req, res) => {
   if (!req.user) return res.status(401).send("인증이 필요합니다.");
   logger.log(req, "user.logout", null, req.user.email);
 
-  const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
-  const cookieOpts = `Path=/; SameSite=Lax; Max-Age=0${isSecure ? "; Secure" : ""}`;
+  const cookieOpts = formatCookieOpts(0, isSecureConnection(req));
 
   res.setHeader("Set-Cookie", [
     `fsk_session=; HttpOnly; ${cookieOpts}`,

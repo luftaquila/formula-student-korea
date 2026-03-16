@@ -149,25 +149,24 @@ app.get("/api/sessions", (req, res) => {
   const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
   if (!team) return res.json({ team: null, sessions: [] });
 
-  const sessions = db.prepare(`
-    SELECT s.*, st.team_num AS target
+  const rows = db.prepare(`
+    SELECT s.*, st.team_num AS target,
+      sub.id AS sub_id, sub.submitted_at AS sub_submitted_at, sub.is_late AS sub_is_late
     FROM session s
     JOIN session_team st ON st.session_id = s.id AND st.team_num = ?
+    LEFT JOIN (
+      SELECT session_id, team_num, id, submitted_at, is_late,
+        ROW_NUMBER() OVER (PARTITION BY session_id, team_num ORDER BY id DESC) AS rn
+      FROM submission
+    ) sub ON sub.session_id = s.id AND sub.team_num = ? AND sub.rn = 1
     WHERE s.year = ?
     ORDER BY s.end_at ASC
-  `).all(team.team_num, team.year);
+  `).all(team.team_num, team.team_num, team.year);
 
-  // 각 세션의 최신 제출 상태 포함
-  const subStmt = db.prepare(`
-    SELECT id, submitted_at, is_late FROM submission
-    WHERE session_id = ? AND team_num = ?
-    ORDER BY id DESC LIMIT 1
-  `);
-
-  const result = sessions.map((s) => {
-    const sub = subStmt.get(s.id, team.team_num);
-    return { ...s, submission: sub || null };
-  });
+  const result = rows.map(({ sub_id, sub_submitted_at, sub_is_late, ...s }) => ({
+    ...s,
+    submission: sub_id ? { id: sub_id, submitted_at: sub_submitted_at, is_late: sub_is_late } : null,
+  }));
 
   res.json({ team, sessions: result });
 });
@@ -377,7 +376,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
         db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(txResult.result.id);
         db.prepare("DELETE FROM submission WHERE id = ?").run(txResult.result.id);
       } catch (rollbackErr) {
-        console.error("DB rollback after file error also failed:", rollbackErr.message);
+        console.error("DB rollback after file error also failed — orphan record may exist:", rollbackErr.message);
       }
       rmDir(tmpDir);
       if (!res.headersSent) return res.status(500).send("파일 저장에 실패했습니다.");

@@ -1,22 +1,16 @@
 <script setup>
 import { ref, onMounted, watch } from "vue";
+import { initTheme } from "./theme-init.js";
 
 const isDark = ref(false);
 
 onMounted(() => {
-  const saved = localStorage.getItem("theme");
-  if (saved) {
-    isDark.value = saved === "dark";
-  } else {
-    isDark.value = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  }
-  applyTheme();
+  initTheme();
+  isDark.value = document.documentElement.getAttribute("data-theme") === "dark";
 
-  // Listen for theme changes from other services
   window.addEventListener("storage", (e) => {
     if (e.key === "theme") {
       isDark.value = e.newValue === "dark";
-      applyTheme();
     }
   });
 });

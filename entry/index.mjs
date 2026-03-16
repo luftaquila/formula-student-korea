@@ -151,6 +151,20 @@ function validateBulkData(data) {
 const dbRun = createDbRun();
 
 /* ============================================
+   연도/테이블 미들웨어
+   ============================================ */
+function withYearTable(req, res, next) {
+  const year = req.query.year || new Date().getFullYear();
+  try {
+    req.tableName = ensureYearTable(year);
+    req.year = year;
+    next();
+  } catch (e) {
+    return res.status(400).send(e.message);
+  }
+}
+
+/* ============================================
    API 라우트: /api/years, /api/entries
    ============================================ */
 
@@ -160,10 +174,8 @@ app.get("/api/years", (req, res) => {
 });
 
 // GET /api/entries - 모든 엔트리 조회
-app.get("/api/entries", (req, res) => {
-  const year = req.query.year || new Date().getFullYear();
-  let tableName;
-  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+app.get("/api/entries", withYearTable, (req, res) => {
+  const { tableName, year } = req;
 
   const result = dbRun(() => {
     const data = {};
@@ -187,10 +199,8 @@ app.get("/api/entries", (req, res) => {
 });
 
 // POST /api/entries - 새 엔트리 추가
-app.post("/api/entries", (req, res) => {
-  const year = req.query.year || new Date().getFullYear();
-  let tableName;
-  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+app.post("/api/entries", withYearTable, (req, res) => {
+  const { tableName, year } = req;
 
   const numValidation = validateEntryNum(req.body.num);
   if (!numValidation.valid) {
@@ -217,10 +227,8 @@ app.post("/api/entries", (req, res) => {
 });
 
 // PATCH /api/entries/:num - 엔트리 수정
-app.patch("/api/entries/:num", (req, res) => {
-  const year = req.query.year || new Date().getFullYear();
-  let tableName;
-  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+app.patch("/api/entries/:num", withYearTable, (req, res) => {
+  const { tableName, year } = req;
 
   const prevNumValidation = validateEntryNum(req.params.num);
   if (!prevNumValidation.valid) {
@@ -270,10 +278,8 @@ app.patch("/api/entries/:num", (req, res) => {
 });
 
 // DELETE /api/entries/:num - 엔트리 삭제
-app.delete("/api/entries/:num", (req, res) => {
-  const year = req.query.year || new Date().getFullYear();
-  let tableName;
-  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+app.delete("/api/entries/:num", withYearTable, (req, res) => {
+  const { tableName, year } = req;
 
   const numValidation = validateEntryNum(req.params.num);
   if (!numValidation.valid) {
@@ -295,10 +301,8 @@ app.delete("/api/entries/:num", (req, res) => {
 });
 
 // DELETE /api/entries - 모든 엔트리 삭제
-app.delete("/api/entries", (req, res) => {
-  const year = req.query.year || new Date().getFullYear();
-  let tableName;
-  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+app.delete("/api/entries", withYearTable, (req, res) => {
+  const { tableName, year } = req;
 
   const result = dbRun(() => db.prepare(`DELETE FROM '${tableName}'`).run());
 
@@ -311,10 +315,8 @@ app.delete("/api/entries", (req, res) => {
 });
 
 // POST /api/entries/bulk - 엔트리 일괄 업로드 (DB 교체)
-app.post("/api/entries/bulk", (req, res) => {
-  const year = req.query.year || new Date().getFullYear();
-  let tableName;
-  try { tableName = ensureYearTable(year); } catch (e) { return res.status(400).send(e.message); }
+app.post("/api/entries/bulk", withYearTable, (req, res) => {
+  const { tableName, year } = req;
 
   const validation = validateBulkData(req.body.data);
   if (!validation.valid) {
@@ -324,12 +326,12 @@ app.post("/api/entries/bulk", (req, res) => {
   const result = dbRun(() => {
     db.transaction(() => {
       db.prepare(`DELETE FROM '${tableName}'`).run();
+      const validTypes = new Set(db.prepare("SELECT name FROM vehicle_types").all().map(t => t.name));
       const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`);
       for (const [k, v] of Object.entries(validation.data)) {
         const validatedType = v.type || null;
-        if (validatedType) {
-          const typeExists = db.prepare("SELECT id FROM vehicle_types WHERE name = ?").get(validatedType);
-          if (!typeExists) throw { status: 400, message: `엔트리 ${k}: 존재하지 않는 차량 유형 '${validatedType}'` };
+        if (validatedType && !validTypes.has(validatedType)) {
+          throw { status: 400, message: `엔트리 ${k}: 존재하지 않는 차량 유형 '${validatedType}'` };
         }
         query.run(Number(k), v.univ.trim(), v.team.trim(), validatedType);
       }

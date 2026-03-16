@@ -45,16 +45,20 @@ export function createLogger(db, serviceName, maxRows = 10000) {
   };
   setInterval(cleanup, 3600000);
 
+  // Pre-compute secret hash at init time
+  const internalSecret = process.env.INTERNAL_SECRET;
+  const cachedSecretHash = internalSecret
+    ? crypto.createHash("sha256").update(internalSecret).digest()
+    : null;
+
   // Query handler (used as Express route handler for GET /api/logs)
   function queryHandler(req, res) {
     // Auth check: admin or internal service
-    const internalSecret = process.env.INTERNAL_SECRET;
     const header = req.headers["x-internal-service"];
     let isInternal = false;
-    if (internalSecret && header) {
+    if (cachedSecretHash && header) {
       const headerHash = crypto.createHash("sha256").update(header).digest();
-      const secretHash = crypto.createHash("sha256").update(internalSecret).digest();
-      isInternal = headerHash.length === secretHash.length && crypto.timingSafeEqual(headerHash, secretHash);
+      isInternal = headerHash.length === cachedSecretHash.length && crypto.timingSafeEqual(headerHash, cachedSecretHash);
     }
 
     if (!isInternal && req.user?.role !== "admin") {

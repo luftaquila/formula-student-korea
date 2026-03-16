@@ -161,87 +161,79 @@ const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 // SSE 엔드포인트
 app.get("/api/score/events", sseHandler());
 
-// Inspection 서비스 SSE 구독 → Score 클라이언트에 재전송
-function subscribeInspectionSSE() {
-  const url = new URL(`${INSPECTION_SERVER}/api/sheet/events`);
+// SSE 메시지 파싱용 정규식 (모듈 스코프에 캐싱)
+const EVENT_RE = /^event:\s*(.+)$/m;
+const DATA_RE = /^data:\s*(.*)$/gm;
 
-  const options = { headers: internalHeaders() };
-  const req = http.get(url, options, (res) => {
-    let buffer = "";
+// SSE 구독 팩토리 (중복 연결 방지 + exponential backoff)
+function createSSESubscriber(name, serverUrl, eventPath, prefix) {
+  let reconnecting = false;
+  let backoff = 3000;
+  const MAX_BACKOFF = 30000;
 
-    res.on("data", (chunk) => {
-      buffer += chunk.toString();
-      if (buffer.length > 1024 * 1024) { buffer = ""; return; }
-      const messages = buffer.split("\n\n");
-      buffer = messages.pop(); // 마지막 불완전한 메시지는 버퍼에 유지
+  function subscribe() {
+    if (reconnecting) return;
+    reconnecting = false;
+    backoff = 3000;
 
-      for (const msg of messages) {
-        try {
-          const eventMatch = msg.match(/^event:\s*(.+)$/m);
-          const dataLines = msg.match(/^data:\s*(.*)$/gm);
-          if (eventMatch && dataLines) {
-            const jsonStr = dataLines.map(l => l.replace(/^data:\s*/, "")).join("\n");
-            broadcastEvent(`inspection:${eventMatch[1]}`, JSON.parse(jsonStr));
-          }
-        } catch (e) {
-          console.error("Inspection SSE message parse error:", e);
+    const url = new URL(`${serverUrl}${eventPath}`);
+    const options = { headers: internalHeaders() };
+    const req = http.get(url, options, (res) => {
+      backoff = 3000; // 연결 성공 시 backoff 리셋
+      let buffer = "";
+
+      res.on("data", (chunk) => {
+        buffer += chunk.toString();
+        if (buffer.length > 1024 * 1024) {
+          console.warn(`[score] ${name} SSE buffer overflow, discarding`);
+          buffer = "";
+          return;
         }
-      }
+        const messages = buffer.split("\n\n");
+        buffer = messages.pop();
+
+        for (const msg of messages) {
+          try {
+            const eventMatch = msg.match(EVENT_RE);
+            const dataLines = msg.match(DATA_RE);
+            if (eventMatch && dataLines) {
+              const jsonStr = dataLines.map(l => l.replace(/^data:\s*/, "")).join("\n");
+              broadcastEvent(`${prefix}:${eventMatch[1]}`, JSON.parse(jsonStr));
+            }
+          } catch (e) {
+            console.error(`${name} SSE message parse error:`, e);
+          }
+        }
+      });
+
+      res.on("end", () => {
+        scheduleReconnect();
+      });
     });
 
-    res.on("end", () => {
-      // 연결 끊기면 재접속
-      setTimeout(subscribeInspectionSSE, 3000);
+    req.setTimeout(60000, () => { req.destroy(); });
+    req.on("error", () => {
+      scheduleReconnect();
     });
-  });
+  }
 
-  req.setTimeout(60000, () => { req.destroy(); });
-  req.on("error", () => {
-    setTimeout(subscribeInspectionSSE, 3000);
-  });
+  function scheduleReconnect() {
+    if (reconnecting) return;
+    reconnecting = true;
+    setTimeout(() => {
+      reconnecting = false;
+      backoff = Math.min(backoff * 2, MAX_BACKOFF);
+      subscribe();
+    }, backoff);
+  }
+
+  return subscribe;
 }
+
+const subscribeInspectionSSE = createSSESubscriber("Inspection", INSPECTION_SERVER, "/api/sheet/events", "inspection");
+const subscribeTrafficSSE = createSSESubscriber("Traffic", TRAFFIC_SERVER, "/api/events", "traffic");
 
 subscribeInspectionSSE();
-
-// Traffic 서비스 SSE 구독 → Score 클라이언트에 재전송
-function subscribeTrafficSSE() {
-  const url = new URL(`${TRAFFIC_SERVER}/api/events`);
-
-  const options = { headers: internalHeaders() };
-  const req = http.get(url, options, (res) => {
-    let buffer = "";
-
-    res.on("data", (chunk) => {
-      buffer += chunk.toString();
-      if (buffer.length > 1024 * 1024) { buffer = ""; return; }
-      const messages = buffer.split("\n\n");
-      buffer = messages.pop();
-
-      for (const msg of messages) {
-        try {
-          const eventMatch = msg.match(/^event:\s*(.+)$/m);
-          const dataLines = msg.match(/^data:\s*(.*)$/gm);
-          if (eventMatch && dataLines) {
-            const jsonStr = dataLines.map(l => l.replace(/^data:\s*/, "")).join("\n");
-            broadcastEvent(`traffic:${eventMatch[1]}`, JSON.parse(jsonStr));
-          }
-        } catch (e) {
-          console.error("Traffic SSE message parse error:", e);
-        }
-      }
-    });
-
-    res.on("end", () => {
-      setTimeout(subscribeTrafficSSE, 3000);
-    });
-  });
-
-  req.setTimeout(60000, () => { req.destroy(); });
-  req.on("error", () => {
-    setTimeout(subscribeTrafficSSE, 3000);
-  });
-}
-
 subscribeTrafficSSE();
 
 /* ============================================

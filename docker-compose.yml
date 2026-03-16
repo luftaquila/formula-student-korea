@@ -1,3 +1,13 @@
+x-common-env: &common-env
+  JWT_SECRET: ${JWT_SECRET}
+  INTERNAL_SECRET: ${INTERNAL_SECRET}
+
+x-common-healthcheck: &common-healthcheck
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 30s
+
 services:
   entry:
     build:
@@ -10,19 +20,21 @@ services:
     security_opt:
       - label:disable
     environment:
-      - AUTH_SERVER=http://auth:9800
-      - JWT_SECRET=${JWT_SECRET}
-      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      <<: *common-env
+      AUTH_SERVER: http://auth:9800
     volumes:
       - ./entry/data:/home/node/fsk-entry/data
     depends_on:
-      - auth
+      auth:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
+      <<: *common-healthcheck
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     networks:
       - fsk-network
 
@@ -37,19 +49,21 @@ services:
     security_opt:
       - label:disable
     environment:
-      - AUTH_SERVER=http://auth:9800
-      - JWT_SECRET=${JWT_SECRET}
-      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      <<: *common-env
+      AUTH_SERVER: http://auth:9800
     volumes:
       - ./traffic/data:/home/node/fsk-traffic/data
     depends_on:
-      - auth
+      auth:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
+      <<: *common-healthcheck
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9200/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     networks:
       - fsk-network
 
@@ -61,6 +75,10 @@ services:
     security_opt:
       - label:disable
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     networks:
       - fsk-network
 
@@ -75,25 +93,28 @@ services:
     security_opt:
       - label:disable
     environment:
-      - ENTRY_SERVER=http://entry:9100
-      - AUTH_SERVER=http://auth:9800
-      - JWT_SECRET=${JWT_SECRET}
-      - INTERNAL_SECRET=${INTERNAL_SECRET}
-      - NAVER_CLOUD_ACCESS_KEY=${NAVER_CLOUD_ACCESS_KEY}
-      - NAVER_CLOUD_SECRET_KEY=${NAVER_CLOUD_SECRET_KEY}
-      - NAVER_CLOUD_SMS_SERVICE_ID=${NAVER_CLOUD_SMS_SERVICE_ID}
-      - PHONE_NUMBER_SMS_SENDER=${PHONE_NUMBER_SMS_SENDER}
+      <<: *common-env
+      ENTRY_SERVER: http://entry:9100
+      AUTH_SERVER: http://auth:9800
+      NAVER_CLOUD_ACCESS_KEY: ${NAVER_CLOUD_ACCESS_KEY}
+      NAVER_CLOUD_SECRET_KEY: ${NAVER_CLOUD_SECRET_KEY}
+      NAVER_CLOUD_SMS_SERVICE_ID: ${NAVER_CLOUD_SMS_SERVICE_ID}
+      PHONE_NUMBER_SMS_SENDER: ${PHONE_NUMBER_SMS_SENDER}
     volumes:
       - ./queue/data:/home/node/fsk-queue/data
     depends_on:
-      - entry
-      - auth
+      entry:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
+      <<: *common-healthcheck
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9300/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     networks:
       - fsk-network
 
@@ -108,19 +129,21 @@ services:
     security_opt:
       - label:disable
     environment:
-      - AUTH_SERVER=http://auth:9800
-      - JWT_SECRET=${JWT_SECRET}
-      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      <<: *common-env
+      AUTH_SERVER: http://auth:9800
     volumes:
       - ./inspection/data:/home/node/fsk-inspection/data
     depends_on:
-      - auth
+      auth:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
+      <<: *common-healthcheck
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9600/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     networks:
       - fsk-network
 
@@ -135,24 +158,28 @@ services:
     security_opt:
       - label:disable
     environment:
-      - ENTRY_SERVER=http://entry:9100
-      - INSPECTION_SERVER=http://inspection:9600
-      - TRAFFIC_SERVER=http://traffic:9200
-      - AUTH_SERVER=http://auth:9800
-      - JWT_SECRET=${JWT_SECRET}
-      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      <<: *common-env
+      ENTRY_SERVER: http://entry:9100
+      INSPECTION_SERVER: http://inspection:9600
+      TRAFFIC_SERVER: http://traffic:9200
+      AUTH_SERVER: http://auth:9800
     volumes:
       - ./score/data:/home/node/fsk-score/data
     depends_on:
-      - entry
-      - inspection
-      - traffic
+      entry:
+        condition: service_healthy
+      inspection:
+        condition: service_healthy
+      traffic:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
+      <<: *common-healthcheck
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9700/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     networks:
       - fsk-network
 
@@ -167,19 +194,21 @@ services:
     security_opt:
       - label:disable
     environment:
-      - AUTH_SERVER=http://auth:9800
-      - JWT_SECRET=${JWT_SECRET}
-      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      <<: *common-env
+      AUTH_SERVER: http://auth:9800
     volumes:
       - ./documents/data:/home/node/fsk-documents/data
     depends_on:
-      - auth
+      auth:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
+      <<: *common-healthcheck
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9900/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     networks:
       - fsk-network
 
@@ -194,21 +223,22 @@ services:
     security_opt:
       - label:disable
     environment:
-      - LOG_SERVICES=entry:http://entry:9100,queue:http://queue:9300,inspection:http://inspection:9600,traffic:http://traffic:9200,score:http://score:9700,documents:http://documents:9900
-      - JWT_SECRET=${JWT_SECRET}
-      - INTERNAL_SECRET=${INTERNAL_SECRET}
-      - ADMIN_EMAIL=${ADMIN_EMAIL}
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-      - PUBLIC_URL=${PUBLIC_URL}
+      <<: *common-env
+      LOG_SERVICES: "entry:http://entry:9100,queue:http://queue:9300,inspection:http://inspection:9600,traffic:http://traffic:9200,score:http://score:9700,documents:http://documents:9900"
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      PUBLIC_URL: ${PUBLIC_URL}
     volumes:
       - ./auth/data:/home/node/fsk-auth/data
     restart: unless-stopped
     healthcheck:
+      <<: *common-healthcheck
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9800/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     networks:
       - fsk-network
 
@@ -223,6 +253,10 @@ services:
       - ./rules/data:/srv/rules
       - ./rules/README.md:/srv/rules/README.md:ro
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     networks:
       - fsk-network
 
@@ -256,6 +290,10 @@ services:
     restart: unless-stopped
     environment:
       - DOMAIN_NAME=${DOMAIN_NAME}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     networks:
       - fsk-network
       - traefik
@@ -270,6 +308,10 @@ services:
       - "0.0.0.0:9000:9000"
     depends_on: *caddy-depends
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     networks:
       - fsk-network
 

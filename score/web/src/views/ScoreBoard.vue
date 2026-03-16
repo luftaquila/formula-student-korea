@@ -186,54 +186,74 @@ function getAdjustedResult(eventType, rec) {
   return rec.result + (rec.cones || 0) * (pen.cone_penalty || 0) * 1000 + (rec.oc || 0) * (pen.oc_penalty || 0) * 1000;
 }
 
+// 사전 계산된 점수 캐시 (events/penalties/settings 변경 시 자동 재계산)
+const scoreCache = computed(() => {
+  const bestAdjustedMap = {}; // eventType → best adjusted time
+  const eventScoreMap = {}; // eventType → { num → score }
+  const totalScoreMap = {}; // num → total score
+
+  // 1. 종목별 최고 기록 산출
+  for (const evt of events.value) {
+    let best = null;
+    for (const rec of Object.values(evt.records)) {
+      const adj = getAdjustedResult(evt.type, rec);
+      if (adj != null && adj >= 0 && (best === null || adj < best)) best = adj;
+    }
+    bestAdjustedMap[evt.type] = best;
+  }
+
+  // 2. 종목별 팀 점수 산출
+  for (const evt of events.value) {
+    const scores = {};
+    const best = bestAdjustedMap[evt.type];
+    const s = settings.value[evt.type] || {};
+    const total = s.total ?? 0;
+    const finish = s.finish ?? 0;
+    const cutoff = (s.cutoff ?? 0) / 100;
+
+    for (const [num, rec] of Object.entries(evt.records)) {
+      const my = getAdjustedResult(evt.type, rec);
+      if (my == null) { scores[num] = null; continue; }
+      if (my === -1) { scores[num] = 0; continue; }
+      if (my <= 0) { scores[num] = finish; continue; }
+      if (best == null || best <= 0 || cutoff <= 1) { scores[num] = null; continue; }
+      if (my > best * cutoff) { scores[num] = finish; continue; }
+      const score = (total - finish) * ((cutoff * best / my) - 1) / (cutoff - 1) + finish;
+      scores[num] = Math.max(finish, Math.min(total, parseFloat(score.toFixed(2))));
+    }
+    eventScoreMap[evt.type] = scores;
+  }
+
+  // 3. 총점 산출
+  for (const num of Object.keys(entries.value)) {
+    let t = 0;
+    for (const evt of events.value) {
+      const s = eventScoreMap[evt.type]?.[num];
+      if (s != null) t += s;
+    }
+    t += manualScores.value[num]?.report ?? 0;
+    t += manualScores.value[num]?.energy ?? 0;
+    t += manualScores.value[num]?.bonus ?? 0;
+    t -= manualScores.value[num]?.deduction ?? 0;
+    totalScoreMap[num] = parseFloat(t.toFixed(2));
+  }
+
+  return { bestAdjustedMap, eventScoreMap, totalScoreMap };
+});
+
 // 종목별 최고 페널티 반영 기록 (가장 빠른 팀)
 function getBestAdjusted(eventType) {
-  const evt = events.value.find((e) => e.type === eventType);
-  if (!evt) return null;
-  let best = null;
-  for (const rec of Object.values(evt.records)) {
-    const adj = getAdjustedResult(eventType, rec);
-    if (adj != null && adj >= 0 && (best === null || adj < best)) best = adj;
-  }
-  return best;
+  return scoreCache.value.bestAdjustedMap[eventType] ?? null;
 }
 
-// 점수 계산: (총점-완주) * ((컷오프*best/my)-1) / (컷오프-1) + 완주
+// 점수 계산 (캐시에서 O(1) 조회)
 function getEventScore(eventType, num) {
-  const evt = events.value.find((e) => e.type === eventType);
-  if (!evt) return null;
-  const rec = evt.records[num];
-  const my = getAdjustedResult(eventType, rec);
-  if (my == null) return null;
-  if (my === -1) return 0;
-  const s = settings.value[eventType] || {};
-  const total = s.total ?? 0;
-  const finish = s.finish ?? 0;
-  if (my <= 0) return finish;
-  const best = getBestAdjusted(eventType);
-  if (best == null || best <= 0) return null;
-  const cutoff = (s.cutoff ?? 0) / 100;
-  if (cutoff <= 1) return null;
-  // 컷오프 초과 시 완주점수만 부여
-  if (my > best * cutoff) return finish;
-  const score = (total - finish) * ((cutoff * best / my) - 1) / (cutoff - 1) + finish;
-  return Math.max(finish, Math.min(total, parseFloat(score.toFixed(2))));
+  return scoreCache.value.eventScoreMap[eventType]?.[num] ?? null;
 }
 
-// 총점 계산 (모든 경기 점수 + 내구 + 보고서 + 에너지)
+// 총점 계산 (캐시에서 O(1) 조회)
 function getTotalScore(num) {
-  let total = 0;
-  for (const evt of dynamicEvents.value) {
-    const s = getEventScore(evt.type, num);
-    if (s != null) total += s;
-  }
-  const endurance = getEventScore("내구", num);
-  if (endurance != null) total += endurance;
-  total += manualScores.value[num]?.report ?? 0;
-  total += manualScores.value[num]?.energy ?? 0;
-  total += manualScores.value[num]?.bonus ?? 0;
-  total -= manualScores.value[num]?.deduction ?? 0;
-  return parseFloat(total.toFixed(2));
+  return scoreCache.value.totalScoreMap[num] ?? 0;
 }
 
 const typeColors = ["blue", "green", "orange", "purple", "red", "teal"];

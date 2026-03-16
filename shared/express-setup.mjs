@@ -1,8 +1,16 @@
 import fs from "fs";
 import crypto from "crypto";
 
-const ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 };
+import { ROLE_LEVELS } from "./constants.js";
 export const VALID_ROLES = Object.keys(ROLE_LEVELS);
+
+export function isSecureConnection(req) {
+  return (req.headers["x-forwarded-proto"] || req.protocol) === "https";
+}
+
+export function formatCookieOpts(maxAge, isSecure) {
+  return `Path=/; SameSite=Lax; Max-Age=${maxAge}${isSecure ? "; Secure" : ""}`;
+}
 
 export function ensureDataDir() {
   if (!fs.existsSync("./data")) {
@@ -129,8 +137,7 @@ export function createApp(deps, authRoleFn) {
         if (remaining < threshold) {
           const { email, name, role } = req.user;
           const newJwt = createJWT({ email, name, role }, process.env.JWT_SECRET);
-          const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
-          const cookieOpts = `Path=/; SameSite=Lax; Max-Age=${7 * 24 * 3600}${isSecure ? "; Secure" : ""}`;
+          const cookieOpts = formatCookieOpts(7 * 24 * 3600, isSecureConnection(req));
           const userPayload = encodeURIComponent(JSON.stringify({ name, role }));
           res.setHeader("Set-Cookie", [
             `fsk_session=${newJwt}; HttpOnly; ${cookieOpts}`,
@@ -150,8 +157,7 @@ export function createApp(deps, authRoleFn) {
       const freshRole = typeof result === "object" ? result.role : null;
       if (!valid) {
         req.user = null;
-        const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
-        const cookieOpts = `Path=/; SameSite=Lax; Max-Age=0${isSecure ? "; Secure" : ""}`;
+        const cookieOpts = formatCookieOpts(0, isSecureConnection(req));
         res.setHeader("Set-Cookie", [
           `fsk_session=; HttpOnly; ${cookieOpts}`,
           `fsk_user=; ${cookieOpts}`,
@@ -160,8 +166,7 @@ export function createApp(deps, authRoleFn) {
         req.user.role = freshRole;
         const { email, name } = req.user;
         const newJwt = createJWT({ email, name, role: freshRole }, process.env.JWT_SECRET);
-        const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
-        const cookieOpts = `Path=/; SameSite=Lax; Max-Age=${7 * 24 * 3600}${isSecure ? "; Secure" : ""}`;
+        const cookieOpts = formatCookieOpts(7 * 24 * 3600, isSecureConnection(req));
         const userPayload = encodeURIComponent(JSON.stringify({ name, role: freshRole }));
         res.setHeader("Set-Cookie", [
           `fsk_session=${newJwt}; HttpOnly; ${cookieOpts}`,

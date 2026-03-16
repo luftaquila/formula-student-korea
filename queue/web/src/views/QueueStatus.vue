@@ -1,39 +1,20 @@
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from "vue";
+import { ref, onMounted, watch } from "vue";
 import { fetchEntries, fetchQueueState } from "../api";
 import { useSSE } from "../composables/useSSE";
 import { useNotification } from "../composables/useNotification";
+import { useBoothTimers } from "../composables/useBoothTimers";
 
 const { error } = useNotification();
 
 const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate } = useSSE();
 
-const elapsedTimes = ref({});
-let elapsedTimers = {};
+const { elapsedTimes, syncTimers } = useBoothTimers();
 
 function syncAllTimers() {
-  Object.values(elapsedTimers).forEach(clearInterval);
-  elapsedTimers = {};
-  elapsedTimes.value = {};
   for (const type of Object.keys(allBooths.value)) {
-    const booths = allBooths.value[type] || [];
-    for (const booth of booths) {
-      if (booth.occupied_by && booth.entered_at) {
-        const key = `${type}-${booth.booth_num}`;
-        elapsedTimes.value[key] = formatElapsed(booth.entered_at);
-        elapsedTimers[key] = setInterval(() => {
-          elapsedTimes.value[key] = formatElapsed(booth.entered_at);
-        }, 1000);
-      }
-    }
+    syncTimers(allBooths.value[type] || [], type);
   }
-}
-
-function formatElapsed(enteredAt) {
-  const diff = Math.max(0, Math.floor((Date.now() - enteredAt) / 1000));
-  const min = Math.floor(diff / 60).toString().padStart(2, "0");
-  const sec = (diff % 60).toString().padStart(2, "0");
-  return `${min}:${sec}`;
 }
 
 watch(lastBoothUpdate, () => {
@@ -43,11 +24,6 @@ watch(lastBoothUpdate, () => {
 watch(allBooths, () => {
   syncAllTimers();
 }, { deep: true });
-
-onUnmounted(() => {
-  Object.values(elapsedTimers).forEach(clearInterval);
-  elapsedTimers = {};
-});
 
 const entries = ref({});
 const loading = ref(true);

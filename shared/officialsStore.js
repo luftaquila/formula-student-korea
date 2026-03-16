@@ -1,6 +1,6 @@
 import { ref, computed } from "vue";
+import { ROLE_LEVELS } from "./constants.js";
 
-const ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 };
 function roleLevel(role) { return ROLE_LEVELS[role] || 0; }
 
 function getUserFromCookie() {

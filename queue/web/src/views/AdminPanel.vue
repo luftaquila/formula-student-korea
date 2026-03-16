@@ -21,6 +21,7 @@ import {
 } from "../api";
 import { useSSE } from "../composables/useSSE";
 import { useNotification } from "../composables/useNotification";
+import { useBoothTimers } from "../composables/useBoothTimers";
 
 const { success, error, warning } = useNotification();
 const router = useRouter();
@@ -36,8 +37,7 @@ const smsRank = ref(3);
 const cancelPenalty = ref(10);
 const loading = ref(true);
 const boothSelectedTeam = ref({});
-const elapsedTimes = ref({});
-let elapsedTimers = {};
+const { elapsedTimes, syncTimers, clearAllTimers } = useBoothTimers();
 
 const activeInspectionTypes = computed(() => activeInspections.value.map((i) => i.type));
 
@@ -176,33 +176,7 @@ async function exitBoothAction(boothNum) {
 }
 
 function syncElapsedTimers() {
-  // Clear all existing timers
-  Object.values(elapsedTimers).forEach(clearInterval);
-  elapsedTimers = {};
-  elapsedTimes.value = {};
-
-  const booths = currentBooths.value;
-  for (const booth of booths) {
-    if (booth.occupied_by && booth.entered_at) {
-      const key = `${currentTab.value}-${booth.booth_num}`;
-      elapsedTimes.value[key] = formatElapsed(booth.entered_at);
-      elapsedTimers[key] = setInterval(() => {
-        elapsedTimes.value[key] = formatElapsed(booth.entered_at);
-      }, 1000);
-    }
-  }
-}
-
-function formatElapsed(enteredAt) {
-  const diff = Math.max(0, Math.floor((Date.now() - enteredAt) / 1000));
-  const min = Math.floor(diff / 60).toString().padStart(2, "0");
-  const sec = (diff % 60).toString().padStart(2, "0");
-  return `${min}:${sec}`;
-}
-
-function clearAllTimers() {
-  Object.values(elapsedTimers).forEach(clearInterval);
-  elapsedTimers = {};
+  syncTimers(currentBooths.value, currentTab.value);
 }
 
 async function cancelEntry(num) {
@@ -287,7 +261,7 @@ function formatTime(timestamp) {
 }
 
 onUnmounted(() => {
-  clearAllTimers();
+  // Timers are auto-cleaned by useBoothTimers onUnmounted
 });
 
 function goToRegister() {
