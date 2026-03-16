@@ -7,6 +7,8 @@ services:
         SERVICE: entry
         PORT: 9100
     container_name: fsk-entry
+    security_opt:
+      - label:disable
     environment:
       - AUTH_SERVER=http://auth:9800
       - JWT_SECRET=${JWT_SECRET}
@@ -32,6 +34,8 @@ services:
         SERVICE: traffic
         PORT: 9200
     container_name: fsk-traffic
+    security_opt:
+      - label:disable
     environment:
       - AUTH_SERVER=http://auth:9800
       - JWT_SECRET=${JWT_SECRET}
@@ -54,6 +58,8 @@ services:
       context: ./energymeter
       dockerfile: Dockerfile
     container_name: fsk-energymeter
+    security_opt:
+      - label:disable
     restart: unless-stopped
     networks:
       - fsk-network
@@ -66,6 +72,8 @@ services:
         SERVICE: queue
         PORT: 9300
     container_name: fsk-queue
+    security_opt:
+      - label:disable
     environment:
       - ENTRY_SERVER=http://entry:9100
       - AUTH_SERVER=http://auth:9800
@@ -97,6 +105,8 @@ services:
         SERVICE: inspection
         PORT: 9600
     container_name: fsk-inspection
+    security_opt:
+      - label:disable
     environment:
       - AUTH_SERVER=http://auth:9800
       - JWT_SECRET=${JWT_SECRET}
@@ -122,6 +132,8 @@ services:
         SERVICE: score
         PORT: 9700
     container_name: fsk-score
+    security_opt:
+      - label:disable
     environment:
       - ENTRY_SERVER=http://entry:9100
       - INSPECTION_SERVER=http://inspection:9600
@@ -152,6 +164,8 @@ services:
         SERVICE: documents
         PORT: 9900
     container_name: fsk-documents
+    security_opt:
+      - label:disable
     environment:
       - AUTH_SERVER=http://auth:9800
       - JWT_SECRET=${JWT_SECRET}
@@ -177,6 +191,8 @@ services:
         SERVICE: auth
         PORT: 9800
     container_name: fsk-auth
+    security_opt:
+      - label:disable
     environment:
       - LOG_SERVICES=entry:http://entry:9100,queue:http://queue:9300,inspection:http://inspection:9600,traffic:http://traffic:9200,score:http://score:9700,documents:http://documents:9900
       - JWT_SECRET=${JWT_SECRET}
@@ -184,6 +200,7 @@ services:
       - ADMIN_EMAIL=${ADMIN_EMAIL}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - PUBLIC_URL=${PUBLIC_URL}
     volumes:
       - ./auth/data:/home/node/fsk-auth/data
     restart: unless-stopped
@@ -196,8 +213,10 @@ services:
       - fsk-network
 
   rules:
-    image: caddy:alpine
+    image: docker.io/library/caddy:alpine
     container_name: fsk-rules
+    security_opt:
+      - label:disable
     volumes:
       - ./rules/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./rules/template.html:/etc/caddy/template.html:ro
@@ -213,6 +232,8 @@ services:
       context: .
       dockerfile: landing/Dockerfile
     container_name: fsk-caddy
+    security_opt:
+      - label:disable
     profiles:
       - production
     labels:
