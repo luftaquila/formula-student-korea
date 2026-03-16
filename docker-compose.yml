@@ -207,12 +207,14 @@ services:
     networks:
       - fsk-network
 
-  # Production (default) - use traefik reverse proxy
+  # Production - use traefik reverse proxy
   caddy:
     build: &caddy-build
       context: .
       dockerfile: landing/Dockerfile
     container_name: fsk-caddy
+    profiles:
+      - production
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.fsk.rule=Host(`${DOMAIN_NAME}`)"

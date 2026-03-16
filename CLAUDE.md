@@ -72,11 +72,21 @@ cd auth|entry|queue|inspection|traffic|score|documents
 node index.mjs     # Run API server directly
 ```
 
-### Docker Deployment
+### Docker Deployment (Local)
+
+Prerequisites:
+1. **Podman machine**: `podman machine init && podman machine start` (first time only)
+2. **Git submodules**: `git submodule update --init --recursive` (energymeter is a submodule)
+3. **`.env` file**: Copy `.env.example` to `.env` and set at minimum `JWT_SECRET` and `INTERNAL_SECRET` (any non-empty value works for local dev). Docker images set `NODE_ENV=production`, so services will fail-fast without `JWT_SECRET`.
+
 ```bash
 podman compose --profile local build    # Build all containers
-podman compose --profile local up -d    # Start all containers (local dev)
+podman compose --profile local up -d    # Start all containers (local dev, port 9000)
+podman compose --profile local ps       # Check container status
+podman compose --profile local down     # Stop all containers
 ```
+
+Access at `http://localhost:9000` after starting. The `local` profile uses `caddy-local` which binds port 9000 to the host.
 
 ## Authentication
 
@@ -95,7 +105,7 @@ Each service's `createApp(deps, authRoleFn)` receives `deps` (`{ express, valida
 - `"chief"` — chief or above (chief, admin)
 - `"admin"` — admin only
 
-**Dev mode:** When `JWT_SECRET` is not set and `NODE_ENV` is not `"production"`, all requests are auto-authenticated as admin. A one-time warning is logged at startup.
+**Dev mode:** When `JWT_SECRET` is not set and `NODE_ENV` is not `"production"`, all requests are auto-authenticated as admin. A one-time warning is logged at startup. Only applies when running services directly outside Docker (e.g. `node index.mjs`).
 
 ### Inter-service communication
 
