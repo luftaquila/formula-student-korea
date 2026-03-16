@@ -27,7 +27,8 @@ All 7 backend services (auth, entry, queue, inspection, traffic, score, document
 - `vite-config.js` - Vite config factory `createViteConfig(serviceName, servicePort, options)` — handles base path, proxy, aliases; options: `{ entryProxy, server, build, aliases }`
 - `styles/base.css` - Common CSS variables, resets, and component styles
 - `styles/layout.css` - Common app layout CSS (header, main-content, responsive) — uses `--layout-max-width` CSS variable for per-service width customization
-- `express-setup.mjs` - Express app factory with cookie parsing, JWT auth middleware, process handlers, DB error helper; exports `createJWT`, `ensureDataDir`, and `VALID_ROLES` array
+- `constants.js` - Shared constants; exports `ROLE_LEVELS` object (used by express-setup.mjs and officialsStore.js)
+- `express-setup.mjs` - Express app factory with cookie parsing, JWT auth middleware, process handlers, DB error helper; exports `createApp`, `createJWT`, `ensureDataDir`, `VALID_ROLES`, `setupProcessHandlers`, `createDbRun`, `isSecureConnection`, `formatCookieOpts`
 - `logger.mjs` - SQLite-based semantic logger factory `createLogger(db, serviceName, maxRows)` — structured action logging with auto-cleanup and query endpoint
 - `api-base.js` - Frontend API client factory with 401 redirect and entry service helpers
 - `NavMenu.vue` - Navigation drawer component used across all frontends
@@ -90,13 +91,13 @@ Access at `http://localhost:9000` after starting. The `local` profile uses `cadd
 
 ## Authentication
 
-Google OAuth 2.0 with JWT cookie-based sessions. Auth logic is handled by backend middleware in `shared/express-setup.mjs`. Caddy strips `X-Internal-Service` headers from all incoming requests (preventing external spoofing) but performs no auth logic itself.
+Google OAuth 2.0 with JWT cookie-based sessions. Auth logic is handled by backend middleware in `shared/express-setup.mjs`. Caddy strips `X-Internal-Service` and `Authuser` headers from all incoming requests (preventing external spoofing); the auth service route additionally strips `X-Forwarded-Host`. Caddy performs no auth logic itself.
 
 ### Roles (four permission levels, hierarchical)
 
 **Role hierarchy**: `public < student < official < chief < admin`
 
-Role levels are defined in `shared/express-setup.mjs` as `ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 }`. Auth middleware compares user's role level against the required role level — a user with a higher-level role can access lower-level resources.
+Role levels are defined in `shared/constants.js` as `ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 }`. Auth middleware compares user's role level against the required role level — a user with a higher-level role can access lower-level resources.
 
 Each service's `createApp(deps, authRoleFn)` receives `deps` (`{ express, validateUser? }`) and an `authRoleFn(req)` callback that returns:
 - `null` — public (no auth required)
