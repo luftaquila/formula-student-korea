@@ -101,6 +101,12 @@ function internalHeaders() {
    ============================================ */
 const dbRun = createDbRun();
 
+function validateKey(key, label) {
+  if (!key || typeof key !== "string" || key.trim() === "") return `${label}이(가) 비어있습니다.`;
+  if (key.length > 50) return `${label}이(가) 너무 깁니다.`;
+  return null;
+}
+
 async function fetchYearRecords(year) {
   const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`, {
     headers: internalHeaders(),
@@ -255,6 +261,7 @@ app.get("/api/score", async (req, res) => {
   try {
     // 1. Entry 서비스에서 엔트리 목록 fetch
     const entryRes = await fetch(`${ENTRY_SERVER}/api/entries?year=${year}`, {
+      headers: internalHeaders(),
       signal: AbortSignal.timeout(10000),
     });
     if (!entryRes.ok) throw new Error("엔트리 정보를 가져올 수 없습니다.");
@@ -446,8 +453,11 @@ app.put("/api/score/manual", (req, res) => {
   if (!year || team_num == null || !score_type) {
     return res.status(400).send("필수 필드가 누락되었습니다.");
   }
+  const keyErr = validateKey(score_type, "score_type");
+  if (keyErr) return res.status(400).send(keyErr);
 
   const numValue = value === null || value === "" ? null : Number(value);
+  if (numValue !== null && !Number.isFinite(numValue)) return res.status(400).send("유효하지 않은 값입니다.");
 
   const result = dbRun(() =>
     db
@@ -474,6 +484,8 @@ app.put("/api/score/penalty", (req, res) => {
   if (!year || !event_type) {
     return res.status(400).send("필수 필드가 누락되었습니다.");
   }
+  const keyErr = validateKey(event_type, "event_type");
+  if (keyErr) return res.status(400).send(keyErr);
 
   const cone = cone_penalty == null ? 0 : Number(cone_penalty);
   const oc = oc_penalty == null ? 0 : Number(oc_penalty);
@@ -507,6 +519,10 @@ app.put("/api/score/setting", (req, res) => {
   if (!year || !event_type || !setting_key) {
     return res.status(400).send("필수 필드가 누락되었습니다.");
   }
+  const etErr = validateKey(event_type, "event_type");
+  if (etErr) return res.status(400).send(etErr);
+  const skErr = validateKey(setting_key, "setting_key");
+  if (skErr) return res.status(400).send(skErr);
 
   const numValue = value == null ? null : Number(value);
 
@@ -562,6 +578,15 @@ app.put("/api/score/endurance", (req, res) => {
   }
 
   const dbValue = value === null || value === "" ? null : (field === "status" ? value : Number(value));
+  if (field === "status" && dbValue !== null && !["DNS", "DNF", "DSQ"].includes(dbValue)) {
+    return res.status(400).send("올바르지 않은 상태값입니다. (DNS, DNF, DSQ 또는 비움)");
+  }
+  if (field !== "status" && dbValue !== null && !Number.isFinite(dbValue)) {
+    return res.status(400).send("유효하지 않은 값입니다.");
+  }
+  if (field !== "status" && dbValue !== null && dbValue < 0) {
+    return res.status(400).send("값은 음수일 수 없습니다.");
+  }
 
   const result = dbRun(() => {
     db.transaction(() => {

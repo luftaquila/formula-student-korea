@@ -204,16 +204,17 @@ app.post("/api/sheet/template", (req, res) => {
 // PUT /api/sheet/template/:id - 노드 수정
 app.put("/api/sheet/template/:id", (req, res) => {
   const id = Number(req.params.id);
+  const ALLOWED_FIELDS = new Set(["name", "sort_order", "answer_type", "remarks", "unit", "pdf_include"]);
   const { name, sort_order, answer_type, remarks, unit, pdf_include } = req.body;
 
   const fields = [];
   const params = [];
-  if (name !== undefined) { fields.push("name = ?"); params.push(name); }
-  if (sort_order !== undefined) { fields.push("sort_order = ?"); params.push(sort_order); }
-  if (answer_type !== undefined) { fields.push("answer_type = ?"); params.push(answer_type || null); }
-  if (remarks !== undefined) { fields.push("remarks = ?"); params.push(remarks); }
-  if (unit !== undefined) { fields.push("unit = ?"); params.push(unit); }
-  if (pdf_include !== undefined) { fields.push("pdf_include = ?"); params.push(pdf_include ? 1 : 0); }
+  if (name !== undefined && ALLOWED_FIELDS.has("name")) { fields.push("name = ?"); params.push(name); }
+  if (sort_order !== undefined && ALLOWED_FIELDS.has("sort_order")) { fields.push("sort_order = ?"); params.push(sort_order); }
+  if (answer_type !== undefined && ALLOWED_FIELDS.has("answer_type")) { fields.push("answer_type = ?"); params.push(answer_type || null); }
+  if (remarks !== undefined && ALLOWED_FIELDS.has("remarks")) { fields.push("remarks = ?"); params.push(remarks); }
+  if (unit !== undefined && ALLOWED_FIELDS.has("unit")) { fields.push("unit = ?"); params.push(unit); }
+  if (pdf_include !== undefined && ALLOWED_FIELDS.has("pdf_include")) { fields.push("pdf_include = ?"); params.push(pdf_include ? 1 : 0); }
 
   if (!fields.length) return res.status(400).send("수정할 필드가 없습니다.");
   params.push(id);
@@ -245,6 +246,7 @@ app.delete("/api/sheet/template/:id", (req, res) => {
 app.post("/api/sheet/template/reorder", (req, res) => {
   const { items } = req.body;
   if (!Array.isArray(items)) return res.status(400).send("items 배열이 필요합니다.");
+  if (items.length > 1000) return res.status(400).send("항목이 너무 많습니다.");
 
   const result = dbRun(() => {
     const stmt = db.prepare("UPDATE sheet_template SET sort_order = ? WHERE id = ?");
@@ -436,6 +438,9 @@ app.get("/api/sheet/data/:year/:num", (req, res) => {
 app.put("/api/sheet/answer", (req, res) => {
   const { year, team_num, item_id, value } = req.body;
   if (!year || team_num == null || !item_id) return res.status(400).send("필수 필드가 누락되었습니다.");
+  if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(item_id)) {
+    return res.status(400).send("필수 필드가 올바르지 않습니다.");
+  }
   const newValue = value ?? "";
 
   const result = dbRun(() => {
@@ -464,6 +469,9 @@ app.put("/api/sheet/answer", (req, res) => {
 app.put("/api/sheet/memo", (req, res) => {
   const { year, team_num, item_id, memo } = req.body;
   if (!year || team_num == null || !item_id) return res.status(400).send("필수 필드가 누락되었습니다.");
+  if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(item_id)) {
+    return res.status(400).send("필수 필드가 올바르지 않습니다.");
+  }
 
   const result = dbRun(() =>
     db.prepare(
@@ -483,6 +491,12 @@ app.put("/api/sheet/memo", (req, res) => {
 app.put("/api/sheet/category-result", (req, res) => {
   const { year, team_num, category_id, result: catResult } = req.body;
   if (!year || team_num == null || !category_id) return res.status(400).send("필수 필드가 누락되었습니다.");
+  if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(category_id)) {
+    return res.status(400).send("필수 필드가 올바르지 않습니다.");
+  }
+  if (catResult !== undefined && catResult !== null && catResult !== "" && !["PASS", "FAIL"].includes(catResult)) {
+    return res.status(400).send("결과는 PASS, FAIL 또는 비움이어야 합니다.");
+  }
 
   const r = dbRun(() =>
     db.prepare(
@@ -502,6 +516,9 @@ app.put("/api/sheet/category-result", (req, res) => {
 app.put("/api/sheet/inspector", (req, res) => {
   const { year, team_num, category_id, inspector } = req.body;
   if (!year || team_num == null || !category_id) return res.status(400).send("필수 필드가 누락되었습니다.");
+  if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(category_id)) {
+    return res.status(400).send("필수 필드가 올바르지 않습니다.");
+  }
 
   const result = dbRun(() =>
     db.prepare(

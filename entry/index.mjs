@@ -79,7 +79,7 @@ app.get("/api/logs", logger.queryHandler);
    ============================================ */
 function validateEntryNum(num) {
   const parsed = Number(num);
-  if (num === "" || num === undefined || Number.isNaN(parsed) || parsed < 0 || !Number.isInteger(parsed)) {
+  if (num === "" || num === undefined || Number.isNaN(parsed) || parsed < 1 || !Number.isInteger(parsed)) {
     return { valid: false, error: "올바르지 않은 엔트리 번호입니다." };
   }
   return { valid: true, value: parsed };
@@ -322,7 +322,12 @@ app.post("/api/entries/bulk", (req, res) => {
       db.prepare(`DELETE FROM '${tableName}'`).run();
       const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`);
       for (const [k, v] of Object.entries(validation.data)) {
-        query.run(Number(k), v.univ, v.team, v.type || null);
+        const validatedType = v.type || null;
+        if (validatedType) {
+          const typeExists = db.prepare("SELECT id FROM vehicle_types WHERE name = ?").get(validatedType);
+          if (!typeExists) throw { status: 400, message: `엔트리 ${k}: 존재하지 않는 차량 유형 '${validatedType}'` };
+        }
+        query.run(Number(k), v.univ, v.team, validatedType);
       }
     })();
   });

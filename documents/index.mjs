@@ -204,6 +204,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
   const busboy = Busboy({
     headers: req.headers,
     defParamCharset: "utf8",
+    limits: { files: 20 },
   });
 
   // 허용 확장자 파싱 (DB에 "pdf,docx" 형태로 저장, 비교 시 ".pdf" 형태로)
@@ -374,6 +375,7 @@ app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
   if (!file) return res.status(404).send("파일을 찾을 수 없습니다.");
 
   const filePath = path.join(UPLOADS_DIR, String(sub.session_id), String(sub.team_num), String(sub.id), file.stored_name);
+  if (!path.resolve(filePath).startsWith(path.resolve(UPLOADS_DIR))) return res.status(400).send("잘못된 파일 경로입니다.");
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
   res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(file.original_name)}`);
@@ -405,7 +407,12 @@ app.post("/api/admin/sessions", (req, res) => {
   if (!Array.isArray(teams) || teams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
 
   const maxSize = max_file_size ? Number(max_file_size) : 52428800;
+  if (!Number.isFinite(maxSize) || maxSize <= 0) return res.status(400).send("올바르지 않은 파일 크기 제한입니다.");
   const exts = allowed_extensions || "";
+
+  for (const t of teams) {
+    if (!Number.isInteger(t) || t < 1) return res.status(400).send("올바르지 않은 팀 번호가 포함되어 있습니다.");
+  }
 
   const txResult = dbRun(() => {
     const tx = db.transaction(() => {
@@ -443,7 +450,12 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   if (!Array.isArray(teams) || teams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
 
   const maxSize = max_file_size ? Number(max_file_size) : 52428800;
+  if (!Number.isFinite(maxSize) || maxSize <= 0) return res.status(400).send("올바르지 않은 파일 크기 제한입니다.");
   const exts = allowed_extensions || "";
+
+  for (const t of teams) {
+    if (!Number.isInteger(t) || t < 1) return res.status(400).send("올바르지 않은 팀 번호가 포함되어 있습니다.");
+  }
 
   const removedTeamNums = [];
   const txResult = dbRun(() => {
@@ -542,6 +554,7 @@ app.get("/api/admin/submissions/:subId/files/:fileId", (req, res) => {
   if (!file) return res.status(404).send("파일을 찾을 수 없습니다.");
 
   const filePath = path.join(UPLOADS_DIR, String(sub.session_id), String(sub.team_num), String(sub.id), file.stored_name);
+  if (!path.resolve(filePath).startsWith(path.resolve(UPLOADS_DIR))) return res.status(400).send("잘못된 파일 경로입니다.");
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
   res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(file.original_name)}`);

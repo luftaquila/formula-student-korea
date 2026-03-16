@@ -86,6 +86,7 @@ const app = createApp({ express, validateUser, db }, (req) => {
   if (req.path.startsWith("/api/ops-contacts") && req.method !== "GET") return "admin";
   if (req.path.startsWith("/api/ops-contacts")) return "official";
   if (req.path === "/api/logs") return "admin";
+  if (req.path.startsWith("/api/")) return "admin"; // API 기본값: default-close
   return null; // SPA
 });
 
@@ -245,7 +246,8 @@ app.get("/api/callback", async (req, res) => {
 
 // POST /api/logout - 쿠키 삭제
 app.post("/api/logout", (req, res) => {
-  logger.log(req, "user.logout", null, req.user?.email);
+  if (!req.user) return res.status(401).send("인증이 필요합니다.");
+  logger.log(req, "user.logout", null, req.user.email);
 
   const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
   const cookieOpts = `Path=/; SameSite=Lax; Max-Age=0${isSecure ? "; Secure" : ""}`;
@@ -263,6 +265,13 @@ app.get("/api/users/exists/:email", (req, res) => {
   const user = db.prepare("SELECT 1 FROM users WHERE email = ? AND active = 1").get(req.params.email);
   if (!user) return res.status(404).send();
   res.status(200).send();
+});
+
+// GET /api/users/role/:email - 사용자 역할 조회 (내부 서비스용, 슬라이딩 갱신)
+app.get("/api/users/role/:email", (req, res) => {
+  const user = db.prepare("SELECT role FROM users WHERE email = ? AND active = 1").get(req.params.email);
+  if (!user) return res.status(404).send();
+  res.json({ role: user.role });
 });
 
 // GET /api/users - 전체 사용자 목록
@@ -308,7 +317,7 @@ app.post("/api/users/bulk", (req, res) => {
       const email = (row.email || "").trim().toLowerCase();
       if (!email) { errors.push({ row, reason: "이메일 없음" }); continue; }
 
-      const role = VALID_ROLES.includes(row.role) ? row.role : "official";
+      const role = VALID_ROLES.includes(row.role) ? row.role : "student";
       const memo = (row.memo || "").trim();
 
       const result = insert.run(email, role, memo);

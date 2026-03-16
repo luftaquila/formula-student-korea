@@ -24,6 +24,8 @@ export function createJWT(payload, secret, expiresInSec = 7 * 24 * 3600) {
 function verifyJWT(token, secret) {
   const [headerB64, payloadB64, signatureB64] = token.split(".");
   if (!headerB64 || !payloadB64 || !signatureB64) throw new Error("Invalid token");
+  const header = JSON.parse(Buffer.from(headerB64, "base64url").toString());
+  if (header.alg !== "HS256") throw new Error("Invalid algorithm");
   const data = `${headerB64}.${payloadB64}`;
   const expected = crypto.createHmac("sha256", secret).update(data).digest("base64url");
   const expectedBuf = Buffer.from(expected);
@@ -31,8 +33,6 @@ function verifyJWT(token, secret) {
   if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
     throw new Error("Invalid signature");
   }
-  const header = JSON.parse(Buffer.from(headerB64, "base64url").toString());
-  if (header.alg !== "HS256") throw new Error("Invalid algorithm");
   const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
   if (!payload.exp || Date.now() / 1000 > payload.exp) throw new Error("Expired");
   return payload;
@@ -43,8 +43,8 @@ export function createApp(deps, authRoleFn) {
   ensureDataDir();
 
   const app = express();
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+  app.use(express.json({ limit: "100kb" }));
+  app.use(express.urlencoded({ extended: true, limit: "100kb" }));
 
   // 1. Cookie parsing (no external dependency)
   app.use((req, res, next) => {
@@ -113,13 +113,25 @@ export function createApp(deps, authRoleFn) {
         const threshold = 3 * 24 * 3600; // 3일
         if (remaining < threshold) {
           const { email, name } = req.user;
-          // DB에서 최신 role 조회 (validateUser가 직접 함수일 때만 — auth 서비스)
           let freshRole = req.user.role;
           if (deps.validateUser) {
+            // auth 서비스: 직접 DB 조회
             try {
               const userRow = deps.db?.prepare("SELECT role FROM users WHERE email = ? AND active = 1").get(email);
               if (userRow) freshRole = userRow.role;
             } catch { /* fallback to JWT role */ }
+          } else if (process.env.AUTH_SERVER && process.env.INTERNAL_SECRET) {
+            // 비인증 서비스: auth API로 최신 역할 조회
+            try {
+              const roleRes = await fetch(
+                `${process.env.AUTH_SERVER}/api/users/role/${encodeURIComponent(email)}`,
+                { headers: { "X-Internal-Service": process.env.INTERNAL_SECRET }, signal: AbortSignal.timeout(2000) }
+              );
+              if (roleRes.ok) {
+                const data = await roleRes.json();
+                if (VALID_ROLES.includes(data.role)) freshRole = data.role;
+              }
+            } catch { /* fail-open: 기존 역할 유지 */ }
           }
           const newJwt = createJWT({ email, name, role: freshRole }, process.env.JWT_SECRET);
           const isSecure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
@@ -194,7 +206,8 @@ export function createDbRun() {
       if (e.status && e.message) {
         return { success: false, status: e.status, error: e.message };
       }
-      return { success: false, status: 500, error: `DB 오류: ${e.message || e}` };
+      console.error("[DB]", e.message || e);
+      return { success: false, status: 500, error: "서버 오류가 발생했습니다." };
     }
   };
 }

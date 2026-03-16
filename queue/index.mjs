@@ -1,4 +1,3 @@
-import http from "http";
 import https from "https";
 import crypto from "crypto";
 import express from "express";
@@ -168,7 +167,12 @@ const app = createApp({ express }, (req) => {
   if (req.path.startsWith("/api/admin")) return "official";
   if (/^\/(admin|register|priority|stats)/.test(req.path)) return "official";
   if (req.path === "/api/logs") return "admin";
-  return null; // public
+  if (req.path === "/api/events") return null;
+  if (req.path === "/api/active") return null;
+  if (req.path.startsWith("/api/booths/")) return null;
+  if (req.path.startsWith("/api/state/")) return null;
+  if (req.path.startsWith("/api/")) return "official"; // API 기본값: default-close
+  return null; // SPA (public display)
 });
 
 app.get("/api/logs", logger.queryHandler);
@@ -194,7 +198,7 @@ app.get("/api/events", sseHandler(() => {
    ============================================ */
 function validateEntryNum(num) {
   const parsed = Number(num);
-  if (num === "" || num === undefined || Number.isNaN(parsed) || parsed < 0 || !Number.isInteger(parsed)) {
+  if (num === "" || num === undefined || Number.isNaN(parsed) || parsed < 1 || !Number.isInteger(parsed)) {
     return { valid: false, error: "올바르지 않은 엔트리 번호입니다." };
   }
   return { valid: true, value: parsed };
@@ -330,6 +334,9 @@ app.post("/api/state/:num", async (req, res) => {
       return { queue: undefined, rank: -1 };
     }
 
+    if (typeof req.body.phone !== "string") {
+      throw { status: 400, message: "전화번호 형식이 올바르지 않습니다." };
+    }
     if (entry.phone !== req.body.phone) {
       throw { status: 400, message: "전화번호가 일치하지 않습니다." };
     }
@@ -892,8 +899,8 @@ app.patch("/api/admin/booths/:type/config", (req, res) => {
   const type = typeValidation.value;
   const count = parseInt(req.body.count, 10);
 
-  if (isNaN(count) || count < 1) {
-    return res.status(400).send("부스 수는 1 이상이어야 합니다.");
+  if (isNaN(count) || count < 1 || count > 100) {
+    return res.status(400).send("부스 수는 1~100 사이여야 합니다.");
   }
 
   const result = dbRun(() => {
@@ -1487,23 +1494,11 @@ app.patch("/api/admin/settings/cancel-penalty", (req, res) => {
    ============================================ */
 async function getEntries() {
   const entryServer = process.env.ENTRY_SERVER || "http://entry:9100";
-
-  return await new Promise((resolve, reject) => {
-    http
-      .get(`${entryServer}/api/entries`, (res) => {
-        let data = "";
-        res.on("data", (chunk) => (data += chunk));
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(data));
-          } catch (e) {
-            reject(e);
-          }
-        });
-        res.on("error", (e) => reject(e));
-      })
-      .on("error", (e) => reject(e));
-  });
+  const headers = {};
+  if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+  const res = await fetch(`${entryServer}/api/entries`, { headers, signal: AbortSignal.timeout(5000) });
+  if (!res.ok) throw new Error("엔트리를 조회할 수 없습니다.");
+  return res.json();
 }
 
 function sendSmsNotification(type, prev) {

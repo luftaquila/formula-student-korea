@@ -98,6 +98,9 @@ function validateRecordName(name) {
   if (!/^[A-Za-z0-9가-힣 .\-_]+$/.test(sanitized)) {
     return { valid: false, error: "올바르지 않은 기록 이름입니다." };
   }
+  if (sanitized.includes("'")) {
+    return { valid: false, error: "올바르지 않은 기록 이름입니다." };
+  }
   return { valid: true, value: sanitized };
 }
 
@@ -121,6 +124,22 @@ function validateRecordData(data) {
     return { valid: false, error: "올바르지 않은 엔트리 데이터입니다." };
   }
 
+  if (typeof data.result !== "number" || !Number.isFinite(data.result)) {
+    return { valid: false, error: "결과값이 올바르지 않습니다." };
+  }
+  if (data.detail !== undefined && data.detail !== null && typeof data.detail !== "string") {
+    return { valid: false, error: "상세 정보가 올바르지 않습니다." };
+  }
+  if (!data.entry.num || typeof data.entry.num !== "number" || !Number.isInteger(data.entry.num) || data.entry.num < 1) {
+    return { valid: false, error: "엔트리 번호가 올바르지 않습니다." };
+  }
+  if (!data.entry.univ || typeof data.entry.univ !== "string") {
+    return { valid: false, error: "올바르지 않은 엔트리 데이터입니다." };
+  }
+  if (!data.entry.team || typeof data.entry.team !== "string") {
+    return { valid: false, error: "올바르지 않은 엔트리 데이터입니다." };
+  }
+
   return { valid: true };
 }
 
@@ -128,8 +147,14 @@ function validateControllerData({ timestamp, data }) {
   if (timestamp === undefined || timestamp === null) {
     return { valid: false, error: "타임스탬프가 누락되었습니다." };
   }
+  if (typeof timestamp !== "string") {
+    return { valid: false, error: "타임스탬프 형식이 올바르지 않습니다." };
+  }
   if (data === undefined || data === null) {
     return { valid: false, error: "데이터가 누락되었습니다." };
+  }
+  if (typeof data !== "string") {
+    return { valid: false, error: "데이터 형식이 올바르지 않습니다." };
   }
   return { valid: true };
 }

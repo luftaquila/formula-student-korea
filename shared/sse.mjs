@@ -1,4 +1,4 @@
-export function createSSEManager() {
+export function createSSEManager(maxClients = 200) {
   const clients = new Set();
 
   function broadcast(event, data) {
@@ -25,6 +25,10 @@ export function createSSEManager() {
 
   function handler(initDataFn) {
     return (req, res) => {
+      if (clients.size >= maxClients) {
+        return res.status(503).send("연결이 너무 많습니다. 잠시 후 다시 시도해주세요.");
+      }
+
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
