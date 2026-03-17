@@ -255,11 +255,11 @@ onMounted(fetchSession);
 
         <div
           class="drop-zone"
-          :class="{ 'drag-over': dragOver }"
-          @dragover.prevent="dragOver = true"
+          :class="{ 'drag-over': dragOver, disabled: uploading }"
+          @dragover.prevent="!uploading && (dragOver = true)"
           @dragleave.prevent="dragOver = false"
-          @drop.prevent="handleDrop"
-          @click="$refs.fileInput.click()"
+          @drop.prevent="dragOver = false; !uploading && handleDrop($event)"
+          @click="!uploading && $refs.fileInput.click()"
         >
           <input ref="fileInput" type="file" multiple hidden :accept="acceptAttr" @change="handleFileInput" />
           <div class="drop-content">
@@ -273,7 +273,7 @@ onMounted(fetchSession);
           <div v-for="(f, i) in selectedFiles" :key="i" class="selected-file">
             <span class="file-name">{{ f.name }}</span>
             <span class="file-size">{{ formatSize(f.size) }}</span>
-            <button class="btn btn-sm btn-danger" @click="removeFile(i)">삭제</button>
+            <button class="btn btn-sm btn-danger" :disabled="uploading" @click="removeFile(i)">삭제</button>
           </div>
         </div>
 
@@ -425,6 +425,12 @@ onMounted(fetchSession);
 .drop-zone.drag-over {
   border-color: var(--accent-primary);
   background: rgba(59, 130, 246, 0.05);
+}
+
+.drop-zone.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+  cursor: default;
 }
 
 .drop-content {
