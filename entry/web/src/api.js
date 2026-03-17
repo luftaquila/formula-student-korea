@@ -1,31 +1,6 @@
-const BASE_URL = import.meta.env.PROD ? "/entry" : "";
+import { createApiClient } from "@shared/api-base.js";
 
-/**
- * 공통 fetch 래퍼
- * @param {string} endpoint - API 엔드포인트
- * @param {RequestInit} options - fetch 옵션
- * @returns {Promise<Response>}
- */
-async function request(endpoint, options = {}) {
-  const config = {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  };
-
-  const res = await fetch(`${BASE_URL}${endpoint}`, config);
-
-  if (res.status === 401) {
-    window.location.href = `/auth/api/login?redirect=${encodeURIComponent(window.location.pathname)}`;
-    throw new Error("인증이 만료되었습니다.");
-  }
-
-  if (!res.ok) {
-    const message = await res.text();
-    throw new Error(message || `요청 실패 (${res.status})`);
-  }
-
-  return res;
-}
+const { request } = createApiClient("/entry");
 
 function yearParam(year, prefix = "?") {
   return year != null ? `${prefix}year=${year}` : "";
@@ -99,7 +74,8 @@ export async function uploadEntries(data, year) {
  * 엔트리 JSON 다운로드 URL
  */
 export function getDownloadUrl(year) {
-  return `${BASE_URL}/api/entries?download${year != null ? `&year=${year}` : ""}`;
+  const base = import.meta.env.PROD ? "/entry" : "";
+  return `${base}/api/entries?download${year != null ? `&year=${year}` : ""}`;
 }
 
 /**
