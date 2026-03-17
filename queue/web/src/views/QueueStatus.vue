@@ -40,6 +40,13 @@ const teamName = ref("");
 const queueName = ref("-");
 const rank = ref("-");
 
+const queueEntries = computed(() => {
+  if (queueName.value === "-") return [];
+  const names = String(queueName.value).split(", ");
+  const ranks = String(rank.value).split(", ");
+  return names.map((name, i) => ({ name, rank: ranks[i] }));
+});
+
 // Watch for queue updates from SSE to refresh user's rank
 watch(lastQueueUpdate, async () => {
   if (sessionStorage.getItem("queue_entry")) {
@@ -194,10 +201,12 @@ function clearState(message) {
         </div>
         <div class="card-body result-body">
           <div class="result-display">
-            <template v-if="queueName !== '-'">
-              <span>{{ queueName }} 검차</span>
-              <span class="result-rank">{{ rank }}</span>
-              <span>번</span>
+            <template v-if="queueEntries.length > 0">
+              <div v-for="(e, i) in queueEntries" :key="i" class="result-row">
+                <span>{{ e.name }}</span>
+                <span class="result-rank">{{ e.rank }}</span>
+                <span>번</span>
+              </div>
             </template>
             <span v-else>-</span>
           </div>
@@ -356,10 +365,17 @@ function clearState(message) {
 
 .result-display {
   display: flex;
-  align-items: baseline;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
   font-size: 1.25rem;
   font-weight: 600;
+  gap: 0.25rem;
+}
+
+.result-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
 }
 
 .result-rank {
