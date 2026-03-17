@@ -268,39 +268,6 @@ describe('createApp auth middleware', () => {
     assert.equal(data.user, 'internal');
   });
 
-  // Auth: dev mode
-  it('dev mode auto-authenticates as admin when JWT_SECRET is unset', async () => {
-    const savedSecret = process.env.JWT_SECRET;
-    const savedNodeEnv = process.env.NODE_ENV;
-    delete process.env.JWT_SECRET;
-    process.env.NODE_ENV = 'development';
-
-    try {
-      // Need a fresh app for dev mode since env is read at createApp time
-      const devApp = createApp({ express }, (req) => {
-        if (req.path === '/dev-test') return 'admin';
-        return null;
-      });
-      devApp.get('/dev-test', (req, res) => res.json({ user: req.user.email }));
-
-      const { server: devServer, baseUrl } = await startServer(devApp);
-      const devClient = createClient(baseUrl);
-
-      const res = await devClient.get('/dev-test');
-      assert.equal(res.status, 200);
-      const data = await res.json();
-      assert.equal(data.user, 'dev@local');
-
-      await stopServer(devServer);
-    } finally {
-      process.env.JWT_SECRET = savedSecret;
-      if (savedNodeEnv !== undefined) {
-        process.env.NODE_ENV = savedNodeEnv;
-      } else {
-        delete process.env.NODE_ENV;
-      }
-    }
-  });
 
   // Auth: validateUser returning invalid
   it('validateUser returning {valid:false} clears cookies and returns 401', async () => {

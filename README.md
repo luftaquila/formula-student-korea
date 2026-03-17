@@ -2,21 +2,23 @@
 
 Formula Student Korea Service Hub
 
+Read [GUIDE.md](GUIDE.md) for usage guide.
+
 ## Services
 
-| Service | Path | Description | Port |
-|---------|------|-------------|------|
-| landing | `/` | Landing page & Caddy reverse proxy | 9000 |
-| auth | `/auth` | Authentication & user management API + Web UI | 9800 |
-| entry | `/entry` | Vehicle entry registration API + Web UI | 9100 |
-| queue | `/queue` | Inspection queue management API + Web UI | 9300 |
-| inspection | `/inspection` | Inspection sheet management API + Web UI | 9600 |
-| traffic | `/traffic` | Traffic controller, telemetry & event mode management API + Web UI | 9200 |
-| score | `/score` | Score aggregation, penalty/scoring config & management API + Web UI | 9700 |
-| documents | `/documents` | Document submission management API + Web UI | 9900 |
-| filebrowser | `/files` | Cloud file storage (chief+ only) | 8080 |
-| energymeter | `/energymeter` | Energy meter data viewer | 9400 |
-| rules | `/rules` | Rules file server (Caddy) | 9500 |
+| Service | Description | Port |
+|---------|-------------|------|
+| landing | Landing page & Caddy reverse proxy | 9000 |
+| auth | Authentication & user management | 9800 |
+| entry | Vehicle entry registration | 9100 |
+| queue | Inspection queue management | 9300 |
+| inspection | Inspection sheet management | 9600 |
+| traffic | Traffic controller, telemetry & event mode management | 9200 |
+| score | Score aggregation, penalty/scoring config & management | 9700 |
+| documents | Document submission management | 9900 |
+| filebrowser | Cloud file storage (chief+ only) | 8080 |
+| energymeter | Energy meter data viewer | 9400 |
+| rules | Rules file server (Caddy) | 9500 |
 
 ## Authentication
 
@@ -90,4 +92,4 @@ make deploy PROFILE=local              # Build all + deploy
 make deploy PROFILE=local SVC=traffic  # Build specific service only
 ```
 
-Available at `http://localhost:9000`. Omit `JWT_SECRET` from `.env` for dev mode (auto-authenticated as admin).
+Available at `http://localhost:9000`.

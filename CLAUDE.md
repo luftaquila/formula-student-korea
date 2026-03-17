@@ -127,8 +127,6 @@ Each service's `createApp(deps, authRoleFn)` receives `deps` (`{ express, valida
 
 For non-API routes (SPA pages), 401/403 responses redirect to `/` (landing page) instead of returning bare text. API routes return standard HTTP status codes with text error messages.
 
-**Dev mode:** When `JWT_SECRET` is not set and `NODE_ENV` is not `"production"`, all requests are auto-authenticated as admin. A one-time warning is logged at startup. Only applies when running services directly outside Docker (e.g. `node index.mjs`).
-
 ### Route Permission Matrix
 
 **Public:** `/` (landing), `/auth/api/login,callback,logout`, `/auth` (SPA), `/queue` + `/queue/api` (except admin), `/entry/api/years` + `/entry/api/entries`, `/energymeter`, `/rules`

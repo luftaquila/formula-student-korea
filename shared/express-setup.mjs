@@ -81,7 +81,7 @@ export function createApp(deps, authRoleFn) {
     next();
   });
 
-  // 2. JWT user extraction (with dev mode auto-auth)
+  // 2. JWT user extraction
   // Build validateUser: direct function from deps, or auto HTTP via AUTH_SERVER
   let validateUser = deps.validateUser || null;
   if (!validateUser && process.env.AUTH_SERVER && process.env.INTERNAL_SECRET) {
@@ -103,10 +103,6 @@ export function createApp(deps, authRoleFn) {
         return { valid: false, role: null };
       }
     };
-  }
-
-  if (!process.env.JWT_SECRET && process.env.NODE_ENV !== "production") {
-    console.warn("⚠ WARNING: JWT_SECRET not set — dev mode enabled (all requests auto-authenticated as admin)");
   }
 
   // Pre-compute INTERNAL_SECRET hash (immutable for process lifetime)
@@ -146,9 +142,6 @@ export function createApp(deps, authRoleFn) {
           ]);
         }
       } catch { /* invalid token */ }
-    } else if (!process.env.JWT_SECRET && process.env.NODE_ENV !== "production") {
-      req.user = { email: "dev@local", name: "Developer", role: "admin" };
-      req.headers.authuser = "dev@local";
     }
 
     // Validate user still exists + sync role from auth
