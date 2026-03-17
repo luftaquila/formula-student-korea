@@ -8,7 +8,7 @@ Formula Student Korea Service Hub - a microservices-based web application for ma
 
 ## Architecture
 
-Ten independent services deployed via Docker Compose behind a Caddy reverse proxy (port 9000):
+Eleven independent services deployed via Docker Compose behind a Caddy reverse proxy (port 9000):
 
 - **landing/** - Landing page and reverse proxy gateway (Vue 3 + Caddy)
 - **auth/** - Authentication and user management API + web UI (Express + Vue 3, port 9800)
@@ -18,6 +18,7 @@ Ten independent services deployed via Docker Compose behind a Caddy reverse prox
 - **traffic/** - Traffic control, telemetry, and event mode management API + web UI (Express + Vue 3, port 9200)
 - **score/** - Score aggregation, penalty/scoring config, and management API + web UI (Express + Vue 3, port 9700)
 - **documents/** - Document submission management API + web UI (Express + Vue 3, port 9900)
+- **filebrowser/** - Cloud file storage (FileBrowser, proxy auth via Caddy forward_auth, port 8080)
 - **energymeter/** - Energy meter data viewer (Git submodule, Vue 3, port 9400)
 - **rules/** - Rules file server (Caddy, port 9500)
 
@@ -96,7 +97,9 @@ Access at `http://localhost:9000` after starting. The `local` profile uses `cadd
 
 ## Authentication
 
-Google OAuth 2.0 with JWT cookie-based sessions. Auth logic is handled by backend middleware in `shared/express-setup.mjs`. Caddy strips `X-Internal-Service` and `Authuser` headers from all incoming requests (preventing external spoofing); the auth service route additionally strips `X-Forwarded-Host`. Caddy performs no auth logic itself.
+Google OAuth 2.0 with JWT cookie-based sessions. Auth logic is handled by backend middleware in `shared/express-setup.mjs`. Caddy strips `X-Internal-Service` and `Authuser` headers from all incoming requests (preventing external spoofing); the auth service route additionally strips `X-Forwarded-Host`.
+
+Caddy also performs `forward_auth` for the FileBrowser service — see "FileBrowser" section below.
 
 ### Roles (four permission levels, hierarchical)
 
@@ -116,6 +119,26 @@ Each service's `createApp(deps, authRoleFn)` receives `deps` (`{ express, valida
 ### Inter-service communication
 
 All inter-service API calls use `X-Internal-Service` header (matching `INTERNAL_SECRET` env var), auto-authenticated as admin. Score service subscribes to inspection and traffic SSE endpoints, re-broadcasting events to score clients with `inspection:*` and `traffic:*` prefixes. Auth service aggregates logs from all other services via `LOG_SERVICES` env var.
+
+### Auth API endpoints for external integration
+
+- `GET /api/session` — public, returns `{ name, role }` for the current JWT session or 401. Used by the landing page to verify cookie state on load (so deactivated users immediately lose menu visibility).
+- `GET /api/forward-auth?role=<role>` — internal only (requires `X-Forward-Auth-Key` header matching `INTERNAL_SECRET`, timing-safe comparison). Validates JWT and checks role level, returns 200 with `X-Forwarded-User` header or 401/403. Used by Caddy's `forward_auth` for FileBrowser.
+
+### FileBrowser
+
+Cloud file storage at `/files/`, restricted to chief+ roles. Uses [FileBrowser](https://filebrowser.org/) Docker image with proxy auth mode.
+
+**Auth flow:** Request → Caddy `forward_auth` (sends `X-Forward-Auth-Key` + user's cookies to `auth:9800/api/forward-auth?role=chief`) → auth validates JWT + role → returns `X-Forwarded-User` header with email → Caddy copies header to FileBrowser → FileBrowser auto-creates/authenticates user. Unauthenticated users (401) are redirected to `/auth/api/login?redirect=/files/`.
+
+**Architecture:**
+- `filebrowser/init.sh` — entrypoint script; initializes DB with proxy auth config (`--auth.method=proxy --auth.header=X-Forwarded-User`) on first run only (when `/data/filebrowser.db` doesn't exist)
+- `filebrowser/data/` — persistent data (DB + uploaded files), gitignored via `data/` pattern
+- Caddy overrides `Content-Security-Policy` for `/files/*` to allow FileBrowser's inline scripts/styles and data: fonts
+- Caddy container requires `INTERNAL_SECRET` env var (used in `{env.INTERNAL_SECRET}` Caddyfile placeholder for `forward_auth` header)
+- `X-Forward-Auth-Key` is a separate header from `X-Internal-Service` to avoid the auth middleware intercepting it and overriding `req.user` with the internal service identity (which would bypass the actual user's JWT validation)
+
+**Important: FileBrowser DB reset** — when deleting `filebrowser/data/filebrowser.db`, the container must be recreated (not just restarted) so `init.sh` runs again to reinitialize proxy auth config. Use `podman rm -f fsk-filebrowser && podman compose --profile production up -d filebrowser`.
 
 ## Testing
 
