@@ -326,8 +326,8 @@ function parseCSV(text) {
 }
 
 // Sorting
-const sortKey = ref(null);
-const sortOrder = ref("asc");
+const sortKey = ref("role");
+const sortOrder = ref("desc");
 
 function handleSort(key) {
   if (sortKey.value === key) {
@@ -343,11 +343,16 @@ function getSortIcon(key) {
   return sortOrder.value === "asc" ? "↑" : "↓";
 }
 
+const ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 };
+
 const sortedUsers = computed(() => {
   if (!sortKey.value) return filteredUsers.value;
   const k = sortKey.value;
   const dir = sortOrder.value === "asc" ? 1 : -1;
   return [...filteredUsers.value].sort((a, b) => {
+    if (k === "role") {
+      return ((ROLE_LEVELS[a.role] || 0) - (ROLE_LEVELS[b.role] || 0)) * dir;
+    }
     const va = (a[k] || "").toString().toLowerCase();
     const vb = (b[k] || "").toString().toLowerCase();
     return va < vb ? -dir : va > vb ? dir : 0;
