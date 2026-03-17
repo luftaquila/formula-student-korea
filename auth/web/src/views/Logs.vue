@@ -50,12 +50,12 @@
           <table class="data-table">
             <thead>
               <tr>
-                <th>시간</th>
-                <th>서비스</th>
-                <th>레벨</th>
-                <th>액션</th>
-                <th>유저</th>
-                <th>대상</th>
+                <th class="col-time">시간</th>
+                <th class="col-shrink">서비스</th>
+                <th class="col-shrink">레벨</th>
+                <th class="col-action">액션</th>
+                <th class="col-actor">유저</th>
+                <th class="col-target">대상</th>
                 <th>상세</th>
               </tr>
             </thead>
@@ -258,7 +258,13 @@ onUnmounted(() => {
   overflow-x: auto;
 }
 
+.col-shrink {
+  width: 1%;
+  white-space: nowrap;
+}
+
 .col-time {
+  width: 1%;
   white-space: nowrap;
   font-size: 0.8125rem;
   font-family: "JetBrains Mono", monospace;
@@ -266,27 +272,26 @@ onUnmounted(() => {
 }
 
 .col-action {
+  width: 1%;
+  white-space: nowrap;
   font-family: "JetBrains Mono", monospace;
   font-size: 0.8125rem;
 }
 
 .col-actor {
-  font-size: 0.8125rem;
+  width: 1%;
   white-space: nowrap;
+  font-size: 0.8125rem;
 }
 
-
 .col-target {
-  font-size: 0.8125rem;
-  max-width: 100px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  width: 1%;
   white-space: nowrap;
+  font-size: 0.8125rem;
 }
 
 .col-detail {
   font-size: 0.8125rem;
-  max-width: 200px;
 }
 
 .detail-text {
@@ -350,7 +355,6 @@ onUnmounted(() => {
     justify-content: space-between;
   }
 
-  .col-detail,
   .col-actor {
     max-width: 80px;
   }
