@@ -98,6 +98,7 @@
 		request_header -X-Forwarded-For
 		forward_auth auth:9800 {
 			uri /api/forward-auth?role=chief
+			header_up X-Forward-Auth-Key {env.INTERNAL_SECRET}
 			copy_headers X-Forwarded-User
 			@unauthenticated status 401
 			handle_response @unauthenticated {

@@ -81,6 +81,7 @@ const logger = createLogger(db, "auth");
 const app = createApp({ express, validateUser, db }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/forward-auth") return null;
+  if (req.path === "/api/session") return null;
   if (["/api/login", "/api/callback", "/api/logout"].includes(req.path)) return null;
   if (req.path.startsWith("/api/admin")) return "admin";
   if (req.path.startsWith("/api/users")) return "admin";
@@ -95,8 +96,20 @@ app.get("/api/logs", logger.queryHandler);
 
 app.get("/api/health", (req, res) => res.send("ok"));
 
+// Session validation endpoint (landing page uses this to verify cookie state)
+app.get("/api/session", (req, res) => {
+  if (!req.user) return res.status(401).send();
+  res.json({ name: req.user.name, role: req.user.role });
+});
+
 // Forward auth endpoint for Caddy forward_auth (FileBrowser etc.)
 app.get("/api/forward-auth", (req, res) => {
+  const key = req.headers["x-forward-auth-key"];
+  const secret = process.env.INTERNAL_SECRET;
+  if (!key || !secret) return res.status(403).send();
+  const keyBuf = Buffer.from(key);
+  const secretBuf = Buffer.from(secret);
+  if (keyBuf.length !== secretBuf.length || !crypto.timingSafeEqual(keyBuf, secretBuf)) return res.status(403).send();
   const requiredRole = req.query.role || "official";
   if (!req.user) return res.status(401).send("인증이 필요합니다.");
   if ((ROLE_LEVELS[req.user.role] || 0) < (ROLE_LEVELS[requiredRole] || Infinity)) {

@@ -309,6 +309,7 @@ services:
     restart: unless-stopped
     environment:
       - DOMAIN_NAME=${DOMAIN_NAME}
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
     deploy:
       resources:
         limits:
@@ -323,6 +324,8 @@ services:
     container_name: fsk-caddy-local
     profiles:
       - local
+    environment:
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
     ports:
       - "0.0.0.0:9000:9000"
     depends_on: *caddy-depends

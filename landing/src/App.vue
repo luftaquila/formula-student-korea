@@ -56,11 +56,21 @@
 </template>
 
 <script setup>
+import { onMounted } from "vue";
 import ServiceCard from "./components/ServiceCard.vue";
 import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
-import { isAuthenticated, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
+import { user, isAuthenticated, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
 import { forumSvg } from "@shared/nav-config.js";
+
+onMounted(() => {
+  if (user.value) {
+    fetch("/auth/api/session").then(res => {
+      if (res.ok) return res.json().then(data => { user.value = data; });
+      user.value = null;
+    }).catch(() => {});
+  }
+});
 </script>
 
 <style scoped>
