@@ -842,11 +842,11 @@ describe('Auth middleware integration', () => {
     assert.ok(Array.isArray(data));
   });
 
-  it('wrong X-Internal-Service header does not grant access', async () => {
+  it('wrong X-Internal-Service header is explicitly rejected', async () => {
     const res = await client.get('/api/users', {
       headers: { 'X-Internal-Service': 'wrong-secret' },
     });
-    assert.equal(res.status, 401);
+    assert.equal(res.status, 403);
   });
 
   it('expired JWT returns 401 on protected endpoints', async () => {

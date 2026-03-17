@@ -121,6 +121,7 @@ export function createApp(deps, authRoleFn) {
         req.headers.authuser = "internal";
         return next();
       }
+      return res.status(403).send("Forbidden");
     }
     const token = req.cookies.fsk_session;
     if (token && process.env.JWT_SECRET) {

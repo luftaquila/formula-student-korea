@@ -268,6 +268,12 @@ describe('createApp auth middleware', () => {
     assert.equal(data.user, 'internal');
   });
 
+  it('wrong X-Internal-Service header is explicitly rejected with 403', async () => {
+    const res = await client.get('/admin', {
+      headers: { 'X-Internal-Service': 'wrong-secret' },
+    });
+    assert.equal(res.status, 403);
+  });
 
   // Auth: validateUser returning invalid
   it('validateUser returning {valid:false} clears cookies and returns 401', async () => {
