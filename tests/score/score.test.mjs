@@ -68,6 +68,99 @@ function createMockTrafficServer() {
   return app;
 }
 
+function createRichMockInspectionServer() {
+  const app = express();
+  app.use(express.json());
+
+  app.get('/api/sheet/summary', (req, res) => {
+    res.json({ categories: [{ id: 100, name: '코너웨이트' }], teams: {} });
+  });
+
+  // Return a template tree with 코너웨이트 category containing all 5 required items
+  app.get('/api/sheet/template', (req, res) => {
+    res.json([{
+      id: 100, year: 2026, level: 'category', name: '코너웨이트', sort_order: 0,
+      subcategories: [{
+        id: 101, year: 2026, level: 'subcategory', name: '측정', sort_order: 0, parent_id: 100,
+        groups: [{
+          id: 102, year: 2026, level: 'group', name: '값', sort_order: 0, parent_id: 101,
+          items: [
+            { id: 201, name: '공차중량', answer_type: 'number', year: 2026, level: 'item', sort_order: 0 },
+            { id: 202, name: 'FL', answer_type: 'number', year: 2026, level: 'item', sort_order: 1 },
+            { id: 203, name: 'FR', answer_type: 'number', year: 2026, level: 'item', sort_order: 2 },
+            { id: 204, name: 'RL', answer_type: 'number', year: 2026, level: 'item', sort_order: 3 },
+            { id: 205, name: 'RR', answer_type: 'number', year: 2026, level: 'item', sort_order: 4 },
+          ],
+        }],
+      }],
+    }]);
+  });
+
+  // Return bulk answers for corner weight items
+  app.get('/api/sheet/bulk-answers', (req, res) => {
+    res.json({
+      1: { 201: '250', 202: '63', 203: '62', 204: '64', 205: '61' },
+    });
+  });
+
+  return app;
+}
+
+function createRichMockTrafficServer() {
+  const app = express();
+  const year = new Date().getFullYear();
+
+  app.get('/api/records', (req, res) => {
+    // Two tables for same event type "가속" (multi-table merge test)
+    // Plus one table for "스키드패드"
+    res.json([
+      `FSK ${year} 가속 1차`,
+      `FSK ${year} 가속 2차`,
+      `FSK ${year} 스키드패드`,
+    ]);
+  });
+
+  app.get('/api/records/:name', (req, res) => {
+    const name = decodeURIComponent(req.params.name);
+
+    if (name.includes('가속 1차')) {
+      res.json([
+        // Team 1: valid run
+        { rowid: 1, time: 'T1', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, cones: 1, oc: 0, invalidated: 0, scoreboard: 1 },
+        // Team 2: invalidated run
+        { rowid: 2, time: 'T2', num: 2, univ: 'B', team: 'B', type: '가속', result: 48000, cones: 0, oc: 0, invalidated: 1, scoreboard: 0 },
+        // Team 3: DNF run (result < 0)
+        { rowid: 3, time: 'T3', num: 3, univ: 'C', team: 'C', type: '가속', result: -1, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+      ]);
+    } else if (name.includes('가속 2차')) {
+      res.json([
+        // Team 1: another run (worse time) - tests multi-table merge + best run selection
+        { rowid: 4, time: 'T4', num: 1, univ: 'A', team: 'A', type: '가속', result: 55000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+        // Team 2: another run (also invalidated) - all runs invalidated → result: null
+        { rowid: 5, time: 'T5', num: 2, univ: 'B', team: 'B', type: '가속', result: 49000, cones: 0, oc: 0, invalidated: 1, scoreboard: 0 },
+        // Team 3: another DNF run - all valid but all DNF → result: -1
+        { rowid: 6, time: 'T6', num: 3, univ: 'C', team: 'C', type: '가속', result: -1, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+      ]);
+    } else if (name.includes('스키드패드')) {
+      res.json([
+        { rowid: 7, time: 'T7', num: 1, univ: 'A', team: 'A', type: '스키드패드', result: 30000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+      ]);
+    } else {
+      res.json([]);
+    }
+  });
+
+  app.get('/api/event-modes', (req, res) => {
+    res.json([
+      { event_type: '가속', enabled: 1 },
+      { event_type: '스키드패드', enabled: 0 }, // DISABLED - should be excluded
+      { event_type: '오토크로스', enabled: 1 },  // enabled but no records
+    ]);
+  });
+
+  return app;
+}
+
 // ─── Setup ──────────────────────────────────────────────────────────────
 
 setupTestEnv();
@@ -668,5 +761,132 @@ describe('Auth', () => {
   it('GET /api/health without auth returns 200', async () => {
     const res = await client.get('/api/health');
     assert.equal(res.status, 200);
+  });
+});
+
+// ─── Score aggregation business logic ────────────────────────────────────
+
+describe('Score aggregation business logic', () => {
+  let srv, url, cli, database, dp;
+  let mEntry, mInsp, mTraffic;
+  const cookie = adminCookie;
+  const YEAR = new Date().getFullYear();
+
+  before(async () => {
+    // Rich entry mock with 3 teams
+    const richEntryApp = express();
+    richEntryApp.get('/api/entries', (req, res) => {
+      res.json({
+        1: { univ: '서울대', team: '팀A', type: 'EV' },
+        2: { univ: '카이스트', team: '팀B', type: 'EV' },
+        3: { univ: '연세대', team: '팀C', type: 'EV' },
+      });
+    });
+
+    const [e, i, t] = await Promise.all([
+      startServer(richEntryApp),
+      startServer(createRichMockInspectionServer()),
+      startServer(createRichMockTrafficServer()),
+    ]);
+    mEntry = e.server;
+    mInsp = i.server;
+    mTraffic = t.server;
+
+    process.env.ENTRY_SERVER = e.baseUrl;
+    process.env.INSPECTION_SERVER = i.baseUrl;
+    process.env.TRAFFIC_SERVER = t.baseUrl;
+
+    dp = tmpDbPath();
+    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true });
+    database = result.db;
+    const started = await startServer(result.app);
+    srv = started.server;
+    url = started.baseUrl;
+    cli = createClient(url);
+  });
+
+  after(async () => {
+    await stopServer(srv);
+    await Promise.all([
+      stopServer(mEntry),
+      stopServer(mInsp),
+      stopServer(mTraffic),
+    ]);
+    database.close();
+    cleanup(dp);
+  });
+
+  it('extracts corner weight data from inspection template', async () => {
+    const res = await cli.get(`/api/score?year=${YEAR}`, { cookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+
+    assert.ok(data.inspection.cornerWeight, 'cornerWeight should be present');
+    assert.equal(data.inspection.cornerWeight.categoryId, 100);
+    assert.ok(data.inspection.cornerWeight.items.curb, 'curb item ID should be set');
+    assert.ok(data.inspection.cornerWeight.teams[1], 'team 1 corner weight data should exist');
+    assert.equal(data.inspection.cornerWeight.teams[1].curb, '250');
+    assert.equal(data.inspection.cornerWeight.teams[1].fl, '63');
+    assert.equal(data.inspection.cornerWeight.teams[1].rr, '61');
+  });
+
+  it('merges records from multiple tables for same event type', async () => {
+    const res = await cli.get(`/api/score?year=${YEAR}`, { cookie });
+    const data = await res.json();
+
+    const accel = data.events.find(e => e.type === '가속');
+    assert.ok(accel, '가속 event should exist');
+
+    // Team 1 has runs from both 가속 1차 and 가속 2차
+    assert.ok(accel.records[1], 'team 1 should have records');
+    assert.ok(accel.records[1].allRuns.length >= 2, 'team 1 should have runs from multiple tables');
+  });
+
+  it('excludes all-invalidated records (result: null)', async () => {
+    const res = await cli.get(`/api/score?year=${YEAR}`, { cookie });
+    const data = await res.json();
+
+    const accel = data.events.find(e => e.type === '가속');
+    // Team 2: both runs are invalidated → result should be null
+    assert.ok(accel.records[2], 'team 2 should exist');
+    assert.equal(accel.records[2].result, null, 'all-invalidated should have result null');
+  });
+
+  it('all-DNF valid runs produce result -1', async () => {
+    const res = await cli.get(`/api/score?year=${YEAR}`, { cookie });
+    const data = await res.json();
+
+    const accel = data.events.find(e => e.type === '가속');
+    // Team 3: both runs are DNF (result < 0) but not invalidated → result: -1
+    assert.ok(accel.records[3], 'team 3 should exist');
+    assert.equal(accel.records[3].result, -1, 'all-DNF should have result -1');
+  });
+
+  it('excludes disabled event modes from events', async () => {
+    const res = await cli.get(`/api/score?year=${YEAR}`, { cookie });
+    const data = await res.json();
+
+    const types = data.events.map(e => e.type);
+    assert.ok(types.includes('가속'), '가속 (enabled) should be in events');
+    assert.ok(!types.includes('스키드패드'), '스키드패드 (disabled) should NOT be in events');
+    // 오토크로스 is enabled but has no records - should still appear with empty records
+    assert.ok(types.includes('오토크로스'), '오토크로스 (enabled, no records) should be in events');
+  });
+
+  it('selects best run from merged multi-table records with penalty', async () => {
+    // Set up penalty for 가속
+    await cli.put('/api/score/penalty', {
+      cookie,
+      body: { year: YEAR, event_type: '가속', cone_penalty: 2, oc_penalty: 10, start_delay: 0 },
+    });
+
+    const res = await cli.get(`/api/score?year=${YEAR}`, { cookie });
+    const data = await res.json();
+
+    const accel = data.events.find(e => e.type === '가속');
+    // Team 1: run1 = 50000 + 1*2*1000 = 52000, run2 = 55000 + 0 = 55000
+    // Best = run1 (lower adjusted time)
+    assert.equal(accel.records[1].result, 50000, 'best run from 가속 1차 should be selected');
+    assert.equal(accel.records[1].cones, 1, 'best run cones should be from selected run');
   });
 });

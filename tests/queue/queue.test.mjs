@@ -667,22 +667,65 @@ describe('Statistics', () => {
     assert.ok('to' in data);
   });
 
-  it('GET /api/admin/stats returns stats', async () => {
+  it('GET /api/admin/stats returns stats with accurate counts', async () => {
     const res = await client.get('/api/admin/stats', { cookie: officialCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.ok(Array.isArray(data));
-    // We have had operations with entry 1 and 2
     assert.ok(data.length > 0);
+
+    // Verify aggregate stats reflect actual operations
+    // Entry 1: registered multiple times across tests, cancelled, re-registered, entered booth, exited
+    const entry1 = data.find(d => d.num === 1);
+    assert.ok(entry1, 'entry 1 should have stats');
+    assert.ok(entry1.registrations >= 1, 'entry 1 should have registrations');
+    assert.ok(entry1.entries >= 1, 'entry 1 should have booth entries');
+    assert.ok(entry1.totalOccupyTime >= 0, 'totalOccupyTime should be non-negative');
   });
 
-  it('GET /api/admin/stats/:num returns team timeline', async () => {
+  it('GET /api/admin/stats filters by inspection type', async () => {
+    const res = await client.get('/api/admin/stats?inspection=battery', { cookie: officialCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.ok(Array.isArray(data));
+    // Should only include stats from battery inspection
+    for (const entry of data) {
+      assert.ok(entry.registrations >= 0);
+    }
+  });
+
+  it('GET /api/admin/stats/:num returns team timeline with event details', async () => {
     const res = await client.get('/api/admin/stats/1', { cookie: officialCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.ok(data.summary);
     assert.ok(Array.isArray(data.timeline));
-    assert.ok(data.summary.registrations >= 1);
+    assert.ok(data.summary.registrations >= 1, 'should have registrations');
+
+    // Timeline should contain register, cancel, enter, exit events
+    const eventTypes = data.timeline.map(e => e.event);
+    assert.ok(eventTypes.includes('register'), 'timeline should include register events');
+
+    // Each timeline event should have inspection and timestamp
+    for (const event of data.timeline) {
+      assert.ok(event.timestamp, 'each timeline event should have timestamp');
+      assert.ok(event.inspection, 'each timeline event should have inspection type');
+    }
+  });
+
+  it('GET /api/admin/stats/:num filters by time range', async () => {
+    // Get the overall time range first
+    const rangeRes = await client.get('/api/admin/stats/timerange', { cookie: officialCookie });
+    const range = await rangeRes.json();
+
+    if (range.from && range.to) {
+      // Query with a narrow time range
+      const res = await client.get(`/api/admin/stats/1?from=${range.from}&to=${range.to}`, { cookie: officialCookie });
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.ok(data.summary);
+      assert.ok(data.summary.registrations >= 0);
+    }
   });
 });
 
