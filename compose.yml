@@ -15,13 +15,13 @@ services:
       dockerfile: Dockerfile.service
       args:
         SERVICE: entry
-        PORT: 9100
+        PORT: 9200
     container_name: fsk-entry
     security_opt:
       - label:disable
     environment:
       <<: *common-env
-      AUTH_SERVER: http://auth:9800
+      AUTH_SERVER: http://auth:9100
     volumes:
       - ./entry/data:/home/node/fsk-entry/data
     depends_on:
@@ -30,7 +30,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9200/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
     deploy:
       resources:
         limits:
@@ -44,13 +44,13 @@ services:
       dockerfile: Dockerfile.service
       args:
         SERVICE: traffic
-        PORT: 9200
+        PORT: 9500
     container_name: fsk-traffic
     security_opt:
       - label:disable
     environment:
       <<: *common-env
-      AUTH_SERVER: http://auth:9800
+      AUTH_SERVER: http://auth:9100
     volumes:
       - ./traffic/data:/home/node/fsk-traffic/data
     depends_on:
@@ -59,7 +59,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9200/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9500/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
     deploy:
       resources:
         limits:
@@ -94,8 +94,8 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      ENTRY_SERVER: http://entry:9100
-      AUTH_SERVER: http://auth:9800
+      ENTRY_SERVER: http://entry:9200
+      AUTH_SERVER: http://auth:9100
       NAVER_CLOUD_ACCESS_KEY: ${NAVER_CLOUD_ACCESS_KEY}
       NAVER_CLOUD_SECRET_KEY: ${NAVER_CLOUD_SECRET_KEY}
       NAVER_CLOUD_SMS_SERVICE_ID: ${NAVER_CLOUD_SMS_SERVICE_ID}
@@ -124,13 +124,13 @@ services:
       dockerfile: Dockerfile.service
       args:
         SERVICE: inspection
-        PORT: 9600
+        PORT: 9400
     container_name: fsk-inspection
     security_opt:
       - label:disable
     environment:
       <<: *common-env
-      AUTH_SERVER: http://auth:9800
+      AUTH_SERVER: http://auth:9100
     volumes:
       - ./inspection/data:/home/node/fsk-inspection/data
     depends_on:
@@ -139,7 +139,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9600/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9400/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
     deploy:
       resources:
         limits:
@@ -153,16 +153,16 @@ services:
       dockerfile: Dockerfile.service
       args:
         SERVICE: score
-        PORT: 9700
+        PORT: 9600
     container_name: fsk-score
     security_opt:
       - label:disable
     environment:
       <<: *common-env
-      ENTRY_SERVER: http://entry:9100
-      INSPECTION_SERVER: http://inspection:9600
-      TRAFFIC_SERVER: http://traffic:9200
-      AUTH_SERVER: http://auth:9800
+      ENTRY_SERVER: http://entry:9200
+      INSPECTION_SERVER: http://inspection:9400
+      TRAFFIC_SERVER: http://traffic:9500
+      AUTH_SERVER: http://auth:9100
     volumes:
       - ./score/data:/home/node/fsk-score/data
     depends_on:
@@ -175,7 +175,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9700/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9600/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
     deploy:
       resources:
         limits:
@@ -189,13 +189,13 @@ services:
       dockerfile: Dockerfile.service
       args:
         SERVICE: documents
-        PORT: 9900
+        PORT: 9700
     container_name: fsk-documents
     security_opt:
       - label:disable
     environment:
       <<: *common-env
-      AUTH_SERVER: http://auth:9800
+      AUTH_SERVER: http://auth:9100
     volumes:
       - ./documents/data:/home/node/fsk-documents/data
     depends_on:
@@ -204,7 +204,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9900/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9700/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
     deploy:
       resources:
         limits:
@@ -218,13 +218,13 @@ services:
       dockerfile: Dockerfile.service
       args:
         SERVICE: auth
-        PORT: 9800
+        PORT: 9100
     container_name: fsk-auth
     security_opt:
       - label:disable
     environment:
       <<: *common-env
-      LOG_SERVICES: "entry:http://entry:9100,queue:http://queue:9300,inspection:http://inspection:9600,traffic:http://traffic:9200,score:http://score:9700,documents:http://documents:9900"
+      LOG_SERVICES: "entry:http://entry:9200,queue:http://queue:9300,inspection:http://inspection:9400,traffic:http://traffic:9500,score:http://score:9600,documents:http://documents:9700"
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
@@ -234,7 +234,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9800/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
     deploy:
       resources:
         limits:

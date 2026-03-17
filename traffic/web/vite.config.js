@@ -3,7 +3,7 @@ import { createViteConfig } from "../../shared/vite-config.js";
 
 export default (env) => ({
   plugins: [vue()],
-  ...createViteConfig("traffic", 9200, {
+  ...createViteConfig("traffic", 9500, {
     entryProxy: true,
     server: { port: 5173 },
   })(env),

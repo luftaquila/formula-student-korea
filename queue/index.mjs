@@ -1498,7 +1498,7 @@ app.patch("/api/admin/settings/cancel-penalty", (req, res) => {
    유틸리티 함수
    ============================================ */
 async function getEntries() {
-  const entryServer = process.env.ENTRY_SERVER || "http://entry:9100";
+  const entryServer = process.env.ENTRY_SERVER || "http://entry:9200";
   const headers = {};
   if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
   const res = await fetch(`${entryServer}/api/entries`, { headers, signal: AbortSignal.timeout(5000) });

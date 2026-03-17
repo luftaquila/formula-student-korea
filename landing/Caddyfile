@@ -30,7 +30,7 @@
 		request_header -Authuser
 		request_header -X-Forwarded-For
 		request_header -X-Forwarded-Host
-		reverse_proxy auth:9800 {
+		reverse_proxy auth:9100 {
 			header_up X-Forwarded-Host {http.request.host}
 		}
 	}
@@ -41,7 +41,7 @@
 		request_header -X-Internal-Service
 		request_header -Authuser
 		request_header -X-Forwarded-For
-		reverse_proxy entry:9100
+		reverse_proxy entry:9200
 	}
 
 	# Queue service
@@ -59,7 +59,7 @@
 		request_header -X-Internal-Service
 		request_header -Authuser
 		request_header -X-Forwarded-For
-		reverse_proxy inspection:9600
+		reverse_proxy inspection:9400
 	}
 
 	# Traffic service
@@ -68,7 +68,7 @@
 		request_header -X-Internal-Service
 		request_header -Authuser
 		request_header -X-Forwarded-For
-		reverse_proxy traffic:9200
+		reverse_proxy traffic:9500
 	}
 
 	# Score service
@@ -77,7 +77,7 @@
 		request_header -X-Internal-Service
 		request_header -Authuser
 		request_header -X-Forwarded-For
-		reverse_proxy score:9700
+		reverse_proxy score:9600
 	}
 
 	# Documents service
@@ -86,7 +86,7 @@
 		request_header -X-Internal-Service
 		request_header -Authuser
 		request_header -X-Forwarded-For
-		reverse_proxy documents:9900
+		reverse_proxy documents:9700
 	}
 
 	# FileBrowser service (proxy auth via forward_auth)
@@ -96,7 +96,7 @@
 		request_header -X-Internal-Service
 		request_header -Authuser
 		request_header -X-Forwarded-For
-		forward_auth auth:9800 {
+		forward_auth auth:9100 {
 			uri /api/forward-auth?role=chief
 			header_up X-Forward-Auth-Key {env.INTERNAL_SECRET}
 			copy_headers X-Forwarded-User
@@ -118,7 +118,7 @@
 		request_header -X-Internal-Service
 		request_header -Authuser
 		request_header -X-Forwarded-For
-		reverse_proxy energymeter:9400
+		reverse_proxy energymeter:9800
 	}
 
 	# Rules service (keeps /rules prefix - rules service handles it internally)
@@ -126,7 +126,7 @@
 		request_header -X-Internal-Service
 		request_header -Authuser
 		request_header -X-Forwarded-For
-		reverse_proxy rules:9500
+		reverse_proxy rules:9900
 	}
 
 	# Landing page (static files)

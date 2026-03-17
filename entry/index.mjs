@@ -403,5 +403,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createEntryApp();
   setupProcessHandlers(db);
-  app.listen(9100);
+  app.listen(9200);
 }

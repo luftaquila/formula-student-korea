@@ -16,7 +16,7 @@ export function createViteConfig(serviceName, servicePort, options = {}) {
 
   if (entryProxy) {
     proxy["/entry"] = {
-      target: "http://localhost:9100",
+      target: "http://localhost:9200",
       changeOrigin: true,
       rewrite: (path) => path.replace(/^\/entry/, ""),
     };

@@ -457,5 +457,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createTrafficApp();
   setupProcessHandlers(db);
-  app.listen(9200);
+  app.listen(9500);
 }

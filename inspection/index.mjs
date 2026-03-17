@@ -569,5 +569,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createInspectionApp();
   setupProcessHandlers(db);
-  app.listen(9600);
+  app.listen(9400);
 }

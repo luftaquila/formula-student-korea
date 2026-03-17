@@ -3,5 +3,5 @@ import { createViteConfig } from "../../shared/vite-config.js";
 
 export default (env) => ({
   plugins: [vue()],
-  ...createViteConfig("entry", 9100)(env),
+  ...createViteConfig("entry", 9200)(env),
 });

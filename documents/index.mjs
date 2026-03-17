@@ -704,5 +704,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createDocumentsApp();
   setupProcessHandlers(db);
-  app.listen(9900);
+  app.listen(9700);
 }

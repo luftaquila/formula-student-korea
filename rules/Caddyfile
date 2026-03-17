@@ -1,4 +1,4 @@
-:9500 {
+:9900 {
 	encode zstd gzip
 
 	redir /rules /rules/

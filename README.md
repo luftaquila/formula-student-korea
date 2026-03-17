@@ -9,16 +9,16 @@ Read [GUIDE.md](GUIDE.md) for usage guide.
 | Service | Description | Port |
 |---------|-------------|------|
 | landing | Landing page & Caddy reverse proxy | 9000 |
-| auth | Authentication & user management | 9800 |
-| entry | Vehicle entry registration | 9100 |
+| auth | Authentication & user management | 9100 |
+| entry | Vehicle entry registration | 9200 |
 | queue | Inspection queue management | 9300 |
-| inspection | Inspection sheet management | 9600 |
-| traffic | Traffic controller, telemetry & event mode management | 9200 |
-| score | Score aggregation, penalty/scoring config & management | 9700 |
-| documents | Document submission management | 9900 |
-| filebrowser | Cloud file storage (chief+ only) | 8080 |
-| energymeter | Energy meter data viewer | 9400 |
-| rules | Rules file server (Caddy) | 9500 |
+| inspection | Inspection sheet management | 9400 |
+| traffic | Traffic controller, telemetry & event mode management | 9500 |
+| score | Score aggregation, penalty/scoring config & management | 9600 |
+| documents | Document submission management | 9700 |
+| energymeter | Energy meter data viewer | 9800 |
+| rules | Rules file server (Caddy) | 9900 |
+| files | Cloud file storage (chief+ only) | 8080 |
 
 ## Authentication
 
@@ -44,31 +44,12 @@ Google OAuth 2.0 + JWT cookie-based authentication.
 
 1. Copy the example environment file and fill in the values:
 
-```bash
-cp .env.example .env
-```
+   ```bash
+   cp .env.example .env
+   ```
 
-2. Configure the required environment variables in `.env`:
-
-```env
-# Google OAuth (https://console.cloud.google.com)
-GOOGLE_CLIENT_ID=your-client-id
-GOOGLE_CLIENT_SECRET=your-client-secret
-PUBLIC_URL=https://your-domain
-
-# JWT & Security
-JWT_SECRET=your-random-secret
-INTERNAL_SECRET=your-internal-secret
-ADMIN_EMAIL=admin@example.com
-
-# Naver Cloud SMS API (queue service)
-NAVER_CLOUD_ACCESS_KEY=your-access-key
-NAVER_CLOUD_SECRET_KEY=your-secret-key
-NAVER_CLOUD_SMS_SERVICE_ID=your-service-id
-PHONE_NUMBER_SMS_SENDER=01012345678
-```
-
-Note: Google OAuth redirect URI should be set to `{PUBLIC_URL}/auth/api/callback`.
+2. Configure the required environment variables in `.env`
+   - Note: Google OAuth redirect URI should be set to `{PUBLIC_URL}/auth/api/callback`.
 
 ### Run
 

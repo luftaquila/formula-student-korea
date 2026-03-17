@@ -102,9 +102,9 @@ app.get("/api/health", (req, res) => res.send("ok"));
 /* ============================================
    설정
    ============================================ */
-const ENTRY_SERVER = process.env.ENTRY_SERVER || "http://localhost:9100";
-const INSPECTION_SERVER = process.env.INSPECTION_SERVER || "http://localhost:9600";
-const TRAFFIC_SERVER = process.env.TRAFFIC_SERVER || "http://localhost:9200";
+const ENTRY_SERVER = process.env.ENTRY_SERVER || "http://localhost:9200";
+const INSPECTION_SERVER = process.env.INSPECTION_SERVER || "http://localhost:9400";
+const TRAFFIC_SERVER = process.env.TRAFFIC_SERVER || "http://localhost:9500";
 
 function internalHeaders() {
   const h = {};
@@ -636,5 +636,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createScoreApp();
   setupProcessHandlers(db);
-  app.listen(9700);
+  app.listen(9600);
 }

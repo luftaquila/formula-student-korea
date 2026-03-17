@@ -11,16 +11,16 @@ Formula Student Korea Service Hub - a microservices-based web application for ma
 Eleven independent services deployed via Docker Compose behind a Caddy reverse proxy (port 9000):
 
 - **landing/** - Landing page and reverse proxy gateway (Vue 3 + Caddy)
-- **auth/** - Authentication and user management API + web UI (Express + Vue 3, port 9800)
-- **entry/** - Vehicle entry registration API + web UI (Express + Vue 3, port 9100)
+- **auth/** - Authentication and user management API + web UI (Express + Vue 3, port 9100)
+- **entry/** - Vehicle entry registration API + web UI (Express + Vue 3, port 9200)
 - **queue/** - Inspection queue management API + web UI (Express + Vue 3, port 9300)
-- **inspection/** - Inspection sheet management API + web UI (Express + Vue 3, port 9600)
-- **traffic/** - Traffic control, telemetry, and event mode management API + web UI (Express + Vue 3, port 9200)
-- **score/** - Score aggregation, penalty/scoring config, and management API + web UI (Express + Vue 3, port 9700)
-- **documents/** - Document submission management API + web UI (Express + Vue 3, port 9900)
+- **inspection/** - Inspection sheet management API + web UI (Express + Vue 3, port 9400)
+- **traffic/** - Traffic control, telemetry, and event mode management API + web UI (Express + Vue 3, port 9500)
+- **score/** - Score aggregation, penalty/scoring config, and management API + web UI (Express + Vue 3, port 9600)
+- **documents/** - Document submission management API + web UI (Express + Vue 3, port 9700)
 - **filebrowser/** - Cloud file storage (FileBrowser, proxy auth via Caddy forward_auth, port 8080)
-- **energymeter/** - Energy meter data viewer (Git submodule, Vue 3, port 9400)
-- **rules/** - Rules file server (Caddy, port 9500)
+- **energymeter/** - Energy meter data viewer (Git submodule, Vue 3, port 9800)
+- **rules/** - Rules file server (Caddy, port 9900)
 
 All 7 backend services (auth, entry, queue, inspection, traffic, score, documents) use a single parameterized `Dockerfile.service` at the repo root, with `ARG SERVICE` and `ARG PORT` passed via `docker-compose.yml` build args.
 
@@ -160,7 +160,7 @@ All inter-service API calls use `X-Internal-Service` header (matching `INTERNAL_
 
 Cloud file storage at `/files/`, restricted to chief+ roles. Uses [FileBrowser](https://filebrowser.org/) Docker image with proxy auth mode.
 
-**Auth flow:** Request → Caddy `forward_auth` (sends `X-Forward-Auth-Key` + user's cookies to `auth:9800/api/forward-auth?role=chief`) → auth validates JWT + role → returns `X-Forwarded-User` header with email → Caddy copies header to FileBrowser → FileBrowser auto-creates/authenticates user. Unauthenticated users (401) are redirected to `/auth/api/login?redirect={original request URI}`. Unauthorized users (403, insufficient role) are redirected to `/`.
+**Auth flow:** Request → Caddy `forward_auth` (sends `X-Forward-Auth-Key` + user's cookies to `auth:9100/api/forward-auth?role=chief`) → auth validates JWT + role → returns `X-Forwarded-User` header with email → Caddy copies header to FileBrowser → FileBrowser auto-creates/authenticates user. Unauthenticated users (401) are redirected to `/auth/api/login?redirect={original request URI}`. Unauthorized users (403, insufficient role) are redirected to `/`.
 
 **Architecture:**
 - `filebrowser/init.sh` — entrypoint script; initializes DB with proxy auth config (`--auth.method=proxy --auth.header=X-Forwarded-User`) on first run only (when `/data/filebrowser.db` doesn't exist)

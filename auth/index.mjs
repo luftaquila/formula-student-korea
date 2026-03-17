@@ -648,5 +648,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createAuthApp();
   setupProcessHandlers(db);
-  app.listen(9800);
+  app.listen(9100);
 }
