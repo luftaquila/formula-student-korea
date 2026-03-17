@@ -215,7 +215,7 @@ app.get("/api/callback", async (req, res) => {
     && stateNonce.length === cookieNonce.length
     && crypto.timingSafeEqual(Buffer.from(stateNonce), Buffer.from(cookieNonce));
   if (!nonceMatch) {
-    return res.redirect("/");
+    return res.redirect("/?login_error=nonce");
   }
 
   // Clear nonce cookie helper
@@ -224,7 +224,7 @@ app.get("/api/callback", async (req, res) => {
 
   if (!code) {
     res.setHeader("Set-Cookie", clearNonceCookie);
-    return res.redirect("/");
+    return res.redirect("/?login_error=cancelled");
   }
 
   try {
@@ -245,7 +245,7 @@ app.get("/api/callback", async (req, res) => {
 
     if (!tokenRes.ok) {
       res.setHeader("Set-Cookie", clearNonceCookie);
-      return res.redirect("/");
+      return res.redirect("/?login_error=token");
     }
 
     const tokenData = await tokenRes.json();
@@ -257,7 +257,7 @@ app.get("/api/callback", async (req, res) => {
 
     if (!userInfoRes.ok) {
       res.setHeader("Set-Cookie", clearNonceCookie);
-      return res.redirect("/");
+      return res.redirect("/?login_error=userinfo");
     }
 
     const userInfo = await userInfoRes.json();
@@ -267,9 +267,10 @@ app.get("/api/callback", async (req, res) => {
     // Check if user is registered and active
     const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
     if (!user || !user.active) {
-      logger.warn(req, "user.login_failed", { reason: !user ? "unregistered" : "deactivated" }, email, { email, name });
+      const reason = !user ? "unregistered" : "deactivated";
+      logger.warn(req, "user.login_failed", { reason }, email, { email, name });
       res.setHeader("Set-Cookie", clearNonceCookie);
-      return res.redirect("/");
+      return res.redirect(`/?login_error=${reason}`);
     }
 
     // Update name from Google profile
@@ -298,7 +299,7 @@ app.get("/api/callback", async (req, res) => {
   } catch (e) {
     console.error("OAuth callback error:", e);
     res.setHeader("Set-Cookie", clearNonceCookie);
-    res.redirect("/");
+    res.redirect("/?login_error=error");
   }
 });
 

@@ -704,7 +704,7 @@ describe('OAuth endpoints', () => {
     });
     assert.equal(rawRes.status, 302);
     const location = rawRes.headers.get('location');
-    assert.equal(location, '/', 'should redirect to landing page');
+    assert.equal(location, '/?login_error=nonce', 'should redirect with nonce error');
   });
 
   it('GET /api/callback handles missing code with valid nonce', async () => {
@@ -724,7 +724,7 @@ describe('OAuth endpoints', () => {
     });
     assert.equal(callbackRes.status, 302);
     const callbackLocation = callbackRes.headers.get('location');
-    assert.equal(callbackLocation, '/', 'should redirect to landing page');
+    assert.equal(callbackLocation, '/?login_error=cancelled', 'should redirect with cancelled error');
   });
 });
 
