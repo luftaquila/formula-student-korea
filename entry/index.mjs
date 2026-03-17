@@ -1,13 +1,12 @@
 import express from "express";
 import Database from "better-sqlite3";
+import { createDatabase } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
 export function createEntryApp(options = {}) {
 
-const db = new Database(options.dbPath || "./data/entry.db");
-db.pragma("journal_mode = WAL");
-db.pragma("synchronous = NORMAL");
+const db = createDatabase(Database, options.dbPath || "./data/entry.db");
 
 // 차량 유형 테이블 (전역, 연도 무관)
 db.exec(`CREATE TABLE IF NOT EXISTS vehicle_types (

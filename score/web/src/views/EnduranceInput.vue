@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from "vue";
 import * as XLSX from "xlsx";
 import { fetchEntryYears, fetchEntries, fetchEndurance, fetchScore, updateEndurance } from "../api";
-import { useNotification } from "../composables/useNotification";
+import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();

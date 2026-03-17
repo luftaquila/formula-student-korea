@@ -7,7 +7,7 @@ import VehicleTypeManager from "./components/VehicleTypeManager.vue";
 import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import { fetchYears, fetchEntries, addEntry, updateEntry, deleteEntry, deleteAllEntries, uploadEntries, fetchVehicleTypes, addVehicleType, deleteVehicleType } from "./api";
-import { useNotification } from "./composables/useNotification";
+import { useNotification } from "@shared/useNotification.js";
 
 const { success, error } = useNotification();
 

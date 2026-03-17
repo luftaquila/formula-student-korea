@@ -11,7 +11,7 @@ import {
   copySheetTemplate,
   importSheetTemplate,
 } from "../api";
-import { useNotification } from "../composables/useNotification";
+import { useNotification } from "@shared/useNotification.js";
 
 const { success, error } = useNotification();
 const router = useRouter();

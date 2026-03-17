@@ -2,6 +2,7 @@ import https from "https";
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
+import { createDatabase, addColumn } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
@@ -42,9 +43,7 @@ function rateLimit(req, res, next) {
   next();
 }
 
-const db = new Database(options.dbPath || "./data/queue.db");
-db.pragma("journal_mode = WAL");
-db.pragma("synchronous = NORMAL");
+const db = createDatabase(Database, options.dbPath || "./data/queue.db");
 
 db.transaction(() => {
   // 검차 종류 메타 테이블
@@ -58,15 +57,9 @@ db.transaction(() => {
   );`);
 
   // 마이그레이션: 기존 테이블에 컬럼 추가
-  try {
-    db.exec(`ALTER TABLE inspection ADD COLUMN ignore_priority BOOLEAN NOT NULL DEFAULT FALSE`);
-  } catch (e) { /* already exists */ }
-  try {
-    db.exec(`ALTER TABLE inspection ADD COLUMN ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE`);
-  } catch (e) { /* already exists */ }
-  try {
-    db.exec(`ALTER TABLE inspection ADD COLUMN hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE`);
-  } catch (e) { /* already exists */ }
+  addColumn(db, "inspection", "ignore_priority BOOLEAN NOT NULL DEFAULT FALSE");
+  addColumn(db, "inspection", "ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE");
+  addColumn(db, "inspection", "hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE");
 
   // 팀별 검차별 우선순위 테이블 (1이 가장 높음, 숫자가 클수록 낮음)
   db.exec(`CREATE TABLE IF NOT EXISTS team_priority (
@@ -218,8 +211,8 @@ const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 app.get("/api/events", sseHandler(() => {
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
   const allBooths = {};
-  for (const k of Object.keys(inspections)) {
-    allBooths[k] = db.prepare("SELECT booth_num, active, occupied_by, entered_at FROM booth WHERE inspection = ? ORDER BY booth_num").all(k);
+  for (const row of db.prepare("SELECT inspection, booth_num, active, occupied_by, entered_at FROM booth ORDER BY inspection, booth_num").all()) {
+    (allBooths[row.inspection] ||= []).push(row);
   }
   return { activeInspections, allBooths };
 }));

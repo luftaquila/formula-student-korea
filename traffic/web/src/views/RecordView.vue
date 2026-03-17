@@ -9,7 +9,8 @@ import {
   addRecord,
   toggleEventMode,
 } from "../composables/useApi";
-import { useNotification } from "../composables/useNotification";
+import { EVENT_TYPES } from "@shared/constants.js";
+import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
 import { useEntryStore } from "../stores/entry";
 import { msToClockStr } from "../stores/serial";
@@ -26,7 +27,7 @@ const sortOrder = ref("desc");
 
 // 수동 기록 추가 폼 상태
 const showAddForm = ref(false);
-const addType = ref("가속");
+const addType = ref(EVENT_TYPES[0]);
 const addEntry = ref(null);
 const addResult = ref("");
 const addDetail = ref("");
@@ -38,10 +39,7 @@ const editingOcId = ref(null);
 
 // 유형 필터 (기본: 모두 선택)
 const typeFilters = ref({
-  가속: true,
-  스키드패드: true,
-  오토크로스: true,
-  짐카나: true,
+  ...Object.fromEntries(EVENT_TYPES.map(t => [t, true])),
 });
 
 // 컴포넌트 마운트 시 엔트리 로드 및 이전에 선택한 파일이 있으면 로드
@@ -260,8 +258,9 @@ function formatResult(result) {
   return msToClockStr(result);
 }
 
+const typeMap = { [EVENT_TYPES[0]]: "accel", [EVENT_TYPES[1]]: "skidpad", [EVENT_TYPES[2]]: "autocross", [EVENT_TYPES[3]]: "gymkhana" };
+
 function getTypeClass(type) {
-  const typeMap = { 가속: "accel", 짐카나: "gymkhana", 스키드패드: "skidpad", 오토크로스: "autocross" };
   return typeMap[type] || type;
 }
 
@@ -394,7 +393,7 @@ async function handleAddRecord() {
     });
     notyf.success("기록이 추가되었습니다.");
     // 폼 초기화
-    addType.value = "가속";
+    addType.value = EVENT_TYPES[0];
     addEntry.value = null;
     addResult.value = "";
     addDetail.value = "";
@@ -479,21 +478,9 @@ async function handleAddRecord() {
           <span v-if="filteredRecords.length" class="entry-count">{{ filteredRecords.length }}개</span>
         </div>
         <div v-if="records.length && !isControllerLog" class="type-filters">
-          <label class="filter-checkbox">
-            <input type="checkbox" v-model="typeFilters['가속']" />
-            <span class="filter-label accel">가속</span>
-          </label>
-          <label class="filter-checkbox">
-            <input type="checkbox" v-model="typeFilters['스키드패드']" />
-            <span class="filter-label skidpad">스키드패드</span>
-          </label>
-          <label class="filter-checkbox">
-            <input type="checkbox" v-model="typeFilters['오토크로스']" />
-            <span class="filter-label autocross">오토크로스</span>
-          </label>
-          <label class="filter-checkbox">
-            <input type="checkbox" v-model="typeFilters['짐카나']" />
-            <span class="filter-label gymkhana">짐카나</span>
+          <label v-for="t in EVENT_TYPES" :key="t" class="filter-checkbox">
+            <input type="checkbox" v-model="typeFilters[t]" />
+            <span class="filter-label" :class="typeMap[t]">{{ t }}</span>
           </label>
         </div>
       </div>
@@ -504,17 +491,14 @@ async function handleAddRecord() {
           <div class="form-group">
             <label class="form-label">경기 유형</label>
             <select v-model="addType" class="form-select">
-              <option value="가속">가속</option>
-              <option value="스키드패드">스키드패드</option>
-              <option value="오토크로스">오토크로스</option>
-              <option value="짐카나">짐카나</option>
+              <option v-for="t in EVENT_TYPES" :key="t" :value="t">{{ t }}</option>
             </select>
           </div>
           <div class="form-group">
             <label class="form-label">엔트리</label>
             <select v-model="addEntry" class="form-select">
               <option disabled :value="null">선택</option>
-              <option v-for="e in entryStore.entryList" :key="e.num" :value="e.num">
+              <option v-for="e in entryStore.entries" :key="e.num" :value="e.num">
                 {{ e.num }} {{ e.univ }} {{ e.team }}
               </option>
             </select>

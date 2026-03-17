@@ -32,7 +32,8 @@ export function useNotification() {
 
   return {
     notyf,
-    error: (msg) => notyf.error({ message: escapeHtml(msg) }),
     success: (msg) => notyf.success({ message: escapeHtml(msg) }),
+    error: (msg) => notyf.error({ message: escapeHtml(msg) }),
+    warning: (msg) => notyf.open({ type: "warning", message: escapeHtml(msg) }),
   };
 }

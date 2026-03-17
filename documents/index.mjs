@@ -3,15 +3,14 @@ import path from "path";
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
+import { createDatabase, addColumn } from "../shared/db-setup.mjs";
 import Busboy from "busboy";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
 export function createDocumentsApp(options = {}) {
 
-const db = new Database(options.dbPath || "./data/documents.db");
-db.pragma("journal_mode = WAL");
-db.pragma("synchronous = NORMAL");
+const db = createDatabase(Database, options.dbPath || "./data/documents.db");
 db.pragma("foreign_keys = ON");
 
 db.exec(`CREATE TABLE IF NOT EXISTS student_team (
@@ -87,8 +86,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS submission_file (
 )`);
 
 // 마이그레이션: allowed_extensions 컬럼 추가
-try { db.exec("ALTER TABLE session ADD COLUMN allowed_extensions TEXT DEFAULT ''"); }
-catch { /* already exists */ }
+addColumn(db, "session", "allowed_extensions TEXT DEFAULT ''");
 
 // 업로드 디렉토리 생성
 const UPLOADS_DIR = options.uploadsDir || path.resolve("./data/uploads");

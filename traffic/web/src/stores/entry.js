@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { fetchEntries } from "../composables/useApi";
-import { useNotification } from "../composables/useNotification";
+import { useNotification } from "@shared/useNotification.js";
 
 export const useEntryStore = defineStore("entry", () => {
   const { notyf } = useNotification();
@@ -12,7 +12,6 @@ export const useEntryStore = defineStore("entry", () => {
   const loading = ref(false);
 
   // Getters
-  const entryList = computed(() => entries.value);
   const isLoaded = computed(() => loaded.value);
 
   // Actions
@@ -41,7 +40,6 @@ export const useEntryStore = defineStore("entry", () => {
 
   return {
     entries,
-    entryList,
     isLoaded,
     loadEntries,
     getEntryByNum,

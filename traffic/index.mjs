@@ -1,14 +1,14 @@
 import express from "express";
 import Database from "better-sqlite3";
+import { createDatabase } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
+import { EVENT_TYPES } from "../shared/constants.js";
 
 export function createTrafficApp(options = {}) {
 
-const db = new Database(options.dbPath || "./data/traffic.db");
-db.pragma("journal_mode = WAL");
-db.pragma("synchronous = NORMAL");
+const db = createDatabase(Database, options.dbPath || "./data/traffic.db");
 
 db.exec(`CREATE TABLE IF NOT EXISTS controller (
   timestamp TEXT NOT NULL,
@@ -23,7 +23,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS event_mode (
 // 기본 경기 모드 시딩
 {
   const insert = db.prepare("INSERT OR IGNORE INTO event_mode (event_type, enabled) VALUES (?, 1)");
-  for (const type of ["가속", "스키드패드", "오토크로스", "짐카나"]) {
+  for (const type of EVENT_TYPES) {
     insert.run(type);
   }
 }

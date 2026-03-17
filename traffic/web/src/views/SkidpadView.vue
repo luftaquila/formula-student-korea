@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from "vue";
 import { useEntryStore } from "../stores/entry";
 import { useSerialStore, msToClockStr } from "../stores/serial";
-import { useNotification } from "../composables/useNotification";
+import { useNotification } from "@shared/useNotification.js";
 import { addRecord } from "../composables/useApi";
 
 const { notyf } = useNotification();

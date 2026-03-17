@@ -2,7 +2,7 @@
 import { ref, onMounted, computed } from "vue";
 import { useRouter } from "vue-router";
 import { fetchEntries, fetchEntryYears, fetchAllInspections, getStatsTimerange, getStats, getTeamStats } from "../api";
-import { useNotification } from "../composables/useNotification";
+import { useNotification } from "@shared/useNotification.js";
 
 const { error } = useNotification();
 const router = useRouter();

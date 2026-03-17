@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { fetchEntries, registerToQueue } from "../api";
 import { useSSE } from "../composables/useSSE";
-import { useNotification } from "../composables/useNotification";
+import { useNotification } from "@shared/useNotification.js";
 import { useBoothTimers } from "../composables/useBoothTimers";
 import { formatPhone } from "@shared/format-phone.js";
 

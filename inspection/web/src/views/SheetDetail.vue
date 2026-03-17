@@ -10,7 +10,7 @@ import {
   updateSheetCategoryResult,
   updateSheetInspector,
 } from "../api";
-import { useNotification } from "../composables/useNotification";
+import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();

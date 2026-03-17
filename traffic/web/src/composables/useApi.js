@@ -1,53 +1,14 @@
-const BASE_URL = import.meta.env.PROD ? "/traffic" : "";
+import { createApiClient } from "@shared/api-base.js";
 
-/**
- * 공통 fetch 래퍼
- * @param {string} endpoint - API 엔드포인트
- * @param {RequestInit} options - fetch 옵션
- * @returns {Promise<Response>}
- */
-async function request(endpoint, options = {}) {
-  const config = {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  };
+const { request, fetchEntries } = createApiClient("/traffic");
 
-  const res = await fetch(`${BASE_URL}${endpoint}`, config);
+export { fetchEntries };
 
-  if (!res.ok) {
-    const message = await res.text();
-    throw new Error(message || `요청 실패 (${res.status})`);
-  }
-
-  return res;
-}
-
-/* ============================================
-   Entry API (/entry 서비스 직접 호출)
-   ============================================ */
-const ENTRY_URL = "/entry";
-
-export async function fetchEntries() {
-  const res = await fetch(`${ENTRY_URL}/api/entries`);
-  if (!res.ok) throw new Error("엔트리 정보를 가져올 수 없습니다.");
-  return res.json();
-}
-
-/* ============================================
-   Record API
-   ============================================ */
-
-/**
- * 특정 기록 조회
- */
 export async function fetchRecord(name) {
   const res = await request(`/api/records/${encodeURIComponent(name)}`);
   return res.json();
 }
 
-/**
- * 새 기록 추가
- */
 export async function addRecord(name, data) {
   await request("/api/records", {
     method: "POST",
@@ -55,18 +16,12 @@ export async function addRecord(name, data) {
   });
 }
 
-/**
- * 기록 테이블 삭제
- */
 export async function deleteRecord(name) {
   await request(`/api/records/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
 }
 
-/**
- * 기록 필드 업데이트 (invalidated, scoreboard, note)
- */
 export async function updateRecord(name, rowid, field, value) {
   const res = await request(`/api/records/${encodeURIComponent(name)}/${rowid}`, {
     method: "PATCH",
@@ -75,21 +30,11 @@ export async function updateRecord(name, rowid, field, value) {
   return res.json();
 }
 
-/* ============================================
-   Controller API
-   ============================================ */
-
-/**
- * 모든 컨트롤러 로그 조회
- */
 export async function fetchControllers() {
   const res = await request("/api/controllers");
   return res.json();
 }
 
-/**
- * 컨트롤러 로그 추가
- */
 export async function addControllerLog(timestamp, data) {
   await request("/api/controllers", {
     method: "POST",
@@ -97,22 +42,12 @@ export async function addControllerLog(timestamp, data) {
   });
 }
 
-/**
- * 모든 컨트롤러 로그 삭제
- */
 export async function deleteControllers() {
   await request("/api/controllers", {
     method: "DELETE",
   });
 }
 
-/* ============================================
-   Event Mode API
-   ============================================ */
-
-/**
- * 경기 모드 활성화/비활성화 토글
- */
 export async function toggleEventMode(eventType) {
   const res = await request(`/api/event-modes/${encodeURIComponent(eventType)}`, {
     method: "PUT",

@@ -28,7 +28,7 @@ All 7 backend services (auth, entry, queue, inspection, traffic, score, document
 - `vite-config.js` - Vite config factory `createViteConfig(serviceName, servicePort, options)` — handles base path, proxy, aliases; options: `{ entryProxy, server, build, aliases }`
 - `styles/base.css` - Common CSS variables, resets, and component styles
 - `styles/layout.css` - Common app layout CSS (header, main-content, responsive) — uses `--layout-max-width` CSS variable for per-service width customization
-- `constants.js` - Shared constants; exports `ROLE_LEVELS` object (used by express-setup.mjs and officialsStore.js)
+- `constants.js` - Shared constants; exports `ROLE_LEVELS` object (used by express-setup.mjs and officialsStore.js) and `EVENT_TYPES` array (`["가속", "스키드패드", "오토크로스", "짐카나"]`)
 - `express-setup.mjs` - Express app factory with cookie parsing, JWT auth middleware, process handlers, DB error helper; exports `createApp`, `createJWT`, `ensureDataDir`, `VALID_ROLES`, `setupProcessHandlers`, `createDbRun`, `isSecureConnection`, `formatCookieOpts`
 - `logger.mjs` - SQLite-based semantic logger factory `createLogger(db, serviceName, maxRows)` — structured action logging with auto-cleanup and query endpoint
 - `api-base.js` - Frontend API client factory with 401 redirect and entry service helpers
@@ -40,6 +40,8 @@ All 7 backend services (auth, entry, queue, inspection, traffic, score, document
 - `useSSE.js` - Frontend SSE connection factory with auto-reconnect
 - `sse.mjs` - Backend SSE manager (broadcast + endpoint handler)
 - `format-phone.js` - Phone number formatting utilities; exports `formatPhone(value)` (input formatting) and `displayPhone(phone)` (display formatting)
+- `db-setup.mjs` - Database initialization helper; exports `createDatabase(Database, dbPath)` (WAL mode + synchronous=NORMAL) and `addColumn(db, table, columnDef)` (idempotent ALTER TABLE)
+- `useNotification.js` - Frontend notification composable using Notyf; exports `useNotification()` returning `{ notyf, success, error, warning }`
 
 Service dependencies (via environment variables in `docker-compose.yml`):
 - entry → auth (`AUTH_SERVER`)

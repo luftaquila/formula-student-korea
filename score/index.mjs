@@ -1,15 +1,14 @@
 import http from "http";
 import express from "express";
 import Database from "better-sqlite3";
+import { createDatabase, addColumn } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 
 export function createScoreApp(options = {}) {
 
-const db = new Database(options.dbPath || "./data/score.db");
-db.pragma("journal_mode = WAL");
-db.pragma("synchronous = NORMAL");
+const db = createDatabase(Database, options.dbPath || "./data/score.db");
 
 db.transaction(() => {
   // 레거시 테이블 정리
@@ -40,8 +39,7 @@ db.transaction(() => {
   )`);
 
   // 마이그레이션: start_delay 컬럼 추가
-  try { db.exec("ALTER TABLE score_penalty ADD COLUMN start_delay REAL NOT NULL DEFAULT 0"); }
-  catch { /* already exists */ }
+  addColumn(db, "score_penalty", "start_delay REAL NOT NULL DEFAULT 0");
 
   // 경기 종목별 점수 설정 (총점/완주점수/컷오프)
   db.exec(`CREATE TABLE IF NOT EXISTS score_setting (

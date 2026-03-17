@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { useNotification } from "../composables/useNotification";
+import { useNotification } from "@shared/useNotification.js";
 import { addControllerLog } from "../composables/useApi";
 
 // Utility function for time formatting (분:초.밀리초, 분은 60 이상 가능)

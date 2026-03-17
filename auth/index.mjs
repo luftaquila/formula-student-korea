@@ -1,15 +1,14 @@
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
+import { createDatabase, addColumn } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, createJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts } from "../shared/express-setup.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
 import { createLogger } from "../shared/logger.mjs";
 
 export function createAuthApp(options = {}) {
 
-const db = new Database(options.dbPath || "./data/auth.db");
-db.pragma("journal_mode = WAL");
-db.pragma("synchronous = NORMAL");
+const db = createDatabase(Database, options.dbPath || "./data/auth.db");
 
 db.exec(`CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,12 +20,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS users (
 )`);
 
 // 마이그레이션: memo 컬럼 추가
-try { db.exec("ALTER TABLE users ADD COLUMN memo TEXT DEFAULT ''"); }
-catch { /* already exists */ }
+addColumn(db, "users", "memo TEXT DEFAULT ''");
 
 // 마이그레이션: active 컬럼 추가
-try { db.exec("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1"); }
-catch { /* already exists */ }
+addColumn(db, "users", "active INTEGER DEFAULT 1");
 
 // 마이그레이션: created_at 기본값 제거 (최초 로그인 시점으로 변경)
 // 아직 로그인하지 않은 사용자(name IS NULL)의 created_at 초기화

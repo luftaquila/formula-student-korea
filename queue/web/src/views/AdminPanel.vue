@@ -20,7 +20,7 @@ import {
   setCancelPenaltySettings,
 } from "../api";
 import { useSSE } from "../composables/useSSE";
-import { useNotification } from "../composables/useNotification";
+import { useNotification } from "@shared/useNotification.js";
 import { useBoothTimers } from "../composables/useBoothTimers";
 import { displayPhone } from "@shared/format-phone.js";
 import { isChief } from "@shared/officialsStore.js";
