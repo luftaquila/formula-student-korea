@@ -136,7 +136,7 @@ describe('formatCookieOpts', () => {
 
 // ─── Cookie parsing & Auth middleware (via createApp) ───────────────────
 describe('createApp auth middleware', () => {
-  let server, client;
+  let server, client, baseUrl;
 
   // Track validateUser calls
   let validateUserResult = { valid: true, role: null };
@@ -148,18 +148,22 @@ describe('createApp auth middleware', () => {
   before(async () => {
     const app = createApp({ express, validateUser }, (req) => {
       if (req.path === '/public') return null;
-      if (req.path === '/admin') return 'admin';
-      if (req.path === '/official') return 'official';
+      if (req.path === '/admin' || req.path === '/api/admin') return 'admin';
+      if (req.path === '/official' || req.path === '/api/official') return 'official';
+      if (req.path.startsWith('/api/')) return 'student';
       return 'student';
     });
     app.get('/public', (req, res) => res.json({ user: req.user?.email || null }));
     app.get('/admin', (req, res) => res.json({ user: req.user.email }));
     app.get('/official', (req, res) => res.json({ user: req.user.email }));
     app.get('/student', (req, res) => res.json({ user: req.user.email }));
+    app.get('/api/admin', (req, res) => res.json({ user: req.user.email }));
+    app.get('/api/student', (req, res) => res.json({ user: req.user.email }));
 
     const started = await startServer(app);
     server = started.server;
-    client = createClient(started.baseUrl);
+    baseUrl = started.baseUrl;
+    client = createClient(baseUrl);
   });
 
   after(async () => {
@@ -199,10 +203,17 @@ describe('createApp auth middleware', () => {
     assert.equal(data.user, null);
   });
 
-  // Auth: no auth on protected endpoint
-  it('protected endpoint without auth returns 401', async () => {
-    const res = await client.get('/student');
+  // Auth: no auth on protected API endpoint
+  it('protected API endpoint without auth returns 401', async () => {
+    const res = await client.get('/api/student');
     assert.equal(res.status, 401);
+  });
+
+  // Auth: no auth on protected SPA page redirects to landing
+  it('protected SPA page without auth redirects to /', async () => {
+    const res = await fetch(`${baseUrl}/student`, { redirect: 'manual' });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), '/');
   });
 
   // Auth: valid JWT
@@ -216,25 +227,34 @@ describe('createApp auth middleware', () => {
   });
 
   // Auth: expired JWT
-  it('expired JWT returns 401', async () => {
+  it('expired JWT returns 401 on API endpoint', async () => {
     const expired = createJWT({ email: 'user@test.com', name: 'User', role: 'student' }, TEST_SECRET, -1);
-    const res = await client.get('/student', { cookie: `fsk_session=${expired}` });
+    const res = await client.get('/api/student', { cookie: `fsk_session=${expired}` });
     assert.equal(res.status, 401);
   });
 
   // Auth: insufficient role
-  it('student cannot access admin endpoint (403)', async () => {
+  it('student cannot access admin API endpoint (403)', async () => {
     validateUserResult = { valid: true, role: null };
     const cookie = makeAuthCookie({ email: 'user@test.com', name: 'User', role: 'student' });
-    const res = await client.get('/admin', { cookie });
+    const res = await client.get('/api/admin', { cookie });
     assert.equal(res.status, 403);
   });
 
+  // Auth: insufficient role on SPA page redirects
+  it('student accessing admin SPA page redirects to /', async () => {
+    validateUserResult = { valid: true, role: null };
+    const cookie = makeAuthCookie({ email: 'user@test.com', name: 'User', role: 'student' });
+    const res = await fetch(`${baseUrl}/admin`, { redirect: 'manual', headers: { Cookie: cookie } });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), '/');
+  });
+
   // Auth: invalid role not in VALID_ROLES
-  it('invalid role not in VALID_ROLES returns 403', async () => {
+  it('invalid role not in VALID_ROLES returns 403 on API endpoint', async () => {
     validateUserResult = { valid: true, role: null };
     const cookie = makeAuthCookie({ email: 'user@test.com', name: 'User', role: 'superuser' });
-    const res = await client.get('/student', { cookie });
+    const res = await client.get('/api/student', { cookie });
     assert.equal(res.status, 403);
   });
 
@@ -286,7 +306,7 @@ describe('createApp auth middleware', () => {
   it('validateUser returning {valid:false} clears cookies and returns 401', async () => {
     validateUserResult = { valid: false, role: null };
     const cookie = makeAuthCookie({ email: 'gone@test.com', name: 'Gone', role: 'student' });
-    const res = await client.get('/student', { cookie });
+    const res = await client.get('/api/student', { cookie });
     assert.equal(res.status, 401);
     // Check that Set-Cookie is present to clear the session
     const setCookie = res.headers.get('set-cookie');

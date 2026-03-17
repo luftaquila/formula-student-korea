@@ -143,7 +143,7 @@ function checkLoginRate(req, res) {
   entry.count++;
   loginLimiter.set(ip, entry);
   if (entry.count > 20) {
-    res.status(429).send("요청이 너무 많습니다.");
+    res.redirect("/?login_error=rate_limit");
     return false;
   }
   return true;

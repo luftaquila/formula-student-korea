@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from "vue";
 import { Notyf } from "notyf";
 import { formatPhone } from "@shared/format-phone.js";
+import { ROLE_LEVELS } from "@shared/constants.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 
@@ -342,8 +343,6 @@ function getSortIcon(key) {
   if (sortKey.value !== key) return "↕";
   return sortOrder.value === "asc" ? "↑" : "↓";
 }
-
-const ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 };
 
 const sortedUsers = computed(() => {
   if (!sortKey.value) return filteredUsers.value;

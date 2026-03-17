@@ -752,19 +752,17 @@ describe('POST /api/logout', () => {
 
 // ─── Rate Limiting ───────────────────────────────────────────────────────
 describe('Rate limiting', () => {
-  it('returns 429 after 20 requests to /api/login', async () => {
+  it('redirects with login_error=rate_limit after 20 requests to /api/login', async () => {
     // Send 21 requests rapidly from the same IP
     const results = [];
     for (let i = 0; i < 21; i++) {
       const res = await fetch(`${baseUrl}/api/login`, { redirect: 'manual' });
-      results.push(res.status);
+      results.push({ status: res.status, location: res.headers.get('location') });
     }
 
-    // The 21st request (index 20) should be rate limited
-    // Note: earlier requests from other tests count too, so we check
-    // that at least one request was rate limited
-    const has429 = results.includes(429);
-    assert.ok(has429, 'should get 429 after exceeding rate limit');
+    // The 21st request (index 20) should be rate limited with a redirect
+    const rateLimited = results.find(r => r.status === 302 && r.location?.includes('login_error=rate_limit'));
+    assert.ok(rateLimited, 'should redirect with rate_limit error after exceeding rate limit');
   });
 });
 

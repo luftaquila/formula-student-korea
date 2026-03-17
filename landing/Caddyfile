@@ -104,6 +104,10 @@
 			handle_response @unauthenticated {
 				redir * /auth/api/login?redirect={http.request.uri}
 			}
+			@forbidden status 403
+			handle_response @forbidden {
+				redir * /
+			}
 		}
 		reverse_proxy filebrowser:8080
 	}

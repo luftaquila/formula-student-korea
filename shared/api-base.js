@@ -11,7 +11,7 @@ export function createApiClient(basePath) {
     const res = await fetch(`${BASE_URL}${endpoint}`, config);
 
     if (res.status === 401) {
-      window.location.href = `/`;
+      window.location.href = `/auth/api/login?redirect=${encodeURIComponent(window.location.pathname)}`;
       throw new Error("인증이 필요합니다.");
     }
 

@@ -70,10 +70,7 @@
                   <span class="badge" :class="levelBadge(log.level)">{{ log.level }}</span>
                 </td>
                 <td class="col-action">{{ log.action }}</td>
-                <td class="col-actor">
-                  <span v-if="formatActor(log)">{{ formatActor(log) }}</span>
-                  <span v-else class="text-tertiary">-</span>
-                </td>
+                <td class="col-actor">{{ formatActor(log) || '-' }}</td>
                 <td class="col-target">{{ log.target || '-' }}</td>
                 <td class="col-detail">
                   <span v-if="log.detail" class="detail-text">{{ truncate(log.detail, 60) }}</span>
@@ -123,8 +120,7 @@
             <div class="modal-row">
               <span class="modal-label">유저</span>
               <span class="modal-value">
-                <span v-if="formatActor(selectedLog)">{{ formatActor(selectedLog) }}</span>
-                <span v-else class="text-tertiary">-</span>
+{{ formatActor(selectedLog) || '-' }}
               </span>
             </div>
             <div class="modal-row">

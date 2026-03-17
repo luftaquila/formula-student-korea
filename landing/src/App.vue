@@ -72,6 +72,7 @@ const LOGIN_ERROR_MESSAGES = {
   token: "로그인 중 오류가 발생했습니다. 다시 시도해 주세요.",
   userinfo: "로그인 중 오류가 발생했습니다. 다시 시도해 주세요.",
   error: "로그인 중 오류가 발생했습니다. 다시 시도해 주세요.",
+  rate_limit: "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
 };
 
 const loginError = ref("");

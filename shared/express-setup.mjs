@@ -184,11 +184,13 @@ export function createApp(deps, authRoleFn) {
     app.use((req, res, next) => {
       const role = authRoleFn(req);
       if (!role) return next(); // public
-      if (!req.user) return res.status(401).send("인증이 필요합니다.");
-      if (!VALID_ROLES.includes(req.user.role)) {
-        return res.status(403).send("권한이 없습니다.");
+      const isApi = req.path.startsWith("/api/");
+      if (!req.user) {
+        if (!isApi) return res.redirect("/");
+        return res.status(401).send("인증이 필요합니다.");
       }
-      if ((ROLE_LEVELS[req.user.role] || 0) < (ROLE_LEVELS[role] || Infinity)) {
+      if (!VALID_ROLES.includes(req.user.role) || (ROLE_LEVELS[req.user.role] || 0) < (ROLE_LEVELS[role] || Infinity)) {
+        if (!isApi) return res.redirect("/");
         return res.status(403).send("권한이 없습니다.");
       }
       next();
