@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watch } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { fetchEntries, fetchQueueState } from "../api";
 import { useSSE } from "../composables/useSSE";
 import { useNotification } from "../composables/useNotification";
@@ -9,6 +9,10 @@ import { formatPhone } from "@shared/format-phone.js";
 const { error } = useNotification();
 
 const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate } = useSSE();
+
+const visibleInspections = computed(() =>
+  activeInspections.value.filter((i) => !i.hidden_from_register),
+);
 
 const { elapsedTimes, syncTimers } = useBoothTimers();
 
@@ -211,13 +215,13 @@ function clearState(message) {
           <div class="loading-spinner"></div>
           <p>데이터를 불러오는 중...</p>
         </div>
-        <div v-else-if="activeInspections.length === 0" class="empty-state">
+        <div v-else-if="visibleInspections.length === 0" class="empty-state">
           현재 활성화된 검차가 없습니다.
         </div>
         <template v-else>
           <div class="booth-sections">
             <div
-              v-for="item in activeInspections"
+              v-for="item in visibleInspections"
               :key="item.type"
               class="booth-type-section"
             >
