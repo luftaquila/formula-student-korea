@@ -697,14 +697,14 @@ describe('OAuth endpoints', () => {
     assert.equal(state.redirect, '/', 'protocol-relative URLs should be sanitized to /');
   });
 
-  it('GET /api/callback redirects to login on CSRF failure (no nonce cookie)', async () => {
+  it('GET /api/callback redirects to landing on CSRF failure (no nonce cookie)', async () => {
     const state = JSON.stringify({ redirect: '/', nonce: 'fake-nonce' });
     const rawRes = await fetch(`${baseUrl}/api/callback?code=testcode&state=${encodeURIComponent(state)}`, {
       redirect: 'manual',
     });
     assert.equal(rawRes.status, 302);
     const location = rawRes.headers.get('location');
-    assert.ok(location.includes('error=csrf_failed'), 'should indicate CSRF failure');
+    assert.equal(location, '/', 'should redirect to landing page');
   });
 
   it('GET /api/callback handles missing code with valid nonce', async () => {
@@ -724,7 +724,7 @@ describe('OAuth endpoints', () => {
     });
     assert.equal(callbackRes.status, 302);
     const callbackLocation = callbackRes.headers.get('location');
-    assert.ok(callbackLocation.includes('error=no_code'), 'should indicate no code');
+    assert.equal(callbackLocation, '/', 'should redirect to landing page');
   });
 });
 

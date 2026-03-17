@@ -9,7 +9,6 @@ initTheme();
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
-    { path: "/login", component: () => import("./views/Login.vue") },
     { path: "/", component: () => import("./views/Manage.vue") },
     { path: "/logs", component: () => import("./views/Logs.vue") },
   ],

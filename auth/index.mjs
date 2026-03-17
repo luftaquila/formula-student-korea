@@ -189,7 +189,7 @@ app.get("/api/callback", async (req, res) => {
     && stateNonce.length === cookieNonce.length
     && crypto.timingSafeEqual(Buffer.from(stateNonce), Buffer.from(cookieNonce));
   if (!nonceMatch) {
-    return res.redirect(`/auth/login?error=csrf_failed&redirect=${encodeURIComponent(redirectUrl)}`);
+    return res.redirect("/");
   }
 
   // Clear nonce cookie helper
@@ -198,7 +198,7 @@ app.get("/api/callback", async (req, res) => {
 
   if (!code) {
     res.setHeader("Set-Cookie", clearNonceCookie);
-    return res.redirect(`/auth/login?error=no_code&redirect=${encodeURIComponent(redirectUrl)}`);
+    return res.redirect("/");
   }
 
   try {
@@ -219,7 +219,7 @@ app.get("/api/callback", async (req, res) => {
 
     if (!tokenRes.ok) {
       res.setHeader("Set-Cookie", clearNonceCookie);
-      return res.redirect(`/auth/login?error=token_failed&redirect=${encodeURIComponent(redirectUrl)}`);
+      return res.redirect("/");
     }
 
     const tokenData = await tokenRes.json();
@@ -231,7 +231,7 @@ app.get("/api/callback", async (req, res) => {
 
     if (!userInfoRes.ok) {
       res.setHeader("Set-Cookie", clearNonceCookie);
-      return res.redirect(`/auth/login?error=userinfo_failed&redirect=${encodeURIComponent(redirectUrl)}`);
+      return res.redirect("/");
     }
 
     const userInfo = await userInfoRes.json();
@@ -243,7 +243,7 @@ app.get("/api/callback", async (req, res) => {
     if (!user || !user.active) {
       logger.warn(req, "user.login_failed", { reason: !user ? "unregistered" : "deactivated" }, email, { email, name });
       res.setHeader("Set-Cookie", clearNonceCookie);
-      return res.redirect(`/auth/login?error=access_denied&redirect=${encodeURIComponent(redirectUrl)}`);
+      return res.redirect("/");
     }
 
     // Update name from Google profile
@@ -272,7 +272,7 @@ app.get("/api/callback", async (req, res) => {
   } catch (e) {
     console.error("OAuth callback error:", e);
     res.setHeader("Set-Cookie", clearNonceCookie);
-    res.redirect(`/auth/login?error=server_error&redirect=${encodeURIComponent(redirectUrl)}`);
+    res.redirect("/");
   }
 });
 

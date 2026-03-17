@@ -30,7 +30,9 @@
 		request_header -Authuser
 		request_header -X-Forwarded-For
 		request_header -X-Forwarded-Host
-		reverse_proxy auth:9800
+		reverse_proxy auth:9800 {
+			header_up X-Forwarded-Host {http.request.host}
+		}
 	}
 
 	# Entry service

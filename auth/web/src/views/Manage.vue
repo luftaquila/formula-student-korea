@@ -29,7 +29,7 @@ const currentUser = getUserFromCookie();
 
 // Redirect if not admin
 if (!currentUser || currentUser.role !== "admin") {
-  window.location.href = "/auth/login?redirect=/auth";
+  window.location.href = "/";
 }
 
 async function fetchUsers() {
@@ -37,7 +37,7 @@ async function fetchUsers() {
   try {
     const res = await fetch(`${BASE_URL}/api/users`);
     if (res.status === 401) {
-      window.location.href = `/auth/login?redirect=/auth`;
+      window.location.href = `/`;
       return;
     }
     if (!res.ok) throw new Error(await res.text());

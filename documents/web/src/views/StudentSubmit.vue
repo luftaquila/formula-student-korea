@@ -136,7 +136,7 @@ async function submit() {
       };
       xhr.onload = () => {
         if (xhr.status === 401) {
-          window.location.href = `/auth/login?redirect=${encodeURIComponent(window.location.pathname)}`;
+          window.location.href = `/`;
           reject(new Error("인증이 필요합니다."));
           return;
         }

@@ -15,7 +15,7 @@ async function request(endpoint, options = {}) {
   const res = await fetch(`${BASE_URL}${endpoint}`, config);
 
   if (res.status === 401) {
-    window.location.href = "/auth/login?redirect=/entry";
+    window.location.href = "/";
     throw new Error("인증이 만료되었습니다.");
   }
 
