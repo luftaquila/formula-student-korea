@@ -53,9 +53,7 @@ describe('GET /api/records (initial)', () => {
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.ok(Array.isArray(data));
-    // The logs table created by logger is included; no FSK record tables yet
-    const recordTables = data.filter(name => name.startsWith('FSK'));
-    assert.equal(recordTables.length, 0);
+    assert.equal(data.length, 0);
   });
 });
 
