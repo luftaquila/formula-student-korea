@@ -49,7 +49,7 @@ Service dependencies (via environment variables in `docker-compose.yml`):
 - score → entry (`ENTRY_SERVER`), inspection (`INSPECTION_SERVER`), traffic (`TRAFFIC_SERVER`), auth (`AUTH_SERVER`)
 - documents → auth (`AUTH_SERVER`)
 
-All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs middleware). Auth validation uses fail-open: if auth service is temporarily unreachable, JWT is trusted (only explicit 404 invalidates sessions).
+All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs middleware). Auth validation uses fail-close: if auth service is temporarily unreachable or returns an error, the session is invalidated (only successful 200 responses confirm the user). Explicit 404 also invalidates sessions.
 
 ## Tech Stack
 
@@ -123,17 +123,19 @@ Each service's `createApp(deps, authRoleFn)` receives `deps` (`{ express, valida
 - `"chief"` — chief or above (chief, admin)
 - `"admin"` — admin only
 
+For non-API routes (SPA pages), 401/403 responses redirect to `/` (landing page) instead of returning bare text. API routes return standard HTTP status codes with text error messages.
+
 **Dev mode:** When `JWT_SECRET` is not set and `NODE_ENV` is not `"production"`, all requests are auto-authenticated as admin. A one-time warning is logged at startup. Only applies when running services directly outside Docker (e.g. `node index.mjs`).
 
 ### Route Permission Matrix
 
-**Public:** `/` (landing), `/auth/login,callback,logout`, `/auth` (SPA), `/queue` + `/queue/api` (except admin), `/entry/api/years` + `/entry/api/entries`, `/energymeter`, `/rules`
+**Public:** `/` (landing), `/auth/api/login,callback,logout`, `/auth` (SPA), `/queue` + `/queue/api` (except admin), `/entry/api/years` + `/entry/api/entries`, `/energymeter`, `/rules`
 
 **Student:** `/documents/**`
 
-**Official:** `/auth/api/ops-contacts` (GET), `/queue/admin,register,priority,stats`, `/queue/api/admin`, `/inspection/**`
+**Official:** `/auth/api/ops-contacts` (GET), `/queue/admin,register,stats`, `/queue/api/admin` (queue listing, register, cancel, booth toggle, enter/exit), `/inspection/**`
 
-**Chief:** `/documents/admin`, `/documents/api/admin/**`, `/files/**` (FileBrowser)
+**Chief:** `/queue/priority`, `/queue/api/admin/priority`, `/queue/api/admin/settings` (POST/PATCH), `/queue/api/admin/inspection/:type` (PATCH, visibility, ignore), `/queue/api/admin/booths/:type/config`, `/queue/api/admin/history`, `/documents/admin`, `/documents/api/admin/**`, `/files/**` (FileBrowser)
 
 **Admin:** `/entry/**` (except public API), `/auth/api/ops-contacts` (POST/DELETE), `/inspection/api/sheet/template` (POST/PUT/DELETE), `/traffic/**`, `/score/**`, `/auth/api/users`, `/*/api/logs`, `/auth/api/admin/logs`, `/auth/logs`
 
@@ -158,7 +160,7 @@ All inter-service API calls use `X-Internal-Service` header (matching `INTERNAL_
 
 Cloud file storage at `/files/`, restricted to chief+ roles. Uses [FileBrowser](https://filebrowser.org/) Docker image with proxy auth mode.
 
-**Auth flow:** Request → Caddy `forward_auth` (sends `X-Forward-Auth-Key` + user's cookies to `auth:9800/api/forward-auth?role=chief`) → auth validates JWT + role → returns `X-Forwarded-User` header with email → Caddy copies header to FileBrowser → FileBrowser auto-creates/authenticates user. Unauthenticated users (401) are redirected to `/auth/api/login?redirect=/files/`.
+**Auth flow:** Request → Caddy `forward_auth` (sends `X-Forward-Auth-Key` + user's cookies to `auth:9800/api/forward-auth?role=chief`) → auth validates JWT + role → returns `X-Forwarded-User` header with email → Caddy copies header to FileBrowser → FileBrowser auto-creates/authenticates user. Unauthenticated users (401) are redirected to `/auth/api/login?redirect={original request URI}`. Unauthorized users (403, insufficient role) are redirected to `/`.
 
 **Architecture:**
 - `filebrowser/init.sh` — entrypoint script; initializes DB with proxy auth config (`--auth.method=proxy --auth.header=X-Forwarded-User`) on first run only (when `/data/filebrowser.db` doesn't exist)
