@@ -242,6 +242,24 @@ services:
     networks:
       - fsk-network
 
+  filebrowser:
+    image: docker.io/filebrowser/filebrowser:latest
+    container_name: fsk-filebrowser
+    security_opt:
+      - label:disable
+    entrypoint: /init-custom.sh
+    volumes:
+      - ./filebrowser/init.sh:/init-custom.sh:ro
+      - ./filebrowser/data:/data
+      - ./filebrowser/data/files:/srv/files
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - fsk-network
+
   rules:
     image: docker.io/library/caddy:alpine
     container_name: fsk-rules
@@ -285,6 +303,7 @@ services:
       - inspection
       - score
       - documents
+      - filebrowser
       - rules
       - auth
     restart: unless-stopped

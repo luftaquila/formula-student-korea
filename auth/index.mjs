@@ -2,6 +2,7 @@ import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, createJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts } from "../shared/express-setup.mjs";
+import { ROLE_LEVELS } from "../shared/constants.js";
 import { createLogger } from "../shared/logger.mjs";
 
 export function createAuthApp(options = {}) {
@@ -79,6 +80,7 @@ const logger = createLogger(db, "auth");
 
 const app = createApp({ express, validateUser, db }, (req) => {
   if (req.path === "/api/health") return null;
+  if (req.path === "/api/forward-auth") return null;
   if (["/api/login", "/api/callback", "/api/logout"].includes(req.path)) return null;
   if (req.path.startsWith("/api/admin")) return "admin";
   if (req.path.startsWith("/api/users")) return "admin";
@@ -92,6 +94,17 @@ const app = createApp({ express, validateUser, db }, (req) => {
 app.get("/api/logs", logger.queryHandler);
 
 app.get("/api/health", (req, res) => res.send("ok"));
+
+// Forward auth endpoint for Caddy forward_auth (FileBrowser etc.)
+app.get("/api/forward-auth", (req, res) => {
+  const requiredRole = req.query.role || "official";
+  if (!req.user) return res.status(401).send("인증이 필요합니다.");
+  if ((ROLE_LEVELS[req.user.role] || 0) < (ROLE_LEVELS[requiredRole] || Infinity)) {
+    return res.status(403).send("권한이 없습니다.");
+  }
+  res.setHeader("X-Forwarded-User", req.user.email);
+  res.status(200).send();
+});
 
 /* ============================================
    DB 헬퍼
