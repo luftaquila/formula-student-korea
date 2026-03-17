@@ -74,6 +74,7 @@ Set `DOMAIN_NAME` in `.env` file.
 ```bash
 make deploy              # 전체 빌드 + 배포
 make deploy SVC=traffic  # 특정 서비스만 빌드 + 배포
+make deploy NO_CACHE=1   # 캐시 없이 전체 빌드 + 배포
 make build               # 빌드만
 make build SVC=traffic   # 특정 서비스만 빌드
 make restart             # 재시작만 (빌드 없이)

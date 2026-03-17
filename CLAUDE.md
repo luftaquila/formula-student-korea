@@ -91,6 +91,7 @@ A `Makefile` wraps common podman compose operations. It auto-prunes dangling ima
 ```bash
 make deploy              # Build all + restart (production)
 make deploy SVC=traffic  # Build specific service + restart
+make deploy NO_CACHE=1   # Build all without cache + restart
 make build               # Build only
 make build SVC=traffic   # Build specific service only
 make restart             # Restart only (no build)
