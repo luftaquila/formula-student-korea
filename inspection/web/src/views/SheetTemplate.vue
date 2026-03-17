@@ -1026,6 +1026,15 @@ function goBack() {
 }
 
 @media (max-width: 640px) {
+  .top-actions {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .top-actions-right {
+    flex-wrap: wrap;
+  }
+
   .subcategory-section,
   .group-section,
   .item-row {
