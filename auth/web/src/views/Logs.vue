@@ -355,8 +355,5 @@ onUnmounted(() => {
     justify-content: space-between;
   }
 
-  .col-actor {
-    max-width: 80px;
-  }
 }
 </style>

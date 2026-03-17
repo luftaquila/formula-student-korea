@@ -237,7 +237,7 @@ onMounted(async () => {
                 <input v-model="form.end" type="datetime-local" class="form-input" required />
               </div>
               <div class="time-row">
-                <label class="time-label">지각 마감</label>
+                <label class="time-label">지각 마감 (선택)</label>
                 <input v-model="form.late_end" type="datetime-local" class="form-input" />
               </div>
             </div>
@@ -344,7 +344,7 @@ onMounted(async () => {
   font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-secondary);
-  min-width: 5rem;
+  min-width: 8rem;
   flex-shrink: 0;
 }
 

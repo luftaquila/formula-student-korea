@@ -445,7 +445,7 @@ app.post("/api/admin/sessions", (req, res) => {
   const late_end_at = req.body.late_end_at || "";
   if (!name?.trim()) return res.status(400).send("세션명을 입력하세요.");
   if (!start_at || !end_at) return res.status(400).send("시간을 모두 입력하세요.");
-  const isoRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+  const isoRegex = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/;
   if (!isoRegex.test(start_at) || !isoRegex.test(end_at)) return res.status(400).send("날짜 형식이 올바르지 않습니다.");
   if (late_end_at && !isoRegex.test(late_end_at)) return res.status(400).send("지연 제출 마감 날짜 형식이 올바르지 않습니다.");
   if (end_at <= start_at) return res.status(400).send("제출 마감은 시작 이후여야 합니다.");
@@ -493,7 +493,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
 
   if (!name?.trim()) return res.status(400).send("세션명을 입력하세요.");
   if (!start_at || !end_at) return res.status(400).send("시간을 모두 입력하세요.");
-  const isoRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+  const isoRegex = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/;
   if (!isoRegex.test(start_at) || !isoRegex.test(end_at)) return res.status(400).send("날짜 형식이 올바르지 않습니다.");
   if (late_end_at && !isoRegex.test(late_end_at)) return res.status(400).send("지연 제출 마감 날짜 형식이 올바르지 않습니다.");
   if (end_at <= start_at) return res.status(400).send("제출 마감은 시작 이후여야 합니다.");
