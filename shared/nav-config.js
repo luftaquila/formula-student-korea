@@ -12,7 +12,7 @@ export const officials = [
   { name: "검차 대기 관리", href: "/queue/admin", icon: "queue-admin" },
   { name: "인스펙션 시트", href: "/inspection", icon: "sheet" },
   { name: "서류 제출 관리", href: "/documents/admin", icon: "documents-admin", auth: "chief" },
-  { name: "파일 스토리지", href: "/files/", icon: "files", auth: "chief" },
+  { name: "파일 클라우드", href: "/files/", icon: "files", auth: "chief" },
 ];
 
 export const admins = [

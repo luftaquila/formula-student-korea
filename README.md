@@ -27,7 +27,7 @@ Google OAuth 2.0 + JWT 쿠키 기반 인증.
 | Role | Level | Access |
 |------|-------|--------|
 | Admin | 4 | 모든 서비스 |
-| Chief | 3 | 서류 제출 관리, 파일 스토리지 등 |
+| Chief | 3 | 서류 제출 관리, 파일 클라우드 등 |
 | Official | 2 | 검차 대기 관리, 인스펙션 시트 등 |
 | Student | 1 | 서류 제출 등 |
 

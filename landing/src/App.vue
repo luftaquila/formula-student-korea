@@ -37,7 +37,7 @@
           <ServiceCard title="검차 대기 관리" description="" path="/queue/admin" icon="🛠️" />
           <ServiceCard title="인스펙션 시트" description="" path="/inspection" icon="📋" />
           <ServiceCard v-if="isChief" title="서류 제출 관리" description="" path="/documents/admin" icon="📑" />
-          <ServiceCard v-if="isChief" title="파일 스토리지" description="" path="/files/" icon="📁" />
+          <ServiceCard v-if="isChief" title="파일 클라우드" description="" path="/files/" icon="📁" />
         </div>
       </section>
 

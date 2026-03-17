@@ -625,6 +625,10 @@ app.post("/api/admin/cancel/:type", (req, res) => {
   const num = numValidation.value;
   const type = typeValidation.value;
 
+  // SMS 발송용: 삭제 전 N번째 대기자 조회
+  const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
+  const prev = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(type, type, smsRank - 1);
+
   const result = dbRun(() => {
     db.transaction(() => {
       const ret = db.prepare(`DELETE FROM '${type}' WHERE num = ?`).run(num);
@@ -678,6 +682,9 @@ app.post("/api/admin/cancel/:type", (req, res) => {
   broadcastEvent("queue", { type, activeInspections });
 
   res.status(200).send();
+
+  // SMS 발송 (N번째 대기자에게)
+  sendSmsNotification(type, prev);
 });
 
 /* ============================================

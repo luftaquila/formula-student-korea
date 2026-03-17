@@ -406,15 +406,15 @@ function goToStats() {
                       <span class="entry-num">{{ item.num }}</span>
                       <span class="entry-detail">{{ entries[item.num]?.univ }} {{ entries[item.num]?.team }}</span>
                     </div>
-                    <div class="queue-item-badges">
-                      <span v-if="item.priority < 999" class="badge badge-primary">{{ item.priority }}순위</span>
-                    </div>
                   </div>
                   <div class="queue-item-meta">
                     <a :href="`tel:${item.phone}`" class="entry-phone">{{ displayPhone(item.phone) }}</a>
                     <span class="entry-time">{{ formatTime(item.timestamp) }}</span>
-                    <span v-if="item.is_reinspection" class="badge badge-warning">재검</span>
-                    <span v-else class="badge badge-success">초검</span>
+                    <div class="queue-item-tags">
+                      <span v-if="item.is_reinspection" class="badge badge-warning">재검</span>
+                      <span v-else class="badge badge-success">초검</span>
+                      <span v-if="item.priority < 999" class="badge badge-primary">{{ item.priority }}순위</span>
+                    </div>
                   </div>
                 </div>
                 <div class="action-buttons">
@@ -615,16 +615,18 @@ function goToStats() {
   min-width: 0;
 }
 
-.queue-item-badges {
-  display: flex;
-  gap: 0.375rem;
-  flex-shrink: 0;
-}
+
 
 .queue-item-meta {
   display: flex;
   align-items: center;
   gap: 1rem;
+}
+
+.queue-item-tags {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
 }
 
 .entry-num {
@@ -1045,7 +1047,12 @@ function goToStats() {
   }
 
   .queue-item-meta {
-    gap: 0.75rem;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.75rem;
+  }
+
+  .queue-item-tags {
+    flex-basis: 100%;
   }
 
   .entry-phone {
