@@ -116,6 +116,26 @@ Each service's `createApp(deps, authRoleFn)` receives `deps` (`{ express, valida
 
 **Dev mode:** When `JWT_SECRET` is not set and `NODE_ENV` is not `"production"`, all requests are auto-authenticated as admin. A one-time warning is logged at startup. Only applies when running services directly outside Docker (e.g. `node index.mjs`).
 
+### Route Permission Matrix
+
+**Public:** `/` (landing), `/auth/login,callback,logout`, `/auth` (SPA), `/queue` + `/queue/api` (except admin), `/entry/api/years` + `/entry/api/entries`, `/energymeter`, `/rules`
+
+**Student:** `/documents/**`
+
+**Official:** `/auth/api/ops-contacts` (GET), `/queue/admin,register,priority,stats`, `/queue/api/admin`, `/inspection/**`
+
+**Chief:** `/documents/admin`, `/documents/api/admin/**`, `/files/**` (FileBrowser)
+
+**Admin:** `/entry/**` (except public API), `/auth/api/ops-contacts` (POST/DELETE), `/inspection/api/sheet/template` (POST/PUT/DELETE), `/traffic/**`, `/score/**`, `/auth/api/users`, `/*/api/logs`, `/auth/api/admin/logs`, `/auth/logs`
+
+### Traffic: Event Mode Management
+
+Event types (가속, 스키드패드, 오토크로스, 짐카나) can be enabled/disabled from the traffic record management page. Disabled modes are hidden from traffic navigation tabs and score service tables. The "내구" (endurance) event is always shown in the score service regardless of event mode settings.
+
+### Score: Scoring System
+
+Penalty settings (per-event cone touch, off-course, start delay penalties in seconds), score settings (per-event total points, completion points, cutoff percentage), auto-calculated scores based on penalty-adjusted best records using the FSK scoring formula. Record/Score toggle switches between viewing penalty-adjusted times and calculated scores. Total score = sum of all event scores + endurance + report + energy.
+
 ### Inter-service communication
 
 All inter-service API calls use `X-Internal-Service` header (matching `INTERNAL_SECRET` env var), auto-authenticated as admin. Score service subscribes to inspection and traffic SSE endpoints, re-broadcasting events to score clients with `inspection:*` and `traffic:*` prefixes. Auth service aggregates logs from all other services via `LOG_SERVICES` env var.
