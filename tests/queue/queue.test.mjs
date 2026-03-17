@@ -34,6 +34,7 @@ setupTestEnv();
 let server, baseUrl, client, db, dbPath;
 let mockEntryServer, mockEntryUrl;
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
+const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 
 before(async () => {
@@ -215,7 +216,7 @@ describe('PATCH /api/admin/inspection/:type', () => {
   it('toggles active state to false', async () => {
     const res = await client.patch('/api/admin/inspection/rain', {
       body: { active: false },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 200);
     // Verify
@@ -228,7 +229,7 @@ describe('PATCH /api/admin/inspection/:type', () => {
   it('toggles active state back to true', async () => {
     const res = await client.patch('/api/admin/inspection/rain', {
       body: { active: true },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 200);
     const active = await client.get('/api/active');
@@ -241,7 +242,7 @@ describe('PATCH /api/admin/inspection/:type/visibility', () => {
   it('toggles hidden_from_register', async () => {
     const res = await client.patch('/api/admin/inspection/rain/visibility', {
       body: { hidden: true },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 200);
     // Verify via all inspections
@@ -254,7 +255,7 @@ describe('PATCH /api/admin/inspection/:type/visibility', () => {
   it('toggles hidden_from_register back to false', async () => {
     const res = await client.patch('/api/admin/inspection/rain/visibility', {
       body: { hidden: false },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 200);
     const all = await client.get('/api/admin/all', { cookie: officialCookie });
@@ -316,7 +317,7 @@ describe('POST /api/admin/register/:type', () => {
     // Deactivate rain
     await client.patch('/api/admin/inspection/rain', {
       body: { active: false },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     const res = await client.post('/api/admin/register/rain', {
       body: { num: 2, phone: '01098765432' },
@@ -326,7 +327,7 @@ describe('POST /api/admin/register/:type', () => {
     // Re-activate
     await client.patch('/api/admin/inspection/rain', {
       body: { active: true },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
   });
 
@@ -406,7 +407,7 @@ describe('POST /api/admin/cancel/:type', () => {
 // ─── Priority management ────────────────────────────────────────────────
 describe('Priority management', () => {
   it('GET /api/admin/priority/:type returns empty initially', async () => {
-    const res = await client.get('/api/admin/priority/battery', { cookie: officialCookie });
+    const res = await client.get('/api/admin/priority/battery', { cookie: chiefCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.ok(Array.isArray(data));
@@ -416,11 +417,11 @@ describe('Priority management', () => {
   it('POST /api/admin/priority/:type sets priority', async () => {
     const res = await client.post('/api/admin/priority/battery', {
       body: { num: 1, priority: 1 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 201);
     // Verify
-    const list = await client.get('/api/admin/priority/battery', { cookie: officialCookie });
+    const list = await client.get('/api/admin/priority/battery', { cookie: chiefCookie });
     const data = await list.json();
     assert.equal(data.length, 1);
     assert.equal(data[0].num, 1);
@@ -430,10 +431,10 @@ describe('Priority management', () => {
   it('DELETE /api/admin/priority/:type removes priority', async () => {
     const res = await client.delete('/api/admin/priority/battery', {
       body: { num: 1 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 200);
-    const list = await client.get('/api/admin/priority/battery', { cookie: officialCookie });
+    const list = await client.get('/api/admin/priority/battery', { cookie: chiefCookie });
     const data = await list.json();
     assert.equal(data.length, 0);
   });
@@ -442,15 +443,15 @@ describe('Priority management', () => {
     // Add multiple priorities
     await client.post('/api/admin/priority/battery', {
       body: { num: 1, priority: 1 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     await client.post('/api/admin/priority/battery', {
       body: { num: 2, priority: 2 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
-    const res = await client.delete('/api/admin/priority/battery/all', { cookie: officialCookie });
+    const res = await client.delete('/api/admin/priority/battery/all', { cookie: chiefCookie });
     assert.equal(res.status, 200);
-    const list = await client.get('/api/admin/priority/battery', { cookie: officialCookie });
+    const list = await client.get('/api/admin/priority/battery', { cookie: chiefCookie });
     const data = await list.json();
     assert.equal(data.length, 0);
   });
@@ -461,7 +462,7 @@ describe('PUT /api/admin/inspection/:type/ignore', () => {
   it('sets ignore_priority', async () => {
     const res = await client.put('/api/admin/inspection/battery/ignore', {
       body: { field: 'ignore_priority', value: true },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 200);
     const all = await client.get('/api/admin/all', { cookie: officialCookie });
@@ -471,14 +472,14 @@ describe('PUT /api/admin/inspection/:type/ignore', () => {
     // Reset
     await client.put('/api/admin/inspection/battery/ignore', {
       body: { field: 'ignore_priority', value: false },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
   });
 
   it('sets ignore_reinspection', async () => {
     const res = await client.put('/api/admin/inspection/battery/ignore', {
       body: { field: 'ignore_reinspection', value: true },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 200);
     const all = await client.get('/api/admin/all', { cookie: officialCookie });
@@ -488,14 +489,14 @@ describe('PUT /api/admin/inspection/:type/ignore', () => {
     // Reset
     await client.put('/api/admin/inspection/battery/ignore', {
       body: { field: 'ignore_reinspection', value: false },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
   });
 
   it('rejects invalid field', async () => {
     const res = await client.put('/api/admin/inspection/battery/ignore', {
       body: { field: 'invalid_field', value: true },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -514,7 +515,7 @@ describe('Booth management', () => {
   it('PATCH /api/admin/booths/:type/config increases booth count', async () => {
     const res = await client.patch('/api/admin/booths/battery/config', {
       body: { count: 3 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 200);
     const booths = await client.get('/api/admin/booths/battery', { cookie: officialCookie });
@@ -601,7 +602,7 @@ describe('Booth management', () => {
     // Now try to decrease from 3 to 1 - would remove booth 3 (occupied) first
     const res = await client.patch('/api/admin/booths/battery/config', {
       body: { count: 1 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -643,7 +644,7 @@ describe('Booth management', () => {
 // ─── History ────────────────────────────────────────────────────────────
 describe('DELETE /api/admin/history/:type', () => {
   it('clears history and resets booths', async () => {
-    const res = await client.delete('/api/admin/history/battery', { cookie: officialCookie });
+    const res = await client.delete('/api/admin/history/battery', { cookie: chiefCookie });
     assert.equal(res.status, 200);
     // Verify history is cleared
     const history = db.prepare("SELECT * FROM inspection_history WHERE inspection = 'battery'").all();
@@ -741,7 +742,7 @@ describe('SMS settings', () => {
   it('PATCH /api/admin/settings/sms rejects enable without env vars', async () => {
     const res = await client.patch('/api/admin/settings/sms', {
       body: { value: true },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -758,7 +759,7 @@ describe('SMS rank settings', () => {
   it('PATCH /api/admin/settings/sms-rank updates rank', async () => {
     const res = await client.patch('/api/admin/settings/sms-rank', {
       body: { value: 5 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 200);
     const check = await client.get('/api/admin/settings/sms-rank', { cookie: officialCookie });
@@ -767,19 +768,19 @@ describe('SMS rank settings', () => {
     // Reset
     await client.patch('/api/admin/settings/sms-rank', {
       body: { value: 3 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
   });
 
   it('PATCH /api/admin/settings/sms-rank rejects out of range', async () => {
     const res = await client.patch('/api/admin/settings/sms-rank', {
       body: { value: 11 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
     const res2 = await client.patch('/api/admin/settings/sms-rank', {
       body: { value: 0 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res2.status, 400);
   });
@@ -796,7 +797,7 @@ describe('Cancel penalty settings', () => {
   it('PATCH /api/admin/settings/cancel-penalty updates penalty', async () => {
     const res = await client.patch('/api/admin/settings/cancel-penalty', {
       body: { value: 5 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 200);
     const check = await client.get('/api/admin/settings/cancel-penalty', { cookie: officialCookie });
@@ -805,19 +806,19 @@ describe('Cancel penalty settings', () => {
     // Reset
     await client.patch('/api/admin/settings/cancel-penalty', {
       body: { value: 10 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
   });
 
   it('PATCH /api/admin/settings/cancel-penalty rejects out of range', async () => {
     const res = await client.patch('/api/admin/settings/cancel-penalty', {
       body: { value: 61 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
     const res2 = await client.patch('/api/admin/settings/cancel-penalty', {
       body: { value: -1 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res2.status, 400);
   });
@@ -874,11 +875,11 @@ describe('Queue sorting', () => {
     // Set priority: entry 1 = priority 2, entry 3 = priority 1
     await client.post('/api/admin/priority/battery', {
       body: { num: 1, priority: 2 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     await client.post('/api/admin/priority/battery', {
       body: { num: 3, priority: 1 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
 
     // Expected order:
@@ -921,16 +922,16 @@ describe('Queue sorting with ignore flags', () => {
 
     // Ensure the inspection type is active
     await client.patch(`/api/admin/inspection/${testType}`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { active: true },
     });
     // Reset ignore flags
     await client.put(`/api/admin/inspection/${testType}/ignore`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { field: 'ignore_priority', value: false },
     });
     await client.put(`/api/admin/inspection/${testType}/ignore`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { field: 'ignore_reinspection', value: false },
     });
     db.prepare(`DELETE FROM team_priority WHERE inspection = ?`).run(testType);
@@ -948,7 +949,7 @@ describe('Queue sorting with ignore flags', () => {
 
     // Register entry 2 with high priority
     await client.post(`/api/admin/priority/${testType}`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 2, priority: 1 },
     });
     await client.post(`/api/admin/register/${testType}`, {
@@ -963,7 +964,7 @@ describe('Queue sorting with ignore flags', () => {
 
     // Enable ignore_priority
     await client.put(`/api/admin/inspection/${testType}/ignore`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { field: 'ignore_priority', value: true },
     });
 
@@ -978,7 +979,7 @@ describe('Queue sorting with ignore flags', () => {
     db.prepare(`DELETE FROM cancel_penalty WHERE inspection = ?`).run(testType);
     db.prepare(`DELETE FROM team_priority WHERE inspection = ?`).run(testType);
     await client.put(`/api/admin/inspection/${testType}/ignore`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { field: 'ignore_priority', value: false },
     });
   });
@@ -1018,7 +1019,7 @@ describe('Queue sorting with ignore flags', () => {
 
     // Enable ignore_reinspection
     await client.put(`/api/admin/inspection/${testType}/ignore`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { field: 'ignore_reinspection', value: true },
     });
 
@@ -1091,7 +1092,7 @@ describe('Validation edge cases', () => {
   it('rejects invalid priority value', async () => {
     const res = await client.post('/api/admin/priority/battery', {
       body: { num: 1, priority: -1 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -1099,7 +1100,7 @@ describe('Validation edge cases', () => {
   it('rejects deleting non-existent priority', async () => {
     const res = await client.delete('/api/admin/priority/electric', {
       body: { num: 99 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });

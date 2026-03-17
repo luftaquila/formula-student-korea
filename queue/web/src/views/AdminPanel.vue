@@ -23,6 +23,7 @@ import { useSSE } from "../composables/useSSE";
 import { useNotification } from "../composables/useNotification";
 import { useBoothTimers } from "../composables/useBoothTimers";
 import { displayPhone } from "@shared/format-phone.js";
+import { isChief } from "@shared/officialsStore.js";
 
 const { success, error, warning } = useNotification();
 const router = useRouter();
@@ -93,10 +94,12 @@ onMounted(async () => {
   try {
     entries.value = await fetchEntries();
     inspections.value = await fetchAllInspections();
-    const sms = await fetchSmsSettings();
-    smsEnabled.value = sms.value;
-    const smsRankData = await fetchSmsRankSettings();
-    smsRank.value = smsRankData.value;
+    if (isChief.value) {
+      const sms = await fetchSmsSettings();
+      smsEnabled.value = sms.value;
+      const smsRankData = await fetchSmsRankSettings();
+      smsRank.value = smsRankData.value;
+    }
     const penaltyData = await fetchCancelPenaltySettings();
     cancelPenalty.value = penaltyData.value;
 
@@ -287,7 +290,7 @@ function goToStats() {
         </svg>
         검차 등록
       </button>
-      <button class="btn btn-ghost" @click="goToPriority">
+      <button v-if="isChief" class="btn btn-ghost" @click="goToPriority">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
           <polygon
             points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"
@@ -305,7 +308,7 @@ function goToStats() {
       </button>
     </div>
 
-    <div class="admin-grid">
+    <div class="admin-grid" :class="{ 'no-settings': !isChief }">
       <!-- Queue Panel -->
       <div class="card queue-panel">
         <div class="card-header">
@@ -433,7 +436,7 @@ function goToStats() {
       </div>
 
       <!-- Settings Panel -->
-      <div class="card settings-panel">
+      <div v-if="isChief" class="card settings-panel">
         <div class="card-header">
           <h3>⚙️ 설정</h3>
         </div>
@@ -547,6 +550,10 @@ function goToStats() {
   display: grid;
   grid-template-columns: 1fr 320px;
   gap: 1.5rem;
+}
+
+.admin-grid.no-settings {
+  grid-template-columns: 1fr;
 }
 
 .queue-panel .card-header {
