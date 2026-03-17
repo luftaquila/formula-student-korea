@@ -95,6 +95,17 @@ const UPLOADS_DIR = options.uploadsDir || path.resolve("./data/uploads");
 const TMP_DIR = path.join(UPLOADS_DIR, "_tmp");
 fs.mkdirSync(TMP_DIR, { recursive: true });
 
+// 서버 시작 시 _tmp 잔여 파일 정리 (크래시/재시작 후 남은 고아 파일)
+{
+  const entries = fs.readdirSync(TMP_DIR);
+  for (const entry of entries) {
+    rmDir(path.join(TMP_DIR, entry));
+  }
+  if (entries.length > 0) {
+    console.log(`[documents] Cleaned up ${entries.length} leftover temp upload(s)`);
+  }
+}
+
 /* ============================================
    Express 앱 설정
    ============================================ */
@@ -397,6 +408,13 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     aborted = true;
     rmDir(tmpDir);
     if (!res.headersSent) res.status(400).send("업로드가 중단되었습니다.");
+  });
+
+  req.on("close", () => {
+    if (!req.complete && !aborted && fs.existsSync(tmpDir)) {
+      aborted = true;
+      rmDir(tmpDir);
+    }
   });
 
   req.pipe(busboy);
