@@ -63,7 +63,7 @@
               <tr v-if="logs.length === 0">
                 <td colspan="7" class="empty-text">로그가 없습니다.</td>
               </tr>
-              <tr v-for="log in logs" :key="`${log._service || log.service}-${log.id}`" :class="{ 'log-warn': log.level === 'warn', 'log-error': log.level === 'error' }">
+              <tr v-for="log in logs" :key="`${log._service || log.service}-${log.id}`" class="row-clickable" :class="{ 'log-warn': log.level === 'warn', 'log-error': log.level === 'error' }" @click="openDetail(log)">
                 <td class="col-time">{{ formatTime(log.timestamp) }}</td>
                 <td><span class="badge badge-primary">{{ log._service || filters.service || '?' }}</span></td>
                 <td>
@@ -71,15 +71,12 @@
                 </td>
                 <td class="col-action">{{ log.action }}</td>
                 <td class="col-actor">
-                  <template v-if="log.actor_name || log.actor_email">
-                    <span v-if="log.actor_name && log.actor_email">{{ log.actor_name }} ({{ log.actor_email }})</span>
-                    <span v-else>{{ log.actor_name || log.actor_email }}</span>
-                  </template>
+                  <span v-if="formatActor(log)">{{ formatActor(log) }}</span>
                   <span v-else class="text-tertiary">-</span>
                 </td>
                 <td class="col-target">{{ log.target || '-' }}</td>
                 <td class="col-detail">
-                  <span v-if="log.detail" class="detail-text" :title="log.detail">{{ truncate(log.detail, 60) }}</span>
+                  <span v-if="log.detail" class="detail-text">{{ truncate(log.detail, 60) }}</span>
                   <span v-else class="text-tertiary">-</span>
                 </td>
               </tr>
@@ -96,6 +93,53 @@
       </div>
     </div>
   </div>
+
+  <!-- Log Detail Modal -->
+  <Teleport to="body">
+    <Transition name="modal">
+      <div v-if="selectedLog" class="modal-overlay" @click.self="closeDetail">
+        <div class="modal-box">
+          <div class="modal-header">
+            <span class="modal-title">로그 상세</span>
+            <button class="modal-close" @click="closeDetail">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="modal-row">
+              <span class="modal-label">시간</span>
+              <span class="modal-value">{{ formatTime(selectedLog.timestamp) }}</span>
+            </div>
+            <div class="modal-row">
+              <span class="modal-label">서비스</span>
+              <span class="modal-value"><span class="badge badge-primary">{{ selectedLog._resolvedService }}</span></span>
+            </div>
+            <div class="modal-row">
+              <span class="modal-label">레벨</span>
+              <span class="modal-value"><span class="badge" :class="levelBadge(selectedLog.level)">{{ selectedLog.level }}</span></span>
+            </div>
+            <div class="modal-row">
+              <span class="modal-label">액션</span>
+              <span class="modal-value mono">{{ selectedLog.action }}</span>
+            </div>
+            <div class="modal-row">
+              <span class="modal-label">유저</span>
+              <span class="modal-value">
+                <span v-if="formatActor(selectedLog)">{{ formatActor(selectedLog) }}</span>
+                <span v-else class="text-tertiary">-</span>
+              </span>
+            </div>
+            <div class="modal-row">
+              <span class="modal-label">대상</span>
+              <span class="modal-value">{{ selectedLog.target || '-' }}</span>
+            </div>
+            <div v-if="selectedLog.detail" class="modal-row modal-row-detail">
+              <span class="modal-label">상세</span>
+              <pre class="modal-detail">{{ selectedLog.detail }}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
 </template>
 
 <script setup>
@@ -104,6 +148,16 @@ import { createApiClient } from "@shared/api-base.js";
 
 const api = createApiClient("/auth");
 const PAGE_SIZE = 100;
+
+const selectedLog = ref(null);
+
+function openDetail(log) {
+  selectedLog.value = { ...log, _resolvedService: log._service || filters.service || '?' };
+}
+
+function closeDetail() {
+  selectedLog.value = null;
+}
 
 const logs = ref([]);
 const total = ref(0);
@@ -136,6 +190,11 @@ function levelBadge(level) {
 function formatTime(ts) {
   if (!ts) return "-";
   return new Date(ts + "Z").toLocaleString("ko-KR");
+}
+
+function formatActor(log) {
+  if (log.actor_name && log.actor_email) return `${log.actor_name} (${log.actor_email})`;
+  return log.actor_name || log.actor_email || null;
 }
 
 function truncate(str, len) {
@@ -194,12 +253,18 @@ function toggleAutoRefresh() {
   }
 }
 
+function onKeydown(e) {
+  if (selectedLog.value && e.key === "Escape") closeDetail();
+}
+
 onMounted(() => {
   document.querySelector(".app-container").style.setProperty("--layout-max-width", "100%");
+  window.addEventListener("keydown", onKeydown);
   fetchLogs();
 });
 onUnmounted(() => {
   document.querySelector(".app-container").style.setProperty("--layout-max-width", "1100px");
+  window.removeEventListener("keydown", onKeydown);
   if (refreshTimer) clearInterval(refreshTimer);
 });
 </script>
@@ -298,7 +363,123 @@ onUnmounted(() => {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.75rem;
   color: var(--text-secondary);
-  cursor: default;
+}
+
+.row-clickable {
+  cursor: pointer;
+}
+
+.row-clickable:hover {
+  background: var(--bg-hover) !important;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.modal-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 0.75rem;
+  width: 100%;
+  max-width: 640px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-title {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  line-height: 1;
+}
+
+.modal-close:hover {
+  color: var(--text-primary);
+}
+
+.modal-body {
+  padding: 1rem 1.25rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.modal-row {
+  display: flex;
+  gap: 1rem;
+  align-items: baseline;
+}
+
+.modal-row-detail {
+  align-items: flex-start;
+}
+
+.modal-label {
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
+  min-width: 4rem;
+  flex-shrink: 0;
+}
+
+.modal-value {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.modal-value.mono {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8125rem;
+}
+
+.modal-detail {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  background: var(--bg-secondary);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  flex: 1;
+}
+
+.modal-enter-active,
+.modal-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
 }
 
 .text-tertiary {
