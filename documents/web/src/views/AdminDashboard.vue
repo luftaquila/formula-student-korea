@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, watch } from "vue";
+import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { Notyf } from "notyf";
 import { request, fetchEntryYears, fetchEntries } from "../api.js";
 
@@ -142,13 +142,26 @@ function getFilteredStudents(teamNum) {
   });
 }
 
-function openDropdown(teamNum) {
+const dropdownStyle = ref({});
+
+function openDropdown(teamNum, event) {
   dropdownOpen.value = { [teamNum]: true };
   dropdownSearch.value[teamNum] = "";
+
+  const rect = event.currentTarget.getBoundingClientRect();
+  const spaceBelow = window.innerHeight - rect.bottom;
+  const style = { left: `${rect.left}px`, width: `${rect.width}px` };
+
+  if (spaceBelow < 220) {
+    style.bottom = `${window.innerHeight - rect.top + 4}px`;
+  } else {
+    style.top = `${rect.bottom + 4}px`;
+  }
+  dropdownStyle.value = style;
 }
 
-function closeDropdown(teamNum) {
-  setTimeout(() => { dropdownOpen.value[teamNum] = false; }, 150);
+function closeAllDropdowns() {
+  dropdownOpen.value = {};
 }
 
 async function assignStudent(teamNum, email) {
@@ -196,7 +209,13 @@ function formatDate(d) {
   return new Date(d + "Z").toLocaleString("ko-KR");
 }
 
-onMounted(loadYears);
+onMounted(() => {
+  loadYears();
+  document.addEventListener("click", closeAllDropdowns);
+});
+onUnmounted(() => {
+  document.removeEventListener("click", closeAllDropdowns);
+});
 </script>
 
 <template>
@@ -262,18 +281,17 @@ onMounted(loadYears);
                   </td>
                   <td class="col-account">
                     <div class="student-select">
-                      <div class="select-display" @click="openDropdown(e.num)">
+                      <div class="select-display" @click.stop="openDropdown(e.num, $event)">
                         <span v-if="teamStudentMap[e.num]" class="selected-email">{{ teamStudentMap[e.num] }}</span>
                         <span v-else class="select-placeholder">-</span>
                         <button v-if="teamStudentMap[e.num]" class="clear-btn" @click.stop="clearStudent(e.num)" title="해제">&times;</button>
                       </div>
-                      <div v-if="dropdownOpen[e.num]" class="select-dropdown">
+                      <div v-if="dropdownOpen[e.num]" class="select-dropdown" :style="dropdownStyle" @click.stop>
                         <input
                           class="select-search"
                           type="text"
                           v-model="dropdownSearch[e.num]"
                           placeholder="검색..."
-                          @blur="closeDropdown(e.num)"
                           autofocus
                         />
                         <div class="select-options">
@@ -542,16 +560,12 @@ onMounted(loadYears);
 .clear-btn:hover { color: var(--accent-danger); }
 
 .select-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
+  position: fixed;
   z-index: 100;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  margin-top: 0.25rem;
 }
 
 .select-search {
