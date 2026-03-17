@@ -57,6 +57,7 @@ All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs
 - **Auth:** Google OAuth 2.0, JWT (HMAC-SHA256) cookies, role-based access control
 - **Real-time:** Server-Sent Events (SSE) for live updates across inspection, queue, score, and traffic services
 - **Deployment:** Docker Compose with Caddy reverse proxy
+- **Testing:** Node.js built-in test runner (`node:test` + `node:assert`)
 - **Logging:** SQLite-based semantic logging (`shared/logger.mjs`)
 
 ## Build Commands
@@ -69,6 +70,9 @@ npm run build      # Production build
 ```
 
 ### Backend Development
+
+Each service's `index.mjs` exports a `create*App(options)` factory function for testability. When run directly (`node index.mjs`), the service starts the HTTP server. The factory accepts `{ dbPath }` (and service-specific options like `skipSSESubscriptions` for score, `uploadsDir` for documents) and returns `{ app, db }`.
+
 ```bash
 cd auth|entry|queue|inspection|traffic|score|documents
 node index.mjs     # Run API server directly
@@ -112,6 +116,34 @@ Each service's `createApp(deps, authRoleFn)` receives `deps` (`{ express, valida
 ### Inter-service communication
 
 All inter-service API calls use `X-Internal-Service` header (matching `INTERNAL_SECRET` env var), auto-authenticated as admin. Score service subscribes to inspection and traffic SSE endpoints, re-broadcasting events to score clients with `inspection:*` and `traffic:*` prefixes. Auth service aggregates logs from all other services via `LOG_SERVICES` env var.
+
+## Testing
+
+Backend services and shared modules are tested using Node.js built-in test runner (`node:test`).
+
+### Running Tests
+```bash
+npm test                          # Run all tests
+npm run test:shared               # Shared modules only
+npm run test:auth                 # Auth service only
+npm run test:entry                # Entry service only
+npm run test:queue                # Queue service only
+npm run test:inspection           # Inspection service only
+npm run test:traffic              # Traffic service only
+npm run test:score                # Score service only
+npm run test:documents            # Documents service only
+```
+
+### Test Architecture
+- Each service's `index.mjs` exports a `create*App(options)` factory function for testability
+- Tests use in-memory/temp SQLite databases (no external services needed)
+- External service dependencies are mocked with lightweight Express servers
+- Tests run in CI via GitHub Actions on push to main and PRs
+
+### Writing Tests
+- Test files go in `tests/<service>/<service>.test.mjs`
+- Shared module tests go in `tests/shared/<module>.test.mjs`
+- Use `tests/helpers/test-utils.mjs` for common utilities (JWT, HTTP client, temp DB)
 
 ## Environment Variables
 

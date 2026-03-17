@@ -3,13 +3,11 @@ import express from "express";
 import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
+import { createSSEManager } from "../shared/sse.mjs";
 
-/* ============================================
-   Database 초기화
-   ============================================ */
-ensureDataDir();
+export function createScoreApp(options = {}) {
 
-const db = new Database("./data/score.db");
+const db = new Database(options.dbPath || "./data/score.db");
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
 
@@ -73,8 +71,6 @@ db.transaction(() => {
     PRIMARY KEY (year, team_num)
   )`);
 })();
-
-setupProcessHandlers(db);
 
 const ENDURANCE_SQL = {
   status: "UPDATE score_endurance SET status = ? WHERE year = ? AND team_num = ?",
@@ -155,7 +151,6 @@ async function fetchYearRecords(year) {
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-import { createSSEManager } from "../shared/sse.mjs";
 const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 // SSE 엔드포인트
@@ -228,11 +223,12 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix) {
   return subscribe;
 }
 
-const subscribeInspectionSSE = createSSESubscriber("Inspection", INSPECTION_SERVER, "/api/sheet/events", "inspection");
-const subscribeTrafficSSE = createSSESubscriber("Traffic", TRAFFIC_SERVER, "/api/events", "traffic");
-
-subscribeInspectionSSE();
-subscribeTrafficSSE();
+if (!options.skipSSESubscriptions) {
+  const subscribeInspectionSSE = createSSESubscriber("Inspection", INSPECTION_SERVER, "/api/sheet/events", "inspection");
+  const subscribeTrafficSSE = createSSESubscriber("Traffic", TRAFFIC_SERVER, "/api/events", "traffic");
+  subscribeInspectionSSE();
+  subscribeTrafficSSE();
+}
 
 /* ============================================
    헬퍼: 템플릿 트리에서 카테고리 이름 기반 item 탐색
@@ -634,7 +630,13 @@ app.get("/{*splat}", (req, res) => {
   res.sendFile("index.html", { root: "./web/dist" });
 });
 
-/* ============================================
-   서버 시작
-   ============================================ */
-app.listen(9700);
+return { app, db };
+}
+
+const isDirectRun = import.meta.filename === process.argv[1];
+if (isDirectRun) {
+  ensureDataDir();
+  const { app, db } = createScoreApp();
+  setupProcessHandlers(db);
+  app.listen(9700);
+}

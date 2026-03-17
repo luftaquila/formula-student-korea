@@ -1,0 +1,27 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: |
+          for dir in auth entry queue inspection traffic score documents; do
+            cd $dir && npm ci && cd ..
+          done
+
+      - name: Run tests
+        run: node --test --test-force-exit tests/**/*.test.mjs

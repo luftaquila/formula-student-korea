@@ -3,12 +3,9 @@ import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
-/* ============================================
-   Database 초기화
-   ============================================ */
-ensureDataDir();
+export function createEntryApp(options = {}) {
 
-const db = new Database("./data/entry.db");
+const db = new Database(options.dbPath || "./data/entry.db");
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
 
@@ -58,8 +55,6 @@ for (const year of getAvailableYears()) {
   try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN type TEXT DEFAULT NULL`); }
   catch (e) { /* column already exists */ }
 }
-
-setupProcessHandlers(db);
 
 /* ============================================
    Express 앱 설정
@@ -401,7 +396,13 @@ app.delete("/api/vehicle-types/:id", (req, res) => {
   res.status(200).send();
 });
 
-/* ============================================
-   서버 시작
-   ============================================ */
-app.listen(9100);
+return { app, db };
+}
+
+const isDirectRun = import.meta.filename === process.argv[1];
+if (isDirectRun) {
+  ensureDataDir();
+  const { app, db } = createEntryApp();
+  setupProcessHandlers(db);
+  app.listen(9100);
+}

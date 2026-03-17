@@ -7,12 +7,9 @@ import Busboy from "busboy";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
-/* ============================================
-   Database 초기화
-   ============================================ */
-ensureDataDir();
+export function createDocumentsApp(options = {}) {
 
-const db = new Database("./data/documents.db");
+const db = new Database(options.dbPath || "./data/documents.db");
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
 db.pragma("foreign_keys = ON");
@@ -94,11 +91,9 @@ try { db.exec("ALTER TABLE session ADD COLUMN allowed_extensions TEXT DEFAULT ''
 catch { /* already exists */ }
 
 // 업로드 디렉토리 생성
-const UPLOADS_DIR = path.resolve("./data/uploads");
+const UPLOADS_DIR = options.uploadsDir || path.resolve("./data/uploads");
 const TMP_DIR = path.join(UPLOADS_DIR, "_tmp");
 fs.mkdirSync(TMP_DIR, { recursive: true });
-
-setupProcessHandlers(db);
 
 /* ============================================
    Express 앱 설정
@@ -685,7 +680,13 @@ app.get("/{*splat}", (req, res) => {
   res.sendFile("index.html", { root: "./web/dist" });
 });
 
-/* ============================================
-   서버 시작
-   ============================================ */
-app.listen(9900);
+return { app, db };
+}
+
+const isDirectRun = import.meta.filename === process.argv[1];
+if (isDirectRun) {
+  ensureDataDir();
+  const { app, db } = createDocumentsApp();
+  setupProcessHandlers(db);
+  app.listen(9900);
+}

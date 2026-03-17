@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-force-exit tests/**/*.test.mjs",
+    "test:shared": "node --test --test-force-exit tests/shared/*.test.mjs",
+    "test:auth": "node --test --test-force-exit tests/auth/*.test.mjs",
+    "test:entry": "node --test --test-force-exit tests/entry/*.test.mjs",
+    "test:queue": "node --test --test-force-exit tests/queue/*.test.mjs",
+    "test:inspection": "node --test --test-force-exit tests/inspection/*.test.mjs",
+    "test:traffic": "node --test --test-force-exit tests/traffic/*.test.mjs",
+    "test:score": "node --test --test-force-exit tests/score/*.test.mjs",
+    "test:documents": "node --test --test-force-exit tests/documents/*.test.mjs"
+  }
+}

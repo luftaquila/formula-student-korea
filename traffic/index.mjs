@@ -2,13 +2,11 @@ import express from "express";
 import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
+import { createSSEManager } from "../shared/sse.mjs";
 
-/* ============================================
-   Database 초기화
-   ============================================ */
-ensureDataDir();
+export function createTrafficApp(options = {}) {
 
-const db = new Database("./data/traffic.db");
+const db = new Database(options.dbPath || "./data/traffic.db");
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
 
@@ -54,8 +52,6 @@ db.exec(`CREATE TABLE IF NOT EXISTS event_mode (
   }
 }
 
-setupProcessHandlers(db);
-
 /* ============================================
    Express 앱 설정
    ============================================ */
@@ -73,7 +69,6 @@ app.get("/api/health", (req, res) => res.send("ok"));
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-import { createSSEManager } from "../shared/sse.mjs";
 const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 function getRecordFiles() {
@@ -454,7 +449,13 @@ app.get("/{*splat}", (req, res) => {
   res.sendFile("index.html", { root: "./web/dist" });
 });
 
-/* ============================================
-   서버 시작
-   ============================================ */
-app.listen(9200);
+return { app, db };
+}
+
+const isDirectRun = import.meta.filename === process.argv[1];
+if (isDirectRun) {
+  ensureDataDir();
+  const { app, db } = createTrafficApp();
+  setupProcessHandlers(db);
+  app.listen(9200);
+}

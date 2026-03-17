@@ -2,13 +2,11 @@ import express from "express";
 import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
+import { createSSEManager } from "../shared/sse.mjs";
 
-/* ============================================
-   Database 초기화
-   ============================================ */
-ensureDataDir();
+export function createInspectionApp(options = {}) {
 
-const db = new Database("./data/sheet.db");
+const db = new Database(options.dbPath || "./data/sheet.db");
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
 
@@ -104,8 +102,6 @@ db.transaction(() => {
   );`);
 })();
 
-setupProcessHandlers(db);
-
 /* ============================================
    Express 앱 설정
    ============================================ */
@@ -131,7 +127,6 @@ const dbRun = createDbRun();
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-import { createSSEManager } from "../shared/sse.mjs";
 const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 // SSE 엔드포인트
@@ -567,7 +562,13 @@ app.get("/{*splat}", (req, res) => {
   res.sendFile("index.html", { root: "./web/dist" });
 });
 
-/* ============================================
-   서버 시작
-   ============================================ */
-app.listen(9600);
+return { app, db };
+}
+
+const isDirectRun = import.meta.filename === process.argv[1];
+if (isDirectRun) {
+  ensureDataDir();
+  const { app, db } = createInspectionApp();
+  setupProcessHandlers(db);
+  app.listen(9600);
+}

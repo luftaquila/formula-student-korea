@@ -4,15 +4,32 @@ import express from "express";
 import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
+import { createSSEManager } from "../shared/sse.mjs";
+
+export const INSPECTIONS = {
+  battery: "배터리",
+  electric: "전기",
+  chassis: "섀시",
+  tilting: "틸팅",
+  braking: "제동",
+  noise: "소음",
+  rain: "우천",
+  report: "보고서",
+};
+
+export function createQueueApp(options = {}) {
+
+const inspections = INSPECTIONS;
 
 // Rate limiter for public endpoints
 const rateLimitMap = new Map();
-setInterval(() => {
+const rateLimitTimer = setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of rateLimitMap) {
     if (now > entry.resetAt) rateLimitMap.delete(ip);
   }
 }, 60000);
+rateLimitTimer.unref();
 
 function rateLimit(req, res, next) {
   const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
@@ -25,23 +42,7 @@ function rateLimit(req, res, next) {
   next();
 }
 
-const inspections = {
-  battery: "배터리",
-  electric: "전기",
-  chassis: "섀시",
-  tilting: "틸팅",
-  braking: "제동",
-  noise: "소음",
-  rain: "우천",
-  report: "보고서",
-};
-
-/* ============================================
-   Database 초기화
-   ============================================ */
-ensureDataDir();
-
-const db = new Database("./data/queue.db");
+const db = new Database(options.dbPath || "./data/queue.db");
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
 
@@ -176,8 +177,6 @@ db.transaction(() => {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_cp_num_insp ON cancel_penalty(num, inspection)`);
 })();
 
-setupProcessHandlers(db);
-
 /* ============================================
    Express 앱 설정
    ============================================ */
@@ -203,7 +202,6 @@ app.get("/api/health", (req, res) => res.send("ok"));
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-import { createSSEManager } from "../shared/sse.mjs";
 const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 // SSE 엔드포인트
@@ -1563,7 +1561,13 @@ app.get("/{*splat}", (req, res) => {
   res.sendFile("index.html", { root: "./web/dist" });
 });
 
-/* ============================================
-   서버 시작
-   ============================================ */
-app.listen(9300);
+return { app, db };
+}
+
+const isDirectRun = import.meta.filename === process.argv[1];
+if (isDirectRun) {
+  ensureDataDir();
+  const { app, db } = createQueueApp();
+  setupProcessHandlers(db);
+  app.listen(9300);
+}

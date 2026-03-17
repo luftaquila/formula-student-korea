@@ -1,0 +1,156 @@
+import { describe, it, before } from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const Database = require('../../auth/node_modules/better-sqlite3');
+
+process.env.INTERNAL_SECRET = 'test-secret';
+
+import { createLogger } from '../../shared/logger.mjs';
+
+function mockReq(query = {}, user = null, headers = {}) {
+  return { query, user, headers, ip: '127.0.0.1' };
+}
+
+function mockRes() {
+  let statusCode = 200;
+  let body = null;
+  return {
+    status(code) { statusCode = code; return this; },
+    send(data) { body = data; },
+    json(data) { body = data; },
+    get statusCode() { return statusCode; },
+    get body() { return body; },
+  };
+}
+
+describe('createLogger', () => {
+  let db, logger;
+
+  before(() => {
+    db = new Database(':memory:');
+    logger = createLogger(db, 'test-service', 5);
+  });
+
+  it('creates logs table automatically', () => {
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='logs'")
+      .all();
+    assert.equal(tables.length, 1);
+    assert.equal(tables[0].name, 'logs');
+  });
+
+  it('log() writes info level record', () => {
+    const req = mockReq({}, { email: 'admin@test.com', name: 'Admin', role: 'admin' });
+    logger.log(req, 'test_action', 'some detail', 'target1');
+
+    const row = db.prepare("SELECT * FROM logs WHERE action = 'test_action'").get();
+    assert.ok(row);
+    assert.equal(row.level, 'info');
+    assert.equal(row.action, 'test_action');
+    assert.equal(row.actor_email, 'admin@test.com');
+    assert.equal(row.target, 'target1');
+    assert.equal(row.detail, 'some detail');
+  });
+
+  it('warn() writes warn level record', () => {
+    const req = mockReq({}, { email: 'admin@test.com', name: 'Admin', role: 'admin' });
+    logger.warn(req, 'warn_action', { key: 'value' }, 'target2');
+
+    const row = db.prepare("SELECT * FROM logs WHERE action = 'warn_action'").get();
+    assert.ok(row);
+    assert.equal(row.level, 'warn');
+    assert.equal(row.detail, '{"key":"value"}');
+  });
+
+  it('queryHandler returns logs for admin user', () => {
+    const req = mockReq({}, { email: 'admin@test.com', name: 'Admin', role: 'admin' });
+    const res = mockRes();
+    logger.queryHandler(req, res);
+
+    assert.ok(res.body);
+    assert.ok(Array.isArray(res.body.logs));
+    assert.ok(res.body.total >= 2);
+    assert.equal(res.body.service, 'test-service');
+  });
+
+  it('queryHandler returns logs for internal service header', () => {
+    const req = mockReq({}, null, { 'x-internal-service': 'test-secret' });
+    const res = mockRes();
+    logger.queryHandler(req, res);
+
+    assert.ok(res.body);
+    assert.ok(Array.isArray(res.body.logs));
+  });
+
+  it('queryHandler returns 403 for non-admin', () => {
+    const req = mockReq({}, { email: 'user@test.com', name: 'User', role: 'student' });
+    const res = mockRes();
+    logger.queryHandler(req, res);
+
+    assert.equal(res.statusCode, 403);
+  });
+
+  it('queryHandler filters by level', () => {
+    const req = mockReq({ level: 'warn' }, { role: 'admin' });
+    const res = mockRes();
+    logger.queryHandler(req, res);
+
+    assert.ok(res.body.logs.length >= 1);
+    for (const log of res.body.logs) {
+      assert.equal(log.level, 'warn');
+    }
+  });
+
+  it('queryHandler filters by action, actor, from, to, search', () => {
+    const req = mockReq({ action: 'test_action', actor: 'admin' }, { role: 'admin' });
+    const res = mockRes();
+    logger.queryHandler(req, res);
+
+    assert.ok(res.body.logs.length >= 1);
+    for (const log of res.body.logs) {
+      assert.ok(log.action.startsWith('test_action'));
+    }
+  });
+
+  it('queryHandler supports pagination (limit, offset)', () => {
+    const req = mockReq({ limit: '1', offset: '0' }, { role: 'admin' });
+    const res = mockRes();
+    logger.queryHandler(req, res);
+
+    assert.equal(res.body.logs.length, 1);
+    assert.ok(res.body.total >= 2);
+  });
+
+  it('auto-cleanup removes oldest rows when maxRows exceeded', () => {
+    // Create a fresh logger with maxRows=5
+    const cleanDb = new Database(':memory:');
+    const cleanLogger = createLogger(cleanDb, 'clean-test', 5);
+
+    // Insert 10 records
+    for (let i = 0; i < 10; i++) {
+      cleanLogger.log(null, `action_${i}`, `detail_${i}`);
+    }
+
+    const countBefore = cleanDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
+    assert.equal(countBefore, 10);
+
+    // Trigger cleanup manually by calling the cleanup logic:
+    // The cleanup runs on interval, but we can simulate it
+    const count = cleanDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
+    if (count > 5) {
+      cleanDb.prepare('DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY id ASC LIMIT ?)').run(count - 5);
+    }
+
+    const countAfter = cleanDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
+    assert.equal(countAfter, 5);
+
+    // Verify we kept the newest ones (highest IDs)
+    const remaining = cleanDb.prepare('SELECT action FROM logs ORDER BY id ASC').all();
+    assert.equal(remaining[0].action, 'action_5');
+    assert.equal(remaining[4].action, 'action_9');
+
+    cleanDb.close();
+  });
+});

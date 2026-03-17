@@ -4,12 +4,9 @@ import Database from "better-sqlite3";
 import { createApp, setupProcessHandlers, createDbRun, createJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
-/* ============================================
-   Database 초기화
-   ============================================ */
-ensureDataDir();
+export function createAuthApp(options = {}) {
 
-const db = new Database("./data/auth.db");
+const db = new Database(options.dbPath || "./data/auth.db");
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
 
@@ -69,8 +66,6 @@ if (ADMIN_EMAIL) {
     db.prepare("INSERT INTO users (email, role) VALUES (?, 'admin')").run(ADMIN_EMAIL);
   }
 }
-
-setupProcessHandlers(db);
 
 /* ============================================
    Express 앱 설정
@@ -621,7 +616,13 @@ app.get("/{*splat}", (req, res) => {
   res.sendFile("index.html", { root: "./web/dist" });
 });
 
-/* ============================================
-   서버 시작
-   ============================================ */
-app.listen(9800);
+return { app, db };
+}
+
+const isDirectRun = import.meta.filename === process.argv[1];
+if (isDirectRun) {
+  ensureDataDir();
+  const { app, db } = createAuthApp();
+  setupProcessHandlers(db);
+  app.listen(9800);
+}
