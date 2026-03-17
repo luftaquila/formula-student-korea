@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from "vue";
+import { ref, watch, onMounted, onUnmounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { Notyf } from "notyf";
 import { request } from "../api.js";
@@ -162,6 +162,17 @@ async function submit() {
   }
 }
 
+function onBeforeUnload(e) {
+  e.preventDefault();
+}
+
+watch(uploading, (val) => {
+  if (val) window.addEventListener("beforeunload", onBeforeUnload);
+  else window.removeEventListener("beforeunload", onBeforeUnload);
+});
+
+onUnmounted(() => window.removeEventListener("beforeunload", onBeforeUnload));
+
 function downloadFile(fileId) {
   if (!submission.value) return;
   window.open(`${BASE_URL}/api/submissions/${submission.value.id}/files/${fileId}`, "_blank");
@@ -193,15 +204,13 @@ onMounted(fetchSession);
               <span class="info-label">지각 마감</span>
               <span class="info-value">{{ formatDate(session.late_end_at) }}</span>
             </div>
-            <div class="info-row-inline">
-              <div class="info-row">
-                <span class="info-label">용량 제한</span>
-                <span class="info-value">{{ formatSize(session.max_file_size) }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">허용 형식</span>
-                <span class="info-value">{{ allowedExts.length > 0 ? allowedExts.map(e => e.toUpperCase()).join(", ") : "제한 없음" }}</span>
-              </div>
+            <div class="info-row">
+              <span class="info-label">용량 제한</span>
+              <span class="info-value">{{ formatSize(session.max_file_size) }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">허용 형식</span>
+              <span class="info-value">{{ allowedExts.length > 0 ? allowedExts.map(e => e.toUpperCase()).join(", ") : "제한 없음" }}</span>
             </div>
           </div>
           <div v-if="session.notice" class="notice-box">{{ session.notice }}</div>
@@ -218,15 +227,13 @@ onMounted(fetchSession);
         </div>
         <div class="card-body">
           <div class="info-list sub-info">
-            <div class="info-row-inline">
-              <div class="info-row">
-                <span class="info-label">제출일</span>
-                <span class="info-value">{{ formatDate(submission.submitted_at) }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">용량</span>
-                <span class="info-value">{{ formatSize(submission.total_size) }}</span>
-              </div>
+            <div class="info-row">
+              <span class="info-label">제출일</span>
+              <span class="info-value">{{ formatDate(submission.submitted_at) }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">용량</span>
+              <span class="info-value">{{ formatSize(submission.total_size) }}</span>
             </div>
           </div>
           <div class="file-list">

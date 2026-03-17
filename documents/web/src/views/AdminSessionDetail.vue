@@ -97,15 +97,13 @@ onMounted(loadStatus);
               <span class="info-label">지각 마감</span>
               <span class="info-value">{{ formatDate(session.late_end_at) }}</span>
             </div>
-            <div class="info-row-inline">
-              <div class="info-row">
-                <span class="info-label">용량 제한</span>
-                <span class="info-value">{{ formatSize(session.max_file_size) }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">허용 확장자</span>
-                <span class="info-value">{{ session.allowed_extensions ? formatExts(session.allowed_extensions) : "제한 없음" }}</span>
-              </div>
+            <div class="info-row">
+              <span class="info-label">용량 제한</span>
+              <span class="info-value">{{ formatSize(session.max_file_size) }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">허용 확장자</span>
+              <span class="info-value">{{ session.allowed_extensions ? formatExts(session.allowed_extensions) : "제한 없음" }}</span>
             </div>
           </div>
           <p v-if="session.notice" class="session-notice">{{ session.notice }}</p>

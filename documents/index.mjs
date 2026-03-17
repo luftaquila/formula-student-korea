@@ -443,7 +443,7 @@ app.get("/api/admin/sessions", (req, res) => {
 app.post("/api/admin/sessions", (req, res) => {
   const { name, notice, start_at, end_at, max_file_size, allowed_extensions, year, teams } = req.body;
   const late_end_at = req.body.late_end_at || "";
-  if (!name?.trim()) return res.status(400).send("세션명을 입력하세요.");
+  if (!name?.trim()) return res.status(400).send("세션 이름을 입력하세요.");
   if (!start_at || !end_at) return res.status(400).send("시간을 모두 입력하세요.");
   const isoRegex = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/;
   if (!isoRegex.test(start_at) || !isoRegex.test(end_at)) return res.status(400).send("날짜 형식이 올바르지 않습니다.");
@@ -491,7 +491,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   const session = db.prepare("SELECT * FROM session WHERE id = ?").get(id);
   if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
 
-  if (!name?.trim()) return res.status(400).send("세션명을 입력하세요.");
+  if (!name?.trim()) return res.status(400).send("세션 이름을 입력하세요.");
   if (!start_at || !end_at) return res.status(400).send("시간을 모두 입력하세요.");
   const isoRegex = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/;
   if (!isoRegex.test(start_at) || !isoRegex.test(end_at)) return res.status(400).send("날짜 형식이 올바르지 않습니다.");

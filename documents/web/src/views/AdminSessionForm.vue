@@ -139,7 +139,7 @@ async function loadSession() {
 }
 
 async function save() {
-  if (!form.value.name.trim()) { notyf.error("세션명을 입력하세요."); return; }
+  if (!form.value.name.trim()) { notyf.error("세션 이름을 입력하세요."); return; }
   if (!form.value.start || !form.value.end) { notyf.error("시간을 모두 입력하세요."); return; }
   if (form.value.teams.length === 0) { notyf.error("대상 팀을 선택하세요."); return; }
 
@@ -218,7 +218,7 @@ onMounted(async () => {
             </div>
 
             <div class="form-group">
-              <label>세션명</label>
+              <label>세션 이름</label>
               <input v-model="form.name" type="text" class="form-input" required />
             </div>
 
