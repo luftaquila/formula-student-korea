@@ -22,7 +22,7 @@ COPY shared ../shared
 RUN npm run build
 
 # Final Caddy image
-FROM caddy:alpine
+FROM docker.io/library/caddy:alpine
 
 # Copy Caddyfile
 COPY landing/Caddyfile /etc/caddy/Caddyfile

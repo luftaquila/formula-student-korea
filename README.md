@@ -72,13 +72,18 @@ Note: Google OAuth redirect URI should be set to `https://your-domain/auth/api/c
 Set `DOMAIN_NAME` in `.env` file.
 
 ```bash
-podman compose --profile production up -d
+make deploy              # 전체 빌드 + 배포
+make deploy SVC=traffic  # 특정 서비스만 빌드 + 배포
+make build               # 빌드만
+make build SVC=traffic   # 특정 서비스만 빌드
+make restart             # 재시작만 (빌드 없이)
 ```
 
 #### Local Development
 
 ```bash
-podman compose --profile local up -d
+make deploy PROFILE=local              # 전체 빌드 + 배포
+make deploy PROFILE=local SVC=traffic  # 특정 서비스만
 ```
 
 Available at `http://localhost:9000`. Omit `JWT_SECRET` from `.env` for dev mode (auto-authenticated as admin).

@@ -79,21 +79,29 @@ cd auth|entry|queue|inspection|traffic|score|documents
 node index.mjs     # Run API server directly
 ```
 
-### Docker Deployment (Local)
+### Docker Deployment
 
 Prerequisites:
 1. **Podman machine**: `podman machine init && podman machine start` (first time only)
 2. **Git submodules**: `git submodule update --init --recursive` (energymeter is a submodule)
 3. **`.env` file**: Copy `.env.example` to `.env` and set at minimum `JWT_SECRET` and `INTERNAL_SECRET` (any non-empty value works for local dev). Docker images set `NODE_ENV=production`, so services will fail-fast without `JWT_SECRET`.
 
+A `Makefile` wraps common podman compose operations. It auto-prunes dangling images before builds to prevent overlay storage slowdowns. Default profile is `production`.
+
 ```bash
-podman compose --profile local build    # Build all containers
-podman compose --profile local up -d    # Start all containers (local dev, port 9000)
-podman compose --profile local ps       # Check container status
-podman compose --profile local down     # Stop all containers
+make deploy              # Build all + restart (production)
+make deploy SVC=traffic  # Build specific service + restart
+make build               # Build only
+make build SVC=traffic   # Build specific service only
+make restart             # Restart only (no build)
 ```
 
-Access at `http://localhost:9000` after starting. The `local` profile uses `caddy-local` which binds port 9000 to the host.
+For local development, override the profile:
+```bash
+make deploy PROFILE=local
+```
+
+Access at `http://localhost:9000` after starting with `local` profile.
 
 ## Authentication
 
