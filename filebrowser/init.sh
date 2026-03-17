@@ -1,6 +1,9 @@
 #!/bin/sh
 set -e
 
+# Ensure writable directories
+chmod -R 777 /data /srv/files 2>/dev/null || true
+
 if [ ! -f /data/filebrowser.db ]; then
   filebrowser config init --database=/data/filebrowser.db
   filebrowser config set --database=/data/filebrowser.db \

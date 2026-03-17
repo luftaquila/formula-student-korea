@@ -247,6 +247,7 @@ services:
     container_name: fsk-filebrowser
     security_opt:
       - label:disable
+    user: "0:0"
     entrypoint: /init-custom.sh
     volumes:
       - ./filebrowser/init.sh:/init-custom.sh:ro
