@@ -7,5 +7,11 @@
 *docker-compose*
 .env*
 .htpasswd*
-energymeter/device
-energymeter/viewer/node_modules
+energymeter
+traffic/device
+traffic/assets
+filebrowser
+rules
+tests
+*.md
+.github
