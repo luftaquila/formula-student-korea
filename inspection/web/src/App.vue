@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from "vue";
+import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
@@ -18,6 +18,8 @@ function getPageTitle() {
   if (route.path.match(/^\/\d+\/\d+$/)) return "인스펙션 시트";
   return pageInfo[route.path]?.title || "인스펙션 시트";
 }
+
+watch(() => route.path, () => { document.title = `FSK ${getPageTitle()}`; }, { immediate: true });
 </script>
 
 <template>

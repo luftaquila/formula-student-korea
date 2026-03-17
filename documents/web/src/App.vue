@@ -1,11 +1,13 @@
 <script setup>
-import { computed } from "vue";
+import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 
 const route = useRoute();
 const title = computed(() => route.path.startsWith("/admin") ? "FSK 서류 제출 관리" : "FSK 서류 제출");
+
+watch(title, (v) => { document.title = v; }, { immediate: true });
 </script>
 
 <template>

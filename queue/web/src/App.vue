@@ -1,4 +1,5 @@
 <script setup>
+import { watch } from "vue";
 import { useRoute } from "vue-router";
 import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
@@ -16,6 +17,8 @@ const pageInfo = {
 function getPageTitle() {
   return pageInfo[route.path]?.title || "검차 대기열";
 }
+
+watch(() => route.path, () => { document.title = `FSK ${getPageTitle()}`; }, { immediate: true });
 </script>
 
 <template>
