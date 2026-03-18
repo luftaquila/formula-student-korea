@@ -415,14 +415,17 @@ watch(lastManualScoreUpdate, (update) => {
 });
 
 // SSE 이벤트 데이터만 갱신 (manualScores/penalties/settings는 전용 SSE watcher가 처리)
+let refreshSeq = 0;
 async function refreshEventData() {
+  const seq = ++refreshSeq;
   try {
     const data = await fetchScore(selectedYear.value);
+    if (seq !== refreshSeq) return;
     entries.value = data.entries;
     inspection.value = data.inspection;
     events.value = data.events;
   } catch (e) {
-    error("데이터를 가져올 수 없습니다.");
+    if (seq === refreshSeq) error("데이터를 가져올 수 없습니다.");
   }
 }
 

@@ -470,7 +470,9 @@ watch(reconnected, async () => {
   try {
     const data = await fetchSheetData(year, num);
     sheetData.value = data;
-  } catch {}
+  } catch {
+    error("데이터 동기화에 실패했습니다.");
+  }
 });
 </script>
 
