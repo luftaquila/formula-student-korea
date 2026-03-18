@@ -299,6 +299,7 @@ app.get("/api/callback", async (req, res) => {
 
     res.redirect(redirectUrl);
   } catch (e) {
+    logger.warn(req, "auth.callback_error", { error: e.message || String(e) });
     console.error("OAuth callback error:", e);
     res.setHeader("Set-Cookie", clearNonceCookie);
     res.redirect("/?login_error=error");
