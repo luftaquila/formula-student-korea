@@ -221,7 +221,7 @@ app.post("/api/entries", withYearTable, (req, res) => {
 });
 
 // PATCH /api/entries/:num - 엔트리 수정
-app.patch("/api/entries/:num", withYearTable, (req, res) => {
+app.patch("/api/entries/:num", withYearTable, async (req, res) => {
   const { tableName, year } = req;
 
   const prevNumValidation = validateEntryNum(req.params.num);
@@ -265,6 +265,20 @@ app.patch("/api/entries/:num", withYearTable, (req, res) => {
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
+  }
+
+  // 번호 변경 시 documents 서비스 team_num 동기화
+  if (numChanged && process.env.DOCUMENTS_SERVER) {
+    try {
+      await fetch(`${process.env.DOCUMENTS_SERVER}/api/internal/team-num`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "X-Internal-Service": process.env.INTERNAL_SECRET },
+        body: JSON.stringify({ prevNum, newNum, year: Number(year) }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch (e) {
+      console.error("Failed to sync team_num with documents service:", e.message);
+    }
   }
 
   logger.log(req, "entry.update", { year, univ: dataValidation.univ, team: dataValidation.team, type: dataValidation.type }, `#${newNum}`);

@@ -111,6 +111,7 @@ const logger = createLogger(db, "documents");
 
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
+  if (req.path.startsWith("/api/internal/")) return "admin";
   if (req.path.startsWith("/api/admin")) return "chief";
   if (req.path === "/api/logs") return "admin";
   if (req.path.startsWith("/api/")) return "student";
@@ -692,6 +693,47 @@ app.delete("/api/admin/student-teams/:email/:year", (req, res) => {
   if (!result.success) return res.status(result.status).send(result.error);
   if (result.result.changes === 0) return res.status(404).send("매핑을 찾을 수 없습니다.");
   logger.log(req, "student_team.delete", { year, team_num: mapping?.team_num }, email);
+  res.status(200).send();
+});
+
+/* ============================================
+   Internal API (서비스 간 통신)
+   ============================================ */
+
+// PATCH /api/internal/team-num - 엔트리 번호 변경 시 team_num 일괄 갱신
+app.patch("/api/internal/team-num", (req, res) => {
+  const prevNum = Number(req.body.prevNum);
+  const newNum = Number(req.body.newNum);
+  const year = Number(req.body.year);
+  if (!Number.isInteger(prevNum) || !Number.isInteger(newNum) || !Number.isInteger(year)) {
+    return res.status(400).send("올바르지 않은 요청입니다.");
+  }
+
+  const txResult = dbRun(() => {
+    db.transaction(() => {
+      db.prepare("UPDATE student_team SET team_num = ? WHERE team_num = ? AND year = ?")
+        .run(newNum, prevNum, year);
+      db.prepare("UPDATE session_team SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
+        .run(newNum, prevNum, year);
+      db.prepare("UPDATE submission SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
+        .run(newNum, prevNum, year);
+    })();
+  });
+
+  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+
+  // 업로드 디렉토리 이름 변경
+  const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
+  for (const s of sessions) {
+    const oldDir = path.join(UPLOADS_DIR, String(s.id), String(prevNum));
+    const newDir = path.join(UPLOADS_DIR, String(s.id), String(newNum));
+    if (fs.existsSync(oldDir)) {
+      try { fs.renameSync(oldDir, newDir); }
+      catch (e) { console.error(`Failed to rename upload dir: ${oldDir} → ${newDir}:`, e.message); }
+    }
+  }
+
+  logger.log(req, "team_num.update", { year, prevNum, newNum });
   res.status(200).send();
 });
 
