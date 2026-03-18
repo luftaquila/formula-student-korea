@@ -16,7 +16,7 @@ import { useSSE } from "../composables/useSSE";
 const { error } = useNotification();
 const router = useRouter();
 const route = useRoute();
-const { lastUpdate, lastInspectorUpdate, lastAnswerUpdate, lastMemoUpdate } = useSSE();
+const { lastUpdate, lastInspectorUpdate, lastAnswerUpdate, lastMemoUpdate, reconnected } = useSSE();
 
 const year = Number(route.params.year);
 const num = Number(route.params.num);
@@ -102,6 +102,7 @@ async function onAnswerChange(itemId, value) {
     sheetData.value.answers[itemId] = { value: "", memo: "" };
   }
   sheetData.value.answers[itemId].value = value;
+  editedDuringFocus.add(itemId);
 
   debounce(`answer-${itemId}`, async () => {
     try {
@@ -130,6 +131,7 @@ async function onMemoChange(itemId, memo) {
     sheetData.value.answers[itemId] = { value: "", memo: "" };
   }
   sheetData.value.answers[itemId].memo = memo;
+  editedMemos.add(itemId);
 
   debounce(`memo-${itemId}`, async () => {
     try {
@@ -193,12 +195,47 @@ async function onInspectorChange(catId, inspector) {
 const editingMemo = ref(null);
 const focusedItemId = ref(null);
 
+// Deferred SSE update state
+const deferredAnswerUpdate = ref(null);
+const editedDuringFocus = new Set();
+const deferredMemoUpdate = ref(null);
+const editedMemos = new Set();
+
+function applyDeferredAnswer(itemId) {
+  const deferred = deferredAnswerUpdate.value;
+  if (deferred && deferred.item_id === itemId && !editedDuringFocus.has(itemId)) {
+    if (!sheetData.value.answers[deferred.item_id])
+      sheetData.value.answers[deferred.item_id] = { value: "", memo: "" };
+    sheetData.value.answers[deferred.item_id].value = deferred.value;
+  }
+  deferredAnswerUpdate.value = null;
+  editedDuringFocus.delete(itemId);
+}
+
+function applyDeferredMemo(itemId) {
+  const deferred = deferredMemoUpdate.value;
+  if (deferred && deferred.item_id === itemId && !editedMemos.has(itemId)) {
+    if (!sheetData.value.answers[deferred.item_id])
+      sheetData.value.answers[deferred.item_id] = { value: "", memo: "" };
+    sheetData.value.answers[deferred.item_id].memo = deferred.memo;
+  }
+  deferredMemoUpdate.value = null;
+  editedMemos.delete(itemId);
+}
+
+function handleAnswerBlur() {
+  const prev = focusedItemId.value;
+  if (prev !== null) applyDeferredAnswer(prev);
+  focusedItemId.value = null;
+}
+
 function startEditMemo(itemId) {
   if (isReadOnly.value) return;
   editingMemo.value = itemId;
 }
 
 function finishEditMemo(itemId) {
+  applyDeferredMemo(itemId);
   editingMemo.value = null;
 }
 
@@ -376,13 +413,16 @@ watch(lastInspectorUpdate, (update) => {
   sheetData.value.inspectors[update.category_id] = update.inspector;
 });
 
-// SSE로 개별 항목 답변 실시간 반영 (self-echo 필터 + 편집 가드)
+// SSE로 개별 항목 답변 실시간 반영 (self-echo 필터 + 편집 가드 + deferred)
 watch(lastAnswerUpdate, (update) => {
   if (!update || update.year !== year || update.team_num !== num) return;
-  if (focusedItemId.value === update.item_id) return;
   const sentKey = `answer-${update.item_id}`;
   if (lastSentValues[sentKey] === update.value) {
     delete lastSentValues[sentKey];
+    return;
+  }
+  if (focusedItemId.value === update.item_id) {
+    deferredAnswerUpdate.value = update;
     return;
   }
   if (!sheetData.value.answers[update.item_id]) {
@@ -391,19 +431,46 @@ watch(lastAnswerUpdate, (update) => {
   sheetData.value.answers[update.item_id].value = update.value;
 });
 
-// SSE로 메모 실시간 반영 (self-echo 필터 + 편집 가드)
+// SSE로 메모 실시간 반영 (self-echo 필터 + 편집 가드 + deferred)
 watch(lastMemoUpdate, (update) => {
   if (!update || update.year !== year || update.team_num !== num) return;
-  if (editingMemo.value === update.item_id) return;
   const sentKey = `memo-${update.item_id}`;
   if (lastSentValues[sentKey] === update.memo) {
     delete lastSentValues[sentKey];
+    return;
+  }
+  if (editingMemo.value === update.item_id) {
+    deferredMemoUpdate.value = update;
     return;
   }
   if (!sheetData.value.answers[update.item_id]) {
     sheetData.value.answers[update.item_id] = { value: "", memo: "" };
   }
   sheetData.value.answers[update.item_id].memo = update.memo;
+});
+
+// Safety net watchers for deferred recovery
+watch(focusedItemId, (newVal, oldVal) => {
+  if (newVal !== null || oldVal === null) return;
+  applyDeferredAnswer(oldVal);
+});
+
+watch(editingMemo, (newVal, oldVal) => {
+  if (newVal !== null || oldVal === null) return;
+  applyDeferredMemo(oldVal);
+});
+
+// SSE 재연결 시 전체 데이터 동기화
+watch(reconnected, async () => {
+  if (!reconnected.value) return;
+  deferredAnswerUpdate.value = null;
+  deferredMemoUpdate.value = null;
+  editedDuringFocus.clear();
+  editedMemos.clear();
+  try {
+    const data = await fetchSheetData(year, num);
+    sheetData.value = data;
+  } catch {}
 });
 </script>
 
@@ -569,7 +636,7 @@ watch(lastMemoUpdate, (update) => {
                       class="form-input inline-input number-input"
                       :value="getAnswer(item.id)"
                       @focus="focusedItemId = item.id"
-                      @blur="focusedItemId = null"
+                      @blur="handleAnswerBlur()"
                       @input="onAnswerChange(item.id, $event.target.value)"
                       :disabled="isReadOnly"
                       placeholder="값"
@@ -583,7 +650,7 @@ watch(lastMemoUpdate, (update) => {
                       class="form-input inline-input text-input"
                       :value="getAnswer(item.id)"
                       @focus="focusedItemId = item.id"
-                      @blur="focusedItemId = null"
+                      @blur="handleAnswerBlur()"
                       @input="onAnswerChange(item.id, $event.target.value)"
                       :disabled="isReadOnly"
                       placeholder="입력"

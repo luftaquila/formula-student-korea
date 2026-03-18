@@ -261,7 +261,7 @@ app.post("/api/records", (req, res) => {
       rowid: result.result,
       time: data.time, num: data.entry.num, univ: data.entry.univ,
       team: data.entry.team, type: data.type, result: data.result,
-      detail: data.detail || null, cones: 0, oc: 0, invalidated: 0, scoreboard: 1,
+      detail: data.detail ?? null, cones: 0, oc: 0, invalidated: 0, scoreboard: 1,
     },
   });
 

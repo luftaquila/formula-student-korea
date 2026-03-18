@@ -13,13 +13,17 @@ const lastPenaltyUpdate = ref(null);
 const lastSettingUpdate = ref(null);
 const lastEnduranceUpdate = ref(null);
 
+const reconnected = ref(null);
+
 function parseSSE(e, target) {
   try { target.value = { ...JSON.parse(e.data), timestamp: Date.now() }; }
   catch { /* malformed */ }
 }
 
+let initCount = 0;
 on("init", () => {
   connected.value = true;
+  if (++initCount > 1) reconnected.value = Date.now();
 });
 
 on("inspection:category-result", (e) => parseSSE(e, lastInspectionUpdate));
@@ -41,5 +45,6 @@ export function useSSE() {
     lastPenaltyUpdate,
     lastSettingUpdate,
     lastEnduranceUpdate,
+    reconnected,
   };
 }

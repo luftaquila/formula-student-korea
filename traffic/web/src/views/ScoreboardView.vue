@@ -25,6 +25,8 @@ const EVENT_CONFIG = {
   짐카나: { label: "GYMKHANA", color: "#bf5af2" },
 };
 
+let fetchSeq = 0;
+
 async function loadRecords() {
   if (!selectedFile.value) {
     records.value = [];
@@ -33,14 +35,17 @@ async function loadRecords() {
   }
 
   loading.value = true;
+  const seq = ++fetchSeq;
   try {
     const data = await fetchRecord(selectedFile.value);
+    if (seq !== fetchSeq) return;
     records.value = data;
     lastLoadedFile.value = selectedFile.value;
   } catch (err) {
+    if (seq !== fetchSeq) return;
     console.error("기록 조회 실패:", err);
   } finally {
-    loading.value = false;
+    if (seq === fetchSeq) loading.value = false;
   }
 }
 

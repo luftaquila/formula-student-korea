@@ -9,9 +9,12 @@ const lastUpdate = ref(null);
 const lastInspectorUpdate = ref(null);
 const lastAnswerUpdate = ref(null);
 const lastMemoUpdate = ref(null);
+const reconnected = ref(null);
 
+let initCount = 0;
 on("init", () => {
   connected.value = true;
+  if (++initCount > 1) reconnected.value = Date.now();
 });
 
 on("category-result", (e) => {
@@ -46,5 +49,6 @@ export function useSSE() {
     lastInspectorUpdate,
     lastAnswerUpdate,
     lastMemoUpdate,
+    reconnected,
   };
 }

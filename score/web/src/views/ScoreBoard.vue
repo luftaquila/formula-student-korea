@@ -6,7 +6,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();
-const { lastInspectionUpdate, lastAnswerUpdate, lastTrafficRecordUpdate, lastManualScoreUpdate, lastPenaltyUpdate, lastSettingUpdate, lastEnduranceUpdate } = useSSE();
+const { lastInspectionUpdate, lastAnswerUpdate, lastTrafficRecordUpdate, lastManualScoreUpdate, lastPenaltyUpdate, lastSettingUpdate, lastEnduranceUpdate, reconnected } = useSSE();
 
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
@@ -461,6 +461,9 @@ watch(lastTrafficRecordUpdate, () => {
 watch(lastEnduranceUpdate, () => {
   debouncedRefresh();
 });
+
+// SSE 재연결 시 전체 데이터 동기화
+watch(reconnected, () => { if (reconnected.value) loadData(); });
 
 // 카테고리 오버라이드 판별
 function isOverriddenCategory(catId) {

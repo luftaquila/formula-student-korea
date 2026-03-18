@@ -341,6 +341,10 @@ function detailInputRef(el) {
 
 async function handleDetailChange(record, value) {
   editingDetailId.value = null;
+  if (missedUpdate.value && !isEditingRow(record.rowid)) {
+    missedUpdate.value = false;
+    refreshRecords();
+  }
   if (value === (record.detail || '')) return;
   try {
     const result = await updateRecord(selectedFile.value, record.rowid, "detail", value);
@@ -363,6 +367,10 @@ function conesInputRef(el) {
 
 async function handleConesChange(record, value) {
   editingConesId.value = null;
+  if (missedUpdate.value && !isEditingRow(record.rowid)) {
+    missedUpdate.value = false;
+    refreshRecords();
+  }
   const numValue = parseInt(value, 10) || 0;
   if (numValue === (record.cones || 0)) return;
   try {
@@ -386,6 +394,10 @@ function ocInputRef(el) {
 
 async function handleOcChange(record, value) {
   editingOcId.value = null;
+  if (missedUpdate.value && !isEditingRow(record.rowid)) {
+    missedUpdate.value = false;
+    refreshRecords();
+  }
   const numValue = parseInt(value, 10) || 0;
   if (numValue === (record.oc || 0)) return;
   try {

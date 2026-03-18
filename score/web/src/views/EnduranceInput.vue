@@ -6,7 +6,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();
-const { lastEnduranceUpdate, lastPenaltyUpdate } = useSSE();
+const { lastEnduranceUpdate, lastPenaltyUpdate, reconnected } = useSSE();
 
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
@@ -17,6 +17,8 @@ const entries = ref({});
 const endurance = ref({});
 const penalties = ref({});
 const focusedCell = ref(null); // { num, field }
+const deferredEnduranceUpdate = ref(null);
+let cellEdited = false;
 let fetchSeq = 0;
 
 const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
@@ -66,11 +68,14 @@ async function onYearChange() {
   loading.value = false;
 }
 
-// SSE (편집 가드: 포커스된 셀은 스킵)
+// SSE (편집 가드: 포커스된 셀은 deferred)
 watch(lastEnduranceUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
   const { team_num, field, value } = update;
-  if (focusedCell.value && focusedCell.value.num === team_num && focusedCell.value.field === field) return;
+  if (focusedCell.value && focusedCell.value.num === team_num && focusedCell.value.field === field) {
+    deferredEnduranceUpdate.value = update;
+    return;
+  }
   if (!endurance.value[team_num]) endurance.value[team_num] = {};
   endurance.value[team_num][field] = value;
 });
@@ -82,6 +87,42 @@ watch(lastPenaltyUpdate, (update) => {
   penalties.value[event_type].cone_penalty = cone_penalty;
   penalties.value[event_type].oc_penalty = oc_penalty;
   penalties.value[event_type].start_delay = start_delay;
+});
+
+// Deferred SSE recovery
+function applyDeferredCell(prevCell) {
+  const deferred = deferredEnduranceUpdate.value;
+  if (deferred && deferred.team_num === prevCell.num && deferred.field === prevCell.field && !cellEdited) {
+    if (!endurance.value[deferred.team_num]) endurance.value[deferred.team_num] = {};
+    endurance.value[deferred.team_num][deferred.field] = deferred.value;
+  }
+  deferredEnduranceUpdate.value = null;
+  cellEdited = false;
+}
+
+function handleCellBlur() {
+  const prev = focusedCell.value;
+  if (prev) applyDeferredCell(prev);
+  focusedCell.value = null;
+}
+
+function handleCellFocus(num, field, event) {
+  focusedCell.value = { num, field };
+  event.target.select();
+}
+
+// Safety net watcher
+watch(focusedCell, (newVal, oldVal) => {
+  if (newVal !== null || !oldVal) return;
+  applyDeferredCell(oldVal);
+});
+
+// SSE 재연결 시 전체 데이터 동기화
+watch(reconnected, () => {
+  if (!reconnected.value) return;
+  deferredEnduranceUpdate.value = null;
+  cellEdited = false;
+  loadData();
 });
 
 // 계산 헬퍼
@@ -196,6 +237,7 @@ async function saveTimeField(num, field, e) {
 
   const oldValue = getField(num, field);
   if (parsed === oldValue) return;
+  cellEdited = true;
 
   if (!endurance.value[num]) endurance.value[num] = {};
   endurance.value[num][field] = parsed;
@@ -219,6 +261,7 @@ async function saveNumField(num, field, e, isInteger = false) {
 
   const oldValue = getField(num, field);
   if (newValue === oldValue) return;
+  cellEdited = true;
 
   if (!endurance.value[num]) endurance.value[num] = {};
   endurance.value[num][field] = newValue;
@@ -401,19 +444,19 @@ function exportData(format) {
                   <span v-else class="cell-display">-</span>
                 </td>
                 <!-- Driver 1 -->
-                <td class="col-field"><input class="cell-input time-input" :value="formatResult(getField(entry.num, 'driver1_time'))" :disabled="isDisabled(entry.num)" placeholder="0:00.000" @focus="focusedCell = { num: entry.num, field: 'driver1_time' }; $event.target.select()" @blur="saveTimeField(entry.num, 'driver1_time', $event); focusedCell = null" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="getField(entry.num, 'driver1_start_delay') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="focusedCell = { num: entry.num, field: 'driver1_start_delay' }; $event.target.select()" @blur="saveNumField(entry.num, 'driver1_start_delay', $event, true); focusedCell = null" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="getField(entry.num, 'driver1_cones') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="focusedCell = { num: entry.num, field: 'driver1_cones' }; $event.target.select()" @blur="saveNumField(entry.num, 'driver1_cones', $event, true); focusedCell = null" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="getField(entry.num, 'driver1_oc') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="focusedCell = { num: entry.num, field: 'driver1_oc' }; $event.target.select()" @blur="saveNumField(entry.num, 'driver1_oc', $event, true); focusedCell = null" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="any" :value="getField(entry.num, 'driver1_penalty') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="focusedCell = { num: entry.num, field: 'driver1_penalty' }; $event.target.select()" @blur="saveNumField(entry.num, 'driver1_penalty', $event); focusedCell = null" /></td>
+                <td class="col-field"><input class="cell-input time-input" :value="formatResult(getField(entry.num, 'driver1_time'))" :disabled="isDisabled(entry.num)" placeholder="0:00.000" @focus="handleCellFocus(entry.num, 'driver1_time', $event)" @blur="saveTimeField(entry.num, 'driver1_time', $event); handleCellBlur()" /></td>
+                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="getField(entry.num, 'driver1_start_delay') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="handleCellFocus(entry.num, 'driver1_start_delay', $event)" @blur="saveNumField(entry.num, 'driver1_start_delay', $event, true); handleCellBlur()" /></td>
+                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="getField(entry.num, 'driver1_cones') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="handleCellFocus(entry.num, 'driver1_cones', $event)" @blur="saveNumField(entry.num, 'driver1_cones', $event, true); handleCellBlur()" /></td>
+                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="getField(entry.num, 'driver1_oc') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="handleCellFocus(entry.num, 'driver1_oc', $event)" @blur="saveNumField(entry.num, 'driver1_oc', $event, true); handleCellBlur()" /></td>
+                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="any" :value="getField(entry.num, 'driver1_penalty') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="handleCellFocus(entry.num, 'driver1_penalty', $event)" @blur="saveNumField(entry.num, 'driver1_penalty', $event); handleCellBlur()" /></td>
                 <!-- Driver change -->
-                <td class="col-change"><input class="cell-input time-input" :value="formatResult(getField(entry.num, 'driver_change_time'))" :disabled="isDisabled(entry.num)" placeholder="0:00.000" @focus="focusedCell = { num: entry.num, field: 'driver_change_time' }; $event.target.select()" @blur="saveTimeField(entry.num, 'driver_change_time', $event); focusedCell = null" /></td>
+                <td class="col-change"><input class="cell-input time-input" :value="formatResult(getField(entry.num, 'driver_change_time'))" :disabled="isDisabled(entry.num)" placeholder="0:00.000" @focus="handleCellFocus(entry.num, 'driver_change_time', $event)" @blur="saveTimeField(entry.num, 'driver_change_time', $event); handleCellBlur()" /></td>
                 <!-- Driver 2 -->
-                <td class="col-field"><input class="cell-input time-input" :value="formatResult(getField(entry.num, 'driver2_time'))" :disabled="isDisabled(entry.num)" placeholder="0:00.000" @focus="focusedCell = { num: entry.num, field: 'driver2_time' }; $event.target.select()" @blur="saveTimeField(entry.num, 'driver2_time', $event); focusedCell = null" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="getField(entry.num, 'driver2_start_delay') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="focusedCell = { num: entry.num, field: 'driver2_start_delay' }; $event.target.select()" @blur="saveNumField(entry.num, 'driver2_start_delay', $event, true); focusedCell = null" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="getField(entry.num, 'driver2_cones') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="focusedCell = { num: entry.num, field: 'driver2_cones' }; $event.target.select()" @blur="saveNumField(entry.num, 'driver2_cones', $event, true); focusedCell = null" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="getField(entry.num, 'driver2_oc') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="focusedCell = { num: entry.num, field: 'driver2_oc' }; $event.target.select()" @blur="saveNumField(entry.num, 'driver2_oc', $event, true); focusedCell = null" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="any" :value="getField(entry.num, 'driver2_penalty') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="focusedCell = { num: entry.num, field: 'driver2_penalty' }; $event.target.select()" @blur="saveNumField(entry.num, 'driver2_penalty', $event); focusedCell = null" /></td>
+                <td class="col-field"><input class="cell-input time-input" :value="formatResult(getField(entry.num, 'driver2_time'))" :disabled="isDisabled(entry.num)" placeholder="0:00.000" @focus="handleCellFocus(entry.num, 'driver2_time', $event)" @blur="saveTimeField(entry.num, 'driver2_time', $event); handleCellBlur()" /></td>
+                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="getField(entry.num, 'driver2_start_delay') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="handleCellFocus(entry.num, 'driver2_start_delay', $event)" @blur="saveNumField(entry.num, 'driver2_start_delay', $event, true); handleCellBlur()" /></td>
+                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="getField(entry.num, 'driver2_cones') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="handleCellFocus(entry.num, 'driver2_cones', $event)" @blur="saveNumField(entry.num, 'driver2_cones', $event, true); handleCellBlur()" /></td>
+                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="getField(entry.num, 'driver2_oc') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="handleCellFocus(entry.num, 'driver2_oc', $event)" @blur="saveNumField(entry.num, 'driver2_oc', $event, true); handleCellBlur()" /></td>
+                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="any" :value="getField(entry.num, 'driver2_penalty') ?? ''" :disabled="isDisabled(entry.num)" placeholder="-" @focus="handleCellFocus(entry.num, 'driver2_penalty', $event)" @blur="saveNumField(entry.num, 'driver2_penalty', $event); handleCellBlur()" /></td>
                 <td class="col-status">
                   <div class="status-group">
                     <button
