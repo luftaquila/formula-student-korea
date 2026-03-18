@@ -6,6 +6,7 @@ on:
 
 permissions:
   packages: write
+  checks: write
 
 jobs:
   e2e:
@@ -38,11 +39,11 @@ jobs:
         uses: docker/setup-buildx-action@v4
         with:
           driver-opts: network=host
-        env:
-          DOCKER_BUILD_SUMMARY: false
 
       - name: Build images with cache
         uses: docker/bake-action@v7
+        env:
+          DOCKER_BUILD_SUMMARY: false
         with:
           files: compose.yml
           targets: auth,entry,queue,inspection,traffic,score,documents,caddy-local
@@ -104,6 +105,14 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+      - name: Test report
+        uses: dorny/test-reporter@v2
+        if: always()
+        with:
+          name: E2E Tests
+          path: e2e-results.xml
+          reporter: java-junit
 
       - name: Stop services
         if: always()
