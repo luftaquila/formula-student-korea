@@ -390,7 +390,7 @@ app.get("/api/sheet/bulk-answers", (req, res) => {
   const result = dbRun(() => {
     const placeholders = itemIds.map(() => "?").join(",");
     const rows = db.prepare(
-      `SELECT team_num, item_id, value FROM sheet_answer WHERE year = ? AND item_id IN (${placeholders})`
+      `SELECT team_num, item_id, value FROM sheet_answer WHERE year = ? AND item_id IN (${placeholders}) AND value != ''`
     ).all(year, ...itemIds);
 
     const teams = {};

@@ -246,7 +246,7 @@ test.describe("Documents deadline enforcement", () => {
     await waitForPageReady(page);
 
     // Verify the "지각 제출" badge is shown
-    await expect(page.locator(".badge").filter({ hasText: "지각 제출" })).toBeVisible();
+    await expect(page.locator(".badge").filter({ hasText: /^지각 제출$/ })).toBeVisible();
 
     await context.close();
   });
