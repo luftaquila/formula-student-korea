@@ -74,3 +74,24 @@ make deploy PROFILE=local SVC=traffic  # Build specific service only
 ```
 
 Available at `http://localhost:9000`.
+
+## Testing
+
+### Unit / Integration Tests
+
+```bash
+npm test                          # Run all tests
+npm run test:auth                 # Auth service only (etc.)
+```
+
+### E2E Tests (Playwright)
+
+Requires all services running (Docker Compose).
+
+```bash
+npx playwright install chromium   # First time only
+npm run test:e2e                  # Run all E2E tests
+npx playwright show-report        # View HTML report
+```
+
+E2E tests run in CI on tag push via `.github/workflows/e2e.yml`.

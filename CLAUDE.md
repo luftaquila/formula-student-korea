@@ -60,7 +60,7 @@ All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs
 - **Auth:** Google OAuth 2.0, JWT (HMAC-SHA256) cookies, role-based access control
 - **Real-time:** Server-Sent Events (SSE) for live updates across inspection, queue, score, and traffic services
 - **Deployment:** Docker Compose with Caddy reverse proxy
-- **Testing:** Node.js built-in test runner (`node:test` + `node:assert`)
+- **Testing:** Node.js built-in test runner (`node:test` + `node:assert`), Playwright (E2E)
 - **Logging:** SQLite-based semantic logging (`shared/logger.mjs`)
 
 ## Build Commands
@@ -143,6 +143,15 @@ For non-API routes (SPA pages), 401/403 responses redirect to `/` (landing page)
 
 Event types (가속, 스키드패드, 오토크로스, 짐카나) can be enabled/disabled from the traffic record management page. Disabled modes are hidden from traffic navigation tabs and score service tables. The "내구" (endurance) event is always shown in the score service regardless of event mode settings.
 
+### Traffic: Manual Mode
+
+Each event view (AccelView, SkidpadView, AutocrossView, GymkhanaView) has a manual mode toggle in the controller card. Manual mode simulates the serial controller by calling the same handlers (`handleGreenLight`, `handleSensorReport`) directly with `Date.now()`-based ticks instead of serial port data. This enables testing dynamic event measurement flows without physical hardware.
+
+- `serial.js` store: `manualMode` ref, `enableManualMode()` / `disableManualMode()` / `manualSensor(sensorNum)` methods
+- When manual mode is active: `sendGreen()` / `sendRed()` / `sendOff()` call handlers directly instead of `transmit()`; `reset()` skips serial transmission
+- Sensor buttons (`data-testid="manual-sensor-1"`, `data-testid="manual-sensor-2"`) appear when green light is active + manual mode is on
+- Manual mode and serial connection are mutually exclusive
+
 ### Score: Scoring System
 
 Penalty settings (per-event cone touch, off-course, start delay penalties in seconds), score settings (per-event total points, completion points, cutoff percentage), auto-calculated scores based on penalty-adjusted best records using the FSK scoring formula. Record/Score toggle switches between viewing penalty-adjusted times and calculated scores. Total score = sum of all event scores + endurance + report + energy.
@@ -173,9 +182,10 @@ Cloud file storage at `/files/`, restricted to chief+ roles. Uses [FileBrowser](
 
 ## Testing
 
+### Unit/Integration Tests
+
 Backend services and shared modules are tested using Node.js built-in test runner (`node:test`).
 
-### Running Tests
 ```bash
 npm test                          # Run all tests
 npm run test:shared               # Shared modules only
@@ -188,16 +198,34 @@ npm run test:score                # Score service only
 npm run test:documents            # Documents service only
 ```
 
-### Test Architecture
 - Each service's `index.mjs` exports a `create*App(options)` factory function for testability
 - Tests use in-memory/temp SQLite databases (no external services needed)
 - External service dependencies are mocked with lightweight Express servers
 - Tests run in CI via GitHub Actions on push to main and PRs
-
-### Writing Tests
 - Test files go in `tests/<service>/<service>.test.mjs`
 - Shared module tests go in `tests/shared/<module>.test.mjs`
 - Use `tests/helpers/test-utils.mjs` for common utilities (JWT, HTTP client, temp DB)
+
+### E2E Tests (Playwright)
+
+Browser-based end-to-end tests using Playwright against all 7 backend services running in Docker.
+
+```bash
+npx playwright install chromium   # First time only
+npm run test:e2e                  # Run all E2E tests
+npx playwright show-report        # View HTML report
+```
+
+- Tests are in `tests/e2e/{service}/*.spec.mjs` (35 spec files across 8 service groups)
+- `playwright.config.mjs` defines project dependencies ensuring execution order: auth → entry → inspection/queue/traffic → score → documents → cross-service
+- `tests/e2e/global-setup.mjs` waits for services, generates auth storage states (JWT cookies for 4 roles), and seeds test data via API
+- Auth bypass: `createJWT()` from `shared/express-setup.mjs` generates valid JWTs directly; Playwright `storageState` files at `tests/e2e/.auth/{admin,chief,official,student}.json` provide pre-authenticated sessions
+- Traffic manual mode (`data-testid="manual-mode-toggle"`) enables dynamic event measurement testing without Web Serial API
+- E2E CI runs via `.github/workflows/e2e.yml`, triggered on tag push only (heavyweight: builds 7 Docker images + Caddy + headless Chromium)
+
+## Business Flows
+
+See `FLOW.md` for the complete documentation of all 63 business flows across the 7 services, including API endpoints, role requirements, business rules, and inter-service dependencies.
 
 ## Environment Variables
 
