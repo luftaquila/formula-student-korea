@@ -1,8 +1,19 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications } from "../helpers/utils.mjs";
 
+const YEAR = new Date().getFullYear();
+
 test.describe("Acceleration manual mode measurement", () => {
   test.use({ storageState: storageStatePath("admin") });
+
+  test.afterAll(async ({ browser }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("admin") });
+    const page = await context.newPage();
+    for (const name of ["E2E-Test", "E2E-DNF", "E2E-Reset"]) {
+      await page.request.delete(`/traffic/api/records/FSK ${YEAR} ${name}`);
+    }
+    await context.close();
+  });
 
   test.beforeEach(async ({ page }) => {
     await page.goto("/traffic/accel");
