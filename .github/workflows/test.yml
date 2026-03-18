@@ -3,8 +3,12 @@ name: Test
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'Makefile'
+      - 'LICENSE'
+      - '.env.example'
+      - '.gitignore'
 
 permissions:
   packages: write

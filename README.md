@@ -86,12 +86,4 @@ npm run test:auth                 # Auth service only (etc.)
 
 ### E2E Tests (Playwright)
 
-Requires all services running (Docker Compose).
-
-```bash
-npx playwright install chromium   # First time only
-npm run test:e2e                  # Run all E2E tests
-npx playwright show-report        # View HTML report
-```
-
-E2E tests run in CI on tag push via `.github/workflows/e2e.yml`.
+E2E tests run only in CI on push to main.
