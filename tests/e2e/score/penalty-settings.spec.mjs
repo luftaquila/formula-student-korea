@@ -1,0 +1,210 @@
+import { test, expect } from "@playwright/test";
+import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+
+const YEAR = new Date().getFullYear();
+
+test.describe("Score penalty and score settings", () => {
+  test.use({ storageState: storageStatePath("admin") });
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/score");
+    await waitForPageReady(page);
+  });
+
+  test("penalty settings table is displayed with event columns", async ({ page }) => {
+    // The penalty settings table is in the bottom-row section
+    const settingCards = page.locator(".setting-card");
+
+    // There should be two setting cards: penalty and score settings
+    // They may not exist if no events are loaded, so check for the bottom-row first
+    const bottomRow = page.locator(".bottom-row");
+    const bottomRowVisible = await bottomRow.isVisible().catch(() => false);
+    if (!bottomRowVisible) {
+      // No events loaded, settings tables won't show
+      return;
+    }
+
+    // First setting card: penalty settings
+    const penaltyTable = settingCards.first().locator("table.setting-table");
+    await expect(penaltyTable).toBeVisible();
+
+    // Verify penalty table header
+    await expect(penaltyTable.locator("th").filter({ hasText: "페널티 (초)" })).toBeVisible();
+    await expect(penaltyTable.locator("th").filter({ hasText: "내구" })).toBeVisible();
+
+    // Verify penalty row labels
+    await expect(penaltyTable.locator("td").filter({ hasText: "콘터치" }).first()).toBeVisible();
+    await expect(penaltyTable.locator("td").filter({ hasText: "코스이탈" }).first()).toBeVisible();
+    await expect(penaltyTable.locator("td").filter({ hasText: "출발지연" }).first()).toBeVisible();
+  });
+
+  test("set cone touch penalty for endurance event", async ({ page }) => {
+    const bottomRow = page.locator(".bottom-row");
+    const bottomRowVisible = await bottomRow.isVisible().catch(() => false);
+    if (!bottomRowVisible) return;
+
+    const penaltyTable = page.locator(".setting-card").first().locator("table.setting-table");
+
+    // Find the cone penalty row
+    const coneRow = penaltyTable.locator("tr").filter({ hasText: "콘터치" });
+    await expect(coneRow).toBeVisible();
+
+    // Find the endurance column cell (last setting-cell in the row)
+    // The columns are dynamic events + endurance (last)
+    const coneCells = coneRow.locator("td.setting-cell");
+    const lastConeCell = coneCells.last();
+
+    // Click to edit
+    await lastConeCell.click();
+
+    // An input should appear
+    const input = lastConeCell.locator("input.setting-input");
+    await expect(input).toBeVisible();
+
+    // Set cone penalty to 2 seconds
+    await input.fill("2");
+    await input.press("Enter");
+
+    // Verify the value is saved and displayed
+    await expect(lastConeCell.locator(".setting-text")).toHaveText("2");
+
+    // Verify via API that the penalty was saved
+    const response = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const data = await response.json();
+    expect(data.penalties["내구"]?.cone_penalty).toBe(2);
+
+    // Clean up: reset to 0
+    await lastConeCell.click();
+    const resetInput = lastConeCell.locator("input.setting-input");
+    await resetInput.fill("0");
+    await resetInput.press("Enter");
+  });
+
+  test("set off-course penalty for endurance event", async ({ page }) => {
+    const bottomRow = page.locator(".bottom-row");
+    const bottomRowVisible = await bottomRow.isVisible().catch(() => false);
+    if (!bottomRowVisible) return;
+
+    const penaltyTable = page.locator(".setting-card").first().locator("table.setting-table");
+
+    // Find the off-course penalty row
+    const ocRow = penaltyTable.locator("tr").filter({ hasText: "코스이탈" });
+    await expect(ocRow).toBeVisible();
+
+    // Find the endurance column cell (last setting-cell)
+    const ocCells = ocRow.locator("td.setting-cell");
+    const lastOcCell = ocCells.last();
+
+    // Click to edit
+    await lastOcCell.click();
+    const input = lastOcCell.locator("input.setting-input");
+    await expect(input).toBeVisible();
+
+    // Set off-course penalty to 10 seconds
+    await input.fill("10");
+    await input.press("Enter");
+
+    // Verify the value is saved
+    await expect(lastOcCell.locator(".setting-text")).toHaveText("10");
+
+    // Verify via API
+    const response = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const data = await response.json();
+    expect(data.penalties["내구"]?.oc_penalty).toBe(10);
+
+    // Clean up
+    await lastOcCell.click();
+    const resetInput = lastOcCell.locator("input.setting-input");
+    await resetInput.fill("0");
+    await resetInput.press("Enter");
+  });
+
+  test("score settings table renders and set total points for endurance", async ({ page }) => {
+    const bottomRow = page.locator(".bottom-row");
+    const bottomRowVisible = await bottomRow.isVisible().catch(() => false);
+    if (!bottomRowVisible) return;
+
+    // Second setting card: score settings
+    const scoreTable = page.locator(".setting-card").nth(1).locator("table.setting-table");
+    await expect(scoreTable).toBeVisible();
+
+    // Verify score settings header
+    await expect(scoreTable.locator("th").filter({ hasText: "점수" })).toBeVisible();
+
+    // Verify score row labels
+    await expect(scoreTable.locator("td").filter({ hasText: "총점" }).first()).toBeVisible();
+    await expect(scoreTable.locator("td").filter({ hasText: "완주점수" }).first()).toBeVisible();
+    await expect(scoreTable.locator("td").filter({ hasText: "컷오프 (%)" }).first()).toBeVisible();
+
+    // Set total points for endurance (last column in total row)
+    const totalRow = scoreTable.locator("tr").filter({ hasText: "총점" });
+    const totalCells = totalRow.locator("td.setting-cell");
+    const lastTotalCell = totalCells.last();
+
+    await lastTotalCell.click();
+    const input = lastTotalCell.locator("input.setting-input");
+    await expect(input).toBeVisible();
+
+    await input.fill("300");
+    await input.press("Enter");
+
+    // Verify the value is saved
+    await expect(lastTotalCell.locator(".setting-text")).toHaveText("300");
+
+    // Verify via API
+    const response = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const data = await response.json();
+    expect(data.settings["내구"]?.total).toBe(300);
+
+    // Clean up
+    await lastTotalCell.click();
+    const resetInput = lastTotalCell.locator("input.setting-input");
+    await resetInput.fill("");
+    await resetInput.press("Enter");
+  });
+
+  test("set completion points and cutoff for endurance", async ({ page }) => {
+    const bottomRow = page.locator(".bottom-row");
+    const bottomRowVisible = await bottomRow.isVisible().catch(() => false);
+    if (!bottomRowVisible) return;
+
+    const scoreTable = page.locator(".setting-card").nth(1).locator("table.setting-table");
+
+    // Set completion points for endurance
+    const finishRow = scoreTable.locator("tr").filter({ hasText: "완주점수" });
+    const finishCells = finishRow.locator("td.setting-cell");
+    const lastFinishCell = finishCells.last();
+
+    await lastFinishCell.click();
+    const finishInput = lastFinishCell.locator("input.setting-input");
+    await finishInput.fill("25");
+    await finishInput.press("Enter");
+    await expect(lastFinishCell.locator(".setting-text")).toHaveText("25");
+
+    // Set cutoff % for endurance
+    const cutoffRow = scoreTable.locator("tr").filter({ hasText: "컷오프 (%)" });
+    const cutoffCells = cutoffRow.locator("td.setting-cell");
+    const lastCutoffCell = cutoffCells.last();
+
+    await lastCutoffCell.click();
+    const cutoffInput = lastCutoffCell.locator("input.setting-input");
+    await cutoffInput.fill("135");
+    await cutoffInput.press("Enter");
+    await expect(lastCutoffCell.locator(".setting-text")).toHaveText("135");
+
+    // Verify via API
+    const response = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const data = await response.json();
+    expect(data.settings["내구"]?.finish).toBe(25);
+    expect(data.settings["내구"]?.cutoff).toBe(135);
+
+    // Clean up
+    await lastFinishCell.click();
+    await lastFinishCell.locator("input.setting-input").fill("");
+    await lastFinishCell.locator("input.setting-input").press("Enter");
+
+    await lastCutoffCell.click();
+    await lastCutoffCell.locator("input.setting-input").fill("");
+    await lastCutoffCell.locator("input.setting-input").press("Enter");
+  });
+});

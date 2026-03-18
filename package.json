@@ -3,6 +3,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test --test-force-exit tests/**/*.test.mjs",
+    "test:e2e": "npx playwright test",
     "test:shared": "node --test --test-force-exit tests/shared/*.test.mjs",
     "test:auth": "node --test --test-force-exit tests/auth/*.test.mjs",
     "test:entry": "node --test --test-force-exit tests/entry/*.test.mjs",
@@ -11,5 +12,8 @@
     "test:traffic": "node --test --test-force-exit tests/traffic/*.test.mjs",
     "test:score": "node --test --test-force-exit tests/score/*.test.mjs",
     "test:documents": "node --test --test-force-exit tests/documents/*.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
   }
 }

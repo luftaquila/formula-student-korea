@@ -1,0 +1,178 @@
+import { test, expect } from "@playwright/test";
+import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
+import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
+
+async function apiGetCancelPenalty() {
+  const res = await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    headers: { Cookie: getAuthCookie("chief") },
+  });
+  return res.json();
+}
+
+async function apiSetCancelPenalty(value) {
+  await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+    body: JSON.stringify({ value }),
+  });
+}
+
+async function apiGetInspections() {
+  const res = await fetch(`${BASE_URL}/queue/api/admin/all`, {
+    headers: { Cookie: getAuthCookie("chief") },
+  });
+  return res.json();
+}
+
+async function apiSetInspectionActive(type, active) {
+  await fetch(`${BASE_URL}/queue/api/admin/inspection/${type}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+    body: JSON.stringify({ active }),
+  });
+}
+
+test.describe("Queue settings management", () => {
+  test.use({ storageState: storageStatePath("chief") });
+
+  let originalPenalty;
+
+  test.beforeAll(async () => {
+    const data = await apiGetCancelPenalty();
+    originalPenalty = data.value;
+  });
+
+  test.afterAll(async () => {
+    // Restore original penalty
+    if (originalPenalty !== undefined) {
+      await apiSetCancelPenalty(originalPenalty);
+    }
+    // Ensure all inspections are active
+    const inspections = await apiGetInspections();
+    for (const insp of inspections) {
+      if (!insp.active) {
+        await apiSetInspectionActive(insp.type, true);
+      }
+    }
+  });
+
+  test("admin page shows settings panel for chief role", async ({ page }) => {
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+
+    // Chief should see the settings panel
+    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+
+    // Should show cancel penalty setting
+    await expect(page.getByText("취소 페널티")).toBeVisible();
+
+    // Should show SMS settings
+    await expect(page.getByText("SMS 알림 활성화")).toBeVisible();
+    await expect(page.getByText("SMS 알림 순번")).toBeVisible();
+  });
+
+  test("change cancel penalty setting", async ({ page }) => {
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+
+    // Wait for settings panel to load
+    await expect(page.getByText("취소 페널티")).toBeVisible({ timeout: 10000 });
+
+    // Find the cancel penalty input
+    const penaltyItem = page.locator(".setting-item", { hasText: "취소 페널티" });
+    const penaltyInput = penaltyItem.locator("input[type='number']");
+    await expect(penaltyInput).toBeVisible();
+
+    // Change the penalty value
+    await penaltyInput.fill("5");
+    await penaltyInput.dispatchEvent("change");
+
+    // Should show success notification
+    await expectNotification(page, "success", "취소 페널티");
+
+    // Verify the value persisted by reloading
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(page.getByText("취소 페널티")).toBeVisible({ timeout: 10000 });
+    const updatedInput = page.locator(".setting-item", { hasText: "취소 페널티" }).locator("input[type='number']");
+    await expect(updatedInput).toHaveValue("5");
+  });
+
+  test("toggle inspection active/inactive via API and verify UI", async ({ page }) => {
+    // Deactivate battery inspection via API
+    await apiSetInspectionActive("noise", false);
+
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+
+    // Wait for settings to load
+    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+
+    // The noise inspection tab should not be visible in the active tabs
+    // (only active inspections show as tabs)
+    const tabs = page.locator(".tab");
+    await expect(tabs.first()).toBeVisible({ timeout: 10000 });
+
+    const tabTexts = await tabs.allTextContents();
+    expect(tabTexts).not.toContain("소음");
+
+    // Re-activate via API
+    await apiSetInspectionActive("noise", true);
+
+    // Reload and verify it's back
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(page.locator(".tab").first()).toBeVisible({ timeout: 10000 });
+
+    const updatedTabTexts = await page.locator(".tab").allTextContents();
+    expect(updatedTabTexts).toContain("소음");
+  });
+
+  test("inspection active/inactive toggle button in settings panel", async ({ page }) => {
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+
+    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+
+    // Find the inspection setting items in the settings panel
+    const inspectionGroups = page.locator(".inspection-setting-group");
+    await expect(inspectionGroups.first()).toBeVisible();
+    const count = await inspectionGroups.count();
+    expect(count).toBe(8); // 8 inspection types
+
+    // Each group should have toggle buttons (visibility and active)
+    const firstGroup = inspectionGroups.first();
+    const toggleButtons = firstGroup.locator(".inspection-buttons button");
+    const btnCount = await toggleButtons.count();
+    expect(btnCount).toBe(2); // visibility + active toggle
+  });
+
+  test("settings panel not visible for official role", async ({ browser }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("official") });
+    const page = await context.newPage();
+
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+
+    // Official should see the queue panel but NOT the settings panel
+    await expect(page.getByRole("heading", { name: /검차 대기열/ })).toBeVisible({ timeout: 10000 });
+
+    // Settings panel should not be visible
+    await expect(page.locator(".settings-panel")).not.toBeVisible();
+
+    await context.close();
+  });
+
+  test("booth count setting is shown in settings panel", async ({ page }) => {
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+
+    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+
+    // Each inspection setting group should have a booth count input
+    const boothInputs = page.locator(".inspection-setting .setting-input input[type='number']");
+    await expect(boothInputs.first()).toBeVisible();
+    const count = await boothInputs.count();
+    expect(count).toBe(8);
+  });
+});

@@ -1,0 +1,135 @@
+import { TEST_USERS, getAuthCookie, BASE_URL } from "./auth.mjs";
+
+const headers = (role = "admin") => ({
+  "Content-Type": "application/json",
+  Cookie: getAuthCookie(role),
+});
+
+async function api(method, path, body, role = "admin") {
+  const opts = { method, headers: headers(role) };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(`${BASE_URL}${path}`, opts);
+  return res;
+}
+
+export async function seedUsers() {
+  // Admin is auto-created via ADMIN_EMAIL env var.
+  // Create the remaining 3 test users.
+  for (const [role, user] of Object.entries(TEST_USERS)) {
+    if (role === "admin") continue;
+    await api("POST", "/auth/api/users", { email: user.email, role: user.role });
+  }
+}
+
+export async function seedVehicleTypes() {
+  await api("POST", "/entry/api/vehicle-types", { name: "EV" });
+  await api("POST", "/entry/api/vehicle-types", { name: "CV" });
+}
+
+export async function seedEntries() {
+  const year = new Date().getFullYear();
+  const entries = [
+    { num: 1, univ: "서울대학교", team: "SNU Racing", type: "EV" },
+    { num: 2, univ: "한양대학교", team: "ACES", type: "EV" },
+    { num: 3, univ: "성균관대학교", team: "SKKU Racing", type: "CV" },
+    { num: 10, univ: "KAIST", team: "RUN", type: "EV" },
+    { num: 20, univ: "고려대학교", team: "KURF", type: "CV" },
+  ];
+  for (const entry of entries) {
+    await api("POST", `/entry/api/entries?year=${year}`, entry);
+  }
+}
+
+export async function seedInspectionTemplate() {
+  const year = new Date().getFullYear();
+  const template = [
+    {
+      name: "전기 검차",
+      remarks: "전기 시스템 검사",
+      pdf_include: 1,
+      subcategories: [
+        {
+          name: "배터리",
+          remarks: "",
+          groups: [
+            {
+              name: "배터리 팩",
+              remarks: "",
+              items: [
+                { name: "절연 저항 측정", answer_type: "number", unit: "MΩ" },
+                { name: "전압 확인", answer_type: "passfail" },
+                { name: "고정 상태", answer_type: "passfail" },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      name: "샤시 검차",
+      remarks: "차체 구조 검사",
+      pdf_include: 1,
+      subcategories: [
+        {
+          name: "프레임",
+          remarks: "",
+          groups: [
+            {
+              name: "롤바",
+              remarks: "",
+              items: [
+                { name: "높이 측정", answer_type: "number", unit: "mm" },
+                { name: "용접 상태", answer_type: "passfail" },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+  await api("POST", "/inspection/api/sheet/template/import", { year, template });
+}
+
+export async function seedDocuments() {
+  const year = new Date().getFullYear();
+  // Map student user to team 1
+  await api("POST", "/documents/api/admin/student-teams", {
+    email: TEST_USERS.student.email,
+    team_num: 1,
+    year,
+  }, "chief");
+
+  // Create a submission session
+  const now = new Date();
+  const start = new Date(now.getTime() - 24 * 60 * 60 * 1000); // yesterday
+  const end = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // next week
+  const lateEnd = new Date(end.getTime() + 24 * 60 * 60 * 1000); // day after end
+
+  const fmt = (d) => d.toISOString().slice(0, 16).replace("T", " ");
+
+  await api("POST", "/documents/api/admin/sessions", {
+    name: "E2E 테스트 세션",
+    notice: "테스트용 제출 세션입니다.",
+    start_at: fmt(start),
+    end_at: fmt(end),
+    late_end_at: fmt(lateEnd),
+    max_file_size: 10485760,
+    allowed_extensions: "pdf,docx,xlsx",
+    year,
+    teams: [1, 2, 3],
+  }, "chief");
+}
+
+export async function seedAll() {
+  console.log("[seed] Seeding users...");
+  await seedUsers();
+  console.log("[seed] Seeding vehicle types...");
+  await seedVehicleTypes();
+  console.log("[seed] Seeding entries...");
+  await seedEntries();
+  console.log("[seed] Seeding inspection template...");
+  await seedInspectionTemplate();
+  console.log("[seed] Seeding documents...");
+  await seedDocuments();
+  console.log("[seed] Seeding complete.");
+}
