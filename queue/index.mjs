@@ -760,6 +760,7 @@ app.delete("/api/admin/priority/:type", (req, res) => {
     return res.status(400).send(numValidation.error);
   }
 
+  const prior = db.prepare("SELECT priority FROM team_priority WHERE num = ? AND inspection = ?").get(numValidation.value, req.params.type);
   const result = dbRun(() =>
     db.prepare("DELETE FROM team_priority WHERE num = ? AND inspection = ?").run(numValidation.value, req.params.type),
   );
@@ -772,7 +773,7 @@ app.delete("/api/admin/priority/:type", (req, res) => {
     return res.status(400).send("존재하지 않는 우선순위 엔트리입니다.");
   }
 
-  logger.log(req, "priority.delete", { inspection: req.params.type }, `#${numValidation.value}`);
+  logger.log(req, "priority.delete", { inspection: req.params.type, priority: prior?.priority }, `#${numValidation.value}`);
 
   // SSE 브로드캐스트: 우선순위 변경 -> 대기열 순서 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();

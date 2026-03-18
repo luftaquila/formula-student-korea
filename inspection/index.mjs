@@ -212,20 +212,23 @@ app.put("/api/sheet/template/:id", (req, res) => {
   if (!fields.length) return res.status(400).send("수정할 필드가 없습니다.");
   params.push(id);
 
+  const node = db.prepare("SELECT name FROM sheet_template WHERE id = ?").get(id);
+  if (!node) return res.status(404).send("항목을 찾을 수 없습니다.");
+
   const result = dbRun(() =>
     db.prepare(`UPDATE sheet_template SET ${fields.join(", ")} WHERE id = ?`).run(...params)
   );
 
   if (!result.success) return res.status(result.status).send(result.error);
   if (!result.result.changes) return res.status(404).send("항목을 찾을 수 없습니다.");
-  logger.log(req, "template.update", { fields: fields.map(f => f.split(" = ")[0]) }, String(id));
+  logger.log(req, "template.update", { fields: Object.fromEntries(fields.map((f, i) => [f.split(" = ")[0], params[i]])) }, node.name);
   res.status(200).send();
 });
 
 // DELETE /api/sheet/template/:id - 노드 삭제 (CASCADE)
 app.delete("/api/sheet/template/:id", (req, res) => {
   const id = Number(req.params.id);
-  const node = db.prepare("SELECT year FROM sheet_template WHERE id = ?").get(id);
+  const node = db.prepare("SELECT year, name FROM sheet_template WHERE id = ?").get(id);
   if (!node) return res.status(404).send("노드를 찾을 수 없습니다.");
   if (node.year < new Date().getFullYear()) return res.status(400).send("이전 연도 템플릿은 수정할 수 없습니다.");
 
@@ -234,7 +237,7 @@ app.delete("/api/sheet/template/:id", (req, res) => {
   });
 
   if (!result.success) return res.status(result.status).send(result.error);
-  logger.log(req, "template.delete", null, String(id));
+  logger.log(req, "template.delete", { year: node.year }, node.name);
   res.status(200).send();
 });
 
@@ -259,7 +262,8 @@ app.post("/api/sheet/template/reorder", (req, res) => {
   });
 
   if (!result.success) return res.status(result.status).send(result.error);
-  logger.log(req, "template.reorder", { count: items.length });
+  const firstItem = db.prepare("SELECT year FROM sheet_template WHERE id = ?").get(items[0].id);
+  logger.log(req, "template.reorder", { count: items.length, year: firstItem?.year });
   res.status(200).send();
 });
 
@@ -444,7 +448,7 @@ app.put("/api/sheet/answer", (req, res) => {
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
-  const templateItem = db.prepare("SELECT id, answer_type FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
+  const templateItem = db.prepare("SELECT id, name, answer_type FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
   if (!templateItem) return res.status(400).send("해당 연도에 존재하지 않는 항목입니다.");
   const newValue = value ?? "";
   if (templateItem.answer_type === "passfail" && !["", "PASS", "FAIL"].includes(newValue)) {
@@ -466,7 +470,7 @@ app.put("/api/sheet/answer", (req, res) => {
   if (!result.success) return res.status(result.status).send(result.error);
 
   if (result.result.changed) {
-    logger.log(req, "answer.update", { year, item_id, value: newValue }, `#${team_num}`);
+    logger.log(req, "answer.update", { year, item_id, item_name: templateItem.name, value: newValue }, `#${team_num}`);
     broadcastEvent("answer", { year, team_num, item_id, value: newValue });
   }
 
@@ -482,7 +486,7 @@ app.put("/api/sheet/memo", (req, res) => {
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
-  const templateItem = db.prepare("SELECT id FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
+  const templateItem = db.prepare("SELECT id, name FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
   if (!templateItem) return res.status(400).send("해당 연도에 존재하지 않는 항목입니다.");
 
   const result = dbRun(() =>
@@ -493,7 +497,7 @@ app.put("/api/sheet/memo", (req, res) => {
 
   if (!result.success) return res.status(result.status).send(result.error);
 
-  logger.log(req, "memo.update", { year, item_id }, `#${team_num}`);
+  logger.log(req, "memo.update", { year, item_id, item_name: templateItem.name, memo: memo ?? "" }, `#${team_num}`);
   broadcastEvent("memo", { year, team_num, item_id, memo: memo ?? "" });
 
   res.status(200).send();
@@ -511,7 +515,7 @@ app.put("/api/sheet/category-result", (req, res) => {
     return res.status(400).send("결과는 PASS, FAIL 또는 비움이어야 합니다.");
   }
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
-  const templateCat = db.prepare("SELECT id FROM sheet_template WHERE id = ? AND year = ? AND level = 'category'").get(category_id, year);
+  const templateCat = db.prepare("SELECT id, name FROM sheet_template WHERE id = ? AND year = ? AND level = 'category'").get(category_id, year);
   if (!templateCat) return res.status(400).send("해당 연도에 존재하지 않는 카테고리입니다.");
 
   const r = dbRun(() =>
@@ -522,7 +526,7 @@ app.put("/api/sheet/category-result", (req, res) => {
 
   if (!r.success) return res.status(r.status).send(r.error);
 
-  logger.log(req, "category_result.update", { year, category_id, result: catResult }, `#${team_num}`);
+  logger.log(req, "category_result.update", { year, category_id, category_name: templateCat.name, result: catResult }, `#${team_num}`);
   broadcastEvent("category-result", { year, team_num, category_id, result: catResult ?? "" });
 
   res.status(200).send();
@@ -537,7 +541,7 @@ app.put("/api/sheet/inspector", (req, res) => {
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
-  const templateCat = db.prepare("SELECT id FROM sheet_template WHERE id = ? AND year = ? AND level = 'category'").get(category_id, year);
+  const templateCat = db.prepare("SELECT id, name FROM sheet_template WHERE id = ? AND year = ? AND level = 'category'").get(category_id, year);
   if (!templateCat) return res.status(400).send("해당 연도에 존재하지 않는 카테고리입니다.");
 
   const result = dbRun(() =>
@@ -548,7 +552,7 @@ app.put("/api/sheet/inspector", (req, res) => {
 
   if (!result.success) return res.status(result.status).send(result.error);
 
-  logger.log(req, "inspector.update", { year, category_id, inspector }, `#${team_num}`);
+  logger.log(req, "inspector.update", { year, category_id, category_name: templateCat.name, inspector }, `#${team_num}`);
   broadcastEvent("inspector", { year, team_num, category_id, inspector: inspector ?? "" });
 
   res.status(200).send();

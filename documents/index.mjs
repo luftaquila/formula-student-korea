@@ -438,6 +438,8 @@ app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
   if (!path.resolve(filePath).startsWith(path.resolve(UPLOADS_DIR))) return res.status(400).send("잘못된 파일 경로입니다.");
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
+  const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
+  logger.log(req, "file.download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
   res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(file.original_name)}`);
   res.sendFile(filePath);
 });
@@ -562,7 +564,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
       rmDir(path.join(UPLOADS_DIR, String(id), String(team), String(subId)));
     }
   }
-  logger.log(req, "session.update", { id }, name.trim());
+  logger.log(req, "session.update", { year: session.year, teams: teams.length }, name.trim());
   res.status(200).send();
 });
 
@@ -624,6 +626,8 @@ app.get("/api/admin/submissions/:subId/files/:fileId", (req, res) => {
   if (!path.resolve(filePath).startsWith(path.resolve(UPLOADS_DIR))) return res.status(400).send("잘못된 파일 경로입니다.");
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
+  const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
+  logger.log(req, "file.admin_download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
   res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(file.original_name)}`);
   res.sendFile(filePath);
 });
@@ -679,13 +683,15 @@ app.post("/api/admin/student-teams", (req, res) => {
 app.delete("/api/admin/student-teams/:email/:year", (req, res) => {
   const year = Number(req.params.year);
   if (!Number.isInteger(year)) return res.status(400).send("올바르지 않은 연도입니다.");
+  const email = decodeURIComponent(req.params.email);
+  const mapping = db.prepare("SELECT team_num FROM student_team WHERE email = ? AND year = ?").get(email, year);
   const result = dbRun(() =>
     db.prepare("DELETE FROM student_team WHERE email = ? AND year = ?")
-      .run(decodeURIComponent(req.params.email), year)
+      .run(email, year)
   );
   if (!result.success) return res.status(result.status).send(result.error);
   if (result.result.changes === 0) return res.status(404).send("매핑을 찾을 수 없습니다.");
-  logger.log(req, "student_team.delete", { year }, decodeURIComponent(req.params.email));
+  logger.log(req, "student_team.delete", { year, team_num: mapping?.team_num }, email);
   res.status(200).send();
 });
 

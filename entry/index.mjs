@@ -280,6 +280,7 @@ app.delete("/api/entries/:num", withYearTable, (req, res) => {
     return res.status(400).send(numValidation.error);
   }
 
+  const entry = db.prepare(`SELECT univ, team FROM '${tableName}' WHERE num = ?`).get(numValidation.value);
   const result = dbRun(() => db.prepare(`DELETE FROM '${tableName}' WHERE num = ?`).run(numValidation.value));
 
   if (!result.success) {
@@ -290,7 +291,7 @@ app.delete("/api/entries/:num", withYearTable, (req, res) => {
     return res.status(404).send("존재하지 않는 엔트리 번호입니다.");
   }
 
-  logger.log(req, "entry.delete", { year }, `#${numValidation.value}`);
+  logger.log(req, "entry.delete", { year, univ: entry?.univ, team: entry?.team }, `#${numValidation.value}`);
   res.status(200).send();
 });
 

@@ -110,6 +110,7 @@ app.get("/api/forward-auth", (req, res) => {
   const requiredRole = req.query.role || "official";
   if (!req.user) return res.status(401).send("인증이 필요합니다.");
   if ((ROLE_LEVELS[req.user.role] || 0) < (ROLE_LEVELS[requiredRole] || Infinity)) {
+    logger.warn(req, "auth.forward_auth_denied", { required: requiredRole, actual: req.user.role }, req.user.email);
     return res.status(403).send("권한이 없습니다.");
   }
   res.setHeader("X-Forwarded-User", req.user.email);
@@ -140,6 +141,7 @@ function checkLoginRate(req, res) {
   entry.count++;
   loginLimiter.set(ip, entry);
   if (entry.count > 20) {
+    logger.warn(req, "auth.rate_limit", { count: entry.count, ip });
     res.redirect("/?login_error=rate_limit");
     return false;
   }
@@ -212,6 +214,7 @@ app.get("/api/callback", async (req, res) => {
     && stateNonce.length === cookieNonce.length
     && crypto.timingSafeEqual(Buffer.from(stateNonce), Buffer.from(cookieNonce));
   if (!nonceMatch) {
+    logger.warn(req, "auth.nonce_failed", { has_state: !!stateNonce, has_cookie: !!cookieNonce });
     return res.redirect("/?login_error=nonce");
   }
 
@@ -241,6 +244,7 @@ app.get("/api/callback", async (req, res) => {
     });
 
     if (!tokenRes.ok) {
+      logger.warn(req, "auth.token_failed", { status: tokenRes.status });
       res.setHeader("Set-Cookie", clearNonceCookie);
       return res.redirect("/?login_error=token");
     }
@@ -253,6 +257,7 @@ app.get("/api/callback", async (req, res) => {
     });
 
     if (!userInfoRes.ok) {
+      logger.warn(req, "auth.userinfo_failed", { status: userInfoRes.status });
       res.setHeader("Set-Cookie", clearNonceCookie);
       return res.redirect("/?login_error=userinfo");
     }
@@ -388,7 +393,7 @@ app.post("/api/users/bulk", (req, res) => {
   const txResult = dbRun(() => run());
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
 
-  logger.log(req, "user.create_bulk", { added: added.length, skipped: skipped.length });
+  logger.log(req, "user.create_bulk", { added, skipped });
   res.json({ added: added.length, skipped: skipped.length, errors });
 });
 
@@ -409,13 +414,14 @@ app.patch("/api/users/bulk", (req, res) => {
   }
 
   const placeholders = numIds.map(() => "?").join(",");
+  const emails = db.prepare(`SELECT email FROM users WHERE id IN (${placeholders})`).all(...numIds).map(r => r.email);
   const stmt = db.prepare(`UPDATE users SET active = ? WHERE id IN (${placeholders})`);
   const run = db.transaction(() => stmt.run(active ? 1 : 0, ...numIds));
 
   const txResult = dbRun(() => run());
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
 
-  logger.log(req, "user.bulk_update", { count: txResult.result.changes, active: !!active });
+  logger.log(req, "user.bulk_update", { emails, active: !!active });
   res.json({ updated: txResult.result.changes });
 });
 
@@ -440,13 +446,14 @@ app.delete("/api/users/bulk", (req, res) => {
   const adminsToDelete = db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND id IN (${placeholders})`).get(...numIds).cnt;
   if (totalAdmins - adminsToDelete < 1) return res.status(400).send("마지막 관리자는 삭제할 수 없습니다.");
 
+  const emails = db.prepare(`SELECT email FROM users WHERE id IN (${placeholders})`).all(...numIds).map(r => r.email);
   const del = db.prepare(`DELETE FROM users WHERE id IN (${placeholders})`);
   const run = db.transaction(() => del.run(...numIds));
 
   const txResult = dbRun(() => run());
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
 
-  logger.log(req, "user.bulk_delete", { count: txResult.result.changes });
+  logger.log(req, "user.bulk_delete", { emails });
   res.json({ deleted: txResult.result.changes });
 });
 
@@ -510,7 +517,7 @@ app.delete("/api/users/:id", (req, res) => {
 
   const result = dbRun(() => db.prepare("DELETE FROM users WHERE id = ?").run(id));
   if (!result.success) return res.status(result.status).send(result.error);
-  logger.log(req, "user.delete", { role: user.role }, user.email);
+  logger.log(req, "user.delete", { role: user.role, name: user.name }, user.email);
   res.status(200).send();
 });
 
@@ -539,11 +546,11 @@ app.post("/api/ops-contacts", (req, res) => {
 
 // DELETE /api/ops-contacts/:id - 연락처 삭제
 app.delete("/api/ops-contacts/:id", (req, res) => {
-  const contact = db.prepare("SELECT name FROM ops_contacts WHERE id = ?").get(Number(req.params.id));
+  const contact = db.prepare("SELECT name, phone FROM ops_contacts WHERE id = ?").get(Number(req.params.id));
   if (!contact) return res.status(404).send("연락처를 찾을 수 없습니다.");
   const result = dbRun(() => db.prepare("DELETE FROM ops_contacts WHERE id = ?").run(Number(req.params.id)));
   if (!result.success) return res.status(result.status).send(result.error);
-  logger.log(req, "ops_contact.delete", null, contact.name);
+  logger.log(req, "ops_contact.delete", { phone: contact.phone }, contact.name);
   res.status(200).send();
 });
 

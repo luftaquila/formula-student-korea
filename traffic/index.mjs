@@ -284,7 +284,7 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   }
 
   const result = dbRun(() => {
-    const row = db.prepare(`SELECT invalidated, scoreboard, cones, oc FROM '${name}' WHERE rowid = ?`).get(rowid);
+    const row = db.prepare(`SELECT num, invalidated, scoreboard, cones, oc FROM '${name}' WHERE rowid = ?`).get(rowid);
     if (!row) {
       const err = new Error("기록을 찾을 수 없습니다.");
       err.status = 404;
@@ -296,26 +296,26 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
       if (newStatus === 1) {
         // 무효화 ON → 전광판도 자동 OFF
         db.prepare(`UPDATE '${name}' SET invalidated = 1, scoreboard = 0 WHERE rowid = ?`).run(rowid);
-        return { invalidated: 1, scoreboard: 0 };
+        return { num: row.num, invalidated: 1, scoreboard: 0 };
       } else {
         db.prepare(`UPDATE '${name}' SET invalidated = 0, scoreboard = 1 WHERE rowid = ?`).run(rowid);
-        return { invalidated: 0, scoreboard: 1 };
+        return { num: row.num, invalidated: 0, scoreboard: 1 };
       }
     } else if (field === "scoreboard") {
       const newStatus = row.scoreboard ? 0 : 1;
       db.prepare(`UPDATE '${name}' SET scoreboard = ? WHERE rowid = ?`).run(newStatus, rowid);
-      return { invalidated: row.invalidated, scoreboard: newStatus };
+      return { num: row.num, invalidated: row.invalidated, scoreboard: newStatus };
     } else if (field === "detail") {
       db.prepare(`UPDATE '${name}' SET detail = ? WHERE rowid = ?`).run(value ?? null, rowid);
-      return { invalidated: row.invalidated, scoreboard: row.scoreboard, detail: value ?? null };
+      return { num: row.num, invalidated: row.invalidated, scoreboard: row.scoreboard, detail: value ?? null };
     } else if (field === "cones") {
       const numValue = Math.max(0, parseInt(value, 10) || 0);
       db.prepare(`UPDATE '${name}' SET cones = ? WHERE rowid = ?`).run(numValue, rowid);
-      return { cones: numValue };
+      return { num: row.num, cones: numValue };
     } else if (field === "oc") {
       const numValue = Math.max(0, parseInt(value, 10) || 0);
       db.prepare(`UPDATE '${name}' SET oc = ? WHERE rowid = ?`).run(numValue, rowid);
-      return { oc: numValue };
+      return { num: row.num, oc: numValue };
     }
   });
 
@@ -323,7 +323,7 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "record.update", { rowid, field, value }, name);
+  logger.log(req, "record.update", { entry_num: result.result.num, field, ...result.result }, name);
 
   // SSE 브로드캐스트 (무효화 변경 시 팀/종목 정보 포함)
   try {
