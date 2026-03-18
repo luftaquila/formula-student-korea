@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
-async function apiRegister(type, num, phone = "010-0000-0000") {
+async function apiRegister(type, num, phone = "01000000000") {
   return fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
@@ -91,22 +91,33 @@ test.describe("Queue registration business rules", () => {
   });
 
   test.afterEach(async () => {
-    // Cleanup: clear queues used in tests
+    // Disable penalty before cleanup to avoid cross-test penalties
+    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      body: JSON.stringify({ value: 0 }),
+    });
     for (const type of ["battery", "chassis", "noise"]) {
       await apiClearQueue(type);
     }
+    // Restore 1-minute penalty for test assertions
+    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      body: JSON.stringify({ value: 1 }),
+    });
   });
 
   test("cancel penalty blocks re-registration", async ({ page }) => {
-    // Register and cancel entry 1 for battery inspection
-    const regRes = await apiRegister("battery", 1);
+    // Register and cancel entry 20 for battery inspection
+    const regRes = await apiRegister("battery", 20);
     expect(regRes.status).toBe(201);
 
-    const cancelRes = await apiCancel("battery", 1);
+    const cancelRes = await apiCancel("battery", 20);
     expect(cancelRes.status).toBe(200);
 
     // Attempt to re-register should fail with 403 (penalty active)
-    const reRegRes = await apiRegister("battery", 1);
+    const reRegRes = await apiRegister("battery", 20);
     expect(reRegRes.status).toBe(403);
   });
 

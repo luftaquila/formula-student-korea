@@ -49,6 +49,30 @@ async function cleanupQueue(type = INSPECTION_TYPE) {
 test.describe("Queue booth management", () => {
   test.use({ storageState: storageStatePath("official") });
 
+  let originalPenalty;
+
+  test.beforeAll(async () => {
+    const res = await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      headers: { Cookie: getAuthCookie("chief") },
+    });
+    originalPenalty = (await res.json()).value;
+    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      body: JSON.stringify({ value: 0 }),
+    });
+  });
+
+  test.afterAll(async () => {
+    if (originalPenalty !== undefined) {
+      await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+        body: JSON.stringify({ value: originalPenalty }),
+      });
+    }
+  });
+
   test.beforeEach(async () => {
     await cleanupQueue();
   });

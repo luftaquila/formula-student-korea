@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
-async function apiRegister(type, num, phone = "010-0000-0000") {
+async function apiRegister(type, num, phone = "01000000000") {
   return fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
@@ -48,12 +48,33 @@ async function apiClearQueue(type) {
 }
 
 test.describe("Queue SSE real-time sync", () => {
+  let originalPenalty;
+
   test.beforeAll(async () => {
+    const res = await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      headers: { Cookie: getAuthCookie("chief") },
+    });
+    originalPenalty = (await res.json()).value;
+    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      body: JSON.stringify({ value: 0 }),
+    });
     await apiClearQueue("battery");
   });
 
   test.afterEach(async () => {
     await apiClearQueue("battery");
+  });
+
+  test.afterAll(async () => {
+    if (originalPenalty !== undefined) {
+      await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+        body: JSON.stringify({ value: originalPenalty }),
+      });
+    }
   });
 
   test("registration in one context reflects in admin view", async ({ browser }) => {
@@ -93,13 +114,9 @@ test.describe("Queue SSE real-time sync", () => {
 
     // The public page should reflect the queue length change via SSE
     // The queue status page shows booth status and queue length
-    // Wait for the queue count to update
-    await publicPage.waitForTimeout(3000);
-
-    // Verify the page shows the registered team or queue count increased
-    // The public page shows inspection-specific queue data
-    const queueSection = publicPage.locator(".queue-section, .inspection-card, .queue-card").first();
-    await expect(queueSection).toBeVisible({ timeout: 5000 });
+    // Verify the public page shows the queue overview card
+    const queueSection = publicPage.locator(".queues-card").first();
+    await expect(queueSection).toBeVisible({ timeout: 10000 });
 
     await publicContext.close();
   });

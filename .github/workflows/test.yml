@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  checks: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -17,12 +20,6 @@ jobs:
         with:
           node-version: 22
 
-      - name: Restore npm cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ~/.npm
-          key: test-npm-${{ runner.os }}-${{ hashFiles('*/package-lock.json') }}
-
       - name: Install dependencies
         run: |
           for dir in auth entry queue inspection traffic score documents; do
@@ -30,11 +27,17 @@ jobs:
           done
 
       - name: Run tests
-        run: node --test --test-force-exit tests/**/*.test.mjs
+        run: |
+          node --test --test-force-exit \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=junit --test-reporter-destination=test-results.xml \
+            tests/**/*.test.mjs
 
-      - name: Save npm cache
-        uses: actions/cache/save@v5
+      - name: Test report
+        uses: dorny/test-reporter@v2
         if: always()
         with:
-          path: ~/.npm
-          key: test-npm-${{ runner.os }}-${{ hashFiles('*/package-lock.json') }}
+          name: Unit Tests
+          path: test-results.xml
+          reporter: java-junit
+
