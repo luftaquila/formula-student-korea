@@ -814,10 +814,12 @@ app.delete("/api/admin/history/:type", (req, res) => {
   const type = typeValidation.value;
 
   const result = dbRun(() => {
-    db.prepare("DELETE FROM inspection_history WHERE inspection = ?").run(type);
+    db.transaction(() => {
+      db.prepare("DELETE FROM inspection_history WHERE inspection = ?").run(type);
 
-    // 부스 상태 초기화: 해당 검차 종류의 모든 부스 점유 해제
-    db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ?").run(type);
+      // 부스 상태 초기화: 해당 검차 종류의 모든 부스 점유 해제
+      db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ?").run(type);
+    })();
   });
 
   if (!result.success) {
@@ -909,33 +911,35 @@ app.patch("/api/admin/booths/:type/config", (req, res) => {
   }
 
   const result = dbRun(() => {
-    const config = db.prepare("SELECT count FROM booth_config WHERE inspection = ?").get(type);
-    if (!config) throw { status: 400, message: "부스 설정을 찾을 수 없습니다." };
-    const currentCount = config.count;
+    return db.transaction(() => {
+      const config = db.prepare("SELECT count FROM booth_config WHERE inspection = ?").get(type);
+      if (!config) throw { status: 400, message: "부스 설정을 찾을 수 없습니다." };
+      const currentCount = config.count;
 
-    if (count > currentCount) {
-      // 부스 추가
-      for (let i = currentCount + 1; i <= count; i++) {
-        db.prepare("INSERT INTO booth (inspection, booth_num) VALUES (?, ?)").run(type, i);
-      }
-    } else if (count < currentCount) {
-      // 부스 삭제 (높은 번호부터, 점유 중인 부스는 삭제 불가)
-      const boothsToRemove = db.prepare(
-        "SELECT booth_num, occupied_by FROM booth WHERE inspection = ? ORDER BY booth_num DESC LIMIT ?"
-      ).all(type, currentCount - count);
+      if (count > currentCount) {
+        // 부스 추가
+        for (let i = currentCount + 1; i <= count; i++) {
+          db.prepare("INSERT INTO booth (inspection, booth_num) VALUES (?, ?)").run(type, i);
+        }
+      } else if (count < currentCount) {
+        // 부스 삭제 (높은 번호부터, 점유 중인 부스는 삭제 불가)
+        const boothsToRemove = db.prepare(
+          "SELECT booth_num, occupied_by FROM booth WHERE inspection = ? ORDER BY booth_num DESC LIMIT ?"
+        ).all(type, currentCount - count);
 
-      for (const booth of boothsToRemove) {
-        if (booth.occupied_by !== null) {
-          throw { status: 400, message: `부스 ${booth.booth_num}번이 사용 중이므로 삭제할 수 없습니다.` };
+        for (const booth of boothsToRemove) {
+          if (booth.occupied_by !== null) {
+            throw { status: 400, message: `부스 ${booth.booth_num}번이 사용 중이므로 삭제할 수 없습니다.` };
+          }
+        }
+
+        for (const booth of boothsToRemove) {
+          db.prepare("DELETE FROM booth WHERE inspection = ? AND booth_num = ?").run(type, booth.booth_num);
         }
       }
 
-      for (const booth of boothsToRemove) {
-        db.prepare("DELETE FROM booth WHERE inspection = ? AND booth_num = ?").run(type, booth.booth_num);
-      }
-    }
-
-    db.prepare("UPDATE booth_config SET count = ? WHERE inspection = ?").run(count, type);
+      db.prepare("UPDATE booth_config SET count = ? WHERE inspection = ?").run(count, type);
+    })();
   });
 
   if (!result.success) {

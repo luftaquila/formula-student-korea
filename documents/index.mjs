@@ -724,13 +724,41 @@ app.patch("/api/internal/team-num", (req, res) => {
 
   // 업로드 디렉토리 이름 변경
   const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
+  const renamedDirs = [];
+  const failedRenames = [];
   for (const s of sessions) {
     const oldDir = path.join(UPLOADS_DIR, String(s.id), String(prevNum));
     const newDir = path.join(UPLOADS_DIR, String(s.id), String(newNum));
     if (fs.existsSync(oldDir)) {
-      try { fs.renameSync(oldDir, newDir); }
-      catch (e) { console.error(`Failed to rename upload dir: ${oldDir} → ${newDir}:`, e.message); }
+      try {
+        fs.renameSync(oldDir, newDir);
+        renamedDirs.push({ oldDir, newDir });
+      } catch (e) {
+        failedRenames.push({ sessionId: s.id, error: e.message });
+      }
     }
+  }
+
+  if (failedRenames.length > 0) {
+    // 성공한 rename 되돌리기
+    for (const { oldDir, newDir } of renamedDirs) {
+      try { fs.renameSync(newDir, oldDir); } catch { /* best effort */ }
+    }
+
+    // DB 롤백: 원래 값으로 복원
+    const rollbackResult = dbRun(() => {
+      db.transaction(() => {
+        db.prepare("UPDATE student_team SET team_num = ? WHERE team_num = ? AND year = ?")
+          .run(prevNum, newNum, year);
+        db.prepare("UPDATE session_team SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
+          .run(prevNum, newNum, year);
+        db.prepare("UPDATE submission SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
+          .run(prevNum, newNum, year);
+      })();
+    });
+
+    logger.warn(req, "team_num.rename_fail", { year, prevNum, newNum, failedRenames, rollback: rollbackResult.success });
+    return res.status(500).send("업로드 디렉토리 이름 변경에 실패하여 롤백되었습니다.");
   }
 
   logger.log(req, "team_num.update", { year, prevNum, newNum });

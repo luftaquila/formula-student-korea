@@ -441,20 +441,21 @@ app.delete("/api/users/bulk", (req, res) => {
     if (protectedUser && numIds.includes(protectedUser.id)) return res.status(400).send("기본 관리자는 삭제할 수 없습니다.");
   }
 
-  // 마지막 관리자 삭제 방지
-  const totalAdmins = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
   const placeholders = numIds.map(() => "?").join(",");
-  const adminsToDelete = db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND id IN (${placeholders})`).get(...numIds).cnt;
-  if (totalAdmins - adminsToDelete < 1) return res.status(400).send("마지막 관리자는 삭제할 수 없습니다.");
 
-  const emails = db.prepare(`SELECT email FROM users WHERE id IN (${placeholders})`).all(...numIds).map(r => r.email);
-  const del = db.prepare(`DELETE FROM users WHERE id IN (${placeholders})`);
-  const run = db.transaction(() => del.run(...numIds));
+  const txResult = dbRun(() => db.transaction(() => {
+    // 마지막 관리자 삭제 방지
+    const totalAdmins = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
+    const adminsToDelete = db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND id IN (${placeholders})`).get(...numIds).cnt;
+    if (totalAdmins - adminsToDelete < 1) throw { status: 400, message: "마지막 관리자는 삭제할 수 없습니다." };
 
-  const txResult = dbRun(() => run());
+    const emails = db.prepare(`SELECT email FROM users WHERE id IN (${placeholders})`).all(...numIds).map(r => r.email);
+    const delResult = db.prepare(`DELETE FROM users WHERE id IN (${placeholders})`).run(...numIds);
+    return { changes: delResult.changes, emails };
+  })());
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
 
-  logger.log(req, "user.bulk_delete", { emails });
+  logger.log(req, "user.bulk_delete", { emails: txResult.result.emails });
   res.json({ deleted: txResult.result.changes });
 });
 
@@ -470,10 +471,6 @@ app.patch("/api/users/:id", (req, res) => {
   if (role !== undefined) {
     if (!VALID_ROLES.includes(role)) return res.status(400).send("올바르지 않은 역할입니다.");
     if (user.email === ADMIN_EMAIL && role !== "admin") return res.status(400).send("기본 관리자의 역할은 변경할 수 없습니다.");
-    if (user.role === "admin" && role !== "admin") {
-      const adminCount = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
-      if (adminCount <= 1) return res.status(400).send("마지막 관리자는 강등할 수 없습니다.");
-    }
   }
 
   if (active !== undefined && user.email === ADMIN_EMAIL) {
@@ -483,6 +480,10 @@ app.patch("/api/users/:id", (req, res) => {
   // 트랜잭션으로 원자적 업데이트
   const result = dbRun(() => {
     db.transaction(() => {
+      if (role !== undefined && user.role === "admin" && role !== "admin") {
+        const adminCount = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
+        if (adminCount <= 1) throw { status: 400, message: "마지막 관리자는 강등할 수 없습니다." };
+      }
       if (role !== undefined) db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id);
       if (memo !== undefined) db.prepare("UPDATE users SET memo = ? WHERE id = ?").run(memo, id);
       if (active !== undefined) db.prepare("UPDATE users SET active = ? WHERE id = ?").run(active ? 1 : 0, id);

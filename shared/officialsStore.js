@@ -15,3 +15,11 @@ export const isAuthenticated = computed(() => roleLevel(user.value?.role) >= 1);
 export const showOfficials = computed(() => roleLevel(user.value?.role) >= 2);
 export const isChief = computed(() => roleLevel(user.value?.role) >= 3);
 export const isAdmin = computed(() => roleLevel(user.value?.role) >= 4);
+
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      user.value = getUserFromCookie();
+    }
+  });
+}

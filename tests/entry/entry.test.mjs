@@ -584,7 +584,7 @@ describe('PATCH /api/entries/:num — documents sync', () => {
     delete process.env.DOCUMENTS_SERVER;
   });
 
-  it('entry update succeeds even if documents service fails', async () => {
+  it('entry update returns 207 when documents service sync fails', async () => {
     receivedRequests = [];
     const mockApp = expressForMock();
     mockApp.use(expressForMock.json());
@@ -602,7 +602,7 @@ describe('PATCH /api/entries/:num — documents sync', () => {
       body: { num: 72, univ: 'SyncUnivUpdated', team: 'SyncTeamUpdated' },
       cookie: adminCookie,
     });
-    assert.equal(res.status, 200, 'entry update should succeed despite documents failure');
+    assert.equal(res.status, 207, 'entry update should return 207 when documents sync fails');
 
     await new Promise(r => setTimeout(r, 100));
 

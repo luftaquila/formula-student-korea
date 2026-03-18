@@ -7,5 +7,8 @@ export function createDatabase(Database, dbPath) {
 
 export function addColumn(db, table, columnDef) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`); }
-  catch { /* already exists */ }
+  catch (e) {
+    if (e.message && e.message.includes("duplicate column")) return;
+    throw e;
+  }
 }

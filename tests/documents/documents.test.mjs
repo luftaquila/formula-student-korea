@@ -1075,6 +1075,90 @@ describe('PATCH /api/internal/team-num', () => {
     assert.ok(fs.existsSync(path.join(newDir, 'test.txt')), 'files should be preserved');
   });
 
+  it('returns 500 and rolls back DB when rename fails', async () => {
+    // Setup: ensure team_num=77 from previous test
+    const studentBefore = db.prepare("SELECT team_num FROM student_team WHERE email = 'internal-test@test.com' AND year = 2025").get();
+    const currentNum = studentBefore.team_num;
+
+    // Create upload dir for the current team
+    const oldDir = path.join(uploadsDir, String(internalSessionId), String(currentNum));
+    fs.mkdirSync(oldDir, { recursive: true });
+    fs.writeFileSync(path.join(oldDir, 'keep.txt'), 'data');
+
+    // Create a non-empty directory at the target path to cause rename to fail
+    const targetNum = 88;
+    const blockingDir = path.join(uploadsDir, String(internalSessionId), String(targetNum));
+    fs.mkdirSync(blockingDir, { recursive: true });
+    fs.writeFileSync(path.join(blockingDir, 'blocker.txt'), 'block');
+
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum: currentNum, newNum: targetNum, year: 2025 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 500, 'should return 500 when rename fails');
+
+    // Verify DB was rolled back
+    const studentAfter = db.prepare("SELECT team_num FROM student_team WHERE email = 'internal-test@test.com' AND year = 2025").get();
+    assert.equal(studentAfter.team_num, currentNum, 'student_team should be rolled back');
+
+    const sessionTeam = db.prepare("SELECT team_num FROM session_team WHERE session_id = ? AND team_num = ?").get(internalSessionId, currentNum);
+    assert.ok(sessionTeam, 'session_team should be rolled back');
+
+    // Verify original upload dir still exists
+    assert.ok(fs.existsSync(oldDir), 'original upload dir should still exist');
+
+    // Cleanup blocking dir
+    fs.rmSync(blockingDir, { recursive: true, force: true });
+  });
+
+  it('returns 500 and rolls back successful renames across multiple sessions', async () => {
+    const studentBefore = db.prepare("SELECT team_num FROM student_team WHERE email = 'internal-test@test.com' AND year = 2025").get();
+    const currentNum = studentBefore.team_num;
+    const targetNum = 95;
+
+    // Create a second session for the same year
+    const session2Result = db.prepare(
+      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2025-01-01 00:00', '2025-12-31 23:59', '', 52428800, 'admin@test.com', 2025)",
+    ).run('Internal Test Session 2');
+    const session2Id = session2Result.lastInsertRowid;
+
+    // Session 1: upload dir exists, no blocker → rename will succeed
+    const s1OldDir = path.join(uploadsDir, String(internalSessionId), String(currentNum));
+    fs.mkdirSync(s1OldDir, { recursive: true });
+    fs.writeFileSync(path.join(s1OldDir, 'file1.txt'), 'data1');
+
+    // Session 2: upload dir exists, blocker at target → rename will fail
+    const s2OldDir = path.join(uploadsDir, String(session2Id), String(currentNum));
+    const s2BlockDir = path.join(uploadsDir, String(session2Id), String(targetNum));
+    fs.mkdirSync(s2OldDir, { recursive: true });
+    fs.writeFileSync(path.join(s2OldDir, 'file2.txt'), 'data2');
+    fs.mkdirSync(s2BlockDir, { recursive: true });
+    fs.writeFileSync(path.join(s2BlockDir, 'blocker.txt'), 'block');
+
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum: currentNum, newNum: targetNum, year: 2025 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 500, 'should return 500 when any rename fails');
+
+    // Verify DB was rolled back
+    const studentAfter = db.prepare("SELECT team_num FROM student_team WHERE email = 'internal-test@test.com' AND year = 2025").get();
+    assert.equal(studentAfter.team_num, currentNum, 'student_team should be rolled back');
+
+    // Verify session 1 successful rename was reverted
+    assert.ok(fs.existsSync(s1OldDir), 'session 1 old dir should be restored');
+    assert.ok(!fs.existsSync(path.join(uploadsDir, String(internalSessionId), String(targetNum))), 'session 1 target dir should not exist');
+
+    // Verify session 2 old dir still exists
+    assert.ok(fs.existsSync(s2OldDir), 'session 2 old dir should still exist');
+
+    // Cleanup
+    fs.rmSync(s2BlockDir, { recursive: true, force: true });
+    fs.rmSync(s1OldDir, { recursive: true, force: true });
+    fs.rmSync(s2OldDir, { recursive: true, force: true });
+    db.prepare("DELETE FROM session WHERE id = ?").run(session2Id);
+  });
+
   it('returns 400 for non-integer prevNum', async () => {
     const res = await client.patch('/api/internal/team-num', {
       body: { prevNum: 'abc', newNum: 2, year: 2025 },

@@ -268,21 +268,27 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
   }
 
   // 번호 변경 시 documents 서비스 team_num 동기화
+  let docsSyncFailed = false;
   if (numChanged && process.env.DOCUMENTS_SERVER) {
     try {
-      await fetch(`${process.env.DOCUMENTS_SERVER}/api/internal/team-num`, {
+      const syncRes = await fetch(`${process.env.DOCUMENTS_SERVER}/api/internal/team-num`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", "X-Internal-Service": process.env.INTERNAL_SECRET },
         body: JSON.stringify({ prevNum, newNum, year: Number(year) }),
         signal: AbortSignal.timeout(5000),
       });
+      if (!syncRes.ok) {
+        docsSyncFailed = true;
+        logger.warn(req, "entry.docs_sync_fail", { prevNum, newNum, year, status: syncRes.status });
+      }
     } catch (e) {
-      console.error("Failed to sync team_num with documents service:", e.message);
+      docsSyncFailed = true;
+      logger.warn(req, "entry.docs_sync_fail", { prevNum, newNum, year, error: e.message });
     }
   }
 
   logger.log(req, "entry.update", { year, univ: dataValidation.univ, team: dataValidation.team, type: dataValidation.type }, `#${newNum}`);
-  res.status(200).send();
+  res.status(docsSyncFailed ? 207 : 200).send();
 });
 
 // DELETE /api/entries/:num - 엔트리 삭제
