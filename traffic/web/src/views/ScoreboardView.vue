@@ -15,6 +15,8 @@ const loading = ref(false);
 const isFullscreen = ref(false);
 const trackTemp = ref("");
 const isActive = ref(true);
+const missedUpdate = ref(false);
+const lastLoadedFile = ref(null);
 
 const EVENT_CONFIG = {
   가속: { label: "ACCELERATION", color: "#ffd000" },
@@ -26,6 +28,7 @@ const EVENT_CONFIG = {
 async function loadRecords() {
   if (!selectedFile.value) {
     records.value = [];
+    lastLoadedFile.value = null;
     return;
   }
 
@@ -33,6 +36,7 @@ async function loadRecords() {
   try {
     const data = await fetchRecord(selectedFile.value);
     records.value = data;
+    lastLoadedFile.value = selectedFile.value;
   } catch (err) {
     console.error("기록 조회 실패:", err);
   } finally {
@@ -43,7 +47,12 @@ async function loadRecords() {
 watch(selectedFile, () => { if (isActive.value) loadRecords(); });
 
 watch(lastUpdate, (update) => {
-  if (!isActive.value) return;
+  if (!isActive.value) {
+    if (update && update.name === selectedFile.value) {
+      missedUpdate.value = true;
+    }
+    return;
+  }
   if (update && update.name === selectedFile.value) {
     loadRecords();
   }
@@ -145,6 +154,10 @@ onUnmounted(() => {
 onActivated(() => {
   isActive.value = true;
   document.addEventListener("fullscreenchange", handleFullscreenChange);
+  if (missedUpdate.value || lastLoadedFile.value !== selectedFile.value) {
+    missedUpdate.value = false;
+    loadRecords();
+  }
 });
 
 onDeactivated(() => {

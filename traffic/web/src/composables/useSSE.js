@@ -30,7 +30,13 @@ on("records", (e) => {
   let data;
   try { data = JSON.parse(e.data); } catch { return; }
   recordFiles.value = ["controller", ...data.recordFiles];
-  lastUpdate.value = { type: data.type, name: data.name, timestamp: Date.now() };
+  lastUpdate.value = {
+    type: data.type,
+    name: data.name,
+    field: data.field,
+    record: data.record,
+    timestamp: Date.now(),
+  };
 });
 
 on("event-mode", (e) => {

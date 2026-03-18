@@ -222,7 +222,7 @@ app.post("/api/records", (req, res) => {
   const data = req.body.data;
 
   const result = dbRun(() => {
-    db.transaction(() => {
+    return db.transaction(() => {
       const table = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name = ?`).get(name);
 
       if (!table) {
@@ -241,9 +241,10 @@ app.post("/api/records", (req, res) => {
         );`);
       }
 
-      db.prepare(
+      const info = db.prepare(
         `INSERT INTO '${name}' (time, num, univ, team, type, result, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).run(data.time, data.entry.num, data.entry.univ, data.entry.team, data.type, data.result, data.detail);
+      return Number(info.lastInsertRowid);
     })();
   });
 
@@ -254,7 +255,15 @@ app.post("/api/records", (req, res) => {
   logger.log(req, "record.create", { entry_num: data.entry.num, type: data.type, result: data.result }, name);
 
   // SSE 브로드캐스트
-  broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: { num: data.entry.num, eventType: data.type } });
+  broadcastEvent("records", {
+    type: "add", name, recordFiles: getRecordFiles(),
+    record: {
+      rowid: result.result,
+      time: data.time, num: data.entry.num, univ: data.entry.univ,
+      team: data.entry.team, type: data.type, result: data.result,
+      detail: data.detail || null, cones: 0, oc: 0, invalidated: 0, scoreboard: 1,
+    },
+  });
 
   res.status(201).send();
 });
@@ -325,14 +334,10 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
 
   logger.log(req, "record.update", { entry_num: result.result.num, field, ...result.result }, name);
 
-  // SSE 브로드캐스트 (무효화 변경 시 팀/종목 정보 포함)
+  // SSE 브로드캐스트 (업데이트된 전체 행 포함)
   try {
-    let record = null;
-    if (field === "invalidated") {
-      const row = db.prepare(`SELECT num, type FROM '${name}' WHERE rowid = ?`).get(rowid);
-      if (row) record = { num: row.num, eventType: row.type };
-    }
-    broadcastEvent("records", { type: "update", name, field, recordFiles: getRecordFiles(), record });
+    const updatedRow = db.prepare(`SELECT rowid, * FROM '${name}' WHERE rowid = ?`).get(rowid);
+    broadcastEvent("records", { type: "update", name, field, recordFiles: getRecordFiles(), record: updatedRow });
   } catch (e) {
     console.error("[SSE broadcast]", e.message);
   }

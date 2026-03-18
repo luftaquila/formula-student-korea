@@ -44,6 +44,8 @@ const typeFilters = ref({
 
 // keep-alive 활성 상태 추적
 const isActive = ref(true);
+const missedUpdate = ref(false);
+let fetchSeq = 0;
 
 // 컴포넌트 마운트 시 엔트리 로드 및 이전에 선택한 파일이 있으면 로드
 onMounted(() => {
@@ -55,6 +57,10 @@ onMounted(() => {
 
 onActivated(() => {
   isActive.value = true;
+  if (missedUpdate.value) {
+    missedUpdate.value = false;
+    refreshRecords();
+  }
 });
 
 onDeactivated(() => {
@@ -101,47 +107,76 @@ const sortedRecords = computed(() => {
   });
 });
 
-// 새 기록이 추가되면 자동으로 새로고침 (정렬 상태 유지, 비활성 시 스킵)
+function isEditingRow(rowid) {
+  return editingDetailId.value === rowid || editingConesId.value === rowid || editingOcId.value === rowid;
+}
+
+// SSE 업데이트 시 부분 갱신 (편집 보호, 비활성 시 defer)
 watch(lastUpdate, (update) => {
-  if (!isActive.value) return;
-  if (update && selectedFile.value && update.name === selectedFile.value) {
+  if (!update || update.name !== selectedFile.value) return;
+
+  if (!isActive.value) {
+    missedUpdate.value = true;
+    return;
+  }
+
+  if (update.type === "add" && update.record) {
+    records.value = [...records.value, update.record];
+  } else if (update.type === "update" && update.record) {
+    if (isEditingRow(update.record.rowid)) {
+      missedUpdate.value = true;
+      return;
+    }
+    const idx = records.value.findIndex((r) => r.rowid === update.record.rowid);
+    if (idx !== -1) {
+      records.value[idx] = { ...records.value[idx], ...update.record };
+      records.value = [...records.value];
+    } else {
+      refreshRecords();
+    }
+  } else if (update.type === "delete") {
+    if (!recordFiles.value.includes(selectedFile.value)) {
+      selectedFile.value = null;
+      records.value = [];
+    }
+  } else {
     refreshRecords();
   }
 });
 
-// 새 기록 추가 시 데이터만 갱신 (정렬 상태 유지)
+// 데이터만 갱신 (정렬 상태 유지, fetch 순서 역전 방지)
 async function refreshRecords() {
   if (!selectedFile.value) return;
-
+  const seq = ++fetchSeq;
   try {
-    if (selectedFile.value === "controller") {
-      records.value = await fetchControllers();
-    } else {
-      records.value = await fetchRecord(selectedFile.value);
-    }
+    const data = selectedFile.value === "controller"
+      ? await fetchControllers()
+      : await fetchRecord(selectedFile.value);
+    if (seq === fetchSeq) records.value = data;
   } catch (e) {
-    notyf.error(`기록을 불러오지 못했습니다.`);
+    if (seq === fetchSeq) notyf.error(`기록을 불러오지 못했습니다.`);
   }
 }
 
-// 파일 선택 시 데이터 로드 (정렬 상태 초기화)
+// 파일 선택 시 데이터 로드 (정렬 상태 초기화, fetch 순서 역전 방지)
 async function loadRecords() {
   if (!selectedFile.value) return;
-
   loading.value = true;
   sortKey.value = "time";
   sortOrder.value = "desc";
+  const seq = ++fetchSeq;
   try {
-    if (selectedFile.value === "controller") {
-      records.value = await fetchControllers();
-    } else {
-      records.value = await fetchRecord(selectedFile.value);
-    }
+    const data = selectedFile.value === "controller"
+      ? await fetchControllers()
+      : await fetchRecord(selectedFile.value);
+    if (seq === fetchSeq) records.value = data;
   } catch (e) {
-    notyf.error(`기록을 불러오지 못했습니다.`);
-    records.value = [];
+    if (seq === fetchSeq) {
+      notyf.error(`기록을 불러오지 못했습니다.`);
+      records.value = [];
+    }
   } finally {
-    loading.value = false;
+    if (seq === fetchSeq) loading.value = false;
   }
 }
 

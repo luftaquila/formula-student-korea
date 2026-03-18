@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from "vue-router";
+import { useSerialStore } from "../stores/serial";
 
 const routes = [
   {
@@ -40,6 +41,13 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(import.meta.env.PROD ? import.meta.env.BASE_URL : ""),
   routes,
+});
+
+router.beforeEach((to, from) => {
+  const serial = useSerialStore();
+  if (serial.green.active && to.path !== from.path) {
+    return false;
+  }
 });
 
 export default router;
