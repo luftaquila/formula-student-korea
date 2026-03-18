@@ -2,6 +2,8 @@
 
 전체 7개 서비스의 비즈니스 흐름을 서비스별로 정리한 문서입니다.
 
+> **공통 엔드포인트**: 모든 7개 서비스는 `GET /api/health` (public, 헬스체크)와 `GET /api/logs` (admin, 로컬 서비스 로그 조회) 엔드포인트를 공통으로 노출합니다.
+
 ## 목차
 
 - [1. Auth 서비스](#1-auth-서비스)
@@ -136,6 +138,18 @@
 | 3.22 | 전체 팀 통계 | official | `GET /api/admin/stats` | 등록/취소/입차 횟수, 총 점유 시간 |
 | 3.23 | 팀별 타임라인 | official | `GET /api/admin/stats/:num` | 이벤트 타임라인 + 요약 |
 
+### 추가 조회 및 실시간
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 3.24 | 전체 부스 현황 조회 | public | `GET /api/booths/all` | 모든 검차 유형의 부스 상태 일괄 조회 |
+| 3.25 | 전체 검차 목록 조회 | official | `GET /api/admin/all` | 비활성 포함 전체 검차 유형 목록 |
+| 3.26 | 대기열 조회 | official | `GET /api/admin/inspection/:type` | 정렬된 대기열 목록 (우선순위/초검·재검/시간순) |
+| 3.27 | 부스 목록 조회 | official | `GET /api/admin/booths/:type` | 검차별 부스 설정 및 점유 현황 |
+| 3.28 | SMS 설정 조회 | official | `GET /api/admin/settings/sms` | SMS 활성화 상태 반환 |
+| 3.29 | 취소 페널티 조회 | official | `GET /api/admin/settings/cancel-penalty` | 현재 페널티 시간(분) 반환 |
+| 3.30 | SSE 실시간 업데이트 | public | `GET /api/events` | 검차 활성 상태, 대기열, 부스 변경 실시간 스트림 |
+
 ---
 
 ## 4. Inspection 서비스
@@ -163,6 +177,13 @@
 | 4.12 | 메모 입력 | official | `PUT /api/sheet/memo` | UPSERT, SSE 브로드캐스트 |
 | 4.13 | 카테고리 결과 설정 | official | `PUT /api/sheet/category-result` | PASS/FAIL/"", SSE 브로드캐스트 |
 | 4.14 | 검사자 지정 | official | `PUT /api/sheet/inspector` | UPSERT, SSE 브로드캐스트 |
+
+### 실시간 및 인쇄
+
+| # | 흐름 | 역할 | API/컴포넌트 | 설명 |
+|---|------|------|-------------|------|
+| 4.15 | SSE 실시간 업데이트 | official | `GET /api/sheet/events` | 답변, 메모, 카테고리 결과, 검사자 변경 실시간 스트림 |
+| 4.16 | 검차 시트 인쇄 | official | SheetTemplatePrint.vue | `/template/print?year=` 라우트, 브라우저 인쇄 기능으로 PDF 출력 |
 
 ---
 
@@ -202,6 +223,13 @@
 | 5.13 | 오토크로스 측정 | admin | AutocrossView | 녹색등 기준 → 센서1 × 2회 → 두 번째 통과 저장 |
 | 5.14 | 짐카나 측정 | admin | GymkhanaView | 센서1(레인1) + 센서2(레인2) 독립 측정, 팀 중복 방지 |
 
+### 실시간 및 내보내기
+
+| # | 흐름 | 역할 | API/컴포넌트 | 설명 |
+|---|------|------|-------------|------|
+| 5.15 | SSE 실시간 업데이트 | admin | `GET /api/events` | 기록 추가/수정/삭제, 경기 모드 변경 실시간 스트림 |
+| 5.16 | 기록 CSV/XLSX 내보내기 | admin | RecordView.vue | 클라이언트 사이드에서 선택된 기록 테이블을 CSV/XLSX로 다운로드 |
+
 ---
 
 ## 6. Score 서비스
@@ -226,6 +254,14 @@
 |---|------|------|-----|------|
 | 6.5 | 내구 기록 조회 | admin | `GET /api/score/endurance?year=` | 팀별 드라이버1·2 시간, 페널티, 상태 |
 | 6.6 | 내구 필드 수정 | admin | `PUT /api/score/endurance` | status(DNS/DNF/DSQ), 시간, 콘, 코스이탈 등, SSE |
+
+### 실시간 및 내보내기
+
+| # | 흐름 | 역할 | API/컴포넌트 | 설명 |
+|---|------|------|-------------|------|
+| 6.7 | SSE 실시간 업데이트 | admin | `GET /api/score/events` | inspection:*/traffic:* 재전파 + manual-score/penalty/setting/endurance 로컬 이벤트 |
+| 6.8 | 성적 대시보드 내보내기 | admin | ScoreBoard.vue | 전체 성적표 CSV/XLSX 클라이언트 사이드 다운로드 |
+| 6.9 | 내구 데이터 내보내기 | admin | EnduranceInput.vue | 내구 데이터 CSV/XLSX 클라이언트 사이드 다운로드 |
 
 ---
 
@@ -259,6 +295,12 @@
 | 7.12 | 매핑 목록 조회 | chief | `GET /api/admin/student-teams?year=` | |
 | 7.13 | 매핑 추가 | chief | `POST /api/admin/student-teams` | `{ email, team_num, year }`, 팀당 1명 |
 | 7.14 | 매핑 삭제 | chief | `DELETE /api/admin/student-teams/:email/:year` | |
+
+### 내부 서비스 연동
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 7.15 | 엔트리 번호 동기화 | 내부 | `PATCH /api/internal/team-num` | entry 서비스에서 번호 변경 시 student_team, session_team, submission + 파일 디렉토리 일괄 갱신 |
 
 ---
 
@@ -299,4 +341,10 @@ Auth → Entry, Queue, Inspection, Traffic, Score, Documents: /api/logs 엔드�
 
 ```
 Documents → Auth: GET /api/admin/students로 학생 목록 조회
+```
+
+### Entry → Documents 팀 번호 동기화
+
+```
+Entry → Documents: PATCH /api/entries/:num에서 번호 변경 시 Documents PATCH /api/internal/team-num 호출 (실패 시 207 반환)
 ```

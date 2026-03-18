@@ -18,40 +18,18 @@ Eleven independent services deployed via Docker Compose behind a Caddy reverse p
 - **traffic/** - Traffic control, telemetry, and event mode management API + web UI (Express + Vue 3, port 9500)
 - **score/** - Score aggregation, penalty/scoring config, and management API + web UI (Express + Vue 3, port 9600)
 - **documents/** - Document submission management API + web UI (Express + Vue 3, port 9700)
-- **filebrowser/** - Cloud file storage (FileBrowser, proxy auth via Caddy forward_auth, port 8080)
+- **files/** - Cloud file storage (FileBrowser, proxy auth via Caddy forward_auth, port 8080)
 - **energymeter/** - Energy meter data viewer (Git submodule, Vue 3, port 9800)
 - **rules/** - Rules file server (Caddy, port 9900)
 
-All 7 backend services (auth, entry, queue, inspection, traffic, score, documents) use a single parameterized `Dockerfile.service` at the repo root, with `ARG SERVICE` and `ARG PORT` passed via `docker-compose.yml` build args.
+All 7 backend services use a single parameterized `Dockerfile.service` at the repo root, with `ARG SERVICE` and `ARG PORT` passed via `compose.yml` build args. **Shared modules** in `shared/` provide common frontend components, backend utilities, styles, and configs — read files directly for details.
 
-**Shared modules** in `shared/` are imported directly by other services:
-- `vite-config.js` - Vite config factory `createViteConfig(serviceName, servicePort, options)` — handles base path, proxy, aliases; options: `{ entryProxy, server, build, aliases }`
-- `styles/base.css` - Common CSS variables, resets, and component styles
-- `styles/layout.css` - Common app layout CSS (header, main-content, responsive) — uses `--layout-max-width` CSS variable for per-service width customization
-- `constants.js` - Shared constants; exports `ROLE_LEVELS` object (used by express-setup.mjs and officialsStore.js) and `EVENT_TYPES` array (`["가속", "스키드패드", "오토크로스", "짐카나"]`)
-- `express-setup.mjs` - Express app factory with cookie parsing, JWT auth middleware, process handlers, DB error helper; exports `createApp`, `createJWT`, `ensureDataDir`, `VALID_ROLES`, `setupProcessHandlers`, `createDbRun`, `isSecureConnection`, `formatCookieOpts`
-- `logger.mjs` - SQLite-based semantic logger factory `createLogger(db, serviceName, maxRows)` — structured action logging with auto-cleanup and query endpoint
-- `api-base.js` - Frontend API client factory with 401 redirect and entry service helpers
-- `NavMenu.vue` - Navigation drawer component used across all frontends
-- `nav-config.js` - Service menu configuration (services, officials, admins arrays; items may have `auth` property (e.g. `"student"`, `"chief"`) to restrict visibility by role level)
-- `officialsStore.js` - Cookie-based auth state (user, isAuthenticated, showOfficials, isChief, isAdmin)
-- `ThemeToggle.vue` - Dark/light theme toggle button component
-- `theme-init.js` - Theme initialization (localStorage + prefers-color-scheme)
-- `useSSE.js` - Frontend SSE connection factory with auto-reconnect
-- `sse.mjs` - Backend SSE manager (broadcast + endpoint handler)
-- `format-phone.js` - Phone number formatting utilities; exports `formatPhone(value)` (input formatting) and `displayPhone(phone)` (display formatting)
-- `db-setup.mjs` - Database initialization helper; exports `createDatabase(Database, dbPath)` (WAL mode + synchronous=NORMAL) and `addColumn(db, table, columnDef)` (idempotent ALTER TABLE)
-- `useNotification.js` - Frontend notification composable using Notyf; exports `useNotification()` returning `{ notyf, success, error, warning }`
-
-Service dependencies (via environment variables in `docker-compose.yml`):
-- entry → auth (`AUTH_SERVER`)
-- inspection → auth (`AUTH_SERVER`)
-- traffic → auth (`AUTH_SERVER`)
+Service dependencies (via environment variables in `compose.yml`):
+- entry, inspection, traffic, documents → auth (`AUTH_SERVER`)
 - queue → entry (`ENTRY_SERVER`), auth (`AUTH_SERVER`)
 - score → entry (`ENTRY_SERVER`), inspection (`INSPECTION_SERVER`), traffic (`TRAFFIC_SERVER`), auth (`AUTH_SERVER`)
-- documents → auth (`AUTH_SERVER`)
 
-All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs middleware). Auth validation uses fail-close: if auth service is temporarily unreachable or returns an error, the session is invalidated (only successful 200 responses confirm the user). Explicit 404 also invalidates sessions.
+All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs middleware). Auth validation uses **fail-close**: if auth service is unreachable or returns an error, the session is invalidated (only successful 200 responses confirm the user).
 
 ## Tech Stack
 
@@ -61,7 +39,6 @@ All non-auth services validate users via `AUTH_SERVER` (shared express-setup.mjs
 - **Real-time:** Server-Sent Events (SSE) for live updates across inspection, queue, score, and traffic services
 - **Deployment:** Docker Compose with Caddy reverse proxy
 - **Testing:** Node.js built-in test runner (`node:test` + `node:assert`), Playwright (E2E)
-- **Logging:** SQLite-based semantic logging (`shared/logger.mjs`)
 
 ## Build Commands
 
@@ -74,7 +51,7 @@ npm run build      # Production build
 
 ### Backend Development
 
-Each service's `index.mjs` exports a `create*App(options)` factory function for testability. When run directly (`node index.mjs`), the service starts the HTTP server. The factory accepts `{ dbPath }` (and service-specific options like `skipSSESubscriptions` for score, `uploadsDir` for documents) and returns `{ app, db }`.
+Each service's `index.mjs` exports a `create*App(options)` factory function for testability. When run directly (`node index.mjs`), the service starts the HTTP server.
 
 ```bash
 cd auth|entry|queue|inspection|traffic|score|documents
@@ -86,9 +63,9 @@ node index.mjs     # Run API server directly
 Prerequisites:
 1. **Podman machine**: `podman machine init && podman machine start` (first time only)
 2. **Git submodules**: `git submodule update --init --recursive` (energymeter is a submodule)
-3. **`.env` file**: Copy `.env.example` to `.env` and set at minimum `JWT_SECRET` and `INTERNAL_SECRET` (any non-empty value works for local dev). Docker images set `NODE_ENV=production`, so services will fail-fast without `JWT_SECRET`.
+3. **`.env` file**: Copy `.env.example` to `.env` and set at minimum `JWT_SECRET` and `INTERNAL_SECRET`. Docker images set `NODE_ENV=production`, so services will fail-fast without `JWT_SECRET`.
 
-A `Makefile` wraps common podman compose operations. It auto-prunes dangling images before builds to prevent overlay storage slowdowns. Default profile is `production`.
+A `Makefile` wraps common podman compose operations. It auto-prunes dangling images before builds. Default profile is `production`.
 
 ```bash
 make deploy              # Build all + restart (production)
@@ -97,135 +74,52 @@ make deploy NO_CACHE=1   # Build all without cache + restart
 make build               # Build only
 make build SVC=traffic   # Build specific service only
 make restart             # Restart only (no build)
+make deploy PROFILE=local  # Local development (access at localhost:9000)
 ```
-
-For local development, override the profile:
-```bash
-make deploy PROFILE=local
-```
-
-Access at `http://localhost:9000` after starting with `local` profile.
 
 ## Authentication
 
-Google OAuth 2.0 with JWT cookie-based sessions. Auth logic is handled by backend middleware in `shared/express-setup.mjs`. Caddy strips `X-Internal-Service` and `Authuser` headers from all incoming requests (preventing external spoofing); the auth service route additionally strips `X-Forwarded-Host`.
+Google OAuth 2.0 with JWT cookie-based sessions. Caddy strips `X-Internal-Service` and `Authuser` headers from all incoming requests (preventing external spoofing); the auth service route additionally strips `X-Forwarded-Host`.
 
-Caddy also performs `forward_auth` for the FileBrowser service — see "FileBrowser" section below.
+**Role hierarchy**: `public < student < official < chief < admin`. Higher roles can access lower-level resources. `authRoleFn(req)` returns: `null` (public), `"student"`, `"official"`, `"chief"`, or `"admin"`. Non-API routes return redirects to `/` instead of 401/403 text.
 
-### Roles (four permission levels, hierarchical)
+See `API.md` for the complete API reference with all endpoints, role requirements, and request/response formats.
 
-**Role hierarchy**: `public < student < official < chief < admin`
-
-Role levels are defined in `shared/constants.js` as `ROLE_LEVELS = { student: 1, official: 2, chief: 3, admin: 4 }`. Auth middleware compares user's role level against the required role level — a user with a higher-level role can access lower-level resources.
-
-Each service's `createApp(deps, authRoleFn)` receives `deps` (`{ express, validateUser? }`) and an `authRoleFn(req)` callback that returns:
-- `null` — public (no auth required)
-- `"student"` — student or above (student, official, chief, admin)
-- `"official"` — official or above (official, chief, admin)
-- `"chief"` — chief or above (chief, admin)
-- `"admin"` — admin only
-
-For non-API routes (SPA pages), 401/403 responses redirect to `/` (landing page) instead of returning bare text. API routes return standard HTTP status codes with text error messages.
-
-### Route Permission Matrix
-
-**Public:** `/` (landing), `/auth/api/login,callback,logout`, `/auth` (SPA), `/queue` + `/queue/api` (except admin), `/entry/api/years` + `/entry/api/entries`, `/energymeter`, `/rules`
-
-**Student:** `/documents/**`
-
-**Official:** `/auth/api/ops-contacts` (GET), `/queue/admin,register,stats`, `/queue/api/admin` (queue listing, register, cancel, booth toggle, enter/exit), `/inspection/**`
-
-**Chief:** `/queue/priority`, `/queue/api/admin/priority`, `/queue/api/admin/settings` (POST/PATCH), `/queue/api/admin/inspection/:type` (PATCH, visibility, ignore), `/queue/api/admin/booths/:type/config`, `/queue/api/admin/history`, `/documents/admin`, `/documents/api/admin/**`, `/files/**` (FileBrowser)
-
-**Admin:** `/entry/**` (except public API), `/auth/api/ops-contacts` (POST/DELETE), `/inspection/api/sheet/template` (POST/PUT/DELETE), `/traffic/**`, `/score/**`, `/auth/api/users`, `/*/api/logs`, `/auth/api/admin/logs`, `/auth/logs`
-
-### Traffic: Event Mode Management
-
-Event types (가속, 스키드패드, 오토크로스, 짐카나) can be enabled/disabled from the traffic record management page. Disabled modes are hidden from traffic navigation tabs and score service tables. The "내구" (endurance) event is always shown in the score service regardless of event mode settings.
-
-### Traffic: Manual Mode
-
-Each event view (AccelView, SkidpadView, AutocrossView, GymkhanaView) has a manual mode toggle in the controller card. Manual mode simulates the serial controller by calling the same handlers (`handleGreenLight`, `handleSensorReport`) directly with `Date.now()`-based ticks instead of serial port data. This enables testing dynamic event measurement flows without physical hardware.
-
-- `serial.js` store: `manualMode` ref, `enableManualMode()` / `disableManualMode()` / `manualSensor(sensorNum)` methods
-- When manual mode is active: `sendGreen()` / `sendRed()` / `sendOff()` call handlers directly instead of `transmit()`; `reset()` skips serial transmission
-- Sensor buttons (`data-testid="manual-sensor-1"`, `data-testid="manual-sensor-2"`) appear when green light is active + manual mode is on
-- Manual mode and serial connection are mutually exclusive
-
-### Score: Scoring System
-
-Penalty settings (per-event cone touch, off-course, start delay penalties in seconds), score settings (per-event total points, completion points, cutoff percentage), auto-calculated scores based on penalty-adjusted best records using the FSK scoring formula. Record/Score toggle switches between viewing penalty-adjusted times and calculated scores. Total score = sum of all event scores + endurance + report + energy.
-
-### Inter-service communication
+## Inter-service Communication
 
 All inter-service API calls use `X-Internal-Service` header (matching `INTERNAL_SECRET` env var), auto-authenticated as admin. Score service subscribes to inspection and traffic SSE endpoints, re-broadcasting events to score clients with `inspection:*` and `traffic:*` prefixes. Auth service aggregates logs from all other services via `LOG_SERVICES` env var.
 
-### Auth API endpoints for external integration
+## FileBrowser
 
-- `GET /api/session` — public, returns `{ name, role }` for the current JWT session or 401. Used by the landing page to verify cookie state on load (so deactivated users immediately lose menu visibility).
-- `GET /api/forward-auth?role=<role>` — internal only (requires `X-Forward-Auth-Key` header matching `INTERNAL_SECRET`, timing-safe comparison). Validates JWT and checks role level, returns 200 with `X-Forwarded-User` header or 401/403. Used by Caddy's `forward_auth` for FileBrowser.
+Cloud file storage at `/files/`, restricted to chief+ roles via Caddy `forward_auth` to auth service. `X-Forward-Auth-Key` is a separate header from `X-Internal-Service` to avoid the auth middleware overriding `req.user` with the internal service identity (which would bypass the actual user's JWT validation).
 
-### FileBrowser
-
-Cloud file storage at `/files/`, restricted to chief+ roles. Uses [FileBrowser](https://filebrowser.org/) Docker image with proxy auth mode.
-
-**Auth flow:** Request → Caddy `forward_auth` (sends `X-Forward-Auth-Key` + user's cookies to `auth:9100/api/forward-auth?role=chief`) → auth validates JWT + role → returns `X-Forwarded-User` header with email → Caddy copies header to FileBrowser → FileBrowser auto-creates/authenticates user. Unauthenticated users (401) are redirected to `/auth/api/login?redirect={original request URI}`. Unauthorized users (403, insufficient role) are redirected to `/`.
-
-**Architecture:**
-- `filebrowser/init.sh` — entrypoint script; initializes DB with proxy auth config (`--auth.method=proxy --auth.header=X-Forwarded-User`) on first run only (when `/data/filebrowser.db` doesn't exist)
-- `filebrowser/data/` — persistent data (DB + uploaded files), gitignored via `data/` pattern
-- Caddy overrides `Content-Security-Policy` for `/files/*` to allow FileBrowser's inline scripts/styles and data: fonts
-- Caddy container requires `INTERNAL_SECRET` env var (used in `{env.INTERNAL_SECRET}` Caddyfile placeholder for `forward_auth` header)
-- `X-Forward-Auth-Key` is a separate header from `X-Internal-Service` to avoid the auth middleware intercepting it and overriding `req.user` with the internal service identity (which would bypass the actual user's JWT validation)
-
-**Important: FileBrowser DB reset** — when deleting `filebrowser/data/filebrowser.db`, the container must be recreated (not just restarted) so `init.sh` runs again to reinitialize proxy auth config. Use `podman rm -f fsk-filebrowser && podman compose --profile production up -d filebrowser`.
+**Important: DB reset** — when deleting `filebrowser/data/filebrowser.db`, the container must be recreated (not just restarted) so `init.sh` runs again. Use `podman rm -f fsk-filebrowser && podman compose --profile production up -d filebrowser`.
 
 ## Testing
 
 ### Unit/Integration Tests
 
-Backend services and shared modules are tested using Node.js built-in test runner (`node:test`).
-
 ```bash
-npm test                          # Run all tests
-npm run test:shared               # Shared modules only
-npm run test:auth                 # Auth service only
-npm run test:entry                # Entry service only
-npm run test:queue                # Queue service only
-npm run test:inspection           # Inspection service only
-npm run test:traffic              # Traffic service only
-npm run test:score                # Score service only
-npm run test:documents            # Documents service only
+npm test                    # Run all tests
+npm run test:{service}      # Run specific service (auth, entry, queue, inspection, traffic, score, documents)
+npm run test:shared         # Shared modules only
 ```
 
-- Each service's `index.mjs` exports a `create*App(options)` factory function for testability
-- Tests use in-memory/temp SQLite databases (no external services needed)
-- External service dependencies are mocked with lightweight Express servers
-- Tests run in CI via GitHub Actions on push to main and PRs
-- Test files go in `tests/<service>/<service>.test.mjs`
-- Shared module tests go in `tests/shared/<module>.test.mjs`
-- Use `tests/helpers/test-utils.mjs` for common utilities (JWT, HTTP client, temp DB)
+- Test files: `tests/<service>/<service>.test.mjs`, shared: `tests/shared/<module>.test.mjs`
+- Utilities: `tests/helpers/test-utils.mjs` (JWT, HTTP client, temp DB)
+- CI runs on push to main and PRs
 
 ### E2E Tests (Playwright)
 
-Browser-based end-to-end tests using Playwright against all 7 backend services running in Docker.
+**E2E tests run only in GitHub Actions CI. Do NOT run locally.**
 
-```bash
-npx playwright install chromium   # First time only
-npm run test:e2e                  # Run all E2E tests
-npx playwright show-report        # View HTML report
-```
-
-- Tests are in `tests/e2e/{service}/*.spec.mjs` (35 spec files across 8 service groups)
-- `playwright.config.mjs` defines project dependencies ensuring execution order: auth → entry → inspection/queue/traffic → score → documents → cross-service
-- `tests/e2e/global-setup.mjs` waits for services, generates auth storage states (JWT cookies for 4 roles), and seeds test data via API
-- Auth bypass: `createJWT()` from `shared/express-setup.mjs` generates valid JWTs directly; Playwright `storageState` files at `tests/e2e/.auth/{admin,chief,official,student}.json` provide pre-authenticated sessions
-- Traffic manual mode (`data-testid="manual-mode-toggle"`) enables dynamic event measurement testing without Web Serial API
-- E2E CI runs via `.github/workflows/e2e.yml`, triggered on tag push only (heavyweight: builds 7 Docker images + Caddy + headless Chromium)
+- Tests: `tests/e2e/{service}/*.spec.mjs`
+- CI workflow: `.github/workflows/e2e.yml`, triggered on push to main
+- Check results: `gh run list` → `gh run view <id> --log-failed`
 
 ## Business Flows
 
-See `FLOW.md` for the complete documentation of all 63 business flows across the 7 services, including API endpoints, role requirements, business rules, and inter-service dependencies.
+See `FLOW.md` for the complete documentation of business flows across the 7 services. See `API.md` for the full API endpoint reference.
 
 ## Environment Variables
 
