@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, onActivated, onDeactivated } from "vue";
 import {
   fetchRecord,
   fetchControllers,
@@ -42,12 +42,26 @@ const typeFilters = ref({
   ...Object.fromEntries(EVENT_TYPES.map(t => [t, true])),
 });
 
+// keep-alive 활성 상태 추적
+const isActive = ref(true);
+
 // 컴포넌트 마운트 시 엔트리 로드 및 이전에 선택한 파일이 있으면 로드
 onMounted(() => {
   if (!entryStore.isLoaded) entryStore.loadEntries();
   if (selectedFile.value) {
     loadRecords();
   }
+});
+
+onActivated(() => {
+  isActive.value = true;
+});
+
+onDeactivated(() => {
+  isActive.value = false;
+  editingDetailId.value = null;
+  editingConesId.value = null;
+  editingOcId.value = null;
 });
 
 const isControllerLog = computed(() => selectedFile.value === "controller");
@@ -87,8 +101,9 @@ const sortedRecords = computed(() => {
   });
 });
 
-// 새 기록이 추가되면 자동으로 새로고침 (정렬 상태 유지)
+// 새 기록이 추가되면 자동으로 새로고침 (정렬 상태 유지, 비활성 시 스킵)
 watch(lastUpdate, (update) => {
+  if (!isActive.value) return;
   if (update && selectedFile.value && update.name === selectedFile.value) {
     refreshRecords();
   }

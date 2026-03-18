@@ -1,5 +1,6 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, onActivated, onDeactivated } from "vue";
+
 import { useSSE } from "../composables/useSSE";
 import { fetchRecord } from "../composables/useApi";
 
@@ -13,6 +14,7 @@ const records = ref([]);
 const loading = ref(false);
 const isFullscreen = ref(false);
 const trackTemp = ref("");
+const isActive = ref(true);
 
 const EVENT_CONFIG = {
   가속: { label: "ACCELERATION", color: "#ffd000" },
@@ -38,9 +40,10 @@ async function loadRecords() {
   }
 }
 
-watch(selectedFile, () => loadRecords());
+watch(selectedFile, () => { if (isActive.value) loadRecords(); });
 
 watch(lastUpdate, (update) => {
+  if (!isActive.value) return;
   if (update && update.name === selectedFile.value) {
     loadRecords();
   }
@@ -135,6 +138,17 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  document.body.classList.remove("scoreboard-fullscreen");
+});
+
+onActivated(() => {
+  isActive.value = true;
+  document.addEventListener("fullscreenchange", handleFullscreenChange);
+});
+
+onDeactivated(() => {
+  isActive.value = false;
   document.removeEventListener("fullscreenchange", handleFullscreenChange);
   document.body.classList.remove("scoreboard-fullscreen");
 });

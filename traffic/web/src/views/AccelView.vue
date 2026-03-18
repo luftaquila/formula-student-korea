@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onActivated } from "vue";
 import { useEntryStore } from "../stores/entry";
 import { useSerialStore, msToClockStr } from "../stores/serial";
 import { useNotification } from "@shared/useNotification.js";
@@ -58,6 +58,10 @@ async function onSensor({ sensor, tick, greenTick }) {
 onMounted(() => {
   serial.setMode("accel", onSensor);
   if (!entryStore.isLoaded) entryStore.loadEntries();
+});
+
+onActivated(() => {
+  serial.setMode("accel", onSensor);
 });
 
 const currentYear = computed(() => new Date().getFullYear());

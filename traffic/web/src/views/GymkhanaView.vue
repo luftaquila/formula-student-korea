@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, onMounted, onActivated, watch } from "vue";
 import { useEntryStore } from "../stores/entry";
 import { useSerialStore, msToClockStr } from "../stores/serial";
 import { useNotification } from "@shared/useNotification.js";
@@ -56,6 +56,10 @@ async function onSensor({ sensor, tick, greenTick }) {
 onMounted(() => {
   serial.setMode("gymkhana", onSensor);
   if (!entryStore.isLoaded) entryStore.loadEntries();
+});
+
+onActivated(() => {
+  serial.setMode("gymkhana", onSensor);
 });
 
 const currentYear = computed(() => new Date().getFullYear());
