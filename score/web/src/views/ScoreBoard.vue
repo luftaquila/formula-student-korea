@@ -137,7 +137,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener("click", handleOutsideClick);
-  clearTimeout(loadDataTimer);
+  clearTimeout(refreshTimer);
 });
 
 function handleOutsideClick(e) {
@@ -414,11 +414,22 @@ watch(lastManualScoreUpdate, (update) => {
   manualScores.value[team_num][score_type] = value;
 });
 
-// SSE loadData 디바운스 (빠른 연속 이벤트 시 중복 fetch 방지)
-let loadDataTimer = null;
-function debouncedLoadData() {
-  clearTimeout(loadDataTimer);
-  loadDataTimer = setTimeout(loadData, 300);
+// SSE 이벤트 데이터만 갱신 (manualScores/penalties/settings는 전용 SSE watcher가 처리)
+async function refreshEventData() {
+  try {
+    const data = await fetchScore(selectedYear.value);
+    entries.value = data.entries;
+    inspection.value = data.inspection;
+    events.value = data.events;
+  } catch (e) {
+    error("데이터를 가져올 수 없습니다.");
+  }
+}
+
+let refreshTimer = null;
+function debouncedRefresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(refreshEventData, 300);
 }
 
 // SSE로 페널티 설정 실시간 반영
@@ -429,7 +440,7 @@ watch(lastPenaltyUpdate, (update) => {
   penalties.value[event_type].cone_penalty = cone_penalty;
   penalties.value[event_type].oc_penalty = oc_penalty;
   penalties.value[event_type].start_delay = start_delay;
-  debouncedLoadData(); // 내구 result는 백엔드에서 start_delay 포함 계산되므로 재로드 필요
+  debouncedRefresh(); // 내구 result는 백엔드에서 start_delay 포함 계산되므로 재로드 필요
 });
 
 // SSE로 점수 설정 실시간 반영
@@ -438,17 +449,17 @@ watch(lastSettingUpdate, (update) => {
   const { event_type, setting_key, value } = update;
   if (!settings.value[event_type]) settings.value[event_type] = {};
   settings.value[event_type][setting_key] = value;
-  debouncedLoadData();
+  debouncedRefresh();
 });
 
-// SSE로 경기 기록 변경 시 데이터 재로드
+// SSE로 경기 기록 변경 시 이벤트 데이터 갱신
 watch(lastTrafficRecordUpdate, () => {
-  debouncedLoadData();
+  debouncedRefresh();
 });
 
-// SSE로 내구 기록 변경 시 데이터 재로드
+// SSE로 내구 기록 변경 시 이벤트 데이터 갱신
 watch(lastEnduranceUpdate, () => {
-  debouncedLoadData();
+  debouncedRefresh();
 });
 
 // 카테고리 오버라이드 판별

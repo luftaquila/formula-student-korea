@@ -191,6 +191,7 @@ async function onInspectorChange(catId, inspector) {
 
 // Click-to-edit memo
 const editingMemo = ref(null);
+const focusedItemId = ref(null);
 
 function startEditMemo(itemId) {
   if (isReadOnly.value) return;
@@ -375,9 +376,10 @@ watch(lastInspectorUpdate, (update) => {
   sheetData.value.inspectors[update.category_id] = update.inspector;
 });
 
-// SSE로 개별 항목 답변 실시간 반영 (self-echo 필터)
+// SSE로 개별 항목 답변 실시간 반영 (self-echo 필터 + 편집 가드)
 watch(lastAnswerUpdate, (update) => {
   if (!update || update.year !== year || update.team_num !== num) return;
+  if (focusedItemId.value === update.item_id) return;
   const sentKey = `answer-${update.item_id}`;
   if (lastSentValues[sentKey] === update.value) {
     delete lastSentValues[sentKey];
@@ -389,9 +391,10 @@ watch(lastAnswerUpdate, (update) => {
   sheetData.value.answers[update.item_id].value = update.value;
 });
 
-// SSE로 메모 실시간 반영 (self-echo 필터)
+// SSE로 메모 실시간 반영 (self-echo 필터 + 편집 가드)
 watch(lastMemoUpdate, (update) => {
   if (!update || update.year !== year || update.team_num !== num) return;
+  if (editingMemo.value === update.item_id) return;
   const sentKey = `memo-${update.item_id}`;
   if (lastSentValues[sentKey] === update.memo) {
     delete lastSentValues[sentKey];
@@ -565,6 +568,8 @@ watch(lastMemoUpdate, (update) => {
                       type="number"
                       class="form-input inline-input number-input"
                       :value="getAnswer(item.id)"
+                      @focus="focusedItemId = item.id"
+                      @blur="focusedItemId = null"
                       @input="onAnswerChange(item.id, $event.target.value)"
                       :disabled="isReadOnly"
                       placeholder="값"
@@ -577,6 +582,8 @@ watch(lastMemoUpdate, (update) => {
                       type="text"
                       class="form-input inline-input text-input"
                       :value="getAnswer(item.id)"
+                      @focus="focusedItemId = item.id"
+                      @blur="focusedItemId = null"
                       @input="onAnswerChange(item.id, $event.target.value)"
                       :disabled="isReadOnly"
                       placeholder="입력"
