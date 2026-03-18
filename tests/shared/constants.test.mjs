@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { ROLE_LEVELS } from '../../shared/constants.js';
+import { ROLE_LEVELS, EVENT_TYPES } from '../../shared/constants.js';
 import { VALID_ROLES } from '../../shared/express-setup.mjs';
 
 describe('ROLE_LEVELS', () => {
@@ -23,6 +23,16 @@ describe('ROLE_LEVELS', () => {
 
   it('admin level is 4', () => {
     assert.equal(ROLE_LEVELS.admin, 4);
+  });
+});
+
+describe('EVENT_TYPES', () => {
+  it('has exactly four event types', () => {
+    assert.equal(EVENT_TYPES.length, 4);
+  });
+
+  it('contains the correct event names in order', () => {
+    assert.deepEqual(EVENT_TYPES, ['가속', '스키드패드', '오토크로스', '짐카나']);
   });
 });
 

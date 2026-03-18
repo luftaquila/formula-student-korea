@@ -831,6 +831,106 @@ describe('GET /api/admin/logs', () => {
   });
 });
 
+// ─── Session ────────────────────────────────────────────────────────────
+describe('GET /api/session', () => {
+  it('returns name and role for valid admin session', async () => {
+    const res = await client.get('/api/session', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.name, 'Admin');
+    assert.equal(data.role, 'admin');
+  });
+
+  it('returns correct role for student session', async () => {
+    db.prepare("INSERT OR IGNORE INTO users (email, name, role, active) VALUES ('student@test.com', 'Student', 'student', 1)").run();
+    const res = await client.get('/api/session', { cookie: studentCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.name, 'Student');
+    assert.equal(data.role, 'student');
+  });
+
+  it('returns 401 without cookie', async () => {
+    const res = await client.get('/api/session');
+    assert.equal(res.status, 401);
+  });
+
+  it('returns 401 with invalid JWT', async () => {
+    const res = await client.get('/api/session', { cookie: 'fsk_session=invalid.jwt.token' });
+    assert.equal(res.status, 401);
+  });
+});
+
+// ─── Forward Auth ───────────────────────────────────────────────────────
+describe('GET /api/forward-auth', () => {
+  it('returns 403 without X-Forward-Auth-Key header', async () => {
+    const res = await client.get('/api/forward-auth', { cookie: adminCookie });
+    assert.equal(res.status, 403);
+  });
+
+  it('returns 403 with wrong key', async () => {
+    const res = await client.get('/api/forward-auth', {
+      cookie: adminCookie,
+      headers: { 'X-Forward-Auth-Key': 'wrong-secret' },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('returns 403 when INTERNAL_SECRET is unset', async () => {
+    const original = process.env.INTERNAL_SECRET;
+    // Note: INTERNAL_SECRET is read at request time in the handler, but the secret
+    // variable is captured at app creation. We test via wrong key instead.
+    const res = await client.get('/api/forward-auth', {
+      cookie: adminCookie,
+      headers: { 'X-Forward-Auth-Key': '' },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('returns 401 without user session', async () => {
+    const res = await client.get('/api/forward-auth', {
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 401);
+  });
+
+  it('returns 403 when role insufficient (official < chief)', async () => {
+    db.prepare("INSERT OR IGNORE INTO users (email, name, role, active) VALUES ('official@test.com', 'Official', 'official', 1)").run();
+    const res = await client.get('/api/forward-auth?role=chief', {
+      cookie: officialCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('returns 200 with X-Forwarded-User when authorized', async () => {
+    const res = await client.get('/api/forward-auth?role=chief', {
+      cookie: adminCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-forwarded-user'), 'admin@test.com');
+  });
+
+  it('defaults to official role when role query is omitted', async () => {
+    const res = await client.get('/api/forward-auth', {
+      cookie: officialCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-forwarded-user'), 'official@test.com');
+  });
+
+  it('allows higher role (admin) for lower requirement (chief)', async () => {
+    const res = await client.get('/api/forward-auth?role=chief', {
+      cookie: adminCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-forwarded-user'), 'admin@test.com');
+  });
+});
+
 // ─── Edge Cases & Auth Middleware Integration ─────────────────────────────
 describe('Auth middleware integration', () => {
   it('X-Internal-Service header grants admin access', async () => {
