@@ -24,18 +24,40 @@ jobs:
           PUBLIC_URL=http://localhost:9000
           EOF
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Build images with cache
+        uses: docker/bake-action@v6
+        with:
+          files: compose.yml
+          targets: auth,entry,queue,inspection,traffic,score,documents,caddy-local
+          set: |
+            *.cache-from=type=gha
+            *.cache-to=type=gha,mode=max
+          load: true
+
       - name: Start services
         run: |
-          docker compose up -d --wait auth entry queue inspection traffic score documents
-          docker compose --profile local up -d --no-deps caddy-local
+          docker compose up -d --wait --no-build auth entry queue inspection traffic score documents
+          docker compose --profile local up -d --no-deps --no-build caddy-local
           sleep 3
           curl -sf http://localhost:9000/auth/api/health
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
-      - name: Install Playwright
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies and Playwright
         run: |
           npm ci
           npx playwright install --with-deps chromium

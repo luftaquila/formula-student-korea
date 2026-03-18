@@ -38,8 +38,8 @@ test.describe("Entry CRUD operations", () => {
     await sidebar.locator('input[type="text"]').nth(1).fill("테스트팀");
     await sidebar.locator("select.form-input").selectOption("EV");
 
-    // Submit form
-    await sidebar.locator('button[type="submit"]').click();
+    // Submit form (use .submit-btn to avoid matching VehicleTypeManager's submit button)
+    await sidebar.locator('.submit-btn').click();
 
     // Verify success notification
     await expectNotification(page, "success", "99번 엔트리를 추가했습니다.");
@@ -61,10 +61,10 @@ test.describe("Entry CRUD operations", () => {
   test("inline edits an entry university name", async ({ page }) => {
     const table = page.locator(".entry-table");
 
-    // Find the row with entry number 10 (KAIST) and click the university cell
+    // Find the row with entry number 10 (KAIST) and click the university cell text
     const row = table.locator("tbody tr").filter({ hasText: "KAIST" });
     const univCell = row.locator("td.col-univ");
-    await univCell.click();
+    await univCell.locator(".cell-text").click();
 
     // The cell should now show an input field
     const editInput = univCell.locator("input.edit-input");
@@ -84,7 +84,7 @@ test.describe("Entry CRUD operations", () => {
     // Revert: edit back to original
     const updatedRow = table.locator("tbody tr").filter({ hasText: "카이스트" });
     const revertCell = updatedRow.locator("td.col-univ");
-    await revertCell.click();
+    await revertCell.locator(".cell-text").click();
     const revertInput = revertCell.locator("input.edit-input");
     await revertInput.fill("KAIST");
     await revertInput.press("Enter");
@@ -97,7 +97,7 @@ test.describe("Entry CRUD operations", () => {
     await sidebar.locator('input[type="number"]').fill("88");
     await sidebar.locator('input[type="text"]').first().fill("삭제대학교");
     await sidebar.locator('input[type="text"]').nth(1).fill("삭제팀");
-    await sidebar.locator('button[type="submit"]').click();
+    await sidebar.locator('.submit-btn').click();
     await waitForPageReady(page);
     await expect(page.locator(".entry-count")).toHaveText("6개");
 
