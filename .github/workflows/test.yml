@@ -11,11 +11,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
+
+      - name: Restore npm cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.npm
+          key: test-npm-${{ runner.os }}-${{ hashFiles('*/package-lock.json') }}
 
       - name: Install dependencies
         run: |
@@ -25,3 +31,10 @@ jobs:
 
       - name: Run tests
         run: node --test --test-force-exit tests/**/*.test.mjs
+
+      - name: Save npm cache
+        uses: actions/cache/save@v5
+        if: always()
+        with:
+          path: ~/.npm
+          key: test-npm-${{ runner.os }}-${{ hashFiles('*/package-lock.json') }}

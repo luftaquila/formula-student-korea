@@ -306,6 +306,8 @@ export const useSerialStore = defineStore("serial", () => {
     records.value = [];
     start.value = { tick: null, timestamp: null };
     lastSensorTrigger.value = {};
+    green.value = { active: false, startTick: null, timestamp: null };
+    lightColor.value = "grey";
     if (!manualMode.value) transmit("$X");
   }
 
