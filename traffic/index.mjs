@@ -397,7 +397,7 @@ app.post("/api/controllers", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "controller.create", { timestamp: req.body.timestamp });
+  logger.log(req, "controller.upload", { timestamp: req.body.timestamp });
   res.status(201).send();
 });
 
@@ -409,7 +409,7 @@ app.delete("/api/controllers", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "controller.delete_all");
+  logger.log(req, "controller.clear");
   res.status(200).send();
 });
 

@@ -305,7 +305,7 @@ app.delete("/api/entries", withYearTable, (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "entry.delete_all", { year });
+  logger.log(req, "entry.clear", { year });
   res.status(200).send();
 });
 

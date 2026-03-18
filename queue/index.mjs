@@ -467,7 +467,7 @@ app.patch("/api/admin/inspection/:type", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "inspection.update", { active: req.body.active === true }, req.params.type);
+  logger.log(req, "inspection.toggle", { active: req.body.active === true }, req.params.type);
 
   // SSE 브로드캐스트: 활성 검차 목록 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
@@ -795,7 +795,7 @@ app.delete("/api/admin/priority/:type/all", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "priority.delete_all", null, req.params.type);
+  logger.log(req, "priority.clear", null, req.params.type);
 
   // SSE 브로드캐스트: 우선순위 변경 -> 대기열 순서 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
@@ -824,7 +824,7 @@ app.delete("/api/admin/history/:type", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "history.delete", null, type);
+  logger.log(req, "history.clear", null, type);
 
   // SSE 브로드캐스트: 이력 초기화 -> 대기열 순서 변경 및 부스 상태 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
@@ -860,7 +860,7 @@ app.put("/api/admin/inspection/:type/ignore", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "inspection.ignore_update", { field, value: !!value }, type);
+  logger.log(req, "inspection.ignore", { field, value: !!value }, type);
 
   // SSE 브로드캐스트: 설정 변경 -> 대기열 순서 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
@@ -942,7 +942,7 @@ app.patch("/api/admin/booths/:type/config", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "booth.config_update", { count }, type);
+  logger.log(req, "booth.count", { count }, type);
 
   // SSE 브로드캐스트: 부스 상태 변경
   const booths = getBoothsForType(type);

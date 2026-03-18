@@ -329,3 +329,101 @@ Chrome 브라우저로 계측 시스템 메뉴에 접속한 후, 계측기 컨�
 | 계측 시스템 | 이벤트 모드 활성화/비활성화 |
 | 성적 관리 | 페널티/점수 설정, 성적 입력 |
 | 시스템 로그 | 전체 서비스 로그 조회 |
+
+## 9. 시스템 로그 액션 목록
+
+### Auth
+| 액션 | 레벨 | 설명 |
+|------|------|------|
+| `auth.forward_auth_denied` | warn | FileBrowser forward_auth 권한 거부 |
+| `auth.rate_limit` | warn | 로그인 속도 제한 초과 |
+| `auth.nonce_failed` | warn | OAuth nonce 검증 실패 |
+| `auth.token_failed` | warn | OAuth 토큰 교환 실패 |
+| `auth.userinfo_failed` | warn | Google userinfo 조회 실패 |
+| `user.login_failed` | warn | 로그인 실패 |
+| `auth.callback_error` | warn | OAuth 콜백 오류 |
+| `user.login` | info | 로그인 |
+| `user.logout` | info | 로그아웃 |
+| `user.create` | info | 사용자 생성 |
+| `user.create_bulk` | info | 사용자 일괄 생성 |
+| `user.bulk_toggle` | info | 사용자 일괄 활성/비활성 토글 |
+| `user.bulk_delete` | info | 사용자 일괄 삭제 |
+| `user.update` | info | 사용자 정보 수정 |
+| `user.delete` | info | 사용자 삭제 |
+| `ops_contact.create` | info | 운영 연락처 추가 |
+| `ops_contact.delete` | info | 운영 연락처 삭제 |
+
+### Entry
+| 액션 | 레벨 | 설명 |
+|------|------|------|
+| `entry.create` | info | 엔트리 생성 |
+| `entry.update` | info | 엔트리 수정 |
+| `entry.delete` | info | 엔트리 삭제 |
+| `entry.clear` | info | 연도별 엔트리 전체 삭제 |
+| `entry.bulk_upload` | info | 엔트리 일괄 업로드 |
+| `vehicle_type.create` | info | 차종 추가 |
+| `vehicle_type.delete` | info | 차종 삭제 |
+
+### Queue
+| 액션 | 레벨 | 설명 |
+|------|------|------|
+| `inspection.toggle` | info | 검차 활성/비활성 토글 |
+| `inspection.visibility` | info | 검차 등록 페이지 표시 토글 |
+| `inspection.ignore` | info | 우선순위/초검재검 무시 토글 |
+| `queue.register` | info | 대기열 등록 |
+| `queue.cancel` | info | 대기열 취소 |
+| `history.clear` | info | 대기열 이력 초기화 |
+| `priority.set` | info | 우선순위 설정 |
+| `priority.delete` | info | 우선순위 삭제 |
+| `priority.clear` | info | 우선순위 전체 삭제 |
+| `booth.count` | info | 부스 수 변경 |
+| `booth.toggle` | info | 부스 활성/비활성 토글 |
+| `booth.enter` | info | 부스 입장 |
+| `booth.exit` | info | 부스 퇴장 |
+| `settings.sms` | info | SMS 알림 토글 |
+| `settings.sms_rank` | info | SMS 알림 순번 변경 |
+| `settings.cancel_penalty` | info | 취소 페널티 시간 변경 |
+
+### Inspection
+| 액션 | 레벨 | 설명 |
+|------|------|------|
+| `template.create` | info | 검차 항목 생성 |
+| `template.update` | info | 검차 항목 수정 |
+| `template.delete` | info | 검차 항목 삭제 |
+| `template.reorder` | info | 검차 항목 순서 변경 |
+| `template.copy` | info | 검차 항목 연도 복사 |
+| `template.import` | info | 검차 항목 가져오기 |
+| `answer.update` | info | 검차 응답 수정 |
+| `memo.update` | info | 검차 메모 수정 |
+| `category_result.update` | info | 카테고리 결과 수정 |
+| `inspector.update` | info | 검사관 지정 수정 |
+
+### Traffic
+| 액션 | 레벨 | 설명 |
+|------|------|------|
+| `record.create` | info | 경기 기록 생성 |
+| `record.update` | info | 경기 기록 수정 |
+| `record.delete` | info | 경기 기록 삭제 |
+| `controller.upload` | info | 컨트롤러 데이터 업로드 |
+| `controller.clear` | info | 컨트롤러 데이터 전체 삭제 |
+| `event_mode.toggle` | info | 경기 모드 활성/비활성 토글 |
+
+### Score
+| 액션 | 레벨 | 설명 |
+|------|------|------|
+| `manual_score.update` | info | 수동 점수 수정 |
+| `penalty.update` | info | 페널티 설정 수정 |
+| `setting.update` | info | 점수 설정 수정 |
+| `endurance.update` | info | 내구 데이터 수정 |
+
+### Documents
+| 액션 | 레벨 | 설명 |
+|------|------|------|
+| `submission.create` | info | 문서 제출 |
+| `session.create` | info | 제출 세션 생성 |
+| `session.update` | info | 제출 세션 수정 |
+| `session.delete` | info | 제출 세션 삭제 |
+| `file.download` | info | 파일 다운로드 (학생) |
+| `file.admin_download` | info | 파일 다운로드 (관리자) |
+| `student_team.create` | info | 학생-팀 매핑 생성 |
+| `student_team.delete` | info | 학생-팀 매핑 삭제 |

@@ -422,7 +422,7 @@ app.patch("/api/users/bulk", (req, res) => {
   const txResult = dbRun(() => run());
   if (!txResult.success) return res.status(txResult.status).send(txResult.error);
 
-  logger.log(req, "user.bulk_update", { emails, active: !!active });
+  logger.log(req, "user.bulk_toggle", { emails, active: !!active });
   res.json({ updated: txResult.result.changes });
 });
 
