@@ -132,11 +132,20 @@ async function handleDNF() {
         <div class="card-body">
           <button
             class="btn btn-block"
-            :class="serial.connected ? 'btn-success' : 'btn-danger'"
+            :class="serial.connected && !serial.manualMode ? 'btn-success' : 'btn-danger'"
             :disabled="serial.connected"
             @click="handleConnect"
           >
-            {{ serial.connected ? "연결됨" : "컨트롤러 연결" }}
+            {{ serial.connected && !serial.manualMode ? "연결됨" : "컨트롤러 연결" }}
+          </button>
+          <button
+            class="btn btn-block mt-1"
+            :class="serial.manualMode ? 'btn-success' : 'btn-ghost'"
+            :disabled="serial.connected && !serial.manualMode"
+            @click="serial.manualMode ? serial.disableManualMode() : serial.enableManualMode()"
+            data-testid="manual-mode-toggle"
+          >
+            {{ serial.manualMode ? "매뉴얼 모드 ON" : "매뉴얼 모드" }}
           </button>
         </div>
       </div>
@@ -230,6 +239,12 @@ async function handleDNF() {
         <div class="timer-display">
           <span class="traffic-light" :class="serial.lightColor"></span>
           <span class="clock">{{ serial.clockDisplay }}</span>
+        </div>
+      </div>
+
+      <div v-if="serial.manualMode && serial.green.active" class="manual-sensors card">
+        <div class="card-body">
+          <button class="btn btn-primary btn-block" data-testid="manual-sensor-1" @click="serial.manualSensor(1)">센서 1 (통과)</button>
         </div>
       </div>
 

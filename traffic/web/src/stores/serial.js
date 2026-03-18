@@ -36,6 +36,28 @@ export const useSerialStore = defineStore("serial", () => {
   const SENSOR_COOLDOWN_MS = 1000;
   const lastSensorTrigger = ref({});
 
+  // Manual mode state
+  const manualMode = ref(false);
+  const manualBaseTick = ref(0);
+  const manualBaseTime = ref(0);
+
+  function getManualTick() {
+    return manualBaseTick.value + (Date.now() - manualBaseTime.value);
+  }
+
+  function enableManualMode() {
+    manualMode.value = true;
+    connected.value = true;
+    manualBaseTick.value = 1000000;
+    manualBaseTime.value = Date.now();
+  }
+
+  function disableManualMode() {
+    manualMode.value = false;
+    connected.value = false;
+    reset();
+  }
+
   // Set current mode and callback
   function setMode(mode, callback) {
     currentMode.value = mode;
@@ -127,19 +149,19 @@ export const useSerialStore = defineStore("serial", () => {
       clockDisplay.value = "00:00:00.000";
       notyf.success("컨트롤러 연결 완료");
     } else if (data.startsWith("$OK G")) {
-      handleGreenLight(data);
+      handleGreenLight(Number(data.slice(6)));
     } else if (data.startsWith("$OK R")) {
       handleRedLight();
     } else if (data.startsWith("$OK X")) {
       handleLightOff();
     } else if (data.startsWith("$S")) {
-      handleSensorReport(data);
+      handleSensorReport(Number(data.slice(3, 4)), Number(data.slice(5)));
     }
   }
 
-  function handleGreenLight(data) {
+  function handleGreenLight(tick) {
     green.value.active = true;
-    green.value.tick = Number(data.slice(6));
+    green.value.tick = tick;
     green.value.timestamp = new Date();
     lightColor.value = "green";
 
@@ -169,10 +191,8 @@ export const useSerialStore = defineStore("serial", () => {
     stopClock();
   }
 
-  function handleSensorReport(data) {
+  function handleSensorReport(sensor, tick) {
     const timestamp = new Date();
-    const sensor = Number(data.slice(3, 4));
-    const tick = Number(data.slice(5));
 
     if (!green.value.active) return;
 
@@ -251,15 +271,33 @@ export const useSerialStore = defineStore("serial", () => {
   }
 
   function sendGreen() {
+    if (manualMode.value) {
+      manualBaseTime.value = Date.now();
+      handleGreenLight(getManualTick());
+      return;
+    }
     transmit("$G");
   }
 
   function sendRed() {
+    if (manualMode.value) {
+      handleRedLight();
+      return;
+    }
     transmit("$R");
   }
 
   function sendOff() {
+    if (manualMode.value) {
+      handleLightOff();
+      return;
+    }
     transmit("$X");
+  }
+
+  function manualSensor(sensorNum) {
+    if (!manualMode.value || !green.value.active) return;
+    handleSensorReport(sensorNum, getManualTick());
   }
 
   function reset() {
@@ -268,7 +306,7 @@ export const useSerialStore = defineStore("serial", () => {
     records.value = [];
     start.value = { tick: null, timestamp: null };
     lastSensorTrigger.value = {};
-    transmit("$X");
+    if (!manualMode.value) transmit("$X");
   }
 
   return {
@@ -278,6 +316,7 @@ export const useSerialStore = defineStore("serial", () => {
     green,
     lightColor,
     records,
+    manualMode,
 
     // Actions
     setMode,
@@ -287,5 +326,8 @@ export const useSerialStore = defineStore("serial", () => {
     sendOff,
     reset,
     setSensorCooldown,
+    enableManualMode,
+    disableManualMode,
+    manualSensor,
   };
 });
