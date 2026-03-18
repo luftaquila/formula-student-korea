@@ -843,8 +843,5 @@ onMounted(() => {
     flex: 1;
   }
 
-  .col-date {
-    display: none;
-  }
 }
 </style>

@@ -1,6 +1,6 @@
 import crypto from "crypto";
 
-export function createLogger(db, serviceName, maxRows = 10000) {
+export function createLogger(db, serviceName, maxRows = 50000) {
   db.exec(`CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
