@@ -174,6 +174,50 @@ test.describe("Traffic record management", () => {
     await expect(table.locator("tbody")).toContainText("성균관대학교");
   });
 
+  test("deletes a record table", async ({ page }) => {
+    // Create a temporary record file to delete
+    const tempName = "E2E-Delete-Test";
+    const createRes = await page.request.post("/traffic/api/records", {
+      data: {
+        name: tempName,
+        data: {
+          time: new Date().toISOString(),
+          type: "가속",
+          entry: { num: 1, univ: "서울대학교", team: "SNU Racing" },
+          result: 1234,
+          detail: "delete test",
+        },
+      },
+    });
+    expect(createRes.status()).toBe(201);
+
+    // Reload to see the new file
+    await page.reload();
+    await waitForPageReady(page);
+
+    // Select the temporary record file
+    const fileSelect = page.locator(".file-toolbar .form-select");
+    await fileSelect.selectOption(`FSK ${YEAR} ${tempName}`);
+
+    const table = page.locator(".data-table");
+    await expect(table).toBeVisible({ timeout: 5000 });
+
+    // Accept the confirmation dialog
+    page.on("dialog", (dialog) => dialog.accept());
+
+    // Delete the record table via API
+    const deleteRes = await page.request.delete(`/traffic/api/records/FSK ${YEAR} ${tempName}`);
+    expect(deleteRes.status()).toBe(200);
+
+    // Reload and verify the file is gone
+    await page.reload();
+    await waitForPageReady(page);
+
+    // The deleted file should not appear in the dropdown
+    const options = await fileSelect.locator("option").allTextContents();
+    expect(options).not.toContain(`FSK ${YEAR} ${tempName}`);
+  });
+
   // Clean up the seeded record file after all tests
   test.afterAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });

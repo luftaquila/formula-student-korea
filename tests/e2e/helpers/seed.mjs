@@ -19,6 +19,8 @@ export async function seedUsers() {
     if (role === "admin") continue;
     await api("POST", "/auth/api/users", { email: user.email, role: user.role });
   }
+  // Extra student for documents admin dropdown test (student-team mapping)
+  await api("POST", "/auth/api/users", { email: "e2e-student2@test.com", role: "student" });
 }
 
 export async function seedVehicleTypes() {

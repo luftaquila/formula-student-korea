@@ -63,11 +63,11 @@ test.describe("Entry CRUD operations", () => {
 
     // Find the row with entry number 10 (KAIST) and click the university cell text
     const row = table.locator("tbody tr").filter({ hasText: "KAIST" });
-    const univCell = row.locator("td.col-univ");
-    await univCell.locator(".cell-text").click();
+    await row.locator("td.col-univ .cell-text").click();
 
-    // The cell should now show an input field
-    const editInput = univCell.locator("input.edit-input");
+    // After clicking, "KAIST" moves from span text to input value,
+    // so the row filter no longer matches — find the edit input directly
+    const editInput = table.locator("input.edit-input");
     await expect(editInput).toBeVisible();
 
     // Clear and type new value
@@ -83,9 +83,9 @@ test.describe("Entry CRUD operations", () => {
 
     // Revert: edit back to original
     const updatedRow = table.locator("tbody tr").filter({ hasText: "카이스트" });
-    const revertCell = updatedRow.locator("td.col-univ");
-    await revertCell.locator(".cell-text").click();
-    const revertInput = revertCell.locator("input.edit-input");
+    await updatedRow.locator("td.col-univ .cell-text").click();
+    const revertInput = table.locator("input.edit-input");
+    await expect(revertInput).toBeVisible();
     await revertInput.fill("KAIST");
     await revertInput.press("Enter");
     await waitForPageReady(page);
@@ -149,6 +149,43 @@ test.describe("Entry CRUD operations", () => {
     // Clear search to restore all entries
     await searchInput.fill("");
     await expect(table.locator("tbody tr")).toHaveCount(5);
+  });
+
+  test("delete all entries and verify restoration", async ({ page }) => {
+    const table = page.locator(".entry-table");
+
+    // Verify we have 5 entries before deletion
+    await expect(page.locator(".entry-count")).toHaveText("5개");
+
+    // Accept the confirmation dialog
+    page.on("dialog", (dialog) => dialog.accept());
+
+    // Click the "전체 삭제" button
+    const deleteAllBtn = page.locator(".delete-all-btn");
+    await expect(deleteAllBtn).toBeVisible();
+    await deleteAllBtn.click();
+
+    // Verify all entries are gone
+    await expect(table.locator("tbody")).toContainText("등록된 엔트리가 없습니다");
+    await expect(page.locator(".entry-count")).toHaveText("0개");
+
+    // Re-seed the entries that were deleted
+    const year = new Date().getFullYear();
+    const entries = [
+      { num: 1, univ: "서울대학교", team: "SNU Racing", type: "EV" },
+      { num: 2, univ: "한양대학교", team: "ACES", type: "EV" },
+      { num: 3, univ: "성균관대학교", team: "SKKU Racing", type: "CV" },
+      { num: 10, univ: "KAIST", team: "RUN", type: "EV" },
+      { num: 20, univ: "고려대학교", team: "KURF", type: "CV" },
+    ];
+    for (const entry of entries) {
+      await page.request.post(`/entry/api/entries?year=${year}`, { data: entry });
+    }
+
+    // Reload and verify entries are back
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(page.locator(".entry-count")).toHaveText("5개");
   });
 
   test("sorts entries by column headers", async ({ page }) => {

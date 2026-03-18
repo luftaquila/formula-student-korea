@@ -16,11 +16,10 @@ test.describe("Cross-service SSE propagation", () => {
     const table = page.locator(".score-table");
     await expect(table).toBeVisible({ timeout: 10000 });
 
-    // Verify entry 1 (서울대학교) is visible in the table
-    await expect(table.locator("tbody")).toContainText("서울대학교");
+    // Use team 10 (KAIST) which has no prior 가속 records from other tests
+    await expect(table.locator("tbody")).toContainText("KAIST");
 
-    // Get initial state of event columns for entry 1
-    const row = table.locator("tr.team-row").filter({ hasText: "서울대학교" });
+    const row = table.locator("tr.team-row").filter({ hasText: "KAIST" });
     await expect(row).toBeVisible();
 
     // Add a traffic record via API (simulating a timing system recording a run)
@@ -37,7 +36,7 @@ test.describe("Cross-service SSE propagation", () => {
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 1, univ: "서울대학교", team: "SNU Racing" },
+          entry: { num: 10, univ: "KAIST", team: "RUN" },
           result: 5432, // 5.432 seconds in milliseconds
         },
       }),
@@ -46,14 +45,10 @@ test.describe("Cross-service SSE propagation", () => {
     expect(recordResponse.status).toBe(201);
 
     // Wait for SSE propagation: the score dashboard should update
-    // The traffic:records SSE event triggers debouncedLoadData() which re-fetches all score data
-    // After reload, the 가속 column for team 1 should show the record time
     await expect(async () => {
-      // Look for the record value in the team row
-      // In "record" display mode, the time is shown as formatted milliseconds
       const rowContent = await row.textContent();
-      // 5432ms = 5.432s, displayed as "5.432" or similar
-      expect(rowContent).toContain("5.432");
+      // 5432ms displayed as "00:05.432" in mm:ss.SSS format
+      expect(rowContent).toContain("05.432");
     }).toPass({ timeout: 10000 });
   });
 

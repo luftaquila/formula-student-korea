@@ -30,7 +30,7 @@ test.describe("Score dashboard", () => {
     await expect(page.locator("th").filter({ hasText: "번호" })).toBeVisible();
     await expect(page.locator("th").filter({ hasText: "학교 / 팀" })).toBeVisible();
     await expect(page.locator("th").filter({ hasText: "총점" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "내구" })).toBeVisible();
+    await expect(page.locator("th.col-event").filter({ hasText: "내구" })).toBeVisible();
     await expect(page.locator("th").filter({ hasText: "보고서" })).toBeVisible();
     await expect(page.locator("th").filter({ hasText: "에너지" })).toBeVisible();
     await expect(page.locator("th").filter({ hasText: "가점" })).toBeVisible();

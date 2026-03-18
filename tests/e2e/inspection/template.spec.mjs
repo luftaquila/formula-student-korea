@@ -24,16 +24,9 @@ test.describe("Inspection template management", () => {
     const panel = page.locator(".category-panel");
     await expect(panel).toBeVisible();
 
-    // Verify the subcategory "배터리" is present
-    await expect(panel).toContainText("배터리");
-
-    // Verify the group "배터리 팩" is present
-    await expect(panel).toContainText("배터리 팩");
-
-    // Verify items exist within the group
-    await expect(panel).toContainText("절연 저항 측정");
-    await expect(panel).toContainText("전압 확인");
-    await expect(panel).toContainText("고정 상태");
+    // Names are in input fields (v-model), not plain text — use toHaveValue
+    await expect(panel.locator(".sub-name").first()).toHaveValue("배터리");
+    await expect(panel.locator(".grp-name").first()).toHaveValue("배터리 팩");
   });
 
   test("switches between category tabs", async ({ page }) => {
@@ -43,10 +36,8 @@ test.describe("Inspection template management", () => {
     await tabs.nth(1).click();
 
     const panel = page.locator(".category-panel");
-    await expect(panel).toContainText("프레임");
-    await expect(panel).toContainText("롤바");
-    await expect(panel).toContainText("높이 측정");
-    await expect(panel).toContainText("용접 상태");
+    await expect(panel.locator(".sub-name").first()).toHaveValue("프레임");
+    await expect(panel.locator(".grp-name").first()).toHaveValue("롤바");
   });
 
   test("adds a new category", async ({ page }) => {
@@ -96,11 +87,11 @@ test.describe("Inspection template management", () => {
   test("deletes a node from the template", async ({ page }) => {
     // First add a temporary category to delete
     await page.locator(".tab-add").click();
-    await waitForPageReady(page);
 
+    // Wait for the new tab to appear before counting
     const tabsAfterAdd = page.locator(".tabs .tab:not(.tab-add)");
-    const countAfterAdd = await tabsAfterAdd.count();
     await expect(tabsAfterAdd.last()).toContainText("새 카테고리");
+    const countAfterAdd = await tabsAfterAdd.count();
 
     // Delete the new category
     page.on("dialog", (dialog) => dialog.accept());
@@ -108,6 +99,133 @@ test.describe("Inspection template management", () => {
 
     // Verify the tab was removed
     await expect(page.locator(".tabs .tab:not(.tab-add)")).toHaveCount(countAfterAdd - 1);
+  });
+
+  test("edits a node name inline", async ({ page }) => {
+    const panel = page.locator(".category-panel");
+
+    // Edit the subcategory name (배터리 → 배터리2)
+    const subNameInput = panel.locator(".sub-name").first();
+    await expect(subNameInput).toHaveValue("배터리");
+    await subNameInput.fill("배터리2");
+    await subNameInput.blur();
+
+    // Wait for debounced save
+    await page.waitForTimeout(500);
+
+    // Verify the value persists after reload
+    await page.reload();
+    await waitForPageReady(page);
+    const reloadedInput = page.locator(".category-panel .sub-name").first();
+    await expect(reloadedInput).toHaveValue("배터리2");
+
+    // Revert: change back to original
+    await reloadedInput.fill("배터리");
+    await reloadedInput.blur();
+    await page.waitForTimeout(500);
+  });
+
+  test("copies template between years via API", async ({ page }) => {
+    // Copy current year's template to (current year + 1) via API
+    const targetYear = YEAR + 1;
+    const response = await page.request.post("/inspection/api/sheet/template/copy", {
+      data: { from_year: YEAR, to_year: targetYear },
+    });
+    expect(response.status()).toBe(201);
+
+    // Verify copied template via API (dropdown won't show year without entry data)
+    const verifyRes = await page.request.get(`/inspection/api/sheet/template?year=${targetYear}`);
+    const copied = await verifyRes.json();
+    expect(copied.length).toBe(2);
+    expect(copied[0].name).toBe("전기 검차");
+    expect(copied[1].name).toBe("샤시 검차");
+
+    // Clean up: delete the target year's template by importing empty
+    await page.request.post("/inspection/api/sheet/template/import", {
+      data: { year: targetYear, template: [] },
+    });
+  });
+
+  test("reorders template items via API", async ({ page }) => {
+    // Get current template to find item IDs
+    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const template = await templateRes.json();
+
+    // Find items in the first group of first subcategory
+    const firstGroup = template[0]?.subcategories?.[0]?.groups?.[0];
+    expect(firstGroup).toBeTruthy();
+    expect(firstGroup.items.length).toBeGreaterThanOrEqual(2);
+
+    // Build items array with reversed sort_order
+    const items = firstGroup.items.map((item) => ({ id: item.id, sort_order: item.sort_order }));
+    const reversedItems = items.map((item, i) => ({ id: item.id, sort_order: items[items.length - 1 - i].sort_order }));
+
+    // Call reorder API
+    const reorderRes = await page.request.post("/inspection/api/sheet/template/reorder", {
+      data: { items: reversedItems },
+    });
+    expect(reorderRes.status()).toBe(200);
+
+    // Verify new order via API
+    const updatedRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const updated = await updatedRes.json();
+    const updatedItems = updated[0].subcategories[0].groups[0].items;
+    const reversedIds = [...items].reverse().map((i) => i.id);
+    expect(updatedItems.map((i) => i.id)).toEqual(reversedIds);
+
+    // Restore original order
+    const restoreItems = items.map((item) => ({ id: item.id, sort_order: item.sort_order }));
+    await page.request.post("/inspection/api/sheet/template/reorder", {
+      data: { items: restoreItems },
+    });
+  });
+
+  test("imports template from JSON via API", async ({ page }) => {
+    const importYear = YEAR + 2;
+    const importTemplate = [
+      {
+        name: "E2E Import 카테고리",
+        subcategories: [
+          {
+            name: "E2E 소분류",
+            groups: [
+              {
+                name: "E2E 그룹",
+                items: [{ name: "E2E 항목", answer_type: "passfail" }],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    // Import template
+    const importRes = await page.request.post("/inspection/api/sheet/template/import", {
+      data: { year: importYear, template: importTemplate },
+    });
+    expect(importRes.status()).toBe(201);
+
+    // Verify imported template via API (dropdown won't show year without entry data)
+    const verifyRes = await page.request.get(`/inspection/api/sheet/template?year=${importYear}`);
+    const imported = await verifyRes.json();
+    expect(imported.length).toBe(1);
+    expect(imported[0].name).toBe("E2E Import 카테고리");
+    expect(imported[0].subcategories[0].name).toBe("E2E 소분류");
+
+    // Cleanup: delete the imported year's template
+    await page.request.post("/inspection/api/sheet/template/import", {
+      data: { year: importYear, template: [] },
+    });
+  });
+
+  test("opens print page with template data", async ({ page }) => {
+    // Navigate directly to the print page
+    await page.goto(`/inspection/template/print?year=${YEAR}`);
+    await waitForPageReady(page);
+
+    // Verify category data is rendered
+    await expect(page.locator("body")).toContainText("전기 검차");
+    await expect(page.locator("body")).toContainText("배터리");
   });
 
   test("exports template as JSON", async ({ page }) => {

@@ -97,6 +97,36 @@ test.describe("Queue statistics page", () => {
     await expect(page).toHaveURL(/\/queue\/admin/);
   });
 
+  test("clicking a team row expands timeline detail", async ({ page }) => {
+    await page.goto("/queue/stats");
+    await waitForPageReady(page);
+
+    const table = page.locator(".stats-table");
+    await expect(table).toBeVisible({ timeout: 10000 });
+
+    // Click on the first team row to expand timeline
+    const firstRow = table.locator("tbody .clickable-row").first();
+    await expect(firstRow).toBeVisible();
+    await firstRow.click();
+
+    // Should show the timeline section
+    const timelineSection = page.locator(".timeline-section");
+    await expect(timelineSection).toBeVisible({ timeout: 5000 });
+
+    // Should show timeline header with team info
+    const timelineHeader = page.locator(".timeline-header h4");
+    await expect(timelineHeader).toContainText("타임라인");
+
+    // Should show either timeline data or empty message
+    const hasTable = await page.locator(".timeline-table").isVisible().catch(() => false);
+    const hasEmpty = await page.locator(".timeline-empty").isVisible().catch(() => false);
+    expect(hasTable || hasEmpty).toBe(true);
+
+    // Click again to collapse
+    await firstRow.click();
+    await expect(timelineSection).not.toBeVisible();
+  });
+
   test("filtering by inspection type updates the table", async ({ page }) => {
     await page.goto("/queue/stats");
     await waitForPageReady(page);

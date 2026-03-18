@@ -28,11 +28,15 @@ test.describe("Skidpad manual mode measurement", () => {
     const sensor1 = page.getByTestId("manual-sensor-1");
     await expect(sensor1).toBeVisible();
 
-    // Lap 1: click sensor 1
+    // Start: first click initializes lastTick (no lap recorded)
     await sensor1.click();
     await page.waitForTimeout(1100);
 
-    // Lap 2: click sensor 1 (after cooldown)
+    // Lap 1: click sensor 1 (after cooldown)
+    await sensor1.click();
+    await page.waitForTimeout(1100);
+
+    // Lap 2: click sensor 1
     await sensor1.click();
     await page.waitForTimeout(1100);
 

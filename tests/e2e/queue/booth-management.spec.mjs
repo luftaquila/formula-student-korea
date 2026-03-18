@@ -93,7 +93,7 @@ test.describe("Queue booth management", () => {
   test("register team via API then verify it appears in admin queue", async ({ page }) => {
     // Register entry 1 via API
     const res = await apiRegister(1);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(201);
 
     await page.goto("/queue/admin");
     await waitForPageReady(page);
@@ -125,7 +125,9 @@ test.describe("Queue booth management", () => {
     // Select the team in the booth select dropdown
     const boothSelect = page.locator(".booth-select").first();
     await expect(boothSelect).toBeVisible({ timeout: 5000 });
-    await boothSelect.selectOption({ label: /2 -/ });
+    const targetOption = boothSelect.locator("option").filter({ hasText: /^2 -/ });
+    const optValue = await targetOption.getAttribute("value");
+    await boothSelect.selectOption(optValue);
 
     // Click enter booth button
     const enterBtn = page.getByRole("button", { name: "입차" }).first();

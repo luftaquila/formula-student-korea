@@ -163,6 +163,115 @@ test.describe("Queue settings management", () => {
     await context.close();
   });
 
+  test("change booth count and verify persistence", async ({ page }) => {
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+
+    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+
+    // Find the first booth count input
+    const boothInput = page.locator(".inspection-setting .setting-input input[type='number']").first();
+    await expect(boothInput).toBeVisible();
+
+    // Read original value
+    const originalValue = await boothInput.inputValue();
+
+    // Change the booth count
+    const newValue = originalValue === "3" ? "4" : "3";
+    await boothInput.fill(newValue);
+    await boothInput.dispatchEvent("change");
+
+    // Verify success notification
+    await expectNotification(page, "success", "부스");
+
+    // Reload and verify persistence
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+
+    const updatedInput = page.locator(".inspection-setting .setting-input input[type='number']").first();
+    await expect(updatedInput).toHaveValue(newValue);
+
+    // Restore original value
+    await updatedInput.fill(originalValue);
+    await updatedInput.dispatchEvent("change");
+    await page.waitForTimeout(500);
+  });
+
+  test("deactivated inspection is excluded from public active list", async ({ page }) => {
+    // Deactivate noise inspection via API
+    await apiSetInspectionActive("noise", false);
+
+    // Verify via public API that noise is not in active list
+    const res = await page.request.get("/queue/api/active");
+    const active = await res.json();
+    const activeTypes = active.map((i) => i.type);
+    expect(activeTypes).not.toContain("noise");
+
+    // Re-activate noise inspection
+    await apiSetInspectionActive("noise", true);
+
+    // Verify it's back in active list
+    const res2 = await page.request.get("/queue/api/active");
+    const active2 = await res2.json();
+    const activeTypes2 = active2.map((i) => i.type);
+    expect(activeTypes2).toContain("noise");
+  });
+
+  test("SMS enable fails without env vars (API level)", async ({ page }) => {
+    // SMS enable requires NAVER_CLOUD env vars not present in CI
+    const res = await fetch(`${BASE_URL}/queue/api/admin/settings/sms`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      body: JSON.stringify({ value: true }),
+    });
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(text).toContain("환경 변수");
+
+    // Disabling should always work
+    const res2 = await fetch(`${BASE_URL}/queue/api/admin/settings/sms`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      body: JSON.stringify({ value: false }),
+    });
+    expect(res2.status).toBe(200);
+  });
+
+  test("change SMS rank setting", async ({ page }) => {
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+    await expect(page.getByText("SMS 알림 순번")).toBeVisible({ timeout: 10000 });
+
+    // Find the SMS rank input
+    const smsRankItem = page.locator(".setting-item", { hasText: "SMS 알림 순번" });
+    const rankInput = smsRankItem.locator("input[type='number']");
+    await expect(rankInput).toBeVisible();
+
+    // Read original value
+    const originalValue = await rankInput.inputValue();
+
+    // Change the rank value
+    const newValue = originalValue === "5" ? "3" : "5";
+    await rankInput.fill(newValue);
+    await rankInput.dispatchEvent("change");
+
+    // Verify success notification
+    await expectNotification(page, "success", "SMS");
+
+    // Reload and verify persistence
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(page.getByText("SMS 알림 순번")).toBeVisible({ timeout: 10000 });
+    const reloadedInput = page.locator(".setting-item", { hasText: "SMS 알림 순번" }).locator("input[type='number']");
+    await expect(reloadedInput).toHaveValue(newValue);
+
+    // Restore original value
+    await reloadedInput.fill(originalValue);
+    await reloadedInput.dispatchEvent("change");
+    await page.waitForTimeout(500);
+  });
+
   test("booth count setting is shown in settings panel", async ({ page }) => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);

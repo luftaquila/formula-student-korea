@@ -173,6 +173,43 @@ test.describe("Inspection sheet filling", () => {
     await page.waitForTimeout(500);
   });
 
+  test("enters memo for an item via click-to-edit", async ({ page }) => {
+    // Find the first item row with a memo area
+    const itemRow = page.locator(".item-row").first();
+    await expect(itemRow).toBeVisible();
+
+    // Click the memo text span to start editing (click-to-edit pattern)
+    const memoText = itemRow.locator(".memo-text");
+    await expect(memoText).toBeVisible();
+    await memoText.click();
+
+    // The memo input should now be visible
+    const memoInput = itemRow.locator(".memo-input");
+    await expect(memoInput).toBeVisible();
+
+    // Type a memo
+    await memoInput.fill("테스트 메모 입력");
+    await memoInput.blur();
+
+    // Wait for debounced save
+    await page.waitForTimeout(500);
+
+    // Reload and verify the memo persists
+    await page.reload();
+    await waitForPageReady(page);
+
+    const reloadedRow = page.locator(".item-row").first();
+    const reloadedMemo = reloadedRow.locator(".memo-text");
+    await expect(reloadedMemo).toHaveText("테스트 메모 입력");
+
+    // Clean up: clear the memo
+    await reloadedMemo.click();
+    const clearInput = reloadedRow.locator(".memo-input");
+    await clearInput.fill("");
+    await clearInput.blur();
+    await page.waitForTimeout(500);
+  });
+
   test("requires inspector name before setting category result", async ({ page }) => {
     // Ensure inspector name is empty
     const inspectorInput = page.locator(".inspector-input");

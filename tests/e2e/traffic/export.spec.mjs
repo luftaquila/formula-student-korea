@@ -64,7 +64,7 @@ test.describe("Traffic record export", () => {
     // Verify download was triggered
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toContain("E2E-Export");
-    expect(download.suggestedFilename()).toEndWith(".csv");
+    expect(download.suggestedFilename()).toMatch(/\.csv$/);
   });
 
   test("exports records as XLSX", async ({ page }) => {
@@ -79,7 +79,7 @@ test.describe("Traffic record export", () => {
     // Verify download was triggered
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toContain("E2E-Export");
-    expect(download.suggestedFilename()).toEndWith(".xlsx");
+    expect(download.suggestedFilename()).toMatch(/\.xlsx$/);
   });
 
   // Clean up

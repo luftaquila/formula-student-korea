@@ -60,11 +60,11 @@ test.describe("Documents admin dashboard", () => {
     const dropdown = page.locator(".select-dropdown");
     await expect(dropdown).toBeVisible();
 
-    // Search for student
-    await dropdown.locator(".select-search").fill("official");
+    // Search for the second student user (dropdown only shows student-role users)
+    await dropdown.locator(".select-search").fill("student2");
 
-    // Select the official user from dropdown
-    const option = dropdown.locator(".select-option").filter({ hasText: "e2e-official@test.com" });
+    // Select the student user from dropdown
+    const option = dropdown.locator(".select-option").filter({ hasText: "e2e-student2@test.com" });
     await option.click();
 
     // Wait for data to reload
@@ -72,13 +72,43 @@ test.describe("Documents admin dashboard", () => {
 
     // Verify mapping was created
     const updatedRow = table.locator("tbody tr").filter({ hasText: "한양대학교" });
-    await expect(updatedRow.locator(".selected-email")).toContainText("e2e-official@test.com");
+    await expect(updatedRow.locator(".selected-email")).toContainText("e2e-student2@test.com");
 
     // Clean up: remove the mapping using the clear button
     await updatedRow.locator(".clear-btn").click();
     await waitForPageReady(page);
 
     // Verify mapping is cleared
+    const clearedRow = table.locator("tbody tr").filter({ hasText: "한양대학교" });
+    await expect(clearedRow.locator(".select-placeholder")).toHaveText("-");
+  });
+
+  test("deletes student-team mapping via clear button", async ({ page }) => {
+    const table = page.locator(".main-table");
+
+    // Find team 2 (한양대학교) which should have no mapping
+    const row = table.locator("tbody tr").filter({ hasText: "한양대학교" });
+    await expect(row).toBeVisible();
+
+    // Create a mapping via API first
+    const res = await page.request.post("/documents/api/admin/student-teams", {
+      data: { email: "e2e-student2@test.com", team_num: 2, year: YEAR },
+    });
+    expect(res.ok()).toBeTruthy();
+
+    // Reload to see the mapping
+    await page.reload();
+    await waitForPageReady(page);
+
+    // Verify mapping is shown
+    const mappedRow = table.locator("tbody tr").filter({ hasText: "한양대학교" });
+    await expect(mappedRow.locator(".selected-email")).toContainText("e2e-student2@test.com");
+
+    // Click the clear button to delete the mapping
+    await mappedRow.locator(".clear-btn").click();
+    await waitForPageReady(page);
+
+    // Verify mapping is cleared (placeholder "-" shown)
     const clearedRow = table.locator("tbody tr").filter({ hasText: "한양대학교" });
     await expect(clearedRow.locator(".select-placeholder")).toHaveText("-");
   });

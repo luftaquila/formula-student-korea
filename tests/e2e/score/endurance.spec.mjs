@@ -173,16 +173,17 @@ test.describe("Score endurance input", () => {
     await driver2TimeInput.blur();
     await page.waitForTimeout(300);
 
-    // Now enter cone touch count for driver 1 (third input field - num-input after time-input)
-    // The input order per driver section: time, start_delay, cones, oc, penalty
-    const driver1ConesInput = row.locator("input.num-input").nth(2);
+    // Enter cone touch count for driver 1
+    // num-input order per row: d1_start_delay(0), d1_cones(1), d1_oc(2), d1_penalty(3),
+    //                          d2_start_delay(4), d2_cones(5), d2_oc(6), d2_penalty(7)
+    const driver1ConesInput = row.locator("input.num-input").nth(1);
     await driver1ConesInput.click();
     await driver1ConesInput.fill("3");
     await driver1ConesInput.blur();
     await page.waitForTimeout(300);
 
-    // Enter off-course for driver 2 (the oc input for driver 2)
-    const driver2OcInput = row.locator("input.num-input").nth(8);
+    // Enter off-course for driver 2
+    const driver2OcInput = row.locator("input.num-input").nth(6);
     await driver2OcInput.click();
     await driver2OcInput.fill("1");
     await driver2OcInput.blur();

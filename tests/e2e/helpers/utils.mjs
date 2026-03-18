@@ -18,7 +18,7 @@ export async function dismissNotifications(page) {
 }
 
 export async function waitForPageReady(page) {
-  await page.waitForLoadState("networkidle");
+  await page.waitForLoadState("domcontentloaded");
 }
 
 export async function selectOption(page, selector, value) {
