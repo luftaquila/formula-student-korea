@@ -435,3 +435,115 @@ describe('Auth enforcement', () => {
     assert.equal(res.status, 200);
   });
 });
+
+// ─── SSE Broadcast Payloads ─────────────────────────────────────────────
+
+function connectSSE(sseBaseUrl, sseUrlPath, cookie) {
+  const events = [];
+  const controller = new AbortController();
+  const ready = new Promise((resolve) => {
+    fetch(`${sseBaseUrl}${sseUrlPath}`, {
+      headers: { Cookie: cookie, Accept: 'text/event-stream' },
+      signal: controller.signal,
+    }).then(async (res) => {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          let currentEvent = null;
+          for (const line of lines) {
+            if (line.startsWith('event: ')) currentEvent = line.slice(7);
+            else if (line.startsWith('data: ') && currentEvent) {
+              const parsed = JSON.parse(line.slice(6));
+              events.push({ event: currentEvent, data: parsed });
+              if (currentEvent === 'init') resolve();
+              currentEvent = null;
+            }
+          }
+        }
+      } catch {}
+    }).catch(() => {});
+  });
+  return { events, close: () => controller.abort(), ready };
+}
+
+describe('SSE broadcast payloads', () => {
+  it('POST /api/records broadcasts full row with record field', async () => {
+    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
+    await sse.ready;
+
+    const res = await client.post('/api/records', {
+      body: {
+        name: 'SSE 테스트 1차',
+        data: {
+          time: '2026-01-01T11:00:00',
+          type: '가속',
+          entry: { num: 5, univ: 'SSE대학교', team: 'SSE팀' },
+          result: 12345,
+        },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+
+    // Give SSE time to propagate
+    await new Promise(r => setTimeout(r, 200));
+    sse.close();
+
+    const recordEvents = sse.events.filter(e => e.event === 'records');
+    assert.ok(recordEvents.length >= 1, 'should receive at least one records event');
+
+    const addEvent = recordEvents.find(e => e.data.type === 'add');
+    assert.ok(addEvent, 'should have an "add" type event');
+    assert.ok(addEvent.data.record, 'event should have record field');
+    assert.equal(addEvent.data.record.num, 5);
+    assert.equal(addEvent.data.record.univ, 'SSE대학교');
+    assert.equal(addEvent.data.record.team, 'SSE팀');
+    assert.equal(addEvent.data.record.type, '가속');
+    assert.equal(addEvent.data.record.result, 12345);
+    assert.ok(addEvent.data.record.rowid, 'record should have rowid');
+    assert.ok(Array.isArray(addEvent.data.recordFiles), 'should include recordFiles');
+  });
+
+  it('PATCH /api/records/:name/:rowid broadcasts full updated row', async () => {
+    const tableName = `FSK ${new Date().getFullYear()} SSE 테스트 1차`;
+
+    // Get the row's rowid
+    const listRes = await client.get(`/api/records/${encodeURIComponent(tableName)}`, { cookie: adminCookie });
+    const rows = await listRes.json();
+    const rowid = rows[0].rowid;
+
+    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
+    await sse.ready;
+
+    const res = await client.patch(`/api/records/${encodeURIComponent(tableName)}/${rowid}`, {
+      body: { field: 'cones', value: 2 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+
+    await new Promise(r => setTimeout(r, 200));
+    sse.close();
+
+    const recordEvents = sse.events.filter(e => e.event === 'records');
+    assert.ok(recordEvents.length >= 1, 'should receive at least one records event');
+
+    const updateEvent = recordEvents.find(e => e.data.type === 'update');
+    assert.ok(updateEvent, 'should have an "update" type event');
+    assert.ok(updateEvent.data.record, 'event should have record field');
+    assert.equal(updateEvent.data.record.rowid, rowid);
+    assert.equal(updateEvent.data.record.num, 5);
+    assert.equal(updateEvent.data.record.cones, 2);
+    assert.equal(updateEvent.data.field, 'cones');
+    assert.ok(Array.isArray(updateEvent.data.recordFiles), 'should include recordFiles');
+
+    // Cleanup: delete the test table
+    await client.delete(`/api/records/${encodeURIComponent(tableName)}`, { cookie: adminCookie });
+  });
+});

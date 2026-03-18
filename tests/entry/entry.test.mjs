@@ -504,3 +504,120 @@ describe('Auth enforcement', () => {
     assert.equal(res.status, 401);
   });
 });
+
+// ─── Documents Sync on Number Change ────────────────────────────────────
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const expressForMock = require('../../entry/node_modules/express/index.js');
+
+describe('PATCH /api/entries/:num — documents sync', () => {
+
+  let mockDocServer, mockDocUrl;
+  let receivedRequests;
+
+  before(async () => {
+    // Create entry for sync tests
+    await client.post('/api/entries', {
+      body: { num: 70, univ: 'SyncUniv', team: 'SyncTeam' },
+      cookie: adminCookie,
+    });
+  });
+
+  it('calls documents internal API when number changes and DOCUMENTS_SERVER is set', async () => {
+    receivedRequests = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      receivedRequests.push(req.body);
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    mockDocServer = started.server;
+    mockDocUrl = started.baseUrl;
+
+    process.env.DOCUMENTS_SERVER = mockDocUrl;
+
+    const res = await client.patch('/api/entries/70', {
+      body: { num: 71, univ: 'SyncUniv', team: 'SyncTeam' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+
+    // Small delay for async fetch to complete
+    await new Promise(r => setTimeout(r, 100));
+
+    assert.equal(receivedRequests.length, 1);
+    assert.equal(receivedRequests[0].prevNum, 70);
+    assert.equal(receivedRequests[0].newNum, 71);
+    assert.equal(receivedRequests[0].year, new Date().getFullYear());
+
+    await stopServer(mockDocServer);
+    delete process.env.DOCUMENTS_SERVER;
+  });
+
+  it('does not call documents when number does not change', async () => {
+    receivedRequests = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      receivedRequests.push(req.body);
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    mockDocServer = started.server;
+    mockDocUrl = started.baseUrl;
+
+    process.env.DOCUMENTS_SERVER = mockDocUrl;
+
+    // Update entry 71 without changing its number
+    const res = await client.patch('/api/entries/71', {
+      body: { num: 71, univ: 'SyncUnivUpdated', team: 'SyncTeamUpdated' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+
+    await new Promise(r => setTimeout(r, 100));
+
+    assert.equal(receivedRequests.length, 0, 'should not call documents when number unchanged');
+
+    await stopServer(mockDocServer);
+    delete process.env.DOCUMENTS_SERVER;
+  });
+
+  it('entry update succeeds even if documents service fails', async () => {
+    receivedRequests = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      receivedRequests.push(req.body);
+      res.status(500).send('Internal Server Error');
+    });
+    const started = await startServer(mockApp);
+    mockDocServer = started.server;
+    mockDocUrl = started.baseUrl;
+
+    process.env.DOCUMENTS_SERVER = mockDocUrl;
+
+    const res = await client.patch('/api/entries/71', {
+      body: { num: 72, univ: 'SyncUnivUpdated', team: 'SyncTeamUpdated' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200, 'entry update should succeed despite documents failure');
+
+    await new Promise(r => setTimeout(r, 100));
+
+    assert.equal(receivedRequests.length, 1, 'should have attempted the call');
+
+    // Verify entry was actually updated
+    const getRes = await client.get('/api/entries');
+    const data = await getRes.json();
+    assert.ok(data[72], 'entry 72 should exist');
+    assert.equal(data[72].univ, 'SyncUnivUpdated');
+
+    await stopServer(mockDocServer);
+    delete process.env.DOCUMENTS_SERVER;
+
+    // Cleanup
+    await client.delete('/api/entries/72', { cookie: adminCookie });
+  });
+});

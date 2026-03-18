@@ -1002,3 +1002,132 @@ describe('Multiple file upload', () => {
     assert.equal(data.files.length, 2, 'should have 2 files');
   });
 });
+
+// -- Internal API: PATCH /api/internal/team-num --
+describe('PATCH /api/internal/team-num', () => {
+  let internalSessionId;
+
+  before(() => {
+    // Create prerequisite data for internal API tests
+    // Student-team mapping for team_num=50, year=2025
+    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('internal-test@test.com', 50, 2025);
+
+    // Session for year 2025
+    const sessionResult = db.prepare(
+      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2025-01-01 00:00', '2025-12-31 23:59', '', 52428800, 'admin@test.com', 2025)",
+    ).run('Internal Test Session');
+    internalSessionId = sessionResult.lastInsertRowid;
+
+    // session_team for team_num=50
+    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(internalSessionId, 50);
+
+    // submission for team_num=50
+    db.prepare(
+      "INSERT INTO submission (session_id, team_num, submitted_by, submitted_at, total_size, is_late) VALUES (?, 50, 'internal-test@test.com', '2025-06-01 12:00', 1024, 0)",
+    ).run(internalSessionId);
+  });
+
+  it('updates student_team, session_team, and submission team_num', async () => {
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum: 50, newNum: 99, year: 2025 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+
+    // Verify student_team updated
+    const studentTeam = db.prepare("SELECT team_num FROM student_team WHERE email = 'internal-test@test.com' AND year = 2025").get();
+    assert.equal(studentTeam.team_num, 99);
+
+    // Verify session_team updated
+    const sessionTeam = db.prepare("SELECT team_num FROM session_team WHERE session_id = ? AND team_num = 99").get(internalSessionId);
+    assert.ok(sessionTeam, 'session_team should have team_num=99');
+
+    // Verify old team_num no longer exists in session_team
+    const oldSessionTeam = db.prepare("SELECT team_num FROM session_team WHERE session_id = ? AND team_num = 50").get(internalSessionId);
+    assert.equal(oldSessionTeam, undefined, 'old team_num=50 should not exist in session_team');
+
+    // Verify submission updated
+    const submission = db.prepare("SELECT team_num FROM submission WHERE session_id = ?").get(internalSessionId);
+    assert.equal(submission.team_num, 99);
+  });
+
+  it('renames upload directory when it exists', async () => {
+    // Rename back from 99 to 50 first for a clean state
+    await client.patch('/api/internal/team-num', {
+      body: { prevNum: 99, newNum: 50, year: 2025 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+
+    // Create a fake upload dir for session/team
+    const oldDir = path.join(uploadsDir, String(internalSessionId), '50');
+    fs.mkdirSync(oldDir, { recursive: true });
+    fs.writeFileSync(path.join(oldDir, 'test.txt'), 'test');
+
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum: 50, newNum: 77, year: 2025 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+
+    const newDir = path.join(uploadsDir, String(internalSessionId), '77');
+    assert.ok(fs.existsSync(newDir), 'new upload dir should exist');
+    assert.ok(!fs.existsSync(oldDir), 'old upload dir should not exist');
+    assert.ok(fs.existsSync(path.join(newDir, 'test.txt')), 'files should be preserved');
+  });
+
+  it('returns 400 for non-integer prevNum', async () => {
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum: 'abc', newNum: 2, year: 2025 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('returns 400 for non-integer newNum', async () => {
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum: 1, newNum: 2.5, year: 2025 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('returns 400 for non-integer year', async () => {
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum: 1, newNum: 2, year: 'abc' },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('returns 400 for missing params', async () => {
+    const res = await client.patch('/api/internal/team-num', {
+      body: {},
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('requires admin auth (student gets 403)', async () => {
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum: 1, newNum: 2, year: 2025 },
+      cookie: studentCookie,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('accessible via internal service header', async () => {
+    // No matching data, but should still return 200 (just no-op)
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum: 9999, newNum: 9998, year: 2025 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+  });
+
+  it('returns 401 without any auth', async () => {
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum: 1, newNum: 2, year: 2025 },
+    });
+    assert.equal(res.status, 401);
+  });
+});
