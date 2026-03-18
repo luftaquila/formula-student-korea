@@ -273,7 +273,7 @@
 |---|------|------|-----|------|
 | 7.1 | 세션 목록 조회 | student | `GET /api/sessions` | student_team에서 팀 조회 → 해당 팀 세션 + 최근 제출 상태 |
 | 7.2 | 세션 상세 조회 | student | `GET /api/sessions/:id` | 팀 소속 확인, 제출 이력 + 파일 목록 |
-| 7.3 | 파일 제출 | student | `POST /api/sessions/:id/submit` | 멀티파트, 시간 검증(start~late_end), 확장자 검증, 이전 제출 교체, 최대 100파일 |
+| 7.3 | 파일 제출 | student | `POST /api/sessions/:id/submit` | 멀티파트, 시간 검증(start~late_end), 확장자 검증, 용량 제한 검증(max_file_size), 이전 제출 교체, 최대 100파일 |
 | 7.4 | 제출 파일 다운로드 | student | `GET /api/submissions/:subId/files/:fileId` | 팀 소속 확인, 경로 순회 방지 |
 
 ### 관리자 흐름
