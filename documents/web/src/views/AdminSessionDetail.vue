@@ -201,11 +201,6 @@ onMounted(loadStatus);
   gap: 0.75rem;
 }
 
-.info-row-inline {
-  display: flex;
-  gap: 1.5rem;
-}
-
 .info-label {
   font-size: 0.75rem;
   font-weight: 600;
@@ -335,10 +330,4 @@ onMounted(loadStatus);
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-@media (max-width: 640px) {
-  .info-row-inline {
-    flex-direction: column;
-    gap: 0.375rem;
-  }
-}
 </style>

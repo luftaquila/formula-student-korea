@@ -339,11 +339,6 @@ onMounted(fetchSession);
   gap: 0.75rem;
 }
 
-.info-row-inline {
-  display: flex;
-  gap: 1.5rem;
-}
-
 .sub-info {
   margin-bottom: 0.75rem;
 }
@@ -369,13 +364,6 @@ onMounted(fetchSession);
   color: var(--text-secondary);
   white-space: pre-line;
   line-height: 1.7;
-}
-
-@media (max-width: 640px) {
-  .info-row-inline {
-    flex-direction: column;
-    gap: 0.375rem;
-  }
 }
 
 .file-list {
