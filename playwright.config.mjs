@@ -6,7 +6,7 @@ export default defineConfig({
   globalTeardown: "./tests/e2e/global-teardown.mjs",
   timeout: 30000,
   retries: 1,
-  workers: 1,
+  workers: 4,
   use: {
     baseURL: "http://localhost:9000",
     screenshot: "only-on-failure",
