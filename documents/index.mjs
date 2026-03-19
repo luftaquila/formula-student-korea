@@ -766,6 +766,44 @@ app.patch("/api/internal/team-num", (req, res) => {
 });
 
 /* ============================================
+   Internal API: 엔트리 삭제 연동
+   ============================================ */
+
+// DELETE /api/internal/team/:num - 엔트리 삭제 시 관련 데이터 정리
+app.delete("/api/internal/team/:num", (req, res) => {
+  const num = Number(req.params.num);
+  const year = Number(req.query.year);
+  if (!Number.isInteger(num) || num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  if (!Number.isInteger(year)) return res.status(400).send("연도를 지정해야 합니다.");
+
+  const removedFiles = [];
+  const txResult = dbRun(() => {
+    db.transaction(() => {
+      db.prepare("DELETE FROM student_team WHERE team_num = ? AND year = ?").run(num, year);
+
+      const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
+      for (const s of sessions) {
+        db.prepare("DELETE FROM session_team WHERE session_id = ? AND team_num = ?").run(s.id, num);
+        const subs = db.prepare("SELECT id FROM submission WHERE session_id = ? AND team_num = ?").all(s.id, num);
+        for (const sub of subs) {
+          db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(sub.id);
+          db.prepare("DELETE FROM submission WHERE id = ?").run(sub.id);
+          removedFiles.push({ sessionId: s.id, subId: sub.id });
+        }
+      }
+    })();
+  });
+
+  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+
+  for (const { sessionId, subId } of removedFiles) {
+    rmDir(path.join(UPLOADS_DIR, String(sessionId), String(num), String(subId)));
+  }
+
+  res.status(200).send();
+});
+
+/* ============================================
    SPA Fallback
    ============================================ */
 app.get("/{*splat}", (req, res) => {

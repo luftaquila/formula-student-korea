@@ -27,6 +27,9 @@ const form = ref({
   teams: [],
 });
 
+// 수정 모드에서 제출물 보유 팀 추적 (제거 시 확인 다이얼로그용)
+const originalTeamsWithSubmissions = ref(new Set());
+
 // 차량 유형 필터
 const typeFilters = ref({});
 
@@ -131,6 +134,9 @@ async function loadSession() {
       allowed_extensions: s.allowed_extensions || "",
       teams: data.status.map((t) => t.team_num),
     };
+    originalTeamsWithSubmissions.value = new Set(
+      data.status.filter((t) => t.submission).map((t) => t.team_num),
+    );
   } catch {
     router.push("/admin");
   } finally {
@@ -166,6 +172,17 @@ async function save() {
     };
 
     if (isEdit.value) {
+      // 제출물이 있는 팀이 제거되는 경우 확인
+      const removedWithSubs = [...originalTeamsWithSubmissions.value].filter(
+        (n) => !form.value.teams.includes(n),
+      );
+      if (removedWithSubs.length > 0) {
+        if (!confirm(`팀 ${removedWithSubs.join(", ")}번의 제출물과 파일이 영구 삭제됩니다. 계속하시겠습니까?`)) {
+          saving.value = false;
+          return;
+        }
+      }
+
       await request(`/api/admin/sessions/${route.params.id}`, {
         method: "PUT",
         body: JSON.stringify(body),

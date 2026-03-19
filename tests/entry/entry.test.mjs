@@ -584,7 +584,7 @@ describe('PATCH /api/entries/:num — documents sync', () => {
     delete process.env.DOCUMENTS_SERVER;
   });
 
-  it('entry update returns 207 when documents service sync fails', async () => {
+  it('entry update returns 502 and rolls back when documents service sync fails', async () => {
     receivedRequests = [];
     const mockApp = expressForMock();
     mockApp.use(expressForMock.json());
@@ -602,22 +602,81 @@ describe('PATCH /api/entries/:num — documents sync', () => {
       body: { num: 72, univ: 'SyncUnivUpdated', team: 'SyncTeamUpdated' },
       cookie: adminCookie,
     });
-    assert.equal(res.status, 207, 'entry update should return 207 when documents sync fails');
+    assert.equal(res.status, 502, 'entry update should return 502 when documents sync fails');
 
     await new Promise(r => setTimeout(r, 100));
 
     assert.equal(receivedRequests.length, 1, 'should have attempted the call');
 
-    // Verify entry was actually updated
+    // Verify entry number was rolled back (data was SyncUnivUpdated before this PATCH)
     const getRes = await client.get('/api/entries');
     const data = await getRes.json();
-    assert.ok(data[72], 'entry 72 should exist');
-    assert.equal(data[72].univ, 'SyncUnivUpdated');
+    assert.ok(!data[72], 'entry 72 should not exist (rolled back)');
+    assert.ok(data[71], 'entry 71 should still exist');
+    assert.equal(data[71].univ, 'SyncUnivUpdated', 'univ should be rolled back to pre-PATCH state');
 
     await stopServer(mockDocServer);
     delete process.env.DOCUMENTS_SERVER;
+  });
+});
 
-    // Cleanup
-    await client.delete('/api/entries/72', { cookie: adminCookie });
+// ─── Entry Delete Notifications ──────────────────────────────────────────
+describe('Entry delete → service notifications', () => {
+  let mockServer, mockUrl;
+  let deletedNums;
+
+  before(async () => {
+    deletedNums = [];
+    const mockApp = expressForMock();
+    mockApp.delete('/api/internal/team/:num', (req, res) => {
+      deletedNums.push({ num: Number(req.params.num), year: Number(req.query.year) });
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    mockServer = started.server;
+    mockUrl = started.baseUrl;
+
+    process.env.QUEUE_SERVER = mockUrl;
+    process.env.DOCUMENTS_SERVER = mockUrl;
+
+    // Create entries for delete tests
+    await client.post('/api/entries', { body: { num: 80, univ: 'DelUniv', team: 'DelTeam' }, cookie: adminCookie });
+    await client.post('/api/entries', { body: { num: 81, univ: 'DelUniv2', team: 'DelTeam2' }, cookie: adminCookie });
+    await client.post('/api/entries', { body: { num: 82, univ: 'DelUniv3', team: 'DelTeam3' }, cookie: adminCookie });
+  });
+
+  after(async () => {
+    await stopServer(mockServer);
+    delete process.env.QUEUE_SERVER;
+    delete process.env.DOCUMENTS_SERVER;
+  });
+
+  it('DELETE /api/entries/:num notifies queue and documents', async () => {
+    deletedNums = [];
+    const res = await client.delete('/api/entries/80', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+
+    await new Promise(r => setTimeout(r, 200));
+
+    // queue + documents = 2 calls for num 80
+    const calls = deletedNums.filter(d => d.num === 80);
+    assert.equal(calls.length, 2, 'should notify both queue and documents');
+  });
+
+  it('POST /api/entries/bulk notifies for removed entries', async () => {
+    deletedNums = [];
+    // Bulk upload replaces all entries — 81 and 82 will be removed, 90 is new
+    const res = await client.post('/api/entries/bulk', {
+      body: { data: { 90: { univ: 'NewUniv', team: 'NewTeam' } } },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+
+    await new Promise(r => setTimeout(r, 200));
+
+    const removedNumSet = new Set(deletedNums.map(d => d.num));
+    assert.ok(removedNumSet.has(81), 'should notify deletion of entry 81');
+    assert.ok(removedNumSet.has(82), 'should notify deletion of entry 82');
+    assert.ok(!removedNumSet.has(90), 'should not notify for new entry 90');
   });
 });

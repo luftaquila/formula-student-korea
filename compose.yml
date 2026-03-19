@@ -23,6 +23,7 @@ services:
       <<: *common-env
       AUTH_SERVER: http://auth:9100
       DOCUMENTS_SERVER: http://documents:9700
+      QUEUE_SERVER: http://queue:9300
     volumes:
       - ./entry/data:/home/node/fsk-entry/data
     depends_on:

@@ -170,7 +170,11 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix) {
     const url = new URL(`${serverUrl}${eventPath}`);
     const options = { headers: internalHeaders() };
     const req = http.get(url, options, (res) => {
+      const wasReconnect = backoff > 3000;
       backoff = 3000; // 연결 성공 시 backoff 리셋
+      if (wasReconnect) {
+        broadcastEvent("refresh", { source: name });
+      }
       let buffer = "";
 
       res.on("data", (chunk) => {

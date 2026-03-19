@@ -1215,3 +1215,70 @@ describe('PATCH /api/internal/team-num', () => {
     assert.equal(res.status, 401);
   });
 });
+
+// ─── Internal API: team deletion ─────────────────────────────────────────
+describe('DELETE /api/internal/team/:num', () => {
+  let deleteTestSessionId;
+
+  before(async () => {
+    // Create student-team mapping for team 10
+    await client.post('/api/admin/student-teams', {
+      cookie: chiefCookie,
+      body: { email: 'student1@test.com', team_num: 10, year: 2025 },
+    });
+
+    // Create a session with team 10
+    const sessionRes = await client.post('/api/admin/sessions', {
+      cookie: chiefCookie,
+      body: {
+        name: 'Delete Test Session',
+        start_at: '2020-01-01T00:00',
+        end_at: '2030-12-31T23:59',
+        late_end_at: '',
+        max_file_size: 52428800,
+        year: 2025,
+        teams: [1, 10],
+        allowed_extensions: '',
+      },
+    });
+    const { id } = await sessionRes.json();
+    deleteTestSessionId = id;
+  });
+
+  it('requires admin auth (internal service header)', async () => {
+    const res = await client.delete('/api/internal/team/10?year=2025');
+    assert.equal(res.status, 401);
+  });
+
+  it('returns 400 for invalid team number', async () => {
+    const res = await client.delete('/api/internal/team/abc?year=2025', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('returns 400 for missing year', async () => {
+    const res = await client.delete('/api/internal/team/10', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('cleans up student-team mapping, session-team, and submissions', async () => {
+    const res = await client.delete('/api/internal/team/10?year=2025', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+
+    // Verify student-team mapping is removed
+    const teams = await client.get('/api/admin/student-teams?year=2025', { cookie: chiefCookie });
+    const teamsData = await teams.json();
+    assert.ok(!teamsData.some(t => t.team_num === 10), 'team 10 mapping should be removed');
+
+    // Verify team is removed from session
+    const status = await client.get(`/api/admin/sessions/${deleteTestSessionId}/status`, { cookie: chiefCookie });
+    const statusData = await status.json();
+    assert.ok(!statusData.status.some(s => s.team_num === 10), 'team 10 should be removed from session');
+    assert.ok(statusData.status.some(s => s.team_num === 1), 'team 1 should remain in session');
+  });
+});

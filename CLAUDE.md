@@ -108,6 +108,7 @@ npm run test:shared         # Shared modules only
 - Test files: `tests/<service>/<service>.test.mjs`, shared: `tests/shared/<module>.test.mjs`
 - Utilities: `tests/helpers/test-utils.mjs` (JWT, HTTP client, temp DB)
 - CI runs on push to main and PRs
+- **When making code changes, always review whether existing tests adequately cover the changes. Add or update tests as needed — new endpoints, behavior changes, and error handling changes must have test coverage.**
 
 ### E2E Tests (Playwright)
 

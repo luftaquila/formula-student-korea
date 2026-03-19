@@ -145,6 +145,33 @@ function validateBulkData(data) {
 const dbRun = createDbRun();
 
 /* ============================================
+   서비스 간 알림 헬퍼
+   ============================================ */
+async function notifyEntryDeleted(nums, year) {
+  const headers = {};
+  if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+
+  const services = [];
+  if (process.env.QUEUE_SERVER) services.push(process.env.QUEUE_SERVER);
+  if (process.env.DOCUMENTS_SERVER) services.push(process.env.DOCUMENTS_SERVER);
+  if (services.length === 0) return;
+
+  await Promise.allSettled(
+    nums.flatMap(num =>
+      services.map(server =>
+        fetch(`${server}/api/internal/team/${num}?year=${Number(year)}`, {
+          method: "DELETE",
+          headers,
+          signal: AbortSignal.timeout(5000),
+        }).catch(e => {
+          logger.warn(null, "entry.notify_delete_fail", { server, num, year, error: e.message });
+        }),
+      ),
+    ),
+  );
+}
+
+/* ============================================
    연도/테이블 미들웨어
    ============================================ */
 function withYearTable(req, res, next) {
@@ -243,6 +270,9 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
   const newNum = newNumValidation.value;
   const numChanged = prevNum !== newNum;
 
+  // 번호 변경 시 롤백을 위해 원본 데이터 보존
+  const originalEntry = numChanged ? db.prepare(`SELECT univ, team, type FROM '${tableName}' WHERE num = ?`).get(prevNum) : null;
+
   const result = dbRun(() => {
     return db.transaction(() => {
       if (numChanged) {
@@ -267,9 +297,10 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  // 번호 변경 시 documents 서비스 team_num 동기화
-  let docsSyncFailed = false;
+  // 번호 변경 시 documents 서비스 team_num 동기화 (실패 시 롤백)
   if (numChanged && process.env.DOCUMENTS_SERVER) {
+    let syncFailed = false;
+    let failReason = "";
     try {
       const syncRes = await fetch(`${process.env.DOCUMENTS_SERVER}/api/internal/team-num`, {
         method: "PATCH",
@@ -278,21 +309,36 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
         signal: AbortSignal.timeout(5000),
       });
       if (!syncRes.ok) {
-        docsSyncFailed = true;
-        logger.warn(req, "entry.docs_sync_fail", { prevNum, newNum, year, status: syncRes.status });
+        syncFailed = true;
+        failReason = `status ${syncRes.status}`;
       }
     } catch (e) {
-      docsSyncFailed = true;
-      logger.warn(req, "entry.docs_sync_fail", { prevNum, newNum, year, error: e.message });
+      syncFailed = true;
+      failReason = e.message;
+    }
+
+    if (syncFailed) {
+      // 엔트리 번호 및 데이터 롤백
+      dbRun(() => {
+        db.transaction(() => {
+          db.prepare(`UPDATE '${tableName}' SET num = ? WHERE num = ?`).run(prevNum, newNum);
+          if (originalEntry) {
+            db.prepare(`UPDATE '${tableName}' SET univ = ?, team = ?, type = ? WHERE num = ?`)
+              .run(originalEntry.univ, originalEntry.team, originalEntry.type, prevNum);
+          }
+        })();
+      });
+      logger.warn(req, "entry.docs_sync_fail_rollback", { prevNum, newNum, year, reason: failReason });
+      return res.status(502).send("문서 서비스 동기화에 실패하여 변경이 취소되었습니다.");
     }
   }
 
   logger.log(req, "entry.update", { year, univ: dataValidation.univ, team: dataValidation.team, type: dataValidation.type }, `#${newNum}`);
-  res.status(docsSyncFailed ? 207 : 200).send();
+  res.status(200).send();
 });
 
 // DELETE /api/entries/:num - 엔트리 삭제
-app.delete("/api/entries/:num", withYearTable, (req, res) => {
+app.delete("/api/entries/:num", withYearTable, async (req, res) => {
   const { tableName, year } = req;
 
   const numValidation = validateEntryNum(req.params.num);
@@ -313,11 +359,16 @@ app.delete("/api/entries/:num", withYearTable, (req, res) => {
 
   logger.log(req, "entry.delete", { year, univ: entry?.univ, team: entry?.team }, `#${numValidation.value}`);
   res.status(200).send();
+
+  // 다른 서비스에 삭제 알림 (응답 이후 비동기)
+  notifyEntryDeleted([numValidation.value], year);
 });
 
 // DELETE /api/entries - 모든 엔트리 삭제
-app.delete("/api/entries", withYearTable, (req, res) => {
+app.delete("/api/entries", withYearTable, async (req, res) => {
   const { tableName, year } = req;
+
+  const existingNums = db.prepare(`SELECT num FROM '${tableName}'`).all().map(r => r.num);
 
   const result = dbRun(() => db.prepare(`DELETE FROM '${tableName}'`).run());
 
@@ -327,16 +378,24 @@ app.delete("/api/entries", withYearTable, (req, res) => {
 
   logger.log(req, "entry.clear", { year });
   res.status(200).send();
+
+  // 다른 서비스에 삭제 알림 (응답 이후 비동기)
+  if (existingNums.length > 0) {
+    notifyEntryDeleted(existingNums, year);
+  }
 });
 
 // POST /api/entries/bulk - 엔트리 일괄 업로드 (DB 교체)
-app.post("/api/entries/bulk", withYearTable, (req, res) => {
+app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   const { tableName, year } = req;
 
   const validation = validateBulkData(req.body.data);
   if (!validation.valid) {
     return res.status(400).send(validation.error);
   }
+
+  // 트랜잭션 전 기존 엔트리 스냅샷
+  const existingNums = new Set(db.prepare(`SELECT num FROM '${tableName}'`).all().map(r => r.num));
 
   const result = dbRun(() => {
     db.transaction(() => {
@@ -359,6 +418,13 @@ app.post("/api/entries/bulk", withYearTable, (req, res) => {
 
   logger.log(req, "entry.bulk_upload", { year, count: Object.keys(validation.data).length });
   res.status(200).send();
+
+  // 제거된 엔트리에 대해 다른 서비스 알림 (응답 이후 비동기)
+  const newNums = new Set(Object.keys(validation.data).map(Number));
+  const removedNums = [...existingNums].filter(n => !newNums.has(n));
+  if (removedNums.length > 0) {
+    notifyEntryDeleted(removedNums, year);
+  }
 });
 
 /* ============================================

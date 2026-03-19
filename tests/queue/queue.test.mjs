@@ -1171,6 +1171,80 @@ describe('POST /api/state/:num (with registered entry)', () => {
   });
 });
 
+// ─── Internal API: team deletion ─────────────────────────────────────────
+describe('DELETE /api/internal/team/:num', () => {
+  before(async () => {
+    // Activate noise inspection and register entry 2 for cleanup tests
+    await client.patch('/api/admin/inspection/noise', {
+      body: { active: true },
+      cookie: chiefCookie,
+    });
+    await client.post('/api/admin/register/noise', {
+      body: { num: 2, phone: '01022222222' },
+      cookie: officialCookie,
+    });
+    // Set priority for entry 2 in noise
+    await client.post('/api/admin/priority/noise', {
+      body: { num: 2, priority: 1 },
+      cookie: chiefCookie,
+    });
+  });
+
+  it('requires admin auth (internal service header)', async () => {
+    const res = await client.delete('/api/internal/team/2?year=' + new Date().getFullYear());
+    assert.equal(res.status, 401);
+  });
+
+  it('cleans up all queue data for the team', async () => {
+    const year = new Date().getFullYear();
+
+    // Verify entry 2 is in noise queue before cleanup
+    const queueBefore = await client.get('/api/admin/inspection/noise', { cookie: officialCookie });
+    const beforeData = await queueBefore.json();
+    assert.ok(beforeData.some(e => e.num === 2), 'entry 2 should be in noise queue before cleanup');
+
+    // Call internal delete
+    const res = await client.delete(`/api/internal/team/2?year=${year}`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+
+    // Verify entry 2 is removed from noise queue
+    const queueAfter = await client.get('/api/admin/inspection/noise', { cookie: officialCookie });
+    const afterData = await queueAfter.json();
+    assert.ok(!afterData.some(e => e.num === 2), 'entry 2 should be removed from noise queue');
+
+    // Verify priority is removed
+    const priorities = await client.get('/api/admin/priority/noise', { cookie: chiefCookie });
+    const prioData = await priorities.json();
+    assert.ok(!prioData.some(e => e.num === 2), 'entry 2 priority should be removed');
+  });
+
+  it('returns 400 for invalid entry number', async () => {
+    const res = await client.delete('/api/internal/team/abc?year=' + new Date().getFullYear(), {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 400);
+  });
+});
+
+// ─── Year isolation ──────────────────────────────────────────────────────
+describe('Year isolation', () => {
+  it('queue queries filter by current year', async () => {
+    // Register entry 2 — should use current year automatically
+    await client.post('/api/admin/register/tilting', {
+      body: { num: 2, phone: '01022222222' },
+      cookie: officialCookie,
+    });
+    const queue = await client.get('/api/admin/inspection/tilting', { cookie: officialCookie });
+    const data = await queue.json();
+    assert.ok(data.some(e => e.num === 2), 'entry should be in tilting queue');
+
+    // Verify year column is present
+    assert.equal(data[0].year, new Date().getFullYear(), 'year column should be current year');
+  });
+});
+
 // ─── Public endpoint rate limiting ───────────────────────────────────────
 // NOTE: This must be the LAST test block because it exhausts the rate limit
 // for /api/state/:num, which would cause subsequent tests using that endpoint to get 429.

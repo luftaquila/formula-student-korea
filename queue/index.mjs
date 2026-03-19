@@ -170,13 +170,68 @@ db.transaction(() => {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_cp_num_insp ON cancel_penalty(num, inspection)`);
 })();
 
+// 연도 컬럼 마이그레이션 (기존 스키마 생성과 분리)
+{
+  const yr = new Date().getFullYear();
+
+  // team_priority: year를 PK에 추가
+  const tpInfo = db.prepare("PRAGMA table_info(team_priority)").all();
+  if (!tpInfo.some(c => c.name === "year")) {
+    db.transaction(() => {
+      db.exec(`CREATE TABLE team_priority_new (
+        num INTEGER NOT NULL,
+        inspection TEXT NOT NULL,
+        year INTEGER NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 999,
+        PRIMARY KEY (num, inspection, year)
+      )`);
+      db.exec(`INSERT INTO team_priority_new SELECT num, inspection, ${yr}, priority FROM team_priority`);
+      db.exec(`DROP TABLE team_priority`);
+      db.exec(`ALTER TABLE team_priority_new RENAME TO team_priority`);
+      db.exec(`CREATE INDEX idx_tp_insp_prio ON team_priority(year, inspection, priority, num)`);
+    })();
+  }
+
+  // cancel_penalty: year를 PK에 추가
+  const cpInfo = db.prepare("PRAGMA table_info(cancel_penalty)").all();
+  if (!cpInfo.some(c => c.name === "year")) {
+    db.transaction(() => {
+      db.exec(`CREATE TABLE cancel_penalty_new (
+        num INTEGER NOT NULL,
+        inspection TEXT NOT NULL,
+        year INTEGER NOT NULL,
+        until INTEGER NOT NULL,
+        PRIMARY KEY (num, inspection, year)
+      )`);
+      db.exec(`INSERT INTO cancel_penalty_new SELECT num, inspection, ${yr}, until FROM cancel_penalty`);
+      db.exec(`DROP TABLE cancel_penalty`);
+      db.exec(`ALTER TABLE cancel_penalty_new RENAME TO cancel_penalty`);
+      db.exec(`CREATE INDEX idx_cp_num_insp ON cancel_penalty(year, num, inspection)`);
+    })();
+  }
+
+  // 나머지 테이블: year 컬럼 추가
+  addColumn(db, "inspection_history", `year INTEGER NOT NULL DEFAULT ${yr}`);
+  addColumn(db, "current", `year INTEGER NOT NULL DEFAULT ${yr}`);
+  addColumn(db, "booth_log", `year INTEGER NOT NULL DEFAULT ${yr}`);
+  addColumn(db, "queue_log", `year INTEGER NOT NULL DEFAULT ${yr}`);
+  for (const k of Object.keys(INSPECTIONS)) {
+    addColumn(db, `'${k}'`, `year INTEGER NOT NULL DEFAULT ${yr}`);
+  }
+}
+
 /* ============================================
    Express 앱 설정
    ============================================ */
+function currentYear() {
+  return new Date().getFullYear();
+}
+
 const logger = createLogger(db, "queue");
 
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
+  if (req.path.startsWith("/api/internal/")) return "admin";
   // Chief-only: 우선순위, 이력 초기화, 설정 변경, 검차 활성화/표시/무시, 부스 수 설정
   if (req.path.startsWith("/api/admin/priority")) return "chief";
   if (req.path.startsWith("/api/admin/history")) return "chief";
@@ -257,6 +312,7 @@ const dbRun = createDbRun();
 
 /**
  * 대기열 조회 쿼리 (정렬 순서: 초검 > 재검, 우선순위 높음 > 낮음, 선착순)
+ * 파라미터 순서: [inspection, year, inspection, year, year]
  */
 function getQueueQuery(inspection) {
   const meta = db.prepare("SELECT ignore_priority, ignore_reinspection FROM inspection WHERE type = ?").get(inspection);
@@ -271,34 +327,40 @@ function getQueueQuery(inspection) {
   return `
     SELECT t.*,
       CASE WHEN EXISTS (
-        SELECT 1 FROM inspection_history h WHERE h.num = t.num AND h.inspection = ?
+        SELECT 1 FROM inspection_history h WHERE h.num = t.num AND h.inspection = ? AND h.year = ?
       ) THEN 1 ELSE 0 END AS is_reinspection,
       COALESCE(p.priority, 999) AS priority
     FROM '${inspection}' AS t
-    LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ?
+    LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ? AND p.year = ?
+    WHERE t.year = ?
     ORDER BY ${orderClauses.join(", ")}
   `;
+}
+
+function getQueueParams(inspection, year) {
+  return [inspection, year, inspection, year, year];
 }
 
 /**
  * 특정 엔트리의 대기열 순위 조회
  */
-function getQueueRank(inspection, num) {
+function getQueueRank(inspection, num, year) {
   const meta = db.prepare("SELECT ignore_priority, ignore_reinspection FROM inspection WHERE type = ?").get(inspection);
   const ignoreReinspection = meta?.ignore_reinspection;
   const ignorePriority = meta?.ignore_priority;
 
   const orderClauses = [];
   if (!ignoreReinspection) orderClauses.push(`CASE WHEN EXISTS (
-              SELECT 1 FROM inspection_history h WHERE h.num = t.num AND h.inspection = ?
+              SELECT 1 FROM inspection_history h WHERE h.num = t.num AND h.inspection = ? AND h.year = ?
             ) THEN 1 ELSE 0 END ASC`);
   if (!ignorePriority) orderClauses.push("COALESCE(p.priority, 999) ASC");
   orderClauses.push("t.timestamp ASC");
 
   const params = [];
-  if (!ignoreReinspection) params.push(inspection);
-  params.push(inspection); // for LEFT JOIN team_priority
-  params.push(num); // for WHERE
+  if (!ignoreReinspection) params.push(inspection, year);
+  params.push(inspection, year); // for LEFT JOIN team_priority
+  params.push(year); // for WHERE t.year = ?
+  params.push(num); // for WHERE sub.num = ?
 
   const result = db
     .prepare(`
@@ -308,7 +370,8 @@ function getQueueRank(inspection, num) {
           ORDER BY ${orderClauses.join(", ")}
         ) AS rank
       FROM '${inspection}' AS t
-      LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ?
+      LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ? AND p.year = ?
+      WHERE t.year = ?
     ) AS sub WHERE sub.num = ?
   `)
     .get(...params);
@@ -351,8 +414,9 @@ app.post("/api/state/:num", rateLimit, async (req, res) => {
     return res.status(500).send("엔트리를 조회할 수 없습니다.");
   }
 
+  const year = currentYear();
   const result = dbRun(() => {
-    const entry = db.prepare("SELECT * FROM current WHERE num = ?").get(num);
+    const entry = db.prepare("SELECT * FROM current WHERE num = ? AND year = ?").get(num, year);
 
     if (!entry) {
       return { queue: undefined, rank: -1 };
@@ -370,12 +434,12 @@ app.post("/api/state/:num", rateLimit, async (req, res) => {
 
       for (let inspection of entry.inspection.split(",")) {
         ranks.queue.push(inspections[inspection]);
-        ranks.rank.push(getQueueRank(inspection, num));
+        ranks.rank.push(getQueueRank(inspection, num, year));
       }
 
       return { queue: ranks.queue.join(", "), rank: ranks.rank.join(", ") };
     } else {
-      const rank = getQueueRank(entry.inspection, num);
+      const rank = getQueueRank(entry.inspection, num, year);
       return { queue: inspections[entry.inspection], rank: rank };
     }
   });
@@ -441,7 +505,8 @@ app.get("/api/admin/inspection/:type", (req, res) => {
     return res.status(400).send(typeValidation.error);
   }
 
-  const result = dbRun(() => db.prepare(getQueueQuery(req.params.type)).all(req.params.type, req.params.type));
+  const year = currentYear();
+  const result = dbRun(() => db.prepare(getQueueQuery(req.params.type)).all(...getQueueParams(req.params.type, year)));
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
@@ -544,8 +609,10 @@ app.post("/api/admin/register/:type", async (req, res) => {
         throw { status: 400, message: "대기열이 비활성화 상태입니다." };
       }
 
+      const year = currentYear();
+
       // 페널티 확인
-      const penalty = db.prepare("SELECT * FROM cancel_penalty WHERE num = ? AND inspection = ?").get(num, type);
+      const penalty = db.prepare("SELECT * FROM cancel_penalty WHERE num = ? AND inspection = ? AND year = ?").get(num, type, year);
       if (penalty && penalty.until > Date.now()) {
         const remaining = Math.ceil((penalty.until - Date.now()) / 1000 / 60);
         throw {
@@ -554,10 +621,10 @@ app.post("/api/admin/register/:type", async (req, res) => {
         };
       } else if (penalty) {
         // 만료된 페널티 삭제
-        db.prepare("DELETE FROM cancel_penalty WHERE num = ? AND inspection = ?").run(num, type);
+        db.prepare("DELETE FROM cancel_penalty WHERE num = ? AND inspection = ? AND year = ?").run(num, type, year);
       }
 
-      const current = db.prepare("SELECT * FROM current WHERE num = ?").get(num);
+      const current = db.prepare("SELECT * FROM current WHERE num = ? AND year = ?").get(num, year);
 
       if (current) {
         const currentTypes = current.inspection.split(",");
@@ -588,14 +655,14 @@ app.post("/api/admin/register/:type", async (req, res) => {
           }
         }
       } else {
-        db.prepare("INSERT INTO current (num, phone, inspection) VALUES (?, ?, ?)").run(num, phone, type);
+        db.prepare("INSERT INTO current (num, phone, inspection, year) VALUES (?, ?, ?, ?)").run(num, phone, type, year);
       }
 
-      db.prepare(`INSERT INTO '${type}' (num, phone, timestamp) VALUES (?, ?, ?)`).run(num, phone, Date.now());
+      db.prepare(`INSERT INTO '${type}' (num, phone, timestamp, year) VALUES (?, ?, ?, ?)`).run(num, phone, Date.now(), year);
       db.prepare("UPDATE inspection SET length = length + 1 WHERE type = ?").run(type);
 
       // 대기열 이벤트 로그 기록 (트랜잭션 내부)
-      db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run("register", num, type, Date.now());
+      db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)").run("register", num, type, Date.now(), year);
     })();
   });
 
@@ -627,14 +694,15 @@ app.post("/api/admin/cancel/:type", (req, res) => {
 
   const num = numValidation.value;
   const type = typeValidation.value;
+  const year = currentYear();
 
   // SMS 발송용: 삭제 전 N번째 대기자 조회
   const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
-  const prev = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(type, type, smsRank - 1);
+  const prev = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(...getQueueParams(type, year), smsRank - 1);
 
   const result = dbRun(() => {
     db.transaction(() => {
-      const ret = db.prepare(`DELETE FROM '${type}' WHERE num = ?`).run(num);
+      const ret = db.prepare(`DELETE FROM '${type}' WHERE num = ? AND year = ?`).run(num, year);
 
       if (!ret.changes) {
         throw { status: 400, message: "존재하지 않는 엔트리입니다." };
@@ -649,14 +717,15 @@ app.post("/api/admin/cancel/:type", (req, res) => {
       );
       if (penaltyMinutes > 0) {
         const until = Date.now() + penaltyMinutes * 60 * 1000;
-        db.prepare("INSERT OR REPLACE INTO cancel_penalty (num, inspection, until) VALUES (?, ?, ?)").run(
+        db.prepare("INSERT OR REPLACE INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)").run(
           num,
           type,
+          year,
           until,
         );
       }
 
-      const current = db.prepare("SELECT * FROM current WHERE num = ?").get(num);
+      const current = db.prepare("SELECT * FROM current WHERE num = ? AND year = ?").get(num, year);
 
       if (!current) {
         throw { status: 400, message: "현재 등록 상태를 찾을 수 없습니다." };
@@ -664,13 +733,13 @@ app.post("/api/admin/cancel/:type", (req, res) => {
 
       const remaining = current.inspection.split(",").filter((i) => i !== type);
       if (remaining.length > 0) {
-        db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(remaining.join(","), num);
+        db.prepare("UPDATE current SET inspection = ? WHERE num = ? AND year = ?").run(remaining.join(","), num, year);
       } else {
-        db.prepare("DELETE FROM current WHERE num = ?").run(num);
+        db.prepare("DELETE FROM current WHERE num = ? AND year = ?").run(num, year);
       }
 
       // 대기열 이벤트 로그 기록 (트랜잭션 내부)
-      db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run("cancel", num, type, Date.now());
+      db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)").run("cancel", num, type, Date.now(), year);
     })();
   });
 
@@ -702,7 +771,7 @@ app.get("/api/admin/priority/:type", (req, res) => {
   }
 
   const result = dbRun(() =>
-    db.prepare("SELECT * FROM team_priority WHERE inspection = ? ORDER BY priority ASC, num ASC").all(req.params.type),
+    db.prepare("SELECT * FROM team_priority WHERE inspection = ? AND year = ? ORDER BY priority ASC, num ASC").all(req.params.type, currentYear()),
   );
 
   if (!result.success) {
@@ -731,8 +800,8 @@ app.post("/api/admin/priority/:type", (req, res) => {
 
   const result = dbRun(() =>
     db
-      .prepare("INSERT OR REPLACE INTO team_priority (num, inspection, priority) VALUES (?, ?, ?)")
-      .run(numValidation.value, req.params.type, priorityValidation.value),
+      .prepare("INSERT OR REPLACE INTO team_priority (num, inspection, year, priority) VALUES (?, ?, ?, ?)")
+      .run(numValidation.value, req.params.type, currentYear(), priorityValidation.value),
   );
 
   if (!result.success) {
@@ -760,9 +829,10 @@ app.delete("/api/admin/priority/:type", (req, res) => {
     return res.status(400).send(numValidation.error);
   }
 
-  const prior = db.prepare("SELECT priority FROM team_priority WHERE num = ? AND inspection = ?").get(numValidation.value, req.params.type);
+  const year = currentYear();
+  const prior = db.prepare("SELECT priority FROM team_priority WHERE num = ? AND inspection = ? AND year = ?").get(numValidation.value, req.params.type, year);
   const result = dbRun(() =>
-    db.prepare("DELETE FROM team_priority WHERE num = ? AND inspection = ?").run(numValidation.value, req.params.type),
+    db.prepare("DELETE FROM team_priority WHERE num = ? AND inspection = ? AND year = ?").run(numValidation.value, req.params.type, year),
   );
 
   if (!result.success) {
@@ -789,7 +859,7 @@ app.delete("/api/admin/priority/:type/all", (req, res) => {
     return res.status(400).send(typeValidation.error);
   }
 
-  const result = dbRun(() => db.prepare("DELETE FROM team_priority WHERE inspection = ?").run(req.params.type));
+  const result = dbRun(() => db.prepare("DELETE FROM team_priority WHERE inspection = ? AND year = ?").run(req.params.type, currentYear()));
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
@@ -812,10 +882,11 @@ app.delete("/api/admin/history/:type", (req, res) => {
   }
 
   const type = typeValidation.value;
+  const year = currentYear();
 
   const result = dbRun(() => {
     db.transaction(() => {
-      db.prepare("DELETE FROM inspection_history WHERE inspection = ?").run(type);
+      db.prepare("DELETE FROM inspection_history WHERE inspection = ? AND year = ?").run(type, year);
 
       // 부스 상태 초기화: 해당 검차 종류의 모든 부스 점유 해제
       db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ?").run(type);
@@ -826,7 +897,7 @@ app.delete("/api/admin/history/:type", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "history.clear", null, type);
+  logger.log(req, "history.clear", { year }, type);
 
   // SSE 브로드캐스트: 이력 초기화 -> 대기열 순서 변경 및 부스 상태 변경
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
@@ -1018,14 +1089,16 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
     return res.status(400).send("올바르지 않은 부스 번호입니다.");
   }
 
+  const year = currentYear();
+
   // SMS 발송용: 삭제 전 N번째 대기자 조회
   const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
-  const prev = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(type, type, smsRank - 1);
+  const prev = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(...getQueueParams(type, year), smsRank - 1);
 
   const result = dbRun(() => {
     db.transaction(() => {
       // 대기열에 팀이 있는지 확인
-      const queueEntry = db.prepare(`SELECT * FROM '${type}' WHERE num = ?`).get(num);
+      const queueEntry = db.prepare(`SELECT * FROM '${type}' WHERE num = ? AND year = ?`).get(num, year);
       if (!queueEntry) {
         throw { status: 400, message: "대기열에 존재하지 않는 엔트리입니다." };
       }
@@ -1045,7 +1118,7 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
       const now = Date.now();
 
       // 대기열에서 제거 및 길이 감소
-      db.prepare(`DELETE FROM '${type}' WHERE num = ?`).run(num);
+      db.prepare(`DELETE FROM '${type}' WHERE num = ? AND year = ?`).run(num, year);
       db.prepare("UPDATE inspection SET length = length - 1 WHERE type = ?").run(type);
 
       // 부스 점유
@@ -1054,23 +1127,23 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
       );
 
       // 부스 로그 기록
-      db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, created_at) VALUES (?, ?, ?, ?, ?)").run(
-        num, type, boothNum, now, now
+      db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, created_at, year) VALUES (?, ?, ?, ?, ?, ?)").run(
+        num, type, boothNum, now, now, year
       );
 
       // 대기열 이벤트 로그 기록
-      db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp) VALUES (?, ?, ?, ?)").run(
-        "enter", num, type, now
+      db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)").run(
+        "enter", num, type, now, year
       );
 
       // current 테이블에서 해당 검차 종류 제거
-      const current = db.prepare("SELECT * FROM current WHERE num = ?").get(num);
+      const current = db.prepare("SELECT * FROM current WHERE num = ? AND year = ?").get(num, year);
       if (current) {
         const remaining = current.inspection.split(",").filter((i) => i !== type);
         if (remaining.length > 0) {
-          db.prepare("UPDATE current SET inspection = ? WHERE num = ?").run(remaining.join(","), num);
+          db.prepare("UPDATE current SET inspection = ? WHERE num = ? AND year = ?").run(remaining.join(","), num, year);
         } else {
-          db.prepare("DELETE FROM current WHERE num = ?").run(num);
+          db.prepare("DELETE FROM current WHERE num = ? AND year = ?").run(num, year);
         }
       }
     })();
@@ -1131,7 +1204,7 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
       ).run(now, num, type, boothNum);
 
       // 검차 이력에 추가 (재검 판단용)
-      db.prepare("INSERT INTO inspection_history (num, inspection, timestamp) VALUES (?, ?, ?)").run(num, type, now);
+      db.prepare("INSERT INTO inspection_history (num, inspection, timestamp, year) VALUES (?, ?, ?, ?)").run(num, type, now, currentYear());
     })();
   });
 
@@ -1517,8 +1590,9 @@ function sendSmsNotification(type, prev) {
       return;
     }
 
+    const year = currentYear();
     const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
-    const target = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(type, type, smsRank - 1);
+    const target = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(...getQueueParams(type, year), smsRank - 1);
 
     if (target && (!prev || target.num !== prev.num)) {
       const payload = {
@@ -1568,6 +1642,61 @@ function sendSmsNotification(type, prev) {
     console.error(`SMS 발송 오류: ${e}`);
   }
 }
+
+/* ============================================
+   Internal API: 엔트리 삭제 연동
+   ============================================ */
+
+// DELETE /api/internal/team/:num - 엔트리 삭제 시 관련 데이터 정리
+app.delete("/api/internal/team/:num", (req, res) => {
+  const numValidation = validateEntryNum(req.params.num);
+  if (!numValidation.valid) {
+    return res.status(400).send(numValidation.error);
+  }
+
+  const num = numValidation.value;
+  const year = Number(req.query.year) || currentYear();
+
+  const result = dbRun(() => {
+    db.transaction(() => {
+      // 모든 검차 대기열에서 제거
+      for (const type of Object.keys(inspections)) {
+        const deleted = db.prepare(`DELETE FROM '${type}' WHERE num = ? AND year = ?`).run(num, year);
+        if (deleted.changes) {
+          db.prepare("UPDATE inspection SET length = length - 1 WHERE type = ?").run(type);
+        }
+      }
+
+      // current에서 제거
+      db.prepare("DELETE FROM current WHERE num = ? AND year = ?").run(num, year);
+
+      // 우선순위 제거
+      db.prepare("DELETE FROM team_priority WHERE num = ? AND year = ?").run(num, year);
+
+      // 취소 페널티 제거
+      db.prepare("DELETE FROM cancel_penalty WHERE num = ? AND year = ?").run(num, year);
+
+      // 검차 이력 제거
+      db.prepare("DELETE FROM inspection_history WHERE num = ? AND year = ?").run(num, year);
+
+      // 부스 점유 해제
+      const booths = db.prepare("SELECT inspection, booth_num FROM booth WHERE occupied_by = ?").all(num);
+      for (const b of booths) {
+        db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ? AND booth_num = ?").run(b.inspection, b.booth_num);
+      }
+    })();
+  });
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  // SSE 브로드캐스트
+  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  broadcastEvent("queue", { type: null, activeInspections });
+
+  res.status(200).send();
+});
 
 /* ============================================
    SPA Fallback - Vue Router 지원
