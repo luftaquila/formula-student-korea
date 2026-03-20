@@ -14,7 +14,7 @@ test.describe("Inspection summary dashboard", () => {
     await expect(page.locator("h3")).toContainText("검차 시트");
 
     // Verify entry count badge
-    await expect(page.locator(".count-badge")).toHaveText("5개 팀");
+    await expect(page.locator(".count-badge")).toHaveText("8개 팀");
 
     // Verify the table is visible
     const table = page.locator(".sheet-table");
@@ -22,7 +22,7 @@ test.describe("Inspection summary dashboard", () => {
 
     // Verify all 5 seeded teams are in the table
     const rows = table.locator("tbody tr.clickable-row");
-    await expect(rows).toHaveCount(5);
+    await expect(rows).toHaveCount(8);
 
     // Verify specific team names
     await expect(table.locator("tbody")).toContainText("서울대학교");
@@ -73,7 +73,7 @@ test.describe("Inspection summary dashboard", () => {
 
     const table = page.locator(".sheet-table");
     const team1Row = table.locator("tbody tr.clickable-row").first();
-    const passBadge = team1Row.locator(".badge-success");
+    const passBadge = team1Row.locator(".badge-success").first();
     await expect(passBadge).toContainText("PASS");
 
     // Clean up: clear the result and inspector
@@ -117,7 +117,7 @@ test.describe("Inspection summary dashboard", () => {
 
     // Clear search restores all entries
     await searchInput.fill("");
-    await expect(rows).toHaveCount(5);
+    await expect(rows).toHaveCount(8);
   });
 
   test("navigates to team sheet on row click", async ({ page }) => {

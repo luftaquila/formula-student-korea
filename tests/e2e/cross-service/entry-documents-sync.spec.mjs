@@ -35,22 +35,17 @@ test.describe("Entry → Documents team_num sync", () => {
     });
     expect(patchRes.status).toBe(200);
 
-    // 3. Wait briefly for async inter-service call to complete
-    await page.waitForTimeout(500);
+    // 3. Poll documents API until team_num sync completes
+    await expect.poll(async () => {
+      const res = await fetch(
+        `${BASE_URL}/documents/api/admin/student-teams?year=${YEAR}`,
+        { headers: chiefHeaders },
+      );
+      const data = await res.json();
+      return data.find((m) => m.team_num === 99) && !data.find((m) => m.team_num === 1);
+    }, { timeout: 5000 }).toBeTruthy();
 
-    // 4. Verify documents student-team mapping now shows team_num=99
-    const mappingsAfter = await fetch(
-      `${BASE_URL}/documents/api/admin/student-teams?year=${YEAR}`,
-      { headers: chiefHeaders },
-    );
-    expect(mappingsAfter.status).toBe(200);
-    const dataAfter = await mappingsAfter.json();
-    const team99 = dataAfter.find((m) => m.team_num === 99);
-    expect(team99).toBeTruthy();
-    const team1After = dataAfter.find((m) => m.team_num === 1);
-    expect(team1After).toBeFalsy();
-
-    // 5. Verify via the admin page UI
+    // 4. Verify via the admin page UI
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
@@ -58,7 +53,7 @@ test.describe("Entry → Documents team_num sync", () => {
     const mappingTable = page.locator(".student-teams-table, table").first();
     await expect(mappingTable).toContainText("99", { timeout: 5000 });
 
-    // 6. Clean up: change entry number back to 1
+    // 5. Clean up: change entry number back to 1
     const restoreRes = await fetch(`${BASE_URL}/entry/api/entries/99?year=${YEAR}`, {
       method: "PATCH",
       headers,
@@ -66,15 +61,14 @@ test.describe("Entry → Documents team_num sync", () => {
     });
     expect(restoreRes.status).toBe(200);
 
-    // Wait for sync
-    await page.waitForTimeout(500);
-
-    // Verify restoration
-    const mappingsRestored = await fetch(
-      `${BASE_URL}/documents/api/admin/student-teams?year=${YEAR}`,
-      { headers: chiefHeaders },
-    );
-    const dataRestored = await mappingsRestored.json();
-    expect(dataRestored.find((m) => m.team_num === 1)).toBeTruthy();
+    // Poll until sync completes
+    await expect.poll(async () => {
+      const res = await fetch(
+        `${BASE_URL}/documents/api/admin/student-teams?year=${YEAR}`,
+        { headers: chiefHeaders },
+      );
+      const data = await res.json();
+      return data.find((m) => m.team_num === 1);
+    }, { timeout: 5000 }).toBeTruthy();
   });
 });

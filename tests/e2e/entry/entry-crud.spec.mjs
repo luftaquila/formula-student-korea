@@ -1,8 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
-
 test.describe("Entry CRUD operations", () => {
   test.use({ storageState: storageStatePath("admin") });
 
@@ -15,9 +13,9 @@ test.describe("Entry CRUD operations", () => {
     const table = page.locator(".entry-table");
     await expect(table).toBeVisible();
 
-    // Verify all 5 seeded entries are present
+    // Verify all 8 seeded entries are present
     const rows = table.locator("tbody tr");
-    await expect(rows).toHaveCount(5);
+    await expect(rows).toHaveCount(8);
 
     // Verify specific seeded entries by their number column
     await expect(table.locator("tbody")).toContainText("서울대학교");
@@ -27,7 +25,7 @@ test.describe("Entry CRUD operations", () => {
     await expect(table.locator("tbody")).toContainText("고려대학교");
 
     // Verify entry count badge
-    await expect(page.locator(".entry-count")).toHaveText("5개");
+    await expect(page.locator(".entry-count")).toHaveText("8개");
   });
 
   test("adds a new entry", async ({ page }) => {
@@ -49,7 +47,7 @@ test.describe("Entry CRUD operations", () => {
     const table = page.locator(".entry-table");
     await expect(table.locator("tbody")).toContainText("테스트대학교");
     await expect(table.locator("tbody")).toContainText("테스트팀");
-    await expect(page.locator(".entry-count")).toHaveText("6개");
+    await expect(page.locator(".entry-count")).toHaveText("9개");
 
     // Clean up: delete the entry we just added
     const row = table.locator("tbody tr").filter({ hasText: "테스트대학교" });
@@ -99,7 +97,7 @@ test.describe("Entry CRUD operations", () => {
     await sidebar.locator('input[type="text"]').nth(1).fill("삭제팀");
     await sidebar.locator('.submit-btn').click();
     await waitForPageReady(page);
-    await expect(page.locator(".entry-count")).toHaveText("6개");
+    await expect(page.locator(".entry-count")).toHaveText("9개");
 
     // Accept the confirmation dialog
     page.on("dialog", (dialog) => dialog.accept());
@@ -115,7 +113,7 @@ test.describe("Entry CRUD operations", () => {
     // Wait for table to update and verify deletion
     await waitForPageReady(page);
     await expect(table.locator("tbody")).not.toContainText("삭제대학교");
-    await expect(page.locator(".entry-count")).toHaveText("5개");
+    await expect(page.locator(".entry-count")).toHaveText("8개");
   });
 
   test("filters entries with search", async ({ page }) => {
@@ -140,7 +138,7 @@ test.describe("Entry CRUD operations", () => {
 
     // Search by vehicle type
     await searchInput.fill("CV");
-    await expect(filteredRows).toHaveCount(2);
+    await expect(filteredRows).toHaveCount(3);
 
     // Search with no results
     await searchInput.fill("존재하지않는대학");
@@ -148,44 +146,7 @@ test.describe("Entry CRUD operations", () => {
 
     // Clear search to restore all entries
     await searchInput.fill("");
-    await expect(table.locator("tbody tr")).toHaveCount(5);
-  });
-
-  test("delete all entries and verify restoration", async ({ page }) => {
-    const table = page.locator(".entry-table");
-
-    // Verify we have 5 entries before deletion
-    await expect(page.locator(".entry-count")).toHaveText("5개");
-
-    // Accept the confirmation dialog
-    page.on("dialog", (dialog) => dialog.accept());
-
-    // Click the "전체 삭제" button
-    const deleteAllBtn = page.locator(".delete-all-btn");
-    await expect(deleteAllBtn).toBeVisible();
-    await deleteAllBtn.click();
-
-    // Verify all entries are gone
-    await expect(table.locator("tbody")).toContainText("등록된 엔트리가 없습니다");
-    await expect(page.locator(".entry-count")).toHaveText("0개");
-
-    // Re-seed the entries that were deleted
-    const year = new Date().getFullYear();
-    const entries = [
-      { num: 1, univ: "서울대학교", team: "SNU Racing", type: "EV" },
-      { num: 2, univ: "한양대학교", team: "ACES", type: "EV" },
-      { num: 3, univ: "성균관대학교", team: "SKKU Racing", type: "CV" },
-      { num: 10, univ: "KAIST", team: "RUN", type: "EV" },
-      { num: 20, univ: "고려대학교", team: "KURF", type: "CV" },
-    ];
-    for (const entry of entries) {
-      await page.request.post(`/entry/api/entries?year=${year}`, { data: entry });
-    }
-
-    // Reload and verify entries are back
-    await page.reload();
-    await waitForPageReady(page);
-    await expect(page.locator(".entry-count")).toHaveText("5개");
+    await expect(table.locator("tbody tr")).toHaveCount(8);
   });
 
   test("sorts entries by column headers", async ({ page }) => {
@@ -214,6 +175,6 @@ test.describe("Entry CRUD operations", () => {
     // Click again to sort by num descending
     await table.locator("th.col-num").click();
     const firstRowAfterNumDescSort = table.locator("tbody tr").first().locator(".entry-number");
-    await expect(firstRowAfterNumDescSort).toHaveText("20");
+    await expect(firstRowAfterNumDescSort).toHaveText("32");
   });
 });

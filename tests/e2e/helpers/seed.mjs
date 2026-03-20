@@ -36,6 +36,9 @@ export async function seedEntries() {
     { num: 3, univ: "성균관대학교", team: "SKKU Racing", type: "CV" },
     { num: 10, univ: "KAIST", team: "RUN", type: "EV" },
     { num: 20, univ: "고려대학교", team: "KURF", type: "CV" },
+    { num: 30, univ: "부산대학교", team: "PNU Racing", type: "EV" },
+    { num: 31, univ: "연세대학교", team: "Yonsei Racing", type: "CV" },
+    { num: 32, univ: "중앙대학교", team: "CAU Speed", type: "EV" },
   ];
   for (const entry of entries) {
     await api("POST", `/entry/api/entries?year=${year}`, entry);
@@ -61,6 +64,7 @@ export async function seedInspectionTemplate() {
                 { name: "절연 저항 측정", answer_type: "number", unit: "MΩ" },
                 { name: "전압 확인", answer_type: "passfail" },
                 { name: "고정 상태", answer_type: "passfail" },
+                { name: "시리얼 넘버", answer_type: "text" },
               ],
             },
           ],
@@ -82,6 +86,7 @@ export async function seedInspectionTemplate() {
               items: [
                 { name: "높이 측정", answer_type: "number", unit: "mm" },
                 { name: "용접 상태", answer_type: "passfail" },
+                { name: "점검 체크리스트", answer_type: "checktable", remarks: '{"columns":["증빙자료","현장확인"],"rows":["사전검토","현장검토"]}' },
               ],
             },
           ],

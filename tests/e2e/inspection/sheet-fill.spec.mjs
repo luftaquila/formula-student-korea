@@ -3,6 +3,13 @@ import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 
+async function saveInspector(page, input, value) {
+  const p = page.waitForResponse((res) => res.url().includes("/api/sheet/inspector") && res.status() === 200);
+  await input.fill(value);
+  await input.blur();
+  await Promise.race([p, page.waitForTimeout(1000)]);
+}
+
 test.describe("Inspection sheet filling", () => {
   test.use({ storageState: storageStatePath("official") });
 
@@ -76,56 +83,74 @@ test.describe("Inspection sheet filling", () => {
     // Verify unit label is shown
     await expect(itemRow.locator(".unit-label")).toHaveText("MΩ");
 
-    // Enter a number value
+    // Pick a different value from current to guarantee save fires
     const numberInput = itemRow.locator('input[type="number"]');
-    await numberInput.fill("42");
+    const currentNum = await numberInput.inputValue();
+    const newNum = currentNum === "42" ? "55" : "42";
 
-    // Wait for debounced save to complete
-    await page.waitForTimeout(500);
+    // Fill and blur to trigger debounced save, then verify via API poll (deterministic)
+    await numberInput.fill(newNum);
+    await numberInput.blur();
 
-    // Verify the value persists by reloading
-    await page.reload();
-    await waitForPageReady(page);
+    // Verify persistence via API (poll instead of waitForResponse — avoids race conditions)
+    await expect.poll(async () => {
+      const resp = await page.request.get(`/inspection/api/sheet/data/${YEAR}/1`);
+      const data = await resp.json();
+      return Object.values(data.answers).some((a) => a.value === newNum);
+    }, { timeout: 20000 }).toBeTruthy();
 
-    const reloadedRow = page.locator(".item-row").filter({ hasText: "절연 저항 측정" });
-    const reloadedInput = reloadedRow.locator('input[type="number"]');
-    await expect(reloadedInput).toHaveValue("42");
-
-    // Clean up: clear the value
-    await reloadedInput.fill("");
-    await page.waitForTimeout(500);
+    // Clean up: clear the value via API (bypass UI debounce)
+    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const template = await templateRes.json();
+    const cat = template.find((c) => c.name === "전기 검차");
+    const item = cat.subcategories[0].groups[0].items.find((i) => i.name === "절연 저항 측정");
+    await page.request.put("/inspection/api/sheet/answer", {
+      data: { year: YEAR, team_num: 1, item_id: item.id, value: "" },
+    });
   });
 
   test("enters inspector name", async ({ page }) => {
-    // Find the inspector input in the panel header
+    // Switch to "샤시 검차" tab to avoid collision with realtime-sync tests on first tab
+    const chassisTab = page.locator(".tab").filter({ hasText: "샤시 검차" });
+    await chassisTab.click();
+
     const inspectorInput = page.locator(".inspector-input");
     await expect(inspectorInput).toBeVisible();
 
-    // Enter inspector name
-    await inspectorInput.fill("홍길동");
+    // Pick a value different from current to guarantee a save fires
+    const currentInspector = await inspectorInput.inputValue();
+    const newInspector = currentInspector === "홍길동" ? "김검사" : "홍길동";
+
+    // Enter inspector name and blur to trigger save
+    await inspectorInput.fill(newInspector);
     await inspectorInput.blur();
 
-    // Wait for save
-    await page.waitForTimeout(500);
+    // Verify via API poll (avoids waitForResponse race)
+    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const template = await templateRes.json();
+    const chassisCatId = template.find((c) => c.name === "샤시 검차").id;
 
-    // Verify the value persists by reloading
-    await page.reload();
-    await waitForPageReady(page);
+    await expect.poll(async () => {
+      const dataRes = await page.request.get(`/inspection/api/sheet/data/${YEAR}/1`);
+      const data = await dataRes.json();
+      return data.inspectors[chassisCatId];
+    }, { timeout: 10000 }).toBe(newInspector);
 
-    await expect(page.locator(".inspector-input")).toHaveValue("홍길동");
+    // Clean up via API
+    await page.request.put("/inspection/api/sheet/inspector", {
+      data: { year: YEAR, team_num: 1, category_id: chassisCatId, inspector: "" },
+    });
 
-    // Clean up
-    await page.locator(".inspector-input").fill("");
-    await page.locator(".inspector-input").blur();
-    await page.waitForTimeout(500);
+    // Restore first tab so subsequent tests start on the correct category
+    await page.locator(".tab").filter({ hasText: "전기 검차" }).click();
   });
 
   test("sets category result to PASS", async ({ page }) => {
+    // Switch to "샤시 검차" tab to avoid collision with summary tests on first tab
+    await page.locator(".tab").filter({ hasText: "샤시 검차" }).click();
+
     // First enter an inspector name (required for setting category result)
-    const inspectorInput = page.locator(".inspector-input");
-    await inspectorInput.fill("테스트관");
-    await inspectorInput.blur();
-    await page.waitForTimeout(500);
+    await saveInspector(page, page.locator(".inspector-input"), "테스트관");
 
     // Click the PASS button in the result toggle
     const resultPassBtn = page.locator(".result-toggle button").filter({ hasText: "PASS" });
@@ -143,17 +168,18 @@ test.describe("Inspection sheet filling", () => {
     await expect(resultPassBtn).not.toHaveClass(/btn-success/);
 
     // Clean up inspector name
-    await inspectorInput.fill("");
-    await inspectorInput.blur();
-    await page.waitForTimeout(500);
+    await saveInspector(page, page.locator(".inspector-input"), "");
+
+    // Restore first tab
+    await page.locator(".tab").filter({ hasText: "전기 검차" }).click();
   });
 
   test("sets category result to FAIL", async ({ page }) => {
+    // Switch to "샤시 검차" tab to avoid collision with summary tests on first tab
+    await page.locator(".tab").filter({ hasText: "샤시 검차" }).click();
+
     // Enter inspector name first
-    const inspectorInput = page.locator(".inspector-input");
-    await inspectorInput.fill("테스트관");
-    await inspectorInput.blur();
-    await page.waitForTimeout(500);
+    await saveInspector(page, page.locator(".inspector-input"), "테스트관");
 
     // Click the FAIL button
     const resultFailBtn = page.locator(".result-toggle button").filter({ hasText: "FAIL" });
@@ -168,9 +194,10 @@ test.describe("Inspection sheet filling", () => {
 
     // Clean up
     await resultFailBtn.click();
-    await inspectorInput.fill("");
-    await inspectorInput.blur();
-    await page.waitForTimeout(500);
+    await saveInspector(page, page.locator(".inspector-input"), "");
+
+    // Restore first tab
+    await page.locator(".tab").filter({ hasText: "전기 검차" }).click();
   });
 
   test("enters memo for an item via click-to-edit", async ({ page }) => {
@@ -187,35 +214,35 @@ test.describe("Inspection sheet filling", () => {
     const memoInput = itemRow.locator(".memo-input");
     await expect(memoInput).toBeVisible();
 
-    // Type a memo
-    await memoInput.fill("테스트 메모 입력");
+    // Pick a different value from current to guarantee save fires
+    const currentMemo = await memoInput.inputValue();
+    const newMemo = currentMemo === "테스트 메모 입력" ? "변경된 메모" : "테스트 메모 입력";
+
+    // Type a memo and blur to trigger save
+    await memoInput.fill(newMemo);
     await memoInput.blur();
 
-    // Wait for debounced save
-    await page.waitForTimeout(500);
+    // Get template to find item ID for API verification
+    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const template = await templateRes.json();
+    const firstItemId = template[0].subcategories[0].groups[0].items[0].id;
 
-    // Reload and verify the memo persists
-    await page.reload();
-    await waitForPageReady(page);
+    // Verify persistence via API poll (avoids waitForResponse race)
+    await expect.poll(async () => {
+      const resp = await page.request.get(`/inspection/api/sheet/data/${YEAR}/1`);
+      const data = await resp.json();
+      return data.answers[firstItemId]?.memo === newMemo;
+    }, { timeout: 10000 }).toBeTruthy();
 
-    const reloadedRow = page.locator(".item-row").first();
-    const reloadedMemo = reloadedRow.locator(".memo-text");
-    await expect(reloadedMemo).toHaveText("테스트 메모 입력");
-
-    // Clean up: clear the memo
-    await reloadedMemo.click();
-    const clearInput = reloadedRow.locator(".memo-input");
-    await clearInput.fill("");
-    await clearInput.blur();
-    await page.waitForTimeout(500);
+    // Clean up via API
+    await page.request.put("/inspection/api/sheet/memo", {
+      data: { year: YEAR, team_num: 1, item_id: firstItemId, memo: "" },
+    });
   });
 
   test("requires inspector name before setting category result", async ({ page }) => {
     // Ensure inspector name is empty
-    const inspectorInput = page.locator(".inspector-input");
-    await inspectorInput.fill("");
-    await inspectorInput.blur();
-    await page.waitForTimeout(300);
+    await saveInspector(page, page.locator(".inspector-input"), "");
 
     // Try to set PASS without inspector name
     const resultPassBtn = page.locator(".result-toggle button").filter({ hasText: "PASS" });
@@ -227,5 +254,71 @@ test.describe("Inspection sheet filling", () => {
 
     // PASS button should not be active
     await expect(resultPassBtn).not.toHaveClass(/btn-success/);
+  });
+
+  test("enters text for a text-type item", async ({ page }) => {
+    // Find the "시리얼 넘버" item row (text type)
+    const itemRow = page.locator(".item-row").filter({ hasText: "시리얼 넘버" });
+    await expect(itemRow).toBeVisible();
+
+    // Pick a different value from current to guarantee save fires
+    const textInput = itemRow.locator(".text-input");
+    const currentText = await textInput.inputValue();
+    const newText = currentText === "BAT-2025-001" ? "BAT-2025-002" : "BAT-2025-001";
+
+    // Enter a text value and blur to trigger debounced save
+    await textInput.fill(newText);
+    await textInput.blur();
+
+    // Get template to find item ID
+    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const template = await templateRes.json();
+    const textItem = template[0].subcategories[0].groups[0].items.find((i) => i.name === "시리얼 넘버");
+
+    // Verify persistence via API poll
+    await expect.poll(async () => {
+      const resp = await page.request.get(`/inspection/api/sheet/data/${YEAR}/1`);
+      const data = await resp.json();
+      return data.answers[textItem.id]?.value;
+    }, { timeout: 10000 }).toBe(newText);
+
+    // Clean up via API
+    await page.request.put("/inspection/api/sheet/answer", {
+      data: { year: YEAR, team_num: 1, item_id: textItem.id, value: "" },
+    });
+  });
+
+  test("toggles checktable cell checkbox", async ({ page }) => {
+    // Switch to second tab (샤시 검차) where 점검 체크리스트 is
+    const tabs = page.locator(".tabs .tab");
+    await tabs.nth(1).click();
+
+    // Find the "점검 체크리스트" item row (checktable type)
+    const itemRow = page.locator(".item-row").filter({ hasText: "점검 체크리스트" });
+    await expect(itemRow).toBeVisible();
+
+    // Find the checktable and toggle the first checkbox
+    const checktable = itemRow.locator(".checktable");
+    await expect(checktable).toBeVisible();
+    const checkbox = checktable.locator("input[type='checkbox']").first();
+    const checkSavePromise = page.waitForResponse((res) => res.url().includes("/api/sheet/answer") && res.status() === 200);
+    await checkbox.check();
+    await checkSavePromise;
+
+    // Verify the value persists by reloading
+    await page.reload();
+    await waitForPageReady(page);
+
+    // Switch to second tab again
+    await page.locator(".tabs .tab").nth(1).click();
+
+    const reloadedRow = page.locator(".item-row").filter({ hasText: "점검 체크리스트" });
+    const reloadedCheckbox = reloadedRow.locator(".checktable input[type='checkbox']").first();
+    await expect(reloadedCheckbox).toBeChecked();
+
+    // Clean up: uncheck
+    const uncheckPromise = page.waitForResponse((res) => res.url().includes("/api/sheet/answer") && res.status() === 200);
+    await reloadedCheckbox.uncheck();
+    await Promise.race([uncheckPromise, page.waitForTimeout(1000)]);
   });
 });

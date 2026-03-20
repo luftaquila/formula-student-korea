@@ -50,34 +50,41 @@ test.describe("Score penalty and score settings", () => {
     await expect(coneRow).toBeVisible();
 
     // Find the endurance column cell (last setting-cell in the row)
-    // The columns are dynamic events + endurance (last)
     const coneCells = coneRow.locator("td.setting-cell");
     const lastConeCell = coneCells.last();
 
-    // Click to edit
+    // Read current value to pick a different one (avoids no-op save if previous cleanup failed)
+    const currentText = await lastConeCell.locator(".setting-text").textContent();
+    const currentValue = Number(currentText) || 0;
+    const newValue = currentValue === 2 ? 4 : 2;
+
+    // Click to edit and wait for input to appear
     await lastConeCell.click();
-
-    // An input should appear
     const input = lastConeCell.locator("input.setting-input");
-    await expect(input).toBeVisible();
+    await expect(input).toBeVisible({ timeout: 3000 });
+    await expect(input).toBeFocused();
 
-    // Set cone penalty to 2 seconds
-    await input.fill("2");
-    await input.press("Enter");
+    // Set cone penalty — atomic evaluate prevents Vue re-render/SSE from closing edit mode
+    const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
+    await input.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.blur(); }, String(newValue));
+    await savePromise;
 
     // Verify the value is saved and displayed
-    await expect(lastConeCell.locator(".setting-text")).toHaveText("2");
+    await expect(lastConeCell.locator(".setting-text")).toHaveText(String(newValue));
 
     // Verify via API that the penalty was saved
     const response = await page.request.get(`/score/api/score?year=${YEAR}`);
     const data = await response.json();
-    expect(data.penalties["내구"]?.cone_penalty).toBe(2);
+    expect(data.penalties["내구"]?.cone_penalty).toBe(newValue);
 
     // Clean up: reset to 0
     await lastConeCell.click();
     const resetInput = lastConeCell.locator("input.setting-input");
+    await expect(resetInput).toBeVisible({ timeout: 3000 });
+    const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
     await resetInput.fill("0");
-    await resetInput.press("Enter");
+    await resetInput.blur();
+    await Promise.race([cleanupPromise, page.waitForTimeout(2000)]);
   });
 
   test("set off-course penalty for endurance event", async ({ page }) => {
@@ -95,28 +102,38 @@ test.describe("Score penalty and score settings", () => {
     const ocCells = ocRow.locator("td.setting-cell");
     const lastOcCell = ocCells.last();
 
-    // Click to edit
+    // Read current value to pick a different one (avoids no-op save if previous cleanup failed)
+    const currentOcText = await lastOcCell.locator(".setting-text").textContent();
+    const currentOcValue = Number(currentOcText) || 0;
+    const newOcValue = currentOcValue === 10 ? 20 : 10;
+
+    // Click to edit and wait for input to appear
     await lastOcCell.click();
     const input = lastOcCell.locator("input.setting-input");
-    await expect(input).toBeVisible();
+    await expect(input).toBeVisible({ timeout: 3000 });
+    await expect(input).toBeFocused();
 
-    // Set off-course penalty to 10 seconds
-    await input.fill("10");
-    await input.press("Enter");
+    // Set off-course penalty — atomic evaluate prevents Vue re-render/SSE from closing edit mode
+    const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
+    await input.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.blur(); }, String(newOcValue));
+    await savePromise;
 
     // Verify the value is saved
-    await expect(lastOcCell.locator(".setting-text")).toHaveText("10");
+    await expect(lastOcCell.locator(".setting-text")).toHaveText(String(newOcValue));
 
     // Verify via API
     const response = await page.request.get(`/score/api/score?year=${YEAR}`);
     const data = await response.json();
-    expect(data.penalties["내구"]?.oc_penalty).toBe(10);
+    expect(data.penalties["내구"]?.oc_penalty).toBe(newOcValue);
 
     // Clean up
     await lastOcCell.click();
     const resetInput = lastOcCell.locator("input.setting-input");
+    await expect(resetInput).toBeVisible({ timeout: 3000 });
+    const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
     await resetInput.fill("0");
-    await resetInput.press("Enter");
+    await resetInput.blur();
+    await Promise.race([cleanupPromise, page.waitForTimeout(2000)]);
   });
 
   test("score settings table renders and set total points for endurance", async ({ page }) => {
@@ -141,26 +158,40 @@ test.describe("Score penalty and score settings", () => {
     const totalCells = totalRow.locator("td.setting-cell");
     const lastTotalCell = totalCells.last();
 
+    // Read current value to pick a different one (avoids no-op save if previous cleanup failed)
+    const currentText = await lastTotalCell.locator(".setting-text").textContent();
+    const currentValue = Number(currentText) || 0;
+    const newValue = currentValue === 300 ? 500 : 300;
+
     await lastTotalCell.click();
     const input = lastTotalCell.locator("input.setting-input");
-    await expect(input).toBeVisible();
+    await expect(input).toBeVisible({ timeout: 3000 });
+    await expect(input).toBeFocused();
 
-    await input.fill("300");
-    await input.press("Enter");
+    const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
+    // Atomically set value and blur to prevent Vue re-render from overwriting between fill() and blur()
+    await input.evaluate((el, v) => {
+      el.value = v;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.blur();
+    }, String(newValue));
+    await savePromise;
 
     // Verify the value is saved
-    await expect(lastTotalCell.locator(".setting-text")).toHaveText("300");
+    await expect(lastTotalCell.locator(".setting-text")).toHaveText(String(newValue));
 
     // Verify via API
     const response = await page.request.get(`/score/api/score?year=${YEAR}`);
     const data = await response.json();
-    expect(data.settings["내구"]?.total).toBe(300);
+    expect(data.settings["내구"]?.total).toBe(newValue);
 
     // Clean up
     await lastTotalCell.click();
     const resetInput = lastTotalCell.locator("input.setting-input");
+    const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
     await resetInput.fill("");
-    await resetInput.press("Enter");
+    await resetInput.blur();
+    await Promise.race([cleanupPromise, page.waitForTimeout(2000)]);
   });
 
   test("set completion points and cutoff for endurance", async ({ page }) => {
@@ -175,36 +206,95 @@ test.describe("Score penalty and score settings", () => {
     const finishCells = finishRow.locator("td.setting-cell");
     const lastFinishCell = finishCells.last();
 
+    const curFinish = Number(await lastFinishCell.locator(".setting-text").textContent()) || 0;
+    const newFinish = curFinish === 25 ? 30 : 25;
+
     await lastFinishCell.click();
     const finishInput = lastFinishCell.locator("input.setting-input");
-    await finishInput.fill("25");
-    await finishInput.press("Enter");
-    await expect(lastFinishCell.locator(".setting-text")).toHaveText("25");
+    const finishSave = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
+    await finishInput.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.blur(); }, String(newFinish));
+    await finishSave;
+    await expect(lastFinishCell.locator(".setting-text")).toHaveText(String(newFinish));
 
     // Set cutoff % for endurance
     const cutoffRow = scoreTable.locator("tr").filter({ hasText: "컷오프 (%)" });
     const cutoffCells = cutoffRow.locator("td.setting-cell");
     const lastCutoffCell = cutoffCells.last();
 
+    const curCutoff = Number(await lastCutoffCell.locator(".setting-text").textContent()) || 0;
+    const newCutoff = curCutoff === 135 ? 150 : 135;
+
     await lastCutoffCell.click();
     const cutoffInput = lastCutoffCell.locator("input.setting-input");
-    await cutoffInput.fill("135");
-    await cutoffInput.press("Enter");
-    await expect(lastCutoffCell.locator(".setting-text")).toHaveText("135");
+    const cutoffSave = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
+    await cutoffInput.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.blur(); }, String(newCutoff));
+    await cutoffSave;
+    await expect(lastCutoffCell.locator(".setting-text")).toHaveText(String(newCutoff));
 
     // Verify via API
     const response = await page.request.get(`/score/api/score?year=${YEAR}`);
     const data = await response.json();
-    expect(data.settings["내구"]?.finish).toBe(25);
-    expect(data.settings["내구"]?.cutoff).toBe(135);
+    expect(data.settings["내구"]?.finish).toBe(newFinish);
+    expect(data.settings["내구"]?.cutoff).toBe(newCutoff);
 
     // Clean up
     await lastFinishCell.click();
+    const cleanupFinish = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
     await lastFinishCell.locator("input.setting-input").fill("");
-    await lastFinishCell.locator("input.setting-input").press("Enter");
+    await lastFinishCell.locator("input.setting-input").blur();
+    await Promise.race([cleanupFinish, page.waitForTimeout(2000)]);
 
     await lastCutoffCell.click();
+    const cleanupCutoff = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
     await lastCutoffCell.locator("input.setting-input").fill("");
-    await lastCutoffCell.locator("input.setting-input").press("Enter");
+    await lastCutoffCell.locator("input.setting-input").blur();
+    await Promise.race([cleanupCutoff, page.waitForTimeout(2000)]);
+  });
+
+  test("set start delay penalty for endurance event", async ({ page }) => {
+    const bottomRow = page.locator(".bottom-row");
+    const bottomRowVisible = await bottomRow.isVisible().catch(() => false);
+    if (!bottomRowVisible) return;
+
+    const penaltyTable = page.locator(".setting-card").first().locator("table.setting-table");
+
+    // Find the start delay penalty row
+    const delayRow = penaltyTable.locator("tr").filter({ hasText: "출발지연" });
+    await expect(delayRow).toBeVisible();
+
+    // Find the endurance column cell (last setting-cell)
+    const delayCells = delayRow.locator("td.setting-cell");
+    const lastDelayCell = delayCells.last();
+
+    // Read current value to pick a different one
+    const curDelay = Number(await lastDelayCell.locator(".setting-text").textContent()) || 0;
+    const newDelay = curDelay === 5 ? 8 : 5;
+
+    // Click to edit
+    await lastDelayCell.click();
+    const input = lastDelayCell.locator("input.setting-input");
+    await expect(input).toBeVisible({ timeout: 3000 });
+    await expect(input).toBeFocused();
+
+    // Set start delay penalty — atomic evaluate prevents Vue re-render/SSE from closing edit mode
+    const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
+    await input.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.blur(); }, String(newDelay));
+    await savePromise;
+
+    // Verify the value is saved
+    await expect(lastDelayCell.locator(".setting-text")).toHaveText(String(newDelay));
+
+    // Verify via API
+    const response = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const data = await response.json();
+    expect(data.penalties["내구"]?.start_delay).toBe(newDelay);
+
+    // Clean up: reset to 0
+    await lastDelayCell.click();
+    const resetInput = lastDelayCell.locator("input.setting-input");
+    const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
+    await resetInput.fill("0");
+    await resetInput.blur();
+    await Promise.race([cleanupPromise, page.waitForTimeout(2000)]);
   });
 });

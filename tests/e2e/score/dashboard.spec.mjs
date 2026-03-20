@@ -17,7 +17,7 @@ test.describe("Score dashboard", () => {
     await expect(table).toBeVisible();
 
     // Verify the header shows the team count badge
-    await expect(page.locator(".count-badge")).toContainText("5");
+    await expect(page.locator(".count-badge")).toContainText("8");
 
     // Verify seeded teams appear in the table
     await expect(table.locator("tbody")).toContainText("서울대학교");
@@ -138,7 +138,7 @@ test.describe("Score dashboard", () => {
 
     // Uncheck CV to show only EV teams
     await cvCheckbox.uncheck();
-    await expect(page.locator(".count-badge")).toContainText("3");
+    await expect(page.locator(".count-badge")).toContainText("5");
 
     // Verify EV teams are visible and CV teams are hidden
     const table = page.locator("table.score-table");
@@ -148,7 +148,7 @@ test.describe("Score dashboard", () => {
 
     // Re-check CV
     await cvCheckbox.check();
-    await expect(page.locator(".count-badge")).toContainText("5");
+    await expect(page.locator(".count-badge")).toContainText("8");
   });
 
   test("search filter narrows displayed teams", async ({ page }) => {
@@ -177,6 +177,6 @@ test.describe("Score dashboard", () => {
 
     // Clear search to restore all entries
     await searchInput.fill("");
-    await expect(page.locator(".count-badge")).toContainText("5");
+    await expect(page.locator(".count-badge")).toContainText("8");
   });
 });

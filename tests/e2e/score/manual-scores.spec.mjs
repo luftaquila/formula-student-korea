@@ -3,6 +3,18 @@ import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 
+async function fillAndSave(page, input, value) {
+  const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/manual") && res.status() === 200);
+  // Atomically set value and blur to prevent Vue re-render from overwriting between fill() and blur()
+  await input.evaluate((el, v) => {
+    el.focus();
+    el.value = v;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.blur();
+  }, value);
+  await Promise.race([savePromise, page.waitForTimeout(2000)]);
+}
+
 test.describe("Score manual score entry", () => {
   test.use({ storageState: storageStatePath("admin") });
 
@@ -28,19 +40,13 @@ test.describe("Score manual score entry", () => {
     await expect(reportInput).toBeVisible();
 
     // Enter a report score
-    await reportInput.fill("85");
-    await reportInput.blur();
-
-    // Wait for the API call and SSE update to propagate
-    await page.waitForTimeout(500);
+    await fillAndSave(page, reportInput, "85");
 
     // Verify total score increased by the report value
     await expect(totalCell).toContainText(String(initialTotalNum + 85));
 
     // Clean up: reset report score to empty
-    await reportInput.fill("");
-    await reportInput.blur();
-    await page.waitForTimeout(500);
+    await fillAndSave(page, reportInput, "");
   });
 
   test("enter energy score for a team", async ({ page }) => {
@@ -53,9 +59,7 @@ test.describe("Score manual score entry", () => {
     await expect(energyInput).toBeVisible();
 
     // Enter an energy score
-    await energyInput.fill("42");
-    await energyInput.blur();
-    await page.waitForTimeout(500);
+    await fillAndSave(page, energyInput, "42");
 
     // Verify the total score includes the energy value
     const totalCell = row.locator(".col-total .total-value");
@@ -63,9 +67,7 @@ test.describe("Score manual score entry", () => {
     expect(Number(totalText)).toBeGreaterThanOrEqual(42);
 
     // Clean up
-    await energyInput.fill("");
-    await energyInput.blur();
-    await page.waitForTimeout(500);
+    await fillAndSave(page, energyInput, "");
   });
 
   test("enter bonus and deduction for a team", async ({ page }) => {
@@ -78,29 +80,21 @@ test.describe("Score manual score entry", () => {
 
     // Bonus input is the third manual-input
     const bonusInput = row.locator("input.manual-input").nth(2);
-    await bonusInput.fill("10");
-    await bonusInput.blur();
-    await page.waitForTimeout(500);
+    await fillAndSave(page, bonusInput, "10");
 
     // Verify total increased by bonus
     await expect(totalCell).toContainText(String(initialTotal + 10));
 
     // Deduction input is the fourth manual-input
     const deductionInput = row.locator("input.manual-input").nth(3);
-    await deductionInput.fill("5");
-    await deductionInput.blur();
-    await page.waitForTimeout(500);
+    await fillAndSave(page, deductionInput, "5");
 
     // Verify total = initial + bonus - deduction
     await expect(totalCell).toContainText(String(initialTotal + 10 - 5));
 
     // Clean up
-    await bonusInput.fill("");
-    await bonusInput.blur();
-    await page.waitForTimeout(300);
-    await deductionInput.fill("");
-    await deductionInput.blur();
-    await page.waitForTimeout(300);
+    await fillAndSave(page, bonusInput, "");
+    await fillAndSave(page, deductionInput, "");
   });
 
   test("total recalculates when multiple manual scores are set", async ({ page }) => {
@@ -117,31 +111,21 @@ test.describe("Score manual score entry", () => {
     const bonusInput = row.locator("input.manual-input").nth(2);
     const deductionInput = row.locator("input.manual-input").nth(3);
 
-    await reportInput.fill("100");
-    await reportInput.blur();
-    await page.waitForTimeout(300);
-
-    await energyInput.fill("50");
-    await energyInput.blur();
-    await page.waitForTimeout(300);
-
-    await bonusInput.fill("20");
-    await bonusInput.blur();
-    await page.waitForTimeout(300);
-
-    await deductionInput.fill("10");
-    await deductionInput.blur();
-    await page.waitForTimeout(500);
+    await fillAndSave(page, reportInput, "100");
+    await fillAndSave(page, energyInput, "50");
+    await fillAndSave(page, bonusInput, "20");
+    await fillAndSave(page, deductionInput, "10");
 
     // Verify total is at least 160 (may include event scores)
-    const totalText = await totalCell.textContent();
-    expect(Number(totalText)).toBeGreaterThanOrEqual(160);
+    // Use expect.poll to retry — fillAndSave uses Promise.race with 1s timeout, so saves may still be in-flight
+    await expect.poll(
+      async () => Number(await totalCell.textContent()),
+      { timeout: 5000 },
+    ).toBeGreaterThanOrEqual(160);
 
     // Clean up all manual scores
     for (const input of [reportInput, energyInput, bonusInput, deductionInput]) {
-      await input.fill("");
-      await input.blur();
-      await page.waitForTimeout(200);
+      await fillAndSave(page, input, "");
     }
   });
 });

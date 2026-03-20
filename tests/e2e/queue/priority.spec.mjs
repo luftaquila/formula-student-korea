@@ -228,7 +228,8 @@ test.describe("Queue priority management", () => {
     }
 
     // Restore original state
+    const restorePromise = page.waitForResponse((res) => res.url().includes("/api/admin/inspection/") && res.status() === 200);
     await firstToggle.click();
-    await page.waitForTimeout(500);
+    await restorePromise;
   });
 });

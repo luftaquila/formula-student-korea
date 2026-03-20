@@ -85,15 +85,24 @@ test.describe("Inspection template advanced features", () => {
     const item1 = items[0]; // 절연 저항 측정 (number)
     const item2 = items[1]; // 전압 확인 (passfail)
 
+    // Read current values and pick different ones to avoid stale data
+    const curBulk = await page.request.get(
+      `/inspection/api/sheet/bulk-answers?year=${YEAR}&item_ids=${item1.id},${item2.id}`,
+    );
+    const curData = await curBulk.json();
+    const val1 = curData["1"]?.[item1.id] === "42.5" ? "55.0" : "42.5";
+    const val2 = curData["1"]?.[item2.id] === "PASS" ? "FAIL" : "PASS";
+    const val3 = curData["2"]?.[item1.id] === "38.2" ? "60.0" : "38.2";
+
     // Set answers for team 1 and team 2
     await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: 1, item_id: item1.id, value: "42.5" },
+      data: { year: YEAR, team_num: 1, item_id: item1.id, value: val1 },
     });
     await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: 1, item_id: item2.id, value: "PASS" },
+      data: { year: YEAR, team_num: 1, item_id: item2.id, value: val2 },
     });
     await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: 2, item_id: item1.id, value: "38.2" },
+      data: { year: YEAR, team_num: 2, item_id: item1.id, value: val3 },
     });
 
     // Fetch bulk answers
@@ -105,12 +114,12 @@ test.describe("Inspection template advanced features", () => {
 
     // Verify team 1 has both answers
     expect(data["1"]).toBeTruthy();
-    expect(data["1"][item1.id]).toBe("42.5");
-    expect(data["1"][item2.id]).toBe("PASS");
+    expect(data["1"][item1.id]).toBe(val1);
+    expect(data["1"][item2.id]).toBe(val2);
 
     // Verify team 2 has only one answer
     expect(data["2"]).toBeTruthy();
-    expect(data["2"][item1.id]).toBe("38.2");
+    expect(data["2"][item1.id]).toBe(val3);
     expect(data["2"][item2.id]).toBeUndefined();
 
     // Clean up answers
@@ -177,6 +186,35 @@ test.describe("Inspection template advanced features", () => {
     });
     await page.request.put(`/inspection/api/sheet/template/${firstCategory.id}`, {
       data: { pdf_include: true },
+    });
+  });
+
+  test("blocks modification of past year template via API", async ({ page }) => {
+    const pastYear = YEAR - 1;
+
+    // Import a minimal template to the past year
+    await page.request.post("/inspection/api/sheet/template/import", {
+      data: {
+        year: pastYear,
+        template: [{ name: "과거 카테고리", subcategories: [] }],
+      },
+    });
+
+    // Get the node ID
+    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${pastYear}`);
+    const template = await templateRes.json();
+    expect(template.length).toBe(1);
+    const nodeId = template[0].id;
+
+    // Attempt to delete the past year node — should be blocked
+    const deleteRes = await page.request.delete(`/inspection/api/sheet/template/${nodeId}`);
+    expect(deleteRes.status()).toBe(400);
+    const text = await deleteRes.text();
+    expect(text).toContain("이전 연도 템플릿은 수정할 수 없습니다.");
+
+    // Clean up: import empty to clear the past year template
+    await page.request.post("/inspection/api/sheet/template/import", {
+      data: { year: pastYear, template: [] },
     });
   });
 });

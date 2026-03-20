@@ -132,7 +132,7 @@ test.describe("Documents admin dashboard", () => {
 
     // Clear search to restore all entries
     await searchInput.fill("");
-    await expect(table.locator("tbody tr")).toHaveCount(5);
+    await expect(table.locator("tbody tr")).toHaveCount(8);
   });
 
   test("sort columns work", async ({ page }) => {
@@ -146,7 +146,7 @@ test.describe("Documents admin dashboard", () => {
     // Click again to sort descending
     await table.locator("th.col-num").click();
     const firstNumDesc = table.locator("tbody tr").first().locator(".entry-num");
-    await expect(firstNumDesc).toHaveText("20");
+    await expect(firstNumDesc).toHaveText("32");
   });
 
   test("session column links navigate to session detail", async ({ page }) => {

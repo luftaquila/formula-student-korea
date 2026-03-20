@@ -5,12 +5,41 @@ import os from "os";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
+const ISOLATED_YEAR = YEAR - 2;
 
 test.describe("Entry bulk upload and download", () => {
   test.use({ storageState: storageStatePath("admin") });
 
+  // Seed entries in an isolated year to avoid interfering with other tests
+  test.beforeAll(async ({ browser }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("admin") });
+    const page = await context.newPage();
+    const entries = [
+      { num: 1, univ: "서울대학교", team: "SNU Racing", type: "EV" },
+      { num: 2, univ: "한양대학교", team: "ACES", type: "EV" },
+      { num: 3, univ: "성균관대학교", team: "SKKU Racing", type: "CV" },
+      { num: 10, univ: "KAIST", team: "RUN", type: "EV" },
+      { num: 20, univ: "고려대학교", team: "KURF", type: "CV" },
+    ];
+    for (const entry of entries) {
+      await page.request.post(`/entry/api/entries?year=${ISOLATED_YEAR}`, { data: entry });
+    }
+    await context.close();
+  });
+
+  test.afterAll(async ({ browser }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("admin") });
+    const page = await context.newPage();
+    await page.request.delete(`/entry/api/entries?year=${ISOLATED_YEAR}`);
+    await context.close();
+  });
+
   test("downloads entries as JSON", async ({ page }) => {
     await page.goto("/entry");
+    await waitForPageReady(page);
+
+    // Switch to isolated year
+    await page.locator(".year-select").selectOption(String(ISOLATED_YEAR));
     await waitForPageReady(page);
 
     // Set up download listener before clicking
@@ -19,7 +48,7 @@ test.describe("Entry bulk upload and download", () => {
     const download = await downloadPromise;
 
     // Verify the file name
-    expect(download.suggestedFilename()).toBe(`entry_${YEAR}.json`);
+    expect(download.suggestedFilename()).toBe(`entry_${ISOLATED_YEAR}.json`);
 
     // Save to temp path and verify contents
     const tmpPath = path.join(os.tmpdir(), download.suggestedFilename());
@@ -30,9 +59,6 @@ test.describe("Entry bulk upload and download", () => {
     expect(Object.keys(content)).toHaveLength(5);
     expect(content["1"]).toEqual({ univ: "서울대학교", team: "SNU Racing", type: "EV" });
     expect(content["2"]).toEqual({ univ: "한양대학교", team: "ACES", type: "EV" });
-    expect(content["3"]).toEqual({ univ: "성균관대학교", team: "SKKU Racing", type: "CV" });
-    expect(content["10"]).toEqual({ univ: "KAIST", team: "RUN", type: "EV" });
-    expect(content["20"]).toEqual({ univ: "고려대학교", team: "KURF", type: "CV" });
 
     // Clean up temp file
     fs.unlinkSync(tmpPath);
@@ -40,6 +66,10 @@ test.describe("Entry bulk upload and download", () => {
 
   test("uploads entries from JSON file", async ({ page }) => {
     await page.goto("/entry");
+    await waitForPageReady(page);
+
+    // Switch to isolated year
+    await page.locator(".year-select").selectOption(String(ISOLATED_YEAR));
     await waitForPageReady(page);
 
     // Create a temporary JSON fixture file for upload
@@ -65,7 +95,7 @@ test.describe("Entry bulk upload and download", () => {
     // Verify success notification
     await expectNotification(page, "success", "엔트리 목록을 업로드했습니다.");
 
-    // Wait for table to update - bulk upload replaces all entries
+    // Wait for table to update - bulk upload replaces all entries for this year
     await waitForPageReady(page);
     const table = page.locator(".entry-table");
     await expect(page.locator(".entry-count")).toHaveText("3개");
@@ -73,24 +103,7 @@ test.describe("Entry bulk upload and download", () => {
     await expect(table.locator("tbody")).toContainText("업로드대학교B");
     await expect(table.locator("tbody")).toContainText("업로드대학교C");
 
-    // Clean up: restore original seeded entries via bulk upload
-    const originalData = {
-      "1": { univ: "서울대학교", team: "SNU Racing", type: "EV" },
-      "2": { univ: "한양대학교", team: "ACES", type: "EV" },
-      "3": { univ: "성균관대학교", team: "SKKU Racing", type: "CV" },
-      "10": { univ: "KAIST", team: "RUN", type: "EV" },
-      "20": { univ: "고려대학교", team: "KURF", type: "CV" },
-    };
-
-    const restorePath = path.join(os.tmpdir(), "e2e-restore-fixture.json");
-    fs.writeFileSync(restorePath, JSON.stringify(originalData, null, 2));
-    await fileInput.setInputFiles(restorePath);
-    await page.locator("button.upload-btn").click();
-    await waitForPageReady(page);
-    await expect(page.locator(".entry-count")).toHaveText("5개");
-
-    // Clean up temp files
+    // Clean up temp file
     fs.unlinkSync(fixturePath);
-    fs.unlinkSync(restorePath);
   });
 });

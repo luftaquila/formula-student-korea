@@ -36,14 +36,23 @@ async function apiExitBooth(type, boothNum) {
   });
 }
 
+async function apiEnterBooth(type, boothNum, num) {
+  return fetch(`${BASE_URL}/queue/api/admin/booths/${type}/${boothNum}/enter`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    body: JSON.stringify({ num }),
+  });
+}
+
 async function cleanupQueue(type = INSPECTION_TYPE) {
-  // Cancel all queued entries and exit all booths
+  // Exit booth first
+  await apiExitBooth(type, 1);
+  // Remove queued entries via booth enter+exit (avoids cancel penalties entirely)
   const queue = await apiGetQueue(type);
   for (const item of queue) {
-    await apiCancel(item.num, type);
+    await apiEnterBooth(type, 1, item.num).catch(() => {});
+    await apiExitBooth(type, 1);
   }
-  // Exit booth 1 if occupied
-  await apiExitBooth(type, 1);
 }
 
 test.describe("Queue booth management", () => {
@@ -122,10 +131,11 @@ test.describe("Queue booth management", () => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    // Click the battery tab
+    // Click the battery tab and wait for loading to complete
     const batteryTab = page.locator(".tab", { hasText: "배터리" });
     await expect(batteryTab).toBeVisible({ timeout: 10000 });
     await batteryTab.click();
+    await expect(page.locator(".loading")).toBeHidden({ timeout: 10000 });
 
     // Verify entry 1 appears in queue
     await expect(page.locator(".entry-num", { hasText: "1" })).toBeVisible({ timeout: 5000 });
@@ -138,10 +148,11 @@ test.describe("Queue booth management", () => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    // Select battery tab
+    // Select battery tab and wait for loading to complete
     const batteryTab = page.locator(".tab", { hasText: "배터리" });
     await expect(batteryTab).toBeVisible({ timeout: 10000 });
     await batteryTab.click();
+    await expect(page.locator(".loading")).toBeHidden({ timeout: 10000 });
 
     // Wait for the queue to show
     await expect(page.locator(".entry-num", { hasText: "2" })).toBeVisible({ timeout: 5000 });
@@ -173,13 +184,14 @@ test.describe("Queue booth management", () => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    // Select battery tab
+    // Select battery tab and wait for loading to complete
     const batteryTab = page.locator(".tab", { hasText: "배터리" });
     await expect(batteryTab).toBeVisible({ timeout: 10000 });
     await batteryTab.click();
+    await expect(page.locator(".loading")).toBeHidden({ timeout: 10000 });
 
     // The booth should show the team and an exit button
-    await expect(page.locator(".booth-team-num", { hasText: "3" })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator(".booth-team-num", { hasText: "3" })).toBeVisible({ timeout: 10000 });
 
     // Click exit booth button
     const exitBtn = page.getByRole("button", { name: "출차" }).first();
@@ -196,10 +208,11 @@ test.describe("Queue booth management", () => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    // Select battery tab
+    // Select battery tab and wait for loading to complete
     const batteryTab = page.locator(".tab", { hasText: "배터리" });
     await expect(batteryTab).toBeVisible({ timeout: 10000 });
     await batteryTab.click();
+    await expect(page.locator(".loading")).toBeHidden({ timeout: 10000 });
 
     // Wait for entry to appear
     await expect(page.locator(".entry-num", { hasText: "20" })).toBeVisible({ timeout: 5000 });

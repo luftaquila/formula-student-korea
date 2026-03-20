@@ -71,12 +71,12 @@
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 2.1 | 연도 목록 조회 | public | `GET /api/years` | entry_YYYY 테이블 스캔, 내림차순 |
-| 2.2 | 엔트리 목록 조회 | public | `GET /api/entries?year=` | JSON 또는 download 파라미터로 CSV |
+| 2.2 | 엔트리 목록 조회 | public | `GET /api/entries?year=` | JSON 다운로드 (`?download` 파라미터) |
 | 2.3 | 엔트리 추가 | admin | `POST /api/entries?year=` | `{ num, univ, team, type? }`, type은 vehicle_types에 존재해야 함 |
-| 2.4 | 엔트리 수정 | admin | `PATCH /api/entries/:num?year=` | 번호 변경 시 리넘버링 포함 |
-| 2.5 | 엔트리 삭제 | admin | `DELETE /api/entries/:num?year=` | |
-| 2.6 | 엔트리 전체 삭제 | admin | `DELETE /api/entries?year=` | 연도별 전체 초기화 |
-| 2.7 | 엔트리 일괄 업로드 | admin | `POST /api/entries/bulk?year=` | JSON 문자열로 전체 교체, 트랜잭션 |
+| 2.4 | 엔트리 수정 | admin | `PATCH /api/entries/:num?year=` | 번호 변경 시 리넘버링, Documents 동기화 실패 시 롤백 (502) |
+| 2.5 | 엔트리 삭제 | admin | `DELETE /api/entries/:num?year=` | 삭제 후 Queue/Documents에 알림 (fire-and-forget) |
+| 2.6 | 엔트리 전체 삭제 | admin | `DELETE /api/entries?year=` | 연도별 전체 초기화, 삭제된 엔트리 Queue/Documents에 알림 |
+| 2.7 | 엔트리 일괄 업로드 | admin | `POST /api/entries/bulk?year=` | JSON 문자열로 전체 교체, 트랜잭션, 삭제된 엔트리 알림 |
 
 ### 차량 유형
 
@@ -112,43 +112,50 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.9 | 우선순위 설정 | chief | `POST /api/admin/priority/:type` | `{ num, priority }` |
-| 3.10 | 우선순위 삭제 | chief | `DELETE /api/admin/priority/:type` | 개별 삭제 |
-| 3.11 | 우선순위 전체 삭제 | chief | `DELETE /api/admin/priority/:type/all` | |
-| 3.12 | 검사 이력 초기화 | chief | `DELETE /api/admin/history/:type` | 초검/재검 구분 초기화 |
-| 3.13 | 정렬 규칙 토글 | chief | `PUT /api/admin/inspection/:type/ignore` | 우선순위/초검재검 무시 플래그 |
-| 3.14 | 부스 수 설정 | chief | `PATCH /api/admin/booths/:type/config` | 점유 중 부스 축소 방지 |
-| 3.15 | 검차 활성 토글 | chief | `PATCH /api/admin/inspection/:type` | SSE 브로드캐스트 |
-| 3.16 | 검차 표시 토글 | chief | `PATCH /api/admin/inspection/:type/visibility` | 등록 페이지 노출 제어 |
-| 3.17 | 취소 페널티 설정 | chief | `PATCH /api/admin/settings/cancel-penalty` | 0~60분 |
+| 3.9 | 우선순위 목록 조회 | chief | `GET /api/admin/priority/:type` | 검차별 팀 우선순위 정렬 목록 |
+| 3.10 | 우선순위 설정 | chief | `POST /api/admin/priority/:type` | `{ num, priority }` |
+| 3.11 | 우선순위 삭제 | chief | `DELETE /api/admin/priority/:type` | 개별 삭제 |
+| 3.12 | 우선순위 전체 삭제 | chief | `DELETE /api/admin/priority/:type/all` | |
+| 3.13 | 검사 이력 초기화 | chief | `DELETE /api/admin/history/:type` | 초검/재검 구분 초기화 |
+| 3.14 | 정렬 규칙 토글 | chief | `PUT /api/admin/inspection/:type/ignore` | 우선순위/초검재검 무시 플래그 |
+| 3.15 | 부스 수 설정 | chief | `PATCH /api/admin/booths/:type/config` | 점유 중 부스 축소 방지 |
+| 3.16 | 검차 활성 토글 | chief | `PATCH /api/admin/inspection/:type` | SSE 브로드캐스트 |
+| 3.17 | 검차 표시 토글 | chief | `PATCH /api/admin/inspection/:type/visibility` | 등록 페이지 노출 제어 |
+| 3.18 | 취소 페널티 설정 | chief | `PATCH /api/admin/settings/cancel-penalty` | 0~60분 |
 
 ### SMS 설정
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.18 | SMS 토글 | official | `PATCH /api/admin/settings/sms` | 환경변수 필요 |
-| 3.19 | SMS 알림 순번 조회 | official | `GET /api/admin/settings/sms-rank` | |
-| 3.20 | SMS 알림 순번 설정 | official | `PATCH /api/admin/settings/sms-rank` | 1~10 |
+| 3.19 | SMS 토글 | official | `PATCH /api/admin/settings/sms` | 환경변수 필요 |
+| 3.20 | SMS 알림 순번 조회 | official | `GET /api/admin/settings/sms-rank` | |
+| 3.21 | SMS 알림 순번 설정 | official | `PATCH /api/admin/settings/sms-rank` | 1~10 |
 
 ### 통계
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.21 | 기간 조회 | official | `GET /api/admin/stats/timerange` | |
-| 3.22 | 전체 팀 통계 | official | `GET /api/admin/stats` | 등록/취소/입차 횟수, 총 점유 시간 |
-| 3.23 | 팀별 타임라인 | official | `GET /api/admin/stats/:num` | 이벤트 타임라인 + 요약 |
+| 3.22 | 기간 조회 | official | `GET /api/admin/stats/timerange` | |
+| 3.23 | 전체 팀 통계 | official | `GET /api/admin/stats` | 등록/취소/입차 횟수, 총 점유 시간 |
+| 3.24 | 팀별 타임라인 | official | `GET /api/admin/stats/:num` | 이벤트 타임라인 + 요약 |
 
 ### 추가 조회 및 실시간
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.24 | 전체 부스 현황 조회 | public | `GET /api/booths/all` | 모든 검차 유형의 부스 상태 일괄 조회 |
-| 3.25 | 전체 검차 목록 조회 | official | `GET /api/admin/all` | 비활성 포함 전체 검차 유형 목록 |
-| 3.26 | 대기열 조회 | official | `GET /api/admin/inspection/:type` | 정렬된 대기열 목록 (우선순위/초검·재검/시간순) |
-| 3.27 | 부스 목록 조회 | official | `GET /api/admin/booths/:type` | 검차별 부스 설정 및 점유 현황 |
-| 3.28 | SMS 설정 조회 | official | `GET /api/admin/settings/sms` | SMS 활성화 상태 반환 |
-| 3.29 | 취소 페널티 조회 | official | `GET /api/admin/settings/cancel-penalty` | 현재 페널티 시간(분) 반환 |
-| 3.30 | SSE 실시간 업데이트 | public | `GET /api/events` | 검차 활성 상태, 대기열, 부스 변경 실시간 스트림 |
+| 3.25 | 전체 부스 현황 조회 | public | `GET /api/booths/all` | 모든 검차 유형의 부스 상태 일괄 조회 |
+| 3.26 | 전체 검차 목록 조회 | official | `GET /api/admin/all` | 비활성 포함 전체 검차 유형 목록 |
+| 3.27 | 대기열 조회 | official | `GET /api/admin/inspection/:type` | 정렬된 대기열 목록 (우선순위/초검·재검/시간순) |
+| 3.28 | 부스 목록 조회 | official | `GET /api/admin/booths/:type` | 검차별 부스 설정 및 점유 현황 |
+| 3.29 | SMS 설정 조회 | official | `GET /api/admin/settings/sms` | SMS 활성화 상태 반환 |
+| 3.30 | 취소 페널티 조회 | official | `GET /api/admin/settings/cancel-penalty` | 현재 페널티 시간(분) 반환 |
+| 3.31 | SSE 실시간 업데이트 | public | `GET /api/events` | 검차 활성 상태, 대기열, 부스 변경 실시간 스트림 |
+
+### 내부 서비스 연동
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 3.32 | 엔트리 삭제 연동 | 내부 | `DELETE /api/internal/team/:num?year=` | 대기열, current, 우선순위, 페널티, 이력, 부스 점유 해제 |
 
 ---
 
@@ -165,25 +172,26 @@
 | 4.5 | 순서 변경 | admin | `POST /api/sheet/template/reorder` | 일괄 sort_order 갱신 |
 | 4.6 | 연도간 복사 | admin | `POST /api/sheet/template/copy` | 대상 연도 비어있어야 함, parent_id 리맵핑 |
 | 4.7 | JSON 가져오기 | admin | `POST /api/sheet/template/import` | 중첩 JSON → 기존 삭제 후 일괄 삽입 |
+| 4.8 | JSON 내보내기 | admin | SheetTemplate.vue | 전체 템플릿 계층 구조 JSON 파일로 다운로드 (클라이언트사이드) |
 
 ### 검차 시트 작성
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 4.8 | 요약 대시보드 | official | `GET /api/sheet/summary?year=` | 전체 팀 × 카테고리 PASS/FAIL 매트릭스 |
-| 4.9 | 답변 일괄 조회 | official | `GET /api/sheet/bulk-answers?year=&item_ids=` | 특정 항목들의 전체 팀 답변 |
-| 4.10 | 팀 시트 조회 | official | `GET /api/sheet/data/:year/:num` | 답변, 카테고리 결과, 검사자 |
-| 4.11 | 답변 입력 | official | `PUT /api/sheet/answer` | UPSERT, SSE 브로드캐스트 |
-| 4.12 | 메모 입력 | official | `PUT /api/sheet/memo` | UPSERT, SSE 브로드캐스트 |
-| 4.13 | 카테고리 결과 설정 | official | `PUT /api/sheet/category-result` | PASS/FAIL/"", SSE 브로드캐스트 |
-| 4.14 | 검사자 지정 | official | `PUT /api/sheet/inspector` | UPSERT, SSE 브로드캐스트 |
+| 4.9 | 요약 대시보드 | official | `GET /api/sheet/summary?year=` | 전체 팀 × 카테고리 PASS/FAIL 매트릭스 |
+| 4.10 | 답변 일괄 조회 | official | `GET /api/sheet/bulk-answers?year=&item_ids=` | 특정 항목들의 전체 팀 답변 |
+| 4.11 | 팀 시트 조회 | official | `GET /api/sheet/data/:year/:num` | 답변, 카테고리 결과, 검사자 |
+| 4.12 | 답변 입력 | official | `PUT /api/sheet/answer` | UPSERT, SSE 브로드캐스트 |
+| 4.13 | 메모 입력 | official | `PUT /api/sheet/memo` | UPSERT, SSE 브로드캐스트 |
+| 4.14 | 카테고리 결과 설정 | official | `PUT /api/sheet/category-result` | PASS/FAIL/"", SSE 브로드캐스트 |
+| 4.15 | 검사자 지정 | official | `PUT /api/sheet/inspector` | UPSERT, SSE 브로드캐스트 |
 
 ### 실시간 및 인쇄
 
 | # | 흐름 | 역할 | API/컴포넌트 | 설명 |
 |---|------|------|-------------|------|
-| 4.15 | SSE 실시간 업데이트 | official | `GET /api/sheet/events` | 답변, 메모, 카테고리 결과, 검사자 변경 실시간 스트림 |
-| 4.16 | 검차 시트 인쇄 | official | SheetTemplatePrint.vue | `/template/print?year=` 라우트, 브라우저 인쇄 기능으로 PDF 출력 |
+| 4.16 | SSE 실시간 업데이트 | official | `GET /api/sheet/events` | 답변, 메모, 카테고리 결과, 검사자 변경 실시간 스트림 |
+| 4.17 | 검차 시트 인쇄 | official | SheetTemplatePrint.vue | `/template/print?year=` 라우트, 브라우저 인쇄 기능으로 PDF 출력 |
 
 ---
 
@@ -198,37 +206,38 @@
 | 5.3 | 기록 추가 | admin | `POST /api/records` | 테이블명 자동 접두사 "FSK {year} ", 미존재 시 CREATE TABLE, SSE |
 | 5.4 | 기록 필드 수정 | admin | `PATCH /api/records/:name/:rowid` | invalidated/scoreboard/detail/cones/oc, 무효화↔전광판 연동, SSE |
 | 5.5 | 기록 테이블 삭제 | admin | `DELETE /api/records/:name` | DROP TABLE, SSE |
+| 5.6 | 전광판 조회 | admin | ScoreboardView.vue | scoreboard=true 레코드 필터링, SSE 실시간 갱신, 종목별 최신/최고/상위 5 기록 |
 
 ### 컨트롤러 데이터
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 5.6 | 컨트롤러 로그 조회 | admin | `GET /api/controllers` | |
-| 5.7 | 컨트롤러 로그 업로드 | admin | `POST /api/controllers` | 시리얼 하드웨어 상태 저장 |
-| 5.8 | 컨트롤러 로그 전체 삭제 | admin | `DELETE /api/controllers` | |
+| 5.7 | 컨트롤러 로그 조회 | admin | `GET /api/controllers` | |
+| 5.8 | 컨트롤러 로그 업로드 | admin | `POST /api/controllers` | 시리얼 하드웨어 상태 저장 |
+| 5.9 | 컨트롤러 로그 전체 삭제 | admin | `DELETE /api/controllers` | |
 
 ### 경기 모드
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 5.9 | 경기 모드 조회 | admin | `GET /api/event-modes` | 가속/스키드패드/오토크로스/짐카나 |
-| 5.10 | 경기 모드 토글 | admin | `PUT /api/event-modes/:type` | 비활성 시 네비게이션/성적 테이블에서 숨김, SSE |
+| 5.10 | 경기 모드 조회 | admin | `GET /api/event-modes` | 가속/스키드패드/오토크로스/짐카나 |
+| 5.11 | 경기 모드 토글 | admin | `PUT /api/event-modes/:type` | 비활성 시 네비게이션/성적 테이블에서 숨김, SSE |
 
 ### 매뉴얼 모드 (프런트엔드)
 
 | # | 흐름 | 역할 | 컴포넌트 | 설명 |
 |---|------|------|----------|------|
-| 5.11 | 가속 측정 | admin | AccelView | 매뉴얼 모드 → 녹색등 → 센서1(출발) → 센서2(도착) → 자동 저장 |
-| 5.12 | 스키드패드 측정 | admin | SkidpadView | 센서1 × 4회 → lap2 + lap4 합산 저장 |
-| 5.13 | 오토크로스 측정 | admin | AutocrossView | 녹색등 기준 → 센서1 × 2회 → 두 번째 통과 저장 |
-| 5.14 | 짐카나 측정 | admin | GymkhanaView | 센서1(레인1) + 센서2(레인2) 독립 측정, 팀 중복 방지 |
+| 5.12 | 가속 측정 | admin | AccelView | 매뉴얼 모드 → 녹색등 → 센서1(출발) → 센서2(도착) → 자동 저장 |
+| 5.13 | 스키드패드 측정 | admin | SkidpadView | 센서1 × 4회 → lap2 + lap4 합산 저장 |
+| 5.14 | 오토크로스 측정 | admin | AutocrossView | 녹색등 기준 → 센서1 × 2회 → 두 번째 통과 저장 |
+| 5.15 | 짐카나 측정 | admin | GymkhanaView | 센서1(레인1) + 센서2(레인2) 독립 측정, 팀 중복 방지 |
 
 ### 실시간 및 내보내기
 
 | # | 흐름 | 역할 | API/컴포넌트 | 설명 |
 |---|------|------|-------------|------|
-| 5.15 | SSE 실시간 업데이트 | admin | `GET /api/events` | 기록 추가/수정/삭제, 경기 모드 변경 실시간 스트림 |
-| 5.16 | 기록 CSV/XLSX 내보내기 | admin | RecordView.vue | 클라이언트 사이드에서 선택된 기록 테이블을 CSV/XLSX로 다운로드 |
+| 5.16 | SSE 실시간 업데이트 | admin | `GET /api/events` | 기록 추가/수정/삭제, 경기 모드 변경 실시간 스트림 |
+| 5.17 | 기록 CSV/XLSX 내보내기 | admin | RecordView.vue | 클라이언트 사이드에서 선택된 기록 테이블을 CSV/XLSX로 다운로드 |
 
 ---
 
@@ -301,6 +310,7 @@
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 7.15 | 엔트리 번호 동기화 | 내부 | `PATCH /api/internal/team-num` | entry 서비스에서 번호 변경 시 student_team, session_team, submission + 파일 디렉토리 일괄 갱신 |
+| 7.16 | 엔트리 삭제 연동 | 내부 | `DELETE /api/internal/team/:num?year=` | student_team, session_team, submission, 파일 삭제 |
 
 ---
 
@@ -346,5 +356,12 @@ Documents → Auth: GET /api/admin/students로 학생 목록 조회
 ### Entry → Documents 팀 번호 동기화
 
 ```
-Entry → Documents: PATCH /api/entries/:num에서 번호 변경 시 Documents PATCH /api/internal/team-num 호출 (실패 시 207 반환)
+Entry → Documents: PATCH /api/entries/:num에서 번호 변경 시 Documents PATCH /api/internal/team-num 호출 (실패 시 롤백 (502))
+```
+
+### Entry 삭제 → Queue/Documents 정리
+
+```
+Entry → Queue: DELETE /api/entries/:num 또는 전체/일괄 삭제 시 Queue DELETE /api/internal/team/:num 호출 (fire-and-forget)
+Entry → Documents: 동일하게 Documents DELETE /api/internal/team/:num 호출, student_team/session_team/submission/파일 정리
 ```

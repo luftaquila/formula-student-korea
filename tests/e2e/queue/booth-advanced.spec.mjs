@@ -2,7 +2,8 @@ import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
-const INSPECTION_TYPE = "battery";
+// Use "braking" type exclusively — avoids cleanup collisions with booth-management (battery)
+const INSPECTION_TYPE = "braking";
 
 async function apiRegister(num, type = INSPECTION_TYPE) {
   return fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
@@ -82,12 +83,15 @@ async function apiClearHistory(type = INSPECTION_TYPE) {
 }
 
 async function cleanupQueue(type = INSPECTION_TYPE) {
-  const queue = await apiGetQueue(type);
-  for (const item of queue) {
-    await apiCancel(item.num, type);
-  }
+  // Exit all booths first
   for (let i = 1; i <= 3; i++) {
     await apiExitBooth(i, type).catch(() => {});
+  }
+  // Remove queued entries via booth enter+exit (avoids cancel penalties entirely)
+  const queue = await apiGetQueue(type);
+  for (const item of queue) {
+    await apiEnterBooth(item.num, 1, type).catch(() => {});
+    await apiExitBooth(1, type).catch(() => {});
   }
 }
 
@@ -151,24 +155,24 @@ test.describe("Queue booth advanced features", () => {
     expect(deactivateRes.status).toBe(200);
 
     // Register a team
-    await apiRegister(1);
+    await apiRegister(30);
 
     // Try to enter the deactivated booth
-    const enterRes = await apiEnterBooth(1, 1);
+    const enterRes = await apiEnterBooth(30, 1);
     expect(enterRes.status).toBe(400);
     const text = await enterRes.text();
     expect(text).toContain("비활성화된 부스");
 
     // Re-activate and entry should succeed
     await apiSetBoothActive(INSPECTION_TYPE, 1, true);
-    const enterRes2 = await apiEnterBooth(1, 1);
+    const enterRes2 = await apiEnterBooth(30, 1);
     expect(enterRes2.status).toBe(200);
   });
 
   test("cannot deactivate an occupied booth", async () => {
     // Register and enter team into booth
-    await apiRegister(2);
-    await apiEnterBooth(2, 1);
+    await apiRegister(31);
+    await apiEnterBooth(31, 1);
 
     // Try to deactivate booth 1 (occupied)
     const res = await apiSetBoothActive(INSPECTION_TYPE, 1, false);
@@ -209,25 +213,25 @@ test.describe("Queue booth advanced features", () => {
     await apiSetBoothCount(INSPECTION_TYPE, 2);
 
     // Register 2 teams
-    await apiRegister(1);
-    await apiRegister(2);
+    await apiRegister(30);
+    await apiRegister(31);
 
-    // Enter team 1 into booth 1 and team 2 into booth 2
-    const enter1 = await apiEnterBooth(1, 1);
+    // Enter team 30 into booth 1 and team 31 into booth 2
+    const enter1 = await apiEnterBooth(30, 1);
     expect(enter1.status).toBe(200);
-    const enter2 = await apiEnterBooth(2, 2);
+    const enter2 = await apiEnterBooth(31, 2);
     expect(enter2.status).toBe(200);
 
     // Verify both booths are occupied via admin page
     await page.goto("/queue/admin");
     await waitForPageReady(page);
-    const batteryTab = page.locator(".tab", { hasText: "배터리" });
-    await expect(batteryTab).toBeVisible({ timeout: 10000 });
-    await batteryTab.click();
+    const brakingTab = page.locator(".tab", { hasText: "제동" });
+    await expect(brakingTab).toBeVisible({ timeout: 10000 });
+    await brakingTab.click();
 
     // Both booth team numbers should be visible
-    await expect(page.locator(".booth-team-num", { hasText: "1" })).toBeVisible({ timeout: 5000 });
-    await expect(page.locator(".booth-team-num", { hasText: "2" })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator(".booth-team-num", { hasText: "30" })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator(".booth-team-num", { hasText: "31" })).toBeVisible({ timeout: 5000 });
 
     // Exit both booths
     await apiExitBooth(1);
@@ -247,25 +251,25 @@ test.describe("Queue booth advanced features", () => {
     // Clear any existing history
     await apiClearHistory();
 
-    // Register team 1 and complete inspection (enter + exit booth)
-    await apiRegister(1);
-    await apiEnterBooth(1, 1);
+    // Register team 30 and complete inspection (enter + exit booth)
+    await apiRegister(30);
+    await apiEnterBooth(30, 1);
     await apiExitBooth(1);
 
-    // Re-register team 1 (now it's a re-inspection due to history)
-    await apiRegister(1);
+    // Re-register team 30 (now it's a re-inspection due to history)
+    await apiRegister(30);
 
-    // Register team 2 (first-time inspection)
-    await apiRegister(2);
+    // Register team 31 (first-time inspection)
+    await apiRegister(31);
 
     // Get queue order
     const queue = await apiGetQueue();
 
-    // Team 2 (first-time, is_reinspection=0) should come before
-    // team 1 (re-inspection, is_reinspection=1) due to sorting
+    // Team 31 (first-time, is_reinspection=0) should come before
+    // team 30 (re-inspection, is_reinspection=1) due to sorting
     expect(queue.length).toBe(2);
-    expect(queue[0].num).toBe(2);
-    expect(queue[1].num).toBe(1);
+    expect(queue[0].num).toBe(31);
+    expect(queue[1].num).toBe(30);
 
     // Restore ignore settings
     await apiSetIgnore(INSPECTION_TYPE, "ignore_priority", false);

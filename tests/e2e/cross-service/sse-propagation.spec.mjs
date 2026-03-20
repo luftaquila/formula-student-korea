@@ -81,9 +81,8 @@ test.describe("Cross-service SSE propagation", () => {
     await expect(table).toBeVisible({ timeout: 10000 });
 
     // Enable inspection columns if they are hidden
-    const inspectionCheckbox = page.locator("input[type='checkbox']").first();
-    const isChecked = await inspectionCheckbox.isChecked();
-    if (!isChecked) {
+    const inspectionCheckbox = page.locator(".filter-bar").locator("label.filter-checkbox").filter({ hasText: "검차" }).locator("input[type='checkbox']");
+    if (!(await inspectionCheckbox.isChecked())) {
       await inspectionCheckbox.check();
     }
 

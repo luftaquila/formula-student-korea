@@ -88,7 +88,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | GET | `/api/years` | public | — | `[2025, 2024, ...]` | Available year list |
 | GET | `/api/entries` | public | `?year=&download` | `{ num: { univ, team, type } }` | All entries for year; `download` param triggers JSON file download |
 | POST | `/api/entries` | admin | `{ num, univ, team, type? }?year=` | 201 | Create entry |
-| PATCH | `/api/entries/:num` | admin | `{ num, univ, team, type? }?year=` | 200 or 207 | Update entry (207 if documents sync failed) |
+| PATCH | `/api/entries/:num` | admin | `{ num, univ, team, type? }?year=` | 200 or 502 | Update entry (502 if documents sync failed, rollback) |
 | DELETE | `/api/entries/:num` | admin | `?year=` | 200 | Delete single entry |
 | DELETE | `/api/entries` | admin | `?year=` | 200 | Delete all entries for year |
 | POST | `/api/entries/bulk` | admin | `{ data: { "num": { univ, team, type? } } }?year=` | 200 | Bulk upload (replaces all entries for year) |
@@ -180,6 +180,12 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | PATCH | `/api/admin/settings/sms-rank` | chief | `{ value: int }` | 200 | Set SMS rank (1-10) |
 | GET | `/api/admin/settings/cancel-penalty` | official | — | `{ value: int }` | Cancel penalty minutes |
 | PATCH | `/api/admin/settings/cancel-penalty` | chief | `{ value: int }` | 200 | Set cancel penalty (0-60 min) |
+
+### Internal API
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team data on entry deletion (queue, priority, penalty, history, booth occupancy) |
 
 ---
 
@@ -319,3 +325,4 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service (updates student_team, session_team, submission, renames upload dirs) |
+| DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team data on entry deletion (student_team, session_team, submission, files) |

@@ -23,9 +23,6 @@ test.describe("Traffic event mode management", () => {
     await expect(gymkhanaBtn).not.toHaveClass(/disabled/);
     await gymkhanaBtn.click();
 
-    // Wait for the update to propagate
-    await page.waitForTimeout(500);
-
     // Verify the button now has the disabled class
     await expect(gymkhanaBtn).toHaveClass(/disabled/);
 
@@ -34,7 +31,6 @@ test.describe("Traffic event mode management", () => {
 
     // Toggle it back on
     await gymkhanaBtn.click();
-    await page.waitForTimeout(500);
 
     // Verify the button no longer has the disabled class
     await expect(gymkhanaBtn).not.toHaveClass(/disabled/);
@@ -52,7 +48,6 @@ test.describe("Traffic event mode management", () => {
     // Disable 스키드패드
     const skidpadBtn = eventModeSection.locator(".event-mode-btn", { hasText: "스키드패드" });
     await skidpadBtn.click();
-    await page.waitForTimeout(500);
     await expect(skidpadBtn).toHaveClass(/disabled/);
 
     // Navigate to accel page and back
@@ -73,7 +68,6 @@ test.describe("Traffic event mode management", () => {
 
     // Re-enable it to clean up
     await skidpadBtnAfter.click();
-    await page.waitForTimeout(500);
     await expect(navTabs).toContainText("스키드패드");
   });
 });

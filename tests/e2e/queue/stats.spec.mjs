@@ -137,9 +137,6 @@ test.describe("Queue statistics page", () => {
     // Select a specific inspection type
     await inspectionSelect.selectOption({ index: 1 });
 
-    // Table should update (wait for potential re-render)
-    await page.waitForTimeout(500);
-
     // The count badge should still be visible
     await expect(page.locator(".count-badge")).toBeVisible();
   });

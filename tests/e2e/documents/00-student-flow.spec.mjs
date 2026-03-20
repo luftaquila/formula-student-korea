@@ -111,6 +111,41 @@ test.describe("Documents student flow", () => {
     await expect(fileItem).toBeVisible();
   });
 
+  test("downloads previously uploaded file", async ({ page }) => {
+    await page.goto("/documents");
+    await waitForPageReady(page);
+
+    // Navigate to session detail
+    const sessionCard = page.locator(".session-card").filter({ hasText: "E2E 테스트 세션" });
+    await sessionCard.click();
+    await waitForPageReady(page);
+
+    // Verify the file item is visible
+    const fileItem = page.locator(".file-item").filter({ hasText: "e2e-test-document.pdf" });
+    await expect(fileItem).toBeVisible();
+
+    // Get session list to find the session ID (student API returns { team, sessions })
+    const sessionsRes = await page.request.get("/documents/api/sessions");
+    expect(sessionsRes.status()).toBe(200);
+    const sessionsData = await sessionsRes.json();
+    const session = sessionsData.sessions.find((s) => s.name === "E2E 테스트 세션");
+    expect(session).toBeTruthy();
+
+    // Fetch session detail (student API returns { session, submission, files })
+    const detailRes = await page.request.get(`/documents/api/sessions/${session.id}`);
+    expect(detailRes.status()).toBe(200);
+    const detail = await detailRes.json();
+    expect(detail.submission).toBeTruthy();
+    expect(detail.files?.length).toBeGreaterThanOrEqual(1);
+
+    const file = detail.files.find((f) => f.original_name === "e2e-test-document.pdf");
+    expect(file).toBeTruthy();
+
+    // Download the file via API and verify success
+    const downloadRes = await page.request.get(`/documents/api/submissions/${detail.submission.id}/files/${file.id}`);
+    expect(downloadRes.status()).toBe(200);
+  });
+
   test("rejects files with disallowed extensions", async ({ page }) => {
     await page.goto("/documents");
     await waitForPageReady(page);

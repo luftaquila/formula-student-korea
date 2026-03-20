@@ -67,7 +67,7 @@ test.describe("Documents admin submission and download", () => {
     // Team 1's row should show the uploaded file name
     const table = page.locator(".detail-table");
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" });
-    await expect(team1Row.locator(".file-link")).toContainText("e2e-test-document.pdf");
+    await expect(team1Row.locator(".file-link")).toContainText(/e2e-.*-document\.pdf/);
   });
 
   test("admin can download submitted file", async ({ page }) => {
@@ -83,7 +83,7 @@ test.describe("Documents admin submission and download", () => {
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" });
     const fileLink = team1Row.locator(".file-link");
     await expect(fileLink).toBeVisible();
-    await expect(fileLink).toContainText("e2e-test-document.pdf");
+    await expect(fileLink).toContainText(/e2e-.*-document\.pdf/);
   });
 
   test("session info is displayed correctly", async ({ page }) => {

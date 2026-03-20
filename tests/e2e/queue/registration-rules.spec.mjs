@@ -36,7 +36,7 @@ async function apiClearQueue(type) {
       if (booth.occupied_by) await apiExitBooth(type, booth.booth_num);
     }
   }
-  // Then cancel all queued entries
+  // Cancel all queued entries (penalty=0 ensured by caller)
   const res = await fetch(`${BASE_URL}/queue/api/admin/inspection/${type}`, {
     headers: { Cookie: getAuthCookie("official") },
   });
@@ -67,7 +67,7 @@ test.describe("Queue registration business rules", () => {
     });
 
     // Clear any leftover queue entries from previous test files
-    for (const type of ["battery", "chassis", "noise"]) {
+    for (const type of ["battery", "chassis", "noise", "rain"]) {
       await apiClearQueue(type);
     }
 
@@ -97,7 +97,7 @@ test.describe("Queue registration business rules", () => {
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ value: 0 }),
     });
-    for (const type of ["battery", "chassis", "noise"]) {
+    for (const type of ["battery", "chassis", "noise", "rain"]) {
       await apiClearQueue(type);
     }
     // Restore 1-minute penalty for test assertions
@@ -109,45 +109,60 @@ test.describe("Queue registration business rules", () => {
   });
 
   test("cancel penalty blocks re-registration", async ({ page }) => {
-    // Register and cancel entry 20 for battery inspection
-    const regRes = await apiRegister("battery", 20);
+    // Use "rain" type exclusively for this test to avoid collisions with other queue test files
+    // Ensure penalty=1 right before the critical register+cancel sequence
+    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      body: JSON.stringify({ value: 1 }),
+    });
+
+    const regRes = await apiRegister("rain", 32);
     expect(regRes.status).toBe(201);
 
-    const cancelRes = await apiCancel("battery", 20);
+    const cancelRes = await apiCancel("rain", 32);
     expect(cancelRes.status).toBe(200);
 
     // Attempt to re-register should fail with 403 (penalty active)
-    const reRegRes = await apiRegister("battery", 20);
+    const reRegRes = await apiRegister("rain", 32);
     expect(reRegRes.status).toBe(403);
   });
 
   test("battery + chassis concurrent registration is allowed", async ({ page }) => {
-    // Register entry 1 for battery
-    const batteryRes = await apiRegister("battery", 1);
+    // Register entry 30 for battery
+    const batteryRes = await apiRegister("battery", 30);
     expect(batteryRes.status).toBe(201);
 
     // Register same entry for chassis (should be allowed)
-    const chassisRes = await apiRegister("chassis", 1);
+    const chassisRes = await apiRegister("chassis", 30);
     expect(chassisRes.status).toBe(201);
   });
 
   test("duplicate registration for same inspection type is blocked", async ({ page }) => {
-    // Register entry 1 for noise
-    const firstRes = await apiRegister("noise", 1);
+    // Register entry 30 for noise
+    const firstRes = await apiRegister("noise", 30);
     expect(firstRes.status).toBe(201);
 
     // Attempt to register same entry for same type again
-    const secondRes = await apiRegister("noise", 1);
+    const secondRes = await apiRegister("noise", 30);
     expect(secondRes.status).toBe(400);
   });
 
   test("registering two different non-compatible types is blocked", async ({ page }) => {
-    // Register entry 2 for battery
-    const batteryRes = await apiRegister("battery", 2);
+    // Register entry 31 for battery
+    const batteryRes = await apiRegister("battery", 31);
     expect(batteryRes.status).toBe(201);
 
     // Attempt to register for noise (not battery+chassis pair) should fail
-    const noiseRes = await apiRegister("noise", 2);
+    const noiseRes = await apiRegister("noise", 31);
     expect(noiseRes.status).toBe(400);
+  });
+
+  test("registration fails for non-existent entry number", async ({ page }) => {
+    const res = await apiRegister("battery", 9999);
+    expect(res.status).toBe(400);
+
+    const text = await res.text();
+    expect(text).toBe("존재하지 않는 엔트리 번호입니다.");
   });
 });

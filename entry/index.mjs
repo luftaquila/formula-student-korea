@@ -358,10 +358,9 @@ app.delete("/api/entries/:num", withYearTable, async (req, res) => {
   }
 
   logger.log(req, "entry.delete", { year, univ: entry?.univ, team: entry?.team }, `#${numValidation.value}`);
-  res.status(200).send();
 
-  // 다른 서비스에 삭제 알림 (응답 이후 비동기)
-  notifyEntryDeleted([numValidation.value], year);
+  await notifyEntryDeleted([numValidation.value], year);
+  res.status(200).send();
 });
 
 // DELETE /api/entries - 모든 엔트리 삭제
@@ -377,12 +376,11 @@ app.delete("/api/entries", withYearTable, async (req, res) => {
   }
 
   logger.log(req, "entry.clear", { year });
-  res.status(200).send();
 
-  // 다른 서비스에 삭제 알림 (응답 이후 비동기)
   if (existingNums.length > 0) {
-    notifyEntryDeleted(existingNums, year);
+    await notifyEntryDeleted(existingNums, year);
   }
+  res.status(200).send();
 });
 
 // POST /api/entries/bulk - 엔트리 일괄 업로드 (DB 교체)
@@ -417,14 +415,13 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   }
 
   logger.log(req, "entry.bulk_upload", { year, count: Object.keys(validation.data).length });
-  res.status(200).send();
 
-  // 제거된 엔트리에 대해 다른 서비스 알림 (응답 이후 비동기)
   const newNums = new Set(Object.keys(validation.data).map(Number));
   const removedNums = [...existingNums].filter(n => !newNums.has(n));
   if (removedNums.length > 0) {
-    notifyEntryDeleted(removedNums, year);
+    await notifyEntryDeleted(removedNums, year);
   }
+  res.status(200).send();
 });
 
 /* ============================================

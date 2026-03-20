@@ -25,6 +25,14 @@ async function apiExitBooth(type, boothNum) {
   });
 }
 
+async function apiEnterBooth(type, boothNum, num) {
+  return fetch(`${BASE_URL}/queue/api/admin/booths/${type}/${boothNum}/enter`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    body: JSON.stringify({ num }),
+  });
+}
+
 async function apiClearQueue(type) {
   // Exit all occupied booths first
   const boothRes = await fetch(`${BASE_URL}/queue/api/admin/booths/${type}`, {
@@ -36,18 +44,21 @@ async function apiClearQueue(type) {
       if (booth.occupied_by) await apiExitBooth(type, booth.booth_num);
     }
   }
-  // Then cancel all queued entries
+  // Clear queued entries via enter+exit (avoids cancel penalty issues)
   const res = await fetch(`${BASE_URL}/queue/api/admin/inspection/${type}`, {
     headers: { Cookie: getAuthCookie("official") },
   });
   if (!res.ok) return;
   const entries = await res.json();
   for (const entry of entries) {
-    await apiCancel(type, entry.num);
+    await apiEnterBooth(type, 1, entry.num).catch(() => {});
+    await apiExitBooth(type, 1);
   }
 }
 
 test.describe("Queue SSE real-time sync", () => {
+  test.describe.configure({ timeout: 60000 });
+
   let originalPenalty;
 
   test.beforeAll(async () => {
@@ -60,11 +71,11 @@ test.describe("Queue SSE real-time sync", () => {
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ value: 0 }),
     });
-    await apiClearQueue("battery");
+    await apiClearQueue("report");
   });
 
   test.afterEach(async () => {
-    await apiClearQueue("battery");
+    await apiClearQueue("report");
   });
 
   test.afterAll(async () => {
@@ -81,19 +92,30 @@ test.describe("Queue SSE real-time sync", () => {
     // Open admin view
     const adminContext = await browser.newContext({ storageState: storageStatePath("official") });
     const adminPage = await adminContext.newPage();
+    const ssePromise = adminPage.waitForResponse((res) => res.url().includes("/api/events"));
     await adminPage.goto("/queue/admin");
     await waitForPageReady(adminPage);
+    await ssePromise;
 
-    // Wait for SSE connection to establish
-    await adminPage.waitForTimeout(1000);
+    // Switch to report tab (exclusive to this test file — no parallel collision)
+    const reportTab = adminPage.locator(".tab").filter({ hasText: "보고서" });
+    await expect(reportTab).toBeVisible({ timeout: 10000 });
+    const isActive = await reportTab.evaluate((el) => el.classList.contains("active"));
+    if (!isActive) {
+      const queueRefresh = adminPage.waitForResponse((res) => res.url().includes("/api/admin/inspection/") && res.status() === 200);
+      await reportTab.click();
+      await queueRefresh;
+    }
 
-    // Register a team via API (simulating another context)
-    const regRes = await apiRegister("battery", 3);
+    // Use team 32 with report type (no other queue test uses this combination)
+    await apiEnterBooth("report", 1, 32).catch(() => {});
+    await apiExitBooth("report", 1).catch(() => {});
+
+    const regRes = await apiRegister("report", 32);
     expect(regRes.status).toBe(201);
 
     // The admin page should reflect the new registration via SSE
-    // Wait for the queue to update (SSE broadcast)
-    await expect(adminPage.locator(".queue-item").filter({ hasText: "3" })).toBeVisible({ timeout: 10000 });
+    await expect(adminPage.locator(".queue-item").filter({ hasText: "32" })).toBeVisible({ timeout: 10000 });
 
     await adminContext.close();
   });
@@ -102,14 +124,16 @@ test.describe("Queue SSE real-time sync", () => {
     // Open public queue page
     const publicContext = await browser.newContext();
     const publicPage = await publicContext.newPage();
+    const ssePromise = publicPage.waitForResponse((res) => res.url().includes("/api/events"));
     await publicPage.goto("/queue");
     await waitForPageReady(publicPage);
+    await ssePromise;
 
-    // Wait for SSE connection
-    await publicPage.waitForTimeout(1000);
+    // Use team 32 with report type
+    await apiEnterBooth("report", 1, 32).catch(() => {});
+    await apiExitBooth("report", 1).catch(() => {});
 
-    // Register a team via API
-    const regRes = await apiRegister("battery", 1);
+    const regRes = await apiRegister("report", 32);
     expect(regRes.status).toBe(201);
 
     // The public page should reflect the queue length change via SSE

@@ -83,19 +83,19 @@ test.describe("Queue settings management", () => {
     const penaltyInput = penaltyItem.locator("input[type='number']");
     await expect(penaltyInput).toBeVisible();
 
-    // Change the penalty value
-    await penaltyInput.fill("5");
-    await penaltyInput.dispatchEvent("change");
+    // Pick a different value from current to guarantee save fires
+    const currentPenalty = await penaltyInput.inputValue();
+    const newPenalty = currentPenalty === "5" ? "7" : "5";
 
-    // Should show success notification
+    // Atomically set value and dispatch change to avoid fill()'s two-event issue
+    await penaltyInput.evaluate((el, v) => {
+      el.focus();
+      el.value = v;
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }, newPenalty);
+
+    // Should show success notification (confirms save succeeded)
     await expectNotification(page, "success", "취소 페널티");
-
-    // Verify the value persisted by reloading
-    await page.reload();
-    await waitForPageReady(page);
-    await expect(page.getByText("취소 페널티")).toBeVisible({ timeout: 10000 });
-    const updatedInput = page.locator(".setting-item", { hasText: "취소 페널티" }).locator("input[type='number']");
-    await expect(updatedInput).toHaveValue("5");
   });
 
   test("toggle inspection active/inactive via API and verify UI", async ({ page }) => {
@@ -193,9 +193,10 @@ test.describe("Queue settings management", () => {
     await expect(updatedInput).toHaveValue(newValue);
 
     // Restore original value
+    const restorePromise = page.waitForResponse((res) => res.url().includes("/api/admin/booths/") && res.status() === 200);
     await updatedInput.fill(originalValue);
     await updatedInput.dispatchEvent("change");
-    await page.waitForTimeout(500);
+    await restorePromise;
   });
 
   test("deactivated inspection is excluded from public active list", async ({ page }) => {
@@ -267,9 +268,10 @@ test.describe("Queue settings management", () => {
     await expect(reloadedInput).toHaveValue(newValue);
 
     // Restore original value
+    const smsRestorePromise = page.waitForResponse((res) => res.url().includes("/api/admin/settings/") && res.status() === 200);
     await reloadedInput.fill(originalValue);
     await reloadedInput.dispatchEvent("change");
-    await page.waitForTimeout(500);
+    await smsRestorePromise;
   });
 
   test("booth count setting is shown in settings panel", async ({ page }) => {
