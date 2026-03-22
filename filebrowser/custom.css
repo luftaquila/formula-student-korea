@@ -149,7 +149,14 @@ aside {
 }
 
 /* =============================================
-   8. Remove icon background
+   8. Hide folder/file category h2 headers
+   ============================================= */
+.listing-items h2 {
+  display: none !important;
+}
+
+/* =============================================
+   9. Remove icon background
    ============================================= */
 .icon,
 i.icon {
