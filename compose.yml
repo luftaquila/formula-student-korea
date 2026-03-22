@@ -245,16 +245,16 @@ services:
       - fsk-network
 
   filebrowser:
-    image: docker.io/filebrowser/filebrowser:latest
+    image: docker.io/gtstef/filebrowser:stable
     container_name: fsk-filebrowser
     security_opt:
       - label:disable
     user: "0:0"
-    entrypoint: /init-custom.sh
     volumes:
-      - ./filebrowser/init.sh:/init-custom.sh:ro
-      - ./filebrowser/data:/data
-      - ./filebrowser/data/files:/srv/files
+      - ./filebrowser/config.yaml:/home/filebrowser/data/config.yaml:ro
+      - ./filebrowser/custom.css:/home/filebrowser/custom.css:ro
+      - ./filebrowser/data:/home/filebrowser/data
+      - ./filebrowser/data/files:/folder
     restart: unless-stopped
     deploy:
       resources:

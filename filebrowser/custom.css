@@ -1,0 +1,157 @@
+/* =============================================
+   1. Flat Design: remove rounded corners
+   ============================================= */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}
+
+/* =============================================
+   2. Flat Design: remove hover gradient overlay
+   Must use specific selectors to beat !important
+   ============================================= */
+
+/* Light mode hover: flat bg change only */
+.clickable:hover,
+button:hover,
+.action:hover,
+.listing-item.drag-hover,
+.plyr .plyr__control:hover {
+  box-shadow: none !important;
+  transform: none !important;
+  background-color: var(--surfaceSecondary) !important;
+}
+
+/* Dark mode hover: flat bg change only */
+.dark-mode .clickable:hover,
+.dark-mode button:hover,
+.dark-mode .action:hover,
+.dark-mode .listing-item.drag-hover {
+  box-shadow: none !important;
+  transform: none !important;
+  background-color: var(--surfaceSecondary) !important;
+}
+
+/* Nav button hover */
+.nav-button:hover,
+.nav-button.active {
+  box-shadow: none !important;
+  transform: translateY(-50%) !important;
+}
+
+.nav-button:hover i.material-icons,
+.nav-button.active i.material-icons {
+  transform: none !important;
+}
+
+/* List item hover: no width/margin shift */
+.listing-items.compact .listing-item:hover,
+.listing-items.list .listing-item:hover,
+.listing-items.compact .listing-item,
+.listing-items.list .listing-item,
+.search-entry:hover,
+.search-entry {
+  width: 100% !important;
+  margin-left: 0 !important;
+  padding-left: 0.5em !important;
+}
+
+/* Remove general shadows */
+.card,
+.listing-item,
+.listing-items,
+#sidebar,
+header,
+.button,
+button,
+input,
+.overlay,
+.floating-action-button {
+  box-shadow: none !important;
+}
+
+/* =============================================
+   3. Flat Design: remove backdrop blur/glass
+   ============================================= */
+#sidebar,
+#sidebar.dark-mode,
+#sidebar:not(.active) {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  background-color: var(--surfacePrimary) !important;
+}
+
+/* =============================================
+   4. Remove gradients (but not on img/video)
+   ============================================= */
+div,
+span,
+a,
+button,
+section,
+header,
+nav,
+footer,
+main,
+aside {
+  background-image: none !important;
+}
+
+/* =============================================
+   5. Remove transitions/animations on items
+   ============================================= */
+.listing-item,
+.listing-items .listing-item,
+.listing-items.normal .listing-item,
+.listing-items.gallery .listing-item {
+  transition: none !important;
+}
+
+/* =============================================
+   6. External links (credits) to top of sidebar
+   ============================================= */
+#sidebar {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.credits {
+  order: -1 !important;
+}
+
+/* Add flag emoji before external link text */
+.credits > span > a::before {
+  content: "🏁 " !important;
+}
+
+/* Hide FileBrowser Quantum name */
+.credits > span > h4 {
+  display: none !important;
+}
+
+/* External link hover */
+.credits > span > a {
+  padding: 0.3em 0.5em !important;
+  display: inline-block !important;
+}
+
+.credits > span > a:hover {
+  background-color: var(--surfaceSecondary) !important;
+  text-decoration: none !important;
+}
+
+/* =============================================
+   7. Hide logout button
+   ============================================= */
+.logout-button {
+  display: none !important;
+}
+
+/* =============================================
+   8. Remove icon background
+   ============================================= */
+.icon,
+i.icon {
+  background: transparent !important;
+}

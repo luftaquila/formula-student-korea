@@ -1,0 +1,42 @@
+server:
+  port: 8080
+  baseURL: /files
+  database: /home/filebrowser/data/database.db
+  minSearchLength: 1
+  sources:
+    - path: /folder
+      name: cloud
+
+auth:
+  methods:
+    password:
+      enabled: false
+    proxy:
+      enabled: true
+      header: X-Forwarded-User
+      createUser: true
+
+userDefaults:
+  locale: ko
+  viewMode: list
+  stickySidebar: true
+  singleClick: false
+  quickDownload: false
+  permissions:
+    admin: false
+    modify: true
+    share: true
+    create: true
+    delete: true
+    download: true
+    realtime: true
+    api: true
+
+frontend:
+  disableDefaultLinks: true
+  disableNavButtons: false
+  externalLinks:
+    - text: "FSK Service Hub"
+      url: "/"
+  styling:
+    customCSS: /home/filebrowser/custom.css
