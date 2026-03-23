@@ -15,3 +15,7 @@ rules
 tests
 *.md
 .github
+backups
+playwright-report
+test-results
+scripts

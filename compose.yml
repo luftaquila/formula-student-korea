@@ -3,10 +3,10 @@ x-common-env: &common-env
   INTERNAL_SECRET: ${INTERNAL_SECRET}
 
 x-common-healthcheck: &common-healthcheck
-  interval: 30s
+  interval: 5s
   timeout: 5s
   retries: 3
-  start_period: 30s
+  start_period: 5s
 
 services:
   entry:
@@ -26,9 +26,6 @@ services:
       QUEUE_SERVER: http://queue:9300
     volumes:
       - ./entry/data:/home/node/fsk-entry/data
-    depends_on:
-      auth:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
@@ -55,9 +52,6 @@ services:
       AUTH_SERVER: http://auth:9100
     volumes:
       - ./traffic/data:/home/node/fsk-traffic/data
-    depends_on:
-      auth:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
@@ -104,11 +98,6 @@ services:
       PHONE_NUMBER_SMS_SENDER: ${PHONE_NUMBER_SMS_SENDER}
     volumes:
       - ./queue/data:/home/node/fsk-queue/data
-    depends_on:
-      entry:
-        condition: service_healthy
-      auth:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
@@ -135,9 +124,6 @@ services:
       AUTH_SERVER: http://auth:9100
     volumes:
       - ./inspection/data:/home/node/fsk-inspection/data
-    depends_on:
-      auth:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
@@ -168,8 +154,6 @@ services:
     volumes:
       - ./score/data:/home/node/fsk-score/data
     depends_on:
-      entry:
-        condition: service_healthy
       inspection:
         condition: service_healthy
       traffic:
@@ -200,9 +184,6 @@ services:
       AUTH_SERVER: http://auth:9100
     volumes:
       - ./documents/data:/home/node/fsk-documents/data
-    depends_on:
-      auth:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
