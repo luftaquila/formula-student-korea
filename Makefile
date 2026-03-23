@@ -1,4 +1,4 @@
-.PHONY: build deploy restart
+.PHONY: build deploy restart backup restore
 
 PROFILE ?= production
 
@@ -15,3 +15,10 @@ deploy:
 restart:
 	podman compose --profile $(PROFILE) up -d --force-recreate
 	podman compose --profile $(PROFILE) restart caddy
+
+backup:
+	./scripts/backup.sh $(DEST)
+
+restore:
+	@test -n "$(ZIP)" || (echo "사용법: make restore ZIP=<백업파일.zip>" && exit 1)
+	./scripts/restore.sh $(ZIP)

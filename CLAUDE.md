@@ -48,6 +48,11 @@ make deploy SVC=traffic        # Single service
 make deploy NO_CACHE=1         # No cache
 make build / make restart      # Build only / restart only
 make deploy PROFILE=local      # Local dev (localhost:9000)
+
+# Backup / Restore (scripts/ — requires sqlite3 CLI)
+make backup                    # → ./backups/fsk-backup-YYYYMMDD-HHMMSS.zip
+make backup DEST=/mnt/nas      # Custom destination
+make restore ZIP=backups/fsk-backup-20260323-120000.zip
 ```
 
 Prerequisites: podman machine, `git submodule update --init --recursive`, `.env` from `.env.example` (min: `JWT_SECRET`, `INTERNAL_SECRET`).
