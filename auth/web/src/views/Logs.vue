@@ -8,16 +8,38 @@
         <!-- Filter Bar -->
         <div class="filter-bar">
           <div class="filter-row">
-            <select v-model="filters.service" class="form-select filter-select" @change="fetchLogs(true)">
-              <option value="">전체 서비스</option>
-              <option v-for="s in serviceList" :key="s" :value="s">{{ s }}</option>
-            </select>
-            <select v-model="filters.level" class="form-select filter-select" @change="fetchLogs(true)">
-              <option value="">전체 레벨</option>
-              <option value="info">info</option>
-              <option value="warn">warn</option>
-              <option value="error">error</option>
-            </select>
+            <div class="multi-select" ref="serviceDropdownRef">
+              <div class="multi-select-trigger form-select filter-select" @click="serviceDropdownOpen = !serviceDropdownOpen">
+                {{ serviceFilterLabel }}
+              </div>
+              <div v-if="serviceDropdownOpen" class="multi-select-dropdown">
+                <label class="multi-select-item">
+                  <input type="checkbox" :checked="filters.services.size === serviceList.length" @change="toggleAllServices" />
+                  <span>전체</span>
+                </label>
+                <div class="multi-select-divider"></div>
+                <label class="multi-select-item" v-for="s in serviceList" :key="s">
+                  <input type="checkbox" :checked="filters.services.has(s)" @change="toggleService(s)" />
+                  <span>{{ s }}</span>
+                </label>
+              </div>
+            </div>
+            <div class="multi-select" ref="levelDropdownRef">
+              <div class="multi-select-trigger form-select filter-select" @click="levelDropdownOpen = !levelDropdownOpen">
+                {{ levelFilterLabel }}
+              </div>
+              <div v-if="levelDropdownOpen" class="multi-select-dropdown">
+                <label class="multi-select-item">
+                  <input type="checkbox" :checked="filters.levels.size === levelList.length" @change="toggleAllLevels" />
+                  <span>전체</span>
+                </label>
+                <div class="multi-select-divider"></div>
+                <label class="multi-select-item" v-for="l in levelList" :key="l">
+                  <input type="checkbox" :checked="filters.levels.has(l)" @change="toggleLevel(l)" />
+                  <span>{{ l }}</span>
+                </label>
+              </div>
+            </div>
             <input v-model="filters.action" type="text" class="form-input filter-input" placeholder="액션 검색"
               @keyup.enter="fetchLogs(true)" />
             <input v-model="filters.actor" type="text" class="form-input filter-input" placeholder="유저 검색"
@@ -65,7 +87,7 @@
               </tr>
               <tr v-for="log in logs" :key="`${log._service || log.service}-${log.id}`" class="row-clickable" :class="{ 'log-warn': log.level === 'warn', 'log-error': log.level === 'error' }" @click="openDetail(log)">
                 <td class="col-time">{{ formatTime(log.timestamp) }}</td>
-                <td><span class="badge badge-primary">{{ log._service || filters.service || '?' }}</span></td>
+                <td><span class="badge badge-primary">{{ log._service || '?' }}</span></td>
                 <td>
                   <span class="badge" :class="levelBadge(log.level)">{{ log.level }}</span>
                 </td>
@@ -148,7 +170,7 @@ const PAGE_SIZE = 100;
 const selectedLog = ref(null);
 
 function openDetail(log) {
-  selectedLog.value = { ...log, _resolvedService: log._service || filters.service || '?' };
+  selectedLog.value = { ...log, _resolvedService: log._service || '?' };
 }
 
 function closeDetail() {
@@ -163,17 +185,59 @@ const error = ref(null);
 const autoRefresh = ref(false);
 let refreshTimer = null;
 
-const serviceList = ["auth", "entry", "queue", "inspection", "traffic", "score", "documents"];
+const serviceDropdownOpen = ref(false);
+const levelDropdownOpen = ref(false);
+const serviceDropdownRef = ref(null);
+const levelDropdownRef = ref(null);
+
+const serviceList = ["auth", "entry", "queue", "inspection", "traffic", "score", "documents", "course"];
+const levelList = ["info", "warn", "error"];
 
 const filters = reactive({
-  service: "",
-  level: "",
+  services: new Set(serviceList),
+  levels: new Set(levelList),
   action: "",
   actor: "",
   from: "",
   to: "",
   search: "",
 });
+
+const serviceFilterLabel = computed(() => {
+  if (filters.services.size === serviceList.length) return "전체 서비스";
+  if (filters.services.size === 0) return "서비스 선택";
+  return `서비스 ${filters.services.size}개`;
+});
+
+const levelFilterLabel = computed(() => {
+  if (filters.levels.size === levelList.length) return "전체 레벨";
+  if (filters.levels.size === 0) return "레벨 선택";
+  return [...filters.levels].join(", ");
+});
+
+function toggleService(s) {
+  if (filters.services.has(s)) filters.services.delete(s);
+  else filters.services.add(s);
+  fetchLogs(true);
+}
+
+function toggleAllServices() {
+  if (filters.services.size === serviceList.length) filters.services.clear();
+  else serviceList.forEach(s => filters.services.add(s));
+  fetchLogs(true);
+}
+
+function toggleLevel(l) {
+  if (filters.levels.has(l)) filters.levels.delete(l);
+  else filters.levels.add(l);
+  fetchLogs(true);
+}
+
+function toggleAllLevels() {
+  if (filters.levels.size === levelList.length) filters.levels.clear();
+  else levelList.forEach(l => filters.levels.add(l));
+  fetchLogs(true);
+}
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
 
@@ -200,6 +264,12 @@ function truncate(str, len) {
 
 async function fetchLogs(resetPage = false) {
   if (resetPage) page.value = 1;
+  if (filters.services.size === 0 || filters.levels.size === 0) {
+    logs.value = [];
+    total.value = 0;
+    return;
+  }
+
   loading.value = true;
   error.value = null;
 
@@ -207,8 +277,12 @@ async function fetchLogs(resetPage = false) {
     const params = new URLSearchParams();
     params.set("limit", String(PAGE_SIZE));
     params.set("offset", String((page.value - 1) * PAGE_SIZE));
-    if (filters.service) params.set("service", filters.service);
-    if (filters.level) params.set("level", filters.level);
+    if (filters.services.size > 0 && filters.services.size < serviceList.length) {
+      params.set("service", [...filters.services].join(","));
+    }
+    if (filters.levels.size > 0 && filters.levels.size < levelList.length) {
+      params.set("level", [...filters.levels].join(","));
+    }
     if (filters.action) params.set("action", filters.action);
     if (filters.actor) params.set("actor", filters.actor);
     if (filters.from) params.set("from", new Date(filters.from).toISOString());
@@ -227,8 +301,10 @@ async function fetchLogs(resetPage = false) {
 }
 
 function resetFilters() {
-  filters.service = "";
-  filters.level = "";
+  filters.services.clear();
+  serviceList.forEach(s => filters.services.add(s));
+  filters.levels.clear();
+  levelList.forEach(l => filters.levels.add(l));
   filters.action = "";
   filters.actor = "";
   filters.from = "";
@@ -253,14 +329,25 @@ function onKeydown(e) {
   if (selectedLog.value && e.key === "Escape") closeDetail();
 }
 
+function onClickOutside(e) {
+  if (serviceDropdownRef.value && !serviceDropdownRef.value.contains(e.target)) {
+    serviceDropdownOpen.value = false;
+  }
+  if (levelDropdownRef.value && !levelDropdownRef.value.contains(e.target)) {
+    levelDropdownOpen.value = false;
+  }
+}
+
 onMounted(() => {
   document.querySelector(".app-container").style.setProperty("--layout-max-width", "100%");
   window.addEventListener("keydown", onKeydown);
+  document.addEventListener("click", onClickOutside);
   fetchLogs();
 });
 onUnmounted(() => {
   document.querySelector(".app-container").style.setProperty("--layout-max-width", "1100px");
   window.removeEventListener("keydown", onKeydown);
+  document.removeEventListener("click", onClickOutside);
   if (refreshTimer) clearInterval(refreshTimer);
 });
 </script>
@@ -268,6 +355,10 @@ onUnmounted(() => {
 <style scoped>
 .logs-page {
   margin: 0 auto;
+}
+
+.logs-page .card {
+  overflow: visible;
 }
 
 .filter-bar {
@@ -282,6 +373,51 @@ onUnmounted(() => {
   gap: 0.5rem;
   flex-wrap: wrap;
   align-items: center;
+}
+
+.multi-select {
+  position: relative;
+  min-width: 120px;
+  flex: 0 0 auto;
+}
+
+.multi-select-trigger {
+  cursor: pointer;
+  user-select: none;
+}
+
+.multi-select-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 100;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  margin-top: 0.25rem;
+  min-width: 100%;
+  padding: 0.25rem 0;
+}
+
+.multi-select-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.75rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.multi-select-item:hover {
+  background: var(--bg-hover);
+}
+
+.multi-select-divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 0.25rem 0;
 }
 
 .filter-select {
@@ -520,6 +656,7 @@ onUnmounted(() => {
     flex-direction: column;
   }
 
+  .multi-select,
   .filter-select,
   .filter-input,
   .filter-search {

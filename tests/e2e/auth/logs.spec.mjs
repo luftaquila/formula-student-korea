@@ -35,14 +35,18 @@ test.describe("System logs page", () => {
   });
 
   test("service filter dropdown works", async ({ page }) => {
-    // Open the service filter dropdown and select "auth"
-    const serviceSelect = page.locator("select.filter-select").first();
-    await expect(serviceSelect).toBeVisible();
+    // Open the service multi-select dropdown
+    const serviceDropdown = page.locator(".multi-select").first();
+    await serviceDropdown.locator(".multi-select-trigger").click();
+    await expect(serviceDropdown.locator(".multi-select-dropdown")).toBeVisible();
 
-    await serviceSelect.selectOption("auth");
-
-    // Wait for the table to reload
-    await waitForPageReady(page);
+    // Uncheck "전체" to deselect all, then check only "auth"
+    await serviceDropdown.locator(".multi-select-item").filter({ hasText: "전체" }).click();
+    const apiResponse = page.waitForResponse(
+      (res) => res.url().includes("/api/admin/logs") && res.status() === 200
+    );
+    await serviceDropdown.locator(".multi-select-item").filter({ hasText: "auth" }).click();
+    await apiResponse;
 
     // All visible service badges should be "auth"
     const serviceBadges = page.locator("table.data-table tbody .badge-primary");
@@ -56,14 +60,18 @@ test.describe("System logs page", () => {
   });
 
   test("level filter dropdown works", async ({ page }) => {
-    const levelSelect = page.locator("select.filter-select").nth(1);
-    await expect(levelSelect).toBeVisible();
+    // Open the level multi-select dropdown
+    const levelDropdown = page.locator(".multi-select").nth(1);
+    await levelDropdown.locator(".multi-select-trigger").click();
+    await expect(levelDropdown.locator(".multi-select-dropdown")).toBeVisible();
 
-    // Filter by "info" level
-    await levelSelect.selectOption("info");
-
-    // Wait for the table to reload
-    await waitForPageReady(page);
+    // Uncheck "전체" to deselect all, then check only "info"
+    await levelDropdown.locator(".multi-select-item").filter({ hasText: "전체" }).click();
+    const apiResponse = page.waitForResponse(
+      (res) => res.url().includes("/api/admin/logs") && res.status() === 200
+    );
+    await levelDropdown.locator(".multi-select-item").filter({ hasText: "info" }).click();
+    await apiResponse;
 
     // All visible level badges should be "info" (badge-success class)
     const levelBadges = page.locator("table.data-table tbody .badge-success");
@@ -96,17 +104,30 @@ test.describe("System logs page", () => {
   });
 
   test("reset filters button clears all filters", async ({ page }) => {
-    // Set a filter first
-    const serviceSelect = page.locator("select.filter-select").first();
-    await serviceSelect.selectOption("auth");
-    await waitForPageReady(page);
+    // Set a filter: select only "auth" service
+    const serviceDropdown = page.locator(".multi-select").first();
+    const serviceTrigger = serviceDropdown.locator(".multi-select-trigger");
+    await serviceTrigger.click();
+    await expect(serviceDropdown.locator(".multi-select-dropdown")).toBeVisible();
+    await serviceDropdown.locator(".multi-select-item").filter({ hasText: "전체" }).click();
+    const filterResponse = page.waitForResponse(
+      (res) => res.url().includes("/api/admin/logs") && res.status() === 200
+    );
+    await serviceDropdown.locator(".multi-select-item").filter({ hasText: "auth" }).click();
+    await filterResponse;
+
+    // Close dropdown by clicking header
+    await page.locator("h3").click();
 
     // Click reset button
+    const resetResponse = page.waitForResponse(
+      (res) => res.url().includes("/api/admin/logs") && res.status() === 200
+    );
     await page.getByRole("button", { name: "초기화" }).click();
-    await waitForPageReady(page);
+    await resetResponse;
 
-    // Service dropdown should be back to default (empty value = "전체 서비스")
-    await expect(serviceSelect).toHaveValue("");
+    // Service dropdown trigger should show "전체 서비스"
+    await expect(serviceTrigger).toHaveText("전체 서비스");
   });
 
   test("clicking a log row opens detail modal", async ({ page }) => {

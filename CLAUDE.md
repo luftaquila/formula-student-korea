@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-Formula Student Korea Service Hub — microservices web app for vehicle entry, inspection queue, traffic control, scoring, document submission, and energy meter monitoring.
+Formula Student Korea Service Hub — microservices web app for vehicle entry, inspection queue, traffic control, scoring, document submission, course management, and energy meter monitoring.
 
 ## Architecture
 
-11 services behind Caddy reverse proxy (port 9000), deployed via Docker Compose:
+12 services behind Caddy reverse proxy (port 9000), deployed via Docker Compose:
 
 | Service | Description | Port |
 |---------|-------------|------|
@@ -16,14 +16,15 @@ Formula Student Korea Service Hub — microservices web app for vehicle entry, i
 | traffic/ | Traffic control, telemetry, event modes (Express + Vue 3) | 9500 |
 | score/ | Score aggregation, penalty/scoring config (Express + Vue 3) | 9600 |
 | documents/ | Document submission management (Express + Vue 3) | 9700 |
+| course/ | Course cone management with RTK GPS (Express + Vue 3 + Leaflet) | 9050 |
 | files/ | Cloud file storage (FileBrowser, Caddy forward_auth) | 8080 |
 | energymeter/ | Energy meter viewer (Git submodule, Vue 3) | 9800 |
 | rules/ | Rules file server (Caddy) | 9900 |
 
-All 7 backend services share `Dockerfile.service` (root) with `ARG SERVICE` + `ARG PORT`. Shared modules in `shared/`.
+All 8 backend services share `Dockerfile.service` (root) with `ARG SERVICE` + `ARG PORT`. Shared modules in `shared/`.
 
 **Service dependencies** (env vars in `compose.yml`):
-- entry, inspection, traffic, documents → auth (`AUTH_SERVER`)
+- entry, inspection, traffic, documents, course → auth (`AUTH_SERVER`)
 - queue → entry (`ENTRY_SERVER`), auth (`AUTH_SERVER`)
 - score → entry, inspection, traffic, auth
 
@@ -31,7 +32,7 @@ All non-auth services validate via `AUTH_SERVER` (fail-close: only 200 confirms 
 
 ## Tech Stack
 
-Frontend: Vue 3, Vite, Vue Router, Pinia (traffic/energymeter only) · Backend: Node.js 22, Express.js 5, Better-SQLite3 · Auth: Google OAuth 2.0, JWT (HMAC-SHA256) cookies, RBAC · Real-time: SSE (inspection, queue, score, traffic) · Deploy: Docker Compose + Caddy · Testing: `node:test` + `node:assert`, Playwright (E2E)
+Frontend: Vue 3, Vite, Vue Router, Pinia (traffic/energymeter only) · Backend: Node.js 22, Express.js 5, Better-SQLite3 · Auth: Google OAuth 2.0, JWT (HMAC-SHA256) cookies, RBAC · Real-time: SSE (inspection, queue, score, traffic, course) · Deploy: Docker Compose + Caddy · Testing: `node:test` + `node:assert`, Playwright (E2E)
 
 ## Commands
 

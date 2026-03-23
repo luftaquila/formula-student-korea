@@ -72,8 +72,9 @@ export function createLogger(db, serviceName, maxRows = 50000) {
     const params = [];
 
     if (req.query.level) {
-      conditions.push("level = ?");
-      params.push(req.query.level);
+      const levels = req.query.level.split(",").map(l => l.trim()).filter(Boolean);
+      conditions.push(`level IN (${levels.map(() => "?").join(",")})`);
+      params.push(...levels);
     }
     if (req.query.action) {
       conditions.push("action LIKE ?");

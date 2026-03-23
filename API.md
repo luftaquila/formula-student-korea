@@ -1,6 +1,6 @@
 # API.md
 
-Complete API reference for all 7 backend services. Each service exposes `/api/health` (public, returns `"ok"`) and `/api/logs` (admin, query handler from `shared/logger.mjs`). Services with real-time updates expose an SSE endpoint. All services except entry have a SPA fallback (`GET /{*splat}`) serving `index.html`.
+Complete API reference for all 8 backend services. Each service exposes `/api/health` (public, returns `"ok"`) and `/api/logs` (admin, query handler from `shared/logger.mjs`). Services with real-time updates expose an SSE endpoint. All services except entry have a SPA fallback (`GET /{*splat}`) serving `index.html`.
 
 All mutating endpoints are logged via `shared/logger.mjs`.
 
@@ -326,3 +326,49 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 |--------|------|------|---------|----------|-------------|
 | PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service (updates student_team, session_team, submission, renames upload dirs) |
 | DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team data on entry deletion (student_team, session_team, submission, files) |
+
+---
+
+## Course Service (port 9050)
+
+RTK GPS 기반 코스 콘 위치 관리 서비스. 모든 엔드포인트 admin 전용 (health, rover/stream, rover/position 제외).
+
+### Courses
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/courses` | admin | — | `[{ id, name, cone_count, created_at, updated_at }]` | 코스 목록 조회 |
+| POST | `/api/courses` | admin | `{ name }` | 201 `{ id, name, created_at, updated_at }` | 코스 생성 |
+| PATCH | `/api/courses/:id` | admin | `{ name }` | `{ id, name, updated_at }` | 코스 이름 수정 |
+| DELETE | `/api/courses/:id` | admin | — | 200 | 코스 삭제 (콘 CASCADE 삭제) |
+
+### Cones
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/courses/:id/cones` | admin | — | `[{ id, course_id, lat, lng, side, created_at, updated_at }]` | 코스의 콘 목록 |
+| POST | `/api/courses/:id/cones` | admin | `{ lat, lng, side }` | 201 `{ id, course_id, lat, lng, side, ... }` | 콘 추가 (side: "left"\|"center"\|"right") |
+| PATCH | `/api/cones/:id` | admin | `{ lat?, lng?, side? }` | `{ id, course_id, lat, lng, side, updated_at }` | 콘 수정 (위치/방향) |
+| DELETE | `/api/cones/:id` | admin | — | 200 | 콘 삭제 |
+
+### Rover
+
+로버는 SSE로 서버에 연결 유지. 관리자가 위치 요청 시 서버가 SSE 이벤트로 로버에 전달, 로버가 즉시 현재 좌표를 POST.
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/rover/stream` | public | — | SSE stream | 로버 SSE 연결 (로버가 호출). `request-position` 이벤트 수신 시 위치 전송 |
+| POST | `/api/rover/position` | public | `{ lat, lng }` | `{ lat, lng }` | 로버가 현재 위치 전송 (로버가 호출) |
+| POST | `/api/rover/request` | admin | — | `{ lat, lng }` | 로버에 위치 요청 후 응답 대기 (5초 타임아웃). 503=미연결, 504=타임아웃 |
+| POST | `/api/rover/execute` | admin | `{ waypoints: [{lat,lng}...] }` | `{ sent }` | 경로 waypoint를 로버에 전송 (SSE `execute-path` 이벤트) |
+| POST | `/api/rover/stop` | admin | — | `{ stopped: true }` | 비상정지 (SSE `emergency-stop` 이벤트) |
+| POST | `/api/rover/control` | admin | `{ throttle, steering }` | `{ throttle, steering }` | 수동 제어 (-100~100, SSE `manual-control` 이벤트) |
+
+### SSE (`/api/events`)
+
+| Event | Data | Description |
+|-------|------|-------------|
+| `init` | `{ courses }` | 연결 시 코스 목록 |
+| `courses` | `{ type, course?, courseId?, courses }` | 코스 생성/수정/삭제 |
+| `cones` | `{ type, courseId, cone?, coneId?, cones }` | 콘 추가/수정/삭제 |
+| `rover` | `{ lat, lng }` | 로버 위치 수신 시 브로드캐스트 |

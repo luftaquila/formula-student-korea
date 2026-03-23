@@ -590,7 +590,10 @@ app.get("/api/admin/logs", async (req, res) => {
 
   // Determine which services to query
   const targetServices = service
-    ? (service === "auth" ? { auth: null } : { [service]: LOG_SERVICES[service] })
+    ? Object.fromEntries(
+        service.split(",").map(s => s.trim()).filter(Boolean)
+          .map(name => [name, name === "auth" ? null : LOG_SERVICES[name]])
+      )
     : { auth: null, ...LOG_SERVICES };
 
   const fetches = Object.entries(targetServices).map(async ([name, url]) => {
@@ -599,7 +602,11 @@ app.get("/api/admin/logs", async (req, res) => {
       try {
         const conditions = [];
         const params = [];
-        if (filters.level) { conditions.push("level = ?"); params.push(filters.level); }
+        if (filters.level) {
+          const levels = filters.level.split(",").map(l => l.trim()).filter(Boolean);
+          conditions.push(`level IN (${levels.map(() => "?").join(",")})`);
+          params.push(...levels);
+        }
         if (filters.action) { conditions.push("action LIKE ?"); params.push(filters.action + "%"); }
         if (filters.actor) { conditions.push("(actor_email LIKE ? OR actor_name LIKE ?)"); params.push(`%${filters.actor}%`, `%${filters.actor}%`); }
         if (filters.from) { conditions.push("timestamp >= ?"); params.push(filters.from); }

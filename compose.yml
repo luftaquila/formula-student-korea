@@ -37,6 +37,32 @@ services:
     networks:
       - fsk-network
 
+  course:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: course
+        PORT: 9050
+    container_name: fsk-course
+    security_opt:
+      - label:disable
+    environment:
+      <<: *common-env
+      AUTH_SERVER: http://auth:9100
+    volumes:
+      - ./course/data:/home/node/fsk-course/data
+    restart: unless-stopped
+    healthcheck:
+      <<: *common-healthcheck
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9050/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - fsk-network
+
   traffic:
     build:
       context: .
@@ -207,7 +233,7 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      LOG_SERVICES: "entry:http://entry:9200,queue:http://queue:9300,inspection:http://inspection:9400,traffic:http://traffic:9500,score:http://score:9600,documents:http://documents:9700"
+      LOG_SERVICES: "entry:http://entry:9200,queue:http://queue:9300,inspection:http://inspection:9400,traffic:http://traffic:9500,score:http://score:9600,documents:http://documents:9700,course:http://course:9050"
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
@@ -281,6 +307,7 @@ services:
       - "traefik.http.services.fsk.loadbalancer.server.port=9000"
     depends_on: &caddy-depends
       - entry
+      - course
       - traffic
       - energymeter
       - queue

@@ -1,8 +1,8 @@
 # 비즈니스 흐름 문서
 
-전체 7개 서비스의 비즈니스 흐름을 서비스별로 정리한 문서입니다.
+전체 8개 서비스의 비즈니스 흐름을 서비스별로 정리한 문서입니다.
 
-> **공통 엔드포인트**: 모든 7개 서비스는 `GET /api/health` (public, 헬스체크)와 `GET /api/logs` (admin, 로컬 서비스 로그 조회) 엔드포인트를 공통으로 노출합니다.
+> **공통 엔드포인트**: 모든 8개 서비스는 `GET /api/health` (public, 헬스체크)와 `GET /api/logs` (admin, 로컬 서비스 로그 조회) 엔드포인트를 공통으로 노출합니다.
 
 ## 목차
 
@@ -13,7 +13,8 @@
 - [5. Traffic 서비스](#5-traffic-서비스)
 - [6. Score 서비스](#6-score-서비스)
 - [7. Documents 서비스](#7-documents-서비스)
-- [8. 서비스 간 연동 흐름](#8-서비스-간-연동-흐름)
+- [8. Course 서비스](#8-course-서비스)
+- [9. 서비스 간 연동 흐름](#9-서비스-간-연동-흐름)
 
 ---
 
@@ -314,7 +315,53 @@
 
 ---
 
-## 8. 서비스 간 연동 흐름
+## 8. Course 서비스
+
+### 코스 관리
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 8.1 | 코스 목록 조회 | admin | `GET /api/courses` | 전체 코스 목록 + 콘 개수 반환 |
+| 8.2 | 코스 생성 | admin | `POST /api/courses` | `{ name }` → UNIQUE 제약 |
+| 8.3 | 코스 이름 수정 | admin | `PATCH /api/courses/:id` | `{ name }` → 중복 이름 방지 |
+| 8.4 | 코스 삭제 | admin | `DELETE /api/courses/:id` | CASCADE로 콘도 함께 삭제 |
+
+### 콘 관리
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 8.5 | 콘 목록 조회 | admin | `GET /api/courses/:id/cones` | 특정 코스의 콘 목록 |
+| 8.6 | 콘 추가 | admin | `POST /api/courses/:id/cones` | `{ lat, lng, side }` side: "left"\|"center"\|"right" |
+| 8.7 | 콘 수정 | admin | `PATCH /api/cones/:id` | 위치(lat, lng) 또는 방향(side) 변경 |
+| 8.8 | 콘 삭제 | admin | `DELETE /api/cones/:id` | 단일 콘 삭제 |
+
+### Rover GPS 연동
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 8.9 | 로버 SSE 연결 | public | `GET /api/rover/stream` | 로버가 서버에 SSE 연결 유지, `request-position` 이벤트 수신 대기 |
+| 8.10 | 로버 위치 전송 | public | `POST /api/rover/position` | 로버가 `request-position` 수신 시 현재 좌표 `{ lat, lng }` 전송 |
+| 8.11 | 로버 좌표 요청 | admin | `POST /api/rover/request` | 관리자 버튼 클릭 → 서버가 로버에 SSE 이벤트 전송 → 로버 응답 대기 (5초 타임아웃) |
+| 8.12 | 로버 좌표로 콘 등록 | admin | 8.11 → 8.6 | 로버 좌표 수신 후 현재 선택된 방향(L/R)으로 콘 등록 (프론트엔드 연동) |
+
+### 로버 제어
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 8.13 | 경로 계산 | admin | 프론트엔드 | 시작점 클릭 → Nearest Neighbor TSP + 2-opt 최적화 (회전 페널티 포함) → 지도에 polyline + S/E 마커 + 예상 거리 표시 |
+| 8.14 | 경로 실행 | admin | `POST /api/rover/execute` | 계산된 waypoint 배열을 로버에 SSE `execute-path` 이벤트로 전송 |
+| 8.15 | 비상정지 | admin | `POST /api/rover/stop` | 로버에 SSE `emergency-stop` 이벤트 즉시 전송 |
+| 8.16 | 수동 제어 | admin | `POST /api/rover/control` | 조이스틱 UI로 throttle/steering(-100~100) 50ms 간격 전송, SSE `manual-control` 이벤트 |
+
+### SSE 실시간 동기화
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 8.17 | SSE 연결 | admin | `GET /api/events` | 연결 시 `init` 이벤트로 코스 목록 전송, 이후 `courses`/`cones`/`rover` 이벤트 브로드캐스트 |
+
+---
+
+## 9. 서비스 간 연동 흐름
 
 ### Score 집계 체인
 

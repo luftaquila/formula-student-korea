@@ -27,7 +27,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          for dir in auth entry queue inspection traffic score documents; do
+          for dir in auth entry queue inspection traffic score documents course; do
             cd $dir && npm ci && cd ..
           done
 
@@ -85,7 +85,7 @@ jobs:
           DOCKER_BUILD_SUMMARY: false
         with:
           files: compose.yml
-          targets: auth,entry,queue,inspection,traffic,score,documents,caddy-local
+          targets: auth,entry,queue,inspection,traffic,score,documents,course,caddy-local
           set: |
             *.cache-from=type=registry,ref=ghcr.io/${{ github.repository }}/cache:buildkit
             *.cache-to=type=registry,ref=ghcr.io/${{ github.repository }}/cache:buildkit,mode=min
@@ -96,12 +96,13 @@ jobs:
             traffic.tags=formula-student-korea-traffic
             score.tags=formula-student-korea-score
             documents.tags=formula-student-korea-documents
+            course.tags=formula-student-korea-course
             caddy-local.tags=formula-student-korea-caddy-local
           load: true
 
       - name: Start services
         run: |
-          docker compose up -d --wait --no-build auth entry queue inspection traffic score documents
+          docker compose up -d --wait --no-build auth entry queue inspection traffic score documents course
           docker compose --profile local up -d --no-deps --no-build caddy-local
           sleep 3
           curl -sf http://localhost:9000/auth/api/health
