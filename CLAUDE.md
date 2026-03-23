@@ -93,6 +93,51 @@ Patterns: immediate → `waitForResponse` before action | debounced → before `
 
 **Parallel isolation**: never assert exact counts; use `toBeGreaterThanOrEqual`, regex, or isolated test data.
 
+## Logging Policy
+
+All backend services use `createLogger(db, serviceName)` from `shared/logger.mjs`. Logs are stored per-service in SQLite `logs` table and aggregated by auth service (`GET /api/admin/logs`).
+
+### API
+
+```js
+logger.log(req, action, detail, target, actorOverride)   // level: info (성공)
+logger.warn(req, action, detail, target, actorOverride)   // level: warn (실패·경고)
+```
+
+- `action`: dot-separated `resource.operation` (e.g., `entry.create`, `rover.request`)
+- `target`: 영향받는 대상 식별자 (e.g., `#123`, `course-name`, `rover`)
+- `detail`: 객체면 자동 JSON.stringify, 문자열이면 그대로 저장. null 허용
+- `actorOverride`: 다른 사용자 대신 기록 시 `{ email, name, role }` 전달
+
+### 레벨 규칙
+
+| 상황 | 레벨 | 예시 |
+|------|------|------|
+| 작업 성공 | `logger.log` | `logger.log(req, "entry.create", { year, univ }, "#123")` |
+| 작업 실패 (비즈니스 로직, DB 에러) | `logger.warn` | `logger.warn(req, "entry.create", { error: result.error }, "#123")` |
+| 보안 이벤트 (인증 실패, 권한 거부) | `logger.warn` | `logger.warn(req, "auth.forward_auth_denied", ...)` |
+
+### 필수 로깅 원칙
+
+1. **모든 쓰기 작업(CUD)의 실패는 반드시 로깅한다.** dbRun 실패 시 에러 응답 전에 `logger.warn`을 호출한다:
+   ```js
+   const result = dbRun(() => { ... });
+   if (!result.success) {
+     logger.warn(req, "resource.operation", { error: result.error }, target);
+     return res.status(result.status).send(result.error);
+   }
+   ```
+
+2. **같은 액션의 성공/실패는 반드시 레벨로 구분한다.** 같은 action 문자열을 써도 성공은 `logger.log`, 실패는 `logger.warn`. 로그 뷰어에서 레벨 필터링으로 장애를 찾을 수 있어야 한다.
+
+3. **catch 블록에서 `console.error` 대신 `logger.warn`을 쓴다.** 구조화된 로그만 로그 뷰어에 노출되므로, `console.*`으로만 남기면 운영 중 확인 불가. `console.error`는 서버 시작·마이그레이션 등 logger 사용 불가 시점에만 허용.
+
+4. **서비스 간 통신 실패는 반드시 로깅한다.** fetch 실패, 타임아웃 등을 `logger.warn`으로 기록하여 어떤 서비스가 왜 실패했는지 추적 가능하게 한다.
+
+5. **파괴적 작업(cascade 삭제, 내부 API)은 성공·실패 모두 반드시 로깅한다.** internal API를 통한 데이터 삭제도 감사 추적이 필요하다.
+
+6. **detail에는 사람이 이해할 수 있는 충분한 맥락을 누락 없이 포함한다.** 로그만 보고 무슨 일이 있었는지 완전히 파악할 수 있어야 한다. 실패 로그에는 `{ error: "..." }` 형태로 에러 원인을, 성공 로그에는 변경된 값·대상·조건 등 핵심 정보를 담는다. ID만 남기고 이름을 빠뜨리거나, 에러 객체를 그대로 던지는 등 맥락이 불충분한 로그를 남기지 않는다.
+
 ## References
 
 See `API.md` for endpoints, `FLOW.md` for business flows, `.env.example` for env vars.

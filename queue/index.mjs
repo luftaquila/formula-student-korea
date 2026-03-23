@@ -410,7 +410,7 @@ app.post("/api/state/:num", rateLimit, async (req, res) => {
       return res.status(400).send("존재하지 않는 엔트리 번호입니다.");
     }
   } catch (e) {
-    console.error("[queue] 엔트리 조회 오류:", e);
+    logger.warn(req, "queue.entry_lookup", { error: e.message, num });
     return res.status(500).send("엔트리를 조회할 수 없습니다.");
   }
 
@@ -529,6 +529,7 @@ app.patch("/api/admin/inspection/:type", (req, res) => {
   );
 
   if (!result.success) {
+    logger.warn(req, "inspection.toggle", { error: result.error }, req.params.type);
     return res.status(result.status).send(result.error);
   }
 
@@ -555,6 +556,7 @@ app.patch("/api/admin/inspection/:type/visibility", (req, res) => {
   );
 
   if (!result.success) {
+    logger.warn(req, "inspection.visibility", { error: result.error }, req.params.type);
     return res.status(result.status).send(result.error);
   }
 
@@ -599,7 +601,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
       return res.status(400).send("존재하지 않는 엔트리 번호입니다.");
     }
   } catch (e) {
-    console.error("[queue] 엔트리 조회 오류:", e);
+    logger.warn(req, "queue.entry_lookup", { error: e.message, num });
     return res.status(500).send("엔트리를 조회할 수 없습니다.");
   }
 
@@ -667,6 +669,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "queue.register", { error: result.error }, `#${num}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -744,6 +747,7 @@ app.post("/api/admin/cancel/:type", (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "queue.cancel", { error: result.error }, `#${num}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -805,6 +809,7 @@ app.post("/api/admin/priority/:type", (req, res) => {
   );
 
   if (!result.success) {
+    logger.warn(req, "priority.set", { error: result.error }, `#${numValidation.value}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -836,6 +841,7 @@ app.delete("/api/admin/priority/:type", (req, res) => {
   );
 
   if (!result.success) {
+    logger.warn(req, "priority.delete", { error: result.error }, `#${numValidation.value}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -862,6 +868,7 @@ app.delete("/api/admin/priority/:type/all", (req, res) => {
   const result = dbRun(() => db.prepare("DELETE FROM team_priority WHERE inspection = ? AND year = ?").run(req.params.type, currentYear()));
 
   if (!result.success) {
+    logger.warn(req, "priority.clear", { error: result.error }, req.params.type);
     return res.status(result.status).send(result.error);
   }
 
@@ -894,6 +901,7 @@ app.delete("/api/admin/history/:type", (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "history.clear", { error: result.error }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -930,6 +938,7 @@ app.put("/api/admin/inspection/:type/ignore", (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "inspection.ignore", { error: result.error }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -1014,6 +1023,7 @@ app.patch("/api/admin/booths/:type/config", (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "booth.count", { error: result.error }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -1057,6 +1067,7 @@ app.patch("/api/admin/booths/:type/:boothNum", (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "booth.toggle", { error: result.error }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -1150,6 +1161,7 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "booth.enter", { error: result.error }, `#${num}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -1209,6 +1221,7 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "booth.exit", { error: result.error }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -1507,6 +1520,7 @@ app.patch("/api/admin/settings/sms", (req, res) => {
   );
 
   if (!result.success) {
+    logger.warn(req, "settings.sms", { error: result.error });
     return res.status(result.status).send(result.error);
   }
 
@@ -1535,6 +1549,7 @@ app.patch("/api/admin/settings/sms-rank", (req, res) => {
   const result = dbRun(() => db.prepare("UPDATE settings SET value = ? WHERE key = ?").run(String(rank), "sms_rank"));
 
   if (!result.success) {
+    logger.warn(req, "settings.sms_rank", { error: result.error });
     return res.status(result.status).send(result.error);
   }
 
@@ -1565,6 +1580,7 @@ app.patch("/api/admin/settings/cancel-penalty", (req, res) => {
   );
 
   if (!result.success) {
+    logger.warn(req, "settings.cancel_penalty", { error: result.error });
     return res.status(result.status).send(result.error);
   }
 
@@ -1620,14 +1636,14 @@ function sendSmsNotification(type, prev) {
       const sms = https.request(payload, (res) => {
         let data = "";
         res.on("data", (chunk) => (data += chunk));
-        res.on("end", () => console.log(data));
+        res.on("end", () => logger.log(null, "sms.send", { response: data, num: target.num, type }));
       });
 
       sms.setTimeout(5000, () => {
-        console.error("SMS request timed out");
+        logger.warn(null, "sms.timeout", { num: target.num, type });
         sms.destroy();
       });
-      sms.on("error", (e) => console.error(e));
+      sms.on("error", (e) => logger.warn(null, "sms.error", { error: e.message, num: target.num, type }));
       sms.write(
         JSON.stringify({
           type: "SMS",
@@ -1639,7 +1655,7 @@ function sendSmsNotification(type, prev) {
       sms.end();
     }
   } catch (e) {
-    console.error(`SMS 발송 오류: ${e}`);
+    logger.warn(null, "sms.error", { error: String(e), num: target?.num, type });
   }
 }
 
@@ -1688,8 +1704,11 @@ app.delete("/api/internal/team/:num", (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "team.cascade_delete", { error: result.error, year }, "#" + num);
     return res.status(result.status).send(result.error);
   }
+
+  logger.log(req, "team.cascade_delete", { year }, "#" + num);
 
   // SSE 브로드캐스트
   const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();

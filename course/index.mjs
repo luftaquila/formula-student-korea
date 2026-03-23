@@ -163,8 +163,10 @@ app.post("/api/courses", (req, res) => {
 
   if (!result.success) {
     if (result.error?.includes("UNIQUE")) {
+      logger.warn(req, "course.create", { error: result.error }, validation.value);
       return res.status(400).send("이미 존재하는 코스 이름입니다.");
     }
+    logger.warn(req, "course.create", { error: result.error }, validation.value);
     return res.status(result.status).send(result.error);
   }
 
@@ -191,8 +193,10 @@ app.patch("/api/courses/:id", (req, res) => {
 
   if (!result.success) {
     if (result.error?.includes("UNIQUE")) {
+      logger.warn(req, "course.rename", { error: result.error }, course.name);
       return res.status(400).send("이미 존재하는 코스 이름입니다.");
     }
+    logger.warn(req, "course.rename", { error: result.error }, course.name);
     return res.status(result.status).send(result.error);
   }
 
@@ -281,7 +285,10 @@ app.delete("/api/courses/:id", (req, res) => {
   if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
 
   const result = dbRun(() => db.prepare("DELETE FROM course WHERE id = ?").run(id));
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "course.delete", { error: result.error }, course.name);
+    return res.status(result.status).send(result.error);
+  }
 
   logger.log(req, "course.delete", null, course.name);
   broadcastEvent("courses", { type: "delete", courseId: id, courses: getCourses() });
@@ -326,7 +333,10 @@ app.post("/api/courses/:id/cones", (req, res) => {
     return db.prepare("SELECT * FROM cone WHERE id = last_insert_rowid()").get();
   });
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "cone.create", { error: result.error }, course.name);
+    return res.status(result.status).send(result.error);
+  }
 
   logger.log(req, "cone.create", { lat, lng, side }, course.name);
   broadcastEvent("cones", { type: "add", courseId, cone: result.result, cones: getCones(courseId) });
@@ -375,7 +385,11 @@ app.patch("/api/cones/:id", (req, res) => {
     return db.prepare("SELECT * FROM cone WHERE id = ?").get(id);
   });
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    const updateCourse = getCourseById(cone.course_id);
+    logger.warn(req, "cone.update", { error: result.error }, updateCourse?.name);
+    return res.status(result.status).send(result.error);
+  }
 
   const updateCourse = getCourseById(cone.course_id);
   logger.log(req, "cone.update", { before: { lat: cone.lat, lng: cone.lng, side: cone.side }, after: { lat: result.result.lat, lng: result.result.lng, side: result.result.side } }, updateCourse?.name);
@@ -392,7 +406,11 @@ app.delete("/api/cones/:id", (req, res) => {
   if (!cone) return res.status(404).send("콘을 찾을 수 없습니다.");
 
   const result = dbRun(() => db.prepare("DELETE FROM cone WHERE id = ?").run(id));
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    const delCourse = getCourseById(cone.course_id);
+    logger.warn(req, "cone.delete", { error: result.error }, delCourse?.name);
+    return res.status(result.status).send(result.error);
+  }
 
   const delCourse = getCourseById(cone.course_id);
   logger.log(req, "cone.delete", { lat: cone.lat, lng: cone.lng, side: cone.side }, delCourse?.name);
@@ -442,12 +460,16 @@ app.post("/api/rover/position", (req, res) => {
 
 // POST /api/rover/request - 관리자가 로버 좌표 요청 (프론트엔드가 호출)
 app.post("/api/rover/request", async (req, res) => {
-  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!roverClient) {
+    logger.warn(req, "rover.request", { error: "not_connected" }, "rover");
+    return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  }
 
   try {
     roverClient.write("event: request-position\ndata: {}\n\n");
   } catch {
     roverClient = null;
+    logger.warn(req, "rover.request", { error: "connection_lost" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
 
@@ -459,7 +481,7 @@ app.post("/api/rover/request", async (req, res) => {
   roverPendingResolve = null;
 
   if (!position) {
-    logger.log(req, "rover.request", { result: "timeout" }, "rover");
+    logger.warn(req, "rover.request", { result: "timeout" }, "rover");
     return res.status(504).send("로버 응답 시간 초과");
   }
   logger.log(req, "rover.request", { lat: position.lat, lng: position.lng }, "rover");
@@ -492,6 +514,7 @@ app.post("/api/rover/execute", (req, res) => {
   if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
 
   if (!sendRoverEvent("execute-path", { waypoints })) {
+    logger.warn(req, "rover.execute", { error: "write_failed" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
 
@@ -504,6 +527,7 @@ app.post("/api/rover/stop", (req, res) => {
   if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
 
   if (!sendRoverEvent("emergency-stop", {})) {
+    logger.warn(req, "rover.stop", { error: "write_failed" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
 
@@ -524,6 +548,7 @@ app.post("/api/rover/control", (req, res) => {
   const s = Math.max(-100, Math.min(100, steering));
 
   if (!sendRoverEvent("manual-control", { throttle: t, steering: s })) {
+    logger.warn(req, "rover.control", { error: "write_failed" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
 

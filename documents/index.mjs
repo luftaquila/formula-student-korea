@@ -141,7 +141,7 @@ function rmDir(dir) {
   try {
     fs.rmSync(dir, { recursive: true, force: true });
   } catch (err) {
-    console.error("rmDir failed:", dir, err.message);
+    logger.warn(null, "file.cleanup", { error: err.message, dir });
   }
 }
 
@@ -269,7 +269,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     };
     const ext = path.extname(info.filename || "").toLowerCase();
     if (MIME_MAP[ext] && !MIME_MAP[ext].includes(info.mimeType)) {
-      console.warn(`[upload] MIME mismatch: ${info.filename} ext=${ext} mime=${info.mimeType}`);
+      logger.warn(req, "submission.create", { warning: "mime_mismatch", filename: info.filename, ext, mime: info.mimeType }, session.name);
     }
 
     const storedName = crypto.randomUUID() + safeExt(info.filename);
@@ -366,6 +366,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     });
 
     if (!txResult.success) {
+      logger.warn(req, "submission.create", { error: txResult.error, session_id: session.id }, session.name);
       rmDir(tmpDir);
       return res.status(txResult.status).send(txResult.error);
     }
@@ -376,12 +377,12 @@ app.post("/api/sessions/:id/submit", (req, res) => {
       fs.mkdirSync(path.dirname(finalDir), { recursive: true });
       fs.renameSync(tmpDir, finalDir);
     } catch (fsErr) {
-      console.error("File operation failed after DB commit:", fsErr.message);
+      logger.warn(req, "submission.create", { error: fsErr.message, phase: "file_move" }, session.name);
       try {
         db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(txResult.result.id);
         db.prepare("DELETE FROM submission WHERE id = ?").run(txResult.result.id);
       } catch (rollbackErr) {
-        console.error("DB rollback after file error also failed — orphan record may exist:", rollbackErr.message);
+        logger.warn(req, "submission.create", { error: rollbackErr.message, phase: "rollback", submission_id: txResult.result.id }, session.name);
       }
       rmDir(tmpDir);
       if (!res.headersSent) return res.status(500).send("파일 저장에 실패했습니다.");
@@ -393,7 +394,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
         db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(txResult.result.prevId);
         db.prepare("DELETE FROM submission WHERE id = ?").run(txResult.result.prevId);
       } catch (e) {
-        console.error("Failed to delete previous submission:", e.message);
+        logger.warn(req, "submission.create", { error: e.message, phase: "prev_cleanup", prev_id: txResult.result.prevId }, session.name);
       }
       rmDir(path.join(UPLOADS_DIR, String(session.id), String(team.team_num), String(txResult.result.prevId)));
     }
@@ -496,7 +497,7 @@ app.post("/api/admin/sessions", (req, res) => {
     return tx();
   });
 
-  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+  if (!txResult.success) { logger.warn(req, "session.create", { error: txResult.error }, name.trim()); return res.status(txResult.status).send(txResult.error); }
   logger.log(req, "session.create", { year: numYear, teams: teams.length }, name.trim());
   res.status(201).json(txResult.result);
 });
@@ -557,7 +558,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
     return tx();
   });
 
-  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+  if (!txResult.success) { logger.warn(req, "session.update", { error: txResult.error }, name.trim()); return res.status(txResult.status).send(txResult.error); }
 
   // 트랜잭션 성공 후 디스크 파일 정리
   for (const { team, subIds } of removedTeamNums) {
@@ -579,7 +580,7 @@ app.delete("/api/admin/sessions/:id", (req, res) => {
     db.prepare("DELETE FROM session WHERE id = ?").run(id);
   });
 
-  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+  if (!txResult.success) { logger.warn(req, "session.delete", { error: txResult.error }, session.name); return res.status(txResult.status).send(txResult.error); }
 
   logger.log(req, "session.delete", { id, year: session.year }, session.name);
 
@@ -640,11 +641,12 @@ app.get("/api/admin/students", async (req, res) => {
       headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
       signal: AbortSignal.timeout(5000),
     });
-    if (!authRes.ok) return res.status(502).send("계정 서비스 연결 실패");
+    if (!authRes.ok) { logger.warn(req, "auth.fetch", { error: "status_" + authRes.status }); return res.status(502).send("계정 서비스 연결 실패"); }
     const users = await authRes.json();
     const students = users.filter((u) => u.role === "student" && u.active);
     res.json(students.map((u) => ({ email: u.email, name: u.name })));
-  } catch {
+  } catch (e) {
+    logger.warn(req, "auth.fetch", { error: e.message });
     res.status(502).send("계정 서비스 연결 실패");
   }
 });
@@ -673,6 +675,7 @@ app.post("/api/admin/student-teams", (req, res) => {
 
   if (!result.success) {
     if (result.error.includes("UNIQUE")) return res.status(400).send("이미 등록된 이메일이거나 해당 팀에 이미 학생이 있습니다.");
+    logger.warn(req, "student_team.create", { error: result.error }, email.trim().toLowerCase());
     return res.status(result.status).send(result.error);
   }
 
@@ -690,7 +693,7 @@ app.delete("/api/admin/student-teams/:email/:year", (req, res) => {
     db.prepare("DELETE FROM student_team WHERE email = ? AND year = ?")
       .run(email, year)
   );
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) { logger.warn(req, "student_team.delete", { error: result.error }, email); return res.status(result.status).send(result.error); }
   if (result.result.changes === 0) return res.status(404).send("매핑을 찾을 수 없습니다.");
   logger.log(req, "student_team.delete", { year, team_num: mapping?.team_num }, email);
   res.status(200).send();
@@ -720,7 +723,7 @@ app.patch("/api/internal/team-num", (req, res) => {
     })();
   });
 
-  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+  if (!txResult.success) { logger.warn(req, "team_num.update", { error: txResult.error, year, prevNum, newNum }); return res.status(txResult.status).send(txResult.error); }
 
   // 업로드 디렉토리 이름 변경
   const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
@@ -742,7 +745,7 @@ app.patch("/api/internal/team-num", (req, res) => {
   if (failedRenames.length > 0) {
     // 성공한 rename 되돌리기
     for (const { oldDir, newDir } of renamedDirs) {
-      try { fs.renameSync(newDir, oldDir); } catch { /* best effort */ }
+      try { fs.renameSync(newDir, oldDir); } catch (e) { logger.warn(req, "team_num.update", { error: e.message, phase: "rollback_rename", oldDir, newDir }); }
     }
 
     // DB 롤백: 원래 값으로 복원
@@ -794,12 +797,13 @@ app.delete("/api/internal/team/:num", (req, res) => {
     })();
   });
 
-  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+  if (!txResult.success) { logger.warn(req, "team.cascade_delete", { error: txResult.error, year }, "#" + num); return res.status(txResult.status).send(txResult.error); }
 
   for (const { sessionId, subId } of removedFiles) {
     rmDir(path.join(UPLOADS_DIR, String(sessionId), String(num), String(subId)));
   }
 
+  logger.log(req, "team.cascade_delete", { year, removed: removedFiles.length }, "#" + num);
   res.status(200).send();
 });
 

@@ -180,7 +180,7 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix) {
       res.on("data", (chunk) => {
         buffer += chunk.toString();
         if (buffer.length > 1024 * 1024) {
-          console.warn(`[score] ${name} SSE buffer overflow, discarding`);
+          logger.warn(null, "score.sse_overflow", { source: name });
           buffer = "";
           return;
         }
@@ -196,7 +196,7 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix) {
               broadcastEvent(`${prefix}:${eventMatch[1]}`, JSON.parse(jsonStr));
             }
           } catch (e) {
-            console.error(`${name} SSE message parse error:`, e);
+            logger.warn(null, "score.sse_parse_error", { source: name, error: e.message });
           }
         }
       });
@@ -455,7 +455,7 @@ app.get("/api/score", async (req, res) => {
 
     res.json({ entries, inspection, events, manualScores, penalties, settings });
   } catch (e) {
-    console.error("[score] 데이터 집계 오류:", e);
+    logger.warn(req, "score.aggregate", { error: e.message });
     res.status(500).send("데이터 집계 오류가 발생했습니다.");
   }
 });
@@ -488,7 +488,10 @@ app.put("/api/score/manual", (req, res) => {
       .run(numYear, numTeamNum, score_type, numValue),
   );
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "manual_score.update", { error: result.error, year: numYear, score_type }, `#${numTeamNum}`);
+    return res.status(result.status).send(result.error);
+  }
 
   logger.log(req, "manual_score.update", { year: numYear, score_type, value: numValue }, `#${numTeamNum}`);
   broadcastEvent("manual-score", { year: numYear, team_num: numTeamNum, score_type, value: numValue });
@@ -523,7 +526,10 @@ app.put("/api/score/penalty", (req, res) => {
       .run(year, event_type, cone, oc, delay),
   );
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "penalty.update", { error: result.error, year }, event_type);
+    return res.status(result.status).send(result.error);
+  }
 
   logger.log(req, "penalty.update", { year, cone: cone, oc: oc, delay }, event_type);
   broadcastEvent("penalty", { year, event_type, cone_penalty: cone, oc_penalty: oc, start_delay: delay });
@@ -558,7 +564,10 @@ app.put("/api/score/setting", (req, res) => {
       .run(year, event_type, setting_key, numValue),
   );
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "setting.update", { error: result.error, year, key: setting_key }, event_type);
+    return res.status(result.status).send(result.error);
+  }
 
   logger.log(req, "setting.update", { year, key: setting_key, value: numValue }, event_type);
   broadcastEvent("setting", { year, event_type, setting_key, value: numValue });
@@ -617,7 +626,10 @@ app.put("/api/score/endurance", (req, res) => {
     })();
   });
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "endurance.update", { error: result.error, year: numYear, field }, `#${numTeamNum}`);
+    return res.status(result.status).send(result.error);
+  }
 
   logger.log(req, "endurance.update", { year: numYear, field, value: dbValue }, `#${numTeamNum}`);
   broadcastEvent("endurance", { year: numYear, team_num: numTeamNum, field, value: dbValue });

@@ -189,7 +189,10 @@ app.post("/api/sheet/template", (req, res) => {
     ).run(year, level, parent_id || null, sort_order || 0, name, answer_type || null, remarks || "", unit || "", pdf_include ?? 1)
   );
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "template.create", { error: result.error, year }, name);
+    return res.status(result.status).send(result.error);
+  }
   logger.log(req, "template.create", { year, level }, name);
   res.json({ id: result.result.lastInsertRowid });
 });
@@ -219,7 +222,10 @@ app.put("/api/sheet/template/:id", (req, res) => {
     db.prepare(`UPDATE sheet_template SET ${fields.join(", ")} WHERE id = ?`).run(...params)
   );
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "template.update", { error: result.error }, node.name);
+    return res.status(result.status).send(result.error);
+  }
   if (!result.result.changes) return res.status(404).send("항목을 찾을 수 없습니다.");
   logger.log(req, "template.update", { fields: Object.fromEntries(fields.map((f, i) => [f.split(" = ")[0], params[i]])) }, node.name);
   res.status(200).send();
@@ -236,7 +242,10 @@ app.delete("/api/sheet/template/:id", (req, res) => {
     return db.prepare("DELETE FROM sheet_template WHERE id = ?").run(id);
   });
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "template.delete", { error: result.error }, node.name);
+    return res.status(result.status).send(result.error);
+  }
   logger.log(req, "template.delete", { year: node.year }, node.name);
   res.status(200).send();
 });
@@ -261,7 +270,10 @@ app.post("/api/sheet/template/reorder", (req, res) => {
     })();
   });
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "template.reorder", { error: result.error });
+    return res.status(result.status).send(result.error);
+  }
   const firstItem = db.prepare("SELECT year FROM sheet_template WHERE id = ?").get(items[0].id);
   logger.log(req, "template.reorder", { count: items.length, year: firstItem?.year });
   res.status(200).send();
@@ -292,7 +304,10 @@ app.post("/api/sheet/template/copy", (req, res) => {
     })();
   });
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "template.copy", { error: result.error });
+    return res.status(result.status).send(result.error);
+  }
   logger.log(req, "template.copy", { from_year, to_year });
   res.status(201).send();
 });
@@ -337,7 +352,10 @@ app.post("/api/sheet/template/import", (req, res) => {
     })();
   });
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "template.import", { error: result.error, year });
+    return res.status(result.status).send(result.error);
+  }
   logger.log(req, "template.import", { year });
   res.status(201).send();
 });
@@ -467,7 +485,10 @@ app.put("/api/sheet/answer", (req, res) => {
     return { changed: !prev || prev.value !== newValue };
   });
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "answer.update", { error: result.error, year, item_id }, `#${team_num}`);
+    return res.status(result.status).send(result.error);
+  }
 
   if (result.result.changed) {
     logger.log(req, "answer.update", { year, item_id, item_name: templateItem.name, value: newValue }, `#${team_num}`);
@@ -495,7 +516,10 @@ app.put("/api/sheet/memo", (req, res) => {
     ).run(year, team_num, item_id, memo ?? "")
   );
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "memo.update", { error: result.error, year, item_id }, `#${team_num}`);
+    return res.status(result.status).send(result.error);
+  }
 
   logger.log(req, "memo.update", { year, item_id, item_name: templateItem.name, memo: memo ?? "" }, `#${team_num}`);
   broadcastEvent("memo", { year, team_num, item_id, memo: memo ?? "" });
@@ -524,7 +548,10 @@ app.put("/api/sheet/category-result", (req, res) => {
     ).run(year, team_num, category_id, catResult ?? "")
   );
 
-  if (!r.success) return res.status(r.status).send(r.error);
+  if (!r.success) {
+    logger.warn(req, "category_result.update", { error: r.error, year, category_id }, `#${team_num}`);
+    return res.status(r.status).send(r.error);
+  }
 
   logger.log(req, "category_result.update", { year, category_id, category_name: templateCat.name, result: catResult }, `#${team_num}`);
   broadcastEvent("category-result", { year, team_num, category_id, result: catResult ?? "" });
@@ -550,7 +577,10 @@ app.put("/api/sheet/inspector", (req, res) => {
     ).run(year, team_num, category_id, inspector ?? "")
   );
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "inspector.update", { error: result.error, year, category_id }, `#${team_num}`);
+    return res.status(result.status).send(result.error);
+  }
 
   logger.log(req, "inspector.update", { year, category_id, category_name: templateCat.name, inspector }, `#${team_num}`);
   broadcastEvent("inspector", { year, team_num, category_id, inspector: inspector ?? "" });

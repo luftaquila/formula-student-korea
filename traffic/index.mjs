@@ -249,6 +249,7 @@ app.post("/api/records", (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "record.create", { error: result.error, entry_num: data.entry.num }, name);
     return res.status(result.status).send(result.error);
   }
 
@@ -324,6 +325,7 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "record.update", { error: result.error }, name);
     return res.status(result.status).send(result.error);
   }
 
@@ -334,7 +336,7 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
     const updatedRow = db.prepare(`SELECT rowid, * FROM '${name}' WHERE rowid = ?`).get(rowid);
     broadcastEvent("records", { type: "update", name, field, recordFiles: getRecordFiles(), record: updatedRow });
   } catch (e) {
-    console.error("[SSE broadcast]", e.message);
+    logger.warn(req, "record.update", { error: e.message, phase: "sse_broadcast" }, name);
   }
 
   res.json(result.result);
@@ -356,6 +358,7 @@ app.delete("/api/records/:name", (req, res) => {
   const result = dbRun(() => db.exec(`DROP TABLE IF EXISTS '${name}'`));
 
   if (!result.success) {
+    logger.warn(req, "record.delete", { error: result.error }, name);
     return res.status(result.status).send(result.error);
   }
 
@@ -394,6 +397,7 @@ app.post("/api/controllers", (req, res) => {
   );
 
   if (!result.success) {
+    logger.warn(req, "controller.upload", { error: result.error });
     return res.status(result.status).send(result.error);
   }
 
@@ -406,6 +410,7 @@ app.delete("/api/controllers", (req, res) => {
   const result = dbRun(() => db.prepare("DELETE FROM controller").run());
 
   if (!result.success) {
+    logger.warn(req, "controller.clear", { error: result.error });
     return res.status(result.status).send(result.error);
   }
 
@@ -434,7 +439,10 @@ app.put("/api/event-modes/:type", (req, res) => {
   const result = dbRun(() =>
     db.prepare("UPDATE event_mode SET enabled = ? WHERE event_type = ?").run(newEnabled, eventType),
   );
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "event_mode.toggle", { error: result.error }, eventType);
+    return res.status(result.status).send(result.error);
+  }
 
   logger.log(req, "event_mode.toggle", { enabled: !!newEnabled }, eventType);
 

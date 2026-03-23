@@ -240,6 +240,7 @@ app.post("/api/entries", withYearTable, (req, res) => {
   );
 
   if (!result.success) {
+    logger.warn(req, "entry.create", { error: result.error, year }, `#${numValidation.value}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -294,6 +295,7 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "entry.update", { error: result.error, year }, `#${newNum}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -350,6 +352,7 @@ app.delete("/api/entries/:num", withYearTable, async (req, res) => {
   const result = dbRun(() => db.prepare(`DELETE FROM '${tableName}' WHERE num = ?`).run(numValidation.value));
 
   if (!result.success) {
+    logger.warn(req, "entry.delete", { error: result.error, year }, `#${numValidation.value}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -372,6 +375,7 @@ app.delete("/api/entries", withYearTable, async (req, res) => {
   const result = dbRun(() => db.prepare(`DELETE FROM '${tableName}'`).run());
 
   if (!result.success) {
+    logger.warn(req, "entry.clear", { error: result.error, year });
     return res.status(result.status).send(result.error);
   }
 
@@ -411,6 +415,7 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   });
 
   if (!result.success) {
+    logger.warn(req, "entry.bulk_upload", { error: result.error, year });
     return res.status(result.status).send(result.error);
   }
 
@@ -450,6 +455,7 @@ app.post("/api/vehicle-types", (req, res) => {
     if (result.error.includes("UNIQUE")) {
       return res.status(400).send("이미 존재하는 차량 유형입니다.");
     }
+    logger.warn(req, "vehicle_type.create", { error: result.error }, name.trim());
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "vehicle_type.create", null, name.trim());
@@ -474,7 +480,10 @@ app.delete("/api/vehicle-types/:id", (req, res) => {
     })();
   });
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "vehicle_type.delete", { error: result.error }, type.name);
+    return res.status(result.status).send(result.error);
+  }
   logger.log(req, "vehicle_type.delete", null, type.name);
   res.status(200).send();
 });

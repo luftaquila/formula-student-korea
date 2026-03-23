@@ -357,6 +357,7 @@ app.post("/api/users", (req, res) => {
     if (result.error.includes("UNIQUE")) {
       return res.status(400).send("이미 등록된 이메일입니다.");
     }
+    logger.warn(req, "user.create", { error: result.error }, email.trim().toLowerCase());
     return res.status(result.status).send(result.error);
   }
 
@@ -392,7 +393,10 @@ app.post("/api/users/bulk", (req, res) => {
   });
 
   const txResult = dbRun(() => run());
-  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+  if (!txResult.success) {
+    logger.warn(req, "user.create_bulk", { error: txResult.error });
+    return res.status(txResult.status).send(txResult.error);
+  }
 
   logger.log(req, "user.create_bulk", { added, skipped });
   res.json({ added: added.length, skipped: skipped.length, errors });
@@ -420,7 +424,10 @@ app.patch("/api/users/bulk", (req, res) => {
   const run = db.transaction(() => stmt.run(active ? 1 : 0, ...numIds));
 
   const txResult = dbRun(() => run());
-  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+  if (!txResult.success) {
+    logger.warn(req, "user.bulk_toggle", { error: txResult.error });
+    return res.status(txResult.status).send(txResult.error);
+  }
 
   logger.log(req, "user.bulk_toggle", { emails, active: !!active });
   res.json({ updated: txResult.result.changes });
@@ -453,7 +460,10 @@ app.delete("/api/users/bulk", (req, res) => {
     const delResult = db.prepare(`DELETE FROM users WHERE id IN (${placeholders})`).run(...numIds);
     return { changes: delResult.changes, emails };
   })());
-  if (!txResult.success) return res.status(txResult.status).send(txResult.error);
+  if (!txResult.success) {
+    logger.warn(req, "user.bulk_delete", { error: txResult.error });
+    return res.status(txResult.status).send(txResult.error);
+  }
 
   logger.log(req, "user.bulk_delete", { emails: txResult.result.emails });
   res.json({ deleted: txResult.result.changes });
@@ -490,7 +500,10 @@ app.patch("/api/users/:id", (req, res) => {
     })();
   });
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "user.update", { error: result.error }, user.email);
+    return res.status(result.status).send(result.error);
+  }
 
   const changes = {};
   if (role !== undefined) changes.role = role;
@@ -518,7 +531,10 @@ app.delete("/api/users/:id", (req, res) => {
   }
 
   const result = dbRun(() => db.prepare("DELETE FROM users WHERE id = ?").run(id));
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "user.delete", { error: result.error }, user.email);
+    return res.status(result.status).send(result.error);
+  }
   logger.log(req, "user.delete", { role: user.role, name: user.name }, user.email);
   res.status(200).send();
 });
@@ -541,7 +557,10 @@ app.post("/api/ops-contacts", (req, res) => {
   if (!phone?.trim()) return res.status(400).send("전화번호를 입력하세요.");
 
   const result = dbRun(() => db.prepare("INSERT INTO ops_contacts (name, phone) VALUES (?, ?)").run(name.trim(), phone.trim()));
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "ops_contact.create", { error: result.error }, name.trim());
+    return res.status(result.status).send(result.error);
+  }
   logger.log(req, "ops_contact.create", { phone: phone.trim() }, name.trim());
   res.status(201).json({ id: result.result.lastInsertRowid, name: name.trim(), phone: phone.trim() });
 });
@@ -551,7 +570,10 @@ app.delete("/api/ops-contacts/:id", (req, res) => {
   const contact = db.prepare("SELECT name, phone FROM ops_contacts WHERE id = ?").get(Number(req.params.id));
   if (!contact) return res.status(404).send("연락처를 찾을 수 없습니다.");
   const result = dbRun(() => db.prepare("DELETE FROM ops_contacts WHERE id = ?").run(Number(req.params.id)));
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "ops_contact.delete", { error: result.error }, contact.name);
+    return res.status(result.status).send(result.error);
+  }
   logger.log(req, "ops_contact.delete", { phone: contact.phone }, contact.name);
   res.status(200).send();
 });
@@ -616,7 +638,7 @@ app.get("/api/admin/logs", async (req, res) => {
         const total = db.prepare(`SELECT COUNT(*) as cnt FROM logs ${where}`).get(...params).cnt;
         const logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY id DESC LIMIT 500`).all(...params);
         return { name, logs: logs.map(l => ({ ...l, _service: name })), total };
-      } catch { return { name, logs: [], total: 0 }; }
+      } catch (e) { console.error("[auth] log query error:", name, e.message); return { name, logs: [], total: 0 }; }
     }
 
     try {
@@ -627,7 +649,8 @@ app.get("/api/admin/logs", async (req, res) => {
       if (!fetchRes.ok) return { name, logs: [], total: 0 };
       const data = await fetchRes.json();
       return { name, logs: (data.logs || []).map(l => ({ ...l, _service: name })), total: data.total || 0 };
-    } catch {
+    } catch (e) {
+      console.error("[auth] log fetch error:", name, e.message);
       return { name, logs: [], total: 0 };
     }
   });
