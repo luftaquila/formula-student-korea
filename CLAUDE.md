@@ -78,7 +78,7 @@ Tests: `tests/<service>/<service>.test.mjs`, utils: `tests/helpers/test-utils.mj
 
 ### E2E (Playwright) — CI only, do NOT run locally
 
-Tests: `tests/e2e/{service}/*.spec.mjs` · CI: `.github/workflows/e2e.yml` (push to main) · Check: `gh run list` → `gh run view <id> --log-failed`
+Tests: `tests/e2e/{service}/*.spec.mjs` · CI: `.github/workflows/test.yml` (push to main) · Check: `gh run list` → `gh run view <id> --log-failed`
 
 **Never use `waitForTimeout` for API saves.** Use deterministic waits:
 

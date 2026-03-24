@@ -128,9 +128,9 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.19 | SMS 토글 | official | `PATCH /api/admin/settings/sms` | 환경변수 필요 |
+| 3.19 | SMS 토글 | chief | `PATCH /api/admin/settings/sms` | 환경변수 필요 |
 | 3.20 | SMS 알림 순번 조회 | official | `GET /api/admin/settings/sms-rank` | |
-| 3.21 | SMS 알림 순번 설정 | official | `PATCH /api/admin/settings/sms-rank` | 1~10 |
+| 3.21 | SMS 알림 순번 설정 | chief | `PATCH /api/admin/settings/sms-rank` | 1~10 |
 
 ### 통계
 
