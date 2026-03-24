@@ -238,6 +238,7 @@ services:
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
       PUBLIC_URL: ${PUBLIC_URL}
+      TEST_SERVER: ${TEST_SERVER:-}
     volumes:
       - ./auth/data:/home/node/fsk-auth/data
     restart: unless-stopped

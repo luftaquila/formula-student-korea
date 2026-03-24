@@ -65,6 +65,10 @@ if (ADMIN_EMAIL) {
   }
 }
 
+if (process.env.TEST_SERVER) {
+  console.warn("[WARNING] TEST_SERVER mode enabled — all Google logins will be auto-registered as admin");
+}
+
 /* ============================================
    Express 앱 설정
    ============================================ */
@@ -267,7 +271,15 @@ app.get("/api/callback", async (req, res) => {
     const name = userInfo.name || email;
 
     // Check if user is registered and active
-    const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+    let user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+
+    // TEST_SERVER 모드: 미등록 사용자 자동 admin 등록
+    if (!user && process.env.TEST_SERVER) {
+      db.prepare("INSERT INTO users (email, name, role, active, created_at) VALUES (?, ?, 'admin', 1, datetime('now'))").run(email, name);
+      user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+      logger.log(req, "user.auto_register", { name, role: "admin", test_server: true }, email, { email, name });
+    }
+
     if (!user || !user.active) {
       const reason = !user ? "unregistered" : "deactivated";
       logger.warn(req, "user.login_failed", { reason }, email, { email, name });
