@@ -33,6 +33,36 @@ const manualSteering = ref(0);
 // Mobile bottom sheet
 const isMobile = ref(false);
 const sheetExpanded = ref(false);
+const sheetHeight = ref(52); // px — 52 = collapsed (handle only)
+const sheetDragging = ref(false);
+let dragStartY = 0;
+let dragStartHeight = 0;
+let wasDrag = false;
+
+function onSheetTouchStart(e) {
+  dragStartY = e.touches[0].clientY;
+  dragStartHeight = sheetHeight.value;
+  wasDrag = false;
+}
+
+function onSheetTouchMove(e) {
+  const dy = dragStartY - e.touches[0].clientY;
+  if (!wasDrag && Math.abs(dy) > 5) { wasDrag = true; sheetDragging.value = true; }
+  if (!wasDrag) return;
+  e.preventDefault();
+  sheetHeight.value = Math.min(Math.max(52, dragStartHeight + dy), window.innerHeight * 0.85);
+}
+
+function onSheetTouchEnd() {
+  sheetDragging.value = false;
+  if (!wasDrag) {
+    // tap → toggle
+    sheetHeight.value = sheetHeight.value <= 52 ? window.innerHeight * 0.5 : 52;
+  } else if (sheetHeight.value < 100) {
+    sheetHeight.value = 52;
+  }
+  sheetExpanded.value = sheetHeight.value > 52;
+}
 
 let map = null;
 let markers = {};
@@ -879,9 +909,11 @@ onUnmounted(() => {
       <div v-if="roverMode === 'path-pick'" class="map-overlay">지도에서 시작점을 클릭하세요</div>
 
       <!-- Desktop sidebar / Mobile bottom sheet -->
-      <div :class="['panel', { 'sheet': isMobile, 'sheet-expanded': isMobile && sheetExpanded }]">
+      <div :class="['panel', { 'sheet': isMobile, 'sheet-dragging': sheetDragging }]"
+           :style="isMobile ? { height: sheetHeight + 'px' } : {}">
         <!-- Mobile sheet handle -->
-        <div v-if="isMobile" class="sheet-handle" @click="sheetExpanded = !sheetExpanded">
+        <div v-if="isMobile" class="sheet-handle"
+             @touchstart="onSheetTouchStart" @touchmove="onSheetTouchMove" @touchend="onSheetTouchEnd">
           <div class="handle-bar"></div>
           <span class="handle-label">{{ activeCourse ? activeCourse.name : '코스 관리' }}</span>
         </div>
@@ -1291,19 +1323,26 @@ onUnmounted(() => {
 
   .panel.sheet {
     position: fixed; bottom: 0; left: 0; right: 0;
-    width: 100%; height: 40vh;
+    width: 100%;
     border-left: none;
     border-top: 1px solid var(--border-primary);
     border-radius: 16px 16px 0 0;
     box-shadow: 0 -4px 20px rgba(0,0,0,0.15);
-    transform: translateY(calc(100% - 52px));
-    transition: transform 0.3s ease;
+    transition: height 0.3s ease;
     z-index: 600;
   }
 
-  .panel.sheet.sheet-expanded {
-    transform: translateY(0);
+  .panel.sheet.sheet-dragging {
+    transition: none;
   }
+
+  .panel-scroll {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .cone-list-section { flex: none; overflow: visible; }
+  .cone-list { overflow-y: visible; }
 
   .sheet-handle {
     display: flex; align-items: center; justify-content: center;
