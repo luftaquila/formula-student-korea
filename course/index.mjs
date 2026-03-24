@@ -455,6 +455,7 @@ app.post("/api/rover/position", (req, res) => {
     roverPendingResolve = null;
   }
 
+  broadcastEvent("rover", { lat, lng });
   res.json({ lat, lng });
 });
 
@@ -570,5 +571,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createCourseApp();
   setupProcessHandlers(db);
-  app.listen(9050);
+  app.listen(10000);
 }

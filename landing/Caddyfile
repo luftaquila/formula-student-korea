@@ -78,7 +78,7 @@
 		request_header -X-Internal-Service
 		request_header -Authuser
 		request_header -X-Forwarded-For
-		reverse_proxy course:9050
+		reverse_proxy course:10000
 	}
 
 	# Score service

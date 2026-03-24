@@ -329,7 +329,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 ---
 
-## Course Service (port 9050)
+## Course Service (port 10000)
 
 RTK GPS 기반 코스 콘 위치 관리 서비스. 모든 엔드포인트 admin 전용 (health, rover/stream, rover/position 제외).
 
@@ -341,6 +341,8 @@ RTK GPS 기반 코스 콘 위치 관리 서비스. 모든 엔드포인트 admin 
 | POST | `/api/courses` | admin | `{ name }` | 201 `{ id, name, created_at, updated_at }` | 코스 생성 |
 | PATCH | `/api/courses/:id` | admin | `{ name }` | `{ id, name, updated_at }` | 코스 이름 수정 |
 | DELETE | `/api/courses/:id` | admin | — | 200 | 코스 삭제 (콘 CASCADE 삭제) |
+| GET | `/api/courses/:id/export` | admin | — | `{ name, cones: [{lat, lng, side}...] }` | 코스+콘 JSON 다운로드 |
+| POST | `/api/courses/import` | admin | `{ name, cones: [{lat, lng, side}...] }` | 201 `{ id, name, ... }` | JSON으로 코스+콘 일괄 생성 (트랜잭션) |
 
 ### Cones
 

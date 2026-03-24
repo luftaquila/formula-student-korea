@@ -16,7 +16,7 @@ Formula Student Korea Service Hub — microservices web app for vehicle entry, i
 | traffic/ | Traffic control, telemetry, event modes (Express + Vue 3) | 9500 |
 | score/ | Score aggregation, penalty/scoring config (Express + Vue 3) | 9600 |
 | documents/ | Document submission management (Express + Vue 3) | 9700 |
-| course/ | Course cone management with RTK GPS (Express + Vue 3 + Leaflet) | 9050 |
+| course/ | Course cone management with RTK GPS (Express + Vue 3 + Leaflet) | 10000 |
 | files/ | Cloud file storage (FileBrowser, Caddy forward_auth) | 8080 |
 | energymeter/ | Energy meter viewer (Git submodule, Vue 3) | 9800 |
 | rules/ | Rules file server (Caddy) | 9900 |
