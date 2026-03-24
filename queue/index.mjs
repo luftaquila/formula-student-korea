@@ -639,7 +639,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
         // 보고서는 다른 검차와 항상 동시 등록 가능
         if (type === "report") {
           current.inspection += `,${type}`;
-          db.prepare("UPDATE current SET inspection = ?, phone = ? WHERE num = ?").run(current.inspection, phone, num);
+          db.prepare("UPDATE current SET inspection = ?, phone = ? WHERE num = ? AND year = ?").run(current.inspection, phone, num, year);
         } else {
           const nonReportTypes = currentTypes.filter((t) => t !== "report");
 
@@ -650,7 +650,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
           ) {
             // 보고서만 등록 또는 배터리+섀시 동시 등록 허용
             current.inspection += `,${type}`;
-            db.prepare("UPDATE current SET inspection = ?, phone = ? WHERE num = ?").run(current.inspection, phone, num);
+            db.prepare("UPDATE current SET inspection = ?, phone = ? WHERE num = ? AND year = ?").run(current.inspection, phone, num, year);
           } else {
             const name = currentTypes.map((i) => inspections[i]).join(", ");
             throw { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };

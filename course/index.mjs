@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase } from "../shared/db-setup.mjs";
@@ -59,10 +60,23 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_cone_course ON cone(course_id);`);
    ============================================ */
 const logger = createLogger(db, "course");
 
+// Pre-compute INTERNAL_SECRET hash for timing-safe comparison
+const internalSecret = process.env.INTERNAL_SECRET;
+const cachedSecretHash = internalSecret
+  ? crypto.createHash("sha256").update(internalSecret).digest()
+  : null;
+
+function isInternalRequest(req) {
+  const header = req.headers["x-internal-service"];
+  if (!cachedSecretHash || !header) return false;
+  const headerHash = crypto.createHash("sha256").update(header).digest();
+  return headerHash.length === cachedSecretHash.length && crypto.timingSafeEqual(headerHash, cachedSecretHash);
+}
+
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/rover/stream" || req.path === "/api/rover/position") {
-    if (process.env.INTERNAL_SECRET && req.headers["x-internal-service"] !== process.env.INTERNAL_SECRET) {
+    if (internalSecret && !isInternalRequest(req)) {
       return "admin";
     }
     return null;
@@ -423,7 +437,7 @@ app.delete("/api/cones/:id", (req, res) => {
    ============================================ */
 
 let roverClient = null;
-let roverPendingResolve = null;
+const roverPendingResolves = [];
 
 // GET /api/rover/stream - 로버 SSE 연결 (로버가 호출)
 app.get("/api/rover/stream", (req, res) => {
@@ -450,9 +464,9 @@ app.post("/api/rover/position", (req, res) => {
   const coordValidation = validateCoordinate(lat, lng);
   if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
 
-  if (roverPendingResolve) {
-    roverPendingResolve({ lat, lng });
-    roverPendingResolve = null;
+  while (roverPendingResolves.length > 0) {
+    const resolve = roverPendingResolves.shift();
+    resolve({ lat, lng });
   }
 
   broadcastEvent("rover", { lat, lng });
@@ -474,12 +488,19 @@ app.post("/api/rover/request", async (req, res) => {
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
 
+  let removeFromQueue;
   const position = await Promise.race([
-    new Promise((resolve) => { roverPendingResolve = resolve; }),
+    new Promise((resolve) => {
+      roverPendingResolves.push(resolve);
+      removeFromQueue = () => {
+        const idx = roverPendingResolves.indexOf(resolve);
+        if (idx !== -1) roverPendingResolves.splice(idx, 1);
+      };
+    }),
     new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
   ]).catch(() => null);
 
-  roverPendingResolve = null;
+  if (removeFromQueue) removeFromQueue();
 
   if (!position) {
     logger.warn(req, "rover.request", { result: "timeout" }, "rover");

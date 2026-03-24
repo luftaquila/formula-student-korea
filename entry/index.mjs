@@ -321,7 +321,7 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
 
     if (syncFailed) {
       // 엔트리 번호 및 데이터 롤백
-      dbRun(() => {
+      const rollbackResult = dbRun(() => {
         db.transaction(() => {
           db.prepare(`UPDATE '${tableName}' SET num = ? WHERE num = ?`).run(prevNum, newNum);
           if (originalEntry) {
@@ -330,7 +330,10 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
           }
         })();
       });
-      logger.warn(req, "entry.docs_sync_fail_rollback", { prevNum, newNum, year, reason: failReason });
+      if (!rollbackResult.success) {
+        logger.warn(req, "entry.rollback_failed", { error: rollbackResult.error, prevNum, newNum, year }, `#${newNum}`);
+      }
+      logger.warn(req, "entry.docs_sync_fail_rollback", { prevNum, newNum, year, reason: failReason, rollbackSuccess: rollbackResult.success });
       return res.status(502).send("문서 서비스 동기화에 실패하여 변경이 취소되었습니다.");
     }
   }

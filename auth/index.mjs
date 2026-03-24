@@ -104,9 +104,9 @@ app.get("/api/forward-auth", (req, res) => {
   const key = req.headers["x-forward-auth-key"];
   const secret = process.env.INTERNAL_SECRET;
   if (!key || !secret) return res.status(403).send();
-  const keyBuf = Buffer.from(key);
-  const secretBuf = Buffer.from(secret);
-  if (keyBuf.length !== secretBuf.length || !crypto.timingSafeEqual(keyBuf, secretBuf)) return res.status(403).send();
+  const keyHash = crypto.createHash("sha256").update(key).digest();
+  const secretHash = crypto.createHash("sha256").update(secret).digest();
+  if (!crypto.timingSafeEqual(keyHash, secretHash)) return res.status(403).send();
   const requiredRole = req.query.role || "official";
   if (!req.user) return res.status(401).send("인증이 필요합니다.");
   if ((ROLE_LEVELS[req.user.role] || 0) < (ROLE_LEVELS[requiredRole] || Infinity)) {
@@ -300,7 +300,6 @@ app.get("/api/callback", async (req, res) => {
     res.redirect(redirectUrl);
   } catch (e) {
     logger.warn(req, "auth.callback_error", { error: e.message || String(e) });
-    console.error("OAuth callback error:", e);
     res.setHeader("Set-Cookie", clearNonceCookie);
     res.redirect("/?login_error=error");
   }

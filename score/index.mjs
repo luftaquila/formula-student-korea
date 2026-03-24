@@ -140,7 +140,9 @@ async function fetchYearRecords(year) {
           { headers: internalHeaders(), signal: AbortSignal.timeout(10000) },
         );
         if (recordRes.ok) return { tableName, records: await recordRes.json() };
-      } catch {}
+      } catch (e) {
+        logger.warn(null, "score.fetch_records", { error: e.message, tableName });
+      }
       return { tableName, records: [] };
     })
   );
@@ -331,7 +333,9 @@ app.get("/api/score", async (req, res) => {
               }
             }
           }
-        } catch {}
+        } catch (e) {
+          logger.warn(null, "score.fetch_bulk_answers", { error: e.message, year });
+        }
       }
     }
 
@@ -347,7 +351,9 @@ app.get("/api/score", async (req, res) => {
         const modes = await modesRes.json();
         enabledModes = new Set(modes.filter((m) => m.enabled).map((m) => m.event_type));
       }
-    } catch {}
+    } catch (e) {
+      logger.warn(null, "score.fetch_event_modes", { error: e.message });
+    }
 
     const allTableRecords = await fetchYearRecords(year);
 
@@ -505,6 +511,8 @@ app.put("/api/score/penalty", (req, res) => {
   if (!year || !event_type) {
     return res.status(400).send("필수 필드가 누락되었습니다.");
   }
+  const numYear = Number(year);
+  if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
   const keyErr = validateKey(event_type, "event_type");
   if (keyErr) return res.status(400).send(keyErr);
 
@@ -523,16 +531,16 @@ app.put("/api/score/penalty", (req, res) => {
          ON CONFLICT(year, event_type)
          DO UPDATE SET cone_penalty = excluded.cone_penalty, oc_penalty = excluded.oc_penalty, start_delay = excluded.start_delay`,
       )
-      .run(year, event_type, cone, oc, delay),
+      .run(numYear, event_type, cone, oc, delay),
   );
 
   if (!result.success) {
-    logger.warn(req, "penalty.update", { error: result.error, year }, event_type);
+    logger.warn(req, "penalty.update", { error: result.error, year: numYear }, event_type);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "penalty.update", { year, cone: cone, oc: oc, delay }, event_type);
-  broadcastEvent("penalty", { year, event_type, cone_penalty: cone, oc_penalty: oc, start_delay: delay });
+  logger.log(req, "penalty.update", { year: numYear, cone: cone, oc: oc, delay }, event_type);
+  broadcastEvent("penalty", { year: numYear, event_type, cone_penalty: cone, oc_penalty: oc, start_delay: delay });
 
   res.status(200).send();
 });
@@ -543,6 +551,8 @@ app.put("/api/score/setting", (req, res) => {
   if (!year || !event_type || !setting_key) {
     return res.status(400).send("필수 필드가 누락되었습니다.");
   }
+  const numYear = Number(year);
+  if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
   const etErr = validateKey(event_type, "event_type");
   if (etErr) return res.status(400).send(etErr);
   const skErr = validateKey(setting_key, "setting_key");
@@ -561,16 +571,16 @@ app.put("/api/score/setting", (req, res) => {
          ON CONFLICT(year, event_type, setting_key)
          DO UPDATE SET value = excluded.value`,
       )
-      .run(year, event_type, setting_key, numValue),
+      .run(numYear, event_type, setting_key, numValue),
   );
 
   if (!result.success) {
-    logger.warn(req, "setting.update", { error: result.error, year, key: setting_key }, event_type);
+    logger.warn(req, "setting.update", { error: result.error, year: numYear, key: setting_key }, event_type);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "setting.update", { year, key: setting_key, value: numValue }, event_type);
-  broadcastEvent("setting", { year, event_type, setting_key, value: numValue });
+  logger.log(req, "setting.update", { year: numYear, key: setting_key, value: numValue }, event_type);
+  broadcastEvent("setting", { year: numYear, event_type, setting_key, value: numValue });
 
   res.status(200).send();
 });
