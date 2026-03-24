@@ -1,0 +1,6 @@
+# FSK Rover Python dependencies
+# Install with: pip install -r requirements.txt
+
+pyserial>=3.5          # Serial communication with ZED-F9P
+lgpio>=0.2.2.0         # RPi5 GPIO (PWM, digital I/O) for MDD10A and servos
+requests>=2.31         # HTTP client for REST API and SSE streaming

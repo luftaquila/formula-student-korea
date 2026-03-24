@@ -14,6 +14,7 @@ const currentSide = ref("left");
 const roverLoading = ref(false);
 const coneFilter = ref("all");
 const selectedConeId = ref(null);
+const multiSelectedIds = ref(new Set());
 const editLat = ref("");
 const editLng = ref("");
 const editSide = ref("left");
@@ -41,6 +42,11 @@ let pathStartMarker = null;
 let pathEndMarker = null;
 let eventSource = null;
 let controlInterval = null;
+let suppressRebuild = false;
+let isMultiDragging = false;
+let dragStartPositions = null;
+let dragOrigin = null;
+let justFinishedBoxSelect = false;
 
 const SIDE_COLORS = { left: "#8b5cf6", right: "#06b6d4", center: "#f59e0b" };
 
@@ -93,6 +99,14 @@ function highlightIcon(side, num) {
   });
 }
 
+function multiSelectIcon(side, num) {
+  return L.divIcon({
+    className: "",
+    html: `<div style="position:relative;width:24px;height:24px;border-radius:50%;background:${SIDE_COLORS[side]};border:3px solid #38bdf8;box-shadow:0 0 8px rgba(56,189,248,0.6);display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:11px;font-weight:700;line-height:1;text-shadow:0 1px 2px rgba(0,0,0,0.5);">${num}</span></div>`,
+    iconSize: [24, 24], iconAnchor: [12, 12],
+  });
+}
+
 /* ── Map markers ──────────────────────────────────── */
 function rebuildAllMarkers() {
   Object.values(markers).forEach((m) => map.removeLayer(m));
@@ -105,19 +119,93 @@ function rebuildAllMarkers() {
 
     for (const cone of cones) {
       const num = coneSideIndex(course.id, cone.id);
-      const marker = L.marker([cone.lat, cone.lng], {
-        icon: coneIcon(cone.side, num, isActive),
-        draggable: isActive,
-      });
+      const isMultiSelected = isActive && multiSelectedIds.value.has(cone.id);
+      const isSingleSelected = isActive && selectedConeId.value === cone.id;
+      const icon = isSingleSelected
+        ? highlightIcon(cone.side, num)
+        : isMultiSelected
+          ? multiSelectIcon(cone.side, num)
+          : coneIcon(cone.side, num, isActive);
+
+      const marker = L.marker([cone.lat, cone.lng], { icon, draggable: isActive });
 
       if (isActive) {
-        marker.on("click", () => { selectedConeId.value = cone.id; });
+        marker.on("click", (e) => {
+          if (e.originalEvent && e.originalEvent.shiftKey) {
+            const newSet = new Set(multiSelectedIds.value);
+            if (newSet.has(cone.id)) newSet.delete(cone.id);
+            else newSet.add(cone.id);
+            multiSelectedIds.value = newSet;
+            selectedConeId.value = null;
+            updateMultiSelectIcons();
+          } else {
+            if (multiSelectedIds.value.size > 0) {
+              multiSelectedIds.value = new Set();
+              updateMultiSelectIcons();
+            }
+            selectedConeId.value = cone.id;
+          }
+        });
+
+        marker.on("dragstart", () => {
+          if (multiSelectedIds.value.has(cone.id) && multiSelectedIds.value.size > 1) {
+            isMultiDragging = true;
+            suppressRebuild = true;
+            dragOrigin = L.latLng(cone.lat, cone.lng);
+            dragStartPositions = new Map();
+            for (const id of multiSelectedIds.value) {
+              if (id === cone.id) continue;
+              const c = (conesMap.value[activeCourseId.value] || []).find(cc => cc.id === id);
+              if (c) dragStartPositions.set(id, L.latLng(c.lat, c.lng));
+            }
+          }
+        });
+
+        marker.on("drag", () => {
+          if (!isMultiDragging) return;
+          const newPos = marker.getLatLng();
+          const dLat = newPos.lat - dragOrigin.lat;
+          const dLng = newPos.lng - dragOrigin.lng;
+          for (const [id, origPos] of dragStartPositions) {
+            const key = `${activeCourseId.value}-${id}`;
+            const m = markers[key];
+            if (m) m.setLatLng([origPos.lat + dLat, origPos.lng + dLng]);
+          }
+        });
+
         marker.on("dragend", async () => {
-          const { lat, lng } = marker.getLatLng();
-          try {
-            await request(`/api/cones/${cone.id}`, { method: "PATCH", body: JSON.stringify({ lat, lng }) });
-          } catch {
-            marker.setLatLng([cone.lat, cone.lng]);
+          if (isMultiDragging) {
+            const { lat, lng } = marker.getLatLng();
+            const dLat = lat - dragOrigin.lat;
+            const dLng = lng - dragOrigin.lng;
+
+            const updates = [{ id: cone.id, lat, lng }];
+            for (const [id, origPos] of dragStartPositions) {
+              updates.push({ id, lat: origPos.lat + dLat, lng: origPos.lng + dLng });
+            }
+
+            isMultiDragging = false;
+            dragStartPositions = null;
+            dragOrigin = null;
+
+            try {
+              await Promise.all(updates.map(u =>
+                request(`/api/cones/${u.id}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({ lat: u.lat, lng: u.lng }),
+                })
+              ));
+            } catch {}
+
+            suppressRebuild = false;
+            rebuildAllMarkers();
+          } else {
+            const { lat, lng } = marker.getLatLng();
+            try {
+              await request(`/api/cones/${cone.id}`, { method: "PATCH", body: JSON.stringify({ lat, lng }) });
+            } catch {
+              marker.setLatLng([cone.lat, cone.lng]);
+            }
           }
         });
       }
@@ -126,6 +214,29 @@ function rebuildAllMarkers() {
       markers[`${course.id}-${cone.id}`] = marker;
     }
   }
+}
+
+function updateMultiSelectIcons() {
+  const aid = activeCourseId.value;
+  if (!aid) return;
+  for (const cone of (conesMap.value[aid] || [])) {
+    const key = `${aid}-${cone.id}`;
+    const m = markers[key];
+    if (!m) continue;
+    const num = coneSideIndex(aid, cone.id);
+    if (selectedConeId.value === cone.id) {
+      m.setIcon(highlightIcon(cone.side, num));
+    } else if (multiSelectedIds.value.has(cone.id)) {
+      m.setIcon(multiSelectIcon(cone.side, num));
+    } else {
+      m.setIcon(coneIcon(cone.side, num, true));
+    }
+  }
+}
+
+function clearMultiSelection() {
+  multiSelectedIds.value = new Set();
+  updateMultiSelectIcons();
 }
 
 /* ── Watchers ─────────────────────────────────────── */
@@ -143,6 +254,8 @@ watch(selectedConeId, (id) => {
         const el = document.querySelector(`[data-cone-id="${id}"]`);
         if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
       });
+    } else if (multiSelectedIds.value.has(coneId)) {
+      marker.setIcon(multiSelectIcon(cone.side, coneSideIndex(aid, cone.id)));
     } else {
       marker.setIcon(coneIcon(cone.side, coneSideIndex(aid, cone.id), true));
     }
@@ -160,6 +273,7 @@ watch(selectedConeId, (id) => {
 
 watch(activeCourseId, () => {
   selectedConeId.value = null;
+  multiSelectedIds.value = new Set();
   coneFilter.value = "all";
   clearPath();
   if (map) rebuildAllMarkers();
@@ -185,16 +299,18 @@ async function fetchAll() {
 
 /* ── Map init ─────────────────────────────────────── */
 function initMap() {
-  map = L.map("map", { zoomControl: true, maxZoom: 21 }).setView([35.292012, 126.574415], 19);
+  map = L.map("map", { zoomControl: true, maxZoom: 21, boxZoom: false }).setView([35.292012, 126.574415], 19);
   L.tileLayer("https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2", {
     subdomains: "0123", attribution: "&copy; Google", maxZoom: 21,
   }).addTo(map);
 
   map.on("click", onMapClick);
+  setupSelectionBox();
   rebuildAllMarkers();
 }
 
 function onMapClick(e) {
+  if (justFinishedBoxSelect) return;
   if (roverMode.value === "path-pick") {
     computePath(e.latlng.lat, e.latlng.lng);
     return;
@@ -204,9 +320,76 @@ function onMapClick(e) {
     return;
   }
   if (roverMode.value === "executing") return;
+  if (multiSelectedIds.value.size > 0) {
+    multiSelectedIds.value = new Set();
+    updateMultiSelectIcons();
+    return;
+  }
   if (selectedConeId.value) { selectedConeId.value = null; return; }
   if (!activeCourseId.value || roverMode.value === "manual") return;
   addCone(e.latlng.lat, e.latlng.lng, currentSide.value);
+}
+
+/* ── Box selection (Shift+drag) ───────────────────── */
+function onSelectionStart(e) {
+  if (!e.shiftKey || !activeCourseId.value || e.button !== 0) return;
+
+  map.dragging.disable();
+
+  const container = map.getContainer();
+  const containerRect = container.getBoundingClientRect();
+  const startPx = { x: e.clientX - containerRect.left, y: e.clientY - containerRect.top };
+
+  const boxEl = document.createElement("div");
+  boxEl.className = "selection-box";
+  container.appendChild(boxEl);
+
+  function onMove(ev) {
+    const curPx = { x: ev.clientX - containerRect.left, y: ev.clientY - containerRect.top };
+    boxEl.style.left = Math.min(startPx.x, curPx.x) + "px";
+    boxEl.style.top = Math.min(startPx.y, curPx.y) + "px";
+    boxEl.style.width = Math.abs(curPx.x - startPx.x) + "px";
+    boxEl.style.height = Math.abs(curPx.y - startPx.y) + "px";
+  }
+
+  function onUp(ev) {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+
+    const endPx = { x: ev.clientX - containerRect.left, y: ev.clientY - containerRect.top };
+    const bounds = {
+      left: Math.min(startPx.x, endPx.x),
+      top: Math.min(startPx.y, endPx.y),
+      right: Math.max(startPx.x, endPx.x),
+      bottom: Math.max(startPx.y, endPx.y),
+    };
+
+    if (bounds.right - bounds.left > 5 || bounds.bottom - bounds.top > 5) {
+      const cones = conesMap.value[activeCourseId.value] || [];
+      const newSet = new Set(multiSelectedIds.value);
+      for (const cone of cones) {
+        const pt = map.latLngToContainerPoint([cone.lat, cone.lng]);
+        if (pt.x >= bounds.left && pt.x <= bounds.right && pt.y >= bounds.top && pt.y <= bounds.bottom) {
+          newSet.add(cone.id);
+        }
+      }
+      multiSelectedIds.value = newSet;
+      selectedConeId.value = null;
+      updateMultiSelectIcons();
+    }
+
+    boxEl.remove();
+    map.dragging.enable();
+    justFinishedBoxSelect = true;
+    setTimeout(() => { justFinishedBoxSelect = false; }, 100);
+  }
+
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+function setupSelectionBox() {
+  map.getContainer().addEventListener("mousedown", onSelectionStart);
 }
 
 /* ── Course CRUD ──────────────────────────────────── */
@@ -226,7 +409,7 @@ async function createCourse() {
     newCourseName.value = "";
     activeCourseId.value = created.id;
     visibility.value[created.id] = true;
-  } catch {}
+  } catch (err) { alert(err.message); }
 }
 
 function startEditCourse(course) {
@@ -240,7 +423,7 @@ async function saveCourseName(id) {
   try {
     await request(`/api/courses/${id}`, { method: "PATCH", body: JSON.stringify({ name }) });
     editingCourseId.value = null;
-  } catch {}
+  } catch (err) { alert(err.message); }
 }
 
 async function exportCourse(id) {
@@ -254,7 +437,7 @@ async function exportCourse(id) {
     a.download = `${course?.name || "course"}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
-  } catch {}
+  } catch (err) { alert(err.message); }
 }
 
 async function importCourse(e) {
@@ -284,7 +467,7 @@ async function deleteCourse(id) {
     if (activeCourseId.value === id) {
       activeCourseId.value = courses.value.find((c) => c.id !== id)?.id || null;
     }
-  } catch {}
+  } catch (err) { alert(err.message); }
 }
 
 /* ── Cone CRUD ────────────────────────────────────── */
@@ -294,7 +477,7 @@ async function addCone(lat, lng, side) {
     await request(`/api/courses/${activeCourseId.value}/cones`, {
       method: "POST", body: JSON.stringify({ lat, lng, side }),
     });
-  } catch {}
+  } catch (err) { alert(err.message); }
 }
 
 async function updateCone() {
@@ -307,14 +490,14 @@ async function updateCone() {
       method: "PATCH", body: JSON.stringify({ lat, lng, side: editSide.value }),
     });
     selectedConeId.value = null;
-  } catch {}
+  } catch (err) { alert(err.message); }
 }
 
 async function deleteCone(id) {
   try {
     await request(`/api/cones/${id}`, { method: "DELETE" });
     if (selectedConeId.value === id) selectedConeId.value = null;
-  } catch {}
+  } catch (err) { alert(err.message); }
 }
 
 function panToCone(cone) {
@@ -348,7 +531,9 @@ async function addConeFromRover() {
     const { lat, lng } = await res.json();
     updateRoverMarker(lat, lng);
     await addCone(lat, lng, currentSide.value);
-  } catch {} finally { roverLoading.value = false; }
+  } catch (err) {
+    alert(err.message || "로버 위치 수신에 실패했습니다.");
+  } finally { roverLoading.value = false; }
 }
 
 /* ── Path planning (TSP + 2-opt) ──────────────────── */
@@ -513,7 +698,10 @@ async function executePath() {
       method: "POST",
       body: JSON.stringify({ waypoints: pathWaypoints.value }),
     });
-  } catch {}
+  } catch (err) {
+    roverMode.value = "path-ready";
+    alert(err.message);
+  }
 }
 
 async function resumePath() {
@@ -525,7 +713,10 @@ async function resumePath() {
       method: "POST",
       body: JSON.stringify({ waypoints: remaining }),
     });
-  } catch {}
+  } catch (err) {
+    roverMode.value = "stopped";
+    alert(err.message);
+  }
 }
 
 function updatePathProgress(lat, lng) {
@@ -543,7 +734,7 @@ function updatePathProgress(lat, lng) {
 /* ── Emergency stop ───────────────────────────────── */
 async function emergencyStop() {
   stopManualControl();
-  try { await request("/api/rover/stop", { method: "POST" }); } catch {}
+  try { await request("/api/rover/stop", { method: "POST" }); } catch (err) { alert(err.message); }
   if (roverMode.value === "executing") roverMode.value = "stopped";
 }
 
@@ -645,7 +836,7 @@ function connectSSE() {
   eventSource.addEventListener("cones", (e) => {
     const data = JSON.parse(e.data);
     conesMap.value[data.courseId] = data.cones;
-    if (map) rebuildAllMarkers();
+    if (map && !suppressRebuild) rebuildAllMarkers();
   });
 
   eventSource.addEventListener("rover", (e) => {
@@ -672,7 +863,10 @@ onUnmounted(() => {
   window.removeEventListener("resize", checkMobile);
   if (controlInterval) clearInterval(controlInterval);
   if (eventSource) eventSource.close();
-  if (map) map.remove();
+  if (map) {
+    map.getContainer().removeEventListener("mousedown", onSelectionStart);
+    map.remove();
+  }
 });
 </script>
 
@@ -792,8 +986,17 @@ onUnmounted(() => {
               </div>
             </div>
 
+            <!-- Multi-select info -->
+            <div v-if="multiSelectedIds.size > 0" class="panel-section edit-section">
+              <h3>{{ multiSelectedIds.size }}개 콘 선택</h3>
+              <div class="edit-buttons">
+                <span class="multi-select-hint">드래그하여 이동</span>
+                <button class="btn btn-ghost btn-sm" @click="clearMultiSelection">선택 해제</button>
+              </div>
+            </div>
+
             <!-- Cone edit -->
-            <div v-if="selectedConeId" class="panel-section edit-section">
+            <div v-if="selectedConeId && multiSelectedIds.size === 0" class="panel-section edit-section">
               <h3>콘 수정 (#{{ coneSideIndex(activeCourseId, selectedConeId) }})</h3>
               <div class="coord-inputs">
                 <input v-model="editLat" type="number" step="any" placeholder="위도" />
@@ -1031,7 +1234,8 @@ onUnmounted(() => {
 }
 .coord-inputs input:focus, .coord-inputs select:focus { outline: none; border-color: var(--accent-primary); }
 
-.edit-buttons { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+.edit-buttons { display: flex; gap: 0.5rem; margin-top: 0.5rem; align-items: center; }
+.multi-select-hint { font-size: 0.8rem; color: var(--text-secondary); flex: 1; }
 .edit-section { background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-primary)); }
 
 /* Cone list */
@@ -1127,6 +1331,13 @@ onUnmounted(() => {
 </style>
 
 <style>
+.selection-box {
+  position: absolute;
+  border: 2px dashed #38bdf8;
+  background: rgba(56, 189, 248, 0.1);
+  pointer-events: none;
+  z-index: 1000;
+}
 .rover-tooltip {
   background: #a855f7; color: #fff; border: none;
   font-size: 11px; font-weight: 600; padding: 2px 6px;
