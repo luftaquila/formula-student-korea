@@ -1012,19 +1012,6 @@ function goBack() {
   padding: 3rem;
 }
 
-.loading-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--border-color);
-  border-top-color: var(--accent-primary);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 @media (max-width: 640px) {
   .top-actions {
     flex-wrap: wrap;

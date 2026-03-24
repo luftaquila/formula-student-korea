@@ -7,7 +7,7 @@
   >
     <div v-if="svgIcon" class="icon icon-svg" v-html="svgIcon"></div>
     <div v-else class="icon">{{ icon }}</div>
-    <h2>{{ title }}</h2>
+    <h3>{{ title }}</h3>
     <p>{{ description }}</p>
     <svg v-if="external" class="external-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
@@ -43,13 +43,13 @@ defineProps({
   border-radius: 16px;
   text-decoration: none;
   color: var(--text-primary);
-  transition: all 0.3s ease;
+  transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease, background-color 0.3s ease;
   cursor: pointer;
   box-shadow: var(--shadow-card);
 }
 
 .service-card:hover {
-  transform: translateY(-5px);
+  transform: translateY(-3px);
   box-shadow: var(--shadow-hover);
   border-color: var(--accent-primary);
 }
@@ -70,7 +70,7 @@ defineProps({
   height: 3rem;
 }
 
-h2 {
+h3 {
   font-size: 1.2rem;
   font-weight: 600;
   margin-bottom: 0.375rem;
@@ -111,7 +111,7 @@ p {
     height: 3rem;
   }
 
-  h2 {
+  h3 {
     font-size: 1.125rem;
   }
 
@@ -136,7 +136,7 @@ p {
     height: 2.5rem;
   }
 
-  h2 {
+  h3 {
     font-size: 1rem;
   }
 

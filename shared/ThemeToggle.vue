@@ -65,14 +65,14 @@ function toggle() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   background: rgba(255, 255, 255, 0.15);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 10px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, transform 0.2s ease;
 }
 
 .theme-toggle:hover {

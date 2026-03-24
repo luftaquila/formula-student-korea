@@ -227,14 +227,14 @@ async function logout() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   background: rgba(255, 255, 255, 0.15);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 10px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, transform 0.2s ease;
 }
 
 .menu-btn:hover {
@@ -289,14 +289,14 @@ async function logout() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   background: transparent;
   border: none;
   border-radius: 6px;
   cursor: pointer;
   color: var(--text-secondary);
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .close-btn:hover {
@@ -373,7 +373,7 @@ async function logout() {
   color: var(--text-secondary);
   text-decoration: none;
   font-size: 0.9375rem;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .nav-item:hover {
@@ -382,9 +382,9 @@ async function logout() {
 }
 
 .nav-item.active {
-  background: linear-gradient(90deg, rgba(59, 130, 246, 0.15) 0%, transparent 100%);
+  background: rgba(59, 130, 246, 0.1);
   color: var(--accent-primary);
-  border-left: 3px solid var(--accent-primary);
+  font-weight: 600;
 }
 
 .nav-icon {
@@ -429,7 +429,7 @@ async function logout() {
   color: var(--text-secondary);
   font-size: 0.75rem;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .logout-btn:hover {

@@ -24,6 +24,14 @@
 
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-hover: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+
+  /* Spacing scale (4px base) */
+  --spacing-xs: 0.25rem;   /* 4px */
+  --spacing-sm: 0.5rem;    /* 8px */
+  --spacing-md: 1rem;      /* 16px */
+  --spacing-lg: 1.5rem;    /* 24px */
+  --spacing-xl: 2rem;      /* 32px */
+  --spacing-2xl: 3rem;     /* 48px */
 }
 
 [data-theme="dark"] {
@@ -54,6 +62,18 @@
 
 html {
   font-size: 16px;
+}
+
+/* Accessibility: visible focus indicator for keyboard navigation */
+:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+/* Override for inputs that have their own focus ring */
+.form-input:focus-visible,
+.form-select:focus-visible {
+  outline: none;
 }
 
 body {
@@ -118,7 +138,7 @@ input[type="number"] {
   font-weight: 500;
   font-size: 0.875rem;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
   text-decoration: none;
 }
 
@@ -173,8 +193,8 @@ input[type="number"] {
 }
 
 .btn-icon {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border-radius: 6px;
 }
@@ -235,8 +255,8 @@ input[type="number"] {
   border: 1px solid var(--border-color);
   border-radius: 8px;
   color: var(--text-primary);
-  font-size: 0.875rem;
-  transition: all 0.2s ease;
+  font-size: 1rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
 }
 
 .form-input:focus {
@@ -267,11 +287,11 @@ input[type="number"] {
   padding: 0.625rem 0.875rem;
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  font-size: 0.875rem;
+  font-size: 1rem;
   background: var(--bg-input);
   color: var(--text-primary);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
 }
 
 .form-select:focus {
@@ -360,7 +380,7 @@ input[type="number"] {
   inset: 0;
   background-color: var(--border-color);
   border-radius: 24px;
-  transition: 0.3s;
+  transition: background-color 0.3s ease;
 }
 
 .toggle-slider:before {
@@ -372,7 +392,7 @@ input[type="number"] {
   bottom: 3px;
   background-color: white;
   border-radius: 50%;
-  transition: 0.3s;
+  transition: transform 0.3s ease;
 }
 
 .toggle input:checked + .toggle-slider {
@@ -400,7 +420,7 @@ input[type="number"] {
   font-weight: 500;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
   white-space: nowrap;
   border: none;
   background: none;
@@ -439,6 +459,20 @@ input[type="number"] {
   color: #f59e0b;
   line-height: 1;
   font-family: Arial, sans-serif;
+}
+
+/* Loading Spinner */
+.loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 /* Accessibility: reduce motion for users who prefer it */
