@@ -208,11 +208,8 @@ services:
     environment:
       <<: *common-env
       AUTH_SERVER: http://auth:9100
-      GOOGLE_CALENDAR_ID: ${GOOGLE_CALENDAR_ID}
-      GOOGLE_SERVICE_ACCOUNT_KEY_FILE: /home/node/fsk-calendar/credentials.json
     volumes:
       - ./calendar/data:/home/node/fsk-calendar/data
-      - ./calendar/credentials.json:/home/node/fsk-calendar/credentials.json:ro
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck

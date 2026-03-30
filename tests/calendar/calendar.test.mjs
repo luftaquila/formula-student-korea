@@ -36,62 +36,9 @@ function createMockAuthServer() {
 }
 
 /* ============================================
-   Mock Google Calendar Client (matches new API)
-   ============================================ */
-function createMockGoogleCalendar() {
-  const store = new Map();
-  let idCounter = 1;
-
-  return {
-    async list(params) {
-      const items = [...store.values()];
-      return { items };
-    },
-    async insert(requestBody) {
-      const id = `evt_${idCounter++}`;
-      const event = {
-        id,
-        summary: requestBody.summary,
-        description: requestBody.description || '',
-        location: requestBody.location || '',
-        start: requestBody.start,
-        end: requestBody.end,
-        extendedProperties: requestBody.extendedProperties,
-      };
-      store.set(id, event);
-      return event;
-    },
-    async update(eventId, requestBody) {
-      if (!store.has(eventId)) throw new Error('Not found');
-      const event = {
-        ...store.get(eventId),
-        summary: requestBody.summary,
-        description: requestBody.description || '',
-        location: requestBody.location || '',
-        start: requestBody.start,
-        end: requestBody.end,
-        extendedProperties: requestBody.extendedProperties,
-      };
-      store.set(eventId, event);
-      return event;
-    },
-    async get(eventId) {
-      if (!store.has(eventId)) throw new Error('Not found');
-      return store.get(eventId);
-    },
-    async delete(eventId) {
-      if (!store.has(eventId)) throw new Error('Not found');
-      store.delete(eventId);
-    },
-    _store: store,
-  };
-}
-
-/* ============================================
    Setup
    ============================================ */
 setupTestEnv();
-process.env.GOOGLE_CALENDAR_ID = 'test-calendar-id';
 
 let server, baseUrl, client, db, dbPath;
 let mockAuthServer;
@@ -108,8 +55,7 @@ before(async () => {
   process.env.AUTH_SERVER = mockStarted.baseUrl;
 
   dbPath = tmpDbPath();
-  const mockCalendar = createMockGoogleCalendar();
-  const result = createCalendarApp({ dbPath, googleCalendarClient: mockCalendar });
+  const result = createCalendarApp({ dbPath });
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;
@@ -142,7 +88,6 @@ describe('Calendar API', () => {
       const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31');
       assert.equal(res.status, 200);
       const events = await res.json();
-      // No public-tagged events exist yet, so filtered to empty
       for (const e of events) assert.equal(e.role, 'public');
     });
 
@@ -150,7 +95,9 @@ describe('Calendar API', () => {
       const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: studentCookie });
       assert.equal(res.status, 200);
       const events = await res.json();
-      for (const e of events) assert.equal(e.role, 'public');
+      for (const e of events) {
+        assert.ok(['public', 'student'].includes(e.role));
+      }
     });
 
     it('allows official access to events', async () => {
@@ -225,7 +172,6 @@ describe('Calendar API', () => {
   });
 
   describe('Role-based event filtering', () => {
-    // Events created above: official (Chief Event), admin (Admin Event), chief (Chief Event 2)
     it('unauthenticated users see only public events', async () => {
       const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31');
       assert.equal(res.status, 200);
@@ -320,9 +266,22 @@ describe('Calendar API', () => {
       assert.equal(event.title, 'Updated Inspection');
     });
 
+    it('PUT /api/events/:id - returns 404 for non-existent event', async () => {
+      const res = await client.put('/api/events/99999', {
+        cookie: chiefCookie,
+        body: { title: 'Ghost', start: '2026-07-16', end: '2026-07-17', allDay: true },
+      });
+      assert.equal(res.status, 404);
+    });
+
     it('DELETE /api/events/:id - deletes an event', async () => {
       const res = await client.delete(`/api/events/${createdId}`, { cookie: chiefCookie });
       assert.equal(res.status, 204);
+    });
+
+    it('DELETE /api/events/:id - returns 404 for non-existent event', async () => {
+      const res = await client.delete('/api/events/99999', { cookie: chiefCookie });
+      assert.equal(res.status, 404);
     });
   });
 });

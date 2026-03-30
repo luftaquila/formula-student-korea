@@ -364,16 +364,16 @@
 
 ## 9. Calendar 서비스
 
-Google Calendar API(서비스 계정)를 통한 대회 일정 관리. 조회는 official+, CUD는 chief+.
+대회 일정 관리. 조회는 public(role 기반 필터링), CUD는 chief+.
 
 ### 일정 관리
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 9.1 | 일정 목록 조회 | official | `GET /api/events` | `timeMin`~`timeMax` 범위의 Google Calendar 이벤트 조회, schedule-x 포맷으로 변환 |
-| 9.2 | 일정 생성 | chief | `POST /api/events` | `{ title, start, end, description?, location?, allDay? }` → Google Calendar에 이벤트 생성 |
-| 9.3 | 일정 수정 | chief | `PUT /api/events/:id` | 이벤트 내용 수정 → Google Calendar 반영 |
-| 9.4 | 일정 삭제 | chief | `DELETE /api/events/:id` | 삭제 전 이벤트명 조회(로깅용) → Google Calendar에서 삭제 |
+| 9.1 | 일정 목록 조회 | public | `GET /api/events` | `timeMin`~`timeMax` 범위의 이벤트 조회, 사용자 role에 따라 필터링 |
+| 9.2 | 일정 생성 | chief | `POST /api/events` | `{ title, start, end, description?, location?, allDay?, role? }` → 이벤트 생성 |
+| 9.3 | 일정 수정 | chief | `PUT /api/events/:id` | 이벤트 내용 수정 |
+| 9.4 | 일정 삭제 | chief | `DELETE /api/events/:id` | 이벤트 삭제 |
 
 ### 프론트엔드 뷰
 
