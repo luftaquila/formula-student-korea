@@ -10,6 +10,7 @@ const PORT = 11000;
 const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID;
 const GCAL_BASE = "https://www.googleapis.com/calendar/v3";
 const EVENT_ROLE_LEVELS = { public: 0, student: 1, official: 2, chief: 3, admin: 4 };
+const ALLOWED_EVENT_ROLES = ["public", "student", "official", "chief", "admin"];
 
 /* ============================================
    Google Auth via Service Account (no googleapis)
@@ -208,7 +209,11 @@ app.get("/api/events", async (req, res) => {
 
     const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
     const events = (data.items || [])
-      .filter(e => userLevel >= (EVENT_ROLE_LEVELS[e.extendedProperties?.private?.role] ?? EVENT_ROLE_LEVELS.official))
+      .filter(e => {
+        const eventRole = e.extendedProperties?.private?.role;
+        const eventLevel = ALLOWED_EVENT_ROLES.includes(eventRole) ? EVENT_ROLE_LEVELS[eventRole] : EVENT_ROLE_LEVELS.official;
+        return userLevel >= eventLevel;
+      })
       .map(toScheduleXEvent);
     res.json(events);
   } catch (e) {
@@ -224,10 +229,18 @@ app.post("/api/events", async (req, res) => {
   const { title, start, end } = req.body;
   if (!title || !start || !end) return res.status(400).json({ error: "title, start, and end are required" });
 
+  const role = req.body.role || "official";
+  if (!ALLOWED_EVENT_ROLES.includes(role)) return res.status(400).json({ error: "Invalid role value" });
+  const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
+  if (EVENT_ROLE_LEVELS[role] > userLevel) {
+    logger.warn(req, "event.create", { error: "role exceeds own level", requested: role, actual: req.user?.role }, null);
+    return res.status(403).json({ error: "Cannot set visibility above your own role" });
+  }
+
   try {
     const data = await calendar.insert(toGoogleCalendarEvent(req.body));
     const event = toScheduleXEvent(data);
-    logger.log(req, "event.create", { title, start, end, allDay: req.body.allDay || false, role: req.body.role || "official" }, event.id);
+    logger.log(req, "event.create", { title, start, end, allDay: req.body.allDay || false, role }, event.id);
     res.status(201).json(event);
   } catch (e) {
     logger.warn(req, "event.create", { error: e.message, title, start, end });
@@ -243,10 +256,18 @@ app.put("/api/events/:id", async (req, res) => {
   const { title, start, end } = req.body;
   if (!title || !start || !end) return res.status(400).json({ error: "title, start, and end are required" });
 
+  const role = req.body.role || "official";
+  if (!ALLOWED_EVENT_ROLES.includes(role)) return res.status(400).json({ error: "Invalid role value" });
+  const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
+  if (EVENT_ROLE_LEVELS[role] > userLevel) {
+    logger.warn(req, "event.update", { error: "role exceeds own level", requested: role, actual: req.user?.role }, id);
+    return res.status(403).json({ error: "Cannot set visibility above your own role" });
+  }
+
   try {
     const data = await calendar.update(id, toGoogleCalendarEvent(req.body));
     const event = toScheduleXEvent(data);
-    logger.log(req, "event.update", { title, start, end, allDay: req.body.allDay || false, role: req.body.role || "official" }, id);
+    logger.log(req, "event.update", { title, start, end, allDay: req.body.allDay || false, role }, id);
     res.json(event);
   } catch (e) {
     logger.warn(req, "event.update", { error: e.message, title, start, end }, id);

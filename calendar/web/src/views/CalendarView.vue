@@ -582,6 +582,7 @@ onUnmounted(() => {
 }
 
 .role-public { background: rgba(16, 185, 129, 0.15); color: #059669; }
+.role-student { background: rgba(139, 92, 246, 0.15); color: #7c3aed; }
 .role-official { background: rgba(59, 130, 246, 0.15); color: #2563eb; }
 .role-chief { background: rgba(245, 158, 11, 0.15); color: #d97706; }
 .role-admin { background: rgba(239, 68, 68, 0.15); color: #dc2626; }

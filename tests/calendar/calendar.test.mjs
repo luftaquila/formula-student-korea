@@ -175,6 +175,85 @@ describe('Calendar API', () => {
     });
   });
 
+  describe('Role validation on write endpoints', () => {
+    it('rejects invalid role value on create', async () => {
+      const res = await client.post('/api/events', {
+        cookie: chiefCookie,
+        body: { title: 'Bad Role', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'superadmin' },
+      });
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.match(body.error, /Invalid role/i);
+    });
+
+    it('rejects invalid role value on update', async () => {
+      const create = await client.post('/api/events', {
+        cookie: chiefCookie,
+        body: { title: 'To Update', start: '2026-08-01', end: '2026-08-01', allDay: true },
+      });
+      const { id } = await create.json();
+      const res = await client.put(`/api/events/${id}`, {
+        cookie: chiefCookie,
+        body: { title: 'To Update', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'hacker' },
+      });
+      assert.equal(res.status, 400);
+    });
+
+    it('prevents chief from setting admin-level visibility', async () => {
+      const res = await client.post('/api/events', {
+        cookie: chiefCookie,
+        body: { title: 'Admin Only', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'admin' },
+      });
+      assert.equal(res.status, 403);
+    });
+
+    it('allows admin to set admin-level visibility', async () => {
+      const res = await client.post('/api/events', {
+        cookie: adminCookie,
+        body: { title: 'Admin Event', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'admin' },
+      });
+      assert.equal(res.status, 201);
+    });
+
+    it('allows chief to set chief-level visibility', async () => {
+      const res = await client.post('/api/events', {
+        cookie: chiefCookie,
+        body: { title: 'Chief Event 2', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'chief' },
+      });
+      assert.equal(res.status, 201);
+    });
+  });
+
+  describe('Role-based event filtering', () => {
+    // Events created above: official (Chief Event), admin (Admin Event), chief (Chief Event 2)
+    it('unauthenticated users see only public events', async () => {
+      const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31');
+      assert.equal(res.status, 200);
+      const events = await res.json();
+      for (const e of events) {
+        assert.equal(e.calendarId, 'public', `unexpected role: ${e.calendarId} for "${e.title}"`);
+      }
+    });
+
+    it('student sees only public and student events', async () => {
+      const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: studentCookie });
+      assert.equal(res.status, 200);
+      const events = await res.json();
+      const allowed = ['public', 'student'];
+      for (const e of events) {
+        assert.ok(allowed.includes(e.calendarId), `student should not see role: ${e.calendarId}`);
+      }
+    });
+
+    it('admin sees all events including admin-role events', async () => {
+      const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: adminCookie });
+      assert.equal(res.status, 200);
+      const events = await res.json();
+      const roles = new Set(events.map(e => e.calendarId));
+      assert.ok(roles.has('admin'), 'admin should see admin-role events');
+    });
+  });
+
   describe('GET /api/events', () => {
     it('requires timeMin and timeMax', async () => {
       const res = await client.get('/api/events', { cookie: officialCookie });
