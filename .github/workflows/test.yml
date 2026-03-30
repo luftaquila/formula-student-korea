@@ -27,7 +27,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          for dir in auth entry queue inspection traffic score documents course; do
+          for dir in auth entry queue inspection traffic score documents course calendar; do
             cd $dir && npm ci && cd ..
           done
 

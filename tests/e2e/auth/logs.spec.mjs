@@ -25,13 +25,9 @@ test.describe("System logs page", () => {
   });
 
   test("log table contains entries from seeding actions", async ({ page }) => {
-    // The seeding process creates users and entries, so there should be log rows
-    const rows = page.locator("table.data-table tbody tr");
-    await expect(rows.first()).toBeVisible();
-
-    // At least one row should exist (user creation logs from seeding)
-    const count = await rows.count();
-    expect(count).toBeGreaterThan(0);
+    // Wait for log API data to load before checking rows
+    const rows = page.locator("table.data-table tbody tr.row-clickable");
+    await expect(rows.first()).toBeVisible({ timeout: 10000 });
   });
 
   test("service filter dropdown works", async ({ page }) => {
@@ -85,22 +81,19 @@ test.describe("System logs page", () => {
   });
 
   test("pagination controls are visible when logs exist", async ({ page }) => {
+    // Wait for log data to load
+    const rows = page.locator("table.data-table tbody tr.row-clickable");
+    await expect(rows.first()).toBeVisible({ timeout: 10000 });
+
     // Check that pagination section is present
     const pagination = page.locator(".pagination");
+    await expect(pagination).toBeVisible();
+    await expect(pagination.locator(".page-info")).toBeVisible();
+    await expect(pagination.getByRole("button", { name: "이전" })).toBeVisible();
+    await expect(pagination.getByRole("button", { name: "다음" })).toBeVisible();
 
-    // Pagination only shows when total > 0
-    const rows = page.locator("table.data-table tbody tr");
-    const count = await rows.count();
-
-    if (count > 0) {
-      await expect(pagination).toBeVisible();
-      await expect(pagination.locator(".page-info")).toBeVisible();
-      await expect(pagination.getByRole("button", { name: "이전" })).toBeVisible();
-      await expect(pagination.getByRole("button", { name: "다음" })).toBeVisible();
-
-      // First page: "이전" button should be disabled
-      await expect(pagination.getByRole("button", { name: "이전" })).toBeDisabled();
-    }
+    // First page: "이전" button should be disabled
+    await expect(pagination.getByRole("button", { name: "이전" })).toBeDisabled();
   });
 
   test("reset filters button clears all filters", async ({ page }) => {
@@ -131,21 +124,18 @@ test.describe("System logs page", () => {
   });
 
   test("clicking a log row opens detail modal", async ({ page }) => {
-    // Wait for at least one log row
+    // Wait for log data to load
     const firstRow = page.locator("table.data-table tbody tr.row-clickable").first();
-    const rowCount = await page.locator("table.data-table tbody tr").count();
+    await expect(firstRow).toBeVisible({ timeout: 10000 });
+    await firstRow.click();
 
-    if (rowCount > 0) {
-      await firstRow.click();
+    // Modal should appear
+    const modal = page.locator(".modal-box");
+    await expect(modal).toBeVisible();
+    await expect(modal.locator(".modal-title")).toHaveText("로그 상세");
 
-      // Modal should appear
-      const modal = page.locator(".modal-box");
-      await expect(modal).toBeVisible();
-      await expect(modal.locator(".modal-title")).toHaveText("로그 상세");
-
-      // Close modal
-      await modal.locator(".modal-close").click();
-      await expect(modal).not.toBeVisible();
-    }
+    // Close modal
+    await modal.locator(".modal-close").click();
+    await expect(modal).not.toBeVisible();
   });
 });

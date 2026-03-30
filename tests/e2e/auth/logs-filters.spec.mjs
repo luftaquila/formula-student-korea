@@ -32,13 +32,9 @@ test.describe("Log date range and text search filters", () => {
     await page.getByRole("button", { name: "검색" }).click();
     await waitForPageReady(page);
 
-    // Should show "로그가 없습니다" or have 0 data rows
+    // Future date range should return no results
     const emptyRow = page.locator("table.data-table tbody td.empty-text");
-    const dataRows = page.locator("table.data-table tbody tr.row-clickable");
-    const dataCount = await dataRows.count();
-    if (dataCount === 0) {
-      await expect(emptyRow).toContainText("로그가 없습니다");
-    }
+    await expect(emptyRow).toContainText("로그가 없습니다", { timeout: 10000 });
 
     // Reset filters
     await page.getByRole("button", { name: "초기화" }).click();
@@ -83,11 +79,9 @@ test.describe("Log date range and text search filters", () => {
     await page.getByRole("button", { name: "검색" }).click();
     await waitForPageReady(page);
 
+    // Nonexistent term should return no results
     const emptyRow = page.locator("table.data-table tbody td.empty-text");
-    const emptyCount = await page.locator("table.data-table tbody tr.row-clickable").count();
-    if (emptyCount === 0) {
-      await expect(emptyRow).toContainText("로그가 없습니다");
-    }
+    await expect(emptyRow).toContainText("로그가 없습니다", { timeout: 10000 });
   });
 
   test("action search filter with Enter key works", async ({ page }) => {
