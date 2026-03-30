@@ -99,6 +99,15 @@
 		reverse_proxy documents:9700
 	}
 
+	# Calendar service
+	redir /calendar /calendar/
+	handle_path /calendar/* {
+		request_header -X-Internal-Service
+		request_header -Authuser
+		request_header -X-Forwarded-For
+		reverse_proxy calendar:11000
+	}
+
 	# FileBrowser service (proxy auth via forward_auth)
 	redir /files /files/
 	handle /files/* {

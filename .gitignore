@@ -1,6 +1,7 @@
 .env
 data/
 node_modules/
+credentials.json
 tests/e2e/.auth/*.json
 playwright-report/
 test-results/

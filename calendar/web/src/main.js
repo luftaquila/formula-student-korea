@@ -1,0 +1,21 @@
+import { createApp } from "vue";
+import { createRouter, createWebHistory } from "vue-router";
+import App from "./App.vue";
+import "./styles/main.css";
+import "notyf/notyf.min.css";
+import { initTheme } from "@shared/theme-init.js";
+
+import CalendarView from "./views/CalendarView.vue";
+
+const routes = [
+  { path: "/", component: CalendarView },
+];
+
+const router = createRouter({
+  history: createWebHistory(import.meta.env.PROD ? "/calendar" : ""),
+  routes,
+});
+
+initTheme();
+
+createApp(App).use(router).mount("#app");

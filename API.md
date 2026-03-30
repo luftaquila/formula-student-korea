@@ -1,6 +1,6 @@
 # API.md
 
-Complete API reference for all 8 backend services. Each service exposes `/api/health` (public, returns `"ok"`) and `/api/logs` (admin, query handler from `shared/logger.mjs`). Services with real-time updates expose an SSE endpoint. All services except entry have a SPA fallback (`GET /{*splat}`) serving `index.html`.
+Complete API reference for all 9 backend services. Each service exposes `/api/health` (public, returns `"ok"`) and `/api/logs` (admin, query handler from `shared/logger.mjs`). Services with real-time updates expose an SSE endpoint. All services except entry have a SPA fallback (`GET /{*splat}`) serving `index.html`.
 
 All mutating endpoints are logged via `shared/logger.mjs`.
 
@@ -374,3 +374,21 @@ RTK GPS 기반 코스 콘 위치 관리 서비스. 모든 엔드포인트 admin 
 | `courses` | `{ type, course?, courseId?, courses }` | 코스 생성/수정/삭제 |
 | `cones` | `{ type, courseId, cone?, coneId?, cones }` | 콘 추가/수정/삭제 |
 | `rover` | `{ lat, lng }` | 로버 위치 수신 시 브로드캐스트 |
+
+---
+
+## Calendar Service (port 11000)
+
+Google Calendar API를 통한 대회 일정 관리 서비스. 조회는 official+, CUD는 chief+. 서비스 계정(Service Account)으로 Google Calendar에 인증.
+
+### Events
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/events` | official | `?timeMin=<ISO>&timeMax=<ISO>` | `[{ id, title, start, end, description, location, allDay }]` | 기간 내 이벤트 목록 (Google Calendar에서 조회) |
+| POST | `/api/events` | chief | `{ title, start, end, description?, location?, allDay? }` | 201 `{ id, title, start, end, ... }` | 이벤트 생성 |
+| PUT | `/api/events/:id` | chief | `{ title, start, end, description?, location?, allDay? }` | `{ id, title, start, end, ... }` | 이벤트 수정 |
+| DELETE | `/api/events/:id` | chief | — | 204 | 이벤트 삭제 |
+
+- `allDay: true` → `start`/`end`는 `YYYY-MM-DD` 형식
+- `allDay: false` → `start`/`end`는 `YYYY-MM-DD HH:mm` 형식, 타임존 Asia/Seoul

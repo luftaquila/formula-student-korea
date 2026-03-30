@@ -45,6 +45,7 @@ SERVICES=(
   "traffic:traffic/data/traffic.db"
   "score:score/data/score.db"
   "documents:documents/data/documents.db"
+  "calendar:calendar/data/calendar.db"
   "filebrowser:filebrowser/data/database.db"
 )
 

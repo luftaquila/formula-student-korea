@@ -4,7 +4,7 @@ Formula Student Korea Service Hub — microservices web app for vehicle entry, i
 
 ## Architecture
 
-12 services behind Caddy reverse proxy (port 9000), deployed via Docker Compose:
+13 services behind Caddy reverse proxy (port 9000), deployed via Docker Compose:
 
 | Service | Description | Port |
 |---------|-------------|------|
@@ -17,11 +17,12 @@ Formula Student Korea Service Hub — microservices web app for vehicle entry, i
 | score/ | Score aggregation, penalty/scoring config (Express + Vue 3) | 9600 |
 | documents/ | Document submission management (Express + Vue 3) | 9700 |
 | course/ | Course cone management with RTK GPS (Express + Vue 3 + Leaflet) | 10000 |
+| calendar/ | Competition schedule via Google Calendar API (Express + Vue 3 + schedule-x) | 11000 |
 | files/ | Cloud file storage (FileBrowser, Caddy forward_auth) | 8080 |
 | energymeter/ | Energy meter viewer (Git submodule, Vue 3) | 9800 |
 | rules/ | Rules file server (Caddy) | 9900 |
 
-All 8 backend services share `Dockerfile.service` (root) with `ARG SERVICE` + `ARG PORT`. Shared modules in `shared/`.
+All 9 backend services share `Dockerfile.service` (root) with `ARG SERVICE` + `ARG PORT`. Shared modules in `shared/`.
 
 **Service dependencies** (env vars in `compose.yml`):
 - entry, inspection, traffic, documents, course → auth (`AUTH_SERVER`)

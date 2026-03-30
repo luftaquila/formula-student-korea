@@ -1,8 +1,8 @@
 # 비즈니스 흐름 문서
 
-전체 8개 서비스의 비즈니스 흐름을 서비스별로 정리한 문서입니다.
+전체 9개 서비스의 비즈니스 흐름을 서비스별로 정리한 문서입니다.
 
-> **공통 엔드포인트**: 모든 8개 서비스는 `GET /api/health` (public, 헬스체크)와 `GET /api/logs` (admin, 로컬 서비스 로그 조회) 엔드포인트를 공통으로 노출합니다.
+> **공통 엔드포인트**: 모든 9개 서비스는 `GET /api/health` (public, 헬스체크)와 `GET /api/logs` (admin, 로컬 서비스 로그 조회) 엔드포인트를 공통으로 노출합니다.
 
 ## 목차
 
@@ -14,7 +14,8 @@
 - [6. Score 서비스](#6-score-서비스)
 - [7. Documents 서비스](#7-documents-서비스)
 - [8. Course 서비스](#8-course-서비스)
-- [9. 서비스 간 연동 흐름](#9-서비스-간-연동-흐름)
+- [9. Calendar 서비스](#9-calendar-서비스)
+- [10. 서비스 간 연동 흐름](#10-서비스-간-연동-흐름)
 
 ---
 
@@ -361,7 +362,28 @@
 
 ---
 
-## 9. 서비스 간 연동 흐름
+## 9. Calendar 서비스
+
+Google Calendar API(서비스 계정)를 통한 대회 일정 관리. 조회는 official+, CUD는 chief+.
+
+### 일정 관리
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 9.1 | 일정 목록 조회 | official | `GET /api/events` | `timeMin`~`timeMax` 범위의 Google Calendar 이벤트 조회, schedule-x 포맷으로 변환 |
+| 9.2 | 일정 생성 | chief | `POST /api/events` | `{ title, start, end, description?, location?, allDay? }` → Google Calendar에 이벤트 생성 |
+| 9.3 | 일정 수정 | chief | `PUT /api/events/:id` | 이벤트 내용 수정 → Google Calendar 반영 |
+| 9.4 | 일정 삭제 | chief | `DELETE /api/events/:id` | 삭제 전 이벤트명 조회(로깅용) → Google Calendar에서 삭제 |
+
+### 프론트엔드 뷰
+
+- **월간 뷰** (month-grid): 달력 형태로 일정 표시, 날짜 클릭 시 일정 추가 (chief+)
+- **리스트 뷰** (month-agenda): 리스트 형태로 일정 표시, 모바일 기본 뷰
+- 이벤트 클릭 시 상세/편집 모달 (chief+만 편집 가능)
+
+---
+
+## 10. 서비스 간 연동 흐름
 
 ### Score 집계 체인
 

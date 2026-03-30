@@ -12,7 +12,8 @@
     "test:traffic": "node --test --test-force-exit tests/traffic/*.test.mjs",
     "test:score": "node --test --test-force-exit tests/score/*.test.mjs",
     "test:documents": "node --test --test-force-exit tests/documents/*.test.mjs",
-    "test:course": "node --test --test-force-exit tests/course/*.test.mjs"
+    "test:course": "node --test --test-force-exit tests/course/*.test.mjs",
+    "test:calendar": "node --test --test-force-exit tests/calendar/*.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2"
