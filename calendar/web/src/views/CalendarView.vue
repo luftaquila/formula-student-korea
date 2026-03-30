@@ -23,6 +23,12 @@ const ROLE_CALENDARS = {
   public: {
     colorName: "public",
     label: "public",
+    lightColors: { main: "#94a3b8", container: "#f1f5f9", onContainer: "#334155" },
+    darkColors: { main: "#94a3b8", container: "#334155", onContainer: "#e2e8f0" },
+  },
+  student: {
+    colorName: "student",
+    label: "student",
     lightColors: { main: "#10b981", container: "#d1fae5", onContainer: "#065f46" },
     darkColors: { main: "#6ee7b7", container: "#064e3b", onContainer: "#d1fae5" },
   },
@@ -53,6 +59,7 @@ const calendarApp = createCalendar({
   views: [viewMonthGrid, viewMonthAgenda],
   defaultView: window.innerWidth < 768 ? "month-agenda" : "month-grid",
   locale: "ko-KR",
+  monthGridOptions: { nEventsPerDay: 100 },
   firstDayOfWeek: 7,
   isDark: document.documentElement.dataset.theme === "dark",
   calendars: ROLE_CALENDARS,
@@ -566,11 +573,6 @@ onUnmounted(() => {
 
 .event-popup__desc span {
   white-space: pre-wrap;
-  max-height: 4.5em;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
 }
 
 .event-popup__role {
@@ -581,8 +583,8 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-.role-public { background: rgba(16, 185, 129, 0.15); color: #059669; }
-.role-student { background: rgba(139, 92, 246, 0.15); color: #7c3aed; }
+.role-public { background: rgba(100, 116, 139, 0.25); color: var(--text-secondary, #334155); }
+.role-student { background: rgba(16, 185, 129, 0.15); color: #059669; }
 .role-official { background: rgba(59, 130, 246, 0.15); color: #2563eb; }
 .role-chief { background: rgba(245, 158, 11, 0.15); color: #d97706; }
 .role-admin { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
@@ -660,7 +662,11 @@ onUnmounted(() => {
   background: var(--bg-hover, #f1f5f9);
 }
 
-/* ── Dim and disable non-current-month dates in month agenda ── */
+/* ── Dim non-current-month dates ── */
+.calendar-container :deep(.sx__month-grid-day.is-leading-or-trailing) {
+  opacity: 0.35 !important;
+}
+
 .calendar-container :deep(.sx__month-agenda-day.is-leading-or-trailing) {
   opacity: 0.35 !important;
 }
