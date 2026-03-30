@@ -256,6 +256,26 @@ describe('Calendar API', () => {
       assert.equal(res.status, 400);
     });
 
+    it('POST /api/events - rejects start after end', async () => {
+      const res = await client.post('/api/events', {
+        cookie: chiefCookie,
+        body: { title: 'Backwards', start: '2026-07-20', end: '2026-07-15', allDay: true },
+      });
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.match(body.error, /start/i);
+    });
+
+    it('PUT /api/events/:id - rejects start after end', async () => {
+      const res = await client.put(`/api/events/${createdId}`, {
+        cookie: chiefCookie,
+        body: { title: 'Backwards', start: '2026-07-20', end: '2026-07-15', allDay: true },
+      });
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.match(body.error, /start/i);
+    });
+
     it('PUT /api/events/:id - updates an event', async () => {
       const res = await client.put(`/api/events/${createdId}`, {
         cookie: chiefCookie,

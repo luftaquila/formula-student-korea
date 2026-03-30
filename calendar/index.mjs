@@ -85,6 +85,7 @@ app.get("/api/events", (req, res) => {
 app.post("/api/events", (req, res) => {
   const { title, start, end } = req.body;
   if (!title || !start || !end) return res.status(400).json({ error: "title, start, and end are required" });
+  if (start > end) return res.status(400).json({ error: "start must not be after end" });
 
   const role = req.body.role || "official";
   if (!ALLOWED_EVENT_ROLES.includes(role)) return res.status(400).json({ error: "Invalid role value" });
@@ -118,6 +119,7 @@ app.put("/api/events/:id", (req, res) => {
   const { id } = req.params;
   const { title, start, end } = req.body;
   if (!title || !start || !end) return res.status(400).json({ error: "title, start, and end are required" });
+  if (start > end) return res.status(400).json({ error: "start must not be after end" });
 
   const role = req.body.role || "official";
   if (!ALLOWED_EVENT_ROLES.includes(role)) return res.status(400).json({ error: "Invalid role value" });

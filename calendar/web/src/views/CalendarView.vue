@@ -23,31 +23,31 @@ const ROLE_CALENDARS = {
   public: {
     colorName: "public",
     label: "public",
-    lightColors: { main: "#94a3b8", container: "#f1f5f9", onContainer: "#334155" },
+    lightColors: { main: "#64748b", container: "#f1f5f9", onContainer: "#334155" },
     darkColors: { main: "#94a3b8", container: "#334155", onContainer: "#e2e8f0" },
   },
   student: {
     colorName: "student",
     label: "student",
-    lightColors: { main: "#10b981", container: "#d1fae5", onContainer: "#065f46" },
+    lightColors: { main: "#059669", container: "#d1fae5", onContainer: "#065f46" },
     darkColors: { main: "#6ee7b7", container: "#064e3b", onContainer: "#d1fae5" },
   },
   official: {
     colorName: "official",
     label: "official",
-    lightColors: { main: "#3b82f6", container: "#dbeafe", onContainer: "#1e40af" },
+    lightColors: { main: "#2563eb", container: "#dbeafe", onContainer: "#1e40af" },
     darkColors: { main: "#93c5fd", container: "#1e3a5f", onContainer: "#dbeafe" },
   },
   chief: {
     colorName: "chief",
     label: "chief",
-    lightColors: { main: "#f59e0b", container: "#fef3c7", onContainer: "#92400e" },
+    lightColors: { main: "#d97706", container: "#fef3c7", onContainer: "#92400e" },
     darkColors: { main: "#fcd34d", container: "#78350f", onContainer: "#fef3c7" },
   },
   admin: {
     colorName: "admin",
     label: "admin",
-    lightColors: { main: "#ef4444", container: "#fee2e2", onContainer: "#991b1b" },
+    lightColors: { main: "#dc2626", container: "#fee2e2", onContainer: "#991b1b" },
     darkColors: { main: "#fca5a5", container: "#7f1d1d", onContainer: "#fee2e2" },
   },
 };
