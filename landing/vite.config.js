@@ -4,6 +4,9 @@ import { resolve } from "path";
 
 export default defineConfig({
   plugins: [vue()],
+  define: {
+    __TEST_SERVER__: process.env.TEST_SERVER === "true",
+  },
   server: {
     port: 9000,
   },

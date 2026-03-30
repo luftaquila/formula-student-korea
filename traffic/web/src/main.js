@@ -6,8 +6,10 @@ import App from "./App.vue";
 import "notyf/notyf.min.css";
 import "./assets/styles/main.css";
 import { initTheme } from "@shared/theme-init.js";
+import { initTestBanner } from "@shared/test-banner.js";
 
 initTheme();
+initTestBanner();
 
 const app = createApp(App);
 app.use(createPinia());

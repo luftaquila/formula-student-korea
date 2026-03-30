@@ -4,6 +4,7 @@ import App from "./App.vue";
 import "./styles/main.css";
 import "notyf/notyf.min.css";
 import { initTheme } from "@shared/theme-init.js";
+import { initTestBanner } from "@shared/test-banner.js";
 
 import ScoreBoard from "./views/ScoreBoard.vue";
 import EnduranceInput from "./views/EnduranceInput.vue";
@@ -19,5 +20,6 @@ const router = createRouter({
 });
 
 initTheme();
+initTestBanner();
 
 createApp(App).use(router).mount("#app");

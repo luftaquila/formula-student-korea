@@ -16,6 +16,7 @@ services:
       args:
         SERVICE: entry
         PORT: 9200
+        TEST_SERVER: ${TEST_SERVER:-}
     container_name: fsk-entry
     security_opt:
       - label:disable
@@ -44,6 +45,7 @@ services:
       args:
         SERVICE: course
         PORT: 10000
+        TEST_SERVER: ${TEST_SERVER:-}
     container_name: fsk-course
     security_opt:
       - label:disable
@@ -70,6 +72,7 @@ services:
       args:
         SERVICE: traffic
         PORT: 9500
+        TEST_SERVER: ${TEST_SERVER:-}
     container_name: fsk-traffic
     security_opt:
       - label:disable
@@ -111,6 +114,7 @@ services:
       args:
         SERVICE: queue
         PORT: 9300
+        TEST_SERVER: ${TEST_SERVER:-}
     container_name: fsk-queue
     security_opt:
       - label:disable
@@ -142,6 +146,7 @@ services:
       args:
         SERVICE: inspection
         PORT: 9400
+        TEST_SERVER: ${TEST_SERVER:-}
     container_name: fsk-inspection
     security_opt:
       - label:disable
@@ -168,6 +173,7 @@ services:
       args:
         SERVICE: score
         PORT: 9600
+        TEST_SERVER: ${TEST_SERVER:-}
     container_name: fsk-score
     security_opt:
       - label:disable
@@ -202,6 +208,7 @@ services:
       args:
         SERVICE: calendar
         PORT: 11000
+        TEST_SERVER: ${TEST_SERVER:-}
     container_name: fsk-calendar
     security_opt:
       - label:disable
@@ -228,6 +235,7 @@ services:
       args:
         SERVICE: documents
         PORT: 9700
+        TEST_SERVER: ${TEST_SERVER:-}
     container_name: fsk-documents
     security_opt:
       - label:disable
@@ -254,6 +262,7 @@ services:
       args:
         SERVICE: auth
         PORT: 9100
+        TEST_SERVER: ${TEST_SERVER:-}
     container_name: fsk-auth
     security_opt:
       - label:disable
@@ -320,6 +329,8 @@ services:
     build: &caddy-build
       context: .
       dockerfile: landing/Dockerfile
+      args:
+        TEST_SERVER: ${TEST_SERVER:-}
     container_name: fsk-caddy
     security_opt:
       - label:disable

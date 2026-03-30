@@ -4,6 +4,7 @@ import App from "./App.vue";
 import "./styles/main.css";
 import "notyf/notyf.min.css";
 import { initTheme } from "@shared/theme-init.js";
+import { initTestBanner } from "@shared/test-banner.js";
 import { isChief } from "@shared/officialsStore.js";
 
 import StudentSessions from "./views/StudentSessions.vue";
@@ -31,5 +32,6 @@ router.beforeEach((to) => {
 });
 
 initTheme();
+initTestBanner();
 
 createApp(App).use(router).mount("#app");

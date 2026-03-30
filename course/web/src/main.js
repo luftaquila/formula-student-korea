@@ -4,6 +4,7 @@ import App from "./App.vue";
 import "./styles/main.css";
 import "leaflet/dist/leaflet.css";
 import { initTheme } from "@shared/theme-init.js";
+import { initTestBanner } from "@shared/test-banner.js";
 
 import MapView from "./views/MapView.vue";
 
@@ -17,5 +18,6 @@ const router = createRouter({
 });
 
 initTheme();
+initTestBanner();
 
 createApp(App).use(router).mount("#app");

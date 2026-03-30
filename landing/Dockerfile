@@ -19,6 +19,7 @@ COPY landing/vite.config.js ./
 COPY shared ../shared
 
 # Build application
+ARG TEST_SERVER
 RUN npm run build
 
 # Final Caddy image

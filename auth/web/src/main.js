@@ -3,8 +3,10 @@ import { createRouter, createWebHistory } from "vue-router";
 import App from "./App.vue";
 import "notyf/notyf.min.css";
 import { initTheme } from "@shared/theme-init.js";
+import { initTestBanner } from "@shared/test-banner.js";
 
 initTheme();
+initTestBanner();
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
