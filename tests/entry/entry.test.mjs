@@ -165,6 +165,79 @@ describe('PATCH /api/vehicle-types/:id', () => {
     });
     assert.equal(res.status, 404);
   });
+
+  it('renames a vehicle type', async () => {
+    const listRes = await client.get('/api/vehicle-types');
+    const types = await listRes.json();
+    const cv = types.find(t => t.name === 'CV');
+
+    const res = await client.patch(`/api/vehicle-types/${cv.id}`, {
+      body: { name: 'CV2' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+
+    const updated = await client.get('/api/vehicle-types');
+    const updatedTypes = await updated.json();
+    assert.equal(updatedTypes.find(t => t.id === cv.id).name, 'CV2');
+
+    // Restore original name
+    await client.patch(`/api/vehicle-types/${cv.id}`, {
+      body: { name: 'CV' },
+      cookie: adminCookie,
+    });
+  });
+
+  it('rename cascades to entries', async () => {
+    // Create a type and an entry referencing it
+    const typeRes = await client.post('/api/vehicle-types', {
+      body: { name: 'RenameTest' },
+      cookie: adminCookie,
+    });
+    const typeData = await typeRes.json();
+
+    await client.post('/api/entries', {
+      body: { num: 77, univ: 'RenameUniv', team: 'RenameTeam', type: 'RenameTest' },
+      cookie: adminCookie,
+    });
+
+    // Rename the type
+    await client.patch(`/api/vehicle-types/${typeData.id}`, {
+      body: { name: 'Renamed' },
+      cookie: adminCookie,
+    });
+
+    // Verify entry type was updated
+    const entries = await (await client.get('/api/entries')).json();
+    assert.equal(entries['77'].type, 'Renamed');
+
+    // Cleanup
+    await client.delete('/api/entries/77', { cookie: adminCookie });
+    await client.delete(`/api/vehicle-types/${typeData.id}`, { cookie: adminCookie });
+  });
+
+  it('rejects duplicate name on rename', async () => {
+    const listRes = await client.get('/api/vehicle-types');
+    const types = await listRes.json();
+    const ev = types.find(t => t.name === 'EV');
+
+    const res = await client.patch(`/api/vehicle-types/${ev.id}`, {
+      body: { name: 'CV' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('rejects empty name on rename', async () => {
+    const listRes = await client.get('/api/vehicle-types');
+    const types = await listRes.json();
+
+    const res = await client.patch(`/api/vehicle-types/${types[0].id}`, {
+      body: { name: '  ' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
 });
 
 describe('DELETE /api/vehicle-types/:id', () => {

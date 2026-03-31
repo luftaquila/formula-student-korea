@@ -143,10 +143,10 @@ async function handleAddType({ name, color }) {
   }
 }
 
-async function handleUpdateType({ id, color }) {
+async function handleUpdateType({ id, ...data }) {
   try {
-    await updateVehicleType(id, color, selectedYear.value);
-    await loadVehicleTypes();
+    await updateVehicleType(id, data, selectedYear.value);
+    await Promise.all([loadVehicleTypes(), loadEntries()]);
   } catch (e) {
     error(e.message);
   }

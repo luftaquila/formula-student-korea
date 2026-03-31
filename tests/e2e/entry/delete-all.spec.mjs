@@ -42,7 +42,7 @@ test.describe("Entry delete all", () => {
     const table = page.locator(".entry-table");
 
     // Verify we have 3 entries before deletion
-    await expect(page.locator(".entry-count")).toHaveText("3개");
+    await expect(page.locator(".entry-count")).toHaveText("3대");
 
     // Accept the confirmation dialog
     page.on("dialog", (dialog) => dialog.accept());
@@ -54,6 +54,6 @@ test.describe("Entry delete all", () => {
 
     // Verify all entries are gone
     await expect(table.locator("tbody")).toContainText("등록된 엔트리가 없습니다");
-    await expect(page.locator(".entry-count")).toHaveText("0개");
+    await expect(page.locator(".entry-count")).toHaveText("0대");
   });
 });

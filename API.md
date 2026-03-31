@@ -99,7 +99,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/vehicle-types` | public | `?year=` | `[{ id, name, sort_order, color }]` | List vehicle types for year |
 | POST | `/api/vehicle-types` | admin | `{ name, color? }?year=` | `{ id, name, sort_order, color }` | Create vehicle type (color: blue/green/orange/purple/red/teal, default blue) |
-| PATCH | `/api/vehicle-types/:id` | admin | `{ color }?year=` | 200 | Update vehicle type color |
+| PATCH | `/api/vehicle-types/:id` | admin | `{ name?, color? }?year=` | 200 | Update vehicle type name/color (name change cascades to entries) |
 | DELETE | `/api/vehicle-types/:id` | admin | `?year=` | 200 | Delete vehicle type (NULLs entries for that year) |
 
 ---

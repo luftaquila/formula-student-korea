@@ -520,25 +520,59 @@ app.post("/api/vehicle-types", withYearVtTable, (req, res) => {
   res.status(201).json({ id: result.result.lastInsertRowid, name: name.trim(), sort_order: nextOrder, color: safeColor });
 });
 
-// PATCH /api/vehicle-types/:id - 차량 유형 색상 변경
+// PATCH /api/vehicle-types/:id - 차량 유형 수정 (이름, 색상)
 app.patch("/api/vehicle-types/:id", withYearVtTable, (req, res) => {
-  const { vtTableName } = req;
+  const { vtTableName, vtYear } = req;
   const id = Number(req.params.id);
   if (!id) return res.status(400).send("올바르지 않은 ID입니다.");
 
-  const { color } = req.body;
-
-  if (!VALID_COLORS.includes(color)) return res.status(400).send("올바르지 않은 색상입니다.");
-
-  const type = db.prepare(`SELECT name FROM '${vtTableName}' WHERE id = ?`).get(id);
+  const type = db.prepare(`SELECT name, color FROM '${vtTableName}' WHERE id = ?`).get(id);
   if (!type) return res.status(404).send("존재하지 않는 차량 유형입니다.");
 
-  const result = dbRun(() => db.prepare(`UPDATE '${vtTableName}' SET color = ? WHERE id = ?`).run(color, id));
+  const { name, color } = req.body;
+  const updates = [];
+  const params = [];
+
+  if (color !== undefined) {
+    if (!VALID_COLORS.includes(color)) return res.status(400).send("올바르지 않은 색상입니다.");
+    updates.push("color = ?");
+    params.push(color);
+  }
+
+  if (name !== undefined) {
+    const trimmed = name.trim();
+    if (!trimmed) return res.status(400).send("유형 이름을 입력하세요.");
+    if (trimmed !== type.name) {
+      const dup = db.prepare(`SELECT id FROM '${vtTableName}' WHERE name = ? AND id != ?`).get(trimmed, id);
+      if (dup) return res.status(400).send("이미 존재하는 차량 유형입니다.");
+      updates.push("name = ?");
+      params.push(trimmed);
+    }
+  }
+
+  if (updates.length === 0) return res.status(200).send();
+
+  params.push(id);
+  const result = dbRun(() => {
+    db.transaction(() => {
+      db.prepare(`UPDATE '${vtTableName}' SET ${updates.join(", ")} WHERE id = ?`).run(...params);
+      // 이름 변경 시 해당 연도 엔트리의 type도 갱신
+      const newName = name?.trim();
+      if (newName && newName !== type.name) {
+        const entryTable = getTableName(vtYear);
+        db.prepare(`UPDATE '${entryTable}' SET type = ? WHERE type = ?`).run(newName, type.name);
+      }
+    })();
+  });
+
   if (!result.success) {
     logger.warn(req, "vehicle_type.update", { error: result.error }, type.name);
     return res.status(result.status).send(result.error);
   }
-  logger.log(req, "vehicle_type.update", { color }, type.name);
+  const detail = {};
+  if (color !== undefined) detail.color = color;
+  if (name?.trim() && name.trim() !== type.name) detail.name = { from: type.name, to: name.trim() };
+  logger.log(req, "vehicle_type.update", detail, type.name);
   res.status(200).send();
 });
 

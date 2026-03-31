@@ -13,9 +13,25 @@ const colorLabels = { blue: "파랑", green: "초록", orange: "주황", purple:
 const newTypeName = ref("");
 const newTypeColor = ref("blue");
 const openPicker = ref(null); // 'new' or vt.id
+const editingId = ref(null);
 
 function togglePicker(id) {
   openPicker.value = openPicker.value === id ? null : id;
+}
+
+function startRename(id) {
+  editingId.value = id;
+}
+
+function saveRename(id, originalName, event) {
+  editingId.value = null;
+  const newName = event.target.value.trim();
+  if (!newName || newName === originalName) return;
+  emit("update", { id, name: newName });
+}
+
+function renameInputRef(el) {
+  if (el) { el.focus(); el.select(); }
 }
 
 function selectNewColor(c) {
@@ -79,7 +95,17 @@ function handleDelete(id) {
       </form>
       <ul v-if="vehicleTypes.length" class="type-list">
         <li v-for="vt in vehicleTypes" :key="vt.id" class="type-item">
-          <span class="badge" :class="'badge-type-' + vt.color">{{ vt.name }}</span>
+          <input
+            v-if="editingId === vt.id"
+            :ref="renameInputRef"
+            class="rename-input"
+            type="text"
+            :value="vt.name"
+            @blur="saveRename(vt.id, vt.name, $event)"
+            @keyup.enter="$event.target.blur()"
+            @keyup.escape="editingId = null"
+          />
+          <span v-else class="badge clickable" :class="'badge-type-' + vt.color" @click="startRename(vt.id)">{{ vt.name }}</span>
           <div class="type-actions">
             <div class="color-picker-wrap">
               <button type="button" class="color-dot small" :class="'color-' + vt.color" :title="colorLabels[vt.color]" @click.stop="togglePicker(vt.id)" />
@@ -225,6 +251,30 @@ function handleDelete(id) {
 .badge-type-purple { background: rgba(139, 92, 246, 0.12); color: #7c3aed; }
 .badge-type-red { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
 .badge-type-teal { background: rgba(20, 184, 166, 0.12); color: #0d9488; }
+
+.clickable {
+  cursor: pointer;
+}
+
+.clickable:hover {
+  opacity: 0.8;
+}
+
+.rename-input {
+  width: 80px;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-focus);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.rename-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
 
 .delete-btn {
   opacity: 0.5;

@@ -86,7 +86,7 @@
 |---|------|------|-----|------|
 | 2.8 | 차량 유형 조회 | public | `GET /api/vehicle-types?year=` | 연도별 차량 유형 목록, sort_order 순 |
 | 2.9 | 차량 유형 추가 | admin | `POST /api/vehicle-types?year=` | `{ name, color? }`, UNIQUE 제약, color: blue/green/orange/purple/red/teal (기본 blue) |
-| 2.10 | 차량 유형 색상 변경 | admin | `PATCH /api/vehicle-types/:id?year=` | `{ color }`, 해당 연도 유형의 색상 변경 |
+| 2.10 | 차량 유형 수정 | admin | `PATCH /api/vehicle-types/:id?year=` | `{ name?, color? }`, 이름 변경 시 해당 연도 엔트리의 type도 갱신 |
 | 2.11 | 차량 유형 삭제 | admin | `DELETE /api/vehicle-types/:id?year=` | 삭제 시 해당 연도 엔트리의 type=NULL로 갱신 |
 
 ---

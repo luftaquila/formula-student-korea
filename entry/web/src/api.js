@@ -94,10 +94,10 @@ export async function addVehicleType(name, color, year) {
   return res.json();
 }
 
-export async function updateVehicleType(id, color, year) {
+export async function updateVehicleType(id, data, year) {
   await request(`/api/vehicle-types/${id}${yearParam(year)}`, {
     method: "PATCH",
-    body: JSON.stringify({ color }),
+    body: JSON.stringify(data),
   });
 }
 

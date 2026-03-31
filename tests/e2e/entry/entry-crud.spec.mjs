@@ -25,7 +25,7 @@ test.describe("Entry CRUD operations", () => {
     await expect(table.locator("tbody")).toContainText("고려대학교");
 
     // Verify entry count badge
-    await expect(page.locator(".entry-count")).toHaveText("8개");
+    await expect(page.locator(".entry-count")).toHaveText("8대");
   });
 
   test("adds a new entry", async ({ page }) => {
@@ -47,7 +47,7 @@ test.describe("Entry CRUD operations", () => {
     const table = page.locator(".entry-table");
     await expect(table.locator("tbody")).toContainText("테스트대학교");
     await expect(table.locator("tbody")).toContainText("테스트팀");
-    await expect(page.locator(".entry-count")).toHaveText("9개");
+    await expect(page.locator(".entry-count")).toHaveText("9대");
 
     // Clean up: delete the entry we just added
     const row = table.locator("tbody tr").filter({ hasText: "테스트대학교" });
@@ -97,7 +97,7 @@ test.describe("Entry CRUD operations", () => {
     await sidebar.locator('input[type="text"]').nth(1).fill("삭제팀");
     await sidebar.locator('.submit-btn').click();
     await waitForPageReady(page);
-    await expect(page.locator(".entry-count")).toHaveText("9개");
+    await expect(page.locator(".entry-count")).toHaveText("9대");
 
     // Accept the confirmation dialog
     page.on("dialog", (dialog) => dialog.accept());
@@ -113,7 +113,7 @@ test.describe("Entry CRUD operations", () => {
     // Wait for table to update and verify deletion
     await waitForPageReady(page);
     await expect(table.locator("tbody")).not.toContainText("삭제대학교");
-    await expect(page.locator(".entry-count")).toHaveText("8개");
+    await expect(page.locator(".entry-count")).toHaveText("8대");
   });
 
   test("filters entries with search", async ({ page }) => {

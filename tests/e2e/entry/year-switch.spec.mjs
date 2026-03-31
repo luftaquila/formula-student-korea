@@ -63,7 +63,7 @@ test.describe("Entry year switching", () => {
 
     // Should show the 2 entries for previous year (isolated data)
     await expect(table.locator("tbody tr")).toHaveCount(2);
-    await expect(page.locator(".entry-count")).toHaveText("2개");
+    await expect(page.locator(".entry-count")).toHaveText("2대");
     await expect(table.locator("tbody")).toContainText("과거대학교");
     await expect(table.locator("tbody")).toContainText("역사대학교");
 

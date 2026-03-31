@@ -107,7 +107,7 @@ test.describe("Entry bulk upload and download", () => {
     // Wait for table to update - bulk upload replaces all entries for this year
     await waitForPageReady(page);
     const table = page.locator(".entry-table");
-    await expect(page.locator(".entry-count")).toHaveText("3개");
+    await expect(page.locator(".entry-count")).toHaveText("3대");
     await expect(table.locator("tbody")).toContainText("업로드대학교A");
     await expect(table.locator("tbody")).toContainText("업로드대학교B");
     await expect(table.locator("tbody")).toContainText("업로드대학교C");
