@@ -74,7 +74,7 @@
 |---|------|------|-----|------|
 | 2.1 | 연도 목록 조회 | public | `GET /api/years` | entry_YYYY 테이블 스캔, 내림차순 |
 | 2.2 | 엔트리 목록 조회 | public | `GET /api/entries?year=` | JSON 다운로드 (`?download` 파라미터) |
-| 2.3 | 엔트리 추가 | admin | `POST /api/entries?year=` | `{ num, univ, team, type? }`, type은 vehicle_types에 존재해야 함 |
+| 2.3 | 엔트리 추가 | admin | `POST /api/entries?year=` | `{ num, univ, team, type? }`, type은 해당 연도 vehicle_types에 존재해야 함 |
 | 2.4 | 엔트리 수정 | admin | `PATCH /api/entries/:num?year=` | 번호 변경 시 리넘버링, Documents 동기화 실패 시 롤백 (502) |
 | 2.5 | 엔트리 삭제 | admin | `DELETE /api/entries/:num?year=` | 삭제 후 Queue/Documents에 알림 (fire-and-forget) |
 | 2.6 | 엔트리 전체 삭제 | admin | `DELETE /api/entries?year=` | 연도별 전체 초기화, 삭제된 엔트리 Queue/Documents에 알림 |
@@ -84,9 +84,10 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 2.8 | 차량 유형 조회 | public | `GET /api/vehicle-types` | sort_order 순 |
-| 2.9 | 차량 유형 추가 | admin | `POST /api/vehicle-types` | `{ name }`, UNIQUE 제약 |
-| 2.10 | 차량 유형 삭제 | admin | `DELETE /api/vehicle-types/:id` | 삭제 시 전 연도 엔트리의 type=NULL로 갱신 |
+| 2.8 | 차량 유형 조회 | public | `GET /api/vehicle-types?year=` | 연도별 차량 유형 목록, sort_order 순 |
+| 2.9 | 차량 유형 추가 | admin | `POST /api/vehicle-types?year=` | `{ name, color? }`, UNIQUE 제약, color: blue/green/orange/purple/red/teal (기본 blue) |
+| 2.10 | 차량 유형 색상 변경 | admin | `PATCH /api/vehicle-types/:id?year=` | `{ color }`, 해당 연도 유형의 색상 변경 |
+| 2.11 | 차량 유형 삭제 | admin | `DELETE /api/vehicle-types/:id?year=` | 삭제 시 해당 연도 엔트리의 type=NULL로 갱신 |
 
 ---
 
