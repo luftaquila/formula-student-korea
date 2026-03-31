@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { Notyf } from "notyf";
-import { request, fetchEntryYears, fetchEntries } from "../api.js";
+import { request, fetchEntryYears, fetchEntries, fetchVehicleTypes } from "../api.js";
 
 const notyf = new Notyf({ duration: 3000, position: { x: "right", y: "top" } });
 
@@ -38,16 +38,11 @@ watch(vehicleTypes, (types) => {
   for (const t of types) { if (!(t in typeFilters.value)) typeFilters.value[t] = true; }
 });
 
-// 유형 색상 (성적표 동일)
-const typeColors = ["blue", "green", "orange", "purple", "red", "teal"];
-const typeColorMap = {};
+// 유형 색상 (엔트리 서비스에서 가져옴)
+const typeColorMap = ref({});
 function getTypeColor(type) {
   if (!type) return "blue";
-  if (!typeColorMap[type]) {
-    const idx = Object.keys(typeColorMap).length % typeColors.length;
-    typeColorMap[type] = typeColors[idx];
-  }
-  return typeColorMap[type];
+  return typeColorMap.value[type] || "blue";
 }
 
 async function loadYears() {
@@ -82,7 +77,7 @@ async function loadData() {
   finally { loading.value = false; }
 }
 
-watch(selectedYear, loadData);
+watch(selectedYear, () => { loadData(); loadTypeColors(); });
 
 // 엔트리 리스트 (필터 + 검색 + 정렬)
 const entryList = computed(() => {
@@ -209,8 +204,17 @@ function formatDate(d) {
   return new Date(d + "Z").toLocaleString("ko-KR");
 }
 
-onMounted(() => {
-  loadYears();
+async function loadTypeColors() {
+  if (!selectedYear.value) return;
+  try {
+    const vtList = await fetchVehicleTypes(selectedYear.value);
+    typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
+  } catch { /* 색상 로드 실패 시 기본값 사용 */ }
+}
+
+onMounted(async () => {
+  await loadYears();
+  await loadTypeColors();
   document.addEventListener("click", closeAllDropdowns);
 });
 onUnmounted(() => {

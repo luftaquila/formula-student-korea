@@ -1,8 +1,8 @@
 import { createApiClient } from "@shared/api-base.js";
 
-const { request, fetchEntryYears, fetchEntries } = createApiClient("/score");
+const { request, fetchEntryYears, fetchEntries, fetchVehicleTypes } = createApiClient("/score");
 
-export { fetchEntryYears, fetchEntries };
+export { fetchEntryYears, fetchEntries, fetchVehicleTypes };
 
 /* ============================================
    Score API

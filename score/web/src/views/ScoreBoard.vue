@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import * as XLSX from "xlsx";
-import { fetchEntryYears, fetchScore, updateManualScore, updatePenalty, updateSetting } from "../api";
+import { fetchEntryYears, fetchScore, fetchVehicleTypes, updateManualScore, updatePenalty, updateSetting } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
 
@@ -122,7 +122,8 @@ const entryList = computed(() => {
 
 onMounted(async () => {
   try {
-    availableYears.value = await fetchEntryYears();
+    const [years] = await Promise.all([fetchEntryYears(), loadTypeColors()]);
+    availableYears.value = years;
     if (availableYears.value.length && !availableYears.value.includes(selectedYear.value)) {
       selectedYear.value = availableYears.value[0];
     }
@@ -146,6 +147,13 @@ function handleOutsideClick(e) {
   }
 }
 
+async function loadTypeColors() {
+  try {
+    const vtList = await fetchVehicleTypes(selectedYear.value);
+    typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
+  } catch { /* 색상 로드 실패 시 기본값 사용 */ }
+}
+
 async function loadData() {
   try {
     const data = await fetchScore(selectedYear.value);
@@ -165,7 +173,7 @@ async function loadData() {
 async function onYearChange() {
   loading.value = true;
   detailExpandedTeam.value = null;
-  await loadData();
+  await Promise.all([loadData(), loadTypeColors()]);
   loading.value = false;
 }
 
@@ -256,15 +264,10 @@ function getTotalScore(num) {
   return scoreCache.value.totalScoreMap[num] ?? 0;
 }
 
-const typeColors = ["blue", "green", "orange", "purple", "red", "teal"];
-const typeColorMap = {};
+const typeColorMap = ref({});
 function getTypeColor(type) {
   if (!type) return "blue";
-  if (!typeColorMap[type]) {
-    const idx = Object.keys(typeColorMap).length % typeColors.length;
-    typeColorMap[type] = typeColors[idx];
-  }
-  return typeColorMap[type];
+  return typeColorMap.value[type] || "blue";
 }
 
 function formatTime(time) {
