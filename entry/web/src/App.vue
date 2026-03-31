@@ -6,7 +6,7 @@ import FileManager from "./components/FileManager.vue";
 import VehicleTypeManager from "./components/VehicleTypeManager.vue";
 import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
-import { fetchYears, fetchEntries, addEntry, updateEntry, deleteEntry, deleteAllEntries, uploadEntries, fetchVehicleTypes, addVehicleType, deleteVehicleType } from "./api";
+import { fetchYears, fetchEntries, addEntry, updateEntry, deleteEntry, deleteAllEntries, uploadEntries, fetchVehicleTypes, addVehicleType, updateVehicleType, deleteVehicleType } from "./api";
 import { useNotification } from "@shared/useNotification.js";
 
 const { success, error } = useNotification();
@@ -78,7 +78,7 @@ async function handleUpdate(entry) {
   try {
     await updateEntry(entry, selectedYear.value);
     success(`${entry.num}번 엔트리를 수정했습니다.`);
-    await loadEntries();
+    entries.value = await fetchEntries(selectedYear.value);
   } catch (e) {
     error(e.message);
   }
@@ -116,16 +116,25 @@ async function handleDeleteAll() {
 
 async function loadVehicleTypes() {
   try {
-    vehicleTypes.value = await fetchVehicleTypes();
+    vehicleTypes.value = await fetchVehicleTypes(selectedYear.value);
   } catch (e) {
     error(e.message);
   }
 }
 
-async function handleAddType(name) {
+async function handleAddType({ name, color }) {
   try {
-    await addVehicleType(name);
+    await addVehicleType(name, color, selectedYear.value);
     success(`차량 유형 '${name}'을(를) 추가했습니다.`);
+    await loadVehicleTypes();
+  } catch (e) {
+    error(e.message);
+  }
+}
+
+async function handleUpdateType({ id, color }) {
+  try {
+    await updateVehicleType(id, color, selectedYear.value);
     await loadVehicleTypes();
   } catch (e) {
     error(e.message);
@@ -134,7 +143,7 @@ async function handleAddType(name) {
 
 async function handleDeleteType(id) {
   try {
-    await deleteVehicleType(id);
+    await deleteVehicleType(id, selectedYear.value);
     success("차량 유형을 삭제했습니다.");
     await Promise.all([loadVehicleTypes(), loadEntries()]);
   } catch (e) {
@@ -142,7 +151,7 @@ async function handleDeleteType(id) {
   }
 }
 
-watch(selectedYear, loadEntries);
+watch(selectedYear, () => { loadEntries(); loadVehicleTypes(); });
 
 onMounted(async () => {
   await loadYears();
@@ -169,7 +178,7 @@ onMounted(async () => {
       <aside class="sidebar">
         <EntryForm :vehicle-types="vehicleTypes" :loading="addingEntry" @submit="handleAdd" />
         <FileManager :year="selectedYear" @upload="handleUpload" @delete-all="handleDeleteAll" />
-        <VehicleTypeManager :vehicle-types="vehicleTypes" @add="handleAddType" @delete="handleDeleteType" />
+        <VehicleTypeManager :vehicle-types="vehicleTypes" @add="handleAddType" @update="handleUpdateType" @delete="handleDeleteType" />
       </aside>
 
       <section class="content">

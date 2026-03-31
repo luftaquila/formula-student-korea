@@ -36,5 +36,12 @@ export function createApiClient(basePath) {
     return res.json();
   }
 
-  return { request, fetchEntryYears, fetchEntries };
+  async function fetchVehicleTypes(year) {
+    const qs = year != null ? `?year=${year}` : "";
+    const res = await fetch(`${ENTRY_URL}/api/vehicle-types${qs}`);
+    if (!res.ok) throw new Error("차량 유형 정보를 가져올 수 없습니다.");
+    return res.json();
+  }
+
+  return { request, fetchEntryYears, fetchEntries, fetchVehicleTypes };
 }

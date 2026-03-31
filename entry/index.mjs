@@ -8,12 +8,48 @@ export function createEntryApp(options = {}) {
 
 const db = createDatabase(Database, options.dbPath || "./data/entry.db");
 
-// 차량 유형 테이블 (전역, 연도 무관)
-db.exec(`CREATE TABLE IF NOT EXISTS vehicle_types (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE,
-  sort_order INTEGER NOT NULL DEFAULT 0
-)`);
+// 연도별 차량 유형 테이블 헬퍼
+function getVtTableName(year) {
+  const y = Number(year) || new Date().getFullYear();
+  if (!/^\d{4}$/.test(String(y)) || y < 2000 || y > 2099) {
+    throw new Error("올바르지 않은 연도입니다.");
+  }
+  return `vehicle_types_${y}`;
+}
+
+function ensureVtTable(year) {
+  const tableName = getVtTableName(year);
+  db.exec(`CREATE TABLE IF NOT EXISTS '${tableName}' (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    color TEXT NOT NULL DEFAULT 'blue'
+  )`);
+  return tableName;
+}
+
+// 기존 전역 vehicle_types → 연도별 마이그레이션
+const legacyVt = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vehicle_types'").get();
+if (legacyVt) {
+  // color 컬럼이 없으면 먼저 추가
+  const vtCols = db.prepare("PRAGMA table_info(vehicle_types)").all();
+  if (!vtCols.some(c => c.name === "color")) {
+    db.exec("ALTER TABLE vehicle_types ADD COLUMN color TEXT NOT NULL DEFAULT 'blue'");
+  }
+  const globalTypes = db.prepare("SELECT name, sort_order, color FROM vehicle_types").all();
+  if (globalTypes.length > 0) {
+    // 기존 엔트리가 있는 모든 연도 + 올해에 복사
+    const years = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'entry_%'")
+      .all().map(t => Number(t.name.replace("entry_", ""))).filter(y => !isNaN(y)));
+    years.add(new Date().getFullYear());
+    for (const y of years) {
+      const vtTable = ensureVtTable(y);
+      const insert = db.prepare(`INSERT OR IGNORE INTO '${vtTable}' (name, sort_order, color) VALUES (?, ?, ?)`);
+      for (const t of globalTypes) insert.run(t.name, t.sort_order, t.color);
+    }
+  }
+  db.exec("DROP TABLE vehicle_types");
+}
 
 // 기존 entry 테이블이 있으면 올해 테이블로 마이그레이션
 const legacy = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entry'").get();
@@ -47,6 +83,7 @@ function getAvailableYears() {
 
 // 올해 테이블 보장
 ensureYearTable(new Date().getFullYear());
+ensureVtTable(new Date().getFullYear());
 
 // 기존 테이블에 type 컬럼 마이그레이션
 for (const year of getAvailableYears()) {
@@ -54,6 +91,8 @@ for (const year of getAvailableYears()) {
   try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN type TEXT DEFAULT NULL`); }
   catch (e) { /* column already exists */ }
 }
+
+const VALID_COLORS = ["blue", "green", "orange", "purple", "red", "teal"];
 
 /* ============================================
    Express 앱 설정
@@ -83,7 +122,7 @@ function validateEntryNum(num) {
   return { valid: true, value: parsed };
 }
 
-function validateEntryData({ univ, team, type }) {
+function validateEntryData({ univ, team, type }, year) {
   if (typeof univ !== "string" || univ.trim() === "") {
     return { valid: false, error: "올바르지 않은 학교명입니다." };
   }
@@ -92,7 +131,8 @@ function validateEntryData({ univ, team, type }) {
   }
   const validatedType = type || null;
   if (validatedType) {
-    const exists = db.prepare("SELECT id FROM vehicle_types WHERE name = ?").get(validatedType);
+    const vtTable = getVtTableName(year);
+    const exists = db.prepare(`SELECT id FROM '${vtTable}' WHERE name = ?`).get(validatedType);
     if (!exists) {
       return { valid: false, error: "존재하지 않는 차량 유형입니다." };
     }
@@ -228,7 +268,7 @@ app.post("/api/entries", withYearTable, (req, res) => {
     return res.status(400).send(numValidation.error);
   }
 
-  const dataValidation = validateEntryData(req.body);
+  const dataValidation = validateEntryData(req.body, year);
   if (!dataValidation.valid) {
     return res.status(400).send(dataValidation.error);
   }
@@ -262,7 +302,7 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
     return res.status(400).send(newNumValidation.error);
   }
 
-  const dataValidation = validateEntryData(req.body);
+  const dataValidation = validateEntryData(req.body, year);
   if (!dataValidation.valid) {
     return res.status(400).send(dataValidation.error);
   }
@@ -405,7 +445,8 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   const result = dbRun(() => {
     db.transaction(() => {
       db.prepare(`DELETE FROM '${tableName}'`).run();
-      const validTypes = new Set(db.prepare("SELECT name FROM vehicle_types").all().map(t => t.name));
+      const vtTable = getVtTableName(year);
+      const validTypes = new Set(db.prepare(`SELECT name FROM '${vtTable}'`).all().map(t => t.name));
       const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`);
       for (const [k, v] of Object.entries(validation.data)) {
         const validatedType = v.type || null;
@@ -436,23 +477,37 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
    API 라우트: /api/vehicle-types
    ============================================ */
 
+function withYearVtTable(req, res, next) {
+  const year = req.query.year || new Date().getFullYear();
+  try {
+    req.vtTableName = ensureVtTable(year);
+    req.vtYear = year;
+    next();
+  } catch (e) {
+    return res.status(400).send(e.message);
+  }
+}
+
 // GET /api/vehicle-types - 차량 유형 목록
-app.get("/api/vehicle-types", (req, res) => {
-  const result = dbRun(() => db.prepare("SELECT * FROM vehicle_types ORDER BY sort_order, id").all());
+app.get("/api/vehicle-types", withYearVtTable, (req, res) => {
+  const result = dbRun(() => db.prepare(`SELECT * FROM '${req.vtTableName}' ORDER BY sort_order, id`).all());
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result);
 });
 
 // POST /api/vehicle-types - 차량 유형 추가
-app.post("/api/vehicle-types", (req, res) => {
-  const { name } = req.body;
+app.post("/api/vehicle-types", withYearVtTable, (req, res) => {
+  const { vtTableName } = req;
+  const { name, color } = req.body;
   if (!name || !name.trim()) {
     return res.status(400).send("유형 이름을 입력하세요.");
   }
-  const maxOrder = db.prepare("SELECT MAX(sort_order) as max FROM vehicle_types").get();
+
+  const safeColor = VALID_COLORS.includes(color) ? color : "blue";
+  const maxOrder = db.prepare(`SELECT MAX(sort_order) as max FROM '${vtTableName}'`).get();
   const nextOrder = (maxOrder?.max ?? -1) + 1;
   const result = dbRun(() =>
-    db.prepare("INSERT INTO vehicle_types (name, sort_order) VALUES (?, ?)").run(name.trim(), nextOrder),
+    db.prepare(`INSERT INTO '${vtTableName}' (name, sort_order, color) VALUES (?, ?, ?)`).run(name.trim(), nextOrder, safeColor),
   );
   if (!result.success) {
     if (result.error.includes("UNIQUE")) {
@@ -461,25 +516,46 @@ app.post("/api/vehicle-types", (req, res) => {
     logger.warn(req, "vehicle_type.create", { error: result.error }, name.trim());
     return res.status(result.status).send(result.error);
   }
-  logger.log(req, "vehicle_type.create", null, name.trim());
-  res.status(201).json({ id: result.result.lastInsertRowid, name: name.trim(), sort_order: nextOrder });
+  logger.log(req, "vehicle_type.create", { color: safeColor }, name.trim());
+  res.status(201).json({ id: result.result.lastInsertRowid, name: name.trim(), sort_order: nextOrder, color: safeColor });
 });
 
-// DELETE /api/vehicle-types/:id - 차량 유형 삭제
-app.delete("/api/vehicle-types/:id", (req, res) => {
+// PATCH /api/vehicle-types/:id - 차량 유형 색상 변경
+app.patch("/api/vehicle-types/:id", withYearVtTable, (req, res) => {
+  const { vtTableName } = req;
   const id = Number(req.params.id);
   if (!id) return res.status(400).send("올바르지 않은 ID입니다.");
 
-  const type = db.prepare("SELECT name FROM vehicle_types WHERE id = ?").get(id);
+  const { color } = req.body;
+
+  if (!VALID_COLORS.includes(color)) return res.status(400).send("올바르지 않은 색상입니다.");
+
+  const type = db.prepare(`SELECT name FROM '${vtTableName}' WHERE id = ?`).get(id);
+  if (!type) return res.status(404).send("존재하지 않는 차량 유형입니다.");
+
+  const result = dbRun(() => db.prepare(`UPDATE '${vtTableName}' SET color = ? WHERE id = ?`).run(color, id));
+  if (!result.success) {
+    logger.warn(req, "vehicle_type.update", { error: result.error }, type.name);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "vehicle_type.update", { color }, type.name);
+  res.status(200).send();
+});
+
+// DELETE /api/vehicle-types/:id - 차량 유형 삭제
+app.delete("/api/vehicle-types/:id", withYearVtTable, (req, res) => {
+  const { vtTableName, vtYear } = req;
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).send("올바르지 않은 ID입니다.");
+
+  const type = db.prepare(`SELECT name FROM '${vtTableName}' WHERE id = ?`).get(id);
   if (!type) return res.status(404).send("존재하지 않는 차량 유형입니다.");
 
   const result = dbRun(() => {
     db.transaction(() => {
-      db.prepare("DELETE FROM vehicle_types WHERE id = ?").run(id);
-      for (const year of getAvailableYears()) {
-        const tableName = getTableName(year);
-        db.prepare(`UPDATE '${tableName}' SET type = NULL WHERE type = ?`).run(type.name);
-      }
+      db.prepare(`DELETE FROM '${vtTableName}' WHERE id = ?`).run(id);
+      const entryTable = getTableName(vtYear);
+      db.prepare(`UPDATE '${entryTable}' SET type = NULL WHERE type = ?`).run(type.name);
     })();
   });
 

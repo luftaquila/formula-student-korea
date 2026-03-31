@@ -81,27 +81,28 @@ export function getDownloadUrl(year) {
 /**
  * 차량 유형 목록 조회
  */
-export async function fetchVehicleTypes() {
-  const res = await request("/api/vehicle-types");
+export async function fetchVehicleTypes(year) {
+  const res = await request(`/api/vehicle-types${yearParam(year)}`);
   return res.json();
 }
 
-/**
- * 차량 유형 추가
- */
-export async function addVehicleType(name) {
-  const res = await request("/api/vehicle-types", {
+export async function addVehicleType(name, color, year) {
+  const res = await request(`/api/vehicle-types${yearParam(year)}`, {
     method: "POST",
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, color }),
   });
   return res.json();
 }
 
-/**
- * 차량 유형 삭제
- */
-export async function deleteVehicleType(id) {
-  await request(`/api/vehicle-types/${id}`, {
+export async function updateVehicleType(id, color, year) {
+  await request(`/api/vehicle-types/${id}${yearParam(year)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ color }),
+  });
+}
+
+export async function deleteVehicleType(id, year) {
+  await request(`/api/vehicle-types/${id}${yearParam(year)}`, {
     method: "DELETE",
   });
 }

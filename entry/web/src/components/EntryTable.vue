@@ -17,6 +17,12 @@ const emit = defineEmits(["update", "delete"]);
 const sortKey = ref(null);
 const sortOrder = ref("asc");
 
+function getTypeColor(type) {
+  if (!type) return "blue";
+  const vt = props.vehicleTypes.find(v => v.name === type);
+  return vt?.color || "blue";
+}
+
 // 인라인 편집 상태: { num, field } 형태
 const editingCell = ref(null);
 
@@ -189,7 +195,8 @@ function handleDelete(num) {
               <option value="">-</option>
               <option v-for="vt in vehicleTypes" :key="vt.id" :value="vt.name">{{ vt.name }}</option>
             </select>
-            <span v-else class="cell-text">{{ entry.type || '-' }}</span>
+            <span v-else-if="entry.type" class="badge" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span>
+            <span v-else class="cell-text">-</span>
           </td>
           <!-- 삭제 -->
           <td class="col-actions">
@@ -351,5 +358,44 @@ function handleDelete(num) {
 
 .empty-content p {
   font-size: 0.9375rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.badge-type-blue {
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+}
+
+.badge-type-green {
+  background: rgba(34, 197, 94, 0.12);
+  color: #16a34a;
+}
+
+.badge-type-orange {
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
+}
+
+.badge-type-purple {
+  background: rgba(139, 92, 246, 0.12);
+  color: #7c3aed;
+}
+
+.badge-type-red {
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+}
+
+.badge-type-teal {
+  background: rgba(20, 184, 166, 0.12);
+  color: #0d9488;
 }
 </style>
