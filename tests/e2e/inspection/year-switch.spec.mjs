@@ -12,7 +12,8 @@ test.describe("Inspection year switch and read-only mode", () => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
 
-    // Create entries for previous year
+    // Create vehicle types and entries for previous year
+    await page.request.post(`/entry/api/vehicle-types?year=${PREV_YEAR}`, { data: { name: "EV" } });
     await page.request.post(`/entry/api/entries?year=${PREV_YEAR}`, {
       data: { num: 80, univ: "과거검차대학교", team: "Old Team", type: "EV" },
     });

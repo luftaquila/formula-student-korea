@@ -7,11 +7,13 @@ const PREV_YEAR = YEAR - 1;
 test.describe("Entry year switching", () => {
   test.use({ storageState: storageStatePath("admin") });
 
-  // Seed entries for previous year
+  // Seed vehicle types and entries for previous year
   test.beforeAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
 
+    await page.request.post(`/entry/api/vehicle-types?year=${PREV_YEAR}`, { data: { name: "EV" } });
+    await page.request.post(`/entry/api/vehicle-types?year=${PREV_YEAR}`, { data: { name: "CV" } });
     await page.request.post(`/entry/api/entries?year=${PREV_YEAR}`, {
       data: { num: 50, univ: "과거대학교", team: "Past Team", type: "EV" },
     });

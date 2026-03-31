@@ -10,10 +10,13 @@ const ISOLATED_YEAR = YEAR - 2;
 test.describe("Entry bulk upload and download", () => {
   test.use({ storageState: storageStatePath("admin") });
 
-  // Seed entries in an isolated year to avoid interfering with other tests
+  // Seed vehicle types and entries in an isolated year to avoid interfering with other tests
   test.beforeAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
+    // Create vehicle types for the isolated year first
+    await page.request.post(`/entry/api/vehicle-types?year=${ISOLATED_YEAR}`, { data: { name: "EV" } });
+    await page.request.post(`/entry/api/vehicle-types?year=${ISOLATED_YEAR}`, { data: { name: "CV" } });
     const entries = [
       { num: 1, univ: "서울대학교", team: "SNU Racing", type: "EV" },
       { num: 2, univ: "한양대학교", team: "ACES", type: "EV" },
@@ -31,6 +34,12 @@ test.describe("Entry bulk upload and download", () => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
     await page.request.delete(`/entry/api/entries?year=${ISOLATED_YEAR}`);
+    // Clean up vehicle types for isolated year
+    const res = await page.request.get(`/entry/api/vehicle-types?year=${ISOLATED_YEAR}`);
+    const types = await res.json();
+    for (const t of types) {
+      await page.request.delete(`/entry/api/vehicle-types/${t.id}?year=${ISOLATED_YEAR}`);
+    }
     await context.close();
   });
 

@@ -131,7 +131,7 @@ function validateEntryData({ univ, team, type }, year) {
   }
   const validatedType = type || null;
   if (validatedType) {
-    const vtTable = getVtTableName(year);
+    const vtTable = ensureVtTable(year);
     const exists = db.prepare(`SELECT id FROM '${vtTable}' WHERE name = ?`).get(validatedType);
     if (!exists) {
       return { valid: false, error: "존재하지 않는 차량 유형입니다." };
@@ -445,7 +445,7 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   const result = dbRun(() => {
     db.transaction(() => {
       db.prepare(`DELETE FROM '${tableName}'`).run();
-      const vtTable = getVtTableName(year);
+      const vtTable = ensureVtTable(year);
       const validTypes = new Set(db.prepare(`SELECT name FROM '${vtTable}'`).all().map(t => t.name));
       const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`);
       for (const [k, v] of Object.entries(validation.data)) {

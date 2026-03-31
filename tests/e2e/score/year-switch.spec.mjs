@@ -7,11 +7,12 @@ const PREV_YEAR = YEAR - 1;
 test.describe("Score year switch and read-only mode", () => {
   test.use({ storageState: storageStatePath("admin") });
 
-  // Seed entry for previous year
+  // Seed vehicle types and entry for previous year
   test.beforeAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
 
+    await page.request.post(`/entry/api/vehicle-types?year=${PREV_YEAR}`, { data: { name: "EV" } });
     await page.request.post(`/entry/api/entries?year=${PREV_YEAR}`, {
       data: { num: 81, univ: "과거성적대학교", team: "Old Score Team", type: "EV" },
     });

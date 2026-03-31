@@ -7,10 +7,12 @@ const ISOLATED_YEAR = YEAR - 3;
 test.describe("Entry delete all", () => {
   test.use({ storageState: storageStatePath("admin") });
 
-  // Seed entries in an isolated year to avoid interfering with other tests
+  // Seed vehicle types and entries in an isolated year to avoid interfering with other tests
   test.beforeAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
+    await page.request.post(`/entry/api/vehicle-types?year=${ISOLATED_YEAR}`, { data: { name: "EV" } });
+    await page.request.post(`/entry/api/vehicle-types?year=${ISOLATED_YEAR}`, { data: { name: "CV" } });
     const entries = [
       { num: 1, univ: "서울대학교", team: "SNU Racing", type: "EV" },
       { num: 2, univ: "한양대학교", team: "ACES", type: "EV" },
