@@ -78,6 +78,28 @@ describe('POST /api/vehicle-types', () => {
     assert.equal(data.name, 'EV');
     assert.ok(data.id);
     assert.equal(data.sort_order, 0);
+    assert.equal(data.color, 'blue');
+  });
+
+  it('creates a vehicle type with color', async () => {
+    const res = await client.post('/api/vehicle-types', {
+      body: { name: 'HEV', color: 'green' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    const data = await res.json();
+    assert.equal(data.name, 'HEV');
+    assert.equal(data.color, 'green');
+  });
+
+  it('defaults to blue for invalid color', async () => {
+    const res = await client.post('/api/vehicle-types', {
+      body: { name: 'FCEV', color: 'invalid' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    const data = await res.json();
+    assert.equal(data.color, 'blue');
   });
 
   it('rejects empty name', async () => {
@@ -104,7 +126,44 @@ describe('POST /api/vehicle-types', () => {
     assert.equal(res.status, 201);
     const data = await res.json();
     assert.equal(data.name, 'CV');
-    assert.equal(data.sort_order, 1);
+    assert.ok(data.sort_order > 0, 'sort_order should auto-increment');
+  });
+});
+
+describe('PATCH /api/vehicle-types/:id', () => {
+  it('updates vehicle type color', async () => {
+    const listRes = await client.get('/api/vehicle-types');
+    const types = await listRes.json();
+    const ev = types.find(t => t.name === 'EV');
+
+    const res = await client.patch(`/api/vehicle-types/${ev.id}`, {
+      body: { color: 'red' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+
+    const updated = await client.get('/api/vehicle-types');
+    const updatedTypes = await updated.json();
+    assert.equal(updatedTypes.find(t => t.id === ev.id).color, 'red');
+  });
+
+  it('rejects invalid color', async () => {
+    const listRes = await client.get('/api/vehicle-types');
+    const types = await listRes.json();
+
+    const res = await client.patch(`/api/vehicle-types/${types[0].id}`, {
+      body: { color: 'pink' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('returns 404 for non-existent type', async () => {
+    const res = await client.patch('/api/vehicle-types/99999', {
+      body: { color: 'blue' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 404);
   });
 });
 
@@ -495,6 +554,13 @@ describe('Auth enforcement', () => {
   it('POST /api/entries/bulk without auth returns 401', async () => {
     const res = await client.post('/api/entries/bulk', {
       body: { data: {} },
+    });
+    assert.equal(res.status, 401);
+  });
+
+  it('PATCH /api/vehicle-types/:id without auth returns 401', async () => {
+    const res = await client.patch('/api/vehicle-types/1', {
+      body: { color: 'blue' },
     });
     assert.equal(res.status, 401);
   });
