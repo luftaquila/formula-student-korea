@@ -39,6 +39,17 @@ const filteredEntries = computed(() => {
 
 const totalCount = computed(() => entriesArray.value.length);
 
+const typeCounts = computed(() => {
+  const counts = {};
+  for (const e of entriesArray.value) {
+    const t = e.type || null;
+    if (t) counts[t] = (counts[t] || 0) + 1;
+  }
+  return vehicleTypes.value
+    .filter(vt => counts[vt.name])
+    .map(vt => ({ name: vt.name, color: vt.color, count: counts[vt.name] }));
+});
+
 async function loadYears() {
   try {
     availableYears.value = await fetchYears();
@@ -184,11 +195,17 @@ onMounted(async () => {
       <section class="content">
         <div class="table-header">
           <div class="table-title-area">
-            <h2>엔트리 목록</h2>
-            <select v-model.number="selectedYear" class="year-select">
-              <option v-for="y in availableYears" :key="y" :value="y">{{ y }}년</option>
-            </select>
-            <span class="entry-count">{{ totalCount }}개</span>
+            <div class="title-row">
+              <h2>엔트리 목록</h2>
+              <select v-model.number="selectedYear" class="year-select">
+                <option v-for="y in availableYears" :key="y" :value="y">{{ y }}년</option>
+              </select>
+              <span class="entry-count">{{ totalCount }}대</span>
+              <span v-for="tc in typeCounts" :key="tc.name" class="type-count desktop-only" :class="'badge-type-' + tc.color">{{ tc.name }} {{ tc.count }}대</span>
+            </div>
+            <div v-if="typeCounts.length" class="type-counts-row mobile-only">
+              <span v-for="tc in typeCounts" :key="tc.name" class="type-count" :class="'badge-type-' + tc.color">{{ tc.name }} {{ tc.count }}대</span>
+            </div>
           </div>
           <div class="search-box">
             <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -241,9 +258,23 @@ onMounted(async () => {
 
 .table-title-area {
   display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.title-row {
+  display: flex;
   align-items: center;
   gap: 0.75rem;
 }
+
+.type-counts-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.mobile-only { display: none; }
 
 .table-title-area h2 {
   margin: 0;
@@ -279,6 +310,20 @@ onMounted(async () => {
   border-radius: 12px;
   font-family: "JetBrains Mono", monospace;
 }
+
+.type-count {
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+}
+
+.badge-type-blue { background: rgba(59, 130, 246, 0.12); color: #3b82f6; }
+.badge-type-green { background: rgba(34, 197, 94, 0.12); color: #16a34a; }
+.badge-type-orange { background: rgba(245, 158, 11, 0.12); color: #d97706; }
+.badge-type-purple { background: rgba(139, 92, 246, 0.12); color: #7c3aed; }
+.badge-type-red { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
+.badge-type-teal { background: rgba(20, 184, 166, 0.12); color: #0d9488; }
 
 .search-box {
   position: relative;
@@ -347,6 +392,9 @@ onMounted(async () => {
     gap: 1rem;
     align-items: stretch;
   }
+
+  .desktop-only { display: none; }
+  .mobile-only { display: flex; }
 
   .search-input {
     width: 100%;
