@@ -12,6 +12,21 @@ const colorLabels = { blue: "파랑", green: "초록", orange: "주황", purple:
 
 const newTypeName = ref("");
 const newTypeColor = ref("blue");
+const openPicker = ref(null); // 'new' or vt.id
+
+function togglePicker(id) {
+  openPicker.value = openPicker.value === id ? null : id;
+}
+
+function selectNewColor(c) {
+  newTypeColor.value = c;
+  openPicker.value = null;
+}
+
+function selectTypeColor(id, c) {
+  emit("update", { id, color: c });
+  openPicker.value = null;
+}
 
 function handleAdd() {
   const name = newTypeName.value.trim();
@@ -19,10 +34,6 @@ function handleAdd() {
   emit("add", { name, color: newTypeColor.value });
   newTypeName.value = "";
   newTypeColor.value = "blue";
-}
-
-function handleColorChange(id, color) {
-  emit("update", { id, color });
 }
 
 function handleDelete(id) {
@@ -33,7 +44,7 @@ function handleDelete(id) {
 </script>
 
 <template>
-  <div class="card">
+  <div class="card" @click.self="openPicker = null">
     <div class="card-header">
       <h3>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
@@ -43,18 +54,21 @@ function handleDelete(id) {
         차량 유형 관리
       </h3>
     </div>
-    <div class="card-body">
+    <div class="card-body" @click.self="openPicker = null">
       <form class="add-form" @submit.prevent="handleAdd">
         <input v-model="newTypeName" type="text" class="form-input" placeholder="유형 이름" />
-        <div class="color-picker-inline">
-          <button
-            v-for="c in colors" :key="c"
-            type="button"
-            class="color-dot"
-            :class="['color-' + c, { selected: newTypeColor === c }]"
-            :title="colorLabels[c]"
-            @click="newTypeColor = c"
-          />
+        <div class="color-picker-wrap">
+          <button type="button" class="color-dot" :class="'color-' + newTypeColor" :title="colorLabels[newTypeColor]" @click.stop="togglePicker('new')" />
+          <div v-if="openPicker === 'new'" class="color-popup">
+            <button
+              v-for="c in colors" :key="c"
+              type="button"
+              class="color-dot"
+              :class="['color-' + c, { selected: newTypeColor === c }]"
+              :title="colorLabels[c]"
+              @click.stop="selectNewColor(c)"
+            />
+          </div>
         </div>
         <button type="submit" class="btn btn-primary add-btn" :disabled="!newTypeName.trim()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -67,15 +81,18 @@ function handleDelete(id) {
         <li v-for="vt in vehicleTypes" :key="vt.id" class="type-item">
           <span class="badge" :class="'badge-type-' + vt.color">{{ vt.name }}</span>
           <div class="type-actions">
-            <div class="color-picker-inline">
-              <button
-                v-for="c in colors" :key="c"
-                type="button"
-                class="color-dot small"
-                :class="['color-' + c, { selected: vt.color === c }]"
-                :title="colorLabels[c]"
-                @click="handleColorChange(vt.id, c)"
-              />
+            <div class="color-picker-wrap">
+              <button type="button" class="color-dot small" :class="'color-' + vt.color" :title="colorLabels[vt.color]" @click.stop="togglePicker(vt.id)" />
+              <div v-if="openPicker === vt.id" class="color-popup">
+                <button
+                  v-for="c in colors" :key="c"
+                  type="button"
+                  class="color-dot"
+                  :class="['color-' + c, { selected: vt.color === c }]"
+                  :title="colorLabels[c]"
+                  @click.stop="selectTypeColor(vt.id, c)"
+                />
+              </div>
             </div>
             <button class="btn btn-danger btn-icon delete-btn" @click="handleDelete(vt.id)" title="삭제">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -117,10 +134,24 @@ function handleDelete(id) {
   height: 18px;
 }
 
-.color-picker-inline {
+.color-picker-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.color-popup {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
   display: flex;
   gap: 4px;
-  flex-shrink: 0;
+  padding: 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: var(--shadow-card);
+  z-index: 10;
 }
 
 .color-dot {
@@ -141,6 +172,10 @@ function handleDelete(id) {
 .color-dot.selected {
   border-color: var(--text-primary);
   box-shadow: 0 0 0 2px var(--bg-card);
+}
+
+.color-dot:hover {
+  transform: scale(1.15);
 }
 
 .color-dot.color-blue { background: #3b82f6; }
