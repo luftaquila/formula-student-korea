@@ -168,13 +168,13 @@ test.describe("Score penalty and score settings", () => {
     await expect(input).toBeVisible({ timeout: 3000 });
     await expect(input).toBeFocused();
 
-    const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
-    // Atomically set value and blur to prevent Vue re-render from overwriting between fill() and blur()
+    // Set value first, then blur separately to let Vue process the input event before save triggers
     await input.evaluate((el, v) => {
       el.value = v;
       el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.blur();
     }, String(newValue));
+    const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
+    await input.evaluate((el) => el.blur());
     await savePromise;
 
     // Verify the value is saved
