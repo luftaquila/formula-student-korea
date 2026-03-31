@@ -142,6 +142,7 @@
 
 	# Rules service (keeps /rules prefix - rules service handles it internally)
 	handle /rules* {
+		header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data: https://cdn.jsdelivr.net; object-src 'none'; frame-ancestors 'self'"
 		request_header -X-Internal-Service
 		request_header -Authuser
 		request_header -X-Forwarded-For
