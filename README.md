@@ -60,19 +60,18 @@ Google OAuth 2.0 + JWT cookie-based authentication.
 Set `DOMAIN_NAME` in `.env` file.
 
 ```bash
-make deploy              # Build all + deploy
-make deploy SVC=traffic  # Build specific service + deploy
-make deploy NO_CACHE=1   # Build all without cache + deploy
-make build               # Build only
-make build SVC=traffic   # Build specific service only
-make restart             # Restart only (no build)
+make deploy              # Pull images + deploy
+make deploy SVC=traffic  # Pull specific service + deploy
+make build               # Build locally (dev)
+make build SVC=traffic   # Build specific service locally
+make restart             # Restart only (no pull/build)
 ```
 
 #### Local Development
 
 ```bash
-make deploy PROFILE=local              # Build all + deploy
-make deploy PROFILE=local SVC=traffic  # Build specific service only
+make deploy PROFILE=local              # Pull images + deploy
+make deploy PROFILE=local SVC=traffic  # Pull specific service + deploy
 ```
 
 Available at `http://localhost:9000`.

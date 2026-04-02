@@ -96,10 +96,7 @@ services:
       - fsk-network
 
   energymeter:
-    image: ghcr.io/luftaquila/formula-student-korea/energymeter:latest
-    build:
-      context: ./energymeter
-      dockerfile: Dockerfile
+    image: ghcr.io/luftaquila/fsk-energymeter:latest
     container_name: fsk-energymeter
     security_opt:
       - label:disable

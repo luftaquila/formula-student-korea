@@ -19,7 +19,7 @@ Formula Student Korea Service Hub — microservices web app for vehicle entry, i
 | course/ | Course cone management with RTK GPS (Express + Vue 3 + Leaflet) | 10000 |
 | calendar/ | Competition schedule management (Express + Vue 3 + schedule-x) | 11000 |
 | files/ | Cloud file storage (FileBrowser, Caddy forward_auth) | 8080 |
-| energymeter/ | Energy meter viewer (Git submodule, Vue 3) | 9800 |
+| energymeter/ | Energy meter viewer (external GHCR image, Vue 3 + Caddy) | 9800 |
 | rules/ | Rules file server (Caddy) | 9900 |
 
 All 9 backend services share `Dockerfile.service` (root) with `ARG SERVICE` + `ARG PORT`. Shared modules in `shared/`.
@@ -45,10 +45,10 @@ cd {service}/web && npm run dev|build
 cd {service} && node index.mjs
 
 # Docker (Makefile wraps podman compose, auto-prunes)
-make deploy                    # Build all + restart (production)
+make deploy                    # Pull images + restart (production)
 make deploy SVC=traffic        # Single service
-make deploy NO_CACHE=1         # No cache
-make build / make restart      # Build only / restart only
+make build                     # Build locally (dev)
+make restart                   # Restart only (no pull/build)
 make deploy PROFILE=local      # Local dev (localhost:9000)
 
 # Backup / Restore (scripts/ — requires sqlite3 CLI)
@@ -57,7 +57,7 @@ make backup DEST=/mnt/nas      # Custom destination
 make restore ZIP=backups/fsk-backup-20260323-120000.zip
 ```
 
-Prerequisites: podman machine, `git submodule update --init --recursive`, `.env` from `.env.example` (min: `JWT_SECRET`, `INTERNAL_SECRET`).
+Prerequisites: podman machine, `.env` from `.env.example` (min: `JWT_SECRET`, `INTERNAL_SECRET`).
 
 ## Auth & Inter-service
 
