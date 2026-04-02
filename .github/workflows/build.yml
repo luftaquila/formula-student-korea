@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: filter
         if: github.event_name != 'workflow_dispatch'
         with:
@@ -172,7 +172,7 @@ jobs:
 
       - name: Build and push by digest
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ steps.config.outputs.context }}
           file: ${{ steps.config.outputs.dockerfile }}
@@ -192,7 +192,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: digest-${{ matrix.service }}-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -214,7 +214,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4
 
       - name: Download digests
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           pattern: digest-${{ matrix.service }}-*
           path: /tmp/digests
