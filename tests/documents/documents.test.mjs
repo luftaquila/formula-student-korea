@@ -580,8 +580,8 @@ describe('File upload', () => {
     assert.equal(res.status, 403);
   });
 
-  it('POST /api/sessions/:id/submit replaces previous submission', async () => {
-    const oldSubId = submissionId;
+  it('POST /api/sessions/:id/submit keeps previous submission (2-set retention)', async () => {
+    const prevSubId = submissionId;
     const fileContent = Buffer.from('replacement file content');
     const res = await uploadFile(sessionId, studentCookie, [
       { name: 'replacement.pdf', type: 'application/pdf', content: fileContent },
@@ -589,12 +589,12 @@ describe('File upload', () => {
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.ok(data.id);
-    assert.notEqual(data.id, oldSubId);
+    assert.notEqual(data.id, prevSubId);
     submissionId = data.id;
 
-    // Old submission should be deleted
-    const oldSub = db.prepare('SELECT * FROM submission WHERE id = ?').get(oldSubId);
-    assert.equal(oldSub, undefined);
+    // Previous submission should still exist (2-set retention)
+    const prevSub = db.prepare('SELECT * FROM submission WHERE id = ?').get(prevSubId);
+    assert.ok(prevSub, 'previous submission should be kept');
   });
 
   it('POST /api/sessions/:id/submit accepts uppercase extension (.PDF matches .pdf)', async () => {
@@ -1213,6 +1213,234 @@ describe('PATCH /api/internal/team-num', () => {
       body: { prevNum: 1, newNum: 2, year: 2025 },
     });
     assert.equal(res.status, 401);
+  });
+});
+
+// -- 2-set retention --
+describe('2-set retention', () => {
+  let retentionSessionId;
+  let sub1Id, sub2Id, sub3Id;
+
+  before(async () => {
+    const sessionRes = await client.post('/api/admin/sessions', {
+      cookie: chiefCookie,
+      body: {
+        name: '2-Set Retention Test',
+        start_at: '2020-01-01T00:00',
+        end_at: '2030-12-31T23:59',
+        late_end_at: '',
+        max_file_size: 52428800,
+        year: 2026,
+        teams: [1],
+        allowed_extensions: '',
+      },
+    });
+    const { id } = await sessionRes.json();
+    retentionSessionId = id;
+  });
+
+  it('1st submission creates a record', async () => {
+    const res = await uploadFile(retentionSessionId, studentCookie, [
+      { name: 'v1.pdf', type: 'application/pdf', content: Buffer.from('version 1') },
+    ]);
+    assert.equal(res.status, 200);
+    sub1Id = (await res.json()).id;
+  });
+
+  it('2nd submission keeps both (2 total)', async () => {
+    const res = await uploadFile(retentionSessionId, studentCookie, [
+      { name: 'v2.pdf', type: 'application/pdf', content: Buffer.from('version 2') },
+    ]);
+    assert.equal(res.status, 200);
+    sub2Id = (await res.json()).id;
+
+    const all = db.prepare('SELECT id FROM submission WHERE session_id = ? AND team_num = 1 ORDER BY id DESC').all(retentionSessionId);
+    assert.equal(all.length, 2, 'should have 2 submissions');
+    assert.equal(all[0].id, sub2Id);
+    assert.equal(all[1].id, sub1Id);
+  });
+
+  it('3rd submission deletes oldest, keeps 2', async () => {
+    const res = await uploadFile(retentionSessionId, studentCookie, [
+      { name: 'v3.pdf', type: 'application/pdf', content: Buffer.from('version 3') },
+    ]);
+    assert.equal(res.status, 200);
+    sub3Id = (await res.json()).id;
+
+    const all = db.prepare('SELECT id FROM submission WHERE session_id = ? AND team_num = 1 ORDER BY id DESC').all(retentionSessionId);
+    assert.equal(all.length, 2, 'should have exactly 2 submissions');
+    assert.equal(all[0].id, sub3Id, 'newest should be kept');
+    assert.equal(all[1].id, sub2Id, 'second newest should be kept');
+
+    // sub1 should be gone
+    const deleted = db.prepare('SELECT * FROM submission WHERE id = ?').get(sub1Id);
+    assert.equal(deleted, undefined, 'oldest submission should be deleted');
+
+    // sub1 files should be gone
+    const deletedFiles = db.prepare('SELECT * FROM submission_file WHERE submission_id = ?').all(sub1Id);
+    assert.equal(deletedFiles.length, 0, 'oldest submission files should be deleted');
+
+    // sub1 disk directory should be gone
+    const sub1Dir = path.join(uploadsDir, String(retentionSessionId), '1', String(sub1Id));
+    assert.ok(!fs.existsSync(sub1Dir), 'oldest submission disk files should be deleted');
+  });
+
+  it('sub2 disk files still exist', () => {
+    const sub2Dir = path.join(uploadsDir, String(retentionSessionId), '1', String(sub2Id));
+    assert.ok(fs.existsSync(sub2Dir), 'previous submission disk files should exist');
+  });
+
+  it('admin status returns prevSubmission and prevFiles', async () => {
+    const res = await client.get(`/api/admin/sessions/${retentionSessionId}/status`, { cookie: chiefCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    const team1 = data.status.find(s => s.team_num === 1);
+    assert.ok(team1.submission, 'should have current submission');
+    assert.equal(team1.submission.id, sub3Id, 'current submission should be the newest');
+    assert.ok(team1.prevSubmission, 'should have previous submission');
+    assert.equal(team1.prevSubmission.id, sub2Id, 'prevSubmission should be second newest');
+    assert.ok(team1.files.length > 0, 'should have current files');
+    assert.ok(team1.prevFiles.length > 0, 'should have previous files');
+  });
+
+  it('student API still returns only latest submission', async () => {
+    const res = await client.get(`/api/sessions/${retentionSessionId}`, { cookie: studentCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.submission.id, sub3Id, 'student should see only the latest');
+    assert.ok(!data.prevSubmission, 'student API should not have prevSubmission');
+  });
+});
+
+// -- Year file purge --
+describe('DELETE /api/admin/years/:year/files', () => {
+  let purgeSessionId;
+
+  before(async () => {
+    const sessionRes = await client.post('/api/admin/sessions', {
+      cookie: chiefCookie,
+      body: {
+        name: 'Purge Test',
+        start_at: '2020-01-01T00:00',
+        end_at: '2030-12-31T23:59',
+        late_end_at: '',
+        max_file_size: 52428800,
+        year: 2025,
+        teams: [1],
+        allowed_extensions: '',
+      },
+    });
+    const { id } = await sessionRes.json();
+    purgeSessionId = id;
+
+    // Need student-team for year 2025
+    try {
+      await client.post('/api/admin/student-teams', {
+        cookie: chiefCookie,
+        body: { email: 'student1@test.com', team_num: 1, year: 2025 },
+      });
+    } catch { /* may already exist */ }
+
+    await uploadFile(purgeSessionId, studentCookie, [
+      { name: 'purge-test.pdf', type: 'application/pdf', content: Buffer.from('purge test content') },
+    ]);
+  });
+
+  it('returns 400 for invalid year', async () => {
+    const res = await client.delete('/api/admin/years/abc/files', { cookie: chiefCookie });
+    assert.equal(res.status, 400);
+  });
+
+  it('returns 404 for year with no sessions', async () => {
+    const res = await client.delete('/api/admin/years/2001/files', { cookie: chiefCookie });
+    assert.equal(res.status, 404);
+  });
+
+  it('requires chief+ auth', async () => {
+    const res = await client.delete('/api/admin/years/2025/files', { cookie: studentCookie });
+    assert.equal(res.status, 403);
+  });
+
+  it('deletes files but keeps submission records', async () => {
+    // Verify files exist before purge
+    const filesBefore = db.prepare(
+      'SELECT sf.* FROM submission_file sf JOIN submission s ON s.id = sf.submission_id WHERE s.session_id = ?',
+    ).all(purgeSessionId);
+    assert.ok(filesBefore.length > 0, 'should have files before purge');
+
+    const res = await client.delete('/api/admin/years/2025/files', { cookie: chiefCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.ok(data.sessions > 0);
+    assert.ok(data.files > 0);
+
+    // submission_file records should be gone
+    const filesAfter = db.prepare(
+      'SELECT sf.* FROM submission_file sf JOIN submission s ON s.id = sf.submission_id WHERE s.session_id = ?',
+    ).all(purgeSessionId);
+    assert.equal(filesAfter.length, 0, 'submission_file records should be deleted');
+
+    // submission records should still exist
+    const subs = db.prepare('SELECT * FROM submission WHERE session_id = ?').all(purgeSessionId);
+    assert.ok(subs.length > 0, 'submission records should be preserved');
+
+    // disk files should be gone
+    const sessionDir = path.join(uploadsDir, String(purgeSessionId));
+    assert.ok(!fs.existsSync(sessionDir), 'upload directory should be deleted');
+  });
+
+  it('is idempotent (re-purge succeeds)', async () => {
+    const res = await client.delete('/api/admin/years/2025/files', { cookie: chiefCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.files, 0, 'no files to delete on re-purge');
+  });
+});
+
+// -- Year archive download --
+describe('GET /api/admin/years/:year/archive', () => {
+  it('returns 400 for invalid year', async () => {
+    const res = await fetch(`${baseUrl}/api/admin/years/abc/archive`, {
+      headers: { 'Cookie': chiefCookie },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('returns 404 for year with no sessions', async () => {
+    const res = await fetch(`${baseUrl}/api/admin/years/2001/archive`, {
+      headers: { 'Cookie': chiefCookie },
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('requires chief+ auth', async () => {
+    const res = await fetch(`${baseUrl}/api/admin/years/2026/archive`, {
+      headers: { 'Cookie': studentCookie },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('returns zip file for year with submissions', async () => {
+    const res = await fetch(`${baseUrl}/api/admin/years/2026/archive`, {
+      headers: { 'Cookie': chiefCookie },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'application/zip');
+    const disposition = res.headers.get('content-disposition');
+    assert.ok(disposition.includes('FSK_2026_documents.zip'), 'should have correct filename');
+    const buf = Buffer.from(await res.arrayBuffer());
+    assert.ok(buf.length > 0, 'zip should not be empty');
+    // Verify zip magic bytes (PK\x03\x04)
+    assert.equal(buf[0], 0x50);
+    assert.equal(buf[1], 0x4b);
+  });
+
+  it('returns 404 for purged year (no files)', async () => {
+    // Year 2025 was purged in previous test section
+    const res = await fetch(`${baseUrl}/api/admin/years/2025/archive`, {
+      headers: { 'Cookie': chiefCookie },
+    });
+    assert.equal(res.status, 404);
   });
 });
 

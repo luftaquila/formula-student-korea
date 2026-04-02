@@ -5,6 +5,7 @@ import { request, fetchEntryYears, fetchEntries, fetchVehicleTypes } from "../ap
 
 const notyf = new Notyf({ duration: 3000, position: { x: "right", y: "top" } });
 
+const BASE_URL = import.meta.env.PROD ? "/documents" : "";
 const loading = ref(true);
 const years = ref([]);
 const selectedYear = ref(null);
@@ -212,6 +213,26 @@ async function loadTypeColors() {
   } catch { /* 색상 로드 실패 시 기본값 사용 */ }
 }
 
+const purging = ref(false);
+
+async function purgeYearFiles() {
+  if (!selectedYear.value) return;
+  if (!confirm(`${selectedYear.value}년도의 모든 제출 파일을 삭제합니다. 제출 기록은 유지됩니다. 계속하시겠습니까?`)) return;
+  purging.value = true;
+  try {
+    const res = await request(`/api/admin/years/${selectedYear.value}/files`, { method: "DELETE" });
+    const data = await res.json();
+    notyf.success(`파일 데이터를 삭제했습니다. (세션 ${data.sessions}개, 파일 ${data.files}건)`);
+    await loadData();
+  } catch (e) { notyf.error(e.message); }
+  finally { purging.value = false; }
+}
+
+function downloadYearArchive() {
+  if (!selectedYear.value) return;
+  window.open(`${BASE_URL}/api/admin/years/${selectedYear.value}/archive`, "_blank");
+}
+
 onMounted(async () => {
   await loadYears();
   await loadTypeColors();
@@ -247,7 +268,11 @@ onUnmounted(() => {
         </div>
         <div class="filter-group action-group">
           <label class="filter-label">&nbsp;</label>
-          <router-link to="/admin/create" class="btn btn-primary btn-sm">세션 생성</router-link>
+          <div class="action-buttons">
+            <router-link to="/admin/create" class="btn btn-primary btn-sm">세션 생성</router-link>
+            <button class="btn btn-ghost btn-sm" :disabled="!selectedYear" @click="downloadYearArchive">전체 다운로드</button>
+            <button class="btn btn-danger btn-sm" :disabled="!selectedYear || purging" @click="purgeYearFiles">{{ purging ? "삭제 중..." : "파일 정리" }}</button>
+          </div>
         </div>
       </div>
     </div>
@@ -411,6 +436,11 @@ onUnmounted(() => {
 
 .action-group {
   margin-left: auto;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 0.375rem;
 }
 
 .count-badge {

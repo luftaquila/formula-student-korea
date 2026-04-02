@@ -14,6 +14,7 @@ const loading = ref(true);
 const session = ref(null);
 const status = ref([]);
 const entries = ref({});
+const expandedTeams = ref(new Set());
 
 async function loadStatus() {
   loading.value = true;
@@ -49,6 +50,11 @@ function formatExts(exts) {
 
 function downloadFile(subId, fileId) {
   window.open(`${BASE_URL}/api/admin/submissions/${subId}/files/${fileId}`, "_blank");
+}
+
+function toggleExpand(teamNum) {
+  if (expandedTeams.value.has(teamNum)) expandedTeams.value.delete(teamNum);
+  else expandedTeams.value.add(teamNum);
 }
 
 async function deleteSession() {
@@ -130,32 +136,64 @@ onMounted(loadStatus);
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="t in status" :key="t.team_num" :class="{ 'row-none': !t.submission }">
-                  <td class="col-num"><span class="entry-num">{{ t.team_num }}</span></td>
-                  <td class="col-team">{{ entries[t.team_num]?.univ }} {{ entries[t.team_num]?.team }}</td>
-                  <td class="col-status">
-                    <template v-if="t.submission">
-                      <span class="badge" :class="t.submission.is_late ? 'badge-warning' : 'badge-success'">
-                        {{ t.submission.is_late ? "지각" : "제출" }}
+                <template v-for="t in status" :key="t.team_num">
+                  <tr :class="{ 'row-none': !t.submission }">
+                    <td class="col-num"><span class="entry-num">{{ t.team_num }}</span></td>
+                    <td class="col-team">{{ entries[t.team_num]?.univ }} {{ entries[t.team_num]?.team }}</td>
+                    <td class="col-status">
+                      <template v-if="t.submission">
+                        <span class="badge" :class="t.submission.is_late ? 'badge-warning' : 'badge-success'">
+                          {{ t.submission.is_late ? "지각" : "제출" }}
+                        </span>
+                      </template>
+                      <span v-else class="text-muted">미제출</span>
+                    </td>
+                    <td class="col-time">{{ t.submission ? formatDate(t.submission.submitted_at) : "-" }}</td>
+                    <td class="col-submitter">{{ t.submission?.submitted_by || "-" }}</td>
+                    <td class="col-size">{{ t.submission ? formatSize(t.submission.total_size) : "-" }}</td>
+                    <td class="col-files">
+                      <div v-if="t.files.length > 0" class="file-list">
+                        <span
+                          v-for="f in t.files"
+                          :key="f.id"
+                          class="file-link"
+                          @click="downloadFile(t.submission.id, f.id)"
+                        >{{ f.original_name }} ({{ formatSize(f.size) }})</span>
+                      </div>
+                      <span v-else>-</span>
+                      <button
+                        v-if="t.prevSubmission"
+                        class="btn-expand"
+                        :class="{ expanded: expandedTeams.has(t.team_num) }"
+                        @click="toggleExpand(t.team_num)"
+                        title="이전 제출 보기"
+                      >▶</button>
+                    </td>
+                  </tr>
+                  <tr v-if="t.prevSubmission && expandedTeams.has(t.team_num)" class="row-prev">
+                    <td class="col-num"></td>
+                    <td class="col-team prev-label">이전 제출</td>
+                    <td class="col-status">
+                      <span class="badge" :class="t.prevSubmission.is_late ? 'badge-warning' : 'badge-success'">
+                        {{ t.prevSubmission.is_late ? "지각" : "제출" }}
                       </span>
-                    </template>
-                    <span v-else class="text-muted">미제출</span>
-                  </td>
-                  <td class="col-time">{{ t.submission ? formatDate(t.submission.submitted_at) : "-" }}</td>
-                  <td class="col-submitter">{{ t.submission?.submitted_by || "-" }}</td>
-                  <td class="col-size">{{ t.submission ? formatSize(t.submission.total_size) : "-" }}</td>
-                  <td class="col-files">
-                    <div v-if="t.files.length > 0" class="file-list">
-                      <span
-                        v-for="f in t.files"
-                        :key="f.id"
-                        class="file-link"
-                        @click="downloadFile(t.submission.id, f.id)"
-                      >{{ f.original_name }} ({{ formatSize(f.size) }})</span>
-                    </div>
-                    <span v-else>-</span>
-                  </td>
-                </tr>
+                    </td>
+                    <td class="col-time">{{ formatDate(t.prevSubmission.submitted_at) }}</td>
+                    <td class="col-submitter">{{ t.prevSubmission.submitted_by }}</td>
+                    <td class="col-size">{{ formatSize(t.prevSubmission.total_size) }}</td>
+                    <td class="col-files">
+                      <div v-if="t.prevFiles.length > 0" class="file-list">
+                        <span
+                          v-for="f in t.prevFiles"
+                          :key="f.id"
+                          class="file-link"
+                          @click="downloadFile(t.prevSubmission.id, f.id)"
+                        >{{ f.original_name }} ({{ formatSize(f.size) }})</span>
+                      </div>
+                      <span v-else>-</span>
+                    </td>
+                  </tr>
+                </template>
               </tbody>
             </table>
           </div>
@@ -311,6 +349,42 @@ onMounted(loadStatus);
 
 .file-link:hover {
   text-decoration: underline;
+}
+
+.btn-expand {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.625rem;
+  color: var(--text-tertiary);
+  padding: 0.125rem 0.25rem;
+  margin-left: 0.5rem;
+  border-radius: 4px;
+  transition: transform 0.15s ease, color 0.15s ease;
+  display: inline-block;
+}
+
+.btn-expand:hover {
+  color: var(--accent-primary);
+}
+
+.btn-expand.expanded {
+  transform: rotate(90deg);
+}
+
+.row-prev {
+  background: var(--bg-secondary);
+}
+
+.row-prev td {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+
+.prev-label {
+  font-style: italic;
+  color: var(--text-tertiary) !important;
 }
 
 .loading {

@@ -5,6 +5,7 @@ import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase, addColumn } from "../shared/db-setup.mjs";
 import Busboy from "busboy";
+import archiver from "archiver";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
@@ -343,9 +344,6 @@ app.post("/api/sessions/:id/submit", (req, res) => {
       return res.status(400).send("파일을 선택하세요.");
     }
 
-    // 기존 제출 조회 (트랜잭션 밖에서)
-    const prev = db.prepare("SELECT id FROM submission WHERE session_id = ? AND team_num = ? ORDER BY id DESC LIMIT 1").get(session.id, team.team_num);
-
     const txResult = dbRun(() => {
       const tx = db.transaction(() => {
         // 새 제출 INSERT
@@ -360,7 +358,13 @@ app.post("/api/sessions/:id/submit", (req, res) => {
           fileStmt.run(newSubId, f.original_name, f.stored_name, f.size, f.mime_type);
         }
 
-        return { id: newSubId, submitted_at: currentTime, is_late: isLate, total_size: totalSize, prevId: prev ? prev.id : null };
+        // 최신 2개를 제외한 오래된 제출 조회
+        const allSubs = db.prepare(
+          "SELECT id FROM submission WHERE session_id = ? AND team_num = ? ORDER BY id DESC",
+        ).all(session.id, team.team_num);
+        const toDelete = allSubs.slice(2).map(s => s.id);
+
+        return { id: newSubId, submitted_at: currentTime, is_late: isLate, total_size: totalSize, toDelete };
       });
       return tx();
     });
@@ -389,17 +393,17 @@ app.post("/api/sessions/:id/submit", (req, res) => {
       return;
     }
 
-    if (txResult.result.prevId) {
+    for (const oldId of txResult.result.toDelete) {
       try {
-        db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(txResult.result.prevId);
-        db.prepare("DELETE FROM submission WHERE id = ?").run(txResult.result.prevId);
+        db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(oldId);
+        db.prepare("DELETE FROM submission WHERE id = ?").run(oldId);
       } catch (e) {
-        logger.warn(req, "submission.create", { error: e.message, phase: "prev_cleanup", prev_id: txResult.result.prevId }, session.name);
+        logger.warn(req, "submission.create", { error: e.message, phase: "prev_cleanup", prev_id: oldId }, session.name);
       }
-      rmDir(path.join(UPLOADS_DIR, String(session.id), String(team.team_num), String(txResult.result.prevId)));
+      rmDir(path.join(UPLOADS_DIR, String(session.id), String(team.team_num), String(oldId)));
     }
 
-    const { prevId, ...result } = txResult.result;
+    const { toDelete, ...result } = txResult.result;
     logger.log(req, "submission.create", { session_id: session.id, team_num: team.team_num, files: filesInfo.length, size: totalSize, is_late: isLate }, session.name);
     res.json(result);
   });
@@ -602,15 +606,18 @@ app.get("/api/admin/sessions/:id/status", (req, res) => {
     SELECT s.id, s.submitted_at, s.total_size, s.is_late, s.submitted_by
     FROM submission s
     WHERE s.session_id = ? AND s.team_num = ?
-    ORDER BY s.id DESC LIMIT 1
+    ORDER BY s.id DESC LIMIT 2
   `);
 
   const fileStmt = db.prepare("SELECT id, original_name, size, mime_type FROM submission_file WHERE submission_id = ?");
 
   const status = teams.map((t) => {
-    const sub = subStmt.get(id, t.team_num);
+    const subs = subStmt.all(id, t.team_num);
+    const sub = subs[0] || null;
     const files = sub ? fileStmt.all(sub.id) : [];
-    return { team_num: t.team_num, submission: sub || null, files };
+    const prevSub = subs[1] || null;
+    const prevFiles = prevSub ? fileStmt.all(prevSub.id) : [];
+    return { team_num: t.team_num, submission: sub, files, prevSubmission: prevSub, prevFiles };
   });
 
   res.json({ session, status });
@@ -697,6 +704,115 @@ app.delete("/api/admin/student-teams/:email/:year", (req, res) => {
   if (result.result.changes === 0) return res.status(404).send("매핑을 찾을 수 없습니다.");
   logger.log(req, "student_team.delete", { year, team_num: mapping?.team_num }, email);
   res.status(200).send();
+});
+
+/* ============================================
+   Year-level Admin API (연도별 관리)
+   ============================================ */
+
+// DELETE /api/admin/years/:year/files - 연도별 파일 데이터 삭제 (제출 기록 유지)
+app.delete("/api/admin/years/:year/files", (req, res) => {
+  const year = Number(req.params.year);
+  if (!Number.isInteger(year) || year < 2000 || year > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
+
+  const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
+  if (sessions.length === 0) return res.status(404).send("해당 연도의 세션이 없습니다.");
+
+  let fileCount = 0;
+  const txResult = dbRun(() => {
+    db.transaction(() => {
+      for (const s of sessions) {
+        const subs = db.prepare("SELECT id FROM submission WHERE session_id = ?").all(s.id);
+        for (const sub of subs) {
+          const deleted = db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(sub.id);
+          fileCount += deleted.changes;
+        }
+      }
+    })();
+  });
+
+  if (!txResult.success) {
+    logger.warn(req, "year.purge_files", { error: txResult.error, year });
+    return res.status(txResult.status).send(txResult.error);
+  }
+
+  // 트랜잭션 성공 후 디스크 파일 삭제
+  for (const s of sessions) {
+    rmDir(path.join(UPLOADS_DIR, String(s.id)));
+  }
+
+  logger.log(req, "year.purge_files", { year, sessions: sessions.length, files: fileCount });
+  res.json({ sessions: sessions.length, files: fileCount });
+});
+
+// GET /api/admin/years/:year/archive - 연도별 전체 압축 다운로드
+app.get("/api/admin/years/:year/archive", async (req, res) => {
+  const year = Number(req.params.year);
+  if (!Number.isInteger(year) || year < 2000 || year > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
+
+  const sessions = db.prepare("SELECT * FROM session WHERE year = ? ORDER BY end_at ASC").all(year);
+  if (sessions.length === 0) return res.status(404).send("해당 연도의 세션이 없습니다.");
+
+  // entry 서비스에서 팀 정보 조회 (실패 시 빈 객체 — graceful degradation)
+  let entries = {};
+  const entryServer = process.env.ENTRY_SERVER;
+  if (entryServer) {
+    try {
+      const entryRes = await fetch(`${entryServer}/api/entries?year=${year}`, {
+        headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (entryRes.ok) entries = await entryRes.json();
+    } catch (e) {
+      logger.warn(req, "year.archive", { warning: "entry_fetch_failed", error: e.message, year });
+    }
+  }
+
+  // 각 세션의 최신 제출 + 파일 조회
+  const archiveFiles = [];
+  for (const s of sessions) {
+    const subs = db.prepare(`
+      SELECT sub.id, sub.team_num FROM submission sub
+      INNER JOIN (
+        SELECT session_id, team_num, MAX(id) AS max_id
+        FROM submission WHERE session_id = ? GROUP BY session_id, team_num
+      ) latest ON sub.id = latest.max_id
+    `).all(s.id);
+
+    for (const sub of subs) {
+      const files = db.prepare("SELECT original_name, stored_name FROM submission_file WHERE submission_id = ?").all(sub.id);
+      for (const f of files) {
+        const diskPath = path.join(UPLOADS_DIR, String(s.id), String(sub.team_num), String(sub.id), f.stored_name);
+        if (fs.existsSync(diskPath)) {
+          const entry = entries[sub.team_num];
+          const sessionName = s.name.replace(/[/\\:*?"<>|]/g, "_");
+          const teamFolder = entry
+            ? `${sub.team_num}_${entry.univ}_${entry.team}`.replace(/[/\\:*?"<>|]/g, "_")
+            : String(sub.team_num);
+          archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
+        }
+      }
+    }
+  }
+
+  if (archiveFiles.length === 0) return res.status(404).send("다운로드할 파일이 없습니다.");
+
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`FSK_${year}_documents.zip`)}`);
+
+  const archive = archiver("zip", { zlib: { level: 5 } });
+  archive.on("error", (err) => {
+    logger.warn(req, "year.archive", { error: err.message, year });
+    if (!res.headersSent) res.status(500).send("압축 중 오류가 발생했습니다.");
+  });
+  archive.pipe(res);
+
+  for (const f of archiveFiles) {
+    archive.file(f.diskPath, { name: f.zipPath });
+  }
+
+  await archive.finalize();
+  logger.log(req, "year.archive", { year, sessions: sessions.length, files: archiveFiles.length });
 });
 
 /* ============================================

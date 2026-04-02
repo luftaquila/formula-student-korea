@@ -248,6 +248,7 @@ services:
     environment:
       <<: *common-env
       AUTH_SERVER: http://auth:9100
+      ENTRY_SERVER: http://entry:9200
     volumes:
       - ./documents/data:/home/node/fsk-documents/data
     restart: unless-stopped

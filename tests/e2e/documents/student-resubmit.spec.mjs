@@ -20,7 +20,7 @@ test.describe("Documents student resubmission flow", () => {
     // Verify there is an existing submission (from 00-student-flow.spec.mjs)
     await expect(page.locator("h3").filter({ hasText: "현재 제출" })).toBeVisible();
 
-    // Accept the confirm dialog for resubmission ("기존 제출을 교체합니다")
+    // Accept the confirm dialog for resubmission
     page.on("dialog", (dialog) => dialog.accept());
 
     // Upload a new file to replace the existing submission
