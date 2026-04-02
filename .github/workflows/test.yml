@@ -87,8 +87,8 @@ jobs:
           files: compose.yml
           targets: auth,entry,queue,inspection,traffic,score,documents,course,caddy-local
           set: |
-            *.cache-from=type=registry,ref=ghcr.io/${{ github.repository }}/cache:buildkit
-            *.cache-to=type=registry,ref=ghcr.io/${{ github.repository }}/cache:buildkit,mode=min
+            *.cache-from=type=gha,scope=e2e
+            *.cache-to=type=gha,scope=e2e,mode=min
             auth.tags=formula-student-korea-auth
             entry.tags=formula-student-korea-entry
             queue.tags=formula-student-korea-queue
