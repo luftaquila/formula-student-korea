@@ -1,0 +1,243 @@
+name: Build Images
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'Makefile'
+      - 'LICENSE'
+      - '.env.example'
+      - '.gitignore'
+  workflow_dispatch:
+
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      build-matrix: ${{ steps.set-matrix.outputs.build-matrix }}
+      services-matrix: ${{ steps.set-matrix.outputs.services-matrix }}
+      has_changes: ${{ steps.set-matrix.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          filters: |
+            shared:
+              - 'shared/**'
+            dockerfile-service:
+              - 'Dockerfile.service'
+              - 'entrypoint.sh'
+            auth:
+              - 'auth/**'
+            entry:
+              - 'entry/**'
+            queue:
+              - 'queue/**'
+            inspection:
+              - 'inspection/**'
+            traffic:
+              - 'traffic/**'
+            score:
+              - 'score/**'
+            documents:
+              - 'documents/**'
+            course:
+              - 'course/**'
+            calendar:
+              - 'calendar/**'
+            landing:
+              - 'landing/**'
+            energymeter:
+              - 'energymeter/**'
+
+      - name: Build matrix
+        id: set-matrix
+        env:
+          IS_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+          SHARED: ${{ steps.filter.outputs.shared }}
+          DOCKERFILE_SVC: ${{ steps.filter.outputs.dockerfile-service }}
+          F_AUTH: ${{ steps.filter.outputs.auth }}
+          F_ENTRY: ${{ steps.filter.outputs.entry }}
+          F_QUEUE: ${{ steps.filter.outputs.queue }}
+          F_INSPECTION: ${{ steps.filter.outputs.inspection }}
+          F_TRAFFIC: ${{ steps.filter.outputs.traffic }}
+          F_SCORE: ${{ steps.filter.outputs.score }}
+          F_DOCUMENTS: ${{ steps.filter.outputs.documents }}
+          F_COURSE: ${{ steps.filter.outputs.course }}
+          F_CALENDAR: ${{ steps.filter.outputs.calendar }}
+          F_LANDING: ${{ steps.filter.outputs.landing }}
+          F_ENERGYMETER: ${{ steps.filter.outputs.energymeter }}
+        run: |
+          declare -A PORTS=([auth]=9100 [entry]=9200 [queue]=9300 [inspection]=9400 [traffic]=9500 [score]=9600 [documents]=9700 [course]=10000 [calendar]=11000)
+          STANDARD=(auth entry queue inspection traffic score documents course calendar)
+          RUNNERS=("ubuntu-latest:linux/amd64:amd64" "ubuntu-24.04-arm:linux/arm64:arm64")
+          BUILD_INCLUDES=()
+          SVC_INCLUDES=()
+
+          add_service() {
+            local svc=$1
+            local port_arg=""
+            if [ -n "${PORTS[$svc]+x}" ]; then
+              port_arg=",\"port\":${PORTS[$svc]}"
+              SVC_INCLUDES+=("{\"service\":\"$svc\"$port_arg}")
+            else
+              SVC_INCLUDES+=("{\"service\":\"$svc\"}")
+            fi
+            for r in "${RUNNERS[@]}"; do
+              IFS=: read -r runner platform arch <<< "$r"
+              BUILD_INCLUDES+=("{\"service\":\"$svc\"$port_arg,\"runner\":\"$runner\",\"platform\":\"$platform\",\"arch\":\"$arch\"}")
+            done
+          }
+
+          if [ "$IS_DISPATCH" = "true" ]; then
+            for svc in "${STANDARD[@]}"; do add_service "$svc"; done
+            add_service "caddy"
+            add_service "energymeter"
+          else
+            declare -A FILTERS=(
+              [auth]="$F_AUTH" [entry]="$F_ENTRY" [queue]="$F_QUEUE"
+              [inspection]="$F_INSPECTION" [traffic]="$F_TRAFFIC" [score]="$F_SCORE"
+              [documents]="$F_DOCUMENTS" [course]="$F_COURSE" [calendar]="$F_CALENDAR"
+            )
+            for svc in "${STANDARD[@]}"; do
+              if [ "${FILTERS[$svc]}" = "true" ] || [ "$SHARED" = "true" ] || [ "$DOCKERFILE_SVC" = "true" ]; then
+                add_service "$svc"
+              fi
+            done
+            if [ "$F_LANDING" = "true" ] || [ "$SHARED" = "true" ]; then
+              add_service "caddy"
+            fi
+            if [ "$F_ENERGYMETER" = "true" ]; then
+              add_service "energymeter"
+            fi
+          fi
+
+          if [ ${#BUILD_INCLUDES[@]} -eq 0 ]; then
+            echo 'build-matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'services-matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'has_changes=false' >> "$GITHUB_OUTPUT"
+          else
+            BUILD_JSON=$(IFS=,; echo "${BUILD_INCLUDES[*]}")
+            SVC_JSON=$(IFS=,; echo "${SVC_INCLUDES[*]}")
+            echo "build-matrix={\"include\":[$BUILD_JSON]}" >> "$GITHUB_OUTPUT"
+            echo "services-matrix={\"include\":[$SVC_JSON]}" >> "$GITHUB_OUTPUT"
+            echo 'has_changes=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.has_changes == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.changes.outputs.build-matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: ${{ matrix.service == 'energymeter' && 'recursive' || 'false' }}
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Set build config
+        id: config
+        run: |
+          case "${{ matrix.service }}" in
+            caddy)
+              echo "dockerfile=landing/Dockerfile" >> "$GITHUB_OUTPUT"
+              echo "context=." >> "$GITHUB_OUTPUT"
+              ;;
+            energymeter)
+              echo "dockerfile=energymeter/Dockerfile" >> "$GITHUB_OUTPUT"
+              echo "context=./energymeter" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "dockerfile=Dockerfile.service" >> "$GITHUB_OUTPUT"
+              echo "context=." >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.config.outputs.context }}
+          file: ${{ steps.config.outputs.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            ${{ matrix.port && format('SERVICE={0}', matrix.service) || '' }}
+            ${{ matrix.port && format('PORT={0}', matrix.port) || '' }}
+          provenance: false
+          outputs: type=image,name=ghcr.io/${{ github.repository }}/${{ matrix.service }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/cache:${{ matrix.service }}-${{ matrix.arch }}
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}/cache:${{ matrix.service }}-${{ matrix.arch }},mode=min
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v6
+        with:
+          name: digest-${{ matrix.service }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  merge:
+    needs: [changes, build]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.changes.outputs.services-matrix) }}
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Download digests
+        uses: actions/download-artifact@v6
+        with:
+          pattern: digest-${{ matrix.service }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Create manifest list
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            -t ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest \
+            $(printf 'ghcr.io/${{ github.repository }}/${{ matrix.service }}@sha256:%s ' *)
+
+  cleanup:
+    needs: [changes, merge]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.changes.outputs.services-matrix) }}
+    steps:
+      - name: Delete old image versions
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: formula-student-korea/${{ matrix.service }}
+          package-type: container
+          min-versions-to-keep: 1
+          delete-only-untagged-versions: true

@@ -10,6 +10,7 @@ x-common-healthcheck: &common-healthcheck
 
 services:
   entry:
+    image: ghcr.io/luftaquila/formula-student-korea/entry:latest
     build:
       context: .
       dockerfile: Dockerfile.service
@@ -39,6 +40,7 @@ services:
       - fsk-network
 
   course:
+    image: ghcr.io/luftaquila/formula-student-korea/course:latest
     build:
       context: .
       dockerfile: Dockerfile.service
@@ -66,6 +68,7 @@ services:
       - fsk-network
 
   traffic:
+    image: ghcr.io/luftaquila/formula-student-korea/traffic:latest
     build:
       context: .
       dockerfile: Dockerfile.service
@@ -93,6 +96,7 @@ services:
       - fsk-network
 
   energymeter:
+    image: ghcr.io/luftaquila/formula-student-korea/energymeter:latest
     build:
       context: ./energymeter
       dockerfile: Dockerfile
@@ -108,6 +112,7 @@ services:
       - fsk-network
 
   queue:
+    image: ghcr.io/luftaquila/formula-student-korea/queue:latest
     build:
       context: .
       dockerfile: Dockerfile.service
@@ -140,6 +145,7 @@ services:
       - fsk-network
 
   inspection:
+    image: ghcr.io/luftaquila/formula-student-korea/inspection:latest
     build:
       context: .
       dockerfile: Dockerfile.service
@@ -167,6 +173,7 @@ services:
       - fsk-network
 
   score:
+    image: ghcr.io/luftaquila/formula-student-korea/score:latest
     build:
       context: .
       dockerfile: Dockerfile.service
@@ -202,6 +209,7 @@ services:
       - fsk-network
 
   calendar:
+    image: ghcr.io/luftaquila/formula-student-korea/calendar:latest
     build:
       context: .
       dockerfile: Dockerfile.service
@@ -229,6 +237,7 @@ services:
       - fsk-network
 
   documents:
+    image: ghcr.io/luftaquila/formula-student-korea/documents:latest
     build:
       context: .
       dockerfile: Dockerfile.service
@@ -256,6 +265,7 @@ services:
       - fsk-network
 
   auth:
+    image: ghcr.io/luftaquila/formula-student-korea/auth:latest
     build:
       context: .
       dockerfile: Dockerfile.service
@@ -326,6 +336,7 @@ services:
 
   # Production - use traefik reverse proxy
   caddy:
+    image: &caddy-image ghcr.io/luftaquila/formula-student-korea/caddy:latest
     build: &caddy-build
       context: .
       dockerfile: landing/Dockerfile
@@ -370,6 +381,7 @@ services:
 
   # Local development - expose port 9000
   caddy-local:
+    image: *caddy-image
     build: *caddy-build
     container_name: fsk-caddy-local
     profiles:
