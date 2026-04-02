@@ -89,15 +89,15 @@ jobs:
           set: |
             *.cache-from=type=gha,scope=e2e
             *.cache-to=type=gha,scope=e2e,mode=min
-            auth.tags=formula-student-korea-auth
-            entry.tags=formula-student-korea-entry
-            queue.tags=formula-student-korea-queue
-            inspection.tags=formula-student-korea-inspection
-            traffic.tags=formula-student-korea-traffic
-            score.tags=formula-student-korea-score
-            documents.tags=formula-student-korea-documents
-            course.tags=formula-student-korea-course
-            caddy-local.tags=formula-student-korea-caddy-local
+            auth.tags=ghcr.io/${{ github.repository }}/auth:latest
+            entry.tags=ghcr.io/${{ github.repository }}/entry:latest
+            queue.tags=ghcr.io/${{ github.repository }}/queue:latest
+            inspection.tags=ghcr.io/${{ github.repository }}/inspection:latest
+            traffic.tags=ghcr.io/${{ github.repository }}/traffic:latest
+            score.tags=ghcr.io/${{ github.repository }}/score:latest
+            documents.tags=ghcr.io/${{ github.repository }}/documents:latest
+            course.tags=ghcr.io/${{ github.repository }}/course:latest
+            caddy-local.tags=ghcr.io/${{ github.repository }}/caddy:latest
           load: true
 
       - name: Start services
