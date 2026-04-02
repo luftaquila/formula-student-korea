@@ -33,6 +33,7 @@ setupTestEnv();
 
 let server, baseUrl, client, db, dbPath;
 let mockEntryServer, mockEntryUrl;
+const studentCookie = makeAuthCookie({ email: 'student@test.com', name: 'Student', role: 'student' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
 const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
@@ -185,6 +186,71 @@ describe('Auth enforcement', () => {
   it('GET /api/active without auth returns 200 (public)', async () => {
     const res = await client.get('/api/active');
     assert.equal(res.status, 200);
+  });
+
+  // Role boundary: student rejected from official-level endpoints
+  it('student is rejected from official-level endpoints (403)', async () => {
+    const res = await client.post('/api/admin/register/battery', {
+      body: { num: 1, phone: '01012345678' },
+      cookie: studentCookie,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  // Role boundary: official rejected from chief-level endpoints
+  it('official is rejected from chief-level priority endpoint (403)', async () => {
+    const res = await client.post('/api/admin/priority/battery', {
+      body: { num: 1 },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('official is rejected from chief-level inspection toggle (403)', async () => {
+    const res = await client.patch('/api/admin/inspection/battery', {
+      body: { active: true },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('official is rejected from chief-level visibility toggle (403)', async () => {
+    const res = await client.patch('/api/admin/inspection/battery/visibility', {
+      body: { visible: true },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('official is rejected from chief-level booth config (403)', async () => {
+    const res = await client.patch('/api/admin/booths/battery/config', {
+      body: { count: 3 },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('official is rejected from chief-level settings (403)', async () => {
+    const res = await client.patch('/api/admin/settings/cancel-penalty', {
+      body: { minutes: 10 },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('official is rejected from chief-level history delete (403)', async () => {
+    const res = await client.delete('/api/admin/history/battery', {
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('official is rejected from chief-level ignore setting (403)', async () => {
+    const res = await client.put('/api/admin/inspection/battery/ignore', {
+      body: { ignore_priority: true },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 403);
   });
 });
 

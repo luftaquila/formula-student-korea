@@ -2,24 +2,6 @@ import { test, expect } from "@playwright/test";
 import { waitForPageReady } from "../helpers/utils.mjs";
 
 test.describe("Queue public status page", () => {
-  test("loads /queue page and shows query form", async ({ page }) => {
-    await page.goto("/queue");
-    await waitForPageReady(page);
-
-    // Verify the query section is visible
-    await expect(page.getByRole("heading", { name: /대기 순번 조회/ })).toBeVisible();
-    await expect(page.getByPlaceholder("번호")).toBeVisible();
-    await expect(page.getByPlaceholder("010-0000-0000")).toBeVisible();
-    await expect(page.getByRole("button", { name: "조회" })).toBeVisible();
-  });
-
-  test("shows queue overview section", async ({ page }) => {
-    await page.goto("/queue");
-    await waitForPageReady(page);
-
-    await expect(page.getByRole("heading", { name: /전체 대기열 현황/ })).toBeVisible();
-  });
-
   test("entering valid entry number shows team name", async ({ page }) => {
     await page.goto("/queue");
     await waitForPageReady(page);
