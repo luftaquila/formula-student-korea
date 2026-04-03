@@ -42,7 +42,7 @@ test.describe("Documents admin previous submission display", () => {
     await studentCtx.close();
   });
 
-  test("shows expand toggle for team with previous submission", async ({ page }) => {
+  test("shows clickable team cell for team with previous submission", async ({ page }) => {
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
@@ -50,14 +50,13 @@ test.describe("Documents admin previous submission display", () => {
     await sessionLink.click();
     await waitForPageReady(page);
 
-    // Team 1 (서울대학교) now has 2 submissions, so expand toggle should be visible
+    // Team 1 (서울대학교) now has 2 submissions, so team cell should have expand class
     const table = page.locator(".detail-table");
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" }).first();
-    const expandBtn = team1Row.locator(".btn-expand");
-    await expect(expandBtn).toBeVisible();
+    await expect(team1Row.locator(".col-team-expand")).toBeVisible();
   });
 
-  test("clicking expand toggle shows previous submission details", async ({ page }) => {
+  test("clicking team cell shows previous submission details", async ({ page }) => {
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
@@ -67,7 +66,7 @@ test.describe("Documents admin previous submission display", () => {
 
     const table = page.locator(".detail-table");
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" }).first();
-    await team1Row.locator(".btn-expand").click();
+    await team1Row.locator(".col-team-expand").click();
 
     // Verify the previous submission row appears
     const prevRow = table.locator("tr.row-prev");
@@ -76,7 +75,7 @@ test.describe("Documents admin previous submission display", () => {
     await expect(prevRow.locator(".file-link").first()).toBeVisible();
   });
 
-  test("clicking expand toggle again hides previous submission", async ({ page }) => {
+  test("clicking team cell again hides previous submission", async ({ page }) => {
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
@@ -86,12 +85,12 @@ test.describe("Documents admin previous submission display", () => {
 
     const table = page.locator(".detail-table");
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" }).first();
-    const expandBtn = team1Row.locator(".btn-expand");
+    const expandCell = team1Row.locator(".col-team-expand");
 
-    await expandBtn.click();
+    await expandCell.click();
     await expect(table.locator("tr.row-prev")).toBeVisible();
 
-    await expandBtn.click();
+    await expandCell.click();
     await expect(table.locator("tr.row-prev")).not.toBeVisible();
   });
 
@@ -106,6 +105,6 @@ test.describe("Documents admin previous submission display", () => {
     // Team 2 (한양대학교) has no submission at all
     const table = page.locator(".detail-table");
     const team2Row = table.locator("tbody tr").filter({ hasText: "한양대학교" });
-    await expect(team2Row.locator(".btn-expand")).not.toBeVisible();
+    await expect(team2Row.locator(".col-team-expand")).not.toBeVisible();
   });
 });

@@ -139,7 +139,7 @@ onMounted(loadStatus);
                 <template v-for="t in status" :key="t.team_num">
                   <tr :class="{ 'row-none': !t.submission }">
                     <td class="col-num"><span class="entry-num">{{ t.team_num }}</span></td>
-                    <td class="col-team">{{ entries[t.team_num]?.univ }} {{ entries[t.team_num]?.team }}</td>
+                    <td class="col-team" :class="{ 'col-team-expand': t.prevSubmission }" @click="t.prevSubmission && toggleExpand(t.team_num)">{{ entries[t.team_num]?.univ }} {{ entries[t.team_num]?.team }}</td>
                     <td class="col-status">
                       <template v-if="t.submission">
                         <span class="badge" :class="t.submission.is_late ? 'badge-warning' : 'badge-success'">
@@ -161,13 +161,6 @@ onMounted(loadStatus);
                         >{{ f.original_name }} ({{ formatSize(f.size) }})</span>
                       </div>
                       <span v-else>-</span>
-                      <button
-                        v-if="t.prevSubmission"
-                        class="btn-expand"
-                        :class="{ expanded: expandedTeams.has(t.team_num) }"
-                        @click="toggleExpand(t.team_num)"
-                        title="이전 제출 보기"
-                      >▶</button>
                     </td>
                   </tr>
                   <tr v-if="t.prevSubmission && expandedTeams.has(t.team_num)" class="row-prev">
@@ -351,25 +344,12 @@ onMounted(loadStatus);
   text-decoration: underline;
 }
 
-.btn-expand {
-  background: none;
-  border: none;
+.col-team-expand {
   cursor: pointer;
-  font-size: 0.625rem;
-  color: var(--text-tertiary);
-  padding: 0.125rem 0.25rem;
-  margin-left: 0.5rem;
-  border-radius: 4px;
-  transition: transform 0.15s ease, color 0.15s ease;
-  display: inline-block;
 }
 
-.btn-expand:hover {
+.col-team-expand:hover {
   color: var(--accent-primary);
-}
-
-.btn-expand.expanded {
-  transform: rotate(90deg);
 }
 
 .row-prev {
