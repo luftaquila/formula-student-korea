@@ -4,7 +4,7 @@ x-common-env: &common-env
   TEST_SERVER: ${TEST_SERVER:-}
 
 x-common-healthcheck: &common-healthcheck
-  interval: 5s
+  interval: 30s
   timeout: 5s
   retries: 3
   start_period: 5s
@@ -31,7 +31,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9200/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9200/api/health"]
     deploy:
       resources:
         limits:
@@ -58,7 +58,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:10000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:10000/api/health"]
     deploy:
       resources:
         limits:
@@ -85,7 +85,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9500/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9500/api/health"]
     deploy:
       resources:
         limits:
@@ -130,7 +130,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9300/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9300/api/health"]
     deploy:
       resources:
         limits:
@@ -157,7 +157,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9400/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9400/api/health"]
     deploy:
       resources:
         limits:
@@ -192,7 +192,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9600/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9600/api/health"]
     deploy:
       resources:
         limits:
@@ -219,7 +219,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:11000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:11000/api/health"]
     deploy:
       resources:
         limits:
@@ -247,7 +247,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9700/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9700/api/health"]
     deploy:
       resources:
         limits:
@@ -278,7 +278,7 @@ services:
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9100/api/health"]
     deploy:
       resources:
         limits:
