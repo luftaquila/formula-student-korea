@@ -11,7 +11,6 @@ COPY ${SERVICE}/index.mjs ./
 COPY ${SERVICE}/web/ web/
 COPY shared ../shared
 RUN ln -s /build/web/node_modules /node_modules
-ARG TEST_SERVER
 RUN npm --prefix web run build
 
 # Runtime stage - only production artifacts

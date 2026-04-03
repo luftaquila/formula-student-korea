@@ -26,9 +26,7 @@ export function createViteConfig(serviceName, servicePort, options = {}) {
     const isProduction = mode === "production";
 
     return {
-      define: {
-        __TEST_SERVER__: process.env.TEST_SERVER === "true",
-      },
+
       base: isProduction ? `/${serviceName}/` : "",
       server: {
         ...server,

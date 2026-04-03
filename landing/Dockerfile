@@ -19,7 +19,6 @@ COPY landing/vite.config.js ./
 COPY shared ../shared
 
 # Build application
-ARG TEST_SERVER
 RUN npm run build
 
 # Final Caddy image
@@ -30,5 +29,9 @@ COPY landing/Caddyfile /etc/caddy/Caddyfile
 
 # Copy landing build
 COPY --from=landing-builder /home/node/fsk-landing/dist /srv/landing
+
+COPY landing/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
 
 EXPOSE 9000

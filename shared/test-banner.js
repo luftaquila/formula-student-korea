@@ -1,5 +1,5 @@
 export function initTestBanner() {
-  if (typeof __TEST_SERVER__ === "undefined" || !__TEST_SERVER__) return;
+  if (!window.__TEST_SERVER__) return;
 
   document.documentElement.classList.add("test-server");
 
