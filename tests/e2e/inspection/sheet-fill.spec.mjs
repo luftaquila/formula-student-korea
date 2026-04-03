@@ -306,8 +306,12 @@ test.describe("Inspection sheet filling", () => {
     await checkSavePromise;
 
     // Verify the value persists by reloading
+    const sheetDataPromise = page.waitForResponse(
+      (res) => res.url().includes("/api/sheet/data/") && res.status() === 200
+    );
     await page.reload();
     await waitForPageReady(page);
+    await sheetDataPromise;
 
     // Switch to second tab again
     await page.locator(".tabs .tab").nth(1).click();
