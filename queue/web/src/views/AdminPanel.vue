@@ -76,7 +76,7 @@ watch(currentTab, () => {
 watch(
   activeInspections,
   async (newVal) => {
-    if (newVal.length > 0 && !currentTab.value) {
+    if (newVal.length > 0 && (!currentTab.value || !activeInspectionTypes.value.includes(currentTab.value))) {
       const savedTab = localStorage.getItem("admin_tab");
       if (savedTab && activeInspectionTypes.value.includes(savedTab)) {
         currentTab.value = savedTab;
@@ -85,6 +85,8 @@ watch(
         localStorage.setItem("admin_tab", currentTab.value);
       }
       await refreshQueue(currentTab.value);
+    } else if (newVal.length === 0) {
+      currentTab.value = "";
     }
   },
   { immediate: true },
