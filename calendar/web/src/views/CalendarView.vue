@@ -35,8 +35,8 @@ const ROLE_CALENDARS = {
   official: {
     colorName: "official",
     label: "official",
-    lightColors: { main: "#5e6ad2", container: "rgba(94, 106, 210, 0.15)", onContainer: "#4850b8" },
-    darkColors: { main: "#a5b4fc", container: "#2e3166", onContainer: "#c7d2fe" },
+    lightColors: { main: "#3b82f6", container: "rgba(59, 130, 246, 0.15)", onContainer: "#1d4ed8" },
+    darkColors: { main: "#60a5fa", container: "#1e3a5f", onContainer: "#bfdbfe" },
   },
   chief: {
     colorName: "chief",
@@ -284,7 +284,7 @@ onUnmounted(() => {
       <template #eventModal="{ calendarEvent }">
         <div class="event-popup">
           <div class="event-popup__header">
-            <div class="event-popup__color" :style="{ backgroundColor: `var(--sx-color-${calendarEvent.calendarId}-container)` }"></div>
+            <span class="event-popup__role" :class="'role-' + calendarEvent.calendarId">{{ calendarEvent.calendarId }}</span>
             <span class="event-popup__title">{{ calendarEvent.title }}</span>
           </div>
 
@@ -307,13 +307,6 @@ onUnmounted(() => {
               <path d="M4 5h12M4 8h12M4 11h8M4 14h10" />
             </svg>
             <span>{{ calendarEvent.description }}</span>
-          </div>
-
-          <div class="event-popup__row">
-            <svg class="event-popup__icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path d="M10 1.5l-7 4v5c0 4.5 3 8.5 7 10 4-1.5 7-5.5 7-10v-5l-7-4z" />
-            </svg>
-            <span class="event-popup__role" :class="'role-' + calendarEvent.calendarId">{{ calendarEvent.calendarId }}</span>
           </div>
 
           <button v-if="isChief" class="event-popup__edit-btn" @click="openEditFromPopup(calendarEvent)">수정</button>
@@ -493,6 +486,7 @@ onUnmounted(() => {
 
   .calendar-container :deep(.sx__month-grid-event) {
     font-size: 0.8125rem;
+    cursor: pointer;
   }
 
   .custom-range-heading {
@@ -539,10 +533,7 @@ onUnmounted(() => {
   margin-bottom: 0.625rem;
 }
 
-.event-popup__color {
-  width: 12px;
-  height: 12px;
-  border-radius: 3px;
+.event-popup__header .event-popup__role {
   flex-shrink: 0;
 }
 
@@ -585,7 +576,7 @@ onUnmounted(() => {
 
 .role-public { background: rgba(100, 116, 139, 0.25); color: var(--text-secondary, #334155); }
 .role-student { background: rgba(16, 185, 129, 0.15); color: #059669; }
-.role-official { background: rgba(94, 106, 210, 0.15); color: #5e6ad2; }
+.role-official { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
 .role-chief { background: rgba(245, 158, 11, 0.15); color: #d97706; }
 .role-admin { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
 
