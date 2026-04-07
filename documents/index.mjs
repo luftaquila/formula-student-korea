@@ -641,6 +641,58 @@ app.get("/api/admin/submissions/:subId/files/:fileId", (req, res) => {
   res.sendFile(filePath);
 });
 
+// GET /api/admin/submissions/:subId/zip - 제출 파일 전체 압축 다운로드
+app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
+  const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
+  if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
+
+  const files = db.prepare("SELECT * FROM submission_file WHERE submission_id = ?").all(sub.id);
+  if (files.length === 0) return res.status(404).send("다운로드할 파일이 없습니다.");
+
+  const session = db.prepare("SELECT name, year FROM session WHERE id = ?").get(sub.session_id);
+  const sanitize = (s) => s.replace(/[/\\:*?"<>|]/g, "_");
+  const sessionName = sanitize(session?.name || String(sub.session_id));
+
+  // entry 서비스에서 팀 정보 조회
+  let teamLabel = String(sub.team_num);
+  const entryServer = process.env.ENTRY_SERVER;
+  if (entryServer && session?.year) {
+    try {
+      const entryRes = await fetch(`${entryServer}/api/entries?year=${session.year}`, {
+        headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (entryRes.ok) {
+        const entries = await entryRes.json();
+        const entry = entries[sub.team_num];
+        if (entry) teamLabel = `${sub.team_num}_${sanitize(entry.univ)}_${sanitize(entry.team)}`;
+      }
+    } catch { /* graceful degradation — use team_num only */ }
+  }
+
+  const zipName = `${sessionName}_${teamLabel}.zip`;
+
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(zipName)}`);
+
+  const archive = archiver("zip", { zlib: { level: 5 } });
+  archive.on("error", (err) => {
+    logger.warn(req, "file.admin_zip", { error: err.message, submission_id: sub.id });
+    if (!res.headersSent) res.status(500).send("압축 중 오류가 발생했습니다.");
+  });
+  archive.pipe(res);
+
+  for (const f of files) {
+    const filePath = path.join(UPLOADS_DIR, String(sub.session_id), String(sub.team_num), String(sub.id), f.stored_name);
+    if (fs.existsSync(filePath)) {
+      archive.file(filePath, { name: f.original_name });
+    }
+  }
+
+  archive.finalize();
+  logger.log(req, "file.admin_zip", { session_name: session?.name, team_num: sub.team_num, files: files.length }, `#${sub.team_num}`);
+});
+
 // GET /api/admin/students - auth 서비스에서 student 역할 사용자 목록 조회
 app.get("/api/admin/students", async (req, res) => {
   try {

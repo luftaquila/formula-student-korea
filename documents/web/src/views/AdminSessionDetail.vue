@@ -52,6 +52,10 @@ function downloadFile(subId, fileId) {
   window.open(`${BASE_URL}/api/admin/submissions/${subId}/files/${fileId}`, "_blank");
 }
 
+function downloadZip(subId) {
+  window.open(`${BASE_URL}/api/admin/submissions/${subId}/zip`, "_blank");
+}
+
 function toggleExpand(teamNum) {
   if (expandedTeams.value.has(teamNum)) expandedTeams.value.delete(teamNum);
   else expandedTeams.value.add(teamNum);
@@ -153,6 +157,7 @@ onMounted(loadStatus);
                     <td class="col-size">{{ t.submission ? formatSize(t.submission.total_size) : "-" }}</td>
                     <td class="col-files">
                       <div v-if="t.files.length > 0" class="file-list">
+                        <span v-if="t.files.length > 1" class="file-link file-zip" @click="downloadZip(t.submission.id)">전체 다운로드 ({{ formatSize(t.submission.total_size) }})</span>
                         <span
                           v-for="f in t.files"
                           :key="f.id"
@@ -176,6 +181,7 @@ onMounted(loadStatus);
                     <td class="col-size">{{ formatSize(t.prevSubmission.total_size) }}</td>
                     <td class="col-files">
                       <div v-if="t.prevFiles.length > 0" class="file-list">
+                        <span v-if="t.prevFiles.length > 1" class="file-link file-zip" @click="downloadZip(t.prevSubmission.id)">전체 다운로드 ({{ formatSize(t.prevSubmission.total_size) }})</span>
                         <span
                           v-for="f in t.prevFiles"
                           :key="f.id"
@@ -342,6 +348,13 @@ onMounted(loadStatus);
 
 .file-link:hover {
   text-decoration: underline;
+}
+
+.file-zip {
+  font-weight: 600;
+  padding-bottom: 0.125rem;
+  margin-bottom: 0.125rem;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .col-team-expand {

@@ -269,9 +269,9 @@ onUnmounted(() => {
         <div class="filter-group action-group">
           <label class="filter-label">&nbsp;</label>
           <div class="action-buttons">
-            <router-link to="/admin/create" class="btn btn-primary btn-sm">세션 생성</router-link>
             <button class="btn btn-ghost btn-sm" :disabled="!selectedYear" @click="downloadYearArchive">전체 다운로드</button>
             <button class="btn btn-danger btn-sm" :disabled="!selectedYear || purging" @click="purgeYearFiles">{{ purging ? "삭제 중..." : "파일 정리" }}</button>
+            <router-link to="/admin/create" class="btn btn-primary btn-sm">세션 생성</router-link>
           </div>
         </div>
       </div>
