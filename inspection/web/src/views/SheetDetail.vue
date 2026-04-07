@@ -809,10 +809,8 @@ watch(reconnected, async () => {
   display: flex;
   gap: 0.25rem;
   padding: 0.25rem;
-  background: var(--bg-secondary);
   border-radius: 10px;
   overflow-x: auto;
-  border: 1px solid var(--border-color);
 }
 
 .tab {
@@ -837,9 +835,10 @@ watch(reconnected, async () => {
 }
 
 .tab.active {
-  color: var(--accent-primary);
-  background: var(--bg-card);
-  box-shadow: var(--shadow-card);
+  color: var(--text-primary);
+  background: var(--bg-tab-active, var(--bg-card));
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .tab-badge {

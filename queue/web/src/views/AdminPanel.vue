@@ -647,7 +647,7 @@ function goToStats() {
 
 .entry-detail {
   font-size: 0.875rem;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -885,7 +885,6 @@ function goToStats() {
 
 /* Booth Section */
 .booth-section {
-  border-bottom: 1px solid var(--border-color);
 }
 
 .booth-section-header,
@@ -912,11 +911,11 @@ function goToStats() {
 
 .booth-card {
   flex: 1;
-  min-width: 160px;
+  min-width: 200px;
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 0.75rem;
-  background: var(--bg-primary);
+  background: var(--bg-card);
 }
 
 .booth-card.booth-inactive {
@@ -933,15 +932,25 @@ function goToStats() {
   align-items: center;
   gap: 0.5rem;
   margin-bottom: 0.5rem;
+  min-width: 0;
 }
 
 .booth-toggle {
   margin-left: auto;
+  flex-shrink: 0;
 }
 
 .booth-num {
   font-weight: 600;
   font-size: 0.875rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.booth-card-header .badge {
+  flex-shrink: 0;
 }
 
 .badge-muted {

@@ -500,6 +500,8 @@ function goBack() {
 .col-stat,
 .col-time {
   text-align: center !important;
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 600;
 }
 
 .entry-num {
@@ -509,7 +511,7 @@ function goBack() {
 }
 
 .entry-name {
-  color: var(--text-secondary);
+  color: var(--text-primary);
   font-size: 0.875rem;
 }
 

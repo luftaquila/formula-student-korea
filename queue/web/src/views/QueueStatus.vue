@@ -379,6 +379,8 @@ function clearState(message) {
 }
 
 .result-rank {
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 700;
   color: var(--accent-primary);
   margin-left: 0.5rem;
 }

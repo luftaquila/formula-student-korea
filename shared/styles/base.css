@@ -4,9 +4,9 @@
   color-scheme: light;
   /* Light Theme — Linear-inspired, softened */
   --bg-primary: #f5f6f8;
-  --bg-secondary: #eef0f3;
+  --bg-secondary: #ffffff;
   --bg-card: #ffffff;
-  --bg-hover: #e8eaee;
+  --bg-hover: #eef0f3;
   --bg-input: #ffffff;
 
   --text-primary: #2c2e3a;
@@ -19,7 +19,7 @@
   --accent-warning: #f59e0b;
   --accent-danger: #ef4444;
 
-  --border-color: #d0d6e0;
+  --border-color: #d5d9e0;
   --border-focus: #3b82f6;
 
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -41,6 +41,7 @@
   --bg-secondary: #1e2027;
   --bg-card: #1e2027;
   --bg-hover: #2a2c34;
+  --bg-tab-active: #2a2c34;
   --bg-input: #16171c;
 
   --text-primary: #e2e4e9;
@@ -411,7 +412,6 @@ input[type="number"] {
   display: flex;
   gap: 0.25rem;
   padding: 0.25rem;
-  background: var(--bg-secondary);
   border-radius: 10px;
   overflow-x: auto;
 }
@@ -435,9 +435,10 @@ input[type="number"] {
 }
 
 .tab.active {
-  color: var(--accent-primary);
-  background: var(--bg-card);
-  box-shadow: var(--shadow-card);
+  color: var(--text-primary);
+  background: var(--bg-tab-active, var(--bg-card));
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 /* Notyf Warning Icon */

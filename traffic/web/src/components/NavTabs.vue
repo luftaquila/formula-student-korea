@@ -40,31 +40,34 @@ const navItems = computed(() =>
 .nav-tabs {
   display: flex;
   gap: 0.25rem;
-  background: rgba(255, 255, 255, 0.1);
+  background: transparent;
   padding: 0.25rem;
   border-radius: 12px;
 }
 
 .nav-tab {
   padding: 0.5rem 1rem;
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--text-secondary);
   text-decoration: none;
   font-size: 0.875rem;
   font-weight: 500;
   border-radius: 8px;
+  border: none;
+  background: none;
   transition: all 0.2s ease;
   white-space: nowrap;
 }
 
 .nav-tab:hover {
-  color: white;
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 .nav-tab.active {
-  color: var(--accent-primary);
-  background: white;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  color: var(--text-primary);
+  font-weight: 700;
+  background: var(--bg-tab-active, var(--bg-card));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .nav-tab.disabled {
@@ -74,7 +77,7 @@ const navItems = computed(() =>
 
 .nav-tab.disabled:not(.active):hover {
   background: transparent;
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--text-secondary);
 }
 
 @media (max-width: 768px) {

@@ -599,11 +599,12 @@ onUnmounted(() => {
 
 .booth-cards {
   display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
 }
 
 .booth-card {
-  flex: 1;
+  flex: 1 1 120px;
   border: 3px solid var(--border-color);
   border-radius: 12px;
   padding: 1.25rem;
