@@ -6,7 +6,7 @@ import { createCalendar, viewMonthGrid, viewMonthAgenda } from "@schedule-x/cale
 import { createEventsServicePlugin } from "@schedule-x/events-service";
 import { createEventModalPlugin } from "@schedule-x/event-modal";
 import "@schedule-x/theme-default/dist/index.css";
-import { isChief, showOfficials } from "@shared/officialsStore.js";
+import { isAuthenticated, isChief, showOfficials } from "@shared/officialsStore.js";
 import { Notyf } from "notyf";
 import { request } from "../api.js";
 import EventModal from "../components/EventModal.vue";
@@ -18,6 +18,9 @@ const editingEvent = ref(null);
 const rangeHeading = ref("");
 const selectedAgendaDate = ref("");
 const isMobile = ref(window.innerWidth < 768);
+const showSubscribe = ref(false);
+const subscribeUrl = ref("");
+const copied = ref(false);
 
 const ROLE_CALENDARS = {
   public: {
@@ -224,6 +227,28 @@ async function handleDelete(eventId) {
   }
 }
 
+async function openSubscribe() {
+  try {
+    const res = await request("/api/events/subscribe");
+    const { path } = await res.json();
+    subscribeUrl.value = `${window.location.origin}${path}`;
+    copied.value = false;
+    showSubscribe.value = true;
+  } catch {
+    notyf.error("구독 URL 생성에 실패했습니다.");
+  }
+}
+
+async function copySubscribeUrl() {
+  try {
+    await navigator.clipboard.writeText(subscribeUrl.value);
+    copied.value = true;
+    setTimeout(() => (copied.value = false), 2000);
+  } catch {
+    notyf.error("클립보드 복사에 실패했습니다.");
+  }
+}
+
 const themeObserver = new MutationObserver(() => {
   calendarApp.setTheme(document.documentElement.dataset.theme === "dark" ? "dark" : "light");
 });
@@ -251,6 +276,15 @@ onUnmounted(() => {
     <ScheduleXCalendar :calendar-app="calendarApp">
       <template #headerContentLeftAppend>
         <span class="custom-range-heading">{{ rangeHeading }}</span>
+      </template>
+
+      <template #headerContentRightPrepend>
+        <button v-if="isAuthenticated" class="subscribe-btn" @click="openSubscribe" title="Google Calendar 연동">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="3" y="4" width="14" height="14" rx="2" /><path d="M3 8h14M7 2v4M13 2v4" />
+            <path d="M10 11v4M8 13h4" />
+          </svg>
+        </button>
       </template>
 
       <template #monthAgendaEvent="{ calendarEvent }">
@@ -316,6 +350,23 @@ onUnmounted(() => {
 
     <div v-if="isMobile && isChief && selectedAgendaDate" class="mobile-add-btn-wrap">
       <button class="mobile-add-btn" @click="openAddForDate">+ 일정 추가</button>
+    </div>
+
+    <div v-if="showSubscribe" class="subscribe-overlay" @click.self="showSubscribe = false">
+      <div class="subscribe-dialog">
+        <div class="subscribe-dialog__header">
+          <span class="subscribe-dialog__title">Google Calendar 연동</span>
+          <button class="subscribe-dialog__close" @click="showSubscribe = false">&times;</button>
+        </div>
+        <div class="subscribe-dialog__url-row">
+          <input class="subscribe-dialog__url" :value="subscribeUrl" readonly @focus="$event.target.select()" />
+          <button class="subscribe-dialog__copy" @click="copySubscribeUrl">{{ copied ? "복사됨" : "복사" }}</button>
+        </div>
+        <ol class="subscribe-dialog__steps">
+          <li>PC에서 <a href="https://calendar.google.com/calendar/r/settings/addbyurl" target="_blank" rel="noopener">Google Calendar 설정</a> 접속</li>
+          <li>위 URL을 붙여넣고 '캘린더 추가' 클릭</li>
+        </ol>
+      </div>
     </div>
 
     <EventModal
@@ -390,6 +441,7 @@ onUnmounted(() => {
 /* Center the header content */
 .calendar-container :deep(.sx__calendar-header-content) {
   justify-content: center;
+  align-items: center;
 }
 
 /* ── Header styling ── */
@@ -670,5 +722,153 @@ onUnmounted(() => {
 /* ── List view styling ── */
 .calendar-container :deep(.sx__list) {
   border-top: none;
+}
+
+/* ── Subscribe button ── */
+.calendar-container :deep(.sx__calendar-header) {
+  position: relative;
+}
+
+.subscribe-btn {
+  position: absolute;
+  right: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary, #475569);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.subscribe-btn:hover {
+  background: var(--bg-hover, #f1f5f9);
+  color: var(--accent-primary, #5e6ad2);
+}
+
+.subscribe-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* ── Subscribe dialog ── */
+.subscribe-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+}
+
+.subscribe-dialog {
+  background: var(--bg-card, #fff);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 12px;
+  box-shadow: var(--shadow-hover);
+  padding: 1.25rem;
+  width: min(420px, calc(100vw - 2rem));
+}
+
+[data-theme="dark"] .subscribe-dialog {
+  background: var(--bg-card, #1e293b);
+  border-color: var(--border-color, #334155);
+}
+
+.subscribe-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.subscribe-dialog__title {
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--text-primary, #0f172a);
+}
+
+.subscribe-dialog__close {
+  border: none;
+  background: none;
+  font-size: 1.25rem;
+  color: var(--text-tertiary, #94a3b8);
+  cursor: pointer;
+  padding: 0.25rem;
+  line-height: 1;
+}
+
+.subscribe-dialog__desc {
+  font-size: 0.8125rem;
+  color: var(--text-secondary, #475569);
+  margin: 0 0 0.75rem;
+  line-height: 1.5;
+}
+
+.subscribe-dialog__url-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.subscribe-dialog__url {
+  flex: 1;
+  padding: 0.5rem 0.625rem;
+  font-size: 0.75rem;
+  font-family: monospace;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 6px;
+  background: var(--bg-secondary, #f8fafc);
+  color: var(--text-primary, #0f172a);
+  outline: none;
+  min-width: 0;
+}
+
+[data-theme="dark"] .subscribe-dialog__url {
+  background: var(--bg-secondary, #0f172a);
+}
+
+.subscribe-dialog__copy {
+  flex-shrink: 0;
+  padding: 0.5rem 0.875rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 6px;
+  background: var(--bg-secondary, #f8fafc);
+  color: var(--text-primary, #0f172a);
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.subscribe-dialog__copy:hover {
+  border-color: var(--accent-primary, #5e6ad2);
+  color: var(--accent-primary, #5e6ad2);
+}
+
+.subscribe-dialog__steps {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary, #475569);
+  line-height: 1.8;
+}
+
+.subscribe-dialog__steps a {
+  color: var(--accent-primary, #5e6ad2);
+  text-decoration: none;
+}
+
+.subscribe-dialog__steps a:hover {
+  text-decoration: underline;
 }
 </style>

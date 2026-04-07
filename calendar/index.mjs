@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase } from "../shared/db-setup.mjs";
@@ -33,6 +34,8 @@ const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/logs") return "admin";
   if (req.method === "GET" && req.path === "/api/events") return null;
+  if (req.path === "/api/events/ical") return null;
+  if (req.path === "/api/events/subscribe") return "student";
   if (req.path.startsWith("/api/")) return "chief";
   return null;
 });
@@ -168,6 +171,105 @@ app.delete("/api/events/:id", (req, res) => {
   logger.log(req, "event.delete", { title: existing.title }, id);
   res.status(204).end();
 });
+
+// Generate HMAC signature for iCal subscription URL
+function generateICalSig(role) {
+  return crypto.createHmac("sha256", process.env.JWT_SECRET).update(`ical:${role}`).digest("hex");
+}
+
+// Get signed subscription URL for current user's role
+app.get("/api/events/subscribe", (req, res) => {
+  const role = req.user.role;
+  const sig = generateICalSig(role);
+  res.json({ role, path: `/calendar/api/events/ical?role=${role}&sig=${sig}` });
+});
+
+// iCal feed (signature-verified, no cookie auth)
+app.get("/api/events/ical", (req, res) => {
+  const { role, sig } = req.query;
+  if (!role || !sig || !ALLOWED_EVENT_ROLES.includes(role)) {
+    return res.status(400).send("Invalid parameters");
+  }
+
+  const expected = generateICalSig(role);
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig, "utf8"), Buffer.from(expected, "utf8"))) {
+    return res.status(403).send("Invalid signature");
+  }
+
+  const roleLevel = EVENT_ROLE_LEVELS[role];
+  const visibleRoles = ALLOWED_EVENT_ROLES.filter(r => EVENT_ROLE_LEVELS[r] <= roleLevel);
+  const placeholders = visibleRoles.map(() => "?").join(",");
+
+  const result = dbRun(() =>
+    db.prepare(`SELECT * FROM events WHERE role IN (${placeholders}) ORDER BY start ASC`).all(...visibleRoles)
+  );
+
+  if (!result.success) {
+    logger.warn(req, "event.ical", { error: result.error });
+    return res.status(result.status).send("Internal error");
+  }
+
+  res.set("Content-Type", "text/calendar; charset=utf-8");
+  res.send(generateICal(result.result));
+});
+
+function escapeICalText(text) {
+  return text.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+}
+
+function formatICalDateTime(dateStr) {
+  // "YYYY-MM-DD HH:MM" → "YYYYMMDDTHHMMSS"
+  return dateStr.slice(0, 10).replace(/-/g, "") + "T" + dateStr.slice(11, 16).replace(/:/g, "") + "00";
+}
+
+function generateICal(events) {
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Formula Student Korea//Calendar//KO",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "X-WR-CALNAME:Formula Student Korea",
+    "X-WR-TIMEZONE:Asia/Seoul",
+    "BEGIN:VTIMEZONE",
+    "TZID:Asia/Seoul",
+    "BEGIN:STANDARD",
+    "DTSTART:19700101T000000",
+    "TZOFFSETFROM:+0900",
+    "TZOFFSETTO:+0900",
+    "TZNAME:KST",
+    "END:STANDARD",
+    "END:VTIMEZONE",
+  ];
+
+  const now = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+
+  for (const event of events) {
+    lines.push("BEGIN:VEVENT");
+    lines.push(`UID:event-${event.id}@fsk-calendar`);
+    lines.push(`DTSTAMP:${now}`);
+
+    if (event.all_day) {
+      lines.push(`DTSTART;VALUE=DATE:${event.start.slice(0, 10).replace(/-/g, "")}`);
+      // iCal DTEND for all-day events is exclusive (day after last day)
+      const endDate = new Date(event.end.slice(0, 10) + "T00:00:00");
+      endDate.setDate(endDate.getDate() + 1);
+      lines.push(`DTEND;VALUE=DATE:${endDate.toISOString().slice(0, 10).replace(/-/g, "")}`);
+    } else {
+      lines.push(`DTSTART;TZID=Asia/Seoul:${formatICalDateTime(event.start)}`);
+      lines.push(`DTEND;TZID=Asia/Seoul:${formatICalDateTime(event.end)}`);
+    }
+
+    lines.push(`SUMMARY:${escapeICalText(event.title)}`);
+    if (event.description) lines.push(`DESCRIPTION:${escapeICalText(event.description)}`);
+    if (event.location) lines.push(`LOCATION:${escapeICalText(event.location)}`);
+    lines.push("TRANSP:TRANSPARENT");
+    lines.push("END:VEVENT");
+  }
+
+  lines.push("END:VCALENDAR");
+  return lines.join("\r\n");
+}
 
 // SPA fallback
 app.get("/{*splat}", (req, res) => {
