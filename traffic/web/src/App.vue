@@ -66,6 +66,11 @@ onUnmounted(() => {
   .header-content {
     flex-wrap: wrap;
   }
+
+  :deep(.nav-tabs) {
+    order: 1;
+    width: 100%;
+  }
 }
 
 @media (max-width: 640px) {
