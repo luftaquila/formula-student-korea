@@ -10,6 +10,7 @@ import {
   resetAllPriorities,
   resetInspectionHistory,
   setInspectionIgnore,
+  fetchReinspectionStatus,
 } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 
@@ -19,6 +20,7 @@ const router = useRouter();
 const entries = ref({});
 const inspections = ref([]);
 const allPriorities = ref({}); // { inspectionType: { num: priority, ... }, ... }
+const reinspectionStatus = ref({}); // { inspectionType: [num, ...], ... }
 const loading = ref(true);
 const searchQuery = ref("");
 
@@ -55,13 +57,17 @@ function hasAnyPriority(type) {
   return priorities && Object.keys(priorities).length > 0;
 }
 
+function isReinspection(num, type) {
+  return reinspectionStatus.value[type]?.includes(num) ?? false;
+}
+
 onMounted(async () => {
   try {
     entries.value = await fetchEntries();
     inspections.value = await fetchAllInspections();
 
-    // Fetch priorities for all inspection types
-    await refreshAllPriorities();
+    // Fetch priorities and reinspection status for all inspection types
+    await Promise.all([refreshAllPriorities(), refreshReinspectionStatus()]);
   } catch (e) {
     error("데이터를 가져올 수 없습니다.");
   }
@@ -88,6 +94,14 @@ async function refreshAllPriorities() {
     }, {});
   } catch (e) {
     error("우선순위 정보를 가져올 수 없습니다.");
+  }
+}
+
+async function refreshReinspectionStatus() {
+  try {
+    reinspectionStatus.value = await fetchReinspectionStatus();
+  } catch (e) {
+    error("재검 현황을 가져올 수 없습니다.");
   }
 }
 
@@ -153,6 +167,7 @@ async function resetHistory(type) {
   try {
     await resetInspectionHistory(type);
     success(`${inspectionName} 검차 이력을 초기화했습니다.`);
+    await refreshReinspectionStatus();
   } catch (e) {
     error(e.message);
   }
@@ -219,72 +234,11 @@ function goBack() {
       </div>
     </div>
 
-    <!-- Inspection Settings -->
-    <div class="card settings-card">
-      <div class="card-header settings-header">
-        <h3>검차별 설정</h3>
-        <div class="settings-legend">
-          <span class="legend-item">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-              <circle cx="9" cy="7" r="4" />
-              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-            </svg>
-            초검/재검
-          </span>
-          <span class="legend-item">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-            </svg>
-            우선순위
-          </span>
-        </div>
-      </div>
-      <div class="card-body">
-        <div v-for="item in inspections" :key="item.type" class="inspection-config">
-          <span class="config-name">{{ item.name }}</span>
-          <div class="config-toggles">
-            <button
-              class="btn-config-toggle"
-              :class="{ active: !item.ignore_reinspection }"
-              @click="toggleIgnore(item.type, 'ignore_reinspection', item.ignore_reinspection)"
-              :title="item.ignore_reinspection ? '초검/재검 적용' : '초검/재검 무시'"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                <circle cx="9" cy="7" r="4" />
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-              </svg>
-            </button>
-            <button
-              class="btn-config-toggle"
-              :class="{ active: !item.ignore_priority }"
-              @click="toggleIgnore(item.type, 'ignore_priority', item.ignore_priority)"
-              :title="item.ignore_priority ? '우선순위 적용' : '우선순위 무시'"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-              </svg>
-            </button>
-          </div>
-          <button
-            class="btn btn-ghost btn-sm"
-            @click="resetHistory(item.type)"
-            title="초검/재검 이력 초기화"
-          >
-            이력 초기화
-          </button>
-        </div>
-      </div>
-    </div>
-
     <!-- Entry Table with Priority Inputs -->
     <div class="card entries-card">
       <div class="card-header">
         <div class="header-left">
-          <h3>팀별 우선순위 설정</h3>
+          <h3>우선순위 설정</h3>
           <span class="count-badge">{{ entriesArray.length }}개 팀</span>
         </div>
         <div class="header-right">
@@ -315,18 +269,47 @@ function goBack() {
                       class="btn-reset"
                       @click="resetAll(inspection.type)"
                       :disabled="!hasAnyPriority(inspection.type)"
-                      title="초기화"
+                      title="우선순위 초기화"
                     >
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                        width="14"
-                        height="14"
-                      >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                         <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
                         <path d="M3 3v5h5" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div class="th-controls">
+                    <button
+                      class="btn-th-toggle"
+                      :class="{ active: !inspection.ignore_reinspection }"
+                      @click="toggleIgnore(inspection.type, 'ignore_reinspection', inspection.ignore_reinspection)"
+                      :title="inspection.ignore_reinspection ? '초검/재검 적용' : '초검/재검 무시'"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                        <circle cx="9" cy="7" r="4" />
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                      </svg>
+                    </button>
+                    <button
+                      class="btn-th-toggle"
+                      :class="{ active: !inspection.ignore_priority }"
+                      @click="toggleIgnore(inspection.type, 'ignore_priority', inspection.ignore_priority)"
+                      :title="inspection.ignore_priority ? '우선순위 적용' : '우선순위 무시'"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                      </svg>
+                    </button>
+                    <button
+                      class="btn-th-toggle btn-th-history"
+                      @click="resetHistory(inspection.type)"
+                      title="초검/재검 이력 초기화"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 6h18" />
+                        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
                       </svg>
                     </button>
                   </div>
@@ -345,7 +328,11 @@ function goBack() {
                   <input
                     type="number"
                     class="priority-input"
-                    :class="{ active: getPriority(entry.num, inspection.type) !== null }"
+                    :class="{
+                      active: getPriority(entry.num, inspection.type) !== null,
+                      reinspection: isReinspection(entry.num, inspection.type),
+                      'first-inspection': !isReinspection(entry.num, inspection.type),
+                    }"
                     :value="getPriority(entry.num, inspection.type)"
                     placeholder="-"
                     min="1"
@@ -427,96 +414,6 @@ function goBack() {
 
 .rule-text strong {
   color: var(--text-primary);
-}
-
-/* Settings Card */
-.settings-card .card-body {
-  display: flex;
-  flex-direction: column;
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-.inspection-config {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.inspection-config:last-child {
-  border-bottom: none;
-}
-
-.config-name {
-  font-weight: 600;
-  font-size: 0.875rem;
-  min-width: 5rem;
-  margin-right: auto;
-}
-
-.settings-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.settings-legend {
-  display: flex;
-  gap: 1rem;
-}
-
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-}
-
-.config-toggles {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.btn-config-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.btn-config-toggle svg {
-  width: 16px;
-  height: 16px;
-}
-
-.btn-config-toggle:hover {
-  background: var(--bg-hover);
-}
-
-.btn-config-toggle.active {
-  background: var(--accent-primary);
-  color: white;
-  border-color: var(--accent-primary);
-}
-
-.btn-config-toggle.active:hover {
-  opacity: 0.85;
-}
-
-.inspection-config .btn {
-  flex-shrink: 0;
 }
 
 /* Entries Card */
@@ -654,6 +551,53 @@ function goBack() {
   gap: 0.5rem;
 }
 
+.th-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  margin-top: 0.375rem;
+}
+
+.btn-th-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-th-toggle svg {
+  width: 13px;
+  height: 13px;
+}
+
+.btn-th-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.btn-th-toggle.active {
+  background: var(--accent-primary);
+  color: white;
+  border-color: var(--accent-primary);
+}
+
+.btn-th-toggle.active:hover {
+  opacity: 0.85;
+}
+
+.btn-th-history:hover {
+  color: var(--accent-danger);
+  border-color: var(--accent-danger);
+}
+
 .btn-reset {
   display: flex;
   align-items: center;
@@ -705,17 +649,20 @@ function goBack() {
   transition: all 0.2s ease;
 }
 
+.priority-input.first-inspection {
+  border-color: var(--accent-success);
+}
+
+.priority-input.reinspection {
+  border-color: var(--accent-warning);
+}
+
 .priority-input:focus {
   outline: none;
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
 }
 
-.priority-input.active {
-  border-color: var(--accent-primary);
-  background: rgba(94, 106, 210, 0.1);
-  color: var(--accent-primary);
-}
 
 .priority-input::placeholder {
   color: var(--text-tertiary);

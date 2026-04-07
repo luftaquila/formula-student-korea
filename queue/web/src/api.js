@@ -117,6 +117,11 @@ export async function resetAllPriorities(type) {
 /* ============================================
    Admin API - 검차 이력 초기화
    ============================================ */
+export async function fetchReinspectionStatus() {
+  const res = await request("/api/admin/history/status");
+  return res.json();
+}
+
 export async function resetInspectionHistory(type) {
   await request(`/api/admin/history/${type}`, {
     method: "DELETE",

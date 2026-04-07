@@ -881,6 +881,18 @@ app.delete("/api/admin/priority/:type/all", (req, res) => {
   res.status(200).send();
 });
 
+// GET /api/admin/history/status - 재검 현황 조회
+app.get("/api/admin/history/status", (req, res) => {
+  const year = currentYear();
+  const rows = db.prepare("SELECT DISTINCT num, inspection FROM inspection_history WHERE year = ?").all(year);
+
+  const result = {};
+  for (const row of rows) {
+    (result[row.inspection] ??= []).push(row.num);
+  }
+  res.json(result);
+});
+
 // DELETE /api/admin/history/:type - 검차별 초검/재검 이력 초기화
 app.delete("/api/admin/history/:type", (req, res) => {
   const typeValidation = validateInspection(req.params.type);

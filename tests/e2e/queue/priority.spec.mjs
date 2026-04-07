@@ -29,11 +29,8 @@ test.describe("Queue priority management", () => {
     // Should show the priority rules section
     await expect(page.getByText("우선순위 규칙")).toBeVisible();
 
-    // Should show inspection settings section
-    await expect(page.getByRole("heading", { name: "검차별 설정" })).toBeVisible();
-
     // Should show team priority table
-    await expect(page.getByRole("heading", { name: /팀별 우선순위 설정/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /우선순위 설정/ })).toBeVisible();
 
     // Should show back button
     await expect(page.getByRole("button", { name: "돌아가기" })).toBeVisible();
@@ -178,8 +175,8 @@ test.describe("Queue priority management", () => {
     // Accept the confirmation dialog
     page.on("dialog", (dialog) => dialog.accept());
 
-    // Find the first "이력 초기화" button in the inspection config section
-    const historyResetBtn = page.getByRole("button", { name: "이력 초기화" }).first();
+    // Find the first history reset button in the table header
+    const historyResetBtn = page.locator(".btn-th-history").first();
     await expect(historyResetBtn).toBeVisible();
     await historyResetBtn.click();
 
@@ -187,18 +184,18 @@ test.describe("Queue priority management", () => {
     await expectNotification(page, "success", "이력을 초기화했습니다");
   });
 
-  test("shows inspection config toggles", async ({ page }) => {
+  test("shows inspection config toggles in table header", async ({ page }) => {
     await page.goto("/queue/priority");
     await waitForPageReady(page);
 
-    // Should show inspection settings with toggle buttons
-    const configItems = page.locator(".inspection-config");
-    await expect(configItems.first()).toBeVisible({ timeout: 10000 });
-    const count = await configItems.count();
+    // Should show toggle controls in the table column headers
+    const thControls = page.locator(".th-controls");
+    await expect(thControls.first()).toBeVisible({ timeout: 10000 });
+    const count = await thControls.count();
     expect(count).toBeGreaterThan(0);
 
-    // Each item should have config toggle buttons
-    const toggles = page.locator(".btn-config-toggle");
+    // Each column header should have toggle buttons
+    const toggles = page.locator(".btn-th-toggle");
     const toggleCount = await toggles.count();
     expect(toggleCount).toBeGreaterThan(0);
   });
@@ -207,8 +204,8 @@ test.describe("Queue priority management", () => {
     await page.goto("/queue/priority");
     await waitForPageReady(page);
 
-    // Wait for config toggles to load
-    const firstToggle = page.locator(".btn-config-toggle").first();
+    // Wait for toggle buttons in table headers to load
+    const firstToggle = page.locator(".btn-th-toggle").first();
     await expect(firstToggle).toBeVisible({ timeout: 10000 });
 
     // Read initial state (active or not)
