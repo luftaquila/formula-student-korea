@@ -29,6 +29,7 @@ on("init", () => {
 on("inspection:category-result", (e) => parseSSE(e, lastInspectionUpdate));
 on("inspection:answer", (e) => parseSSE(e, lastAnswerUpdate));
 on("traffic:records", (e) => parseSSE(e, lastTrafficRecordUpdate));
+on("traffic:record-visibility", (e) => parseSSE(e, lastTrafficRecordUpdate));
 on("manual-score", (e) => parseSSE(e, lastManualScoreUpdate));
 on("penalty", (e) => parseSSE(e, lastPenaltyUpdate));
 on("setting", (e) => parseSSE(e, lastSettingUpdate));

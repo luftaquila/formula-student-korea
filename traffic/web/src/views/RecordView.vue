@@ -525,13 +525,6 @@ async function handleAddRecord() {
             </svg>
             XLSX
           </button>
-          <button v-if="!isControllerLog" class="btn btn-primary" @click="showAddForm = !showAddForm">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            기록 추가
-          </button>
           <button
             v-if="!isControllerLog"
             class="btn-visibility"
@@ -540,9 +533,16 @@ async function handleAddRecord() {
             :title="recordVisibility[selectedFile] !== false ? '성적에 반영 중' : '성적에 미반영'"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-              <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z" />
+              <path v-if="recordVisibility[selectedFile] !== false" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle v-if="recordVisibility[selectedFile] !== false" cx="12" cy="12" r="3" /><line v-if="recordVisibility[selectedFile] === false" x1="1" y1="1" x2="23" y2="23" /><path v-if="recordVisibility[selectedFile] === false" d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24" />
             </svg>
             성적 반영
+          </button>
+          <button v-if="!isControllerLog" class="btn btn-primary" @click="showAddForm = !showAddForm">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            기록 추가
           </button>
           <button class="btn btn-danger" @click="handleDelete">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
@@ -551,7 +551,7 @@ async function handleAddRecord() {
               <line x1="10" y1="11" x2="10" y2="17" />
               <line x1="14" y1="11" x2="14" y2="17" />
             </svg>
-            삭제
+            전체 삭제
           </button>
         </div>
       </div>
