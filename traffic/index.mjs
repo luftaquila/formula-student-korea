@@ -20,6 +20,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS event_mode (
   enabled INTEGER NOT NULL DEFAULT 1
 );`);
 
+db.exec(`CREATE TABLE IF NOT EXISTS record_visibility (
+  name TEXT PRIMARY KEY,
+  visible INTEGER NOT NULL DEFAULT 1
+);`);
+
 // 기본 경기 모드 시딩
 {
   const insert = db.prepare("INSERT OR IGNORE INTO event_mode (event_type, enabled) VALUES (?, 1)");
@@ -31,7 +36,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS event_mode (
 // 기존 동적 테이블들에 누락 컬럼 추가 (startup에서 1회 실행)
 {
   const tables = db
-    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('controller', 'event_mode', 'logs')")
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('controller', 'event_mode', 'record_visibility', 'logs')")
     .all();
   for (const { name } of tables) {
     if (!/^[A-Za-z0-9가-힣 .\-_]+$/.test(name)) continue;
@@ -73,7 +78,7 @@ const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 function getRecordFiles() {
   const tables = db
-    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('controller', 'event_mode', 'logs')")
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('controller', 'event_mode', 'record_visibility', 'logs')")
     .all();
   return tables.map((table) => table.name);
 }
@@ -82,8 +87,15 @@ function getEventModes() {
   return db.prepare("SELECT event_type, enabled FROM event_mode").all();
 }
 
+function getRecordVisibility() {
+  const rows = db.prepare("SELECT name, visible FROM record_visibility").all();
+  const map = {};
+  for (const row of rows) map[row.name] = !!row.visible;
+  return map;
+}
+
 // SSE 엔드포인트
-app.get("/api/events", sseHandler(() => ({ recordFiles: getRecordFiles(), eventModes: getEventModes() })));
+app.get("/api/events", sseHandler(() => ({ recordFiles: getRecordFiles(), eventModes: getEventModes(), recordVisibility: getRecordVisibility() })));
 
 /* ============================================
    Validation 헬퍼
@@ -169,7 +181,7 @@ app.get("/api/records", (req, res) => {
   const result = dbRun(() => {
     const tables = db
       .prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('controller', 'event_mode', 'logs')",
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('controller', 'event_mode', 'record_visibility', 'logs')",
       )
       .all();
     return tables.map((table) => table.name);
@@ -178,6 +190,43 @@ app.get("/api/records", (req, res) => {
   if (!result.success) {
     return res.status(result.status).send(result.error);
   }
+
+  res.json(result.result);
+});
+
+// GET /api/records/visibility - 기록 파일별 성적 반영 상태 조회
+app.get("/api/records/visibility", (req, res) => {
+  res.json(getRecordVisibility());
+});
+
+// PUT /api/records/:name/visibility - 기록 파일 성적 반영 토글
+app.put("/api/records/:name/visibility", (req, res) => {
+  const validation = validateRecordName(req.params.name);
+  if (!validation.valid) {
+    return res.status(400).send(validation.error);
+  }
+
+  const name = validation.value;
+
+  if (!tableExists(name)) {
+    return res.status(404).send("기록을 찾을 수 없습니다.");
+  }
+
+  const result = dbRun(() => {
+    const row = db.prepare("SELECT visible FROM record_visibility WHERE name = ?").get(name);
+    const newVisible = row ? (row.visible ? 0 : 1) : 0;
+    db.prepare("INSERT INTO record_visibility (name, visible) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET visible = excluded.visible").run(name, newVisible);
+    return { name, visible: newVisible };
+  });
+
+  if (!result.success) {
+    logger.warn(req, "record.visibility", { error: result.error }, name);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "record.visibility", { visible: !!result.result.visible }, name);
+
+  broadcastEvent("record-visibility", result.result);
 
   res.json(result.result);
 });
@@ -239,6 +288,7 @@ app.post("/api/records", (req, res) => {
           invalidated INTEGER DEFAULT 0,
           scoreboard INTEGER DEFAULT 1
         );`);
+        db.prepare("INSERT OR IGNORE INTO record_visibility (name, visible) VALUES (?, 1)").run(name);
       }
 
       db.prepare(
@@ -355,7 +405,10 @@ app.delete("/api/records/:name", (req, res) => {
     return res.status(404).send("기록을 찾을 수 없습니다.");
   }
 
-  const result = dbRun(() => db.exec(`DROP TABLE IF EXISTS '${name}'`));
+  const result = dbRun(() => {
+    db.exec(`DROP TABLE IF EXISTS '${name}'`);
+    db.prepare("DELETE FROM record_visibility WHERE name = ?").run(name);
+  });
 
   if (!result.success) {
     logger.warn(req, "record.delete", { error: result.error }, name);

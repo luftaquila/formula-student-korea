@@ -8,6 +8,7 @@ import {
   updateRecord,
   addRecord,
   toggleEventMode,
+  toggleRecordVisibility,
 } from "../composables/useApi";
 import { EVENT_TYPES } from "@shared/constants.js";
 import { useNotification } from "@shared/useNotification.js";
@@ -17,7 +18,7 @@ import { msToClockStr } from "../stores/serial";
 
 
 const { notyf } = useNotification();
-const { recordFiles, selectedFile, lastUpdate, eventModes } = useSSE();
+const { recordFiles, selectedFile, lastUpdate, eventModes, recordVisibility } = useSSE();
 const entryStore = useEntryStore();
 
 const records = ref([]);
@@ -420,6 +421,15 @@ async function handleScoreboardToggle(record) {
   }
 }
 
+async function handleToggleVisibility() {
+  if (!selectedFile.value || isControllerLog.value) return;
+  try {
+    await toggleRecordVisibility(selectedFile.value);
+  } catch (e) {
+    notyf.error(`성적 반영 변경 실패: ${e.message}`);
+  }
+}
+
 async function handleToggleEventMode(eventType) {
   try {
     await toggleEventMode(eventType);
@@ -521,6 +531,18 @@ async function handleAddRecord() {
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
             기록 추가
+          </button>
+          <button
+            v-if="!isControllerLog"
+            class="btn-visibility"
+            :class="{ active: recordVisibility[selectedFile] !== false }"
+            @click="handleToggleVisibility"
+            :title="recordVisibility[selectedFile] !== false ? '성적에 반영 중' : '성적에 미반영'"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
+              <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z" />
+            </svg>
+            성적 반영
           </button>
           <button class="btn btn-danger" @click="handleDelete">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
@@ -872,6 +894,31 @@ async function handleAddRecord() {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+.btn-visibility {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+}
+
+.btn-visibility.active {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-success);
+  border-color: var(--accent-success);
+}
+
+.btn-visibility:hover {
+  opacity: 0.8;
 }
 
 .btn {

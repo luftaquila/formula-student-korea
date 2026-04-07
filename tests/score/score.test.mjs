@@ -52,6 +52,10 @@ function createMockTrafficServer() {
     const year = new Date().getFullYear();
     res.json([`FSK ${year} 가속 1차`]);
   });
+  app.get('/api/records/visibility', (req, res) => {
+    const year = new Date().getFullYear();
+    res.json({ [`FSK ${year} 가속 1차`]: true });
+  });
   app.get('/api/records/:name', (req, res) => {
     res.json([
       { rowid: 1, time: '2026-01-01T10:00:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 50000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
@@ -118,6 +122,14 @@ function createRichMockTrafficServer() {
       `FSK ${year} 가속 2차`,
       `FSK ${year} 스키드패드`,
     ]);
+  });
+
+  app.get('/api/records/visibility', (req, res) => {
+    res.json({
+      [`FSK ${year} 가속 1차`]: true,
+      [`FSK ${year} 가속 2차`]: true,
+      [`FSK ${year} 스키드패드`]: true,
+    });
   });
 
   app.get('/api/records/:name', (req, res) => {
@@ -888,5 +900,82 @@ describe('Score aggregation business logic', () => {
     // Best = run1 (lower adjusted time)
     assert.equal(accel.records[1].result, 50000, 'best run from 가속 1차 should be selected');
     assert.equal(accel.records[1].cones, 1, 'best run cones should be from selected run');
+  });
+});
+
+// ─── Record visibility filtering ──────────────────────────────────────
+
+describe('Score visibility filtering', () => {
+  let srv, url, cli, database, dp;
+  let mEntry, mInsp, mTraffic;
+  const cookie = adminCookie;
+  const YEAR = new Date().getFullYear();
+
+  before(async () => {
+    const entryApp = express();
+    entryApp.get('/api/entries', (req, res) => {
+      res.json({ 1: { univ: 'A대', team: '팀A', type: 'EV' } });
+    });
+
+    const inspApp = createMockInspectionServer();
+
+    const trafficApp = express();
+    trafficApp.get('/api/records', (req, res) => {
+      res.json([`FSK ${YEAR} 가속 1차`, `FSK ${YEAR} 가속 2차`]);
+    });
+    trafficApp.get('/api/records/visibility', (req, res) => {
+      // 가속 2차 is hidden
+      res.json({ [`FSK ${YEAR} 가속 1차`]: true, [`FSK ${YEAR} 가속 2차`]: false });
+    });
+    trafficApp.get('/api/records/:name', (req, res) => {
+      const name = decodeURIComponent(req.params.name);
+      if (name.includes('가속 1차')) {
+        res.json([{ rowid: 1, time: 'T1', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 }]);
+      } else if (name.includes('가속 2차')) {
+        res.json([{ rowid: 2, time: 'T2', num: 1, univ: 'A', team: 'A', type: '가속', result: 40000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 }]);
+      } else {
+        res.json([]);
+      }
+    });
+    trafficApp.get('/api/event-modes', (req, res) => {
+      res.json([{ event_type: '가속', enabled: 1 }]);
+    });
+
+    const [e, i, t] = await Promise.all([
+      startServer(entryApp),
+      startServer(inspApp),
+      startServer(trafficApp),
+    ]);
+    mEntry = e.server; mInsp = i.server; mTraffic = t.server;
+
+    process.env.ENTRY_SERVER = e.baseUrl;
+    process.env.INSPECTION_SERVER = i.baseUrl;
+    process.env.TRAFFIC_SERVER = t.baseUrl;
+
+    dp = tmpDbPath();
+    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true });
+    database = result.db;
+    const started = await startServer(result.app);
+    srv = started.server; url = started.baseUrl;
+    cli = createClient(url);
+  });
+
+  after(async () => {
+    await stopServer(srv);
+    await Promise.all([stopServer(mEntry), stopServer(mInsp), stopServer(mTraffic)]);
+    database.close();
+    cleanup(dp);
+  });
+
+  it('excludes hidden record files from score aggregation', async () => {
+    const res = await cli.get(`/api/score?year=${YEAR}`, { cookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+
+    const accel = data.events.find(e => e.type === '가속');
+    assert.ok(accel, '가속 event should exist');
+    // Only 가속 1차 (50000) should be included, 가속 2차 (40000) is hidden
+    assert.equal(accel.records[1].result, 50000, 'should use only visible file records');
+    assert.equal(accel.records[1].allRuns.length, 1, 'hidden file runs should be excluded');
   });
 });

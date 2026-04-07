@@ -9,6 +9,7 @@ const recordFiles = ref([]);
 const selectedFile = ref(localStorage.getItem("traffic-last-file") || null);
 const lastUpdate = ref(null);
 const eventModes = ref({});
+const recordVisibility = ref({});
 
 watch(selectedFile, (v) => {
   if (v) localStorage.setItem("traffic-last-file", v);
@@ -23,6 +24,9 @@ on("init", (e) => {
     const modes = {};
     for (const m of data.eventModes) modes[m.event_type] = !!m.enabled;
     eventModes.value = modes;
+  }
+  if (data.recordVisibility) {
+    recordVisibility.value = data.recordVisibility;
   }
 });
 
@@ -39,6 +43,12 @@ on("records", (e) => {
   };
 });
 
+on("record-visibility", (e) => {
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
+  recordVisibility.value = { ...recordVisibility.value, [data.name]: !!data.visible };
+});
+
 on("event-mode", (e) => {
   let data;
   try { data = JSON.parse(e.data); } catch { return; }
@@ -53,6 +63,7 @@ export function useSSE() {
     selectedFile,
     lastUpdate,
     eventModes,
+    recordVisibility,
     connected,
   };
 }

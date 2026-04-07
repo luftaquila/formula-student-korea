@@ -124,13 +124,20 @@ function validateKey(key, label) {
 }
 
 async function fetchYearRecords(year) {
-  const tablesRes = await fetch(`${TRAFFIC_SERVER}/api/records`, {
-    headers: internalHeaders(),
-    signal: AbortSignal.timeout(10000),
-  });
+  const [tablesRes, visRes] = await Promise.all([
+    fetch(`${TRAFFIC_SERVER}/api/records`, {
+      headers: internalHeaders(),
+      signal: AbortSignal.timeout(10000),
+    }),
+    fetch(`${TRAFFIC_SERVER}/api/records/visibility`, {
+      headers: internalHeaders(),
+      signal: AbortSignal.timeout(10000),
+    }).catch(() => null),
+  ]);
   if (!tablesRes.ok) throw new Error("경기 목록을 가져올 수 없습니다.");
   const allTables = await tablesRes.json();
-  const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year}`));
+  const visibility = visRes?.ok ? await visRes.json() : {};
+  const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year}`) && visibility[t] !== false);
 
   return Promise.all(
     yearTables.map(async (tableName) => {

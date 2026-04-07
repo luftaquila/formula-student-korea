@@ -284,6 +284,46 @@ describe('PATCH /api/records/:name/:rowid', () => {
   });
 });
 
+// ─── Record Visibility ─────────────────────────────────────────────────
+describe('GET /api/records/visibility', () => {
+  it('returns visibility map', async () => {
+    const res = await client.get('/api/records/visibility', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(typeof data, 'object');
+  });
+});
+
+describe('PUT /api/records/:name/visibility', () => {
+  const tableName = `FSK ${new Date().getFullYear()} 가속 1차`;
+
+  it('toggles visibility off', async () => {
+    const res = await client.put(`/api/records/${encodeURIComponent(tableName)}/visibility`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.name, tableName);
+    assert.equal(data.visible, 0);
+  });
+
+  it('reflects in visibility map', async () => {
+    const res = await client.get('/api/records/visibility', { cookie: adminCookie });
+    const data = await res.json();
+    assert.equal(data[tableName], false);
+  });
+
+  it('toggles visibility back on', async () => {
+    const res = await client.put(`/api/records/${encodeURIComponent(tableName)}/visibility`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.visible, 1);
+  });
+
+  it('returns 404 for non-existent table', async () => {
+    const res = await client.put(`/api/records/${encodeURIComponent('NoSuchTable')}/visibility`, { cookie: adminCookie });
+    assert.equal(res.status, 404);
+  });
+});
+
 describe('DELETE /api/records/:name', () => {
   it('deletes table', async () => {
     const tableName = `FSK ${new Date().getFullYear()} 가속 1차`;

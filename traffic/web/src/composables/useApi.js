@@ -48,6 +48,13 @@ export async function deleteControllers() {
   });
 }
 
+export async function toggleRecordVisibility(name) {
+  const res = await request(`/api/records/${encodeURIComponent(name)}/visibility`, {
+    method: "PUT",
+  });
+  return res.json();
+}
+
 export async function toggleEventMode(eventType) {
   const res = await request(`/api/event-modes/${encodeURIComponent(eventType)}`, {
     method: "PUT",
