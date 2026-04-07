@@ -358,23 +358,23 @@ onUnmounted(() => {
 }
 
 [data-theme="dark"] .calendar-container :deep(.sx__calendar) {
-  --sx-color-primary: #60a5fa;
+  --sx-color-primary: var(--accent-primary, #60a5fa);
   --sx-color-on-primary: #fff;
-  --sx-color-surface: #1e293b;
-  --sx-color-surface-dim: #0f172a;
-  --sx-color-surface-bright: #3b4963;
-  --sx-color-on-surface: #f1f5f9;
-  --sx-color-surface-container: #162032;
-  --sx-color-surface-container-low: #0f172a;
-  --sx-color-surface-container-high: #283548;
-  --sx-color-background: #162032;
-  --sx-color-on-background: #f1f5f9;
-  --sx-color-on-surface-variant: #cbd5e1;
-  --sx-color-outline: #3e5068;
-  --sx-color-outline-variant: #334155;
-  --sx-internal-color-gray-ripple-background: #334155;
-  --sx-internal-color-light-gray: #1e293b;
-  --sx-internal-color-text: #e2e8f0;
+  --sx-color-surface: #1e2027;
+  --sx-color-surface-dim: #16171c;
+  --sx-color-surface-bright: #2a2c34;
+  --sx-color-on-surface: #e2e4e9;
+  --sx-color-surface-container: #16171c;
+  --sx-color-surface-container-low: #16171c;
+  --sx-color-surface-container-high: #2a2c34;
+  --sx-color-background: #16171c;
+  --sx-color-on-background: #e2e4e9;
+  --sx-color-on-surface-variant: #b0b4be;
+  --sx-color-outline: rgba(255, 255, 255, 0.08);
+  --sx-color-outline-variant: rgba(255, 255, 255, 0.08);
+  --sx-internal-color-gray-ripple-background: #2a2c34;
+  --sx-internal-color-light-gray: #1e2027;
+  --sx-internal-color-text: #e2e4e9;
 }
 
 /* ── Override theme rules that hide nav/heading ── */
