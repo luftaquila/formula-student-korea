@@ -1,7 +1,7 @@
 export const services = [
   { name: "홈", href: "/", icon: "home" },
-  { name: "검차 대기열", href: "/queue", icon: "queue" },
   { name: "서류 제출", href: "/documents", icon: "documents", auth: "student" },
+  { name: "검차 대기열", href: "/queue", icon: "queue" },
   { name: "에너지미터", href: "/energymeter", icon: "energy" },
   { name: "대회 일정", href: "/calendar", icon: "calendar" },
   { name: "대회 규정집", href: "/rules", icon: "rules", external: true },

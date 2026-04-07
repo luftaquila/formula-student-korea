@@ -16,8 +16,8 @@
       <section class="section">
         <h2 class="section-title">Services</h2>
         <div class="services">
-          <ServiceCard title="검차 대기열" description="" path="/queue" icon="🔧" />
           <ServiceCard v-if="isAuthenticated" title="서류 제출" description="" path="/documents" icon="📄" />
+          <ServiceCard title="검차 대기열" description="" path="/queue" icon="🔧" />
           <ServiceCard title="에너지미터" description="" path="/energymeter" icon="⚡" />
           <ServiceCard title="대회 일정" description="" path="/calendar" icon="📅" />
           <ServiceCard title="대회 규정집" description="" path="/rules" icon="📖" external />
