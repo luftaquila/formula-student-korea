@@ -296,7 +296,7 @@ onUnmounted(() => {
 
 .input-group {
   background: var(--bg-card);
-  border-radius: 16px;
+  border-radius: 12px;
   padding: 1.5rem;
   box-shadow: var(--shadow-card);
 }
@@ -325,7 +325,7 @@ onUnmounted(() => {
 .kiosk-input:focus {
   outline: none;
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 4px rgba(94, 106, 210, 0.15);
 }
 
 .kiosk-input::placeholder {
@@ -390,7 +390,7 @@ onUnmounted(() => {
 
 .inspection-group {
   background: var(--bg-card);
-  border-radius: 16px;
+  border-radius: 12px;
   padding: 1.5rem;
   box-shadow: var(--shadow-card);
 }
@@ -412,7 +412,7 @@ onUnmounted(() => {
 .inspection-btn {
   padding: 1.5rem;
   border: 3px solid var(--border-color);
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--bg-secondary);
   cursor: pointer;
   transition: all 0.2s ease;
@@ -424,12 +424,12 @@ onUnmounted(() => {
 
 .inspection-btn:hover {
   border-color: var(--accent-primary);
-  background: rgba(59, 130, 246, 0.05);
+  background: rgba(94, 106, 210, 0.05);
 }
 
 .inspection-btn.selected {
   border-color: var(--accent-primary);
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(94, 106, 210, 0.15);
 }
 
 .inspection-name {
@@ -464,7 +464,7 @@ onUnmounted(() => {
 /* Agreement */
 .agreement-group {
   background: var(--bg-card);
-  border-radius: 16px;
+  border-radius: 12px;
   padding: 1rem;
   box-shadow: var(--shadow-card);
 }
@@ -539,7 +539,7 @@ onUnmounted(() => {
 .submit-btn {
   padding: 1.5rem;
   border: none;
-  border-radius: 16px;
+  border-radius: 12px;
   font-size: 1.5rem;
   font-weight: 700;
   cursor: pointer;
@@ -561,14 +561,14 @@ onUnmounted(() => {
 }
 
 .submit-btn {
-  background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+  background: var(--accent-primary);
   color: white;
-  box-shadow: 0 4px 20px rgba(59, 130, 246, 0.4);
+  box-shadow: 0 4px 20px rgba(94, 106, 210, 0.4);
 }
 
 .submit-btn:hover:not(:disabled) {
   transform: translateY(-2px);
-  box-shadow: 0 6px 25px rgba(59, 130, 246, 0.5);
+  box-shadow: 0 6px 25px rgba(94, 106, 210, 0.5);
 }
 
 .submit-btn:active:not(:disabled) {
@@ -583,7 +583,7 @@ onUnmounted(() => {
 /* Booth Status */
 .booth-status {
   background: var(--bg-card);
-  border-radius: 16px;
+  border-radius: 12px;
   padding: 1.5rem;
   box-shadow: var(--shadow-card);
   margin-top: 1rem;
@@ -605,7 +605,7 @@ onUnmounted(() => {
 .booth-card {
   flex: 1;
   border: 3px solid var(--border-color);
-  border-radius: 16px;
+  border-radius: 12px;
   padding: 1.25rem;
   background: var(--bg-secondary);
   text-align: center;

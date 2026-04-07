@@ -35,8 +35,8 @@ const ROLE_CALENDARS = {
   official: {
     colorName: "official",
     label: "official",
-    lightColors: { main: "#2563eb", container: "#dbeafe", onContainer: "#1e40af" },
-    darkColors: { main: "#93c5fd", container: "#1e3a5f", onContainer: "#dbeafe" },
+    lightColors: { main: "#5e6ad2", container: "rgba(94, 106, 210, 0.15)", onContainer: "#4850b8" },
+    darkColors: { main: "#a5b4fc", container: "#2e3166", onContainer: "#c7d2fe" },
   },
   chief: {
     colorName: "chief",
@@ -342,7 +342,7 @@ onUnmounted(() => {
 
 /* ── schedule-x theme mapping ── */
 .calendar-container :deep(.sx__calendar) {
-  --sx-color-primary: var(--accent-primary, #3b82f6);
+  --sx-color-primary: var(--accent-primary, #5e6ad2);
   --sx-color-on-primary: #fff;
   --sx-color-surface: var(--bg-card, #fff);
   --sx-color-on-surface: var(--text-primary, #0f172a);
@@ -451,7 +451,7 @@ onUnmounted(() => {
 }
 
 .calendar-container :deep(.sx__view-selection-selected-item:hover) {
-  border-color: var(--accent-primary, #3b82f6);
+  border-color: var(--accent-primary, #5e6ad2);
 }
 
 .calendar-container :deep(.sx__view-selection-items) {
@@ -585,7 +585,7 @@ onUnmounted(() => {
 
 .role-public { background: rgba(100, 116, 139, 0.25); color: var(--text-secondary, #334155); }
 .role-student { background: rgba(16, 185, 129, 0.15); color: #059669; }
-.role-official { background: rgba(59, 130, 246, 0.15); color: #2563eb; }
+.role-official { background: rgba(94, 106, 210, 0.15); color: #5e6ad2; }
 .role-chief { background: rgba(245, 158, 11, 0.15); color: #d97706; }
 .role-admin { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
 
@@ -604,8 +604,8 @@ onUnmounted(() => {
 }
 
 .event-popup__edit-btn:hover {
-  border-color: var(--accent-primary, #3b82f6);
-  color: var(--accent-primary, #3b82f6);
+  border-color: var(--accent-primary, #5e6ad2);
+  color: var(--accent-primary, #5e6ad2);
 }
 
 /* ── Month agenda event items (match default schedule-x style + extras) ── */
@@ -651,7 +651,7 @@ onUnmounted(() => {
   border: 1px dashed var(--border-color, #e2e8f0);
   border-radius: 8px;
   background: transparent;
-  color: var(--accent-primary, #3b82f6);
+  color: var(--accent-primary, #5e6ad2);
   font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;

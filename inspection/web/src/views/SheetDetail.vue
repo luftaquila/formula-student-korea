@@ -1336,7 +1336,7 @@ watch(reconnected, async () => {
 }
 
 .fab:hover {
-  background: var(--accent-primary-hover, #4f46e5);
+  background: var(--accent-primary-hover, #5e6ad2);
 }
 
 .fab.active {

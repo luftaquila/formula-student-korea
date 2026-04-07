@@ -375,9 +375,9 @@ async function handleDNF() {
   align-items: center;
   padding: 1rem;
   margin-top: 0.5rem;
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(94, 106, 210, 0.1);
   border-radius: 8px;
-  border: 1px solid rgba(59, 130, 246, 0.2);
+  border: 1px solid rgba(94, 106, 210, 0.2);
 }
 
 .total-label {

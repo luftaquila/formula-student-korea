@@ -1,7 +1,6 @@
 <script setup>
 import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
-import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 
 const route = useRoute();
@@ -22,7 +21,6 @@ watch(pageTitle, (v) => { document.title = v; }, { immediate: true });
           <h1>{{ pageTitle }}</h1>
         </a>
         <div class="header-actions">
-          <ThemeToggle />
           <NavMenu :currentPath="currentPath" />
         </div>
       </div>

@@ -1,7 +1,6 @@
 <script setup>
 import { watch } from "vue";
 import { useRoute } from "vue-router";
-import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 
 const route = useRoute();
@@ -30,7 +29,6 @@ watch(() => route.path, () => { document.title = `FSK ${getPageTitle()}`; }, { i
           <h1>FSK {{ getPageTitle() }}</h1>
         </a>
         <div class="header-actions">
-          <ThemeToggle />
           <NavMenu :currentPath="'/queue' + route.path" />
         </div>
       </div>

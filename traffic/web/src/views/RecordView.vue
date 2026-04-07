@@ -752,7 +752,7 @@ async function handleAddRecord() {
 /* Event Mode Card */
 .event-mode-card {
   background: var(--bg-card);
-  border-radius: 16px;
+  border-radius: 12px;
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
@@ -787,7 +787,7 @@ async function handleAddRecord() {
 }
 
 .event-mode-btn.accel {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(94, 106, 210, 0.15);
   color: var(--accent-primary);
   border-color: var(--accent-primary);
 }
@@ -823,7 +823,7 @@ async function handleAddRecord() {
 
 .content {
   background: var(--bg-card);
-  border-radius: 16px;
+  border-radius: 12px;
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
@@ -865,7 +865,7 @@ async function handleAddRecord() {
 .form-select:focus {
   outline: none;
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
 }
 
 .toolbar-right {
@@ -972,7 +972,7 @@ async function handleAddRecord() {
 }
 
 .filter-label.accel {
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(94, 106, 210, 0.1);
   color: var(--accent-primary);
 }
 
@@ -1082,7 +1082,7 @@ async function handleAddRecord() {
 }
 
 .type-badge.accel {
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(94, 106, 210, 0.1);
   color: var(--accent-primary);
 }
 .type-badge.gymkhana {
@@ -1139,7 +1139,7 @@ async function handleAddRecord() {
   outline: none;
   background: var(--bg-input);
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
 }
 
 .penalty-cell {
@@ -1183,7 +1183,7 @@ async function handleAddRecord() {
   outline: none;
   background: var(--bg-input);
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
 }
 
 .col-shrink {
@@ -1361,7 +1361,7 @@ async function handleAddRecord() {
 .form-input:focus {
   outline: none;
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
 }
 
 .add-form-fields .form-select,

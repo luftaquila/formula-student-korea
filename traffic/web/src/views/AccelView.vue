@@ -306,7 +306,7 @@ async function handleDNF() {
 @import "../assets/styles/event-view.css";
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+  background: var(--accent-primary);
   color: white;
 }
 

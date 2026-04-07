@@ -180,12 +180,12 @@ function handleDeleteAll() {
 
 .drop-zone:hover {
   border-color: var(--accent-primary);
-  background: rgba(59, 130, 246, 0.05);
+  background: rgba(94, 106, 210, 0.05);
 }
 
 .drop-zone.dragging {
   border-color: var(--accent-primary);
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(94, 106, 210, 0.1);
   transform: scale(1.02);
 }
 

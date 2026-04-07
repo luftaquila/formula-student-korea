@@ -1177,7 +1177,7 @@ function exportData(format) {
   text-align: center !important;
   white-space: nowrap;
   width: 1%;
-  background: rgba(59, 130, 246, 0.04);
+  background: rgba(94, 106, 210, 0.04);
 }
 
 .score-table thead .col-total {
@@ -1527,7 +1527,7 @@ function exportData(format) {
 }
 
 .expanded-row {
-  background: rgba(59, 130, 246, 0.04);
+  background: rgba(94, 106, 210, 0.04);
 }
 
 .expanded-row .col-num {

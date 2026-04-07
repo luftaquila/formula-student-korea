@@ -1,5 +1,4 @@
 <script setup>
-import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 </script>
 
@@ -12,7 +11,6 @@ import NavMenu from "@shared/NavMenu.vue";
           <h1>FSK 대회 일정</h1>
         </a>
         <div class="header-actions">
-          <ThemeToggle />
           <NavMenu currentPath="/calendar" />
         </div>
       </div>

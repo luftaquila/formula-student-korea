@@ -4,7 +4,6 @@ import EntryTable from "./components/EntryTable.vue";
 import EntryForm from "./components/EntryForm.vue";
 import FileManager from "./components/FileManager.vue";
 import VehicleTypeManager from "./components/VehicleTypeManager.vue";
-import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import { fetchYears, fetchEntries, addEntry, updateEntry, deleteEntry, deleteAllEntries, uploadEntries, fetchVehicleTypes, addVehicleType, updateVehicleType, deleteVehicleType } from "./api";
 import { useNotification } from "@shared/useNotification.js";
@@ -179,7 +178,6 @@ onMounted(async () => {
           <h1>FSK 엔트리 관리</h1>
         </a>
         <div class="header-actions">
-          <ThemeToggle />
           <NavMenu currentPath="/entry" />
         </div>
       </div>
@@ -242,7 +240,7 @@ onMounted(async () => {
 
 .content {
   background: var(--bg-card);
-  border-radius: 16px;
+  border-radius: 12px;
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
@@ -298,7 +296,7 @@ onMounted(async () => {
 .year-select:focus {
   outline: none;
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+  box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.1);
 }
 
 .entry-count {
@@ -354,7 +352,7 @@ onMounted(async () => {
 .search-input:focus {
   outline: none;
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+  box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.1);
 }
 
 .search-input::placeholder {

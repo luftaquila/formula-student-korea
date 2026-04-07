@@ -412,7 +412,7 @@ onMounted(fetchSession);
 .drop-zone:hover,
 .drop-zone.drag-over {
   border-color: var(--accent-primary);
-  background: rgba(59, 130, 246, 0.05);
+  background: rgba(94, 106, 210, 0.05);
 }
 
 .drop-zone.disabled {

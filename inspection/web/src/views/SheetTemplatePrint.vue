@@ -156,7 +156,7 @@ import { subNum, grpNum, itemNum, getChecktableConfig } from "../utils/sheet-hel
   right: 16px;
   z-index: 1000;
   padding: 10px 24px;
-  background: #3b82f6;
+  background: #5e6ad2;
   color: white;
   border: none;
   border-radius: 8px;
@@ -167,7 +167,7 @@ import { subNum, grpNum, itemNum, getChecktableConfig } from "../utils/sheet-hel
 }
 
 .print-btn:hover {
-  background: #2563eb;
+  background: #4f5bc4;
 }
 
 .page {

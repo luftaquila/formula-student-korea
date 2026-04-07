@@ -1,6 +1,5 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from "vue";
-import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavTabs from "./components/NavTabs.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import { useEntryStore } from "./stores/entry";
@@ -38,7 +37,6 @@ onUnmounted(() => {
         </a>
         <NavTabs />
         <div class="header-actions">
-          <ThemeToggle />
           <NavMenu currentPath="/traffic" />
         </div>
       </div>

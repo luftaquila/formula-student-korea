@@ -708,12 +708,12 @@ function goBack() {
 .priority-input:focus {
   outline: none;
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
 }
 
 .priority-input.active {
   border-color: var(--accent-primary);
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(94, 106, 210, 0.1);
   color: var(--accent-primary);
 }
 

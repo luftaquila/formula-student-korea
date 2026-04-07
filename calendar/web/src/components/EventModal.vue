@@ -218,7 +218,7 @@ onUnmounted(() => document.removeEventListener("keydown", handleKeydown));
 .field textarea:focus,
 .field select:focus {
   outline: none;
-  border-color: var(--border-focus, #3b82f6);
+  border-color: var(--border-focus, #5e6ad2);
 }
 
 .field-row {
@@ -242,7 +242,7 @@ onUnmounted(() => document.removeEventListener("keydown", handleKeydown));
 .toggle-label input[type="checkbox"] {
   width: 1rem;
   height: 1rem;
-  accent-color: var(--accent-primary, #3b82f6);
+  accent-color: var(--accent-primary, #5e6ad2);
 }
 
 .modal-actions {
@@ -266,9 +266,9 @@ onUnmounted(() => document.removeEventListener("keydown", handleKeydown));
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-primary {
-  background: var(--accent-primary, #3b82f6);
+  background: var(--accent-primary, #5e6ad2);
   color: #fff;
-  border-color: var(--accent-primary, #3b82f6);
+  border-color: var(--accent-primary, #5e6ad2);
 }
 
 .btn-primary:hover:not(:disabled) { opacity: 0.9; }
@@ -297,7 +297,7 @@ onUnmounted(() => document.removeEventListener("keydown", handleKeydown));
   .modal {
     max-width: 100%;
     max-height: 95vh;
-    border-radius: 16px 16px 0 0;
+    border-radius: 12px 12px 0 0;
   }
 
   .field-row {

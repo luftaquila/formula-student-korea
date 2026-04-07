@@ -1,5 +1,4 @@
 <script setup>
-import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import { useRoute } from "vue-router";
 
@@ -15,7 +14,6 @@ const route = useRoute();
           <h1>FSK 코스 관리</h1>
         </a>
         <div class="header-actions">
-          <ThemeToggle />
           <NavMenu :currentPath="'/course' + route.path" />
         </div>
       </div>

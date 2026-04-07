@@ -1,6 +1,5 @@
 <script setup>
 import { useRoute } from "vue-router";
-import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 
 const route = useRoute();
@@ -15,7 +14,6 @@ const route = useRoute();
           <h1>FSK 성적 관리</h1>
         </a>
         <div class="header-actions">
-          <ThemeToggle />
           <NavMenu :currentPath="'/score' + route.path" />
         </div>
       </div>

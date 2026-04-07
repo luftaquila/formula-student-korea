@@ -273,7 +273,7 @@ function handleDelete(id) {
 
 .rename-input:focus {
   outline: none;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 0 2px rgba(94, 106, 210, 0.2);
 }
 
 .delete-btn {

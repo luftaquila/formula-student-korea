@@ -438,7 +438,7 @@ onMounted(async () => {
 }
 
 .team-checkbox.checked {
-  background: rgba(59, 130, 246, 0.08);
+  background: rgba(94, 106, 210, 0.08);
   border-color: var(--accent-primary);
 }
 

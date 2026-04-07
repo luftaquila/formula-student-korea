@@ -620,7 +620,7 @@ function goBack() {
 }
 
 .event-register {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(94, 106, 210, 0.15);
   color: var(--accent-primary);
 }
 

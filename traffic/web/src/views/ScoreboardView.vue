@@ -334,7 +334,7 @@ onDeactivated(() => {
   width: 100%;
   aspect-ratio: 4 / 3;
   background: #000;
-  border-radius: 16px;
+  border-radius: 12px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -483,7 +483,7 @@ onDeactivated(() => {
 /* Main Box */
 .main-box {
   border: 4px solid var(--panel-color);
-  border-radius: 16px;
+  border-radius: 12px;
   display: flex;
   overflow: hidden;
 }
@@ -793,7 +793,7 @@ onDeactivated(() => {
 .controls {
   width: 100%;
   background: var(--bg-card);
-  border-radius: 16px;
+  border-radius: 12px;
   box-shadow: var(--shadow-card);
   padding: 1rem 1.5rem;
 }
@@ -818,7 +818,7 @@ onDeactivated(() => {
 .form-select:focus {
   outline: none;
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
 }
 
 .form-input {
@@ -833,7 +833,7 @@ onDeactivated(() => {
 .form-input:focus {
   outline: none;
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
 }
 
 .temp-input {

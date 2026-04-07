@@ -7,7 +7,6 @@
           <h1>Formula Student Korea</h1>
         </a>
         <div class="header-actions">
-          <ThemeToggle />
           <NavMenu currentPath="/" />
         </div>
       </div>
@@ -61,7 +60,6 @@
 <script setup>
 import { ref, onMounted } from "vue";
 import ServiceCard from "./components/ServiceCard.vue";
-import ThemeToggle from "@shared/ThemeToggle.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import { user, isAuthenticated, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
 import { forumSvg } from "@shared/nav-config.js";
@@ -106,9 +104,9 @@ onMounted(() => {
 }
 
 .header {
-  background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+  background: #1a1b21;
   padding: 1rem 2rem;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .header-content {
@@ -128,15 +126,14 @@ onMounted(() => {
 
 .logo-icon {
   font-size: 2rem;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
 }
 
 .logo h1 {
-  color: white;
-  font-size: 1.5rem;
-  font-weight: 700;
+  color: #e2e4e9;
+  font-size: 1.25rem;
+  font-weight: 600;
   margin: 0;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+  letter-spacing: -0.02em;
 }
 
 .header-actions {
@@ -161,12 +158,12 @@ onMounted(() => {
 }
 
 .section-title {
-  font-size: 1.25rem;
+  font-size: 0.9375rem;
   font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 1.5rem;
-  padding-left: 0.5rem;
-  border-left: 3px solid var(--accent-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 1.25rem;
 }
 
 .services {
@@ -178,28 +175,18 @@ onMounted(() => {
 
 @media (max-width: 768px) {
   .header {
-    padding: 1rem;
-  }
-
-  .header-content {
-    flex-direction: column;
-    gap: 1rem;
-    text-align: center;
+    padding: 0.75rem 1rem;
   }
 
   .main {
-    padding: 2.5rem 1rem;
+    padding: 2rem 1rem;
     gap: 2rem;
     justify-content: flex-start;
   }
 
-  .section-title {
-    font-size: 1.125rem;
-  }
-
   .services {
     grid-template-columns: repeat(2, 1fr);
-    gap: 1rem;
+    gap: 0.75rem;
   }
 }
 

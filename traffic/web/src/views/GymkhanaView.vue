@@ -356,7 +356,7 @@ async function handleDNF(lane) {
   justify-content: center;
   width: 28px;
   height: 28px;
-  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+  background: var(--accent-primary);
   border-radius: 8px;
   color: white;
   font-weight: 700;

@@ -40,16 +40,16 @@ defineProps({
   padding: 2rem 1.25rem;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
-  border-radius: 16px;
+  border-radius: 12px;
   text-decoration: none;
   color: var(--text-primary);
-  transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease, background-color 0.3s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
   cursor: pointer;
   box-shadow: var(--shadow-card);
 }
 
 .service-card:hover {
-  transform: translateY(-3px);
+  transform: translateY(-2px);
   box-shadow: var(--shadow-hover);
   border-color: var(--accent-primary);
 }
@@ -57,7 +57,6 @@ defineProps({
 .icon {
   font-size: 3rem;
   margin-bottom: 1.25rem;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
   line-height: 1;
   height: 3rem;
   display: flex;

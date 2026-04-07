@@ -724,7 +724,7 @@ onMounted(() => {
   outline: none;
   background: var(--bg-input);
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
 }
 
 /* Action buttons */

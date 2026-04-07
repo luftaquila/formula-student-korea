@@ -671,7 +671,7 @@ function exportData(format) {
 }
 
 .col-summary {
-  background: rgba(59, 130, 246, 0.04);
+  background: rgba(94, 106, 210, 0.04);
 }
 
 .record-value {
