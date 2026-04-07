@@ -651,7 +651,7 @@ app.get("/api/admin/students", async (req, res) => {
     if (!authRes.ok) { logger.warn(req, "auth.fetch", { error: "status_" + authRes.status }); return res.status(502).send("계정 서비스 연결 실패"); }
     const users = await authRes.json();
     const students = users.filter((u) => u.role === "student" && u.active);
-    res.json(students.map((u) => ({ email: u.email, name: u.name })));
+    res.json(students.map((u) => ({ email: u.email, name: u.name, memo: u.memo })));
   } catch (e) {
     logger.warn(req, "auth.fetch", { error: e.message });
     res.status(502).send("계정 서비스 연결 실패");
