@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed, watch } from "vue";
 import { useRouter } from "vue-router";
-import { fetchEntries, fetchEntryYears, fetchSheetSummary } from "../api";
+import { fetchEntries, fetchEntryYears, fetchSheetSummary, fetchVehicleTypes } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
 import { isAdmin } from "@shared/officialsStore.js";
@@ -14,6 +14,7 @@ const entries = ref({});
 const summary = ref({ categories: [], teams: {} });
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
+const typeColorMap = ref({});
 const loading = ref(true);
 const searchQuery = ref("");
 
@@ -46,14 +47,21 @@ onMounted(async () => {
   loading.value = false;
 });
 
+function getTypeColor(type) {
+  if (!type) return "blue";
+  return typeColorMap.value[type] || "blue";
+}
+
 async function loadData() {
   try {
-    const [e, s] = await Promise.all([
+    const [e, s, vtList] = await Promise.all([
       fetchEntries(selectedYear.value),
       fetchSheetSummary(selectedYear.value),
+      fetchVehicleTypes(selectedYear.value).catch(() => []),
     ]);
     entries.value = e;
     summary.value = s;
+    typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
   } catch (e) {
     error("데이터를 가져올 수 없습니다.");
   }
@@ -134,6 +142,7 @@ watch(lastInspectorUpdate, (update) => {
               <tr>
                 <th class="col-num">번호</th>
                 <th class="col-team">학교 / 팀</th>
+                <th class="col-type">유형</th>
                 <template v-for="cat in visibleCategories" :key="'r'+cat.id">
                   <th class="col-result">{{ cat.name }}</th>
                 </template>
@@ -148,6 +157,9 @@ watch(lastInspectorUpdate, (update) => {
               >
                 <td class="col-num"><span class="entry-num">{{ entry.num }}</span></td>
                 <td class="col-team"><span class="entry-name">{{ entry.univ }} {{ entry.team }}</span></td>
+                <td class="col-type">
+                  <span v-if="entry.type" class="badge" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span>
+                </td>
                 <template v-for="cat in visibleCategories" :key="'r'+cat.id+'-'+entry.num">
                   <td class="col-result">
                     <span
@@ -161,7 +173,7 @@ watch(lastInspectorUpdate, (update) => {
                 </template>
               </tr>
               <tr v-if="filteredEntries.length === 0">
-                <td :colspan="2 + visibleCategories.length" class="empty-state">
+                <td :colspan="3 + visibleCategories.length" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>
@@ -271,6 +283,7 @@ watch(lastInspectorUpdate, (update) => {
 
 .col-num,
 .col-team,
+.col-type,
 .col-result {
   width: 1%;
   white-space: nowrap;
@@ -288,6 +301,7 @@ watch(lastInspectorUpdate, (update) => {
 }
 
 .col-num,
+.col-type,
 .col-result {
   text-align: center !important;
 }
@@ -322,6 +336,14 @@ watch(lastInspectorUpdate, (update) => {
   background: var(--bg-hover);
   color: var(--text-tertiary);
 }
+
+/* 유형 뱃지 */
+.badge-type-blue { background: rgba(59, 130, 246, 0.12); color: #3b82f6; }
+.badge-type-green { background: rgba(34, 197, 94, 0.12); color: #16a34a; }
+.badge-type-orange { background: rgba(245, 158, 11, 0.12); color: #d97706; }
+.badge-type-purple { background: rgba(139, 92, 246, 0.12); color: #7c3aed; }
+.badge-type-red { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
+.badge-type-teal { background: rgba(20, 184, 166, 0.12); color: #0d9488; }
 
 .loading {
   display: flex;

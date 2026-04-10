@@ -1,8 +1,8 @@
 import { createApiClient } from "@shared/api-base.js";
 
-const { request, fetchEntries, fetchEntryYears } = createApiClient("/inspection");
+const { request, fetchEntries, fetchEntryYears, fetchVehicleTypes } = createApiClient("/inspection");
 
-export { fetchEntries, fetchEntryYears };
+export { fetchEntries, fetchEntryYears, fetchVehicleTypes };
 
 /* ============================================
    Sheet API

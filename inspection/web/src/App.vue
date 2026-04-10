@@ -46,6 +46,6 @@ watch(() => route.path, () => { document.title = `FSK ${getPageTitle()}`; }, { i
 
 <style scoped>
 .app-container {
-  --layout-max-width: 960px;
+  --layout-max-width: 1100px;
 }
 </style>
