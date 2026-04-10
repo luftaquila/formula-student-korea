@@ -178,11 +178,4 @@ onMounted(load);
   color: var(--text-tertiary);
   margin: 0;
 }
-
-.loading {
-  display: flex;
-  justify-content: center;
-  padding: 3rem;
-}
-
 </style>

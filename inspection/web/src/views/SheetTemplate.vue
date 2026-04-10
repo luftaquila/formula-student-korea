@@ -1005,12 +1005,6 @@ function goBack() {
   accent-color: var(--accent-primary);
 }
 
-.loading {
-  display: flex;
-  justify-content: center;
-  padding: 3rem;
-}
-
 @media (max-width: 640px) {
   .top-actions {
     flex-wrap: wrap;

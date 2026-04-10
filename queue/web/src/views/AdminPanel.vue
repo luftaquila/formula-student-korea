@@ -639,9 +639,7 @@ function goToStats() {
 }
 
 .entry-num {
-  font-weight: 700;
   font-size: 1.125rem;
-  font-family: "JetBrains Mono", monospace;
   flex-shrink: 0;
 }
 
@@ -672,14 +670,10 @@ function goToStats() {
 }
 
 .loading {
-  display: flex;
-  justify-content: center;
   padding: 2rem;
 }
 
 .empty-state {
-  text-align: center;
-  color: var(--text-tertiary);
   padding: 3rem;
 }
 

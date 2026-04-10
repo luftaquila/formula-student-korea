@@ -639,10 +639,6 @@ onMounted(() => {
   overflow: auto;
 }
 
-.table-container {
-  overflow-x: auto;
-}
-
 .users-table {
   width: 100%;
 }
@@ -745,19 +741,6 @@ onMounted(() => {
 
 .row-inactive {
   opacity: 0.45;
-}
-
-.empty-state {
-  text-align: center;
-  color: var(--text-tertiary);
-  padding: 2rem;
-}
-
-/* Loading */
-.loading {
-  display: flex;
-  justify-content: center;
-  padding: 3rem;
 }
 
 /* 운영 오피셜 연락처 */

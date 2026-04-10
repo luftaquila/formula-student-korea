@@ -265,10 +265,6 @@ watch(lastInspectorUpdate, (update) => {
   overflow: auto;
 }
 
-.table-container {
-  overflow-x: auto;
-}
-
 .sheet-table {
   min-width: 600px;
 }
@@ -313,11 +309,6 @@ watch(lastInspectorUpdate, (update) => {
   margin-top: 0.125rem;
 }
 
-.entry-num {
-  font-weight: 700;
-  font-family: "JetBrains Mono", monospace;
-}
-
 .entry-name {
   color: var(--text-primary);
   font-size: 0.875rem;
@@ -335,26 +326,6 @@ watch(lastInspectorUpdate, (update) => {
 .badge-empty {
   background: var(--bg-hover);
   color: var(--text-tertiary);
-}
-
-/* 유형 뱃지 */
-.badge-type-blue { background: rgba(59, 130, 246, 0.12); color: #3b82f6; }
-.badge-type-green { background: rgba(34, 197, 94, 0.12); color: #16a34a; }
-.badge-type-orange { background: rgba(245, 158, 11, 0.12); color: #d97706; }
-.badge-type-purple { background: rgba(139, 92, 246, 0.12); color: #7c3aed; }
-.badge-type-red { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
-.badge-type-teal { background: rgba(20, 184, 166, 0.12); color: #0d9488; }
-
-.loading {
-  display: flex;
-  justify-content: center;
-  padding: 3rem;
-}
-
-.empty-state {
-  text-align: center;
-  color: var(--text-tertiary);
-  padding: 2rem;
 }
 
 @media (max-width: 640px) {

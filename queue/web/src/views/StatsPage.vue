@@ -434,10 +434,6 @@ function goBack() {
 }
 
 /* Table */
-.table-container {
-  overflow-x: auto;
-}
-
 .stats-table {
   width: 100%;
   border-collapse: collapse;
@@ -505,9 +501,7 @@ function goBack() {
 }
 
 .entry-num {
-  font-weight: 700;
   font-size: 1rem;
-  font-family: "JetBrains Mono", monospace;
 }
 
 .entry-name {
@@ -517,19 +511,6 @@ function goBack() {
 
 .mono {
   font-family: "JetBrains Mono", monospace;
-}
-
-/* Loading & Empty */
-.loading {
-  display: flex;
-  justify-content: center;
-  padding: 3rem;
-}
-
-.empty-state {
-  text-align: center;
-  color: var(--text-tertiary);
-  padding: 2rem;
 }
 
 /* Clickable Rows */

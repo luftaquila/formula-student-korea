@@ -1065,10 +1065,6 @@ function exportData(format) {
   overflow: auto;
 }
 
-.table-container {
-  overflow-x: auto;
-}
-
 .score-table {
   min-width: 700px;
 }
@@ -1131,41 +1127,6 @@ function exportData(format) {
 .col-event,
 .col-manual {
   text-align: center !important;
-}
-
-.entry-num {
-  font-weight: 700;
-  font-family: "JetBrains Mono", monospace;
-}
-
-.badge-type-blue {
-  background: rgba(59, 130, 246, 0.12);
-  color: #3b82f6;
-}
-
-.badge-type-green {
-  background: rgba(34, 197, 94, 0.12);
-  color: #16a34a;
-}
-
-.badge-type-orange {
-  background: rgba(245, 158, 11, 0.12);
-  color: #d97706;
-}
-
-.badge-type-purple {
-  background: rgba(139, 92, 246, 0.12);
-  color: #7c3aed;
-}
-
-.badge-type-red {
-  background: rgba(239, 68, 68, 0.12);
-  color: #dc2626;
-}
-
-.badge-type-teal {
-  background: rgba(20, 184, 166, 0.12);
-  color: #0d9488;
 }
 
 .badge-empty {
@@ -1412,19 +1373,6 @@ function exportData(format) {
 .manual-input::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
-}
-
-/* Loading */
-.loading {
-  display: flex;
-  justify-content: center;
-  padding: 3rem;
-}
-
-.empty-state {
-  text-align: center;
-  color: var(--text-tertiary);
-  padding: 2rem;
 }
 
 /* Bottom row: penalty + score settings */

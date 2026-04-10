@@ -616,10 +616,6 @@ function exportData(format) {
   overflow: auto;
 }
 
-.table-container {
-  overflow-x: auto;
-}
-
 .endurance-table {
   min-width: 1200px;
 }
@@ -656,11 +652,6 @@ function exportData(format) {
 
 .col-team {
   font-size: 0.875rem;
-}
-
-.entry-num {
-  font-weight: 700;
-  font-family: "JetBrains Mono", monospace;
 }
 
 .col-status,
@@ -790,19 +781,6 @@ function exportData(format) {
 
 .num-input {
   width: 3.5rem;
-}
-
-/* Loading */
-.loading {
-  display: flex;
-  justify-content: center;
-  padding: 3rem;
-}
-
-.empty-state {
-  text-align: center;
-  color: var(--text-tertiary);
-  padding: 2rem;
 }
 
 @media (max-width: 640px) {

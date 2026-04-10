@@ -393,12 +393,6 @@ function clearState(message) {
   color: var(--text-secondary);
 }
 
-.empty-state {
-  text-align: center;
-  color: var(--text-tertiary);
-  padding: 2rem;
-}
-
 .tips {
   padding: 1rem 1.25rem;
   background: var(--bg-secondary);

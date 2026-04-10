@@ -459,10 +459,6 @@ onUnmounted(() => {
   overflow: auto;
 }
 
-.table-container {
-  overflow-x: auto;
-}
-
 .main-table th {
   position: sticky;
   top: 0;
@@ -511,11 +507,6 @@ onUnmounted(() => {
 .col-type,
 .col-session {
   text-align: center !important;
-}
-
-.entry-num {
-  font-weight: 700;
-  font-family: "JetBrains Mono", monospace;
 }
 
 .col-team {
@@ -637,20 +628,6 @@ onUnmounted(() => {
 .cell-time { font-size: 0.8125rem; display: block; }
 .cell-empty { font-size: 0.8125rem; }
 .cell-clickable { cursor: pointer; }
-
-/* 유형 뱃지 (성적표 동일) */
-.badge-type-blue { background: rgba(59, 130, 246, 0.12); color: #3b82f6; }
-.badge-type-green { background: rgba(34, 197, 94, 0.12); color: #16a34a; }
-.badge-type-orange { background: rgba(245, 158, 11, 0.12); color: #d97706; }
-.badge-type-purple { background: rgba(139, 92, 246, 0.12); color: #7c3aed; }
-.badge-type-red { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
-.badge-type-teal { background: rgba(20, 184, 166, 0.12); color: #0d9488; }
-
-.loading {
-  display: flex;
-  justify-content: center;
-  padding: 3rem;
-}
 
 @media (max-width: 640px) {
   .filter-bar { flex-direction: column; align-items: stretch; }

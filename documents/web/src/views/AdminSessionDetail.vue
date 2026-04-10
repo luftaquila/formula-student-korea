@@ -277,10 +277,6 @@ onMounted(loadStatus);
   overflow: auto;
 }
 
-.table-container {
-  overflow-x: auto;
-}
-
 .col-num,
 .col-team,
 .col-status,
@@ -306,11 +302,6 @@ onMounted(loadStatus);
 
 .col-status {
   text-align: center !important;
-}
-
-.entry-num {
-  font-weight: 700;
-  font-family: "JetBrains Mono", monospace;
 }
 
 .col-team {
@@ -379,11 +370,4 @@ onMounted(loadStatus);
   font-style: italic;
   color: var(--text-tertiary) !important;
 }
-
-.loading {
-  display: flex;
-  justify-content: center;
-  padding: 3rem;
-}
-
 </style>

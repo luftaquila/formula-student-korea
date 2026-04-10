@@ -1107,12 +1107,6 @@ watch(reconnected, async () => {
   padding: 0.25rem 0.5rem;
 }
 
-.empty-state {
-  text-align: center;
-  color: var(--text-tertiary);
-  padding: 2rem;
-}
-
 .empty-state-box {
   text-align: center;
   padding: 3rem;
@@ -1121,12 +1115,6 @@ watch(reconnected, async () => {
   flex-direction: column;
   align-items: center;
   gap: 1rem;
-}
-
-.loading {
-  display: flex;
-  justify-content: center;
-  padding: 3rem;
 }
 
 /* Missing items banner */
