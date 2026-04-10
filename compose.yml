@@ -305,24 +305,6 @@ services:
     networks:
       - fsk-network
 
-  rules:
-    image: docker.io/library/caddy:alpine
-    container_name: fsk-rules
-    security_opt:
-      - label:disable
-    volumes:
-      - ./rules/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./rules/template.html:/etc/caddy/template.html:ro
-      - ./rules/data:/srv/rules
-      - ./rules/README.md:/srv/rules/README.md:ro
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-    networks:
-      - fsk-network
-
   # Production - use traefik reverse proxy
   caddy:
     image: &caddy-image ghcr.io/luftaquila/formula-student-korea/caddy:latest
@@ -352,7 +334,6 @@ services:
       - documents
       - calendar
       - filebrowser
-      - rules
       - auth
     restart: unless-stopped
     environment:

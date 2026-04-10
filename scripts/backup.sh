@@ -10,7 +10,6 @@
 #   - 8개 서비스 SQLite DB (online backup API 사용)
 #   - FileBrowser DB 및 파일
 #   - 제출 서류 파일 (documents/data/uploads)
-#   - 규정집 파일 (rules/data)
 #
 set -euo pipefail
 
@@ -77,12 +76,6 @@ if [ -d "$ROOT/filebrowser/data/files" ]; then
   echo "  backup: filebrowser/files"
   mkdir -p "$TMPDIR/filebrowser"
   cp -a "$ROOT/filebrowser/data/files" "$TMPDIR/filebrowser/files"
-fi
-
-# 규정집
-if [ -d "$ROOT/rules/data" ]; then
-  echo "  backup: rules/data"
-  cp -a "$ROOT/rules/data" "$TMPDIR/rules"
 fi
 
 # --- 3) ZIP 생성 ---

@@ -17,7 +17,6 @@ Read [GUIDE.md](GUIDE.md) for usage guide.
 | score | Score aggregation, penalty/scoring config & management | 9600 |
 | documents | Document submission management | 9700 |
 | energymeter | Energy meter data viewer | 9800 |
-| rules | Rules file server (Caddy) | 9900 |
 | course | Course cone management with RTK GPS rover | 10000 |
 | calendar | Competition schedule management | 11000 |
 | files | Cloud file storage (chief+ only) | 8080 |
