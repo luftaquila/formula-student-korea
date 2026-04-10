@@ -4,8 +4,12 @@ export const services = [
   { name: "검차 대기열", href: "/queue", icon: "queue" },
   { name: "에너지미터", href: "/energymeter", icon: "energy" },
   { name: "대회 일정", href: "/calendar", icon: "calendar" },
-  { name: "대회 규정집", href: "/rules", icon: "rules", external: true },
-  { name: "AI 규정 챗봇", href: "https://pitbot.luftaquila.io", icon: "pitbot", external: true },
+];
+
+export const resources = [
+  { name: "공지 알림봇", href: "https://ksae-notice.luftaquila.io", icon: "notice", external: true },
+  { name: "대회 규정집", href: "https://ksae-rule.luftaquila.io", icon: "rules", external: true },
+  { name: "AI 규정 챗봇", href: "https://ksae-qna.luftaquila.io", icon: "pitbot", external: true },
   { name: "자작자동차포럼", href: "https://dnf.luftaquila.io", icon: "forum", external: true },
 ];
 
@@ -29,6 +33,7 @@ const icons = {
   home: "🏠",
   queue: "🔧",
   energy: "⚡",
+  notice: "💡",
   rules: "📖",
   forum: "svg",
   "queue-admin": "🛠️",
