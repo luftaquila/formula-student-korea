@@ -67,6 +67,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS submission (
   session_id INTEGER NOT NULL,
   team_num INTEGER NOT NULL,
   submitted_by TEXT NOT NULL,
+  started_at TEXT DEFAULT '',
   submitted_at TEXT NOT NULL,
   total_size INTEGER NOT NULL DEFAULT 0,
   is_late INTEGER NOT NULL DEFAULT 0,
@@ -88,6 +89,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS submission_file (
 
 // 마이그레이션: allowed_extensions 컬럼 추가
 addColumn(db, "session", "allowed_extensions TEXT DEFAULT ''");
+
+// 마이그레이션: started_at 컬럼 추가 (업로드 시작 시간)
+addColumn(db, "submission", "started_at TEXT DEFAULT ''");
 
 // 예약 알림 테이블
 db.exec(`CREATE TABLE IF NOT EXISTS scheduled_notification (
@@ -142,6 +146,14 @@ const dbRun = createDbRun();
    ============================================ */
 function now() {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
+}
+
+/** "YYYY-MM-DD HH:MM" 또는 "YYYY-MM-DDTHH:MM" → "YYYY-MM-DD HH:MM:SS" (19자) 정규화. 실패 시 null */
+function normalizeTimestamp(str) {
+  if (!str || typeof str !== "string") return null;
+  const m = str.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(:\d{2})?/);
+  if (!m) return null;
+  return `${m[1]} ${m[2]}${m[3] || ":00"}`;
 }
 
 /** UTC DB date string → KST display "YYYY-MM-DD HH:MM" */
@@ -240,12 +252,10 @@ app.post("/api/sessions/:id/submit", (req, res) => {
   const isTarget = db.prepare("SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?").get(session.id, team.team_num);
   if (!isTarget) return res.status(403).send("대상 팀이 아닙니다.");
 
-  const currentTime = now();
+  const startTime = now();
   const effectiveLateEnd = session.late_end_at || session.end_at;
-  if (currentTime < session.start_at) return res.status(400).send("제출 기간이 아닙니다.");
-  if (currentTime > effectiveLateEnd) return res.status(400).send("제출 기간이 종료되었습니다.");
-
-  const isLate = session.late_end_at && currentTime > session.end_at ? 1 : 0;
+  if (startTime < session.start_at) return res.status(400).send("제출 기간이 아닙니다.");
+  if (startTime > effectiveLateEnd) return res.status(400).send("제출 기간이 종료되었습니다.");
 
   const uploadId = crypto.randomUUID();
   const tmpDir = path.join(TMP_DIR, uploadId);
@@ -370,12 +380,22 @@ app.post("/api/sessions/:id/submit", (req, res) => {
       return res.status(400).send("파일을 선택하세요.");
     }
 
+    // 업로드 완료 시간 기준으로 마감·지각 여부 결정
+    const submittedTime = now();
+    if (submittedTime > effectiveLateEnd) {
+      rmDir(tmpDir);
+      logger.warn(req, "submission.create", { error: "upload_past_deadline", started_at: startTime, submitted_at: submittedTime, deadline: effectiveLateEnd, session_id: session.id, team_num: team.team_num }, session.name);
+      if (!res.headersSent) return res.status(400).send("업로드 완료 시간이 제출 마감을 초과했습니다.");
+      return;
+    }
+    const isLate = session.late_end_at && submittedTime > session.end_at ? 1 : 0;
+
     const txResult = dbRun(() => {
       const tx = db.transaction(() => {
         // 새 제출 INSERT
         const subResult = db.prepare(
-          "INSERT INTO submission (session_id, team_num, submitted_by, submitted_at, total_size, is_late) VALUES (?, ?, ?, ?, ?, ?)",
-        ).run(session.id, team.team_num, req.user.email, currentTime, totalSize, isLate);
+          "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ).run(session.id, team.team_num, req.user.email, startTime, submittedTime, totalSize, isLate);
         const newSubId = subResult.lastInsertRowid;
 
         // 파일 메타데이터 INSERT
@@ -390,7 +410,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
         ).all(session.id, team.team_num);
         const toDelete = allSubs.slice(2).map(s => s.id);
 
-        return { id: newSubId, submitted_at: currentTime, is_late: isLate, total_size: totalSize, toDelete };
+        return { id: newSubId, submitted_at: submittedTime, is_late: isLate, total_size: totalSize, toDelete };
       });
       return tx();
     });
@@ -430,7 +450,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     }
 
     const { toDelete, ...result } = txResult.result;
-    logger.log(req, "submission.create", { session_id: session.id, team_num: team.team_num, files: filesInfo.length, size: totalSize, is_late: isLate }, session.name);
+    logger.log(req, "submission.create", { session_id: session.id, team_num: team.team_num, files: filesInfo.length, size: totalSize, is_late: isLate, started_at: startTime, submitted_at: submittedTime }, session.name);
     res.json(result);
   });
 
@@ -492,14 +512,16 @@ app.get("/api/admin/sessions", (req, res) => {
 // POST /api/admin/sessions - 세션 생성
 app.post("/api/admin/sessions", (req, res) => {
   const { name, notice, start_at, end_at, max_file_size, allowed_extensions, year, teams } = req.body;
-  const late_end_at = req.body.late_end_at || "";
+  const rawLateEnd = req.body.late_end_at || "";
   if (!name?.trim()) return res.status(400).send("세션 이름을 입력하세요.");
   if (!start_at || !end_at) return res.status(400).send("시간을 모두 입력하세요.");
-  const isoRegex = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/;
-  if (!isoRegex.test(start_at) || !isoRegex.test(end_at)) return res.status(400).send("날짜 형식이 올바르지 않습니다.");
-  if (late_end_at && !isoRegex.test(late_end_at)) return res.status(400).send("지연 제출 마감 날짜 형식이 올바르지 않습니다.");
-  if (end_at <= start_at) return res.status(400).send("제출 마감은 시작 이후여야 합니다.");
-  if (late_end_at && late_end_at < end_at) return res.status(400).send("지각 마감은 제출 마감 이후여야 합니다.");
+  const nStart = normalizeTimestamp(start_at);
+  const nEnd = normalizeTimestamp(end_at);
+  if (!nStart || !nEnd) return res.status(400).send("날짜 형식이 올바르지 않습니다.");
+  const nLateEnd = rawLateEnd ? normalizeTimestamp(rawLateEnd) : "";
+  if (rawLateEnd && !nLateEnd) return res.status(400).send("지연 제출 마감 날짜 형식이 올바르지 않습니다.");
+  if (nEnd <= nStart) return res.status(400).send("제출 마감은 시작 이후여야 합니다.");
+  if (nLateEnd && nLateEnd < nEnd) return res.status(400).send("지각 마감은 제출 마감 이후여야 합니다.");
   const numYear = Number(year);
   if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
   if (!Array.isArray(teams) || teams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
@@ -516,7 +538,7 @@ app.post("/api/admin/sessions", (req, res) => {
     const tx = db.transaction(() => {
       const result = db.prepare(
         "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, allowed_extensions, created_by, year) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(name.trim(), notice || "", start_at, end_at, late_end_at, maxSize, exts, req.user.email, numYear);
+      ).run(name.trim(), notice || "", nStart, nEnd, nLateEnd, maxSize, exts, req.user.email, numYear);
       const sessionId = result.lastInsertRowid;
 
       const teamStmt = db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)");
@@ -532,7 +554,7 @@ app.post("/api/admin/sessions", (req, res) => {
   res.status(201).json(txResult.result);
 
   // 예약 알림 등록 (세션 시작 시, 마감 3시간 전, 마감 1시간 전)
-  try { scheduleSessionNotifications(txResult.result.id, start_at, end_at); }
+  try { scheduleSessionNotifications(txResult.result.id, nStart, nEnd); }
   catch (e) { logger.warn(req, "schedule.register", { error: e.message, sessionId: txResult.result.id }); }
 });
 
@@ -540,18 +562,20 @@ app.post("/api/admin/sessions", (req, res) => {
 app.put("/api/admin/sessions/:id", (req, res) => {
   const id = Number(req.params.id);
   const { name, notice, start_at, end_at, max_file_size, allowed_extensions, teams } = req.body;
-  const late_end_at = req.body.late_end_at || "";
+  const rawLateEnd = req.body.late_end_at || "";
 
   const session = db.prepare("SELECT * FROM session WHERE id = ?").get(id);
   if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
 
   if (!name?.trim()) return res.status(400).send("세션 이름을 입력하세요.");
   if (!start_at || !end_at) return res.status(400).send("시간을 모두 입력하세요.");
-  const isoRegex = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/;
-  if (!isoRegex.test(start_at) || !isoRegex.test(end_at)) return res.status(400).send("날짜 형식이 올바르지 않습니다.");
-  if (late_end_at && !isoRegex.test(late_end_at)) return res.status(400).send("지연 제출 마감 날짜 형식이 올바르지 않습니다.");
-  if (end_at <= start_at) return res.status(400).send("제출 마감은 시작 이후여야 합니다.");
-  if (late_end_at && late_end_at < end_at) return res.status(400).send("지각 마감은 제출 마감 이후여야 합니다.");
+  const nStart = normalizeTimestamp(start_at);
+  const nEnd = normalizeTimestamp(end_at);
+  if (!nStart || !nEnd) return res.status(400).send("날짜 형식이 올바르지 않습니다.");
+  const nLateEnd = rawLateEnd ? normalizeTimestamp(rawLateEnd) : "";
+  if (rawLateEnd && !nLateEnd) return res.status(400).send("지연 제출 마감 날짜 형식이 올바르지 않습니다.");
+  if (nEnd <= nStart) return res.status(400).send("제출 마감은 시작 이후여야 합니다.");
+  if (nLateEnd && nLateEnd < nEnd) return res.status(400).send("지각 마감은 제출 마감 이후여야 합니다.");
   if (!Array.isArray(teams) || teams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
 
   const maxSize = max_file_size ? Number(max_file_size) : 52428800;
@@ -567,7 +591,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
     const tx = db.transaction(() => {
       db.prepare(
         "UPDATE session SET name = ?, notice = ?, start_at = ?, end_at = ?, late_end_at = ?, max_file_size = ?, allowed_extensions = ? WHERE id = ?",
-      ).run(name.trim(), notice || "", start_at, end_at, late_end_at, maxSize, exts, id);
+      ).run(name.trim(), notice || "", nStart, nEnd, nLateEnd, maxSize, exts, id);
 
       // 기존 팀 목록 조회
       const oldTeams = db.prepare("SELECT team_num FROM session_team WHERE session_id = ?").all(id).map(r => r.team_num);
@@ -604,7 +628,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   res.status(200).send();
 
   // 예약 알림 재등록 (날짜 변경 반영)
-  try { scheduleSessionNotifications(id, start_at, end_at); }
+  try { scheduleSessionNotifications(id, nStart, nEnd); }
   catch (e) { logger.warn(req, "schedule.register", { error: e.message, sessionId: id }); }
 });
 
@@ -1071,7 +1095,9 @@ async function processScheduledNotifications() {
   for (const n of pending) {
     try {
       const url = process.env.PUBLIC_URL || "https://fsk.luftaquila.io";
-      const deadline = toKST(n.late_end_at || n.end_at);
+      const deadlineInfo = n.late_end_at
+        ? `마감: ${toKST(n.end_at)} / 지각 마감: ${toKST(n.late_end_at)} (KST)`
+        : `마감: ${toKST(n.end_at)} (KST)`;
 
       // 수신자 결정
       let recipients;
@@ -1104,14 +1130,15 @@ async function processScheduledNotifications() {
         htmlContent =
           `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 안내</h2>` +
           (n.notice ? `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${n.notice}</p>` : "") +
-          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">제출 기간: ${toKST(n.start_at)} ~ ${deadline} (KST)</p>` +
+          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">제출 시작: ${toKST(n.start_at)} (KST)</p>` +
+          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${deadlineInfo}</p>` +
           `<p style="margin:0;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>`;
       } else if (n.type === "deadline_3h") {
         subject = `[FSK] 서류 제출 마감 3시간 전: ${n.name}`;
         htmlContent =
           `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 마감 안내</h2>` +
           `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${n.name} 서류 제출 마감이 3시간 남았습니다.</p>` +
-          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">마감: ${deadline} (KST)</p>` +
+          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${deadlineInfo}</p>` +
           `<p style="margin:0 0 8px;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>` +
           `<p style="margin:0;font-size:12px;color:#888">본 메일은 서류 제출 여부와 관계없이 발송되는 마감 안내 메일입니다.</p>`;
       } else if (n.type === "deadline_1h") {
@@ -1119,7 +1146,7 @@ async function processScheduledNotifications() {
         htmlContent =
           `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 미제출 알림</h2>` +
           `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${n.name} 서류가 아직 제출되지 않았습니다. 마감까지 1시간 남았습니다.</p>` +
-          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">마감: ${deadline} (KST)</p>` +
+          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${deadlineInfo}</p>` +
           `<p style="margin:0;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>`;
       }
 
@@ -1160,8 +1187,10 @@ async function notifyOpenSessions(req, email, teamNum, year) {
 
     const url = process.env.PUBLIC_URL || "https://fsk.luftaquila.io";
     const sessionList = openSessions.map((s) => {
-      const deadline = toKST(s.late_end_at || s.end_at);
-      return `<li><strong>${s.name}</strong> (마감: ${deadline} KST)</li>`;
+      const info = s.late_end_at
+        ? `마감: ${toKST(s.end_at)} / 지각 마감: ${toKST(s.late_end_at)} KST`
+        : `마감: ${toKST(s.end_at)} KST`;
+      return `<li><strong>${s.name}</strong> (${info})</li>`;
     }).join("");
 
     const result = await sendNotificationEmail(

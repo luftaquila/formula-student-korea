@@ -1042,7 +1042,7 @@ describe('PATCH /api/internal/team-num', () => {
 
     // submission for team_num=50
     db.prepare(
-      "INSERT INTO submission (session_id, team_num, submitted_by, submitted_at, total_size, is_late) VALUES (?, 50, 'internal-test@test.com', '2025-06-01 12:00', 1024, 0)",
+      "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late) VALUES (?, 50, 'internal-test@test.com', '2025-06-01 11:59', '2025-06-01 12:00', 1024, 0)",
     ).run(internalSessionId);
   });
 

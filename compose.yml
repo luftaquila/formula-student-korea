@@ -240,6 +240,7 @@ services:
       AUTH_SERVER: http://auth:9100
       ENTRY_SERVER: http://entry:9200
       EMAIL_SERVER: http://email:9900
+      PUBLIC_URL: ${PUBLIC_URL}
     volumes:
       - ./documents/data:/home/node/fsk-documents/data
     restart: unless-stopped
