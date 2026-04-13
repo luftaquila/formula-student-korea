@@ -16,6 +16,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS users (
   name TEXT,
   role TEXT NOT NULL CHECK(role IN ('admin', 'official')),
   memo TEXT DEFAULT '',
+  realname TEXT DEFAULT '',
+  phone TEXT DEFAULT '',
   created_at TEXT
 )`);
 
@@ -24,6 +26,11 @@ addColumn(db, "users", "memo TEXT DEFAULT ''");
 
 // 마이그레이션: active 컬럼 추가
 addColumn(db, "users", "active INTEGER DEFAULT 1");
+
+// 마이그레이션: realname, phone 컬럼 추가 (memo → realname 전환)
+addColumn(db, "users", "realname TEXT DEFAULT ''");
+addColumn(db, "users", "phone TEXT DEFAULT ''");
+db.exec("UPDATE users SET realname = memo WHERE (realname IS NULL OR realname = '') AND memo IS NOT NULL AND memo != ''");
 
 // 마이그레이션: created_at 기본값 제거 (최초 로그인 시점으로 변경)
 // 아직 로그인하지 않은 사용자(name IS NULL)의 created_at 초기화
@@ -40,10 +47,12 @@ if (roleCheck && !roleCheck.sql.includes("student")) {
         name TEXT,
         role TEXT NOT NULL CHECK(role IN ('admin', 'chief', 'official', 'student')),
         memo TEXT DEFAULT '',
+        realname TEXT DEFAULT '',
+        phone TEXT DEFAULT '',
         created_at TEXT,
         active INTEGER DEFAULT 1
       );
-      INSERT INTO users_new SELECT id, email, name, role, memo, created_at, active FROM users;
+      INSERT INTO users_new (id, email, name, role, memo, created_at, active) SELECT id, email, name, role, memo, created_at, active FROM users;
       DROP TABLE users;
       ALTER TABLE users_new RENAME TO users;
     `);
@@ -348,7 +357,7 @@ app.get("/api/users/role/:email", (req, res) => {
 
 // GET /api/users - 전체 사용자 목록
 app.get("/api/users", (req, res) => {
-  const result = dbRun(() => db.prepare("SELECT id, email, name, role, memo, active, created_at FROM users ORDER BY id").all());
+  const result = dbRun(() => db.prepare("SELECT id, email, name, role, realname, phone, active, created_at FROM users ORDER BY id").all());
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result.map((u) => ({ ...u, protected: u.email === ADMIN_EMAIL })));
 });
@@ -381,7 +390,7 @@ app.post("/api/users/bulk", (req, res) => {
   const { users: rows } = req.body;
   if (!Array.isArray(rows) || rows.length === 0) return res.status(400).send("추가할 사용자 목록이 비어있습니다.");
 
-  const insert = db.prepare("INSERT OR IGNORE INTO users (email, role, memo) VALUES (?, ?, ?)");
+  const insert = db.prepare("INSERT OR IGNORE INTO users (email, role, realname, phone) VALUES (?, ?, ?, ?)");
   const added = [];
   const skipped = [];
   const errors = [];
@@ -395,9 +404,10 @@ app.post("/api/users/bulk", (req, res) => {
       if (!VALID_ROLES.includes(row.role)) {
         errors.push({ row, reason: `알 수 없는 역할 "${row.role}", "student"로 설정됨` });
       }
-      const memo = (row.memo || "").trim();
+      const realname = (row.realname || "").trim();
+      const phone = (row.phone || "").trim();
 
-      const result = insert.run(email, role, memo);
+      const result = insert.run(email, role, realname, phone);
       if (result.changes > 0) added.push(email);
       else skipped.push(email);
     }
@@ -480,10 +490,10 @@ app.delete("/api/users/bulk", (req, res) => {
   res.json({ deleted: txResult.result.changes });
 });
 
-// PATCH /api/users/:id - 역할/메모/활성 변경
+// PATCH /api/users/:id - 역할/실명/전화번호/활성 변경
 app.patch("/api/users/:id", (req, res) => {
   const id = Number(req.params.id);
-  const { role, memo, active } = req.body;
+  const { role, realname, phone, active } = req.body;
 
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
   if (!user) return res.status(404).send("사용자를 찾을 수 없습니다.");
@@ -506,7 +516,8 @@ app.patch("/api/users/:id", (req, res) => {
         if (adminCount <= 1) throw { status: 400, message: "마지막 관리자는 강등할 수 없습니다." };
       }
       if (role !== undefined) db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id);
-      if (memo !== undefined) db.prepare("UPDATE users SET memo = ? WHERE id = ?").run(memo, id);
+      if (realname !== undefined) db.prepare("UPDATE users SET realname = ? WHERE id = ?").run(realname, id);
+      if (phone !== undefined) db.prepare("UPDATE users SET phone = ? WHERE id = ?").run(phone, id);
       if (active !== undefined) db.prepare("UPDATE users SET active = ? WHERE id = ?").run(active ? 1 : 0, id);
     })();
   });
@@ -518,7 +529,8 @@ app.patch("/api/users/:id", (req, res) => {
 
   const changes = {};
   if (role !== undefined) changes.role = role;
-  if (memo !== undefined) changes.memo = memo;
+  if (realname !== undefined) changes.realname = realname;
+  if (phone !== undefined) changes.phone = phone;
   if (active !== undefined) changes.active = !!active;
   logger.log(req, "user.update", changes, user.email);
 

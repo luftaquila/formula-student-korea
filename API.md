@@ -48,12 +48,12 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/users` | admin | — | `[{ id, email, name, role, memo, active, created_at, protected }]` | List all users |
+| GET | `/api/users` | admin | — | `[{ id, email, name, role, realname, phone, active, created_at, protected }]` | List all users |
 | POST | `/api/users` | admin | `{ email, role }` | `{ id, email, role }` | Create user |
-| POST | `/api/users/bulk` | admin | `{ users: [{ email, role, memo }] }` | `{ added, skipped, errors }` | Bulk create users (INSERT OR IGNORE) |
+| POST | `/api/users/bulk` | admin | `{ users: [{ email, role, realname, phone }] }` | `{ added, skipped, errors }` | Bulk create users (INSERT OR IGNORE) |
 | PATCH | `/api/users/bulk` | admin | `{ ids: [int], active: bool }` | `{ updated }` | Bulk activate/deactivate users |
 | DELETE | `/api/users/bulk` | admin | `{ ids: [int] }` | `{ deleted }` | Bulk delete users (protects last admin) |
-| PATCH | `/api/users/:id` | admin | `{ role?, memo?, active? }` | 200 | Update user role/memo/active status |
+| PATCH | `/api/users/:id` | admin | `{ role?, realname?, phone?, active? }` | 200 | Update user role/realname/phone/active status |
 | DELETE | `/api/users/:id` | admin | — | 200 | Delete single user (protects last admin, ADMIN_EMAIL) |
 
 ### Internal User Lookup

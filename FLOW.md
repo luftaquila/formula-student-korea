@@ -35,9 +35,9 @@
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 1.5 | 사용자 추가 | admin | `POST /api/users` | `{ email, role }` → 이메일 소문자 정규화, 중복 방지 |
-| 1.6 | 사용자 일괄 추가 | admin | `POST /api/users/bulk` | `{ users: [{ email, role?, memo? }] }` → 중복 스킵, 기본 역할 student |
+| 1.6 | 사용자 일괄 추가 | admin | `POST /api/users/bulk` | `{ users: [{ email, role?, realname?, phone? }] }` → 중복 스킵, 기본 역할 student |
 | 1.7 | 사용자 목록 조회 | admin | `GET /api/users` | ADMIN_EMAIL 보호 플래그 포함 |
-| 1.8 | 사용자 수정 | admin | `PATCH /api/users/:id` | 역할/메모/활성 변경, ADMIN_EMAIL 강등·비활성화 방지, 마지막 admin 삭제 방지 |
+| 1.8 | 사용자 수정 | admin | `PATCH /api/users/:id` | 역할/실명/전화번호/활성 변경, ADMIN_EMAIL 강등·비활성화 방지, 마지막 admin 삭제 방지 |
 | 1.9 | 일괄 활성/비활성 | admin | `PATCH /api/users/bulk` | `{ ids, active }`, ADMIN_EMAIL 보호 |
 | 1.10 | 일괄 삭제 | admin | `DELETE /api/users/bulk` | `{ ids }`, ADMIN_EMAIL 보호 |
 | 1.11 | 사용자 삭제 | admin | `DELETE /api/users/:id` | ADMIN_EMAIL 보호, 마지막 admin 삭제 방지 |

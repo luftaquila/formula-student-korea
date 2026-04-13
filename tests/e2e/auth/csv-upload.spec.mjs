@@ -29,8 +29,8 @@ test.describe("Auth CSV user bulk upload via UI", () => {
 
     // Prepare CSV content: header row + 3 users + 1 duplicate (existing admin)
     const csvContent = [
-      "email,name,role,memo",
-      "e2e-csv1@test.com,CSV User 1,student,csv test memo",
+      "email,name,role,realname,phone",
+      "e2e-csv1@test.com,CSV User 1,student,csv test realname,",
       "e2e-csv2@test.com,CSV User 2,official,",
       "e2e-csv3@test.com,CSV User 3,,",
       "e2e-admin@test.com,Duplicate Admin,admin,should be skipped",
@@ -63,8 +63,8 @@ test.describe("Auth CSV user bulk upload via UI", () => {
 
     // CSV with quoted fields containing commas
     const csvContent = [
-      "email,name,role,memo",
-      '"e2e-csv1@test.com","Already Exists","student","memo with, comma"',
+      "email,name,role,realname,phone",
+      '"e2e-csv1@test.com","Already Exists","student","realname with, comma",""',
     ].join("\n");
 
     const fileChooserPromise = page.waitForEvent("filechooser");

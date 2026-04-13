@@ -130,28 +130,50 @@ async function deleteUser(user) {
   }
 }
 
-// Memo click-to-edit
-const editingMemoId = ref(null);
+// Realname / Phone click-to-edit
+const editingRealnameId = ref(null);
+const editingPhoneId = ref(null);
 
-function startMemoEdit(userId) {
-  editingMemoId.value = userId;
+function startRealnameEdit(userId) {
+  editingRealnameId.value = userId;
 }
 
-function memoInputRef(el) {
+function startPhoneEdit(userId) {
+  editingPhoneId.value = userId;
+}
+
+function inlineInputRef(el) {
   if (el) el.focus();
 }
 
-async function handleMemoChange(user, value) {
-  editingMemoId.value = null;
-  if (value === (user.memo || "")) return;
+async function handleRealnameChange(user, value) {
+  editingRealnameId.value = null;
+  if (value === (user.realname || "")) return;
   try {
     const res = await fetch(`${BASE_URL}/api/users/${user.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ memo: value }),
+      body: JSON.stringify({ realname: value }),
     });
     if (!res.ok) throw new Error(await res.text());
-    user.memo = value;
+    user.realname = value;
+  } catch (e) {
+    notyf.error(e.message);
+  }
+}
+
+async function handlePhoneChange(user, value) {
+  editingPhoneId.value = null;
+  const formatted = formatPhone(value);
+  if (formatted === (user.phone || "")) return;
+  try {
+    const res = await fetch(`${BASE_URL}/api/users/${user.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: formatted }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    user.phone = formatted;
   } catch (e) {
     notyf.error(e.message);
   }
@@ -236,8 +258,8 @@ async function bulkDelete() {
 
 // CSV export
 function exportCSV() {
-  const header = "email,name,role,memo";
-  const rows = users.value.map((u) => [u.email, u.name || "", u.role, u.memo || ""].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
+  const header = "email,name,role,realname,phone";
+  const rows = users.value.map((u) => [u.email, u.name || "", u.role, u.realname || "", u.phone || ""].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
   const csv = "\uFEFF" + [header, ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -267,10 +289,10 @@ function uploadCSV() {
 
     const users = [];
     for (let i = start; i < rows.length; i++) {
-      // CSV format: email, name (ignored — set via Google OAuth), role, memo
-      const [email, , role, memo] = [rows[i][0], rows[i][1], rows[i][2], rows[i][3]];
+      // CSV format: email, name (ignored — set via Google OAuth), role, realname, phone
+      const [email, , role, realname, phone] = [rows[i][0], rows[i][1], rows[i][2], rows[i][3], rows[i][4]];
       if (!email || !email.trim()) continue;
-      users.push({ email: email.trim(), role: role?.trim() || "official", memo: memo?.trim() || "" });
+      users.push({ email: email.trim(), role: role?.trim() || "official", realname: realname?.trim() || "", phone: phone?.trim() || "" });
     }
 
     if (users.length === 0) { notyf.error("추가할 사용자가 없습니다."); return; }
@@ -473,7 +495,8 @@ onMounted(() => {
                 <th class="col-email sortable" @click="handleSort('email')">이메일 <span class="sort-icon">{{ getSortIcon('email') }}</span></th>
                 <th class="col-name sortable" @click="handleSort('name')">이름 <span class="sort-icon">{{ getSortIcon('name') }}</span></th>
                 <th class="col-role sortable" @click="handleSort('role')">역할 <span class="sort-icon">{{ getSortIcon('role') }}</span></th>
-                <th class="col-memo">메모</th>
+                <th class="col-realname">실명</th>
+                <th class="col-phone">전화번호</th>
                 <th class="col-date sortable" @click="handleSort('created_at')">등록일 <span class="sort-icon">{{ getSortIcon('created_at') }}</span></th>
                 <th class="col-action">액션</th>
               </tr>
@@ -486,17 +509,30 @@ onMounted(() => {
                 <td class="col-role">
                   <span class="badge" :class="roleBadgeClass(user.role)">{{ user.role }}</span>
                 </td>
-                <td class="col-memo memo-cell" @click="startMemoEdit(user.id)">
+                <td class="col-realname inline-edit-cell" @click="startRealnameEdit(user.id)">
                   <input
-                    v-if="editingMemoId === user.id"
-                    :ref="memoInputRef"
-                    class="memo-input"
+                    v-if="editingRealnameId === user.id"
+                    :ref="inlineInputRef"
+                    class="inline-edit-input"
                     type="text"
-                    :value="user.memo || ''"
-                    @blur="handleMemoChange(user, $event.target.value)"
+                    :value="user.realname || ''"
+                    @blur="handleRealnameChange(user, $event.target.value)"
                     @keyup.enter="$event.target.blur()"
                   />
-                  <span v-else class="memo-text">{{ user.memo || '' }}</span>
+                  <span v-else class="inline-edit-text">{{ user.realname || '' }}</span>
+                </td>
+                <td class="col-phone inline-edit-cell" @click="startPhoneEdit(user.id)">
+                  <input
+                    v-if="editingPhoneId === user.id"
+                    :ref="inlineInputRef"
+                    class="inline-edit-input"
+                    type="tel"
+                    :value="user.phone || ''"
+                    maxlength="13"
+                    @blur="handlePhoneChange(user, $event.target.value)"
+                    @keyup.enter="$event.target.blur()"
+                  />
+                  <span v-else class="inline-edit-text">{{ user.phone || '' }}</span>
                 </td>
                 <td class="col-date">{{ user.created_at ? new Date(user.created_at + 'Z').toLocaleString("ko-KR") : "-" }}</td>
                 <td class="col-action">
@@ -534,7 +570,7 @@ onMounted(() => {
                 </td>
               </tr>
               <tr v-if="users.length === 0">
-                <td colspan="7" class="empty-state">등록된 사용자가 없습니다.</td>
+                <td colspan="8" class="empty-state">등록된 사용자가 없습니다.</td>
               </tr>
             </tbody>
           </table>
@@ -688,20 +724,20 @@ onMounted(() => {
   color: var(--text-secondary);
 }
 
-/* Memo click-to-edit */
-.memo-cell {
+/* Inline click-to-edit (realname, phone) */
+.inline-edit-cell {
   cursor: text;
-  min-width: 6rem;
+  min-width: 5rem;
   font-size: 0.8125rem;
 }
 
-.memo-text {
+.inline-edit-text {
   display: inline-block;
   min-width: 2em;
   min-height: 1.25em;
 }
 
-.memo-input {
+.inline-edit-input {
   width: 100%;
   padding: 0.25rem 0.5rem;
   background: transparent;
@@ -712,15 +748,19 @@ onMounted(() => {
   transition: all 0.2s ease;
 }
 
-.memo-input:hover {
+.inline-edit-input:hover {
   border-color: var(--border-color);
 }
 
-.memo-input:focus {
+.inline-edit-input:focus {
   outline: none;
   background: var(--bg-input);
   border-color: var(--border-focus);
   box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
+}
+
+.col-phone {
+  white-space: nowrap;
 }
 
 /* Action buttons */

@@ -136,7 +136,7 @@ test.describe("Auth bulk operations", () => {
       body: JSON.stringify({
         users: [
           { email: bulkAddEmails[0], role: "student" },
-          { email: bulkAddEmails[1], role: "official", memo: "bulk test" },
+          { email: bulkAddEmails[1], role: "official", realname: "bulk test" },
           { email: "e2e-admin@test.com", role: "admin" },
         ],
       }),

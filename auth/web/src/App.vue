@@ -39,6 +39,6 @@ watch(pageTitle, (v) => { document.title = v; }, { immediate: true });
 
 <style scoped>
 .app-container {
-  --layout-max-width: 1100px;
+  --layout-max-width: 1400px;
 }
 </style>

@@ -18,7 +18,7 @@ test.describe("User management", () => {
     // Verify table headers
     await expect(page.locator("th").filter({ hasText: "이메일" })).toBeVisible();
     await expect(page.locator("th").filter({ hasText: "역할" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "메모" })).toBeVisible();
+    await expect(page.locator("th").filter({ hasText: "실명" })).toBeVisible();
 
     // Verify seeded users appear in the table
     await expect(page.locator("td").filter({ hasText: "e2e-admin@test.com" })).toBeVisible();
@@ -62,23 +62,23 @@ test.describe("User management", () => {
     await expect(row.locator(".badge").filter({ hasText: "official" })).toBeVisible();
   });
 
-  test("edit memo inline", async ({ page }) => {
+  test("edit realname inline", async ({ page }) => {
     const row = page.locator("tr").filter({ hasText: TEST_EMAIL });
     await expect(row).toBeVisible();
 
-    // Click the memo cell to start editing
-    await row.locator(".memo-cell").click();
+    // Click the realname cell to start editing
+    await row.locator(".col-realname.inline-edit-cell").click();
 
-    // Type into the memo input
-    const memoInput = row.locator(".memo-input");
-    await expect(memoInput).toBeVisible();
-    await memoInput.fill("E2E 테스트 메모");
+    // Type into the realname input
+    const realnameInput = row.locator(".col-realname .inline-edit-input");
+    await expect(realnameInput).toBeVisible();
+    await realnameInput.fill("E2E 테스트 실명");
 
     // Blur to save (press Enter triggers blur)
-    await memoInput.press("Enter");
+    await realnameInput.press("Enter");
 
-    // Wait for save to complete, then verify the memo text persists
-    await expect(row.locator(".memo-text")).toHaveText("E2E 테스트 메모");
+    // Wait for save to complete, then verify the text persists
+    await expect(row.locator(".col-realname .inline-edit-text")).toHaveText("E2E 테스트 실명");
   });
 
   test("deactivate and activate user", async ({ page }) => {

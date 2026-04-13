@@ -159,7 +159,7 @@ describe('POST /api/users/bulk', () => {
       body: {
         users: [
           { email: 'bulk1@example.com', role: 'student' },
-          { email: 'bulk2@example.com', role: 'official', memo: 'test memo' },
+          { email: 'bulk2@example.com', role: 'official', realname: 'test realname' },
           { email: 'new@example.com', role: 'student' }, // duplicate from earlier
         ],
       },
@@ -241,14 +241,24 @@ describe('PATCH /api/users/:id', () => {
     assert.equal(user.role, 'official');
   });
 
-  it('changes memo', async () => {
+  it('changes realname', async () => {
     const res = await client.patch(`/api/users/${testUserId}`, {
-      body: { memo: 'updated memo' },
+      body: { realname: 'updated realname' },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
-    const user = db.prepare('SELECT memo FROM users WHERE id = ?').get(testUserId);
-    assert.equal(user.memo, 'updated memo');
+    const user = db.prepare('SELECT realname FROM users WHERE id = ?').get(testUserId);
+    assert.equal(user.realname, 'updated realname');
+  });
+
+  it('changes phone', async () => {
+    const res = await client.patch(`/api/users/${testUserId}`, {
+      body: { phone: '010-1234-5678' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const user = db.prepare('SELECT phone FROM users WHERE id = ?').get(testUserId);
+    assert.equal(user.phone, '010-1234-5678');
   });
 
   it('changes active status', async () => {
@@ -267,15 +277,15 @@ describe('PATCH /api/users/:id', () => {
     });
   });
 
-  it('handles complex update (role + memo)', async () => {
+  it('handles complex update (role + realname)', async () => {
     const res = await client.patch(`/api/users/${testUserId}`, {
-      body: { role: 'chief', memo: 'promoted' },
+      body: { role: 'chief', realname: 'promoted' },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
-    const user = db.prepare('SELECT role, memo FROM users WHERE id = ?').get(testUserId);
+    const user = db.prepare('SELECT role, realname FROM users WHERE id = ?').get(testUserId);
     assert.equal(user.role, 'chief');
-    assert.equal(user.memo, 'promoted');
+    assert.equal(user.realname, 'promoted');
   });
 
   it('rejects invalid role (400)', async () => {
@@ -316,7 +326,7 @@ describe('PATCH /api/users/:id', () => {
 
   it('returns 404 for non-existent user', async () => {
     const res = await client.patch('/api/users/99999', {
-      body: { memo: 'nope' },
+      body: { realname: 'nope' },
       cookie: adminCookie,
     });
     assert.equal(res.status, 404);
