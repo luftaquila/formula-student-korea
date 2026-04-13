@@ -65,6 +65,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS ops_contacts (
   phone TEXT NOT NULL
 )`);
 
+db.exec(`CREATE TABLE IF NOT EXISTS ops_display (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id)
+)`);
+
 // Bootstrap: ADMIN_EMAIL이 DB에 없으면 admin으로 등록
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 if (ADMIN_EMAIL) {
@@ -563,41 +567,50 @@ app.delete("/api/users/:id", (req, res) => {
 });
 
 /* ============================================
-   운영 오피셜 연락처
+   운영 오피셜 연락처 (사이드바 표시)
    ============================================ */
 
-// GET /api/ops-contacts - 연락처 목록
+// GET /api/ops-contacts - 사이드바에 표시할 사용자 목록
 app.get("/api/ops-contacts", (req, res) => {
-  const result = dbRun(() => db.prepare("SELECT id, name, phone FROM ops_contacts ORDER BY id").all());
+  const result = dbRun(() => db.prepare(`
+    SELECT u.id, u.email, u.name, u.realname, u.phone
+    FROM ops_display d JOIN users u ON d.user_id = u.id
+    WHERE u.active = 1
+    ORDER BY u.id
+  `).all());
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result);
 });
 
-// POST /api/ops-contacts - 연락처 추가
+// POST /api/ops-contacts - 사용자를 사이드바 표시 목록에 추가
 app.post("/api/ops-contacts", (req, res) => {
-  const { name, phone } = req.body;
-  if (!name?.trim()) return res.status(400).send("이름을 입력하세요.");
-  if (!phone?.trim()) return res.status(400).send("전화번호를 입력하세요.");
+  const { user_id } = req.body;
+  if (!user_id) return res.status(400).send("사용자 ID가 필요합니다.");
 
-  const result = dbRun(() => db.prepare("INSERT INTO ops_contacts (name, phone) VALUES (?, ?)").run(name.trim(), phone.trim()));
+  const user = db.prepare("SELECT email, name, role FROM users WHERE id = ? AND active = 1").get(user_id);
+  if (!user) return res.status(404).send("사용자를 찾을 수 없습니다.");
+  if (!["official", "chief", "admin"].includes(user.role)) return res.status(400).send("official 이상 권한 사용자만 추가할 수 있습니다.");
+
+  const result = dbRun(() => db.prepare("INSERT OR IGNORE INTO ops_display (user_id) VALUES (?)").run(user_id));
   if (!result.success) {
-    logger.warn(req, "ops_contact.create", { error: result.error }, name.trim());
+    logger.warn(req, "ops_contact.create", { error: result.error }, user.email);
     return res.status(result.status).send(result.error);
   }
-  logger.log(req, "ops_contact.create", { phone: phone.trim() }, name.trim());
-  res.status(201).json({ id: result.result.lastInsertRowid, name: name.trim(), phone: phone.trim() });
+  logger.log(req, "ops_contact.create", { name: user.name, role: user.role }, user.email);
+  res.status(201).send();
 });
 
-// DELETE /api/ops-contacts/:id - 연락처 삭제
-app.delete("/api/ops-contacts/:id", (req, res) => {
-  const contact = db.prepare("SELECT name, phone FROM ops_contacts WHERE id = ?").get(Number(req.params.id));
-  if (!contact) return res.status(404).send("연락처를 찾을 수 없습니다.");
-  const result = dbRun(() => db.prepare("DELETE FROM ops_contacts WHERE id = ?").run(Number(req.params.id)));
+// DELETE /api/ops-contacts/:userId - 사이드바 표시 목록에서 제거
+app.delete("/api/ops-contacts/:userId", (req, res) => {
+  const userId = Number(req.params.userId);
+  const row = db.prepare("SELECT d.user_id, u.email, u.name FROM ops_display d JOIN users u ON d.user_id = u.id WHERE d.user_id = ?").get(userId);
+  if (!row) return res.status(404).send("표시 목록에 없는 사용자입니다.");
+  const result = dbRun(() => db.prepare("DELETE FROM ops_display WHERE user_id = ?").run(userId));
   if (!result.success) {
-    logger.warn(req, "ops_contact.delete", { error: result.error }, contact.name);
+    logger.warn(req, "ops_contact.delete", { error: result.error }, row.email);
     return res.status(result.status).send(result.error);
   }
-  logger.log(req, "ops_contact.delete", { phone: contact.phone }, contact.name);
+  logger.log(req, "ops_contact.delete", { name: row.name }, row.email);
   res.status(200).send();
 });
 

@@ -12,13 +12,13 @@ test.describe("User management", () => {
   });
 
   test("user list table renders with seeded users", async ({ page }) => {
-    const table = page.locator("table.data-table");
+    const table = page.locator("table.users-table");
     await expect(table).toBeVisible();
 
     // Verify table headers
-    await expect(page.locator("th").filter({ hasText: "이메일" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "역할" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "실명" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "이메일" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "역할" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "실명" })).toBeVisible();
 
     // Verify seeded users appear in the table
     await expect(page.locator("td").filter({ hasText: "e2e-admin@test.com" })).toBeVisible();

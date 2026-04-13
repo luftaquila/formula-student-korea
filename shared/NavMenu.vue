@@ -119,8 +119,8 @@ async function logout() {
             <div v-if="showOfficials && opsContacts" class="nav-section ops-contacts-section">
               <span class="nav-section-title">Contacts</span>
               <div v-for="c in opsContacts" :key="c.id" class="ops-contact">
-                <span class="ops-contact-name">{{ c.name }}</span>
-                <a :href="'tel:' + c.phone" class="ops-contact-phone">{{ c.phone }}</a>
+                <span class="ops-contact-name">{{ c.realname || c.name || c.email }}</span>
+                <a v-if="c.phone" :href="'tel:' + c.phone" class="ops-contact-phone">{{ c.phone }}</a>
               </div>
             </div>
 

@@ -1,10 +1,7 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, expectNotification, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 test.use({ storageState: storageStatePath("admin") });
-
-const TEST_CONTACT_NAME = "E2E 테스트 담당자";
-const TEST_CONTACT_PHONE = "010-1234-5678";
 
 test.describe("Ops contacts management", () => {
   test.beforeEach(async ({ page }) => {
@@ -12,40 +9,44 @@ test.describe("Ops contacts management", () => {
     await waitForPageReady(page);
   });
 
-  test("ops contacts section is visible", async ({ page }) => {
+  test("ops contacts section is visible with description", async ({ page }) => {
     const section = page.locator(".ops-card");
     await expect(section).toBeVisible();
     await expect(section.locator("h3")).toHaveText("운영 오피셜 연락처");
+    await expect(section.locator(".ops-desc")).toContainText("사이드바에 표시");
   });
 
-  test("add a new contact", async ({ page }) => {
+  test("add and remove user via dropdown", async ({ page }) => {
     const section = page.locator(".ops-card");
 
-    // Fill in contact name and phone
-    await section.locator("input[placeholder='이름']").fill(TEST_CONTACT_NAME);
-    await section.locator("input[placeholder='전화번호']").fill(TEST_CONTACT_PHONE);
+    // Open dropdown
+    await section.locator(".select-display").click();
+    const dropdown = section.locator(".select-dropdown");
+    await expect(dropdown).toBeVisible();
 
-    // Submit
-    await section.locator("button").filter({ hasText: "추가" }).click();
+    // Search for a user
+    await dropdown.locator(".select-search").fill("e2e");
 
-    // Verify success notification
-    await expectNotification(page, "success", "연락처를 추가했습니다");
+    // Select the first option
+    const firstOption = dropdown.locator(".select-option").first();
+    await expect(firstOption).toBeVisible();
+    const optionEmail = await firstOption.locator(".option-email").textContent();
 
-    // Verify the contact appears in the list
-    await expect(section.locator(".ops-name").filter({ hasText: TEST_CONTACT_NAME })).toBeVisible();
-  });
+    const addResp = page.waitForResponse((res) => res.url().includes("/api/ops-contacts") && res.request().method() === "POST");
+    await firstOption.click();
+    await addResp;
 
-  test("delete a contact", async ({ page }) => {
-    const section = page.locator(".ops-card");
+    // Verify user appears in the ops table
+    const opsTable = section.locator("table.ops-table");
+    const row = opsTable.locator("tr").filter({ hasText: optionEmail });
+    await expect(row).toBeVisible();
 
-    // Find the contact item we added
-    const contactItem = section.locator(".ops-item").filter({ hasText: TEST_CONTACT_NAME });
-    await expect(contactItem).toBeVisible();
+    // Remove the user via the 제거 button
+    const delResp = page.waitForResponse((res) => res.url().includes("/api/ops-contacts") && res.request().method() === "DELETE");
+    await row.getByRole("button", { name: "제거" }).click();
+    await delResp;
 
-    // Click delete
-    await contactItem.getByRole("button", { name: "삭제" }).click();
-
-    // Verify the contact is removed from the list
-    await expect(section.locator(".ops-name").filter({ hasText: TEST_CONTACT_NAME })).not.toBeVisible();
+    // Verify user is removed from the table
+    await expect(row).not.toBeVisible();
   });
 });

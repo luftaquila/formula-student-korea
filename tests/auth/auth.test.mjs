@@ -558,9 +558,16 @@ describe('GET /api/users/role/:email', () => {
   });
 });
 
-// ─── Ops Contacts ────────────────────────────────────────────────────────
+// ─── Ops Contacts (sidebar display) ─────────────────────────────────────
 describe('Ops contacts', () => {
-  let contactId;
+  let officialUserId;
+
+  before(() => {
+    // Ensure an official user exists for testing
+    const user = db.prepare("SELECT id FROM users WHERE email = 'new@example.com'").get();
+    db.prepare("UPDATE users SET role = 'official', active = 1 WHERE id = ?").run(user.id);
+    officialUserId = user.id;
+  });
 
   it('GET /api/ops-contacts returns empty array initially', async () => {
     const res = await client.get('/api/ops-contacts', { cookie: officialCookie });
@@ -586,77 +593,73 @@ describe('Ops contacts', () => {
     assert.equal(res.status, 403);
   });
 
-  it('POST /api/ops-contacts creates a contact', async () => {
+  it('POST /api/ops-contacts adds user to display list', async () => {
     const res = await client.post('/api/ops-contacts', {
-      body: { name: 'John Doe', phone: '010-1234-5678' },
+      body: { user_id: officialUserId },
       cookie: adminCookie,
     });
     assert.equal(res.status, 201);
-    const data = await res.json();
-    assert.equal(data.name, 'John Doe');
-    assert.equal(data.phone, '010-1234-5678');
-    assert.ok(data.id);
-    contactId = data.id;
   });
 
-  it('POST /api/ops-contacts validates required name', async () => {
+  it('POST /api/ops-contacts rejects missing user_id (400)', async () => {
     const res = await client.post('/api/ops-contacts', {
-      body: { phone: '010-1234-5678' },
+      body: {},
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
   });
 
-  it('POST /api/ops-contacts validates required phone', async () => {
+  it('POST /api/ops-contacts rejects student role user (400)', async () => {
+    const student = db.prepare("SELECT id FROM users WHERE email = 'student@test.com'").get();
     const res = await client.post('/api/ops-contacts', {
-      body: { name: 'Jane Doe' },
+      body: { user_id: student.id },
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
   });
 
-  it('POST /api/ops-contacts rejects empty name', async () => {
+  it('POST /api/ops-contacts rejects non-existent user (404)', async () => {
     const res = await client.post('/api/ops-contacts', {
-      body: { name: '  ', phone: '010-1234-5678' },
+      body: { user_id: 99999 },
       cookie: adminCookie,
     });
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 404);
   });
 
   it('POST /api/ops-contacts requires admin role (403 for official)', async () => {
     const res = await client.post('/api/ops-contacts', {
-      body: { name: 'Test', phone: '010-0000-0000' },
+      body: { user_id: officialUserId },
       cookie: officialCookie,
     });
     assert.equal(res.status, 403);
   });
 
-  it('GET /api/ops-contacts returns created contacts', async () => {
+  it('GET /api/ops-contacts returns displayed users', async () => {
     const res = await client.get('/api/ops-contacts', { cookie: adminCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.ok(data.length >= 1);
-    const contact = data.find(c => c.id === contactId);
+    const contact = data.find(c => c.id === officialUserId);
     assert.ok(contact);
-    assert.equal(contact.name, 'John Doe');
+    assert.ok(contact.email);
   });
 
-  it('DELETE /api/ops-contacts/:id deletes a contact', async () => {
-    const res = await client.delete(`/api/ops-contacts/${contactId}`, { cookie: adminCookie });
+  it('DELETE /api/ops-contacts/:userId removes from display list', async () => {
+    const res = await client.delete(`/api/ops-contacts/${officialUserId}`, { cookie: adminCookie });
     assert.equal(res.status, 200);
 
-    // Verify deletion
+    // Verify removal
     const check = await client.get('/api/ops-contacts', { cookie: adminCookie });
     const data = await check.json();
-    assert.ok(!data.find(c => c.id === contactId));
+    assert.ok(!data.find(c => c.id === officialUserId));
   });
 
-  it('DELETE /api/ops-contacts/:id returns 404 for non-existent', async () => {
+  it('DELETE /api/ops-contacts/:userId returns 404 for non-displayed user', async () => {
     const res = await client.delete('/api/ops-contacts/99999', { cookie: adminCookie });
     assert.equal(res.status, 404);
   });
 
-  it('DELETE /api/ops-contacts/:id requires admin role (403 for official)', async () => {
+  it('DELETE /api/ops-contacts/:userId requires admin role (403 for official)', async () => {
     const res = await client.delete('/api/ops-contacts/1', { cookie: officialCookie });
     assert.equal(res.status, 403);
   });

@@ -13,10 +13,11 @@ const loading = ref(true);
 const newEmail = ref("");
 const newRole = ref("official");
 
-// 운영 오피셜 연락처
-const opsContacts = ref([]);
-const newOpsName = ref("");
-const newOpsPhone = ref("");
+// 운영 오피셜 연락처 (사이드바 표시)
+const opsDisplayIds = ref(new Set());
+const opsDropdownOpen = ref(false);
+const opsDropdownSearch = ref("");
+const opsDropdownStyle = ref({});
 
 // Check auth from cookie
 function getUserFromCookie() {
@@ -380,46 +381,78 @@ const sortedUsers = computed(() => {
   });
 });
 
-async function fetchOpsContacts() {
+// official 이상 활성 사용자 목록 (연락처 선택용)
+const officialUsers = computed(() =>
+  users.value.filter((u) => u.active && ["official", "chief", "admin"].includes(u.role)),
+);
+
+async function fetchOpsDisplay() {
   try {
     const res = await fetch(`${BASE_URL}/api/ops-contacts`);
-    if (res.ok) opsContacts.value = await res.json();
+    if (res.ok) {
+      const data = await res.json();
+      opsDisplayIds.value = new Set(data.map((d) => d.id));
+    }
   } catch {}
 }
 
-async function addOpsContact() {
-  if (!newOpsName.value.trim() || !newOpsPhone.value.trim()) {
-    notyf.error("이름과 전화번호를 모두 입력하세요.");
-    return;
+// 추가 가능한 official 이상 사용자 (이미 표시 중인 사용자 제외)
+const opsFilteredUsers = computed(() => {
+  const q = opsDropdownSearch.value.toLowerCase();
+  return officialUsers.value.filter((u) => {
+    if (opsDisplayIds.value.has(u.id)) return false;
+    if (!q) return true;
+    return u.email.toLowerCase().includes(q) || (u.name || "").toLowerCase().includes(q) || (u.realname || "").toLowerCase().includes(q);
+  });
+});
+
+// 현재 표시 중인 사용자 상세 목록
+const opsDisplayUsers = computed(() =>
+  officialUsers.value.filter((u) => opsDisplayIds.value.has(u.id)),
+);
+
+function openOpsDropdown(event) {
+  opsDropdownOpen.value = true;
+  opsDropdownSearch.value = "";
+  const rect = event.currentTarget.getBoundingClientRect();
+  const spaceBelow = window.innerHeight - rect.bottom;
+  const style = { left: `${rect.left}px`, width: `${rect.width}px` };
+  if (spaceBelow < 220) {
+    style.bottom = `${window.innerHeight - rect.top + 4}px`;
+  } else {
+    style.top = `${rect.bottom + 4}px`;
   }
+  opsDropdownStyle.value = style;
+}
+
+function closeOpsDropdown() {
+  opsDropdownOpen.value = false;
+}
+
+async function addOpsDisplay(user) {
+  opsDropdownOpen.value = false;
   try {
     const res = await fetch(`${BASE_URL}/api/ops-contacts`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: newOpsName.value, phone: newOpsPhone.value }),
+      body: JSON.stringify({ user_id: user.id }),
     });
     if (!res.ok) throw new Error(await res.text());
-    const contact = await res.json();
-    opsContacts.value.push(contact);
-    newOpsName.value = "";
-    newOpsPhone.value = "";
-    notyf.success("연락처를 추가했습니다.");
+    const s = new Set(opsDisplayIds.value);
+    s.add(user.id);
+    opsDisplayIds.value = s;
   } catch (e) {
     notyf.error(e.message);
   }
 }
 
-
-
-function onOpsPhoneInput(e) {
-  newOpsPhone.value = formatPhone(e.target.value);
-}
-
-async function deleteOpsContact(id) {
+async function removeOpsDisplay(user) {
   try {
-    const res = await fetch(`${BASE_URL}/api/ops-contacts/${id}`, { method: "DELETE" });
+    const res = await fetch(`${BASE_URL}/api/ops-contacts/${user.id}`, { method: "DELETE" });
     if (!res.ok) throw new Error(await res.text());
-    opsContacts.value = opsContacts.value.filter(c => c.id !== id);
+    const s = new Set(opsDisplayIds.value);
+    s.delete(user.id);
+    opsDisplayIds.value = s;
   } catch (e) {
     notyf.error(e.message);
   }
@@ -427,7 +460,7 @@ async function deleteOpsContact(id) {
 
 onMounted(() => {
   fetchUsers();
-  fetchOpsContacts();
+  fetchOpsDisplay();
 });
 </script>
 
@@ -457,7 +490,7 @@ onMounted(() => {
 
     <div class="card">
       <div class="card-header">
-        <h3>등록된 사용자 <span class="count-badge">{{ filteredUsers.length }}</span></h3>
+        <h3>사용자 <span class="count-badge">{{ filteredUsers.length }}</span></h3>
         <div class="header-actions">
           <div class="header-filters">
             <select v-model="filterRole" class="filter-select">
@@ -570,7 +603,7 @@ onMounted(() => {
                 </td>
               </tr>
               <tr v-if="users.length === 0">
-                <td colspan="8" class="empty-state">등록된 사용자가 없습니다.</td>
+                <td colspan="8" class="empty-state">사용자가 없습니다.</td>
               </tr>
             </tbody>
           </table>
@@ -578,21 +611,67 @@ onMounted(() => {
       </div>
     </div>
 
-    <div class="card ops-card">
-      <div class="card-header"><h3>운영 오피셜 연락처</h3></div>
-      <div v-if="opsContacts.length" class="ops-list">
-        <div v-for="c in opsContacts" :key="c.id" class="ops-item">
-          <span class="ops-name">{{ c.name }}</span>
-          <a :href="'tel:' + c.phone" class="ops-phone">{{ c.phone }}</a>
-          <button class="btn btn-sm btn-danger" @click="deleteOpsContact(c.id)">삭제</button>
+    <div class="card ops-card" @click="closeOpsDropdown">
+      <div class="card-header">
+        <h3>운영 오피셜 연락처</h3>
+        <span class="ops-desc">official 이상 권한 사용자의 사이드바에 표시</span>
+      </div>
+      <div class="ops-body">
+        <div class="ops-select">
+          <div class="select-display" @click.stop="openOpsDropdown($event)">
+            <span class="select-placeholder">사용자 추가...</span>
+          </div>
+          <div v-if="opsDropdownOpen" class="select-dropdown" :style="opsDropdownStyle" @click.stop>
+            <input
+              class="select-search"
+              type="text"
+              v-model="opsDropdownSearch"
+              placeholder="검색..."
+              autofocus
+            />
+            <div class="select-options">
+              <div
+                v-for="u in opsFilteredUsers"
+                :key="u.id"
+                class="select-option"
+                @mousedown.prevent="addOpsDisplay(u)"
+              >
+                <span class="option-name">{{ u.realname ? (u.phone ? `${u.realname} (${u.phone})` : u.realname) : u.name || u.email }}</span>
+                <span class="option-email">{{ u.email }}</span>
+              </div>
+              <div v-if="opsFilteredUsers.length === 0" class="select-empty">결과 없음</div>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="ops-add-form">
-        <form @submit.prevent="addOpsContact" class="form-row ops-form">
-          <input v-model="newOpsName" type="text" placeholder="이름" class="form-input" />
-          <input :value="newOpsPhone" @input="onOpsPhoneInput" type="tel" placeholder="전화번호" class="form-input" maxlength="13" />
-          <button type="submit" class="btn btn-primary">추가</button>
-        </form>
+      <div class="table-body">
+        <div class="table-container">
+          <table class="data-table ops-table">
+            <thead>
+              <tr>
+                <th class="col-email">이메일</th>
+                <th class="col-name">이름</th>
+                <th class="col-role">역할</th>
+                <th class="col-realname">실명</th>
+                <th class="col-phone">전화번호</th>
+                <th class="col-action">액션</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="u in opsDisplayUsers" :key="u.id">
+                <td class="col-email">{{ u.email }}</td>
+                <td class="col-name">{{ u.name || '-' }}</td>
+                <td class="col-role"><span class="badge" :class="roleBadgeClass(u.role)">{{ u.role }}</span></td>
+                <td class="col-realname">{{ u.realname || '-' }}</td>
+                <td class="col-phone">{{ u.phone || '-' }}</td>
+                <td class="col-action"><div class="action-btns"><button class="btn btn-sm btn-danger" @click="removeOpsDisplay(u)">제거</button></div></td>
+              </tr>
+              <tr v-if="opsDisplayUsers.length === 0">
+                <td colspan="6" class="empty-state">표시할 사용자가 없습니다.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -682,10 +761,17 @@ onMounted(() => {
 .col-email,
 .col-name,
 .col-role,
+.col-realname,
+.col-phone,
 .col-date,
 .col-action {
   width: 1%;
   white-space: nowrap;
+}
+
+.col-realname,
+.col-phone {
+  font-size: 0.8125rem;
 }
 
 .col-email {
@@ -784,40 +870,75 @@ onMounted(() => {
 }
 
 /* 운영 오피셜 연락처 */
-.ops-item {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.625rem 1.25rem;
-  border-bottom: 1px solid var(--border-color);
+.ops-desc {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-left: 0.5rem;
 }
 
-.ops-name {
-  font-weight: 600;
-  font-size: 0.875rem;
-}
-
-.ops-phone {
-  font-size: 0.875rem;
-  color: var(--accent-primary);
-  text-decoration: none;
-}
-
-.ops-phone:hover {
-  text-decoration: underline;
-}
-
-.ops-item .btn {
-  margin-left: auto;
-}
-
-.ops-add-form {
+.ops-body {
   padding: 1rem 1.25rem;
 }
 
-.ops-form.form-row {
-  flex-direction: row;
-  margin: 0;
+.ops-select {
+  position: relative;
+  margin-bottom: 0.75rem;
+}
+
+.ops-select .select-display {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  min-height: 1.75rem;
+  background: var(--bg-input);
+  transition: border-color 0.15s ease;
+}
+
+.ops-select .select-display:hover { border-color: var(--accent-primary); }
+.ops-select .select-placeholder { color: var(--text-tertiary); flex: 1; }
+
+.ops-select .select-dropdown {
+  position: fixed;
+  z-index: 100;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.ops-select .select-search {
+  width: 100%;
+  padding: 0.5rem;
+  border: none;
+  border-bottom: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  outline: none;
+}
+
+.ops-select .select-options { max-height: 160px; overflow-y: auto; }
+
+.ops-select .select-option {
+  padding: 0.375rem 0.5rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.0625rem;
+  transition: background 0.1s ease;
+}
+
+.ops-select .select-option:hover { background: var(--bg-hover); }
+.ops-select .option-name { font-size: 0.75rem; color: var(--text-primary); }
+.ops-select .option-email { font-size: 0.6875rem; color: var(--text-tertiary); }
+.ops-select .select-empty { padding: 0.5rem; text-align: center; font-size: 0.75rem; color: var(--text-tertiary); }
+
+.ops-table {
+  width: 100%;
 }
 
 @media (max-width: 768px) {
@@ -853,5 +974,8 @@ onMounted(() => {
     flex: 1;
   }
 
+  .ops-desc {
+    margin-left: 0;
+  }
 }
 </style>

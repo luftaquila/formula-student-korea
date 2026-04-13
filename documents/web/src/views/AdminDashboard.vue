@@ -124,6 +124,17 @@ const teamStudentMap = computed(() => {
   return map;
 });
 const assignedEmails = computed(() => new Set(studentTeams.value.map((st) => st.email)));
+const studentByEmail = computed(() => {
+  const map = {};
+  for (const s of students.value) map[s.email] = s;
+  return map;
+});
+function studentDisplayName(email) {
+  const s = studentByEmail.value[email];
+  if (!s) return email;
+  if (s.realname) return s.phone ? `${s.realname} (${s.phone})` : s.realname;
+  return s.name || email;
+}
 
 // 검색 가능 드롭다운
 const dropdownSearch = ref({});
@@ -311,7 +322,7 @@ onUnmounted(() => {
                   <td class="col-account">
                     <div class="student-select">
                       <div class="select-display" @click.stop="openDropdown(e.num, $event)">
-                        <span v-if="teamStudentMap[e.num]" class="selected-email">{{ teamStudentMap[e.num] }}</span>
+                        <span v-if="teamStudentMap[e.num]" class="selected-email">{{ studentDisplayName(teamStudentMap[e.num]) }}</span>
                         <span v-else class="select-placeholder">-</span>
                         <button v-if="teamStudentMap[e.num]" class="clear-btn" @click.stop="clearStudent(e.num)" title="해제">&times;</button>
                       </div>
@@ -330,7 +341,7 @@ onUnmounted(() => {
                             class="select-option"
                             @mousedown.prevent="assignStudent(e.num, st.email)"
                           >
-                            <span class="option-name">{{ st.realname || st.name || st.email }}</span>
+                            <span class="option-name">{{ st.realname ? (st.phone ? `${st.realname} (${st.phone})` : st.realname) : st.name || st.email }}</span>
                             <span v-if="st.name" class="option-email">{{ st.email }}</span>
                           </div>
                           <div v-if="getFilteredStudents(e.num).length === 0" class="select-empty">결과 없음</div>

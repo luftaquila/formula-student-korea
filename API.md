@@ -67,9 +67,9 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/ops-contacts` | official | — | `[{ id, name, phone }]` | List operations contacts |
-| POST | `/api/ops-contacts` | admin | `{ name, phone }` | `{ id, name, phone }` | Add contact |
-| DELETE | `/api/ops-contacts/:id` | admin | — | 200 | Delete contact |
+| GET | `/api/ops-contacts` | official | — | `[{ id, email, name, realname, phone }]` | List users displayed in sidebar |
+| POST | `/api/ops-contacts` | admin | `{ user_id }` | 201 | Add user to sidebar display (official+ only) |
+| DELETE | `/api/ops-contacts/:userId` | admin | — | 200 | Remove user from sidebar display |
 
 ### Log Aggregation
 
