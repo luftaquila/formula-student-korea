@@ -199,6 +199,11 @@ async function clearStudent(teamNum) {
   } catch (e) { notyf.error(e.message); }
 }
 
+function isTargetTeam(session, teamNum) {
+  if (!session._status) return false;
+  return session._status.some((s) => s.team_num === teamNum);
+}
+
 function getSubmissionForTeam(session, teamNum) {
   if (!session._status) return null;
   return session._status.find((s) => s.team_num === teamNum)?.submission || null;
@@ -357,11 +362,14 @@ onUnmounted(() => {
                   <td
                     v-for="s in sessions"
                     :key="s.id"
-                    class="col-session cell-clickable"
-                    :class="submissionCellClass(s, getSubmissionForTeam(s, e.num))"
-                    @click="$router.push('/admin/session/' + s.id)"
+                    class="col-session"
+                    :class="[isTargetTeam(s, e.num) ? ['cell-clickable', submissionCellClass(s, getSubmissionForTeam(s, e.num))] : 'cell-not-target']"
+                    @click="isTargetTeam(s, e.num) && $router.push('/admin/session/' + s.id)"
                   >
-                    <template v-if="getSubmissionForTeam(s, e.num)">
+                    <template v-if="!isTargetTeam(s, e.num)">
+                      <span class="cell-empty"></span>
+                    </template>
+                    <template v-else-if="getSubmissionForTeam(s, e.num)">
                       <span class="cell-time">{{ formatDate(getSubmissionForTeam(s, e.num).submitted_at) }}</span>
                     </template>
                     <template v-else>
@@ -641,6 +649,7 @@ onUnmounted(() => {
 .cell-late { background: rgba(234, 179, 8, 0.08); }
 .cell-missed { background: rgba(239, 68, 68, 0.08); }
 .cell-none { color: var(--text-tertiary); }
+.cell-not-target { background: var(--bg-secondary); }
 .cell-time { font-size: 0.8125rem; display: block; }
 .cell-empty { font-size: 0.8125rem; }
 .cell-clickable { cursor: pointer; }

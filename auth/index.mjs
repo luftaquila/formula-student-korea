@@ -52,7 +52,7 @@ if (roleCheck && !roleCheck.sql.includes("student")) {
         created_at TEXT,
         active INTEGER DEFAULT 1
       );
-      INSERT INTO users_new (id, email, name, role, memo, created_at, active) SELECT id, email, name, role, memo, created_at, active FROM users;
+      INSERT INTO users_new (id, email, name, role, memo, realname, phone, created_at, active) SELECT id, email, name, role, memo, realname, phone, created_at, active FROM users;
       DROP TABLE users;
       ALTER TABLE users_new RENAME TO users;
     `);
@@ -512,6 +512,7 @@ app.delete("/api/users/bulk", (req, res) => {
     if (totalAdmins - adminsToDelete < 1) throw { status: 400, message: "마지막 관리자는 삭제할 수 없습니다." };
 
     const emails = db.prepare(`SELECT email FROM users WHERE id IN (${placeholders})`).all(...numIds).map(r => r.email);
+    db.prepare(`DELETE FROM ops_display WHERE user_id IN (${placeholders})`).run(...numIds);
     const delResult = db.prepare(`DELETE FROM users WHERE id IN (${placeholders})`).run(...numIds);
     return { changes: delResult.changes, emails };
   })());
@@ -587,7 +588,10 @@ app.delete("/api/users/:id", (req, res) => {
     if (adminCount <= 1) return res.status(400).send("마지막 관리자는 삭제할 수 없습니다.");
   }
 
-  const result = dbRun(() => db.prepare("DELETE FROM users WHERE id = ?").run(id));
+  const result = dbRun(() => db.transaction(() => {
+    db.prepare("DELETE FROM ops_display WHERE user_id = ?").run(id);
+    return db.prepare("DELETE FROM users WHERE id = ?").run(id);
+  })());
   if (!result.success) {
     logger.warn(req, "user.delete", { error: result.error }, user.email);
     return res.status(result.status).send(result.error);

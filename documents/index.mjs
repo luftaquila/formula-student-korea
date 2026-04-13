@@ -1092,9 +1092,10 @@ async function processScheduledNotifications() {
         ).all(n.year, n.session_id).map((r) => r.email);
       }
 
-      db.prepare("UPDATE scheduled_notification SET sent = 1 WHERE id = ?").run(n.id);
-
-      if (recipients.length === 0) continue;
+      if (recipients.length === 0) {
+        db.prepare("UPDATE scheduled_notification SET sent = 1 WHERE id = ?").run(n.id);
+        continue;
+      }
 
       let subject, htmlContent;
 
@@ -1123,10 +1124,13 @@ async function processScheduledNotifications() {
       }
 
       const result = await sendNotificationEmail(subject, htmlContent, recipients);
-      if (!result.ok) logger.warn(null, `schedule.${n.type}`, { error: result.error, recipientCount: recipients.length }, n.name);
-      else logger.log(null, `schedule.${n.type}`, { recipientCount: recipients.length }, n.name);
+      if (!result.ok) {
+        logger.warn(null, `schedule.${n.type}`, { error: result.error, recipientCount: recipients.length }, n.name);
+      } else {
+        db.prepare("UPDATE scheduled_notification SET sent = 1 WHERE id = ?").run(n.id);
+        logger.log(null, `schedule.${n.type}`, { recipientCount: recipients.length }, n.name);
+      }
     } catch (e) {
-      db.prepare("UPDATE scheduled_notification SET sent = 1 WHERE id = ?").run(n.id);
       logger.warn(null, `schedule.${n.type}`, { error: e.message }, n.name);
     }
   }

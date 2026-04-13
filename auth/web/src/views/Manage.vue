@@ -34,8 +34,8 @@ if (!currentUser || currentUser.role !== "admin") {
   window.location.href = "/";
 }
 
-async function fetchUsers() {
-  loading.value = true;
+async function fetchUsers(showLoading = false) {
+  if (showLoading) loading.value = true;
   try {
     const res = await fetch(`${BASE_URL}/api/users`);
     if (res.status === 401) {
@@ -459,7 +459,7 @@ async function removeOpsDisplay(user) {
 }
 
 onMounted(() => {
-  fetchUsers();
+  fetchUsers(true);
   fetchOpsDisplay();
 });
 </script>
