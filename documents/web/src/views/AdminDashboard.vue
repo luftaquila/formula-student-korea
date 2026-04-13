@@ -171,6 +171,11 @@ function closeAllDropdowns() {
   dropdownOpen.value = {};
 }
 
+async function reloadStudentTeams() {
+  const res = await request(`/api/admin/student-teams?year=${selectedYear.value}`);
+  studentTeams.value = await res.json();
+}
+
 async function assignStudent(teamNum, email) {
   dropdownOpen.value[teamNum] = false;
   const current = teamStudentMap.value[teamNum];
@@ -181,7 +186,7 @@ async function assignStudent(teamNum, email) {
       method: "POST",
       body: JSON.stringify({ email, team_num: teamNum, year: selectedYear.value }),
     });
-    await loadData();
+    await reloadStudentTeams();
   } catch (e) { notyf.error(e.message); }
 }
 
@@ -190,7 +195,7 @@ async function clearStudent(teamNum) {
   if (!current) return;
   try {
     await request(`/api/admin/student-teams/${encodeURIComponent(current)}/${selectedYear.value}`, { method: "DELETE" });
-    await loadData();
+    await reloadStudentTeams();
   } catch (e) { notyf.error(e.message); }
 }
 
