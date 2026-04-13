@@ -1,8 +1,8 @@
 # 비즈니스 흐름 문서
 
-전체 9개 서비스의 비즈니스 흐름을 서비스별로 정리한 문서입니다.
+전체 10개 서비스의 비즈니스 흐름을 서비스별로 정리한 문서입니다.
 
-> **공통 엔드포인트**: 모든 9개 서비스는 `GET /api/health` (public, 헬스체크)와 `GET /api/logs` (admin, 로컬 서비스 로그 조회) 엔드포인트를 공통으로 노출합니다.
+> **공통 엔드포인트**: 모든 10개 서비스는 `GET /api/health` (public, 헬스체크)와 `GET /api/logs` (admin, 로컬 서비스 로그 조회) 엔드포인트를 공통으로 노출합니다.
 
 ## 목차
 
@@ -15,7 +15,8 @@
 - [7. Documents 서비스](#7-documents-서비스)
 - [8. Course 서비스](#8-course-서비스)
 - [9. Calendar 서비스](#9-calendar-서비스)
-- [10. 서비스 간 연동 흐름](#10-서비스-간-연동-흐름)
+- [10. Email 서비스](#10-email-서비스)
+- [11. 서비스 간 연동 흐름](#11-서비스-간-연동-흐름)
 
 ---
 
@@ -372,9 +373,16 @@
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 9.1 | 일정 목록 조회 | public | `GET /api/events` | `timeMin`~`timeMax` 범위의 이벤트 조회, 사용자 role에 따라 필터링 |
-| 9.2 | 일정 생성 | chief | `POST /api/events` | `{ title, start, end, description?, location?, allDay?, role? }` → 이벤트 생성 |
+| 9.2 | 일정 생성 | chief | `POST /api/events` | `{ title, start, end, description?, location?, allDay?, role? }` → 이벤트 생성, role 기본값 "official" |
 | 9.3 | 일정 수정 | chief | `PUT /api/events/:id` | 이벤트 내용 수정 |
 | 9.4 | 일정 삭제 | chief | `DELETE /api/events/:id` | 이벤트 삭제 |
+
+### 구독
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 9.5 | iCal 구독 URL 조회 | student | `GET /api/events/subscribe` | 사용자 role 기반 서명된 iCal 구독 URL 반환 |
+| 9.6 | iCal 피드 | public | `GET /api/events/ical` | `?role=&sig=` HMAC-SHA256 서명 검증 후 role 기반 필터링된 iCalendar 피드 반환 |
 
 ### 프론트엔드 뷰
 
@@ -384,7 +392,45 @@
 
 ---
 
-## 10. 서비스 간 연동 흐름
+## 10. Email 서비스
+
+이메일/SMS 관리 서비스. Brevo API로 이메일, Naver Cloud SENS로 SMS 전송. 설정 관리는 admin, 내부 서비스 연동은 X-Internal-Service 헤더로 인증.
+
+### 이메일 전송
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 10.1 | 이메일 전송 | admin | `POST /api/send` | `{ subject, htmlContent, recipients[] }` → Brevo API로 개별 전송, 수신자별 성공/실패 로깅 |
+| 10.2 | 내부 이메일 전송 | 내부 | `POST /api/internal/send` | 다른 서비스(auth, documents)에서 호출, `source` 필드로 발신 서비스 식별 |
+| 10.3 | 테스트 이메일 | admin | `POST /api/test-email` | `{ recipient }` → 단일 수신자에게 테스트 메일 전송, Brevo 설정 검증용 |
+| 10.4 | 테스트 SMS | admin | `POST /api/test-sms` | `{ recipient }` → 단일 수신자에게 테스트 SMS 전송, Naver Cloud 설정 검증용 |
+
+### 설정
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 10.5 | 설정 조회 | admin | `GET /api/config` | Brevo/SMS 설정 조회, 민감 키는 마스킹 (`****`) |
+| 10.6 | 설정 변경 | admin | `PUT /api/config` | `{ key, value }[]` 일괄 저장, 마스킹된 값은 스킵 |
+| 10.7 | 설정 초기화 | admin | `POST /api/config/reset` | `{ group }` → brevo/sms 그룹별 설정 초기화 |
+| 10.8 | 이메일 활성/비활성 | admin | `PUT /api/config` | `email_enabled` 키로 전체 이메일 전송 토글 (FALSE 시 503) |
+
+### 전송 기록 및 통계
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 10.9 | 전송 기록 조회 | admin | `GET /api/emails` | `?page=&limit=` 페이지네이션, 최신순 |
+| 10.10 | 수신자 기록 조회 | admin | `GET /api/emails/:emailId/recipients` | 이메일별 수신자 목록 및 개별 전송 상태 |
+| 10.11 | 통계 조회 | admin | `GET /api/stats` | 오늘/전체 전송 건수, 성공/실패 집계 |
+
+### 내부 서비스 연동
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 10.12 | SMS 설정 조회 | 내부 | `GET /api/internal/sms-config` | Queue 서비스에서 SMS 발송용 설정(access key, secret, service ID, sender) 조회 |
+
+---
+
+## 11. 서비스 간 연동 흐름
 
 ### Score 집계 체인
 
@@ -414,13 +460,21 @@ Fail-close 방식: auth 서비스 무응답 또는 에러 시 세션 무효화.
 ### Auth 로그 집계
 
 ```
-Auth → Entry, Queue, Inspection, Traffic, Score, Documents: /api/logs 엔드포인트로 로그 수집
+Auth → Entry, Queue, Inspection, Traffic, Score, Documents, Calendar, Course, Email: /api/logs 엔드포인트로 로그 수집
 ```
 
 ### Documents 학생 조회
 
 ```
 Documents → Auth: GET /api/admin/students로 학생 목록 조회
+```
+
+### Email 연동
+
+```
+Auth → Email: POST /api/internal/send (계정 등록 알림)
+Documents → Email: POST /api/internal/send (서류 제출 알림, 마감 알림, 미제출 알림, 열린 세션 알림)
+Queue → Email: GET /api/internal/sms-config (SMS 설정 조회, 5분 주기 갱신)
 ```
 
 ### Entry → Documents 팀 번호 동기화

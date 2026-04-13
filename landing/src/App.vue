@@ -57,6 +57,7 @@
           <ServiceCard title="성적 관리" description="" path="/score" icon="📊" />
           <ServiceCard title="코스 관리" description="" path="/course" icon="📍" />
           <ServiceCard title="계정 관리" description="" path="/auth" icon="🔑" />
+          <ServiceCard title="이메일/SMS" description="" path="/email" icon="📧" />
           <ServiceCard title="시스템 로그" description="" path="/auth/logs" icon="📜" />
         </div>
       </section>

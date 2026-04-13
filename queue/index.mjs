@@ -152,14 +152,8 @@ db.transaction(() => {
   db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`).run("sms_rank", "3");
   db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`).run("cancel_penalty", "10");
 
-  if (
-    !process.env.NAVER_CLOUD_ACCESS_KEY ||
-    !process.env.NAVER_CLOUD_SECRET_KEY ||
-    !process.env.NAVER_CLOUD_SMS_SERVICE_ID ||
-    !process.env.PHONE_NUMBER_SMS_SENDER
-  ) {
-    db.prepare(`UPDATE settings SET value = ? WHERE key = ?`).run("FALSE", "sms");
-  }
+  // SMS 설정은 이메일 서비스에서 가져오거나 환경변수로 폴백
+  // loadSmsConfig()에서 비동기로 확인 후 활성화
 
   // 인덱스 생성
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ih_num_insp ON inspection_history(num, inspection)`);
@@ -1517,13 +1511,8 @@ app.get("/api/admin/settings/sms", (req, res) => {
 // PATCH /api/admin/settings/sms - SMS 설정 변경
 app.patch("/api/admin/settings/sms", (req, res) => {
   if (req.body.value === true) {
-    if (
-      !process.env.NAVER_CLOUD_ACCESS_KEY ||
-      !process.env.NAVER_CLOUD_SECRET_KEY ||
-      !process.env.NAVER_CLOUD_SMS_SERVICE_ID ||
-      !process.env.PHONE_NUMBER_SMS_SENDER
-    ) {
-      return res.status(400).send("SMS 환경 변수가 설정되지 않았습니다.");
+    if (!smsConfig) {
+      return res.status(400).send("SMS 설정이 되어 있지 않습니다. 이메일/SMS 서비스에서 설정해 주세요.");
     }
   }
 
@@ -1612,6 +1601,34 @@ async function getEntries() {
   return res.json();
 }
 
+let smsConfig = null;
+
+async function loadSmsConfig() {
+  const emailServer = process.env.EMAIL_SERVER;
+  if (emailServer) {
+    try {
+      const headers = {};
+      if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+      const res = await fetch(`${emailServer}/api/internal/sms-config`, { headers, signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.naver_cloud_access_key && data.naver_cloud_secret_key && data.naver_cloud_sms_service_id && data.phone_number_sms_sender) {
+          smsConfig = data;
+          return;
+        }
+      }
+    } catch (e) {
+      logger.warn(null, "sms.config_fetch", { error: e.message });
+    }
+  }
+  if (!smsConfig) {
+    db.prepare(`UPDATE settings SET value = ? WHERE key = ?`).run("FALSE", "sms");
+  }
+}
+
+// Refresh SMS config every 5 minutes to pick up admin changes
+setInterval(loadSmsConfig, 5 * 60 * 1000);
+
 function sendSmsNotification(type, prev) {
   try {
     if (db.prepare(`SELECT value FROM settings WHERE key = 'sms'`).get()?.value !== "TRUE") {
@@ -1623,23 +1640,25 @@ function sendSmsNotification(type, prev) {
     const target = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(...getQueueParams(type, year), smsRank - 1);
 
     if (target && (!prev || target.num !== prev.num)) {
+      if (!smsConfig) return;
+
       const payload = {
         hostname: "sens.apigw.ntruss.com",
         port: 443,
-        path: `/sms/v2/services/${process.env.NAVER_CLOUD_SMS_SERVICE_ID}/messages`,
+        path: `/sms/v2/services/${smsConfig.naver_cloud_sms_service_id}/messages`,
         method: "POST",
         headers: {
           "Content-Type": "application/json; charset=utf-8",
-          "x-ncp-apigw-timestamp": Date.now(),
-          "x-ncp-iam-access-key": process.env.NAVER_CLOUD_ACCESS_KEY,
+          "x-ncp-apigw-timestamp": String(Date.now()),
+          "x-ncp-iam-access-key": smsConfig.naver_cloud_access_key,
           "x-ncp-apigw-signature-v2": "",
         },
       };
 
       const secret = crypto
-        .createHmac("sha256", process.env.NAVER_CLOUD_SECRET_KEY)
+        .createHmac("sha256", smsConfig.naver_cloud_secret_key)
         .update(
-          `${payload.method} ${payload.path}\n${payload.headers["x-ncp-apigw-timestamp"]}\n${process.env.NAVER_CLOUD_ACCESS_KEY}`,
+          `${payload.method} ${payload.path}\n${payload.headers["x-ncp-apigw-timestamp"]}\n${smsConfig.naver_cloud_access_key}`,
         )
         .digest("base64");
 
@@ -1648,7 +1667,13 @@ function sendSmsNotification(type, prev) {
       const sms = https.request(payload, (res) => {
         let data = "";
         res.on("data", (chunk) => (data += chunk));
-        res.on("end", () => logger.log(null, "sms.send", { response: data, num: target.num, type }));
+        res.on("end", () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            logger.log(null, "sms.send", { response: data, num: target.num, type });
+          } else {
+            logger.warn(null, "sms.send", { error: data, status: res.statusCode, num: target.num, type });
+          }
+        });
       });
 
       sms.setTimeout(5000, () => {
@@ -1659,7 +1684,7 @@ function sendSmsNotification(type, prev) {
       sms.write(
         JSON.stringify({
           type: "SMS",
-          from: process.env.PHONE_NUMBER_SMS_SENDER,
+          from: smsConfig.phone_number_sms_sender,
           content: `[FSK ${new Date().getFullYear()}]\n엔트리 ${target.num}번 ${inspections[type]} 검차 대기 순서 ${smsRank}번입니다.\n차량과 함께 검차장으로 오세요.`,
           messages: [{ to: target.phone }],
         }),
@@ -1736,13 +1761,13 @@ app.get("/{*splat}", (req, res) => {
   res.sendFile("index.html", { root: "./web/dist" });
 });
 
-return { app, db };
+return { app, db, loadSmsConfig };
 }
 
 const isDirectRun = import.meta.filename === process.argv[1];
 if (isDirectRun) {
   ensureDataDir();
-  const { app, db } = createQueueApp();
+  const { app, db, loadSmsConfig: load } = createQueueApp();
   setupProcessHandlers(db);
-  app.listen(9300);
+  load().then(() => app.listen(9300));
 }

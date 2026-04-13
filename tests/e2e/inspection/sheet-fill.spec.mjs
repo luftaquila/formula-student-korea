@@ -267,8 +267,10 @@ test.describe("Inspection sheet filling", () => {
     const newText = currentText === "BAT-2025-001" ? "BAT-2025-002" : "BAT-2025-001";
 
     // Enter a text value and blur to trigger debounced save
+    const saveP = page.waitForResponse((res) => res.url().includes("/api/sheet/answer") && res.status() === 200);
     await textInput.fill(newText);
     await textInput.blur();
+    await saveP;
 
     // Get template to find item ID
     const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);

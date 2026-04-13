@@ -53,6 +53,8 @@ jobs:
               - 'course/**'
             calendar:
               - 'calendar/**'
+            email:
+              - 'email/**'
             landing:
               - 'landing/**'
 
@@ -71,10 +73,11 @@ jobs:
           F_DOCUMENTS: ${{ steps.filter.outputs.documents }}
           F_COURSE: ${{ steps.filter.outputs.course }}
           F_CALENDAR: ${{ steps.filter.outputs.calendar }}
+          F_EMAIL: ${{ steps.filter.outputs.email }}
           F_LANDING: ${{ steps.filter.outputs.landing }}
         run: |
-          declare -A PORTS=([auth]=9100 [entry]=9200 [queue]=9300 [inspection]=9400 [traffic]=9500 [score]=9600 [documents]=9700 [course]=10000 [calendar]=11000)
-          STANDARD=(auth entry queue inspection traffic score documents course calendar)
+          declare -A PORTS=([auth]=9100 [entry]=9200 [queue]=9300 [inspection]=9400 [traffic]=9500 [score]=9600 [documents]=9700 [email]=9900 [course]=10000 [calendar]=11000)
+          STANDARD=(auth entry queue inspection traffic score documents email course calendar)
           RUNNERS=("ubuntu-latest:linux/amd64:amd64" "ubuntu-24.04-arm:linux/arm64:arm64")
           BUILD_INCLUDES=()
           SVC_INCLUDES=()
@@ -101,7 +104,7 @@ jobs:
             declare -A FILTERS=(
               [auth]="$F_AUTH" [entry]="$F_ENTRY" [queue]="$F_QUEUE"
               [inspection]="$F_INSPECTION" [traffic]="$F_TRAFFIC" [score]="$F_SCORE"
-              [documents]="$F_DOCUMENTS" [course]="$F_COURSE" [calendar]="$F_CALENDAR"
+              [documents]="$F_DOCUMENTS" [email]="$F_EMAIL" [course]="$F_COURSE" [calendar]="$F_CALENDAR"
             )
             for svc in "${STANDARD[@]}"; do
               if [ "${FILTERS[$svc]}" = "true" ] || [ "$SHARED" = "true" ] || [ "$DOCKERFILE_SVC" = "true" ]; then

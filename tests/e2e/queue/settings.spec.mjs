@@ -219,8 +219,8 @@ test.describe("Queue settings management", () => {
     expect(activeTypes2).toContain("noise");
   });
 
-  test("SMS enable fails without env vars (API level)", async ({ page }) => {
-    // SMS enable requires NAVER_CLOUD env vars not present in CI
+  test("SMS enable fails without config (API level)", async ({ page }) => {
+    // SMS enable requires SMS config from email service (not configured in CI)
     const res = await fetch(`${BASE_URL}/queue/api/admin/settings/sms`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
@@ -228,7 +228,7 @@ test.describe("Queue settings management", () => {
     });
     expect(res.status).toBe(400);
     const text = await res.text();
-    expect(text).toContain("환경 변수");
+    expect(text).toContain("SMS 설정");
 
     // Disabling should always work
     const res2 = await fetch(`${BASE_URL}/queue/api/admin/settings/sms`, {

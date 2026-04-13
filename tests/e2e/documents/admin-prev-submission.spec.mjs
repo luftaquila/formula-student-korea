@@ -107,4 +107,23 @@ test.describe("Documents admin previous submission display", () => {
     const team2Row = table.locator("tbody tr").filter({ hasText: "한양대학교" });
     await expect(team2Row.locator(".col-team-expand")).not.toBeVisible();
   });
+
+  test("restore original submission for other tests", async ({ browser }) => {
+    const studentCtx = await browser.newContext({
+      storageState: storageStatePath("student"),
+    });
+    const studentPage = await studentCtx.newPage();
+
+    const sessionsRes = await studentPage.request.get("/documents/api/sessions");
+    const sessionsData = await sessionsRes.json();
+    const session = sessionsData.sessions.find((s) => s.name === "E2E 테스트 세션");
+
+    const res = await studentPage.request.post(`/documents/api/sessions/${session.id}/submit`, {
+      multipart: { files: { name: "e2e-test-document.pdf", mimeType: "application/pdf", buffer: pdfContent } },
+    });
+    expect(res.ok()).toBeTruthy();
+
+    await studentPage.close();
+    await studentCtx.close();
+  });
 });

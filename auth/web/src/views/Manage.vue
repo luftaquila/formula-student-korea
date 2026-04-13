@@ -509,7 +509,7 @@ onMounted(() => {
           <div class="header-btns">
             <button v-if="selectedIds.size > 0" class="btn btn-sm btn-ghost" @click="bulkDeactivate">선택 비활성화 ({{ selectedIds.size }})</button>
             <button v-if="selectedIds.size > 0" class="btn btn-sm btn-danger" @click="bulkDelete">선택 삭제 ({{ selectedIds.size }})</button>
-            <button class="btn btn-sm btn-ghost" @click="exportCSV">CSV 내보내기</button>
+            <button class="btn btn-sm btn-ghost" @click="exportCSV">CSV 다운로드</button>
             <button class="btn btn-sm btn-ghost" @click="uploadCSV">CSV 업로드</button>
           </div>
         </div>

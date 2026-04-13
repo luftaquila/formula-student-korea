@@ -89,6 +89,17 @@ db.exec(`CREATE TABLE IF NOT EXISTS submission_file (
 // 마이그레이션: allowed_extensions 컬럼 추가
 addColumn(db, "session", "allowed_extensions TEXT DEFAULT ''");
 
+// 예약 알림 테이블
+db.exec(`CREATE TABLE IF NOT EXISTS scheduled_notification (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  scheduled_at TEXT NOT NULL,
+  sent INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+)`);
+db.exec("CREATE INDEX IF NOT EXISTS idx_sn_pending ON scheduled_notification(sent, scheduled_at)");
+
 // 업로드 디렉토리 생성
 const UPLOADS_DIR = options.uploadsDir || path.resolve("./data/uploads");
 const TMP_DIR = path.join(UPLOADS_DIR, "_tmp");
@@ -131,6 +142,21 @@ const dbRun = createDbRun();
    ============================================ */
 function now() {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
+}
+
+/** UTC DB date string → KST display "YYYY-MM-DD HH:MM" */
+function toKST(utcStr) {
+  if (!utcStr) return "";
+  const d = new Date(utcStr.replace(" ", "T") + "Z");
+  d.setHours(d.getHours() + 9);
+  return d.toISOString().replace("T", " ").slice(0, 16);
+}
+
+/** Subtract hours from UTC date string → UTC date string */
+function subtractHours(utcStr, hours) {
+  const d = new Date(utcStr.replace(" ", "T") + "Z");
+  d.setHours(d.getHours() - hours);
+  return d.toISOString().replace("T", " ").slice(0, 19);
 }
 
 function safeExt(filename) {
@@ -504,6 +530,10 @@ app.post("/api/admin/sessions", (req, res) => {
   if (!txResult.success) { logger.warn(req, "session.create", { error: txResult.error }, name.trim()); return res.status(txResult.status).send(txResult.error); }
   logger.log(req, "session.create", { year: numYear, teams: teams.length }, name.trim());
   res.status(201).json(txResult.result);
+
+  // 예약 알림 등록 (세션 시작 시, 마감 3시간 전, 마감 1시간 전)
+  try { scheduleSessionNotifications(txResult.result.id, start_at, end_at); }
+  catch (e) { logger.warn(req, "schedule.register", { error: e.message, sessionId: txResult.result.id }); }
 });
 
 // PUT /api/admin/sessions/:id - 세션 수정
@@ -572,6 +602,10 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   }
   logger.log(req, "session.update", { year: session.year, teams: teams.length }, name.trim());
   res.status(200).send();
+
+  // 예약 알림 재등록 (날짜 변경 반영)
+  try { scheduleSessionNotifications(id, start_at, end_at); }
+  catch (e) { logger.warn(req, "schedule.register", { error: e.message, sessionId: id }); }
 });
 
 // DELETE /api/admin/sessions/:id - 세션 삭제
@@ -740,6 +774,8 @@ app.post("/api/admin/student-teams", (req, res) => {
 
   logger.log(req, "student_team.create", { team_num: Number(team_num), year: Number(year) }, email.trim().toLowerCase());
   res.status(201).json({ email: email.trim().toLowerCase(), team_num: Number(team_num), year: Number(year) });
+
+  notifyOpenSessions(req, email.trim().toLowerCase(), numTeam, numYear);
 });
 
 // DELETE /api/admin/student-teams/:email/:year - 학생-팀 매핑 삭제
@@ -976,13 +1012,178 @@ app.delete("/api/internal/team/:num", (req, res) => {
 });
 
 /* ============================================
+   Email Notification
+   ============================================ */
+/* ============================================
+   예약 알림 시스템
+   ============================================ */
+
+/** 세션에 대한 예약 알림 등록 (미전송 건만 삭제 후 재등록) */
+function scheduleSessionNotifications(sessionId, start_at, end_at) {
+  db.prepare("DELETE FROM scheduled_notification WHERE session_id = ? AND sent = 0").run(sessionId);
+
+  const currentTime = now();
+  const insert = db.prepare("INSERT INTO scheduled_notification (session_id, type, scheduled_at) VALUES (?, ?, ?)");
+
+  // 제출 시작 알림: start_at이 미래면 예약, 과거면 즉시 발송 대상
+  if (start_at > currentTime) {
+    insert.run(sessionId, "session_open", start_at);
+  } else {
+    insert.run(sessionId, "session_open", currentTime);
+  }
+
+  // 마감 3시간 전 알림
+  const h3 = subtractHours(end_at, 3);
+  if (h3 > currentTime) {
+    insert.run(sessionId, "deadline_3h", h3);
+  }
+
+  // 마감 1시간 전 알림 (미제출 팀만)
+  const h1 = subtractHours(end_at, 1);
+  if (h1 > currentTime) {
+    insert.run(sessionId, "deadline_1h", h1);
+  }
+}
+
+/** 이메일 전송 공통 */
+async function sendNotificationEmail(subject, htmlContent, recipients) {
+  const emailServer = process.env.EMAIL_SERVER;
+  if (!emailServer || !process.env.INTERNAL_SECRET) return { ok: false, error: "EMAIL_SERVER not configured" };
+
+  const resp = await fetch(`${emailServer}/api/internal/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Internal-Service": process.env.INTERNAL_SECRET },
+    body: JSON.stringify({ subject, htmlContent, recipients, source: "documents" }),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!resp.ok) return { ok: false, error: await resp.text() };
+  return { ok: true };
+}
+
+/** 예약 알림 처리 — 1분마다 실행 */
+async function processScheduledNotifications() {
+  const currentTime = now();
+  const pending = db.prepare(
+    "SELECT sn.*, s.name, s.notice, s.start_at, s.end_at, s.late_end_at, s.year FROM scheduled_notification sn JOIN session s ON sn.session_id = s.id WHERE sn.sent = 0 AND sn.scheduled_at <= ?",
+  ).all(currentTime);
+
+  for (const n of pending) {
+    try {
+      const url = process.env.PUBLIC_URL || "https://fsk.luftaquila.io";
+      const deadline = toKST(n.late_end_at || n.end_at);
+
+      // 수신자 결정
+      let recipients;
+      if (n.type === "deadline_1h") {
+        // 미제출 팀 학생만
+        recipients = db.prepare(
+          `SELECT st2.email FROM session_team st
+           JOIN student_team st2 ON st.team_num = st2.team_num AND st2.year = ?
+           WHERE st.session_id = ?
+             AND st.team_num NOT IN (SELECT team_num FROM submission WHERE session_id = ?)`,
+        ).all(n.year, n.session_id, n.session_id).map((r) => r.email);
+      } else {
+        // 전체 대상 팀 학생
+        recipients = db.prepare(
+          `SELECT st2.email FROM session_team st
+           JOIN student_team st2 ON st.team_num = st2.team_num AND st2.year = ?
+           WHERE st.session_id = ?`,
+        ).all(n.year, n.session_id).map((r) => r.email);
+      }
+
+      db.prepare("UPDATE scheduled_notification SET sent = 1 WHERE id = ?").run(n.id);
+
+      if (recipients.length === 0) continue;
+
+      let subject, htmlContent;
+
+      if (n.type === "session_open") {
+        subject = `[FSK] 서류 제출 안내: ${n.name}`;
+        htmlContent =
+          `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 안내</h2>` +
+          (n.notice ? `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${n.notice}</p>` : "") +
+          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">제출 기간: ${toKST(n.start_at)} ~ ${deadline} (KST)</p>` +
+          `<p style="margin:0;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>`;
+      } else if (n.type === "deadline_3h") {
+        subject = `[FSK] 서류 제출 마감 3시간 전: ${n.name}`;
+        htmlContent =
+          `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 마감 안내</h2>` +
+          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${n.name} 서류 제출 마감이 3시간 남았습니다.</p>` +
+          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">마감: ${deadline} (KST)</p>` +
+          `<p style="margin:0 0 8px;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>` +
+          `<p style="margin:0;font-size:12px;color:#888">본 메일은 서류 제출 여부와 관계없이 발송되는 마감 안내 메일입니다.</p>`;
+      } else if (n.type === "deadline_1h") {
+        subject = `[FSK] 서류 미제출 알림: ${n.name}`;
+        htmlContent =
+          `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 미제출 알림</h2>` +
+          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${n.name} 서류가 아직 제출되지 않았습니다. 마감까지 1시간 남았습니다.</p>` +
+          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">마감: ${deadline} (KST)</p>` +
+          `<p style="margin:0;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>`;
+      }
+
+      const result = await sendNotificationEmail(subject, htmlContent, recipients);
+      if (!result.ok) logger.warn(null, `schedule.${n.type}`, { error: result.error, recipientCount: recipients.length }, n.name);
+      else logger.log(null, `schedule.${n.type}`, { recipientCount: recipients.length }, n.name);
+    } catch (e) {
+      db.prepare("UPDATE scheduled_notification SET sent = 1 WHERE id = ?").run(n.id);
+      logger.warn(null, `schedule.${n.type}`, { error: e.message }, n.name);
+    }
+  }
+}
+
+// 1분마다 예약 알림 처리
+const _schedulerInterval = setInterval(processScheduledNotifications, 60_000);
+// 서버 시작 후 5초 뒤 첫 실행 (밀린 알림 즉시 처리)
+setTimeout(processScheduledNotifications, 5000);
+
+/** 계정 할당 시 현재 열린 세션 알림 */
+async function notifyOpenSessions(req, email, teamNum, year) {
+  const emailServer = process.env.EMAIL_SERVER;
+  if (!emailServer || !process.env.INTERNAL_SECRET) return;
+
+  try {
+    const currentTime = now();
+    const openSessions = db.prepare(
+      `SELECT s.id, s.name, s.end_at, s.late_end_at FROM session s
+       JOIN session_team st ON s.id = st.session_id
+       WHERE st.team_num = ? AND s.year = ? AND s.start_at <= ? AND COALESCE(NULLIF(s.late_end_at, ''), s.end_at) > ?
+         AND s.id NOT IN (SELECT session_id FROM submission WHERE team_num = ?)
+       ORDER BY COALESCE(NULLIF(s.late_end_at, ''), s.end_at) ASC`
+    ).all(teamNum, year, currentTime, currentTime, teamNum);
+
+    if (openSessions.length === 0) return;
+
+    const url = process.env.PUBLIC_URL || "https://fsk.luftaquila.io";
+    const sessionList = openSessions.map((s) => {
+      const deadline = toKST(s.late_end_at || s.end_at);
+      return `<li><strong>${s.name}</strong> (마감: ${deadline} KST)</li>`;
+    }).join("");
+
+    const result = await sendNotificationEmail(
+      `[FSK] 제출 대기 중인 서류가 있습니다`,
+      `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 안내</h2>` +
+        `<p style="margin:0 0 12px;font-size:14px;line-height:1.6">현재 제출 대기 중인 서류 세션이 있습니다.</p>` +
+        `<ul style="margin:0 0 16px;padding-left:20px;font-size:14px;line-height:1.8">${sessionList}</ul>` +
+        `<p style="margin:0;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>`,
+      [email],
+    );
+
+    if (!result.ok) logger.warn(req, "student_team.notify", { error: result.error }, email);
+    else logger.log(req, "student_team.notify", { sessionCount: openSessions.length }, email);
+  } catch (e) {
+    logger.warn(req, "student_team.notify", { error: e.message }, email);
+  }
+}
+
+/* ============================================
    SPA Fallback
    ============================================ */
 app.get("/{*splat}", (req, res) => {
   res.sendFile("index.html", { root: "./web/dist" });
 });
 
-return { app, db };
+return { app, db, _schedulerInterval };
 }
 
 const isDirectRun = import.meta.filename === process.argv[1];

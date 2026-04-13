@@ -121,10 +121,7 @@ services:
       <<: *common-env
       ENTRY_SERVER: http://entry:9200
       AUTH_SERVER: http://auth:9100
-      NAVER_CLOUD_ACCESS_KEY: ${NAVER_CLOUD_ACCESS_KEY}
-      NAVER_CLOUD_SECRET_KEY: ${NAVER_CLOUD_SECRET_KEY}
-      NAVER_CLOUD_SMS_SERVICE_ID: ${NAVER_CLOUD_SMS_SERVICE_ID}
-      PHONE_NUMBER_SMS_SENDER: ${PHONE_NUMBER_SMS_SENDER}
+      EMAIL_SERVER: http://email:9900
     volumes:
       - ./queue/data:/home/node/fsk-queue/data
     restart: unless-stopped
@@ -242,12 +239,40 @@ services:
       <<: *common-env
       AUTH_SERVER: http://auth:9100
       ENTRY_SERVER: http://entry:9200
+      EMAIL_SERVER: http://email:9900
     volumes:
       - ./documents/data:/home/node/fsk-documents/data
     restart: unless-stopped
     healthcheck:
       <<: *common-healthcheck
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9700/api/health"]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - fsk-network
+
+  email:
+    image: ghcr.io/luftaquila/formula-student-korea/email:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: email
+        PORT: 9900
+    container_name: fsk-email
+    security_opt:
+      - label:disable
+    environment:
+      <<: *common-env
+      AUTH_SERVER: http://auth:9100
+    volumes:
+      - ./email/data:/home/node/fsk-email/data
+    restart: unless-stopped
+    healthcheck:
+      <<: *common-healthcheck
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9900/api/health"]
     deploy:
       resources:
         limits:
@@ -268,7 +293,8 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      LOG_SERVICES: "entry:http://entry:9200,queue:http://queue:9300,inspection:http://inspection:9400,traffic:http://traffic:9500,score:http://score:9600,documents:http://documents:9700,calendar:http://calendar:11000,course:http://course:10000"
+      LOG_SERVICES: "entry:http://entry:9200,queue:http://queue:9300,inspection:http://inspection:9400,traffic:http://traffic:9500,score:http://score:9600,documents:http://documents:9700,calendar:http://calendar:11000,course:http://course:10000,email:http://email:9900"
+      EMAIL_SERVER: http://email:9900
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
@@ -333,6 +359,7 @@ services:
       - score
       - documents
       - calendar
+      - email
       - filebrowser
       - auth
     restart: unless-stopped

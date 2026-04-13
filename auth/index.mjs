@@ -92,6 +92,34 @@ const validateUser = (email) => {
 
 const logger = createLogger(db, "auth");
 
+const EMAIL_SERVER = process.env.EMAIL_SERVER;
+
+async function notifyNewUser(emails) {
+  if (!EMAIL_SERVER || !process.env.INTERNAL_SECRET) return;
+  try {
+    const list = Array.isArray(emails) ? emails : [emails];
+    const url = process.env.PUBLIC_URL || "https://fsk.luftaquila.io";
+    await fetch(`${EMAIL_SERVER}/api/internal/send`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Service": process.env.INTERNAL_SECRET,
+      },
+      body: JSON.stringify({
+        subject: "[FSK] 계정 등록 완료",
+        htmlContent:
+          `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea Service Hub 계정이 등록되었습니다.</h2>` +
+          `<p style="margin:0;font-size:14px;line-height:1.6">Google 계정으로 <a href="${url}">FSK Service Hub</a>에 로그인하여 서비스를 이용하세요.</p>`,
+        recipients: list,
+        source: "auth",
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (e) {
+    logger.warn(null, "email.notify", { error: e.message, emails });
+  }
+}
+
 const app = createApp({ express, validateUser, db }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/forward-auth") return null;
@@ -386,6 +414,7 @@ app.post("/api/users", (req, res) => {
   }
 
   logger.log(req, "user.create", { role }, email.trim().toLowerCase());
+  notifyNewUser(email.trim().toLowerCase());
   res.status(201).json({ id: result.result.lastInsertRowid, email: email.trim().toLowerCase(), role });
 });
 
@@ -424,6 +453,7 @@ app.post("/api/users/bulk", (req, res) => {
   }
 
   logger.log(req, "user.create_bulk", { added, skipped });
+  if (added.length > 0) notifyNewUser(added);
   res.json({ added: added.length, skipped: skipped.length, errors });
 });
 

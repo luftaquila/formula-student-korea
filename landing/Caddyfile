@@ -140,6 +140,15 @@
 		reverse_proxy energymeter:9800
 	}
 
+	# Email service
+	redir /email /email/
+	handle_path /email/* {
+		request_header -X-Internal-Service
+		request_header -Authuser
+		request_header -X-Forwarded-For
+		reverse_proxy email:9900
+	}
+
 	# Landing page (static files)
 	handle {
 		root * /srv/landing

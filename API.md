@@ -1,6 +1,6 @@
 # API.md
 
-Complete API reference for all 9 backend services. Each service exposes `/api/health` (public, returns `"ok"`) and `/api/logs` (admin, query handler from `shared/logger.mjs`). Services with real-time updates expose an SSE endpoint. All services except entry have a SPA fallback (`GET /{*splat}`) serving `index.html`.
+Complete API reference for all 10 backend services. Each service exposes `/api/health` (public, returns `"ok"`) and `/api/logs` (admin, query handler from `shared/logger.mjs`). Services with real-time updates expose an SSE endpoint. All services except entry have a SPA fallback (`GET /{*splat}`) serving `index.html`.
 
 All mutating endpoints are logged via `shared/logger.mjs`.
 
@@ -330,6 +330,60 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 ---
 
+## Email Service (port 9900)
+
+이메일/SMS 관리 서비스. Brevo API 기반 이메일 전송, 대시보드, Brevo/Naver Cloud SMS 설정 관리. 모든 엔드포인트 admin 전용 (health, internal API 제외).
+
+### Config
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/config` | admin | — | `{ brevo_api_key: "****xxxx", brevo_sender_name, brevo_sender_email, naver_cloud_access_key: "****xxxx", ... }` | 설정 목록 (민감 키는 마스킹) |
+| PUT | `/api/config` | admin | `{ configs: [{ key, value }] }` | `{ updated: ["key1", ...] }` | 설정 업데이트 (빈 값·마스킹 값 무시) |
+| POST | `/api/config/reset` | admin | `{ group: "brevo" \| "sms" }` | `{ reset: ["key1", ...] }` | 그룹 설정 일괄 초기화 |
+
+Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sender_email`, `naver_cloud_access_key`, `naver_cloud_secret_key`, `naver_cloud_sms_service_id`, `phone_number_sms_sender`
+
+### Stats & Quota
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/stats` | admin | — | `{ sent: 12, errors: 0, totalSent: 100, totalErrors: 3 }` | 오늘·누적 전송/오류 건수 |
+| GET | `/api/quota` | admin | — | `{ remaining: 288 }` or `{ remaining: null, error: "..." }` | Brevo 남은 일일 전송 가능 수 (GET /v3/account) |
+
+### Email Log
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/emails` | admin | `?limit=50&offset=0&status=sent\|error` | `{ rows: [{ id, subject, recipients, recipient_count, status, error, message_id, html_content, source, sent_at, sent_by }], total }` | 전송 기록 (페이지네이션, 상태 필터) |
+
+### Email Sending
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| POST | `/api/send` | admin | `{ subject, htmlContent, recipients: ["email@..."] }` | `{ success: true, messageId }` | 이메일 전송 (Brevo POST /v3/smtp/email). 전송 전 quota 확인 — 부족 시 400 |
+| GET | `/api/recipients` | admin | — | `[{ email, name, role, realname, active }]` | 수신자 목록 (auth 서비스에서 사용자 프록시) |
+
+- `email_enabled`가 `FALSE`이면 전송 거부 (503)
+- Quota 부족 시 응답: `400 "전송 가능한 메일 수(N건)가 수신자 수(M명)보다 적습니다."`
+- 전송 성공/실패 모두 email_log 테이블과 시스템 로그에 동시 기록
+
+### Test
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| POST | `/api/test-email` | admin | `{ recipient: "email@..." }` | `{ success: true }` | Brevo 설정 검증용 테스트 이메일 전송 |
+| POST | `/api/test-sms` | admin | `{ recipient: "01012345678" }` | `{ success: true }` | Naver Cloud SMS 설정 검증용 테스트 SMS 전송 |
+
+### Internal API
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| POST | `/api/internal/send` | internal | `{ subject, htmlContent, recipients: [...], source }` | `{ success: true, messageId }` | 다른 서비스용 이메일 전송 API. `source`로 호출 서비스 식별 (e.g., "auth") |
+| GET | `/api/internal/sms-config` | internal | — | `{ naver_cloud_access_key, naver_cloud_secret_key, naver_cloud_sms_service_id, phone_number_sms_sender }` | SMS 설정 (queue 서비스용, 마스킹 없이 원본값 반환) |
+
+---
+
 ## Course Service (port 10000)
 
 RTK GPS 기반 코스 콘 위치 관리 서비스. 모든 엔드포인트 admin 전용 (health, rover/stream, rover/position 제외).
@@ -386,10 +440,19 @@ RTK GPS 기반 코스 콘 위치 관리 서비스. 모든 엔드포인트 admin 
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/events` | public | `?timeMin=<ISO>&timeMax=<ISO>` | `[{ id, title, start, end, description, location, allDay, role }]` | 기간 내 이벤트 목록 (사용자 role에 따라 필터링) |
-| POST | `/api/events` | chief | `{ title, start, end, description?, location?, allDay? }` | 201 `{ id, title, start, end, ... }` | 이벤트 생성 |
-| PUT | `/api/events/:id` | chief | `{ title, start, end, description?, location?, allDay? }` | `{ id, title, start, end, ... }` | 이벤트 수정 |
+| GET | `/api/events` | public | `?timeMin=<ISO>&timeMax=<ISO>` | `[{ id, title, start, end, description, location, allDay, calendarId, role }]` | 기간 내 이벤트 목록 (사용자 role에 따라 필터링) |
+| POST | `/api/events` | chief | `{ title, start, end, role?, description?, location?, allDay? }` | 201 `{ id, title, start, end, description, location, allDay, calendarId, role }` | 이벤트 생성 (role 기본값 "official", 자신의 role 이하만 설정 가능) |
+| PUT | `/api/events/:id` | chief | `{ title, start, end, role?, description?, location?, allDay? }` | `{ id, title, start, end, description, location, allDay, calendarId, role }` | 이벤트 수정 |
 | DELETE | `/api/events/:id` | chief | — | 204 | 이벤트 삭제 |
 
+### Subscribe / iCal
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/events/subscribe` | student | — | `{ role, path }` | 사용자 role 기반 서명된 iCal 구독 URL 반환 |
+| GET | `/api/events/ical` | public | `?role=<role>&sig=<hmac>` | `text/calendar` (iCalendar RFC 5545) | 서명 검증 후 role 기반 필터링된 iCal 피드 반환 |
+
+- `calendarId`: `role` 필드와 동일한 값 (캘린더 식별자)
 - `allDay: true` → `start`/`end`는 `YYYY-MM-DD` 형식
 - `allDay: false` → `start`/`end`는 `YYYY-MM-DD HH:mm` 형식, 타임존 Asia/Seoul
+- iCal 서명: HMAC-SHA256 (`JWT_SECRET`), PRODID `-//Formula Student Korea//Calendar//KO`

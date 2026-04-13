@@ -69,6 +69,7 @@ before(async () => {
   uploadsDir = path.join(os.tmpdir(), `fsk-test-uploads-${crypto.randomUUID()}`);
   const result = createDocumentsApp({ dbPath, uploadsDir });
   db = result.db;
+  if (result._schedulerInterval) clearInterval(result._schedulerInterval);
   const started = await startServer(result.app);
   server = started.server;
   baseUrl = started.baseUrl;
@@ -272,6 +273,16 @@ describe('Session management (admin API)', () => {
     sessionId = data.id;
   });
 
+  it('creates scheduled notifications when session is created', () => {
+    const rows = db.prepare('SELECT type, scheduled_at FROM scheduled_notification WHERE session_id = ? ORDER BY type').all(sessionId);
+    // start_at is past (2020), so session_open should be scheduled at ~now
+    // end_at is 2030, so deadline_3h and deadline_1h should be scheduled
+    assert.ok(rows.length >= 2, `expected >= 2 scheduled notifications, got ${rows.length}`);
+    const types = rows.map(r => r.type);
+    assert.ok(types.includes('deadline_3h'));
+    assert.ok(types.includes('deadline_1h'));
+  });
+
   it('POST /api/admin/sessions validates required fields (name)', async () => {
     const res = await client.post('/api/admin/sessions', {
       body: {
@@ -458,6 +469,10 @@ describe('Session management (admin API)', () => {
     });
     const { id } = await createRes.json();
 
+    // Verify scheduled notifications exist before delete
+    const beforeCount = db.prepare('SELECT count(*) as c FROM scheduled_notification WHERE session_id = ?').get(id).c;
+    assert.ok(beforeCount > 0, 'scheduled notifications should exist before delete');
+
     const res = await client.delete(`/api/admin/sessions/${id}`, { cookie: chiefCookie });
     assert.equal(res.status, 200);
 
@@ -465,6 +480,10 @@ describe('Session management (admin API)', () => {
     const listRes = await client.get('/api/admin/sessions', { cookie: chiefCookie });
     const data = await listRes.json();
     assert.ok(!data.find(s => s.id === id));
+
+    // Verify scheduled notifications cascaded
+    const afterCount = db.prepare('SELECT count(*) as c FROM scheduled_notification WHERE session_id = ?').get(id).c;
+    assert.equal(afterCount, 0, 'scheduled notifications should cascade on session delete');
   });
 });
 

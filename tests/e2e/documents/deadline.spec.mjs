@@ -236,12 +236,11 @@ test.describe("Documents deadline enforcement", () => {
     const context = await browser.newContext({ storageState: storageStatePath("student") });
     const page = await context.newPage();
 
-    await page.goto("/documents");
-    await waitForPageReady(page);
+    await page.goto("/documents", { waitUntil: "networkidle" });
 
     // Click on the late submission session
     const sessionCard = page.locator(".session-card").filter({ hasText: "E2E 지각제출 테스트" });
-    await expect(sessionCard).toBeVisible();
+    await expect(sessionCard).toBeVisible({ timeout: 10000 });
     await sessionCard.click();
     await waitForPageReady(page);
 

@@ -55,8 +55,7 @@ test.describe("Documents admin zip download", () => {
   });
 
   test("zip download link visible when multiple files exist", async ({ page }) => {
-    await page.goto("/documents/admin");
-    await waitForPageReady(page);
+    await page.goto("/documents/admin", { waitUntil: "networkidle" });
 
     const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
     await sessionLink.click();
@@ -91,8 +90,7 @@ test.describe("Documents admin zip download", () => {
     });
     const studentPage = await studentCtx.newPage();
 
-    await studentPage.goto("/documents");
-    await waitForPageReady(studentPage);
+    await studentPage.goto("/documents", { waitUntil: "networkidle" });
 
     const sessionCard = studentPage.locator(".session-card").filter({ hasText: "E2E 테스트 세션" });
     await sessionCard.click();
@@ -118,8 +116,7 @@ test.describe("Documents admin zip download", () => {
       storageState: storageStatePath("chief"),
     });
     const chiefPage = await chiefCtx.newPage();
-    await chiefPage.goto("/documents/admin");
-    await waitForPageReady(chiefPage);
+    await chiefPage.goto("/documents/admin", { waitUntil: "networkidle" });
 
     const sessionLink = chiefPage.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
     await sessionLink.click();
