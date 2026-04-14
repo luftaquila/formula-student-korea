@@ -40,7 +40,7 @@
             <thead>
               <tr>
                 <th class="col-time">시간</th>
-                <th>제목</th>
+                <th class="col-subject">제목</th>
                 <th class="col-shrink">수신자</th>
                 <th class="col-shrink">출처</th>
                 <th class="col-shrink">상태</th>
@@ -53,9 +53,9 @@
               <tr v-for="log in emailLogs" :key="log.id" class="row-clickable" @click="openLogDetail(log)">
                 <td class="col-time">{{ formatTime(log.sent_at) }}</td>
                 <td class="col-subject">{{ log.subject }}</td>
-                <td class="text-center">{{ log.recipient_count }}명</td>
-                <td><span class="badge badge-primary">{{ log.source }}</span></td>
-                <td>
+                <td class="col-shrink">{{ recipientDisplay(log.recipient) }}</td>
+                <td class="col-shrink"><span class="badge badge-primary">{{ log.source }}</span></td>
+                <td class="col-shrink">
                   <span class="badge" :class="log.status === 'sent' ? 'badge-success' : 'badge-danger'">
                     {{ log.status === 'sent' ? '성공' : '오류' }}
                   </span>
@@ -165,7 +165,7 @@
               </div>
               <div class="modal-row">
                 <span class="modal-label">수신자</span>
-                <span class="modal-value">{{ parseRecipients(selectedLog.recipients).join(', ') }}</span>
+                <span class="modal-value">{{ recipientDisplay(selectedLog.recipient) }}</span>
               </div>
               <div class="modal-row">
                 <span class="modal-label">출처</span>
@@ -318,9 +318,6 @@ function openLogDetail(log) {
   selectedLog.value = log;
 }
 
-function parseRecipients(json) {
-  try { return JSON.parse(json); } catch { return []; }
-}
 
 // ── Config ──
 const config = ref({});
@@ -541,10 +538,16 @@ function formatTime(ts) {
   return d.toLocaleString("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
+function recipientDisplay(email) {
+  const user = recipients.value.find((u) => u.email === email);
+  return user?.realname ? `${user.realname} (${email})` : email;
+}
+
 // ── Init ──
-onMounted(() => {
+onMounted(async () => {
   loadStats();
   fetchEmailLog(false);
+  try { recipients.value = await fetchRecipients(); } catch { /* non-critical */ }
   loadConfig();
 });
 </script>
@@ -615,17 +618,17 @@ onMounted(() => {
 }
 
 .col-time {
+  width: 1%;
   white-space: nowrap;
-  width: 160px;
 }
 
 .col-subject {
-  word-break: break-word;
+  white-space: nowrap;
 }
 
 .col-shrink {
+  width: 1%;
   white-space: nowrap;
-  width: 80px;
 }
 
 .text-center {

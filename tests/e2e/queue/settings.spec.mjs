@@ -184,8 +184,10 @@ test.describe("Queue settings management", () => {
     // Verify success notification
     await expectNotification(page, "success", "부스");
 
-    // Reload and verify persistence
+    // Reload and verify persistence — wait for settings API before asserting
+    const settingsLoaded = page.waitForResponse((res) => res.url().includes("/api/admin/all") && res.status() === 200);
     await page.reload();
+    await settingsLoaded;
     await waitForPageReady(page);
     await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
 

@@ -1110,7 +1110,7 @@ async function fetchEntries(year) {
 function teamHeaderHtml(teamNum, entries) {
   const entry = entries[teamNum];
   const label = entry ? `#${teamNum} ${escapeHtml(entry.univ)} ${escapeHtml(entry.team)}` : `#${teamNum}`;
-  return `<p style="margin:0 0 12px;font-size:15px;font-weight:bold;color:#555">${label}</p>`;
+  return `<p style="margin:0 0 12px;font-size:15px;font-weight:bold;font-style:italic;color:#333">${label}</p>`;
 }
 
 /** 예약 알림 처리 — 1분마다 실행 */

@@ -343,20 +343,20 @@ describe('Email API', () => {
       assert.ok(data.success);
       assert.equal(data.messageId, '<test-123>');
 
-      // Verify Brevo was called
+      // Verify Brevo was called per recipient
       const sendCalls = brevoCallLog.filter(c => c.type === 'send');
-      assert.ok(sendCalls.length >= 1);
+      assert.equal(sendCalls.length, 2);
     });
 
-    it('records email in log', async () => {
+    it('records per-recipient email log rows', async () => {
       const res = await client.get('/api/emails', { cookie: adminCookie });
       const data = await res.json();
-      assert.ok(data.total >= 1);
-      const lastLog = data.rows[0];
-      assert.equal(lastLog.subject, 'Test Email');
-      assert.equal(lastLog.status, 'sent');
-      assert.equal(lastLog.recipient_count, 2);
-      assert.equal(lastLog.source, 'manual');
+      const logs = data.rows.filter(r => r.subject === 'Test Email');
+      assert.equal(logs.length, 2);
+      assert.ok(logs.every(r => r.status === 'sent'));
+      const recipients = logs.map(r => r.recipient).sort();
+      assert.deepEqual(recipients, ['user1@test.com', 'user2@test.com']);
+      assert.equal(logs[0].source, 'manual');
     });
 
     it('rejects missing fields', async () => {

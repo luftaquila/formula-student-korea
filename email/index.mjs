@@ -43,8 +43,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS config (
 db.exec(`CREATE TABLE IF NOT EXISTS email_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   subject TEXT NOT NULL,
-  recipients TEXT NOT NULL,
-  recipient_count INTEGER NOT NULL DEFAULT 0,
+  recipient TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'sent',
   error TEXT,
   message_id TEXT,
@@ -56,6 +55,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS email_log (
 
 // Migration: add html_content column if missing
 try { db.exec("ALTER TABLE email_log ADD COLUMN html_content TEXT"); } catch { /* already exists */ }
+
+// Migration: recipients JSON array → recipient single string, drop legacy columns
+try {
+  db.exec("ALTER TABLE email_log ADD COLUMN recipient TEXT NOT NULL DEFAULT ''");
+  db.exec("UPDATE email_log SET recipient = json_extract(recipients, '$[0]') WHERE recipients LIKE '[%'");
+} catch { /* already migrated */ }
+try { db.exec("ALTER TABLE email_log DROP COLUMN recipients"); } catch { /* already dropped */ }
+try { db.exec("ALTER TABLE email_log DROP COLUMN recipient_count"); } catch { /* already dropped */ }
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_el_sent_at ON email_log(sent_at)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_el_status ON email_log(status)`);
@@ -167,9 +174,9 @@ app.post("/api/config/reset", (req, res) => {
 app.get("/api/stats", (req, res) => {
   const today = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
   const result = dbRun(() => {
-    const sent = db.prepare("SELECT COALESCE(SUM(recipient_count), 0) as count FROM email_log WHERE sent_at >= ? AND status = 'sent'").get(today);
+    const sent = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE sent_at >= ? AND status = 'sent'").get(today);
     const errors = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE sent_at >= ? AND status = 'error'").get(today);
-    const totalSent = db.prepare("SELECT COALESCE(SUM(recipient_count), 0) as count FROM email_log WHERE status = 'sent'").get();
+    const totalSent = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE status = 'sent'").get();
     const totalErrors = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE status = 'error'").get();
     return { sent: sent.count, errors: errors.count, totalSent: totalSent.count, totalErrors: totalErrors.count };
   });
@@ -273,7 +280,27 @@ app.post("/api/internal/send", async (req, res) => {
 });
 
 /* ============================================
-   Shared Send Logic
+   Brevo API Wrapper — single recipient, no side effects
+   ============================================ */
+async function sendBrevo({ apiKey, senderName, senderEmail, subject, wrappedHtml, recipient }) {
+  const resp = await fetchFn(`${BREVO_API_BASE}/smtp/email`, {
+    method: "POST",
+    headers: { "api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      sender: { name: senderName || "FSK", email: senderEmail },
+      to: [{ email: recipient }],
+      subject,
+      htmlContent: wrappedHtml,
+    }),
+    signal: AbortSignal.timeout(10000),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (resp.ok) return { ok: true, messageId: data.messageId };
+  return { ok: false, error: data.message || `Brevo API 오류 (${resp.status})`, status: resp.status >= 400 && resp.status < 500 ? 400 : 500 };
+}
+
+/* ============================================
+   Shared Send Logic — config/quota, per-recipient loop, logging
    ============================================ */
 async function sendEmail(req, res, { subject, htmlContent, recipients, source }) {
   if (getConfig("email_enabled") === "FALSE") {
@@ -324,72 +351,49 @@ async function sendEmail(req, res, { subject, htmlContent, recipients, source })
 ${htmlContent}
 </body></html>`;
 
-  // 수신자별 개별 발송
-  try {
-    let successCount = 0;
-    let lastMessageId = null;
-    let lastError = null;
-    let lastErrorStatus = 500;
+  let successCount = 0;
+  let lastMessageId = null;
+  let lastError = null;
+  let lastErrorStatus = 500;
 
-    for (const recipientEmail of recipients) {
-      try {
-        const resp = await fetchFn(`${BREVO_API_BASE}/smtp/email`, {
-          method: "POST",
-          headers: { "api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({
-            sender: { name: senderName || "FSK", email: senderEmail },
-            to: [{ email: recipientEmail }],
-            subject,
-            htmlContent: wrappedHtml,
-          }),
-          signal: AbortSignal.timeout(10000),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (resp.ok) {
-          successCount++;
-          lastMessageId = data.messageId || lastMessageId;
-        } else {
-          lastError = data.message || `Brevo API 오류 (${resp.status})`;
-          lastErrorStatus = resp.status >= 400 && resp.status < 500 ? 400 : 500;
-        }
-      } catch (e) {
-        lastError = e.message;
-        lastErrorStatus = 500;
-      }
+  for (const recipient of recipients) {
+    let result;
+    try {
+      result = await sendBrevo({ apiKey, senderName, senderEmail, subject, wrappedHtml, recipient });
+    } catch (e) {
+      result = { ok: false, error: e.message, status: 500 };
     }
 
-    if (successCount === 0) {
-      const errorMsg = lastError || "전송 실패";
+    // Per-recipient DB log
+    if (result.ok) {
       const logResult = dbRun(() =>
-        db.prepare("INSERT INTO email_log (subject, recipients, recipient_count, status, error, html_content, source, sent_by, sent_at) VALUES (?, ?, ?, 'error', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))")
-          .run(subject, JSON.stringify(recipients), recipients.length, errorMsg, htmlContent, source, sentBy)
+        db.prepare("INSERT INTO email_log (subject, recipient, status, message_id, html_content, source, sent_by, sent_at) VALUES (?, ?, 'sent', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))")
+          .run(subject, recipient, result.messageId || null, htmlContent, source, sentBy)
       );
-      if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, source });
-      logger.warn(req, "email.send", { error: errorMsg, subject, recipientCount: recipients.length, source });
-      return res.status(lastErrorStatus).send(errorMsg);
+      if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, recipient, source });
+      successCount++;
+      lastMessageId = result.messageId || lastMessageId;
+    } else {
+      const logResult = dbRun(() =>
+        db.prepare("INSERT INTO email_log (subject, recipient, status, error, html_content, source, sent_by, sent_at) VALUES (?, ?, 'error', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))")
+          .run(subject, recipient, result.error, htmlContent, source, sentBy)
+      );
+      if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, recipient, source });
+      lastError = result.error;
+      lastErrorStatus = result.status;
     }
-
-    const logResult = dbRun(() =>
-      db.prepare("INSERT INTO email_log (subject, recipients, recipient_count, status, message_id, html_content, source, sent_by, sent_at) VALUES (?, ?, ?, 'sent', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))")
-        .run(subject, JSON.stringify(recipients), successCount, lastMessageId, htmlContent, source, sentBy)
-    );
-    if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, source });
-
-    if (successCount < recipients.length) {
-      logger.warn(req, "email.send_partial", { subject, successCount, failedCount: recipients.length - successCount, lastError, source });
-    }
-    logger.log(req, "email.send", { subject, recipientCount: successCount, messageId: lastMessageId, source });
-    res.json({ success: true, messageId: lastMessageId });
-  } catch (e) {
-    const logResult = dbRun(() =>
-      db.prepare("INSERT INTO email_log (subject, recipients, recipient_count, status, error, html_content, source, sent_by, sent_at) VALUES (?, ?, ?, 'error', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))")
-        .run(subject, JSON.stringify(recipients), recipients.length, e.message, htmlContent, source, sentBy)
-    );
-    if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, source });
-
-    logger.warn(req, "email.send", { error: e.message, subject, recipientCount: recipients.length, source });
-    res.status(500).send("메일 전송 중 오류가 발생했습니다.");
   }
+
+  if (successCount === 0) {
+    logger.warn(req, "email.send", { error: lastError || "전송 실패", subject, recipientCount: recipients.length, source });
+    return res.status(lastErrorStatus).send(lastError || "전송 실패");
+  }
+
+  if (successCount < recipients.length) {
+    logger.warn(req, "email.send_partial", { subject, successCount, failedCount: recipients.length - successCount, lastError, source });
+  }
+  logger.log(req, "email.send", { subject, recipientCount: successCount, messageId: lastMessageId, source });
+  res.json({ success: true, messageId: lastMessageId });
 }
 
 /* ============================================
