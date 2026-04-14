@@ -167,9 +167,9 @@ app.post("/api/config/reset", (req, res) => {
 app.get("/api/stats", (req, res) => {
   const today = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
   const result = dbRun(() => {
-    const sent = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE sent_at >= ? AND status = 'sent'").get(today);
+    const sent = db.prepare("SELECT COALESCE(SUM(recipient_count), 0) as count FROM email_log WHERE sent_at >= ? AND status = 'sent'").get(today);
     const errors = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE sent_at >= ? AND status = 'error'").get(today);
-    const totalSent = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE status = 'sent'").get();
+    const totalSent = db.prepare("SELECT COALESCE(SUM(recipient_count), 0) as count FROM email_log WHERE status = 'sent'").get();
     const totalErrors = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE status = 'error'").get();
     return { sent: sent.count, errors: errors.count, totalSent: totalSent.count, totalErrors: totalErrors.count };
   });

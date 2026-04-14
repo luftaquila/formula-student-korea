@@ -12,7 +12,8 @@ test.describe("Documents admin zip download", () => {
   let sessionId;
   let submissionId;
 
-  test("submit multiple files via student UI", async ({ browser }) => {
+  test("submit multiple files and verify zip download link", async ({ page, browser }) => {
+    // Submit 2 files as student
     const studentCtx = await browser.newContext({
       storageState: storageStatePath("student"),
     });
@@ -52,16 +53,18 @@ test.describe("Documents admin zip download", () => {
 
     await studentPage.close();
     await studentCtx.close();
-  });
 
-  test("zip download link visible when multiple files exist", async ({ page }) => {
+    // Verify admin view shows zip download link immediately after submit
+    // (no gap for parallel tests to overwrite the 2-file submission)
     await page.goto("/documents/admin", { waitUntil: "networkidle" });
 
     const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
+    const statusResp = page.waitForResponse((res) => res.url().includes("/api/admin/sessions/") && res.url().includes("/status") && res.status() === 200);
     await sessionLink.click();
-    await waitForPageReady(page);
+    await statusResp;
 
     const table = page.locator(".detail-table");
+    await table.waitFor({ state: "visible" });
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" }).first();
 
     // Verify zip download link is present
@@ -119,10 +122,12 @@ test.describe("Documents admin zip download", () => {
     await chiefPage.goto("/documents/admin", { waitUntil: "networkidle" });
 
     const sessionLink = chiefPage.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
+    const statusResp = chiefPage.waitForResponse((res) => res.url().includes("/api/admin/sessions/") && res.url().includes("/status") && res.status() === 200);
     await sessionLink.click();
-    await waitForPageReady(chiefPage);
+    await statusResp;
 
     const table = chiefPage.locator(".detail-table");
+    await table.waitFor({ state: "visible" });
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" }).first();
     await expect(team1Row.locator(".file-zip")).not.toBeVisible();
 

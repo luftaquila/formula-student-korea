@@ -65,9 +65,9 @@
           </table>
         </div>
         <div v-if="!logLoading && logTotal > 0" class="pagination">
-          <button class="btn btn-ghost btn-sm" :disabled="logPage <= 1" @click="goLogPage(logPage - 1)">이전</button>
+          <button type="button" class="btn btn-ghost btn-sm" :disabled="logPage <= 1" @click="goLogPage(logPage - 1)">이전</button>
           <span class="page-info">{{ logPage }} / {{ logTotalPages }} ({{ logTotal }}건)</span>
-          <button class="btn btn-ghost btn-sm" :disabled="logPage >= logTotalPages" @click="goLogPage(logPage + 1)">다음</button>
+          <button type="button" class="btn btn-ghost btn-sm" :disabled="logPage >= logTotalPages" @click="goLogPage(logPage + 1)">다음</button>
         </div>
       </div>
     </div>
@@ -76,15 +76,18 @@
     <div class="config-row">
       <div class="card">
         <div class="card-header">
-          <h3>Brevo 이메일 설정</h3>
-          <label class="toggle-switch" title="이메일 전송 활성화/비활성화">
-            <input type="checkbox" :checked="emailEnabled" @change="toggleEmailEnabled" />
-            <span class="toggle-slider"></span>
-          </label>
+          <h3>이메일 설정</h3>
         </div>
         <div class="card-body">
+          <div class="form-group form-group-inline">
+            <label class="form-label">이메일 활성화</label>
+            <label class="toggle-switch" title="이메일 전송 활성화/비활성화">
+              <input type="checkbox" :checked="emailEnabled" @change="toggleEmailEnabled" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
           <div class="form-group">
-            <label class="form-label">API Key</label>
+            <label class="form-label">Brevo API Key</label>
             <input type="password" class="form-input" :placeholder="config.brevo_api_key ? '설정됨' : '미설정'" v-model="configEdit.brevo_api_key" autocomplete="off" />
           </div>
           <div class="form-group">
@@ -109,18 +112,18 @@
         </div>
       </div>
       <div class="card">
-        <div class="card-header"><h3>SMS 설정 (Naver Cloud)</h3></div>
+        <div class="card-header"><h3>SMS 설정</h3></div>
         <div class="card-body">
           <div class="form-group">
-            <label class="form-label">Access Key</label>
+            <label class="form-label">Naver Cloud Access Key</label>
             <input type="password" class="form-input" :placeholder="config.naver_cloud_access_key ? '설정됨' : '미설정'" v-model="configEdit.naver_cloud_access_key" autocomplete="off" />
           </div>
           <div class="form-group">
-            <label class="form-label">Secret Key</label>
+            <label class="form-label">Naver Cloud Secret Key</label>
             <input type="password" class="form-input" :placeholder="config.naver_cloud_secret_key ? '설정됨' : '미설정'" v-model="configEdit.naver_cloud_secret_key" autocomplete="off" />
           </div>
           <div class="form-group">
-            <label class="form-label">SMS Service ID</label>
+            <label class="form-label">Naver Cloud SMS Service ID</label>
             <input type="text" class="form-input" :placeholder="config.naver_cloud_sms_service_id || '미설정'" v-model="configEdit.naver_cloud_sms_service_id" />
           </div>
           <div class="form-group">
@@ -347,7 +350,7 @@ async function saveBrevoConfig() {
       .map((k) => ({ key: k, value: configEdit[k] }));
     if (configs.length === 0) return showError("변경할 값이 없습니다.");
     await updateConfig(configs);
-    success("Brevo 설정이 저장되었습니다.");
+    success("이메일 설정이 저장되었습니다.");
     for (const k of ["brevo_api_key", "brevo_sender_name", "brevo_sender_email"]) configEdit[k] = "";
     await Promise.all([loadConfig(), loadStats()]);
   } catch (e) {
@@ -426,7 +429,7 @@ async function toggleEmailEnabled() {
 }
 
 async function handleResetConfig(group) {
-  const label = group === "brevo" ? "Brevo 이메일" : "SMS";
+  const label = group === "brevo" ? "이메일" : "SMS";
   if (!confirm(`${label} 설정을 모두 초기화하시겠습니까?`)) return;
   try {
     await apiResetConfig(group);
@@ -745,6 +748,16 @@ onMounted(() => {
 
 .form-group {
   margin-bottom: 0.75rem;
+}
+
+.form-group-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.form-group-inline .form-label {
+  margin-bottom: 0;
 }
 
 .form-label {

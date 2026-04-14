@@ -44,7 +44,7 @@ const icons = {
   score: "📊",
   course: "📍",
   auth: "🔑",
-  email: "📧",
+  email: "✉️",
   logs: "📜",
   pitbot: "💽",
   documents: "📄",
