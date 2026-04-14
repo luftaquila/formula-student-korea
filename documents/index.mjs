@@ -1049,11 +1049,14 @@ function scheduleSessionNotifications(sessionId, start_at, end_at) {
   const currentTime = now();
   const insert = db.prepare("INSERT INTO scheduled_notification (session_id, type, scheduled_at) VALUES (?, ?, ?)");
 
-  // 제출 시작 알림: start_at이 미래면 예약, 과거면 즉시 발송 대상
-  if (start_at > currentTime) {
-    insert.run(sessionId, "session_open", start_at);
-  } else {
-    insert.run(sessionId, "session_open", currentTime);
+  // 제출 시작 알림: 이미 발송된 경우 재등록하지 않음
+  const alreadySent = db.prepare("SELECT 1 FROM scheduled_notification WHERE session_id = ? AND type = 'session_open' AND sent = 1").get(sessionId);
+  if (!alreadySent) {
+    if (start_at > currentTime) {
+      insert.run(sessionId, "session_open", start_at);
+    } else {
+      insert.run(sessionId, "session_open", currentTime);
+    }
   }
 
   // 마감 3시간 전 알림
@@ -1070,19 +1073,44 @@ function scheduleSessionNotifications(sessionId, start_at, end_at) {
 }
 
 /** 이메일 전송 공통 */
-async function sendNotificationEmail(subject, htmlContent, recipients) {
+async function sendNotificationEmail(subject, htmlContent, recipient) {
   const emailServer = process.env.EMAIL_SERVER;
   if (!emailServer || !process.env.INTERNAL_SECRET) return { ok: false, error: "EMAIL_SERVER not configured" };
 
   const resp = await fetch(`${emailServer}/api/internal/send`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Internal-Service": process.env.INTERNAL_SECRET },
-    body: JSON.stringify({ subject, htmlContent, recipients, source: "documents" }),
+    body: JSON.stringify({ subject, htmlContent, recipients: [recipient], source: "documents" }),
     signal: AbortSignal.timeout(15000),
   });
 
   if (!resp.ok) return { ok: false, error: await resp.text() };
   return { ok: true };
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** 엔트리 정보 조회 */
+async function fetchEntries(year) {
+  const entryServer = process.env.ENTRY_SERVER;
+  if (!entryServer) return {};
+  try {
+    const res = await fetch(`${entryServer}/api/entries?year=${year}`, {
+      headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) return await res.json();
+  } catch {}
+  return {};
+}
+
+/** 팀 정보 헤더 HTML */
+function teamHeaderHtml(teamNum, entries) {
+  const entry = entries[teamNum];
+  const label = entry ? `#${teamNum} ${escapeHtml(entry.univ)} ${escapeHtml(entry.team)}` : `#${teamNum}`;
+  return `<p style="margin:0 0 12px;font-size:15px;font-weight:bold;color:#555">${label}</p>`;
 }
 
 /** 예약 알림 처리 — 1분마다 실행 */
@@ -1096,66 +1124,84 @@ async function processScheduledNotifications() {
     try {
       const url = process.env.PUBLIC_URL || "https://fsk.luftaquila.io";
       const deadlineInfo = n.late_end_at
-        ? `마감: ${toKST(n.end_at)} / 지각 마감: ${toKST(n.late_end_at)} (KST)`
-        : `마감: ${toKST(n.end_at)} (KST)`;
+        ? `제출 마감: ${toKST(n.end_at)} (KST)<br>지각 마감: ${toKST(n.late_end_at)} (KST)`
+        : `제출 마감: ${toKST(n.end_at)} (KST)`;
 
-      // 수신자 결정
-      let recipients;
+      // 수신자 결정 (team_num 포함)
+      let recipientRows;
       if (n.type === "deadline_1h") {
         // 미제출 팀 학생만
-        recipients = db.prepare(
-          `SELECT st2.email FROM session_team st
+        recipientRows = db.prepare(
+          `SELECT st2.email, st.team_num FROM session_team st
            JOIN student_team st2 ON st.team_num = st2.team_num AND st2.year = ?
            WHERE st.session_id = ?
              AND st.team_num NOT IN (SELECT team_num FROM submission WHERE session_id = ?)`,
-        ).all(n.year, n.session_id, n.session_id).map((r) => r.email);
+        ).all(n.year, n.session_id, n.session_id);
       } else {
         // 전체 대상 팀 학생
-        recipients = db.prepare(
-          `SELECT st2.email FROM session_team st
+        recipientRows = db.prepare(
+          `SELECT st2.email, st.team_num FROM session_team st
            JOIN student_team st2 ON st.team_num = st2.team_num AND st2.year = ?
            WHERE st.session_id = ?`,
-        ).all(n.year, n.session_id).map((r) => r.email);
+        ).all(n.year, n.session_id);
       }
 
-      if (recipients.length === 0) {
+      if (recipientRows.length === 0) {
         db.prepare("UPDATE scheduled_notification SET sent = 1 WHERE id = ?").run(n.id);
         continue;
       }
 
-      let subject, htmlContent;
+      // 엔트리 정보 조회
+      const entries = await fetchEntries(n.year);
 
-      if (n.type === "session_open") {
-        subject = `[FSK] 서류 제출 안내: ${n.name}`;
-        htmlContent =
-          `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 안내</h2>` +
-          (n.notice ? `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${n.notice}</p>` : "") +
-          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">제출 시작: ${toKST(n.start_at)} (KST)</p>` +
-          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${deadlineInfo}</p>` +
-          `<p style="margin:0;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>`;
-      } else if (n.type === "deadline_3h") {
-        subject = `[FSK] 서류 제출 마감 3시간 전: ${n.name}`;
-        htmlContent =
-          `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 마감 안내</h2>` +
-          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${n.name} 서류 제출 마감이 3시간 남았습니다.</p>` +
-          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${deadlineInfo}</p>` +
-          `<p style="margin:0 0 8px;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>` +
-          `<p style="margin:0;font-size:12px;color:#888">본 메일은 서류 제출 여부와 관계없이 발송되는 마감 안내 메일입니다.</p>`;
-      } else if (n.type === "deadline_1h") {
-        subject = `[FSK] 서류 미제출 알림: ${n.name}`;
-        htmlContent =
-          `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 미제출 알림</h2>` +
-          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${n.name} 서류가 아직 제출되지 않았습니다. 마감까지 1시간 남았습니다.</p>` +
-          `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${deadlineInfo}</p>` +
-          `<p style="margin:0;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>`;
+      let subject;
+      const safeName = escapeHtml(n.name);
+
+      if (n.type === "session_open") subject = `[FSK] 서류 제출 안내: ${n.name}`;
+      else if (n.type === "deadline_3h") subject = `[FSK] 서류 제출 마감 3시간 전: ${n.name}`;
+      else if (n.type === "deadline_1h") subject = `[FSK] 서류 미제출 알림: ${n.name}`;
+
+      // 수신자별 개별 발송
+      let sentCount = 0;
+      for (const { email, team_num } of recipientRows) {
+        const teamHeader = teamHeaderHtml(team_num, entries);
+        let htmlContent;
+
+        if (n.type === "session_open") {
+          const noticeHtml = n.notice ? escapeHtml(n.notice).replace(/\n/g, "<br>") : "";
+          htmlContent =
+            `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 안내</h2>` +
+            teamHeader +
+            (noticeHtml ? `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${noticeHtml}</p>` : "") +
+            `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">제출 시작: ${toKST(n.start_at)} (KST)</p>` +
+            `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${deadlineInfo}</p>` +
+            `<p style="margin:0;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>`;
+        } else if (n.type === "deadline_3h") {
+          htmlContent =
+            `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 마감 안내</h2>` +
+            teamHeader +
+            `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${safeName} 서류 제출 마감이 3시간 남았습니다.</p>` +
+            `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${deadlineInfo}</p>` +
+            `<p style="margin:0 0 8px;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>` +
+            `<p style="margin:0;font-size:12px;color:#888">본 메일은 서류 제출 여부와 관계없이 발송되는 마감 안내 메일입니다.</p>`;
+        } else if (n.type === "deadline_1h") {
+          htmlContent =
+            `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 미제출 알림</h2>` +
+            teamHeader +
+            `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${safeName} 서류가 아직 제출되지 않았습니다. 마감까지 1시간 남았습니다.</p>` +
+            `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${deadlineInfo}</p>` +
+            `<p style="margin:0;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>`;
+        }
+
+        const result = await sendNotificationEmail(subject, htmlContent, email);
+        if (result.ok) sentCount++;
       }
 
-      const result = await sendNotificationEmail(subject, htmlContent, recipients);
-      if (!result.ok) {
-        logger.warn(null, `schedule.${n.type}`, { error: result.error, recipientCount: recipients.length }, n.name);
-      } else {
+      if (sentCount > 0) {
         db.prepare("UPDATE scheduled_notification SET sent = 1 WHERE id = ?").run(n.id);
-        logger.log(null, `schedule.${n.type}`, { recipientCount: recipients.length }, n.name);
+        logger.log(null, `schedule.${n.type}`, { recipientCount: sentCount }, n.name);
+      } else {
+        logger.warn(null, `schedule.${n.type}`, { error: "all_sends_failed", recipientCount: recipientRows.length }, n.name);
       }
     } catch (e) {
       logger.warn(null, `schedule.${n.type}`, { error: e.message }, n.name);
@@ -1185,21 +1231,26 @@ async function notifyOpenSessions(req, email, teamNum, year) {
 
     if (openSessions.length === 0) return;
 
+    const entries = await fetchEntries(year);
+    const teamHeader = teamHeaderHtml(teamNum, entries);
+
     const url = process.env.PUBLIC_URL || "https://fsk.luftaquila.io";
     const sessionList = openSessions.map((s) => {
-      const info = s.late_end_at
-        ? `마감: ${toKST(s.end_at)} / 지각 마감: ${toKST(s.late_end_at)} KST`
-        : `마감: ${toKST(s.end_at)} KST`;
-      return `<li><strong>${s.name}</strong> (${info})</li>`;
+      const safeName = escapeHtml(s.name);
+      const deadlines = s.late_end_at
+        ? `<li>제출 마감: ${toKST(s.end_at)} (KST)</li><li>지각 마감: ${toKST(s.late_end_at)} (KST)</li>`
+        : `<li>제출 마감: ${toKST(s.end_at)} (KST)</li>`;
+      return `<li><strong>${safeName}</strong><ul style="margin:4px 0 0;padding-left:20px">${deadlines}</ul></li>`;
     }).join("");
 
     const result = await sendNotificationEmail(
       `[FSK] 제출 대기 중인 서류가 있습니다`,
       `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 안내</h2>` +
+        teamHeader +
         `<p style="margin:0 0 12px;font-size:14px;line-height:1.6">현재 제출 대기 중인 서류 세션이 있습니다.</p>` +
         `<ul style="margin:0 0 16px;padding-left:20px;font-size:14px;line-height:1.8">${sessionList}</ul>` +
         `<p style="margin:0;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>`,
-      [email],
+      email,
     );
 
     if (!result.ok) logger.warn(req, "student_team.notify", { error: result.error }, email);

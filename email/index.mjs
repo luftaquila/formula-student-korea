@@ -324,50 +324,62 @@ async function sendEmail(req, res, { subject, htmlContent, recipients, source })
 ${htmlContent}
 </body></html>`;
 
-  const payload = {
-    sender: { name: senderName || "FSK", email: senderEmail },
-    to: recipients.map((email) => ({ email })),
-    subject,
-    htmlContent: wrappedHtml,
-  };
-
+  // 수신자별 개별 발송
   try {
-    const resp = await fetchFn(`${BREVO_API_BASE}/smtp/email`, {
-      method: "POST",
-      headers: {
-        "api-key": apiKey,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(10000),
-    });
+    let successCount = 0;
+    let lastMessageId = null;
+    let lastError = null;
+    let lastErrorStatus = 500;
 
-    const data = await resp.json().catch(() => ({}));
+    for (const recipientEmail of recipients) {
+      try {
+        const resp = await fetchFn(`${BREVO_API_BASE}/smtp/email`, {
+          method: "POST",
+          headers: { "api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            sender: { name: senderName || "FSK", email: senderEmail },
+            to: [{ email: recipientEmail }],
+            subject,
+            htmlContent: wrappedHtml,
+          }),
+          signal: AbortSignal.timeout(10000),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+          successCount++;
+          lastMessageId = data.messageId || lastMessageId;
+        } else {
+          lastError = data.message || `Brevo API 오류 (${resp.status})`;
+          lastErrorStatus = resp.status >= 400 && resp.status < 500 ? 400 : 500;
+        }
+      } catch (e) {
+        lastError = e.message;
+        lastErrorStatus = 500;
+      }
+    }
 
-    if (!resp.ok) {
-      const errorMsg = data.message || `Brevo API 오류 (${resp.status})`;
-
+    if (successCount === 0) {
+      const errorMsg = lastError || "전송 실패";
       const logResult = dbRun(() =>
         db.prepare("INSERT INTO email_log (subject, recipients, recipient_count, status, error, html_content, source, sent_by, sent_at) VALUES (?, ?, ?, 'error', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))")
           .run(subject, JSON.stringify(recipients), recipients.length, errorMsg, htmlContent, source, sentBy)
       );
       if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, source });
-
       logger.warn(req, "email.send", { error: errorMsg, subject, recipientCount: recipients.length, source });
-      return res.status(resp.status >= 400 && resp.status < 500 ? 400 : 500).send(errorMsg);
+      return res.status(lastErrorStatus).send(errorMsg);
     }
-
-    const messageId = data.messageId || null;
 
     const logResult = dbRun(() =>
       db.prepare("INSERT INTO email_log (subject, recipients, recipient_count, status, message_id, html_content, source, sent_by, sent_at) VALUES (?, ?, ?, 'sent', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))")
-        .run(subject, JSON.stringify(recipients), recipients.length, messageId, htmlContent, source, sentBy)
+        .run(subject, JSON.stringify(recipients), successCount, lastMessageId, htmlContent, source, sentBy)
     );
     if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, source });
 
-    logger.log(req, "email.send", { subject, recipientCount: recipients.length, messageId, source });
-    res.json({ success: true, messageId });
+    if (successCount < recipients.length) {
+      logger.warn(req, "email.send_partial", { subject, successCount, failedCount: recipients.length - successCount, lastError, source });
+    }
+    logger.log(req, "email.send", { subject, recipientCount: successCount, messageId: lastMessageId, source });
+    res.json({ success: true, messageId: lastMessageId });
   } catch (e) {
     const logResult = dbRun(() =>
       db.prepare("INSERT INTO email_log (subject, recipients, recipient_count, status, error, html_content, source, sent_by, sent_at) VALUES (?, ?, ?, 'error', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))")

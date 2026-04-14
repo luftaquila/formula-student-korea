@@ -352,7 +352,7 @@ onUnmounted(() => {
                             @mousedown.prevent="assignStudent(e.num, st.email)"
                           >
                             <span class="option-name">{{ st.realname ? (st.phone ? `${st.realname} (${st.phone})` : st.realname) : st.name || st.email }}</span>
-                            <span v-if="st.name" class="option-email">{{ st.email }}</span>
+                            <span v-if="st.realname" class="option-email">{{ st.email }}</span>
                           </div>
                           <div v-if="getFilteredStudents(e.num).length === 0" class="select-empty">결과 없음</div>
                         </div>
