@@ -132,8 +132,8 @@ async function updatePriority(type, num, value) {
     return;
   }
 
-  if (isNaN(priority) || priority < 1) {
-    error("우선순위는 1 이상의 숫자여야 합니다.");
+  if (isNaN(priority) || priority < 0) {
+    error("우선순위는 0 이상의 숫자여야 합니다.");
     return;
   }
 
@@ -335,7 +335,7 @@ function goBack() {
                     }"
                     :value="getPriority(entry.num, inspection.type)"
                     placeholder="-"
-                    min="1"
+                    min="0"
                     @change="updatePriority(inspection.type, entry.num, $event.target.value)"
                     @focus="$event.target.select()"
                   />

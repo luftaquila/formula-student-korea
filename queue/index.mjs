@@ -61,7 +61,7 @@ db.transaction(() => {
   addColumn(db, "inspection", "ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE");
   addColumn(db, "inspection", "hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE");
 
-  // 팀별 검차별 우선순위 테이블 (1이 가장 높음, 숫자가 클수록 낮음)
+  // 팀별 검차별 우선순위 테이블 (0이 가장 높음, 숫자가 클수록 낮음)
   db.exec(`CREATE TABLE IF NOT EXISTS team_priority (
     num INTEGER NOT NULL,
     inspection TEXT NOT NULL,
@@ -293,8 +293,8 @@ function validateInspection(type) {
 
 function validatePriority(priority) {
   const parsed = Number(priority);
-  if (priority === "" || priority === undefined || Number.isNaN(parsed) || parsed < 1 || !Number.isInteger(parsed)) {
-    return { valid: false, error: "우선순위는 1 이상의 정수여야 합니다." };
+  if (priority === "" || priority === undefined || Number.isNaN(parsed) || parsed < 0 || !Number.isInteger(parsed)) {
+    return { valid: false, error: "우선순위는 0 이상의 정수여야 합니다." };
   }
   return { valid: true, value: parsed };
 }
