@@ -681,6 +681,73 @@ app.get("/api/admin/sessions/:id/status", (req, res) => {
   res.json({ session, status });
 });
 
+// GET /api/admin/sessions/:id/archive - 세션별 전체 압축 다운로드
+app.get("/api/admin/sessions/:id/archive", async (req, res) => {
+  const id = Number(req.params.id);
+  const session = db.prepare("SELECT * FROM session WHERE id = ?").get(id);
+  if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
+
+  // entry 서비스에서 팀 정보 조회
+  let entries = {};
+  const entryServer = process.env.ENTRY_SERVER;
+  if (entryServer) {
+    try {
+      const entryRes = await fetch(`${entryServer}/api/entries?year=${session.year}`, {
+        headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (entryRes.ok) entries = await entryRes.json();
+    } catch (e) {
+      logger.warn(req, "session.archive", { warning: "entry_fetch_failed", error: e.message, session_id: id });
+    }
+  }
+
+  const subs = db.prepare(`
+    SELECT sub.id, sub.team_num FROM submission sub
+    INNER JOIN (
+      SELECT session_id, team_num, MAX(id) AS max_id
+      FROM submission WHERE session_id = ? GROUP BY session_id, team_num
+    ) latest ON sub.id = latest.max_id
+  `).all(id);
+
+  const sanitize = (s) => s.replace(/[/\\:*?"<>|]/g, "_");
+  const sessionName = sanitize(session.name);
+  const archiveFiles = [];
+
+  for (const sub of subs) {
+    const files = db.prepare("SELECT original_name, stored_name FROM submission_file WHERE submission_id = ?").all(sub.id);
+    for (const f of files) {
+      const diskPath = path.join(UPLOADS_DIR, String(id), String(sub.team_num), String(sub.id), f.stored_name);
+      if (fs.existsSync(diskPath)) {
+        const entry = entries[sub.team_num];
+        const teamFolder = entry
+          ? `${sub.team_num}_${sanitize(entry.univ)}_${sanitize(entry.team)}`
+          : String(sub.team_num);
+        archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
+      }
+    }
+  }
+
+  if (archiveFiles.length === 0) return res.status(404).send("다운로드할 파일이 없습니다.");
+
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`${sessionName}.zip`)}`);
+
+  const archive = archiver("zip", { zlib: { level: 5 } });
+  archive.on("error", (err) => {
+    logger.warn(req, "session.archive", { error: err.message, session_id: id });
+    if (!res.headersSent) res.status(500).send("압축 중 오류가 발생했습니다.");
+  });
+  archive.pipe(res);
+
+  for (const f of archiveFiles) {
+    archive.file(f.diskPath, { name: f.zipPath });
+  }
+
+  await archive.finalize();
+  logger.log(req, "session.archive", { session_name: session.name, teams: subs.length, files: archiveFiles.length });
+});
+
 // GET /api/admin/submissions/:subId/files/:fileId - 관리자 파일 다운로드
 app.get("/api/admin/submissions/:subId/files/:fileId", (req, res) => {
   const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));

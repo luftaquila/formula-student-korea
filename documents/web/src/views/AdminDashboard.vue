@@ -14,6 +14,8 @@ const entries = ref({});
 const studentTeams = ref([]);
 const students = ref([]);
 const searchQuery = ref("");
+const showAccount = ref(localStorage.getItem("documents-show-account") !== "false");
+watch(showAccount, (v) => localStorage.setItem("documents-show-account", v));
 
 // 정렬
 const sortKey = ref(null);
@@ -278,7 +280,7 @@ onUnmounted(() => {
           <label class="filter-label">검색</label>
           <input class="filter-input" v-model="searchQuery" placeholder="번호 / 학교 / 팀명" />
         </div>
-        <div class="filter-group" v-if="vehicleTypes.length > 1">
+        <div class="filter-group type-filter-gap" v-if="vehicleTypes.length > 1">
           <label class="filter-label">유형</label>
           <div class="type-filter-group">
             <label v-for="t in vehicleTypes" :key="t" class="filter-checkbox">
@@ -287,11 +289,17 @@ onUnmounted(() => {
             </label>
           </div>
         </div>
+        <div class="filter-group type-filter-gap">
+          <label class="filter-label">표시</label>
+          <label class="filter-checkbox">
+            <input type="checkbox" v-model="showAccount" />
+            <span>계정</span>
+          </label>
+        </div>
         <div class="filter-group action-group">
           <label class="filter-label">&nbsp;</label>
           <div class="action-buttons">
             <button class="btn btn-ghost btn-sm" :disabled="!selectedYear" @click="downloadYearArchive">전체 다운로드</button>
-            <button class="btn btn-danger btn-sm" :disabled="!selectedYear || purging" @click="purgeYearFiles">{{ purging ? "삭제 중..." : "파일 정리" }}</button>
             <router-link to="/admin/create" class="btn btn-primary btn-sm">세션 생성</router-link>
           </div>
         </div>
@@ -315,7 +323,7 @@ onUnmounted(() => {
                   <th class="col-num sortable" @click="handleSort('num')">번호 <span class="sort-icon">{{ getSortIcon('num') }}</span></th>
                   <th class="col-team sortable" @click="handleSort('team')">학교 / 팀 <span class="sort-icon">{{ getSortIcon('team') }}</span></th>
                   <th class="col-type sortable" @click="handleSort('type')">유형 <span class="sort-icon">{{ getSortIcon('type') }}</span></th>
-                  <th class="col-account">계정</th>
+                  <th v-if="showAccount" class="col-account">계정</th>
                   <th v-for="s in sessions" :key="s.id" class="col-session">
                     <router-link :to="'/admin/session/' + s.id" class="session-link">{{ s.name }}</router-link>
                     <div class="session-date">{{ formatDate(s.end_at) }}</div>
@@ -329,7 +337,7 @@ onUnmounted(() => {
                   <td class="col-type">
                     <span v-if="e.type" class="badge" :class="'badge-type-' + getTypeColor(e.type)">{{ e.type }}</span>
                   </td>
-                  <td class="col-account">
+                  <td v-if="showAccount" class="col-account">
                     <div class="student-select">
                       <div class="select-display" @click.stop="openDropdown(e.num, $event)">
                         <span v-if="teamStudentMap[e.num]" class="selected-email">{{ studentDisplayName(teamStudentMap[e.num]) }}</span>
@@ -383,6 +391,17 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+
+      <!-- 파일 관리 -->
+      <div class="card danger-card">
+        <div class="card-header">
+          <h3>파일 관리</h3>
+        </div>
+        <div class="card-body danger-card-body">
+          <p class="danger-description">선택한 연도의 모든 제출 파일을 삭제합니다. 제출 기록(시간, 제출자 등)은 유지되지만, 파일 데이터는 복구할 수 없습니다.</p>
+          <button class="btn btn-danger btn-sm" :disabled="!selectedYear || purging" @click="purgeYearFiles">{{ purging ? "삭제 중..." : "파일 정리" }}</button>
+        </div>
+      </div>
     </template>
   </div>
 </template>
@@ -409,7 +428,8 @@ onUnmounted(() => {
   border: 1px solid var(--border-color);
   border-radius: 12px;
   padding: 1rem 1.25rem;
-  align-items: flex-end;
+  align-items: center;
+  align-content: center;
   flex-wrap: wrap;
   flex: 1;
 }
@@ -442,10 +462,15 @@ onUnmounted(() => {
   border-color: var(--accent-primary);
 }
 
+.type-filter-gap {
+  margin-left: 1rem;
+}
+
 .type-filter-group {
   display: flex;
   gap: 0.375rem;
   align-items: center;
+  height: 2.125rem;
 }
 
 .filter-checkbox {
@@ -454,6 +479,7 @@ onUnmounted(() => {
   gap: 0.25rem;
   cursor: pointer;
   font-size: 0.8125rem;
+  height: 2.125rem;
 }
 
 .filter-checkbox input { cursor: pointer; }
@@ -465,6 +491,7 @@ onUnmounted(() => {
 .action-buttons {
   display: flex;
   gap: 0.375rem;
+  height: 2.125rem;
 }
 
 .count-badge {
@@ -649,10 +676,35 @@ onUnmounted(() => {
 .cell-late { background: rgba(234, 179, 8, 0.08); }
 .cell-missed { background: rgba(239, 68, 68, 0.08); }
 .cell-none { color: var(--text-tertiary); }
-.cell-not-target { background: var(--bg-secondary); }
+.cell-not-target {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 4px,
+    var(--bg-hover) 4px,
+    var(--bg-hover) 5px
+  );
+}
 .cell-time { font-size: 0.8125rem; display: block; }
 .cell-empty { font-size: 0.8125rem; }
 .cell-clickable { cursor: pointer; }
+
+/* 파일 관리 카드 */
+.danger-card {
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.danger-card-body {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.danger-description {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  flex: 1;
+}
 
 @media (max-width: 640px) {
   .filter-bar { flex-direction: column; align-items: stretch; }

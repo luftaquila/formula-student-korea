@@ -56,6 +56,10 @@ function downloadZip(subId) {
   window.open(`${BASE_URL}/api/admin/submissions/${subId}/zip`, "_blank");
 }
 
+function downloadSessionArchive() {
+  window.open(`${BASE_URL}/api/admin/sessions/${route.params.id}/archive`, "_blank");
+}
+
 function toggleExpand(teamNum) {
   if (expandedTeams.value.has(teamNum)) expandedTeams.value.delete(teamNum);
   else expandedTeams.value.add(teamNum);
@@ -89,6 +93,7 @@ onMounted(loadStatus);
         <div class="card-header">
           <h3>{{ session.name }}</h3>
           <div class="header-actions">
+            <button class="btn btn-sm btn-ghost" @click="downloadSessionArchive">다운로드</button>
             <router-link :to="'/admin/session/' + session.id + '/edit'" class="btn btn-sm btn-ghost">수정</router-link>
             <button class="btn btn-sm btn-danger" @click="deleteSession">삭제</button>
           </div>
