@@ -36,6 +36,7 @@ from std_msgs.msg import Float64, String, Int32, Empty
 from fsk_rover.lib.geo_utils import (
     haversine, bearing, enu_from_gps, normalize_angle,
 )
+from fsk_rover.lib.protocol_utils import has_required_fix_status
 
 
 class State(Enum):
@@ -74,6 +75,7 @@ class NavigatorNode(Node):
         self.declare_parameter('settle_readings', 5)
         self.declare_parameter('settle_tolerance', 0.03)
         self.declare_parameter('settle_timeout', 10.0)
+        self.declare_parameter('required_fix_status', 'rtk_fixed')
 
         # Publishers
         self._pub_velocity = self.create_publisher(Twist, '/rover/cmd/velocity', 10)
@@ -85,6 +87,7 @@ class NavigatorNode(Node):
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps, 10)
         self.create_subscription(Float64, '/rover/gps/heading', self._on_heading, 10)
+        self.create_subscription(String, '/rover/gps/fix_status', self._on_fix_status, 10)
         self.create_subscription(String, '/rover/cmd/execute_path', self._on_execute_path, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_emergency_stop, reliable_qos)
         self.create_subscription(Empty, '/rover/spray/done', self._on_spray_done, reliable_qos)
@@ -101,6 +104,7 @@ class NavigatorNode(Node):
         self._current_lon = None
         self._current_heading = None   # radians, 0=North CW
         self._last_gps_time = 0.0
+        self._gps_fix_status = 'no_fix'
 
         # Calibration state
         self._cal_start_lat = None
@@ -140,6 +144,9 @@ class NavigatorNode(Node):
         """Heading in degrees from GPS (only published when moving)."""
         self._current_heading = radians(msg.data)
 
+    def _on_fix_status(self, msg):
+        self._gps_fix_status = msg.data
+
     # ── Command callbacks ──────────────────────────────
 
     def _on_execute_path(self, msg):
@@ -159,7 +166,7 @@ class NavigatorNode(Node):
         self._stuck_retries = 0
 
         # Record start position for return
-        if self._current_lat is not None:
+        if self._current_lat is not None and self._has_required_fix():
             self._start_position = (self._current_lat, self._current_lon)
             self._ref_position = (self._current_lat, self._current_lon)
 
@@ -170,7 +177,9 @@ class NavigatorNode(Node):
             self._set_state(State.CALIBRATING)
             self.get_logger().info(f'Mission started: {len(waypoints)} waypoints')
         else:
-            self.get_logger().error('No GPS position, cannot start mission')
+            self.get_logger().error(
+                'Cannot start mission without current GPS position and required fix quality'
+            )
             self._set_state(State.ERROR)
 
     def _on_emergency_stop(self, _msg):
@@ -214,6 +223,14 @@ class NavigatorNode(Node):
                 self._stop_motors()
                 self._set_state(State.ERROR)
                 return
+            if not self._has_required_fix():
+                self.get_logger().warn(
+                    f'GPS fix below required quality ({self._gps_fix_status}), entering ERROR state'
+                )
+                self._pre_error_state = self._state
+                self._stop_motors()
+                self._set_state(State.ERROR)
+                return
 
         if self._state == State.ERROR:
             self._handle_error()
@@ -232,7 +249,11 @@ class NavigatorNode(Node):
     def _handle_error(self):
         """Check if GPS has recovered."""
         gps_timeout = self.get_parameter('gps_timeout').value
-        if time.monotonic() - self._last_gps_time < gps_timeout and self._current_lat is not None:
+        if (
+            time.monotonic() - self._last_gps_time < gps_timeout
+            and self._current_lat is not None
+            and self._has_required_fix()
+        ):
             self.get_logger().info('GPS recovered, resuming mission')
             if self._pre_error_state:
                 self._set_state(self._pre_error_state)
@@ -577,6 +598,10 @@ class NavigatorNode(Node):
         msg = String()
         msg.data = self._state.value
         self._pub_state.publish(msg)
+
+    def _has_required_fix(self):
+        required = self.get_parameter('required_fix_status').value
+        return has_required_fix_status(self._gps_fix_status, required)
 
 
 def main(args=None):

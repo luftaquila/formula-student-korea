@@ -14,7 +14,12 @@ setup(
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
     ],
-    install_requires=['setuptools'],
+    install_requires=[
+        'setuptools',
+        'pyserial>=3.5',
+        'requests>=2.31',
+        'lgpio>=0.2.2.0',
+    ],
     zip_safe=True,
     maintainer='luftaquila',
     maintainer_email='luftaquila@luftaquila.io',

@@ -60,6 +60,7 @@ navigator_node:
     settle_readings: 5                 # Consecutive GPS readings to confirm settled position
     settle_tolerance: 0.03             # Meters for tight settle confirmation (3cm)
     settle_timeout: 10.0               # Seconds before settling gives up and sprays anyway
+    required_fix_status: "rtk_fixed"   # Minimum GPS fix quality required to start/resume mission
 
 spray_node:
   ros__parameters:

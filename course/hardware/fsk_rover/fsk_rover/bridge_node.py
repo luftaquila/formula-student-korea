@@ -25,6 +25,8 @@ from sensor_msgs.msg import NavSatFix
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Empty, String
 
+from fsk_rover.lib.protocol_utils import assemble_sse_data
+
 
 class BridgeNode(Node):
 
@@ -161,7 +163,7 @@ class BridgeNode(Node):
         self.get_logger().info('SSE connected to server')
 
         event_name = None
-        event_data = ''
+        event_data_lines = []
 
         for line in resp.iter_lines(decode_unicode=True):
             if not self._running:
@@ -173,19 +175,22 @@ class BridgeNode(Node):
             # SSE parsing
             if line.startswith('event: '):
                 event_name = line[7:]
-                event_data = ''
+                event_data_lines = []
             elif line.startswith('data: '):
-                event_data = line[6:]
+                event_data_lines.append(line[6:])
+            elif line == 'data:':
+                event_data_lines.append('')
             elif line.startswith(':'):
                 # Comment/heartbeat - just keep alive
                 continue
             elif line == '':
                 # Empty line = end of event
-                if event_name and event_data:
+                event_data = assemble_sse_data(event_data_lines)
+                if event_name:
                     self._handle_sse_event(event_name, event_data)
                     event_count += 1
                 event_name = None
-                event_data = ''
+                event_data_lines = []
 
         resp.close()
         return event_count > 0

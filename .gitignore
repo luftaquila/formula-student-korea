@@ -7,3 +7,7 @@ test-results/
 backups/
 .gstack/
 .omc/
+.codex/
+__pycache__/
+*.pyc
+*.pyo

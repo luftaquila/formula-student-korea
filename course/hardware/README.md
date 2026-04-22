@@ -38,10 +38,10 @@ colcon build --packages-select fsk_rover
 source install/setup.bash
 
 # 4. udev 규칙 (선택)
-sudo bash fsk_rover/../scripts/setup_udev.sh
+sudo bash fsk_rover/scripts/setup_udev.sh
 
 # 5. 설정 편집
-# rover_params.yaml에서 GPIO 핀, NTRIP 인증, 서버 URL 등 수정
+# rover_params.yaml에서 GPIO 핀, NTRIP 인증, 서버 URL, required_fix_status 등 수정
 ```
 
 ## Usage
