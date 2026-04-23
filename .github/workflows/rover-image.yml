@@ -1,0 +1,51 @@
+name: Build Rover Image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    env:
+      MODEL_ASSERTION_B64: ${{ secrets.ROVER_MODEL_ASSERTION_B64 }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate model assertion secret
+        run: |
+          test -n "$MODEL_ASSERTION_B64" || {
+            echo "ROVER_MODEL_ASSERTION_B64 secret is required" >&2
+            exit 1
+          }
+
+      - name: Build pilot snap
+        uses: snapcore/action-build@v1
+        id: build
+        with:
+          path: course/rover
+
+      - name: Install ubuntu-image
+        run: sudo snap install ubuntu-image --classic
+
+      - name: Materialize model assertion
+        run: |
+          mkdir -p .tmp
+          printf '%s' "$MODEL_ASSERTION_B64" | base64 -d > .tmp/rover.model
+
+      - name: Build Ubuntu Core image
+        run: |
+          mkdir -p .tmp/image
+          ubuntu-image snap \
+            --snap "${{ steps.build.outputs.snap }}" \
+            --output-dir .tmp/image \
+            .tmp/rover.model
+
+      - name: Upload image artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: rover-ubuntu-core-image
+          path: .tmp/image/*
+          retention-days: 7

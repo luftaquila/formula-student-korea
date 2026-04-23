@@ -1,0 +1,62 @@
+name: Build Rover Snap
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'course/rover/**'
+      - '.github/workflows/rover-snap.yml'
+  pull_request:
+    paths:
+      - 'course/rover/**'
+      - '.github/workflows/rover-snap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rover-snap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Compile rover sources
+        run: python3 -m compileall course/rover/pilot/pilot course/rover/pilot/test course/rover/pilot/launch
+
+  build:
+    runs-on: ubuntu-24.04-arm
+    needs: verify
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build pilot snap
+        uses: snapcore/action-build@v1
+        id: build
+        with:
+          path: course/rover
+
+      - name: Upload snap artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: pilot-snap-arm64
+          path: ${{ steps.build.outputs.snap }}
+          retention-days: 7
+
+      - name: Publish snap to edge
+        if: github.event_name != 'pull_request'
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: edge

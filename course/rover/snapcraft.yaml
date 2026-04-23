@@ -1,0 +1,44 @@
+name: fsk-rover-pilot
+base: core24
+version: "0.1.0"
+summary: ROS 2 pilot stack for the Formula Student Korea rover
+description: |
+  Monolithic Ubuntu Core snap for the rover.
+  The snap packages the ROS 2 Pilot workspace, launches it as a daemon at boot,
+  and keeps the default rover configuration inside the snap.
+
+grade: stable
+confinement: strict
+
+apps:
+  pilot:
+    command: bin/run-pilot
+    daemon: simple
+    restart-condition: on-failure
+    extensions: [ros2-jazzy]
+    plugs:
+      - network
+      - network-bind
+      - raw-usb
+      - serial-port
+      - gpio
+
+parts:
+  pilot:
+    plugin: colcon
+    source: ./pilot
+    stage-packages:
+      - ros-jazzy-ros2launch
+      - python3-serial
+      - python3-requests
+      - python3-lgpio
+
+  launchers:
+    plugin: dump
+    source: ./snap
+    organize:
+      bin/run-pilot: bin/run-pilot
+      hooks/configure: meta/hooks/configure
+    prime:
+      - bin/run-pilot
+      - meta/hooks/configure

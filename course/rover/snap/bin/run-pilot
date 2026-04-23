@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+get_conf() {
+    if snapctl get "$1" >/dev/null 2>&1; then
+        snapctl get "$1"
+    else
+        printf '%s' ""
+    fi
+}
+
+SERVER_URL="$(get_conf server-url)"
+INTERNAL_SECRET="$(get_conf internal-secret)"
+ROS_DOMAIN_ID="$(get_conf ros-domain-id)"
+
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+export INTERNAL_SECRET
+
+exec ros2 launch pilot pilot.launch.py \
+    server_url:="${SERVER_URL}"

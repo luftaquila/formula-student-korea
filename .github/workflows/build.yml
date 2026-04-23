@@ -218,7 +218,7 @@ jobs:
             $(printf 'ghcr.io/${{ github.repository }}/${{ matrix.service }}@sha256:%s ' *)
 
       - name: Delete orphaned versions
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const pkg = 'formula-student-korea/${{ matrix.service }}';
@@ -256,4 +256,3 @@ jobs:
                 });
               }
             }
-
