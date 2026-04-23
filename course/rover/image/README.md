@@ -14,9 +14,12 @@ Image assembly is handled in GitHub Actions instead of on a developer machine.
 
 The image build expects:
 
-- a signed Ubuntu Core model assertion stored as the `ROVER_MODEL_ASSERTION_B64` GitHub secret
-- the `fsk-rover-pilot` snap built inside the image workflow
-- the `tailscale` snap to be referenced from the model assertion
+- `SNAP_BRAND_KEY_B64` GitHub **secret** — tar+base64 of the `snap create-key`
+  gnupg homedir containing the brand signing key (see "Signing setup" below)
+- `SNAP_BRAND_KEY_NAME` GitHub **repo variable** — name of the key (output of
+  `snap keys`, e.g. `fsk-rover-signing`)
+- the `fsk-rover-pilot` snap, built inside the image workflow
+- the `tailscale` snap, referenced from the model assertion
 
 Current account values already wired into `model.assertion.template`:
 
@@ -24,9 +27,36 @@ Current account values already wired into `model.assertion.template`:
 - `authority-id`: `0omV9pEFvLnFgHtuPb1LUkfXbJyegTHc`
 - `brand-id`: `0omV9pEFvLnFgHtuPb1LUkfXbJyegTHc`
 
-Before signing, refresh `timestamp`.
+CI signs the assertion on every run with a freshly-refreshed `timestamp`, so the
+template lives in git unsigned and nobody has to remember to re-sign.
 
-The model uses `grade: dangerous` because the image build injects the local `fsk-rover-pilot` snap with `ubuntu-image --snap`.
+The model uses `grade: dangerous` because the image build injects the local
+`fsk-rover-pilot` snap with `ubuntu-image --snap`.
+
+## Signing Setup (one-time per brand key)
+
+Run these commands on a trusted machine that already has the brand account
+logged in to `snapcraft`:
+
+```bash
+# Create a signing key and register it with the brand. Leave the passphrase
+# blank — CI signs non-interactively and cannot type one.
+snap create-key fsk-rover-signing
+snapcraft register-key fsk-rover-signing
+
+# Export the gnupg homedir snapd uses for assertion signing.
+# On classic Ubuntu hosts the path is ~/.snap/gnupg (verify with `ls`).
+tar czf /tmp/snap-brand-key.tar.gz -C ~/.snap/gnupg .
+base64 -w0 /tmp/snap-brand-key.tar.gz | \
+    gh secret set SNAP_BRAND_KEY_B64 --repo luftaquila/formula-student-korea
+
+# Record the key name as a repo variable (not a secret).
+gh variable set SNAP_BRAND_KEY_NAME --repo luftaquila/formula-student-korea \
+    --body 'fsk-rover-signing'
+```
+
+The old `ROVER_MODEL_ASSERTION_B64` secret is no longer read and can be removed
+from repo secrets.
 
 ## Security Model
 

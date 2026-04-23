@@ -48,7 +48,7 @@
     {
       "name": "fsk-rover-pilot",
       "type": "app",
-      "default-channel": "latest/edge"
+      "default-channel": "latest/candidate"
     }
   ]
 }

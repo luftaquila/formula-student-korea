@@ -2,7 +2,12 @@ name: Build Rover Snap
 
 on:
   push:
+    # Branch pushes: gated by course/rover paths so doc-only changes elsewhere
+    # don't rebuild the rover snap. Tags (v*) also trigger this flow; note that
+    # GitHub's `paths` filter also applies to tag pushes, so tags placed on
+    # non-course commits won't trigger — use workflow_dispatch for those.
     branches: [main]
+    tags: ['v*']
     paths:
       - 'course/rover/**'
       - '.github/workflows/rover-snap.yml'
@@ -11,6 +16,11 @@ on:
       - 'course/rover/**'
       - '.github/workflows/rover-snap.yml'
   workflow_dispatch:
+    inputs:
+      release_channel:
+        description: 'Snap channel to release to (edge | candidate | beta | stable). Use this for tag→edge promotion when the tagged commit is doc-only.'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -30,8 +40,19 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Python test deps
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pytest
+          python3 -m pip install -r course/rover/pilot/requirements.txt || true
+
       - name: Compile rover sources
         run: python3 -m compileall course/rover/pilot/pilot course/rover/pilot/test course/rover/pilot/launch
+
+      - name: Run pilot pytest
+        run: |
+          cd course/rover/pilot
+          python3 -m pytest test/ -q
 
   build:
     runs-on: ubuntu-24.04-arm
@@ -52,11 +73,32 @@ jobs:
           path: ${{ steps.build.outputs.snap }}
           retention-days: 7
 
-      - name: Publish snap to edge
-        if: github.event_name != 'pull_request'
+      # PRs: artifact only (no publish).
+      # main push: publish to `candidate` (staging channel for the field team).
+      # Tag push (v*) or workflow_dispatch with release_channel: publish to that channel.
+      - name: Publish snap to candidate (main push)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: candidate
+
+      - name: Publish snap to tagged channel
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: snapcore/action-publish@v1
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
         with:
           snap: ${{ steps.build.outputs.snap }}
           release: edge
+
+      - name: Manual publish (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch' && inputs.release_channel != ''
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: ${{ inputs.release_channel }}

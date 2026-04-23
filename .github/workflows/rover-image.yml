@@ -2,6 +2,9 @@ name: Build Rover Image
 
 on:
   workflow_dispatch:
+  schedule:
+    # Weekly Monday 14:00 KST (05:00 UTC) so the image tracks recent snap releases.
+    - cron: '0 5 * * 1'
 
 permissions:
   contents: read
@@ -10,15 +13,21 @@ jobs:
   build:
     runs-on: ubuntu-24.04-arm
     env:
-      MODEL_ASSERTION_B64: ${{ secrets.ROVER_MODEL_ASSERTION_B64 }}
+      # Tar+base64 of the snap create-key gnupg homedir (usually ~/.snap/gnupg
+      # on classic Ubuntu hosts). See course/rover/image/README.md.
+      SNAP_BRAND_KEY_B64: ${{ secrets.SNAP_BRAND_KEY_B64 }}
+      # Name of the registered signing key (e.g. "fsk-rover-signing").
+      SNAP_BRAND_KEY_NAME: ${{ vars.SNAP_BRAND_KEY_NAME }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: Validate model assertion secret
+      - name: Validate signing inputs
         run: |
-          test -n "$MODEL_ASSERTION_B64" || {
-            echo "ROVER_MODEL_ASSERTION_B64 secret is required" >&2
-            exit 1
+          test -n "$SNAP_BRAND_KEY_B64" || {
+            echo "SNAP_BRAND_KEY_B64 secret is required" >&2; exit 1
+          }
+          test -n "$SNAP_BRAND_KEY_NAME" || {
+            echo "SNAP_BRAND_KEY_NAME repo variable is required" >&2; exit 1
           }
 
       - name: Build pilot snap
@@ -30,10 +39,30 @@ jobs:
       - name: Install ubuntu-image
         run: sudo snap install ubuntu-image --classic
 
-      - name: Materialize model assertion
+      - name: Import brand signing key
+        run: |
+          # snapd's create-key/sign uses ~/.snap/gnupg on classic Ubuntu hosts.
+          KEYDIR="$HOME/.snap/gnupg"
+          mkdir -p "$KEYDIR"
+          chmod 700 "$KEYDIR"
+          printf '%s' "$SNAP_BRAND_KEY_B64" | base64 -d | tar xz -C "$KEYDIR"
+          # Verify the expected key is now visible to snapd.
+          snap keys
+          snap keys | awk 'NR>1 {print $1}' | grep -Fxq "$SNAP_BRAND_KEY_NAME" || {
+            echo "Signing key '$SNAP_BRAND_KEY_NAME' not found in keystore" >&2
+            exit 1
+          }
+
+      - name: Build and sign model assertion
         run: |
           mkdir -p .tmp
-          printf '%s' "$MODEL_ASSERTION_B64" | base64 -d > .tmp/rover.model
+          # Refresh timestamp so the assertion never drifts more than a few
+          # minutes from signing time (Store policy enforces recency).
+          TS="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+          jq --arg ts "$TS" '.timestamp=$ts' \
+            course/rover/image/model.assertion.template > .tmp/rover.model.json
+          snap sign -k "$SNAP_BRAND_KEY_NAME" < .tmp/rover.model.json > .tmp/rover.model
+          head -n 20 .tmp/rover.model
 
       - name: Build Ubuntu Core image
         run: |
