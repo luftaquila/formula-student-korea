@@ -1,63 +1,79 @@
-# Ubuntu Core Notes
+# Ubuntu Core Deployment Notes
 
-Recommended deployment layout:
+Design rationale and Ubuntu-Core-specific facts for the `fsk-rover-pilot`
+snap. For day-to-day operation see [`README.md`](README.md) and
+[`provisioning.md`](provisioning.md).
 
-- `pilot/`: ROS 2 package source and local service assets
-- `snap/`: Ubuntu Core packaging files
-- `image/`: Ubuntu Core image assembly templates and notes
-- `docs/`: operations and deployment documentation
+## Packaging model
 
-Selected deployment model:
+One monolithic snap (`fsk-rover-pilot`), `grade: stable`,
+`confinement: strict`, `base: core24`, ROS 2 Jazzy via the `ros2-jazzy` snap
+extension. The `pilot` app runs as `daemon: simple` with
+`restart-condition: on-failure`.
 
-- single monolithic snap
-- ROS 2 app runs as a snap daemon at boot
-- Ubuntu Core image includes `fsk-rover-pilot` and `tailscale` snaps
-- default rover settings are embedded in `pilot/config/rover_params.yaml`
-- only a few operational values are overrideable through `snap set`
-- the `fsk-rover-pilot` snap stages its Python runtime dependencies directly
-- the `fsk-rover-pilot` snap uses a `configure` hook to restart after `snap set`
+Rationale — one unit per rover keeps the refresh/rollback story a single
+command (`snap refresh` / `snap revert`). Splitting the five ROS 2 nodes
+into individual snaps would mean inter-snap content-sharing plumbing for
+no operational gain.
 
-Access and bootstrap model:
+## Snap confinement
 
-- first login uses Ubuntu One SSH key injection during Ubuntu Core setup
-- `tailscale` is preinstalled in the image but not pre-authenticated
-- after the first SSH login, the operator runs `sudo tailscale up`
-- the operator then applies `snap set fsk-rover-pilot ...`
-- the `configure` hook restarts the daemon so the new values take effect immediately
+Required plugs, all declared in `../snapcraft.yaml`:
 
-Supported snap configuration keys:
+- `network`, `network-bind` — course server REST/SSE and NTRIP TCP
+- `raw-usb` — ZED-F9P USB CDC device
+- `serial-port` — udev-named serial lines if present
+- `gpio` — MDD10A PWM/DIR and the steering/spray servos
 
-- `server-url`
-- `internal-secret`
-- `ros-domain-id`
+Notably absent: `snapd-control`, `home`, `system-files`. The snap cannot
+reach host filesystems or reconfigure snapd; the only writable host path
+touched by the package is `/etc/netplan/90-fsk-wifi.yaml`, written by the
+`configure` hook (hooks run as root outside the app confinement).
 
-Configuration strategy:
+## Image composition
 
-- common hardware parameters stay in the packaged YAML
-- identical devices all run the same snap revision
-- no per-device YAML layer is introduced unless field exceptions appear later
-- the image does not contain `fsk-rover-pilot` application secrets
-- the image does not contain Tailscale auth keys
+The Ubuntu Core image (see `../image/`) bundles:
 
-Recommended first-boot sequence:
+- `core24`, `snapd`, `pi`, `pi-kernel`, `console-conf` — Canonical base + gadget
+- `tailscale` — for remote access, installed but not pre-authenticated
+- `fsk-rover-pilot` — tracking `latest/candidate` by default
+- a brand-signed `system-user` assertion that creates the `fsk` local user
+  with `authorized_keys` fetched from <https://github.com/luftaquila.keys>
 
-1. flash the Ubuntu Core image that already includes `fsk-rover-pilot` and `tailscale`
-2. complete Ubuntu Core setup with Ubuntu One so SSH keys are injected
-3. SSH into the rover over the local network
-4. run `sudo tailscale up --auth-key=...`
-5. run `sudo snap set fsk-rover-pilot internal-secret=...`
-6. optionally set `server-url=...` and `ros-domain-id=...`
-7. verify with `snap services fsk-rover-pilot` and `snap logs fsk-rover-pilot -n 50`
-8. continue all later access over Tailscale SSH
+`grade: dangerous` on the model assertion is required because the image
+build injects the local `fsk-rover-pilot` snap via `ubuntu-image --snap`
+instead of pulling a published revision. Once booted, the rover follows
+the Store's signed channel the same way any Ubuntu Core device does.
 
-CI ownership:
+## Configure hook behaviour
 
-- `.github/workflows/rover-snap.yml` builds the snap on every push to `main` and publishes it to the `latest/edge` channel on the Snap Store
-- `.github/workflows/rover-image.yml` is a manual (`workflow_dispatch`) pipeline that rebuilds the snap and assembles the Ubuntu Core image
-- the signed model assertion is expected as the `ROVER_MODEL_ASSERTION_B64` GitHub secret
-- Snap Store credentials are expected as the `SNAPCRAFT_STORE_CREDENTIALS` GitHub secret
+`snap/hooks/configure` runs on install and on every `snap set`:
 
-Legacy notes:
+1. Reads `wifi-ssid` / `wifi-password` (defaults: `default` / `password`).
+2. Rewrites `/etc/netplan/90-fsk-wifi.yaml` only when the content changes,
+   then runs `netplan apply`. Skipping identical writes avoids yanking the
+   link on unrelated `snap set` calls.
+3. Restarts the `pilot` daemon so any other changed keys (NTRIP, server
+   URL, internal secret) take effect immediately.
 
-- `pilot/scripts/systemd/` remains only as a reference for non-Core environments
-- `pilot/scripts/setup_udev.sh` remains available for classic Ubuntu bring-up
+All supported `snap set` keys are listed in `README.md`.
+
+## CI ownership
+
+- `.github/workflows/rover-snap.yml` — verifies (`compileall` + `pytest`) and
+  builds the snap; publishes `candidate` on main pushes, `edge` on `v*`
+  tags or `workflow_dispatch` with a specified channel.
+- `.github/workflows/rover-image.yml` — manual or weekly-scheduled; signs
+  the model and system-user assertions in-pipeline from
+  `image/model.assertion.template` and `image/system-user.template.json`
+  using the brand key imported from `SNAP_BRAND_KEY_B64` and
+  `SNAP_BRAND_KEY_NAME`.
+
+## Legacy paths
+
+Kept for non-Ubuntu-Core bring-up only:
+
+- `pilot/scripts/setup_udev.sh` — classic Ubuntu udev rule for the ZED-F9P
+  (gives `/dev/ttyGPS`, `MODE=0660`, `GROUP=dialout`)
+- `pilot/scripts/systemd/pilot.service` — systemd unit if running the pilot
+  without a snap

@@ -1,59 +1,57 @@
 # Image Assembly
 
-This directory documents the Ubuntu Core image layer for the rover.
+Ubuntu Core image layer for the rover. All assembly happens in GitHub
+Actions; developer machines only need the signing-key setup below.
 
-## CI Strategy
+## Pipelines
 
-Image assembly is handled in GitHub Actions instead of on a developer machine.
+- `.github/workflows/rover-snap.yml` — builds `fsk-rover-pilot` on every
+  PR (artifact only), publishes `candidate` on pushes to `main`, and
+  publishes `edge` on `v*` tags or `workflow_dispatch` with a specified
+  channel. Field rovers refresh from these channels, so new missions
+  roll out through this pipeline rather than through fresh images.
+- `.github/workflows/rover-image.yml` — manual (`workflow_dispatch`) or
+  weekly (Mon 14:00 KST). Signs the model and system-user assertions
+  in-pipeline, builds the Ubuntu Core image, and injects the signed
+  `auto-import.assert` into the image's writable partition so the
+  image boots into a ready-to-SSH state.
 
-- `.github/workflows/rover-snap.yml` builds and publishes the `fsk-rover-pilot` snap on every push to `main` (edge channel)
-- `.github/workflows/rover-image.yml` is a manual (`workflow_dispatch`) workflow that rebuilds the snap and assembles the Ubuntu Core image
-- image assembly is intentionally separate from the snap pipeline because it is only needed for first-time provisioning; ongoing updates flow through the snap channel
+Ongoing updates flow through the snap pipeline; the image pipeline is
+only needed for first-time provisioning, hardware swaps, or base-snap
+refreshes.
 
 ## Inputs
 
-The image build expects:
+| Name | Type | Contents |
+|------|------|----------|
+| `SNAP_BRAND_KEY_B64` | secret | `tar czf - -C ~/.snap/gnupg .` then `base64 -w0`. Contains the brand signing key snapd uses for `snap sign`. |
+| `SNAP_BRAND_KEY_NAME` | repo var | Key name as shown by `snap keys`, e.g. `fsk-rover-signing`. |
+| `model.assertion.template` | checked-in | Unsigned model. CI refreshes `timestamp` per run and signs. |
+| `system-user.template.json` | checked-in | Unsigned local-user assertion. CI fetches public keys from <https://github.com/luftaquila.keys>, fills `ssh-keys` + `since`/`until`/`timestamp`, signs, and stages the result as `auto-import.assert`. |
+| `fsk-rover-pilot` snap | built | Built inside the image workflow by `snapcore/action-build`. |
+| `tailscale` | snap-store | Referenced from the model assertion, pulled at assembly time. |
 
-- `SNAP_BRAND_KEY_B64` GitHub **secret** — tar+base64 of the `snap create-key`
-  gnupg homedir containing the brand signing key (see "Signing setup" below)
-- `SNAP_BRAND_KEY_NAME` GitHub **repo variable** — name of the key (output of
-  `snap keys`, e.g. `fsk-rover-signing`)
-- `model.assertion.template` (checked-in) — unsigned model, CI fills in the
-  timestamp and signs it per-run
-- `system-user.template.json` (checked-in) — unsigned local-user assertion.
-  CI fetches SSH public keys at build time from
-  <https://github.com/luftaquila.keys>, injects them into the template
-  alongside fresh `since` / `until` / `timestamp` fields, signs, and stages the
-  result as `auto-import.assert` inside the image so the `fsk` user exists on
-  first boot with no console-conf prompt
-- the `fsk-rover-pilot` snap, built inside the image workflow
-- the `tailscale` snap, referenced from the model assertion
+Brand identity baked into `model.assertion.template`:
 
-Current account values already wired into `model.assertion.template`:
+- `model` — `fsk-rover`
+- `authority-id` / `brand-id` — `0omV9pEFvLnFgHtuPb1LUkfXbJyegTHc`
 
-- `model`: `fsk-rover`
-- `authority-id`: `0omV9pEFvLnFgHtuPb1LUkfXbJyegTHc`
-- `brand-id`: `0omV9pEFvLnFgHtuPb1LUkfXbJyegTHc`
-
-CI signs the assertion on every run with a freshly-refreshed `timestamp`, so the
-template lives in git unsigned and nobody has to remember to re-sign.
-
-The model uses `grade: dangerous` because the image build injects the local
-`fsk-rover-pilot` snap with `ubuntu-image --snap`.
+`grade: dangerous` is required because the image embeds the locally-built
+`fsk-rover-pilot` snap via `ubuntu-image --snap` rather than a published
+revision.
 
 ## Signing Setup (one-time per brand key)
 
-Run these commands on a trusted machine that already has the brand account
-logged in to `snapcraft`:
+On a trusted workstation that already has the brand account logged in
+to `snapcraft`:
 
 ```bash
-# Create a signing key and register it with the brand. Leave the passphrase
-# blank — CI signs non-interactively and cannot type one.
+# Create an assertion-signing key. Leave the passphrase blank — CI signs
+# non-interactively and cannot type one.
 snap create-key fsk-rover-signing
 snapcraft register-key fsk-rover-signing
 
-# Export the gnupg homedir snapd uses for assertion signing.
-# On classic Ubuntu hosts the path is ~/.snap/gnupg (verify with `ls`).
+# Export the snapd gnupg homedir (path is ~/.snap/gnupg on classic Ubuntu).
 tar czf /tmp/snap-brand-key.tar.gz -C ~/.snap/gnupg .
 base64 -w0 /tmp/snap-brand-key.tar.gz | \
     gh secret set SNAP_BRAND_KEY_B64 --repo luftaquila/formula-student-korea
@@ -63,40 +61,25 @@ gh variable set SNAP_BRAND_KEY_NAME --repo luftaquila/formula-student-korea \
     --body 'fsk-rover-signing'
 ```
 
-The old `ROVER_MODEL_ASSERTION_B64` secret is no longer read and can be removed
-from repo secrets.
+The older `ROVER_MODEL_ASSERTION_B64` secret is no longer read by CI; it
+can be removed from the repo secrets.
 
-## Security Model
+## Security model
 
-The common image should include:
+The image contains:
 
 - Ubuntu Core base snaps
-- the `fsk-rover-pilot` snap
-- the `tailscale` snap
+- `fsk-rover-pilot`, `tailscale`
+- a signed `system-user` assertion creating local user `fsk` with SSH keys
+- a default Wi-Fi profile (`default` / `password`) applied by the pilot
+  snap's `configure` hook at first boot
 
-The common image should not include:
+The image does **not** contain:
 
-- Pilot runtime secrets
+- `fsk-rover-pilot` application secrets (INTERNAL_SECRET, NTRIP credentials)
 - Tailscale auth keys
 - per-device override files
 
-## First-Boot Flow
-
-1. Flash the CI-built Ubuntu Core image.
-2. Complete Ubuntu Core setup with Ubuntu One to inject SSH keys.
-3. SSH into the rover.
-4. Join Tailscale:
-
-```bash
-sudo tailscale up --auth-key=TSKEY...
-```
-
-5. Apply Pilot settings:
-
-```bash
-sudo snap set fsk-rover-pilot internal-secret=YOUR_SECRET
-sudo snap set fsk-rover-pilot server-url=https://test.luftaquila.io/course
-sudo snap set fsk-rover-pilot ros-domain-id=0
-```
-
-The `fsk-rover-pilot` snap `configure` hook restarts the daemon automatically after each `snap set`.
+Per-rover secrets are injected after first login via `snap set`. See
+[`../docs/provisioning.md`](../docs/provisioning.md) for the full first-boot
+sequence.
