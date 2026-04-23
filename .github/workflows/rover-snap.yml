@@ -60,11 +60,65 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build pilot snap
-        uses: snapcore/action-build@v1
-        id: build
+      - name: Install snapcraft
+        run: sudo snap install snapcraft --classic
+
+      # The ros2-jazzy extension calls `rosdep resolve` during
+      # stage-runtime-dependencies. In LXD-backed builds the extension
+      # seeds rosdep inside the container; in destructive-mode it uses
+      # the host's rosdep, so we have to init it ourselves.
+      # python3-rosdep isn't in the default Ubuntu repos (it lives in
+      # the ROS 2 apt repo that snapcraft sets up later), so install via
+      # pip from PyPI — same binary, no repo plumbing.
+      - name: Initialize rosdep
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3-pip
+          sudo pip install --break-system-packages rosdep
+          sudo rosdep init 2>/dev/null || true
+          # Populate /root/.ros explicitly. snapcraft's stage-runtime-
+          # dependencies step launches rosdep via `env -i` which clears
+          # HOME, so rosdep falls back to the effective UID's home dir
+          # (/root under our sudo snapcraft). Without this, rosdep reports
+          # "not initialized" even though /home/runner/.ros is populated.
+          sudo rosdep update
+
+      # Cache the ROS 2 Jazzy stage-packages that snapcraft downloads every
+      # run (~hundreds of MB of .debs). Key on snapcraft.yaml so new deps
+      # invalidate automatically; restore-keys lets PR branches share the
+      # base cache even when their snapcraft.yaml differs.
+      - name: Cache snapcraft downloads
+        uses: actions/cache@v4
         with:
-          path: course/rover
+          path: ~/.cache/snapcraft
+          key: snapcraft-${{ runner.arch }}-${{ hashFiles('course/rover/snapcraft.yaml') }}
+          restore-keys: |
+            snapcraft-${{ runner.arch }}-
+
+      # --destructive-mode builds directly on the runner VM instead of
+      # spinning up an LXD container. The runner is already Ubuntu 24.04
+      # (matches `base: core24`) and is thrown away after the job, so LXD
+      # isolation adds only overhead (~3 min of base-image pull per run).
+      # Needs sudo because the ros2-jazzy extension writes the ROS 2
+      # apt keyring to /etc/apt/keyrings/. `HOME=$HOME` keeps snapcraft's
+      # cache under /home/runner/.cache/snapcraft so actions/cache hits.
+      - name: Build pilot snap
+        id: build
+        working-directory: course/rover
+        env:
+          SNAPCRAFT_BUILD_INFO: "1"
+        run: |
+          sudo -E HOME="$HOME" snapcraft --destructive-mode
+          # Hand snapcraft's cache and state dirs back to the runner user:
+          # - cache so the actions/cache save step can tar it,
+          # - state so the later non-sudo `snapcraft upload` (publish step)
+          #   can write its log file at ~/.local/state/snapcraft/log/.
+          sudo chown -R "$(id -u):$(id -g)" \
+            "$HOME/.cache/snapcraft" \
+            "$HOME/.local/state/snapcraft" 2>/dev/null || true
+          SNAP=$(ls fsk-rover-pilot_*.snap | head -1)
+          test -n "$SNAP" || { echo "No .snap produced" >&2; exit 1; }
+          echo "snap=${GITHUB_WORKSPACE}/course/rover/${SNAP}" >> "$GITHUB_OUTPUT"
 
       - name: Upload snap artifact
         uses: actions/upload-artifact@v7

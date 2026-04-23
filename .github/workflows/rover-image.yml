@@ -30,14 +30,46 @@ jobs:
             echo "SNAP_BRAND_KEY_NAME repo variable is required" >&2; exit 1
           }
 
-      - name: Build pilot snap
-        uses: snapcore/action-build@v1
-        id: build
-        with:
-          path: course/rover
+      - name: Install snap tooling
+        run: |
+          sudo snap install snapcraft --classic
+          sudo snap install ubuntu-image --classic
 
-      - name: Install ubuntu-image
-        run: sudo snap install ubuntu-image --classic
+      # See rover-snap.yml for rationale; destructive-mode needs host-level
+      # rosdep initialization.
+      - name: Initialize rosdep
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3-pip
+          sudo pip install --break-system-packages rosdep
+          sudo rosdep init 2>/dev/null || true
+          sudo rosdep update
+
+      # Same cache as rover-snap.yml so both workflows share the ROS 2 Jazzy
+      # stage-packages (~hundreds of MB of .debs).
+      - name: Cache snapcraft downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/snapcraft
+          key: snapcraft-${{ runner.arch }}-${{ hashFiles('course/rover/snapcraft.yaml') }}
+          restore-keys: |
+            snapcraft-${{ runner.arch }}-
+
+      # --destructive-mode avoids the ~3 min LXD base-image pull. See
+      # rover-snap.yml for the full rationale.
+      - name: Build pilot snap
+        id: build
+        working-directory: course/rover
+        env:
+          SNAPCRAFT_BUILD_INFO: "1"
+        run: |
+          sudo -E HOME="$HOME" snapcraft --destructive-mode
+          sudo chown -R "$(id -u):$(id -g)" \
+            "$HOME/.cache/snapcraft" \
+            "$HOME/.local/state/snapcraft" 2>/dev/null || true
+          SNAP=$(ls fsk-rover-pilot_*.snap | head -1)
+          test -n "$SNAP" || { echo "No .snap produced" >&2; exit 1; }
+          echo "snap=${GITHUB_WORKSPACE}/course/rover/${SNAP}" >> "$GITHUB_OUTPUT"
 
       - name: Import brand signing key
         run: |
