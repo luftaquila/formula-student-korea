@@ -91,41 +91,15 @@ jobs:
       - name: Build Ubuntu Core image
         run: |
           mkdir -p .tmp/image
+          # --assertion bakes the system-user assertion into the seed at
+          # build time, so snapd picks it up on first boot and creates the
+          # fsk user. Only works because the model is grade: dangerous and
+          # the assertion uses ssh-keys (no password).
           ubuntu-image snap \
             --snap "${{ steps.build.outputs.snap }}" \
+            --assertion .tmp/auto-import.assert \
             --output-dir .tmp/image \
             .tmp/rover.model
-
-      - name: Inject system-user assertion into image
-        run: |
-          set -x
-          IMG=$(ls .tmp/image/*.img 2>/dev/null | head -1)
-          test -n "$IMG" || { echo "No .img found in .tmp/image/"; ls -la .tmp/image/; exit 1; }
-
-          LOOP=$(sudo losetup --show -fP "$IMG")
-          sudo partprobe "$LOOP" || true
-
-          # Ubuntu Core 24 lays out 4 partitions; writable is labelled
-          # `ubuntu-data` on grade: dangerous.
-          WRITABLE=$(sudo blkid -L ubuntu-data || true)
-          if [ -z "$WRITABLE" ]; then
-            sudo parted -s "$LOOP" print
-            # Fallback: the last ext4 partition is ubuntu-data.
-            WRITABLE=$(sudo lsblk -nr -o NAME,FSTYPE,LABEL "$LOOP" \
-                        | awk '$2=="ext4" && $3=="ubuntu-data" {print "/dev/"$1}' | tail -1)
-          fi
-          test -n "$WRITABLE" || { echo "Could not locate ubuntu-data partition"; exit 1; }
-
-          MNT=$(mktemp -d)
-          sudo mount "$WRITABLE" "$MNT"
-          # Pre-first-boot assertions live in the seed tree so snapd's seeding
-          # step picks them up on initial boot and creates the local user.
-          sudo mkdir -p "$MNT/system-data/var/lib/snapd/seed/assertions"
-          sudo cp .tmp/auto-import.assert \
-            "$MNT/system-data/var/lib/snapd/seed/assertions/auto-import.assert"
-          sudo chmod 644 "$MNT/system-data/var/lib/snapd/seed/assertions/auto-import.assert"
-          sudo umount "$MNT"
-          sudo losetup -d "$LOOP"
 
       - name: Upload image artifacts
         uses: actions/upload-artifact@v7

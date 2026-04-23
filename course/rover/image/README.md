@@ -12,9 +12,9 @@ Actions; developer machines only need the signing-key setup below.
   roll out through this pipeline rather than through fresh images.
 - `.github/workflows/rover-image.yml` — manual (`workflow_dispatch`) or
   weekly (Mon 14:00 KST). Signs the model and system-user assertions
-  in-pipeline, builds the Ubuntu Core image, and injects the signed
-  `auto-import.assert` into the image's writable partition so the
-  image boots into a ready-to-SSH state.
+  in-pipeline and bakes the signed `auto-import.assert` into the image
+  seed at build time via `ubuntu-image snap --assertion`, so the image
+  boots into a ready-to-SSH state.
 
 Ongoing updates flow through the snap pipeline; the image pipeline is
 only needed for first-time provisioning, hardware swaps, or base-snap
