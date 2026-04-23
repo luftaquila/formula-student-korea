@@ -30,6 +30,37 @@ const pathDistance = ref(0);
 const manualThrottle = ref(0);
 const manualSteering = ref(0);
 
+// Rover live status (from SSE rover:status event)
+const roverStatus = ref({
+  connected: false,
+  last_position_at: 0,
+  fix_status: null,
+  nav_state: null,
+  ntrip_connected: null,
+});
+let manualFailCount = 0;
+
+const roverStatusText = computed(() => {
+  const s = roverStatus.value;
+  if (!s.connected) return "로버 미연결";
+  const parts = [];
+  if (s.fix_status) parts.push(s.fix_status.toUpperCase());
+  if (s.nav_state) parts.push(s.nav_state);
+  if (s.ntrip_connected !== null) parts.push(`NTRIP ${s.ntrip_connected ? "ok" : "off"}`);
+  if (s.last_position_at) {
+    const ago = Math.max(0, Math.round((Date.now() - s.last_position_at) / 1000));
+    parts.push(`pos ${ago}s`);
+  }
+  return parts.join(" · ");
+});
+
+const roverStatusClass = computed(() => {
+  const s = roverStatus.value;
+  if (!s.connected) return "rover-badge-off";
+  if (s.fix_status === "rtk_fixed" && s.ntrip_connected !== false) return "rover-badge-ok";
+  return "rover-badge-warn";
+});
+
 // Mobile bottom sheet
 const isMobile = ref(false);
 const sheetExpanded = ref(false);
@@ -770,10 +801,15 @@ async function emergencyStop() {
 
 /* ── Manual control ───────────────────────────────── */
 function startManualControl() {
+  if (!roverStatus.value.connected) {
+    alert("로버가 연결되어 있지 않습니다.");
+    return;
+  }
   clearPath();
   roverMode.value = "manual";
   manualThrottle.value = 0;
   manualSteering.value = 0;
+  manualFailCount = 0;
   sendControl();
   controlInterval = setInterval(sendControl, 50);
 }
@@ -782,6 +818,7 @@ function stopManualControl() {
   if (controlInterval) { clearInterval(controlInterval); controlInterval = null; }
   manualThrottle.value = 0;
   manualSteering.value = 0;
+  manualFailCount = 0;
   sendControl();
   if (roverMode.value === "manual") roverMode.value = "none";
 }
@@ -792,7 +829,15 @@ async function sendControl() {
       method: "POST",
       body: JSON.stringify({ throttle: manualThrottle.value, steering: manualSteering.value }),
     });
-  } catch {}
+    manualFailCount = 0;
+  } catch {
+    manualFailCount++;
+    // 5 consecutive failures (~250ms) → auto-release manual control
+    if (manualFailCount >= 5 && roverMode.value === "manual") {
+      stopManualControl();
+      alert("로버 연결이 끊어져 수동 제어를 해제했습니다.");
+    }
+  }
 }
 
 // Joystick pointer handling
@@ -874,6 +919,23 @@ function connectSSE() {
     updateRoverMarker(data.lat, data.lng);
     if (roverMode.value === "executing") updatePathProgress(data.lat, data.lng);
   });
+
+  eventSource.addEventListener("rover:status", (e) => {
+    const data = JSON.parse(e.data);
+    roverStatus.value = { ...roverStatus.value, ...data };
+    // If the rover disconnected mid-manual-control, release immediately.
+    if (!data.connected && roverMode.value === "manual") {
+      stopManualControl();
+    }
+  });
+}
+
+async function fetchRoverStatus() {
+  try {
+    const res = await request("/api/rover/status", { method: "GET" });
+    const data = await res.json();
+    roverStatus.value = { ...roverStatus.value, ...data };
+  } catch { /* best-effort */ }
 }
 
 /* ── Mobile detection ─────────────────────────────── */
@@ -887,6 +949,7 @@ onMounted(async () => {
   await nextTick();
   initMap();
   connectSSE();
+  fetchRoverStatus();
 });
 
 onUnmounted(() => {
@@ -907,6 +970,12 @@ onUnmounted(() => {
 
       <!-- Path pick overlay -->
       <div v-if="roverMode === 'path-pick'" class="map-overlay">지도에서 시작점을 클릭하세요</div>
+
+      <!-- Rover status badge -->
+      <div :class="['rover-badge', roverStatusClass]" :title="roverStatusText">
+        <span class="rover-badge-dot"></span>
+        <span class="rover-badge-text">{{ roverStatusText }}</span>
+      </div>
 
       <!-- Desktop sidebar / Mobile bottom sheet -->
       <div :class="['panel', { 'sheet': isMobile, 'sheet-dragging': sheetDragging }]"
@@ -979,6 +1048,7 @@ onUnmounted(() => {
                 >{{ pathBtnLabel }}</button>
                 <button
                   :class="['btn', 'btn-sm', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
+                  :disabled="roverMode !== 'manual' && !roverStatus.connected"
                   @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
                 >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
                 <button class="btn estop-btn-inline" @click="emergencyStop">비상정지</button>
@@ -1093,6 +1163,22 @@ onUnmounted(() => {
   border-radius: 8px; font-size: 0.9rem; font-weight: 500; z-index: 500;
   pointer-events: none;
 }
+
+.rover-badge {
+  position: absolute; top: 1rem; right: 1rem; z-index: 500;
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.3rem 0.6rem; border-radius: 999px;
+  background: rgba(0,0,0,0.7); color: #fff;
+  font-size: 0.75rem; font-weight: 500;
+  pointer-events: none;
+}
+.rover-badge-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #94a3b8;
+}
+.rover-badge-ok .rover-badge-dot { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+.rover-badge-warn .rover-badge-dot { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }
+.rover-badge-off .rover-badge-dot { background: #94a3b8; }
 
 /* Emergency stop inline */
 .estop-btn-inline {
