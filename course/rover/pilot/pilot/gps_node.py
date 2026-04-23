@@ -12,6 +12,8 @@ Subscribed topics:
     /rover/cmd/request_position (std_msgs/Empty) - Trigger immediate position publish
 """
 
+import json
+
 import serial
 import rclpy
 from rclpy.node import Node
@@ -66,11 +68,13 @@ class GpsNode(Node):
         self.declare_parameter('ntrip.mountpoint', '')
         self.declare_parameter('ntrip.username', '')
         self.declare_parameter('ntrip.password', '')
+        self.declare_parameter('ntrip.gga_interval_s', 10.0)
 
         # Publishers
         self._pub_position = self.create_publisher(NavSatFix, '/rover/gps/position', 10)
         self._pub_heading = self.create_publisher(Float64, '/rover/gps/heading', 10)
         self._pub_fix_status = self.create_publisher(String, '/rover/gps/fix_status', 10)
+        self._pub_ntrip_status = self.create_publisher(String, '/rover/ntrip/status', 1)
 
         # Subscriber for position request
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
@@ -92,7 +96,24 @@ class GpsNode(Node):
         rate = self.get_parameter('publish_rate').value
         self._timer = self.create_timer(1.0 / rate, self._read_serial)
 
+        # Periodic NTRIP status publisher (1Hz)
+        self._ntrip_status_timer = self.create_timer(1.0, self._publish_ntrip_status)
+
         self.get_logger().info('GPS node started')
+
+    def _publish_ntrip_status(self):
+        """Publish NTRIP client status as JSON for bridge_node telemetry."""
+        if not self._ntrip:
+            return
+        status = {
+            'connected': self._ntrip.connected,
+            'fail_count': self._ntrip.fail_count,
+            'last_error': self._ntrip.last_error,
+            'bytes_received': self._ntrip.bytes_received,
+        }
+        msg = String()
+        msg.data = json.dumps(status)
+        self._pub_ntrip_status.publish(msg)
 
     def _open_serial(self):
         port = self.get_parameter('serial_port').value
@@ -129,7 +150,10 @@ class GpsNode(Node):
             username=self.get_parameter('ntrip.username').value,
             password=self.get_parameter('ntrip.password').value,
             serial_port=self._serial,
+            logger=self.get_logger(),
         )
+        # Apply GGA interval from config (exposed as attribute so tests/ops can tweak)
+        self._ntrip._gga_interval = self.get_parameter('ntrip.gga_interval_s').value
         self._ntrip.start()
         self.get_logger().info(f'NTRIP client started: {host}')
 

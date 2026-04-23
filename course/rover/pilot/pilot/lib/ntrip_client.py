@@ -10,7 +10,7 @@ import threading
 import time
 import logging
 
-logger = logging.getLogger(__name__)
+_default_logger = logging.getLogger(__name__)
 
 GGA_TEMPLATE = (
     "$GPGGA,{time},{lat},{lat_dir},{lon},{lon_dir},1,12,1.0,0.0,M,0.0,M,,"
@@ -49,7 +49,7 @@ class NTRIPClient:
     """NTRIP client that streams RTCM3 corrections to a serial port."""
 
     def __init__(self, host, port, mountpoint, username, password,
-                 serial_port, lat=0.0, lon=0.0):
+                 serial_port, lat=0.0, lon=0.0, logger=None):
         """Initialize NTRIP client.
 
         Args:
@@ -61,6 +61,7 @@ class NTRIPClient:
             serial_port: pyserial Serial object to write RTCM3 data to
             lat: approximate latitude for initial GGA
             lon: approximate longitude for initial GGA
+            logger: optional logger (ROS2 logger or stdlib). Falls back to module logger.
         """
         self._host = host
         self._port = port
@@ -75,6 +76,10 @@ class NTRIPClient:
         self._sock = None
         self._bytes_received = 0
         self._connected = False
+        self._fail_count = 0
+        self._last_error = None
+        self._logger = logger or _default_logger
+        self._gga_interval = 10.0  # seconds, override via attribute
 
     @property
     def connected(self):
@@ -83,6 +88,26 @@ class NTRIPClient:
     @property
     def bytes_received(self):
         return self._bytes_received
+
+    @property
+    def fail_count(self):
+        return self._fail_count
+
+    @property
+    def last_error(self):
+        return self._last_error
+
+    def _log_info(self, msg):
+        """Log an info message via whichever logger we were given."""
+        if hasattr(self._logger, 'info'):
+            self._logger.info(msg)
+
+    def _log_warn(self, msg):
+        """Log a warning. ROS2 loggers use warn(), stdlib uses warning()."""
+        if hasattr(self._logger, 'warn'):
+            self._logger.warn(msg)
+        elif hasattr(self._logger, 'warning'):
+            self._logger.warning(msg)
 
     def update_position(self, lat, lon):
         """Update position for GGA reports (thread-safe)."""
@@ -152,11 +177,18 @@ class NTRIPClient:
 
         self._sock.settimeout(30.0)
         self._connected = True
-        logger.info(f"Connected to NTRIP {self._host}:{self._port}/{self._mountpoint}")
+        self._fail_count = 0
+        self._last_error = None
+        self._log_info(f"Connected to NTRIP {self._host}:{self._port}/{self._mountpoint}")
 
     def _run(self):
-        """Main loop: connect, receive RTCM3, reconnect on failure."""
+        """Main loop: connect, receive RTCM3, reconnect on failure.
+
+        Reconnect uses exponential backoff: 5s, 10s, 20s, ... capped at 300s.
+        Successful handshake resets the counter.
+        """
         while self._running:
+            gga_interval = self._gga_interval
             try:
                 self._connect()
                 last_gga = time.monotonic()
@@ -171,21 +203,24 @@ class NTRIPClient:
                         self._serial.write(data)
                         self._bytes_received += len(data)
 
-                    # Send GGA position update every 60 seconds
+                    # Send GGA position update at the configured cadence
                     now = time.monotonic()
-                    if now - last_gga > 60.0:
+                    if now - last_gga > gga_interval:
                         try:
                             gga = _format_gga(self._lat, self._lon)
                             self._sock.sendall(gga.encode())
                             last_gga = now
-                        except Exception:
+                        except Exception as exc:
+                            self._last_error = f"gga_send: {exc}"
                             break
 
                     if data == b"":
                         break  # connection closed
 
             except Exception as e:
-                logger.warning(f"NTRIP connection error: {e}")
+                self._last_error = str(e)
+                self._fail_count += 1
+                self._log_warn(f"NTRIP connection error (fail_count={self._fail_count}): {e}")
             finally:
                 self._connected = False
                 if self._sock:
@@ -196,5 +231,8 @@ class NTRIPClient:
                     self._sock = None
 
             if self._running:
-                logger.info("NTRIP reconnecting in 5 seconds...")
-                time.sleep(5.0)
+                # Exponential backoff: 5s * 2^(fail_count-1), capped at 300s
+                base = 5.0
+                delay = min(base * (2 ** max(0, min(self._fail_count - 1, 6))), 300.0)
+                self._log_info(f"NTRIP reconnecting in {delay:.0f}s (fail={self._fail_count})")
+                time.sleep(delay)

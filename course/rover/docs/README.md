@@ -47,10 +47,13 @@ sudo bash pilot/scripts/setup_udev.sh
 ## Usage
 
 ```bash
-# 전체 시스템 실행
-ros2 launch pilot pilot.launch.py \
-  server_url:=https://test.luftaquila.io/course \
-  internal_secret:=YOUR_SECRET
+# 전체 시스템 실행 — 시크릿은 환경변수로 주입 (ros2 param tree 노출 방지)
+INTERNAL_SECRET=YOUR_SECRET \
+NTRIP_HOST=ntrip.example.com NTRIP_PORT=2101 \
+NTRIP_MOUNTPOINT=VRS-RTCM31 \
+NTRIP_USERNAME=... NTRIP_PASSWORD=... \
+  ros2 launch pilot pilot.launch.py \
+    server_url:=https://test.luftaquila.io/course
 
 # 개별 노드 실행 (디버그)
 ros2 run pilot gps_node --ros-args --params-file pilot/config/rover_params.yaml

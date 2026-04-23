@@ -11,10 +11,13 @@ Published topics:
 
 Subscribed topics:
     /rover/gps/position (sensor_msgs/NavSatFix) - GPS position to report to server
+    /rover/gps/fix_status (std_msgs/String) - Fix status for telemetry
     /rover/nav/state (std_msgs/String) - Navigation state for logging
+    /rover/ntrip/status (std_msgs/String) - NTRIP client JSON status (optional)
 """
 
 import json
+import os
 import threading
 import time
 import requests
@@ -35,9 +38,23 @@ class BridgeNode(Node):
 
         # Parameters
         self.declare_parameter('server_url', '')
-        self.declare_parameter('internal_secret', '')
         self.declare_parameter('position_report_interval', 1.0)
         self.declare_parameter('sse_reconnect_delay', 3.0)
+        # Emergency escape hatch for Tailscale-internal HTTP use; default off.
+        self.declare_parameter('server_url_allow_http', False)
+
+        # INTERNAL_SECRET is read from env only — never from ros params, to keep
+        # it off the `ros2 param get` surface for anyone on the same ROS domain.
+        self._internal_secret = os.environ.get('INTERNAL_SECRET', '')
+
+        url = self.get_parameter('server_url').value
+        allow_http = self.get_parameter('server_url_allow_http').value
+        if url and not url.startswith('https://') and not allow_http:
+            self.get_logger().fatal(
+                f'server_url must start with https:// (got: {url!r}). '
+                "Set server_url_allow_http=true to override for trusted internal networks."
+            )
+            raise SystemExit(1)
 
         # Publishers
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
@@ -49,6 +66,8 @@ class BridgeNode(Node):
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps_position, 10)
         self.create_subscription(String, '/rover/nav/state', self._on_nav_state, 10)
+        self.create_subscription(String, '/rover/gps/fix_status', self._on_fix_status, 10)
+        self.create_subscription(String, '/rover/ntrip/status', self._on_ntrip_status, 10)
 
         # State
         self._last_position = None
@@ -56,20 +75,25 @@ class BridgeNode(Node):
         self._position_requested = False
         self._nav_state = 'IDLE'
         self._sse_connected = False
+        self._fix_status = None
+        self._ntrip_connected = None
 
         # Start SSE listener thread
         self._running = True
         self._sse_thread = threading.Thread(target=self._sse_loop, daemon=True)
         self._sse_thread.start()
 
+        # Periodic telemetry thread (every 3s)
+        self._telemetry_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
+        self._telemetry_thread.start()
+
         self.get_logger().info('Bridge node started')
 
     def _get_headers(self):
         """Build request headers with internal service auth."""
-        secret = self.get_parameter('internal_secret').value
         headers = {'Content-Type': 'application/json'}
-        if secret:
-            headers['X-Internal-Service'] = secret
+        if self._internal_secret:
+            headers['X-Internal-Service'] = self._internal_secret
         return headers
 
     def _on_gps_position(self, msg):
@@ -92,6 +116,40 @@ class BridgeNode(Node):
     def _on_nav_state(self, msg):
         """Track navigation state for position reporting."""
         self._nav_state = msg.data
+
+    def _on_fix_status(self, msg):
+        """Track fix status for telemetry."""
+        self._fix_status = msg.data
+
+    def _on_ntrip_status(self, msg):
+        """Track NTRIP client status payload (JSON) for telemetry."""
+        try:
+            data = json.loads(msg.data)
+            self._ntrip_connected = bool(data.get('connected'))
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
+
+    def _telemetry_loop(self):
+        """Periodically POST telemetry to the course server."""
+        while self._running:
+            time.sleep(3.0)
+            url = self.get_parameter('server_url').value
+            if not url:
+                continue
+            payload = {
+                'nav_state': self._nav_state,
+                'fix_status': self._fix_status,
+                'ntrip_connected': self._ntrip_connected,
+            }
+            try:
+                requests.post(
+                    f'{url}/api/rover/telemetry',
+                    json=payload,
+                    headers=self._get_headers(),
+                    timeout=5.0,
+                )
+            except requests.RequestException as e:
+                self.get_logger().warn(f'Telemetry POST error: {e}')
 
     def _report_position(self):
         """POST current position to the course server."""
@@ -231,6 +289,8 @@ class BridgeNode(Node):
         self._running = False
         if self._sse_thread:
             self._sse_thread.join(timeout=5.0)
+        if getattr(self, '_telemetry_thread', None):
+            self._telemetry_thread.join(timeout=5.0)
         super().destroy_node()
 
 
