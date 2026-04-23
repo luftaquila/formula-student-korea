@@ -76,6 +76,9 @@ class NavigatorNode(Node):
         self.declare_parameter('settle_tolerance', 0.03)
         self.declare_parameter('settle_timeout', 10.0)
         self.declare_parameter('required_fix_status', 'rtk_fixed')
+        self.declare_parameter('fix_hysteresis_s', 0.8)
+        self.declare_parameter('max_curvature', 3.0)
+        self.declare_parameter('calibration_max_distance', 5.0)
 
         # Publishers
         self._pub_velocity = self.create_publisher(Twist, '/rover/cmd/velocity', 10)
@@ -127,11 +130,45 @@ class NavigatorNode(Node):
         # Resumable state for ERROR recovery
         self._pre_error_state = None
 
+        # Fix hysteresis tracking
+        self._fix_degraded_since = None  # float monotonic time or None
+
+        # Calibration extension state
+        self._cal_extended = False
+
+        # Published state dedup
+        self._last_published_state = None
+
         # Control loop at 20Hz
         self._timer = self.create_timer(0.05, self._control_loop)
 
         self._publish_state()
         self.get_logger().info('Navigator node started')
+
+    # ── Helpers ──────────────────────────────────────────
+
+    def _safe_destroy_timer(self, timer):
+        """Cancel and destroy a timer, ignoring any failure."""
+        if timer is None:
+            return None
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+        try:
+            self.destroy_timer(timer)
+        except Exception:
+            pass
+        return None
+
+    def _heading_variance(self):
+        """Circular variance of the last 5 calibration headings (0=tight)."""
+        if len(self._cal_headings) < 2:
+            return 1.0
+        recent = self._cal_headings[-5:]
+        mean_sin = sum(sin(h) for h in recent) / len(recent)
+        mean_cos = sum(cos(h) for h in recent) / len(recent)
+        return 1.0 - sqrt(mean_sin ** 2 + mean_cos ** 2)
 
     # ── GPS callbacks ──────────────────────────────────
 
@@ -170,10 +207,14 @@ class NavigatorNode(Node):
             self._start_position = (self._current_lat, self._current_lon)
             self._ref_position = (self._current_lat, self._current_lon)
 
-            # Begin calibration
+            # Begin calibration — reset hysteresis + calibration-extend state so
+            # previous mission history never leaks into this run's thresholds.
             self._cal_start_lat = self._current_lat
             self._cal_start_lon = self._current_lon
             self._cal_headings = []
+            self._cal_extended = False
+            self._fix_degraded_since = None
+            self._pre_error_state = None
             self._set_state(State.CALIBRATING)
             self.get_logger().info(f'Mission started: {len(waypoints)} waypoints')
         else:
@@ -216,21 +257,30 @@ class NavigatorNode(Node):
         """Main 20Hz control loop dispatching by state."""
         # GPS timeout check
         if self._state in (State.CALIBRATING, State.NAVIGATING, State.SETTLING, State.RETURNING):
+            now = time.monotonic()
             gps_timeout = self.get_parameter('gps_timeout').value
-            if time.monotonic() - self._last_gps_time > gps_timeout:
+            if now - self._last_gps_time > gps_timeout:
                 self.get_logger().warn('GPS timeout, entering ERROR state')
                 self._pre_error_state = self._state
                 self._stop_motors()
                 self._set_state(State.ERROR)
                 return
+            # Fix hysteresis: tolerate short fix dropouts to avoid 50ms flicker
+            hysteresis = self.get_parameter('fix_hysteresis_s').value
             if not self._has_required_fix():
-                self.get_logger().warn(
-                    f'GPS fix below required quality ({self._gps_fix_status}), entering ERROR state'
-                )
-                self._pre_error_state = self._state
-                self._stop_motors()
-                self._set_state(State.ERROR)
-                return
+                if self._fix_degraded_since is None:
+                    self._fix_degraded_since = now
+                elif now - self._fix_degraded_since >= hysteresis:
+                    self.get_logger().warn(
+                        f'GPS fix below required quality ({self._gps_fix_status}) '
+                        f'for {now - self._fix_degraded_since:.2f}s, entering ERROR state'
+                    )
+                    self._pre_error_state = self._state
+                    self._stop_motors()
+                    self._set_state(State.ERROR)
+                    return
+            else:
+                self._fix_degraded_since = None
 
         if self._state == State.ERROR:
             self._handle_error()
@@ -275,12 +325,28 @@ class NavigatorNode(Node):
                          self._current_lat, self._current_lon)
 
         cal_distance = self.get_parameter('calibration_distance').value
+        cal_max_distance = self.get_parameter('calibration_max_distance').value
+        # If we've been extended once, push the threshold out by 2m.
+        effective_cal_distance = cal_distance + (2.0 if self._cal_extended else 0.0)
 
         if self._current_heading is not None:
             self._cal_headings.append(self._current_heading)
 
+        # Hard cap: if we've driven further than calibration_max_distance
+        # and variance is still bad, abort with ERROR for operator review.
+        if dist >= cal_max_distance:
+            variance = self._heading_variance()
+            self.get_logger().error(
+                f'Calibration max distance reached ({dist:.2f}m) '
+                f'without stable heading (variance={variance:.4f}), entering ERROR'
+            )
+            self._pre_error_state = None  # require manual restart
+            self._stop_motors()
+            self._set_state(State.ERROR)
+            return
+
         # Check if calibration is complete
-        if dist >= cal_distance and len(self._cal_headings) >= 3:
+        if dist >= effective_cal_distance and len(self._cal_headings) >= 3:
             # Also compute heading from position delta as backup
             self._current_heading = bearing(
                 self._cal_start_lat, self._cal_start_lon,
@@ -289,30 +355,31 @@ class NavigatorNode(Node):
 
             # Check heading stability
             if len(self._cal_headings) >= 5:
-                recent = self._cal_headings[-5:]
-                # Circular mean check
-                mean_sin = sum(sin(h) for h in recent) / len(recent)
-                mean_cos = sum(cos(h) for h in recent) / len(recent)
-                variance = 1.0 - sqrt(mean_sin**2 + mean_cos**2)
+                variance = self._heading_variance()
                 threshold = self.get_parameter('heading_calibrated_threshold').value
 
                 if variance < (1.0 - cos(radians(threshold))):
                     self.get_logger().info(
                         f'Heading calibrated: {degrees(self._current_heading):.1f}° '
-                        f'(variance: {variance:.4f})'
+                        f'(variance: {variance:.4f}, dist: {dist:.2f}m)'
                     )
                     self._last_progress_time = time.monotonic()
                     self._last_progress_dist = float('inf')
+                    self._cal_extended = False
                     self._set_state(State.NAVIGATING)
                     return
 
-            # Even if variance is high, proceed after sufficient distance
-            self.get_logger().info(
-                f'Calibration distance reached, heading: {degrees(self._current_heading):.1f}°'
-            )
-            self._last_progress_time = time.monotonic()
-            self._last_progress_dist = float('inf')
-            self._set_state(State.NAVIGATING)
+                # Variance still high — extend once before giving up.
+                # Only extend if a 2m extension would stay under the hard cap.
+                if not self._cal_extended and (dist + 2.0) < cal_max_distance:
+                    self._cal_extended = True
+                    self.get_logger().warn(
+                        f'Heading variance high ({variance:.4f}), extending calibration by 2m'
+                    )
+                    return  # keep driving until new threshold hit
+
+                # Already extended or no room to extend: fall through and let
+                # the max-distance guard trip ERROR on the next loop.
 
     def _handle_navigating(self):
         """Pure Pursuit navigation to current waypoint."""
@@ -393,9 +460,14 @@ class NavigatorNode(Node):
         else:
             speed = cruise_speed
 
-        # Adaptive lookahead
-        lookahead = max(lookahead_min, lookahead_gain * speed)
-        lookahead = min(lookahead, dist)  # don't look past target
+        # Adaptive lookahead. Near the target, using min(lookahead_min, dist)
+        # collapses the denominator to ~0 and spikes curvature. Scale down instead.
+        max_curv = self.get_parameter('max_curvature').value
+        raw_lookahead = max(lookahead_min, lookahead_gain * speed)
+        if dist < lookahead_min:
+            lookahead = max(0.05, dist * 0.7)
+        else:
+            lookahead = min(raw_lookahead, dist)
 
         # Target bearing
         target_bearing = bearing(
@@ -409,8 +481,8 @@ class NavigatorNode(Node):
         # If heading error is too large (> 90 deg), rotate in place
         # alpha > 0 means target is CW (right) of heading → need right turn (negative curvature)
         if abs(alpha) > pi / 2:
-            curvature = -3.0 if alpha > 0 else 3.0
-            return 0.05, curvature  # very slow forward to keep heading updates
+            turn = max_curv if alpha <= 0 else -max_curv
+            return 0.05, turn  # very slow forward to keep heading updates
 
         # Pure Pursuit curvature
         # Negate because geodetic bearing convention (CW positive) is opposite
@@ -420,6 +492,8 @@ class NavigatorNode(Node):
         else:
             curvature = 0.0
 
+        # Clamp curvature to keep the vehicle dynamics within Ackermann limits.
+        curvature = max(-max_curv, min(max_curv, curvature))
         return speed, curvature
 
     # ── Stuck detection ────────────────────────────────
@@ -509,6 +583,7 @@ class NavigatorNode(Node):
     def _creep_toward_waypoint(self, target_lat, target_lon, dist):
         """Very slow correction movement toward waypoint."""
         creep_speed = self.get_parameter('creep_speed').value
+        max_curv = self.get_parameter('max_curvature').value
 
         if self._current_heading is None:
             self._stop_motors()
@@ -521,10 +596,11 @@ class NavigatorNode(Node):
         alpha = normalize_angle(target_bearing - self._current_heading)
 
         if abs(alpha) > pi / 2:
-            curvature = -3.0 if alpha > 0 else 3.0
+            curvature = max_curv if alpha <= 0 else -max_curv
             self._publish_velocity(0.03, curvature)
         else:
             curvature = -2.0 * sin(alpha) / max(0.1, dist)
+            curvature = max(-max_curv, min(max_curv, curvature))
             self._publish_velocity(creep_speed, curvature)
 
     def _trigger_spray(self):
@@ -594,10 +670,13 @@ class NavigatorNode(Node):
             self._publish_state()
 
     def _publish_state(self):
-        """Publish current state string."""
+        """Publish current state string (dedup to reduce topic chatter)."""
+        if self._last_published_state == self._state:
+            return
         msg = String()
         msg.data = self._state.value
         self._pub_state.publish(msg)
+        self._last_published_state = self._state
 
     def _has_required_fix(self):
         required = self.get_parameter('required_fix_status').value
