@@ -18,6 +18,14 @@ The image build expects:
   gnupg homedir containing the brand signing key (see "Signing setup" below)
 - `SNAP_BRAND_KEY_NAME` GitHub **repo variable** — name of the key (output of
   `snap keys`, e.g. `fsk-rover-signing`)
+- `model.assertion.template` (checked-in) — unsigned model, CI fills in the
+  timestamp and signs it per-run
+- `system-user.template.json` (checked-in) — unsigned local-user assertion.
+  CI fetches SSH public keys at build time from
+  <https://github.com/luftaquila.keys>, injects them into the template
+  alongside fresh `since` / `until` / `timestamp` fields, signs, and stages the
+  result as `auto-import.assert` inside the image so the `fsk` user exists on
+  first boot with no console-conf prompt
 - the `fsk-rover-pilot` snap, built inside the image workflow
 - the `tailscale` snap, referenced from the model assertion
 

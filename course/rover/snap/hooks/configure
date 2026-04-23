@@ -1,4 +1,35 @@
 #!/bin/sh
 set -eu
 
+# Wi-Fi: snap-set values take precedence; defaults match the team's portable AP.
+# Change at any time with:
+#   sudo snap set fsk-rover-pilot wifi-ssid=<ssid> wifi-password=<pw>
+SSID=$(snapctl get wifi-ssid || printf '%s' 'default')
+PASS=$(snapctl get wifi-password || printf '%s' 'password')
+
+NETPLAN=/etc/netplan/90-fsk-wifi.yaml
+TMP=$(mktemp)
+cat > "$TMP" <<EOF
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0:
+      dhcp4: true
+      optional: true
+  wifis:
+    wlan0:
+      dhcp4: true
+      access-points:
+        "${SSID}":
+          password: "${PASS}"
+EOF
+
+# Only rewrite+apply on actual change to avoid yanking the link every refresh.
+if ! cmp -s "$TMP" "$NETPLAN" 2>/dev/null; then
+  install -m 600 "$TMP" "$NETPLAN"
+  netplan apply || true
+fi
+rm -f "$TMP"
+
 snapctl restart "$SNAP_INSTANCE_NAME.pilot" || true

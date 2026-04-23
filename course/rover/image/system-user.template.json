@@ -1,0 +1,15 @@
+{
+  "type": "system-user",
+  "authority-id": "0omV9pEFvLnFgHtuPb1LUkfXbJyegTHc",
+  "brand-id": "0omV9pEFvLnFgHtuPb1LUkfXbJyegTHc",
+  "series": ["16"],
+  "models": ["fsk-rover"],
+  "name": "FSK Rover Operator",
+  "username": "fsk",
+  "email": "admin@luftaquila.io",
+  "ssh-keys": [],
+  "password": "",
+  "since": "",
+  "until": "",
+  "timestamp": ""
+}

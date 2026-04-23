@@ -64,6 +64,30 @@ jobs:
           snap sign -k "$SNAP_BRAND_KEY_NAME" < .tmp/rover.model.json > .tmp/rover.model
           head -n 20 .tmp/rover.model
 
+      - name: Build and sign system-user assertion
+        run: |
+          # Pull the team's SSH public keys at build time so we don't have to
+          # keep the authorised_keys list in git.
+          curl -fsSL https://github.com/luftaquila.keys > .tmp/ssh-keys.txt
+          test -s .tmp/ssh-keys.txt || {
+            echo "Fetched key list is empty" >&2; exit 1;
+          }
+          jq -Rs 'split("\n") | map(select(length>0))' .tmp/ssh-keys.txt > .tmp/ssh-keys.json
+
+          TS_NOW=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+          # Assertion is valid for 2 years — long enough that monthly image
+          # rebuilds keep it fresh, short enough to rotate if a key leaks.
+          TS_END=$(date -u -d '+2 years' +%Y-%m-%dT%H:%M:%S+00:00)
+          # `until` is a reserved word in jq, so reference the field via its
+          # quoted form; same caution applies if new reserved-name fields appear.
+          jq --slurpfile keys .tmp/ssh-keys.json \
+             --arg now "$TS_NOW" --arg expiry "$TS_END" \
+             '."ssh-keys"=$keys[0] | .since=$now | .timestamp=$now | ."until"=$expiry' \
+             course/rover/image/system-user.template.json > .tmp/system-user.json
+          snap sign -k "$SNAP_BRAND_KEY_NAME" < .tmp/system-user.json \
+            > .tmp/auto-import.assert
+          head -n 20 .tmp/auto-import.assert
+
       - name: Build Ubuntu Core image
         run: |
           mkdir -p .tmp/image
@@ -72,9 +96,49 @@ jobs:
             --output-dir .tmp/image \
             .tmp/rover.model
 
+      - name: Inject system-user assertion into image
+        run: |
+          set -x
+          IMG=$(ls .tmp/image/*.img 2>/dev/null | head -1)
+          test -n "$IMG" || { echo "No .img found in .tmp/image/"; ls -la .tmp/image/; exit 1; }
+
+          LOOP=$(sudo losetup --show -fP "$IMG")
+          sudo partprobe "$LOOP" || true
+
+          # Ubuntu Core 24 lays out 4 partitions; writable is labelled
+          # `ubuntu-data` on grade: dangerous.
+          WRITABLE=$(sudo blkid -L ubuntu-data || true)
+          if [ -z "$WRITABLE" ]; then
+            sudo parted -s "$LOOP" print
+            # Fallback: the last ext4 partition is ubuntu-data.
+            WRITABLE=$(sudo lsblk -nr -o NAME,FSTYPE,LABEL "$LOOP" \
+                        | awk '$2=="ext4" && $3=="ubuntu-data" {print "/dev/"$1}' | tail -1)
+          fi
+          test -n "$WRITABLE" || { echo "Could not locate ubuntu-data partition"; exit 1; }
+
+          MNT=$(mktemp -d)
+          sudo mount "$WRITABLE" "$MNT"
+          # Pre-first-boot assertions live in the seed tree so snapd's seeding
+          # step picks them up on initial boot and creates the local user.
+          sudo mkdir -p "$MNT/system-data/var/lib/snapd/seed/assertions"
+          sudo cp .tmp/auto-import.assert \
+            "$MNT/system-data/var/lib/snapd/seed/assertions/auto-import.assert"
+          sudo chmod 644 "$MNT/system-data/var/lib/snapd/seed/assertions/auto-import.assert"
+          sudo umount "$MNT"
+          sudo losetup -d "$LOOP"
+
       - name: Upload image artifacts
         uses: actions/upload-artifact@v7
         with:
           name: rover-ubuntu-core-image
           path: .tmp/image/*
+          retention-days: 7
+
+      - name: Upload auto-import.assert (USB fallback)
+        # The same assertion as a standalone artifact, for manual provisioning
+        # on a pre-built image or to recover an already-flashed rover.
+        uses: actions/upload-artifact@v7
+        with:
+          name: rover-auto-import-assert
+          path: .tmp/auto-import.assert
           retention-days: 7

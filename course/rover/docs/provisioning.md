@@ -1,69 +1,99 @@
 # Provisioning Flow
 
-The rover uses a two-stage bootstrap:
-
-1. Ubuntu Core grants the first SSH login through Ubuntu One key injection.
-2. The operator finishes remote operations setup from that first shell.
+The CI-built image ships with a pre-seeded `fsk` local user and Wi-Fi defaults,
+so first boot requires no console interaction.
 
 ## Image Contents
 
-The common Ubuntu Core image should include:
+The common Ubuntu Core image includes:
 
 - the `fsk-rover-pilot` snap
 - the `tailscale` snap
-- the default Pilot ROS 2 configuration
+- a signed `system-user` assertion creating local user `fsk` whose
+  `authorized_keys` is fetched at image build time from
+  <https://github.com/luftaquila.keys>
+- a default Wi-Fi profile (`default` / `password`) applied by the pilot snap's
+  configure hook
 
-The image should not include:
+The image does **not** include:
 
-- `fsk-rover-pilot` application secrets
+- `fsk-rover-pilot` application secrets (INTERNAL_SECRET, NTRIP credentials)
 - Tailscale auth keys
 - per-device override files
 
 ## First-Boot Procedure
 
-1. Flash the prepared Ubuntu Core image to the Raspberry Pi 5.
-2. Boot the rover and complete Ubuntu Core setup with the target Ubuntu One account.
-3. SSH into the rover using the injected Ubuntu One key.
-4. Bring up Tailscale:
+1. Flash the image to the Raspberry Pi 5.
 
-```bash
-sudo tailscale up --auth-key=TSKEY...
-```
+2. Boot the rover. **No console-conf, no Ubuntu One prompt.** Snapd seeds the
+   `fsk` user from the bundled system-user assertion and the pilot snap's
+   configure hook writes `/etc/netplan/90-fsk-wifi.yaml` with the default
+   Wi-Fi profile. Within ~60s the rover has an IP on either `eth0` (DHCP) or
+   `wlan0` (joining the `default` / `password` AP).
 
-5. Apply Pilot settings:
+3. SSH in from any machine whose public key is published at
+   <https://github.com/luftaquila.keys>:
 
-```bash
-sudo snap set fsk-rover-pilot internal-secret=YOUR_SECRET
-sudo snap set fsk-rover-pilot server-url=https://test.luftaquila.io/course
-sudo snap set fsk-rover-pilot ros-domain-id=0
-```
+   ```bash
+   ssh fsk@<rover-ip>
+   ```
 
-6. Apply NTRIP credentials (never commit these to `rover_params.yaml`):
+4. (Recommended) Switch the rover to a non-default Wi-Fi once it is on a
+   stable network:
 
-```bash
-sudo snap set fsk-rover-pilot ntrip-host=gnss.ngii.go.kr
-sudo snap set fsk-rover-pilot ntrip-port=2101
-sudo snap set fsk-rover-pilot ntrip-mountpoint=VRS-RTCM31
-sudo snap set fsk-rover-pilot ntrip-username=YOUR_USERNAME
-sudo snap set fsk-rover-pilot ntrip-password=YOUR_PASSWORD
-```
+   ```bash
+   sudo snap set fsk-rover-pilot wifi-ssid=<ssid> wifi-password=<pw>
+   ```
 
-7. Confirm the daemon restarted with the new values:
+5. Bring up Tailscale:
 
-```bash
-snap services fsk-rover-pilot
-snap logs fsk-rover-pilot -n 50
-```
+   ```bash
+   sudo tailscale up --auth-key=TSKEY...
+   ```
 
-8. Pin the rover to the current `fsk-rover-pilot` revision for the week
+6. Apply Pilot secrets (these are deliberately not baked into the image):
+
+   ```bash
+   sudo snap set fsk-rover-pilot internal-secret=YOUR_SECRET
+   sudo snap set fsk-rover-pilot server-url=https://test.luftaquila.io/course
+   sudo snap set fsk-rover-pilot ros-domain-id=0
+   ```
+
+7. Apply NTRIP credentials (never commit these to `rover_params.yaml`):
+
+   ```bash
+   sudo snap set fsk-rover-pilot ntrip-host=gnss.ngii.go.kr
+   sudo snap set fsk-rover-pilot ntrip-port=2101
+   sudo snap set fsk-rover-pilot ntrip-mountpoint=VRS-RTCM31
+   sudo snap set fsk-rover-pilot ntrip-username=YOUR_USERNAME
+   sudo snap set fsk-rover-pilot ntrip-password=YOUR_PASSWORD
+   ```
+
+8. Confirm the daemon restarted with the new values:
+
+   ```bash
+   snap services fsk-rover-pilot
+   snap logs fsk-rover-pilot -n 50
+   ```
+
+9. Pin the rover to the current `fsk-rover-pilot` revision for the week
    leading up to a competition so an automatic refresh can't ship a
    candidate build into the field:
 
-```bash
-sudo snap refresh --hold=168h fsk-rover-pilot
-```
+   ```bash
+   sudo snap refresh --hold=168h fsk-rover-pilot
+   ```
 
-9. From this point onward, manage the rover through Tailscale-based SSH.
+10. From this point onward, manage the rover through Tailscale-based SSH.
+
+## Recovering a Rover With Unreachable Wi-Fi
+
+If the rover ends up on a network without the default AP and without ethernet,
+the `rover-auto-import-assert` artifact from the `Build Rover Image` workflow
+run can be copied to a FAT-formatted USB stick as `auto-import.assert` and
+inserted; snapd will re-create the `fsk` user from it on next boot. Then SSH in
+and `sudo snap set fsk-rover-pilot wifi-ssid=... wifi-password=...` to steer
+the rover back to a reachable AP.
 
 ## Release Channels
 
