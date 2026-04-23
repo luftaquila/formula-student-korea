@@ -5,6 +5,13 @@ import { createDatabase } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
+import { haversine } from "../shared/geo.mjs";
+
+const ROVER_MAX_WAYPOINT_DIST_M = Number(process.env.ROVER_MAX_WAYPOINT_DIST_M) || 200;
+const ROVER_MAX_SEGMENT_DIST_M = Number(process.env.ROVER_MAX_SEGMENT_DIST_M) || 50;
+const ROVER_MIN_SEGMENT_DIST_M = 0.05;
+const ROVER_MAX_PENDING_REQUESTS = 32;
+const ROVER_POSITION_STALE_MS = 30 * 1000;
 
 export function createCourseApp(options = {}) {
 
@@ -75,11 +82,8 @@ function isInternalRequest(req) {
 
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
-  if (req.path === "/api/rover/stream" || req.path === "/api/rover/position") {
-    if (internalSecret && !isInternalRequest(req)) {
-      return "admin";
-    }
-    return null;
+  if (req.path === "/api/rover/stream" || req.path === "/api/rover/position" || req.path === "/api/rover/telemetry") {
+    return isInternalRequest(req) ? null : "admin";
   }
   return "admin";
 });
@@ -438,6 +442,22 @@ app.delete("/api/cones/:id", (req, res) => {
 
 let roverClient = null;
 const roverPendingResolves = [];
+let lastRoverPosition = null; // { lat, lng, at: epoch ms }
+const roverState = {
+  connected: false,
+  last_position: null,
+  last_position_at: 0,
+  fix_status: null,
+  fix_status_at: 0,
+  nav_state: null,
+  ntrip_connected: null,
+  updated_at: 0,
+};
+
+function broadcastRoverStatus() {
+  roverState.updated_at = Date.now();
+  broadcastEvent("rover:status", { ...roverState });
+}
 
 // GET /api/rover/stream - 로버 SSE 연결 (로버가 호출)
 app.get("/api/rover/stream", (req, res) => {
@@ -448,13 +468,25 @@ app.get("/api/rover/stream", (req, res) => {
   });
   res.write("event: connected\ndata: {}\n\n");
 
+  // 기존 연결이 있으면 종료(중복 스트림 방지)
+  if (roverClient && roverClient !== res) {
+    try { roverClient.end(); } catch {}
+  }
   roverClient = res;
+  roverState.connected = true;
+  broadcastRoverStatus();
 
-  const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 30000);
+  const heartbeat = setInterval(() => {
+    try { res.write(": heartbeat\n\n"); } catch {}
+  }, 30000);
 
   req.on("close", () => {
     clearInterval(heartbeat);
-    if (roverClient === res) roverClient = null;
+    if (roverClient === res) {
+      roverClient = null;
+      roverState.connected = false;
+      broadcastRoverStatus();
+    }
   });
 });
 
@@ -464,13 +496,39 @@ app.post("/api/rover/position", (req, res) => {
   const coordValidation = validateCoordinate(lat, lng);
   if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
 
-  while (roverPendingResolves.length > 0) {
-    const resolve = roverPendingResolves.shift();
+  lastRoverPosition = { lat, lng, at: Date.now() };
+  roverState.last_position = { lat, lng };
+  roverState.last_position_at = lastRoverPosition.at;
+
+  // FIFO: 하나의 position은 가장 오래된 pending request 하나만 resolve
+  if (roverPendingResolves.length > 0) {
+    const { resolve } = roverPendingResolves.shift();
     resolve({ lat, lng });
   }
 
   broadcastEvent("rover", { lat, lng });
+  broadcastRoverStatus();
   res.json({ lat, lng });
+});
+
+// POST /api/rover/telemetry - 로버 상태 텔레메트리 (internal)
+app.post("/api/rover/telemetry", (req, res) => {
+  const { nav_state, fix_status, ntrip_connected } = req.body || {};
+  const now = Date.now();
+  if (typeof nav_state === "string") roverState.nav_state = nav_state;
+  if (typeof fix_status === "string") {
+    roverState.fix_status = fix_status;
+    roverState.fix_status_at = now;
+  }
+  // Distinguish "not reported" (null/undefined) from "reported disconnected" (false).
+  if (typeof ntrip_connected === "boolean") roverState.ntrip_connected = ntrip_connected;
+  broadcastRoverStatus();
+  res.json({ ok: true });
+});
+
+// GET /api/rover/status - 로버 상태 스냅샷 (admin)
+app.get("/api/rover/status", (req, res) => {
+  res.json({ ...roverState });
 });
 
 // POST /api/rover/request - 관리자가 로버 좌표 요청 (프론트엔드가 호출)
@@ -480,10 +538,17 @@ app.post("/api/rover/request", async (req, res) => {
     return res.status(503).send("로버가 연결되어 있지 않습니다.");
   }
 
+  if (roverPendingResolves.length >= ROVER_MAX_PENDING_REQUESTS) {
+    logger.warn(req, "rover.request", { error: "queue_full", pending: roverPendingResolves.length }, "rover");
+    return res.status(503).send("위치 요청이 많아 대기 중입니다.");
+  }
+
   try {
     roverClient.write("event: request-position\ndata: {}\n\n");
   } catch {
     roverClient = null;
+    roverState.connected = false;
+    broadcastRoverStatus();
     logger.warn(req, "rover.request", { error: "connection_lost" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
@@ -491,9 +556,10 @@ app.post("/api/rover/request", async (req, res) => {
   let removeFromQueue;
   const position = await Promise.race([
     new Promise((resolve) => {
-      roverPendingResolves.push(resolve);
+      const entry = { resolve, createdAt: Date.now() };
+      roverPendingResolves.push(entry);
       removeFromQueue = () => {
-        const idx = roverPendingResolves.indexOf(resolve);
+        const idx = roverPendingResolves.indexOf(entry);
         if (idx !== -1) roverPendingResolves.splice(idx, 1);
       };
     }),
@@ -516,9 +582,33 @@ function sendRoverEvent(event, data) {
     roverClient.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     return true;
   } catch {
+    try { roverClient.end(); } catch {}
     roverClient = null;
+    roverState.connected = false;
+    broadcastRoverStatus();
     return false;
   }
+}
+
+function validateWaypointDistances(waypoints) {
+  // 첫 waypoint와 최신 rover 위치 간 거리 검증
+  if (lastRoverPosition && Date.now() - lastRoverPosition.at < ROVER_POSITION_STALE_MS) {
+    const d0 = haversine(lastRoverPosition, waypoints[0]);
+    if (d0 > ROVER_MAX_WAYPOINT_DIST_M) {
+      return { valid: false, reason: "first_waypoint_far", distance: d0 };
+    }
+  }
+  // 인접 세그먼트 거리 검증 + 중복(<5cm) 제거
+  const cleaned = [waypoints[0]];
+  for (let i = 1; i < waypoints.length; i++) {
+    const d = haversine(waypoints[i - 1], waypoints[i]);
+    if (d < ROVER_MIN_SEGMENT_DIST_M) continue; // 중복 제거
+    if (d > ROVER_MAX_SEGMENT_DIST_M) {
+      return { valid: false, reason: "segment_too_long", distance: d, index: i };
+    }
+    cleaned.push(waypoints[i]);
+  }
+  return { valid: true, waypoints: cleaned };
 }
 
 // POST /api/rover/execute - 경로 실행 (waypoint 전송)
@@ -533,15 +623,28 @@ app.post("/api/rover/execute", (req, res) => {
     if (!v.valid) return res.status(400).send(v.error);
   }
 
+  const distCheck = validateWaypointDistances(waypoints);
+  if (!distCheck.valid) {
+    const msg = distCheck.reason === "first_waypoint_far"
+      ? `로버 현재 위치에서 첫 웨이포인트까지 ${distCheck.distance.toFixed(1)}m로 너무 멉니다.`
+      : `인접 웨이포인트 간 거리가 ${distCheck.distance.toFixed(1)}m로 너무 큽니다.`;
+    logger.warn(req, "rover.execute", { error: msg, reason: distCheck.reason, distance: distCheck.distance }, "rover");
+    return res.status(400).send(msg);
+  }
+  const finalWaypoints = distCheck.waypoints;
+
   if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
 
-  if (!sendRoverEvent("execute-path", { waypoints })) {
+  if (!sendRoverEvent("execute-path", { waypoints: finalWaypoints })) {
     logger.warn(req, "rover.execute", { error: "write_failed" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
 
-  logger.log(req, "rover.execute", { waypoint_count: waypoints.length }, "rover");
-  res.json({ sent: waypoints.length });
+  logger.log(req, "rover.execute", {
+    waypoint_count: finalWaypoints.length,
+    dropped: waypoints.length - finalWaypoints.length,
+  }, "rover");
+  res.json({ sent: finalWaypoints.length });
 });
 
 // POST /api/rover/stop - 비상정지

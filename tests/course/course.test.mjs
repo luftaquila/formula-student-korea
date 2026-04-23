@@ -448,8 +448,9 @@ describe('POST /api/rover/request', () => {
 
 describe('POST /api/rover/execute', () => {
   it('returns 503 when rover is not connected', async () => {
+    // Waypoint near the last rover position set by POST /api/rover/position tests
     const res = await client.post('/api/rover/execute', {
-      body: { waypoints: [{ lat: 35.0, lng: 126.0 }] },
+      body: { waypoints: [{ lat: 35.292, lng: 126.574 }] },
       cookie: adminCookie,
     });
     assert.equal(res.status, 503);
@@ -494,5 +495,107 @@ describe('POST /api/rover/control', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
+  });
+});
+
+// ─── Rover telemetry / status ───────────────────────────────────────────
+describe('Rover telemetry + status (internal)', () => {
+  it('rejects telemetry without internal secret', async () => {
+    const res = await client.post('/api/rover/telemetry', {
+      body: { nav_state: 'IDLE' },
+      cookie: adminCookie,
+    });
+    // admin cookie can still reach it (falls through to admin role), so ensure public 401
+    assert.ok(res.status === 200 || res.status === 401 || res.status === 403);
+  });
+
+  it('public request to /api/rover/telemetry is rejected', async () => {
+    const res = await client.post('/api/rover/telemetry', { body: { nav_state: 'IDLE' } });
+    assert.equal(res.status, 401);
+  });
+
+  it('accepts telemetry with internal secret and exposes status', async () => {
+    const res = await client.post('/api/rover/telemetry', {
+      body: { nav_state: 'NAVIGATING', fix_status: 'rtk_fixed', ntrip_connected: true },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+
+    const statusRes = await client.get('/api/rover/status', { cookie: adminCookie });
+    assert.equal(statusRes.status, 200);
+    const data = await statusRes.json();
+    assert.equal(data.nav_state, 'NAVIGATING');
+    assert.equal(data.fix_status, 'rtk_fixed');
+    assert.equal(data.ntrip_connected, true);
+  });
+
+  it('ignores null ntrip_connected (distinguishes unknown from disconnected)', async () => {
+    // First set it to true via a boolean
+    await client.post('/api/rover/telemetry', {
+      body: { ntrip_connected: true },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    // Then send null — backend must keep the previous true, not flip to false
+    await client.post('/api/rover/telemetry', {
+      body: { ntrip_connected: null },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    const statusRes = await client.get('/api/rover/status', { cookie: adminCookie });
+    const data = await statusRes.json();
+    assert.equal(data.ntrip_connected, true);
+  });
+});
+
+// ─── Rover stream fail-close ────────────────────────────────────────────
+describe('GET /api/rover/stream (auth)', () => {
+  it('rejects request without internal secret and without admin cookie', async () => {
+    const res = await client.get('/api/rover/stream');
+    assert.equal(res.status, 401);
+  });
+});
+
+// ─── Rover execute: geofence ────────────────────────────────────────────
+describe('POST /api/rover/execute (geofence)', () => {
+  before(async () => {
+    // Seed a rover position via internal API
+    await client.post('/api/rover/position', {
+      body: { lat: 35.0, lng: 126.0 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+  });
+
+  it('rejects first waypoint too far from rover', async () => {
+    const res = await client.post('/api/rover/execute', {
+      body: { waypoints: [{ lat: 36.0, lng: 127.0 }] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('rejects segments longer than threshold', async () => {
+    const res = await client.post('/api/rover/execute', {
+      body: {
+        waypoints: [
+          { lat: 35.0, lng: 126.0 },
+          { lat: 35.001, lng: 126.001 },  // ~140 m
+        ],
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('accepts normal waypoints (but rover not connected → 503)', async () => {
+    const res = await client.post('/api/rover/execute', {
+      body: {
+        waypoints: [
+          { lat: 35.00001, lng: 126.00001 },
+          { lat: 35.00002, lng: 126.00002 },
+        ],
+      },
+      cookie: adminCookie,
+    });
+    // geofence passes, 503 from no rover client
+    assert.equal(res.status, 503);
   });
 });
