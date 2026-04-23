@@ -42,6 +42,8 @@ class SprayNode(Node):
         self.declare_parameter('retract_delay', 0.3)
         self.declare_parameter('gpio_chip', 4)
 
+        self._validate_params()
+
         # Initialize GPIO
         chip = self.get_parameter('gpio_chip').value
         self._handle = lgpio.gpiochip_open(chip)
@@ -66,6 +68,40 @@ class SprayNode(Node):
 
         self.get_logger().info('Spray node started')
 
+    def _validate_params(self):
+        """Sanity-check spray parameters."""
+        spray = self.get_parameter('spray_angle').value
+        rest = self.get_parameter('rest_angle').value
+        duration = self.get_parameter('spray_duration').value
+        delay = self.get_parameter('retract_delay').value
+
+        if not (0 <= spray <= 180):
+            self.get_logger().fatal(f'spray_angle must be in [0, 180]; got {spray}')
+            raise SystemExit(1)
+        if not (0 <= rest <= 180):
+            self.get_logger().fatal(f'rest_angle must be in [0, 180]; got {rest}')
+            raise SystemExit(1)
+        if not (0.0 < duration <= 10.0):
+            self.get_logger().fatal(f'spray_duration must be in (0, 10]s; got {duration}')
+            raise SystemExit(1)
+        if not (0.0 <= delay <= 10.0):
+            self.get_logger().fatal(f'retract_delay must be in [0, 10]s; got {delay}')
+            raise SystemExit(1)
+
+    def _safe_destroy_timer(self, timer):
+        """Cancel and destroy a timer, ignoring any failure (double-destroy safe)."""
+        if timer is None:
+            return None
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+        try:
+            self.destroy_timer(timer)
+        except Exception:
+            pass
+        return None
+
     def _on_waypoint_reached(self, msg):
         """Actuate spray servo at reached waypoint."""
         if self._spraying:
@@ -85,10 +121,7 @@ class SprayNode(Node):
 
     def _retract(self):
         """Retract servo to rest position."""
-        if self._spray_timer:
-            self._spray_timer.cancel()
-            self.destroy_timer(self._spray_timer)
-            self._spray_timer = None
+        self._spray_timer = self._safe_destroy_timer(self._spray_timer)
 
         rest_angle = self.get_parameter('rest_angle').value
         lgpio.tx_pwm(self._handle, self._pin, SERVO_FREQUENCY, _angle_to_duty(rest_angle))
@@ -98,26 +131,19 @@ class SprayNode(Node):
         self._retract_timer = self.create_timer(delay, self._signal_done, callback_group=None)
 
     def _signal_done(self):
-        """Signal spray cycle complete."""
-        if self._retract_timer:
-            self._retract_timer.cancel()
-            self.destroy_timer(self._retract_timer)
-            self._retract_timer = None
-
+        """Signal spray cycle complete. Always publishes done regardless of timer state."""
+        self._retract_timer = self._safe_destroy_timer(self._retract_timer)
         self._spraying = False
-        self._pub_done.publish(Empty())
-        self.get_logger().info('Spray done')
+        # Always publish done so the navigator never blocks on a missed signal
+        try:
+            self._pub_done.publish(Empty())
+        finally:
+            self.get_logger().info('Spray done')
 
     def _on_emergency_stop(self, _msg):
         """Emergency: retract immediately."""
-        if self._spray_timer:
-            self._spray_timer.cancel()
-            self.destroy_timer(self._spray_timer)
-            self._spray_timer = None
-        if self._retract_timer:
-            self._retract_timer.cancel()
-            self.destroy_timer(self._retract_timer)
-            self._retract_timer = None
+        self._spray_timer = self._safe_destroy_timer(self._spray_timer)
+        self._retract_timer = self._safe_destroy_timer(self._retract_timer)
 
         rest_angle = self.get_parameter('rest_angle').value
         lgpio.tx_pwm(self._handle, self._pin, SERVO_FREQUENCY, _angle_to_duty(rest_angle))

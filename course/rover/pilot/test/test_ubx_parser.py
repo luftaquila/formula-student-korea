@@ -193,3 +193,23 @@ class TestUBXParser:
         parser = UBXParser()
         results = parser.feed(bytes(frame))
         assert len(results) == 0
+
+
+class TestPayloadLengthValidation:
+    """Exact-length payload validation (3.11)."""
+
+    def test_nav_pvt_short_payload_rejected(self):
+        from pilot.lib.ubx_parser import parse_nav_pvt
+        assert parse_nav_pvt(b'\x00' * 91) is None
+
+    def test_nav_pvt_long_payload_rejected(self):
+        from pilot.lib.ubx_parser import parse_nav_pvt
+        assert parse_nav_pvt(b'\x00' * 93) is None
+
+    def test_nav_hpposllh_short_payload_rejected(self):
+        from pilot.lib.ubx_parser import parse_nav_hpposllh
+        assert parse_nav_hpposllh(b'\x00' * 35) is None
+
+    def test_nav_hpposllh_long_payload_rejected(self):
+        from pilot.lib.ubx_parser import parse_nav_hpposllh
+        assert parse_nav_hpposllh(b'\x00' * 37) is None

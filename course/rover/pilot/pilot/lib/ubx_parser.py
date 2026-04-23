@@ -3,9 +3,12 @@
 Parses NAV-PVT (0x01 0x07) and NAV-HPPOSLLH (0x01 0x14) messages.
 """
 
+import logging
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
+
+logger = logging.getLogger(__name__)
 
 # UBX sync bytes
 SYNC1 = 0xB5
@@ -82,7 +85,8 @@ def checksum(data):
 
 def parse_nav_pvt(payload):
     """Parse NAV-PVT payload (92 bytes) into NavPVT."""
-    if len(payload) < 92:
+    if len(payload) != 92:
+        logger.warning("NAV-PVT payload has unexpected length %d (expected 92)", len(payload))
         return None
 
     (iTOW, year, month, day, hour, minute, second, valid,
@@ -115,7 +119,8 @@ def parse_nav_pvt(payload):
 
 def parse_nav_hpposllh(payload):
     """Parse NAV-HPPOSLLH payload (36 bytes) into NavHPPOSLLH."""
-    if len(payload) < 36:
+    if len(payload) != 36:
+        logger.warning("NAV-HPPOSLLH payload has unexpected length %d (expected 36)", len(payload))
         return None
 
     (version, _reserved,

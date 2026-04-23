@@ -49,6 +49,8 @@ class MotorNode(Node):
         self.declare_parameter('accel_limit', 0.5)
         self.declare_parameter('gpio_chip', 4)
 
+        self._validate_params()
+
         # Initialize MDD10A motor driver
         self._mdd10a = MDD10A(
             dir1_pin=self.get_parameter('dir1_pin').value,
@@ -85,6 +87,28 @@ class MotorNode(Node):
 
         self.get_logger().info('Motor node started')
 
+    def _validate_params(self):
+        """Sanity-check critical parameters; fail loudly if misconfigured."""
+        max_speed = self.get_parameter('max_speed').value
+        accel = self.get_parameter('accel_limit').value
+        center = self.get_parameter('servo_center_us').value
+        rng = self.get_parameter('servo_range_us').value
+
+        if max_speed < 0.1:
+            self.get_logger().fatal(f'max_speed must be >= 0.1 m/s (got {max_speed})')
+            raise SystemExit(1)
+        if not (0.0 < accel <= max_speed * 4.0):
+            self.get_logger().fatal(
+                f'accel_limit must be in (0, max_speed*4]; got {accel} (max_speed={max_speed})'
+            )
+            raise SystemExit(1)
+        if not (500 <= center <= 2500):
+            self.get_logger().fatal(f'servo_center_us must be in [500, 2500]; got {center}')
+            raise SystemExit(1)
+        if not (0 <= rng <= 1000):
+            self.get_logger().fatal(f'servo_range_us must be in [0, 1000]; got {rng}')
+            raise SystemExit(1)
+
     def _set_servo_us(self, pulse_us):
         """Set steering servo pulse width in microseconds."""
         # Convert pulse width to duty cycle percentage for 50Hz
@@ -99,8 +123,9 @@ class MotorNode(Node):
         if max_speed <= 0:
             return target
 
-        # Convert accel (m/s^2) to duty%/s
-        max_delta = (accel / max_speed * 100.0) * dt
+        # Convert accel (m/s^2) to duty%/s, clamp to 100 duty%/s hard ceiling
+        # so a misconfigured accel_limit can't jerk the motors in a single tick.
+        max_delta = min((accel / max_speed * 100.0) * dt, 100.0)
         diff = target - current
         if abs(diff) > max_delta:
             return current + max_delta * (1.0 if diff > 0 else -1.0)

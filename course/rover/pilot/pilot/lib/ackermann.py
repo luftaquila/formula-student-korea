@@ -4,7 +4,18 @@ Converts (speed, curvature) commands to (left_duty, right_duty, servo_us)
 for the Wheeltec R550 AKM Plus platform.
 """
 
-from math import atan, tan, fabs
+from math import atan, tan, fabs, pi
+
+
+def _validate_params(wheelbase, track_width, max_steering_angle_rad):
+    if wheelbase <= 0:
+        raise ValueError(f"wheelbase must be > 0 (got {wheelbase})")
+    if track_width <= 0:
+        raise ValueError(f"track_width must be > 0 (got {track_width})")
+    if not (0.0 < max_steering_angle_rad < pi / 2):
+        raise ValueError(
+            f"max_steering_angle_rad must be in (0, pi/2); got {max_steering_angle_rad}"
+        )
 
 
 def ackermann_convert(speed, curvature, wheelbase, track_width,
@@ -26,6 +37,7 @@ def ackermann_convert(speed, curvature, wheelbase, track_width,
         (left_duty, right_duty, servo_us) where duty is -100.0 to 100.0 percent
         and servo_us is pulse width in microseconds.
     """
+    _validate_params(wheelbase, track_width, max_steering_angle_rad)
     # Compute steering angle from curvature
     # curvature = 1/R, steering_angle = atan(wheelbase / R) = atan(curvature * wheelbase)
     if fabs(curvature) > 1e-6:

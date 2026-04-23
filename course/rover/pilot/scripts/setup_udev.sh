@@ -13,8 +13,9 @@ set -euo pipefail
 RULES_FILE="/etc/udev/rules.d/99-pilot.rules"
 
 cat > "$RULES_FILE" << 'EOF'
-# ZED-F9P GPS receiver (u-blox)
-SUBSYSTEM=="tty", ATTRS{idVendor}=="1546", ATTRS{idProduct}=="01a9", SYMLINK+="ttyGPS", MODE="0666"
+# ZED-F9P GPS receiver (u-blox). Restrict to dialout group to avoid world-writable /dev/ttyGPS.
+# On Ubuntu Core the pilot snap uses the serial-port interface instead and this file is unused.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1546", ATTRS{idProduct}=="01a9", SYMLINK+="ttyGPS", MODE="0660", GROUP="dialout"
 EOF
 
 echo "udev rules written to $RULES_FILE"
