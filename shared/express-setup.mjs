@@ -116,6 +116,11 @@ export function createApp(deps, authRoleFn) {
     const header = req.headers["x-internal-service"];
     if (cachedSecretHash && header) {
       const headerHash = crypto.createHash("sha256").update(header).digest();
+      // timingSafeEqual throws on length mismatch; with SHA-256 this is always
+      // 32 bytes, but the explicit guard keeps the contract unambiguous.
+      if (headerHash.length !== cachedSecretHash.length) {
+        return res.status(403).send("Forbidden");
+      }
       if (crypto.timingSafeEqual(cachedSecretHash, headerHash)) {
         req.user = { email: "internal", name: "Service", role: "admin" };
         req.headers.authuser = "internal";
