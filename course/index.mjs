@@ -39,6 +39,41 @@ db.exec(`CREATE TABLE IF NOT EXISTS cone (
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_cone_course ON cone(course_id);`);
 
+db.exec(`CREATE TABLE IF NOT EXISTS course_snapshot (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  course_id INTEGER NOT NULL,
+  taken_at INTEGER NOT NULL,
+  actor TEXT,
+  reason TEXT,
+  cones_json TEXT NOT NULL,
+  FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
+);`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_course_snapshot ON course_snapshot(course_id, taken_at);`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS mission (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  course_id INTEGER,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'stopped', 'error')) DEFAULT 'running',
+  waypoints_json TEXT NOT NULL,
+  actor TEXT,
+  FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE SET NULL
+);`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_started ON mission(started_at);`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS mission_telemetry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mission_id INTEGER NOT NULL,
+  t INTEGER NOT NULL,
+  lat REAL,
+  lng REAL,
+  fix_status TEXT,
+  nav_state TEXT,
+  FOREIGN KEY (mission_id) REFERENCES mission(id) ON DELETE CASCADE
+);`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(mission_id, t);`);
+
 // 기존 DB 마이그레이션: side CHECK 제약에 'center' 추가
 {
   const info = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='cone'").get();
@@ -82,7 +117,14 @@ function isInternalRequest(req) {
 
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
-  if (req.path === "/api/rover/stream" || req.path === "/api/rover/position" || req.path === "/api/rover/telemetry") {
+  if (
+    req.path === "/api/rover/stream" ||
+    req.path === "/api/rover/position" ||
+    req.path === "/api/rover/telemetry" ||
+    req.path === "/api/rover/waypoint_reached" ||
+    req.path === "/api/rover/spray_result" ||
+    req.path === "/api/rover/logs"
+  ) {
     return isInternalRequest(req) ? null : "admin";
   }
   return "admin";
@@ -241,6 +283,94 @@ app.get("/api/courses/:id/export", (req, res) => {
 
   res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(course.name)}.json"`);
   res.json(data);
+});
+
+/* ============================================
+   API 라우트: /api/courses/:id/snapshots
+   ============================================ */
+
+const insertSnapshot = db.prepare(
+  "INSERT INTO course_snapshot (course_id, taken_at, actor, reason, cones_json) VALUES (?, ?, ?, ?, ?)"
+);
+const selectSnapshotsForCourse = db.prepare(
+  `SELECT id, course_id, taken_at, actor, reason,
+          json_array_length(cones_json) AS cone_count
+   FROM course_snapshot WHERE course_id = ? ORDER BY taken_at DESC LIMIT 100`
+);
+const selectSnapshotById = db.prepare(
+  "SELECT id, course_id, taken_at, actor, reason, cones_json FROM course_snapshot WHERE id = ?"
+);
+
+function takeCourseSnapshot(courseId, actor, reason) {
+  const cones = getCones(courseId);
+  if (cones.length === 0) return null;
+  const simplified = cones.map((c) => ({ lat: c.lat, lng: c.lng, side: c.side }));
+  const info = insertSnapshot.run(courseId, Date.now(), actor || null, reason || null, JSON.stringify(simplified));
+  return Number(info.lastInsertRowid);
+}
+
+app.get("/api/courses/:id/snapshots", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).send("올바르지 않은 코스 ID입니다.");
+  const course = getCourseById(id);
+  if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
+  res.json({ snapshots: selectSnapshotsForCourse.all(id) });
+});
+
+app.post("/api/courses/:id/snapshots", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).send("올바르지 않은 코스 ID입니다.");
+  const course = getCourseById(id);
+  if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
+  const cones = getCones(id);
+  if (cones.length === 0) return res.status(400).send("콘이 없는 코스는 스냅샷할 수 없습니다.");
+
+  const actor = req.user ? `${req.user.name || ""} <${req.user.email || ""}>` : null;
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.slice(0, 200) : null;
+
+  const result = dbRun(() => takeCourseSnapshot(id, actor, reason));
+  if (!result.success) {
+    logger.warn(req, "course.snapshot.create", { error: result.error }, course.name);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "course.snapshot.create", { snapshot_id: result.result, cone_count: cones.length, reason }, course.name);
+  res.status(201).json({ id: result.result });
+});
+
+app.post("/api/courses/:id/snapshots/:sid/restore", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const sid = parseInt(req.params.sid, 10);
+  if (isNaN(id) || isNaN(sid)) return res.status(400).send("올바르지 않은 ID입니다.");
+  const course = getCourseById(id);
+  if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
+  const snap = selectSnapshotById.get(sid);
+  if (!snap || snap.course_id !== id) return res.status(404).send("스냅샷을 찾을 수 없습니다.");
+
+  let cones;
+  try { cones = JSON.parse(snap.cones_json); }
+  catch { return res.status(500).send("스냅샷 데이터가 손상되었습니다."); }
+  if (!Array.isArray(cones)) return res.status(500).send("스냅샷 데이터가 손상되었습니다.");
+
+  const actor = req.user ? `${req.user.name || ""} <${req.user.email || ""}>` : null;
+  // Auto-snapshot current state as a safety net before overwriting.
+  const safetyReason = `pre-restore of #${sid}`;
+  const result = dbRun(() => {
+    return db.transaction(() => {
+      takeCourseSnapshot(id, actor, safetyReason);
+      db.prepare("DELETE FROM cone WHERE course_id = ?").run(id);
+      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, side) VALUES (?, ?, ?, ?)");
+      for (const c of cones) insert.run(id, c.lat, c.lng, c.side);
+      return getCones(id);
+    })();
+  });
+  if (!result.success) {
+    logger.warn(req, "course.snapshot.restore", { error: result.error, snapshot_id: sid }, course.name);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "course.snapshot.restore", { snapshot_id: sid, cone_count: cones.length }, course.name);
+  broadcastEvent("cones", { type: "restore", courseId: id, cones: result.result });
+  res.json({ cones: result.result });
 });
 
 // POST /api/courses/import - JSON으로 코스 추가
@@ -443,6 +573,70 @@ app.delete("/api/cones/:id", (req, res) => {
 let roverClient = null;
 const roverPendingResolves = [];
 let lastRoverPosition = null; // { lat, lng, at: epoch ms }
+
+// Active mission tracking
+const insertMission = db.prepare(
+  "INSERT INTO mission (course_id, started_at, waypoints_json, actor) VALUES (?, ?, ?, ?)"
+);
+const finishMission = db.prepare(
+  "UPDATE mission SET ended_at = ?, status = ? WHERE id = ? AND status = 'running'"
+);
+const insertTelemetry = db.prepare(
+  "INSERT INTO mission_telemetry (mission_id, t, lat, lng, fix_status, nav_state) VALUES (?, ?, ?, ?, ?, ?)"
+);
+
+let currentMissionId = null;
+
+// Recover from unclean shutdowns: any row left running in the DB is impossible
+// to re-attach to (the roverClient SSE connection is gone). Mark them as error
+// with ended_at = the last telemetry timestamp we have, or started_at as a
+// fallback, so the history view doesn't show zero-duration phantoms.
+const orphanRecoveryResult = db.prepare(
+  `UPDATE mission
+   SET status = 'error',
+       ended_at = COALESCE(
+         (SELECT MAX(t) FROM mission_telemetry WHERE mission_id = mission.id),
+         started_at
+       )
+   WHERE status = 'running'`
+).run();
+if (orphanRecoveryResult.changes > 0) {
+  logger.log(null, "mission.orphan_recovery", { count: orphanRecoveryResult.changes }, "rover",
+    { email: "system", name: "boot", role: "admin" });
+}
+
+function startMission(waypoints, actor, courseId) {
+  // Close any still-running prior mission as stopped.
+  if (currentMissionId != null) {
+    finishMission.run(Date.now(), "stopped", currentMissionId);
+  }
+  const info = insertMission.run(
+    courseId || null,
+    Date.now(),
+    JSON.stringify(waypoints),
+    actor || null,
+  );
+  currentMissionId = Number(info.lastInsertRowid);
+}
+
+function endMission(status) {
+  if (currentMissionId == null) return;
+  finishMission.run(Date.now(), status, currentMissionId);
+  currentMissionId = null;
+}
+
+function recordTelemetrySample() {
+  if (currentMissionId == null) return;
+  const pos = roverState.last_position;
+  insertTelemetry.run(
+    currentMissionId,
+    Date.now(),
+    pos ? pos.lat : null,
+    pos ? pos.lng : null,
+    roverState.fix_status,
+    roverState.nav_state,
+  );
+}
 const roverState = {
   connected: false,
   last_position: null,
@@ -451,12 +645,24 @@ const roverState = {
   fix_status_at: 0,
   nav_state: null,
   ntrip_connected: null,
+  last_disconnect_reason: null, // "sse_closed" | "write_failed" | "replaced"
+  last_disconnect_at: 0,
+  last_spray_result: null, // { waypoint, outcome, at }
+  battery: null, // { voltage, percent, source }
   updated_at: 0,
 };
 
 function broadcastRoverStatus() {
   roverState.updated_at = Date.now();
   broadcastEvent("rover:status", { ...roverState });
+}
+
+function markRoverDisconnected(reason) {
+  if (roverState.connected) {
+    roverState.last_disconnect_reason = reason;
+    roverState.last_disconnect_at = Date.now();
+  }
+  roverState.connected = false;
 }
 
 // GET /api/rover/stream - 로버 SSE 연결 (로버가 호출)
@@ -468,12 +674,22 @@ app.get("/api/rover/stream", (req, res) => {
   });
   res.write("event: connected\ndata: {}\n\n");
 
-  // 기존 연결이 있으면 종료(중복 스트림 방지)
+  // 기존 연결이 있으면 종료(중복 스트림 방지). 이 시점에 진행 중이던 미션은
+  // 새 세션이 이어받을 수 없으므로 'error'로 즉시 마감한다 — 다음 execute가
+  // 올 때까지 in-memory 상태를 남겨두면 감사 로그가 지연된다.
   if (roverClient && roverClient !== res) {
+    if (currentMissionId != null) {
+      const endedId = currentMissionId;
+      endMission("error");
+      logger.warn(req, "mission.end.rover_replaced", { mission_id: endedId }, "rover");
+    }
+    markRoverDisconnected("replaced");
     try { roverClient.end(); } catch {}
   }
   roverClient = res;
   roverState.connected = true;
+  roverState.last_disconnect_reason = null;
+  roverState.last_disconnect_at = 0;
   broadcastRoverStatus();
 
   const heartbeat = setInterval(() => {
@@ -484,7 +700,15 @@ app.get("/api/rover/stream", (req, res) => {
     clearInterval(heartbeat);
     if (roverClient === res) {
       roverClient = null;
-      roverState.connected = false;
+      markRoverDisconnected("sse_closed");
+      // If a mission was running when the rover dropped off, record it and
+      // leave an audit trail so operators can tell "mission failed" from
+      // "operator hit e-stop" after the fact.
+      if (currentMissionId != null) {
+        const endedId = currentMissionId;
+        endMission("error");
+        logger.warn(req, "mission.end.sse_disconnect", { mission_id: endedId }, "rover");
+      }
       broadcastRoverStatus();
     }
   });
@@ -506,6 +730,9 @@ app.post("/api/rover/position", (req, res) => {
     resolve({ lat, lng });
   }
 
+  // Telemetry sample for active mission
+  if (currentMissionId != null) recordTelemetrySample();
+
   broadcastEvent("rover", { lat, lng });
   broadcastRoverStatus();
   res.json({ lat, lng });
@@ -513,8 +740,9 @@ app.post("/api/rover/position", (req, res) => {
 
 // POST /api/rover/telemetry - 로버 상태 텔레메트리 (internal)
 app.post("/api/rover/telemetry", (req, res) => {
-  const { nav_state, fix_status, ntrip_connected } = req.body || {};
+  const { nav_state, fix_status, ntrip_connected, battery } = req.body || {};
   const now = Date.now();
+  const prevNav = roverState.nav_state;
   if (typeof nav_state === "string") roverState.nav_state = nav_state;
   if (typeof fix_status === "string") {
     roverState.fix_status = fix_status;
@@ -522,6 +750,23 @@ app.post("/api/rover/telemetry", (req, res) => {
   }
   // Distinguish "not reported" (null/undefined) from "reported disconnected" (false).
   if (typeof ntrip_connected === "boolean") roverState.ntrip_connected = ntrip_connected;
+  if (battery && typeof battery === "object") {
+    roverState.battery = {
+      voltage: typeof battery.voltage === "number" ? battery.voltage : null,
+      percent: Number.isInteger(battery.percent) ? battery.percent : null,
+      source: typeof battery.source === "string" ? battery.source : null,
+    };
+  }
+
+  // Mission lifecycle: when nav_state transitions to IDLE from a driving state, end the mission.
+  if (prevNav && prevNav !== "IDLE" && nav_state === "IDLE" && currentMissionId != null) {
+    const endStatus = prevNav === "EMERGENCY_STOP" ? "stopped"
+      : prevNav === "ERROR" ? "error"
+      : "completed";
+    endMission(endStatus);
+  }
+  if (currentMissionId != null) recordTelemetrySample();
+
   broadcastRoverStatus();
   res.json({ ok: true });
 });
@@ -529,6 +774,121 @@ app.post("/api/rover/telemetry", (req, res) => {
 // GET /api/rover/status - 로버 상태 스냅샷 (admin)
 app.get("/api/rover/status", (req, res) => {
   res.json({ ...roverState });
+});
+
+// POST /api/rover/waypoint_reached - 로버가 웨이포인트 도달 알림 (internal)
+app.post("/api/rover/waypoint_reached", (req, res) => {
+  const index = Number(req.body?.index);
+  if (!Number.isInteger(index) || index < 0) {
+    return res.status(400).send("올바르지 않은 waypoint index입니다.");
+  }
+  broadcastEvent("rover:waypoint", { index });
+  res.json({ ok: true });
+});
+
+/* ============================================
+   API 라우트: /api/missions (미션 이력)
+   ============================================ */
+
+const MISSION_LIST_LIMIT = 50;
+const selectMissions = db.prepare(
+  `SELECT m.id, m.course_id, c.name AS course_name, m.started_at, m.ended_at, m.status, m.actor,
+          (SELECT COUNT(*) FROM mission_telemetry t WHERE t.mission_id = m.id) AS sample_count
+   FROM mission m LEFT JOIN course c ON c.id = m.course_id
+   ORDER BY m.started_at DESC LIMIT ?`
+);
+const selectMissionById = db.prepare(
+  `SELECT m.id, m.course_id, c.name AS course_name, m.started_at, m.ended_at, m.status,
+          m.waypoints_json, m.actor
+   FROM mission m LEFT JOIN course c ON c.id = m.course_id WHERE m.id = ?`
+);
+const selectMissionTelemetry = db.prepare(
+  "SELECT t, lat, lng, fix_status, nav_state FROM mission_telemetry WHERE mission_id = ? ORDER BY t"
+);
+
+app.get("/api/missions", (req, res) => {
+  const rows = selectMissions.all(MISSION_LIST_LIMIT);
+  res.json({ missions: rows });
+});
+
+app.get("/api/missions/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).send("올바르지 않은 id입니다.");
+  const mission = selectMissionById.get(id);
+  if (!mission) return res.status(404).send("미션을 찾을 수 없습니다.");
+  let waypoints = [];
+  try { waypoints = JSON.parse(mission.waypoints_json); } catch { /* ignore */ }
+  res.json({
+    id: mission.id,
+    course_id: mission.course_id,
+    course_name: mission.course_name,
+    started_at: mission.started_at,
+    ended_at: mission.ended_at,
+    status: mission.status,
+    actor: mission.actor,
+    waypoints,
+  });
+});
+
+app.get("/api/missions/:id/telemetry", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).send("올바르지 않은 id입니다.");
+  const mission = selectMissionById.get(id);
+  if (!mission) return res.status(404).send("미션을 찾을 수 없습니다.");
+  const samples = selectMissionTelemetry.all(id);
+  res.json({ samples });
+});
+
+// Rover log cache — in-memory only. Filled by rover POST, drained by admin GET.
+const MAX_ROVER_LOG_ENTRIES = 1000;
+let roverLogCache = { entries: [], uploaded_at: 0 };
+
+// POST /api/rover/logs - 로버 로그 업로드 (internal)
+app.post("/api/rover/logs", (req, res) => {
+  const entries = Array.isArray(req.body?.entries) ? req.body.entries : null;
+  if (!entries) return res.status(400).send("올바르지 않은 로그 데이터입니다.");
+  const sanitized = entries
+    .filter((e) => e && typeof e === "object")
+    .slice(-MAX_ROVER_LOG_ENTRIES)
+    .map((e) => ({
+      t: Number(e.t) || 0,
+      level: typeof e.level === "string" ? e.level.slice(0, 10) : "",
+      node: typeof e.node === "string" ? e.node.slice(0, 64) : "",
+      msg: typeof e.msg === "string" ? e.msg.slice(0, 2000) : "",
+    }));
+  roverLogCache = { entries: sanitized, uploaded_at: Date.now() };
+  broadcastEvent("rover:logs", { count: sanitized.length, uploaded_at: roverLogCache.uploaded_at });
+  res.json({ ok: true, stored: sanitized.length });
+});
+
+// GET /api/rover/logs - 최근 업로드된 로그 조회 (admin)
+app.get("/api/rover/logs", (req, res) => {
+  res.json(roverLogCache);
+});
+
+// POST /api/rover/logs/fetch - 로버에 로그 업로드 요청 (admin → SSE)
+app.post("/api/rover/logs/fetch", (req, res) => {
+  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!sendRoverEvent("fetch-logs", {})) {
+    logger.warn(req, "rover.logs.fetch", { error: "write_failed" }, "rover");
+    return res.status(503).send("로버 연결이 끊어졌습니다.");
+  }
+  logger.log(req, "rover.logs.fetch", null, "rover");
+  res.json({ ok: true });
+});
+
+// POST /api/rover/spray_result - 로버가 스프레이 결과 보고 (internal)
+const SPRAY_OUTCOMES = new Set(["success", "cancelled", "timeout"]);
+app.post("/api/rover/spray_result", (req, res) => {
+  const index = Number(req.body?.waypoint);
+  const outcome = req.body?.outcome;
+  if (!Number.isInteger(index) || index < 0 || !SPRAY_OUTCOMES.has(outcome)) {
+    return res.status(400).send("올바르지 않은 spray_result 데이터입니다.");
+  }
+  roverState.last_spray_result = { waypoint: index, outcome, at: Date.now() };
+  broadcastEvent("rover:spray", { waypoint: index, outcome, at: roverState.last_spray_result.at });
+  broadcastRoverStatus();
+  res.json({ ok: true });
 });
 
 // POST /api/rover/request - 관리자가 로버 좌표 요청 (프론트엔드가 호출)
@@ -547,7 +907,7 @@ app.post("/api/rover/request", async (req, res) => {
     roverClient.write("event: request-position\ndata: {}\n\n");
   } catch {
     roverClient = null;
-    roverState.connected = false;
+    markRoverDisconnected("write_failed");
     broadcastRoverStatus();
     logger.warn(req, "rover.request", { error: "connection_lost" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
@@ -584,7 +944,7 @@ function sendRoverEvent(event, data) {
   } catch {
     try { roverClient.end(); } catch {}
     roverClient = null;
-    roverState.connected = false;
+    markRoverDisconnected("write_failed");
     broadcastRoverStatus();
     return false;
   }
@@ -613,9 +973,16 @@ function validateWaypointDistances(waypoints) {
 
 // POST /api/rover/execute - 경로 실행 (waypoint 전송)
 app.post("/api/rover/execute", (req, res) => {
-  const { waypoints } = req.body;
+  const { waypoints, force } = req.body;
   if (!Array.isArray(waypoints) || waypoints.length === 0 || waypoints.length > 10000) {
     return res.status(400).send("올바르지 않은 waypoint 데이터입니다.");
+  }
+  if (force === true) {
+    logger.warn(req, "rover.execute.force", {
+      fix_status: roverState.fix_status,
+      ntrip_connected: roverState.ntrip_connected,
+      waypoint_count: waypoints.length,
+    }, "rover");
   }
 
   for (const wp of waypoints) {
@@ -626,8 +993,8 @@ app.post("/api/rover/execute", (req, res) => {
   const distCheck = validateWaypointDistances(waypoints);
   if (!distCheck.valid) {
     const msg = distCheck.reason === "first_waypoint_far"
-      ? `로버 현재 위치에서 첫 웨이포인트까지 ${distCheck.distance.toFixed(1)}m로 너무 멉니다.`
-      : `인접 웨이포인트 간 거리가 ${distCheck.distance.toFixed(1)}m로 너무 큽니다.`;
+      ? `로버 현재 위치에서 첫 웨이포인트까지 ${distCheck.distance.toFixed(1)}m로 너무 멉니다 (최대 ${ROVER_MAX_WAYPOINT_DIST_M}m).`
+      : `${distCheck.index}번 웨이포인트 인접 거리가 ${distCheck.distance.toFixed(1)}m로 너무 큽니다 (최대 ${ROVER_MAX_SEGMENT_DIST_M}m).`;
     logger.warn(req, "rover.execute", { error: msg, reason: distCheck.reason, distance: distCheck.distance }, "rover");
     return res.status(400).send(msg);
   }
@@ -640,11 +1007,20 @@ app.post("/api/rover/execute", (req, res) => {
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
 
+  const actor = req.user ? `${req.user.name || ""} <${req.user.email || ""}>` : null;
+  const courseId = Number.isInteger(req.body?.course_id) ? req.body.course_id : null;
+  if (courseId != null && getCourseById(courseId)) {
+    try { takeCourseSnapshot(courseId, actor, `auto: execute mission`); }
+    catch (err) { logger.warn(req, "course.snapshot.auto", { error: String(err) }, `course#${courseId}`); }
+  }
+  startMission(finalWaypoints, actor, courseId);
+
   logger.log(req, "rover.execute", {
     waypoint_count: finalWaypoints.length,
     dropped: waypoints.length - finalWaypoints.length,
+    mission_id: currentMissionId,
   }, "rover");
-  res.json({ sent: finalWaypoints.length });
+  res.json({ sent: finalWaypoints.length, waypoints: finalWaypoints, mission_id: currentMissionId });
 });
 
 // POST /api/rover/stop - 비상정지
