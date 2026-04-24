@@ -78,6 +78,15 @@ def generate_launch_description():
         output='screen',
     )
 
+    # Battery node
+    battery_node = Node(
+        package='pilot',
+        executable='battery_node',
+        name='battery_node',
+        parameters=[config_file],
+        output='screen',
+    )
+
     # Navigator node
     navigator_node = Node(
         package='pilot',
@@ -107,6 +116,7 @@ def generate_launch_description():
         gps_node,
         motor_node,
         spray_node,
+        battery_node,
         navigator_node,
         bridge_node,
     ])

@@ -78,3 +78,14 @@ spray_node:
     spray_duration: 0.5                # Seconds to hold spray position
     retract_delay: 0.3                 # Seconds to wait after retract before done
     gpio_chip: 4                       # GPIO chip number (RPi5 RP1 = 4)
+
+battery_node:
+  ros__parameters:
+    publish_rate: 1.0                  # Hz
+    # "simulated" publishes `simulated_voltage`; switch to "ina219" once the
+    # INA219 at the I2C address is wired.
+    source: "simulated"
+    simulated_voltage: 12.3            # Volts (ignored when source=ina219)
+    warn_percent: 30                   # UI threshold; <= triggers warning color
+    i2c_bus: 1
+    i2c_address: 0x40

@@ -6,16 +6,23 @@ at each reached waypoint.
 Subscribed topics:
     /rover/nav/waypoint_reached (std_msgs/Int32) - Waypoint index reached
     /rover/cmd/emergency_stop (std_msgs/Empty) - Cancel spray in progress
+    /rover/spray/cancel (std_msgs/Int32) - Abort spray on a specific waypoint
+                                           without entering EMERGENCY_STOP state
+                                           (used by navigator on spray timeout
+                                           to suppress a late _signal_done).
 
 Published topics:
     /rover/spray/done (std_msgs/Empty) - Spray cycle complete
+    /rover/spray/result (std_msgs/String) - JSON {waypoint, outcome}
 """
+
+import json
 
 import lgpio
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Int32, Empty
+from std_msgs.msg import Int32, Empty, String
 
 SERVO_FREQUENCY = 50  # 50Hz for standard RC servos
 
@@ -57,16 +64,25 @@ class SprayNode(Node):
         self._spraying = False
         self._spray_timer = None
         self._retract_timer = None
+        self._current_wp_idx = -1
 
         # Subscribers
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(Int32, '/rover/nav/waypoint_reached', self._on_waypoint_reached, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_emergency_stop, reliable_qos)
+        self.create_subscription(Int32, '/rover/spray/cancel', self._on_spray_cancel, reliable_qos)
 
-        # Publisher
+        # Publishers
         self._pub_done = self.create_publisher(Empty, '/rover/spray/done', reliable_qos)
+        self._pub_result = self.create_publisher(String, '/rover/spray/result', reliable_qos)
 
         self.get_logger().info('Spray node started')
+
+    def _publish_result(self, outcome, wp_idx):
+        """Emit a spray outcome for the course server / UI."""
+        msg = String()
+        msg.data = json.dumps({'waypoint': int(wp_idx), 'outcome': outcome})
+        self._pub_result.publish(msg)
 
     def _validate_params(self):
         """Sanity-check spray parameters."""
@@ -109,6 +125,7 @@ class SprayNode(Node):
 
         self._spraying = True
         wp_idx = msg.data
+        self._current_wp_idx = wp_idx
         self.get_logger().info(f'Spraying at waypoint {wp_idx}')
 
         # Move to spray position
@@ -133,10 +150,14 @@ class SprayNode(Node):
     def _signal_done(self):
         """Signal spray cycle complete. Always publishes done regardless of timer state."""
         self._retract_timer = self._safe_destroy_timer(self._retract_timer)
+        was_spraying = self._spraying
+        wp_idx = self._current_wp_idx
         self._spraying = False
         # Always publish done so the navigator never blocks on a missed signal
         try:
             self._pub_done.publish(Empty())
+            if was_spraying and wp_idx >= 0:
+                self._publish_result('success', wp_idx)
         finally:
             self.get_logger().info('Spray done')
 
@@ -147,7 +168,30 @@ class SprayNode(Node):
 
         rest_angle = self.get_parameter('rest_angle').value
         lgpio.tx_pwm(self._handle, self._pin, SERVO_FREQUENCY, _angle_to_duty(rest_angle))
+        was_spraying = self._spraying
+        wp_idx = self._current_wp_idx
         self._spraying = False
+        if was_spraying and wp_idx >= 0:
+            self._publish_result('cancelled', wp_idx)
+
+    def _on_spray_cancel(self, msg):
+        """Abort the current spray cycle without leaving SPRAYING for EMERGENCY_STOP.
+
+        Used when the navigator times out waiting for spray/done: we need the
+        servo to come back to rest AND the pending signal_done timer to stop
+        publishing a late 'success' result for a waypoint the navigator has
+        already flagged as 'timeout'.
+        """
+        target_idx = int(msg.data)
+        if not self._spraying or self._current_wp_idx != target_idx:
+            return
+        self._spray_timer = self._safe_destroy_timer(self._spray_timer)
+        self._retract_timer = self._safe_destroy_timer(self._retract_timer)
+
+        rest_angle = self.get_parameter('rest_angle').value
+        lgpio.tx_pwm(self._handle, self._pin, SERVO_FREQUENCY, _angle_to_duty(rest_angle))
+        self._spraying = False
+        # Intentionally do NOT publish a result here — navigator already did.
 
     def destroy_node(self):
         rest_angle = self.get_parameter('rest_angle').value

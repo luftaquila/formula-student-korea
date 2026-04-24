@@ -16,6 +16,7 @@ Subscribed topics:
     /rover/ntrip/status (std_msgs/String) - NTRIP client JSON status (optional)
 """
 
+import collections
 import json
 import os
 import threading
@@ -26,9 +27,18 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import NavSatFix
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Empty, String
+from std_msgs.msg import Empty, Int32, String
+
+try:
+    from rcl_interfaces.msg import Log as _RosoutLog  # noqa: F401
+    HAS_ROSOUT = True
+except ImportError:
+    HAS_ROSOUT = False
 
 from pilot.lib.protocol_utils import assemble_sse_data
+
+LOG_BUFFER_MAXLEN = 500
+LOG_LEVEL_LABEL = {10: "DEBUG", 20: "INFO", 30: "WARN", 40: "ERROR", 50: "FATAL"}
 
 
 class BridgeNode(Node):
@@ -68,6 +78,9 @@ class BridgeNode(Node):
         self.create_subscription(String, '/rover/nav/state', self._on_nav_state, 10)
         self.create_subscription(String, '/rover/gps/fix_status', self._on_fix_status, 10)
         self.create_subscription(String, '/rover/ntrip/status', self._on_ntrip_status, 10)
+        self.create_subscription(Int32, '/rover/nav/waypoint_reached', self._on_waypoint_reached, reliable_qos)
+        self.create_subscription(String, '/rover/spray/result', self._on_spray_result, reliable_qos)
+        self.create_subscription(String, '/rover/battery', self._on_battery, 10)
 
         # State
         self._last_position = None
@@ -77,6 +90,16 @@ class BridgeNode(Node):
         self._sse_connected = False
         self._fix_status = None
         self._ntrip_connected = None
+
+        # Battery telemetry
+        self._battery = None  # { voltage, percent, source }
+
+        # /rosout log buffer (aggregated across all nodes in the domain)
+        self._log_buffer = collections.deque(maxlen=LOG_BUFFER_MAXLEN)
+        self._log_upload_in_flight = False
+        if HAS_ROSOUT:
+            from rcl_interfaces.msg import Log as RosoutLog
+            self.create_subscription(RosoutLog, '/rosout', self._on_rosout, 10)
 
         # Start SSE listener thread
         self._running = True
@@ -129,6 +152,86 @@ class BridgeNode(Node):
         except (json.JSONDecodeError, AttributeError, TypeError):
             pass
 
+    def _post_async(self, path, payload, label):
+        """POST to the course server on a worker thread.
+
+        The ROS executor is single-threaded; doing a blocking HTTP call here
+        would stall every other subscription until the request returns. These
+        callbacks fire at most a few times per mission, so a short-lived daemon
+        thread per call is acceptable.
+        """
+        url = self.get_parameter('server_url').value
+        if not url:
+            return
+        def _send():
+            try:
+                requests.post(
+                    f'{url}{path}',
+                    json=payload,
+                    headers=self._get_headers(),
+                    timeout=5.0,
+                )
+            except requests.RequestException as e:
+                self.get_logger().warn(f'{label} POST error: {e}')
+        threading.Thread(target=_send, daemon=True).start()
+
+    def _on_waypoint_reached(self, msg):
+        """Forward reached waypoint index to the course server."""
+        self._post_async(
+            '/api/rover/waypoint_reached',
+            {'index': int(msg.data)},
+            'waypoint_reached',
+        )
+
+    def _on_battery(self, msg):
+        """Cache battery status for the periodic telemetry POST."""
+        try:
+            self._battery = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    def _on_rosout(self, msg):
+        """Buffer log records from every node in the ROS 2 domain."""
+        try:
+            t_msg = msg.stamp
+            t_ms = int(t_msg.sec) * 1000 + int(t_msg.nanosec) // 1_000_000
+        except AttributeError:
+            t_ms = int(time.time() * 1000)
+        self._log_buffer.append({
+            't': t_ms,
+            'level': LOG_LEVEL_LABEL.get(int(msg.level), str(msg.level)),
+            'node': getattr(msg, 'name', ''),
+            'msg': getattr(msg, 'msg', ''),
+        })
+
+    def _upload_logs(self):
+        """Upload the current log buffer to the course server."""
+        url = self.get_parameter('server_url').value
+        if not url:
+            self._log_upload_in_flight = False
+            return
+        try:
+            entries = list(self._log_buffer)
+            requests.post(
+                f'{url}/api/rover/logs',
+                json={'entries': entries},
+                headers=self._get_headers(),
+                timeout=10.0,
+            )
+        except requests.RequestException as e:
+            self.get_logger().warn(f'log upload error: {e}')
+        finally:
+            self._log_upload_in_flight = False
+
+    def _on_spray_result(self, msg):
+        """Forward spray outcome JSON to the course server."""
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warn(f'Invalid spray result JSON: {msg.data}')
+            return
+        self._post_async('/api/rover/spray_result', payload, 'spray_result')
+
     def _telemetry_loop(self):
         """Periodically POST telemetry to the course server."""
         while self._running:
@@ -141,6 +244,8 @@ class BridgeNode(Node):
                 'fix_status': self._fix_status,
                 'ntrip_connected': self._ntrip_connected,
             }
+            if self._battery is not None:
+                payload['battery'] = self._battery
             try:
                 requests.post(
                     f'{url}/api/rover/telemetry',
@@ -284,6 +389,15 @@ class BridgeNode(Node):
             msg.linear.x = float(payload.get('throttle', 0))
             msg.angular.z = float(payload.get('steering', 0))
             self._pub_manual.publish(msg)
+
+        elif event == 'fetch-logs':
+            # Upload on a worker thread so the SSE reader loop stays responsive.
+            # Skip if a previous upload is still in flight — the operator mashing
+            # the button should not spawn an unbounded pile of threads.
+            if self._log_upload_in_flight:
+                return
+            self._log_upload_in_flight = True
+            threading.Thread(target=self._upload_logs, daemon=True).start()
 
     def destroy_node(self):
         self._running = False

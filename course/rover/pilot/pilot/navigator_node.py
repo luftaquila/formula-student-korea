@@ -86,6 +86,8 @@ class NavigatorNode(Node):
 
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self._pub_waypoint_reached = self.create_publisher(Int32, '/rover/nav/waypoint_reached', reliable_qos)
+        self._pub_spray_result = self.create_publisher(String, '/rover/spray/result', reliable_qos)
+        self._pub_spray_cancel = self.create_publisher(Int32, '/rover/spray/cancel', reliable_qos)
 
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps, 10)
@@ -620,6 +622,14 @@ class NavigatorNode(Node):
             self.get_logger().warn(
                 f'Spray timeout at waypoint {self._current_wp_idx + 1}, skipping'
             )
+            result = String()
+            result.data = json.dumps({'waypoint': int(self._current_wp_idx), 'outcome': 'timeout'})
+            self._pub_spray_result.publish(result)
+            # Tell spray_node to kill any pending signal_done timer so a late
+            # 'success' doesn't overwrite the 'timeout' we just published.
+            cancel = Int32()
+            cancel.data = int(self._current_wp_idx)
+            self._pub_spray_cancel.publish(cancel)
             self._on_spray_done(None)
             return
 

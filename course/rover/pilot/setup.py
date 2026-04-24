@@ -28,6 +28,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'battery_node = pilot.battery_node:main',
             'bridge_node = pilot.bridge_node:main',
             'gps_node = pilot.gps_node:main',
             'motor_node = pilot.motor_node:main',
