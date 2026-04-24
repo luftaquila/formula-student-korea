@@ -617,12 +617,24 @@ function startMission(waypoints, actor, courseId) {
     actor || null,
   );
   currentMissionId = Number(info.lastInsertRowid);
+  roverState.mission_progress = {
+    mission_id: currentMissionId,
+    waypoints,
+    current_waypoint_idx: 0,
+    spray_results: {},
+  };
 }
 
 function endMission(status) {
   if (currentMissionId == null) return;
   finishMission.run(Date.now(), status, currentMissionId);
   currentMissionId = null;
+  roverState.mission_progress = {
+    mission_id: null,
+    waypoints: [],
+    current_waypoint_idx: 0,
+    spray_results: {},
+  };
 }
 
 function recordTelemetrySample() {
@@ -649,6 +661,16 @@ const roverState = {
   last_disconnect_at: 0,
   last_spray_result: null, // { waypoint, outcome, at }
   battery: null, // { voltage, percent, source }
+  ntrip: null, // { host, port, mountpoint, fail_count, last_error, last_correction_at, bytes_received }
+  // Session-scoped per-mission progress used for tab-close recovery — the
+  // server acts as the source of truth so reloading the UI rebuilds the
+  // executing/stopped view exactly.
+  mission_progress: {
+    mission_id: null,
+    waypoints: [],          // last waypoint set broadcast to the rover
+    current_waypoint_idx: 0, // 1-based: count of waypoints reached so far
+    spray_results: {},      // { [waypointIndex]: outcome }
+  },
   updated_at: 0,
 };
 
@@ -740,7 +762,7 @@ app.post("/api/rover/position", (req, res) => {
 
 // POST /api/rover/telemetry - 로버 상태 텔레메트리 (internal)
 app.post("/api/rover/telemetry", (req, res) => {
-  const { nav_state, fix_status, ntrip_connected, battery } = req.body || {};
+  const { nav_state, fix_status, ntrip_connected, battery, ntrip } = req.body || {};
   const now = Date.now();
   const prevNav = roverState.nav_state;
   if (typeof nav_state === "string") roverState.nav_state = nav_state;
@@ -755,6 +777,17 @@ app.post("/api/rover/telemetry", (req, res) => {
       voltage: typeof battery.voltage === "number" ? battery.voltage : null,
       percent: Number.isInteger(battery.percent) ? battery.percent : null,
       source: typeof battery.source === "string" ? battery.source : null,
+    };
+  }
+  if (ntrip && typeof ntrip === "object" && !Array.isArray(ntrip)) {
+    roverState.ntrip = {
+      host: typeof ntrip.host === "string" ? ntrip.host.slice(0, 128) : null,
+      port: Number.isInteger(ntrip.port) ? ntrip.port : null,
+      mountpoint: typeof ntrip.mountpoint === "string" ? ntrip.mountpoint.slice(0, 64) : null,
+      fail_count: Number.isInteger(ntrip.fail_count) ? ntrip.fail_count : null,
+      last_error: typeof ntrip.last_error === "string" ? ntrip.last_error.slice(0, 256) : null,
+      last_correction_at: typeof ntrip.last_correction_at === "number" ? ntrip.last_correction_at : null,
+      bytes_received: Number.isInteger(ntrip.bytes_received) ? ntrip.bytes_received : null,
     };
   }
 
@@ -782,6 +815,11 @@ app.post("/api/rover/waypoint_reached", (req, res) => {
   if (!Number.isInteger(index) || index < 0) {
     return res.status(400).send("올바르지 않은 waypoint index입니다.");
   }
+  // Monotonic: never regress current_waypoint_idx so late or duplicate events
+  // from SSE reconnects can't walk progress backwards.
+  if (index + 1 > roverState.mission_progress.current_waypoint_idx) {
+    roverState.mission_progress.current_waypoint_idx = index + 1;
+  }
   broadcastEvent("rover:waypoint", { index });
   res.json({ ok: true });
 });
@@ -790,13 +828,15 @@ app.post("/api/rover/waypoint_reached", (req, res) => {
    API 라우트: /api/missions (미션 이력)
    ============================================ */
 
-const MISSION_LIST_LIMIT = 50;
+const MISSION_LIST_MAX_LIMIT = 500;
+const MISSION_LIST_DEFAULT_LIMIT = 50;
 const selectMissions = db.prepare(
   `SELECT m.id, m.course_id, c.name AS course_name, m.started_at, m.ended_at, m.status, m.actor,
           (SELECT COUNT(*) FROM mission_telemetry t WHERE t.mission_id = m.id) AS sample_count
    FROM mission m LEFT JOIN course c ON c.id = m.course_id
-   ORDER BY m.started_at DESC LIMIT ?`
+   ORDER BY m.started_at DESC LIMIT ? OFFSET ?`
 );
+const countMissions = db.prepare("SELECT COUNT(*) AS cnt FROM mission");
 const selectMissionById = db.prepare(
   `SELECT m.id, m.course_id, c.name AS course_name, m.started_at, m.ended_at, m.status,
           m.waypoints_json, m.actor
@@ -807,8 +847,11 @@ const selectMissionTelemetry = db.prepare(
 );
 
 app.get("/api/missions", (req, res) => {
-  const rows = selectMissions.all(MISSION_LIST_LIMIT);
-  res.json({ missions: rows });
+  const limit = Math.max(1, Math.min(Number(req.query.limit) || MISSION_LIST_DEFAULT_LIMIT, MISSION_LIST_MAX_LIMIT));
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  const rows = selectMissions.all(limit, offset);
+  const total = countMissions.get().cnt;
+  res.json({ missions: rows, total, limit, offset });
 });
 
 app.get("/api/missions/:id", (req, res) => {
@@ -886,6 +929,7 @@ app.post("/api/rover/spray_result", (req, res) => {
     return res.status(400).send("올바르지 않은 spray_result 데이터입니다.");
   }
   roverState.last_spray_result = { waypoint: index, outcome, at: Date.now() };
+  roverState.mission_progress.spray_results[String(index)] = outcome;
   broadcastEvent("rover:spray", { waypoint: index, outcome, at: roverState.last_spray_result.at });
   broadcastRoverStatus();
   res.json({ ok: true });

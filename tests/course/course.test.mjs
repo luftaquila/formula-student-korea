@@ -774,6 +774,23 @@ describe('Missions API', () => {
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.ok(Array.isArray(data.missions));
+    assert.ok('total' in data, 'response must expose total count for pagination');
+    assert.ok('limit' in data);
+    assert.ok('offset' in data);
+  });
+
+  it('honours limit and offset query params', async () => {
+    const res = await client.get('/api/missions?limit=5&offset=10', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.limit, 5);
+    assert.equal(data.offset, 10);
+  });
+
+  it('caps limit at the configured maximum', async () => {
+    const res = await client.get('/api/missions?limit=999999', { cookie: adminCookie });
+    const data = await res.json();
+    assert.equal(data.limit, 500, 'limit should clamp to MISSION_LIST_MAX_LIMIT');
   });
 
   it('returns 404 for missing mission id', async () => {
