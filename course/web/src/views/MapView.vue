@@ -1,7 +1,10 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
+import { useRouter } from "vue-router";
 import L from "leaflet";
 import { request } from "../api.js";
+
+const router = useRouter();
 
 /* ── State ─────────────────────────────────────────── */
 const courses = ref([]);
@@ -93,7 +96,7 @@ const roverStatusText = computed(() => {
     return "로버 미연결";
   }
   const parts = [];
-  if (s.fix_status) parts.push(s.fix_status.toUpperCase());
+  if (s.fix_status) parts.push(s.fix_status.replace(/_/g, " ").toUpperCase());
   if (s.nav_state) parts.push(s.nav_state);
   if (s.ntrip_connected !== null) parts.push(`NTRIP ${s.ntrip_connected ? "ok" : "off"}`);
   if (s.battery && s.battery.percent != null) {
@@ -147,6 +150,11 @@ const INSPECTOR_TABS = [
   { key: "cones", label: "콘", icon: "🔶" },
   { key: "rover", label: "로버", icon: "🚗" },
   { key: "logs", label: "로그", icon: "📜" },
+];
+// Items that aren't inspector tabs but share the rail so the operator has
+// a single nav surface. { key: unique, to: router route }.
+const RAIL_ROUTES = [
+  { key: "missions", label: "이력", icon: "📊", to: "/missions" },
 ];
 const activeTab = ref(loadPref("activeTab", "courses"));
 const inspectorCollapsed = ref(loadPref("inspectorCollapsed", false, JSON.parse));
@@ -279,7 +287,7 @@ const preflightChecks = computed(() => {
   return [
     { key: "connected", label: "로버 SSE 연결", ok: !!s.connected },
     { key: "fix", label: "RTK Fixed GPS", ok: s.fix_status === "rtk_fixed",
-      detail: s.fix_status ? s.fix_status.toUpperCase() : "알 수 없음" },
+      detail: s.fix_status ? s.fix_status.replace(/_/g, " ").toUpperCase() : "알 수 없음" },
     { key: "ntrip", label: "NTRIP 연결", ok: s.ntrip_connected === true,
       detail: (() => {
         if (s.ntrip_connected === null) return "알 수 없음";
@@ -1566,7 +1574,7 @@ onUnmounted(() => {
 
         <div class="workspace-body">
           <!-- Left icon rail -->
-          <nav class="rail" aria-label="인스펙터 카테고리">
+          <nav class="rail" aria-label="탐색">
             <button
               v-for="t in INSPECTOR_TABS" :key="t.key"
               :class="['rail-btn', { active: activeTab === t.key && !inspectorCollapsed }]"
@@ -1576,7 +1584,20 @@ onUnmounted(() => {
               <span class="rail-icon">{{ t.icon }}</span>
               <span class="rail-label">{{ t.label }}</span>
             </button>
+            <div class="rail-divider"></div>
+            <button
+              v-for="r in RAIL_ROUTES" :key="r.key"
+              class="rail-btn"
+              @click="router.push(r.to)"
+              :title="r.label"
+            >
+              <span class="rail-icon">{{ r.icon }}</span>
+              <span class="rail-label">{{ r.label }}</span>
+            </button>
           </nav>
+
+          <!-- Visual separator matching the inspector resize handle width. -->
+          <div class="rail-spacer"></div>
 
           <!-- Map (center) -->
           <div class="map-wrap">
@@ -1914,8 +1935,17 @@ onUnmounted(() => {
   width: 72px; flex-shrink: 0;
   display: flex; flex-direction: column;
   padding: 0.5rem 0; gap: 0.375rem;
-  border-right: 1px solid var(--border-primary);
   background: var(--bg-primary);
+}
+/* Match the 8px inspector resize handle on the left side so the map has
+   symmetric breathing room. Purely visual — no drag affordance here. */
+.rail-spacer {
+  width: 8px; flex-shrink: 0;
+  background: var(--border-primary);
+}
+.rail-divider {
+  height: 1px; margin: 0.25rem 0.75rem;
+  background: var(--border-primary);
 }
 .rail-btn {
   display: flex; flex-direction: column; align-items: center;
@@ -2384,10 +2414,15 @@ onUnmounted(() => {
   .rail {
     order: 99;
     width: 100%; flex-direction: row;
-    border-right: none; border-top: 1px solid var(--border-primary);
+    border-top: 1px solid var(--border-primary);
     padding: 0.25rem 0.5rem; gap: 0.25rem;
     justify-content: space-around;
     background: var(--bg-primary);
+  }
+  .rail-spacer { display: none; }
+  .rail-divider {
+    width: 1px; height: 28px; margin: 0 0.25rem;
+    align-self: center;
   }
   .rail-btn { flex: 1; min-height: 56px; margin: 0; }
   .rail-icon { font-size: 1.25rem; }
