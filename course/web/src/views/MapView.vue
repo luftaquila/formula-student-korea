@@ -44,6 +44,7 @@ const roverStatus = ref({
   last_disconnect_at: 0,
   last_spray_result: null,
   battery: null,
+  ntrip: null,
 });
 let manualFailCount = 0;
 
@@ -91,6 +92,29 @@ const roverStatusText = computed(() => {
     parts.push(`pos ${ago}s`);
   }
   return parts.join(" · ");
+});
+
+// Verbose tooltip — includes NTRIP caster, retries, last correction age.
+const roverStatusTooltip = computed(() => {
+  const s = roverStatus.value;
+  const lines = [roverStatusText.value];
+  if (s.ntrip) {
+    if (s.ntrip.host) {
+      const mp = s.ntrip.mountpoint ? `/${s.ntrip.mountpoint}` : "";
+      lines.push(`NTRIP caster: ${s.ntrip.host}${mp}`);
+    }
+    if (s.ntrip.last_correction_at) {
+      const ago = Math.max(0, Math.round(Date.now() / 1000 - s.ntrip.last_correction_at));
+      lines.push(`보정 마지막 수신: ${ago}s 전`);
+    }
+    if (s.ntrip.fail_count != null && s.ntrip.fail_count > 0) {
+      lines.push(`재연결 시도: ${s.ntrip.fail_count}`);
+    }
+    if (s.ntrip.last_error) {
+      lines.push(`마지막 오류: ${s.ntrip.last_error}`);
+    }
+  }
+  return lines.join("\n");
 });
 
 const BATTERY_WARN_PERCENT = 30;
@@ -176,6 +200,10 @@ const pathBtnClass = computed(() => {
   if (roverMode.value === "path-pick") return "btn-danger";
   return "btn-ghost";
 });
+// Tracks which check keys flipped recently — used to flash the row so the
+// operator notices RTK/NTRIP degrading mid-modal instead of acting on stale info.
+const preflightFlash = ref({});
+
 // Pre-flight checklist derived from current rover state + planned path.
 const preflightChecks = computed(() => {
   const s = roverStatus.value;
@@ -189,7 +217,13 @@ const preflightChecks = computed(() => {
     { key: "fix", label: "RTK Fixed GPS", ok: s.fix_status === "rtk_fixed",
       detail: s.fix_status ? s.fix_status.toUpperCase() : "알 수 없음" },
     { key: "ntrip", label: "NTRIP 연결", ok: s.ntrip_connected === true,
-      detail: s.ntrip_connected === null ? "알 수 없음" : (s.ntrip_connected ? "ok" : "off") },
+      detail: (() => {
+        if (s.ntrip_connected === null) return "알 수 없음";
+        const caster = s.ntrip?.host ? `${s.ntrip.host}${s.ntrip.mountpoint ? '/' + s.ntrip.mountpoint : ''}` : null;
+        if (s.ntrip_connected) return caster ? `${caster} · ok` : "ok";
+        const retry = s.ntrip?.fail_count ? ` · 재시도 ${s.ntrip.fail_count}` : "";
+        return caster ? `${caster} · off${retry}` : `off${retry}`;
+      })() },
     { key: "firstwp", label: "첫 웨이포인트 거리", ok: firstDist != null && firstDist < 5,
       detail: firstDist != null ? `${firstDist.toFixed(1)} m` : "위치 미수신" },
     { key: "battery", label: "배터리", ok: batteryOk,
@@ -197,6 +231,40 @@ const preflightChecks = computed(() => {
   ];
 });
 const preflightAllOk = computed(() => preflightChecks.value.every((c) => c.ok));
+
+// Flash a check row when it changes ok-state during an open modal so the
+// operator sees the transition even if they're focused on the button.
+let lastPreflightOk = {};
+watch(preflightChecks, (next) => {
+  if (!showPreflight.value) {
+    lastPreflightOk = Object.fromEntries(next.map((c) => [c.key, c.ok]));
+    return;
+  }
+  const flashes = {};
+  for (const c of next) {
+    const prev = lastPreflightOk[c.key];
+    if (prev !== undefined && prev !== c.ok) flashes[c.key] = Date.now();
+  }
+  lastPreflightOk = Object.fromEntries(next.map((c) => [c.key, c.ok]));
+  if (Object.keys(flashes).length > 0) {
+    preflightFlash.value = { ...preflightFlash.value, ...flashes };
+    // Clear the flash class after the animation completes so a second
+    // transition can re-trigger it.
+    setTimeout(() => {
+      const stale = Date.now() - 1200;
+      preflightFlash.value = Object.fromEntries(
+        Object.entries(preflightFlash.value).filter(([, at]) => at > stale)
+      );
+    }, 1300);
+  }
+}, { deep: true });
+
+watch(showPreflight, (open) => {
+  if (open) {
+    lastPreflightOk = Object.fromEntries(preflightChecks.value.map((c) => [c.key, c.ok]));
+    preflightFlash.value = {};
+  }
+});
 
 const activeCones = computed(() => conesMap.value[activeCourseId.value] || []);
 const filteredCones = computed(() => {
@@ -545,6 +613,10 @@ async function createCourse() {
 function startEditCourse(course) {
   editingCourseId.value = course.id;
   editCourseName.value = course.name;
+  nextTick(() => {
+    const el = document.querySelector(`.course-item.editing .course-name-input`);
+    if (el) { el.focus(); el.select(); }
+  });
 }
 
 async function saveCourseName(id) {
@@ -1219,8 +1291,10 @@ function renderSprayMarkers() {
     sprayMarkers[idx] = L.marker([wp.lat, wp.lng], {
       icon: L.divIcon({
         className: "",
-        html: `<div style="width:18px;height:18px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#fff;">${symbol}</div>`,
-        iconSize: [18, 18], iconAnchor: [9, 22], // above the waypoint
+        // White halo + dark drop shadow so the marker stays legible over green
+        // satellite terrain or the planned-path polyline.
+        html: `<div style="width:22px;height:22px;border-radius:50%;background:${color};border:3px solid #fff;outline:1px solid rgba(0,0,0,0.55);box-shadow:0 2px 6px rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,0.6);">${symbol}</div>`,
+        iconSize: [22, 22], iconAnchor: [11, 26], // above the waypoint
       }),
       interactive: false, zIndexOffset: 950,
     }).addTo(map);
@@ -1240,16 +1314,66 @@ async function fetchRoverStatus() {
     const res = await request("/api/rover/status", { method: "GET" });
     const data = await res.json();
     roverStatus.value = { ...roverStatus.value, ...data };
+    // Restore in-flight mission so a tab reload during a mission doesn't lose
+    // the path overlay, waypoint counter, or spray markers.
+    restoreMissionProgress(data.mission_progress);
   } catch { /* best-effort */ }
+}
+
+function restoreMissionProgress(mp) {
+  if (!mp || !mp.mission_id || !Array.isArray(mp.waypoints) || mp.waypoints.length === 0) return;
+  if (pathWaypoints.value.length > 0) return; // user already has local state; don't clobber
+
+  pathWaypoints.value = mp.waypoints;
+  executedIndex.value = Math.max(0, Math.min(mp.current_waypoint_idx || 0, mp.waypoints.length));
+  executionStartIdx = 0; // server's waypoints are the active execution's full list
+  pathStart = roverStatus.value.last_position || mp.waypoints[0];
+
+  // Rebuild path geometry + progress bar using renderPath's cumulative math.
+  renderPath();
+  if (pathTotalDist > 0 && executedIndex.value > 0) {
+    const walked = pathCumDist[executedIndex.value - 1] ?? pathTotalDist;
+    pathProgress.value = Math.min(100, Math.round((walked / pathTotalDist) * 100));
+  }
+
+  // Rehydrate spray markers from server-side results map.
+  const restored = new Map();
+  for (const [k, outcome] of Object.entries(mp.spray_results || {})) {
+    const idx = Number(k);
+    if (Number.isInteger(idx)) restored.set(idx, { outcome, at: 0 });
+  }
+  sprayResults.value = restored;
+  renderSprayMarkers();
+
+  // If the rover is in any active nav state, mirror that locally so the Resume /
+  // Stop controls make sense on the restored view.
+  const ACTIVE_STATES = new Set(["CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING", "RETURNING"]);
+  if (ACTIVE_STATES.has(roverStatus.value.nav_state)) {
+    roverMode.value = "executing";
+  } else if (roverStatus.value.nav_state === "EMERGENCY_STOP" || roverStatus.value.nav_state === "ERROR") {
+    roverMode.value = "stopped";
+    resumeStartIdx.value = executedIndex.value;
+  } else {
+    roverMode.value = "path-ready";
+  }
 }
 
 /* ── Mobile detection ─────────────────────────────── */
 function checkMobile() { isMobile.value = window.innerWidth <= 768; }
 
+function onGlobalKeydown(e) {
+  if (e.key !== "Escape") return;
+  // Highest-open modal wins; others remain so a stack of prompts collapses one level at a time.
+  if (showLogs.value) { showLogs.value = false; e.preventDefault(); return; }
+  if (showSnapshots.value) { showSnapshots.value = false; e.preventDefault(); return; }
+  if (showPreflight.value) { cancelPreflight(); e.preventDefault(); return; }
+}
+
 /* ── Lifecycle ────────────────────────────────────── */
 onMounted(async () => {
   checkMobile();
   window.addEventListener("resize", checkMobile);
+  window.addEventListener("keydown", onGlobalKeydown);
   await fetchAll();
   await nextTick();
   initMap();
@@ -1259,6 +1383,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener("resize", checkMobile);
+  window.removeEventListener("keydown", onGlobalKeydown);
   if (controlInterval) clearInterval(controlInterval);
   if (eventSource) eventSource.close();
   if (map) {
@@ -1342,7 +1467,10 @@ onUnmounted(() => {
         <div class="preflight-modal">
           <h3>{{ preflightMode === 'resume' ? '재시작 전 점검' : '경로 실행 전 점검' }}</h3>
           <ul class="preflight-list">
-            <li v-for="c in preflightChecks" :key="c.key" :class="['preflight-item', c.ok ? 'ok' : 'fail']">
+            <li
+              v-for="c in preflightChecks" :key="c.key"
+              :class="['preflight-item', c.ok ? 'ok' : 'fail', { flash: preflightFlash[c.key] }]"
+            >
               <span class="preflight-mark">{{ c.ok ? '✓' : '✗' }}</span>
               <span class="preflight-label">{{ c.label }}</span>
               <span v-if="c.detail" class="preflight-detail">{{ c.detail }}</span>
@@ -1364,7 +1492,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Rover status badge -->
-      <div :class="['rover-badge', roverStatusClass]" :title="roverStatusText">
+      <div :class="['rover-badge', roverStatusClass]" :title="roverStatusTooltip">
         <span class="rover-badge-dot"></span>
         <span class="rover-badge-text">{{ roverStatusText }}</span>
       </div>
@@ -1397,7 +1525,7 @@ onUnmounted(() => {
               >📸</button>
             </div>
             <div class="course-items">
-              <div v-for="c in courses" :key="c.id" :class="['course-item', { active: c.id === activeCourseId }]">
+              <div v-for="c in courses" :key="c.id" :class="['course-item', { active: c.id === activeCourseId, editing: editingCourseId === c.id }]">
                 <button class="vis-btn" @click.stop="toggleVisibility(c.id)" :title="visibility[c.id] ? '숨기기' : '표시'">
                   <svg v-if="visibility[c.id]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                   <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
@@ -1452,7 +1580,11 @@ onUnmounted(() => {
                 <button class="btn btn-ghost btn-sm" @click="openLogs" title="로버 로그">📜 로그</button>
               </div>
               <div v-if="pathDistance > 0" class="path-info">
-                예상 주행 거리: {{ pathDistance >= 1000 ? (pathDistance / 1000).toFixed(2) + ' km' : pathDistance.toFixed(1) + ' m' }}
+                <div>예상 주행 거리: {{ pathDistance >= 1000 ? (pathDistance / 1000).toFixed(2) + ' km' : pathDistance.toFixed(1) + ' m' }}</div>
+                <div v-if="roverMode === 'executing' || roverMode === 'stopped'">
+                  웨이포인트 {{ executedIndex }}/{{ pathWaypoints.length }}
+                  <span v-if="pathProgress > 0" class="path-info-progress">({{ pathProgress }}%)</span>
+                </div>
               </div>
 
               <!-- Waypoint reorder (path-ready only) -->
@@ -1547,10 +1679,10 @@ onUnmounted(() => {
                   <span v-if="coneFilter !== 'all'" class="filter-tag" :style="{ '--fc': SIDE_COLORS[coneFilter] }">{{ coneFilterLabel }}만</span>
                 </h3>
                 <div class="cone-filter">
-                  <button :class="['filter-btn', { active: coneFilter === 'all' }]" @click="coneFilter = 'all'">전체</button>
-                  <button :class="['filter-btn', { active: coneFilter === 'left' }]" @click="coneFilter = 'left'" :style="{ '--fc': SIDE_COLORS.left }">L</button>
-                  <button :class="['filter-btn', { active: coneFilter === 'center' }]" @click="coneFilter = 'center'" :style="{ '--fc': SIDE_COLORS.center }">M</button>
-                  <button :class="['filter-btn', { active: coneFilter === 'right' }]" @click="coneFilter = 'right'" :style="{ '--fc': SIDE_COLORS.right }">R</button>
+                  <button :class="['filter-btn', { active: coneFilter === 'all' }]" @click="coneFilter = 'all'" title="전체 콘 표시">전체</button>
+                  <button :class="['filter-btn', { active: coneFilter === 'left' }]" @click="coneFilter = 'left'" :style="{ '--fc': SIDE_COLORS.left }" title="왼쪽 콘만">L</button>
+                  <button :class="['filter-btn', { active: coneFilter === 'center' }]" @click="coneFilter = 'center'" :style="{ '--fc': SIDE_COLORS.center }" title="가운데 콘만">M</button>
+                  <button :class="['filter-btn', { active: coneFilter === 'right' }]" @click="coneFilter = 'right'" :style="{ '--fc': SIDE_COLORS.right }" title="오른쪽 콘만">R</button>
                 </div>
               </div>
               <div class="cone-list">
@@ -1691,6 +1823,15 @@ onUnmounted(() => {
 .dl-btn:hover { color: var(--accent-primary); }
 .del-btn:hover { color: var(--accent-danger, #ef4444); }
 
+/* On touch-only devices (no hover), enlarge tap targets per WCAG 2.5.5 +
+   Apple HIG 44pt recommendation. Desktop keeps the tight visual rhythm. */
+@media (hover: none) {
+  .dl-btn, .del-btn, .vis-btn, .arrow-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
 .import-btn { cursor: pointer; }
 
 /* Side + Rover row */
@@ -1720,7 +1861,9 @@ onUnmounted(() => {
   background: var(--bg-secondary); border-radius: 6px;
   font-size: 0.8rem; color: var(--text-secondary);
   font-family: "JetBrains Mono", monospace;
+  display: flex; flex-direction: column; gap: 0.15rem;
 }
+.path-info-progress { color: var(--accent-primary); margin-left: 0.25rem; }
 
 .preflight-backdrop {
   position: absolute; inset: 0; z-index: 1000;
@@ -1744,6 +1887,12 @@ onUnmounted(() => {
 .preflight-item:last-child { border-bottom: none; }
 .preflight-item.ok .preflight-mark { color: #22c55e; }
 .preflight-item.fail .preflight-mark { color: #ef4444; }
+.preflight-item.flash { animation: preflight-flash 1.2s ease-out; }
+
+@keyframes preflight-flash {
+  0%   { background: color-mix(in srgb, #f59e0b 40%, transparent); }
+  100% { background: transparent; }
+}
 .preflight-mark { font-weight: 800; width: 1em; text-align: center; }
 .preflight-label { flex: 1; }
 .preflight-detail { color: var(--text-secondary); font-family: "JetBrains Mono", monospace; font-size: 0.8rem; }

@@ -4,10 +4,13 @@ import L from "leaflet";
 import { request } from "../api.js";
 
 const missions = ref([]);
+const missionTotal = ref(0);
 const selectedId = ref(null);
 const detail = ref(null); // { id, waypoints, started_at, ended_at, status }
 const samples = ref([]);
 const loading = ref(false);
+const loadingMore = ref(false);
+const PAGE_SIZE = 50;
 
 // Replay state
 const playing = ref(false);
@@ -51,13 +54,29 @@ function formatTimestamp(ms) {
 async function loadMissions() {
   loading.value = true;
   try {
-    const res = await request("/api/missions");
+    const res = await request(`/api/missions?limit=${PAGE_SIZE}&offset=0`);
     const data = await res.json();
     missions.value = data.missions || [];
+    missionTotal.value = data.total || 0;
   } catch (err) {
     alert(err.message);
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadMoreMissions() {
+  if (loadingMore.value || missions.value.length >= missionTotal.value) return;
+  loadingMore.value = true;
+  try {
+    const res = await request(`/api/missions?limit=${PAGE_SIZE}&offset=${missions.value.length}`);
+    const data = await res.json();
+    missions.value = [...missions.value, ...(data.missions || [])];
+    missionTotal.value = data.total || missions.value.length;
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    loadingMore.value = false;
   }
 }
 
@@ -244,6 +263,11 @@ onUnmounted(() => {
           </div>
           <div class="mission-meta-sub">{{ m.sample_count }}개 샘플</div>
         </div>
+        <div v-if="missions.length < missionTotal" class="load-more">
+          <button class="btn btn-ghost btn-sm" :disabled="loadingMore" @click="loadMoreMissions">
+            {{ loadingMore ? "불러오는 중..." : `더 보기 (${missions.length}/${missionTotal})` }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -348,6 +372,13 @@ onUnmounted(() => {
   font-size: 0.75rem;
   color: var(--text-secondary);
   margin-top: 0.2rem;
+}
+
+.load-more {
+  display: flex;
+  justify-content: center;
+  padding: 0.75rem;
+  border-top: 1px solid var(--border-primary);
 }
 
 .missions-main {
