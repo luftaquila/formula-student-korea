@@ -67,8 +67,14 @@ the Store's signed channel the same way any Ubuntu Core device does.
    skipping Wi-Fi setup, restarts the `pilot` daemon, and exits 0. This
    graceful no-op matters for first boot: a failing configure hook would
    abort the seed change and leave the rover stuck in install mode.
-2. Otherwise, reads `wifi-ssid` / `wifi-password` (defaults: `default` /
-   `password`).
+2. Otherwise, reads `wifi-ssid` / `wifi-password`, falling back to
+   `default` / `password` when either key is unset or empty. The hook
+   only emits a `wifis:` block; the ethernet path is handled by the
+   snapd-provided `/etc/netplan/00-snapd-config.yaml`, which matches
+   `en*`/`eth*` globs (Pi 5's `end0` is covered there). Re-declaring
+   ethernet in the 90 file was both redundant and dangerous — any
+   invalid YAML here wipes ethernet along with Wi-Fi from the merged
+   netplan output.
 3. Rewrites `/etc/netplan/90-fsk-wifi.yaml` only when the content changes,
    then runs `netplan apply`. Skipping identical writes avoids yanking the
    link on unrelated `snap set` calls.

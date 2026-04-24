@@ -16,18 +16,29 @@ fi
 # Wi-Fi: snap-set values take precedence; defaults match the team's portable AP.
 # Change at any time with:
 #   sudo snap set fsk-rover-pilot wifi-ssid=<ssid> wifi-password=<pw>
-SSID=$(snapctl get wifi-ssid || printf '%s' 'default')
-PASS=$(snapctl get wifi-password || printf '%s' 'password')
+#
+# `snapctl get` on an unset key exits 0 with an empty string — the old
+# `|| printf default` fallback never triggered, so `snap set server-url=…`
+# (without any wifi-* key) wrote a netplan with SSID="" / password="".
+# That is invalid YAML for wpa_supplicant, and netplan generate/apply
+# then fails for the whole merged config, which wipes the ethernet
+# configuration from the generated networkd units and leaves the rover
+# with no IP at all after the next reboot. Guard on empty explicitly.
+SSID=$(snapctl get wifi-ssid)
+[ -n "$SSID" ] || SSID='default'
+PASS=$(snapctl get wifi-password)
+[ -n "$PASS" ] || PASS='password'
 
+# Only emit the wifis block here. The ethernet path is handled by the
+# snapd-provided `00-snapd-config.yaml` which matches `en*`/`eth*` globs
+# — that covers Pi 5's `end0` automatically. Re-declaring eth0 here was
+# both redundant and risky: any syntax error in this file takes down
+# that whole merged netplan and strands ethernet along with Wi-Fi.
 TMP=$(mktemp)
 cat > "$TMP" <<EOF
 network:
   version: 2
   renderer: networkd
-  ethernets:
-    eth0:
-      dhcp4: true
-      optional: true
   wifis:
     wlan0:
       dhcp4: true
