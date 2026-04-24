@@ -35,16 +35,17 @@ has the full sequence including secret injection.
 
 1. Build the image — `gh workflow run "Build Rover Image"` and download the
    `rover-ubuntu-core-image` artifact.
-2. Flash to SD, boot the Pi. The image ships a pre-seeded `fsk` user whose
-   `authorized_keys` comes from <https://github.com/luftaquila.keys> and a
-   default Wi-Fi profile (`default` / `password`).
-3. `ssh fsk@<rover>` — no console-conf or Ubuntu One prompt.
-4. `sudo snap connect fsk-rover-pilot:network-setup-control` (for Wi-Fi
-   override via `snap set wifi-*`). The Pi 5 cooling fan is forced to
-   100% at the firmware level by the image — no snap plug needed.
-5. `sudo tailscale up` and
-   `sudo snap set fsk-rover-pilot internal-secret=… server-url=… ntrip-username=…`
-   (NTRIP host/port/password are hard-coded to NGII; mountpoint auto-selects).
+2. Flash to SD, boot the Pi. The image ships a pre-seeded `fsk` user
+   whose `authorized_keys` comes from <https://github.com/luftaquila.keys>,
+   a default Wi-Fi profile (`default` / `password`), and firmware-pinned
+   100% fan so the board doesn't overheat before login.
+3. From the repo checkout on the admin workstation, run
+   `scripts/provision-rover.sh <rover-ip>` — one shot that SSHes in,
+   connects the non-auto-connected plugs (`network-setup-control`,
+   `raw-usb`), reads `INTERNAL_SECRET`/`PUBLIC_URL` from `.env` to push
+   `snap set internal-secret server-url ntrip-username`, and restarts
+   the pilot daemon. Idempotent — safe to re-run after `.env` rotations.
+4. (Optional, only for off-LAN access) `ssh fsk@<rover> sudo tailscale up --auth-key=TSKEY…`.
 
 ## Ongoing development
 
@@ -200,5 +201,6 @@ snap publish.
 | `snap/hooks/configure` | Wi-Fi netplan writer + daemon restart |
 | `snapcraft.yaml` | Snap confinement and plugs |
 | `image/` | Ubuntu Core image assembly, model + system-user templates |
+| `../../scripts/provision-rover.sh` | One-shot post-flash provisioning from the admin machine |
 | `docs/provisioning.md` | New-rover bring-up procedure |
 | `docs/ubuntu-core.md` | Packaging/confinement rationale |

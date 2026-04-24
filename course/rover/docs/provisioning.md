@@ -31,77 +31,63 @@ The image does **not** include:
    `fsk` user from the bundled system-user assertion and the pilot snap's
    configure hook writes `/etc/netplan/90-fsk-wifi.yaml` with the default
    Wi-Fi profile. Within ~60s the rover has an IP on either `eth0` (DHCP) or
-   `wlan0` (joining the `default` / `password` AP).
+   `wlan0` (joining the `default` / `password` AP). Pi 5 cooling fan runs
+   at 100% from power-on (firmware-level via `dtparam=fan_temp*`) so no
+   cooling action is needed before login.
 
-3. SSH in from any machine whose public key is published at
-   <https://github.com/luftaquila.keys>:
-
-   ```bash
-   ssh fsk@<rover-ip>
-   ```
-
-4. Connect `network-setup-control` (it is not auto-connected on a
-   strict-confinement snap). Do this **before** any `snap set wifi-*` —
-   the `configure` hook silently no-ops without it and the new Wi-Fi
-   settings silently never reach netplan:
+3. From the admin workstation that holds the repo (and has
+   [`luftaquila.keys`](https://github.com/luftaquila.keys) installed as
+   SSH trust), run the one-shot provisioning script:
 
    ```bash
-   sudo snap connect fsk-rover-pilot:network-setup-control
+   scripts/provision-rover.sh <rover-ip> [--ntrip-username=<id>]
    ```
 
-   Verify with `snap connections fsk-rover-pilot`. Pi 5 cooling fan
-   needs no plug — it is pinned to 100% at the firmware level via
-   `dtparam=fan_temp*` in `ubuntu-seed/config.txt`, written by the
-   image build workflow.
+   This SSHes in as `fsk`, connects the non-auto-connected plugs
+   (`network-setup-control`, `raw-usb`), reads `INTERNAL_SECRET` and
+   `PUBLIC_URL` from the repo's `.env` to set `internal-secret` +
+   `server-url`, applies `ntrip-username` (defaults to the team account
+   but can be overridden per rover), and restarts the pilot daemon. The
+   script is idempotent — safe to re-run whenever the `.env` rotates
+   or a plug needs re-connecting.
 
-5. (Recommended) Switch the rover to a non-default Wi-Fi once it is on a
-   stable network (requires step 4):
+4. (Recommended) Switch the rover to a non-default Wi-Fi once it is on a
+   stable network. The provisioning script in step 3 already connected
+   `network-setup-control`, so this takes effect immediately:
 
    ```bash
-   sudo snap set fsk-rover-pilot wifi-ssid=<ssid> wifi-password=<pw>
+   ssh fsk@<rover-ip> sudo snap set fsk-rover-pilot \
+       wifi-ssid=<ssid> wifi-password=<pw>
    ```
 
-6. Bring up Tailscale:
+5. Bring up Tailscale (optional — only needed for remote access across
+   networks; LAN-only operation works without it):
 
    ```bash
-   sudo tailscale up --auth-key=TSKEY...
+   ssh fsk@<rover-ip> sudo tailscale up --auth-key=TSKEY...
    ```
 
-7. Apply Pilot secrets (these are deliberately not baked into the image):
+6. Confirm the daemon is healthy:
 
    ```bash
-   sudo snap set fsk-rover-pilot internal-secret=YOUR_SECRET
-   sudo snap set fsk-rover-pilot server-url=https://test.luftaquila.io/course
-   sudo snap set fsk-rover-pilot ros-domain-id=0
+   ssh fsk@<rover-ip> snap services fsk-rover-pilot
+   ssh fsk@<rover-ip> sudo snap logs fsk-rover-pilot.pilot -n 50
    ```
 
-8. Apply the NTRIP operator login. Caster host (`www.gnssdata.or.kr`),
-   port (`2101`), and password (`gnss`) are hard-coded in `gps_node.py`
-   because the rover only ever targets NGII and the shared RTK password is
-   a protocol constant. Mountpoint is auto-selected at runtime — `gps_node`
-   fetches the caster's source table after the first 3D fix and picks the
-   nearest RTCM 3.2 base station:
+   `gps_node`, `battery_node`, `navigator_node`, and `bridge_node` come
+   up under any conditions. `motor_node` and `spray_node` need their
+   GPIO hardware attached (MDD10A + servos) and stay in a restart loop
+   otherwise — that is expected on a bench test without the drivetrain.
+
+7. Pin the rover to the current `fsk-rover-pilot` revision for the week
+   leading up to a competition so an automatic refresh can't ship a
+   candidate build into the field:
 
    ```bash
-   sudo snap set fsk-rover-pilot ntrip-username=YOUR_NGII_LOGIN
+   ssh fsk@<rover-ip> sudo snap refresh --hold=168h fsk-rover-pilot
    ```
 
-9. Confirm the daemon restarted with the new values:
-
-   ```bash
-   snap services fsk-rover-pilot
-   snap logs fsk-rover-pilot.pilot -n 50
-   ```
-
-10. Pin the rover to the current `fsk-rover-pilot` revision for the week
-    leading up to a competition so an automatic refresh can't ship a
-    candidate build into the field:
-
-    ```bash
-    sudo snap refresh --hold=168h fsk-rover-pilot
-    ```
-
-11. From this point onward, manage the rover through Tailscale-based SSH.
+8. From this point onward, manage the rover through Tailscale-based SSH.
 
 ## Recovering a Rover With Unreachable Wi-Fi
 

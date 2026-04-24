@@ -58,6 +58,10 @@ make deploy PROFILE=local      # Local dev (localhost:9000)
 make backup                    # → ./backups/fsk-backup-YYYYMMDD-HHMMSS.zip
 make backup DEST=/mnt/nas      # Custom destination
 make restore ZIP=backups/fsk-backup-20260323-120000.zip
+
+# Rover bring-up after a fresh image flash (reads .env, connects plugs,
+# applies snap set, restarts pilot; idempotent)
+scripts/provision-rover.sh <rover-ip> [--ntrip-username=<id>]
 ```
 
 Prerequisites: podman machine, `.env` from `.env.example` (min: `JWT_SECRET`, `INTERNAL_SECRET`).
