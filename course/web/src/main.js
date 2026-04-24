@@ -7,9 +7,11 @@ import { initTheme } from "@shared/theme-init.js";
 import { initTestBanner } from "@shared/test-banner.js";
 
 import MapView from "./views/MapView.vue";
+import MissionsView from "./views/MissionsView.vue";
 
 const routes = [
   { path: "/", component: MapView },
+  { path: "/missions", component: MissionsView },
 ];
 
 const router = createRouter({

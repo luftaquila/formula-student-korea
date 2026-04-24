@@ -13,6 +13,8 @@ const newCourseName = ref("");
 const currentSide = ref("left");
 const roverLoading = ref(false);
 const coneFilter = ref("all");
+const CONE_FILTER_LABELS = { all: "전체", left: "L", center: "M", right: "R" };
+const coneFilterLabel = computed(() => CONE_FILTER_LABELS[coneFilter.value] || coneFilter.value);
 const selectedConeId = ref(null);
 const multiSelectedIds = ref(new Set());
 const editLat = ref("");
@@ -25,6 +27,7 @@ const editCourseName = ref("");
 const roverMode = ref("none"); // none | path-pick | path-ready | executing | stopped | manual
 const pathWaypoints = ref([]);
 const executedIndex = ref(0);
+const resumeStartIdx = ref(0); // operator-chosen resume index (stopped mode)
 const pathProgress = ref(0);
 const pathDistance = ref(0);
 const manualThrottle = ref(0);
@@ -37,16 +40,52 @@ const roverStatus = ref({
   fix_status: null,
   nav_state: null,
   ntrip_connected: null,
+  last_disconnect_reason: null,
+  last_disconnect_at: 0,
+  last_spray_result: null,
+  battery: null,
 });
 let manualFailCount = 0;
 
+// sprayResults: Map<globalWaypointIdx, { outcome, at }>
+const sprayResults = ref(new Map());
+let sprayMarkers = {};
+
+// Pre-flight checklist modal state
+const showPreflight = ref(false);
+const preflightForce = ref(false);
+const preflightMode = ref("execute"); // "execute" | "resume"
+
+const SPRAY_OUTCOME_SYMBOL = { success: "✓", cancelled: "⚠", timeout: "✕" };
+const SPRAY_OUTCOME_COLOR = { success: "#22c55e", cancelled: "#f59e0b", timeout: "#ef4444" };
+
+const DISCONNECT_REASON_LABEL = {
+  sse_closed: "SSE 끊김",
+  write_failed: "전송 실패",
+  replaced: "다른 세션으로 교체됨",
+};
+
 const roverStatusText = computed(() => {
   const s = roverStatus.value;
-  if (!s.connected) return "로버 미연결";
+  if (!s.connected) {
+    if (s.last_disconnect_reason) {
+      const label = DISCONNECT_REASON_LABEL[s.last_disconnect_reason] || s.last_disconnect_reason;
+      if (s.last_disconnect_at) {
+        const ago = Math.max(0, Math.round((Date.now() - s.last_disconnect_at) / 1000));
+        return `로버 미연결 · ${label} (${ago}s 전)`;
+      }
+      return `로버 미연결 · ${label}`;
+    }
+    return "로버 미연결";
+  }
   const parts = [];
   if (s.fix_status) parts.push(s.fix_status.toUpperCase());
   if (s.nav_state) parts.push(s.nav_state);
   if (s.ntrip_connected !== null) parts.push(`NTRIP ${s.ntrip_connected ? "ok" : "off"}`);
+  if (s.battery && s.battery.percent != null) {
+    const v = s.battery.voltage != null ? ` ${s.battery.voltage.toFixed(1)}V` : "";
+    parts.push(`🔋 ${s.battery.percent}%${v}`);
+  }
   if (s.last_position_at) {
     const ago = Math.max(0, Math.round((Date.now() - s.last_position_at) / 1000));
     parts.push(`pos ${ago}s`);
@@ -54,9 +93,13 @@ const roverStatusText = computed(() => {
   return parts.join(" · ");
 });
 
+const BATTERY_WARN_PERCENT = 30;
+
 const roverStatusClass = computed(() => {
   const s = roverStatus.value;
   if (!s.connected) return "rover-badge-off";
+  const lowBattery = s.battery && s.battery.percent != null && s.battery.percent <= BATTERY_WARN_PERCENT;
+  if (lowBattery) return "rover-badge-warn";
   if (s.fix_status === "rtk_fixed" && s.ntrip_connected !== false) return "rover-badge-ok";
   return "rover-badge-warn";
 });
@@ -101,6 +144,10 @@ let roverMarker = null;
 let pathLine = null;
 let pathStartMarker = null;
 let pathEndMarker = null;
+let pathStart = null; // { lat, lng } — preserved across compute/execute/resume for re-rendering
+let pathCumDist = []; // cumulative distance to each waypoint from start (length = pathWaypoints.value.length)
+let pathTotalDist = 0; // total distance including return-to-start segment
+let executionStartIdx = 0; // global waypoint index the current execute/resume call started from
 let eventSource = null;
 let controlInterval = null;
 let suppressRebuild = false;
@@ -129,6 +176,28 @@ const pathBtnClass = computed(() => {
   if (roverMode.value === "path-pick") return "btn-danger";
   return "btn-ghost";
 });
+// Pre-flight checklist derived from current rover state + planned path.
+const preflightChecks = computed(() => {
+  const s = roverStatus.value;
+  const first = pathWaypoints.value[0];
+  const firstDist = first && s.last_position
+    ? haversine({ lat: s.last_position.lat, lng: s.last_position.lng }, first)
+    : null;
+  const batteryOk = !s.battery || s.battery.percent == null || s.battery.percent > BATTERY_WARN_PERCENT;
+  return [
+    { key: "connected", label: "로버 SSE 연결", ok: !!s.connected },
+    { key: "fix", label: "RTK Fixed GPS", ok: s.fix_status === "rtk_fixed",
+      detail: s.fix_status ? s.fix_status.toUpperCase() : "알 수 없음" },
+    { key: "ntrip", label: "NTRIP 연결", ok: s.ntrip_connected === true,
+      detail: s.ntrip_connected === null ? "알 수 없음" : (s.ntrip_connected ? "ok" : "off") },
+    { key: "firstwp", label: "첫 웨이포인트 거리", ok: firstDist != null && firstDist < 5,
+      detail: firstDist != null ? `${firstDist.toFixed(1)} m` : "위치 미수신" },
+    { key: "battery", label: "배터리", ok: batteryOk,
+      detail: s.battery && s.battery.percent != null ? `${s.battery.percent}%` : "미수신" },
+  ];
+});
+const preflightAllOk = computed(() => preflightChecks.value.every((c) => c.ok));
+
 const activeCones = computed(() => conesMap.value[activeCourseId.value] || []);
 const filteredCones = computed(() => {
   if (coneFilter.value === "all") return activeCones.value;
@@ -531,6 +600,106 @@ async function deleteCourse(id) {
   } catch (err) { alert(err.message); }
 }
 
+/* ── Rover log viewer ─────────────────────────────── */
+const showLogs = ref(false);
+const logEntries = ref([]);
+const logUploadedAt = ref(0);
+const logFetching = ref(false);
+
+async function openLogs() {
+  showLogs.value = true;
+  await refreshLogs();
+}
+
+async function refreshLogs() {
+  try {
+    const res = await request("/api/rover/logs");
+    const data = await res.json();
+    logEntries.value = data.entries || [];
+    logUploadedAt.value = data.uploaded_at || 0;
+  } catch (err) { alert(err.message); }
+}
+
+async function requestLogs() {
+  logFetching.value = true;
+  try {
+    await request("/api/rover/logs/fetch", { method: "POST" });
+    // Wait briefly for rover to upload, then refresh.
+    setTimeout(async () => {
+      await refreshLogs();
+      logFetching.value = false;
+    }, 1500);
+  } catch (err) {
+    logFetching.value = false;
+    alert(err.message);
+  }
+}
+
+function formatLogTime(ms) {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleTimeString("ko-KR", { hour12: false });
+}
+
+function downloadLogs() {
+  const text = logEntries.value
+    .map((e) => `${formatLogTime(e.t)} [${e.level}] [${e.node}] ${e.msg}`)
+    .join("\n");
+  const blob = new Blob([text], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `rover-log-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ── Snapshots ────────────────────────────────────── */
+const showSnapshots = ref(false);
+const snapshotList = ref([]);
+const snapshotReason = ref("");
+
+async function openSnapshots() {
+  if (!activeCourseId.value) return;
+  snapshotReason.value = "";
+  showSnapshots.value = true;
+  await loadSnapshots();
+}
+
+async function loadSnapshots() {
+  if (!activeCourseId.value) return;
+  try {
+    const res = await request(`/api/courses/${activeCourseId.value}/snapshots`);
+    const data = await res.json();
+    snapshotList.value = data.snapshots || [];
+  } catch (err) { alert(err.message); }
+}
+
+async function createSnapshot() {
+  if (!activeCourseId.value) return;
+  try {
+    await request(`/api/courses/${activeCourseId.value}/snapshots`, {
+      method: "POST",
+      body: JSON.stringify({ reason: snapshotReason.value || null }),
+    });
+    snapshotReason.value = "";
+    await loadSnapshots();
+  } catch (err) { alert(err.message); }
+}
+
+async function restoreSnapshot(sid) {
+  if (!activeCourseId.value) return;
+  if (!confirm("현재 콘을 모두 지우고 이 스냅샷 상태로 되돌립니다. 계속하시겠습니까?\n(되돌리기 직전 상태가 자동으로 스냅샷됩니다.)")) return;
+  try {
+    await request(`/api/courses/${activeCourseId.value}/snapshots/${sid}/restore`, { method: "POST" });
+    await loadSnapshots();
+    showSnapshots.value = false;
+  } catch (err) { alert(err.message); }
+}
+
+function formatSnapshotTime(ms) {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleString("ko-KR", { hour12: false });
+}
+
 /* ── Cone CRUD ────────────────────────────────────── */
 async function addCone(lat, lng, side) {
   if (!activeCourseId.value) return;
@@ -683,20 +852,32 @@ function computePath(startLat, startLng) {
   // Step 2: 2-opt improvement (distance + turn penalty)
   const optimized = twoOpt(route, start);
 
+  pathStart = { lat: startLat, lng: startLng };
   pathWaypoints.value = optimized;
+  renderPath();
 
-  // Compute total distance
-  let dist = haversine(start, optimized[0]);
-  for (let i = 0; i < optimized.length - 1; i++) dist += haversine(optimized[i], optimized[i + 1]);
-  dist += haversine(optimized[optimized.length - 1], start);
-  pathDistance.value = dist;
+  roverMode.value = "path-ready";
+}
 
-  // Draw on map
+function renderPath() {
+  if (!map || !pathStart || pathWaypoints.value.length === 0) return;
+
+  // Cumulative distance from start to each waypoint + total (including return-to-start)
+  pathCumDist = new Array(pathWaypoints.value.length);
+  let acc = haversine(pathStart, pathWaypoints.value[0]);
+  pathCumDist[0] = acc;
+  for (let i = 1; i < pathWaypoints.value.length; i++) {
+    acc += haversine(pathWaypoints.value[i - 1], pathWaypoints.value[i]);
+    pathCumDist[i] = acc;
+  }
+  pathTotalDist = acc + haversine(pathWaypoints.value[pathWaypoints.value.length - 1], pathStart);
+  pathDistance.value = pathTotalDist;
+
   if (pathLine) map.removeLayer(pathLine);
   if (pathStartMarker) map.removeLayer(pathStartMarker);
   if (pathEndMarker) map.removeLayer(pathEndMarker);
 
-  const fullPath = [{ lat: startLat, lng: startLng }, ...optimized, { lat: startLat, lng: startLng }];
+  const fullPath = [pathStart, ...pathWaypoints.value, pathStart];
   const stops = [[34,197,94],[234,179,8],[249,115,22],[239,68,68]]; // green→yellow→orange→red
   const group = L.layerGroup();
   for (let i = 0; i < fullPath.length - 1; i++) {
@@ -713,67 +894,117 @@ function computePath(startLat, startLng) {
   }
   pathLine = group.addTo(map);
 
-  function pathLabel(text, latlng, color) {
-    return L.marker(latlng, {
-      icon: L.divIcon({
-        className: "",
-        html: `<div style="width:22px;height:22px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:11px;font-weight:800;line-height:1;">${text}</span></div>`,
-        iconSize: [22, 22], iconAnchor: [11, 11],
-      }),
-      interactive: false, zIndexOffset: 900,
-    });
-  }
+  const first = pathWaypoints.value[0];
+  pathStartMarker = pathLabel("S", [first.lat, first.lng], "#22c55e").addTo(map);
+  pathEndMarker = pathLabel("E", [pathStart.lat, pathStart.lng], "#ef4444").addTo(map);
+}
 
-  pathStartMarker = pathLabel("S", [optimized[0].lat, optimized[0].lng], "#22c55e").addTo(map);
-  pathEndMarker = pathLabel("E", [startLat, startLng], "#ef4444").addTo(map);
+function pathLabel(text, latlng, color) {
+  return L.marker(latlng, {
+    icon: L.divIcon({
+      className: "",
+      html: `<div style="width:22px;height:22px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:11px;font-weight:800;line-height:1;">${text}</span></div>`,
+      iconSize: [22, 22], iconAnchor: [11, 11],
+    }),
+    interactive: false, zIndexOffset: 900,
+  });
+}
 
-  roverMode.value = "path-ready";
+function moveWaypoint(idx, delta) {
+  const target = idx + delta;
+  if (target < 0 || target >= pathWaypoints.value.length) return;
+  const next = [...pathWaypoints.value];
+  [next[idx], next[target]] = [next[target], next[idx]];
+  pathWaypoints.value = next;
+  renderPath();
 }
 
 function clearPath() {
   if (pathLine) { map.removeLayer(pathLine); pathLine = null; }
   if (pathStartMarker) { map.removeLayer(pathStartMarker); pathStartMarker = null; }
   if (pathEndMarker) { map.removeLayer(pathEndMarker); pathEndMarker = null; }
+  pathStart = null;
   pathWaypoints.value = [];
+  pathCumDist = [];
+  pathTotalDist = 0;
+  executionStartIdx = 0;
   executedIndex.value = 0;
+  resumeStartIdx.value = 0;
   pathProgress.value = 0;
   pathDistance.value = 0;
+  clearSprayMarkers();
   if (roverMode.value !== "manual") roverMode.value = "none";
 }
 
 function onPathBtn() {
   if (roverMode.value === "executing") return; // 실행 중에는 무시
-  if (roverMode.value === "stopped") { resumePath(); return; }
-  if (roverMode.value === "path-ready") { executePath(); return; }
+  if (roverMode.value === "stopped") { openPreflight("resume"); return; }
+  if (roverMode.value === "path-ready") { openPreflight("execute"); return; }
   if (roverMode.value === "path-pick") { clearPath(); return; }
   if (roverMode.value === "none") { startPathPick(); }
 }
 
-async function executePath() {
+function openPreflight(mode) {
+  preflightMode.value = mode;
+  preflightForce.value = false;
+  showPreflight.value = true;
+}
+
+function cancelPreflight() {
+  showPreflight.value = false;
+}
+
+async function confirmPreflight() {
+  const force = preflightForce.value && !preflightAllOk.value;
+  showPreflight.value = false;
+  if (preflightMode.value === "resume") {
+    await resumePath({ force });
+  } else {
+    await executePath({ force });
+  }
+}
+
+async function executePath(opts = {}) {
   if (pathWaypoints.value.length === 0) return;
   executedIndex.value = 0;
+  executionStartIdx = 0;
   pathProgress.value = 0;
+  clearSprayMarkers();
   roverMode.value = "executing";
   try {
-    await request("/api/rover/execute", {
+    const res = await request("/api/rover/execute", {
       method: "POST",
-      body: JSON.stringify({ waypoints: pathWaypoints.value }),
+      body: JSON.stringify({ waypoints: pathWaypoints.value, force: !!opts.force }),
     });
+    const data = await res.json();
+    if (Array.isArray(data.waypoints) && data.waypoints.length !== pathWaypoints.value.length) {
+      pathWaypoints.value = data.waypoints;
+      renderPath();
+    }
   } catch (err) {
     roverMode.value = "path-ready";
     alert(err.message);
   }
 }
 
-async function resumePath() {
-  const remaining = pathWaypoints.value.slice(executedIndex.value);
+async function resumePath(opts = {}) {
+  const startIdx = Math.max(0, Math.min(resumeStartIdx.value, pathWaypoints.value.length));
+  const prefix = pathWaypoints.value.slice(0, startIdx);
+  const remaining = pathWaypoints.value.slice(startIdx);
   if (remaining.length === 0) { clearPath(); return; }
+  executionStartIdx = startIdx;
+  executedIndex.value = startIdx;
   roverMode.value = "executing";
   try {
-    await request("/api/rover/execute", {
+    const res = await request("/api/rover/execute", {
       method: "POST",
-      body: JSON.stringify({ waypoints: remaining }),
+      body: JSON.stringify({ waypoints: remaining, force: !!opts.force }),
     });
+    const data = await res.json();
+    if (Array.isArray(data.waypoints) && data.waypoints.length !== remaining.length) {
+      pathWaypoints.value = [...prefix, ...data.waypoints];
+      renderPath();
+    }
   } catch (err) {
     roverMode.value = "stopped";
     alert(err.message);
@@ -781,22 +1012,40 @@ async function resumePath() {
 }
 
 function updatePathProgress(lat, lng) {
-  if (pathWaypoints.value.length === 0) return;
-  // Find nearest waypoint to rover position
-  let minDist = Infinity, minIdx = 0;
-  for (let i = 0; i < pathWaypoints.value.length; i++) {
-    const d = haversine({ lat, lng }, pathWaypoints.value[i]);
-    if (d < minDist) { minDist = d; minIdx = i; }
+  if (pathWaypoints.value.length === 0 || pathTotalDist === 0) return;
+  // Interpolate progress using cumulative segment distance. executedIndex is
+  // advanced monotonically by the rover:waypoint SSE event, never by proximity.
+  const idx = executedIndex.value;
+  const prevPoint = idx === 0 ? pathStart : pathWaypoints.value[idx - 1];
+  const prevCum = idx === 0 ? 0 : pathCumDist[idx - 1];
+  const nextPoint = idx < pathWaypoints.value.length ? pathWaypoints.value[idx] : pathStart;
+  const segLen = haversine(prevPoint, nextPoint);
+  const traversed = segLen > 0 ? Math.min(segLen, haversine(prevPoint, { lat, lng })) : 0;
+  const walked = prevCum + traversed;
+  pathProgress.value = Math.min(100, Math.round((walked / pathTotalDist) * 100));
+}
+
+function onWaypointReached(localIdx) {
+  // Navigator reports local indices into the waypoint list it received; map
+  // those back onto the global list and advance monotonically.
+  const globalIdx = executionStartIdx + localIdx;
+  if (globalIdx + 1 > executedIndex.value && globalIdx < pathWaypoints.value.length) {
+    executedIndex.value = globalIdx + 1;
+    if (pathTotalDist > 0) {
+      const walked = pathCumDist[executedIndex.value - 1] ?? pathTotalDist;
+      pathProgress.value = Math.min(100, Math.round((walked / pathTotalDist) * 100));
+    }
   }
-  executedIndex.value = minIdx;
-  pathProgress.value = Math.round(((minIdx + 1) / pathWaypoints.value.length) * 100);
 }
 
 /* ── Emergency stop ───────────────────────────────── */
 async function emergencyStop() {
   stopManualControl();
   try { await request("/api/rover/stop", { method: "POST" }); } catch (err) { alert(err.message); }
-  if (roverMode.value === "executing") roverMode.value = "stopped";
+  if (roverMode.value === "executing") {
+    roverMode.value = "stopped";
+    resumeStartIdx.value = executedIndex.value; // default to "where the rover left off"
+  }
 }
 
 /* ── Manual control ───────────────────────────────── */
@@ -928,6 +1177,62 @@ function connectSSE() {
       stopManualControl();
     }
   });
+
+  eventSource.addEventListener("rover:waypoint", (e) => {
+    const data = JSON.parse(e.data);
+    if (roverMode.value === "executing" && Number.isInteger(data?.index)) {
+      onWaypointReached(data.index);
+    }
+  });
+
+  eventSource.addEventListener("rover:spray", (e) => {
+    const data = JSON.parse(e.data);
+    if (!Number.isInteger(data?.waypoint) || !data.outcome) return;
+    onSprayResult(data.waypoint, data.outcome);
+  });
+}
+
+function onSprayResult(localIdx, outcome) {
+  // Navigator/spray_node publish local indices; translate to the global list.
+  const globalIdx = executionStartIdx + localIdx;
+  if (globalIdx < 0 || globalIdx >= pathWaypoints.value.length) return;
+  sprayResults.value.set(globalIdx, { outcome, at: Date.now() });
+  // Trigger reactive update for Map
+  sprayResults.value = new Map(sprayResults.value);
+  renderSprayMarkers();
+}
+
+function renderSprayMarkers() {
+  if (!map) return;
+  for (const [idx, marker] of Object.entries(sprayMarkers)) {
+    if (!sprayResults.value.has(Number(idx))) {
+      map.removeLayer(marker);
+      delete sprayMarkers[idx];
+    }
+  }
+  for (const [idx, result] of sprayResults.value.entries()) {
+    if (idx >= pathWaypoints.value.length) continue;
+    const wp = pathWaypoints.value[idx];
+    const color = SPRAY_OUTCOME_COLOR[result.outcome] || "#888";
+    const symbol = SPRAY_OUTCOME_SYMBOL[result.outcome] || "?";
+    if (sprayMarkers[idx]) map.removeLayer(sprayMarkers[idx]);
+    sprayMarkers[idx] = L.marker([wp.lat, wp.lng], {
+      icon: L.divIcon({
+        className: "",
+        html: `<div style="width:18px;height:18px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#fff;">${symbol}</div>`,
+        iconSize: [18, 18], iconAnchor: [9, 22], // above the waypoint
+      }),
+      interactive: false, zIndexOffset: 950,
+    }).addTo(map);
+  }
+}
+
+function clearSprayMarkers() {
+  for (const marker of Object.values(sprayMarkers)) {
+    try { map.removeLayer(marker); } catch {}
+  }
+  sprayMarkers = {};
+  sprayResults.value = new Map();
 }
 
 async function fetchRoverStatus() {
@@ -971,6 +1276,93 @@ onUnmounted(() => {
       <!-- Path pick overlay -->
       <div v-if="roverMode === 'path-pick'" class="map-overlay">지도에서 시작점을 클릭하세요</div>
 
+      <!-- Rover log viewer modal -->
+      <div v-if="showLogs" class="preflight-backdrop" @click.self="showLogs = false">
+        <div class="preflight-modal logs-modal">
+          <h3>로버 로그</h3>
+          <div class="logs-toolbar">
+            <button class="btn btn-primary btn-sm" :disabled="logFetching" @click="requestLogs">
+              {{ logFetching ? '가져오는 중...' : '로버에서 가져오기' }}
+            </button>
+            <button class="btn btn-ghost btn-sm" @click="refreshLogs">↻ 새로고침</button>
+            <button class="btn btn-ghost btn-sm" :disabled="logEntries.length === 0" @click="downloadLogs">↓ 다운로드</button>
+            <span class="logs-meta">
+              {{ logEntries.length }}줄
+              <template v-if="logUploadedAt">· {{ formatSnapshotTime(logUploadedAt) }}</template>
+            </span>
+          </div>
+          <div class="logs-view">
+            <div v-if="logEntries.length === 0" class="empty-msg">업로드된 로그가 없습니다. "로버에서 가져오기"를 눌러주세요.</div>
+            <div
+              v-for="(e, i) in logEntries" :key="i"
+              :class="['log-row', `log-${(e.level || '').toLowerCase()}`]"
+            >
+              <span class="log-time">{{ formatLogTime(e.t) }}</span>
+              <span class="log-level">{{ e.level }}</span>
+              <span class="log-node">{{ e.node }}</span>
+              <span class="log-msg">{{ e.msg }}</span>
+            </div>
+          </div>
+          <div class="preflight-actions">
+            <button class="btn btn-ghost btn-sm" @click="showLogs = false">닫기</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Snapshots modal -->
+      <div v-if="showSnapshots" class="preflight-backdrop" @click.self="showSnapshots = false">
+        <div class="preflight-modal snapshots-modal">
+          <h3>{{ activeCourse?.name }} 스냅샷</h3>
+          <div class="snapshot-create">
+            <input v-model="snapshotReason" placeholder="메모 (선택)" maxlength="200" />
+            <button class="btn btn-primary btn-sm" @click="createSnapshot">저장</button>
+          </div>
+          <div class="snapshot-list">
+            <div v-if="snapshotList.length === 0" class="empty-msg">스냅샷이 없습니다.</div>
+            <div v-for="s in snapshotList" :key="s.id" class="snapshot-item">
+              <div class="snapshot-top">
+                <span class="snapshot-time">{{ formatSnapshotTime(s.taken_at) }}</span>
+                <span class="snapshot-count">{{ s.cone_count }}개</span>
+              </div>
+              <div v-if="s.reason" class="snapshot-reason">{{ s.reason }}</div>
+              <div v-if="s.actor" class="snapshot-actor">{{ s.actor }}</div>
+              <div class="snapshot-actions">
+                <button class="btn btn-ghost btn-sm" @click="restoreSnapshot(s.id)">되돌리기</button>
+              </div>
+            </div>
+          </div>
+          <div class="preflight-actions">
+            <button class="btn btn-ghost btn-sm" @click="showSnapshots = false">닫기</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pre-flight checklist modal -->
+      <div v-if="showPreflight" class="preflight-backdrop" @click.self="cancelPreflight">
+        <div class="preflight-modal">
+          <h3>{{ preflightMode === 'resume' ? '재시작 전 점검' : '경로 실행 전 점검' }}</h3>
+          <ul class="preflight-list">
+            <li v-for="c in preflightChecks" :key="c.key" :class="['preflight-item', c.ok ? 'ok' : 'fail']">
+              <span class="preflight-mark">{{ c.ok ? '✓' : '✗' }}</span>
+              <span class="preflight-label">{{ c.label }}</span>
+              <span v-if="c.detail" class="preflight-detail">{{ c.detail }}</span>
+            </li>
+          </ul>
+          <label v-if="!preflightAllOk" class="preflight-override">
+            <input type="checkbox" v-model="preflightForce" />
+            경고를 이해했고, 강제 실행합니다
+          </label>
+          <div class="preflight-actions">
+            <button class="btn btn-ghost btn-sm" @click="cancelPreflight">취소</button>
+            <button
+              class="btn btn-primary btn-sm"
+              :disabled="!preflightAllOk && !preflightForce"
+              @click="confirmPreflight"
+            >{{ preflightMode === 'resume' ? '이어서 실행' : '실행' }}</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Rover status badge -->
       <div :class="['rover-badge', roverStatusClass]" :title="roverStatusText">
         <span class="rover-badge-dot"></span>
@@ -998,6 +1390,11 @@ onUnmounted(() => {
                 ↑
                 <input type="file" accept=".json" hidden @change="importCourse" />
               </label>
+              <button
+                class="btn btn-ghost btn-sm" title="스냅샷"
+                :disabled="!activeCourseId"
+                @click="openSnapshots"
+              >📸</button>
             </div>
             <div class="course-items">
               <div v-for="c in courses" :key="c.id" :class="['course-item', { active: c.id === activeCourseId }]">
@@ -1052,9 +1449,39 @@ onUnmounted(() => {
                   @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
                 >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
                 <button class="btn estop-btn-inline" @click="emergencyStop">비상정지</button>
+                <button class="btn btn-ghost btn-sm" @click="openLogs" title="로버 로그">📜 로그</button>
               </div>
               <div v-if="pathDistance > 0" class="path-info">
                 예상 주행 거리: {{ pathDistance >= 1000 ? (pathDistance / 1000).toFixed(2) + ' km' : pathDistance.toFixed(1) + ' m' }}
+              </div>
+
+              <!-- Waypoint reorder (path-ready only) -->
+              <div v-if="roverMode === 'path-ready' && pathWaypoints.length > 1" class="waypoint-list">
+                <div class="waypoint-list-header">
+                  <span>웨이포인트 ({{ pathWaypoints.length }})</span>
+                  <span class="waypoint-hint">↑↓로 순서 변경</span>
+                </div>
+                <div
+                  v-for="(wp, idx) in pathWaypoints" :key="`${wp.lat}-${wp.lng}-${idx}`"
+                  class="waypoint-item"
+                >
+                  <span class="waypoint-num">#{{ idx + 1 }}</span>
+                  <span class="waypoint-coord">{{ wp.lat.toFixed(5) }}, {{ wp.lng.toFixed(5) }}</span>
+                  <div class="waypoint-arrows">
+                    <button class="arrow-btn" :disabled="idx === 0" @click="moveWaypoint(idx, -1)" title="위로">↑</button>
+                    <button class="arrow-btn" :disabled="idx === pathWaypoints.length - 1" @click="moveWaypoint(idx, 1)" title="아래로">↓</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Resume waypoint selector (stopped only) -->
+              <div v-if="roverMode === 'stopped' && pathWaypoints.length > 0" class="resume-selector">
+                <label class="resume-label">재시작 위치:</label>
+                <select v-model.number="resumeStartIdx" class="resume-select">
+                  <option v-for="(wp, idx) in pathWaypoints" :key="idx" :value="idx">
+                    #{{ idx + 1 }}{{ idx < executedIndex ? ' (완료)' : '' }}{{ idx === executedIndex ? ' (다음)' : '' }}
+                  </option>
+                </select>
               </div>
 
               <!-- Manual joystick -->
@@ -1115,7 +1542,10 @@ onUnmounted(() => {
             <!-- Cone list -->
             <div class="panel-section cone-list-section">
               <div class="cone-list-header">
-                <h3>콘 목록 ({{ filteredCones.length }})</h3>
+                <h3>
+                  콘 목록 ({{ filteredCones.length }})
+                  <span v-if="coneFilter !== 'all'" class="filter-tag" :style="{ '--fc': SIDE_COLORS[coneFilter] }">{{ coneFilterLabel }}만</span>
+                </h3>
                 <div class="cone-filter">
                   <button :class="['filter-btn', { active: coneFilter === 'all' }]" @click="coneFilter = 'all'">전체</button>
                   <button :class="['filter-btn', { active: coneFilter === 'left' }]" @click="coneFilter = 'left'" :style="{ '--fc': SIDE_COLORS.left }">L</button>
@@ -1292,6 +1722,131 @@ onUnmounted(() => {
   font-family: "JetBrains Mono", monospace;
 }
 
+.preflight-backdrop {
+  position: absolute; inset: 0; z-index: 1000;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex; align-items: center; justify-content: center;
+  padding: 1rem;
+}
+.preflight-modal {
+  background: var(--bg-primary); color: var(--text-primary);
+  border: 1px solid var(--border-primary); border-radius: 10px;
+  padding: 1rem 1.25rem; min-width: 320px; max-width: 440px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+.preflight-modal h3 { margin: 0 0 0.75rem 0; }
+.preflight-list { list-style: none; padding: 0; margin: 0 0 0.75rem 0; }
+.preflight-item {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.4rem 0.25rem; border-bottom: 1px solid var(--border-primary);
+  font-size: 0.9rem;
+}
+.preflight-item:last-child { border-bottom: none; }
+.preflight-item.ok .preflight-mark { color: #22c55e; }
+.preflight-item.fail .preflight-mark { color: #ef4444; }
+.preflight-mark { font-weight: 800; width: 1em; text-align: center; }
+.preflight-label { flex: 1; }
+.preflight-detail { color: var(--text-secondary); font-family: "JetBrains Mono", monospace; font-size: 0.8rem; }
+.preflight-override {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.5rem; margin-bottom: 0.5rem;
+  background: color-mix(in srgb, #ef4444 12%, var(--bg-secondary));
+  border-radius: 6px; font-size: 0.85rem; color: var(--text-primary);
+}
+.preflight-override input { margin: 0; }
+.preflight-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+
+.logs-modal { max-width: 800px; width: 90vw; max-height: 85vh; display: flex; flex-direction: column; }
+.logs-toolbar {
+  display: flex; align-items: center; gap: 0.5rem;
+  margin-bottom: 0.5rem; flex-wrap: wrap;
+}
+.logs-meta { font-size: 0.75rem; color: var(--text-secondary); margin-left: auto; }
+.logs-view {
+  flex: 1; overflow-y: auto;
+  background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: 6px;
+  padding: 0.5rem; font-family: "JetBrains Mono", monospace; font-size: 0.75rem;
+  line-height: 1.45;
+}
+.log-row {
+  display: grid;
+  grid-template-columns: 6em 4em 10em 1fr; gap: 0.5rem;
+  padding: 0.1rem 0; border-bottom: 1px solid color-mix(in srgb, var(--border-primary) 30%, transparent);
+  word-break: break-word;
+}
+.log-time { color: var(--text-secondary); }
+.log-level { font-weight: 700; }
+.log-node { color: var(--text-secondary); }
+.log-warn .log-level { color: #f59e0b; }
+.log-error .log-level, .log-fatal .log-level { color: #ef4444; }
+.log-info .log-level { color: #22c55e; }
+
+.snapshots-modal { max-width: 500px; max-height: 80vh; display: flex; flex-direction: column; }
+.snapshot-create {
+  display: flex; gap: 0.5rem; margin-bottom: 0.75rem;
+}
+.snapshot-create input {
+  flex: 1; padding: 0.4rem 0.6rem;
+  background: var(--bg-secondary); color: var(--text-primary);
+  border: 1px solid var(--border-primary); border-radius: 6px;
+}
+.snapshot-list { flex: 1; overflow-y: auto; margin-bottom: 0.75rem; }
+.snapshot-item {
+  padding: 0.5rem; border-bottom: 1px solid var(--border-primary);
+  font-size: 0.85rem;
+}
+.snapshot-top { display: flex; justify-content: space-between; align-items: center; }
+.snapshot-time { font-family: "JetBrains Mono", monospace; color: var(--text-primary); }
+.snapshot-count { color: var(--text-secondary); font-size: 0.8rem; }
+.snapshot-reason { color: var(--text-secondary); font-size: 0.8rem; margin-top: 0.15rem; }
+.snapshot-actor { color: var(--text-secondary); font-size: 0.75rem; margin-top: 0.15rem; }
+.snapshot-actions { margin-top: 0.3rem; display: flex; justify-content: flex-end; }
+
+.waypoint-list {
+  margin-top: 0.5rem; max-height: 250px; overflow-y: auto;
+  border: 1px solid var(--border-primary); border-radius: 6px;
+  background: var(--bg-primary);
+}
+.waypoint-list-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.4rem 0.6rem; background: var(--bg-secondary);
+  font-size: 0.8rem; font-weight: 600;
+  position: sticky; top: 0;
+}
+.waypoint-hint { color: var(--text-secondary); font-weight: 400; font-size: 0.75rem; }
+.waypoint-item {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--border-primary);
+  font-size: 0.8rem;
+}
+.waypoint-item:last-child { border-bottom: none; }
+.waypoint-num { font-family: "JetBrains Mono", monospace; font-weight: 600; min-width: 2em; }
+.waypoint-coord { flex: 1; font-family: "JetBrains Mono", monospace; color: var(--text-secondary); font-size: 0.75rem; }
+.waypoint-arrows { display: flex; gap: 0.15rem; }
+.arrow-btn {
+  width: 22px; height: 22px; padding: 0;
+  background: var(--bg-secondary); color: var(--text-primary);
+  border: 1px solid var(--border-primary); border-radius: 4px;
+  font-size: 0.8rem; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.arrow-btn:hover:not(:disabled) { background: var(--accent-primary); color: #fff; }
+.arrow-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.resume-selector {
+  margin-top: 0.5rem;
+  display: flex; align-items: center; gap: 0.5rem;
+  font-size: 0.85rem;
+}
+.resume-label { color: var(--text-secondary); flex-shrink: 0; }
+.resume-select {
+  flex: 1; min-width: 0;
+  padding: 0.3rem 0.5rem;
+  background: var(--bg-primary); color: var(--text-primary);
+  border: 1px solid var(--border-primary); border-radius: 6px;
+  font-family: "JetBrains Mono", monospace; font-size: 0.8rem;
+}
+
 /* Joystick */
 .joystick-area { margin-top: 0.75rem; }
 
@@ -1372,9 +1927,21 @@ onUnmounted(() => {
 }
 .filter-btn.active {
   border-color: var(--fc, var(--accent-primary));
-  color: var(--fc, var(--accent-primary));
-  background: color-mix(in srgb, var(--fc, var(--accent-primary)) 10%, var(--bg-secondary));
+  color: #fff;
+  background: var(--fc, var(--accent-primary));
+  font-weight: 700;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--fc, var(--accent-primary)) 25%, transparent);
+}
+
+.filter-tag {
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.7rem;
   font-weight: 600;
+  border-radius: 4px;
+  color: #fff;
+  background: var(--fc, var(--accent-primary));
+  vertical-align: middle;
 }
 
 .cone-list { flex: 1; overflow-y: auto; padding-bottom: 1rem; }
