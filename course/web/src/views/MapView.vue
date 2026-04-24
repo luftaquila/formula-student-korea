@@ -47,25 +47,9 @@ function restoreLiveMapLayers() {
   renderSprayMarkers();
 }
 
-// When entering the missions tab, hide the live operation layers and load
-// the mission list; when leaving, tear down the replay state and restore the
-// live view. Keeps one Leaflet instance for both modes so operators never see
-// the "gray map" that used to happen on the separate missions route.
-watch(activeTab, (next, prev) => {
-  if (next === prev || !map) return;
-  if (prev === "missions") {
-    stopReplay();
-    clearMissionMap();
-    selectedMissionId.value = null;
-    missionDetail.value = null;
-    missionSamples.value = [];
-    restoreLiveMapLayers();
-  }
-  if (next === "missions") {
-    hideLiveMapLayers();
-    loadMissions();
-  }
-});
+// NOTE: the tab-swap watch that swaps live ↔ mission map layers lives further
+// down in this file, after `activeTab` is declared. Placing it here used to
+// trip a TDZ because `activeTab` is a `const` defined below.
 const selectedConeId = ref(null);
 const multiSelectedIds = ref(new Set());
 const editLat = ref("");
@@ -385,6 +369,25 @@ function savePref(key, value) {
 watch(activeTab, (v) => savePref("activeTab", v));
 watch(inspectorWidth, (v) => savePref("inspectorWidth", v));
 watch(inspectorCollapsed, (v) => savePref("inspectorCollapsed", v));
+
+// Tab-swap: hide live layers when entering missions, tear down replay state
+// and restore the live view when leaving. Relies on `activeTab` being already
+// declared just above (don't move this block up — TDZ).
+watch(activeTab, (next, prev) => {
+  if (next === prev || !map) return;
+  if (prev === "missions") {
+    stopReplay();
+    clearMissionMap();
+    selectedMissionId.value = null;
+    missionDetail.value = null;
+    missionSamples.value = [];
+    restoreLiveMapLayers();
+  }
+  if (next === "missions") {
+    hideLiveMapLayers();
+    loadMissions();
+  }
+});
 
 // Inspector drag-to-resize. Works for mouse and touch via Pointer Events.
 let resizePointerId = null;
