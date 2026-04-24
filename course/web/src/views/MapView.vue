@@ -1460,11 +1460,6 @@ onUnmounted(() => {
 <template>
   <div class="map-layout">
     <div class="content">
-      <div id="map" class="map"></div>
-
-      <!-- Path pick overlay -->
-      <div v-if="roverMode === 'path-pick'" class="map-overlay">지도에서 시작점을 클릭하세요</div>
-
       <!-- Rover log viewer modal -->
       <div v-if="showLogs" class="preflight-backdrop" @click.self="showLogs = false">
         <div class="preflight-modal logs-modal">
