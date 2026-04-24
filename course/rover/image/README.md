@@ -11,10 +11,11 @@ Actions; developer machines only need the signing-key setup below.
   channel. Field rovers refresh from these channels, so new missions
   roll out through this pipeline rather than through fresh images.
 - `.github/workflows/rover-image.yml` — manual (`workflow_dispatch`) or
-  weekly (Mon 14:00 KST). Signs the model and system-user assertions
-  in-pipeline and bakes the signed `auto-import.assert` into the image
-  seed at build time via `ubuntu-image snap --assertion`, so the image
-  boots into a ready-to-SSH state.
+  weekly (Mon 14:00 KST). Signs the model and a chained
+  `auto-import.assert` in-pipeline and bakes that assertion bundle into
+  the image seed at build time via `ubuntu-image snap --assertion`, so
+  the image boots straight to the seeded `fsk` SSH user without
+  console-conf.
 
 Ongoing updates flow through the snap pipeline; the image pipeline is
 only needed for first-time provisioning, hardware swaps, or base-snap
@@ -27,7 +28,7 @@ refreshes.
 | `SNAP_BRAND_KEY_B64` | secret | `tar czf - -C ~/.snap/gnupg .` then `base64 -w0`. Contains the brand signing key snapd uses for `snap sign`. |
 | `SNAP_BRAND_KEY_NAME` | repo var | Key name as shown by `snap keys`, e.g. `fsk-rover-signing`. |
 | `model.assertion.template` | checked-in | Unsigned model. CI refreshes `timestamp` per run and signs. |
-| `system-user.template.json` | checked-in | Unsigned local-user assertion. CI fetches public keys from <https://github.com/luftaquila.keys>, fills `ssh-keys` + `since`/`until`/`timestamp`, signs, and stages the result as `auto-import.assert`. |
+| `system-user.template.json` | checked-in | Unsigned local-user assertion. CI fetches public keys from <https://github.com/luftaquila.keys>, fills `ssh-keys` + `since`/`until`/`timestamp`, then signs it with `--chain` so `auto-import.assert` contains the required account/account-key assertions too. |
 | `fsk-rover-pilot` snap | built | Built inside the image workflow by `snapcore/action-build`. |
 | `tailscale` | snap-store | Referenced from the model assertion, pulled at assembly time. |
 

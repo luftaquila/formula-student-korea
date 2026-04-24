@@ -116,17 +116,20 @@ jobs:
              --arg now "$TS_NOW" --arg expiry "$TS_END" \
              '."ssh-keys"=$keys[0] | .since=$now | .timestamp=$now | ."until"=$expiry' \
              course/rover/image/system-user.template.json > .tmp/system-user.json
-          snap sign -k "$SNAP_BRAND_KEY_NAME" < .tmp/system-user.json \
+          # auto-import.assert must include the account/account-key chain so
+          # snapd can import the embedded system-user assertion on first boot.
+          snap sign --chain -k "$SNAP_BRAND_KEY_NAME" < .tmp/system-user.json \
             > .tmp/auto-import.assert
           head -n 20 .tmp/auto-import.assert
 
       - name: Build Ubuntu Core image
         run: |
           mkdir -p .tmp/image
-          # --assertion bakes the system-user assertion into the seed at
-          # build time, so snapd picks it up on first boot and creates the
-          # fsk user. Only works because the model is grade: dangerous and
-          # the assertion uses ssh-keys (no password).
+          # --assertion bakes the chained auto-import.assert (system-user
+          # plus the account/account-key needed to validate it) into the
+          # seed, so snapd picks it up on first boot and creates the fsk
+          # user. Only works because the model is grade: dangerous and the
+          # assertion uses ssh-keys (no password).
           ubuntu-image snap \
             --snap "${{ steps.build.outputs.snap }}" \
             --assertion .tmp/auto-import.assert \

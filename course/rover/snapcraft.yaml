@@ -24,6 +24,10 @@ apps:
       - gpio
       - i2c
 
+hooks:
+  configure:
+    plugs: [network-setup-control]
+
 parts:
   pilot:
     plugin: colcon

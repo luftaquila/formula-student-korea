@@ -10,7 +10,9 @@ Ubuntu Core deployment assets for the rover.
   pilot.launch.py`
 - `hooks/configure` — runs on install and on every `snap set`; writes
   `/etc/netplan/90-fsk-wifi.yaml` (default AP: `default` / `password`) and
-  restarts the `pilot` daemon
+  restarts the `pilot` daemon. Requires the `network-setup-control` plug
+  to be connected (`sudo snap connect fsk-rover-pilot:network-setup-control`)
+  — the hook no-ops otherwise so first-boot seeding does not abort
 
 ## Supported `snap set` keys
 
@@ -29,7 +31,7 @@ never placed on the ROS 2 parameter tree.
 ## Image-level composition
 
 This directory only defines the application snap. Base snap bundling
-(`core24`, `pi`, `pi-kernel`, `console-conf`, `tailscale`) happens at the
+(`core24`, `pi`, `pi-kernel`, `tailscale`) happens at the
 Ubuntu Core image/model layer in `../image/`.
 
 First-boot provisioning — SSH seeding via `system-user` assertion and

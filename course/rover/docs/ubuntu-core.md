@@ -34,7 +34,7 @@ touched by the package is `/etc/netplan/90-fsk-wifi.yaml`, written by the
 
 The Ubuntu Core image (see `../image/`) bundles:
 
-- `core24`, `snapd`, `pi`, `pi-kernel`, `console-conf` — Canonical base + gadget
+- `core24`, `snapd`, `pi`, `pi-kernel` — Canonical base + gadget
 - `tailscale` — for remote access, installed but not pre-authenticated
 - `fsk-rover-pilot` — tracking `latest/candidate` by default
 - a brand-signed `system-user` assertion that creates the `fsk` local user
@@ -64,7 +64,7 @@ All supported `snap set` keys are listed in `README.md`.
   builds the snap; publishes `candidate` on main pushes, `edge` on `v*`
   tags or `workflow_dispatch` with a specified channel.
 - `.github/workflows/rover-image.yml` — manual or weekly-scheduled; signs
-  the model and system-user assertions in-pipeline from
+  the model and a chained `auto-import.assert` in-pipeline from
   `image/model.assertion.template` and `image/system-user.template.json`
   using the brand key imported from `SNAP_BRAND_KEY_B64` and
   `SNAP_BRAND_KEY_NAME`.

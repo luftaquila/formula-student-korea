@@ -1,13 +1,24 @@
 #!/bin/sh
 set -eu
 
+NETPLAN=/etc/netplan/90-fsk-wifi.yaml
+
+# Writing $NETPLAN and running `netplan apply` both require the
+# network-setup-control plug. It is not auto-connected, so on a fresh
+# install the hook must no-op rather than fail — a failing configure hook
+# aborts the seed change and strands the device in install mode.
+if ! snapctl is-connected network-setup-control 2>/dev/null; then
+  echo "[configure] skipping Wi-Fi setup: run 'sudo snap connect ${SNAP_INSTANCE_NAME}:network-setup-control' to enable" >&2
+  snapctl restart "$SNAP_INSTANCE_NAME.pilot" || true
+  exit 0
+fi
+
 # Wi-Fi: snap-set values take precedence; defaults match the team's portable AP.
 # Change at any time with:
 #   sudo snap set fsk-rover-pilot wifi-ssid=<ssid> wifi-password=<pw>
 SSID=$(snapctl get wifi-ssid || printf '%s' 'default')
 PASS=$(snapctl get wifi-password || printf '%s' 'password')
 
-NETPLAN=/etc/netplan/90-fsk-wifi.yaml
 TMP=$(mktemp)
 cat > "$TMP" <<EOF
 network:
