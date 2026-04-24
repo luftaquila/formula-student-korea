@@ -14,7 +14,20 @@ const currentSide = ref("left");
 const roverLoading = ref(false);
 const coneFilter = ref("all");
 const CONE_FILTER_LABELS = { all: "전체", left: "L", center: "M", right: "R" };
+const SIDE_LABELS = { left: "왼쪽", center: "가운데", right: "오른쪽" };
 const coneFilterLabel = computed(() => CONE_FILTER_LABELS[coneFilter.value] || coneFilter.value);
+const currentSideLabel = computed(() => SIDE_LABELS[currentSide.value] || "");
+
+// Clicking an already-active rail icon toggles the inspector closed so the map
+// reclaims the full width on a laptop. Clicking any other icon just switches.
+function onRailClick(key) {
+  if (activeTab.value === key && !inspectorCollapsed.value) {
+    inspectorCollapsed.value = true;
+  } else {
+    activeTab.value = key;
+    inspectorCollapsed.value = false;
+  }
+}
 const selectedConeId = ref(null);
 const multiSelectedIds = ref(new Set());
 const editLat = ref("");
@@ -128,7 +141,58 @@ const roverStatusClass = computed(() => {
   return "rover-badge-warn";
 });
 
-// Mobile bottom sheet
+// Inspector (desktop right panel)
+const INSPECTOR_TABS = [
+  { key: "courses", label: "코스", icon: "📋" },
+  { key: "cones", label: "콘", icon: "🔶" },
+  { key: "rover", label: "로버", icon: "🚗" },
+  { key: "logs", label: "로그", icon: "📜" },
+];
+const activeTab = ref(loadPref("activeTab", "courses"));
+const inspectorCollapsed = ref(loadPref("inspectorCollapsed", false, JSON.parse));
+const inspectorWidth = ref(Math.max(280, Math.min(Number(loadPref("inspectorWidth", 360, Number)), 600)));
+const inspectorResizing = ref(false);
+
+function loadPref(key, fallback, parse = (x) => x) {
+  try {
+    const raw = localStorage.getItem(`mapview.${key}`);
+    if (raw === null) return fallback;
+    return parse(raw);
+  } catch { return fallback; }
+}
+function savePref(key, value) {
+  try { localStorage.setItem(`mapview.${key}`, String(value)); } catch {}
+}
+
+watch(activeTab, (v) => savePref("activeTab", v));
+watch(inspectorWidth, (v) => savePref("inspectorWidth", v));
+watch(inspectorCollapsed, (v) => savePref("inspectorCollapsed", v));
+
+// Inspector drag-to-resize. Works for mouse and touch via Pointer Events.
+let resizePointerId = null;
+let resizeStartX = 0;
+let resizeStartW = 360;
+
+function onInspectorResizeStart(e) {
+  resizePointerId = e.pointerId;
+  resizeStartX = e.clientX;
+  resizeStartW = inspectorWidth.value;
+  inspectorResizing.value = true;
+  e.target.setPointerCapture(e.pointerId);
+  e.preventDefault();
+}
+function onInspectorResizeMove(e) {
+  if (e.pointerId !== resizePointerId) return;
+  const dx = resizeStartX - e.clientX; // drag handle is on the left edge of inspector
+  inspectorWidth.value = Math.max(280, Math.min(600, resizeStartW + dx));
+}
+function onInspectorResizeEnd(e) {
+  if (e.pointerId !== resizePointerId) return;
+  resizePointerId = null;
+  inspectorResizing.value = false;
+}
+
+// Mobile bottom sheet (narrow viewports) — rail becomes a bottom tab bar.
 const isMobile = ref(false);
 const sheetExpanded = ref(false);
 const sheetHeight = ref(52); // px — 52 = collapsed (handle only)
@@ -1491,217 +1555,316 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Rover status badge -->
-      <div :class="['rover-badge', roverStatusClass]" :title="roverStatusTooltip">
-        <span class="rover-badge-dot"></span>
-        <span class="rover-badge-text">{{ roverStatusText }}</span>
-      </div>
+      <!-- Workspace: top status strip + body(rail + map + inspector) -->
+      <div class="workspace" :class="{ 'inspector-collapsed': inspectorCollapsed }">
 
-      <!-- Desktop sidebar / Mobile bottom sheet -->
-      <div :class="['panel', { 'sheet': isMobile, 'sheet-dragging': sheetDragging }]"
-           :style="isMobile ? { height: sheetHeight + 'px' } : {}">
-        <!-- Mobile sheet handle -->
-        <div v-if="isMobile" class="sheet-handle"
-             @touchstart="onSheetTouchStart" @touchmove="onSheetTouchMove" @touchend="onSheetTouchEnd">
-          <div class="handle-bar"></div>
-          <span class="handle-label">{{ activeCourse ? activeCourse.name : '코스 관리' }}</span>
+        <!-- Persistent status strip (always visible across tabs) -->
+        <div :class="['status-strip', roverStatusClass]" :title="roverStatusTooltip">
+          <span class="status-dot"></span>
+          <span class="status-text">{{ roverStatusText }}</span>
+          <button
+            class="status-inspector-toggle"
+            @click="inspectorCollapsed = !inspectorCollapsed"
+            :title="inspectorCollapsed ? '인스펙터 펼치기' : '인스펙터 접기'"
+          >{{ inspectorCollapsed ? '◀' : '▶' }}</button>
         </div>
 
-        <div class="panel-scroll">
-          <!-- Courses -->
-          <div class="panel-section">
-            <h3>코스</h3>
-            <div class="course-add">
-              <input v-model="newCourseName" placeholder="새 코스" maxlength="100" @keyup.enter="createCourse" />
-              <button class="btn btn-primary btn-sm" @click="createCourse" :disabled="!newCourseName.trim()">+</button>
-              <label class="btn btn-ghost btn-sm import-btn" title="JSON 가져오기">
-                ↑
-                <input type="file" accept=".json" hidden @change="importCourse" />
-              </label>
-              <button
-                class="btn btn-ghost btn-sm" title="스냅샷"
-                :disabled="!activeCourseId"
-                @click="openSnapshots"
-              >📸</button>
-            </div>
-            <div class="course-items">
-              <div v-for="c in courses" :key="c.id" :class="['course-item', { active: c.id === activeCourseId, editing: editingCourseId === c.id }]">
-                <button class="vis-btn" @click.stop="toggleVisibility(c.id)" :title="visibility[c.id] ? '숨기기' : '표시'">
-                  <svg v-if="visibility[c.id]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-                </button>
-                <template v-if="editingCourseId === c.id">
-                  <input v-model="editCourseName" class="course-name-input" @keyup.enter="saveCourseName(c.id)" @keyup.escape="editingCourseId = null" @click.stop />
-                  <button class="btn btn-primary btn-sm" @click.stop="saveCourseName(c.id)">저장</button>
-                </template>
-                <template v-else>
-                  <span class="course-name" @click="selectCourse(c.id)" @dblclick.stop="startEditCourse(c)">
-                    {{ c.name }} <span class="cone-count">({{ c.cone_count }})</span>
-                  </span>
-                </template>
-                <button class="dl-btn" @click.stop="exportCourse(c.id)" title="JSON 내보내기">↓</button>
-                <button class="del-btn" @click.stop="deleteCourse(c.id)" title="삭제">×</button>
-              </div>
-              <div v-if="courses.length === 0" class="empty-msg">코스를 추가하세요.</div>
-            </div>
+        <div class="workspace-body">
+          <!-- Left icon rail -->
+          <nav class="rail" aria-label="인스펙터 카테고리">
+            <button
+              v-for="t in INSPECTOR_TABS" :key="t.key"
+              :class="['rail-btn', { active: activeTab === t.key && !inspectorCollapsed }]"
+              @click="onRailClick(t.key)"
+              :title="t.label"
+            >
+              <span class="rail-icon">{{ t.icon }}</span>
+              <span class="rail-label">{{ t.label }}</span>
+            </button>
+          </nav>
+
+          <!-- Map (center) -->
+          <div class="map-wrap">
+            <div id="map" class="map"></div>
+            <!-- Path pick overlay stays inside the map area -->
+            <div v-if="roverMode === 'path-pick'" class="map-overlay">지도에서 시작점을 클릭하세요</div>
           </div>
 
-          <template v-if="activeCourse">
-            <!-- Side toggle + Rover -->
-            <div class="panel-section">
-              <h3>콘 추가</h3>
-              <div class="side-rover-row">
-                <div class="side-toggle">
-                  <button :class="['side-btn', { active: currentSide === 'left' }]" @click="currentSide = 'left'" style="--side-color: #8b5cf6">L</button>
-                  <button :class="['side-btn', { active: currentSide === 'center' }]" @click="currentSide = 'center'" style="--side-color: #f59e0b">M</button>
-                  <button :class="['side-btn', { active: currentSide === 'right' }]" @click="currentSide = 'right'" style="--side-color: #06b6d4">R</button>
-                </div>
-                <button class="btn btn-primary btn-sm rover-btn" @click="addConeFromRover" :disabled="roverLoading">
-                  {{ roverLoading ? '수신중...' : '위치 수신' }}
-                </button>
-              </div>
+          <!-- Resize handle (desktop only) -->
+          <div
+            v-if="!inspectorCollapsed && !isMobile"
+            class="inspector-handle"
+            :class="{ dragging: inspectorResizing }"
+            @pointerdown="onInspectorResizeStart"
+            @pointermove="onInspectorResizeMove"
+            @pointerup="onInspectorResizeEnd"
+            @pointercancel="onInspectorResizeEnd"
+            aria-label="인스펙터 너비 조절"
+          ></div>
+
+          <!-- Inspector -->
+          <aside
+            v-show="!inspectorCollapsed"
+            class="inspector"
+            :style="!isMobile ? { width: inspectorWidth + 'px' } : { height: sheetHeight + 'px' }"
+          >
+            <!-- Mobile: grab handle at top -->
+            <div
+              v-if="isMobile"
+              class="sheet-handle"
+              @touchstart="onSheetTouchStart" @touchmove="onSheetTouchMove" @touchend="onSheetTouchEnd"
+            >
+              <div class="handle-bar"></div>
             </div>
 
-            <!-- Rover controls -->
-            <div class="panel-section">
-              <h3>로버 제어</h3>
-              <div class="rover-controls">
-                <button
-                  :class="['btn', 'btn-sm', pathBtnClass]"
-                  @click="onPathBtn"
-                  :disabled="activeCones.length === 0 || roverMode === 'manual'"
-                >{{ pathBtnLabel }}</button>
-                <button
-                  :class="['btn', 'btn-sm', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
-                  :disabled="roverMode !== 'manual' && !roverStatus.connected"
-                  @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
-                >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
-                <button class="btn estop-btn-inline" @click="emergencyStop">비상정지</button>
-                <button class="btn btn-ghost btn-sm" @click="openLogs" title="로버 로그">📜 로그</button>
-              </div>
-              <div v-if="pathDistance > 0" class="path-info">
-                <div>예상 주행 거리: {{ pathDistance >= 1000 ? (pathDistance / 1000).toFixed(2) + ' km' : pathDistance.toFixed(1) + ' m' }}</div>
-                <div v-if="roverMode === 'executing' || roverMode === 'stopped'">
-                  웨이포인트 {{ executedIndex }}/{{ pathWaypoints.length }}
-                  <span v-if="pathProgress > 0" class="path-info-progress">({{ pathProgress }}%)</span>
-                </div>
-              </div>
+            <div class="inspector-body">
 
-              <!-- Waypoint reorder (path-ready only) -->
-              <div v-if="roverMode === 'path-ready' && pathWaypoints.length > 1" class="waypoint-list">
-                <div class="waypoint-list-header">
-                  <span>웨이포인트 ({{ pathWaypoints.length }})</span>
-                  <span class="waypoint-hint">↑↓로 순서 변경</span>
+              <!-- Courses tab -->
+              <section v-show="activeTab === 'courses'" class="tab-pane">
+                <header class="tab-header">
+                  <h3>코스 관리</h3>
+                </header>
+                <div class="course-add">
+                  <input v-model="newCourseName" placeholder="새 코스 이름" maxlength="100" @keyup.enter="createCourse" />
+                  <button class="btn btn-primary btn-lg-touch" @click="createCourse" :disabled="!newCourseName.trim()">추가</button>
                 </div>
-                <div
-                  v-for="(wp, idx) in pathWaypoints" :key="`${wp.lat}-${wp.lng}-${idx}`"
-                  class="waypoint-item"
-                >
-                  <span class="waypoint-num">#{{ idx + 1 }}</span>
-                  <span class="waypoint-coord">{{ wp.lat.toFixed(5) }}, {{ wp.lng.toFixed(5) }}</span>
-                  <div class="waypoint-arrows">
-                    <button class="arrow-btn" :disabled="idx === 0" @click="moveWaypoint(idx, -1)" title="위로">↑</button>
-                    <button class="arrow-btn" :disabled="idx === pathWaypoints.length - 1" @click="moveWaypoint(idx, 1)" title="아래로">↓</button>
+                <div class="course-toolbar">
+                  <label class="btn btn-ghost btn-lg-touch import-btn" title="JSON 가져오기">
+                    ↑ 가져오기
+                    <input type="file" accept=".json" hidden @change="importCourse" />
+                  </label>
+                  <button
+                    class="btn btn-ghost btn-lg-touch"
+                    :disabled="!activeCourseId"
+                    @click="openSnapshots"
+                    title="스냅샷"
+                  >📸 스냅샷</button>
+                </div>
+                <div class="course-items">
+                  <div
+                    v-for="c in courses" :key="c.id"
+                    :class="['course-item', { active: c.id === activeCourseId, editing: editingCourseId === c.id }]"
+                  >
+                    <button class="vis-btn" @click.stop="toggleVisibility(c.id)" :title="visibility[c.id] ? '숨기기' : '표시'">
+                      <svg v-if="visibility[c.id]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                      <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                    </button>
+                    <template v-if="editingCourseId === c.id">
+                      <input v-model="editCourseName" class="course-name-input" @keyup.enter="saveCourseName(c.id)" @keyup.escape="editingCourseId = null" @click.stop />
+                      <button class="btn btn-primary btn-sm" @click.stop="saveCourseName(c.id)">저장</button>
+                    </template>
+                    <template v-else>
+                      <span class="course-name" @click="selectCourse(c.id)" @dblclick.stop="startEditCourse(c)">
+                        {{ c.name }} <span class="cone-count">({{ c.cone_count }})</span>
+                      </span>
+                    </template>
+                    <button class="dl-btn" @click.stop="exportCourse(c.id)" title="JSON 내보내기">↓</button>
+                    <button class="del-btn" @click.stop="deleteCourse(c.id)" title="삭제">×</button>
                   </div>
+                  <div v-if="courses.length === 0" class="empty-msg">코스를 추가하세요.</div>
                 </div>
-              </div>
+              </section>
 
-              <!-- Resume waypoint selector (stopped only) -->
-              <div v-if="roverMode === 'stopped' && pathWaypoints.length > 0" class="resume-selector">
-                <label class="resume-label">재시작 위치:</label>
-                <select v-model.number="resumeStartIdx" class="resume-select">
-                  <option v-for="(wp, idx) in pathWaypoints" :key="idx" :value="idx">
-                    #{{ idx + 1 }}{{ idx < executedIndex ? ' (완료)' : '' }}{{ idx === executedIndex ? ' (다음)' : '' }}
-                  </option>
-                </select>
-              </div>
-
-              <!-- Manual joystick -->
-              <div v-if="roverMode === 'manual'" class="joystick-area">
-                <div class="joystick-info">
-                  T: {{ manualThrottle }} / S: {{ manualSteering }}
+              <!-- Cones tab -->
+              <section v-show="activeTab === 'cones'" class="tab-pane">
+                <header class="tab-header">
+                  <h3>{{ activeCourse ? activeCourse.name + ' 콘' : '콘' }}</h3>
+                </header>
+                <div v-if="!activeCourse" class="empty-msg large">
+                  코스를 먼저 선택하세요.
+                  <button class="btn btn-ghost btn-lg-touch" @click="activeTab = 'courses'">코스 탭으로</button>
                 </div>
-                <div
-                  class="joystick"
-                  @pointerdown.prevent="onJoystickDown"
-                  @pointermove.prevent="onJoystickMove"
-                  @pointerup.prevent="onJoystickUp"
-                  @pointercancel.prevent="onJoystickUp"
-                >
-                  <div class="joystick-bg">
-                    <div class="joystick-crosshair"></div>
+                <template v-else>
+                  <div class="inspector-group">
+                    <div class="group-title">콘 추가</div>
+                    <div class="side-rover-row">
+                      <div class="side-toggle">
+                        <button :class="['side-btn', { active: currentSide === 'left' }]" @click="currentSide = 'left'" style="--side-color: #8b5cf6" title="왼쪽">L</button>
+                        <button :class="['side-btn', { active: currentSide === 'center' }]" @click="currentSide = 'center'" style="--side-color: #f59e0b" title="가운데">M</button>
+                        <button :class="['side-btn', { active: currentSide === 'right' }]" @click="currentSide = 'right'" style="--side-color: #06b6d4" title="오른쪽">R</button>
+                      </div>
+                      <button class="btn btn-primary btn-lg-touch rover-btn" @click="addConeFromRover" :disabled="roverLoading">
+                        {{ roverLoading ? '수신중...' : '로버 위치' }}
+                      </button>
+                    </div>
+                    <p class="hint">지도 클릭으로도 현재 <b>{{ coneFilterLabel === '전체' ? currentSideLabel : '' }}</b> 콘을 놓을 수 있습니다.</p>
+                  </div>
+
+                  <div v-if="multiSelectedIds.size > 0" class="inspector-group selected">
+                    <div class="group-title">{{ multiSelectedIds.size }}개 선택됨</div>
+                    <div class="edit-buttons">
+                      <span class="multi-select-hint">드래그로 일괄 이동</span>
+                      <button class="btn btn-ghost btn-lg-touch" @click="clearMultiSelection">선택 해제</button>
+                    </div>
+                  </div>
+
+                  <div v-if="selectedConeId && multiSelectedIds.size === 0" class="inspector-group selected">
+                    <div class="group-title">콘 수정 #{{ coneSideIndex(activeCourseId, selectedConeId) }}</div>
+                    <div class="coord-inputs">
+                      <input v-model="editLat" type="number" step="any" placeholder="위도" />
+                      <input v-model="editLng" type="number" step="any" placeholder="경도" />
+                      <select v-model="editSide">
+                        <option value="left">L 왼쪽</option>
+                        <option value="center">M 가운데</option>
+                        <option value="right">R 오른쪽</option>
+                      </select>
+                    </div>
+                    <div class="edit-buttons">
+                      <button class="btn btn-primary btn-lg-touch" @click="updateCone">저장</button>
+                      <button class="btn btn-danger btn-lg-touch" @click="deleteCone(selectedConeId)">삭제</button>
+                      <button class="btn btn-ghost btn-lg-touch" @click="selectedConeId = null">취소</button>
+                    </div>
+                  </div>
+
+                  <div class="inspector-group cone-list-section">
+                    <div class="cone-list-header">
+                      <div class="group-title">
+                        목록 ({{ filteredCones.length }})
+                        <span v-if="coneFilter !== 'all'" class="filter-tag" :style="{ '--fc': SIDE_COLORS[coneFilter] }">{{ coneFilterLabel }}</span>
+                      </div>
+                      <div class="cone-filter">
+                        <button :class="['filter-btn', { active: coneFilter === 'all' }]" @click="coneFilter = 'all'" title="전체 콘 표시">전체</button>
+                        <button :class="['filter-btn', { active: coneFilter === 'left' }]" @click="coneFilter = 'left'" :style="{ '--fc': SIDE_COLORS.left }" title="왼쪽">L</button>
+                        <button :class="['filter-btn', { active: coneFilter === 'center' }]" @click="coneFilter = 'center'" :style="{ '--fc': SIDE_COLORS.center }" title="가운데">M</button>
+                        <button :class="['filter-btn', { active: coneFilter === 'right' }]" @click="coneFilter = 'right'" :style="{ '--fc': SIDE_COLORS.right }" title="오른쪽">R</button>
+                      </div>
+                    </div>
+                    <div class="cone-list">
+                      <div
+                        v-for="cone in filteredCones" :key="cone.id"
+                        :data-cone-id="cone.id"
+                        :class="['cone-item', { selected: selectedConeId === cone.id }]"
+                        @click="panToCone(cone)"
+                      >
+                        <span class="cone-num" :style="{ color: SIDE_COLORS[cone.side] }">#{{ coneSideIndex(activeCourseId, cone.id) }}</span>
+                        <span class="cone-coords">{{ cone.lat.toFixed(6) }}, {{ cone.lng.toFixed(6) }}</span>
+                        <button class="del-btn" @click.stop="deleteCone(cone.id)" title="삭제">×</button>
+                      </div>
+                      <div v-if="filteredCones.length === 0" class="empty-msg">콘이 없습니다.</div>
+                    </div>
+                  </div>
+                </template>
+              </section>
+
+              <!-- Rover tab -->
+              <section v-show="activeTab === 'rover'" class="tab-pane">
+                <header class="tab-header">
+                  <h3>로버 제어</h3>
+                </header>
+                <div v-if="!activeCourse" class="empty-msg large">
+                  코스를 먼저 선택하세요.
+                  <button class="btn btn-ghost btn-lg-touch" @click="activeTab = 'courses'">코스 탭으로</button>
+                </div>
+                <template v-else>
+                  <div class="rover-controls rover-controls-grid">
+                    <button
+                      :class="['btn', 'btn-lg-touch', pathBtnClass]"
+                      @click="onPathBtn"
+                      :disabled="activeCones.length === 0 || roverMode === 'manual'"
+                    >{{ pathBtnLabel }}</button>
+                    <button
+                      :class="['btn', 'btn-lg-touch', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
+                      :disabled="roverMode !== 'manual' && !roverStatus.connected"
+                      @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
+                    >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
+                    <button class="btn btn-lg-touch estop-btn-inline" @click="emergencyStop">비상정지</button>
+                  </div>
+
+                  <div v-if="pathDistance > 0" class="path-info">
+                    <div>예상 주행 거리: {{ pathDistance >= 1000 ? (pathDistance / 1000).toFixed(2) + ' km' : pathDistance.toFixed(1) + ' m' }}</div>
+                    <div v-if="roverMode === 'executing' || roverMode === 'stopped'">
+                      웨이포인트 {{ executedIndex }}/{{ pathWaypoints.length }}
+                      <span v-if="pathProgress > 0" class="path-info-progress">({{ pathProgress }}%)</span>
+                    </div>
+                  </div>
+
+                  <!-- Waypoint reorder (path-ready only) -->
+                  <div v-if="roverMode === 'path-ready' && pathWaypoints.length > 1" class="inspector-group waypoint-list">
+                    <div class="waypoint-list-header">
+                      <span>웨이포인트 ({{ pathWaypoints.length }})</span>
+                      <span class="waypoint-hint">↑↓로 순서 변경</span>
+                    </div>
                     <div
-                      class="joystick-knob"
-                      :style="{
-                        transform: `translate(${manualSteering * 0.82}px, ${-manualThrottle * 0.82}px)`
-                      }"
-                    ></div>
+                      v-for="(wp, idx) in pathWaypoints" :key="`${wp.lat}-${wp.lng}-${idx}`"
+                      class="waypoint-item"
+                    >
+                      <span class="waypoint-num">#{{ idx + 1 }}</span>
+                      <span class="waypoint-coord">{{ wp.lat.toFixed(5) }}, {{ wp.lng.toFixed(5) }}</span>
+                      <div class="waypoint-arrows">
+                        <button class="arrow-btn" :disabled="idx === 0" @click="moveWaypoint(idx, -1)" title="위로">↑</button>
+                        <button class="arrow-btn" :disabled="idx === pathWaypoints.length - 1" @click="moveWaypoint(idx, 1)" title="아래로">↓</button>
+                      </div>
+                    </div>
                   </div>
-                  <div class="joystick-labels">
-                    <span class="jl-up">▲</span>
-                    <span class="jl-down">▼</span>
-                    <span class="jl-left">◄</span>
-                    <span class="jl-right">►</span>
+
+                  <!-- Resume waypoint selector (stopped only) -->
+                  <div v-if="roverMode === 'stopped' && pathWaypoints.length > 0" class="resume-selector">
+                    <label class="resume-label">재시작 위치:</label>
+                    <select v-model.number="resumeStartIdx" class="resume-select">
+                      <option v-for="(wp, idx) in pathWaypoints" :key="idx" :value="idx">
+                        #{{ idx + 1 }}{{ idx < executedIndex ? ' (완료)' : '' }}{{ idx === executedIndex ? ' (다음)' : '' }}
+                      </option>
+                    </select>
+                  </div>
+
+                  <!-- Manual joystick -->
+                  <div v-if="roverMode === 'manual'" class="joystick-area">
+                    <div class="joystick-info">T: {{ manualThrottle }} / S: {{ manualSteering }}</div>
+                    <div
+                      class="joystick"
+                      @pointerdown.prevent="onJoystickDown"
+                      @pointermove.prevent="onJoystickMove"
+                      @pointerup.prevent="onJoystickUp"
+                      @pointercancel.prevent="onJoystickUp"
+                    >
+                      <div class="joystick-bg">
+                        <div class="joystick-crosshair"></div>
+                        <div
+                          class="joystick-knob"
+                          :style="{ transform: `translate(${manualSteering * 0.82}px, ${-manualThrottle * 0.82}px)` }"
+                        ></div>
+                      </div>
+                      <div class="joystick-labels">
+                        <span class="jl-up">▲</span><span class="jl-down">▼</span>
+                        <span class="jl-left">◄</span><span class="jl-right">►</span>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </section>
+
+              <!-- Logs tab -->
+              <section v-show="activeTab === 'logs'" class="tab-pane">
+                <header class="tab-header">
+                  <h3>로버 로그</h3>
+                </header>
+                <div class="rover-controls rover-controls-grid">
+                  <button class="btn btn-primary btn-lg-touch" :disabled="logFetching" @click="requestLogs">
+                    {{ logFetching ? '가져오는 중...' : '로버에서 가져오기' }}
+                  </button>
+                  <button class="btn btn-ghost btn-lg-touch" @click="refreshLogs">↻ 새로고침</button>
+                  <button class="btn btn-ghost btn-lg-touch" :disabled="logEntries.length === 0" @click="downloadLogs">↓ 다운로드</button>
+                  <button class="btn btn-ghost btn-lg-touch" :disabled="logEntries.length === 0" @click="showLogs = true">전체 보기</button>
+                </div>
+                <div class="logs-meta">
+                  {{ logEntries.length }}줄
+                  <template v-if="logUploadedAt">· {{ formatSnapshotTime(logUploadedAt) }}</template>
+                </div>
+                <div v-if="logEntries.length === 0" class="empty-msg">업로드된 로그가 없습니다.</div>
+                <div v-else class="logs-view logs-view-inline">
+                  <div
+                    v-for="(e, i) in logEntries.slice(-50)" :key="i"
+                    :class="['log-row', `log-${(e.level || '').toLowerCase()}`]"
+                  >
+                    <span class="log-time">{{ formatLogTime(e.t) }}</span>
+                    <span class="log-level">{{ e.level }}</span>
+                    <span class="log-msg">{{ e.msg }}</span>
                   </div>
                 </div>
-              </div>
-            </div>
+              </section>
 
-            <!-- Multi-select info -->
-            <div v-if="multiSelectedIds.size > 0" class="panel-section edit-section">
-              <h3>{{ multiSelectedIds.size }}개 콘 선택</h3>
-              <div class="edit-buttons">
-                <span class="multi-select-hint">드래그하여 이동</span>
-                <button class="btn btn-ghost btn-sm" @click="clearMultiSelection">선택 해제</button>
-              </div>
             </div>
-
-            <!-- Cone edit -->
-            <div v-if="selectedConeId && multiSelectedIds.size === 0" class="panel-section edit-section">
-              <h3>콘 수정 (#{{ coneSideIndex(activeCourseId, selectedConeId) }})</h3>
-              <div class="coord-inputs">
-                <input v-model="editLat" type="number" step="any" placeholder="위도" />
-                <input v-model="editLng" type="number" step="any" placeholder="경도" />
-                <select v-model="editSide"><option value="left">L</option><option value="center">M</option><option value="right">R</option></select>
-              </div>
-              <div class="edit-buttons">
-                <button class="btn btn-primary" @click="updateCone">저장</button>
-                <button class="btn btn-danger" @click="deleteCone(selectedConeId)">삭제</button>
-                <button class="btn btn-ghost" @click="selectedConeId = null">취소</button>
-              </div>
-            </div>
-
-            <!-- Cone list -->
-            <div class="panel-section cone-list-section">
-              <div class="cone-list-header">
-                <h3>
-                  콘 목록 ({{ filteredCones.length }})
-                  <span v-if="coneFilter !== 'all'" class="filter-tag" :style="{ '--fc': SIDE_COLORS[coneFilter] }">{{ coneFilterLabel }}만</span>
-                </h3>
-                <div class="cone-filter">
-                  <button :class="['filter-btn', { active: coneFilter === 'all' }]" @click="coneFilter = 'all'" title="전체 콘 표시">전체</button>
-                  <button :class="['filter-btn', { active: coneFilter === 'left' }]" @click="coneFilter = 'left'" :style="{ '--fc': SIDE_COLORS.left }" title="왼쪽 콘만">L</button>
-                  <button :class="['filter-btn', { active: coneFilter === 'center' }]" @click="coneFilter = 'center'" :style="{ '--fc': SIDE_COLORS.center }" title="가운데 콘만">M</button>
-                  <button :class="['filter-btn', { active: coneFilter === 'right' }]" @click="coneFilter = 'right'" :style="{ '--fc': SIDE_COLORS.right }" title="오른쪽 콘만">R</button>
-                </div>
-              </div>
-              <div class="cone-list">
-                <div
-                  v-for="cone in filteredCones" :key="cone.id"
-                  :data-cone-id="cone.id"
-                  :class="['cone-item', { selected: selectedConeId === cone.id }]"
-                  @click="panToCone(cone)"
-                >
-                  <span class="cone-num" :style="{ color: SIDE_COLORS[cone.side] }">#{{ coneSideIndex(activeCourseId, cone.id) }}</span>
-                  <span class="cone-coords">{{ cone.lat.toFixed(6) }}, {{ cone.lng.toFixed(6) }}</span>
-                  <button class="del-btn" @click.stop="deleteCone(cone.id)">×</button>
-                </div>
-                <div v-if="filteredCones.length === 0" class="empty-msg">콘이 없습니다.</div>
-              </div>
-            </div>
-          </template>
-
-          <div v-else class="panel-section"><p class="empty-msg">코스를 선택하세요.</p></div>
+          </aside>
         </div>
       </div>
     </div>
@@ -1709,15 +1872,75 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.map-layout { height: 100%; overflow: hidden; padding: 1.5rem; position: relative; }
+.map-layout { height: 100%; overflow: hidden; padding: 1rem; position: relative; }
 
 .content {
-  height: 100%; display: flex; overflow: hidden;
+  height: 100%; display: flex; flex-direction: column; overflow: hidden;
   border-radius: 12px; border: 1px solid var(--border-primary);
   position: relative;
+  background: var(--bg-primary);
 }
 
-.map { flex: 1; min-height: 0; z-index: 0; }
+.workspace { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+/* ── Top status strip ─────────────────────────────── */
+.status-strip {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.5rem 0.875rem; min-height: 40px;
+  border-bottom: 1px solid var(--border-primary);
+  background: var(--bg-primary); color: var(--text-primary);
+  font-size: 0.85rem; font-weight: 500;
+  cursor: help;
+}
+.status-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: #94a3b8; flex-shrink: 0;
+}
+.status-strip.rover-badge-ok .status-dot { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+.status-strip.rover-badge-warn .status-dot { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
+.status-strip.rover-badge-off .status-dot { background: #94a3b8; }
+.status-text {
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: "JetBrains Mono", monospace;
+}
+.status-inspector-toggle {
+  min-width: 44px; min-height: 32px;
+  padding: 0 0.75rem;
+  border: 1px solid var(--border-primary); border-radius: 6px;
+  background: var(--bg-secondary); color: var(--text-primary);
+  cursor: pointer; font-size: 0.9rem; font-weight: 700;
+}
+.status-inspector-toggle:hover { background: var(--accent-primary); color: #fff; }
+
+/* ── Body: rail + map + inspector ─────────────────── */
+.workspace-body { flex: 1; display: flex; min-height: 0; }
+
+.rail {
+  width: 72px; flex-shrink: 0;
+  display: flex; flex-direction: column;
+  padding: 0.5rem 0; gap: 0.375rem;
+  border-right: 1px solid var(--border-primary);
+  background: var(--bg-primary);
+}
+.rail-btn {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 2px;
+  min-height: 60px; padding: 0.4rem 0.25rem;
+  margin: 0 0.25rem; border: none; border-radius: 8px;
+  background: transparent; color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.rail-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
+.rail-btn.active {
+  background: var(--accent-primary); color: #fff;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--accent-primary) 50%, transparent);
+}
+.rail-icon { font-size: 1.5rem; line-height: 1; }
+.rail-label { font-size: 0.7rem; font-weight: 600; }
+
+.map-wrap { flex: 1; position: relative; min-width: 0; min-height: 0; }
+.map { width: 100%; height: 100%; z-index: 0; }
 
 .map-overlay {
   position: absolute; top: 1rem; left: 50%; transform: translateX(-50%);
@@ -1726,54 +1949,71 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-.rover-badge {
-  position: absolute; top: 1rem; right: 1rem; z-index: 500;
-  display: flex; align-items: center; gap: 0.4rem;
-  padding: 0.3rem 0.6rem; border-radius: 999px;
-  background: rgba(0,0,0,0.7); color: #fff;
-  font-size: 0.75rem; font-weight: 500;
-  pointer-events: none;
+.inspector-handle {
+  width: 8px; flex-shrink: 0;
+  background: var(--border-primary);
+  cursor: col-resize;
+  touch-action: none;
+  transition: background 0.12s;
 }
-.rover-badge-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: #94a3b8;
+.inspector-handle:hover, .inspector-handle.dragging { background: var(--accent-primary); }
+
+.inspector {
+  flex-shrink: 0; min-width: 280px; max-width: 600px;
+  background: var(--bg-primary);
+  display: flex; flex-direction: column;
+  overflow: hidden;
 }
-.rover-badge-ok .rover-badge-dot { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
-.rover-badge-warn .rover-badge-dot { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }
-.rover-badge-off .rover-badge-dot { background: #94a3b8; }
+.inspector-body {
+  flex: 1; overflow-y: auto;
+  display: flex; flex-direction: column;
+}
+
+/* Tab panes */
+.tab-pane {
+  display: flex; flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem 1.5rem;
+}
+.tab-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-bottom: 0.5rem; margin-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border-primary);
+}
+.tab-header h3 { margin: 0; font-size: 1rem; font-weight: 700; }
+
+.inspector-group {
+  padding: 0.625rem 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  display: flex; flex-direction: column; gap: 0.5rem;
+}
+.inspector-group.selected {
+  background: color-mix(in srgb, var(--accent-primary) 7%, var(--bg-primary));
+  border-color: var(--accent-primary);
+}
+.group-title {
+  font-size: 0.85rem; font-weight: 700; color: var(--text-primary);
+}
+.hint { font-size: 0.75rem; color: var(--text-secondary); margin: 0; }
+
+/* Large touch-friendly button variant — min 44x44. */
+.btn-lg-touch {
+  min-height: 44px;
+  padding: 0.5rem 0.875rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
 
 /* Emergency stop inline */
 .estop-btn-inline {
   background: #dc2626; color: #fff; border: none;
-  font-size: 0.8rem; font-weight: 700;
-  padding: 0.375rem 0.75rem; border-radius: 6px;
+  font-weight: 700;
+  border-radius: 6px;
   cursor: pointer; box-shadow: 0 2px 8px rgba(220,38,38,0.4);
 }
 .estop-btn-inline:active { opacity: 0.8; }
-
-/* Panel (desktop sidebar) */
-.panel {
-  width: 320px; flex-shrink: 0;
-  background: var(--bg-primary);
-  border-left: 1px solid var(--border-primary);
-  display: flex; flex-direction: column;
-  overflow: hidden;
-}
-
-.panel-scroll {
-  flex: 1; overflow: hidden;
-  display: flex; flex-direction: column;
-}
-
-.panel-section {
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--border-primary);
-}
-
-.panel-section h3 {
-  margin: 0 0 0.5rem; font-size: 0.9rem; font-weight: 700;
-  color: var(--text-primary);
-}
 
 /* Course list */
 .course-add { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
@@ -1823,13 +2063,24 @@ onUnmounted(() => {
 .dl-btn:hover { color: var(--accent-primary); }
 .del-btn:hover { color: var(--accent-danger, #ef4444); }
 
-/* On touch-only devices (no hover), enlarge tap targets per WCAG 2.5.5 +
-   Apple HIG 44pt recommendation. Desktop keeps the tight visual rhythm. */
-@media (hover: none) {
+/* Touch-friendly tap targets per WCAG 2.5.5 / Apple HIG 44pt when any coarse
+   pointer (touchscreen, stylus, or external touch surface) is present. A
+   hybrid laptop gets the bigger targets even when the user is on the mouse —
+   that's a deliberate trade so switching to touch mid-task isn't fiddly. */
+@media (any-pointer: coarse) {
   .dl-btn, .del-btn, .vis-btn, .arrow-btn {
     min-width: 44px;
     min-height: 44px;
   }
+  .side-btn, .filter-btn {
+    min-height: 44px;
+    padding: 0.6rem 0.75rem;
+  }
+  .status-inspector-toggle { min-height: 44px; min-width: 56px; }
+  .inspector-handle { width: 14px; }
+  .course-item { min-height: 44px; padding: 0.5rem 0.375rem; }
+  .cone-item { min-height: 44px; padding: 0.5rem 0.375rem; }
+  .waypoint-item { min-height: 44px; padding: 0.5rem 0.6rem; }
 }
 
 .import-btn { cursor: pointer; }
@@ -1854,7 +2105,19 @@ onUnmounted(() => {
 .btn-block { width: 100%; }
 
 /* Rover controls */
-.rover-controls { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.rover-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.rover-controls-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem;
+}
+.rover-controls-grid .btn { width: 100%; }
+.rover-controls-grid .estop-btn-inline { grid-column: span 2; }
+
+.course-toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
+.course-toolbar .btn { flex: 1; min-width: 120px; }
+
+.logs-view-inline {
+  flex: none; max-height: 50vh;
+}
 
 .path-info {
   margin-top: 0.5rem; padding: 0.375rem 0.5rem;
@@ -2110,59 +2373,60 @@ onUnmounted(() => {
   font-size: 0.8rem; color: var(--text-primary);
 }
 
-.empty-msg { text-align: center; padding: 1rem 0; color: var(--text-secondary); font-size: 0.8rem; }
+.empty-msg { text-align: center; padding: 1rem 0; color: var(--text-secondary); font-size: 0.85rem; }
+.empty-msg.large { padding: 2rem 0; font-size: 0.95rem; display: flex; flex-direction: column; align-items: center; gap: 0.75rem; }
 
-/* ── Mobile bottom sheet ───────────────────── */
+/* ── Mobile: rail → bottom tab bar, inspector → bottom drawer ────────── */
 @media (max-width: 768px) {
   .map-layout { padding: 0; }
+  .content { border-radius: 0; border: none; }
 
-  .content {
-    border-radius: 0; border: none;
+  .workspace-body {
+    flex-direction: column;
     position: relative;
   }
 
-  .map { height: 100%; }
+  .rail {
+    order: 99;
+    width: 100%; flex-direction: row;
+    border-right: none; border-top: 1px solid var(--border-primary);
+    padding: 0.25rem 0.5rem; gap: 0.25rem;
+    justify-content: space-around;
+    background: var(--bg-primary);
+  }
+  .rail-btn { flex: 1; min-height: 56px; margin: 0; }
+  .rail-icon { font-size: 1.25rem; }
+  .rail-label { font-size: 0.7rem; }
 
-  .panel.sheet {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    width: 100%;
-    border-left: none;
+  .map-wrap { flex: 1; min-height: 200px; }
+
+  .inspector-handle { display: none; }
+
+  .inspector {
+    position: fixed; left: 0; right: 0; bottom: 56px; /* above mobile rail */
+    width: 100% !important;
+    max-width: 100%; min-width: 0; max-height: 70vh;
     border-top: 1px solid var(--border-primary);
     border-radius: 12px 12px 0 0;
-    box-shadow: 0 -4px 20px rgba(0,0,0,0.15);
-    transition: height 0.3s ease;
+    box-shadow: 0 -4px 20px rgba(0,0,0,0.2);
     z-index: 600;
+    transition: height 0.2s ease;
   }
-
-  .panel.sheet.sheet-dragging {
-    transition: none;
-  }
-
-  .panel-scroll {
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .cone-list-section { flex: none; overflow: visible; }
-  .cone-list { overflow-y: visible; }
 
   .sheet-handle {
     display: flex; align-items: center; justify-content: center;
-    gap: 0.5rem; padding: 0.5rem 1rem;
+    padding: 0.5rem 1rem;
     cursor: pointer; flex-shrink: 0;
-    flex-direction: column;
+    touch-action: none;
   }
-
   .handle-bar {
-    width: 36px; height: 4px; border-radius: 2px;
+    width: 42px; height: 4px; border-radius: 2px;
     background: var(--text-secondary); opacity: 0.4;
   }
 
-  .handle-label {
-    font-size: 0.8rem; font-weight: 600; color: var(--text-primary);
-  }
-
-  .joystick { max-width: 160px; }
+  .joystick { max-width: 180px; }
+  .rover-controls-grid { grid-template-columns: 1fr; }
+  .rover-controls-grid .estop-btn-inline { grid-column: span 1; }
 }
 
 /* Desktop: hide sheet handle */
