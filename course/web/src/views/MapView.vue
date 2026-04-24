@@ -1,10 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
-import { useRouter } from "vue-router";
 import L from "leaflet";
 import { request } from "../api.js";
-
-const router = useRouter();
 
 /* ── State ─────────────────────────────────────────── */
 const courses = ref([]);
@@ -31,6 +28,44 @@ function onRailClick(key) {
     inspectorCollapsed.value = false;
   }
 }
+
+function hideLiveMapLayers() {
+  if (!map) return;
+  for (const m of Object.values(markers)) { try { map.removeLayer(m); } catch {} }
+  if (roverMarker) { try { map.removeLayer(roverMarker); } catch {} }
+  if (pathLine) { try { map.removeLayer(pathLine); } catch {} }
+  if (pathStartMarker) { try { map.removeLayer(pathStartMarker); } catch {} }
+  if (pathEndMarker) { try { map.removeLayer(pathEndMarker); } catch {} }
+  for (const m of Object.values(sprayMarkers)) { try { map.removeLayer(m); } catch {} }
+}
+function restoreLiveMapLayers() {
+  if (!map) return;
+  rebuildAllMarkers();
+  const lp = roverStatus.value.last_position;
+  if (lp) updateRoverMarker(lp.lat, lp.lng);
+  if (pathStart && pathWaypoints.value.length > 0) renderPath();
+  renderSprayMarkers();
+}
+
+// When entering the missions tab, hide the live operation layers and load
+// the mission list; when leaving, tear down the replay state and restore the
+// live view. Keeps one Leaflet instance for both modes so operators never see
+// the "gray map" that used to happen on the separate missions route.
+watch(activeTab, (next, prev) => {
+  if (next === prev || !map) return;
+  if (prev === "missions") {
+    stopReplay();
+    clearMissionMap();
+    selectedMissionId.value = null;
+    missionDetail.value = null;
+    missionSamples.value = [];
+    restoreLiveMapLayers();
+  }
+  if (next === "missions") {
+    hideLiveMapLayers();
+    loadMissions();
+  }
+});
 const selectedConeId = ref(null);
 const multiSelectedIds = ref(new Set());
 const editLat = ref("");
@@ -150,12 +185,187 @@ const INSPECTOR_TABS = [
   { key: "cones", label: "콘", icon: "🔶" },
   { key: "rover", label: "로버", icon: "🚗" },
   { key: "logs", label: "로그", icon: "📜" },
+  { key: "missions", label: "이력", icon: "📊" },
 ];
-// Items that aren't inspector tabs but share the rail so the operator has
-// a single nav surface. { key: unique, to: router route }.
-const RAIL_ROUTES = [
-  { key: "missions", label: "이력", icon: "📊", to: "/missions" },
-];
+
+// Mission history state (integrated into this view so the same map + rail +
+// inspector structure serves both the live operation and replay).
+const missions = ref([]);
+const missionTotal = ref(0);
+const missionPage = 50;
+const selectedMissionId = ref(null);
+const missionDetail = ref(null);
+const missionSamples = ref([]);
+const missionLoading = ref(false);
+const missionLoadingMore = ref(false);
+const replayPlaying = ref(false);
+const replayIdx = ref(0);
+const replaySpeed = ref(1);
+let playTimer = null;
+
+const MISSION_STATUS_LABEL = { running: "진행 중", completed: "완료", stopped: "정지됨", error: "오류" };
+const MISSION_STATUS_COLOR = { running: "#3b82f6", completed: "#22c55e", stopped: "#f59e0b", error: "#ef4444" };
+
+function formatMissionDuration(started, ended) {
+  if (!ended) return "—";
+  const s = Math.round((ended - started) / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${s % 60}s`;
+}
+function formatMissionTimestamp(ms) {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleString("ko-KR", { hour12: false });
+}
+
+async function loadMissions() {
+  missionLoading.value = true;
+  try {
+    const res = await request(`/api/missions?limit=${missionPage}&offset=0`);
+    const data = await res.json();
+    missions.value = data.missions || [];
+    missionTotal.value = data.total || 0;
+  } catch (err) { alert(err.message); }
+  finally { missionLoading.value = false; }
+}
+async function loadMoreMissions() {
+  if (missionLoadingMore.value || missions.value.length >= missionTotal.value) return;
+  missionLoadingMore.value = true;
+  try {
+    const res = await request(`/api/missions?limit=${missionPage}&offset=${missions.value.length}`);
+    const data = await res.json();
+    missions.value = [...missions.value, ...(data.missions || [])];
+    missionTotal.value = data.total || missions.value.length;
+  } catch (err) { alert(err.message); }
+  finally { missionLoadingMore.value = false; }
+}
+
+async function selectMission(id) {
+  if (selectedMissionId.value === id) return;
+  selectedMissionId.value = id;
+  stopReplay();
+  try {
+    const [d, t] = await Promise.all([
+      request(`/api/missions/${id}`).then((r) => r.json()),
+      request(`/api/missions/${id}/telemetry`).then((r) => r.json()),
+    ]);
+    missionDetail.value = d;
+    missionSamples.value = t.samples || [];
+    replayIdx.value = 0;
+    renderMissionMap();
+  } catch (err) { alert(err.message); }
+}
+
+// Mission map layers — kept separate from the live cone/rover layers so
+// switching tabs is a clean swap instead of overlapping paint.
+let missionPlannedMarkers = [];
+let missionPlannedPath = null;
+let missionActualPath = null;
+let missionReplayMarker = null;
+
+function clearMissionMap() {
+  if (!map) return;
+  for (const m of missionPlannedMarkers) { try { map.removeLayer(m); } catch {} }
+  missionPlannedMarkers = [];
+  if (missionPlannedPath) { try { map.removeLayer(missionPlannedPath); } catch {} missionPlannedPath = null; }
+  if (missionActualPath) { try { map.removeLayer(missionActualPath); } catch {} missionActualPath = null; }
+  if (missionReplayMarker) { try { map.removeLayer(missionReplayMarker); } catch {} missionReplayMarker = null; }
+}
+
+function renderMissionMap() {
+  if (!map || !missionDetail.value) return;
+  clearMissionMap();
+
+  const waypoints = missionDetail.value.waypoints || [];
+  waypoints.forEach((wp, i) => {
+    const marker = L.marker([wp.lat, wp.lng], {
+      icon: L.divIcon({
+        className: "",
+        html: `<div style="width:22px;height:22px;border-radius:50%;background:#8b5cf6;border:2px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,0.4);">${i + 1}</div>`,
+        iconSize: [22, 22], iconAnchor: [11, 11],
+      }),
+      interactive: false,
+    }).addTo(map);
+    missionPlannedMarkers.push(marker);
+  });
+  if (waypoints.length > 0) {
+    missionPlannedPath = L.polyline(waypoints.map((w) => [w.lat, w.lng]), {
+      color: "#8b5cf6", weight: 2, dashArray: "6 4", opacity: 0.75,
+    }).addTo(map);
+  }
+
+  const validSamples = missionSamples.value.filter((s) => s.lat != null && s.lng != null);
+  if (validSamples.length >= 2) {
+    missionActualPath = L.polyline(validSamples.map((s) => [s.lat, s.lng]), {
+      color: "#ef4444", weight: 3, opacity: 0.9,
+    }).addTo(map);
+  }
+
+  const allPoints = [
+    ...waypoints.map((w) => [w.lat, w.lng]),
+    ...validSamples.map((s) => [s.lat, s.lng]),
+  ];
+  if (allPoints.length > 0) {
+    map.fitBounds(L.latLngBounds(allPoints), { padding: [40, 40] });
+  }
+  updateReplayMarker();
+}
+
+function updateReplayMarker() {
+  if (!map || missionSamples.value.length === 0) return;
+  const s = missionSamples.value[replayIdx.value];
+  if (!s || s.lat == null) {
+    if (missionReplayMarker) { map.removeLayer(missionReplayMarker); missionReplayMarker = null; }
+    return;
+  }
+  const color = s.nav_state === "ERROR" ? "#ef4444"
+    : s.nav_state === "SPRAYING" ? "#f59e0b"
+    : "#22c55e";
+  if (missionReplayMarker) {
+    missionReplayMarker.setLatLng([s.lat, s.lng]);
+  } else {
+    missionReplayMarker = L.marker([s.lat, s.lng], {
+      icon: L.divIcon({
+        className: "",
+        html: `<div style="width:18px;height:18px;border-radius:50%;background:${color};border:3px solid #fff;box-shadow:0 0 0 2px ${color};"></div>`,
+        iconSize: [18, 18], iconAnchor: [9, 9],
+      }),
+      interactive: false, zIndexOffset: 1000,
+    }).addTo(map);
+  }
+}
+
+watch(replayIdx, updateReplayMarker);
+
+function scheduleReplayStep() {
+  const i = replayIdx.value;
+  if (i >= missionSamples.value.length - 1) { stopReplay(); return; }
+  const dt = Math.max(0, (missionSamples.value[i + 1].t || 0) - (missionSamples.value[i].t || 0));
+  const interval = Math.max(16, Math.min(2000, dt / Math.max(1, replaySpeed.value)));
+  playTimer = setTimeout(() => {
+    if (!replayPlaying.value) return;
+    replayIdx.value = Math.min(missionSamples.value.length - 1, replayIdx.value + 1);
+    scheduleReplayStep();
+  }, interval);
+}
+function startReplay() {
+  if (missionSamples.value.length === 0) return;
+  if (replayIdx.value >= missionSamples.value.length - 1) replayIdx.value = 0;
+  replayPlaying.value = true;
+  scheduleReplayStep();
+}
+function stopReplay() {
+  replayPlaying.value = false;
+  if (playTimer) { clearTimeout(playTimer); playTimer = null; }
+}
+function togglePlay() { if (replayPlaying.value) stopReplay(); else startReplay(); }
+
+const currentSampleTime = computed(() => {
+  const s = missionSamples.value[replayIdx.value];
+  return s ? formatMissionTimestamp(s.t) : "—";
+});
+const currentSampleState = computed(() => missionSamples.value[replayIdx.value]?.nav_state || "—");
+const currentSampleFix = computed(() => missionSamples.value[replayIdx.value]?.fix_status || "—");
 const activeTab = ref(loadPref("activeTab", "courses"));
 const inspectorCollapsed = ref(loadPref("inspectorCollapsed", false, JSON.parse));
 const inspectorWidth = ref(Math.max(280, Math.min(Number(loadPref("inspectorWidth", 360, Number)), 600)));
@@ -1574,7 +1784,7 @@ onUnmounted(() => {
 
         <div class="workspace-body">
           <!-- Left icon rail -->
-          <nav class="rail" aria-label="탐색">
+          <nav class="rail" aria-label="인스펙터 카테고리">
             <button
               v-for="t in INSPECTOR_TABS" :key="t.key"
               :class="['rail-btn', { active: activeTab === t.key && !inspectorCollapsed }]"
@@ -1583,16 +1793,6 @@ onUnmounted(() => {
             >
               <span class="rail-icon">{{ t.icon }}</span>
               <span class="rail-label">{{ t.label }}</span>
-            </button>
-            <div class="rail-divider"></div>
-            <button
-              v-for="r in RAIL_ROUTES" :key="r.key"
-              class="rail-btn"
-              @click="router.push(r.to)"
-              :title="r.label"
-            >
-              <span class="rail-icon">{{ r.icon }}</span>
-              <span class="rail-label">{{ r.label }}</span>
             </button>
           </nav>
 
@@ -1879,6 +2079,67 @@ onUnmounted(() => {
                 </div>
               </section>
 
+              <!-- Missions tab (integrated; map shows replay layers while active) -->
+              <section v-show="activeTab === 'missions'" class="tab-pane">
+                <header class="tab-header">
+                  <h3>미션 이력</h3>
+                  <button class="btn btn-ghost btn-sm" @click="loadMissions" title="새로고침">↻</button>
+                </header>
+                <div v-if="missionLoading" class="empty-msg">불러오는 중...</div>
+                <div v-else-if="missions.length === 0" class="empty-msg">기록된 미션이 없습니다.</div>
+                <div v-else class="missions-list-inline">
+                  <div
+                    v-for="m in missions" :key="m.id"
+                    :class="['mission-card', { selected: selectedMissionId === m.id }]"
+                    @click="selectMission(m.id)"
+                  >
+                    <div class="mission-top">
+                      <span class="mission-id">#{{ m.id }}</span>
+                      <span class="mission-status-badge" :style="{ background: MISSION_STATUS_COLOR[m.status] }">
+                        {{ MISSION_STATUS_LABEL[m.status] || m.status }}
+                      </span>
+                    </div>
+                    <div class="mission-meta">
+                      <span>{{ formatMissionTimestamp(m.started_at) }}</span>
+                      <span>· {{ formatMissionDuration(m.started_at, m.ended_at) }}</span>
+                      <span v-if="m.course_name">· {{ m.course_name }}</span>
+                    </div>
+                    <div class="mission-meta-sub">{{ m.sample_count }}개 샘플</div>
+                  </div>
+                  <div v-if="missions.length < missionTotal" class="load-more">
+                    <button class="btn btn-ghost btn-lg-touch" :disabled="missionLoadingMore" @click="loadMoreMissions">
+                      {{ missionLoadingMore ? "불러오는 중..." : `더 보기 (${missions.length}/${missionTotal})` }}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Replay controls for the selected mission -->
+                <div v-if="missionDetail" class="inspector-group mission-replay">
+                  <div class="group-title">
+                    #{{ missionDetail.id }}
+                    <span class="replay-state">{{ currentSampleState }} · {{ currentSampleFix }}</span>
+                  </div>
+                  <div class="replay-controls-touch">
+                    <button class="btn btn-primary btn-lg-touch replay-play" @click="togglePlay" :disabled="missionSamples.length === 0">
+                      {{ replayPlaying ? '⏸ 일시정지' : '▶ 재생' }}
+                    </button>
+                    <input
+                      type="range" class="replay-slider"
+                      :min="0" :max="Math.max(0, missionSamples.length - 1)" :step="1"
+                      v-model.number="replayIdx"
+                      :disabled="missionSamples.length === 0"
+                    />
+                    <select v-model.number="replaySpeed" class="replay-speed">
+                      <option :value="1">1× 실시간</option>
+                      <option :value="4">4×</option>
+                      <option :value="16">16×</option>
+                      <option :value="64">64×</option>
+                    </select>
+                  </div>
+                  <div class="replay-time">{{ currentSampleTime }}</div>
+                </div>
+              </section>
+
             </div>
           </aside>
         </div>
@@ -2142,6 +2403,56 @@ onUnmounted(() => {
 
 .logs-view-inline {
   flex: none; max-height: 50vh;
+}
+
+/* ── Mission history (inside the missions inspector tab) ─────────── */
+.missions-list-inline { display: flex; flex-direction: column; gap: 0.5rem; }
+.mission-card {
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+.mission-card:hover { background: var(--bg-primary); }
+.mission-card.selected {
+  background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-primary));
+  border-color: var(--accent-primary);
+}
+.mission-top {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 0.25rem;
+}
+.mission-id { font-weight: 700; font-family: "JetBrains Mono", monospace; }
+.mission-status-badge {
+  padding: 0.1rem 0.5rem; border-radius: 4px;
+  font-size: 0.7rem; font-weight: 600; color: #fff;
+}
+.mission-meta {
+  font-size: 0.8rem; color: var(--text-secondary);
+  display: flex; gap: 0.3rem; flex-wrap: wrap;
+}
+.mission-meta-sub { font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.2rem; }
+.load-more { display: flex; justify-content: center; padding: 0.5rem; }
+
+.mission-replay { position: sticky; bottom: 0; background: var(--bg-primary); z-index: 1; }
+.replay-controls-touch { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
+.replay-play { min-width: 120px; }
+.replay-slider { flex: 1; min-width: 0; accent-color: var(--accent-primary); height: 28px; }
+.replay-speed {
+  padding: 0.4rem 0.5rem; min-height: 36px;
+  background: var(--bg-primary); color: var(--text-primary);
+  border: 1px solid var(--border-primary); border-radius: 6px;
+  font-family: "JetBrains Mono", monospace;
+}
+.replay-state {
+  font-family: "JetBrains Mono", monospace; font-size: 0.75rem;
+  color: var(--text-secondary); font-weight: 400;
+}
+.replay-time {
+  font-family: "JetBrains Mono", monospace; font-size: 0.8rem;
+  color: var(--text-secondary); margin-top: 0.25rem;
 }
 
 .path-info {

@@ -7,11 +7,13 @@ import { initTheme } from "@shared/theme-init.js";
 import { initTestBanner } from "@shared/test-banner.js";
 
 import MapView from "./views/MapView.vue";
-import MissionsView from "./views/MissionsView.vue";
 
+// Mission history is integrated into MapView as the 5th inspector tab so
+// the same rail + map + inspector layout serves both live operation and
+// replay; legacy /missions URLs redirect to the merged view.
 const routes = [
   { path: "/", component: MapView },
-  { path: "/missions", component: MissionsView },
+  { path: "/missions", redirect: "/" },
 ];
 
 const router = createRouter({
