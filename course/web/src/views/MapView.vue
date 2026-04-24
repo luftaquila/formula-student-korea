@@ -101,58 +101,175 @@ const DISCONNECT_REASON_LABEL = {
   replaced: "다른 세션으로 교체됨",
 };
 
-const roverStatusText = computed(() => {
-  const s = roverStatus.value;
-  if (!s.connected) {
-    if (s.last_disconnect_reason) {
-      const label = DISCONNECT_REASON_LABEL[s.last_disconnect_reason] || s.last_disconnect_reason;
-      if (s.last_disconnect_at) {
-        const ago = Math.max(0, Math.round((Date.now() - s.last_disconnect_at) / 1000));
-        return `로버 미연결 · ${label} (${ago}s 전)`;
-      }
-      return `로버 미연결 · ${label}`;
-    }
-    return "로버 미연결";
-  }
-  const parts = [];
-  if (s.fix_status) parts.push(s.fix_status.replace(/_/g, " ").toUpperCase());
-  if (s.nav_state) parts.push(s.nav_state);
-  if (s.ntrip_connected !== null) parts.push(`NTRIP ${s.ntrip_connected ? "ok" : "off"}`);
-  if (s.battery && s.battery.percent != null) {
-    const v = s.battery.voltage != null ? ` ${s.battery.voltage.toFixed(1)}V` : "";
-    parts.push(`🔋 ${s.battery.percent}%${v}`);
-  }
-  if (s.last_position_at) {
-    const ago = Math.max(0, Math.round((Date.now() - s.last_position_at) / 1000));
-    parts.push(`pos ${ago}s`);
-  }
-  return parts.join(" · ");
-});
-
-// Verbose tooltip — includes NTRIP caster, retries, last correction age.
-const roverStatusTooltip = computed(() => {
-  const s = roverStatus.value;
-  const lines = [roverStatusText.value];
-  if (s.ntrip) {
-    if (s.ntrip.host) {
-      const mp = s.ntrip.mountpoint ? `/${s.ntrip.mountpoint}` : "";
-      lines.push(`NTRIP caster: ${s.ntrip.host}${mp}`);
-    }
-    if (s.ntrip.last_correction_at) {
-      const ago = Math.max(0, Math.round(Date.now() / 1000 - s.ntrip.last_correction_at));
-      lines.push(`보정 마지막 수신: ${ago}s 전`);
-    }
-    if (s.ntrip.fail_count != null && s.ntrip.fail_count > 0) {
-      lines.push(`재연결 시도: ${s.ntrip.fail_count}`);
-    }
-    if (s.ntrip.last_error) {
-      lines.push(`마지막 오류: ${s.ntrip.last_error}`);
-    }
-  }
-  return lines.join("\n");
-});
-
 const BATTERY_WARN_PERCENT = 30;
+const BATTERY_CRIT_PERCENT = 20;
+
+// Tick ref — bumps every second so time-ago computeds recalc even when no
+// new SSE event arrives (otherwise "pos 0s" stays stale when the rover stops).
+const uiTick = ref(0);
+let uiTickInterval = null;
+
+// Recent position history (for avg speed / ETA). Plain array + a bump ref so
+// computeds depending on it get retriggered without making the list reactive.
+const recentPositions = [];
+const recentPositionsBump = ref(0);
+function pushRecentPosition(lat, lng) {
+  const now = Date.now();
+  recentPositions.push({ lat, lng, t: now });
+  const cutoff = now - 30000;
+  while (recentPositions.length > 0 && recentPositions[0].t < cutoff) {
+    recentPositions.shift();
+  }
+  recentPositionsBump.value += 1;
+}
+
+const avgSpeedMs = computed(() => {
+  recentPositionsBump.value; // track
+  if (recentPositions.length < 2) return null;
+  const first = recentPositions[0];
+  const last = recentPositions[recentPositions.length - 1];
+  const dt = (last.t - first.t) / 1000;
+  if (dt < 0.5) return null;
+  let dist = 0;
+  for (let i = 1; i < recentPositions.length; i++) {
+    dist += haversine(recentPositions[i - 1], recentPositions[i]);
+  }
+  return dist / dt;
+});
+
+// Distance from rover's last reported position to the next-target waypoint.
+// Only meaningful while a mission is actually being driven.
+const currentTargetDistance = computed(() => {
+  if (roverMode.value !== "executing") return null;
+  const idx = executedIndex.value;
+  if (idx < 0 || idx >= pathWaypoints.value.length) return null;
+  const lp = roverStatus.value.last_position;
+  if (!lp) return null;
+  return haversine(lp, pathWaypoints.value[idx]);
+});
+
+function formatDurationSec(secs) {
+  if (!isFinite(secs) || secs < 1) return null;
+  if (secs < 60) return `~${Math.round(secs)}초`;
+  const m = Math.floor(secs / 60);
+  const s = Math.round(secs % 60);
+  return s === 0 ? `~${m}분` : `~${m}분 ${s}초`;
+}
+
+const missionETA = computed(() => {
+  if (roverMode.value !== "executing") return null;
+  if (pathTotalDist <= 0) return null;
+  const speed = avgSpeedMs.value;
+  if (!speed || speed < 0.05) return null;
+  const remaining = pathTotalDist * Math.max(0, (100 - pathProgress.value) / 100);
+  return formatDurationSec(remaining / speed);
+});
+
+// Per-chip computeds. Each chip owns its own tone (ok/warn/bad/neutral) so
+// the strip's overall color band is decided separately (primary class).
+const fixChip = computed(() => {
+  const s = roverStatus.value;
+  if (!s.connected || !s.fix_status) return null;
+  const label = s.fix_status.replace(/_/g, " ").toUpperCase();
+  const tone = s.fix_status === "rtk_fixed" ? "ok"
+    : s.fix_status === "rtk_float" ? "warn"
+    : "bad";
+  return { label, tone };
+});
+
+const navChip = computed(() => {
+  const s = roverStatus.value;
+  if (!s.connected || !s.nav_state) return null;
+  const dist = currentTargetDistance.value;
+  const label = (dist != null && dist < 50)
+    ? `${s.nav_state} · #${executedIndex.value + 1} → ${dist.toFixed(1)}m`
+    : s.nav_state;
+  const tone = (s.nav_state === "ERROR" || s.nav_state === "EMERGENCY_STOP") ? "bad"
+    : s.nav_state === "IDLE" ? "neutral"
+    : "ok";
+  return { label, tone };
+});
+
+const batteryChip = computed(() => {
+  const s = roverStatus.value;
+  if (!s.connected || !s.battery || s.battery.percent == null) return null;
+  const p = s.battery.percent;
+  const tone = p <= BATTERY_CRIT_PERCENT ? "bad"
+    : p <= BATTERY_WARN_PERCENT ? "warn"
+    : "ok";
+  return { percent: p, voltage: s.battery.voltage, tone };
+});
+
+const ntripChip = computed(() => {
+  const s = roverStatus.value;
+  if (!s.connected || s.ntrip_connected === null) return null;
+  const mp = s.ntrip?.mountpoint;
+  const label = s.ntrip_connected ? (mp ? `📡 ${mp}` : "📡 ok") : "📡 off";
+  const tone = s.ntrip_connected ? "ok" : "bad";
+  return { label, tone };
+});
+
+const posChip = computed(() => {
+  uiTick.value; // retrigger every second
+  const s = roverStatus.value;
+  if (!s.connected || !s.last_position_at) return null;
+  const ago = Math.max(0, Math.round((Date.now() - s.last_position_at) / 1000));
+  const tone = ago <= 5 ? "ok" : ago <= 15 ? "warn" : "bad";
+  return { ago, tone };
+});
+
+const missionChip = computed(() => {
+  if (roverMode.value !== "executing" && roverMode.value !== "stopped") return null;
+  if (pathWaypoints.value.length === 0) return null;
+  return {
+    current: executedIndex.value,
+    total: pathWaypoints.value.length,
+    percent: pathProgress.value,
+    eta: missionETA.value,
+  };
+});
+
+const disconnectInfo = computed(() => {
+  uiTick.value;
+  const s = roverStatus.value;
+  if (s.connected) return null;
+  const label = DISCONNECT_REASON_LABEL[s.last_disconnect_reason] || s.last_disconnect_reason || "원인 미상";
+  let ago = null;
+  if (s.last_disconnect_at) {
+    const sec = Math.max(0, Math.round((Date.now() - s.last_disconnect_at) / 1000));
+    if (sec < 60) ago = `${sec}초 전`;
+    else {
+      const m = Math.floor(sec / 60);
+      const rs = sec % 60;
+      ago = rs === 0 ? `${m}분 전` : `${m}분 ${rs}초 전`;
+    }
+  }
+  return { label, ago };
+});
+
+// Expanded detail panel
+const statusExpanded = ref(false);
+function toggleStatusExpanded() { statusExpanded.value = !statusExpanded.value; }
+
+const ntripCorrectionAge = computed(() => {
+  uiTick.value;
+  const n = roverStatus.value.ntrip;
+  if (!n?.last_correction_at) return null;
+  return Math.max(0, Math.round(Date.now() / 1000 - n.last_correction_at));
+});
+
+const lastPositionAge = computed(() => {
+  uiTick.value;
+  const at = roverStatus.value.last_position_at;
+  if (!at) return null;
+  return Math.max(0, Math.round((Date.now() - at) / 1000));
+});
+
+const remainingDistanceM = computed(() => {
+  if (roverMode.value !== "executing") return null;
+  if (pathTotalDist <= 0) return null;
+  return pathTotalDist * Math.max(0, (100 - pathProgress.value) / 100);
+});
 
 const roverStatusClass = computed(() => {
   const s = roverStatus.value;
@@ -1523,6 +1640,7 @@ function connectSSE() {
   eventSource.addEventListener("rover", (e) => {
     const data = JSON.parse(e.data);
     updateRoverMarker(data.lat, data.lng);
+    pushRecentPosition(data.lat, data.lng);
     if (roverMode.value === "executing") updatePathProgress(data.lat, data.lng);
   });
 
@@ -1659,6 +1777,8 @@ onMounted(async () => {
   checkMobile();
   window.addEventListener("resize", checkMobile);
   window.addEventListener("keydown", onGlobalKeydown);
+  // 1Hz tick so time-ago chips and disconnect-ago refresh without new SSE events.
+  uiTickInterval = setInterval(() => { uiTick.value = (uiTick.value + 1) % 3600; }, 1000);
   await fetchAll();
   await nextTick();
   initMap();
@@ -1669,6 +1789,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener("resize", checkMobile);
   window.removeEventListener("keydown", onGlobalKeydown);
+  if (uiTickInterval) clearInterval(uiTickInterval);
   if (controlInterval) clearInterval(controlInterval);
   if (eventSource) eventSource.close();
   if (map) {
@@ -1775,14 +1896,107 @@ onUnmounted(() => {
       <div class="workspace" :class="{ 'inspector-collapsed': inspectorCollapsed }">
 
         <!-- Persistent status strip (always visible across tabs) -->
-        <div :class="['status-strip', roverStatusClass]" :title="roverStatusTooltip">
-          <span class="status-dot"></span>
-          <span class="status-text">{{ roverStatusText }}</span>
+        <div :class="['status-strip', roverStatusClass, { expanded: statusExpanded }]">
+          <!-- Disconnected: prominent single line with reason + ago -->
+          <template v-if="!roverStatus.connected">
+            <span class="status-dot"></span>
+            <div class="status-disconnect">
+              <span class="status-disconnect-main">⊘ 로버 미연결</span>
+              <span v-if="disconnectInfo" class="status-disconnect-sub">
+                {{ disconnectInfo.label }}<template v-if="disconnectInfo.ago"> · {{ disconnectInfo.ago }}</template>
+              </span>
+            </div>
+            <span class="status-reconnect-hint">재연결 대기 중…</span>
+          </template>
+
+          <!-- Connected: three zones (primary / mission / vitals) of chips -->
+          <template v-else>
+            <span class="status-dot"></span>
+            <div class="chip-row primary-zone">
+              <span v-if="fixChip" :class="['chip', `chip-${fixChip.tone}`]">{{ fixChip.label }}</span>
+              <span v-if="navChip" :class="['chip', `chip-${navChip.tone}`]">🧭 {{ navChip.label }}</span>
+            </div>
+            <div v-if="missionChip" class="mission-inline">
+              <div class="mission-bar"><div class="mission-fill" :style="{ width: missionChip.percent + '%' }"></div></div>
+              <span class="mission-counts">{{ missionChip.current }}/{{ missionChip.total }} · {{ missionChip.percent }}%</span>
+              <span v-if="missionChip.eta" class="mission-eta">ETA {{ missionChip.eta }}</span>
+            </div>
+            <div class="chip-row vitals-zone">
+              <span v-if="batteryChip" :class="['chip', `chip-${batteryChip.tone}`]">
+                🔋 {{ batteryChip.percent }}%<template v-if="batteryChip.voltage != null"> · {{ batteryChip.voltage.toFixed(1) }}V</template>
+              </span>
+              <span v-if="ntripChip" :class="['chip', `chip-${ntripChip.tone}`]">{{ ntripChip.label }}</span>
+              <span v-if="posChip" :class="['chip', `chip-${posChip.tone}`]">📍 {{ posChip.ago }}s</span>
+            </div>
+          </template>
+
+          <button
+            class="status-expand-btn"
+            @click="toggleStatusExpanded"
+            :title="statusExpanded ? '상세 접기' : '상세 펼치기'"
+          >{{ statusExpanded ? '▲' : '▼' }}</button>
           <button
             class="status-inspector-toggle"
             @click="inspectorCollapsed = !inspectorCollapsed"
             :title="inspectorCollapsed ? '인스펙터 펼치기' : '인스펙터 접기'"
           >{{ inspectorCollapsed ? '◀' : '▶' }}</button>
+        </div>
+
+        <!-- Expanded detail panel below status strip -->
+        <div v-if="statusExpanded" class="status-detail">
+          <div class="status-detail-row">
+            <span class="status-detail-key">GPS</span>
+            <span class="status-detail-val">
+              <template v-if="roverStatus.fix_status">{{ roverStatus.fix_status.replace(/_/g, ' ').toUpperCase() }}</template>
+              <template v-else>—</template>
+              <template v-if="lastPositionAge != null"> · 위치 {{ lastPositionAge }}s 전</template>
+            </span>
+          </div>
+          <div class="status-detail-row">
+            <span class="status-detail-key">NTRIP</span>
+            <span class="status-detail-val">
+              <template v-if="roverStatus.ntrip?.host">
+                {{ roverStatus.ntrip.host }}<template v-if="roverStatus.ntrip.mountpoint">/{{ roverStatus.ntrip.mountpoint }}</template>
+              </template>
+              <template v-else>—</template>
+              <template v-if="roverStatus.ntrip_connected === true"> · 연결됨</template>
+              <template v-else-if="roverStatus.ntrip_connected === false"> · 끊김</template>
+              <template v-if="ntripCorrectionAge != null"> · 보정 {{ ntripCorrectionAge }}s 전</template>
+              <template v-if="roverStatus.ntrip?.fail_count"> · 재시도 {{ roverStatus.ntrip.fail_count }}회</template>
+            </span>
+          </div>
+          <div v-if="roverStatus.ntrip?.last_error" class="status-detail-row">
+            <span class="status-detail-key">NTRIP 오류</span>
+            <span class="status-detail-val status-detail-err">{{ roverStatus.ntrip.last_error }}</span>
+          </div>
+          <div class="status-detail-row">
+            <span class="status-detail-key">배터리</span>
+            <span class="status-detail-val">
+              <template v-if="batteryChip">
+                {{ batteryChip.percent }}%<template v-if="batteryChip.voltage != null"> · {{ batteryChip.voltage.toFixed(2) }}V</template><template v-if="roverStatus.battery?.source"> · {{ roverStatus.battery.source }}</template>
+              </template>
+              <template v-else>—</template>
+            </span>
+          </div>
+          <div class="status-detail-row">
+            <span class="status-detail-key">주행</span>
+            <span class="status-detail-val">
+              <template v-if="avgSpeedMs != null">{{ avgSpeedMs.toFixed(2) }} m/s (10초 평균)</template>
+              <template v-else>정지 또는 샘플 부족</template>
+            </span>
+          </div>
+          <div v-if="missionChip" class="status-detail-row">
+            <span class="status-detail-key">미션</span>
+            <span class="status-detail-val">
+              #{{ missionChip.current }}/{{ missionChip.total }} · {{ missionChip.percent }}%
+              <template v-if="remainingDistanceM != null"> · 남은 {{ remainingDistanceM >= 1000 ? (remainingDistanceM/1000).toFixed(2) + 'km' : remainingDistanceM.toFixed(1) + 'm' }}</template>
+              <template v-if="missionChip.eta"> · {{ missionChip.eta }} 후 완료</template>
+            </span>
+          </div>
+          <div v-if="!roverStatus.connected && disconnectInfo" class="status-detail-row">
+            <span class="status-detail-key">연결 끊김</span>
+            <span class="status-detail-val">{{ disconnectInfo.label }}<template v-if="disconnectInfo.ago"> · {{ disconnectInfo.ago }}</template></span>
+          </div>
         </div>
 
         <div class="workspace-body">
@@ -2166,11 +2380,11 @@ onUnmounted(() => {
 /* ── Top status strip ─────────────────────────────── */
 .status-strip {
   display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.5rem 0.875rem; min-height: 40px;
+  padding: 0.4rem 0.75rem; min-height: 48px;
   border-bottom: 1px solid var(--border-primary);
   background: var(--bg-primary); color: var(--text-primary);
-  font-size: 0.85rem; font-weight: 500;
-  cursor: help;
+  font-size: 0.85rem;
+  flex-wrap: wrap;
 }
 .status-dot {
   width: 10px; height: 10px; border-radius: 50%;
@@ -2179,18 +2393,112 @@ onUnmounted(() => {
 .status-strip.rover-badge-ok .status-dot { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
 .status-strip.rover-badge-warn .status-dot { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
 .status-strip.rover-badge-off .status-dot { background: #94a3b8; }
-.status-text {
-  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+
+.chip-row { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
+.primary-zone { flex: 0 1 auto; }
+.vitals-zone { margin-left: auto; flex: 0 1 auto; }
+
+.chip {
+  display: inline-flex; align-items: center;
+  padding: 0.2rem 0.6rem; border-radius: 999px;
+  font-size: 0.78rem; font-weight: 600;
   font-family: "JetBrains Mono", monospace;
+  border: 1px solid transparent; white-space: nowrap;
+  line-height: 1.4;
 }
-.status-inspector-toggle {
+.chip-ok {
+  background: color-mix(in srgb, #22c55e 15%, var(--bg-primary));
+  border-color: color-mix(in srgb, #22c55e 40%, transparent);
+  color: color-mix(in srgb, #22c55e 80%, var(--text-primary));
+}
+.chip-warn {
+  background: color-mix(in srgb, #f59e0b 18%, var(--bg-primary));
+  border-color: color-mix(in srgb, #f59e0b 50%, transparent);
+  color: color-mix(in srgb, #f59e0b 85%, var(--text-primary));
+}
+.chip-bad {
+  background: color-mix(in srgb, #ef4444 20%, var(--bg-primary));
+  border-color: color-mix(in srgb, #ef4444 55%, transparent);
+  color: color-mix(in srgb, #ef4444 85%, var(--text-primary));
+  animation: chip-attention 2s ease-in-out infinite;
+}
+.chip-neutral {
+  background: var(--bg-secondary);
+  border-color: var(--border-primary);
+  color: var(--text-secondary);
+}
+@keyframes chip-attention {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.75; }
+}
+
+/* Mission progress inline between primary + vitals */
+.mission-inline {
+  display: flex; align-items: center; gap: 0.5rem;
+  flex: 1 1 220px; min-width: 0;
+  padding: 0.2rem 0.6rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 999px;
+  font-family: "JetBrains Mono", monospace; font-size: 0.78rem;
+}
+.mission-bar {
+  flex: 1; min-width: 60px; height: 6px;
+  background: color-mix(in srgb, var(--accent-primary) 15%, var(--bg-primary));
+  border-radius: 3px; overflow: hidden;
+}
+.mission-fill {
+  height: 100%;
+  background: var(--accent-primary);
+  transition: width 0.3s ease;
+}
+.mission-counts { font-weight: 700; color: var(--text-primary); white-space: nowrap; }
+.mission-eta { color: var(--text-secondary); white-space: nowrap; }
+
+/* Disconnected layout */
+.status-disconnect {
+  display: flex; flex-direction: column; gap: 0.1rem;
+  flex: 1; min-width: 0;
+}
+.status-disconnect-main { font-size: 0.95rem; font-weight: 700; color: var(--text-primary); }
+.status-disconnect-sub { font-size: 0.78rem; color: var(--text-secondary); }
+.status-reconnect-hint {
+  font-size: 0.75rem; color: var(--text-secondary);
+  font-style: italic;
+  padding: 0.2rem 0.6rem;
+  background: var(--bg-secondary); border-radius: 999px;
+}
+
+/* Expand + inspector toggle buttons */
+.status-expand-btn, .status-inspector-toggle {
   min-width: 44px; min-height: 32px;
-  padding: 0 0.75rem;
+  padding: 0 0.6rem;
   border: 1px solid var(--border-primary); border-radius: 6px;
   background: var(--bg-secondary); color: var(--text-primary);
   cursor: pointer; font-size: 0.9rem; font-weight: 700;
+  flex-shrink: 0;
 }
-.status-inspector-toggle:hover { background: var(--accent-primary); color: #fff; }
+.status-expand-btn:hover, .status-inspector-toggle:hover { background: var(--accent-primary); color: #fff; }
+
+/* Detail panel that drops below the strip when expanded */
+.status-detail {
+  display: flex; flex-direction: column; gap: 0.25rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  font-size: 0.82rem;
+}
+.status-detail-row { display: flex; gap: 0.75rem; }
+.status-detail-key {
+  min-width: 5.5em; color: var(--text-secondary);
+  font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.02em;
+  padding-top: 0.1rem;
+}
+.status-detail-val {
+  flex: 1; font-family: "JetBrains Mono", monospace;
+  color: var(--text-primary); word-break: break-word;
+}
+.status-detail-err { color: #ef4444; }
 
 /* ── Body: rail + map + inspector ─────────────────── */
 .workspace-body { flex: 1; display: flex; min-height: 0; }
@@ -2719,6 +3027,13 @@ onUnmounted(() => {
 @media (max-width: 768px) {
   .map-layout { padding: 0; }
   .content { border-radius: 0; border: none; }
+
+  /* Status strip: allow chips to wrap and hide lower-priority chips first. */
+  .status-strip { padding: 0.35rem 0.5rem; min-height: 44px; }
+  .mission-inline { flex-basis: 100%; order: 10; }
+  .vitals-zone { flex-wrap: wrap; }
+  .status-reconnect-hint { display: none; }
+  .status-detail { padding: 0.5rem 0.75rem; }
 
   .workspace-body {
     flex-direction: column;
