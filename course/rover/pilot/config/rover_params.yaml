@@ -13,8 +13,9 @@ gps_node:
     baud_rate: 115200
     publish_rate: 10.0                 # Hz
     heading_speed_threshold: 0.3       # m/s minimum to publish heading
-    # NOTE: NTRIP credentials MUST be injected via `snap set fsk-rover-pilot ntrip-*=...`,
-    # never committed to this file. Leave blank here so the repo stays safe to publish.
+    # NOTE: the NTRIP username MUST be injected via
+    # `snap set fsk-rover-pilot ntrip-username=...`, never committed to this
+    # file. Leave blank here so the repo stays safe to publish.
     ntrip:
       # Caster host/port/password are hard-coded constants in gps_node.py
       # because the rover only ever targets NGII (www.gnssdata.or.kr:2101)

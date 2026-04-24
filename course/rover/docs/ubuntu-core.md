@@ -63,12 +63,19 @@ the Store's signed channel the same way any Ubuntu Core device does.
 
 `snap/hooks/configure` runs on install and on every `snap set`:
 
-1. Reads `wifi-ssid` / `wifi-password` (defaults: `default` / `password`).
-2. Rewrites `/etc/netplan/90-fsk-wifi.yaml` only when the content changes,
+1. If `network-setup-control` is not connected, the hook logs that it is
+   skipping Wi-Fi setup, restarts the `pilot` daemon, and exits 0. This
+   graceful no-op matters for first boot: a failing configure hook would
+   abort the seed change and leave the rover stuck in install mode.
+2. Otherwise, reads `wifi-ssid` / `wifi-password` (defaults: `default` /
+   `password`).
+3. Rewrites `/etc/netplan/90-fsk-wifi.yaml` only when the content changes,
    then runs `netplan apply`. Skipping identical writes avoids yanking the
    link on unrelated `snap set` calls.
-3. Restarts the `pilot` daemon so any other changed keys (NTRIP, server
-   URL, internal secret) take effect immediately.
+4. Restarts the `pilot` daemon so any other changed keys (NTRIP username,
+   server URL, internal secret) take effect immediately.
+
+The `fan-max` daemon is independent and not touched by this hook.
 
 All supported `snap set` keys are listed in `README.md`.
 

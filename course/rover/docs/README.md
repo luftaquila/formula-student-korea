@@ -39,7 +39,12 @@ has the full sequence including secret injection.
    `authorized_keys` comes from <https://github.com/luftaquila.keys> and a
    default Wi-Fi profile (`default` / `password`).
 3. `ssh fsk@<rover>` — no console-conf or Ubuntu One prompt.
-4. `sudo tailscale up` and `sudo snap set fsk-rover-pilot internal-secret=… server-url=… ntrip-*=…`.
+4. Connect the super-privileged plugs once:
+   `sudo snap connect fsk-rover-pilot:network-setup-control`,
+   `:fan-control`, `:hardware-observe`.
+5. `sudo tailscale up` and
+   `sudo snap set fsk-rover-pilot internal-secret=… server-url=… ntrip-username=…`
+   (NTRIP host/port/password are hard-coded to NGII; mountpoint auto-selects).
 
 ## Ongoing development
 
@@ -47,13 +52,14 @@ has the full sequence including secret injection.
 |--------|--------|
 | PR → merge to `main` (touches `course/rover/**`) | Snap publishes to `latest/candidate`. Field rovers on the candidate channel auto-refresh within 24 h. |
 | Push tag `vX.Y.Z` | Snap publishes to `latest/edge`. Operators promote rovers with `sudo snap refresh --channel=latest/edge fsk-rover-pilot`. |
-| Rover-specific config | `sudo snap set fsk-rover-pilot <key>=<value>` → configure hook restarts the daemon (and rewrites Wi-Fi netplan when `wifi-*` changes). |
+| Rover-specific config | `sudo snap set fsk-rover-pilot <key>=<value>` → configure hook restarts the `pilot` daemon (and rewrites Wi-Fi netplan when `wifi-*` changes and `network-setup-control` is connected). The `fan-max` daemon runs independently and is not affected. |
 
 Check a rover's state:
 
 ```bash
-snap info fsk-rover-pilot     # installed revision, tracking channel
-snap services fsk-rover-pilot # daemon status
+snap info fsk-rover-pilot            # installed revision, tracking channel
+snap services fsk-rover-pilot        # pilot + fan-max daemon status
+snap connections fsk-rover-pilot     # super-privileged plugs connected?
 snap logs fsk-rover-pilot -n 200
 ```
 
@@ -73,9 +79,11 @@ Wi-Fi profile baked into the configure hook.
 | `ntrip-username` | NGII RTK caster login. Host/port/password are hard-coded in `gps_node.py` (NGII-only target); mountpoint is auto-selected by nearest-base-station lookup against the caster's source table. |
 | `wifi-ssid`, `wifi-password` | Override the default AP |
 
-`INTERNAL_SECRET` and every `NTRIP_*` value flow
+`INTERNAL_SECRET` and `NTRIP_USERNAME` flow
 `snapctl → run-pilot → env → ROS node`, never via `declare_parameter`, so
-peers on the same ROS 2 domain can't read them with `ros2 param get`.
+peers on the same ROS 2 domain can't read them with `ros2 param get`. The
+NGII NTRIP host/port/password never leave `gps_node.py` source — they are
+compile-time constants.
 
 ## Local development (no snap)
 

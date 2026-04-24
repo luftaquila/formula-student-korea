@@ -77,7 +77,9 @@ The image contains:
 
 The image does **not** contain:
 
-- `fsk-rover-pilot` application secrets (INTERNAL_SECRET, NTRIP credentials)
+- `fsk-rover-pilot` application secrets (`INTERNAL_SECRET`,
+  `NTRIP_USERNAME` — the NGII password and host are hard-coded constants,
+  not secrets)
 - Tailscale auth keys
 - per-device override files
 

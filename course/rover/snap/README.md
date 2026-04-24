@@ -20,9 +20,10 @@ Ubuntu Core deployment assets for the rover.
 
 ## Supported `snap set` keys
 
-All optional; unset keys fall back to the baked defaults. Secrets travel
-via the environment only — `INTERNAL_SECRET` and the `NTRIP_*` values are
-never placed on the ROS 2 parameter tree.
+All optional; unset keys fall back to the baked defaults. The two secret
+values (`INTERNAL_SECRET`, `NTRIP_USERNAME`) travel via the environment
+only — never placed on the ROS 2 parameter tree where peers on the same
+`ROS_DOMAIN_ID` could read them.
 
 | Key | Consumer |
 |-----|----------|
