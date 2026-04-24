@@ -44,6 +44,29 @@ parts:
       - python3-serial
       - python3-requests
       - python3-lgpio
+      # Runtime BLAS/LAPACK backend for numpy. ros2-jazzy's Python
+      # message bindings (`sensor_msgs`, `geometry_msgs`,
+      # `rcl_interfaces`, ...) transitively `import numpy`, numpy's C
+      # extension dlopens `libblas.so.3` and `liblapack.so.3`, and
+      # without these lines snapcraft doesn't stage them — every ROS
+      # node then crashes at import time and the `pilot` wrapper stays
+      # "active" despite every child having died.
+      - libblas3
+      - liblapack3
+      - libopenblas0-pthread
+    override-prime: |
+      craftctl default
+      # Ubuntu's BLAS/LAPACK packages ship the actual SONAMEs inside
+      # `/usr/lib/<triplet>/{blas,lapack,openblas-pthread}/` and rely
+      # on `update-alternatives` to place symlinks one directory up
+      # where the dynamic loader expects them. Alternatives do not run
+      # during snap assembly, so we wire the symlinks by hand and fix
+      # openblas as the chosen implementation (arm64-tuned, matches
+      # what python3-numpy is built against).
+      cd usr/lib/aarch64-linux-gnu
+      ln -sf openblas-pthread/libblas.so.3 libblas.so.3
+      ln -sf openblas-pthread/liblapack.so.3 liblapack.so.3
+      ln -sf openblas-pthread/libopenblas.so.0 libopenblas.so.0
 
   launchers:
     plugin: dump
