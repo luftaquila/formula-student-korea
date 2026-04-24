@@ -39,12 +39,18 @@ plugs:
   fan-control:
     interface: system-files
     write:
-      # /sys/class/{thermal,hwmon} are symlink trees into /sys/devices/platform.
-      # Listing both keeps AppArmor happy regardless of which path the shell
-      # hands to open() after readlink traversal.
+      # AppArmor enforces write rules against the post-symlink-resolution
+      # path, so each symlink entrypoint in /sys/class/ needs its real
+      # target covered too:
+      #   /sys/class/hwmon/hwmon*/pwm1            → /sys/devices/platform/…
+      #   /sys/class/thermal/cooling_device*/…    → /sys/devices/virtual/thermal/…
+      # Miss either and `fan-max` hits "Permission denied" on the denied
+      # leg, which previously showed up as the fan visibly ramping down
+      # every few seconds (hwmon write OK, cooling_device write denied).
       - /sys/class/thermal
       - /sys/class/hwmon
       - /sys/devices/platform
+      - /sys/devices/virtual/thermal
 
 hooks:
   configure:

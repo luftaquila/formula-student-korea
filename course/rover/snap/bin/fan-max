@@ -33,6 +33,14 @@ find_cooling_fan_pwm() {
 
 echo "[fan-max] starting; tick=${TICK_S}s"
 
+# Flip every thermal zone's governor to `user_space` once at startup so
+# the in-kernel step_wise policy stops fighting us on each temperature
+# update — otherwise cur_state=max gets stepped back down within seconds.
+for tz in /sys/class/thermal/thermal_zone*; do
+    [ -w "$tz/policy" ] || continue
+    echo user_space > "$tz/policy" 2>/dev/null || true
+done
+
 pwm_path=""
 while :; do
     # Re-resolve the PWM path each tick until we find it — hwmon numbering

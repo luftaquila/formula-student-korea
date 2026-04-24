@@ -23,5 +23,15 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export INTERNAL_SECRET
 export NTRIP_USERNAME
 
-exec ros2 launch pilot pilot.launch.py \
-    server_url:="${SERVER_URL}"
+# `ros2 launch` rejects `server_url:=` with an empty RHS, so on a fresh
+# install (before the operator has run `snap set server-url=...`) we
+# launch without the override and let bridge_node fall back to its
+# config default. Without this guard the pilot daemon crash-loops until
+# systemd gives up, and `snap services` shows it as failed for no
+# obvious reason.
+if [ -n "${SERVER_URL:-}" ]; then
+    exec ros2 launch pilot pilot.launch.py \
+        server_url:="${SERVER_URL}"
+else
+    exec ros2 launch pilot pilot.launch.py
+fi

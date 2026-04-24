@@ -13,9 +13,12 @@ extension. The snap ships two simple daemons:
 - `pilot` (`daemon: simple`, `restart-condition: on-failure`) — the ROS 2
   pilot stack proper
 - `fan-max` (`daemon: simple`, `restart-condition: always`) — holds the
-  Pi 5 cooling fan at 100% via hwmon `pwm1` and thermal `cooling_device`
-  writes. Runs alongside `pilot` but decoupled so a pilot crash can't take
-  thermal management down
+  Pi 5 cooling fan at 100%. At startup it flips every `thermal_zone*`
+  policy to `user_space` (so the in-kernel `step_wise` governor stops
+  fighting back) and then every 5 s writes `pwm1=255` on the cooling-fan
+  hwmon and `cur_state=max_state` on every `cooling_device*`. Runs
+  alongside `pilot` but decoupled so a pilot crash can't take thermal
+  management down
 
 Rationale — one unit per rover keeps the refresh/rollback story a single
 command (`snap refresh` / `snap revert`). Splitting the five ROS 2 nodes
@@ -32,8 +35,13 @@ Required plugs, all declared in `../snapcraft.yaml`:
 - `gpio` — MDD10A PWM/DIR and the steering/spray servos
 - `hardware-observe` — `fan-max` reads hwmon names to find the fan PWM
 - `fan-control` (custom `system-files` plug, write-only on
-  `/sys/class/thermal`, `/sys/class/hwmon`, and `/sys/devices/platform`)
-  — `fan-max` writes PWM and thermal cooling_device state
+  `/sys/class/thermal`, `/sys/class/hwmon`, `/sys/devices/platform`, and
+  `/sys/devices/virtual/thermal`) — `fan-max` writes PWM and thermal
+  cooling_device state. Both `/sys/devices/platform` **and**
+  `/sys/devices/virtual/thermal` are required because AppArmor matches
+  against the symlink-resolved path: `cooling_device0` resolves under
+  `virtual/thermal` while hwmon pwm1 resolves under `platform`. Missing
+  either side causes the fan to cyclically ramp down as one leg denies.
 - `network-setup-control` (configure hook) — writes
   `/etc/netplan/90-fsk-wifi.yaml`
 

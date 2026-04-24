@@ -9,9 +9,12 @@ Ubuntu Core deployment assets for the rover.
   exports them into the environment, and `exec`s `ros2 launch pilot
   pilot.launch.py`
 - `bin/fan-max` — `fan-max` daemon entrypoint. Holds the Pi 5 cooling fan
-  at 100% regardless of temperature by writing the hwmon PWM channel and
-  thermal cooling_device `cur_state` = `max_state`. Requires the
-  `fan-control` plug (`sudo snap connect fsk-rover-pilot:fan-control`)
+  at 100% regardless of temperature by switching `thermal_zone*/policy`
+  to `user_space` at startup and continuously writing `pwm1=255` on the
+  cooling-fan hwmon and `cur_state=max_state` on every `cooling_device*`.
+  Requires the `fan-control` and `hardware-observe` plugs
+  (`sudo snap connect fsk-rover-pilot:fan-control` and
+  `…:hardware-observe`)
 - `hooks/configure` — runs on install and on every `snap set`; writes
   `/etc/netplan/90-fsk-wifi.yaml` (default AP: `default` / `password`) and
   restarts the `pilot` daemon. Requires the `network-setup-control` plug
