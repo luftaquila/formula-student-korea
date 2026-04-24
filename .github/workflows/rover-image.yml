@@ -136,6 +136,40 @@ jobs:
             --output-dir .tmp/image \
             .tmp/rover.model
 
+      - name: Force Pi 5 fan to 100% via config.txt
+        run: |
+          # Append Pi firmware fan-control dtparams to the ubuntu-seed
+          # config.txt of the built image. Pi 5's VideoCore firmware owns
+          # the cooling fan before the kernel boots, so setting every
+          # trip point to 0°C and max PWM (255/255) makes the fan run
+          # full-tilt from power-on regardless of any in-kernel thermal
+          # governor. Doing it here (instead of via a snap daemon writing
+          # sysfs) avoids needing the `system-files` plug that forces the
+          # snap through Snapcraft Store manual review on every revision.
+          IMG=$(ls .tmp/image/*.img | head -1)
+          test -n "$IMG" || { echo "no built image found" >&2; exit 1; }
+          LOOP=$(sudo losetup -Pf --show "$IMG")
+          mkdir -p .tmp/seedmnt
+          # ubuntu-seed is always partition 1 on the pi gadget layout.
+          sudo mount "${LOOP}p1" .tmp/seedmnt
+          printf '%s\n' \
+              '' \
+              '# FSK: pin the Pi 5 cooling fan to 100% regardless of temperature.' \
+              '# All four trip points at 0 deg C with full PWM, so the fan never ramps down.' \
+              'dtparam=fan_temp0=0' \
+              'dtparam=fan_temp0_speed=255' \
+              'dtparam=fan_temp1=0' \
+              'dtparam=fan_temp1_speed=255' \
+              'dtparam=fan_temp2=0' \
+              'dtparam=fan_temp2_speed=255' \
+              'dtparam=fan_temp3=0' \
+              'dtparam=fan_temp3_speed=255' \
+              | sudo tee -a .tmp/seedmnt/config.txt >/dev/null
+          echo "--- tail of patched config.txt ---"
+          sudo tail -n 16 .tmp/seedmnt/config.txt
+          sudo umount .tmp/seedmnt
+          sudo losetup -d "$LOOP"
+
       - name: Upload image artifacts
         uses: actions/upload-artifact@v7
         with:

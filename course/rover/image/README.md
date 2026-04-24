@@ -74,6 +74,10 @@ The image contains:
 - a signed `system-user` assertion creating local user `fsk` with SSH keys
 - a default Wi-Fi profile (`default` / `password`) applied by the pilot
   snap's `configure` hook at first boot
+- `dtparam=fan_temp*` lines appended to `ubuntu-seed/config.txt` by the
+  image workflow's "Force Pi 5 fan to 100%" step, so the Pi firmware
+  runs the cooling fan at full PWM from power-on without any kernel or
+  snap involvement
 
 The image does **not** contain:
 

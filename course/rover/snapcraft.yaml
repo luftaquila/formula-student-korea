@@ -23,34 +23,13 @@ apps:
       - serial-port
       - gpio
       - i2c
-  fan-max:
-    # Pi 5's stock thermal governor keeps the fan off until ~50°C and only
-    # ramps to 100% near 75°C, which leaves the passive heatsink cooking
-    # under sustained ROS 2 load. This daemon forces the fan to full-on at
-    # all times via hwmon pwm1 + thermal cooling_device cur_state.
-    command: bin/fan-max
-    daemon: simple
-    restart-condition: always
-    plugs:
-      - hardware-observe
-      - fan-control
 
-plugs:
-  fan-control:
-    interface: system-files
-    write:
-      # AppArmor enforces write rules against the post-symlink-resolution
-      # path, so each symlink entrypoint in /sys/class/ needs its real
-      # target covered too:
-      #   /sys/class/hwmon/hwmon*/pwm1            → /sys/devices/platform/…
-      #   /sys/class/thermal/cooling_device*/…    → /sys/devices/virtual/thermal/…
-      # Miss either and `fan-max` hits "Permission denied" on the denied
-      # leg, which previously showed up as the fan visibly ramping down
-      # every few seconds (hwmon write OK, cooling_device write denied).
-      - /sys/class/thermal
-      - /sys/class/hwmon
-      - /sys/devices/platform
-      - /sys/devices/virtual/thermal
+# Pi 5 cooling fan is pinned to 100% at the firmware level via
+# `dtparam=fan_temp*` lines appended to `ubuntu-seed/config.txt` during
+# image assembly (see `.github/workflows/rover-image.yml`). No snap-side
+# daemon or super-privileged plug is involved, which keeps the snap's
+# confinement within the set of interfaces the Snapcraft Store auto-
+# approves.
 
 hooks:
   configure:
@@ -71,9 +50,7 @@ parts:
     source: ./snap
     organize:
       bin/run-pilot: bin/run-pilot
-      bin/fan-max: bin/fan-max
       hooks/configure: meta/hooks/configure
     prime:
       - bin/run-pilot
-      - bin/fan-max
       - meta/hooks/configure

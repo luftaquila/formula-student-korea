@@ -39,9 +39,9 @@ has the full sequence including secret injection.
    `authorized_keys` comes from <https://github.com/luftaquila.keys> and a
    default Wi-Fi profile (`default` / `password`).
 3. `ssh fsk@<rover>` — no console-conf or Ubuntu One prompt.
-4. Connect the super-privileged plugs once:
-   `sudo snap connect fsk-rover-pilot:network-setup-control`,
-   `:fan-control`, `:hardware-observe`.
+4. `sudo snap connect fsk-rover-pilot:network-setup-control` (for Wi-Fi
+   override via `snap set wifi-*`). The Pi 5 cooling fan is forced to
+   100% at the firmware level by the image — no snap plug needed.
 5. `sudo tailscale up` and
    `sudo snap set fsk-rover-pilot internal-secret=… server-url=… ntrip-username=…`
    (NTRIP host/port/password are hard-coded to NGII; mountpoint auto-selects).
@@ -52,14 +52,14 @@ has the full sequence including secret injection.
 |--------|--------|
 | PR → merge to `main` (touches `course/rover/**`) | Snap publishes to `latest/candidate`. Field rovers on the candidate channel auto-refresh within 24 h. |
 | Push tag `vX.Y.Z` | Snap publishes to `latest/edge`. Operators promote rovers with `sudo snap refresh --channel=latest/edge fsk-rover-pilot`. |
-| Rover-specific config | `sudo snap set fsk-rover-pilot <key>=<value>` → configure hook restarts the `pilot` daemon (and rewrites Wi-Fi netplan when `wifi-*` changes and `network-setup-control` is connected). The `fan-max` daemon runs independently and is not affected. |
+| Rover-specific config | `sudo snap set fsk-rover-pilot <key>=<value>` → configure hook restarts the `pilot` daemon (and rewrites Wi-Fi netplan when `wifi-*` changes and `network-setup-control` is connected). |
 
 Check a rover's state:
 
 ```bash
 snap info fsk-rover-pilot            # installed revision, tracking channel
-snap services fsk-rover-pilot        # pilot + fan-max daemon status
-snap connections fsk-rover-pilot     # super-privileged plugs connected?
+snap services fsk-rover-pilot        # pilot daemon status
+snap connections fsk-rover-pilot     # is network-setup-control connected?
 snap logs fsk-rover-pilot -n 200
 ```
 
@@ -197,7 +197,6 @@ snap publish.
 | `pilot/pilot/lib/ntrip_client.py` | NTRIP v2 client with exponential backoff |
 | `pilot/pilot/lib/ubx_parser.py` | ZED-F9P UBX parser (NAV-PVT, NAV-HPPOSLLH) |
 | `snap/bin/run-pilot` | Pilot daemon entrypoint — env assembly |
-| `snap/bin/fan-max` | Fan-override daemon (Pi 5 cooling fan always 100%) |
 | `snap/hooks/configure` | Wi-Fi netplan writer + daemon restart |
 | `snapcraft.yaml` | Snap confinement and plugs |
 | `image/` | Ubuntu Core image assembly, model + system-user templates |

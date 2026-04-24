@@ -40,19 +40,19 @@ The image does **not** include:
    ssh fsk@<rover-ip>
    ```
 
-4. Connect the super-privileged interfaces the snap needs (none are
-   auto-connected on a strict-confinement snap). Do this **before** any
-   `snap set wifi-*` or running in hot conditions — the `configure` hook
-   silently no-ops without `network-setup-control`, and `fan-max` can't
-   touch sysfs without `fan-control` + `hardware-observe`:
+4. Connect `network-setup-control` (it is not auto-connected on a
+   strict-confinement snap). Do this **before** any `snap set wifi-*` —
+   the `configure` hook silently no-ops without it and the new Wi-Fi
+   settings silently never reach netplan:
 
    ```bash
    sudo snap connect fsk-rover-pilot:network-setup-control
-   sudo snap connect fsk-rover-pilot:fan-control
-   sudo snap connect fsk-rover-pilot:hardware-observe
    ```
 
-   Verify with `snap connections fsk-rover-pilot`.
+   Verify with `snap connections fsk-rover-pilot`. Pi 5 cooling fan
+   needs no plug — it is pinned to 100% at the firmware level via
+   `dtparam=fan_temp*` in `ubuntu-seed/config.txt`, written by the
+   image build workflow.
 
 5. (Recommended) Switch the rover to a non-default Wi-Fi once it is on a
    stable network (requires step 4):
@@ -86,12 +86,11 @@ The image does **not** include:
    sudo snap set fsk-rover-pilot ntrip-username=YOUR_NGII_LOGIN
    ```
 
-9. Confirm the daemons restarted with the new values:
+9. Confirm the daemon restarted with the new values:
 
    ```bash
    snap services fsk-rover-pilot
    snap logs fsk-rover-pilot.pilot -n 50
-   snap logs fsk-rover-pilot.fan-max -n 20
    ```
 
 10. Pin the rover to the current `fsk-rover-pilot` revision for the week
