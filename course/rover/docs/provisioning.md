@@ -59,32 +59,47 @@ The image does **not** include:
    sudo snap set fsk-rover-pilot ros-domain-id=0
    ```
 
-7. Apply NTRIP credentials (never commit these to `rover_params.yaml`):
+7. Apply the NTRIP operator login. Caster host (`www.gnssdata.or.kr`),
+   port (`2101`), and password (`gnss`) are hard-coded in `gps_node.py`
+   because the rover only ever targets NGII and the shared RTK password is
+   a protocol constant. Mountpoint is auto-selected at runtime — `gps_node`
+   fetches the caster's source table after the first 3D fix and picks the
+   nearest RTCM 3.2 base station:
 
    ```bash
-   sudo snap set fsk-rover-pilot ntrip-host=gnss.ngii.go.kr
-   sudo snap set fsk-rover-pilot ntrip-port=2101
-   sudo snap set fsk-rover-pilot ntrip-mountpoint=VRS-RTCM31
-   sudo snap set fsk-rover-pilot ntrip-username=YOUR_USERNAME
-   sudo snap set fsk-rover-pilot ntrip-password=YOUR_PASSWORD
+   sudo snap set fsk-rover-pilot ntrip-username=YOUR_NGII_LOGIN
    ```
 
-8. Confirm the daemon restarted with the new values:
+8. Connect the super-privileged interfaces the snap needs for Wi-Fi
+   configuration and Pi 5 fan override (none are auto-connected on a
+   strict-confinement snap):
+
+   ```bash
+   sudo snap connect fsk-rover-pilot:network-setup-control
+   sudo snap connect fsk-rover-pilot:fan-control
+   sudo snap connect fsk-rover-pilot:hardware-observe
+   ```
+
+   Verify with `snap connections fsk-rover-pilot`. The `fan-max` daemon
+   no-ops until `fan-control` is connected, so connect it early if the
+   heatsink is hot.
+
+9. Confirm the daemons restarted with the new values:
 
    ```bash
    snap services fsk-rover-pilot
    snap logs fsk-rover-pilot -n 50
    ```
 
-9. Pin the rover to the current `fsk-rover-pilot` revision for the week
-   leading up to a competition so an automatic refresh can't ship a
-   candidate build into the field:
+10. Pin the rover to the current `fsk-rover-pilot` revision for the week
+    leading up to a competition so an automatic refresh can't ship a
+    candidate build into the field:
 
-   ```bash
-   sudo snap refresh --hold=168h fsk-rover-pilot
-   ```
+    ```bash
+    sudo snap refresh --hold=168h fsk-rover-pilot
+    ```
 
-10. From this point onward, manage the rover through Tailscale-based SSH.
+11. From this point onward, manage the rover through Tailscale-based SSH.
 
 ## Recovering a Rover With Unreachable Wi-Fi
 

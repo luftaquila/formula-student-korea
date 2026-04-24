@@ -10,7 +10,90 @@ import threading
 import time
 import logging
 
+from pilot.lib.geo_utils import haversine
+
 _default_logger = logging.getLogger(__name__)
+
+
+def fetch_source_table(host, port, timeout=10.0):
+    """Fetch the NTRIP source table from a caster at GET /.
+
+    Source tables are public and unauthenticated on every caster we care
+    about (NGII in particular 200s here and 404s any real mountpoint without
+    auth). HTTP body is returned as text with the header stripped.
+    """
+    with socket.create_connection((host, port), timeout=timeout) as s:
+        req = (
+            f"GET / HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\n"
+            f"Ntrip-Version: Ntrip/2.0\r\n"
+            f"User-Agent: NTRIP FSKRover/1.0\r\n"
+            f"Connection: close\r\n"
+            f"\r\n"
+        )
+        s.sendall(req.encode())
+        data = bytearray()
+        while True:
+            chunk = s.recv(8192)
+            if not chunk:
+                break
+            data.extend(chunk)
+    text = bytes(data).decode('latin-1', errors='replace')
+    # Some casters return a plain SOURCETABLE body; others wrap it in HTTP.
+    # Strip the first blank-line-separated header block if present.
+    sep = "\r\n\r\n"
+    if sep in text:
+        text = text.split(sep, 1)[1]
+    return text
+
+
+def parse_source_table(text):
+    """Parse STR; entries from a source table.
+
+    Returns a list of {'mount', 'format', 'lat', 'lon'}. STR format per
+    Ntrip v1 Appendix B:
+        STR;<mount>;<id>;<format>;...;<lat>;<lon>;...
+
+    Entries with unparseable lat/lon are skipped rather than raising —
+    some casters emit malformed rows for stale/test mounts.
+    """
+    entries = []
+    for line in text.splitlines():
+        if not line.startswith("STR;"):
+            continue
+        fields = line.split(";")
+        if len(fields) < 11:
+            continue
+        try:
+            lat = float(fields[9])
+            lon = float(fields[10])
+        except ValueError:
+            continue
+        entries.append({
+            "mount": fields[1],
+            "format": fields[3],
+            "lat": lat,
+            "lon": lon,
+        })
+    return entries
+
+
+def select_nearest_mountpoint(lat, lon, entries, format_prefix="RTCM 3.2"):
+    """Pick the mount whose base station is closest to (lat, lon).
+
+    Filters by format string prefix — defaults to RTCM 3.2 which is what
+    the ZED-F9P runs best on. Returns None if no entry matches.
+    """
+    best_mount = None
+    best_dist = float("inf")
+    for e in entries:
+        if not e["format"].startswith(format_prefix):
+            continue
+        d = haversine(lat, lon, e["lat"], e["lon"])
+        if d < best_dist:
+            best_mount = e["mount"]
+            best_dist = d
+    return best_mount
 
 GGA_TEMPLATE = (
     "$GPGGA,{time},{lat},{lat_dir},{lon},{lon_dir},1,12,1.0,0.0,M,0.0,M,,"

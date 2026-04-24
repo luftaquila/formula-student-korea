@@ -1,7 +1,11 @@
-"""Tests for NTRIPClient exponential backoff + failure tracking."""
+"""Tests for NTRIPClient exponential backoff + failure tracking + source-table auto-selection."""
 
 import pytest
-from pilot.lib.ntrip_client import NTRIPClient
+from pilot.lib.ntrip_client import (
+    NTRIPClient,
+    parse_source_table,
+    select_nearest_mountpoint,
+)
 
 
 class _DummySerial:
@@ -59,3 +63,47 @@ def test_backoff_delay_progression():
 def test_gga_interval_default():
     c = _make_client()
     assert c._gga_interval == 10.0
+
+
+# Sample rows cover: RTCM 2.3 (filtered out), RTCM 3.2 far north, RTCM 3.2
+# close to the target position, malformed lat (skipped), and a non-STR line.
+_SAMPLE_TABLE = (
+    "SOURCETABLE 200 OK\r\n"
+    "STR;ANHN-RTCM23;ANHN-RTCM23;RTCM 2.3;2;2;DGPS+RTK;KORREF;KOR;36.67;126.13;0;0;;;B;N;9600;\n"
+    "STR;SEOU-RTCM32;SEOU-RTCM32;RTCM 3.2;2;2;RTK;KORREF;KOR;37.56;126.98;0;0;;;B;N;9600;\n"
+    "STR;ANHN-RTCM32;ANHN-RTCM32;RTCM 3.2;2;2;RTK;KORREF;KOR;36.67;126.13;0;0;;;B;N;9600;\n"
+    "STR;PUSN-RTCM32;PUSN-RTCM32;RTCM 3.2;2;2;RTK;KORREF;KOR;35.10;129.03;0;0;;;B;N;9600;\n"
+    "STR;BAD-RTCM32;BAD-RTCM32;RTCM 3.2;2;2;RTK;KORREF;KOR;not-a-number;126.0;0;0;;;B;N;9600;\n"
+    "CAS;some-caster-line;ignore-me\n"
+    "ENDSOURCETABLE\r\n"
+)
+
+
+def test_parse_source_table_extracts_valid_rows():
+    entries = parse_source_table(_SAMPLE_TABLE)
+    mounts = [e["mount"] for e in entries]
+    # BAD-RTCM32 is dropped (bad lat); CAS line is dropped (not STR).
+    assert mounts == ["ANHN-RTCM23", "SEOU-RTCM32", "ANHN-RTCM32", "PUSN-RTCM32"]
+    seou = next(e for e in entries if e["mount"] == "SEOU-RTCM32")
+    assert seou["format"] == "RTCM 3.2"
+    assert seou["lat"] == pytest.approx(37.56)
+    assert seou["lon"] == pytest.approx(126.98)
+
+
+def test_select_nearest_mountpoint_prefers_rtcm32_and_closest():
+    entries = parse_source_table(_SAMPLE_TABLE)
+    # From Seoul City Hall (~37.5665, 126.9780) → SEOU is closest RTCM 3.2.
+    assert select_nearest_mountpoint(37.5665, 126.9780, entries) == "SEOU-RTCM32"
+    # From Busan (~35.18, 129.08) → PUSN dominates.
+    assert select_nearest_mountpoint(35.18, 129.08, entries) == "PUSN-RTCM32"
+    # Explicit format filter must exclude RTCM 2.3 even if closer.
+    # ANHN RTCM23 (36.67, 126.13) sits right under a point that is otherwise
+    # farther from the RTCM 3.2 ones; the selector must not pick it.
+    near_anhn = select_nearest_mountpoint(36.67, 126.13, entries)
+    assert near_anhn == "ANHN-RTCM32"
+
+
+def test_select_nearest_mountpoint_none_when_no_match():
+    entries = parse_source_table(_SAMPLE_TABLE)
+    assert select_nearest_mountpoint(0.0, 0.0, entries, format_prefix="RTCM 4.0") is None
+    assert select_nearest_mountpoint(0.0, 0.0, [], format_prefix="RTCM 3.2") is None

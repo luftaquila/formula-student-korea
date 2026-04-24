@@ -23,6 +23,28 @@ apps:
       - serial-port
       - gpio
       - i2c
+  fan-max:
+    # Pi 5's stock thermal governor keeps the fan off until ~50°C and only
+    # ramps to 100% near 75°C, which leaves the passive heatsink cooking
+    # under sustained ROS 2 load. This daemon forces the fan to full-on at
+    # all times via hwmon pwm1 + thermal cooling_device cur_state.
+    command: bin/fan-max
+    daemon: simple
+    restart-condition: always
+    plugs:
+      - hardware-observe
+      - fan-control
+
+plugs:
+  fan-control:
+    interface: system-files
+    write:
+      # /sys/class/{thermal,hwmon} are symlink trees into /sys/devices/platform.
+      # Listing both keeps AppArmor happy regardless of which path the shell
+      # hands to open() after readlink traversal.
+      - /sys/class/thermal
+      - /sys/class/hwmon
+      - /sys/devices/platform
 
 hooks:
   configure:
@@ -43,7 +65,9 @@ parts:
     source: ./snap
     organize:
       bin/run-pilot: bin/run-pilot
+      bin/fan-max: bin/fan-max
       hooks/configure: meta/hooks/configure
     prime:
       - bin/run-pilot
+      - bin/fan-max
       - meta/hooks/configure

@@ -70,7 +70,7 @@ Wi-Fi profile baked into the configure hook.
 | `server-url` | Course server base URL (must be `https://` unless `server_url_allow_http: true`) |
 | `internal-secret` | Shared secret for the `X-Internal-Service` header |
 | `ros-domain-id` | ROS 2 domain id (default `0`) |
-| `ntrip-host`, `-port`, `-mountpoint`, `-username`, `-password` | RTK caster credentials |
+| `ntrip-username` | NGII RTK caster login. Host/port/password are hard-coded in `gps_node.py` (NGII-only target); mountpoint is auto-selected by nearest-base-station lookup against the caster's source table. |
 | `wifi-ssid`, `wifi-password` | Override the default AP |
 
 `INTERNAL_SECRET` and every `NTRIP_*` value flow
@@ -96,8 +96,7 @@ sudo bash src/pilot/scripts/setup_udev.sh
 
 # Run with env-only secrets (same contract as run-pilot inside the snap)
 INTERNAL_SECRET=… \
-NTRIP_HOST=… NTRIP_PORT=2101 NTRIP_MOUNTPOINT=… \
-NTRIP_USERNAME=… NTRIP_PASSWORD=… \
+NTRIP_USERNAME=YOUR_NGII_LOGIN \
   ros2 launch pilot pilot.launch.py \
     server_url:=https://your-server.example/course
 ```
@@ -189,7 +188,8 @@ snap publish.
 | `pilot/pilot/lib/ackermann.py` | Ackermann kinematics for Wheeltec R550 |
 | `pilot/pilot/lib/ntrip_client.py` | NTRIP v2 client with exponential backoff |
 | `pilot/pilot/lib/ubx_parser.py` | ZED-F9P UBX parser (NAV-PVT, NAV-HPPOSLLH) |
-| `snap/bin/run-pilot` | Snap daemon entrypoint — env assembly |
+| `snap/bin/run-pilot` | Pilot daemon entrypoint — env assembly |
+| `snap/bin/fan-max` | Fan-override daemon (Pi 5 cooling fan always 100%) |
 | `snap/hooks/configure` | Wi-Fi netplan writer + daemon restart |
 | `snapcraft.yaml` | Snap confinement and plugs |
 | `image/` | Ubuntu Core image assembly, model + system-user templates |

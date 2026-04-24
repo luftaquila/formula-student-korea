@@ -13,6 +13,7 @@ Subscribed topics:
 """
 
 import json
+import time
 
 import serial
 import rclpy
@@ -26,7 +27,32 @@ from pilot.lib.ubx_parser import (
     CarrierSolution, FixType,
     build_cfg_valset,
 )
-from pilot.lib.ntrip_client import NTRIPClient
+from pilot.lib.ntrip_client import (
+    NTRIPClient,
+    fetch_source_table,
+    parse_source_table,
+    select_nearest_mountpoint,
+)
+
+# NGII (국토지리정보원) is the only NTRIP caster we use. Host, port, and
+# password are protocol-level constants published on the gnssdata.or.kr
+# portal — the only per-rover value is the operator's NGII login, which
+# travels in as the `ntrip-username` snap key. Update these constants if
+# NGII ever changes the caster endpoint.
+_NTRIP_HOST = 'www.gnssdata.or.kr'
+_NTRIP_PORT = 2101
+_NTRIP_PASSWORD = 'gnss'
+
+# Retry NTRIP auto-setup at most this often when source-table fetch or
+# mount selection fails. Long enough that a down caster doesn't busy-loop;
+# short enough that a transient network blip clears within a minute.
+_NTRIP_SETUP_COOLDOWN_S = 30.0
+
+# Retry opening /dev/ttyACM0 this many times at startup before giving up.
+# The ZED-F9P can take a few seconds to enumerate after power-on, so a
+# retry loop lets the snap daemon restart-condition do less heavy lifting.
+_SERIAL_OPEN_RETRIES = 6
+_SERIAL_OPEN_BACKOFF_S = 2.0
 
 
 def _fix_status_string(pvt):
@@ -63,11 +89,7 @@ class GpsNode(Node):
         self.declare_parameter('baud_rate', 115200)
         self.declare_parameter('publish_rate', 10.0)
         self.declare_parameter('heading_speed_threshold', 0.3)
-        self.declare_parameter('ntrip.host', '')
-        self.declare_parameter('ntrip.port', 2101)
-        self.declare_parameter('ntrip.mountpoint', '')
         self.declare_parameter('ntrip.username', '')
-        self.declare_parameter('ntrip.password', '')
         self.declare_parameter('ntrip.gga_interval_s', 10.0)
 
         # Publishers
@@ -86,11 +108,16 @@ class GpsNode(Node):
         self._last_hpposllh = None
         self._serial = None
         self._ntrip = None
+        # NTRIP auto-setup is deferred until we have a real 3D fix so we
+        # can pick the nearest base station. These track retry timing.
+        self._ntrip_last_attempt = 0.0
 
         # Open serial port and configure ZED-F9P
         self._open_serial()
         self._configure_receiver()
-        self._start_ntrip()
+        # NTRIP is started lazily from _read_serial once a 3D fix arrives —
+        # the mountpoint is chosen by nearest distance to the caster's
+        # published base stations, so we need a position first.
 
         # Timer for reading serial data
         rate = self.get_parameter('publish_rate').value
@@ -122,8 +149,22 @@ class GpsNode(Node):
     def _open_serial(self):
         port = self.get_parameter('serial_port').value
         baud = self.get_parameter('baud_rate').value
-        self._serial = serial.Serial(port, baud, timeout=0.1)
-        self.get_logger().info(f'Opened GPS serial: {port} @ {baud}')
+        last_exc = None
+        for attempt in range(1, _SERIAL_OPEN_RETRIES + 1):
+            try:
+                self._serial = serial.Serial(port, baud, timeout=0.1)
+                self.get_logger().info(f'Opened GPS serial: {port} @ {baud}')
+                return
+            except serial.SerialException as exc:
+                last_exc = exc
+                self.get_logger().warn(
+                    f'GPS serial open failed ({port}, attempt {attempt}/{_SERIAL_OPEN_RETRIES}): {exc}'
+                )
+                if attempt < _SERIAL_OPEN_RETRIES:
+                    time.sleep(_SERIAL_OPEN_BACKOFF_S)
+        # All retries exhausted — re-raise so the snap daemon restart logic
+        # kicks in with a clear trail of attempts in the log.
+        raise last_exc
 
     def _configure_receiver(self):
         """Configure ZED-F9P to output UBX NAV-PVT and NAV-HPPOSLLH, disable NMEA."""
@@ -140,26 +181,69 @@ class GpsNode(Node):
         self._serial.write(cfg)
         self.get_logger().info('ZED-F9P configured for UBX output')
 
-    def _start_ntrip(self):
-        """Start NTRIP client if configured."""
-        host = self.get_parameter('ntrip.host').value
-        if not host:
-            self.get_logger().info('NTRIP not configured, running without RTK corrections')
+    def _maybe_setup_ntrip(self, pvt):
+        """Lazily start the NTRIP client once a real fix is available.
+
+        Mountpoint is auto-selected from the caster's source table as the
+        nearest RTCM 3.2 base station to the current position. On failure
+        (network, empty table, no RTCM 3.2 mount in range) we log and retry
+        after _NTRIP_SETUP_COOLDOWN_S — GPS continues publishing single-
+        precision fixes in the meantime.
+        """
+        if self._ntrip is not None:
+            return
+        if pvt.fix_type < FixType.FIX_3D:
+            return
+        username = self.get_parameter('ntrip.username').value
+        if not username:
+            return  # NTRIP disabled — no operator login, run without RTK.
+        now = time.monotonic()
+        if now - self._ntrip_last_attempt < _NTRIP_SETUP_COOLDOWN_S:
+            return
+        self._ntrip_last_attempt = now
+
+        try:
+            table_text = fetch_source_table(_NTRIP_HOST, _NTRIP_PORT)
+        except Exception as exc:
+            self.get_logger().warn(
+                f'NTRIP source table fetch failed ({_NTRIP_HOST}:{_NTRIP_PORT}): {exc} '
+                f'— retry in {_NTRIP_SETUP_COOLDOWN_S:.0f}s'
+            )
             return
 
+        entries = parse_source_table(table_text)
+        if not entries:
+            self.get_logger().warn(
+                f'NTRIP source table from {_NTRIP_HOST}:{_NTRIP_PORT} had no parseable STR entries '
+                f'— retry in {_NTRIP_SETUP_COOLDOWN_S:.0f}s'
+            )
+            return
+
+        mount = select_nearest_mountpoint(pvt.lat, pvt.lon, entries)
+        if not mount:
+            self.get_logger().warn(
+                f'NTRIP: no RTCM 3.2 mountpoint in source table of {len(entries)} entries '
+                f'— retry in {_NTRIP_SETUP_COOLDOWN_S:.0f}s'
+            )
+            return
+
+        self.get_logger().info(
+            f'NTRIP: auto-selected "{mount}" for position '
+            f'({pvt.lat:.5f}, {pvt.lon:.5f})'
+        )
         self._ntrip = NTRIPClient(
-            host=host,
-            port=self.get_parameter('ntrip.port').value,
-            mountpoint=self.get_parameter('ntrip.mountpoint').value,
-            username=self.get_parameter('ntrip.username').value,
-            password=self.get_parameter('ntrip.password').value,
+            host=_NTRIP_HOST,
+            port=_NTRIP_PORT,
+            mountpoint=mount,
+            username=username,
+            password=_NTRIP_PASSWORD,
             serial_port=self._serial,
+            lat=pvt.lat,
+            lon=pvt.lon,
             logger=self.get_logger(),
         )
-        # Apply GGA interval from config (exposed as attribute so tests/ops can tweak)
         self._ntrip._gga_interval = self.get_parameter('ntrip.gga_interval_s').value
         self._ntrip.start()
-        self.get_logger().info(f'NTRIP client started: {host}')
 
     def _read_serial(self):
         """Read and parse UBX data from serial port."""
@@ -178,6 +262,10 @@ class GpsNode(Node):
                 self._last_pvt = msg
                 self._publish_heading(msg)
                 self._publish_fix_status(msg)
+
+                # Kick off NTRIP now that we might have a position; no-op
+                # if already running, no fix yet, or in cooldown.
+                self._maybe_setup_ntrip(msg)
 
                 if self._ntrip:
                     self._ntrip.update_position(msg.lat, msg.lon)

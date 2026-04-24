@@ -13,16 +13,15 @@ SERVER_URL="$(get_conf server-url)"
 INTERNAL_SECRET="$(get_conf internal-secret)"
 ROS_DOMAIN_ID="$(get_conf ros-domain-id)"
 
-NTRIP_HOST="$(get_conf ntrip-host)"
-NTRIP_PORT="$(get_conf ntrip-port)"
-NTRIP_MOUNTPOINT="$(get_conf ntrip-mountpoint)"
+# NTRIP caster host/port/password are compile-time constants in gps_node.py
+# (NGII-only, shared "gnss" password). Only the per-operator username is
+# configurable via snap.
 NTRIP_USERNAME="$(get_conf ntrip-username)"
-NTRIP_PASSWORD="$(get_conf ntrip-password)"
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 # Secrets travel via env, never on the ROS2 param tree or the argv line.
 export INTERNAL_SECRET
-export NTRIP_HOST NTRIP_PORT NTRIP_MOUNTPOINT NTRIP_USERNAME NTRIP_PASSWORD
+export NTRIP_USERNAME
 
 exec ros2 launch pilot pilot.launch.py \
     server_url:="${SERVER_URL}"

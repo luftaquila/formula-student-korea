@@ -16,11 +16,13 @@ gps_node:
     # NOTE: NTRIP credentials MUST be injected via `snap set fsk-rover-pilot ntrip-*=...`,
     # never committed to this file. Leave blank here so the repo stays safe to publish.
     ntrip:
-      host: ""                         # NTRIP caster hostname (e.g., gnss.ngii.go.kr)
-      port: 2101
-      mountpoint: ""
+      # Caster host/port/password are hard-coded constants in gps_node.py
+      # because the rover only ever targets NGII (www.gnssdata.or.kr:2101)
+      # whose shared RTK login uses the fixed password "gnss". Only the
+      # per-operator username is configurable, and mountpoint is auto-
+      # selected at runtime by nearest-base-station lookup against the
+      # caster's source table.
       username: ""
-      password: ""
       gga_interval_s: 10.0             # Seconds between GGA heartbeats to the caster
 
 motor_node:

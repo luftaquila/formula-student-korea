@@ -1,0 +1,57 @@
+#!/bin/sh
+# Hold the Pi 5 cooling fan at 100% forever, regardless of temperature.
+#
+# Pi 5 exposes the fan two ways:
+#   - /sys/class/hwmon/hwmon*/pwm1          raw PWM, 0–255
+#   - /sys/class/thermal/cooling_device*    symbolic states 0..max_state
+#                                           (thermal governor owns cur_state)
+#
+# We write *both* on every tick so the thermal governor's step_wise policy
+# can't step the fan back down when the CPU cools. Errors are swallowed
+# per-write — some paths may be momentarily unwritable during kernel
+# hotplug, and we'd rather keep pounding than exit.
+
+set -u
+
+TICK_S=5
+
+find_cooling_fan_pwm() {
+    for hw in /sys/class/hwmon/hwmon*; do
+        [ -r "$hw/name" ] || continue
+        name=$(cat "$hw/name" 2>/dev/null)
+        case "$name" in
+            cooling_fan|pwmfan|rp1-fan)
+                if [ -w "$hw/pwm1" ]; then
+                    printf '%s' "$hw/pwm1"
+                    return 0
+                fi
+                ;;
+        esac
+    done
+    return 1
+}
+
+echo "[fan-max] starting; tick=${TICK_S}s"
+
+pwm_path=""
+while :; do
+    # Re-resolve the PWM path each tick until we find it — hwmon numbering
+    # is load-order dependent and can shift across kernel upgrades.
+    if [ -z "$pwm_path" ] || [ ! -w "$pwm_path" ]; then
+        pwm_path=$(find_cooling_fan_pwm || true)
+    fi
+
+    if [ -n "$pwm_path" ]; then
+        echo 255 > "$pwm_path" 2>/dev/null || true
+    fi
+
+    # Force every cooling device (fans, throttles...) to its max state.
+    # max_state on Pi 5's fan is 4 (off, low, med, high, full).
+    for cd in /sys/class/thermal/cooling_device*; do
+        [ -r "$cd/max_state" ] || continue
+        max=$(cat "$cd/max_state" 2>/dev/null) || continue
+        echo "$max" > "$cd/cur_state" 2>/dev/null || true
+    done
+
+    sleep "$TICK_S"
+done

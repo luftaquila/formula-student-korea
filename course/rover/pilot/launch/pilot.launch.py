@@ -34,22 +34,13 @@ def generate_launch_description():
 
     config_file = LaunchConfiguration('config_file')
 
-    # NTRIP credentials from env (set via `sudo snap set fsk-rover-pilot ntrip-*=...`).
-    # These overlay the YAML config which must stay blank so secrets never land in git.
+    # NTRIP caster host/port/password are hard-coded in gps_node (NGII only).
+    # The only env var overlaid onto the ROS param tree is NTRIP_USERNAME,
+    # set via `sudo snap set fsk-rover-pilot ntrip-username=...`. Mountpoint
+    # is auto-selected by gps_node against the caster's source table.
     ntrip_overrides = {}
-    if os.environ.get('NTRIP_HOST'):
-        ntrip_overrides['ntrip.host'] = os.environ['NTRIP_HOST']
-    if os.environ.get('NTRIP_PORT'):
-        try:
-            ntrip_overrides['ntrip.port'] = int(os.environ['NTRIP_PORT'])
-        except ValueError:
-            pass
-    if os.environ.get('NTRIP_MOUNTPOINT'):
-        ntrip_overrides['ntrip.mountpoint'] = os.environ['NTRIP_MOUNTPOINT']
     if os.environ.get('NTRIP_USERNAME'):
         ntrip_overrides['ntrip.username'] = os.environ['NTRIP_USERNAME']
-    if os.environ.get('NTRIP_PASSWORD'):
-        ntrip_overrides['ntrip.password'] = os.environ['NTRIP_PASSWORD']
 
     # GPS node (start first - needs time for RTK convergence)
     gps_node = Node(
