@@ -78,8 +78,21 @@ class NTRIPClient:
         self._connected = False
         self._fail_count = 0
         self._last_error = None
+        self._last_correction_at = 0  # unix seconds when RTCM last flowed in
         self._logger = logger or _default_logger
         self._gga_interval = 10.0  # seconds, override via attribute
+
+    @property
+    def host(self):
+        return self._host
+
+    @property
+    def port(self):
+        return self._port
+
+    @property
+    def mountpoint(self):
+        return self._mountpoint
 
     @property
     def connected(self):
@@ -96,6 +109,10 @@ class NTRIPClient:
     @property
     def last_error(self):
         return self._last_error
+
+    @property
+    def last_correction_at(self):
+        return self._last_correction_at
 
     def _log_info(self, msg):
         """Log an info message via whichever logger we were given."""
@@ -174,6 +191,7 @@ class NTRIPClient:
         if remainder:
             self._serial.write(remainder)
             self._bytes_received += len(remainder)
+            self._last_correction_at = time.time()
 
         self._sock.settimeout(30.0)
         self._connected = True
@@ -202,6 +220,7 @@ class NTRIPClient:
                     if data:
                         self._serial.write(data)
                         self._bytes_received += len(data)
+                        self._last_correction_at = time.time()
 
                     # Send GGA position update at the configured cadence
                     now = time.monotonic()

@@ -110,6 +110,10 @@ class GpsNode(Node):
             'fail_count': self._ntrip.fail_count,
             'last_error': self._ntrip.last_error,
             'bytes_received': self._ntrip.bytes_received,
+            'host': self._ntrip.host,
+            'port': self._ntrip.port,
+            'mountpoint': self._ntrip.mountpoint,
+            'last_correction_at': self._ntrip.last_correction_at,
         }
         msg = String()
         msg.data = json.dumps(status)

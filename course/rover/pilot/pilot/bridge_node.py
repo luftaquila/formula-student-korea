@@ -90,6 +90,7 @@ class BridgeNode(Node):
         self._sse_connected = False
         self._fix_status = None
         self._ntrip_connected = None
+        self._ntrip_detail = None
 
         # Battery telemetry
         self._battery = None  # { voltage, percent, source }
@@ -149,6 +150,19 @@ class BridgeNode(Node):
         try:
             data = json.loads(msg.data)
             self._ntrip_connected = bool(data.get('connected'))
+            # Cache full detail (caster, fail_count, last_error, last_correction_at)
+            # so the UI can tell "NTRIP off because DNS failed" from "connected,
+            # last correction 30s ago".
+            if isinstance(data, dict):
+                self._ntrip_detail = {
+                    'host': data.get('host'),
+                    'port': data.get('port'),
+                    'mountpoint': data.get('mountpoint'),
+                    'fail_count': data.get('fail_count'),
+                    'last_error': data.get('last_error'),
+                    'last_correction_at': data.get('last_correction_at'),
+                    'bytes_received': data.get('bytes_received'),
+                }
         except (json.JSONDecodeError, AttributeError, TypeError):
             pass
 
@@ -244,6 +258,8 @@ class BridgeNode(Node):
                 'fix_status': self._fix_status,
                 'ntrip_connected': self._ntrip_connected,
             }
+            if self._ntrip_detail is not None:
+                payload['ntrip'] = self._ntrip_detail
             if self._battery is not None:
                 payload['battery'] = self._battery
             try:
