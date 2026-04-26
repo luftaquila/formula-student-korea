@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       # Tar+base64 of the snap create-key gnupg homedir (usually ~/.snap/gnupg
-      # on classic Ubuntu hosts). See course/rover/image/README.md.
+      # on classic Ubuntu hosts). See course/rover/README.md (§ Image assembly).
       SNAP_BRAND_KEY_B64: ${{ secrets.SNAP_BRAND_KEY_B64 }}
       # Name of the registered signing key (e.g. "fsk-rover-signing").
       SNAP_BRAND_KEY_NAME: ${{ vars.SNAP_BRAND_KEY_NAME }}

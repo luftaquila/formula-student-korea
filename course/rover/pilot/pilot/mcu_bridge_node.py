@@ -14,7 +14,7 @@ Published topics:
     /rover/battery             (std_msgs/String) JSON
     /rover/odom                (std_msgs/String) JSON {x, y, yaw, v_left, v_right}
 
-Wire protocol: see course/rover/mcu/README.md.
+Wire protocol: see course/rover/README.md (§ MCU coprocessor).
 """
 
 import json
