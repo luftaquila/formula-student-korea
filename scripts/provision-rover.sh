@@ -45,8 +45,10 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$REPO_ROOT/.env"
 UDEV_RULES="$REPO_ROOT/course/rover/scripts/99-fsk-rover.rules"
+FLASH_SCRIPT="$REPO_ROOT/course/rover/scripts/flash-mcu.sh"
 [ -f "$ENV_FILE" ] || { echo "cannot find $ENV_FILE" >&2; exit 1; }
 [ -f "$UDEV_RULES" ] || { echo "cannot find $UDEV_RULES" >&2; exit 1; }
+[ -f "$FLASH_SCRIPT" ] || { echo "cannot find $FLASH_SCRIPT" >&2; exit 1; }
 
 # Pull the two keys we need without sourcing the whole file — we'd rather
 # not leak unrelated secrets (JWT_SECRET etc.) into this process' environment.
@@ -77,9 +79,11 @@ printf '  ntrip-username:  %s\n\n' "$NTRIP_USER"
 
 SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 
-echo "[admin] copying udev rules"
+echo "[admin] copying udev rules and flash-mcu helper"
 # shellcheck disable=SC2086
 scp $SSH_OPTS "$UDEV_RULES" "fsk@$HOST:/tmp/99-fsk-rover.rules"
+# shellcheck disable=SC2086
+scp $SSH_OPTS "$FLASH_SCRIPT" "fsk@$HOST:/tmp/flash-mcu.sh"
 
 # shellcheck disable=SC2086
 ssh $SSH_OPTS \
@@ -93,6 +97,10 @@ sudo install -m 644 /tmp/99-fsk-rover.rules /etc/udev/rules.d/99-fsk-rover.rules
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=tty
 rm -f /tmp/99-fsk-rover.rules
+
+echo "[rover] installing flash-mcu helper"
+sudo install -m 755 /tmp/flash-mcu.sh /usr/local/bin/flash-mcu
+rm -f /tmp/flash-mcu.sh
 
 echo "[rover] connecting plugs"
 for plug in network-setup-control raw-usb; do
