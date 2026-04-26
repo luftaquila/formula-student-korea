@@ -43,6 +43,9 @@ void servo_set_target_us(servo_id_t id, uint16_t pulse_us) {
     if (id >= SERVO_COUNT_) return;
     if (pulse_us < SERVO_MIN_US) pulse_us = SERVO_MIN_US;
     if (pulse_us > SERVO_MAX_US) pulse_us = SERVO_MAX_US;
+    int32_t delta = (int32_t)pulse_us - (int32_t)g_srv[id].target_us;
+    if (delta < 0) delta = -delta;
+    if (delta < SERVO_DEADBAND_US) return;  // ignore sub-deadzone wobble
     g_srv[id].target_us = pulse_us;
 }
 
