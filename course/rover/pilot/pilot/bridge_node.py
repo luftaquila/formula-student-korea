@@ -89,7 +89,12 @@ class BridgeNode(Node):
         self._nav_state = 'IDLE'
         self._sse_connected = False
         self._fix_status = None
-        self._ntrip_connected = None
+        # Default to False (not None) so the very first telemetry POST
+        # explicitly tells the server "no NTRIP this session". The server
+        # uses that signal to clear any stale ntrip detail it cached from
+        # a previous boot — without it the UI keeps showing the old
+        # mountpoint and "보정 N s 전" until something else updates it.
+        self._ntrip_connected = False
         self._ntrip_detail = None
 
         # Battery telemetry

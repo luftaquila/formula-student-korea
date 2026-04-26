@@ -557,6 +557,33 @@ describe('Rover telemetry + status (internal)', () => {
     const data = await statusRes.json();
     assert.equal(data.ntrip_connected, true);
   });
+
+  it('clears cached ntrip detail when ntrip_connected flips to false', async () => {
+    // Seed a full ntrip detail object via a connected payload
+    await client.post('/api/rover/telemetry', {
+      body: {
+        ntrip_connected: true,
+        ntrip: {
+          host: 'www.gnssdata.or.kr', port: 2101, mountpoint: 'SEJN-RTCM32',
+          fail_count: 0, last_error: null,
+          last_correction_at: 1234567890, bytes_received: 99,
+        },
+      },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    let data = await (await client.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(data.ntrip?.mountpoint, 'SEJN-RTCM32');
+
+    // Next telemetry says NTRIP is disconnected — server must drop the
+    // stale detail so the UI doesn't keep rendering the old mountpoint.
+    await client.post('/api/rover/telemetry', {
+      body: { ntrip_connected: false },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    data = await (await client.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(data.ntrip_connected, false);
+    assert.equal(data.ntrip, null);
+  });
 });
 
 // ─── Rover stream fail-close ────────────────────────────────────────────

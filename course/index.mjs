@@ -771,7 +771,13 @@ app.post("/api/rover/telemetry", (req, res) => {
     roverState.fix_status_at = now;
   }
   // Distinguish "not reported" (null/undefined) from "reported disconnected" (false).
-  if (typeof ntrip_connected === "boolean") roverState.ntrip_connected = ntrip_connected;
+  // When the rover explicitly says it's not connected, drop the cached detail
+  // too — otherwise a previous boot's mountpoint + last_correction_at lingers
+  // forever in memory and the UI keeps rendering it as a stale "보정 N s 전".
+  if (typeof ntrip_connected === "boolean") {
+    roverState.ntrip_connected = ntrip_connected;
+    if (ntrip_connected === false) roverState.ntrip = null;
+  }
   if (battery && typeof battery === "object") {
     roverState.battery = {
       voltage: typeof battery.voltage === "number" ? battery.voltage : null,
