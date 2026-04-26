@@ -88,5 +88,5 @@ The image does **not** contain:
 - per-device override files
 
 Per-rover secrets are injected after first login via `snap set`. See
-[`../docs/provisioning.md`](../docs/provisioning.md) for the full first-boot
+[`../docs/README.md`](../docs/README.md) for the full first-boot
 sequence.

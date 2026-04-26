@@ -40,4 +40,4 @@ plug is involved in fan control.
 
 First-boot provisioning — SSH seeding via `system-user` assertion and
 initial secret injection — is documented in
-[`../docs/provisioning.md`](../docs/provisioning.md).
+[`../docs/README.md`](../docs/README.md).
