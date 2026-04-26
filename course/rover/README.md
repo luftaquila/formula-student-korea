@@ -350,8 +350,8 @@ E-Stop, HW + Pi-heartbeat watchdog, status LED. Pi link: USB CDC.
 | Right enc B/A   | GP4, GP5   | |
 | E-Stop          | GP6        | NC + internal pull-up; HIGH = tripped (fail-safe) |
 | Steering servo  | GP8        | S20F signal; VCC from BEC (slice4) |
-| Right mot PWM/DIR| GP10, GP11 | → MDD10A PWM2/DIR2 (PWM on slice5 chA) |
-| Left mot PWM/DIR | GP12, GP13 | → MDD10A PWM1/DIR1 (PWM on slice6 chA) |
+| Left mot PWM/DIR | GP10, GP11 | → MDD10A PWM/DIR (PWM on slice5 chA) |
+| Right mot PWM/DIR| GP12, GP13 | → MDD10A PWM/DIR (PWM on slice6 chA) |
 | Status LED      | GP16       | onboard WS2812 |
 | Battery V       | GP27 (ADC1)| 100 kΩ : 10 kΩ divider |
 

@@ -15,14 +15,14 @@
 #define PIN_ENC_RIGHT_BASE  4
 
 // MDD10A motor driver (PWM + DIR per channel). PWM on a hardware
-// PWM-capable pin; DIR is plain digital out. Pin order on the board's
-// GP10..GP13 row is reversed (right motor on the lower pins, left on
-// the higher) to match the cable layout. PWM2 sits on slice5 chA and
-// PWM1 on slice6 chA, so each motor's PWM frequency is independent.
-#define PIN_MOT_RIGHT_PWM   10
-#define PIN_MOT_RIGHT_DIR   11
-#define PIN_MOT_LEFT_PWM    12
-#define PIN_MOT_LEFT_DIR    13
+// PWM-capable pin; DIR is plain digital out. Cable layout on rover #1
+// puts the LEFT motor on the lower PWM/DIR pair (GP10/GP11, slice5)
+// and RIGHT on the higher (GP12/GP13, slice6). Independent slices so
+// each motor's PWM frequency is independent.
+#define PIN_MOT_LEFT_PWM    10
+#define PIN_MOT_LEFT_DIR    11
+#define PIN_MOT_RIGHT_PWM   12
+#define PIN_MOT_RIGHT_DIR   13
 
 // Servo PWM output (50 Hz, 1000-2000 us nominal). slice4 chA.
 #define PIN_SERVO_STEER     8   // S20F front steering (mission-specific

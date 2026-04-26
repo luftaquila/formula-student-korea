@@ -49,7 +49,12 @@ void motor_set(int channel, float duty) {
     if (duty < -1.0f) duty = -1.0f;
 
     motor_t *m = &g_mot[channel];
-    gpio_put(m->pin_dir, duty >= 0.0f ? 1 : 0);
+    // The rover's MDD10A wiring inverts the DIR convention: DIR=LOW is
+    // physical forward, DIR=HIGH is physical reverse. The motor cables
+    // could be swapped at the H-bridge instead, but flipping the sense
+    // here is a single-source change that keeps all the wiring on the
+    // chassis intact.
+    gpio_put(m->pin_dir, duty >= 0.0f ? 0 : 1);
 
     uint16_t level = (uint16_t)(fabsf(duty) * (float)MOTOR_PWM_WRAP);
     pwm_set_chan_level(m->slice, m->channel, level);
