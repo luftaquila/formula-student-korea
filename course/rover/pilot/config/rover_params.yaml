@@ -9,7 +9,7 @@ bridge_node:
 
 gps_node:
   ros__parameters:
-    serial_port: "/dev/ttyACM0"        # ZED-F9P USB serial port
+    serial_port: "/dev/ttyGPS"         # udev symlink (see scripts/99-fsk-rover.rules)
     baud_rate: 115200
     publish_rate: 10.0                 # Hz
     heading_speed_threshold: 0.3       # m/s minimum to publish heading
@@ -64,7 +64,7 @@ spray_node:
 mcu_bridge_node:
   ros__parameters:
     # USB CDC link to the RP2040 coprocessor (course/rover/mcu/).
-    serial_port: "/dev/ttyACM1"        # ZED-F9P uses /dev/ttyACM0
+    serial_port: "/dev/ttyMCU"         # udev symlink (see scripts/99-fsk-rover.rules)
     baud_rate: 115200                  # USB CDC ignores this but pyserial requires it
     heartbeat_hz: 10.0                 # MCU Pi-link WDT = 500 ms
     reconnect_delay_s: 2.0
@@ -77,7 +77,9 @@ mcu_bridge_node:
     max_speed: 1.5
     accel_limit: 0.5
     manual_priority_s: 1.0
-    command_period_s: 0.02
+    # dt used by accel_limit. _drive() runs once per /rover/cmd/velocity,
+    # which navigator publishes at 20 Hz (50 ms). Set to match.
+    command_period_s: 0.05
     # PID closed loop on the MCU. Off until encoders are calibrated and
     # gains are tuned on the actual hardware.
     use_pid: false

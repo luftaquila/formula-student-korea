@@ -1,25 +1,27 @@
 #!/bin/bash
-# Setup udev rules for consistent serial port naming on the RPi5.
+# Install FSK rover udev rules on a classic Ubuntu host.
 #
-# After running this script:
-#   /dev/ttyGPS  → ZED-F9P GPS receiver
+# After running this script, the kernel creates:
+#   /dev/ttyGPS  -> ZED-F9P GNSS receiver
+#   /dev/ttyMCU  -> RP2040-Zero coprocessor
+#
+# Production rovers (Ubuntu Core) get the same rules installed by
+# scripts/provision-rover.sh, which copies the same .rules file.
 #
 # Usage:
 #   sudo bash setup_udev.sh
-#   sudo udevadm control --reload-rules && sudo udevadm trigger
 
 set -euo pipefail
 
-RULES_FILE="/etc/udev/rules.d/99-pilot.rules"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SRC="$SCRIPT_DIR/../../scripts/99-fsk-rover.rules"
+DEST="/etc/udev/rules.d/99-fsk-rover.rules"
 
-cat > "$RULES_FILE" << 'EOF'
-# ZED-F9P GPS receiver (u-blox). Restrict to dialout group to avoid world-writable /dev/ttyGPS.
-# On Ubuntu Core the pilot snap uses the serial-port interface instead and this file is unused.
-SUBSYSTEM=="tty", ATTRS{idVendor}=="1546", ATTRS{idProduct}=="01a9", SYMLINK+="ttyGPS", MODE="0660", GROUP="dialout"
-EOF
+[ -f "$SRC" ] || { echo "rules file missing: $SRC" >&2; exit 1; }
 
-echo "udev rules written to $RULES_FILE"
-echo "Run: sudo udevadm control --reload-rules && sudo udevadm trigger"
-echo ""
-echo "After reconnecting the GPS, it will be available at /dev/ttyGPS"
-echo "Update rover_params.yaml: serial_port: /dev/ttyGPS"
+install -m 644 "$SRC" "$DEST"
+echo "installed: $DEST"
+
+udevadm control --reload-rules
+udevadm trigger --subsystem-match=tty
+echo "udev reloaded; reconnect the ZED-F9P / RP2040 to confirm symlinks"

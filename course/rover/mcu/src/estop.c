@@ -10,7 +10,9 @@
 static volatile bool g_tripped = false;
 
 bool estop_is_active(void) {
-    return g_tripped || (gpio_get(PIN_ESTOP_IN) == 0);
+    // NC + pull-up: rest = LOW (button closed), tripped = HIGH (button
+    // pressed *or* wire broken). Fail-safe: any open in the loop trips.
+    return g_tripped || (gpio_get(PIN_ESTOP_IN) == 1);
 }
 
 void estop_clear(void) {
@@ -28,10 +30,9 @@ void estop_trip(void) {
 void estop_init(void) {
     gpio_init(PIN_ESTOP_IN);
     gpio_set_dir(PIN_ESTOP_IN, GPIO_IN);
-    gpio_pull_up(PIN_ESTOP_IN);  // button shorts to GND when pressed
-    // Latch on first low edge so a momentary push still trips. Edge IRQ
-    // is multiplexed through the encoder GPIO callback (gpio.c uses a
-    // single bank-wide handler), but estop only needs a polled latch
-    // because main and core1 both check estop_is_active() every tick.
+    gpio_pull_up(PIN_ESTOP_IN);  // NC button at rest pulls line LOW
+    // Polled latch is sufficient — both main and core1 check
+    // estop_is_active() every tick, so a transient HIGH (~1 ms press
+    // or a contact bounce) is captured on the next sample.
     g_tripped = false;
 }

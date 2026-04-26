@@ -20,7 +20,12 @@
 #define PIN_SERVO_STEER     10  // S20F front steering (mission-specific
                                 // spray servo stays on the Pi)
 
-// E-Stop input. Active-low; closes button to GND.
+// E-Stop input. NC momentary, fail-safe wiring:
+//   GP14 ── NC button ── GND, with the MCU's internal pull-up enabled.
+// At rest the closed button ties the line LOW; pressing it (or any
+// open in the wire/connector) releases the line and the pull-up pulls
+// it HIGH. We treat HIGH as the active/tripped state so a broken cable
+// or popped connector also stops the rover.
 #define PIN_ESTOP_IN        14
 
 // Status RGB LED on RP2040-Zero (single WS2812).
@@ -86,7 +91,7 @@
 #define WHEEL_RADIUS_M          0.0325f   // 65 mm dia
 #endif
 #ifndef ENCODER_PPR
-#define ENCODER_PPR             1024      // pulses per rev (single channel)
+#define ENCODER_PPR             500       // single-channel pulses per rev
 #endif
 // Quadrature decode multiplies by 4. Distance per count = 2*pi*r / (PPR*4).
 #define METERS_PER_COUNT        ((2.0f * 3.14159265f * WHEEL_RADIUS_M) / (ENCODER_PPR * 4.0f))

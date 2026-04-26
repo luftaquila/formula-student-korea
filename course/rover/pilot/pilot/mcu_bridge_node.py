@@ -53,7 +53,7 @@ class McuBridgeNode(Node):
         super().__init__('mcu_bridge_node')
 
         # Serial / link
-        self.declare_parameter('serial_port', '/dev/ttyACM1')
+        self.declare_parameter('serial_port', '/dev/ttyMCU')
         self.declare_parameter('baud_rate', 115200)
         self.declare_parameter('heartbeat_hz', 10.0)
         self.declare_parameter('reconnect_delay_s', 2.0)
@@ -67,7 +67,7 @@ class McuBridgeNode(Node):
         self.declare_parameter('max_speed', 1.5)
         self.declare_parameter('accel_limit', 0.5)
         self.declare_parameter('manual_priority_s', 1.0)
-        self.declare_parameter('command_period_s', 0.02)  # 50 Hz
+        self.declare_parameter('command_period_s', 0.05)  # 20 Hz (navigator)
 
         # PID closed loop (off by default; raw duty mode is the safe baseline)
         self.declare_parameter('use_pid', False)

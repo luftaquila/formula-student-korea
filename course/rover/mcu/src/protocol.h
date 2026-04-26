@@ -8,6 +8,7 @@
 #define FLAG_ESTOP_ACTIVE         (1u << 0)
 #define FLAG_PI_HEARTBEAT_TIMEOUT (1u << 1)
 #define FLAG_BATTERY_UNDERVOLT    (1u << 2)
+#define FLAG_BATTERY_WARN         (1u << 3)
 #define FLAG_PID_ACTIVE           (1u << 4)
 #define FLAG_HW_WDT_REBOOT        (1u << 5)
 

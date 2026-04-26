@@ -35,6 +35,7 @@ static led_state_t pick_led_state(uint32_t flags, bool driving) {
     if (flags & FLAG_ESTOP_ACTIVE)         return LED_ESTOP;
     if (flags & FLAG_BATTERY_UNDERVOLT)    return LED_FAULT;
     if (flags & FLAG_PI_HEARTBEAT_TIMEOUT) return LED_WARN;
+    if (flags & FLAG_BATTERY_WARN)         return LED_WARN;
     return driving ? LED_ACTIVE : LED_IDLE;
 }
 
@@ -56,7 +57,10 @@ static void core1_main(void) {
         uint32_t now_ms = to_ms_since_boot(get_absolute_time());
 
         bool hb_timeout = (now_ms - g_last_heartbeat_ms) > PI_HEARTBEAT_TIMEOUT_MS;
-        bool undervolt  = g_last_vbat < BATTERY_UNDERVOLT_V && g_last_vbat > 1.0f;
+        // Drop readings below 1 V — divider sees that only when unpowered.
+        bool batt_known = g_last_vbat > 1.0f;
+        bool undervolt  = batt_known && g_last_vbat < BATTERY_UNDERVOLT_V;
+        bool batt_warn  = batt_known && !undervolt && g_last_vbat < BATTERY_WARN_V;
         bool estop      = estop_is_active();
 
         if (g_estop_clear_request && !estop) {
@@ -85,6 +89,7 @@ static void core1_main(void) {
         if (estop)      flags |= FLAG_ESTOP_ACTIVE;
         if (hb_timeout) flags |= FLAG_PI_HEARTBEAT_TIMEOUT;
         if (undervolt)  flags |= FLAG_BATTERY_UNDERVOLT;
+        if (batt_warn)  flags |= FLAG_BATTERY_WARN;
         if (g_pid_enabled && !g_use_raw_motor) flags |= FLAG_PID_ACTIVE;
         if (watchdog_caused_reboot())          flags |= FLAG_HW_WDT_REBOOT;
         g_last_flags = flags;

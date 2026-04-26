@@ -22,7 +22,6 @@ apps:
       - raw-usb
       - serial-port
       - gpio
-      - i2c
 
 # Pi 5 cooling fan is pinned to 100% at the firmware level via
 # `dtparam=fan_temp*` lines appended to `ubuntu-seed/config.txt` during

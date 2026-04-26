@@ -85,7 +85,7 @@ class GpsNode(Node):
         super().__init__('gps_node')
 
         # Parameters
-        self.declare_parameter('serial_port', '/dev/ttyACM0')
+        self.declare_parameter('serial_port', '/dev/ttyGPS')
         self.declare_parameter('baud_rate', 115200)
         self.declare_parameter('publish_rate', 10.0)
         self.declare_parameter('heading_speed_threshold', 0.3)

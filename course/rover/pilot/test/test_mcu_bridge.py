@@ -31,7 +31,7 @@ def bridge():
     # Bypass __init__ so we don't need rclpy or a real serial port; instead
     # set up the minimum state the methods under test reach for.
     node._params = {
-        'serial_port': '/dev/ttyACM1',
+        'serial_port': '/dev/ttyMCU',
         'baud_rate': 115200,
         'heartbeat_hz': 10.0,
         'reconnect_delay_s': 2.0,
@@ -43,7 +43,7 @@ def bridge():
         'max_speed': 1.5,
         'accel_limit': 0.5,
         'manual_priority_s': 1.0,
-        'command_period_s': 0.02,
+        'command_period_s': 0.05,
         'use_pid': False,
         'pid_kp': 0.6,
         'pid_ki': 1.5,
@@ -103,6 +103,32 @@ def test_validate_params_rejects_bad_command_period(bridge):
     bridge._params['command_period_s'] = 0.5
     with pytest.raises(SystemExit):
         bridge._validate_params()
+
+
+def test_manual_priority_blocks_velocity_during_window(bridge):
+    """Velocity callback should ignore /rover/cmd/velocity for manual_priority_s
+    after a manual command, so a stale autonomy stream can't override the joystick."""
+    import time
+    import types
+
+    msg = types.SimpleNamespace(linear=types.SimpleNamespace(x=50.0, y=0.0, z=0.0),
+                                angular=types.SimpleNamespace(x=0.0, y=0.0, z=10.0))
+
+    bridge._mode = 'manual'
+    bridge._last_manual_t = time.monotonic()  # just got a manual cmd
+
+    bridge._on_velocity(msg)
+    out = _writes_text(bridge)
+    # No drive frame should have been emitted while the manual lockout holds.
+    assert not any(line.startswith(('M ', 'V ')) for line in out)
+    assert bridge._mode == 'manual'
+
+    # After the lockout expires, the next velocity callback must drive again.
+    bridge._last_manual_t = time.monotonic() - 2.0  # well past 1s window
+    bridge._on_velocity(msg)
+    out = _writes_text(bridge)
+    assert any(line.startswith('M ') for line in out)
+    assert bridge._mode == 'autonomous'
 
 
 def test_drive_emits_M_in_raw_mode(bridge):

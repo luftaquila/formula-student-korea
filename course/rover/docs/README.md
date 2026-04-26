@@ -9,15 +9,15 @@ Core; remote access via Tailscale.
 | Role | Part | Interface |
 |------|------|-----------|
 | Compute | Raspberry Pi 5 | — |
-| Coprocessor | Waveshare RP2040-Zero | USB CDC (`/dev/ttyACM1`) |
-| GPS | u-blox ZED-F9P | USB CDC (`/dev/ttyACM0`) |
+| Coprocessor | Waveshare RP2040-Zero | USB CDC (`/dev/ttyMCU`) |
+| GPS | u-blox ZED-F9P | USB CDC (`/dev/ttyGPS`) |
 | RTK corrections | NTRIP caster (NGII) | TCP |
 | Motor driver | Cytron MDD10A | MCU GPIO PWM + DIR |
 | Drive | 2× DC motor (Wheeltec R550 rear) | One MDD10A channel per wheel |
-| Wheel encoders | 2× quadrature, 3.3–5 V, 200–500 PPR | MCU PIO (signal-only) |
+| Wheel encoders | 2× quadrature, 3.3 V push-pull, 500 PPR | MCU PIO + 3V3 supply |
 | Steering servo | Wheeltec S20F (5–6.5 V, 20 kg·cm, 0.18 s/60°, 180°, stall 1.8 A, dead-zone 4 µs) | MCU GPIO PWM, signal only |
 | Spray servo | Standard RC servo | Pi GPIO PWM (mission-specific) |
-| E-Stop | NC momentary | MCU GP14 ↔ GND |
+| E-Stop | NC momentary, fail-safe | MCU GP14 ↔ GND, internal pull-up; HIGH = tripped |
 | Platform | Wheeltec R550 AKM Plus | Ackermann |
 | Battery | 25.6 V (8S) LiFePO4, 6.6 Ah | XT60, BMS-protected |
 | Pi supply | 5 V 5 A buck (battery → USB-C PD trigger) | Powers Pi 5 only |
@@ -102,7 +102,7 @@ CI builds the image; field bring-up is one SSH session.
    ssh fsk@<rover-ip> sudo snap logs fsk-rover-pilot.pilot -n 50
    ```
    `gps_node`, `navigator_node`, `bridge_node` come up unconditionally.
-   `mcu_bridge_node` needs the RP2040 on `/dev/ttyACM1`; on a bench
+   `mcu_bridge_node` needs the RP2040 on `/dev/ttyMCU`; on a bench
    without the MCU it logs serial-open warnings and retries.
    `spray_node` needs Pi GPIO 13 wired to the spray servo.
 7. **Pre-competition hold** — pin the revision for the competition week:
@@ -299,7 +299,7 @@ Required plugs (`snapcraft.yaml`):
 | Plug | Purpose |
 |------|---------|
 | `network`, `network-bind` | Course server REST/SSE, NTRIP TCP |
-| `raw-usb` | ZED-F9P + RP2040 USB CDC |
+| `raw-usb` | ZED-F9P + RP2040 USB CDC (also resolves `/dev/ttyGPS` and `/dev/ttyMCU`) |
 | `serial-port` | udev-named serial lines if present |
 | `gpio` | Spray servo (Pi GPIO 13) |
 | `network-setup-control` | Configure hook writes `/etc/netplan/90-fsk-wifi.yaml` |
