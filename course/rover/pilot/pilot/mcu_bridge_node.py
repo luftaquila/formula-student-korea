@@ -262,8 +262,9 @@ class McuBridgeNode(Node):
     # ------------------------- heartbeat
 
     def _heartbeat(self):
-        if self._serial is None:
-            self._open_serial()
+        # Reconnect is owned by the reader loop (rate-limited by
+        # `reconnect_delay_s`). _send is a no-op when the port is closed,
+        # so the heartbeat tick stays cheap and silent during MCU outages.
         self._send('H')
 
     # ------------------------- reader
@@ -273,6 +274,7 @@ class McuBridgeNode(Node):
         while self._reader_alive.is_set():
             if self._serial is None:
                 time.sleep(delay)
+                self._open_serial()
                 continue
             try:
                 chunk = self._serial.read(256)
