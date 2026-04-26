@@ -154,6 +154,13 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) {
-  .global-estop { bottom: 1rem; right: 1rem; padding: 0.75rem 1rem; font-size: 0.85rem; }
+  /* Sit above the map view's bottom rail (~56px) plus the iOS
+     home-indicator safe-area, so the button never overlaps tabs. */
+  .global-estop {
+    bottom: calc(64px + env(safe-area-inset-bottom));
+    right: 0.75rem;
+    padding: 0.7rem 1rem;
+    font-size: 0.85rem;
+  }
 }
 </style>

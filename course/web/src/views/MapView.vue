@@ -18,15 +18,12 @@ const SIDE_LABELS = { left: "왼쪽", center: "가운데", right: "오른쪽" };
 const coneFilterLabel = computed(() => CONE_FILTER_LABELS[coneFilter.value] || coneFilter.value);
 const currentSideLabel = computed(() => SIDE_LABELS[currentSide.value] || "");
 
-// Clicking an already-active rail icon toggles the inspector closed so the map
-// reclaims the full width on a laptop. Clicking any other icon just switches.
+// Rail icon click just switches tabs; the inspector is always open.
+// (We removed the click-to-collapse behaviour because it confused
+//  operators who hit the current tab expecting a no-op and lost the
+//  whole side panel.)
 function onRailClick(key) {
-  if (activeTab.value === key && !inspectorCollapsed.value) {
-    inspectorCollapsed.value = true;
-  } else {
-    activeTab.value = key;
-    inspectorCollapsed.value = false;
-  }
+  activeTab.value = key;
 }
 
 function hideLiveMapLayers() {
@@ -167,6 +164,7 @@ const missionETA = computed(() => {
 
 // Per-chip computeds. Each chip owns its own tone (ok/warn/bad/neutral) so
 // the strip's overall color band is decided separately (primary class).
+// `detail` is the multi-line text shown in the hover/click popover.
 const fixChip = computed(() => {
   const s = roverStatus.value;
   if (!s.connected || !s.fix_status) return null;
@@ -174,7 +172,9 @@ const fixChip = computed(() => {
   const tone = s.fix_status === "rtk_fixed" ? "ok"
     : s.fix_status === "rtk_float" ? "warn"
     : "bad";
-  return { label, tone };
+  const rows = [["모드", label]];
+  if (lastPositionAge.value != null) rows.push(["갱신", `${lastPositionAge.value}s 전`]);
+  return { label, tone, rows };
 });
 
 const navChip = computed(() => {
@@ -187,7 +187,9 @@ const navChip = computed(() => {
   const tone = (s.nav_state === "ERROR" || s.nav_state === "EMERGENCY_STOP") ? "bad"
     : s.nav_state === "IDLE" ? "neutral"
     : "ok";
-  return { label, tone };
+  const rows = [["상태", s.nav_state]];
+  if (dist != null) rows.push(["다음", `#${executedIndex.value + 1} · ${dist.toFixed(1)} m`]);
+  return { label, tone, rows };
 });
 
 const batteryChip = computed(() => {
@@ -197,7 +199,10 @@ const batteryChip = computed(() => {
   const tone = p <= BATTERY_CRIT_PERCENT ? "bad"
     : p <= BATTERY_WARN_PERCENT ? "warn"
     : "ok";
-  return { percent: p, voltage: s.battery.voltage, tone };
+  const rows = [["잔량", `${p}%`]];
+  if (s.battery.voltage != null) rows.push(["전압", `${s.battery.voltage.toFixed(2)} V`]);
+  if (s.battery.source) rows.push(["측정", s.battery.source]);
+  return { percent: p, voltage: s.battery.voltage, tone, rows };
 });
 
 const ntripChip = computed(() => {
@@ -207,7 +212,13 @@ const ntripChip = computed(() => {
   const s = roverStatus.value;
   if (!s.connected || !s.ntrip_connected) return null;
   const mp = s.ntrip?.mountpoint;
-  return { label: mp ? `📡 ${mp}` : "📡 ok", tone: "ok" };
+  const rows = [];
+  if (s.ntrip?.host) rows.push(["Caster", `${s.ntrip.host}${s.ntrip.port ? `:${s.ntrip.port}` : ""}`]);
+  if (mp) rows.push(["Mount", mp]);
+  if (ntripCorrectionAge.value != null) rows.push(["보정", `${ntripCorrectionAge.value}s 전`]);
+  if (s.ntrip?.fail_count) rows.push(["재시도", `${s.ntrip.fail_count}회`]);
+  if (s.ntrip?.last_error) rows.push(["오류", s.ntrip.last_error]);
+  return { label: mp ? `📡 ${mp}` : "📡 ok", tone: "ok", rows };
 });
 
 const posChip = computed(() => {
@@ -216,19 +227,46 @@ const posChip = computed(() => {
   if (!s.connected || !s.last_position_at) return null;
   const ago = Math.max(0, Math.round((Date.now() - s.last_position_at) / 1000));
   const tone = ago <= 5 ? "ok" : ago <= 15 ? "warn" : "bad";
-  return { ago, tone };
+  const rows = [["갱신", `${ago}s 전`]];
+  if (s.last_position) rows.push(["좌표", `${s.last_position.lat?.toFixed(6)}, ${s.last_position.lng?.toFixed(6)}`]);
+  return { ago, tone, rows };
 });
 
 const missionChip = computed(() => {
   if (roverMode.value !== "executing" && roverMode.value !== "stopped") return null;
   if (pathWaypoints.value.length === 0) return null;
+  const lines = [
+    `미션 진행: ${executedIndex.value} / ${pathWaypoints.value.length} (${pathProgress.value}%)`,
+  ];
+  if (remainingDistanceM.value != null) {
+    lines.push(`남은 거리: ${remainingDistanceM.value >= 1000
+      ? (remainingDistanceM.value / 1000).toFixed(2) + " km"
+      : remainingDistanceM.value.toFixed(1) + " m"}`);
+  }
+  if (missionETA.value) lines.push(`예상 완료: ${missionETA.value} 후`);
+  if (avgSpeedMs.value != null) lines.push(`최근 10초 평균 속도: ${avgSpeedMs.value.toFixed(2)} m/s`);
   return {
     current: executedIndex.value,
     total: pathWaypoints.value.length,
     percent: pathProgress.value,
     eta: missionETA.value,
+    detail: lines.join("\n"),
   };
 });
+
+// Which chip is currently showing its popover via click (mobile-friendly).
+// Hover handles desktop via :hover; click adds a sticky toggle for touch.
+const activeChipPopover = ref(null);
+function toggleChipPopover(key) {
+  activeChipPopover.value = activeChipPopover.value === key ? null : key;
+}
+// Dismiss popover on outside click or Esc.
+function onGlobalClickForChips(e) {
+  if (!e.target.closest(".chip-wrapper")) activeChipPopover.value = null;
+}
+function onGlobalKeyForChips(e) {
+  if (e.key === "Escape") activeChipPopover.value = null;
+}
 
 const disconnectInfo = computed(() => {
   uiTick.value;
@@ -467,7 +505,9 @@ const currentSampleTime = computed(() => {
 const currentSampleState = computed(() => missionSamples.value[replayIdx.value]?.nav_state || "—");
 const currentSampleFix = computed(() => missionSamples.value[replayIdx.value]?.fix_status || "—");
 const activeTab = ref(loadPref("activeTab", "courses"));
-const inspectorCollapsed = ref(loadPref("inspectorCollapsed", false, JSON.parse));
+// Inspector is always open now; keep the ref as a fixed `false` so any
+// remaining template references compile, but stop persisting it.
+const inspectorCollapsed = ref(false);
 const inspectorWidth = ref(Math.max(280, Math.min(Number(loadPref("inspectorWidth", 360, Number)), 600)));
 const inspectorResizing = ref(false);
 
@@ -484,7 +524,9 @@ function savePref(key, value) {
 
 watch(activeTab, (v) => savePref("activeTab", v));
 watch(inspectorWidth, (v) => savePref("inspectorWidth", v));
-watch(inspectorCollapsed, (v) => savePref("inspectorCollapsed", v));
+// Clear any stale collapsed pref a user might have saved from the
+// previous behaviour, so the inspector always starts open.
+try { localStorage.removeItem("inspectorCollapsed"); } catch {}
 
 // Tab-swap: hide live layers when entering missions, tear down replay state
 // and restore the live view when leaving. Relies on `activeTab` being already
@@ -1110,7 +1152,9 @@ async function requestLogs() {
 
 function formatLogTime(ms) {
   if (!ms) return "—";
-  return new Date(ms).toLocaleTimeString("ko-KR", { hour12: false });
+  // ko-KR locale already produces "YYYY. M. D. 오전/오후 H:MM:SS"
+  // — match the OS default rather than rebuilding it by hand.
+  return new Date(ms).toLocaleString("ko-KR");
 }
 
 function downloadLogs() {
@@ -1646,6 +1690,12 @@ function connectSSE() {
   eventSource.addEventListener("rover:status", (e) => {
     const data = JSON.parse(e.data);
     roverStatus.value = { ...roverStatus.value, ...data };
+    // Live-update the rover marker on the map whenever the server
+    // forwards a fresh position (rover→server SSE is the truth).
+    const lp = data.last_position;
+    if (lp && typeof lp.lat === "number" && typeof lp.lng === "number") {
+      updateRoverMarker(lp.lat, lp.lng);
+    }
     // If the rover disconnected mid-manual-control, release immediately.
     if (!data.connected && roverMode.value === "manual") {
       stopManualControl();
@@ -1716,6 +1766,13 @@ async function fetchRoverStatus() {
     const res = await request("/api/rover/status", { method: "GET" });
     const data = await res.json();
     roverStatus.value = { ...roverStatus.value, ...data };
+    // Sync the rover marker with the cached server-side position on
+    // first load — without this the map only shows the rover after the
+    // next live SSE update, which can be 1+ seconds away.
+    const lp = data.last_position;
+    if (lp && typeof lp.lat === "number" && typeof lp.lng === "number") {
+      updateRoverMarker(lp.lat, lp.lng);
+    }
     // Restore in-flight mission so a tab reload during a mission doesn't lose
     // the path overlay, waypoint counter, or spray markers.
     restoreMissionProgress(data.mission_progress);
@@ -1776,6 +1833,8 @@ onMounted(async () => {
   checkMobile();
   window.addEventListener("resize", checkMobile);
   window.addEventListener("keydown", onGlobalKeydown);
+  document.addEventListener("click", onGlobalClickForChips);
+  document.addEventListener("keydown", onGlobalKeyForChips);
   // 1Hz tick so time-ago chips and disconnect-ago refresh without new SSE events.
   uiTickInterval = setInterval(() => { uiTick.value = (uiTick.value + 1) % 3600; }, 1000);
   await fetchAll();
@@ -1788,6 +1847,8 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener("resize", checkMobile);
   window.removeEventListener("keydown", onGlobalKeydown);
+  document.removeEventListener("click", onGlobalClickForChips);
+  document.removeEventListener("keydown", onGlobalKeyForChips);
   if (uiTickInterval) clearInterval(uiTickInterval);
   if (controlInterval) clearInterval(controlInterval);
   if (eventSource) eventSource.close();
@@ -1912,20 +1973,75 @@ onUnmounted(() => {
           <template v-else>
             <span class="status-dot"></span>
             <div class="chip-row primary-zone">
-              <span v-if="fixChip" :class="['chip', `chip-${fixChip.tone}`]">{{ fixChip.label }}</span>
-              <span v-if="navChip" :class="['chip', `chip-${navChip.tone}`]">🧭 {{ navChip.label }}</span>
+              <span
+                v-if="fixChip"
+                :class="['chip-wrapper', { active: activeChipPopover === 'fix' }]"
+                @click.stop="toggleChipPopover('fix')"
+              >
+                <span :class="['chip', `chip-${fixChip.tone}`]">{{ fixChip.label }}</span>
+                <span class="chip-popover">
+                  <span class="popover-row" v-for="r in fixChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span class="popover-val">{{ r[1] }}</span></span>
+                </span>
+              </span>
+              <span
+                v-if="navChip"
+                :class="['chip-wrapper', { active: activeChipPopover === 'nav' }]"
+                @click.stop="toggleChipPopover('nav')"
+              >
+                <span :class="['chip', `chip-${navChip.tone}`]">🧭 {{ navChip.label }}</span>
+                <span class="chip-popover">
+                  <span class="popover-row" v-for="r in navChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span class="popover-val">{{ r[1] }}</span></span>
+                </span>
+              </span>
             </div>
-            <div v-if="missionChip" class="mission-inline">
-              <div class="mission-bar"><div class="mission-fill" :style="{ width: missionChip.percent + '%' }"></div></div>
-              <span class="mission-counts">{{ missionChip.current }}/{{ missionChip.total }} · {{ missionChip.percent }}%</span>
-              <span v-if="missionChip.eta" class="mission-eta">ETA {{ missionChip.eta }}</span>
+            <div
+              v-if="missionChip"
+              :class="['chip-wrapper', 'mission-wrapper', { active: activeChipPopover === 'mission' }]"
+              @click.stop="toggleChipPopover('mission')"
+            >
+              <div class="mission-inline">
+                <div class="mission-bar"><div class="mission-fill" :style="{ width: missionChip.percent + '%' }"></div></div>
+                <span class="mission-counts">{{ missionChip.current }}/{{ missionChip.total }} · {{ missionChip.percent }}%</span>
+                <span v-if="missionChip.eta" class="mission-eta">ETA {{ missionChip.eta }}</span>
+              </div>
+              <span class="chip-popover">
+                <span class="popover-row"><span class="popover-key">진행</span><span class="popover-val">{{ missionChip.current }} / {{ missionChip.total }} ({{ missionChip.percent }}%)</span></span>
+                <span v-if="missionChip.eta" class="popover-row"><span class="popover-key">ETA</span><span class="popover-val">{{ missionChip.eta }}</span></span>
+              </span>
             </div>
             <div class="chip-row vitals-zone">
-              <span v-if="batteryChip" :class="['chip', `chip-${batteryChip.tone}`]">
-                🔋 {{ batteryChip.percent }}%<template v-if="batteryChip.voltage != null"> · {{ batteryChip.voltage.toFixed(1) }}V</template>
+              <span
+                v-if="batteryChip"
+                :class="['chip-wrapper', { active: activeChipPopover === 'battery' }]"
+                @click.stop="toggleChipPopover('battery')"
+              >
+                <span :class="['chip', `chip-${batteryChip.tone}`]">
+                  🔋 {{ batteryChip.percent }}%<template v-if="batteryChip.voltage != null"> · {{ batteryChip.voltage.toFixed(1) }}V</template>
+                </span>
+                <span class="chip-popover">
+                  <span class="popover-row" v-for="r in batteryChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span class="popover-val">{{ r[1] }}</span></span>
+                </span>
               </span>
-              <span v-if="ntripChip" :class="['chip', `chip-${ntripChip.tone}`]">{{ ntripChip.label }}</span>
-              <span v-if="posChip" :class="['chip', `chip-${posChip.tone}`]">📍 {{ posChip.ago }}s</span>
+              <span
+                v-if="ntripChip"
+                :class="['chip-wrapper', { active: activeChipPopover === 'ntrip' }]"
+                @click.stop="toggleChipPopover('ntrip')"
+              >
+                <span :class="['chip', `chip-${ntripChip.tone}`]">{{ ntripChip.label }}</span>
+                <span class="chip-popover">
+                  <span class="popover-row" v-for="r in ntripChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span class="popover-val">{{ r[1] }}</span></span>
+                </span>
+              </span>
+              <span
+                v-if="posChip"
+                :class="['chip-wrapper', { active: activeChipPopover === 'pos' }]"
+                @click.stop="toggleChipPopover('pos')"
+              >
+                <span :class="['chip', `chip-${posChip.tone}`]">📍 {{ posChip.ago }}s</span>
+                <span class="chip-popover">
+                  <span class="popover-row" v-for="r in posChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span class="popover-val">{{ r[1] }}</span></span>
+                </span>
+              </span>
             </div>
           </template>
 
@@ -2316,6 +2432,11 @@ onUnmounted(() => {
   background: var(--bg-primary); color: var(--text-primary);
   font-size: 0.85rem;
   flex-wrap: wrap;
+  /* New stacking context comfortably above Leaflet's panes/controls
+     (max 1000) so chip popovers anchored inside it always escape the
+     map. The inline E-Stop button still wins at z-index 2000. */
+  position: relative;
+  z-index: 1500;
 }
 .status-dot {
   width: 10px; height: 10px; border-radius: 50%;
@@ -2328,6 +2449,65 @@ onUnmounted(() => {
 .chip-row { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
 .primary-zone { flex: 0 1 auto; }
 .vitals-zone { flex: 0 1 auto; }
+
+/* Hover-/click-toggled popover for any status chip. The wrapper holds
+   the chip element and an absolutely-positioned bubble that appears on
+   :hover (desktop) or when .active is set (click toggle, mobile). */
+.chip-wrapper {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+}
+.chip-popover {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 1600;          /* above status-strip's stacking context */
+  width: max-content;
+  max-width: min(320px, calc(100vw - 1.5rem));
+  padding: 0.45rem 0.65rem;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  cursor: default;
+}
+/* Compact two-column rows.  `max-content 1fr` lets the key column hug
+   its widest label across rows while the value column takes the rest;
+   `keep-all` stops Korean text from breaking inside syllables and
+   `nowrap` keeps short data on one line — long values still wrap on
+   word boundaries because `flex-wrap: wrap` is implicit on rows. */
+.popover-row {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.05rem 0;
+}
+.popover-key {
+  color: var(--text-secondary);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+.popover-val {
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.74rem;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.chip-wrapper:hover > .chip-popover,
+.chip-wrapper.active > .chip-popover { display: block; }
+
+/* The mission progress bar needs to grow to fill the strip's middle,
+   so override the chip-wrapper's tighter inline-flex sizing. */
+.mission-wrapper { flex: 1 1 220px; min-width: 0; display: flex; }
+.mission-wrapper > .mission-inline { flex: 1 1 auto; min-width: 0; }
 
 .chip {
   display: inline-flex; align-items: center;
@@ -2723,7 +2903,13 @@ onUnmounted(() => {
   border-radius: 6px; font-size: 0.85rem; color: var(--text-primary);
 }
 .preflight-override input { margin: 0; }
-.preflight-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+.preflight-actions {
+  display: flex; justify-content: flex-end; gap: 0.5rem;
+  /* Breathing room above the close/confirm buttons in every modal. */
+  margin-top: 1rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid color-mix(in srgb, var(--border-primary) 50%, transparent);
+}
 
 .logs-modal { max-width: 800px; width: 90vw; max-height: 85vh; display: flex; flex-direction: column; }
 .logs-toolbar {
@@ -2956,49 +3142,79 @@ onUnmounted(() => {
   .map-layout { padding: 0; }
   .content { border-radius: 0; border: none; }
 
-  /* Status strip: allow chips to wrap and hide lower-priority chips first. */
-  .status-strip { padding: 0.35rem 0.5rem; min-height: 44px; }
-  .mission-inline { flex-basis: 100%; order: 10; }
-  .vitals-zone { flex-wrap: wrap; }
+  /* Status strip: allow chips to wrap onto a second row when needed.
+     We can't use overflow-x: auto here because that clips the chip
+     popovers (top: 100%) that hang below the strip. Wrapping eats one
+     extra row at most, while the map still fills below — acceptable
+     trade for popovers that actually display. */
+  .status-strip {
+    padding: 0.3rem 0.6rem;
+    min-height: 40px;
+    flex-wrap: wrap;
+    row-gap: 0.25rem;
+    overflow: visible;
+  }
+  .chip-row { flex-wrap: wrap; }
+  .mission-inline { flex: 1 1 100%; min-width: 0; }
   .status-reconnect-hint { display: none; }
-  .status-detail { padding: 0.5rem 0.75rem; }
+  .chip { padding: 0.15rem 0.5rem; font-size: 0.72rem; }
 
   .workspace-body {
     flex-direction: column;
     position: relative;
+    min-height: 0;
   }
 
   .rail {
-    order: 99;
-    width: 100%; flex-direction: row;
+    /* Pin the tab nav to the bottom of the visual viewport so it's
+       always visible — address-bar reflow never hides it. */
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    width: 100%;
+    flex-direction: row;
     border-top: 1px solid var(--border-primary);
     padding: 0.25rem 0.5rem; gap: 0.25rem;
     justify-content: space-around;
     background: var(--bg-primary);
+    z-index: 700;
+    /* Respect iOS home-indicator safe-area so labels stay tappable. */
+    padding-bottom: max(0.25rem, env(safe-area-inset-bottom));
   }
   .rail-spacer { display: none; }
   .rail-divider {
     width: 1px; height: 28px; margin: 0 0.25rem;
     align-self: center;
   }
-  .rail-btn { flex: 1; min-height: 56px; margin: 0; }
-  .rail-icon { font-size: 1.25rem; }
-  .rail-label { font-size: 0.7rem; }
+  .rail-btn { flex: 1; min-height: 52px; margin: 0; padding: 0.3rem 0.2rem; }
+  .rail-icon { font-size: 1.2rem; }
+  .rail-label { font-size: 0.68rem; }
 
-  .map-wrap { flex: 1; min-height: 200px; }
+  .map-wrap { flex: 1; min-height: 220px; }
 
   .inspector-handle { display: none; }
 
+  /* Bottom drawer pinned to the visual viewport (same coord space as
+     the fixed rail). Anchoring against `bottom` rather than relying
+     on flex layout means the drawer sits just above the rail no
+     matter how the address bar reflows the layout viewport — the bug
+     where the drawer only became visible after the address bar
+     hid was caused by laying it out against the layout viewport. */
   .inspector {
-    position: fixed; left: 0; right: 0; bottom: 56px; /* above mobile rail */
+    position: fixed !important;
+    left: 0; right: 0;
+    bottom: calc(60px + env(safe-area-inset-bottom));
     width: 100% !important;
-    max-width: 100%; min-width: 0; max-height: 70vh;
+    max-width: 100%; min-width: 0;
+    max-height: 75vh;
     border-top: 1px solid var(--border-primary);
     border-radius: 12px 12px 0 0;
-    box-shadow: 0 -4px 20px rgba(0,0,0,0.2);
+    box-shadow: 0 -4px 20px rgba(0,0,0,0.25);
     z-index: 600;
-    transition: height 0.2s ease;
+    background: var(--bg-primary);
+    overflow: hidden;
   }
+  .inspector-body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .map-wrap { flex: 1; min-height: 220px; }
 
   .sheet-handle {
     display: flex; align-items: center; justify-content: center;
@@ -3007,12 +3223,47 @@ onUnmounted(() => {
     touch-action: none;
   }
   .handle-bar {
-    width: 42px; height: 4px; border-radius: 2px;
+    width: 44px; height: 5px; border-radius: 3px;
     background: var(--text-secondary); opacity: 0.4;
   }
 
-  .joystick { max-width: 180px; }
-  .rover-controls-grid { grid-template-columns: 1fr; }
+  /* Drawer content needs breathing room on touch and the joystick
+     should always be centred and large enough to grip. */
+  .tab-pane { padding: 0.75rem 0.875rem 1.25rem; }
+  .rover-controls-grid { grid-template-columns: 1fr; gap: 0.5rem; }
+  .joystick-area { display: flex; flex-direction: column; align-items: center; }
+  .joystick { max-width: 220px; width: 100%; }
+
+  /* Modals: full-bleed with side margin so they fit phone screens. */
+  .preflight-modal, .logs-modal, .snapshots-modal {
+    width: calc(100vw - 1.5rem); max-width: calc(100vw - 1.5rem);
+    max-height: calc(100dvh - 2rem);
+  }
+
+  /* Modal log viewer on mobile: drop the table-row layout (which gets
+     clipped at the viewport edge with `width: 1%; nowrap`) and stack
+     each row like the inline sidebar — time + level on one line, the
+     message wrapped onto its own. */
+  .logs-view:not(.logs-view-inline) .log-row {
+    display: flex; flex-wrap: wrap;
+    column-gap: 0.5rem; row-gap: 0.05rem;
+    padding: 0.2rem 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--border-primary) 30%, transparent);
+  }
+  .logs-view:not(.logs-view-inline) .log-row > span {
+    display: inline; padding: 0; border: none; vertical-align: baseline;
+  }
+  .logs-view:not(.logs-view-inline) .log-time,
+  .logs-view:not(.logs-view-inline) .log-level,
+  .logs-view:not(.logs-view-inline) .log-node {
+    width: auto; white-space: nowrap;
+  }
+  .logs-view:not(.logs-view-inline) .log-msg {
+    flex-basis: 100%; word-break: break-word;
+  }
+
+  /* Popovers: fall back to wider, lower-density layout for thumb taps. */
+  .chip-popover { font-size: 0.78rem; min-width: 200px; max-width: calc(100vw - 2rem); }
 }
 
 /* Desktop: hide sheet handle */
