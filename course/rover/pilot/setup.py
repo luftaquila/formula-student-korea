@@ -18,7 +18,7 @@ setup(
         'setuptools',
         'pyserial>=3.5',
         'requests>=2.31',
-        'lgpio>=0.2.2.0',
+        'lgpio>=0.2.2.0',  # spray_node only — drive I/O moved to the MCU
     ],
     zip_safe=True,
     maintainer='luftaquila',
@@ -28,10 +28,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'battery_node = pilot.battery_node:main',
             'bridge_node = pilot.bridge_node:main',
             'gps_node = pilot.gps_node:main',
-            'motor_node = pilot.motor_node:main',
+            'mcu_bridge_node = pilot.mcu_bridge_node:main',
             'navigator_node = pilot.navigator_node:main',
             'spray_node = pilot.spray_node:main',
         ],

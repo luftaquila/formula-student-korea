@@ -26,27 +26,6 @@ gps_node:
       username: ""
       gga_interval_s: 10.0             # Seconds between GGA heartbeats to the caster
 
-motor_node:
-  ros__parameters:
-    # MDD10A GPIO pins (BCM numbering)
-    dir1_pin: 23                       # Channel 1 (left motor) direction
-    pwm1_pin: 24                       # Channel 1 (left motor) PWM
-    dir2_pin: 27                       # Channel 2 (right motor) direction
-    pwm2_pin: 22                       # Channel 2 (right motor) PWM
-    # S20F steering servo
-    steering_pin: 12                   # Steering servo GPIO pin (hardware PWM)
-    servo_center_us: 1500              # Center pulse width (microseconds)
-    servo_range_us: 500                # Range from center (+/- for full lock)
-    # Robot geometry
-    max_steering_angle: 25.0           # Maximum steering angle (degrees)
-    wheelbase: 0.38                    # Front-to-rear axle distance (meters)
-    track_width: 0.30                  # Left-to-right wheel distance (meters)
-    max_speed: 1.5                     # Maximum speed (m/s)
-    # Safety
-    watchdog_timeout: 0.5              # Seconds without command before auto-stop
-    accel_limit: 0.5                   # Maximum acceleration (m/s^2)
-    gpio_chip: 4                       # GPIO chip number (RPi5 RP1 = 4)
-
 navigator_node:
   ros__parameters:
     waypoint_tolerance: 0.05           # Meters to consider waypoint reached (5cm)
@@ -82,13 +61,26 @@ spray_node:
     retract_delay: 0.3                 # Seconds to wait after retract before done
     gpio_chip: 4                       # GPIO chip number (RPi5 RP1 = 4)
 
-battery_node:
+mcu_bridge_node:
   ros__parameters:
-    publish_rate: 1.0                  # Hz
-    # "simulated" publishes `simulated_voltage`; switch to "ina219" once the
-    # INA219 at the I2C address is wired.
-    source: "simulated"
-    simulated_voltage: 12.3            # Volts (ignored when source=ina219)
-    warn_percent: 30                   # UI threshold; <= triggers warning color
-    i2c_bus: 1
-    i2c_address: 0x40
+    # USB CDC link to the RP2040 coprocessor (course/rover/mcu/).
+    serial_port: "/dev/ttyACM1"        # ZED-F9P uses /dev/ttyACM0
+    baud_rate: 115200                  # USB CDC ignores this but pyserial requires it
+    heartbeat_hz: 10.0                 # MCU Pi-link WDT = 500 ms
+    reconnect_delay_s: 2.0
+    # Ackermann + steering servo
+    servo_center_us: 1500
+    servo_range_us: 500
+    max_steering_angle: 25.0
+    wheelbase: 0.38
+    track_width: 0.30
+    max_speed: 1.5
+    accel_limit: 0.5
+    manual_priority_s: 1.0
+    command_period_s: 0.02
+    # PID closed loop on the MCU. Off until encoders are calibrated and
+    # gains are tuned on the actual hardware.
+    use_pid: false
+    pid_kp: 0.6
+    pid_ki: 1.5
+    pid_kd: 0.0

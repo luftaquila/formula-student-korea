@@ -9,24 +9,62 @@ Core; remote access via Tailscale.
 | Role | Part | Interface |
 |------|------|-----------|
 | Compute | Raspberry Pi 5 | — |
+| Coprocessor | Waveshare RP2040-Zero | USB CDC (`/dev/ttyACM1`) |
 | GPS | u-blox ZED-F9P | USB CDC (`/dev/ttyACM0`) |
 | RTK corrections | NTRIP caster (NGII) | TCP |
-| Motor driver | Cytron MDD10A | GPIO PWM + DIR |
-| Drive | 2× DC motor (Wheeltec R550 rear) | Differential PWM |
-| Steering servo | S20F | GPIO hardware PWM |
-| Spray servo | Standard RC servo | GPIO hardware PWM |
+| Motor driver | Cytron MDD10A | MCU GPIO PWM + DIR |
+| Drive | 2× DC motor (Wheeltec R550 rear) | One MDD10A channel per wheel |
+| Wheel encoders | 2× quadrature, 3.3–5 V, 200–500 PPR | MCU PIO (signal-only) |
+| Steering servo | Wheeltec S20F (5–6.5 V, 20 kg·cm, 0.18 s/60°, 180°, stall 1.8 A, dead-zone 4 µs) | MCU GPIO PWM, signal only |
+| Spray servo | Standard RC servo | Pi GPIO PWM (mission-specific) |
+| E-Stop | NC momentary | MCU GP14 ↔ GND |
 | Platform | Wheeltec R550 AKM Plus | Ackermann |
+| Battery | 25.6 V (8S) LiFePO4, 6.6 Ah | XT60, BMS-protected |
+| Pi supply | 5 V 5 A buck (battery → USB-C PD trigger) | Powers Pi 5 only |
+| Servo supply | MP1584EN buck (5.5 V, ≥3 A) | S20F + spray VCC; signal lines stay on GPIO |
 
-GPIO (BCM, RPi5 chip 4) — overridable in `pilot/config/rover_params.yaml`:
+Pi GPIO (BCM, chip 4) — overridable in `pilot/config/rover_params.yaml`:
 
 | Pin | Signal |
 |-----|--------|
-| 23  | MDD10A DIR1 (left motor) |
-| 24  | MDD10A PWM1 |
-| 27  | MDD10A DIR2 (right motor) |
-| 22  | MDD10A PWM2 |
-| 12  | Steering servo |
-| 13  | Spray servo |
+| 13  | Spray servo (signal) |
+
+MCU pin map and USB CDC protocol: [`mcu/README.md`](../mcu/README.md).
+
+### Power chain
+
+```
+25.6 V LiFePO4 8S 6.6 Ah ─┬─► 5 V 5 A buck ──────► Pi 5 (USB-C PD)
+                         ├─► MDD10A V_MOT ─────► rear DC motors
+                         └─► MP1584EN @ 5.5 V ─► S20F + spray VCC
+```
+
+- S20F stall 1.8 A → servo VCC off Pi/MCU rail.
+- Servo signal on 3.3 V GPIO (within S20F threshold).
+- All GNDs commoned (battery, MDD10A, MP1584EN, Pi, MCU).
+- Battery thresholds (firmware): warn 22 V, undervolt cutoff 20 V.
+- MP1584EN: rec. 4.5–28 V, abs. max 30 V. 8S full charge 29.2 V is
+  above rec., below abs. max. For margin: LM2596HV (abs. max 60 V).
+
+### Drive control split
+
+- **MCU (RP2040)** owns drive I/O — wheel encoders (PIO quadrature),
+  MDD10A motor PWM, S20F steering, battery ADC, E-Stop, hardware +
+  Pi-heartbeat watchdog. Pi link: USB CDC @ 50 Hz.
+- **Pi** owns navigation, RTK, course-server bridge, and the
+  mission-specific spray servo (BCM 13 via `spray_node`).
+
+The bridge between them is `mcu_bridge_node`. Pin map and wire
+protocol: [`mcu/README.md`](../mcu/README.md). Firmware CI:
+`.github/workflows/rover-mcu.yml`.
+
+Battery divider supplements (BoM):
+
+| Part | Notes |
+|------|-------|
+| Divider 100 kΩ + 10 kΩ 1 % | 8S → MCU ADC0 |
+| 100 nF ceramic | ADC0 → GND |
+| 3.3 V Zener / TVS | ADC0 → GND clamp |
 
 ## Provisioning
 
@@ -63,10 +101,10 @@ CI builds the image; field bring-up is one SSH session.
    ssh fsk@<rover-ip> snap services fsk-rover-pilot
    ssh fsk@<rover-ip> sudo snap logs fsk-rover-pilot.pilot -n 50
    ```
-   `gps_node`, `battery_node`, `navigator_node`, `bridge_node` come up
-   unconditionally. `motor_node` and `spray_node` need GPIO hardware
-   (MDD10A + servos); their restart loop on a bench without the
-   drivetrain is expected.
+   `gps_node`, `navigator_node`, `bridge_node` come up unconditionally.
+   `mcu_bridge_node` needs the RP2040 on `/dev/ttyACM1`; on a bench
+   without the MCU it logs serial-open warnings and retries.
+   `spray_node` needs Pi GPIO 13 wired to the spray servo.
 7. **Pre-competition hold** — pin the revision for the competition week:
    ```bash
    ssh fsk@<rover-ip> sudo snap refresh --hold=168h fsk-rover-pilot
@@ -213,10 +251,14 @@ course server (port 10000)
                                                navigator_node
                                                  │        │
                       /rover/cmd/velocity ◄──────┘        │
-                          │                               │
-                       motor_node                /rover/nav/waypoint_reached
+                          ▼                               │
+                  mcu_bridge_node ── USB CDC ── RP2040    │
+                  (motor PWM, S20F, encoders,             │
+                   battery, E-Stop, watchdog)             │
+                                                /rover/nav/waypoint_reached
                                                           │
                                                    spray_node ── /rover/spray/done
+                                                   (Pi GPIO 13, mission)
 ```
 
 ### Mission state machine (`navigator_node`)
@@ -257,9 +299,9 @@ Required plugs (`snapcraft.yaml`):
 | Plug | Purpose |
 |------|---------|
 | `network`, `network-bind` | Course server REST/SSE, NTRIP TCP |
-| `raw-usb` | ZED-F9P USB CDC |
+| `raw-usb` | ZED-F9P + RP2040 USB CDC |
 | `serial-port` | udev-named serial lines if present |
-| `gpio` | MDD10A PWM/DIR, steering/spray servos |
+| `gpio` | Spray servo (Pi GPIO 13) |
 | `network-setup-control` | Configure hook writes `/etc/netplan/90-fsk-wifi.yaml` |
 
 All plugs are on the Snapcraft Store's auto-approval list — new
@@ -310,6 +352,7 @@ Runs on install and on every `snap set`:
 |----------|---------|--------|
 | `.github/workflows/rover-snap.yml` | PR (artifact only), push to `main` (→ `candidate`), `v*` tag or `workflow_dispatch` with channel (→ `edge`) | `fsk-rover-pilot` snap; runs `compileall` + pytest before publish |
 | `.github/workflows/rover-image.yml` | `workflow_dispatch` or weekly (Mon 14:00 KST) | Ubuntu Core image + chained `auto-import.assert` |
+| `.github/workflows/rover-mcu.yml` | Push/PR touching `course/rover/mcu/**` | RP2040 coprocessor firmware (`rover_mcu.uf2`) |
 
 The image workflow signs the model and `system-user` assertions
 in-pipeline using the brand key from `SNAP_BRAND_KEY_B64` /
@@ -346,7 +389,9 @@ npm run test:shared
 |------|------|
 | `pilot/config/rover_params.yaml` | All tunable parameters + inline docs |
 | `pilot/pilot/navigator_node.py` | Mission state machine |
-| `pilot/pilot/bridge_node.py` | SSE/REST bridge + telemetry reporter |
+| `pilot/pilot/mcu_bridge_node.py` | USB CDC link to RP2040; Ackermann translation, odom integration, battery republish |
+| `pilot/pilot/spray_node.py` | Spray servo on Pi GPIO 13 (mission-only) |
+| `pilot/pilot/bridge_node.py` | Course server SSE/REST bridge + telemetry reporter |
 | `pilot/pilot/lib/ackermann.py` | Ackermann kinematics (Wheeltec R550) |
 | `pilot/pilot/lib/ntrip_client.py` | NTRIP v2 client with exponential backoff |
 | `pilot/pilot/lib/ubx_parser.py` | ZED-F9P UBX parser (NAV-PVT, NAV-HPPOSLLH) |
@@ -354,6 +399,7 @@ npm run test:shared
 | `snap/hooks/configure` | Wi-Fi netplan writer + daemon restart |
 | `snapcraft.yaml` | Snap confinement and plugs |
 | `image/` | Ubuntu Core image assembly, model + system-user templates |
+| `mcu/` | RP2040 coprocessor firmware (pico-sdk, C) — drive I/O |
 | `../../scripts/provision-rover.sh` | One-shot post-flash provisioning |
 | `pilot/scripts/setup_udev.sh` | (Legacy) classic-Ubuntu udev rule for ZED-F9P |
 | `pilot/scripts/systemd/pilot.service` | (Legacy) systemd unit for non-snap runs |
