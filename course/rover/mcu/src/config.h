@@ -68,11 +68,12 @@
 // 50 Hz tick = 20 ms => mechanical 6.7 deg/tick.
 // Limit command rate to ~80% of mechanical capability.
 #define SERVO_SLEW_US_PER_TICK  100
-// S20F mechanical dead-zone is 4 µs. Reject target updates that move
-// less than this so a slowly-moving joystick (UI quantises to 5 µs
-// per percent of steering) doesn't trickle in sub-deadzone changes
-// that the gear train turns into stutter.
-#define SERVO_DEADBAND_US       5
+// S20F mechanical dead-zone is 4 µs and the UI quantises steering to
+// 5 µs per percent. Sit one full step above that (10 µs) so a single
+// joystick unit is always rejected and only deliberate two-unit moves
+// reach the slew loop — kills the residual stutter from updates that
+// landed exactly on the previous 5 µs threshold.
+#define SERVO_DEADBAND_US       10
 
 // ----- Motor PWM -----
 #define MOTOR_PWM_FREQ_HZ       20000     // 20 kHz - inaudible, MDD10A friendly
