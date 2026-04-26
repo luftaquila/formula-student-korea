@@ -7,6 +7,7 @@
 
 #include "pico/stdlib.h"
 #include "pico/stdio.h"
+#include "pico/bootrom.h"
 
 #include <stdio.h>
 #include <stdint.h>
@@ -89,6 +90,17 @@ static void handle_line(char *line) {
             if (sscanf(args, "%d", &on) == 1) {
                 g_pid_enabled = (on != 0);
             }
+            break;
+        }
+        case 'B': {
+            // Reboot into USB BOOTSEL mode for firmware update.
+            // Stops motors and announces the reset over USB CDC before
+            // the bootloader takes over the USB interface.
+            motor_stop_all();
+            protocol_emit_event("BOOTSEL");
+            sleep_ms(50);
+            reset_usb_boot(0, 0);
+            // Unreachable — chip resets into the mass-storage bootloader.
             break;
         }
         default:

@@ -394,6 +394,7 @@ Pi → MCU:
 | `C` | — | Clear E-Stop (only takes effect after the GPIO line returns to rest) |
 | `P` | `<kp> <ki> <kd>` | Live PID gains (both wheels) |
 | `L` | `<0\|1>` | PID gate — `1` allows the PID lane, `0` forces RAW |
+| `B` | — | Reboot into USB BOOTSEL for `.uf2` reflash; emits `! BOOTSEL` first |
 
 Two orthogonal state bits drive the control loop:
 
@@ -457,8 +458,13 @@ cmake -S … -B … -DWHEEL_RADIUS_M=0.04 -DENCODER_PPR=200
 
 ### Flash
 
-- First time: hold BOOT, plug USB-C, drag `.uf2` to the `RPI-RP2` drive.
-- Subsequent: `picotool load -f rover_mcu.uf2 && picotool reboot`.
+- First time (firmware doesn't yet know `B`): hold BOOT, plug USB-C,
+  drag `.uf2` to the `RPI-RP2` drive.
+- Subsequent (rover Pi): `sudo course/rover/scripts/flash-mcu.sh
+  rover_mcu.uf2`. Sends `B` on `/dev/ttyMCU`, mounts the resulting
+  RPI-RP2 disk, copies the file, waits for re-enumeration. The pilot
+  snap is paused for the duration and resumed automatically.
+- Off-rover host: `picotool load -f rover_mcu.uf2 && picotool reboot`.
 
 After flash, the board enumerates as a USB CDC device. Always address
 it via the udev symlink `/dev/ttyMCU` (installed by

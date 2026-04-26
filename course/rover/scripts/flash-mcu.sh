@@ -1,0 +1,74 @@
+#!/bin/sh
+# One-shot MCU reflash from the rover Pi — no BOOT button required.
+#
+# Usage:
+#   sudo flash-mcu.sh <rover_mcu.uf2>
+#
+# Sequence:
+#   1. Send "B" over /dev/ttyMCU; the running firmware drops into the
+#      RP2040 mass-storage bootloader (BOOTSEL).
+#   2. Wait for /dev/disk/by-label/RPI-RP2 to appear.
+#   3. Mount, copy the .uf2, sync — the bootloader auto-resets the
+#      chip the moment the file lands.
+#   4. Wait for the new firmware to enumerate /dev/ttyMCU again.
+#
+# Bootstraps from the very first BOOTSEL flash (which has to be done
+# the manual way, holding BOOT) since the previous firmware needs to
+# know the "B" command. Every subsequent flash is software-driven.
+
+set -eu
+
+UF2="${1:?usage: $(basename "$0") <rover_mcu.uf2>}"
+[ -f "$UF2" ] || { echo "missing: $UF2" >&2; exit 1; }
+
+# The pilot snap holds /dev/ttyMCU exclusive — stop it so we can
+# write to the port without interleaving with mcu_bridge_node.
+SNAP_WAS_ACTIVE=0
+if snap services fsk-rover-pilot 2>/dev/null | grep -q "active"; then
+    SNAP_WAS_ACTIVE=1
+    snap stop fsk-rover-pilot.pilot >/dev/null
+fi
+
+restart_snap() {
+    [ "$SNAP_WAS_ACTIVE" = "1" ] || return 0
+    snap start fsk-rover-pilot.pilot >/dev/null || true
+}
+trap restart_snap EXIT
+
+if [ -e /dev/ttyMCU ]; then
+    printf 'B\n' > /dev/ttyMCU
+    echo "[flash-mcu] BOOTSEL requested via /dev/ttyMCU"
+else
+    echo "[flash-mcu] /dev/ttyMCU absent — assuming MCU already in BOOTSEL"
+fi
+
+# Wait up to 15 s for the mass-storage device to appear.
+for _ in $(seq 1 30); do
+    [ -e /dev/disk/by-label/RPI-RP2 ] && break
+    sleep 0.5
+done
+[ -e /dev/disk/by-label/RPI-RP2 ] || {
+    echo "[flash-mcu] RPI-RP2 didn't appear within 15 s" >&2
+    exit 1
+}
+
+MNT="$(mktemp -d -t rp2.XXXXXX)"
+mount -t vfat /dev/disk/by-label/RPI-RP2 "$MNT"
+cp "$UF2" "$MNT/"
+sync
+# The bootloader yanks the USB device the moment the file is written,
+# so the umount may EIO. That's fine — clean up anyway.
+umount "$MNT" 2>/dev/null || true
+rmdir "$MNT" 2>/dev/null || true
+echo "[flash-mcu] $UF2 written; bootloader rebooting…"
+
+# Wait up to 10 s for the new firmware to come back as /dev/ttyMCU.
+for _ in $(seq 1 20); do
+    [ -e /dev/ttyMCU ] && break
+    sleep 0.5
+done
+if [ -e /dev/ttyMCU ]; then
+    echo "[flash-mcu] /dev/ttyMCU back online"
+else
+    echo "[flash-mcu] firmware flashed; /dev/ttyMCU not yet visible — give it a few seconds"
+fi
