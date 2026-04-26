@@ -42,8 +42,8 @@ void encoder_init(void) {
         g_program_loaded = true;
     }
 
-    init_one(&g_enc[ENC_LEFT],  pio, 0, PIN_ENC_LEFT_A);
-    init_one(&g_enc[ENC_RIGHT], pio, 1, PIN_ENC_RIGHT_A);
+    init_one(&g_enc[ENC_LEFT],  pio, 0, PIN_ENC_LEFT_BASE);
+    init_one(&g_enc[ENC_RIGHT], pio, 1, PIN_ENC_RIGHT_BASE);
 }
 
 int32_t encoder_get_count(encoder_id_t id) {

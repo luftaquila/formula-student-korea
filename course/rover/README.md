@@ -346,21 +346,23 @@ E-Stop, HW + Pi-heartbeat watchdog, status LED. Pi link: USB CDC.
 
 | Role | Pin | Notes |
 |------|-----|-------|
-| Left enc A/B    | GP2, GP3   | PIO needs A,B on consecutive pins |
-| Right enc A/B   | GP4, GP5   | |
-| Left mot PWM/DIR| GP6, GP7   | → MDD10A PWM1/DIR1 |
-| Right mot PWM/DIR| GP8, GP9  | → MDD10A PWM2/DIR2 |
-| Steering servo  | GP10       | S20F signal; VCC from BEC |
-| E-Stop          | GP14       | NC + internal pull-up; HIGH = tripped (fail-safe) |
+| Left enc B/A    | GP2, GP3   | PIO needs the two phases on consecutive pins; lower = bit 0 |
+| Right enc B/A   | GP4, GP5   | |
+| E-Stop          | GP6        | NC + internal pull-up; HIGH = tripped (fail-safe) |
+| Steering servo  | GP8        | S20F signal; VCC from BEC (slice4) |
+| Right mot PWM/DIR| GP10, GP11 | → MDD10A PWM2/DIR2 (PWM on slice5 chA) |
+| Left mot PWM/DIR | GP12, GP13 | → MDD10A PWM1/DIR1 (PWM on slice6 chA) |
 | Status LED      | GP16       | onboard WS2812 |
-| Battery V       | GP26 (ADC0)| 100 kΩ : 10 kΩ divider |
+| Battery V       | GP27 (ADC1)| 100 kΩ : 10 kΩ divider |
 
 PIO usage: PIO0 SM0/SM1 = quadrature encoder (offset 0). PIO1 SM0 = WS2812.
 
-Wheel encoders are 3.3 V push-pull — both the signal lines (`A/B`) and
-power (`VCC`/`GND`) come straight from the RP2040 (3V3 rail). No level
+Wheel encoders are 3.3 V push-pull — both the signal lines and power
+(`VCC`/`GND`) come straight from the RP2040 (3V3 rail). No level
 shifter; soft pull-ups on the input pins are harmless for a push-pull
-driver.
+driver. The PIO state machine reads the lower of each pair as bit 0,
+so swapping which physical wire goes to the lower pin only flips
+count direction.
 
 E-Stop wiring is fail-safe: NC button between GP14 and GND with the
 internal pull-up enabled. At rest the closed contact pulls LOW;

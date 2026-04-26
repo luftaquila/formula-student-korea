@@ -117,8 +117,12 @@ class McuBridgeNode(Node):
         self._reader_thread.start()
 
         # Push PID gains + mode at startup so the MCU defaults match params.
+        # 'C' clears any stale software E-Stop latch left over from a prior
+        # session (the MCU only honours it when the hardware line is also
+        # released, so a genuinely-pressed button stays tripped).
         self._send(f'P {self._p("pid_kp")} {self._p("pid_ki")} {self._p("pid_kd")}')
         self._send(f'L {1 if self._p("use_pid") else 0}')
+        self._send('C')
 
         self.get_logger().info('MCU bridge started')
 
@@ -355,11 +359,11 @@ class McuBridgeNode(Node):
     # ------------------------- shutdown
 
     def destroy_node(self):
+        # Don't send 'E' on shutdown — that would latch g_tripped on the
+        # MCU and outlive the snap restart. Heartbeats stopping naturally
+        # trips the MCU's Pi-link WDT (500 ms) and motors stop on their
+        # own; the latch isn't needed and is hard to clear.
         self._reader_alive.clear()
-        try:
-            self._send('E')
-        except Exception:
-            pass
         self._close_serial()
         super().destroy_node()
 

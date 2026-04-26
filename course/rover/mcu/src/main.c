@@ -61,12 +61,16 @@ static void core1_main(void) {
         bool batt_known = g_last_vbat > 1.0f;
         bool undervolt  = batt_known && g_last_vbat < BATTERY_UNDERVOLT_V;
         bool batt_warn  = batt_known && !undervolt && g_last_vbat < BATTERY_WARN_V;
-        bool estop      = estop_is_active();
 
-        if (g_estop_clear_request && !estop) {
+        // Clear before re-reading the latch, and gate only on the hardware
+        // line. estop_is_active() ORs in g_tripped, so checking "!estop"
+        // here would deadlock the latch — once tripped, it could never
+        // clear regardless of the GPIO state.
+        if (g_estop_clear_request && gpio_get(PIN_ESTOP_IN) == 0) {
             estop_clear();
             g_estop_clear_request = false;
         }
+        bool estop = estop_is_active();
 
         if (estop || hb_timeout) {
             motor_stop_all();

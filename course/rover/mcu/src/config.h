@@ -1,38 +1,46 @@
 #ifndef ROVER_MCU_CONFIG_H
 #define ROVER_MCU_CONFIG_H
 
-// ----- Pin assignments (RP2040-Zero, default mapping) -----
-// Encoder A/B inputs. PIO quadrature decoder requires A and B on consecutive
-// GPIOs (B = A + 1). One PIO state machine per wheel.
-#define PIN_ENC_LEFT_A      2
-#define PIN_ENC_LEFT_B      3
-#define PIN_ENC_RIGHT_A     4
-#define PIN_ENC_RIGHT_B     5
+// ----- Pin assignments (RP2040-Zero) -----
+// Wheel encoders. PIO quadrature decoder needs the two phase pins on
+// consecutive GPIOs and reads the lower pin as bit 0, the higher pin as
+// bit 1. We pass the lower (= base) pin to the program; whichever
+// signal you label "A" or "B" only flips the count's sign convention.
+//
+// Wiring: LEFT  B → GP2, LEFT  A → GP3
+//         RIGHT B → GP4, RIGHT A → GP5
+// If wheel-forward ends up reading negative on first power-up, swap
+// the two encoder wires at the connector (per side).
+#define PIN_ENC_LEFT_BASE   2
+#define PIN_ENC_RIGHT_BASE  4
 
-// MDD10A motor driver (PWM + DIR per channel). PWM on a hardware PWM-capable
-// pin; DIR is plain digital out.
-#define PIN_MOT_LEFT_PWM    6
-#define PIN_MOT_LEFT_DIR    7
-#define PIN_MOT_RIGHT_PWM   8
-#define PIN_MOT_RIGHT_DIR   9
+// MDD10A motor driver (PWM + DIR per channel). PWM on a hardware
+// PWM-capable pin; DIR is plain digital out. Pin order on the board's
+// GP10..GP13 row is reversed (right motor on the lower pins, left on
+// the higher) to match the cable layout. PWM2 sits on slice5 chA and
+// PWM1 on slice6 chA, so each motor's PWM frequency is independent.
+#define PIN_MOT_RIGHT_PWM   10
+#define PIN_MOT_RIGHT_DIR   11
+#define PIN_MOT_LEFT_PWM    12
+#define PIN_MOT_LEFT_DIR    13
 
-// Servo PWM output (50 Hz, 1000-2000 us nominal).
-#define PIN_SERVO_STEER     10  // S20F front steering (mission-specific
+// Servo PWM output (50 Hz, 1000-2000 us nominal). slice4 chA.
+#define PIN_SERVO_STEER     8   // S20F front steering (mission-specific
                                 // spray servo stays on the Pi)
 
 // E-Stop input. NC momentary, fail-safe wiring:
-//   GP14 ── NC button ── GND, with the MCU's internal pull-up enabled.
+//   GP6 ── NC button ── GND, with the MCU's internal pull-up enabled.
 // At rest the closed button ties the line LOW; pressing it (or any
 // open in the wire/connector) releases the line and the pull-up pulls
 // it HIGH. We treat HIGH as the active/tripped state so a broken cable
 // or popped connector also stops the rover.
-#define PIN_ESTOP_IN        14
+#define PIN_ESTOP_IN        6
 
 // Status RGB LED on RP2040-Zero (single WS2812).
 #define PIN_STATUS_LED      16
 
 // ADC-capable GPIOs: GP26=ADC0, GP27=ADC1, GP28=ADC2.
-#define PIN_BATTERY_ADC     26  // ADC0 — battery via 1:11 divider
+#define PIN_BATTERY_ADC     27  // ADC1 — battery via 1:11 divider
 
 // ----- Battery voltage divider -----
 // Vbat -> R1 -> ADC -> R2 -> GND. 8S LiFePO4 max 29.2 V.
