@@ -480,6 +480,13 @@ describe('POST /api/rover/stop', () => {
   });
 });
 
+describe('POST /api/rover/clear-emergency', () => {
+  it('returns 503 when rover is not connected', async () => {
+    const res = await client.post('/api/rover/clear-emergency', { cookie: adminCookie });
+    assert.equal(res.status, 503);
+  });
+});
+
 describe('POST /api/rover/control', () => {
   it('returns 503 when rover is not connected', async () => {
     const res = await client.post('/api/rover/control', {

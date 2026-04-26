@@ -103,6 +103,7 @@ class McuBridgeNode(Node):
         self.create_subscription(Twist, '/rover/cmd/velocity', self._on_velocity, 10)
         self.create_subscription(Twist, '/rover/cmd/manual_control', self._on_manual, 10)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_estop, reliable)
+        self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_estop, reliable)
 
         self._pub_status = self.create_publisher(String, '/rover/motor/status', 10)
         self._pub_battery = self.create_publisher(String, '/rover/battery', 10)
@@ -236,6 +237,13 @@ class McuBridgeNode(Node):
         self._cur_steer_us = self._p('servo_center_us')
         self._send('E')
         self.get_logger().warn('EMERGENCY STOP')
+
+    def _on_clear_estop(self, _msg):
+        # Operator-acknowledged release. The MCU still gates the clear
+        # on its hardware E-Stop line being released, so a physically-
+        # held button keeps the latch on.
+        self._send('C')
+        self.get_logger().info('Emergency-stop clear sent to MCU')
 
     # ------------------------- drive
 

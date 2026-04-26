@@ -70,6 +70,7 @@ class BridgeNode(Node):
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self._pub_execute = self.create_publisher(String, '/rover/cmd/execute_path', reliable_qos)
         self._pub_estop = self.create_publisher(Empty, '/rover/cmd/emergency_stop', reliable_qos)
+        self._pub_clear_estop = self.create_publisher(Empty, '/rover/cmd/clear_emergency', reliable_qos)
         self._pub_manual = self.create_publisher(Twist, '/rover/cmd/manual_control', 10)
         self._pub_request_pos = self.create_publisher(Empty, '/rover/cmd/request_position', reliable_qos)
 
@@ -404,6 +405,10 @@ class BridgeNode(Node):
         elif event == 'emergency-stop':
             self.get_logger().warn('Emergency stop received from server')
             self._pub_estop.publish(Empty())
+
+        elif event == 'clear-emergency':
+            self.get_logger().info('Emergency-stop release received from server')
+            self._pub_clear_estop.publish(Empty())
 
         elif event == 'manual-control':
             msg = Twist()

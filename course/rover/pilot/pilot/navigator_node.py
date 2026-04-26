@@ -95,6 +95,7 @@ class NavigatorNode(Node):
         self.create_subscription(String, '/rover/gps/fix_status', self._on_fix_status, 10)
         self.create_subscription(String, '/rover/cmd/execute_path', self._on_execute_path, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_emergency_stop, reliable_qos)
+        self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_emergency, reliable_qos)
         self.create_subscription(Empty, '/rover/spray/done', self._on_spray_done, reliable_qos)
 
         # State
@@ -228,6 +229,15 @@ class NavigatorNode(Node):
     def _on_emergency_stop(self, _msg):
         self._stop_motors()
         self._set_state(State.EMERGENCY_STOP)
+
+    def _on_clear_emergency(self, _msg):
+        # Operator-acknowledged release. Drop back to IDLE so the rover
+        # is ready to accept the next execute_path; we deliberately don't
+        # auto-resume mid-mission because the operator may have moved
+        # the chassis or aborted intentionally.
+        if self._state == State.EMERGENCY_STOP:
+            self.get_logger().info('Emergency-stop cleared by operator')
+            self._set_state(State.IDLE)
 
     def _on_spray_done(self, _msg):
         """Spray complete, advance to next waypoint or return."""

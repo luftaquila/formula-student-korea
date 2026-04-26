@@ -1086,6 +1086,19 @@ app.post("/api/rover/stop", (req, res) => {
   res.json({ stopped: true });
 });
 
+// POST /api/rover/clear-emergency - 비상정지 해제 (operator-acknowledged)
+app.post("/api/rover/clear-emergency", (req, res) => {
+  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+
+  if (!sendRoverEvent("clear-emergency", {})) {
+    logger.warn(req, "rover.clear_emergency", { error: "write_failed" }, "rover");
+    return res.status(503).send("로버 연결이 끊어졌습니다.");
+  }
+
+  logger.log(req, "rover.clear_emergency", null, "rover");
+  res.json({ cleared: true });
+});
+
 // POST /api/rover/control - 수동 제어
 app.post("/api/rover/control", (req, res) => {
   const { throttle, steering } = req.body;

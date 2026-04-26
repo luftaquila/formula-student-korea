@@ -19,14 +19,18 @@ function isMissionActive() {
   return roverConnected.value && ACTIVE_NAV_STATES.has(navState.value);
 }
 
+function inEmergency() {
+  return navState.value === "EMERGENCY_STOP";
+}
+
 async function globalEmergencyStop() {
   if (stopping.value || !roverConnected.value) return;
-  if (!confirm("로버를 즉시 정지시키겠습니까?")) return;
   stopping.value = true;
   try {
-    await request("/api/rover/stop", { method: "POST" });
+    const path = inEmergency() ? "/api/rover/clear-emergency" : "/api/rover/stop";
+    await request(path, { method: "POST" });
   } catch (err) {
-    alert("비상정지 실패: " + err.message);
+    alert((inEmergency() ? "비상정지 해제 실패: " : "비상정지 실패: ") + err.message);
   } finally {
     stopping.value = false;
   }
@@ -75,15 +79,19 @@ onUnmounted(() => {
     </main>
 
     <!-- Global emergency stop: visible only when rover is connected.
-         Stronger visual emphasis when a mission is actively running. -->
+         Stronger visual emphasis when a mission is actively running.
+         Morphs to a release button when the rover is latched in
+         EMERGENCY_STOP so the operator can clear without a tab change. -->
     <button
       v-if="roverConnected"
-      :class="['global-estop', { active: isMissionActive() }]"
+      :class="['global-estop', { active: isMissionActive(), release: inEmergency() }]"
       :disabled="stopping"
       @click="globalEmergencyStop"
-      title="비상정지 (모든 화면에서 접근 가능)"
+      :title="inEmergency() ? '비상정지 해제' : '비상정지 (모든 화면에서 접근 가능)'"
     >
-      {{ stopping ? '정지 중...' : '⏹ 비상정지' }}
+      <template v-if="stopping">{{ inEmergency() ? '해제 중...' : '정지 중...' }}</template>
+      <template v-else-if="inEmergency()">▶ 비상정지 해제</template>
+      <template v-else>⏹ 비상정지</template>
     </button>
   </div>
 </template>
@@ -128,6 +136,16 @@ onUnmounted(() => {
 .global-estop.active {
   background: #dc2626;
   animation: estop-pulse 1.6s ease-in-out infinite;
+}
+
+/* Morph into a release button when the rover is latched in EMERGENCY_STOP. */
+.global-estop.release {
+  background: #16a34a;
+  box-shadow: 0 8px 20px rgba(22, 163, 74, 0.35), 0 2px 6px rgba(0,0,0,0.25);
+  animation: none;
+}
+.global-estop.release:hover:not(:disabled) {
+  background: #15803d;
 }
 
 @keyframes estop-pulse {

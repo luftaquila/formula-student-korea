@@ -201,12 +201,13 @@ const batteryChip = computed(() => {
 });
 
 const ntripChip = computed(() => {
+  // Only surface NTRIP when it's actually streaming corrections — a
+  // generic "off" chip just adds noise (the GPS fix chip already
+  // signals when the rover is running unaided).
   const s = roverStatus.value;
-  if (!s.connected || s.ntrip_connected === null) return null;
+  if (!s.connected || !s.ntrip_connected) return null;
   const mp = s.ntrip?.mountpoint;
-  const label = s.ntrip_connected ? (mp ? `📡 ${mp}` : "📡 ok") : "📡 off";
-  const tone = s.ntrip_connected ? "ok" : "bad";
-  return { label, tone };
+  return { label: mp ? `📡 ${mp}` : "📡 ok", tone: "ok" };
 });
 
 const posChip = computed(() => {
@@ -248,8 +249,6 @@ const disconnectInfo = computed(() => {
 });
 
 // Expanded detail panel
-const statusExpanded = ref(false);
-function toggleStatusExpanded() { statusExpanded.value = !statusExpanded.value; }
 
 const ntripCorrectionAge = computed(() => {
   uiTick.value;
@@ -1896,7 +1895,7 @@ onUnmounted(() => {
       <div class="workspace" :class="{ 'inspector-collapsed': inspectorCollapsed }">
 
         <!-- Persistent status strip (always visible across tabs) -->
-        <div :class="['status-strip', roverStatusClass, { expanded: statusExpanded }]">
+        <div :class="['status-strip', roverStatusClass]">
           <!-- Disconnected: prominent single line with reason + ago -->
           <template v-if="!roverStatus.connected">
             <span class="status-dot"></span>
@@ -1930,73 +1929,6 @@ onUnmounted(() => {
             </div>
           </template>
 
-          <button
-            class="status-expand-btn"
-            @click="toggleStatusExpanded"
-            :title="statusExpanded ? '상세 접기' : '상세 펼치기'"
-          >{{ statusExpanded ? '▲' : '▼' }}</button>
-          <button
-            class="status-inspector-toggle"
-            @click="inspectorCollapsed = !inspectorCollapsed"
-            :title="inspectorCollapsed ? '인스펙터 펼치기' : '인스펙터 접기'"
-          >{{ inspectorCollapsed ? '◀' : '▶' }}</button>
-        </div>
-
-        <!-- Expanded detail panel below status strip -->
-        <div v-if="statusExpanded" class="status-detail">
-          <div class="status-detail-row">
-            <span class="status-detail-key">GPS</span>
-            <span class="status-detail-val">
-              <template v-if="roverStatus.fix_status">{{ roverStatus.fix_status.replace(/_/g, ' ').toUpperCase() }}</template>
-              <template v-else>—</template>
-              <template v-if="lastPositionAge != null"> · 위치 {{ lastPositionAge }}s 전</template>
-            </span>
-          </div>
-          <div class="status-detail-row">
-            <span class="status-detail-key">NTRIP</span>
-            <span class="status-detail-val">
-              <template v-if="roverStatus.ntrip?.host">
-                {{ roverStatus.ntrip.host }}<template v-if="roverStatus.ntrip.mountpoint">/{{ roverStatus.ntrip.mountpoint }}</template>
-              </template>
-              <template v-else>—</template>
-              <template v-if="roverStatus.ntrip_connected === true"> · 연결됨</template>
-              <template v-else-if="roverStatus.ntrip_connected === false"> · 끊김</template>
-              <template v-if="ntripCorrectionAge != null"> · 보정 {{ ntripCorrectionAge }}s 전</template>
-              <template v-if="roverStatus.ntrip?.fail_count"> · 재시도 {{ roverStatus.ntrip.fail_count }}회</template>
-            </span>
-          </div>
-          <div v-if="roverStatus.ntrip?.last_error" class="status-detail-row">
-            <span class="status-detail-key">NTRIP 오류</span>
-            <span class="status-detail-val status-detail-err">{{ roverStatus.ntrip.last_error }}</span>
-          </div>
-          <div class="status-detail-row">
-            <span class="status-detail-key">배터리</span>
-            <span class="status-detail-val">
-              <template v-if="batteryChip">
-                {{ batteryChip.percent }}%<template v-if="batteryChip.voltage != null"> · {{ batteryChip.voltage.toFixed(2) }}V</template><template v-if="roverStatus.battery?.source"> · {{ roverStatus.battery.source }}</template>
-              </template>
-              <template v-else>—</template>
-            </span>
-          </div>
-          <div class="status-detail-row">
-            <span class="status-detail-key">주행</span>
-            <span class="status-detail-val">
-              <template v-if="avgSpeedMs != null">{{ avgSpeedMs.toFixed(2) }} m/s (10초 평균)</template>
-              <template v-else>정지 또는 샘플 부족</template>
-            </span>
-          </div>
-          <div v-if="missionChip" class="status-detail-row">
-            <span class="status-detail-key">미션</span>
-            <span class="status-detail-val">
-              #{{ missionChip.current }}/{{ missionChip.total }} · {{ missionChip.percent }}%
-              <template v-if="remainingDistanceM != null"> · 남은 {{ remainingDistanceM >= 1000 ? (remainingDistanceM/1000).toFixed(2) + 'km' : remainingDistanceM.toFixed(1) + 'm' }}</template>
-              <template v-if="missionChip.eta"> · {{ missionChip.eta }} 후 완료</template>
-            </span>
-          </div>
-          <div v-if="!roverStatus.connected && disconnectInfo" class="status-detail-row">
-            <span class="status-detail-key">연결 끊김</span>
-            <span class="status-detail-val">{{ disconnectInfo.label }}<template v-if="disconnectInfo.ago"> · {{ disconnectInfo.ago }}</template></span>
-          </div>
         </div>
 
         <div class="workspace-body">
@@ -2200,7 +2132,6 @@ onUnmounted(() => {
                       :disabled="roverMode !== 'manual' && !roverStatus.connected"
                       @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
                     >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
-                    <button class="btn btn-lg-touch estop-btn-inline" @click="emergencyStop">비상정지</button>
                   </div>
 
                   <div v-if="pathDistance > 0" class="path-info">
@@ -2396,7 +2327,7 @@ onUnmounted(() => {
 
 .chip-row { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
 .primary-zone { flex: 0 1 auto; }
-.vitals-zone { margin-left: auto; flex: 0 1 auto; }
+.vitals-zone { flex: 0 1 auto; }
 
 .chip {
   display: inline-flex; align-items: center;
@@ -2469,36 +2400,8 @@ onUnmounted(() => {
   background: var(--bg-secondary); border-radius: 999px;
 }
 
-/* Expand + inspector toggle buttons */
-.status-expand-btn, .status-inspector-toggle {
-  min-width: 44px; min-height: 32px;
-  padding: 0 0.6rem;
-  border: 1px solid var(--border-primary); border-radius: 6px;
-  background: var(--bg-secondary); color: var(--text-primary);
-  cursor: pointer; font-size: 0.9rem; font-weight: 700;
-  flex-shrink: 0;
-}
-.status-expand-btn:hover, .status-inspector-toggle:hover { background: var(--accent-primary); color: #fff; }
-
-/* Detail panel that drops below the strip when expanded */
-.status-detail {
-  display: flex; flex-direction: column; gap: 0.25rem;
-  padding: 0.75rem 1rem;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-  font-size: 0.82rem;
-}
-.status-detail-row { display: flex; gap: 0.75rem; }
-.status-detail-key {
-  min-width: 5.5em; color: var(--text-secondary);
-  font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.02em;
-  padding-top: 0.1rem;
-}
-.status-detail-val {
-  flex: 1; font-family: "JetBrains Mono", monospace;
-  color: var(--text-primary); word-break: break-word;
-}
-.status-detail-err { color: #ef4444; }
+/* (status-expand / inspector-toggle / status-detail removed — operator
+   uses inspector tabs for detail and rail icon click to dock/undock.) */
 
 /* ── Body: rail + map + inspector ─────────────────── */
 .workspace-body { flex: 1; display: flex; min-height: 0; }
@@ -2603,15 +2506,6 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-/* Emergency stop inline */
-.estop-btn-inline {
-  background: #dc2626; color: #fff; border: none;
-  font-weight: 700;
-  border-radius: 6px;
-  cursor: pointer; box-shadow: 0 2px 8px rgba(220,38,38,0.4);
-}
-.estop-btn-inline:active { opacity: 0.8; }
-
 /* Course list */
 .course-add { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
 
@@ -2707,13 +2601,29 @@ onUnmounted(() => {
   display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem;
 }
 .rover-controls-grid .btn { width: 100%; }
-.rover-controls-grid .estop-btn-inline { grid-column: span 2; }
 
 .course-toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
 .course-toolbar .btn { flex: 1; min-width: 120px; }
 
 .logs-view-inline {
   flex: none; max-height: 50vh;
+}
+/* Sidebar log row: time + level on the first line, message wraps below.
+   Lays out as a flex grid with a hard line break before the message. */
+.logs-view-inline .log-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 0.5rem;
+  row-gap: 0.1rem;
+  padding: 0.2rem 0;
+}
+.logs-view-inline .log-time { white-space: nowrap; }
+.logs-view-inline .log-level { white-space: nowrap; }
+.logs-view-inline .log-msg {
+  flex-basis: 100%;        /* force msg onto its own line */
+  word-break: break-word;
+  color: var(--text-primary);
 }
 
 /* ── Mission history (inside the missions inspector tab) ─────────── */
@@ -2827,11 +2737,29 @@ onUnmounted(() => {
   padding: 0.5rem; font-family: "JetBrains Mono", monospace; font-size: 0.75rem;
   line-height: 1.45;
 }
-.log-row {
-  display: grid;
-  grid-template-columns: 6em 4em 10em 1fr; gap: 0.5rem;
-  padding: 0.1rem 0; border-bottom: 1px solid color-mix(in srgb, var(--border-primary) 30%, transparent);
-  word-break: break-word;
+/* Modal full-screen log viewer: rows are table-rows with cells
+   sizing to their content (the classic "width: 1%" trick on the
+   fixed columns) so nothing wraps and the message column takes
+   whatever's left. The browser auto-generates the anonymous table
+   wrapper around the consecutive table-rows, so .logs-view stays a
+   regular flex/scroll container. */
+.logs-view:not(.logs-view-inline) .log-row {
+  display: table-row;
+}
+.logs-view:not(.logs-view-inline) .log-row > span {
+  display: table-cell;
+  padding: 0.1rem 0.5rem 0.1rem 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-primary) 30%, transparent);
+  vertical-align: top;
+}
+.logs-view:not(.logs-view-inline) .log-time,
+.logs-view:not(.logs-view-inline) .log-level,
+.logs-view:not(.logs-view-inline) .log-node {
+  width: 1%;             /* shrink to content */
+  white-space: nowrap;
+}
+.logs-view:not(.logs-view-inline) .log-msg {
+  width: auto; word-break: break-word;
 }
 .log-time { color: var(--text-secondary); }
 .log-level { font-weight: 700; }
@@ -3085,7 +3013,6 @@ onUnmounted(() => {
 
   .joystick { max-width: 180px; }
   .rover-controls-grid { grid-template-columns: 1fr; }
-  .rover-controls-grid .estop-btn-inline { grid-column: span 1; }
 }
 
 /* Desktop: hide sheet handle */
