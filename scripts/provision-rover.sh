@@ -99,7 +99,9 @@ sudo udevadm trigger --subsystem-match=tty
 rm -f /tmp/99-fsk-rover.rules
 
 echo "[rover] installing flash-mcu helper"
-sudo install -m 755 /tmp/flash-mcu.sh /usr/local/bin/flash-mcu
+# Ubuntu Core's /usr is read-only and /usr/local doesn't exist; drop the
+# helper in fsk's home where it stays writable across snap refreshes.
+sudo install -m 755 -o fsk -g fsk /tmp/flash-mcu.sh /home/fsk/flash-mcu
 rm -f /tmp/flash-mcu.sh
 
 echo "[rover] connecting plugs"
