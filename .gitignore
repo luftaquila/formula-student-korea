@@ -1,6 +1,10 @@
 .env
 data/
 node_modules/
+*/web/dist/
+course/rover/rover_mcu.bin
+course/rover/rover_mcu.elf
+course/rover/rover_mcu.uf2
 tests/e2e/.auth/*.json
 playwright-report/
 test-results/
