@@ -86,9 +86,12 @@ set -eu
 
 echo "[rover] writing /etc/pilot/pilot.conf"
 sudo install -d -m 755 /etc/pilot
+# tee creates the file with the default umask (022 -> 0644), which is
+# what we want for a non-secret KEY=VALUE file. No explicit chmod —
+# sudoers.d/fsk only whitelists install/tee/podman/systemctl/nmcli/
+# tailscale/bootc.
 printf 'SERVER_URL=%s\nROS_DOMAIN_ID=0\n' "$SERVER_URL" \
     | sudo tee /etc/pilot/pilot.conf >/dev/null
-sudo chmod 644 /etc/pilot/pilot.conf
 
 echo "[rover] (re)creating podman secrets"
 for s in internal-secret ntrip-username; do
