@@ -115,7 +115,7 @@ jobs:
           # leaving UID 1000 free for fsk.
           sudo tee .tmp/efi/user-data >/dev/null <<'EOF'
           #cloud-config
-          hostname: rover.local
+          hostname: fsk-rover
           ssh_pwauth: false
           users: []
           EOF

@@ -22,9 +22,14 @@ FROM quay.io/almalinuxorg/almalinux-bootc-rpi:10
 RUN dnf install -y dnf-plugins-core \
     && dnf config-manager --add-repo https://pkgs.tailscale.com/stable/rhel/10/tailscale.repo
 
-# Runtime stack.
+# Runtime stack. NetworkManager-wifi + wpa_supplicant are pulled in
+# explicitly because the bootc-rpi base ships only the wired-only NM
+# core; without them NM marks wlan0 'unmanaged' and the baked
+# fsk-default Wi-Fi profile can't activate.
 RUN dnf install -y \
         NetworkManager \
+        NetworkManager-wifi \
+        wpa_supplicant \
         openssh-server \
         podman \
         tailscale \
