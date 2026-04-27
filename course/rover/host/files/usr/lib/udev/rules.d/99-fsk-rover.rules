@@ -1,0 +1,20 @@
+# FSK rover device symlinks. Baked into the bootc host image at
+# /usr/lib/udev/rules.d/. The pilot.container quadlet's AddDevice= entries
+# refer to these stable symlinks so the unit survives kernel/firmware
+# changes that re-number the underlying char devices.
+
+# u-blox ZED-F9P GNSS receiver -> /dev/ttyGPS
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1546", ATTRS{idProduct}=="01a9", \
+    SYMLINK+="ttyGPS", MODE="0660", GROUP="dialout"
+
+# RP2040-Zero coprocessor (Pico-SDK USB CDC) -> /dev/ttyMCU
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="000a", \
+    SYMLINK+="ttyMCU", MODE="0660", GROUP="dialout"
+
+# Raspberry Pi 5 RP1 pinctrl (lgpio target) -> /dev/gpiochip-rp1
+# RP1 introduced /dev/gpiochip0..N where the RP1 chip number has shifted
+# across kernel/firmware revisions (most recently 0 -> 4). Match by
+# label so the symlink is stable. The 'pinctrl-rp1' label string is
+# verified in step 0 of the migration on a real Pi 5.
+KERNEL=="gpiochip*", SUBSYSTEM=="gpio", ATTRS{label}=="pinctrl-rp1", \
+    SYMLINK+="gpiochip-rp1"

@@ -1,0 +1,15 @@
+test/
+build/
+install/
+log/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.env
+scripts/
+Containerfile
+.containerignore

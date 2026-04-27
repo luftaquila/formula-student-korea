@@ -4,17 +4,18 @@
 # Usage:
 #   scripts/provision-rover.sh <rover-ip-or-host> [--ntrip-username=<id>]
 #
-# The script:
-#   1. SSHes in as `fsk` (key auth set up by the image's system-user assertion),
-#   2. connects the hardware plugs the pilot snap needs (network-setup-control,
-#      raw-usb) — stock Ubuntu Core does not auto-connect these,
-#   3. pushes `server-url`, `internal-secret`, and `ntrip-username` via
-#      `snap set` (reading INTERNAL_SECRET and PUBLIC_URL from the repo's
-#      .env so the values never have to be pasted),
-#   4. restarts the pilot daemon.
+# What it does (idempotent):
+#   1. SSHes in as `fsk` (key auth seeded by the host bootc image),
+#   2. writes /etc/pilot/pilot.conf with SERVER_URL + ROS_DOMAIN_ID
+#      (sourced from the repo's .env),
+#   3. recreates the `internal-secret` and `ntrip-username` podman
+#      secrets from .env (the pilot.container quadlet wires them into
+#      the container's env),
+#   4. restarts pilot.service and verifies it stays active.
 #
-# Re-running against the same rover is safe — `snap connect` and `snap set`
-# no-op when the target state is already in place.
+# Re-running against the same rover is safe — secrets are removed and
+# recreated, /etc/pilot/pilot.conf is overwritten, systemctl restart
+# is a no-op when nothing has changed.
 
 set -eu
 
@@ -24,7 +25,8 @@ usage: $(basename "$0") <rover-ip-or-host> [--ntrip-username=<id>]
 
 Requires:
   - <repo>/.env with INTERNAL_SECRET and PUBLIC_URL
-  - SSH key auth for fsk@<rover> (images built from this repo seed that).
+  - SSH key auth for fsk@<rover> (host bootc image bakes
+    https://github.com/luftaquila.keys at build time)
 EOF
     exit 2
 }
@@ -44,14 +46,10 @@ done
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$REPO_ROOT/.env"
-UDEV_RULES="$REPO_ROOT/course/rover/scripts/99-fsk-rover.rules"
-FLASH_SCRIPT="$REPO_ROOT/course/rover/scripts/flash-mcu.sh"
 [ -f "$ENV_FILE" ] || { echo "cannot find $ENV_FILE" >&2; exit 1; }
-[ -f "$UDEV_RULES" ] || { echo "cannot find $UDEV_RULES" >&2; exit 1; }
-[ -f "$FLASH_SCRIPT" ] || { echo "cannot find $FLASH_SCRIPT" >&2; exit 1; }
 
-# Pull the two keys we need without sourcing the whole file — we'd rather
-# not leak unrelated secrets (JWT_SECRET etc.) into this process' environment.
+# Pull only the two keys we need; avoid leaking unrelated secrets
+# (JWT_SECRET, etc.) into the local environment.
 grep_env() {
     awk -F= -v k="$1" '
         $0 ~ "^"k"=" {
@@ -73,17 +71,11 @@ NTRIP_USER="${NTRIP_USER:-mail@luftaquila.io}"
 SECRET_PREVIEW="$(printf '%s' "$INTERNAL_SECRET" | cut -c1-8)"
 
 printf 'provisioning fsk@%s\n' "$HOST"
-printf '  server-url:      %s\n' "$SERVER_URL"
-printf '  internal-secret: %s…\n' "$SECRET_PREVIEW"
-printf '  ntrip-username:  %s\n\n' "$NTRIP_USER"
+printf '  SERVER_URL:      %s\n' "$SERVER_URL"
+printf '  INTERNAL_SECRET: %s…\n' "$SECRET_PREVIEW"
+printf '  NTRIP_USERNAME:  %s\n\n' "$NTRIP_USER"
 
 SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-
-echo "[admin] copying udev rules and flash-mcu helper"
-# shellcheck disable=SC2086
-scp $SSH_OPTS "$UDEV_RULES" "fsk@$HOST:/tmp/99-fsk-rover.rules"
-# shellcheck disable=SC2086
-scp $SSH_OPTS "$FLASH_SCRIPT" "fsk@$HOST:/tmp/flash-mcu.sh"
 
 # shellcheck disable=SC2086
 ssh $SSH_OPTS \
@@ -92,41 +84,33 @@ ssh $SSH_OPTS \
     <<'REMOTE'
 set -eu
 
-echo "[rover] installing udev rules"
-sudo install -m 644 /tmp/99-fsk-rover.rules /etc/udev/rules.d/99-fsk-rover.rules
-sudo udevadm control --reload-rules
-sudo udevadm trigger --subsystem-match=tty
-rm -f /tmp/99-fsk-rover.rules
+echo "[rover] writing /etc/pilot/pilot.conf"
+sudo install -d -m 755 /etc/pilot
+printf 'SERVER_URL=%s\nROS_DOMAIN_ID=0\n' "$SERVER_URL" \
+    | sudo tee /etc/pilot/pilot.conf >/dev/null
+sudo chmod 644 /etc/pilot/pilot.conf
 
-echo "[rover] installing flash-mcu helper"
-# Ubuntu Core's /usr is read-only and /usr/local doesn't exist; drop the
-# helper in fsk's home where it stays writable across snap refreshes.
-sudo install -m 755 -o fsk -g fsk /tmp/flash-mcu.sh /home/fsk/flash-mcu
-rm -f /tmp/flash-mcu.sh
-
-echo "[rover] connecting plugs"
-for plug in network-setup-control raw-usb; do
-    if snap connections fsk-rover-pilot \
-        | awk -v p="fsk-rover-pilot:$plug" '$2 == p && $3 != "-" { hit=1 } END { exit !hit }'; then
-        echo "  already connected: $plug"
-    else
-        sudo snap connect "fsk-rover-pilot:$plug"
-        echo "  connected: $plug"
-    fi
+echo "[rover] (re)creating podman secrets"
+for s in internal-secret ntrip-username; do
+    sudo podman secret rm "$s" >/dev/null 2>&1 || true
 done
+printf '%s' "$INTERNAL_SECRET" | sudo podman secret create internal-secret - >/dev/null
+printf '%s' "$NTRIP_USER"      | sudo podman secret create ntrip-username -  >/dev/null
 
-echo "[rover] applying snap set"
-sudo snap set fsk-rover-pilot \
-    "server-url=$SERVER_URL" \
-    "internal-secret=$INTERNAL_SECRET" \
-    "ntrip-username=$NTRIP_USER"
+echo "[rover] restarting pilot.service"
+sudo systemctl restart pilot.service
 
-echo "[rover] restarting pilot"
-sudo snap restart fsk-rover-pilot.pilot >/dev/null
-
-echo "[rover] services:"
-snap services fsk-rover-pilot
+# Give the container a moment to settle before asserting health —
+# secret-driven crashes show up within ~10 s.
+sleep 10
+if sudo systemctl is-active --quiet pilot.service; then
+    echo "[rover] pilot.service: active"
+else
+    echo "[rover] pilot.service: NOT active — recent log:" >&2
+    sudo journalctl -u pilot.service -n 30 --no-pager >&2
+    exit 1
+fi
 REMOTE
 
 printf '\nprovisioning complete. Tail logs with:\n'
-printf '  ssh fsk@%s sudo snap logs fsk-rover-pilot.pilot -f\n' "$HOST"
+printf '  ssh fsk@%s sudo journalctl -u pilot.service -f\n' "$HOST"

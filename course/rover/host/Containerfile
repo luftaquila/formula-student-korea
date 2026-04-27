@@ -1,0 +1,96 @@
+# FSK rover host bootc image — AlmaLinux 10 + Raspberry Pi 5 firmware/DTB
+# (bcm2712-rpi-5-b.dtb, kernel_2712.img, /boot/efi assets) + the runtime
+# pieces every rover needs: NetworkManager, sshd, tailscale, podman,
+# udev rules, and the pilot.container quadlet definition.
+#
+# The pilot ROS workload is NOT in this image. It is a separate OCI
+# image (ghcr.io/luftaquila/fsk-rover-pilot) pulled at runtime by the
+# pilot.container quadlet that this image carries. Lifecycles are
+# decoupled: bootc upgrades roll the host (rare, requires reboot);
+# podman-auto-update rolls the pilot container (frequent, in place).
+#
+# Built by .github/workflows/rover-host-image.yml and pushed to
+# ghcr.io/luftaquila/fsk-rover-host:{candidate,edge,vX.Y.Z}.
+# Flashable SD images are produced from this base by
+# .github/workflows/rover-sd-image.yml using AlmaLinux's
+# bootc-images-rpi tooling (which knows about Pi 5's GPT/FAT
+# firmware partition layout).
+
+FROM quay.io/almalinuxorg/almalinux-bootc-rpi:10
+
+# Tailscale's RHEL repo is not part of AlmaLinux's defaults.
+RUN dnf install -y dnf-plugins-core \
+    && dnf config-manager --add-repo https://pkgs.tailscale.com/stable/rhel/10/tailscale.repo
+
+# Runtime stack.
+RUN dnf install -y \
+        NetworkManager \
+        openssh-server \
+        podman \
+        tailscale \
+        policycoreutils-python-utils \
+    && dnf clean all
+
+# Operator account. authorized_keys is a build-time snapshot of
+# https://github.com/luftaquila.keys; rotate by rebuilding this image.
+#
+# We bypass useradd/groupadd entirely and append directly to
+# /etc/passwd, /etc/group, /etc/shadow. shadow-utils on AlmaLinux 10
+# bootc shows a lookup mismatch in builder contexts: groupadd / getent
+# succeed but useradd's /etc/group parser does not see the just-added
+# entry and aborts with exit 6. Direct file writes are deterministic
+# regardless of which path the tools actually use.
+#
+# UID/GID 1000 is the EL convention for the first regular user; system
+# users are <1000 in the base image. Password is `!` (locked) — SSH
+# key auth only. fsk is NOT in `wheel`; sudoers.d/fsk whitelists the
+# specific commands needed, which makes wheel membership unnecessary.
+# OSTree/bootc images keep /home as a symlink to /var/home (state on
+# /var, immutable /). At image build time /home isn't a real directory
+# yet — write directly to /var/home and the symlink resolves at boot.
+RUN echo 'fsk:x:1000:1000::/home/fsk:/bin/bash' >> /etc/passwd \
+    && echo 'fsk:x:1000:'                       >> /etc/group  \
+    && echo 'fsk:!::0:99999:7:::'               >> /etc/shadow \
+    && mkdir -p /var/home/fsk/.ssh \
+    && curl -fsSL https://github.com/luftaquila.keys \
+         -o /var/home/fsk/.ssh/authorized_keys \
+    && chmod 700 /var/home/fsk /var/home/fsk/.ssh \
+    && chmod 600 /var/home/fsk/.ssh/authorized_keys \
+    && chown -R 1000:1000 /var/home/fsk
+
+# Narrow sudo grant — only the commands provision-rover.sh and operators
+# actually need. Avoids handing fsk full root.
+RUN install -d -m 750 /etc/sudoers.d \
+    && printf 'fsk ALL=(ALL) NOPASSWD: /usr/bin/podman, /usr/bin/systemctl, /usr/bin/install, /usr/bin/tee, /usr/bin/nmcli, /usr/bin/tailscale, /usr/bin/bootc\n' \
+         > /etc/sudoers.d/fsk \
+    && chmod 440 /etc/sudoers.d/fsk
+
+# firewalld off: this is a single-purpose rover with --network=host ROS 2.
+# FastDDS uses dynamic ports starting at 7400 + 250*ROS_DOMAIN_ID and
+# multicast 239.255.0.0/24; running zone-based filtering on top adds
+# operational surface for no security gain on this device.
+RUN systemctl disable firewalld 2>/dev/null || true
+
+# Static assets — quadlet, env example, NM profile, tmpfiles.d, udev rules.
+COPY files/ /
+
+# NM connection files must be 0600 or NetworkManager refuses to load them.
+RUN chmod 600 /etc/NetworkManager/system-connections/fsk-default.nmconnection \
+    && chmod 755 /usr/local/bin/flash-mcu
+
+# SELinux: container_use_devices boolean must be enabled for the pilot
+# container's /dev/* AddDevice= entries to work under enforcing mode.
+# Set on the running rover (not at image build time — buildkit's
+# environment lacks the policy DB and `setsebool` would fail):
+#   sudo setsebool -P container_use_devices on
+# Verified once per host in step 0 of the migration; persisted in
+# /etc/selinux/targeted/booleans.local so it survives bootc upgrades.
+
+# OTA: bootc pulls the host image, podman-auto-update pulls the pilot.
+RUN systemctl enable \
+        NetworkManager \
+        sshd \
+        tailscaled \
+        podman.socket \
+        bootc-fetch-apply-updates.timer \
+        podman-auto-update.timer

@@ -1,0 +1,54 @@
+# FSK rover pilot quadlet — systemd-managed rootful podman container.
+# generates pilot.service at boot from this file.
+#
+# Lifecycle:
+#   - host bootc image carries this file
+#   - pilot container image is pulled separately from ghcr.io
+#   - podman-auto-update.timer (host) checks the registry every 24h and
+#     restarts this unit if the digest of the :candidate tag changed
+#
+# Per-rover state (not in this file):
+#   - /etc/pilot/pilot.conf        non-secret env (SERVER_URL, ROS_DOMAIN_ID)
+#   - podman secret internal-secret  -> $INTERNAL_SECRET
+#   - podman secret ntrip-username   -> $NTRIP_USERNAME
+#   - /var/lib/pilot/battery_cal.json  in-field battery gain calibration
+
+[Unit]
+Description=FSK Rover Pilot
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/luftaquila/fsk-rover-pilot:candidate
+AutoUpdate=registry
+Network=host
+
+# Stable udev symlinks created by /usr/lib/udev/rules.d/99-fsk-rover.rules.
+AddDevice=/dev/ttyGPS
+AddDevice=/dev/ttyMCU
+AddDevice=/dev/gpiochip-rp1
+# lgpio also touches the memory-mapped IO node on Pi 5.
+AddDevice=/dev/gpiomem0
+
+# Battery calibration persists across container/image swaps via host bind.
+Volume=/var/lib/pilot:/var/lib/pilot:Z
+
+# Non-secret runtime config; written by scripts/provision-rover.sh.
+EnvironmentFile=/etc/pilot/pilot.conf
+
+# Secrets injected as environment variables at container start.
+# `podman secret create` populates these on each rover (rootful store).
+Secret=internal-secret,type=env,target=INTERNAL_SECRET
+Secret=ntrip-username,type=env,target=NTRIP_USERNAME
+
+[Service]
+Restart=on-failure
+RestartSec=5
+# Avoid runaway restart loops if INTERNAL_SECRET hasn't been provisioned
+# yet (bridge_node will 5xx and exit). systemd waits StartLimitIntervalSec
+# before considering this a permanent failure, then stops trying.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target default.target

@@ -6,10 +6,6 @@ on:
     paths:
       - 'course/rover/mcu/**'
       - '.github/workflows/rover-mcu.yml'
-  pull_request:
-    paths:
-      - 'course/rover/mcu/**'
-      - '.github/workflows/rover-mcu.yml'
   workflow_dispatch:
 
 permissions:
@@ -40,7 +36,7 @@ jobs:
 
       - name: Cache pico-sdk
         id: cache-sdk
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: pico-sdk
           key: pico-sdk-${{ env.PICO_SDK_REF }}
@@ -73,7 +69,7 @@ jobs:
           arm-none-eabi-size course/rover/mcu/build/rover_mcu.elf
 
       - name: Upload firmware artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rover-mcu-firmware
           path: |

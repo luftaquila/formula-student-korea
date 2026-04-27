@@ -37,8 +37,9 @@ from pilot.lib.ntrip_client import (
 # NGII (국토지리정보원) is the only NTRIP caster we use. Host, port, and
 # password are protocol-level constants published on the gnssdata.or.kr
 # portal — the only per-rover value is the operator's NGII login, which
-# travels in as the `ntrip-username` snap key. Update these constants if
-# NGII ever changes the caster endpoint.
+# arrives via the NTRIP_USERNAME env var (sourced from the
+# ntrip-username podman secret). Update these constants if NGII ever
+# changes the caster endpoint.
 _NTRIP_HOST = 'www.gnssdata.or.kr'
 _NTRIP_PORT = 2101
 _NTRIP_PASSWORD = 'gnss'
@@ -50,7 +51,7 @@ _NTRIP_SETUP_COOLDOWN_S = 30.0
 
 # Retry opening /dev/ttyACM0 this many times at startup before giving up.
 # The ZED-F9P can take a few seconds to enumerate after power-on, so a
-# retry loop lets the snap daemon restart-condition do less heavy lifting.
+# retry loop lets pilot.service's Restart=on-failure do less heavy lifting.
 _SERIAL_OPEN_RETRIES = 6
 _SERIAL_OPEN_BACKOFF_S = 2.0
 
@@ -162,7 +163,7 @@ class GpsNode(Node):
                 )
                 if attempt < _SERIAL_OPEN_RETRIES:
                     time.sleep(_SERIAL_OPEN_BACKOFF_S)
-        # All retries exhausted — re-raise so the snap daemon restart logic
+        # All retries exhausted — re-raise so pilot.service's Restart=on-failure
         # kicks in with a clear trail of attempts in the log.
         raise last_exc
 

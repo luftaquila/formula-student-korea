@@ -1,0 +1,41 @@
+# FSK rover pilot container — runs the five ROS 2 Jazzy nodes
+# (gps, mcu_bridge, navigator, spray, bridge) on the rover host.
+#
+# Built by .github/workflows/rover-pilot-image.yml and pushed to
+# ghcr.io/luftaquila/fsk-rover-pilot:{candidate,edge,vX.Y.Z}.
+# Pulled at runtime by the host's pilot.container quadlet unit
+# (see course/rover/host/files/etc/containers/systemd/pilot.container).
+
+FROM docker.io/ros:jazzy-ros-base
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         python3-pip \
+         ros-jazzy-ros2launch \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir --break-system-packages \
+        'pyserial>=3.5' \
+        'requests>=2.31' \
+        'lgpio>=0.2.2.0'
+
+WORKDIR /opt/pilot_ws
+
+COPY . src/pilot/
+
+RUN bash -lc '. /opt/ros/jazzy/setup.bash \
+    && colcon build --merge-install --packages-select pilot'
+
+# Battery calibration is bind-mounted from the host at /var/lib/pilot
+# (see pilot.container Volume= directive).
+ENV PILOT_STATE_DIR=/var/lib/pilot
+
+# Opt this container in to `podman auto-update` (driven by the host's
+# podman-auto-update.timer). The host pulls the same tag from ghcr.io
+# and restarts the unit if the digest changed.
+LABEL io.containers.autoupdate=registry
+
+ENTRYPOINT ["/bin/bash", "-lc", \
+    ". /opt/ros/jazzy/setup.bash \
+     && . /opt/pilot_ws/install/setup.bash \
+     && exec ros2 launch pilot pilot.launch.py server_url:=${SERVER_URL:-}"]

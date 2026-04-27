@@ -1,0 +1,146 @@
+name: Build Rover SD Image
+
+# Produces a flashable SD card image for fresh Pi 5 provisioning.
+# Pulls the latest AlmaLinux/bootc-images-rpi release (gpt-10-arm64
+# variant — smallest stable image that supports Pi 5's modern GPT
+# boot path) and applies two on-image patches:
+#
+#   1. Pi 5 cooling fan pinned to 100% via dtparams in /boot/efi/config.txt.
+#      The Pi 5 VideoCore firmware owns the fan before the kernel boots;
+#      fan_temp{0..3}=0 + fan_temp{0..3}_speed=255 makes it run full-tilt
+#      from power-on regardless of any in-kernel thermal governor.
+#
+#   2. A one-shot first-boot service that runs
+#      `bootc switch ghcr.io/.../fsk-rover-host:candidate && reboot`
+#      so freshly-flashed rovers reach the FSK-customized host image
+#      with no manual `bootc switch` step.
+#
+# No cron: this artifact is provisioning-only. Already-deployed rovers
+# update via bootc-fetch-apply-updates.timer (host) and
+# podman-auto-update.timer (pilot). Re-run manually when the AlmaLinux
+# bootc-rpi base ships changes you want to bake into fresh SD cards.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_image:
+        description: 'Override the host image baked into the first-boot bootc switch.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve base image URL (latest gpt-10-arm64 release)
+        id: in
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          base_url=$(gh release view --repo AlmaLinux/bootc-images-rpi \
+              --json assets \
+              --jq '.assets[] | select(.name | test("^image-almalinux-bootc-rpi-gpt-10-[0-9]+-arm64\\.raw\\.xz$")) | .url' \
+              | head -1)
+          test -n "$base_url" || {
+            echo "Could not find gpt-10-arm64 asset in latest AlmaLinux/bootc-images-rpi release" >&2
+            gh release view --repo AlmaLinux/bootc-images-rpi --json tagName,assets --jq '.assets[].name'
+            exit 1
+          }
+          target="${{ inputs.target_image }}"
+          [ -n "$target" ] || target='ghcr.io/${{ github.repository_owner }}/fsk-rover-host:candidate'
+          echo "base_url=$base_url" >> "$GITHUB_OUTPUT"
+          echo "target=$target"     >> "$GITHUB_OUTPUT"
+          echo "Resolved base: $base_url"
+          echo "Resolved host image target: $target"
+
+      - name: Download base SD image
+        run: |
+          mkdir -p .tmp
+          curl -fsSL "${{ steps.in.outputs.base_url }}" | xz -d > .tmp/base.img
+          ls -lh .tmp/base.img
+
+      - name: Patch image (fan dtparams + first-boot bootc switch)
+        run: |
+          IMG=.tmp/base.img
+          LOOP=$(sudo losetup -Pf --show "$IMG")
+          mkdir -p .tmp/efi .tmp/root
+
+          # Find the FAT firmware partition (holds config.txt) and the
+          # ext4/btrfs root. Don't hard-code partition numbers — bootc-rpi
+          # has changed layout across releases.
+          for part in "${LOOP}"p*; do
+            type=$(sudo blkid -o value -s TYPE "$part" 2>/dev/null || true)
+            case "$type" in
+              vfat) EFI="$part" ;;
+              ext4|btrfs|xfs) ROOT="$part" ;;
+            esac
+          done
+          test -n "${EFI:-}"  || { echo "no FAT firmware partition found" >&2; exit 1; }
+          test -n "${ROOT:-}" || { echo "no rootfs partition found"      >&2; exit 1; }
+
+          # 1. Pi 5 fan to 100%.
+          sudo mount "$EFI" .tmp/efi
+          printf '%s\n' \
+            '' \
+            '# FSK: pin the Pi 5 cooling fan to 100% regardless of temperature.' \
+            'dtparam=fan_temp0=0' \
+            'dtparam=fan_temp0_speed=255' \
+            'dtparam=fan_temp1=0' \
+            'dtparam=fan_temp1_speed=255' \
+            'dtparam=fan_temp2=0' \
+            'dtparam=fan_temp2_speed=255' \
+            'dtparam=fan_temp3=0' \
+            'dtparam=fan_temp3_speed=255' \
+            | sudo tee -a .tmp/efi/config.txt >/dev/null
+          echo "--- patched config.txt tail ---"
+          sudo tail -n 14 .tmp/efi/config.txt
+          sudo umount .tmp/efi
+
+          # 2. First-boot bootc switch oneshot.
+          sudo mount "$ROOT" .tmp/root
+          # bootc deployments live under /ostree/deploy/<stateroot>/deploy/<commit>
+          # but the writable /etc overlay lives at /etc on the rootfs we mounted.
+          # If the layout is OSTree-only we drop into /etc which is the etc
+          # writable overlay either way.
+          target="${{ steps.in.outputs.target }}"
+          UNIT_DIR=.tmp/root/etc/systemd/system
+          sudo install -d -m 755 "$UNIT_DIR" "$UNIT_DIR/multi-user.target.wants"
+
+          sudo tee "$UNIT_DIR/fsk-firstboot.service" >/dev/null <<EOF
+          [Unit]
+          Description=FSK rover first-boot bootc switch
+          After=network-online.target
+          Wants=network-online.target
+          ConditionPathExists=!/var/lib/fsk-firstboot.done
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/bootc switch ${target}
+          ExecStartPost=/bin/sh -c 'touch /var/lib/fsk-firstboot.done && systemctl reboot'
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          sudo ln -sf ../fsk-firstboot.service \
+            "$UNIT_DIR/multi-user.target.wants/fsk-firstboot.service"
+          sudo umount .tmp/root
+
+          sudo losetup -d "$LOOP"
+
+      - name: Compress and upload
+        run: |
+          xz -T0 -c .tmp/base.img > .tmp/fsk-rover-sd.img.xz
+          ls -lh .tmp/fsk-rover-sd.img.xz
+
+      - name: Upload SD image artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rover-sd-image
+          path: .tmp/fsk-rover-sd.img.xz
+          retention-days: 14

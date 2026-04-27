@@ -1,8 +1,8 @@
 # FSK Rover
 
 Raspberry Pi 5 + RTK GPS rover. Drives a waypoint mission and sprays a
-marker at each cone. Packaged as the `fsk-rover-pilot` snap on Ubuntu
-Core; remote access via Tailscale.
+marker at each cone. Runs as a podman container on AlmaLinux bootc;
+remote access via Tailscale.
 
 ## Hardware
 
@@ -23,13 +23,16 @@ Core; remote access via Tailscale.
 | Pi supply | 5 V 5 A buck (battery → USB-C PD trigger) | Powers Pi 5 only |
 | Servo supply | MP1584EN buck (5.5 V, ≥3 A) | S20F + spray VCC; signal lines stay on GPIO |
 
-Pi GPIO (BCM, chip 4) — overridable in `pilot/config/rover_params.yaml`:
+Pi GPIO (BCM, RP1 pinctrl) — overridable in `pilot/config/rover_params.yaml`:
 
 | Pin | Signal |
 |-----|--------|
 | 13  | Spray servo (signal) |
 
-MCU pin map and USB CDC protocol: [§ MCU coprocessor](#mcu-coprocessor).
+The pilot container reaches RP1 via `/dev/gpiochip-rp1` (a stable udev
+symlink that absorbs the chip-number changes RP1 has gone through across
+firmware revisions) plus `/dev/gpiomem0`. MCU pin map and USB CDC
+protocol: [§ MCU coprocessor](#mcu-coprocessor).
 
 ### Power chain
 
@@ -68,7 +71,8 @@ Battery divider supplements (BoM):
 
 ## Architecture
 
-Five ROS 2 nodes bridge the course backend over SSE + REST:
+Five ROS 2 Jazzy nodes, packaged together in a single rootful podman
+container, bridge the course backend over SSE + REST:
 
 ```
 course server (port 10000)
@@ -99,6 +103,11 @@ course server (port 10000)
                                                    (Pi GPIO 13, mission)
 ```
 
+The container runs `--network=host` so DDS multicast and the course
+server REST/SSE work against the host's NetworkManager-managed
+interfaces, and pulls the GPS, MCU, and GPIO devices in via the
+quadlet's `AddDevice=` directives.
+
 ### Mission state machine (`navigator_node`)
 
 ```
@@ -126,215 +135,178 @@ any driving state → ERROR   (GPS timeout or fix below required quality
 All thresholds, speeds, timeouts: `pilot/config/rover_params.yaml`
 (inline comments).
 
+## Image structure
+
+Two OCI images, decoupled lifecycles:
+
+| Image | Built by | Updates | Owns |
+|-------|----------|---------|------|
+| `ghcr.io/luftaquila/fsk-rover-host:{candidate,edge,vX.Y.Z}` | `course/rover/host/Containerfile` | `bootc upgrade` (24 h timer, reboot to apply) | AlmaLinux 10 + Pi 5 firmware/DTB, NetworkManager, sshd, tailscale, podman, udev rules, the pilot quadlet, fsk user with baked authorized_keys |
+| `ghcr.io/luftaquila/fsk-rover-pilot:{candidate,edge,vX.Y.Z}` | `course/rover/pilot/Containerfile` | `podman auto-update` (24 h timer, in-place restart) | ROS 2 Jazzy + the five `pilot` nodes |
+
+The host image is based on `quay.io/almalinuxorg/almalinux-bootc-rpi:10`,
+which is the only public bootc base that ships the Pi 5 boot chain
+(VPU → SPI bootloader → `bcm2712-rpi-5-b.dtb` + `kernel_2712.img`).
+Stock `almalinux-bootc:10` is missing those firmware assets and the SPI
+bootloader cannot read the SD media at all. AlmaLinux 10 is chosen
+over 9 for ~35% smaller layers (rebuilt standard profile in 10);
+podman, NetworkManager, openssh-server, and the bootc/podman timers
+are version-equivalent on both releases.
+
 ## Provisioning
 
-CI builds the image; field bring-up is one SSH session.
+CI builds the OCI images; field bring-up flashes a SD image once and
+then runs one SSH session per rover.
 
-1. **Build** — `gh workflow run "Build Rover Image"`; download the
-   `rover-ubuntu-core-image` artifact.
-2. **Flash + boot** — SD → Pi 5. No console-conf, no Ubuntu One prompt.
-   Snapd seeds the `fsk` user from the bundled `system-user` assertion;
-   the configure hook writes `/etc/netplan/90-fsk-wifi.yaml` with the
-   default profile. Within ~60 s the rover has an IP on `eth0` (DHCP)
-   or `wlan0` (default AP). Pi firmware holds the cooling fan at 100 %
-   from power-on.
-3. **Provision** — from the admin workstation (repo checkout, SSH key
-   in <https://github.com/luftaquila.keys>):
+1. **Build SD image** — manual-dispatch `.github/workflows/rover-sd-image.yml`.
+   No inputs required: the workflow auto-resolves the latest
+   AlmaLinux bootc-rpi gpt-10-arm64 asset, applies Pi 5 fan dtparams
+   to `config.txt`, and bakes a one-shot `fsk-firstboot.service` that
+   runs `bootc switch fsk-rover-host:candidate && reboot` on first
+   boot. Artifact: `rover-sd-image` → `fsk-rover-sd.img.xz`.
+
+2. **Flash + boot** — write the artifact to a SD card, boot the Pi 5.
+   The Pi reboots once mid-bring-up (firstboot service switches to
+   the FSK host image). Within ~60 s after the second boot the rover
+   has an IP on `eth0` (DHCP) or `wlan0` (default `fsk-default`
+   profile: SSID `default`, PSK `password`). `pilot.service` enters a
+   restart loop until step 3 — expected, secrets are not in the SD.
+
+3. **Provision** — from the admin workstation (repo checkout, your SSH
+   public key in <https://github.com/luftaquila.keys>):
    ```bash
    scripts/provision-rover.sh <rover-ip> [--ntrip-username=<id>]
    ```
-   Installs `course/rover/scripts/99-fsk-rover.rules` so the GPS and
-   MCU appear at `/dev/ttyGPS` and `/dev/ttyMCU`, connects non-auto
-   plugs (`network-setup-control`, `raw-usb`), reads `INTERNAL_SECRET`
-   / `PUBLIC_URL` from `.env`, applies
-   `snap set internal-secret server-url ntrip-username`, and restarts
-   the pilot daemon. Idempotent — re-run after `.env` rotation.
-4. **Wi-Fi (recommended)** — move the rover off the default AP:
+   Reads `INTERNAL_SECRET` and `PUBLIC_URL` from `.env`, writes
+   `/etc/pilot/pilot.conf`, creates the `internal-secret` and
+   `ntrip-username` podman secrets, restarts `pilot.service`.
+   Idempotent.
+
+4. **Enable the SELinux container-device boolean** (once per rover):
    ```bash
-   ssh fsk@<rover-ip> sudo snap set fsk-rover-pilot \
-       wifi-ssid='MyAP' wifi-password='mypassword'
+   ssh fsk@<rover-ip> sudo setsebool -P container_use_devices on
    ```
-5. **Tailscale (off-LAN access only)**:
+   Required for the pilot container's `AddDevice=/dev/ttyGPS …`
+   under enforcing mode. Persists across `bootc upgrade`.
+
+5. **Wi-Fi (recommended)** — move the rover off the default AP:
    ```bash
-   ssh fsk@<rover-ip> sudo tailscale up --auth-key=TSKEY…
+   ssh fsk@<rover-ip> sudo nmcli connection modify fsk-default \
+       802-11-wireless.ssid 'MyAP' \
+       wifi-sec.psk 'mypassword'
+   ssh fsk@<rover-ip> sudo nmcli connection up fsk-default
    ```
-6. **Verify**:
+   Mutates `/etc/NetworkManager/system-connections/fsk-default.nmconnection`;
+   survives reboots and `bootc upgrade`.
+
+6. **Tailscale (off-LAN access only)**:
    ```bash
-   ssh fsk@<rover-ip> snap services fsk-rover-pilot
-   ssh fsk@<rover-ip> sudo snap logs fsk-rover-pilot.pilot -n 50
+   ssh fsk@<rover-ip> sudo tailscale up --auth-key=tskey-…
+   ```
+
+7. **Verify**:
+   ```bash
+   ssh fsk@<rover-ip> systemctl status pilot.service
+   ssh fsk@<rover-ip> sudo journalctl -u pilot.service -n 50
    ```
    `gps_node`, `navigator_node`, `bridge_node` come up unconditionally.
    `mcu_bridge_node` needs the RP2040 on `/dev/ttyMCU`; on a bench
    without the MCU it logs serial-open warnings and retries.
    `spray_node` needs Pi GPIO 13 wired to the spray servo.
-7. **Pre-competition hold** — pin the revision for the competition week:
+
+8. **Pre-competition hold** — freeze the rover for the competition week:
    ```bash
-   ssh fsk@<rover-ip> sudo snap refresh --hold=168h fsk-rover-pilot
+   ssh fsk@<rover-ip> sudo systemctl disable --now \
+       bootc-fetch-apply-updates.timer podman-auto-update.timer
    ```
+   Re-enable with `systemctl enable --now …` after the event.
 
-### Recovering a rover with unreachable Wi-Fi
+### Recovering an unreachable rover
 
-If the rover ends up on a network without the default AP and no
-ethernet, write the `rover-auto-import-assert` artifact (from the
-`Build Rover Image` run) to a FAT USB stick as `auto-import.assert` and
-plug it in. Snapd re-creates the `fsk` user on next boot. SSH in,
-confirm `network-setup-control` is connected, then reset
-`wifi-ssid` / `wifi-password`.
+If the rover is on a network where neither the default AP nor ethernet
+DHCP can reach it, and it hasn't joined Tailscale yet, the recovery is
+to re-flash the SD card. There is no equivalent of Ubuntu Core's
+`auto-import.assert` USB recovery — bootc's first line of defense is
+on-device `bootc rollback`, the second is reflash.
 
-## Snap configuration
+## Runtime configuration
 
-`snap set fsk-rover-pilot <key>=<value>`. All keys optional; unset keys
-fall back to `rover_params.yaml` defaults or the configure hook's
-default Wi-Fi profile.
+bootc keeps the host image immutable; runtime knobs live outside the
+image so that `bootc upgrade` doesn't churn them. Each piece uses the
+target-native primitive directly — there is no `snap set` wrapper.
 
-| Key | Consumer |
-|-----|----------|
-| `server-url` | `bridge_node.server_url`. Must be `https://` unless `server_url_allow_http: true`. |
-| `internal-secret` | `bridge_node` (env `INTERNAL_SECRET`, `X-Internal-Service` header). |
-| `ros-domain-id` | `run-pilot` (env `ROS_DOMAIN_ID`, default `0`). |
-| `ntrip-username` | `gps_node` NGII RTK login. Host (`www.gnssdata.or.kr`), port (`2101`), password (`gnss`): compile-time constants in `gps_node.py`. Mountpoint: auto-selected by nearest-base-station lookup against the caster's source table. |
-| `wifi-ssid`, `wifi-password` | `hooks/configure` → `/etc/netplan/90-fsk-wifi.yaml`. |
+| Knob | Storage | Change with | Notes |
+|------|---------|-------------|-------|
+| `INTERNAL_SECRET` | rootful podman secret `internal-secret` | `printf '%s' $val \| sudo podman secret rm internal-secret 2>/dev/null; sudo podman secret create internal-secret -` | Wired to the container as `INTERNAL_SECRET` env. Not visible to `ros2 param get`. |
+| `NTRIP_USERNAME` | rootful podman secret `ntrip-username` | same pattern as above | Wired as `NTRIP_USERNAME` env. NGII host (`www.gnssdata.or.kr`), port (`2101`), password (`gnss`) and mountpoint (auto, nearest base station) are not configurable. |
+| `SERVER_URL`, `ROS_DOMAIN_ID` | `/etc/pilot/pilot.conf` (KEY=VALUE) | `sudo $EDITOR /etc/pilot/pilot.conf` | Loaded by quadlet `EnvironmentFile=`. |
+| Wi-Fi SSID/PSK | `/etc/NetworkManager/system-connections/fsk-default.nmconnection` | `sudo nmcli connection modify fsk-default …` | Empty values invalid — NetworkManager rejects them at apply time. |
+| Mission parameters (speeds, tolerances) | `pilot/config/rover_params.yaml` baked into pilot image | New pilot image build → push → auto-update | Intentionally not runtime-mutable; revert via `bootc rollback` is per-host, mission revert via `podman pull <prior-tag>`. |
+| OTA channel | `bootc status` (host), `pilot.container` `Image=` line (pilot) | `sudo bootc switch ghcr.io/.../fsk-rover-host:edge`, edit + rebake host image for pilot | — |
+| OTA freeze | `bootc-fetch-apply-updates.timer`, `podman-auto-update.timer` | `sudo systemctl disable --now <timer>` | Re-enable with `systemctl enable --now <timer>`. |
 
-Secrets (`INTERNAL_SECRET`, `NTRIP_USERNAME`) flow
-`snapctl → run-pilot → env → ROS node`, never via `declare_parameter` —
-peers on the same `ROS_DOMAIN_ID` cannot read them with
-`ros2 param get`.
-
-### Wi-Fi
-
-Requires `network-setup-control` connected (done by
-`provision-rover.sh`). The configure hook rewrites
-`/etc/netplan/90-fsk-wifi.yaml` and runs `netplan apply` on change only.
+After changing any value the container reads (`pilot.conf` or a secret),
+restart the unit:
 
 ```bash
-sudo snap set fsk-rover-pilot wifi-ssid='MyAP' wifi-password='mypassword'
+sudo systemctl restart pilot.service
 ```
 
-Quote values with spaces or shell metacharacters. Clear both keys to
-fall back to the baked default profile:
+After taking up `fsk-default` with new credentials, the SSH session you
+ran the command from will drop with the old AP — reconnect over the new
+network or fall back to ethernet.
+
+Battery calibration persists at `/var/lib/pilot/battery_cal.json` on
+the host (bind-mounted into the container). Survives `systemctl
+restart`, `podman auto-update`, and `bootc upgrade`. To inspect:
 
 ```bash
-sudo snap unset fsk-rover-pilot wifi-ssid wifi-password
+sudo cat /var/lib/pilot/battery_cal.json
 ```
 
-### Configure hook algorithm (`snap/hooks/configure`)
+Sanity bounds enforced by `mcu_bridge_node`: `measured_v ∈ [15, 32] V`,
+`gain ∈ [0.5, 2.0]`. A corrupt or out-of-range cal file falls back to
+`gain = 1.0` so a bad calibration can't brick the rover.
 
-Runs on install and on every `snap set`:
+## OTA & rollback
 
-1. If `network-setup-control` not connected → log, restart `pilot`,
-   exit 0. A failing hook would abort the seed change and strand the
-   rover in install mode.
-2. Read `wifi-ssid` / `wifi-password`; empty or unset → `default` /
-   `password`. Empty values must be treated as "use default" — writing
-   an empty SSID produces invalid wpa_supplicant YAML and
-   `netplan generate` then fails for the whole merged config, which
-   also wipes the ethernet path from the generated networkd units.
-3. Emit only the `wifis:` block. Ethernet is handled by snapd's
-   `/etc/netplan/00-snapd-config.yaml` (matches `en*`/`eth*`, covers
-   Pi 5's `end0`). Redeclaring ethernet here risks wiping it on any
-   YAML error.
-4. Rewrite `/etc/netplan/90-fsk-wifi.yaml` only when content changes;
-   run `netplan apply`. No-op writes avoid yanking the link on
-   unrelated `snap set` calls.
-5. Restart the `pilot` daemon so other keys take effect immediately.
-
-## Packaging & confinement
-
-One monolithic snap. `grade: stable`, `confinement: strict`,
-`base: core24`, ROS 2 Jazzy via the `ros2-jazzy` extension. Single
-daemon `pilot` (`daemon: simple`, `restart-condition: on-failure`).
-
-Required plugs (`snapcraft.yaml`):
-
-| Plug | Purpose |
-|------|---------|
-| `network`, `network-bind` | Course server REST/SSE, NTRIP TCP |
-| `raw-usb` | ZED-F9P + RP2040 USB CDC (also resolves `/dev/ttyGPS` and `/dev/ttyMCU`) |
-| `serial-port` | udev-named serial lines if present |
-| `gpio` | Spray servo (Pi GPIO 13) |
-| `network-setup-control` | Configure hook writes `/etc/netplan/90-fsk-wifi.yaml` |
-
-All plugs are on the Snapcraft Store's auto-approval list — new
-revisions reach `candidate` without manual review.
-`network-setup-control` and `raw-usb` are not auto-connected;
-`provision-rover.sh` connects them. The configure hook no-ops when
-`network-setup-control` is missing so first-boot seeding does not
-abort.
-
-Pi 5 fan is pinned at 100 % via `dtparam=fan_temp*` in
-`ubuntu-seed/config.txt` — firmware-level, not a snap daemon, so the
-snap stays inside the auto-approved plug set.
-
-`grade: dangerous` on the model assertion is required because
-`ubuntu-image` embeds the locally-built `fsk-rover-pilot` snap instead
-of pulling a published revision. Once booted, the rover follows the
-Store's signed channel like any Ubuntu Core device.
-
-Rationale — one unit per rover keeps refresh / rollback a single
-command (`snap refresh` / `snap revert`). Splitting the five nodes
-into separate snaps would add inter-snap content-sharing plumbing for
-no operational gain.
-
-## Image assembly (`image/`)
-
-Ubuntu Core image layer. All assembly happens in GitHub Actions;
-developer machines only need the signing-key setup below.
-
-### Inputs
-
-| Name | Type | Contents |
-|------|------|----------|
-| `SNAP_BRAND_KEY_B64` | secret | `tar czf - -C ~/.snap/gnupg .` then `base64 -w0`. Brand signing key snapd uses for `snap sign`. |
-| `SNAP_BRAND_KEY_NAME` | repo var | Key name as shown by `snap keys`, e.g. `fsk-rover-signing`. |
-| `model.assertion.template` | checked-in | Unsigned model. CI refreshes `timestamp` per run and signs. |
-| `system-user.template.json` | checked-in | Unsigned local-user assertion. CI fetches public keys from <https://github.com/luftaquila.keys>, fills `ssh-keys` + `since`/`until`/`timestamp`, then signs with `--chain` so `auto-import.assert` carries the required account/account-key assertions. |
-| `fsk-rover-pilot` snap | built | Built inside the image workflow by `snapcore/action-build`. |
-| `tailscale` | snap-store | Referenced from the model assertion, pulled at assembly time. |
-
-Brand identity baked into `model.assertion.template`:
-
-- `model` — `fsk-rover`
-- `authority-id` / `brand-id` — `0omV9pEFvLnFgHtuPb1LUkfXbJyegTHc`
-
-### Signing setup (one-time per brand key)
-
-On a trusted workstation that already has the brand account logged in
-to `snapcraft`:
+Two independent update channels:
 
 ```bash
-# Create an assertion-signing key. Leave the passphrase blank — CI signs
-# non-interactively and cannot type one.
-snap create-key fsk-rover-signing
-snapcraft register-key fsk-rover-signing
+# Host (rare; reboot to apply)
+sudo bootc status                          # show booted/staged digests
+sudo systemctl start bootc-fetch-apply-updates.service   # fetch now
+sudo bootc rollback && sudo systemctl reboot             # revert previous
 
-# Export the snapd gnupg homedir (path is ~/.snap/gnupg on classic Ubuntu).
-tar czf /tmp/snap-brand-key.tar.gz -C ~/.snap/gnupg .
-base64 -w0 /tmp/snap-brand-key.tar.gz | \
-    gh secret set SNAP_BRAND_KEY_B64 --repo luftaquila/formula-student-korea
-
-# Record the key name as a repo variable (not a secret).
-gh variable set SNAP_BRAND_KEY_NAME --repo luftaquila/formula-student-korea \
-    --body 'fsk-rover-signing'
+# Pilot container (frequent; in-place)
+sudo systemctl start podman-auto-update.service          # pull now
+sudo podman pull ghcr.io/luftaquila/fsk-rover-pilot:edge \
+  && sudo systemctl restart pilot.service                # manual promote
 ```
 
-### Image contents
+`bootc upgrade` is atomic — on reboot the bootloader switches to the
+new deployment, and if boot fails the previous deployment is preserved
+for a one-command rollback. `podman auto-update` checks the
+`io.containers.autoupdate=registry` label and pulls when the digest
+of the configured tag changes.
 
-Ships:
+Mission changes ship through the pilot pipeline — do not reflash images
+for them. Reflash is only needed for fresh provisioning, hardware
+swaps, or when a new AlmaLinux bootc-rpi base ships changes that
+cannot be reached via `bootc upgrade` alone.
 
-- `fsk-rover-pilot` snap (tracking `latest/candidate`)
-- `tailscale` snap (not authenticated)
-- `core24`, `snapd`, `pi`, `pi-kernel`
-- signed `system-user` assertion → local `fsk` user with
-  `authorized_keys` fetched from <https://github.com/luftaquila.keys> at
-  build time
-- default Wi-Fi profile `default` / `password` (applied by configure hook)
-- `dtparam=fan_temp*` appended to `ubuntu-seed/config.txt` by the image
-  workflow → 100 % fan from firmware init, independent of the kernel
-  thermal governor
+Rover state inspection:
 
-Does **not** ship: application secrets (`INTERNAL_SECRET`,
-`NTRIP_USERNAME` — the NGII password and host are compile-time
-constants, not secrets), Tailscale auth keys, per-rover overrides.
+```bash
+sudo bootc status
+systemctl status pilot.service
+sudo podman ps
+sudo podman secret ls
+sudo journalctl -u pilot.service -n 200
+```
+
+The course web UI surfaces a live status badge (connected · fix · NTRIP
+· nav state) from `/api/rover/telemetry`.
 
 ## MCU coprocessor (`mcu/`)
 
@@ -407,12 +379,13 @@ via the course UI:
    SSE `calibrate-battery` → `bridge_node` publishes Float32 on
    `/rover/cmd/calibrate_battery` → `mcu_bridge_node` derives
    `gain = measured_v / V_raw` and persists to
-   `$SNAP_COMMON/battery_cal.json`.
+   `$PILOT_STATE_DIR/battery_cal.json` (`/var/lib/pilot/battery_cal.json`
+   on the host, bind-mounted into the container).
 
-The saved JSON survives reboots and snap refreshes. Sanity bounds:
-`measured_v ∈ [15, 32] V`, `gain ∈ [0.5, 2.0]`. A corrupt or
-out-of-range cal file falls back to `gain = 1.0` so a bad calibration
-can't brick the rover.
+The saved JSON survives reboots, `podman auto-update`, and
+`bootc upgrade`. Sanity bounds: `measured_v ∈ [15, 32] V`,
+`gain ∈ [0.5, 2.0]`. A corrupt or out-of-range cal file falls back to
+`gain = 1.0` so a bad calibration can't brick the rover.
 
 ### USB CDC protocol
 
@@ -495,16 +468,19 @@ cmake -S … -B … -DWHEEL_RADIUS_M=0.04 -DENCODER_PPR=200
 
 - First time (firmware doesn't yet know `B`): hold BOOT, plug USB-C,
   drag `.uf2` to the `RPI-RP2` drive.
-- Subsequent (rover Pi): `sudo course/rover/scripts/flash-mcu.sh
-  rover_mcu.uf2`. Sends `B` on `/dev/ttyMCU`, mounts the resulting
-  RPI-RP2 disk, copies the file, waits for re-enumeration. The pilot
-  snap is paused for the duration and resumed automatically.
+- Subsequent (rover Pi): `sudo flash-mcu rover_mcu.uf2`.
+  Sends `B` on `/dev/ttyMCU`, mounts the resulting RPI-RP2 disk,
+  copies the file, waits for re-enumeration. The pilot container is
+  paused for the duration and resumed automatically. Baked into the
+  host image at `/usr/local/bin/flash-mcu`; updates flow through
+  `bootc upgrade`.
 - Off-rover host: `picotool load -f rover_mcu.uf2 && picotool reboot`.
 
 After flash, the board enumerates as a USB CDC device. Always address
 it via the udev symlink `/dev/ttyMCU` (installed by
-`scripts/99-fsk-rover.rules`) — raw `/dev/ttyACM*` ordering is
-non-deterministic when both the GPS and the MCU are present.
+`host/files/usr/lib/udev/rules.d/99-fsk-rover.rules`) — raw
+`/dev/ttyACM*` ordering is non-deterministic when both the GPS and the
+MCU are present.
 
 ### Omitted: motor current sensing
 
@@ -516,48 +492,42 @@ if a real shunt-amp / INA219 ever lands.
 
 | Workflow | Trigger | Output |
 |----------|---------|--------|
-| `.github/workflows/rover-snap.yml` | PR (artifact only), push to `main` (→ `candidate`), `v*` tag or `workflow_dispatch` with channel (→ `edge`) | `fsk-rover-pilot` snap; runs `compileall` + pytest before publish |
-| `.github/workflows/rover-image.yml` | `workflow_dispatch` or weekly (Mon 14:00 KST) | Ubuntu Core image + chained `auto-import.assert` |
-| `.github/workflows/rover-mcu.yml` | Push/PR touching `course/rover/mcu/**` | RP2040 coprocessor firmware (`rover_mcu.uf2`) |
+| `.github/workflows/rover-pilot-image.yml` | `main` push touching `course/rover/pilot/**` (→ `:candidate`), or manual dispatch with `release_channel` input | `ghcr.io/luftaquila/fsk-rover-pilot` OCI; `compileall` + pytest gate the build |
+| `.github/workflows/rover-host-image.yml` | `main` push touching `course/rover/host/**` (→ `:candidate`), or manual dispatch | `ghcr.io/luftaquila/fsk-rover-host` OCI |
+| `.github/workflows/rover-sd-image.yml` | Manual dispatch only (provisioning-only artifact) | Flashable `.img.xz` artifact: AlmaLinux bootc-rpi base + Pi 5 fan dtparams + first-boot `bootc switch` to `fsk-rover-host:candidate` |
+| `.github/workflows/rover-mcu.yml` | `main` push touching `course/rover/mcu/**`, or manual dispatch | RP2040 coprocessor firmware (`rover_mcu.uf2`) |
 
-The image workflow signs the model and `system-user` assertions
-in-pipeline using the brand key from `SNAP_BRAND_KEY_B64` /
-`SNAP_BRAND_KEY_NAME`, then builds via `ubuntu-image snap --assertion`
-so the image boots straight to the seeded `fsk` SSH user. The "Force
-Pi 5 fan to 100 %" step mounts the built `ubuntu-seed` partition and
-appends `dtparam=fan_temp*` to `config.txt`.
+PR / tag triggers are intentionally absent — every workflow auto-runs
+on `main` push (path-gated) and is otherwise manual. Tag-based promotion
+is done by manually dispatching with `release_channel=vX.Y.Z` (or `edge`).
+The two OCI image workflows publish to GitHub Container Registry using
+`GITHUB_TOKEN` — no external store credentials. The SD image workflow
+takes the AlmaLinux-published prebuilt SD URL as a manual input; the
+artifact is provisioning-only, deployed rovers track host/pilot
+updates via the OTA timers without ever needing a fresh SD.
 
-The snap pipeline handles rolling updates; the image pipeline is only
-needed for first-time provisioning, hardware swaps, or base-snap
-refreshes.
+The pilot pipeline handles rolling updates; the host pipeline only
+runs on host-config changes (sshd, NM defaults, sudoers, udev,
+quadlet, dnf packages); the SD pipeline is only needed for first-time
+provisioning, hardware swaps, or a base-OS jump that `bootc upgrade`
+cannot reach (very rare).
 
 ## Release channels
 
 | Trigger | Channel | Rollout |
 |---------|---------|---------|
-| PR (touches `course/rover/**`) | artifact only | — |
-| Push to `main` | `latest/candidate` | Field rovers on candidate auto-refresh within 24 h. |
-| Tag `vX.Y.Z` or `workflow_dispatch` with `release_channel=edge` | `latest/edge` | Promote with `sudo snap refresh --channel=latest/edge fsk-rover-pilot`. |
+| Push to `main` | `:candidate` | Field rovers on candidate auto-pull within 24 h. |
+| Manual dispatch (`release_channel=edge`) | `:edge` | Promote with `sudo bootc switch …:edge` (host) or via the pilot quadlet's `Image=` line (rebake the host image with the new tag). |
+| Manual dispatch (`release_channel=vX.Y.Z`) | `:vX.Y.Z` | Immutable snapshot for rollback reference. |
 
-Rover default channel is `candidate` (see
-`image/model.assertion.template`); `edge` is the "promoted for
-competition" channel. Mission changes ship through the snap pipeline —
-do not reflash images for them. Re-apply `--hold=168h` after every
-manual refresh.
+Rovers default to `:candidate` (see `pilot.container` and the
+`fsk-firstboot` service in the SD workflow); `:edge` is the
+"promoted for competition" channel. Mission changes ship through the
+pilot pipeline. Re-disable `bootc-fetch-apply-updates.timer` and
+`podman-auto-update.timer` after every manual upgrade you want to
+freeze in place.
 
-Rover state inspection:
-
-```bash
-snap info fsk-rover-pilot            # installed revision, tracking channel
-snap services fsk-rover-pilot        # pilot daemon status
-snap connections fsk-rover-pilot     # network-setup-control connected?
-snap logs fsk-rover-pilot -n 200
-```
-
-Course web UI surfaces a live status badge (connected · fix · NTRIP ·
-nav state) from `/api/rover/telemetry`.
-
-## Local development (no snap)
+## Local development (no rover)
 
 Classic Ubuntu workstation with ROS 2 Jazzy:
 
@@ -570,12 +540,18 @@ pip install -r src/pilot/requirements.txt
 colcon build --packages-select pilot
 source install/setup.bash
 
-# Install the udev rules so /dev/ttyGPS and /dev/ttyMCU appear.
-sudo bash src/pilot/scripts/setup_udev.sh
+# Install the udev rules so /dev/ttyGPS and /dev/ttyMCU appear (the
+# rover image bakes the same rules into /usr/lib/udev/rules.d/).
+sudo install -m 644 \
+    "$(pwd)/host/files/usr/lib/udev/rules.d/99-fsk-rover.rules" \
+    /etc/udev/rules.d/99-fsk-rover.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=tty
 
-# Env-only secrets (same contract as run-pilot inside the snap)
+# Env-only secrets (same contract the pilot.container quadlet uses)
 INTERNAL_SECRET=… \
 NTRIP_USERNAME=YOUR_NGII_LOGIN \
+PILOT_STATE_DIR=/tmp \
   ros2 launch pilot pilot.launch.py \
     server_url:=https://your-server.example/course
 ```
@@ -603,8 +579,8 @@ npm run test:shared
 
 - All rovers share hardware layout and NTRIP endpoint.
 - `pilot/config/rover_params.yaml` is identical across the fleet.
-- Only `server-url`, `internal-secret`, `ntrip-username` vary per
-  rover, injected after first boot.
+- Only `SERVER_URL`, `INTERNAL_SECRET`, `NTRIP_USERNAME` vary per
+  rover, injected after first boot by `provision-rover.sh`.
 
 ## File map
 
@@ -618,12 +594,13 @@ npm run test:shared
 | `pilot/pilot/lib/ackermann.py` | Ackermann kinematics (Wheeltec R550) |
 | `pilot/pilot/lib/ntrip_client.py` | NTRIP v2 client with exponential backoff |
 | `pilot/pilot/lib/ubx_parser.py` | ZED-F9P UBX parser (NAV-PVT, NAV-HPPOSLLH) |
-| `snap/bin/run-pilot` | Pilot daemon entrypoint — env assembly |
-| `snap/hooks/configure` | Wi-Fi netplan writer + daemon restart |
-| `snapcraft.yaml` | Snap confinement and plugs |
-| `image/model.assertion.template`, `image/system-user.template.json` | Ubuntu Core image assembly inputs |
+| `pilot/Containerfile` | pilot OCI image build (`FROM ros:jazzy-ros-base`) |
+| `host/Containerfile` | host bootc image build (`FROM almalinux-bootc-rpi:10`) |
+| `host/files/etc/containers/systemd/pilot.container` | quadlet: pilot.service definition (devices, secrets, env, autoupdate) |
+| `host/files/etc/pilot/pilot.conf.example` | non-secret env template (`SERVER_URL`, `ROS_DOMAIN_ID`) |
+| `host/files/etc/NetworkManager/system-connections/fsk-default.nmconnection` | default Wi-Fi profile |
+| `host/files/etc/tmpfiles.d/pilot-state.conf` | creates `/var/lib/pilot/` (battery cal bind-mount source) |
+| `host/files/usr/lib/udev/rules.d/99-fsk-rover.rules` | `/dev/ttyGPS`, `/dev/ttyMCU`, `/dev/gpiochip-rp1` symlinks |
+| `host/files/usr/local/bin/flash-mcu` | On-rover MCU reflash (sends `B`, copies UF2, restarts pilot.service) |
 | `mcu/` | RP2040 coprocessor firmware (pico-sdk, C) — drive I/O |
-| `scripts/99-fsk-rover.rules` | udev rules for `/dev/ttyGPS` and `/dev/ttyMCU` |
-| `../../scripts/provision-rover.sh` | One-shot post-flash provisioning |
-| `pilot/scripts/setup_udev.sh` | Classic-Ubuntu udev installer for the same rules |
-| `pilot/scripts/systemd/pilot.service` | (Legacy) systemd unit for non-snap runs |
+| `../../scripts/provision-rover.sh` | One-shot post-flash provisioning (writes `/etc/pilot/pilot.conf`, creates podman secrets) |

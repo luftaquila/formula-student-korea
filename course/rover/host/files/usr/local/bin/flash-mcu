@@ -1,8 +1,9 @@
 #!/bin/sh
 # One-shot MCU reflash from the rover Pi — no BOOT button required.
+# Baked into the host image at /usr/local/bin/flash-mcu.
 #
 # Usage:
-#   sudo flash-mcu.sh <rover_mcu.uf2>
+#   sudo flash-mcu <rover_mcu.uf2>
 #
 # Sequence:
 #   1. Send "B" over /dev/ttyMCU; the running firmware drops into the
@@ -21,19 +22,19 @@ set -eu
 UF2="${1:?usage: $(basename "$0") <rover_mcu.uf2>}"
 [ -f "$UF2" ] || { echo "missing: $UF2" >&2; exit 1; }
 
-# The pilot snap holds /dev/ttyMCU exclusive — stop it so we can
+# The pilot container holds /dev/ttyMCU exclusive — stop it so we can
 # write to the port without interleaving with mcu_bridge_node.
-SNAP_WAS_ACTIVE=0
-if snap services fsk-rover-pilot 2>/dev/null | grep -q "active"; then
-    SNAP_WAS_ACTIVE=1
-    snap stop fsk-rover-pilot.pilot >/dev/null
+PILOT_WAS_ACTIVE=0
+if systemctl is-active --quiet pilot.service; then
+    PILOT_WAS_ACTIVE=1
+    systemctl stop pilot.service
 fi
 
-restart_snap() {
-    [ "$SNAP_WAS_ACTIVE" = "1" ] || return 0
-    snap start fsk-rover-pilot.pilot >/dev/null || true
+restart_pilot() {
+    [ "$PILOT_WAS_ACTIVE" = "1" ] || return 0
+    systemctl start pilot.service || true
 }
-trap restart_snap EXIT
+trap restart_pilot EXIT
 
 if [ -e /dev/ttyMCU ]; then
     printf 'B\n' > /dev/ttyMCU

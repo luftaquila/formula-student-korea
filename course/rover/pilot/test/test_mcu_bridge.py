@@ -216,20 +216,20 @@ def test_voltage_to_percent_8s_uses_lifepo4_plateau():
         assert voltage_to_percent_8s(v) == expected
 
 
-def test_battery_cal_path_uses_snap_common(monkeypatch, tmp_path):
-    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+def test_battery_cal_path_uses_pilot_state_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
     assert _battery_cal_path() == os.path.join(str(tmp_path), BATTERY_CAL_FILENAME)
 
 
 def test_load_battery_cal_missing_returns_default(bridge, monkeypatch, tmp_path):
-    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
     cal = bridge._load_battery_cal()
     assert cal['gain'] == 1.0
     assert cal['calibrated_at'] is None
 
 
 def test_load_battery_cal_rejects_out_of_range_gain(bridge, monkeypatch, tmp_path):
-    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
     path = tmp_path / BATTERY_CAL_FILENAME
     path.write_text(json.dumps({'gain': 5.0, 'calibrated_at': 1, 'measured_v': 25.0}))
     cal = bridge._load_battery_cal()
@@ -237,14 +237,14 @@ def test_load_battery_cal_rejects_out_of_range_gain(bridge, monkeypatch, tmp_pat
 
 
 def test_load_battery_cal_rejects_corrupt_file(bridge, monkeypatch, tmp_path):
-    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
     (tmp_path / BATTERY_CAL_FILENAME).write_text('{not valid json')
     cal = bridge._load_battery_cal()
     assert cal['gain'] == 1.0
 
 
 def test_calibrate_battery_persists_and_applies_gain(bridge, monkeypatch, tmp_path):
-    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
     # Telemetry first to seed _last_raw_vbat with a believable raw reading
     # — the MCU said 25.6 V but the multimeter reads 26.0 V.
     bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.600 0x0')
@@ -275,7 +275,7 @@ def test_calibrate_battery_persists_and_applies_gain(bridge, monkeypatch, tmp_pa
 
 
 def test_calibrate_battery_rejects_out_of_range_measurement(bridge, monkeypatch, tmp_path):
-    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
     bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x0')
     class _Msg:
         def __init__(self, v): self.data = v
@@ -286,7 +286,7 @@ def test_calibrate_battery_rejects_out_of_range_measurement(bridge, monkeypatch,
 
 
 def test_calibrate_battery_without_raw_sample_is_ignored(bridge, monkeypatch, tmp_path):
-    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
     # No telemetry yet → no raw sample → must not blow up or save garbage
     class _Msg:
         def __init__(self, v): self.data = v

@@ -83,9 +83,10 @@ def voltage_to_percent_8s(voltage):
 
 
 # In-field calibration: a single gain factor (V_real = V_raw × gain) stored
-# in $SNAP_COMMON. Captures the dominant ratiometric error sources (resistor
-# divider tolerance + ADC Vref drift) which together drift with temperature.
-# Operators re-enter the multimeter reading whenever conditions change.
+# in $PILOT_STATE_DIR (host bind-mounted /var/lib/pilot in the rover image).
+# Captures the dominant ratiometric error sources (resistor divider tolerance
+# + ADC Vref drift) which together drift with temperature. Operators re-enter
+# the multimeter reading whenever conditions change.
 BATTERY_CAL_FILENAME = 'battery_cal.json'
 BATTERY_CAL_GAIN_MIN = 0.5
 BATTERY_CAL_GAIN_MAX = 2.0
@@ -94,7 +95,7 @@ BATTERY_CAL_MEASURED_MAX_V = 32.0
 
 
 def _battery_cal_path():
-    base = os.environ.get('SNAP_COMMON') or os.environ.get('HOME') or tempfile.gettempdir()
+    base = os.environ.get('PILOT_STATE_DIR') or tempfile.gettempdir()
     return os.path.join(base, BATTERY_CAL_FILENAME)
 
 
@@ -442,7 +443,7 @@ class McuBridgeNode(Node):
     # ------------------------- battery calibration
 
     def _load_battery_cal(self):
-        """Read the persisted gain from $SNAP_COMMON. Defaults to gain=1.0.
+        """Read the persisted gain from $PILOT_STATE_DIR. Defaults to gain=1.0.
 
         Tolerates missing file, missing fields, and out-of-range gains —
         a corrupt calibration must never block the rover from booting.
@@ -469,7 +470,7 @@ class McuBridgeNode(Node):
         }
 
     def _save_battery_cal(self, cal):
-        """Atomically persist the calibration JSON ($SNAP_COMMON/battery_cal.json)."""
+        """Atomically persist the calibration JSON ($PILOT_STATE_DIR/battery_cal.json)."""
         path = _battery_cal_path()
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -529,7 +530,7 @@ class McuBridgeNode(Node):
 
     def destroy_node(self):
         # Don't send 'E' on shutdown — that would latch g_tripped on the
-        # MCU and outlive the snap restart. Heartbeats stopping naturally
+        # MCU and outlive the service restart. Heartbeats stopping naturally
         # trips the MCU's Pi-link WDT (500 ms) and motors stop on their
         # own; the latch isn't needed and is hard to clear.
         self._reader_alive.clear()
