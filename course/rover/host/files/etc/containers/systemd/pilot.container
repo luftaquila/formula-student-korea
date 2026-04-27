@@ -24,9 +24,12 @@ AutoUpdate=registry
 Network=host
 
 # Stable udev symlinks created by /usr/lib/udev/rules.d/99-fsk-rover.rules.
-AddDevice=/dev/ttyGPS
-AddDevice=/dev/ttyMCU
-AddDevice=/dev/gpiochip-rp1
+# Explicit host:container mapping — without it podman dereferences the
+# symlink and exposes the canonical /dev/ttyACM*/gpiochipN names inside
+# the container, which the pilot code never opens.
+AddDevice=/dev/ttyGPS:/dev/ttyGPS
+AddDevice=/dev/ttyMCU:/dev/ttyMCU
+AddDevice=/dev/gpiochip-rp1:/dev/gpiochip-rp1
 # lgpio also touches the memory-mapped IO node on Pi 5.
 AddDevice=/dev/gpiomem0
 
