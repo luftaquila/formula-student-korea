@@ -1,0 +1,16 @@
+[Unit]
+Description=FSK rover SELinux boolean overrides
+# Policy needs to be loaded before setsebool can flip a boolean, and
+# the runtime change has to land before podman.socket starts the
+# pilot container — without container_use_devices, the AddDevice=
+# entries in pilot.container fail at runtime under enforcing mode.
+After=selinux-autorelabel-mark.service local-fs.target
+Before=podman.socket pilot.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/setsebool container_use_devices on
+
+[Install]
+WantedBy=multi-user.target
