@@ -108,6 +108,7 @@ def _install_rclpy():
 def _install_ros_msgs():
     std_msgs_msg = _install_stub("std_msgs.msg", {
         "String": type("String", (), {"__init__": lambda self: setattr(self, "data", "")}),
+        "Float32": type("Float32", (), {"__init__": lambda self: setattr(self, "data", 0.0)}),
         "Float64": type("Float64", (), {"__init__": lambda self: setattr(self, "data", 0.0)}),
         "Int32": type("Int32", (), {"__init__": lambda self: setattr(self, "data", 0)}),
         "Empty": type("Empty", (), {"__init__": lambda self: None}),

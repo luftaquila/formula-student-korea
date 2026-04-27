@@ -379,6 +379,41 @@ Vbat ─[100 kΩ 1%]─┬─ GP26
                   └─[10 kΩ 1%]─ GND
 ```
 
+#### SOC mapping (8S LiFePO4)
+
+`mcu_bridge_node` maps pack voltage → SOC % using a piecewise-linear
+OCV-SOC table (rest voltage, no load). LiFePO4's discharge curve is
+extremely flat between ~20 % and ~90 % SOC — most cells sit at
+3.27–3.32 V — so a naïve linear `(V - V_empty) / (V_full - V_empty)`
+map gives wildly wrong readings in the operating range. Above 27.20 V
+clamps to 100 % (charger surface charge up to 29.2 V also clamps);
+below 20.00 V clamps to 0 % (cell undervolt cutoff).
+
+Voltages are read under load (motor IR drop) — % is most accurate at
+rest. The reported `voltage` already has the field-calibrated gain
+applied; `voltage_raw` carries the uncorrected ADC reading.
+
+#### Field calibration (1-point gain)
+
+The dominant ADC error sources on this board are *ratiometric*:
+divider-resistor tolerance + RP2040 ADC Vref drift. Both shift with
+temperature, which is why a one-time bench cal won't hold across a
+hot summer day vs a cold morning. Operators re-calibrate in the field
+via the course UI:
+
+1. Battery chip popover → "전압 보정"
+2. Read multimeter at the battery, type the value into the modal
+3. Submit → `POST /api/rover/calibrate-battery {measured_v}` →
+   SSE `calibrate-battery` → `bridge_node` publishes Float32 on
+   `/rover/cmd/calibrate_battery` → `mcu_bridge_node` derives
+   `gain = measured_v / V_raw` and persists to
+   `$SNAP_COMMON/battery_cal.json`.
+
+The saved JSON survives reboots and snap refreshes. Sanity bounds:
+`measured_v ∈ [15, 32] V`, `gain ∈ [0.5, 2.0]`. A corrupt or
+out-of-range cal file falls back to `gain = 1.0` so a bad calibration
+can't brick the rover.
+
 ### USB CDC protocol
 
 Line-based ASCII, `\n` terminated.

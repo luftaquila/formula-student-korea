@@ -505,6 +505,41 @@ describe('POST /api/rover/control', () => {
   });
 });
 
+describe('POST /api/rover/calibrate-battery', () => {
+  it('rejects unauthenticated requests', async () => {
+    const res = await client.post('/api/rover/calibrate-battery', {
+      body: { measured_v: 26.0 },
+    });
+    assert.equal(res.status, 401);
+  });
+
+  it('rejects non-numeric measured_v', async () => {
+    const res = await client.post('/api/rover/calibrate-battery', {
+      body: { measured_v: 'twenty-six' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('rejects measured_v outside 15–32 V (sanity-check range for 8S LiFePO4)', async () => {
+    for (const bad of [0, 14.9, 32.1, 100]) {
+      const res = await client.post('/api/rover/calibrate-battery', {
+        body: { measured_v: bad },
+        cookie: adminCookie,
+      });
+      assert.equal(res.status, 400, `expected 400 for measured_v=${bad}`);
+    }
+  });
+
+  it('returns 503 when rover is not connected', async () => {
+    const res = await client.post('/api/rover/calibrate-battery', {
+      body: { measured_v: 26.0 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 503);
+  });
+});
+
 // ─── Rover telemetry / status ───────────────────────────────────────────
 describe('Rover telemetry + status (internal)', () => {
   it('rejects telemetry without internal secret', async () => {
@@ -547,6 +582,31 @@ describe('Rover telemetry + status (internal)', () => {
     assert.equal(data.battery.voltage, 11.4);
     assert.equal(data.battery.percent, 55);
     assert.equal(data.battery.source, 'simulated');
+  });
+
+  it('passes through battery calibration metadata (gain, measured_v, calibrated_at, voltage_raw)', async () => {
+    const calibratedAt = 1714200000000;
+    const res = await client.post('/api/rover/telemetry', {
+      body: {
+        battery: {
+          voltage: 26.0,
+          voltage_raw: 25.6,
+          percent: 47,
+          source: 'mcu',
+          gain: 1.015625,
+          measured_v: 26.0,
+          calibrated_at: calibratedAt,
+        },
+      },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+    const data = await (await client.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(data.battery.voltage, 26.0);
+    assert.equal(data.battery.voltage_raw, 25.6);
+    assert.equal(data.battery.gain, 1.015625);
+    assert.equal(data.battery.measured_v, 26.0);
+    assert.equal(data.battery.calibrated_at, calibratedAt);
   });
 
   it('ignores null ntrip_connected (distinguishes unknown from disconnected)', async () => {

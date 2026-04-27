@@ -27,7 +27,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import NavSatFix
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Empty, Int32, String
+from std_msgs.msg import Empty, Float32, Int32, String
 
 try:
     from rcl_interfaces.msg import Log as _RosoutLog  # noqa: F401
@@ -73,6 +73,7 @@ class BridgeNode(Node):
         self._pub_clear_estop = self.create_publisher(Empty, '/rover/cmd/clear_emergency', reliable_qos)
         self._pub_manual = self.create_publisher(Twist, '/rover/cmd/manual_control', 10)
         self._pub_request_pos = self.create_publisher(Empty, '/rover/cmd/request_position', reliable_qos)
+        self._pub_calibrate_battery = self.create_publisher(Float32, '/rover/cmd/calibrate_battery', reliable_qos)
 
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps_position, 10)
@@ -424,6 +425,17 @@ class BridgeNode(Node):
                 return
             self._log_upload_in_flight = True
             threading.Thread(target=self._upload_logs, daemon=True).start()
+
+        elif event == 'calibrate-battery':
+            try:
+                measured_v = float(payload.get('measured_v'))
+            except (TypeError, ValueError):
+                self.get_logger().warn(f'calibrate-battery: invalid payload {payload!r}')
+                return
+            self.get_logger().info(f'Battery calibration request: measured={measured_v:.3f} V')
+            msg = Float32()
+            msg.data = measured_v
+            self._pub_calibrate_battery.publish(msg)
 
     def destroy_node(self):
         self._running = False

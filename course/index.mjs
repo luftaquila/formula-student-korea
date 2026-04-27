@@ -781,8 +781,12 @@ app.post("/api/rover/telemetry", (req, res) => {
   if (battery && typeof battery === "object") {
     roverState.battery = {
       voltage: typeof battery.voltage === "number" ? battery.voltage : null,
+      voltage_raw: typeof battery.voltage_raw === "number" ? battery.voltage_raw : null,
       percent: Number.isInteger(battery.percent) ? battery.percent : null,
       source: typeof battery.source === "string" ? battery.source : null,
+      gain: typeof battery.gain === "number" ? battery.gain : null,
+      measured_v: typeof battery.measured_v === "number" ? battery.measured_v : null,
+      calibrated_at: Number.isInteger(battery.calibrated_at) ? battery.calibrated_at : null,
     };
   }
   if (ntrip && typeof ntrip === "object" && !Array.isArray(ntrip)) {
@@ -1084,6 +1088,26 @@ app.post("/api/rover/stop", (req, res) => {
 
   logger.log(req, "rover.stop", null, "rover");
   res.json({ stopped: true });
+});
+
+// POST /api/rover/calibrate-battery - 배터리 전압 1점 게인 보정 (admin)
+// 운영자가 멀티미터로 측정한 실제 전압을 입력하면, 로버가 같은 시점의 ADC raw
+// 값과 비교해 V_real = V_raw × gain 의 게인 하나를 갱신·영구 저장한다.
+// 환경 온도가 바뀔 때마다 다시 누르면 그 자리에서 보정.
+app.post("/api/rover/calibrate-battery", (req, res) => {
+  const measured_v = Number(req.body?.measured_v);
+  if (!Number.isFinite(measured_v) || measured_v < 15 || measured_v > 32) {
+    return res.status(400).send("측정값은 15~32 V 범위 안의 숫자여야 합니다.");
+  }
+  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+
+  if (!sendRoverEvent("calibrate-battery", { measured_v })) {
+    logger.warn(req, "rover.calibrate_battery", { error: "write_failed", measured_v }, "rover");
+    return res.status(503).send("로버 연결이 끊어졌습니다.");
+  }
+
+  logger.log(req, "rover.calibrate_battery", { measured_v }, "rover");
+  res.json({ ok: true, measured_v });
 });
 
 // POST /api/rover/clear-emergency - 비상정지 해제 (operator-acknowledged)

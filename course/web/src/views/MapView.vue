@@ -201,6 +201,14 @@ const batteryChip = computed(() => {
     : "ok";
   const rows = [["잔량", `${p}%`]];
   if (s.battery.voltage != null) rows.push(["전압", `${s.battery.voltage.toFixed(2)} V`]);
+  if (s.battery.voltage_raw != null && s.battery.gain != null && Math.abs(s.battery.gain - 1.0) > 1e-4) {
+    rows.push(["원시", `${s.battery.voltage_raw.toFixed(2)} V`]);
+  }
+  if (s.battery.gain != null) rows.push(["게인", s.battery.gain.toFixed(4)]);
+  if (s.battery.calibrated_at) {
+    const ago = Math.max(0, Math.round((Date.now() - s.battery.calibrated_at) / 60000));
+    rows.push(["보정", ago < 1 ? "방금" : ago < 60 ? `${ago}분 전` : `${Math.round(ago / 60)}시간 전`]);
+  }
   if (s.battery.source) rows.push(["측정", s.battery.source]);
   return { percent: p, voltage: s.battery.voltage, tone, rows };
 });
@@ -1115,6 +1123,40 @@ async function deleteCourse(id) {
   } catch (err) { alert(err.message); }
 }
 
+/* ── Battery calibration ──────────────────────────── */
+const showBatteryCal = ref(false);
+const batteryCalInput = ref("");
+const batteryCalSubmitting = ref(false);
+
+function openBatteryCal() {
+  // Pre-fill with the current corrected voltage as a sane starting point —
+  // operator only has to nudge the digits to match the multimeter.
+  const v = roverStatus.value.battery?.voltage;
+  batteryCalInput.value = (typeof v === "number") ? v.toFixed(2) : "";
+  showBatteryCal.value = true;
+  activeChipPopover.value = null;
+}
+
+async function submitBatteryCal() {
+  const measured_v = Number(batteryCalInput.value);
+  if (!Number.isFinite(measured_v) || measured_v < 15 || measured_v > 32) {
+    alert("측정값은 15~32 V 범위 안의 숫자여야 합니다.");
+    return;
+  }
+  batteryCalSubmitting.value = true;
+  try {
+    await request("/api/rover/calibrate-battery", {
+      method: "POST",
+      body: JSON.stringify({ measured_v }),
+    });
+    showBatteryCal.value = false;
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    batteryCalSubmitting.value = false;
+  }
+}
+
 /* ── Rover log viewer ─────────────────────────────── */
 const showLogs = ref(false);
 const logEntries = ref([]);
@@ -1825,6 +1867,7 @@ function onGlobalKeydown(e) {
   // Highest-open modal wins; others remain so a stack of prompts collapses one level at a time.
   if (showLogs.value) { showLogs.value = false; e.preventDefault(); return; }
   if (showSnapshots.value) { showSnapshots.value = false; e.preventDefault(); return; }
+  if (showBatteryCal.value) { showBatteryCal.value = false; e.preventDefault(); return; }
   if (showPreflight.value) { cancelPreflight(); e.preventDefault(); return; }
 }
 
@@ -1891,6 +1934,47 @@ onUnmounted(() => {
           </div>
           <div class="preflight-actions">
             <button class="btn btn-ghost btn-sm" @click="showLogs = false">닫기</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Battery calibration modal -->
+      <div v-if="showBatteryCal" class="preflight-backdrop" @click.self="showBatteryCal = false">
+        <div class="preflight-modal">
+          <h3>배터리 전압 보정</h3>
+          <p class="cal-help">
+            멀티미터로 측정한 실제 배터리 전압을 입력하세요.
+            로버가 같은 시점의 ADC 값과 비교해 게인을 갱신·저장합니다.
+            온도 환경이 바뀌면 다시 누르면 됩니다.
+          </p>
+          <div class="cal-current">
+            <span class="cal-key">현재 표시</span>
+            <span class="cal-val">{{ roverStatus.battery?.voltage != null ? roverStatus.battery.voltage.toFixed(2) + ' V' : '—' }}</span>
+            <template v-if="roverStatus.battery?.voltage_raw != null">
+              <span class="cal-key">원시(보정 전)</span>
+              <span class="cal-val">{{ roverStatus.battery.voltage_raw.toFixed(2) }} V</span>
+            </template>
+            <span class="cal-key">현재 게인</span>
+            <span class="cal-val">{{ roverStatus.battery?.gain != null ? roverStatus.battery.gain.toFixed(4) : '—' }}</span>
+          </div>
+          <div class="cal-input-row">
+            <label for="battery-cal-input">실측 전압 (V)</label>
+            <input
+              id="battery-cal-input"
+              v-model="batteryCalInput"
+              type="number"
+              step="0.01"
+              min="15"
+              max="32"
+              :disabled="batteryCalSubmitting"
+              @keyup.enter="submitBatteryCal"
+            />
+          </div>
+          <div class="preflight-actions">
+            <button class="btn btn-ghost btn-sm" :disabled="batteryCalSubmitting" @click="showBatteryCal = false">취소</button>
+            <button class="btn btn-primary btn-sm" :disabled="batteryCalSubmitting || !batteryCalInput" @click="submitBatteryCal">
+              {{ batteryCalSubmitting ? '저장 중...' : '저장' }}
+            </button>
           </div>
         </div>
       </div>
@@ -2020,6 +2104,9 @@ onUnmounted(() => {
                 </span>
                 <span class="chip-popover">
                   <span class="popover-row" v-for="r in batteryChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span class="popover-val">{{ r[1] }}</span></span>
+                  <span class="popover-row popover-actions">
+                    <button class="btn btn-ghost btn-sm" @click.stop="openBatteryCal">전압 보정</button>
+                  </span>
                 </span>
               </span>
               <span
@@ -2503,6 +2590,62 @@ onUnmounted(() => {
 }
 .chip-wrapper:hover > .chip-popover,
 .chip-wrapper.active > .chip-popover { display: block; }
+
+/* Popover action row (e.g. battery 보정 button) — single-cell, padded so
+   the button sits inside the popover's bottom border, not glued to it. */
+.popover-row.popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 0.4rem;
+  margin-top: 0.3rem;
+  border-top: 1px solid var(--border-color, rgba(0, 0, 0, 0.08));
+}
+
+/* Battery cal modal — borrows the preflight modal frame, just adds
+   the layout for the current-state grid + the input row. */
+.cal-help {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.cal-current {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 0.75rem;
+  row-gap: 0.25rem;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-secondary, rgba(0, 0, 0, 0.03));
+  border-radius: 6px;
+}
+.cal-current .cal-key {
+  color: var(--text-secondary);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.78rem;
+}
+.cal-current .cal-val {
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.85rem;
+}
+.cal-input-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+.cal-input-row label {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+.cal-input-row input {
+  padding: 0.5rem 0.6rem;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 1rem;
+  border: 1px solid var(--border-color, #ccc);
+  border-radius: 4px;
+}
 
 /* The mission progress bar needs to grow to fill the strip's middle,
    so override the chip-wrapper's tighter inline-flex sizing. */

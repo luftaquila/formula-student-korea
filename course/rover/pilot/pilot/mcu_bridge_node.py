@@ -19,6 +19,8 @@ Wire protocol: see course/rover/README.md (§ MCU coprocessor).
 
 import json
 import math
+import os
+import tempfile
 import threading
 import time
 
@@ -27,24 +29,73 @@ import serial
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Empty, String
+from std_msgs.msg import Empty, Float32, String
 
 from pilot.lib.ackermann import ackermann_convert, manual_to_ackermann
 
 
-# 8S LiFePO4 voltage range used for battery percent mapping.
-V_FULL_8S = 29.2
-V_EMPTY_8S = 20.0
+# 8S LiFePO4 OCV-SOC table (resting voltage, no load).
+# Built from per-cell rest voltage × 8. LiFePO4's discharge curve is
+# extremely flat between ~20% and ~90% SOC (most cells sit at 3.27–3.32 V),
+# so a linear V→% map gives wildly wrong readings in the operating range.
+# Each entry is (pack_voltage, percent), sorted ascending by voltage.
+# Above 27.2 V we clamp to 100% (charging surface charge, ≤29.2 V on the
+# charger, settles to 27.2 V at rest). Below 20.0 V clamp to 0% (cell
+# undervolt cutoff).
+LIFEPO4_8S_OCV_SOC = (
+    (20.00,   0),
+    (23.20,   5),
+    (24.40,  10),
+    (25.28,  15),
+    (25.60,  20),
+    (25.76,  30),
+    (26.00,  40),
+    (26.16,  50),
+    (26.32,  60),
+    (26.40,  70),
+    (26.48,  80),
+    (26.56,  90),
+    (26.72,  95),
+    (27.20, 100),
+)
 
 
 def voltage_to_percent_8s(voltage):
+    """Map 8S LiFePO4 pack voltage → SOC %, using a piecewise OCV table.
+
+    Returns None if voltage is None. Clamps to 0/100 outside the table.
+    Loaded voltages will read low (IR drop) — % is best read at rest.
+    """
     if voltage is None:
         return None
-    if voltage >= V_FULL_8S:
-        return 100
-    if voltage <= V_EMPTY_8S:
+    table = LIFEPO4_8S_OCV_SOC
+    if voltage <= table[0][0]:
         return 0
-    return int(100 * (voltage - V_EMPTY_8S) / (V_FULL_8S - V_EMPTY_8S))
+    if voltage >= table[-1][0]:
+        return 100
+    for i in range(1, len(table)):
+        v_hi, p_hi = table[i]
+        if voltage <= v_hi:
+            v_lo, p_lo = table[i - 1]
+            frac = (voltage - v_lo) / (v_hi - v_lo)
+            return int(round(p_lo + frac * (p_hi - p_lo)))
+    return 100
+
+
+# In-field calibration: a single gain factor (V_real = V_raw × gain) stored
+# in $SNAP_COMMON. Captures the dominant ratiometric error sources (resistor
+# divider tolerance + ADC Vref drift) which together drift with temperature.
+# Operators re-enter the multimeter reading whenever conditions change.
+BATTERY_CAL_FILENAME = 'battery_cal.json'
+BATTERY_CAL_GAIN_MIN = 0.5
+BATTERY_CAL_GAIN_MAX = 2.0
+BATTERY_CAL_MEASURED_MIN_V = 15.0
+BATTERY_CAL_MEASURED_MAX_V = 32.0
+
+
+def _battery_cal_path():
+    base = os.environ.get('SNAP_COMMON') or os.environ.get('HOME') or tempfile.gettempdir()
+    return os.path.join(base, BATTERY_CAL_FILENAME)
 
 
 class McuBridgeNode(Node):
@@ -91,6 +142,13 @@ class McuBridgeNode(Node):
         self._odom_yaw = 0.0
         self._last_telemetry_t = None
 
+        # Battery calibration (single-point gain, persisted across reboots).
+        self._battery_cal_lock = threading.Lock()
+        self._battery_cal = self._load_battery_cal()
+        # Last raw (uncorrected) MCU voltage, kept for re-deriving gain when
+        # the operator submits a fresh multimeter reading.
+        self._last_raw_vbat = None
+
         # Serial
         self._serial = None
         self._serial_lock = threading.Lock()
@@ -104,6 +162,7 @@ class McuBridgeNode(Node):
         self.create_subscription(Twist, '/rover/cmd/manual_control', self._on_manual, 10)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_estop, reliable)
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_estop, reliable)
+        self.create_subscription(Float32, '/rover/cmd/calibrate_battery', self._on_calibrate_battery, reliable)
 
         self._pub_status = self.create_publisher(String, '/rover/motor/status', 10)
         self._pub_battery = self.create_publisher(String, '/rover/battery', 10)
@@ -327,13 +386,29 @@ class McuBridgeNode(Node):
         except ValueError:
             return
 
-        # Battery JSON: {voltage, percent, source, flags}.
-        self._pub_battery.publish(self._json_msg({
-            'voltage': round(vbat, 3),
-            'percent': voltage_to_percent_8s(vbat),
+        # Apply field-calibrated gain (V_real = V_raw * gain) before mapping
+        # to SOC. The gain absorbs the dominant ratiometric error sources
+        # (resistor divider tolerance, ADC Vref drift), which both shift
+        # with temperature — hence the in-field re-cal workflow.
+        with self._battery_cal_lock:
+            cal = dict(self._battery_cal)
+        gain = cal.get('gain', 1.0)
+        self._last_raw_vbat = vbat
+        vbat_corrected = vbat * gain
+
+        battery_payload = {
+            'voltage': round(vbat_corrected, 3),
+            'voltage_raw': round(vbat, 3),
+            'percent': voltage_to_percent_8s(vbat_corrected),
             'source': 'mcu',
             'flags': flags,
-        }))
+            'gain': round(gain, 6),
+        }
+        if cal.get('calibrated_at') is not None:
+            battery_payload['calibrated_at'] = cal['calibrated_at']
+        if cal.get('measured_v') is not None:
+            battery_payload['measured_v'] = round(cal['measured_v'], 3)
+        self._pub_battery.publish(self._json_msg(battery_payload))
 
         # Odometry — integrate (vl, vr) into a 2D pose.
         now_t = time.monotonic()
@@ -363,6 +438,92 @@ class McuBridgeNode(Node):
         msg = String()
         msg.data = json.dumps(payload)
         return msg
+
+    # ------------------------- battery calibration
+
+    def _load_battery_cal(self):
+        """Read the persisted gain from $SNAP_COMMON. Defaults to gain=1.0.
+
+        Tolerates missing file, missing fields, and out-of-range gains —
+        a corrupt calibration must never block the rover from booting.
+        """
+        path = _battery_cal_path()
+        default = {'gain': 1.0, 'measured_v': None, 'voltage_raw_at_cal': None, 'calibrated_at': None}
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return default
+        except (OSError, json.JSONDecodeError) as e:
+            self.get_logger().warn(f'battery cal load failed ({path}): {e}; using gain=1.0')
+            return default
+        gain = data.get('gain')
+        if not isinstance(gain, (int, float)) or not (BATTERY_CAL_GAIN_MIN <= gain <= BATTERY_CAL_GAIN_MAX):
+            self.get_logger().warn(f'battery cal gain out of range ({gain}); using gain=1.0')
+            return default
+        return {
+            'gain': float(gain),
+            'measured_v': data.get('measured_v'),
+            'voltage_raw_at_cal': data.get('voltage_raw_at_cal'),
+            'calibrated_at': data.get('calibrated_at'),
+        }
+
+    def _save_battery_cal(self, cal):
+        """Atomically persist the calibration JSON ($SNAP_COMMON/battery_cal.json)."""
+        path = _battery_cal_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = f'{path}.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(cal, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except OSError as e:
+            self.get_logger().error(f'battery cal save failed ({path}): {e}')
+
+    def _on_calibrate_battery(self, msg):
+        """Accept a multimeter reading, derive gain = measured / raw, persist.
+
+        The raw voltage used here is the most recent uncorrected ADC sample
+        (`_last_raw_vbat`), so the operator's workflow is: read voltage on
+        a multimeter → enter into UI → submit. We do not require the rover
+        to be at rest — the user is asserting "right now, V_real = X".
+        """
+        try:
+            measured_v = float(msg.data)
+        except (TypeError, ValueError):
+            self.get_logger().warn('calibrate_battery: non-numeric value ignored')
+            return
+        if not (BATTERY_CAL_MEASURED_MIN_V <= measured_v <= BATTERY_CAL_MEASURED_MAX_V):
+            self.get_logger().warn(
+                f'calibrate_battery: measured_v {measured_v} V out of '
+                f'[{BATTERY_CAL_MEASURED_MIN_V}, {BATTERY_CAL_MEASURED_MAX_V}] V — ignored'
+            )
+            return
+        raw = self._last_raw_vbat
+        if raw is None or raw <= 0.5:
+            self.get_logger().warn('calibrate_battery: no raw sample yet — ignored')
+            return
+        gain = measured_v / raw
+        if not (BATTERY_CAL_GAIN_MIN <= gain <= BATTERY_CAL_GAIN_MAX):
+            self.get_logger().warn(
+                f'calibrate_battery: derived gain {gain:.4f} out of '
+                f'[{BATTERY_CAL_GAIN_MIN}, {BATTERY_CAL_GAIN_MAX}] — refusing to save'
+            )
+            return
+        cal = {
+            'gain': round(gain, 6),
+            'measured_v': round(measured_v, 3),
+            'voltage_raw_at_cal': round(raw, 3),
+            'calibrated_at': int(time.time() * 1000),
+        }
+        with self._battery_cal_lock:
+            self._battery_cal = cal
+        self._save_battery_cal(cal)
+        self.get_logger().info(
+            f'battery calibrated: measured={measured_v:.3f}V raw={raw:.3f}V gain={gain:.4f}'
+        )
 
     # ------------------------- shutdown
 

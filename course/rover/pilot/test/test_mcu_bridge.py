@@ -1,10 +1,17 @@
 """Tests for mcu_bridge_node — param validation, wire protocol, telemetry parse."""
 
 import json
+import os
 
 import pytest
 
-from pilot.mcu_bridge_node import McuBridgeNode, voltage_to_percent_8s
+from pilot.mcu_bridge_node import (
+    BATTERY_CAL_FILENAME,
+    LIFEPO4_8S_OCV_SOC,
+    McuBridgeNode,
+    _battery_cal_path,
+    voltage_to_percent_8s,
+)
 
 
 class _RecorderSerial:
@@ -85,6 +92,12 @@ def bridge():
     node._pub_status = _Pub()
     node._pub_battery = _Pub()
     node._pub_odom = _Pub()
+
+    # Battery calibration state — same defaults the real __init__ sets.
+    import threading as _t
+    node._battery_cal_lock = _t.Lock()
+    node._battery_cal = {'gain': 1.0, 'measured_v': None, 'voltage_raw_at_cal': None, 'calibrated_at': None}
+    node._last_raw_vbat = None
 
     return node
 
@@ -180,11 +193,106 @@ def test_telemetry_rejects_short_line(bridge):
 
 
 def test_voltage_to_percent_8s_endpoints():
+    # Above the rest-voltage 100% point (27.20 V) is full; charger surface
+    # charge up to 29.2 V also clamps to 100.
     assert voltage_to_percent_8s(29.5) == 100
+    assert voltage_to_percent_8s(27.20) == 100
     assert voltage_to_percent_8s(20.0) == 0
+    assert voltage_to_percent_8s(19.0) == 0
     assert voltage_to_percent_8s(None) is None
-    mid = voltage_to_percent_8s(24.6)  # halfway
-    assert 45 <= mid <= 55
+
+
+def test_voltage_to_percent_8s_uses_lifepo4_plateau():
+    # The whole point of the OCV table: a "halfway" voltage in the linear
+    # 20.0–29.2 V map (~24.6 V) is actually deep into the 0–10% knee for
+    # LiFePO4. The new mapping must reflect that.
+    assert voltage_to_percent_8s(24.6) <= 15
+    # Conversely, the flat plateau means 26.16 V (the published 50% point)
+    # should report close to 50, not the ~67 the old linear map produced.
+    p = voltage_to_percent_8s(26.16)
+    assert 45 <= p <= 55
+    # And the table breakpoints themselves should round-trip exactly.
+    for v, expected in LIFEPO4_8S_OCV_SOC:
+        assert voltage_to_percent_8s(v) == expected
+
+
+def test_battery_cal_path_uses_snap_common(monkeypatch, tmp_path):
+    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    assert _battery_cal_path() == os.path.join(str(tmp_path), BATTERY_CAL_FILENAME)
+
+
+def test_load_battery_cal_missing_returns_default(bridge, monkeypatch, tmp_path):
+    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    cal = bridge._load_battery_cal()
+    assert cal['gain'] == 1.0
+    assert cal['calibrated_at'] is None
+
+
+def test_load_battery_cal_rejects_out_of_range_gain(bridge, monkeypatch, tmp_path):
+    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    path = tmp_path / BATTERY_CAL_FILENAME
+    path.write_text(json.dumps({'gain': 5.0, 'calibrated_at': 1, 'measured_v': 25.0}))
+    cal = bridge._load_battery_cal()
+    assert cal['gain'] == 1.0  # rejected, fell back to default
+
+
+def test_load_battery_cal_rejects_corrupt_file(bridge, monkeypatch, tmp_path):
+    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    (tmp_path / BATTERY_CAL_FILENAME).write_text('{not valid json')
+    cal = bridge._load_battery_cal()
+    assert cal['gain'] == 1.0
+
+
+def test_calibrate_battery_persists_and_applies_gain(bridge, monkeypatch, tmp_path):
+    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    # Telemetry first to seed _last_raw_vbat with a believable raw reading
+    # — the MCU said 25.6 V but the multimeter reads 26.0 V.
+    bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.600 0x0')
+    assert abs(bridge._last_raw_vbat - 25.6) < 1e-3
+
+    class _Msg:
+        def __init__(self, v): self.data = v
+    bridge._on_calibrate_battery(_Msg(26.0))
+
+    # Gain saved + applied to subsequent telemetry
+    expected_gain = 26.0 / 25.6
+    assert abs(bridge._battery_cal['gain'] - expected_gain) < 1e-4
+    assert bridge._battery_cal['measured_v'] == 26.0
+    assert bridge._battery_cal['calibrated_at'] is not None
+
+    # JSON written
+    written = json.loads((tmp_path / BATTERY_CAL_FILENAME).read_text())
+    assert abs(written['gain'] - expected_gain) < 1e-4
+
+    # Next telemetry sample reports the corrected voltage
+    bridge._pub_battery.published.clear()
+    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.600 0x0')
+    bat = json.loads(bridge._pub_battery.published[0].data)
+    assert abs(bat['voltage'] - 26.0) < 0.01
+    assert abs(bat['voltage_raw'] - 25.6) < 0.01
+    assert abs(bat['gain'] - expected_gain) < 1e-4
+    assert bat['measured_v'] == 26.0
+
+
+def test_calibrate_battery_rejects_out_of_range_measurement(bridge, monkeypatch, tmp_path):
+    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x0')
+    class _Msg:
+        def __init__(self, v): self.data = v
+    bridge._on_calibrate_battery(_Msg(50.0))     # absurdly high
+    bridge._on_calibrate_battery(_Msg(5.0))      # absurdly low
+    bridge._on_calibrate_battery(_Msg(float('nan')))
+    assert bridge._battery_cal['gain'] == 1.0    # never overwritten
+
+
+def test_calibrate_battery_without_raw_sample_is_ignored(bridge, monkeypatch, tmp_path):
+    monkeypatch.setenv('SNAP_COMMON', str(tmp_path))
+    # No telemetry yet → no raw sample → must not blow up or save garbage
+    class _Msg:
+        def __init__(self, v): self.data = v
+    bridge._on_calibrate_battery(_Msg(26.0))
+    assert bridge._battery_cal['gain'] == 1.0
+    assert not (tmp_path / BATTERY_CAL_FILENAME).exists()
 
 
 def test_heartbeat_sends_H(bridge):
