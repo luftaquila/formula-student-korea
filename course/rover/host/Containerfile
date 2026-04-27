@@ -31,32 +31,34 @@ RUN dnf install -y \
         policycoreutils-python-utils \
     && dnf clean all
 
-# Operator account. authorized_keys is a build-time snapshot of
+# Operator account. Declared via sysusers.d, not a Containerfile-time
+# edit of /etc/passwd. authorized_keys is a build-time snapshot of
 # https://github.com/luftaquila.keys; rotate by rebuilding this image.
 #
-# We bypass useradd/groupadd entirely and append directly to
-# /etc/passwd, /etc/group, /etc/shadow. shadow-utils on AlmaLinux 10
-# bootc shows a lookup mismatch in builder contexts: groupadd / getent
-# succeed but useradd's /etc/group parser does not see the just-added
-# entry and aborts with exit 6. Direct file writes are deterministic
-# regardless of which path the tools actually use.
+# OSTree's three-way merge for /etc preserves user modifications across
+# bootc deploys: cloud-init (or anyone) writing to /etc/passwd on the
+# previous deployment shadows our new /etc/passwd entries from the
+# image. systemd-sysusers runs every boot and adds missing users to
+# /etc/passwd in-place; that's the bootc-native way to declare a user.
 #
-# UID/GID 1000 is the EL convention for the first regular user; system
-# users are <1000 in the base image. Password is `!` (locked) — SSH
-# key auth only. fsk is NOT in `wheel`; sudoers.d/fsk whitelists the
-# specific commands needed, which makes wheel membership unnecessary.
-# OSTree/bootc images keep /home as a symlink to /var/home (state on
-# /var, immutable /). At image build time /home isn't a real directory
-# yet — write directly to /var/home and the symlink resolves at boot.
-RUN echo 'fsk:x:1000:1000::/home/fsk:/bin/bash' >> /etc/passwd \
-    && echo 'fsk:x:1000:'                       >> /etc/group  \
-    && echo 'fsk:!::0:99999:7:::'               >> /etc/shadow \
-    && mkdir -p /var/home/fsk/.ssh \
+# Keys must live at /var/home/fsk/.ssh/authorized_keys, not in /etc.
+# SELinux file_contexts puts ~/.ssh/* in the ssh_home_t domain, which
+# sshd_t is allowed to open for authorized-keys lookup; files in
+# /etc/ssh/authorized_keys.d/* end up etc_t and sshd_t cannot open
+# them for that purpose (sshd logs "Permission denied" on the file).
+#
+# bootc deploys initialize /var fresh from /usr/share/factory/var, so
+# we bake the home tree there and let tmpfiles.d/fsk-home.conf seed
+# /var/home/fsk on first boot.
+#
+# fsk is NOT in `wheel`; sudoers.d/fsk whitelists only the commands
+# provision-rover.sh needs.
+RUN install -d -m 700 -o 1500 -g 1500 /usr/share/factory/var/home/fsk \
+                                      /usr/share/factory/var/home/fsk/.ssh \
     && curl -fsSL https://github.com/luftaquila.keys \
-         -o /var/home/fsk/.ssh/authorized_keys \
-    && chmod 700 /var/home/fsk /var/home/fsk/.ssh \
-    && chmod 600 /var/home/fsk/.ssh/authorized_keys \
-    && chown -R 1000:1000 /var/home/fsk
+         -o /usr/share/factory/var/home/fsk/.ssh/authorized_keys \
+    && chmod 600 /usr/share/factory/var/home/fsk/.ssh/authorized_keys \
+    && chown 1500:1500 /usr/share/factory/var/home/fsk/.ssh/authorized_keys
 
 # Narrow sudo grant — only the commands provision-rover.sh and operators
 # actually need. Avoids handing fsk full root.

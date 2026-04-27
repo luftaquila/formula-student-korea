@@ -70,20 +70,24 @@ jobs:
           LOOP=$(sudo losetup -Pf --show "$IMG")
           mkdir -p .tmp/efi .tmp/root
 
-          # Find the FAT firmware partition (holds config.txt) and the
-          # ext4/btrfs root. Don't hard-code partition numbers — bootc-rpi
-          # has changed layout across releases.
+          # Identify partitions by LABEL. AlmaLinux's bootc-images-rpi
+          # gpt-10 layout: CIDATA (vfat) holds Pi firmware + config.txt
+          # + cloud-init seed; root (xfs) holds the OSTree repo.
+          # boot (xfs) is bootloader config and is not touched here.
+          # LABEL match avoids the boot/root xfs ambiguity that bites
+          # TYPE-based matching.
+          EFI=""; ROOT=""
           for part in "${LOOP}"p*; do
-            type=$(sudo blkid -o value -s TYPE "$part" 2>/dev/null || true)
-            case "$type" in
-              vfat) EFI="$part" ;;
-              ext4|btrfs|xfs) ROOT="$part" ;;
+            label=$(sudo blkid -o value -s LABEL "$part" 2>/dev/null || true)
+            case "$label" in
+              CIDATA) EFI="$part" ;;
+              root)   ROOT="$part" ;;
             esac
           done
-          test -n "${EFI:-}"  || { echo "no FAT firmware partition found" >&2; exit 1; }
-          test -n "${ROOT:-}" || { echo "no rootfs partition found"      >&2; exit 1; }
+          test -n "${EFI:-}"  || { echo "no CIDATA partition found"        >&2; exit 1; }
+          test -n "${ROOT:-}" || { echo "no root (OSTree) partition found" >&2; exit 1; }
 
-          # 1. Pi 5 fan to 100%.
+          # 1a. Pi 5 fan to 100% — CIDATA holds config.txt.
           sudo mount "$EFI" .tmp/efi
           printf '%s\n' \
             '' \
@@ -99,27 +103,60 @@ jobs:
             | sudo tee -a .tmp/efi/config.txt >/dev/null
           echo "--- patched config.txt tail ---"
           sudo tail -n 14 .tmp/efi/config.txt
+
+          # 1b. Replace cloud-init user-data on CIDATA.
+          # The stock AlmaLinux user-data creates user 'almalinux' at
+          # UID 1000 on first boot. That entry persists in /etc/passwd
+          # via OSTree's three-way merge and prevents our fsk user
+          # (also UID 1000, declared via sysusers.d in the host image)
+          # from being added on bootc switch. Overwriting user-data
+          # with an empty users list keeps cloud-init useful for
+          # growpart / hostname / ssh-host-key generation while
+          # leaving UID 1000 free for fsk.
+          sudo tee .tmp/efi/user-data >/dev/null <<'EOF'
+          #cloud-config
+          hostname: rover.local
+          ssh_pwauth: false
+          users: []
+          EOF
+          echo "--- patched user-data ---"
+          sudo cat .tmp/efi/user-data
           sudo umount .tmp/efi
 
           # 2. First-boot bootc switch oneshot.
+          # OSTree deploys boot from /ostree/deploy/<stateroot>/deploy/<commit>/,
+          # and the writable /etc at runtime is THAT deployment's etc/,
+          # not the unused /etc at the partition root. Locate it.
           sudo mount "$ROOT" .tmp/root
-          # bootc deployments live under /ostree/deploy/<stateroot>/deploy/<commit>
-          # but the writable /etc overlay lives at /etc on the rootfs we mounted.
-          # If the layout is OSTree-only we drop into /etc which is the etc
-          # writable overlay either way.
+          DEPLOY_ETC=$(sudo find .tmp/root/ostree/deploy -mindepth 4 -maxdepth 4 -type d -name etc | head -1)
+          test -n "$DEPLOY_ETC" || {
+            echo "no OSTree deployment etc found under .tmp/root/ostree/deploy" >&2
+            sudo find .tmp/root/ostree/deploy -maxdepth 4 -type d >&2
+            exit 1
+          }
+          echo "OSTree deployment etc: $DEPLOY_ETC"
           target="${{ steps.in.outputs.target }}"
-          UNIT_DIR=.tmp/root/etc/systemd/system
+          UNIT_DIR="$DEPLOY_ETC/systemd/system"
           sudo install -d -m 755 "$UNIT_DIR" "$UNIT_DIR/multi-user.target.wants"
 
+          # Pi 5 has no battery-backed RTC, so on the very first boot the
+          # system clock starts at whatever was the kernel build time
+          # (months ago) until chronyd syncs. bootc's pull from
+          # ghcr.io fails the TLS handshake when the wall clock is
+          # before the registry cert's NotBefore date. chronyc waitsync
+          # blocks until chrony has stepped/slewed the clock to a
+          # plausibly-current value before we attempt the registry
+          # pull.
           sudo tee "$UNIT_DIR/fsk-firstboot.service" >/dev/null <<EOF
           [Unit]
           Description=FSK rover first-boot bootc switch
-          After=network-online.target
-          Wants=network-online.target
+          After=network-online.target chronyd.service
+          Wants=network-online.target chronyd.service
           ConditionPathExists=!/var/lib/fsk-firstboot.done
 
           [Service]
           Type=oneshot
+          ExecStartPre=/usr/bin/chronyc waitsync 60 0 0 1
           ExecStart=/usr/bin/bootc switch ${target}
           ExecStartPost=/bin/sh -c 'touch /var/lib/fsk-firstboot.done && systemctl reboot'
 
