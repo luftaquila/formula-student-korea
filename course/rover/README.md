@@ -41,8 +41,7 @@ Pilot reaches RP1 via `/dev/gpiochip-rp1` + `/dev/gpiomem0`.
 
 - All GNDs commoned.
 - Battery thresholds: warn 22 V, undervolt cutoff 20 V.
-- MP1584EN abs. max 30 V; 8S full charge 29.2 V is in range.
-  LM2596HV (60 V) for margin.
+- MP1584EN abs. max 30 V; 8S full charge 29.2 V is in range. LM2596HV (60 V) for margin.
 
 ### Drive control split
 
@@ -51,14 +50,6 @@ Pilot reaches RP1 via `/dev/gpiochip-rp1` + `/dev/gpiomem0`.
 - **Pi**: navigation, RTK, course bridge, spray servo.
 
 Bridge: `mcu_bridge_node`. Firmware CI: `.github/workflows/rover-mcu.yml`.
-
-### Battery divider BoM
-
-| Part | Notes |
-|------|-------|
-| 100 kΩ + 10 kΩ 1 % | 8S → MCU ADC0 |
-| 100 nF ceramic | ADC0 → GND |
-| 3.3 V Zener / TVS | ADC0 → GND clamp |
 
 ## Architecture
 
@@ -90,11 +81,12 @@ course server (port 10000)
                                                    spray_node ── /rover/spray/done
 ```
 
-Devices via `pilot-run` wrapper: probes `/dev` at start and passes only
-present devices to `podman run --device`. udev `add|remove` events on
-GPS/MCU fire `fsk-pilot-replug.service`, which debounces and restarts
-`pilot.service` so hot-plug Just Works (with a ~5 s container restart).
-Missing one device doesn't block the others.
+Hot-plug behaviour:
+
+- `pilot-run` probes `/dev` at start and passes only present devices to `podman run --device`.
+- udev `add|remove` on GPS/MCU fires `fsk-pilot-replug.service`, which debounces and restarts `pilot.service`.
+- Container restart latency: ~5 s.
+- A missing device doesn't block the others.
 
 ### Mission state machine (`navigator_node`)
 
@@ -115,6 +107,8 @@ any driving state → ERROR   (GPS timeout / fix below quality > fix_hysteresis_
 
 Thresholds in `pilot/config/rover_params.yaml`.
 
+Fleet-wide identical: hardware, NTRIP endpoint, `rover_params.yaml`. Per-rover differs only in `SERVER_URL` / `INTERNAL_SECRET` / `NTRIP_USERNAME`.
+
 ## Image structure
 
 | Image | Built by | Updates | Owns |
@@ -122,8 +116,8 @@ Thresholds in `pilot/config/rover_params.yaml`.
 | `ghcr.io/luftaquila/fsk-rover-host:{candidate,edge,vX.Y.Z}` | `host/Containerfile` | `bootc upgrade` (24 h, reboot) | AlmaLinux 10 + Pi 5 firmware/DTB, NM, sshd, tailscale, podman, udev, `pilot.service` + `pilot-run`, fsk user |
 | `ghcr.io/luftaquila/fsk-rover-pilot:{candidate,edge,vX.Y.Z}` | `pilot/Containerfile` | `podman auto-update` (24 h, in-place) | ROS 2 Jazzy + the five `pilot` nodes |
 
-Host base: `quay.io/almalinuxorg/almalinux-bootc-rpi:10`. Stock
-`almalinux-bootc:10` lacks Pi 5 firmware and won't boot.
+- Host base: `quay.io/almalinuxorg/almalinux-bootc-rpi:10`.
+- Stock `almalinux-bootc:10` lacks Pi 5 firmware and won't boot.
 
 ## Provisioning
 
@@ -184,12 +178,19 @@ Unreachable (no LAN, no Tailscale) → reflash SD. On-rover: `bootc rollback`.
 
 After changing `pilot.conf` or any secret: `sudo systemctl restart pilot.service`.
 
-NTRIP host/port/password/mountpoint are fixed (NGII `www.gnssdata.or.kr:2101`,
-password `gnss`, auto mountpoint).
+Fixed NTRIP settings (NGII):
 
-Battery calibration: `/var/lib/pilot/battery_cal.json` (host bind-mount).
-Survives `systemctl restart`, `podman auto-update`, `bootc upgrade`.
-Bounds: `measured_v ∈ [15, 32] V`, `gain ∈ [0.5, 2.0]`; OOB → `gain = 1.0`.
+| Field | Value |
+|-------|-------|
+| host:port | `www.gnssdata.or.kr:2101` |
+| password | `gnss` |
+| mountpoint | auto-selected (nearest base, RTCM 3.2) |
+
+Battery calibration:
+
+- File: `/var/lib/pilot/battery_cal.json` (host bind-mount).
+- Persists across `systemctl restart`, `podman auto-update`, `bootc upgrade`.
+- Bounds: `measured_v ∈ [15, 32] V`, `gain ∈ [0.5, 2.0]`. OOB → reset to `gain = 1.0`.
 
 ## OTA & rollback
 
@@ -217,8 +218,6 @@ sudo journalctl -u pilot.service -n 200
 
 ## MCU coprocessor (`mcu/`)
 
-RP2040-Zero firmware. Pi link: USB CDC.
-
 ### Pinout
 
 | Role | Pin | Notes |
@@ -232,8 +231,12 @@ RP2040-Zero firmware. Pi link: USB CDC.
 | Status LED | GP16 | onboard WS2812 |
 | Battery V | GP27 (ADC1) | 100 kΩ : 10 kΩ |
 
-PIO0 SM0/SM1 = quadrature. PIO1 SM0 = WS2812.
-Encoder VCC/signal off RP2040 3V3 rail. E-Stop fail-safe (open → trip).
+### Firmware internals
+
+- PIO0 SM0/SM1: quadrature decoders.
+- PIO1 SM0: WS2812.
+- Encoder VCC/signal off RP2040 3V3 rail.
+- E-Stop fail-safe: open contact → tripped.
 
 ### Battery divider
 
@@ -246,16 +249,22 @@ Vbat ─[100 kΩ 1%]─┬─ GP26
 
 ### SOC mapping (8S LiFePO4)
 
-`mcu_bridge_node` does piecewise-linear OCV-SOC interpolation (LiFePO4
-is flat 20–90 % SOC; linear maps fail). Above 27.20 V → 100 %; below
-20.00 V → 0 %. `voltage` = calibrated; `voltage_raw` = uncorrected ADC.
+- `mcu_bridge_node` does piecewise-linear OCV-SOC interpolation (LiFePO4 is flat 20–90 % SOC, so linear maps fail).
+- Above 27.20 V → 100 %; below 20.00 V → 0 %.
+- `voltage` = calibrated; `voltage_raw` = uncorrected ADC.
 
 ### Field calibration (1-point gain)
 
-Course UI: battery popover → "전압 보정" → enter multimeter reading.
-`POST /api/rover/calibrate-battery` → SSE → `bridge_node` →
-`/rover/cmd/calibrate_battery` → `gain = measured_v / V_raw` →
-`$PILOT_STATE_DIR/battery_cal.json`.
+Operator path: battery popover → "전압 보정" → enter multimeter reading.
+
+Pipeline:
+
+```
+POST /api/rover/calibrate-battery
+  → SSE → bridge_node → /rover/cmd/calibrate_battery
+  → gain = measured_v / V_raw
+  → $PILOT_STATE_DIR/battery_cal.json
+```
 
 ### USB CDC protocol
 
@@ -319,16 +328,15 @@ Output: `build/rover_mcu.uf2`. Overrides (defaults r=32.5 mm, PPR=500):
 
 ### Flash
 
-- First time: hold BOOT, plug USB-C, drag `.uf2` to `RPI-RP2`.
-- Rover Pi: `sudo flash-mcu rover_mcu.uf2`. Pilot is paused for the duration.
-- Off-rover: `picotool load -f rover_mcu.uf2 && picotool reboot`.
+| Context | Command |
+|---------|---------|
+| First time | hold BOOT, plug USB-C, drag `.uf2` to `RPI-RP2` |
+| Rover Pi | `sudo flash-mcu rover_mcu.uf2` (pauses pilot for the duration) |
+| Off-rover | `picotool load -f rover_mcu.uf2 && picotool reboot` |
 
 Address as `/dev/ttyMCU` — `/dev/ttyACM*` ordering is non-deterministic.
 
-### Omitted: motor current sensing
-
-MDD10A self-protects; encoder vel = 0 with non-zero command covers
-stall. Re-add `current.c` + `FLAG_OVERCURRENT` if a shunt-amp lands.
+> Current sensing intentionally omitted: MDD10A self-protects, encoder-vel = 0 with non-zero command covers stall. Re-add `current.c` + `FLAG_OVERCURRENT` if a shunt-amp lands.
 
 ## CI
 
@@ -339,9 +347,6 @@ stall. Re-add `current.c` + `FLAG_OVERCURRENT` if a shunt-amp lands.
 | `rover-sd-image.yml` | manual only | `fsk-rover-sd.img.xz` |
 | `rover-mcu.yml` | `main` push under `mcu/**`; manual | `rover_mcu.uf2` |
 
-Manual dispatch with `release_channel=vX.Y.Z` or `edge` for promotion.
-GHCR auth via `GITHUB_TOKEN`.
-
 ## Release channels
 
 | Trigger | Channel | Rollout |
@@ -350,7 +355,8 @@ GHCR auth via `GITHUB_TOKEN`.
 | dispatch `edge` | `:edge` | `sudo bootc switch …:edge`; rebake host for pilot |
 | dispatch `vX.Y.Z` | `:vX.Y.Z` | rollback reference |
 
-Default channel: `:candidate`. Re-disable both timers after manual upgrades.
+- Default channel: `:candidate`.
+- Re-disable both timers after manual upgrades.
 
 ## Local development (no rover)
 
@@ -363,16 +369,22 @@ pip install -r src/pilot/requirements.txt
 colcon build --packages-select pilot
 source install/setup.bash
 
+INTERNAL_SECRET=… NTRIP_USERNAME=YOUR_NGII_LOGIN PILOT_STATE_DIR=/tmp \
+  ros2 launch pilot pilot.launch.py \
+    server_url:=https://your-server.example/course
+```
+
+<details>
+<summary>Mirror the rover's <code>/dev/tty{GPS,MCU}</code> symlinks (only if your dev box has these devices)</summary>
+
+```bash
 sudo install -m 644 \
     "$(pwd)/host/files/usr/lib/udev/rules.d/99-fsk-rover.rules" \
     /etc/udev/rules.d/99-fsk-rover.rules
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=tty
-
-INTERNAL_SECRET=… NTRIP_USERNAME=YOUR_NGII_LOGIN PILOT_STATE_DIR=/tmp \
-  ros2 launch pilot pilot.launch.py \
-    server_url:=https://your-server.example/course
 ```
+</details>
 
 Single-node:
 
@@ -389,33 +401,3 @@ npm run test:course
 npm run test:shared
 ```
 
-## Operating assumptions
-
-- Hardware and NTRIP endpoint identical fleet-wide.
-- `pilot/config/rover_params.yaml` identical fleet-wide.
-- Per-rover: `SERVER_URL`, `INTERNAL_SECRET`, `NTRIP_USERNAME` only.
-
-## File map
-
-| File | Owns |
-|------|------|
-| `pilot/config/rover_params.yaml` | tunables + inline docs |
-| `pilot/pilot/navigator_node.py` | mission state machine |
-| `pilot/pilot/mcu_bridge_node.py` | USB CDC; Ackermann; odom; battery |
-| `pilot/pilot/spray_node.py` | spray servo (Pi GPIO 13) |
-| `pilot/pilot/bridge_node.py` | course server SSE/REST + telemetry |
-| `pilot/pilot/lib/ackermann.py` | Ackermann kinematics |
-| `pilot/pilot/lib/ntrip_client.py` | NTRIP v2 client |
-| `pilot/pilot/lib/ubx_parser.py` | ZED-F9P UBX parser |
-| `pilot/Containerfile` | pilot OCI build |
-| `host/Containerfile` | host bootc build |
-| `host/files/usr/lib/systemd/system/pilot.service` | pilot unit |
-| `host/files/usr/lib/systemd/system/fsk-pilot-replug.service` | hot-plug debouncer |
-| `host/files/usr/local/bin/pilot-run` | `podman run` wrapper (probes `/dev`) |
-| `host/files/etc/pilot/pilot.conf.example` | env template |
-| `host/files/etc/NetworkManager/system-connections/fsk-default.nmconnection` | default Wi-Fi |
-| `host/files/etc/tmpfiles.d/pilot-state.conf` | `/var/lib/pilot/` |
-| `host/files/usr/lib/udev/rules.d/99-fsk-rover.rules` | device symlinks |
-| `host/files/usr/local/bin/flash-mcu` | on-rover MCU reflash |
-| `mcu/` | RP2040 firmware (pico-sdk, C) |
-| `../../scripts/provision-rover.sh` | post-flash provisioning |
