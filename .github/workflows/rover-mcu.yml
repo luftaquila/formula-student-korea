@@ -1,4 +1,4 @@
-name: Build Rover MCU
+name: Build Rover MCU Firmware
 
 on:
   push:

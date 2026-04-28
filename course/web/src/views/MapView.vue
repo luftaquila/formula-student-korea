@@ -94,9 +94,9 @@ const SPRAY_OUTCOME_SYMBOL = { success: "✓", cancelled: "⚠", timeout: "✕" 
 const SPRAY_OUTCOME_COLOR = { success: "#22c55e", cancelled: "#f59e0b", timeout: "#ef4444" };
 
 const DISCONNECT_REASON_LABEL = {
-  sse_closed: "SSE 끊김",
-  write_failed: "전송 실패",
-  replaced: "다른 세션으로 교체됨",
+  sse_closed: "SSE LOST",
+  write_failed: "SSE PUSH FAILED",
+  replaced: "SESSION REPLACED",
 };
 
 const BATTERY_WARN_PERCENT = 30;
@@ -263,32 +263,63 @@ const missionChip = computed(() => {
 });
 
 // Which chip is currently showing its popover via click (mobile-friendly).
-// Hover handles desktop via :hover; click adds a sticky toggle for touch.
 const activeChipPopover = ref(null);
-function toggleChipPopover(key) {
-  activeChipPopover.value = activeChipPopover.value === key ? null : key;
+// On mobile the strip is overflow-x: auto, which clips absolutely-positioned
+// popovers — promote to position: fixed against the chip's viewport rect.
+const popoverPos = ref(null);
+const popoverStyle = computed(() => {
+  if (!popoverPos.value) return null;
+  return {
+    position: "fixed",
+    top: `${popoverPos.value.top}px`,
+    left: `${popoverPos.value.left}px`,
+  };
+});
+
+function toggleChipPopover(key, e) {
+  if (activeChipPopover.value === key) {
+    activeChipPopover.value = null;
+    popoverPos.value = null;
+    return;
+  }
+  if (isMobile.value && e?.currentTarget) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const maxLeft = window.innerWidth - 360 - 8;
+    popoverPos.value = {
+      top: rect.bottom + 6,
+      left: Math.max(8, Math.min(rect.left, Math.max(8, maxLeft))),
+    };
+  } else {
+    popoverPos.value = null;
+  }
+  activeChipPopover.value = key;
 }
-// Dismiss popover on outside click or Esc.
 function onGlobalClickForChips(e) {
-  if (!e.target.closest(".chip-wrapper")) activeChipPopover.value = null;
+  if (!e.target.closest(".chip-wrapper")) {
+    activeChipPopover.value = null;
+    popoverPos.value = null;
+  }
 }
 function onGlobalKeyForChips(e) {
-  if (e.key === "Escape") activeChipPopover.value = null;
+  if (e.key === "Escape") {
+    activeChipPopover.value = null;
+    popoverPos.value = null;
+  }
 }
 
 const disconnectInfo = computed(() => {
   uiTick.value;
   const s = roverStatus.value;
   if (s.connected) return null;
-  const label = DISCONNECT_REASON_LABEL[s.last_disconnect_reason] || s.last_disconnect_reason || "원인 미상";
+  const label = DISCONNECT_REASON_LABEL[s.last_disconnect_reason] || s.last_disconnect_reason || "UNKNOWN";
   let ago = null;
   if (s.last_disconnect_at) {
     const sec = Math.max(0, Math.round((Date.now() - s.last_disconnect_at) / 1000));
-    if (sec < 60) ago = `${sec}초 전`;
+    if (sec < 60) ago = `${sec}s`;
     else {
       const m = Math.floor(sec / 60);
       const rs = sec % 60;
-      ago = rs === 0 ? `${m}분 전` : `${m}분 ${rs}초 전`;
+      ago = rs === 0 ? `${m}m` : `${m}m ${rs}s`;
     }
   }
   return { label, ago };
@@ -534,6 +565,16 @@ function savePref(key, value) {
 
 watch(activeTab, (v) => savePref("activeTab", v));
 watch(historyView, (v) => savePref("historyView", v));
+
+// Cone draggability is gated on the courses tab — rebuild markers when
+// crossing that boundary. Skip missions transitions; isMissionsView owns those.
+watch(activeTab, (next, prev) => {
+  if (!map) return;
+  const prevWasMissions = prev === "history" && historyView.value === "missions";
+  const nextIsMissions = next === "history" && historyView.value === "missions";
+  if (prevWasMissions || nextIsMissions) return;
+  if ((next === "courses") !== (prev === "courses")) rebuildAllMarkers();
+});
 watch(inspectorWidth, (v) => savePref("inspectorWidth", v));
 
 // Tab-swap: hide live layers when entering the missions sub-view of the
@@ -590,6 +631,18 @@ let dragStartY = 0;
 let dragStartHeight = 0;
 let wasDrag = false;
 
+// Cap so the sheet can't slide up past the status-strip; remeasured every
+// drag in case chip-row wrapping changed the strip's height.
+function maxSheetHeight() {
+  const strip = document.querySelector(".status-strip");
+  const rail = document.querySelector(".rail");
+  if (!strip || !rail) return window.innerHeight * 0.85;
+  const stripBottom = strip.getBoundingClientRect().bottom;
+  const railTop = rail.getBoundingClientRect().top;
+  const gap = 8;
+  return Math.max(52, railTop - stripBottom - gap);
+}
+
 function onSheetTouchStart(e) {
   dragStartY = e.touches[0].clientY;
   dragStartHeight = sheetHeight.value;
@@ -601,14 +654,16 @@ function onSheetTouchMove(e) {
   if (!wasDrag && Math.abs(dy) > 5) { wasDrag = true; sheetDragging.value = true; }
   if (!wasDrag) return;
   e.preventDefault();
-  sheetHeight.value = Math.min(Math.max(52, dragStartHeight + dy), window.innerHeight * 0.85);
+  sheetHeight.value = Math.min(Math.max(52, dragStartHeight + dy), maxSheetHeight());
 }
 
 function onSheetTouchEnd() {
   sheetDragging.value = false;
   if (!wasDrag) {
-    // tap → toggle
-    sheetHeight.value = sheetHeight.value <= 52 ? window.innerHeight * 0.5 : 52;
+    // tap → toggle (capped same as drag so it can't cover the chip bar)
+    sheetHeight.value = sheetHeight.value <= 52
+      ? Math.min(window.innerHeight * 0.5, maxSheetHeight())
+      : 52;
   } else if (sheetHeight.value < 100) {
     sheetHeight.value = 52;
   }
@@ -733,11 +788,13 @@ function coneSideIndex(courseId, coneId) {
   return cones.filter((c) => c.side === cone.side && c.id <= coneId).length;
 }
 
+// No box-shadow/text-shadow on cone icons — they cause mobile pan jank with
+// dozens of markers (each becomes its own GPU compositing layer).
 function coneIcon(side, num, active) {
   const opacity = active ? 1 : 0.45;
   return L.divIcon({
     className: "",
-    html: `<div style="opacity:${opacity};position:relative;width:20px;height:20px;border-radius:50%;background:${SIDE_COLORS[side]};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:10px;font-weight:700;line-height:1;text-shadow:0 1px 2px rgba(0,0,0,0.5);">${num}</span></div>`,
+    html: `<div style="opacity:${opacity};position:relative;width:20px;height:20px;border-radius:50%;background:${SIDE_COLORS[side]};border:2px solid #fff;display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:10px;font-weight:700;line-height:1;">${num}</span></div>`,
     iconSize: [20, 20], iconAnchor: [10, 10],
   });
 }
@@ -745,7 +802,7 @@ function coneIcon(side, num, active) {
 function highlightIcon(side, num) {
   return L.divIcon({
     className: "",
-    html: `<div style="position:relative;width:24px;height:24px;border-radius:50%;background:${SIDE_COLORS[side]};border:3px solid #fbbf24;box-shadow:0 0 8px rgba(251,191,36,0.6);display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:11px;font-weight:700;line-height:1;text-shadow:0 1px 2px rgba(0,0,0,0.5);">${num}</span></div>`,
+    html: `<div style="position:relative;width:24px;height:24px;border-radius:50%;background:${SIDE_COLORS[side]};border:3px solid #fbbf24;display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:11px;font-weight:700;line-height:1;">${num}</span></div>`,
     iconSize: [24, 24], iconAnchor: [12, 12],
   });
 }
@@ -753,7 +810,7 @@ function highlightIcon(side, num) {
 function multiSelectIcon(side, num) {
   return L.divIcon({
     className: "",
-    html: `<div style="position:relative;width:24px;height:24px;border-radius:50%;background:${SIDE_COLORS[side]};border:3px solid #38bdf8;box-shadow:0 0 8px rgba(56,189,248,0.6);display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:11px;font-weight:700;line-height:1;text-shadow:0 1px 2px rgba(0,0,0,0.5);">${num}</span></div>`,
+    html: `<div style="position:relative;width:24px;height:24px;border-radius:50%;background:${SIDE_COLORS[side]};border:3px solid #38bdf8;display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:11px;font-weight:700;line-height:1;">${num}</span></div>`,
     iconSize: [24, 24], iconAnchor: [12, 12],
   });
 }
@@ -778,7 +835,14 @@ function rebuildAllMarkers() {
           ? multiSelectIcon(cone.side, num)
           : coneIcon(cone.side, num, isActive);
 
-      const marker = L.marker([cone.lat, cone.lng], { icon, draggable: isActive });
+      // Drag is courses-tab only; non-active cones opt out of hit-testing so
+      // Leaflet doesn't probe every marker on every touchmove (mobile jank).
+      const canDrag = isActive && activeTab.value === "courses";
+      const marker = L.marker([cone.lat, cone.lng], {
+        icon,
+        draggable: canDrag,
+        interactive: isActive,
+      });
 
       if (isActive) {
         marker.on("click", (e) => {
@@ -854,7 +918,8 @@ function rebuildAllMarkers() {
             const { lat, lng } = marker.getLatLng();
             try {
               await request(`/api/cones/${cone.id}`, { method: "PATCH", body: JSON.stringify({ lat, lng }) });
-            } catch {
+            } catch (err) {
+              console.error("cone drag PATCH failed", err);
               marker.setLatLng([cone.lat, cone.lng]);
             }
           }
@@ -900,7 +965,7 @@ watch(selectedConeId, (id) => {
     if (!cone) return;
     if (coneId === id) {
       marker.setIcon(highlightIcon(cone.side, coneSideIndex(aid, cone.id)));
-      map.panTo([cone.lat, cone.lng]);
+      // panToCone() (list click) owns map re-centering — map taps don't pan.
       nextTick(() => {
         const el = document.querySelector(`[data-cone-id="${id}"]`);
         if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -1347,7 +1412,7 @@ function updateRoverMarker(lat, lng) {
     roverMarker = L.marker([lat, lng], {
       icon: L.divIcon({
         className: "",
-        html: `<div style="width:12px;height:12px;border-radius:50%;background:#fff;border:3px solid #a855f7;box-shadow:0 0 8px rgba(168,85,247,0.6);"></div>`,
+        html: `<div style="width:12px;height:12px;border-radius:50%;background:#fff;border:3px solid #a855f7;"></div>`,
         iconSize: [12, 12], iconAnchor: [6, 6],
       }),
       zIndexOffset: 1000, interactive: false,
@@ -1895,7 +1960,25 @@ function restoreMissionProgress(mp) {
 }
 
 /* ── Mobile detection ─────────────────────────────── */
-function checkMobile() { isMobile.value = window.innerWidth <= 768; }
+function checkMobile() {
+  isMobile.value = window.innerWidth <= 768;
+  // Reflow can change strip height and chip rects — reclamp / dismiss popover.
+  if (isMobile.value && sheetHeight.value > 52) {
+    sheetHeight.value = Math.min(sheetHeight.value, maxSheetHeight());
+  }
+  if (activeChipPopover.value) {
+    activeChipPopover.value = null;
+    popoverPos.value = null;
+  }
+}
+
+// Popover is position: fixed; close it on scroll so it doesn't drift.
+function onChipStripScroll() {
+  if (activeChipPopover.value) {
+    activeChipPopover.value = null;
+    popoverPos.value = null;
+  }
+}
 
 function onGlobalKeydown(e) {
   if (e.key !== "Escape") return;
@@ -1977,19 +2060,14 @@ onUnmounted(() => {
       <div v-if="showBatteryCal" class="preflight-backdrop" @click.self="showBatteryCal = false">
         <div class="preflight-modal">
           <h3>배터리 전압 보정</h3>
-          <p class="cal-help">
-            멀티미터로 측정한 실제 배터리 전압을 입력하세요.
-            로버가 같은 시점의 ADC 값과 비교해 게인을 갱신·저장합니다.
-            온도 환경이 바뀌면 다시 누르면 됩니다.
-          </p>
           <div class="cal-current">
-            <span class="cal-key">현재 표시</span>
+            <span class="cal-key">표시 전압</span>
             <span class="cal-val">{{ roverStatus.battery?.voltage != null ? roverStatus.battery.voltage.toFixed(2) + ' V' : '—' }}</span>
             <template v-if="roverStatus.battery?.voltage_raw != null">
-              <span class="cal-key">원시(보정 전)</span>
+              <span class="cal-key">ADC 측정 전압</span>
               <span class="cal-val">{{ roverStatus.battery.voltage_raw.toFixed(2) }} V</span>
             </template>
-            <span class="cal-key">현재 게인</span>
+            <span class="cal-key">GAIN</span>
             <span class="cal-val">{{ roverStatus.battery?.gain != null ? roverStatus.battery.gain.toFixed(4) : '—' }}</span>
           </div>
           <div class="cal-input-row">
@@ -2075,17 +2153,23 @@ onUnmounted(() => {
       <div class="workspace">
 
         <!-- Persistent status strip (always visible across tabs) -->
-        <div :class="['status-strip', roverStatusClass]">
-          <!-- Disconnected: prominent single line with reason + ago -->
+        <div
+          :class="['status-strip', roverStatusClass]"
+          @scroll.passive="onChipStripScroll"
+        >
           <template v-if="!roverStatus.connected">
             <span class="status-dot"></span>
-            <div class="status-disconnect">
-              <span class="status-disconnect-main">⊘ 로버 미연결</span>
-              <span v-if="disconnectInfo" class="status-disconnect-sub">
-                {{ disconnectInfo.label }}<template v-if="disconnectInfo.ago"> · {{ disconnectInfo.ago }}</template>
+            <span
+              :class="['chip-wrapper', { active: activeChipPopover === 'disconnect' }]"
+              @click.stop="toggleChipPopover('disconnect', $event)"
+            >
+              <span class="chip chip-bad">DISCONNECTED</span>
+              <span class="chip-popover chip-popover-inline" :style="popoverStyle">
+                <span v-if="disconnectInfo">
+                  {{ disconnectInfo.label }}<template v-if="disconnectInfo.ago"> · {{ disconnectInfo.ago }}</template>
+                </span>
               </span>
-            </div>
-            <span class="status-reconnect-hint">재연결 대기 중…</span>
+            </span>
           </template>
 
           <!-- Connected: three zones (primary / mission / vitals) of chips -->
@@ -2095,20 +2179,20 @@ onUnmounted(() => {
               <span
                 v-if="fixChip"
                 :class="['chip-wrapper', { active: activeChipPopover === 'fix' }]"
-                @click.stop="toggleChipPopover('fix')"
+                @click.stop="toggleChipPopover('fix', $event)"
               >
                 <span :class="['chip', `chip-${fixChip.tone}`]">🛰️ {{ fixChip.label }}</span>
-                <span class="chip-popover">
+                <span class="chip-popover" :style="popoverStyle">
                   <span class="popover-row" v-for="r in fixChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span :class="['popover-val', r[2] && `popover-val-${r[2]}`]">{{ r[1] }}</span></span>
                 </span>
               </span>
               <span
                 v-if="navChip"
                 :class="['chip-wrapper', { active: activeChipPopover === 'nav' }]"
-                @click.stop="toggleChipPopover('nav')"
+                @click.stop="toggleChipPopover('nav', $event)"
               >
                 <span :class="['chip', `chip-${navChip.tone}`]">🧭 {{ navChip.label }}</span>
-                <span class="chip-popover">
+                <span class="chip-popover" :style="popoverStyle">
                   <span class="popover-row" v-for="r in navChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span :class="['popover-val', r[2] && `popover-val-${r[2]}`]">{{ r[1] }}</span></span>
                 </span>
               </span>
@@ -2116,7 +2200,7 @@ onUnmounted(() => {
             <div
               v-if="missionChip"
               :class="['chip-wrapper', 'mission-wrapper', { active: activeChipPopover === 'mission' }]"
-              @click.stop="toggleChipPopover('mission')"
+              @click.stop="toggleChipPopover('mission', $event)"
             >
               <div class="mission-inline">
                 <span class="mission-emoji">🚩</span>
@@ -2124,7 +2208,7 @@ onUnmounted(() => {
                 <span class="mission-counts">{{ missionChip.current }}/{{ missionChip.total }} · {{ missionChip.percent }}%</span>
                 <span v-if="missionChip.eta" class="mission-eta">ETA {{ missionChip.eta }}</span>
               </div>
-              <span class="chip-popover">
+              <span class="chip-popover" :style="popoverStyle">
                 <span class="popover-row"><span class="popover-key">PROGRESS</span><span class="popover-val">{{ missionChip.current }} / {{ missionChip.total }} ({{ missionChip.percent }}%)</span></span>
                 <span v-if="missionChip.eta" class="popover-row"><span class="popover-key">ETA</span><span class="popover-val">{{ missionChip.eta }}</span></span>
               </span>
@@ -2133,12 +2217,12 @@ onUnmounted(() => {
               <span
                 v-if="batteryChip"
                 :class="['chip-wrapper', { active: activeChipPopover === 'battery' }]"
-                @click.stop="toggleChipPopover('battery')"
+                @click.stop="toggleChipPopover('battery', $event)"
               >
                 <span :class="['chip', `chip-${batteryChip.tone}`]">
                   🔋 {{ batteryChip.percent }}%<template v-if="batteryChip.voltage != null"> · {{ batteryChip.voltage.toFixed(1) }}V</template>
                 </span>
-                <span class="chip-popover">
+                <span class="chip-popover" :style="popoverStyle">
                   <span class="popover-row" v-for="r in batteryChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span :class="['popover-val', r[2] && `popover-val-${r[2]}`]">{{ r[1] }}</span></span>
                   <span class="popover-row popover-actions">
                     <button class="btn btn-ghost btn-sm" @click.stop="openBatteryCal">전압 보정</button>
@@ -2151,6 +2235,7 @@ onUnmounted(() => {
         </div>
 
         <div class="workspace-body">
+          <div v-if="!isMobile" class="edge-spacer"></div>
           <!-- Left icon rail -->
           <nav class="rail" aria-label="인스펙터 카테고리">
             <button
@@ -2329,10 +2414,6 @@ onUnmounted(() => {
                   <h3>로버 제어</h3>
                 </header>
 
-                <!-- GPS live block (always visible while connected). Surfaces
-                     heading/speed/accuracy/satellite/altitude/DOP outside the
-                     fix-chip popover so the operator can read it during
-                     driving. -->
                 <div v-if="roverStatus.connected" class="inspector-group gps-block">
                   <div class="group-title">GPS</div>
                   <div class="gps-grid">
@@ -2559,6 +2640,7 @@ onUnmounted(() => {
 
             </div>
           </aside>
+          <div v-if="!isMobile" class="edge-spacer"></div>
         </div>
       </div>
     </div>
@@ -2566,11 +2648,10 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.map-layout { height: 100%; overflow: hidden; padding: 1rem; position: relative; }
+.map-layout { height: 100%; overflow: hidden; padding: 0 0 1rem; position: relative; }
 
 .content {
   height: 100%; display: flex; flex-direction: column; overflow: hidden;
-  border-radius: 12px; border: 1px solid var(--border-primary);
   position: relative;
   background: var(--bg-primary);
 }
@@ -2579,33 +2660,31 @@ onUnmounted(() => {
 
 /* ── Top status strip ─────────────────────────────── */
 .status-strip {
-  display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.4rem 0.75rem; min-height: 48px;
+  display: flex; align-items: center; gap: 0.75rem;
+  /* Horizontal padding = dot↔first-chip distance (gap 0.75 + dot mr 0.5). */
+  padding: 0.875rem 1.25rem;
   border-bottom: 1px solid var(--border-primary);
   background: var(--bg-primary); color: var(--text-primary);
   font-size: 0.85rem;
   flex-wrap: wrap;
-  /* New stacking context comfortably above Leaflet's panes/controls
-     (max 1000) so chip popovers anchored inside it always escape the
-     map. The global E-Stop button in App.vue sits at z-index 2000. */
+  /* z-index 999: above Leaflet panes (max 700), below NavMenu drawer (1000). */
   position: relative;
-  z-index: 1500;
+  z-index: 999;
 }
 .status-dot {
   width: 10px; height: 10px; border-radius: 50%;
   background: #94a3b8; flex-shrink: 0;
+  margin-right: 0.5rem;
 }
 .status-strip.rover-badge-ok .status-dot { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
 .status-strip.rover-badge-warn .status-dot { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
 .status-strip.rover-badge-off .status-dot { background: #94a3b8; }
 
-.chip-row { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
+.chip-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .primary-zone { flex: 0 1 auto; }
 .vitals-zone { flex: 0 1 auto; }
 
-/* Hover-/click-toggled popover for any status chip. The wrapper holds
-   the chip element and an absolutely-positioned bubble that appears on
-   :hover (desktop) or when .active is set (click toggle, mobile). */
+/* Popover: :hover on desktop, .active toggle on touch. */
 .chip-wrapper {
   position: relative;
   display: inline-flex;
@@ -2629,9 +2708,6 @@ onUnmounted(() => {
   line-height: 1.5;
   cursor: default;
 }
-/* Two-column table layout for the entire popover so every row's key
-   column aligns to the same width — `display: contents` on each row
-   lets its key/val become direct children of this grid. */
 .chip-wrapper:hover > .chip-popover,
 .chip-wrapper.active > .chip-popover {
   display: grid;
@@ -2639,6 +2715,11 @@ onUnmounted(() => {
   column-gap: 0.85rem;
   row-gap: 0.18rem;
   align-items: baseline;
+}
+.chip-wrapper:hover > .chip-popover.chip-popover-inline,
+.chip-wrapper.active > .chip-popover.chip-popover-inline {
+  display: block;
+  font-family: "JetBrains Mono", monospace;
 }
 .popover-row { display: contents; }
 .popover-key {
@@ -2653,12 +2734,13 @@ onUnmounted(() => {
   color: var(--text-primary);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.9rem;
+  font-weight: 600;
   word-break: keep-all;
   overflow-wrap: anywhere;
 }
-.popover-val-ok { color: #22c55e; font-weight: 600; }
-.popover-val-warn { color: #f59e0b; font-weight: 600; }
-.popover-val-bad { color: #ef4444; font-weight: 600; }
+.popover-val-ok { color: #22c55e; }
+.popover-val-warn { color: #f59e0b; }
+.popover-val-bad { color: #ef4444; }
 .popover-val-neutral { color: var(--text-secondary); }
 
 /* Popover action row (e.g. battery 보정 button) — span both grid columns
@@ -2674,12 +2756,6 @@ onUnmounted(() => {
 
 /* Battery cal modal — borrows the preflight modal frame, just adds
    the layout for the current-state grid + the input row. */
-.cal-help {
-  margin: 0 0 0.75rem 0;
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-  line-height: 1.5;
-}
 .cal-current {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -2725,8 +2801,8 @@ onUnmounted(() => {
 
 .chip {
   display: inline-flex; align-items: center;
-  padding: 0.2rem 0.6rem; border-radius: 999px;
-  font-size: 0.78rem; font-weight: 600;
+  padding: 0.25rem 0.7rem; border-radius: 999px;
+  font-size: 0.85rem; font-weight: 600;
   font-family: "JetBrains Mono", monospace;
   border: 1px solid transparent; white-space: nowrap;
   line-height: 1.4;
@@ -2761,11 +2837,11 @@ onUnmounted(() => {
 .mission-inline {
   display: flex; align-items: center; gap: 0.5rem;
   flex: 1 1 220px; min-width: 0;
-  padding: 0.2rem 0.6rem;
+  padding: 0.25rem 0.7rem;
   background: var(--bg-secondary);
   border: 1px solid var(--border-primary);
   border-radius: 999px;
-  font-family: "JetBrains Mono", monospace; font-size: 0.78rem;
+  font-family: "JetBrains Mono", monospace; font-size: 0.85rem;
 }
 .mission-bar {
   flex: 1; min-width: 60px; height: 6px;
@@ -2777,25 +2853,8 @@ onUnmounted(() => {
   background: var(--accent-primary);
   transition: width 0.3s ease;
 }
-.mission-counts { font-weight: 700; color: var(--text-primary); white-space: nowrap; }
-.mission-eta { color: var(--text-secondary); white-space: nowrap; }
-
-/* Disconnected layout */
-.status-disconnect {
-  display: flex; flex-direction: column; gap: 0.1rem;
-  flex: 1; min-width: 0;
-}
-.status-disconnect-main { font-size: 0.95rem; font-weight: 700; color: var(--text-primary); }
-.status-disconnect-sub { font-size: 0.78rem; color: var(--text-secondary); }
-.status-reconnect-hint {
-  font-size: 0.75rem; color: var(--text-secondary);
-  font-style: italic;
-  padding: 0.2rem 0.6rem;
-  background: var(--bg-secondary); border-radius: 999px;
-}
-
-/* (status-expand / inspector-toggle / status-detail removed — operator
-   uses inspector tabs for detail and rail icon click to dock/undock.) */
+.mission-counts { font-weight: 600; color: var(--text-primary); white-space: nowrap; }
+.mission-eta { font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
 
 /* ── Body: rail + map + inspector ─────────────────── */
 .workspace-body { flex: 1; display: flex; min-height: 0; }
@@ -2806,11 +2865,15 @@ onUnmounted(() => {
   padding: 0.5rem 0; gap: 0.375rem;
   background: var(--bg-primary);
 }
-/* Match the 8px inspector resize handle on the left side so the map has
-   symmetric breathing room. Purely visual — no drag affordance here. */
+/* Mirrors inspector-handle width on the rail side. Visual only. */
 .rail-spacer {
   width: 8px; flex-shrink: 0;
   background: var(--border-primary);
+}
+/* Mirrors rail-spacer / inspector-handle widths so rail and inspector
+   have equal whitespace on both sides. Desktop only. */
+.edge-spacer {
+  width: 8px; flex-shrink: 0;
 }
 .rail-divider {
   height: 1px; margin: 0.25rem 0.75rem;
@@ -2884,9 +2947,6 @@ onUnmounted(() => {
   width: 100%;
   display: block;
 }
-/* When the rover is connected but no course is selected, the standalone
-   추적 toggle still gets its own row (single grid column, not 50% wide). */
-.rover-controls-grid.follow-only { grid-template-columns: 1fr; }
 
 .inspector-handle {
   width: 8px; flex-shrink: 0;
@@ -3067,6 +3127,9 @@ onUnmounted(() => {
   display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem;
 }
 .rover-controls-grid .btn { width: 100%; }
+/* Odd button count: last button spans both columns so the layout never
+   leaves a half-empty trailing row. */
+.rover-controls-grid > *:last-child:nth-child(odd) { grid-column: 1 / -1; }
 
 .course-toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
 .course-toolbar .btn { flex: 1; min-width: 120px; }
@@ -3428,22 +3491,22 @@ onUnmounted(() => {
   .map-layout { padding: 0; }
   .content { border-radius: 0; border: none; }
 
-  /* Status strip: allow chips to wrap onto a second row when needed.
-     We can't use overflow-x: auto here because that clips the chip
-     popovers (top: 100%) that hang below the strip. Wrapping eats one
-     extra row at most, while the map still fills below — acceptable
-     trade for popovers that actually display. */
+  /* Strip scrolls horizontally; popovers go position: fixed (see
+     toggleChipPopover) since overflow-x: auto would clip them. */
   .status-strip {
-    padding: 0.3rem 0.6rem;
-    min-height: 40px;
-    flex-wrap: wrap;
-    row-gap: 0.25rem;
-    overflow: visible;
+    padding: 0.75rem 1.25rem;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
   }
-  .chip-row { flex-wrap: wrap; }
-  .mission-inline { flex: 1 1 100%; min-width: 0; }
-  .status-reconnect-hint { display: none; }
-  .chip { padding: 0.15rem 0.5rem; font-size: 0.72rem; }
+  .status-strip::-webkit-scrollbar { display: none; }
+  .chip-row { flex-wrap: nowrap; flex: 0 0 auto; }
+  .mission-wrapper { flex: 0 0 auto; }
+  .mission-inline { flex: 0 0 auto; min-width: 180px; }
+  .chip { padding: 0.2rem 0.6rem; font-size: 0.8rem; }
+  .mission-inline { padding: 0.2rem 0.6rem; font-size: 0.8rem; }
 
   .workspace-body {
     flex-direction: column;
@@ -3452,8 +3515,7 @@ onUnmounted(() => {
   }
 
   .rail {
-    /* Pin the tab nav to the bottom of the visual viewport so it's
-       always visible — address-bar reflow never hides it. */
+    /* Pinned to visual viewport so address-bar reflow never hides it. */
     position: fixed;
     left: 0; right: 0; bottom: 0;
     width: 100%;
@@ -3463,7 +3525,6 @@ onUnmounted(() => {
     justify-content: space-around;
     background: var(--bg-primary);
     z-index: 700;
-    /* Respect iOS home-indicator safe-area so labels stay tappable. */
     padding-bottom: max(0.25rem, env(safe-area-inset-bottom));
   }
   .rail-spacer { display: none; }
@@ -3479,12 +3540,8 @@ onUnmounted(() => {
 
   .inspector-handle { display: none; }
 
-  /* Bottom drawer pinned to the visual viewport (same coord space as
-     the fixed rail). Anchoring against `bottom` rather than relying
-     on flex layout means the drawer sits just above the rail no
-     matter how the address bar reflows the layout viewport — the bug
-     where the drawer only became visible after the address bar
-     hid was caused by laying it out against the layout viewport. */
+  /* Pinned to visual viewport (same as rail) so address-bar reflow
+     can't shift the drawer off-screen. */
   .inspector {
     position: fixed !important;
     left: 0; right: 0;
@@ -3504,32 +3561,25 @@ onUnmounted(() => {
 
   .sheet-handle {
     display: flex; align-items: center; justify-content: center;
-    padding: 0.5rem 1rem;
+    padding: 1.25rem 1rem;
     cursor: pointer; flex-shrink: 0;
     touch-action: none;
   }
   .handle-bar {
-    width: 44px; height: 5px; border-radius: 3px;
-    background: var(--text-secondary); opacity: 0.4;
+    width: 56px; height: 6px; border-radius: 3px;
+    background: var(--text-secondary); opacity: 0.5;
   }
 
-  /* Drawer content needs breathing room on touch and the joystick
-     should always be centred and large enough to grip. */
   .tab-pane { padding: 0.75rem 0.875rem 1.25rem; }
-  .rover-controls-grid { grid-template-columns: 1fr; gap: 0.5rem; }
   .joystick-area { display: flex; flex-direction: column; align-items: center; }
   .joystick { max-width: 220px; width: 100%; }
 
-  /* Modals: full-bleed with side margin so they fit phone screens. */
   .preflight-modal, .logs-modal, .snapshots-modal {
     width: calc(100vw - 1.5rem); max-width: calc(100vw - 1.5rem);
     max-height: calc(100dvh - 2rem);
   }
 
-  /* Modal log viewer on mobile: drop the table-row layout (which gets
-     clipped at the viewport edge with `width: 1%; nowrap`) and stack
-     each row like the inline sidebar — time + level on one line, the
-     message wrapped onto its own. */
+  /* Mobile log viewer: stack rows so messages wrap instead of being clipped. */
   .logs-view:not(.logs-view-inline) .log-row {
     display: flex; flex-wrap: wrap;
     column-gap: 0.5rem; row-gap: 0.05rem;
@@ -3548,11 +3598,9 @@ onUnmounted(() => {
     flex-basis: 100%; word-break: break-word;
   }
 
-  /* Popovers: fall back to wider, lower-density layout for thumb taps. */
   .chip-popover { font-size: 0.9rem; min-width: 200px; max-width: calc(100vw - 2rem); }
 }
 
-/* Desktop: hide sheet handle */
 @media (min-width: 769px) {
   .sheet-handle { display: none; }
 }

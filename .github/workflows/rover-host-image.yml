@@ -1,4 +1,4 @@
-name: Build Rover Host Image
+name: Build Rover bootc Image
 
 on:
   push:

@@ -111,13 +111,12 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* Floating e-stop — always reachable from any route. Bigger / redder
-   when the rover is actually moving. */
+/* z-index 999: same as status-strip; NavMenu drawer (1000) covers it. */
 .global-estop {
   position: fixed;
   bottom: 1.25rem;
   right: 1.25rem;
-  z-index: 2000;
+  z-index: 999;
   padding: 0.85rem 1.25rem;
   border: none;
   border-radius: 999px;
