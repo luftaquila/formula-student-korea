@@ -288,10 +288,8 @@ const roverStatusClass = computed(() => {
 // Inspector (desktop right panel)
 const INSPECTOR_TABS = [
   { key: "courses", label: "코스", icon: "📋" },
-  { key: "cones", label: "콘", icon: "🔶" },
   { key: "rover", label: "로버", icon: "🚗" },
-  { key: "logs", label: "로그", icon: "📜" },
-  { key: "missions", label: "이력", icon: "📊" },
+  { key: "history", label: "기록", icon: "📊" },
 ];
 
 // Mission history state (integrated into this view so the same map + rail +
@@ -472,7 +470,14 @@ const currentSampleTime = computed(() => {
 });
 const currentSampleState = computed(() => missionSamples.value[replayIdx.value]?.nav_state || "—");
 const currentSampleFix = computed(() => missionSamples.value[replayIdx.value]?.fix_status || "—");
-const activeTab = ref(loadPref("activeTab", "courses"));
+const activeTab = ref((() => {
+  const v = loadPref("activeTab", "courses");
+  // Migrate stale tab keys from the pre-merge layout.
+  if (v === "cones") return "courses";
+  if (v === "logs" || v === "missions") return "history";
+  return v;
+})());
+const historyView = ref(loadPref("historyView", "missions"));
 // Inspector is always open now; keep the ref as a fixed `false` so any
 // remaining template references compile, but stop persisting it.
 const inspectorCollapsed = ref(false);
@@ -491,17 +496,20 @@ function savePref(key, value) {
 }
 
 watch(activeTab, (v) => savePref("activeTab", v));
+watch(historyView, (v) => savePref("historyView", v));
 watch(inspectorWidth, (v) => savePref("inspectorWidth", v));
 // Clear any stale collapsed pref a user might have saved from the
 // previous behaviour, so the inspector always starts open.
 try { localStorage.removeItem("inspectorCollapsed"); } catch {}
 
-// Tab-swap: hide live layers when entering missions, tear down replay state
-// and restore the live view when leaving. Relies on `activeTab` being already
-// declared just above (don't move this block up — TDZ).
-watch(activeTab, (next, prev) => {
+// Tab-swap: hide live layers when entering the missions sub-view of the
+// history tab, tear down replay state and restore the live view when leaving.
+const isMissionsView = computed(
+  () => activeTab.value === "history" && historyView.value === "missions"
+);
+watch(isMissionsView, (next, prev) => {
   if (next === prev || !map) return;
-  if (prev === "missions") {
+  if (prev) {
     stopReplay();
     clearMissionMap();
     selectedMissionId.value = null;
@@ -509,7 +517,7 @@ watch(activeTab, (next, prev) => {
     missionSamples.value = [];
     restoreLiveMapLayers();
   }
-  if (next === "missions") {
+  if (next) {
     hideLiveMapLayers();
     loadMissions();
   }
@@ -935,8 +943,24 @@ function onMapClick(e) {
     return;
   }
   if (selectedConeId.value) { selectedConeId.value = null; return; }
-  if (!activeCourseId.value || roverMode.value === "manual") return;
-  addCone(e.latlng.lat, e.latlng.lng, currentSide.value);
+  // Cone-add is the side effect of clicking only when the cones tab is active
+  // and a course is selected. Every other case (other tabs, no course) shows
+  // the clicked coordinate so the user can read it off the map.
+  if (activeTab.value === "courses" && activeCourseId.value && roverMode.value !== "manual") {
+    addCone(e.latlng.lat, e.latlng.lng, currentSide.value);
+    return;
+  }
+  showCoordPopover(e.latlng);
+}
+
+function showCoordPopover(latlng) {
+  if (!map) return;
+  const lat = latlng.lat.toFixed(6);
+  const lng = latlng.lng.toFixed(6);
+  L.popup({ closeOnClick: true, autoClose: true, className: "coord-popup" })
+    .setLatLng(latlng)
+    .setContent(`<div class="coord-popover-body">${lat}, ${lng}</div>`)
+    .openOn(map);
 }
 
 /* ── Box selection (Shift+drag) ───────────────────── */
@@ -2127,7 +2151,7 @@ onUnmounted(() => {
 
             <div class="inspector-body">
 
-              <!-- Courses tab -->
+              <!-- Courses tab (merged with cones) -->
               <section v-show="activeTab === 'courses'" class="tab-pane">
                 <header class="tab-header">
                   <h3>코스 관리</h3>
@@ -2171,18 +2195,12 @@ onUnmounted(() => {
                   </div>
                   <div v-if="courses.length === 0" class="empty-msg">코스를 추가하세요.</div>
                 </div>
-              </section>
 
-              <!-- Cones tab -->
-              <section v-show="activeTab === 'cones'" class="tab-pane">
-                <header class="tab-header">
-                  <h3>{{ activeCourse ? activeCourse.name + ' 콘' : '콘' }}</h3>
-                </header>
-                <div v-if="!activeCourse" class="empty-msg large">
-                  코스를 먼저 선택하세요.
-                  <button class="btn btn-ghost btn-lg-touch" @click="activeTab = 'courses'">코스 탭으로</button>
-                </div>
-                <template v-else>
+                <!-- Cones panel for the selected course -->
+                <template v-if="activeCourse">
+                  <header class="tab-header tab-header-sub">
+                    <h3>{{ activeCourse.name }} 콘</h3>
+                  </header>
                   <div class="inspector-group">
                     <div class="group-title">콘 추가</div>
                     <div class="side-rover-row">
@@ -2340,95 +2358,97 @@ onUnmounted(() => {
                 </template>
               </section>
 
-              <!-- Logs tab -->
-              <section v-show="activeTab === 'logs'" class="tab-pane">
+              <!-- History tab (missions + logs) -->
+              <section v-show="activeTab === 'history'" class="tab-pane">
                 <header class="tab-header">
-                  <h3>로버 로그</h3>
+                  <h3>{{ historyView === 'missions' ? '미션 이력' : '로버 로그' }}</h3>
+                  <div class="history-switcher">
+                    <button :class="['history-switch-btn', { active: historyView === 'missions' }]" @click="historyView = 'missions'">이력</button>
+                    <button :class="['history-switch-btn', { active: historyView === 'logs' }]" @click="historyView = 'logs'">로그</button>
+                  </div>
                 </header>
-                <div class="rover-controls rover-controls-grid">
-                  <button class="btn btn-primary btn-lg-touch" :disabled="logFetching" @click="requestLogs">
-                    {{ logFetching ? '가져오는 중...' : '로버에서 가져오기' }}
-                  </button>
-                  <button class="btn btn-ghost btn-lg-touch" @click="refreshLogs">↻ 새로고침</button>
-                  <button class="btn btn-ghost btn-lg-touch" :disabled="logEntries.length === 0" @click="downloadLogs">↓ 다운로드</button>
-                  <button class="btn btn-ghost btn-lg-touch" :disabled="logEntries.length === 0" @click="showLogs = true">전체 보기</button>
-                </div>
-                <div class="logs-meta">
-                  {{ logEntries.length }}줄
-                  <template v-if="logUploadedAt">· {{ formatSnapshotTime(logUploadedAt) }}</template>
-                </div>
-                <div v-if="logEntries.length === 0" class="empty-msg">업로드된 로그가 없습니다.</div>
-                <div v-else class="logs-view logs-view-inline">
-                  <div
-                    v-for="(e, i) in logEntries.slice(-50)" :key="i"
-                    :class="['log-row', `log-${(e.level || '').toLowerCase()}`]"
-                  >
-                    <span class="log-time">{{ formatLogTime(e.t) }}</span>
-                    <span class="log-level">{{ e.level }}</span>
-                    <span class="log-msg">{{ e.msg }}</span>
-                  </div>
-                </div>
-              </section>
 
-              <!-- Missions tab (integrated; map shows replay layers while active) -->
-              <section v-show="activeTab === 'missions'" class="tab-pane">
-                <header class="tab-header">
-                  <h3>미션 이력</h3>
-                  <button class="btn btn-ghost btn-sm" @click="loadMissions" title="새로고침">↻</button>
-                </header>
-                <div v-if="missionLoading" class="empty-msg">불러오는 중...</div>
-                <div v-else-if="missions.length === 0" class="empty-msg">기록된 미션이 없습니다.</div>
-                <div v-else class="missions-list-inline">
-                  <div
-                    v-for="m in missions" :key="m.id"
-                    :class="['mission-card', { selected: selectedMissionId === m.id }]"
-                    @click="selectMission(m.id)"
-                  >
-                    <div class="mission-top">
-                      <span class="mission-id">#{{ m.id }}</span>
-                      <span class="mission-status-badge" :style="{ background: MISSION_STATUS_COLOR[m.status] }">
-                        {{ MISSION_STATUS_LABEL[m.status] || m.status }}
-                      </span>
+                <template v-if="historyView === 'missions'">
+                  <div v-if="missionLoading" class="empty-msg">불러오는 중...</div>
+                  <div v-else-if="missions.length === 0" class="empty-msg">기록된 미션이 없습니다.</div>
+                  <div v-else class="missions-list-inline">
+                    <div
+                      v-for="m in missions" :key="m.id"
+                      :class="['mission-card', { selected: selectedMissionId === m.id }]"
+                      @click="selectMission(m.id)"
+                    >
+                      <div class="mission-top">
+                        <span class="mission-id">#{{ m.id }}</span>
+                        <span class="mission-status-badge" :style="{ background: MISSION_STATUS_COLOR[m.status] }">
+                          {{ MISSION_STATUS_LABEL[m.status] || m.status }}
+                        </span>
+                      </div>
+                      <div class="mission-meta">
+                        <span>{{ formatMissionTimestamp(m.started_at) }}</span>
+                        <span>· {{ formatMissionDuration(m.started_at, m.ended_at) }}</span>
+                        <span v-if="m.course_name">· {{ m.course_name }}</span>
+                      </div>
+                      <div class="mission-meta-sub">{{ m.sample_count }}개 샘플</div>
                     </div>
-                    <div class="mission-meta">
-                      <span>{{ formatMissionTimestamp(m.started_at) }}</span>
-                      <span>· {{ formatMissionDuration(m.started_at, m.ended_at) }}</span>
-                      <span v-if="m.course_name">· {{ m.course_name }}</span>
+                    <div v-if="missions.length < missionTotal" class="load-more">
+                      <button class="btn btn-ghost btn-lg-touch" :disabled="missionLoadingMore" @click="loadMoreMissions">
+                        {{ missionLoadingMore ? "불러오는 중..." : `더 보기 (${missions.length}/${missionTotal})` }}
+                      </button>
                     </div>
-                    <div class="mission-meta-sub">{{ m.sample_count }}개 샘플</div>
                   </div>
-                  <div v-if="missions.length < missionTotal" class="load-more">
-                    <button class="btn btn-ghost btn-lg-touch" :disabled="missionLoadingMore" @click="loadMoreMissions">
-                      {{ missionLoadingMore ? "불러오는 중..." : `더 보기 (${missions.length}/${missionTotal})` }}
-                    </button>
-                  </div>
-                </div>
 
-                <!-- Replay controls for the selected mission -->
-                <div v-if="missionDetail" class="inspector-group mission-replay">
-                  <div class="group-title">
-                    #{{ missionDetail.id }}
-                    <span class="replay-state">{{ currentSampleState }} · {{ currentSampleFix }}</span>
+                  <!-- Replay controls for the selected mission -->
+                  <div v-if="missionDetail" class="inspector-group mission-replay">
+                    <div class="group-title">
+                      #{{ missionDetail.id }}
+                      <span class="replay-state">{{ currentSampleState }} · {{ currentSampleFix }}</span>
+                    </div>
+                    <div class="replay-controls-touch">
+                      <button class="btn btn-primary btn-lg-touch replay-play" @click="togglePlay" :disabled="missionSamples.length === 0">
+                        {{ replayPlaying ? '⏸ 일시정지' : '▶ 재생' }}
+                      </button>
+                      <input
+                        type="range" class="replay-slider"
+                        :min="0" :max="Math.max(0, missionSamples.length - 1)" :step="1"
+                        v-model.number="replayIdx"
+                        :disabled="missionSamples.length === 0"
+                      />
+                      <select v-model.number="replaySpeed" class="replay-speed">
+                        <option :value="1">1× 실시간</option>
+                        <option :value="4">4×</option>
+                        <option :value="16">16×</option>
+                        <option :value="64">64×</option>
+                      </select>
+                    </div>
+                    <div class="replay-time">{{ currentSampleTime }}</div>
                   </div>
-                  <div class="replay-controls-touch">
-                    <button class="btn btn-primary btn-lg-touch replay-play" @click="togglePlay" :disabled="missionSamples.length === 0">
-                      {{ replayPlaying ? '⏸ 일시정지' : '▶ 재생' }}
+                </template>
+
+                <template v-else>
+                  <div class="rover-controls rover-controls-grid">
+                    <button class="btn btn-primary btn-lg-touch" :disabled="logFetching" @click="requestLogs">
+                      {{ logFetching ? '가져오는 중...' : '로버에서 가져오기' }}
                     </button>
-                    <input
-                      type="range" class="replay-slider"
-                      :min="0" :max="Math.max(0, missionSamples.length - 1)" :step="1"
-                      v-model.number="replayIdx"
-                      :disabled="missionSamples.length === 0"
-                    />
-                    <select v-model.number="replaySpeed" class="replay-speed">
-                      <option :value="1">1× 실시간</option>
-                      <option :value="4">4×</option>
-                      <option :value="16">16×</option>
-                      <option :value="64">64×</option>
-                    </select>
+                    <button class="btn btn-ghost btn-lg-touch" @click="refreshLogs">↻ 새로고침</button>
+                    <button class="btn btn-ghost btn-lg-touch" :disabled="logEntries.length === 0" @click="downloadLogs">↓ 다운로드</button>
+                    <button class="btn btn-ghost btn-lg-touch" :disabled="logEntries.length === 0" @click="showLogs = true">전체 보기</button>
                   </div>
-                  <div class="replay-time">{{ currentSampleTime }}</div>
-                </div>
+                  <div class="logs-meta">
+                    {{ logEntries.length }}줄
+                    <template v-if="logUploadedAt">· {{ formatSnapshotTime(logUploadedAt) }}</template>
+                  </div>
+                  <div v-if="logEntries.length === 0" class="empty-msg">업로드된 로그가 없습니다.</div>
+                  <div v-else class="logs-view logs-view-inline">
+                    <div
+                      v-for="(e, i) in logEntries.slice(-50)" :key="i"
+                      :class="['log-row', `log-${(e.level || '').toLowerCase()}`]"
+                    >
+                      <span class="log-time">{{ formatLogTime(e.t) }}</span>
+                      <span class="log-level">{{ e.level }}</span>
+                      <span class="log-msg">{{ e.msg }}</span>
+                    </div>
+                  </div>
+                </template>
               </section>
 
             </div>
@@ -2712,6 +2732,12 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
+.coord-popover-body {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
 .inspector-handle {
   width: 8px; flex-shrink: 0;
   background: var(--border-primary);
@@ -2744,6 +2770,33 @@ onUnmounted(() => {
   border-bottom: 1px solid var(--border-primary);
 }
 .tab-header h3 { margin: 0; font-size: 1rem; font-weight: 700; }
+.tab-header-sub {
+  margin-top: 0.875rem;
+  border-top: 1px solid var(--border-primary);
+  padding-top: 0.625rem;
+  border-bottom: 1px solid var(--border-primary);
+}
+.history-switcher {
+  display: inline-flex;
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.history-switch-btn {
+  padding: 0.25rem 0.625rem;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  border: 0;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.history-switch-btn + .history-switch-btn { border-left: 1px solid var(--border-primary); }
+.history-switch-btn.active {
+  background: var(--accent-primary);
+  color: var(--accent-primary-fg, #fff);
+  font-weight: 600;
+}
+.history-switch-btn:hover:not(.active) { background: var(--bg-secondary); color: var(--text-primary); }
 
 .inspector-group {
   padding: 0.625rem 0.75rem;
