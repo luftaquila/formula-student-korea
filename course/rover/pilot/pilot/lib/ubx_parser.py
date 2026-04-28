@@ -1,6 +1,6 @@
 """u-blox UBX binary protocol parser for ZED-F9P.
 
-Parses NAV-PVT (0x01 0x07) and NAV-HPPOSLLH (0x01 0x14) messages.
+Parses NAV-PVT (0x01 0x07), NAV-HPPOSLLH (0x01 0x14), and NAV-DOP (0x01 0x04).
 """
 
 import logging
@@ -18,6 +18,7 @@ SYNC2 = 0x62
 CLASS_NAV = 0x01
 ID_NAV_PVT = 0x07
 ID_NAV_HPPOSLLH = 0x14
+ID_NAV_DOP = 0x04
 
 # UBX-CFG class
 CLASS_CFG = 0x06
@@ -71,6 +72,18 @@ class NavHPPOSLLH:
     h_msl: float    # meters (high precision)
     h_acc: float    # horizontal accuracy (meters)
     v_acc: float    # vertical accuracy (meters)
+
+
+@dataclass
+class NavDOP:
+    """UBX-NAV-DOP parsed data (dilution of precision, 0.01 units)."""
+    g_dop: float    # geometric DOP
+    p_dop: float    # position DOP
+    t_dop: float    # time DOP
+    v_dop: float    # vertical DOP
+    h_dop: float    # horizontal DOP
+    n_dop: float    # northing DOP
+    e_dop: float    # easting DOP
 
 
 def checksum(data):
@@ -138,6 +151,27 @@ def parse_nav_hpposllh(payload):
         h_msl=(hMSL + hMSLHp * 0.1) * 1e-3,
         h_acc=hAcc * 1e-4,
         v_acc=vAcc * 1e-4,
+    )
+
+
+def parse_nav_dop(payload):
+    """Parse NAV-DOP payload (18 bytes) into NavDOP. All DOP fields are
+    transmitted as U2 in 0.01 units, scaled here back to floats."""
+    if len(payload) != 18:
+        logger.warning("NAV-DOP payload has unexpected length %d (expected 18)", len(payload))
+        return None
+
+    (_iTOW, gDOP, pDOP, tDOP, vDOP, hDOP, nDOP, eDOP) = struct.unpack_from(
+        '<IHHHHHHH', payload, 0
+    )
+    return NavDOP(
+        g_dop=gDOP * 0.01,
+        p_dop=pDOP * 0.01,
+        t_dop=tDOP * 0.01,
+        v_dop=vDOP * 0.01,
+        h_dop=hDOP * 0.01,
+        n_dop=nDOP * 0.01,
+        e_dop=eDOP * 0.01,
     )
 
 
@@ -209,6 +243,8 @@ class UBXParser:
                 return parse_nav_pvt(payload)
             elif msg_id == ID_NAV_HPPOSLLH:
                 return parse_nav_hpposllh(payload)
+            elif msg_id == ID_NAV_DOP:
+                return parse_nav_dop(payload)
         return None
 
 

@@ -23,7 +23,7 @@ from sensor_msgs.msg import NavSatFix, NavSatStatus
 from std_msgs.msg import Float64, String, Empty
 
 from pilot.lib.ubx_parser import (
-    UBXParser, NavPVT, NavHPPOSLLH,
+    UBXParser, NavPVT, NavHPPOSLLH, NavDOP,
     CarrierSolution, FixType,
     build_cfg_valset,
 )
@@ -57,21 +57,28 @@ _SERIAL_OPEN_BACKOFF_S = 2.0
 
 
 def _fix_status_string(pvt):
-    """Convert NavPVT to human-readable fix status."""
-    if pvt.fix_type == FixType.NO_FIX:
-        return 'no_fix'
+    """Convert NavPVT to human-readable fix status. RTK carrier solution
+    wins over a plain 3D fix when present. Dead-reckoning variants are
+    reported as `no_fix` because ZED-F9P has no IMU input — DR transitions
+    are spurious here, and treating them as no_fix avoids confusing UI."""
     if pvt.carrier_solution == CarrierSolution.FIXED:
         return 'rtk_fixed'
     if pvt.carrier_solution == CarrierSolution.FLOAT:
         return 'rtk_float'
-    if pvt.fix_type >= FixType.FIX_3D:
-        return '3d_fix'
-    return 'no_fix'
+    return {
+        FixType.NO_FIX: 'no_fix',
+        FixType.DEAD_RECKONING: 'no_fix',
+        FixType.FIX_2D: '2d_fix',
+        FixType.FIX_3D: '3d_fix',
+        FixType.GNSS_DR: 'no_fix',
+        FixType.TIME_ONLY: 'time_only',
+    }.get(pvt.fix_type, 'no_fix')
 
 
 # UBX CFG key IDs for configuring output messages
 CFG_MSGOUT_UBX_NAV_PVT_USB = 0x20910009
 CFG_MSGOUT_UBX_NAV_HPPOSLLH_USB = 0x20910036
+CFG_MSGOUT_UBX_NAV_DOP_USB = 0x20910041
 CFG_MSGOUT_NMEA_GGA_USB = 0x209100BD
 CFG_MSGOUT_NMEA_RMC_USB = 0x209100AE
 CFG_MSGOUT_NMEA_GSV_USB = 0x209100C4
@@ -108,6 +115,7 @@ class GpsNode(Node):
         self._parser = UBXParser()
         self._last_pvt = None
         self._last_hpposllh = None
+        self._last_dop = None
         self._serial = None
         self._ntrip = None
         # NTRIP auto-setup is deferred until we have a real 3D fix so we
@@ -173,6 +181,7 @@ class GpsNode(Node):
         cfg = build_cfg_valset([
             (CFG_MSGOUT_UBX_NAV_PVT_USB, 1, 'B'),       # Enable NAV-PVT on USB
             (CFG_MSGOUT_UBX_NAV_HPPOSLLH_USB, 1, 'B'),   # Enable NAV-HPPOSLLH on USB
+            (CFG_MSGOUT_UBX_NAV_DOP_USB, 1, 'B'),        # Enable NAV-DOP on USB
             (CFG_MSGOUT_NMEA_GGA_USB, 0, 'B'),           # Disable NMEA GGA
             (CFG_MSGOUT_NMEA_RMC_USB, 0, 'B'),           # Disable NMEA RMC
             (CFG_MSGOUT_NMEA_GSV_USB, 0, 'B'),           # Disable NMEA GSV
@@ -281,6 +290,9 @@ class GpsNode(Node):
                 self._last_hpposllh = msg
                 self._publish_hp_position(msg)
 
+            elif isinstance(msg, NavDOP):
+                self._last_dop = msg
+
     def _publish_position(self, pvt):
         """Publish NavSatFix from NAV-PVT."""
         msg = NavSatFix()
@@ -347,21 +359,36 @@ class GpsNode(Node):
         self._pub_fix_status.publish(msg)
 
     def _publish_metrics(self, pvt):
-        """Publish accuracy/speed/heading JSON for telemetry consumers."""
+        """Publish accuracy/speed/heading/altitude/DOP JSON for telemetry."""
         threshold = self.get_parameter('heading_speed_threshold').value
-        # Prefer HPPOSLLH accuracy when available — finer than NAV-PVT estimate.
+        # Prefer HPPOSLLH for position fields when available — finer than
+        # NAV-PVT estimates.
         if self._last_hpposllh is not None:
             h_acc = self._last_hpposllh.h_acc
             v_acc = self._last_hpposllh.v_acc
+            altitude = self._last_hpposllh.h_msl
         else:
             h_acc = pvt.h_acc
             v_acc = pvt.v_acc
+            altitude = pvt.h_msl
+        # Prefer NAV-DOP's PDOP when available (NAV-PVT also carries pDOP
+        # but it's the same scalar at coarser resolution; NAV-DOP gives
+        # us TDOP for free).
+        if self._last_dop is not None:
+            p_dop = self._last_dop.p_dop
+            t_dop = self._last_dop.t_dop
+        else:
+            p_dop = pvt.p_dop
+            t_dop = None
         metrics = {
             'h_acc': h_acc,
             'v_acc': v_acc,
+            'altitude': altitude,
             'speed': pvt.ground_speed,
             'heading': pvt.heading if pvt.ground_speed >= threshold else None,
             'num_sv': pvt.num_sv,
+            'pdop': p_dop,
+            'tdop': t_dop,
         }
         msg = String()
         msg.data = json.dumps(metrics)

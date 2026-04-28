@@ -662,7 +662,7 @@ const roverState = {
   last_spray_result: null, // { waypoint, outcome, at }
   battery: null, // { voltage, percent, source }
   ntrip: null, // { host, port, mountpoint, fail_count, last_error, last_correction_at, bytes_received }
-  gps: null, // { h_acc, v_acc, speed, heading, num_sv } from rover GPS metrics
+  gps: null, // { h_acc, v_acc, altitude, speed, heading, num_sv, pdop, tdop } from rover GPS metrics
   // Session-scoped per-mission progress used for tab-close recovery — the
   // server acts as the source of truth so reloading the UI rebuilds the
   // executing/stopped view exactly.
@@ -794,9 +794,12 @@ app.post("/api/rover/telemetry", (req, res) => {
     roverState.gps = {
       h_acc: typeof gps.h_acc === "number" ? gps.h_acc : null,
       v_acc: typeof gps.v_acc === "number" ? gps.v_acc : null,
+      altitude: typeof gps.altitude === "number" ? gps.altitude : null,
       speed: typeof gps.speed === "number" ? gps.speed : null,
       heading: typeof gps.heading === "number" ? gps.heading : null,
       num_sv: Number.isInteger(gps.num_sv) ? gps.num_sv : null,
+      pdop: typeof gps.pdop === "number" ? gps.pdop : null,
+      tdop: typeof gps.tdop === "number" ? gps.tdop : null,
     };
   }
   if (ntrip && typeof ntrip === "object" && !Array.isArray(ntrip)) {

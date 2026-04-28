@@ -138,28 +138,68 @@ const missionETA = computed(() => {
 // Per-chip computeds. Each chip owns its own tone (ok/warn/bad/neutral) so
 // the strip's overall color band is decided separately (primary class).
 // `detail` is the multi-line text shown in the hover/click popover.
+// Fix-status tone. RTK is ok/warn, plain 3D is warn (no corrections),
+// 2D / time-only / no-fix are all bad. Dead-reckoning variants are folded
+// into no_fix at the rover, so they don't appear here.
+const FIX_STATUS_META = {
+  rtk_fixed: { tone: "ok" },
+  rtk_float: { tone: "warn" },
+  "3d_fix": { tone: "warn" },
+  "2d_fix": { tone: "bad" },
+  time_only: { tone: "bad" },
+  no_fix: { tone: "bad" },
+};
+
 const fixChip = computed(() => {
   const s = roverStatus.value;
   if (!s.connected || !s.fix_status) return null;
   const label = s.fix_status.replace(/_/g, " ").toUpperCase();
-  const tone = s.fix_status === "rtk_fixed" ? "ok"
-    : s.fix_status === "rtk_float" ? "warn"
-    : "bad";
-  const rows = [["MODE", label]];
+  const meta = FIX_STATUS_META[s.fix_status] || { tone: "bad" };
+  const tone = meta.tone;
+  // [key, value, valTone?] — valTone (optional) colors the value text.
+  const rows = [["MODE", label, tone]];
   if (s.last_position?.lat != null && s.last_position?.lng != null) {
     rows.push(["POS", `${s.last_position.lat.toFixed(6)}, ${s.last_position.lng.toFixed(6)}`]);
   }
-  if (lastPositionAge.value != null) rows.push(["UPDATE", `${lastPositionAge.value}s`]);
-  if (s.gps?.h_acc != null) rows.push(["ACC", `±${s.gps.h_acc.toFixed(2)} m`]);
+  if (s.gps?.altitude != null) rows.push(["ALT", `${s.gps.altitude.toFixed(2)} m`]);
+  if (lastPositionAge.value != null) {
+    const age = lastPositionAge.value;
+    const ageT = age <= 2 ? "ok" : age <= 10 ? "warn" : "bad";
+    rows.push(["UPDATE", `${age}s`, ageT]);
+  }
+  if (s.gps?.h_acc != null) {
+    const a = s.gps.h_acc;
+    const t = a <= 0.05 ? "ok" : a <= 0.5 ? "warn" : "bad";
+    rows.push(["ACC", `±${a.toFixed(2)} m`, t]);
+  }
+  if (s.gps?.v_acc != null) rows.push(["V-ACC", `±${s.gps.v_acc.toFixed(2)} m`]);
   if (s.gps?.speed != null) rows.push(["SPEED", `${s.gps.speed.toFixed(2)} m/s`]);
-  if (s.gps?.num_sv != null) rows.push(["SAT", `${s.gps.num_sv}`]);
+  if (s.gps?.num_sv != null) {
+    const n = s.gps.num_sv;
+    const t = n >= 12 ? "ok" : n >= 6 ? "warn" : "bad";
+    rows.push(["SAT", `${n}`, t]);
+  }
+  if (s.gps?.pdop != null) {
+    const d = s.gps.pdop;
+    const t = d <= 2 ? "ok" : d <= 5 ? "warn" : "bad";
+    rows.push(["PDOP", d.toFixed(2), t]);
+  }
+  if (s.gps?.tdop != null) {
+    const d = s.gps.tdop;
+    const t = d <= 2 ? "ok" : d <= 5 ? "warn" : "bad";
+    rows.push(["TDOP", d.toFixed(2), t]);
+  }
   if (s.ntrip_connected) {
-    if (s.ntrip?.mountpoint) rows.push(["NTRIP", s.ntrip.mountpoint]);
+    if (s.ntrip?.mountpoint) rows.push(["NTRIP", s.ntrip.mountpoint, "ok"]);
     if (s.ntrip?.host) rows.push(["CASTER", `${s.ntrip.host}${s.ntrip.port ? `:${s.ntrip.port}` : ""}`]);
-    if (ntripCorrectionAge.value != null) rows.push(["FIXED", `${ntripCorrectionAge.value}s`]);
-    if (s.ntrip?.last_error) rows.push(["ERR", s.ntrip.last_error]);
+    if (ntripCorrectionAge.value != null) {
+      const c = ntripCorrectionAge.value;
+      const t = c <= 2 ? "ok" : c <= 10 ? "warn" : "bad";
+      rows.push(["FIXED", `${c}s`, t]);
+    }
+    if (s.ntrip?.last_error) rows.push(["ERR", s.ntrip.last_error, "bad"]);
   } else {
-    rows.push(["NTRIP", "OFF"]);
+    rows.push(["NTRIP", "OFF", "bad"]);
   }
   return { label, tone, rows };
 });
@@ -175,7 +215,7 @@ const navChip = computed(() => {
   const tone = (s.nav_state === "ERROR" || s.nav_state === "EMERGENCY_STOP") ? "bad"
     : s.nav_state === "IDLE" ? "neutral"
     : "ok";
-  const rows = [["STATUS", stateLabel]];
+  const rows = [["STATUS", stateLabel, tone]];
   if (dist != null) rows.push(["NEXT", `#${executedIndex.value + 1} · ${dist.toFixed(1)} m`]);
   return { label, tone, rows };
 });
@@ -187,8 +227,8 @@ const batteryChip = computed(() => {
   const tone = p <= BATTERY_CRIT_PERCENT ? "bad"
     : p <= BATTERY_WARN_PERCENT ? "warn"
     : "ok";
-  const rows = [["SOC", `${p}%`]];
-  if (s.battery.voltage != null) rows.push(["VOLT", `${s.battery.voltage.toFixed(2)} V`]);
+  const rows = [["SOC", `${p}%`, tone]];
+  if (s.battery.voltage != null) rows.push(["VOLT", `${s.battery.voltage.toFixed(2)} V`, tone]);
   if (s.battery.voltage_raw != null && s.battery.gain != null && Math.abs(s.battery.gain - 1.0) > 1e-4) {
     rows.push(["ADC", `${s.battery.voltage_raw.toFixed(2)} V`]);
   }
@@ -287,8 +327,8 @@ const roverStatusClass = computed(() => {
 
 // Inspector (desktop right panel)
 const INSPECTOR_TABS = [
-  { key: "courses", label: "코스", icon: "📋" },
   { key: "rover", label: "로버", icon: "🚗" },
+  { key: "courses", label: "코스", icon: "📋" },
   { key: "history", label: "기록", icon: "📊" },
 ];
 
@@ -916,6 +956,13 @@ function initMap() {
   }).addTo(map);
 
   map.on("click", onMapClick);
+  // Coordinate popover is gated on long-press / right-click — Leaflet's
+  // `contextmenu` fires on a 500ms touch hold (mobile) or right-click
+  // (desktop), so a tap can't accidentally drop a popup mid-pan.
+  map.on("contextmenu", (e) => {
+    L.DomEvent.preventDefault(e.originalEvent);
+    showCoordPopover(e.latlng);
+  });
   // User-initiated drag should disable follow so the operator isn't
   // fighting an auto-recentre. Programmatic panTo doesn't fire dragstart.
   map.on("dragstart", () => { if (followRover.value) followRover.value = false; });
@@ -940,14 +987,12 @@ function onMapClick(e) {
     return;
   }
   if (selectedConeId.value) { selectedConeId.value = null; return; }
-  // Cone-add is the side effect of clicking only when the cones tab is active
-  // and a course is selected. Every other case (other tabs, no course) shows
-  // the clicked coordinate so the user can read it off the map.
+  // Cone-add fires on a tap only when the courses tab is active and a course
+  // is selected. Other contexts (other tabs, no course) ignore the tap —
+  // long-press shows a coordinate popover instead.
   if (activeTab.value === "courses" && activeCourseId.value && roverMode.value !== "manual") {
     addCone(e.latlng.lat, e.latlng.lng, currentSide.value);
-    return;
   }
-  showCoordPopover(e.latlng);
 }
 
 function showCoordPopover(latlng) {
@@ -1141,6 +1186,10 @@ async function submitBatteryCal() {
 /* ── Rover log viewer ─────────────────────────────── */
 const showLogs = ref(false);
 const logEntries = ref([]);
+// Newest first for the operator: ROS log buffer arrives oldest-first,
+// but the inspector and full-screen viewer show the most recent first.
+const logsNewestFirst = computed(() => [...logEntries.value].reverse());
+const logsNewestFirstTrimmed = computed(() => [...logEntries.value].slice(-50).reverse());
 const logUploadedAt = ref(0);
 const logFetching = ref(false);
 
@@ -1909,7 +1958,7 @@ onUnmounted(() => {
           <div class="logs-view">
             <div v-if="logEntries.length === 0" class="empty-msg">업로드된 로그가 없습니다. "로버에서 가져오기"를 눌러주세요.</div>
             <div
-              v-for="(e, i) in logEntries" :key="i"
+              v-for="(e, i) in logsNewestFirst" :key="i"
               :class="['log-row', `log-${(e.level || '').toLowerCase()}`]"
             >
               <span class="log-time">{{ formatLogTime(e.t) }}</span>
@@ -2050,7 +2099,7 @@ onUnmounted(() => {
               >
                 <span :class="['chip', `chip-${fixChip.tone}`]">🛰️ {{ fixChip.label }}</span>
                 <span class="chip-popover">
-                  <span class="popover-row" v-for="r in fixChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span class="popover-val">{{ r[1] }}</span></span>
+                  <span class="popover-row" v-for="r in fixChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span :class="['popover-val', r[2] && `popover-val-${r[2]}`]">{{ r[1] }}</span></span>
                 </span>
               </span>
               <span
@@ -2060,7 +2109,7 @@ onUnmounted(() => {
               >
                 <span :class="['chip', `chip-${navChip.tone}`]">🧭 {{ navChip.label }}</span>
                 <span class="chip-popover">
-                  <span class="popover-row" v-for="r in navChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span class="popover-val">{{ r[1] }}</span></span>
+                  <span class="popover-row" v-for="r in navChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span :class="['popover-val', r[2] && `popover-val-${r[2]}`]">{{ r[1] }}</span></span>
                 </span>
               </span>
             </div>
@@ -2090,7 +2139,7 @@ onUnmounted(() => {
                   🔋 {{ batteryChip.percent }}%<template v-if="batteryChip.voltage != null"> · {{ batteryChip.voltage.toFixed(1) }}V</template>
                 </span>
                 <span class="chip-popover">
-                  <span class="popover-row" v-for="r in batteryChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span class="popover-val">{{ r[1] }}</span></span>
+                  <span class="popover-row" v-for="r in batteryChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span :class="['popover-val', r[2] && `popover-val-${r[2]}`]">{{ r[1] }}</span></span>
                   <span class="popover-row popover-actions">
                     <button class="btn btn-ghost btn-sm" @click.stop="openBatteryCal">전압 보정</button>
                   </span>
@@ -2281,8 +2330,9 @@ onUnmounted(() => {
                 </header>
 
                 <!-- GPS live block (always visible while connected). Surfaces
-                     heading/speed/accuracy/satellite count outside the fix-chip
-                     popover so the operator can read it during driving. -->
+                     heading/speed/accuracy/satellite/altitude/DOP outside the
+                     fix-chip popover so the operator can read it during
+                     driving. -->
                 <div v-if="roverStatus.connected" class="inspector-group gps-block">
                   <div class="group-title">GPS</div>
                   <div class="gps-grid">
@@ -2311,36 +2361,45 @@ onUnmounted(() => {
                       <span class="gps-label">SAT</span>
                       <span class="gps-val">{{ roverStatus.gps?.num_sv ?? '—' }}</span>
                     </div>
+                    <div class="gps-cell">
+                      <span class="gps-label">ALT</span>
+                      <span class="gps-val">{{ roverStatus.gps?.altitude != null ? roverStatus.gps.altitude.toFixed(1) + ' m' : '—' }}</span>
+                    </div>
+                    <div class="gps-cell">
+                      <span class="gps-label">PDOP</span>
+                      <span class="gps-val">{{ roverStatus.gps?.pdop != null ? roverStatus.gps.pdop.toFixed(2) : '—' }}</span>
+                    </div>
                   </div>
                 </div>
 
-                <!-- Map follow controls (always visible while connected). -->
-                <div v-if="roverStatus.connected" class="map-follow-row">
-                  <button class="btn btn-ghost btn-lg-touch" :disabled="!roverStatus.last_position" @click="centerOnRover">📍 위치로</button>
-                  <button
-                    :class="['btn', 'btn-lg-touch', followRover ? 'btn-primary' : 'btn-ghost']"
-                    :disabled="!roverStatus.connected"
-                    @click="toggleFollowRover"
-                  >{{ followRover ? '추적 중' : '추적' }}</button>
-                </div>
-
                 <div v-if="!activeCourse" class="empty-msg large">
+                  <div v-if="roverStatus.connected" class="rover-controls rover-controls-grid follow-only">
+                    <button
+                      :class="['btn', 'btn-lg-touch', followRover ? 'btn-primary' : 'btn-ghost']"
+                      @click="toggleFollowRover"
+                    >{{ followRover ? '추적 중' : '추적' }}</button>
+                  </div>
                   코스를 먼저 선택하세요.
                   <button class="btn btn-ghost btn-lg-touch" @click="activeTab = 'courses'">코스 탭으로</button>
                 </div>
                 <template v-else>
                   <div class="rover-controls rover-controls-grid">
                     <button
+                      :class="['btn', 'btn-lg-touch', followRover ? 'btn-primary' : 'btn-ghost']"
+                      :disabled="!roverStatus.connected"
+                      @click="toggleFollowRover"
+                    >{{ followRover ? '추적 중' : '추적' }}</button>
+                    <button
                       :class="['btn', 'btn-lg-touch', pathBtnClass]"
                       @click="onPathBtn"
                       :disabled="activeCones.length === 0 || roverMode === 'manual'"
                     >{{ pathBtnLabel }}</button>
-                    <button
-                      :class="['btn', 'btn-lg-touch', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
-                      :disabled="roverMode !== 'manual' && !roverStatus.connected"
-                      @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
-                    >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
                   </div>
+                  <button
+                    :class="['btn', 'btn-lg-touch', 'manual-btn-row', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
+                    :disabled="roverMode !== 'manual' && !roverStatus.connected"
+                    @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
+                  >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
 
                   <div v-if="pathDistance > 0" class="path-info">
                     <div>예상 주행 거리: {{ pathDistance >= 1000 ? (pathDistance / 1000).toFixed(2) + ' km' : pathDistance.toFixed(1) + ' m' }}</div>
@@ -2487,7 +2546,7 @@ onUnmounted(() => {
                   <div v-if="logEntries.length === 0" class="empty-msg">업로드된 로그가 없습니다.</div>
                   <div v-else class="logs-view logs-view-inline">
                     <div
-                      v-for="(e, i) in logEntries.slice(-50)" :key="i"
+                      v-for="(e, i) in logsNewestFirstTrimmed" :key="i"
                       :class="['log-row', `log-${(e.level || '').toLowerCase()}`]"
                     >
                       <span class="log-time">{{ formatLogTime(e.t) }}</span>
@@ -2559,49 +2618,54 @@ onUnmounted(() => {
   left: 0;
   z-index: 1600;          /* above status-strip's stacking context */
   width: max-content;
-  max-width: min(320px, calc(100vw - 1.5rem));
-  padding: 0.45rem 0.65rem;
+  max-width: min(360px, calc(100vw - 1.5rem));
+  padding: 0.55rem 0.75rem;
   background: var(--bg-primary);
   color: var(--text-primary);
   border: 1px solid var(--border-primary);
   border-radius: 6px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
-  font-size: 0.74rem;
-  line-height: 1.45;
+  font-size: 0.9rem;
+  line-height: 1.5;
   cursor: default;
 }
-/* Compact two-column rows.  `max-content 1fr` lets the key column hug
-   its widest label across rows while the value column takes the rest;
-   `keep-all` stops Korean text from breaking inside syllables and
-   `nowrap` keeps short data on one line — long values still wrap on
-   word boundaries because `flex-wrap: wrap` is implicit on rows. */
-.popover-row {
+/* Two-column table layout for the entire popover so every row's key
+   column aligns to the same width — `display: contents` on each row
+   lets its key/val become direct children of this grid. */
+.chip-wrapper:hover > .chip-popover,
+.chip-wrapper.active > .chip-popover {
   display: grid;
   grid-template-columns: max-content 1fr;
-  column-gap: 0.6rem;
+  column-gap: 0.85rem;
+  row-gap: 0.18rem;
   align-items: baseline;
-  padding: 0.05rem 0;
 }
+.popover-row { display: contents; }
 .popover-key {
   color: var(--text-secondary);
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   white-space: nowrap;
 }
 .popover-val {
   color: var(--text-primary);
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.74rem;
+  font-size: 0.9rem;
   word-break: keep-all;
   overflow-wrap: anywhere;
 }
-.chip-wrapper:hover > .chip-popover,
-.chip-wrapper.active > .chip-popover { display: block; }
+.popover-val-ok { color: #22c55e; font-weight: 600; }
+.popover-val-warn { color: #f59e0b; font-weight: 600; }
+.popover-val-bad { color: #ef4444; font-weight: 600; }
+.popover-val-neutral { color: var(--text-secondary); }
 
-/* Popover action row (e.g. battery 보정 button) — single-cell, padded so
-   the button sits inside the popover's bottom border, not glued to it. */
+/* Popover action row (e.g. battery 보정 button) — span both grid columns
+   and switch back to flex so the button can right-align inside the box. */
 .popover-row.popover-actions {
   display: flex;
+  grid-column: 1 / -1;
   justify-content: flex-end;
   padding-top: 0.4rem;
   margin-top: 0.3rem;
@@ -2816,10 +2880,13 @@ onUnmounted(() => {
   color: var(--accent-primary);
 }
 
-.map-follow-row {
-  display: flex; gap: 0.5rem;
+.manual-btn-row {
+  width: 100%;
+  display: block;
 }
-.map-follow-row .btn { flex: 1; }
+/* When the rover is connected but no course is selected, the standalone
+   추적 toggle still gets its own row (single grid column, not 50% wide). */
+.rover-controls-grid.follow-only { grid-template-columns: 1fr; }
 
 .inspector-handle {
   width: 8px; flex-shrink: 0;
@@ -3482,7 +3549,7 @@ onUnmounted(() => {
   }
 
   /* Popovers: fall back to wider, lower-density layout for thumb taps. */
-  .chip-popover { font-size: 0.78rem; min-width: 200px; max-width: calc(100vw - 2rem); }
+  .chip-popover { font-size: 0.9rem; min-width: 200px; max-width: calc(100vw - 2rem); }
 }
 
 /* Desktop: hide sheet handle */
