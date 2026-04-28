@@ -461,6 +461,54 @@ describe('Email API', () => {
       });
       assert.equal(res.status, 401);
     });
+
+    it('does NOT emit email.send info log on internal success (noise reduction)', async () => {
+      const subject = 'Quiet Internal ' + Date.now();
+      const res = await client.post('/api/internal/send', {
+        headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+        body: {
+          subject,
+          htmlContent: '<p>Quiet</p>',
+          recipients: ['admin@test.com'],
+          source: 'documents',
+        },
+      });
+      assert.equal(res.status, 200);
+
+      const logsRes = await client.get('/api/logs?action=email.send', { cookie: adminCookie });
+      const logsData = await logsRes.json();
+      const matches = (logsData.logs || []).filter(
+        r => r.action === 'email.send' && r.level === 'info' && r.detail && r.detail.includes(subject),
+      );
+      assert.equal(matches.length, 0, 'internal success must not produce email.send info log');
+    });
+
+    it('still emits email.send warn on internal full-failure', async () => {
+      brevoSendStatus = 400;
+      brevoSendResponse = { message: 'Invalid email' };
+      const subject = 'Fail Internal ' + Date.now();
+      const res = await client.post('/api/internal/send', {
+        headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+        body: {
+          subject,
+          htmlContent: '<p>Fail</p>',
+          recipients: ['bad@test.com'],
+          source: 'documents',
+        },
+      });
+      assert.equal(res.status, 400);
+
+      const logsRes = await client.get('/api/logs?action=email.send&level=warn', { cookie: adminCookie });
+      const logsData = await logsRes.json();
+      const matches = (logsData.logs || []).filter(
+        r => r.action === 'email.send' && r.level === 'warn' && r.detail && r.detail.includes(subject),
+      );
+      assert.ok(matches.length >= 1, 'full-failure must still produce email.send warn log');
+
+      // Restore
+      brevoSendStatus = 201;
+      brevoSendResponse = { messageId: '<test-restore>' };
+    });
   });
 
   describe('GET /api/recipients', () => {

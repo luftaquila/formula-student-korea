@@ -392,7 +392,13 @@ ${htmlContent}
   if (successCount < recipients.length) {
     logger.warn(req, "email.send_partial", { subject, successCount, failedCount: recipients.length - successCount, lastError, source });
   }
-  logger.log(req, "email.send", { subject, recipientCount: successCount, messageId: lastMessageId, source });
+  // 내부 서비스에서 호출한 경우(예: documents 예약 알림은 수신자별 1건씩 호출), 호출자가
+  // 자체 집계 로그(`schedule.*`)를 남기므로 성공 info는 생략해 로그 노이즈를 줄인다.
+  // email_log 테이블에는 수신자별 행이 그대로 남아 추적 가능.
+  const isInternal = req.headers["x-internal-service"] && req.headers["x-internal-service"] === process.env.INTERNAL_SECRET;
+  if (!isInternal) {
+    logger.log(req, "email.send", { subject, recipientCount: successCount, messageId: lastMessageId, source });
+  }
   res.json({ success: true, messageId: lastMessageId });
 }
 

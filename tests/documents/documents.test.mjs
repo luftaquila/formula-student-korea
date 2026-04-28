@@ -704,14 +704,15 @@ describe('File download (student)', () => {
     fileId = files[0].id;
   });
 
-  it('GET /api/submissions/:subId/files/:fileId downloads file', async () => {
+  it('GET /api/submissions/:subId/files/:fileId serves PDF inline', async () => {
     const res = await fetch(`${baseUrl}/api/submissions/${submissionId}/files/${fileId}`, {
       headers: { 'Cookie': studentCookie },
     });
     assert.equal(res.status, 200);
     const disposition = res.headers.get('content-disposition');
     assert.ok(disposition);
-    assert.ok(disposition.includes('attachment'));
+    assert.ok(disposition.includes('inline'), 'PDF should be inline');
+    assert.equal(res.headers.get('content-type'), 'application/pdf');
   });
 
   it('GET /api/submissions/:subId/files/:fileId 403 for wrong team', async () => {
@@ -737,14 +738,35 @@ describe('File download (student)', () => {
 });
 
 describe('File download (admin)', () => {
-  it('GET /api/admin/submissions/:subId/files/:fileId downloads file', async () => {
+  it('GET /api/admin/submissions/:subId/files/:fileId serves PDF inline', async () => {
     const res = await fetch(`${baseUrl}/api/admin/submissions/${submissionId}/files/${fileId}`, {
       headers: { 'Cookie': adminCookie },
     });
     assert.equal(res.status, 200);
     const disposition = res.headers.get('content-disposition');
     assert.ok(disposition);
-    assert.ok(disposition.includes('attachment'));
+    assert.ok(disposition.includes('inline'), 'PDF should be inline');
+    assert.equal(res.headers.get('content-type'), 'application/pdf');
+  });
+
+  it('GET /api/admin/submissions/:subId/files/:fileId forces attachment for non-previewable type', async () => {
+    // Find a non-PDF file (the "replacement.pdf" submission also has older docx if any).
+    // Upload a fresh non-inline file and check disposition.
+    const fileContent = Buffer.from('docx test content');
+    const upRes = await uploadFile(sessionId, studentCookie, [
+      { name: 'sample.docx', type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', content: fileContent },
+    ]);
+    assert.equal(upRes.status, 200);
+    const subData = await upRes.json();
+    const newFile = db.prepare('SELECT id FROM submission_file WHERE submission_id = ? ORDER BY id DESC LIMIT 1').get(subData.id);
+
+    const res = await fetch(`${baseUrl}/api/admin/submissions/${subData.id}/files/${newFile.id}`, {
+      headers: { 'Cookie': adminCookie },
+    });
+    assert.equal(res.status, 200);
+    const disposition = res.headers.get('content-disposition');
+    assert.ok(disposition.includes('attachment'), 'docx should be attachment');
+    submissionId = subData.id; // keep test chain consistent with latest sub
   });
 
   it('GET /api/admin/submissions/:subId/files/:fileId 404 for non-existent submission', async () => {
@@ -764,13 +786,15 @@ describe('File download (admin)', () => {
 
 // -- Session status after submission --
 describe('Session status after submission', () => {
-  it('GET /api/admin/sessions/:id/status shows submission', async () => {
+  it('GET /api/admin/sessions/:id/status shows submission and submissionCount', async () => {
     const res = await client.get(`/api/admin/sessions/${sessionId}/status`, { cookie: chiefCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.ok(data.status[0].submission);
     assert.ok(data.status[0].submission.id);
     assert.ok(data.status[0].files.length > 0);
+    assert.equal(typeof data.status[0].submissionCount, 'number');
+    assert.ok(data.status[0].submissionCount >= 1, 'submissionCount should reflect total submissions');
   });
 });
 
@@ -1320,6 +1344,8 @@ describe('2-set retention', () => {
     assert.equal(team1.prevSubmission.id, sub2Id, 'prevSubmission should be second newest');
     assert.ok(team1.files.length > 0, 'should have current files');
     assert.ok(team1.prevFiles.length > 0, 'should have previous files');
+    // 3 submissions were inserted; oldest got pruned to disk but DB row count after retention is 2.
+    assert.equal(team1.submissionCount, 2, 'submissionCount should reflect remaining DB rows');
   });
 
   it('student API still returns only latest submission', async () => {

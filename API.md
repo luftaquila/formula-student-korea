@@ -304,7 +304,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | GET | `/api/sessions` | student | — | `{ team, sessions }` | My team's open sessions with latest submission |
 | GET | `/api/sessions/:id` | student | — | `{ session, team_num, submission, files }` | Session detail with files |
 | POST | `/api/sessions/:id/submit` | student | `multipart/form-data` | `{ id, submitted_at, is_late, total_size }` | Upload files (validates time window, extensions, size) |
-| GET | `/api/submissions/:subId/files/:fileId` | student | — | File download | Download own submission file |
+| GET | `/api/submissions/:subId/files/:fileId` | student | — | File stream | Download own submission file (PDF/text/image/AV → `inline`, other → `attachment`) |
 
 ### Admin/Chief API
 
@@ -314,8 +314,8 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | POST | `/api/admin/sessions` | chief | `{ name, notice?, start_at, end_at, late_end_at?, max_file_size?, allowed_extensions?, year, teams: [int] }` | `{ id }` | Create session |
 | PUT | `/api/admin/sessions/:id` | chief | `{ name, notice?, start_at, end_at, late_end_at?, max_file_size?, allowed_extensions?, teams: [int] }` | 200 | Update session (cleans up removed teams' submissions) |
 | DELETE | `/api/admin/sessions/:id` | chief | — | 200 | Delete session + all files |
-| GET | `/api/admin/sessions/:id/status` | chief | — | `{ session, status: [{ team_num, submission, files }] }` | Per-team submission status |
-| GET | `/api/admin/submissions/:subId/files/:fileId` | chief | — | File download | Admin file download |
+| GET | `/api/admin/sessions/:id/status` | chief | — | `{ session, status: [{ team_num, submission, files, prevSubmission, prevFiles, submissionCount }] }` | Per-team submission status (`submissionCount` = 누적 제출 횟수, 직전 1건은 `prevSubmission`) |
+| GET | `/api/admin/submissions/:subId/files/:fileId` | chief | — | File stream | Admin file download (PDF/text/image/AV → `inline`, other → `attachment`) |
 | GET | `/api/admin/students` | chief | — | `[{ email, name }]` | Active student users (fetched from auth service) |
 | GET | `/api/admin/student-teams` | chief | `?year=` | `[{ email, team_num, year }]` | Student-team mappings |
 | POST | `/api/admin/student-teams` | chief | `{ email, team_num, year }` | `{ email, team_num, year }` | Add student-team mapping |
@@ -379,7 +379,7 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| POST | `/api/internal/send` | internal | `{ subject, htmlContent, recipients: [...], source }` | `{ success: true, messageId }` | 다른 서비스용 이메일 전송 API. `source`로 호출 서비스 식별 (e.g., "auth") |
+| POST | `/api/internal/send` | internal | `{ subject, htmlContent, recipients: [...], source }` | `{ success: true, messageId }` | 다른 서비스용 이메일 전송 API. `source`로 호출 서비스 식별 (e.g., "auth"). 내부 호출은 성공 시 `email.send` info 로그를 남기지 않음 (호출자가 집계 로그를 남기는 전제, email_log 테이블에는 수신자별 행이 그대로 기록). 부분 실패(`email.send_partial`)·전부 실패(`email.send` warn)는 그대로 기록. |
 | GET | `/api/internal/sms-config` | internal | — | `{ naver_cloud_access_key, naver_cloud_secret_key, naver_cloud_sms_service_id, phone_number_sms_sender }` | SMS 설정 (queue 서비스용, 마스킹 없이 원본값 반환) |
 
 ---

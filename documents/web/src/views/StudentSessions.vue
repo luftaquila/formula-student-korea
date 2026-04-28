@@ -168,11 +168,6 @@ onMounted(load);
   color: var(--text-secondary);
 }
 
-.badge-default {
-  background: var(--bg-hover);
-  color: var(--text-secondary);
-}
-
 .empty-text {
   text-align: center;
   color: var(--text-tertiary);

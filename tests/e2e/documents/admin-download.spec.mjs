@@ -40,10 +40,10 @@ test.describe("Documents admin submission and download", () => {
     // Team 2 (한양대학교) should show "미제출"
     const team2Row = table.locator("tbody tr").filter({ hasText: "한양대학교" });
     await expect(team2Row).toBeVisible();
-    await expect(team2Row.locator(".text-muted")).toContainText("미제출");
+    await expect(team2Row.locator(".col-status .badge-default")).toContainText("미제출");
   });
 
-  test("submission count badge shows correct count", async ({ page }) => {
+  test("submission count chips show correct counts", async ({ page }) => {
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
@@ -51,9 +51,11 @@ test.describe("Documents admin submission and download", () => {
     await sessionLink.click();
     await waitForPageReady(page);
 
-    // Verify the count badge shows "1 / 3" (team 1 submitted, teams 2 and 3 did not)
-    const countBadge = page.locator(".count-badge");
-    await expect(countBadge).toContainText("1 / 3");
+    // Header chips: 제출 1 / 미제출 2 / 전체 3 (지각 0이라 숨김)
+    const chips = page.locator(".count-chips");
+    await expect(chips.locator(".badge-success")).toContainText("제출 1");
+    await expect(chips.locator(".badge-default")).toContainText("미제출 2");
+    await expect(chips.locator(".badge-primary")).toContainText("전체 3");
   });
 
   test("submitted file name is visible for team 1", async ({ page }) => {

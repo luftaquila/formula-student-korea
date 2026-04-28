@@ -1,8 +1,8 @@
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { Notyf } from "notyf";
-import { request, fetchEntries } from "../api.js";
+import { request, fetchEntries, fetchVehicleTypes } from "../api.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -14,7 +14,85 @@ const loading = ref(true);
 const session = ref(null);
 const status = ref([]);
 const entries = ref({});
+const students = ref([]);
 const expandedTeams = ref(new Set());
+
+// 정렬
+const sortKey = ref(null);
+const sortOrder = ref("asc");
+
+function handleSort(key) {
+  if (sortKey.value === key) sortOrder.value = sortOrder.value === "asc" ? "desc" : "asc";
+  else { sortKey.value = key; sortOrder.value = "asc"; }
+}
+function getSortIcon(key) {
+  if (sortKey.value !== key) return "↕";
+  return sortOrder.value === "asc" ? "↑" : "↓";
+}
+
+// 유형 색상 (엔트리 서비스에서 가져옴)
+const typeColorMap = ref({});
+function getTypeColor(type) {
+  if (!type) return "blue";
+  return typeColorMap.value[type] || "blue";
+}
+
+// 학생 디스플레이
+const studentByEmail = computed(() => {
+  const map = {};
+  for (const s of students.value) map[s.email] = s;
+  return map;
+});
+function studentDisplayName(email) {
+  if (!email) return "-";
+  const s = studentByEmail.value[email];
+  if (!s) return email;
+  if (s.realname) return s.phone ? `${s.realname} (${s.phone})` : s.realname;
+  return s.name || email;
+}
+
+// 정렬된 status
+const sortedStatus = computed(() => {
+  if (!sortKey.value) return status.value;
+  const key = sortKey.value;
+  const dir = sortOrder.value === "asc" ? 1 : -1;
+  return [...status.value].sort((a, b) => {
+    let aVal, bVal;
+    if (key === "num") { aVal = a.team_num; bVal = b.team_num; }
+    else if (key === "team") {
+      const ea = entries.value[a.team_num] || {};
+      const eb = entries.value[b.team_num] || {};
+      aVal = `${ea.univ || ""} ${ea.team || ""}`.toLowerCase();
+      bVal = `${eb.univ || ""} ${eb.team || ""}`.toLowerCase();
+    } else if (key === "type") {
+      aVal = (entries.value[a.team_num]?.type || "").toLowerCase();
+      bVal = (entries.value[b.team_num]?.type || "").toLowerCase();
+    } else if (key === "status") {
+      // 제출(0) < 지각(1) < 미제출(2)
+      aVal = a.submission ? (a.submission.is_late ? 1 : 0) : 2;
+      bVal = b.submission ? (b.submission.is_late ? 1 : 0) : 2;
+    } else if (key === "count") {
+      aVal = a.submissionCount || 0;
+      bVal = b.submissionCount || 0;
+    } else if (key === "time") {
+      aVal = a.submission?.submitted_at || "";
+      bVal = b.submission?.submitted_at || "";
+    } else if (key === "submitter") {
+      aVal = studentDisplayName(a.submission?.submitted_by).toLowerCase();
+      bVal = studentDisplayName(b.submission?.submitted_by).toLowerCase();
+    } else if (key === "size") {
+      aVal = a.submission?.total_size || 0;
+      bVal = b.submission?.total_size || 0;
+    } else { aVal = a.team_num; bVal = b.team_num; }
+    return aVal < bVal ? -dir : aVal > bVal ? dir : 0;
+  });
+});
+
+// 카운트 칩
+const submittedCount = computed(() => status.value.filter(t => t.submission && !t.submission.is_late).length);
+const lateCount = computed(() => status.value.filter(t => t.submission && t.submission.is_late).length);
+const missingCount = computed(() => status.value.filter(t => !t.submission).length);
+const totalCount = computed(() => status.value.length);
 
 async function loadStatus() {
   loading.value = true;
@@ -23,7 +101,16 @@ async function loadStatus() {
     const data = await res.json();
     session.value = data.session;
     status.value = data.status;
-    entries.value = await fetchEntries(session.value.year);
+    const [entryData, studRes] = await Promise.all([
+      fetchEntries(session.value.year),
+      request("/api/admin/students"),
+    ]);
+    entries.value = entryData;
+    students.value = await studRes.json();
+    try {
+      const vtList = await fetchVehicleTypes(session.value.year);
+      typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
+    } catch { /* 색상 로드 실패 시 기본값 사용 */ }
   } catch {
     router.push("/admin");
   } finally {
@@ -128,37 +215,53 @@ onMounted(loadStatus);
       <!-- 제출 현황 테이블 -->
       <div class="card">
         <div class="card-header">
-          <h3>팀별 제출 현황 <span class="count-badge">{{ status.filter(t => t.submission).length }} / {{ status.length }}</span></h3>
+          <h3>팀별 제출 현황</h3>
+          <div class="count-chips">
+            <span v-if="submittedCount > 0" class="badge badge-success">제출 {{ submittedCount }}</span>
+            <span v-if="lateCount > 0" class="badge badge-warning">지각 {{ lateCount }}</span>
+            <span v-if="missingCount > 0" class="badge badge-default">미제출 {{ missingCount }}</span>
+            <span class="badge badge-primary">전체 {{ totalCount }}</span>
+          </div>
         </div>
         <div class="card-body table-body">
           <div class="table-container">
             <table class="data-table detail-table">
               <thead>
                 <tr>
-                  <th class="col-num">번호</th>
-                  <th class="col-team">학교 / 팀</th>
-                  <th class="col-status">상태</th>
-                  <th class="col-time">제출 시간</th>
-                  <th class="col-submitter">제출자</th>
-                  <th class="col-size">용량</th>
+                  <th class="col-num sortable" @click="handleSort('num')">번호 <span class="sort-icon">{{ getSortIcon('num') }}</span></th>
+                  <th class="col-team sortable" @click="handleSort('team')">학교 / 팀 <span class="sort-icon">{{ getSortIcon('team') }}</span></th>
+                  <th class="col-type sortable" @click="handleSort('type')">유형 <span class="sort-icon">{{ getSortIcon('type') }}</span></th>
+                  <th class="col-status sortable" @click="handleSort('status')">상태 <span class="sort-icon">{{ getSortIcon('status') }}</span></th>
+                  <th class="col-count sortable" @click="handleSort('count')">횟수 <span class="sort-icon">{{ getSortIcon('count') }}</span></th>
+                  <th class="col-time sortable" @click="handleSort('time')">제출 시간 <span class="sort-icon">{{ getSortIcon('time') }}</span></th>
+                  <th class="col-submitter sortable" @click="handleSort('submitter')">제출자 <span class="sort-icon">{{ getSortIcon('submitter') }}</span></th>
+                  <th class="col-size sortable" @click="handleSort('size')">용량 <span class="sort-icon">{{ getSortIcon('size') }}</span></th>
                   <th class="col-files">파일</th>
                 </tr>
               </thead>
               <tbody>
-                <template v-for="t in status" :key="t.team_num">
+                <template v-for="t in sortedStatus" :key="t.team_num">
                   <tr :class="{ 'row-none': !t.submission }">
                     <td class="col-num"><span class="entry-num">{{ t.team_num }}</span></td>
-                    <td class="col-team" :class="{ 'col-team-expand': t.prevSubmission }" @click="t.prevSubmission && toggleExpand(t.team_num)">{{ entries[t.team_num]?.univ }} {{ entries[t.team_num]?.team }}</td>
+                    <td class="col-team">{{ entries[t.team_num]?.univ }} {{ entries[t.team_num]?.team }}</td>
+                    <td class="col-type">
+                      <span v-if="entries[t.team_num]?.type" class="badge" :class="'badge-type-' + getTypeColor(entries[t.team_num].type)">{{ entries[t.team_num].type }}</span>
+                    </td>
                     <td class="col-status">
-                      <template v-if="t.submission">
-                        <span class="badge" :class="t.submission.is_late ? 'badge-warning' : 'badge-success'">
-                          {{ t.submission.is_late ? "지각" : "제출" }}
-                        </span>
-                      </template>
-                      <span v-else class="text-muted">미제출</span>
+                      <span v-if="t.submission" class="badge" :class="t.submission.is_late ? 'badge-warning' : 'badge-success'">
+                        {{ t.submission.is_late ? "지각" : "제출" }}
+                      </span>
+                      <span v-else class="badge badge-default">미제출</span>
+                    </td>
+                    <td class="col-count" :class="{ 'col-count-expand': t.prevSubmission }" @click="t.prevSubmission && toggleExpand(t.team_num)">
+                      <span v-if="t.submissionCount > 0">#{{ t.submissionCount }}</span>
+                      <span v-else class="text-muted">-</span>
                     </td>
                     <td class="col-time">{{ t.submission ? formatDate(t.submission.submitted_at) : "-" }}</td>
-                    <td class="col-submitter">{{ t.submission?.submitted_by || "-" }}</td>
+                    <td class="col-submitter">
+                      <span v-if="t.submission?.submitted_by" :title="t.submission.submitted_by">{{ studentDisplayName(t.submission.submitted_by) }}</span>
+                      <span v-else>-</span>
+                    </td>
                     <td class="col-size">{{ t.submission ? formatSize(t.submission.total_size) : "-" }}</td>
                     <td class="col-files">
                       <div v-if="t.files.length > 0" class="file-list">
@@ -175,14 +278,17 @@ onMounted(loadStatus);
                   </tr>
                   <tr v-if="t.prevSubmission && expandedTeams.has(t.team_num)" class="row-prev">
                     <td class="col-num"></td>
-                    <td class="col-team prev-label">이전 제출</td>
+                    <td class="col-team prev-label" colspan="2">이전 제출</td>
                     <td class="col-status">
                       <span class="badge" :class="t.prevSubmission.is_late ? 'badge-warning' : 'badge-success'">
                         {{ t.prevSubmission.is_late ? "지각" : "제출" }}
                       </span>
                     </td>
+                    <td class="col-count"></td>
                     <td class="col-time">{{ formatDate(t.prevSubmission.submitted_at) }}</td>
-                    <td class="col-submitter">{{ t.prevSubmission.submitted_by }}</td>
+                    <td class="col-submitter">
+                      <span :title="t.prevSubmission.submitted_by">{{ studentDisplayName(t.prevSubmission.submitted_by) }}</span>
+                    </td>
                     <td class="col-size">{{ formatSize(t.prevSubmission.total_size) }}</td>
                     <td class="col-files">
                       <div v-if="t.prevFiles.length > 0" class="file-list">
@@ -266,14 +372,11 @@ onMounted(loadStatus);
   line-height: 1.7;
 }
 
-.count-badge {
-  background: var(--accent-primary);
-  color: white;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  padding: 0.125rem 0.5rem;
-  border-radius: 12px;
-  margin-left: 0.5rem;
+.count-chips {
+  display: flex;
+  gap: 0.375rem;
+  margin-left: 0.75rem;
+  flex-wrap: wrap;
 }
 
 /* 테이블 */
@@ -284,7 +387,9 @@ onMounted(loadStatus);
 
 .col-num,
 .col-team,
+.col-type,
 .col-status,
+.col-count,
 .col-time,
 .col-submitter,
 .col-size,
@@ -305,7 +410,8 @@ onMounted(loadStatus);
   z-index: 3;
 }
 
-.col-status {
+.col-status,
+.col-count {
   text-align: center !important;
 }
 
@@ -353,12 +459,18 @@ onMounted(loadStatus);
   border-bottom: 1px solid var(--border-color);
 }
 
-.col-team-expand {
+.col-count-expand {
   cursor: pointer;
+  color: var(--accent-primary);
+  font-weight: 600;
 }
 
-.col-team-expand:hover {
-  color: var(--accent-primary);
+.col-count-expand:hover {
+  text-decoration: underline;
+}
+
+.col-submitter span[title] {
+  cursor: help;
 }
 
 .row-prev {
@@ -374,5 +486,18 @@ onMounted(loadStatus);
 .prev-label {
   font-style: italic;
   color: var(--text-tertiary) !important;
+}
+
+/* 정렬 */
+.detail-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+.detail-table th.sortable:hover {
+  background: var(--bg-hover);
+}
+.sort-icon {
+  opacity: 0.5;
+  font-size: 0.75rem;
 }
 </style>

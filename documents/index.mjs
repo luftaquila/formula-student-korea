@@ -184,6 +184,61 @@ function rmDir(dir) {
   }
 }
 
+// 브라우저에서 안전하게 인라인으로 표시 가능한 MIME/확장자 화이트리스트.
+// SVG·HTML은 same-origin XSS 위험이 있어 제외한다.
+const INLINE_MIME = new Set([
+  "application/pdf",
+  "text/plain",
+  "text/csv",
+  "text/markdown",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "audio/mpeg",
+  "audio/wav",
+  "audio/ogg",
+  "audio/webm",
+  "video/mp4",
+  "video/webm",
+  "video/ogg",
+]);
+const INLINE_EXT_MIME = {
+  ".pdf": "application/pdf",
+  ".txt": "text/plain; charset=utf-8",
+  ".csv": "text/csv; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+};
+
+function inlineDisposition(originalName, mimeType) {
+  const ext = path.extname(originalName || "").toLowerCase();
+  const mime = (mimeType || "").split(";")[0].trim().toLowerCase();
+  if (mime && INLINE_MIME.has(mime)) return mime;
+  if (INLINE_EXT_MIME[ext]) return INLINE_EXT_MIME[ext];
+  return null;
+}
+
+function setFileResponseHeaders(res, file) {
+  const inlineType = inlineDisposition(file.original_name, file.mime_type);
+  const encoded = encodeURIComponent(file.original_name);
+  if (inlineType) {
+    res.setHeader("Content-Type", inlineType);
+    res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encoded}`);
+  } else {
+    res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encoded}`);
+  }
+}
+
 /* ============================================
    학생 API
    ============================================ */
@@ -492,7 +547,7 @@ app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
   logger.log(req, "file.download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
-  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(file.original_name)}`);
+  setFileResponseHeaders(res, file);
   res.sendFile(filePath);
 });
 
@@ -667,6 +722,7 @@ app.get("/api/admin/sessions/:id/status", (req, res) => {
     ORDER BY s.id DESC LIMIT 2
   `);
 
+  const countStmt = db.prepare("SELECT COUNT(*) AS c FROM submission WHERE session_id = ? AND team_num = ?");
   const fileStmt = db.prepare("SELECT id, original_name, size, mime_type FROM submission_file WHERE submission_id = ?");
 
   const status = teams.map((t) => {
@@ -675,7 +731,8 @@ app.get("/api/admin/sessions/:id/status", (req, res) => {
     const files = sub ? fileStmt.all(sub.id) : [];
     const prevSub = subs[1] || null;
     const prevFiles = prevSub ? fileStmt.all(prevSub.id) : [];
-    return { team_num: t.team_num, submission: sub, files, prevSubmission: prevSub, prevFiles };
+    const submissionCount = countStmt.get(id, t.team_num).c;
+    return { team_num: t.team_num, submission: sub, files, prevSubmission: prevSub, prevFiles, submissionCount };
   });
 
   res.json({ session, status });
@@ -762,7 +819,7 @@ app.get("/api/admin/submissions/:subId/files/:fileId", (req, res) => {
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
   logger.log(req, "file.admin_download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
-  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(file.original_name)}`);
+  setFileResponseHeaders(res, file);
   res.sendFile(filePath);
 });
 
