@@ -478,9 +478,6 @@ const activeTab = ref((() => {
   return v;
 })());
 const historyView = ref(loadPref("historyView", "missions"));
-// Inspector is always open now; keep the ref as a fixed `false` so any
-// remaining template references compile, but stop persisting it.
-const inspectorCollapsed = ref(false);
 const inspectorWidth = ref(Math.max(280, Math.min(Number(loadPref("inspectorWidth", 360, Number)), 600)));
 const inspectorResizing = ref(false);
 
@@ -498,9 +495,6 @@ function savePref(key, value) {
 watch(activeTab, (v) => savePref("activeTab", v));
 watch(historyView, (v) => savePref("historyView", v));
 watch(inspectorWidth, (v) => savePref("inspectorWidth", v));
-// Clear any stale collapsed pref a user might have saved from the
-// previous behaviour, so the inspector always starts open.
-try { localStorage.removeItem("inspectorCollapsed"); } catch {}
 
 // Tab-swap: hide live layers when entering the missions sub-view of the
 // history tab, tear down replay state and restore the live view when leaving.
@@ -922,6 +916,9 @@ function initMap() {
   }).addTo(map);
 
   map.on("click", onMapClick);
+  // User-initiated drag should disable follow so the operator isn't
+  // fighting an auto-recentre. Programmatic panTo doesn't fire dragstart.
+  map.on("dragstart", () => { if (followRover.value) followRover.value = false; });
   setupSelectionBox();
   rebuildAllMarkers();
 }
@@ -1279,6 +1276,20 @@ function panToCone(cone) {
 }
 
 /* ── Rover position ───────────────────────────────── */
+const followRover = ref(loadPref("followRover", false, (v) => v === "true"));
+watch(followRover, (v) => savePref("followRover", v));
+
+function centerOnRover() {
+  const lp = roverStatus.value.last_position;
+  if (!lp || !map) return;
+  map.panTo([lp.lat, lp.lng], { animate: true });
+}
+
+function toggleFollowRover() {
+  followRover.value = !followRover.value;
+  if (followRover.value) centerOnRover();
+}
+
 function updateRoverMarker(lat, lng) {
   if (!map) return;
   if (roverMarker) {
@@ -1581,16 +1592,6 @@ function onWaypointReached(localIdx) {
   }
 }
 
-/* ── Emergency stop ───────────────────────────────── */
-async function emergencyStop() {
-  stopManualControl();
-  try { await request("/api/rover/stop", { method: "POST" }); } catch (err) { alert(err.message); }
-  if (roverMode.value === "executing") {
-    roverMode.value = "stopped";
-    resumeStartIdx.value = executedIndex.value; // default to "where the rover left off"
-  }
-}
-
 /* ── Manual control ───────────────────────────────── */
 function startManualControl() {
   if (!roverStatus.value.connected) {
@@ -1709,6 +1710,7 @@ function connectSSE() {
   eventSource.addEventListener("rover", (e) => {
     const data = JSON.parse(e.data);
     updateRoverMarker(data.lat, data.lng);
+    if (followRover.value && map) map.panTo([data.lat, data.lng], { animate: true });
     if (roverMode.value === "executing") updatePathProgress(data.lat, data.lng);
   });
 
@@ -1720,6 +1722,7 @@ function connectSSE() {
     const lp = data.last_position;
     if (lp && typeof lp.lat === "number" && typeof lp.lng === "number") {
       updateRoverMarker(lp.lat, lp.lng);
+      if (followRover.value && map) map.panTo([lp.lat, lp.lng], { animate: true });
     }
     // If the rover disconnected mid-manual-control, release immediately.
     if (!data.connected && roverMode.value === "manual") {
@@ -2020,7 +2023,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Workspace: top status strip + body(rail + map + inspector) -->
-      <div class="workspace" :class="{ 'inspector-collapsed': inspectorCollapsed }">
+      <div class="workspace">
 
         <!-- Persistent status strip (always visible across tabs) -->
         <div :class="['status-strip', roverStatusClass]">
@@ -2103,7 +2106,7 @@ onUnmounted(() => {
           <nav class="rail" aria-label="인스펙터 카테고리">
             <button
               v-for="t in INSPECTOR_TABS" :key="t.key"
-              :class="['rail-btn', { active: activeTab === t.key && !inspectorCollapsed }]"
+              :class="['rail-btn', { active: activeTab === t.key }]"
               @click="onRailClick(t.key)"
               :title="t.label"
             >
@@ -2124,7 +2127,7 @@ onUnmounted(() => {
 
           <!-- Resize handle (desktop only) -->
           <div
-            v-if="!inspectorCollapsed && !isMobile"
+            v-if="!isMobile"
             class="inspector-handle"
             :class="{ dragging: inspectorResizing }"
             @pointerdown="onInspectorResizeStart"
@@ -2136,7 +2139,6 @@ onUnmounted(() => {
 
           <!-- Inspector -->
           <aside
-            v-show="!inspectorCollapsed"
             class="inspector"
             :style="!isMobile ? { width: inspectorWidth + 'px' } : { height: sheetHeight + 'px' }"
           >
@@ -2277,6 +2279,51 @@ onUnmounted(() => {
                 <header class="tab-header">
                   <h3>로버 제어</h3>
                 </header>
+
+                <!-- GPS live block (always visible while connected). Surfaces
+                     heading/speed/accuracy/satellite count outside the fix-chip
+                     popover so the operator can read it during driving. -->
+                <div v-if="roverStatus.connected" class="inspector-group gps-block">
+                  <div class="group-title">GPS</div>
+                  <div class="gps-grid">
+                    <div class="gps-cell">
+                      <span class="gps-label">HEAD</span>
+                      <span class="gps-val">
+                        <span
+                          class="compass-arrow"
+                          :style="{
+                            transform: `rotate(${roverStatus.gps?.heading ?? 0}deg)`,
+                            opacity: roverStatus.gps?.heading == null ? 0.25 : 1,
+                          }"
+                        >▲</span>
+                        {{ roverStatus.gps?.heading != null ? roverStatus.gps.heading.toFixed(0) + '°' : '—' }}
+                      </span>
+                    </div>
+                    <div class="gps-cell">
+                      <span class="gps-label">SPEED</span>
+                      <span class="gps-val">{{ roverStatus.gps?.speed != null ? roverStatus.gps.speed.toFixed(2) + ' m/s' : '—' }}</span>
+                    </div>
+                    <div class="gps-cell">
+                      <span class="gps-label">ACC</span>
+                      <span class="gps-val">{{ roverStatus.gps?.h_acc != null ? '±' + roverStatus.gps.h_acc.toFixed(2) + ' m' : '—' }}</span>
+                    </div>
+                    <div class="gps-cell">
+                      <span class="gps-label">SAT</span>
+                      <span class="gps-val">{{ roverStatus.gps?.num_sv ?? '—' }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Map follow controls (always visible while connected). -->
+                <div v-if="roverStatus.connected" class="map-follow-row">
+                  <button class="btn btn-ghost btn-lg-touch" :disabled="!roverStatus.last_position" @click="centerOnRover">📍 위치로</button>
+                  <button
+                    :class="['btn', 'btn-lg-touch', followRover ? 'btn-primary' : 'btn-ghost']"
+                    :disabled="!roverStatus.connected"
+                    @click="toggleFollowRover"
+                  >{{ followRover ? '추적 중' : '추적' }}</button>
+                </div>
+
                 <div v-if="!activeCourse" class="empty-msg large">
                   코스를 먼저 선택하세요.
                   <button class="btn btn-ghost btn-lg-touch" @click="activeTab = 'courses'">코스 탭으로</button>
@@ -2481,7 +2528,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
   /* New stacking context comfortably above Leaflet's panes/controls
      (max 1000) so chip popovers anchored inside it always escape the
-     map. The inline E-Stop button still wins at z-index 2000. */
+     map. The global E-Stop button in App.vue sits at z-index 2000. */
   position: relative;
   z-index: 1500;
 }
@@ -2737,6 +2784,42 @@ onUnmounted(() => {
   font-size: 0.8rem;
   white-space: nowrap;
 }
+
+.gps-block .gps-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.375rem 0.75rem;
+  font-family: "JetBrains Mono", monospace;
+}
+.gps-cell {
+  display: flex; align-items: baseline; gap: 0.5rem;
+  min-width: 0;
+}
+.gps-label {
+  font-size: 0.7rem; font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+  flex: 0 0 auto;
+}
+.gps-val {
+  font-size: 0.85rem; font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  display: inline-flex; align-items: center; gap: 0.25rem;
+}
+.compass-arrow {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+  color: var(--accent-primary);
+}
+
+.map-follow-row {
+  display: flex; gap: 0.5rem;
+}
+.map-follow-row .btn { flex: 1; }
 
 .inspector-handle {
   width: 8px; flex-shrink: 0;
