@@ -662,6 +662,7 @@ const roverState = {
   last_spray_result: null, // { waypoint, outcome, at }
   battery: null, // { voltage, percent, source }
   ntrip: null, // { host, port, mountpoint, fail_count, last_error, last_correction_at, bytes_received }
+  gps: null, // { h_acc, v_acc, speed, heading, num_sv } from rover GPS metrics
   // Session-scoped per-mission progress used for tab-close recovery — the
   // server acts as the source of truth so reloading the UI rebuilds the
   // executing/stopped view exactly.
@@ -762,7 +763,7 @@ app.post("/api/rover/position", (req, res) => {
 
 // POST /api/rover/telemetry - 로버 상태 텔레메트리 (internal)
 app.post("/api/rover/telemetry", (req, res) => {
-  const { nav_state, fix_status, ntrip_connected, battery, ntrip } = req.body || {};
+  const { nav_state, fix_status, ntrip_connected, battery, ntrip, gps } = req.body || {};
   const now = Date.now();
   const prevNav = roverState.nav_state;
   if (typeof nav_state === "string") roverState.nav_state = nav_state;
@@ -787,6 +788,15 @@ app.post("/api/rover/telemetry", (req, res) => {
       gain: typeof battery.gain === "number" ? battery.gain : null,
       measured_v: typeof battery.measured_v === "number" ? battery.measured_v : null,
       calibrated_at: Number.isInteger(battery.calibrated_at) ? battery.calibrated_at : null,
+    };
+  }
+  if (gps && typeof gps === "object" && !Array.isArray(gps)) {
+    roverState.gps = {
+      h_acc: typeof gps.h_acc === "number" ? gps.h_acc : null,
+      v_acc: typeof gps.v_acc === "number" ? gps.v_acc : null,
+      speed: typeof gps.speed === "number" ? gps.speed : null,
+      heading: typeof gps.heading === "number" ? gps.heading : null,
+      num_sv: Number.isInteger(gps.num_sv) ? gps.num_sv : null,
     };
   }
   if (ntrip && typeof ntrip === "object" && !Array.isArray(ntrip)) {

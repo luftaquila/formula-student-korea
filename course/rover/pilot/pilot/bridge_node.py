@@ -83,6 +83,7 @@ class BridgeNode(Node):
         self.create_subscription(Int32, '/rover/nav/waypoint_reached', self._on_waypoint_reached, reliable_qos)
         self.create_subscription(String, '/rover/spray/result', self._on_spray_result, reliable_qos)
         self.create_subscription(String, '/rover/battery', self._on_battery, 10)
+        self.create_subscription(String, '/rover/gps/metrics', self._on_gps_metrics, 10)
 
         # State
         self._last_position = None
@@ -101,6 +102,9 @@ class BridgeNode(Node):
 
         # Battery telemetry
         self._battery = None  # { voltage, percent, source }
+
+        # Latest GPS metrics: { h_acc, v_acc, speed, heading, num_sv }
+        self._gps_metrics = None
 
         # /rosout log buffer (aggregated across all nodes in the domain)
         self._log_buffer = collections.deque(maxlen=LOG_BUFFER_MAXLEN)
@@ -151,6 +155,15 @@ class BridgeNode(Node):
     def _on_fix_status(self, msg):
         """Track fix status for telemetry."""
         self._fix_status = msg.data
+
+    def _on_gps_metrics(self, msg):
+        """Track GPS accuracy/speed/heading JSON for telemetry."""
+        try:
+            data = json.loads(msg.data)
+            if isinstance(data, dict):
+                self._gps_metrics = data
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
 
     def _on_ntrip_status(self, msg):
         """Track NTRIP client status payload (JSON) for telemetry."""
@@ -269,6 +282,8 @@ class BridgeNode(Node):
                 payload['ntrip'] = self._ntrip_detail
             if self._battery is not None:
                 payload['battery'] = self._battery
+            if self._gps_metrics is not None:
+                payload['gps'] = self._gps_metrics
             try:
                 requests.post(
                     f'{url}/api/rover/telemetry',

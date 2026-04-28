@@ -97,6 +97,7 @@ class GpsNode(Node):
         self._pub_position = self.create_publisher(NavSatFix, '/rover/gps/position', 10)
         self._pub_heading = self.create_publisher(Float64, '/rover/gps/heading', 10)
         self._pub_fix_status = self.create_publisher(String, '/rover/gps/fix_status', 10)
+        self._pub_metrics = self.create_publisher(String, '/rover/gps/metrics', 10)
         self._pub_ntrip_status = self.create_publisher(String, '/rover/ntrip/status', 1)
 
         # Subscriber for position request
@@ -263,6 +264,7 @@ class GpsNode(Node):
                 self._last_pvt = msg
                 self._publish_heading(msg)
                 self._publish_fix_status(msg)
+                self._publish_metrics(msg)
 
                 # Kick off NTRIP now that we might have a position; no-op
                 # if already running, no fix yet, or in cooldown.
@@ -343,6 +345,27 @@ class GpsNode(Node):
         msg = String()
         msg.data = _fix_status_string(pvt)
         self._pub_fix_status.publish(msg)
+
+    def _publish_metrics(self, pvt):
+        """Publish accuracy/speed/heading JSON for telemetry consumers."""
+        threshold = self.get_parameter('heading_speed_threshold').value
+        # Prefer HPPOSLLH accuracy when available — finer than NAV-PVT estimate.
+        if self._last_hpposllh is not None:
+            h_acc = self._last_hpposllh.h_acc
+            v_acc = self._last_hpposllh.v_acc
+        else:
+            h_acc = pvt.h_acc
+            v_acc = pvt.v_acc
+        metrics = {
+            'h_acc': h_acc,
+            'v_acc': v_acc,
+            'speed': pvt.ground_speed,
+            'heading': pvt.heading if pvt.ground_speed >= threshold else None,
+            'num_sv': pvt.num_sv,
+        }
+        msg = String()
+        msg.data = json.dumps(metrics)
+        self._pub_metrics.publish(msg)
 
     def _on_request_position(self, _msg):
         """Immediately publish cached position on request."""

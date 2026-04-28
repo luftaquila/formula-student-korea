@@ -571,6 +571,20 @@ describe('Rover telemetry + status (internal)', () => {
     assert.equal(data.ntrip_connected, true);
   });
 
+  it('accepts and exposes gps metrics payload (h_acc, v_acc, speed, heading, num_sv)', async () => {
+    const res = await client.post('/api/rover/telemetry', {
+      body: { gps: { h_acc: 0.012, v_acc: 0.018, speed: 1.34, heading: 87.5, num_sv: 22 } },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+    const data = await (await client.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(data.gps.h_acc, 0.012);
+    assert.equal(data.gps.v_acc, 0.018);
+    assert.equal(data.gps.speed, 1.34);
+    assert.equal(data.gps.heading, 87.5);
+    assert.equal(data.gps.num_sv, 22);
+  });
+
   it('accepts and exposes battery payload', async () => {
     const res = await client.post('/api/rover/telemetry', {
       body: { battery: { voltage: 11.4, percent: 55, source: 'simulated' } },

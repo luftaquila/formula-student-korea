@@ -77,6 +77,7 @@ const roverStatus = ref({
   last_spray_result: null,
   battery: null,
   ntrip: null,
+  gps: null,
 });
 let manualFailCount = 0;
 
@@ -106,34 +107,6 @@ const BATTERY_CRIT_PERCENT = 20;
 const uiTick = ref(0);
 let uiTickInterval = null;
 
-// Recent position history (for avg speed / ETA). Plain array + a bump ref so
-// computeds depending on it get retriggered without making the list reactive.
-const recentPositions = [];
-const recentPositionsBump = ref(0);
-function pushRecentPosition(lat, lng) {
-  const now = Date.now();
-  recentPositions.push({ lat, lng, t: now });
-  const cutoff = now - 30000;
-  while (recentPositions.length > 0 && recentPositions[0].t < cutoff) {
-    recentPositions.shift();
-  }
-  recentPositionsBump.value += 1;
-}
-
-const avgSpeedMs = computed(() => {
-  recentPositionsBump.value; // track
-  if (recentPositions.length < 2) return null;
-  const first = recentPositions[0];
-  const last = recentPositions[recentPositions.length - 1];
-  const dt = (last.t - first.t) / 1000;
-  if (dt < 0.5) return null;
-  let dist = 0;
-  for (let i = 1; i < recentPositions.length; i++) {
-    dist += haversine(recentPositions[i - 1], recentPositions[i]);
-  }
-  return dist / dt;
-});
-
 // Distance from rover's last reported position to the next-target waypoint.
 // Only meaningful while a mission is actually being driven.
 const currentTargetDistance = computed(() => {
@@ -147,16 +120,16 @@ const currentTargetDistance = computed(() => {
 
 function formatDurationSec(secs) {
   if (!isFinite(secs) || secs < 1) return null;
-  if (secs < 60) return `~${Math.round(secs)}초`;
+  if (secs < 60) return `~${Math.round(secs)}s`;
   const m = Math.floor(secs / 60);
   const s = Math.round(secs % 60);
-  return s === 0 ? `~${m}분` : `~${m}분 ${s}초`;
+  return s === 0 ? `~${m}m` : `~${m}m ${s}s`;
 }
 
 const missionETA = computed(() => {
   if (roverMode.value !== "executing") return null;
   if (pathTotalDist <= 0) return null;
-  const speed = avgSpeedMs.value;
+  const speed = roverStatus.value.gps?.speed;
   if (!speed || speed < 0.05) return null;
   const remaining = pathTotalDist * Math.max(0, (100 - pathProgress.value) / 100);
   return formatDurationSec(remaining / speed);
@@ -172,8 +145,22 @@ const fixChip = computed(() => {
   const tone = s.fix_status === "rtk_fixed" ? "ok"
     : s.fix_status === "rtk_float" ? "warn"
     : "bad";
-  const rows = [["모드", label]];
-  if (lastPositionAge.value != null) rows.push(["갱신", `${lastPositionAge.value}s 전`]);
+  const rows = [["MODE", label]];
+  if (s.last_position?.lat != null && s.last_position?.lng != null) {
+    rows.push(["POS", `${s.last_position.lat.toFixed(6)}, ${s.last_position.lng.toFixed(6)}`]);
+  }
+  if (lastPositionAge.value != null) rows.push(["UPDATE", `${lastPositionAge.value}s`]);
+  if (s.gps?.h_acc != null) rows.push(["ACC", `±${s.gps.h_acc.toFixed(2)} m`]);
+  if (s.gps?.speed != null) rows.push(["SPEED", `${s.gps.speed.toFixed(2)} m/s`]);
+  if (s.gps?.num_sv != null) rows.push(["SAT", `${s.gps.num_sv}`]);
+  if (s.ntrip_connected) {
+    if (s.ntrip?.mountpoint) rows.push(["NTRIP", s.ntrip.mountpoint]);
+    if (s.ntrip?.host) rows.push(["CASTER", `${s.ntrip.host}${s.ntrip.port ? `:${s.ntrip.port}` : ""}`]);
+    if (ntripCorrectionAge.value != null) rows.push(["FIXED", `${ntripCorrectionAge.value}s`]);
+    if (s.ntrip?.last_error) rows.push(["ERR", s.ntrip.last_error]);
+  } else {
+    rows.push(["NTRIP", "OFF"]);
+  }
   return { label, tone, rows };
 });
 
@@ -181,14 +168,15 @@ const navChip = computed(() => {
   const s = roverStatus.value;
   if (!s.connected || !s.nav_state) return null;
   const dist = currentTargetDistance.value;
+  const stateLabel = s.nav_state.replace(/_/g, " ");
   const label = (dist != null && dist < 50)
-    ? `${s.nav_state} · #${executedIndex.value + 1} → ${dist.toFixed(1)}m`
-    : s.nav_state;
+    ? `${stateLabel} · #${executedIndex.value + 1} → ${dist.toFixed(1)}m`
+    : stateLabel;
   const tone = (s.nav_state === "ERROR" || s.nav_state === "EMERGENCY_STOP") ? "bad"
     : s.nav_state === "IDLE" ? "neutral"
     : "ok";
-  const rows = [["상태", s.nav_state]];
-  if (dist != null) rows.push(["다음", `#${executedIndex.value + 1} · ${dist.toFixed(1)} m`]);
+  const rows = [["STATUS", stateLabel]];
+  if (dist != null) rows.push(["NEXT", `#${executedIndex.value + 1} · ${dist.toFixed(1)} m`]);
   return { label, tone, rows };
 });
 
@@ -199,45 +187,17 @@ const batteryChip = computed(() => {
   const tone = p <= BATTERY_CRIT_PERCENT ? "bad"
     : p <= BATTERY_WARN_PERCENT ? "warn"
     : "ok";
-  const rows = [["잔량", `${p}%`]];
-  if (s.battery.voltage != null) rows.push(["전압", `${s.battery.voltage.toFixed(2)} V`]);
+  const rows = [["SOC", `${p}%`]];
+  if (s.battery.voltage != null) rows.push(["VOLT", `${s.battery.voltage.toFixed(2)} V`]);
   if (s.battery.voltage_raw != null && s.battery.gain != null && Math.abs(s.battery.gain - 1.0) > 1e-4) {
-    rows.push(["원시", `${s.battery.voltage_raw.toFixed(2)} V`]);
+    rows.push(["ADC", `${s.battery.voltage_raw.toFixed(2)} V`]);
   }
-  if (s.battery.gain != null) rows.push(["게인", s.battery.gain.toFixed(4)]);
+  if (s.battery.gain != null) rows.push(["GAIN", s.battery.gain.toFixed(4)]);
   if (s.battery.calibrated_at) {
     const ago = Math.max(0, Math.round((Date.now() - s.battery.calibrated_at) / 60000));
-    rows.push(["보정", ago < 1 ? "방금" : ago < 60 ? `${ago}분 전` : `${Math.round(ago / 60)}시간 전`]);
+    rows.push(["FIX", ago < 1 ? "방금" : ago < 60 ? `${ago}분 전` : `${Math.round(ago / 60)}시간 전`]);
   }
-  if (s.battery.source) rows.push(["측정", s.battery.source]);
   return { percent: p, voltage: s.battery.voltage, tone, rows };
-});
-
-const ntripChip = computed(() => {
-  // Only surface NTRIP when it's actually streaming corrections — a
-  // generic "off" chip just adds noise (the GPS fix chip already
-  // signals when the rover is running unaided).
-  const s = roverStatus.value;
-  if (!s.connected || !s.ntrip_connected) return null;
-  const mp = s.ntrip?.mountpoint;
-  const rows = [];
-  if (s.ntrip?.host) rows.push(["Caster", `${s.ntrip.host}${s.ntrip.port ? `:${s.ntrip.port}` : ""}`]);
-  if (mp) rows.push(["Mount", mp]);
-  if (ntripCorrectionAge.value != null) rows.push(["보정", `${ntripCorrectionAge.value}s 전`]);
-  if (s.ntrip?.fail_count) rows.push(["재시도", `${s.ntrip.fail_count}회`]);
-  if (s.ntrip?.last_error) rows.push(["오류", s.ntrip.last_error]);
-  return { label: mp ? `📡 ${mp}` : "📡 ok", tone: "ok", rows };
-});
-
-const posChip = computed(() => {
-  uiTick.value; // retrigger every second
-  const s = roverStatus.value;
-  if (!s.connected || !s.last_position_at) return null;
-  const ago = Math.max(0, Math.round((Date.now() - s.last_position_at) / 1000));
-  const tone = ago <= 5 ? "ok" : ago <= 15 ? "warn" : "bad";
-  const rows = [["갱신", `${ago}s 전`]];
-  if (s.last_position) rows.push(["좌표", `${s.last_position.lat?.toFixed(6)}, ${s.last_position.lng?.toFixed(6)}`]);
-  return { ago, tone, rows };
 });
 
 const missionChip = computed(() => {
@@ -252,7 +212,7 @@ const missionChip = computed(() => {
       : remainingDistanceM.value.toFixed(1) + " m"}`);
   }
   if (missionETA.value) lines.push(`예상 완료: ${missionETA.value} 후`);
-  if (avgSpeedMs.value != null) lines.push(`최근 10초 평균 속도: ${avgSpeedMs.value.toFixed(2)} m/s`);
+  if (roverStatus.value.gps?.speed != null) lines.push(`현재 속도: ${roverStatus.value.gps.speed.toFixed(2)} m/s`);
   return {
     current: executedIndex.value,
     total: pathWaypoints.value.length,
@@ -1725,7 +1685,6 @@ function connectSSE() {
   eventSource.addEventListener("rover", (e) => {
     const data = JSON.parse(e.data);
     updateRoverMarker(data.lat, data.lng);
-    pushRecentPosition(data.lat, data.lng);
     if (roverMode.value === "executing") updatePathProgress(data.lat, data.lng);
   });
 
@@ -2062,7 +2021,7 @@ onUnmounted(() => {
                 :class="['chip-wrapper', { active: activeChipPopover === 'fix' }]"
                 @click.stop="toggleChipPopover('fix')"
               >
-                <span :class="['chip', `chip-${fixChip.tone}`]">{{ fixChip.label }}</span>
+                <span :class="['chip', `chip-${fixChip.tone}`]">🛰️ {{ fixChip.label }}</span>
                 <span class="chip-popover">
                   <span class="popover-row" v-for="r in fixChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span class="popover-val">{{ r[1] }}</span></span>
                 </span>
@@ -2084,12 +2043,13 @@ onUnmounted(() => {
               @click.stop="toggleChipPopover('mission')"
             >
               <div class="mission-inline">
+                <span class="mission-emoji">🚩</span>
                 <div class="mission-bar"><div class="mission-fill" :style="{ width: missionChip.percent + '%' }"></div></div>
                 <span class="mission-counts">{{ missionChip.current }}/{{ missionChip.total }} · {{ missionChip.percent }}%</span>
                 <span v-if="missionChip.eta" class="mission-eta">ETA {{ missionChip.eta }}</span>
               </div>
               <span class="chip-popover">
-                <span class="popover-row"><span class="popover-key">진행</span><span class="popover-val">{{ missionChip.current }} / {{ missionChip.total }} ({{ missionChip.percent }}%)</span></span>
+                <span class="popover-row"><span class="popover-key">PROGRESS</span><span class="popover-val">{{ missionChip.current }} / {{ missionChip.total }} ({{ missionChip.percent }}%)</span></span>
                 <span v-if="missionChip.eta" class="popover-row"><span class="popover-key">ETA</span><span class="popover-val">{{ missionChip.eta }}</span></span>
               </span>
             </div>
@@ -2107,26 +2067,6 @@ onUnmounted(() => {
                   <span class="popover-row popover-actions">
                     <button class="btn btn-ghost btn-sm" @click.stop="openBatteryCal">전압 보정</button>
                   </span>
-                </span>
-              </span>
-              <span
-                v-if="ntripChip"
-                :class="['chip-wrapper', { active: activeChipPopover === 'ntrip' }]"
-                @click.stop="toggleChipPopover('ntrip')"
-              >
-                <span :class="['chip', `chip-${ntripChip.tone}`]">{{ ntripChip.label }}</span>
-                <span class="chip-popover">
-                  <span class="popover-row" v-for="r in ntripChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span class="popover-val">{{ r[1] }}</span></span>
-                </span>
-              </span>
-              <span
-                v-if="posChip"
-                :class="['chip-wrapper', { active: activeChipPopover === 'pos' }]"
-                @click.stop="toggleChipPopover('pos')"
-              >
-                <span :class="['chip', `chip-${posChip.tone}`]">📍 {{ posChip.ago }}s</span>
-                <span class="chip-popover">
-                  <span class="popover-row" v-for="r in posChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span class="popover-val">{{ r[1] }}</span></span>
                 </span>
               </span>
             </div>
