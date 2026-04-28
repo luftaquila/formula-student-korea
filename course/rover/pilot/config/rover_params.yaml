@@ -4,7 +4,7 @@ bridge_node:
     # internal_secret is injected via INTERNAL_SECRET env var; never commit.
     # server_url_allow_http defaults to false. Only set true on trusted internal (e.g. Tailscale) networks.
     server_url_allow_http: false
-    position_report_interval: 1.0      # Seconds between position reports during navigation
+    position_report_interval: 1.0      # Seconds between position reports (always, even when idle)
     sse_reconnect_delay: 3.0           # Initial SSE reconnect delay (exponential backoff)
 
 gps_node:

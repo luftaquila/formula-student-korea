@@ -141,11 +141,12 @@ class BridgeNode(Node):
             self._report_position()
             return
 
-        # Periodic reporting during navigation
+        # Periodic reporting — always, regardless of nav_state. The map needs
+        # to track the rover even when it's parked/IDLE; gating on a driving
+        # state means the marker freezes the moment a mission ends.
         interval = self.get_parameter('position_report_interval').value
         now = time.monotonic()
-        if self._nav_state in ('CALIBRATING', 'NAVIGATING', 'RETURNING') and \
-           (now - self._last_report_time) >= interval:
+        if (now - self._last_report_time) >= interval:
             self._report_position()
 
     def _on_nav_state(self, msg):
