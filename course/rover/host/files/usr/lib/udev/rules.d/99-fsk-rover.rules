@@ -1,15 +1,24 @@
 # FSK rover device symlinks. Baked into the bootc host image at
-# /usr/lib/udev/rules.d/. The pilot.container quadlet's AddDevice= entries
-# refer to these stable symlinks so the unit survives kernel/firmware
-# changes that re-number the underlying char devices.
+# /usr/lib/udev/rules.d/. The pilot-run wrapper refers to these stable
+# symlinks so the unit survives kernel/firmware changes that re-number
+# the underlying char devices.
 
 # u-blox ZED-F9P GNSS receiver -> /dev/ttyGPS
+# FSK_DEVICE marker is stored in udev's database on `add` and replayed
+# on `remove`, so the second rule below matches on both.
 SUBSYSTEM=="tty", ATTRS{idVendor}=="1546", ATTRS{idProduct}=="01a9", \
-    SYMLINK+="ttyGPS", MODE="0660", GROUP="dialout"
+    SYMLINK+="ttyGPS", MODE="0660", GROUP="dialout", ENV{FSK_DEVICE}="gps"
 
 # RP2040-Zero coprocessor (Pico-SDK USB CDC) -> /dev/ttyMCU
 SUBSYSTEM=="tty", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="000a", \
-    SYMLINK+="ttyMCU", MODE="0660", GROUP="dialout"
+    SYMLINK+="ttyMCU", MODE="0660", GROUP="dialout", ENV{FSK_DEVICE}="mcu"
+
+# Hot-plug: any of the rover's USB serial devices coming or going
+# triggers fsk-pilot-replug.service, which debounces and restarts
+# pilot.service. pilot-run then re-probes /dev so the container
+# starts with whatever's currently connected.
+SUBSYSTEM=="tty", ENV{FSK_DEVICE}=="?*", ACTION=="add|remove", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="fsk-pilot-replug.service"
 
 # Raspberry Pi 5 RP1 pinctrl (lgpio target) -> /dev/gpiochip-rp1
 # RP1 introduced /dev/gpiochip0..N where the RP1 chip number has shifted

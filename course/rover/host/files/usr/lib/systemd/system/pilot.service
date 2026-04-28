@@ -1,0 +1,21 @@
+[Unit]
+Description=FSK Rover Pilot
+After=network-online.target podman.socket
+Wants=network-online.target
+# Devices come and go at runtime — fsk-pilot-replug.service restarts
+# this unit on USB plug/unplug so the wrapper re-probes /dev.
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pilot-run
+ExecStop=/usr/bin/podman stop -t 10 pilot
+Restart=on-failure
+RestartSec=5
+# Avoid runaway restart loops if INTERNAL_SECRET hasn't been provisioned
+# yet (bridge_node will 5xx and exit). systemd waits StartLimitIntervalSec
+# before considering this a permanent failure, then stops trying.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target default.target

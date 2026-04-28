@@ -90,7 +90,11 @@ course server (port 10000)
                                                    spray_node ── /rover/spray/done
 ```
 
-Devices via quadlet `AddDevice=`.
+Devices via `pilot-run` wrapper: probes `/dev` at start and passes only
+present devices to `podman run --device`. udev `add|remove` events on
+GPS/MCU fire `fsk-pilot-replug.service`, which debounces and restarts
+`pilot.service` so hot-plug Just Works (with a ~5 s container restart).
+Missing one device doesn't block the others.
 
 ### Mission state machine (`navigator_node`)
 
@@ -115,7 +119,7 @@ Thresholds in `pilot/config/rover_params.yaml`.
 
 | Image | Built by | Updates | Owns |
 |-------|----------|---------|------|
-| `ghcr.io/luftaquila/fsk-rover-host:{candidate,edge,vX.Y.Z}` | `host/Containerfile` | `bootc upgrade` (24 h, reboot) | AlmaLinux 10 + Pi 5 firmware/DTB, NM, sshd, tailscale, podman, udev, pilot quadlet, fsk user |
+| `ghcr.io/luftaquila/fsk-rover-host:{candidate,edge,vX.Y.Z}` | `host/Containerfile` | `bootc upgrade` (24 h, reboot) | AlmaLinux 10 + Pi 5 firmware/DTB, NM, sshd, tailscale, podman, udev, `pilot.service` + `pilot-run`, fsk user |
 | `ghcr.io/luftaquila/fsk-rover-pilot:{candidate,edge,vX.Y.Z}` | `pilot/Containerfile` | `podman auto-update` (24 h, in-place) | ROS 2 Jazzy + the five `pilot` nodes |
 
 Host base: `quay.io/almalinuxorg/almalinux-bootc-rpi:10`. Stock
@@ -138,30 +142,25 @@ Host base: `quay.io/almalinuxorg/almalinux-bootc-rpi:10`. Stock
    ```
    Reads `INTERNAL_SECRET`, `PUBLIC_URL` from `.env`. Idempotent.
 
-4. **SELinux** (once per rover):
-   ```bash
-   ssh fsk@<rover-ip> sudo setsebool -P container_use_devices on
-   ```
-
-5. **Wi-Fi**:
+4. **Wi-Fi**:
    ```bash
    ssh fsk@<rover-ip> sudo nmcli connection modify fsk-default \
        802-11-wireless.ssid 'MyAP' wifi-sec.psk 'mypassword'
    ssh fsk@<rover-ip> sudo nmcli connection up fsk-default
    ```
 
-6. **Tailscale** (off-LAN):
+5. **Tailscale** (off-LAN):
    ```bash
    ssh fsk@<rover-ip> sudo tailscale up --auth-key=tskey-…
    ```
 
-7. **Verify**:
+6. **Verify**:
    ```bash
    ssh fsk@<rover-ip> systemctl status pilot.service
    ssh fsk@<rover-ip> sudo journalctl -u pilot.service -n 50
    ```
 
-8. **Pre-competition freeze**:
+7. **Pre-competition freeze**:
    ```bash
    ssh fsk@<rover-ip> sudo systemctl disable --now \
        bootc-fetch-apply-updates.timer podman-auto-update.timer
@@ -180,7 +179,7 @@ Unreachable (no LAN, no Tailscale) → reflash SD. On-rover: `bootc rollback`.
 | `SERVER_URL`, `ROS_DOMAIN_ID` | `/etc/pilot/pilot.conf` | `sudo $EDITOR /etc/pilot/pilot.conf` |
 | Wi-Fi | `/etc/NetworkManager/system-connections/fsk-default.nmconnection` | `sudo nmcli connection modify fsk-default …` |
 | Mission params | `pilot/config/rover_params.yaml` (baked) | new pilot build → push → auto-update |
-| OTA channel | `bootc status` (host); quadlet `Image=` (pilot) | `sudo bootc switch …:edge`; rebake host |
+| OTA channel | `bootc status` (host); `pilot-run` `IMAGE=` (pilot) | `sudo bootc switch …:edge`; rebake host |
 | OTA freeze | both timers | `sudo systemctl disable --now <timer>` |
 
 After changing `pilot.conf` or any secret: `sudo systemctl restart pilot.service`.
@@ -410,7 +409,9 @@ npm run test:shared
 | `pilot/pilot/lib/ubx_parser.py` | ZED-F9P UBX parser |
 | `pilot/Containerfile` | pilot OCI build |
 | `host/Containerfile` | host bootc build |
-| `host/files/etc/containers/systemd/pilot.container` | quadlet |
+| `host/files/usr/lib/systemd/system/pilot.service` | pilot unit |
+| `host/files/usr/lib/systemd/system/fsk-pilot-replug.service` | hot-plug debouncer |
+| `host/files/usr/local/bin/pilot-run` | `podman run` wrapper (probes `/dev`) |
 | `host/files/etc/pilot/pilot.conf.example` | env template |
 | `host/files/etc/NetworkManager/system-connections/fsk-default.nmconnection` | default Wi-Fi |
 | `host/files/etc/tmpfiles.d/pilot-state.conf` | `/var/lib/pilot/` |

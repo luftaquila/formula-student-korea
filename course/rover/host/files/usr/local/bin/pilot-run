@@ -1,0 +1,41 @@
+#!/bin/bash
+# Pilot container launcher.
+#
+# Probes /dev for the rover's expected devices and passes only those
+# present to `podman run`. Without this, a single missing USB cable
+# (e.g. GPS unplugged) makes podman refuse to create the container,
+# killing every other pilot node along with it. With this wrapper,
+# pilot.service starts with whatever's connected and the udev-driven
+# fsk-pilot-replug.service restarts it when devices come or go.
+
+set -euo pipefail
+
+IMAGE="ghcr.io/luftaquila/fsk-rover-pilot:candidate"
+NAME="pilot"
+
+DEVS=()
+for dev in /dev/ttyGPS /dev/ttyMCU /dev/gpiochip-rp1 /dev/gpiomem0; do
+    if [ -e "$dev" ]; then
+        # Explicit host:container mapping — without it podman dereferences
+        # the udev symlink and exposes the canonical /dev/ttyACM*/gpiochipN
+        # name inside the container, which the pilot code never opens.
+        DEVS+=(--device "$dev:$dev")
+    fi
+done
+
+# --rm should clean up on exit, but a hard kill / OOM can leave the
+# named container behind. Be idempotent.
+podman rm -f "$NAME" >/dev/null 2>&1 || true
+
+exec podman run \
+    --name "$NAME" \
+    --rm \
+    --network=host \
+    --label=io.containers.autoupdate=registry \
+    --label=PODMAN_SYSTEMD_UNIT=pilot.service \
+    "${DEVS[@]}" \
+    --volume /var/lib/pilot:/var/lib/pilot:Z \
+    --env-file /etc/pilot/pilot.conf \
+    --secret internal-secret,type=env,target=INTERNAL_SECRET \
+    --secret ntrip-username,type=env,target=NTRIP_USERNAME \
+    "$IMAGE"

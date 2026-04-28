@@ -78,26 +78,29 @@ RUN install -d -m 750 /etc/sudoers.d \
 # operational surface for no security gain on this device.
 RUN systemctl disable firewalld 2>/dev/null || true
 
-# Static assets — quadlet, env example, NM profile, tmpfiles.d, udev rules.
+# Static assets — pilot.service, pilot-run wrapper, env example, NM
+# profile, tmpfiles.d, sysusers.d, udev rules, hostname.
 COPY files/ /
 
 # NM connection files must be 0600 or NetworkManager refuses to load them.
+# pilot-run / flash-mcu need +x to be exec'd by their respective units.
 RUN chmod 600 /etc/NetworkManager/system-connections/fsk-default.nmconnection \
-    && chmod 755 /usr/local/bin/flash-mcu
+    && chmod 755 /usr/local/bin/flash-mcu /usr/local/bin/pilot-run
 
 # SELinux: container_use_devices boolean must be enabled for the pilot
-# container's /dev/* AddDevice= entries to work under enforcing mode.
-# Set on the running rover (not at image build time — buildkit's
-# environment lacks the policy DB and `setsebool` would fail):
-#   sudo setsebool -P container_use_devices on
-# Verified once per host in step 0 of the migration; persisted in
-# /etc/selinux/targeted/booleans.local so it survives bootc upgrades.
+# container's --device /dev/* mappings to work under enforcing mode.
+# Set at boot by fsk-selinux-booleans.service (not at image build time —
+# buildkit's environment lacks the policy DB and `setsebool` would fail).
 
 # OTA: bootc pulls the host image, podman-auto-update pulls the pilot.
+# pilot.service is hand-written (see files/usr/lib/systemd/system/) rather
+# than a quadlet — pilot-run probes /dev at start so missing USB devices
+# don't block the whole container, which a static AddDevice= would.
 RUN systemctl enable \
         NetworkManager \
         sshd \
         tailscaled \
         podman.socket \
         bootc-fetch-apply-updates.timer \
-        podman-auto-update.timer
+        podman-auto-update.timer \
+        pilot.service

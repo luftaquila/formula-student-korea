@@ -1,0 +1,11 @@
+[Unit]
+Description=Restart pilot.service on USB plug/unplug
+
+[Service]
+Type=oneshot
+# Coalesce bursts: if the operator plugs in GPS and MCU within a
+# couple of seconds, both udev events fire fsk-pilot-replug, but the
+# second start is dropped while this oneshot is still in its sleep —
+# so pilot is restarted once instead of twice.
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/bin/systemctl restart pilot.service
