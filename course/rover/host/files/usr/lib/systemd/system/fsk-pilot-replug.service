@@ -1,5 +1,12 @@
 [Unit]
 Description=Restart pilot.service on USB plug/unplug
+# Rate-limit our own start counter so a flapping cable (re-enumerating
+# every ~3-4 s, outside the 2 s coalesce window) can't loop pilot.service
+# indefinitely. After 5 starts in 60 s, systemd refuses further starts
+# until the interval rolls over. The operator gets a clear journal
+# entry instead of pilot ping-ponging.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=oneshot

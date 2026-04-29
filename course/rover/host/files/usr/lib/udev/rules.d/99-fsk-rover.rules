@@ -20,6 +20,18 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="000a", \
 SUBSYSTEM=="tty", ENV{FSK_DEVICE}=="?*", ACTION=="add|remove", \
     TAG+="systemd", ENV{SYSTEMD_WANTS}="fsk-pilot-replug.service"
 
+# Pin USB autosuspend OFF on the GPS and MCU CDC interfaces. Default
+# behaviour suspends idle CDC devices after ~2 s; on Pi 5 + rp1, resume
+# can fail silently without a remove/add event so neither pilot.service
+# nor fsk-pilot-replug.service will recover. Holding the device active
+# keeps the link alive across mission-idle gaps. Match the parent USB
+# device (not the tty subsystem) since power/control lives on the usb
+# device node, not the tty.
+SUBSYSTEM=="usb", ATTR{idVendor}=="1546", ATTR{idProduct}=="01a9", \
+    ATTR{power/control}="on"
+SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="000a", \
+    ATTR{power/control}="on"
+
 # Raspberry Pi 5 RP1 pinctrl (lgpio target) -> /dev/gpiochip-rp1
 # RP1 introduced /dev/gpiochip0..N where the RP1 chip number has shifted
 # across kernel/firmware revisions (most recently 0 -> 4). Match by the
