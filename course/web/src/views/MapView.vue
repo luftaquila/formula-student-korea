@@ -1996,7 +1996,7 @@ function restoreMissionProgress(mp) {
 // post-reconnect refetch) routes through this so the button label can never
 // diverge from reality. User-driven modes (path-pick, manual) are orthogonal
 // to server state and preserved.
-const ACTIVE_NAV_STATES = new Set(["CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING", "RETURNING"]);
+const ACTIVE_NAV_STATES = new Set(["CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING"]);
 
 function reconcileRoverMode(s) {
   if (roverMode.value === "path-pick" || roverMode.value === "manual") return;

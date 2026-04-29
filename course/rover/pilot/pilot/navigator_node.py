@@ -1,30 +1,53 @@
-"""Navigator Node: Mission state machine with Pure Pursuit path following.
+"""Navigator Node: antenna-precise mission state machine.
 
-Central intelligence node managing heading calibration, waypoint navigation
-with cm-level precision, spray coordination, and return-to-start.
+Drives the chassis so that the GPS antenna (the user's clicked target) lands
+on each waypoint within `waypoint_tolerance`, even when the antenna is offset
+from the rear axle.
 
-State Machine:
-    IDLE → CALIBRATING → NAVIGATING → SETTLING → SPRAYING → RETURNING → IDLE
-    (any) → EMERGENCY_STOP → (new execute_path) → CALIBRATING
-    (any) → ERROR (GPS lost) → (GPS restored) → resume
+Pipeline (per control tick, 20 Hz):
+    odom + GPS  →  ChassisPoseEstimator  →  (x_chassis, y_chassis, ψ)
+    waypoints   →  PathPlanner           →  [cruise, dock, cruise, dock, …]
+    chassis pose + segment → CruiseTracker / DockTracker → (v, κ)
+    (v, κ) → /rover/cmd/velocity → mcu_bridge_node → motors
 
-Subscribed topics:
-    /rover/gps/position (sensor_msgs/NavSatFix) - RTK GPS position
-    /rover/gps/heading (std_msgs/Float64) - GPS-derived heading
-    /rover/cmd/execute_path (std_msgs/String) - JSON waypoints
-    /rover/cmd/emergency_stop (std_msgs/Empty) - Abort mission
-    /rover/spray/done (std_msgs/Empty) - Spray complete
+State machine:
+    IDLE → CALIBRATING → NAVIGATING → SETTLING → SPRAYING → … → IDLE
+    (any) → EMERGENCY_STOP → (clear) → IDLE
+    (any except IDLE) → ERROR (GPS lost / calib failed) → resume on recovery
 
-Published topics:
-    /rover/cmd/velocity (geometry_msgs/Twist) - Velocity commands
-    /rover/nav/state (std_msgs/String) - Current state
-    /rover/nav/waypoint_reached (std_msgs/Int32) - Waypoint index for spray
+Calibration is the cold-start bootstrap to discover chassis ψ: we drive
+straight (κ=0) at calibration_speed, log antenna ENU samples, and fit a
+chord. Trustworthy when the chord is at least calibration_chord_min_m and
+the orthogonal residual RMS is below calibration_residual_max. After that
+the estimator runs and fuses GPS heading-of-motion with encoder-derived ω,
+so we never re-enter calibration unless the operator restarts the mission.
+
+Subscribed:
+    /rover/gps/position    (sensor_msgs/NavSatFix)  — antenna lat/lon
+    /rover/gps/heading     (std_msgs/Float64)       — heading-of-motion deg, 0=N, CW+
+    /rover/gps/fix_status  (std_msgs/String)        — fix quality
+    /rover/gps/metrics     (std_msgs/String JSON)   — for ground_speed
+    /rover/odom            (std_msgs/String JSON)   — chassis v_left, v_right
+    /rover/cmd/execute_path (std_msgs/String)       — JSON waypoints
+    /rover/cmd/emergency_stop  (std_msgs/Empty)
+    /rover/cmd/clear_emergency (std_msgs/Empty)
+    /rover/spray/done      (std_msgs/Empty)
+
+Published:
+    /rover/cmd/velocity         (geometry_msgs/Twist)  — linear.x = m/s, angular.z = κ (1/m)
+    /rover/nav/state            (std_msgs/String)
+    /rover/nav/waypoint_reached (std_msgs/Int32)
+    /rover/nav/error_reason     (std_msgs/String)      — populated on every ERROR entry
+    /rover/nav/skipped          (std_msgs/Int32)       — published on stuck-skip
+    /rover/spray/result         (std_msgs/String JSON)
+    /rover/spray/cancel         (std_msgs/Int32)
 """
 
 import json
+import math
 import time
 from enum import Enum
-from math import radians, degrees, sin, cos, atan2, sqrt, pi
+from math import radians, degrees, hypot
 
 import rclpy
 from rclpy.node import Node
@@ -34,9 +57,12 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Float64, String, Int32, Empty
 
 from pilot.lib.geo_utils import (
-    haversine, bearing, enu_from_gps, normalize_angle,
+    enu_from_gps, fit_chord_heading, normalize_angle,
 )
 from pilot.lib.protocol_utils import has_required_fix_status
+from pilot.lib.state_estimator import ChassisPoseEstimator
+from pilot.lib.path_planner import plan as plan_path
+from pilot.lib.path_tracker import CruiseTracker, DockTracker
 
 
 class State(Enum):
@@ -45,7 +71,6 @@ class State(Enum):
     NAVIGATING = 'NAVIGATING'
     SETTLING = 'SETTLING'
     SPRAYING = 'SPRAYING'
-    RETURNING = 'RETURNING'
     EMERGENCY_STOP = 'EMERGENCY_STOP'
     ERROR = 'ERROR'
 
@@ -55,103 +80,161 @@ class NavigatorNode(Node):
     def __init__(self):
         super().__init__('navigator_node')
 
-        # Parameters
-        self.declare_parameter('waypoint_tolerance', 0.05)
-        self.declare_parameter('approach_tolerance', 0.30)
-        self.declare_parameter('calibration_distance', 2.5)
-        self.declare_parameter('calibration_speed', 0.5)
-        self.declare_parameter('cruise_speed', 1.2)
-        self.declare_parameter('approach_speed', 0.2)
-        self.declare_parameter('lookahead_min', 0.8)
-        self.declare_parameter('lookahead_gain', 0.5)
-        self.declare_parameter('heading_calibrated_threshold', 5.0)
-        self.declare_parameter('gps_timeout', 3.0)
-        self.declare_parameter('return_to_start', True)
-        self.declare_parameter('stuck_timeout', 10.0)
-        self.declare_parameter('stuck_max_retries', 2)
-        self.declare_parameter('spray_timeout', 5.0)
-        self.declare_parameter('creep_speed', 0.15)
-        self.declare_parameter('decel_distance', 2.0)
-        self.declare_parameter('settle_readings', 5)
-        self.declare_parameter('settle_tolerance', 0.03)
-        self.declare_parameter('settle_timeout', 10.0)
-        self.declare_parameter('required_fix_status', 'rtk_fixed')
-        self.declare_parameter('fix_hysteresis_s', 0.8)
-        self.declare_parameter('max_curvature', 1.2)
-        self.declare_parameter('calibration_max_distance', 5.0)
+        # ── parameters ───────────────────────────────────────────────────
 
-        # Publishers
+        # Antenna geometry (the only physical-rig knob that matters for
+        # antenna-precise docking — measure once with a tape, never tune).
+        self.declare_parameter('antenna_offset_x', 0.30)
+        self.declare_parameter('antenna_offset_y', 0.00)
+
+        # Chassis geometry (kept here AND in mcu_bridge_node so the
+        # navigator's kinematic model doesn't silently fall out of sync if
+        # mcu_bridge is restarted with stale params; bridge owns the
+        # authoritative copy for steering-angle conversion).
+        self.declare_parameter('wheelbase', 0.38)
+        self.declare_parameter('track_width', 0.30)
+        self.declare_parameter('max_steering_angle_deg', 25.0)
+        self.declare_parameter('max_curvature', 1.2)
+
+        # Speeds.
+        self.declare_parameter('cruise_speed', 1.0)
+        self.declare_parameter('approach_speed', 0.4)
+        self.declare_parameter('creep_speed', 0.18)
+        self.declare_parameter('calibration_speed', 0.5)
+
+        # Path planner.
+        self.declare_parameter('dock_approach_distance', 1.5)
+
+        # Cruise tracker (Pure Pursuit).
+        self.declare_parameter('pp_lookahead_min', 0.6)
+        self.declare_parameter('pp_lookahead_gain', 0.6)
+        self.declare_parameter('pp_damping', 0.18)
+        self.declare_parameter('cruise_done_tolerance', 0.20)
+
+        # Dock tracker (state feedback).
+        self.declare_parameter('dock_k_y', 1.4)
+        self.declare_parameter('dock_k_psi', 1.6)
+        self.declare_parameter('approach_tolerance', 0.10)
+        self.declare_parameter('creep_zone', 0.40)
+
+        # Tolerances and timeouts.
+        self.declare_parameter('waypoint_tolerance', 0.05)
+        self.declare_parameter('settle_tolerance', 0.03)
+        self.declare_parameter('settle_readings', 5)
+        self.declare_parameter('settle_timeout', 10.0)
+        self.declare_parameter('spray_timeout', 5.0)
+        self.declare_parameter('stuck_timeout', 12.0)
+        self.declare_parameter('stuck_max_retries', 2)
+
+        # Calibration quality gates.
+        self.declare_parameter('calibration_distance', 2.5)
+        self.declare_parameter('calibration_max_distance', 5.0)
+        self.declare_parameter('calibration_min_samples', 20)
+        self.declare_parameter('calibration_chord_min_m', 1.5)
+        self.declare_parameter('calibration_residual_max', 0.15)
+
+        # Estimator gains.
+        self.declare_parameter('estimator_pos_gain', 0.30)
+        self.declare_parameter('estimator_psi_gain', 0.05)
+        self.declare_parameter('estimator_psi_min_speed', 0.4)
+
+        # Safety.
+        self.declare_parameter('gps_timeout', 3.0)
+        self.declare_parameter('fix_hysteresis_s', 0.8)
+        self.declare_parameter('required_fix_status', 'rtk_fixed')
+        self.declare_parameter('return_to_start', True)
+
+        # ── derived & state ──────────────────────────────────────────────
+        self._max_steer_rad = radians(self.get_parameter('max_steering_angle_deg').value)
+
+        # Publishers.
         self._pub_velocity = self.create_publisher(Twist, '/rover/cmd/velocity', 10)
         self._pub_state = self.create_publisher(String, '/rover/nav/state', 10)
-
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self._pub_waypoint_reached = self.create_publisher(Int32, '/rover/nav/waypoint_reached', reliable_qos)
         self._pub_spray_result = self.create_publisher(String, '/rover/spray/result', reliable_qos)
         self._pub_spray_cancel = self.create_publisher(Int32, '/rover/spray/cancel', reliable_qos)
+        self._pub_error_reason = self.create_publisher(String, '/rover/nav/error_reason', reliable_qos)
+        self._pub_skipped = self.create_publisher(Int32, '/rover/nav/skipped', reliable_qos)
 
-        # Subscribers
+        # Subscribers.
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps, 10)
         self.create_subscription(Float64, '/rover/gps/heading', self._on_heading, 10)
         self.create_subscription(String, '/rover/gps/fix_status', self._on_fix_status, 10)
+        self.create_subscription(String, '/rover/gps/metrics', self._on_gps_metrics, 10)
+        self.create_subscription(String, '/rover/odom', self._on_odom, 10)
         self.create_subscription(String, '/rover/cmd/execute_path', self._on_execute_path, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_emergency_stop, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_emergency, reliable_qos)
         self.create_subscription(Empty, '/rover/spray/done', self._on_spray_done, reliable_qos)
 
-        # State
+        # ── runtime state ────────────────────────────────────────────────
         self._state = State.IDLE
-        self._waypoints = []           # [{lat, lng}, ...]
-        self._current_wp_idx = 0
-        self._start_position = None    # (lat, lon) for return
-        self._ref_position = None      # ENU reference point (lat, lon)
+        self._waypoints = []           # original [{lat, lng}, ...] from operator
+        self._segments = []            # planner output; len = 2 × len(waypoints) (+2 if return)
+        self._cur_seg_idx = 0
+        self._cur_wp_idx = 0           # last waypoint index whose dock segment we're tracking
 
-        # GPS state
-        self._current_lat = None
-        self._current_lon = None
-        self._current_heading = None   # radians, 0=North CW
-        self._last_gps_time = 0.0
+        # Mission anchors.
+        self._ref_lat = None           # ENU origin for the mission
+        self._ref_lon = None
+        self._mission_start_chassis_xy = None  # for return-to-start
+
+        # GPS / odometry inputs.
+        self._gps_lat = None
+        self._gps_lon = None
+        self._gps_heading_compass = None   # radians, 0=N, CW+
         self._gps_fix_status = 'no_fix'
+        self._gps_speed = 0.0
+        self._last_gps_time = 0.0
+        self._odom_v_left = 0.0
+        self._odom_v_right = 0.0
+        self._odom_have_sample = False
 
-        # Calibration state
+        # Estimator (constructed when calibration completes; needs ref_lat/lon).
+        self._estimator = None
+
+        # Trackers (constructed from params; reused across segments).
+        self._cruise_tracker = None
+        self._dock_tracker = None
+
+        # Calibration state.
         self._cal_start_lat = None
         self._cal_start_lon = None
-        self._cal_headings = []
+        self._cal_samples = []          # list of (e_enu, n_enu)
+        self._cal_extended = False
 
-        # Navigation state
-        self._reached_count = 0        # consecutive readings within tolerance
+        # Settling state.
+        self._settle_count = 0
+        self._settle_enter_time = 0.0
+
+        # Spray state.
+        self._spray_enter_time = 0.0
+
+        # Stuck detection.
         self._last_progress_time = 0.0
         self._last_progress_dist = float('inf')
         self._stuck_retries = 0
 
-        # Spray state
-        self._spray_enter_time = 0.0
+        # Fix hysteresis.
+        self._fix_degraded_since = None
 
-        # Settling state
-        self._settle_count = 0
-        self._settle_enter_time = 0.0
-
-        # Resumable state for ERROR recovery
+        # Error recovery.
         self._pre_error_state = None
+        self._last_error_reason = None
 
-        # Fix hysteresis tracking
-        self._fix_degraded_since = None  # float monotonic time or None
-
-        # Calibration extension state
-        self._cal_extended = False
-
-        # Published state dedup
+        # Published state dedup.
         self._last_published_state = None
 
-        # Control loop at 20Hz
+        # Control loop @ 20 Hz.
         self._timer = self.create_timer(0.05, self._control_loop)
 
         self._publish_state()
         self.get_logger().info('Navigator node started')
 
-    # ── Helpers ──────────────────────────────────────────
+    # ── helpers ──────────────────────────────────────────────────────────
 
     def _safe_destroy_timer(self, timer):
-        """Cancel and destroy a timer, ignoring any failure."""
         if timer is None:
             return None
         try:
@@ -164,136 +247,177 @@ class NavigatorNode(Node):
             pass
         return None
 
-    def _heading_variance(self):
-        """Circular variance of the last 5 calibration headings (0=tight)."""
-        if len(self._cal_headings) < 2:
-            return 1.0
-        recent = self._cal_headings[-5:]
-        mean_sin = sum(sin(h) for h in recent) / len(recent)
-        mean_cos = sum(cos(h) for h in recent) / len(recent)
-        return 1.0 - sqrt(mean_sin ** 2 + mean_cos ** 2)
+    def _has_required_fix(self):
+        required = self.get_parameter('required_fix_status').value
+        return has_required_fix_status(self._gps_fix_status, required)
 
-    # ── GPS callbacks ──────────────────────────────────
+    def _params_for_trackers(self):
+        return {
+            'cruise_speed': self.get_parameter('cruise_speed').value,
+            'approach_speed': self.get_parameter('approach_speed').value,
+            'creep_speed': self.get_parameter('creep_speed').value,
+            'pp_lookahead_min': self.get_parameter('pp_lookahead_min').value,
+            'pp_lookahead_gain': self.get_parameter('pp_lookahead_gain').value,
+            'pp_damping': self.get_parameter('pp_damping').value,
+            'cruise_done_tolerance': self.get_parameter('cruise_done_tolerance').value,
+            'dock_k_y': self.get_parameter('dock_k_y').value,
+            'dock_k_psi': self.get_parameter('dock_k_psi').value,
+            'approach_tolerance': self.get_parameter('approach_tolerance').value,
+            'creep_zone': self.get_parameter('creep_zone').value,
+            'max_curvature': self.get_parameter('max_curvature').value,
+            'wheelbase': self.get_parameter('wheelbase').value,
+            'max_steering_angle_rad': self._max_steer_rad,
+            'antenna_offset_x': self.get_parameter('antenna_offset_x').value,
+            'antenna_offset_y': self.get_parameter('antenna_offset_y').value,
+        }
+
+    def _odom_chassis_kinematics(self):
+        v = 0.5 * (self._odom_v_left + self._odom_v_right)
+        track = self.get_parameter('track_width').value
+        if track <= 0:
+            return v, 0.0
+        # Right wheel faster than left = CCW yaw = positive ω in math frame.
+        omega = (self._odom_v_right - self._odom_v_left) / track
+        return v, omega
+
+    # ── input callbacks ──────────────────────────────────────────────────
 
     def _on_gps(self, msg):
-        self._current_lat = msg.latitude
-        self._current_lon = msg.longitude
+        self._gps_lat = msg.latitude
+        self._gps_lon = msg.longitude
         self._last_gps_time = time.monotonic()
+        if self._estimator is not None and self._estimator.initialized:
+            self._estimator.correct_position(msg.latitude, msg.longitude)
 
     def _on_heading(self, msg):
-        """Heading in degrees from GPS (only published when moving)."""
-        self._current_heading = radians(msg.data)
+        # gps_node only publishes when ground_speed > 0.3 m/s, so receiving
+        # a value implies the rover is moving — but we still use the
+        # estimator's own min-speed gate for the antenna-offset inversion.
+        self._gps_heading_compass = radians(msg.data)
+        if self._estimator is not None and self._estimator.initialized:
+            self._estimator.correct_heading(self._gps_heading_compass, self._gps_speed)
 
     def _on_fix_status(self, msg):
         self._gps_fix_status = msg.data
 
-    # ── Command callbacks ──────────────────────────────
+    def _on_gps_metrics(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            return
+        spd = data.get('speed') if isinstance(data, dict) else None
+        if isinstance(spd, (int, float)):
+            self._gps_speed = float(spd)
+
+    def _on_odom(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            return
+        if not isinstance(data, dict):
+            return
+        vl = data.get('v_left')
+        vr = data.get('v_right')
+        if isinstance(vl, (int, float)):
+            self._odom_v_left = float(vl)
+        if isinstance(vr, (int, float)):
+            self._odom_v_right = float(vr)
+        self._odom_have_sample = True
+
+    # ── command callbacks ────────────────────────────────────────────────
 
     def _on_execute_path(self, msg):
-        """Receive waypoints and start mission."""
         try:
             waypoints = json.loads(msg.data)
         except json.JSONDecodeError:
             self.get_logger().error('Invalid waypoint JSON')
             return
-
-        if not waypoints:
+        if not isinstance(waypoints, list) or not waypoints:
             return
 
+        if self._gps_lat is None or not self._has_required_fix():
+            self._set_error('Cannot start mission without RTK-fixed GPS position')
+            return
+
+        # Reset every per-mission knob — leakage between missions was the
+        # exact failure that caused the previous calibration regressions
+        # to recur after a stop/restart.
         self._waypoints = waypoints
-        self._current_wp_idx = 0
-        self._reached_count = 0
+        self._segments = []
+        self._cur_seg_idx = 0
+        self._cur_wp_idx = 0
         self._stuck_retries = 0
+        self._reset_progress()
+        self._cal_samples = []
+        self._cal_extended = False
+        self._fix_degraded_since = None
+        self._pre_error_state = None
+        self._last_error_reason = None
 
-        # Record start position for return
-        if self._current_lat is not None and self._has_required_fix():
-            self._start_position = (self._current_lat, self._current_lon)
-            self._ref_position = (self._current_lat, self._current_lon)
+        # Anchor ENU to the calibration start so all subsequent ENU math
+        # is in a single linearised frame.
+        self._ref_lat = self._gps_lat
+        self._ref_lon = self._gps_lon
+        self._cal_start_lat = self._gps_lat
+        self._cal_start_lon = self._gps_lon
 
-            # Begin calibration — reset hysteresis + calibration-extend state so
-            # previous mission history never leaks into this run's thresholds.
-            self._cal_start_lat = self._current_lat
-            self._cal_start_lon = self._current_lon
-            self._cal_headings = []
-            self._cal_extended = False
-            self._fix_degraded_since = None
-            self._pre_error_state = None
-            self._set_state(State.CALIBRATING)
-            self.get_logger().info(f'Mission started: {len(waypoints)} waypoints')
-        else:
-            self.get_logger().error(
-                'Cannot start mission without current GPS position and required fix quality'
-            )
-            self._set_state(State.ERROR)
+        self._set_state(State.CALIBRATING)
+        self.get_logger().info(f'Mission started: {len(waypoints)} waypoints, calibrating heading')
 
     def _on_emergency_stop(self, _msg):
         self._stop_motors()
+        self._cruise_tracker = None
+        self._dock_tracker = None
         self._set_state(State.EMERGENCY_STOP)
 
     def _on_clear_emergency(self, _msg):
-        # Operator-acknowledged release. Drop back to IDLE so the rover
-        # is ready to accept the next execute_path; we deliberately don't
-        # auto-resume mid-mission because the operator may have moved
-        # the chassis or aborted intentionally.
         if self._state == State.EMERGENCY_STOP:
             self.get_logger().info('Emergency-stop cleared by operator')
             self._set_state(State.IDLE)
 
     def _on_spray_done(self, _msg):
-        """Spray complete, advance to next waypoint or return."""
         if self._state != State.SPRAYING:
             return
+        self._advance_to_next_waypoint()
 
-        self._current_wp_idx += 1
-        self._reached_count = 0
-        self._stuck_retries = 0
-        self._last_progress_dist = float('inf')
-        self._last_progress_time = time.monotonic()
-
-        if self._current_wp_idx >= len(self._waypoints):
-            # All waypoints done
-            if self.get_parameter('return_to_start').value and self._start_position:
-                self.get_logger().info('All waypoints done, returning to start')
-                self._set_state(State.RETURNING)
-            else:
-                self.get_logger().info('Mission complete')
-                self._stop_motors()
-                self._set_state(State.IDLE)
-        else:
-            self.get_logger().info(f'Next waypoint: {self._current_wp_idx + 1}/{len(self._waypoints)}')
-            self._set_state(State.NAVIGATING)
-
-    # ── Control loop ───────────────────────────────────
+    # ── main control loop ────────────────────────────────────────────────
 
     def _control_loop(self):
-        """Main 20Hz control loop dispatching by state."""
-        # GPS timeout check
-        if self._state in (State.CALIBRATING, State.NAVIGATING, State.SETTLING, State.RETURNING):
+        # GPS health gate first — any state that drives motors must abort
+        # immediately on GPS loss.
+        active_states = (
+            State.CALIBRATING, State.NAVIGATING, State.SETTLING,
+        )
+        if self._state in active_states:
             now = time.monotonic()
-            gps_timeout = self.get_parameter('gps_timeout').value
-            if now - self._last_gps_time > gps_timeout:
-                self.get_logger().warn('GPS timeout, entering ERROR state')
-                self._pre_error_state = self._state
+            if now - self._last_gps_time > self.get_parameter('gps_timeout').value:
                 self._stop_motors()
-                self._set_state(State.ERROR)
+                self._pre_error_state = self._state
+                self._set_error('GPS timeout (no position for >gps_timeout)')
                 return
-            # Fix hysteresis: tolerate short fix dropouts to avoid 50ms flicker
             hysteresis = self.get_parameter('fix_hysteresis_s').value
             if not self._has_required_fix():
                 if self._fix_degraded_since is None:
                     self._fix_degraded_since = now
                 elif now - self._fix_degraded_since >= hysteresis:
-                    self.get_logger().warn(
-                        f'GPS fix below required quality ({self._gps_fix_status}) '
-                        f'for {now - self._fix_degraded_since:.2f}s, entering ERROR state'
-                    )
-                    self._pre_error_state = self._state
                     self._stop_motors()
-                    self._set_state(State.ERROR)
+                    self._pre_error_state = self._state
+                    self._set_error(
+                        f'GPS fix below required quality ({self._gps_fix_status}) '
+                        f'for {now - self._fix_degraded_since:.2f}s'
+                    )
                     return
             else:
                 self._fix_degraded_since = None
 
+        # Run the estimator predict step on every tick once we're past
+        # calibration. This keeps chassis pose smooth between GPS fixes.
+        if self._estimator is not None and self._estimator.initialized:
+            v, om = self._odom_chassis_kinematics()
+            self._estimator.predict(v, om, time.monotonic())
+
+        if self._state == State.IDLE or self._state == State.EMERGENCY_STOP:
+            return
         if self._state == State.ERROR:
             self._handle_error()
         elif self._state == State.CALIBRATING:
@@ -302,389 +426,367 @@ class NavigatorNode(Node):
             self._handle_navigating()
         elif self._state == State.SETTLING:
             self._handle_settling()
-        elif self._state == State.RETURNING:
-            self._handle_returning()
         elif self._state == State.SPRAYING:
             self._handle_spraying()
-        # IDLE, EMERGENCY_STOP: no motor commands
+
+    # ── error recovery ───────────────────────────────────────────────────
 
     def _handle_error(self):
-        """Check if GPS has recovered."""
         gps_timeout = self.get_parameter('gps_timeout').value
         if (
             time.monotonic() - self._last_gps_time < gps_timeout
-            and self._current_lat is not None
+            and self._gps_lat is not None
             and self._has_required_fix()
         ):
-            self.get_logger().info('GPS recovered, resuming mission')
-            if self._pre_error_state:
+            if self._pre_error_state is not None:
+                self.get_logger().info(
+                    f'GPS recovered, resuming {self._pre_error_state.value}'
+                )
                 self._set_state(self._pre_error_state)
                 self._pre_error_state = None
+                self._last_error_reason = None
             else:
                 self._set_state(State.IDLE)
 
+    # ── calibration ──────────────────────────────────────────────────────
+
     def _handle_calibrating(self):
-        """Drive straight to establish heading."""
-        if self._current_lat is None:
+        if self._gps_lat is None:
             return
 
-        # Drive straight forward (zero curvature)
         cal_speed = self.get_parameter('calibration_speed').value
+        # Drive straight, no curvature, no D-term entanglement with PP.
         self._publish_velocity(cal_speed, 0.0)
 
-        # Check distance traveled
-        dist = haversine(self._cal_start_lat, self._cal_start_lon,
-                         self._current_lat, self._current_lon)
+        # Sample antenna ENU position for chord regression.
+        e, n = enu_from_gps(self._gps_lat, self._gps_lon, self._ref_lat, self._ref_lon)
+        # Drop duplicate samples at the same GPS position to keep the
+        # regression weighted by movement, not by 50 ms ticks at standstill.
+        if not self._cal_samples or hypot(
+            e - self._cal_samples[-1][0], n - self._cal_samples[-1][1]
+        ) >= 0.02:
+            self._cal_samples.append((e, n))
 
+        dist_from_start = hypot(e, n)  # ref is the calibration start
         cal_distance = self.get_parameter('calibration_distance').value
-        cal_max_distance = self.get_parameter('calibration_max_distance').value
-        # If we've been extended once, push the threshold out by 2m.
-        effective_cal_distance = cal_distance + (2.0 if self._cal_extended else 0.0)
+        cal_max = self.get_parameter('calibration_max_distance').value
+        effective_distance = cal_distance + (1.5 if self._cal_extended else 0.0)
 
-        if self._current_heading is not None:
-            self._cal_headings.append(self._current_heading)
-
-        # Hard cap: if we've driven further than calibration_max_distance
-        # and variance is still bad, abort with ERROR for operator review.
-        if dist >= cal_max_distance:
-            variance = self._heading_variance()
-            self.get_logger().error(
-                f'Calibration max distance reached ({dist:.2f}m) '
-                f'without stable heading (variance={variance:.4f}), entering ERROR'
-            )
-            self._pre_error_state = None  # require manual restart
+        if dist_from_start >= cal_max:
             self._stop_motors()
-            self._set_state(State.ERROR)
+            self._set_error(
+                f'Calibration max distance reached ({dist_from_start:.2f} m) '
+                'without a usable heading fit'
+            )
             return
 
-        # Check if calibration is complete
-        if dist >= effective_cal_distance and len(self._cal_headings) >= 3:
-            # Also compute heading from position delta as backup
-            self._current_heading = bearing(
-                self._cal_start_lat, self._cal_start_lon,
-                self._current_lat, self._current_lon,
+        if dist_from_start < effective_distance:
+            return
+
+        min_samples = self.get_parameter('calibration_min_samples').value
+        if len(self._cal_samples) < min_samples:
+            return
+
+        psi_math, residual_rms, chord_len = fit_chord_heading(self._cal_samples)
+        chord_min = self.get_parameter('calibration_chord_min_m').value
+        residual_max = self.get_parameter('calibration_residual_max').value
+
+        if chord_len < chord_min or residual_rms > residual_max:
+            if not self._cal_extended:
+                self._cal_extended = True
+                self.get_logger().warn(
+                    f'Calibration fit weak (chord={chord_len:.2f} m, '
+                    f'rms={residual_rms*100:.1f} cm), extending'
+                )
+                return
+            self._stop_motors()
+            self._set_error(
+                f'Calibration fit unusable after extension '
+                f'(chord={chord_len:.2f} m, rms={residual_rms*100:.1f} cm)'
             )
+            return
 
-            # Check heading stability
-            if len(self._cal_headings) >= 5:
-                variance = self._heading_variance()
-                threshold = self.get_parameter('heading_calibrated_threshold').value
+        # Build estimator anchored at the mission ENU origin.
+        self._estimator = ChassisPoseEstimator(
+            antenna_offset_x=self.get_parameter('antenna_offset_x').value,
+            antenna_offset_y=self.get_parameter('antenna_offset_y').value,
+            ref_lat=self._ref_lat,
+            ref_lon=self._ref_lon,
+            pos_correction_gain=self.get_parameter('estimator_pos_gain').value,
+            psi_correction_gain=self.get_parameter('estimator_psi_gain').value,
+            psi_correction_min_speed=self.get_parameter('estimator_psi_min_speed').value,
+        )
+        self._estimator.set_initial(self._gps_lat, self._gps_lon, psi_math)
+        self._mission_start_chassis_xy = (self._estimator.x, self._estimator.y)
 
-                if variance < (1.0 - cos(radians(threshold))):
-                    self.get_logger().info(
-                        f'Heading calibrated: {degrees(self._current_heading):.1f}° '
-                        f'(variance: {variance:.4f}, dist: {dist:.2f}m)'
-                    )
-                    self._last_progress_time = time.monotonic()
-                    self._last_progress_dist = float('inf')
-                    self._cal_extended = False
-                    self._set_state(State.NAVIGATING)
-                    return
+        # Plan path now that chassis pose is known.
+        params = self._params_for_trackers()
+        try:
+            self._segments = plan_path(
+                current_chassis_pose=self._estimator.chassis_pose(),
+                antenna_offset=(params['antenna_offset_x'], params['antenna_offset_y']),
+                waypoints_lat_lng=self._waypoints,
+                ref_lat_lon=(self._ref_lat, self._ref_lon),
+                dock_distance=self.get_parameter('dock_approach_distance').value,
+                return_to_start=self.get_parameter('return_to_start').value,
+                start_chassis_xy=self._mission_start_chassis_xy,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            self._stop_motors()
+            self._set_error(f'Path planning failed: {exc}')
+            return
+        self._cur_seg_idx = 0
+        self._cur_wp_idx = 0
 
-                # Variance still high — extend once before giving up.
-                # Only extend if a 2m extension would stay under the hard cap.
-                if not self._cal_extended and (dist + 2.0) < cal_max_distance:
-                    self._cal_extended = True
-                    self.get_logger().warn(
-                        f'Heading variance high ({variance:.4f}), extending calibration by 2m'
-                    )
-                    return  # keep driving until new threshold hit
+        self._cruise_tracker = CruiseTracker(params)
+        self._dock_tracker = DockTracker(params)
+        self._cruise_tracker.reset()
+        self._dock_tracker.reset()
+        self._reset_progress()
+        self.get_logger().info(
+            f'Calibration done: ψ={degrees(psi_math):.1f}° (chord={chord_len:.2f} m, '
+            f'rms={residual_rms*100:.1f} cm), {len(self._segments)} segments'
+        )
+        self._set_state(State.NAVIGATING)
 
-                # Already extended or no room to extend: fall through and let
-                # the max-distance guard trip ERROR on the next loop.
+    # ── navigation ───────────────────────────────────────────────────────
 
     def _handle_navigating(self):
-        """Pure Pursuit navigation to current waypoint."""
-        if self._current_lat is None or self._current_heading is None:
+        if self._estimator is None or not self._estimator.initialized:
             return
-
-        if self._current_wp_idx >= len(self._waypoints):
+        if self._cur_seg_idx >= len(self._segments):
             self._stop_motors()
             self._set_state(State.IDLE)
             return
 
-        wp = self._waypoints[self._current_wp_idx]
-        target_lat = wp['lat']
-        target_lon = wp['lng']
+        seg = self._segments[self._cur_seg_idx]
+        chassis_pose = self._estimator.chassis_pose()
+        antenna_world = self._estimator.antenna_position()
 
-        dist = haversine(self._current_lat, self._current_lon, target_lat, target_lon)
-
-        # Check waypoint reached
-        wp_tolerance = self.get_parameter('waypoint_tolerance').value
-        if dist < wp_tolerance:
-            self._reached_count += 1
-            if self._reached_count >= 3:
-                self._on_waypoint_arrived()
-                return
-        else:
-            self._reached_count = 0
-
-        # Stuck detection
-        self._check_stuck(dist)
-
-        # Pure Pursuit
-        speed, curvature = self._pure_pursuit(target_lat, target_lon, dist)
-        self._publish_velocity(speed, curvature)
-
-    def _handle_returning(self):
-        """Navigate back to start position."""
-        if self._current_lat is None or self._current_heading is None or not self._start_position:
+        if seg.kind == 'cruise':
+            v, kappa, done = self._cruise_tracker.step(chassis_pose, seg, time.monotonic())
+            self._publish_velocity(v, kappa)
+            self._update_progress(chassis_pose, seg.end_pose)
+            if done:
+                self._cur_seg_idx += 1
+                self._cruise_tracker.reset()
+                self._reset_progress()
             return
 
-        start_lat, start_lon = self._start_position
-        dist = haversine(self._current_lat, self._current_lon, start_lat, start_lon)
-
-        wp_tolerance = self.get_parameter('waypoint_tolerance').value
-        if dist < wp_tolerance * 2:  # relaxed tolerance for return
-            self._stop_motors()
-            self.get_logger().info('Returned to start, mission complete')
-            self._set_state(State.IDLE)
+        if seg.kind == 'dock':
+            v, kappa, status = self._dock_tracker.step(chassis_pose, seg, antenna_world)
+            self._publish_velocity(v, kappa)
+            self._update_progress(chassis_pose, seg.end_pose)
+            if status == 'reached':
+                # Dock reached → run settling to confirm antenna position.
+                self._cur_wp_idx = seg.waypoint_index
+                self._stop_motors()
+                self._settle_count = 0
+                self._settle_enter_time = time.monotonic()
+                self._set_state(State.SETTLING)
             return
 
-        speed, curvature = self._pure_pursuit(start_lat, start_lon, dist)
-        self._publish_velocity(speed, curvature)
+    # ── stuck detection ──────────────────────────────────────────────────
 
-    # ── Pure Pursuit ───────────────────────────────────
+    def _reset_progress(self):
+        self._last_progress_time = time.monotonic()
+        self._last_progress_dist = float('inf')
 
-    def _pure_pursuit(self, target_lat, target_lon, dist):
-        """Compute speed and curvature using Pure Pursuit controller.
-
-        Returns (speed_m_s, curvature_1_m).
-        """
-        approach_tolerance = self.get_parameter('approach_tolerance').value
-        cruise_speed = self.get_parameter('cruise_speed').value
-        approach_speed = self.get_parameter('approach_speed').value
-        lookahead_min = self.get_parameter('lookahead_min').value
-        lookahead_gain = self.get_parameter('lookahead_gain').value
-
-        # Deceleration speed profile
-        decel_distance = self.get_parameter('decel_distance').value
-        creep_speed = self.get_parameter('creep_speed').value
-
-        if dist < approach_tolerance:
-            # Final approach: linear ramp from approach_speed to creep_speed
-            t = dist / approach_tolerance if approach_tolerance > 0 else 0.0
-            speed = creep_speed + (approach_speed - creep_speed) * t
-        elif dist < decel_distance:
-            # Deceleration zone: linear ramp from cruise to approach
-            t = (dist - approach_tolerance) / (decel_distance - approach_tolerance)
-            speed = approach_speed + (cruise_speed - approach_speed) * t
-        else:
-            speed = cruise_speed
-
-        # lookahead_min is set ≥ minimum turn radius (wheelbase/tan(max_steer))
-        # so PP never demands a tighter arc than the vehicle can physically do.
-        # When dist < lookahead, PP aims at a virtual point past the goal —
-        # heading feedback self-corrects, no special-case needed.
-        max_curv = self.get_parameter('max_curvature').value
-        lookahead = max(lookahead_min, lookahead_gain * speed)
-
-        # Target bearing
-        target_bearing = bearing(
-            self._current_lat, self._current_lon,
-            target_lat, target_lon,
-        )
-
-        # Heading error
-        alpha = normalize_angle(target_bearing - self._current_heading)
-
-        # Pure Pursuit curvature. Ackermann can't pivot in place, so even at
-        # |alpha| > pi/2 the right move is a forward arc at clamped curvature —
-        # the vehicle swings around at the normal speed profile and GPS heading
-        # updates close the loop.
-        # Negate because geodetic bearing convention (CW positive) is opposite
-        # to curvature convention (positive = left turn).
-        curvature = -2.0 * sin(alpha) / lookahead
-
-        # Clamp curvature to keep the vehicle dynamics within Ackermann limits.
-        curvature = max(-max_curv, min(max_curv, curvature))
-        return speed, curvature
-
-    # ── Stuck detection ────────────────────────────────
-
-    def _check_stuck(self, current_dist):
-        """Detect if rover is stuck (no progress for stuck_timeout)."""
-        stuck_timeout = self.get_parameter('stuck_timeout').value
-        max_retries = self.get_parameter('stuck_max_retries').value
+    def _update_progress(self, chassis_pose, target_pose):
+        x, y, _ = chassis_pose
+        ex, ey, _ = target_pose
+        dist = hypot(ex - x, ey - y)
         now = time.monotonic()
 
-        if current_dist < self._last_progress_dist - 0.02:
-            # Making progress (moved at least 2cm closer)
-            self._last_progress_dist = current_dist
+        if dist < self._last_progress_dist - 0.02:
+            self._last_progress_dist = dist
             self._last_progress_time = now
             return
 
-        if now - self._last_progress_time > stuck_timeout:
-            self._stuck_retries += 1
-            self.get_logger().warn(
-                f'Stuck at waypoint {self._current_wp_idx + 1} '
-                f'(retry {self._stuck_retries}/{max_retries})'
-            )
-
-            if self._stuck_retries > max_retries:
-                # Skip this waypoint
-                self.get_logger().warn(f'Skipping waypoint {self._current_wp_idx + 1}')
-                self._current_wp_idx += 1
-                self._stuck_retries = 0
-                self._reached_count = 0
-                self._last_progress_dist = float('inf')
-                self._last_progress_time = now
-
-                if self._current_wp_idx >= len(self._waypoints):
-                    if self.get_parameter('return_to_start').value and self._start_position:
-                        self._set_state(State.RETURNING)
-                    else:
-                        self._stop_motors()
-                        self._set_state(State.IDLE)
-            else:
-                # Reset progress tracking for retry
-                self._last_progress_dist = float('inf')
-                self._last_progress_time = now
-
-    # ── Settling (precision stop) ─────────────────────
-
-    def _handle_settling(self):
-        """Confirm precise position at waypoint, creep-correct if overshot."""
-        if self._current_lat is None:
+        if now - self._last_progress_time < self.get_parameter('stuck_timeout').value:
             return
 
-        wp = self._waypoints[self._current_wp_idx]
-        dist = haversine(self._current_lat, self._current_lon, wp['lat'], wp['lng'])
+        self._stuck_retries += 1
+        max_retries = self.get_parameter('stuck_max_retries').value
+        wp_idx = self._segments[self._cur_seg_idx].waypoint_index if self._cur_seg_idx < len(self._segments) else -1
+        self.get_logger().warn(
+            f'Stuck on segment {self._cur_seg_idx} (waypoint {wp_idx + 1}) '
+            f'retry {self._stuck_retries}/{max_retries}'
+        )
+        if self._stuck_retries > max_retries:
+            self._skip_current_waypoint()
+        else:
+            self._reset_progress()
 
-        settle_tolerance = self.get_parameter('settle_tolerance').value
-        wp_tolerance = self.get_parameter('waypoint_tolerance').value
+    def _skip_current_waypoint(self):
+        if self._cur_seg_idx >= len(self._segments):
+            return
+        skipped_idx = self._segments[self._cur_seg_idx].waypoint_index
+        # Skip both the cruise + dock segments belonging to this waypoint.
+        # Synthetic return segments have waypoint_index = -1 — their skip
+        # ends the mission cleanly rather than trying to parse the next.
+        while (self._cur_seg_idx < len(self._segments)
+               and self._segments[self._cur_seg_idx].waypoint_index == skipped_idx):
+            self._cur_seg_idx += 1
+        if skipped_idx >= 0:
+            msg = Int32()
+            msg.data = int(skipped_idx)
+            self._pub_skipped.publish(msg)
+            self.get_logger().warn(f'Skipped waypoint {skipped_idx + 1}')
+        self._stuck_retries = 0
+        self._reset_progress()
+        if self._cruise_tracker is not None:
+            self._cruise_tracker.reset()
+
+    # ── settling ─────────────────────────────────────────────────────────
+
+    def _handle_settling(self):
+        if self._estimator is None or not self._estimator.initialized:
+            return
+        if self._cur_wp_idx < 0 or self._cur_wp_idx >= len(self._waypoints):
+            # Settling on a synthetic return-to-start segment (waypoint
+            # index = -1): skip spray and finish the mission. We don't try
+            # to wait for cm-tolerance settling on the return — the user
+            # hasn't pinned a target there, only a "go home" intent.
+            self._stop_motors()
+            self.get_logger().info('Returned to start, mission complete')
+            self._set_state(State.IDLE)
+            self._cur_seg_idx = len(self._segments)
+            return
+
+        wp = self._waypoints[self._cur_wp_idx]
+        antenna_e, antenna_n = self._estimator.antenna_position()
+        target_e, target_n = enu_from_gps(wp['lat'], wp['lng'], self._ref_lat, self._ref_lon)
+        dist = hypot(target_e - antenna_e, target_n - antenna_n)
+
+        wp_tol = self.get_parameter('waypoint_tolerance').value
+        settle_tol = self.get_parameter('settle_tolerance').value
         settle_readings = self.get_parameter('settle_readings').value
         settle_timeout = self.get_parameter('settle_timeout').value
 
-        # Timeout: proceed with spray at current position
         if time.monotonic() - self._settle_enter_time > settle_timeout:
             self.get_logger().warn(
-                f'Settle timeout at waypoint {self._current_wp_idx + 1} '
-                f'(dist={dist*100:.1f}cm), proceeding to spray'
+                f'Settle timeout at waypoint {self._cur_wp_idx + 1} '
+                f'(dist={dist*100:.1f} cm), proceeding to spray'
             )
             self._trigger_spray()
             return
 
-        if dist > wp_tolerance:
-            # Overshot or drifted beyond tolerance: creep back
+        if dist > wp_tol:
+            # Antenna has drifted out of tolerance during settling — most
+            # likely a small overshoot or a late GPS correction. Hand back
+            # to the dock tracker, which can creep / reverse to bring it
+            # back. We don't change segment index — the dock segment is
+            # still the active one for this waypoint.
             self._settle_count = 0
-            self._creep_toward_waypoint(wp['lat'], wp['lng'], dist)
-        elif dist <= settle_tolerance:
-            # Within tight tolerance: count toward confirmation
-            self._stop_motors()
+            seg = self._segments[self._cur_seg_idx] if self._cur_seg_idx < len(self._segments) else None
+            if seg is not None and seg.kind == 'dock':
+                v, kappa, _ = self._dock_tracker.step(
+                    self._estimator.chassis_pose(), seg,
+                    (antenna_e, antenna_n),
+                )
+                self._publish_velocity(v, kappa)
+            else:
+                self._stop_motors()
+            return
+
+        # Inside tolerance.
+        self._stop_motors()
+        if dist <= settle_tol:
             self._settle_count += 1
             if self._settle_count >= settle_readings:
                 self.get_logger().info(
-                    f'Waypoint {self._current_wp_idx + 1}/{len(self._waypoints)} '
-                    f'settled at {dist*100:.1f}cm'
+                    f'Waypoint {self._cur_wp_idx + 1}/{len(self._waypoints)} '
+                    f'settled at {dist*100:.1f} cm'
                 )
                 self._trigger_spray()
         else:
-            # Between settle_tolerance and wp_tolerance: stop and wait
-            self._stop_motors()
             self._settle_count = 0
 
-    def _creep_toward_waypoint(self, target_lat, target_lon, dist):
-        """Very slow correction movement toward waypoint."""
-        creep_speed = self.get_parameter('creep_speed').value
-        max_curv = self.get_parameter('max_curvature').value
-
-        if self._current_heading is None:
-            self._stop_motors()
-            return
-
-        target_bearing = bearing(
-            self._current_lat, self._current_lon,
-            target_lat, target_lon,
-        )
-        alpha = normalize_angle(target_bearing - self._current_heading)
-
-        if abs(alpha) > pi / 2:
-            # Target is behind us (overshoot). Ackermann can't pivot in place,
-            # so reverse straight back. Once we've backed up enough that the
-            # target is in front again, the next tick's normal creep arc takes over.
-            self._publish_velocity(-creep_speed, 0.0)
-        else:
-            curvature = -2.0 * sin(alpha) / max(0.1, dist)
-            curvature = max(-max_curv, min(max_curv, curvature))
-            self._publish_velocity(creep_speed, curvature)
-
     def _trigger_spray(self):
-        """Trigger spray and enter SPRAYING state."""
         msg = Int32()
-        msg.data = self._current_wp_idx
+        msg.data = int(self._cur_wp_idx)
         self._pub_waypoint_reached.publish(msg)
         self._spray_enter_time = time.monotonic()
         self._set_state(State.SPRAYING)
 
-    # ── Spray (with position hold) ────────────────────
+    # ── spraying ─────────────────────────────────────────────────────────
 
     def _handle_spraying(self):
-        """Handle spraying state: timeout check + position hold."""
-        spray_timeout = self.get_parameter('spray_timeout').value
-        if time.monotonic() - self._spray_enter_time > spray_timeout:
+        if time.monotonic() - self._spray_enter_time > self.get_parameter('spray_timeout').value:
             self.get_logger().warn(
-                f'Spray timeout at waypoint {self._current_wp_idx + 1}, skipping'
+                f'Spray timeout at waypoint {self._cur_wp_idx + 1}, skipping'
             )
             result = String()
-            result.data = json.dumps({'waypoint': int(self._current_wp_idx), 'outcome': 'timeout'})
+            result.data = json.dumps({
+                'waypoint': int(self._cur_wp_idx),
+                'outcome': 'timeout',
+            })
             self._pub_spray_result.publish(result)
-            # Tell spray_node to kill any pending signal_done timer so a late
-            # 'success' doesn't overwrite the 'timeout' we just published.
             cancel = Int32()
-            cancel.data = int(self._current_wp_idx)
+            cancel.data = int(self._cur_wp_idx)
             self._pub_spray_cancel.publish(cancel)
-            self._on_spray_done(None)
+            self._advance_to_next_waypoint()
             return
 
-        # Position hold during spray
-        if self._current_lat is None:
+        # Position hold during spray: keep the antenna parked on target
+        # using the dock tracker. This is what catches small GPS drift
+        # mid-spray without leaving SPRAYING.
+        if self._estimator is None or self._cur_seg_idx >= len(self._segments):
+            self._stop_motors()
             return
-
-        wp = self._waypoints[self._current_wp_idx]
-        dist = haversine(self._current_lat, self._current_lon, wp['lat'], wp['lng'])
-        wp_tolerance = self.get_parameter('waypoint_tolerance').value
-
-        if dist > wp_tolerance:
-            self._creep_toward_waypoint(wp['lat'], wp['lng'], dist)
+        seg = self._segments[self._cur_seg_idx]
+        if seg.kind != 'dock':
+            self._stop_motors()
+            return
+        antenna_e, antenna_n = self._estimator.antenna_position()
+        target_e, target_n = seg.target_antenna
+        dist = hypot(target_e - antenna_e, target_n - antenna_n)
+        if dist > self.get_parameter('waypoint_tolerance').value:
+            v, kappa, _ = self._dock_tracker.step(
+                self._estimator.chassis_pose(), seg,
+                (antenna_e, antenna_n),
+            )
+            self._publish_velocity(v, kappa)
         else:
             self._stop_motors()
 
-    # ── Waypoint arrival ──────────────────────────────
+    def _advance_to_next_waypoint(self):
+        # Move past the dock segment of the current waypoint.
+        if self._cur_seg_idx < len(self._segments):
+            self._cur_seg_idx += 1
+        self._stuck_retries = 0
+        self._reset_progress()
+        if self._cruise_tracker is not None:
+            self._cruise_tracker.reset()
+        if self._dock_tracker is not None:
+            self._dock_tracker.reset()
 
-    def _on_waypoint_arrived(self):
-        """Handle arrival at waypoint: enter settling phase for precision stop."""
-        self._stop_motors()
-        self._settle_count = 0
-        self._settle_enter_time = time.monotonic()
-        self.get_logger().info(
-            f'Waypoint {self._current_wp_idx + 1}/{len(self._waypoints)} '
-            f'in tolerance, settling...'
-        )
-        self._set_state(State.SETTLING)
+        if self._cur_seg_idx >= len(self._segments):
+            self._stop_motors()
+            self.get_logger().info('Mission complete')
+            self._set_state(State.IDLE)
+            return
+        self._set_state(State.NAVIGATING)
 
-    # ── Helpers ────────────────────────────────────────
+    # ── velocity / state plumbing ────────────────────────────────────────
 
     def _publish_velocity(self, speed, curvature):
-        """Publish Twist velocity command."""
         msg = Twist()
-        msg.linear.x = speed
-        msg.angular.z = curvature
+        msg.linear.x = float(speed)
+        msg.angular.z = float(curvature)
         self._pub_velocity.publish(msg)
 
     def _stop_motors(self):
-        """Publish zero velocity."""
         self._publish_velocity(0.0, 0.0)
 
     def _set_state(self, new_state):
-        """Transition to a new state and publish."""
         if self._state != new_state:
             self.get_logger().info(f'State: {self._state.value} → {new_state.value}')
             self._state = new_state
             self._publish_state()
 
     def _publish_state(self):
-        """Publish current state string (dedup to reduce topic chatter)."""
         if self._last_published_state == self._state:
             return
         msg = String()
@@ -692,9 +794,13 @@ class NavigatorNode(Node):
         self._pub_state.publish(msg)
         self._last_published_state = self._state
 
-    def _has_required_fix(self):
-        required = self.get_parameter('required_fix_status').value
-        return has_required_fix_status(self._gps_fix_status, required)
+    def _set_error(self, reason):
+        self._last_error_reason = reason
+        self.get_logger().warn(f'ERROR: {reason}')
+        msg = String()
+        msg.data = reason
+        self._pub_error_reason.publish(msg)
+        self._set_state(State.ERROR)
 
 
 def main(args=None):

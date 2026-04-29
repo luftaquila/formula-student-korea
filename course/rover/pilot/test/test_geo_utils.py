@@ -1,9 +1,11 @@
 """Tests for geo_utils module."""
 
 import pytest
-from math import pi, radians, isclose
+from math import pi, radians, isclose, cos, sin
 from pilot.lib.geo_utils import (
     haversine, bearing, enu_from_gps, gps_from_enu, normalize_angle,
+    compass_to_math, math_to_compass, offset_point, project_onto_line,
+    fit_chord_heading,
 )
 
 
@@ -93,3 +95,85 @@ class TestNormalizeAngle:
     def test_pi(self):
         result = normalize_angle(pi)
         assert isclose(result, pi, abs_tol=1e-10) or isclose(result, -pi, abs_tol=1e-10)
+
+
+class TestFrameConversions:
+    def test_compass_north_is_math_pi_over_two(self):
+        # 0 compass = North = +y axis = π/2 in math frame
+        assert isclose(compass_to_math(0.0), pi / 2, abs_tol=1e-10)
+
+    def test_compass_east_is_math_zero(self):
+        # π/2 compass = East = +x axis = 0 in math frame
+        assert isclose(compass_to_math(pi / 2), 0.0, abs_tol=1e-10)
+
+    def test_compass_south_is_math_minus_pi_over_two(self):
+        m = compass_to_math(pi)
+        # π/2 - π = -π/2 (already inside [-π, π])
+        assert isclose(m, -pi / 2, abs_tol=1e-10)
+
+    def test_round_trip(self):
+        for c in (-2.0, -0.5, 0.0, 0.4, 1.7, 2.9):
+            assert isclose(compass_to_math(math_to_compass(c)), c, abs_tol=1e-10)
+
+
+class TestPlanarHelpers:
+    def test_offset_point_along_x(self):
+        x, y = offset_point(1.0, 2.0, 3.0, 0.0)  # 3m along +x
+        assert isclose(x, 4.0, abs_tol=1e-10) and isclose(y, 2.0, abs_tol=1e-10)
+
+    def test_offset_point_along_y(self):
+        x, y = offset_point(1.0, 2.0, 3.0, pi / 2)  # 3m along +y
+        assert isclose(x, 1.0, abs_tol=1e-10) and isclose(y, 5.0, abs_tol=1e-10)
+
+    def test_project_onto_line_along_only(self):
+        along, lat = project_onto_line(3.0, 0.0, 0.0, 0.0, 0.0)  # x-axis line
+        assert isclose(along, 3.0) and isclose(lat, 0.0)
+
+    def test_project_onto_line_lateral_left(self):
+        # Line along +x; point at (0, 2) should be 2m to the left.
+        along, lat = project_onto_line(0.0, 2.0, 0.0, 0.0, 0.0)
+        assert isclose(along, 0.0) and isclose(lat, 2.0)
+
+    def test_project_onto_line_lateral_right(self):
+        along, lat = project_onto_line(0.0, -2.0, 0.0, 0.0, 0.0)
+        assert isclose(along, 0.0) and isclose(lat, -2.0)
+
+
+class TestFitChordHeading:
+    def test_clean_eastward_line(self):
+        pts = [(i * 0.5, 0.0) for i in range(10)]
+        heading, rms, chord = fit_chord_heading(pts)
+        assert isclose(heading, 0.0, abs_tol=1e-9)
+        assert rms < 1e-9
+        assert isclose(chord, 4.5, abs_tol=1e-9)
+
+    def test_recovers_45deg(self):
+        pts = [(i * 0.5, i * 0.5) for i in range(10)]
+        heading, rms, _ = fit_chord_heading(pts)
+        assert isclose(heading, pi / 4, abs_tol=1e-9)
+        assert rms < 1e-9
+
+    def test_robust_to_jitter(self):
+        # Points along +x with cm-level jitter — heading should still be ~0,
+        # residual RMS should reflect the noise, chord should be the full
+        # length. This is the canonical "did calibration sample reliably"
+        # case the navigator uses.
+        import random
+        random.seed(42)
+        pts = [(i * 0.25, random.gauss(0.0, 0.02)) for i in range(15)]
+        heading, rms, chord = fit_chord_heading(pts)
+        assert abs(heading) < 0.05
+        assert 0.005 < rms < 0.05
+        assert chord > 3.4  # 14 * 0.25 minus jitter
+
+    def test_picks_first_to_last_direction(self):
+        # Reverse-ordered points must NOT come back as the 180°-flipped
+        # heading — calibration regresses motion direction, not just an
+        # axis. (Without this guard the chassis would face the wrong way.)
+        pts = [(0.0, 0.0), (-1.0, 0.0), (-2.0, 0.0)]
+        heading, _, _ = fit_chord_heading(pts)
+        assert isclose(heading, pi, abs_tol=1e-9) or isclose(heading, -pi, abs_tol=1e-9)
+
+    def test_too_few_points_returns_zero_chord(self):
+        h, rms, chord = fit_chord_heading([(0.0, 0.0)])
+        assert chord == 0.0

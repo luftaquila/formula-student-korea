@@ -119,7 +119,6 @@ class McuBridgeNode(Node):
         self.declare_parameter('max_speed', 1.5)
         self.declare_parameter('accel_limit', 0.5)
         self.declare_parameter('manual_priority_s', 1.0)
-        self.declare_parameter('command_period_s', 0.05)  # 20 Hz (navigator)
 
         # PID closed loop (off by default; raw duty mode is the safe baseline)
         self.declare_parameter('use_pid', False)
@@ -133,6 +132,16 @@ class McuBridgeNode(Node):
         self._mode = 'stopped'
         self._last_cmd_t = 0.0
         self._last_manual_t = 0.0
+        # Chassis longitudinal speed actually being commanded (m/s, signed).
+        # The previous implementation ramped left/right duties independently,
+        # which preserved the curvature ratio but stalled the *differential*
+        # for ~1.5 s while both wheels caught up to their targets — rover
+        # turned via front-wheel scrub during the ramp instead of clean
+        # Ackermann. We now ramp on chassis (v) and apply curvature (κ)
+        # instantaneously, so the differential develops as the wheels spin
+        # up rather than after they've equalised.
+        self._cur_speed = 0.0
+        self._last_drive_t = None
         self._cur_left = 0.0
         self._cur_right = 0.0
         self._cur_steer_us = self.get_parameter('servo_center_us').value
@@ -205,9 +214,6 @@ class McuBridgeNode(Node):
         if not (0 <= self._p('servo_range_us') <= 1000):
             self.get_logger().fatal('servo_range_us out of range')
             raise SystemExit(1)
-        if not (0.0 < self._p('command_period_s') <= 0.2):
-            self.get_logger().fatal('command_period_s out of range')
-            raise SystemExit(1)
 
     def _open_serial(self):
         port = self._p('serial_port')
@@ -239,16 +245,28 @@ class McuBridgeNode(Node):
 
     # ------------------------- accel limit + ackermann
 
-    def _accel_limit(self, target, current, dt):
+    def _ramp_speed(self, target_speed, dt):
+        """Limit how fast the commanded chassis speed can change.
+
+        Ramping happens on chassis longitudinal speed in m/s, NOT on the
+        per-wheel duties — applying the limit per wheel killed the
+        Ackermann differential during ramp-up and made the rover scrub
+        through every turn until both wheels had caught up to their
+        targets (~1.5 s on the field). With this in place the steering
+        angle follows the command instantaneously, the wheel differential
+        develops naturally as v ramps, and acceleration stays bounded.
+        """
         accel = self._p('accel_limit')
-        max_speed = self._p('max_speed')
-        if max_speed <= 0:
-            return target
-        max_delta = min((accel / max_speed * 100.0) * dt, 100.0)
-        diff = target - current
-        if abs(diff) > max_delta:
-            return current + max_delta * (1.0 if diff > 0 else -1.0)
-        return target
+        if dt <= 0.0 or dt > 0.5:
+            # Long gap or first sample — accept the target without ramping.
+            # A long gap usually means the navigator restarted; ramping
+            # from a stale internal state would just give wrong torque.
+            return target_speed
+        max_delta = accel * dt
+        diff = target_speed - self._cur_speed
+        if abs(diff) <= max_delta:
+            return target_speed
+        return self._cur_speed + math.copysign(max_delta, diff)
 
     def _ackermann_kwargs(self):
         return dict(
@@ -269,9 +287,17 @@ class McuBridgeNode(Node):
         self._mode = 'autonomous'
         self._last_cmd_t = now
 
+        # Ramp on chassis speed; pass the ramped speed + raw curvature into
+        # ackermann_convert so the steering servo and wheel differential
+        # both reflect the ramped state coherently.
+        dt = 0.0 if self._last_drive_t is None else (now - self._last_drive_t)
+        self._last_drive_t = now
+        speed = self._ramp_speed(float(msg.linear.x), dt)
+        self._cur_speed = speed
+
         left, right, servo_us = ackermann_convert(
-            speed=msg.linear.x,
-            curvature=msg.angular.z,
+            speed=speed,
+            curvature=float(msg.angular.z),
             **self._ackermann_kwargs(),
         )
         self._drive(left, right, servo_us)
@@ -282,9 +308,21 @@ class McuBridgeNode(Node):
         self._last_manual_t = now
         self._mode = 'manual'
 
+        # Manual joystick goes through the same speed ramp as autonomous
+        # by translating throttle % into a target chassis speed, ramping,
+        # then re-projecting into duty %. Keeps acceleration bounded
+        # regardless of how aggressive the operator is on the stick.
+        max_speed = self._p('max_speed')
+        target_speed = float(msg.linear.x) / 100.0 * max_speed
+        dt = 0.0 if self._last_drive_t is None else (now - self._last_drive_t)
+        self._last_drive_t = now
+        speed = self._ramp_speed(target_speed, dt)
+        self._cur_speed = speed
+        throttle_pct = (speed / max_speed * 100.0) if max_speed > 0 else 0.0
+
         left, right, servo_us = manual_to_ackermann(
-            throttle_pct=msg.linear.x,
-            steering_pct=msg.angular.z,
+            throttle_pct=throttle_pct,
+            steering_pct=float(msg.angular.z),
             servo_center_us=self._p('servo_center_us'),
             servo_range_us=self._p('servo_range_us'),
         )
@@ -292,9 +330,11 @@ class McuBridgeNode(Node):
 
     def _on_estop(self, _msg):
         self._mode = 'stopped'
+        self._cur_speed = 0.0
         self._cur_left = 0.0
         self._cur_right = 0.0
         self._cur_steer_us = self._p('servo_center_us')
+        self._last_drive_t = None
         self._send('E')
         self.get_logger().warn('EMERGENCY STOP')
 
@@ -308,10 +348,10 @@ class McuBridgeNode(Node):
     # ------------------------- drive
 
     def _drive(self, left_pct, right_pct, servo_us):
-        dt = self._p('command_period_s')
-        left_pct = self._accel_limit(left_pct, self._cur_left, dt)
-        right_pct = self._accel_limit(right_pct, self._cur_right, dt)
-
+        # left/right percent already came out of ackermann_convert with the
+        # ramped speed baked in, and the curvature passed through to the
+        # steering servo unchanged. No per-wheel ramp here — that's the
+        # whole point of moving the limit upstream.
         self._cur_left = left_pct
         self._cur_right = right_pct
         self._cur_steer_us = int(round(servo_us))

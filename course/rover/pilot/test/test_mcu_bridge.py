@@ -48,9 +48,8 @@ def bridge():
         'wheelbase': 0.38,
         'track_width': 0.30,
         'max_speed': 1.5,
-        'accel_limit': 0.5,
+        'accel_limit': 0.8,
         'manual_priority_s': 1.0,
-        'command_period_s': 0.05,
         'use_pid': False,
         'pid_kp': 0.6,
         'pid_ki': 1.5,
@@ -73,6 +72,8 @@ def bridge():
 
     # State
     node._mode = 'stopped'
+    node._cur_speed = 0.0
+    node._last_drive_t = None
     node._cur_left = 0.0
     node._cur_right = 0.0
     node._cur_steer_us = 1500
@@ -112,12 +113,6 @@ def test_validate_params_rejects_bad_max_speed(bridge):
         bridge._validate_params()
 
 
-def test_validate_params_rejects_bad_command_period(bridge):
-    bridge._params['command_period_s'] = 0.5
-    with pytest.raises(SystemExit):
-        bridge._validate_params()
-
-
 def test_manual_priority_blocks_velocity_during_window(bridge):
     """Velocity callback should ignore /rover/cmd/velocity for manual_priority_s
     after a manual command, so a stale autonomy stream can't override the joystick."""
@@ -145,13 +140,15 @@ def test_manual_priority_blocks_velocity_during_window(bridge):
 
 
 def test_drive_emits_M_in_raw_mode(bridge):
+    # _drive is a pure passthrough now — ramping happens upstream in
+    # _on_velocity / _on_manual on chassis speed, not on per-wheel duty.
+    # Verify the wire format and servo value land unchanged.
     bridge._drive(left_pct=50.0, right_pct=50.0, servo_us=1500)
     out = _writes_text(bridge)
-    assert any(line.startswith('M ') for line in out)
     line = next(line for line in out if line.startswith('M '))
     parts = line.strip().split()
-    # Accel limiter caps a 0->50 jump per single tick.
-    assert -1.0 <= float(parts[1]) <= 1.0
+    assert float(parts[1]) == pytest.approx(0.5, abs=1e-6)
+    assert float(parts[2]) == pytest.approx(0.5, abs=1e-6)
     assert int(parts[3]) == 1500
 
 
@@ -161,8 +158,52 @@ def test_drive_emits_V_when_pid_enabled(bridge):
     out = _writes_text(bridge)
     line = next(line for line in out if line.startswith('V '))
     parts = line.strip().split()
-    # Sent in m/s = (pct/100) * max_speed = capped by accel limit
-    assert abs(float(parts[1])) <= bridge._params['max_speed']
+    assert abs(float(parts[1])) <= bridge._params['max_speed'] + 1e-9
+
+
+def test_velocity_ramps_on_chassis_speed_not_duty(bridge):
+    """Curvature applies instantly through the steering servo; chassis
+    speed ramps to honour accel_limit. The previous implementation ramped
+    per-wheel duty which killed the Ackermann differential during the
+    first ~1.5 s of every turn."""
+    import time
+    import types
+
+    # Big jump from 0 to 1.0 m/s with a curvature so we can observe the
+    # differential. dt = 50 ms, accel = 0.8 m/s² → max Δv ≈ 0.04 m/s.
+    msg = types.SimpleNamespace(
+        linear=types.SimpleNamespace(x=1.0, y=0.0, z=0.0),
+        angular=types.SimpleNamespace(x=0.0, y=0.0, z=0.5),
+    )
+    now = time.monotonic()
+    bridge._last_drive_t = now - 0.05
+    bridge._on_velocity(msg)
+    # Ramped speed should be ≈ 0 + 0.04 m/s (plus a μs of test runtime),
+    # not 1.0. Loose tolerance because the test thread's monotonic clock
+    # advances between _last_drive_t setup and the _on_velocity call.
+    assert 0.035 < bridge._cur_speed < 0.060
+    # The curvature still produces a differential at the (small) ramped
+    # speed — left and right duties should differ even at this first
+    # tick. With the old per-wheel ramp, both wheels would have hit the
+    # same delta cap and the differential would have been zero here.
+    out = _writes_text(bridge)
+    line = next(line for line in out if line.startswith('M '))
+    parts = line.strip().split()
+    assert abs(float(parts[1]) - float(parts[2])) > 0.0
+
+
+def test_velocity_first_tick_no_ramp_if_no_history(bridge):
+    """If we have no _last_drive_t (first command after estop / startup),
+    the ramp is bypassed — otherwise the very first command would be
+    clamped near zero and the rover would feel sluggish on every restart."""
+    import types
+    bridge._last_drive_t = None
+    msg = types.SimpleNamespace(
+        linear=types.SimpleNamespace(x=1.0, y=0.0, z=0.0),
+        angular=types.SimpleNamespace(x=0.0, y=0.0, z=0.0),
+    )
+    bridge._on_velocity(msg)
+    assert bridge._cur_speed == pytest.approx(1.0, abs=1e-9)
 
 
 def test_estop_sends_E_and_clears_state(bridge):

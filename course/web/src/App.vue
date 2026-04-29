@@ -29,7 +29,7 @@ let stopReleaseTimer = null;
 let es = null;
 
 const ACTIVE_NAV_STATES = new Set([
-  "CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING", "RETURNING",
+  "CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING",
 ]);
 
 function isMissionActive() {

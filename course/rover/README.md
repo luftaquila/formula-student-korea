@@ -93,19 +93,46 @@ Hot-plug behaviour:
 ```
 IDLE → CALIBRATING → NAVIGATING → SETTLING → SPRAYING ─(next wp)→ NAVIGATING
                                                            │
-                                        (all waypoints done)│
+                              (all wp done, return_to_start)│
                                                            ▼
-                                                       RETURNING → IDLE
+                                              NAVIGATING (return) → IDLE
 
 any state → EMERGENCY_STOP (on /rover/cmd/emergency_stop)
-any driving state → ERROR   (GPS timeout / fix below quality > fix_hysteresis_s)
+any driving state → ERROR  (GPS timeout / fix below quality > fix_hysteresis_s)
 ```
 
-- **CALIBRATING**: drive 2.5 m, derive heading from delta. ERROR at 5 m.
-- **NAVIGATING**: Pure Pursuit, `max_curvature` 3.0 1/m, `fix_hysteresis_s` 0.8 s.
-- **SETTLING → SPRAYING**: within 3 cm for 5 consecutive samples → fire.
+- **Antenna-precise docking**: every waypoint becomes a *cruise* segment
+  followed by a *dock* segment — a straight corridor of length
+  `dock_approach_distance` ending at the chassis pose where the GPS
+  antenna sits exactly on the user's clicked target. The chassis dock
+  pose is `target − R(ψ_dock) · antenna_offset`, so non-zero antenna
+  offset is compensated at planning time. The dock corridor is straight
+  so ω ≈ 0 at arrival, which makes antenna position predictable from
+  chassis pose alone.
+- **State estimator** fuses MCU encoder odometry (chassis v, ω) with GPS
+  antenna position and GPS heading-of-motion (with antenna-offset
+  inversion) into a chassis (x, y, ψ) at 20 Hz. ψ never depends on raw
+  GPS heading-of-motion alone — that decouples control from the 200–500
+  ms heading-of-motion latency that previously caused figure-8 swings.
+- **CALIBRATING**: drive κ = 0 at `calibration_speed`, regress chassis
+  heading from antenna ENU samples. Trustworthy when chord ≥
+  `calibration_chord_min_m` AND residual RMS ≤ `calibration_residual_max`,
+  otherwise extend once and ERROR if still bad. Hard cap at
+  `calibration_max_distance`.
+- **NAVIGATING/cruise**: Pure Pursuit with D-term damping +
+  virtual-lookahead projection past the goal. `max_curvature` 1.2 1/m
+  matches `tan(25°)/wheelbase`; speed scales with `cos(α)`.
+- **NAVIGATING/dock**: linear state-feedback line follower on antenna
+  lateral error: κ = −k_y · e_y_antenna − k_ψ · e_ψ. Reverses straight
+  on along-track overshoot.
+- **SETTLING → SPRAYING**: antenna within `settle_tolerance` for
+  `settle_readings` consecutive samples → fire. Drift back outside
+  `waypoint_tolerance` mid-settle hands control back to the dock tracker.
 
-Thresholds in `pilot/config/rover_params.yaml`.
+Thresholds in `pilot/config/rover_params.yaml`. The most physically
+load-bearing knob is `antenna_offset_x` / `antenna_offset_y` — measure
+it once on the actual chassis with a tape; everything else self-corrects
+via GPS feedback.
 
 Fleet-wide identical: hardware, NTRIP endpoint, `rover_params.yaml`. Per-rover differs only in `SERVER_URL` / `INTERNAL_SECRET` / `NTRIP_USERNAME`.
 

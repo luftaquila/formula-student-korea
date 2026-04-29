@@ -28,29 +28,69 @@ gps_node:
 
 navigator_node:
   ros__parameters:
-    waypoint_tolerance: 0.05           # Meters to consider waypoint reached (5cm)
-    approach_tolerance: 0.30           # Meters to switch to precision approach
-    calibration_distance: 2.5          # Meters to drive for heading calibration
-    calibration_max_distance: 5.0      # Meters cap — enter ERROR if variance still high here
-    calibration_speed: 0.5             # m/s during calibration. Must exceed gps_node.heading_speed_threshold (0.3) with margin so heading actually publishes.
-    cruise_speed: 1.2                  # m/s during normal navigation
-    approach_speed: 0.2                # m/s during precision approach
-    lookahead_min: 0.8                 # Minimum Pure Pursuit lookahead (meters). Set ≥ minimum turn radius (wheelbase/tan(max_steering) ≈ 0.81 m) so PP never demands a tighter arc than physically possible.
-    lookahead_gain: 0.5                # Lookahead = gain * speed
-    max_curvature: 1.2                 # 1/m cap on Pure Pursuit curvature. Physical limit is tan(25°)/0.38 ≈ 1.23; set just below for headroom.
-    heading_calibrated_threshold: 5.0  # Degrees, max variance for calibrated heading
-    gps_timeout: 3.0                   # Seconds without GPS before ERROR state
-    fix_hysteresis_s: 0.8              # Seconds of bad fix tolerated before ERROR (avoids 50ms flicker)
-    return_to_start: true              # Return to starting position after last waypoint
-    stuck_timeout: 10.0                # Seconds without progress before retry/skip
-    stuck_max_retries: 2               # Max retries before skipping waypoint
-    spray_timeout: 5.0                 # Seconds to wait for spray_done before auto-skip
-    creep_speed: 0.15                  # m/s during position correction creep. Must stay above the motors' static-friction breakaway (≈3% duty stalled the rover in field testing).
-    decel_distance: 2.0                # Meters from waypoint to start decelerating
-    settle_readings: 5                 # Consecutive GPS readings to confirm settled position
-    settle_tolerance: 0.03             # Meters for tight settle confirmation (3cm)
-    settle_timeout: 10.0               # Seconds before settling gives up and sprays anyway
-    required_fix_status: "rtk_fixed"   # Minimum GPS fix quality required to start/resume mission
+    # ── Antenna geometry ────────────────────────────────────────────────
+    # Body-frame offset from rear-axle centre to GPS antenna phase centre.
+    # Positive x = ahead of rear axle; positive y = LEFT of centerline.
+    # Measure with a tape on the actual chassis — this is the only knob
+    # the antenna-precise docking depends on.
+    antenna_offset_x: 0.30             # meters
+    antenna_offset_y: 0.00             # meters
+
+    # ── Chassis geometry ────────────────────────────────────────────────
+    # Mirrors mcu_bridge's authoritative copies; navigator needs them for
+    # the kinematic model and curvature clamp.
+    wheelbase: 0.38                    # meters
+    track_width: 0.30                  # meters
+    max_steering_angle_deg: 25.0       # degrees
+    max_curvature: 1.2                 # 1/m. Physical limit tan(25°)/0.38 ≈ 1.23.
+
+    # ── Speeds ──────────────────────────────────────────────────────────
+    cruise_speed: 1.0                  # m/s during cruise segments
+    approach_speed: 0.4                # m/s on the dock corridor (precision)
+    creep_speed: 0.18                  # m/s for fine corrections / overshoot reverse
+    calibration_speed: 0.5             # m/s during cold-start heading discovery (must exceed gps_node.heading_speed_threshold by margin)
+
+    # ── Path planner ────────────────────────────────────────────────────
+    dock_approach_distance: 1.5        # meters of straight line before the dock pose. Should be at least ~3× wheelbase so chassis can settle on the line before the dock point.
+
+    # ── Pure Pursuit (cruise tracker) ───────────────────────────────────
+    pp_lookahead_min: 0.6              # meters. Decoupled from min turn radius — separate clamp on max_curvature handles physical limit.
+    pp_lookahead_gain: 0.6             # lookahead = max(min, gain × speed)
+    pp_damping: 0.18                   # D-term gain on dα/dt. Damps figure-8 oscillation under heading lag.
+    cruise_done_tolerance: 0.20        # meters from cruise end pose to declare cruise done and switch to dock
+
+    # ── Dock tracker (state-feedback line follower) ─────────────────────
+    dock_k_y: 1.4                      # 1/m — gain on antenna lateral error
+    dock_k_psi: 1.6                    # 1/m — gain on chassis heading error vs path
+    approach_tolerance: 0.10           # meters antenna-to-target to declare dock segment reached
+    creep_zone: 0.40                   # meters from target to drop from approach_speed to creep_speed
+
+    # ── Tolerances and timeouts ─────────────────────────────────────────
+    waypoint_tolerance: 0.05           # meters antenna-to-target to consider waypoint hit
+    settle_tolerance: 0.03             # meters for tight settle confirmation
+    settle_readings: 5                 # consecutive in-tolerance readings to declare settled
+    settle_timeout: 10.0               # seconds before settling gives up and sprays anyway
+    spray_timeout: 5.0                 # seconds to wait for spray_done before auto-skip
+    stuck_timeout: 12.0                # seconds without progress before retry/skip
+    stuck_max_retries: 2
+
+    # ── Calibration quality gates ───────────────────────────────────────
+    calibration_distance: 2.5          # meters of straight drive
+    calibration_max_distance: 5.0      # meters cap — ERROR if heading still untrustworthy
+    calibration_min_samples: 20        # ≥1 second at 20 Hz
+    calibration_chord_min_m: 1.5       # require this chord length for trustworthy heading fit
+    calibration_residual_max: 0.15     # meters RMS of perpendicular residuals
+
+    # ── State estimator ─────────────────────────────────────────────────
+    estimator_pos_gain: 0.30           # blend factor for GPS antenna position correction
+    estimator_psi_gain: 0.05           # blend factor for GPS heading-of-motion correction
+    estimator_psi_min_speed: 0.4       # m/s below which heading-of-motion is too noisy to trust
+
+    # ── Safety ──────────────────────────────────────────────────────────
+    gps_timeout: 3.0                   # seconds without GPS before ERROR
+    fix_hysteresis_s: 0.8              # seconds of bad fix tolerated before ERROR
+    required_fix_status: "rtk_fixed"
+    return_to_start: true
 
 spray_node:
   ros__parameters:
@@ -75,11 +115,13 @@ mcu_bridge_node:
     wheelbase: 0.38
     track_width: 0.30
     max_speed: 1.5
-    accel_limit: 0.5
+    # accel_limit applies to chassis longitudinal speed (m/s²), NOT to
+    # per-wheel duty as the previous implementation did. Ramping per duty
+    # killed the Ackermann differential during the first ~1.5s of every
+    # turn — the rover scrubbed instead of arcing cleanly. Now the
+    # steering servo applies κ instantly and only v ramps.
+    accel_limit: 0.8
     manual_priority_s: 1.0
-    # dt used by accel_limit. _drive() runs once per /rover/cmd/velocity,
-    # which navigator publishes at 20 Hz (50 ms). Set to match.
-    command_period_s: 0.05
     # PID closed loop on the MCU. Off until encoders are calibrated and
     # gains are tuned on the actual hardware.
     use_pid: false
