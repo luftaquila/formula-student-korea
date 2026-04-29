@@ -17,6 +17,7 @@ from pilot.lib.antenna_calibration import (
     ANTENNA_OFFSET_FILENAME,
     OFFSET_BOUND_M,
     SOLVE_MIN_SAMPLES,
+    SOLVE_PSI_SPREAD_MIN_RAD,
     antenna_offset_path,
     load_antenna_offset,
     save_antenna_offset,
@@ -117,6 +118,48 @@ class TestSolverGates:
         result = solve_antenna_offset(samples)
         assert result['reason'] is not None
         assert 'out of bounds' in result['reason']
+
+    def test_near_constant_psi_rejected(self):
+        # SCURVE that failed to execute (encoder stall, mid-drive E-Stop)
+        # leaves a sample set with effectively no ψ rotation. The solver
+        # would silently absorb chassis-pose origin error into a_x/a_y
+        # without this gate.
+        samples = []
+        for i in range(60):
+            psi = 0.10 + 1e-3 * (i / 60)  # ~0.001 rad spread, far below gate
+            x_c = 0.05 * i
+            y_c = 0.0
+            a_obs_x = x_c + cos(psi) * 0.30 - sin(psi) * 0.05
+            a_obs_y = y_c + sin(psi) * 0.30 + cos(psi) * 0.05
+            samples.append((x_c, y_c, psi, a_obs_x, a_obs_y))
+        result = solve_antenna_offset(samples)
+        assert result['reason'] is not None
+        assert 'ψ excitation' in result['reason']
+
+    def test_psi_spread_wraps_across_pi_handled(self):
+        # ψ samples that cross the ±π boundary (e.g. SCURVE driving a
+        # chassis already pointing near south). Naïve max−min on raw
+        # angles would compute spread ≈ 2π and pass the gate even when
+        # the actual rotation is tiny. The solver unwraps before checking.
+        samples = []
+        from math import pi as _pi
+        for i in range(60):
+            # Oscillate tightly around π: real spread 0.01 rad, raw spread
+            # ≈ 2π if half are at +π−ε and half at −π+ε.
+            if i % 2 == 0:
+                psi = _pi - 0.005
+            else:
+                psi = -_pi + 0.005
+            x_c = 0.05 * i
+            y_c = 0.0
+            a_obs_x = x_c + cos(psi) * 0.30 - sin(psi) * 0.05
+            a_obs_y = y_c + sin(psi) * 0.30 + cos(psi) * 0.05
+            samples.append((x_c, y_c, psi, a_obs_x, a_obs_y))
+        result = solve_antenna_offset(samples)
+        # Real ψ excitation is ~0.01 rad — must be rejected, not promoted
+        # to ~6.28 rad by a wrap.
+        assert result['reason'] is not None
+        assert 'ψ excitation' in result['reason']
 
 
 class TestPersistence:

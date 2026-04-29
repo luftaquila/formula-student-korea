@@ -66,7 +66,7 @@ import math
 import os
 import tempfile
 import time
-from math import cos, sin, sqrt
+from math import cos, sin, sqrt, pi
 
 
 ANTENNA_OFFSET_FILENAME = 'antenna_offset.json'
@@ -79,6 +79,14 @@ RMS_BOUND_M = 0.5
 # Solver acceptance gates.
 SOLVE_MIN_SAMPLES = 30
 SOLVE_RMS_MAX_M = 0.05
+# Minimum ψ excitation across the sample set. The closed-form solver
+# itself is well-defined for any ψ (R^T R = I), but it silently absorbs
+# chassis-pose origin error into the offset estimate when the drive
+# fails to rotate the rover. The S-curve drive (κ_max=0.5, v=0.5 m/s,
+# T=4 s) produces ~18° peak ψ excursion in normal operation; this gate
+# (~8.6°) flags a SCURVE that didn't execute (encoder stall, motor
+# failure, mid-drive E-Stop) without rejecting healthy runs.
+SOLVE_PSI_SPREAD_MIN_RAD = 0.15
 
 
 def antenna_offset_path():
@@ -163,6 +171,27 @@ def solve_antenna_offset(samples):
     if n < SOLVE_MIN_SAMPLES:
         return {'reason': f'too few samples ({n} < {SOLVE_MIN_SAMPLES})',
                 'samples': n}
+
+    # ψ-excitation gate. Unwrap each sample's ψ relative to the first so
+    # crossing the ±π boundary doesn't artificially inflate the spread.
+    psi0 = samples[0][2]
+    unwrapped = []
+    for s in samples:
+        d = s[2] - psi0
+        # Wrap to [-π, π] then offset by psi0 to get a continuous trace.
+        while d > pi:
+            d -= 2.0 * pi
+        while d < -pi:
+            d += 2.0 * pi
+        unwrapped.append(psi0 + d)
+    psi_spread = max(unwrapped) - min(unwrapped)
+    if psi_spread < SOLVE_PSI_SPREAD_MIN_RAD:
+        return {
+            'reason': (f'insufficient ψ excitation '
+                       f'({math.degrees(psi_spread):.1f}° < '
+                       f'{math.degrees(SOLVE_PSI_SPREAD_MIN_RAD):.1f}°)'),
+            'samples': n,
+        }
 
     sum_bx = 0.0
     sum_by = 0.0
