@@ -63,6 +63,10 @@ from pilot.lib.protocol_utils import has_required_fix_status
 from pilot.lib.state_estimator import ChassisPoseEstimator
 from pilot.lib.path_planner import plan as plan_path
 from pilot.lib.path_tracker import CruiseTracker, DockTracker
+from pilot.lib.antenna_calibration import (
+    load_antenna_offset, save_antenna_offset, solve_antenna_offset,
+    scurve_curvature,
+)
 
 
 class State(Enum):
@@ -71,8 +75,16 @@ class State(Enum):
     NAVIGATING = 'NAVIGATING'
     SETTLING = 'SETTLING'
     SPRAYING = 'SPRAYING'
+    CAL_ANTENNA = 'CAL_ANTENNA'
     EMERGENCY_STOP = 'EMERGENCY_STOP'
     ERROR = 'ERROR'
+
+
+class CalAntennaPhase(Enum):
+    """Sub-phases of the antenna offset auto-calibration drive."""
+    STRAIGHT = 'straight'   # κ = 0, chord-fit ψ_init from antenna ENU
+    SCURVE = 'scurve'       # κ(t) sinusoidal, sample chassis pose vs antenna
+    SOLVE = 'solve'         # stop, run LSQ, persist, publish result
 
 
 class NavigatorNode(Node):
@@ -133,6 +145,13 @@ class NavigatorNode(Node):
         self.declare_parameter('calibration_chord_min_m', 1.5)
         self.declare_parameter('calibration_residual_max', 0.15)
 
+        # Antenna offset auto-calibration drive shape.
+        self.declare_parameter('antenna_cal_straight_distance', 2.0)
+        self.declare_parameter('antenna_cal_kappa_max', 0.5)
+        self.declare_parameter('antenna_cal_period_s', 4.0)
+        self.declare_parameter('antenna_cal_periods', 2)
+        self.declare_parameter('antenna_cal_speed', 0.5)
+
         # Estimator gains.
         self.declare_parameter('estimator_pos_gain', 0.30)
         self.declare_parameter('estimator_psi_gain', 0.05)
@@ -147,6 +166,20 @@ class NavigatorNode(Node):
         # ── derived & state ──────────────────────────────────────────────
         self._max_steer_rad = radians(self.get_parameter('max_steering_angle_deg').value)
 
+        # Effective antenna offset. Persisted antenna_offset.json wins over
+        # the YAML default; the YAML value is a fallback for first boot. We
+        # keep them on the instance (not re-read from params) so a fresh
+        # auto-calibration applies to the next mission immediately without
+        # requiring a service restart.
+        yaml_offset = (
+            self.get_parameter('antenna_offset_x').value,
+            self.get_parameter('antenna_offset_y').value,
+        )
+        loaded, payload = load_antenna_offset(default=yaml_offset)
+        self._antenna_offset_x = loaded[0]
+        self._antenna_offset_y = loaded[1]
+        self._antenna_offset_source = 'persisted' if payload else 'yaml_default'
+
         # Publishers.
         self._pub_velocity = self.create_publisher(Twist, '/rover/cmd/velocity', 10)
         self._pub_state = self.create_publisher(String, '/rover/nav/state', 10)
@@ -156,6 +189,7 @@ class NavigatorNode(Node):
         self._pub_spray_cancel = self.create_publisher(Int32, '/rover/spray/cancel', reliable_qos)
         self._pub_error_reason = self.create_publisher(String, '/rover/nav/error_reason', reliable_qos)
         self._pub_skipped = self.create_publisher(Int32, '/rover/nav/skipped', reliable_qos)
+        self._pub_cal_antenna_result = self.create_publisher(String, '/rover/cal/antenna_result', reliable_qos)
 
         # Subscribers.
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps, 10)
@@ -167,6 +201,7 @@ class NavigatorNode(Node):
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_emergency_stop, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_emergency, reliable_qos)
         self.create_subscription(Empty, '/rover/spray/done', self._on_spray_done, reliable_qos)
+        self.create_subscription(Empty, '/rover/cmd/calibrate_antenna', self._on_calibrate_antenna, reliable_qos)
 
         # ── runtime state ────────────────────────────────────────────────
         self._state = State.IDLE
@@ -223,6 +258,20 @@ class NavigatorNode(Node):
         self._pre_error_state = None
         self._last_error_reason = None
 
+        # Antenna offset auto-calibration state.
+        self._cal_antenna_phase = None
+        self._cal_antenna_chassis = None     # integrated (x, y, ψ) during scurve
+        self._cal_antenna_psi_init = None
+        self._cal_antenna_start_lat = None
+        self._cal_antenna_start_lon = None
+        self._cal_antenna_samples = []       # for chord fit during straight phase
+        self._cal_antenna_data = []          # (x_c, y_c, ψ, a_obs_x, a_obs_y) during scurve
+        self._cal_antenna_phase_start_t = 0.0
+        self._cal_antenna_last_predict_t = None
+        self._cal_antenna_last_gps_idx = -1
+        self._cal_antenna_drive_distance = 0.0
+        self._cal_antenna_extended = False
+
         # Published state dedup.
         self._last_published_state = None
 
@@ -267,8 +316,10 @@ class NavigatorNode(Node):
             'max_curvature': self.get_parameter('max_curvature').value,
             'wheelbase': self.get_parameter('wheelbase').value,
             'max_steering_angle_rad': self._max_steer_rad,
-            'antenna_offset_x': self.get_parameter('antenna_offset_x').value,
-            'antenna_offset_y': self.get_parameter('antenna_offset_y').value,
+            # Pull from instance, not yaml param, so a fresh auto-cal is
+            # picked up on the next mission start without restart.
+            'antenna_offset_x': self._antenna_offset_x,
+            'antenna_offset_y': self._antenna_offset_y,
         }
 
     def _odom_chassis_kinematics(self):
@@ -380,6 +431,44 @@ class NavigatorNode(Node):
             return
         self._advance_to_next_waypoint()
 
+    def _on_calibrate_antenna(self, _msg):
+        """Operator-triggered antenna offset auto-calibration.
+
+        Only valid from IDLE — the maneuver drives the rover ~5 m through
+        an S-curve, which would interfere with any active mission.
+        Requires RTK fix at the start (the chord regression for ψ_init
+        depends on cm-level antenna positions).
+        """
+        if self._state != State.IDLE:
+            self._publish_cal_antenna_result(
+                ok=False,
+                reason=f'must be IDLE to start (current: {self._state.value})',
+            )
+            return
+        if self._gps_lat is None or not self._has_required_fix():
+            self._publish_cal_antenna_result(
+                ok=False,
+                reason='RTK-fixed GPS required to start calibration',
+            )
+            return
+        # Reset every per-cal scratch field so a previous failed run can't
+        # leak into this one.
+        self._cal_antenna_phase = CalAntennaPhase.STRAIGHT
+        self._cal_antenna_chassis = None
+        self._cal_antenna_psi_init = None
+        self._cal_antenna_start_lat = self._gps_lat
+        self._cal_antenna_start_lon = self._gps_lon
+        self._cal_antenna_samples = []
+        self._cal_antenna_data = []
+        self._cal_antenna_phase_start_t = time.monotonic()
+        self._cal_antenna_last_predict_t = None
+        self._cal_antenna_last_gps_idx = -1
+        self._cal_antenna_drive_distance = 0.0
+        self._cal_antenna_extended = False
+        self._fix_degraded_since = None
+        self.get_logger().info('Antenna offset auto-calibration started')
+        self._set_state(State.CAL_ANTENNA)
+
     # ── main control loop ────────────────────────────────────────────────
 
     def _control_loop(self):
@@ -387,6 +476,7 @@ class NavigatorNode(Node):
         # immediately on GPS loss.
         active_states = (
             State.CALIBRATING, State.NAVIGATING, State.SETTLING,
+            State.CAL_ANTENNA,
         )
         if self._state in active_states:
             now = time.monotonic()
@@ -428,6 +518,8 @@ class NavigatorNode(Node):
             self._handle_settling()
         elif self._state == State.SPRAYING:
             self._handle_spraying()
+        elif self._state == State.CAL_ANTENNA:
+            self._handle_cal_antenna()
 
     # ── error recovery ───────────────────────────────────────────────────
 
@@ -508,8 +600,8 @@ class NavigatorNode(Node):
 
         # Build estimator anchored at the mission ENU origin.
         self._estimator = ChassisPoseEstimator(
-            antenna_offset_x=self.get_parameter('antenna_offset_x').value,
-            antenna_offset_y=self.get_parameter('antenna_offset_y').value,
+            antenna_offset_x=self._antenna_offset_x,
+            antenna_offset_y=self._antenna_offset_y,
             ref_lat=self._ref_lat,
             ref_lon=self._ref_lon,
             pos_correction_gain=self.get_parameter('estimator_pos_gain').value,
@@ -750,6 +842,207 @@ class NavigatorNode(Node):
             self._publish_velocity(v, kappa)
         else:
             self._stop_motors()
+
+    # ── antenna offset auto-calibration ─────────────────────────────────
+
+    def _handle_cal_antenna(self):
+        if self._cal_antenna_phase == CalAntennaPhase.STRAIGHT:
+            self._cal_antenna_step_straight()
+        elif self._cal_antenna_phase == CalAntennaPhase.SCURVE:
+            self._cal_antenna_step_scurve()
+        elif self._cal_antenna_phase == CalAntennaPhase.SOLVE:
+            self._cal_antenna_step_solve()
+
+    def _cal_antenna_step_straight(self):
+        """Drive κ=0 for `antenna_cal_straight_distance`, fit chord → ψ_init."""
+        if self._gps_lat is None:
+            return
+        speed = self.get_parameter('antenna_cal_speed').value
+        self._publish_velocity(speed, 0.0)
+
+        # Use the start fix as a local ENU origin for the chord regression.
+        e, n = enu_from_gps(
+            self._gps_lat, self._gps_lon,
+            self._cal_antenna_start_lat, self._cal_antenna_start_lon,
+        )
+        if (not self._cal_antenna_samples
+                or hypot(e - self._cal_antenna_samples[-1][0],
+                         n - self._cal_antenna_samples[-1][1]) >= 0.02):
+            self._cal_antenna_samples.append((e, n))
+
+        target_distance = self.get_parameter('antenna_cal_straight_distance').value
+        if self._cal_antenna_extended:
+            target_distance += 1.0
+        # Hard cap at 2× the requested distance — refuse to keep driving
+        # forever if the fit just won't lock in.
+        max_distance = max(2.0 * target_distance, target_distance + 2.0)
+        dist = hypot(e, n)
+
+        if dist >= max_distance:
+            self._stop_motors()
+            self._publish_cal_antenna_result(
+                ok=False,
+                reason=f'straight phase exceeded {max_distance:.1f} m without a usable chord',
+            )
+            self._set_state(State.IDLE)
+            return
+
+        if dist < target_distance:
+            return
+
+        chord_min = self.get_parameter('calibration_chord_min_m').value
+        residual_max = self.get_parameter('calibration_residual_max').value
+        psi_math, rms, chord_len = fit_chord_heading(self._cal_antenna_samples)
+        if chord_len < chord_min or rms > residual_max:
+            if not self._cal_antenna_extended:
+                self._cal_antenna_extended = True
+                self.get_logger().warn(
+                    f'Antenna-cal straight fit weak (chord={chord_len:.2f} m, '
+                    f'rms={rms*100:.1f} cm), extending'
+                )
+                return
+            self._stop_motors()
+            self._publish_cal_antenna_result(
+                ok=False,
+                reason=(f'straight chord fit unusable '
+                        f'(chord={chord_len:.2f} m, rms={rms*100:.1f} cm)'),
+            )
+            self._set_state(State.IDLE)
+            return
+
+        # Bootstrap the chassis pose. The "chassis" reference is the rear
+        # axle; we don't know yet where it is in world frame because we
+        # don't know the offset (that's what we're solving for). Anchor it
+        # at the GPS antenna position with zero offset assumption — the
+        # math doesn't care about an absolute origin, only the per-sample
+        # consistency of (chassis pose, antenna observation). The chord
+        # gave us ψ_init; the SCURVE phase integrates from there.
+        self._cal_antenna_psi_init = psi_math
+        self._cal_antenna_chassis = (e, n, psi_math)
+        self._cal_antenna_phase = CalAntennaPhase.SCURVE
+        self._cal_antenna_phase_start_t = time.monotonic()
+        self._cal_antenna_last_predict_t = None
+        self._cal_antenna_drive_distance = dist
+        self.get_logger().info(
+            f'Antenna-cal straight done: ψ_init={degrees(psi_math):.1f}° '
+            f'(chord={chord_len:.2f} m, rms={rms*100:.1f} cm) → S-curve'
+        )
+
+    def _cal_antenna_step_scurve(self):
+        """Drive sinusoidal κ for N periods, sample (chassis, antenna).
+
+        Chassis pose integrates open-loop from MCU encoder odometry — we
+        deliberately don't apply GPS feedback because the GPS observation
+        IS the data we're fitting. Encoder drift over the ~10 s drive is
+        small enough on smooth ground (~0.5° ψ, ~5 cm xy) that it doesn't
+        meaningfully bias the LSQ.
+        """
+        speed = self.get_parameter('antenna_cal_speed').value
+        kappa_max = self.get_parameter('antenna_cal_kappa_max').value
+        period_s = self.get_parameter('antenna_cal_period_s').value
+        periods = self.get_parameter('antenna_cal_periods').value
+
+        elapsed = time.monotonic() - self._cal_antenna_phase_start_t
+        total = period_s * max(1, int(periods))
+        if elapsed >= total:
+            self._stop_motors()
+            self._cal_antenna_phase = CalAntennaPhase.SOLVE
+            return
+
+        kappa = scurve_curvature(elapsed, kappa_max, period_s)
+        self._publish_velocity(speed, kappa)
+
+        # Encoder-based open-loop integration of chassis pose.
+        v, omega = self._odom_chassis_kinematics()
+        now = time.monotonic()
+        if self._cal_antenna_last_predict_t is None:
+            self._cal_antenna_last_predict_t = now
+        else:
+            dt = now - self._cal_antenna_last_predict_t
+            self._cal_antenna_last_predict_t = now
+            if 0.0 < dt < 0.5:
+                cx, cy, cpsi = self._cal_antenna_chassis
+                mid_psi = cpsi + 0.5 * omega * dt
+                cx += v * cos(mid_psi) * dt
+                cy += v * sin(mid_psi) * dt
+                cpsi = normalize_angle(cpsi + omega * dt)
+                self._cal_antenna_chassis = (cx, cy, cpsi)
+                self._cal_antenna_drive_distance += abs(v) * dt
+
+        # Record one sample per fresh GPS fix. We dedupe via _last_gps_time
+        # rather than position so we capture every truly new measurement.
+        if self._cal_antenna_last_gps_idx != int(self._last_gps_time * 1000):
+            self._cal_antenna_last_gps_idx = int(self._last_gps_time * 1000)
+            if self._gps_lat is not None:
+                a_e, a_n = enu_from_gps(
+                    self._gps_lat, self._gps_lon,
+                    self._cal_antenna_start_lat, self._cal_antenna_start_lon,
+                )
+                cx, cy, cpsi = self._cal_antenna_chassis
+                self._cal_antenna_data.append((cx, cy, cpsi, a_e, a_n))
+
+    def _cal_antenna_step_solve(self):
+        """Run LSQ, persist on success, publish result either way."""
+        result = solve_antenna_offset(self._cal_antenna_data)
+        ok = result.get('reason') is None
+        if ok:
+            try:
+                payload = save_antenna_offset(
+                    result['a_x'], result['a_y'],
+                    rms_residual_m=result['rms_residual_m'],
+                    samples=result['samples'],
+                    drive_distance_m=self._cal_antenna_drive_distance,
+                )
+            except (OSError, ValueError) as exc:
+                self._publish_cal_antenna_result(
+                    ok=False,
+                    reason=f'persistence failed: {exc}',
+                    a_x=result['a_x'], a_y=result['a_y'],
+                    rms_residual_m=result['rms_residual_m'],
+                    samples=result['samples'],
+                )
+                self._set_state(State.IDLE)
+                return
+            # Apply immediately so the next mission picks it up.
+            self._antenna_offset_x = float(result['a_x'])
+            self._antenna_offset_y = float(result['a_y'])
+            self._antenna_offset_source = 'persisted'
+            self.get_logger().info(
+                f'Antenna offset calibrated: a_x={self._antenna_offset_x:.3f} m, '
+                f'a_y={self._antenna_offset_y:.3f} m '
+                f'(rms={result["rms_residual_m"]*100:.1f} cm, '
+                f'n={result["samples"]}, drive={self._cal_antenna_drive_distance:.1f} m)'
+            )
+            self._publish_cal_antenna_result(ok=True, **payload)
+        else:
+            self.get_logger().warn(f'Antenna-cal solve failed: {result["reason"]}')
+            self._publish_cal_antenna_result(
+                ok=False,
+                reason=result['reason'],
+                a_x=result.get('a_x'),
+                a_y=result.get('a_y'),
+                rms_residual_m=result.get('rms_residual_m'),
+                samples=result.get('samples'),
+            )
+        self._set_state(State.IDLE)
+
+    def _publish_cal_antenna_result(self, *, ok, reason=None, a_x=None,
+                                    a_y=None, rms_residual_m=None,
+                                    samples=None, drive_distance_m=None,
+                                    calibrated_at=None):
+        payload = {'ok': bool(ok)}
+        if reason is not None:
+            payload['reason'] = reason
+        for k, v in (('a_x', a_x), ('a_y', a_y),
+                     ('rms_residual_m', rms_residual_m),
+                     ('samples', samples),
+                     ('drive_distance_m', drive_distance_m),
+                     ('calibrated_at', calibrated_at)):
+            if v is not None:
+                payload[k] = v
+        msg = String()
+        msg.data = json.dumps(payload)
+        self._pub_cal_antenna_result.publish(msg)
 
     def _advance_to_next_waypoint(self):
         # Move past the dock segment of the current waypoint.

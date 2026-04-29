@@ -209,3 +209,60 @@ def test_set_error_publishes_reason(nav):
     assert nav._state == State.ERROR
     assert nav._last_error_reason == 'test reason'
     assert published == ['test reason']
+
+
+# ── Antenna offset auto-calibration ───────────────────────────────────────
+
+def test_calibrate_antenna_rejected_when_not_idle(nav):
+    nav._state = State.NAVIGATING
+    results = []
+    nav._pub_cal_antenna_result.publish = lambda msg: results.append(msg.data)
+    nav._on_calibrate_antenna(None)
+    assert nav._state == State.NAVIGATING
+    assert len(results) == 1
+    import json as _json
+    payload = _json.loads(results[0])
+    assert payload['ok'] is False
+    assert 'IDLE' in payload['reason']
+
+
+def test_calibrate_antenna_rejected_without_fix(nav):
+    nav._state = State.IDLE
+    nav._gps_fix_status = 'no_fix'
+    results = []
+    nav._pub_cal_antenna_result.publish = lambda msg: results.append(msg.data)
+    nav._on_calibrate_antenna(None)
+    assert nav._state == State.IDLE
+    assert len(results) == 1
+
+
+def test_calibrate_antenna_starts_from_idle(nav):
+    nav._state = State.IDLE
+    nav._on_calibrate_antenna(None)
+    assert nav._state == State.CAL_ANTENNA
+    # Per-cal scratch must be reset so a previous failed attempt can't bleed in.
+    assert nav._cal_antenna_samples == []
+    assert nav._cal_antenna_data == []
+    assert nav._cal_antenna_extended is False
+    assert nav._cal_antenna_psi_init is None
+    assert nav._cal_antenna_start_lat == nav._gps_lat
+
+
+def test_emergency_stop_during_cal_antenna(nav):
+    nav._state = State.CAL_ANTENNA
+    nav._on_emergency_stop(None)
+    assert nav._state == State.EMERGENCY_STOP
+
+
+def test_persisted_offset_loaded_into_instance(nav, tmp_path, monkeypatch):
+    """Sanity: when a saved antenna_offset.json exists, navigator picks it
+    up on construction so missions plan with the persisted value, not the
+    YAML default."""
+    monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
+    from pilot.lib.antenna_calibration import save_antenna_offset
+    save_antenna_offset(0.42, 0.07, rms_residual_m=0.015,
+                        samples=60, drive_distance_m=5.5)
+    fresh = type(nav)()  # call __init__ again with the env var set
+    assert fresh._antenna_offset_x == pytest.approx(0.42)
+    assert fresh._antenna_offset_y == pytest.approx(0.07)
+    assert fresh._antenna_offset_source == 'persisted'

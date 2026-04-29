@@ -74,6 +74,7 @@ class BridgeNode(Node):
         self._pub_manual = self.create_publisher(Twist, '/rover/cmd/manual_control', 10)
         self._pub_request_pos = self.create_publisher(Empty, '/rover/cmd/request_position', reliable_qos)
         self._pub_calibrate_battery = self.create_publisher(Float32, '/rover/cmd/calibrate_battery', reliable_qos)
+        self._pub_calibrate_antenna = self.create_publisher(Empty, '/rover/cmd/calibrate_antenna', reliable_qos)
 
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps_position, 10)
@@ -84,6 +85,7 @@ class BridgeNode(Node):
         self.create_subscription(String, '/rover/spray/result', self._on_spray_result, reliable_qos)
         self.create_subscription(String, '/rover/battery', self._on_battery, 10)
         self.create_subscription(String, '/rover/gps/metrics', self._on_gps_metrics, 10)
+        self.create_subscription(String, '/rover/cal/antenna_result', self._on_cal_antenna_result, reliable_qos)
 
         # State
         self._last_position = None
@@ -266,6 +268,16 @@ class BridgeNode(Node):
             self.get_logger().warn(f'Invalid spray result JSON: {msg.data}')
             return
         self._post_async('/api/rover/spray_result', payload, 'spray_result')
+
+    def _on_cal_antenna_result(self, msg):
+        """Forward antenna-cal outcome JSON to the course server."""
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warn(f'Invalid antenna cal result JSON: {msg.data}')
+            return
+        self._post_async('/api/rover/antenna_calibration_result', payload,
+                         'antenna_calibration_result')
 
     def _telemetry_loop(self):
         """Periodically POST telemetry to the course server."""
@@ -452,6 +464,10 @@ class BridgeNode(Node):
             msg = Float32()
             msg.data = measured_v
             self._pub_calibrate_battery.publish(msg)
+
+        elif event == 'calibrate-antenna':
+            self.get_logger().info('Antenna offset calibration requested by server')
+            self._pub_calibrate_antenna.publish(Empty())
 
     def destroy_node(self):
         self._running = False

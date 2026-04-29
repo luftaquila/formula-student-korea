@@ -123,6 +123,7 @@ const app = createApp({ express }, (req) => {
     req.path === "/api/rover/telemetry" ||
     req.path === "/api/rover/waypoint_reached" ||
     req.path === "/api/rover/spray_result" ||
+    req.path === "/api/rover/antenna_calibration_result" ||
     req.path === "/api/rover/logs"
   ) {
     return isInternalRequest(req) ? null : "admin";
@@ -660,6 +661,11 @@ const roverState = {
   last_disconnect_reason: null, // "sse_closed" | "write_failed" | "replaced"
   last_disconnect_at: 0,
   last_spray_result: null, // { waypoint, outcome, at }
+  // Most recent antenna offset calibration outcome — surfaced in the UI so
+  // the chief can see whether the persisted offset on the rover matches
+  // what they just measured / whether a recent attempt failed (and why).
+  // { ok, a_x, a_y, rms_residual_m, samples, drive_distance_m, calibrated_at, reason }
+  antenna_calibration: null,
   battery: null, // { voltage, percent, source }
   ntrip: null, // { host, port, mountpoint, fail_count, last_error, last_correction_at, bytes_received }
   gps: null, // { h_acc, v_acc, altitude, speed, heading, num_sv, pdop, tdop } from rover GPS metrics
@@ -1131,6 +1137,54 @@ app.post("/api/rover/calibrate-battery", (req, res) => {
 
   logger.log(req, "rover.calibrate_battery", { measured_v }, "rover");
   res.json({ ok: true, measured_v });
+});
+
+// POST /api/rover/calibrate-antenna - 안테나 오프셋 자동 캘리브레이션 시작 (admin)
+// 로버가 직진 → S-curve(8s) 패턴을 자동 주행하면서 인코더로 적분한
+// chassis pose와 GPS 안테나 위치를 비교해 (a_x, a_y) 오프셋을 LSQ로 적합한다.
+// 결과는 로버 측 /var/lib/pilot/antenna_offset.json에 영속화되고
+// /api/rover/antenna_calibration_result로 회신된다.
+app.post("/api/rover/calibrate-antenna", (req, res) => {
+  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (roverState.nav_state && roverState.nav_state !== "IDLE") {
+    return res.status(409).send(
+      `로버가 IDLE이 아닙니다 (현재: ${roverState.nav_state}). 먼저 미션을 종료하세요.`
+    );
+  }
+  if (!sendRoverEvent("calibrate-antenna", {})) {
+    logger.warn(req, "rover.calibrate_antenna", { error: "write_failed" }, "rover");
+    return res.status(503).send("로버 연결이 끊어졌습니다.");
+  }
+  logger.log(req, "rover.calibrate_antenna", null, "rover");
+  res.json({ ok: true });
+});
+
+// POST /api/rover/antenna_calibration_result - 로버가 캘리브레이션 결과 보고 (internal)
+app.post("/api/rover/antenna_calibration_result", (req, res) => {
+  const body = req.body || {};
+  const ok = !!body.ok;
+  // We log everything the rover sent so post-mortem of a failed calibration
+  // (residual too high / not enough samples) tells the operator exactly
+  // which gate tripped without needing SSH.
+  const stored = {
+    ok,
+    a_x: typeof body.a_x === "number" ? body.a_x : null,
+    a_y: typeof body.a_y === "number" ? body.a_y : null,
+    rms_residual_m: typeof body.rms_residual_m === "number" ? body.rms_residual_m : null,
+    samples: Number.isInteger(body.samples) ? body.samples : null,
+    drive_distance_m: typeof body.drive_distance_m === "number" ? body.drive_distance_m : null,
+    calibrated_at: Number.isInteger(body.calibrated_at) ? body.calibrated_at : Date.now(),
+    reason: typeof body.reason === "string" ? body.reason : null,
+  };
+  roverState.antenna_calibration = stored;
+  broadcastEvent("rover:antenna_calibration", stored);
+  broadcastRoverStatus();
+  if (ok) {
+    logger.log(req, "rover.antenna_calibration", stored, "rover");
+  } else {
+    logger.warn(req, "rover.antenna_calibration", stored, "rover");
+  }
+  res.json({ ok: true });
 });
 
 // POST /api/rover/clear-emergency - 비상정지 해제 (operator-acknowledged)

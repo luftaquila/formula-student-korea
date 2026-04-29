@@ -1240,6 +1240,79 @@ async function deleteCourse(id) {
   } catch (err) { notifyError(err.message); }
 }
 
+/* ── Antenna offset auto-calibration ──────────────── */
+// The rover persists the offset on its end (/var/lib/pilot/antenna_offset.json)
+// and reports each calibration attempt back via /api/rover/antenna_calibration_result.
+// We surface the latest result here so the chief can spot a stale or wildly
+// wrong offset before a mission. Trigger button is gated on roverStatus
+// (connected + IDLE) — mid-mission calibration would require interrupting
+// the rover and is intentionally not allowed.
+const showAntennaCal = ref(false);
+const antennaCalSubmitting = ref(false);
+
+const antennaCalRunning = computed(() => {
+  // Either a CAL_ANTENNA state on the rover, or we just sent the trigger and
+  // are waiting for the rover to update its nav_state (which takes ~50 ms).
+  return roverStatus.value.nav_state === "CAL_ANTENNA";
+});
+
+const antennaCalCanStart = computed(() => {
+  return roverStatus.value.connected
+      && (roverStatus.value.nav_state === "IDLE" || roverStatus.value.nav_state == null);
+});
+
+const antennaCalBtnLabel = computed(() => {
+  if (antennaCalRunning.value) return "캘리브레이션 진행 중...";
+  if (!roverStatus.value.connected) return "로버 연결 필요";
+  if (roverStatus.value.nav_state && roverStatus.value.nav_state !== "IDLE") {
+    return "IDLE 상태에서만 가능";
+  }
+  return "안테나 오프셋 캘리브레이션";
+});
+
+const antennaCalDisplay = computed(() => {
+  const cal = roverStatus.value.antenna_calibration;
+  const fmt = (v) => (typeof v === "number" ? v.toFixed(3) + " m" : "—");
+  const fmtRms = (v) => (typeof v === "number" ? (v * 100).toFixed(1) + " cm" : "—");
+  let calibratedAgo = "—";
+  if (cal?.calibrated_at) {
+    const ago = Math.max(0, Math.round((Date.now() - cal.calibrated_at) / 60000));
+    calibratedAgo = ago < 1 ? "방금" : `${ago}분 전`;
+  }
+  return {
+    a_x: fmt(cal?.a_x),
+    a_y: fmt(cal?.a_y),
+    rms: fmtRms(cal?.rms_residual_m),
+    calibratedAgo,
+    errorReason: cal && !cal.ok ? cal.reason : null,
+  };
+});
+
+function openAntennaCal() {
+  showAntennaCal.value = true;
+  activeChipPopover.value = null;
+}
+
+function closeAntennaCal() {
+  if (antennaCalSubmitting.value) return;
+  showAntennaCal.value = false;
+}
+
+async function submitAntennaCal() {
+  if (!antennaCalCanStart.value) return;
+  antennaCalSubmitting.value = true;
+  try {
+    await request("/api/rover/calibrate-antenna", { method: "POST" });
+    // Leave the modal open so the operator sees the running status; it
+    // self-closes only when they hit "닫기". Result chip in the panel
+    // updates from the SSE broadcast independently.
+  } catch (err) {
+    notifyError(err.message);
+  } finally {
+    antennaCalSubmitting.value = false;
+  }
+}
+
 /* ── Battery calibration ──────────────────────────── */
 const showBatteryCal = ref(false);
 const batteryCalInput = ref("");
@@ -1996,7 +2069,7 @@ function restoreMissionProgress(mp) {
 // post-reconnect refetch) routes through this so the button label can never
 // diverge from reality. User-driven modes (path-pick, manual) are orthogonal
 // to server state and preserved.
-const ACTIVE_NAV_STATES = new Set(["CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING"]);
+const ACTIVE_NAV_STATES = new Set(["CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING", "CAL_ANTENNA"]);
 
 function reconcileRoverMode(s) {
   if (roverMode.value === "path-pick" || roverMode.value === "manual") return;
@@ -2055,6 +2128,7 @@ function onGlobalKeydown(e) {
   if (showLogs.value) { showLogs.value = false; e.preventDefault(); return; }
   if (showSnapshots.value) { showSnapshots.value = false; e.preventDefault(); return; }
   if (showBatteryCal.value) { showBatteryCal.value = false; e.preventDefault(); return; }
+  if (showAntennaCal.value) { closeAntennaCal(); e.preventDefault(); return; }
   if (showPreflight.value) { cancelPreflight(); e.preventDefault(); return; }
 }
 
@@ -2121,6 +2195,40 @@ onUnmounted(() => {
           </div>
           <div class="preflight-actions">
             <button class="btn btn-ghost btn-sm" @click="showLogs = false">닫기</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Antenna offset auto-calibration modal -->
+      <div v-if="showAntennaCal" class="preflight-backdrop" @click.self="closeAntennaCal">
+        <div class="preflight-modal">
+          <h3>안테나 오프셋 자동 캘리브레이션</h3>
+          <p class="modal-warning">
+            로버가 직진 약 2 m 이후 S자 패턴(8 s)을 자동 주행합니다.
+            전후좌우 5 m 이상의 평탄하고 빈 공간이 필요하며,
+            로버 주변에 사람·장애물이 없는지 확인하세요.
+          </p>
+          <div class="cal-current">
+            <span class="cal-key">현재 a_x</span>
+            <span class="cal-val">{{ antennaCalDisplay.a_x }}</span>
+            <span class="cal-key">현재 a_y</span>
+            <span class="cal-val">{{ antennaCalDisplay.a_y }}</span>
+          </div>
+          <div v-if="antennaCalRunning" class="modal-status">
+            진행 중... 로버 상태가 IDLE로 돌아오면 결과가 표시됩니다.
+          </div>
+          <div class="preflight-actions">
+            <button class="btn btn-ghost btn-sm" :disabled="antennaCalSubmitting" @click="closeAntennaCal">
+              {{ antennaCalRunning ? '닫기' : '취소' }}
+            </button>
+            <button
+              v-if="!antennaCalRunning"
+              class="btn btn-primary btn-sm"
+              :disabled="antennaCalSubmitting || !antennaCalCanStart"
+              @click="submitAntennaCal"
+            >
+              {{ antennaCalSubmitting ? '전송 중...' : '시작' }}
+            </button>
           </div>
         </div>
       </div>
@@ -2522,6 +2630,30 @@ onUnmounted(() => {
                   </div>
                 </div>
 
+                <div v-if="roverStatus.connected" class="inspector-group antenna-cal-block">
+                  <div class="group-title">안테나 오프셋</div>
+                  <div class="cal-current">
+                    <span class="cal-key">a_x</span>
+                    <span class="cal-val">{{ antennaCalDisplay.a_x }}</span>
+                    <span class="cal-key">a_y</span>
+                    <span class="cal-val">{{ antennaCalDisplay.a_y }}</span>
+                    <span class="cal-key">RMS</span>
+                    <span class="cal-val">{{ antennaCalDisplay.rms }}</span>
+                    <span class="cal-key">갱신</span>
+                    <span class="cal-val">{{ antennaCalDisplay.calibratedAgo }}</span>
+                  </div>
+                  <div v-if="antennaCalDisplay.errorReason" class="cal-error">
+                    마지막 시도 실패: {{ antennaCalDisplay.errorReason }}
+                  </div>
+                  <div class="rover-controls rover-controls-grid">
+                    <button
+                      class="btn btn-ghost btn-lg-touch"
+                      :disabled="!antennaCalCanStart"
+                      @click="openAntennaCal"
+                    >{{ antennaCalBtnLabel }}</button>
+                  </div>
+                </div>
+
                 <div v-if="!activeCourse" class="empty-msg large">
                   <div v-if="roverStatus.connected" class="rover-controls rover-controls-grid follow-only">
                     <button
@@ -2854,6 +2986,37 @@ onUnmounted(() => {
 .cal-input-row label {
   font-size: 0.85rem;
   color: var(--text-secondary);
+}
+/* Antenna-cal modal: same frame as battery, plus a yellow warning callout
+   for the "drive pattern needs clear space" notice and a reason line for
+   failed calibrations. */
+.modal-warning {
+  margin: 0 0 0.75rem 0;
+  padding: 0.6rem 0.75rem;
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.5);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  line-height: 1.45;
+}
+.modal-status {
+  margin: 0 0 0.75rem 0;
+  padding: 0.5rem 0.75rem;
+  background: rgba(59, 130, 246, 0.10);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+.cal-error {
+  margin: 0.5rem 0 0 0;
+  padding: 0.4rem 0.6rem;
+  background: rgba(239, 68, 68, 0.10);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: var(--text-primary);
 }
 .cal-input-row input {
   padding: 0.5rem 0.6rem;
