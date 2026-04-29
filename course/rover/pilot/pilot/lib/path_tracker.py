@@ -101,14 +101,19 @@ class CruiseTracker:
 
         kappa = 2.0 * sin(alpha) / L_d
 
-        # D-term damping: subtract a portion of dα/dt to stop the
-        # commanded κ from chasing the heading-error gradient. This is
-        # what kills the left-right oscillation under heading lag.
+        # D-term damping: ADD damping × dα/dt so that as the chassis
+        # converges (α decreases, dα/dt < 0) the commanded κ is REDUCED
+        # — opposing the rate of heading change. The earlier `kappa -=`
+        # form was anti-damping: it added |κ| while α was already
+        # closing, which under heading-lag amplified figure-8 swings.
+        # Sign change here matches classical PD: u = Kp·α + Kd·dα/dt
+        # with Kd > 0 (where Kp = 2·sin(α)/L_d gives κ ∝ α for small α
+        # so the same-sign Kd damps the closing rate).
         if self._prev_alpha is not None and self._prev_t is not None:
             dt = t_now - self._prev_t
             if 0.0 < dt < 0.5:
                 d_alpha = normalize_angle(alpha - self._prev_alpha) / dt
-                kappa -= self._damping * d_alpha
+                kappa += self._damping * d_alpha
         self._prev_alpha = alpha
         self._prev_t = t_now
 

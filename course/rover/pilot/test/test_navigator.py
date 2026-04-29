@@ -89,6 +89,54 @@ def test_execute_path_with_fix_starts_calibrating(nav):
     assert nav._stuck_retries == 0
 
 
+def test_execute_path_rejected_during_active_state(nav):
+    """Mid-NAVIGATING execute_path must be rejected. Otherwise the chassis
+    keeps cruising under the prior tracker for one tick, and the new
+    mission's CALIBRATING anchors ENU at a moving rover."""
+    nav._state = State.NAVIGATING
+    msg = type('M', (), {'data': json.dumps([{'lat': 35.0001, 'lng': 126.0001}])})()
+    nav._on_execute_path(msg)
+    assert nav._state == State.NAVIGATING  # unchanged
+    # Same for SETTLING / SPRAYING / CAL_ANTENNA / CAL_WHEELS.
+    for s in (State.SETTLING, State.SPRAYING, State.CAL_ANTENNA, State.CAL_WHEELS):
+        nav._state = s
+        nav._on_execute_path(msg)
+        assert nav._state == s
+
+
+def test_execute_path_accepted_from_error_state(nav):
+    """Operator should be able to start a new mission from ERROR (after
+    GPS recovery hasn't auto-resumed yet, e.g. cleared via clear_emergency
+    landing in IDLE first — but ERROR direct entry is also reasonable
+    when the operator wants to forcibly retry from a known position)."""
+    nav._state = State.ERROR
+    msg = type('M', (), {'data': json.dumps([{'lat': 35.0001, 'lng': 126.0001}])})()
+    nav._on_execute_path(msg)
+    assert nav._state == State.CALIBRATING
+
+
+def test_error_resume_resets_settle_and_progress_timers(nav, monkeypatch):
+    """30-s GPS outage during SETTLING must not fire settle_timeout
+    immediately on resume."""
+    t = [time.monotonic()]
+    monkeypatch.setattr(time, 'monotonic', lambda: t[0])
+    # Simulate: rover entered SETTLING, then GPS dropped, ERROR fired.
+    nav._settle_enter_time = t[0] - 30.0  # 30 s ago
+    nav._last_progress_time = t[0] - 30.0
+    nav._last_progress_dist = 1.5
+    nav._pre_error_state = State.SETTLING
+    nav._state = State.ERROR
+    nav._last_gps_time = t[0]  # GPS just recovered
+    nav._gps_fix_status = 'rtk_fixed'
+    nav._handle_error()
+    assert nav._state == State.SETTLING
+    # Wall-clock timers must reset to NOW so the next handler tick
+    # doesn't see "30 s elapsed" and trip its timeouts.
+    assert nav._settle_enter_time == t[0]
+    assert nav._last_progress_time == t[0]
+    assert nav._last_progress_dist == float('inf')
+
+
 def test_new_mission_resets_internal_state(nav):
     """Regression: prior mission's flags must not leak into a fresh run."""
     nav._cal_extended = True

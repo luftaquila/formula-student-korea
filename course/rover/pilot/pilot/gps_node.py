@@ -121,6 +121,11 @@ class GpsNode(Node):
         # NTRIP auto-setup is deferred until we have a real 3D fix so we
         # can pick the nearest base station. These track retry timing.
         self._ntrip_last_attempt = 0.0
+        # Reconnect timing: when _read_serial sees a SerialException we
+        # close the port and retry with backoff. Without this, a single
+        # USB-CDC drop mid-mission silently halts position publishing.
+        self._serial_last_open_attempt = 0.0
+        self._serial_reopen_backoff_s = 2.0
 
         # Open serial port and configure ZED-F9P
         self._open_serial()
@@ -155,6 +160,28 @@ class GpsNode(Node):
         msg = String()
         msg.data = json.dumps(status)
         self._pub_ntrip_status.publish(msg)
+
+    def _teardown_serial(self):
+        """Close NTRIP and the serial port for a clean reopen.
+
+        NTRIP holds a reference to the same Serial object; if we leave it
+        running it will write RTCM to a dead fd and never recover. Stop +
+        null it; _maybe_setup_ntrip will rebuild on the next 3D fix after
+        the port is back.
+        """
+        if self._ntrip is not None:
+            try:
+                self._ntrip.stop()
+            except Exception:
+                pass
+            self._ntrip = None
+            self._ntrip_last_attempt = 0.0
+        try:
+            if self._serial is not None:
+                self._serial.close()
+        except Exception:
+            pass
+        self._serial = None
 
     def _open_serial(self):
         port = self.get_parameter('serial_port').value
@@ -257,11 +284,33 @@ class GpsNode(Node):
         self._ntrip.start()
 
     def _read_serial(self):
-        """Read and parse UBX data from serial port."""
+        """Read and parse UBX data from serial port.
+
+        On SerialException (USB-CDC drop, permission flap, kernel hiccup) we
+        close the port, null `_serial`, and re-attempt `_open_serial` on
+        subsequent ticks with `_serial_reopen_backoff_s` delay. NTRIP shares
+        the serial handle so it must be torn down too — restarting NTRIP is
+        cheap (lazy reconnect via _maybe_setup_ntrip) and avoids writing
+        RTCM into a dead fd.
+        """
+        if self._serial is None:
+            now = time.monotonic()
+            if now - self._serial_last_open_attempt < self._serial_reopen_backoff_s:
+                return
+            self._serial_last_open_attempt = now
+            try:
+                self._open_serial()
+                self._configure_receiver()
+                self.get_logger().info('GPS serial reopened')
+            except (serial.SerialException, OSError) as exc:
+                self.get_logger().warn(f'GPS serial reopen failed: {exc}')
+                self._serial = None
+                return
         try:
             data = self._serial.read(self._serial.in_waiting or 1)
-        except serial.SerialException as e:
-            self.get_logger().error(f'Serial read error: {e}')
+        except (serial.SerialException, OSError) as e:
+            self.get_logger().error(f'Serial read error: {e} — closing for reopen')
+            self._teardown_serial()
             return
 
         if not data:

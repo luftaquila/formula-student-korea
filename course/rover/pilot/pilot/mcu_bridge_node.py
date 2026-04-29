@@ -426,6 +426,16 @@ class McuBridgeNode(Node):
             if not chunk:
                 continue
             self._line_buf += chunk
+            # Cap the buffer at a generous multiple of the MCU's LINE_MAX
+            # (96 bytes) so a corrupted MCU stream that drops newlines
+            # can't grow the buffer unbounded. Discard the partial line
+            # rather than block the reader.
+            if len(self._line_buf) > 4096:
+                self.get_logger().warn(
+                    f'line buffer overflow ({len(self._line_buf)} bytes without LF) — discarding'
+                )
+                self._line_buf = b''
+                continue
             while b'\n' in self._line_buf:
                 line, _, self._line_buf = self._line_buf.partition(b'\n')
                 self._dispatch_line(line.strip().decode('ascii', errors='ignore'))

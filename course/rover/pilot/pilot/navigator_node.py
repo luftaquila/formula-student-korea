@@ -453,6 +453,21 @@ class NavigatorNode(Node):
         if not isinstance(waypoints, list) or not waypoints:
             return
 
+        # Preempt guard: only accept new mission from IDLE / ERROR. Mid-
+        # NAVIGATING/SETTLING/SPRAYING/CAL_* swap-and-restart leaves the
+        # chassis cruising under the prior tracker for one tick and
+        # anchors the new ENU origin at the moving rover, biasing the
+        # CALIBRATING chord regression. Operator must explicitly stop
+        # the active mission first. (CAL_ANTENNA / CAL_WHEELS already
+        # apply this guard via their own callbacks; mirror it here for
+        # consistency.)
+        if self._state not in (State.IDLE, State.ERROR):
+            self.get_logger().warn(
+                f'execute_path rejected: state={self._state.value} '
+                '(stop the current activity first)'
+            )
+            return
+
         if self._gps_lat is None or not self._has_required_fix():
             self._set_error('Cannot start mission without RTK-fixed GPS position')
             return
@@ -658,6 +673,22 @@ class NavigatorNode(Node):
                 self.get_logger().info(
                     f'GPS recovered, resuming {self._pre_error_state.value}'
                 )
+                # Reset any wall-clock timers that ran during the outage.
+                # Without this, a 30 s GPS dropout during SETTLING resumes
+                # with _settle_enter_time from BEFORE the outage; the
+                # 10 s timeout fires immediately on the next tick and
+                # triggers spray on a possibly-drifted antenna. Same for
+                # _last_progress_time during NAVIGATING (instantly
+                # declares "stuck"). Tracker D/I terms also reset so the
+                # control law restarts from a clean state.
+                now = time.monotonic()
+                self._settle_enter_time = now
+                self._last_progress_time = now
+                self._last_progress_dist = float('inf')
+                if self._cruise_tracker is not None:
+                    self._cruise_tracker.reset()
+                if self._dock_tracker is not None:
+                    self._dock_tracker.reset()
                 self._set_state(self._pre_error_state)
                 self._pre_error_state = None
                 self._last_error_reason = None
@@ -832,6 +863,14 @@ class NavigatorNode(Node):
         if self._stuck_retries > max_retries:
             self._skip_current_waypoint()
         else:
+            # Reset trackers so the retry doesn't reuse a saturated I-term
+            # (DockTracker integral) or stale D-term (CruiseTracker prev_alpha).
+            # Without this, retry is functionally a no-op: the same control
+            # law re-runs against the same wall it failed against.
+            if self._cruise_tracker is not None:
+                self._cruise_tracker.reset()
+            if self._dock_tracker is not None:
+                self._dock_tracker.reset()
             self._reset_progress()
 
     def _skip_current_waypoint(self):
@@ -851,8 +890,12 @@ class NavigatorNode(Node):
             self.get_logger().warn(f'Skipped waypoint {skipped_idx + 1}')
         self._stuck_retries = 0
         self._reset_progress()
+        # Reset BOTH trackers so saturated DockTracker integral from the
+        # failed dock doesn't leak into the next waypoint's docking.
         if self._cruise_tracker is not None:
             self._cruise_tracker.reset()
+        if self._dock_tracker is not None:
+            self._dock_tracker.reset()
 
     # ── settling ─────────────────────────────────────────────────────────
 
@@ -881,6 +924,21 @@ class NavigatorNode(Node):
         settle_timeout = self.get_parameter('settle_timeout').value
 
         if time.monotonic() - self._settle_enter_time > settle_timeout:
+            # Don't spray on a moving target. If the antenna is currently
+            # outside waypoint_tolerance (still in re-approach via the
+            # dock tracker), skip the waypoint instead of firing spray
+            # at whatever drifted position we happen to be at. Settling
+            # included time spent re-tracking, so a bouncy antenna can
+            # exhaust the budget while still moving.
+            if dist > wp_tol:
+                self.get_logger().warn(
+                    f'Settle timeout at waypoint {self._cur_wp_idx + 1} '
+                    f'(dist={dist*100:.1f} cm > waypoint_tolerance) — '
+                    'skipping rather than spraying on moving antenna'
+                )
+                self._skip_current_waypoint()
+                self._set_state(State.NAVIGATING)
+                return
             self.get_logger().warn(
                 f'Settle timeout at waypoint {self._cur_wp_idx + 1} '
                 f'(dist={dist*100:.1f} cm), proceeding to spray'

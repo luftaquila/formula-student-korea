@@ -378,9 +378,13 @@ class BridgeNode(Node):
 
         while self._running:
             try:
-                had_events = self._connect_sse()
-                if had_events:
-                    current_delay = reconnect_delay  # Reset only if connection actually worked
+                connection_succeeded, had_events = self._connect_sse()
+                # Reset backoff on a successful HTTP handshake, even if no
+                # events arrived before disconnect — otherwise a 401 fix
+                # makes the operator wait 30 s for the first reconnect
+                # because the previous burst of failures pinned the cap.
+                if connection_succeeded or had_events:
+                    current_delay = reconnect_delay
             except Exception as e:
                 self.get_logger().warn(f'SSE connection error: {e}')
 
@@ -393,15 +397,19 @@ class BridgeNode(Node):
     def _connect_sse(self):
         """Connect to server SSE stream and process events.
 
-        Returns True if at least one event was processed (connection was healthy).
+        Returns (connection_succeeded, had_events). connection_succeeded
+        is True once the HTTP handshake passes raise_for_status — used
+        to reset the reconnect backoff so a transient 401 doesn't pin
+        operator-visible delay at the 30 s cap after auth is fixed.
         """
         url = self.get_parameter('server_url').value
         if not url:
             self.get_logger().warn('No server_url configured')
             time.sleep(5.0)
-            return False
+            return False, False
 
         event_count = 0
+        connection_succeeded = False
 
         headers = self._get_headers()
         headers['Accept'] = 'text/event-stream'
@@ -414,6 +422,7 @@ class BridgeNode(Node):
             timeout=(10.0, 90.0),  # connect timeout, read timeout (heartbeat is 30s)
         )
         resp.raise_for_status()
+        connection_succeeded = True
 
         self._sse_connected = True
         self.get_logger().info('SSE connected to server')
@@ -449,7 +458,7 @@ class BridgeNode(Node):
                 event_data_lines = []
 
         resp.close()
-        return event_count > 0
+        return connection_succeeded, event_count > 0
 
     def _handle_sse_event(self, event, data):
         """Process a single SSE event."""

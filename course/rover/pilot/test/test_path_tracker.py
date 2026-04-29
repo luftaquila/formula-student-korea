@@ -122,24 +122,45 @@ class TestCruiseTracker:
         assert not done
         assert v == pytest.approx(_PARAMS['cruise_speed'], abs=1e-9)
 
-    def test_d_term_damping_reduces_oscillation(self):
-        # If α is decreasing (chassis heading is correcting toward target),
-        # the D-term subtracts a portion of dα/dt and lowers the commanded
-        # |κ| compared to a pure P-only PP. This is the property that
-        # kills figure-8 swings.
+    def test_d_term_damps_when_chassis_converges_on_target(self):
+        # Convergence: α > 0 with dα/dt < 0. P-only κ > 0 (turning left).
+        # Damping κ += damping·dα/dt adds a NEGATIVE contribution → κ_damped
+        # is signed-smaller than κ_p_only (less left turn, possibly even
+        # turning right to brake). Earlier sign was anti-damping.
+        # Use a small off-axis target so neither κ saturates at max_curvature.
         t = CruiseTracker(_PARAMS)
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (0.0, 5.0, pi / 2))
-        # First call seeds prev_alpha; we need a baseline κ with no D-term.
-        _, kappa_baseline, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
-        # Step time forward and rotate chassis 0.2 rad toward target → α
-        # decreased by 0.2 over 0.05 s → dα/dt = -4 rad/s. D-term adds
-        # -damping × dα/dt = +0.72 to κ. Net κ should be greater than
-        # the no-D baseline at the same chassis pose.
-        _, kappa_damped, _ = t.step((0.0, 0.0, 0.2), seg, t_now=100.05)
-        # Second-call P term is recomputed at the new pose; we just check
-        # that the D-term is signed sensibly: when chassis is closing the
-        # heading error, |κ| should not grow uncontrolled.
-        assert isinstance(kappa_damped, float)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.3, 0.0))
+        # Pose A: chassis at origin, target slightly left → small +α.
+        _, _, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
+        # Pose B: chassis rotated +0.04 rad toward target → α reduced.
+        t_p_only = CruiseTracker(_PARAMS)
+        _, kappa_p_only, _ = t_p_only.step((0.0, 0.0, 0.04), seg, t_now=200.0)
+        _, kappa_damped, _ = t.step((0.0, 0.0, 0.04), seg, t_now=100.05)
+        # Both unsaturated since target is small-angle off-axis.
+        assert abs(kappa_p_only) < _PARAMS['max_curvature'] - 1e-9
+        # Damping must reduce SIGNED κ (less turn in the convergence direction).
+        # P-term has α > 0 → κ_p > 0; damping contribution is negative.
+        assert kappa_damped < kappa_p_only, (
+            f'D-term should reduce signed κ on convergence: '
+            f'κ_damped={kappa_damped:.4f} must be < κ_p_only={kappa_p_only:.4f}'
+        )
+
+    def test_d_term_boosts_when_chassis_diverges_from_target(self):
+        # Divergence: α > 0 with dα/dt > 0 (chassis turning AWAY from target).
+        # P-only κ > 0; damping adds a POSITIVE contribution → κ_damped >
+        # κ_p_only, correcting harder against the diverging heading.
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.3, 0.0))
+        # Pose A: chassis already pointing partly toward target.
+        _, _, _ = t.step((0.0, 0.0, 0.04), seg, t_now=100.0)
+        # Pose B: chassis rotated AWAY (psi smaller) → α grew.
+        t_p_only = CruiseTracker(_PARAMS)
+        _, kappa_p_only, _ = t_p_only.step((0.0, 0.0, 0.0), seg, t_now=200.0)
+        _, kappa_damped, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.05)
+        assert kappa_damped > kappa_p_only - 1e-9, (
+            f'D-term should boost κ on divergence: '
+            f'κ_damped={kappa_damped:.4f} vs κ_p_only={kappa_p_only:.4f}'
+        )
 
 
 class TestDockTracker:
