@@ -56,8 +56,14 @@ void motor_set(int channel, float duty) {
     // chassis intact.
     gpio_put(m->pin_dir, duty >= 0.0f ? 0 : 1);
 
-    uint16_t level = (uint16_t)(fabsf(duty) * (float)MOTOR_PWM_WRAP);
-    pwm_set_chan_level(m->slice, m->channel, level);
+    // Pico SDK PWM: counter cycles 0..wrap inclusive (wrap+1 ticks total),
+    // output HIGH while counter < level. To get true 100 % at duty=1.0
+    // we need level = wrap+1, not level = wrap (which yields 1000/1001 ≈
+    // 99.9 %). Cap below at 0; cap above at MOTOR_PWM_WRAP+1.
+    float mag = fabsf(duty);
+    uint32_t level = (uint32_t)(mag * (float)(MOTOR_PWM_WRAP + 1) + 0.5f);
+    if (level > (uint32_t)(MOTOR_PWM_WRAP + 1)) level = MOTOR_PWM_WRAP + 1;
+    pwm_set_chan_level(m->slice, m->channel, (uint16_t)level);
 }
 
 void motor_stop_all(void) {

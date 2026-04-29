@@ -66,9 +66,23 @@ static void core1_main(void) {
         // line. estop_is_active() ORs in g_tripped, so checking "!estop"
         // here would deadlock the latch — once tripped, it could never
         // clear regardless of the GPIO state.
-        if (g_estop_clear_request && gpio_get(PIN_ESTOP_IN) == 0) {
+        //
+        // Debounced clear: the NC button bounces ~10 ms on release. A
+        // single-sample LOW read could land on a transient bounce while
+        // the operator is still pressing, fire estop_clear(), and let
+        // one full tick (20 ms) of motor motion through before the next
+        // tick re-trips. Require N=5 consecutive LOW samples before
+        // honouring the clear request.
+        static int g_estop_low_samples = 0;
+        if (gpio_get(PIN_ESTOP_IN) == 0) {
+            if (g_estop_low_samples < 100) g_estop_low_samples++;
+        } else {
+            g_estop_low_samples = 0;
+        }
+        if (g_estop_clear_request && g_estop_low_samples >= 5) {
             estop_clear();
             g_estop_clear_request = false;
+            g_estop_low_samples = 0;
         }
         bool estop = estop_is_active();
 

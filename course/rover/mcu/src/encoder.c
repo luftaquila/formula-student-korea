@@ -63,6 +63,14 @@ void encoder_tick(void) {
         // Two's complement subtraction wraps correctly even across INT32 wrap.
         int32_t d = c - g_enc[i].last_count;
         g_enc[i].last_count = c;
+        // Single-count deadband: at standstill a single quadrature glitch
+        // produces d=±1 (≈ 0.5 cm/s nominal velocity) which would feed
+        // nonzero error into the closed-loop PID and slowly accumulate
+        // integral drift while the rover is parked at a waypoint. Bias
+        // towards "stopped" reading rather than letting noise integrate.
+        if (d == 1 || d == -1) {
+            d = 0;
+        }
         g_enc[i].velocity_mps = (float)d * METERS_PER_COUNT / dt;
     }
 }
