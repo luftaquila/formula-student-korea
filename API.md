@@ -417,8 +417,10 @@ RTK GPS 기반 코스 콘 위치 관리 서비스. 모든 엔드포인트 admin 
 | GET | `/api/rover/stream` | public | — | SSE stream | 로버 SSE 연결 (로버가 호출). `request-position` 이벤트 수신 시 위치 전송 |
 | POST | `/api/rover/position` | public | `{ lat, lng }` | `{ lat, lng }` | 로버가 현재 위치 전송 (로버가 호출) |
 | POST | `/api/rover/request` | admin | — | `{ lat, lng }` | 로버에 위치 요청 후 응답 대기 (5초 타임아웃). 503=미연결, 504=타임아웃 |
-| POST | `/api/rover/execute` | admin | `{ waypoints: [{lat,lng}...] }` | `{ sent }` | 경로 waypoint를 로버에 전송 (SSE `execute-path` 이벤트) |
+| POST | `/api/rover/execute` | admin | `{ waypoints: [{lat,lng}...] }` | `{ sent }` | 경로 waypoint를 로버에 전송 (SSE `execute-path` 이벤트). 409=현재 EMERGENCY_STOP 래치 상태 (먼저 해제 필요) |
 | POST | `/api/rover/stop` | admin | — | `{ stopped: true }` | 비상정지 (SSE `emergency-stop` 이벤트) |
+| POST | `/api/rover/clear-emergency` | admin | — | `{ cleared: true }` | 비상정지 해제 (SSE `clear-emergency` 이벤트). 미션은 자동 종료되지 않고 보존되어 "이어서 실행" 가능 |
+| POST | `/api/rover/end-mission` | admin | — | `{ ended, mission_id? }` | 보존된 미션을 명시적으로 종료 (운영자가 path 폐기 시 호출). 활성 미션 없으면 `ended:false` |
 | POST | `/api/rover/control` | admin | `{ throttle, steering }` | `{ throttle, steering }` | 수동 제어 (-100~100, SSE `manual-control` 이벤트) |
 | POST | `/api/rover/calibrate-battery` | admin | `{ measured_v }` (15~32 V) | `{ ok, measured_v }` | 멀티미터 실측값으로 배터리 ADC 게인 1점 보정 (SSE `calibrate-battery` 이벤트). 로버가 `$SNAP_COMMON/battery_cal.json`에 영구 저장 |
 

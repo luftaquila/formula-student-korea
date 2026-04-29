@@ -487,6 +487,19 @@ describe('POST /api/rover/clear-emergency', () => {
   });
 });
 
+describe('POST /api/rover/end-mission', () => {
+  // When no mission is in flight (currentMissionId is null), the endpoint
+  // is a successful no-op. It must not require the rover to be connected —
+  // the operator may need to clean up a dangling mission record after a
+  // rover SSE drop.
+  it('returns ended:false when no mission is active', async () => {
+    const res = await client.post('/api/rover/end-mission', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.ended, false);
+  });
+});
+
 describe('POST /api/rover/control', () => {
   it('returns 503 when rover is not connected', async () => {
     const res = await client.post('/api/rover/control', {

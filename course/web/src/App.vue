@@ -1,13 +1,25 @@
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from "vue";
+import { ref, watch, provide, onMounted, onUnmounted } from "vue";
 import NavMenu from "@shared/NavMenu.vue";
 import { useRoute } from "vue-router";
 import { request } from "./api.js";
+import { useNotification } from "@shared/useNotification.js";
+
+const { error: notifyError } = useNotification();
 
 const route = useRoute();
 const roverConnected = ref(false);
 const navState = ref(null);
 const stopping = ref(false);
+// Visible to MapView (and any future descendant) via inject so the path-execute
+// button can surface "정지 요청 중..." in the same window the global e-stop
+// latch is held — both buttons need to reflect the same in-flight command.
+provide("stopping", stopping);
+
+// True only while the SSE link is in a reconnecting state, so the UI can show
+// a small "연결 재시도 중" badge instead of silently freezing.
+const sseReconnecting = ref(false);
+provide("sseReconnecting", sseReconnecting);
 
 // What the operator just commanded — used to decide which terminal nav_state
 // releases the latch. Cleared once the rover confirms via telemetry, or after
@@ -15,7 +27,6 @@ const stopping = ref(false);
 let stopRequestedKind = null; // "stop" | "clear" | null
 let stopReleaseTimer = null;
 let es = null;
-let sseHadError = false;
 
 const ACTIVE_NAV_STATES = new Set([
   "CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING", "RETURNING",
@@ -45,7 +56,7 @@ async function globalEmergencyStop() {
   } catch (err) {
     const kind = stopRequestedKind;
     clearStopLatch();
-    alert((kind === "clear" ? "비상정지 해제 실패: " : "비상정지 실패: ") + err.message);
+    notifyError((kind === "clear" ? "비상정지 해제 실패: " : "비상정지 실패: ") + err.message);
     return;
   }
   // Hold the latch until telemetry confirms the rover reached the requested
@@ -74,9 +85,9 @@ onMounted(async () => {
 
   const base = import.meta.env.PROD ? "/course" : "";
   es = new EventSource(`${base}/api/events`);
-  es.addEventListener("error", () => { sseHadError = true; });
+  es.addEventListener("error", () => { sseReconnecting.value = true; });
   es.addEventListener("open", () => {
-    if (sseHadError) { sseHadError = false; fetchStatus(); }
+    if (sseReconnecting.value) { sseReconnecting.value = false; fetchStatus(); }
   });
   es.addEventListener("rover:status", (e) => {
     try {
@@ -110,6 +121,12 @@ onUnmounted(() => {
     <main class="main-fill">
       <router-view />
     </main>
+
+    <!-- SSE 재연결 진행 중 표시: 무음 freeze 방지용. 자동 화해는 onopen 에서
+         일어나므로 이 배지는 시각적 신호만 담당. -->
+    <div v-if="sseReconnecting" class="sse-reconnecting" role="status">
+      <span class="sse-spinner"></span> 연결 재시도 중...
+    </div>
 
     <!-- Global emergency stop: visible only when rover is connected.
          Stronger visual emphasis when a mission is actively running.
@@ -183,6 +200,36 @@ onUnmounted(() => {
 @keyframes estop-pulse {
   0%, 100% { box-shadow: 0 8px 20px rgba(220, 38, 38, 0.35), 0 0 0 0 rgba(220, 38, 38, 0.7); }
   50% { box-shadow: 0 8px 20px rgba(220, 38, 38, 0.5), 0 0 0 12px rgba(220, 38, 38, 0); }
+}
+
+.sse-reconnecting {
+  position: fixed;
+  top: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 998;
+  padding: 0.4rem 0.85rem;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.95);
+  color: #1f2937;
+  font-size: 0.8rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+.sse-spinner {
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 2px solid rgba(31, 41, 55, 0.3);
+  border-top-color: #1f2937;
+  border-radius: 50%;
+  display: inline-block;
+  animation: sse-spin 0.8s linear infinite;
+}
+@keyframes sse-spin {
+  to { transform: rotate(360deg); }
 }
 
 @media (max-width: 768px) {

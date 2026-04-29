@@ -1,7 +1,11 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, nextTick, watch, inject } from "vue";
 import L from "leaflet";
 import { request } from "../api.js";
+import { useNotification } from "@shared/useNotification.js";
+
+const { error: notifyError, warning: notifyWarn } = useNotification();
+const stopping = inject("stopping", ref(false));
 
 /* ── State ─────────────────────────────────────────── */
 const courses = ref([]);
@@ -155,7 +159,17 @@ const fixChip = computed(() => {
   if (!s.connected || !s.fix_status) return null;
   const label = s.fix_status.replace(/_/g, " ").toUpperCase();
   const meta = FIX_STATUS_META[s.fix_status] || { tone: "bad" };
-  const tone = meta.tone;
+  // Stale position during an active mission is a hard fail signal — operator
+  // needs to see the chip degrade even when the latched fix_status looks fine.
+  // 5s warn / 15s bad are aligned with the existing UPDATE-row thresholds in
+  // the popover (2s/10s), but raised slightly so brief telemetry hiccups
+  // don't flap the strip.
+  const age = lastPositionAge.value;
+  const exec = roverMode.value === "executing";
+  const stale = age != null && (exec ? age >= 5 : age >= 15);
+  let tone = meta.tone;
+  if (stale && exec && age >= 15) tone = "bad";
+  else if (stale) tone = tone === "ok" ? "warn" : tone;
   // [key, value, valTone?] — valTone (optional) colors the value text.
   const rows = [["MODE", label, tone]];
   if (s.last_position?.lat != null && s.last_position?.lng != null) {
@@ -400,7 +414,7 @@ async function loadMissions() {
     const data = await res.json();
     missions.value = data.missions || [];
     missionTotal.value = data.total || 0;
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
   finally { missionLoading.value = false; }
 }
 async function loadMoreMissions() {
@@ -411,7 +425,7 @@ async function loadMoreMissions() {
     const data = await res.json();
     missions.value = [...missions.value, ...(data.missions || [])];
     missionTotal.value = data.total || missions.value.length;
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
   finally { missionLoadingMore.value = false; }
 }
 
@@ -428,7 +442,7 @@ async function selectMission(id) {
     missionSamples.value = t.samples || [];
     replayIdx.value = 0;
     renderMissionMap();
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
 }
 
 // Mission map layers — kept separate from the live cone/rover layers so
@@ -694,7 +708,19 @@ const SIDE_COLORS = { left: "#8b5cf6", right: "#06b6d4", center: "#f59e0b" };
 const activeCourse = computed(() => courses.value.find((c) => c.id === activeCourseId.value));
 
 const pathBtnLabel = computed(() => {
-  if (roverMode.value === "executing") return `실행 중 ${pathProgress.value}%`;
+  // 글로벌 비상정지 래치가 잡혀 있는 동안에는 모든 미션 버튼이 정지 명령이
+  // 텔레메트리로 확인될 때까지 같은 상태로 보여야 운영자가 두 버튼을 보고
+  // 모순된 단계로 오해하지 않는다.
+  if (stopping.value && (roverMode.value === "executing" || roverMode.value === "stopped")) {
+    return "정지 요청 중...";
+  }
+  if (roverMode.value === "executing") {
+    // executePath 직후 nav_state 가 IDLE 인 ~수초 동안은 0% 가 아니라 "시작
+    // 요청 중..." 으로 노출. rover 가 CALIBRATING 으로 들어가면 화해 함수가
+    // 진행률 라벨을 자동 갱신.
+    if (!ACTIVE_NAV_STATES.has(roverStatus.value.nav_state)) return "시작 요청 중...";
+    return `실행 중 ${pathProgress.value}%`;
+  }
   if (roverMode.value === "stopped") return "이어서 실행";
   if (roverMode.value === "path-ready") return "경로 실행";
   if (roverMode.value === "path-pick") return "계산 취소";
@@ -1149,7 +1175,7 @@ async function createCourse() {
     newCourseName.value = "";
     activeCourseId.value = created.id;
     visibility.value[created.id] = true;
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
 }
 
 function startEditCourse(course) {
@@ -1167,7 +1193,7 @@ async function saveCourseName(id) {
   try {
     await request(`/api/courses/${id}`, { method: "PATCH", body: JSON.stringify({ name }) });
     editingCourseId.value = null;
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
 }
 
 async function exportCourse(id) {
@@ -1181,7 +1207,7 @@ async function exportCourse(id) {
     a.download = `${course?.name || "course"}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
 }
 
 async function importCourse(e) {
@@ -1199,7 +1225,7 @@ async function importCourse(e) {
     activeCourseId.value = created.id;
     visibility.value[created.id] = true;
   } catch (err) {
-    alert(err.message);
+    notifyError(err.message);
   }
 }
 
@@ -1211,7 +1237,7 @@ async function deleteCourse(id) {
     if (activeCourseId.value === id) {
       activeCourseId.value = courses.value.find((c) => c.id !== id)?.id || null;
     }
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
 }
 
 /* ── Battery calibration ──────────────────────────── */
@@ -1231,7 +1257,7 @@ function openBatteryCal() {
 async function submitBatteryCal() {
   const measured_v = Number(batteryCalInput.value);
   if (!Number.isFinite(measured_v) || measured_v < 15 || measured_v > 32) {
-    alert("측정값은 15~32 V 범위 안의 숫자여야 합니다.");
+    notifyWarn("측정값은 15~32 V 범위 안의 숫자여야 합니다.");
     return;
   }
   batteryCalSubmitting.value = true;
@@ -1242,7 +1268,7 @@ async function submitBatteryCal() {
     });
     showBatteryCal.value = false;
   } catch (err) {
-    alert(err.message);
+    notifyError(err.message);
   } finally {
     batteryCalSubmitting.value = false;
   }
@@ -1269,7 +1295,7 @@ async function refreshLogs() {
     const data = await res.json();
     logEntries.value = data.entries || [];
     logUploadedAt.value = data.uploaded_at || 0;
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
 }
 
 async function requestLogs() {
@@ -1283,7 +1309,7 @@ async function requestLogs() {
     }, 1500);
   } catch (err) {
     logFetching.value = false;
-    alert(err.message);
+    notifyError(err.message);
   }
 }
 
@@ -1324,7 +1350,7 @@ async function loadSnapshots() {
     const res = await request(`/api/courses/${activeCourseId.value}/snapshots`);
     const data = await res.json();
     snapshotList.value = data.snapshots || [];
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
 }
 
 async function createSnapshot() {
@@ -1336,7 +1362,7 @@ async function createSnapshot() {
     });
     snapshotReason.value = "";
     await loadSnapshots();
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
 }
 
 async function restoreSnapshot(sid) {
@@ -1346,7 +1372,7 @@ async function restoreSnapshot(sid) {
     await request(`/api/courses/${activeCourseId.value}/snapshots/${sid}/restore`, { method: "POST" });
     await loadSnapshots();
     showSnapshots.value = false;
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
 }
 
 function formatSnapshotTime(ms) {
@@ -1361,7 +1387,7 @@ async function addCone(lat, lng, side) {
     await request(`/api/courses/${activeCourseId.value}/cones`, {
       method: "POST", body: JSON.stringify({ lat, lng, side }),
     });
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
 }
 
 async function updateCone() {
@@ -1374,14 +1400,14 @@ async function updateCone() {
       method: "PATCH", body: JSON.stringify({ lat, lng, side: editSide.value }),
     });
     selectedConeId.value = null;
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
 }
 
 async function deleteCone(id) {
   try {
     await request(`/api/cones/${id}`, { method: "DELETE" });
     if (selectedConeId.value === id) selectedConeId.value = null;
-  } catch (err) { alert(err.message); }
+  } catch (err) { notifyError(err.message); }
 }
 
 function panToCone(cone) {
@@ -1430,7 +1456,7 @@ async function addConeFromRover() {
     updateRoverMarker(lat, lng);
     await addCone(lat, lng, currentSide.value);
   } catch (err) {
-    alert(err.message || "로버 위치 수신에 실패했습니다.");
+    notifyError(err.message || "로버 위치 수신에 실패했습니다.");
   } finally { roverLoading.value = false; }
 }
 
@@ -1588,6 +1614,12 @@ function moveWaypoint(idx, delta) {
 }
 
 function clearPath() {
+  // EMERGENCY_STOP 동안 서버에 보존되어 있던 미션 레코드를 명시적으로 마감.
+  // (D1) clear-emergency 가 더 이상 자동으로 끝내지 않으므로, path 폐기 시
+  // dangling running 레코드가 남지 않도록 best-effort 로 정리한다.
+  if (roverStatus.value.mission_progress?.mission_id) {
+    request("/api/rover/end-mission", { method: "POST" }).catch(() => {});
+  }
   if (pathLine) { map.removeLayer(pathLine); pathLine = null; }
   if (pathStartMarker) { map.removeLayer(pathStartMarker); pathStartMarker = null; }
   if (pathEndMarker) { map.removeLayer(pathEndMarker); pathEndMarker = null; }
@@ -1651,7 +1683,7 @@ async function executePath(opts = {}) {
     }
   } catch (err) {
     roverMode.value = "path-ready";
-    alert(err.message);
+    notifyError(err.message);
   }
 }
 
@@ -1675,7 +1707,7 @@ async function resumePath(opts = {}) {
     }
   } catch (err) {
     roverMode.value = "stopped";
-    alert(err.message);
+    notifyError(err.message);
   }
 }
 
@@ -1709,7 +1741,7 @@ function onWaypointReached(localIdx) {
 /* ── Manual control ───────────────────────────────── */
 function startManualControl() {
   if (!roverStatus.value.connected) {
-    alert("로버가 연결되어 있지 않습니다.");
+    notifyWarn("로버가 연결되어 있지 않습니다.");
     return;
   }
   clearPath();
@@ -1742,7 +1774,7 @@ async function sendControl() {
     // 5 consecutive failures (~250ms) → auto-release manual control
     if (manualFailCount >= 5 && roverMode.value === "manual") {
       stopManualControl();
-      alert("로버 연결이 끊어져 수동 제어를 해제했습니다.");
+      notifyWarn("로버 연결이 끊어져 수동 제어를 해제했습니다.");
     }
   }
 }
@@ -2510,12 +2542,12 @@ onUnmounted(() => {
                     <button
                       :class="['btn', 'btn-lg-touch', pathBtnClass]"
                       @click="onPathBtn"
-                      :disabled="activeCones.length === 0 || roverMode === 'manual'"
+                      :disabled="activeCones.length === 0 || roverMode === 'manual' || (stopping && (roverMode === 'executing' || roverMode === 'stopped'))"
                     >{{ pathBtnLabel }}</button>
                   </div>
                   <button
                     :class="['btn', 'btn-lg-touch', 'manual-btn-row', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
-                    :disabled="roverMode !== 'manual' && !roverStatus.connected"
+                    :disabled="roverMode !== 'manual' && (!roverStatus.connected || roverMode === 'executing' || roverMode === 'stopped')"
                     @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
                   >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
 

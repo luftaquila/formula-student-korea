@@ -814,11 +814,13 @@ app.post("/api/rover/telemetry", (req, res) => {
     };
   }
 
-  // Mission lifecycle: when nav_state transitions to IDLE from a driving state, end the mission.
-  if (prevNav && prevNav !== "IDLE" && nav_state === "IDLE" && currentMissionId != null) {
-    const endStatus = prevNav === "EMERGENCY_STOP" ? "stopped"
-      : prevNav === "ERROR" ? "error"
-      : "completed";
+  // Mission lifecycle: end on natural completion (driving → IDLE) or rover ERROR.
+  // EMERGENCY_STOP is operator-acknowledged and *preserves* the mission across
+  // the clear-emergency → IDLE transition so "이어서 실행" remains available.
+  // Operator must explicitly abandon via /api/rover/end-mission to commit.
+  if (prevNav && prevNav !== "IDLE" && prevNav !== "EMERGENCY_STOP"
+      && nav_state === "IDLE" && currentMissionId != null) {
+    const endStatus = prevNav === "ERROR" ? "error" : "completed";
     endMission(endStatus);
   }
   if (currentMissionId != null) recordTelemetrySample();
@@ -1069,6 +1071,14 @@ app.post("/api/rover/execute", (req, res) => {
 
   if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
 
+  // 비상정지 래치가 걸린 상태에서는 새 경로 송신을 거부한다. 운영자가 먼저
+  // "비상정지 해제"를 눌러 명시적으로 인지·해제한 뒤에만 다음 동작을 허용해
+  // 이중 운영자 시나리오에서 우회 출발이 발생하지 않도록 한다.
+  if (roverState.nav_state === "EMERGENCY_STOP") {
+    logger.warn(req, "rover.execute", { error: "in_emergency_stop" }, "rover");
+    return res.status(409).send("비상정지 상태입니다. 먼저 해제 후 실행하세요.");
+  }
+
   if (!sendRoverEvent("execute-path", { waypoints: finalWaypoints })) {
     logger.warn(req, "rover.execute", { error: "write_failed" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
@@ -1134,6 +1144,18 @@ app.post("/api/rover/clear-emergency", (req, res) => {
 
   logger.log(req, "rover.clear_emergency", null, "rover");
   res.json({ cleared: true });
+});
+
+// POST /api/rover/end-mission - 운영자가 보존된 미션을 명시적으로 종료
+// EMERGENCY_STOP 동안은 미션이 자동으로 끝나지 않으므로, 운영자가 "이어서
+// 실행" 대신 path 자체를 폐기할 때 호출되어 미션 레코드를 마감한다.
+app.post("/api/rover/end-mission", (req, res) => {
+  if (currentMissionId == null) return res.json({ ended: false });
+  const endedId = currentMissionId;
+  endMission("stopped");
+  broadcastRoverStatus();
+  logger.log(req, "rover.end_mission", { mission_id: endedId }, "rover");
+  res.json({ ended: true, mission_id: endedId });
 });
 
 // POST /api/rover/control - 수동 제어

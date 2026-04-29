@@ -352,8 +352,10 @@
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 8.13 | 경로 계산 | admin | 프론트엔드 | 시작점 클릭 → Nearest Neighbor TSP + 2-opt 최적화 (회전 페널티 포함) → 지도에 polyline + S/E 마커 + 예상 거리 표시 |
-| 8.14 | 경로 실행 | admin | `POST /api/rover/execute` | 계산된 waypoint 배열을 로버에 SSE `execute-path` 이벤트로 전송 |
-| 8.15 | 비상정지 | admin | `POST /api/rover/stop` | 로버에 SSE `emergency-stop` 이벤트 즉시 전송 |
+| 8.14 | 경로 실행 | admin | `POST /api/rover/execute` | 계산된 waypoint 배열을 로버에 SSE `execute-path` 이벤트로 전송. 현재 EMERGENCY_STOP 래치 상태면 409 거부 |
+| 8.15 | 비상정지 | admin | `POST /api/rover/stop` | 로버에 SSE `emergency-stop` 이벤트 즉시 전송. 미션 레코드는 보존 |
+| 8.15a | 비상정지 해제 | admin | `POST /api/rover/clear-emergency` | SSE `clear-emergency` 이벤트. 보존된 미션이 그대로 남아 "이어서 실행" 가능 |
+| 8.15b | 미션 종료 | admin | `POST /api/rover/end-mission` | 보존된 미션을 명시적으로 마감 (운영자가 path 폐기 시 자동 호출) |
 | 8.16 | 수동 제어 | admin | `POST /api/rover/control` | 조이스틱 UI로 throttle/steering(-100~100) 50ms 간격 전송, SSE `manual-control` 이벤트 |
 
 ### SSE 실시간 동기화
