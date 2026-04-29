@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, watch, onMounted, onUnmounted } from "vue";
 import NavMenu from "@shared/NavMenu.vue";
 import { useRoute } from "vue-router";
 import { request } from "./api.js";
@@ -9,7 +9,13 @@ const roverConnected = ref(false);
 const navState = ref(null);
 const stopping = ref(false);
 
+// What the operator just commanded — used to decide which terminal nav_state
+// releases the latch. Cleared once the rover confirms via telemetry, or after
+// a 5s safety timeout so a missed update can never freeze the button.
+let stopRequestedKind = null; // "stop" | "clear" | null
+let stopReleaseTimer = null;
 let es = null;
+let sseHadError = false;
 
 const ACTIVE_NAV_STATES = new Set([
   "CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING", "RETURNING",
@@ -23,29 +29,55 @@ function inEmergency() {
   return navState.value === "EMERGENCY_STOP";
 }
 
-async function globalEmergencyStop() {
-  if (stopping.value || !roverConnected.value) return;
-  stopping.value = true;
-  try {
-    const path = inEmergency() ? "/api/rover/clear-emergency" : "/api/rover/stop";
-    await request(path, { method: "POST" });
-  } catch (err) {
-    alert((inEmergency() ? "비상정지 해제 실패: " : "비상정지 실패: ") + err.message);
-  } finally {
-    stopping.value = false;
-  }
+function clearStopLatch() {
+  stopping.value = false;
+  stopRequestedKind = null;
+  if (stopReleaseTimer) { clearTimeout(stopReleaseTimer); stopReleaseTimer = null; }
 }
 
-onMounted(async () => {
+async function globalEmergencyStop() {
+  if (stopping.value || !roverConnected.value) return;
+  stopRequestedKind = inEmergency() ? "clear" : "stop";
+  stopping.value = true;
+  try {
+    const path = stopRequestedKind === "clear" ? "/api/rover/clear-emergency" : "/api/rover/stop";
+    await request(path, { method: "POST" });
+  } catch (err) {
+    const kind = stopRequestedKind;
+    clearStopLatch();
+    alert((kind === "clear" ? "비상정지 해제 실패: " : "비상정지 실패: ") + err.message);
+    return;
+  }
+  // Hold the latch until telemetry confirms the rover reached the requested
+  // terminal state — operators were clicking the button again before the
+  // command had even reached the rover.
+  stopReleaseTimer = setTimeout(clearStopLatch, 5000);
+}
+
+watch(navState, (cur) => {
+  if (!stopping.value) return;
+  if (stopRequestedKind === "stop" && cur === "EMERGENCY_STOP") clearStopLatch();
+  else if (stopRequestedKind === "clear" && cur === "IDLE") clearStopLatch();
+});
+
+async function fetchStatus() {
   try {
     const res = await request("/api/rover/status");
     const data = await res.json();
     roverConnected.value = !!data.connected;
     navState.value = data.nav_state || null;
   } catch { /* best-effort */ }
+}
+
+onMounted(async () => {
+  await fetchStatus();
 
   const base = import.meta.env.PROD ? "/course" : "";
   es = new EventSource(`${base}/api/events`);
+  es.addEventListener("error", () => { sseHadError = true; });
+  es.addEventListener("open", () => {
+    if (sseHadError) { sseHadError = false; fetchStatus(); }
+  });
   es.addEventListener("rover:status", (e) => {
     try {
       const data = JSON.parse(e.data);
@@ -57,6 +89,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (es) es.close();
+  if (stopReleaseTimer) clearTimeout(stopReleaseTimer);
 });
 </script>
 

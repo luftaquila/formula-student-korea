@@ -1790,9 +1790,19 @@ function updateJoystick(e) {
 }
 
 /* ── SSE ──────────────────────────────────────────── */
+// Tracks whether the SSE link recently dropped. Browser auto-reconnects, but
+// any rover:status events emitted during the gap are lost — fetch a snapshot
+// once the link is back so the reconciler can absorb missed transitions.
+let sseHadError = false;
+
 function connectSSE() {
   const base = import.meta.env.PROD ? "/course" : "";
   eventSource = new EventSource(`${base}/api/events`);
+
+  eventSource.addEventListener("error", () => { sseHadError = true; });
+  eventSource.addEventListener("open", () => {
+    if (sseHadError) { sseHadError = false; fetchRoverStatus(); }
+  });
 
   eventSource.addEventListener("init", (e) => {
     courses.value = JSON.parse(e.data).courses;
@@ -1842,6 +1852,7 @@ function connectSSE() {
     if (!data.connected && roverMode.value === "manual") {
       stopManualControl();
     }
+    reconcileRoverMode(roverStatus.value);
   });
 
   eventSource.addEventListener("rover:waypoint", (e) => {
@@ -1918,6 +1929,7 @@ async function fetchRoverStatus() {
     // Restore in-flight mission so a tab reload during a mission doesn't lose
     // the path overlay, waypoint counter, or spray markers.
     restoreMissionProgress(data.mission_progress);
+    reconcileRoverMode(roverStatus.value);
   } catch { /* best-effort */ }
 }
 
@@ -1945,17 +1957,42 @@ function restoreMissionProgress(mp) {
   }
   sprayResults.value = restored;
   renderSprayMarkers();
+}
 
-  // If the rover is in any active nav state, mirror that locally so the Resume /
-  // Stop controls make sense on the restored view.
-  const ACTIVE_STATES = new Set(["CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING", "RETURNING"]);
-  if (ACTIVE_STATES.has(roverStatus.value.nav_state)) {
-    roverMode.value = "executing";
-  } else if (roverStatus.value.nav_state === "EMERGENCY_STOP" || roverStatus.value.nav_state === "ERROR") {
-    roverMode.value = "stopped";
-    resumeStartIdx.value = executedIndex.value;
-  } else {
-    roverMode.value = "path-ready";
+// Server is the source of truth for nav_state / connected / mission_progress.
+// Every code path that ingests fresh server state (initial fetch, live SSE,
+// post-reconnect refetch) routes through this so the button label can never
+// diverge from reality. User-driven modes (path-pick, manual) are orthogonal
+// to server state and preserved.
+const ACTIVE_NAV_STATES = new Set(["CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING", "RETURNING"]);
+
+function reconcileRoverMode(s) {
+  if (roverMode.value === "path-pick" || roverMode.value === "manual") return;
+
+  const nav = s?.nav_state;
+  const hasMission = !!s?.mission_progress?.mission_id;
+  const connected = !!s?.connected;
+
+  if (!connected) {
+    if (roverMode.value === "executing" || roverMode.value === "stopped") {
+      roverMode.value = pathWaypoints.value.length ? "path-ready" : "none";
+    }
+    return;
+  }
+  if (ACTIVE_NAV_STATES.has(nav)) { roverMode.value = "executing"; return; }
+  if (nav === "EMERGENCY_STOP" || nav === "ERROR") {
+    if (roverMode.value !== "stopped") {
+      roverMode.value = "stopped";
+      if (resumeStartIdx.value === 0) resumeStartIdx.value = executedIndex.value;
+    }
+    return;
+  }
+  // nav IDLE/null — only step out of executing/stopped once the server has
+  // also cleared the mission, so we don't bounce while the rover briefly
+  // touches IDLE between phases.
+  if (!hasMission && (roverMode.value === "executing" || roverMode.value === "stopped")) {
+    roverMode.value = pathWaypoints.value.length ? "path-ready" : "none";
+    pathProgress.value = 0;
   }
 }
 
