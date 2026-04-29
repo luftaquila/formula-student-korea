@@ -17,6 +17,7 @@ Published topics:
 """
 
 import json
+import os
 
 import lgpio
 import rclpy
@@ -25,6 +26,44 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Int32, Empty, String
 
 SERVO_FREQUENCY = 50  # 50Hz for standard RC servos
+
+
+def _resolve_gpiochip(configured):
+    """Resolve the RP1 gpiochip number robustly across kernel/firmware revs.
+
+    The Pi 5's RP1 pinctrl appears as /dev/gpiochip{N} where N has shifted
+    over kernel/firmware updates (most recently 4 → 0). The host image
+    ships a stable /dev/gpiochip-rp1 symlink keyed on OF_COMPATIBLE_0,
+    but pilot-run bind-mounts /dev/gpiochip-rp1:/dev/gpiochip-rp1 (host
+    symlink resolved by podman) — so inside pilot, /dev/gpiochip-rp1 is
+    a regular char device, not a symlink, and /dev/gpiochip{N} doesn't
+    exist at all.
+
+    `lgpio.gpiochip_open(N)` always opens `/dev/gpiochip{N}` literally,
+    so we must EITHER materialise that path inside the container OR
+    work out N to match an already-present device. The device file's
+    kernel minor number IS the chip number registered by the gpio core,
+    so reading it via stat works identically on host and container; we
+    additionally synth a `/dev/gpiochip{N}` symlink when missing so
+    lgpio's open path resolves. Falls back to the YAML int when the
+    device is absent (dev tests).
+    """
+    rp1_dev = '/dev/gpiochip-rp1'
+    try:
+        st = os.stat(rp1_dev)
+        chip_num = os.minor(st.st_rdev)
+    except (OSError, AttributeError):
+        return int(configured)
+    target = f'/dev/gpiochip{chip_num}'
+    if not os.path.exists(target):
+        # Best-effort: symlink the canonical path lgpio expects to the
+        # already-bind-mounted RP1 device. Tolerate failure (read-only
+        # /dev in some configs); lgpio will surface the underlying error.
+        try:
+            os.symlink(os.path.basename(rp1_dev), target)
+        except OSError:
+            pass
+    return chip_num
 
 
 def _angle_to_duty(angle_deg):
@@ -51,8 +90,15 @@ class SprayNode(Node):
 
         self._validate_params()
 
-        # Initialize GPIO
-        chip = self.get_parameter('gpio_chip').value
+        # Initialize GPIO. Resolve via /dev/gpiochip-rp1 udev symlink so
+        # we ride out the periodic RP1 chip-number reshuffles that come
+        # with bootc kernel/firmware bumps (most recent: 4 → 0).
+        configured_chip = self.get_parameter('gpio_chip').value
+        chip = _resolve_gpiochip(configured_chip)
+        if chip != configured_chip:
+            self.get_logger().info(
+                f'gpio_chip configured={configured_chip}, resolved to {chip} via /dev/gpiochip-rp1'
+            )
         self._handle = lgpio.gpiochip_open(chip)
         self._pin = self.get_parameter('servo_pin').value
 
