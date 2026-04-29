@@ -254,6 +254,99 @@ def test_emergency_stop_during_cal_antenna(nav):
     assert nav._state == State.EMERGENCY_STOP
 
 
+def test_cal_antenna_scurve_step_does_not_crash(nav, monkeypatch):
+    """Regression for the SCURVE NameError introduced in 66b75ab.
+
+    The scurve sub-step uses bare cos()/sin() and would NameError on the
+    second tick if math symbols aren't imported into navigator_node's
+    namespace. This test takes the path that calls _cal_antenna_step_scurve
+    twice (so the dt-gated integration body runs at least once) with valid
+    odom + GPS state, and asserts no exception escapes.
+    """
+    from pilot.navigator_node import CalAntennaPhase
+    nav._state = State.CAL_ANTENNA
+    nav._cal_antenna_phase = CalAntennaPhase.SCURVE
+    nav._cal_antenna_chassis = (0.0, 0.0, 0.0)
+    nav._cal_antenna_psi_init = 0.0
+    nav._cal_antenna_start_lat = 35.0
+    nav._cal_antenna_start_lon = 126.0
+    nav._cal_antenna_phase_start_t = time.monotonic()
+    nav._odom_v_left = 0.5
+    nav._odom_v_right = 0.5
+    nav._cal_antenna_step_scurve()  # primes _cal_antenna_last_predict_t
+    # Second tick exercises the integration body where cos/sin are called.
+    nav._cal_antenna_step_scurve()
+
+
+# ── Wheel scale auto-calibration ──────────────────────────────────────────
+
+def test_calibrate_wheels_rejected_when_not_idle(nav):
+    nav._state = State.NAVIGATING
+    results = []
+    nav._pub_cal_wheels_result.publish = lambda msg: results.append(msg.data)
+    nav._on_calibrate_wheels(None)
+    assert nav._state == State.NAVIGATING
+    assert len(results) == 1
+    payload = json.loads(results[0])
+    assert payload['ok'] is False
+    assert 'IDLE' in payload['reason']
+
+
+def test_calibrate_wheels_rejected_without_fix(nav):
+    nav._state = State.IDLE
+    nav._gps_fix_status = 'no_fix'
+    results = []
+    nav._pub_cal_wheels_result.publish = lambda msg: results.append(msg.data)
+    nav._on_calibrate_wheels(None)
+    assert nav._state == State.IDLE
+    assert len(results) == 1
+
+
+def test_calibrate_wheels_starts_from_idle(nav):
+    nav._state = State.IDLE
+    nav._on_calibrate_wheels(None)
+    assert nav._state == State.CAL_WHEELS
+    assert nav._cal_wheels_enc_l_m == 0.0
+    assert nav._cal_wheels_enc_r_m == 0.0
+    assert nav._cal_wheels_samples == 0
+    assert nav._cal_wheels_start_lat == nav._gps_lat
+
+
+def test_handle_cal_wheels_publishes_apply_when_done(nav, monkeypatch):
+    """Driving past wheel_cal_distance must publish apply_wheel_scales
+    with both scales and persist via the navigator → mcu_bridge handoff."""
+    nav._state = State.CAL_WHEELS
+    nav._cal_wheels_start_lat = 35.0
+    nav._cal_wheels_start_lon = 126.0
+    nav._cal_wheels_enc_l_m = 9.95   # 0.5 % under
+    nav._cal_wheels_enc_r_m = 10.10  # 1 % over
+    nav._cal_wheels_samples = 200
+    nav._cal_wheels_last_t = time.monotonic()
+    # Position the rover ~10 m north of start (≈10 m chord on RTK).
+    nav._gps_lat = 35.00009  # 10 m / R_EARTH × 180/π ≈ 0.0000898°
+    nav._gps_lon = 126.0
+    nav._odom_v_left_raw = 0.5
+    nav._odom_v_right_raw = 0.5
+
+    apply_msgs = []
+    nav._pub_apply_wheel_scales.publish = lambda m: apply_msgs.append(m.data)
+    result_msgs = []
+    nav._pub_cal_wheels_result.publish = lambda m: result_msgs.append(m.data)
+
+    nav._handle_cal_wheels()
+
+    assert nav._state == State.IDLE
+    assert len(apply_msgs) == 1
+    apply_payload = json.loads(apply_msgs[0])
+    assert 0.85 <= apply_payload['scale_l'] <= 1.15
+    assert 0.85 <= apply_payload['scale_r'] <= 1.15
+    # Sanity: encoder right reads larger than left ⇒ scale_r < scale_l.
+    assert apply_payload['scale_r'] < apply_payload['scale_l']
+    assert len(result_msgs) == 1
+    result_payload = json.loads(result_msgs[0])
+    assert result_payload['ok'] is True
+
+
 def test_persisted_offset_loaded_into_instance(nav, tmp_path, monkeypatch):
     """Sanity: when a saved antenna_offset.json exists, navigator picks it
     up on construction so missions plan with the persisted value, not the

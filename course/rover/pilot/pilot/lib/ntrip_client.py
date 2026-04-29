@@ -164,6 +164,10 @@ class NTRIPClient:
         self._last_correction_at = 0  # unix seconds when RTCM last flowed in
         self._logger = logger or _default_logger
         self._gga_interval = 10.0  # seconds, override via attribute
+        # Wakeable sleep primitive used by the reconnect backoff. Plain
+        # time.sleep would block stop() join for up to 5 minutes when the
+        # backoff has reached its cap.
+        self._stop_event = threading.Event()
 
     @property
     def host(self):
@@ -226,6 +230,9 @@ class NTRIPClient:
         """Stop the NTRIP client."""
         self._running = False
         self._connected = False
+        # Wake any thread blocked in the reconnect backoff so the join()
+        # below returns promptly rather than waiting up to the cap (300 s).
+        self._stop_event.set()
         if self._sock:
             try:
                 self._sock.close()
@@ -337,4 +344,8 @@ class NTRIPClient:
                 base = 5.0
                 delay = min(base * (2 ** max(0, min(self._fail_count - 1, 6))), 300.0)
                 self._log_info(f"NTRIP reconnecting in {delay:.0f}s (fail={self._fail_count})")
-                time.sleep(delay)
+                # Event.wait returns True if set() was called → stop has
+                # been requested, so exit the outer loop without waiting
+                # the full delay.
+                if self._stop_event.wait(delay):
+                    break

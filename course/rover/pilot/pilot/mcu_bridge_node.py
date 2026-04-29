@@ -32,6 +32,10 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Empty, Float32, String
 
 from pilot.lib.ackermann import ackermann_convert, manual_to_ackermann
+from pilot.lib.wheel_calibration import (
+    SCALE_BOUND_HI, SCALE_BOUND_LO,
+    load_wheel_cal, save_wheel_cal,
+)
 
 
 # 8S LiFePO4 OCV-SOC table (resting voltage, no load).
@@ -159,6 +163,15 @@ class McuBridgeNode(Node):
         # the operator submits a fresh multimeter reading.
         self._last_raw_vbat = None
 
+        # Per-wheel encoder scale calibration. Persisted at
+        # $PILOT_STATE_DIR/wheel_cal.json; (1.0, 1.0) until calibrated.
+        # Scale is multiplicative on the m/s reading from MCU telemetry,
+        # absorbing rolling-radius mismatch between left/right wheels.
+        self._wheel_cal_lock = threading.Lock()
+        scales, _ = load_wheel_cal(default=(1.0, 1.0))
+        self._wheel_scale_l = float(scales[0])
+        self._wheel_scale_r = float(scales[1])
+
         # Serial
         self._serial = None
         self._serial_lock = threading.Lock()
@@ -173,6 +186,7 @@ class McuBridgeNode(Node):
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_estop, reliable)
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_estop, reliable)
         self.create_subscription(Float32, '/rover/cmd/calibrate_battery', self._on_calibrate_battery, reliable)
+        self.create_subscription(String, '/rover/cmd/apply_wheel_scales', self._on_apply_wheel_scales, reliable)
 
         self._pub_status = self.create_publisher(String, '/rover/motor/status', 10)
         self._pub_battery = self.create_publisher(String, '/rover/battery', 10)
@@ -255,13 +269,26 @@ class McuBridgeNode(Node):
         targets (~1.5 s on the field). With this in place the steering
         angle follows the command instantaneously, the wheel differential
         develops naturally as v ramps, and acceleration stays bounded.
+
+        First call after E-Stop release (`dt == 0`) is treated as one
+        nominal-tick step rather than an unramped pass-through, so a
+        commanded cruise speed can't punch through the H-bridge as a
+        single torque spike when motors come back online.
         """
         accel = self._p('accel_limit')
-        if dt <= 0.0 or dt > 0.5:
-            # Long gap or first sample — accept the target without ramping.
-            # A long gap usually means the navigator restarted; ramping
-            # from a stale internal state would just give wrong torque.
+        if dt > 0.5:
+            # Long gap usually means navigator restarted — ramping from
+            # stale internal state would just give wrong torque.
             return target_speed
+        if dt <= 0.0:
+            # First tick after a state reset (E-Stop clear / fresh boot).
+            # Allow at most one nominal control tick worth of step rather
+            # than letting the full target through in zero time.
+            step = accel * 0.05
+            diff = target_speed - self._cur_speed
+            if abs(diff) <= step:
+                return target_speed
+            return self._cur_speed + math.copysign(step, diff)
         max_delta = accel * dt
         diff = target_speed - self._cur_speed
         if abs(diff) <= max_delta:
@@ -420,12 +447,21 @@ class McuBridgeNode(Node):
             _ms = int(parts[1])
             _enc_l = int(parts[2])
             _enc_r = int(parts[3])
-            vl = float(parts[4])
-            vr = float(parts[5])
+            vl_raw = float(parts[4])
+            vr_raw = float(parts[5])
             vbat = float(parts[6])
             flags = int(parts[7], 0)
         except ValueError:
             return
+
+        # Apply per-wheel scale calibration. Snapshot the live values
+        # so a calibrate-wheels callback firing mid-line can't tear the
+        # pair (left and right must always be applied as a coherent set).
+        with self._wheel_cal_lock:
+            sl = self._wheel_scale_l
+            sr = self._wheel_scale_r
+        vl = vl_raw * sl
+        vr = vr_raw * sr
 
         # Apply field-calibrated gain (V_real = V_raw * gain) before mapping
         # to SOC. The gain absorbs the dominant ratiometric error sources
@@ -473,6 +509,14 @@ class McuBridgeNode(Node):
             'yaw': round(self._odom_yaw, 4),
             'v_left': round(vl, 3),
             'v_right': round(vr, 3),
+            # Pre-scale velocities exposed for the wheel-scale calibration
+            # routine in navigator. Every other consumer must read v_left/
+            # v_right (the scaled versions) so the rest of the stack sees
+            # a single coherent encoder model.
+            'v_left_raw': round(vl_raw, 3),
+            'v_right_raw': round(vr_raw, 3),
+            'wheel_scale_l': round(sl, 5),
+            'wheel_scale_r': round(sr, 5),
         }))
 
     def _json_msg(self, payload):
@@ -564,6 +608,55 @@ class McuBridgeNode(Node):
         self._save_battery_cal(cal)
         self.get_logger().info(
             f'battery calibrated: measured={measured_v:.3f}V raw={raw:.3f}V gain={gain:.4f}'
+        )
+
+    # ------------------------- wheel scale calibration
+
+    def _on_apply_wheel_scales(self, msg):
+        """Adopt and persist a (scale_l, scale_r) pair from the navigator.
+
+        Payload is JSON: {"scale_l": float, "scale_r": float,
+                          "gps_distance_m": float, "encoder_left_m": float,
+                          "encoder_right_m": float, "samples": int}.
+        Out-of-range values are rejected and logged; the live scale stays
+        at its previous (presumably good) value.
+        """
+        try:
+            data = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            self.get_logger().warn('apply_wheel_scales: invalid JSON, ignored')
+            return
+        if not isinstance(data, dict):
+            return
+        try:
+            sl = float(data.get('scale_l'))
+            sr = float(data.get('scale_r'))
+        except (TypeError, ValueError):
+            self.get_logger().warn('apply_wheel_scales: non-numeric scales')
+            return
+        if not (SCALE_BOUND_LO <= sl <= SCALE_BOUND_HI
+                and SCALE_BOUND_LO <= sr <= SCALE_BOUND_HI):
+            self.get_logger().warn(
+                f'apply_wheel_scales: ({sl:.3f}, {sr:.3f}) outside '
+                f'[{SCALE_BOUND_LO}, {SCALE_BOUND_HI}] — ignored'
+            )
+            return
+        try:
+            save_wheel_cal(
+                sl, sr,
+                gps_distance_m=float(data.get('gps_distance_m', 0.0)),
+                encoder_left_m=float(data.get('encoder_left_m', 0.0)),
+                encoder_right_m=float(data.get('encoder_right_m', 0.0)),
+                samples=int(data.get('samples', 0)),
+            )
+        except (OSError, ValueError) as exc:
+            self.get_logger().warn(f'apply_wheel_scales: persist failed: {exc}')
+            return
+        with self._wheel_cal_lock:
+            self._wheel_scale_l = sl
+            self._wheel_scale_r = sr
+        self.get_logger().info(
+            f'wheel scales applied: L={sl:.4f} R={sr:.4f}'
         )
 
     # ------------------------- shutdown

@@ -65,6 +65,43 @@ def test_gga_interval_default():
     assert c._gga_interval == 10.0
 
 
+def test_stop_wakes_thread_blocked_in_backoff():
+    """stop() must return promptly even when the worker thread is sleeping
+    in the reconnect-backoff window (up to 300 s otherwise).
+
+    We start the run loop, force a fast retry → backoff sleep, then call
+    stop() and verify the join completes well before the 5-second join
+    timeout.
+    """
+    import threading
+    import time
+
+    c = _make_client()
+
+    # Patch _connect to fail immediately so _run() falls into the backoff
+    # branch on the first iteration. _stop_event.wait will sleep there.
+    def _fail_connect():
+        raise ConnectionError('synthetic')
+    c._connect = _fail_connect
+
+    c._running = True
+    t = threading.Thread(target=c._run, daemon=True)
+    c._thread = t  # so stop() will join the worker we just started
+    t.start()
+    # Give the run loop a moment to enter the backoff wait().
+    time.sleep(0.1)
+    assert t.is_alive()
+
+    t0 = time.monotonic()
+    c.stop()  # sets the event, lets wait() return, joins
+    elapsed = time.monotonic() - t0
+    # Without the Event.wait() shortcut the thread would be stuck in
+    # time.sleep(5) for the first backoff. With the shortcut the join
+    # returns within ~50 ms.
+    assert not t.is_alive()
+    assert elapsed < 1.0, f'stop took {elapsed:.2f}s; backoff likely still using time.sleep'
+
+
 # Sample rows cover: RTCM 2.3 (filtered out), RTCM 3.2 far north, RTCM 3.2
 # close to the target position, malformed lat (skipped), and a non-STR line.
 _SAMPLE_TABLE = (

@@ -25,9 +25,17 @@ The planner is purely geometric — no controller state — so it can be regen-
 erated cheaply if the operator skips a waypoint or restarts mid-mission.
 """
 
-from math import atan2, cos, sin
+from math import atan2, cos, sin, hypot
 
 from pilot.lib.geo_utils import enu_from_gps, normalize_angle
+
+
+# Floor on the dock corridor length. Below ~0.3 m the chassis can't
+# settle its heading on the line before reaching the dock pose, so a
+# very short clamp would break the dock tracker's linearisation. If the
+# requested span doesn't allow at least this much corridor, the planner
+# accepts the squeeze rather than U-turning back.
+_DOCK_DISTANCE_FLOOR_M = 0.3
 
 
 class PathSegment:
@@ -99,14 +107,22 @@ def plan(current_chassis_pose, antenna_offset,
             # using chassis position keeps the dock corridor aligned with how
             # the rover will actually approach.
             psi_dock = atan2(wp_n - cur_y, wp_e - cur_x)
+            span = hypot(wp_e - cur_x, wp_n - cur_y)
         else:
             prev_e, prev_n = prev_target
             psi_dock = atan2(wp_n - prev_n, wp_e - prev_e)
+            span = hypot(wp_e - prev_e, wp_n - prev_n)
 
         psi_dock = normalize_angle(psi_dock)
+        # Clamp the dock corridor to half the span between consecutive
+        # antenna targets so the entry point doesn't sit BEHIND the
+        # previous waypoint. With dock_distance=1.5 m and 1 m cone-to-
+        # cone spacing the original code projected the entry 50 cm
+        # behind the previous cone, making the cruise leg a U-turn.
+        effective_dock = min(dock_distance, max(0.5 * span, _DOCK_DISTANCE_FLOOR_M))
         dock_x, dock_y, _ = _dock_chassis_pose(wp_e, wp_n, psi_dock, antenna_offset)
-        entry_x = dock_x - dock_distance * cos(psi_dock)
-        entry_y = dock_y - dock_distance * sin(psi_dock)
+        entry_x = dock_x - effective_dock * cos(psi_dock)
+        entry_y = dock_y - effective_dock * sin(psi_dock)
 
         cruise_start = (cur_x, cur_y, cur_psi)
         cruise_end = (entry_x, entry_y, psi_dock)
@@ -126,9 +142,11 @@ def plan(current_chassis_pose, antenna_offset,
         start_x, start_y = start_chassis_xy
         psi_dock = atan2(start_y - cur_y, start_x - cur_x)
         psi_dock = normalize_angle(psi_dock)
+        span = hypot(start_x - cur_x, start_y - cur_y)
+        effective_dock = min(dock_distance, max(0.5 * span, _DOCK_DISTANCE_FLOOR_M))
         dock_x, dock_y, _ = _dock_chassis_pose(start_x, start_y, psi_dock, antenna_offset)
-        entry_x = dock_x - dock_distance * cos(psi_dock)
-        entry_y = dock_y - dock_distance * sin(psi_dock)
+        entry_x = dock_x - effective_dock * cos(psi_dock)
+        entry_y = dock_y - effective_dock * sin(psi_dock)
         segments.append(PathSegment(
             'cruise', (cur_x, cur_y, cur_psi),
             (entry_x, entry_y, psi_dock), (start_x, start_y), -1,

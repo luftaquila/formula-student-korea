@@ -99,6 +99,10 @@ def bridge():
     node._battery_cal_lock = _t.Lock()
     node._battery_cal = {'gain': 1.0, 'measured_v': None, 'voltage_raw_at_cal': None, 'calibrated_at': None}
     node._last_raw_vbat = None
+    # Wheel scale calibration state — defaults to (1.0, 1.0) (no scaling).
+    node._wheel_cal_lock = _t.Lock()
+    node._wheel_scale_l = 1.0
+    node._wheel_scale_r = 1.0
 
     return node
 
@@ -192,18 +196,27 @@ def test_velocity_ramps_on_chassis_speed_not_duty(bridge):
     assert abs(float(parts[1]) - float(parts[2])) > 0.0
 
 
-def test_velocity_first_tick_no_ramp_if_no_history(bridge):
-    """If we have no _last_drive_t (first command after estop / startup),
-    the ramp is bypassed — otherwise the very first command would be
-    clamped near zero and the rover would feel sluggish on every restart."""
+def test_velocity_first_tick_after_estop_clears_with_one_step(bridge):
+    """After E-Stop release / startup the very first command must NOT
+    pass through unramped (would punch the H-bridge with the full
+    cruise-speed step). Instead we allow at most one nominal control
+    tick (accel × 0.05 s) to land on the target."""
     import types
     bridge._last_drive_t = None
+    bridge._cur_speed = 0.0
     msg = types.SimpleNamespace(
         linear=types.SimpleNamespace(x=1.0, y=0.0, z=0.0),
         angular=types.SimpleNamespace(x=0.0, y=0.0, z=0.0),
     )
     bridge._on_velocity(msg)
-    assert bridge._cur_speed == pytest.approx(1.0, abs=1e-9)
+    one_tick = bridge._params['accel_limit'] * 0.05
+    assert bridge._cur_speed == pytest.approx(one_tick, abs=1e-9)
+    # Subsequent normal-tick calls should ramp normally.
+    import time as _time
+    bridge._last_drive_t = _time.monotonic() - 0.05
+    bridge._on_velocity(msg)
+    # After two ticks of bounded ramp we should be at ≥ 2 × one_tick.
+    assert bridge._cur_speed >= 2 * one_tick - 1e-9
 
 
 def test_estop_sends_E_and_clears_state(bridge):

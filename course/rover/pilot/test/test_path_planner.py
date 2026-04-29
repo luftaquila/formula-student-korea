@@ -124,6 +124,54 @@ class TestMultiWaypoint:
             assert isclose(ay, n, abs_tol=1e-6)
 
 
+class TestDockDistanceClamp:
+    """Regression: dock_distance projection past the previous waypoint
+    forced cruise legs to U-turn when consecutive cones were closer than
+    dock_distance. The planner now clamps to half the inter-waypoint
+    span (with a 0.3 m floor)."""
+
+    def test_close_cones_dont_project_entry_behind_prev(self):
+        # Two cones 0.8 m apart with dock_distance=1.5 m. Without the
+        # clamp, the second waypoint's entry would sit 0.7 m BEHIND the
+        # first cone along the shared corridor, requiring a U-turn.
+        antenna_offset = (0.3, 0.0)
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=antenna_offset,
+            waypoints_lat_lng=[_gps(2.0, 0.0), _gps(2.8, 0.0)],
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=1.5,
+            return_to_start=False,
+        )
+        # Second cruise → second dock; the cruise's end pose is the entry
+        # point. Verify it sits BETWEEN the two cones along the corridor,
+        # not before the first.
+        second_cruise_end = segments[2].end_pose  # (entry_x, entry_y, psi_dock)
+        ex, _ey, _ = second_cruise_end
+        # First cone is at antenna position (2.0, 0); chassis dock pose
+        # for that cone is (1.7, 0). Entry must be ≥ 1.7 (between dock pose
+        # of cone 1 and cone 2's antenna landing).
+        assert ex > 1.5
+
+    def test_clamp_floor_at_min_distance(self):
+        # Even with a tiny span, the corridor must be at least 0.3 m so
+        # the dock tracker's linearisation has room to settle.
+        antenna_offset = (0.3, 0.0)
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=antenna_offset,
+            waypoints_lat_lng=[_gps(2.0, 0.0), _gps(2.1, 0.0)],
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=1.5,
+            return_to_start=False,
+        )
+        second_dock_end = segments[3].end_pose
+        second_cruise_end = segments[2].end_pose
+        corridor = hypot(second_dock_end[0] - second_cruise_end[0],
+                         second_dock_end[1] - second_cruise_end[1])
+        assert corridor == pytest.approx(0.3, abs=1e-6)
+
+
 class TestReturnToStart:
     def test_return_segments_appended(self):
         segments = plan(

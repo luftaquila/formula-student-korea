@@ -19,6 +19,7 @@ Subscribed topics:
 import collections
 import json
 import os
+import queue
 import threading
 import time
 import requests
@@ -75,6 +76,7 @@ class BridgeNode(Node):
         self._pub_request_pos = self.create_publisher(Empty, '/rover/cmd/request_position', reliable_qos)
         self._pub_calibrate_battery = self.create_publisher(Float32, '/rover/cmd/calibrate_battery', reliable_qos)
         self._pub_calibrate_antenna = self.create_publisher(Empty, '/rover/cmd/calibrate_antenna', reliable_qos)
+        self._pub_calibrate_wheels = self.create_publisher(Empty, '/rover/cmd/calibrate_wheels', reliable_qos)
 
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps_position, 10)
@@ -86,6 +88,7 @@ class BridgeNode(Node):
         self.create_subscription(String, '/rover/battery', self._on_battery, 10)
         self.create_subscription(String, '/rover/gps/metrics', self._on_gps_metrics, 10)
         self.create_subscription(String, '/rover/cal/antenna_result', self._on_cal_antenna_result, reliable_qos)
+        self.create_subscription(String, '/rover/cal/wheel_result', self._on_cal_wheels_result, reliable_qos)
 
         # State
         self._last_position = None
@@ -123,6 +126,16 @@ class BridgeNode(Node):
         # Periodic telemetry thread (every 3s)
         self._telemetry_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
         self._telemetry_thread.start()
+
+        # Single async-POST worker. The previous implementation spawned a
+        # fresh thread + TCP connection per spray_result / waypoint_reached
+        # callback; bursts during a multi-cone mission piled up dozens of
+        # threads and request sockets. A bounded queue + Session reuses
+        # the connection and back-pressures bursts cleanly.
+        self._post_queue = queue.Queue(maxsize=64)
+        self._post_session = requests.Session()
+        self._post_thread = threading.Thread(target=self._post_loop, daemon=True)
+        self._post_thread.start()
 
         self.get_logger().info('Bridge node started')
 
@@ -190,19 +203,39 @@ class BridgeNode(Node):
             pass
 
     def _post_async(self, path, payload, label):
-        """POST to the course server on a worker thread.
+        """Enqueue a POST for the single async worker.
 
-        The ROS executor is single-threaded; doing a blocking HTTP call here
-        would stall every other subscription until the request returns. These
-        callbacks fire at most a few times per mission, so a short-lived daemon
-        thread per call is acceptable.
+        The ROS executor is single-threaded; a blocking HTTP call here
+        would stall every other subscription until the request returns.
+        We hand the work to a long-lived worker thread that drains a
+        bounded queue using a shared requests.Session for connection
+        reuse. Drops on full queue rather than blocking the executor.
         """
         url = self.get_parameter('server_url').value
         if not url:
             return
-        def _send():
+        try:
+            self._post_queue.put_nowait((path, payload, label))
+        except queue.Full:
+            self.get_logger().warn(
+                f'{label}: post queue full ({self._post_queue.maxsize}), dropping'
+            )
+
+    def _post_loop(self):
+        """Worker that drains the queue and posts via the shared Session."""
+        while self._running:
             try:
-                requests.post(
+                item = self._post_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if item is None:  # shutdown sentinel
+                break
+            path, payload, label = item
+            url = self.get_parameter('server_url').value
+            if not url:
+                continue
+            try:
+                self._post_session.post(
                     f'{url}{path}',
                     json=payload,
                     headers=self._get_headers(),
@@ -210,7 +243,6 @@ class BridgeNode(Node):
                 )
             except requests.RequestException as e:
                 self.get_logger().warn(f'{label} POST error: {e}')
-        threading.Thread(target=_send, daemon=True).start()
 
     def _on_waypoint_reached(self, msg):
         """Forward reached waypoint index to the course server."""
@@ -278,6 +310,16 @@ class BridgeNode(Node):
             return
         self._post_async('/api/rover/antenna_calibration_result', payload,
                          'antenna_calibration_result')
+
+    def _on_cal_wheels_result(self, msg):
+        """Forward wheel-cal outcome JSON to the course server."""
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warn(f'Invalid wheel cal result JSON: {msg.data}')
+            return
+        self._post_async('/api/rover/wheel_calibration_result', payload,
+                         'wheel_calibration_result')
 
     def _telemetry_loop(self):
         """Periodically POST telemetry to the course server."""
@@ -469,12 +511,23 @@ class BridgeNode(Node):
             self.get_logger().info('Antenna offset calibration requested by server')
             self._pub_calibrate_antenna.publish(Empty())
 
+        elif event == 'calibrate-wheels':
+            self.get_logger().info('Wheel scale calibration requested by server')
+            self._pub_calibrate_wheels.publish(Empty())
+
     def destroy_node(self):
         self._running = False
         if self._sse_thread:
             self._sse_thread.join(timeout=5.0)
         if getattr(self, '_telemetry_thread', None):
             self._telemetry_thread.join(timeout=5.0)
+        post_thread = getattr(self, '_post_thread', None)
+        if post_thread is not None:
+            try:
+                self._post_queue.put_nowait(None)
+            except queue.Full:
+                pass
+            post_thread.join(timeout=5.0)
         super().destroy_node()
 
 

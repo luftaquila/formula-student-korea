@@ -47,7 +47,7 @@ import json
 import math
 import time
 from enum import Enum
-from math import radians, degrees, hypot
+from math import radians, degrees, hypot, cos, sin
 
 import rclpy
 from rclpy.node import Node
@@ -67,6 +67,8 @@ from pilot.lib.antenna_calibration import (
     load_antenna_offset, save_antenna_offset, solve_antenna_offset,
     scurve_curvature,
 )
+from pilot.lib.wheel_calibration import solve_wheel_scales
+from pilot.lib.geo_utils import haversine
 
 
 class State(Enum):
@@ -76,6 +78,7 @@ class State(Enum):
     SETTLING = 'SETTLING'
     SPRAYING = 'SPRAYING'
     CAL_ANTENNA = 'CAL_ANTENNA'
+    CAL_WHEELS = 'CAL_WHEELS'
     EMERGENCY_STOP = 'EMERGENCY_STOP'
     ERROR = 'ERROR'
 
@@ -125,9 +128,14 @@ class NavigatorNode(Node):
 
         # Dock tracker (state feedback).
         self.declare_parameter('dock_k_y', 1.4)
-        self.declare_parameter('dock_k_psi', 1.6)
+        self.declare_parameter('dock_k_psi', 2.4)
+        self.declare_parameter('dock_k_i', 0.4)
+        self.declare_parameter('dock_integral_limit', 0.5)
         self.declare_parameter('approach_tolerance', 0.10)
         self.declare_parameter('creep_zone', 0.40)
+        # Pure Pursuit tunables exposed for cone-spacing-specific tuning.
+        self.declare_parameter('pp_min_speed_fraction', 0.25)
+        self.declare_parameter('pp_handoff_blend_distance', 1.0)
 
         # Tolerances and timeouts.
         self.declare_parameter('waypoint_tolerance', 0.05)
@@ -143,7 +151,7 @@ class NavigatorNode(Node):
         self.declare_parameter('calibration_max_distance', 5.0)
         self.declare_parameter('calibration_min_samples', 20)
         self.declare_parameter('calibration_chord_min_m', 1.5)
-        self.declare_parameter('calibration_residual_max', 0.15)
+        self.declare_parameter('calibration_residual_max', 0.05)
 
         # Antenna offset auto-calibration drive shape.
         self.declare_parameter('antenna_cal_straight_distance', 2.0)
@@ -152,9 +160,16 @@ class NavigatorNode(Node):
         self.declare_parameter('antenna_cal_periods', 2)
         self.declare_parameter('antenna_cal_speed', 0.5)
 
+        # Wheel scale auto-calibration (CAL_WHEELS state). Drives a
+        # straight chord and divides GPS distance by per-wheel encoder
+        # integration to recover the rolling-radius mismatch.
+        self.declare_parameter('wheel_cal_distance', 10.0)
+        self.declare_parameter('wheel_cal_speed', 0.5)
+        self.declare_parameter('wheel_cal_max_distance', 15.0)
+
         # Estimator gains.
         self.declare_parameter('estimator_pos_gain', 0.30)
-        self.declare_parameter('estimator_psi_gain', 0.05)
+        self.declare_parameter('estimator_psi_gain', 0.15)
         self.declare_parameter('estimator_psi_min_speed', 0.4)
 
         # Safety.
@@ -162,6 +177,12 @@ class NavigatorNode(Node):
         self.declare_parameter('fix_hysteresis_s', 0.8)
         self.declare_parameter('required_fix_status', 'rtk_fixed')
         self.declare_parameter('return_to_start', True)
+        # Battery thresholds. The MCU has its own hard cutoff at
+        # BATTERY_UNDERVOLT_V (20 V); these gate the navigator earlier so
+        # we don't start a mission with a marginal pack and so we ERROR
+        # gracefully instead of having motors cut out mid-dock.
+        self.declare_parameter('battery_warn_pct', 20)
+        self.declare_parameter('battery_abort_pct', 10)
 
         # ── derived & state ──────────────────────────────────────────────
         self._max_steer_rad = radians(self.get_parameter('max_steering_angle_deg').value)
@@ -190,6 +211,8 @@ class NavigatorNode(Node):
         self._pub_error_reason = self.create_publisher(String, '/rover/nav/error_reason', reliable_qos)
         self._pub_skipped = self.create_publisher(Int32, '/rover/nav/skipped', reliable_qos)
         self._pub_cal_antenna_result = self.create_publisher(String, '/rover/cal/antenna_result', reliable_qos)
+        self._pub_cal_wheels_result = self.create_publisher(String, '/rover/cal/wheel_result', reliable_qos)
+        self._pub_apply_wheel_scales = self.create_publisher(String, '/rover/cmd/apply_wheel_scales', reliable_qos)
 
         # Subscribers.
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps, 10)
@@ -202,6 +225,8 @@ class NavigatorNode(Node):
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_emergency, reliable_qos)
         self.create_subscription(Empty, '/rover/spray/done', self._on_spray_done, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/calibrate_antenna', self._on_calibrate_antenna, reliable_qos)
+        self.create_subscription(Empty, '/rover/cmd/calibrate_wheels', self._on_calibrate_wheels, reliable_qos)
+        self.create_subscription(String, '/rover/battery', self._on_battery, 10)
 
         # ── runtime state ────────────────────────────────────────────────
         self._state = State.IDLE
@@ -224,7 +249,15 @@ class NavigatorNode(Node):
         self._last_gps_time = 0.0
         self._odom_v_left = 0.0
         self._odom_v_right = 0.0
+        # Pre-scale velocities exposed by mcu_bridge for the CAL_WHEELS
+        # routine; everywhere else we use the post-scale v_left/v_right.
+        self._odom_v_left_raw = 0.0
+        self._odom_v_right_raw = 0.0
         self._odom_have_sample = False
+
+        # Battery state-of-charge. Updated from /rover/battery telemetry
+        # JSON; navigator gates mission start and emits ERROR on critical.
+        self._battery_pct = None
 
         # Estimator (constructed when calibration completes; needs ref_lat/lon).
         self._estimator = None
@@ -257,6 +290,16 @@ class NavigatorNode(Node):
         # Error recovery.
         self._pre_error_state = None
         self._last_error_reason = None
+
+        # Wheel scale auto-calibration state. CAL_WHEELS drives a
+        # straight chord; we accumulate per-wheel ∫|v_raw| dt and chord
+        # GPS distance, then divide.
+        self._cal_wheels_start_lat = None
+        self._cal_wheels_start_lon = None
+        self._cal_wheels_enc_l_m = 0.0
+        self._cal_wheels_enc_r_m = 0.0
+        self._cal_wheels_samples = 0
+        self._cal_wheels_last_t = None
 
         # Antenna offset auto-calibration state.
         self._cal_antenna_phase = None
@@ -311,6 +354,10 @@ class NavigatorNode(Node):
             'cruise_done_tolerance': self.get_parameter('cruise_done_tolerance').value,
             'dock_k_y': self.get_parameter('dock_k_y').value,
             'dock_k_psi': self.get_parameter('dock_k_psi').value,
+            'dock_k_i': self.get_parameter('dock_k_i').value,
+            'dock_integral_limit': self.get_parameter('dock_integral_limit').value,
+            'pp_min_speed_fraction': self.get_parameter('pp_min_speed_fraction').value,
+            'pp_handoff_blend_distance': self.get_parameter('pp_handoff_blend_distance').value,
             'approach_tolerance': self.get_parameter('approach_tolerance').value,
             'creep_zone': self.get_parameter('creep_zone').value,
             'max_curvature': self.get_parameter('max_curvature').value,
@@ -360,6 +407,17 @@ class NavigatorNode(Node):
         if isinstance(spd, (int, float)):
             self._gps_speed = float(spd)
 
+    def _on_battery(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            return
+        if not isinstance(data, dict):
+            return
+        pct = data.get('percent')
+        if isinstance(pct, (int, float)):
+            self._battery_pct = float(pct)
+
     def _on_odom(self, msg):
         try:
             data = json.loads(msg.data)
@@ -373,6 +431,15 @@ class NavigatorNode(Node):
             self._odom_v_left = float(vl)
         if isinstance(vr, (int, float)):
             self._odom_v_right = float(vr)
+        # Raw (pre-wheel-scale) values; only the CAL_WHEELS routine reads
+        # these. Older mcu_bridge builds without raw fields fall back to
+        # the scaled value, which gives a no-op result on the next cal.
+        vl_raw = data.get('v_left_raw', vl)
+        vr_raw = data.get('v_right_raw', vr)
+        if isinstance(vl_raw, (int, float)):
+            self._odom_v_left_raw = float(vl_raw)
+        if isinstance(vr_raw, (int, float)):
+            self._odom_v_right_raw = float(vr_raw)
         self._odom_have_sample = True
 
     # ── command callbacks ────────────────────────────────────────────────
@@ -388,6 +455,19 @@ class NavigatorNode(Node):
 
         if self._gps_lat is None or not self._has_required_fix():
             self._set_error('Cannot start mission without RTK-fixed GPS position')
+            return
+        # Refuse to start if battery is below the warn threshold — running
+        # a multi-waypoint mission to ~22 V then dying mid-dock leaves the
+        # rover stranded with the spray uncoordinated and the operator
+        # walking out to the field. We make the operator swap or charge
+        # before the mission begins instead.
+        warn_pct = self.get_parameter('battery_warn_pct').value
+        if (self._battery_pct is not None
+                and self._battery_pct < warn_pct):
+            self._set_error(
+                f'Battery low ({self._battery_pct:.0f}% < {warn_pct}%) — '
+                f'charge or swap before starting mission'
+            )
             return
 
         # Reset every per-mission knob — leakage between missions was the
@@ -430,6 +510,36 @@ class NavigatorNode(Node):
         if self._state != State.SPRAYING:
             return
         self._advance_to_next_waypoint()
+
+    def _on_calibrate_wheels(self, _msg):
+        """Operator-triggered per-wheel scale auto-calibration.
+
+        Only valid from IDLE — drives the rover ~10 m through a straight
+        chord and divides GPS distance by per-wheel encoder integration
+        to recover the rolling-radius scale. Requires RTK fix at start
+        for the chord measurement to be cm-accurate.
+        """
+        if self._state != State.IDLE:
+            self._publish_cal_wheels_result(
+                ok=False,
+                reason=f'must be IDLE to start (current: {self._state.value})',
+            )
+            return
+        if self._gps_lat is None or not self._has_required_fix():
+            self._publish_cal_wheels_result(
+                ok=False,
+                reason='RTK-fixed GPS required to start calibration',
+            )
+            return
+        self._cal_wheels_start_lat = self._gps_lat
+        self._cal_wheels_start_lon = self._gps_lon
+        self._cal_wheels_enc_l_m = 0.0
+        self._cal_wheels_enc_r_m = 0.0
+        self._cal_wheels_samples = 0
+        self._cal_wheels_last_t = None
+        self._fix_degraded_since = None
+        self.get_logger().info('Wheel scale auto-calibration started')
+        self._set_state(State.CAL_WHEELS)
 
     def _on_calibrate_antenna(self, _msg):
         """Operator-triggered antenna offset auto-calibration.
@@ -476,9 +586,21 @@ class NavigatorNode(Node):
         # immediately on GPS loss.
         active_states = (
             State.CALIBRATING, State.NAVIGATING, State.SETTLING,
-            State.CAL_ANTENNA,
+            State.CAL_ANTENNA, State.CAL_WHEELS,
         )
         if self._state in active_states:
+            # Battery critical — stop and ERROR before motors cut out under
+            # the MCU's hard cutoff (BATTERY_UNDERVOLT_V) mid-mission.
+            abort_pct = self.get_parameter('battery_abort_pct').value
+            if (self._battery_pct is not None
+                    and self._battery_pct < abort_pct):
+                self._stop_motors()
+                self._pre_error_state = self._state
+                self._set_error(
+                    f'Battery critical ({self._battery_pct:.0f}% < {abort_pct}%) — '
+                    f'aborting mission'
+                )
+                return
             now = time.monotonic()
             if now - self._last_gps_time > self.get_parameter('gps_timeout').value:
                 self._stop_motors()
@@ -520,6 +642,8 @@ class NavigatorNode(Node):
             self._handle_spraying()
         elif self._state == State.CAL_ANTENNA:
             self._handle_cal_antenna()
+        elif self._state == State.CAL_WHEELS:
+            self._handle_cal_wheels()
 
     # ── error recovery ───────────────────────────────────────────────────
 
@@ -666,7 +790,7 @@ class NavigatorNode(Node):
             return
 
         if seg.kind == 'dock':
-            v, kappa, status = self._dock_tracker.step(chassis_pose, seg, antenna_world)
+            v, kappa, status = self._dock_tracker.step(chassis_pose, seg, time.monotonic(), antenna_world)
             self._publish_velocity(v, kappa)
             self._update_progress(chassis_pose, seg.end_pose)
             if status == 'reached':
@@ -775,6 +899,7 @@ class NavigatorNode(Node):
             if seg is not None and seg.kind == 'dock':
                 v, kappa, _ = self._dock_tracker.step(
                     self._estimator.chassis_pose(), seg,
+                    time.monotonic(),
                     (antenna_e, antenna_n),
                 )
                 self._publish_velocity(v, kappa)
@@ -837,11 +962,136 @@ class NavigatorNode(Node):
         if dist > self.get_parameter('waypoint_tolerance').value:
             v, kappa, _ = self._dock_tracker.step(
                 self._estimator.chassis_pose(), seg,
+                time.monotonic(),
                 (antenna_e, antenna_n),
             )
             self._publish_velocity(v, kappa)
         else:
             self._stop_motors()
+
+    # ── wheel scale auto-calibration ────────────────────────────────────
+
+    def _handle_cal_wheels(self):
+        """Drive a straight chord, integrate per-wheel encoder distance,
+        derive (scale_l, scale_r) from gps_chord / encoder_distance.
+
+        We don't enforce κ=0 via a lookahead controller — straight at the
+        commanded κ=0 is good enough; tiny drift won't change ∫|v_wheel|
+        dt meaningfully because the integrand is wheel speed magnitude.
+        """
+        if self._gps_lat is None:
+            return
+        speed = self.get_parameter('wheel_cal_speed').value
+        self._publish_velocity(speed, 0.0)
+
+        # Encoder integration. Use raw (pre-scale) values from mcu_bridge
+        # so the result represents the absolute wheel-radius mismatch
+        # rather than composing on top of an existing scale.
+        now = time.monotonic()
+        if self._cal_wheels_last_t is None:
+            self._cal_wheels_last_t = now
+        else:
+            dt = now - self._cal_wheels_last_t
+            self._cal_wheels_last_t = now
+            if 0.0 < dt < 0.5:
+                self._cal_wheels_enc_l_m += abs(self._odom_v_left_raw) * dt
+                self._cal_wheels_enc_r_m += abs(self._odom_v_right_raw) * dt
+                self._cal_wheels_samples += 1
+
+        gps_dist = haversine(
+            self._cal_wheels_start_lat, self._cal_wheels_start_lon,
+            self._gps_lat, self._gps_lon,
+        )
+
+        target = self.get_parameter('wheel_cal_distance').value
+        cap = self.get_parameter('wheel_cal_max_distance').value
+
+        if gps_dist >= cap:
+            self._stop_motors()
+            self._publish_cal_wheels_result(
+                ok=False,
+                reason=f'drove {gps_dist:.2f} m without converging on target {target:.1f} m',
+                gps_distance_m=gps_dist,
+                encoder_left_m=self._cal_wheels_enc_l_m,
+                encoder_right_m=self._cal_wheels_enc_r_m,
+                samples=self._cal_wheels_samples,
+            )
+            self._set_state(State.IDLE)
+            return
+
+        if gps_dist < target:
+            return
+
+        self._stop_motors()
+        result = solve_wheel_scales(
+            gps_distance_m=gps_dist,
+            encoder_left_m=self._cal_wheels_enc_l_m,
+            encoder_right_m=self._cal_wheels_enc_r_m,
+            samples=self._cal_wheels_samples,
+        )
+        if result['reason'] is not None:
+            self.get_logger().warn(f'wheel cal solve failed: {result["reason"]}')
+            self._publish_cal_wheels_result(
+                ok=False,
+                reason=result['reason'],
+                gps_distance_m=gps_dist,
+                encoder_left_m=self._cal_wheels_enc_l_m,
+                encoder_right_m=self._cal_wheels_enc_r_m,
+                samples=self._cal_wheels_samples,
+                scale_l=result.get('scale_l'),
+                scale_r=result.get('scale_r'),
+            )
+            self._set_state(State.IDLE)
+            return
+
+        # Hand the new scales to mcu_bridge, which persists and applies.
+        scale_l = result['scale_l']
+        scale_r = result['scale_r']
+        apply_msg = String()
+        apply_msg.data = json.dumps({
+            'scale_l': scale_l,
+            'scale_r': scale_r,
+            'gps_distance_m': gps_dist,
+            'encoder_left_m': self._cal_wheels_enc_l_m,
+            'encoder_right_m': self._cal_wheels_enc_r_m,
+            'samples': self._cal_wheels_samples,
+        })
+        self._pub_apply_wheel_scales.publish(apply_msg)
+        self.get_logger().info(
+            f'wheel cal: L={scale_l:.4f} R={scale_r:.4f} '
+            f'(gps={gps_dist:.2f} m, encL={self._cal_wheels_enc_l_m:.2f} m, '
+            f'encR={self._cal_wheels_enc_r_m:.2f} m, '
+            f'n={self._cal_wheels_samples})'
+        )
+        self._publish_cal_wheels_result(
+            ok=True,
+            scale_l=scale_l,
+            scale_r=scale_r,
+            gps_distance_m=gps_dist,
+            encoder_left_m=self._cal_wheels_enc_l_m,
+            encoder_right_m=self._cal_wheels_enc_r_m,
+            samples=self._cal_wheels_samples,
+        )
+        self._set_state(State.IDLE)
+
+    def _publish_cal_wheels_result(self, *, ok, reason=None,
+                                   scale_l=None, scale_r=None,
+                                   gps_distance_m=None,
+                                   encoder_left_m=None, encoder_right_m=None,
+                                   samples=None):
+        payload = {'ok': bool(ok)}
+        if reason is not None:
+            payload['reason'] = reason
+        for k, v in (('scale_l', scale_l), ('scale_r', scale_r),
+                     ('gps_distance_m', gps_distance_m),
+                     ('encoder_left_m', encoder_left_m),
+                     ('encoder_right_m', encoder_right_m),
+                     ('samples', samples)):
+            if v is not None:
+                payload[k] = v
+        msg = String()
+        msg.data = json.dumps(payload)
+        self._pub_cal_wheels_result.publish(msg)
 
     # ── antenna offset auto-calibration ─────────────────────────────────
 

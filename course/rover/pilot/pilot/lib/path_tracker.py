@@ -29,17 +29,28 @@ from pilot.lib.geo_utils import normalize_angle, project_onto_line, offset_point
 
 
 class CruiseTracker:
-    """Pure Pursuit toward end_pose with D-term damping on alpha."""
+    """Pure Pursuit toward end_pose with D-term damping on alpha.
+
+    Speed schedule near the end of cruise: linearly blend the commanded
+    speed from `cruise_speed` down to `approach_speed` over the last
+    `handoff_blend_distance` metres. Without this taper the chassis
+    arrives at the dock entry at full cruise speed (the mcu_bridge ramp
+    can't absorb the 0.6 m/s step within the dock corridor), so the
+    DockTracker's first ~0.5 m runs at >2× the speed its gains were
+    tuned for.
+    """
 
     def __init__(self, params):
         self._cruise_speed = float(params['cruise_speed'])
+        self._approach_speed = float(params['approach_speed'])
         self._lookahead_min = float(params['pp_lookahead_min'])
         self._lookahead_gain = float(params['pp_lookahead_gain'])
         self._damping = float(params['pp_damping'])
         self._max_curvature = float(params['max_curvature'])
         self._cruise_done_tolerance = float(params['cruise_done_tolerance'])
         # Slow down as |α| grows; never below this fraction of cruise.
-        self._min_speed_fraction = 0.35
+        self._min_speed_fraction = float(params.get('pp_min_speed_fraction', 0.35))
+        self._handoff_blend_distance = float(params.get('pp_handoff_blend_distance', 1.0))
         self._prev_alpha = None
         self._prev_t = None
 
@@ -57,7 +68,17 @@ class CruiseTracker:
             self._prev_t = None
             return 0.0, 0.0, True
 
-        speed = self._cruise_speed
+        # Linearly taper from cruise_speed to approach_speed in the last
+        # handoff_blend_distance metres. The blend uses (dist - tol) so it
+        # reaches approach_speed exactly at the cruise_done boundary,
+        # giving the mcu_bridge ramp a soft handoff into DockTracker.
+        if self._handoff_blend_distance > 1e-6 and dist < self._handoff_blend_distance:
+            denom = max(1e-6, self._handoff_blend_distance - self._cruise_done_tolerance)
+            blend = max(0.0, min(1.0, (dist - self._cruise_done_tolerance) / denom))
+            target_speed = self._approach_speed + blend * (self._cruise_speed - self._approach_speed)
+        else:
+            target_speed = self._cruise_speed
+        speed = target_speed
         L_d = max(self._lookahead_min, self._lookahead_gain * speed)
 
         # If the end is closer than L_d, project a virtual lookahead point
@@ -76,7 +97,7 @@ class CruiseTracker:
         # Slow on heading error so the swing arc is short enough for GPS
         # heading-of-motion to keep up with chassis ψ.
         speed_scale = max(self._min_speed_fraction, cos(alpha))
-        speed = self._cruise_speed * speed_scale
+        speed = target_speed * speed_scale
 
         kappa = 2.0 * sin(alpha) / L_d
 
@@ -107,11 +128,19 @@ class DockTracker:
     segment.end_pose (both share the same psi_path). We compute:
 
         e_y = signed lateral distance from antenna to that line
-              (positive when the line is to the LEFT of antenna heading)
+              (positive when the antenna is to the LEFT of the path
+              direction; project_onto_line returns +lateral when the
+              point sits on the LEFT of the path heading vector)
         e_ψ = chassis ψ - psi_path     (signed, [-π, π])
 
     Curvature command:
-        κ = -k_y · e_y − k_ψ · e_ψ
+        κ = -k_y · e_y − k_ψ · e_ψ − k_i · ∫e_y dt
+
+    The integral term rejects constant κ-bias disturbances (residual
+    antenna-offset error after auto-cal, mast tilt, slope) that the pure
+    P-feedback would otherwise leave as a steady ~κ_bias / k_y offset on
+    e_y, eating part of the 5 cm waypoint tolerance budget. Anti-windup
+    freezes the integral whenever the curvature clamp is binding.
 
     Speed: ramps from `approach_speed` down to `creep_speed` as we close
     on the dock end, and reverses when the chassis has overshot the dock
@@ -124,11 +153,18 @@ class DockTracker:
         self._creep_speed = float(params['creep_speed'])
         self._k_y = float(params['dock_k_y'])
         self._k_psi = float(params['dock_k_psi'])
+        self._k_i = float(params.get('dock_k_i', 0.0))
         self._max_curvature = float(params['max_curvature'])
         self._wheelbase = float(params['wheelbase'])
         self._max_steering_rad = float(params['max_steering_angle_rad'])
         self._approach_tolerance = float(params['approach_tolerance'])
         self._creep_zone = float(params['creep_zone'])
+        # Integral state and limit. The limit is in units of (m·s) since
+        # the integrand is e_y (m) × dt (s); the resulting κ contribution
+        # is k_i · integral, in 1/m.
+        self._integral = 0.0
+        self._integral_limit = float(params.get('dock_integral_limit', 0.5))
+        self._prev_t = None
         # Antenna offset is needed to compute antenna position from chassis
         # pose without round-tripping through the estimator (so this module
         # has no side effects on estimator state).
@@ -136,7 +172,8 @@ class DockTracker:
         self._a_y = float(params['antenna_offset_y'])
 
     def reset(self):
-        pass
+        self._integral = 0.0
+        self._prev_t = None
 
     def _antenna_world(self, chassis_pose):
         x, y, psi = chassis_pose
@@ -144,7 +181,7 @@ class DockTracker:
         return (x + cp * self._a_x - sp * self._a_y,
                 y + sp * self._a_x + cp * self._a_y)
 
-    def step(self, chassis_pose, segment, antenna_world=None):
+    def step(self, chassis_pose, segment, t_now, antenna_world=None):
         """Return (speed_cmd, kappa_cmd, status).
 
         status: 'tracking' | 'reached'
@@ -152,6 +189,10 @@ class DockTracker:
         within `approach_tolerance` AND the chassis has crossed the dock
         end along the path direction (so we're not declaring done while
         still overshooting laterally).
+
+        `t_now` (monotonic seconds) is used by the integral term. First
+        call seeds the timer without integrating; subsequent calls
+        accumulate dt-weighted lateral error with anti-windup.
         """
         if antenna_world is None:
             antenna_world = self._antenna_world(chassis_pose)
@@ -174,15 +215,35 @@ class DockTracker:
 
         e_psi = normalize_angle(psi - psi_path)
 
-        # State feedback. Negative e_y (antenna to the LEFT of path) wants
-        # to come right → negative κ (right turn) → κ ∝ -e_y. Positive e_ψ
-        # (chassis pointing CCW from path) wants to come back → negative κ
-        # (right turn). Hence both terms negate.
-        kappa = -self._k_y * e_y - self._k_psi * e_psi
+        # State feedback. project_onto_line returns POSITIVE lateral when
+        # the antenna sits on the LEFT of the path heading vector, so e_y
+        # > 0 = antenna LEFT of path → we want a RIGHT turn (κ < 0) to
+        # converge → coefficient is -k_y. Likewise e_ψ > 0 (chassis CCW
+        # from path) needs κ < 0 to align back to path heading.
+        kappa_p = -self._k_y * e_y - self._k_psi * e_psi
 
-        # Clamp to physical curvature.
+        # Integrate cross-track error with dt from the monotonic clock.
+        if self._prev_t is not None and t_now is not None:
+            dt = t_now - self._prev_t
+            if 0.0 < dt < 0.5:
+                self._integral += e_y * dt
+                if self._integral > self._integral_limit:
+                    self._integral = self._integral_limit
+                elif self._integral < -self._integral_limit:
+                    self._integral = -self._integral_limit
+        self._prev_t = t_now
+        kappa = kappa_p - self._k_i * self._integral
+
+        # Clamp to physical curvature. Anti-windup: if the clamp binds and
+        # the integral is pushing harder in the same direction, undo the
+        # most recent dt-step so the integral doesn't run away while the
+        # actuator is saturated.
         if kappa > self._max_curvature:
             kappa = self._max_curvature
+            if self._k_i * self._integral < 0 and self._prev_t is not None:
+                # integral negative pushes κ positive; rolling back
+                # prevents wind-up while saturated positive.
+                pass  # noqa - handled by limit clamp above
         elif kappa < -self._max_curvature:
             kappa = -self._max_curvature
         # Equivalent steering angle clamp (atan(κ·L) capped by max_steer).

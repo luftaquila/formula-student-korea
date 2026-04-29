@@ -65,6 +65,14 @@ class SprayNode(Node):
         self._spray_timer = None
         self._retract_timer = None
         self._current_wp_idx = -1
+        # Index of the most recent waypoint cancelled by navigator timeout.
+        # Guards _signal_done from publishing a stale 'success' result for a
+        # waypoint navigator already published 'timeout' for. Race: navigator
+        # times out → /rover/spray/cancel arrives → _on_spray_cancel destroys
+        # the retract_timer; but if _signal_done was already queued on the
+        # executor when cancel arrived, it would still fire and overwrite the
+        # outcome. The flag short-circuits that path.
+        self._cancelled_wp_idx = -1
 
         # Subscribers
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
@@ -153,10 +161,16 @@ class SprayNode(Node):
         was_spraying = self._spraying
         wp_idx = self._current_wp_idx
         self._spraying = False
+        # If this waypoint was cancelled (navigator timeout) between when
+        # _signal_done was scheduled and when it actually ran, suppress
+        # the 'success' result so we don't race the navigator's 'timeout'.
+        cancelled = (self._cancelled_wp_idx == wp_idx)
+        if cancelled:
+            self._cancelled_wp_idx = -1
         # Always publish done so the navigator never blocks on a missed signal
         try:
             self._pub_done.publish(Empty())
-            if was_spraying and wp_idx >= 0:
+            if was_spraying and wp_idx >= 0 and not cancelled:
                 self._publish_result('success', wp_idx)
         finally:
             self.get_logger().info('Spray done')
@@ -187,6 +201,10 @@ class SprayNode(Node):
             return
         self._spray_timer = self._safe_destroy_timer(self._spray_timer)
         self._retract_timer = self._safe_destroy_timer(self._retract_timer)
+        # Mark this waypoint cancelled so a queued _signal_done callback
+        # racing on the single-threaded executor can't publish a stale
+        # 'success' for what navigator has already declared a 'timeout'.
+        self._cancelled_wp_idx = target_idx
 
         rest_angle = self.get_parameter('rest_angle').value
         lgpio.tx_pwm(self._handle, self._pin, SERVO_FREQUENCY, _angle_to_duty(rest_angle))

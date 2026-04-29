@@ -97,8 +97,12 @@ IDLE → CALIBRATING → NAVIGATING → SETTLING → SPRAYING ─(next wp)→ NA
                                                            ▼
                                               NAVIGATING (return) → IDLE
 
+IDLE → CAL_ANTENNA → IDLE   (operator-triggered antenna-offset auto-cal)
+IDLE → CAL_WHEELS  → IDLE   (operator-triggered per-wheel scale auto-cal)
+
 any state → EMERGENCY_STOP (on /rover/cmd/emergency_stop)
-any driving state → ERROR  (GPS timeout / fix below quality > fix_hysteresis_s)
+any driving state → ERROR  (GPS timeout / fix below quality > fix_hysteresis_s,
+                            or battery below battery_abort_pct mid-mission)
 ```
 
 - **Antenna-precise docking**: every waypoint becomes a *cruise* segment
@@ -108,7 +112,9 @@ any driving state → ERROR  (GPS timeout / fix below quality > fix_hysteresis_s
   pose is `target − R(ψ_dock) · antenna_offset`, so non-zero antenna
   offset is compensated at planning time. The dock corridor is straight
   so ω ≈ 0 at arrival, which makes antenna position predictable from
-  chassis pose alone.
+  chassis pose alone. `dock_approach_distance` is clamped per-segment
+  to ≤ ½ · inter-waypoint span (floor 0.3 m), so tightly-spaced cones
+  don't get an entry point projected behind the previous waypoint.
 - **State estimator** fuses MCU encoder odometry (chassis v, ω) with GPS
   antenna position and GPS heading-of-motion (with antenna-offset
   inversion) into a chassis (x, y, ψ) at 20 Hz. ψ never depends on raw
@@ -116,23 +122,40 @@ any driving state → ERROR  (GPS timeout / fix below quality > fix_hysteresis_s
   ms heading-of-motion latency that previously caused figure-8 swings.
 - **CALIBRATING**: drive κ = 0 at `calibration_speed`, regress chassis
   heading from antenna ENU samples. Trustworthy when chord ≥
-  `calibration_chord_min_m` AND residual RMS ≤ `calibration_residual_max`,
-  otherwise extend once and ERROR if still bad. Hard cap at
-  `calibration_max_distance`.
+  `calibration_chord_min_m` AND residual RMS ≤ `calibration_residual_max`
+  (production: 1.5 m / 5 cm → ~2° heading 1σ), otherwise extend once
+  and ERROR if still bad. Hard cap at `calibration_max_distance`.
 - **NAVIGATING/cruise**: Pure Pursuit with D-term damping +
   virtual-lookahead projection past the goal. `max_curvature` 1.2 1/m
-  matches `tan(25°)/wheelbase`; speed scales with `cos(α)`.
-- **NAVIGATING/dock**: linear state-feedback line follower on antenna
-  lateral error: κ = −k_y · e_y_antenna − k_ψ · e_ψ. Reverses straight
-  on along-track overshoot.
+  matches `tan(25°)/wheelbase`; speed scales with `cos(α)` and tapers
+  linearly from `cruise_speed` toward `approach_speed` over the last
+  `pp_handoff_blend_distance` metres so the chassis enters the dock
+  corridor at the speed DockTracker's gains were tuned for.
+- **NAVIGATING/dock**: state-feedback line follower on antenna lateral
+  error: κ = −k_y · e_y_antenna − k_ψ · e_ψ − k_i · ∫e_y dt. The
+  integral term (with anti-windup at `dock_integral_limit`) cancels
+  steady κ-bias from antenna-offset residual / mast tilt / slope.
+  Reverses straight on along-track overshoot.
 - **SETTLING → SPRAYING**: antenna within `settle_tolerance` for
   `settle_readings` consecutive samples → fire. Drift back outside
   `waypoint_tolerance` mid-settle hands control back to the dock tracker.
+- **CAL_ANTENNA**: drive a chord then a sinusoidal-κ S-curve and run
+  closed-form LSQ on the (chassis pose, antenna obs) samples. The
+  solver gates on a minimum ψ excitation (`SOLVE_PSI_SPREAD_MIN_RAD`)
+  so a SCURVE that didn't actually rotate the rover (encoder stall,
+  mid-drive E-Stop) can't silently persist a garbage offset. Result
+  written to `$PILOT_STATE_DIR/antenna_offset.json`.
+- **CAL_WHEELS**: drive a straight 10 m chord at `wheel_cal_speed` and
+  divide GPS chord distance by per-wheel encoder integration to recover
+  per-wheel rolling-radius scale. Result written to
+  `$PILOT_STATE_DIR/wheel_cal.json` and applied live via
+  `/rover/cmd/apply_wheel_scales`. Bounded to ±15 % so encoder
+  slip / GPS error never produces a runaway scale.
 
 Thresholds in `pilot/config/rover_params.yaml`. The most physically
 load-bearing knob is `antenna_offset_x` / `antenna_offset_y` — measure
-it once on the actual chassis with a tape; everything else self-corrects
-via GPS feedback.
+it once on the actual chassis with a tape (or run CAL_ANTENNA once);
+everything else self-corrects via GPS feedback.
 
 Fleet-wide identical: hardware, NTRIP endpoint, `rover_params.yaml`. Per-rover differs only in `SERVER_URL` / `INTERNAL_SECRET` / `NTRIP_USERNAME`.
 
@@ -218,6 +241,18 @@ Battery calibration:
 - File: `/var/lib/pilot/battery_cal.json` (host bind-mount).
 - Persists across `systemctl restart`, `podman auto-update`, `bootc upgrade`.
 - Bounds: `measured_v ∈ [15, 32] V`, `gain ∈ [0.5, 2.0]`. OOB → reset to `gain = 1.0`.
+
+Antenna offset calibration (CAL_ANTENNA):
+
+- File: `/var/lib/pilot/antenna_offset.json` (host bind-mount).
+- Persisted `(a_x, a_y)` overrides the YAML default; absent / corrupt → fall back to YAML.
+- Bounds: `|a_x|, |a_y| ≤ 1 m`, RMS residual ≤ 5 cm, ψ excitation ≥ 8.6° (rejects SCURVEs that didn't actually rotate the rover).
+
+Wheel scale calibration (CAL_WHEELS):
+
+- File: `/var/lib/pilot/wheel_cal.json` (host bind-mount).
+- Persisted `(scale_l, scale_r)` is applied live by `mcu_bridge_node` as `v_wheel_corrected = v_wheel_raw × scale`.
+- Bounds: `scale ∈ [0.85, 1.15]`, GPS chord ≥ 5 m, ≥ 50 samples (1 s @ 50 Hz). OOB → reject and refuse to persist (caller falls back to current live scale).
 
 ## OTA & rollback
 

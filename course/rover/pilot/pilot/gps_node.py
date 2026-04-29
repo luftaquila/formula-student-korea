@@ -389,6 +389,9 @@ class GpsNode(Node):
             'num_sv': pvt.num_sv,
             'pdop': p_dop,
             'tdop': t_dop,
+            # iTOW lets navigator back-date the position correction by
+            # USB-CDC + parse latency (~50-100 ms on the ZED-F9P link).
+            'i_tow_ms': pvt.i_tow_ms,
         }
         msg = String()
         msg.data = json.dumps(metrics)

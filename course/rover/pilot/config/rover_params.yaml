@@ -12,7 +12,7 @@ gps_node:
     serial_port: "/dev/ttyGPS"         # udev symlink (see host/files/usr/lib/udev/rules.d/99-fsk-rover.rules)
     baud_rate: 115200
     publish_rate: 10.0                 # Hz
-    heading_speed_threshold: 0.3       # m/s minimum to publish heading
+    heading_speed_threshold: 0.4       # m/s minimum to publish heading. Aligned with estimator_psi_min_speed so we don't publish headings the estimator immediately discards.
     # NOTE: the NTRIP username MUST be injected via the NTRIP_USERNAME env
     # var (sourced from a podman secret in the rover image), never committed
     # to this file. Leave blank here so the repo stays safe to publish.
@@ -58,17 +58,21 @@ navigator_node:
     pp_lookahead_gain: 0.6             # lookahead = max(min, gain × speed)
     pp_damping: 0.18                   # D-term gain on dα/dt. Damps figure-8 oscillation under heading lag.
     cruise_done_tolerance: 0.20        # meters from cruise end pose to declare cruise done and switch to dock
+    pp_min_speed_fraction: 0.25        # cos(α) speed scale floor (was hardcoded 0.35; 0.25 lets tight cone-to-cone curves slow further before lateral correction blows out)
+    pp_handoff_blend_distance: 1.0     # meters from cruise end at which commanded speed begins to taper from cruise_speed → approach_speed
 
     # ── Dock tracker (state-feedback line follower) ─────────────────────
     dock_k_y: 1.4                      # 1/m — gain on antenna lateral error
-    dock_k_psi: 1.6                    # 1/m — gain on chassis heading error vs path
+    dock_k_psi: 2.4                    # 1/m — gain on chassis heading error vs path. ζ = k_ψ / (2·√k_y) ≈ 1.01 (near-critical, accounting for steering servo lag).
+    dock_k_i: 0.4                      # 1/(m·s) — integral on antenna lateral error. Cancels constant κ-bias from antenna-offset residual / mast tilt / slope.
+    dock_integral_limit: 0.5           # m·s — anti-windup clamp on the integral state.
     approach_tolerance: 0.10           # meters antenna-to-target to declare dock segment reached
     creep_zone: 0.40                   # meters from target to drop from approach_speed to creep_speed
 
     # ── Tolerances and timeouts ─────────────────────────────────────────
     waypoint_tolerance: 0.05           # meters antenna-to-target to consider waypoint hit
     settle_tolerance: 0.03             # meters for tight settle confirmation
-    settle_readings: 5                 # consecutive in-tolerance readings to declare settled
+    settle_readings: 8                 # consecutive in-tolerance readings to declare settled (was 5; 8 × 50 ms = 400 ms washes out chassis decel + mast ringing)
     settle_timeout: 10.0               # seconds before settling gives up and sprays anyway
     spray_timeout: 5.0                 # seconds to wait for spray_done before auto-skip
     stuck_timeout: 12.0                # seconds without progress before retry/skip
@@ -79,11 +83,16 @@ navigator_node:
     calibration_max_distance: 5.0      # meters cap — ERROR if heading still untrustworthy
     calibration_min_samples: 20        # ≥1 second at 20 Hz
     calibration_chord_min_m: 1.5       # require this chord length for trustworthy heading fit
-    calibration_residual_max: 0.15     # meters RMS of perpendicular residuals
+    calibration_residual_max: 0.05     # meters RMS of perpendicular residuals (~2° heading 1σ at 1.5 m chord)
+
+    # ── Wheel scale auto-calibration (CAL_WHEELS state) ─────────────────
+    wheel_cal_distance: 10.0           # meters of straight drive to converge on (GPS chord)
+    wheel_cal_speed: 0.5               # m/s during the calibration drive
+    wheel_cal_max_distance: 15.0       # cap — give up if 15 m elapsed without resolving
 
     # ── State estimator ─────────────────────────────────────────────────
     estimator_pos_gain: 0.30           # blend factor for GPS antenna position correction
-    estimator_psi_gain: 0.05           # blend factor for GPS heading-of-motion correction
+    estimator_psi_gain: 0.15           # blend factor for GPS heading-of-motion correction (τ ≈ 0.67 s @ 10 Hz heading updates)
     estimator_psi_min_speed: 0.4       # m/s below which heading-of-motion is too noisy to trust
 
     # ── Safety ──────────────────────────────────────────────────────────

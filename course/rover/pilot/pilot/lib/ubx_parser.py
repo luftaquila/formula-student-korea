@@ -61,6 +61,10 @@ class NavPVT:
     ground_speed: float # m/s
     heading: float      # degrees (heading of motion)
     p_dop: float
+    i_tow_ms: int       # GPS time-of-week of the navigation epoch (ms).
+                        # Forwarded into telemetry so downstream estimators
+                        # can back-date the position correction by USB-CDC
+                        # latency rather than time-stamping at receive.
 
 
 @dataclass
@@ -127,6 +131,7 @@ def parse_nav_pvt(payload):
         ground_speed=gSpeed * 1e-3,
         heading=headMot * 1e-5,
         p_dop=pDOP * 0.01,
+        i_tow_ms=iTOW,
     )
 
 
