@@ -84,15 +84,38 @@ def test_pure_pursuit_clamps_curvature_near_target(nav):
     assert abs(curvature) <= max_curv + 1e-6
 
 
-def test_pure_pursuit_rotate_in_place_uses_max_curvature(nav):
-    # Large heading error → rotate in place
-    nav._current_heading = 0.0  # pointing north
-    target_lat = 34.99  # target is south (180deg off)
-    target_lon = 126.0
+def test_pure_pursuit_large_heading_error_clamps_curvature(nav):
+    """At |α| > 90°, PP must command max-clamped curvature with the normal
+    speed profile — Ackermann can't pivot in place, so the rover swings
+    around at cruise speed instead of crawling at the old 0.05 m/s."""
+    nav._current_heading = 0.0  # facing north
+    # Target south-east of us → bearing ≈ 100°, comfortably past π/2 and
+    # outside the sin(π)=0 degenerate point of a target directly behind.
+    target_lat = 34.999  # ~111m south
+    target_lon = 126.005  # ~455m east at lat 35°
     speed, curvature = nav._pure_pursuit(target_lat, target_lon, 5.0)
     max_curv = nav.get_parameter('max_curvature').value
-    assert speed == pytest.approx(0.05, abs=1e-9)
+    cruise = nav.get_parameter('cruise_speed').value
+    assert speed == pytest.approx(cruise, abs=1e-6)
     assert abs(curvature) == pytest.approx(max_curv, abs=1e-6)
+
+
+def test_creep_reverses_when_target_behind(nav):
+    """Overshoot recovery: when |α| > 90° in creep, the rover must drive in
+    reverse rather than spinning forward at full lock — Ackermann recovery
+    from an overshoot is a reverse, not a tighter forward arc."""
+    nav._current_lat = 35.0
+    nav._current_lon = 126.0
+    nav._current_heading = 0.0  # facing north
+    published = []
+    nav._publish_velocity = lambda s, c: published.append((s, c))
+    # Target south of us → α ≈ ±π → |α| > π/2
+    nav._creep_toward_waypoint(34.999, 126.0, 0.10)
+    assert published, 'expected a velocity command'
+    speed, curvature = published[-1]
+    creep = nav.get_parameter('creep_speed').value
+    assert speed == pytest.approx(-creep, abs=1e-9)
+    assert curvature == pytest.approx(0.0, abs=1e-9)
 
 
 # ── 2.4 Calibration quality gating ────────────────────────────────────────

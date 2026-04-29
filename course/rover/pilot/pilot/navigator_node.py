@@ -59,10 +59,10 @@ class NavigatorNode(Node):
         self.declare_parameter('waypoint_tolerance', 0.05)
         self.declare_parameter('approach_tolerance', 0.30)
         self.declare_parameter('calibration_distance', 2.5)
-        self.declare_parameter('calibration_speed', 0.3)
+        self.declare_parameter('calibration_speed', 0.5)
         self.declare_parameter('cruise_speed', 1.2)
         self.declare_parameter('approach_speed', 0.2)
-        self.declare_parameter('lookahead_min', 0.3)
+        self.declare_parameter('lookahead_min', 0.8)
         self.declare_parameter('lookahead_gain', 0.5)
         self.declare_parameter('heading_calibrated_threshold', 5.0)
         self.declare_parameter('gps_timeout', 3.0)
@@ -70,14 +70,14 @@ class NavigatorNode(Node):
         self.declare_parameter('stuck_timeout', 10.0)
         self.declare_parameter('stuck_max_retries', 2)
         self.declare_parameter('spray_timeout', 5.0)
-        self.declare_parameter('creep_speed', 0.05)
+        self.declare_parameter('creep_speed', 0.15)
         self.declare_parameter('decel_distance', 2.0)
         self.declare_parameter('settle_readings', 5)
         self.declare_parameter('settle_tolerance', 0.03)
         self.declare_parameter('settle_timeout', 10.0)
         self.declare_parameter('required_fix_status', 'rtk_fixed')
         self.declare_parameter('fix_hysteresis_s', 0.8)
-        self.declare_parameter('max_curvature', 3.0)
+        self.declare_parameter('max_curvature', 1.2)
         self.declare_parameter('calibration_max_distance', 5.0)
 
         # Publishers
@@ -472,14 +472,12 @@ class NavigatorNode(Node):
         else:
             speed = cruise_speed
 
-        # Adaptive lookahead. Near the target, using min(lookahead_min, dist)
-        # collapses the denominator to ~0 and spikes curvature. Scale down instead.
+        # lookahead_min is set ≥ minimum turn radius (wheelbase/tan(max_steer))
+        # so PP never demands a tighter arc than the vehicle can physically do.
+        # When dist < lookahead, PP aims at a virtual point past the goal —
+        # heading feedback self-corrects, no special-case needed.
         max_curv = self.get_parameter('max_curvature').value
-        raw_lookahead = max(lookahead_min, lookahead_gain * speed)
-        if dist < lookahead_min:
-            lookahead = max(0.05, dist * 0.7)
-        else:
-            lookahead = min(raw_lookahead, dist)
+        lookahead = max(lookahead_min, lookahead_gain * speed)
 
         # Target bearing
         target_bearing = bearing(
@@ -490,19 +488,13 @@ class NavigatorNode(Node):
         # Heading error
         alpha = normalize_angle(target_bearing - self._current_heading)
 
-        # If heading error is too large (> 90 deg), rotate in place
-        # alpha > 0 means target is CW (right) of heading → need right turn (negative curvature)
-        if abs(alpha) > pi / 2:
-            turn = max_curv if alpha <= 0 else -max_curv
-            return 0.05, turn  # very slow forward to keep heading updates
-
-        # Pure Pursuit curvature
+        # Pure Pursuit curvature. Ackermann can't pivot in place, so even at
+        # |alpha| > pi/2 the right move is a forward arc at clamped curvature —
+        # the vehicle swings around at the normal speed profile and GPS heading
+        # updates close the loop.
         # Negate because geodetic bearing convention (CW positive) is opposite
-        # to curvature convention (positive = left turn)
-        if lookahead > 0.01:
-            curvature = -2.0 * sin(alpha) / lookahead
-        else:
-            curvature = 0.0
+        # to curvature convention (positive = left turn).
+        curvature = -2.0 * sin(alpha) / lookahead
 
         # Clamp curvature to keep the vehicle dynamics within Ackermann limits.
         curvature = max(-max_curv, min(max_curv, curvature))
@@ -608,8 +600,10 @@ class NavigatorNode(Node):
         alpha = normalize_angle(target_bearing - self._current_heading)
 
         if abs(alpha) > pi / 2:
-            curvature = max_curv if alpha <= 0 else -max_curv
-            self._publish_velocity(0.03, curvature)
+            # Target is behind us (overshoot). Ackermann can't pivot in place,
+            # so reverse straight back. Once we've backed up enough that the
+            # target is in front again, the next tick's normal creep arc takes over.
+            self._publish_velocity(-creep_speed, 0.0)
         else:
             curvature = -2.0 * sin(alpha) / max(0.1, dist)
             curvature = max(-max_curv, min(max_curv, curvature))
