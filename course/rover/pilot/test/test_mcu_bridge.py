@@ -103,6 +103,9 @@ def bridge():
     node._wheel_cal_lock = _t.Lock()
     node._wheel_scale_l = 1.0
     node._wheel_scale_r = 1.0
+    # Steering trim — uncalibrated centre by default.
+    node._steering_trim_lock = _t.Lock()
+    node._steering_trim_us = 0.0
 
     return node
 
@@ -217,6 +220,82 @@ def test_velocity_first_tick_after_estop_clears_with_one_step(bridge):
     bridge._on_velocity(msg)
     # After two ticks of bounded ramp we should be at ≥ 2 × one_tick.
     assert bridge._cur_speed >= 2 * one_tick - 1e-9
+
+
+def test_velocity_zero_target_snaps_immediately(bridge):
+    """Explicit stop intent (Twist(0,0)) must not be absorbed by the
+    accel-limit ramp. Navigator publishes a single zero-twist on
+    state-machine transitions out of an active state and then stops
+    publishing — if mcu_bridge ramped that down across many ticks, the
+    rover would coast for half a second after the navigator returned to
+    IDLE because nobody else would ever republish zero."""
+    import time as _time
+    import types
+    bridge._cur_speed = 0.5
+    bridge._last_drive_t = _time.monotonic() - 0.05
+    msg = types.SimpleNamespace(
+        linear=types.SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        angular=types.SimpleNamespace(x=0.0, y=0.0, z=0.0),
+    )
+    bridge._on_velocity(msg)
+    assert bridge._cur_speed == 0.0
+    # The single 'M 0 0 ...' frame must have actually gone out — the
+    # MCU is otherwise free-running on its last command.
+    assert any(line.startswith('M 0.000') for line in _writes_text(bridge))
+
+
+def test_drive_applies_steering_trim_and_clamps(bridge):
+    """Persisted trim must offset every commanded servo_us, but the
+    final pulse must stay inside [center - range, center + range] so
+    adding trim near full lock doesn't push the servo past its stops."""
+    bridge._steering_trim_us = 8.0
+    bridge._drive(40.0, 60.0, 1500.0)
+    parts = _writes_text(bridge)[-1].strip().split()
+    assert int(parts[3]) == 1508
+    bridge._serial.writes.clear()
+    # At full positive lock (center + range = 2000) and trim = +8 µs,
+    # the result must clamp to 2000, not 2008.
+    bridge._steering_trim_us = 8.0
+    bridge._drive(40.0, 60.0, 2000.0)
+    parts = _writes_text(bridge)[-1].strip().split()
+    assert int(parts[3]) == 2000
+    bridge._serial.writes.clear()
+    bridge._steering_trim_us = -8.0
+    bridge._drive(40.0, 60.0, 1000.0)
+    parts = _writes_text(bridge)[-1].strip().split()
+    assert int(parts[3]) == 1000
+
+
+def test_apply_steering_trim_persists_and_applies(bridge, monkeypatch, tmp_path):
+    monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
+    import json as _json
+    import types
+    msg = types.SimpleNamespace(data=_json.dumps({
+        'trim_us': 6.5, 'radius_m': -120.0, 'rms_residual_m': 0.012,
+        'samples': 200, 'drive_distance_m': 10.0,
+    }))
+    bridge._on_apply_steering_trim(msg)
+    assert bridge._steering_trim_us == pytest.approx(6.5, abs=1e-6)
+    # The persisted file should round-trip through load_steering_trim.
+    from pilot.lib.steering_calibration import load_steering_trim
+    trim, _ = load_steering_trim(default=0.0)
+    assert trim == pytest.approx(6.5, abs=1e-3)
+
+
+def test_apply_steering_trim_rejects_out_of_range(bridge, monkeypatch, tmp_path):
+    monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
+    import json as _json
+    import types
+    bridge._steering_trim_us = 0.0
+    msg = types.SimpleNamespace(data=_json.dumps({
+        'trim_us': 1000.0, 'radius_m': 1.0, 'rms_residual_m': 0.0,
+        'samples': 200, 'drive_distance_m': 10.0,
+    }))
+    bridge._on_apply_steering_trim(msg)
+    # Live trim untouched, file not created.
+    assert bridge._steering_trim_us == 0.0
+    from pilot.lib.steering_calibration import steering_trim_path
+    assert not os.path.exists(steering_trim_path())
 
 
 def test_estop_sends_E_and_clears_state(bridge):

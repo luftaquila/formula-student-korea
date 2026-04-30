@@ -43,6 +43,8 @@ navigator_node:
     track_width: 0.30                  # meters
     max_steering_angle_deg: 25.0       # degrees
     max_curvature: 1.2                 # 1/m. Physical limit tan(25°)/0.38 ≈ 1.23.
+    servo_range_us: 500                # mirrors mcu_bridge_node.servo_range_us — used by
+                                       # CAL_WHEELS' steering-trim solve to convert κ_bias to µs.
 
     # ── Speeds ──────────────────────────────────────────────────────────
     cruise_speed: 1.0                  # m/s during cruise segments

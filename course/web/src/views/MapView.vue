@@ -1342,6 +1342,17 @@ const antennaCalDisplay = computed(() => {
 const wheelCalDisplay = computed(() => {
   const cal = roverStatus.value.wheel_calibration;
   const fmtScale = (v) => (typeof v === "number" ? v.toFixed(4) : "—");
+  const fmtTrim = (v) => (typeof v === "number"
+    ? `${v >= 0 ? "+" : ""}${v.toFixed(1)} µs` : "—");
+  // radius_m comes back null when the rover drove straight enough that
+  // the trim solver returned 0 (>100 m radius). Show "직선" then so the
+  // operator sees at a glance that no correction was needed.
+  let radiusLabel = "—";
+  if (typeof cal?.radius_m === "number") {
+    radiusLabel = `${cal.radius_m.toFixed(1)} m`;
+  } else if (typeof cal?.trim_us === "number") {
+    radiusLabel = "직선";
+  }
   let calibratedAgo = "—";
   if (cal?.calibrated_at) {
     const ago = Math.max(0, Math.round((Date.now() - cal.calibrated_at) / 60000));
@@ -1351,8 +1362,13 @@ const wheelCalDisplay = computed(() => {
     scale_l: fmtScale(cal?.scale_l),
     scale_r: fmtScale(cal?.scale_r),
     samples: typeof cal?.samples === "number" ? String(cal.samples) : "—",
+    trim: fmtTrim(cal?.trim_us),
+    radius: radiusLabel,
     calibratedAgo,
     errorReason: cal && !cal.ok ? cal.reason : null,
+    // Soft warn when wheel scales applied but steering-trim solve refused
+    // to persist (e.g. slip, GPS noise) — the wheel cal still succeeded.
+    steeringWarning: cal && cal.ok && cal.steering_reason ? cal.steering_reason : null,
   };
 });
 
@@ -2290,7 +2306,15 @@ onUnmounted(() => {
       <!-- Combined calibration modal (antenna + wheel encoder) -->
       <div v-if="showCalibration" class="preflight-backdrop" @click.self="closeCalibration">
         <div class="preflight-modal calibration-modal">
-          <h3>캘리브레이션</h3>
+          <div class="modal-titlebar">
+            <h3>캘리브레이션</h3>
+            <button
+              class="modal-close-x"
+              :disabled="antennaCalSubmitting || wheelCalSubmitting"
+              aria-label="닫기"
+              @click="closeCalibration"
+            >×</button>
+          </div>
 
           <section class="cal-section">
             <div class="cal-section-title">안테나 오프셋</div>
@@ -2338,11 +2362,18 @@ onUnmounted(() => {
               <span class="cal-val">{{ wheelCalDisplay.scale_r }}</span>
               <span class="cal-key">샘플</span>
               <span class="cal-val">{{ wheelCalDisplay.samples }}</span>
+              <span class="cal-key">조향 트림</span>
+              <span class="cal-val">{{ wheelCalDisplay.trim }}</span>
+              <span class="cal-key">arc 반경</span>
+              <span class="cal-val">{{ wheelCalDisplay.radius }}</span>
               <span class="cal-key">갱신</span>
               <span class="cal-val">{{ wheelCalDisplay.calibratedAgo }}</span>
             </div>
             <div v-if="wheelCalDisplay.errorReason" class="cal-error">
               마지막 시도 실패: {{ wheelCalDisplay.errorReason }}
+            </div>
+            <div v-if="wheelCalDisplay.steeringWarning" class="cal-error cal-warn">
+              조향 트림 미적용: {{ wheelCalDisplay.steeringWarning }} (휠 스케일은 적용됨)
             </div>
             <div v-if="wheelCalRunning" class="modal-status">
               진행 중... 로버 상태가 IDLE로 돌아오면 결과가 표시됩니다.
@@ -3147,11 +3178,44 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 
+/* The cal modal can grow taller than the mobile viewport (two long
+   warnings + scale rows + trim rows + a status line each). Cap its
+   height to the visible viewport, scroll the body, and pin the title
+   bar on top so the X close button is always reachable — the bottom
+   close button used to fall below the fold on phones. */
+.calibration-modal {
+  display: flex; flex-direction: column;
+  max-height: calc(100dvh - 2rem);
+  overflow: hidden;
+}
+.calibration-modal > .modal-titlebar { flex: 0 0 auto; }
+.calibration-modal > .preflight-actions { flex: 0 0 auto; }
 .calibration-modal .cal-section {
   padding: 0.75rem 0;
   border-top: 1px solid var(--border-primary);
 }
 .calibration-modal .cal-section:first-of-type { border-top: none; padding-top: 0; }
+.calibration-modal > .cal-section:first-of-type { padding-top: 0.5rem; }
+/* Body sections scroll independently of the title bar / footer. */
+.calibration-modal > .cal-section { overflow-y: auto; }
+.cal-warn {
+  background: rgba(234, 179, 8, 0.12) !important;
+  border-color: rgba(234, 179, 8, 0.5) !important;
+}
+.modal-titlebar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem 0;
+}
+.modal-titlebar h3 { margin: 0; }
+.modal-close-x {
+  appearance: none; background: transparent; border: none;
+  font-size: 1.6rem; line-height: 1; cursor: pointer;
+  color: var(--text-secondary);
+  padding: 0.25rem 0.6rem; border-radius: 6px;
+}
+.modal-close-x:hover { background: var(--bg-secondary); color: var(--text-primary); }
+.modal-close-x:disabled { cursor: not-allowed; opacity: 0.5; }
 .cal-section-title {
   font-size: 0.95rem; font-weight: 600;
   margin-bottom: 0.5rem;

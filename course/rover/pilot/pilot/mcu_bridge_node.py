@@ -36,6 +36,10 @@ from pilot.lib.wheel_calibration import (
     SCALE_BOUND_HI, SCALE_BOUND_LO,
     load_wheel_cal, save_wheel_cal,
 )
+from pilot.lib.steering_calibration import (
+    TRIM_BOUND_US,
+    load_steering_trim, save_steering_trim,
+)
 
 
 # 8S LiFePO4 OCV-SOC table (resting voltage, no load).
@@ -172,6 +176,14 @@ class McuBridgeNode(Node):
         self._wheel_scale_l = float(scales[0])
         self._wheel_scale_r = float(scales[1])
 
+        # Steering centre auto-trim. Persisted at
+        # $PILOT_STATE_DIR/steering_trim.json; 0.0 until calibrated.
+        # Added to every commanded servo_us so the mechanical zero of
+        # the steering linkage matches the navigator's κ = 0.
+        self._steering_trim_lock = threading.Lock()
+        trim, _ = load_steering_trim(default=0.0)
+        self._steering_trim_us = float(trim)
+
         # Serial
         self._serial = None
         self._serial_lock = threading.Lock()
@@ -187,6 +199,7 @@ class McuBridgeNode(Node):
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_estop, reliable)
         self.create_subscription(Float32, '/rover/cmd/calibrate_battery', self._on_calibrate_battery, reliable)
         self.create_subscription(String, '/rover/cmd/apply_wheel_scales', self._on_apply_wheel_scales, reliable)
+        self.create_subscription(String, '/rover/cmd/apply_steering_trim', self._on_apply_steering_trim, reliable)
 
         self._pub_status = self.create_publisher(String, '/rover/motor/status', 10)
         self._pub_battery = self.create_publisher(String, '/rover/battery', 10)
@@ -276,6 +289,15 @@ class McuBridgeNode(Node):
         single torque spike when motors come back online.
         """
         accel = self._p('accel_limit')
+        # Explicit stop intent: caller wants zero (state-machine transition,
+        # E-Stop release follow-up, end of cal). Ramping it down would let
+        # the rover coast 0.5 s after the navigator returns to IDLE because
+        # IDLE doesn't keep republishing zero-velocity, and the previous
+        # ramp output (~0.45 m/s) would be the last value the MCU ever
+        # received. Snap to 0 — there's no torque or scrub concern in
+        # decel-to-rest.
+        if target_speed == 0.0:
+            return 0.0
         if dt > 0.5:
             # Long gap usually means navigator restarted — ramping from
             # stale internal state would just give wrong torque.
@@ -381,7 +403,17 @@ class McuBridgeNode(Node):
         # whole point of moving the limit upstream.
         self._cur_left = left_pct
         self._cur_right = right_pct
-        self._cur_steer_us = int(round(servo_us))
+        # Apply persisted steering trim. The trim absorbs the offset
+        # between the linkage's mechanical zero and `servo_center_us`;
+        # we clamp the final pulse to the configured range so adding
+        # trim near full-lock never pushes the servo past its stops.
+        with self._steering_trim_lock:
+            trim = self._steering_trim_us
+        center = self._p('servo_center_us')
+        rng = self._p('servo_range_us')
+        trimmed = servo_us + trim
+        trimmed = max(center - rng, min(center + rng, trimmed))
+        self._cur_steer_us = int(round(trimmed))
 
         if self._p('use_pid'):
             max_speed = self._p('max_speed')
@@ -668,6 +700,51 @@ class McuBridgeNode(Node):
         self.get_logger().info(
             f'wheel scales applied: L={sl:.4f} R={sr:.4f}'
         )
+
+    def _on_apply_steering_trim(self, msg):
+        """Adopt and persist the steering centre trim from the navigator.
+
+        Payload is JSON: {"trim_us": float, "radius_m": float|null,
+                          "rms_residual_m": float, "samples": int,
+                          "drive_distance_m": float}.
+        Out-of-range trims are rejected — applying a 100 µs offset would
+        push the servo past its configured ±servo_range_us when the
+        operator commands the same direction at full lock.
+        """
+        try:
+            data = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            self.get_logger().warn('apply_steering_trim: invalid JSON, ignored')
+            return
+        if not isinstance(data, dict):
+            return
+        try:
+            trim = float(data.get('trim_us'))
+        except (TypeError, ValueError):
+            self.get_logger().warn('apply_steering_trim: non-numeric trim_us')
+            return
+        if not (-TRIM_BOUND_US <= trim <= TRIM_BOUND_US):
+            self.get_logger().warn(
+                f'apply_steering_trim: {trim:.1f} µs outside '
+                f'±{TRIM_BOUND_US:.0f} µs — ignored'
+            )
+            return
+        try:
+            radius = data.get('radius_m')
+            radius_f = float(radius) if isinstance(radius, (int, float)) else float('inf')
+            save_steering_trim(
+                trim,
+                radius_m=radius_f,
+                rms_residual_m=float(data.get('rms_residual_m', 0.0)),
+                samples=int(data.get('samples', 0)),
+                drive_distance_m=float(data.get('drive_distance_m', 0.0)),
+            )
+        except (OSError, ValueError) as exc:
+            self.get_logger().warn(f'apply_steering_trim: persist failed: {exc}')
+            return
+        with self._steering_trim_lock:
+            self._steering_trim_us = trim
+        self.get_logger().info(f'steering trim applied: {trim:+.1f} µs')
 
     # ------------------------- shutdown
 

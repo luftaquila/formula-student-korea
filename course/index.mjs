@@ -1222,6 +1222,13 @@ app.post("/api/rover/wheel_calibration_result", (req, res) => {
     encoder_left_m: typeof body.encoder_left_m === "number" ? body.encoder_left_m : null,
     encoder_right_m: typeof body.encoder_right_m === "number" ? body.encoder_right_m : null,
     samples: Number.isInteger(body.samples) ? body.samples : null,
+    // Steering-trim auto-cal piggy-backs on the same drive (rover/pilot/lib/steering_calibration.py).
+    // null radius_m means the path was straight enough that we report 0 µs trim;
+    // null trim_us with a steering_reason means the trim solve failed but wheel scales still applied.
+    trim_us: typeof body.trim_us === "number" ? body.trim_us : null,
+    radius_m: typeof body.radius_m === "number" ? body.radius_m : null,
+    steering_rms_m: typeof body.steering_rms_m === "number" ? body.steering_rms_m : null,
+    steering_reason: typeof body.steering_reason === "string" ? body.steering_reason : null,
     // Rover doesn't stamp calibrated_at in the result payload — we stamp on receipt
     // since that's within ~100 ms of the rover's solve completion.
     calibrated_at: Date.now(),

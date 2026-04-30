@@ -47,7 +47,7 @@ import json
 import math
 import time
 from enum import Enum
-from math import radians, degrees, hypot, cos, sin
+from math import radians, degrees, hypot, cos, sin, tan, isfinite
 
 import rclpy
 from rclpy.node import Node
@@ -68,6 +68,7 @@ from pilot.lib.antenna_calibration import (
     scurve_curvature,
 )
 from pilot.lib.wheel_calibration import solve_wheel_scales
+from pilot.lib.steering_calibration import solve_steering_trim
 from pilot.lib.geo_utils import haversine
 
 
@@ -110,6 +111,12 @@ class NavigatorNode(Node):
         self.declare_parameter('track_width', 0.30)
         self.declare_parameter('max_steering_angle_deg', 25.0)
         self.declare_parameter('max_curvature', 1.2)
+        # Mirrors mcu_bridge_node.servo_range_us; the steering auto-trim
+        # solve at the end of CAL_WHEELS converts κ_bias to a servo µs
+        # offset which the bridge then persists. Declared here so the
+        # solve doesn't have to round-trip through mcu_bridge just to
+        # learn the platform's servo geometry.
+        self.declare_parameter('servo_range_us', 500.0)
 
         # Speeds.
         self.declare_parameter('cruise_speed', 1.0)
@@ -213,6 +220,7 @@ class NavigatorNode(Node):
         self._pub_cal_antenna_result = self.create_publisher(String, '/rover/cal/antenna_result', reliable_qos)
         self._pub_cal_wheels_result = self.create_publisher(String, '/rover/cal/wheel_result', reliable_qos)
         self._pub_apply_wheel_scales = self.create_publisher(String, '/rover/cmd/apply_wheel_scales', reliable_qos)
+        self._pub_apply_steering_trim = self.create_publisher(String, '/rover/cmd/apply_steering_trim', reliable_qos)
 
         # Subscribers.
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps, 10)
@@ -293,13 +301,19 @@ class NavigatorNode(Node):
 
         # Wheel scale auto-calibration state. CAL_WHEELS drives a
         # straight chord; we accumulate per-wheel ∫|v_raw| dt and chord
-        # GPS distance, then divide.
+        # GPS distance, then divide. The same drive doubles as the
+        # source data for steering-trim auto-cal — ENU samples here feed
+        # a circle fit at completion, since both calibrations want
+        # exactly a κ=0 long chord and there's no point making the
+        # operator drive twice.
         self._cal_wheels_start_lat = None
         self._cal_wheels_start_lon = None
         self._cal_wheels_enc_l_m = 0.0
         self._cal_wheels_enc_r_m = 0.0
         self._cal_wheels_samples = 0
         self._cal_wheels_last_t = None
+        self._cal_wheels_enu_samples = []     # (e, n) for steering-trim circle fit
+        self._cal_wheels_last_gps_idx = -1
 
         # Antenna offset auto-calibration state.
         self._cal_antenna_phase = None
@@ -552,6 +566,8 @@ class NavigatorNode(Node):
         self._cal_wheels_enc_r_m = 0.0
         self._cal_wheels_samples = 0
         self._cal_wheels_last_t = None
+        self._cal_wheels_enu_samples = []
+        self._cal_wheels_last_gps_idx = -1
         self._fix_degraded_since = None
         self.get_logger().info('Wheel scale auto-calibration started')
         self._set_state(State.CAL_WHEELS)
@@ -1056,6 +1072,19 @@ class NavigatorNode(Node):
                 self._cal_wheels_enc_r_m += abs(self._odom_v_right_raw) * dt
                 self._cal_wheels_samples += 1
 
+        # ENU samples for steering-trim circle fit. Dedupe on GPS time so
+        # we capture exactly one sample per fresh fix; the same fix coming
+        # in across multiple control ticks must not stack (would weight
+        # the LSQ unfairly toward fix-update boundaries).
+        gps_idx = int(self._last_gps_time * 1000)
+        if gps_idx != self._cal_wheels_last_gps_idx:
+            self._cal_wheels_last_gps_idx = gps_idx
+            e, n = enu_from_gps(
+                self._gps_lat, self._gps_lon,
+                self._cal_wheels_start_lat, self._cal_wheels_start_lon,
+            )
+            self._cal_wheels_enu_samples.append((e, n))
+
         gps_dist = haversine(
             self._cal_wheels_start_lat, self._cal_wheels_start_lon,
             self._gps_lat, self._gps_lon,
@@ -1121,6 +1150,48 @@ class NavigatorNode(Node):
             f'encR={self._cal_wheels_enc_r_m:.2f} m, '
             f'n={self._cal_wheels_samples})'
         )
+
+        # Steering-trim auto-cal piggy-backs on the same κ=0 chord. We
+        # already collected ENU samples; if the path is actually a slight
+        # arc, the circle fit recovers the bias and pushes the trim down
+        # to mcu_bridge alongside the wheel scales. A clean straight
+        # drive returns trim_us = 0 (radius > 100 m); a wildly out-of-
+        # range trim is reported as a soft warning and not applied.
+        trim_result = solve_steering_trim(
+            samples=self._cal_wheels_enu_samples,
+            kappa_max=tan(self._max_steer_rad)
+                      / max(self.get_parameter('wheelbase').value, 1e-3),
+            servo_range_us=self.get_parameter('servo_range_us').value,
+            drive_distance_m=gps_dist,
+        )
+        trim_us = None
+        radius_m = None
+        rms_residual_m = None
+        if trim_result.get('reason') is None:
+            trim_us = float(trim_result['trim_us'])
+            r = trim_result['radius_m']
+            radius_m = float(r) if isfinite(r) else None
+            rms_residual_m = float(trim_result['rms_residual_m'])
+            trim_msg = String()
+            trim_msg.data = json.dumps({
+                'trim_us': trim_us,
+                'radius_m': radius_m,
+                'rms_residual_m': rms_residual_m,
+                'samples': int(trim_result['samples']),
+                'drive_distance_m': gps_dist,
+            })
+            self._pub_apply_steering_trim.publish(trim_msg)
+            radius_str = (f'{radius_m:.1f} m' if radius_m is not None
+                          else 'straight')
+            self.get_logger().info(
+                f'steering trim: {trim_us:+.1f} µs '
+                f'(radius={radius_str}, rms={rms_residual_m*100:.1f} cm, '
+                f'n={trim_result["samples"]})'
+            )
+        else:
+            self.get_logger().warn(
+                f'steering trim solve failed: {trim_result["reason"]}'
+            )
         self._publish_cal_wheels_result(
             ok=True,
             scale_l=scale_l,
@@ -1129,6 +1200,10 @@ class NavigatorNode(Node):
             encoder_left_m=self._cal_wheels_enc_l_m,
             encoder_right_m=self._cal_wheels_enc_r_m,
             samples=self._cal_wheels_samples,
+            trim_us=trim_us,
+            radius_m=radius_m,
+            steering_rms_m=rms_residual_m,
+            steering_reason=trim_result.get('reason'),
         )
         self._set_state(State.IDLE)
 
@@ -1136,7 +1211,10 @@ class NavigatorNode(Node):
                                    scale_l=None, scale_r=None,
                                    gps_distance_m=None,
                                    encoder_left_m=None, encoder_right_m=None,
-                                   samples=None):
+                                   samples=None,
+                                   trim_us=None, radius_m=None,
+                                   steering_rms_m=None,
+                                   steering_reason=None):
         payload = {'ok': bool(ok)}
         if reason is not None:
             payload['reason'] = reason
@@ -1144,7 +1222,11 @@ class NavigatorNode(Node):
                      ('gps_distance_m', gps_distance_m),
                      ('encoder_left_m', encoder_left_m),
                      ('encoder_right_m', encoder_right_m),
-                     ('samples', samples)):
+                     ('samples', samples),
+                     ('trim_us', trim_us),
+                     ('radius_m', radius_m),
+                     ('steering_rms_m', steering_rms_m),
+                     ('steering_reason', steering_reason)):
             if v is not None:
                 payload[k] = v
         msg = String()
