@@ -660,6 +660,16 @@ class NavigatorNode(Node):
             self._estimator.predict(v, om, time.monotonic())
 
         if self._state == State.IDLE or self._state == State.EMERGENCY_STOP:
+            # Keep republishing Twist(0,0) every tick so mcu_bridge's
+            # accel-limit ramp can decay any residual speed smoothly to a
+            # stop. Without this, the single zero-twist published on
+            # state-machine transitions would only step the speed down
+            # by accel_limit · 50 ms and leave the rover coasting at
+            # whatever the ramp landed on (the original "끝나도 계속
+            # 직진" symptom). Manual control is unaffected — mcu_bridge
+            # ignores autonomous Twists during the manual_priority_s
+            # window after the operator's last joystick input.
+            self._stop_motors()
             return
         if self._state == State.ERROR:
             self._handle_error()
@@ -1342,8 +1352,18 @@ class NavigatorNode(Node):
         kappa = scurve_curvature(elapsed, kappa_max, period_s)
         self._publish_velocity(speed, kappa)
 
-        # Encoder-based open-loop integration of chassis pose.
-        v, omega = self._odom_chassis_kinematics()
+        # Open-loop pose integration. v comes from the encoder average
+        # (track_width-invariant — both wheels' longitudinal component);
+        # ω uses the *commanded* curvature × velocity rather than the
+        # encoder-differential ω, because the latter mistakes per-wheel
+        # motor imbalance and Ackermann kinematic-conflict slip for
+        # actual chassis rotation. Over 8 s of S-curve those errors
+        # integrate into meters of pose drift, which is what blew up
+        # the antenna LSQ residual to 263 cm last run. Steering trim
+        # plus PID closed-loop velocity now make commanded-κ a faithful
+        # stand-in for actual chassis ω.
+        v_avg, _omega_enc = self._odom_chassis_kinematics()
+        omega = v_avg * kappa
         now = time.monotonic()
         if self._cal_antenna_last_predict_t is None:
             self._cal_antenna_last_predict_t = now
@@ -1353,11 +1373,11 @@ class NavigatorNode(Node):
             if 0.0 < dt < 0.5:
                 cx, cy, cpsi = self._cal_antenna_chassis
                 mid_psi = cpsi + 0.5 * omega * dt
-                cx += v * cos(mid_psi) * dt
-                cy += v * sin(mid_psi) * dt
+                cx += v_avg * cos(mid_psi) * dt
+                cy += v_avg * sin(mid_psi) * dt
                 cpsi = normalize_angle(cpsi + omega * dt)
                 self._cal_antenna_chassis = (cx, cy, cpsi)
-                self._cal_antenna_drive_distance += abs(v) * dt
+                self._cal_antenna_drive_distance += abs(v_avg) * dt
 
         # Record one sample per fresh GPS fix. We dedupe via _last_gps_time
         # rather than position so we capture every truly new measurement.

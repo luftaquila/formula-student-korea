@@ -121,7 +121,7 @@ class McuBridgeNode(Node):
         # Ackermann + steering servo
         self.declare_parameter('servo_center_us', 1500)
         self.declare_parameter('servo_range_us', 500)
-        self.declare_parameter('max_steering_angle', 25.0)
+        self.declare_parameter('max_steering_angle_deg', 25.0)
         self.declare_parameter('wheelbase', 0.38)
         self.declare_parameter('track_width', 0.30)
         self.declare_parameter('max_speed', 1.5)
@@ -289,15 +289,6 @@ class McuBridgeNode(Node):
         single torque spike when motors come back online.
         """
         accel = self._p('accel_limit')
-        # Explicit stop intent: caller wants zero (state-machine transition,
-        # E-Stop release follow-up, end of cal). Ramping it down would let
-        # the rover coast 0.5 s after the navigator returns to IDLE because
-        # IDLE doesn't keep republishing zero-velocity, and the previous
-        # ramp output (~0.45 m/s) would be the last value the MCU ever
-        # received. Snap to 0 — there's no torque or scrub concern in
-        # decel-to-rest.
-        if target_speed == 0.0:
-            return 0.0
         if dt > 0.5:
             # Long gap usually means navigator restarted — ramping from
             # stale internal state would just give wrong torque.
@@ -322,7 +313,7 @@ class McuBridgeNode(Node):
             wheelbase=self._p('wheelbase'),
             track_width=self._p('track_width'),
             max_speed=self._p('max_speed'),
-            max_steering_angle_rad=math.radians(self._p('max_steering_angle')),
+            max_steering_angle_rad=math.radians(self._p('max_steering_angle_deg')),
             servo_center_us=self._p('servo_center_us'),
             servo_range_us=self._p('servo_range_us'),
         )

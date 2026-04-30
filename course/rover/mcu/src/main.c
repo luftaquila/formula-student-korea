@@ -12,6 +12,7 @@
 #include "pico/multicore.h"
 #include "hardware/watchdog.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -94,10 +95,44 @@ static void core1_main(void) {
         } else if (g_pid_enabled && !g_use_raw_motor) {
             float vl = encoder_get_velocity(ENC_LEFT);
             float vr = encoder_get_velocity(ENC_RIGHT);
-            float ul = pid_step(&g_pid_left,  g_target_vel_l, vl, dt);
-            float ur = pid_step(&g_pid_right, g_target_vel_r, vr, dt);
-            motor_set(0, ul);
-            motor_set(1, ur);
+            // "Drive-only" PID: closed-loop output is allowed to push
+            // the wheel in the commanded direction (positive duty for
+            // forward target, negative for reverse) but never the
+            // opposite. The combination of a target ramp-down (fast)
+            // against natural wheel inertia (slow) makes target − v
+            // sit on the wrong side of zero for several ticks; without
+            // this clamp PID would reverse-PWM the wheel to drag it
+            // down, which judders the H-bridge ("드드득") and cogs the
+            // motor at low duty.
+            //
+            // Below the setpoint deadband we want a full friction
+            // coast plus integrator reset (otherwise wind-up during
+            // the deadband window slams the motor on the next non-zero
+            // command). Above the deadband, PID runs but its output is
+            // sign-clamped against the target sign — wheels decelerate
+            // on friction, never on reverse-drive.
+            if (fabsf(g_target_vel_l) < PID_TARGET_DEADBAND_MPS) {
+                pid_reset(&g_pid_left);
+                motor_set(0, 0.0f);
+            } else {
+                float ul = pid_step(&g_pid_left, g_target_vel_l, vl, dt);
+                if ((g_target_vel_l > 0.0f && ul < 0.0f)
+                    || (g_target_vel_l < 0.0f && ul > 0.0f)) {
+                    ul = 0.0f;
+                }
+                motor_set(0, ul);
+            }
+            if (fabsf(g_target_vel_r) < PID_TARGET_DEADBAND_MPS) {
+                pid_reset(&g_pid_right);
+                motor_set(1, 0.0f);
+            } else {
+                float ur = pid_step(&g_pid_right, g_target_vel_r, vr, dt);
+                if ((g_target_vel_r > 0.0f && ur < 0.0f)
+                    || (g_target_vel_r < 0.0f && ur > 0.0f)) {
+                    ur = 0.0f;
+                }
+                motor_set(1, ur);
+            }
         } else {
             motor_set(0, g_raw_duty_l);
             motor_set(1, g_raw_duty_r);

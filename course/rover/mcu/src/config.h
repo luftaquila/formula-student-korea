@@ -95,6 +95,12 @@
 #define PID_DEFAULT_KP          0.6f
 #define PID_DEFAULT_KI          1.5f
 #define PID_DEFAULT_KD          0.0f
+// Velocity setpoint deadband. A target |v| below this disables the
+// motor (raw duty 0 = H-bridge coast) and resets the PID integrator,
+// instead of letting the closed loop reverse-PWM the wheels to drag a
+// still-spinning encoder to zero. 0.05 m/s is well below creep_speed
+// (0.18 m/s) so dock-approach precision is unaffected.
+#define PID_TARGET_DEADBAND_MPS 0.05f
 #define PID_OUT_MIN             -1.0f
 #define PID_OUT_MAX             1.0f
 #define PID_INTEGRAL_LIMIT      0.5f

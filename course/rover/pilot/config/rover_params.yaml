@@ -122,7 +122,7 @@ mcu_bridge_node:
     # Ackermann + steering servo
     servo_center_us: 1500
     servo_range_us: 500
-    max_steering_angle: 25.0
+    max_steering_angle_deg: 25.0
     wheelbase: 0.38
     track_width: 0.30
     max_speed: 1.5
@@ -133,8 +133,13 @@ mcu_bridge_node:
     # steering servo applies κ instantly and only v ramps.
     accel_limit: 0.8
     manual_priority_s: 1.0
-    # PID closed loop on the MCU. Off until encoders are calibrated and
-    # gains are tuned on the actual hardware.
+    # PID closed loop on the MCU. OFF until the gains are tuned on this
+    # specific drivetrain. The default kp/ki were placeholder values;
+    # turning the loop on without tuning made forward driving feel
+    # gritty (encoder-noise-driven duty oscillation) and decel actively
+    # reverse-PWMed the wheels (band-aided with drive-only clamp +
+    # deadband, but the underlying sensitivity is still wrong).
+    # Re-enable only after step-response / Ziegler-Nichols on the rover.
     use_pid: false
     pid_kp: 0.6
     pid_ki: 1.5

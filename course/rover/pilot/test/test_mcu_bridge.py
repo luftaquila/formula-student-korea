@@ -44,7 +44,7 @@ def bridge():
         'reconnect_delay_s': 2.0,
         'servo_center_us': 1500,
         'servo_range_us': 500,
-        'max_steering_angle': 25.0,
+        'max_steering_angle_deg': 25.0,
         'wheelbase': 0.38,
         'track_width': 0.30,
         'max_speed': 1.5,
@@ -222,13 +222,11 @@ def test_velocity_first_tick_after_estop_clears_with_one_step(bridge):
     assert bridge._cur_speed >= 2 * one_tick - 1e-9
 
 
-def test_velocity_zero_target_snaps_immediately(bridge):
-    """Explicit stop intent (Twist(0,0)) must not be absorbed by the
-    accel-limit ramp. Navigator publishes a single zero-twist on
-    state-machine transitions out of an active state and then stops
-    publishing — if mcu_bridge ramped that down across many ticks, the
-    rover would coast for half a second after the navigator returned to
-    IDLE because nobody else would ever republish zero."""
+def test_velocity_zero_target_ramps_smoothly(bridge):
+    """Twist(0,0) must ramp down at accel_limit, not snap. Hard-snap
+    to-zero would make releasing the joystick feel like a hard brake;
+    smooth coast comes from navigator continuing to republish Twist(0,0)
+    every tick while idle so the ramp keeps decaying."""
     import time as _time
     import types
     bridge._cur_speed = 0.5
@@ -238,10 +236,11 @@ def test_velocity_zero_target_snaps_immediately(bridge):
         angular=types.SimpleNamespace(x=0.0, y=0.0, z=0.0),
     )
     bridge._on_velocity(msg)
-    assert bridge._cur_speed == 0.0
-    # The single 'M 0 0 ...' frame must have actually gone out — the
-    # MCU is otherwise free-running on its last command.
-    assert any(line.startswith('M 0.000') for line in _writes_text(bridge))
+    # accel_limit = 0.8 m/s²; one ~50 ms tick = ~0.04 m/s decrement.
+    # Tolerance covers wallclock jitter between setting last_drive_t and
+    # the ramp reading time.monotonic() — we just need to confirm the
+    # ramp engaged (not a snap to zero, not a no-op).
+    assert 0.45 < bridge._cur_speed < 0.5
 
 
 def test_drive_applies_steering_trim_and_clamps(bridge):
