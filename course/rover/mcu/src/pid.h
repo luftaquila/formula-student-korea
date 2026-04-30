@@ -6,7 +6,6 @@
 typedef struct {
     float kp, ki, kd;
     float integral;
-    float prev_error;
     float prev_measured;   // for derivative-on-measurement (no setpoint kick)
     float out_min, out_max;
     float i_limit;

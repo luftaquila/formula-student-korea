@@ -673,13 +673,6 @@ const roverState = {
   battery: null, // { voltage, percent, source }
   ntrip: null, // { host, port, mountpoint, fail_count, last_error, last_correction_at, bytes_received }
   gps: null, // { h_acc, v_acc, altitude, speed, heading, num_sv, pdop, tdop } from rover GPS metrics
-  // Telemetry staleness: bridge_node POSTs telemetry every 3 s. If the
-  // SSE socket stays alive but the ROS executor wedges, nav_state /
-  // fix_status would otherwise stay frozen at the last reported value
-  // and the UI would mislead the operator. Watchdog below fades them
-  // to null after ROVER_TELEMETRY_STALE_MS without a POST.
-  last_telemetry_at: 0,
-  telemetry_stale: false,
   // Session-scoped per-mission progress used for tab-close recovery — the
   // server acts as the source of truth so reloading the UI rebuilds the
   // executing/stopped view exactly.
@@ -691,22 +684,6 @@ const roverState = {
   },
   updated_at: 0,
 };
-
-const ROVER_TELEMETRY_STALE_MS = 10_000;
-const ROVER_STALENESS_CHECK_MS = 3_000;
-
-// Periodic staleness check. Marks nav_state / fix_status as stale and
-// broadcasts so the UI can render a degraded badge instead of frozen
-// values from a wedged ROS executor. Only fires while SSE is connected
-// — if SSE drops, markRoverDisconnected handles UX directly.
-setInterval(() => {
-  if (!roverState.connected) return;
-  if (roverState.last_telemetry_at === 0) return;
-  const stale = Date.now() - roverState.last_telemetry_at > ROVER_TELEMETRY_STALE_MS;
-  if (stale === roverState.telemetry_stale) return;
-  roverState.telemetry_stale = stale;
-  broadcastRoverStatus();
-}, ROVER_STALENESS_CHECK_MS);
 
 function broadcastRoverStatus() {
   roverState.updated_at = Date.now();
@@ -798,11 +775,6 @@ app.post("/api/rover/position", (req, res) => {
 app.post("/api/rover/telemetry", (req, res) => {
   const { nav_state, fix_status, ntrip_connected, battery, ntrip, gps } = req.body || {};
   const now = Date.now();
-  // Track the fact that telemetry is flowing — staleness watchdog uses
-  // this to fade nav_state / fix_status when the rover's ROS executor
-  // wedges while SSE stays alive.
-  roverState.last_telemetry_at = now;
-  if (roverState.telemetry_stale) roverState.telemetry_stale = false;
   const prevNav = roverState.nav_state;
   if (typeof nav_state === "string") roverState.nav_state = nav_state;
   if (typeof fix_status === "string") {
@@ -1256,7 +1228,6 @@ app.post("/api/rover/wheel_calibration_result", (req, res) => {
     reason: typeof body.reason === "string" ? body.reason : null,
   };
   roverState.wheel_calibration = stored;
-  broadcastEvent("rover:wheel_calibration", stored);
   broadcastRoverStatus();
   if (ok) {
     logger.log(req, "rover.wheel_calibration", stored, "rover");

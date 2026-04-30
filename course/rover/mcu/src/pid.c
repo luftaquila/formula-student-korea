@@ -6,7 +6,6 @@
 void pid_init(pid_t *p, float kp, float ki, float kd) {
     p->kp = kp; p->ki = ki; p->kd = kd;
     p->integral = 0.0f;
-    p->prev_error = 0.0f;
     p->prev_measured = 0.0f;
     p->out_min = PID_OUT_MIN;
     p->out_max = PID_OUT_MAX;
@@ -19,7 +18,6 @@ void pid_set_gains(pid_t *p, float kp, float ki, float kd) {
 
 void pid_reset(pid_t *p) {
     p->integral = 0.0f;
-    p->prev_error = 0.0f;
     p->prev_measured = 0.0f;
 }
 
@@ -32,7 +30,6 @@ float pid_step(pid_t *p, float setpoint, float measured, float dt) {
     // spike of kd*Δsetpoint/dt that injects into the motor command.
     float deriv = (dt > 0.0f) ? -(measured - p->prev_measured) / dt : 0.0f;
     p->prev_measured = measured;
-    p->prev_error = err;  // kept for compatibility / debug; not used in deriv
 
     // Provisional output without the integral update for back-calculation
     // anti-windup: only integrate when the proposed command isn't already
