@@ -1671,6 +1671,15 @@ function startPathPick() {
   roverMode.value = "path-pick";
 }
 
+function computePathFromRover() {
+  const lp = roverStatus.value.last_position;
+  if (!lp || lp.lat == null || lp.lng == null) {
+    notifyWarn("로버 위치를 알 수 없습니다.");
+    return;
+  }
+  computePath(lp.lat, lp.lng);
+}
+
 function computePath(startLat, startLng) {
   const allCones = activeCones.value;
   if (allCones.length === 0) { roverMode.value = "none"; return; }
@@ -2557,7 +2566,14 @@ onUnmounted(() => {
           <div class="map-wrap">
             <div id="map" class="map"></div>
             <!-- Path pick overlay stays inside the map area -->
-            <div v-if="roverMode === 'path-pick'" class="map-overlay">지도에서 시작점을 클릭하세요</div>
+            <div v-if="roverMode === 'path-pick'" class="map-overlay map-overlay-row">
+              <span>시작점을 지도에서 클릭하거나</span>
+              <button
+                class="btn btn-primary btn-sm"
+                :disabled="!roverStatus.connected || !roverStatus.last_position"
+                @click="computePathFromRover"
+              >현재 로버 위치에서 시작</button>
+            </div>
           </div>
 
           <!-- Resize handle (desktop only) -->
@@ -2782,16 +2798,18 @@ onUnmounted(() => {
                       :disabled="activeCones.length === 0 || roverMode === 'manual' || (stopping && (roverMode === 'executing' || roverMode === 'stopped'))"
                     >{{ pathBtnLabel }}</button>
                   </div>
-                  <button
-                    class="btn btn-lg-touch btn-ghost manual-btn-row"
-                    :disabled="!roverStatus.connected"
-                    @click="openCalibration"
-                  >캘리브레이션</button>
-                  <button
-                    :class="['btn', 'btn-lg-touch', 'manual-btn-row', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
-                    :disabled="roverMode !== 'manual' && (!roverStatus.connected || roverMode === 'executing' || roverMode === 'stopped')"
-                    @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
-                  >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
+                  <div class="rover-controls rover-controls-grid">
+                    <button
+                      class="btn btn-lg-touch btn-ghost"
+                      :disabled="!roverStatus.connected"
+                      @click="openCalibration"
+                    >캘리브레이션</button>
+                    <button
+                      :class="['btn', 'btn-lg-touch', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
+                      :disabled="roverMode !== 'manual' && (!roverStatus.connected || roverMode === 'executing' || roverMode === 'stopped')"
+                      @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
+                    >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
+                  </div>
 
                   <div v-if="pathDistance > 0" class="path-info">
                     <div>예상 주행 거리: {{ pathDistance >= 1000 ? (pathDistance / 1000).toFixed(2) + ' km' : pathDistance.toFixed(1) + ' m' }}</div>
@@ -3262,6 +3280,14 @@ onUnmounted(() => {
   border-radius: 8px; font-size: 0.9rem; font-weight: 500; z-index: 500;
   pointer-events: none;
 }
+.map-overlay-row {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  pointer-events: auto;
+  max-width: calc(100vw - 2rem);
+}
+.map-overlay-row > span { white-space: nowrap; }
+.map-overlay-row .btn { white-space: nowrap; }
 
 .coord-popover-body {
   font-family: "JetBrains Mono", monospace;
