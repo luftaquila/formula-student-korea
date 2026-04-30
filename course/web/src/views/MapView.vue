@@ -1336,6 +1336,8 @@ const antennaCalDisplay = computed(() => {
     rms: fmtRms(cal?.rms_residual_m),
     calibratedAgo,
     errorReason: cal && !cal.ok ? cal.reason : null,
+    source: cal?.source || null,
+    sourceLabel: cal?.source === "manual" ? "수동" : (cal?.source === "auto" ? "자동" : null),
   };
 });
 
@@ -1422,6 +1424,43 @@ async function submitAntennaCal() {
     notifyError(err.message);
   } finally {
     antennaCalSubmitting.value = false;
+  }
+}
+
+// Manual antenna offset entry. The recommended path: tape-measure rear
+// axle centre → antenna phase centre, type the cm values here. Saves
+// to the same antenna_offset.json the auto-cal writes (with source
+// 'manual'), applies live in the navigator without restart.
+const antennaManualX = ref("");
+const antennaManualY = ref("");
+const antennaManualSubmitting = ref(false);
+
+// Operator types in mm (cm-precision tape measure → mm input is natural).
+// We convert to m before sending; server-side validation is in m bounds.
+const antennaManualValid = computed(() => {
+  const x_mm = parseFloat(antennaManualX.value);
+  const y_mm = parseFloat(antennaManualY.value);
+  return Number.isFinite(x_mm) && Number.isFinite(y_mm)
+    && Math.abs(x_mm) <= 1000 && Math.abs(y_mm) <= 1000;
+});
+
+async function submitAntennaManual() {
+  if (!antennaManualValid.value || !roverStatus.value.connected) return;
+  antennaManualSubmitting.value = true;
+  try {
+    await request("/api/rover/set-antenna-offset", {
+      method: "POST",
+      body: JSON.stringify({
+        a_x: parseFloat(antennaManualX.value) / 1000,
+        a_y: parseFloat(antennaManualY.value) / 1000,
+      }),
+    });
+    antennaManualX.value = "";
+    antennaManualY.value = "";
+  } catch (err) {
+    notifyError(err.message);
+  } finally {
+    antennaManualSubmitting.value = false;
   }
 }
 
@@ -2347,11 +2386,12 @@ onUnmounted(() => {
           </div>
 
           <section class="cal-section">
-            <div class="cal-section-title">안테나 오프셋</div>
-            <p class="modal-warning">
-              로버가 직진 약 2 m 이후 S자 패턴(8 s)을 자동 주행합니다.
-              전후좌우 5 m 이상의 평탄하고 빈 공간이 필요합니다.
-            </p>
+            <div class="cal-section-title">
+              안테나 오프셋
+              <span v-if="antennaCalDisplay.sourceLabel" class="cal-source-tag">
+                {{ antennaCalDisplay.sourceLabel }}
+              </span>
+            </div>
             <div class="cal-current">
               <span class="cal-key">a_x</span>
               <span class="cal-val">{{ antennaCalDisplay.a_x }}</span>
@@ -2365,15 +2405,52 @@ onUnmounted(() => {
             <div v-if="antennaCalDisplay.errorReason" class="cal-error">
               마지막 시도 실패: {{ antennaCalDisplay.errorReason }}
             </div>
-            <div v-if="antennaCalRunning" class="modal-status">
-              진행 중... 로버 상태가 IDLE로 돌아오면 결과가 표시됩니다.
+
+            <div class="cal-subsection">
+              <div class="cal-subsection-title">수동 입력 (권장)</div>
+              <p class="cal-help">
+                후륜축 중점 → GPS 안테나 위상 중심 거리를 줄자로 측정하여 mm 단위로 입력하세요.
+                전방 +x, 좌측 +y. 한 번 입력하면 안테나가 옮겨지기 전까지 영구 적용됩니다.
+              </p>
+              <div class="cal-manual-row">
+                <label class="cal-manual-field">
+                  <span>a_x (mm)</span>
+                  <input
+                    type="number" step="1" inputmode="numeric"
+                    v-model="antennaManualX" placeholder="예: 300"
+                  />
+                </label>
+                <label class="cal-manual-field">
+                  <span>a_y (mm)</span>
+                  <input
+                    type="number" step="1" inputmode="numeric"
+                    v-model="antennaManualY" placeholder="예: 50"
+                  />
+                </label>
+                <button
+                  class="btn btn-primary btn-sm"
+                  :disabled="!antennaManualValid || antennaManualSubmitting || !roverStatus.connected"
+                  @click="submitAntennaManual"
+                >{{ antennaManualSubmitting ? '저장 중...' : '저장' }}</button>
+              </div>
             </div>
-            <div class="cal-section-actions">
-              <button
-                class="btn btn-primary btn-sm"
-                :disabled="antennaCalSubmitting || antennaCalRunning || !antennaCalCanStart"
-                @click="submitAntennaCal"
-              >{{ antennaCalSubmitting ? '전송 중...' : (antennaCalRunning ? '진행 중' : (antennaCalCanStart ? '시작' : antennaCalBtnLabel)) }}</button>
+
+            <div class="cal-subsection">
+              <div class="cal-subsection-title">자동 보정 (실험적)</div>
+              <p class="modal-warning">
+                로버가 직진 약 2 m 이후 S자 패턴(8 s)을 자동 주행합니다. 전후좌우 5 m 이상의 평탄하고 빈 공간이 필요합니다.
+                PID 튜닝 전에는 정확도가 떨어질 수 있으니 수동 입력을 우선 사용하세요.
+              </p>
+              <div v-if="antennaCalRunning" class="modal-status">
+                진행 중... 로버 상태가 IDLE로 돌아오면 결과가 표시됩니다.
+              </div>
+              <div class="cal-section-actions">
+                <button
+                  class="btn btn-ghost btn-sm"
+                  :disabled="antennaCalSubmitting || antennaCalRunning || !antennaCalCanStart"
+                  @click="submitAntennaCal"
+                >{{ antennaCalSubmitting ? '전송 중...' : (antennaCalRunning ? '진행 중' : (antennaCalCanStart ? '자동 보정 실행' : antennaCalBtnLabel)) }}</button>
+              </div>
             </div>
           </section>
 
@@ -3236,6 +3313,45 @@ onUnmounted(() => {
 }
 .modal-close-x:hover { background: var(--bg-secondary); color: var(--text-primary); }
 .modal-close-x:disabled { cursor: not-allowed; opacity: 0.5; }
+.cal-source-tag {
+  font-size: 0.7rem; font-weight: 500;
+  margin-left: 0.4rem; padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-secondary); color: var(--text-secondary);
+  vertical-align: middle;
+}
+.cal-subsection {
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px dashed color-mix(in srgb, var(--border-primary) 60%, transparent);
+}
+.cal-subsection-title {
+  font-size: 0.85rem; font-weight: 600;
+  margin-bottom: 0.35rem;
+  color: var(--text-primary);
+}
+.cal-help {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.78rem; line-height: 1.4;
+  color: var(--text-secondary);
+}
+.cal-manual-row {
+  display: flex; gap: 0.5rem; align-items: flex-end;
+  flex-wrap: wrap;
+}
+.cal-manual-field {
+  display: flex; flex-direction: column; gap: 0.15rem;
+  font-size: 0.75rem; color: var(--text-secondary);
+  flex: 1 1 5em; min-width: 5em;
+}
+.cal-manual-field input {
+  font-family: "JetBrains Mono", monospace;
+  padding: 0.3rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid var(--border-primary);
+  background: var(--bg-primary); color: var(--text-primary);
+  width: 100%; box-sizing: border-box;
+}
 .cal-section-title {
   font-size: 0.95rem; font-weight: 600;
   margin-bottom: 0.5rem;

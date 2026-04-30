@@ -76,6 +76,7 @@ class BridgeNode(Node):
         self._pub_request_pos = self.create_publisher(Empty, '/rover/cmd/request_position', reliable_qos)
         self._pub_calibrate_battery = self.create_publisher(Float32, '/rover/cmd/calibrate_battery', reliable_qos)
         self._pub_calibrate_antenna = self.create_publisher(Empty, '/rover/cmd/calibrate_antenna', reliable_qos)
+        self._pub_set_antenna_offset = self.create_publisher(String, '/rover/cmd/set_antenna_offset', reliable_qos)
         self._pub_calibrate_wheels = self.create_publisher(Empty, '/rover/cmd/calibrate_wheels', reliable_qos)
 
         # Subscribers
@@ -519,6 +520,20 @@ class BridgeNode(Node):
         elif event == 'calibrate-antenna':
             self.get_logger().info('Antenna offset calibration requested by server')
             self._pub_calibrate_antenna.publish(Empty())
+
+        elif event == 'set-antenna-offset':
+            try:
+                a_x = float(payload.get('a_x'))
+                a_y = float(payload.get('a_y'))
+            except (TypeError, ValueError):
+                self.get_logger().warn(f'set-antenna-offset: invalid payload {payload!r}')
+                return
+            self.get_logger().info(
+                f'Manual antenna offset received: a_x={a_x:.3f}, a_y={a_y:.3f}'
+            )
+            msg = String()
+            msg.data = json.dumps({'a_x': a_x, 'a_y': a_y})
+            self._pub_set_antenna_offset.publish(msg)
 
         elif event == 'calibrate-wheels':
             self.get_logger().info('Wheel scale calibration requested by server')

@@ -64,6 +64,7 @@ from pilot.lib.state_estimator import ChassisPoseEstimator
 from pilot.lib.path_planner import plan as plan_path
 from pilot.lib.path_tracker import CruiseTracker, DockTracker
 from pilot.lib.antenna_calibration import (
+    OFFSET_BOUND_M,
     load_antenna_offset, save_antenna_offset, solve_antenna_offset,
     scurve_curvature,
 )
@@ -235,6 +236,7 @@ class NavigatorNode(Node):
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_emergency, reliable_qos)
         self.create_subscription(Empty, '/rover/spray/done', self._on_spray_done, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/calibrate_antenna', self._on_calibrate_antenna, reliable_qos)
+        self.create_subscription(String, '/rover/cmd/set_antenna_offset', self._on_set_antenna_offset, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/calibrate_wheels', self._on_calibrate_wheels, reliable_qos)
         self.create_subscription(String, '/rover/battery', self._on_battery, 10)
 
@@ -611,6 +613,56 @@ class NavigatorNode(Node):
         self._fix_degraded_since = None
         self.get_logger().info('Antenna offset auto-calibration started')
         self._set_state(State.CAL_ANTENNA)
+
+    def _on_set_antenna_offset(self, msg):
+        """Operator-typed antenna offset (a_x, a_y) from a tape measure.
+
+        Auto-cal is fragile under open-loop drive (the SCURVE pose
+        integrator drifts metres without PID closed-loop velocity), so
+        the practical path is to measure the offset once with a tape and
+        type it in. We persist via the same JSON file the auto-cal uses,
+        tagged source='manual', so the next mission picks it up
+        identically. No state change — this is metadata, not a drive.
+        """
+        try:
+            data = json.loads(msg.data)
+            a_x = float(data['a_x'])
+            a_y = float(data['a_y'])
+        except (json.JSONDecodeError, AttributeError, TypeError, KeyError, ValueError):
+            self._publish_cal_antenna_result(
+                ok=False, reason='invalid manual offset payload',
+            )
+            return
+        if not (-OFFSET_BOUND_M <= a_x <= OFFSET_BOUND_M
+                and -OFFSET_BOUND_M <= a_y <= OFFSET_BOUND_M):
+            self._publish_cal_antenna_result(
+                ok=False,
+                reason=(f'offset out of bounds ({a_x:.2f}, {a_y:.2f}) — '
+                        f'must be within ±{OFFSET_BOUND_M:.1f} m'),
+                a_x=a_x, a_y=a_y,
+            )
+            return
+        try:
+            payload = save_antenna_offset(
+                a_x, a_y,
+                rms_residual_m=0.0,
+                samples=0,
+                drive_distance_m=0.0,
+                source='manual',
+            )
+        except (OSError, ValueError) as exc:
+            self._publish_cal_antenna_result(
+                ok=False, reason=f'persistence failed: {exc}',
+                a_x=a_x, a_y=a_y,
+            )
+            return
+        self._antenna_offset_x = a_x
+        self._antenna_offset_y = a_y
+        self._antenna_offset_source = 'manual'
+        self.get_logger().info(
+            f'Antenna offset set manually: a_x={a_x:.3f} m, a_y={a_y:.3f} m'
+        )
+        self._publish_cal_antenna_result(ok=True, **payload)
 
     # ── main control loop ────────────────────────────────────────────────
 
@@ -1463,7 +1515,7 @@ class NavigatorNode(Node):
     def _publish_cal_antenna_result(self, *, ok, reason=None, a_x=None,
                                     a_y=None, rms_residual_m=None,
                                     samples=None, drive_distance_m=None,
-                                    calibrated_at=None):
+                                    calibrated_at=None, source=None):
         payload = {'ok': bool(ok)}
         if reason is not None:
             payload['reason'] = reason
@@ -1471,7 +1523,8 @@ class NavigatorNode(Node):
                      ('rms_residual_m', rms_residual_m),
                      ('samples', samples),
                      ('drive_distance_m', drive_distance_m),
-                     ('calibrated_at', calibrated_at)):
+                     ('calibrated_at', calibrated_at),
+                     ('source', source)):
             if v is not None:
                 payload[k] = v
         msg = String()

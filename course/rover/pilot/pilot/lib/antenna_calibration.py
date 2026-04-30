@@ -126,11 +126,17 @@ def load_antenna_offset(default=(0.0, 0.0)):
     return (float(a_x), float(a_y)), data
 
 
-def save_antenna_offset(a_x, a_y, *, rms_residual_m, samples, drive_distance_m):
+def save_antenna_offset(a_x, a_y, *, rms_residual_m, samples, drive_distance_m,
+                        source='auto'):
     """Atomically persist the calibration JSON.
 
     Mirrors the battery_cal write: tmp file + fsync + rename, so a crash
     mid-write can never leave a half-written file at the canonical path.
+
+    `source` is 'auto' (default — written by solve_antenna_offset's auto-cal
+    drive) or 'manual' (operator typed a tape-measured value into the UI).
+    The UI uses this to label the persisted offset and skip RMS / samples
+    when irrelevant for manual entries.
     """
     if not (-OFFSET_BOUND_M <= a_x <= OFFSET_BOUND_M
             and -OFFSET_BOUND_M <= a_y <= OFFSET_BOUND_M):
@@ -142,6 +148,7 @@ def save_antenna_offset(a_x, a_y, *, rms_residual_m, samples, drive_distance_m):
         'samples': int(samples),
         'drive_distance_m': round(float(drive_distance_m), 3),
         'calibrated_at': int(time.time() * 1000),
+        'source': source,
     }
     path = antenna_offset_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)

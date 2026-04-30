@@ -1171,6 +1171,30 @@ app.post("/api/rover/calibrate-antenna", (req, res) => {
   res.json({ ok: true });
 });
 
+// POST /api/rover/set-antenna-offset - 운영자가 줄자로 잰 안테나 오프셋 직접 입력 (admin)
+// auto-cal은 PID 튜닝이 안 된 상태에서는 SCURVE 동안 chassis pose 적분 오차가
+// 누적되어 m 단위 오차가 나오기 쉬우므로, 운영 환경에서는 한 번 측정한 값을
+// 직접 입력하는 게 가장 확실하다. 결과는 동일한 antenna_offset.json에
+// source='manual' 태그로 영속화된다.
+app.post("/api/rover/set-antenna-offset", (req, res) => {
+  const body = req.body || {};
+  const a_x = typeof body.a_x === "number" ? body.a_x : null;
+  const a_y = typeof body.a_y === "number" ? body.a_y : null;
+  if (a_x === null || a_y === null) {
+    return res.status(400).send("a_x, a_y는 숫자여야 합니다.");
+  }
+  if (Math.abs(a_x) > 1.0 || Math.abs(a_y) > 1.0) {
+    return res.status(400).send("오프셋은 ±1 m 이내여야 합니다.");
+  }
+  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!sendRoverEvent("set-antenna-offset", { a_x, a_y })) {
+    logger.warn(req, "rover.set_antenna_offset", { error: "write_failed", a_x, a_y }, "rover");
+    return res.status(503).send("로버 연결이 끊어졌습니다.");
+  }
+  logger.log(req, "rover.set_antenna_offset", { a_x, a_y }, "rover");
+  res.json({ ok: true, a_x, a_y });
+});
+
 // POST /api/rover/antenna_calibration_result - 로버가 캘리브레이션 결과 보고 (internal)
 app.post("/api/rover/antenna_calibration_result", (req, res) => {
   const body = req.body || {};
@@ -1187,6 +1211,9 @@ app.post("/api/rover/antenna_calibration_result", (req, res) => {
     drive_distance_m: typeof body.drive_distance_m === "number" ? body.drive_distance_m : null,
     calibrated_at: Number.isInteger(body.calibrated_at) ? body.calibrated_at : Date.now(),
     reason: typeof body.reason === "string" ? body.reason : null,
+    // 'auto' (auto-cal SCURVE drive) or 'manual' (operator typed the value).
+    // Lets the UI label which method produced the persisted offset.
+    source: body.source === "manual" ? "manual" : (body.source === "auto" ? "auto" : null),
   };
   roverState.antenna_calibration = stored;
   broadcastEvent("rover:antenna_calibration", stored);
