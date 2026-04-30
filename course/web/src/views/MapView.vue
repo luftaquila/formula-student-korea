@@ -1372,14 +1372,33 @@ const wheelCalDisplay = computed(() => {
   };
 });
 
+// While the cal modal is open we poll the server-side rover status so a
+// silently dropped SSE event (background tab / caddy buffering / network
+// blip that didn't trip the browser's 'error' handler) can't leave the
+// button disabled because nav_state is stuck at CAL_* in the local view.
+// Browser refresh used to be the operator's only escape; this poll
+// reproduces that effect every couple seconds without the F5 dance.
+let calStatusPollHandle = null;
+
 function openCalibration() {
   showCalibration.value = true;
   activeChipPopover.value = null;
+  // Sync once on open so a stale local state is corrected before the
+  // operator's first click, then keep refreshing every 2 s while the
+  // modal stays open.
+  fetchRoverStatus();
+  if (calStatusPollHandle == null) {
+    calStatusPollHandle = setInterval(fetchRoverStatus, 2000);
+  }
 }
 
 function closeCalibration() {
   if (antennaCalSubmitting.value || wheelCalSubmitting.value) return;
   showCalibration.value = false;
+  if (calStatusPollHandle != null) {
+    clearInterval(calStatusPollHandle);
+    calStatusPollHandle = null;
+  }
 }
 
 async function submitAntennaCal() {
@@ -2259,6 +2278,7 @@ onUnmounted(() => {
   document.removeEventListener("keydown", onGlobalKeyForChips);
   if (uiTickInterval) clearInterval(uiTickInterval);
   if (controlInterval) clearInterval(controlInterval);
+  if (calStatusPollHandle) clearInterval(calStatusPollHandle);
   if (eventSource) eventSource.close();
   if (map) {
     map.getContainer().removeEventListener("mousedown", onSelectionStart);
