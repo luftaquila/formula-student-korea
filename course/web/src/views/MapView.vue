@@ -702,6 +702,47 @@ let dragStartPositions = null;
 let dragOrigin = null;
 let justFinishedBoxSelect = false;
 
+// Visible-area center of the map: container center on desktop (sibling
+// layout), but on mobile the inspector overlays the bottom of the
+// viewport, so we shorten the visible region accordingly.
+function getVisibleMapCenter() {
+  if (!map) return null;
+  const mapEl = map.getContainer();
+  if (!mapEl) return null;
+  const rect = mapEl.getBoundingClientRect();
+  let cy = rect.height / 2;
+  if (isMobile.value) {
+    const insEl = document.querySelector(".inspector");
+    if (insEl) {
+      const insRect = insEl.getBoundingClientRect();
+      const overlapTop = Math.max(rect.top, insRect.top);
+      if (overlapTop > rect.top) cy = (overlapTop - rect.top) / 2;
+    }
+  }
+  return L.point(rect.width / 2, cy);
+}
+
+// Keep whatever is at the visible-area center pinned across drawer /
+// inspector resizes. flush:'pre' lets us read the OLD layout (and so the
+// OLD visible-center lat/lng) before Vue applies the new width/height,
+// then nextTick reapplies after the DOM is patched.
+watch([inspectorWidth, sheetHeight, isMobile], () => {
+  if (!map) return;
+  const beforePx = getVisibleMapCenter();
+  if (!beforePx) return;
+  const anchor = map.containerPointToLatLng(beforePx);
+  nextTick(() => {
+    if (!map) return;
+    map.invalidateSize({ pan: false });
+    const afterPx = getVisibleMapCenter();
+    if (!afterPx) return;
+    const curPx = map.latLngToContainerPoint(anchor);
+    const dx = curPx.x - afterPx.x;
+    const dy = curPx.y - afterPx.y;
+    if (dx !== 0 || dy !== 0) map.panBy([dx, dy], { animate: false });
+  });
+}, { flush: "pre" });
+
 const SIDE_COLORS = { left: "#8b5cf6", right: "#06b6d4", center: "#f59e0b" };
 
 /* ── Computed ──────────────────────────────────────── */
@@ -1240,34 +1281,44 @@ async function deleteCourse(id) {
   } catch (err) { notifyError(err.message); }
 }
 
-/* ── Antenna offset auto-calibration ──────────────── */
-// The rover persists the offset on its end (/var/lib/pilot/antenna_offset.json)
-// and reports each calibration attempt back via /api/rover/antenna_calibration_result.
-// We surface the latest result here so the chief can spot a stale or wildly
-// wrong offset before a mission. Trigger button is gated on roverStatus
-// (connected + IDLE) — mid-mission calibration would require interrupting
-// the rover and is intentionally not allowed.
-const showAntennaCal = ref(false);
+/* ── Calibration popup (antenna + wheel encoder) ───── */
+// One modal hosts both rover calibrations. The rover persists each
+// offset on its end (/var/lib/pilot/{antenna_offset,wheel_cal}.json)
+// and reports every attempt back via SSE — so the chief can spot a
+// stale or wildly wrong value before a mission. Both triggers are
+// gated on roverStatus (connected + IDLE); mid-mission calibration
+// would require interrupting the rover and is intentionally not allowed.
+const showCalibration = ref(false);
 const antennaCalSubmitting = ref(false);
+const wheelCalSubmitting = ref(false);
 
-const antennaCalRunning = computed(() => {
-  // Either a CAL_ANTENNA state on the rover, or we just sent the trigger and
-  // are waiting for the rover to update its nav_state (which takes ~50 ms).
-  return roverStatus.value.nav_state === "CAL_ANTENNA";
-});
+const antennaCalRunning = computed(() => roverStatus.value.nav_state === "CAL_ANTENNA");
+const wheelCalRunning = computed(() => roverStatus.value.nav_state === "CAL_WHEELS");
 
 const antennaCalCanStart = computed(() => {
   return roverStatus.value.connected
       && (roverStatus.value.nav_state === "IDLE" || roverStatus.value.nav_state == null);
 });
+const wheelCalCanStart = computed(() => {
+  return roverStatus.value.connected
+      && (roverStatus.value.nav_state === "IDLE" || roverStatus.value.nav_state == null);
+});
 
 const antennaCalBtnLabel = computed(() => {
-  if (antennaCalRunning.value) return "캘리브레이션 진행 중...";
+  if (antennaCalRunning.value) return "진행 중";
   if (!roverStatus.value.connected) return "로버 연결 필요";
   if (roverStatus.value.nav_state && roverStatus.value.nav_state !== "IDLE") {
     return "IDLE 상태에서만 가능";
   }
-  return "안테나 오프셋 캘리브레이션";
+  return "시작";
+});
+const wheelCalBtnLabel = computed(() => {
+  if (wheelCalRunning.value) return "진행 중";
+  if (!roverStatus.value.connected) return "로버 연결 필요";
+  if (roverStatus.value.nav_state && roverStatus.value.nav_state !== "IDLE") {
+    return "IDLE 상태에서만 가능";
+  }
+  return "시작";
 });
 
 const antennaCalDisplay = computed(() => {
@@ -1288,57 +1339,6 @@ const antennaCalDisplay = computed(() => {
   };
 });
 
-function openAntennaCal() {
-  showAntennaCal.value = true;
-  activeChipPopover.value = null;
-}
-
-function closeAntennaCal() {
-  if (antennaCalSubmitting.value) return;
-  showAntennaCal.value = false;
-}
-
-async function submitAntennaCal() {
-  if (!antennaCalCanStart.value) return;
-  antennaCalSubmitting.value = true;
-  try {
-    await request("/api/rover/calibrate-antenna", { method: "POST" });
-    // Leave the modal open so the operator sees the running status; it
-    // self-closes only when they hit "닫기". Result chip in the panel
-    // updates from the SSE broadcast independently.
-  } catch (err) {
-    notifyError(err.message);
-  } finally {
-    antennaCalSubmitting.value = false;
-  }
-}
-
-/* ── Wheel scale auto-calibration ─────────────────── */
-// Mirror of the antenna cal pattern: server stores last result on
-// roverState.wheel_calibration; rover drives a 10 m chord and reports
-// (scale_l, scale_r). The mcu_bridge applies the scales live to its
-// telemetry; persisted at /var/lib/pilot/wheel_cal.json.
-const showWheelCal = ref(false);
-const wheelCalSubmitting = ref(false);
-
-const wheelCalRunning = computed(() => {
-  return roverStatus.value.nav_state === "CAL_WHEELS";
-});
-
-const wheelCalCanStart = computed(() => {
-  return roverStatus.value.connected
-      && (roverStatus.value.nav_state === "IDLE" || roverStatus.value.nav_state == null);
-});
-
-const wheelCalBtnLabel = computed(() => {
-  if (wheelCalRunning.value) return "캘리브레이션 진행 중...";
-  if (!roverStatus.value.connected) return "로버 연결 필요";
-  if (roverStatus.value.nav_state && roverStatus.value.nav_state !== "IDLE") {
-    return "IDLE 상태에서만 가능";
-  }
-  return "휠 인코더 캘리브레이션";
-});
-
 const wheelCalDisplay = computed(() => {
   const cal = roverStatus.value.wheel_calibration;
   const fmtScale = (v) => (typeof v === "number" ? v.toFixed(4) : "—");
@@ -1356,14 +1356,28 @@ const wheelCalDisplay = computed(() => {
   };
 });
 
-function openWheelCal() {
-  showWheelCal.value = true;
+function openCalibration() {
+  showCalibration.value = true;
   activeChipPopover.value = null;
 }
 
-function closeWheelCal() {
-  if (wheelCalSubmitting.value) return;
-  showWheelCal.value = false;
+function closeCalibration() {
+  if (antennaCalSubmitting.value || wheelCalSubmitting.value) return;
+  showCalibration.value = false;
+}
+
+async function submitAntennaCal() {
+  if (!antennaCalCanStart.value) return;
+  antennaCalSubmitting.value = true;
+  try {
+    await request("/api/rover/calibrate-antenna", { method: "POST" });
+    // Leave the modal open so the operator sees the running status; the
+    // result row updates from SSE independently.
+  } catch (err) {
+    notifyError(err.message);
+  } finally {
+    antennaCalSubmitting.value = false;
+  }
 }
 
 async function submitWheelCal() {
@@ -2193,8 +2207,7 @@ function onGlobalKeydown(e) {
   if (showLogs.value) { showLogs.value = false; e.preventDefault(); return; }
   if (showSnapshots.value) { showSnapshots.value = false; e.preventDefault(); return; }
   if (showBatteryCal.value) { showBatteryCal.value = false; e.preventDefault(); return; }
-  if (showAntennaCal.value) { closeAntennaCal(); e.preventDefault(); return; }
-  if (showWheelCal.value) { closeWheelCal(); e.preventDefault(); return; }
+  if (showCalibration.value) { closeCalibration(); e.preventDefault(); return; }
   if (showPreflight.value) { cancelPreflight(); e.preventDefault(); return; }
 }
 
@@ -2265,70 +2278,81 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Antenna offset auto-calibration modal -->
-      <div v-if="showAntennaCal" class="preflight-backdrop" @click.self="closeAntennaCal">
-        <div class="preflight-modal">
-          <h3>안테나 오프셋 자동 캘리브레이션</h3>
-          <p class="modal-warning">
-            로버가 직진 약 2 m 이후 S자 패턴(8 s)을 자동 주행합니다.
-            전후좌우 5 m 이상의 평탄하고 빈 공간이 필요하며,
-            로버 주변에 사람·장애물이 없는지 확인하세요.
-          </p>
-          <div class="cal-current">
-            <span class="cal-key">현재 a_x</span>
-            <span class="cal-val">{{ antennaCalDisplay.a_x }}</span>
-            <span class="cal-key">현재 a_y</span>
-            <span class="cal-val">{{ antennaCalDisplay.a_y }}</span>
-          </div>
-          <div v-if="antennaCalRunning" class="modal-status">
-            진행 중... 로버 상태가 IDLE로 돌아오면 결과가 표시됩니다.
-          </div>
-          <div class="preflight-actions">
-            <button class="btn btn-ghost btn-sm" :disabled="antennaCalSubmitting" @click="closeAntennaCal">
-              {{ antennaCalRunning ? '닫기' : '취소' }}
-            </button>
-            <button
-              v-if="!antennaCalRunning"
-              class="btn btn-primary btn-sm"
-              :disabled="antennaCalSubmitting || !antennaCalCanStart"
-              @click="submitAntennaCal"
-            >
-              {{ antennaCalSubmitting ? '전송 중...' : '시작' }}
-            </button>
-          </div>
-        </div>
-      </div>
+      <!-- Combined calibration modal (antenna + wheel encoder) -->
+      <div v-if="showCalibration" class="preflight-backdrop" @click.self="closeCalibration">
+        <div class="preflight-modal calibration-modal">
+          <h3>캘리브레이션</h3>
 
-      <!-- Wheel scale auto-calibration modal -->
-      <div v-if="showWheelCal" class="preflight-backdrop" @click.self="closeWheelCal">
-        <div class="preflight-modal">
-          <h3>휠 인코더 스케일 캘리브레이션</h3>
-          <p class="modal-warning">
-            로버가 직진 약 10 m를 자동 주행하면서 GPS chord 거리와 좌·우 인코더 적분 거리의
-            비율로 휠 스케일을 추정합니다. 전방 12 m 이상 평탄하고 빈 공간이 필요하며,
-            로버 주변에 사람·장애물이 없는지 확인하세요.
-          </p>
-          <div class="cal-current">
-            <span class="cal-key">현재 scale_l</span>
-            <span class="cal-val">{{ wheelCalDisplay.scale_l }}</span>
-            <span class="cal-key">현재 scale_r</span>
-            <span class="cal-val">{{ wheelCalDisplay.scale_r }}</span>
-          </div>
-          <div v-if="wheelCalRunning" class="modal-status">
-            진행 중... 로버 상태가 IDLE로 돌아오면 결과가 표시됩니다.
-          </div>
+          <section class="cal-section">
+            <div class="cal-section-title">안테나 오프셋</div>
+            <p class="modal-warning">
+              로버가 직진 약 2 m 이후 S자 패턴(8 s)을 자동 주행합니다.
+              전후좌우 5 m 이상의 평탄하고 빈 공간이 필요하며,
+              로버 주변에 사람·장애물이 없는지 확인하세요.
+            </p>
+            <div class="cal-current">
+              <span class="cal-key">a_x</span>
+              <span class="cal-val">{{ antennaCalDisplay.a_x }}</span>
+              <span class="cal-key">a_y</span>
+              <span class="cal-val">{{ antennaCalDisplay.a_y }}</span>
+              <span class="cal-key">RMS</span>
+              <span class="cal-val">{{ antennaCalDisplay.rms }}</span>
+              <span class="cal-key">갱신</span>
+              <span class="cal-val">{{ antennaCalDisplay.calibratedAgo }}</span>
+            </div>
+            <div v-if="antennaCalDisplay.errorReason" class="cal-error">
+              마지막 시도 실패: {{ antennaCalDisplay.errorReason }}
+            </div>
+            <div v-if="antennaCalRunning" class="modal-status">
+              진행 중... 로버 상태가 IDLE로 돌아오면 결과가 표시됩니다.
+            </div>
+            <div class="cal-section-actions">
+              <button
+                class="btn btn-primary btn-sm"
+                :disabled="antennaCalSubmitting || antennaCalRunning || !antennaCalCanStart"
+                @click="submitAntennaCal"
+              >{{ antennaCalSubmitting ? '전송 중...' : (antennaCalRunning ? '진행 중' : (antennaCalCanStart ? '시작' : antennaCalBtnLabel)) }}</button>
+            </div>
+          </section>
+
+          <section class="cal-section">
+            <div class="cal-section-title">휠 인코더 스케일</div>
+            <p class="modal-warning">
+              로버가 직진 약 10 m를 자동 주행하면서 GPS chord 거리와 좌·우 인코더 적분 거리의
+              비율로 휠 스케일을 추정합니다. 전방 12 m 이상 평탄하고 빈 공간이 필요하며,
+              로버 주변에 사람·장애물이 없는지 확인하세요.
+            </p>
+            <div class="cal-current">
+              <span class="cal-key">scale_l</span>
+              <span class="cal-val">{{ wheelCalDisplay.scale_l }}</span>
+              <span class="cal-key">scale_r</span>
+              <span class="cal-val">{{ wheelCalDisplay.scale_r }}</span>
+              <span class="cal-key">샘플</span>
+              <span class="cal-val">{{ wheelCalDisplay.samples }}</span>
+              <span class="cal-key">갱신</span>
+              <span class="cal-val">{{ wheelCalDisplay.calibratedAgo }}</span>
+            </div>
+            <div v-if="wheelCalDisplay.errorReason" class="cal-error">
+              마지막 시도 실패: {{ wheelCalDisplay.errorReason }}
+            </div>
+            <div v-if="wheelCalRunning" class="modal-status">
+              진행 중... 로버 상태가 IDLE로 돌아오면 결과가 표시됩니다.
+            </div>
+            <div class="cal-section-actions">
+              <button
+                class="btn btn-primary btn-sm"
+                :disabled="wheelCalSubmitting || wheelCalRunning || !wheelCalCanStart"
+                @click="submitWheelCal"
+              >{{ wheelCalSubmitting ? '전송 중...' : (wheelCalRunning ? '진행 중' : (wheelCalCanStart ? '시작' : wheelCalBtnLabel)) }}</button>
+            </div>
+          </section>
+
           <div class="preflight-actions">
-            <button class="btn btn-ghost btn-sm" :disabled="wheelCalSubmitting" @click="closeWheelCal">
-              {{ wheelCalRunning ? '닫기' : '취소' }}
-            </button>
             <button
-              v-if="!wheelCalRunning"
-              class="btn btn-primary btn-sm"
-              :disabled="wheelCalSubmitting || !wheelCalCanStart"
-              @click="submitWheelCal"
-            >
-              {{ wheelCalSubmitting ? '전송 중...' : '시작' }}
-            </button>
+              class="btn btn-ghost btn-sm"
+              :disabled="antennaCalSubmitting || wheelCalSubmitting"
+              @click="closeCalibration"
+            >닫기</button>
           </div>
         </div>
       </div>
@@ -2730,54 +2754,6 @@ onUnmounted(() => {
                   </div>
                 </div>
 
-                <div v-if="roverStatus.connected" class="inspector-group antenna-cal-block">
-                  <div class="group-title">안테나 오프셋</div>
-                  <div class="cal-current">
-                    <span class="cal-key">a_x</span>
-                    <span class="cal-val">{{ antennaCalDisplay.a_x }}</span>
-                    <span class="cal-key">a_y</span>
-                    <span class="cal-val">{{ antennaCalDisplay.a_y }}</span>
-                    <span class="cal-key">RMS</span>
-                    <span class="cal-val">{{ antennaCalDisplay.rms }}</span>
-                    <span class="cal-key">갱신</span>
-                    <span class="cal-val">{{ antennaCalDisplay.calibratedAgo }}</span>
-                  </div>
-                  <div v-if="antennaCalDisplay.errorReason" class="cal-error">
-                    마지막 시도 실패: {{ antennaCalDisplay.errorReason }}
-                  </div>
-                  <div class="rover-controls rover-controls-grid">
-                    <button
-                      class="btn btn-ghost btn-lg-touch"
-                      :disabled="!antennaCalCanStart"
-                      @click="openAntennaCal"
-                    >{{ antennaCalBtnLabel }}</button>
-                  </div>
-                </div>
-
-                <div v-if="roverStatus.connected" class="inspector-group antenna-cal-block">
-                  <div class="group-title">휠 인코더 스케일</div>
-                  <div class="cal-current">
-                    <span class="cal-key">scale_l</span>
-                    <span class="cal-val">{{ wheelCalDisplay.scale_l }}</span>
-                    <span class="cal-key">scale_r</span>
-                    <span class="cal-val">{{ wheelCalDisplay.scale_r }}</span>
-                    <span class="cal-key">샘플</span>
-                    <span class="cal-val">{{ wheelCalDisplay.samples }}</span>
-                    <span class="cal-key">갱신</span>
-                    <span class="cal-val">{{ wheelCalDisplay.calibratedAgo }}</span>
-                  </div>
-                  <div v-if="wheelCalDisplay.errorReason" class="cal-error">
-                    마지막 시도 실패: {{ wheelCalDisplay.errorReason }}
-                  </div>
-                  <div class="rover-controls rover-controls-grid">
-                    <button
-                      class="btn btn-ghost btn-lg-touch"
-                      :disabled="!wheelCalCanStart"
-                      @click="openWheelCal"
-                    >{{ wheelCalBtnLabel }}</button>
-                  </div>
-                </div>
-
                 <div v-if="!activeCourse" class="empty-msg large">
                   <div v-if="roverStatus.connected" class="rover-controls rover-controls-grid follow-only">
                     <button
@@ -2785,6 +2761,11 @@ onUnmounted(() => {
                       @click="toggleFollowRover"
                     >{{ followRover ? '추적 중' : '추적' }}</button>
                   </div>
+                  <button
+                    v-if="roverStatus.connected"
+                    class="btn btn-lg-touch btn-ghost manual-btn-row"
+                    @click="openCalibration"
+                  >캘리브레이션</button>
                   코스를 먼저 선택하세요.
                   <button class="btn btn-ghost btn-lg-touch" @click="activeTab = 'courses'">코스 탭으로</button>
                 </div>
@@ -2801,6 +2782,11 @@ onUnmounted(() => {
                       :disabled="activeCones.length === 0 || roverMode === 'manual' || (stopping && (roverMode === 'executing' || roverMode === 'stopped'))"
                     >{{ pathBtnLabel }}</button>
                   </div>
+                  <button
+                    class="btn btn-lg-touch btn-ghost manual-btn-row"
+                    :disabled="!roverStatus.connected"
+                    @click="openCalibration"
+                  >캘리브레이션</button>
                   <button
                     :class="['btn', 'btn-lg-touch', 'manual-btn-row', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
                     :disabled="roverMode !== 'manual' && (!roverStatus.connected || roverMode === 'executing' || roverMode === 'stopped')"
@@ -3141,6 +3127,21 @@ onUnmounted(() => {
   border-radius: 4px;
   font-size: 0.8rem;
   color: var(--text-primary);
+}
+
+.calibration-modal .cal-section {
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--border-primary);
+}
+.calibration-modal .cal-section:first-of-type { border-top: none; padding-top: 0; }
+.cal-section-title {
+  font-size: 0.95rem; font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+}
+.cal-section-actions {
+  margin-top: 0.5rem;
+  display: flex; justify-content: flex-end;
 }
 .cal-input-row input {
   padding: 0.5rem 0.6rem;
