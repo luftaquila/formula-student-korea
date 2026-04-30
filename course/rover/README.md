@@ -13,8 +13,9 @@ for remote access.
 | GPS | u-blox ZED-F9P | USB CDC (`/dev/ttyGPS`) |
 | RTK corrections | NTRIP caster (NGII) | TCP |
 | Motor driver | Cytron MDD10A | MCU PWM + DIR |
-| Drive | 2× DC (Wheeltec R550 rear) | one MDD10A channel per wheel |
-| Wheel encoders | 2× quadrature, 3.3 V push-pull, 500 PPR | MCU PIO + 3V3 |
+| Drive | 2× MD36L P27 DC gearmotor (27:1) on Wheeltec R550 rear | one MDD10A channel per wheel |
+| Wheel encoders | 2× quadrature on motor shaft, 3.3 V push-pull, 500 PPR (×4 × 27 = 54000 counts/wheel rev) | MCU PIO + 3V3 |
+| Wheels | 125 mm dia (Wheeltec R550) | rear drive, front passive |
 | Steering servo | Wheeltec S20F (5–6.5 V, 20 kg·cm, stall 1.8 A) | MCU PWM |
 | Spray servo | Standard RC | Pi GPIO PWM |
 | E-Stop | NC momentary, fail-safe | MCU GP14, internal pull-up |
@@ -385,8 +386,8 @@ cmake -S course/rover/mcu -B course/rover/mcu/build -DPICO_BOARD=pico
 cmake --build course/rover/mcu/build -j
 ```
 
-Output: `build/rover_mcu.uf2`. Overrides (defaults r=32.5 mm, PPR=500):
-`-DWHEEL_RADIUS_M=… -DENCODER_PPR=…`.
+Output: `build/rover_mcu.uf2`. Overrides (defaults r=62.5 mm, PPR=500, gear=27):
+`-DWHEEL_RADIUS_M=… -DENCODER_PPR=… -DGEAR_RATIO=…`.
 
 ### Flash
 

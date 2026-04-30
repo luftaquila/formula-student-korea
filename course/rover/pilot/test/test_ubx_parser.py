@@ -4,9 +4,10 @@ import struct
 import pytest
 from pilot.lib.ubx_parser import (
     UBXParser, NavPVT, NavHPPOSLLH,
-    checksum, build_ubx_message,
+    checksum, build_ubx_message, build_cfg_valset,
     FixType, CarrierSolution,
-    SYNC1, SYNC2, CLASS_NAV, ID_NAV_PVT, ID_NAV_HPPOSLLH,
+    SYNC1, SYNC2, CLASS_NAV, CLASS_CFG, ID_NAV_PVT, ID_NAV_HPPOSLLH,
+    ID_CFG_VALSET,
 )
 
 
@@ -213,3 +214,63 @@ class TestPayloadLengthValidation:
     def test_nav_hpposllh_long_payload_rejected(self):
         from pilot.lib.ubx_parser import parse_nav_hpposllh
         assert parse_nav_hpposllh(b'\x00' * 37) is None
+
+
+class TestBuildCfgValset:
+    """CFG-VALSET payload encoding — used to set F9P measurement rate, output
+    streams, etc. The 10 Hz fix rate (CFG-RATE-MEAS = 100 ms) depends on the
+    U2 ('H') format encoding being little-endian and exactly 2 bytes."""
+
+    def _decode_frame(self, frame):
+        assert frame[0] == SYNC1
+        assert frame[1] == SYNC2
+        assert frame[2] == CLASS_CFG
+        assert frame[3] == ID_CFG_VALSET
+        length = struct.unpack('<H', frame[4:6])[0]
+        payload = frame[6:6 + length]
+        # Last 2 bytes are checksum; verify integrity.
+        ck_a, ck_b = checksum(frame[2:6 + length])
+        assert frame[6 + length] == ck_a
+        assert frame[6 + length + 1] == ck_b
+        return payload
+
+    def test_u1_byte_encoding(self):
+        # NAV-PVT message-output enable: U1 (B), value 1.
+        frame = build_cfg_valset([(0x20910009, 1, 'B')])
+        payload = self._decode_frame(frame)
+        # 4-byte VALSET header (version, layer, reserved x2) + 4-byte key + 1-byte value.
+        assert len(payload) == 4 + 4 + 1
+        assert payload[0] == 0x00      # version
+        assert payload[1] == 0x03      # layer = RAM | BBR
+        assert payload[2:4] == b'\x00\x00'
+        assert payload[4:8] == b'\x09\x00\x91\x20'  # key, little-endian
+        assert payload[8] == 0x01
+
+    def test_u2_short_encoding_for_rate_meas(self):
+        # CFG-RATE-MEAS = 100 ms (10 Hz). The whole point of this commit:
+        # H format must encode the value as exactly 2 little-endian bytes,
+        # otherwise the F9P silently keeps its 1 Hz default and antenna cal
+        # collects ~9 samples instead of 80.
+        frame = build_cfg_valset([(0x30210001, 100, 'H')])
+        payload = self._decode_frame(frame)
+        assert len(payload) == 4 + 4 + 2
+        assert payload[4:8] == b'\x01\x00\x21\x30'
+        assert payload[8:10] == struct.pack('<H', 100)
+
+    def test_layer_override(self):
+        frame = build_cfg_valset([(0x20910009, 1, 'B')], layer=0x07)
+        payload = self._decode_frame(frame)
+        assert payload[1] == 0x07
+
+    def test_multiple_keys_concat_in_order(self):
+        frame = build_cfg_valset([
+            (0x30210001, 100, 'H'),
+            (0x20910009, 1, 'B'),
+        ])
+        payload = self._decode_frame(frame)
+        # Header (4) + key1 (4) + value1 (2) + key2 (4) + value2 (1) = 15
+        assert len(payload) == 15
+        assert payload[4:8] == b'\x01\x00\x21\x30'
+        assert payload[8:10] == struct.pack('<H', 100)
+        assert payload[10:14] == b'\x09\x00\x91\x20'
+        assert payload[14] == 0x01

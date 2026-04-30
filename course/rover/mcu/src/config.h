@@ -101,13 +101,20 @@
 
 // ----- Wheel kinematics (convert encoder counts -> m/s) -----
 // Override at compile time (-D...) or here once encoder + wheel measured.
+// Encoder is on the motor shaft, BEFORE the gearbox, so a wheel revolution
+// produces ENCODER_PPR * 4 * GEAR_RATIO quadrature counts.
 #ifndef WHEEL_RADIUS_M
-#define WHEEL_RADIUS_M          0.0325f   // 65 mm dia
+#define WHEEL_RADIUS_M          0.0625f   // 125 mm dia (Wheeltec R550)
 #endif
 #ifndef ENCODER_PPR
-#define ENCODER_PPR             500       // single-channel pulses per rev
+#define ENCODER_PPR             500       // motor-shaft, single-channel pulses per rev
 #endif
-// Quadrature decode multiplies by 4. Distance per count = 2*pi*r / (PPR*4).
-#define METERS_PER_COUNT        ((2.0f * 3.14159265f * WHEEL_RADIUS_M) / (ENCODER_PPR * 4.0f))
+#ifndef GEAR_RATIO
+#define GEAR_RATIO              27.0f     // MD36L P27 motor:wheel reduction
+#endif
+// Quadrature decode multiplies by 4. Distance per count =
+//   2*pi*r / (PPR * 4 * GEAR_RATIO).
+#define METERS_PER_COUNT        ((2.0f * 3.14159265f * WHEEL_RADIUS_M) \
+                                 / (ENCODER_PPR * 4.0f * GEAR_RATIO))
 
 #endif // ROVER_MCU_CONFIG_H

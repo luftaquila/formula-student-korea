@@ -85,6 +85,9 @@ CFG_MSGOUT_NMEA_GSV_USB = 0x209100C4
 CFG_MSGOUT_NMEA_GSA_USB = 0x209100C1
 CFG_MSGOUT_NMEA_GLL_USB = 0x209100CA
 CFG_MSGOUT_NMEA_VTG_USB = 0x209100B3
+# Measurement period in ms (U2). F9P boots at 1000 (1 Hz); we need 100 ms (10 Hz)
+# so antenna-offset auto-cal collects enough samples during its short S-curve.
+CFG_RATE_MEAS = 0x30210001
 
 
 class GpsNode(Node):
@@ -206,7 +209,8 @@ class GpsNode(Node):
     def _configure_receiver(self):
         """Configure ZED-F9P to output UBX NAV-PVT and NAV-HPPOSLLH, disable NMEA."""
         cfg = build_cfg_valset([
-            (CFG_MSGOUT_UBX_NAV_PVT_USB, 1, 'B'),       # Enable NAV-PVT on USB
+            (CFG_RATE_MEAS, 100, 'H'),                   # 100 ms = 10 Hz fixes
+            (CFG_MSGOUT_UBX_NAV_PVT_USB, 1, 'B'),        # Enable NAV-PVT on USB
             (CFG_MSGOUT_UBX_NAV_HPPOSLLH_USB, 1, 'B'),   # Enable NAV-HPPOSLLH on USB
             (CFG_MSGOUT_UBX_NAV_DOP_USB, 1, 'B'),        # Enable NAV-DOP on USB
             (CFG_MSGOUT_NMEA_GGA_USB, 0, 'B'),           # Disable NMEA GGA
