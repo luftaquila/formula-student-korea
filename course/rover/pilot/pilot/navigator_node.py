@@ -68,7 +68,9 @@ from pilot.lib.antenna_calibration import (
     scurve_curvature,
 )
 from pilot.lib.wheel_calibration import solve_wheel_scales
-from pilot.lib.steering_calibration import solve_steering_trim
+from pilot.lib.steering_calibration import (
+    TRIM_BOUND_US, load_steering_trim, solve_steering_trim,
+)
 from pilot.lib.geo_utils import haversine
 
 
@@ -1163,10 +1165,19 @@ class NavigatorNode(Node):
 
         # Steering-trim auto-cal piggy-backs on the same κ=0 chord. We
         # already collected ENU samples; if the path is actually a slight
-        # arc, the circle fit recovers the bias and pushes the trim down
-        # to mcu_bridge alongside the wheel scales. A clean straight
-        # drive returns trim_us = 0 (radius > 100 m); a wildly out-of-
-        # range trim is reported as a soft warning and not applied.
+        # arc, the circle fit recovers the bias.
+        #
+        # The cal drive itself runs WITH any previously persisted trim
+        # already applied by mcu_bridge, so the residual κ_bias the
+        # solver sees is what's left over after the existing correction.
+        # That makes the solver result a *delta*, not an absolute trim.
+        # The previous bug treated it as absolute and overwrote the
+        # accumulated correction on every cal — running cal twice would
+        # push trim back toward 0 even on a chassis with a real bias,
+        # and operators saw the rover veering again after a "successful"
+        # second cal. Accumulate instead: read the currently persisted
+        # trim, add the delta, re-validate the ±TRIM_BOUND_US bound
+        # against the accumulated value, and publish that.
         trim_result = solve_steering_trim(
             samples=self._cal_wheels_enu_samples,
             kappa_max=tan(self._max_steer_rad)
@@ -1177,30 +1188,43 @@ class NavigatorNode(Node):
         trim_us = None
         radius_m = None
         rms_residual_m = None
-        if trim_result.get('reason') is None:
-            trim_us = float(trim_result['trim_us'])
+        steering_reason = trim_result.get('reason')
+        if steering_reason is None:
+            delta_us = float(trim_result['trim_us'])
+            current_trim, _ = load_steering_trim(default=0.0)
+            new_trim_us = current_trim + delta_us
             r = trim_result['radius_m']
             radius_m = float(r) if isfinite(r) else None
             rms_residual_m = float(trim_result['rms_residual_m'])
-            trim_msg = String()
-            trim_msg.data = json.dumps({
-                'trim_us': trim_us,
-                'radius_m': radius_m,
-                'rms_residual_m': rms_residual_m,
-                'samples': int(trim_result['samples']),
-                'drive_distance_m': gps_dist,
-            })
-            self._pub_apply_steering_trim.publish(trim_msg)
-            radius_str = (f'{radius_m:.1f} m' if radius_m is not None
-                          else 'straight')
-            self.get_logger().info(
-                f'steering trim: {trim_us:+.1f} µs '
-                f'(radius={radius_str}, rms={rms_residual_m*100:.1f} cm, '
-                f'n={trim_result["samples"]})'
-            )
+            if abs(new_trim_us) > TRIM_BOUND_US:
+                steering_reason = (
+                    f'accumulated trim {new_trim_us:+.1f} µs (current '
+                    f'{current_trim:+.1f} + delta {delta_us:+.1f}) outside '
+                    f'±{TRIM_BOUND_US:.0f} µs'
+                )
+                self.get_logger().warn(f'steering trim rejected: {steering_reason}')
+            else:
+                trim_us = new_trim_us
+                trim_msg = String()
+                trim_msg.data = json.dumps({
+                    'trim_us': trim_us,
+                    'radius_m': radius_m,
+                    'rms_residual_m': rms_residual_m,
+                    'samples': int(trim_result['samples']),
+                    'drive_distance_m': gps_dist,
+                })
+                self._pub_apply_steering_trim.publish(trim_msg)
+                radius_str = (f'{radius_m:.1f} m' if radius_m is not None
+                              else 'straight')
+                self.get_logger().info(
+                    f'steering trim: {current_trim:+.1f} µs + '
+                    f'{delta_us:+.1f} µs = {trim_us:+.1f} µs '
+                    f'(radius={radius_str}, rms={rms_residual_m*100:.1f} cm, '
+                    f'n={trim_result["samples"]})'
+                )
         else:
             self.get_logger().warn(
-                f'steering trim solve failed: {trim_result["reason"]}'
+                f'steering trim solve failed: {steering_reason}'
             )
         self._publish_cal_wheels_result(
             ok=True,
@@ -1213,7 +1237,7 @@ class NavigatorNode(Node):
             trim_us=trim_us,
             radius_m=radius_m,
             steering_rms_m=rms_residual_m,
-            steering_reason=trim_result.get('reason'),
+            steering_reason=steering_reason,
         )
         self._set_state(State.IDLE)
 

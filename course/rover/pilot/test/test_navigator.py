@@ -395,6 +395,121 @@ def test_handle_cal_wheels_publishes_apply_when_done(nav, monkeypatch):
     assert result_payload['ok'] is True
 
 
+def _stub_cal_wheels_drive(nav):
+    """Minimal navigator state to make _handle_cal_wheels run through to
+    the end-of-drive solve (10 m GPS chord, healthy encoder displacement,
+    enough samples). Wheel scales come out near 1.0; the test focuses on
+    the steering-trim leg around them."""
+    nav._state = State.CAL_WHEELS
+    nav._cal_wheels_start_lat = 35.0
+    nav._cal_wheels_start_lon = 126.0
+    nav._cal_wheels_enc_l_m = 10.0
+    nav._cal_wheels_enc_r_m = 10.0
+    nav._cal_wheels_samples = 200
+    nav._cal_wheels_last_t = time.monotonic()
+    nav._gps_lat = 35.00009
+    nav._gps_lon = 126.0
+    nav._odom_v_left_raw = 0.5
+    nav._odom_v_right_raw = 0.5
+    nav._cal_wheels_enu_samples = [(i * 0.05, 0.0) for i in range(201)]
+
+
+def test_handle_cal_wheels_accumulates_steering_trim(nav, monkeypatch, tmp_path):
+    """Each cal drive runs WITH the previously persisted trim already
+    applied by mcu_bridge, so the residual κ_bias the solver sees is a
+    delta on top of the existing correction. The cal must add the delta
+    to the persisted trim, not overwrite it. Without accumulation, two
+    successive cals on a chassis with a real bias push trim toward zero
+    instead of converging on the true correction.
+
+    Mock solve_steering_trim to return a known delta so this test is
+    insensitive to circle-fit numerics on synthetic data (the solver
+    itself is exercised in test_steering_calibration.py)."""
+    monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
+    from pilot.lib.steering_calibration import save_steering_trim
+    from pilot import navigator_node as nn
+
+    save_steering_trim(
+        -10.0,
+        radius_m=40.0,
+        rms_residual_m=0.01,
+        samples=200,
+        drive_distance_m=10.0,
+    )
+
+    def fake_solve(**_kw):
+        return {
+            'trim_us': -8.0,             # delta only
+            'radius_m': -50.0,
+            'rms_residual_m': 0.005,
+            'samples': 200,
+            'reason': None,
+        }
+    monkeypatch.setattr(nn, 'solve_steering_trim', fake_solve)
+
+    _stub_cal_wheels_drive(nav)
+
+    apply_trim_msgs = []
+    nav._pub_apply_steering_trim.publish = lambda m: apply_trim_msgs.append(m.data)
+    nav._pub_apply_wheel_scales.publish = lambda m: None
+    nav._pub_cal_wheels_result.publish = lambda m: None
+
+    nav._handle_cal_wheels()
+
+    assert len(apply_trim_msgs) == 1
+    payload = json.loads(apply_trim_msgs[0])
+    # Persisted -10 µs + delta -8 µs = -18 µs accumulated.
+    # The pre-fix bug published just -8 µs, overwriting the prior trim.
+    assert payload['trim_us'] == pytest.approx(-18.0, abs=1e-6)
+
+
+def test_handle_cal_wheels_rejects_accumulated_trim_over_bound(nav, monkeypatch, tmp_path):
+    """If the persisted trim is already near the ±50 µs sanity bound and
+    the new delta would push it past, the cal must NOT overwrite the
+    existing trim. mcu_bridge would reject the apply message anyway,
+    but failing soft on the navigator side keeps the audit trail clean
+    (the result payload reports the reason)."""
+    monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
+    from pilot.lib.steering_calibration import save_steering_trim
+    from pilot import navigator_node as nn
+
+    save_steering_trim(
+        -45.0,
+        radius_m=10.0,
+        rms_residual_m=0.01,
+        samples=200,
+        drive_distance_m=10.0,
+    )
+
+    def fake_solve(**_kw):
+        # Delta -10 µs would push accumulated to -55 µs > ±50 bound.
+        return {
+            'trim_us': -10.0,
+            'radius_m': -40.0,
+            'rms_residual_m': 0.005,
+            'samples': 200,
+            'reason': None,
+        }
+    monkeypatch.setattr(nn, 'solve_steering_trim', fake_solve)
+
+    _stub_cal_wheels_drive(nav)
+
+    apply_trim_msgs = []
+    nav._pub_apply_steering_trim.publish = lambda m: apply_trim_msgs.append(m.data)
+    nav._pub_apply_wheel_scales.publish = lambda m: None
+    result_msgs = []
+    nav._pub_cal_wheels_result.publish = lambda m: result_msgs.append(m.data)
+
+    nav._handle_cal_wheels()
+
+    assert len(apply_trim_msgs) == 0
+    result_payload = json.loads(result_msgs[0])
+    assert 'steering_reason' in result_payload
+    assert 'outside' in result_payload['steering_reason']
+    # Wheel scales still applied — only the trim leg failed.
+    assert result_payload['ok'] is True
+
+
 def test_persisted_offset_loaded_into_instance(nav, tmp_path, monkeypatch):
     """Sanity: when a saved antenna_offset.json exists, navigator picks it
     up on construction so missions plan with the persisted value, not the
