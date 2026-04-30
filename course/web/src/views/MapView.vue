@@ -2320,8 +2320,7 @@ onUnmounted(() => {
             <div class="cal-section-title">안테나 오프셋</div>
             <p class="modal-warning">
               로버가 직진 약 2 m 이후 S자 패턴(8 s)을 자동 주행합니다.
-              전후좌우 5 m 이상의 평탄하고 빈 공간이 필요하며,
-              로버 주변에 사람·장애물이 없는지 확인하세요.
+              전후좌우 5 m 이상의 평탄하고 빈 공간이 필요합니다.
             </p>
             <div class="cal-current">
               <span class="cal-key">a_x</span>
@@ -2352,8 +2351,7 @@ onUnmounted(() => {
             <div class="cal-section-title">휠 인코더 스케일</div>
             <p class="modal-warning">
               로버가 직진 약 10 m를 자동 주행하면서 GPS chord 거리와 좌·우 인코더 적분 거리의
-              비율로 휠 스케일을 추정합니다. 전방 12 m 이상 평탄하고 빈 공간이 필요하며,
-              로버 주변에 사람·장애물이 없는지 확인하세요.
+              비율로 휠 스케일을 추정합니다. 전방 12 m 이상 평탄하고 빈 공간이 필요합니다.
             </p>
             <div class="cal-current">
               <span class="cal-key">scale_l</span>
@@ -2386,14 +2384,6 @@ onUnmounted(() => {
               >{{ wheelCalSubmitting ? '전송 중...' : (wheelCalRunning ? '진행 중' : (wheelCalCanStart ? '시작' : wheelCalBtnLabel)) }}</button>
             </div>
           </section>
-
-          <div class="preflight-actions">
-            <button
-              class="btn btn-ghost btn-sm"
-              :disabled="antennaCalSubmitting || wheelCalSubmitting"
-              @click="closeCalibration"
-            >닫기</button>
-          </div>
         </div>
       </div>
 
