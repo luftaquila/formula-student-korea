@@ -116,7 +116,7 @@ class NavigatorNode(Node):
         # offset which the bridge then persists. Declared here so the
         # solve doesn't have to round-trip through mcu_bridge just to
         # learn the platform's servo geometry.
-        self.declare_parameter('servo_range_us', 500.0)
+        self.declare_parameter('servo_range_us', 500)
 
         # Speeds.
         self.declare_parameter('cruise_speed', 1.0)
