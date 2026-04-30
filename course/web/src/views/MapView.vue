@@ -1381,6 +1381,16 @@ const wheelCalDisplay = computed(() => {
 let calStatusPollHandle = null;
 
 function openCalibration() {
+  // Manual control runs a 20 Hz timer that keeps the mcu_bridge's
+  // manual-priority window alive on every tick. If the operator opens
+  // cal while still in manual mode, the navigator's autonomous Twist
+  // for the cal drive gets silently dropped on every tick because
+  // mcu_bridge sees a fresh manual command less than manual_priority_s
+  // ago — the rover sits in CAL_ANTENNA state but never moves, until
+  // the operator closes the page (clearing the interval) and reloads.
+  // Opening the cal modal is an implicit "I want to autonomously drive"
+  // gesture, so release manual control first.
+  if (roverMode.value === "manual") stopManualControl();
   showCalibration.value = true;
   activeChipPopover.value = null;
   // Sync once on open so a stale local state is corrected before the
