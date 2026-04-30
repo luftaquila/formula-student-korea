@@ -117,8 +117,16 @@ function isInternalRequest(req) {
 
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
+  // Rover-only endpoints. /api/rover/stream is internal-strict — falling
+  // back to "admin" let any logged-in operator open the SSE in a browser
+  // and clobber the single roverClient slot, which silently kicked the
+  // real rover off and routed subsequent calibrate-* events to the
+  // browser response. Symptom on the operator side: cal start button
+  // does nothing despite RTK-fixed + IDLE. Internal-only closes the door.
+  if (req.path === "/api/rover/stream") {
+    return isInternalRequest(req) ? null : "deny";
+  }
   if (
-    req.path === "/api/rover/stream" ||
     req.path === "/api/rover/position" ||
     req.path === "/api/rover/telemetry" ||
     req.path === "/api/rover/waypoint_reached" ||

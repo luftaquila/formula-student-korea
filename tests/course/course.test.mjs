@@ -686,6 +686,16 @@ describe('GET /api/rover/stream (auth)', () => {
     const res = await client.get('/api/rover/stream');
     assert.equal(res.status, 401);
   });
+
+  it('rejects admin cookie without internal secret (browsers must not clobber the rover slot)', async () => {
+    // The single-slot roverClient was previously replaceable by any logged-in
+    // operator opening /api/rover/stream in a browser/devtools. That kicked
+    // the real rover off and rerouted calibrate-* events to the browser
+    // response — the operator-visible symptom was "cal start button does
+    // nothing despite RTK fixed and IDLE". Internal-only closes that door.
+    const res = await client.get('/api/rover/stream', { cookie: adminCookie });
+    assert.equal(res.status, 403);
+  });
 });
 
 // ─── Rover execute: geofence ────────────────────────────────────────────

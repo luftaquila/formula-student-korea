@@ -165,7 +165,7 @@ class NavigatorNode(Node):
         self.declare_parameter('antenna_cal_kappa_max', 0.5)
         self.declare_parameter('antenna_cal_period_s', 4.0)
         self.declare_parameter('antenna_cal_periods', 2)
-        self.declare_parameter('antenna_cal_speed', 0.5)
+        self.declare_parameter('antenna_cal_speed', 0.8)
 
         # Wheel scale auto-calibration (CAL_WHEELS state). Drives a
         # straight chord and divides GPS distance by per-wheel encoder
