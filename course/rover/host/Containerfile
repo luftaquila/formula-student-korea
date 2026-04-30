@@ -68,7 +68,7 @@ RUN install -d -m 700 -o 1500 -g 1500 /usr/share/factory/var/home/fsk \
 # Narrow sudo grant — only the commands provision-rover.sh and operators
 # actually need. Avoids handing fsk full root.
 RUN install -d -m 750 /etc/sudoers.d \
-    && printf 'fsk ALL=(ALL) NOPASSWD: /usr/bin/podman, /usr/bin/systemctl, /usr/bin/install, /usr/bin/tee, /usr/bin/nmcli, /usr/bin/tailscale, /usr/bin/bootc, /usr/local/bin/flash-mcu\n' \
+    && printf 'Defaults secure_path="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin"\nfsk ALL=(ALL) NOPASSWD: /usr/bin/podman, /usr/bin/systemctl, /usr/bin/install, /usr/bin/tee, /usr/bin/nmcli, /usr/bin/tailscale, /usr/bin/bootc, /usr/local/bin/flash-mcu\n' \
          > /etc/sudoers.d/fsk \
     && chmod 440 /etc/sudoers.d/fsk
 
