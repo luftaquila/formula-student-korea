@@ -87,6 +87,12 @@ class _FakeNode:
     def destroy_node(self):
         pass
 
+    def add_on_set_parameters_callback(self, cb):
+        # Tests don't fire param changes through this path; just record
+        # the callback so the registration doesn't blow up.
+        self._on_param_cbs = getattr(self, '_on_param_cbs', [])
+        self._on_param_cbs.append(cb)
+
 
 def _install_rclpy():
     rclpy = _install_stub("rclpy", {
@@ -172,6 +178,19 @@ def _install_hardware():
     })
 
 
+def _install_rcl_interfaces():
+    class _SetParametersResult:
+        def __init__(self, successful=True, reason=""):
+            self.successful = successful
+            self.reason = reason
+
+    rcl_msg = _install_stub("rcl_interfaces.msg", {
+        "SetParametersResult": _SetParametersResult,
+    })
+    _install_stub("rcl_interfaces", {"msg": rcl_msg})
+
+
 _install_rclpy()
 _install_ros_msgs()
+_install_rcl_interfaces()
 _install_hardware()

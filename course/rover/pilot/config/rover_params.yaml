@@ -133,14 +133,19 @@ mcu_bridge_node:
     # steering servo applies κ instantly and only v ramps.
     accel_limit: 0.8
     manual_priority_s: 1.0
-    # PID closed loop on the MCU. OFF until the gains are tuned on this
-    # specific drivetrain. The default kp/ki were placeholder values;
-    # turning the loop on without tuning made forward driving feel
-    # gritty (encoder-noise-driven duty oscillation) and decel actively
-    # reverse-PWMed the wheels (band-aided with drive-only clamp +
-    # deadband, but the underlying sensitivity is still wrong).
-    # Re-enable only after step-response / Ziegler-Nichols on the rover.
-    use_pid: false
-    pid_kp: 0.6
-    pid_ki: 1.5
+    # PID closed loop on the MCU. ON.
+    # Gains tuned on the bench (jacked-up, step responses across
+    # 0.3-1.2 m/s targets). With kp=1.0, ki=3.0:
+    #   * steady-state error ~ -3 % (consistent across speed range)
+    #   * overshoot < 2 % even on hardest step
+    #   * rise time 0.1-0.5 s
+    # kp ≥ 4 produced strong oscillation (Ku ≈ 3-4, picked 0.45·Ku);
+    # kd left at 0 because derivative-on-measurement on a noisy
+    # encoder amplifies more noise than it dampens for a system this
+    # small. Drive-only sign clamp + 0.05 m/s deadband in the MCU
+    # firmware handle the stop-on-zero behaviour so PID never
+    # reverse-PWMs the wheels.
+    use_pid: true
+    pid_kp: 1.0
+    pid_ki: 3.0
     pid_kd: 0.0

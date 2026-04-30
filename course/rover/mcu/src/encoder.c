@@ -63,6 +63,17 @@ void encoder_tick(void) {
         // Two's complement subtraction wraps correctly even across INT32 wrap.
         int32_t d = c - g_enc[i].last_count;
         g_enc[i].last_count = c;
+        // Right encoder A/B is wired with opposite phase relative to the
+        // left side (motor mounted symmetrically — A and B end up swapped
+        // when looking at the connector from the same side as the left).
+        // Without this flip, forward motion gives v_right = -v_left, which
+        // makes chassis odom v_avg ≈ 0 and feeds PID a setpoint-vs-measured
+        // sign mismatch that runs the loop to saturation. Flipping count
+        // delta on the right side restores the convention "positive count
+        // = forward physical rotation" that everything downstream assumes.
+        if (i == ENC_RIGHT) {
+            d = -d;
+        }
         // Single-count deadband: at standstill a single quadrature glitch
         // produces d=±1 (≈ 0.5 cm/s nominal velocity) which would feed
         // nonzero error into the closed-loop PID and slowly accumulate

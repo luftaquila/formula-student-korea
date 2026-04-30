@@ -26,6 +26,7 @@ import time
 
 import rclpy
 import serial
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
@@ -221,12 +222,57 @@ class McuBridgeNode(Node):
         self._send(f'L {1 if self._p("use_pid") else 0}')
         self._send('C')
 
+        # Live PID tuning: `ros2 param set /mcu_bridge_node pid_kp 0.8` pushes
+        # the new gains to the MCU on the next callback tick without a
+        # service restart. Same for use_pid (toggles the closed-loop). The
+        # operator can iterate gains while watching odom — pre-fix the only
+        # way to change gains was to edit YAML and restart pilot, which
+        # invalidated step-response measurements between attempts.
+        self.add_on_set_parameters_callback(self._on_param_change)
+
         self.get_logger().info('MCU bridge started')
 
     # ------------------------- helpers
 
     def _p(self, name):
         return self.get_parameter(name).value
+
+    def _on_param_change(self, params):
+        """Live-apply pid_kp/ki/kd and use_pid changes to the MCU.
+
+        We push gains/mode on every accepted change because the MCU's
+        in-flash defaults are per-boot only and there's no "current
+        gains" read-back over the protocol — so a small over-send on a
+        triple-tweak (kp + ki + kd at once) is fine, and far better
+        than relying on operators to remember a separate apply step.
+        """
+        push_pid = False
+        push_mode = False
+        for p in params:
+            if p.name in ('pid_kp', 'pid_ki', 'pid_kd'):
+                push_pid = True
+            elif p.name == 'use_pid':
+                push_mode = True
+        # ROS rejects type-mismatched assignments before this callback
+        # fires, and we trust value bounds to gain sanity (kp ≤ 5 etc.)
+        # at the operator level — the MCU clamps PID output to ±1.0
+        # duty regardless of gain magnitude, so no runaway risk.
+        if push_pid:
+            # Read effective values AFTER the set succeeds. We can't read
+            # from get_parameter() here because the new values aren't
+            # committed until we return success. Use the param objects.
+            new = {p.name: p.value for p in params}
+            kp = float(new.get('pid_kp', self._p('pid_kp')))
+            ki = float(new.get('pid_ki', self._p('pid_ki')))
+            kd = float(new.get('pid_kd', self._p('pid_kd')))
+            self._send(f'P {kp} {ki} {kd}')
+            self.get_logger().info(f'PID gains live-updated: kp={kp}, ki={ki}, kd={kd}')
+        if push_mode:
+            new = {p.name: p.value for p in params}
+            on = bool(new.get('use_pid', self._p('use_pid')))
+            self._send(f'L {1 if on else 0}')
+            self.get_logger().info(f'PID mode live-updated: {"on" if on else "off"}')
+        return SetParametersResult(successful=True)
 
     def _validate_params(self):
         if self._p('max_speed') < 0.1:

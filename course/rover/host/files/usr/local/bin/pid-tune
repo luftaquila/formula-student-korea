@@ -1,0 +1,86 @@
+#!/bin/bash
+# Live PID tuning helper. Wraps `ros2 param set` + step-response capture
+# inside the running pilot container so the operator can iterate gains
+# without touching YAML or restarting services.
+#
+# Usage:
+#   pid-tune get                      # current gains + use_pid mode
+#   pid-tune set <kp> <ki> <kd>       # push new gains live to MCU
+#   pid-tune mode on|off              # toggle closed-loop
+#   pid-tune step <target_v> [secs]   # publish Twist for `secs` (default 2 s)
+#                                     # then stop, while logging odom v
+#   pid-tune watch [secs]             # tail v_left/v_right for `secs`
+#                                     # without changing the command (default 5 s)
+#
+# Safety: requires the rover to already be jacked up or in a clear area.
+# This script does not check — operator's responsibility.
+
+set -euo pipefail
+
+if ! command -v podman >/dev/null 2>&1; then
+    echo "podman not found" >&2; exit 1
+fi
+if ! sudo podman ps --format '{{.Names}}' | grep -q '^pilot$'; then
+    echo "pilot container not running" >&2; exit 1
+fi
+
+run() {
+    sudo podman exec pilot bash -c "source /opt/ros/jazzy/setup.bash && $*"
+}
+
+cmd="${1:-}"; shift || true
+
+case "$cmd" in
+    get)
+        echo "== mcu_bridge_node parameters =="
+        run "ros2 param get /mcu_bridge_node pid_kp"
+        run "ros2 param get /mcu_bridge_node pid_ki"
+        run "ros2 param get /mcu_bridge_node pid_kd"
+        run "ros2 param get /mcu_bridge_node use_pid"
+        ;;
+    set)
+        kp="${1:?usage: pid-tune set <kp> <ki> <kd>}"
+        ki="${2:?usage: pid-tune set <kp> <ki> <kd>}"
+        kd="${3:?usage: pid-tune set <kp> <ki> <kd>}"
+        # Force float literal — ROS param type is double; an integer
+        # literal is rejected with "Wrong parameter type".
+        printf -v kp '%g' "$(awk "BEGIN{printf \"%.6f\",$kp}")"
+        printf -v ki '%g' "$(awk "BEGIN{printf \"%.6f\",$ki}")"
+        printf -v kd '%g' "$(awk "BEGIN{printf \"%.6f\",$kd}")"
+        # awk %.6f always emits a decimal point (e.g. 1.000000), which is what we need.
+        run "ros2 param set /mcu_bridge_node pid_kp $(awk "BEGIN{printf \"%.6f\",$1}")"
+        run "ros2 param set /mcu_bridge_node pid_ki $(awk "BEGIN{printf \"%.6f\",$2}")"
+        run "ros2 param set /mcu_bridge_node pid_kd $(awk "BEGIN{printf \"%.6f\",$3}")"
+        ;;
+    mode)
+        on="${1:?usage: pid-tune mode on|off}"
+        case "$on" in
+            on|true|1)  run "ros2 param set /mcu_bridge_node use_pid true"  ;;
+            off|false|0) run "ros2 param set /mcu_bridge_node use_pid false" ;;
+            *) echo "mode must be on|off" >&2; exit 2 ;;
+        esac
+        ;;
+    step)
+        target="${1:?usage: pid-tune step <target_v> [secs]}"
+        secs="${2:-2}"
+        # Publish in the background, capture odom for secs+1, then stop.
+        echo "stepping to ${target} m/s for ${secs} s..."
+        run "(ros2 topic pub --rate 50 /rover/cmd/velocity geometry_msgs/msg/Twist '{linear: {x: ${target}}, angular: {z: 0.0}}' &
+              PUB=\$!
+              timeout ${secs} ros2 topic echo --no-arr /rover/odom std_msgs/msg/String 2>/dev/null || true
+              kill \$PUB 2>/dev/null
+              ros2 topic pub --once /rover/cmd/velocity geometry_msgs/msg/Twist '{linear: {x: 0.0}, angular: {z: 0.0}}' >/dev/null) | grep -E 'v_left|v_right' || true"
+        ;;
+    watch)
+        secs="${1:-5}"
+        run "timeout ${secs} ros2 topic echo --no-arr /rover/odom std_msgs/msg/String 2>/dev/null | grep -E 'v_left|v_right' || true"
+        ;;
+    ""|-h|--help)
+        sed -n '2,18p' "$0" | sed 's/^# \?//'
+        ;;
+    *)
+        echo "unknown subcommand: $cmd" >&2
+        echo "see: pid-tune --help" >&2
+        exit 2
+        ;;
+esac
