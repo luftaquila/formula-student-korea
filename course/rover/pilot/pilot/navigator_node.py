@@ -45,6 +45,8 @@ Published:
 
 import json
 import math
+import os
+import tempfile
 import time
 from enum import Enum
 from math import radians, degrees, hypot, cos, sin, tan, isfinite
@@ -1501,7 +1503,39 @@ class NavigatorNode(Node):
             )
             self._publish_cal_antenna_result(ok=True, **payload)
         else:
-            self.get_logger().warn(f'Antenna-cal solve failed: {result["reason"]}')
+            cand_a_x = result.get('a_x')
+            cand_a_y = result.get('a_y')
+            cand_rms = result.get('rms_residual_m')
+            extras = ''
+            if cand_a_x is not None and cand_a_y is not None:
+                extras = f' (candidate a_x={cand_a_x:.3f}, a_y={cand_a_y:.3f}'
+                if cand_rms is not None:
+                    extras += f', rms={cand_rms*100:.1f} cm'
+                extras += ')'
+            self.get_logger().warn(
+                f'Antenna-cal solve failed: {result["reason"]}{extras}'
+            )
+            # Dump samples for offline analysis. Path mirrors the persisted
+            # offset path family ($PILOT_STATE_DIR/), survives container
+            # restarts via the bind mount.
+            try:
+                dump_dir = os.environ.get('PILOT_STATE_DIR') or tempfile.gettempdir()
+                dump_path = os.path.join(dump_dir, 'antenna_cal_failed_samples.json')
+                with open(dump_path, 'w') as f:
+                    json.dump({
+                        'reason': result['reason'],
+                        'candidate_a_x': result.get('a_x'),
+                        'candidate_a_y': result.get('a_y'),
+                        'rms_residual_m': result.get('rms_residual_m'),
+                        'psi_init_rad': self._cal_antenna_psi_init,
+                        'samples': [
+                            {'cx': cx, 'cy': cy, 'cpsi': cpsi, 'a_e': a_e, 'a_n': a_n}
+                            for cx, cy, cpsi, a_e, a_n in self._cal_antenna_data
+                        ],
+                    }, f)
+                self.get_logger().info(f'Antenna-cal failed samples dumped to {dump_path}')
+            except OSError as exc:
+                self.get_logger().warn(f'Failed to dump cal samples: {exc}')
             self._publish_cal_antenna_result(
                 ok=False,
                 reason=result['reason'],
