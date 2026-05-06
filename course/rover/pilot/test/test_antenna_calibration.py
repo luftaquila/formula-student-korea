@@ -207,17 +207,54 @@ class TestPersistence:
 
 class TestScurveShape:
     def test_zero_at_period_boundaries(self):
-        # κ(t) = κ_max · sin(2π·t/period). At t = 0, period, 2·period, the
-        # curvature is zero — that's the property that makes net yaw zero
-        # over a full period and keeps the calibration drive bounded.
+        # At t = 0, period, 2·period, ... the curvature is zero — the sign
+        # flip across periods preserves this since sin(2π·k) = 0.
         for k in range(4):
             assert isclose(scurve_curvature(k * 4.0, 0.5, 4.0),
                            0.0, abs_tol=1e-12)
 
-    def test_extrema_at_quarter_periods(self):
-        # +κ_max at t = period/4, -κ_max at t = 3·period/4.
+    def test_extrema_within_period_zero(self):
+        # Period 0 (t in [0, T)): +κ_max at T/4, -κ_max at 3T/4.
         assert isclose(scurve_curvature(1.0, 0.5, 4.0), 0.5, abs_tol=1e-12)
         assert isclose(scurve_curvature(3.0, 0.5, 4.0), -0.5, abs_tol=1e-12)
+
+    def test_sign_flips_per_period(self):
+        # Period 1 (t in [T, 2T)) inverts the sign so lateral drift cancels.
+        # Same local-time offset within the period gives opposite κ.
+        assert isclose(scurve_curvature(1.0, 0.5, 4.0), 0.5, abs_tol=1e-12)
+        assert isclose(scurve_curvature(5.0, 0.5, 4.0), -0.5, abs_tol=1e-12)
+        # Period 2 swings back to the period-0 sign.
+        assert isclose(scurve_curvature(9.0, 0.5, 4.0), 0.5, abs_tol=1e-12)
+
+    def test_lateral_drift_cancels_over_even_periods(self):
+        # The whole point of the sign flip: integrating the drive over an
+        # even number of periods returns the rover to the start line. We
+        # simulate the navigator's pose update at the same 50 Hz the
+        # control loop runs, and assert lateral drift ends < 5 cm —
+        # tiny residual from the trapezoidal integration vs the ideal.
+        from math import cos as mcos, sin as msin
+        v = 1.2
+        kappa_max = 0.5
+        T = 4.0
+        periods = 2
+        dt = 0.02  # 50 Hz
+        cx, cy, cpsi = 0.0, 0.0, 0.0
+        steps = int(T * periods / dt)
+        for i in range(steps):
+            t = i * dt
+            kappa = scurve_curvature(t, kappa_max, T)
+            omega = v * kappa
+            mid_psi = cpsi + 0.5 * omega * dt
+            cx += v * mcos(mid_psi) * dt
+            cy += v * msin(mid_psi) * dt
+            cpsi += omega * dt
+        # Heading nets to ~0 (every period independently nets to 0).
+        assert abs(cpsi) < 1e-6, f'final ψ should be 0, got {cpsi}'
+        # Lateral (perpendicular to start heading = +x): under 5 cm over
+        # ~9 m of forward travel. The pre-fix shape produced ~3.6 m here.
+        assert abs(cy) < 0.05, f'lateral drift should cancel, got {cy:.3f} m'
+        # Sanity: forward travel is positive and on the order of v·T·periods.
+        assert cx > 0.5 * v * T * periods
 
     def test_zero_period_returns_zero(self):
         # Defensive: a misconfigured period must not divide by zero.

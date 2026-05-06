@@ -42,11 +42,22 @@ Phase 1 (`STRAIGHT`):  drive κ = 0 for `straight_distance` metres at
     `calibration_speed`. Chord-regression of antenna ENU samples gives ψ_init
     with the same residual gates the mission-start calibration uses.
 
-Phase 2 (`SCURVE`):    drive κ(t) = κ_max · sin(2π · t / period) for
-    `scurve_periods` full periods. ψ nets back to ψ_init at the end of every
-    full period, so the whole maneuver is bounded in heading and translates
-    forward roughly along the original direction. Encoder integration over
-    the brief drive (~10 s) accumulates < 1° drift on smooth ground.
+Phase 2 (`SCURVE`):    drive κ(t) sinusoidal with sign alternating across
+    periods — period k uses (-1)^k · κ_max · sin(2π · t / period). ψ nets
+    back to ψ_init at the end of every full period (sin integrates to 0),
+    AND because consecutive periods swing opposite ways, the lateral drift
+    accumulated in period k is cancelled by period k+1. With an even number
+    of periods the rover ends on the same straight line it started on.
+
+    The naïve all-positive sin (no sign flip) keeps ψ entirely on one side
+    of ψ_init for the whole drive — ∫sin dt = (1−cos)/(2π/T) ≥ 0 always —
+    so the rover steadily drifts ~v²·κ_max·T/(2π) m laterally per period
+    and accumulates a non-rigid chassis-vs-antenna trace that blows up the
+    LSQ residual (54 cm RMS on a v=1.2, T=4, periods=2 run).
+
+    Encoder integration over the brief drive (~10 s) accumulates < 1° drift
+    on smooth ground. Use an EVEN periods count for full lateral cancellation;
+    odd counts leave one uncancelled lobe.
 
 Persistence
 -----------
@@ -249,7 +260,19 @@ def solve_antenna_offset(samples):
 
 
 def scurve_curvature(elapsed_s, kappa_max, period_s):
-    """κ(t) = κ_max · sin(2π · t / period). One full period nets zero yaw."""
+    """Sign-alternating S-curve κ(t).
+
+    κ(t) = (-1)^k · κ_max · sin(2π · t / period_s) for the kth period.
+    Each period nets zero yaw (sin integral over a period is zero); the
+    sign flip across periods cancels lateral drift over even period counts.
+    See module docstring for the geometry.
+
+    The flip introduces a corner in dκ/dt at period boundaries (κ itself
+    stays continuous, hitting 0 at the boundary). The servo slew limit is
+    well above the kink rate so this is benign in practice.
+    """
     if period_s <= 0:
         return 0.0
-    return kappa_max * math.sin(2.0 * math.pi * elapsed_s / period_s)
+    period_idx = int(elapsed_s // period_s)
+    sign = -1.0 if (period_idx % 2) else 1.0
+    return sign * kappa_max * math.sin(2.0 * math.pi * elapsed_s / period_s)

@@ -90,7 +90,7 @@ class State(Enum):
 class CalAntennaPhase(Enum):
     """Sub-phases of the antenna offset auto-calibration drive."""
     STRAIGHT = 'straight'   # κ = 0, chord-fit ψ_init from antenna ENU
-    SCURVE = 'scurve'       # κ(t) sinusoidal, sample chassis pose vs antenna
+    SCURVE = 'scurve'       # κ(t) sign-alternating sinusoid, sample chassis pose vs antenna
     SOLVE = 'solve'         # stop, run LSQ, persist, publish result
 
 
