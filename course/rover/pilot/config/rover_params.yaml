@@ -51,6 +51,12 @@ navigator_node:
     approach_speed: 0.4                # m/s on the dock corridor (precision)
     creep_speed: 0.18                  # m/s for fine corrections / overshoot reverse
     calibration_speed: 0.5             # m/s during cold-start heading discovery (must exceed gps_node.heading_speed_threshold by margin)
+    # Antenna offset auto-cal drive speed. Raised from 0.8 (default) — at the
+    # old value PID locks the wheels at exactly 0.8 m/s, whereas raw mode at
+    # the same commanded speed produced ~1.2 m/s actual via duty% open-loop
+    # (53% duty × ~2.3 m/s motor top). 1.2 keeps the SCURVE ψ excursion in
+    # the same range the LSQ residual gate was tuned against.
+    antenna_cal_speed: 1.2
 
     # ── Path planner ────────────────────────────────────────────────────
     dock_approach_distance: 1.5        # meters of straight line before the dock pose. Should be at least ~3× wheelbase so chassis can settle on the line before the dock point.
@@ -125,7 +131,12 @@ mcu_bridge_node:
     max_steering_angle_deg: 25.0
     wheelbase: 0.38
     track_width: 0.30
-    max_speed: 1.5
+    # Operator-measured open-loop top speed at 100% duty is ~2.3 m/s on
+    # this drivetrain at full LiFePO4. Cap was previously 1.5, which forced
+    # PID setpoint at full manual throttle to 1.5 (since target_speed =
+    # throttle_pct/100 × max_speed). Raised to 2.5 so PID can issue the
+    # full-duty setpoint manual control expects.
+    max_speed: 2.5
     # accel_limit applies to chassis longitudinal speed (m/s²), NOT to
     # per-wheel duty as the previous implementation did. Ramping per duty
     # killed the Ackermann differential during the first ~1.5s of every
