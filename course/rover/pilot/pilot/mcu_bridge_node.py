@@ -304,7 +304,23 @@ class McuBridgeNode(Node):
         try:
             with self._serial_lock:
                 self._serial.write((line + '\n').encode('ascii', errors='ignore'))
+        except serial.SerialTimeoutException as e:
+            # Write timeout means the host's TTY buffer is full — typically
+            # because something (host scheduling, transient USB stall) has
+            # held back the OUT endpoint. The reader loop keeps draining the
+            # IN endpoint either way, which keeps the MCU's CDC TX buffer
+            # from filling and tripping its watchdog (printf blocks for up
+            # to PICO_STDIO_USB_STDOUT_TIMEOUT_US per call). Closing the
+            # port here would stop the drain and start a self-perpetuating
+            # crash loop (MCU resets every ~4 s, host can never reconnect).
+            # Just rate-limit the warn and keep the port open.
+            now = time.monotonic()
+            if now - getattr(self, '_last_write_warn_t', 0.0) > 1.0:
+                self._last_write_warn_t = now
+                self.get_logger().warn(f'Serial write timeout (port stays open): {e}')
         except Exception as e:  # noqa: BLE001
+            # Real errors (port gone, OSError) — drop and let the reader
+            # loop's reconnect path take over.
             self.get_logger().warn(f'Serial write failed: {e}')
             self._close_serial()
 
