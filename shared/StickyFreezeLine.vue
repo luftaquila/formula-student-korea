@@ -1,32 +1,10 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from "vue";
-
-const props = defineProps({
+defineProps({
   lineX: { type: Number, required: true },
   active: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(["pointerdown"]);
-
-const root = ref(null);
-const scrollLeft = ref(0);
-let scrollEl = null;
-
-function onScroll() {
-  scrollLeft.value = scrollEl ? scrollEl.scrollLeft : 0;
-}
-
-onMounted(() => {
-  scrollEl = root.value?.parentElement;
-  if (scrollEl) {
-    scrollEl.addEventListener("scroll", onScroll, { passive: true });
-    scrollLeft.value = scrollEl.scrollLeft;
-  }
-});
-
-onBeforeUnmount(() => {
-  if (scrollEl) scrollEl.removeEventListener("scroll", onScroll);
-});
 
 function onPointerDown(event) {
   emit("pointerdown", event);
@@ -35,10 +13,9 @@ function onPointerDown(event) {
 
 <template>
   <div
-    ref="root"
     class="sticky-freeze-line"
     :class="{ 'is-active': active }"
-    :style="{ left: lineX + scrollLeft + 'px' }"
+    :style="{ left: lineX + 'px' }"
     @pointerdown="onPointerDown"
   >
     <div class="sticky-freeze-line__bar"></div>

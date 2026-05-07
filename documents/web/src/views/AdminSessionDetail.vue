@@ -233,7 +233,8 @@ onMounted(loadStatus);
           </div>
         </div>
         <div class="card-body table-body">
-          <div class="table-container sticky-host">
+          <div class="sticky-host">
+            <div class="table-container">
             <table ref="tableRef" class="data-table detail-table" :data-sticky-cols="stickyCols">
               <thead>
                 <tr>
@@ -315,6 +316,7 @@ onMounted(loadStatus);
                 </template>
               </tbody>
             </table>
+            </div>
             <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
           </div>
         </div>
