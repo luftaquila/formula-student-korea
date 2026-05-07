@@ -1461,10 +1461,15 @@ class NavigatorNode(Node):
         self._publish_velocity(speed, kappa)
 
         # Inter-fix integration: short (~0.2 s) bridging between GPS
-        # snaps. Errors here only need to last one GPS interval so even
-        # the imperfect commanded-κ × v model is sufficient.
-        v_avg, _omega_enc = self._odom_chassis_kinematics()
-        omega = v_avg * kappa
+        # snaps. With wheel scales now calibrated (sub-0.2 % per side)
+        # the encoder-differential ω = (v_R − v_L) / track is a direct
+        # measurement of chassis rotation. Earlier code used commanded
+        # κ × v_avg as a stand-in because uncalibrated scales let
+        # per-wheel imbalance leak into the diff; that imbalance is now
+        # absorbed by the wheel-cal scales. Encoder-diff also captures
+        # servo lag and steering compliance that commanded κ misses,
+        # which is exactly the ω error the iterative LSQ relies on.
+        v_avg, omega = self._odom_chassis_kinematics()
         now = time.monotonic()
         if self._cal_antenna_last_predict_t is None:
             self._cal_antenna_last_predict_t = now
