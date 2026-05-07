@@ -1,5 +1,7 @@
 <script setup>
 import { ref, computed } from "vue";
+import { useStickyColumns } from "@shared/useStickyColumns.js";
+import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 
 const props = defineProps({
   entries: {
@@ -10,6 +12,13 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+});
+
+const tableRef = ref(null);
+const { stickyCols, lineX, startDrag } = useStickyColumns({
+  storageKey: "entry-sticky-cols",
+  tableRef,
+  columnSelectors: [".col-num", ".col-univ", ".col-team", ".col-type"],
 });
 
 const emit = defineEmits(["update", "delete"]);
@@ -107,8 +116,8 @@ function handleDelete(num) {
 </script>
 
 <template>
-  <div class="table-wrapper">
-    <table class="entry-table">
+  <div class="table-wrapper sticky-host">
+    <table ref="tableRef" class="entry-table" :data-sticky-cols="stickyCols">
       <thead>
         <tr>
           <th class="col-num sortable" @click="handleSort('num')">
@@ -210,6 +219,7 @@ function handleDelete(num) {
         </tr>
       </tbody>
     </table>
+    <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
   </div>
 </template>
 
@@ -285,6 +295,43 @@ function handleDelete(num) {
 }
 
 .entry-table thead .col-num {
+  z-index: 3;
+}
+
+.sticky-host {
+  position: relative;
+}
+
+.entry-table[data-sticky-cols="2"] .col-univ,
+.entry-table[data-sticky-cols="3"] .col-univ,
+.entry-table[data-sticky-cols="4"] .col-univ {
+  position: sticky;
+  left: var(--sticky-l1, 0);
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.entry-table[data-sticky-cols="3"] .col-team,
+.entry-table[data-sticky-cols="4"] .col-team {
+  position: sticky;
+  left: var(--sticky-l2, 0);
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.entry-table[data-sticky-cols="4"] .col-type {
+  position: sticky;
+  left: var(--sticky-l3, 0);
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.entry-table[data-sticky-cols="2"] thead .col-univ,
+.entry-table[data-sticky-cols="3"] thead .col-univ,
+.entry-table[data-sticky-cols="3"] thead .col-team,
+.entry-table[data-sticky-cols="4"] thead .col-univ,
+.entry-table[data-sticky-cols="4"] thead .col-team,
+.entry-table[data-sticky-cols="4"] thead .col-type {
   z-index: 3;
 }
 

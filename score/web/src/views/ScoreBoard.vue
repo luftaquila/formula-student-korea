@@ -3,6 +3,8 @@ import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import * as XLSX from "xlsx";
 import { fetchEntryYears, fetchScore, fetchVehicleTypes, updateManualScore, updatePenalty, updateSetting } from "../api";
 import { useNotification } from "@shared/useNotification.js";
+import { useStickyColumns } from "@shared/useStickyColumns.js";
+import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();
@@ -20,6 +22,13 @@ const detailSortMode = ref("time");
 const hoveredEvtGroup = ref(null);
 const displayMode = ref(localStorage.getItem("score-display-mode") || "record");
 watch(displayMode, (v) => localStorage.setItem("score-display-mode", v));
+
+const tableRef = ref(null);
+const { stickyCols, lineX, startDrag } = useStickyColumns({
+  storageKey: "score-board-sticky-cols",
+  tableRef,
+  columnSelectors: [".col-num", ".col-team", ".col-type"],
+});
 
 // 정렬 상태
 const sortKey = ref(null);
@@ -677,8 +686,8 @@ function exportData(format) {
       </div>
       <div class="card-body table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
-        <div v-else class="table-container">
-          <table class="data-table score-table">
+        <div v-else class="table-container sticky-host">
+          <table ref="tableRef" class="data-table score-table" :data-sticky-cols="stickyCols">
             <thead>
               <tr>
                 <th class="col-num sortable" @click="handleSort('num')">번호 <span class="sort-icon">{{ getSortIcon('num') }}</span></th>
@@ -893,6 +902,7 @@ function exportData(format) {
               </tr>
             </tbody>
           </table>
+          <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
         </div>
       </div>
     </div>
@@ -1115,6 +1125,31 @@ function exportData(format) {
 }
 
 .score-table thead .col-num {
+  z-index: 3;
+}
+
+.sticky-host {
+  position: relative;
+}
+
+.score-table[data-sticky-cols="2"] .col-team,
+.score-table[data-sticky-cols="3"] .col-team {
+  position: sticky;
+  left: var(--sticky-l1, 0);
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.score-table[data-sticky-cols="3"] .col-type {
+  position: sticky;
+  left: var(--sticky-l2, 0);
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.score-table[data-sticky-cols="2"] thead .col-team,
+.score-table[data-sticky-cols="3"] thead .col-team,
+.score-table[data-sticky-cols="3"] thead .col-type {
   z-index: 3;
 }
 

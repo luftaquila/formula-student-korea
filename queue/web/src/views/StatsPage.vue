@@ -3,9 +3,18 @@ import { ref, onMounted, computed } from "vue";
 import { useRouter } from "vue-router";
 import { fetchEntries, fetchEntryYears, fetchAllInspections, getStatsTimerange, getStats, getTeamStats } from "../api";
 import { useNotification } from "@shared/useNotification.js";
+import { useStickyColumns } from "@shared/useStickyColumns.js";
+import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 
 const { error } = useNotification();
 const router = useRouter();
+
+const tableRef = ref(null);
+const { stickyCols, lineX, startDrag } = useStickyColumns({
+  storageKey: "queue-stats-sticky-cols",
+  tableRef,
+  columnSelectors: [".col-num", ".col-team"],
+});
 
 const entries = ref({});
 const inspections = ref([]);
@@ -254,8 +263,8 @@ function goBack() {
         <div v-if="loading" class="loading">
           <div class="loading-spinner"></div>
         </div>
-        <div v-else class="table-container">
-          <table class="stats-table">
+        <div v-else class="table-container sticky-host">
+          <table ref="tableRef" class="stats-table" :data-sticky-cols="stickyCols">
             <thead>
               <tr>
                 <th class="col-num sortable" @click="toggleSort('num')">
@@ -343,6 +352,7 @@ function goBack() {
               </tr>
             </tbody>
           </table>
+          <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
         </div>
       </div>
     </div>
@@ -489,6 +499,21 @@ function goBack() {
 }
 
 .stats-table thead .col-num {
+  z-index: 3;
+}
+
+.sticky-host {
+  position: relative;
+}
+
+.stats-table[data-sticky-cols="2"] .col-team {
+  position: sticky;
+  left: var(--sticky-l1, 0);
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.stats-table[data-sticky-cols="2"] thead .col-team {
   z-index: 3;
 }
 
