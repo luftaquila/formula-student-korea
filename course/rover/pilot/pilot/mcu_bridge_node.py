@@ -743,6 +743,8 @@ class McuBridgeNode(Node):
                 encoder_left_m=float(data.get('encoder_left_m', 0.0)),
                 encoder_right_m=float(data.get('encoder_right_m', 0.0)),
                 samples=int(data.get('samples', 0)),
+                arc_radius_m=data.get('arc_radius_m'),
+                arc_theta_rad=data.get('arc_theta_rad'),
             )
         except (OSError, ValueError) as exc:
             self.get_logger().warn(f'apply_wheel_scales: persist failed: {exc}')

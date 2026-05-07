@@ -366,10 +366,16 @@ def test_handle_cal_wheels_publishes_apply_when_done(nav, monkeypatch):
     nav._state = State.CAL_WHEELS
     nav._cal_wheels_start_lat = 35.0
     nav._cal_wheels_start_lon = 126.0
-    nav._cal_wheels_enc_l_m = 9.95   # 0.5 % under
-    nav._cal_wheels_enc_r_m = 10.10  # 1 % over
+    # Differential 0.04 m on a 10 m straight drive ⇒ per-wheel scales
+    # 10/9.98 vs 10/10.02 (right wheel rolls slightly bigger than left).
+    nav._cal_wheels_enc_l_m = 9.98
+    nav._cal_wheels_enc_r_m = 10.02
     nav._cal_wheels_samples = 200
     nav._cal_wheels_last_t = time.monotonic()
+    # Straight ENU chord aligned with +n: 50 collinear samples spanning
+    # ~10 m. The arc-aware solver fits a degenerate (infinite-radius)
+    # circle here and falls back to chord-based per-wheel reference.
+    nav._cal_wheels_enu_samples = [(0.0, 10.0 * i / 49) for i in range(50)]
     # Position the rover ~10 m north of start (≈10 m chord on RTK).
     nav._gps_lat = 35.00009  # 10 m / R_EARTH × 180/π ≈ 0.0000898°
     nav._gps_lon = 126.0

@@ -1177,10 +1177,12 @@ class NavigatorNode(Node):
 
         self._stop_motors()
         result = solve_wheel_scales(
-            gps_distance_m=gps_dist,
+            samples_enu=self._cal_wheels_enu_samples,
             encoder_left_m=self._cal_wheels_enc_l_m,
             encoder_right_m=self._cal_wheels_enc_r_m,
             samples=self._cal_wheels_samples,
+            track_width_m=self.get_parameter('track_width').value,
+            gps_distance_m=gps_dist,
         )
         if result['reason'] is not None:
             self.get_logger().warn(f'wheel cal solve failed: {result["reason"]}')
@@ -1200,21 +1202,31 @@ class NavigatorNode(Node):
         # Hand the new scales to mcu_bridge, which persists and applies.
         scale_l = result['scale_l']
         scale_r = result['scale_r']
+        arc_r = result.get('arc_radius_m')
+        arc_th = result.get('arc_theta_rad')
         apply_msg = String()
-        apply_msg.data = json.dumps({
+        apply_payload = {
             'scale_l': scale_l,
             'scale_r': scale_r,
             'gps_distance_m': gps_dist,
             'encoder_left_m': self._cal_wheels_enc_l_m,
             'encoder_right_m': self._cal_wheels_enc_r_m,
             'samples': self._cal_wheels_samples,
-        })
+        }
+        if arc_r is not None:
+            apply_payload['arc_radius_m'] = arc_r
+        if arc_th is not None:
+            apply_payload['arc_theta_rad'] = arc_th
+        apply_msg.data = json.dumps(apply_payload)
         self._pub_apply_wheel_scales.publish(apply_msg)
+        arc_str = (f', arc r={arc_r:.1f} m θ={degrees(arc_th):.1f}°'
+                   if arc_r is not None and arc_th is not None
+                   else ', straight')
         self.get_logger().info(
             f'wheel cal: L={scale_l:.4f} R={scale_r:.4f} '
             f'(gps={gps_dist:.2f} m, encL={self._cal_wheels_enc_l_m:.2f} m, '
             f'encR={self._cal_wheels_enc_r_m:.2f} m, '
-            f'n={self._cal_wheels_samples})'
+            f'n={self._cal_wheels_samples}{arc_str})'
         )
 
         # Steering-trim auto-cal piggy-backs on the same κ=0 chord. We
