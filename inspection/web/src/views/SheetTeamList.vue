@@ -3,8 +3,17 @@ import { ref, onMounted, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { fetchEntries, fetchEntryYears, fetchSheetSummary, fetchVehicleTypes } from "../api";
 import { useNotification } from "@shared/useNotification.js";
+import { useStickyColumns } from "@shared/useStickyColumns.js";
+import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
 import { isAdmin } from "@shared/officialsStore.js";
+
+const tableRef = ref(null);
+const { stickyCols, lineX, startDrag } = useStickyColumns({
+  storageKey: "inspection-sticky-cols",
+  tableRef,
+  columnSelectors: [".col-num", ".col-team", ".col-type"],
+});
 
 const { error } = useNotification();
 const router = useRouter();
@@ -136,8 +145,8 @@ watch(lastInspectorUpdate, (update) => {
       </div>
       <div class="card-body table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
-        <div v-else class="table-container">
-          <table class="data-table sheet-table">
+        <div v-else class="table-container sticky-host">
+          <table ref="tableRef" class="data-table sheet-table" :data-sticky-cols="stickyCols">
             <thead>
               <tr>
                 <th class="col-num">번호</th>
@@ -179,6 +188,7 @@ watch(lastInspectorUpdate, (update) => {
               </tr>
             </tbody>
           </table>
+          <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
         </div>
       </div>
     </div>
@@ -293,6 +303,31 @@ watch(lastInspectorUpdate, (update) => {
 }
 
 .sheet-table thead .col-num {
+  z-index: 3;
+}
+
+.sticky-host {
+  position: relative;
+}
+
+.sheet-table[data-sticky-cols="2"] .col-team,
+.sheet-table[data-sticky-cols="3"] .col-team {
+  position: sticky;
+  left: var(--sticky-l1, 0);
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.sheet-table[data-sticky-cols="3"] .col-type {
+  position: sticky;
+  left: var(--sticky-l2, 0);
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.sheet-table[data-sticky-cols="2"] thead .col-team,
+.sheet-table[data-sticky-cols="3"] thead .col-team,
+.sheet-table[data-sticky-cols="3"] thead .col-type {
   z-index: 3;
 }
 

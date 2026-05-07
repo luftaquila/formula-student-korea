@@ -13,9 +13,18 @@ import {
   fetchReinspectionStatus,
 } from "../api";
 import { useNotification } from "@shared/useNotification.js";
+import { useStickyColumns } from "@shared/useStickyColumns.js";
+import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 
 const { success, error } = useNotification();
 const router = useRouter();
+
+const tableRef = ref(null);
+const { stickyCols, lineX, startDrag } = useStickyColumns({
+  storageKey: "queue-priority-sticky-cols",
+  tableRef,
+  columnSelectors: [".col-num", ".col-team"],
+});
 
 const entries = ref({});
 const inspections = ref([]);
@@ -256,8 +265,8 @@ function goBack() {
         <div v-if="loading" class="loading">
           <div class="loading-spinner"></div>
         </div>
-        <div v-else class="table-container">
-          <table class="priority-table">
+        <div v-else class="table-container sticky-host">
+          <table ref="tableRef" class="priority-table" :data-sticky-cols="stickyCols">
             <thead>
               <tr>
                 <th class="col-num">번호</th>
@@ -346,6 +355,7 @@ function goBack() {
               </tr>
             </tbody>
           </table>
+          <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
         </div>
       </div>
     </div>
@@ -532,6 +542,21 @@ function goBack() {
 }
 
 .priority-table thead .col-num {
+  z-index: 3;
+}
+
+.sticky-host {
+  position: relative;
+}
+
+.priority-table[data-sticky-cols="2"] .col-team {
+  position: sticky;
+  left: var(--sticky-l1, 0);
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.priority-table[data-sticky-cols="2"] thead .col-team {
   z-index: 3;
 }
 
