@@ -470,17 +470,20 @@ def test_handle_cal_wheels_accumulates_steering_trim(nav, monkeypatch, tmp_path)
 
 
 def test_handle_cal_wheels_rejects_accumulated_trim_over_bound(nav, monkeypatch, tmp_path):
-    """If the persisted trim is already near the ±50 µs sanity bound and
-    the new delta would push it past, the cal must NOT overwrite the
-    existing trim. mcu_bridge would reject the apply message anyway,
-    but failing soft on the navigator side keeps the audit trail clean
-    (the result payload reports the reason)."""
+    """If the persisted trim is already near the ±TRIM_BOUND_US sanity
+    bound and the new delta would push it past, the cal must NOT
+    overwrite the existing trim. mcu_bridge would reject the apply
+    message anyway, but failing soft on the navigator side keeps the
+    audit trail clean (the result payload reports the reason)."""
     monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
-    from pilot.lib.steering_calibration import save_steering_trim
+    from pilot.lib.steering_calibration import TRIM_BOUND_US, save_steering_trim
     from pilot import navigator_node as nn
 
+    # Seed trim 5 µs under the bound; a 10 µs delta in the same
+    # direction will push it 5 µs over.
+    seeded = -(TRIM_BOUND_US - 5.0)
     save_steering_trim(
-        -45.0,
+        seeded,
         radius_m=10.0,
         rms_residual_m=0.01,
         samples=200,
@@ -488,7 +491,6 @@ def test_handle_cal_wheels_rejects_accumulated_trim_over_bound(nav, monkeypatch,
     )
 
     def fake_solve(**_kw):
-        # Delta -10 µs would push accumulated to -55 µs > ±50 bound.
         return {
             'trim_us': -10.0,
             'radius_m': -40.0,

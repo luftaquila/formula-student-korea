@@ -64,11 +64,15 @@ import time
 STEERING_TRIM_FILENAME = 'steering_trim.json'
 
 # Sanity bound. Servo full-lock is ±servo_range_us (typically ±500 µs);
-# 50 µs = 10 % of full-lock is already a *huge* steering bias for a
-# centred rover. Anything bigger is pathological and shouldn't be applied
-# blindly because it'd push out one side of the steering range when the
-# operator commands max-lock toward the same side.
-TRIM_BOUND_US = 50.0
+# 80 µs = 16 % of full-lock — a large steering bias but still leaves
+# 84 % of the lock range on the worst side. Field measurements on this
+# chassis hit −56 µs accumulated trim with the cal solver still
+# requesting more correction (residual κ_bias from front-wheel
+# alignment not yet cancelled), so 50 µs as the prior bound was below
+# the actual mechanical bias. Above 80 µs we still refuse — that
+# magnitude points at encoder slip, GPS chord error, or a wheel
+# alignment problem the cal can't fix.
+TRIM_BOUND_US = 80.0
 
 # Solver acceptance gates. The chord noise floor over 10 m at RTK 1 cm
 # 1σ is < 0.2 % of the chord, so we can resolve trim down to a few µs;

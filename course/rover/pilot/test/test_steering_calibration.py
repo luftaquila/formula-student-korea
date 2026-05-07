@@ -138,10 +138,12 @@ class TestSolverGates:
         assert result['trim_us'] == 0.0
 
     def test_huge_bias_rejected(self):
-        # Radius 5 m on a κ=0 commanded drive is pathological — κ ≈ 0.2,
-        # which would produce a trim of ~80 µs. That's beyond TRIM_BOUND_US;
-        # the solver must refuse to persist it.
-        pts = _arc(5.0, n=200, total_angle_rad=math.pi / 4)
+        # Radius 3 m on a κ=0 commanded drive is pathological — κ ≈ 0.33,
+        # which produces a trim of ~135 µs. That's well beyond
+        # TRIM_BOUND_US (80 µs); the solver must refuse to persist it.
+        # Margin chosen so the test is unambiguous if TRIM_BOUND_US is
+        # tweaked again — anything above ~100 µs of trim is pathological.
+        pts = _arc(3.0, n=200, total_angle_rad=math.pi / 4)
         result = solve_steering_trim(
             samples=pts, kappa_max=KAPPA_MAX,
             servo_range_us=SERVO_RANGE, drive_distance_m=10.0,
