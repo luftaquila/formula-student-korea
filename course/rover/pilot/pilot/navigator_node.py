@@ -49,7 +49,7 @@ import os
 import tempfile
 import time
 from enum import Enum
-from math import radians, degrees, hypot, cos, sin, tan, isfinite
+from math import radians, degrees, hypot, cos, sin, tan, isfinite, pi
 
 import rclpy
 from rclpy.node import Node
@@ -1421,11 +1421,29 @@ class NavigatorNode(Node):
     def _cal_antenna_step_scurve(self):
         """Drive sinusoidal κ for N periods, sample (chassis, antenna).
 
-        Chassis pose integrates open-loop from MCU encoder odometry — we
-        deliberately don't apply GPS feedback because the GPS observation
-        IS the data we're fitting. Encoder drift over the ~10 s drive is
-        small enough on smooth ground (~0.5° ψ, ~5 cm xy) that it doesn't
-        meaningfully bias the LSQ.
+        ψ source — GPS heading-of-motion (snapped at every fresh fix)
+        with commanded-κ × encoder-v integration filling the gap between
+        fixes. The earlier pure-encoder integration blew up to ~1 m of
+        pose drift on the second period of the SCURVE because commanded
+        κ doesn't track actual rover ψ at v=0.8/κ_max=0.3 (servo lag,
+        tyre scrub, mechanical asymmetry) — the LSQ residual stayed at
+        25-40 cm even after trim and wheel-scale convergence. GPS
+        heading-of-motion has cm-class accuracy at our drive speeds and
+        bounds the integration drift to one inter-fix interval (~0.2 s)
+        instead of the whole drive.
+
+        Antenna heading-of-motion ≠ chassis heading exactly: with offset
+        a_x ≈ 0.30 m and ω ≈ 0.24 rad/s peak, the antenna's velocity
+        direction differs from chassis ψ by atan(ω·a_x / v) ≈ 5°. That
+        residual bias is dwarfed by the 1 m of pure-integration drift it
+        replaces, so the trade is net positive even before iterative
+        refinement.
+
+        Position (cx, cy) still comes from open-loop encoder integration
+        — we can't lift it from GPS without already knowing the antenna
+        offset (the very thing we're solving for). The accuracy of
+        cx/cy is bounded by the encoder velocity (calibrated to ~0.1 %)
+        rather than the κ-tracking error.
         """
         speed = self.get_parameter('antenna_cal_speed').value
         kappa_max = self.get_parameter('antenna_cal_kappa_max').value
@@ -1442,16 +1460,9 @@ class NavigatorNode(Node):
         kappa = scurve_curvature(elapsed, kappa_max, period_s)
         self._publish_velocity(speed, kappa)
 
-        # Open-loop pose integration. v comes from the encoder average
-        # (track_width-invariant — both wheels' longitudinal component);
-        # ω uses the *commanded* curvature × velocity rather than the
-        # encoder-differential ω, because the latter mistakes per-wheel
-        # motor imbalance and Ackermann kinematic-conflict slip for
-        # actual chassis rotation. Over 8 s of S-curve those errors
-        # integrate into meters of pose drift, which is what blew up
-        # the antenna LSQ residual to 263 cm last run. Steering trim
-        # plus PID closed-loop velocity now make commanded-κ a faithful
-        # stand-in for actual chassis ω.
+        # Inter-fix integration: short (~0.2 s) bridging between GPS
+        # snaps. Errors here only need to last one GPS interval so even
+        # the imperfect commanded-κ × v model is sufficient.
         v_avg, _omega_enc = self._odom_chassis_kinematics()
         omega = v_avg * kappa
         now = time.monotonic()
@@ -1479,6 +1490,16 @@ class NavigatorNode(Node):
                     self._cal_antenna_start_lat, self._cal_antenna_start_lon,
                 )
                 cx, cy, cpsi = self._cal_antenna_chassis
+                # Snap chassis ψ to GPS heading-of-motion when it's
+                # trustworthy (rover moving fast enough that the speed-
+                # gated heading is published). Replaces the open-loop
+                # integrated ψ so per-sample chassis pose stays close to
+                # ground truth even when commanded-κ tracking is poor.
+                if (self._gps_heading_compass is not None
+                        and self._gps_speed
+                        > self.get_parameter('estimator_psi_min_speed').value):
+                    cpsi = normalize_angle(pi / 2 - self._gps_heading_compass)
+                    self._cal_antenna_chassis = (cx, cy, cpsi)
                 self._cal_antenna_data.append((cx, cy, cpsi, a_e, a_n))
 
     def _cal_antenna_step_solve(self):
