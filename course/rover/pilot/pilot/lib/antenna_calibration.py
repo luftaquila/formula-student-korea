@@ -77,7 +77,7 @@ import math
 import os
 import tempfile
 import time
-from math import cos, sin, sqrt, pi
+from math import atan2, cos, sin, sqrt, pi
 
 
 ANTENNA_OFFSET_FILENAME = 'antenna_offset.json'
@@ -98,6 +98,17 @@ SOLVE_RMS_MAX_M = 0.05
 # (~8.6°) flags a SCURVE that didn't execute (encoder stall, motor
 # failure, mid-drive E-Stop) without rejecting healthy runs.
 SOLVE_PSI_SPREAD_MIN_RAD = 0.15
+
+# Iterative refinement of GPS-heading-of-motion bias. The cal SCURVE
+# samples chassis ψ via GPS heading-of-motion (snapped at every fix),
+# but that heading equals the *antenna's* velocity direction, not the
+# chassis: ψ_GPS = ψ_chassis + atan2(ω·a_x, v − ω·a_y) when the rover
+# rotates. Using ψ_GPS as ψ_chassis underestimates a_x by roughly the
+# same factor (~30 cm true → ~10 cm fitted observed in field). Solve
+# iteratively: fit r₀ with ψ_GPS, correct ψ using r₀, refit r₁, …
+# until r converges. Empirically converges in 3–5 iterations.
+SOLVE_REFINE_MAX_ITERS = 10
+SOLVE_REFINE_TOL_M = 1e-3
 
 
 def antenna_offset_path():
@@ -176,19 +187,27 @@ def solve_antenna_offset(samples):
     """Closed-form LSQ for (a_x, a_y) given calibration-drive samples.
 
     Args:
-        samples: iterable of (chassis_x, chassis_y, chassis_psi,
-                              antenna_obs_x, antenna_obs_y) tuples.
+        samples: iterable of either 5- or 8-tuples per sample:
+                 (chassis_x, chassis_y, chassis_psi,
+                  antenna_obs_x, antenna_obs_y[, omega, v, t]).
+                 The 8-tuple form (with ω, v, elapsed time) enables the
+                 iterative GPS-heading-of-motion bias correction; the
+                 5-tuple form runs only the single-pass fit and matches
+                 the legacy on-disk dump format.
 
     Returns:
         dict with keys {'a_x', 'a_y', 'rms_residual_m', 'samples',
-        'reason'} on success, or {'reason': '<why>'} on failure. Failure
-        causes: not enough samples, residual above acceptance gate.
+        'iterations', 'reason'} on success, or {'reason': '<why>'} on
+        failure. Failure causes: not enough samples, ψ excitation below
+        gate, residual above acceptance gate, offset bound violation.
     """
     samples = list(samples)
     n = len(samples)
     if n < SOLVE_MIN_SAMPLES:
         return {'reason': f'too few samples ({n} < {SOLVE_MIN_SAMPLES})',
                 'samples': n}
+
+    has_dynamics = n > 0 and len(samples[0]) >= 8
 
     # ψ-excitation gate. Unwrap each sample's ψ relative to the first so
     # crossing the ±π boundary doesn't artificially inflate the spread.
@@ -211,22 +230,52 @@ def solve_antenna_offset(samples):
             'samples': n,
         }
 
-    sum_bx = 0.0
-    sum_by = 0.0
-    rotated = []  # cache per-sample R(-ψ)·u for the residual pass
-    for cx, cy, psi, ax, ay in samples:
-        u_x = ax - cx
-        u_y = ay - cy
-        # Body-frame offset implied by THIS sample. Averaging these is the
-        # closed-form LSQ — see module docstring.
-        bx = cos(psi) * u_x + sin(psi) * u_y
-        by = -sin(psi) * u_x + cos(psi) * u_y
-        sum_bx += bx
-        sum_by += by
-        rotated.append((bx, by, psi, u_x, u_y))
+    def _fit(psi_per_sample):
+        """LSQ closed-form averaged R(-ψ)·u, given a ψ value per sample."""
+        sx = 0.0
+        sy = 0.0
+        for (s, psi_use) in zip(samples, psi_per_sample):
+            cx, cy = s[0], s[1]
+            ax, ay = s[3], s[4]
+            u_x = ax - cx
+            u_y = ay - cy
+            sx += cos(psi_use) * u_x + sin(psi_use) * u_y
+            sy += -sin(psi_use) * u_x + cos(psi_use) * u_y
+        return sx / n, sy / n
 
-    a_x = sum_bx / n
-    a_y = sum_by / n
+    # Initial pass: take chassis ψ at face value (legacy behaviour, and
+    # the only thing possible when we don't have dynamics per sample).
+    psi_used = [s[2] for s in samples]
+    a_x, a_y = _fit(psi_used)
+    iterations = 0
+
+    # Iterative refinement of the antenna-vs-chassis heading bias when
+    # ω/v are available. ψ_chassis_i = ψ_GPS_i − atan2(ω·a_x, v − ω·a_y).
+    if has_dynamics:
+        for it in range(SOLVE_REFINE_MAX_ITERS):
+            psi_corr = []
+            for s in samples:
+                psi_gps = s[2]
+                omega = s[5]
+                v = s[6]
+                denom = v - omega * a_y
+                # When the rover is essentially stopped (or moving slower
+                # than the velocity quantum) the GPS heading is undefined
+                # and there's nothing to correct against. Use the snapped
+                # value as-is.
+                if abs(denom) < 0.05:
+                    psi_corr.append(psi_gps)
+                    continue
+                psi_corr.append(psi_gps - atan2(omega * a_x, denom))
+            new_x, new_y = _fit(psi_corr)
+            iterations = it + 1
+            if (abs(new_x - a_x) < SOLVE_REFINE_TOL_M
+                    and abs(new_y - a_y) < SOLVE_REFINE_TOL_M):
+                a_x, a_y = new_x, new_y
+                psi_used = psi_corr
+                break
+            a_x, a_y = new_x, new_y
+            psi_used = psi_corr
 
     # Bound check before residual calc — a wildly wrong offset usually
     # signals chassis-pose drift (encoder slip / yaw bias) rather than a
@@ -235,12 +284,15 @@ def solve_antenna_offset(samples):
     if not (-OFFSET_BOUND_M <= a_x <= OFFSET_BOUND_M
             and -OFFSET_BOUND_M <= a_y <= OFFSET_BOUND_M):
         return {'reason': f'offset out of bounds ({a_x:.2f}, {a_y:.2f})',
-                'samples': n, 'a_x': a_x, 'a_y': a_y}
+                'samples': n, 'a_x': a_x, 'a_y': a_y,
+                'iterations': iterations}
 
     rss = 0.0
-    for _bx, _by, psi, u_x, u_y in rotated:
-        pred_u_x = cos(psi) * a_x - sin(psi) * a_y
-        pred_u_y = sin(psi) * a_x + cos(psi) * a_y
+    for s, psi_use in zip(samples, psi_used):
+        u_x = s[3] - s[0]
+        u_y = s[4] - s[1]
+        pred_u_x = cos(psi_use) * a_x - sin(psi_use) * a_y
+        pred_u_y = sin(psi_use) * a_x + cos(psi_use) * a_y
         rss += (u_x - pred_u_x) ** 2 + (u_y - pred_u_y) ** 2
     rms = sqrt(rss / n)
 
@@ -249,12 +301,14 @@ def solve_antenna_offset(samples):
             'reason': f'residual RMS too high ({rms*100:.1f} cm > '
                       f'{SOLVE_RMS_MAX_M*100:.0f} cm)',
             'samples': n, 'a_x': a_x, 'a_y': a_y, 'rms_residual_m': rms,
+            'iterations': iterations,
         }
 
     return {
         'a_x': a_x, 'a_y': a_y,
         'rms_residual_m': rms,
         'samples': n,
+        'iterations': iterations,
         'reason': None,
     }
 

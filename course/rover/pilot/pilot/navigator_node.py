@@ -1500,7 +1500,14 @@ class NavigatorNode(Node):
                         > self.get_parameter('estimator_psi_min_speed').value):
                     cpsi = normalize_angle(pi / 2 - self._gps_heading_compass)
                     self._cal_antenna_chassis = (cx, cy, cpsi)
-                self._cal_antenna_data.append((cx, cy, cpsi, a_e, a_n))
+                # Store ω, v, and elapsed time alongside chassis/antenna
+                # pose so the solver can iteratively correct the
+                # antenna-vs-chassis heading-of-motion bias
+                # (ψ_GPS − ψ_chassis = atan2(ω·a_x, v − ω·a_y)).
+                t_rel = time.monotonic() - self._cal_antenna_phase_start_t
+                self._cal_antenna_data.append(
+                    (cx, cy, cpsi, a_e, a_n, omega, v_avg, t_rel)
+                )
 
     def _cal_antenna_step_solve(self):
         """Run LSQ, persist on success, publish result either way."""
@@ -1562,8 +1569,11 @@ class NavigatorNode(Node):
                         'rms_residual_m': result.get('rms_residual_m'),
                         'psi_init_rad': self._cal_antenna_psi_init,
                         'samples': [
-                            {'cx': cx, 'cy': cy, 'cpsi': cpsi, 'a_e': a_e, 'a_n': a_n}
-                            for cx, cy, cpsi, a_e, a_n in self._cal_antenna_data
+                            {'cx': cx, 'cy': cy, 'cpsi': cpsi,
+                             'a_e': a_e, 'a_n': a_n,
+                             'omega': om, 'v': v, 't': t}
+                            for cx, cy, cpsi, a_e, a_n, om, v, t
+                            in self._cal_antenna_data
                         ],
                     }, f)
                 self.get_logger().info(f'Antenna-cal failed samples dumped to {dump_path}')

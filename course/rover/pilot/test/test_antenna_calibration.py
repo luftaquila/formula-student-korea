@@ -97,6 +97,51 @@ class TestSolverNoisy:
         assert abs(result['a_y'] - 0.05) < 0.01
 
 
+class TestIterativeRefinement:
+    def _gps_biased_samples(self, true_a_x, true_a_y, n=80):
+        """Synthesise samples where the recorded chassis ψ is the
+        antenna's heading-of-motion (the field condition after the GPS-
+        heading snap fix), to test iterative refinement against a known
+        bias.
+        """
+        from math import atan2
+        out = []
+        for i in range(n):
+            t = i * 0.1
+            psi_chassis = 0.4 * sin(2 * pi * t / 4.0)
+            omega = 0.4 * (2 * pi / 4.0) * cos(2 * pi * t / 4.0)
+            v = 0.8
+            x_c = 0.5 * t
+            y_c = 0.0
+            a_obs_x = x_c + cos(psi_chassis) * true_a_x - sin(psi_chassis) * true_a_y
+            a_obs_y = y_c + sin(psi_chassis) * true_a_x + cos(psi_chassis) * true_a_y
+            # ψ_GPS as the antenna's heading-of-motion — the bias the
+            # iteration is meant to subtract out.
+            psi_gps = psi_chassis + atan2(omega * true_a_x,
+                                          v - omega * true_a_y)
+            out.append((x_c, y_c, psi_gps, a_obs_x, a_obs_y, omega, v, t))
+        return out
+
+    def test_iterative_recovers_truth_under_gps_heading_bias(self):
+        # Single-pass LSQ against ψ_GPS underestimates a_x by ~ω·a_x/v.
+        # The iteration corrects ψ using the running r estimate and
+        # converges to ground truth.
+        samples = self._gps_biased_samples(0.30, 0.0, n=80)
+        result = solve_antenna_offset(samples)
+        assert result['reason'] is None
+        assert result['iterations'] >= 1
+        assert abs(result['a_x'] - 0.30) < 0.01
+        assert abs(result['a_y']) < 0.01
+
+    def test_legacy_5tuple_skips_iteration(self):
+        # Old dump format / pre-fix samples have no ω/v fields. Solver
+        # falls back to the single-pass LSQ without crashing.
+        samples = _synthesize_samples(0.30, 0.05, n=60)
+        result = solve_antenna_offset(samples)
+        assert result['reason'] is None
+        assert result['iterations'] == 0
+
+
 class TestSolverGates:
     def test_too_few_samples(self):
         samples = _synthesize_samples(0.3, 0.0, n=SOLVE_MIN_SAMPLES - 1)
