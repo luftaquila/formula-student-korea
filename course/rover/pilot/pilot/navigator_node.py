@@ -67,8 +67,8 @@ from pilot.lib.path_planner import plan as plan_path
 from pilot.lib.path_tracker import CruiseTracker, DockTracker
 from pilot.lib.antenna_calibration import (
     OFFSET_BOUND_M,
-    load_antenna_offset, save_antenna_offset, solve_antenna_offset,
-    scurve_curvature,
+    load_antenna_offset, save_antenna_offset,
+    solve_antenna_offset_circular,
 )
 from pilot.lib.wheel_calibration import solve_wheel_scales
 from pilot.lib.steering_calibration import (
@@ -92,8 +92,8 @@ class State(Enum):
 class CalAntennaPhase(Enum):
     """Sub-phases of the antenna offset auto-calibration drive."""
     STRAIGHT = 'straight'   # κ = 0, chord-fit ψ_init from antenna ENU
-    SCURVE = 'scurve'       # κ(t) sign-alternating sinusoid, sample chassis pose vs antenna
-    SOLVE = 'solve'         # stop, run LSQ, persist, publish result
+    CIRCLE = 'circle'       # constant κ = 1/R for N revolutions, sample chassis vs antenna
+    SOLVE = 'solve'         # stop, fit two circles + phase, persist, publish
 
 
 class NavigatorNode(Node):
@@ -167,9 +167,19 @@ class NavigatorNode(Node):
 
         # Antenna offset auto-calibration drive shape.
         self.declare_parameter('antenna_cal_straight_distance', 2.0)
-        self.declare_parameter('antenna_cal_kappa_max', 0.5)
-        self.declare_parameter('antenna_cal_period_s', 4.0)
-        self.declare_parameter('antenna_cal_periods', 2)
+        # Constant-κ orbit drive: κ = sign / radius. The closed-form solver
+        # extracts (a_x, a_y) from the orbit geometry alone — no instantaneous
+        # ψ required, so GPS heading-of-motion lag and encoder ω drift over
+        # short timescales don't bias the result. Pick R well inside the
+        # chassis curvature limit (κ_max = 1.2) and big enough that the
+        # encoder integration over the drive (~15-25 s at v=1) doesn't
+        # accumulate >1° ψ error.
+        self.declare_parameter('antenna_cal_radius_m', 1.0)
+        self.declare_parameter('antenna_cal_revolutions', 2)
+        # `antenna_cal_sign` controls rotation direction: +1 CCW, -1 CW.
+        # CCW is the default because that's what we've used in the field;
+        # the solver supports both, so flip if site geometry requires.
+        self.declare_parameter('antenna_cal_sign', 1)
         self.declare_parameter('antenna_cal_speed', 0.8)
 
         # Wheel scale auto-calibration (CAL_WHEELS state). Drives a
@@ -323,17 +333,21 @@ class NavigatorNode(Node):
 
         # Antenna offset auto-calibration state.
         self._cal_antenna_phase = None
-        self._cal_antenna_chassis = None     # integrated (x, y, ψ) during scurve
+        self._cal_antenna_chassis = None     # integrated (x, y, ψ) during circle
         self._cal_antenna_psi_init = None
         self._cal_antenna_start_lat = None
         self._cal_antenna_start_lon = None
         self._cal_antenna_samples = []       # for chord fit during straight phase
-        self._cal_antenna_data = []          # (x_c, y_c, ψ, a_obs_x, a_obs_y) during scurve
+        self._cal_antenna_data = []          # (x_c, y_c, ψ, a_obs_x, a_obs_y) during circle
         self._cal_antenna_phase_start_t = 0.0
         self._cal_antenna_last_predict_t = None
         self._cal_antenna_last_gps_idx = -1
         self._cal_antenna_drive_distance = 0.0
         self._cal_antenna_extended = False
+        # Cumulative orbit angle (Σ ω·dt) since CIRCLE phase started. Used as
+        # the termination condition (revolutions completed) since cpsi wraps
+        # to ±π and can't be compared against 2π·N directly.
+        self._cal_antenna_orbit_angle = 0.0
 
         # Published state dedup.
         self._last_published_state = None
@@ -612,6 +626,7 @@ class NavigatorNode(Node):
         self._cal_antenna_last_gps_idx = -1
         self._cal_antenna_drive_distance = 0.0
         self._cal_antenna_extended = False
+        self._cal_antenna_orbit_angle = 0.0
         self._fix_degraded_since = None
         self.get_logger().info('Antenna offset auto-calibration started')
         self._set_state(State.CAL_ANTENNA)
@@ -1338,8 +1353,8 @@ class NavigatorNode(Node):
     def _handle_cal_antenna(self):
         if self._cal_antenna_phase == CalAntennaPhase.STRAIGHT:
             self._cal_antenna_step_straight()
-        elif self._cal_antenna_phase == CalAntennaPhase.SCURVE:
-            self._cal_antenna_step_scurve()
+        elif self._cal_antenna_phase == CalAntennaPhase.CIRCLE:
+            self._cal_antenna_step_circle()
         elif self._cal_antenna_phase == CalAntennaPhase.SOLVE:
             self._cal_antenna_step_solve()
 
@@ -1401,74 +1416,78 @@ class NavigatorNode(Node):
             return
 
         # Bootstrap the chassis pose. The "chassis" reference is the rear
-        # axle; we don't know yet where it is in world frame because we
-        # don't know the offset (that's what we're solving for). Anchor it
+        # axle; we don't know its world-frame position because we don't
+        # know the offset yet (that's what we're solving for). Anchor it
         # at the GPS antenna position with zero offset assumption — the
-        # math doesn't care about an absolute origin, only the per-sample
-        # consistency of (chassis pose, antenna observation). The chord
-        # gave us ψ_init; the SCURVE phase integrates from there.
+        # closed-form circular solver only depends on the per-sample
+        # consistency between chassis_xy and antenna_obs being in the
+        # SAME frame, not on an absolute origin. The chord fit gave us
+        # ψ_init so the chassis frame is rotation-aligned with ENU.
         self._cal_antenna_psi_init = psi_math
         self._cal_antenna_chassis = (e, n, psi_math)
-        self._cal_antenna_phase = CalAntennaPhase.SCURVE
+        self._cal_antenna_phase = CalAntennaPhase.CIRCLE
         self._cal_antenna_phase_start_t = time.monotonic()
         self._cal_antenna_last_predict_t = None
         self._cal_antenna_drive_distance = dist
         self.get_logger().info(
             f'Antenna-cal straight done: ψ_init={degrees(psi_math):.1f}° '
-            f'(chord={chord_len:.2f} m, rms={rms*100:.1f} cm) → S-curve'
+            f'(chord={chord_len:.2f} m, rms={rms*100:.1f} cm) → circle'
         )
 
-    def _cal_antenna_step_scurve(self):
-        """Drive sinusoidal κ for N periods, sample (chassis, antenna).
+    def _cal_antenna_step_circle(self):
+        """Drive constant κ = sign / R for N revolutions, sample chassis vs antenna.
 
-        ψ source — GPS heading-of-motion (snapped at every fresh fix)
-        with commanded-κ × encoder-v integration filling the gap between
-        fixes. The earlier pure-encoder integration blew up to ~1 m of
-        pose drift on the second period of the SCURVE because commanded
-        κ doesn't track actual rover ψ at v=0.8/κ_max=0.3 (servo lag,
-        tyre scrub, mechanical asymmetry) — the LSQ residual stayed at
-        25-40 cm even after trim and wheel-scale convergence. GPS
-        heading-of-motion has cm-class accuracy at our drive speeds and
-        bounds the integration drift to one inter-fix interval (~0.2 s)
-        instead of the whole drive.
+        The closed-form circular solver fits two circles (chassis trace and
+        antenna trace) and recovers (a_x, a_y) from their common centre and
+        the constant phase offset between their orbit angles. It does NOT
+        consume per-sample chassis ψ, so this phase deliberately omits the
+        GPS heading-of-motion snap that the SCURVE phase relied on — that
+        snap injected ~100 ms doppler lag into chassis_xy integration, which
+        rotated the recovered r vector while preserving |r|.
 
-        Antenna heading-of-motion ≠ chassis heading exactly: with offset
-        a_x ≈ 0.30 m and ω ≈ 0.24 rad/s peak, the antenna's velocity
-        direction differs from chassis ψ by atan(ω·a_x / v) ≈ 5°. That
-        residual bias is dwarfed by the 1 m of pure-integration drift it
-        replaces, so the trade is net positive even before iterative
-        refinement.
-
-        Position (cx, cy) still comes from open-loop encoder integration
-        — we can't lift it from GPS without already knowing the antenna
-        offset (the very thing we're solving for). The accuracy of
-        cx/cy is bounded by the encoder velocity (calibrated to ~0.1 %)
-        rather than the κ-tracking error.
+        Chassis_xy is open-loop integrated from encoder ω + v. Wheel scales
+        are already calibrated (sub-0.2% per side), so the differential ω is
+        a direct measurement of chassis rotation. Over a 15-25 s drive on
+        smooth ground the cumulative ψ drift is well under 1°, which
+        translates to a bounded distortion of the chassis circle fit that
+        the rms gate (10 cm) catches if it does sneak through.
         """
         speed = self.get_parameter('antenna_cal_speed').value
-        kappa_max = self.get_parameter('antenna_cal_kappa_max').value
-        period_s = self.get_parameter('antenna_cal_period_s').value
-        periods = self.get_parameter('antenna_cal_periods').value
+        radius = self.get_parameter('antenna_cal_radius_m').value
+        revolutions = max(1, int(self.get_parameter('antenna_cal_revolutions').value))
+        sign_raw = int(self.get_parameter('antenna_cal_sign').value)
+        sign = 1 if sign_raw >= 0 else -1
 
+        if radius <= 0:
+            self._stop_motors()
+            self._publish_cal_antenna_result(
+                ok=False,
+                reason=f'antenna_cal_radius_m must be > 0 (got {radius})',
+            )
+            self._set_state(State.IDLE)
+            return
+
+        # Termination: completed the requested orbit angle, OR safety cap
+        # at 1.5× nominal duration in case encoder ω lags commanded.
+        target_orbit_angle = 2.0 * pi * revolutions
         elapsed = time.monotonic() - self._cal_antenna_phase_start_t
-        total = period_s * max(1, int(periods))
-        if elapsed >= total:
+        nominal_t = (2.0 * pi * radius * revolutions) / max(speed, 0.1)
+        if (abs(self._cal_antenna_orbit_angle) >= target_orbit_angle
+                or elapsed > 1.5 * nominal_t):
             self._stop_motors()
             self._cal_antenna_phase = CalAntennaPhase.SOLVE
             return
 
-        kappa = scurve_curvature(elapsed, kappa_max, period_s)
+        kappa = sign / radius
+        # Clamp to physical curvature limit — defends against a misconfigured
+        # cal_radius_m smaller than the chassis can actually turn.
+        kappa_cap = self.get_parameter('max_curvature').value
+        if abs(kappa) > kappa_cap:
+            kappa = kappa_cap if kappa > 0 else -kappa_cap
         self._publish_velocity(speed, kappa)
 
-        # Inter-fix integration: short (~0.2 s) bridging between GPS
-        # snaps. With wheel scales now calibrated (sub-0.2 % per side)
-        # the encoder-differential ω = (v_R − v_L) / track is a direct
-        # measurement of chassis rotation. Earlier code used commanded
-        # κ × v_avg as a stand-in because uncalibrated scales let
-        # per-wheel imbalance leak into the diff; that imbalance is now
-        # absorbed by the wheel-cal scales. Encoder-diff also captures
-        # servo lag and steering compliance that commanded κ misses,
-        # which is exactly the ω error the iterative LSQ relies on.
+        # Encoder-only chassis pose integration. No GPS heading snap (see
+        # docstring above for why).
         v_avg, omega = self._odom_chassis_kinematics()
         now = time.monotonic()
         if self._cal_antenna_last_predict_t is None:
@@ -1484,9 +1503,10 @@ class NavigatorNode(Node):
                 cpsi = normalize_angle(cpsi + omega * dt)
                 self._cal_antenna_chassis = (cx, cy, cpsi)
                 self._cal_antenna_drive_distance += abs(v_avg) * dt
+                self._cal_antenna_orbit_angle += omega * dt
 
-        # Record one sample per fresh GPS fix. We dedupe via _last_gps_time
-        # rather than position so we capture every truly new measurement.
+        # Record one sample per fresh GPS fix. Dedupe via _last_gps_time so
+        # we never emit two samples for the same fix.
         if self._cal_antenna_last_gps_idx != int(self._last_gps_time * 1000):
             self._cal_antenna_last_gps_idx = int(self._last_gps_time * 1000)
             if self._gps_lat is not None:
@@ -1495,28 +1515,11 @@ class NavigatorNode(Node):
                     self._cal_antenna_start_lat, self._cal_antenna_start_lon,
                 )
                 cx, cy, cpsi = self._cal_antenna_chassis
-                # Snap chassis ψ to GPS heading-of-motion when it's
-                # trustworthy (rover moving fast enough that the speed-
-                # gated heading is published). Replaces the open-loop
-                # integrated ψ so per-sample chassis pose stays close to
-                # ground truth even when commanded-κ tracking is poor.
-                if (self._gps_heading_compass is not None
-                        and self._gps_speed
-                        > self.get_parameter('estimator_psi_min_speed').value):
-                    cpsi = normalize_angle(pi / 2 - self._gps_heading_compass)
-                    self._cal_antenna_chassis = (cx, cy, cpsi)
-                # Store ω, v, and elapsed time alongside chassis/antenna
-                # pose so the solver can iteratively correct the
-                # antenna-vs-chassis heading-of-motion bias
-                # (ψ_GPS − ψ_chassis = atan2(ω·a_x, v − ω·a_y)).
-                t_rel = time.monotonic() - self._cal_antenna_phase_start_t
-                self._cal_antenna_data.append(
-                    (cx, cy, cpsi, a_e, a_n, omega, v_avg, t_rel)
-                )
+                self._cal_antenna_data.append((cx, cy, cpsi, a_e, a_n))
 
     def _cal_antenna_step_solve(self):
-        """Run LSQ, persist on success, publish result either way."""
-        result = solve_antenna_offset(self._cal_antenna_data)
+        """Run circular fit, persist on success, publish result either way."""
+        result = solve_antenna_offset_circular(self._cal_antenna_data)
         ok = result.get('reason') is None
         if ok:
             try:
@@ -1573,11 +1576,15 @@ class NavigatorNode(Node):
                         'candidate_a_y': result.get('a_y'),
                         'rms_residual_m': result.get('rms_residual_m'),
                         'psi_init_rad': self._cal_antenna_psi_init,
+                        'circle_R_m': result.get('circle_R_m'),
+                        'circle_rho_m': result.get('circle_rho_m'),
+                        'phase_phi_rad': result.get('phase_phi_rad'),
+                        'rotation_sign': result.get('rotation_sign'),
+                        'centre_dist_m': result.get('centre_dist_m'),
                         'samples': [
                             {'cx': cx, 'cy': cy, 'cpsi': cpsi,
-                             'a_e': a_e, 'a_n': a_n,
-                             'omega': om, 'v': v, 't': t}
-                            for cx, cy, cpsi, a_e, a_n, om, v, t
+                             'a_e': a_e, 'a_n': a_n}
+                            for cx, cy, cpsi, a_e, a_n
                             in self._cal_antenna_data
                         ],
                     }, f)

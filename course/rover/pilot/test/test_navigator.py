@@ -302,28 +302,28 @@ def test_emergency_stop_during_cal_antenna(nav):
     assert nav._state == State.EMERGENCY_STOP
 
 
-def test_cal_antenna_scurve_step_does_not_crash(nav, monkeypatch):
-    """Regression for the SCURVE NameError introduced in 66b75ab.
+def test_cal_antenna_circle_step_does_not_crash(nav, monkeypatch):
+    """Regression: bare cos()/sin() must be in navigator_node's namespace.
 
-    The scurve sub-step uses bare cos()/sin() and would NameError on the
-    second tick if math symbols aren't imported into navigator_node's
-    namespace. This test takes the path that calls _cal_antenna_step_scurve
-    twice (so the dt-gated integration body runs at least once) with valid
-    odom + GPS state, and asserts no exception escapes.
+    The circle sub-step integrates chassis pose with cos()/sin() — a
+    missing import would NameError on the second tick (when the dt-gated
+    integration body actually runs). Drives two ticks with valid odom and
+    GPS state and asserts no exception escapes.
     """
     from pilot.navigator_node import CalAntennaPhase
     nav._state = State.CAL_ANTENNA
-    nav._cal_antenna_phase = CalAntennaPhase.SCURVE
+    nav._cal_antenna_phase = CalAntennaPhase.CIRCLE
     nav._cal_antenna_chassis = (0.0, 0.0, 0.0)
     nav._cal_antenna_psi_init = 0.0
     nav._cal_antenna_start_lat = 35.0
     nav._cal_antenna_start_lon = 126.0
     nav._cal_antenna_phase_start_t = time.monotonic()
+    nav._cal_antenna_orbit_angle = 0.0
     nav._odom_v_left = 0.5
     nav._odom_v_right = 0.5
-    nav._cal_antenna_step_scurve()  # primes _cal_antenna_last_predict_t
+    nav._cal_antenna_step_circle()  # primes _cal_antenna_last_predict_t
     # Second tick exercises the integration body where cos/sin are called.
-    nav._cal_antenna_step_scurve()
+    nav._cal_antenna_step_circle()
 
 
 # ── Wheel scale auto-calibration ──────────────────────────────────────────

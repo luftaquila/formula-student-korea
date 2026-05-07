@@ -214,7 +214,7 @@ def test_modules_import_cleanly():
     )
     # Pinning attributes that have been the locus of import-related
     # regressions before:
-    assert hasattr(antenna_calibration, 'scurve_curvature')
+    assert hasattr(antenna_calibration, 'solve_antenna_offset_circular')
     assert hasattr(antenna_calibration, 'SOLVE_PSI_SPREAD_MIN_RAD')
     assert hasattr(wheel_calibration, 'solve_wheel_scales')
     assert hasattr(path_tracker, 'CruiseTracker')
