@@ -3,10 +3,19 @@ import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { Notyf } from "notyf";
 import { request, fetchEntries, fetchVehicleTypes } from "../api.js";
+import { useStickyColumns } from "@shared/useStickyColumns.js";
+import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 
 const route = useRoute();
 const router = useRouter();
 const notyf = new Notyf({ duration: 3000, position: { x: "right", y: "top" } });
+
+const tableRef = ref(null);
+const { stickyCols, lineX, startDrag } = useStickyColumns({
+  storageKey: "documents-session-sticky-cols",
+  tableRef,
+  columnSelectors: [".col-num", ".col-team", ".col-type"],
+});
 
 const BASE_URL = import.meta.env.PROD ? "/documents" : "";
 
@@ -224,8 +233,8 @@ onMounted(loadStatus);
           </div>
         </div>
         <div class="card-body table-body">
-          <div class="table-container">
-            <table class="data-table detail-table">
+          <div class="table-container sticky-host">
+            <table ref="tableRef" class="data-table detail-table" :data-sticky-cols="stickyCols">
               <thead>
                 <tr>
                   <th class="col-num sortable" @click="handleSort('num')">번호 <span class="sort-icon">{{ getSortIcon('num') }}</span></th>
@@ -306,6 +315,7 @@ onMounted(loadStatus);
                 </template>
               </tbody>
             </table>
+            <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
           </div>
         </div>
       </div>
@@ -407,6 +417,31 @@ onMounted(loadStatus);
 }
 
 .detail-table thead .col-num {
+  z-index: 3;
+}
+
+.sticky-host {
+  position: relative;
+}
+
+.detail-table[data-sticky-cols="2"] .col-team,
+.detail-table[data-sticky-cols="3"] .col-team {
+  position: sticky;
+  left: var(--sticky-l1, 0);
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.detail-table[data-sticky-cols="3"] .col-type {
+  position: sticky;
+  left: var(--sticky-l2, 0);
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.detail-table[data-sticky-cols="2"] thead .col-team,
+.detail-table[data-sticky-cols="3"] thead .col-team,
+.detail-table[data-sticky-cols="3"] thead .col-type {
   z-index: 3;
 }
 

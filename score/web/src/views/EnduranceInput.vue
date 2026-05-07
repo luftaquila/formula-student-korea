@@ -3,10 +3,19 @@ import { ref, onMounted, computed, watch } from "vue";
 import * as XLSX from "xlsx";
 import { fetchEntryYears, fetchEntries, fetchEndurance, fetchScore, updateEndurance } from "../api";
 import { useNotification } from "@shared/useNotification.js";
+import { useStickyColumns } from "@shared/useStickyColumns.js";
+import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();
 const { lastEnduranceUpdate, lastPenaltyUpdate, reconnected } = useSSE();
+
+const tableRef = ref(null);
+const { stickyCols, lineX, startDrag } = useStickyColumns({
+  storageKey: "score-endurance-sticky-cols",
+  tableRef,
+  columnSelectors: [".col-num", ".col-team"],
+});
 
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
@@ -399,8 +408,8 @@ function exportData(format) {
       </div>
       <div class="card-body table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
-        <div v-else class="table-container">
-          <table class="data-table endurance-table" @keydown="handleKeyNav">
+        <div v-else class="table-container sticky-host">
+          <table ref="tableRef" class="data-table endurance-table" :data-sticky-cols="stickyCols" @keydown="handleKeyNav">
             <thead>
               <tr>
                 <th class="col-num" rowspan="2">번호</th>
@@ -477,6 +486,7 @@ function exportData(format) {
               </tr>
             </tbody>
           </table>
+          <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
         </div>
       </div>
     </div>
@@ -647,6 +657,21 @@ function exportData(format) {
 }
 
 .endurance-table thead .col-num {
+  z-index: 3;
+}
+
+.sticky-host {
+  position: relative;
+}
+
+.endurance-table[data-sticky-cols="2"] .col-team {
+  position: sticky;
+  left: var(--sticky-l1, 0);
+  z-index: 1;
+  background: var(--bg-card);
+}
+
+.endurance-table[data-sticky-cols="2"] thead .col-team {
   z-index: 3;
 }
 
