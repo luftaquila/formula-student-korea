@@ -116,7 +116,8 @@ function handleDelete(num) {
 </script>
 
 <template>
-  <div class="table-wrapper sticky-host">
+  <div class="sticky-host">
+    <div class="table-wrapper">
     <table ref="tableRef" class="entry-table" :data-sticky-cols="stickyCols">
       <thead>
         <tr>
@@ -219,6 +220,7 @@ function handleDelete(num) {
         </tr>
       </tbody>
     </table>
+    </div>
     <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
   </div>
 </template>

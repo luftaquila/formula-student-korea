@@ -263,7 +263,8 @@ function goBack() {
         <div v-if="loading" class="loading">
           <div class="loading-spinner"></div>
         </div>
-        <div v-else class="table-container sticky-host">
+        <div v-else class="sticky-host">
+          <div class="table-container">
           <table ref="tableRef" class="stats-table" :data-sticky-cols="stickyCols">
             <thead>
               <tr>
@@ -352,6 +353,7 @@ function goBack() {
               </tr>
             </tbody>
           </table>
+          </div>
           <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
         </div>
       </div>
