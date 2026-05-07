@@ -145,7 +145,8 @@ watch(lastInspectorUpdate, (update) => {
       </div>
       <div class="card-body table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
-        <div v-else class="table-container sticky-host">
+        <div v-else class="sticky-host">
+          <div class="table-container">
           <table ref="tableRef" class="data-table sheet-table" :data-sticky-cols="stickyCols">
             <thead>
               <tr>
@@ -188,6 +189,7 @@ watch(lastInspectorUpdate, (update) => {
               </tr>
             </tbody>
           </table>
+          </div>
           <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
         </div>
       </div>
