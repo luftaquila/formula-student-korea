@@ -1,4 +1,4 @@
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
+import { ref, computed, watch, onBeforeUnmount, nextTick } from "vue";
 
 export function useStickyColumns({ storageKey, tableRef, columnSelectors, defaultCols = 1 }) {
   const maxCols = columnSelectors.length;
@@ -126,11 +126,19 @@ export function useStickyColumns({ storageKey, tableRef, columnSelectors, defaul
     window.removeEventListener("keydown", onDragKey);
   }
 
-  onMounted(async () => {
-    await nextTick();
-    measure();
-    attachObserver();
-  });
+  watch(
+    tableRef,
+    async (el) => {
+      if (el) {
+        await nextTick();
+        measure();
+        attachObserver();
+      } else {
+        detachObserver();
+      }
+    },
+    { immediate: true, flush: "post" },
+  );
 
   onBeforeUnmount(() => {
     detachObserver();
