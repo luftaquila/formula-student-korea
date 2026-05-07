@@ -98,40 +98,95 @@ class TestSolverNoisy:
 
 
 class TestIterativeRefinement:
-    def _gps_biased_samples(self, true_a_x, true_a_y, n=80):
-        """Synthesise samples where the recorded chassis ψ is the
-        antenna's heading-of-motion (the field condition after the GPS-
-        heading snap fix), to test iterative refinement against a known
-        bias.
+    def _field_biased_samples(self, true_a_x, true_a_y, n=120):
+        """Synthesise samples that mirror what the rover records during
+        a real SCURVE cal with the GPS-heading snap fix in place:
+
+          • Chassis heading is integrated commanded κ × v (true rover
+            ψ trajectory).
+          • Recorded ψ is the antenna's heading-of-motion,
+            ψ_GPS = ψ_chassis + atan2(ω·a_x, v − ω·a_y).
+          • Recorded chassis_xy was anchored at antenna(0) and integrated
+            using ψ_GPS (NOT ψ_chassis). This is the second of the two
+            biases the solver must back out — the first being the ψ
+            rotation in the LSQ, the second being the position drift in
+            the integrand.
+          • antenna_obs is rigid-body forward kinematics of the true
+            chassis pose (ground truth).
         """
-        from math import atan2
+        from math import atan2 as _atan2
+        v = 0.8
+        kappa_max = 0.3
+        period_s = 6.0
+        dt_int = 0.05  # integrator step (matches navigator timer rate)
+        # Integrator state.
+        psi_chassis = 0.0
+        chassis_actual_x = 0.0
+        chassis_actual_y = 0.0
+        # Recorded chassis_xy starts at the antenna world position at t=0.
+        ant0_x = chassis_actual_x + cos(psi_chassis) * true_a_x - sin(psi_chassis) * true_a_y
+        ant0_y = chassis_actual_y + sin(psi_chassis) * true_a_x + cos(psi_chassis) * true_a_y
+        recorded_cx = ant0_x
+        recorded_cy = ant0_y
+        psi_recorded = psi_chassis  # initialised at chord-fit value, no ψ_GPS bias at t=0 (ω=0)
         out = []
-        for i in range(n):
-            t = i * 0.1
-            psi_chassis = 0.4 * sin(2 * pi * t / 4.0)
-            omega = 0.4 * (2 * pi / 4.0) * cos(2 * pi * t / 4.0)
-            v = 0.8
-            x_c = 0.5 * t
-            y_c = 0.0
-            a_obs_x = x_c + cos(psi_chassis) * true_a_x - sin(psi_chassis) * true_a_y
-            a_obs_y = y_c + sin(psi_chassis) * true_a_x + cos(psi_chassis) * true_a_y
-            # ψ_GPS as the antenna's heading-of-motion — the bias the
-            # iteration is meant to subtract out.
-            psi_gps = psi_chassis + atan2(omega * true_a_x,
-                                          v - omega * true_a_y)
-            out.append((x_c, y_c, psi_gps, a_obs_x, a_obs_y, omega, v, t))
+        # Step at integrator rate but emit a sample only at GPS rate (10 Hz).
+        gps_period = 0.1
+        next_emit_t = 0.0
+        t = 0.0
+        # Run for two SCURVE periods (sign-alternating κ, like the navigator).
+        total_t = 2 * period_s
+        steps = int(total_t / dt_int) + 1
+        for k in range(steps):
+            kappa = scurve_curvature(t, kappa_max, period_s)
+            omega = v * kappa
+            # Advance true chassis pose.
+            mid_psi = psi_chassis + 0.5 * omega * dt_int
+            chassis_actual_x += v * cos(mid_psi) * dt_int
+            chassis_actual_y += v * sin(mid_psi) * dt_int
+            psi_chassis += omega * dt_int
+            # Advance the recorded (biased) chassis_xy using ψ_recorded.
+            recorded_cx += v * cos(psi_recorded) * dt_int
+            recorded_cy += v * sin(psi_recorded) * dt_int
+            psi_recorded += omega * dt_int  # between snaps, both follow same ω
+            # Emit sample every GPS period.
+            t += dt_int
+            if t < next_emit_t:
+                continue
+            next_emit_t += gps_period
+            # GPS-derived heading-of-motion (snapped onto recorded ψ).
+            denom = v - omega * true_a_y
+            psi_gps = psi_chassis + _atan2(omega * true_a_x, denom)
+            psi_recorded = psi_gps  # snap (the cal does this on every fix)
+            antenna_x = chassis_actual_x + cos(psi_chassis) * true_a_x - sin(psi_chassis) * true_a_y
+            antenna_y = chassis_actual_y + sin(psi_chassis) * true_a_x + cos(psi_chassis) * true_a_y
+            out.append((recorded_cx, recorded_cy, psi_recorded,
+                        antenna_x, antenna_y,
+                        omega, v, t))
         return out
 
-    def test_iterative_recovers_truth_under_gps_heading_bias(self):
-        # Single-pass LSQ against ψ_GPS underestimates a_x by ~ω·a_x/v.
-        # The iteration corrects ψ using the running r estimate and
-        # converges to ground truth.
-        samples = self._gps_biased_samples(0.30, 0.0, n=80)
+    def test_difference_model_recovers_truth_under_field_biases(self):
+        # The single-pass LSQ on this dataset bottoms out near a_x ≈ 0.10
+        # (matches the field result at 30 cm true offset). The iterative
+        # difference-model solver re-integrates chassis_xy using corrected
+        # ψ each pass and converges on truth.
+        samples = self._field_biased_samples(0.30, 0.05, n=120)
+        result = solve_antenna_offset(samples)
+        assert result['reason'] is None, result.get('reason')
+        assert result['iterations'] >= 1
+        assert abs(result['a_x'] - 0.30) < 0.02, result
+        assert abs(result['a_y'] - 0.05) < 0.02, result
+
+    def test_iteration_handles_negative_offset(self):
+        # Antenna mounted to the right of centerline (a_y < 0). The
+        # iteration must converge for both signs — the correction
+        # uses ω·a_x/(v − ω·a_y) so a sign flip in a_y is part of the
+        # nonlinearity it has to handle.
+        samples = self._field_biased_samples(0.30, -0.10, n=120)
         result = solve_antenna_offset(samples)
         assert result['reason'] is None
-        assert result['iterations'] >= 1
-        assert abs(result['a_x'] - 0.30) < 0.01
-        assert abs(result['a_y']) < 0.01
+        assert abs(result['a_x'] - 0.30) < 0.02
+        assert abs(result['a_y'] + 0.10) < 0.02
 
     def test_legacy_5tuple_skips_iteration(self):
         # Old dump format / pre-fix samples have no ω/v fields. Solver
