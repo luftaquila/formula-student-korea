@@ -43,6 +43,17 @@ from pilot.lib.steering_calibration import (
 )
 
 
+# Navigator states that own the velocity stream; manual joystick must be
+# silenced while any of these are active so the autonomy can drive without
+# being override-filtered by ambient UI traffic. Mirrors navigator_node's
+# State enum values; kept here as plain strings so mcu_bridge doesn't have
+# to import the navigator module.
+_AUTONOMOUS_ACTIVE_STATES = frozenset({
+    'CALIBRATING', 'CAL_ANTENNA', 'CAL_WHEELS',
+    'NAVIGATING', 'SETTLING', 'SPRAYING',
+})
+
+
 # 8S LiFePO4 OCV-SOC table (resting voltage, no load).
 # Built from per-cell rest voltage × 8. LiFePO4's discharge curve is
 # extremely flat between ~20% and ~90% SOC (most cells sit at 3.27–3.32 V),
@@ -193,6 +204,19 @@ class McuBridgeNode(Node):
         self._line_buf = b''
 
         reliable = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+
+        # Navigator state — used to lock out manual joystick during
+        # autonomous activity. The browser UI publishes manual_control at
+        # joystick-tick rate even when the operator hasn't touched anything
+        # (the toggle being ON is enough), and that traffic was leaking
+        # through manual_priority_s and starving the calibration / mission
+        # velocity stream — every published cal κ command was getting
+        # filtered out for the entire 1 s priority window, then refreshed
+        # by the next manual tick. Backend lockout instead of UI toggle so
+        # the operator can leave the toggle ON and not bork an in-flight
+        # cal.
+        self._nav_state = 'IDLE'
+        self.create_subscription(String, '/rover/nav/state', self._on_nav_state, 10)
 
         self.create_subscription(Twist, '/rover/cmd/velocity', self._on_velocity, 10)
         self.create_subscription(Twist, '/rover/cmd/manual_control', self._on_manual, 10)
@@ -405,6 +429,14 @@ class McuBridgeNode(Node):
         self._drive(left, right, servo_us)
 
     def _on_manual(self, msg):
+        # Lock out manual joystick during any active autonomous state — the
+        # browser UI publishes here at joystick-tick rate even when the
+        # operator isn't touching the stick, and the navigator's autonomy
+        # would otherwise be silently overridden. _last_manual_t is NOT
+        # updated, so the manual_priority_s window can't be re-armed by
+        # ambient UI traffic.
+        if self._nav_state in _AUTONOMOUS_ACTIVE_STATES:
+            return
         now = time.monotonic()
         self._last_cmd_t = now
         self._last_manual_t = now
@@ -429,6 +461,20 @@ class McuBridgeNode(Node):
             servo_range_us=self._p('servo_range_us'),
         )
         self._drive(left, right, servo_us)
+
+    def _on_nav_state(self, msg):
+        new_state = msg.data
+        # When transitioning INTO an active autonomous state, drop any
+        # stale manual lock so the navigator's first velocity command
+        # isn't filtered by manual_priority_s. Without this, the operator
+        # toggling manual then triggering cal would enter cal with
+        # _last_manual_t fresh and the first 1 s of cal velocity would be
+        # silently dropped.
+        if (new_state in _AUTONOMOUS_ACTIVE_STATES
+                and self._nav_state not in _AUTONOMOUS_ACTIVE_STATES):
+            self._mode = 'autonomous'
+            self._last_manual_t = 0.0
+        self._nav_state = new_state
 
     def _on_estop(self, _msg):
         self._mode = 'stopped'
