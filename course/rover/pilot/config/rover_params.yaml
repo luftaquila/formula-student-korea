@@ -86,8 +86,8 @@ navigator_node:
     pp_handoff_blend_distance: 1.0     # meters from cruise end at which commanded speed begins to taper from cruise_speed → approach_speed
 
     # ── Dock tracker (state-feedback line follower) ─────────────────────
-    dock_k_y: 1.4                      # 1/m — gain on antenna lateral error
-    dock_k_psi: 2.4                    # 1/m — gain on chassis heading error vs path. ζ = k_ψ / (2·√k_y) ≈ 1.01 (near-critical, accounting for steering servo lag).
+    dock_k_y: 6.0                      # 1/m — gain on antenna lateral error. Old 1.4 gave ω_n = v·√k_y = 0.10·1.18 = 0.12 rad/s → forward 2 s closed lateral by 21 % (~1 mm), so the dock cycled forward/reverse without ever closing. 6.0 brings ω_n to 0.245 rad/s and 39 %/sweep, converging in 2-3 cycles.
+    dock_k_psi: 5.0                    # 1/m — gain on chassis heading error vs path. ζ = k_ψ / (2·√k_y) = 5.0 / 4.9 ≈ 1.02 (near-critical) at the new k_y.
     dock_k_i: 0.4                      # 1/(m·s) — integral on antenna lateral error. Cancels constant κ-bias from antenna-offset residual / mast tilt / slope.
     dock_integral_limit: 0.5           # m·s — anti-windup clamp on the integral state.
     approach_tolerance: 0.03           # antenna-to-target distance to declare dock reached. Matched to settle_tolerance — the new dock logic stops on raw distance (no along-track gate), so this directly bounds final landing.
@@ -97,7 +97,7 @@ navigator_node:
     waypoint_tolerance: 0.05           # meters antenna-to-target to consider waypoint hit
     settle_tolerance: 0.03             # meters for tight settle confirmation
     settle_readings: 8                 # consecutive in-tolerance readings to declare settled (was 5; 8 × 50 ms = 400 ms washes out chassis decel + mast ringing)
-    settle_timeout: 10.0               # seconds before settling gives up and sprays anyway
+    settle_timeout: 18.0               # seconds. Bumped from 10 s — the new dock reverse-recovery does ~5 s/cycle (forward 0.20 m + reverse 0.20 m + brake), and convergence to <3 cm at the new k_y takes 2-3 cycles, so 10 s wasn't enough budget.
     spray_timeout: 5.0                 # seconds to wait for spray_done before auto-skip
     stuck_timeout: 12.0                # seconds without progress before retry/skip
     stuck_max_retries: 2
