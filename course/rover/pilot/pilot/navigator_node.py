@@ -1062,22 +1062,20 @@ class NavigatorNode(Node):
             return
 
         if dist > wp_tol:
-            # Antenna has drifted out of tolerance during settling — most
-            # likely a small overshoot or a late GPS correction. Hand back
-            # to the dock tracker, which can creep / reverse to bring it
-            # back. We don't change segment index — the dock segment is
-            # still the active one for this waypoint.
+            # Antenna sits outside settle tolerance — but we DON'T hand
+            # back to the dock tracker here. The chassis already reached
+            # approach_tolerance under the dock controller; any further
+            # apparent distance is dominated by GPS multipath / estimator
+            # catch-up, not by actual chassis motion. Re-arming dock would
+            # see along_to_target flip negative on the next noisy sample,
+            # latch into reverse-recovery, and oscillate forever — exactly
+            # the back-and-forth the operator saw.
+            #
+            # Instead, hold the chassis stopped, reset the settle counter,
+            # and let settle_timeout decide: if the antenna ends up within
+            # waypoint_tolerance at timeout we spray; otherwise we skip.
             self._settle_count = 0
-            seg = self._segments[self._cur_seg_idx] if self._cur_seg_idx < len(self._segments) else None
-            if seg is not None and seg.kind == 'dock':
-                v, kappa, _ = self._dock_tracker.step(
-                    self._estimator.chassis_pose(), seg,
-                    time.monotonic(),
-                    (antenna_e, antenna_n),
-                )
-                self._publish_velocity(v, kappa)
-            else:
-                self._stop_motors()
+            self._stop_motors()
             return
 
         # Inside tolerance.
