@@ -90,7 +90,7 @@ navigator_node:
     dock_k_psi: 2.4                    # 1/m — gain on chassis heading error vs path. ζ = k_ψ / (2·√k_y) ≈ 1.01 (near-critical, accounting for steering servo lag).
     dock_k_i: 0.4                      # 1/(m·s) — integral on antenna lateral error. Cancels constant κ-bias from antenna-offset residual / mast tilt / slope.
     dock_integral_limit: 0.5           # m·s — anti-windup clamp on the integral state.
-    approach_tolerance: 0.10           # meters antenna-to-target to declare dock segment reached
+    approach_tolerance: 0.03           # antenna-to-target distance to declare dock reached. Matched to settle_tolerance — the new dock logic stops on raw distance (no along-track gate), so this directly bounds final landing.
     creep_zone: 0.40                   # meters from target to drop from approach_speed to creep_speed
 
     # ── Tolerances and timeouts ─────────────────────────────────────────

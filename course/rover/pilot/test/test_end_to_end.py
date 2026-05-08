@@ -55,7 +55,7 @@ _TRACKER_PARAMS = {
     'dock_k_psi': 2.4,
     'dock_k_i': 0.4,
     'dock_integral_limit': 0.5,
-    'approach_tolerance': 0.10,
+    'approach_tolerance': 0.03,
     'creep_zone': 0.40,
     'max_curvature': 1.2,
     'wheelbase': WHEELBASE,

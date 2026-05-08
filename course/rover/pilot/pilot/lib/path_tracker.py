@@ -175,10 +175,25 @@ class DockTracker:
         # has no side effects on estimator state).
         self._a_x = float(params['antenna_offset_x'])
         self._a_y = float(params['antenna_offset_y'])
+        # Reverse-recovery state. When the antenna overshoots the target
+        # along the corridor we back up far enough that the next forward
+        # pass has room to close lateral error before re-reaching the
+        # target. Without this, a small lateral residual makes the dock
+        # oscillate one tick past the target and one tick back, never
+        # actually closing.
+        self._reverse_active = False
+        # Distance behind the target (along the corridor) to back up to
+        # before re-engaging forward dock control. 0.20 m gives the
+        # state-feedback law roughly one time-constant of forward travel
+        # to bleed the residual lateral error.
+        self._reverse_recovery_m = float(
+            params.get('dock_reverse_recovery_m', 0.20)
+        )
 
     def reset(self):
         self._integral = 0.0
         self._prev_t = None
+        self._reverse_active = False
 
     def _antenna_world(self, chassis_pose):
         x, y, psi = chassis_pose
@@ -264,19 +279,37 @@ class DockTracker:
                                             sx, sy, psi_path)
         along_to_target = target_along - a_along
 
-        if target_dist <= self._approach_tolerance and along_to_target <= 0.0:
+        # 'reached' as soon as we're inside the approach tolerance,
+        # regardless of along-track sign. The previous version required
+        # along_to_target <= 0 (chassis must have crossed past the target)
+        # which forced an along-track overshoot on every dock and then
+        # short reverse blips that oscillated when lateral wasn't already
+        # closed. Without that constraint, the dock stops as soon as the
+        # antenna is close enough — no overshoot, no oscillation.
+        if target_dist <= self._approach_tolerance:
+            self._reverse_active = False
             return 0.0, 0.0, 'reached'
 
-        # Speed schedule.
+        # Reverse recovery. Once the antenna overshoots the target along
+        # the corridor we don't want a tick-by-tick blip — we want to
+        # back up far enough (`_reverse_recovery_m`) that the next forward
+        # pass has room to close any lateral residual before re-reaching
+        # the target. _reverse_active latches once we cross past the
+        # target, and clears either when we've backed up the full
+        # recovery distance OR when the dock is declared reached above.
         if along_to_target < 0.0:
-            # Antenna has overshot the target along the corridor. Reverse
-            # straight at creep speed; the dock state-feedback law works
-            # symmetrically on (e_y, e_ψ) — but we *don't* steer while
-            # reversing because Ackermann steering inverts in reverse and
-            # that interacts poorly with the linearised gains. Pure
-            # straight-back is enough; once we're behind the target again
-            # the next tick's forward κ corrects the lateral.
-            return -self._creep_speed, 0.0, 'tracking'
+            self._reverse_active = True
+        if self._reverse_active:
+            if along_to_target >= -self._reverse_recovery_m:
+                # Still need to back up further. Pure straight-back —
+                # Ackermann steering inverts in reverse and that interacts
+                # poorly with the linearised gains.
+                return -self._creep_speed, 0.0, 'tracking'
+            # Reached the recovery point. Drop the reverse latch and
+            # let the normal forward state-feedback law take this tick.
+            self._reverse_active = False
+
+        # Speed schedule (forward).
         if target_dist < self._creep_zone:
             speed = self._creep_speed
         else:
