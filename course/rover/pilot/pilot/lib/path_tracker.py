@@ -295,18 +295,22 @@ class DockTracker:
         # back up far enough (`_reverse_recovery_m`) that the next forward
         # pass has room to close any lateral residual before re-reaching
         # the target. _reverse_active latches once we cross past the
-        # target, and clears either when we've backed up the full
-        # recovery distance OR when the dock is declared reached above.
+        # target, and clears once the antenna sits a full recovery
+        # distance behind the target (along_to_target ≥ +recovery_m, since
+        # backing the chassis up the corridor moves a_along DOWN, which
+        # makes along_to_target = target_along - a_along go from negative
+        # toward +recovery_m).
         if along_to_target < 0.0:
             self._reverse_active = True
         if self._reverse_active:
-            if along_to_target >= -self._reverse_recovery_m:
-                # Still need to back up further. Pure straight-back —
-                # Ackermann steering inverts in reverse and that interacts
-                # poorly with the linearised gains.
+            if along_to_target < self._reverse_recovery_m:
+                # Still inside the recovery window. Keep backing up at
+                # creep speed with κ=0 — Ackermann steering inverts in
+                # reverse and interacts poorly with the linearised gains.
                 return -self._creep_speed, 0.0, 'tracking'
-            # Reached the recovery point. Drop the reverse latch and
-            # let the normal forward state-feedback law take this tick.
+            # Backed up the full recovery distance behind the target.
+            # Drop the reverse latch and let the normal forward state-
+            # feedback law take this tick.
             self._reverse_active = False
 
         # Speed schedule (forward).
@@ -314,5 +318,16 @@ class DockTracker:
             speed = self._creep_speed
         else:
             speed = self._approach_speed
+
+        # Dist-proportional brake near the 'reached' threshold. Without
+        # this, the chassis hits v=0 abruptly at approach_tolerance and
+        # rolls forward several cm on inertia + PID tracking lag, which
+        # showed up as a 5-10 cm overshoot at the first waypoint of every
+        # mission. Linear ramp from creep_speed at 2× threshold down to
+        # 20% of creep_speed at the threshold itself.
+        brake_zone = max(2.0 * self._approach_tolerance, 0.05)
+        if target_dist < brake_zone:
+            ramp = max(target_dist / brake_zone, 0.2)
+            speed *= ramp
 
         return speed, kappa, 'tracking'

@@ -54,7 +54,7 @@ navigator_node:
     # ── Speeds ──────────────────────────────────────────────────────────
     cruise_speed: 1.0                  # m/s during cruise segments
     approach_speed: 0.4                # m/s on the dock corridor (precision)
-    creep_speed: 0.18                  # m/s for fine corrections / overshoot reverse
+    creep_speed: 0.10                  # m/s for fine corrections / overshoot reverse. Halved from 0.18 so the chassis can stop within approach_tolerance instead of rolling several cm past on inertia + PID lag at the dock 'reached' threshold.
     calibration_speed: 0.5             # m/s during cold-start heading discovery (must exceed gps_node.heading_speed_threshold by margin)
     # Antenna offset auto-cal drive speed. v = 0.5 m/s on R = 1.5 m keeps
     # lateral acceleration v²/R ≈ 0.17 m/s², low enough that wheel slip /
