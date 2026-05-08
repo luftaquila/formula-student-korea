@@ -1020,7 +1020,25 @@ class NavigatorNode(Node):
         settle_readings = self.get_parameter('settle_readings').value
         settle_timeout = self.get_parameter('settle_timeout').value
 
+        # Diagnostic: log estimator state vs raw GPS antenna at the moment
+        # of timeout / settle decision, so we can pin down whether settle
+        # failures come from estimator drift, antenna_offset error, or
+        # dock_tracker stop accuracy.
         if time.monotonic() - self._settle_enter_time > settle_timeout:
+            cx, cy, cpsi = self._estimator.chassis_pose()
+            gps_e = gps_n = float('nan')
+            if self._gps_lat is not None and self._ref_lat is not None:
+                gps_e, gps_n = enu_from_gps(
+                    self._gps_lat, self._gps_lon, self._ref_lat, self._ref_lon)
+            self.get_logger().info(
+                f'WP{self._cur_wp_idx + 1} timeout diag: '
+                f'chassis=({cx:.3f}, {cy:.3f}, {degrees(cpsi):.1f}°) '
+                f'ant_est=({antenna_e:.3f}, {antenna_n:.3f}) '
+                f'ant_gps=({gps_e:.3f}, {gps_n:.3f}) '
+                f'target=({target_e:.3f}, {target_n:.3f}) '
+                f'dist_est={dist*100:.1f}cm '
+                f'dist_gps={hypot(target_e-gps_e, target_n-gps_n)*100:.1f}cm'
+            )
             # Don't spray on a moving target. If the antenna is currently
             # outside waypoint_tolerance (still in re-approach via the
             # dock tracker), skip the waypoint instead of firing spray
