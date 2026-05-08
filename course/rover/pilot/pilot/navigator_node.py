@@ -866,7 +866,17 @@ class NavigatorNode(Node):
             psi_correction_min_speed=self.get_parameter('estimator_psi_min_speed').value,
         )
         self._estimator.set_initial(self._gps_lat, self._gps_lon, psi_math)
-        self._mission_start_chassis_xy = (self._estimator.x, self._estimator.y)
+        # Mission-start chassis position is the chassis pose at the moment
+        # of mission trigger (CALIBRATING entry), NOT the chassis pose at
+        # cal-end (which is ~2.5 m further down the calibration chord).
+        # The ENU origin is the antenna at mission trigger, so the chassis
+        # at trigger sits at -R(ψ_init)·offset from that origin.
+        ax = self._antenna_offset_x
+        ay = self._antenna_offset_y
+        self._mission_start_chassis_xy = (
+            -(cos(psi_math) * ax - sin(psi_math) * ay),
+            -(sin(psi_math) * ax + cos(psi_math) * ay),
+        )
 
         # Plan path now that chassis pose is known.
         params = self._params_for_trackers()

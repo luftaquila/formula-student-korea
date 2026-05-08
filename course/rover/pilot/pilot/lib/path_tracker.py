@@ -51,6 +51,21 @@ class CruiseTracker:
         # Slow down as |α| grows; never below this fraction of cruise.
         self._min_speed_fraction = float(params.get('pp_min_speed_fraction', 0.35))
         self._handoff_blend_distance = float(params.get('pp_handoff_blend_distance', 1.0))
+        # Maximum heading misalignment with the segment direction at which
+        # cruise is allowed to declare done. Without this gate, chassis can
+        # arrive at the end pose with a 50° heading offset and hand off to
+        # the dock tracker, which then can't close that within its 1.5 m
+        # corridor and cycles forever (observed at WP2 in 2026-05-08
+        # mission). 0.52 rad = 30°.
+        self._cruise_done_heading_max = float(
+            params.get('cruise_done_heading_max_rad', 0.52))
+        # Past-end fail-safe. When chassis overshoots the cruise end along
+        # the corridor by `cruise_pass_through_m` metres, declare done
+        # regardless of heading. Without this, an overshooting chassis
+        # tries to swing back, the lookahead orbits the end pose, and the
+        # tracker max-curvature loops in place (observed at WP7).
+        self._cruise_pass_through_m = float(
+            params.get('cruise_pass_through_m', 0.30))
         self._prev_alpha = None
         self._prev_t = None
 
@@ -60,10 +75,29 @@ class CruiseTracker:
 
     def step(self, chassis_pose, segment, t_now):
         x, y, psi = chassis_pose
+        sx, sy, psi_path = segment.start_pose
         ex, ey, _ = segment.end_pose
         dx, dy = ex - x, ey - y
         dist = hypot(dx, dy)
-        if dist < self._cruise_done_tolerance:
+        # Project onto the corridor to detect pass-through overshoots.
+        # `along` is signed distance from start in the corridor direction.
+        a_along, _ = project_onto_line(x, y, sx, sy, psi_path)
+        seg_len = hypot(ex - sx, ey - sy)
+        e_psi = abs(normalize_angle(psi - psi_path))
+
+        # Done conditions:
+        # 1. Chassis arrived at end pose AND heading aligned with corridor
+        #    — clean handoff to the dock tracker.
+        # 2. Chassis already passed the cruise end along the corridor by
+        #    cruise_pass_through_m — keep going forward only re-orbits
+        #    the end pose; declare done and let the dock tracker take over
+        #    with whatever heading we ended up with.
+        if (dist < self._cruise_done_tolerance
+                and e_psi <= self._cruise_done_heading_max):
+            self._prev_alpha = None
+            self._prev_t = None
+            return 0.0, 0.0, True
+        if a_along >= seg_len + self._cruise_pass_through_m:
             self._prev_alpha = None
             self._prev_t = None
             return 0.0, 0.0, True
