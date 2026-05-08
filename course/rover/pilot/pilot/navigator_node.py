@@ -1054,6 +1054,62 @@ class NavigatorNode(Node):
             self._cruise_tracker.reset()
         if self._dock_tracker is not None:
             self._dock_tracker.reset()
+        # Re-plan the remaining path anchored at the chassis's actual
+        # current pose. Without this, the next cruise segment has its
+        # start_pose pinned to where the previous waypoint's dock-end
+        # WOULD have been if the chassis had reached it — but after a
+        # skip the chassis is sitting at the stuck spot, often metres
+        # off the original corridor. The cruise pure-pursuit then orbits
+        # the lookahead trying to reach a corridor it isn't on, which is
+        # the WP1/WP2/WP7 in-place spin the operator was seeing.
+        if skipped_idx >= 0:
+            self._replan_from_current_chassis()
+
+    def _replan_from_current_chassis(self):
+        """Rebuild self._segments anchored at the chassis's live pose.
+
+        Used after a skip — the planner originally laid out cruise/dock
+        segments under the assumption the chassis would be at each dock-
+        end before transitioning to the next cruise. A skip breaks that
+        assumption, so we regenerate the remaining segments using the
+        actual chassis pose as the next cruise's start. The waypoint
+        index offset keeps the new segments numbered against the
+        original `self._waypoints` list so any consumer of
+        seg.waypoint_index (the UI skip publisher, settle handler) sees
+        the same indices it saw before the replan.
+        """
+        if self._estimator is None or not self._estimator.initialized:
+            return
+        # Find the next pending waypoint index in the ORIGINAL waypoint list.
+        if self._cur_seg_idx < len(self._segments):
+            next_seg = self._segments[self._cur_seg_idx]
+            if next_seg.waypoint_index < 0:
+                # Currently in the synthetic return-to-start segments.
+                # Replan them from chassis pose using the same target.
+                next_wp_idx = len(self._waypoints)
+            else:
+                next_wp_idx = next_seg.waypoint_index
+        else:
+            next_wp_idx = len(self._waypoints)
+
+        remaining = self._waypoints[next_wp_idx:]
+        params = self._params_for_trackers()
+        try:
+            new_segments = plan_path(
+                current_chassis_pose=self._estimator.chassis_pose(),
+                antenna_offset=(params['antenna_offset_x'], params['antenna_offset_y']),
+                waypoints_lat_lng=remaining,
+                ref_lat_lon=(self._ref_lat, self._ref_lon),
+                dock_distance=self.get_parameter('dock_approach_distance').value,
+                return_to_start=self.get_parameter('return_to_start').value,
+                start_chassis_xy=self._mission_start_chassis_xy,
+                waypoint_index_offset=next_wp_idx,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            self.get_logger().warn(f'Replan failed: {exc}')
+            return
+        self._segments = new_segments
+        self._cur_seg_idx = 0
 
     # ── settling ─────────────────────────────────────────────────────────
 

@@ -69,7 +69,8 @@ def _dock_chassis_pose(target_e, target_n, psi_dock, antenna_offset):
 
 def plan(current_chassis_pose, antenna_offset,
          waypoints_lat_lng, ref_lat_lon,
-         dock_distance, return_to_start=False, start_chassis_xy=None):
+         dock_distance, return_to_start=False, start_chassis_xy=None,
+         waypoint_index_offset=0):
     """Build the segment list for a mission.
 
     Args:
@@ -83,6 +84,10 @@ def plan(current_chassis_pose, antenna_offset,
         return_to_start: if True, append a synthetic waypoint at start_chassis_xy.
         start_chassis_xy: (x, y) chassis position where the mission started,
             required when return_to_start=True.
+        waypoint_index_offset: integer added to each segment's
+            waypoint_index. Used by the navigator when re-planning a
+            partial mission (after a skip) so the segment indices continue
+            to align with the original full waypoint list.
 
     Returns:
         List of PathSegment, ordered. Each waypoint contributes (cruise, dock);
@@ -128,8 +133,9 @@ def plan(current_chassis_pose, antenna_offset,
         cruise_end = (entry_x, entry_y, psi_dock)
         dock_end = (dock_x, dock_y, psi_dock)
 
-        segments.append(PathSegment('cruise', cruise_start, cruise_end, (wp_e, wp_n), idx))
-        segments.append(PathSegment('dock', cruise_end, dock_end, (wp_e, wp_n), idx))
+        seg_wp_idx = idx + waypoint_index_offset
+        segments.append(PathSegment('cruise', cruise_start, cruise_end, (wp_e, wp_n), seg_wp_idx))
+        segments.append(PathSegment('dock', cruise_end, dock_end, (wp_e, wp_n), seg_wp_idx))
 
         cur_x, cur_y, cur_psi = dock_end
         prev_target = (wp_e, wp_n)
