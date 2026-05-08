@@ -51,21 +51,19 @@ navigator_node:
     approach_speed: 0.4                # m/s on the dock corridor (precision)
     creep_speed: 0.18                  # m/s for fine corrections / overshoot reverse
     calibration_speed: 0.5             # m/s during cold-start heading discovery (must exceed gps_node.heading_speed_threshold by margin)
-    # Antenna offset auto-cal drive speed. The circular procedure runs at
-    # constant κ = 1/R ≈ 1.0 m⁻¹, so v = 0.8 m/s gives a comfortable lateral
-    # acceleration of v²/R ≈ 0.64 m/s² (well below the chassis tipping limit)
-    # and a per-revolution time of 2π·R/v ≈ 7.9 s — two revolutions at this
-    # speed sample the orbit with ~80 GPS fixes (10 Hz × 8 s × 2 = 160) which
-    # is plenty for the closed-form circle fits.
-    antenna_cal_speed: 0.8
+    # Antenna offset auto-cal drive speed. v = 0.5 m/s on R = 1.5 m keeps
+    # lateral acceleration v²/R ≈ 0.17 m/s², low enough that wheel slip /
+    # tyre scrub doesn't corrupt the encoder ω integration the closed-form
+    # solver depends on (a 1.0 m / 0.8 m/s drive at 0.64 m/s² lat acc gave
+    # 32% sweep mismatch between chassis encoder and antenna GPS — chassis
+    # encoder under-counted rotation due to scrub).
+    antenna_cal_speed: 0.5
 
-    # Antenna offset auto-cal orbit shape. The closed-form solver requires:
-    # at least one circle's worth of orbit angle (so the chassis circle
-    # centre is well-constrained), and the centre to be inside the chassis
-    # curvature limit. R = 1.0 m gives κ = 1.0 m⁻¹, ~17% inside the chassis
-    # cap (1.2 m⁻¹). Two revolutions average GPS noise / encoder ω drift
-    # without dragging the drive too long.
-    antenna_cal_radius_m: 1.0
+    # Antenna offset auto-cal orbit shape. R = 1.5 m gives κ = 0.667 m⁻¹,
+    # well inside the chassis curvature cap (1.2). Two revolutions at v =
+    # 0.5 m/s = ~38 s, sampling ~380 GPS fixes (plenty for the closed-form
+    # circle fits). Drive footprint ~ 3 m diameter + chassis ≈ 4 m × 4 m.
+    antenna_cal_radius_m: 1.5
     antenna_cal_revolutions: 2
     # Rotation direction: +1 CCW (left turn), -1 CW. CCW first because that
     # was the SCURVE convention; flip if site geometry requires.
