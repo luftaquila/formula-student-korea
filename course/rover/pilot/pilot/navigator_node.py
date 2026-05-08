@@ -60,6 +60,7 @@ from std_msgs.msg import Float64, String, Int32, Empty
 
 from pilot.lib.geo_utils import (
     enu_from_gps, fit_chord_heading, normalize_angle,
+    project_onto_line as _project_onto_line,
 )
 from pilot.lib.protocol_utils import has_required_fix_status
 from pilot.lib.state_estimator import ChassisPoseEstimator
@@ -351,6 +352,10 @@ class NavigatorNode(Node):
 
         # Published state dedup.
         self._last_published_state = None
+
+        # Per-segment 1 Hz tracker trace clock. Reset to None on segment
+        # boundary so the first tick of each segment always logs.
+        self._last_dock_trace_t = None
 
         # Control loop @ 20 Hz.
         self._timer = self.create_timer(0.05, self._control_loop)
@@ -911,16 +916,62 @@ class NavigatorNode(Node):
             v, kappa, done = self._cruise_tracker.step(chassis_pose, seg, time.monotonic())
             self._publish_velocity(v, kappa)
             self._update_progress(chassis_pose, seg.end_pose)
+
+            now_mono = time.monotonic()
+            if (self._last_dock_trace_t is None
+                    or now_mono - self._last_dock_trace_t >= 1.0):
+                self._last_dock_trace_t = now_mono
+                cx, cy, cpsi = chassis_pose
+                ex, ey, _ = seg.end_pose
+                dist_to_end = hypot(ex - cx, ey - cy)
+                self.get_logger().info(
+                    f'CRUISE seg{self._cur_seg_idx} (WP{seg.waypoint_index + 1}) '
+                    f'ch=({cx:+.2f},{cy:+.2f},{degrees(cpsi):+.0f}°) '
+                    f'end=({ex:+.2f},{ey:+.2f}) dist_to_end={dist_to_end*100:.1f}cm '
+                    f'cmd v={v:+.2f} k={kappa:+.2f}'
+                )
+
             if done:
                 self._cur_seg_idx += 1
                 self._cruise_tracker.reset()
                 self._reset_progress()
+                self._last_dock_trace_t = None  # reset trace clock for next segment
             return
 
         if seg.kind == 'dock':
             v, kappa, status = self._dock_tracker.step(chassis_pose, seg, time.monotonic(), antenna_world)
             self._publish_velocity(v, kappa)
             self._update_progress(chassis_pose, seg.end_pose)
+
+            # 1 Hz dock trace. The cycle/stuck symptoms could be (a) chassis
+            # entering the corridor with too much lateral residual, (b) the
+            # forward+reverse loop never closing it, or (c) the reach
+            # condition gating on something the chassis can't satisfy. Need
+            # per-tick e_y / e_psi / along / dist / commanded κ to tell.
+            now_mono = time.monotonic()
+            if (self._last_dock_trace_t is None
+                    or now_mono - self._last_dock_trace_t >= 1.0):
+                self._last_dock_trace_t = now_mono
+                cx, cy, cpsi = chassis_pose
+                ax, ay = antenna_world
+                sx, sy, psi_path = seg.start_pose
+                ex, ey, _ = seg.end_pose
+                tx, ty = seg.target_antenna
+                a_along, e_y = _project_onto_line(ax, ay, sx, sy, psi_path)
+                target_along, _ = _project_onto_line(tx, ty, sx, sy, psi_path)
+                along_to_target = target_along - a_along
+                e_psi = normalize_angle(cpsi - psi_path)
+                dist = hypot(tx - ax, ty - ay)
+                self.get_logger().info(
+                    f'DOCK WP{seg.waypoint_index + 1} '
+                    f'ch=({cx:+.2f},{cy:+.2f},{degrees(cpsi):+.0f}°) '
+                    f'ant=({ax:+.2f},{ay:+.2f}) tgt=({tx:+.2f},{ty:+.2f}) '
+                    f'e_y={e_y*100:+.1f}cm e_psi={degrees(e_psi):+.1f}° '
+                    f'along_to_target={along_to_target*100:+.1f}cm '
+                    f'dist={dist*100:.1f}cm '
+                    f'cmd v={v:+.2f} k={kappa:+.2f} {status}'
+                )
+
             if status == 'reached':
                 # Dock reached → run settling to confirm antenna position.
                 self._cur_wp_idx = seg.waypoint_index

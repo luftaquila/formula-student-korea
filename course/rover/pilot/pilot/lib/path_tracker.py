@@ -304,20 +304,15 @@ class DockTracker:
             self._reverse_active = True
         if self._reverse_active:
             if along_to_target < self._reverse_recovery_m:
-                # Still inside the recovery window. Back up at creep speed
-                # AND keep closing lateral by negating κ. Ackermann reverse
-                # inverts the steering→ψ̇ sign (servo left → chassis rear
-                # swings left → ψ rotates right), so the forward state-
-                # feedback law's κ produces the wrong-sign yaw if applied
-                # raw in reverse — but flipping its sign restores the
-                # correct lateral-closure direction. With this, the lateral
-                # error keeps converging during the reverse half of the
-                # cycle, so a single forward+reverse round trip closes
-                # ~75 %+ of any residual instead of just the forward half.
-                return -self._creep_speed, -kappa, 'tracking'
-            # Backed up the full recovery distance behind the target.
-            # Drop the reverse latch and let the normal forward state-
-            # feedback law take this tick.
+                # Pure straight-back. Ackermann reverse couples
+                # lateral and yaw in a way that doesn't simplify to a
+                # sign flip on the forward state-feedback κ — the
+                # rear axle's sideways slip changes the lateral rate
+                # term, and an uncorrected linearised gain led to
+                # divergence on real hardware in the previous attempt.
+                # Reverse straight, close lateral on the next forward
+                # half only.
+                return -self._creep_speed, 0.0, 'tracking'
             self._reverse_active = False
 
         # Speed schedule (forward).
