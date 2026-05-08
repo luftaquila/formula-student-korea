@@ -46,8 +46,8 @@ navigator_node:
     # while ω was under-measured against the assumed track.
     wheelbase: 0.33                    # meters
     track_width: 0.33                  # meters
-    max_steering_angle_deg: 25.0       # degrees
-    max_curvature: 1.4                 # 1/m. Physical limit tan(25°)/0.33 ≈ 1.41.
+    max_steering_angle_deg: 28.5       # measured from cal-data residual (servo gain: commanded 25° produced ~28.5° actual wheel angle, leaving 14 % R mismatch after wheelbase fix)
+    max_curvature: 1.6                 # 1/m. Physical limit tan(28.5°)/0.33 ≈ 1.65.
     servo_range_us: 500                # mirrors mcu_bridge_node.servo_range_us — used by
                                        # CAL_WHEELS' steering-trim solve to convert κ_bias to µs.
 
@@ -144,7 +144,7 @@ mcu_bridge_node:
     # Ackermann + steering servo
     servo_center_us: 1500
     servo_range_us: 500
-    max_steering_angle_deg: 25.0
+    max_steering_angle_deg: 28.5
     wheelbase: 0.33                    # tape-measured 2026-05-08
     track_width: 0.33                  # tape-measured 2026-05-08
     # Operator-measured open-loop top speed at 100% duty is ~2.3 m/s on
