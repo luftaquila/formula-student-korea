@@ -95,7 +95,13 @@ RMS_BOUND_M = 0.5
 
 # Solver acceptance gates.
 SOLVE_MIN_SAMPLES = 30
-SOLVE_RMS_MAX_M = 0.05
+# Was 0.05 (SCURVE-era). Circular drive's noise floor sits around 8-10 cm
+# even when the recovered (a_x, a_y) is correct to a few cm — multipath +
+# residual chassis-fit-vs-antenna-fit phase mismatch contribute systematic
+# residuals that aren't actually offset error. Loosening to 10 cm keeps the
+# bound-violation gate (|offset| > 1 m) catching real solver blowups while
+# letting healthy circular cals persist automatically.
+SOLVE_RMS_MAX_M = 0.10
 
 # Minimum chassis ψ excitation across the sample set (used by the legacy
 # 5-tuple LSQ path; the circular solver has its own gates). The closed-form
