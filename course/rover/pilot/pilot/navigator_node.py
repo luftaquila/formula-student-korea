@@ -308,6 +308,13 @@ class NavigatorNode(Node):
         self._last_progress_time = 0.0
         self._last_progress_dist = float('inf')
         self._stuck_retries = 0
+        # Chassis displacement window (list of (t_mono, x, y)). The
+        # distance-to-target gate alone misses dock-cycle stuck cases
+        # where dist oscillates >2 cm each tick (5-30 cm cycle observed
+        # at WP1 in the 18:39 mission), because every oscillation low
+        # resets the timer. This window tracks the chassis's actual
+        # bounding-box displacement over `stuck_timeout` seconds.
+        self._stuck_window = []
 
         # Fix hysteresis.
         self._fix_degraded_since = None
@@ -996,27 +1003,55 @@ class NavigatorNode(Node):
     def _reset_progress(self):
         self._last_progress_time = time.monotonic()
         self._last_progress_dist = float('inf')
+        self._stuck_window = []
 
     def _update_progress(self, chassis_pose, target_pose):
         x, y, _ = chassis_pose
         ex, ey, _ = target_pose
         dist = hypot(ex - x, ey - y)
         now = time.monotonic()
+        timeout = self.get_parameter('stuck_timeout').value
+
+        # Maintain chassis-displacement window of length `timeout` seconds.
+        self._stuck_window.append((now, x, y))
+        cutoff = now - timeout
+        while self._stuck_window and self._stuck_window[0][0] < cutoff:
+            self._stuck_window.pop(0)
 
         if dist < self._last_progress_dist - 0.02:
             self._last_progress_dist = dist
             self._last_progress_time = now
+            # Chassis is making progress toward target — no need to also
+            # check the displacement gate.
             return
 
-        if now - self._last_progress_time < self.get_parameter('stuck_timeout').value:
+        # Distance-to-target hasn't improved. Two ways to be stuck:
+        # (a) timeout elapsed since last improvement (original gate);
+        # (b) chassis hasn't moved more than 15 cm in the last `timeout`
+        #     seconds (catches dock-cycle where dist oscillates but the
+        #     chassis is bouncing around a 10 cm patch).
+        bbox_disp = 0.0
+        if len(self._stuck_window) >= 2:
+            xs = [r[1] for r in self._stuck_window]
+            ys = [r[2] for r in self._stuck_window]
+            bbox_disp = hypot(max(xs) - min(xs), max(ys) - min(ys))
+        chassis_pinned = (
+            len(self._stuck_window) >= 2
+            and (now - self._stuck_window[0][0]) >= timeout
+            and bbox_disp < 0.15
+        )
+
+        if not chassis_pinned and now - self._last_progress_time < timeout:
             return
 
         self._stuck_retries += 1
         max_retries = self.get_parameter('stuck_max_retries').value
         wp_idx = self._segments[self._cur_seg_idx].waypoint_index if self._cur_seg_idx < len(self._segments) else -1
+        gate = 'displacement' if chassis_pinned else 'no-progress'
         self.get_logger().warn(
             f'Stuck on segment {self._cur_seg_idx} (waypoint {wp_idx + 1}) '
-            f'retry {self._stuck_retries}/{max_retries}'
+            f'retry {self._stuck_retries}/{max_retries} '
+            f'gate={gate} bbox_disp={bbox_disp*100:.1f}cm'
         )
         if self._stuck_retries > max_retries:
             self._skip_current_waypoint()
