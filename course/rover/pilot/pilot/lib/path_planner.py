@@ -129,7 +129,17 @@ def plan(current_chassis_pose, antenna_offset,
         entry_x = dock_x - effective_dock * cos(psi_dock)
         entry_y = dock_y - effective_dock * sin(psi_dock)
 
-        cruise_start = (cur_x, cur_y, cur_psi)
+        # cruise_start.psi = psi_dock (corridor heading), NOT chassis ψ.
+        # CruiseTracker reads psi_path from start_pose.psi to compute
+        # e_psi = chassis ψ - psi_path; if we wrote cur_psi here, e_psi
+        # would be 0 for the chassis at planning time and the cruise_done
+        # heading-aligned gate (cruise_done_heading_max) becomes vacuous.
+        # Then a chassis sitting next to the cruise end with a 30+° offset
+        # from the dock heading gets handed off to the dock tracker with
+        # that heading offset baked in, and the dock tracker cycles trying
+        # to close it inside the corridor (observed at WP1 in 18:39
+        # mission: e_psi=+36° at dock entry → 53 s cycle → skip).
+        cruise_start = (cur_x, cur_y, psi_dock)
         cruise_end = (entry_x, entry_y, psi_dock)
         dock_end = (dock_x, dock_y, psi_dock)
 
@@ -154,7 +164,7 @@ def plan(current_chassis_pose, antenna_offset,
         entry_x = dock_x - effective_dock * cos(psi_dock)
         entry_y = dock_y - effective_dock * sin(psi_dock)
         segments.append(PathSegment(
-            'cruise', (cur_x, cur_y, cur_psi),
+            'cruise', (cur_x, cur_y, psi_dock),
             (entry_x, entry_y, psi_dock), (start_x, start_y), -1,
         ))
         segments.append(PathSegment(
