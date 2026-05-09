@@ -338,15 +338,34 @@ class DockTracker:
             self._reverse_active = True
         if self._reverse_active:
             if along_to_target < self._reverse_recovery_m:
-                # Pure straight-back. Ackermann reverse couples
-                # lateral and yaw in a way that doesn't simplify to a
-                # sign flip on the forward state-feedback κ — the
-                # rear axle's sideways slip changes the lateral rate
-                # term, and an uncorrected linearised gain led to
-                # divergence on real hardware in the previous attempt.
-                # Reverse straight, close lateral on the next forward
-                # half only.
-                return -self._creep_speed, 0.0, 'tracking'
+                # Reverse with e_ψ P-only steering (no e_y term).
+                #
+                # Why not the full sign-flipped forward law (fd61bbf
+                # attempt): that returns -κ where κ includes -k_y·e_y.
+                # When the chassis crosses the corridor line mid-reverse,
+                # e_y flips sign while -k_y·e_y keeps the linearised
+                # closure direction wrong, and the law steers the chassis
+                # further off-line. fd61bbf got stuck on WP1 from the
+                # first segment for exactly this reason.
+                #
+                # What we use instead: for forward, the e_ψ P-term is
+                # κ_p_ψ_fwd = -k_ψ·e_ψ. Ackermann reverse keeps the
+                # steering→ψ̇ map but flips its sign for the same δ
+                # (servo left → chassis rear swings left → ψ rotates
+                # right). To get the same e_ψ closure direction in the
+                # world frame, flip the sign of the κ command:
+                #   κ_rev = +k_ψ·e_ψ
+                # This is a P controller on e_ψ alone — bounded,
+                # converges to e_ψ = 0 monotonically, and never picks
+                # up an e_y sign-flip discontinuity. lateral closure
+                # is left to the forward half (where the linearisation
+                # is valid).
+                kappa_rev = self._k_psi * e_psi
+                if kappa_rev > self._max_curvature:
+                    kappa_rev = self._max_curvature
+                elif kappa_rev < -self._max_curvature:
+                    kappa_rev = -self._max_curvature
+                return -self._creep_speed, kappa_rev, 'tracking'
             self._reverse_active = False
 
         # Speed schedule (forward).
