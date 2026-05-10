@@ -216,6 +216,11 @@ class DockTracker:
         # oscillate one tick past the target and one tick back, never
         # actually closing.
         self._reverse_active = False
+        # Latched κ for the duration of a reverse stroke. Captured at the
+        # instant reverse begins as -κ_forward (forward state-feedback κ
+        # negated, no integral) and held constant until the stroke ends.
+        # See the full rationale in step()'s reverse branch.
+        self._reverse_kappa_latched = 0.0
         # Distance behind the target (along the corridor) to back up to
         # before re-engaging forward dock control. 0.20 m gives the
         # state-feedback law roughly one time-constant of forward travel
@@ -223,11 +228,33 @@ class DockTracker:
         self._reverse_recovery_m = float(
             params.get('dock_reverse_recovery_m', 0.20)
         )
+        # Cycle counter. Each forward→reverse transition increments. We
+        # tolerate a small number of cycles (chassis closing residual
+        # lateral over multiple short strokes) but cap it: by cycle N+1
+        # the dock is judged unsalvageable and we hand 'cycle_stuck'
+        # back to the navigator, which skips to the next waypoint
+        # instead of letting the chassis ping-pong for tens of seconds.
+        self._cycle_count = 0
+        self._was_reverse = False
+        # Max forward→reverse cycles before declaring the dock cycle-
+        # stuck. 1 cycle = one overshoot+reverse round trip, which is
+        # enough information to decide a clean settle isn't happening.
+        self._cycle_limit = int(params.get('dock_cycle_limit', 1))
+        # Brake zone (target-distance under which forward speed ramps
+        # down). Wider zone + lower minimum keeps the chassis from
+        # blowing past target on inertia + PID lag, which is what makes
+        # along_to_target swing negative and trips the reverse latch.
+        self._brake_zone_m = float(params.get('dock_brake_zone_m', 0.12))
+        self._brake_min_speed_frac = float(
+            params.get('dock_brake_min_speed_frac', 0.10))
 
     def reset(self):
         self._integral = 0.0
         self._prev_t = None
         self._reverse_active = False
+        self._reverse_kappa_latched = 0.0
+        self._cycle_count = 0
+        self._was_reverse = False
 
     def _antenna_world(self, chassis_pose):
         x, y, psi = chassis_pose
@@ -334,38 +361,58 @@ class DockTracker:
         # backing the chassis up the corridor moves a_along DOWN, which
         # makes along_to_target = target_along - a_along go from negative
         # toward +recovery_m).
-        if along_to_target < 0.0:
+        # Count forward→reverse transitions before deciding to enter
+        # this reverse: a cycle is one round trip back to forward, so
+        # the count is incremented when reverse first re-engages after
+        # any forward tick.
+        cycle_just_started = (along_to_target < 0.0 and not self._was_reverse)
+        if cycle_just_started:
+            self._cycle_count += 1
+        # If we've cycled once already, the dock isn't going to settle —
+        # tell the navigator. Stop motors, do NOT enter another reverse.
+        if self._cycle_count > self._cycle_limit:
+            self._reverse_active = False
+            return 0.0, 0.0, 'cycle_stuck'
+
+        if along_to_target < 0.0 and not self._reverse_active:
+            # Latch κ at the moment we cross the target. Use the negated
+            # forward state-feedback κ (no integral). The forward law is
+            #   κ_fwd = -k_y·e_y - k_ψ·e_ψ
+            # Ackermann reverse with the same δ flips ψ̇'s sign, so the
+            # opposite δ (i.e. -κ) produces the same world-frame yaw rate
+            # in reverse as κ produced in forward. Holding the value
+            # latched at entry, instead of recomputing each tick from
+            # live e_y, eliminates the divergence mode of fd61bbf's
+            # naive `return -kappa` form: live e_y can flip sign mid-
+            # reverse when the chassis crosses the corridor line, and a
+            # tick-by-tick negation then steers the chassis further off-
+            # line. The latched value freezes the closure direction.
+            #
+            # Earlier attempt with κ_rev = +k_ψ·e_ψ (e_ψ P-only, no e_y)
+            # left wheel angle near zero whenever e_y dominated κ_fwd
+            # (e.g. e_y=-4 cm, e_ψ=+3° → κ_fwd ≈ +0.08, κ_rev ≈ +0.32 —
+            # both positive, so reverse and forward steered the chassis
+            # the same way and the dock cycle never advanced). Observed
+            # in the 04:18 mission, segment 17.
+            kappa_latch = -kappa_p
+            if kappa_latch > self._max_curvature:
+                kappa_latch = self._max_curvature
+            elif kappa_latch < -self._max_curvature:
+                kappa_latch = -self._max_curvature
+            self._reverse_kappa_latched = kappa_latch
             self._reverse_active = True
+        elif along_to_target < 0.0:
+            # already in reverse; keep latched κ (no update)
+            pass
+        # Track reverse-edge for next-tick cycle counting (must be set
+        # AFTER the cycle-just-started check above to detect the edge).
+        self._was_reverse = self._reverse_active
+
         if self._reverse_active:
             if along_to_target < self._reverse_recovery_m:
-                # Reverse with e_ψ P-only steering (no e_y term).
-                #
-                # Why not the full sign-flipped forward law (fd61bbf
-                # attempt): that returns -κ where κ includes -k_y·e_y.
-                # When the chassis crosses the corridor line mid-reverse,
-                # e_y flips sign while -k_y·e_y keeps the linearised
-                # closure direction wrong, and the law steers the chassis
-                # further off-line. fd61bbf got stuck on WP1 from the
-                # first segment for exactly this reason.
-                #
-                # What we use instead: for forward, the e_ψ P-term is
-                # κ_p_ψ_fwd = -k_ψ·e_ψ. Ackermann reverse keeps the
-                # steering→ψ̇ map but flips its sign for the same δ
-                # (servo left → chassis rear swings left → ψ rotates
-                # right). To get the same e_ψ closure direction in the
-                # world frame, flip the sign of the κ command:
-                #   κ_rev = +k_ψ·e_ψ
-                # This is a P controller on e_ψ alone — bounded,
-                # converges to e_ψ = 0 monotonically, and never picks
-                # up an e_y sign-flip discontinuity. lateral closure
-                # is left to the forward half (where the linearisation
-                # is valid).
-                kappa_rev = self._k_psi * e_psi
-                if kappa_rev > self._max_curvature:
-                    kappa_rev = self._max_curvature
-                elif kappa_rev < -self._max_curvature:
-                    kappa_rev = -self._max_curvature
-                return -self._creep_speed, kappa_rev, 'tracking'
+                return (-self._creep_speed,
+                        self._reverse_kappa_latched,
+                        'tracking')
             self._reverse_active = False
 
         # Speed schedule (forward).
@@ -374,15 +421,18 @@ class DockTracker:
         else:
             speed = self._approach_speed
 
-        # Dist-proportional brake near the 'reached' threshold. Without
-        # this, the chassis hits v=0 abruptly at approach_tolerance and
-        # rolls forward several cm on inertia + PID tracking lag, which
-        # showed up as a 5-10 cm overshoot at the first waypoint of every
-        # mission. Linear ramp from creep_speed at 2× threshold down to
-        # 20% of creep_speed at the threshold itself.
-        brake_zone = max(2.0 * self._approach_tolerance, 0.05)
-        if target_dist < brake_zone:
-            ramp = max(target_dist / brake_zone, 0.2)
+        # Dist-proportional brake near the target. Earlier sizing
+        # (brake_zone = 2× approach_tolerance = 6 cm, ramp_min = 0.2)
+        # was too tight: in the 04:18 mission segment 17, every forward
+        # tick exited brake_zone within one step (target_dist 7.7→6.5)
+        # while v_actual was still PID-lagging the cmd, so the chassis
+        # blew past target along-track on every approach. brake_zone now
+        # widened to 0.12 m with min 0.10× of cmd, so a chassis on the
+        # tail end of the corridor decelerates over ~10 cm instead of
+        # 6 cm and never crosses past target on inertia.
+        if target_dist < self._brake_zone_m:
+            ramp = max(target_dist / self._brake_zone_m,
+                       self._brake_min_speed_frac)
             speed *= ramp
 
         return speed, kappa, 'tracking'

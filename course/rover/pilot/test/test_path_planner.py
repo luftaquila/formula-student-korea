@@ -154,8 +154,9 @@ class TestDockDistanceClamp:
         assert ex > 1.5
 
     def test_clamp_floor_at_min_distance(self):
-        # Even with a tiny span, the corridor must be at least 0.3 m so
-        # the dock tracker's linearisation has room to settle.
+        # Even with a tiny span, the corridor must be at least 0.6 m so
+        # the dock tracker has room to bleed lateral residual at creep
+        # speed without overshooting along-track and triggering reverse.
         antenna_offset = (0.3, 0.0)
         segments = plan(
             current_chassis_pose=(0.0, 0.0, 0.0),
@@ -169,7 +170,7 @@ class TestDockDistanceClamp:
         second_cruise_end = segments[2].end_pose
         corridor = hypot(second_dock_end[0] - second_cruise_end[0],
                          second_dock_end[1] - second_cruise_end[1])
-        assert corridor == pytest.approx(0.3, abs=1e-6)
+        assert corridor == pytest.approx(0.6, abs=1e-6)
 
 
 class TestReturnToStart:

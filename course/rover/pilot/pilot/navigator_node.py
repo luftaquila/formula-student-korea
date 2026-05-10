@@ -996,6 +996,16 @@ class NavigatorNode(Node):
                 self._settle_count = 0
                 self._settle_enter_time = time.monotonic()
                 self._set_state(State.SETTLING)
+            elif status == 'cycle_stuck':
+                # Dock tracker reported it has cycled forward→reverse the
+                # configured limit and won't settle. Don't ping-pong any
+                # further — skip the waypoint immediately and let the
+                # path replan from current chassis pose.
+                self.get_logger().warn(
+                    f'Dock cycle limit hit on WP{seg.waypoint_index + 1}, skipping'
+                )
+                self._stop_motors()
+                self._skip_current_waypoint()
             return
 
     # ── stuck detection ──────────────────────────────────────────────────
@@ -1035,10 +1045,17 @@ class NavigatorNode(Node):
             xs = [r[1] for r in self._stuck_window]
             ys = [r[2] for r in self._stuck_window]
             bbox_disp = hypot(max(xs) - min(xs), max(ys) - min(ys))
+        # Threshold sized for the dock-cycle bbox actually observed: the
+        # 04:18 mission's WP0 stuck cycled within 25 cm of the target
+        # (oscillating 6-24 cm of along-corridor distance per tick) and
+        # the previous 0.15 m gate didn't fire. 0.30 m catches that
+        # cycle while still being well inside any non-cycle motion
+        # (settled chassis sits in <5 cm, normal cruise covers >1 m
+        # in stuck_timeout seconds).
         chassis_pinned = (
             len(self._stuck_window) >= 2
             and (now - self._stuck_window[0][0]) >= timeout
-            and bbox_disp < 0.15
+            and bbox_disp < 0.30
         )
 
         if not chassis_pinned and now - self._last_progress_time < timeout:

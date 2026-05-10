@@ -30,12 +30,16 @@ from math import atan2, cos, sin, hypot
 from pilot.lib.geo_utils import enu_from_gps, normalize_angle
 
 
-# Floor on the dock corridor length. Below ~0.3 m the chassis can't
-# settle its heading on the line before reaching the dock pose, so a
-# very short clamp would break the dock tracker's linearisation. If the
-# requested span doesn't allow at least this much corridor, the planner
-# accepts the squeeze rather than U-turning back.
-_DOCK_DISTANCE_FLOOR_M = 0.3
+# Floor on the dock corridor length. The dock tracker needs enough along-
+# corridor distance for the chassis to close any lateral residual at
+# creep speed without overshooting the target along-track and triggering
+# reverse. Empirically 0.3 m was too short: 04:18 mission segment 17
+# (chassis 0.43 m from wp → effective_dock = floor = 0.3 m) cycled at
+# creep speed because every forward stroke crossed past target before
+# closing 5 cm of lateral. 0.6 m gives the forward state-feedback law
+# enough corridor to bleed lateral while still being well inside the
+# 1.5 m default dock_distance for normally-spaced waypoints.
+_DOCK_DISTANCE_FLOOR_M = 0.6
 
 
 class PathSegment:
