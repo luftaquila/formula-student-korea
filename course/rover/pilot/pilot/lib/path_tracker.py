@@ -228,18 +228,6 @@ class DockTracker:
         self._reverse_recovery_m = float(
             params.get('dock_reverse_recovery_m', 0.20)
         )
-        # Cycle counter. Each forward→reverse transition increments. We
-        # tolerate a small number of cycles (chassis closing residual
-        # lateral over multiple short strokes) but cap it: by cycle N+1
-        # the dock is judged unsalvageable and we hand 'cycle_stuck'
-        # back to the navigator, which skips to the next waypoint
-        # instead of letting the chassis ping-pong for tens of seconds.
-        self._cycle_count = 0
-        self._was_reverse = False
-        # Max forward→reverse cycles before declaring the dock cycle-
-        # stuck. 1 cycle = one overshoot+reverse round trip, which is
-        # enough information to decide a clean settle isn't happening.
-        self._cycle_limit = int(params.get('dock_cycle_limit', 1))
         # Brake zone (target-distance under which forward speed ramps
         # down). Wider zone + lower minimum keeps the chassis from
         # blowing past target on inertia + PID lag, which is what makes
@@ -253,8 +241,6 @@ class DockTracker:
         self._prev_t = None
         self._reverse_active = False
         self._reverse_kappa_latched = 0.0
-        self._cycle_count = 0
-        self._was_reverse = False
 
     def _antenna_world(self, chassis_pose):
         x, y, psi = chassis_pose
@@ -296,12 +282,47 @@ class DockTracker:
 
         e_psi = normalize_angle(psi - psi_path)
 
-        # State feedback. project_onto_line returns POSITIVE lateral when
-        # the antenna sits on the LEFT of the path heading vector, so e_y
-        # > 0 = antenna LEFT of path → we want a RIGHT turn (κ < 0) to
-        # converge → coefficient is -k_y. Likewise e_ψ > 0 (chassis CCW
-        # from path) needs κ < 0 to align back to path heading.
-        kappa_p = -self._k_y * e_y - self._k_psi * e_psi
+        # ── Forward control law: Stanley feedforward ───────────────────
+        # The previous law (kappa_p = -k_y*e_y - k_psi*e_psi) is a sum
+        # of two P-terms. When the chassis is mostly-aligned with the
+        # corridor (e_psi small) but lateral isn't closed (|e_y| large),
+        # the e_y term wants to turn but the e_psi term is near zero,
+        # so the chassis rotates slightly, immediately picks up some
+        # e_psi, and the two terms cancel (04:18 mission segment 17:
+        # e_y=-4 cm, e_psi=+3° gave kappa = +0.28 - 0.20 = +0.08, near
+        # zero, so the chassis just rolled past the target without
+        # closing 4 cm of lateral residual).
+        #
+        # Stanley control replaces the dual P-term with a single
+        # heading regulator that follows a *desired* chassis psi which
+        # itself biases toward the line by an arctan of (k*e_y / v):
+        #
+        #   desired_yaw_offset = atan2(k_y * e_y, v)
+        #   desired_psi = psi_path - desired_yaw_offset
+        #   e_psi_corrected = chassis_psi - desired_psi = e_psi + desired_yaw_offset
+        #   kappa_p = -k_psi * e_psi_corrected
+        #
+        # At low v this saturates desired_yaw_offset near pi/2 in the
+        # sign of e_y, pointing the chassis nearly perpendicular to the
+        # line — lateral closes within a meter at creep speed regardless
+        # of how much residual is left. As |e_y| → 0, desired_yaw_offset
+        # → 0 and the law reduces to a simple heading regulator that
+        # holds chassis_psi = psi_path on the line.
+        #
+        # We need the forward speed to compute desired_yaw_offset, so
+        # speed schedule is run BEFORE the kappa calculation.
+        if target_dist < self._creep_zone:
+            speed_for_kappa = self._creep_speed
+        else:
+            speed_for_kappa = self._approach_speed
+        # Stanley arctan needs a non-zero v denominator. Use creep speed
+        # as a floor even if brake-zone ramping later cuts speed below it
+        # — the desired yaw-offset is what we're shooting at, not what
+        # the chassis can instantaneously achieve at the cut speed.
+        v_eff = max(speed_for_kappa, self._creep_speed)
+        desired_yaw_offset = atan2(self._k_y * e_y, v_eff)
+        e_psi_corrected = normalize_angle(e_psi + desired_yaw_offset)
+        kappa_p = -self._k_psi * e_psi_corrected
 
         # Integrate cross-track error with dt from the monotonic clock.
         if self._prev_t is not None and t_now is not None:
@@ -361,19 +382,6 @@ class DockTracker:
         # backing the chassis up the corridor moves a_along DOWN, which
         # makes along_to_target = target_along - a_along go from negative
         # toward +recovery_m).
-        # Count forward→reverse transitions before deciding to enter
-        # this reverse: a cycle is one round trip back to forward, so
-        # the count is incremented when reverse first re-engages after
-        # any forward tick.
-        cycle_just_started = (along_to_target < 0.0 and not self._was_reverse)
-        if cycle_just_started:
-            self._cycle_count += 1
-        # If we've cycled once already, the dock isn't going to settle —
-        # tell the navigator. Stop motors, do NOT enter another reverse.
-        if self._cycle_count > self._cycle_limit:
-            self._reverse_active = False
-            return 0.0, 0.0, 'cycle_stuck'
-
         if along_to_target < 0.0 and not self._reverse_active:
             # Latch κ at the moment we cross the target. Use the negated
             # forward state-feedback κ (no integral). The forward law is
@@ -404,10 +412,6 @@ class DockTracker:
         elif along_to_target < 0.0:
             # already in reverse; keep latched κ (no update)
             pass
-        # Track reverse-edge for next-tick cycle counting (must be set
-        # AFTER the cycle-just-started check above to detect the edge).
-        self._was_reverse = self._reverse_active
-
         if self._reverse_active:
             if along_to_target < self._reverse_recovery_m:
                 return (-self._creep_speed,
@@ -415,11 +419,9 @@ class DockTracker:
                         'tracking')
             self._reverse_active = False
 
-        # Speed schedule (forward).
-        if target_dist < self._creep_zone:
-            speed = self._creep_speed
-        else:
-            speed = self._approach_speed
+        # Forward speed schedule (already computed once above for
+        # Stanley's kappa denominator; recompute here to apply brake).
+        speed = speed_for_kappa
 
         # Dist-proportional brake near the target. Earlier sizing
         # (brake_zone = 2× approach_tolerance = 6 cm, ramp_min = 0.2)

@@ -996,16 +996,6 @@ class NavigatorNode(Node):
                 self._settle_count = 0
                 self._settle_enter_time = time.monotonic()
                 self._set_state(State.SETTLING)
-            elif status == 'cycle_stuck':
-                # Dock tracker reported it has cycled forward→reverse the
-                # configured limit and won't settle. Don't ping-pong any
-                # further — skip the waypoint immediately and let the
-                # path replan from current chassis pose.
-                self.get_logger().warn(
-                    f'Dock cycle limit hit on WP{seg.waypoint_index + 1}, skipping'
-                )
-                self._stop_motors()
-                self._skip_current_waypoint()
             return
 
     # ── stuck detection ──────────────────────────────────────────────────
