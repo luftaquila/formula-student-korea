@@ -282,6 +282,12 @@ class DockTracker:
         # negated, no integral) and held constant until the stroke ends.
         # See the full rationale in step()'s reverse branch.
         self._reverse_kappa_latched = 0.0
+        # Forward-only mode (set by navigator during active settle). When
+        # True the reverse latch is disabled regardless of along_to_target
+        # so the chassis only ever advances toward the target — needed
+        # during settle re-engagement where GPS noise can flip the
+        # along sign without the chassis actually overshooting.
+        self._forward_only = False
         # Distance behind the target (along the corridor) to back up to
         # before re-engaging forward dock control. Shortened from 0.20 m
         # to 0.08 m — if the new overshoot-but-close reach condition
@@ -338,6 +344,14 @@ class DockTracker:
         self._reverse_kappa_latched = 0.0
         self._reverse_entry_t = None
         self._reverse_entry_xy = None
+        # Note: _forward_only is NOT cleared on reset — the navigator
+        # owns its lifecycle (set on settle re-engagement, cleared on
+        # the next mission's path start). Add explicit clear_forward_only
+        # if you need to drop the latch outside that flow.
+
+    def set_forward_only(self, value):
+        """Toggle forward-only mode (no reverse latch)."""
+        self._forward_only = bool(value)
 
     def _antenna_world(self, chassis_pose):
         x, y, psi = chassis_pose
@@ -516,7 +530,12 @@ class DockTracker:
         # backing the chassis up the corridor moves a_along DOWN, which
         # makes along_to_target = target_along - a_along go from negative
         # toward +recovery_m).
-        if along_to_target < 0.0 and not self._reverse_active:
+        # In forward-only mode (active settle), skip the reverse latch
+        # entirely — even if GPS noise flips along_to_target negative,
+        # we stay in forward closure mode.
+        if self._forward_only:
+            pass
+        elif along_to_target < 0.0 and not self._reverse_active:
             # Latch κ at the moment we cross the target. Use the negated
             # forward state-feedback κ (no integral). The forward law is
             #   κ_fwd = -k_y·e_y - k_ψ·e_ψ
