@@ -273,9 +273,20 @@ class DockTracker:
         # down). Wider zone + lower minimum keeps the chassis from
         # blowing past target on inertia + PID lag, which is what makes
         # along_to_target swing negative and trips the reverse latch.
-        self._brake_zone_m = float(params.get('dock_brake_zone_m', 0.12))
+        # brake_zone tightened from 12 cm to 6 cm and min_speed_frac
+        # lifted from 0.10 to 0.70 because at the old values the
+        # commanded speed at the approach edge worked out to:
+        #   v_cmd = creep_speed(0.10) * brake_ramp
+        # which falls below the MCU's 0.05 m/s PID deadband as soon as
+        # target_dist drops past ~6 cm, freezing the chassis 2-3 cm
+        # short of approach_tolerance. 13:49 mission WP4 sat for 13 s
+        # at dist=5.3 cm / v_cmd=0.04 before stuck-skip. New floor:
+        # min v_cmd = creep_speed * 0.70 = 0.07 m/s, comfortably above
+        # the deadband, so the chassis actually crosses the last cm
+        # under power.
+        self._brake_zone_m = float(params.get('dock_brake_zone_m', 0.06))
         self._brake_min_speed_frac = float(
-            params.get('dock_brake_min_speed_frac', 0.10))
+            params.get('dock_brake_min_speed_frac', 0.70))
         # Reverse stall watchdog. After a GPS RTK dropout the estimator's
         # chassis pose can jump >1 m on recovery; the dock tracker then
         # latches reverse trying to back up the chassis to within
