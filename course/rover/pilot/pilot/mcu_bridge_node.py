@@ -229,6 +229,19 @@ class McuBridgeNode(Node):
         self._pub_status = self.create_publisher(String, '/rover/motor/status', 10)
         self._pub_battery = self.create_publisher(String, '/rover/battery', 10)
         self._pub_odom = self.create_publisher(String, '/rover/odom', 10)
+        # Forward hardware emergency-stop transitions from the MCU
+        # (FLAG_ESTOP_ACTIVE on telemetry) up to the navigator's
+        # state machine. Without this, pressing the physical button
+        # stops the wheels (MCU motor_stop_all) but the navigator keeps
+        # publishing forward velocity Twists and treats the chassis as
+        # 'stuck' — the 15:58:50 WP3 trace sat at v_cmd=+0.46 for 11 s
+        # of forced no-motion before stuck-retry fired.
+        self._pub_emergency_stop = self.create_publisher(
+            Empty, '/rover/cmd/emergency_stop', reliable)
+        self._pub_clear_emergency = self.create_publisher(
+            Empty, '/rover/cmd/clear_emergency', reliable)
+        # Last seen hardware-estop bit so we only emit on edges.
+        self._last_hw_estop = None
 
         self._open_serial()
 
@@ -627,6 +640,24 @@ class McuBridgeNode(Node):
         if cal.get('measured_v') is not None:
             battery_payload['measured_v'] = round(cal['measured_v'], 3)
         self._pub_battery.publish(self._json_msg(battery_payload))
+
+        # Forward hardware estop button transitions to the navigator.
+        # FLAG_ESTOP_ACTIVE (bit 0) reflects the physical estop line state
+        # the MCU sees. Edge-trigger only — if we re-published every tick
+        # the navigator's emergency_stop topic (reliable QoS) would back
+        # up. Initial unknown -> known transition: only emit on a known
+        # rising edge, so a pilot restart that comes up with the button
+        # already pressed doesn't replay a stale press.
+        hw_estop = bool(flags & 0x01)
+        if self._last_hw_estop is False and hw_estop:
+            self.get_logger().warn(
+                'Hardware emergency-stop pressed (MCU FLAG_ESTOP_ACTIVE)')
+            self._pub_emergency_stop.publish(Empty())
+        elif self._last_hw_estop is True and not hw_estop:
+            self.get_logger().info(
+                'Hardware emergency-stop released — clearing')
+            self._pub_clear_emergency.publish(Empty())
+        self._last_hw_estop = hw_estop
 
         # Odometry — integrate (vl, vr) into a 2D pose.
         now_t = time.monotonic()

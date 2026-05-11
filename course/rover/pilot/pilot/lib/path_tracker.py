@@ -520,6 +520,19 @@ class DockTracker:
             self._reverse_entry_xy = None
             return 0.0, 0.0, 'reached'
 
+        # Forward-only (active settle) reach. Without reverse to recover
+        # from along<0, the chassis would keep rolling past the target
+        # forever (the 15:58 trace's 343 cm bbox came from exactly this
+        # bug — forward_only chassis crossed the dock end and kept
+        # accelerating because no reach condition fired). Treat any
+        # along<0 in forward_only as 'reached' and let the navigator's
+        # settle phase verify precision against waypoint_tolerance.
+        if self._forward_only and along_to_target < 0.0:
+            self._reverse_active = False
+            self._reverse_entry_t = None
+            self._reverse_entry_xy = None
+            return 0.0, 0.0, 'reached'
+
         # Reverse recovery. Once the antenna overshoots the target along
         # the corridor we don't want a tick-by-tick blip — we want to
         # back up far enough (`_reverse_recovery_m`) that the next forward
