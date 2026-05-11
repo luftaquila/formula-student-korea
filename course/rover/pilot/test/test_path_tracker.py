@@ -67,36 +67,41 @@ class TestCruiseTracker:
         assert done
         assert v == 0.0 and kappa == 0.0
 
-    def test_curvature_sign_target_to_left(self):
+    def test_chassis_left_of_corridor_turns_right(self):
         t = CruiseTracker(_PARAMS)
-        # Chassis facing East at origin; target due North → α = +π/2 →
-        # PP wants to turn LEFT → κ > 0 (math/CCW convention).
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (0.0, 5.0, pi / 2))
-        _, kappa, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
-        assert kappa > 0.0
-
-    def test_curvature_sign_target_to_right(self):
-        t = CruiseTracker(_PARAMS)
-        # Target due South → α = -π/2 → turn RIGHT → κ < 0.
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (0.0, -5.0, -pi / 2))
-        _, kappa, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
+        # Corridor along East (psi_path=0). Chassis 0.2 m LEFT of corridor
+        # (positive y), heading aligned. Stanley: e_y > 0 → desired_offset
+        # > 0 → desired_psi < psi_path → e_psi_corrected > 0 → κ < 0
+        # (right turn) to head back onto the corridor.
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        _, kappa, _ = t.step((1.0, 0.2, 0.0), seg, t_now=100.0)
         assert kappa < 0.0
+
+    def test_chassis_right_of_corridor_turns_left(self):
+        t = CruiseTracker(_PARAMS)
+        # Mirror of above: chassis below corridor → κ > 0 (left turn).
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        _, kappa, _ = t.step((1.0, -0.2, 0.0), seg, t_now=100.0)
+        assert kappa > 0.0
 
     def test_curvature_clamped_to_max(self):
         t = CruiseTracker(_PARAMS)
-        # Target slightly off-axis but very close — would explode without
-        # the max_curvature clamp.
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (0.05, 0.05, pi / 4))
-        _, kappa, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
+        # Large lateral error at cruise speed would push Stanley's
+        # heading regulator past the chassis curvature limit; clamp must
+        # bind.
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        _, kappa, _ = t.step((1.0, 5.0, 0.0), seg, t_now=100.0)
         assert abs(kappa) <= _PARAMS['max_curvature'] + 1e-9
 
     def test_speed_scales_with_heading_error(self):
         t = CruiseTracker(_PARAMS)
-        # Target 90° to the side: speed should drop noticeably from cruise.
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (0.0, 5.0, pi / 2))
-        v, _, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
-        # cos(π/2) = 0 → clamped to min_speed_fraction × cruise.
-        assert v == pytest.approx(_PARAMS['cruise_speed'] * 0.35, abs=1e-9)
+        # Chassis on corridor centreline but heading 90° off corridor.
+        # Stanley's e_psi_corrected = pi/2 → cos = 0 → speed clamped to
+        # min_speed_fraction × cruise.
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        v, _, _ = t.step((1.0, 0.0, pi / 2), seg, t_now=100.0)
+        assert v == pytest.approx(
+            _PARAMS['cruise_speed'] * _PARAMS['pp_min_speed_fraction'], abs=1e-9)
 
     def test_speed_blends_to_approach_near_end_of_cruise(self):
         # Within pp_handoff_blend_distance metres of the end pose, the
@@ -122,45 +127,21 @@ class TestCruiseTracker:
         assert not done
         assert v == pytest.approx(_PARAMS['cruise_speed'], abs=1e-9)
 
-    def test_d_term_damps_when_chassis_converges_on_target(self):
-        # Convergence: α > 0 with dα/dt < 0. P-only κ > 0 (turning left).
-        # Damping κ += damping·dα/dt adds a NEGATIVE contribution → κ_damped
-        # is signed-smaller than κ_p_only (less left turn, possibly even
-        # turning right to brake). Earlier sign was anti-damping.
-        # Use a small off-axis target so neither κ saturates at max_curvature.
+    def test_done_requires_heading_aligned(self):
+        # Within cruise_done_tolerance of end but chassis heading 45° off
+        # corridor → not done (would hand off a bad heading to dock).
         t = CruiseTracker(_PARAMS)
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.3, 0.0))
-        # Pose A: chassis at origin, target slightly left → small +α.
-        _, _, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
-        # Pose B: chassis rotated +0.04 rad toward target → α reduced.
-        t_p_only = CruiseTracker(_PARAMS)
-        _, kappa_p_only, _ = t_p_only.step((0.0, 0.0, 0.04), seg, t_now=200.0)
-        _, kappa_damped, _ = t.step((0.0, 0.0, 0.04), seg, t_now=100.05)
-        # Both unsaturated since target is small-angle off-axis.
-        assert abs(kappa_p_only) < _PARAMS['max_curvature'] - 1e-9
-        # Damping must reduce SIGNED κ (less turn in the convergence direction).
-        # P-term has α > 0 → κ_p > 0; damping contribution is negative.
-        assert kappa_damped < kappa_p_only, (
-            f'D-term should reduce signed κ on convergence: '
-            f'κ_damped={kappa_damped:.4f} must be < κ_p_only={kappa_p_only:.4f}'
-        )
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        _, _, done = t.step((4.95, 0.0, pi / 4), seg, t_now=100.0)
+        assert not done
 
-    def test_d_term_boosts_when_chassis_diverges_from_target(self):
-        # Divergence: α > 0 with dα/dt > 0 (chassis turning AWAY from target).
-        # P-only κ > 0; damping adds a POSITIVE contribution → κ_damped >
-        # κ_p_only, correcting harder against the diverging heading.
+    def test_pass_through_safety_net(self):
+        # Chassis past the end pose along corridor by more than
+        # cruise_pass_through_m → forced done regardless of heading.
         t = CruiseTracker(_PARAMS)
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.3, 0.0))
-        # Pose A: chassis already pointing partly toward target.
-        _, _, _ = t.step((0.0, 0.0, 0.04), seg, t_now=100.0)
-        # Pose B: chassis rotated AWAY (psi smaller) → α grew.
-        t_p_only = CruiseTracker(_PARAMS)
-        _, kappa_p_only, _ = t_p_only.step((0.0, 0.0, 0.0), seg, t_now=200.0)
-        _, kappa_damped, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.05)
-        assert kappa_damped > kappa_p_only - 1e-9, (
-            f'D-term should boost κ on divergence: '
-            f'κ_damped={kappa_damped:.4f} vs κ_p_only={kappa_p_only:.4f}'
-        )
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        _, _, done = t.step((5.40, 0.0, pi / 4), seg, t_now=100.0)
+        assert done
 
 
 class TestDockTracker:
