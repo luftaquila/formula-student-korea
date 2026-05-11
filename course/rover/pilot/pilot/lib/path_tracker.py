@@ -97,7 +97,16 @@ class CruiseTracker:
         # left-right wari-gari with no dwell on the corridor. Dropped
         # to 1.0 (≈12°/5 cm) so chassis can track without slamming
         # back and forth on noise.
-        self._k_lat = float(params.get('cruise_k_lat', 1.5))
+        # Raised 1.5 -> 2.5 to break out of Stanley's stationary point.
+        # 14:47 mission WP2 trace: e_y=-8 cm, e_psi=+14° gave kappa ≈ 0
+        # (e_psi_corrected = +0.5° because atan2(1.5*-0.08, 0.5) = -13.5°
+        # cancelled e_psi almost exactly). Chassis ran parallel to the
+        # corridor at 8 cm lateral offset until stuck-skip. At k_lat=2.5
+        # the same e_y gives -21.8° desired offset, breaks the cancel,
+        # and rotates chassis into a closing trajectory. Cap 35° +
+        # v_eff floor 0.5 keep this far from the k_lat=6 wari-gari
+        # regime (the 13:42 incident).
+        self._k_lat = float(params.get('cruise_k_lat', 2.5))
         self._k_heading = float(params.get('cruise_k_heading', 2.0))
         # Cap on Stanley's desired-offset to prevent perpendicular-
         # entry oscillation on large lateral residuals. 35° default.
@@ -228,10 +237,12 @@ class DockTracker:
         # k_psi*e_psi; inside Stanley's atan2(k_y*e_y, v) the same 6.0
         # makes 5 cm of lateral residual rotate the desired-psi by 30°+
         # at creep speed, far past anything the chassis can track. Use
-        # a separate Stanley gain (dock_stanley_k_lat, default 1.0) and
-        # leave dock_k_y honoured for backward compat only.
+        # a separate Stanley gain (dock_stanley_k_lat, default 2.5) and
+        # leave dock_k_y honoured for backward compat only. 2.5 chosen
+        # over 1.5 because at k_lat=1.5 dock got stuck in Stanley's
+        # stationary point on the 14:47 WP2 trace (e_y=-8 cm, kappa ≈ 0).
         self._k_y = float(params.get('dock_stanley_k_lat',
-                                     min(1.5, float(params['dock_k_y']))))
+                                     min(2.5, float(params['dock_k_y']))))
         self._k_psi = float(params['dock_k_psi'])
         self._k_i = float(params.get('dock_k_i', 0.0))
         self._max_curvature = float(params['max_curvature'])
