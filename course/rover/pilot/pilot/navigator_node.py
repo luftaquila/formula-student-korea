@@ -725,14 +725,23 @@ class NavigatorNode(Node):
             if not self._has_required_fix():
                 if self._fix_degraded_since is None:
                     self._fix_degraded_since = now
-                elif now - self._fix_degraded_since >= hysteresis:
-                    self._stop_motors()
+                # Hold position while the fix is degraded. Without this,
+                # cruise/dock keep publishing forward Twists for the full
+                # hysteresis window (0.8 s = ~80 cm at cruise_speed=1 m/s)
+                # before the ERROR transition stops motors, and the
+                # operator sees the chassis "fail to brake" when RTK
+                # drops to float. Position is held by emitting Twist(0,0)
+                # every tick — mcu_bridge's accel_limit then ramps the
+                # actual chassis speed to zero, so we're not relying on
+                # whatever cmd was last latched.
+                self._stop_motors()
+                if now - self._fix_degraded_since >= hysteresis:
                     self._pre_error_state = self._state
                     self._set_error(
                         f'GPS fix below required quality ({self._gps_fix_status}) '
                         f'for {now - self._fix_degraded_since:.2f}s'
                     )
-                    return
+                return
             else:
                 self._fix_degraded_since = None
 
@@ -772,6 +781,13 @@ class NavigatorNode(Node):
     # ── error recovery ───────────────────────────────────────────────────
 
     def _handle_error(self):
+        # Hold position every tick while in ERROR. _set_error stops the
+        # motors once on transition, but mcu_bridge needs a continuous
+        # zero-twist stream so its accel-limit ramp can drive actual
+        # chassis speed to zero — otherwise the chassis keeps rolling
+        # on the last forward cmd while we sit in ERROR waiting for
+        # RTK recovery.
+        self._stop_motors()
         gps_timeout = self.get_parameter('gps_timeout').value
         if (
             time.monotonic() - self._last_gps_time < gps_timeout
