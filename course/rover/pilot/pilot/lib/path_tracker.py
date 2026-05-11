@@ -73,6 +73,29 @@ class CruiseTracker:
         # Slow down as |e_psi_corrected| grows; never below this fraction.
         self._min_speed_fraction = float(params.get('pp_min_speed_fraction', 0.25))
         self._handoff_blend_distance = float(params.get('pp_handoff_blend_distance', 1.0))
+        # Zero-cross gate threshold. When a new cruise sub-segment has a
+        # different direction sign than the previously executed one (i.e.
+        # Reed-Shepp asks for a forward→reverse or reverse→forward
+        # transition mid-cruise), command v=0 until measured chassis
+        # speed magnitude drops below this value. Without the gate, the
+        # MCU accel_limit (0.8 m/s²) takes ~1.5 s to ramp setpoint from
+        # +0.5 m/s through zero to −0.5 m/s — during which the chassis
+        # drifts forward under inertia while the cruise tracker thinks
+        # it is already reversing. 16:47 WP2 trace: cmd v=−0.68 at
+        # t=23.36 s, chassis still moving +0.30 m east at t=24.36 s,
+        # only reversed by t=25.41 s — by which point chassis was 0.65
+        # m past the planned dock entry and dock opened at |e_y|=43 cm.
+        # 0.10 m/s threshold is well above MCU PID deadband (0.05 m/s)
+        # so the gate releases as soon as the chassis is genuinely at
+        # rest, not on encoder noise.
+        self._zero_cross_speed_threshold = float(
+            params.get('cruise_zero_cross_speed_threshold', 0.10))
+        # Persistent last-executed direction across step() calls. None
+        # means "no prior cruise sub-seg executed yet"; +1/-1 once the
+        # tracker has commanded motion in that direction. reset()
+        # clears this so the navigator can flush state at cruise→dock
+        # boundaries.
+        self._last_direction = None
         # Done condition heading tolerance — chassis must have its ψ
         # within this of psi_path before declaring done, so the dock
         # tracker takes over with a clean alignment.
@@ -130,11 +153,12 @@ class CruiseTracker:
             params.get('cruise_stanley_offset_cap_rad', 0.262))
 
     def reset(self):
-        # No persistent state in Stanley; keep the method for the API
-        # the navigator already uses.
-        pass
+        # Clear the zero-cross gate's direction history so the next
+        # cruise leg starts fresh (no stale sign from before a dock or
+        # SETTLE state).
+        self._last_direction = None
 
-    def step(self, chassis_pose, segment, t_now):
+    def step(self, chassis_pose, segment, t_now, chassis_v=None):
         x, y, psi = chassis_pose
         sx, sy, psi_path = segment.start_pose
         ex, ey, _ = segment.end_pose
@@ -169,13 +193,40 @@ class CruiseTracker:
         if a_along >= seg_len + self._cruise_pass_through_m:
             return 0.0, 0.0, True
 
-        # Speed taper: same handoff blend as the PP version.
+        # Zero-cross gate. Reed-Shepp can hand us a sub-seg whose
+        # direction differs from the previously executed one. If the
+        # chassis hasn't yet decelerated through zero, sending the new
+        # signed-speed command immediately would let the MCU accel_limit
+        # ramp setpoint smoothly through zero while the chassis itself
+        # continues drifting in the *old* direction for ~1 s — which is
+        # what produced the WP2 catastrophe in the 16:47 trace. Hold the
+        # gate closed (v=0, kappa=0) until either chassis_v signals the
+        # chassis has actually slowed below threshold, or chassis_v is
+        # unavailable (caller didn't pass it — backward compat for the
+        # existing tests; production callers always pass it).
+        if (self._last_direction is not None
+                and direction != self._last_direction
+                and chassis_v is not None
+                and abs(chassis_v) > self._zero_cross_speed_threshold):
+            return 0.0, 0.0, False
+
+        # Speed taper: handoff blend now keys on the *remaining cruise
+        # distance to the dock corridor entry*, not on the current sub-
+        # segment's residual length. The planner stamps each cruise
+        # sub-seg with dist_to_dock (= cumulative metres from this sub-
+        # seg's end through all later sub-segs to the dock entry); the
+        # taper begins when (dist_to_end + dist_to_dock) drops below
+        # handoff_blend_distance, i.e. on the genuine final approach.
+        # Before that, target_speed is held at cruise_speed across
+        # arbitrarily many short Reed-Shepp sub-segs.
+        dist_to_dock = getattr(segment, 'dist_to_dock', 0.0)
+        remaining_to_dock = dist_to_end + dist_to_dock
         if (self._handoff_blend_distance > 1e-6
-                and dist_to_end < self._handoff_blend_distance):
+                and remaining_to_dock < self._handoff_blend_distance):
             denom = max(1e-6,
                         self._handoff_blend_distance - self._cruise_done_tolerance)
             blend = max(0.0, min(1.0,
-                                 (dist_to_end - self._cruise_done_tolerance) / denom))
+                                 (remaining_to_dock - self._cruise_done_tolerance) / denom))
             target_speed = (self._approach_speed
                             + blend * (self._cruise_speed - self._approach_speed))
         else:
@@ -223,6 +274,10 @@ class CruiseTracker:
             kappa = self._max_curvature
         elif kappa < -self._max_curvature:
             kappa = -self._max_curvature
+
+        # Record the direction we are about to command so the zero-
+        # cross gate can detect transitions on the next call.
+        self._last_direction = direction
 
         # Reverse motion: signed speed (mcu_bridge / ackermann_convert
         # accept negative speed) and flip kappa because chassis ψ̇ = v·κ

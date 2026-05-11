@@ -322,3 +322,72 @@ class TestDubinsCruise:
         cruises = _cruise_for(segments, 0)
         dock = _docks(segments)[0]
         assert isclose(cruises[-1].end_pose[2], dock.start_pose[2], abs_tol=1e-9)
+
+
+class TestDistToDockPropagation:
+    """Each cruise sub-segment carries `dist_to_dock` = cumulative metres
+    from its END pose through all later cruise sub-segs to the dock
+    corridor entry. The CruiseTracker's handoff-blend taper keys on
+    this so cruise_speed is held across an entire Reed-Shepp expansion;
+    without it, every 0.15 m sub-seg trips the taper and caps speed at
+    approach_speed."""
+
+    def _simple_segments(self):
+        # Single distant waypoint so the Reed-Shepp expansion has many
+        # sub-segs; antenna offset zero keeps geometry tidy.
+        ref = (37.5, 127.0)
+        # 6 m east in metres → adjust by reverse ENU conversion.
+        wp_e, wp_n = 6.0, 0.0
+        wp_lat, wp_lon = gps_from_enu(wp_e, wp_n, ref[0], ref[1])
+        waypoints = [{'lat': wp_lat, 'lng': wp_lon}]
+        return plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=(0.0, 0.0),
+            waypoints_lat_lng=waypoints,
+            ref_lat_lon=ref,
+            dock_distance=2.5,
+            turning_radius=0.56,
+        )
+
+    def test_last_cruise_sub_has_zero_dist_to_dock(self):
+        segs = self._simple_segments()
+        cruises = _cruise_for(segs, 0)
+        assert cruises, 'expected at least one cruise sub-seg'
+        last = cruises[-1]
+        assert last.dist_to_dock == pytest.approx(0.0, abs=1e-9)
+
+    def test_dist_to_dock_decreases_monotonically(self):
+        segs = self._simple_segments()
+        cruises = _cruise_for(segs, 0)
+        assert len(cruises) >= 2
+        for prev, nxt in zip(cruises[:-1], cruises[1:]):
+            assert prev.dist_to_dock + 1e-9 >= nxt.dist_to_dock, (
+                f'dist_to_dock should never increase along the path; '
+                f'got {prev.dist_to_dock:.3f} → {nxt.dist_to_dock:.3f}')
+
+    def test_dist_to_dock_matches_remaining_chord_sum(self):
+        # The first cruise sub-seg's dist_to_dock should equal the
+        # total chord length of every later sub-seg in the same cruise.
+        segs = self._simple_segments()
+        cruises = _cruise_for(segs, 0)
+        if len(cruises) < 2:
+            pytest.skip('Reed-Shepp expansion too short for the check')
+        head = cruises[0]
+        tail = cruises[1:]
+        tail_chord_sum = 0.0
+        for s in tail:
+            sx, sy, _ = s.start_pose
+            ex, ey, _ = s.end_pose
+            tail_chord_sum += hypot(ex - sx, ey - sy)
+        assert head.dist_to_dock == pytest.approx(tail_chord_sum, abs=1e-6)
+
+    def test_last_cruise_ends_forward(self):
+        # require_forward_end is wired through _expand_cruise so the
+        # last cruise sub-seg must be forward (direction = +1). The
+        # dock tracker only supports forward motion; a reverse-end
+        # cruise would force a direction switch right at the dock
+        # corridor entry.
+        segs = self._simple_segments()
+        cruises = _cruise_for(segs, 0)
+        assert cruises
+        assert cruises[-1].direction == 1

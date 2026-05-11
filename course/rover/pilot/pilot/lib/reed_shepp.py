@@ -378,8 +378,55 @@ def _advance(pose, kind, signed_length, rho):
     return (x_end, y_end, psi_end)
 
 
-def plan(start, end, rho):
-    """Plan the shortest Reed-Shepp path from start to end."""
+def _direction_switch_count(lengths):
+    """Count direction switches in a candidate's signed-length list.
+
+    A "switch" is a change of sign between two consecutive non-zero
+    primitives. The first non-zero primitive sets the initial sign but
+    is not itself a switch. Zero-length primitives are skipped (Reed-
+    Shepp closed-forms can emit them as degenerate cases).
+    """
+    switches = 0
+    last_sign = 0
+    for L in lengths:
+        if L > 0:
+            sign = 1
+        elif L < 0:
+            sign = -1
+        else:
+            continue
+        if last_sign != 0 and sign != last_sign:
+            switches += 1
+        last_sign = sign
+    return switches
+
+
+def plan(start, end, rho, switch_penalty_m=1.0, require_forward_end=False):
+    """Plan the shortest Reed-Shepp path from start to end.
+
+    Selection criterion is `total_length + N_switches * switch_penalty_m`
+    so paths that demand direction reversals are only preferred when
+    they are significantly shorter than forward-only alternatives.
+    Direction switches on this chassis cost ~1.5 s of accel_limit ramp
+    each (the MCU cannot step setpoint from +v to -v faster than 0.04
+    m/s per 50 ms tick), and during that ramp the chassis drifts on
+    inertia in the prior direction with no useful tracking. Defaulting
+    the penalty to 1.0 m breaks even when the alternative path is up to
+    1 m longer per switch — slightly less than the 0.75 m / 0.5 m/s
+    of motion the switch wastes, so the planner still prefers a
+    1-switch reverse over a 1.5 m longer forward arc, but rejects
+    multi-switch words when forward is anywhere close.
+
+    If ``require_forward_end`` is set, candidates whose last non-zero
+    primitive is a reverse motion are rejected — the path planner needs
+    the chassis to enter the dock corridor going forward so the dock
+    state-feedback tracker, which only supports forward motion, has a
+    clean velocity sign at handoff. Without this, the 16:47 WP2 case
+    selected a Reed-Shepp word ending in reverse, the chassis arrived
+    at the dock entry moving backward, and the dock tracker's first
+    forward command had to ride out a 1.5 s accel ramp through zero
+    while Stanley fought the chassis's residual reverse velocity.
+    """
     if rho <= 0:
         raise ValueError('rho must be positive')
 
@@ -396,7 +443,26 @@ def plan(start, end, rho):
     if not candidates:
         return None
 
-    best_lens, best_kinds, best_total = min(candidates, key=lambda c: c[2])
+    if require_forward_end:
+        def _ends_forward(cand):
+            for L in reversed(cand[0]):
+                if L > 0:
+                    return True
+                if L < 0:
+                    return False
+            return True  # all zero — degenerate, treat as forward
+        filtered = [c for c in candidates if _ends_forward(c)]
+        if filtered:
+            candidates = filtered
+        # else: fall back to unfiltered set rather than fail outright.
+
+    def _cost(cand):
+        lens, _kinds, total = cand
+        # ``total`` is in unit-radius coordinates; convert switch
+        # penalty to the same units so the comparison is consistent.
+        return total + _direction_switch_count(lens) * (switch_penalty_m / rho)
+
+    best_lens, best_kinds, best_total = min(candidates, key=_cost)
 
     # Reconstruct world-frame segments.
     segments = []

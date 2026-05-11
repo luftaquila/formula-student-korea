@@ -46,8 +46,10 @@ _PARAMS = {
 }
 
 
-def _seg(kind, start, end, target=(0.0, 0.0), idx=0, direction=1):
-    return PathSegment(kind, start, end, target, idx, direction=direction)
+def _seg(kind, start, end, target=(0.0, 0.0), idx=0, direction=1,
+         dist_to_dock=0.0):
+    return PathSegment(kind, start, end, target, idx,
+                       direction=direction, dist_to_dock=dist_to_dock)
 
 
 class TestCruiseTracker:
@@ -142,6 +144,119 @@ class TestCruiseTracker:
         seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
         _, _, done = t.step((5.40, 0.0, pi / 4), seg, t_now=100.0)
         assert done
+
+    def test_dist_to_dock_holds_cruise_speed_across_sub_segs(self):
+        # A short Reed-Shepp sub-seg (0.30 m chord) sitting 2.0 m of
+        # remaining cruise away from the dock corridor: the tracker
+        # must hold cruise_speed, not taper into approach_speed every
+        # sub-seg. Without dist_to_dock the (per-sub-seg) dist_to_end
+        # of 0.30 m would trip the handoff blend.
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (0.30, 0.0, 0.0),
+                   dist_to_dock=2.0)
+        v, _, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
+        assert v == pytest.approx(_PARAMS['cruise_speed'], abs=1e-9)
+
+    def test_dist_to_dock_zero_blends_as_before(self):
+        # Last cruise sub-seg (dist_to_dock=0): blend keys on
+        # dist_to_end alone, matching the legacy single-segment behaviour
+        # already pinned by test_speed_blends_to_approach_near_end_of_cruise.
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
+                   dist_to_dock=0.0)
+        v, _, _ = t.step((4.70, 0.0, 0.0), seg, t_now=100.0)
+        assert v == pytest.approx(0.475, abs=1e-6)
+
+
+class TestCruiseZeroCrossGate:
+    """When Reed-Shepp asks for a forward→reverse (or reverse→forward)
+    sub-seg transition, the cruise tracker must hold v=0 until the
+    chassis has actually decelerated through zero. Sending the new
+    signed command while the chassis is still rolling in the old
+    direction lets the MCU accel_limit ramp setpoint smoothly through
+    zero (~1.5 s) while the chassis drifts under inertia in the prior
+    direction — observed catastrophically in the 16:47 WP2 trace as
+    a 0.65 m overshoot of the planned dock entry."""
+
+    def _params_with_threshold(self, thresh=0.10):
+        p = dict(_PARAMS)
+        p['cruise_zero_cross_speed_threshold'] = thresh
+        return p
+
+    def test_first_call_no_gate(self):
+        # Fresh tracker has _last_direction = None: the gate cannot
+        # fire on the very first sub-seg regardless of chassis_v.
+        t = CruiseTracker(self._params_with_threshold())
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), direction=1)
+        v, _, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0, chassis_v=0.0)
+        assert v > 0.0
+
+    def test_same_direction_no_gate(self):
+        # Two consecutive forward sub-segs: gate must not fire on the
+        # second even if chassis_v is exactly the cruise speed.
+        t = CruiseTracker(self._params_with_threshold())
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), direction=1)
+        t.step((0.0, 0.0, 0.0), seg, t_now=100.0, chassis_v=0.0)
+        v, _, _ = t.step((0.1, 0.0, 0.0), seg, t_now=100.05,
+                         chassis_v=+0.50)
+        assert v > 0.0
+
+    def test_direction_flip_with_lingering_chassis_v_holds_zero(self):
+        # Forward sub-seg first, then reverse sub-seg while chassis_v
+        # is still high in the forward direction: gate must hold v=0.
+        t = CruiseTracker(self._params_with_threshold())
+        seg_fwd = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
+                       direction=1)
+        t.step((0.0, 0.0, 0.0), seg_fwd, t_now=100.0, chassis_v=+0.50)
+        seg_rev = _seg('cruise', (1.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                       direction=-1)
+        v, kappa, done = t.step((1.0, 0.0, pi), seg_rev, t_now=100.05,
+                                chassis_v=+0.50)
+        assert v == 0.0
+        assert kappa == 0.0
+        assert not done
+
+    def test_direction_flip_after_chassis_decelerates_releases(self):
+        # Same setup but chassis_v has fallen below the gate threshold:
+        # the tracker must release the gate and emit the reverse command.
+        t = CruiseTracker(self._params_with_threshold(thresh=0.10))
+        seg_fwd = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
+                       direction=1)
+        t.step((0.0, 0.0, 0.0), seg_fwd, t_now=100.0, chassis_v=+0.50)
+        seg_rev = _seg('cruise', (1.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                       direction=-1)
+        v, _, _ = t.step((1.0, 0.0, pi), seg_rev, t_now=100.05,
+                         chassis_v=+0.05)
+        assert v < 0.0
+
+    def test_gate_does_not_fire_without_chassis_v(self):
+        # Backward-compatible call (no chassis_v passed): the gate must
+        # remain inert so existing tests / call sites that pre-date the
+        # zero-cross gate stay functional.
+        t = CruiseTracker(self._params_with_threshold())
+        seg_fwd = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
+                       direction=1)
+        t.step((0.0, 0.0, 0.0), seg_fwd, t_now=100.0)
+        seg_rev = _seg('cruise', (1.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                       direction=-1)
+        v, _, _ = t.step((1.0, 0.0, pi), seg_rev, t_now=100.05)
+        assert v < 0.0  # no gate, emits reverse cmd directly
+
+    def test_reset_clears_direction_history(self):
+        # After reset() the tracker has no _last_direction so a
+        # subsequent reverse sub-seg with large chassis_v should NOT be
+        # gated — the gate only triggers on a *change* from a known
+        # prior direction.
+        t = CruiseTracker(self._params_with_threshold())
+        seg_fwd = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
+                       direction=1)
+        t.step((0.0, 0.0, 0.0), seg_fwd, t_now=100.0, chassis_v=+0.50)
+        t.reset()
+        seg_rev = _seg('cruise', (1.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                       direction=-1)
+        v, _, _ = t.step((1.0, 0.0, pi), seg_rev, t_now=100.05,
+                         chassis_v=+0.50)
+        assert v < 0.0
 
 
 class TestCruiseReverse:

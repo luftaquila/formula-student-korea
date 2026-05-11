@@ -138,6 +138,20 @@ class NavigatorNode(Node):
         self.declare_parameter('pp_lookahead_gain', 0.6)
         self.declare_parameter('pp_damping', 0.18)
         self.declare_parameter('cruise_done_tolerance', 0.20)
+        # Maximum lateral error (|e_y| vs dock corridor) tolerated at
+        # the cruise→dock handoff. Above this, navigator re-plans from
+        # the live chassis pose instead of letting the dock tracker
+        # open with a residual it can't smoothly close. 0.10 m sits
+        # well inside the dock corridor (default 2.5 m) so Stanley
+        # k_lat=4 with cap 15° has ~5 s of corridor to bleed lateral
+        # at 0.4 m/s before reaching target.
+        self.declare_parameter('cruise_dock_lateral_max', 0.10)
+        # Threshold below which the cruise tracker's zero-cross gate
+        # releases — i.e., when measured chassis speed magnitude drops
+        # below this, a forward↔reverse sub-seg transition is allowed
+        # through. 0.10 m/s is above the MCU PID deadband (0.05 m/s)
+        # so the gate releases on genuine standstill, not encoder noise.
+        self.declare_parameter('cruise_zero_cross_speed_threshold', 0.10)
 
         # Dock tracker (state feedback).
         self.declare_parameter('dock_k_y', 1.4)
@@ -228,6 +242,8 @@ class NavigatorNode(Node):
 
         # ── derived & state ──────────────────────────────────────────────
         self._max_steer_rad = radians(self.get_parameter('max_steering_angle_deg').value)
+        self._cruise_dock_lateral_max = float(
+            self.get_parameter('cruise_dock_lateral_max').value)
 
         # Effective antenna offset. Persisted antenna_offset.json wins over
         # the YAML default; the YAML value is a fallback for first boot. We
@@ -448,6 +464,8 @@ class NavigatorNode(Node):
             'dock_integral_limit': self.get_parameter('dock_integral_limit').value,
             'pp_min_speed_fraction': self.get_parameter('pp_min_speed_fraction').value,
             'pp_handoff_blend_distance': self.get_parameter('pp_handoff_blend_distance').value,
+            'cruise_zero_cross_speed_threshold': self.get_parameter(
+                'cruise_zero_cross_speed_threshold').value,
             'approach_tolerance': self.get_parameter('approach_tolerance').value,
             'creep_zone': self.get_parameter('creep_zone').value,
             'max_curvature': self.get_parameter('max_curvature').value,
@@ -1022,7 +1040,13 @@ class NavigatorNode(Node):
         antenna_world = self._estimator.antenna_position()
 
         if seg.kind == 'cruise':
-            v, kappa, done = self._cruise_tracker.step(chassis_pose, seg, time.monotonic())
+            # Chassis longitudinal speed (m/s, signed by direction of
+            # motion). Wheel-encoder average gives the actual chassis
+            # speed the MCU has spun up to; the cruise tracker uses this
+            # to gate direction-switch sub-seg transitions through zero.
+            chassis_v = 0.5 * (self._odom_v_left + self._odom_v_right)
+            v, kappa, done = self._cruise_tracker.step(
+                chassis_pose, seg, time.monotonic(), chassis_v=chassis_v)
             self._publish_velocity(v, kappa)
             self._update_progress(chassis_pose, seg.end_pose)
 
@@ -1037,10 +1061,38 @@ class NavigatorNode(Node):
                     f'CRUISE seg{self._cur_seg_idx} (WP{seg.waypoint_index + 1}) '
                     f'ch=({cx:+.2f},{cy:+.2f},{degrees(cpsi):+.0f}°) '
                     f'end=({ex:+.2f},{ey:+.2f}) dist_to_end={dist_to_end*100:.1f}cm '
+                    f'd2d={seg.dist_to_dock*100:.0f}cm v_ch={chassis_v:+.2f} '
                     f'cmd v={v:+.2f} k={kappa:+.2f}'
                 )
 
             if done:
+                # cruise→dock handoff lateral gate. If this was the last
+                # cruise sub-seg (dist_to_dock == 0) AND the chassis is
+                # still too far off the dock corridor laterally, the
+                # next segment (dock) would open with a |e_y| that
+                # forces Stanley to saturate trying to slam lateral
+                # closed — exactly the WP2 wari-gari from the 16:47
+                # trace. Re-plan from the live chassis pose so a fresh
+                # Reed-Shepp leg can stitch chassis→dock entry cleanly.
+                # The next dock segment after this cruise (if any)
+                # carries the canonical psi_path = dock heading, so we
+                # project the chassis onto that line to read e_y.
+                if (seg.dist_to_dock <= 1e-3
+                        and self._cur_seg_idx + 1 < len(self._segments)
+                        and self._segments[self._cur_seg_idx + 1].kind == 'dock'):
+                    dock_seg = self._segments[self._cur_seg_idx + 1]
+                    dsx, dsy, dpsi = dock_seg.start_pose
+                    _, e_y_dock = _project_onto_line(
+                        chassis_pose[0], chassis_pose[1], dsx, dsy, dpsi)
+                    if abs(e_y_dock) > self._cruise_dock_lateral_max:
+                        self.get_logger().warn(
+                            f'Cruise→dock handoff |e_y|={abs(e_y_dock)*100:.1f}cm '
+                            f'exceeds {self._cruise_dock_lateral_max*100:.0f}cm '
+                            f'tolerance — replanning from live chassis pose'
+                        )
+                        self._replan_from_current_chassis()
+                        self._last_dock_trace_t = None
+                        return
                 self._cur_seg_idx += 1
                 self._cruise_tracker.reset()
                 self._reset_progress()

@@ -262,3 +262,109 @@ class TestMissionRegression:
         rs = plan(start, end, rho)
         du = dubins_plan(start, end, rho)
         assert rs.length < du.length + 1e-9
+
+
+class TestSwitchPenalty:
+    """`plan(switch_penalty_m=...)` biases candidate selection against
+    paths that require direction reversals. Each direction switch wastes
+    ~1.5 s of MCU accel_limit ramp through zero (the chassis decelerates
+    forward through 0 then accelerates reverse), and during that ramp
+    the chassis drifts on inertia in the prior direction. The 16:47 WP2
+    case (chassis at -131° heading needs to reach a dock entry pose at
+    -16.5°) selected a Reed-Shepp word with 2 direction switches whose
+    nominal length was 1.5 m shorter than the forward-only Dubins
+    alternative — but the 3 s of accel-ramp drift past the planned
+    entry left dock opening with |e_y| = 43 cm, far outside Stanley's
+    smooth-closure regime."""
+
+    def test_wp1_to_wp2_penalty_reduces_switch_count(self):
+        # Concrete case lifted from the 16:47 mission's WP1→WP2 leg.
+        # Free Reed-Shepp selected a word with multiple direction
+        # switches; a 2 m switch penalty must drop the chosen path's
+        # switch count strictly below the unpenalised baseline.
+        from pilot.lib.reed_shepp import _direction_switch_count
+        start = (-0.98, -3.92, math.radians(-131.0))
+        end = (-2.25, -5.09, math.radians(-16.5))
+        rho = 0.56
+        rs_free = plan(start, end, rho, switch_penalty_m=0.0)
+        rs_pen = plan(start, end, rho, switch_penalty_m=2.0)
+        assert rs_free is not None and rs_pen is not None
+        n_free = _direction_switch_count(
+            [seg[1] for seg in rs_free.segments])
+        n_pen = _direction_switch_count(
+            [seg[1] for seg in rs_pen.segments])
+        # Free baseline must use at least one switch (the case is
+        # specifically chosen so it does).
+        assert n_free >= 1
+        assert n_pen < n_free
+
+    def test_penalty_never_increases_switch_count(self):
+        # Across a sample of geometrically diverse cases, raising
+        # switch_penalty from 0 to a large value must never produce
+        # a path with MORE direction switches than the unpenalised
+        # baseline. The penalty is monotone in switch count.
+        from pilot.lib.reed_shepp import _direction_switch_count
+        cases = [
+            ((0.0, 0.0, 0.0), (-1.0, 0.0, 0.0)),
+            ((0.0, 0.0, 0.0), (1.0, 0.3, math.radians(30.0))),
+            ((0.0, 0.0, 0.0), (-2.0, 1.0, math.radians(120.0))),
+            ((0.0, 0.0, 0.0), (0.5, 0.5, math.radians(-160.0))),
+            ((0.0, 0.0, 0.0), (-1.5, -0.5, math.radians(90.0))),
+        ]
+        rho = 0.5
+        for start, end in cases:
+            free = plan(start, end, rho, switch_penalty_m=0.0)
+            pen = plan(start, end, rho, switch_penalty_m=10.0)
+            n_free = _direction_switch_count(
+                [s[1] for s in free.segments])
+            n_pen = _direction_switch_count(
+                [s[1] for s in pen.segments])
+            assert n_pen <= n_free, (
+                f'{start}→{end}: switches went up under penalty '
+                f'({n_free}→{n_pen})')
+
+
+class TestRequireForwardEnd:
+    """`plan(require_forward_end=True)` filters Reed-Shepp candidates
+    so the chassis arrives at the goal moving forward. The path planner
+    relies on this for the cruise→dock handoff — the dock state-feedback
+    tracker only supports forward motion and cannot ride out a direction
+    reversal at the corridor entry."""
+
+    def test_last_primitive_is_forward(self):
+        # Sample of geometrically reasonable goals; each plan must
+        # terminate in a forward primitive.
+        rho = 0.5
+        cases = [
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            ((0.0, 0.0, 0.0), (-1.0, 0.0, 0.0)),
+            ((0.0, 0.0, 0.0), (0.0, 1.0, math.pi / 2)),
+            ((0.0, 0.0, 0.0), (2.0, -1.5, math.radians(-90.0))),
+            ((0.0, 0.0, 0.0), (-1.5, 1.5, math.radians(135.0))),
+        ]
+        for start, end in cases:
+            p = plan(start, end, rho, require_forward_end=True)
+            assert p is not None, f'no plan for {start}→{end}'
+            # Find the last non-zero primitive.
+            last_signed = None
+            for _kind, signed_length, _s, _e in reversed(p.segments):
+                if abs(signed_length) > 1e-9:
+                    last_signed = signed_length
+                    break
+            assert last_signed is not None
+            assert last_signed > 0, (
+                f'expected forward-end for {start}→{end}; got '
+                f'last signed_length={last_signed:.4f}')
+
+    def test_pose_accuracy_preserved_with_forward_end(self):
+        # The constraint must not break end-pose accuracy on cases that
+        # admit a forward-end solution (which Reed-Shepp's 48-candidate
+        # set always does for any reachable goal).
+        rho = 0.5
+        end_target = (1.5, 0.8, math.radians(60.0))
+        p = plan((0.0, 0.0, 0.0), end_target, rho, require_forward_end=True)
+        assert p is not None
+        end_actual = _end_of(p)
+        d_xy, d_psi = _err(end_actual, end_target)
+        assert d_xy < 1e-3
+        assert d_psi < 1e-3
