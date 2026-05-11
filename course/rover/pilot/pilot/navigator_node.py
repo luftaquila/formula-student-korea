@@ -155,11 +155,16 @@ class NavigatorNode(Node):
         self.declare_parameter('settle_tolerance', 0.03)
         self.declare_parameter('settle_readings', 5)
         self.declare_parameter('settle_timeout', 10.0)
-        # Active settle: number of times we re-engage the dock tracker
-        # during SETTLING when the antenna is outside waypoint_tolerance.
-        # Each retry sets dock to forward_only (no reverse latch on GPS
-        # noise) and lets the chassis crawl closer.
-        self.declare_parameter('active_settle_retries', 3)
+        # Active settle: retry counter is uncapped (Phase 4 policy — never
+        # skip a waypoint). The throttle bounds how often we can re-engage
+        # so a misbehaving dock can't burn cycles in <100 ms loops.
+        self.declare_parameter('active_settle_retries', 3)  # legacy, unused
+        # Minimum seconds between consecutive active-settle retries.
+        # The dock tracker needs time to move the chassis a meaningful
+        # distance before the navigator decides the retry didn't work
+        # and re-engages again. 1.5 s gives the chassis ~10-15 cm of
+        # creep-speed forward motion at minimum.
+        self.declare_parameter('active_settle_throttle_s', 1.5)
         self.declare_parameter('spray_timeout', 5.0)
         self.declare_parameter('stuck_timeout', 12.0)
         self.declare_parameter('stuck_max_retries', 2)
@@ -321,10 +326,10 @@ class NavigatorNode(Node):
         self._settle_enter_time = 0.0
         # Active settle retry counter — incremented each time the chassis
         # falls outside waypoint_tolerance during a SETTLING phase and we
-        # re-engage the dock tracker to crawl it back in. Capped by the
-        # 'active_settle_retries' parameter to avoid an infinite loop on
-        # GPS-noise-dominated stops.
+        # re-engage the dock tracker to crawl it back in. No upper bound
+        # since Phase 4 removed skip; the throttle below paces retries.
         self._settle_retries = 0
+        self._last_settle_retry_t = 0.0
 
         # Spray state.
         self._spray_enter_time = 0.0
@@ -1038,11 +1043,6 @@ class NavigatorNode(Node):
             if done:
                 self._cur_seg_idx += 1
                 self._cruise_tracker.reset()
-                # Drop any leftover active-settle flag from a previous
-                # waypoint's SETTLING re-engagement — fresh dock starts
-                # in normal (reverse-latch-enabled) mode.
-                if self._dock_tracker is not None:
-                    self._dock_tracker.set_forward_only(False)
                 self._reset_progress()
                 self._last_dock_trace_t = None  # reset trace clock for next segment
             return
@@ -1355,37 +1355,41 @@ class NavigatorNode(Node):
             return
 
         if dist > wp_tol:
-            # Active settle: re-engage the dock tracker in forward-only
-            # mode so the chassis crawls the residual cm toward the
-            # antenna target. The original passive form stopped the
-            # chassis and waited for settle_timeout — but a stopped
-            # chassis cannot close a 5 cm residual, it can only wait
-            # for noise to drift the reading. With active settle we
-            # spend the same timeout budget actually moving toward the
-            # target.
-            #
-            # forward_only=True disables the dock's reverse latch so
-            # GPS jitter that flips along_to_target negative doesn't
-            # whipsaw the chassis backward — the chassis only ever
-            # advances toward the target during settle.
-            max_retries = self.get_parameter('active_settle_retries').value
-            if (self._settle_retries < max_retries
-                    and self._dock_tracker is not None):
-                self._settle_retries += 1
-                self.get_logger().info(
-                    f'Active settle WP{self._cur_wp_idx + 1}: '
-                    f'dist={dist * 100:.1f} cm > wp_tol, '
-                    f'retry {self._settle_retries}/{max_retries}'
-                )
-                self._dock_tracker.reset()
-                self._dock_tracker.set_forward_only(True)
-                self._reset_progress()
-                self._set_state(State.NAVIGATING)
+            # Active settle redesign: re-engage the dock tracker in its
+            # normal (reverse-permitted) mode. The Phase 1-4 work makes
+            # this safe and effective:
+            #   * Reed-Shepp planning lets the planner pick a K-turn if
+            #     forward-only is geometrically wedged.
+            #   * Skip is removed (Phase 4), so retry is the only
+            #     terminator besides emergency_stop.
+            #   * The old forward_only mode is no longer used — it had
+            #     a tight-loop bug (chassis past target ⇒ 50 ms cycle
+            #     burning retries with no motion). Plain dock_tracker
+            #     with the new Stanley + brake tuning handles the
+            #     re-approach.
+            # Throttle: retry only if at least active_settle_throttle_s
+            # has elapsed since the last retry. Without this, the
+            # navigator could cycle SETTLING→NAVIGATING→SETTLING within
+            # 50 ms (a dock that declares 'reached' on the first tick
+            # of re-engagement, observed in the 16:11 trace) and
+            # burn through retries with no useful motion.
+            now = time.monotonic()
+            throttle = self.get_parameter('active_settle_throttle_s').value
+            if now - self._last_settle_retry_t < throttle:
+                # Within throttle window — hold position, don't retry yet.
+                self._settle_count = 0
+                self._stop_motors()
                 return
-            # Retries exhausted: drop back to passive — stop and wait
-            # for settle_timeout to decide spray-vs-skip.
-            self._settle_count = 0
-            self._stop_motors()
+            self._settle_retries += 1
+            self._last_settle_retry_t = now
+            self.get_logger().info(
+                f'Active settle WP{self._cur_wp_idx + 1}: '
+                f'dist={dist * 100:.1f} cm > wp_tol, retry {self._settle_retries}'
+            )
+            if self._dock_tracker is not None:
+                self._dock_tracker.reset()
+            self._reset_progress()
+            self._set_state(State.NAVIGATING)
             return
 
         # Inside tolerance.
