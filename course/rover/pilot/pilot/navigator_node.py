@@ -1167,26 +1167,26 @@ class NavigatorNode(Node):
             return
 
         self._stuck_retries += 1
-        max_retries = self.get_parameter('stuck_max_retries').value
         wp_idx = self._segments[self._cur_seg_idx].waypoint_index if self._cur_seg_idx < len(self._segments) else -1
         gate = 'displacement' if chassis_pinned else 'no-progress'
         self.get_logger().warn(
             f'Stuck on segment {self._cur_seg_idx} (waypoint {wp_idx + 1}) '
-            f'retry {self._stuck_retries}/{max_retries} '
-            f'gate={gate} bbox_disp={bbox_disp*100:.1f}cm'
+            f'retry {self._stuck_retries} '
+            f'gate={gate} bbox_disp={bbox_disp*100:.1f}cm — '
+            f'resetting trackers and replanning from current chassis pose'
         )
-        if self._stuck_retries > max_retries:
-            self._skip_current_waypoint()
-        else:
-            # Reset trackers so the retry doesn't reuse a saturated I-term
-            # (DockTracker integral) or stale D-term (CruiseTracker prev_alpha).
-            # Without this, retry is functionally a no-op: the same control
-            # law re-runs against the same wall it failed against.
-            if self._cruise_tracker is not None:
-                self._cruise_tracker.reset()
-            if self._dock_tracker is not None:
-                self._dock_tracker.reset()
-            self._reset_progress()
+        # NEVER skip. The operator's stated policy: every waypoint
+        # gets sprayed. Reset both trackers (clears saturated dock
+        # integral, stale cruise state) and replan from the live
+        # chassis pose so the next attempt uses fresh geometry
+        # (Reed-Shepp can pick a K-turn if forward-only got stuck).
+        # Only emergency_stop ends the mission.
+        if self._cruise_tracker is not None:
+            self._cruise_tracker.reset()
+        if self._dock_tracker is not None:
+            self._dock_tracker.reset()
+        self._reset_progress()
+        self._replan_from_current_chassis()
 
     def _skip_current_waypoint(self):
         if self._cur_seg_idx >= len(self._segments):
@@ -1321,17 +1321,35 @@ class NavigatorNode(Node):
             # included time spent re-tracking, so a bouncy antenna can
             # exhaust the budget while still moving.
             if dist > wp_tol:
+                # NEVER skip — operator policy. Replan from the live
+                # chassis pose so the next attempt has a fresh corridor
+                # and Reed-Shepp can pick a different topology if the
+                # current approach is geometrically wedged. Reset
+                # settle state and drop back into NAVIGATING.
                 self.get_logger().warn(
                     f'Settle timeout at waypoint {self._cur_wp_idx + 1} '
                     f'(dist={dist*100:.1f} cm > waypoint_tolerance) — '
-                    'skipping rather than spraying on moving antenna'
+                    'replanning'
                 )
-                self._skip_current_waypoint()
+                self._settle_count = 0
+                self._settle_retries = 0
+                if self._cruise_tracker is not None:
+                    self._cruise_tracker.reset()
+                if self._dock_tracker is not None:
+                    self._dock_tracker.reset()
+                self._reset_progress()
+                # Replan keeping the current waypoint as the next target.
+                # _replan_from_current_chassis uses _cur_seg_idx to decide
+                # which waypoint to start from. _cur_seg_idx was not
+                # advanced when we entered SETTLING, so it still points
+                # at the dock segment of the current waypoint — replan
+                # rebuilds path from chassis-now through that wp onward.
+                self._replan_from_current_chassis()
                 self._set_state(State.NAVIGATING)
                 return
-            self.get_logger().warn(
+            self.get_logger().info(
                 f'Settle timeout at waypoint {self._cur_wp_idx + 1} '
-                f'(dist={dist*100:.1f} cm), proceeding to spray'
+                f'(dist={dist*100:.1f} cm <= wp_tol), proceeding to spray'
             )
             self._trigger_spray()
             return
