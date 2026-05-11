@@ -89,7 +89,15 @@ class CruiseTracker:
         # sets the proportional gain on the heading regulator. Default
         # values are softer than the dock tracker's so cruise can run at
         # higher speed without chasing every cm of lateral residual.
-        self._k_lat = float(params.get('cruise_k_lat', 2.0))
+        # Stanley k_lat is the gain inside atan2(k_lat * e_y, v). Common
+        # values in the literature are 0.5–1.0; 2.0 (the original guess
+        # carried over from the dual-P era) gives a 24° desired-offset
+        # for only e_y = 5 cm at v = 0.4, so a 10 cm bounce across the
+        # corridor swings the chassis target heading 48° — full
+        # left-right wari-gari with no dwell on the corridor. Dropped
+        # to 1.0 (≈12°/5 cm) so chassis can track without slamming
+        # back and forth on noise.
+        self._k_lat = float(params.get('cruise_k_lat', 1.0))
         self._k_heading = float(params.get('cruise_k_heading', 2.0))
         # Cap on Stanley's desired-offset to prevent perpendicular-
         # entry oscillation on large lateral residuals. 35° default.
@@ -144,7 +152,13 @@ class CruiseTracker:
         # high speed the desired-offset stays small (gentle bias toward
         # corridor); at low speed it saturates near pi/2 (perpendicular
         # entry).
-        v_eff = max(target_speed, 0.1)
+        # v_eff floor sized to the speed at which Stanley's atan2
+        # responds smoothly to e_y. Too low (≈creep speed) and the
+        # arctan saturates near pi/2 on every cm of e_y — wari-gari.
+        # 0.5 m/s gives a desired_offset of 11°/5 cm e_y at k_lat=1,
+        # which is a real correction the chassis can track without
+        # ringing.
+        v_eff = max(target_speed, 0.5)
         desired_offset = atan2(self._k_lat * e_y, v_eff)
         # Cap the desired offset. Without this, large lateral residuals
         # (cruise often starts with e_y ~ 0.3 m off-corridor when the
@@ -209,7 +223,15 @@ class DockTracker:
     def __init__(self, params):
         self._approach_speed = float(params['approach_speed'])
         self._creep_speed = float(params['creep_speed'])
-        self._k_y = float(params['dock_k_y'])
+        # Stanley arctan gain. The yaml param dock_k_y (default 6.0) was
+        # the P-gain for the legacy dual-P controller κ = -k_y*e_y -
+        # k_psi*e_psi; inside Stanley's atan2(k_y*e_y, v) the same 6.0
+        # makes 5 cm of lateral residual rotate the desired-psi by 30°+
+        # at creep speed, far past anything the chassis can track. Use
+        # a separate Stanley gain (dock_stanley_k_lat, default 1.0) and
+        # leave dock_k_y honoured for backward compat only.
+        self._k_y = float(params.get('dock_stanley_k_lat',
+                                     min(1.0, float(params['dock_k_y']))))
         self._k_psi = float(params['dock_k_psi'])
         self._k_i = float(params.get('dock_k_i', 0.0))
         self._max_curvature = float(params['max_curvature'])
@@ -359,7 +381,16 @@ class DockTracker:
         # as a floor even if brake-zone ramping later cuts speed below it
         # — the desired yaw-offset is what we're shooting at, not what
         # the chassis can instantaneously achieve at the cut speed.
-        v_eff = max(speed_for_kappa, self._creep_speed)
+        # Same v_eff floor as cruise: arctan needs enough denominator
+        # that it doesn't saturate on cm-scale e_y at creep speed.
+        # Below 0.5 m/s the Stanley feedforward turns into a relay that
+        # commands ±35° from any tiny lateral noise, freezing the
+        # chassis while the wheel servos thrash. The 13:42 mission's
+        # WP3 dock stuck for 7+ s at e_y=-0.8 cm because brake-zone
+        # had ramped v to 0.03 m/s while v_eff was the 0.1 creep
+        # floor — desired_offset = atan2(6·−0.008, 0.1) = −26°, kappa
+        # saturated, chassis not advancing.
+        v_eff = max(speed_for_kappa, 0.5)
         desired_yaw_offset = atan2(self._k_y * e_y, v_eff)
         # Cap desired-offset so dock approach doesn't drive the chassis
         # perpendicular to the corridor on large lateral residuals. The
