@@ -798,9 +798,23 @@ class NavigatorNode(Node):
                     self._cruise_tracker.reset()
                 if self._dock_tracker is not None:
                     self._dock_tracker.reset()
-                self._set_state(self._pre_error_state)
+                # Path replan when resuming into NAVIGATING. Without this,
+                # the chassis pose can jump several metres during a GPS
+                # dropout (RTK lost → 3d_fix dead-reckoning → RTK fixed
+                # hard-correct to the new antenna fix). Resuming on the
+                # pre-error segments then puts the chassis well past the
+                # dock target, which trips the dock's along<0 reverse
+                # latch for tens of seconds. Replanning from the live
+                # chassis pose rebuilds cruise+dock so the next forward
+                # cycle actually leads to the waypoint. We replan only
+                # on NAVIGATING resume — SETTLING/CAL_* don't have an
+                # active path to rebuild.
+                resume_state = self._pre_error_state
+                self._set_state(resume_state)
                 self._pre_error_state = None
                 self._last_error_reason = None
+                if resume_state == State.NAVIGATING:
+                    self._replan_from_current_chassis()
             else:
                 self._set_state(State.IDLE)
 
@@ -996,6 +1010,24 @@ class NavigatorNode(Node):
                 self._settle_count = 0
                 self._settle_enter_time = time.monotonic()
                 self._set_state(State.SETTLING)
+            elif status == 'reverse_stalled':
+                # DockTracker gave up on a reverse stroke that wasn't
+                # making ground (chassis rotating in place under a
+                # saturated latched κ — happens when the estimator
+                # jump-corrects far past the target on RTK recovery).
+                # Don't skip — replan from current chassis pose and
+                # keep the same waypoint as the target so the next
+                # cruise/dock pair leads back to it.
+                self.get_logger().warn(
+                    f'Dock reverse stalled on WP{seg.waypoint_index + 1}, replanning'
+                )
+                self._stop_motors()
+                self._reset_progress()
+                if self._cruise_tracker is not None:
+                    self._cruise_tracker.reset()
+                if self._dock_tracker is not None:
+                    self._dock_tracker.reset()
+                self._replan_from_current_chassis()
             return
 
     # ── stuck detection ──────────────────────────────────────────────────

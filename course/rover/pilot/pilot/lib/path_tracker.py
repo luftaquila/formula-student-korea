@@ -234,12 +234,29 @@ class DockTracker:
         self._brake_zone_m = float(params.get('dock_brake_zone_m', 0.12))
         self._brake_min_speed_frac = float(
             params.get('dock_brake_min_speed_frac', 0.10))
+        # Reverse stall watchdog. After a GPS RTK dropout the estimator's
+        # chassis pose can jump >1 m on recovery; the dock tracker then
+        # latches reverse trying to back up the chassis to within
+        # reverse_recovery_m of the corridor, but the chassis spends the
+        # whole reverse stroke rotating in place (saturated latched κ at
+        # a wide along_to_target offset) and barely advances. Watchdog
+        # tracks chassis displacement during reverse and emits a
+        # 'reverse_stalled' status if not enough ground was covered —
+        # navigator replans from the live pose instead of staying stuck.
+        self._reverse_stall_timeout_s = float(
+            params.get('dock_reverse_stall_timeout_s', 5.0))
+        self._reverse_stall_min_disp_m = float(
+            params.get('dock_reverse_stall_min_disp_m', 0.30))
+        self._reverse_entry_t = None
+        self._reverse_entry_xy = None
 
     def reset(self):
         self._integral = 0.0
         self._prev_t = None
         self._reverse_active = False
         self._reverse_kappa_latched = 0.0
+        self._reverse_entry_t = None
+        self._reverse_entry_xy = None
 
     def _antenna_world(self, chassis_pose):
         x, y, psi = chassis_pose
@@ -369,6 +386,8 @@ class DockTracker:
         # antenna is close enough — no overshoot, no oscillation.
         if target_dist <= self._approach_tolerance:
             self._reverse_active = False
+            self._reverse_entry_t = None
+            self._reverse_entry_xy = None
             return 0.0, 0.0, 'reached'
 
         # Reverse recovery. Once the antenna overshoots the target along
@@ -408,15 +427,41 @@ class DockTracker:
                 kappa_latch = -self._max_curvature
             self._reverse_kappa_latched = kappa_latch
             self._reverse_active = True
+            # Watchdog snapshot for reverse-stall detection.
+            self._reverse_entry_t = t_now
+            self._reverse_entry_xy = (x, y)
         elif along_to_target < 0.0:
             # already in reverse; keep latched κ (no update)
             pass
         if self._reverse_active:
             if along_to_target < self._reverse_recovery_m:
+                # Watchdog: if reverse has been running for
+                # reverse_stall_timeout_s and chassis displacement from
+                # the reverse-entry point is still below
+                # reverse_stall_min_disp_m, the chassis is rotating in
+                # place under a saturated latched κ (observed in
+                # 05:11 mission: 9 s reverse, 0.64 m total displacement,
+                # 97° of rotation). Bail to the navigator with
+                # 'reverse_stalled' so it can replan from the live pose.
+                if (self._reverse_entry_t is not None
+                        and self._reverse_entry_xy is not None
+                        and t_now is not None):
+                    elapsed = t_now - self._reverse_entry_t
+                    dx_rev = x - self._reverse_entry_xy[0]
+                    dy_rev = y - self._reverse_entry_xy[1]
+                    disp = hypot(dx_rev, dy_rev)
+                    if (elapsed >= self._reverse_stall_timeout_s
+                            and disp < self._reverse_stall_min_disp_m):
+                        self._reverse_active = False
+                        self._reverse_entry_t = None
+                        self._reverse_entry_xy = None
+                        return 0.0, 0.0, 'reverse_stalled'
                 return (-self._creep_speed,
                         self._reverse_kappa_latched,
                         'tracking')
             self._reverse_active = False
+            self._reverse_entry_t = None
+            self._reverse_entry_xy = None
 
         # Forward speed schedule (already computed once above for
         # Stanley's kappa denominator; recompute here to apply brake).
