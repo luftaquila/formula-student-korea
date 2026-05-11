@@ -263,11 +263,15 @@ class DockTracker:
         # See the full rationale in step()'s reverse branch.
         self._reverse_kappa_latched = 0.0
         # Distance behind the target (along the corridor) to back up to
-        # before re-engaging forward dock control. 0.20 m gives the
-        # state-feedback law roughly one time-constant of forward travel
-        # to bleed the residual lateral error.
+        # before re-engaging forward dock control. Shortened from 0.20 m
+        # to 0.08 m — if the new overshoot-but-close reach condition
+        # ever fails to catch the chassis (e.g. lateral pushed past
+        # 2*approach_tolerance), we want a tight retry cycle (4 cm
+        # back, 4 cm forward) instead of a 20 cm slingshot that the
+        # 13:59 trace showed kicking the chassis 18 cm back from the
+        # target every iteration of the cycle.
         self._reverse_recovery_m = float(
-            params.get('dock_reverse_recovery_m', 0.20)
+            params.get('dock_reverse_recovery_m', 0.08)
         )
         # Brake zone (target-distance under which forward speed ramps
         # down). Wider zone + lower minimum keeps the chassis from
@@ -462,6 +466,21 @@ class DockTracker:
         # closed. Without that constraint, the dock stops as soon as the
         # antenna is close enough — no overshoot, no oscillation.
         if target_dist <= self._approach_tolerance:
+            self._reverse_active = False
+            self._reverse_entry_t = None
+            self._reverse_entry_xy = None
+            return 0.0, 0.0, 'reached'
+
+        # Overshoot-but-close: chassis crossed past target along-track
+        # while still inside 2*approach_tolerance of the antenna target.
+        # Without this, inertia carries the antenna ~5 cm past every
+        # approach (PID lag + chassis momentum at 0.07 m/s creep), and
+        # the strict 'dist<=tol' gate forces reverse every time, kicking
+        # off the wari-gari cycle observed in the 13:59 trace. The dock
+        # cycle is more damaging to the mission than 3–6 cm of landing
+        # error on the overshoot side; settle re-verifies precision.
+        if (along_to_target < 0.0
+                and target_dist <= 2.0 * self._approach_tolerance):
             self._reverse_active = False
             self._reverse_entry_t = None
             self._reverse_entry_xy = None

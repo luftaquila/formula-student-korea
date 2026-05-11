@@ -257,14 +257,15 @@ class TestDockTracker:
         assert t._prev_t is None
 
     def test_overshoot_reverses_straight(self):
-        # Antenna 0.15 m past target — outside approach_tolerance (0.10)
-        # so 'reached' doesn't trigger, but well within the 0.20 m reverse-
-        # recovery window. Dock must back up at creep speed with κ ≈ 0
-        # (Ackermann steering inverts in reverse and interacts poorly with
-        # the linearised gains).
+        # Antenna 0.25 m past target — outside 2*approach_tolerance
+        # (0.20 m, the new overshoot-but-close reach gate) so 'reached'
+        # doesn't trigger, but well within the reverse-recovery window.
+        # Dock must back up at the latched κ from forward state feedback
+        # (no integral); with chassis on the corridor centreline and
+        # heading aligned, kappa_p = 0 → latched -kappa_p = 0.
         t = DockTracker(_PARAMS)
         seg = self._dock_seg()
-        chassis = (5.15 - _PARAMS['antenna_offset_x'], 0.0, 0.0)
+        chassis = (5.25 - _PARAMS['antenna_offset_x'], 0.0, 0.0)
         v, kappa, status = t.step(chassis, seg, t_now=100.0)
         assert status == 'tracking'
         assert v < 0.0
