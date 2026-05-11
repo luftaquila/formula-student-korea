@@ -204,6 +204,15 @@ class NavigatorNode(Node):
         self.declare_parameter('gps_timeout', 3.0)
         self.declare_parameter('fix_hysteresis_s', 0.8)
         self.declare_parameter('required_fix_status', 'rtk_fixed')
+        # When the live fix is rtk_float (integer ambiguity unresolved),
+        # accept it as 'good enough' if reported hAcc is at or below this
+        # many millimetres. 0 disables the float-accept escape hatch and
+        # falls back to fixed-only behaviour. 20 mm chosen so float is
+        # accepted only when its reported accuracy is within the
+        # waypoint cm-tolerance budget — anything sloppier and the
+        # mission errors out instead of plotting the antenna onto a
+        # potentially-drifted estimate.
+        self.declare_parameter('fix_accept_float_max_h_acc_mm', 20)
         self.declare_parameter('return_to_start', True)
         # Battery thresholds. The MCU has its own hard cutoff at
         # BATTERY_UNDERVOLT_V (20 V); these gate the navigator earlier so
@@ -276,6 +285,11 @@ class NavigatorNode(Node):
         self._gps_heading_compass = None   # radians, 0=N, CW+
         self._gps_fix_status = 'no_fix'
         self._gps_speed = 0.0
+        # Horizontal accuracy reported by u-blox (mm). Used by
+        # _has_required_fix to accept rtk_float when h_acc is below the
+        # configured threshold — float fixes are usable for short
+        # missions when the reported accuracy is cm-scale.
+        self._gps_h_acc_mm = None
         self._last_gps_time = 0.0
         self._odom_v_left = 0.0
         self._odom_v_right = 0.0
@@ -398,7 +412,21 @@ class NavigatorNode(Node):
 
     def _has_required_fix(self):
         required = self.get_parameter('required_fix_status').value
-        return has_required_fix_status(self._gps_fix_status, required)
+        if has_required_fix_status(self._gps_fix_status, required):
+            return True
+        # Accept rtk_float when reported horizontal accuracy is below the
+        # float-accept threshold. Float fixes have unresolved integer
+        # ambiguities so their absolute drift can be metres over hours,
+        # but for short missions (minutes) where h_acc stays below a
+        # few cm the position is usable. 0 disables this acceptance —
+        # i.e. behave as the legacy 'fixed only' gate.
+        float_max_mm = self.get_parameter('fix_accept_float_max_h_acc_mm').value
+        if (float_max_mm > 0
+                and self._gps_fix_status == 'rtk_float'
+                and self._gps_h_acc_mm is not None
+                and self._gps_h_acc_mm <= float_max_mm):
+            return True
+        return False
 
     def _params_for_trackers(self):
         return {
@@ -477,6 +505,9 @@ class NavigatorNode(Node):
         spd = data.get('speed') if isinstance(data, dict) else None
         if isinstance(spd, (int, float)):
             self._gps_speed = float(spd)
+        h_acc = data.get('h_acc') if isinstance(data, dict) else None
+        if isinstance(h_acc, (int, float)):
+            self._gps_h_acc_mm = float(h_acc)
 
     def _on_battery(self, msg):
         try:
