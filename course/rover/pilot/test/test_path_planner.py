@@ -5,6 +5,11 @@ should land), produce chassis-frame segments such that following them
 puts the antenna on each waypoint. The dock pose is the load-bearing
 part — if it doesn't compensate for antenna offset, no controller
 downstream can hit the cm-level tolerance.
+
+With Dubins-decomposed cruise, the number of cruise sub-segments per
+waypoint depends on the chassis turning radius and the chassis→entry
+geometry; tests assert invariants (dock count, last dock antenna
+landing, corridor length) rather than fixed segment counts.
 """
 
 from math import cos, sin, pi, isclose, hypot, atan2
@@ -30,6 +35,15 @@ def _antenna_pos_for(chassis_pose, antenna_offset):
             y + sin(psi) * a_x + cos(psi) * a_y)
 
 
+def _docks(segments):
+    return [s for s in segments if s.kind == 'dock']
+
+
+def _cruise_for(segments, wp_idx):
+    """Cruise sub-segments belonging to a particular waypoint, in order."""
+    return [s for s in segments if s.kind == 'cruise' and s.waypoint_index == wp_idx]
+
+
 class TestSingleWaypoint:
     def test_dock_pose_puts_antenna_on_target(self):
         # Antenna offset 0.30 m forward of rear axle. Target 5 m east of
@@ -45,11 +59,9 @@ class TestSingleWaypoint:
             dock_distance=1.5,
             return_to_start=False,
         )
-        assert len(segments) == 2
-        cruise, dock = segments
-        assert cruise.kind == 'cruise' and dock.kind == 'dock'
-
-        ax, ay = _antenna_pos_for(dock.end_pose, antenna_offset)
+        docks = _docks(segments)
+        assert len(docks) == 1
+        ax, ay = _antenna_pos_for(docks[0].end_pose, antenna_offset)
         assert isclose(ax, 5.0, abs_tol=1e-6)
         assert isclose(ay, 0.0, abs_tol=1e-6)
 
@@ -65,12 +77,15 @@ class TestSingleWaypoint:
             dock_distance=1.0,
             return_to_start=False,
         )
-        cruise, dock = segments
+        dock = _docks(segments)[0]
         expected_psi = atan2(4.0, 3.0)
-        assert isclose(cruise.end_pose[2], expected_psi, abs_tol=1e-9)
         assert isclose(dock.end_pose[2], expected_psi, abs_tol=1e-9)
+        assert isclose(dock.start_pose[2], expected_psi, abs_tol=1e-9)
 
-    def test_dock_distance_separates_cruise_end_from_dock_end(self):
+    def test_dock_corridor_length_matches_dock_distance(self):
+        # The dock corridor (entry → dock_end) length must equal the
+        # requested dock_distance for a target far enough from the chassis
+        # that the floor clamp doesn't kick in.
         segments = plan(
             current_chassis_pose=(0.0, 0.0, 0.0),
             antenna_offset=(0.3, 0.0),
@@ -79,10 +94,31 @@ class TestSingleWaypoint:
             dock_distance=1.5,
             return_to_start=False,
         )
-        cruise, dock = segments
-        cx, cy, _ = cruise.end_pose
+        dock = _docks(segments)[0]
+        sx, sy, _ = dock.start_pose
         dx, dy, _ = dock.end_pose
-        assert isclose(hypot(dx - cx, dy - cy), 1.5, abs_tol=1e-9)
+        assert isclose(hypot(dx - sx, dy - sy), 1.5, abs_tol=1e-9)
+
+    def test_cruise_chain_starts_at_chassis_ends_at_dock_entry(self):
+        # The first cruise sub-segment must start at the chassis pose, the
+        # last cruise sub-segment must end at the dock segment's start.
+        segments = plan(
+            current_chassis_pose=(0.5, -0.2, 0.3),
+            antenna_offset=(0.3, 0.0),
+            waypoints_lat_lng=[_gps(5.0, 2.0)],
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=1.5,
+            return_to_start=False,
+        )
+        cruises = _cruise_for(segments, wp_idx=0)
+        assert len(cruises) >= 1
+        # First cruise starts at chassis xy (psi may differ — it's the chord)
+        assert isclose(cruises[0].start_pose[0], 0.5, abs_tol=1e-6)
+        assert isclose(cruises[0].start_pose[1], -0.2, abs_tol=1e-6)
+        # Last cruise ends at the dock entry
+        dock = _docks(segments)[0]
+        assert isclose(cruises[-1].end_pose[0], dock.start_pose[0], abs_tol=1e-6)
+        assert isclose(cruises[-1].end_pose[1], dock.start_pose[1], abs_tol=1e-6)
 
 
 class TestMultiWaypoint:
@@ -96,11 +132,11 @@ class TestMultiWaypoint:
             dock_distance=1.0,
             return_to_start=False,
         )
-        # Two waypoints → 4 segments.
-        assert len(segments) == 4
+        docks = _docks(segments)
+        assert len(docks) == 2
         # Second waypoint's dock heading is bearing from wp1→wp2.
         expected = atan2(1.0 - 0.0, 4.0 - 2.0)
-        assert isclose(segments[3].end_pose[2], expected, abs_tol=1e-9)
+        assert isclose(docks[1].end_pose[2], expected, abs_tol=1e-9)
 
     def test_each_waypoint_dock_lands_antenna_on_target(self):
         antenna_offset = (0.25, 0.05)
@@ -114,12 +150,11 @@ class TestMultiWaypoint:
             dock_distance=1.2,
             return_to_start=False,
         )
-        assert len(segments) == 6
+        docks = _docks(segments)
+        assert len(docks) == 3
         for i, (e, n) in enumerate(wps_enu):
-            dock = segments[2 * i + 1]
-            assert dock.kind == 'dock'
-            assert dock.waypoint_index == i
-            ax, ay = _antenna_pos_for(dock.end_pose, antenna_offset)
+            assert docks[i].waypoint_index == i
+            ax, ay = _antenna_pos_for(docks[i].end_pose, antenna_offset)
             assert isclose(ax, e, abs_tol=1e-6)
             assert isclose(ay, n, abs_tol=1e-6)
 
@@ -128,7 +163,7 @@ class TestDockDistanceClamp:
     """Regression: dock_distance projection past the previous waypoint
     forced cruise legs to U-turn when consecutive cones were closer than
     dock_distance. The planner now clamps to half the inter-waypoint
-    span (with a 0.3 m floor)."""
+    span (with a 0.6 m floor)."""
 
     def test_close_cones_dont_project_entry_behind_prev(self):
         # Two cones 0.8 m apart with dock_distance=1.5 m. Without the
@@ -143,13 +178,11 @@ class TestDockDistanceClamp:
             dock_distance=1.5,
             return_to_start=False,
         )
-        # Second cruise → second dock; the cruise's end pose is the entry
-        # point. Verify it sits BETWEEN the two cones along the corridor,
-        # not before the first.
-        second_cruise_end = segments[2].end_pose  # (entry_x, entry_y, psi_dock)
-        ex, _ey, _ = second_cruise_end
+        # Second dock segment's entry (start_pose).
+        docks = _docks(segments)
+        ex = docks[1].start_pose[0]
         # First cone is at antenna position (2.0, 0); chassis dock pose
-        # for that cone is (1.7, 0). Entry must be ≥ 1.7 (between dock pose
+        # for that cone is (1.7, 0). Entry must be ≥ 1.5 (between dock pose
         # of cone 1 and cone 2's antenna landing).
         assert ex > 1.5
 
@@ -166,10 +199,10 @@ class TestDockDistanceClamp:
             dock_distance=1.5,
             return_to_start=False,
         )
-        second_dock_end = segments[3].end_pose
-        second_cruise_end = segments[2].end_pose
-        corridor = hypot(second_dock_end[0] - second_cruise_end[0],
-                         second_dock_end[1] - second_cruise_end[1])
+        docks = _docks(segments)
+        sx, sy, _ = docks[1].start_pose
+        ex, ey, _ = docks[1].end_pose
+        corridor = hypot(ex - sx, ey - sy)
         assert corridor == pytest.approx(0.6, abs=1e-6)
 
 
@@ -184,8 +217,9 @@ class TestReturnToStart:
             return_to_start=True,
             start_chassis_xy=(0.0, 0.0),
         )
-        # 2 mission segments + 2 return segments
-        assert len(segments) == 4
+        docks = _docks(segments)
+        # One mission dock + one return dock.
+        assert len(docks) == 2
         assert segments[-1].kind == 'dock'
         assert segments[-1].waypoint_index == -1
 
@@ -198,7 +232,26 @@ class TestReturnToStart:
             dock_distance=1.0,
             return_to_start=False,
         )
-        assert len(segments) == 2
+        docks = _docks(segments)
+        assert len(docks) == 1
+
+    def test_return_created_even_when_all_waypoints_skipped(self):
+        # Empty waypoints list with return_to_start=True must still emit
+        # the return segments (regression: prev_target was None and the
+        # return branch was skipped, leaving the navigator stranded at
+        # the last waypoint after a final-wp skip).
+        segments = plan(
+            current_chassis_pose=(2.0, 1.0, 0.0),
+            antenna_offset=(0.3, 0.0),
+            waypoints_lat_lng=[],
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=1.0,
+            return_to_start=True,
+            start_chassis_xy=(0.0, 0.0),
+        )
+        docks = _docks(segments)
+        assert len(docks) == 1
+        assert docks[0].waypoint_index == -1
 
 
 class TestOffsetCompensation:
@@ -221,7 +274,51 @@ class TestOffsetCompensation:
             dock_distance=1.5,
             return_to_start=False,
         )
-        dock = segments[1]
+        dock = _docks(segments)[0]
         ax, ay = _antenna_pos_for(dock.end_pose, (a_x, a_y))
         assert isclose(ax, 7.0, abs_tol=1e-6)
         assert isclose(ay, 2.0, abs_tol=1e-6)
+
+
+class TestDubinsCruise:
+    """Dubins-decomposed cruise must be a chain of small chord segments
+    whose accumulated length is no shorter than the chassis→entry chord
+    (because Dubins respects the turning radius) and that ends tangent
+    to the corridor heading."""
+
+    def test_cruise_chain_length_at_least_chord(self):
+        start_xy = (0.0, 0.0)
+        wp = _gps(5.0, 3.0)
+        segments = plan(
+            current_chassis_pose=(*start_xy, 0.0),
+            antenna_offset=(0.0, 0.0),
+            waypoints_lat_lng=[wp],
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=1.0,
+            return_to_start=False,
+            turning_radius=0.5,
+        )
+        cruises = _cruise_for(segments, 0)
+        # Chord from chassis to dock entry.
+        dock = _docks(segments)[0]
+        chord = hypot(dock.start_pose[0] - start_xy[0],
+                      dock.start_pose[1] - start_xy[1])
+        path_len = sum(hypot(c.end_pose[0] - c.start_pose[0],
+                             c.end_pose[1] - c.start_pose[1])
+                       for c in cruises)
+        assert path_len >= chord - 1e-6
+
+    def test_last_cruise_aligned_with_dock_heading(self):
+        # The final cruise sub-segment's end_pose.psi is forced to
+        # psi_dock so the cruise→dock handoff has e_psi ≈ 0.
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=(0.0, 0.0),
+            waypoints_lat_lng=[_gps(5.0, 2.0)],
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=1.0,
+            return_to_start=False,
+        )
+        cruises = _cruise_for(segments, 0)
+        dock = _docks(segments)[0]
+        assert isclose(cruises[-1].end_pose[2], dock.start_pose[2], abs_tol=1e-9)

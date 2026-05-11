@@ -415,6 +415,20 @@ class NavigatorNode(Node):
             'antenna_offset_y': self._antenna_offset_y,
         }
 
+    def _chassis_turning_radius(self):
+        """Minimum chassis turning radius from wheelbase / tan(max_steer).
+
+        Passed to the path planner so Dubins decomposition uses the actual
+        kinematic limit of the rover rather than a hardcoded default.
+        Adds a small safety margin (1.1×) so the planner doesn't generate
+        paths the chassis can't quite achieve due to servo trim / mech-
+        anical slop near the steering stops.
+        """
+        wb = max(1e-3, self.get_parameter('wheelbase').value)
+        max_steer = max(1e-3, self._max_steer_rad)
+        from math import tan as _tan
+        return 1.1 * wb / _tan(max_steer)
+
     def _odom_chassis_kinematics(self):
         v = 0.5 * (self._odom_v_left + self._odom_v_right)
         track = self.get_parameter('track_width').value
@@ -926,6 +940,7 @@ class NavigatorNode(Node):
                 dock_distance=self.get_parameter('dock_approach_distance').value,
                 return_to_start=self.get_parameter('return_to_start').value,
                 start_chassis_xy=self._mission_start_chassis_xy,
+                turning_radius=self._chassis_turning_radius(),
             )
         except Exception as exc:  # pragma: no cover - defensive
             self._stop_motors()
@@ -1194,6 +1209,7 @@ class NavigatorNode(Node):
                 return_to_start=self.get_parameter('return_to_start').value,
                 start_chassis_xy=self._mission_start_chassis_xy,
                 waypoint_index_offset=next_wp_idx,
+                turning_radius=self._chassis_turning_radius(),
             )
         except Exception as exc:  # pragma: no cover - defensive
             self.get_logger().warn(f'Replan failed: {exc}')
