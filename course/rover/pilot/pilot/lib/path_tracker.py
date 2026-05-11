@@ -115,10 +115,19 @@ class CruiseTracker:
         # the S-curve overshoot in tandem.
         self._k_lat = float(params.get('cruise_k_lat', 4.0))
         self._k_heading = float(params.get('cruise_k_heading', 3.0))
-        # Cap on Stanley's desired-offset to prevent perpendicular-
-        # entry oscillation on large lateral residuals.
+        # cap 30° → 15°: the 16:38 trace showed cruise→dock handoff
+        # with e_y = 7 cm + e_psi = +2° drove desired_offset to the cap
+        # (29.2°), Stanley commanded saturated kappa, and chassis
+        # crossed the corridor 23 cm in one second. Then the same
+        # mechanism flipped sign and crossed back 26 cm (the wari-gari
+        # the operator reported). cap 15° at k_lat=4 means e_y ≥ 4 cm
+        # already saturates, but the saturation level is gentler
+        # (chassis still rotates ~20°/s instead of 39°/s), so the
+        # cross is < corridor width and chassis converges instead of
+        # overshooting. Final approach (e_y < 2 cm) doesn't hit the
+        # cap so precision is unchanged.
         self._stanley_offset_cap = float(
-            params.get('cruise_stanley_offset_cap_rad', 0.52))
+            params.get('cruise_stanley_offset_cap_rad', 0.262))
 
     def reset(self):
         # No persistent state in Stanley; keep the method for the API
@@ -343,10 +352,12 @@ class DockTracker:
             params.get('dock_reverse_stall_min_disp_m', 0.30))
         self._reverse_entry_t = None
         self._reverse_entry_xy = None
-        # Stanley desired-offset cap — see step() for rationale. Same
-        # default as the cruise tracker (30°).
+        # Stanley desired-offset cap — see CruiseTracker.__init__ for
+        # the full rationale. Same default as the cruise tracker (15°)
+        # so cruise→dock handoff at e_y > 4 cm doesn't suddenly switch
+        # to a wider cap and start cross-and-swinging at the dock entry.
         self._stanley_offset_cap = float(
-            params.get('dock_stanley_offset_cap_rad', 0.52))
+            params.get('dock_stanley_offset_cap_rad', 0.262))
 
     def reset(self):
         self._integral = 0.0
