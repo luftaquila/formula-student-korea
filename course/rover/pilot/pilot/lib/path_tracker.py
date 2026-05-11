@@ -97,21 +97,28 @@ class CruiseTracker:
         # left-right wari-gari with no dwell on the corridor. Dropped
         # to 1.0 (≈12°/5 cm) so chassis can track without slamming
         # back and forth on noise.
-        # Raised 1.5 -> 2.5 to break out of Stanley's stationary point.
-        # 14:47 mission WP2 trace: e_y=-8 cm, e_psi=+14° gave kappa ≈ 0
-        # (e_psi_corrected = +0.5° because atan2(1.5*-0.08, 0.5) = -13.5°
-        # cancelled e_psi almost exactly). Chassis ran parallel to the
-        # corridor at 8 cm lateral offset until stuck-skip. At k_lat=2.5
-        # the same e_y gives -21.8° desired offset, breaks the cancel,
-        # and rotates chassis into a closing trajectory. Cap 35° +
-        # v_eff floor 0.5 keep this far from the k_lat=6 wari-gari
-        # regime (the 13:42 incident).
-        self._k_lat = float(params.get('cruise_k_lat', 2.5))
-        self._k_heading = float(params.get('cruise_k_heading', 2.0))
+        # k_lat 2.5 -> 4.0: 15:01 mission WP4 dock final approach (e_y=
+        # 1.6 cm, e_psi=-4.5°, dist=8.6 cm) gave kappa=-0.03, chassis
+        # crawled the last cm with no meaningful turn. At k_lat=4 the
+        # same residual yields desired_offset=7.3° → e_psi_corrected=
+        # +2.8° → kappa=-0.15 (5× larger), so the final cm closes under
+        # real steering instead of inertia.
+        # cap 0.61 -> 0.52 (35° -> 30°): large e_y cases saturate the
+        # cap rather than the chassis curvature, but a tighter cap
+        # reduces the over-rotation during S-shaped cruise (15:01 WP5
+        # cruise: 67° rotation in 4 s, chassis ended 60 cm off corridor
+        # entry). cap 30° still admits 4 m of lateral closure per meter
+        # forward — strong enough for real corridors, gentle enough to
+        # avoid cross-and-swing-back.
+        # k_heading 2.0 -> 3.0: the heading regulator now responds 1.5×
+        # faster, which closes both the final-approach precision gap and
+        # the S-curve overshoot in tandem.
+        self._k_lat = float(params.get('cruise_k_lat', 4.0))
+        self._k_heading = float(params.get('cruise_k_heading', 3.0))
         # Cap on Stanley's desired-offset to prevent perpendicular-
-        # entry oscillation on large lateral residuals. 35° default.
+        # entry oscillation on large lateral residuals.
         self._stanley_offset_cap = float(
-            params.get('cruise_stanley_offset_cap_rad', 0.61))
+            params.get('cruise_stanley_offset_cap_rad', 0.52))
 
     def reset(self):
         # No persistent state in Stanley; keep the method for the API
@@ -237,12 +244,14 @@ class DockTracker:
         # k_psi*e_psi; inside Stanley's atan2(k_y*e_y, v) the same 6.0
         # makes 5 cm of lateral residual rotate the desired-psi by 30°+
         # at creep speed, far past anything the chassis can track. Use
-        # a separate Stanley gain (dock_stanley_k_lat, default 2.5) and
-        # leave dock_k_y honoured for backward compat only. 2.5 chosen
-        # over 1.5 because at k_lat=1.5 dock got stuck in Stanley's
-        # stationary point on the 14:47 WP2 trace (e_y=-8 cm, kappa ≈ 0).
+        # a separate Stanley gain (dock_stanley_k_lat, default 4.0) and
+        # leave dock_k_y honoured for backward compat only. Raised 2.5
+        # -> 4.0 to match the cruise tracker — same final-approach
+        # precision argument applies on the dock side: e_y=1.6 cm at
+        # k_lat=2.5 left only a 4.6° desired-offset and a near-zero
+        # kappa, so the antenna crept the last cm without steering.
         self._k_y = float(params.get('dock_stanley_k_lat',
-                                     min(2.5, float(params['dock_k_y']))))
+                                     min(4.0, float(params['dock_k_y']))))
         self._k_psi = float(params['dock_k_psi'])
         self._k_i = float(params.get('dock_k_i', 0.0))
         self._max_curvature = float(params['max_curvature'])
@@ -318,9 +327,9 @@ class DockTracker:
         self._reverse_entry_t = None
         self._reverse_entry_xy = None
         # Stanley desired-offset cap — see step() for rationale. Same
-        # default as the cruise tracker.
+        # default as the cruise tracker (30°).
         self._stanley_offset_cap = float(
-            params.get('dock_stanley_offset_cap_rad', 0.61))
+            params.get('dock_stanley_offset_cap_rad', 0.52))
 
     def reset(self):
         self._integral = 0.0
