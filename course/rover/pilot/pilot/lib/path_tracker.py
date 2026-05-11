@@ -91,6 +91,10 @@ class CruiseTracker:
         # higher speed without chasing every cm of lateral residual.
         self._k_lat = float(params.get('cruise_k_lat', 2.0))
         self._k_heading = float(params.get('cruise_k_heading', 2.0))
+        # Cap on Stanley's desired-offset to prevent perpendicular-
+        # entry oscillation on large lateral residuals. 35° default.
+        self._stanley_offset_cap = float(
+            params.get('cruise_stanley_offset_cap_rad', 0.61))
 
     def reset(self):
         # No persistent state in Stanley; keep the method for the API
@@ -139,9 +143,25 @@ class CruiseTracker:
         # Use target_speed (pre-scale) for the atan2 denominator: at
         # high speed the desired-offset stays small (gentle bias toward
         # corridor); at low speed it saturates near pi/2 (perpendicular
-        # entry) to close lateral fast.
+        # entry).
         v_eff = max(target_speed, 0.1)
         desired_offset = atan2(self._k_lat * e_y, v_eff)
+        # Cap the desired offset. Without this, large lateral residuals
+        # (cruise often starts with e_y ~ 0.3 m off-corridor when the
+        # previous dock ended pointing 60° off the next corridor) drive
+        # desired_offset toward ±pi/2 — chassis points nearly perpen-
+        # dicular to the corridor, saturated kappa for several seconds,
+        # overshoots the corridor, flips e_y sign, swings back. The
+        # 13:33:57 mission showed 4 s of k=-1.70 followed by a flipped
+        # k=+1.46 reverse — the wari-gari the operator reported. 35°
+        # cap keeps Stanley's lateral closure rate respectable
+        # (v·sin(35°) ≈ 0.57·v) without driving the chassis at the
+        # corridor like a battering ram.
+        offset_cap = self._stanley_offset_cap
+        if desired_offset > offset_cap:
+            desired_offset = offset_cap
+        elif desired_offset < -offset_cap:
+            desired_offset = -offset_cap
         e_psi_corrected = normalize_angle(e_psi_raw + desired_offset)
         kappa = -self._k_heading * e_psi_corrected
 
@@ -249,6 +269,10 @@ class DockTracker:
             params.get('dock_reverse_stall_min_disp_m', 0.30))
         self._reverse_entry_t = None
         self._reverse_entry_xy = None
+        # Stanley desired-offset cap — see step() for rationale. Same
+        # default as the cruise tracker.
+        self._stanley_offset_cap = float(
+            params.get('dock_stanley_offset_cap_rad', 0.61))
 
     def reset(self):
         self._integral = 0.0
@@ -337,6 +361,17 @@ class DockTracker:
         # the chassis can instantaneously achieve at the cut speed.
         v_eff = max(speed_for_kappa, self._creep_speed)
         desired_yaw_offset = atan2(self._k_y * e_y, v_eff)
+        # Cap desired-offset so dock approach doesn't drive the chassis
+        # perpendicular to the corridor on large lateral residuals. The
+        # 13:33 mission showed cruise hand off to dock at e_y=30 cm, the
+        # dock then commanded kappa saturated for the whole approach as
+        # it tried to slam the chassis sideways onto the corridor. 35°
+        # cap matches the cruise tracker's cap so handoff is smooth.
+        offset_cap = self._stanley_offset_cap
+        if desired_yaw_offset > offset_cap:
+            desired_yaw_offset = offset_cap
+        elif desired_yaw_offset < -offset_cap:
+            desired_yaw_offset = -offset_cap
         e_psi_corrected = normalize_angle(e_psi + desired_yaw_offset)
         kappa_p = -self._k_psi * e_psi_corrected
 
