@@ -153,10 +153,22 @@ class CruiseTracker:
             params.get('cruise_stanley_offset_cap_rad', 0.262))
 
     def reset(self):
-        # Clear the zero-cross gate's direction history so the next
-        # cruise leg starts fresh (no stale sign from before a dock or
-        # SETTLE state).
-        self._last_direction = None
+        # Stanley itself has no per-segment state to clear. The zero-
+        # cross gate's `_last_direction` is deliberately NOT reset here
+        # — the navigator calls reset() between every Reed-Shepp sub-
+        # segment (kind = 'cruise') on done=True, and if reset() wiped
+        # `_last_direction` the gate could never fire on direction
+        # switches across sub-seg boundaries (which is exactly where
+        # Reed-Shepp puts them). The 17:18 WP6 trace shows this
+        # failure mode: a reverse sub-seg ran to completion at
+        # chassis_v=-0.38 m/s, the next forward sub-seg got cmd v=
+        # +0.84 m/s without the gate ever activating because the
+        # intervening reset() had cleared the history. `_last_direction`
+        # is set in __init__ and updated only inside step(); it
+        # survives mission state transitions because chassis_v is at
+        # rest after ERROR / SETTLING / SPRAYING anyway, so a stale
+        # value cannot incorrectly gate a fresh leg.
+        pass
 
     def step(self, chassis_pose, segment, t_now, chassis_v=None):
         x, y, psi = chassis_pose

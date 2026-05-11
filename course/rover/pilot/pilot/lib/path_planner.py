@@ -141,10 +141,23 @@ def _expand_cruise(start_pose, end_pose, target_antenna, waypoint_index,
     """Decompose a Reed-Shepp path from start_pose to end_pose into a list
     of straight cruise sub-segments carrying motion direction.
 
-    Each sample-to-sample chord becomes one PathSegment whose direction
-    matches the Reed-Shepp sample's motion_sign. The last sub-segment's
-    end_pose.psi is forced to the corridor (dock) heading so the
-    cruise→dock handoff has e_psi ≈ 0.
+    Each sample-to-sample sub-segment carries the **tangent direction
+    of motion** as its psi_path, not the inter-sample chord direction.
+    On an arc primitive, consecutive chords would differ by ~step/rho
+    radians (≈ 14° at step 0.15 m, rho 0.61 m) and Stanley would treat
+    each boundary as a fresh ~14° heading error, kicking kappa around
+    every 50 ms tick. The tangent at each sample is what the chassis
+    actually has to be heading to stay on the arc; using it as psi_path
+    means e_psi reflects "how far off the *intended* heading the
+    chassis is" rather than "how far off the chord-to-next-sample the
+    chassis is", which is what Stanley needs to be feeding back on.
+
+    For reverse sub-segments the chassis facing (= Reed-Shepp tangent
+    psi) is opposite to the direction of travel. The CruiseTracker
+    composes effective_psi = chassis_psi + π for reverse before
+    comparing to psi_path, so psi_path must equal the *direction of
+    travel*. Therefore the planner stamps psi_path = tangent + π on
+    reverse sub-segs (forward sub-segs use tangent directly).
 
     The Reed-Shepp plan is requested with ``require_forward_end=True``
     so that the final sub-segment is always a forward motion — the
@@ -160,6 +173,7 @@ def _expand_cruise(start_pose, end_pose, target_antenna, waypoint_index,
     Reed-Shepp path and only tapers into approach_speed on the final
     metre — instead of tapering on every 0.15-0.30 m sub-segment.
     """
+    from pilot.lib.geo_utils import normalize_angle as _normalize_angle
     sx, sy, _ = start_pose
     ex, ey, dock_psi = end_pose
     rs = _reed_shepp_plan(start_pose, end_pose, turning_radius,
@@ -183,16 +197,20 @@ def _expand_cruise(start_pose, end_pose, target_antenna, waypoint_index,
         )]
 
     pts = _reed_shepp_sample(rs, sample_step)
-    # pts = [(x, y, psi, motion_sign), ...], first sample carries
-    # motion_sign = 0 (start point), rest are +1/-1.
-    raw_subs = []  # (x0, y0, x1, y1, sign1, chord)
+    # pts = [(x, y, tangent_psi, motion_sign), ...]. First sample's
+    # motion_sign = 0 (start point); subsequent samples carry the
+    # +1/-1 of the primitive they were sampled from. tangent_psi is
+    # the chassis-facing direction at the sample — for forward
+    # primitives this equals the direction of travel; for reverse the
+    # direction of travel is tangent_psi + π.
+    raw_subs = []  # (x0, y0, x1, y1, t0, t1, sign1, chord)
     for i in range(len(pts) - 1):
-        x0, y0, _, _ = pts[i]
-        x1, y1, _, sign1 = pts[i + 1]
+        x0, y0, t0, _ = pts[i]
+        x1, y1, t1, sign1 = pts[i + 1]
         chord = hypot(x1 - x0, y1 - y0)
         if chord < 1e-9:
             continue
-        raw_subs.append((x0, y0, x1, y1, sign1, chord))
+        raw_subs.append((x0, y0, x1, y1, t0, t1, sign1, chord))
     if not raw_subs:
         return []
 
@@ -202,24 +220,34 @@ def _expand_cruise(start_pose, end_pose, target_antenna, waypoint_index,
     # sub's chord length.
     dist_to_dock = [0.0] * len(raw_subs)
     for j in range(len(raw_subs) - 2, -1, -1):
-        dist_to_dock[j] = dist_to_dock[j + 1] + raw_subs[j + 1][5]
+        dist_to_dock[j] = dist_to_dock[j + 1] + raw_subs[j + 1][7]
 
     sub_segments = []
-    for idx, (x0, y0, x1, y1, sign1, _chord) in enumerate(raw_subs):
-        # Chord heading is the direction of travel along this sub-
-        # segment, set on both start_pose and end_pose. The cruise
-        # tracker reads segment.direction (+1/-1) and projects the
-        # chassis facing onto the motion direction before computing
-        # e_psi, so we don't need to embed the chassis-facing-pi
-        # convention here.
-        chord_psi = atan2(y1 - y0, x1 - x0)
+    for idx, (x0, y0, x1, y1, t0, t1, sign1, _chord) in enumerate(raw_subs):
+        direction = sign1 if sign1 != 0 else 1
+        # psi_path = direction of travel at the sample. For forward
+        # this is the chassis facing tangent; for reverse it is the
+        # tangent + π (chassis moves toward the rear).
+        if direction < 0:
+            psi_start = _normalize_angle(t0 + 3.141592653589793)
+            psi_end = _normalize_angle(t1 + 3.141592653589793)
+        else:
+            psi_start = t0
+            psi_end = t1
+        # The first sample of the path carries motion_sign = 0 from
+        # _reed_shepp_sample, which leaves its tangent undefined for
+        # our direction-of-travel convention. Fall back to the
+        # outgoing tangent (t1's tangent already corrected) as the
+        # sub-seg start_pose psi in that case.
+        if idx == 0 and pts[0][3] == 0:
+            psi_start = psi_end
         sub_segments.append(PathSegment(
             'cruise',
-            (x0, y0, chord_psi),
-            (x1, y1, chord_psi),
+            (x0, y0, psi_start),
+            (x1, y1, psi_end),
             target_antenna,
             waypoint_index,
-            direction=sign1 if sign1 != 0 else 1,
+            direction=direction,
             dist_to_dock=dist_to_dock[idx],
         ))
     # Force the final cruise sub-segment's end heading to the dock

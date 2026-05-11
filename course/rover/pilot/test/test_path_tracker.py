@@ -242,11 +242,15 @@ class TestCruiseZeroCrossGate:
         v, _, _ = t.step((1.0, 0.0, pi), seg_rev, t_now=100.05)
         assert v < 0.0  # no gate, emits reverse cmd directly
 
-    def test_reset_clears_direction_history(self):
-        # After reset() the tracker has no _last_direction so a
-        # subsequent reverse sub-seg with large chassis_v should NOT be
-        # gated — the gate only triggers on a *change* from a known
-        # prior direction.
+    def test_reset_preserves_direction_history(self):
+        # reset() is invoked by the navigator between every cruise sub-
+        # seg (kind 'cruise' transitions), but the zero-cross gate
+        # specifically needs to fire on direction switches across those
+        # sub-seg boundaries (Reed-Shepp puts every direction switch at
+        # a sub-seg boundary). If reset() wiped `_last_direction`, the
+        # gate would never trigger on the actual Reed-Shepp reversals.
+        # reset() therefore MUST preserve direction history; clearing
+        # only happens implicitly via __init__ (mission restart).
         t = CruiseTracker(self._params_with_threshold())
         seg_fwd = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
                        direction=1)
@@ -256,7 +260,9 @@ class TestCruiseZeroCrossGate:
                        direction=-1)
         v, _, _ = t.step((1.0, 0.0, pi), seg_rev, t_now=100.05,
                          chassis_v=+0.50)
-        assert v < 0.0
+        # Gate must fire: chassis_v still high in forward direction
+        # despite reset() being called between sub-segs.
+        assert v == 0.0
 
 
 class TestCruiseReverse:

@@ -391,3 +391,67 @@ class TestDistToDockPropagation:
         cruises = _cruise_for(segs, 0)
         assert cruises
         assert cruises[-1].direction == 1
+
+
+class TestTangentPsiOnArcPrimitives:
+    """The cruise sub-seg psi_path is the Reed-Shepp tangent (chassis
+    facing) at the sample, NOT the inter-sample chord direction. On
+    arc primitives the chord rotates by step/rho radians per sample
+    (≈ 14° at step 0.15 m, rho 0.61 m); using it as psi_path makes
+    Stanley see a fresh 14° heading error every 50 ms sub-seg boundary
+    and snap kappa around. The tangent at each sample varies smoothly
+    along the arc, giving Stanley a continuous reference."""
+
+    def test_psi_path_smoothly_varies_on_arc(self):
+        # A 90° forward arc: start (0,0,0) → end (rho, rho, pi/2)
+        # forces Reed-Shepp into a pure L+ primitive (no straights, no
+        # reverse). Tangent at each sample should rotate gradually;
+        # adjacent sub-segs should not have psi_path jumps larger than
+        # what an arc of length step_m on radius rho would produce
+        # (≈ step/rho = 0.27 rad = 15° at step 0.15 m, rho 0.56 m).
+        from math import degrees
+        from pilot.lib.path_planner import _expand_cruise
+
+        rho = 0.56
+        sub_segs = _expand_cruise(
+            start_pose=(0.0, 0.0, 0.0),
+            end_pose=(rho, rho, pi / 2),
+            target_antenna=(rho + 0.5, rho),
+            waypoint_index=0,
+            turning_radius=rho,
+            sample_step=0.15,
+        )
+        assert len(sub_segs) >= 3, 'expected multiple sub-segs on a 90° arc'
+        # Per-sub-seg psi_path is constant (start_pose.psi == end_pose.psi
+        # by the new tangent-based convention). Consecutive sub-segs'
+        # psi_path differs by at most the per-sample tangent rotation.
+        max_step = 0.15 / rho + 0.05  # rad, small slack for boundary
+        for prev, nxt in zip(sub_segs[:-1], sub_segs[1:]):
+            dpsi = abs(((nxt.start_pose[2] - prev.start_pose[2] + pi)
+                        % (2 * pi)) - pi)
+            assert dpsi <= max_step, (
+                f'tangent step too large: {degrees(dpsi):.1f}° '
+                f'(max {degrees(max_step):.1f}°)')
+
+    def test_forward_arc_subs_match_chassis_facing(self):
+        # On a forward 90° arc Reed-Shepp produces only direction=+1
+        # sub-segs. psi_path equals the chassis-facing tangent; e_psi
+        # for a chassis on the arc is ≈ 0. The previous (pre-fix)
+        # chord-based psi_path would step the angle by step/rho per
+        # sub-seg, so this test guards against regressing to chord_psi.
+        from pilot.lib.path_planner import _expand_cruise
+
+        rho = 0.56
+        sub_segs = _expand_cruise(
+            start_pose=(0.0, 0.0, 0.0),
+            end_pose=(rho, rho, pi / 2),
+            target_antenna=(rho + 0.5, rho),
+            waypoint_index=0,
+            turning_radius=rho,
+            sample_step=0.15,
+        )
+        assert sub_segs
+        for s in sub_segs:
+            assert s.direction == 1, (
+                f'forward arc should not yield reverse subs; got '
+                f'direction={s.direction}')

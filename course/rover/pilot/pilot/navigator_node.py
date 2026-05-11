@@ -1045,38 +1045,31 @@ class NavigatorNode(Node):
             # speed the MCU has spun up to; the cruise tracker uses this
             # to gate direction-switch sub-seg transitions through zero.
             chassis_v = 0.5 * (self._odom_v_left + self._odom_v_right)
-            v, kappa, done = self._cruise_tracker.step(
-                chassis_pose, seg, time.monotonic(), chassis_v=chassis_v)
-            self._publish_velocity(v, kappa)
-            self._update_progress(chassis_pose, seg.end_pose)
 
-            now_mono = time.monotonic()
-            if (self._last_dock_trace_t is None
-                    or now_mono - self._last_dock_trace_t >= 1.0):
-                self._last_dock_trace_t = now_mono
-                cx, cy, cpsi = chassis_pose
-                ex, ey, _ = seg.end_pose
-                dist_to_end = hypot(ex - cx, ey - cy)
-                self.get_logger().info(
-                    f'CRUISE seg{self._cur_seg_idx} (WP{seg.waypoint_index + 1}) '
-                    f'ch=({cx:+.2f},{cy:+.2f},{degrees(cpsi):+.0f}°) '
-                    f'end=({ex:+.2f},{ey:+.2f}) dist_to_end={dist_to_end*100:.1f}cm '
-                    f'd2d={seg.dist_to_dock*100:.0f}cm v_ch={chassis_v:+.2f} '
-                    f'cmd v={v:+.2f} k={kappa:+.2f}'
-                )
-
-            if done:
-                # cruise→dock handoff lateral gate. If this was the last
-                # cruise sub-seg (dist_to_dock == 0) AND the chassis is
-                # still too far off the dock corridor laterally, the
-                # next segment (dock) would open with a |e_y| that
-                # forces Stanley to saturate trying to slam lateral
-                # closed — exactly the WP2 wari-gari from the 16:47
-                # trace. Re-plan from the live chassis pose so a fresh
-                # Reed-Shepp leg can stitch chassis→dock entry cleanly.
-                # The next dock segment after this cruise (if any)
-                # carries the canonical psi_path = dock heading, so we
-                # project the chassis onto that line to read e_y.
+            # Burn-through loop: Reed-Shepp's expansion often produces
+            # leading sub-segs whose end pose is already behind the
+            # chassis (the previous dock pushed chassis ~10-20 cm past
+            # the dock point, the new cruise plan starts from current
+            # chassis pose, and the first 1-3 sub-segs of the new plan
+            # are immediately "done"). Without the loop, each done
+            # sub-seg cost one 50 ms tick at cmd v=0 before the
+            # navigator advanced — adding up to a visible 100-300 ms
+            # stop at every WP transition and after every replan. The
+            # loop advances through done sub-segs in the same tick so
+            # the chassis only sees the cmd from the first non-done
+            # (or last cruise) sub-seg of the run. The loop terminates
+            # on: (a) a non-done step, (b) a replan trigger, (c)
+            # reaching the dock segment, or (d) running out of
+            # segments. A hard iteration cap defends against any
+            # never-terminating plan.
+            v, kappa, done = 0.0, 0.0, False
+            for _ in range(64):
+                v, kappa, done = self._cruise_tracker.step(
+                    chassis_pose, seg, time.monotonic(),
+                    chassis_v=chassis_v)
+                if not done:
+                    break
+                # done — handle replan check, then advance.
                 if (seg.dist_to_dock <= 1e-3
                         and self._cur_seg_idx + 1 < len(self._segments)
                         and self._segments[self._cur_seg_idx + 1].kind == 'dock'):
@@ -1094,9 +1087,37 @@ class NavigatorNode(Node):
                         self._last_dock_trace_t = None
                         return
                 self._cur_seg_idx += 1
-                self._cruise_tracker.reset()
                 self._reset_progress()
-                self._last_dock_trace_t = None  # reset trace clock for next segment
+                self._last_dock_trace_t = None
+                if self._cur_seg_idx >= len(self._segments):
+                    # Mission complete.
+                    self._stop_motors()
+                    self._set_state(State.IDLE)
+                    return
+                seg = self._segments[self._cur_seg_idx]
+                if seg.kind != 'cruise':
+                    # Next sub-seg is dock — let the dock handler take
+                    # over on the next tick. Don't publish a stale
+                    # cruise v/kappa (would be 0,0 from the prior done).
+                    return
+
+            self._publish_velocity(v, kappa)
+            self._update_progress(chassis_pose, seg.end_pose)
+
+            now_mono = time.monotonic()
+            if (self._last_dock_trace_t is None
+                    or now_mono - self._last_dock_trace_t >= 1.0):
+                self._last_dock_trace_t = now_mono
+                cx, cy, cpsi = chassis_pose
+                ex, ey, _ = seg.end_pose
+                dist_to_end = hypot(ex - cx, ey - cy)
+                self.get_logger().info(
+                    f'CRUISE seg{self._cur_seg_idx} (WP{seg.waypoint_index + 1}) '
+                    f'ch=({cx:+.2f},{cy:+.2f},{degrees(cpsi):+.0f}°) '
+                    f'end=({ex:+.2f},{ey:+.2f}) dist_to_end={dist_to_end*100:.1f}cm '
+                    f'd2d={seg.dist_to_dock*100:.0f}cm v_ch={chassis_v:+.2f} '
+                    f'cmd v={v:+.2f} k={kappa:+.2f}'
+                )
             return
 
         if seg.kind == 'dock':
