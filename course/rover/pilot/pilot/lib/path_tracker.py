@@ -129,6 +129,15 @@ class CruiseTracker:
         x, y, psi = chassis_pose
         sx, sy, psi_path = segment.start_pose
         ex, ey, _ = segment.end_pose
+        # Direction: +1 forward, -1 reverse. For reverse sub-segments
+        # the chassis's direction of *travel* is psi + π (the rear axle
+        # leads), so Stanley's control quantities must be computed
+        # against that effective heading rather than the chassis facing.
+        direction = getattr(segment, 'direction', 1)
+        if direction < 0:
+            effective_psi = normalize_angle(psi + 3.141592653589793)
+        else:
+            effective_psi = psi
         dx, dy = ex - x, ey - y
         dist_to_end = hypot(dx, dy)
 
@@ -137,7 +146,7 @@ class CruiseTracker:
         # LEFT of corridor heading).
         a_along, e_y = project_onto_line(x, y, sx, sy, psi_path)
         seg_len = hypot(ex - sx, ey - sy)
-        e_psi_raw = normalize_angle(psi - psi_path)
+        e_psi_raw = normalize_angle(effective_psi - psi_path)
 
         # Done conditions:
         # 1. Close to end pose AND chassis ψ aligned with corridor — the
@@ -206,6 +215,14 @@ class CruiseTracker:
         elif kappa < -self._max_curvature:
             kappa = -self._max_curvature
 
+        # Reverse motion: signed speed (mcu_bridge / ackermann_convert
+        # accept negative speed) and flip kappa because chassis ψ̇ = v·κ
+        # — with v < 0 the same kappa rotates the chassis the *wrong*
+        # way for closing e_psi_corrected, so the cruise tracker must
+        # negate kappa to drive the heading regulator in the right
+        # direction.
+        if direction < 0:
+            return -speed, -kappa, False
         return speed, kappa, False
 
 

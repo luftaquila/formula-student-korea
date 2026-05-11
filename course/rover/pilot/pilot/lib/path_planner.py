@@ -137,24 +137,17 @@ def _expand_cruise(start_pose, end_pose, target_antenna, waypoint_index,
         x1, y1, _, sign1 = pts[i + 1]
         if hypot(x1 - x0, y1 - y0) < 1e-9:
             continue
-        # Chord heading from start sample to end sample.
+        # Chord heading is the direction of travel along this sub-
+        # segment, set on both start_pose and end_pose. The cruise
+        # tracker reads segment.direction (+1/-1) and projects the
+        # chassis facing onto the motion direction before computing
+        # e_psi, so we don't need to embed the chassis-facing-pi
+        # convention here.
         chord_psi = atan2(y1 - y0, x1 - x0)
-        # If the sub-segment is a *reverse* sub (chassis backs along
-        # the chord), the chassis heading at start AND end is the
-        # chord direction PLUS pi (chassis points opposite to its
-        # motion). The cruise tracker reads start_pose.psi as the
-        # corridor heading; setting it equal to chassis-facing-psi
-        # (chord + pi for reverse) keeps Stanley's e_psi computed
-        # against the chassis's actual heading rather than its
-        # direction of travel.
-        if sign1 < 0:
-            chassis_psi = normalize_angle(chord_psi + 3.141592653589793)
-        else:
-            chassis_psi = chord_psi
         sub_segments.append(PathSegment(
             'cruise',
-            (x0, y0, chassis_psi),
-            (x1, y1, chassis_psi),
+            (x0, y0, chord_psi),
+            (x1, y1, chord_psi),
             target_antenna,
             waypoint_index,
             direction=sign1 if sign1 != 0 else 1,

@@ -46,8 +46,8 @@ _PARAMS = {
 }
 
 
-def _seg(kind, start, end, target=(0.0, 0.0), idx=0):
-    return PathSegment(kind, start, end, target, idx)
+def _seg(kind, start, end, target=(0.0, 0.0), idx=0, direction=1):
+    return PathSegment(kind, start, end, target, idx, direction=direction)
 
 
 class TestCruiseTracker:
@@ -142,6 +142,52 @@ class TestCruiseTracker:
         seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
         _, _, done = t.step((5.40, 0.0, pi / 4), seg, t_now=100.0)
         assert done
+
+
+class TestCruiseReverse:
+    """Reverse cruise sub-segments come out of the Reed-Shepp planner
+    when the goal sits inside the chassis turning circle. The tracker
+    must emit negative speed and flip kappa so the chassis backs along
+    the segment in the right direction."""
+
+    def test_reverse_segment_emits_negative_speed(self):
+        # Reverse along +x: chord direction = 0, chassis facing −x
+        # (psi = pi) is the canonical orientation for reversing along
+        # the chord. Tracker must command v < 0.
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), direction=-1)
+        v, _, _ = t.step((0.0, 0.0, pi), seg, t_now=100.0)
+        assert v < 0.0
+
+    def test_reverse_chassis_aligned_zero_curvature(self):
+        # Chassis facing pi (motion direction is +x along the chord),
+        # exactly on the corridor with no lateral error: kappa must be
+        # ≈ 0 (Stanley sees no error, motion is aligned).
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), direction=-1)
+        _, kappa, _ = t.step((1.0, 0.0, pi), seg, t_now=100.0)
+        assert abs(kappa) < 1e-6
+
+    def test_reverse_lateral_error_drives_correct_kappa_sign(self):
+        # Chassis above the corridor (e_y > 0), motion direction is the
+        # chord (+x). For *forward* cruise the tracker emits kappa < 0
+        # to turn the chassis right (toward the corridor). For reverse
+        # cruise the tracker must emit the OPPOSITE sign kappa so the
+        # same world-frame wheel angle still rotates the chassis toward
+        # the corridor under Ackermann reverse kinematics.
+        t = CruiseTracker(_PARAMS)
+        seg_fwd = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), direction=1)
+        seg_rev = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), direction=-1)
+        # Forward: chassis facing +x (along corridor), 0.2 m left.
+        _, kappa_fwd, _ = t.step((1.0, 0.2, 0.0), seg_fwd, t_now=100.0)
+        # Reverse: chassis facing -x (so motion direction = +x), same
+        # lateral offset.
+        _, kappa_rev, _ = t.step((1.0, 0.2, pi), seg_rev, t_now=101.0)
+        # Forward sign: e_y > 0 → desired_offset > 0 → e_psi_corrected
+        # > 0 → kappa < 0.
+        assert kappa_fwd < 0
+        # Reverse sign: flipped.
+        assert kappa_rev > 0
 
 
 class TestDockTracker:
