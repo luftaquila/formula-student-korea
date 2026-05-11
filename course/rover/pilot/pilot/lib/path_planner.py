@@ -7,24 +7,22 @@ The chassis (rear axle) needs to be elsewhere — at `target - R(ψ_dock)·offse
 crosses the target.
 
 Per waypoint we generate:
-  1. A *Dubins* cruise — the shortest forward-only path from the chassis's
-     current pose to the dock entry pose, respecting the chassis minimum
-     turning radius. Decomposed into ~`dubins_sample_step` segments of
-     straight line so the existing Stanley-feedforward cruise tracker can
-     follow it without arc-curvature primitives.
+  1. A *Reed-Shepp* cruise — the shortest path from the chassis's current
+     pose to the dock entry pose, respecting the chassis minimum turning
+     radius AND allowing both forward and reverse motion. Decomposed into
+     short straight sub-segments along each Reed-Shepp primitive; each
+     sub-segment carries its motion direction so the cruise tracker can
+     command +v or −v accordingly.
   2. A straight dock segment from the corridor entry to the chassis dock
-     pose (the corridor proper). State-feedback line follower handles this.
+     pose. State-feedback line follower handles this in forward.
 
-The Dubins cruise replaces the previous geometric-line-only cruise. The
-old form couldn't tell the chassis how to align with the corridor heading
-when consecutive waypoints sat at 60°+ relative bearings — Stanley
-saturated kappa during the rotation, the chassis crossed and re-crossed
-the corridor as it swung the heading around, and the dock opened at
-e_y > 20 cm. Dubins folds the chassis turning-radius constraint into the
-geometry: chassis follows a sequence of arc + straight + arc primitives
-that lands on (entry_x, entry_y, psi_dock) tangentially, so the dock
-tracker takes over with the chassis already on the corridor and aimed
-along it. No cross-and-swing-back, no headed-into-the-wall first arc.
+Reed-Shepp replaced the earlier forward-only Dubins cruise because the
+Dubins planner produced ~1.5 m loops whenever consecutive waypoints sat
+inside the chassis turning circle (e.g. WP1→WP2 in the 15:15 mission
+trace cycled 1.5 m around a left-right circuit before reaching the dock
+entry, ~5 s of wasted motion). Reed-Shepp's reverse leg lets the chassis
+back up a few centimetres and then approach the goal directly when that's
+shorter than circling forward.
 
 ψ_dock is chosen as:
   - For the first waypoint, the bearing from current chassis position to
@@ -37,10 +35,10 @@ The planner is purely geometric — no controller state — so it can be regen-
 erated cheaply if the operator skips a waypoint or restarts mid-mission.
 """
 
-from math import atan2, cos, sin, hypot, tan, pi
+from math import atan2, cos, sin, hypot
 
 from pilot.lib.geo_utils import enu_from_gps, normalize_angle
-from pilot.lib.dubins import plan as _dubins_plan, sample as _dubins_sample
+from pilot.lib.reed_shepp import plan as _reed_shepp_plan, sample as _reed_shepp_sample
 
 
 # Floor on the dock corridor length. The dock tracker needs enough along-
@@ -57,32 +55,38 @@ _DOCK_DISTANCE_FLOOR_M = 0.6
 # Caller should pass the current value explicitly via `turning_radius`.
 _DEFAULT_TURNING_RADIUS_M = 0.56
 
-# Dubins sample step for cruise decomposition. Each Dubins primitive is
-# discretised at this step into straight sub-segments; the cruise tracker
-# then treats each sub-segment as a tiny Stanley problem. 0.30 m balances
-# (a) being small enough that the inscribed-polygon error on the tightest
-# arc (rho=0.56) is sub-cm, and (b) being large enough that
-# cruise_done_tolerance=0.20 doesn't trip on every adjacent sub-segment.
-_DUBINS_SAMPLE_STEP_M = 0.30
+# Reed-Shepp sample step for cruise decomposition. Each primitive (arc
+# or straight) of the Reed-Shepp path is discretised at this step into
+# straight sub-segments. 0.30 m balances (a) inscribed-polygon error
+# on tight arcs (≤ 5 mm at rho = 0.56) and (b) keeping
+# cruise_done_tolerance = 0.20 m from tripping on every adjacent sub.
+_CRUISE_SAMPLE_STEP_M = 0.30
 
 
 class PathSegment:
-    __slots__ = ('kind', 'start_pose', 'end_pose', 'target_antenna', 'waypoint_index')
+    __slots__ = ('kind', 'start_pose', 'end_pose', 'target_antenna',
+                 'waypoint_index', 'direction')
 
-    def __init__(self, kind, start_pose, end_pose, target_antenna, waypoint_index):
+    def __init__(self, kind, start_pose, end_pose, target_antenna,
+                 waypoint_index, direction=1):
         # kind: 'cruise' | 'dock'
         # *_pose: (x, y, psi_math)
         # target_antenna: (e, n) ENU of the antenna's intended landing point
         # waypoint_index: 0-based index into the original waypoint list, or
         #                 -1 for the synthetic return-to-start segment.
+        # direction: +1 forward, -1 reverse. Cruise sub-segments inherit
+        #            the sign from the Reed-Shepp primitive they were
+        #            sampled from; dock is always forward.
         self.kind = kind
         self.start_pose = start_pose
         self.end_pose = end_pose
         self.target_antenna = target_antenna
         self.waypoint_index = waypoint_index
+        self.direction = int(direction)
 
     def __repr__(self):  # pragma: no cover - debug only
-        return (f'PathSegment({self.kind} wp={self.waypoint_index} '
+        sign = '+' if self.direction >= 0 else '-'
+        return (f'PathSegment({self.kind}{sign} wp={self.waypoint_index} '
                 f'start={self.start_pose} end={self.end_pose})')
 
 
@@ -95,24 +99,23 @@ def _dock_chassis_pose(target_e, target_n, psi_dock, antenna_offset):
     return target_e - ox, target_n - oy, psi_dock
 
 
-def _expand_dubins_cruise(start_pose, end_pose, target_antenna, waypoint_index,
-                          turning_radius, sample_step):
-    """Build a list of straight cruise sub-segments along the Dubins path
-    from start_pose to end_pose.
+def _expand_cruise(start_pose, end_pose, target_antenna, waypoint_index,
+                   turning_radius, sample_step):
+    """Decompose a Reed-Shepp path from start_pose to end_pose into a list
+    of straight cruise sub-segments carrying motion direction.
 
-    Each sub-segment's start_pose.psi and end_pose.psi are set to the
-    chord direction (atan2 of end - start), so the cruise tracker's
-    Stanley feedforward sees the local path heading. The dense sampling
-    is what gives the chassis a continuously-updated tangent direction
-    around an arc — without it the chassis would chase a tangent fixed
-    at the arc start and overshoot.
+    Each sample-to-sample chord becomes one PathSegment whose direction
+    matches the Reed-Shepp sample's motion_sign. The last sub-segment's
+    end_pose.psi is forced to the corridor (dock) heading so the
+    cruise→dock handoff has e_psi ≈ 0.
     """
-    dub = _dubins_plan(start_pose, end_pose, turning_radius)
     sx, sy, _ = start_pose
-    ex, ey, e_psi = end_pose
-    if dub is None or dub.length < 1e-3:
-        # Degenerate / no path: emit one straight sub-segment so the
-        # navigator has something to track to (or nothing if start ≈ end).
+    ex, ey, dock_psi = end_pose
+    rs = _reed_shepp_plan(start_pose, end_pose, turning_radius)
+    if rs is None or rs.length < 1e-3:
+        # Degenerate: chassis already at goal pose, or pose pair the
+        # planner doesn't admit (Reed-Shepp 1990 Theorem 1 says this
+        # shouldn't happen for rho > 0, but we keep the safety arm).
         if hypot(ex - sx, ey - sy) < 1e-6:
             return []
         chord_psi = atan2(ey - sy, ex - sx)
@@ -122,38 +125,53 @@ def _expand_dubins_cruise(start_pose, end_pose, target_antenna, waypoint_index,
             (ex, ey, chord_psi),
             target_antenna,
             waypoint_index,
+            direction=1,
         )]
-    pts = _dubins_sample(dub, sample_step)
+
+    pts = _reed_shepp_sample(rs, sample_step)
+    # pts = [(x, y, psi, motion_sign), ...], first sample carries
+    # motion_sign = 0 (start point), rest are +1/-1.
     sub_segments = []
     for i in range(len(pts) - 1):
-        x0, y0, _ = pts[i]
-        x1, y1, _ = pts[i + 1]
+        x0, y0, _, _ = pts[i]
+        x1, y1, _, sign1 = pts[i + 1]
         if hypot(x1 - x0, y1 - y0) < 1e-9:
             continue
+        # Chord heading from start sample to end sample.
         chord_psi = atan2(y1 - y0, x1 - x0)
+        # If the sub-segment is a *reverse* sub (chassis backs along
+        # the chord), the chassis heading at start AND end is the
+        # chord direction PLUS pi (chassis points opposite to its
+        # motion). The cruise tracker reads start_pose.psi as the
+        # corridor heading; setting it equal to chassis-facing-psi
+        # (chord + pi for reverse) keeps Stanley's e_psi computed
+        # against the chassis's actual heading rather than its
+        # direction of travel.
+        if sign1 < 0:
+            chassis_psi = normalize_angle(chord_psi + 3.141592653589793)
+        else:
+            chassis_psi = chord_psi
         sub_segments.append(PathSegment(
             'cruise',
-            (x0, y0, chord_psi),
-            (x1, y1, chord_psi),
+            (x0, y0, chassis_psi),
+            (x1, y1, chassis_psi),
             target_antenna,
             waypoint_index,
+            direction=sign1 if sign1 != 0 else 1,
         ))
-    # Force the final cruise sub-segment's end_pose.psi to match the dock
-    # corridor heading (psi_dock = end_pose[2]). The chord_psi of the last
-    # sample is usually within a degree or two but Stanley reads psi_path
-    # from start_pose.psi of the NEXT segment (the dock) for handoff, so
-    # any mismatch matters less than the final approach angle the cruise
-    # tracker uses while still in cruise.
+    # Force the final cruise sub-segment's end heading to the dock
+    # heading so the handoff has e_psi ≈ 0. Only meaningful when the
+    # final motion was forward (which Reed-Shepp normally guarantees
+    # for the last sub if the goal pose is reached).
     if sub_segments:
         last = sub_segments[-1]
-        # Drop the last sub-segment's end-heading onto psi_dock so the
-        # handoff into dock has e_psi ≈ 0.
         sub_segments[-1] = PathSegment(
             last.kind,
             last.start_pose,
-            (last.end_pose[0], last.end_pose[1], e_psi),
+            (last.end_pose[0], last.end_pose[1], dock_psi),
             last.target_antenna,
             last.waypoint_index,
+            direction=last.direction,
         )
     return sub_segments
 
@@ -163,51 +181,23 @@ def plan(current_chassis_pose, antenna_offset,
          dock_distance, return_to_start=False, start_chassis_xy=None,
          waypoint_index_offset=0,
          turning_radius=_DEFAULT_TURNING_RADIUS_M,
-         dubins_sample_step=_DUBINS_SAMPLE_STEP_M):
+         dubins_sample_step=_CRUISE_SAMPLE_STEP_M):
     """Build the segment list for a mission.
 
-    Args:
-        current_chassis_pose: (x, y, psi_math) of the chassis at planning time.
-        antenna_offset: (a_x, a_y) body-frame offset of the antenna.
-        waypoints_lat_lng: list of {'lat', 'lng'} dicts (waypoint = antenna target).
-        ref_lat_lon: (ref_lat, ref_lon) for ENU conversion.
-        dock_distance: meters of straight approach before the dock pose.
-            Must be >= 1× wheelbase + a margin so the chassis can settle
-            its heading on the line before reaching the dock point.
-        return_to_start: if True, append a synthetic waypoint at start_chassis_xy.
-        start_chassis_xy: (x, y) chassis position where the mission started,
-            required when return_to_start=True.
-        waypoint_index_offset: integer added to each segment's
-            waypoint_index. Used by the navigator when re-planning a
-            partial mission (after a skip) so the segment indices continue
-            to align with the original full waypoint list.
-        turning_radius: chassis minimum turning radius in meters.
-        dubins_sample_step: meters per cruise sub-segment after Dubins
-            decomposition.
-
-    Returns:
-        List of PathSegment, ordered. Each waypoint contributes one or more
-        cruise sub-segments (Dubins-decomposed) plus one dock segment;
-        return-to-start contributes the same.
+    `dubins_sample_step` retains its old name for parameter backward
+    compatibility; semantically it's the Reed-Shepp sample step now.
     """
     ref_lat, ref_lon = ref_lat_lon
     cur_x, cur_y, cur_psi = current_chassis_pose
 
-    # Convert waypoint lat/lon → ENU once.
     wp_enu = [enu_from_gps(wp['lat'], wp['lng'], ref_lat, ref_lon)
               for wp in waypoints_lat_lng]
 
     segments = []
-    prev_target = None  # antenna ENU of the previous waypoint, for dock heading
+    prev_target = None
 
     for idx, (wp_e, wp_n) in enumerate(wp_enu):
         if prev_target is None:
-            # First waypoint: dock heading = bearing from CURRENT chassis to
-            # waypoint. Picking chassis-to-target rather than antenna-to-
-            # target is intentional — at planning time the antenna may be
-            # behind a slightly-off chassis ψ (e.g. fresh out of calibration);
-            # using chassis position keeps the dock corridor aligned with how
-            # the rover will actually approach.
             psi_dock = atan2(wp_n - cur_y, wp_e - cur_x)
             span = hypot(wp_e - cur_x, wp_n - cur_y)
         else:
@@ -222,10 +212,7 @@ def plan(current_chassis_pose, antenna_offset,
         entry_y = dock_y - effective_dock * sin(psi_dock)
 
         seg_wp_idx = idx + waypoint_index_offset
-        # Dubins cruise: chassis (cur_x, cur_y, cur_psi) → entry pose.
-        # Decomposed into ~`dubins_sample_step` straight sub-segments so
-        # the existing cruise tracker can chase each chord directly.
-        sub_segs = _expand_dubins_cruise(
+        sub_segs = _expand_cruise(
             (cur_x, cur_y, cur_psi),
             (entry_x, entry_y, psi_dock),
             (wp_e, wp_n),
@@ -234,20 +221,16 @@ def plan(current_chassis_pose, antenna_offset,
             dubins_sample_step,
         )
         segments.extend(sub_segs)
-        # Dock straight-line segment (entry → dock pose).
         segments.append(PathSegment(
             'dock', (entry_x, entry_y, psi_dock),
             (dock_x, dock_y, psi_dock), (wp_e, wp_n), seg_wp_idx,
+            direction=1,
         ))
 
         cur_x, cur_y, cur_psi = dock_x, dock_y, psi_dock
         prev_target = (wp_e, wp_n)
 
     if return_to_start and start_chassis_xy is not None:
-        # Antenna landing point for the return = the antenna position the
-        # operator started at. We approximate it as the chassis start
-        # position; the physical antenna offset just shifts the final
-        # parking spot by the offset vector, which is fine for "go home".
         start_x, start_y = start_chassis_xy
         psi_dock = atan2(start_y - cur_y, start_x - cur_x)
         psi_dock = normalize_angle(psi_dock)
@@ -256,8 +239,7 @@ def plan(current_chassis_pose, antenna_offset,
         dock_x, dock_y, _ = _dock_chassis_pose(start_x, start_y, psi_dock, antenna_offset)
         entry_x = dock_x - effective_dock * cos(psi_dock)
         entry_y = dock_y - effective_dock * sin(psi_dock)
-        # Dubins for return cruise too.
-        sub_segs = _expand_dubins_cruise(
+        sub_segs = _expand_cruise(
             (cur_x, cur_y, cur_psi),
             (entry_x, entry_y, psi_dock),
             (start_x, start_y),
@@ -269,6 +251,7 @@ def plan(current_chassis_pose, antenna_offset,
         segments.append(PathSegment(
             'dock', (entry_x, entry_y, psi_dock),
             (dock_x, dock_y, psi_dock), (start_x, start_y), -1,
+            direction=1,
         ))
 
     return segments
