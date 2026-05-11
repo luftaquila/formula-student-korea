@@ -75,7 +75,7 @@ navigator_node:
     antenna_cal_sign: 1
 
     # ── Path planner ────────────────────────────────────────────────────
-    dock_approach_distance: 1.5        # meters of straight line before the dock pose. Should be at least ~3× wheelbase so chassis can settle on the line before the dock point.
+    dock_approach_distance: 2.5        # meters of straight line before the dock pose. Lengthened from 1.5 so chassis has room to rotate into corridor heading inside the cruise leg before handing off to dock — critical when consecutive waypoints sit at 60°+ relative bearings (cruise from prev-dock-end with chassis ψ way off corridor; PP and Stanley both drift across the corridor before aligning, and the dock then opens at e_y ~30cm). 2.5m gives 4×min-turning-radius (0.56m) of room.
 
     # ── Pure Pursuit (cruise tracker) ───────────────────────────────────
     pp_lookahead_min: 0.6              # meters. Decoupled from min turn radius — separate clamp on max_curvature handles physical limit.

@@ -154,7 +154,7 @@ def plan(current_chassis_pose, antenna_offset,
         cur_x, cur_y, cur_psi = dock_end
         prev_target = (wp_e, wp_n)
 
-    if return_to_start and start_chassis_xy is not None and prev_target is not None:
+    if return_to_start and start_chassis_xy is not None:
         # Antenna landing point for the return = the antenna position the
         # operator started at. We approximate it as the chassis start
         # position; the physical antenna offset just shifts the final

@@ -97,7 +97,7 @@ class CruiseTracker:
         # left-right wari-gari with no dwell on the corridor. Dropped
         # to 1.0 (≈12°/5 cm) so chassis can track without slamming
         # back and forth on noise.
-        self._k_lat = float(params.get('cruise_k_lat', 1.0))
+        self._k_lat = float(params.get('cruise_k_lat', 1.5))
         self._k_heading = float(params.get('cruise_k_heading', 2.0))
         # Cap on Stanley's desired-offset to prevent perpendicular-
         # entry oscillation on large lateral residuals. 35° default.
@@ -231,7 +231,7 @@ class DockTracker:
         # a separate Stanley gain (dock_stanley_k_lat, default 1.0) and
         # leave dock_k_y honoured for backward compat only.
         self._k_y = float(params.get('dock_stanley_k_lat',
-                                     min(1.0, float(params['dock_k_y']))))
+                                     min(1.5, float(params['dock_k_y']))))
         self._k_psi = float(params['dock_k_psi'])
         self._k_i = float(params.get('dock_k_i', 0.0))
         self._max_curvature = float(params['max_curvature'])
@@ -480,7 +480,7 @@ class DockTracker:
         # cycle is more damaging to the mission than 3–6 cm of landing
         # error on the overshoot side; settle re-verifies precision.
         if (along_to_target < 0.0
-                and target_dist <= 2.0 * self._approach_tolerance):
+                and target_dist <= 1.5 * self._approach_tolerance):
             self._reverse_active = False
             self._reverse_entry_t = None
             self._reverse_entry_xy = None
