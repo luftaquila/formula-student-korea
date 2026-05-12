@@ -164,6 +164,8 @@ class NavigatorNode(Node):
         self.declare_parameter('l1_brake_min_speed_frac', 0.175)
         self.declare_parameter('l1_min_speed_m_s', 0.07)
         self.declare_parameter('l1_close_enough_spray_m', 0.30)
+        self.declare_parameter('l1_sharp_turn_thresh_rad', 0.785)
+        self.declare_parameter('l1_sharp_turn_l1_min_m', 1.2)
 
         # Dock tracker (state feedback).
         self.declare_parameter('dock_k_y', 6.0)
@@ -509,6 +511,8 @@ class NavigatorNode(Node):
             'l1_brake_zone_m': p('l1_brake_zone_m').value,
             'l1_brake_min_speed_frac': p('l1_brake_min_speed_frac').value,
             'l1_min_speed_m_s': p('l1_min_speed_m_s').value,
+            'l1_sharp_turn_thresh_rad': p('l1_sharp_turn_thresh_rad').value,
+            'l1_sharp_turn_l1_min_m': p('l1_sharp_turn_l1_min_m').value,
             # Pull from instance, not yaml param, so a fresh auto-cal is
             # picked up on the next mission start without restart.
             'antenna_offset_x': self._antenna_offset_x,
@@ -1030,6 +1034,16 @@ class NavigatorNode(Node):
             -(sin(psi_math) * ax + cos(psi_math) * ay),
         )
 
+        # Resolve tracker kind FIRST so the planner can emit the
+        # corresponding segment layout (l1 → single segment per WP,
+        # legacy → cruise+dock pair).
+        kind = self.get_parameter('path_tracker_kind').value
+        if kind not in ('l1', 'legacy'):
+            self.get_logger().warn(
+                f'Unknown path_tracker_kind={kind!r}; defaulting to legacy'
+            )
+            kind = 'legacy'
+
         # Plan path now that chassis pose is known.
         params = self._params_for_trackers()
         try:
@@ -1041,6 +1055,7 @@ class NavigatorNode(Node):
                 dock_distance=self.get_parameter('dock_approach_distance').value,
                 return_to_start=self.get_parameter('return_to_start').value,
                 start_chassis_xy=self._mission_start_chassis_xy,
+                path_tracker_kind=kind,
             )
         except Exception as exc:  # pragma: no cover - defensive
             self._stop_motors()
@@ -1049,17 +1064,7 @@ class NavigatorNode(Node):
         self._cur_seg_idx = 0
         self._cur_wp_idx = 0
 
-        # Pick the tracker stack. 'l1' instantiates a single L1Tracker
-        # used for BOTH cruise and dock segments (Stage 2 unified
-        # architecture). 'legacy' instantiates the CruiseTracker +
-        # DockTracker pair for backward-compatible behaviour and
-        # field rollback via yaml flip.
-        kind = self.get_parameter('path_tracker_kind').value
-        if kind not in ('l1', 'legacy'):
-            self.get_logger().warn(
-                f'Unknown path_tracker_kind={kind!r}; defaulting to legacy'
-            )
-            kind = 'legacy'
+        # Instantiate the matching tracker.
         self._path_tracker_kind = kind
         self._l1_tracker = None
         self._cruise_tracker = None
@@ -1123,10 +1128,19 @@ class NavigatorNode(Node):
                 )
 
             if status == 'reached':
-                if seg.kind == 'dock':
-                    # Dock leg complete → settle gate. L1 already
-                    # captured at cm_capture, so this is just
-                    # confirm-with-N-readings before spraying.
+                # Unified L1 segment ('l1' kind): each segment ends at
+                # antenna-on-WP, so a 'reached' always means the WP is
+                # done → SETTLING. Legacy planner outputs (cruise + dock
+                # pair) under l1 tracker: cruise reached advances to
+                # the dock segment of the same WP; dock reached →
+                # SETTLING.
+                if seg.kind == 'cruise':
+                    self._cur_seg_idx += 1
+                    self._l1_tracker.reset()
+                    self._reset_progress()
+                    self._last_dock_trace_t = None
+                else:
+                    # 'dock' or 'l1' → settle/spray on this WP.
                     if self._cur_wp_idx != seg.waypoint_index:
                         self._settle_retries = 0
                     self._cur_wp_idx = seg.waypoint_index
@@ -1134,12 +1148,6 @@ class NavigatorNode(Node):
                     self._settle_count = 0
                     self._settle_enter_time = time.monotonic()
                     self._set_state(State.SETTLING)
-                else:
-                    # cruise → next segment (dock for the same WP).
-                    self._cur_seg_idx += 1
-                    self._l1_tracker.reset()
-                    self._reset_progress()
-                    self._last_dock_trace_t = None
             return
 
         if seg.kind == 'cruise':
@@ -1321,11 +1329,14 @@ class NavigatorNode(Node):
                     f'≤ {close_m*100:.0f} cm) — '
                     'accepting landing and spraying'
                 )
-                # Snap _cur_seg_idx to the dock segment of this WP
-                # so spraying lands on the correct waypoint.
+                # Snap _cur_seg_idx to the final/precision segment of
+                # this WP so spraying lands on the correct waypoint.
+                # Legacy planner: precision kind is 'dock'. L1 planner:
+                # 'l1'.
+                final_kinds = ('dock', 'l1')
                 while self._cur_seg_idx < len(self._segments) and (
                     self._segments[self._cur_seg_idx].waypoint_index != wp_idx
-                    or self._segments[self._cur_seg_idx].kind != 'dock'
+                    or self._segments[self._cur_seg_idx].kind not in final_kinds
                 ):
                     self._cur_seg_idx += 1
                 self._cur_wp_idx = wp_idx
@@ -1410,6 +1421,7 @@ class NavigatorNode(Node):
                 start_chassis_xy=self._mission_start_chassis_xy,
                 waypoint_index_offset=next_wp_idx,
                 prev_target_xy=prev_xy,
+                path_tracker_kind=self._path_tracker_kind,
             )
         except Exception as exc:  # pragma: no cover - defensive
             self.get_logger().warn(f'Replan failed: {exc}')
@@ -1625,7 +1637,9 @@ class NavigatorNode(Node):
             self._stop_motors()
             return
         seg = self._segments[self._cur_seg_idx]
-        if seg.kind != 'dock':
+        # Only precision-final segments expose a target_antenna we can
+        # hold against. Both 'dock' (legacy) and 'l1' (unified) qualify.
+        if seg.kind not in ('dock', 'l1'):
             self._stop_motors()
             return
         antenna_e, antenna_n = self._estimator.antenna_position()

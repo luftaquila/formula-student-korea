@@ -391,3 +391,69 @@ class TestSingleCruisePerWaypoint:
         # At least one dock for the waypoint.
         docks = _docks(segments)
         assert len(docks) == 1
+
+
+class TestL1PlannerLayout:
+    """The 'l1' path_tracker_kind emits a single unified segment per
+    waypoint (no cruise+dock pair). Pin the invariants the L1Tracker
+    relies on: segment count, segment kind, antenna landing.
+    """
+
+    def test_l1_emits_one_segment_per_waypoint(self):
+        # 4 WPs + return-to-start → 5 'l1' segments total. No 'cruise'
+        # or 'dock' segments emitted.
+        wps = [_gps(2.0, 0.0), _gps(2.0, 2.0),
+               _gps(0.0, 2.0), _gps(-2.0, 2.0)]
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=(0.30, 0.0),
+            waypoints_lat_lng=wps,
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=2.5,
+            return_to_start=True,
+            start_chassis_xy=(0.0, 0.0),
+            path_tracker_kind='l1',
+        )
+        l1_segs = [s for s in segments if s.kind == 'l1']
+        assert len(l1_segs) == 5
+        assert all(s.kind == 'l1' for s in segments)
+
+    def test_l1_segment_lands_antenna_on_target(self):
+        # Each L1 segment's end_pose is the chassis pose that puts the
+        # antenna on the WP. target_antenna is the WP itself.
+        a_offset = (0.30, 0.0)
+        wps = [_gps(5.0, 0.0), _gps(5.0, 5.0)]
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=a_offset,
+            waypoints_lat_lng=wps,
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=2.5,
+            path_tracker_kind='l1',
+        )
+        for seg in segments:
+            assert seg.kind == 'l1'
+            ant_e, ant_n = _antenna_pos_for(seg.end_pose, a_offset)
+            assert isclose(ant_e, seg.target_antenna[0], abs_tol=1e-6)
+            assert isclose(ant_n, seg.target_antenna[1], abs_tol=1e-6)
+
+    def test_l1_subsequent_segment_starts_at_prev_dock_pose(self):
+        # The 2nd L1 segment's start_pose should equal the 1st L1
+        # segment's end_pose (dock_pose of WP1). This is the
+        # cruise+dock collapse that Stage 3 design specifies.
+        a_offset = (0.30, 0.0)
+        wps = [_gps(2.0, 0.0), _gps(4.0, 2.0)]
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=a_offset,
+            waypoints_lat_lng=wps,
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=2.5,
+            path_tracker_kind='l1',
+        )
+        assert len(segments) == 2
+        s1_end = segments[0].end_pose
+        s2_start = segments[1].start_pose
+        assert isclose(s1_end[0], s2_start[0], abs_tol=1e-9)
+        assert isclose(s1_end[1], s2_start[1], abs_tol=1e-9)
+        assert isclose(s1_end[2], s2_start[2], abs_tol=1e-9)

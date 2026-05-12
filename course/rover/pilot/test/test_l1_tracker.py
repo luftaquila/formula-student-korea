@@ -52,6 +52,8 @@ _PARAMS = {
     'l1_brake_zone_m': 0.20,
     'l1_brake_min_speed_frac': 0.175,
     'l1_min_speed_m_s': 0.07,
+    'l1_sharp_turn_thresh_rad': 0.785,
+    'l1_sharp_turn_l1_min_m': 1.2,
     'cruise_done_tolerance': 0.20,
 }
 
@@ -169,17 +171,22 @@ class TestL1TrackerSteering:
         assert kappa > 0.0
 
     def test_curvature_clamped_to_max(self):
-        # Chassis perpendicular to corridor → η ≈ π/2 → κ
-        # would exceed max_curvature. Clamp must bind.
-        t = L1Tracker(_PARAMS)
+        # Chassis perpendicular to corridor → η ≈ π/2. The sharp-turn
+        # boost activates (e_psi > 45°) and widens the lookahead to
+        # 1.2 m, so κ no longer saturates at max_curvature — but it
+        # remains strongly negative (chassis must turn right to face
+        # the corridor extension). With boost disabled the clamp
+        # would bind; this test pins boosted behaviour.
+        params_no_boost = dict(_PARAMS, l1_sharp_turn_thresh_rad=10.0)
+        t = L1Tracker(params_no_boost)
         seg = _seg('dock', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
                    target=(5.3, 0.0))
         antenna = _antenna_world_from_pose((1.0, 0.0, pi / 2))
         _, kappa, _ = t.step((1.0, 0.0, pi / 2), seg,
                              t_now=100.0,
                              antenna_world=antenna)
-        # Chassis facing +y, lookahead on corridor (+x, ahead) →
-        # need to turn right (negative ψ̇) → κ < 0 at saturation.
+        # With boost disabled, perpendicular geometry saturates κ
+        # at -max_curvature (right turn).
         assert kappa == pytest.approx(-_PARAMS['max_curvature'],
                                       abs=1e-6)
 
@@ -377,6 +384,75 @@ class TestL1TrackerSpeedRegulation:
                          antenna_world=antenna)
         assert v == pytest.approx(_PARAMS['approach_speed'],
                                   abs=1e-6)
+
+    def test_l1_unified_segment_reaches_on_cm_capture(self):
+        # The l1 planner emits a single segment per WP with kind='l1'.
+        # L1Tracker should treat it identically to 'dock' for the
+        # reached gate (antenna within cm_capture of target_antenna).
+        t = L1Tracker(_PARAMS)
+        seg = _seg('l1', (0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+                   target=(1.0, 0.0))
+        antenna = (1.02, 0.0)
+        v, kappa, status = t.step((0.72, 0.0, 0.0), seg,
+                                  t_now=100.0, antenna_world=antenna)
+        assert status == 'reached'
+        assert v == 0.0 and kappa == 0.0
+
+    def test_l1_unified_segment_uses_brake_zone(self):
+        # Unified L1 segments must apply the brake near the target.
+        # Compare two distances: well outside the brake zone (50 cm)
+        # should command full cruise_speed, just inside (5 cm) should
+        # be well below.
+        t = L1Tracker(_PARAMS)
+        seg = _seg('l1', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
+                   target=(5.0, 0.0))
+        antenna_far = _antenna_world_from_pose((4.20, 0.0, 0.0))
+        v_far, _, _ = t.step((4.20, 0.0, 0.0), seg, t_now=0.0,
+                             antenna_world=antenna_far)
+        t.reset()
+        antenna_near = _antenna_world_from_pose((4.65, 0.0, 0.0))
+        v_near, _, _ = t.step((4.65, 0.0, 0.0), seg, t_now=0.0,
+                              antenna_world=antenna_near)
+        # Outside brake zone: full cruise_speed (no regulation).
+        assert v_far == pytest.approx(_PARAMS['cruise_speed'], abs=1e-6)
+        # Inside brake zone: 5 cm from target → ramp = 0.25 →
+        # speed = cruise_speed × 0.25 = 0.25.
+        assert v_near < _PARAMS['cruise_speed'] * 0.5
+        assert v_near >= _PARAMS['l1_min_speed_m_s']
+
+    def test_sharp_turn_boost_widens_arc(self):
+        # Identical geometry with and without boost. Boost should
+        # produce a strictly smaller |κ| (wider arc, no saturation
+        # in the limit).
+        seg = _seg('l1', (0.0, 0.0, -pi / 2), (0.0, -5.0, -pi / 2),
+                   target=(0.0, -5.3))
+        antenna = _antenna_world_from_pose((0.3, -0.2, 0.0))
+        chassis = (0.3, -0.2, 0.0)
+
+        params_no_boost = dict(_PARAMS, l1_sharp_turn_thresh_rad=10.0)
+        t_no = L1Tracker(params_no_boost)
+        _, k_no, _ = t_no.step(chassis, seg, t_now=0.0,
+                               antenna_world=antenna)
+
+        t_boost = L1Tracker(_PARAMS)
+        _, k_boost, _ = t_boost.step(chassis, seg, t_now=0.0,
+                                     antenna_world=antenna)
+
+        # Boost widens lookahead → η drops → |κ| drops.
+        assert abs(k_boost) < abs(k_no)
+
+    def test_sharp_turn_boost_inactive_when_aligned(self):
+        # Chassis aligned with segment direction → no boost; L1
+        # uses its nominal floor.
+        t = L1Tracker(_PARAMS)
+        seg = _seg('l1', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
+                   target=(5.0, 0.0))
+        antenna = _antenna_world_from_pose((1.0, 0.05, 0.0))
+        # Probe L1 by reading the internal state via behaviour:
+        # with tiny e_y and aligned chassis, κ should be tiny.
+        _, kappa, _ = t.step((1.0, 0.05, 0.0), seg, t_now=0.0,
+                             antenna_world=antenna)
+        assert abs(kappa) < 0.3
 
     def test_large_e_y_reduces_speed(self):
         # On a wide cruise leg with big e_y, the e_y_speed_gain

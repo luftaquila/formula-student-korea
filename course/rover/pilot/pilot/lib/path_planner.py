@@ -120,14 +120,32 @@ def plan(current_chassis_pose, antenna_offset,
                                          # dock_psi on replans so the
                                          # corridor heading doesn't pivot
                                          # with every chassis drift.
+         path_tracker_kind='legacy',    # 'legacy' emits cruise+dock pair
+                                         # per WP; 'l1' emits a single
+                                         # unified segment per WP. The
+                                         # latter is the Stage 3-style
+                                         # cleanup that pairs with the
+                                         # L1Tracker controller.
          turning_radius=None,           # accepted for backward compat, unused
          dubins_sample_step=None):      # accepted for backward compat, unused
     """Build the segment list for a mission.
 
-    Each waypoint becomes one cruise segment (from current chassis to dock
-    entry) and one dock segment (from dock entry to chassis-with-antenna-
-    on-target). Reverse and arc primitives are NOT emitted — the cruise
-    tracker handles all geometry by steering toward the goal point.
+    `path_tracker_kind` selects the segment layout:
+
+      * ``'legacy'`` (default) — per WP emit a cruise segment (chassis
+        pose → dock corridor entry) plus a dock segment (entry → dock
+        pose). Two trackers (CruiseTracker + DockTracker) consume the
+        pair; the cruise tracker steers toward the entry and hands off
+        to the dock tracker for cm-precision antenna landing.
+
+      * ``'l1'`` — per WP emit a single unified segment that runs from
+        the chassis's last known pose (chassis-now on the first WP,
+        prev WP's dock_pose on subsequent WPs) straight to the cur WP's
+        dock_pose. L1Tracker handles the whole geometry: lookahead
+        adapts with speed, cm-precision capture fires at antenna
+        within `cm_capture_m`. No cruise/dock split, no handoff
+        transient. Sharp turns between non-collinear WPs are handled
+        by L1Tracker's sharp-turn lookahead boost (path_tracker B).
 
     For the FIRST waypoint in the list, dock_psi is normally derived from
     the bearing chassis → waypoint. On replans mid-mission, that makes
@@ -143,6 +161,16 @@ def plan(current_chassis_pose, antenna_offset,
     nothing.
     """
     del turning_radius, dubins_sample_step  # unused
+
+    if path_tracker_kind == 'l1':
+        return _plan_l1(
+            current_chassis_pose, antenna_offset,
+            waypoints_lat_lng, ref_lat_lon,
+            return_to_start=return_to_start,
+            start_chassis_xy=start_chassis_xy,
+            waypoint_index_offset=waypoint_index_offset,
+            prev_target_xy=prev_target_xy,
+        )
 
     ref_lat, ref_lon = ref_lat_lon
     cur_x, cur_y, cur_psi = current_chassis_pose
@@ -231,5 +259,91 @@ def plan(current_chassis_pose, antenna_offset,
             -1,
             direction=1,
         ))
+
+    return segments
+
+
+def _plan_l1(current_chassis_pose, antenna_offset,
+             waypoints_lat_lng, ref_lat_lon,
+             return_to_start=False, start_chassis_xy=None,
+             waypoint_index_offset=0,
+             prev_target_xy=None):
+    """Unified-segment plan for the L1Tracker controller.
+
+    One PathSegment per waypoint (kind='l1'). start_pose is the chassis's
+    pose at the start of the segment — the live chassis pose for the
+    first WP, the previous WP's dock_pose for subsequent WPs. end_pose
+    is the cur WP's dock_pose (chassis pose that puts the antenna on
+    target). target_antenna is the WP itself.
+
+    No separate cruise/dock split. L1Tracker tracks chassis projection
+    on the start→end line, fires 'reached' at antenna within cm_capture
+    of target_antenna, and uses reverse-recovery for genuine overshoots.
+    Sharp turns between non-collinear WPs (e.g. a 4-corner square
+    mission) are handled by L1Tracker's sharp-turn lookahead boost —
+    the planner does NOT smooth the path at WP-to-WP transitions; the
+    corridor stays a straight line from prev_dock_pose to cur_dock_pose.
+
+    Return-to-start emits an additional segment from the last WP's
+    dock_pose back to the chassis pose recorded at mission start.
+    """
+    ref_lat, ref_lon = ref_lat_lon
+    cur_x, cur_y, cur_psi = current_chassis_pose
+
+    wp_enu = [enu_from_gps(wp['lat'], wp['lng'], ref_lat, ref_lon)
+              for wp in waypoints_lat_lng]
+
+    segments = []
+    prev_target = prev_target_xy
+
+    for idx, (wp_e, wp_n) in enumerate(wp_enu):
+        if prev_target is None:
+            psi_dock = atan2(wp_n - cur_y, wp_e - cur_x)
+        else:
+            prev_e, prev_n = prev_target
+            psi_dock = atan2(wp_n - prev_n, wp_e - prev_e)
+        psi_dock = normalize_angle(psi_dock)
+
+        dock_x, dock_y, _ = _dock_chassis_pose(
+            wp_e, wp_n, psi_dock, antenna_offset)
+
+        # Skip if chassis is essentially on the dock pose already (e.g.
+        # tight replan landing right on top of the next WP). The L1
+        # tracker handles cm-capture immediately on the next tick.
+        if hypot(dock_x - cur_x, dock_y - cur_y) < 1e-3:
+            cur_x, cur_y, cur_psi = dock_x, dock_y, psi_dock
+            prev_target = (wp_e, wp_n)
+            continue
+
+        seg_wp_idx = idx + waypoint_index_offset
+        segments.append(PathSegment(
+            'l1',
+            (cur_x, cur_y, cur_psi),
+            (dock_x, dock_y, psi_dock),
+            (wp_e, wp_n),
+            seg_wp_idx,
+            direction=1,
+        ))
+
+        # Advance the running pose to the WP's dock_pose — the chassis
+        # will (approximately) be there when the next segment begins.
+        cur_x, cur_y, cur_psi = dock_x, dock_y, psi_dock
+        prev_target = (wp_e, wp_n)
+
+    if return_to_start and start_chassis_xy is not None:
+        start_x, start_y = start_chassis_xy
+        psi_dock = atan2(start_y - cur_y, start_x - cur_x)
+        psi_dock = normalize_angle(psi_dock)
+        dock_x, dock_y, _ = _dock_chassis_pose(
+            start_x, start_y, psi_dock, antenna_offset)
+        if hypot(dock_x - cur_x, dock_y - cur_y) >= 1e-3:
+            segments.append(PathSegment(
+                'l1',
+                (cur_x, cur_y, cur_psi),
+                (dock_x, dock_y, psi_dock),
+                (start_x, start_y),
+                -1,
+                direction=1,
+            ))
 
     return segments

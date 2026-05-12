@@ -770,6 +770,24 @@ class L1Tracker:
         # chassis moving under power until cm_capture fires.
         self._min_speed = float(params.get('l1_min_speed_m_s', 0.07))
 
+        # Sharp-turn lookahead boost. On WP-to-WP transitions where the
+        # path direction turns by more than `sharp_turn_thresh_rad`
+        # (default 45°), the L1_min floor (0.6 m) bites with chassis
+        # still wide of the path — the close lookahead pulls η ≈ 30°
+        # and κ saturates, the speed regulator drops v to 0.20 m/s,
+        # and the chassis pivots tightly in place for 4-5 s before
+        # advancing toward the corridor (15:48 mission WP5 trace:
+        # 9.3 s cruise, saturated κ throughout). Boosting L1_min to
+        # ~1.2 m during the sharp-turn window widens the η/κ to a
+        # gentle arc — κ stays well below saturation, the speed
+        # regulator keeps full v_target, and the chassis advances
+        # toward the corridor while it rotates. Auto-disengages once
+        # e_psi falls under the threshold (chassis aligned with path).
+        self._sharp_turn_thresh = float(
+            params.get('l1_sharp_turn_thresh_rad', 0.785))  # 45°
+        self._sharp_turn_l1_min = float(
+            params.get('l1_sharp_turn_l1_min_m', 1.2))
+
         # Reverse latch state. Captured at the moment along_to_target
         # crosses zero (antenna projects past target along corridor);
         # held until termination (sign-flip or adaptive distance).
@@ -887,8 +905,23 @@ class L1Tracker:
         a_along, a_e_y = project_onto_line(ax, ay, sx, sy, psi_path)
         target_dist = hypot(tx - ax, ty - ay)
 
+        # Segment kind semantics:
+        #   'dock' (legacy planner): chassis is on the dock corridor
+        #     between the entry and the dock pose. cm_capture + reverse-
+        #     recovery apply.
+        #   'l1' (l1 planner, Stage 3-style): unified segment from
+        #     chassis-now (or prev dock_pose) to cur WP's dock_pose.
+        #     Same reached/reverse-recovery semantics as 'dock' — the
+        #     antenna landing on the WP is what matters, regardless of
+        #     where the segment started.
+        #   'cruise' (legacy planner): chassis transit to the dock
+        #     corridor entry. Reached on along-projection past entry
+        #     or chassis proximity — antenna is NOT cm-precise here,
+        #     the dock segment handles that.
+        precision_kind = is_dock or segment.kind == 'l1'
+
         # ── Reached gates ────────────────────────────────────────────
-        if is_dock:
+        if precision_kind:
             if target_dist <= self._cm_capture:
                 self._reset_reverse()
                 self._last_v_cmd = self._approach_speed
@@ -913,23 +946,38 @@ class L1Tracker:
                 return 0.0, 0.0, 'reached'
 
         # ── Forward L1 ───────────────────────────────────────────────
+        # 'l1' (unified) and 'cruise' both run at cruise_speed;
+        # 'dock' is the slow corridor leg at approach_speed.
         v_target = self._approach_speed if is_dock else self._cruise_speed
         # L1 distance from current commanded speed, with the segment's
         # target speed as the floor so L1 doesn't collapse to L1_min
         # immediately on segment entry before chassis has accelerated.
         v_for_l1 = max(self._last_v_cmd, v_target)
         l1 = (self._l1_damping / pi) * self._l1_period * v_for_l1
-        if l1 < self._l1_min:
-            l1 = self._l1_min
+
+        # Sharp-turn lookahead boost. When the chassis heading is far
+        # off the segment direction (e.g. fresh L1 segment after a
+        # 90° WP-to-WP turn), the L1_min floor would force a tight
+        # arc with saturated κ and a speed regulator that cuts v to
+        # 0.20. Boosting the floor widens the arc → κ stays below
+        # saturation → speed regulator holds full v_target → chassis
+        # advances toward the corridor while it rotates.
+        e_psi_seg = abs(normalize_angle(psi - psi_path))
+        l1_min_eff = self._l1_min
+        if e_psi_seg > self._sharp_turn_thresh:
+            l1_min_eff = self._sharp_turn_l1_min
+
+        if l1 < l1_min_eff:
+            l1 = l1_min_eff
         elif l1 > self._l1_max:
             l1 = self._l1_max
 
         # Lookahead point: advance chassis projection by L1 along path.
-        # For dock, cap at target_along so we don't carrot PAST the
-        # target (which would command continued forward motion after
-        # the antenna is at the dock pose).
+        # For precision segments (dock + l1), cap at target_along so we
+        # don't carrot PAST the target (which would command continued
+        # forward motion after the antenna is at the dock pose).
         look_along = c_along + l1
-        if is_dock:
+        if precision_kind:
             t_along, _ = project_onto_line(tx, ty, sx, sy, psi_path)
             if look_along > t_along:
                 look_along = t_along
@@ -951,20 +999,22 @@ class L1Tracker:
         kappa_scale = 1.0
         if abs(kappa) > self._kappa_lim:
             kappa_scale = self._kappa_lim / abs(kappa)
-        # Slow on large cross-track residual. Use antenna e_y on dock
-        # (cm precision target), chassis e_y on cruise (path-follow).
-        e_y_for_reg = a_e_y if is_dock else c_e_y
+        # Slow on large cross-track residual. Use antenna e_y on
+        # precision segments (cm precision target), chassis e_y on
+        # cruise (path-follow without cm requirement at end).
+        e_y_for_reg = a_e_y if precision_kind else c_e_y
         e_y_scale = 1.0 - self._e_y_gain * abs(e_y_for_reg)
         if e_y_scale < self._e_y_speed_floor:
             e_y_scale = self._e_y_speed_floor
 
         speed = v_target * kappa_scale * e_y_scale
-        # Dock-only target-distance brake. Without this, dist 15 cm
-        # at v=0.40 → 50 ms tick travels 2 cm → cm_capture (3 cm)
-        # blown past on every approach → reverse-recovery → wari-gari.
-        # Linear ramp scales speed down to brake_min_frac at the
-        # target, so the chassis crosses cm_capture at ~creep_speed.
-        if is_dock and target_dist < self._brake_zone_m:
+        # Target-distance brake on precision segments (dock + l1).
+        # Without this, dist 15 cm at v=0.40 → 50 ms tick travels 2 cm
+        # → cm_capture (3 cm) blown past on every approach → reverse-
+        # recovery cycles. Linear ramp scales speed down to
+        # brake_min_frac at the target, so the chassis crosses
+        # cm_capture at ~creep_speed.
+        if precision_kind and target_dist < self._brake_zone_m:
             brake_ramp = target_dist / self._brake_zone_m
             if brake_ramp < self._brake_min_speed_frac:
                 brake_ramp = self._brake_min_speed_frac
