@@ -134,7 +134,7 @@ navigator_node:
 
     # ── State estimator ─────────────────────────────────────────────────
     estimator_pos_gain: 0.30           # blend factor for GPS antenna position correction
-    estimator_psi_gain: 0.15           # blend factor for GPS heading-of-motion correction (τ ≈ 0.67 s @ 10 Hz heading updates)
+    estimator_psi_gain: 0.30           # blend factor for GPS heading-of-motion correction. Doubled 0.15→0.30: at 10 Hz heading updates the previous gain gave τ ≈ 0.67 s of lag in chassis_psi, which combined with cruise Stanley's k_heading=3 (loop gain v·k_heading = 1.5 rad/s) sat exactly at the phase margin where the 17:18 trace showed kappa winding up against a slow-to-update heading reading. Raising to 0.30 halves τ to ~0.33 s — phase margin jumps ~30°, oscillation in the loop dies. Tradeoff: heading correction is twice as sensitive to GPS heading-of-motion noise (RTK 1σ ≈ 1°), so the chassis_psi reading carries ~±1.4° noise band instead of ±1°. Stanley k_heading=3 turns that into ±0.07 rad/m kappa noise — negligible compared to the loop-instability artefacts it cures.
     estimator_psi_min_speed: 0.4       # m/s below which heading-of-motion is too noisy to trust
 
     # ── Safety ──────────────────────────────────────────────────────────

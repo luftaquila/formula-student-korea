@@ -96,9 +96,11 @@ class CruiseTracker:
             params.get('cruise_zero_cross_speed_threshold', 0.10))
         # Persistent last-executed direction across step() calls. None
         # means "no prior cruise sub-seg executed yet"; +1/-1 once the
-        # tracker has commanded motion in that direction. reset()
-        # clears this so the navigator can flush state at cruise→dock
-        # boundaries.
+        # tracker has commanded motion in that direction. NOT cleared
+        # by reset() — the navigator calls reset() between every Reed-
+        # Shepp sub-seg and direction switches happen at exactly those
+        # boundaries, so wiping the history would defeat the gate. Only
+        # __init__ initialises this. See reset()'s docstring.
         self._last_direction = None
         # Done condition heading tolerance — chassis must have its ψ
         # within this of psi_path before declaring done, so the dock
