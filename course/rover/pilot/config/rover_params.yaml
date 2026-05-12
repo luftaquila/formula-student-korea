@@ -12,7 +12,7 @@ gps_node:
     serial_port: "/dev/ttyGPS"         # udev symlink (see host/files/usr/lib/udev/rules.d/99-fsk-rover.rules)
     baud_rate: 115200
     publish_rate: 10.0                 # Hz
-    heading_speed_threshold: 0.4       # m/s minimum to publish heading. Aligned with estimator_psi_min_speed so we don't publish headings the estimator immediately discards.
+    heading_speed_threshold: 0.8       # m/s minimum to publish heading-of-motion. At v=0.4 m/s with 1 cm RTK position noise, atan2 over a 4 cm displacement gives ±19° heading noise; that feeds estimator_psi_gain=0.30 and creates ±8° steady-state ψ noise visible at the dock as kappa-saturated wari-gari (14:03 mission: chassis_psi swinging ±20-30° per second on every dock approach). Raising to 0.8 m/s means heading is only published when noise is ≤±8° (atan2(1.4,8)). Aligned with estimator_psi_min_speed so we don't publish headings the estimator immediately discards. Calibration uses fit_chord_heading from positions, not heading-of-motion — unaffected by this threshold.
     # NOTE: the NTRIP username MUST be injected via the NTRIP_USERNAME env
     # var (sourced from a podman secret in the rover image), never committed
     # to this file. Leave blank here so the repo stays safe to publish.
@@ -55,7 +55,7 @@ navigator_node:
     cruise_speed: 1.0                  # m/s during cruise segments
     approach_speed: 0.4                # m/s on the dock corridor (precision)
     creep_speed: 0.10                  # m/s for fine corrections / overshoot reverse. Halved from 0.18 so the chassis can stop within approach_tolerance instead of rolling several cm past on inertia + PID lag at the dock 'reached' threshold.
-    calibration_speed: 0.5             # m/s during cold-start heading discovery (must exceed gps_node.heading_speed_threshold by margin)
+    calibration_speed: 0.5             # m/s during cold-start heading discovery. Independent of heading_speed_threshold — calibration uses fit_chord_heading on GPS antenna ENU positions, not GPS heading-of-motion.
     # Antenna offset auto-calibration STRAIGHT phase chord length. Drives
     # κ=0 for this distance, fits ψ_init from antenna ENU. 2 m gives a
     # chord well above the 1.5 m calibration_chord_min_m gate even when
@@ -137,7 +137,7 @@ navigator_node:
     # ── State estimator ─────────────────────────────────────────────────
     estimator_pos_gain: 0.30           # blend factor for GPS antenna position correction
     estimator_psi_gain: 0.30           # blend factor for GPS heading-of-motion correction. Doubled 0.15→0.30: at 10 Hz heading updates the previous gain gave τ ≈ 0.67 s of lag in chassis_psi, which combined with cruise Stanley's k_heading=3 (loop gain v·k_heading = 1.5 rad/s) sat exactly at the phase margin where the 17:18 trace showed kappa winding up against a slow-to-update heading reading. Raising to 0.30 halves τ to ~0.33 s — phase margin jumps ~30°, oscillation in the loop dies. Tradeoff: heading correction is twice as sensitive to GPS heading-of-motion noise (RTK 1σ ≈ 1°), so the chassis_psi reading carries ~±1.4° noise band instead of ±1°. Stanley k_heading=3 turns that into ±0.07 rad/m kappa noise — negligible compared to the loop-instability artefacts it cures.
-    estimator_psi_min_speed: 0.4       # m/s below which heading-of-motion is too noisy to trust
+    estimator_psi_min_speed: 0.8       # m/s below which heading-of-motion is too noisy to trust. Matched to gps_node.heading_speed_threshold. Below this, the estimator's ψ is maintained purely by encoder yaw-rate integration from predict() — drift over a short dock approach (3-5 s) is bounded to a few degrees and far less harmful than the ±20° tick-to-tick swings the GPS heading-of-motion injects at 0.4 m/s.
 
     # ── Safety ──────────────────────────────────────────────────────────
     gps_timeout: 3.0                   # seconds without GPS before ERROR

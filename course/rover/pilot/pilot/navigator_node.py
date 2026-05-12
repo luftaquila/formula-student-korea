@@ -206,7 +206,7 @@ class NavigatorNode(Node):
         # Estimator gains.
         self.declare_parameter('estimator_pos_gain', 0.30)
         self.declare_parameter('estimator_psi_gain', 0.30)
-        self.declare_parameter('estimator_psi_min_speed', 0.4)
+        self.declare_parameter('estimator_psi_min_speed', 0.8)
 
         # Safety.
         self.declare_parameter('gps_timeout', 3.0)
