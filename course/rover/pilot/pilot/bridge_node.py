@@ -37,6 +37,9 @@ except ImportError:
     HAS_ROSOUT = False
 
 from pilot.lib.protocol_utils import assemble_sse_data
+from pilot.lib.antenna_calibration import load_antenna_offset
+from pilot.lib.wheel_calibration import load_wheel_cal
+from pilot.lib.steering_calibration import load_steering_trim
 
 LOG_BUFFER_MAXLEN = 500
 LOG_LEVEL_LABEL = {10: "DEBUG", 20: "INFO", 30: "WARN", 40: "ERROR", 50: "FATAL"}
@@ -78,6 +81,7 @@ class BridgeNode(Node):
         self._pub_calibrate_antenna = self.create_publisher(Empty, '/rover/cmd/calibrate_antenna', reliable_qos)
         self._pub_set_antenna_offset = self.create_publisher(String, '/rover/cmd/set_antenna_offset', reliable_qos)
         self._pub_calibrate_wheels = self.create_publisher(Empty, '/rover/cmd/calibrate_wheels', reliable_qos)
+        self._pub_reset_wheel_cal = self.create_publisher(Empty, '/rover/cmd/reset_wheel_cal', reliable_qos)
 
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps_position, 10)
@@ -85,6 +89,7 @@ class BridgeNode(Node):
         self.create_subscription(String, '/rover/gps/fix_status', self._on_fix_status, 10)
         self.create_subscription(String, '/rover/ntrip/status', self._on_ntrip_status, 10)
         self.create_subscription(Int32, '/rover/nav/waypoint_reached', self._on_waypoint_reached, reliable_qos)
+        self.create_subscription(Int32, '/rover/nav/skipped', self._on_waypoint_skipped, reliable_qos)
         self.create_subscription(String, '/rover/spray/result', self._on_spray_result, reliable_qos)
         self.create_subscription(String, '/rover/battery', self._on_battery, 10)
         self.create_subscription(String, '/rover/gps/metrics', self._on_gps_metrics, 10)
@@ -253,6 +258,16 @@ class BridgeNode(Node):
             'waypoint_reached',
         )
 
+    def _on_waypoint_skipped(self, msg):
+        """Forward stuck-skip waypoint index to the course server so the
+        UI's executedIndex advances past the skipped cone instead of
+        jumping by 2 when the next waypoint reports reached."""
+        self._post_async(
+            '/api/rover/waypoint_skipped',
+            {'index': int(msg.data)},
+            'waypoint_skipped',
+        )
+
     def _on_battery(self, msg):
         """Cache battery status for the periodic telemetry POST."""
         try:
@@ -350,6 +365,58 @@ class BridgeNode(Node):
             except requests.RequestException as e:
                 self.get_logger().warn(f'Telemetry POST error: {e}')
 
+    def _report_persisted_cal_state(self):
+        """Push the rover's persisted calibration to the server on connect.
+
+        roverState.{antenna_calibration,wheel_calibration} on the server only
+        gets populated when the navigator finishes a cal run and posts the
+        result. After a rover reboot the values are still loaded into the
+        navigator/mcu_bridge from JSON, but the server (and therefore the
+        GUI) has no knowledge of them — the cal modal shows '—' even
+        though the rover is calibrated. Re-emitting the persisted payload
+        on every SSE connect fixes that without changing the result
+        endpoints' shape.
+        """
+        _, antenna_payload = load_antenna_offset()
+        if isinstance(antenna_payload, dict):
+            self._post_async(
+                '/api/rover/antenna_calibration_result',
+                {
+                    'ok': True,
+                    'a_x': antenna_payload.get('a_x'),
+                    'a_y': antenna_payload.get('a_y'),
+                    'rms_residual_m': antenna_payload.get('rms_residual_m'),
+                    'samples': antenna_payload.get('samples'),
+                    'drive_distance_m': antenna_payload.get('drive_distance_m'),
+                    'calibrated_at': antenna_payload.get('calibrated_at'),
+                    'source': antenna_payload.get('source'),
+                },
+                'antenna_calibration_result(boot)',
+            )
+
+        _, wheel_payload = load_wheel_cal()
+        _, trim_payload = load_steering_trim()
+        if isinstance(wheel_payload, dict) or isinstance(trim_payload, dict):
+            wheel_payload = wheel_payload if isinstance(wheel_payload, dict) else {}
+            trim_payload = trim_payload if isinstance(trim_payload, dict) else {}
+            self._post_async(
+                '/api/rover/wheel_calibration_result',
+                {
+                    'ok': True,
+                    'scale_l': wheel_payload.get('scale_l'),
+                    'scale_r': wheel_payload.get('scale_r'),
+                    'gps_distance_m': wheel_payload.get('gps_distance_m'),
+                    'encoder_left_m': wheel_payload.get('encoder_left_m'),
+                    'encoder_right_m': wheel_payload.get('encoder_right_m'),
+                    'samples': wheel_payload.get('samples'),
+                    'trim_us': trim_payload.get('trim_us'),
+                    'radius_m': trim_payload.get('radius_m'),
+                    'steering_rms_m': trim_payload.get('rms_residual_m'),
+                    'steering_reason': None,
+                },
+                'wheel_calibration_result(boot)',
+            )
+
     def _report_position(self):
         """POST current position to the course server."""
         if not self._last_position:
@@ -427,6 +494,10 @@ class BridgeNode(Node):
 
         self._sse_connected = True
         self.get_logger().info('SSE connected to server')
+        # Re-emit persisted cal state so the GUI doesn't show '—' after a
+        # rover reboot (or after the server side was restarted and cleared
+        # roverState in memory).
+        self._report_persisted_cal_state()
 
         event_name = None
         event_data_lines = []
@@ -538,6 +609,10 @@ class BridgeNode(Node):
         elif event == 'calibrate-wheels':
             self.get_logger().info('Wheel scale calibration requested by server')
             self._pub_calibrate_wheels.publish(Empty())
+
+        elif event == 'reset-wheel-cal':
+            self.get_logger().warn('Wheel/steering calibration reset requested by server')
+            self._pub_reset_wheel_cal.publish(Empty())
 
     def destroy_node(self):
         self._running = False

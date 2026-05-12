@@ -1054,12 +1054,22 @@ watch(selectedConeId, (id) => {
   }
 });
 
-watch(activeCourseId, () => {
+watch(activeCourseId, (v) => {
   selectedConeId.value = null;
   multiSelectedIds.value = new Set();
   coneFilter.value = "all";
   clearPath();
   if (map) rebuildAllMarkers();
+  if (v != null) {
+    savePref("activeCourseId", v);
+    // Pan to the first cone of the newly selected course so the operator
+    // doesn't have to hand-pan after switching courses (and after a page
+    // refresh the restored course pulls the map with it).
+    const cones = conesMap.value[v] || [];
+    if (cones.length > 0 && map) {
+      panToVisibleCenter(cones[0].lat, cones[0].lng);
+    }
+  }
 });
 
 /* ── Data fetch ───────────────────────────────────── */
@@ -1075,7 +1085,12 @@ async function fetchAll() {
       } catch { conesMap.value[c.id] = []; }
     }
     if (!activeCourseId.value && courses.value.length) {
-      activeCourseId.value = courses.value[0].id;
+      // Restore the last-used course so a refresh doesn't silently drop
+      // the operator back to courses[0] (which then requires re-clicking
+      // the actually-wanted course every time the page reloads).
+      const saved = Number(loadPref("activeCourseId", null));
+      const match = Number.isInteger(saved) && courses.value.find((c) => c.id === saved);
+      activeCourseId.value = match ? saved : courses.value[0].id;
     }
   } catch {} finally { loading.value = false; }
 }
@@ -1291,6 +1306,7 @@ async function deleteCourse(id) {
 const showCalibration = ref(false);
 const antennaCalSubmitting = ref(false);
 const wheelCalSubmitting = ref(false);
+const wheelCalResetSubmitting = ref(false);
 
 const antennaCalRunning = computed(() => roverStatus.value.nav_state === "CAL_ANTENNA");
 const wheelCalRunning = computed(() => roverStatus.value.nav_state === "CAL_WHEELS");
@@ -1476,6 +1492,21 @@ async function submitWheelCal() {
   }
 }
 
+async function submitWheelCalReset() {
+  if (!roverStatus.value.connected || wheelCalResetSubmitting.value) return;
+  if (!window.confirm("휠 캘리브레이션을 초기화합니다 (scale_l/r=1.0, trim=0 µs). 계속하시겠습니까?")) {
+    return;
+  }
+  wheelCalResetSubmitting.value = true;
+  try {
+    await request("/api/rover/reset-wheel-cal", { method: "POST" });
+  } catch (err) {
+    notifyError(err.message);
+  } finally {
+    wheelCalResetSubmitting.value = false;
+  }
+}
+
 /* ── Battery calibration ──────────────────────────── */
 const showBatteryCal = ref(false);
 const batteryCalInput = ref("");
@@ -1651,6 +1682,25 @@ function panToCone(cone) {
   map.setView([cone.lat, cone.lng], Math.max(map.getZoom(), 17));
 }
 
+// Pan so the given latLng lands at the visible-area center, not the
+// raw container center. On mobile the inspector overlays the bottom
+// half of the map — panTo([lat,lng]) puts the target behind the
+// inspector. Computing the offset from container center to visible
+// center and panBy that delta keeps the target visually centered.
+function panToVisibleCenter(lat, lng, opts = {}) {
+  if (!map) return;
+  const visible = getVisibleMapCenter();
+  if (!visible) {
+    map.panTo([lat, lng], { animate: opts.animate ?? true });
+    return;
+  }
+  const targetPx = map.latLngToContainerPoint([lat, lng]);
+  const dx = targetPx.x - visible.x;
+  const dy = targetPx.y - visible.y;
+  if (dx === 0 && dy === 0) return;
+  map.panBy([dx, dy], { animate: opts.animate ?? true });
+}
+
 /* ── Rover position ───────────────────────────────── */
 const followRover = ref(loadPref("followRover", false, (v) => v === "true"));
 watch(followRover, (v) => savePref("followRover", v));
@@ -1658,7 +1708,7 @@ watch(followRover, (v) => savePref("followRover", v));
 function centerOnRover() {
   const lp = roverStatus.value.last_position;
   if (!lp || !map) return;
-  map.panTo([lp.lat, lp.lng], { animate: true });
+  panToVisibleCenter(lp.lat, lp.lng);
 }
 
 function toggleFollowRover() {
@@ -2111,7 +2161,7 @@ function connectSSE() {
   eventSource.addEventListener("rover", (e) => {
     const data = JSON.parse(e.data);
     updateRoverMarker(data.lat, data.lng);
-    if (followRover.value && map) map.panTo([data.lat, data.lng], { animate: true });
+    if (followRover.value) panToVisibleCenter(data.lat, data.lng);
     if (roverMode.value === "executing") updatePathProgress(data.lat, data.lng);
   });
 
@@ -2123,7 +2173,7 @@ function connectSSE() {
     const lp = data.last_position;
     if (lp && typeof lp.lat === "number" && typeof lp.lng === "number") {
       updateRoverMarker(lp.lat, lp.lng);
-      if (followRover.value && map) map.panTo([lp.lat, lp.lng], { animate: true });
+      if (followRover.value) panToVisibleCenter(lp.lat, lp.lng);
     }
     // If the rover disconnected mid-manual-control, release immediately.
     if (!data.connected && roverMode.value === "manual") {
@@ -2136,6 +2186,19 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     if (roverMode.value === "executing" && Number.isInteger(data?.index)) {
       onWaypointReached(data.index);
+    }
+  });
+
+  eventSource.addEventListener("rover:skipped", (e) => {
+    const data = JSON.parse(e.data);
+    if (roverMode.value === "executing" && Number.isInteger(data?.index)) {
+      // Stuck-skip: navigator advanced _cur_seg_idx past this waypoint
+      // without firing waypoint_reached. Advance executedIndex the same
+      // way the reached event would, otherwise the counter sits on the
+      // skipped index until the *next* waypoint reports reached — at
+      // which point it jumps by 2 and the skip becomes invisible.
+      onWaypointReached(data.index);
+      notifyWarn(`웨이포인트 #${data.index + 1} 건너뜀 (stuck)`);
     }
   });
 
@@ -2316,6 +2379,13 @@ onMounted(async () => {
   await fetchAll();
   await nextTick();
   initMap();
+  // fetchAll restores activeCourseId before initMap exists, so the
+  // course watcher's pan was a no-op. Re-apply once the map is ready
+  // so a refresh lands centered on the restored course's first cone.
+  if (activeCourseId.value != null) {
+    const cones = conesMap.value[activeCourseId.value] || [];
+    if (cones.length > 0) panToVisibleCenter(cones[0].lat, cones[0].lng, { animate: false });
+  }
   connectSSE();
   fetchRoverStatus();
 });
@@ -2408,10 +2478,6 @@ onUnmounted(() => {
 
             <div class="cal-subsection">
               <div class="cal-subsection-title">수동 입력 (권장)</div>
-              <p class="cal-help">
-                후륜축 중점 → GPS 안테나 위상 중심 거리를 줄자로 측정하여 mm 단위로 입력하세요.
-                전방 +x, 좌측 +y. 한 번 입력하면 안테나가 옮겨지기 전까지 영구 적용됩니다.
-              </p>
               <div class="cal-manual-row">
                 <label class="cal-manual-field">
                   <span>a_x (mm)</span>
@@ -2436,30 +2502,22 @@ onUnmounted(() => {
             </div>
 
             <div class="cal-subsection">
-              <div class="cal-subsection-title">자동 보정 (실험적)</div>
-              <p class="modal-warning">
-                로버가 직진 약 2 m 이후 S자 패턴(8 s)을 자동 주행합니다. 전후좌우 5 m 이상의 평탄하고 빈 공간이 필요합니다.
-                PID 튜닝 전에는 정확도가 떨어질 수 있으니 수동 입력을 우선 사용하세요.
-              </p>
-              <div v-if="antennaCalRunning" class="modal-status">
-                진행 중... 로버 상태가 IDLE로 돌아오면 결과가 표시됩니다.
-              </div>
+              <div class="cal-subsection-title">자동 보정</div>
+              <div class="cal-space-req">필요 공간: 전후좌우 5 m</div>
+              <div v-if="antennaCalRunning" class="modal-status">진행 중...</div>
               <div class="cal-section-actions">
                 <button
                   class="btn btn-ghost btn-sm"
                   :disabled="antennaCalSubmitting || antennaCalRunning || !antennaCalCanStart"
                   @click="submitAntennaCal"
-                >{{ antennaCalSubmitting ? '전송 중...' : (antennaCalRunning ? '진행 중' : (antennaCalCanStart ? '자동 보정 실행' : antennaCalBtnLabel)) }}</button>
+                >{{ antennaCalSubmitting ? '전송 중...' : (antennaCalRunning ? '진행 중' : antennaCalBtnLabel) }}</button>
               </div>
             </div>
           </section>
 
           <section class="cal-section">
             <div class="cal-section-title">휠 인코더 스케일</div>
-            <p class="modal-warning">
-              로버가 직진 약 10 m를 자동 주행하면서 GPS chord 거리와 좌·우 인코더 적분 거리의
-              비율로 휠 스케일을 추정합니다. 전방 12 m 이상 평탄하고 빈 공간이 필요합니다.
-            </p>
+            <div class="cal-space-req">필요 공간: 전방 12 m</div>
             <div class="cal-current">
               <span class="cal-key">scale_l</span>
               <span class="cal-val">{{ wheelCalDisplay.scale_l }}</span>
@@ -2480,10 +2538,13 @@ onUnmounted(() => {
             <div v-if="wheelCalDisplay.steeringWarning" class="cal-error cal-warn">
               조향 트림 미적용: {{ wheelCalDisplay.steeringWarning }} (휠 스케일은 적용됨)
             </div>
-            <div v-if="wheelCalRunning" class="modal-status">
-              진행 중... 로버 상태가 IDLE로 돌아오면 결과가 표시됩니다.
-            </div>
+            <div v-if="wheelCalRunning" class="modal-status">진행 중...</div>
             <div class="cal-section-actions">
+              <button
+                class="btn btn-ghost btn-sm"
+                :disabled="wheelCalResetSubmitting || wheelCalRunning || !roverStatus.connected"
+                @click="submitWheelCalReset"
+              >{{ wheelCalResetSubmitting ? '초기화 중...' : '초기화' }}</button>
               <button
                 class="btn btn-primary btn-sm"
                 :disabled="wheelCalSubmitting || wheelCalRunning || !wheelCalCanStart"
@@ -2757,6 +2818,7 @@ onUnmounted(() => {
                   <div
                     v-for="c in courses" :key="c.id"
                     :class="['course-item', { active: c.id === activeCourseId, editing: editingCourseId === c.id }]"
+                    @click="selectCourse(c.id)"
                   >
                     <button class="vis-btn" @click.stop="toggleVisibility(c.id)" :title="visibility[c.id] ? '숨기기' : '표시'">
                       <svg v-if="visibility[c.id]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -2767,7 +2829,7 @@ onUnmounted(() => {
                       <button class="btn btn-primary btn-sm" @click.stop="saveCourseName(c.id)">저장</button>
                     </template>
                     <template v-else>
-                      <span class="course-name" @click="selectCourse(c.id)" @dblclick.stop="startEditCourse(c)">
+                      <span class="course-name" @dblclick.stop="startEditCourse(c)">
                         {{ c.name }} <span class="cone-count">({{ c.cone_count }})</span>
                       </span>
                     </template>
@@ -3360,6 +3422,12 @@ onUnmounted(() => {
 .cal-section-actions {
   margin-top: 0.5rem;
   display: flex; justify-content: flex-end;
+  gap: 0.5rem;
+}
+.cal-space-req {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.4rem;
 }
 .cal-input-row input {
   padding: 0.5rem 0.6rem;

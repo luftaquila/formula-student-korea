@@ -35,11 +35,11 @@ from std_msgs.msg import Empty, Float32, String
 from pilot.lib.ackermann import ackermann_convert, manual_to_ackermann
 from pilot.lib.wheel_calibration import (
     SCALE_BOUND_HI, SCALE_BOUND_LO,
-    load_wheel_cal, save_wheel_cal,
+    load_wheel_cal, save_wheel_cal, wheel_cal_path,
 )
 from pilot.lib.steering_calibration import (
     TRIM_BOUND_US,
-    load_steering_trim, save_steering_trim,
+    load_steering_trim, save_steering_trim, steering_trim_path,
 )
 
 
@@ -229,6 +229,7 @@ class McuBridgeNode(Node):
         self.create_subscription(Float32, '/rover/cmd/calibrate_battery', self._on_calibrate_battery, reliable)
         self.create_subscription(String, '/rover/cmd/apply_wheel_scales', self._on_apply_wheel_scales, reliable)
         self.create_subscription(String, '/rover/cmd/apply_steering_trim', self._on_apply_steering_trim, reliable)
+        self.create_subscription(Empty, '/rover/cmd/reset_wheel_cal', self._on_reset_wheel_cal, reliable)
 
         self._pub_status = self.create_publisher(String, '/rover/motor/status', 10)
         self._pub_battery = self.create_publisher(String, '/rover/battery', 10)
@@ -881,6 +882,30 @@ class McuBridgeNode(Node):
         with self._steering_trim_lock:
             self._steering_trim_us = trim
         self.get_logger().info(f'steering trim applied: {trim:+.1f} µs')
+
+    def _on_reset_wheel_cal(self, _msg):
+        """Operator-triggered factory reset for wheel scales + steering trim.
+
+        Wheel scales overwrite each cal run, but steering trim accumulates
+        delta_us each time — a few cals on a noisy chord can drift the
+        persisted trim into the ±50 µs bound. This handler lets the
+        operator wipe both back to (1.0, 1.0, 0.0) without SSHing in to
+        delete the JSON files."""
+        with self._wheel_cal_lock:
+            self._wheel_scale_l = 1.0
+            self._wheel_scale_r = 1.0
+        with self._steering_trim_lock:
+            self._steering_trim_us = 0.0
+        for path in (wheel_cal_path(), steering_trim_path()):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                self.get_logger().warn(f'reset_wheel_cal: unlink {path} failed: {exc}')
+        self.get_logger().warn(
+            'wheel/steering calibration reset: scales=(1.0, 1.0), trim=0.0 µs'
+        )
 
     # ------------------------- shutdown
 

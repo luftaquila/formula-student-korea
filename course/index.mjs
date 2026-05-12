@@ -130,6 +130,7 @@ const app = createApp({ express }, (req) => {
     req.path === "/api/rover/position" ||
     req.path === "/api/rover/telemetry" ||
     req.path === "/api/rover/waypoint_reached" ||
+    req.path === "/api/rover/waypoint_skipped" ||
     req.path === "/api/rover/spray_result" ||
     req.path === "/api/rover/antenna_calibration_result" ||
     req.path === "/api/rover/wheel_calibration_result" ||
@@ -1276,6 +1277,42 @@ app.post("/api/rover/wheel_calibration_result", (req, res) => {
   } else {
     logger.warn(req, "rover.wheel_calibration", stored, "rover");
   }
+  res.json({ ok: true });
+});
+
+// POST /api/rover/reset-wheel-cal - 휠 스케일/조향 트림을 공장 기본값으로 되돌림 (admin)
+// 휠 cal은 매 실행에서 scale_l/r을 새로 덮어쓰지만 조향 트림은 누적되므로,
+// 비정상 누적값이 적용된 상태를 한 번에 해소하는 escape hatch.
+app.post("/api/rover/reset-wheel-cal", (req, res) => {
+  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (roverState.nav_state && roverState.nav_state !== "IDLE") {
+    return res.status(409).send(
+      `로버가 IDLE이 아닙니다 (현재: ${roverState.nav_state}). 먼저 미션을 종료하세요.`
+    );
+  }
+  if (!sendRoverEvent("reset-wheel-cal", {})) {
+    logger.warn(req, "rover.reset_wheel_cal", { error: "write_failed" }, "rover");
+    return res.status(503).send("로버 연결이 끊어졌습니다.");
+  }
+  roverState.wheel_calibration = null;
+  broadcastRoverStatus();
+  logger.log(req, "rover.reset_wheel_cal", null, "rover");
+  res.json({ ok: true });
+});
+
+// POST /api/rover/waypoint_skipped - 로버가 stuck-skip으로 웨이포인트 건너뜀 (internal)
+// waypoint_reached와 동일하게 current_waypoint_idx를 monotonically 전진시켜
+// 새로고침 후에도 스킵된 콘이 다음 목표로 다시 잡히지 않도록 한다.
+app.post("/api/rover/waypoint_skipped", (req, res) => {
+  const index = Number(req.body?.index);
+  if (!Number.isInteger(index) || index < 0) {
+    return res.status(400).send("올바르지 않은 waypoint index입니다.");
+  }
+  if (index + 1 > roverState.mission_progress.current_waypoint_idx) {
+    roverState.mission_progress.current_waypoint_idx = index + 1;
+  }
+  broadcastEvent("rover:skipped", { index });
+  logger.warn(req, "rover.waypoint_skipped", { index }, "rover");
   res.json({ ok: true });
 });
 
