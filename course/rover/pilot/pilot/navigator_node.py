@@ -38,7 +38,6 @@ Published:
     /rover/nav/state            (std_msgs/String)
     /rover/nav/waypoint_reached (std_msgs/Int32)
     /rover/nav/error_reason     (std_msgs/String)      — populated on every ERROR entry
-    /rover/nav/skipped          (std_msgs/Int32)       — published on stuck-skip
     /rover/spray/result         (std_msgs/String JSON)
     /rover/spray/cancel         (std_msgs/Int32)
 """
@@ -59,7 +58,7 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Float64, String, Int32, Empty
 
 from pilot.lib.geo_utils import (
-    enu_from_gps, fit_chord_heading, normalize_angle,
+    enu_from_gps, fit_chord_heading, haversine, normalize_angle,
     project_onto_line as _project_onto_line,
 )
 from pilot.lib.protocol_utils import has_required_fix_status
@@ -75,7 +74,6 @@ from pilot.lib.wheel_calibration import solve_wheel_scales
 from pilot.lib.steering_calibration import (
     TRIM_BOUND_US, load_steering_trim, solve_steering_trim,
 )
-from pilot.lib.geo_utils import haversine
 
 
 class State(Enum):
@@ -113,10 +111,14 @@ class NavigatorNode(Node):
         # navigator's kinematic model doesn't silently fall out of sync if
         # mcu_bridge is restarted with stale params; bridge owns the
         # authoritative copy for steering-angle conversion).
-        self.declare_parameter('wheelbase', 0.38)
-        self.declare_parameter('track_width', 0.30)
-        self.declare_parameter('max_steering_angle_deg', 25.0)
-        self.declare_parameter('max_curvature', 1.2)
+        # Defaults mirror config/rover_params.yaml — that file is the
+        # authoritative tuned value and is always passed via the launch
+        # file. These defaults only apply if the yaml fails to load (test
+        # harness, direct `ros2 run`).
+        self.declare_parameter('wheelbase', 0.33)
+        self.declare_parameter('track_width', 0.33)
+        self.declare_parameter('max_steering_angle_deg', 30.5)
+        self.declare_parameter('max_curvature', 1.7)
         # Mirrors mcu_bridge_node.servo_range_us; the steering auto-trim
         # solve at the end of CAL_WHEELS converts κ_bias to a servo µs
         # offset which the bridge then persists. Declared here so the
@@ -127,16 +129,13 @@ class NavigatorNode(Node):
         # Speeds.
         self.declare_parameter('cruise_speed', 1.0)
         self.declare_parameter('approach_speed', 0.4)
-        self.declare_parameter('creep_speed', 0.18)
+        self.declare_parameter('creep_speed', 0.10)
         self.declare_parameter('calibration_speed', 0.5)
 
         # Path planner.
-        self.declare_parameter('dock_approach_distance', 1.5)
+        self.declare_parameter('dock_approach_distance', 2.5)
 
-        # Cruise tracker (Pure Pursuit).
-        self.declare_parameter('pp_lookahead_min', 0.6)
-        self.declare_parameter('pp_lookahead_gain', 0.6)
-        self.declare_parameter('pp_damping', 0.18)
+        # Cruise tracker (Stanley).
         self.declare_parameter('cruise_done_tolerance', 0.20)
         # Maximum lateral error (|e_y| vs dock corridor) tolerated at
         # the cruise→dock handoff. Above this, navigator re-plans from
@@ -154,25 +153,24 @@ class NavigatorNode(Node):
         self.declare_parameter('cruise_zero_cross_speed_threshold', 0.10)
 
         # Dock tracker (state feedback).
-        self.declare_parameter('dock_k_y', 1.4)
-        self.declare_parameter('dock_k_psi', 2.4)
+        self.declare_parameter('dock_k_y', 6.0)
+        self.declare_parameter('dock_k_psi', 5.0)
         self.declare_parameter('dock_k_i', 0.4)
         self.declare_parameter('dock_integral_limit', 0.5)
-        self.declare_parameter('approach_tolerance', 0.10)
+        self.declare_parameter('approach_tolerance', 0.03)
         self.declare_parameter('creep_zone', 0.40)
-        # Pure Pursuit tunables exposed for cone-spacing-specific tuning.
+        # Cruise speed-scale floor (`cos(e_psi_corrected)` lower bound)
+        # and cruise→approach handoff blend distance. `pp_` prefix is
+        # historical (Pure Pursuit era) — the current Stanley tracker
+        # uses the same knobs with the same semantics.
         self.declare_parameter('pp_min_speed_fraction', 0.25)
         self.declare_parameter('pp_handoff_blend_distance', 1.0)
 
         # Tolerances and timeouts.
         self.declare_parameter('waypoint_tolerance', 0.05)
         self.declare_parameter('settle_tolerance', 0.03)
-        self.declare_parameter('settle_readings', 5)
-        self.declare_parameter('settle_timeout', 10.0)
-        # Active settle: retry counter is uncapped (Phase 4 policy — never
-        # skip a waypoint). The throttle bounds how often we can re-engage
-        # so a misbehaving dock can't burn cycles in <100 ms loops.
-        self.declare_parameter('active_settle_retries', 3)  # legacy, unused
+        self.declare_parameter('settle_readings', 8)
+        self.declare_parameter('settle_timeout', 12.0)
         # Minimum seconds between consecutive active-settle retries.
         # The dock tracker needs time to move the chassis a meaningful
         # distance before the navigator decides the retry didn't work
@@ -199,13 +197,13 @@ class NavigatorNode(Node):
         # chassis curvature limit (κ_max = 1.2) and big enough that the
         # encoder integration over the drive (~15-25 s at v=1) doesn't
         # accumulate >1° ψ error.
-        self.declare_parameter('antenna_cal_radius_m', 1.0)
+        self.declare_parameter('antenna_cal_radius_m', 1.5)
         self.declare_parameter('antenna_cal_revolutions', 2)
         # `antenna_cal_sign` controls rotation direction: +1 CCW, -1 CW.
         # CCW is the default because that's what we've used in the field;
         # the solver supports both, so flip if site geometry requires.
         self.declare_parameter('antenna_cal_sign', 1)
-        self.declare_parameter('antenna_cal_speed', 0.8)
+        self.declare_parameter('antenna_cal_speed', 0.5)
 
         # Wheel scale auto-calibration (CAL_WHEELS state). Drives a
         # straight chord and divides GPS distance by per-wheel encoder
@@ -267,7 +265,6 @@ class NavigatorNode(Node):
         self._pub_spray_result = self.create_publisher(String, '/rover/spray/result', reliable_qos)
         self._pub_spray_cancel = self.create_publisher(Int32, '/rover/spray/cancel', reliable_qos)
         self._pub_error_reason = self.create_publisher(String, '/rover/nav/error_reason', reliable_qos)
-        self._pub_skipped = self.create_publisher(Int32, '/rover/nav/skipped', reliable_qos)
         self._pub_cal_antenna_result = self.create_publisher(String, '/rover/cal/antenna_result', reliable_qos)
         self._pub_cal_wheels_result = self.create_publisher(String, '/rover/cal/wheel_result', reliable_qos)
         self._pub_apply_wheel_scales = self.create_publisher(String, '/rover/cmd/apply_wheel_scales', reliable_qos)
@@ -454,9 +451,6 @@ class NavigatorNode(Node):
             'cruise_speed': self.get_parameter('cruise_speed').value,
             'approach_speed': self.get_parameter('approach_speed').value,
             'creep_speed': self.get_parameter('creep_speed').value,
-            'pp_lookahead_min': self.get_parameter('pp_lookahead_min').value,
-            'pp_lookahead_gain': self.get_parameter('pp_lookahead_gain').value,
-            'pp_damping': self.get_parameter('pp_damping').value,
             'cruise_done_tolerance': self.get_parameter('cruise_done_tolerance').value,
             'dock_k_y': self.get_parameter('dock_k_y').value,
             'dock_k_psi': self.get_parameter('dock_k_psi').value,
@@ -1261,52 +1255,20 @@ class NavigatorNode(Node):
         self._reset_progress()
         self._replan_from_current_chassis()
 
-    def _skip_current_waypoint(self):
-        if self._cur_seg_idx >= len(self._segments):
-            return
-        skipped_idx = self._segments[self._cur_seg_idx].waypoint_index
-        # Skip both the cruise + dock segments belonging to this waypoint.
-        # Synthetic return segments have waypoint_index = -1 — their skip
-        # ends the mission cleanly rather than trying to parse the next.
-        while (self._cur_seg_idx < len(self._segments)
-               and self._segments[self._cur_seg_idx].waypoint_index == skipped_idx):
-            self._cur_seg_idx += 1
-        if skipped_idx >= 0:
-            msg = Int32()
-            msg.data = int(skipped_idx)
-            self._pub_skipped.publish(msg)
-            self.get_logger().warn(f'Skipped waypoint {skipped_idx + 1}')
-        self._stuck_retries = 0
-        self._reset_progress()
-        # Reset BOTH trackers so saturated DockTracker integral from the
-        # failed dock doesn't leak into the next waypoint's docking.
-        if self._cruise_tracker is not None:
-            self._cruise_tracker.reset()
-        if self._dock_tracker is not None:
-            self._dock_tracker.reset()
-        # Re-plan the remaining path anchored at the chassis's actual
-        # current pose. Without this, the next cruise segment has its
-        # start_pose pinned to where the previous waypoint's dock-end
-        # WOULD have been if the chassis had reached it — but after a
-        # skip the chassis is sitting at the stuck spot, often metres
-        # off the original corridor. The cruise pure-pursuit then orbits
-        # the lookahead trying to reach a corridor it isn't on, which is
-        # the WP1/WP2/WP7 in-place spin the operator was seeing.
-        if skipped_idx >= 0:
-            self._replan_from_current_chassis()
-
     def _replan_from_current_chassis(self):
         """Rebuild self._segments anchored at the chassis's live pose.
 
-        Used after a skip — the planner originally laid out cruise/dock
-        segments under the assumption the chassis would be at each dock-
-        end before transitioning to the next cruise. A skip breaks that
-        assumption, so we regenerate the remaining segments using the
-        actual chassis pose as the next cruise's start. The waypoint
-        index offset keeps the new segments numbered against the
-        original `self._waypoints` list so any consumer of
-        seg.waypoint_index (the UI skip publisher, settle handler) sees
-        the same indices it saw before the replan.
+        Called from stuck / reverse-stalled / settle-timeout / ERROR
+        recovery. The planner originally laid out cruise/dock segments
+        under the assumption the chassis would be at each dock-end before
+        transitioning to the next cruise. If that assumption breaks
+        (chassis stuck off-corridor, estimator hard-corrected past the
+        target after RTK reacquire), we regenerate the remaining segments
+        using the actual chassis pose as the next cruise's start. The
+        waypoint index offset keeps the new segments numbered against
+        the original `self._waypoints` list so any consumer of
+        seg.waypoint_index (settle handler, telemetry) sees the same
+        indices it saw before the replan.
         """
         if self._estimator is None or not self._estimator.initialized:
             return

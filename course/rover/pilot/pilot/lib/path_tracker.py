@@ -2,30 +2,34 @@
 
 Two control laws, one per segment kind:
 
-  • CruiseTracker — Pure Pursuit toward the cruise segment's end pose, with
-    derivative damping on heading error and a virtual lookahead projection
-    when within the lookahead radius. Speed scales with cos(α) so that the
-    rover slows as it commits to a sharper arc, killing the figure-8
-    instability that the previous controller showed under stale heading.
+  • CruiseTracker — Stanley line follower. Regulates chassis ψ toward a
+    desired ψ that biases toward the cruise corridor by atan2(k_lat·e_y, v).
+    Speed scales with cos(e_psi_corrected) so the rover slows as the
+    corrected heading error grows, keeping GPS heading-of-motion
+    measurement noise low. Was Pure Pursuit + D damping until the 04:16
+    figure-8 incident on chassis ψ way off corridor — Stanley actively
+    aligns chassis ψ with the corridor instead of chasing a lookahead
+    point, eliminating the PP orbit pathology.
 
-  • DockTracker — linear state feedback on (e_y_antenna, e_ψ) along the
-    straight-line dock corridor. Operating on the *antenna*'s lateral
-    error (rather than the chassis') is what makes the antenna land on
-    the user-clicked target even when the antenna is offset from the rear
-    axle. The chassis frame Lyapunov analysis (see commit message) yields
-    κ = -k_y · e_y_antenna - k_ψ · e_ψ, valid as long as the dock
-    distance is large enough that linearisation is OK (dock_distance ≥
-    a few × wheelbase).
+  • DockTracker — Stanley line follower on the *antenna*'s lateral error
+    with an integral term for κ-bias rejection. Operating on the antenna
+    e_y (rather than the chassis') is what makes the antenna land on the
+    user-clicked target even when the antenna is offset from the rear
+    axle. The chassis frame Lyapunov analysis yields the legacy dual-P
+    form κ = -k_y·e_y_antenna - k_ψ·e_ψ; the Stanley refinement uses
+    atan2(k_y·e_y, v) for the desired offset which gives perpendicular
+    closure at low v and a pure heading regulator at small e_y.
 
 Both trackers consume an immutable PathSegment + the live chassis pose +
 the antenna ENU position, and return (v_cmd, κ_cmd, done?). Internal
-state is kept on the tracker instance so navigator can hand off cleanly
-between cruise and dock without losing the D-term continuity.
+state is kept on the tracker instance (dock integral, cruise zero-cross
+direction memory) so navigator can hand off cleanly between cruise and
+dock without losing controller state continuity.
 """
 
 from math import atan2, cos, sin, hypot, tan
 
-from pilot.lib.geo_utils import normalize_angle, project_onto_line, offset_point
+from pilot.lib.geo_utils import normalize_angle, project_onto_line
 
 
 class CruiseTracker:
@@ -548,16 +552,14 @@ class DockTracker:
         self._prev_t = t_now
         kappa = kappa_p - self._k_i * self._integral
 
-        # Clamp to physical curvature. Anti-windup: if the clamp binds and
-        # the integral is pushing harder in the same direction, undo the
-        # most recent dt-step so the integral doesn't run away while the
-        # actuator is saturated.
+        # Clamp to physical curvature. Anti-windup is handled upstream by
+        # the ±integral_limit clamp on the integrator itself (lines 548-
+        # 551); during sustained κ-saturation the integral pumps up to
+        # ±integral_limit and stops, so the post-clamp κ contribution
+        # k_i × integral is bounded by k_i × integral_limit regardless of
+        # how long saturation persists.
         if kappa > self._max_curvature:
             kappa = self._max_curvature
-            if self._k_i * self._integral < 0 and self._prev_t is not None:
-                # integral negative pushes κ positive; rolling back
-                # prevents wind-up while saturated positive.
-                pass  # noqa - handled by limit clamp above
         elif kappa < -self._max_curvature:
             kappa = -self._max_curvature
         # Equivalent steering angle clamp (atan(κ·L) capped by max_steer).

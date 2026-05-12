@@ -44,10 +44,10 @@ class ChassisPoseEstimator:
         self.ref_lon = float(ref_lon)
         self.pos_gain = float(pos_correction_gain)
         self.psi_gain = float(psi_correction_gain)
-        # GPS heading-of-motion is noise-dominated below this speed even
-        # though gps_node only publishes it above its own threshold (0.3
-        # m/s). We use a slightly higher floor so the correction never
-        # latches a noise-dominated reading.
+        # GPS heading-of-motion is noise-dominated below this speed.
+        # gps_node's publish gate (heading_speed_threshold in rover_params)
+        # is aligned to the same value so we don't accept reports gps_node
+        # has already discarded as noisy.
         self.psi_min_speed = float(psi_correction_min_speed)
 
         self.x = 0.0

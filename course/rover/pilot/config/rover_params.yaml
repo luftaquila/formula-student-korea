@@ -56,6 +56,12 @@ navigator_node:
     approach_speed: 0.4                # m/s on the dock corridor (precision)
     creep_speed: 0.10                  # m/s for fine corrections / overshoot reverse. Halved from 0.18 so the chassis can stop within approach_tolerance instead of rolling several cm past on inertia + PID lag at the dock 'reached' threshold.
     calibration_speed: 0.5             # m/s during cold-start heading discovery (must exceed gps_node.heading_speed_threshold by margin)
+    # Antenna offset auto-calibration STRAIGHT phase chord length. Drives
+    # κ=0 for this distance, fits ψ_init from antenna ENU. 2 m gives a
+    # chord well above the 1.5 m calibration_chord_min_m gate even when
+    # the operator starts on slightly uneven ground.
+    antenna_cal_straight_distance: 2.0
+
     # Antenna offset auto-cal drive speed. v = 0.5 m/s on R = 1.5 m keeps
     # lateral acceleration v²/R ≈ 0.17 m/s², low enough that wheel slip /
     # tyre scrub doesn't corrupt the encoder ω integration the closed-form
@@ -77,10 +83,7 @@ navigator_node:
     # ── Path planner ────────────────────────────────────────────────────
     dock_approach_distance: 2.5        # meters of straight line before the dock pose. Lengthened from 1.5 so chassis has room to rotate into corridor heading inside the cruise leg before handing off to dock — critical when consecutive waypoints sit at 60°+ relative bearings (cruise from prev-dock-end with chassis ψ way off corridor; PP and Stanley both drift across the corridor before aligning, and the dock then opens at e_y ~30cm). 2.5m gives 4×min-turning-radius (0.56m) of room.
 
-    # ── Pure Pursuit (cruise tracker) ───────────────────────────────────
-    pp_lookahead_min: 0.6              # meters. Decoupled from min turn radius — separate clamp on max_curvature handles physical limit.
-    pp_lookahead_gain: 0.6             # lookahead = max(min, gain × speed)
-    pp_damping: 0.18                   # D-term gain on dα/dt. Damps figure-8 oscillation under heading lag.
+    # ── Cruise tracker (Stanley line follower) ──────────────────────────
     cruise_done_tolerance: 0.20        # meters from cruise end pose to declare cruise done and switch to dock
     pp_min_speed_fraction: 0.25        # cos(α) speed scale floor (was hardcoded 0.35; 0.25 lets tight cone-to-cone curves slow further before lateral correction blows out)
     pp_handoff_blend_distance: 1.0     # meters from cruise end at which commanded speed begins to taper from cruise_speed → approach_speed. Keyed on remaining cumulative distance to dock entry across all upcoming Reed-Shepp sub-segs, NOT per-sub-seg — without that, every 0.15-0.30 m Reed-Shepp sub-seg tripped this taper and capped commanded speed at ~0.5 m/s instead of cruise_speed=1.0 (16:47 trace: peak cmd v=0.61 m/s during what should have been full-cruise stretches).
@@ -100,6 +103,7 @@ navigator_node:
     settle_tolerance: 0.03             # meters for tight settle confirmation
     settle_readings: 8                 # consecutive in-tolerance readings to declare settled (was 5; 8 × 50 ms = 400 ms washes out chassis decel + mast ringing)
     settle_timeout: 12.0               # seconds. Reverse-with-steering closes lateral on both halves of the round trip (~62 %/cycle at k_y=6), so a single 5 s cycle clears 5 cm residual to under 2 cm, and 12 s leaves slack for the cruise→dock handoff transient.
+    active_settle_throttle_s: 1.5      # seconds — minimum interval between active-settle retries when dock drifts back outside waypoint_tolerance. Stops the navigator from cycling SETTLING→NAVIGATING in 50 ms ticks on a dock that declares 'reached' immediately on re-engagement.
     spray_timeout: 5.0                 # seconds to wait for spray_done before auto-skip
     stuck_timeout: 12.0                # seconds without progress before retry/skip
     stuck_max_retries: 2
@@ -125,7 +129,19 @@ navigator_node:
     gps_timeout: 3.0                   # seconds without GPS before ERROR
     fix_hysteresis_s: 0.8              # seconds of bad fix tolerated before ERROR
     required_fix_status: "rtk_fixed"
+    # When the live fix is rtk_float (integer ambiguity unresolved), accept
+    # it if reported horizontal accuracy is at or below this many mm.
+    # 0 disables — falls back to fixed-only behaviour. 20 mm matches the
+    # waypoint cm-tolerance budget; anything sloppier and the mission
+    # errors out instead of plotting onto a potentially-drifted estimate.
+    fix_accept_float_max_h_acc_mm: 20
     return_to_start: true
+
+    # Battery state-of-charge gates (the MCU has its own hard cutoff at
+    # BATTERY_UNDERVOLT_V=20 V; these stop the navigator earlier so motors
+    # don't cut out mid-dock).
+    battery_warn_pct: 20               # below this, refuse to start a new mission
+    battery_abort_pct: 10              # below this, abort an active mission and ERROR
 
 spray_node:
   ros__parameters:

@@ -130,20 +130,24 @@ class McuBridgeNode(Node):
         self.declare_parameter('heartbeat_hz', 10.0)
         self.declare_parameter('reconnect_delay_s', 2.0)
 
-        # Ackermann + steering servo
+        # Ackermann + steering servo. Defaults mirror
+        # config/rover_params.yaml — that file is the authoritative tuned
+        # value passed via the launch file. These defaults only apply if
+        # the yaml fails to load (test harness, direct `ros2 run`).
         self.declare_parameter('servo_center_us', 1500)
         self.declare_parameter('servo_range_us', 500)
-        self.declare_parameter('max_steering_angle_deg', 25.0)
-        self.declare_parameter('wheelbase', 0.38)
-        self.declare_parameter('track_width', 0.30)
-        self.declare_parameter('max_speed', 1.5)
-        self.declare_parameter('accel_limit', 0.5)
+        self.declare_parameter('max_steering_angle_deg', 30.5)
+        self.declare_parameter('wheelbase', 0.33)
+        self.declare_parameter('track_width', 0.33)
+        self.declare_parameter('max_speed', 2.5)
+        self.declare_parameter('accel_limit', 0.8)
         self.declare_parameter('manual_priority_s', 1.0)
 
-        # PID closed loop (off by default; raw duty mode is the safe baseline)
-        self.declare_parameter('use_pid', False)
-        self.declare_parameter('pid_kp', 0.6)
-        self.declare_parameter('pid_ki', 1.5)
+        # PID closed loop. ON in production; raw duty mode is the
+        # bench-test fallback.
+        self.declare_parameter('use_pid', True)
+        self.declare_parameter('pid_kp', 1.0)
+        self.declare_parameter('pid_ki', 3.0)
         self.declare_parameter('pid_kd', 0.0)
 
         self._validate_params()
