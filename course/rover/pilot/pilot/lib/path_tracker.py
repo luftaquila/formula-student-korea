@@ -93,33 +93,41 @@ class CruiseTracker:
 
     def __init__(self, params):
         self._cruise_speed = float(params['cruise_speed'])
+        self._approach_speed = float(params['approach_speed'])
         self._max_curvature = float(params['max_curvature'])
         self._cruise_done_tolerance = float(params['cruise_done_tolerance'])
         self._cruise_done_heading_max = float(
-            params.get('cruise_done_heading_max_rad', 0.26))
+            params.get('cruise_done_heading_max_rad', 0.14))  # tightened 15→8°
         self._cruise_pass_through_m = float(
             params.get('cruise_pass_through_m', 0.30))
         self._k_heading = float(params.get('cruise_k_heading', 1.5))
         self._min_speed_fraction = float(
             params.get('cruise_min_speed_fraction', 0.40))
-        # Carrot lookahead distance. Instead of steering directly at
-        # segment.end_pose (the dock corridor entry), we steer at a
-        # point CARROT_LOOKAHEAD metres further along the corridor
-        # direction (segment.end_pose.psi). This is the classic pure-
-        # pursuit lookahead with a corridor-aware carrot:
-        #   - far from entry: carrot is far ahead too, e_psi roughly
-        #     equals bearing-to-entry, same as steering at entry directly.
-        #   - close to entry: carrot is INSIDE the corridor, so the
-        #     bearing-to-carrot converges to the corridor heading. The
-        #     chassis naturally aligns with ψ_dock as it approaches,
-        #     handing off to the dock tracker with e_y, e_psi ≈ 0.
-        # 0.60 m chosen as ~turning_radius — keeps the carrot inside the
-        # chassis's reachable arc at all times so the heading regulator
-        # always has a feasible target. Larger lookahead would smooth
-        # the final approach more but reduce reactivity on tight cone-
-        # to-cone transitions.
+        # Carrot lookahead distance. Steer toward a point 1.0 m past
+        # the entry along corridor — larger lookahead than the initial
+        # 0.60 m so the heading regulator gets a stronger pull toward
+        # ψ_dock during the approach, leaving less heading residual
+        # at handoff. The chassis still arrives ON the entry because
+        # the done condition checks dist to entry, not to carrot.
         self._carrot_lookahead = float(
-            params.get('cruise_carrot_lookahead_m', 0.60))
+            params.get('cruise_carrot_lookahead_m', 1.00))
+        # Handoff taper: slow chassis from cruise_speed down to
+        # approach_speed over the last handoff_taper_m metres of the
+        # cruise. Without taper the chassis was arriving at the entry
+        # at full cruise speed (1.0 m/s) with whatever heading the
+        # bearing-to-carrot wanted 0.5 s ago — typically 5-10° off
+        # ψ_dock — and the dock tracker then had to correct that
+        # residual at v=0.4 m/s with halved Stanley gains, which
+        # produced visible lateral drift before the chassis aligned.
+        # Tapering means the chassis enters the dock corridor at the
+        # same 0.4 m/s the dock expects, with the carrot having had
+        # time to pull e_psi closer to zero. Sized to ~1.5 m: chassis
+        # decel from 1.0 to 0.4 m/s at accel_limit=0.8 needs 0.75 s of
+        # decel, which covers ~0.6 m at the average speed — well
+        # inside 1.5 m so the chassis fully reaches 0.4 m/s before
+        # crossing the entry.
+        self._handoff_taper_m = float(
+            params.get('cruise_handoff_taper_m', 1.50))
         # Orbit gate: when the chassis is closer to the goal than its
         # minimum turning radius AND its heading is more than 90° off
         # the bearing-to-goal, the chassis CANNOT reach the goal by
@@ -220,8 +228,20 @@ class CruiseTracker:
         elif kappa < -self._max_curvature:
             kappa = -self._max_curvature
 
+        # Speed: cruise_speed far from entry, tapered toward
+        # approach_speed inside handoff_taper_m so the cruise→dock
+        # handoff is at the same speed the dock expects. The taper
+        # gives the carrot time to bend the heading into ψ_dock
+        # before the chassis crosses the entry.
+        if self._handoff_taper_m > 1e-6 and dist_to_end < self._handoff_taper_m:
+            blend = max(0.0, min(1.0, dist_to_end / self._handoff_taper_m))
+            target_speed = self._approach_speed + blend * (
+                self._cruise_speed - self._approach_speed)
+        else:
+            target_speed = self._cruise_speed
+
         speed_scale = max(self._min_speed_fraction, cos(e_psi))
-        speed = self._cruise_speed * speed_scale
+        speed = target_speed * speed_scale
 
         return speed, kappa, False
 

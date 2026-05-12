@@ -153,7 +153,7 @@ class NavigatorNode(Node):
         self.declare_parameter('dock_stanley_offset_cap_rad', 0.262)
         self.declare_parameter('dock_reverse_recovery_m', 0.08)
         self.declare_parameter('dock_brake_zone_m', 0.12)
-        self.declare_parameter('dock_brake_min_speed_frac', 0.30)
+        self.declare_parameter('dock_brake_min_speed_frac', 0.70)
         self.declare_parameter('dock_reverse_stall_timeout_s', 5.0)
         self.declare_parameter('dock_reverse_stall_min_disp_m', 0.30)
         self.declare_parameter('approach_tolerance', 0.03)
