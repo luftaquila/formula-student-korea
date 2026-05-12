@@ -137,6 +137,11 @@ class NavigatorNode(Node):
 
         # Cruise tracker (Stanley).
         self.declare_parameter('cruise_done_tolerance', 0.20)
+        self.declare_parameter('cruise_done_heading_max_rad', 0.26)
+        self.declare_parameter('cruise_pass_through_m', 0.30)
+        self.declare_parameter('cruise_k_lat', 4.0)
+        self.declare_parameter('cruise_k_heading', 3.0)
+        self.declare_parameter('cruise_stanley_offset_cap_rad', 0.262)
         # Maximum lateral error (|e_y| vs dock corridor) tolerated at
         # the cruise→dock handoff. Above this, navigator re-plans from
         # the live chassis pose instead of letting the dock tracker
@@ -154,9 +159,16 @@ class NavigatorNode(Node):
 
         # Dock tracker (state feedback).
         self.declare_parameter('dock_k_y', 6.0)
+        self.declare_parameter('dock_stanley_k_lat', 4.0)
         self.declare_parameter('dock_k_psi', 5.0)
         self.declare_parameter('dock_k_i', 0.4)
         self.declare_parameter('dock_integral_limit', 0.5)
+        self.declare_parameter('dock_stanley_offset_cap_rad', 0.262)
+        self.declare_parameter('dock_reverse_recovery_m', 0.08)
+        self.declare_parameter('dock_brake_zone_m', 0.06)
+        self.declare_parameter('dock_brake_min_speed_frac', 0.70)
+        self.declare_parameter('dock_reverse_stall_timeout_s', 5.0)
+        self.declare_parameter('dock_reverse_stall_min_disp_m', 0.30)
         self.declare_parameter('approach_tolerance', 0.03)
         self.declare_parameter('creep_zone', 0.40)
         # Cruise speed-scale floor (`cos(e_psi_corrected)` lower bound)
@@ -447,23 +459,35 @@ class NavigatorNode(Node):
         return False
 
     def _params_for_trackers(self):
+        p = self.get_parameter
         return {
-            'cruise_speed': self.get_parameter('cruise_speed').value,
-            'approach_speed': self.get_parameter('approach_speed').value,
-            'creep_speed': self.get_parameter('creep_speed').value,
-            'cruise_done_tolerance': self.get_parameter('cruise_done_tolerance').value,
-            'dock_k_y': self.get_parameter('dock_k_y').value,
-            'dock_k_psi': self.get_parameter('dock_k_psi').value,
-            'dock_k_i': self.get_parameter('dock_k_i').value,
-            'dock_integral_limit': self.get_parameter('dock_integral_limit').value,
-            'pp_min_speed_fraction': self.get_parameter('pp_min_speed_fraction').value,
-            'pp_handoff_blend_distance': self.get_parameter('pp_handoff_blend_distance').value,
-            'cruise_zero_cross_speed_threshold': self.get_parameter(
-                'cruise_zero_cross_speed_threshold').value,
-            'approach_tolerance': self.get_parameter('approach_tolerance').value,
-            'creep_zone': self.get_parameter('creep_zone').value,
-            'max_curvature': self.get_parameter('max_curvature').value,
-            'wheelbase': self.get_parameter('wheelbase').value,
+            'cruise_speed': p('cruise_speed').value,
+            'approach_speed': p('approach_speed').value,
+            'creep_speed': p('creep_speed').value,
+            'cruise_done_tolerance': p('cruise_done_tolerance').value,
+            'cruise_done_heading_max_rad': p('cruise_done_heading_max_rad').value,
+            'cruise_pass_through_m': p('cruise_pass_through_m').value,
+            'cruise_k_lat': p('cruise_k_lat').value,
+            'cruise_k_heading': p('cruise_k_heading').value,
+            'cruise_stanley_offset_cap_rad': p('cruise_stanley_offset_cap_rad').value,
+            'dock_k_y': p('dock_k_y').value,
+            'dock_stanley_k_lat': p('dock_stanley_k_lat').value,
+            'dock_k_psi': p('dock_k_psi').value,
+            'dock_k_i': p('dock_k_i').value,
+            'dock_integral_limit': p('dock_integral_limit').value,
+            'dock_stanley_offset_cap_rad': p('dock_stanley_offset_cap_rad').value,
+            'dock_reverse_recovery_m': p('dock_reverse_recovery_m').value,
+            'dock_brake_zone_m': p('dock_brake_zone_m').value,
+            'dock_brake_min_speed_frac': p('dock_brake_min_speed_frac').value,
+            'dock_reverse_stall_timeout_s': p('dock_reverse_stall_timeout_s').value,
+            'dock_reverse_stall_min_disp_m': p('dock_reverse_stall_min_disp_m').value,
+            'pp_min_speed_fraction': p('pp_min_speed_fraction').value,
+            'pp_handoff_blend_distance': p('pp_handoff_blend_distance').value,
+            'cruise_zero_cross_speed_threshold': p('cruise_zero_cross_speed_threshold').value,
+            'approach_tolerance': p('approach_tolerance').value,
+            'creep_zone': p('creep_zone').value,
+            'max_curvature': p('max_curvature').value,
+            'wheelbase': p('wheelbase').value,
             'max_steering_angle_rad': self._max_steer_rad,
             # Pull from instance, not yaml param, so a fresh auto-cal is
             # picked up on the next mission start without restart.
