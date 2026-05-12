@@ -1291,6 +1291,7 @@ async function deleteCourse(id) {
 const showCalibration = ref(false);
 const antennaCalSubmitting = ref(false);
 const wheelCalSubmitting = ref(false);
+const wheelCalResetSubmitting = ref(false);
 
 const antennaCalRunning = computed(() => roverStatus.value.nav_state === "CAL_ANTENNA");
 const wheelCalRunning = computed(() => roverStatus.value.nav_state === "CAL_WHEELS");
@@ -1473,6 +1474,21 @@ async function submitWheelCal() {
     notifyError(err.message);
   } finally {
     wheelCalSubmitting.value = false;
+  }
+}
+
+async function submitWheelCalReset() {
+  if (!roverStatus.value.connected || wheelCalResetSubmitting.value) return;
+  if (!window.confirm("휠 캘리브레이션을 초기화합니다 (scale_l/r=1.0, trim=0 µs). 계속하시겠습니까?")) {
+    return;
+  }
+  wheelCalResetSubmitting.value = true;
+  try {
+    await request("/api/rover/reset-wheel-cal", { method: "POST" });
+  } catch (err) {
+    notifyError(err.message);
+  } finally {
+    wheelCalResetSubmitting.value = false;
   }
 }
 
@@ -2139,6 +2155,19 @@ function connectSSE() {
     }
   });
 
+  eventSource.addEventListener("rover:skipped", (e) => {
+    const data = JSON.parse(e.data);
+    if (roverMode.value === "executing" && Number.isInteger(data?.index)) {
+      // Stuck-skip: navigator advanced _cur_seg_idx past this waypoint
+      // without firing waypoint_reached. Advance executedIndex the same
+      // way the reached event would, otherwise the counter sits on the
+      // skipped index until the *next* waypoint reports reached — at
+      // which point it jumps by 2 and the skip becomes invisible.
+      onWaypointReached(data.index);
+      notifyWarn(`웨이포인트 #${data.index + 1} 건너뜀 (stuck)`);
+    }
+  });
+
   eventSource.addEventListener("rover:spray", (e) => {
     const data = JSON.parse(e.data);
     if (!Number.isInteger(data?.waypoint) || !data.outcome) return;
@@ -2408,10 +2437,6 @@ onUnmounted(() => {
 
             <div class="cal-subsection">
               <div class="cal-subsection-title">수동 입력 (권장)</div>
-              <p class="cal-help">
-                후륜축 중점 → GPS 안테나 위상 중심 거리를 줄자로 측정하여 mm 단위로 입력하세요.
-                전방 +x, 좌측 +y. 한 번 입력하면 안테나가 옮겨지기 전까지 영구 적용됩니다.
-              </p>
               <div class="cal-manual-row">
                 <label class="cal-manual-field">
                   <span>a_x (mm)</span>
@@ -2436,30 +2461,22 @@ onUnmounted(() => {
             </div>
 
             <div class="cal-subsection">
-              <div class="cal-subsection-title">자동 보정 (실험적)</div>
-              <p class="modal-warning">
-                로버가 직진 약 2 m 이후 S자 패턴(8 s)을 자동 주행합니다. 전후좌우 5 m 이상의 평탄하고 빈 공간이 필요합니다.
-                PID 튜닝 전에는 정확도가 떨어질 수 있으니 수동 입력을 우선 사용하세요.
-              </p>
-              <div v-if="antennaCalRunning" class="modal-status">
-                진행 중... 로버 상태가 IDLE로 돌아오면 결과가 표시됩니다.
-              </div>
+              <div class="cal-subsection-title">자동 보정</div>
+              <div class="cal-space-req">필요 공간: 전후좌우 5 m</div>
+              <div v-if="antennaCalRunning" class="modal-status">진행 중...</div>
               <div class="cal-section-actions">
                 <button
                   class="btn btn-ghost btn-sm"
                   :disabled="antennaCalSubmitting || antennaCalRunning || !antennaCalCanStart"
                   @click="submitAntennaCal"
-                >{{ antennaCalSubmitting ? '전송 중...' : (antennaCalRunning ? '진행 중' : (antennaCalCanStart ? '자동 보정 실행' : antennaCalBtnLabel)) }}</button>
+                >{{ antennaCalSubmitting ? '전송 중...' : (antennaCalRunning ? '진행 중' : antennaCalBtnLabel) }}</button>
               </div>
             </div>
           </section>
 
           <section class="cal-section">
             <div class="cal-section-title">휠 인코더 스케일</div>
-            <p class="modal-warning">
-              로버가 직진 약 10 m를 자동 주행하면서 GPS chord 거리와 좌·우 인코더 적분 거리의
-              비율로 휠 스케일을 추정합니다. 전방 12 m 이상 평탄하고 빈 공간이 필요합니다.
-            </p>
+            <div class="cal-space-req">필요 공간: 전방 12 m</div>
             <div class="cal-current">
               <span class="cal-key">scale_l</span>
               <span class="cal-val">{{ wheelCalDisplay.scale_l }}</span>
@@ -2480,10 +2497,13 @@ onUnmounted(() => {
             <div v-if="wheelCalDisplay.steeringWarning" class="cal-error cal-warn">
               조향 트림 미적용: {{ wheelCalDisplay.steeringWarning }} (휠 스케일은 적용됨)
             </div>
-            <div v-if="wheelCalRunning" class="modal-status">
-              진행 중... 로버 상태가 IDLE로 돌아오면 결과가 표시됩니다.
-            </div>
+            <div v-if="wheelCalRunning" class="modal-status">진행 중...</div>
             <div class="cal-section-actions">
+              <button
+                class="btn btn-ghost btn-sm"
+                :disabled="wheelCalResetSubmitting || wheelCalRunning || !roverStatus.connected"
+                @click="submitWheelCalReset"
+              >{{ wheelCalResetSubmitting ? '초기화 중...' : '초기화' }}</button>
               <button
                 class="btn btn-primary btn-sm"
                 :disabled="wheelCalSubmitting || wheelCalRunning || !wheelCalCanStart"
@@ -3360,6 +3380,12 @@ onUnmounted(() => {
 .cal-section-actions {
   margin-top: 0.5rem;
   display: flex; justify-content: flex-end;
+  gap: 0.5rem;
+}
+.cal-space-req {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.4rem;
 }
 .cal-input-row input {
   padding: 0.5rem 0.6rem;
