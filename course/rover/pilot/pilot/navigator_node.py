@@ -141,17 +141,19 @@ class NavigatorNode(Node):
         self.declare_parameter('cruise_pass_through_m', 0.30)
         self.declare_parameter('cruise_k_heading', 1.5)
         self.declare_parameter('cruise_min_speed_fraction', 0.40)
+        self.declare_parameter('cruise_carrot_lookahead_m', 0.60)
+        self.declare_parameter('cruise_orbit_gate_dist_m', 0.40)
 
         # Dock tracker (state feedback).
         self.declare_parameter('dock_k_y', 6.0)
-        self.declare_parameter('dock_stanley_k_lat', 4.0)
-        self.declare_parameter('dock_k_psi', 5.0)
+        self.declare_parameter('dock_stanley_k_lat', 2.0)
+        self.declare_parameter('dock_k_psi', 2.0)
         self.declare_parameter('dock_k_i', 0.4)
         self.declare_parameter('dock_integral_limit', 0.5)
         self.declare_parameter('dock_stanley_offset_cap_rad', 0.262)
         self.declare_parameter('dock_reverse_recovery_m', 0.08)
-        self.declare_parameter('dock_brake_zone_m', 0.06)
-        self.declare_parameter('dock_brake_min_speed_frac', 0.70)
+        self.declare_parameter('dock_brake_zone_m', 0.12)
+        self.declare_parameter('dock_brake_min_speed_frac', 0.30)
         self.declare_parameter('dock_reverse_stall_timeout_s', 5.0)
         self.declare_parameter('dock_reverse_stall_min_disp_m', 0.30)
         self.declare_parameter('approach_tolerance', 0.03)
@@ -446,6 +448,8 @@ class NavigatorNode(Node):
             'cruise_pass_through_m': p('cruise_pass_through_m').value,
             'cruise_k_heading': p('cruise_k_heading').value,
             'cruise_min_speed_fraction': p('cruise_min_speed_fraction').value,
+            'cruise_carrot_lookahead_m': p('cruise_carrot_lookahead_m').value,
+            'cruise_orbit_gate_dist_m': p('cruise_orbit_gate_dist_m').value,
             'dock_k_y': p('dock_k_y').value,
             'dock_stanley_k_lat': p('dock_stanley_k_lat').value,
             'dock_k_psi': p('dock_k_psi').value,
@@ -1143,22 +1147,21 @@ class NavigatorNode(Node):
             return
 
         # Distance-to-target hasn't improved. Two ways to be stuck:
-        # (a) timeout elapsed since last improvement (original gate);
-        # (b) chassis hasn't moved more than 15 cm in the last `timeout`
-        #     seconds (catches dock-cycle where dist oscillates but the
-        #     chassis is bouncing around a 10 cm patch).
+        # (a) chassis pinned: hasn't moved more than 30 cm in the
+        #     stuck_timeout window — actual stuck (dock reverse cycle,
+        #     wheel slip, etc.).
+        # (b) no-progress timeout: dist-to-target hasn't decreased by
+        #     ≥2 cm in stuck_timeout seconds even though chassis is
+        #     moving. This catches genuine wedged geometry but also
+        #     fires on legitimate orbit-around-tight-goal cases. The
+        #     cruise tracker's past-entry / orbit-gate exits should
+        #     prevent those from ever entering this branch in the
+        #     first place, but we keep the gate for safety.
         bbox_disp = 0.0
         if len(self._stuck_window) >= 2:
             xs = [r[1] for r in self._stuck_window]
             ys = [r[2] for r in self._stuck_window]
             bbox_disp = hypot(max(xs) - min(xs), max(ys) - min(ys))
-        # Threshold sized for the dock-cycle bbox actually observed: the
-        # 04:18 mission's WP0 stuck cycled within 25 cm of the target
-        # (oscillating 6-24 cm of along-corridor distance per tick) and
-        # the previous 0.15 m gate didn't fire. 0.30 m catches that
-        # cycle while still being well inside any non-cycle motion
-        # (settled chassis sits in <5 cm, normal cruise covers >1 m
-        # in stuck_timeout seconds).
         chassis_pinned = (
             len(self._stuck_window) >= 2
             and (now - self._stuck_window[0][0]) >= timeout
@@ -1220,6 +1223,20 @@ class NavigatorNode(Node):
             next_wp_idx = len(self._waypoints)
 
         remaining = self._waypoints[next_wp_idx:]
+        # Anchor the first replanned waypoint's dock_psi on the bearing
+        # FROM the previously sprayed waypoint, not from the live chassis
+        # pose. Without this, each replan re-derives dock_psi from
+        # chassis-to-WP, so a chassis that drifted past the target spins
+        # the corridor around it on every retry (14:03 WP5: dock_psi
+        # rotated -105°→-87°→-150°→+175° across 4 replans). Keeping the
+        # original WP_{n-1} → WP_n bearing preserves the corridor.
+        prev_xy = None
+        if next_wp_idx > 0:
+            prev_wp = self._waypoints[next_wp_idx - 1]
+            prev_xy = enu_from_gps(
+                prev_wp['lat'], prev_wp['lng'],
+                self._ref_lat, self._ref_lon,
+            )
         params = self._params_for_trackers()
         try:
             new_segments = plan_path(
@@ -1231,6 +1248,7 @@ class NavigatorNode(Node):
                 return_to_start=self.get_parameter('return_to_start').value,
                 start_chassis_xy=self._mission_start_chassis_xy,
                 waypoint_index_offset=next_wp_idx,
+                prev_target_xy=prev_xy,
             )
         except Exception as exc:  # pragma: no cover - defensive
             self.get_logger().warn(f'Replan failed: {exc}')

@@ -25,6 +25,8 @@ _PARAMS = {
     'cruise_pass_through_m': 0.30,
     'cruise_k_heading': 1.5,
     'cruise_min_speed_fraction': 0.40,
+    'cruise_carrot_lookahead_m': 0.60,
+    'cruise_orbit_gate_dist_m': 0.40,
     'dock_k_y': 1.4,
     'dock_k_psi': 1.6,                # tests pin to 1.6 for the legacy
                                        # P-only assertions; production yaml
@@ -139,21 +141,23 @@ class TestCruiseTracker:
         assert v == pytest.approx(_PARAMS['cruise_speed'], abs=1e-9)
 
     def test_no_response_to_lateral_offset_alone(self):
-        # Chassis off the start→end line laterally but facing the goal:
-        # the new tracker computes bearing-to-goal, which simply points
-        # back at the goal, so e_psi against chassis_psi may be small.
-        # Specifically, with chassis at (2, 0.5) facing the goal at
-        # (5, 0), bearing = atan2(-0.5, 3) ≈ -9.5°. So κ is the heading
-        # error to point at the goal, NOT a Stanley lateral-correction.
-        # The key behaviour: |κ| is small because the chassis can simply
-        # re-aim at the goal.
+        # Chassis off the start→end line laterally, facing toward the
+        # CARROT (end + lookahead × corridor_dir). With end=(5,0,0°)
+        # and carrot_lookahead=0.60 m the carrot sits at (5.6, 0).
+        # From chassis (2, 0.5) the bearing-to-carrot = atan2(-0.5, 3.6)
+        # ≈ -7.9°. A chassis facing exactly that bearing has e_psi=0
+        # and κ=0 — confirming the controller is purely a bearing-to-
+        # carrot heading regulator with no Stanley lateral term feeding
+        # in any e_y noise into κ.
+        from math import atan2 as _atan2
         t = CruiseTracker(_PARAMS)
         seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
-        # Chassis facing the goal direction directly (atan2(-0.5,3)≈-0.166).
-        from math import atan2 as _atan2
-        face = _atan2(-0.5, 3.0)
+        lookahead = _PARAMS.get('cruise_carrot_lookahead_m', 0.60)
+        carrot_x = 5.0 + lookahead  # end_psi=0 → corridor_dir=(1,0)
+        carrot_y = 0.0
+        face = _atan2(carrot_y - 0.5, carrot_x - 2.0)
         _, kappa, _ = t.step((2.0, 0.5, face), seg, t_now=100.0)
-        # Already pointed at the goal → κ ≈ 0.
+        # Pointed exactly at the carrot → κ ≈ 0.
         assert abs(kappa) < 1e-6
 
     def test_pass_through_safety_net(self):
@@ -174,6 +178,61 @@ class TestCruiseTracker:
         v_b, k_b, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0, chassis_v=10.0)
         assert v_a == v_b
         assert k_a == k_b
+
+    def test_carrot_pulls_chassis_into_corridor_heading(self):
+        # When approaching the entry, the carrot sits inside the corridor.
+        # A chassis approaching from below the corridor (entry at y=0,
+        # corridor heading 0° = east) should steer slightly LEFT to enter
+        # aligned with the corridor, rather than aim straight at the
+        # entry point.
+        from math import atan2 as _atan2
+        t = CruiseTracker(_PARAMS)
+        # entry at (5, 0), corridor_dir = east
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        # Chassis below the corridor (y=-0.5), 1 m before entry, facing east
+        # along chassis_psi=0.
+        _, kappa, _ = t.step((4.0, -0.5, 0.0), seg, t_now=100.0)
+        # carrot at (5.6, 0). bearing from (4.0, -0.5) = atan2(0.5, 1.6) ≈
+        # +17.4°. e_psi = +17.4°. κ = 1.5·0.304 = +0.46 rad/m → left
+        # turn. Positive κ means CCW (left). Chassis enters the corridor
+        # aligned with corridor heading rather than aimed straight at
+        # the entry point (which would be atan2(0.5,1.0)=+26.6° — sharper
+        # turn that overshoots the corridor).
+        assert kappa > 0
+        # Without carrot lookahead (zero), bearing-to-entry would give κ
+        # closer to k_heading × 26.6°×π/180 ≈ 0.70 rad/m. Carrot pulls
+        # the κ down to about 0.46 — softer steer that lands the chassis
+        # on the corridor heading.
+        assert kappa < 0.60
+
+    def test_past_entry_declares_done(self):
+        # Chassis past the entry along the corridor direction — there's
+        # no useful forward arc from here, dock should take over.
+        # End at (5, 0, 0°). Corridor direction = +x. Chassis at (5.3, 0),
+        # i.e. 30 cm past entry along corridor. dist_to_end = 30 cm,
+        # heading match (chassis ψ=0, end ψ=0). Position done condition
+        # already fires — this test pins the past-entry path explicitly
+        # at heading off so the past-entry exit (not the position-done
+        # one) is what triggers.
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        # 30 cm past entry, heading 45° off corridor — position-done
+        # condition fails (heading not aligned), past-entry condition
+        # succeeds.
+        _, _, done = t.step((5.30, 0.0, pi / 4), seg, t_now=100.0)
+        assert done
+
+    def test_orbit_gate_close_and_backward_facing(self):
+        # Chassis close to goal AND facing away from goal direction.
+        # Pure-pursuit would orbit; the gate hands off to dock.
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        # Chassis 30 cm before entry but facing 180° (backward). dist=
+        # 30 cm < orbit_gate=40 cm; e_psi to bearing-to-end = 180° >
+        # 90°. Gate fires. Heading not aligned with end_psi (0° vs 180°)
+        # so position-done doesn't fire on its own.
+        _, _, done = t.step((4.70, 0.0, pi), seg, t_now=100.0)
+        assert done
 
 
 class TestDockTracker:

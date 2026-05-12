@@ -99,19 +99,40 @@ class CruiseTracker:
             params.get('cruise_done_heading_max_rad', 0.26))
         self._cruise_pass_through_m = float(
             params.get('cruise_pass_through_m', 0.30))
-        # P-gain on heading error. 1.5 keeps κ at small heading errors
-        # (e.g. e_psi=5° ≈ ±0.13 rad/m κ, ≈ ±2.5° steering) well below
-        # the chassis_psi noise envelope so noise doesn't visibly pump
-        # the steering. At large heading errors (e_psi=30° = 0.52 rad)
-        # κ saturates at the max_curvature clamp, so a single smooth
-        # arc closes the turn.
         self._k_heading = float(params.get('cruise_k_heading', 1.5))
-        # Minimum speed fraction when e_psi is large (cos(e_psi)
-        # collapses toward 0). Keeps the chassis moving rather than
-        # spinning in place. 0.40 means 0.40 × cruise_speed at any
-        # heading error >= 90°.
         self._min_speed_fraction = float(
             params.get('cruise_min_speed_fraction', 0.40))
+        # Carrot lookahead distance. Instead of steering directly at
+        # segment.end_pose (the dock corridor entry), we steer at a
+        # point CARROT_LOOKAHEAD metres further along the corridor
+        # direction (segment.end_pose.psi). This is the classic pure-
+        # pursuit lookahead with a corridor-aware carrot:
+        #   - far from entry: carrot is far ahead too, e_psi roughly
+        #     equals bearing-to-entry, same as steering at entry directly.
+        #   - close to entry: carrot is INSIDE the corridor, so the
+        #     bearing-to-carrot converges to the corridor heading. The
+        #     chassis naturally aligns with ψ_dock as it approaches,
+        #     handing off to the dock tracker with e_y, e_psi ≈ 0.
+        # 0.60 m chosen as ~turning_radius — keeps the carrot inside the
+        # chassis's reachable arc at all times so the heading regulator
+        # always has a feasible target. Larger lookahead would smooth
+        # the final approach more but reduce reactivity on tight cone-
+        # to-cone transitions.
+        self._carrot_lookahead = float(
+            params.get('cruise_carrot_lookahead_m', 0.60))
+        # Orbit gate: when the chassis is closer to the goal than its
+        # minimum turning radius AND its heading is more than 90° off
+        # the bearing-to-goal, the chassis CANNOT reach the goal by
+        # forward arc. Pure-pursuit would orbit forever (14:03 WP5
+        # trace: chassis spent 4 minutes circling around the dock entry
+        # at radius ~0.6 m). Detect this case and declare cruise done,
+        # handing off to the dock tracker whose reverse-recovery can
+        # back the chassis up and re-approach properly. The threshold
+        # is matched to the dock's expected approach distance — within
+        # 0.40 m of the entry, dock can take over even from a wonky
+        # heading.
+        self._orbit_gate_dist = float(
+            params.get('cruise_orbit_gate_dist_m', 0.40))
 
     def reset(self):
         # No persistent state.
@@ -150,13 +171,47 @@ class CruiseTracker:
             if a_along >= seg_len + self._cruise_pass_through_m:
                 return 0.0, 0.0, True
 
-        # If chassis is right on top of the goal but not yet aligned,
-        # steer toward end_psi directly (the bearing is undefined when
-        # dx,dy ≈ 0). This is rare and only happens at the boundary.
-        if dist_to_end < 1e-3:
+        # Past-entry gate. If the chassis has already moved INTO the
+        # dock corridor (i.e., past segment.end_pose along the corridor
+        # direction toward the target), no forward arc can bring it
+        # back to entry — the chassis is already where the dock tracker
+        # wants to start. 14:03 WP5 replan case: dock failed to land,
+        # chassis ended south of WP5 target which is south of the new
+        # entry, replanned cruise tried to backtrack north and instead
+        # orbited. With this gate the cruise hands off immediately and
+        # the dock's reverse-recovery handles the back-up.
+        # (chassis − entry) · corridor_dir > 0 ⇔ chassis past entry.
+        past_entry_dot = (-dx) * cos(end_psi) + (-dy) * sin(end_psi)
+        if past_entry_dot > 0 and dist_to_end < self._orbit_gate_dist * 3.0:
+            return 0.0, 0.0, True
+
+        # Orbit gate. If the goal is within orbit_gate_dist AND the
+        # chassis is facing > 90° off the direction to the goal, the
+        # chassis cannot forward-arc to reach it without circling.
+        # Declare done; let the dock tracker (which can reverse) handle
+        # the final cm-scale repositioning.
+        if dist_to_end < self._orbit_gate_dist and dist_to_end >= 1e-3:
+            bearing_to_goal = atan2(dy, dx)
+            e_psi_bearing = normalize_angle(bearing_to_goal - psi)
+            if abs(e_psi_bearing) > 1.5708:  # pi/2
+                return 0.0, 0.0, True
+
+        # Carrot point: end_pose extended forward along the corridor by
+        # carrot_lookahead. Far from the end, the carrot is close to a
+        # straight extrapolation of the bearing-to-goal, so behaviour
+        # matches pure heading regulation. Close to the end, the carrot
+        # sits inside the dock corridor and the bearing-to-carrot
+        # converges to ψ_dock — chassis aligns smoothly with the
+        # corridor heading rather than arriving at the entry at an angle.
+        carrot_x = ex + self._carrot_lookahead * cos(end_psi)
+        carrot_y = ey + self._carrot_lookahead * sin(end_psi)
+        cdx = carrot_x - x
+        cdy = carrot_y - y
+        carrot_dist = hypot(cdx, cdy)
+        if carrot_dist < 1e-3:
             desired_psi = end_psi
         else:
-            desired_psi = atan2(dy, dx)
+            desired_psi = atan2(cdy, cdx)
 
         e_psi = normalize_angle(desired_psi - psi)
         kappa = self._k_heading * e_psi
@@ -165,12 +220,6 @@ class CruiseTracker:
         elif kappa < -self._max_curvature:
             kappa = -self._max_curvature
 
-        # Speed scales with how aligned chassis is with the goal
-        # direction. cos(e_psi) is +1 when aligned, 0 at 90°, -1 at
-        # 180°. Clamp to min_speed_fraction so the chassis still moves
-        # at large e_psi (otherwise it would freeze on a U-turn). At
-        # large e_psi the chassis arcs around at reduced speed; as it
-        # aligns cos rises and speed approaches cruise_speed.
         speed_scale = max(self._min_speed_fraction, cos(e_psi))
         speed = self._cruise_speed * speed_scale
 

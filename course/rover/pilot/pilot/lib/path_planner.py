@@ -114,6 +114,12 @@ def plan(current_chassis_pose, antenna_offset,
          waypoints_lat_lng, ref_lat_lon,
          dock_distance, return_to_start=False, start_chassis_xy=None,
          waypoint_index_offset=0,
+         prev_target_xy=None,           # ENU (e, n) of the previously
+                                         # sprayed waypoint, used to
+                                         # anchor the first waypoint's
+                                         # dock_psi on replans so the
+                                         # corridor heading doesn't pivot
+                                         # with every chassis drift.
          turning_radius=None,           # accepted for backward compat, unused
          dubins_sample_step=None):      # accepted for backward compat, unused
     """Build the segment list for a mission.
@@ -122,6 +128,14 @@ def plan(current_chassis_pose, antenna_offset,
     entry) and one dock segment (from dock entry to chassis-with-antenna-
     on-target). Reverse and arc primitives are NOT emitted — the cruise
     tracker handles all geometry by steering toward the goal point.
+
+    For the FIRST waypoint in the list, dock_psi is normally derived from
+    the bearing chassis → waypoint. On replans mid-mission, that makes
+    the corridor heading pivot every time chassis drifts (14:03 WP5: 4
+    consecutive replans gave dock_psi -105°, -87°, -150°, +175° as the
+    chassis orbited). Pass ``prev_target_xy`` (the ENU of the last
+    sprayed waypoint) so the first waypoint inherits the original prev-
+    to-current bearing instead — same dock_psi every replan.
 
     ``turning_radius`` and ``dubins_sample_step`` are accepted but
     ignored. They survive in the signature so callers that built up
@@ -137,7 +151,7 @@ def plan(current_chassis_pose, antenna_offset,
               for wp in waypoints_lat_lng]
 
     segments = []
-    prev_target = None
+    prev_target = prev_target_xy  # None on initial plan, override on replan
 
     for idx, (wp_e, wp_n) in enumerate(wp_enu):
         if prev_target is None:
