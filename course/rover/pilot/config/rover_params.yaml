@@ -83,6 +83,37 @@ navigator_node:
     # ── Path planner ────────────────────────────────────────────────────
     dock_approach_distance: 2.5        # meters of straight line before the dock pose. Lengthened from 1.5 so chassis has room to rotate into corridor heading inside the cruise leg before handing off to dock — critical when consecutive waypoints sit at 60°+ relative bearings (cruise from prev-dock-end with chassis ψ way off corridor; PP and Stanley both drift across the corridor before aligning, and the dock then opens at e_y ~30cm). 2.5m gives 4×min-turning-radius (0.56m) of room.
 
+    # ── Path tracker selector ──────────────────────────────────────────
+    # Stage 2 architecture: 'l1' enables L1Tracker (Park 2007 +
+    # Macenski regulated PP) on both cruise and dock segments,
+    # replacing CruiseTracker + DockTracker. 'legacy' keeps the
+    # original two-tracker stack for field rollback in a single
+    # yaml flip. The legacy stack STAYS in the codebase until Stage
+    # 3 cleanup after three successful L1 missions.
+    path_tracker_kind: "l1"
+
+    # ── L1 tracker tuning (path_tracker_kind == 'l1') ──────────────────
+    # L1 lookahead time-constant. v=1.0 m/s → L1 = 0.7071/π·2.5·1.0 ≈
+    # 0.56 m (clamped up to l1_min). At v=2.0 → 1.13 m. Period of 2.5 s
+    # is ArduPilot's typical rover setting; damping 1/√2 is the
+    # critical-damping pick.
+    l1_period_s: 2.5
+    l1_damping: 0.7071
+    l1_min_m: 0.6                      # lookahead floor — keeps creep dock in tight closure
+    l1_max_m: 4.0                      # lookahead cap — prevents the carrot from running off the end of a short cruise leg
+
+    # cm-precision capture radius on dock segments. Matches
+    # settle_tolerance so the single 3 cm gate decides BOTH the dock
+    # 'reached' status and the spray confirmation — no dead band
+    # between approach_tolerance and waypoint_tolerance like the
+    # legacy stack had.
+    l1_cm_capture_m: 0.03
+    l1_reverse_recovery_min_m: 0.08    # adaptive recovery distance floor (overshoot ≤ 4 cm → 8 cm reverse; 5 cm → 10 cm; 10 cm → 20 cm)
+    l1_reverse_speed: 0.10             # m/s magnitude during reverse-recovery
+    l1_kappa_speed_lim: 0.85           # 1/m — half of max_curvature; speed regulates as min(1, lim/|κ|)
+    l1_e_y_speed_gain: 2.0             # linear cross-track speed cut: speed *= max(floor, 1 - gain·|e_y|)
+    l1_e_y_speed_floor: 0.4            # floor of the e_y speed scale (keeps chassis moving even on big residuals)
+
     # ── Cruise tracker (heading-only goal-seeking P-controller) ─────────
     # The cruise tracker is now a human-driver-style heading regulator
     # toward the dock corridor entry. There is no path-following lateral
@@ -115,7 +146,7 @@ navigator_node:
     creep_zone: 0.40                   # meters from target to drop from approach_speed to creep_speed
 
     # ── Tolerances and timeouts ─────────────────────────────────────────
-    waypoint_tolerance: 0.05           # meters antenna-to-target to consider waypoint hit
+    waypoint_tolerance: 0.03           # meters antenna-to-target to consider waypoint hit. Matched to settle_tolerance (3 cm) under the L1Tracker design — single threshold removes the dead band where settle_tol < dist <= waypoint_tolerance left neither branch of the settle handler doing anything. L1's cm_capture is also 3 cm so the controller stops on the same gate the navigator sprays on.
     settle_tolerance: 0.03             # meters for tight settle confirmation
     settle_readings: 8                 # consecutive in-tolerance readings to declare settled (was 5; 8 × 50 ms = 400 ms washes out chassis decel + mast ringing)
     settle_timeout: 12.0               # seconds. Reverse-with-steering closes lateral on both halves of the round trip (~62 %/cycle at k_y=6), so a single 5 s cycle clears 5 cm residual to under 2 cm, and 12 s leaves slack for the cruise→dock handoff transient.

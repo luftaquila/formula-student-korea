@@ -64,7 +64,7 @@ from pilot.lib.geo_utils import (
 from pilot.lib.protocol_utils import has_required_fix_status
 from pilot.lib.state_estimator import ChassisPoseEstimator
 from pilot.lib.path_planner import plan as plan_path
-from pilot.lib.path_tracker import CruiseTracker, DockTracker
+from pilot.lib.path_tracker import CruiseTracker, DockTracker, L1Tracker
 from pilot.lib.antenna_calibration import (
     OFFSET_BOUND_M,
     load_antenna_offset, save_antenna_offset,
@@ -143,6 +143,23 @@ class NavigatorNode(Node):
         self.declare_parameter('cruise_min_speed_fraction', 0.40)
         self.declare_parameter('cruise_carrot_lookahead_m', 0.60)
         self.declare_parameter('cruise_orbit_gate_dist_m', 0.40)
+
+        # L1 tracker (Park 2007 + Macenski regulated). Active when
+        # path_tracker_kind == 'l1'. Replaces cruise + dock for the
+        # whole mission. See pilot/lib/path_tracker.py::L1Tracker for
+        # the control law; the knobs below tune lookahead sizing and
+        # speed regulation.
+        self.declare_parameter('path_tracker_kind', 'legacy')
+        self.declare_parameter('l1_period_s', 2.5)
+        self.declare_parameter('l1_damping', 0.7071)
+        self.declare_parameter('l1_min_m', 0.6)
+        self.declare_parameter('l1_max_m', 4.0)
+        self.declare_parameter('l1_cm_capture_m', 0.03)
+        self.declare_parameter('l1_reverse_recovery_min_m', 0.08)
+        self.declare_parameter('l1_reverse_speed', 0.10)
+        self.declare_parameter('l1_kappa_speed_lim', 0.85)
+        self.declare_parameter('l1_e_y_speed_gain', 2.0)
+        self.declare_parameter('l1_e_y_speed_floor', 0.4)
 
         # Dock tracker (state feedback).
         self.declare_parameter('dock_k_y', 6.0)
@@ -318,8 +335,14 @@ class NavigatorNode(Node):
         self._estimator = None
 
         # Trackers (constructed from params; reused across segments).
+        # In legacy mode only _cruise_tracker and _dock_tracker are
+        # populated; in 'l1' mode _l1_tracker is populated and the
+        # other two stay None. _path_tracker_kind cached for cheap
+        # branch checks in the per-tick handlers.
         self._cruise_tracker = None
         self._dock_tracker = None
+        self._l1_tracker = None
+        self._path_tracker_kind = 'legacy'
 
         # Calibration state.
         self._cal_start_lat = None
@@ -468,6 +491,17 @@ class NavigatorNode(Node):
             'max_curvature': p('max_curvature').value,
             'wheelbase': p('wheelbase').value,
             'max_steering_angle_rad': self._max_steer_rad,
+            # L1 knobs (consumed only by L1Tracker; harmless to legacy).
+            'l1_period_s': p('l1_period_s').value,
+            'l1_damping': p('l1_damping').value,
+            'l1_min_m': p('l1_min_m').value,
+            'l1_max_m': p('l1_max_m').value,
+            'l1_cm_capture_m': p('l1_cm_capture_m').value,
+            'l1_reverse_recovery_min_m': p('l1_reverse_recovery_min_m').value,
+            'l1_reverse_speed': p('l1_reverse_speed').value,
+            'l1_kappa_speed_lim': p('l1_kappa_speed_lim').value,
+            'l1_e_y_speed_gain': p('l1_e_y_speed_gain').value,
+            'l1_e_y_speed_floor': p('l1_e_y_speed_floor').value,
             # Pull from instance, not yaml param, so a fresh auto-cal is
             # picked up on the next mission start without restart.
             'antenna_offset_x': self._antenna_offset_x,
@@ -629,6 +663,7 @@ class NavigatorNode(Node):
         self._stop_motors()
         self._cruise_tracker = None
         self._dock_tracker = None
+        self._l1_tracker = None
         self._set_state(State.EMERGENCY_STOP)
 
     def _on_clear_emergency(self, _msg):
@@ -883,6 +918,8 @@ class NavigatorNode(Node):
                     self._cruise_tracker.reset()
                 if self._dock_tracker is not None:
                     self._dock_tracker.reset()
+                if self._l1_tracker is not None:
+                    self._l1_tracker.reset()
                 # Path replan when resuming into NAVIGATING. Without this,
                 # the chassis pose can jump several metres during a GPS
                 # dropout (RTK lost → 3d_fix dead-reckoning → RTK fixed
@@ -1005,10 +1042,29 @@ class NavigatorNode(Node):
         self._cur_seg_idx = 0
         self._cur_wp_idx = 0
 
-        self._cruise_tracker = CruiseTracker(params)
-        self._dock_tracker = DockTracker(params)
-        self._cruise_tracker.reset()
-        self._dock_tracker.reset()
+        # Pick the tracker stack. 'l1' instantiates a single L1Tracker
+        # used for BOTH cruise and dock segments (Stage 2 unified
+        # architecture). 'legacy' instantiates the CruiseTracker +
+        # DockTracker pair for backward-compatible behaviour and
+        # field rollback via yaml flip.
+        kind = self.get_parameter('path_tracker_kind').value
+        if kind not in ('l1', 'legacy'):
+            self.get_logger().warn(
+                f'Unknown path_tracker_kind={kind!r}; defaulting to legacy'
+            )
+            kind = 'legacy'
+        self._path_tracker_kind = kind
+        self._l1_tracker = None
+        self._cruise_tracker = None
+        self._dock_tracker = None
+        if kind == 'l1':
+            self._l1_tracker = L1Tracker(params)
+            self._l1_tracker.reset()
+        else:
+            self._cruise_tracker = CruiseTracker(params)
+            self._dock_tracker = DockTracker(params)
+            self._cruise_tracker.reset()
+            self._dock_tracker.reset()
         self._reset_progress()
         self.get_logger().info(
             f'Calibration done: ψ={degrees(psi_math):.1f}° (chord={chord_len:.2f} m, '
@@ -1029,6 +1085,55 @@ class NavigatorNode(Node):
         seg = self._segments[self._cur_seg_idx]
         chassis_pose = self._estimator.chassis_pose()
         antenna_world = self._estimator.antenna_position()
+
+        if self._path_tracker_kind == 'l1':
+            v, kappa, status = self._l1_tracker.step(
+                chassis_pose, seg, time.monotonic(), antenna_world)
+            self._publish_velocity(v, kappa)
+            self._update_progress(chassis_pose, seg.end_pose)
+
+            now_mono = time.monotonic()
+            if (self._last_dock_trace_t is None
+                    or now_mono - self._last_dock_trace_t >= 1.0):
+                self._last_dock_trace_t = now_mono
+                cx, cy, cpsi = chassis_pose
+                ax, ay = antenna_world
+                sx, sy, psi_path = seg.start_pose
+                tx, ty = seg.target_antenna
+                a_along, e_y = _project_onto_line(ax, ay, sx, sy, psi_path)
+                target_along, _ = _project_onto_line(tx, ty, sx, sy, psi_path)
+                along_to_target = target_along - a_along
+                e_psi = normalize_angle(cpsi - psi_path)
+                dist = hypot(tx - ax, ty - ay)
+                self.get_logger().info(
+                    f'L1 {seg.kind} WP{seg.waypoint_index + 1} '
+                    f'ch=({cx:+.2f},{cy:+.2f},{degrees(cpsi):+.0f}°) '
+                    f'ant=({ax:+.2f},{ay:+.2f}) tgt=({tx:+.2f},{ty:+.2f}) '
+                    f'e_y={e_y*100:+.1f}cm e_psi={degrees(e_psi):+.1f}° '
+                    f'along_to_target={along_to_target*100:+.1f}cm '
+                    f'dist={dist*100:.1f}cm '
+                    f'cmd v={v:+.2f} k={kappa:+.2f} {status}'
+                )
+
+            if status == 'reached':
+                if seg.kind == 'dock':
+                    # Dock leg complete → settle gate. L1 already
+                    # captured at cm_capture, so this is just
+                    # confirm-with-N-readings before spraying.
+                    if self._cur_wp_idx != seg.waypoint_index:
+                        self._settle_retries = 0
+                    self._cur_wp_idx = seg.waypoint_index
+                    self._stop_motors()
+                    self._settle_count = 0
+                    self._settle_enter_time = time.monotonic()
+                    self._set_state(State.SETTLING)
+                else:
+                    # cruise → next segment (dock for the same WP).
+                    self._cur_seg_idx += 1
+                    self._l1_tracker.reset()
+                    self._reset_progress()
+                    self._last_dock_trace_t = None
+            return
 
         if seg.kind == 'cruise':
             # Heading-only goal-seeking controller. One cruise PathSegment
@@ -1127,6 +1232,8 @@ class NavigatorNode(Node):
                     self._cruise_tracker.reset()
                 if self._dock_tracker is not None:
                     self._dock_tracker.reset()
+                if self._l1_tracker is not None:
+                    self._l1_tracker.reset()
                 self._replan_from_current_chassis()
             return
 
@@ -1201,6 +1308,8 @@ class NavigatorNode(Node):
             self._cruise_tracker.reset()
         if self._dock_tracker is not None:
             self._dock_tracker.reset()
+        if self._l1_tracker is not None:
+            self._l1_tracker.reset()
         self._reset_progress()
         self._replan_from_current_chassis()
 
@@ -1335,6 +1444,8 @@ class NavigatorNode(Node):
                     self._cruise_tracker.reset()
                 if self._dock_tracker is not None:
                     self._dock_tracker.reset()
+                if self._l1_tracker is not None:
+                    self._l1_tracker.reset()
                 self._reset_progress()
                 # Replan keeping the current waypoint as the next target.
                 # _replan_from_current_chassis uses _cur_seg_idx to decide
@@ -1353,24 +1464,24 @@ class NavigatorNode(Node):
             return
 
         if dist > wp_tol:
-            # Active settle redesign: re-engage the dock tracker in its
-            # normal (reverse-permitted) mode. The Phase 1-4 work makes
-            # this safe and effective:
-            #   * Reed-Shepp planning lets the planner pick a K-turn if
-            #     forward-only is geometrically wedged.
-            #   * Skip is removed (Phase 4), so retry is the only
-            #     terminator besides emergency_stop.
-            #   * The old forward_only mode is no longer used — it had
-            #     a tight-loop bug (chassis past target ⇒ 50 ms cycle
-            #     burning retries with no motion). Plain dock_tracker
-            #     with the new Stanley + brake tuning handles the
-            #     re-approach.
-            # Throttle: retry only if at least active_settle_throttle_s
-            # has elapsed since the last retry. Without this, the
-            # navigator could cycle SETTLING→NAVIGATING→SETTLING within
-            # 50 ms (a dock that declares 'reached' on the first tick
-            # of re-engagement, observed in the 16:11 trace) and
-            # burn through retries with no useful motion.
+            # In 'l1' mode the navigator does NOT do active settle
+            # retry: L1Tracker handles convergence internally via its
+            # reverse-recovery cycles (saturated κ in e_y-closing
+            # direction, adaptive recovery distance, sign-flip
+            # terminate). The SETTLING→NAVIGATING ping-pong pattern of
+            # the legacy stack caused new wari-gari on every approach
+            # at 3-5 cm; L1 mode skips it entirely. Hold position; the
+            # only exit is the timeout branch above which replans on
+            # >wp_tol or sprays under wp_tol.
+            if self._path_tracker_kind == 'l1':
+                self._settle_count = 0
+                self._stop_motors()
+                return
+            # Active settle redesign (legacy mode): re-engage the dock
+            # tracker. Throttle to active_settle_throttle_s between
+            # retries so a dock that declares 'reached' on the first
+            # tick of re-engagement (16:11 trace) doesn't cycle
+            # SETTLING→NAVIGATING→SETTLING within 50 ms.
             now = time.monotonic()
             throttle = self.get_parameter('active_settle_throttle_s').value
             if now - self._last_settle_retry_t < throttle:
@@ -1443,7 +1554,11 @@ class NavigatorNode(Node):
         target_e, target_n = seg.target_antenna
         dist = hypot(target_e - antenna_e, target_n - antenna_n)
         if dist > self.get_parameter('waypoint_tolerance').value:
-            v, kappa, _ = self._dock_tracker.step(
+            if self._path_tracker_kind == 'l1' and self._l1_tracker is not None:
+                tracker = self._l1_tracker
+            else:
+                tracker = self._dock_tracker
+            v, kappa, _ = tracker.step(
                 self._estimator.chassis_pose(), seg,
                 time.monotonic(),
                 (antenna_e, antenna_n),
@@ -1958,6 +2073,8 @@ class NavigatorNode(Node):
             self._cruise_tracker.reset()
         if self._dock_tracker is not None:
             self._dock_tracker.reset()
+        if self._l1_tracker is not None:
+            self._l1_tracker.reset()
 
         if self._cur_seg_idx >= len(self._segments):
             self._stop_motors()

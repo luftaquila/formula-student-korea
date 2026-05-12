@@ -1,36 +1,47 @@
 """Per-segment path trackers.
 
-Two control laws, one per segment kind:
+Three control laws live here. Pick one with the yaml param
+``path_tracker_kind``:
 
-  • CruiseTracker — heading-only P-control toward the segment end pose.
-    Drives the chassis like a human steering toward a visible target:
-    compute the bearing from current chassis position to the goal, set
-    κ proportional to (bearing - chassis_ψ), drive forward at cruise
-    speed. No path-following, no lateral term — there is literally no
-    way for chassis-position noise or chord_psi discretisation to feed
-    into the κ command, so straight stretches stay straight (e_psi → 0
-    drives κ → 0) and turns are single smooth arcs that taper out as
-    the chassis aligns. This replaces the Reed-Shepp + Stanley line
-    follower whose lateral Stanley term coupled GPS noise into κ noise
-    and produced visible wiggle.
+  • L1Tracker (``'l1'``, Stage 2 design) — Park 2007 geometric pursuit
+    with Macenski-style regulated speed. Single controller for cruise
+    AND dock segments: same code path, same κ law, just different
+    "reached" gates per kind. Self-tunes lookahead from speed so the
+    same controller stretches from fast cruise (L1 ≈ a few m, smooth)
+    to creep dock (L1 floored, tight closure). Reverse-recovery on
+    dock overshoot uses saturated κ in the e_y-closing direction (not
+    the legacy DockTracker's latched-κ which devolves to a ~0 rotation
+    rate on small lateral residuals). This is what ArduPilot Rover
+    uses on every commercial RTK rover, and replaces the cruise+dock
+    split as the eventual one-controller architecture.
 
-  • DockTracker — Stanley line follower on the *antenna*'s lateral error
-    with an integral term for κ-bias rejection. Operating on the antenna
-    e_y (rather than the chassis') is what makes the antenna land on the
-    user-clicked target even when the antenna is offset from the rear
-    axle. The chassis frame Lyapunov analysis yields the legacy dual-P
-    form κ = -k_y·e_y_antenna - k_ψ·e_ψ; the Stanley refinement uses
-    atan2(k_y·e_y, v) for the desired offset which gives perpendicular
-    closure at low v and a pure heading regulator at small e_y.
+  • CruiseTracker (``'legacy'`` half) — heading-only P-control toward
+    the segment end pose. Drives the chassis like a human steering
+    toward a visible target: compute the bearing from current chassis
+    position to the goal, set κ proportional to (bearing - chassis_ψ),
+    drive forward at cruise speed. No path-following, no lateral term
+    — there is literally no way for chassis-position noise or
+    chord_psi discretisation to feed into the κ command, so straight
+    stretches stay straight (e_psi → 0 drives κ → 0) and turns are
+    single smooth arcs that taper out as the chassis aligns.
 
-Both trackers consume an immutable PathSegment + the live chassis pose +
-the antenna ENU position, and return (v_cmd, κ_cmd, done?). State is
+  • DockTracker (``'legacy'`` half) — Stanley line follower on the
+    *antenna*'s lateral error with an integral term for κ-bias
+    rejection. Operating on the antenna e_y (rather than the chassis')
+    is what makes the antenna land on the user-clicked target even when
+    the antenna is offset from the rear axle. The Stanley refinement
+    uses atan2(k_y·e_y, v) for the desired offset which gives
+    perpendicular closure at low v and a pure heading regulator at
+    small e_y.
+
+All trackers consume an immutable PathSegment + the live chassis pose +
+the antenna ENU position, and return (v_cmd, κ_cmd, status). State is
 kept on the tracker instance (dock integral, reverse latch) so the
-navigator can hand off cleanly between cruise and dock without losing
+navigator can hand off cleanly between segments without losing
 controller state continuity.
 """
 
-from math import atan2, cos, sin, hypot, tan
+from math import atan2, cos, pi, sin, hypot, tan
 
 from pilot.lib.geo_utils import normalize_angle, project_onto_line
 
@@ -635,4 +646,302 @@ class DockTracker:
                        self._brake_min_speed_frac)
             speed *= ramp
 
+        return speed, kappa, 'tracking'
+
+
+class L1Tracker:
+    """L1 geometric pursuit + Macenski-regulated speed.
+
+    Replaces CruiseTracker + DockTracker with one continuous controller.
+    The same `step()` runs on every PathSegment regardless of kind; only
+    the "reached" gate and the speed-target floor differ between cruise
+    and dock. The L1 lateral controller is identical to ArduPilot Rover's
+    L1_Control:
+
+        L1 = clamp(damping/π · period · v,  L1_min,  L1_max)
+        η  = atan2(L1_y - chassis_y, L1_x - chassis_x)  -  chassis_ψ
+        κ  = 2·sin(η) / L1
+
+    The lookahead point sits L1 metres ahead of the chassis's projection
+    on the segment line (start_pose → end_pose). η is the bearing from
+    chassis position to that point relative to chassis heading. The
+    classical pure-pursuit derivation gives κ = 2·sin(η)/L1; with η = 0
+    (chassis pointed at the lookahead) κ → 0 and the chassis runs
+    straight. Lateral closure is exponential with time-constant ≈
+    L1·damping/v, so on a 1 m residual at v=1 m/s the chassis closes
+    to under 5 cm in ~3 s — no oscillation, no saturated Stanley
+    perpendicular swing.
+
+    Reached condition is per-segment:
+      cruise: chassis projects past end_pose along the segment line, OR
+              chassis within `cruise_done_tolerance` of end_pose. cm-
+              capture is not enforced here — the cruise segment exists
+              only to bring the chassis to the dock corridor entry.
+      dock:   antenna within `cm_capture` of `target_antenna` (default
+              3 cm). Direct cm-precision gate, no along-track sign
+              requirement (no overshoot mandate, so no obligatory dock-
+              cycle on every WP).
+
+    Reverse-recovery (dock segments only): when the antenna overshoots
+    the target along the corridor (along_to_target < 0), the chassis
+    reverses with curvature saturated in the e_y-closing direction.
+    This is the key correction from the legacy DockTracker: latched κ
+    on overshoot devolved to ≈0.06 rad/m at small e_y, yielding
+    0.27°/0.8 s — useless. Saturated κ gives 7.8°/0.8 s, closing ≈ 1
+    cm lateral per reverse cycle. Recovery distance is adaptive
+    (max(min, 2·|e_y|)) so the cycle scales with the residual.
+    Termination is on EITHER e_y sign-flip (chassis crossed the
+    corridor — keep reversing past that would re-open the lateral) OR
+    reaching the adaptive recovery distance.
+    """
+
+    def __init__(self, params):
+        self._cruise_speed = float(params['cruise_speed'])
+        self._approach_speed = float(params['approach_speed'])
+        self._creep_speed = float(params['creep_speed'])
+        self._max_curvature = float(params['max_curvature'])
+        self._wheelbase = float(params['wheelbase'])
+        self._max_steering_rad = float(params['max_steering_angle_rad'])
+        self._a_x = float(params['antenna_offset_x'])
+        self._a_y = float(params['antenna_offset_y'])
+
+        # L1 self-tuning lookahead. ArduPilot defaults are period=18s,
+        # damping=0.75 for plane-scale; rover dynamics are 10× tighter,
+        # so period=2.5 s pulls L1 down to ~0.6-1.5 m at our speed
+        # range. damping=1/√2 is the critical-damping pick.
+        self._l1_period = float(params.get('l1_period_s', 2.5))
+        self._l1_damping = float(params.get('l1_damping', 0.7071))
+        self._l1_min = float(params.get('l1_min_m', 0.6))
+        self._l1_max = float(params.get('l1_max_m', 4.0))
+
+        # cm-precision capture radius on dock segments. Matches the
+        # navigator's waypoint_tolerance / settle_tolerance for L1
+        # mode (3 cm). Going much tighter than this exceeds the RTK
+        # noise band; looser gives away accuracy that's free to claim.
+        self._cm_capture = float(params.get('l1_cm_capture_m', 0.03))
+
+        # Cruise advancement tolerance. Used as a backup to the
+        # along-projection gate so a chassis that drifts laterally
+        # close to the entry without quite crossing it still hands off.
+        self._cruise_done_tolerance = float(
+            params.get('cruise_done_tolerance', 0.20))
+
+        # Reverse-recovery sizing. _min_m floors the adaptive distance
+        # at 8 cm so even sub-cm overshoots get one meaningful reverse
+        # stroke; 2× scaling above that means 5 cm overshoot reverses
+        # 10 cm, 10 cm reverses 20 cm — closure per cycle scales with
+        # residual.
+        self._reverse_recovery_min_m = float(
+            params.get('l1_reverse_recovery_min_m', 0.08))
+        self._reverse_speed = float(
+            params.get('l1_reverse_speed', self._creep_speed))
+
+        # Macenski regulated-speed knobs. _kappa_lim is the curvature
+        # at which speed regulation starts kicking in; speed scales by
+        # min(1, kappa_lim/|κ|) so tight turns slow down proportional
+        # to 1/κ. _e_y_gain (default 2.0) is the linear cross-track
+        # speed cut: speed *= max(_e_y_speed_floor, 1 - gain·|e_y|).
+        self._kappa_lim = float(
+            params.get('l1_kappa_speed_lim', 0.5 * self._max_curvature))
+        self._e_y_gain = float(params.get('l1_e_y_speed_gain', 2.0))
+        self._e_y_speed_floor = float(
+            params.get('l1_e_y_speed_floor', 0.4))
+
+        # Reverse latch state. Captured at the moment along_to_target
+        # crosses zero (antenna projects past target along corridor);
+        # held until termination (sign-flip or adaptive distance).
+        self._reverse_active = False
+        self._reverse_entry_e_y = 0.0
+        self._reverse_recovery_target_m = 0.0
+        self._reverse_entry_along_to_target = 0.0
+        # Cached last commanded forward speed — feeds L1 sizing on the
+        # next tick so the lookahead doesn't shrink to L1_min on a
+        # zero-cmd recovery tick and then snap back on the next.
+        self._last_v_cmd = self._approach_speed
+
+    def reset(self):
+        self._reverse_active = False
+        self._reverse_entry_e_y = 0.0
+        self._reverse_recovery_target_m = 0.0
+        self._reverse_entry_along_to_target = 0.0
+        self._last_v_cmd = self._approach_speed
+
+    def _antenna_world(self, chassis_pose):
+        x, y, psi = chassis_pose
+        cp, sp = cos(psi), sin(psi)
+        return (x + cp * self._a_x - sp * self._a_y,
+                y + sp * self._a_x + cp * self._a_y)
+
+    def _reset_reverse(self):
+        self._reverse_active = False
+        self._reverse_entry_e_y = 0.0
+        self._reverse_recovery_target_m = 0.0
+        self._reverse_entry_along_to_target = 0.0
+
+    def _clamp_curvature(self, kappa):
+        if kappa > self._max_curvature:
+            return self._max_curvature
+        if kappa < -self._max_curvature:
+            return -self._max_curvature
+        max_k_from_steer = tan(self._max_steering_rad) / self._wheelbase
+        if kappa > max_k_from_steer:
+            return max_k_from_steer
+        if kappa < -max_k_from_steer:
+            return -max_k_from_steer
+        return kappa
+
+    def _reverse_step(self, antenna_e_y, along_to_target):
+        # Latch entry state on first reverse tick.
+        if not self._reverse_active:
+            self._reverse_active = True
+            self._reverse_entry_e_y = antenna_e_y
+            self._reverse_recovery_target_m = max(
+                self._reverse_recovery_min_m, 2.0 * abs(antenna_e_y))
+            self._reverse_entry_along_to_target = along_to_target
+
+        # Termination: e_y sign-flip. Chassis crossed the corridor —
+        # continuing reverse past this would push lateral the other
+        # way. Snapshot entry sign vs current sign.
+        entry_sign = self._reverse_entry_e_y
+        if (entry_sign > 0.0 and antenna_e_y < 0.0) or \
+           (entry_sign < 0.0 and antenna_e_y > 0.0):
+            self._reset_reverse()
+            return None
+
+        # Termination: reversed far enough. along_to_target starts
+        # negative (antenna past target) and INCREASES as chassis
+        # reverses (antenna_along decreases). reversed_dist is how
+        # much the antenna has moved back along the corridor.
+        reversed_dist = along_to_target - self._reverse_entry_along_to_target
+        if reversed_dist >= self._reverse_recovery_target_m:
+            self._reset_reverse()
+            return None
+
+        # Saturated κ in the e_y-closing direction. Derivation:
+        # ė_y = v·κ·a_x (chassis aligned with path, a_x = antenna
+        # forward offset). In reverse v < 0; to close e_y > 0
+        # (antenna LEFT of path), need ė_y < 0 → v·κ < 0 → κ > 0.
+        # Symmetrically κ < 0 closes e_y < 0. So κ = sign(e_y)·max.
+        if antenna_e_y > 0.0:
+            kappa_rev = self._max_curvature
+        elif antenna_e_y < 0.0:
+            kappa_rev = -self._max_curvature
+        else:
+            kappa_rev = 0.0
+        return -self._reverse_speed, kappa_rev, 'tracking'
+
+    def step(self, chassis_pose, segment, t_now, antenna_world=None):
+        """Return (v_cmd, kappa_cmd, status).
+
+        status: 'tracking' | 'reached'
+
+        `t_now` is accepted for parity with the legacy trackers; L1 has
+        no time-integrating state so the value is unused. Kept in the
+        signature so the navigator can dispatch trackers uniformly.
+        """
+        del t_now  # unused
+        if antenna_world is None:
+            antenna_world = self._antenna_world(chassis_pose)
+        x, y, psi = chassis_pose
+        ax, ay = antenna_world
+        sx, sy, psi_path = segment.start_pose
+        ex, ey, _ = segment.end_pose
+        tx, ty = segment.target_antenna
+        seg_len = hypot(ex - sx, ey - sy)
+        is_dock = segment.kind == 'dock'
+
+        # Degenerate path: start ≈ end (e.g. tight replan).
+        # Use bearing-to-end as the synthetic path direction so the
+        # lookahead still has something to chase.
+        if seg_len < 1e-3:
+            chassis_to_end = hypot(ex - x, ey - y)
+            if chassis_to_end < 1e-3:
+                psi_path = psi
+            else:
+                psi_path = atan2(ey - y, ex - x)
+
+        c_along, c_e_y = project_onto_line(x, y, sx, sy, psi_path)
+        a_along, a_e_y = project_onto_line(ax, ay, sx, sy, psi_path)
+        target_dist = hypot(tx - ax, ty - ay)
+
+        # ── Reached gates ────────────────────────────────────────────
+        if is_dock:
+            if target_dist <= self._cm_capture:
+                self._reset_reverse()
+                self._last_v_cmd = self._approach_speed
+                return 0.0, 0.0, 'reached'
+            target_along, _ = project_onto_line(tx, ty, sx, sy, psi_path)
+            along_to_target = target_along - a_along
+            # Reverse-recovery handles overshoot. Once latched, stays
+            # in reverse until termination signal flips _reverse_active
+            # back to False — at which point the next tick falls
+            # through to forward L1.
+            if along_to_target < 0.0 or self._reverse_active:
+                cmd = self._reverse_step(a_e_y, along_to_target)
+                if cmd is not None:
+                    self._last_v_cmd = abs(cmd[0])
+                    return cmd
+        else:
+            chassis_to_end = hypot(ex - x, ey - y)
+            if c_along >= seg_len - 1e-3 \
+                    or chassis_to_end <= self._cruise_done_tolerance:
+                self._reset_reverse()
+                self._last_v_cmd = self._approach_speed
+                return 0.0, 0.0, 'reached'
+
+        # ── Forward L1 ───────────────────────────────────────────────
+        v_target = self._approach_speed if is_dock else self._cruise_speed
+        # L1 distance from current commanded speed, with the segment's
+        # target speed as the floor so L1 doesn't collapse to L1_min
+        # immediately on segment entry before chassis has accelerated.
+        v_for_l1 = max(self._last_v_cmd, v_target)
+        l1 = (self._l1_damping / pi) * self._l1_period * v_for_l1
+        if l1 < self._l1_min:
+            l1 = self._l1_min
+        elif l1 > self._l1_max:
+            l1 = self._l1_max
+
+        # Lookahead point: advance chassis projection by L1 along path.
+        # For dock, cap at target_along so we don't carrot PAST the
+        # target (which would command continued forward motion after
+        # the antenna is at the dock pose).
+        look_along = c_along + l1
+        if is_dock:
+            t_along, _ = project_onto_line(tx, ty, sx, sy, psi_path)
+            if look_along > t_along:
+                look_along = t_along
+        cos_p, sin_p = cos(psi_path), sin(psi_path)
+        lx = sx + look_along * cos_p
+        ly = sy + look_along * sin_p
+
+        # η = bearing from chassis to lookahead, minus chassis heading.
+        eta = normalize_angle(atan2(ly - y, lx - x) - psi)
+        # κ = 2·sin(η) / L1. We use the L1 nominal (not the actual
+        # chassis-to-lookahead distance) so that large lateral offsets
+        # don't shrink the effective denominator and amplify κ beyond
+        # the path's natural geometry.
+        kappa = 2.0 * sin(eta) / l1
+        kappa = self._clamp_curvature(kappa)
+
+        # ── Regulated speed (Macenski/Nav2 RPP) ──────────────────────
+        # Slow on tight curvature: speed *= κ_lim/|κ| capped at 1.
+        kappa_scale = 1.0
+        if abs(kappa) > self._kappa_lim:
+            kappa_scale = self._kappa_lim / abs(kappa)
+        # Slow on large cross-track residual. Use antenna e_y on dock
+        # (cm precision target), chassis e_y on cruise (path-follow).
+        e_y_for_reg = a_e_y if is_dock else c_e_y
+        e_y_scale = 1.0 - self._e_y_gain * abs(e_y_for_reg)
+        if e_y_scale < self._e_y_speed_floor:
+            e_y_scale = self._e_y_speed_floor
+
+        speed = v_target * kappa_scale * e_y_scale
+        # Floor at creep_speed so PID deadband doesn't freeze the
+        # chassis short of the cm-capture (the MCU's 0.05 m/s deadband
+        # ate the last cm of every dock approach in the legacy 13:49
+        # mission). creep_speed=0.10 is comfortably above the band.
+        if speed < self._creep_speed:
+            speed = self._creep_speed
+
+        self._last_v_cmd = speed
         return speed, kappa, 'tracking'
