@@ -755,11 +755,20 @@ class L1Tracker:
         # outside cm_capture, settle timeout fired). Linear ramp from
         # approach_speed at brake_zone edge down to brake_min_frac ·
         # approach_speed at the target. Sized to ~6× cm_capture so
-        # the MCU PID has time to settle around creep_speed before
-        # the antenna crosses 3 cm.
+        # the MCU PID has time to settle around the min approach
+        # speed before the antenna crosses 3 cm.
         self._brake_zone_m = float(params.get('l1_brake_zone_m', 0.20))
         self._brake_min_speed_frac = float(
-            params.get('l1_brake_min_speed_frac', 0.25))
+            params.get('l1_brake_min_speed_frac', 0.175))
+        # Hard floor on commanded forward speed inside the brake zone.
+        # Decoupled from `creep_speed` (which legacy DockTracker uses
+        # as the creep-zone speed BEFORE the brake_min_frac modulation
+        # — its effective stop floor is 0.10·0.70 = 0.07). Match legacy
+        # at 0.07 so the final cm-capture is reached at the same
+        # forward velocity the dock was field-validated at. PID
+        # deadband is 0.05 m/s; 0.07 gives a 40 % margin to keep the
+        # chassis moving under power until cm_capture fires.
+        self._min_speed = float(params.get('l1_min_speed_m_s', 0.07))
 
         # Reverse latch state. Captured at the moment along_to_target
         # crosses zero (antenna projects past target along corridor);
@@ -960,12 +969,12 @@ class L1Tracker:
             if brake_ramp < self._brake_min_speed_frac:
                 brake_ramp = self._brake_min_speed_frac
             speed *= brake_ramp
-        # Floor at creep_speed so PID deadband doesn't freeze the
-        # chassis short of the cm-capture (the MCU's 0.05 m/s deadband
-        # ate the last cm of every dock approach in the legacy 13:49
-        # mission). creep_speed=0.10 is comfortably above the band.
-        if speed < self._creep_speed:
-            speed = self._creep_speed
+        # Hard floor so PID deadband (0.05 m/s) doesn't freeze the
+        # chassis short of cm-capture. Default 0.07 m/s matches the
+        # legacy DockTracker's effective stop floor (creep_speed ×
+        # brake_min_speed_frac = 0.10 × 0.70).
+        if speed < self._min_speed:
+            speed = self._min_speed
 
         self._last_v_cmd = speed
         return speed, kappa, 'tracking'

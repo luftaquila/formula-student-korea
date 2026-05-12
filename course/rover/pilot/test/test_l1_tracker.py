@@ -50,7 +50,8 @@ _PARAMS = {
     'l1_e_y_speed_gain': 2.0,
     'l1_e_y_speed_floor': 0.4,
     'l1_brake_zone_m': 0.20,
-    'l1_brake_min_speed_frac': 0.25,
+    'l1_brake_min_speed_frac': 0.175,
+    'l1_min_speed_m_s': 0.07,
     'cruise_done_tolerance': 0.20,
 }
 
@@ -343,8 +344,8 @@ class TestL1TrackerSpeedRegulation:
                              antenna_world=antenna)
         # |κ| > kappa_lim → speed regulated below approach_speed
         assert abs(kappa) > _PARAMS['l1_kappa_speed_lim'] - 1e-6
-        # Should be regulated but floored at creep_speed
-        assert v >= _PARAMS['creep_speed'] - 1e-9
+        # Should be regulated but floored at l1_min_speed_m_s
+        assert v >= _PARAMS['l1_min_speed_m_s'] - 1e-9
         assert v <= _PARAMS['approach_speed'] + 1e-9
 
     def test_dock_brake_zone_reduces_speed_near_target(self):

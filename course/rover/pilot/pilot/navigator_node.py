@@ -161,7 +161,8 @@ class NavigatorNode(Node):
         self.declare_parameter('l1_e_y_speed_gain', 2.0)
         self.declare_parameter('l1_e_y_speed_floor', 0.4)
         self.declare_parameter('l1_brake_zone_m', 0.20)
-        self.declare_parameter('l1_brake_min_speed_frac', 0.25)
+        self.declare_parameter('l1_brake_min_speed_frac', 0.175)
+        self.declare_parameter('l1_min_speed_m_s', 0.07)
         self.declare_parameter('l1_close_enough_spray_m', 0.30)
 
         # Dock tracker (state feedback).
@@ -507,6 +508,7 @@ class NavigatorNode(Node):
             'l1_e_y_speed_floor': p('l1_e_y_speed_floor').value,
             'l1_brake_zone_m': p('l1_brake_zone_m').value,
             'l1_brake_min_speed_frac': p('l1_brake_min_speed_frac').value,
+            'l1_min_speed_m_s': p('l1_min_speed_m_s').value,
             # Pull from instance, not yaml param, so a fresh auto-cal is
             # picked up on the next mission start without restart.
             'antenna_offset_x': self._antenna_offset_x,
