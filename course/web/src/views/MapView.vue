@@ -1060,7 +1060,16 @@ watch(activeCourseId, (v) => {
   coneFilter.value = "all";
   clearPath();
   if (map) rebuildAllMarkers();
-  if (v != null) savePref("activeCourseId", v);
+  if (v != null) {
+    savePref("activeCourseId", v);
+    // Pan to the first cone of the newly selected course so the operator
+    // doesn't have to hand-pan after switching courses (and after a page
+    // refresh the restored course pulls the map with it).
+    const cones = conesMap.value[v] || [];
+    if (cones.length > 0 && map) {
+      panToVisibleCenter(cones[0].lat, cones[0].lng);
+    }
+  }
 });
 
 /* ── Data fetch ───────────────────────────────────── */
@@ -1673,6 +1682,25 @@ function panToCone(cone) {
   map.setView([cone.lat, cone.lng], Math.max(map.getZoom(), 17));
 }
 
+// Pan so the given latLng lands at the visible-area center, not the
+// raw container center. On mobile the inspector overlays the bottom
+// half of the map — panTo([lat,lng]) puts the target behind the
+// inspector. Computing the offset from container center to visible
+// center and panBy that delta keeps the target visually centered.
+function panToVisibleCenter(lat, lng, opts = {}) {
+  if (!map) return;
+  const visible = getVisibleMapCenter();
+  if (!visible) {
+    map.panTo([lat, lng], { animate: opts.animate ?? true });
+    return;
+  }
+  const targetPx = map.latLngToContainerPoint([lat, lng]);
+  const dx = targetPx.x - visible.x;
+  const dy = targetPx.y - visible.y;
+  if (dx === 0 && dy === 0) return;
+  map.panBy([dx, dy], { animate: opts.animate ?? true });
+}
+
 /* ── Rover position ───────────────────────────────── */
 const followRover = ref(loadPref("followRover", false, (v) => v === "true"));
 watch(followRover, (v) => savePref("followRover", v));
@@ -1680,7 +1708,7 @@ watch(followRover, (v) => savePref("followRover", v));
 function centerOnRover() {
   const lp = roverStatus.value.last_position;
   if (!lp || !map) return;
-  map.panTo([lp.lat, lp.lng], { animate: true });
+  panToVisibleCenter(lp.lat, lp.lng);
 }
 
 function toggleFollowRover() {
@@ -2133,7 +2161,7 @@ function connectSSE() {
   eventSource.addEventListener("rover", (e) => {
     const data = JSON.parse(e.data);
     updateRoverMarker(data.lat, data.lng);
-    if (followRover.value && map) map.panTo([data.lat, data.lng], { animate: true });
+    if (followRover.value) panToVisibleCenter(data.lat, data.lng);
     if (roverMode.value === "executing") updatePathProgress(data.lat, data.lng);
   });
 
@@ -2145,7 +2173,7 @@ function connectSSE() {
     const lp = data.last_position;
     if (lp && typeof lp.lat === "number" && typeof lp.lng === "number") {
       updateRoverMarker(lp.lat, lp.lng);
-      if (followRover.value && map) map.panTo([lp.lat, lp.lng], { animate: true });
+      if (followRover.value) panToVisibleCenter(lp.lat, lp.lng);
     }
     // If the rover disconnected mid-manual-control, release immediately.
     if (!data.connected && roverMode.value === "manual") {
@@ -2351,6 +2379,13 @@ onMounted(async () => {
   await fetchAll();
   await nextTick();
   initMap();
+  // fetchAll restores activeCourseId before initMap exists, so the
+  // course watcher's pan was a no-op. Re-apply once the map is ready
+  // so a refresh lands centered on the restored course's first cone.
+  if (activeCourseId.value != null) {
+    const cones = conesMap.value[activeCourseId.value] || [];
+    if (cones.length > 0) panToVisibleCenter(cones[0].lat, cones[0].lng, { animate: false });
+  }
   connectSSE();
   fetchRoverStatus();
 });
