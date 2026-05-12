@@ -83,25 +83,27 @@ navigator_node:
     # ── Path planner ────────────────────────────────────────────────────
     dock_approach_distance: 2.5        # meters of straight line before the dock pose. Lengthened from 1.5 so chassis has room to rotate into corridor heading inside the cruise leg before handing off to dock — critical when consecutive waypoints sit at 60°+ relative bearings (cruise from prev-dock-end with chassis ψ way off corridor; PP and Stanley both drift across the corridor before aligning, and the dock then opens at e_y ~30cm). 2.5m gives 4×min-turning-radius (0.56m) of room.
 
-    # ── Cruise tracker (Stanley line follower) ──────────────────────────
-    cruise_done_tolerance: 0.20        # meters from cruise end pose to declare cruise done and switch to dock
-    cruise_done_heading_max_rad: 0.26  # ~15°. Done is only declared when chassis ψ is within this of psi_path AND inside cruise_done_tolerance, so the dock tracker takes over with a clean alignment instead of bake-in heading residual.
-    cruise_pass_through_m: 0.30        # meters of past-end along-corridor overshoot that forces done regardless of heading. Safety net against PP-style orbit pathology re-emerging.
-    cruise_k_lat: 4.0                  # Stanley arctan gain: desired_offset = atan2(k_lat·e_y, v). Drives the chassis toward the corridor as a function of lateral error. Higher = more aggressive lateral closure but more wari-gari risk under noise.
-    cruise_k_heading: 3.0               # Proportional gain on the heading regulator: κ = -k_heading · e_psi_corrected. Raised 2.0→3.0 to close both final-approach precision gap and S-curve overshoot.
-    cruise_stanley_offset_cap_rad: 0.262  # ~15°. Caps desired_offset so large lateral residuals don't drive the chassis perpendicular to the corridor. Tightened from 30° (commit d1a5997) to kill dock wari-gari.
-    pp_min_speed_fraction: 0.25        # cos(e_psi_corrected) speed scale floor; lets tight cone-to-cone curves slow further before lateral correction blows out.
-    pp_handoff_blend_distance: 1.0     # meters from cruise end at which commanded speed begins to taper from cruise_speed → approach_speed. Keyed on remaining cumulative distance to dock entry across all upcoming Reed-Shepp sub-segs, NOT per-sub-seg — without that, every 0.15-0.30 m Reed-Shepp sub-seg tripped this taper and capped commanded speed at ~0.5 m/s instead of cruise_speed=1.0 (16:47 trace: peak cmd v=0.61 m/s during what should have been full-cruise stretches).
-    cruise_dock_lateral_max: 0.10      # meters — |e_y| above this at the cruise→dock handoff triggers a replan from the live chassis pose, instead of opening the dock tracker with a residual too large to close smoothly. 0.10 m fits inside the 2.5 m dock corridor at v=0.4 m/s under Stanley k_lat=4 cap 15° (closes 0.4·sin(15°)·5 s = 0.52 m of lateral budget).
-    cruise_zero_cross_speed_threshold: 0.10  # m/s — cruise tracker's zero-cross gate holds v=0 between Reed-Shepp sub-segs of opposite direction until measured chassis speed drops below this. Above the 0.05 m/s MCU PID deadband so it releases on genuine standstill, not encoder noise. Without the gate, the 16:47 WP2 case sent cmd v=-0.68 while chassis was still rolling forward at +0.5 m/s under accel_limit=0.8 m/s² ramping; chassis drifted 0.65 m past planned dock entry before MCU caught up.
+    # ── Cruise tracker (heading-only goal-seeking P-controller) ─────────
+    # The cruise tracker is now a human-driver-style heading regulator
+    # toward the dock corridor entry. There is no path-following lateral
+    # term — chassis position noise cannot enter κ. Reed-Shepp planning,
+    # sub-seg expansion, zero-cross gating, and lateral-handoff replan
+    # logic have all been removed; the planner emits exactly one cruise
+    # segment per waypoint with start_pose = chassis pose at plan time
+    # and end_pose = dock entry.
+    cruise_done_tolerance: 0.20        # meters from end pose to declare cruise done (chassis inside this distance AND heading-aligned within heading_max → handoff to dock)
+    cruise_done_heading_max_rad: 0.26  # ~15°. Chassis ψ must be within this of ψ_dock at handoff so the dock tracker opens with clean heading alignment.
+    cruise_pass_through_m: 0.30        # meters of past-end overshoot along the start→end bearing that forces done. Safety net so the chassis cannot orbit a goal that ended up just behind it.
+    cruise_k_heading: 1.5              # rad/m per rad of heading error. κ = k_heading · (bearing_to_goal − chassis_ψ), clamped to ±max_curvature. 1.5 keeps κ small (≈ ±0.13 rad/m, ≈ ±2.5° steering) at 5° heading-error noise, well below visible chassis wiggle threshold; saturates at e_psi ≈ 65° so big turns close in a single smooth arc.
+    cruise_min_speed_fraction: 0.40    # floor on the cos(e_psi) speed scale. 0.40 means commanded speed never drops below 0.40 × cruise_speed even at 180° heading error, so the chassis keeps moving (rather than freezing) while it U-turns under saturated κ.
 
     # ── Dock tracker (state-feedback line follower) ─────────────────────
     dock_k_y: 6.0                      # 1/m — legacy P-gain on antenna lateral error, retained for backward compat. The Stanley refinement uses dock_stanley_k_lat instead; dock_k_y is only consulted as the upper-bound fallback when dock_stanley_k_lat is absent.
-    dock_stanley_k_lat: 4.0            # Stanley arctan gain for the dock tracker: desired_offset = atan2(k·e_y, v). Matched to cruise_k_lat so cruise→dock handoff doesn't change closure dynamics. 2.5→4.0 closes the final cm under real steering instead of inertia.
+    dock_stanley_k_lat: 4.0            # Stanley arctan gain for the dock tracker: desired_offset = atan2(k·e_y, v). 2.5→4.0 closes the final cm under real steering instead of inertia.
     dock_k_psi: 5.0                    # 1/m — gain on chassis heading error vs path. ζ = k_ψ / (2·√k_y) ≈ 1.02 (near-critical) at k_y=6.
     dock_k_i: 0.4                      # 1/(m·s) — integral on antenna lateral error. Cancels constant κ-bias from antenna-offset residual / mast tilt / slope.
     dock_integral_limit: 0.5           # m·s — clamp on the integral state. Also acts as the anti-windup mechanism: during sustained κ-saturation the integral pumps up to ±limit and stops, bounding the kappa contribution k_i × limit regardless of how long saturation persists.
-    dock_stanley_offset_cap_rad: 0.262 # ~15°. Matches cruise_stanley_offset_cap_rad so the cruise→dock handoff doesn't switch to a wider cap and start cross-and-swinging at the dock entry.
+    dock_stanley_offset_cap_rad: 0.262 # ~15°. Caps desired_offset so the dock tracker doesn't drive perpendicular to the corridor on large lateral residuals.
     dock_reverse_recovery_m: 0.08      # meters behind the target (along corridor) to back up to before re-engaging forward control after an along-track overshoot. Tight cycle (4 cm back, 4 cm forward) prevents 20 cm slingshot.
     dock_brake_zone_m: 0.06            # meters under which forward speed ramps down approaching target. Wider zone bleeds inertia + PID lag before the antenna crosses the target.
     dock_brake_min_speed_frac: 0.70    # minimum fraction of creep_speed inside brake_zone. 0.70 × 0.10 = 0.07 m/s stays above MCU PID deadband 0.05 m/s so the chassis crosses the last cm under power.

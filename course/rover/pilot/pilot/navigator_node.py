@@ -135,27 +135,12 @@ class NavigatorNode(Node):
         # Path planner.
         self.declare_parameter('dock_approach_distance', 2.5)
 
-        # Cruise tracker (Stanley).
+        # Cruise tracker (heading-only goal-seeking P-controller).
         self.declare_parameter('cruise_done_tolerance', 0.20)
         self.declare_parameter('cruise_done_heading_max_rad', 0.26)
         self.declare_parameter('cruise_pass_through_m', 0.30)
-        self.declare_parameter('cruise_k_lat', 4.0)
-        self.declare_parameter('cruise_k_heading', 3.0)
-        self.declare_parameter('cruise_stanley_offset_cap_rad', 0.262)
-        # Maximum lateral error (|e_y| vs dock corridor) tolerated at
-        # the cruise→dock handoff. Above this, navigator re-plans from
-        # the live chassis pose instead of letting the dock tracker
-        # open with a residual it can't smoothly close. 0.10 m sits
-        # well inside the dock corridor (default 2.5 m) so Stanley
-        # k_lat=4 with cap 15° has ~5 s of corridor to bleed lateral
-        # at 0.4 m/s before reaching target.
-        self.declare_parameter('cruise_dock_lateral_max', 0.10)
-        # Threshold below which the cruise tracker's zero-cross gate
-        # releases — i.e., when measured chassis speed magnitude drops
-        # below this, a forward↔reverse sub-seg transition is allowed
-        # through. 0.10 m/s is above the MCU PID deadband (0.05 m/s)
-        # so the gate releases on genuine standstill, not encoder noise.
-        self.declare_parameter('cruise_zero_cross_speed_threshold', 0.10)
+        self.declare_parameter('cruise_k_heading', 1.5)
+        self.declare_parameter('cruise_min_speed_fraction', 0.40)
 
         # Dock tracker (state feedback).
         self.declare_parameter('dock_k_y', 6.0)
@@ -171,12 +156,6 @@ class NavigatorNode(Node):
         self.declare_parameter('dock_reverse_stall_min_disp_m', 0.30)
         self.declare_parameter('approach_tolerance', 0.03)
         self.declare_parameter('creep_zone', 0.40)
-        # Cruise speed-scale floor (`cos(e_psi_corrected)` lower bound)
-        # and cruise→approach handoff blend distance. `pp_` prefix is
-        # historical (Pure Pursuit era) — the current Stanley tracker
-        # uses the same knobs with the same semantics.
-        self.declare_parameter('pp_min_speed_fraction', 0.25)
-        self.declare_parameter('pp_handoff_blend_distance', 1.0)
 
         # Tolerances and timeouts.
         self.declare_parameter('waypoint_tolerance', 0.05)
@@ -252,8 +231,6 @@ class NavigatorNode(Node):
 
         # ── derived & state ──────────────────────────────────────────────
         self._max_steer_rad = radians(self.get_parameter('max_steering_angle_deg').value)
-        self._cruise_dock_lateral_max = float(
-            self.get_parameter('cruise_dock_lateral_max').value)
 
         # Effective antenna offset. Persisted antenna_offset.json wins over
         # the YAML default; the YAML value is a fallback for first boot. We
@@ -467,9 +444,8 @@ class NavigatorNode(Node):
             'cruise_done_tolerance': p('cruise_done_tolerance').value,
             'cruise_done_heading_max_rad': p('cruise_done_heading_max_rad').value,
             'cruise_pass_through_m': p('cruise_pass_through_m').value,
-            'cruise_k_lat': p('cruise_k_lat').value,
             'cruise_k_heading': p('cruise_k_heading').value,
-            'cruise_stanley_offset_cap_rad': p('cruise_stanley_offset_cap_rad').value,
+            'cruise_min_speed_fraction': p('cruise_min_speed_fraction').value,
             'dock_k_y': p('dock_k_y').value,
             'dock_stanley_k_lat': p('dock_stanley_k_lat').value,
             'dock_k_psi': p('dock_k_psi').value,
@@ -481,9 +457,6 @@ class NavigatorNode(Node):
             'dock_brake_min_speed_frac': p('dock_brake_min_speed_frac').value,
             'dock_reverse_stall_timeout_s': p('dock_reverse_stall_timeout_s').value,
             'dock_reverse_stall_min_disp_m': p('dock_reverse_stall_min_disp_m').value,
-            'pp_min_speed_fraction': p('pp_min_speed_fraction').value,
-            'pp_handoff_blend_distance': p('pp_handoff_blend_distance').value,
-            'cruise_zero_cross_speed_threshold': p('cruise_zero_cross_speed_threshold').value,
             'approach_tolerance': p('approach_tolerance').value,
             'creep_zone': p('creep_zone').value,
             'max_curvature': p('max_curvature').value,
@@ -494,20 +467,6 @@ class NavigatorNode(Node):
             'antenna_offset_x': self._antenna_offset_x,
             'antenna_offset_y': self._antenna_offset_y,
         }
-
-    def _chassis_turning_radius(self):
-        """Minimum chassis turning radius from wheelbase / tan(max_steer).
-
-        Passed to the path planner so Dubins decomposition uses the actual
-        kinematic limit of the rover rather than a hardcoded default.
-        Adds a small safety margin (1.1×) so the planner doesn't generate
-        paths the chassis can't quite achieve due to servo trim / mech-
-        anical slop near the steering stops.
-        """
-        wb = max(1e-3, self.get_parameter('wheelbase').value)
-        max_steer = max(1e-3, self._max_steer_rad)
-        from math import tan as _tan
-        return 1.1 * wb / _tan(max_steer)
 
     def _odom_chassis_kinematics(self):
         v = 0.5 * (self._odom_v_left + self._odom_v_right)
@@ -1023,7 +982,6 @@ class NavigatorNode(Node):
                 dock_distance=self.get_parameter('dock_approach_distance').value,
                 return_to_start=self.get_parameter('return_to_start').value,
                 start_chassis_xy=self._mission_start_chassis_xy,
-                turning_radius=self._chassis_turning_radius(),
             )
         except Exception as exc:  # pragma: no cover - defensive
             self._stop_motors()
@@ -1058,67 +1016,12 @@ class NavigatorNode(Node):
         antenna_world = self._estimator.antenna_position()
 
         if seg.kind == 'cruise':
-            # Chassis longitudinal speed (m/s, signed by direction of
-            # motion). Wheel-encoder average gives the actual chassis
-            # speed the MCU has spun up to; the cruise tracker uses this
-            # to gate direction-switch sub-seg transitions through zero.
-            chassis_v = 0.5 * (self._odom_v_left + self._odom_v_right)
-
-            # Burn-through loop: Reed-Shepp's expansion often produces
-            # leading sub-segs whose end pose is already behind the
-            # chassis (the previous dock pushed chassis ~10-20 cm past
-            # the dock point, the new cruise plan starts from current
-            # chassis pose, and the first 1-3 sub-segs of the new plan
-            # are immediately "done"). Without the loop, each done
-            # sub-seg cost one 50 ms tick at cmd v=0 before the
-            # navigator advanced — adding up to a visible 100-300 ms
-            # stop at every WP transition and after every replan. The
-            # loop advances through done sub-segs in the same tick so
-            # the chassis only sees the cmd from the first non-done
-            # (or last cruise) sub-seg of the run. The loop terminates
-            # on: (a) a non-done step, (b) a replan trigger, (c)
-            # reaching the dock segment, or (d) running out of
-            # segments. A hard iteration cap defends against any
-            # never-terminating plan.
-            v, kappa, done = 0.0, 0.0, False
-            for _ in range(64):
-                v, kappa, done = self._cruise_tracker.step(
-                    chassis_pose, seg, time.monotonic(),
-                    chassis_v=chassis_v)
-                if not done:
-                    break
-                # done — handle replan check, then advance.
-                if (seg.dist_to_dock <= 1e-3
-                        and self._cur_seg_idx + 1 < len(self._segments)
-                        and self._segments[self._cur_seg_idx + 1].kind == 'dock'):
-                    dock_seg = self._segments[self._cur_seg_idx + 1]
-                    dsx, dsy, dpsi = dock_seg.start_pose
-                    _, e_y_dock = _project_onto_line(
-                        chassis_pose[0], chassis_pose[1], dsx, dsy, dpsi)
-                    if abs(e_y_dock) > self._cruise_dock_lateral_max:
-                        self.get_logger().warn(
-                            f'Cruise→dock handoff |e_y|={abs(e_y_dock)*100:.1f}cm '
-                            f'exceeds {self._cruise_dock_lateral_max*100:.0f}cm '
-                            f'tolerance — replanning from live chassis pose'
-                        )
-                        self._replan_from_current_chassis()
-                        self._last_dock_trace_t = None
-                        return
-                self._cur_seg_idx += 1
-                self._reset_progress()
-                self._last_dock_trace_t = None
-                if self._cur_seg_idx >= len(self._segments):
-                    # Mission complete.
-                    self._stop_motors()
-                    self._set_state(State.IDLE)
-                    return
-                seg = self._segments[self._cur_seg_idx]
-                if seg.kind != 'cruise':
-                    # Next sub-seg is dock — let the dock handler take
-                    # over on the next tick. Don't publish a stale
-                    # cruise v/kappa (would be 0,0 from the prior done).
-                    return
-
+            # Heading-only goal-seeking controller. One cruise PathSegment
+            # per waypoint (planner no longer expands into Reed-Shepp
+            # sub-segs), so there's no burn-through loop and no chassis_v
+            # gate — the tracker just steers toward seg.end_pose.
+            v, kappa, done = self._cruise_tracker.step(
+                chassis_pose, seg, time.monotonic())
             self._publish_velocity(v, kappa)
             self._update_progress(chassis_pose, seg.end_pose)
 
@@ -1127,15 +1030,23 @@ class NavigatorNode(Node):
                     or now_mono - self._last_dock_trace_t >= 1.0):
                 self._last_dock_trace_t = now_mono
                 cx, cy, cpsi = chassis_pose
-                ex, ey, _ = seg.end_pose
+                ex, ey, end_psi = seg.end_pose
                 dist_to_end = hypot(ex - cx, ey - cy)
+                e_psi_to_dock = normalize_angle(cpsi - end_psi)
                 self.get_logger().info(
-                    f'CRUISE seg{self._cur_seg_idx} (WP{seg.waypoint_index + 1}) '
+                    f'CRUISE (WP{seg.waypoint_index + 1}) '
                     f'ch=({cx:+.2f},{cy:+.2f},{degrees(cpsi):+.0f}°) '
-                    f'end=({ex:+.2f},{ey:+.2f}) dist_to_end={dist_to_end*100:.1f}cm '
-                    f'd2d={seg.dist_to_dock*100:.0f}cm v_ch={chassis_v:+.2f} '
+                    f'end=({ex:+.2f},{ey:+.2f},{degrees(end_psi):+.0f}°) '
+                    f'dist={dist_to_end*100:.1f}cm '
+                    f'e_psi={degrees(e_psi_to_dock):+.1f}° '
                     f'cmd v={v:+.2f} k={kappa:+.2f}'
                 )
+
+            if done:
+                self._cur_seg_idx += 1
+                self._cruise_tracker.reset()
+                self._reset_progress()
+                self._last_dock_trace_t = None
             return
 
         if seg.kind == 'dock':
@@ -1320,7 +1231,6 @@ class NavigatorNode(Node):
                 return_to_start=self.get_parameter('return_to_start').value,
                 start_chassis_xy=self._mission_start_chassis_xy,
                 waypoint_index_offset=next_wp_idx,
-                turning_radius=self._chassis_turning_radius(),
             )
         except Exception as exc:  # pragma: no cover - defensive
             self.get_logger().warn(f'Replan failed: {exc}')

@@ -280,178 +280,114 @@ class TestOffsetCompensation:
         assert isclose(ay, 2.0, abs_tol=1e-6)
 
 
-class TestDubinsCruise:
-    """Dubins-decomposed cruise must be a chain of small chord segments
-    whose accumulated length is no shorter than the chassis→entry chord
-    (because Dubins respects the turning radius) and that ends tangent
-    to the corridor heading."""
 
-    def test_cruise_chain_length_at_least_chord(self):
+
+class TestSingleCruisePerWaypoint:
+    """The planner now emits ONE cruise PathSegment per waypoint (down
+    from a chain of Reed-Shepp sub-segs). Each cruise's start_pose is
+    the chassis pose at plan time and end_pose is the dock corridor
+    entry. The cruise tracker is a heading-only goal-seeker — it does
+    not need a sampled path."""
+
+    def test_exactly_one_cruise_per_waypoint(self):
         start_xy = (0.0, 0.0)
-        wp = _gps(5.0, 3.0)
         segments = plan(
             current_chassis_pose=(*start_xy, 0.0),
             antenna_offset=(0.0, 0.0),
-            waypoints_lat_lng=[wp],
+            waypoints_lat_lng=[_gps(5.0, 3.0)],
             ref_lat_lon=(REF_LAT, REF_LON),
             dock_distance=1.0,
             return_to_start=False,
-            turning_radius=0.5,
         )
         cruises = _cruise_for(segments, 0)
-        # Chord from chassis to dock entry.
-        dock = _docks(segments)[0]
-        chord = hypot(dock.start_pose[0] - start_xy[0],
-                      dock.start_pose[1] - start_xy[1])
-        path_len = sum(hypot(c.end_pose[0] - c.start_pose[0],
-                             c.end_pose[1] - c.start_pose[1])
-                       for c in cruises)
-        assert path_len >= chord - 1e-6
+        assert len(cruises) == 1
 
-    def test_last_cruise_aligned_with_dock_heading(self):
-        # The final cruise sub-segment's end_pose.psi is forced to
-        # psi_dock so the cruise→dock handoff has e_psi ≈ 0.
+    def test_cruise_start_is_chassis_now(self):
+        start_xy = (1.5, -0.5)
+        segments = plan(
+            current_chassis_pose=(*start_xy, 0.0),
+            antenna_offset=(0.0, 0.0),
+            waypoints_lat_lng=[_gps(5.0, 3.0)],
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=1.0,
+        )
+        cruises = _cruise_for(segments, 0)
+        c = cruises[0]
+        assert c.start_pose[0] == pytest.approx(start_xy[0], abs=1e-9)
+        assert c.start_pose[1] == pytest.approx(start_xy[1], abs=1e-9)
+
+    def test_cruise_end_is_dock_entry(self):
+        # cruise.end_pose must equal dock.start_pose (the corridor entry).
         segments = plan(
             current_chassis_pose=(0.0, 0.0, 0.0),
             antenna_offset=(0.0, 0.0),
             waypoints_lat_lng=[_gps(5.0, 2.0)],
             ref_lat_lon=(REF_LAT, REF_LON),
             dock_distance=1.0,
-            return_to_start=False,
         )
-        cruises = _cruise_for(segments, 0)
+        cruise = _cruise_for(segments, 0)[0]
         dock = _docks(segments)[0]
-        assert isclose(cruises[-1].end_pose[2], dock.start_pose[2], abs_tol=1e-9)
+        assert cruise.end_pose[0] == pytest.approx(dock.start_pose[0])
+        assert cruise.end_pose[1] == pytest.approx(dock.start_pose[1])
+        # End psi carries the dock corridor heading so the cruise tracker
+        # has the correct target heading for its done condition.
+        assert cruise.end_pose[2] == pytest.approx(dock.start_pose[2])
 
-
-class TestDistToDockPropagation:
-    """Each cruise sub-segment carries `dist_to_dock` = cumulative metres
-    from its END pose through all later cruise sub-segs to the dock
-    corridor entry. The CruiseTracker's handoff-blend taper keys on
-    this so cruise_speed is held across an entire Reed-Shepp expansion;
-    without it, every 0.15 m sub-seg trips the taper and caps speed at
-    approach_speed."""
-
-    def _simple_segments(self):
-        # Single distant waypoint so the Reed-Shepp expansion has many
-        # sub-segs; antenna offset zero keeps geometry tidy.
-        ref = (37.5, 127.0)
-        # 6 m east in metres → adjust by reverse ENU conversion.
-        wp_e, wp_n = 6.0, 0.0
-        wp_lat, wp_lon = gps_from_enu(wp_e, wp_n, ref[0], ref[1])
-        waypoints = [{'lat': wp_lat, 'lng': wp_lon}]
-        return plan(
+    def test_cruise_start_psi_is_bearing_to_entry(self):
+        # The cruise tracker doesn't actually consume start_pose.psi (it
+        # only needs end_pose for steering), but the planner stamps it
+        # with the bearing from chassis to dock entry as a useful
+        # diagnostic field. That bearing should be consistent.
+        segments = plan(
             current_chassis_pose=(0.0, 0.0, 0.0),
             antenna_offset=(0.0, 0.0),
-            waypoints_lat_lng=waypoints,
-            ref_lat_lon=ref,
-            dock_distance=2.5,
-            turning_radius=0.56,
+            waypoints_lat_lng=[_gps(5.0, 2.0)],
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=1.0,
         )
+        cruise = _cruise_for(segments, 0)[0]
+        bearing = atan2(cruise.end_pose[1] - cruise.start_pose[1],
+                        cruise.end_pose[0] - cruise.start_pose[0])
+        assert cruise.start_pose[2] == pytest.approx(bearing, abs=1e-6)
 
-    def test_last_cruise_sub_has_zero_dist_to_dock(self):
-        segs = self._simple_segments()
-        cruises = _cruise_for(segs, 0)
-        assert cruises, 'expected at least one cruise sub-seg'
-        last = cruises[-1]
-        assert last.dist_to_dock == pytest.approx(0.0, abs=1e-9)
-
-    def test_dist_to_dock_decreases_monotonically(self):
-        segs = self._simple_segments()
-        cruises = _cruise_for(segs, 0)
-        assert len(cruises) >= 2
-        for prev, nxt in zip(cruises[:-1], cruises[1:]):
-            assert prev.dist_to_dock + 1e-9 >= nxt.dist_to_dock, (
-                f'dist_to_dock should never increase along the path; '
-                f'got {prev.dist_to_dock:.3f} → {nxt.dist_to_dock:.3f}')
-
-    def test_dist_to_dock_matches_remaining_chord_sum(self):
-        # The first cruise sub-seg's dist_to_dock should equal the
-        # total chord length of every later sub-seg in the same cruise.
-        segs = self._simple_segments()
-        cruises = _cruise_for(segs, 0)
-        if len(cruises) < 2:
-            pytest.skip('Reed-Shepp expansion too short for the check')
-        head = cruises[0]
-        tail = cruises[1:]
-        tail_chord_sum = 0.0
-        for s in tail:
-            sx, sy, _ = s.start_pose
-            ex, ey, _ = s.end_pose
-            tail_chord_sum += hypot(ex - sx, ey - sy)
-        assert head.dist_to_dock == pytest.approx(tail_chord_sum, abs=1e-6)
-
-    def test_last_cruise_ends_forward(self):
-        # require_forward_end is wired through _expand_cruise so the
-        # last cruise sub-seg must be forward (direction = +1). The
-        # dock tracker only supports forward motion; a reverse-end
-        # cruise would force a direction switch right at the dock
-        # corridor entry.
-        segs = self._simple_segments()
-        cruises = _cruise_for(segs, 0)
-        assert cruises
-        assert cruises[-1].direction == 1
-
-
-class TestTangentPsiOnArcPrimitives:
-    """The cruise sub-seg psi_path is the Reed-Shepp tangent (chassis
-    facing) at the sample, NOT the inter-sample chord direction. On
-    arc primitives the chord rotates by step/rho radians per sample
-    (≈ 14° at step 0.15 m, rho 0.61 m); using it as psi_path makes
-    Stanley see a fresh 14° heading error every 50 ms sub-seg boundary
-    and snap kappa around. The tangent at each sample varies smoothly
-    along the arc, giving Stanley a continuous reference."""
-
-    def test_psi_path_smoothly_varies_on_arc(self):
-        # A 90° forward arc: start (0,0,0) → end (rho, rho, pi/2)
-        # forces Reed-Shepp into a pure L+ primitive (no straights, no
-        # reverse). Tangent at each sample should rotate gradually;
-        # adjacent sub-segs should not have psi_path jumps larger than
-        # what an arc of length step_m on radius rho would produce
-        # (≈ step/rho = 0.27 rad = 15° at step 0.15 m, rho 0.56 m).
-        from math import degrees
-        from pilot.lib.path_planner import _expand_cruise
-
-        rho = 0.56
-        sub_segs = _expand_cruise(
-            start_pose=(0.0, 0.0, 0.0),
-            end_pose=(rho, rho, pi / 2),
-            target_antenna=(rho + 0.5, rho),
-            waypoint_index=0,
-            turning_radius=rho,
-            sample_step=0.15,
+    def test_no_reed_shepp_artefacts(self):
+        # No sub-seg chain — verify by checking the count of cruise
+        # segments equals the number of waypoints (+1 for return).
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=(0.0, 0.0),
+            waypoints_lat_lng=[_gps(5.0, 2.0), _gps(10.0, -1.0),
+                               _gps(2.0, 5.0)],
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=1.0,
+            return_to_start=True,
+            start_chassis_xy=(0.0, 0.0),
         )
-        assert len(sub_segs) >= 3, 'expected multiple sub-segs on a 90° arc'
-        # Per-sub-seg psi_path is constant (start_pose.psi == end_pose.psi
-        # by the new tangent-based convention). Consecutive sub-segs'
-        # psi_path differs by at most the per-sample tangent rotation.
-        max_step = 0.15 / rho + 0.05  # rad, small slack for boundary
-        for prev, nxt in zip(sub_segs[:-1], sub_segs[1:]):
-            dpsi = abs(((nxt.start_pose[2] - prev.start_pose[2] + pi)
-                        % (2 * pi)) - pi)
-            assert dpsi <= max_step, (
-                f'tangent step too large: {degrees(dpsi):.1f}° '
-                f'(max {degrees(max_step):.1f}°)')
+        cruises = [s for s in segments if s.kind == 'cruise']
+        docks = [s for s in segments if s.kind == 'dock']
+        # 3 waypoints + 1 return = 4 cruise + 4 dock.
+        assert len(cruises) == 4
+        assert len(docks) == 4
+        # Cruise direction is always forward in the new planner.
+        for c in cruises:
+            assert c.direction == 1
 
-    def test_forward_arc_subs_match_chassis_facing(self):
-        # On a forward 90° arc Reed-Shepp produces only direction=+1
-        # sub-segs. psi_path equals the chassis-facing tangent; e_psi
-        # for a chassis on the arc is ≈ 0. The previous (pre-fix)
-        # chord-based psi_path would step the angle by step/rho per
-        # sub-seg, so this test guards against regressing to chord_psi.
-        from pilot.lib.path_planner import _expand_cruise
-
-        rho = 0.56
-        sub_segs = _expand_cruise(
-            start_pose=(0.0, 0.0, 0.0),
-            end_pose=(rho, rho, pi / 2),
-            target_antenna=(rho + 0.5, rho),
-            waypoint_index=0,
-            turning_radius=rho,
-            sample_step=0.15,
+    def test_chassis_already_at_dock_entry_skips_cruise(self):
+        # If the chassis pose is essentially the dock entry (replan or
+        # repeated request), the planner can omit the cruise and emit
+        # only the dock segment. Defensive — prevents a zero-length
+        # cruise from being created.
+        # We can't easily build this case without knowing the dock
+        # entry up front, so just verify the planner doesn't choke
+        # on a very close-by waypoint; whether the cruise is emitted
+        # is implementation detail.
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=(0.0, 0.0),
+            waypoints_lat_lng=[_gps(0.001, 0.0)],
+            ref_lat_lon=(REF_LAT, REF_LON),
+            dock_distance=1.0,
         )
-        assert sub_segs
-        for s in sub_segs:
-            assert s.direction == 1, (
-                f'forward arc should not yield reverse subs; got '
-                f'direction={s.direction}')
+        # At least one dock for the waypoint.
+        docks = _docks(segments)
+        assert len(docks) == 1

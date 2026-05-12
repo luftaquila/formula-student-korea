@@ -2,14 +2,17 @@
 
 Two control laws, one per segment kind:
 
-  • CruiseTracker — Stanley line follower. Regulates chassis ψ toward a
-    desired ψ that biases toward the cruise corridor by atan2(k_lat·e_y, v).
-    Speed scales with cos(e_psi_corrected) so the rover slows as the
-    corrected heading error grows, keeping GPS heading-of-motion
-    measurement noise low. Was Pure Pursuit + D damping until the 04:16
-    figure-8 incident on chassis ψ way off corridor — Stanley actively
-    aligns chassis ψ with the corridor instead of chasing a lookahead
-    point, eliminating the PP orbit pathology.
+  • CruiseTracker — heading-only P-control toward the segment end pose.
+    Drives the chassis like a human steering toward a visible target:
+    compute the bearing from current chassis position to the goal, set
+    κ proportional to (bearing - chassis_ψ), drive forward at cruise
+    speed. No path-following, no lateral term — there is literally no
+    way for chassis-position noise or chord_psi discretisation to feed
+    into the κ command, so straight stretches stay straight (e_psi → 0
+    drives κ → 0) and turns are single smooth arcs that taper out as
+    the chassis aligns. This replaces the Reed-Shepp + Stanley line
+    follower whose lateral Stanley term coupled GPS noise into κ noise
+    and produced visible wiggle.
 
   • DockTracker — Stanley line follower on the *antenna*'s lateral error
     with an integral term for κ-bias rejection. Operating on the antenna
@@ -21,10 +24,10 @@ Two control laws, one per segment kind:
     closure at low v and a pure heading regulator at small e_y.
 
 Both trackers consume an immutable PathSegment + the live chassis pose +
-the antenna ENU position, and return (v_cmd, κ_cmd, done?). Internal
-state is kept on the tracker instance (dock integral, cruise zero-cross
-direction memory) so navigator can hand off cleanly between cruise and
-dock without losing controller state continuity.
+the antenna ENU position, and return (v_cmd, κ_cmd, done?). State is
+kept on the tracker instance (dock integral, reverse latch) so the
+navigator can hand off cleanly between cruise and dock without losing
+controller state continuity.
 """
 
 from math import atan2, cos, sin, hypot, tan
@@ -33,278 +36,144 @@ from pilot.lib.geo_utils import normalize_angle, project_onto_line
 
 
 class CruiseTracker:
-    """Stanley line follower toward the cruise corridor's end pose.
+    """Heading-only P-controller driving the chassis toward the segment end.
 
-    Replaces Pure Pursuit because PP only matches the chassis position to
-    a lookahead point — it does NOT actively align chassis ψ with the
-    corridor heading. When the chassis comes out of one dock pointing
-    60-90° off the next corridor (WP6→WP7 case, 04:16:23 trace: chassis
-    ψ=-107°, corridor=-171°), PP saturates κ chasing the chassis→end
-    direction, rotates the chassis through the end pose, and then orbits
-    the end at turning-radius distance because the end now sits inside
-    the chassis's turning circle. ψ overshoots the corridor by 30+°
-    before swinging back. Cruise never declares done because dist
-    grows again as the chassis swings out.
+    Computes the desired chassis heading as the bearing from the current
+    chassis position to ``segment.end_pose`` (the dock corridor entry).
+    Sets curvature proportional to (desired_psi − chassis_psi), capped at
+    ``max_curvature``. Speed is ``cruise_speed`` scaled by max(min_frac,
+    cos(e_psi)) so the chassis slows gracefully on sharp turns where GPS
+    heading-of-motion is noisier.
 
-    Stanley instead controls chassis ψ to follow a desired psi that
-    biases toward the corridor:
+    Why heading-only (no lateral term):
 
-      desired_offset = atan2(k_lat * e_y_corridor, v)
-      desired_psi    = psi_path - desired_offset
-      e_psi_corr     = chassis_psi - desired_psi
-      kappa          = -k_heading * e_psi_corr
+      A Stanley line follower runs κ = -k_heading·(e_psi + atan2(k_lat·
+      e_y, v)). The e_y term is the source of every wiggle problem we
+      saw — chassis-position noise of ±1 cm feeds atan2(4·0.01/0.5) =
+      ±4.6° into desired_offset, then ±0.24 rad/m into κ; chord_psi
+      jumps between Reed-Shepp sample sub-segments inject 5-14° steps
+      that the regulator chases; the loop fights its own state-feedback
+      lag at the phase margin and oscillates at ~0.25 Hz. Removing the
+      e_y term entirely removes all three pathologies — κ depends only
+      on (bearing - chassis_psi), and a chassis that is on a straight
+      stretch with chassis_psi pointed at the goal has e_psi → 0 and
+      κ → 0. No path to deviate from means no false-deviation to react
+      to.
 
-    Far off the corridor (large |e_y|), desired_offset saturates near
-    pi/2 in the sign of e_y so the chassis steers nearly perpendicular
-    to the corridor and closes lateral. As the chassis gets onto the
-    corridor, desired_offset decays smoothly to zero and the law becomes
-    a pure heading regulator that holds chassis_psi = psi_path. This
-    means the chassis is already corridor-aligned by the time cruise
-    hands off to dock — no 30° heading offset bake-in, no PP orbit.
+    Why this still works for path-following:
 
-    Speed schedule preserved from the PP version: linearly taper from
-    `cruise_speed` to `approach_speed` over the last
-    `handoff_blend_distance` metres, plus a min_speed_fraction cap on
-    |cos(e_psi_corr)| to slow the chassis on sharp turns so GPS heading
-    measurement can keep up.
+      The chassis traces a smooth arc into the dock corridor entry
+      naturally. As it approaches the entry, the bearing-to-goal
+      direction approaches the entry-to-corridor direction (geometrically:
+      a chassis arriving at the entry from any side will have its
+      heading pointed at the entry, which is ψ_dock by construction
+      because the dock entry sits ahead of the dock target along ψ_dock).
+      So the cruise→dock handoff has the chassis already pointed along
+      the dock corridor heading, with the antenna roughly on the
+      corridor (within ±a few cm at typical approach angles). The dock
+      Stanley then handles the cm-precision landing.
+
+      Worst case: chassis arriving at the dock entry from a perpendicular
+      direction (90° off ψ_dock). The arc tightens, the chassis arrives
+      with chassis_psi ≈ ψ_dock (because it was always steering toward
+      the entry point and at entry the bearing-to-entry IS the corridor
+      heading), and dock takes over with small e_y residual that the
+      Stanley + integral closes within the 2.5 m default corridor.
+
+    Done condition:
+
+      Chassis position within ``cruise_done_tolerance`` of the segment
+      end AND chassis_psi within ``cruise_done_heading_max_rad`` of
+      ψ_dock (= segment.end_pose.psi). The heading condition keeps the
+      dock from opening with a stale ±30° chassis heading the operator
+      previously saw cause wari-gari. If the chassis overshoots the end
+      pose along the bearing-to-goal direction by
+      ``cruise_pass_through_m``, declare done regardless — safety net.
     """
 
     def __init__(self, params):
         self._cruise_speed = float(params['cruise_speed'])
-        self._approach_speed = float(params['approach_speed'])
         self._max_curvature = float(params['max_curvature'])
         self._cruise_done_tolerance = float(params['cruise_done_tolerance'])
-        # Slow down as |e_psi_corrected| grows; never below this fraction.
-        self._min_speed_fraction = float(params.get('pp_min_speed_fraction', 0.25))
-        self._handoff_blend_distance = float(params.get('pp_handoff_blend_distance', 1.0))
-        # Zero-cross gate threshold. When a new cruise sub-segment has a
-        # different direction sign than the previously executed one (i.e.
-        # Reed-Shepp asks for a forward→reverse or reverse→forward
-        # transition mid-cruise), command v=0 until measured chassis
-        # speed magnitude drops below this value. Without the gate, the
-        # MCU accel_limit (0.8 m/s²) takes ~1.5 s to ramp setpoint from
-        # +0.5 m/s through zero to −0.5 m/s — during which the chassis
-        # drifts forward under inertia while the cruise tracker thinks
-        # it is already reversing. 16:47 WP2 trace: cmd v=−0.68 at
-        # t=23.36 s, chassis still moving +0.30 m east at t=24.36 s,
-        # only reversed by t=25.41 s — by which point chassis was 0.65
-        # m past the planned dock entry and dock opened at |e_y|=43 cm.
-        # 0.10 m/s threshold is well above MCU PID deadband (0.05 m/s)
-        # so the gate releases as soon as the chassis is genuinely at
-        # rest, not on encoder noise.
-        self._zero_cross_speed_threshold = float(
-            params.get('cruise_zero_cross_speed_threshold', 0.10))
-        # Persistent last-executed direction across step() calls. None
-        # means "no prior cruise sub-seg executed yet"; +1/-1 once the
-        # tracker has commanded motion in that direction. NOT cleared
-        # by reset() — the navigator calls reset() between every Reed-
-        # Shepp sub-seg and direction switches happen at exactly those
-        # boundaries, so wiping the history would defeat the gate. Only
-        # __init__ initialises this. See reset()'s docstring.
-        self._last_direction = None
-        # Done condition heading tolerance — chassis must have its ψ
-        # within this of psi_path before declaring done, so the dock
-        # tracker takes over with a clean alignment.
         self._cruise_done_heading_max = float(
-            params.get('cruise_done_heading_max_rad', 0.26))  # 15°
-        # Past-end fail-safe. Declare done regardless of heading if the
-        # chassis has overshot the cruise end along-corridor by this
-        # margin. Keeps PP-style orbit pathology from ever burning a
-        # mission again.
+            params.get('cruise_done_heading_max_rad', 0.26))
         self._cruise_pass_through_m = float(
             params.get('cruise_pass_through_m', 0.30))
-        # Stanley gains. k_lat sets how aggressively the chassis turns
-        # toward the corridor as a function of lateral error; k_heading
-        # sets the proportional gain on the heading regulator. Default
-        # values are softer than the dock tracker's so cruise can run at
-        # higher speed without chasing every cm of lateral residual.
-        # Stanley k_lat is the gain inside atan2(k_lat * e_y, v). Common
-        # values in the literature are 0.5–1.0; 2.0 (the original guess
-        # carried over from the dual-P era) gives a 24° desired-offset
-        # for only e_y = 5 cm at v = 0.4, so a 10 cm bounce across the
-        # corridor swings the chassis target heading 48° — full
-        # left-right wari-gari with no dwell on the corridor. Dropped
-        # to 1.0 (≈12°/5 cm) so chassis can track without slamming
-        # back and forth on noise.
-        # k_lat 2.5 -> 4.0: 15:01 mission WP4 dock final approach (e_y=
-        # 1.6 cm, e_psi=-4.5°, dist=8.6 cm) gave kappa=-0.03, chassis
-        # crawled the last cm with no meaningful turn. At k_lat=4 the
-        # same residual yields desired_offset=7.3° → e_psi_corrected=
-        # +2.8° → kappa=-0.15 (5× larger), so the final cm closes under
-        # real steering instead of inertia.
-        # cap 0.61 -> 0.52 (35° -> 30°): large e_y cases saturate the
-        # cap rather than the chassis curvature, but a tighter cap
-        # reduces the over-rotation during S-shaped cruise (15:01 WP5
-        # cruise: 67° rotation in 4 s, chassis ended 60 cm off corridor
-        # entry). cap 30° still admits 4 m of lateral closure per meter
-        # forward — strong enough for real corridors, gentle enough to
-        # avoid cross-and-swing-back.
-        # k_heading 2.0 -> 3.0: the heading regulator now responds 1.5×
-        # faster, which closes both the final-approach precision gap and
-        # the S-curve overshoot in tandem.
-        self._k_lat = float(params.get('cruise_k_lat', 4.0))
-        self._k_heading = float(params.get('cruise_k_heading', 3.0))
-        # cap 30° → 15°: the 16:38 trace showed cruise→dock handoff
-        # with e_y = 7 cm + e_psi = +2° drove desired_offset to the cap
-        # (29.2°), Stanley commanded saturated kappa, and chassis
-        # crossed the corridor 23 cm in one second. Then the same
-        # mechanism flipped sign and crossed back 26 cm (the wari-gari
-        # the operator reported). cap 15° at k_lat=4 means e_y ≥ 4 cm
-        # already saturates, but the saturation level is gentler
-        # (chassis still rotates ~20°/s instead of 39°/s), so the
-        # cross is < corridor width and chassis converges instead of
-        # overshooting. Final approach (e_y < 2 cm) doesn't hit the
-        # cap so precision is unchanged.
-        self._stanley_offset_cap = float(
-            params.get('cruise_stanley_offset_cap_rad', 0.262))
+        # P-gain on heading error. 1.5 keeps κ at small heading errors
+        # (e.g. e_psi=5° ≈ ±0.13 rad/m κ, ≈ ±2.5° steering) well below
+        # the chassis_psi noise envelope so noise doesn't visibly pump
+        # the steering. At large heading errors (e_psi=30° = 0.52 rad)
+        # κ saturates at the max_curvature clamp, so a single smooth
+        # arc closes the turn.
+        self._k_heading = float(params.get('cruise_k_heading', 1.5))
+        # Minimum speed fraction when e_psi is large (cos(e_psi)
+        # collapses toward 0). Keeps the chassis moving rather than
+        # spinning in place. 0.40 means 0.40 × cruise_speed at any
+        # heading error >= 90°.
+        self._min_speed_fraction = float(
+            params.get('cruise_min_speed_fraction', 0.40))
 
     def reset(self):
-        # Stanley itself has no per-segment state to clear. The zero-
-        # cross gate's `_last_direction` is deliberately NOT reset here
-        # — the navigator calls reset() between every Reed-Shepp sub-
-        # segment (kind = 'cruise') on done=True, and if reset() wiped
-        # `_last_direction` the gate could never fire on direction
-        # switches across sub-seg boundaries (which is exactly where
-        # Reed-Shepp puts them). The 17:18 WP6 trace shows this
-        # failure mode: a reverse sub-seg ran to completion at
-        # chassis_v=-0.38 m/s, the next forward sub-seg got cmd v=
-        # +0.84 m/s without the gate ever activating because the
-        # intervening reset() had cleared the history. `_last_direction`
-        # is set in __init__ and updated only inside step(); it
-        # survives mission state transitions because chassis_v is at
-        # rest after ERROR / SETTLING / SPRAYING anyway, so a stale
-        # value cannot incorrectly gate a fresh leg.
+        # No persistent state.
         pass
 
     def step(self, chassis_pose, segment, t_now, chassis_v=None):
+        # chassis_v retained in signature for navigator backward compat;
+        # this tracker does not gate on chassis speed.
+        del t_now, chassis_v
         x, y, psi = chassis_pose
-        sx, sy, psi_path = segment.start_pose
-        ex, ey, _ = segment.end_pose
-        # Direction: +1 forward, -1 reverse. For reverse sub-segments
-        # the chassis's direction of *travel* is psi + π (the rear axle
-        # leads), so Stanley's control quantities must be computed
-        # against that effective heading rather than the chassis facing.
-        direction = getattr(segment, 'direction', 1)
-        if direction < 0:
-            effective_psi = normalize_angle(psi + 3.141592653589793)
-        else:
-            effective_psi = psi
-        dx, dy = ex - x, ey - y
+        ex, ey, end_psi = segment.end_pose
+
+        dx = ex - x
+        dy = ey - y
         dist_to_end = hypot(dx, dy)
 
-        # Corridor projection: a_along is signed distance from start
-        # along psi_path; e_y is signed lateral (positive = chassis on
-        # LEFT of corridor heading).
-        a_along, e_y = project_onto_line(x, y, sx, sy, psi_path)
-        seg_len = hypot(ex - sx, ey - sy)
-        e_psi_raw = normalize_angle(effective_psi - psi_path)
-
-        # Done conditions:
-        # 1. Close to end pose AND chassis ψ aligned with corridor — the
-        #    dock tracker can take over without paying for any lateral
-        #    or heading carry-over.
-        # 2. Past the end along-corridor by cruise_pass_through_m —
-        #    safety net so we never sit in cruise re-orbiting the end.
+        # Done conditions. Heading aligned with end pose (which carries
+        # ψ_dock) AND within position tolerance — the dock tracker can
+        # take over with both heading and lateral close.
+        e_psi_to_dock = normalize_angle(psi - end_psi)
         if (dist_to_end < self._cruise_done_tolerance
-                and abs(e_psi_raw) <= self._cruise_done_heading_max):
-            return 0.0, 0.0, True
-        if a_along >= seg_len + self._cruise_pass_through_m:
+                and abs(e_psi_to_dock) <= self._cruise_done_heading_max):
             return 0.0, 0.0, True
 
-        # Zero-cross gate. Reed-Shepp can hand us a sub-seg whose
-        # direction differs from the previously executed one. If the
-        # chassis hasn't yet decelerated through zero, sending the new
-        # signed-speed command immediately would let the MCU accel_limit
-        # ramp setpoint smoothly through zero while the chassis itself
-        # continues drifting in the *old* direction for ~1 s — which is
-        # what produced the WP2 catastrophe in the 16:47 trace. Hold the
-        # gate closed (v=0, kappa=0) until either chassis_v signals the
-        # chassis has actually slowed below threshold, or chassis_v is
-        # unavailable (caller didn't pass it — backward compat for the
-        # existing tests; production callers always pass it).
-        if (self._last_direction is not None
-                and direction != self._last_direction
-                and chassis_v is not None
-                and abs(chassis_v) > self._zero_cross_speed_threshold):
-            return 0.0, 0.0, False
+        # Past-end fail-safe. Project chassis position onto the bearing-
+        # to-end ray from segment.start_pose; if a_along is past the
+        # end by pass_through_m, declare done. Prevents PP-style orbit
+        # if the goal ends up just behind the chassis.
+        sx, sy, _ = segment.start_pose
+        seg_dx = ex - sx
+        seg_dy = ey - sy
+        seg_len = hypot(seg_dx, seg_dy)
+        if seg_len > 1e-6:
+            seg_psi = atan2(seg_dy, seg_dx)
+            a_along, _ = project_onto_line(x, y, sx, sy, seg_psi)
+            if a_along >= seg_len + self._cruise_pass_through_m:
+                return 0.0, 0.0, True
 
-        # Speed taper: handoff blend now keys on the *remaining cruise
-        # distance to the dock corridor entry*, not on the current sub-
-        # segment's residual length. The planner stamps each cruise
-        # sub-seg with dist_to_dock (= cumulative metres from this sub-
-        # seg's end through all later sub-segs to the dock entry); the
-        # taper begins when (dist_to_end + dist_to_dock) drops below
-        # handoff_blend_distance, i.e. on the genuine final approach.
-        # Before that, target_speed is held at cruise_speed across
-        # arbitrarily many short Reed-Shepp sub-segs.
-        dist_to_dock = getattr(segment, 'dist_to_dock', 0.0)
-        remaining_to_dock = dist_to_end + dist_to_dock
-        if (self._handoff_blend_distance > 1e-6
-                and remaining_to_dock < self._handoff_blend_distance):
-            denom = max(1e-6,
-                        self._handoff_blend_distance - self._cruise_done_tolerance)
-            blend = max(0.0, min(1.0,
-                                 (remaining_to_dock - self._cruise_done_tolerance) / denom))
-            target_speed = (self._approach_speed
-                            + blend * (self._cruise_speed - self._approach_speed))
+        # If chassis is right on top of the goal but not yet aligned,
+        # steer toward end_psi directly (the bearing is undefined when
+        # dx,dy ≈ 0). This is rare and only happens at the boundary.
+        if dist_to_end < 1e-3:
+            desired_psi = end_psi
         else:
-            target_speed = self._cruise_speed
+            desired_psi = atan2(dy, dx)
 
-        # Stanley feedforward — same structure as DockTracker.step.
-        # Use target_speed (pre-scale) for the atan2 denominator: at
-        # high speed the desired-offset stays small (gentle bias toward
-        # corridor); at low speed it saturates near pi/2 (perpendicular
-        # entry).
-        # v_eff floor sized to the speed at which Stanley's atan2
-        # responds smoothly to e_y. Too low (≈creep speed) and the
-        # arctan saturates near pi/2 on every cm of e_y — wari-gari.
-        # 0.5 m/s gives a desired_offset of 11°/5 cm e_y at k_lat=1,
-        # which is a real correction the chassis can track without
-        # ringing.
-        v_eff = max(target_speed, 0.5)
-        desired_offset = atan2(self._k_lat * e_y, v_eff)
-        # Cap the desired offset. Without this, large lateral residuals
-        # (cruise often starts with e_y ~ 0.3 m off-corridor when the
-        # previous dock ended pointing 60° off the next corridor) drive
-        # desired_offset toward ±pi/2 — chassis points nearly perpen-
-        # dicular to the corridor, saturated kappa for several seconds,
-        # overshoots the corridor, flips e_y sign, swings back. The
-        # 13:33:57 mission showed 4 s of k=-1.70 followed by a flipped
-        # k=+1.46 reverse — the wari-gari the operator reported. 35°
-        # cap keeps Stanley's lateral closure rate respectable
-        # (v·sin(35°) ≈ 0.57·v) without driving the chassis at the
-        # corridor like a battering ram.
-        offset_cap = self._stanley_offset_cap
-        if desired_offset > offset_cap:
-            desired_offset = offset_cap
-        elif desired_offset < -offset_cap:
-            desired_offset = -offset_cap
-        e_psi_corrected = normalize_angle(e_psi_raw + desired_offset)
-        kappa = -self._k_heading * e_psi_corrected
-
-        # Slow on the magnitude of the corrected heading error so the
-        # chassis doesn't try to turn at high speed under saturation.
-        speed_scale = max(self._min_speed_fraction, cos(e_psi_corrected))
-        speed = target_speed * speed_scale
-
-        # Clamp curvature to physical limit.
+        e_psi = normalize_angle(desired_psi - psi)
+        kappa = self._k_heading * e_psi
         if kappa > self._max_curvature:
             kappa = self._max_curvature
         elif kappa < -self._max_curvature:
             kappa = -self._max_curvature
 
-        # Record the direction we are about to command so the zero-
-        # cross gate can detect transitions on the next call.
-        self._last_direction = direction
+        # Speed scales with how aligned chassis is with the goal
+        # direction. cos(e_psi) is +1 when aligned, 0 at 90°, -1 at
+        # 180°. Clamp to min_speed_fraction so the chassis still moves
+        # at large e_psi (otherwise it would freeze on a U-turn). At
+        # large e_psi the chassis arcs around at reduced speed; as it
+        # aligns cos rises and speed approaches cruise_speed.
+        speed_scale = max(self._min_speed_fraction, cos(e_psi))
+        speed = self._cruise_speed * speed_scale
 
-        # Reverse motion: signed speed (mcu_bridge / ackermann_convert
-        # accept negative speed) and flip kappa because chassis ψ̇ = v·κ
-        # — with v < 0 the same kappa rotates the chassis the *wrong*
-        # way for closing e_psi_corrected, so the cruise tracker must
-        # negate kappa to drive the heading regulator in the right
-        # direction.
-        if direction < 0:
-            return -speed, -kappa, False
         return speed, kappa, False
 
 

@@ -20,18 +20,15 @@ _PARAMS = {
     'cruise_speed': 1.0,
     'approach_speed': 0.4,
     'creep_speed': 0.18,
-    'pp_lookahead_min': 0.6,
-    'pp_lookahead_gain': 0.6,
-    'pp_damping': 0.18,
     'cruise_done_tolerance': 0.20,
-    'pp_min_speed_fraction': 0.35,  # tests pin to 0.35 for the legacy
-                                     # heading-error speed-scale assertion;
-                                     # production yaml uses 0.25.
-    'pp_handoff_blend_distance': 1.0,
+    'cruise_done_heading_max_rad': 0.26,
+    'cruise_pass_through_m': 0.30,
+    'cruise_k_heading': 1.5,
+    'cruise_min_speed_fraction': 0.40,
     'dock_k_y': 1.4,
     'dock_k_psi': 1.6,                # tests pin to 1.6 for the legacy
                                        # P-only assertions; production yaml
-                                       # uses 2.4 alongside the new I-term.
+                                       # uses 5.0 alongside the new I-term.
     'dock_k_i': 0.0,                  # disable I-term in the P-only tests
                                        # below; the I-term-specific test
                                        # constructs its own params dict.
@@ -46,14 +43,28 @@ _PARAMS = {
 }
 
 
-def _seg(kind, start, end, target=(0.0, 0.0), idx=0, direction=1,
-         dist_to_dock=0.0):
-    return PathSegment(kind, start, end, target, idx,
-                       direction=direction, dist_to_dock=dist_to_dock)
+def _seg(kind, start, end, target=(0.0, 0.0), idx=0, direction=1):
+    return PathSegment(kind, start, end, target, idx, direction=direction)
 
 
 class TestCruiseTracker:
-    def test_straight_target_zero_curvature(self):
+    """Heading-only goal-seeking P-controller. Pins the behaviours that
+    distinguish it from the prior Stanley line follower:
+
+      - κ depends ONLY on (bearing-to-goal − chassis_ψ), never on a
+        lateral offset.
+      - On a straight stretch with chassis pointed at the goal, κ = 0.
+      - On a turn, κ saturates and decays smoothly as the chassis aligns
+        (no sign flip, no overshoot).
+      - Done = position close AND heading aligned with end_pose.psi
+        (= ψ_dock at handoff).
+      - Past-end fail-safe declares done regardless of heading if the
+        chassis has overshot the start→end bearing by pass_through_m.
+    """
+
+    def test_aligned_with_goal_zero_curvature(self):
+        # Chassis at origin facing +x, goal 5 m ahead on +x: bearing =
+        # chassis_ψ, e_psi = 0 → κ = 0.
         t = CruiseTracker(_PARAMS)
         seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
         v, kappa, done = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
@@ -61,254 +72,108 @@ class TestCruiseTracker:
         assert v == pytest.approx(_PARAMS['cruise_speed'], abs=1e-9)
         assert abs(kappa) < 1e-9
 
-    def test_done_within_tolerance(self):
+    def test_done_within_position_and_heading(self):
+        # Within cruise_done_tolerance AND chassis heading matches
+        # end_pose.psi → done.
         t = CruiseTracker(_PARAMS)
         seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
-        # Chassis already at the cruise endpoint (within tolerance).
         v, kappa, done = t.step((4.95, 0.0, 0.0), seg, t_now=100.0)
         assert done
         assert v == 0.0 and kappa == 0.0
 
-    def test_chassis_left_of_corridor_turns_right(self):
-        t = CruiseTracker(_PARAMS)
-        # Corridor along East (psi_path=0). Chassis 0.2 m LEFT of corridor
-        # (positive y), heading aligned. Stanley: e_y > 0 → desired_offset
-        # > 0 → desired_psi < psi_path → e_psi_corrected > 0 → κ < 0
-        # (right turn) to head back onto the corridor.
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
-        _, kappa, _ = t.step((1.0, 0.2, 0.0), seg, t_now=100.0)
-        assert kappa < 0.0
-
-    def test_chassis_right_of_corridor_turns_left(self):
-        t = CruiseTracker(_PARAMS)
-        # Mirror of above: chassis below corridor → κ > 0 (left turn).
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
-        _, kappa, _ = t.step((1.0, -0.2, 0.0), seg, t_now=100.0)
-        assert kappa > 0.0
-
-    def test_curvature_clamped_to_max(self):
-        t = CruiseTracker(_PARAMS)
-        # Large lateral error at cruise speed would push Stanley's
-        # heading regulator past the chassis curvature limit; clamp must
-        # bind.
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
-        _, kappa, _ = t.step((1.0, 5.0, 0.0), seg, t_now=100.0)
-        assert abs(kappa) <= _PARAMS['max_curvature'] + 1e-9
-
-    def test_speed_scales_with_heading_error(self):
-        t = CruiseTracker(_PARAMS)
-        # Chassis on corridor centreline but heading 90° off corridor.
-        # Stanley's e_psi_corrected = pi/2 → cos = 0 → speed clamped to
-        # min_speed_fraction × cruise.
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
-        v, _, _ = t.step((1.0, 0.0, pi / 2), seg, t_now=100.0)
-        assert v == pytest.approx(
-            _PARAMS['cruise_speed'] * _PARAMS['pp_min_speed_fraction'], abs=1e-9)
-
-    def test_speed_blends_to_approach_near_end_of_cruise(self):
-        # Within pp_handoff_blend_distance metres of the end pose, the
-        # commanded speed must linearly taper from cruise_speed toward
-        # approach_speed so the chassis reaches the dock corridor at the
-        # speed DockTracker's gains were tuned for. With α=0 the cos()
-        # speed_scale is 1.0 so we observe the blend directly.
-        t = CruiseTracker(_PARAMS)
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
-        # 0.30 m from the end → well inside the 1.0 m blend.
-        v, _, done = t.step((4.70, 0.0, 0.0), seg, t_now=100.0)
-        assert not done
-        # Linearly between approach_speed and cruise_speed:
-        # blend = (0.30 - 0.20) / (1.0 - 0.20) = 0.125
-        # target = 0.4 + 0.125 × (1.0 − 0.4) = 0.475
-        assert v == pytest.approx(0.475, abs=1e-6)
-
-    def test_speed_blend_inactive_far_from_end(self):
-        # Past pp_handoff_blend_distance, target is the full cruise_speed.
-        t = CruiseTracker(_PARAMS)
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (10.0, 0.0, 0.0))
-        v, _, done = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
-        assert not done
-        assert v == pytest.approx(_PARAMS['cruise_speed'], abs=1e-9)
-
     def test_done_requires_heading_aligned(self):
-        # Within cruise_done_tolerance of end but chassis heading 45° off
-        # corridor → not done (would hand off a bad heading to dock).
+        # Within position tolerance but chassis heading 45° off ψ_dock
+        # → NOT done (dock would open with stale heading residual).
         t = CruiseTracker(_PARAMS)
         seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
         _, _, done = t.step((4.95, 0.0, pi / 4), seg, t_now=100.0)
         assert not done
 
+    def test_goal_to_the_left_commands_left_turn(self):
+        # Chassis at origin facing +x; goal at (5, 5) — bearing = +45°.
+        # desired_psi − chassis_psi = +45° > 0 → κ > 0 (left turn under
+        # math-frame Ackermann: ψ̇ = v·κ, positive κ = CCW).
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 5.0, 0.0))
+        _, kappa, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
+        assert kappa > 0.0
+
+    def test_goal_to_the_right_commands_right_turn(self):
+        # Mirror: goal at (5, -5) → bearing = -45° → κ < 0 (right turn).
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, -5.0, 0.0))
+        _, kappa, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
+        assert kappa < 0.0
+
+    def test_curvature_clamped_to_max(self):
+        # Goal at 90° to chassis facing → e_psi = π/2 → unclamped κ
+        # would be k_heading × π/2 ≈ 2.36, which exceeds max_curvature.
+        # The clamp must bind.
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (0.0, 5.0, 0.0))
+        _, kappa, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
+        assert abs(kappa) <= _PARAMS['max_curvature'] + 1e-9
+        # And it should be the positive (left) clamp because the goal is
+        # to the left.
+        assert kappa == pytest.approx(_PARAMS['max_curvature'], abs=1e-9)
+
+    def test_speed_scales_with_heading_error(self):
+        # Chassis facing 180° away from goal → cos(π) = −1. The speed
+        # scale floors at cruise_min_speed_fraction × cruise_speed.
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        v, _, _ = t.step((0.0, 0.0, pi), seg, t_now=100.0)
+        expected = _PARAMS['cruise_speed'] * _PARAMS['cruise_min_speed_fraction']
+        assert v == pytest.approx(expected, abs=1e-9)
+
+    def test_speed_at_aligned_is_full_cruise(self):
+        # When the chassis is pointed at the goal, the cos(e_psi) factor
+        # is 1, so commanded speed is exactly cruise_speed. There is no
+        # remaining-distance taper (that was a Reed-Shepp-era knob — the
+        # DockTracker handles approach-speed transition).
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        # 0.30 m from the end, perfectly aligned.
+        v, _, done = t.step((4.70, 0.0, 0.0), seg, t_now=100.0)
+        assert not done
+        assert v == pytest.approx(_PARAMS['cruise_speed'], abs=1e-9)
+
+    def test_no_response_to_lateral_offset_alone(self):
+        # Chassis off the start→end line laterally but facing the goal:
+        # the new tracker computes bearing-to-goal, which simply points
+        # back at the goal, so e_psi against chassis_psi may be small.
+        # Specifically, with chassis at (2, 0.5) facing the goal at
+        # (5, 0), bearing = atan2(-0.5, 3) ≈ -9.5°. So κ is the heading
+        # error to point at the goal, NOT a Stanley lateral-correction.
+        # The key behaviour: |κ| is small because the chassis can simply
+        # re-aim at the goal.
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        # Chassis facing the goal direction directly (atan2(-0.5,3)≈-0.166).
+        from math import atan2 as _atan2
+        face = _atan2(-0.5, 3.0)
+        _, kappa, _ = t.step((2.0, 0.5, face), seg, t_now=100.0)
+        # Already pointed at the goal → κ ≈ 0.
+        assert abs(kappa) < 1e-6
+
     def test_pass_through_safety_net(self):
-        # Chassis past the end pose along corridor by more than
-        # cruise_pass_through_m → forced done regardless of heading.
+        # Chassis past the end pose along the start→end bearing by more
+        # than cruise_pass_through_m → forced done regardless of heading.
         t = CruiseTracker(_PARAMS)
         seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
         _, _, done = t.step((5.40, 0.0, pi / 4), seg, t_now=100.0)
         assert done
 
-    def test_dist_to_dock_holds_cruise_speed_across_sub_segs(self):
-        # A short Reed-Shepp sub-seg (0.30 m chord) sitting 2.0 m of
-        # remaining cruise away from the dock corridor: the tracker
-        # must hold cruise_speed, not taper into approach_speed every
-        # sub-seg. Without dist_to_dock the (per-sub-seg) dist_to_end
-        # of 0.30 m would trip the handoff blend.
+    def test_chassis_v_arg_ignored(self):
+        # The signature accepts chassis_v for navigator-side backward
+        # compat; the tracker must not use it. Passing wildly different
+        # chassis_v must not change v or κ.
         t = CruiseTracker(_PARAMS)
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (0.30, 0.0, 0.0),
-                   dist_to_dock=2.0)
-        v, _, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0)
-        assert v == pytest.approx(_PARAMS['cruise_speed'], abs=1e-9)
-
-    def test_dist_to_dock_zero_blends_as_before(self):
-        # Last cruise sub-seg (dist_to_dock=0): blend keys on
-        # dist_to_end alone, matching the legacy single-segment behaviour
-        # already pinned by test_speed_blends_to_approach_near_end_of_cruise.
-        t = CruiseTracker(_PARAMS)
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
-                   dist_to_dock=0.0)
-        v, _, _ = t.step((4.70, 0.0, 0.0), seg, t_now=100.0)
-        assert v == pytest.approx(0.475, abs=1e-6)
-
-
-class TestCruiseZeroCrossGate:
-    """When Reed-Shepp asks for a forward→reverse (or reverse→forward)
-    sub-seg transition, the cruise tracker must hold v=0 until the
-    chassis has actually decelerated through zero. Sending the new
-    signed command while the chassis is still rolling in the old
-    direction lets the MCU accel_limit ramp setpoint smoothly through
-    zero (~1.5 s) while the chassis drifts under inertia in the prior
-    direction — observed catastrophically in the 16:47 WP2 trace as
-    a 0.65 m overshoot of the planned dock entry."""
-
-    def _params_with_threshold(self, thresh=0.10):
-        p = dict(_PARAMS)
-        p['cruise_zero_cross_speed_threshold'] = thresh
-        return p
-
-    def test_first_call_no_gate(self):
-        # Fresh tracker has _last_direction = None: the gate cannot
-        # fire on the very first sub-seg regardless of chassis_v.
-        t = CruiseTracker(self._params_with_threshold())
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), direction=1)
-        v, _, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0, chassis_v=0.0)
-        assert v > 0.0
-
-    def test_same_direction_no_gate(self):
-        # Two consecutive forward sub-segs: gate must not fire on the
-        # second even if chassis_v is exactly the cruise speed.
-        t = CruiseTracker(self._params_with_threshold())
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), direction=1)
-        t.step((0.0, 0.0, 0.0), seg, t_now=100.0, chassis_v=0.0)
-        v, _, _ = t.step((0.1, 0.0, 0.0), seg, t_now=100.05,
-                         chassis_v=+0.50)
-        assert v > 0.0
-
-    def test_direction_flip_with_lingering_chassis_v_holds_zero(self):
-        # Forward sub-seg first, then reverse sub-seg while chassis_v
-        # is still high in the forward direction: gate must hold v=0.
-        t = CruiseTracker(self._params_with_threshold())
-        seg_fwd = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
-                       direction=1)
-        t.step((0.0, 0.0, 0.0), seg_fwd, t_now=100.0, chassis_v=+0.50)
-        seg_rev = _seg('cruise', (1.0, 0.0, 0.0), (0.0, 0.0, 0.0),
-                       direction=-1)
-        v, kappa, done = t.step((1.0, 0.0, pi), seg_rev, t_now=100.05,
-                                chassis_v=+0.50)
-        assert v == 0.0
-        assert kappa == 0.0
-        assert not done
-
-    def test_direction_flip_after_chassis_decelerates_releases(self):
-        # Same setup but chassis_v has fallen below the gate threshold:
-        # the tracker must release the gate and emit the reverse command.
-        t = CruiseTracker(self._params_with_threshold(thresh=0.10))
-        seg_fwd = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
-                       direction=1)
-        t.step((0.0, 0.0, 0.0), seg_fwd, t_now=100.0, chassis_v=+0.50)
-        seg_rev = _seg('cruise', (1.0, 0.0, 0.0), (0.0, 0.0, 0.0),
-                       direction=-1)
-        v, _, _ = t.step((1.0, 0.0, pi), seg_rev, t_now=100.05,
-                         chassis_v=+0.05)
-        assert v < 0.0
-
-    def test_gate_does_not_fire_without_chassis_v(self):
-        # Backward-compatible call (no chassis_v passed): the gate must
-        # remain inert so existing tests / call sites that pre-date the
-        # zero-cross gate stay functional.
-        t = CruiseTracker(self._params_with_threshold())
-        seg_fwd = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
-                       direction=1)
-        t.step((0.0, 0.0, 0.0), seg_fwd, t_now=100.0)
-        seg_rev = _seg('cruise', (1.0, 0.0, 0.0), (0.0, 0.0, 0.0),
-                       direction=-1)
-        v, _, _ = t.step((1.0, 0.0, pi), seg_rev, t_now=100.05)
-        assert v < 0.0  # no gate, emits reverse cmd directly
-
-    def test_reset_preserves_direction_history(self):
-        # reset() is invoked by the navigator between every cruise sub-
-        # seg (kind 'cruise' transitions), but the zero-cross gate
-        # specifically needs to fire on direction switches across those
-        # sub-seg boundaries (Reed-Shepp puts every direction switch at
-        # a sub-seg boundary). If reset() wiped `_last_direction`, the
-        # gate would never trigger on the actual Reed-Shepp reversals.
-        # reset() therefore MUST preserve direction history; clearing
-        # only happens implicitly via __init__ (mission restart).
-        t = CruiseTracker(self._params_with_threshold())
-        seg_fwd = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
-                       direction=1)
-        t.step((0.0, 0.0, 0.0), seg_fwd, t_now=100.0, chassis_v=+0.50)
-        t.reset()
-        seg_rev = _seg('cruise', (1.0, 0.0, 0.0), (0.0, 0.0, 0.0),
-                       direction=-1)
-        v, _, _ = t.step((1.0, 0.0, pi), seg_rev, t_now=100.05,
-                         chassis_v=+0.50)
-        # Gate must fire: chassis_v still high in forward direction
-        # despite reset() being called between sub-segs.
-        assert v == 0.0
-
-
-class TestCruiseReverse:
-    """Reverse cruise sub-segments come out of the Reed-Shepp planner
-    when the goal sits inside the chassis turning circle. The tracker
-    must emit negative speed and flip kappa so the chassis backs along
-    the segment in the right direction."""
-
-    def test_reverse_segment_emits_negative_speed(self):
-        # Reverse along +x: chord direction = 0, chassis facing −x
-        # (psi = pi) is the canonical orientation for reversing along
-        # the chord. Tracker must command v < 0.
-        t = CruiseTracker(_PARAMS)
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), direction=-1)
-        v, _, _ = t.step((0.0, 0.0, pi), seg, t_now=100.0)
-        assert v < 0.0
-
-    def test_reverse_chassis_aligned_zero_curvature(self):
-        # Chassis facing pi (motion direction is +x along the chord),
-        # exactly on the corridor with no lateral error: kappa must be
-        # ≈ 0 (Stanley sees no error, motion is aligned).
-        t = CruiseTracker(_PARAMS)
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), direction=-1)
-        _, kappa, _ = t.step((1.0, 0.0, pi), seg, t_now=100.0)
-        assert abs(kappa) < 1e-6
-
-    def test_reverse_lateral_error_drives_correct_kappa_sign(self):
-        # Chassis above the corridor (e_y > 0), motion direction is the
-        # chord (+x). For *forward* cruise the tracker emits kappa < 0
-        # to turn the chassis right (toward the corridor). For reverse
-        # cruise the tracker must emit the OPPOSITE sign kappa so the
-        # same world-frame wheel angle still rotates the chassis toward
-        # the corridor under Ackermann reverse kinematics.
-        t = CruiseTracker(_PARAMS)
-        seg_fwd = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), direction=1)
-        seg_rev = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), direction=-1)
-        # Forward: chassis facing +x (along corridor), 0.2 m left.
-        _, kappa_fwd, _ = t.step((1.0, 0.2, 0.0), seg_fwd, t_now=100.0)
-        # Reverse: chassis facing -x (so motion direction = +x), same
-        # lateral offset.
-        _, kappa_rev, _ = t.step((1.0, 0.2, pi), seg_rev, t_now=101.0)
-        # Forward sign: e_y > 0 → desired_offset > 0 → e_psi_corrected
-        # > 0 → kappa < 0.
-        assert kappa_fwd < 0
-        # Reverse sign: flipped.
-        assert kappa_rev > 0
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 5.0, 0.0))
+        v_a, k_a, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0, chassis_v=0.0)
+        v_b, k_b, _ = t.step((0.0, 0.0, 0.0), seg, t_now=100.0, chassis_v=10.0)
+        assert v_a == v_b
+        assert k_a == k_b
 
 
 class TestDockTracker:
