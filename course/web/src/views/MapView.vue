@@ -1054,12 +1054,13 @@ watch(selectedConeId, (id) => {
   }
 });
 
-watch(activeCourseId, () => {
+watch(activeCourseId, (v) => {
   selectedConeId.value = null;
   multiSelectedIds.value = new Set();
   coneFilter.value = "all";
   clearPath();
   if (map) rebuildAllMarkers();
+  if (v != null) savePref("activeCourseId", v);
 });
 
 /* ── Data fetch ───────────────────────────────────── */
@@ -1075,7 +1076,12 @@ async function fetchAll() {
       } catch { conesMap.value[c.id] = []; }
     }
     if (!activeCourseId.value && courses.value.length) {
-      activeCourseId.value = courses.value[0].id;
+      // Restore the last-used course so a refresh doesn't silently drop
+      // the operator back to courses[0] (which then requires re-clicking
+      // the actually-wanted course every time the page reloads).
+      const saved = Number(loadPref("activeCourseId", null));
+      const match = Number.isInteger(saved) && courses.value.find((c) => c.id === saved);
+      activeCourseId.value = match ? saved : courses.value[0].id;
     }
   } catch {} finally { loading.value = false; }
 }
@@ -2777,6 +2783,7 @@ onUnmounted(() => {
                   <div
                     v-for="c in courses" :key="c.id"
                     :class="['course-item', { active: c.id === activeCourseId, editing: editingCourseId === c.id }]"
+                    @click="selectCourse(c.id)"
                   >
                     <button class="vis-btn" @click.stop="toggleVisibility(c.id)" :title="visibility[c.id] ? '숨기기' : '표시'">
                       <svg v-if="visibility[c.id]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -2787,7 +2794,7 @@ onUnmounted(() => {
                       <button class="btn btn-primary btn-sm" @click.stop="saveCourseName(c.id)">저장</button>
                     </template>
                     <template v-else>
-                      <span class="course-name" @click="selectCourse(c.id)" @dblclick.stop="startEditCourse(c)">
+                      <span class="course-name" @dblclick.stop="startEditCourse(c)">
                         {{ c.name }} <span class="cone-count">({{ c.cone_count }})</span>
                       </span>
                     </template>
