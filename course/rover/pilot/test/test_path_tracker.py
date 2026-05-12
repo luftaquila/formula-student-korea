@@ -128,17 +128,31 @@ class TestCruiseTracker:
         expected = _PARAMS['cruise_speed'] * _PARAMS['cruise_min_speed_fraction']
         assert v == pytest.approx(expected, abs=1e-9)
 
-    def test_speed_at_aligned_is_full_cruise(self):
-        # When the chassis is pointed at the goal, the cos(e_psi) factor
-        # is 1, so commanded speed is exactly cruise_speed. There is no
-        # remaining-distance taper (that was a Reed-Shepp-era knob — the
-        # DockTracker handles approach-speed transition).
+    def test_speed_at_aligned_is_full_cruise_when_far_from_end(self):
+        # Pointed at the goal, far from the end → no handoff taper →
+        # full cruise_speed.
         t = CruiseTracker(_PARAMS)
-        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
-        # 0.30 m from the end, perfectly aligned.
-        v, _, done = t.step((4.70, 0.0, 0.0), seg, t_now=100.0)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (10.0, 0.0, 0.0))
+        # 5 m from the end (well past the 1.5 m handoff_taper threshold),
+        # perfectly aligned.
+        v, _, done = t.step((5.0, 0.0, 0.0), seg, t_now=100.0)
         assert not done
         assert v == pytest.approx(_PARAMS['cruise_speed'], abs=1e-9)
+
+    def test_speed_tapers_into_approach_at_entry(self):
+        # Inside the handoff_taper_m window, commanded speed blends
+        # linearly from cruise_speed down to approach_speed so the
+        # cruise→dock handoff opens at the speed the dock expects.
+        # Without taper, the chassis hit the entry at full cruise speed
+        # and the dock Stanley immediately saturated trying to correct
+        # the residual heading.
+        t = CruiseTracker(_PARAMS)
+        seg = _seg('cruise', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0))
+        # 0.30 m from end, perfectly aligned. taper window 1.50 m.
+        # blend = 0.30 / 1.50 = 0.20.
+        # speed = approach + blend × (cruise − approach) = 0.4 + 0.2·0.6 = 0.52.
+        v, _, _ = t.step((4.70, 0.0, 0.0), seg, t_now=100.0)
+        assert v == pytest.approx(0.52, abs=1e-6)
 
     def test_no_response_to_lateral_offset_alone(self):
         # Chassis off the start→end line laterally, facing toward the

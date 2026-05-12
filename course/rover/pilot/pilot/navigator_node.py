@@ -207,8 +207,10 @@ class NavigatorNode(Node):
 
         # Estimator gains.
         self.declare_parameter('estimator_pos_gain', 0.30)
-        self.declare_parameter('estimator_psi_gain', 0.30)
-        self.declare_parameter('estimator_psi_min_speed', 0.8)
+        self.declare_parameter('estimator_psi_gain', 0.08)
+        self.declare_parameter('estimator_psi_min_speed', 1.5)
+        self.declare_parameter('estimator_yaw_innov_gain', 0.10)
+        self.declare_parameter('estimator_yaw_innov_min_speed', 0.3)
 
         # Safety.
         self.declare_parameter('gps_timeout', 3.0)
@@ -486,8 +488,15 @@ class NavigatorNode(Node):
     def _on_gps(self, msg):
         self._gps_lat = msg.latitude
         self._gps_lon = msg.longitude
-        self._last_gps_time = time.monotonic()
+        now = time.monotonic()
+        self._last_gps_time = now
         if self._estimator is not None and self._estimator.initialized:
+            # Run yaw-innovation correction BEFORE position correction so
+            # the position pull uses the freshly-rotated antenna offset.
+            # The yaw correction is the dominant chassis_psi source at
+            # 0.3-1.5 m/s where heading-of-motion is too noisy to fuse.
+            self._estimator.correct_position_with_yaw_innovation(
+                msg.latitude, msg.longitude, now)
             self._estimator.correct_position(msg.latitude, msg.longitude)
 
     def _on_heading(self, msg):
@@ -961,6 +970,8 @@ class NavigatorNode(Node):
             pos_correction_gain=self.get_parameter('estimator_pos_gain').value,
             psi_correction_gain=self.get_parameter('estimator_psi_gain').value,
             psi_correction_min_speed=self.get_parameter('estimator_psi_min_speed').value,
+            yaw_innov_gain=self.get_parameter('estimator_yaw_innov_gain').value,
+            yaw_innov_min_speed=self.get_parameter('estimator_yaw_innov_min_speed').value,
         )
         self._estimator.set_initial(self._gps_lat, self._gps_lon, psi_math)
         # Mission-start chassis position is the chassis pose at the moment
