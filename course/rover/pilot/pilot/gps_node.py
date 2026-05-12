@@ -99,7 +99,7 @@ class GpsNode(Node):
         self.declare_parameter('serial_port', '/dev/ttyGPS')
         self.declare_parameter('baud_rate', 115200)
         self.declare_parameter('publish_rate', 10.0)
-        self.declare_parameter('heading_speed_threshold', 0.3)
+        self.declare_parameter('heading_speed_threshold', 1.5)
         self.declare_parameter('ntrip.username', '')
         self.declare_parameter('ntrip.gga_interval_s', 10.0)
 

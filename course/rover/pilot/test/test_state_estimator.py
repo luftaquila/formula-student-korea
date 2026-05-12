@@ -185,3 +185,133 @@ class TestCorrectHeading:
         est.correct_heading(heading_compass_rad=0.0, ground_speed_mps=0.1)
         _, _, psi = est.chassis_pose()
         assert isclose(psi, 0.0, abs_tol=1e-9)
+
+
+class TestPositionInnovationYaw:
+    """Position-innovation → ψ correction is the new ArduPilot-EKF3-style
+    yaw channel that resolves chassis_psi at low speed (0.3–1.5 m/s)
+    where heading-of-motion is too noise-dominated to fuse directly.
+    """
+
+    def _est(self, **overrides):
+        kwargs = dict(
+            antenna_offset_x=0.3, antenna_offset_y=0.0,
+            ref_lat=REF_LAT, ref_lon=REF_LON,
+            pos_correction_gain=0.0,
+            psi_correction_gain=0.0,
+            psi_correction_min_speed=99.0,  # never fuse heading-of-motion
+            yaw_innov_gain=1.0,
+            yaw_innov_min_speed=0.20,
+            yaw_innov_max_step_rad=1.0,  # disable cap for clean unit math
+        )
+        kwargs.update(overrides)
+        return ChassisPoseEstimator(**kwargs)
+
+    def test_first_call_only_seeds_timer(self):
+        # First GPS-yaw-innov call has no prior dt → no correction.
+        est = self._est()
+        ant_lat, ant_lon = gps_from_enu(0.0, 0.0, REF_LAT, REF_LON)
+        est.set_initial(ant_lat, ant_lon, psi_math=0.0)
+        est.predict(v=1.0, omega=0.0, t_now=100.0)
+        est.predict(v=1.0, omega=0.0, t_now=100.05)
+        # Antenna observed somewhere — but no prior fix yet, ψ stays put.
+        meas_lat, meas_lon = gps_from_enu(1.0, 0.5, REF_LAT, REF_LON)
+        est.correct_position_with_yaw_innovation(meas_lat, meas_lon, t_now=200.0)
+        _, _, psi = est.chassis_pose()
+        assert isclose(psi, 0.0, abs_tol=1e-9)
+
+    def test_lateral_residual_drives_psi_correction(self):
+        # Setup: chassis facing East (ψ=0) at 1 m/s. DR predicts antenna
+        # will travel 10 cm East over 0.1 s (10 Hz GPS). But the actual
+        # antenna ends up 5 cm North of predicted — lateral residual
+        # +5 cm with chassis facing East implies ψ was underestimated.
+        est = self._est()
+        ant_lat, ant_lon = gps_from_enu(0.0, 0.0, REF_LAT, REF_LON)
+        est.set_initial(ant_lat, ant_lon, psi_math=0.0)
+        # Predict 0.1 s of straight 1 m/s.
+        est.predict(v=1.0, omega=0.0, t_now=100.0)
+        est.predict(v=1.0, omega=0.0, t_now=100.1)
+        # Seed the GPS timer (no correction applied on first call).
+        seed_lat, seed_lon = gps_from_enu(0.0, 0.0, REF_LAT, REF_LON)
+        est.correct_position_with_yaw_innovation(seed_lat, seed_lon, t_now=100.0)
+        # Predicted antenna at this point = chassis_x + 0.3 = 1.0 + 0.3? No —
+        # chassis was at (-0.3, 0) initial, drove 0.1 m east → (-0.2, 0)
+        # chassis. Predicted antenna = (-0.2 + 0.3, 0) = (0.1, 0).
+        # Now observe antenna at (0.1, 0.05) — 5 cm North.
+        obs_lat, obs_lon = gps_from_enu(0.1, 0.05, REF_LAT, REF_LON)
+        est.correct_position_with_yaw_innovation(obs_lat, obs_lon, t_now=100.1)
+        # dt = 0.1 s, v = 1.0 m/s → arc = 10 cm. lat_inn = +5 cm.
+        # dpsi = 0.05 / 0.10 = 0.5 rad. With yaw_innov_gain=1.0, ψ snaps
+        # to +0.5 rad. Verifies the geometric direction of correction.
+        _, _, psi = est.chassis_pose()
+        assert psi > 0.0  # +lateral → ψ increases (CCW)
+        assert isclose(psi, 0.5, abs_tol=1e-3)
+
+    def test_skipped_below_min_speed(self):
+        # 0.1 m/s is below yaw_innov_min_speed=0.20: no correction applied.
+        est = self._est()
+        ant_lat, ant_lon = gps_from_enu(0.0, 0.0, REF_LAT, REF_LON)
+        est.set_initial(ant_lat, ant_lon, psi_math=0.0)
+        est.predict(v=0.1, omega=0.0, t_now=100.0)
+        est.predict(v=0.1, omega=0.0, t_now=100.1)
+        seed_lat, seed_lon = gps_from_enu(0.0, 0.0, REF_LAT, REF_LON)
+        est.correct_position_with_yaw_innovation(seed_lat, seed_lon, t_now=100.0)
+        # Observe antenna 5 cm lateral — but speed is below threshold.
+        obs_lat, obs_lon = gps_from_enu(0.01, 0.05, REF_LAT, REF_LON)
+        est.correct_position_with_yaw_innovation(obs_lat, obs_lon, t_now=100.1)
+        _, _, psi = est.chassis_pose()
+        assert isclose(psi, 0.0, abs_tol=1e-9)
+
+    def test_max_step_caps_correction(self):
+        # A huge lateral residual (slip event, GPS jitter) must NOT swing
+        # ψ by more than yaw_innov_max_step radians per fix.
+        est = self._est(yaw_innov_max_step_rad=0.05)
+        ant_lat, ant_lon = gps_from_enu(0.0, 0.0, REF_LAT, REF_LON)
+        est.set_initial(ant_lat, ant_lon, psi_math=0.0)
+        est.predict(v=1.0, omega=0.0, t_now=100.0)
+        est.predict(v=1.0, omega=0.0, t_now=100.1)
+        seed_lat, seed_lon = gps_from_enu(0.0, 0.0, REF_LAT, REF_LON)
+        est.correct_position_with_yaw_innovation(seed_lat, seed_lon, t_now=100.0)
+        # Observe antenna 1 m lateral (impossible in 0.1 s without slip).
+        obs_lat, obs_lon = gps_from_enu(0.1, 1.0, REF_LAT, REF_LON)
+        est.correct_position_with_yaw_innovation(obs_lat, obs_lon, t_now=100.1)
+        _, _, psi = est.chassis_pose()
+        # Capped at +0.05 rad regardless of how large the residual is.
+        assert isclose(psi, 0.05, abs_tol=1e-9)
+
+    def test_bias_converges_over_multiple_fixes(self):
+        # Inject a 5° (0.087 rad) ψ bias and confirm yaw-innov
+        # corrections converge toward zero error within ~5 fixes when
+        # the chassis drives a straight line at 1 m/s. Simulates the
+        # ArduPilot-EKF3 yaw-from-position-innovation recovery loop.
+        from math import degrees
+        # Real chassis ψ = 0 (East), but estimator believes ψ = +5°.
+        true_psi = 0.0
+        biased_psi = 0.087
+        est = self._est(yaw_innov_gain=0.30, yaw_innov_max_step_rad=0.087)
+        # Place antenna at ENU origin; estimator anchors chassis there.
+        ant_lat, ant_lon = gps_from_enu(0.0, 0.0, REF_LAT, REF_LON)
+        est.set_initial(ant_lat, ant_lon, psi_math=biased_psi)
+        # Seed timers.
+        est.predict(v=1.0, omega=0.0, t_now=100.0)
+        est.correct_position_with_yaw_innovation(ant_lat, ant_lon, t_now=100.0)
+        for k in range(1, 11):
+            t = 100.0 + k * 0.1
+            est.predict(v=1.0, omega=0.0, t_now=t)
+            # True chassis position at step k: chassis started at
+            # (cos(0)·(-0.3) - sin(0)·0, sin(0)·(-0.3) + cos(0)·0)
+            # = (-0.3, 0) and moves east at 1 m/s along TRUE ψ=0.
+            true_chassis_x = -0.3 + 1.0 * k * 0.1
+            true_chassis_y = 0.0
+            # True antenna at chassis + R(true_psi)·offset.
+            true_ax = true_chassis_x + cos(true_psi) * 0.3
+            true_ay = true_chassis_y + sin(true_psi) * 0.3
+            obs_lat, obs_lon = gps_from_enu(true_ax, true_ay, REF_LAT, REF_LON)
+            est.correct_position_with_yaw_innovation(obs_lat, obs_lon, t_now=t)
+            # Also do a position pull so x stays correct for next round.
+            est.correct_position(obs_lat, obs_lon)
+        _, _, psi = est.chassis_pose()
+        # 5° → < 1° within 10 fixes (1 s) at gain 0.30.
+        assert abs(psi - true_psi) < degrees(1)/57.2958, (
+            f'expected ψ within 1° of true after 10 fixes, got {degrees(psi):.2f}°'
+        )

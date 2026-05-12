@@ -38,16 +38,17 @@ Published:
     /rover/nav/state            (std_msgs/String)
     /rover/nav/waypoint_reached (std_msgs/Int32)
     /rover/nav/error_reason     (std_msgs/String)      — populated on every ERROR entry
-    /rover/nav/skipped          (std_msgs/Int32)       — published on stuck-skip
     /rover/spray/result         (std_msgs/String JSON)
     /rover/spray/cancel         (std_msgs/Int32)
 """
 
 import json
 import math
+import os
+import tempfile
 import time
 from enum import Enum
-from math import radians, degrees, hypot, cos, sin, tan, isfinite
+from math import radians, degrees, hypot, cos, sin, tan, isfinite, pi
 
 import rclpy
 from rclpy.node import Node
@@ -57,22 +58,22 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Float64, String, Int32, Empty
 
 from pilot.lib.geo_utils import (
-    enu_from_gps, fit_chord_heading, normalize_angle,
+    enu_from_gps, fit_chord_heading, haversine, normalize_angle,
+    project_onto_line as _project_onto_line,
 )
 from pilot.lib.protocol_utils import has_required_fix_status
 from pilot.lib.state_estimator import ChassisPoseEstimator
 from pilot.lib.path_planner import plan as plan_path
-from pilot.lib.path_tracker import CruiseTracker, DockTracker
+from pilot.lib.path_tracker import CruiseTracker, DockTracker, L1Tracker
 from pilot.lib.antenna_calibration import (
     OFFSET_BOUND_M,
-    load_antenna_offset, save_antenna_offset, solve_antenna_offset,
-    scurve_curvature,
+    load_antenna_offset, save_antenna_offset,
+    solve_antenna_offset_circular,
 )
 from pilot.lib.wheel_calibration import solve_wheel_scales
 from pilot.lib.steering_calibration import (
     TRIM_BOUND_US, load_steering_trim, solve_steering_trim,
 )
-from pilot.lib.geo_utils import haversine
 
 
 class State(Enum):
@@ -90,8 +91,8 @@ class State(Enum):
 class CalAntennaPhase(Enum):
     """Sub-phases of the antenna offset auto-calibration drive."""
     STRAIGHT = 'straight'   # κ = 0, chord-fit ψ_init from antenna ENU
-    SCURVE = 'scurve'       # κ(t) sinusoidal, sample chassis pose vs antenna
-    SOLVE = 'solve'         # stop, run LSQ, persist, publish result
+    CIRCLE = 'circle'       # constant κ = 1/R for N revolutions, sample chassis vs antenna
+    SOLVE = 'solve'         # stop, fit two circles + phase, persist, publish
 
 
 class NavigatorNode(Node):
@@ -110,10 +111,14 @@ class NavigatorNode(Node):
         # navigator's kinematic model doesn't silently fall out of sync if
         # mcu_bridge is restarted with stale params; bridge owns the
         # authoritative copy for steering-angle conversion).
-        self.declare_parameter('wheelbase', 0.38)
-        self.declare_parameter('track_width', 0.30)
-        self.declare_parameter('max_steering_angle_deg', 25.0)
-        self.declare_parameter('max_curvature', 1.2)
+        # Defaults mirror config/rover_params.yaml — that file is the
+        # authoritative tuned value and is always passed via the launch
+        # file. These defaults only apply if the yaml fails to load (test
+        # harness, direct `ros2 run`).
+        self.declare_parameter('wheelbase', 0.33)
+        self.declare_parameter('track_width', 0.33)
+        self.declare_parameter('max_steering_angle_deg', 30.5)
+        self.declare_parameter('max_curvature', 1.7)
         # Mirrors mcu_bridge_node.servo_range_us; the steering auto-trim
         # solve at the end of CAL_WHEELS converts κ_bias to a servo µs
         # offset which the bridge then persists. Declared here so the
@@ -124,34 +129,68 @@ class NavigatorNode(Node):
         # Speeds.
         self.declare_parameter('cruise_speed', 1.0)
         self.declare_parameter('approach_speed', 0.4)
-        self.declare_parameter('creep_speed', 0.18)
+        self.declare_parameter('creep_speed', 0.10)
         self.declare_parameter('calibration_speed', 0.5)
 
         # Path planner.
-        self.declare_parameter('dock_approach_distance', 1.5)
+        self.declare_parameter('dock_approach_distance', 2.5)
 
-        # Cruise tracker (Pure Pursuit).
-        self.declare_parameter('pp_lookahead_min', 0.6)
-        self.declare_parameter('pp_lookahead_gain', 0.6)
-        self.declare_parameter('pp_damping', 0.18)
+        # Cruise tracker (heading-only goal-seeking P-controller).
         self.declare_parameter('cruise_done_tolerance', 0.20)
+        self.declare_parameter('cruise_done_heading_max_rad', 0.26)
+        self.declare_parameter('cruise_pass_through_m', 0.30)
+        self.declare_parameter('cruise_k_heading', 1.5)
+        self.declare_parameter('cruise_min_speed_fraction', 0.40)
+        self.declare_parameter('cruise_carrot_lookahead_m', 0.60)
+        self.declare_parameter('cruise_orbit_gate_dist_m', 0.40)
+
+        # L1 tracker (Park 2007 + Macenski regulated). Active when
+        # path_tracker_kind == 'l1'. Replaces cruise + dock for the
+        # whole mission. See pilot/lib/path_tracker.py::L1Tracker for
+        # the control law; the knobs below tune lookahead sizing and
+        # speed regulation.
+        self.declare_parameter('path_tracker_kind', 'legacy')
+        self.declare_parameter('l1_period_s', 2.5)
+        self.declare_parameter('l1_damping', 0.7071)
+        self.declare_parameter('l1_min_m', 0.6)
+        self.declare_parameter('l1_max_m', 4.0)
+        self.declare_parameter('l1_cm_capture_m', 0.03)
+        self.declare_parameter('l1_reverse_recovery_min_m', 0.08)
+        self.declare_parameter('l1_reverse_speed', 0.10)
+        self.declare_parameter('l1_kappa_speed_lim', 0.85)
+        self.declare_parameter('l1_e_y_speed_gain', 2.0)
+        self.declare_parameter('l1_e_y_speed_floor', 0.4)
+        self.declare_parameter('l1_brake_zone_m', 0.20)
+        self.declare_parameter('l1_brake_min_speed_frac', 0.175)
+        self.declare_parameter('l1_min_speed_m_s', 0.07)
+        self.declare_parameter('l1_close_enough_spray_m', 0.30)
 
         # Dock tracker (state feedback).
-        self.declare_parameter('dock_k_y', 1.4)
-        self.declare_parameter('dock_k_psi', 2.4)
+        self.declare_parameter('dock_k_y', 6.0)
+        self.declare_parameter('dock_stanley_k_lat', 2.0)
+        self.declare_parameter('dock_k_psi', 2.0)
         self.declare_parameter('dock_k_i', 0.4)
         self.declare_parameter('dock_integral_limit', 0.5)
-        self.declare_parameter('approach_tolerance', 0.10)
+        self.declare_parameter('dock_stanley_offset_cap_rad', 0.262)
+        self.declare_parameter('dock_reverse_recovery_m', 0.08)
+        self.declare_parameter('dock_brake_zone_m', 0.12)
+        self.declare_parameter('dock_brake_min_speed_frac', 0.70)
+        self.declare_parameter('dock_reverse_stall_timeout_s', 5.0)
+        self.declare_parameter('dock_reverse_stall_min_disp_m', 0.30)
+        self.declare_parameter('approach_tolerance', 0.03)
         self.declare_parameter('creep_zone', 0.40)
-        # Pure Pursuit tunables exposed for cone-spacing-specific tuning.
-        self.declare_parameter('pp_min_speed_fraction', 0.25)
-        self.declare_parameter('pp_handoff_blend_distance', 1.0)
 
         # Tolerances and timeouts.
         self.declare_parameter('waypoint_tolerance', 0.05)
         self.declare_parameter('settle_tolerance', 0.03)
-        self.declare_parameter('settle_readings', 5)
-        self.declare_parameter('settle_timeout', 10.0)
+        self.declare_parameter('settle_readings', 8)
+        self.declare_parameter('settle_timeout', 12.0)
+        # Minimum seconds between consecutive active-settle retries.
+        # The dock tracker needs time to move the chassis a meaningful
+        # distance before the navigator decides the retry didn't work
+        # and re-engages again. 1.5 s gives the chassis ~10-15 cm of
+        # creep-speed forward motion at minimum.
+        self.declare_parameter('active_settle_throttle_s', 1.5)
         self.declare_parameter('spray_timeout', 5.0)
         self.declare_parameter('stuck_timeout', 12.0)
         self.declare_parameter('stuck_max_retries', 2)
@@ -165,10 +204,20 @@ class NavigatorNode(Node):
 
         # Antenna offset auto-calibration drive shape.
         self.declare_parameter('antenna_cal_straight_distance', 2.0)
-        self.declare_parameter('antenna_cal_kappa_max', 0.5)
-        self.declare_parameter('antenna_cal_period_s', 4.0)
-        self.declare_parameter('antenna_cal_periods', 2)
-        self.declare_parameter('antenna_cal_speed', 0.8)
+        # Constant-κ orbit drive: κ = sign / radius. The closed-form solver
+        # extracts (a_x, a_y) from the orbit geometry alone — no instantaneous
+        # ψ required, so GPS heading-of-motion lag and encoder ω drift over
+        # short timescales don't bias the result. Pick R well inside the
+        # chassis curvature limit (κ_max = 1.2) and big enough that the
+        # encoder integration over the drive (~15-25 s at v=1) doesn't
+        # accumulate >1° ψ error.
+        self.declare_parameter('antenna_cal_radius_m', 1.5)
+        self.declare_parameter('antenna_cal_revolutions', 2)
+        # `antenna_cal_sign` controls rotation direction: +1 CCW, -1 CW.
+        # CCW is the default because that's what we've used in the field;
+        # the solver supports both, so flip if site geometry requires.
+        self.declare_parameter('antenna_cal_sign', 1)
+        self.declare_parameter('antenna_cal_speed', 0.5)
 
         # Wheel scale auto-calibration (CAL_WHEELS state). Drives a
         # straight chord and divides GPS distance by per-wheel encoder
@@ -179,13 +228,24 @@ class NavigatorNode(Node):
 
         # Estimator gains.
         self.declare_parameter('estimator_pos_gain', 0.30)
-        self.declare_parameter('estimator_psi_gain', 0.15)
-        self.declare_parameter('estimator_psi_min_speed', 0.4)
+        self.declare_parameter('estimator_psi_gain', 0.08)
+        self.declare_parameter('estimator_psi_min_speed', 1.5)
+        self.declare_parameter('estimator_yaw_innov_gain', 0.10)
+        self.declare_parameter('estimator_yaw_innov_min_speed', 0.3)
 
         # Safety.
         self.declare_parameter('gps_timeout', 3.0)
         self.declare_parameter('fix_hysteresis_s', 0.8)
         self.declare_parameter('required_fix_status', 'rtk_fixed')
+        # When the live fix is rtk_float (integer ambiguity unresolved),
+        # accept it as 'good enough' if reported hAcc is at or below this
+        # many millimetres. 0 disables the float-accept escape hatch and
+        # falls back to fixed-only behaviour. 20 mm chosen so float is
+        # accepted only when its reported accuracy is within the
+        # waypoint cm-tolerance budget — anything sloppier and the
+        # mission errors out instead of plotting the antenna onto a
+        # potentially-drifted estimate.
+        self.declare_parameter('fix_accept_float_max_h_acc_mm', 20)
         self.declare_parameter('return_to_start', True)
         # Battery thresholds. The MCU has its own hard cutoff at
         # BATTERY_UNDERVOLT_V (20 V); these gate the navigator earlier so
@@ -219,7 +279,6 @@ class NavigatorNode(Node):
         self._pub_spray_result = self.create_publisher(String, '/rover/spray/result', reliable_qos)
         self._pub_spray_cancel = self.create_publisher(Int32, '/rover/spray/cancel', reliable_qos)
         self._pub_error_reason = self.create_publisher(String, '/rover/nav/error_reason', reliable_qos)
-        self._pub_skipped = self.create_publisher(Int32, '/rover/nav/skipped', reliable_qos)
         self._pub_cal_antenna_result = self.create_publisher(String, '/rover/cal/antenna_result', reliable_qos)
         self._pub_cal_wheels_result = self.create_publisher(String, '/rover/cal/wheel_result', reliable_qos)
         self._pub_apply_wheel_scales = self.create_publisher(String, '/rover/cmd/apply_wheel_scales', reliable_qos)
@@ -258,6 +317,11 @@ class NavigatorNode(Node):
         self._gps_heading_compass = None   # radians, 0=N, CW+
         self._gps_fix_status = 'no_fix'
         self._gps_speed = 0.0
+        # Horizontal accuracy reported by u-blox (mm). Used by
+        # _has_required_fix to accept rtk_float when h_acc is below the
+        # configured threshold — float fixes are usable for short
+        # missions when the reported accuracy is cm-scale.
+        self._gps_h_acc_mm = None
         self._last_gps_time = 0.0
         self._odom_v_left = 0.0
         self._odom_v_right = 0.0
@@ -275,8 +339,14 @@ class NavigatorNode(Node):
         self._estimator = None
 
         # Trackers (constructed from params; reused across segments).
+        # In legacy mode only _cruise_tracker and _dock_tracker are
+        # populated; in 'l1' mode _l1_tracker is populated and the
+        # other two stay None. _path_tracker_kind cached for cheap
+        # branch checks in the per-tick handlers.
         self._cruise_tracker = None
         self._dock_tracker = None
+        self._l1_tracker = None
+        self._path_tracker_kind = 'legacy'
 
         # Calibration state.
         self._cal_start_lat = None
@@ -287,6 +357,12 @@ class NavigatorNode(Node):
         # Settling state.
         self._settle_count = 0
         self._settle_enter_time = 0.0
+        # Active settle retry counter — incremented each time the chassis
+        # falls outside waypoint_tolerance during a SETTLING phase and we
+        # re-engage the dock tracker to crawl it back in. No upper bound
+        # since Phase 4 removed skip; the throttle below paces retries.
+        self._settle_retries = 0
+        self._last_settle_retry_t = 0.0
 
         # Spray state.
         self._spray_enter_time = 0.0
@@ -295,6 +371,13 @@ class NavigatorNode(Node):
         self._last_progress_time = 0.0
         self._last_progress_dist = float('inf')
         self._stuck_retries = 0
+        # Chassis displacement window (list of (t_mono, x, y)). The
+        # distance-to-target gate alone misses dock-cycle stuck cases
+        # where dist oscillates >2 cm each tick (5-30 cm cycle observed
+        # at WP1 in the 18:39 mission), because every oscillation low
+        # resets the timer. This window tracks the chassis's actual
+        # bounding-box displacement over `stuck_timeout` seconds.
+        self._stuck_window = []
 
         # Fix hysteresis.
         self._fix_degraded_since = None
@@ -321,20 +404,28 @@ class NavigatorNode(Node):
 
         # Antenna offset auto-calibration state.
         self._cal_antenna_phase = None
-        self._cal_antenna_chassis = None     # integrated (x, y, ψ) during scurve
+        self._cal_antenna_chassis = None     # integrated (x, y, ψ) during circle
         self._cal_antenna_psi_init = None
         self._cal_antenna_start_lat = None
         self._cal_antenna_start_lon = None
         self._cal_antenna_samples = []       # for chord fit during straight phase
-        self._cal_antenna_data = []          # (x_c, y_c, ψ, a_obs_x, a_obs_y) during scurve
+        self._cal_antenna_data = []          # (x_c, y_c, ψ, a_obs_x, a_obs_y) during circle
         self._cal_antenna_phase_start_t = 0.0
         self._cal_antenna_last_predict_t = None
         self._cal_antenna_last_gps_idx = -1
         self._cal_antenna_drive_distance = 0.0
         self._cal_antenna_extended = False
+        # Cumulative orbit angle (Σ ω·dt) since CIRCLE phase started. Used as
+        # the termination condition (revolutions completed) since cpsi wraps
+        # to ±π and can't be compared against 2π·N directly.
+        self._cal_antenna_orbit_angle = 0.0
 
         # Published state dedup.
         self._last_published_state = None
+
+        # Per-segment 1 Hz tracker trace clock. Reset to None on segment
+        # boundary so the first tick of each segment always logs.
+        self._last_dock_trace_t = None
 
         # Control loop @ 20 Hz.
         self._timer = self.create_timer(0.05, self._control_loop)
@@ -359,28 +450,65 @@ class NavigatorNode(Node):
 
     def _has_required_fix(self):
         required = self.get_parameter('required_fix_status').value
-        return has_required_fix_status(self._gps_fix_status, required)
+        if has_required_fix_status(self._gps_fix_status, required):
+            return True
+        # Accept rtk_float when reported horizontal accuracy is below the
+        # float-accept threshold. Float fixes have unresolved integer
+        # ambiguities so their absolute drift can be metres over hours,
+        # but for short missions (minutes) where h_acc stays below a
+        # few cm the position is usable. 0 disables this acceptance —
+        # i.e. behave as the legacy 'fixed only' gate.
+        float_max_mm = self.get_parameter('fix_accept_float_max_h_acc_mm').value
+        if (float_max_mm > 0
+                and self._gps_fix_status == 'rtk_float'
+                and self._gps_h_acc_mm is not None
+                and self._gps_h_acc_mm <= float_max_mm):
+            return True
+        return False
 
     def _params_for_trackers(self):
+        p = self.get_parameter
         return {
-            'cruise_speed': self.get_parameter('cruise_speed').value,
-            'approach_speed': self.get_parameter('approach_speed').value,
-            'creep_speed': self.get_parameter('creep_speed').value,
-            'pp_lookahead_min': self.get_parameter('pp_lookahead_min').value,
-            'pp_lookahead_gain': self.get_parameter('pp_lookahead_gain').value,
-            'pp_damping': self.get_parameter('pp_damping').value,
-            'cruise_done_tolerance': self.get_parameter('cruise_done_tolerance').value,
-            'dock_k_y': self.get_parameter('dock_k_y').value,
-            'dock_k_psi': self.get_parameter('dock_k_psi').value,
-            'dock_k_i': self.get_parameter('dock_k_i').value,
-            'dock_integral_limit': self.get_parameter('dock_integral_limit').value,
-            'pp_min_speed_fraction': self.get_parameter('pp_min_speed_fraction').value,
-            'pp_handoff_blend_distance': self.get_parameter('pp_handoff_blend_distance').value,
-            'approach_tolerance': self.get_parameter('approach_tolerance').value,
-            'creep_zone': self.get_parameter('creep_zone').value,
-            'max_curvature': self.get_parameter('max_curvature').value,
-            'wheelbase': self.get_parameter('wheelbase').value,
+            'cruise_speed': p('cruise_speed').value,
+            'approach_speed': p('approach_speed').value,
+            'creep_speed': p('creep_speed').value,
+            'cruise_done_tolerance': p('cruise_done_tolerance').value,
+            'cruise_done_heading_max_rad': p('cruise_done_heading_max_rad').value,
+            'cruise_pass_through_m': p('cruise_pass_through_m').value,
+            'cruise_k_heading': p('cruise_k_heading').value,
+            'cruise_min_speed_fraction': p('cruise_min_speed_fraction').value,
+            'cruise_carrot_lookahead_m': p('cruise_carrot_lookahead_m').value,
+            'cruise_orbit_gate_dist_m': p('cruise_orbit_gate_dist_m').value,
+            'dock_k_y': p('dock_k_y').value,
+            'dock_stanley_k_lat': p('dock_stanley_k_lat').value,
+            'dock_k_psi': p('dock_k_psi').value,
+            'dock_k_i': p('dock_k_i').value,
+            'dock_integral_limit': p('dock_integral_limit').value,
+            'dock_stanley_offset_cap_rad': p('dock_stanley_offset_cap_rad').value,
+            'dock_reverse_recovery_m': p('dock_reverse_recovery_m').value,
+            'dock_brake_zone_m': p('dock_brake_zone_m').value,
+            'dock_brake_min_speed_frac': p('dock_brake_min_speed_frac').value,
+            'dock_reverse_stall_timeout_s': p('dock_reverse_stall_timeout_s').value,
+            'dock_reverse_stall_min_disp_m': p('dock_reverse_stall_min_disp_m').value,
+            'approach_tolerance': p('approach_tolerance').value,
+            'creep_zone': p('creep_zone').value,
+            'max_curvature': p('max_curvature').value,
+            'wheelbase': p('wheelbase').value,
             'max_steering_angle_rad': self._max_steer_rad,
+            # L1 knobs (consumed only by L1Tracker; harmless to legacy).
+            'l1_period_s': p('l1_period_s').value,
+            'l1_damping': p('l1_damping').value,
+            'l1_min_m': p('l1_min_m').value,
+            'l1_max_m': p('l1_max_m').value,
+            'l1_cm_capture_m': p('l1_cm_capture_m').value,
+            'l1_reverse_recovery_min_m': p('l1_reverse_recovery_min_m').value,
+            'l1_reverse_speed': p('l1_reverse_speed').value,
+            'l1_kappa_speed_lim': p('l1_kappa_speed_lim').value,
+            'l1_e_y_speed_gain': p('l1_e_y_speed_gain').value,
+            'l1_e_y_speed_floor': p('l1_e_y_speed_floor').value,
+            'l1_brake_zone_m': p('l1_brake_zone_m').value,
+            'l1_brake_min_speed_frac': p('l1_brake_min_speed_frac').value,
+            'l1_min_speed_m_s': p('l1_min_speed_m_s').value,
             # Pull from instance, not yaml param, so a fresh auto-cal is
             # picked up on the next mission start without restart.
             'antenna_offset_x': self._antenna_offset_x,
@@ -401,8 +529,15 @@ class NavigatorNode(Node):
     def _on_gps(self, msg):
         self._gps_lat = msg.latitude
         self._gps_lon = msg.longitude
-        self._last_gps_time = time.monotonic()
+        now = time.monotonic()
+        self._last_gps_time = now
         if self._estimator is not None and self._estimator.initialized:
+            # Run yaw-innovation correction BEFORE position correction so
+            # the position pull uses the freshly-rotated antenna offset.
+            # The yaw correction is the dominant chassis_psi source at
+            # 0.3-1.5 m/s where heading-of-motion is too noisy to fuse.
+            self._estimator.correct_position_with_yaw_innovation(
+                msg.latitude, msg.longitude, now)
             self._estimator.correct_position(msg.latitude, msg.longitude)
 
     def _on_heading(self, msg):
@@ -424,6 +559,9 @@ class NavigatorNode(Node):
         spd = data.get('speed') if isinstance(data, dict) else None
         if isinstance(spd, (int, float)):
             self._gps_speed = float(spd)
+        h_acc = data.get('h_acc') if isinstance(data, dict) else None
+        if isinstance(h_acc, (int, float)):
+            self._gps_h_acc_mm = float(h_acc)
 
     def _on_battery(self, msg):
         try:
@@ -532,6 +670,7 @@ class NavigatorNode(Node):
         self._stop_motors()
         self._cruise_tracker = None
         self._dock_tracker = None
+        self._l1_tracker = None
         self._set_state(State.EMERGENCY_STOP)
 
     def _on_clear_emergency(self, _msg):
@@ -610,6 +749,7 @@ class NavigatorNode(Node):
         self._cal_antenna_last_gps_idx = -1
         self._cal_antenna_drive_distance = 0.0
         self._cal_antenna_extended = False
+        self._cal_antenna_orbit_angle = 0.0
         self._fix_degraded_since = None
         self.get_logger().info('Antenna offset auto-calibration started')
         self._set_state(State.CAL_ANTENNA)
@@ -696,14 +836,23 @@ class NavigatorNode(Node):
             if not self._has_required_fix():
                 if self._fix_degraded_since is None:
                     self._fix_degraded_since = now
-                elif now - self._fix_degraded_since >= hysteresis:
-                    self._stop_motors()
+                # Hold position while the fix is degraded. Without this,
+                # cruise/dock keep publishing forward Twists for the full
+                # hysteresis window (0.8 s = ~80 cm at cruise_speed=1 m/s)
+                # before the ERROR transition stops motors, and the
+                # operator sees the chassis "fail to brake" when RTK
+                # drops to float. Position is held by emitting Twist(0,0)
+                # every tick — mcu_bridge's accel_limit then ramps the
+                # actual chassis speed to zero, so we're not relying on
+                # whatever cmd was last latched.
+                self._stop_motors()
+                if now - self._fix_degraded_since >= hysteresis:
                     self._pre_error_state = self._state
                     self._set_error(
                         f'GPS fix below required quality ({self._gps_fix_status}) '
                         f'for {now - self._fix_degraded_since:.2f}s'
                     )
-                    return
+                return
             else:
                 self._fix_degraded_since = None
 
@@ -743,6 +892,13 @@ class NavigatorNode(Node):
     # ── error recovery ───────────────────────────────────────────────────
 
     def _handle_error(self):
+        # Hold position every tick while in ERROR. _set_error stops the
+        # motors once on transition, but mcu_bridge needs a continuous
+        # zero-twist stream so its accel-limit ramp can drive actual
+        # chassis speed to zero — otherwise the chassis keeps rolling
+        # on the last forward cmd while we sit in ERROR waiting for
+        # RTK recovery.
+        self._stop_motors()
         gps_timeout = self.get_parameter('gps_timeout').value
         if (
             time.monotonic() - self._last_gps_time < gps_timeout
@@ -769,9 +925,25 @@ class NavigatorNode(Node):
                     self._cruise_tracker.reset()
                 if self._dock_tracker is not None:
                     self._dock_tracker.reset()
-                self._set_state(self._pre_error_state)
+                if self._l1_tracker is not None:
+                    self._l1_tracker.reset()
+                # Path replan when resuming into NAVIGATING. Without this,
+                # the chassis pose can jump several metres during a GPS
+                # dropout (RTK lost → 3d_fix dead-reckoning → RTK fixed
+                # hard-correct to the new antenna fix). Resuming on the
+                # pre-error segments then puts the chassis well past the
+                # dock target, which trips the dock's along<0 reverse
+                # latch for tens of seconds. Replanning from the live
+                # chassis pose rebuilds cruise+dock so the next forward
+                # cycle actually leads to the waypoint. We replan only
+                # on NAVIGATING resume — SETTLING/CAL_* don't have an
+                # active path to rebuild.
+                resume_state = self._pre_error_state
+                self._set_state(resume_state)
                 self._pre_error_state = None
                 self._last_error_reason = None
+                if resume_state == State.NAVIGATING:
+                    self._replan_from_current_chassis()
             else:
                 self._set_state(State.IDLE)
 
@@ -842,9 +1014,21 @@ class NavigatorNode(Node):
             pos_correction_gain=self.get_parameter('estimator_pos_gain').value,
             psi_correction_gain=self.get_parameter('estimator_psi_gain').value,
             psi_correction_min_speed=self.get_parameter('estimator_psi_min_speed').value,
+            yaw_innov_gain=self.get_parameter('estimator_yaw_innov_gain').value,
+            yaw_innov_min_speed=self.get_parameter('estimator_yaw_innov_min_speed').value,
         )
         self._estimator.set_initial(self._gps_lat, self._gps_lon, psi_math)
-        self._mission_start_chassis_xy = (self._estimator.x, self._estimator.y)
+        # Mission-start chassis position is the chassis pose at the moment
+        # of mission trigger (CALIBRATING entry), NOT the chassis pose at
+        # cal-end (which is ~2.5 m further down the calibration chord).
+        # The ENU origin is the antenna at mission trigger, so the chassis
+        # at trigger sits at -R(ψ_init)·offset from that origin.
+        ax = self._antenna_offset_x
+        ay = self._antenna_offset_y
+        self._mission_start_chassis_xy = (
+            -(cos(psi_math) * ax - sin(psi_math) * ay),
+            -(sin(psi_math) * ax + cos(psi_math) * ay),
+        )
 
         # Plan path now that chassis pose is known.
         params = self._params_for_trackers()
@@ -865,10 +1049,29 @@ class NavigatorNode(Node):
         self._cur_seg_idx = 0
         self._cur_wp_idx = 0
 
-        self._cruise_tracker = CruiseTracker(params)
-        self._dock_tracker = DockTracker(params)
-        self._cruise_tracker.reset()
-        self._dock_tracker.reset()
+        # Pick the tracker stack. 'l1' instantiates a single L1Tracker
+        # used for BOTH cruise and dock segments (Stage 2 unified
+        # architecture). 'legacy' instantiates the CruiseTracker +
+        # DockTracker pair for backward-compatible behaviour and
+        # field rollback via yaml flip.
+        kind = self.get_parameter('path_tracker_kind').value
+        if kind not in ('l1', 'legacy'):
+            self.get_logger().warn(
+                f'Unknown path_tracker_kind={kind!r}; defaulting to legacy'
+            )
+            kind = 'legacy'
+        self._path_tracker_kind = kind
+        self._l1_tracker = None
+        self._cruise_tracker = None
+        self._dock_tracker = None
+        if kind == 'l1':
+            self._l1_tracker = L1Tracker(params)
+            self._l1_tracker.reset()
+        else:
+            self._cruise_tracker = CruiseTracker(params)
+            self._dock_tracker = DockTracker(params)
+            self._cruise_tracker.reset()
+            self._dock_tracker.reset()
         self._reset_progress()
         self.get_logger().info(
             f'Calibration done: ψ={degrees(psi_math):.1f}° (chord={chord_len:.2f} m, '
@@ -890,27 +1093,155 @@ class NavigatorNode(Node):
         chassis_pose = self._estimator.chassis_pose()
         antenna_world = self._estimator.antenna_position()
 
-        if seg.kind == 'cruise':
-            v, kappa, done = self._cruise_tracker.step(chassis_pose, seg, time.monotonic())
+        if self._path_tracker_kind == 'l1':
+            v, kappa, status = self._l1_tracker.step(
+                chassis_pose, seg, time.monotonic(), antenna_world)
             self._publish_velocity(v, kappa)
             self._update_progress(chassis_pose, seg.end_pose)
+
+            now_mono = time.monotonic()
+            if (self._last_dock_trace_t is None
+                    or now_mono - self._last_dock_trace_t >= 1.0):
+                self._last_dock_trace_t = now_mono
+                cx, cy, cpsi = chassis_pose
+                ax, ay = antenna_world
+                sx, sy, psi_path = seg.start_pose
+                tx, ty = seg.target_antenna
+                a_along, e_y = _project_onto_line(ax, ay, sx, sy, psi_path)
+                target_along, _ = _project_onto_line(tx, ty, sx, sy, psi_path)
+                along_to_target = target_along - a_along
+                e_psi = normalize_angle(cpsi - psi_path)
+                dist = hypot(tx - ax, ty - ay)
+                self.get_logger().info(
+                    f'L1 {seg.kind} WP{seg.waypoint_index + 1} '
+                    f'ch=({cx:+.2f},{cy:+.2f},{degrees(cpsi):+.0f}°) '
+                    f'ant=({ax:+.2f},{ay:+.2f}) tgt=({tx:+.2f},{ty:+.2f}) '
+                    f'e_y={e_y*100:+.1f}cm e_psi={degrees(e_psi):+.1f}° '
+                    f'along_to_target={along_to_target*100:+.1f}cm '
+                    f'dist={dist*100:.1f}cm '
+                    f'cmd v={v:+.2f} k={kappa:+.2f} {status}'
+                )
+
+            if status == 'reached':
+                if seg.kind == 'dock':
+                    # Dock leg complete → settle gate. L1 already
+                    # captured at cm_capture, so this is just
+                    # confirm-with-N-readings before spraying.
+                    if self._cur_wp_idx != seg.waypoint_index:
+                        self._settle_retries = 0
+                    self._cur_wp_idx = seg.waypoint_index
+                    self._stop_motors()
+                    self._settle_count = 0
+                    self._settle_enter_time = time.monotonic()
+                    self._set_state(State.SETTLING)
+                else:
+                    # cruise → next segment (dock for the same WP).
+                    self._cur_seg_idx += 1
+                    self._l1_tracker.reset()
+                    self._reset_progress()
+                    self._last_dock_trace_t = None
+            return
+
+        if seg.kind == 'cruise':
+            # Heading-only goal-seeking controller. One cruise PathSegment
+            # per waypoint (planner no longer expands into Reed-Shepp
+            # sub-segs), so there's no burn-through loop and no chassis_v
+            # gate — the tracker just steers toward seg.end_pose.
+            v, kappa, done = self._cruise_tracker.step(
+                chassis_pose, seg, time.monotonic())
+            self._publish_velocity(v, kappa)
+            self._update_progress(chassis_pose, seg.end_pose)
+
+            now_mono = time.monotonic()
+            if (self._last_dock_trace_t is None
+                    or now_mono - self._last_dock_trace_t >= 1.0):
+                self._last_dock_trace_t = now_mono
+                cx, cy, cpsi = chassis_pose
+                ex, ey, end_psi = seg.end_pose
+                dist_to_end = hypot(ex - cx, ey - cy)
+                e_psi_to_dock = normalize_angle(cpsi - end_psi)
+                self.get_logger().info(
+                    f'CRUISE (WP{seg.waypoint_index + 1}) '
+                    f'ch=({cx:+.2f},{cy:+.2f},{degrees(cpsi):+.0f}°) '
+                    f'end=({ex:+.2f},{ey:+.2f},{degrees(end_psi):+.0f}°) '
+                    f'dist={dist_to_end*100:.1f}cm '
+                    f'e_psi={degrees(e_psi_to_dock):+.1f}° '
+                    f'cmd v={v:+.2f} k={kappa:+.2f}'
+                )
+
             if done:
                 self._cur_seg_idx += 1
                 self._cruise_tracker.reset()
                 self._reset_progress()
+                self._last_dock_trace_t = None
             return
 
         if seg.kind == 'dock':
             v, kappa, status = self._dock_tracker.step(chassis_pose, seg, time.monotonic(), antenna_world)
             self._publish_velocity(v, kappa)
             self._update_progress(chassis_pose, seg.end_pose)
+
+            # 1 Hz dock trace. The cycle/stuck symptoms could be (a) chassis
+            # entering the corridor with too much lateral residual, (b) the
+            # forward+reverse loop never closing it, or (c) the reach
+            # condition gating on something the chassis can't satisfy. Need
+            # per-tick e_y / e_psi / along / dist / commanded κ to tell.
+            now_mono = time.monotonic()
+            if (self._last_dock_trace_t is None
+                    or now_mono - self._last_dock_trace_t >= 1.0):
+                self._last_dock_trace_t = now_mono
+                cx, cy, cpsi = chassis_pose
+                ax, ay = antenna_world
+                sx, sy, psi_path = seg.start_pose
+                ex, ey, _ = seg.end_pose
+                tx, ty = seg.target_antenna
+                a_along, e_y = _project_onto_line(ax, ay, sx, sy, psi_path)
+                target_along, _ = _project_onto_line(tx, ty, sx, sy, psi_path)
+                along_to_target = target_along - a_along
+                e_psi = normalize_angle(cpsi - psi_path)
+                dist = hypot(tx - ax, ty - ay)
+                self.get_logger().info(
+                    f'DOCK WP{seg.waypoint_index + 1} '
+                    f'ch=({cx:+.2f},{cy:+.2f},{degrees(cpsi):+.0f}°) '
+                    f'ant=({ax:+.2f},{ay:+.2f}) tgt=({tx:+.2f},{ty:+.2f}) '
+                    f'e_y={e_y*100:+.1f}cm e_psi={degrees(e_psi):+.1f}° '
+                    f'along_to_target={along_to_target*100:+.1f}cm '
+                    f'dist={dist*100:.1f}cm '
+                    f'cmd v={v:+.2f} k={kappa:+.2f} {status}'
+                )
+
             if status == 'reached':
                 # Dock reached → run settling to confirm antenna position.
+                # Active-settle retry counter is reset *only* on a fresh
+                # dock reach — re-engaging from settle keeps the counter
+                # so we eventually time out instead of looping forever.
+                if self._cur_wp_idx != seg.waypoint_index:
+                    self._settle_retries = 0
                 self._cur_wp_idx = seg.waypoint_index
                 self._stop_motors()
                 self._settle_count = 0
                 self._settle_enter_time = time.monotonic()
                 self._set_state(State.SETTLING)
+            elif status == 'reverse_stalled':
+                # DockTracker gave up on a reverse stroke that wasn't
+                # making ground (chassis rotating in place under a
+                # saturated latched κ — happens when the estimator
+                # jump-corrects far past the target on RTK recovery).
+                # Don't skip — replan from current chassis pose and
+                # keep the same waypoint as the target so the next
+                # cruise/dock pair leads back to it.
+                self.get_logger().warn(
+                    f'Dock reverse stalled on WP{seg.waypoint_index + 1}, replanning'
+                )
+                self._stop_motors()
+                self._reset_progress()
+                if self._cruise_tracker is not None:
+                    self._cruise_tracker.reset()
+                if self._dock_tracker is not None:
+                    self._dock_tracker.reset()
+                if self._l1_tracker is not None:
+                    self._l1_tracker.reset()
+                self._replan_from_current_chassis()
             return
 
     # ── stuck detection ──────────────────────────────────────────────────
@@ -918,64 +1249,173 @@ class NavigatorNode(Node):
     def _reset_progress(self):
         self._last_progress_time = time.monotonic()
         self._last_progress_dist = float('inf')
+        self._stuck_window = []
 
     def _update_progress(self, chassis_pose, target_pose):
         x, y, _ = chassis_pose
         ex, ey, _ = target_pose
         dist = hypot(ex - x, ey - y)
         now = time.monotonic()
+        timeout = self.get_parameter('stuck_timeout').value
+
+        # Maintain chassis-displacement window of length `timeout` seconds.
+        self._stuck_window.append((now, x, y))
+        cutoff = now - timeout
+        while self._stuck_window and self._stuck_window[0][0] < cutoff:
+            self._stuck_window.pop(0)
 
         if dist < self._last_progress_dist - 0.02:
             self._last_progress_dist = dist
             self._last_progress_time = now
+            # Chassis is making progress toward target — no need to also
+            # check the displacement gate.
             return
 
-        if now - self._last_progress_time < self.get_parameter('stuck_timeout').value:
+        # Distance-to-target hasn't improved. Two ways to be stuck:
+        # (a) chassis pinned: hasn't moved more than 30 cm in the
+        #     stuck_timeout window — actual stuck (dock reverse cycle,
+        #     wheel slip, etc.).
+        # (b) no-progress timeout: dist-to-target hasn't decreased by
+        #     ≥2 cm in stuck_timeout seconds even though chassis is
+        #     moving. This catches genuine wedged geometry but also
+        #     fires on legitimate orbit-around-tight-goal cases. The
+        #     cruise tracker's past-entry / orbit-gate exits should
+        #     prevent those from ever entering this branch in the
+        #     first place, but we keep the gate for safety.
+        bbox_disp = 0.0
+        if len(self._stuck_window) >= 2:
+            xs = [r[1] for r in self._stuck_window]
+            ys = [r[2] for r in self._stuck_window]
+            bbox_disp = hypot(max(xs) - min(xs), max(ys) - min(ys))
+        chassis_pinned = (
+            len(self._stuck_window) >= 2
+            and (now - self._stuck_window[0][0]) >= timeout
+            and bbox_disp < 0.30
+        )
+
+        if not chassis_pinned and now - self._last_progress_time < timeout:
             return
 
         self._stuck_retries += 1
-        max_retries = self.get_parameter('stuck_max_retries').value
         wp_idx = self._segments[self._cur_seg_idx].waypoint_index if self._cur_seg_idx < len(self._segments) else -1
+        gate = 'displacement' if chassis_pinned else 'no-progress'
+
+        # In 'l1' mode, if the antenna is already close to the WP
+        # target (≤ l1_close_enough_spray_m), spray the WP instead
+        # of replanning. Replan-from-just-past-target spirals (15:24
+        # WP1 trace: 7 cm → 161 cm). Only replan when we're truly
+        # far from any reachable target, where the spiral cost is
+        # less than abandoning the mission.
+        if self._path_tracker_kind == 'l1' and self._estimator is not None \
+                and self._cur_seg_idx < len(self._segments):
+            seg = self._segments[self._cur_seg_idx]
+            ax, ay = self._estimator.antenna_position()
+            tx, ty = seg.target_antenna
+            dist_to_target = hypot(tx - ax, ty - ay)
+            close_m = self.get_parameter(
+                'l1_close_enough_spray_m').value
+            if dist_to_target <= close_m and wp_idx >= 0:
+                self.get_logger().warn(
+                    f'Stuck on WP{wp_idx + 1} '
+                    f'(antenna {dist_to_target*100:.1f} cm from target '
+                    f'≤ {close_m*100:.0f} cm) — '
+                    'accepting landing and spraying'
+                )
+                # Snap _cur_seg_idx to the dock segment of this WP
+                # so spraying lands on the correct waypoint.
+                while self._cur_seg_idx < len(self._segments) and (
+                    self._segments[self._cur_seg_idx].waypoint_index != wp_idx
+                    or self._segments[self._cur_seg_idx].kind != 'dock'
+                ):
+                    self._cur_seg_idx += 1
+                self._cur_wp_idx = wp_idx
+                self._stop_motors()
+                self._trigger_spray()
+                return
+
         self.get_logger().warn(
             f'Stuck on segment {self._cur_seg_idx} (waypoint {wp_idx + 1}) '
-            f'retry {self._stuck_retries}/{max_retries}'
+            f'retry {self._stuck_retries} '
+            f'gate={gate} bbox_disp={bbox_disp*100:.1f}cm — '
+            f'resetting trackers and replanning from current chassis pose'
         )
-        if self._stuck_retries > max_retries:
-            self._skip_current_waypoint()
-        else:
-            # Reset trackers so the retry doesn't reuse a saturated I-term
-            # (DockTracker integral) or stale D-term (CruiseTracker prev_alpha).
-            # Without this, retry is functionally a no-op: the same control
-            # law re-runs against the same wall it failed against.
-            if self._cruise_tracker is not None:
-                self._cruise_tracker.reset()
-            if self._dock_tracker is not None:
-                self._dock_tracker.reset()
-            self._reset_progress()
-
-    def _skip_current_waypoint(self):
-        if self._cur_seg_idx >= len(self._segments):
-            return
-        skipped_idx = self._segments[self._cur_seg_idx].waypoint_index
-        # Skip both the cruise + dock segments belonging to this waypoint.
-        # Synthetic return segments have waypoint_index = -1 — their skip
-        # ends the mission cleanly rather than trying to parse the next.
-        while (self._cur_seg_idx < len(self._segments)
-               and self._segments[self._cur_seg_idx].waypoint_index == skipped_idx):
-            self._cur_seg_idx += 1
-        if skipped_idx >= 0:
-            msg = Int32()
-            msg.data = int(skipped_idx)
-            self._pub_skipped.publish(msg)
-            self.get_logger().warn(f'Skipped waypoint {skipped_idx + 1}')
-        self._stuck_retries = 0
-        self._reset_progress()
-        # Reset BOTH trackers so saturated DockTracker integral from the
-        # failed dock doesn't leak into the next waypoint's docking.
+        # NEVER skip. The operator's stated policy: every waypoint
+        # gets sprayed. Reset both trackers (clears saturated dock
+        # integral, stale cruise state) and replan from the live
+        # chassis pose so the next attempt uses fresh geometry
+        # (Reed-Shepp can pick a K-turn if forward-only got stuck).
+        # Only emergency_stop ends the mission.
         if self._cruise_tracker is not None:
             self._cruise_tracker.reset()
         if self._dock_tracker is not None:
             self._dock_tracker.reset()
+        if self._l1_tracker is not None:
+            self._l1_tracker.reset()
+        self._reset_progress()
+        self._replan_from_current_chassis()
+
+    def _replan_from_current_chassis(self):
+        """Rebuild self._segments anchored at the chassis's live pose.
+
+        Called from stuck / reverse-stalled / settle-timeout / ERROR
+        recovery. The planner originally laid out cruise/dock segments
+        under the assumption the chassis would be at each dock-end before
+        transitioning to the next cruise. If that assumption breaks
+        (chassis stuck off-corridor, estimator hard-corrected past the
+        target after RTK reacquire), we regenerate the remaining segments
+        using the actual chassis pose as the next cruise's start. The
+        waypoint index offset keeps the new segments numbered against
+        the original `self._waypoints` list so any consumer of
+        seg.waypoint_index (settle handler, telemetry) sees the same
+        indices it saw before the replan.
+        """
+        if self._estimator is None or not self._estimator.initialized:
+            return
+        # Find the next pending waypoint index in the ORIGINAL waypoint list.
+        if self._cur_seg_idx < len(self._segments):
+            next_seg = self._segments[self._cur_seg_idx]
+            if next_seg.waypoint_index < 0:
+                # Currently in the synthetic return-to-start segments.
+                # Replan them from chassis pose using the same target.
+                next_wp_idx = len(self._waypoints)
+            else:
+                next_wp_idx = next_seg.waypoint_index
+        else:
+            next_wp_idx = len(self._waypoints)
+
+        remaining = self._waypoints[next_wp_idx:]
+        # Anchor the first replanned waypoint's dock_psi on the bearing
+        # FROM the previously sprayed waypoint, not from the live chassis
+        # pose. Without this, each replan re-derives dock_psi from
+        # chassis-to-WP, so a chassis that drifted past the target spins
+        # the corridor around it on every retry (14:03 WP5: dock_psi
+        # rotated -105°→-87°→-150°→+175° across 4 replans). Keeping the
+        # original WP_{n-1} → WP_n bearing preserves the corridor.
+        prev_xy = None
+        if next_wp_idx > 0:
+            prev_wp = self._waypoints[next_wp_idx - 1]
+            prev_xy = enu_from_gps(
+                prev_wp['lat'], prev_wp['lng'],
+                self._ref_lat, self._ref_lon,
+            )
+        params = self._params_for_trackers()
+        try:
+            new_segments = plan_path(
+                current_chassis_pose=self._estimator.chassis_pose(),
+                antenna_offset=(params['antenna_offset_x'], params['antenna_offset_y']),
+                waypoints_lat_lng=remaining,
+                ref_lat_lon=(self._ref_lat, self._ref_lon),
+                dock_distance=self.get_parameter('dock_approach_distance').value,
+                return_to_start=self.get_parameter('return_to_start').value,
+                start_chassis_xy=self._mission_start_chassis_xy,
+                waypoint_index_offset=next_wp_idx,
+                prev_target_xy=prev_xy,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            self.get_logger().warn(f'Replan failed: {exc}')
+            return
+        self._segments = new_segments
+        self._cur_seg_idx = 0
 
     # ── settling ─────────────────────────────────────────────────────────
 
@@ -1003,7 +1443,25 @@ class NavigatorNode(Node):
         settle_readings = self.get_parameter('settle_readings').value
         settle_timeout = self.get_parameter('settle_timeout').value
 
+        # Diagnostic: log estimator state vs raw GPS antenna at the moment
+        # of timeout / settle decision, so we can pin down whether settle
+        # failures come from estimator drift, antenna_offset error, or
+        # dock_tracker stop accuracy.
         if time.monotonic() - self._settle_enter_time > settle_timeout:
+            cx, cy, cpsi = self._estimator.chassis_pose()
+            gps_e = gps_n = float('nan')
+            if self._gps_lat is not None and self._ref_lat is not None:
+                gps_e, gps_n = enu_from_gps(
+                    self._gps_lat, self._gps_lon, self._ref_lat, self._ref_lon)
+            self.get_logger().info(
+                f'WP{self._cur_wp_idx + 1} timeout diag: '
+                f'chassis=({cx:.3f}, {cy:.3f}, {degrees(cpsi):.1f}°) '
+                f'ant_est=({antenna_e:.3f}, {antenna_n:.3f}) '
+                f'ant_gps=({gps_e:.3f}, {gps_n:.3f}) '
+                f'target=({target_e:.3f}, {target_n:.3f}) '
+                f'dist_est={dist*100:.1f}cm '
+                f'dist_gps={hypot(target_e-gps_e, target_n-gps_n)*100:.1f}cm'
+            )
             # Don't spray on a moving target. If the antenna is currently
             # outside waypoint_tolerance (still in re-approach via the
             # dock tracker), skip the waypoint instead of firing spray
@@ -1011,38 +1469,114 @@ class NavigatorNode(Node):
             # included time spent re-tracking, so a bouncy antenna can
             # exhaust the budget while still moving.
             if dist > wp_tol:
+                # In 'l1' mode, never replan from a settle timeout.
+                # plan()-from-just-past-target is broken: dock_entry
+                # is floored 60 cm behind chassis along the new
+                # corridor, forcing a U-turn the forward-only L1
+                # cannot make → wide orbit, divergence (15:24 WP1
+                # trace: 7 cm → 161 cm spiral away). The correct
+                # response is to let L1's internal reverse-recovery
+                # cycle the chassis back behind the target and
+                # re-approach. Two branches by distance:
+                #   * dist > l1_close_enough_spray_m: drop back to
+                #     NAVIGATING; L1 keeps trying with reverse-
+                #     recovery, no replan.
+                #   * dist ≤ l1_close_enough_spray_m: accept the
+                #     landing and spray at widened tolerance.
+                close_m = self.get_parameter(
+                    'l1_close_enough_spray_m').value
+                if self._path_tracker_kind == 'l1':
+                    if dist <= close_m:
+                        self.get_logger().warn(
+                            f'Settle timeout WP{self._cur_wp_idx + 1} '
+                            f'(dist={dist*100:.1f} cm ≤ '
+                            f'{close_m*100:.0f} cm) — '
+                            'accepting landing and spraying'
+                        )
+                        self._trigger_spray()
+                        return
+                    self.get_logger().warn(
+                        f'Settle timeout WP{self._cur_wp_idx + 1} '
+                        f'(dist={dist*100:.1f} cm > '
+                        f'{close_m*100:.0f} cm) — re-engaging L1 '
+                        'reverse-recovery'
+                    )
+                    self._settle_count = 0
+                    self._settle_retries = 0
+                    if self._l1_tracker is not None:
+                        self._l1_tracker.reset()
+                    self._reset_progress()
+                    self._set_state(State.NAVIGATING)
+                    return
+                # Legacy mode: NEVER skip — operator policy. Replan
+                # from the live chassis pose so the next attempt has
+                # a fresh corridor.
                 self.get_logger().warn(
                     f'Settle timeout at waypoint {self._cur_wp_idx + 1} '
                     f'(dist={dist*100:.1f} cm > waypoint_tolerance) — '
-                    'skipping rather than spraying on moving antenna'
+                    'replanning'
                 )
-                self._skip_current_waypoint()
+                self._settle_count = 0
+                self._settle_retries = 0
+                if self._cruise_tracker is not None:
+                    self._cruise_tracker.reset()
+                if self._dock_tracker is not None:
+                    self._dock_tracker.reset()
+                if self._l1_tracker is not None:
+                    self._l1_tracker.reset()
+                self._reset_progress()
+                # Replan keeping the current waypoint as the next target.
+                # _replan_from_current_chassis uses _cur_seg_idx to decide
+                # which waypoint to start from. _cur_seg_idx was not
+                # advanced when we entered SETTLING, so it still points
+                # at the dock segment of the current waypoint — replan
+                # rebuilds path from chassis-now through that wp onward.
+                self._replan_from_current_chassis()
                 self._set_state(State.NAVIGATING)
                 return
-            self.get_logger().warn(
+            self.get_logger().info(
                 f'Settle timeout at waypoint {self._cur_wp_idx + 1} '
-                f'(dist={dist*100:.1f} cm), proceeding to spray'
+                f'(dist={dist*100:.1f} cm <= wp_tol), proceeding to spray'
             )
             self._trigger_spray()
             return
 
         if dist > wp_tol:
-            # Antenna has drifted out of tolerance during settling — most
-            # likely a small overshoot or a late GPS correction. Hand back
-            # to the dock tracker, which can creep / reverse to bring it
-            # back. We don't change segment index — the dock segment is
-            # still the active one for this waypoint.
-            self._settle_count = 0
-            seg = self._segments[self._cur_seg_idx] if self._cur_seg_idx < len(self._segments) else None
-            if seg is not None and seg.kind == 'dock':
-                v, kappa, _ = self._dock_tracker.step(
-                    self._estimator.chassis_pose(), seg,
-                    time.monotonic(),
-                    (antenna_e, antenna_n),
-                )
-                self._publish_velocity(v, kappa)
-            else:
+            # In 'l1' mode the navigator does NOT do active settle
+            # retry: L1Tracker handles convergence internally via its
+            # reverse-recovery cycles (saturated κ in e_y-closing
+            # direction, adaptive recovery distance, sign-flip
+            # terminate). The SETTLING→NAVIGATING ping-pong pattern of
+            # the legacy stack caused new wari-gari on every approach
+            # at 3-5 cm; L1 mode skips it entirely. Hold position; the
+            # only exit is the timeout branch above which replans on
+            # >wp_tol or sprays under wp_tol.
+            if self._path_tracker_kind == 'l1':
+                self._settle_count = 0
                 self._stop_motors()
+                return
+            # Active settle redesign (legacy mode): re-engage the dock
+            # tracker. Throttle to active_settle_throttle_s between
+            # retries so a dock that declares 'reached' on the first
+            # tick of re-engagement (16:11 trace) doesn't cycle
+            # SETTLING→NAVIGATING→SETTLING within 50 ms.
+            now = time.monotonic()
+            throttle = self.get_parameter('active_settle_throttle_s').value
+            if now - self._last_settle_retry_t < throttle:
+                # Within throttle window — hold position, don't retry yet.
+                self._settle_count = 0
+                self._stop_motors()
+                return
+            self._settle_retries += 1
+            self._last_settle_retry_t = now
+            self.get_logger().info(
+                f'Active settle WP{self._cur_wp_idx + 1}: '
+                f'dist={dist * 100:.1f} cm > wp_tol, retry {self._settle_retries}'
+            )
+            if self._dock_tracker is not None:
+                self._dock_tracker.reset()
+            self._reset_progress()
+            self._set_state(State.NAVIGATING)
             return
 
         # Inside tolerance.
@@ -1098,7 +1632,11 @@ class NavigatorNode(Node):
         target_e, target_n = seg.target_antenna
         dist = hypot(target_e - antenna_e, target_n - antenna_n)
         if dist > self.get_parameter('waypoint_tolerance').value:
-            v, kappa, _ = self._dock_tracker.step(
+            if self._path_tracker_kind == 'l1' and self._l1_tracker is not None:
+                tracker = self._l1_tracker
+            else:
+                tracker = self._dock_tracker
+            v, kappa, _ = tracker.step(
                 self._estimator.chassis_pose(), seg,
                 time.monotonic(),
                 (antenna_e, antenna_n),
@@ -1175,10 +1713,12 @@ class NavigatorNode(Node):
 
         self._stop_motors()
         result = solve_wheel_scales(
-            gps_distance_m=gps_dist,
+            samples_enu=self._cal_wheels_enu_samples,
             encoder_left_m=self._cal_wheels_enc_l_m,
             encoder_right_m=self._cal_wheels_enc_r_m,
             samples=self._cal_wheels_samples,
+            track_width_m=self.get_parameter('track_width').value,
+            gps_distance_m=gps_dist,
         )
         if result['reason'] is not None:
             self.get_logger().warn(f'wheel cal solve failed: {result["reason"]}')
@@ -1198,21 +1738,31 @@ class NavigatorNode(Node):
         # Hand the new scales to mcu_bridge, which persists and applies.
         scale_l = result['scale_l']
         scale_r = result['scale_r']
+        arc_r = result.get('arc_radius_m')
+        arc_th = result.get('arc_theta_rad')
         apply_msg = String()
-        apply_msg.data = json.dumps({
+        apply_payload = {
             'scale_l': scale_l,
             'scale_r': scale_r,
             'gps_distance_m': gps_dist,
             'encoder_left_m': self._cal_wheels_enc_l_m,
             'encoder_right_m': self._cal_wheels_enc_r_m,
             'samples': self._cal_wheels_samples,
-        })
+        }
+        if arc_r is not None:
+            apply_payload['arc_radius_m'] = arc_r
+        if arc_th is not None:
+            apply_payload['arc_theta_rad'] = arc_th
+        apply_msg.data = json.dumps(apply_payload)
         self._pub_apply_wheel_scales.publish(apply_msg)
+        arc_str = (f', arc r={arc_r:.1f} m θ={degrees(arc_th):.1f}°'
+                   if arc_r is not None and arc_th is not None
+                   else ', straight')
         self.get_logger().info(
             f'wheel cal: L={scale_l:.4f} R={scale_r:.4f} '
             f'(gps={gps_dist:.2f} m, encL={self._cal_wheels_enc_l_m:.2f} m, '
             f'encR={self._cal_wheels_enc_r_m:.2f} m, '
-            f'n={self._cal_wheels_samples})'
+            f'n={self._cal_wheels_samples}{arc_str})'
         )
 
         # Steering-trim auto-cal piggy-backs on the same κ=0 chord. We
@@ -1324,8 +1874,8 @@ class NavigatorNode(Node):
     def _handle_cal_antenna(self):
         if self._cal_antenna_phase == CalAntennaPhase.STRAIGHT:
             self._cal_antenna_step_straight()
-        elif self._cal_antenna_phase == CalAntennaPhase.SCURVE:
-            self._cal_antenna_step_scurve()
+        elif self._cal_antenna_phase == CalAntennaPhase.CIRCLE:
+            self._cal_antenna_step_circle()
         elif self._cal_antenna_phase == CalAntennaPhase.SOLVE:
             self._cal_antenna_step_solve()
 
@@ -1387,59 +1937,79 @@ class NavigatorNode(Node):
             return
 
         # Bootstrap the chassis pose. The "chassis" reference is the rear
-        # axle; we don't know yet where it is in world frame because we
-        # don't know the offset (that's what we're solving for). Anchor it
+        # axle; we don't know its world-frame position because we don't
+        # know the offset yet (that's what we're solving for). Anchor it
         # at the GPS antenna position with zero offset assumption — the
-        # math doesn't care about an absolute origin, only the per-sample
-        # consistency of (chassis pose, antenna observation). The chord
-        # gave us ψ_init; the SCURVE phase integrates from there.
+        # closed-form circular solver only depends on the per-sample
+        # consistency between chassis_xy and antenna_obs being in the
+        # SAME frame, not on an absolute origin. The chord fit gave us
+        # ψ_init so the chassis frame is rotation-aligned with ENU.
         self._cal_antenna_psi_init = psi_math
         self._cal_antenna_chassis = (e, n, psi_math)
-        self._cal_antenna_phase = CalAntennaPhase.SCURVE
+        self._cal_antenna_phase = CalAntennaPhase.CIRCLE
         self._cal_antenna_phase_start_t = time.monotonic()
         self._cal_antenna_last_predict_t = None
         self._cal_antenna_drive_distance = dist
         self.get_logger().info(
             f'Antenna-cal straight done: ψ_init={degrees(psi_math):.1f}° '
-            f'(chord={chord_len:.2f} m, rms={rms*100:.1f} cm) → S-curve'
+            f'(chord={chord_len:.2f} m, rms={rms*100:.1f} cm) → circle'
         )
 
-    def _cal_antenna_step_scurve(self):
-        """Drive sinusoidal κ for N periods, sample (chassis, antenna).
+    def _cal_antenna_step_circle(self):
+        """Drive constant κ = sign / R for N revolutions, sample chassis vs antenna.
 
-        Chassis pose integrates open-loop from MCU encoder odometry — we
-        deliberately don't apply GPS feedback because the GPS observation
-        IS the data we're fitting. Encoder drift over the ~10 s drive is
-        small enough on smooth ground (~0.5° ψ, ~5 cm xy) that it doesn't
-        meaningfully bias the LSQ.
+        The closed-form circular solver fits two circles (chassis trace and
+        antenna trace) and recovers (a_x, a_y) from their common centre and
+        the constant phase offset between their orbit angles. It does NOT
+        consume per-sample chassis ψ, so this phase deliberately omits the
+        GPS heading-of-motion snap that the SCURVE phase relied on — that
+        snap injected ~100 ms doppler lag into chassis_xy integration, which
+        rotated the recovered r vector while preserving |r|.
+
+        Chassis_xy is open-loop integrated from encoder ω + v. Wheel scales
+        are already calibrated (sub-0.2% per side), so the differential ω is
+        a direct measurement of chassis rotation. Over a 15-25 s drive on
+        smooth ground the cumulative ψ drift is well under 1°, which
+        translates to a bounded distortion of the chassis circle fit that
+        the rms gate (10 cm) catches if it does sneak through.
         """
         speed = self.get_parameter('antenna_cal_speed').value
-        kappa_max = self.get_parameter('antenna_cal_kappa_max').value
-        period_s = self.get_parameter('antenna_cal_period_s').value
-        periods = self.get_parameter('antenna_cal_periods').value
+        radius = self.get_parameter('antenna_cal_radius_m').value
+        revolutions = max(1, int(self.get_parameter('antenna_cal_revolutions').value))
+        sign_raw = int(self.get_parameter('antenna_cal_sign').value)
+        sign = 1 if sign_raw >= 0 else -1
 
+        if radius <= 0:
+            self._stop_motors()
+            self._publish_cal_antenna_result(
+                ok=False,
+                reason=f'antenna_cal_radius_m must be > 0 (got {radius})',
+            )
+            self._set_state(State.IDLE)
+            return
+
+        # Termination: completed the requested orbit angle, OR safety cap
+        # at 1.5× nominal duration in case encoder ω lags commanded.
+        target_orbit_angle = 2.0 * pi * revolutions
         elapsed = time.monotonic() - self._cal_antenna_phase_start_t
-        total = period_s * max(1, int(periods))
-        if elapsed >= total:
+        nominal_t = (2.0 * pi * radius * revolutions) / max(speed, 0.1)
+        if (abs(self._cal_antenna_orbit_angle) >= target_orbit_angle
+                or elapsed > 1.5 * nominal_t):
             self._stop_motors()
             self._cal_antenna_phase = CalAntennaPhase.SOLVE
             return
 
-        kappa = scurve_curvature(elapsed, kappa_max, period_s)
+        kappa = sign / radius
+        # Clamp to physical curvature limit — defends against a misconfigured
+        # cal_radius_m smaller than the chassis can actually turn.
+        kappa_cap = self.get_parameter('max_curvature').value
+        if abs(kappa) > kappa_cap:
+            kappa = kappa_cap if kappa > 0 else -kappa_cap
         self._publish_velocity(speed, kappa)
 
-        # Open-loop pose integration. v comes from the encoder average
-        # (track_width-invariant — both wheels' longitudinal component);
-        # ω uses the *commanded* curvature × velocity rather than the
-        # encoder-differential ω, because the latter mistakes per-wheel
-        # motor imbalance and Ackermann kinematic-conflict slip for
-        # actual chassis rotation. Over 8 s of S-curve those errors
-        # integrate into meters of pose drift, which is what blew up
-        # the antenna LSQ residual to 263 cm last run. Steering trim
-        # plus PID closed-loop velocity now make commanded-κ a faithful
-        # stand-in for actual chassis ω.
-        v_avg, _omega_enc = self._odom_chassis_kinematics()
-        omega = v_avg * kappa
+        # Encoder-only chassis pose integration. No GPS heading snap (see
+        # docstring above for why).
+        v_avg, omega = self._odom_chassis_kinematics()
         now = time.monotonic()
         if self._cal_antenna_last_predict_t is None:
             self._cal_antenna_last_predict_t = now
@@ -1454,9 +2024,10 @@ class NavigatorNode(Node):
                 cpsi = normalize_angle(cpsi + omega * dt)
                 self._cal_antenna_chassis = (cx, cy, cpsi)
                 self._cal_antenna_drive_distance += abs(v_avg) * dt
+                self._cal_antenna_orbit_angle += omega * dt
 
-        # Record one sample per fresh GPS fix. We dedupe via _last_gps_time
-        # rather than position so we capture every truly new measurement.
+        # Record one sample per fresh GPS fix. Dedupe via _last_gps_time so
+        # we never emit two samples for the same fix.
         if self._cal_antenna_last_gps_idx != int(self._last_gps_time * 1000):
             self._cal_antenna_last_gps_idx = int(self._last_gps_time * 1000)
             if self._gps_lat is not None:
@@ -1468,8 +2039,8 @@ class NavigatorNode(Node):
                 self._cal_antenna_data.append((cx, cy, cpsi, a_e, a_n))
 
     def _cal_antenna_step_solve(self):
-        """Run LSQ, persist on success, publish result either way."""
-        result = solve_antenna_offset(self._cal_antenna_data)
+        """Run circular fit, persist on success, publish result either way."""
+        result = solve_antenna_offset_circular(self._cal_antenna_data)
         ok = result.get('reason') is None
         if ok:
             try:
@@ -1501,7 +2072,46 @@ class NavigatorNode(Node):
             )
             self._publish_cal_antenna_result(ok=True, **payload)
         else:
-            self.get_logger().warn(f'Antenna-cal solve failed: {result["reason"]}')
+            cand_a_x = result.get('a_x')
+            cand_a_y = result.get('a_y')
+            cand_rms = result.get('rms_residual_m')
+            extras = ''
+            if cand_a_x is not None and cand_a_y is not None:
+                extras = f' (candidate a_x={cand_a_x:.3f}, a_y={cand_a_y:.3f}'
+                if cand_rms is not None:
+                    extras += f', rms={cand_rms*100:.1f} cm'
+                extras += ')'
+            self.get_logger().warn(
+                f'Antenna-cal solve failed: {result["reason"]}{extras}'
+            )
+            # Dump samples for offline analysis. Path mirrors the persisted
+            # offset path family ($PILOT_STATE_DIR/), survives container
+            # restarts via the bind mount.
+            try:
+                dump_dir = os.environ.get('PILOT_STATE_DIR') or tempfile.gettempdir()
+                dump_path = os.path.join(dump_dir, 'antenna_cal_failed_samples.json')
+                with open(dump_path, 'w') as f:
+                    json.dump({
+                        'reason': result['reason'],
+                        'candidate_a_x': result.get('a_x'),
+                        'candidate_a_y': result.get('a_y'),
+                        'rms_residual_m': result.get('rms_residual_m'),
+                        'psi_init_rad': self._cal_antenna_psi_init,
+                        'circle_R_m': result.get('circle_R_m'),
+                        'circle_rho_m': result.get('circle_rho_m'),
+                        'phase_phi_rad': result.get('phase_phi_rad'),
+                        'rotation_sign': result.get('rotation_sign'),
+                        'centre_dist_m': result.get('centre_dist_m'),
+                        'samples': [
+                            {'cx': cx, 'cy': cy, 'cpsi': cpsi,
+                             'a_e': a_e, 'a_n': a_n}
+                            for cx, cy, cpsi, a_e, a_n
+                            in self._cal_antenna_data
+                        ],
+                    }, f)
+                self.get_logger().info(f'Antenna-cal failed samples dumped to {dump_path}')
+            except OSError as exc:
+                self.get_logger().warn(f'Failed to dump cal samples: {exc}')
             self._publish_cal_antenna_result(
                 ok=False,
                 reason=result['reason'],
@@ -1541,6 +2151,8 @@ class NavigatorNode(Node):
             self._cruise_tracker.reset()
         if self._dock_tracker is not None:
             self._dock_tracker.reset()
+        if self._l1_tracker is not None:
+            self._l1_tracker.reset()
 
         if self._cur_seg_idx >= len(self._segments):
             self._stop_motors()

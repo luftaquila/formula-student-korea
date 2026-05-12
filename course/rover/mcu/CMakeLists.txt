@@ -45,5 +45,17 @@ target_link_libraries(rover_mcu
 # USB CDC stdout (printf -> /dev/ttyACM0 on the Pi).
 pico_enable_stdio_usb(rover_mcu 1)
 pico_enable_stdio_uart(rover_mcu 0)
+# Cap the per-printf CDC-flush wait far below HW_WATCHDOG_MS=1000 so a
+# host-side stall (pilot reconnect loop, broken serial fd, kernel TTY
+# buffer full) can NEVER let printf hold the main loop past the watchdog
+# deadline. The SDK default 500_000 us combined with multiple per-tick
+# printfs cascades into a self-inducing crash loop: host stops draining
+# CDC → printf blocks → watchdog_update() not reached → MCU resets →
+# USB re-enumerates → host racing to reconnect doesn't drain in time →
+# repeat. With 20 ms here, telemetry that can't be delivered is dropped
+# rather than killing the chip.
+target_compile_definitions(rover_mcu PRIVATE
+    PICO_STDIO_USB_STDOUT_TIMEOUT_US=20000
+)
 
 pico_add_extra_outputs(rover_mcu)

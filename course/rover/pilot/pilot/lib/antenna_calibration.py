@@ -1,52 +1,67 @@
-"""Antenna offset auto-calibration.
+"""Antenna offset auto-calibration via constant-curvature circular drive.
 
 The chassis kinematic model needs the body-frame position of the GPS antenna
-relative to the rear axle. Measuring it with a tape works (and is the safest
-fallback), but on a chassis where the antenna mast can move during deployment
-or transport, an automatic procedure is more reliable.
+relative to the rear-axle centre. Measuring with a tape works as a fallback
+but is hard to keep accurate when the mast can move during deployment, so we
+auto-calibrate by driving the rover in known-shape paths and fitting the
+offset that explains the antenna trajectory.
 
-Math
-----
-For each sample collected during a calibration drive — chassis pose
-(x_c, y_c, ψ) integrated from MCU encoders, and observed antenna ENU position
-(a_obs_x, a_obs_y) from GPS — the rigid-body link is:
+Geometry
+--------
+While the rover orbits at constant curvature κ on flat ground, the rear-axle
+centre traces a circle of radius R = 1/|κ| around some orbit centre O. The
+chassis heading at orbit angle θ is ψ = θ + s·π/2, where s = sign(κ) (=+1
+CCW, −1 CW). The antenna sits at body-frame offset r = (r_x, r_y) so its
+world-frame position is
 
-    [a_obs_x]   [x_c]                        [a_x]
-    [a_obs_y] = [y_c] + R(ψ) ·               [a_y]
+    a(t) = O + R·(cos θ, sin θ) + R(ψ)·r
 
-Stacking N samples and writing u_i = a_obs_i − chassis_xy_i gives an
-overdetermined system M · [a_x; a_y] = u (2N rows, 2 columns) where each
-2×2 block of M is R(ψ_i). The Gauss–Newton normal matrix is
+Expanding R(ψ)·r and collecting cosines/sines of θ shows the antenna also
+traces a CIRCLE about the same centre O, with radius
 
-    M^T M = Σ_i R(ψ_i)^T R(ψ_i) = N · I_2
+    ρ = sqrt((R − s·r_y)² + r_x²)
 
-so the closed-form solution is
+and a CONSTANT phase offset relative to the chassis orbit angle:
 
-    [a_x]   1
-    [a_y] = N · Σ_i R(ψ_i)^T · u_i
+    φ = s·atan2(r_x, R − s·r_y)
 
-i.e. the body-frame antenna-offset estimate from each sample is just R(-ψ_i)
-applied to its world-frame residual, and we average. No iteration, no
-linearisation; the only assumption is that ψ_i is reasonably accurate during
-the drive (which is why we bootstrap from a straight chord first and trust
-encoders for the brief excitation phase).
+Both ρ and φ are time-invariant, so they fall out of two ordinary algebraic
+circle fits and one circular mean — no instantaneous heading required, no
+iteration, no dependence on GPS heading-of-motion. Inverting:
 
-Observability: the system is rank-deficient when ψ is constant (pure
-straight drive can't separate a_x and a_y because both contribute the same
-constant world-frame offset). The drive pattern below sweeps κ through both
-signs to break the degeneracy.
+    r_x = s·ρ·sin(s·φ)        (= ρ·sin φ for s=+1, −ρ·sin φ for s=−1)
+    r_y = s·(R − ρ·cos(s·φ))  (= R − ρ·cos φ for s=+1, ρ·cos φ − R for s=−1)
+
+Why this beats the SCURVE approach
+----------------------------------
+The previous SCURVE drive sampled chassis ψ from GPS heading-of-motion to
+keep open-loop integration drift bounded, but the F9P's doppler-derived
+heading lags actual rover heading by ~100 ms (a windowed average over recent
+velocity vectors). On a high-lateral-acc SCURVE that lag rotates the recovered
+r vector while preserving |r|, producing magnitude-correct but
+direction-unstable offsets across runs (~25 cm direction variance against
+0.3 m truth in field testing).
+
+The circular method depends only on long-term orbit geometry — every per-
+sample observation contributes ~1/N of its noise to the fitted (centre,
+radius, phase), so a 100 ms heading lag on individual samples averages out
+over multiple revolutions instead of biasing the result.
 
 Drive pattern
 -------------
 Phase 1 (`STRAIGHT`):  drive κ = 0 for `straight_distance` metres at
-    `calibration_speed`. Chord-regression of antenna ENU samples gives ψ_init
-    with the same residual gates the mission-start calibration uses.
+    `calibration_speed`. Chord-regression of antenna ENU samples gives
+    ψ_init with the same residual gates the mission-start calibration uses.
+    The chord fit is the quality gate — if RTK is unstable or the chassis
+    isn't tracking straight, we fail here rather than collecting a bad
+    orbit.
 
-Phase 2 (`SCURVE`):    drive κ(t) = κ_max · sin(2π · t / period) for
-    `scurve_periods` full periods. ψ nets back to ψ_init at the end of every
-    full period, so the whole maneuver is bounded in heading and translates
-    forward roughly along the original direction. Encoder integration over
-    the brief drive (~10 s) accumulates < 1° drift on smooth ground.
+Phase 2 (`CIRCLE`):    drive κ = ±1/R for N revolutions at
+    `antenna_cal_speed`. Encoder-only chassis ψ integration (NO GPS
+    heading snap) so the chassis trajectory stays in a consistent local
+    frame; over the cal duration (~15-25 s) encoder ω drift on smooth
+    ground is well under 1° and the orbit fit is robust to that. Sample
+    every fresh GPS fix.
 
 Persistence
 -----------
@@ -66,7 +81,9 @@ import math
 import os
 import tempfile
 import time
-from math import cos, sin, sqrt, pi
+from math import atan2, cos, sin, sqrt, pi, hypot
+
+from pilot.lib.steering_calibration import _fit_circle_kasa
 
 
 ANTENNA_OFFSET_FILENAME = 'antenna_offset.json'
@@ -78,15 +95,42 @@ RMS_BOUND_M = 0.5
 
 # Solver acceptance gates.
 SOLVE_MIN_SAMPLES = 30
-SOLVE_RMS_MAX_M = 0.05
-# Minimum ψ excitation across the sample set. The closed-form solver
-# itself is well-defined for any ψ (R^T R = I), but it silently absorbs
-# chassis-pose origin error into the offset estimate when the drive
-# fails to rotate the rover. The S-curve drive (κ_max=0.5, v=0.5 m/s,
-# T=4 s) produces ~18° peak ψ excursion in normal operation; this gate
-# (~8.6°) flags a SCURVE that didn't execute (encoder stall, motor
-# failure, mid-drive E-Stop) without rejecting healthy runs.
+# Was 0.05 (SCURVE-era). Circular drive's noise floor sits around 8-10 cm
+# even when the recovered (a_x, a_y) is correct to a few cm — multipath +
+# residual chassis-fit-vs-antenna-fit phase mismatch contribute systematic
+# residuals that aren't actually offset error. Loosening to 10 cm keeps the
+# bound-violation gate (|offset| > 1 m) catching real solver blowups while
+# letting healthy circular cals persist automatically.
+SOLVE_RMS_MAX_M = 0.10
+
+# Minimum chassis ψ excitation across the sample set (used by the legacy
+# 5-tuple LSQ path; the circular solver has its own gates). The closed-form
+# LSQ is well-defined for any ψ (R^T R = I), but it silently absorbs
+# chassis-pose origin error into the offset estimate when the drive fails to
+# rotate the rover. ~8.6° is comfortably above any healthy excitation.
 SOLVE_PSI_SPREAD_MIN_RAD = 0.15
+
+# Circular-solver gates.
+# Minimum total orbit-angle sweep on the chassis trace to trust the circle
+# fit. Less than ~3/4 of a revolution is too short to nail down the centre.
+SOLVE_CIRCLE_SWEEP_MIN_RAD = 1.5 * pi
+# Per-circle-fit residual cap (applies to both chassis and antenna fits).
+# Larger than this means the trajectory wasn't actually circular — encoder
+# slip on chassis, GPS multipath on antenna, or someone bumped the rover.
+SOLVE_CIRCLE_FIT_RMS_MAX_M = 0.10
+# Mismatch between chassis and antenna orbit centres. They MUST be the same
+# point in world frame; the chassis trace is integrated in a local frame
+# rooted at the chord-fit ψ_init, and the antenna trace is in ENU rooted at
+# the GPS start fix, so the two centres only coincide after we shift the
+# chassis frame by (antenna_obs(0) − chassis_xy(0)). Larger residual flags
+# a frame-alignment problem (ψ_init off, encoder drift) rather than just
+# fit noise.
+SOLVE_CIRCLE_CENTER_MISMATCH_M = 0.30
+# Sane orbit-radius bounds. Chassis curvature limit (max ~1.2 1/m) puts
+# physical R lower bound around 0.8 m; we drive at ~1.0 m by default. Cap
+# at 5 m to catch a near-straight drive masquerading as a giant circle.
+SOLVE_CIRCLE_RADIUS_MIN_M = 0.5
+SOLVE_CIRCLE_RADIUS_MAX_M = 5.0
 
 
 def antenna_offset_path():
@@ -164,14 +208,19 @@ def save_antenna_offset(a_x, a_y, *, rms_residual_m, samples, drive_distance_m,
 def solve_antenna_offset(samples):
     """Closed-form LSQ for (a_x, a_y) given calibration-drive samples.
 
+    This is the legacy single-pass solver used for the on-disk dump format
+    and unit-test fixtures with synthetic chassis poses. Live calibration
+    drives use `solve_antenna_offset_circular` instead, which doesn't depend
+    on instantaneous chassis ψ.
+
     Args:
-        samples: iterable of (chassis_x, chassis_y, chassis_psi,
-                              antenna_obs_x, antenna_obs_y) tuples.
+        samples: iterable of 5-tuples
+                 (chassis_x, chassis_y, chassis_psi, antenna_obs_x,
+                 antenna_obs_y).
 
     Returns:
-        dict with keys {'a_x', 'a_y', 'rms_residual_m', 'samples',
-        'reason'} on success, or {'reason': '<why>'} on failure. Failure
-        causes: not enough samples, residual above acceptance gate.
+        dict with keys {'a_x', 'a_y', 'rms_residual_m', 'samples', 'reason'}
+        on success, or {'reason': '<why>'} on failure.
     """
     samples = list(samples)
     n = len(samples)
@@ -185,7 +234,6 @@ def solve_antenna_offset(samples):
     unwrapped = []
     for s in samples:
         d = s[2] - psi0
-        # Wrap to [-π, π] then offset by psi0 to get a continuous trace.
         while d > pi:
             d -= 2.0 * pi
         while d < -pi:
@@ -200,34 +248,29 @@ def solve_antenna_offset(samples):
             'samples': n,
         }
 
-    sum_bx = 0.0
-    sum_by = 0.0
-    rotated = []  # cache per-sample R(-ψ)·u for the residual pass
-    for cx, cy, psi, ax, ay in samples:
-        u_x = ax - cx
-        u_y = ay - cy
-        # Body-frame offset implied by THIS sample. Averaging these is the
-        # closed-form LSQ — see module docstring.
-        bx = cos(psi) * u_x + sin(psi) * u_y
-        by = -sin(psi) * u_x + cos(psi) * u_y
-        sum_bx += bx
-        sum_by += by
-        rotated.append((bx, by, psi, u_x, u_y))
+    # Closed-form LSQ: M^T M = N·I, so r̂ = (1/N)·Σ R(-ψ_i)·u_i where
+    # u_i = a_obs_i − chassis_xy_i.
+    sx = 0.0
+    sy = 0.0
+    for s in samples:
+        psi = s[2]
+        u_x = s[3] - s[0]
+        u_y = s[4] - s[1]
+        sx += cos(psi) * u_x + sin(psi) * u_y
+        sy += -sin(psi) * u_x + cos(psi) * u_y
+    a_x = sx / n
+    a_y = sy / n
 
-    a_x = sum_bx / n
-    a_y = sum_by / n
-
-    # Bound check before residual calc — a wildly wrong offset usually
-    # signals chassis-pose drift (encoder slip / yaw bias) rather than a
-    # bad antenna position, and we'd rather refuse than persist a 2 m
-    # offset that would brick subsequent missions.
     if not (-OFFSET_BOUND_M <= a_x <= OFFSET_BOUND_M
             and -OFFSET_BOUND_M <= a_y <= OFFSET_BOUND_M):
         return {'reason': f'offset out of bounds ({a_x:.2f}, {a_y:.2f})',
                 'samples': n, 'a_x': a_x, 'a_y': a_y}
 
     rss = 0.0
-    for _bx, _by, psi, u_x, u_y in rotated:
+    for s in samples:
+        psi = s[2]
+        u_x = s[3] - s[0]
+        u_y = s[4] - s[1]
         pred_u_x = cos(psi) * a_x - sin(psi) * a_y
         pred_u_y = sin(psi) * a_x + cos(psi) * a_y
         rss += (u_x - pred_u_x) ** 2 + (u_y - pred_u_y) ** 2
@@ -248,8 +291,158 @@ def solve_antenna_offset(samples):
     }
 
 
-def scurve_curvature(elapsed_s, kappa_max, period_s):
-    """κ(t) = κ_max · sin(2π · t / period). One full period nets zero yaw."""
-    if period_s <= 0:
+def _unwrap(angles):
+    """Unwrap a sequence of angles into a continuous trace."""
+    if not angles:
+        return []
+    out = [angles[0]]
+    for a in angles[1:]:
+        prev = out[-1]
+        d = a - prev
+        while d > pi:
+            d -= 2.0 * pi
+        while d < -pi:
+            d += 2.0 * pi
+        out.append(prev + d)
+    return out
+
+
+def _circular_mean(angles):
+    """Mean of angles via unit-vector averaging. Returns a value in (-π, π]."""
+    if not angles:
         return 0.0
-    return kappa_max * math.sin(2.0 * math.pi * elapsed_s / period_s)
+    sx = sum(sin(a) for a in angles)
+    sy = sum(cos(a) for a in angles)
+    return atan2(sx, sy)
+
+
+def solve_antenna_offset_circular(samples):
+    """Closed-form (a_x, a_y) from a constant-curvature orbit drive.
+
+    Args:
+        samples: iterable of 5-tuples
+                 (chassis_x, chassis_y, chassis_psi, antenna_obs_x,
+                 antenna_obs_y), with chassis_xy and chassis_psi integrated
+                 from encoders in a frame aligned to the antenna ENU origin
+                 (i.e. the navigator anchors chassis_xy(0) at antenna_obs(0)
+                 and ψ(0) at the chord-fit ψ_init). The chassis trajectory
+                 must be a near-circular arc of at least ~3/4 revolution.
+
+    Returns:
+        dict with the calibration-result schema (a_x, a_y, rms_residual_m,
+        samples, plus diagnostic circle_R_m, circle_rho_m, phase_phi_rad,
+        rotation_sign) on success, or {'reason': '<why>'} on failure.
+    """
+    samples = list(samples)
+    n = len(samples)
+    if n < SOLVE_MIN_SAMPLES:
+        return {'reason': f'too few samples ({n} < {SOLVE_MIN_SAMPLES})',
+                'samples': n}
+
+    chassis_pts = [(s[0], s[1]) for s in samples]
+    antenna_pts = [(s[3], s[4]) for s in samples]
+
+    Cxc, Cyc, R_c, rms_c = _fit_circle_kasa(chassis_pts)
+    Cxa, Cya, rho, rms_a = _fit_circle_kasa(antenna_pts)
+
+    if not (math.isfinite(R_c) and math.isfinite(rho)):
+        return {'reason': 'chassis or antenna trace is collinear (no orbit)',
+                'samples': n}
+
+    if not (SOLVE_CIRCLE_RADIUS_MIN_M <= R_c <= SOLVE_CIRCLE_RADIUS_MAX_M):
+        return {'reason': f'chassis orbit radius out of range ({R_c:.2f} m)',
+                'samples': n, 'circle_R_m': R_c}
+    if rho > SOLVE_CIRCLE_RADIUS_MAX_M:
+        return {'reason': f'antenna orbit radius out of range ({rho:.2f} m)',
+                'samples': n, 'circle_rho_m': rho}
+
+    if rms_c > SOLVE_CIRCLE_FIT_RMS_MAX_M:
+        return {'reason': (f'chassis trace not circular '
+                           f'(fit rms {rms_c*100:.1f} cm)'),
+                'samples': n}
+    if rms_a > SOLVE_CIRCLE_FIT_RMS_MAX_M:
+        return {'reason': (f'antenna trace not circular '
+                           f'(fit rms {rms_a*100:.1f} cm)'),
+                'samples': n}
+
+    # Both circles must share the same world-frame centre (the orbit centre
+    # is one geometric object). Their fitted positions should match within
+    # GPS noise.
+    centre_dist = hypot(Cxc - Cxa, Cyc - Cya)
+    if centre_dist > SOLVE_CIRCLE_CENTER_MISMATCH_M:
+        return {'reason': (f'chassis vs antenna orbit centres differ '
+                           f'({centre_dist*100:.1f} cm)'),
+                'samples': n,
+                'centre_dist_m': centre_dist}
+
+    # Per-sample orbit angles around each fitted centre, unwrapped.
+    theta_c_raw = [atan2(cy - Cyc, cx - Cxc) for cx, cy in chassis_pts]
+    theta_a_raw = [atan2(ay - Cya, ax - Cxa) for ax, ay in antenna_pts]
+    theta_c = _unwrap(theta_c_raw)
+    theta_a = _unwrap(theta_a_raw)
+
+    sweep = theta_c[-1] - theta_c[0]
+    if abs(sweep) < SOLVE_CIRCLE_SWEEP_MIN_RAD:
+        return {'reason': (f'chassis orbit sweep too small '
+                           f'({math.degrees(abs(sweep)):.0f}° < '
+                           f'{math.degrees(SOLVE_CIRCLE_SWEEP_MIN_RAD):.0f}°)'),
+                'samples': n}
+    sign_rot = 1.0 if sweep > 0 else -1.0
+
+    # Per-sample phase diff (already unwrapped continuously). Reduce to a
+    # single angle via circular mean — no run-to-run sensitivity to which
+    # branch the unwrapper picks.
+    diffs = [theta_a[i] - theta_c[i] for i in range(n)]
+    phi_signed = _circular_mean(diffs)
+
+    # Inverse:
+    #   CCW (s=+1):  φ_signed = +atan2(r_x, R − r_y)
+    #     ⇒ r_x = ρ·sin φ_signed,   r_y = R − ρ·cos φ_signed
+    #   CW (s=−1):  φ_signed = −atan2(r_x, R + r_y)
+    #     ⇒ r_x = −ρ·sin φ_signed,  r_y = ρ·cos φ_signed − R
+    if sign_rot > 0:
+        a_x = rho * sin(phi_signed)
+        a_y = R_c - rho * cos(phi_signed)
+    else:
+        a_x = -rho * sin(phi_signed)
+        a_y = rho * cos(phi_signed) - R_c
+
+    if not (-OFFSET_BOUND_M <= a_x <= OFFSET_BOUND_M
+            and -OFFSET_BOUND_M <= a_y <= OFFSET_BOUND_M):
+        return {'reason': f'offset out of bounds ({a_x:.2f}, {a_y:.2f})',
+                'samples': n, 'a_x': a_x, 'a_y': a_y,
+                'circle_R_m': R_c, 'circle_rho_m': rho,
+                'phase_phi_rad': phi_signed, 'rotation_sign': sign_rot}
+
+    # Residual: predict each antenna obs from chassis orbit angle + phase
+    # offset, ρ, and centre. Captures rigid-body kinematic consistency
+    # between the two traces.
+    rss = 0.0
+    for i in range(n):
+        theta_pred = theta_c[i] + phi_signed
+        ax_pred = Cxa + rho * cos(theta_pred)
+        ay_pred = Cya + rho * sin(theta_pred)
+        rss += ((antenna_pts[i][0] - ax_pred) ** 2
+                + (antenna_pts[i][1] - ay_pred) ** 2)
+    rms = sqrt(rss / n)
+
+    if rms > SOLVE_RMS_MAX_M:
+        return {
+            'reason': f'residual RMS too high ({rms*100:.1f} cm > '
+                      f'{SOLVE_RMS_MAX_M*100:.0f} cm)',
+            'samples': n, 'a_x': a_x, 'a_y': a_y, 'rms_residual_m': rms,
+            'circle_R_m': R_c, 'circle_rho_m': rho,
+            'phase_phi_rad': phi_signed, 'rotation_sign': sign_rot,
+        }
+
+    return {
+        'a_x': a_x, 'a_y': a_y,
+        'rms_residual_m': rms,
+        'samples': n,
+        'circle_R_m': R_c,
+        'circle_rho_m': rho,
+        'phase_phi_rad': phi_signed,
+        'rotation_sign': sign_rot,
+        'centre_dist_m': centre_dist,
+        'reason': None,
+    }

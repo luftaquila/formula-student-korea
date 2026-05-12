@@ -55,7 +55,7 @@ _TRACKER_PARAMS = {
     'dock_k_psi': 2.4,
     'dock_k_i': 0.4,
     'dock_integral_limit': 0.5,
-    'approach_tolerance': 0.10,
+    'approach_tolerance': 0.03,
     'creep_zone': 0.40,
     'max_curvature': 1.2,
     'wheelbase': WHEELBASE,
@@ -214,7 +214,7 @@ def test_modules_import_cleanly():
     )
     # Pinning attributes that have been the locus of import-related
     # regressions before:
-    assert hasattr(antenna_calibration, 'scurve_curvature')
+    assert hasattr(antenna_calibration, 'solve_antenna_offset_circular')
     assert hasattr(antenna_calibration, 'SOLVE_PSI_SPREAD_MIN_RAD')
     assert hasattr(wheel_calibration, 'solve_wheel_scales')
     assert hasattr(path_tracker, 'CruiseTracker')

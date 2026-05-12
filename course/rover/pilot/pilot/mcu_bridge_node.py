@@ -43,6 +43,17 @@ from pilot.lib.steering_calibration import (
 )
 
 
+# Navigator states that own the velocity stream; manual joystick must be
+# silenced while any of these are active so the autonomy can drive without
+# being override-filtered by ambient UI traffic. Mirrors navigator_node's
+# State enum values; kept here as plain strings so mcu_bridge doesn't have
+# to import the navigator module.
+_AUTONOMOUS_ACTIVE_STATES = frozenset({
+    'CALIBRATING', 'CAL_ANTENNA', 'CAL_WHEELS',
+    'NAVIGATING', 'SETTLING', 'SPRAYING',
+})
+
+
 # 8S LiFePO4 OCV-SOC table (resting voltage, no load).
 # Built from per-cell rest voltage × 8. LiFePO4's discharge curve is
 # extremely flat between ~20% and ~90% SOC (most cells sit at 3.27–3.32 V),
@@ -119,20 +130,24 @@ class McuBridgeNode(Node):
         self.declare_parameter('heartbeat_hz', 10.0)
         self.declare_parameter('reconnect_delay_s', 2.0)
 
-        # Ackermann + steering servo
+        # Ackermann + steering servo. Defaults mirror
+        # config/rover_params.yaml — that file is the authoritative tuned
+        # value passed via the launch file. These defaults only apply if
+        # the yaml fails to load (test harness, direct `ros2 run`).
         self.declare_parameter('servo_center_us', 1500)
         self.declare_parameter('servo_range_us', 500)
-        self.declare_parameter('max_steering_angle_deg', 25.0)
-        self.declare_parameter('wheelbase', 0.38)
-        self.declare_parameter('track_width', 0.30)
-        self.declare_parameter('max_speed', 1.5)
-        self.declare_parameter('accel_limit', 0.5)
+        self.declare_parameter('max_steering_angle_deg', 30.5)
+        self.declare_parameter('wheelbase', 0.33)
+        self.declare_parameter('track_width', 0.33)
+        self.declare_parameter('max_speed', 2.5)
+        self.declare_parameter('accel_limit', 0.8)
         self.declare_parameter('manual_priority_s', 1.0)
 
-        # PID closed loop (off by default; raw duty mode is the safe baseline)
-        self.declare_parameter('use_pid', False)
-        self.declare_parameter('pid_kp', 0.6)
-        self.declare_parameter('pid_ki', 1.5)
+        # PID closed loop. ON in production; raw duty mode is the
+        # bench-test fallback.
+        self.declare_parameter('use_pid', True)
+        self.declare_parameter('pid_kp', 1.0)
+        self.declare_parameter('pid_ki', 3.0)
         self.declare_parameter('pid_kd', 0.0)
 
         self._validate_params()
@@ -194,6 +209,19 @@ class McuBridgeNode(Node):
 
         reliable = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
 
+        # Navigator state — used to lock out manual joystick during
+        # autonomous activity. The browser UI publishes manual_control at
+        # joystick-tick rate even when the operator hasn't touched anything
+        # (the toggle being ON is enough), and that traffic was leaking
+        # through manual_priority_s and starving the calibration / mission
+        # velocity stream — every published cal κ command was getting
+        # filtered out for the entire 1 s priority window, then refreshed
+        # by the next manual tick. Backend lockout instead of UI toggle so
+        # the operator can leave the toggle ON and not bork an in-flight
+        # cal.
+        self._nav_state = 'IDLE'
+        self.create_subscription(String, '/rover/nav/state', self._on_nav_state, 10)
+
         self.create_subscription(Twist, '/rover/cmd/velocity', self._on_velocity, 10)
         self.create_subscription(Twist, '/rover/cmd/manual_control', self._on_manual, 10)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_estop, reliable)
@@ -205,6 +233,19 @@ class McuBridgeNode(Node):
         self._pub_status = self.create_publisher(String, '/rover/motor/status', 10)
         self._pub_battery = self.create_publisher(String, '/rover/battery', 10)
         self._pub_odom = self.create_publisher(String, '/rover/odom', 10)
+        # Forward hardware emergency-stop transitions from the MCU
+        # (FLAG_ESTOP_ACTIVE on telemetry) up to the navigator's
+        # state machine. Without this, pressing the physical button
+        # stops the wheels (MCU motor_stop_all) but the navigator keeps
+        # publishing forward velocity Twists and treats the chassis as
+        # 'stuck' — the 15:58:50 WP3 trace sat at v_cmd=+0.46 for 11 s
+        # of forced no-motion before stuck-retry fired.
+        self._pub_emergency_stop = self.create_publisher(
+            Empty, '/rover/cmd/emergency_stop', reliable)
+        self._pub_clear_emergency = self.create_publisher(
+            Empty, '/rover/cmd/clear_emergency', reliable)
+        # Last seen hardware-estop bit so we only emit on edges.
+        self._last_hw_estop = None
 
         self._open_serial()
 
@@ -304,7 +345,23 @@ class McuBridgeNode(Node):
         try:
             with self._serial_lock:
                 self._serial.write((line + '\n').encode('ascii', errors='ignore'))
+        except serial.SerialTimeoutException as e:
+            # Write timeout means the host's TTY buffer is full — typically
+            # because something (host scheduling, transient USB stall) has
+            # held back the OUT endpoint. The reader loop keeps draining the
+            # IN endpoint either way, which keeps the MCU's CDC TX buffer
+            # from filling and tripping its watchdog (printf blocks for up
+            # to PICO_STDIO_USB_STDOUT_TIMEOUT_US per call). Closing the
+            # port here would stop the drain and start a self-perpetuating
+            # crash loop (MCU resets every ~4 s, host can never reconnect).
+            # Just rate-limit the warn and keep the port open.
+            now = time.monotonic()
+            if now - getattr(self, '_last_write_warn_t', 0.0) > 1.0:
+                self._last_write_warn_t = now
+                self.get_logger().warn(f'Serial write timeout (port stays open): {e}')
         except Exception as e:  # noqa: BLE001
+            # Real errors (port gone, OSError) — drop and let the reader
+            # loop's reconnect path take over.
             self.get_logger().warn(f'Serial write failed: {e}')
             self._close_serial()
 
@@ -389,6 +446,14 @@ class McuBridgeNode(Node):
         self._drive(left, right, servo_us)
 
     def _on_manual(self, msg):
+        # Lock out manual joystick during any active autonomous state — the
+        # browser UI publishes here at joystick-tick rate even when the
+        # operator isn't touching the stick, and the navigator's autonomy
+        # would otherwise be silently overridden. _last_manual_t is NOT
+        # updated, so the manual_priority_s window can't be re-armed by
+        # ambient UI traffic.
+        if self._nav_state in _AUTONOMOUS_ACTIVE_STATES:
+            return
         now = time.monotonic()
         self._last_cmd_t = now
         self._last_manual_t = now
@@ -413,6 +478,20 @@ class McuBridgeNode(Node):
             servo_range_us=self._p('servo_range_us'),
         )
         self._drive(left, right, servo_us)
+
+    def _on_nav_state(self, msg):
+        new_state = msg.data
+        # When transitioning INTO an active autonomous state, drop any
+        # stale manual lock so the navigator's first velocity command
+        # isn't filtered by manual_priority_s. Without this, the operator
+        # toggling manual then triggering cal would enter cal with
+        # _last_manual_t fresh and the first 1 s of cal velocity would be
+        # silently dropped.
+        if (new_state in _AUTONOMOUS_ACTIVE_STATES
+                and self._nav_state not in _AUTONOMOUS_ACTIVE_STATES):
+            self._mode = 'autonomous'
+            self._last_manual_t = 0.0
+        self._nav_state = new_state
 
     def _on_estop(self, _msg):
         self._mode = 'stopped'
@@ -565,6 +644,24 @@ class McuBridgeNode(Node):
         if cal.get('measured_v') is not None:
             battery_payload['measured_v'] = round(cal['measured_v'], 3)
         self._pub_battery.publish(self._json_msg(battery_payload))
+
+        # Forward hardware estop button transitions to the navigator.
+        # FLAG_ESTOP_ACTIVE (bit 0) reflects the physical estop line state
+        # the MCU sees. Edge-trigger only — if we re-published every tick
+        # the navigator's emergency_stop topic (reliable QoS) would back
+        # up. Initial unknown -> known transition: only emit on a known
+        # rising edge, so a pilot restart that comes up with the button
+        # already pressed doesn't replay a stale press.
+        hw_estop = bool(flags & 0x01)
+        if self._last_hw_estop is False and hw_estop:
+            self.get_logger().warn(
+                'Hardware emergency-stop pressed (MCU FLAG_ESTOP_ACTIVE)')
+            self._pub_emergency_stop.publish(Empty())
+        elif self._last_hw_estop is True and not hw_estop:
+            self.get_logger().info(
+                'Hardware emergency-stop released — clearing')
+            self._pub_clear_emergency.publish(Empty())
+        self._last_hw_estop = hw_estop
 
         # Odometry — integrate (vl, vr) into a 2D pose.
         now_t = time.monotonic()
@@ -727,6 +824,8 @@ class McuBridgeNode(Node):
                 encoder_left_m=float(data.get('encoder_left_m', 0.0)),
                 encoder_right_m=float(data.get('encoder_right_m', 0.0)),
                 samples=int(data.get('samples', 0)),
+                arc_radius_m=data.get('arc_radius_m'),
+                arc_theta_rad=data.get('arc_theta_rad'),
             )
         except (OSError, ValueError) as exc:
             self.get_logger().warn(f'apply_wheel_scales: persist failed: {exc}')

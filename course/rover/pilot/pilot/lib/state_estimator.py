@@ -1,22 +1,35 @@
 """Chassis pose estimator.
 
-Fuses three sources to track the chassis (rear-axle) pose at 20 Hz:
+Fuses four sources to track the chassis (rear-axle) pose at 20 Hz:
   - MCU encoder odometry → chassis (v, ω). Predicts pose between GPS fixes.
+    Encoder yaw rate ω = (v_right − v_left) / track_width is the PRIMARY
+    chassis_psi source (σ_ω ≈ 0.06 rad/s, two orders of magnitude better
+    than GPS heading-of-motion at low speed).
   - GPS antenna position → corrects (x, y). Antenna offset is removed by
     subtracting R(ψ)·(a_x, a_y) — the rigid-body link to the chassis.
-  - GPS heading-of-motion → corrects ψ. The reported angle is the antenna's
-    velocity vector direction, which differs from chassis ψ when the chassis
-    is turning (because the antenna swings sideways through R·(a_x, a_y)).
-    We undo that by subtracting `atan2(ω·a_x, v - ω·a_y)` before fusing.
+  - GPS position innovation → corrects ψ. After encoder DR predicts the
+    antenna's position, the GPS measurement reveals a residual. The
+    component PERPENDICULAR to the current chassis heading is mostly
+    attributable to a ψ estimation error (lateral DR drift is a yaw
+    error multiplied by arc length). This is the ArduPilot EKF3 pattern
+    for single-antenna RTK rovers without an IMU — and it's why the
+    chassis_psi stays clean even at speeds where GPS heading-of-motion
+    is too noisy to fuse directly.
+  - GPS heading-of-motion → slow ψ drift correction at HIGH speed only
+    (≥ psi_correction_min_speed). At low speed (<1.5 m/s) the displacement
+    between consecutive fixes is small enough that atan2(dy, dx) carries
+    ±10°+ noise; we don't fuse those readings at all.
 
 All internal angles are in math frame (0 = East, CCW positive). The GPS
 boundary converts compass bearings via geo_utils.compass_to_math.
 
-The estimator is intentionally a complementary filter rather than a full EKF:
-  - GPS position and antenna offset are the dominant accuracies (cm-level).
-  - Encoder slip on the rover platform is small over a sub-second prediction.
-  - A scalar gain per channel is enough to track within a few cm and stay
-    stable under brief GPS dropouts (covered by gps_timeout in navigator).
+The estimator is intentionally a complementary filter rather than a full
+EKF — separate scalar gains per observation channel, each gated by signal
+quality. Sufficient because (a) GPS RTK position is cm-accurate, (b) wheel
+encoders are mm-resolution, (c) the position-innovation ψ correction
+closes the only remaining gap (yaw drift without an IMU). This matches
+ArduPilot Rover's encoder-only EKF3 configuration on commercial RTK rover
+platforms.
 """
 
 from math import cos, sin, atan2, hypot
@@ -36,19 +49,31 @@ class ChassisPoseEstimator:
     def __init__(self, antenna_offset_x, antenna_offset_y,
                  ref_lat, ref_lon,
                  pos_correction_gain=0.3,
-                 psi_correction_gain=0.05,
-                 psi_correction_min_speed=0.4):
+                 psi_correction_gain=0.08,
+                 psi_correction_min_speed=1.5,
+                 yaw_innov_gain=0.10,
+                 yaw_innov_min_speed=0.3,
+                 yaw_innov_max_step_rad=0.087):
         self.a_x = float(antenna_offset_x)
         self.a_y = float(antenna_offset_y)
         self.ref_lat = float(ref_lat)
         self.ref_lon = float(ref_lon)
         self.pos_gain = float(pos_correction_gain)
         self.psi_gain = float(psi_correction_gain)
-        # GPS heading-of-motion is noise-dominated below this speed even
-        # though gps_node only publishes it above its own threshold (0.3
-        # m/s). We use a slightly higher floor so the correction never
-        # latches a noise-dominated reading.
+        # GPS heading-of-motion is noise-dominated below this speed.
+        # gps_node's publish gate (heading_speed_threshold in rover_params)
+        # is aligned to the same value so we don't accept reports gps_node
+        # has already discarded as noisy.
         self.psi_min_speed = float(psi_correction_min_speed)
+        # Position-innovation ψ correction parameters. Below
+        # yaw_innov_min_speed the lateral component of the position
+        # innovation is too noise-dominated (small DR arc, large
+        # 1 cm RTK noise band) to extract a usable ψ correction.
+        # max_step caps |Δψ| per fix to stay in the small-angle regime —
+        # bigger jumps suggest a slip event, not pure ψ drift.
+        self.yaw_innov_gain = float(yaw_innov_gain)
+        self.yaw_innov_min_speed = float(yaw_innov_min_speed)
+        self.yaw_innov_max_step = float(yaw_innov_max_step_rad)
 
         self.x = 0.0
         self.y = 0.0
@@ -60,6 +85,10 @@ class ChassisPoseEstimator:
         self._last_v = 0.0
         self._last_omega = 0.0
         self._last_predict_t = None
+        # Wall-clock of the previous GPS fix correction (any kind).
+        # Used by correct_position_with_yaw_innovation to compute the
+        # DR arc length over which the lateral residual accumulated.
+        self._last_gps_t = None
 
     # ── initialization ────────────────────────────────────────────────────
 
@@ -78,6 +107,7 @@ class ChassisPoseEstimator:
         self.psi = normalize_angle(psi_math)
         self.initialized = True
         self._last_predict_t = None
+        self._last_gps_t = None
 
     # ── prediction (encoder-driven) ──────────────────────────────────────
 
@@ -119,6 +149,76 @@ class ChassisPoseEstimator:
 
     # ── corrections (GPS-driven) ─────────────────────────────────────────
 
+    def correct_position_with_yaw_innovation(self, antenna_lat, antenna_lon, t_now):
+        """Recover chassis ψ from the GPS position innovation.
+
+        The chassis dead-reckons antenna position from (x, y, ψ) and the
+        antenna offset. If ψ is slightly off, the encoder DR moves the
+        predicted antenna into the wrong direction over the inter-GPS
+        interval, and the actual GPS measurement reveals a lateral
+        residual perpendicular to the chassis heading. The size of that
+        residual divided by the DR arc length is the ψ error.
+
+        This is the position-innovation-derived yaw observation that
+        ArduPilot EKF3 uses on encoder-only ground rovers. Without it,
+        single-antenna RTK + encoders cannot resolve yaw at low speed
+        (GPS heading-of-motion is too noisy below ~1.5 m/s for direct
+        fusion). With it, yaw stays clean down to 0.3 m/s.
+
+        Call this BEFORE `correct_position` on each GPS fix so the
+        subsequent position pull uses the freshly-rotated antenna
+        offset. ``t_now`` is the monotonic clock at the GPS fix; the
+        first call seeds the timer without applying any correction.
+        """
+        if not self.initialized:
+            return
+        if self._last_gps_t is None:
+            self._last_gps_t = t_now
+            return
+        dt = t_now - self._last_gps_t
+        self._last_gps_t = t_now
+        # Need a meaningful arc length to convert lateral residual into
+        # a ψ correction. At creep speed (0.10 m/s) over 0.1 s the arc
+        # is only 1 cm — comparable to the RTK position noise band, so
+        # the ψ correction would be dominated by position noise rather
+        # than ψ error. Skip below the speed gate.
+        if abs(self._last_v) < self.yaw_innov_min_speed:
+            return
+        if dt <= 0.0 or dt > 0.5:
+            return
+
+        e_meas, n_meas = enu_from_gps(
+            antenna_lat, antenna_lon, self.ref_lat, self.ref_lon,
+        )
+        cp, sp = cos(self.psi), sin(self.psi)
+        ox = cp * self.a_x - sp * self.a_y
+        oy = sp * self.a_x + cp * self.a_y
+        a_pred_x = self.x + ox
+        a_pred_y = self.y + oy
+        inn_e = e_meas - a_pred_x
+        inn_n = n_meas - a_pred_y
+
+        # Component of the innovation in the chassis +LEFT direction
+        # (perpendicular to heading, math frame: rotate +90° CCW).
+        # A chassis whose ψ estimate is too small leaves the antenna
+        # predicted to the RIGHT of where it actually is, observed as
+        # +lateral innovation → ψ should increase (rotate CCW).
+        lat_inn = -sp * inn_e + cp * inn_n
+
+        # DR arc length over the inter-fix interval. Use commanded
+        # speed magnitude × dt — accurate to better than 1 % for the
+        # small (<200 ms) intervals we deal with. Floor at 5 cm so we
+        # don't divide by a tiny arc and amplify position noise into
+        # a wild ψ jump.
+        arc = max(abs(self._last_v) * dt, 0.05)
+        dpsi = lat_inn / arc
+        if dpsi > self.yaw_innov_max_step:
+            dpsi = self.yaw_innov_max_step
+        elif dpsi < -self.yaw_innov_max_step:
+            dpsi = -self.yaw_innov_max_step
+
+        self.psi = normalize_angle(self.psi + self.yaw_innov_gain * dpsi)
+
     def correct_position(self, antenna_lat, antenna_lon):
         """Pull chassis (x, y) toward GPS antenna observation.
 
@@ -126,7 +226,10 @@ class ChassisPoseEstimator:
         applies 1:1 to chassis position. We don't change ψ here because
         rotational error shows up as an apparent translation only when the
         antenna offset is non-zero, and unwinding it from a single position
-        sample is poorly conditioned. Heading is corrected separately.
+        sample is poorly conditioned. Heading is corrected separately —
+        either via correct_position_with_yaw_innovation (position-residual
+        based, low-speed dominant) or correct_heading (heading-of-motion
+        based, high-speed only).
         """
         if not self.initialized:
             return

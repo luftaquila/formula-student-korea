@@ -12,7 +12,7 @@ gps_node:
     serial_port: "/dev/ttyGPS"         # udev symlink (see host/files/usr/lib/udev/rules.d/99-fsk-rover.rules)
     baud_rate: 115200
     publish_rate: 10.0                 # Hz
-    heading_speed_threshold: 0.4       # m/s minimum to publish heading. Aligned with estimator_psi_min_speed so we don't publish headings the estimator immediately discards.
+    heading_speed_threshold: 1.5       # m/s minimum to publish heading-of-motion. At 1.5 m/s, atan2 over a 15 cm displacement with ±1 cm RTK noise gives ±5° heading noise — fusable with a low gain. Below 1.5 m/s the noise exceeds ±8° and gets DROPPED entirely; chassis_psi at low speed is maintained by wheel-encoder yaw rate (predict) and the position-innovation ψ correction (estimator.correct_position_with_yaw_innovation), which is what ArduPilot EKF3 does on single-antenna RTK rovers without an IMU. Aligned with estimator_psi_min_speed.
     # NOTE: the NTRIP username MUST be injected via the NTRIP_USERNAME env
     # var (sourced from a podman secret in the rover image), never committed
     # to this file. Leave blank here so the repo stays safe to publish.
@@ -38,44 +38,126 @@ navigator_node:
 
     # ── Chassis geometry ────────────────────────────────────────────────
     # Mirrors mcu_bridge's authoritative copies; navigator needs them for
-    # the kinematic model and curvature clamp.
-    wheelbase: 0.38                    # meters
-    track_width: 0.30                  # meters
-    max_steering_angle_deg: 25.0       # degrees
-    max_curvature: 1.2                 # 1/m. Physical limit tan(25°)/0.38 ≈ 1.23.
+    # the kinematic model and curvature clamp. Tape-measured 2026-05-08
+    # (front-axle to rear-axle ≈ rear-wheel-to-rear-wheel ≈ 330 mm); old
+    # values 0.38 / 0.30 were placeholder defaults from an earlier rev of
+    # the chassis and made the antenna-cal closed-form solver miss by 25 %
+    # because chassis κ was over-commanded against the assumed wheelbase
+    # while ω was under-measured against the assumed track.
+    wheelbase: 0.33                    # meters
+    track_width: 0.33                  # meters
+    max_steering_angle_deg: 30.5       # iteratively converged on cal data: 25 → 28.5 left 7 % R mismatch; 28.5 → 30.5 closes that down to noise floor (sweep ratio 1.07 → ~1.0)
+    max_curvature: 1.7                 # 1/m. Physical limit tan(30.5°)/0.33 ≈ 1.78.
     servo_range_us: 500                # mirrors mcu_bridge_node.servo_range_us — used by
                                        # CAL_WHEELS' steering-trim solve to convert κ_bias to µs.
 
     # ── Speeds ──────────────────────────────────────────────────────────
     cruise_speed: 1.0                  # m/s during cruise segments
     approach_speed: 0.4                # m/s on the dock corridor (precision)
-    creep_speed: 0.18                  # m/s for fine corrections / overshoot reverse
-    calibration_speed: 0.5             # m/s during cold-start heading discovery (must exceed gps_node.heading_speed_threshold by margin)
+    creep_speed: 0.10                  # m/s for fine corrections / overshoot reverse. Halved from 0.18 so the chassis can stop within approach_tolerance instead of rolling several cm past on inertia + PID lag at the dock 'reached' threshold.
+    calibration_speed: 0.5             # m/s during cold-start heading discovery. Independent of heading_speed_threshold — calibration uses fit_chord_heading on GPS antenna ENU positions, not GPS heading-of-motion.
+    # Antenna offset auto-calibration STRAIGHT phase chord length. Drives
+    # κ=0 for this distance, fits ψ_init from antenna ENU. 2 m gives a
+    # chord well above the 1.5 m calibration_chord_min_m gate even when
+    # the operator starts on slightly uneven ground.
+    antenna_cal_straight_distance: 2.0
+
+    # Antenna offset auto-cal drive speed. v = 0.5 m/s on R = 1.5 m keeps
+    # lateral acceleration v²/R ≈ 0.17 m/s², low enough that wheel slip /
+    # tyre scrub doesn't corrupt the encoder ω integration the closed-form
+    # solver depends on (a 1.0 m / 0.8 m/s drive at 0.64 m/s² lat acc gave
+    # 32% sweep mismatch between chassis encoder and antenna GPS — chassis
+    # encoder under-counted rotation due to scrub).
+    antenna_cal_speed: 0.5
+
+    # Antenna offset auto-cal orbit shape. R = 1.5 m gives κ = 0.667 m⁻¹,
+    # well inside the chassis curvature cap (1.2). Two revolutions at v =
+    # 0.5 m/s = ~38 s, sampling ~380 GPS fixes (plenty for the closed-form
+    # circle fits). Drive footprint ~ 3 m diameter + chassis ≈ 4 m × 4 m.
+    antenna_cal_radius_m: 1.5
+    antenna_cal_revolutions: 2
+    # Rotation direction: +1 CCW (left turn), -1 CW. CCW first because that
+    # was the SCURVE convention; flip if site geometry requires.
+    antenna_cal_sign: 1
 
     # ── Path planner ────────────────────────────────────────────────────
-    dock_approach_distance: 1.5        # meters of straight line before the dock pose. Should be at least ~3× wheelbase so chassis can settle on the line before the dock point.
+    dock_approach_distance: 2.5        # meters of straight line before the dock pose. Lengthened from 1.5 so chassis has room to rotate into corridor heading inside the cruise leg before handing off to dock — critical when consecutive waypoints sit at 60°+ relative bearings (cruise from prev-dock-end with chassis ψ way off corridor; PP and Stanley both drift across the corridor before aligning, and the dock then opens at e_y ~30cm). 2.5m gives 4×min-turning-radius (0.56m) of room.
 
-    # ── Pure Pursuit (cruise tracker) ───────────────────────────────────
-    pp_lookahead_min: 0.6              # meters. Decoupled from min turn radius — separate clamp on max_curvature handles physical limit.
-    pp_lookahead_gain: 0.6             # lookahead = max(min, gain × speed)
-    pp_damping: 0.18                   # D-term gain on dα/dt. Damps figure-8 oscillation under heading lag.
-    cruise_done_tolerance: 0.20        # meters from cruise end pose to declare cruise done and switch to dock
-    pp_min_speed_fraction: 0.25        # cos(α) speed scale floor (was hardcoded 0.35; 0.25 lets tight cone-to-cone curves slow further before lateral correction blows out)
-    pp_handoff_blend_distance: 1.0     # meters from cruise end at which commanded speed begins to taper from cruise_speed → approach_speed
+    # ── Path tracker selector ──────────────────────────────────────────
+    # Stage 2 architecture: 'l1' enables L1Tracker (Park 2007 +
+    # Macenski regulated PP) on both cruise and dock segments,
+    # replacing CruiseTracker + DockTracker. 'legacy' keeps the
+    # original two-tracker stack for field rollback in a single
+    # yaml flip. The legacy stack STAYS in the codebase until Stage
+    # 3 cleanup after three successful L1 missions.
+    path_tracker_kind: "l1"
+
+    # ── L1 tracker tuning (path_tracker_kind == 'l1') ──────────────────
+    # L1 lookahead time-constant. v=1.0 m/s → L1 = 0.7071/π·2.5·1.0 ≈
+    # 0.56 m (clamped up to l1_min). At v=2.0 → 1.13 m. Period of 2.5 s
+    # is ArduPilot's typical rover setting; damping 1/√2 is the
+    # critical-damping pick.
+    l1_period_s: 2.5
+    l1_damping: 0.7071
+    l1_min_m: 0.6                      # lookahead floor — keeps creep dock in tight closure
+    l1_max_m: 4.0                      # lookahead cap — prevents the carrot from running off the end of a short cruise leg
+
+    # cm-precision capture radius on dock segments. Matches
+    # settle_tolerance so the single 3 cm gate decides BOTH the dock
+    # 'reached' status and the spray confirmation — no dead band
+    # between approach_tolerance and waypoint_tolerance like the
+    # legacy stack had.
+    l1_cm_capture_m: 0.03
+    l1_reverse_recovery_min_m: 0.08    # adaptive recovery distance floor (overshoot ≤ 4 cm → 8 cm reverse; 5 cm → 10 cm; 10 cm → 20 cm)
+    l1_reverse_speed: 0.10             # m/s magnitude during reverse-recovery
+    l1_kappa_speed_lim: 0.85           # 1/m — half of max_curvature; speed regulates as min(1, lim/|κ|)
+    l1_e_y_speed_gain: 2.0             # linear cross-track speed cut: speed *= max(floor, 1 - gain·|e_y|)
+    l1_e_y_speed_floor: 0.4            # floor of the e_y speed scale (keeps chassis moving even on big residuals)
+    # Dock-only target-distance brake. At v=approach_speed=0.40 m/s a 50 ms tick travels 2 cm — without a brake the antenna blows past cm_capture (3 cm) on every approach and triggers reverse-recovery. Linear ramp scales speed down to brake_min_frac × approach_speed at the target. 0.175 × 0.40 = 0.07 m/s = legacy DockTracker's effective stop floor (creep_speed × brake_min_speed_frac = 0.10 × 0.70), field-validated. PID deadband is 0.05 m/s; 0.07 leaves a 40 % margin.
+    l1_brake_zone_m: 0.20
+    l1_brake_min_speed_frac: 0.175
+    # Hard floor on commanded forward speed in the brake zone. Decoupled from `creep_speed` (legacy DockTracker uses creep_speed as the speed BEFORE brake modulation). Matches legacy effective floor 0.07 m/s.
+    l1_min_speed_m_s: 0.07
+    # Close-but-not-cm-precise tolerance: if antenna is within this distance of target after a settle timeout or stuck detection, accept the landing and spray rather than replan. Replan-from-just-past-target tends to spiral because plan() floors dock_entry 60 cm behind chassis → no forward arc back to entry. 30 cm matches the spray cone budget and prevents the 15:24 WP1 spiral observed in trace.
+    l1_close_enough_spray_m: 0.30
+
+    # ── Cruise tracker (heading-only goal-seeking P-controller) ─────────
+    # The cruise tracker is now a human-driver-style heading regulator
+    # toward the dock corridor entry. There is no path-following lateral
+    # term — chassis position noise cannot enter κ. Reed-Shepp planning,
+    # sub-seg expansion, zero-cross gating, and lateral-handoff replan
+    # logic have all been removed; the planner emits exactly one cruise
+    # segment per waypoint with start_pose = chassis pose at plan time
+    # and end_pose = dock entry.
+    cruise_done_tolerance: 0.20        # meters from end pose to declare cruise done (chassis inside this distance AND heading-aligned within heading_max → handoff to dock)
+    cruise_done_heading_max_rad: 0.14  # ~8°. Tightened from 15° — the 14:03 trace handed off with chassis 15° off ψ_dock and dock immediately saturated correcting. 8° leaves only ±0.4 cm/s lateral drift at v=0.4 inside the dock corridor, well below settle_tol budget.
+    cruise_pass_through_m: 0.30        # meters of past-end overshoot along the start→end bearing that forces done. Safety net so the chassis cannot orbit a goal that ended up just behind it.
+    cruise_k_heading: 1.5              # rad/m per rad of heading error. κ = k_heading · (bearing_to_goal − chassis_ψ), clamped to ±max_curvature. 1.5 keeps κ small (≈ ±0.13 rad/m, ≈ ±2.5° steering) at 5° heading-error noise, well below visible chassis wiggle threshold; saturates at e_psi ≈ 65° so big turns close in a single smooth arc.
+    cruise_min_speed_fraction: 0.40    # floor on the cos(e_psi) speed scale. 0.40 means commanded speed never drops below 0.40 × cruise_speed even at 180° heading error, so the chassis keeps moving (rather than freezing) while it U-turns under saturated κ.
+    cruise_carrot_lookahead_m: 0.60    # meters ahead of the dock corridor entry to put the steer-toward 'carrot'. As the chassis approaches the entry, the bearing-to-carrot converges to ψ_dock (corridor heading) because the carrot sits INSIDE the corridor — chassis aligns naturally and the cruise→dock handoff opens with e_y, e_psi ≈ 0. Sized to ~chassis turning radius so the heading regulator's target is always inside the reachable arc.
+    cruise_orbit_gate_dist_m: 0.40     # meters — when chassis is closer than this to the dock entry AND its heading is more than 90° off the bearing-to-entry, the cruise tracker declares done. Pure-pursuit cannot forward-arc to a goal inside the turning circle (14:03 WP5 trace: 4 minutes of orbit when the original dock failed to land and the replan placed a 0.4 m entry behind the chassis facing the opposite direction). Handing off to the dock lets its reverse-recovery back the chassis up and re-approach.
 
     # ── Dock tracker (state-feedback line follower) ─────────────────────
-    dock_k_y: 1.4                      # 1/m — gain on antenna lateral error
-    dock_k_psi: 2.4                    # 1/m — gain on chassis heading error vs path. ζ = k_ψ / (2·√k_y) ≈ 1.01 (near-critical, accounting for steering servo lag).
+    dock_k_y: 6.0                      # 1/m — legacy P-gain on antenna lateral error, retained for backward compat. The Stanley refinement uses dock_stanley_k_lat instead; dock_k_y is only consulted as the upper-bound fallback when dock_stanley_k_lat is absent.
+    dock_stanley_k_lat: 2.0            # Stanley arctan gain for the dock tracker. Halved 4→2: at v=0.4 m/s, k=4 with e_y=5 cm produced desired_offset=atan(4·0.05/0.5)=39° → 15° cap; combined with k_psi=5 it drove κ to saturation on any minor lateral disturbance, and chassis dynamics couldn't track the saturated κ command → sign-flipping limit cycle every WP dock (14:03 trace: e_y +2.9 → -6.4 → +3.5 → +6.4 → -10.7 across 5 ticks under saturated ±1.70 κ). k=2 gives desired_offset=22° at the same e_y, still above the 15° cap on big residuals but inside the cap for ≤4 cm e_y, so small disturbances don't saturate.
+    dock_k_psi: 2.0                    # 1/m — gain on chassis heading error vs path. Halved 5→2 for the same reason: at e_psi=20° the contribution drops from -1.75 to -0.70 rad/m, well clear of the curvature cap so chassis dynamics can actually track the command. Steady-state arc tracking unaffected because dock corridors are straight.
     dock_k_i: 0.4                      # 1/(m·s) — integral on antenna lateral error. Cancels constant κ-bias from antenna-offset residual / mast tilt / slope.
-    dock_integral_limit: 0.5           # m·s — anti-windup clamp on the integral state.
-    approach_tolerance: 0.10           # meters antenna-to-target to declare dock segment reached
+    dock_integral_limit: 0.5           # m·s — clamp on the integral state. Also acts as the anti-windup mechanism: during sustained κ-saturation the integral pumps up to ±limit and stops, bounding the kappa contribution k_i × limit regardless of how long saturation persists.
+    dock_stanley_offset_cap_rad: 0.262 # ~15°. Caps desired_offset so the dock tracker doesn't drive perpendicular to the corridor on large lateral residuals.
+    dock_reverse_recovery_m: 0.08      # meters behind the target (along corridor) to back up to before re-engaging forward control after an along-track overshoot. Tight cycle (4 cm back, 4 cm forward) prevents 20 cm slingshot.
+    dock_brake_zone_m: 0.12            # Doubled 6→12 cm. The 14:03 WP5 trace shows the dock crossing 'reached' (along<0, dist≤4.5 cm) at v=0.07 m/s with 6 cm brake_zone, then bouncing into reverse-recovery because the chassis couldn't stop in time. Wider 12 cm brake_zone gives the MCU 12·0.05=0.6 s to ramp setpoint smoothly from approach_speed to brake_min × creep_speed before crossing target, eliminating the reverse-forward limit cycle.
+    dock_brake_min_speed_frac: 0.70    # creep_speed 0.10 × 0.70 = 0.07 m/s, comfortably above the MCU PID deadband 0.05 m/s. Going below deadband (the 0.30 attempt) made the chassis stop dead 6 cm short of target — frozen with the antenna slightly off. Keep the chassis moving under power until the dock's reach condition fires; the 12 cm brake_zone is what gives the MCU time to decelerate from approach_speed=0.4 down to 0.07 inside the zone (decel distance ≈ 10 cm at accel_limit=0.8 m/s²), so the chassis crosses the target at the controlled 0.07 m/s with bounded overshoot < 0.3 cm.
+    dock_reverse_stall_timeout_s: 5.0  # seconds in reverse before checking displacement. If chassis rotates in place under saturated latched κ instead of backing up, the watchdog bails to navigator for replan.
+    dock_reverse_stall_min_disp_m: 0.30  # minimum chassis displacement (m) during a reverse stroke before stall is declared. 0.30 m = 6 cm/s average over 5 s, well below the 0.10 m/s commanded creep — anything less means the chassis isn't translating.
+    approach_tolerance: 0.03           # antenna-to-target distance to declare dock reached. Matched to settle_tolerance — the new dock logic stops on raw distance (no along-track gate), so this directly bounds final landing.
     creep_zone: 0.40                   # meters from target to drop from approach_speed to creep_speed
 
     # ── Tolerances and timeouts ─────────────────────────────────────────
-    waypoint_tolerance: 0.05           # meters antenna-to-target to consider waypoint hit
+    waypoint_tolerance: 0.03           # meters antenna-to-target to consider waypoint hit. Matched to settle_tolerance (3 cm) under the L1Tracker design — single threshold removes the dead band where settle_tol < dist <= waypoint_tolerance left neither branch of the settle handler doing anything. L1's cm_capture is also 3 cm so the controller stops on the same gate the navigator sprays on.
     settle_tolerance: 0.03             # meters for tight settle confirmation
     settle_readings: 8                 # consecutive in-tolerance readings to declare settled (was 5; 8 × 50 ms = 400 ms washes out chassis decel + mast ringing)
-    settle_timeout: 10.0               # seconds before settling gives up and sprays anyway
+    settle_timeout: 12.0               # seconds. Reverse-with-steering closes lateral on both halves of the round trip (~62 %/cycle at k_y=6), so a single 5 s cycle clears 5 cm residual to under 2 cm, and 12 s leaves slack for the cruise→dock handoff transient.
+    active_settle_throttle_s: 1.5      # seconds — minimum interval between active-settle retries when dock drifts back outside waypoint_tolerance. Stops the navigator from cycling SETTLING→NAVIGATING in 50 ms ticks on a dock that declares 'reached' immediately on re-engagement.
     spray_timeout: 5.0                 # seconds to wait for spray_done before auto-skip
     stuck_timeout: 12.0                # seconds without progress before retry/skip
     stuck_max_retries: 2
@@ -94,14 +176,28 @@ navigator_node:
 
     # ── State estimator ─────────────────────────────────────────────────
     estimator_pos_gain: 0.30           # blend factor for GPS antenna position correction
-    estimator_psi_gain: 0.15           # blend factor for GPS heading-of-motion correction (τ ≈ 0.67 s @ 10 Hz heading updates)
-    estimator_psi_min_speed: 0.4       # m/s below which heading-of-motion is too noisy to trust
+    estimator_psi_gain: 0.08           # blend factor for GPS heading-of-motion (high-speed observation). Lowered 0.30→0.08 because we now have a SECOND ψ observation (position-innovation, see yaw_innov_gain below) that handles the low-speed regime where heading-of-motion would inject too much noise. Heading-of-motion is now a slow drift correction at high speed only.
+    estimator_psi_min_speed: 1.5       # m/s below which heading-of-motion is dropped entirely. At 1.5 m/s the displacement between consecutive 10 Hz GPS fixes is 15 cm, so atan2(dy, dx) with ±1 cm RTK noise gives ±4° heading noise — fusable with the low 0.08 gain. Below 1.5 m/s, chassis_psi is maintained by encoder yaw-rate integration (predict) + position-innovation ψ correction (correct_position_with_yaw_innovation).
+    estimator_yaw_innov_gain: 0.10     # Position-innovation → ψ correction gain. After encoder DR predicts the antenna's ENU, the GPS-measured antenna position reveals a residual; the component PERPENDICULAR to chassis heading is yaw error × DR arc. ArduPilot EKF3 uses this exact channel on encoder-only RTK rovers without an IMU. 0.10 with the ±5° per-fix cap converges a 5° ψ bias in 4-6 GPS fixes.
+    estimator_yaw_innov_min_speed: 0.3 # Below this commanded speed, the DR arc per GPS fix is too short to overcome the ±1 cm RTK position noise — the lateral residual is noise-dominated, not ψ-dominated. 0.3 m/s × 0.1 s = 3 cm arc, which is just above the 1 cm noise band; safe to fuse.
 
     # ── Safety ──────────────────────────────────────────────────────────
     gps_timeout: 3.0                   # seconds without GPS before ERROR
     fix_hysteresis_s: 0.8              # seconds of bad fix tolerated before ERROR
     required_fix_status: "rtk_fixed"
+    # When the live fix is rtk_float (integer ambiguity unresolved), accept
+    # it if reported horizontal accuracy is at or below this many mm.
+    # 0 disables — falls back to fixed-only behaviour. 20 mm matches the
+    # waypoint cm-tolerance budget; anything sloppier and the mission
+    # errors out instead of plotting onto a potentially-drifted estimate.
+    fix_accept_float_max_h_acc_mm: 20
     return_to_start: true
+
+    # Battery state-of-charge gates (the MCU has its own hard cutoff at
+    # BATTERY_UNDERVOLT_V=20 V; these stop the navigator earlier so motors
+    # don't cut out mid-dock).
+    battery_warn_pct: 20               # below this, refuse to start a new mission
+    battery_abort_pct: 10              # below this, abort an active mission and ERROR
 
 spray_node:
   ros__parameters:
@@ -122,10 +218,15 @@ mcu_bridge_node:
     # Ackermann + steering servo
     servo_center_us: 1500
     servo_range_us: 500
-    max_steering_angle_deg: 25.0
-    wheelbase: 0.38
-    track_width: 0.30
-    max_speed: 1.5
+    max_steering_angle_deg: 30.5
+    wheelbase: 0.33                    # tape-measured 2026-05-08
+    track_width: 0.33                  # tape-measured 2026-05-08
+    # Operator-measured open-loop top speed at 100% duty is ~2.3 m/s on
+    # this drivetrain at full LiFePO4. Cap was previously 1.5, which forced
+    # PID setpoint at full manual throttle to 1.5 (since target_speed =
+    # throttle_pct/100 × max_speed). Raised to 2.5 so PID can issue the
+    # full-duty setpoint manual control expects.
+    max_speed: 2.5
     # accel_limit applies to chassis longitudinal speed (m/s²), NOT to
     # per-wheel duty as the previous implementation did. Ramping per duty
     # killed the Ackermann differential during the first ~1.5s of every

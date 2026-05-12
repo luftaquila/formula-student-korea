@@ -93,6 +93,10 @@ def bridge():
     node._pub_status = _Pub()
     node._pub_battery = _Pub()
     node._pub_odom = _Pub()
+    node._pub_emergency_stop = _Pub()
+    node._pub_clear_emergency = _Pub()
+    # Hardware-estop edge-detection state.
+    node._last_hw_estop = None
 
     # Battery calibration state — same defaults the real __init__ sets.
     import threading as _t
@@ -440,5 +444,34 @@ def test_odom_integration_advances_when_dt_ok(bridge):
     # Forward 1 m/s × 0.1 s ≈ 0.1 m along x (yaw=0)
     assert 0.05 < odom['x'] < 0.2
     assert abs(odom['yaw']) < 1e-6
+
+
+def test_hardware_estop_press_publishes_emergency_stop(bridge):
+    # First telemetry observation: estop bit clear. No edge → no publish.
+    bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x0')
+    assert len(bridge._pub_emergency_stop.published) == 0
+    # Next tick the operator has pressed the button (FLAG_ESTOP_ACTIVE = 1).
+    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x1')
+    assert len(bridge._pub_emergency_stop.published) == 1
+    assert len(bridge._pub_clear_emergency.published) == 0
+
+
+def test_hardware_estop_release_publishes_clear(bridge):
+    bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x1')  # already pressed
+    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x0')  # released
+    # Rising edge from unknown → True does NOT emit (avoids spurious
+    # estop on pilot restart with the button already pressed); falling
+    # edge from True → False does emit clear.
+    assert len(bridge._pub_emergency_stop.published) == 0
+    assert len(bridge._pub_clear_emergency.published) == 1
+
+
+def test_hardware_estop_steady_state_no_repeat(bridge):
+    bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x0')
+    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x1')  # press → publish
+    bridge._handle_telemetry('T 3 0 0 0.0 0.0 25.0 0x1')  # held
+    bridge._handle_telemetry('T 4 0 0 0.0 0.0 25.0 0x1')  # held
+    assert len(bridge._pub_emergency_stop.published) == 1
+    assert len(bridge._pub_clear_emergency.published) == 0
 
 

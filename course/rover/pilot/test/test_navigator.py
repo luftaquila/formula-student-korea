@@ -302,28 +302,28 @@ def test_emergency_stop_during_cal_antenna(nav):
     assert nav._state == State.EMERGENCY_STOP
 
 
-def test_cal_antenna_scurve_step_does_not_crash(nav, monkeypatch):
-    """Regression for the SCURVE NameError introduced in 66b75ab.
+def test_cal_antenna_circle_step_does_not_crash(nav, monkeypatch):
+    """Regression: bare cos()/sin() must be in navigator_node's namespace.
 
-    The scurve sub-step uses bare cos()/sin() and would NameError on the
-    second tick if math symbols aren't imported into navigator_node's
-    namespace. This test takes the path that calls _cal_antenna_step_scurve
-    twice (so the dt-gated integration body runs at least once) with valid
-    odom + GPS state, and asserts no exception escapes.
+    The circle sub-step integrates chassis pose with cos()/sin() — a
+    missing import would NameError on the second tick (when the dt-gated
+    integration body actually runs). Drives two ticks with valid odom and
+    GPS state and asserts no exception escapes.
     """
     from pilot.navigator_node import CalAntennaPhase
     nav._state = State.CAL_ANTENNA
-    nav._cal_antenna_phase = CalAntennaPhase.SCURVE
+    nav._cal_antenna_phase = CalAntennaPhase.CIRCLE
     nav._cal_antenna_chassis = (0.0, 0.0, 0.0)
     nav._cal_antenna_psi_init = 0.0
     nav._cal_antenna_start_lat = 35.0
     nav._cal_antenna_start_lon = 126.0
     nav._cal_antenna_phase_start_t = time.monotonic()
+    nav._cal_antenna_orbit_angle = 0.0
     nav._odom_v_left = 0.5
     nav._odom_v_right = 0.5
-    nav._cal_antenna_step_scurve()  # primes _cal_antenna_last_predict_t
+    nav._cal_antenna_step_circle()  # primes _cal_antenna_last_predict_t
     # Second tick exercises the integration body where cos/sin are called.
-    nav._cal_antenna_step_scurve()
+    nav._cal_antenna_step_circle()
 
 
 # ── Wheel scale auto-calibration ──────────────────────────────────────────
@@ -366,10 +366,16 @@ def test_handle_cal_wheels_publishes_apply_when_done(nav, monkeypatch):
     nav._state = State.CAL_WHEELS
     nav._cal_wheels_start_lat = 35.0
     nav._cal_wheels_start_lon = 126.0
-    nav._cal_wheels_enc_l_m = 9.95   # 0.5 % under
-    nav._cal_wheels_enc_r_m = 10.10  # 1 % over
+    # Differential 0.04 m on a 10 m straight drive ⇒ per-wheel scales
+    # 10/9.98 vs 10/10.02 (right wheel rolls slightly bigger than left).
+    nav._cal_wheels_enc_l_m = 9.98
+    nav._cal_wheels_enc_r_m = 10.02
     nav._cal_wheels_samples = 200
     nav._cal_wheels_last_t = time.monotonic()
+    # Straight ENU chord aligned with +n: 50 collinear samples spanning
+    # ~10 m. The arc-aware solver fits a degenerate (infinite-radius)
+    # circle here and falls back to chord-based per-wheel reference.
+    nav._cal_wheels_enu_samples = [(0.0, 10.0 * i / 49) for i in range(50)]
     # Position the rover ~10 m north of start (≈10 m chord on RTK).
     nav._gps_lat = 35.00009  # 10 m / R_EARTH × 180/π ≈ 0.0000898°
     nav._gps_lon = 126.0
@@ -464,17 +470,20 @@ def test_handle_cal_wheels_accumulates_steering_trim(nav, monkeypatch, tmp_path)
 
 
 def test_handle_cal_wheels_rejects_accumulated_trim_over_bound(nav, monkeypatch, tmp_path):
-    """If the persisted trim is already near the ±50 µs sanity bound and
-    the new delta would push it past, the cal must NOT overwrite the
-    existing trim. mcu_bridge would reject the apply message anyway,
-    but failing soft on the navigator side keeps the audit trail clean
-    (the result payload reports the reason)."""
+    """If the persisted trim is already near the ±TRIM_BOUND_US sanity
+    bound and the new delta would push it past, the cal must NOT
+    overwrite the existing trim. mcu_bridge would reject the apply
+    message anyway, but failing soft on the navigator side keeps the
+    audit trail clean (the result payload reports the reason)."""
     monkeypatch.setenv('PILOT_STATE_DIR', str(tmp_path))
-    from pilot.lib.steering_calibration import save_steering_trim
+    from pilot.lib.steering_calibration import TRIM_BOUND_US, save_steering_trim
     from pilot import navigator_node as nn
 
+    # Seed trim 5 µs under the bound; a 10 µs delta in the same
+    # direction will push it 5 µs over.
+    seeded = -(TRIM_BOUND_US - 5.0)
     save_steering_trim(
-        -45.0,
+        seeded,
         radius_m=10.0,
         rms_residual_m=0.01,
         samples=200,
@@ -482,7 +491,6 @@ def test_handle_cal_wheels_rejects_accumulated_trim_over_bound(nav, monkeypatch,
     )
 
     def fake_solve(**_kw):
-        # Delta -10 µs would push accumulated to -55 µs > ±50 bound.
         return {
             'trim_us': -10.0,
             'radius_m': -40.0,

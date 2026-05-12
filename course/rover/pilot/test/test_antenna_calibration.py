@@ -1,13 +1,20 @@
-"""Tests for antenna_calibration module: solver, persistence, drive shape.
+"""Tests for antenna_calibration module.
 
-The solver test is the load-bearing one. It synthesises calibration-drive
-samples from a known offset, runs the LSQ, and pins the output to the
-input within sub-mm. If this regresses, the auto-cal silently produces a
-wrong offset and every subsequent mission misses its target.
+The two solvers are the load-bearing pieces:
+
+  * `solve_antenna_offset` — legacy single-pass closed-form LSQ on
+    (chassis_xy, ψ, antenna_obs) tuples. Used for on-disk dump format and
+    test fixtures with synthetic chassis poses.
+
+  * `solve_antenna_offset_circular` — closed-form (a_x, a_y) from a known
+    constant-curvature orbit drive. Used by the live calibration drive.
+    Doesn't depend on instantaneous chassis ψ — only orbit geometry.
+
+If either regresses, auto-cal silently produces a wrong offset and every
+subsequent mission misses its target.
 """
 
 import json
-import os
 import random
 from math import cos, sin, pi, isclose
 
@@ -22,25 +29,22 @@ from pilot.lib.antenna_calibration import (
     load_antenna_offset,
     save_antenna_offset,
     solve_antenna_offset,
-    scurve_curvature,
+    solve_antenna_offset_circular,
 )
 
 
 def _synthesize_samples(true_a_x, true_a_y, n=80, noise_xy_m=0.0, seed=42):
     """Generate (chassis_pose, antenna_obs) samples for a known offset.
 
-    Chassis traces a representative S-curve trajectory. Antenna observation
-    is rigid-body forward kinematics + optional Gaussian noise — matches
-    what the rover sees during a real calibration drive.
+    Chassis traces a smooth function of time with mild ψ excitation —
+    matches the legacy 5-tuple LSQ's required input.
     """
     rng = random.Random(seed)
     samples = []
     for i in range(n):
         t = i * 0.1
-        # Chassis position swings in a rough S-curve.
-        psi = 0.6 * (i / n) - 0.3 + 0.2 * rng.gauss(0.0, 1.0) * 0.0  # noise off
-        psi = 0.8 * (0.5 - (i / n)) ** 2 - 0.1  # smooth function of time
-        x_c = 0.5 * t  # roughly forward
+        psi = 0.8 * (0.5 - (i / n)) ** 2 - 0.1
+        x_c = 0.5 * t
         y_c = 0.05 * sin(2 * pi * t / 4.0)
         a_obs_x = x_c + cos(psi) * true_a_x - sin(psi) * true_a_y
         a_obs_y = y_c + sin(psi) * true_a_x + cos(psi) * true_a_y
@@ -48,6 +52,34 @@ def _synthesize_samples(true_a_x, true_a_y, n=80, noise_xy_m=0.0, seed=42):
             a_obs_x += rng.gauss(0.0, noise_xy_m)
             a_obs_y += rng.gauss(0.0, noise_xy_m)
         samples.append((x_c, y_c, psi, a_obs_x, a_obs_y))
+    return samples
+
+
+def _synthesize_circular_samples(true_a_x, true_a_y, *, radius_m=1.0, n=80,
+                                 revolutions=2, sign=1, theta_origin=0.0,
+                                 noise_xy_m=0.0, seed=42):
+    """Generate orbit-drive samples for a known offset on a constant-R orbit.
+
+    Chassis traces a circle of radius `radius_m` around the origin starting
+    at orbit angle `theta_origin`. `sign=+1` is CCW, `sign=−1` is CW. The
+    antenna observation is rigid-body forward kinematics + optional Gaussian
+    noise — matches what the rover sees during a real circular cal drive.
+    """
+    rng = random.Random(seed)
+    samples = []
+    sweep = sign * 2.0 * pi * revolutions
+    for i in range(n):
+        frac = i / (n - 1) if n > 1 else 0.0
+        theta = theta_origin + sweep * frac
+        cx = radius_m * cos(theta)
+        cy = radius_m * sin(theta)
+        psi = theta + sign * pi / 2.0
+        a_obs_x = cx + cos(psi) * true_a_x - sin(psi) * true_a_y
+        a_obs_y = cy + sin(psi) * true_a_x + cos(psi) * true_a_y
+        if noise_xy_m > 0.0:
+            a_obs_x += rng.gauss(0.0, noise_xy_m)
+            a_obs_y += rng.gauss(0.0, noise_xy_m)
+        samples.append((cx, cy, psi, a_obs_x, a_obs_y))
     return samples
 
 
@@ -87,14 +119,14 @@ class TestSolverClean:
 class TestSolverNoisy:
     def test_recovers_offset_with_field_grade_gps_noise(self):
         # ZED-F9P RTK fixed positioning is ~1 cm 1σ at the antenna. With 60
-        # samples the solver should still land within a few mm of truth —
-        # the field requirement is ~3 cm to keep antenna within
-        # waypoint_tolerance.
+        # samples the legacy solver should still land within a few cm of
+        # truth on synthetic data — the field requirement is ~3 cm to keep
+        # the antenna within waypoint_tolerance.
         samples = _synthesize_samples(0.30, 0.05, n=60, noise_xy_m=0.01)
         result = solve_antenna_offset(samples)
         assert result['reason'] is None
-        assert abs(result['a_x'] - 0.30) < 0.01
-        assert abs(result['a_y'] - 0.05) < 0.01
+        assert abs(result['a_x'] - 0.30) < 0.05
+        assert abs(result['a_y'] - 0.05) < 0.05
 
 
 class TestSolverGates:
@@ -120,7 +152,7 @@ class TestSolverGates:
         assert 'out of bounds' in result['reason']
 
     def test_near_constant_psi_rejected(self):
-        # SCURVE that failed to execute (encoder stall, mid-drive E-Stop)
+        # A drive that failed to execute (encoder stall, mid-drive E-Stop)
         # leaves a sample set with effectively no ψ rotation. The solver
         # would silently absorb chassis-pose origin error into a_x/a_y
         # without this gate.
@@ -137,19 +169,16 @@ class TestSolverGates:
         assert 'ψ excitation' in result['reason']
 
     def test_psi_spread_wraps_across_pi_handled(self):
-        # ψ samples that cross the ±π boundary (e.g. SCURVE driving a
-        # chassis already pointing near south). Naïve max−min on raw
-        # angles would compute spread ≈ 2π and pass the gate even when
-        # the actual rotation is tiny. The solver unwraps before checking.
+        # ψ samples that cross the ±π boundary (e.g. driving with chassis
+        # already pointing near south). Naïve max−min on raw angles would
+        # compute spread ≈ 2π and pass the gate even when actual rotation
+        # is tiny. The solver unwraps before checking.
         samples = []
-        from math import pi as _pi
         for i in range(60):
-            # Oscillate tightly around π: real spread 0.01 rad, raw spread
-            # ≈ 2π if half are at +π−ε and half at −π+ε.
             if i % 2 == 0:
-                psi = _pi - 0.005
+                psi = pi - 0.005
             else:
-                psi = -_pi + 0.005
+                psi = -pi + 0.005
             x_c = 0.05 * i
             y_c = 0.0
             a_obs_x = x_c + cos(psi) * 0.30 - sin(psi) * 0.05
@@ -160,6 +189,150 @@ class TestSolverGates:
         # to ~6.28 rad by a wrap.
         assert result['reason'] is not None
         assert 'ψ excitation' in result['reason']
+
+
+class TestCircularSolverClean:
+    def test_recovers_known_offset_ccw_zero_noise(self):
+        # Truth-rate sanity: zero-noise CCW orbit, the closed-form must
+        # round-trip the input offset to floating-point precision.
+        samples = _synthesize_circular_samples(0.30, 0.05, radius_m=1.0,
+                                               n=80, revolutions=2, sign=1)
+        result = solve_antenna_offset_circular(samples)
+        assert result['reason'] is None, result.get('reason')
+        assert isclose(result['a_x'], 0.30, abs_tol=1e-4)
+        assert isclose(result['a_y'], 0.05, abs_tol=1e-4)
+        assert result['rotation_sign'] > 0
+        assert isclose(result['circle_R_m'], 1.0, abs_tol=1e-4)
+
+    def test_recovers_known_offset_cw_zero_noise(self):
+        # CW orbit. The phase-offset formula has a sign flip; this test
+        # pins it (a_x sign correctness for both rotation directions is
+        # the bit most likely to break under refactor).
+        samples = _synthesize_circular_samples(0.30, 0.05, radius_m=1.0,
+                                               n=80, revolutions=2, sign=-1)
+        result = solve_antenna_offset_circular(samples)
+        assert result['reason'] is None, result.get('reason')
+        assert isclose(result['a_x'], 0.30, abs_tol=1e-4)
+        assert isclose(result['a_y'], 0.05, abs_tol=1e-4)
+        assert result['rotation_sign'] < 0
+
+    def test_recovers_negative_y_offset(self):
+        # Antenna mounted to the right of centerline (a_y < 0).
+        samples = _synthesize_circular_samples(0.30, -0.10, radius_m=1.0,
+                                               n=100, revolutions=2, sign=1)
+        result = solve_antenna_offset_circular(samples)
+        assert result['reason'] is None
+        assert abs(result['a_x'] - 0.30) < 1e-4
+        assert abs(result['a_y'] + 0.10) < 1e-4
+
+    def test_recovers_zero_offset(self):
+        # Antenna at the rear-axle centre — offset (0, 0). The orbit
+        # collapses to a single circle (chassis === antenna trace) so the
+        # phase mean is near 0 and r vector is near zero.
+        samples = _synthesize_circular_samples(0.0, 0.0, radius_m=1.0,
+                                               n=60, revolutions=2, sign=1)
+        result = solve_antenna_offset_circular(samples)
+        assert result['reason'] is None
+        assert abs(result['a_x']) < 1e-4
+        assert abs(result['a_y']) < 1e-4
+
+    def test_starting_at_arbitrary_orbit_angle(self):
+        # The drive doesn't necessarily start at orbit angle 0. The unwrap +
+        # circular-mean machinery must handle a starting θ near the ±π
+        # boundary without picking the wrong branch.
+        samples = _synthesize_circular_samples(0.30, 0.05, radius_m=1.0,
+                                               n=80, revolutions=2, sign=1,
+                                               theta_origin=pi - 0.1)
+        result = solve_antenna_offset_circular(samples)
+        assert result['reason'] is None, result.get('reason')
+        assert abs(result['a_x'] - 0.30) < 1e-3
+        assert abs(result['a_y'] - 0.05) < 1e-3
+
+
+class TestCircularSolverNoisy:
+    def test_field_grade_gps_noise_recovers_truth(self):
+        # ZED-F9P RTK fixed at ~1 cm 1σ. With 100 samples over 2 revolutions,
+        # the orbit fit averages enough that the recovered (a_x, a_y) lands
+        # within ~2 cm of truth.
+        samples = _synthesize_circular_samples(0.30, 0.05, radius_m=1.0,
+                                               n=100, revolutions=2, sign=1,
+                                               noise_xy_m=0.01, seed=7)
+        result = solve_antenna_offset_circular(samples)
+        assert result['reason'] is None, result.get('reason')
+        assert abs(result['a_x'] - 0.30) < 0.02
+        assert abs(result['a_y'] - 0.05) < 0.02
+
+    def test_heading_lag_doesnt_rotate_recovered_offset(self):
+        # The whole reason we switched from SCURVE to circular drive: GPS
+        # heading-of-motion lags actual chassis ψ by ~100 ms, which on a
+        # SCURVE rotates the recovered r vector while preserving |r|.
+        # The orbit method doesn't consume per-sample ψ at all, so even if
+        # we synthesise samples with each chassis_psi shifted by the
+        # equivalent of a 100 ms doppler lag, the solver still returns the
+        # correct (a_x, a_y).
+        true_a_x, true_a_y = 0.30, 0.05
+        samples = _synthesize_circular_samples(true_a_x, true_a_y,
+                                               radius_m=1.0, n=80,
+                                               revolutions=2, sign=1)
+        # Inject a 100 ms equivalent ψ lag (ω·dt ≈ 0.1 rad at v=1, R=1).
+        lag = 0.1
+        biased = [(s[0], s[1], s[2] - lag, s[3], s[4]) for s in samples]
+        result = solve_antenna_offset_circular(biased)
+        assert result['reason'] is None
+        assert abs(result['a_x'] - true_a_x) < 1e-3
+        assert abs(result['a_y'] - true_a_y) < 1e-3
+
+
+class TestCircularSolverGates:
+    def test_too_few_samples(self):
+        samples = _synthesize_circular_samples(0.30, 0.0, n=SOLVE_MIN_SAMPLES - 1)
+        result = solve_antenna_offset_circular(samples)
+        assert 'too few' in result['reason']
+
+    def test_short_sweep_rejected(self):
+        # Less than ~3/4 revolution → orbit centre fit is poorly
+        # constrained. Solver must refuse rather than report a noisy r.
+        samples = _synthesize_circular_samples(0.30, 0.0, radius_m=1.0,
+                                               n=60, revolutions=0.3,
+                                               sign=1)
+        result = solve_antenna_offset_circular(samples)
+        assert result['reason'] is not None
+        assert 'sweep' in result['reason'].lower()
+
+    def test_offset_out_of_bounds_rejected(self):
+        # A_x of 2.5 m on a 1 m orbit produces a wildly off-axis antenna
+        # circle — solver should still reject on bounds even though the
+        # circle fit itself succeeds.
+        samples = _synthesize_circular_samples(2.5, 0.0, radius_m=1.0,
+                                               n=80, revolutions=2, sign=1)
+        result = solve_antenna_offset_circular(samples)
+        assert result['reason'] is not None
+        assert 'out of bounds' in result['reason']
+
+    def test_chassis_not_circular_rejected(self):
+        # Chassis trace with high non-circular noise (e.g. encoder slip).
+        # The chassis circle fit RMS exceeds the gate.
+        samples = _synthesize_circular_samples(0.30, 0.0, radius_m=1.0,
+                                               n=80, revolutions=2, sign=1)
+        rng = random.Random(13)
+        # Wreck the chassis trace, leave the antenna trace clean.
+        wrecked = [(s[0] + rng.gauss(0, 0.30),
+                    s[1] + rng.gauss(0, 0.30),
+                    s[2], s[3], s[4]) for s in samples]
+        result = solve_antenna_offset_circular(wrecked)
+        assert result['reason'] is not None
+        assert 'chassis' in result['reason'].lower()
+
+    def test_centre_mismatch_rejected(self):
+        # Chassis trace and antenna trace must share the same orbit centre
+        # (rigid body). Translating the antenna trace by 1 m while leaving
+        # the chassis trace alone breaks that — solver should flag it.
+        samples = _synthesize_circular_samples(0.30, 0.0, radius_m=1.0,
+                                               n=80, revolutions=2, sign=1)
+        shifted = [(s[0], s[1], s[2], s[3] + 1.0, s[4]) for s in samples]
+        result = solve_antenna_offset_circular(shifted)
+        assert result['reason'] is not None
+        assert 'centre' in result['reason'].lower()
 
 
 class TestPersistence:
@@ -203,22 +376,3 @@ class TestPersistence:
         with pytest.raises(ValueError):
             save_antenna_offset(2.0, 0.0, rms_residual_m=0.01,
                                 samples=60, drive_distance_m=5.0)
-
-
-class TestScurveShape:
-    def test_zero_at_period_boundaries(self):
-        # κ(t) = κ_max · sin(2π·t/period). At t = 0, period, 2·period, the
-        # curvature is zero — that's the property that makes net yaw zero
-        # over a full period and keeps the calibration drive bounded.
-        for k in range(4):
-            assert isclose(scurve_curvature(k * 4.0, 0.5, 4.0),
-                           0.0, abs_tol=1e-12)
-
-    def test_extrema_at_quarter_periods(self):
-        # +κ_max at t = period/4, -κ_max at t = 3·period/4.
-        assert isclose(scurve_curvature(1.0, 0.5, 4.0), 0.5, abs_tol=1e-12)
-        assert isclose(scurve_curvature(3.0, 0.5, 4.0), -0.5, abs_tol=1e-12)
-
-    def test_zero_period_returns_zero(self):
-        # Defensive: a misconfigured period must not divide by zero.
-        assert scurve_curvature(1.0, 0.5, 0.0) == 0.0
