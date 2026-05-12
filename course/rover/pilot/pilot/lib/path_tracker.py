@@ -747,6 +747,20 @@ class L1Tracker:
         self._e_y_speed_floor = float(
             params.get('l1_e_y_speed_floor', 0.4))
 
+        # Dock-only target-distance brake. cm_capture = 3 cm; at
+        # v=approach_speed=0.40 m/s the chassis travels 2 cm per 50 ms
+        # tick, so without a brake the antenna overshoots cm_capture
+        # on every approach and kicks off reverse-recovery cycles
+        # (15:24:50 WP1 trace: dist 15→14.6→7.6→3.8 → stalled at 7 cm
+        # outside cm_capture, settle timeout fired). Linear ramp from
+        # approach_speed at brake_zone edge down to brake_min_frac ·
+        # approach_speed at the target. Sized to ~6× cm_capture so
+        # the MCU PID has time to settle around creep_speed before
+        # the antenna crosses 3 cm.
+        self._brake_zone_m = float(params.get('l1_brake_zone_m', 0.20))
+        self._brake_min_speed_frac = float(
+            params.get('l1_brake_min_speed_frac', 0.25))
+
         # Reverse latch state. Captured at the moment along_to_target
         # crosses zero (antenna projects past target along corridor);
         # held until termination (sign-flip or adaptive distance).
@@ -936,6 +950,16 @@ class L1Tracker:
             e_y_scale = self._e_y_speed_floor
 
         speed = v_target * kappa_scale * e_y_scale
+        # Dock-only target-distance brake. Without this, dist 15 cm
+        # at v=0.40 → 50 ms tick travels 2 cm → cm_capture (3 cm)
+        # blown past on every approach → reverse-recovery → wari-gari.
+        # Linear ramp scales speed down to brake_min_frac at the
+        # target, so the chassis crosses cm_capture at ~creep_speed.
+        if is_dock and target_dist < self._brake_zone_m:
+            brake_ramp = target_dist / self._brake_zone_m
+            if brake_ramp < self._brake_min_speed_frac:
+                brake_ramp = self._brake_min_speed_frac
+            speed *= brake_ramp
         # Floor at creep_speed so PID deadband doesn't freeze the
         # chassis short of the cm-capture (the MCU's 0.05 m/s deadband
         # ate the last cm of every dock approach in the legacy 13:49

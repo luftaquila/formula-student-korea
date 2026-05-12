@@ -113,6 +113,11 @@ navigator_node:
     l1_kappa_speed_lim: 0.85           # 1/m — half of max_curvature; speed regulates as min(1, lim/|κ|)
     l1_e_y_speed_gain: 2.0             # linear cross-track speed cut: speed *= max(floor, 1 - gain·|e_y|)
     l1_e_y_speed_floor: 0.4            # floor of the e_y speed scale (keeps chassis moving even on big residuals)
+    # Dock-only target-distance brake. At v=approach_speed=0.40 m/s a 50 ms tick travels 2 cm — without a brake the antenna blows past cm_capture (3 cm) on every approach and triggers reverse-recovery. Linear ramp scales speed down to brake_min_frac at the target; sized so the chassis crosses cm_capture at ~creep_speed. 20 cm zone × 0.25 floor = creep=0.10 m/s at target, comfortably above the 0.05 m/s PID deadband.
+    l1_brake_zone_m: 0.20
+    l1_brake_min_speed_frac: 0.25
+    # Close-but-not-cm-precise tolerance: if antenna is within this distance of target after a settle timeout or stuck detection, accept the landing and spray rather than replan. Replan-from-just-past-target tends to spiral because plan() floors dock_entry 60 cm behind chassis → no forward arc back to entry. 30 cm matches the spray cone budget and prevents the 15:24 WP1 spiral observed in trace.
+    l1_close_enough_spray_m: 0.30
 
     # ── Cruise tracker (heading-only goal-seeking P-controller) ─────────
     # The cruise tracker is now a human-driver-style heading regulator

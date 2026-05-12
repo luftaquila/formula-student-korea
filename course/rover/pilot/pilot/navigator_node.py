@@ -160,6 +160,9 @@ class NavigatorNode(Node):
         self.declare_parameter('l1_kappa_speed_lim', 0.85)
         self.declare_parameter('l1_e_y_speed_gain', 2.0)
         self.declare_parameter('l1_e_y_speed_floor', 0.4)
+        self.declare_parameter('l1_brake_zone_m', 0.20)
+        self.declare_parameter('l1_brake_min_speed_frac', 0.25)
+        self.declare_parameter('l1_close_enough_spray_m', 0.30)
 
         # Dock tracker (state feedback).
         self.declare_parameter('dock_k_y', 6.0)
@@ -502,6 +505,8 @@ class NavigatorNode(Node):
             'l1_kappa_speed_lim': p('l1_kappa_speed_lim').value,
             'l1_e_y_speed_gain': p('l1_e_y_speed_gain').value,
             'l1_e_y_speed_floor': p('l1_e_y_speed_floor').value,
+            'l1_brake_zone_m': p('l1_brake_zone_m').value,
+            'l1_brake_min_speed_frac': p('l1_brake_min_speed_frac').value,
             # Pull from instance, not yaml param, so a fresh auto-cal is
             # picked up on the next mission start without restart.
             'antenna_offset_x': self._antenna_offset_x,
@@ -1292,6 +1297,40 @@ class NavigatorNode(Node):
         self._stuck_retries += 1
         wp_idx = self._segments[self._cur_seg_idx].waypoint_index if self._cur_seg_idx < len(self._segments) else -1
         gate = 'displacement' if chassis_pinned else 'no-progress'
+
+        # In 'l1' mode, if the antenna is already close to the WP
+        # target (≤ l1_close_enough_spray_m), spray the WP instead
+        # of replanning. Replan-from-just-past-target spirals (15:24
+        # WP1 trace: 7 cm → 161 cm). Only replan when we're truly
+        # far from any reachable target, where the spiral cost is
+        # less than abandoning the mission.
+        if self._path_tracker_kind == 'l1' and self._estimator is not None \
+                and self._cur_seg_idx < len(self._segments):
+            seg = self._segments[self._cur_seg_idx]
+            ax, ay = self._estimator.antenna_position()
+            tx, ty = seg.target_antenna
+            dist_to_target = hypot(tx - ax, ty - ay)
+            close_m = self.get_parameter(
+                'l1_close_enough_spray_m').value
+            if dist_to_target <= close_m and wp_idx >= 0:
+                self.get_logger().warn(
+                    f'Stuck on WP{wp_idx + 1} '
+                    f'(antenna {dist_to_target*100:.1f} cm from target '
+                    f'≤ {close_m*100:.0f} cm) — '
+                    'accepting landing and spraying'
+                )
+                # Snap _cur_seg_idx to the dock segment of this WP
+                # so spraying lands on the correct waypoint.
+                while self._cur_seg_idx < len(self._segments) and (
+                    self._segments[self._cur_seg_idx].waypoint_index != wp_idx
+                    or self._segments[self._cur_seg_idx].kind != 'dock'
+                ):
+                    self._cur_seg_idx += 1
+                self._cur_wp_idx = wp_idx
+                self._stop_motors()
+                self._trigger_spray()
+                return
+
         self.get_logger().warn(
             f'Stuck on segment {self._cur_seg_idx} (waypoint {wp_idx + 1}) '
             f'retry {self._stuck_retries} '
@@ -1428,11 +1467,48 @@ class NavigatorNode(Node):
             # included time spent re-tracking, so a bouncy antenna can
             # exhaust the budget while still moving.
             if dist > wp_tol:
-                # NEVER skip — operator policy. Replan from the live
-                # chassis pose so the next attempt has a fresh corridor
-                # and Reed-Shepp can pick a different topology if the
-                # current approach is geometrically wedged. Reset
-                # settle state and drop back into NAVIGATING.
+                # In 'l1' mode, never replan from a settle timeout.
+                # plan()-from-just-past-target is broken: dock_entry
+                # is floored 60 cm behind chassis along the new
+                # corridor, forcing a U-turn the forward-only L1
+                # cannot make → wide orbit, divergence (15:24 WP1
+                # trace: 7 cm → 161 cm spiral away). The correct
+                # response is to let L1's internal reverse-recovery
+                # cycle the chassis back behind the target and
+                # re-approach. Two branches by distance:
+                #   * dist > l1_close_enough_spray_m: drop back to
+                #     NAVIGATING; L1 keeps trying with reverse-
+                #     recovery, no replan.
+                #   * dist ≤ l1_close_enough_spray_m: accept the
+                #     landing and spray at widened tolerance.
+                close_m = self.get_parameter(
+                    'l1_close_enough_spray_m').value
+                if self._path_tracker_kind == 'l1':
+                    if dist <= close_m:
+                        self.get_logger().warn(
+                            f'Settle timeout WP{self._cur_wp_idx + 1} '
+                            f'(dist={dist*100:.1f} cm ≤ '
+                            f'{close_m*100:.0f} cm) — '
+                            'accepting landing and spraying'
+                        )
+                        self._trigger_spray()
+                        return
+                    self.get_logger().warn(
+                        f'Settle timeout WP{self._cur_wp_idx + 1} '
+                        f'(dist={dist*100:.1f} cm > '
+                        f'{close_m*100:.0f} cm) — re-engaging L1 '
+                        'reverse-recovery'
+                    )
+                    self._settle_count = 0
+                    self._settle_retries = 0
+                    if self._l1_tracker is not None:
+                        self._l1_tracker.reset()
+                    self._reset_progress()
+                    self._set_state(State.NAVIGATING)
+                    return
+                # Legacy mode: NEVER skip — operator policy. Replan
+                # from the live chassis pose so the next attempt has
+                # a fresh corridor.
                 self.get_logger().warn(
                     f'Settle timeout at waypoint {self._cur_wp_idx + 1} '
                     f'(dist={dist*100:.1f} cm > waypoint_tolerance) — '

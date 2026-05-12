@@ -49,6 +49,8 @@ _PARAMS = {
     'l1_kappa_speed_lim': 0.85,
     'l1_e_y_speed_gain': 2.0,
     'l1_e_y_speed_floor': 0.4,
+    'l1_brake_zone_m': 0.20,
+    'l1_brake_min_speed_frac': 0.25,
     'cruise_done_tolerance': 0.20,
 }
 
@@ -344,6 +346,36 @@ class TestL1TrackerSpeedRegulation:
         # Should be regulated but floored at creep_speed
         assert v >= _PARAMS['creep_speed'] - 1e-9
         assert v <= _PARAMS['approach_speed'] + 1e-9
+
+    def test_dock_brake_zone_reduces_speed_near_target(self):
+        # Without the brake_zone, dock approaches blow past cm_capture
+        # (3 cm) at v=approach_speed=0.40 → 2 cm per 50 ms tick →
+        # overshoot → reverse-recovery → wari-gari. The brake ramps
+        # speed down so the chassis crosses cm_capture at ~creep_speed.
+        t = L1Tracker(_PARAMS)
+        seg = _seg('dock', (0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+                   target=(1.0, 0.0))
+        # Antenna 10 cm short of target, aligned with corridor.
+        antenna = _antenna_world_from_pose((0.60, 0.0, 0.0))
+        v, _, _ = t.step((0.60, 0.0, 0.0), seg, t_now=0.0,
+                         antenna_world=antenna)
+        # brake_zone = 0.20, brake_min_frac = 0.25. At target_dist=0.10,
+        # ramp = 0.10/0.20 = 0.50. speed = approach_speed × 0.50 = 0.20.
+        # Should be well below approach_speed.
+        assert v < _PARAMS['approach_speed'] * 0.75
+        assert v >= _PARAMS['creep_speed']
+
+    def test_dock_no_brake_outside_zone(self):
+        # 50 cm from target — outside brake_zone (20 cm). Full
+        # approach_speed should be commanded.
+        t = L1Tracker(_PARAMS)
+        seg = _seg('dock', (0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+                   target=(1.0, 0.0))
+        antenna = _antenna_world_from_pose((0.20, 0.0, 0.0))
+        v, _, _ = t.step((0.20, 0.0, 0.0), seg, t_now=0.0,
+                         antenna_world=antenna)
+        assert v == pytest.approx(_PARAMS['approach_speed'],
+                                  abs=1e-6)
 
     def test_large_e_y_reduces_speed(self):
         # On a wide cruise leg with big e_y, the e_y_speed_gain
