@@ -140,14 +140,27 @@ navigator_node:
     # and chassis arcs through target. If exit fires at 30° the chassis
     # is still 30° off-aim when forward begins, antenna sweeps past
     # target on a 0.5 m arc and dist explodes back > 30 cm (16:27 WP5
-    # trace: dist 22 → 8 cm → 32 cm → 47 cm in 3 ticks). 10° leaves
-    # the chassis essentially pointed at the target before forward
-    # takes over, so antenna travels almost straight to cm_capture.
-    l1_kturn_exit_rad: 0.175   # 10°
+    # trace: dist 22 → 8 cm → 32 cm → 47 cm in 3 ticks). At 10°, with
+    # kturn_exit_dist_m=0.50, the forward leg has ~50 cm to correct a
+    # ~9 cm lateral offset — borderline. 5° drops lateral offset at
+    # forward entry to ~4 cm and gives the P-control enough budget to
+    # land on cm_capture in a single straight pass.
+    l1_kturn_exit_rad: 0.0873  # 5°
     # When chassis is within this distance of target, K-turn is
     # SUPPRESSED — backing up here just takes the chassis away from a
     # target it can reach with a small forward arc.
     l1_kturn_min_dist_m: 0.30
+    # K-turn exit standoff. K-turn does NOT release to forward until
+    # the antenna is at least this far behind the target AND chassis ψ
+    # is aligned (|eta|<kturn_exit_rad). The alignment condition by
+    # itself let the chassis exit K-turn at 8 cm antenna→target (16:42
+    # WP3 trace) — the next forward tick then pushed the antenna past
+    # the target and the K-turn ↔ forward orbital lock kicked in.
+    # 0.5 m covers antenna_offset_x (~0.36 m) plus a short forward
+    # budget so the post-K-turn straight-in approach starts with the
+    # chassis solidly behind the target and the antenna re-aligns
+    # itself naturally as it converges on cm_capture.
+    l1_kturn_exit_dist_m: 0.50
 
     # ── Cruise tracker (heading-only goal-seeking P-controller) ─────────
     # The cruise tracker is now a human-driver-style heading regulator

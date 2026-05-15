@@ -177,6 +177,7 @@ class NavigatorNode(Node):
         self.declare_parameter('l1_kturn_enter_rad', 1.047)
         self.declare_parameter('l1_kturn_exit_rad', 0.524)
         self.declare_parameter('l1_kturn_min_dist_m', 0.30)
+        self.declare_parameter('l1_kturn_exit_dist_m', 0.50)
 
         # Dock tracker (state feedback).
         self.declare_parameter('dock_k_y', 6.0)
@@ -546,6 +547,7 @@ class NavigatorNode(Node):
             'l1_kturn_enter_rad': p('l1_kturn_enter_rad').value,
             'l1_kturn_exit_rad': p('l1_kturn_exit_rad').value,
             'l1_kturn_min_dist_m': p('l1_kturn_min_dist_m').value,
+            'l1_kturn_exit_dist_m': p('l1_kturn_exit_dist_m').value,
             'l1_reverse_lockout_s': p('l1_reverse_lockout_s').value,
             # Pull from instance, not yaml param, so a fresh auto-cal is
             # picked up on the next mission start without restart.

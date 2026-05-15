@@ -831,6 +831,14 @@ class L1Tracker:
             params.get('l1_kturn_exit_rad', 0.524))   # 30°
         self._kturn_min_dist_m = float(
             params.get('l1_kturn_min_dist_m', 0.30))
+        # K-turn exit standoff: antenna must be at LEAST this far from
+        # the target before the K-turn releases to forward. Combined
+        # with the alignment condition this guarantees the post-K-turn
+        # forward leg has enough straight-line distance for the brake
+        # ramp to settle the antenna onto cm_capture without the
+        # chassis crossing the target prematurely.
+        self._kturn_exit_dist_m = float(
+            params.get('l1_kturn_exit_dist_m', 0.50))
 
         # Reverse latch state. Captured at the moment along_to_target
         # crosses zero (antenna projects past target along corridor);
@@ -1009,16 +1017,22 @@ class L1Tracker:
             eta_d = normalize_angle(bearing - psi)
             abs_eta = abs(eta_d)
 
-            # K-turn hysteresis. Without it eta_d crosses ±π/2 every
-            # few ticks near the target, flipping v between +approach
-            # and -approach at ~1 Hz (the 15:53 WP2 trace had ~15
-            # such flips in 18 s). Enter at kturn_enter, exit at
-            # kturn_exit (< enter). Also suppress K-turn when chassis
-            # is already inside kturn_min_dist of the target — the
-            # backward direction would just take the chassis AWAY
-            # from a target it can otherwise reach with a small arc.
+            # K-turn state machine. Two-phase backward:
+            #   phase A (|eta| >= kturn_exit) — saturated κ rotates the
+            #     chassis backward + sideways to close attitude.
+            #   phase B (|eta| <  kturn_exit) — κ=0, chassis reverses
+            #     straight back to build up standoff before the final
+            #     forward straight-in approach.
+            # Exit when BOTH conditions are met: aligned AND antenna is
+            # at least kturn_exit_dist behind the target. The distance
+            # condition is what was missing — at 8 cm antenna→target
+            # the next forward tick pushed antenna past the target and
+            # the K-turn ↔ forward orbital lock kicked in (16:42 WP3
+            # trace: ~8 cycles over 45 s, antenna orbited at 7-50 cm
+            # radius, EMERGENCY_STOP).
             if self._kturn_active:
-                if abs_eta < self._kturn_exit_rad:
+                if (abs_eta < self._kturn_exit_rad
+                        and target_dist_direct >= self._kturn_exit_dist_m):
                     self._kturn_active = False
             else:
                 if (abs_eta > self._kturn_enter_rad
@@ -1026,12 +1040,17 @@ class L1Tracker:
                     self._kturn_active = True
 
             if self._kturn_active:
-                # Backward K-turn. Sign derivation (the original
-                # bug, since fixed): eta_d > 0 means bearing is
-                # ahead of psi → want ψ̇ > 0 to close → v < 0 →
-                # need κ < 0. So κ = -sign(eta_d) × max.
-                kappa_kt = -self._max_curvature if eta_d > 0 \
-                    else self._max_curvature
+                # Sign derivation: eta_d > 0 means bearing is ahead of
+                # ψ → want ψ̇ > 0 to close → v < 0 (backward) → need
+                # κ < 0. So κ = -sign(eta_d) × max during alignment.
+                # Once aligned, κ=0 — straight-line reverse is what
+                # builds the standoff; the next forward leg re-aligns
+                # via the normal P-control if ψ drifts during reverse.
+                if abs_eta >= self._kturn_exit_rad:
+                    kappa_kt = -self._max_curvature if eta_d > 0 \
+                        else self._max_curvature
+                else:
+                    kappa_kt = 0.0
                 self._last_v_cmd = self._approach_speed
                 return -self._approach_speed, \
                     self._clamp_curvature(kappa_kt), 'tracking'
