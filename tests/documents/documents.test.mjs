@@ -1344,8 +1344,10 @@ describe('2-set retention', () => {
     assert.equal(team1.prevSubmission.id, sub2Id, 'prevSubmission should be second newest');
     assert.ok(team1.files.length > 0, 'should have current files');
     assert.ok(team1.prevFiles.length > 0, 'should have previous files');
-    // 3 submissions were inserted; oldest got pruned to disk but DB row count after retention is 2.
-    assert.equal(team1.submissionCount, 2, 'submissionCount should reflect remaining DB rows');
+    // 3 submissions were inserted; oldest row was pruned, but submissionCount tracks total attempts via attempt_no.
+    assert.equal(team1.submissionCount, 3, 'submissionCount should reflect total submission attempts');
+    assert.equal(team1.submission.attempt_no, 3);
+    assert.equal(team1.prevSubmission.attempt_no, 2);
   });
 
   it('student API still returns only latest submission', async () => {
@@ -1354,6 +1356,22 @@ describe('2-set retention', () => {
     const data = await res.json();
     assert.equal(data.submission.id, sub3Id, 'student should see only the latest');
     assert.ok(!data.prevSubmission, 'student API should not have prevSubmission');
+  });
+
+  it('4th submission keeps submissionCount increasing past retention cap', async () => {
+    const res = await uploadFile(retentionSessionId, studentCookie, [
+      { name: 'v4.pdf', type: 'application/pdf', content: Buffer.from('version 4') },
+    ]);
+    assert.equal(res.status, 200);
+
+    const statusRes = await client.get(`/api/admin/sessions/${retentionSessionId}/status`, { cookie: chiefCookie });
+    const data = await statusRes.json();
+    const team1 = data.status.find(s => s.team_num === 1);
+    assert.equal(team1.submissionCount, 4, 'submissionCount must keep growing even though only 2 rows remain');
+    assert.equal(team1.submission.attempt_no, 4);
+    assert.equal(team1.prevSubmission.attempt_no, 3);
+    const rows = db.prepare('SELECT COUNT(*) AS c FROM submission WHERE session_id = ? AND team_num = 1').get(retentionSessionId);
+    assert.equal(rows.c, 2, 'DB row count is still capped at 2 by retention');
   });
 });
 
