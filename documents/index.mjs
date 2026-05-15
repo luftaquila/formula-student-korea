@@ -93,6 +93,46 @@ addColumn(db, "session", "allowed_extensions TEXT DEFAULT ''");
 // 마이그레이션: started_at 컬럼 추가 (업로드 시작 시간)
 addColumn(db, "submission", "started_at TEXT DEFAULT ''");
 
+// 마이그레이션: attempt_no 컬럼 추가 (제출 시도 누적 번호 — retention과 무관하게 유지)
+addColumn(db, "submission", "attempt_no INTEGER NOT NULL DEFAULT 0");
+{
+  const pending = db.prepare("SELECT 1 FROM submission WHERE attempt_no = 0 LIMIT 1").get();
+  if (pending) {
+    // 살아남은 row 그룹별로 logs(submission.create info)에서 실제 시도 횟수를 복원.
+    // logs FIFO cap(50k, shared/logger.mjs)에 의해 잘려있을 경우 최소 하한은 현재 row 수.
+    db.transaction(() => {
+      const groups = db.prepare(`
+        SELECT session_id, team_num, COUNT(*) AS rows
+        FROM submission WHERE attempt_no = 0
+        GROUP BY session_id, team_num
+      `).all();
+      const countLogs = db.prepare(`
+        SELECT COUNT(*) AS c FROM logs
+        WHERE action = 'submission.create' AND level = 'info'
+          AND CAST(json_extract(detail, '$.session_id') AS INTEGER) = ?
+          AND CAST(json_extract(detail, '$.team_num') AS INTEGER) = ?
+      `);
+      const zeroRowsStmt = db.prepare(`
+        SELECT id FROM submission
+        WHERE session_id = ? AND team_num = ? AND attempt_no = 0
+        ORDER BY id DESC
+      `);
+      const setAttempt = db.prepare("UPDATE submission SET attempt_no = ? WHERE id = ?");
+      for (const g of groups) {
+        const logged = countLogs.get(g.session_id, g.team_num).c;
+        // 로그가 잘려 있어도 최소 하한은 살아남은 row 수.
+        const newest = Math.max(logged, g.rows);
+        const rows = zeroRowsStmt.all(g.session_id, g.team_num);
+        let n = newest;
+        for (const r of rows) {
+          setAttempt.run(n, r.id);
+          n -= 1;
+        }
+      }
+    })();
+  }
+}
+
 // 예약 알림 테이블
 db.exec(`CREATE TABLE IF NOT EXISTS scheduled_notification (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -447,10 +487,16 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 
     const txResult = dbRun(() => {
       const tx = db.transaction(() => {
+        // attempt_no는 같은 (session, team)의 누적 최대치 + 1. retention으로 삭제되어도 최신 row가 살아남으므로 단조 증가.
+        const prevAttempt = db.prepare(
+          "SELECT MAX(attempt_no) AS m FROM submission WHERE session_id = ? AND team_num = ?",
+        ).get(session.id, team.team_num);
+        const attemptNo = (prevAttempt?.m || 0) + 1;
+
         // 새 제출 INSERT
         const subResult = db.prepare(
-          "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ).run(session.id, team.team_num, req.user.email, startTime, submittedTime, totalSize, isLate);
+          "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late, attempt_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ).run(session.id, team.team_num, req.user.email, startTime, submittedTime, totalSize, isLate, attemptNo);
         const newSubId = subResult.lastInsertRowid;
 
         // 파일 메타데이터 INSERT
@@ -716,13 +762,12 @@ app.get("/api/admin/sessions/:id/status", (req, res) => {
   const teams = db.prepare("SELECT team_num FROM session_team WHERE session_id = ? ORDER BY team_num").all(id);
 
   const subStmt = db.prepare(`
-    SELECT s.id, s.submitted_at, s.total_size, s.is_late, s.submitted_by
+    SELECT s.id, s.submitted_at, s.total_size, s.is_late, s.submitted_by, s.attempt_no
     FROM submission s
     WHERE s.session_id = ? AND s.team_num = ?
     ORDER BY s.id DESC LIMIT 2
   `);
 
-  const countStmt = db.prepare("SELECT COUNT(*) AS c FROM submission WHERE session_id = ? AND team_num = ?");
   const fileStmt = db.prepare("SELECT id, original_name, size, mime_type FROM submission_file WHERE submission_id = ?");
 
   const status = teams.map((t) => {
@@ -731,7 +776,8 @@ app.get("/api/admin/sessions/:id/status", (req, res) => {
     const files = sub ? fileStmt.all(sub.id) : [];
     const prevSub = subs[1] || null;
     const prevFiles = prevSub ? fileStmt.all(prevSub.id) : [];
-    const submissionCount = countStmt.get(id, t.team_num).c;
+    // 백필 누락 등으로 attempt_no가 0이면 최소 1로 보정 (sub이 존재하니 최소 1회 제출은 있음)
+    const submissionCount = sub ? (sub.attempt_no || 1) : 0;
     return { team_num: t.team_num, submission: sub, files, prevSubmission: prevSub, prevFiles, submissionCount };
   });
 
