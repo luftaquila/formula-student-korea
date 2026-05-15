@@ -30,7 +30,7 @@ from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Empty, Float32, String
+from std_msgs.msg import Empty, Float32, Int32, String
 
 from pilot.lib.ackermann import ackermann_convert, manual_to_ackermann
 from pilot.lib.wheel_calibration import (
