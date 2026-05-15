@@ -964,10 +964,19 @@ class L1Tracker:
             bearing = atan2(ty - y, tx - x)
             eta_d = normalize_angle(bearing - psi)
             # K-turn at large angle: forward gives wide arc that takes
-            # chassis off-course; reverse keeps chassis facing toward
-            # the target's side while it rotates.
+            # chassis off-course; reverse keeps chassis on the target's
+            # side while it rotates.
+            #
+            # Sign derivation (the previous version was backwards, which
+            # is exactly the "후진할 때 WP랑 방향이 맞아져도 회전 후진을
+            # 멈추지 않고 잘못된 각도로 더 크게 계속 꺾는" symptom):
+            #   eta_d = bearing - psi
+            #   want |eta_d| → 0, i.e. psi → bearing
+            #   when eta_d > 0 (bearing ahead of psi) need ψ̇ > 0
+            #   ψ̇ = v·κ. v < 0 (reverse) → need v·κ > 0 → κ < 0
+            #   so κ = -sign(eta_d) × max_curvature.
             if abs(eta_d) > pi / 2:
-                kappa_kt = self._max_curvature if eta_d > 0 else -self._max_curvature
+                kappa_kt = -self._max_curvature if eta_d > 0 else self._max_curvature
                 self._last_v_cmd = self._approach_speed
                 return -self._approach_speed, self._clamp_curvature(kappa_kt), 'tracking'
             # Forward heading-only P control: κ ∝ η.

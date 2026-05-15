@@ -113,8 +113,8 @@ navigator_node:
     l1_kappa_speed_lim: 0.85           # 1/m — half of max_curvature; speed regulates as min(1, lim/|κ|)
     l1_e_y_speed_gain: 2.0             # linear cross-track speed cut: speed *= max(floor, 1 - gain·|e_y|)
     l1_e_y_speed_floor: 0.4            # floor of the e_y speed scale (keeps chassis moving even on big residuals)
-    # Target-distance brake. Sized for MCU PID lag (cmd→actual ≈ 0.5 s) + accel_limit 0.8 m/s². 50 cm zone gives the PID enough time to ramp chassis v from approach_speed (0.40) down to brake_min_frac × 0.40 = 0.07 m/s by the time the antenna crosses cm_capture (3 cm) — so the post-trigger inertia stop distance is ~0.6 cm instead of the 16 cm we measured with the previous 20 cm zone (15:00 mission WP1: cm_capture fired at chassis dist ≈ 3 cm but chassis kept moving with real v ≈ 0.20 m/s for 0.5 s, landing 19 cm past target).
-    l1_brake_zone_m: 0.50
+    # Target-distance brake. With the single smooth ramp (cmd v scales LINEARLY from cruise_speed at the zone edge down to min_speed at the target), the zone must be long enough for the MCU PID + accel_limit to actually follow the deceleration curve. 15:35 mission WP2 had chassis cross the 50 cm zone in ~1 s at real v ≈ 0.7 m/s and overshoot cm_capture by 41 cm. 1.0 m gives the PID twice the budget and keeps real v close to cmd v all the way to the target.
+    l1_brake_zone_m: 1.00
     l1_brake_min_speed_frac: 0.175
     # Hard floor on commanded forward speed in the brake zone. Decoupled from `creep_speed` (legacy DockTracker uses creep_speed as the speed BEFORE brake modulation). Matches legacy effective floor 0.07 m/s.
     l1_min_speed_m_s: 0.07
