@@ -1021,33 +1021,38 @@ class L1Tracker:
         #       under 90°, then the next tick rejoins regime (b).
         e_psi_seg = abs(normalize_angle(psi - psi_path))
         if e_psi_seg > pi / 2:
-            # Saturated tight-rotation override. Use the segment-line
-            # lookahead at the nominal L1_min to pick η's sign — we
-            # rotate toward the side that brings the chassis heading
-            # back toward psi_path.
-            look_along = c_along + self._l1_min
-            if precision_kind:
-                t_along_tmp, _ = project_onto_line(tx, ty, sx, sy, psi_path)
-                if look_along > t_along_tmp:
-                    look_along = t_along_tmp
-            cos_p_t, sin_p_t = cos(psi_path), sin(psi_path)
-            lx_t = sx + look_along * cos_p_t
-            ly_t = sy + look_along * sin_p_t
-            eta_t = normalize_angle(atan2(ly_t - y, lx_t - x) - psi)
-            if eta_t > 0:
+            # Backward K-turn override. When chassis ψ is more than
+            # 90° off the corridor direction, forward saturated κ
+            # arcs sweep the chassis ~1 m sideways from the corridor
+            # before alignment completes (15:00 mission WP1 trace:
+            # e_y -36→-163 cm during a 5 s forward rotation, then
+            # 4 s of L1 lateral closure to re-attack the corridor).
+            # Instead REVERSE during the rotation: chassis backs
+            # away from the target while turning, with the same
+            # saturated κ closing |e_psi|. Once e_psi falls under
+            # π/2 the next tick drops out of this branch and forward
+            # L1 takes over — chassis is now pointed at the target
+            # from ~1 m past the start, and approaches cleanly.
+            # Sign derivation: ψ̇ = v·κ. In reverse v<0; we want
+            # ψ̇ opposite to sign(e_psi_signed) to close the angle.
+            # → sign(v·κ) = -sign(e_psi); with v<0, sign(κ) =
+            # sign(e_psi). So κ = sign(e_psi_signed) × max.
+            e_psi_signed = normalize_angle(psi - psi_path)
+            if e_psi_signed > 0:
                 kappa_t = self._max_curvature
-            elif eta_t < 0:
+            elif e_psi_signed < 0:
                 kappa_t = -self._max_curvature
             else:
                 kappa_t = 0.0
             kappa_t = self._clamp_curvature(kappa_t)
-            # Rotation speed: approach_speed × max_curvature gives
-            # ψ̇ ≈ 39°/s — 90° rotation in ~2.3 s. creep_speed (0.10
-            # m/s) would take 9 s, too slow to be useful. Chassis
-            # arcs forward ~1 m during the rotation, so corridor
-            # re-attack adds a few s of normal L1 closure afterwards.
+            # Reverse at approach_speed magnitude. ψ̇ ≈ 39°/s, so
+            # 90° rotation takes ~2.3 s with chassis backing ~1 m
+            # AWAY from the target — out of any wide-arc corridor
+            # divergence path. Forward-only reverse-recovery
+            # interlock doesn't apply here (this isn't a target
+            # overshoot, it's an angle-too-large condition).
             self._last_v_cmd = self._approach_speed
-            return self._approach_speed, kappa_t, 'tracking'
+            return -self._approach_speed, kappa_t, 'tracking'
 
         if e_psi_seg <= self._sharp_turn_thresh:
             l1_min_eff = self._l1_min
