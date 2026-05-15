@@ -1004,36 +1004,61 @@ class L1Tracker:
         v_for_l1 = max(self._last_v_cmd, v_target)
         l1 = (self._l1_damping / pi) * self._l1_period * v_for_l1
 
-        # Sharp-turn lookahead boost. When the chassis heading is far
-        # off the segment direction, the L1_min floor would force a
-        # tight arc with saturated κ. Progressive boost: linear
-        # interpolation from sharp_turn_l1_min (at the threshold) up
-        # to l1_max (at 180° opposed). At 90° we land mid-way, ~half
-        # l1_max. The 14:22 mission WP1 trace (e_psi=+113°) saturated
-        # κ for 17 s of wide-arc divergence under the old fixed 1.2 m
-        # boost; under progressive boost the same geometry would have
-        # used a ~3 m lookahead and stayed below κ saturation.
+        # Sharp-turn handling. Three regimes by |e_psi|:
+        #   (a) ≤ thresh (45°): normal L1, no boost.
+        #   (b) thresh..π/2 (45-90°): progressive lookahead boost — linear
+        #       interp from sharp_turn_l1_min at the threshold up to
+        #       l1_max at 90°. The chassis traces a wide, gentle arc
+        #       without κ saturation.
+        #   (c) > π/2 (90-180°): forward L1 cannot widen its arc fast
+        #       enough — the lookahead falls behind the chassis at large
+        #       e_psi, η wraps near ±π, sin(η)→0, and κ collapses to ~0
+        #       (14:52 mission WP1, e_psi=-170°: chassis drifted 8 m in
+        #       the WRONG direction at v=0.15 m/s before E-stop). Under
+        #       this branch we drop normal L1 and command saturated κ
+        #       in the rotation-closing direction at creep speed —
+        #       chassis pivots close-to-in-place until e_psi drops
+        #       under 90°, then the next tick rejoins regime (b).
         e_psi_seg = abs(normalize_angle(psi - psi_path))
+        if e_psi_seg > pi / 2:
+            # Saturated tight-rotation override. Use the segment-line
+            # lookahead at the nominal L1_min to pick η's sign — we
+            # rotate toward the side that brings the chassis heading
+            # back toward psi_path.
+            look_along = c_along + self._l1_min
+            if precision_kind:
+                t_along_tmp, _ = project_onto_line(tx, ty, sx, sy, psi_path)
+                if look_along > t_along_tmp:
+                    look_along = t_along_tmp
+            cos_p_t, sin_p_t = cos(psi_path), sin(psi_path)
+            lx_t = sx + look_along * cos_p_t
+            ly_t = sy + look_along * sin_p_t
+            eta_t = normalize_angle(atan2(ly_t - y, lx_t - x) - psi)
+            if eta_t > 0:
+                kappa_t = self._max_curvature
+            elif eta_t < 0:
+                kappa_t = -self._max_curvature
+            else:
+                kappa_t = 0.0
+            kappa_t = self._clamp_curvature(kappa_t)
+            # Rotation speed: approach_speed × max_curvature gives
+            # ψ̇ ≈ 39°/s — 90° rotation in ~2.3 s. creep_speed (0.10
+            # m/s) would take 9 s, too slow to be useful. Chassis
+            # arcs forward ~1 m during the rotation, so corridor
+            # re-attack adds a few s of normal L1 closure afterwards.
+            self._last_v_cmd = self._approach_speed
+            return self._approach_speed, kappa_t, 'tracking'
+
         if e_psi_seg <= self._sharp_turn_thresh:
             l1_min_eff = self._l1_min
-        elif e_psi_seg >= pi:
-            l1_min_eff = self._l1_max
         else:
+            # Linear interp from sharp_turn_l1_min at the threshold up
+            # to l1_max at 90°. Beyond 90° the override above takes
+            # over, so this branch never sees e_psi_seg > π/2.
             t = (e_psi_seg - self._sharp_turn_thresh) / \
-                (pi - self._sharp_turn_thresh)
+                (pi / 2 - self._sharp_turn_thresh)
             l1_min_eff = self._sharp_turn_l1_min + t * (
                 self._l1_max - self._sharp_turn_l1_min)
-
-        # Speed cut on large angle: forward motion during rotation
-        # drives e_y divergence (chassis arcs sideways). For |e_psi|
-        # past 90°, scale v_target linearly down to 30 % at 180°.
-        # Combined with the boosted lookahead this lets the chassis
-        # rotate close-to-in-place, then re-attack the corridor.
-        if e_psi_seg > pi / 2:
-            shrink = 1.0 - (e_psi_seg - pi / 2) / (pi / 2)
-            if shrink < 0.3:
-                shrink = 0.3
-            v_target *= shrink
 
         if l1 < l1_min_eff:
             l1 = l1_min_eff
