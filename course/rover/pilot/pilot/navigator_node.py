@@ -174,6 +174,9 @@ class NavigatorNode(Node):
         # converge (15:22 trace got to retry 11 without progress).
         self.declare_parameter('l1_stuck_direct_retries', 3)
         self.declare_parameter('l1_kturn_thresh_rad', 1.047)
+        self.declare_parameter('l1_kturn_enter_rad', 1.047)
+        self.declare_parameter('l1_kturn_exit_rad', 0.524)
+        self.declare_parameter('l1_kturn_min_dist_m', 0.30)
 
         # Dock tracker (state feedback).
         self.declare_parameter('dock_k_y', 6.0)
@@ -540,6 +543,9 @@ class NavigatorNode(Node):
             'l1_sharp_turn_thresh_rad': p('l1_sharp_turn_thresh_rad').value,
             'l1_sharp_turn_l1_min_m': p('l1_sharp_turn_l1_min_m').value,
             'l1_kturn_thresh_rad': p('l1_kturn_thresh_rad').value,
+            'l1_kturn_enter_rad': p('l1_kturn_enter_rad').value,
+            'l1_kturn_exit_rad': p('l1_kturn_exit_rad').value,
+            'l1_kturn_min_dist_m': p('l1_kturn_min_dist_m').value,
             'l1_reverse_lockout_s': p('l1_reverse_lockout_s').value,
             # Pull from instance, not yaml param, so a fresh auto-cal is
             # picked up on the next mission start without restart.

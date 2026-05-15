@@ -817,6 +817,21 @@ class L1Tracker:
         self._reverse_lockout_s = float(
             params.get('l1_reverse_lockout_s', 1.5))
 
+        # Direct-mode K-turn hysteresis. eta_d = bearing_to_target -
+        # chassis_psi. While forward, K-turn only engages when
+        # |eta_d| crosses ABOVE kturn_enter (default 60°). Once in
+        # K-turn, exit only when |eta_d| drops BELOW kturn_exit
+        # (default 30°). And K-turn is suppressed when chassis is
+        # within kturn_min_dist of the target — the K-turn would
+        # back the chassis AWAY from a target it can otherwise reach
+        # with a small forward arc.
+        self._kturn_enter_rad = float(
+            params.get('l1_kturn_enter_rad', 1.047))  # 60°
+        self._kturn_exit_rad = float(
+            params.get('l1_kturn_exit_rad', 0.524))   # 30°
+        self._kturn_min_dist_m = float(
+            params.get('l1_kturn_min_dist_m', 0.30))
+
         # Reverse latch state. Captured at the moment along_to_target
         # crosses zero (antenna projects past target along corridor);
         # held until termination (sign-flip or adaptive distance).
@@ -831,8 +846,23 @@ class L1Tracker:
         # next tick so the lookahead doesn't shrink to L1_min on a
         # zero-cmd recovery tick and then snap back on the next.
         self._last_v_cmd = self._approach_speed
-        # Direct-to-target fallback flag (see set_direct_to_target).
-        self._direct_to_target = False
+        # Direct-to-target IS the default in this build. The corridor-
+        # follow L1 stays compiled in for legacy ('cruise'/'dock')
+        # segment kinds, but unified 'l1' segments run direct mode.
+        # See step() and set_direct_to_target().
+        self._default_direct_mode = bool(
+            params.get('l1_default_direct_mode', True))
+        self._direct_to_target = self._default_direct_mode
+        # K-turn hysteresis state. Without it, eta_d (bearing-to-target
+        # minus chassis_psi) crosses ±π/2 every few ticks as the chassis
+        # arcs near the target, flipping cmd v between +approach and
+        # -approach at 1 Hz (the 15:53 WP2 trace had ~15 such flips
+        # in 18 s before stuck). With hysteresis: enter K-turn at
+        # |eta_d| > kturn_enter_rad (default 60°), exit at
+        # |eta_d| < kturn_exit_rad (default 30°). Plus a close-target
+        # K-turn lockout (kturn_min_dist_m) so the chassis just sees
+        # the target through.
+        self._kturn_active = False
 
     def reset(self):
         self._reverse_active = False
@@ -841,7 +871,8 @@ class L1Tracker:
         self._reverse_entry_along_to_target = 0.0
         self._reverse_lockout_until = 0.0
         self._last_v_cmd = self._approach_speed
-        self._direct_to_target = False
+        self._direct_to_target = self._default_direct_mode
+        self._kturn_active = False
         # Direct-to-target fallback. The navigator flips this on when
         # stuck retries exhaust on a segment — chassis ended up too
         # far from the planner's corridor for normal L1 to converge,
@@ -962,39 +993,55 @@ class L1Tracker:
         seg_len = hypot(ex - sx, ey - sy)
         is_dock = segment.kind == 'dock'
 
-        # ── Direct-to-target fallback ────────────────────────────────
-        # Active when the navigator detected an unrecoverable corridor-
-        # follow loop. We ignore the segment line entirely and steer
-        # the chassis straight at target_antenna.
+        # ── Direct-to-target controller (default on 'l1' / 'dock') ────
+        # The unified L1 corridor was the source of every "WP and
+        # chassis 1-3 m apart" pathology — chassis off the corridor →
+        # wide-arc divergence → cm_capture missed → reverse-recovery
+        # cycle → stuck. Direct mode ignores the corridor and steers
+        # straight at target_antenna with hysteretic K-turn handling
+        # of large attitude errors.
         if self._direct_to_target and segment.kind in ('dock', 'l1'):
             target_dist_direct = hypot(tx - ax, ty - ay)
             if target_dist_direct <= self._cm_capture:
                 self._last_v_cmd = self._approach_speed
+                self._kturn_active = False
                 return 0.0, 0.0, 'reached'
-            # Bearing from chassis (rear axle) to target, then η.
+
             bearing = atan2(ty - y, tx - x)
             eta_d = normalize_angle(bearing - psi)
-            # K-turn at large angle: forward gives wide arc that takes
-            # chassis off-course; reverse keeps chassis on the target's
-            # side while it rotates.
-            #
-            # Sign derivation (the previous version was backwards, which
-            # is exactly the "후진할 때 WP랑 방향이 맞아져도 회전 후진을
-            # 멈추지 않고 잘못된 각도로 더 크게 계속 꺾는" symptom):
-            #   eta_d = bearing - psi
-            #   want |eta_d| → 0, i.e. psi → bearing
-            #   when eta_d > 0 (bearing ahead of psi) need ψ̇ > 0
-            #   ψ̇ = v·κ. v < 0 (reverse) → need v·κ > 0 → κ < 0
-            #   so κ = -sign(eta_d) × max_curvature.
-            if abs(eta_d) > pi / 2:
-                kappa_kt = -self._max_curvature if eta_d > 0 else self._max_curvature
+            abs_eta = abs(eta_d)
+
+            # K-turn hysteresis. Without it eta_d crosses ±π/2 every
+            # few ticks near the target, flipping v between +approach
+            # and -approach at ~1 Hz (the 15:53 WP2 trace had ~15
+            # such flips in 18 s). Enter at kturn_enter, exit at
+            # kturn_exit (< enter). Also suppress K-turn when chassis
+            # is already inside kturn_min_dist of the target — the
+            # backward direction would just take the chassis AWAY
+            # from a target it can otherwise reach with a small arc.
+            if self._kturn_active:
+                if abs_eta < self._kturn_exit_rad:
+                    self._kturn_active = False
+            else:
+                if (abs_eta > self._kturn_enter_rad
+                        and target_dist_direct > self._kturn_min_dist_m):
+                    self._kturn_active = True
+
+            if self._kturn_active:
+                # Backward K-turn. Sign derivation (the original
+                # bug, since fixed): eta_d > 0 means bearing is
+                # ahead of psi → want ψ̇ > 0 to close → v < 0 →
+                # need κ < 0. So κ = -sign(eta_d) × max.
+                kappa_kt = -self._max_curvature if eta_d > 0 \
+                    else self._max_curvature
                 self._last_v_cmd = self._approach_speed
-                return -self._approach_speed, self._clamp_curvature(kappa_kt), 'tracking'
+                return -self._approach_speed, \
+                    self._clamp_curvature(kappa_kt), 'tracking'
+
             # Forward heading-only P control: κ ∝ η.
-            kappa_d = 2.0 * eta_d  # saturating at clamp on big η
-            kappa_d = self._clamp_curvature(kappa_d)
-            # Speed: same linear brake_zone ramp as the unified L1
-            # branch, just keyed off target_dist_direct directly.
+            kappa_d = self._clamp_curvature(2.0 * eta_d)
+            # Speed: linear brake from cruise_speed at the zone edge
+            # down to min_speed at the target.
             if target_dist_direct < self._brake_zone_m:
                 t_ramp = target_dist_direct / self._brake_zone_m
                 speed_d = self._min_speed + t_ramp * (

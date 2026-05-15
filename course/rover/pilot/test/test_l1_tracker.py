@@ -54,6 +54,10 @@ _PARAMS = {
     'l1_min_speed_m_s': 0.07,
     'l1_sharp_turn_thresh_rad': 0.785,
     'l1_sharp_turn_l1_min_m': 1.2,
+    'l1_kturn_enter_rad': 1.047,
+    'l1_kturn_exit_rad': 0.524,
+    'l1_kturn_min_dist_m': 0.30,
+    'l1_default_direct_mode': False,
     'cruise_done_tolerance': 0.20,
     'creep_zone': 0.40,
 }

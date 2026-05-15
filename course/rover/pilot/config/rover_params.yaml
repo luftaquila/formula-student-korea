@@ -128,8 +128,19 @@ navigator_node:
     l1_reverse_lockout_s: 1.5
     # Stuck retries on the same L1 segment before navigator switches L1Tracker to direct-to-target (heading-only goal seek toward target_antenna, corridor ignored). 15:22 WP2 trace got to retry 11 with the chassis drifting 213→343 cm from the WP because normal L1 + replan kept making corridors that put the chassis off the line and along_to_target permanently negative. 3 retries is a clean "this approach isn't going to work" signal.
     l1_stuck_direct_retries: 3
-    # K-turn threshold (radians). Above this |e_psi| the L1Tracker swaps forward L1 for a REVERSE saturated-κ tight rotation. 60° is the empirical cutoff where forward wide-arc divergence starts pulling the chassis far enough off-corridor to overshoot the WP (15:35 WP1→WP2 trace: e_psi = 80°, chassis arced 1.5 m past WP before alignment under the prior 90° threshold).
-    l1_kturn_thresh_rad: 1.047
+    # K-turn (corridor mode) threshold. Used only by the legacy
+    # corridor-follow branch; the direct-mode K-turn (default for 'l1'
+    # segments) uses the hysteretic l1_kturn_enter_rad / l1_kturn_exit_rad
+    # pair below.
+    l1_kturn_thresh_rad: 0.785
+    # Direct-mode K-turn hysteresis. eta_d = bearing_to_target - chassis_psi.
+    # While forward, K-turn engages when |eta_d| crosses ABOVE l1_kturn_enter_rad. Once in K-turn, exit only when |eta_d| drops BELOW l1_kturn_exit_rad. Without hysteresis eta_d toggled across ±π/2 every few ticks near the target, flipping v between +approach and -approach at 1 Hz (15:53 WP2 trace).
+    l1_kturn_enter_rad: 1.047  # 60°
+    l1_kturn_exit_rad: 0.524   # 30°
+    # When chassis is within this distance of target, K-turn is
+    # SUPPRESSED — backing up here just takes the chassis away from a
+    # target it can reach with a small forward arc.
+    l1_kturn_min_dist_m: 0.30
 
     # ── Cruise tracker (heading-only goal-seeking P-controller) ─────────
     # The cruise tracker is now a human-driver-style heading regulator
