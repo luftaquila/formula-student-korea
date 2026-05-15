@@ -126,6 +126,8 @@ navigator_node:
     l1_sharp_turn_l1_min_m: 1.2
     # Seconds of forward-only lockout after exiting reverse-recovery. Prevents the near-target reverse/forward ping-pong where along_to_target flips sign every tick and chassis κ alternates ±max each 50 ms — the 14:22 WP4 trace had 30+ such oscillations before stuck. 1.5 s lets the brake_zone ramp settle into the chassis before a new reverse decision.
     l1_reverse_lockout_s: 1.5
+    # Stuck retries on the same L1 segment before navigator switches L1Tracker to direct-to-target (heading-only goal seek toward target_antenna, corridor ignored). 15:22 WP2 trace got to retry 11 with the chassis drifting 213→343 cm from the WP because normal L1 + replan kept making corridors that put the chassis off the line and along_to_target permanently negative. 3 retries is a clean "this approach isn't going to work" signal.
+    l1_stuck_direct_retries: 3
 
     # ── Cruise tracker (heading-only goal-seeking P-controller) ─────────
     # The cruise tracker is now a human-driver-style heading regulator

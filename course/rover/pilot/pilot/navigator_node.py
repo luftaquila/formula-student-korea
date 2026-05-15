@@ -167,6 +167,12 @@ class NavigatorNode(Node):
         self.declare_parameter('l1_sharp_turn_thresh_rad', 0.785)
         self.declare_parameter('l1_sharp_turn_l1_min_m', 1.2)
         self.declare_parameter('l1_reverse_lockout_s', 1.5)
+        # Stuck retries on a single L1 segment before the navigator
+        # gives up on the corridor and tells L1Tracker to go
+        # heading-only direct-to-target. 3 retries is enough to
+        # confirm that a normal-L1 + replan cycle isn't going to
+        # converge (15:22 trace got to retry 11 without progress).
+        self.declare_parameter('l1_stuck_direct_retries', 3)
 
         # Dock tracker (state feedback).
         self.declare_parameter('dock_k_y', 6.0)
@@ -239,6 +245,15 @@ class NavigatorNode(Node):
         # Safety.
         self.declare_parameter('gps_timeout', 3.0)
         self.declare_parameter('fix_hysteresis_s', 0.8)
+        # Seconds the fix must hold continuously at required quality
+        # AFTER recovery before NAVIGATING resumes. Without it, RTK
+        # flapping (rtk_fixed ↔ rtk_float / 3d_fix within sub-second
+        # windows, common in marginal sky-view) re-entered ERROR
+        # almost instantly each time the navigator tried to resume.
+        # LED still clears the moment fix is back so the operator
+        # has live feedback; chassis just stays parked until the
+        # fix has held long enough to trust.
+        self.declare_parameter('fix_recovery_hold_s', 3.0)
         self.declare_parameter('required_fix_status', 'rtk_fixed')
         # When the live fix is rtk_float (integer ambiguity unresolved),
         # accept it as 'good enough' if reported hAcc is at or below this
@@ -389,6 +404,10 @@ class NavigatorNode(Node):
 
         # Fix hysteresis.
         self._fix_degraded_since = None
+        # Timestamp when fix first returned to required quality while
+        # in ERROR. Set by `_handle_error`, cleared on degradation or
+        # successful resume. Drives the fix_recovery_hold_s hysteresis.
+        self._fix_recovered_at = None
 
         # Error recovery.
         self._pre_error_state = None
@@ -911,14 +930,32 @@ class NavigatorNode(Node):
         # RTK recovery.
         self._stop_motors()
         gps_timeout = self.get_parameter('gps_timeout').value
-        if (
-            time.monotonic() - self._last_gps_time < gps_timeout
+        now = time.monotonic()
+        fix_ok = (
+            now - self._last_gps_time < gps_timeout
             and self._gps_lat is not None
             and self._has_required_fix()
-        ):
+        )
+        if fix_ok:
+            # Edge-trigger LED clear on the FIRST moment fix is back —
+            # operator sees the orange-blink stop instantly even though
+            # the chassis won't resume until the recovery has held for
+            # `fix_recovery_hold_s` seconds. RTK fixes around the
+            # 14:22 / 15:15 / 15:16 missions flapped between fixed and
+            # float multiple times per second; without the hold we'd
+            # re-enter ERROR within 1-2 ticks of resuming.
+            if self._fix_recovered_at is None:
+                self._fix_recovered_at = now
+                fault = Int32()
+                fault.data = 0
+                self._pub_nav_fault.publish(fault)
+            hold = self.get_parameter('fix_recovery_hold_s').value
+            if now - self._fix_recovered_at < hold:
+                return  # hold position, LED already cleared
             if self._pre_error_state is not None:
                 self.get_logger().info(
-                    f'GPS recovered, resuming {self._pre_error_state.value}'
+                    f'GPS recovered (held {hold:.1f}s), resuming '
+                    f'{self._pre_error_state.value}'
                 )
                 # Reset any wall-clock timers that ran during the outage.
                 # Without this, a 30 s GPS dropout during SETTLING resumes
@@ -953,10 +990,22 @@ class NavigatorNode(Node):
                 self._set_state(resume_state)
                 self._pre_error_state = None
                 self._last_error_reason = None
+                self._fix_recovered_at = None
                 if resume_state == State.NAVIGATING:
                     self._replan_from_current_chassis()
             else:
                 self._set_state(State.IDLE)
+        else:
+            # Fix degraded again before the hold elapsed. If the LED
+            # had been cleared on the previous recovery, re-light it
+            # so the operator can see the fix lost again. Edge-trigger
+            # via _fix_recovered_at: only publish on the recovery →
+            # degrade transition, not every tick.
+            if self._fix_recovered_at is not None:
+                fault = Int32()
+                fault.data = 1
+                self._pub_nav_fault.publish(fault)
+            self._fix_recovered_at = None
 
     # ── calibration ──────────────────────────────────────────────────────
 
@@ -1350,6 +1399,29 @@ class NavigatorNode(Node):
                 self._stop_motors()
                 self._trigger_spray()
                 return
+
+        # Direct-to-target fallback: after stuck_direct_retries
+        # stuck retries in l1 mode, the corridor approach has
+        # clearly failed (chassis 1-2 m off, replan keeps spiraling
+        # — 15:22 WP2 trace: 11 retries with dist 213→343 cm). Flip
+        # L1Tracker into heading-only goal-seek mode so it steers
+        # the chassis directly at target_antenna, ignoring the
+        # corridor geometry entirely. Keep replanning the rest of
+        # the mission normally; direct mode auto-clears on segment
+        # advance.
+        direct_thresh = self.get_parameter(
+            'l1_stuck_direct_retries').value
+        if (self._path_tracker_kind == 'l1'
+                and self._l1_tracker is not None
+                and self._stuck_retries >= direct_thresh):
+            self.get_logger().warn(
+                f'Stuck on segment {self._cur_seg_idx} '
+                f'(waypoint {wp_idx + 1}) retry {self._stuck_retries} '
+                f'≥ {direct_thresh} — switching L1 to direct-to-target'
+            )
+            self._l1_tracker.set_direct_to_target(True)
+            self._reset_progress()
+            return
 
         self.get_logger().warn(
             f'Stuck on segment {self._cur_seg_idx} (waypoint {wp_idx + 1}) '

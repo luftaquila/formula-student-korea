@@ -820,6 +820,8 @@ class L1Tracker:
         # next tick so the lookahead doesn't shrink to L1_min on a
         # zero-cmd recovery tick and then snap back on the next.
         self._last_v_cmd = self._approach_speed
+        # Direct-to-target fallback flag (see set_direct_to_target).
+        self._direct_to_target = False
 
     def reset(self):
         self._reverse_active = False
@@ -828,12 +830,44 @@ class L1Tracker:
         self._reverse_entry_along_to_target = 0.0
         self._reverse_lockout_until = 0.0
         self._last_v_cmd = self._approach_speed
+        self._direct_to_target = False
+        # Direct-to-target fallback. The navigator flips this on when
+        # stuck retries exhaust on a segment — chassis ended up too
+        # far from the planner's corridor for normal L1 to converge,
+        # so we abandon the corridor entirely and steer directly
+        # toward target_antenna. See set_direct_to_target() docstring.
+        self._direct_to_target = False
 
     def _antenna_world(self, chassis_pose):
         x, y, psi = chassis_pose
         cp, sp = cos(psi), sin(psi)
         return (x + cp * self._a_x - sp * self._a_y,
                 y + sp * self._a_x + cp * self._a_y)
+
+    def set_direct_to_target(self, on):
+        """Toggle direct-heading fallback mode.
+
+        Normal L1 follows the segment corridor (start_pose → end_pose)
+        and uses `along_to_target` to decide reverse-recovery. After
+        multiple stuck retries the chassis can end up 1-2 m off the
+        corridor with along_to_target permanently negative — forward L1
+        runs along the corridor (AWAY from the target in that geometry),
+        reverse-recovery exits on e_y sign-flip without closing distance,
+        and stuck retries replan the same broken corridor (15:22 WP2
+        trace: 11 retries, chassis drifted 2.13 → 3.43 m from WP).
+        The navigator flips this on when it detects that loop; step()
+        then ignores the corridor and steers directly toward
+        target_antenna like a heading-only goal-seeker:
+
+            bearing_to_target = atan2(ty - ay, tx - ax)
+            kappa ∝ bearing_to_target − chassis_psi  (saturated)
+            speed = same brake_zone ramp on target_dist
+            cm_capture / K-turn (large |bearing-to-target| − psi) apply
+            as usual.
+
+        The navigator should turn this OFF on segment advance.
+        """
+        self._direct_to_target = bool(on)
 
     def _reset_reverse(self, t_now=None):
         was_active = self._reverse_active
@@ -916,6 +950,39 @@ class L1Tracker:
         tx, ty = segment.target_antenna
         seg_len = hypot(ex - sx, ey - sy)
         is_dock = segment.kind == 'dock'
+
+        # ── Direct-to-target fallback ────────────────────────────────
+        # Active when the navigator detected an unrecoverable corridor-
+        # follow loop. We ignore the segment line entirely and steer
+        # the chassis straight at target_antenna.
+        if self._direct_to_target and segment.kind in ('dock', 'l1'):
+            target_dist_direct = hypot(tx - ax, ty - ay)
+            if target_dist_direct <= self._cm_capture:
+                self._last_v_cmd = self._approach_speed
+                return 0.0, 0.0, 'reached'
+            # Bearing from chassis (rear axle) to target, then η.
+            bearing = atan2(ty - y, tx - x)
+            eta_d = normalize_angle(bearing - psi)
+            # K-turn at large angle: forward gives wide arc that takes
+            # chassis off-course; reverse keeps chassis facing toward
+            # the target's side while it rotates.
+            if abs(eta_d) > pi / 2:
+                kappa_kt = self._max_curvature if eta_d > 0 else -self._max_curvature
+                self._last_v_cmd = self._approach_speed
+                return -self._approach_speed, self._clamp_curvature(kappa_kt), 'tracking'
+            # Forward heading-only P control: κ ∝ η.
+            kappa_d = 2.0 * eta_d  # saturating at clamp on big η
+            kappa_d = self._clamp_curvature(kappa_d)
+            # Speed: same linear brake_zone ramp as the unified L1
+            # branch, just keyed off target_dist_direct directly.
+            if target_dist_direct < self._brake_zone_m:
+                t_ramp = target_dist_direct / self._brake_zone_m
+                speed_d = self._min_speed + t_ramp * (
+                    self._cruise_speed - self._min_speed)
+            else:
+                speed_d = self._cruise_speed
+            self._last_v_cmd = speed_d
+            return speed_d, kappa_d, 'tracking'
 
         # Degenerate path: start ≈ end (e.g. tight replan).
         # Use bearing-to-end as the synthetic path direction so the
