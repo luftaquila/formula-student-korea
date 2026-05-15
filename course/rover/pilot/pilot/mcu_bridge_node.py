@@ -226,6 +226,11 @@ class McuBridgeNode(Node):
         self.create_subscription(Twist, '/rover/cmd/manual_control', self._on_manual, 10)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_estop, reliable)
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_estop, reliable)
+        # Pi-reported navigation faults (currently: RTK fix lost / below
+        # required quality). Forwarded to the MCU via 'N <0|1>' so the
+        # operator-visible status LED can show LED_GPS_LOST (orange
+        # blink) for the duration of the fault.
+        self.create_subscription(Int32, '/rover/cmd/nav_fault', self._on_nav_fault, reliable)
         self.create_subscription(Float32, '/rover/cmd/calibrate_battery', self._on_calibrate_battery, reliable)
         self.create_subscription(String, '/rover/cmd/apply_wheel_scales', self._on_apply_wheel_scales, reliable)
         self.create_subscription(String, '/rover/cmd/apply_steering_trim', self._on_apply_steering_trim, reliable)
@@ -510,6 +515,11 @@ class McuBridgeNode(Node):
         # held button keeps the latch on.
         self._send('C')
         self.get_logger().info('Emergency-stop clear sent to MCU')
+
+    def _on_nav_fault(self, msg):
+        # 1 → GPS fix lost / nav fault active. 0 → cleared.
+        on = 1 if int(getattr(msg, 'data', 0)) != 0 else 0
+        self._send(f'N {on}')
 
     # ------------------------- drive
 

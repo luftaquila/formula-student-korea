@@ -122,8 +122,10 @@ navigator_node:
     l1_close_enough_spray_m: 0.30
     # Sharp-turn lookahead boost. When the chassis enters a fresh L1 segment with its heading more than this many radians off the segment direction (typical case: 90° WP-to-WP turn where chassis is still pointed along the previous corridor), boost the L1_min floor so the lookahead pulls a gentle arc instead of saturating κ. 0.785 rad ≈ 45°: directly-back angles auto-trigger but small lateral wobbles don't.
     l1_sharp_turn_thresh_rad: 0.785
-    # L1_min when sharp-turn boost is active. 2× the nominal 0.6 m floor → η drops from ~30° to ~15° on the WP5 first-tick geometry (chassis 35 cm wide of corridor, e_psi 80°), κ from saturated 1.7 to ~0.5, speed regulator no longer cuts v. Auto-disengages once chassis aligns under the threshold.
+    # L1_min when sharp-turn boost is active. Linear interp from this value at the threshold up to l1_max at 180° opposed. At 90° (halfway) lookahead lands mid-way (~2.6 m), wide enough to keep κ below saturation on a true U-turn case.
     l1_sharp_turn_l1_min_m: 1.2
+    # Seconds of forward-only lockout after exiting reverse-recovery. Prevents the near-target reverse/forward ping-pong where along_to_target flips sign every tick and chassis κ alternates ±max each 50 ms — the 14:22 WP4 trace had 30+ such oscillations before stuck. 1.5 s lets the brake_zone ramp settle into the chassis before a new reverse decision.
+    l1_reverse_lockout_s: 1.5
 
     # ── Cruise tracker (heading-only goal-seeking P-controller) ─────────
     # The cruise tracker is now a human-driver-style heading regulator
@@ -191,10 +193,15 @@ navigator_node:
     required_fix_status: "rtk_fixed"
     # When the live fix is rtk_float (integer ambiguity unresolved), accept
     # it if reported horizontal accuracy is at or below this many mm.
-    # 0 disables — falls back to fixed-only behaviour. 20 mm matches the
-    # waypoint cm-tolerance budget; anything sloppier and the mission
-    # errors out instead of plotting onto a potentially-drifted estimate.
-    fix_accept_float_max_h_acc_mm: 20
+    # 0 disables — falls back to fixed-only behaviour. Operator policy
+    # (2026-05-15): rtk_fixed ONLY. Float fixes have unresolved integer
+    # ambiguities and can drift several cm even at small reported hAcc;
+    # navigation under float caused chassis-pose jumps in the 14:22
+    # mission trace (13 GPS quality drops in one mission) that triggered
+    # ERROR → reverse-recovery → stuck loops. With float disabled, the
+    # navigator HOLDS POSITION whenever the fix degrades and only resumes
+    # once rtk_fixed is restored.
+    fix_accept_float_max_h_acc_mm: 0
     return_to_start: true
 
     # Battery state-of-charge gates (the MCU has its own hard cutoff at

@@ -796,6 +796,16 @@ class L1Tracker:
         self._sharp_turn_l1_min = float(
             params.get('l1_sharp_turn_l1_min_m', 1.2))
 
+        # Reverse-recovery lockout: after exiting reverse-recovery,
+        # block re-entry for this many seconds. Without it, the chassis
+        # toggles between forward and reverse every tick near the target
+        # (14:23 mission WP4 trace: 30+ ticks of v=+0.4/-0.10 alternating,
+        # κ flipping ±1.70 each tick — the "조향 휙휙" symptom).
+        # 1.5 s lets the brake_zone ramp settle into the chassis before
+        # along_to_target can flip negative again.
+        self._reverse_lockout_s = float(
+            params.get('l1_reverse_lockout_s', 1.5))
+
         # Reverse latch state. Captured at the moment along_to_target
         # crosses zero (antenna projects past target along corridor);
         # held until termination (sign-flip or adaptive distance).
@@ -803,6 +813,9 @@ class L1Tracker:
         self._reverse_entry_e_y = 0.0
         self._reverse_recovery_target_m = 0.0
         self._reverse_entry_along_to_target = 0.0
+        # Lockout window — t_now value until which new reverse entries
+        # are suppressed. Set by `_reset_reverse` when reverse exits.
+        self._reverse_lockout_until = 0.0
         # Cached last commanded forward speed — feeds L1 sizing on the
         # next tick so the lookahead doesn't shrink to L1_min on a
         # zero-cmd recovery tick and then snap back on the next.
@@ -813,6 +826,7 @@ class L1Tracker:
         self._reverse_entry_e_y = 0.0
         self._reverse_recovery_target_m = 0.0
         self._reverse_entry_along_to_target = 0.0
+        self._reverse_lockout_until = 0.0
         self._last_v_cmd = self._approach_speed
 
     def _antenna_world(self, chassis_pose):
@@ -821,11 +835,16 @@ class L1Tracker:
         return (x + cp * self._a_x - sp * self._a_y,
                 y + sp * self._a_x + cp * self._a_y)
 
-    def _reset_reverse(self):
+    def _reset_reverse(self, t_now=None):
+        was_active = self._reverse_active
         self._reverse_active = False
         self._reverse_entry_e_y = 0.0
         self._reverse_recovery_target_m = 0.0
         self._reverse_entry_along_to_target = 0.0
+        # Arm the forward-only lockout if we just exited a real reverse
+        # stroke (not a no-op clear from segment advance / reset()).
+        if was_active and t_now is not None:
+            self._reverse_lockout_until = t_now + self._reverse_lockout_s
 
     def _clamp_curvature(self, kappa):
         if kappa > self._max_curvature:
@@ -839,7 +858,7 @@ class L1Tracker:
             return -max_k_from_steer
         return kappa
 
-    def _reverse_step(self, antenna_e_y, along_to_target):
+    def _reverse_step(self, antenna_e_y, along_to_target, t_now):
         # Latch entry state on first reverse tick.
         if not self._reverse_active:
             self._reverse_active = True
@@ -854,7 +873,7 @@ class L1Tracker:
         entry_sign = self._reverse_entry_e_y
         if (entry_sign > 0.0 and antenna_e_y < 0.0) or \
            (entry_sign < 0.0 and antenna_e_y > 0.0):
-            self._reset_reverse()
+            self._reset_reverse(t_now)
             return None
 
         # Termination: reversed far enough. along_to_target starts
@@ -863,7 +882,7 @@ class L1Tracker:
         # much the antenna has moved back along the corridor.
         reversed_dist = along_to_target - self._reverse_entry_along_to_target
         if reversed_dist >= self._reverse_recovery_target_m:
-            self._reset_reverse()
+            self._reset_reverse(t_now)
             return None
 
         # Saturated κ in the e_y-closing direction. Derivation:
@@ -888,7 +907,6 @@ class L1Tracker:
         no time-integrating state so the value is unused. Kept in the
         signature so the navigator can dispatch trackers uniformly.
         """
-        del t_now  # unused
         if antenna_world is None:
             antenna_world = self._antenna_world(chassis_pose)
         x, y, psi = chassis_pose
@@ -940,8 +958,19 @@ class L1Tracker:
             # in reverse until termination signal flips _reverse_active
             # back to False — at which point the next tick falls
             # through to forward L1.
-            if along_to_target < 0.0 or self._reverse_active:
-                cmd = self._reverse_step(a_e_y, along_to_target)
+            # Reverse-recovery has a forward-only lockout window after
+            # each exit (see _reverse_lockout_s). While locked out, even
+            # along_to_target<0 doesn't re-enter reverse — forward L1
+            # runs instead. This prevents the WP-near ping-pong cycle
+            # where chassis crosses target by <5 cm, reverse fires,
+            # exits 50 ms later, forward fires, target crosses again,
+            # and κ flips ±max every tick.
+            lockout = (not self._reverse_active
+                       and t_now is not None
+                       and t_now < self._reverse_lockout_until)
+            if (along_to_target < 0.0 or self._reverse_active) \
+                    and not lockout:
+                cmd = self._reverse_step(a_e_y, along_to_target, t_now)
                 if cmd is not None:
                     self._last_v_cmd = abs(cmd[0])
                     return cmd
@@ -976,16 +1005,35 @@ class L1Tracker:
         l1 = (self._l1_damping / pi) * self._l1_period * v_for_l1
 
         # Sharp-turn lookahead boost. When the chassis heading is far
-        # off the segment direction (e.g. fresh L1 segment after a
-        # 90° WP-to-WP turn), the L1_min floor would force a tight
-        # arc with saturated κ and a speed regulator that cuts v to
-        # 0.20. Boosting the floor widens the arc → κ stays below
-        # saturation → speed regulator holds full v_target → chassis
-        # advances toward the corridor while it rotates.
+        # off the segment direction, the L1_min floor would force a
+        # tight arc with saturated κ. Progressive boost: linear
+        # interpolation from sharp_turn_l1_min (at the threshold) up
+        # to l1_max (at 180° opposed). At 90° we land mid-way, ~half
+        # l1_max. The 14:22 mission WP1 trace (e_psi=+113°) saturated
+        # κ for 17 s of wide-arc divergence under the old fixed 1.2 m
+        # boost; under progressive boost the same geometry would have
+        # used a ~3 m lookahead and stayed below κ saturation.
         e_psi_seg = abs(normalize_angle(psi - psi_path))
-        l1_min_eff = self._l1_min
-        if e_psi_seg > self._sharp_turn_thresh:
-            l1_min_eff = self._sharp_turn_l1_min
+        if e_psi_seg <= self._sharp_turn_thresh:
+            l1_min_eff = self._l1_min
+        elif e_psi_seg >= pi:
+            l1_min_eff = self._l1_max
+        else:
+            t = (e_psi_seg - self._sharp_turn_thresh) / \
+                (pi - self._sharp_turn_thresh)
+            l1_min_eff = self._sharp_turn_l1_min + t * (
+                self._l1_max - self._sharp_turn_l1_min)
+
+        # Speed cut on large angle: forward motion during rotation
+        # drives e_y divergence (chassis arcs sideways). For |e_psi|
+        # past 90°, scale v_target linearly down to 30 % at 180°.
+        # Combined with the boosted lookahead this lets the chassis
+        # rotate close-to-in-place, then re-attack the corridor.
+        if e_psi_seg > pi / 2:
+            shrink = 1.0 - (e_psi_seg - pi / 2) / (pi / 2)
+            if shrink < 0.3:
+                shrink = 0.3
+            v_target *= shrink
 
         if l1 < l1_min_eff:
             l1 = l1_min_eff

@@ -166,6 +166,7 @@ class NavigatorNode(Node):
         self.declare_parameter('l1_close_enough_spray_m', 0.30)
         self.declare_parameter('l1_sharp_turn_thresh_rad', 0.785)
         self.declare_parameter('l1_sharp_turn_l1_min_m', 1.2)
+        self.declare_parameter('l1_reverse_lockout_s', 1.5)
 
         # Dock tracker (state feedback).
         self.declare_parameter('dock_k_y', 6.0)
@@ -285,6 +286,11 @@ class NavigatorNode(Node):
         self._pub_cal_wheels_result = self.create_publisher(String, '/rover/cal/wheel_result', reliable_qos)
         self._pub_apply_wheel_scales = self.create_publisher(String, '/rover/cmd/apply_wheel_scales', reliable_qos)
         self._pub_apply_steering_trim = self.create_publisher(String, '/rover/cmd/apply_steering_trim', reliable_qos)
+        # Surfaces the navigator's RTK-fix-lost halt to the MCU for the
+        # LED_GPS_LOST orange-blink status indication. Edge-triggered:
+        # published on entering ERROR with data=1, on exiting ERROR
+        # back to NAVIGATING with data=0.
+        self._pub_nav_fault = self.create_publisher(Int32, '/rover/cmd/nav_fault', reliable_qos)
 
         # Subscribers.
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps, 10)
@@ -513,6 +519,7 @@ class NavigatorNode(Node):
             'l1_min_speed_m_s': p('l1_min_speed_m_s').value,
             'l1_sharp_turn_thresh_rad': p('l1_sharp_turn_thresh_rad').value,
             'l1_sharp_turn_l1_min_m': p('l1_sharp_turn_l1_min_m').value,
+            'l1_reverse_lockout_s': p('l1_reverse_lockout_s').value,
             # Pull from instance, not yaml param, so a fresh auto-cal is
             # picked up on the next mission start without restart.
             'antenna_offset_x': self._antenna_offset_x,
@@ -2189,8 +2196,17 @@ class NavigatorNode(Node):
     def _set_state(self, new_state):
         if self._state != new_state:
             self.get_logger().info(f'State: {self._state.value} → {new_state.value}')
+            leaving_error = (self._state == State.ERROR and new_state != State.ERROR)
             self._state = new_state
             self._publish_state()
+            if leaving_error:
+                # Clear the MCU's LED_GPS_LOST indicator now that we're
+                # back out of ERROR. _set_error publishes data=1 on
+                # entry; here we publish data=0 on exit so the flag is
+                # edge-triggered both directions.
+                fault = Int32()
+                fault.data = 0
+                self._pub_nav_fault.publish(fault)
 
     def _publish_state(self):
         if self._last_published_state == self._state:
@@ -2206,6 +2222,13 @@ class NavigatorNode(Node):
         msg = String()
         msg.data = reason
         self._pub_error_reason.publish(msg)
+        # Light the MCU's LED_GPS_LOST (orange blink) so the operator
+        # has a hardware indication that the chassis is halted for an
+        # RTK / GPS quality reason. _set_state below stops motors;
+        # this just labels the cause.
+        fault = Int32()
+        fault.data = 1
+        self._pub_nav_fault.publish(fault)
         self._set_state(State.ERROR)
 
 
