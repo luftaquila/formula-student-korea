@@ -55,6 +55,7 @@ _PARAMS = {
     'l1_sharp_turn_thresh_rad': 0.785,
     'l1_sharp_turn_l1_min_m': 1.2,
     'cruise_done_tolerance': 0.20,
+    'creep_zone': 0.40,
 }
 
 

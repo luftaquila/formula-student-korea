@@ -760,6 +760,14 @@ class L1Tracker:
         self._brake_zone_m = float(params.get('l1_brake_zone_m', 0.20))
         self._brake_min_speed_frac = float(
             params.get('l1_brake_min_speed_frac', 0.175))
+        # Creep zone — distance to target inside which the unified
+        # 'l1' segment downshifts v_target from cruise_speed to
+        # approach_speed. Mirrors legacy DockTracker's creep_zone:
+        # once we're within ~40 cm of the antenna landing, the L1
+        # is functionally acting as a dock corridor and should use
+        # the precision speed schedule, not the long-haul cruise
+        # schedule.
+        self._creep_zone = float(params.get('creep_zone', 0.40))
         # Hard floor on commanded forward speed inside the brake zone.
         # Decoupled from `creep_speed` (which legacy DockTracker uses
         # as the creep-zone speed BEFORE the brake_min_frac modulation
@@ -946,9 +954,21 @@ class L1Tracker:
                 return 0.0, 0.0, 'reached'
 
         # ── Forward L1 ───────────────────────────────────────────────
-        # 'l1' (unified) and 'cruise' both run at cruise_speed;
-        # 'dock' is the slow corridor leg at approach_speed.
-        v_target = self._approach_speed if is_dock else self._cruise_speed
+        # 'l1' (unified) and 'cruise' default to cruise_speed for the
+        # long-haul; 'dock' (legacy short corridor) always runs at
+        # approach_speed. For unified 'l1' segments, drop v_target to
+        # approach_speed once inside `creep_zone` so the brake_zone
+        # ramp asymptotes near approach_speed × brake_min_frac =
+        # 0.07 m/s — the legacy DockTracker's field-validated stop
+        # velocity. Without this gate (14:09 mission WP1), cm_capture
+        # fired while cmd v ≈ cruise_speed × brake_min_frac = 0.175
+        # m/s; PID lag let the chassis carry 60 cm past the target.
+        if is_dock:
+            v_target = self._approach_speed
+        elif segment.kind == 'l1' and target_dist < self._creep_zone:
+            v_target = self._approach_speed
+        else:
+            v_target = self._cruise_speed
         # L1 distance from current commanded speed, with the segment's
         # target speed as the floor so L1 doesn't collapse to L1_min
         # immediately on segment entry before chassis has accelerated.
