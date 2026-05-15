@@ -865,6 +865,10 @@ class L1Tracker:
         self._kturn_active = False
 
     def reset(self):
+        # Restores ALL latched controller state to the values set in
+        # __init__. The direct/corridor mode flag goes back to its
+        # configured default (l1_default_direct_mode, True by default
+        # in production, False for the corridor-mode test fixtures).
         self._reverse_active = False
         self._reverse_entry_e_y = 0.0
         self._reverse_recovery_target_m = 0.0
@@ -873,12 +877,6 @@ class L1Tracker:
         self._last_v_cmd = self._approach_speed
         self._direct_to_target = self._default_direct_mode
         self._kturn_active = False
-        # Direct-to-target fallback. The navigator flips this on when
-        # stuck retries exhaust on a segment — chassis ended up too
-        # far from the planner's corridor for normal L1 to converge,
-        # so we abandon the corridor entirely and steer directly
-        # toward target_antenna. See set_direct_to_target() docstring.
-        self._direct_to_target = False
 
     def _antenna_world(self, chassis_pose):
         x, y, psi = chassis_pose
