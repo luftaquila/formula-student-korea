@@ -983,19 +983,22 @@ class L1Tracker:
                 return 0.0, 0.0, 'reached'
 
         # ── Forward L1 ───────────────────────────────────────────────
-        # 'l1' (unified) and 'cruise' default to cruise_speed for the
-        # long-haul; 'dock' (legacy short corridor) always runs at
-        # approach_speed. For unified 'l1' segments, drop v_target to
-        # approach_speed once inside `creep_zone` so the brake_zone
-        # ramp asymptotes near approach_speed × brake_min_frac =
-        # 0.07 m/s — the legacy DockTracker's field-validated stop
-        # velocity. Without this gate (14:09 mission WP1), cm_capture
-        # fired while cmd v ≈ cruise_speed × brake_min_frac = 0.175
-        # m/s; PID lag let the chassis carry 60 cm past the target.
+        # Speed schedule. Single smooth ramp on precision segments:
+        # outside brake_zone the chassis runs at cruise_speed; inside,
+        # v_target ramps LINEARLY from cruise_speed at the zone edge
+        # down to min_speed at the target. No creep_zone step (the
+        # prior creep_zone/brake_zone two-stage produced a 0.80→0.28
+        # cmd v step at the creep_zone boundary that MCU PID couldn't
+        # follow — 15:15 mission WP1: chassis blew past cm_capture
+        # with real v ≈ 0.6 m/s and landed 21.6 cm past target).
+        # Legacy 'dock' (short corridor) keeps its original approach_
+        # speed behaviour via the brake_ramp logic below.
         if is_dock:
             v_target = self._approach_speed
-        elif segment.kind == 'l1' and target_dist < self._creep_zone:
-            v_target = self._approach_speed
+        elif precision_kind and target_dist < self._brake_zone_m:
+            t_ramp = target_dist / self._brake_zone_m
+            v_target = self._min_speed + t_ramp * (
+                self._cruise_speed - self._min_speed)
         else:
             v_target = self._cruise_speed
         # L1 distance from current commanded speed, with the segment's
@@ -1106,13 +1109,12 @@ class L1Tracker:
             e_y_scale = self._e_y_speed_floor
 
         speed = v_target * kappa_scale * e_y_scale
-        # Target-distance brake on precision segments (dock + l1).
-        # Without this, dist 15 cm at v=0.40 → 50 ms tick travels 2 cm
-        # → cm_capture (3 cm) blown past on every approach → reverse-
-        # recovery cycles. Linear ramp scales speed down to
-        # brake_min_frac at the target, so the chassis crosses
-        # cm_capture at ~creep_speed.
-        if precision_kind and target_dist < self._brake_zone_m:
+        # Legacy 'dock' segments still need a separate brake_ramp
+        # because their v_target is fixed at approach_speed; the
+        # cruise_speed→min_speed linear ramp above only applies to
+        # 'l1' (unified) segments. For 'dock', keep the old
+        # brake_min_frac asymptote (0.40 × 0.175 = 0.07 m/s).
+        if is_dock and target_dist < self._brake_zone_m:
             brake_ramp = target_dist / self._brake_zone_m
             if brake_ramp < self._brake_min_speed_frac:
                 brake_ramp = self._brake_min_speed_frac
