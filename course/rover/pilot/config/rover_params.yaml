@@ -136,7 +136,14 @@ navigator_node:
     # Direct-mode K-turn hysteresis. eta_d = bearing_to_target - chassis_psi.
     # While forward, K-turn engages when |eta_d| crosses ABOVE l1_kturn_enter_rad. Once in K-turn, exit only when |eta_d| drops BELOW l1_kturn_exit_rad. Without hysteresis eta_d toggled across ±π/2 every few ticks near the target, flipping v between +approach and -approach at 1 Hz (15:53 WP2 trace).
     l1_kturn_enter_rad: 1.047  # 60°
-    l1_kturn_exit_rad: 0.524   # 30°
+    # K-turn exit must be tight: forward direct mode steers κ ∝ eta_d
+    # and chassis arcs through target. If exit fires at 30° the chassis
+    # is still 30° off-aim when forward begins, antenna sweeps past
+    # target on a 0.5 m arc and dist explodes back > 30 cm (16:27 WP5
+    # trace: dist 22 → 8 cm → 32 cm → 47 cm in 3 ticks). 10° leaves
+    # the chassis essentially pointed at the target before forward
+    # takes over, so antenna travels almost straight to cm_capture.
+    l1_kturn_exit_rad: 0.175   # 10°
     # When chassis is within this distance of target, K-turn is
     # SUPPRESSED — backing up here just takes the chassis away from a
     # target it can reach with a small forward arc.
