@@ -315,10 +315,21 @@ def _plan_l1(current_chassis_pose, antenna_offset,
             prev_target = (wp_e, wp_n)
             continue
 
+        # start_pose.psi MUST be the corridor direction (psi_dock), not
+        # the chassis's instantaneous heading. L1Tracker.step() extracts
+        # `psi_path = segment.start_pose[2]` and uses it for the line
+        # projection that drives along/cross-track computation. If we
+        # put the chassis ψ here, the controller projects motion along
+        # the chassis's heading instead of along the corridor from
+        # chassis-now to the dock pose — chassis drives straight along
+        # its current ψ and misses the WP laterally (1st field mission
+        # WP1: chassis ψ=-117° but corridor=-103° → 14° offset → 1 m
+        # lateral miss over a 4 m segment → reverse-recovery trigger
+        # → spiral → GPS timeout).
         seg_wp_idx = idx + waypoint_index_offset
         segments.append(PathSegment(
             'l1',
-            (cur_x, cur_y, cur_psi),
+            (cur_x, cur_y, psi_dock),
             (dock_x, dock_y, psi_dock),
             (wp_e, wp_n),
             seg_wp_idx,
@@ -339,7 +350,7 @@ def _plan_l1(current_chassis_pose, antenna_offset,
         if hypot(dock_x - cur_x, dock_y - cur_y) >= 1e-3:
             segments.append(PathSegment(
                 'l1',
-                (cur_x, cur_y, cur_psi),
+                (cur_x, cur_y, psi_dock),
                 (dock_x, dock_y, psi_dock),
                 (start_x, start_y),
                 -1,

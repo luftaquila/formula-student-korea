@@ -438,9 +438,13 @@ class TestL1PlannerLayout:
             assert isclose(ant_n, seg.target_antenna[1], abs_tol=1e-6)
 
     def test_l1_subsequent_segment_starts_at_prev_dock_pose(self):
-        # The 2nd L1 segment's start_pose should equal the 1st L1
-        # segment's end_pose (dock_pose of WP1). This is the
-        # cruise+dock collapse that Stage 3 design specifies.
+        # The 2nd L1 segment's start_pose XY equals the 1st segment's
+        # end_pose XY (chassis lands on prev dock_pose). The psi
+        # component is the NEW corridor direction (psi_dock for WP2,
+        # = bearing WP1→WP2), NOT the previous corridor's heading —
+        # L1Tracker reads start_pose[2] as psi_path for line projection
+        # and it must point along the segment's corridor (not the
+        # chassis's instantaneous heading at the previous dock pose).
         a_offset = (0.30, 0.0)
         wps = [_gps(2.0, 0.0), _gps(4.0, 2.0)]
         segments = plan(
@@ -454,6 +458,13 @@ class TestL1PlannerLayout:
         assert len(segments) == 2
         s1_end = segments[0].end_pose
         s2_start = segments[1].start_pose
+        # XY position matches: chassis sits at prev dock_pose at
+        # the moment the next segment begins.
         assert isclose(s1_end[0], s2_start[0], abs_tol=1e-9)
         assert isclose(s1_end[1], s2_start[1], abs_tol=1e-9)
-        assert isclose(s1_end[2], s2_start[2], abs_tol=1e-9)
+        # PSI is the new corridor direction (start_pose.psi ==
+        # end_pose.psi within a single segment; both are psi_dock).
+        assert isclose(s2_start[2], segments[1].end_pose[2],
+                       abs_tol=1e-9)
+        expected_psi_dock = atan2(2.0 - 0.0, 4.0 - 2.0)
+        assert isclose(s2_start[2], expected_psi_dock, abs_tol=1e-9)
