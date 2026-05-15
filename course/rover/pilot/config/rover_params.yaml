@@ -113,13 +113,13 @@ navigator_node:
     l1_kappa_speed_lim: 0.85           # 1/m — half of max_curvature; speed regulates as min(1, lim/|κ|)
     l1_e_y_speed_gain: 2.0             # linear cross-track speed cut: speed *= max(floor, 1 - gain·|e_y|)
     l1_e_y_speed_floor: 0.4            # floor of the e_y speed scale (keeps chassis moving even on big residuals)
-    # Dock-only target-distance brake. At v=approach_speed=0.40 m/s a 50 ms tick travels 2 cm — without a brake the antenna blows past cm_capture (3 cm) on every approach and triggers reverse-recovery. Linear ramp scales speed down to brake_min_frac × approach_speed at the target. 0.175 × 0.40 = 0.07 m/s = legacy DockTracker's effective stop floor (creep_speed × brake_min_speed_frac = 0.10 × 0.70), field-validated. PID deadband is 0.05 m/s; 0.07 leaves a 40 % margin.
-    l1_brake_zone_m: 0.20
+    # Target-distance brake. Sized for MCU PID lag (cmd→actual ≈ 0.5 s) + accel_limit 0.8 m/s². 50 cm zone gives the PID enough time to ramp chassis v from approach_speed (0.40) down to brake_min_frac × 0.40 = 0.07 m/s by the time the antenna crosses cm_capture (3 cm) — so the post-trigger inertia stop distance is ~0.6 cm instead of the 16 cm we measured with the previous 20 cm zone (15:00 mission WP1: cm_capture fired at chassis dist ≈ 3 cm but chassis kept moving with real v ≈ 0.20 m/s for 0.5 s, landing 19 cm past target).
+    l1_brake_zone_m: 0.50
     l1_brake_min_speed_frac: 0.175
     # Hard floor on commanded forward speed in the brake zone. Decoupled from `creep_speed` (legacy DockTracker uses creep_speed as the speed BEFORE brake modulation). Matches legacy effective floor 0.07 m/s.
     l1_min_speed_m_s: 0.07
-    # Close-but-not-cm-precise tolerance: if antenna is within this distance of target after a settle timeout or stuck detection, accept the landing and spray rather than replan. Replan-from-just-past-target tends to spiral because plan() floors dock_entry 60 cm behind chassis → no forward arc back to entry. 30 cm matches the spray cone budget and prevents the 15:24 WP1 spiral observed in trace.
-    l1_close_enough_spray_m: 0.30
+    # Close-but-not-cm-precise tolerance: if antenna is within this distance of target after a settle timeout or stuck detection, accept the landing and spray rather than replan/retry. 5 cm matches the spray cone budget tightly — 20-30 cm landings are unacceptable mission output (the prior 30 cm value let WPs fire spray that far off target). Anything beyond 5 cm forces L1 to re-engage its internal reverse-recovery / K-turn for another approach.
+    l1_close_enough_spray_m: 0.05
     # Sharp-turn lookahead boost. When the chassis enters a fresh L1 segment with its heading more than this many radians off the segment direction (typical case: 90° WP-to-WP turn where chassis is still pointed along the previous corridor), boost the L1_min floor so the lookahead pulls a gentle arc instead of saturating κ. 0.785 rad ≈ 45°: directly-back angles auto-trigger but small lateral wobbles don't.
     l1_sharp_turn_thresh_rad: 0.785
     # L1_min when sharp-turn boost is active. Linear interp from this value at the threshold up to l1_max at 180° opposed. At 90° (halfway) lookahead lands mid-way (~2.6 m), wide enough to keep κ below saturation on a true U-turn case.
@@ -162,7 +162,7 @@ navigator_node:
     waypoint_tolerance: 0.03           # meters antenna-to-target to consider waypoint hit. Matched to settle_tolerance (3 cm) under the L1Tracker design — single threshold removes the dead band where settle_tol < dist <= waypoint_tolerance left neither branch of the settle handler doing anything. L1's cm_capture is also 3 cm so the controller stops on the same gate the navigator sprays on.
     settle_tolerance: 0.03             # meters for tight settle confirmation
     settle_readings: 8                 # consecutive in-tolerance readings to declare settled (was 5; 8 × 50 ms = 400 ms washes out chassis decel + mast ringing)
-    settle_timeout: 12.0               # seconds. Reverse-with-steering closes lateral on both halves of the round trip (~62 %/cycle at k_y=6), so a single 5 s cycle clears 5 cm residual to under 2 cm, and 12 s leaves slack for the cruise→dock handoff transient.
+    settle_timeout: 2.0                # seconds. SETTLING just confirms N consecutive readings inside settle_tol after cm_capture fires — chassis is already stopped (cmd v=0). The old 12 s was a legacy DockTracker leftover where reverse-recovery cycles needed time to converge inside the corridor; L1 mode has no such cycles in SETTLING (chassis is stationary, only RTK noise moves the antenna ±1 cm). 2 s = 4 × settle_readings × 50 ms window plus RTK-noise headroom. Anything longer was idle wait the operator (rightly) called "조작도 안 하고 가만히 있을 거면" pointless.
     active_settle_throttle_s: 1.5      # seconds — minimum interval between active-settle retries when dock drifts back outside waypoint_tolerance. Stops the navigator from cycling SETTLING→NAVIGATING in 50 ms ticks on a dock that declares 'reached' immediately on re-engagement.
     spray_timeout: 5.0                 # seconds to wait for spray_done before auto-skip
     stuck_timeout: 12.0                # seconds without progress before retry/skip
