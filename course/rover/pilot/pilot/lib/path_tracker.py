@@ -795,6 +795,17 @@ class L1Tracker:
             params.get('l1_sharp_turn_thresh_rad', 0.785))  # 45°
         self._sharp_turn_l1_min = float(
             params.get('l1_sharp_turn_l1_min_m', 1.2))
+        # K-turn threshold: above this |e_psi|, the override flips
+        # the chassis into REVERSE saturated-κ tight rotation instead
+        # of forward L1. Forward L1 at large e_psi swings the chassis
+        # in a wide arc that takes it AWAY from the target before the
+        # corridor closes; backward K-turn rotates while moving in
+        # the opposite direction (often closer to the target).
+        # 60° picked from the WP1→WP2 trace where e_psi = 80° and
+        # forward wide-arc divergence drove chassis 1.5 m past WP
+        # before alignment completed.
+        self._kturn_thresh_rad = float(
+            params.get('l1_kturn_thresh_rad', 1.047))  # 60°
 
         # Reverse-recovery lockout: after exiting reverse-recovery,
         # block re-entry for this many seconds. Without it, the chassis
@@ -1099,9 +1110,10 @@ class L1Tracker:
         #       chassis pivots close-to-in-place until e_psi drops
         #       under 90°, then the next tick rejoins regime (b).
         e_psi_seg = abs(normalize_angle(psi - psi_path))
-        if e_psi_seg > pi / 2:
+        kturn_thresh = self._kturn_thresh_rad
+        if e_psi_seg > kturn_thresh:
             # Backward K-turn override. When chassis ψ is more than
-            # 90° off the corridor direction, forward saturated κ
+            # ~60° off the corridor direction, forward saturated κ
             # arcs sweep the chassis ~1 m sideways from the corridor
             # before alignment completes (15:00 mission WP1 trace:
             # e_y -36→-163 cm during a 5 s forward rotation, then
@@ -1137,10 +1149,12 @@ class L1Tracker:
             l1_min_eff = self._l1_min
         else:
             # Linear interp from sharp_turn_l1_min at the threshold up
-            # to l1_max at 90°. Beyond 90° the override above takes
-            # over, so this branch never sees e_psi_seg > π/2.
-            t = (e_psi_seg - self._sharp_turn_thresh) / \
-                (pi / 2 - self._sharp_turn_thresh)
+            # to l1_max at the K-turn threshold. Beyond that the
+            # override above takes over.
+            t = (e_psi_seg - self._sharp_turn_thresh) / max(
+                kturn_thresh - self._sharp_turn_thresh, 1e-6)
+            if t > 1.0:
+                t = 1.0
             l1_min_eff = self._sharp_turn_l1_min + t * (
                 self._l1_max - self._sharp_turn_l1_min)
 

@@ -172,22 +172,18 @@ class TestL1TrackerSteering:
         assert kappa > 0.0
 
     def test_curvature_clamped_to_max(self):
-        # Chassis perpendicular to corridor → η ≈ π/2. The sharp-turn
-        # boost activates (e_psi > 45°) and widens the lookahead to
-        # 1.2 m, so κ no longer saturates at max_curvature — but it
-        # remains strongly negative (chassis must turn right to face
-        # the corridor extension). With boost disabled the clamp
-        # would bind; this test pins boosted behaviour.
-        params_no_boost = dict(_PARAMS, l1_sharp_turn_thresh_rad=10.0)
-        t = L1Tracker(params_no_boost)
+        # Chassis perpendicular to corridor → η ≈ π/2. With BOTH boost
+        # and K-turn disabled, geometry saturates κ at -max_curvature.
+        params_min = dict(_PARAMS,
+                          l1_sharp_turn_thresh_rad=10.0,
+                          l1_kturn_thresh_rad=10.0)
+        t = L1Tracker(params_min)
         seg = _seg('dock', (0.0, 0.0, 0.0), (5.0, 0.0, 0.0),
                    target=(5.3, 0.0))
         antenna = _antenna_world_from_pose((1.0, 0.0, pi / 2))
         _, kappa, _ = t.step((1.0, 0.0, pi / 2), seg,
                              t_now=100.0,
                              antenna_world=antenna)
-        # With boost disabled, perpendicular geometry saturates κ
-        # at -max_curvature (right turn).
         assert kappa == pytest.approx(-_PARAMS['max_curvature'],
                                       abs=1e-6)
 
@@ -422,20 +418,25 @@ class TestL1TrackerSpeedRegulation:
         assert v_near >= _PARAMS['l1_min_speed_m_s']
 
     def test_sharp_turn_boost_widens_arc(self):
-        # Identical geometry with and without boost. Boost should
-        # produce a strictly smaller |κ| (wider arc, no saturation
-        # in the limit).
+        # Geometry: chassis aligned with +x, corridor heads -y. The
+        # angle is e_psi = π/2 — but we set the K-turn threshold high
+        # for this test so we exercise the boost branch, not the
+        # backward K-turn. Boost should produce a strictly smaller
+        # |κ| than the no-boost baseline (both kept in forward L1).
         seg = _seg('l1', (0.0, 0.0, -pi / 2), (0.0, -5.0, -pi / 2),
                    target=(0.0, -5.3))
         antenna = _antenna_world_from_pose((0.3, -0.2, 0.0))
         chassis = (0.3, -0.2, 0.0)
 
-        params_no_boost = dict(_PARAMS, l1_sharp_turn_thresh_rad=10.0)
+        params_no_boost = dict(_PARAMS,
+                               l1_sharp_turn_thresh_rad=10.0,
+                               l1_kturn_thresh_rad=10.0)
         t_no = L1Tracker(params_no_boost)
         _, k_no, _ = t_no.step(chassis, seg, t_now=0.0,
                                antenna_world=antenna)
 
-        t_boost = L1Tracker(_PARAMS)
+        params_boost = dict(_PARAMS, l1_kturn_thresh_rad=10.0)
+        t_boost = L1Tracker(params_boost)
         _, k_boost, _ = t_boost.step(chassis, seg, t_now=0.0,
                                      antenna_world=antenna)
 
