@@ -52,9 +52,8 @@ navigator_node:
                                        # CAL_WHEELS' steering-trim solve to convert κ_bias to µs.
 
     # ── Speeds ──────────────────────────────────────────────────────────
-    cruise_speed: 1.0                  # m/s during cruise segments
-    approach_speed: 0.4                # m/s on the dock corridor (precision)
-    creep_speed: 0.10                  # m/s for fine corrections / overshoot reverse. Halved from 0.18 so the chassis can stop within approach_tolerance instead of rolling several cm past on inertia + PID lag at the dock 'reached' threshold.
+    cruise_speed: 1.0                  # m/s away from target
+    approach_speed: 0.4                # m/s magnitude during K-turn (backward)
     calibration_speed: 0.5             # m/s during cold-start heading discovery. Independent of heading_speed_threshold — calibration uses fit_chord_heading on GPS antenna ENU positions, not GPS heading-of-motion.
     # Antenna offset auto-calibration STRAIGHT phase chord length. Drives
     # κ=0 for this distance, fits ψ_init from antenna ENU. 2 m gives a
@@ -80,125 +79,39 @@ navigator_node:
     # was the SCURVE convention; flip if site geometry requires.
     antenna_cal_sign: 1
 
-    # ── Path planner ────────────────────────────────────────────────────
-    dock_approach_distance: 2.5        # meters of straight line before the dock pose. Lengthened from 1.5 so chassis has room to rotate into corridor heading inside the cruise leg before handing off to dock — critical when consecutive waypoints sit at 60°+ relative bearings (cruise from prev-dock-end with chassis ψ way off corridor; PP and Stanley both drift across the corridor before aligning, and the dock then opens at e_y ~30cm). 2.5m gives 4×min-turning-radius (0.56m) of room.
-
-    # ── Path tracker selector ──────────────────────────────────────────
-    # Stage 2 architecture: 'l1' enables L1Tracker (Park 2007 +
-    # Macenski regulated PP) on both cruise and dock segments,
-    # replacing CruiseTracker + DockTracker. 'legacy' keeps the
-    # original two-tracker stack for field rollback in a single
-    # yaml flip. The legacy stack STAYS in the codebase until Stage
-    # 3 cleanup after three successful L1 missions.
-    path_tracker_kind: "l1"
-
-    # ── L1 tracker tuning (path_tracker_kind == 'l1') ──────────────────
-    # L1 lookahead time-constant. v=1.0 m/s → L1 = 0.7071/π·2.5·1.0 ≈
-    # 0.56 m (clamped up to l1_min). At v=2.0 → 1.13 m. Period of 2.5 s
-    # is ArduPilot's typical rover setting; damping 1/√2 is the
-    # critical-damping pick.
-    l1_period_s: 2.5
-    l1_damping: 0.7071
-    l1_min_m: 0.6                      # lookahead floor — keeps creep dock in tight closure
-    l1_max_m: 4.0                      # lookahead cap — prevents the carrot from running off the end of a short cruise leg
-
-    # cm-precision capture radius on dock segments. Matches
-    # settle_tolerance so the single 3 cm gate decides BOTH the dock
-    # 'reached' status and the spray confirmation — no dead band
-    # between approach_tolerance and waypoint_tolerance like the
-    # legacy stack had.
+    # ── L1 tracker tuning ──────────────────────────────────────────────
+    # cm-precision capture radius. Matches settle_tolerance so the
+    # single 3 cm gate decides BOTH the 'reached' status and the spray
+    # confirmation.
     l1_cm_capture_m: 0.03
-    l1_reverse_recovery_min_m: 0.08    # adaptive recovery distance floor (overshoot ≤ 4 cm → 8 cm reverse; 5 cm → 10 cm; 10 cm → 20 cm)
-    l1_reverse_speed: 0.10             # m/s magnitude during reverse-recovery
-    l1_kappa_speed_lim: 0.85           # 1/m — half of max_curvature; speed regulates as min(1, lim/|κ|)
-    l1_e_y_speed_gain: 2.0             # linear cross-track speed cut: speed *= max(floor, 1 - gain·|e_y|)
-    l1_e_y_speed_floor: 0.4            # floor of the e_y speed scale (keeps chassis moving even on big residuals)
-    # Target-distance brake. With the single smooth ramp (cmd v scales LINEARLY from cruise_speed at the zone edge down to min_speed at the target), the zone must be long enough for the MCU PID + accel_limit to actually follow the deceleration curve. 15:35 mission WP2 had chassis cross the 50 cm zone in ~1 s at real v ≈ 0.7 m/s and overshoot cm_capture by 41 cm. 1.0 m gives the PID twice the budget and keeps real v close to cmd v all the way to the target.
+    # Target-distance brake. Inside the zone, cmd v ramps LINEARLY
+    # from cruise_speed at the zone edge down to min_speed at the
+    # target. 1.0 m gives the MCU PID + accel_limit enough budget to
+    # track the deceleration curve and land at the controlled
+    # min_speed when cm_capture fires.
     l1_brake_zone_m: 1.00
-    l1_brake_min_speed_frac: 0.175
-    # Hard floor on commanded forward speed in the brake zone. Decoupled from `creep_speed` (legacy DockTracker uses creep_speed as the speed BEFORE brake modulation). Matches legacy effective floor 0.07 m/s.
+    # Hard floor on commanded forward speed in the brake zone. MCU
+    # PID deadband is 0.05 m/s; 0.07 keeps the chassis moving under
+    # power until cm_capture trips.
     l1_min_speed_m_s: 0.07
-    # Close-but-not-cm-precise tolerance: if antenna is within this distance of target after a settle timeout or stuck detection, accept the landing and spray rather than replan/retry. 5 cm matches the spray cone budget tightly — 20-30 cm landings are unacceptable mission output (the prior 30 cm value let WPs fire spray that far off target). Anything beyond 5 cm forces L1 to re-engage its internal reverse-recovery / K-turn for another approach.
-    l1_close_enough_spray_m: 0.05
-    # Sharp-turn lookahead boost. When the chassis enters a fresh L1 segment with its heading more than this many radians off the segment direction (typical case: 90° WP-to-WP turn where chassis is still pointed along the previous corridor), boost the L1_min floor so the lookahead pulls a gentle arc instead of saturating κ. 0.785 rad ≈ 45°: directly-back angles auto-trigger but small lateral wobbles don't.
-    l1_sharp_turn_thresh_rad: 0.785
-    # L1_min when sharp-turn boost is active. Linear interp from this value at the threshold up to l1_max at 180° opposed. At 90° (halfway) lookahead lands mid-way (~2.6 m), wide enough to keep κ below saturation on a true U-turn case.
-    l1_sharp_turn_l1_min_m: 1.2
-    # Seconds of forward-only lockout after exiting reverse-recovery. Prevents the near-target reverse/forward ping-pong where along_to_target flips sign every tick and chassis κ alternates ±max each 50 ms — the 14:22 WP4 trace had 30+ such oscillations before stuck. 1.5 s lets the brake_zone ramp settle into the chassis before a new reverse decision.
-    l1_reverse_lockout_s: 1.5
-    # Stuck retries on the same L1 segment before navigator switches L1Tracker to direct-to-target (heading-only goal seek toward target_antenna, corridor ignored). 15:22 WP2 trace got to retry 11 with the chassis drifting 213→343 cm from the WP because normal L1 + replan kept making corridors that put the chassis off the line and along_to_target permanently negative. 3 retries is a clean "this approach isn't going to work" signal.
-    l1_stuck_direct_retries: 3
-    # K-turn (corridor mode) threshold. Used only by the legacy
-    # corridor-follow branch; the direct-mode K-turn (default for 'l1'
-    # segments) uses the hysteretic l1_kturn_enter_rad / l1_kturn_exit_rad
-    # pair below.
-    l1_kturn_thresh_rad: 0.785
-    # Direct-mode K-turn hysteresis. eta_d = bearing_to_target - chassis_psi.
-    # While forward, K-turn engages when |eta_d| crosses ABOVE l1_kturn_enter_rad. Once in K-turn, exit only when |eta_d| drops BELOW l1_kturn_exit_rad. Without hysteresis eta_d toggled across ±π/2 every few ticks near the target, flipping v between +approach and -approach at 1 Hz (15:53 WP2 trace).
+    # Direct-mode K-turn hysteresis. eta = bearing(antenna→target)
+    # − chassis_ψ. K-turn engages when |eta| crosses ABOVE kturn_enter
+    # (60°). Exit when |eta| drops BELOW kturn_exit (5°) AND antenna
+    # is at least kturn_exit_dist (50 cm) behind target. Hysteresis
+    # prevents the near-target |eta|≈±π/2 oscillation that flipped
+    # cmd v between +approach and -approach at 1 Hz in early field
+    # trials. The min_dist suppression keeps a tiny attitude
+    # excursion close to target from triggering a needless back-up.
     l1_kturn_enter_rad: 1.047  # 60°
-    # K-turn exit must be tight: forward direct mode steers κ ∝ eta_d
-    # and chassis arcs through target. If exit fires at 30° the chassis
-    # is still 30° off-aim when forward begins, antenna sweeps past
-    # target on a 0.5 m arc and dist explodes back > 30 cm (16:27 WP5
-    # trace: dist 22 → 8 cm → 32 cm → 47 cm in 3 ticks). At 10°, with
-    # kturn_exit_dist_m=0.50, the forward leg has ~50 cm to correct a
-    # ~9 cm lateral offset — borderline. 5° drops lateral offset at
-    # forward entry to ~4 cm and gives the P-control enough budget to
-    # land on cm_capture in a single straight pass.
     l1_kturn_exit_rad: 0.0873  # 5°
-    # When chassis is within this distance of target, K-turn is
-    # SUPPRESSED — backing up here just takes the chassis away from a
-    # target it can reach with a small forward arc.
     l1_kturn_min_dist_m: 0.30
-    # K-turn exit standoff. K-turn does NOT release to forward until
-    # the antenna is at least this far behind the target AND chassis ψ
-    # is aligned (|eta|<kturn_exit_rad). The alignment condition by
-    # itself let the chassis exit K-turn at 8 cm antenna→target (16:42
-    # WP3 trace) — the next forward tick then pushed the antenna past
-    # the target and the K-turn ↔ forward orbital lock kicked in.
-    # 0.5 m covers antenna_offset_x (~0.36 m) plus a short forward
-    # budget so the post-K-turn straight-in approach starts with the
-    # chassis solidly behind the target and the antenna re-aligns
-    # itself naturally as it converges on cm_capture.
     l1_kturn_exit_dist_m: 0.50
-
-    # ── Cruise tracker (heading-only goal-seeking P-controller) ─────────
-    # The cruise tracker is now a human-driver-style heading regulator
-    # toward the dock corridor entry. There is no path-following lateral
-    # term — chassis position noise cannot enter κ. Reed-Shepp planning,
-    # sub-seg expansion, zero-cross gating, and lateral-handoff replan
-    # logic have all been removed; the planner emits exactly one cruise
-    # segment per waypoint with start_pose = chassis pose at plan time
-    # and end_pose = dock entry.
-    cruise_done_tolerance: 0.20        # meters from end pose to declare cruise done (chassis inside this distance AND heading-aligned within heading_max → handoff to dock)
-    cruise_done_heading_max_rad: 0.14  # ~8°. Tightened from 15° — the 14:03 trace handed off with chassis 15° off ψ_dock and dock immediately saturated correcting. 8° leaves only ±0.4 cm/s lateral drift at v=0.4 inside the dock corridor, well below settle_tol budget.
-    cruise_pass_through_m: 0.30        # meters of past-end overshoot along the start→end bearing that forces done. Safety net so the chassis cannot orbit a goal that ended up just behind it.
-    cruise_k_heading: 1.5              # rad/m per rad of heading error. κ = k_heading · (bearing_to_goal − chassis_ψ), clamped to ±max_curvature. 1.5 keeps κ small (≈ ±0.13 rad/m, ≈ ±2.5° steering) at 5° heading-error noise, well below visible chassis wiggle threshold; saturates at e_psi ≈ 65° so big turns close in a single smooth arc.
-    cruise_min_speed_fraction: 0.40    # floor on the cos(e_psi) speed scale. 0.40 means commanded speed never drops below 0.40 × cruise_speed even at 180° heading error, so the chassis keeps moving (rather than freezing) while it U-turns under saturated κ.
-    cruise_carrot_lookahead_m: 0.60    # meters ahead of the dock corridor entry to put the steer-toward 'carrot'. As the chassis approaches the entry, the bearing-to-carrot converges to ψ_dock (corridor heading) because the carrot sits INSIDE the corridor — chassis aligns naturally and the cruise→dock handoff opens with e_y, e_psi ≈ 0. Sized to ~chassis turning radius so the heading regulator's target is always inside the reachable arc.
-    cruise_orbit_gate_dist_m: 0.40     # meters — when chassis is closer than this to the dock entry AND its heading is more than 90° off the bearing-to-entry, the cruise tracker declares done. Pure-pursuit cannot forward-arc to a goal inside the turning circle (14:03 WP5 trace: 4 minutes of orbit when the original dock failed to land and the replan placed a 0.4 m entry behind the chassis facing the opposite direction). Handing off to the dock lets its reverse-recovery back the chassis up and re-approach.
-
-    # ── Dock tracker (state-feedback line follower) ─────────────────────
-    dock_k_y: 6.0                      # 1/m — legacy P-gain on antenna lateral error, retained for backward compat. The Stanley refinement uses dock_stanley_k_lat instead; dock_k_y is only consulted as the upper-bound fallback when dock_stanley_k_lat is absent.
-    dock_stanley_k_lat: 2.0            # Stanley arctan gain for the dock tracker. Halved 4→2: at v=0.4 m/s, k=4 with e_y=5 cm produced desired_offset=atan(4·0.05/0.5)=39° → 15° cap; combined with k_psi=5 it drove κ to saturation on any minor lateral disturbance, and chassis dynamics couldn't track the saturated κ command → sign-flipping limit cycle every WP dock (14:03 trace: e_y +2.9 → -6.4 → +3.5 → +6.4 → -10.7 across 5 ticks under saturated ±1.70 κ). k=2 gives desired_offset=22° at the same e_y, still above the 15° cap on big residuals but inside the cap for ≤4 cm e_y, so small disturbances don't saturate.
-    dock_k_psi: 2.0                    # 1/m — gain on chassis heading error vs path. Halved 5→2 for the same reason: at e_psi=20° the contribution drops from -1.75 to -0.70 rad/m, well clear of the curvature cap so chassis dynamics can actually track the command. Steady-state arc tracking unaffected because dock corridors are straight.
-    dock_k_i: 0.4                      # 1/(m·s) — integral on antenna lateral error. Cancels constant κ-bias from antenna-offset residual / mast tilt / slope.
-    dock_integral_limit: 0.5           # m·s — clamp on the integral state. Also acts as the anti-windup mechanism: during sustained κ-saturation the integral pumps up to ±limit and stops, bounding the kappa contribution k_i × limit regardless of how long saturation persists.
-    dock_stanley_offset_cap_rad: 0.262 # ~15°. Caps desired_offset so the dock tracker doesn't drive perpendicular to the corridor on large lateral residuals.
-    dock_reverse_recovery_m: 0.08      # meters behind the target (along corridor) to back up to before re-engaging forward control after an along-track overshoot. Tight cycle (4 cm back, 4 cm forward) prevents 20 cm slingshot.
-    dock_brake_zone_m: 0.12            # Doubled 6→12 cm. The 14:03 WP5 trace shows the dock crossing 'reached' (along<0, dist≤4.5 cm) at v=0.07 m/s with 6 cm brake_zone, then bouncing into reverse-recovery because the chassis couldn't stop in time. Wider 12 cm brake_zone gives the MCU 12·0.05=0.6 s to ramp setpoint smoothly from approach_speed to brake_min × creep_speed before crossing target, eliminating the reverse-forward limit cycle.
-    dock_brake_min_speed_frac: 0.70    # creep_speed 0.10 × 0.70 = 0.07 m/s, comfortably above the MCU PID deadband 0.05 m/s. Going below deadband (the 0.30 attempt) made the chassis stop dead 6 cm short of target — frozen with the antenna slightly off. Keep the chassis moving under power until the dock's reach condition fires; the 12 cm brake_zone is what gives the MCU time to decelerate from approach_speed=0.4 down to 0.07 inside the zone (decel distance ≈ 10 cm at accel_limit=0.8 m/s²), so the chassis crosses the target at the controlled 0.07 m/s with bounded overshoot < 0.3 cm.
-    dock_reverse_stall_timeout_s: 5.0  # seconds in reverse before checking displacement. If chassis rotates in place under saturated latched κ instead of backing up, the watchdog bails to navigator for replan.
-    dock_reverse_stall_min_disp_m: 0.30  # minimum chassis displacement (m) during a reverse stroke before stall is declared. 0.30 m = 6 cm/s average over 5 s, well below the 0.10 m/s commanded creep — anything less means the chassis isn't translating.
-    approach_tolerance: 0.03           # antenna-to-target distance to declare dock reached. Matched to settle_tolerance — the new dock logic stops on raw distance (no along-track gate), so this directly bounds final landing.
-    creep_zone: 0.40                   # meters from target to drop from approach_speed to creep_speed
 
     # ── Tolerances and timeouts ─────────────────────────────────────────
     waypoint_tolerance: 0.03           # meters antenna-to-target to consider waypoint hit. Matched to settle_tolerance (3 cm) under the L1Tracker design — single threshold removes the dead band where settle_tol < dist <= waypoint_tolerance left neither branch of the settle handler doing anything. L1's cm_capture is also 3 cm so the controller stops on the same gate the navigator sprays on.
     settle_tolerance: 0.03             # meters for tight settle confirmation
     settle_readings: 8                 # consecutive in-tolerance readings to declare settled (was 5; 8 × 50 ms = 400 ms washes out chassis decel + mast ringing)
-    settle_timeout: 2.0                # seconds. SETTLING just confirms N consecutive readings inside settle_tol after cm_capture fires — chassis is already stopped (cmd v=0). The old 12 s was a legacy DockTracker leftover where reverse-recovery cycles needed time to converge inside the corridor; L1 mode has no such cycles in SETTLING (chassis is stationary, only RTK noise moves the antenna ±1 cm). 2 s = 4 × settle_readings × 50 ms window plus RTK-noise headroom. Anything longer was idle wait the operator (rightly) called "조작도 안 하고 가만히 있을 거면" pointless.
-    active_settle_throttle_s: 1.5      # seconds — minimum interval between active-settle retries when dock drifts back outside waypoint_tolerance. Stops the navigator from cycling SETTLING→NAVIGATING in 50 ms ticks on a dock that declares 'reached' immediately on re-engagement.
+    settle_timeout: 2.0                # seconds. SETTLING confirms N consecutive readings inside settle_tol after cm_capture fires — chassis is already stopped (cmd v=0). 2 s = settle_readings (8) × 50 ms window plus RTK-noise headroom; longer was idle waste.
     spray_timeout: 5.0                 # seconds to wait for spray_done before auto-skip
     stuck_timeout: 12.0                # seconds without progress before retry/skip
     stuck_max_retries: 2

@@ -1,15 +1,14 @@
-"""Tests for the dock-and-approach path planner.
+"""Tests for the antenna-precise path planner.
 
 The planner's only job is geometry: given waypoints (where the antenna
 should land), produce chassis-frame segments such that following them
-puts the antenna on each waypoint. The dock pose is the load-bearing
-part — if it doesn't compensate for antenna offset, no controller
-downstream can hit the cm-level tolerance.
+puts the antenna on each waypoint. The dock pose is load-bearing — if
+it doesn't compensate for antenna offset, no controller downstream can
+hit the cm-level tolerance.
 
-With Dubins-decomposed cruise, the number of cruise sub-segments per
-waypoint depends on the chassis turning radius and the chassis→entry
-geometry; tests assert invariants (dock count, last dock antenna
-landing, corridor length) rather than fixed segment counts.
+One PathSegment per waypoint, consumed by L1Tracker. The tests pin
+geometric invariants: dock pose puts antenna on target, corridor
+heading runs prev → current, return-to-start emits a closing segment.
 """
 
 from math import cos, sin, pi, isclose, hypot, atan2
@@ -35,436 +34,185 @@ def _antenna_pos_for(chassis_pose, antenna_offset):
             y + sin(psi) * a_x + cos(psi) * a_y)
 
 
-def _docks(segments):
-    return [s for s in segments if s.kind == 'dock']
-
-
-def _cruise_for(segments, wp_idx):
-    """Cruise sub-segments belonging to a particular waypoint, in order."""
-    return [s for s in segments if s.kind == 'cruise' and s.waypoint_index == wp_idx]
-
-
 class TestSingleWaypoint:
     def test_dock_pose_puts_antenna_on_target(self):
-        # Antenna offset 0.30 m forward of rear axle. Target 5 m east of
-        # the rover's current chassis position. After running the dock
-        # segment, the antenna must land within rounding error on the
-        # target — that's the whole point of the planner.
+        # Antenna offset 0.30 m forward of rear axle. Target 5 m east
+        # of the rover's current chassis position. The segment's
+        # end_pose must place the antenna on target.
         antenna_offset = (0.30, 0.0)
         segments = plan(
             current_chassis_pose=(0.0, 0.0, 0.0),
             antenna_offset=antenna_offset,
             waypoints_lat_lng=[_gps(5.0, 0.0)],
             ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.5,
             return_to_start=False,
         )
-        docks = _docks(segments)
-        assert len(docks) == 1
-        ax, ay = _antenna_pos_for(docks[0].end_pose, antenna_offset)
+        assert len(segments) == 1
+        ax, ay = _antenna_pos_for(segments[0].end_pose, antenna_offset)
         assert isclose(ax, 5.0, abs_tol=1e-6)
         assert isclose(ay, 0.0, abs_tol=1e-6)
 
     def test_dock_heading_matches_approach_direction(self):
-        # A target north-east of the rover should get a dock segment whose
-        # heading is the bearing from chassis to target — so that the dock
-        # corridor is the natural continuation of the approach.
+        # First waypoint: ψ_dock = bearing(chassis → wp).
         segments = plan(
             current_chassis_pose=(0.0, 0.0, 0.0),
             antenna_offset=(0.0, 0.0),
             waypoints_lat_lng=[_gps(3.0, 4.0)],
             ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.0,
             return_to_start=False,
         )
-        dock = _docks(segments)[0]
-        expected_psi = atan2(4.0, 3.0)
-        assert isclose(dock.end_pose[2], expected_psi, abs_tol=1e-9)
-        assert isclose(dock.start_pose[2], expected_psi, abs_tol=1e-9)
+        seg = segments[0]
+        expected = atan2(4.0, 3.0)
+        assert isclose(seg.end_pose[2], expected, abs_tol=1e-6)
+        # start_pose carries the corridor direction too.
+        assert isclose(seg.start_pose[2], expected, abs_tol=1e-6)
 
-    def test_dock_corridor_length_matches_dock_distance(self):
-        # The dock corridor (entry → dock_end) length must equal the
-        # requested dock_distance for a target far enough from the chassis
-        # that the floor clamp doesn't kick in.
+    def test_target_antenna_equals_waypoint(self):
         segments = plan(
             current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=(0.3, 0.0),
-            waypoints_lat_lng=[_gps(10.0, 0.0)],
+            antenna_offset=(0.30, 0.0),
+            waypoints_lat_lng=[_gps(2.0, 1.0)],
             ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.5,
             return_to_start=False,
         )
-        dock = _docks(segments)[0]
-        sx, sy, _ = dock.start_pose
-        dx, dy, _ = dock.end_pose
-        assert isclose(hypot(dx - sx, dy - sy), 1.5, abs_tol=1e-9)
+        tx, ty = segments[0].target_antenna
+        assert isclose(tx, 2.0, abs_tol=1e-6)
+        assert isclose(ty, 1.0, abs_tol=1e-6)
 
-    def test_cruise_chain_starts_at_chassis_ends_at_dock_entry(self):
-        # The first cruise sub-segment must start at the chassis pose, the
-        # last cruise sub-segment must end at the dock segment's start.
+    def test_skip_when_already_on_dock_pose(self):
+        # Chassis already at the dock pose (antenna already on target).
+        # Planner should emit nothing for that waypoint.
+        antenna_offset = (0.30, 0.0)
+        # Dock pose for an east-facing approach to (5,0): chassis at
+        # (5 - 0.30, 0) facing east.
+        chassis_at_dock = (5.0 - 0.30, 0.0, 0.0)
         segments = plan(
-            current_chassis_pose=(0.5, -0.2, 0.3),
-            antenna_offset=(0.3, 0.0),
-            waypoints_lat_lng=[_gps(5.0, 2.0)],
+            current_chassis_pose=chassis_at_dock,
+            antenna_offset=antenna_offset,
+            waypoints_lat_lng=[_gps(5.0, 0.0)],
             ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.5,
             return_to_start=False,
         )
-        cruises = _cruise_for(segments, wp_idx=0)
-        assert len(cruises) >= 1
-        # First cruise starts at chassis xy (psi may differ — it's the chord)
-        assert isclose(cruises[0].start_pose[0], 0.5, abs_tol=1e-6)
-        assert isclose(cruises[0].start_pose[1], -0.2, abs_tol=1e-6)
-        # Last cruise ends at the dock entry
-        dock = _docks(segments)[0]
-        assert isclose(cruises[-1].end_pose[0], dock.start_pose[0], abs_tol=1e-6)
-        assert isclose(cruises[-1].end_pose[1], dock.start_pose[1], abs_tol=1e-6)
+        assert segments == []
 
 
 class TestMultiWaypoint:
-    def test_subsequent_dock_heading_uses_previous_waypoint(self):
-        antenna_offset = (0.3, 0.0)
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=antenna_offset,
-            waypoints_lat_lng=[_gps(2.0, 0.0), _gps(4.0, 1.0)],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.0,
-            return_to_start=False,
-        )
-        docks = _docks(segments)
-        assert len(docks) == 2
-        # Second waypoint's dock heading is bearing from wp1→wp2.
-        expected = atan2(1.0 - 0.0, 4.0 - 2.0)
-        assert isclose(docks[1].end_pose[2], expected, abs_tol=1e-9)
-
-    def test_each_waypoint_dock_lands_antenna_on_target(self):
-        antenna_offset = (0.25, 0.05)
-        wps_enu = [(2.0, 0.0), (4.0, 1.0), (3.0, 3.0)]
-        wps_gps = [_gps(*p) for p in wps_enu]
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=antenna_offset,
-            waypoints_lat_lng=wps_gps,
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.2,
-            return_to_start=False,
-        )
-        docks = _docks(segments)
-        assert len(docks) == 3
-        for i, (e, n) in enumerate(wps_enu):
-            assert docks[i].waypoint_index == i
-            ax, ay = _antenna_pos_for(docks[i].end_pose, antenna_offset)
-            assert isclose(ax, e, abs_tol=1e-6)
-            assert isclose(ay, n, abs_tol=1e-6)
-
-
-class TestDockDistanceClamp:
-    """Regression: dock_distance projection past the previous waypoint
-    forced cruise legs to U-turn when consecutive cones were closer than
-    dock_distance. The planner now clamps to half the inter-waypoint
-    span (with a 0.6 m floor)."""
-
-    def test_close_cones_dont_project_entry_behind_prev(self):
-        # Two cones 0.8 m apart with dock_distance=1.5 m. Without the
-        # clamp, the second waypoint's entry would sit 0.7 m BEHIND the
-        # first cone along the shared corridor, requiring a U-turn.
-        antenna_offset = (0.3, 0.0)
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=antenna_offset,
-            waypoints_lat_lng=[_gps(2.0, 0.0), _gps(2.8, 0.0)],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.5,
-            return_to_start=False,
-        )
-        # Second dock segment's entry (start_pose).
-        docks = _docks(segments)
-        ex = docks[1].start_pose[0]
-        # First cone is at antenna position (2.0, 0); chassis dock pose
-        # for that cone is (1.7, 0). Entry must be ≥ 1.5 (between dock pose
-        # of cone 1 and cone 2's antenna landing).
-        assert ex > 1.5
-
-    def test_clamp_floor_at_min_distance(self):
-        # Even with a tiny span, the corridor must be at least 0.6 m so
-        # the dock tracker has room to bleed lateral residual at creep
-        # speed without overshooting along-track and triggering reverse.
-        antenna_offset = (0.3, 0.0)
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=antenna_offset,
-            waypoints_lat_lng=[_gps(2.0, 0.0), _gps(2.1, 0.0)],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.5,
-            return_to_start=False,
-        )
-        docks = _docks(segments)
-        sx, sy, _ = docks[1].start_pose
-        ex, ey, _ = docks[1].end_pose
-        corridor = hypot(ex - sx, ey - sy)
-        assert corridor == pytest.approx(0.6, abs=1e-6)
-
-
-class TestReturnToStart:
-    def test_return_segments_appended(self):
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=(0.3, 0.0),
-            waypoints_lat_lng=[_gps(5.0, 0.0)],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.0,
-            return_to_start=True,
-            start_chassis_xy=(0.0, 0.0),
-        )
-        docks = _docks(segments)
-        # One mission dock + one return dock.
-        assert len(docks) == 2
-        assert segments[-1].kind == 'dock'
-        assert segments[-1].waypoint_index == -1
-
-    def test_return_omitted_when_disabled(self):
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=(0.3, 0.0),
-            waypoints_lat_lng=[_gps(5.0, 0.0)],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.0,
-            return_to_start=False,
-        )
-        docks = _docks(segments)
-        assert len(docks) == 1
-
-    def test_return_created_even_when_all_waypoints_skipped(self):
-        # Empty waypoints list with return_to_start=True must still emit
-        # the return segments (regression: prev_target was None and the
-        # return branch was skipped, leaving the navigator stranded at
-        # the last waypoint after a final-wp skip).
-        segments = plan(
-            current_chassis_pose=(2.0, 1.0, 0.0),
-            antenna_offset=(0.3, 0.0),
-            waypoints_lat_lng=[],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.0,
-            return_to_start=True,
-            start_chassis_xy=(0.0, 0.0),
-        )
-        docks = _docks(segments)
-        assert len(docks) == 1
-        assert docks[0].waypoint_index == -1
-
-
-class TestOffsetCompensation:
-    @pytest.mark.parametrize('a_x,a_y', [
-        (0.0, 0.0),       # rear-axle antenna (degenerate but valid)
-        (0.30, 0.0),      # forward only (typical)
-        (0.20, 0.10),     # asymmetric (matches a non-centerline mount)
-        (0.50, -0.15),    # extreme — verify the closed form holds
-    ])
-    def test_arbitrary_offset_lands_antenna_on_target(self, a_x, a_y):
-        # The dock pose formula `target − R(ψ_dock) · offset` must work for
-        # any antenna offset, including off-centerline. Each one would
-        # otherwise produce a different lateral bias the controller has
-        # no way to undo on a straight dock corridor.
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=(a_x, a_y),
-            waypoints_lat_lng=[_gps(7.0, 2.0)],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.5,
-            return_to_start=False,
-        )
-        dock = _docks(segments)[0]
-        ax, ay = _antenna_pos_for(dock.end_pose, (a_x, a_y))
-        assert isclose(ax, 7.0, abs_tol=1e-6)
-        assert isclose(ay, 2.0, abs_tol=1e-6)
-
-
-
-
-class TestSingleCruisePerWaypoint:
-    """The planner now emits ONE cruise PathSegment per waypoint (down
-    from a chain of Reed-Shepp sub-segs). Each cruise's start_pose is
-    the chassis pose at plan time and end_pose is the dock corridor
-    entry. The cruise tracker is a heading-only goal-seeker — it does
-    not need a sampled path."""
-
-    def test_exactly_one_cruise_per_waypoint(self):
-        start_xy = (0.0, 0.0)
-        segments = plan(
-            current_chassis_pose=(*start_xy, 0.0),
-            antenna_offset=(0.0, 0.0),
-            waypoints_lat_lng=[_gps(5.0, 3.0)],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.0,
-            return_to_start=False,
-        )
-        cruises = _cruise_for(segments, 0)
-        assert len(cruises) == 1
-
-    def test_cruise_start_is_chassis_now(self):
-        start_xy = (1.5, -0.5)
-        segments = plan(
-            current_chassis_pose=(*start_xy, 0.0),
-            antenna_offset=(0.0, 0.0),
-            waypoints_lat_lng=[_gps(5.0, 3.0)],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.0,
-        )
-        cruises = _cruise_for(segments, 0)
-        c = cruises[0]
-        assert c.start_pose[0] == pytest.approx(start_xy[0], abs=1e-9)
-        assert c.start_pose[1] == pytest.approx(start_xy[1], abs=1e-9)
-
-    def test_cruise_end_is_dock_entry(self):
-        # cruise.end_pose must equal dock.start_pose (the corridor entry).
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=(0.0, 0.0),
-            waypoints_lat_lng=[_gps(5.0, 2.0)],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.0,
-        )
-        cruise = _cruise_for(segments, 0)[0]
-        dock = _docks(segments)[0]
-        assert cruise.end_pose[0] == pytest.approx(dock.start_pose[0])
-        assert cruise.end_pose[1] == pytest.approx(dock.start_pose[1])
-        # End psi carries the dock corridor heading so the cruise tracker
-        # has the correct target heading for its done condition.
-        assert cruise.end_pose[2] == pytest.approx(dock.start_pose[2])
-
-    def test_cruise_start_psi_is_bearing_to_entry(self):
-        # The cruise tracker doesn't actually consume start_pose.psi (it
-        # only needs end_pose for steering), but the planner stamps it
-        # with the bearing from chassis to dock entry as a useful
-        # diagnostic field. That bearing should be consistent.
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=(0.0, 0.0),
-            waypoints_lat_lng=[_gps(5.0, 2.0)],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.0,
-        )
-        cruise = _cruise_for(segments, 0)[0]
-        bearing = atan2(cruise.end_pose[1] - cruise.start_pose[1],
-                        cruise.end_pose[0] - cruise.start_pose[0])
-        assert cruise.start_pose[2] == pytest.approx(bearing, abs=1e-6)
-
-    def test_no_reed_shepp_artefacts(self):
-        # No sub-seg chain — verify by checking the count of cruise
-        # segments equals the number of waypoints (+1 for return).
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=(0.0, 0.0),
-            waypoints_lat_lng=[_gps(5.0, 2.0), _gps(10.0, -1.0),
-                               _gps(2.0, 5.0)],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.0,
-            return_to_start=True,
-            start_chassis_xy=(0.0, 0.0),
-        )
-        cruises = [s for s in segments if s.kind == 'cruise']
-        docks = [s for s in segments if s.kind == 'dock']
-        # 3 waypoints + 1 return = 4 cruise + 4 dock.
-        assert len(cruises) == 4
-        assert len(docks) == 4
-        # Cruise direction is always forward in the new planner.
-        for c in cruises:
-            assert c.direction == 1
-
-    def test_chassis_already_at_dock_entry_skips_cruise(self):
-        # If the chassis pose is essentially the dock entry (replan or
-        # repeated request), the planner can omit the cruise and emit
-        # only the dock segment. Defensive — prevents a zero-length
-        # cruise from being created.
-        # We can't easily build this case without knowing the dock
-        # entry up front, so just verify the planner doesn't choke
-        # on a very close-by waypoint; whether the cruise is emitted
-        # is implementation detail.
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=(0.0, 0.0),
-            waypoints_lat_lng=[_gps(0.001, 0.0)],
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=1.0,
-        )
-        # At least one dock for the waypoint.
-        docks = _docks(segments)
-        assert len(docks) == 1
-
-
-class TestL1PlannerLayout:
-    """The 'l1' path_tracker_kind emits a single unified segment per
-    waypoint (no cruise+dock pair). Pin the invariants the L1Tracker
-    relies on: segment count, segment kind, antenna landing.
-    """
-
-    def test_l1_emits_one_segment_per_waypoint(self):
-        # 4 WPs + return-to-start → 5 'l1' segments total. No 'cruise'
-        # or 'dock' segments emitted.
-        wps = [_gps(2.0, 0.0), _gps(2.0, 2.0),
-               _gps(0.0, 2.0), _gps(-2.0, 2.0)]
+    def test_one_segment_per_waypoint(self):
+        wps = [_gps(2.0, 0.0), _gps(2.0, 2.0), _gps(0.0, 2.0)]
         segments = plan(
             current_chassis_pose=(0.0, 0.0, 0.0),
             antenna_offset=(0.30, 0.0),
             waypoints_lat_lng=wps,
             ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=2.5,
+            return_to_start=False,
+        )
+        assert len(segments) == 3
+        for idx, seg in enumerate(segments):
+            assert seg.waypoint_index == idx
+            tx, ty = seg.target_antenna
+            wp_e, wp_n = enu_from_gps(
+                wps[idx]['lat'], wps[idx]['lng'], REF_LAT, REF_LON)
+            assert isclose(tx, wp_e, abs_tol=1e-6)
+            assert isclose(ty, wp_n, abs_tol=1e-6)
+
+    def test_corridor_heading_from_prev_waypoint(self):
+        """For WPs after the first, ψ_dock should be the bearing from
+        the previous waypoint to the current one — keeps the corridor
+        smooth between cones."""
+        wps = [_gps(2.0, 0.0), _gps(2.0, 2.0)]
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=(0.30, 0.0),
+            waypoints_lat_lng=wps,
+            ref_lat_lon=(REF_LAT, REF_LON),
+            return_to_start=False,
+        )
+        # WP2: bearing (2,0) → (2,2) = +π/2 (north).
+        assert isclose(segments[1].end_pose[2], pi / 2, abs_tol=1e-6)
+
+    def test_each_dock_pose_lands_antenna_on_corresponding_wp(self):
+        antenna_offset = (0.30, 0.0)
+        wps = [_gps(2.0, 0.0), _gps(2.0, 2.0), _gps(0.0, 2.0)]
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=antenna_offset,
+            waypoints_lat_lng=wps,
+            ref_lat_lon=(REF_LAT, REF_LON),
+            return_to_start=False,
+        )
+        for idx, seg in enumerate(segments):
+            ax, ay = _antenna_pos_for(seg.end_pose, antenna_offset)
+            wp_e, wp_n = enu_from_gps(
+                wps[idx]['lat'], wps[idx]['lng'], REF_LAT, REF_LON)
+            assert isclose(ax, wp_e, abs_tol=1e-6)
+            assert isclose(ay, wp_n, abs_tol=1e-6)
+
+
+class TestPrevTargetAnchor:
+    def test_first_wp_uses_prev_target_when_provided(self):
+        """On a replan mid-mission, prev_target_xy anchors the first
+        WP's ψ_dock to the original prev→cur bearing so the corridor
+        heading doesn't pivot with each chassis drift."""
+        wps = [_gps(2.0, 0.0)]
+        prev_target_xy = (-2.0, 0.0)  # 2 m west of origin
+        # Chassis nowhere near the prev→cur line.
+        segments = plan(
+            current_chassis_pose=(0.0, 1.0, pi / 4),
+            antenna_offset=(0.30, 0.0),
+            waypoints_lat_lng=wps,
+            ref_lat_lon=(REF_LAT, REF_LON),
+            return_to_start=False,
+            prev_target_xy=prev_target_xy,
+        )
+        # Without prev_target_xy, ψ_dock would be bearing(chassis →
+        # wp) = atan2(-1, 2). With prev_target_xy, it should be
+        # bearing(prev → wp) = atan2(0, 4) = 0.
+        assert isclose(segments[0].end_pose[2], 0.0, abs_tol=1e-6)
+
+
+class TestReturnToStart:
+    def test_emits_closing_segment(self):
+        wps = [_gps(2.0, 0.0)]
+        start_xy = (0.0, 0.0)
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=(0.30, 0.0),
+            waypoints_lat_lng=wps,
+            ref_lat_lon=(REF_LAT, REF_LON),
             return_to_start=True,
-            start_chassis_xy=(0.0, 0.0),
-            path_tracker_kind='l1',
-        )
-        l1_segs = [s for s in segments if s.kind == 'l1']
-        assert len(l1_segs) == 5
-        assert all(s.kind == 'l1' for s in segments)
-
-    def test_l1_segment_lands_antenna_on_target(self):
-        # Each L1 segment's end_pose is the chassis pose that puts the
-        # antenna on the WP. target_antenna is the WP itself.
-        a_offset = (0.30, 0.0)
-        wps = [_gps(5.0, 0.0), _gps(5.0, 5.0)]
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=a_offset,
-            waypoints_lat_lng=wps,
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=2.5,
-            path_tracker_kind='l1',
-        )
-        for seg in segments:
-            assert seg.kind == 'l1'
-            ant_e, ant_n = _antenna_pos_for(seg.end_pose, a_offset)
-            assert isclose(ant_e, seg.target_antenna[0], abs_tol=1e-6)
-            assert isclose(ant_n, seg.target_antenna[1], abs_tol=1e-6)
-
-    def test_l1_subsequent_segment_starts_at_prev_dock_pose(self):
-        # The 2nd L1 segment's start_pose XY equals the 1st segment's
-        # end_pose XY (chassis lands on prev dock_pose). The psi
-        # component is the NEW corridor direction (psi_dock for WP2,
-        # = bearing WP1→WP2), NOT the previous corridor's heading —
-        # L1Tracker reads start_pose[2] as psi_path for line projection
-        # and it must point along the segment's corridor (not the
-        # chassis's instantaneous heading at the previous dock pose).
-        a_offset = (0.30, 0.0)
-        wps = [_gps(2.0, 0.0), _gps(4.0, 2.0)]
-        segments = plan(
-            current_chassis_pose=(0.0, 0.0, 0.0),
-            antenna_offset=a_offset,
-            waypoints_lat_lng=wps,
-            ref_lat_lon=(REF_LAT, REF_LON),
-            dock_distance=2.5,
-            path_tracker_kind='l1',
+            start_chassis_xy=start_xy,
         )
         assert len(segments) == 2
-        s1_end = segments[0].end_pose
-        s2_start = segments[1].start_pose
-        # XY position matches: chassis sits at prev dock_pose at
-        # the moment the next segment begins.
-        assert isclose(s1_end[0], s2_start[0], abs_tol=1e-9)
-        assert isclose(s1_end[1], s2_start[1], abs_tol=1e-9)
-        # PSI is the new corridor direction (start_pose.psi ==
-        # end_pose.psi within a single segment; both are psi_dock).
-        assert isclose(s2_start[2], segments[1].end_pose[2],
-                       abs_tol=1e-9)
-        expected_psi_dock = atan2(2.0 - 0.0, 4.0 - 2.0)
-        assert isclose(s2_start[2], expected_psi_dock, abs_tol=1e-9)
+        # Last segment closes back to start.
+        last = segments[-1]
+        assert last.waypoint_index == -1
+        tx, ty = last.target_antenna
+        assert isclose(tx, 0.0, abs_tol=1e-6)
+        assert isclose(ty, 0.0, abs_tol=1e-6)
+
+    def test_no_return_segment_when_disabled(self):
+        wps = [_gps(2.0, 0.0)]
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=(0.30, 0.0),
+            waypoints_lat_lng=wps,
+            ref_lat_lon=(REF_LAT, REF_LON),
+            return_to_start=False,
+        )
+        assert len(segments) == 1
+
+
+class TestWaypointIndexOffset:
+    def test_offset_applied_to_segment_index(self):
+        """On replans the planner gets a non-zero offset so segment
+        waypoint_index continues to match the mission-wide WP number."""
+        wps = [_gps(2.0, 0.0), _gps(2.0, 2.0)]
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=(0.30, 0.0),
+            waypoints_lat_lng=wps,
+            ref_lat_lon=(REF_LAT, REF_LON),
+            return_to_start=False,
+            waypoint_index_offset=5,
+        )
+        assert [s.waypoint_index for s in segments] == [5, 6]

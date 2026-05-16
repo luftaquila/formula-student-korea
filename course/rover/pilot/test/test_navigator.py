@@ -219,8 +219,7 @@ def test_calibration_completes_with_clean_chord(nav, monkeypatch):
     nav._handle_calibrating()
     assert nav._state == State.NAVIGATING
     assert nav._estimator is not None
-    assert nav._cruise_tracker is not None
-    assert nav._dock_tracker is not None
+    assert nav._l1_tracker is not None
     # Chassis psi should be close to North = math π/2.
     _, _, psi = nav._estimator.chassis_pose()
     assert abs(psi - math.pi / 2) < 0.05
