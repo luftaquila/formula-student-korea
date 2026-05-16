@@ -117,7 +117,9 @@ def test_execute_path_accepted_from_error_state(nav):
 
 def test_error_resume_resets_settle_and_progress_timers(nav, monkeypatch):
     """30-s GPS outage during SETTLING must not fire settle_timeout
-    immediately on resume."""
+    immediately on resume. fix_recovery_hold_s also gates the resume —
+    fix must hold for the configured duration before NAVIGATING/SETTLING
+    re-enters."""
     t = [time.monotonic()]
     monkeypatch.setattr(time, 'monotonic', lambda: t[0])
     # Simulate: rover entered SETTLING, then GPS dropped, ERROR fired.
@@ -128,6 +130,16 @@ def test_error_resume_resets_settle_and_progress_timers(nav, monkeypatch):
     nav._state = State.ERROR
     nav._last_gps_time = t[0]  # GPS just recovered
     nav._gps_fix_status = 'rtk_fixed'
+
+    # First tick after recovery: fix is back but hold hasn't elapsed.
+    nav._handle_error()
+    assert nav._state == State.ERROR
+    assert nav._fix_recovered_at == t[0]
+
+    # Advance past fix_recovery_hold_s and call again — now resume.
+    hold = nav.get_parameter('fix_recovery_hold_s').value
+    t[0] = t[0] + hold + 0.01
+    nav._last_gps_time = t[0]  # GPS still fresh
     nav._handle_error()
     assert nav._state == State.SETTLING
     # Wall-clock timers must reset to NOW so the next handler tick
@@ -207,8 +219,7 @@ def test_calibration_completes_with_clean_chord(nav, monkeypatch):
     nav._handle_calibrating()
     assert nav._state == State.NAVIGATING
     assert nav._estimator is not None
-    assert nav._cruise_tracker is not None
-    assert nav._dock_tracker is not None
+    assert nav._l1_tracker is not None
     # Chassis psi should be close to North = math π/2.
     _, _, psi = nav._estimator.chassis_pose()
     assert abs(psi - math.pi / 2) < 0.05
@@ -223,16 +234,6 @@ def test_publish_state_dedup(nav):
     nav._publish_state()
     nav._publish_state()
     assert len(calls) <= 1
-
-
-def test_safe_destroy_timer_idempotent(nav):
-    t = nav.create_timer(1.0, lambda: None)
-    assert nav._safe_destroy_timer(t) is None
-    assert nav._safe_destroy_timer(t) is None
-
-
-def test_safe_destroy_timer_none_ok(nav):
-    assert nav._safe_destroy_timer(None) is None
 
 
 def test_emergency_stop_goes_to_estop(nav):

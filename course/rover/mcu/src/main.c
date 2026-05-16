@@ -27,14 +27,22 @@ volatile bool     g_estop_clear_request = false;
 volatile bool     g_use_raw_motor = true;
 volatile float    g_raw_duty_l   = 0.0f;
 volatile float    g_raw_duty_r   = 0.0f;
+// Pi-reported navigation fault flag. Set/cleared via the 'N' protocol
+// command. Surfaces in telemetry as FLAG_GPS_LOST and drives the
+// LED_GPS_LOST (orange blink) status indication.
+volatile bool     g_nav_gps_lost = false;
 
 // ----- Inter-core latched state -----
 static volatile float    g_last_vbat  = 0.0f;
 static volatile uint32_t g_last_flags = 0;
 
 static led_state_t pick_led_state(uint32_t flags, bool driving) {
+    // Priority: estop > battery_undervolt > gps_lost (operator must
+    // see RTK-fix failures during a mission) > heartbeat_timeout >
+    // battery_warn > driving > idle.
     if (flags & FLAG_ESTOP_ACTIVE)         return LED_ESTOP;
     if (flags & FLAG_BATTERY_UNDERVOLT)    return LED_FAULT;
+    if (flags & FLAG_GPS_LOST)             return LED_GPS_LOST;
     if (flags & FLAG_PI_HEARTBEAT_TIMEOUT) return LED_WARN;
     if (flags & FLAG_BATTERY_WARN)         return LED_WARN;
     return driving ? LED_ACTIVE : LED_IDLE;
@@ -139,10 +147,11 @@ static void core1_main(void) {
         }
 
         uint32_t flags = 0;
-        if (estop)      flags |= FLAG_ESTOP_ACTIVE;
-        if (hb_timeout) flags |= FLAG_PI_HEARTBEAT_TIMEOUT;
-        if (undervolt)  flags |= FLAG_BATTERY_UNDERVOLT;
-        if (batt_warn)  flags |= FLAG_BATTERY_WARN;
+        if (estop)            flags |= FLAG_ESTOP_ACTIVE;
+        if (hb_timeout)       flags |= FLAG_PI_HEARTBEAT_TIMEOUT;
+        if (undervolt)        flags |= FLAG_BATTERY_UNDERVOLT;
+        if (batt_warn)        flags |= FLAG_BATTERY_WARN;
+        if (g_nav_gps_lost)   flags |= FLAG_GPS_LOST;
         if (g_pid_enabled && !g_use_raw_motor) flags |= FLAG_PID_ACTIVE;
         if (watchdog_caused_reboot())          flags |= FLAG_HW_WDT_REBOOT;
         g_last_flags = flags;

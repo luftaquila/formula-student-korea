@@ -10,6 +10,7 @@ typedef enum {
     LED_WARN,        // yellow (low battery, watchdog warn)
     LED_ESTOP,       // red blink
     LED_FAULT,       // magenta (battery undervolt)
+    LED_GPS_LOST,    // orange blink (Pi reported RTK fix lost / below required)
 } led_state_t;
 
 void status_led_init(void);

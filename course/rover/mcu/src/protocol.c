@@ -26,6 +26,7 @@ extern volatile bool     g_estop_clear_request;
 extern volatile bool     g_use_raw_motor;
 extern volatile float    g_raw_duty_l;
 extern volatile float    g_raw_duty_r;
+extern volatile bool     g_nav_gps_lost;
 
 #define LINE_MAX 96
 static char     g_line[LINE_MAX];
@@ -89,6 +90,21 @@ static void handle_line(char *line) {
             int on = 0;
             if (sscanf(args, "%d", &on) == 1) {
                 g_pid_enabled = (on != 0);
+            }
+            break;
+        }
+        case 'N': {
+            // Pi-reported navigation fault. 'N 1' = GPS fix lost /
+            // below required quality; 'N 0' = cleared. Sets FLAG_GPS_LOST
+            // and drives LED_GPS_LOST (orange blink). The MCU does not
+            // independently halt motors on this flag — the Pi already
+            // commands v=0 when the fix is bad — but the flag is reported
+            // back in telemetry and the LED makes the cause visible at a
+            // glance, distinct from estop (red blink) and battery warn
+            // (solid yellow).
+            int on = 0;
+            if (sscanf(args, "%d", &on) == 1) {
+                g_nav_gps_lost = (on != 0);
             }
             break;
         }

@@ -11,6 +11,12 @@
 #define FLAG_BATTERY_WARN         (1u << 3)
 #define FLAG_PID_ACTIVE           (1u << 4)
 #define FLAG_HW_WDT_REBOOT        (1u << 5)
+// Pi-reported navigation fault: GPS fix lost / below required quality.
+// Set via the 'N <0|1>' command. While set the chassis is commanded
+// stopped from the Pi side (cmd v=0, kappa=0) and the status LED
+// shows LED_GPS_LOST (orange blink) so the operator can distinguish
+// the cause from other warn-class faults (battery, heartbeat).
+#define FLAG_GPS_LOST             (1u << 6)
 
 // Process whatever bytes have arrived on stdin (USB CDC). Non-blocking.
 // Returns true if at least one complete command was consumed.
