@@ -103,13 +103,6 @@ SOLVE_MIN_SAMPLES = 30
 # letting healthy circular cals persist automatically.
 SOLVE_RMS_MAX_M = 0.10
 
-# Minimum chassis ψ excitation across the sample set (used by the legacy
-# 5-tuple LSQ path; the circular solver has its own gates). The closed-form
-# LSQ is well-defined for any ψ (R^T R = I), but it silently absorbs
-# chassis-pose origin error into the offset estimate when the drive fails to
-# rotate the rover. ~8.6° is comfortably above any healthy excitation.
-SOLVE_PSI_SPREAD_MIN_RAD = 0.15
-
 # Circular-solver gates.
 # Minimum total orbit-angle sweep on the chassis trace to trust the circle
 # fit. Less than ~3/4 of a revolution is too short to nail down the centre.
@@ -203,92 +196,6 @@ def save_antenna_offset(a_x, a_y, *, rms_residual_m, samples, drive_distance_m,
         os.fsync(f.fileno())
     os.replace(tmp, path)
     return payload
-
-
-def solve_antenna_offset(samples):
-    """Closed-form LSQ for (a_x, a_y) given calibration-drive samples.
-
-    This is the legacy single-pass solver used for the on-disk dump format
-    and unit-test fixtures with synthetic chassis poses. Live calibration
-    drives use `solve_antenna_offset_circular` instead, which doesn't depend
-    on instantaneous chassis ψ.
-
-    Args:
-        samples: iterable of 5-tuples
-                 (chassis_x, chassis_y, chassis_psi, antenna_obs_x,
-                 antenna_obs_y).
-
-    Returns:
-        dict with keys {'a_x', 'a_y', 'rms_residual_m', 'samples', 'reason'}
-        on success, or {'reason': '<why>'} on failure.
-    """
-    samples = list(samples)
-    n = len(samples)
-    if n < SOLVE_MIN_SAMPLES:
-        return {'reason': f'too few samples ({n} < {SOLVE_MIN_SAMPLES})',
-                'samples': n}
-
-    # ψ-excitation gate. Unwrap each sample's ψ relative to the first so
-    # crossing the ±π boundary doesn't artificially inflate the spread.
-    psi0 = samples[0][2]
-    unwrapped = []
-    for s in samples:
-        d = s[2] - psi0
-        while d > pi:
-            d -= 2.0 * pi
-        while d < -pi:
-            d += 2.0 * pi
-        unwrapped.append(psi0 + d)
-    psi_spread = max(unwrapped) - min(unwrapped)
-    if psi_spread < SOLVE_PSI_SPREAD_MIN_RAD:
-        return {
-            'reason': (f'insufficient ψ excitation '
-                       f'({math.degrees(psi_spread):.1f}° < '
-                       f'{math.degrees(SOLVE_PSI_SPREAD_MIN_RAD):.1f}°)'),
-            'samples': n,
-        }
-
-    # Closed-form LSQ: M^T M = N·I, so r̂ = (1/N)·Σ R(-ψ_i)·u_i where
-    # u_i = a_obs_i − chassis_xy_i.
-    sx = 0.0
-    sy = 0.0
-    for s in samples:
-        psi = s[2]
-        u_x = s[3] - s[0]
-        u_y = s[4] - s[1]
-        sx += cos(psi) * u_x + sin(psi) * u_y
-        sy += -sin(psi) * u_x + cos(psi) * u_y
-    a_x = sx / n
-    a_y = sy / n
-
-    if not (-OFFSET_BOUND_M <= a_x <= OFFSET_BOUND_M
-            and -OFFSET_BOUND_M <= a_y <= OFFSET_BOUND_M):
-        return {'reason': f'offset out of bounds ({a_x:.2f}, {a_y:.2f})',
-                'samples': n, 'a_x': a_x, 'a_y': a_y}
-
-    rss = 0.0
-    for s in samples:
-        psi = s[2]
-        u_x = s[3] - s[0]
-        u_y = s[4] - s[1]
-        pred_u_x = cos(psi) * a_x - sin(psi) * a_y
-        pred_u_y = sin(psi) * a_x + cos(psi) * a_y
-        rss += (u_x - pred_u_x) ** 2 + (u_y - pred_u_y) ** 2
-    rms = sqrt(rss / n)
-
-    if rms > SOLVE_RMS_MAX_M:
-        return {
-            'reason': f'residual RMS too high ({rms*100:.1f} cm > '
-                      f'{SOLVE_RMS_MAX_M*100:.0f} cm)',
-            'samples': n, 'a_x': a_x, 'a_y': a_y, 'rms_residual_m': rms,
-        }
-
-    return {
-        'a_x': a_x, 'a_y': a_y,
-        'rms_residual_m': rms,
-        'samples': n,
-        'reason': None,
-    }
 
 
 def _unwrap(angles):

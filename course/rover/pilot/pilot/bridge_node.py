@@ -89,7 +89,6 @@ class BridgeNode(Node):
         self.create_subscription(String, '/rover/gps/fix_status', self._on_fix_status, 10)
         self.create_subscription(String, '/rover/ntrip/status', self._on_ntrip_status, 10)
         self.create_subscription(Int32, '/rover/nav/waypoint_reached', self._on_waypoint_reached, reliable_qos)
-        self.create_subscription(Int32, '/rover/nav/skipped', self._on_waypoint_skipped, reliable_qos)
         self.create_subscription(String, '/rover/spray/result', self._on_spray_result, reliable_qos)
         self.create_subscription(String, '/rover/battery', self._on_battery, 10)
         self.create_subscription(String, '/rover/gps/metrics', self._on_gps_metrics, 10)
@@ -256,16 +255,6 @@ class BridgeNode(Node):
             '/api/rover/waypoint_reached',
             {'index': int(msg.data)},
             'waypoint_reached',
-        )
-
-    def _on_waypoint_skipped(self, msg):
-        """Forward stuck-skip waypoint index to the course server so the
-        UI's executedIndex advances past the skipped cone instead of
-        jumping by 2 when the next waypoint reports reached."""
-        self._post_async(
-            '/api/rover/waypoint_skipped',
-            {'index': int(msg.data)},
-            'waypoint_skipped',
         )
 
     def _on_battery(self, msg):

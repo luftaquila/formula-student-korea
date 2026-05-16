@@ -2,8 +2,7 @@
 # Real /etc/pilot/pilot.conf is written by scripts/provision-rover.sh
 # from the workstation's .env on each rover.
 #
-# Loaded into the container via the pilot.container quadlet's
-# EnvironmentFile= directive.
+# Loaded into the container via pilot-run's `--env-file` flag.
 
 SERVER_URL=https://your-server.example/course
 ROS_DOMAIN_ID=0

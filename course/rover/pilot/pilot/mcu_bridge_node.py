@@ -152,6 +152,13 @@ class McuBridgeNode(Node):
 
         self._validate_params()
 
+        # Cached ackermann conversion kwargs. The set of params here are
+        # rig constants (wheelbase, track, steer-angle, servo geometry,
+        # max_speed); rebuilding the dict + math.radians on every 20 Hz
+        # velocity / manual tick was pure waste. _on_param_change
+        # invalidates this if any of these gets ros2-param-set live.
+        self._ack_kwargs_cache = None
+
         # State
         self._mode = 'stopped'
         self._last_cmd_t = 0.0
@@ -252,6 +259,13 @@ class McuBridgeNode(Node):
             Empty, '/rover/cmd/clear_emergency', reliable)
         # Last seen hardware-estop bit so we only emit on edges.
         self._last_hw_estop = None
+        # Last seen FLAG_HW_WDT_REBOOT bit (telemetry bit 5). Edge-
+        # logged on the first telemetry tick after the MCU comes up so
+        # an unattended watchdog reboot leaves a trace in journalctl
+        # instead of disappearing silently. None on startup = "we
+        # haven't seen the first tick yet"; transitions to True/False
+        # after.
+        self._last_wdt_reboot = None
 
         self._open_serial()
 
@@ -295,11 +309,16 @@ class McuBridgeNode(Node):
         """
         push_pid = False
         push_mode = False
+        invalidate_ack = False
         for p in params:
             if p.name in ('pid_kp', 'pid_ki', 'pid_kd'):
                 push_pid = True
             elif p.name == 'use_pid':
                 push_mode = True
+            elif p.name in self._ACK_PARAMS:
+                invalidate_ack = True
+        if invalidate_ack:
+            self._ack_kwargs_cache = None
         # ROS rejects type-mismatched assignments before this callback
         # fires, and we trust value bounds to gain sanity (kp ≤ 5 etc.)
         # at the operator level — the MCU clamps PID output to ±1.0
@@ -417,15 +436,22 @@ class McuBridgeNode(Node):
             return target_speed
         return self._cur_speed + math.copysign(max_delta, diff)
 
+    _ACK_PARAMS = ('wheelbase', 'track_width', 'max_speed',
+                   'max_steering_angle_deg',
+                   'servo_center_us', 'servo_range_us')
+
     def _ackermann_kwargs(self):
-        return dict(
-            wheelbase=self._p('wheelbase'),
-            track_width=self._p('track_width'),
-            max_speed=self._p('max_speed'),
-            max_steering_angle_rad=math.radians(self._p('max_steering_angle_deg')),
-            servo_center_us=self._p('servo_center_us'),
-            servo_range_us=self._p('servo_range_us'),
-        )
+        if self._ack_kwargs_cache is None:
+            self._ack_kwargs_cache = dict(
+                wheelbase=self._p('wheelbase'),
+                track_width=self._p('track_width'),
+                max_speed=self._p('max_speed'),
+                max_steering_angle_rad=math.radians(
+                    self._p('max_steering_angle_deg')),
+                servo_center_us=self._p('servo_center_us'),
+                servo_range_us=self._p('servo_range_us'),
+            )
+        return self._ack_kwargs_cache
 
     # ------------------------- ROS callbacks
 
@@ -663,6 +689,19 @@ class McuBridgeNode(Node):
         # up. Initial unknown -> known transition: only emit on a known
         # rising edge, so a pilot restart that comes up with the button
         # already pressed doesn't replay a stale press.
+        # FLAG_HW_WDT_REBOOT (bit 5). Edge-log on the FIRST telemetry
+        # tick after the MCU comes up. The bit stays high for the
+        # session once the SDK's watchdog_caused_reboot() returns true,
+        # so we only ever fire this log once per pilot run, which is
+        # exactly what we want for "did the MCU just hard-reset?"
+        # observability.
+        wdt_reboot = bool(flags & 0x20)
+        if self._last_wdt_reboot is None and wdt_reboot:
+            self.get_logger().warn(
+                'MCU reports last boot was a watchdog reset '
+                '(FLAG_HW_WDT_REBOOT)')
+        self._last_wdt_reboot = wdt_reboot
+
         hw_estop = bool(flags & 0x01)
         if self._last_hw_estop is False and hw_estop:
             self.get_logger().warn(

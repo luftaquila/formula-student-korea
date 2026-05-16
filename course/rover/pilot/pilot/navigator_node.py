@@ -147,7 +147,6 @@ class NavigatorNode(Node):
         self.declare_parameter('settle_timeout', 2.0)
         self.declare_parameter('spray_timeout', 5.0)
         self.declare_parameter('stuck_timeout', 12.0)
-        self.declare_parameter('stuck_max_retries', 2)
 
         # Calibration quality gates.
         self.declare_parameter('calibration_distance', 2.5)
@@ -781,7 +780,7 @@ class NavigatorNode(Node):
             v, om = self._odom_chassis_kinematics()
             self._estimator.predict(v, om, time.monotonic())
 
-        if self._state == State.IDLE or self._state == State.EMERGENCY_STOP:
+        if self._state in (State.IDLE, State.EMERGENCY_STOP):
             # Keep republishing Twist(0,0) every tick so mcu_bridge's
             # accel-limit ramp can decay any residual speed smoothly to a
             # stop. Without this, the single zero-twist published on
@@ -1198,9 +1197,11 @@ class NavigatorNode(Node):
             self._cur_seg_idx = len(self._segments)
             return
 
-        wp = self._waypoints[self._cur_wp_idx]
+        # Reuse the ENU target the planner already cached on the
+        # segment — same value as enu_from_gps(wp['lat'], wp['lng'], …)
+        # but skips the per-tick lat/lon conversion.
         antenna_e, antenna_n = self._estimator.antenna_position()
-        target_e, target_n = enu_from_gps(wp['lat'], wp['lng'], self._ref_lat, self._ref_lon)
+        target_e, target_n = self._segments[self._cur_seg_idx].target_antenna
         dist = hypot(target_e - antenna_e, target_n - antenna_n)
 
         wp_tol = self.get_parameter('waypoint_tolerance').value

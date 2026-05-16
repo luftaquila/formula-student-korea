@@ -29,7 +29,3 @@ float battery_read_voltage(void) {
     float v_adc = ((float)sum / (float)BATTERY_OVERSAMPLE_N) * ADC_VREF_V / ADC_RESOLUTION;
     return v_adc * BATTERY_DIVIDER * BATTERY_CAL_GAIN;
 }
-
-bool battery_is_undervolt(void) {
-    return battery_read_voltage() < BATTERY_UNDERVOLT_V;
-}

@@ -82,6 +82,8 @@ def bridge():
     node._odom_yaw = 0.0
     node._last_telemetry_t = None
     node._line_buf = b''
+    node._ack_kwargs_cache = None
+    node._last_wdt_reboot = None
 
     # Patches for ROS Node helpers
     node.get_parameter = lambda name: type('P', (), {'value': node._params[name]})()

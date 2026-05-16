@@ -1,16 +1,11 @@
 """Tests for antenna_calibration module.
 
-The two solvers are the load-bearing pieces:
+`solve_antenna_offset_circular` is the load-bearing piece — closed-form
+(a_x, a_y) from a known constant-curvature orbit drive, used by the live
+calibration drive. Doesn't depend on instantaneous chassis ψ; only orbit
+geometry.
 
-  * `solve_antenna_offset` — legacy single-pass closed-form LSQ on
-    (chassis_xy, ψ, antenna_obs) tuples. Used for on-disk dump format and
-    test fixtures with synthetic chassis poses.
-
-  * `solve_antenna_offset_circular` — closed-form (a_x, a_y) from a known
-    constant-curvature orbit drive. Used by the live calibration drive.
-    Doesn't depend on instantaneous chassis ψ — only orbit geometry.
-
-If either regresses, auto-cal silently produces a wrong offset and every
+If it regresses, auto-cal silently produces a wrong offset and every
 subsequent mission misses its target.
 """
 
@@ -24,35 +19,11 @@ from pilot.lib.antenna_calibration import (
     ANTENNA_OFFSET_FILENAME,
     OFFSET_BOUND_M,
     SOLVE_MIN_SAMPLES,
-    SOLVE_PSI_SPREAD_MIN_RAD,
     antenna_offset_path,
     load_antenna_offset,
     save_antenna_offset,
-    solve_antenna_offset,
     solve_antenna_offset_circular,
 )
-
-
-def _synthesize_samples(true_a_x, true_a_y, n=80, noise_xy_m=0.0, seed=42):
-    """Generate (chassis_pose, antenna_obs) samples for a known offset.
-
-    Chassis traces a smooth function of time with mild ψ excitation —
-    matches the legacy 5-tuple LSQ's required input.
-    """
-    rng = random.Random(seed)
-    samples = []
-    for i in range(n):
-        t = i * 0.1
-        psi = 0.8 * (0.5 - (i / n)) ** 2 - 0.1
-        x_c = 0.5 * t
-        y_c = 0.05 * sin(2 * pi * t / 4.0)
-        a_obs_x = x_c + cos(psi) * true_a_x - sin(psi) * true_a_y
-        a_obs_y = y_c + sin(psi) * true_a_x + cos(psi) * true_a_y
-        if noise_xy_m > 0.0:
-            a_obs_x += rng.gauss(0.0, noise_xy_m)
-            a_obs_y += rng.gauss(0.0, noise_xy_m)
-        samples.append((x_c, y_c, psi, a_obs_x, a_obs_y))
-    return samples
 
 
 def _synthesize_circular_samples(true_a_x, true_a_y, *, radius_m=1.0, n=80,
@@ -81,114 +52,6 @@ def _synthesize_circular_samples(true_a_x, true_a_y, *, radius_m=1.0, n=80,
             a_obs_y += rng.gauss(0.0, noise_xy_m)
         samples.append((cx, cy, psi, a_obs_x, a_obs_y))
     return samples
-
-
-class TestSolverClean:
-    def test_recovers_known_offset_zero_noise(self):
-        # If the math is right, zero-noise samples must round-trip the
-        # input offset to within floating point.
-        true_a_x, true_a_y = 0.30, 0.05
-        samples = _synthesize_samples(true_a_x, true_a_y, n=80, noise_xy_m=0.0)
-        result = solve_antenna_offset(samples)
-        assert result['reason'] is None
-        assert isclose(result['a_x'], true_a_x, abs_tol=1e-6)
-        assert isclose(result['a_y'], true_a_y, abs_tol=1e-6)
-        assert result['rms_residual_m'] < 1e-6
-        assert result['samples'] == 80
-
-    def test_recovers_negative_offsets(self):
-        # The solver must work for a_y < 0 (antenna mounted to the right
-        # of centerline) without sign confusion.
-        samples = _synthesize_samples(0.40, -0.12, n=60)
-        result = solve_antenna_offset(samples)
-        assert result['reason'] is None
-        assert isclose(result['a_x'], 0.40, abs_tol=1e-6)
-        assert isclose(result['a_y'], -0.12, abs_tol=1e-6)
-
-    def test_rear_axle_antenna_zero_offset(self):
-        # Edge case: antenna at the rear axle. Solver must report (0, 0)
-        # cleanly rather than picking up numerical drift from the
-        # constant-zero u vectors.
-        samples = _synthesize_samples(0.0, 0.0, n=60)
-        result = solve_antenna_offset(samples)
-        assert result['reason'] is None
-        assert abs(result['a_x']) < 1e-9
-        assert abs(result['a_y']) < 1e-9
-
-
-class TestSolverNoisy:
-    def test_recovers_offset_with_field_grade_gps_noise(self):
-        # ZED-F9P RTK fixed positioning is ~1 cm 1σ at the antenna. With 60
-        # samples the legacy solver should still land within a few cm of
-        # truth on synthetic data — the field requirement is ~3 cm to keep
-        # the antenna within waypoint_tolerance.
-        samples = _synthesize_samples(0.30, 0.05, n=60, noise_xy_m=0.01)
-        result = solve_antenna_offset(samples)
-        assert result['reason'] is None
-        assert abs(result['a_x'] - 0.30) < 0.05
-        assert abs(result['a_y'] - 0.05) < 0.05
-
-
-class TestSolverGates:
-    def test_too_few_samples(self):
-        samples = _synthesize_samples(0.3, 0.0, n=SOLVE_MIN_SAMPLES - 1)
-        result = solve_antenna_offset(samples)
-        assert 'too few' in result['reason']
-
-    def test_residual_above_gate_rejected(self):
-        # Inject heavy Gaussian noise so residual RMS exceeds the gate. The
-        # solver must return a `reason` rather than persisting a poor fit.
-        samples = _synthesize_samples(0.3, 0.0, n=80, noise_xy_m=0.20)
-        result = solve_antenna_offset(samples)
-        assert result['reason'] is not None
-        assert 'residual' in result['reason'].lower()
-
-    def test_offset_out_of_bounds_rejected(self):
-        # If chassis pose drifts wildly (encoder slip), the solver might
-        # land on a physically impossible offset. Reject before persisting.
-        samples = _synthesize_samples(2.5, 0.0, n=60)  # a_x > OFFSET_BOUND_M
-        result = solve_antenna_offset(samples)
-        assert result['reason'] is not None
-        assert 'out of bounds' in result['reason']
-
-    def test_near_constant_psi_rejected(self):
-        # A drive that failed to execute (encoder stall, mid-drive E-Stop)
-        # leaves a sample set with effectively no ψ rotation. The solver
-        # would silently absorb chassis-pose origin error into a_x/a_y
-        # without this gate.
-        samples = []
-        for i in range(60):
-            psi = 0.10 + 1e-3 * (i / 60)  # ~0.001 rad spread, far below gate
-            x_c = 0.05 * i
-            y_c = 0.0
-            a_obs_x = x_c + cos(psi) * 0.30 - sin(psi) * 0.05
-            a_obs_y = y_c + sin(psi) * 0.30 + cos(psi) * 0.05
-            samples.append((x_c, y_c, psi, a_obs_x, a_obs_y))
-        result = solve_antenna_offset(samples)
-        assert result['reason'] is not None
-        assert 'ψ excitation' in result['reason']
-
-    def test_psi_spread_wraps_across_pi_handled(self):
-        # ψ samples that cross the ±π boundary (e.g. driving with chassis
-        # already pointing near south). Naïve max−min on raw angles would
-        # compute spread ≈ 2π and pass the gate even when actual rotation
-        # is tiny. The solver unwraps before checking.
-        samples = []
-        for i in range(60):
-            if i % 2 == 0:
-                psi = pi - 0.005
-            else:
-                psi = -pi + 0.005
-            x_c = 0.05 * i
-            y_c = 0.0
-            a_obs_x = x_c + cos(psi) * 0.30 - sin(psi) * 0.05
-            a_obs_y = y_c + sin(psi) * 0.30 + cos(psi) * 0.05
-            samples.append((x_c, y_c, psi, a_obs_x, a_obs_y))
-        result = solve_antenna_offset(samples)
-        # Real ψ excitation is ~0.01 rad — must be rejected, not promoted
-        # to ~6.28 rad by a wrap.
-        assert result['reason'] is not None
-        assert 'ψ excitation' in result['reason']
 
 
 class TestCircularSolverClean:

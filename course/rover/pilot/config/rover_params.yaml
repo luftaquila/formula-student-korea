@@ -114,7 +114,6 @@ navigator_node:
     settle_timeout: 2.0                # seconds. SETTLING confirms N consecutive readings inside settle_tol after cm_capture fires — chassis is already stopped (cmd v=0). 2 s = settle_readings (8) × 50 ms window plus RTK-noise headroom; longer was idle waste.
     spray_timeout: 5.0                 # seconds to wait for spray_done before auto-skip
     stuck_timeout: 12.0                # seconds without progress before retry/skip
-    stuck_max_retries: 2
 
     # ── Calibration quality gates ───────────────────────────────────────
     calibration_distance: 2.5          # meters of straight drive

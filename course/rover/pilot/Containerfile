@@ -3,8 +3,10 @@
 #
 # Built by .github/workflows/rover-pilot-image.yml and pushed to
 # ghcr.io/luftaquila/fsk-rover-pilot:{candidate,edge,vX.Y.Z}.
-# Pulled at runtime by the host's pilot.container quadlet unit
-# (see course/rover/host/files/etc/containers/systemd/pilot.container).
+# Pulled at runtime by the host's pilot.service systemd unit
+# (see course/rover/host/files/usr/lib/systemd/system/pilot.service),
+# which invokes /usr/local/bin/pilot-run to `podman run` this image
+# with only the /dev nodes actually present.
 
 FROM docker.io/ros:jazzy-ros-base
 
@@ -27,7 +29,7 @@ RUN bash -lc '. /opt/ros/jazzy/setup.bash \
     && colcon build --merge-install --packages-select pilot'
 
 # Battery calibration is bind-mounted from the host at /var/lib/pilot
-# (see pilot.container Volume= directive).
+# (see pilot-run's --volume /var/lib/pilot:/var/lib/pilot flag).
 ENV PILOT_STATE_DIR=/var/lib/pilot
 
 # Opt this container in to `podman auto-update` (driven by the host's
