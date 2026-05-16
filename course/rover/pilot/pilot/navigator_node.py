@@ -144,7 +144,7 @@ class NavigatorNode(Node):
         self.declare_parameter('waypoint_tolerance', 0.05)
         self.declare_parameter('settle_tolerance', 0.03)
         self.declare_parameter('settle_readings', 8)
-        self.declare_parameter('settle_timeout', 12.0)
+        self.declare_parameter('settle_timeout', 2.0)
         self.declare_parameter('spray_timeout', 5.0)
         self.declare_parameter('stuck_timeout', 12.0)
         self.declare_parameter('stuck_max_retries', 2)
@@ -208,7 +208,7 @@ class NavigatorNode(Node):
         # waypoint cm-tolerance budget — anything sloppier and the
         # mission errors out instead of plotting the antenna onto a
         # potentially-drifted estimate.
-        self.declare_parameter('fix_accept_float_max_h_acc_mm', 20)
+        self.declare_parameter('fix_accept_float_max_h_acc_mm', 0)
         self.declare_parameter('return_to_start', True)
         # Battery thresholds. The MCU has its own hard cutoff at
         # BATTERY_UNDERVOLT_V (20 V); these gate the navigator earlier so
@@ -399,19 +399,6 @@ class NavigatorNode(Node):
 
     # ── helpers ──────────────────────────────────────────────────────────
 
-    def _safe_destroy_timer(self, timer):
-        if timer is None:
-            return None
-        try:
-            timer.cancel()
-        except Exception:
-            pass
-        try:
-            self.destroy_timer(timer)
-        except Exception:
-            pass
-        return None
-
     def _has_required_fix(self):
         required = self.get_parameter('required_fix_status').value
         if has_required_fix_status(self._gps_fix_status, required):
@@ -436,8 +423,6 @@ class NavigatorNode(Node):
             'cruise_speed': p('cruise_speed').value,
             'approach_speed': p('approach_speed').value,
             'max_curvature': p('max_curvature').value,
-            'wheelbase': p('wheelbase').value,
-            'max_steering_angle_rad': self._max_steer_rad,
             'l1_cm_capture_m': p('l1_cm_capture_m').value,
             'l1_brake_zone_m': p('l1_brake_zone_m').value,
             'l1_min_speed_m_s': p('l1_min_speed_m_s').value,

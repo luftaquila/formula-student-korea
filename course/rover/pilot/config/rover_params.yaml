@@ -150,6 +150,12 @@ navigator_node:
     # navigator HOLDS POSITION whenever the fix degrades and only resumes
     # once rtk_fixed is restored.
     fix_accept_float_max_h_acc_mm: 0
+    # After fix recovers from a bad-fix excursion, the navigator holds
+    # ERROR state for this many seconds before resuming NAVIGATING.
+    # RTK fixes around the recovery edge can momentarily report
+    # 'fixed' before settling — the hysteresis avoids a flap that
+    # would trigger a position jump correction mid-mission.
+    fix_recovery_hold_s: 3.0
     return_to_start: true
 
     # Battery state-of-charge gates (the MCU has its own hard cutoff at

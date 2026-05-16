@@ -236,16 +236,6 @@ def test_publish_state_dedup(nav):
     assert len(calls) <= 1
 
 
-def test_safe_destroy_timer_idempotent(nav):
-    t = nav.create_timer(1.0, lambda: None)
-    assert nav._safe_destroy_timer(t) is None
-    assert nav._safe_destroy_timer(t) is None
-
-
-def test_safe_destroy_timer_none_ok(nav):
-    assert nav._safe_destroy_timer(None) is None
-
-
 def test_emergency_stop_goes_to_estop(nav):
     nav._state = State.NAVIGATING
     nav._on_emergency_stop(None)
