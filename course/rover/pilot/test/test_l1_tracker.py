@@ -65,7 +65,6 @@ def _seg(target=(0.0, 0.0), idx=0):
         end_pose=target + (0.0,),
         target_antenna=target,
         waypoint_index=idx,
-        direction=1,
     )
 
 
@@ -333,7 +332,5 @@ class TestReset:
     def test_reset_clears_kturn_state(self):
         t = L1Tracker(_PARAMS)
         t._kturn_active = True
-        t._last_v_cmd = 3.0
         t.reset()
         assert t._kturn_active is False
-        assert t._last_v_cmd == _PARAMS['approach_speed']

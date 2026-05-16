@@ -80,16 +80,12 @@ class L1Tracker:
         self._kturn_exit_dist_m = float(
             params.get('l1_kturn_exit_dist_m', 0.50))
 
-        # Cached last commanded forward speed — used by the navigator
-        # for diagnostic trace output. No control consequence.
-        self._last_v_cmd = self._approach_speed
         self._kturn_active = False
 
     def reset(self):
         """Clear latched K-turn state. Called by the navigator on
         segment advance and after stuck-handler intervention.
         """
-        self._last_v_cmd = self._approach_speed
         self._kturn_active = False
 
     def _antenna_world(self, chassis_pose):
@@ -121,7 +117,6 @@ class L1Tracker:
 
         target_dist = hypot(tx - ax, ty - ay)
         if target_dist <= self._cm_capture:
-            self._last_v_cmd = self._approach_speed
             self._kturn_active = False
             return 0.0, 0.0, 'reached'
 
@@ -159,7 +154,6 @@ class L1Tracker:
                             else self._max_curvature)
             else:
                 kappa_kt = 0.0
-            self._last_v_cmd = self._approach_speed
             return -self._approach_speed, \
                 self._clamp_curvature(kappa_kt), 'tracking'
 
@@ -182,5 +176,4 @@ class L1Tracker:
                 self._cruise_speed - self._min_speed)
         speed_d = v_des * cos(eta)
         kappa_d = self._clamp_curvature(tan(eta) / self._a_x)
-        self._last_v_cmd = abs(speed_d)
         return speed_d, kappa_d, 'tracking'

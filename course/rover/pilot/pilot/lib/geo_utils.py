@@ -1,13 +1,13 @@
 """Geographic and planar utility functions.
 
-Mixes two angle conventions because both are needed:
-- *compass bearing*: 0 = North, CW positive (radians). Matches u-blox `headMot`
-  and the lat/lon → bearing()/haversine() helpers below.
-- *math angle*: 0 = East, CCW positive (radians). Used by every controller in
-  pilot/lib/* because it lines up with `atan2(north, east)` on local ENU and
-  with the standard bicycle kinematics derivation.
+Two angle conventions in use across the rover stack:
+- *compass bearing*: 0 = North, CW positive (radians). Matches u-blox
+  `headMot`.
+- *math angle*: 0 = East, CCW positive (radians). Used by every controller
+  in pilot/lib/* because it lines up with `atan2(north, east)` on local
+  ENU and with the standard bicycle kinematics derivation.
 
-Convert at the GPS boundary with `compass_to_math` / `math_to_compass`; never
+GPS-reported headings cross the boundary via `compass_to_math`; never
 mix the two inside a single computation.
 """
 
@@ -24,16 +24,6 @@ def haversine(lat1, lon1, lat2, lon2):
     return R_EARTH * 2 * atan2(sqrt(a), sqrt(1 - a))
 
 
-def bearing(lat1, lon1, lat2, lon2):
-    """Initial bearing from point 1 to point 2 in radians (0=North, CW positive)."""
-    dlon = radians(lon2 - lon1)
-    rlat1 = radians(lat1)
-    rlat2 = radians(lat2)
-    x = sin(dlon) * cos(rlat2)
-    y = cos(rlat1) * sin(rlat2) - sin(rlat1) * cos(rlat2) * cos(dlon)
-    return atan2(x, y)
-
-
 def enu_from_gps(lat, lon, ref_lat, ref_lon):
     """Convert GPS (lat, lon) to local East-North-Up (meters) relative to reference point.
 
@@ -47,7 +37,12 @@ def enu_from_gps(lat, lon, ref_lat, ref_lon):
 
 
 def gps_from_enu(east, north, ref_lat, ref_lon):
-    """Convert local ENU (meters) back to GPS (lat, lon)."""
+    """Convert local ENU (meters) back to GPS (lat, lon).
+
+    Inverse of `enu_from_gps`; used by tests to synthesise GPS samples
+    from a desired ENU pose. Production code only ever needs the
+    forward direction.
+    """
     lat = ref_lat + degrees(north / R_EARTH)
     lon = ref_lon + degrees(east / (R_EARTH * cos(radians(ref_lat))))
     return lat, lon
@@ -62,38 +57,19 @@ def normalize_angle(angle):
     return angle
 
 
-# ── frame conversions ──────────────────────────────────────────────────────
-
 def compass_to_math(compass_rad):
     """Compass bearing (0=N, CW+) → math angle (0=E, CCW+)."""
     return normalize_angle(pi / 2 - compass_rad)
 
 
 def math_to_compass(math_rad):
-    """Math angle (0=E, CCW+) → compass bearing (0=N, CW+)."""
-    return normalize_angle(pi / 2 - math_rad)
+    """Math angle (0=E, CCW+) → compass bearing (0=N, CW+).
 
-
-# ── ENU planar helpers ────────────────────────────────────────────────────
-
-def offset_point(x, y, distance, math_angle):
-    """Return ENU point at `distance` meters along `math_angle` from (x, y)."""
-    return x + distance * cos(math_angle), y + distance * sin(math_angle)
-
-
-def project_onto_line(px, py, ax, ay, math_angle):
-    """Project point (px, py) onto line through (ax, ay) with math_angle.
-
-    Returns (along, lateral): `along` is signed distance along the line
-    (positive = same direction as `math_angle`), `lateral` is signed cross-
-    track (positive = path is to the LEFT of the chassis when chassis is
-    facing math_angle, i.e. CCW from path direction).
+    Inverse of `compass_to_math`; used by tests to fabricate the
+    synthetic GPS heading messages the estimator expects. Production
+    only ever converts compass→math at the GPS boundary.
     """
-    cos_a, sin_a = cos(math_angle), sin(math_angle)
-    dx, dy = px - ax, py - ay
-    along = dx * cos_a + dy * sin_a
-    lateral = -dx * sin_a + dy * cos_a
-    return along, lateral
+    return normalize_angle(pi / 2 - math_rad)
 
 
 def fit_chord_heading(points):

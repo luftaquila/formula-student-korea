@@ -147,7 +147,6 @@ class NavigatorNode(Node):
         self.declare_parameter('settle_timeout', 2.0)
         self.declare_parameter('spray_timeout', 5.0)
         self.declare_parameter('stuck_timeout', 12.0)
-        self.declare_parameter('stuck_max_retries', 2)
 
         # Calibration quality gates.
         self.declare_parameter('calibration_distance', 2.5)

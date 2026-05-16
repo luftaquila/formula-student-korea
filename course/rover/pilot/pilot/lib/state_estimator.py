@@ -285,10 +285,3 @@ class ChassisPoseEstimator:
             self.x + cp * self.a_x - sp * self.a_y,
             self.y + sp * self.a_x + cp * self.a_y,
         )
-
-    def antenna_offset_world(self, psi=None):
-        """Return the antenna→chassis offset in world frame for a given ψ."""
-        if psi is None:
-            psi = self.psi
-        cp, sp = cos(psi), sin(psi)
-        return cp * self.a_x - sp * self.a_y, sp * self.a_x + cp * self.a_y

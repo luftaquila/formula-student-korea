@@ -33,27 +33,22 @@ from pilot.lib.geo_utils import enu_from_gps, normalize_angle
 
 class PathSegment:
     __slots__ = ('start_pose', 'end_pose', 'target_antenna',
-                 'waypoint_index', 'direction')
+                 'waypoint_index')
 
     def __init__(self, start_pose, end_pose, target_antenna,
-                 waypoint_index, direction=1):
+                 waypoint_index):
         # *_pose: (x, y, psi_math). Both ψ values carry the corridor
         #     heading from start to end (ψ_dock).
         # target_antenna: (e, n) ENU of the antenna's intended landing point
         # waypoint_index: 0-based index into the original waypoint list, or
         #                 -1 for the synthetic return-to-start segment.
-        # direction: +1 forward (the only direction the planner emits;
-        #     reverse manoeuvres are an internal L1Tracker recovery action
-        #     and not represented at the segment level).
         self.start_pose = start_pose
         self.end_pose = end_pose
         self.target_antenna = target_antenna
         self.waypoint_index = waypoint_index
-        self.direction = int(direction)
 
     def __repr__(self):  # pragma: no cover - debug only
-        sign = '+' if self.direction >= 0 else '-'
-        return (f'PathSegment({sign} wp={self.waypoint_index} '
+        return (f'PathSegment(wp={self.waypoint_index} '
                 f'start={self.start_pose} end={self.end_pose})')
 
 
@@ -92,7 +87,7 @@ def plan(current_chassis_pose, antenna_offset,
     to-current bearing instead — same dock_psi every replan.
     """
     ref_lat, ref_lon = ref_lat_lon
-    cur_x, cur_y, cur_psi = current_chassis_pose
+    cur_x, cur_y, _ = current_chassis_pose
 
     wp_enu = [enu_from_gps(wp['lat'], wp['lng'], ref_lat, ref_lon)
               for wp in waypoints_lat_lng]
@@ -115,7 +110,7 @@ def plan(current_chassis_pose, antenna_offset,
         # tight replan landing right on top of the next WP). L1Tracker
         # handles cm-capture immediately on the next tick.
         if hypot(dock_x - cur_x, dock_y - cur_y) < 1e-3:
-            cur_x, cur_y, cur_psi = dock_x, dock_y, psi_dock
+            cur_x, cur_y = dock_x, dock_y
             prev_target = (wp_e, wp_n)
             continue
 
@@ -130,12 +125,11 @@ def plan(current_chassis_pose, antenna_offset,
             (dock_x, dock_y, psi_dock),
             (wp_e, wp_n),
             seg_wp_idx,
-            direction=1,
         ))
 
         # Advance the running pose to the WP's dock_pose — the chassis
         # will (approximately) be there when the next segment begins.
-        cur_x, cur_y, cur_psi = dock_x, dock_y, psi_dock
+        cur_x, cur_y = dock_x, dock_y
         prev_target = (wp_e, wp_n)
 
     if return_to_start and start_chassis_xy is not None:
@@ -150,7 +144,6 @@ def plan(current_chassis_pose, antenna_offset,
                 (dock_x, dock_y, psi_dock),
                 (start_x, start_y),
                 -1,
-                direction=1,
             ))
 
     return segments
