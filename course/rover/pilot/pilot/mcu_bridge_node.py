@@ -259,6 +259,13 @@ class McuBridgeNode(Node):
             Empty, '/rover/cmd/clear_emergency', reliable)
         # Last seen hardware-estop bit so we only emit on edges.
         self._last_hw_estop = None
+        # Last seen FLAG_HW_WDT_REBOOT bit (telemetry bit 5). Edge-
+        # logged on the first telemetry tick after the MCU comes up so
+        # an unattended watchdog reboot leaves a trace in journalctl
+        # instead of disappearing silently. None on startup = "we
+        # haven't seen the first tick yet"; transitions to True/False
+        # after.
+        self._last_wdt_reboot = None
 
         self._open_serial()
 
@@ -682,6 +689,19 @@ class McuBridgeNode(Node):
         # up. Initial unknown -> known transition: only emit on a known
         # rising edge, so a pilot restart that comes up with the button
         # already pressed doesn't replay a stale press.
+        # FLAG_HW_WDT_REBOOT (bit 5). Edge-log on the FIRST telemetry
+        # tick after the MCU comes up. The bit stays high for the
+        # session once the SDK's watchdog_caused_reboot() returns true,
+        # so we only ever fire this log once per pilot run, which is
+        # exactly what we want for "did the MCU just hard-reset?"
+        # observability.
+        wdt_reboot = bool(flags & 0x20)
+        if self._last_wdt_reboot is None and wdt_reboot:
+            self.get_logger().warn(
+                'MCU reports last boot was a watchdog reset '
+                '(FLAG_HW_WDT_REBOOT)')
+        self._last_wdt_reboot = wdt_reboot
+
         hw_estop = bool(flags & 0x01)
         if self._last_hw_estop is False and hw_estop:
             self.get_logger().warn(
