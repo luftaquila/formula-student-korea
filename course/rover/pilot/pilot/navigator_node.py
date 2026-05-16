@@ -1578,28 +1578,15 @@ class NavigatorNode(Node):
                 # trace: 7 cm → 161 cm spiral away). The correct
                 # response is to let L1's internal reverse-recovery
                 # cycle the chassis back behind the target and
-                # re-approach. Two branches by distance:
-                #   * dist > l1_close_enough_spray_m: drop back to
-                #     NAVIGATING; L1 keeps trying with reverse-
-                #     recovery, no replan.
-                #   * dist ≤ l1_close_enough_spray_m: accept the
-                #     landing and spray at widened tolerance.
-                close_m = self.get_parameter(
-                    'l1_close_enough_spray_m').value
+                # re-approach. Any antenna→target distance beyond
+                # waypoint_tolerance (3 cm) is a miss — the chassis
+                # retries until it lands within cm_capture or the
+                # mission is stopped. No widened spray tolerance.
                 if self._path_tracker_kind == 'l1':
-                    if dist <= close_m:
-                        self.get_logger().warn(
-                            f'Settle timeout WP{self._cur_wp_idx + 1} '
-                            f'(dist={dist*100:.1f} cm ≤ '
-                            f'{close_m*100:.0f} cm) — '
-                            'accepting landing and spraying'
-                        )
-                        self._trigger_spray()
-                        return
                     self.get_logger().warn(
                         f'Settle timeout WP{self._cur_wp_idx + 1} '
                         f'(dist={dist*100:.1f} cm > '
-                        f'{close_m*100:.0f} cm) — re-engaging L1 '
+                        f'{wp_tol*100:.0f} cm) — re-engaging L1 '
                         'reverse-recovery'
                     )
                     self._settle_count = 0
