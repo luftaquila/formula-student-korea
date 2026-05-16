@@ -1013,7 +1013,17 @@ class L1Tracker:
                 self._kturn_active = False
                 return 0.0, 0.0, 'reached'
 
-            bearing = atan2(ty - y, tx - x)
+            # Antenna-as-unicycle controller. The controlled point is
+            # the ANTENNA, not the chassis. bearing is measured from
+            # the antenna position (already antenna-frame, so a chassis
+            # crossing the target doesn't flip bearing by ±180° — only
+            # an actual antenna crossing does). The forward leg below
+            # then uses an exact Ackermann↔unicycle transform so that
+            # the antenna closes on target_antenna in a smooth tangent
+            # arc instead of the chassis chasing a geometrically
+            # divergent bearing while the antenna sweeps past on a
+            # 36 cm offset arc.
+            bearing = atan2(ty - ay, tx - ax)
             eta_d = normalize_angle(bearing - psi)
             abs_eta = abs(eta_d)
 
@@ -1055,17 +1065,33 @@ class L1Tracker:
                 return -self._approach_speed, \
                     self._clamp_curvature(kappa_kt), 'tracking'
 
-            # Forward heading-only P control: κ ∝ η.
-            kappa_d = self._clamp_curvature(2.0 * eta_d)
-            # Speed: linear brake from cruise_speed at the zone edge
-            # down to min_speed at the target.
+            # Forward leg — exact Ackermann↔unicycle transform from
+            # Aicardi-Casalino-Bicchi-Balestrino (1995), specialised to
+            # an antenna mounted L metres ahead of the rear axle on the
+            # chassis x-axis. The math:
+            #   For a unicycle at the antenna point to move along the
+            #   bearing vector to target with speed v_des, the chassis
+            #   must satisfy:
+            #     v_chassis · cos(eta) = v_des  (along-bearing component)
+            #     v_chassis · sin(eta) = L · ψ̇ (perpendicular ↔ rotation)
+            #   The standard rear-axle kinematics gives ψ̇ = v_chassis ·
+            #   κ_chassis, so:
+            #     v_chassis  = v_des · cos(eta)
+            #     κ_chassis  = tan(eta) / L
+            # Note the elegance: cos(eta) naturally drops v to zero as
+            # eta→90° (antenna sideways to chassis), so the chassis
+            # never tries to "drive sideways" through a saturated κ.
+            # Outside the K-turn entry threshold (|eta|<60°) cos stays
+            # above 0.5, so v_chassis stays solidly positive and the
+            # tan(eta) term clamps cleanly against max_curvature.
+            v_des = self._cruise_speed
             if target_dist_direct < self._brake_zone_m:
                 t_ramp = target_dist_direct / self._brake_zone_m
-                speed_d = self._min_speed + t_ramp * (
+                v_des = self._min_speed + t_ramp * (
                     self._cruise_speed - self._min_speed)
-            else:
-                speed_d = self._cruise_speed
-            self._last_v_cmd = speed_d
+            speed_d = v_des * cos(eta_d)
+            kappa_d = self._clamp_curvature(tan(eta_d) / self._a_x)
+            self._last_v_cmd = abs(speed_d)
             return speed_d, kappa_d, 'tracking'
 
         # Degenerate path: start ≈ end (e.g. tight replan).
