@@ -152,6 +152,13 @@ class McuBridgeNode(Node):
 
         self._validate_params()
 
+        # Cached ackermann conversion kwargs. The set of params here are
+        # rig constants (wheelbase, track, steer-angle, servo geometry,
+        # max_speed); rebuilding the dict + math.radians on every 20 Hz
+        # velocity / manual tick was pure waste. _on_param_change
+        # invalidates this if any of these gets ros2-param-set live.
+        self._ack_kwargs_cache = None
+
         # State
         self._mode = 'stopped'
         self._last_cmd_t = 0.0
@@ -295,11 +302,16 @@ class McuBridgeNode(Node):
         """
         push_pid = False
         push_mode = False
+        invalidate_ack = False
         for p in params:
             if p.name in ('pid_kp', 'pid_ki', 'pid_kd'):
                 push_pid = True
             elif p.name == 'use_pid':
                 push_mode = True
+            elif p.name in self._ACK_PARAMS:
+                invalidate_ack = True
+        if invalidate_ack:
+            self._ack_kwargs_cache = None
         # ROS rejects type-mismatched assignments before this callback
         # fires, and we trust value bounds to gain sanity (kp ≤ 5 etc.)
         # at the operator level — the MCU clamps PID output to ±1.0
@@ -417,15 +429,22 @@ class McuBridgeNode(Node):
             return target_speed
         return self._cur_speed + math.copysign(max_delta, diff)
 
+    _ACK_PARAMS = ('wheelbase', 'track_width', 'max_speed',
+                   'max_steering_angle_deg',
+                   'servo_center_us', 'servo_range_us')
+
     def _ackermann_kwargs(self):
-        return dict(
-            wheelbase=self._p('wheelbase'),
-            track_width=self._p('track_width'),
-            max_speed=self._p('max_speed'),
-            max_steering_angle_rad=math.radians(self._p('max_steering_angle_deg')),
-            servo_center_us=self._p('servo_center_us'),
-            servo_range_us=self._p('servo_range_us'),
-        )
+        if self._ack_kwargs_cache is None:
+            self._ack_kwargs_cache = dict(
+                wheelbase=self._p('wheelbase'),
+                track_width=self._p('track_width'),
+                max_speed=self._p('max_speed'),
+                max_steering_angle_rad=math.radians(
+                    self._p('max_steering_angle_deg')),
+                servo_center_us=self._p('servo_center_us'),
+                servo_range_us=self._p('servo_range_us'),
+            )
+        return self._ack_kwargs_cache
 
     # ------------------------- ROS callbacks
 
