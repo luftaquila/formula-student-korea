@@ -64,8 +64,6 @@ class TestSingleWaypoint:
         seg = segments[0]
         expected = atan2(4.0, 3.0)
         assert isclose(seg.end_pose[2], expected, abs_tol=1e-6)
-        # start_pose carries the corridor direction too.
-        assert isclose(seg.start_pose[2], expected, abs_tol=1e-6)
 
     def test_target_antenna_equals_waypoint(self):
         segments = plan(

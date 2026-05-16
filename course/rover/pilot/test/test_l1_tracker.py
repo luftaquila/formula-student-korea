@@ -57,11 +57,10 @@ _PARAMS = {
 def _seg(target=(0.0, 0.0), idx=0):
     """Build a minimal PathSegment for a tracker step.
 
-    L1Tracker only reads `target_antenna` and `waypoint_index`; the
-    start/end poses are kept for navigator-side trace plumbing.
+    L1Tracker only reads `target_antenna`; `end_pose` is for the
+    navigator's stuck-detection progress check.
     """
     return PathSegment(
-        start_pose=(0.0, 0.0, 0.0),
         end_pose=target + (0.0,),
         target_antenna=target,
         waypoint_index=idx,

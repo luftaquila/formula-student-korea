@@ -8,8 +8,6 @@ crosses the target.
 
 One PathSegment per waypoint, consumed by L1Tracker:
 
-  - start_pose: the chassis pose at the start of the segment (live chassis
-    pose for the first WP, the previous WP's dock_pose for subsequent WPs).
   - end_pose:   the cur WP's dock_pose — the chassis pose that puts the
     antenna on target.
   - target_antenna: the antenna landing point (the WP itself).
@@ -32,24 +30,23 @@ from pilot.lib.geo_utils import enu_from_gps, normalize_angle
 
 
 class PathSegment:
-    __slots__ = ('start_pose', 'end_pose', 'target_antenna',
-                 'waypoint_index')
+    __slots__ = ('end_pose', 'target_antenna', 'waypoint_index')
 
-    def __init__(self, start_pose, end_pose, target_antenna,
-                 waypoint_index):
-        # *_pose: (x, y, psi_math). Both ψ values carry the corridor
-        #     heading from start to end (ψ_dock).
-        # target_antenna: (e, n) ENU of the antenna's intended landing point
+    def __init__(self, end_pose, target_antenna, waypoint_index):
+        # end_pose: (x, y, psi_math) chassis dock pose; ψ is the corridor
+        #     heading. Used by the navigator's stuck-detection progress
+        #     check.
+        # target_antenna: (e, n) ENU of the antenna's intended landing point.
+        #     L1Tracker steers the antenna here.
         # waypoint_index: 0-based index into the original waypoint list, or
         #                 -1 for the synthetic return-to-start segment.
-        self.start_pose = start_pose
         self.end_pose = end_pose
         self.target_antenna = target_antenna
         self.waypoint_index = waypoint_index
 
     def __repr__(self):  # pragma: no cover - debug only
         return (f'PathSegment(wp={self.waypoint_index} '
-                f'start={self.start_pose} end={self.end_pose})')
+                f'end={self.end_pose} target={self.target_antenna})')
 
 
 def _dock_chassis_pose(target_e, target_n, psi_dock, antenna_offset):
@@ -114,14 +111,8 @@ def plan(current_chassis_pose, antenna_offset,
             prev_target = (wp_e, wp_n)
             continue
 
-        # start_pose.psi carries the corridor direction (psi_dock), not
-        # the chassis's instantaneous heading. L1Tracker uses it as the
-        # nominal corridor heading for diagnostic projection; the
-        # antenna-as-unicycle controller itself works off chassis ψ
-        # and antenna→target bearing.
         seg_wp_idx = idx + waypoint_index_offset
         segments.append(PathSegment(
-            (cur_x, cur_y, psi_dock),
             (dock_x, dock_y, psi_dock),
             (wp_e, wp_n),
             seg_wp_idx,
@@ -140,7 +131,6 @@ def plan(current_chassis_pose, antenna_offset,
             start_x, start_y, psi_dock, antenna_offset)
         if hypot(dock_x - cur_x, dock_y - cur_y) >= 1e-3:
             segments.append(PathSegment(
-                (cur_x, cur_y, psi_dock),
                 (dock_x, dock_y, psi_dock),
                 (start_x, start_y),
                 -1,
