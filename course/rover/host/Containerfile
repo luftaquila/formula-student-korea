@@ -1,13 +1,14 @@
 # FSK rover host bootc image — AlmaLinux 10 + Raspberry Pi 5 firmware/DTB
 # (bcm2712-rpi-5-b.dtb, kernel_2712.img, /boot/efi assets) + the runtime
 # pieces every rover needs: NetworkManager, sshd, tailscale, podman,
-# udev rules, and the pilot.container quadlet definition.
+# udev rules, and the pilot.service + pilot-run launcher.
 #
 # The pilot ROS workload is NOT in this image. It is a separate OCI
-# image (ghcr.io/luftaquila/fsk-rover-pilot) pulled at runtime by the
-# pilot.container quadlet that this image carries. Lifecycles are
-# decoupled: bootc upgrades roll the host (rare, requires reboot);
-# podman-auto-update rolls the pilot container (frequent, in place).
+# image (ghcr.io/luftaquila/fsk-rover-pilot) pulled at runtime by
+# pilot.service, which invokes /usr/local/bin/pilot-run to probe /dev
+# and `podman run` the pilot container. Lifecycles are decoupled: bootc
+# upgrades roll the host (rare, requires reboot); podman-auto-update
+# rolls the pilot container (frequent, in place).
 #
 # Built by .github/workflows/rover-host-image.yml and pushed to
 # ghcr.io/luftaquila/fsk-rover-host:{candidate,edge,vX.Y.Z}.
