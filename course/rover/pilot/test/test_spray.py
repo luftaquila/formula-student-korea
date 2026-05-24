@@ -82,7 +82,7 @@ def test_emergency_stop_does_not_command_servo(spray, captured_pulses):
     angle on E-stop; the pocket-wheel has no such rest position and
     re-commanding would spill the loaded pocket or hammer the wheel.
     """
-    # Clear any pulses queued by __init__ (boot publishes angle_a).
+    # Clear any pulses queued by __init__ (boot publishes angle_b).
     captured_pulses.clear()
     spray._spraying = True
     spray._current_wp_idx = 7
@@ -156,11 +156,12 @@ def test_spray_cancel_for_stale_wp_noop(spray):
 
 
 def test_toggle_alternates_and_drives_targets(spray, captured_pulses):
-    """Two waypoint triggers must drive angle_b then angle_a.
+    """Two waypoint triggers must drive angle_a then angle_b.
 
-    Boot drives the servo to dispense_angle_a (set in __init__), so the
-    first trigger should rotate TO angle_b. The toggle_state flips each
-    time; the second trigger should rotate back to angle_a.
+    Boot drives the servo to dispense_angle_b (set in __init__), so the
+    first trigger should rotate TO angle_a (load the pocket). The
+    toggle_state flips each time; the second trigger rotates back to
+    angle_b (dump).
     """
     captured_pulses.clear()
     wp1 = type('M', (), {'data': 10})()
@@ -169,19 +170,19 @@ def test_toggle_alternates_and_drives_targets(spray, captured_pulses):
     angle_a = spray.get_parameter('dispense_angle_a').value
     angle_b = spray.get_parameter('dispense_angle_b').value
 
-    # First trigger: state is 0 → drive to angle_b
+    # First trigger: state is 1 → drive to angle_a
     spray._on_waypoint_reached(wp1)
-    assert spray._toggle_state == 1, "state must flip after dispense"
+    assert spray._toggle_state == 0, "state must flip after dispense"
     assert spray._spraying is True
     # Mark the dispense complete so the second trigger isn't blocked.
     spray._signal_done()
     assert spray._spraying is False
 
-    # Second trigger: state is 1 → drive to angle_a
+    # Second trigger: state is 0 → drive to angle_b
     spray._on_waypoint_reached(wp2)
-    assert spray._toggle_state == 0, "state must flip back"
+    assert spray._toggle_state == 1, "state must flip back"
 
-    expected = [_angle_to_pulse_us(angle_b), _angle_to_pulse_us(angle_a)]
+    expected = [_angle_to_pulse_us(angle_a), _angle_to_pulse_us(angle_b)]
     assert captured_pulses == expected, \
         f"expected pulses {expected}, got {captured_pulses}"
 

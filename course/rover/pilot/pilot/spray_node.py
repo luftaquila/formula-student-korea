@@ -75,20 +75,22 @@ class SprayNode(Node):
         self._pub_dispenser = self.create_publisher(
             Int32, '/rover/cmd/dispenser_us', reliable_qos)
 
-        # Drive to angle_a on boot so physical state matches the logical
-        # _toggle_state = 0 (i.e., next dispense will move to angle_b).
-        # Best-effort: the MCU bridge may not yet be ready / connected;
-        # later commands will re-sync the servo regardless.
-        angle_a = self.get_parameter('dispense_angle_a').value
-        self._publish_pulse_us(_angle_to_pulse_us(angle_a))
+        # Drive to angle_b (dump position) on boot so any chalk left in
+        # the pocket from a previous run drops out before the rover
+        # starts moving. Best-effort: the MCU bridge may not yet be
+        # ready / connected; later commands will re-sync the servo
+        # regardless.
+        angle_b = self.get_parameter('dispense_angle_b').value
+        self._publish_pulse_us(_angle_to_pulse_us(angle_b))
 
         # State
         self._spraying = False
         self._dispense_timer = None
         self._current_wp_idx = -1
         # Toggle state: 0 → next dispense rotates to angle_b; 1 → angle_a.
-        # Starts at 0 because boot drove the servo to angle_a above.
-        self._toggle_state = 0
+        # Starts at 1 because boot drove the servo to angle_b above, so
+        # the first waypoint rotates back to angle_a (load the pocket).
+        self._toggle_state = 1
         # Index of the most recent waypoint cancelled by navigator timeout.
         # Guards _signal_done from publishing a stale 'success' result for
         # a waypoint navigator already published 'timeout' for.
@@ -227,11 +229,12 @@ class SprayNode(Node):
         # Intentionally do NOT publish a result here — navigator already did.
 
     def destroy_node(self):
-        # Park the servo at angle_a so subsequent boots align logical and
-        # physical state. Best-effort: MCU bridge may have shut down too.
+        # Park the servo at angle_b (dump) so subsequent boots align
+        # logical and physical state, and any loaded pocket drops on
+        # shutdown. Best-effort: MCU bridge may have shut down too.
         try:
-            angle_a = self.get_parameter('dispense_angle_a').value
-            self._publish_pulse_us(_angle_to_pulse_us(angle_a))
+            angle_b = self.get_parameter('dispense_angle_b').value
+            self._publish_pulse_us(_angle_to_pulse_us(angle_b))
         except Exception:
             pass
         super().destroy_node()
