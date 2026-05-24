@@ -1341,6 +1341,21 @@ app.post("/api/rover/end-mission", (req, res) => {
   res.json({ ended: true, mission_id: endedId });
 });
 
+// POST /api/rover/dispenser - 분필 디스펜서 수동 위치 (load/dump)
+app.post("/api/rover/dispenser", (req, res) => {
+  const { position } = req.body;
+  if (position !== "load" && position !== "dump") {
+    return res.status(400).send("position must be 'load' or 'dump'.");
+  }
+  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!sendRoverEvent("dispenser-set-position", { position })) {
+    logger.warn(req, "rover.dispenser", { error: "write_failed", position }, "rover");
+    return res.status(503).send("로버 연결이 끊어졌습니다.");
+  }
+  logger.log(req, "rover.dispenser", { position }, "rover");
+  res.json({ position });
+});
+
 // POST /api/rover/control - 수동 제어
 app.post("/api/rover/control", (req, res) => {
   const { throttle, steering } = req.body;

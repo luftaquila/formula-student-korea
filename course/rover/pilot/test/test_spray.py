@@ -187,6 +187,45 @@ def test_toggle_alternates_and_drives_targets(spray, captured_pulses):
         f"expected pulses {expected}, got {captured_pulses}"
 
 
+def test_set_position_load_drives_angle_a_and_sets_state_0(spray, captured_pulses):
+    captured_pulses.clear()
+    spray._toggle_state = 1
+    msg = type('M', (), {'data': 'load'})()
+    spray._on_set_position(msg)
+    angle_a = spray.get_parameter('dispense_angle_a').value
+    assert captured_pulses == [_angle_to_pulse_us(angle_a)]
+    assert spray._toggle_state == 0, "next auto-dispense must rotate to dump"
+
+
+def test_set_position_dump_drives_angle_b_and_sets_state_1(spray, captured_pulses):
+    captured_pulses.clear()
+    spray._toggle_state = 0
+    msg = type('M', (), {'data': 'dump'})()
+    spray._on_set_position(msg)
+    angle_b = spray.get_parameter('dispense_angle_b').value
+    assert captured_pulses == [_angle_to_pulse_us(angle_b)]
+    assert spray._toggle_state == 1, "next auto-dispense must rotate to load"
+
+
+def test_set_position_unknown_payload_noop(spray, captured_pulses):
+    captured_pulses.clear()
+    pre = spray._toggle_state
+    msg = type('M', (), {'data': 'banana'})()
+    spray._on_set_position(msg)
+    assert captured_pulses == []
+    assert spray._toggle_state == pre
+
+
+def test_set_position_ignored_while_spraying(spray, captured_pulses):
+    captured_pulses.clear()
+    spray._spraying = True
+    pre = spray._toggle_state
+    msg = type('M', (), {'data': 'load'})()
+    spray._on_set_position(msg)
+    assert captured_pulses == []
+    assert spray._toggle_state == pre
+
+
 def test_waypoint_reached_blocked_while_spraying(spray, captured_pulses):
     """A second trigger arriving while a dispense is in progress is ignored."""
     captured_pulses.clear()

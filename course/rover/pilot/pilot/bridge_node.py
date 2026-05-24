@@ -82,6 +82,7 @@ class BridgeNode(Node):
         self._pub_set_antenna_offset = self.create_publisher(String, '/rover/cmd/set_antenna_offset', reliable_qos)
         self._pub_calibrate_wheels = self.create_publisher(Empty, '/rover/cmd/calibrate_wheels', reliable_qos)
         self._pub_reset_wheel_cal = self.create_publisher(Empty, '/rover/cmd/reset_wheel_cal', reliable_qos)
+        self._pub_dispenser_set_pos = self.create_publisher(String, '/rover/cmd/dispenser_set_position', reliable_qos)
 
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps_position, 10)
@@ -556,6 +557,17 @@ class BridgeNode(Node):
             msg.linear.x = float(payload.get('throttle', 0))
             msg.angular.z = float(payload.get('steering', 0))
             self._pub_manual.publish(msg)
+
+        elif event == 'dispenser-set-position':
+            position = (payload.get('position') or '').strip().lower()
+            if position not in ('load', 'dump'):
+                self.get_logger().warn(
+                    f'dispenser-set-position: bad payload {payload!r}'
+                )
+                return
+            msg = String()
+            msg.data = position
+            self._pub_dispenser_set_pos.publish(msg)
 
         elif event == 'fetch-logs':
             # Upload on a worker thread so the SSE reader loop stays responsive.

@@ -68,6 +68,7 @@ const pathProgress = ref(0);
 const pathDistance = ref(0);
 const manualThrottle = ref(0);
 const manualSteering = ref(0);
+const dispenserBusy = ref(false);
 
 // Rover live status (from SSE rover:status event)
 const roverStatus = ref({
@@ -2074,6 +2075,21 @@ async function sendControl() {
   }
 }
 
+async function setDispenserPosition(position) {
+  if (dispenserBusy.value) return;
+  dispenserBusy.value = true;
+  try {
+    await request("/api/rover/dispenser", {
+      method: "POST",
+      body: JSON.stringify({ position }),
+    });
+  } catch (e) {
+    notifyWarn(`디스펜서 제어 실패: ${e?.message || e}`);
+  } finally {
+    dispenserBusy.value = false;
+  }
+}
+
 // Joystick pointer handling
 let joystickEl = null;
 let joystickRect = null;
@@ -3059,6 +3075,18 @@ onUnmounted(() => {
                         <span class="jl-up">▲</span><span class="jl-down">▼</span>
                         <span class="jl-left">◄</span><span class="jl-right">►</span>
                       </div>
+                    </div>
+                    <div class="dispenser-buttons">
+                      <button
+                        class="dispenser-btn"
+                        :disabled="dispenserBusy"
+                        @click="setDispenserPosition('load')"
+                      >Load</button>
+                      <button
+                        class="dispenser-btn"
+                        :disabled="dispenserBusy"
+                        @click="setDispenserPosition('dump')"
+                      >Dump</button>
                     </div>
                   </div>
                 </template>
@@ -4068,6 +4096,20 @@ onUnmounted(() => {
 .jl-down { position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%); }
 .jl-left { position: absolute; left: 6px; top: 50%; transform: translateY(-50%); }
 .jl-right { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); }
+
+.dispenser-buttons {
+  display: flex; gap: 0.5rem; justify-content: center;
+  margin-top: 0.75rem;
+}
+.dispenser-btn {
+  flex: 1; max-width: 80px;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border-primary); border-radius: 4px;
+  background: var(--bg-secondary); color: var(--text-primary);
+  font-size: 0.8rem; cursor: pointer;
+}
+.dispenser-btn:hover:not(:disabled) { background: var(--bg-tertiary); }
+.dispenser-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Cone edit */
 .coord-inputs { display: flex; flex-direction: column; gap: 0.5rem; }

@@ -25,6 +25,14 @@ Subscribed topics:
                                            EMERGENCY_STOP state (used by
                                            navigator on dispense timeout
                                            to suppress a late _signal_done).
+    /rover/cmd/dispenser_set_position (std_msgs/String) - Operator override
+                                           from the manual-control panel.
+                                           Payload "load" → angle_a (pocket
+                                           up, hopper fills); "dump" →
+                                           angle_b (pocket down, gravity
+                                           dumps). Updates _toggle_state so
+                                           the next auto-dispense stays
+                                           consistent.
 
 Published topics:
     /rover/cmd/dispenser_us (std_msgs/Int32) - Servo pulse width in µs,
@@ -100,6 +108,7 @@ class SprayNode(Node):
         self.create_subscription(Int32, '/rover/nav/waypoint_reached', self._on_waypoint_reached, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_emergency_stop, reliable_qos)
         self.create_subscription(Int32, '/rover/spray/cancel', self._on_spray_cancel, reliable_qos)
+        self.create_subscription(String, '/rover/cmd/dispenser_set_position', self._on_set_position, reliable_qos)
 
         # Publishers
         self._pub_done = self.create_publisher(Empty, '/rover/spray/done', reliable_qos)
@@ -210,6 +219,40 @@ class SprayNode(Node):
         self._spraying = False
         if was_spraying and wp_idx >= 0:
             self._publish_result('cancelled', wp_idx)
+
+    def _on_set_position(self, msg):
+        """Operator manual override: drive the dispenser directly.
+
+        Accepts the string "load" (angle_a, pocket up) or "dump"
+        (angle_b, pocket down). Ignored mid-dispense so it can't race
+        the toggle path. The internal _toggle_state is set so that the
+        NEXT auto-dispense rotates to the OPPOSITE pose, keeping the
+        load/dump alternation consistent after a manual move.
+        """
+        if self._spraying:
+            self.get_logger().info(
+                f'dispenser_set_position ignored while spraying (req={msg.data})'
+            )
+            return
+        position = (msg.data or '').strip().lower()
+        if position == 'load':
+            angle = self.get_parameter('dispense_angle_a').value
+            # state = 0 → next auto-dispense rotates to angle_b (dump)
+            self._toggle_state = 0
+        elif position == 'dump':
+            angle = self.get_parameter('dispense_angle_b').value
+            # state = 1 → next auto-dispense rotates to angle_a (load)
+            self._toggle_state = 1
+        else:
+            self.get_logger().warn(
+                f'dispenser_set_position: unknown payload {msg.data!r}'
+            )
+            return
+        target_us = _angle_to_pulse_us(angle)
+        self.get_logger().info(
+            f'Manual dispenser → {position} ({angle}° = {target_us} µs)'
+        )
+        self._publish_pulse_us(target_us)
 
     def _on_spray_cancel(self, msg):
         """Abort the current dispense cycle without leaving SPRAYING for EMERGENCY_STOP.

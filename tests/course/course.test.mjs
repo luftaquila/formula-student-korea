@@ -487,6 +487,30 @@ describe('POST /api/rover/clear-emergency', () => {
   });
 });
 
+describe('POST /api/rover/dispenser', () => {
+  it('returns 400 when position is missing', async () => {
+    const res = await client.post('/api/rover/dispenser', {
+      cookie: adminCookie,
+      body: {},
+    });
+    assert.equal(res.status, 400);
+  });
+  it('returns 400 when position is not load/dump', async () => {
+    const res = await client.post('/api/rover/dispenser', {
+      cookie: adminCookie,
+      body: { position: 'banana' },
+    });
+    assert.equal(res.status, 400);
+  });
+  it('returns 503 when rover is not connected', async () => {
+    const res = await client.post('/api/rover/dispenser', {
+      cookie: adminCookie,
+      body: { position: 'load' },
+    });
+    assert.equal(res.status, 503);
+  });
+});
+
 describe('POST /api/rover/end-mission', () => {
   // When no mission is in flight (currentMissionId is null), the endpoint
   // is a successful no-op. It must not require the rover to be connected —
