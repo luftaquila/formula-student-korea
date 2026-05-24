@@ -21,7 +21,8 @@ static servo_t g_srv[SERVO_COUNT_];
 // Convert pulse_us to PWM level given current slice config.
 // We pick clkdiv so wrap = SERVO_PERIOD_US, then level = pulse_us directly.
 static void setup_servo(servo_t *s, uint pin,
-                        uint16_t min_us, uint16_t max_us) {
+                        uint16_t min_us, uint16_t max_us,
+                        uint16_t init_us) {
     s->pin    = pin;
     s->min_us = min_us;
     s->max_us = max_us;
@@ -34,19 +35,24 @@ static void setup_servo(servo_t *s, uint pin,
     float div    = sys_hz / 1.0e6f;
     pwm_set_clkdiv(s->slice, div);
     pwm_set_wrap(s->slice, SERVO_PERIOD_US - 1);
-    pwm_set_chan_level(s->slice, s->channel, SERVO_CENTER_US);
+    pwm_set_chan_level(s->slice, s->channel, init_us);
     pwm_set_enabled(s->slice, true);
-    s->target_us  = SERVO_CENTER_US;
-    s->current_us = SERVO_CENTER_US;
+    s->target_us  = init_us;
+    s->current_us = init_us;
 }
 
 void servo_init(void) {
+    // Steering boots centred (S20F linkage rests at center).
     setup_servo(&g_srv[SERVO_STEER],
                 PIN_SERVO_STEER,
-                SERVO_MIN_US, SERVO_MAX_US);
+                SERVO_MIN_US, SERVO_MAX_US,
+                SERVO_CENTER_US);
+    // Dispenser boots in the dump position so any chalk left in the
+    // pocket from a previous run drops out before the rover moves.
     setup_servo(&g_srv[SERVO_DISPENSER],
                 PIN_SERVO_DISPENSER,
-                SERVO_DISPENSER_MIN_US, SERVO_DISPENSER_MAX_US);
+                SERVO_DISPENSER_MIN_US, SERVO_DISPENSER_MAX_US,
+                SERVO_DISPENSER_MAX_US);
 }
 
 void servo_set_target_us(servo_id_t id, uint16_t pulse_us) {
@@ -72,9 +78,12 @@ void servo_tick(void) {
 }
 
 void servo_center_all(void) {
-    for (int i = 0; i < SERVO_COUNT_; i++) {
-        g_srv[i].target_us  = SERVO_CENTER_US;
-        g_srv[i].current_us = SERVO_CENTER_US;
-        pwm_set_chan_level(g_srv[i].slice, g_srv[i].channel, SERVO_CENTER_US);
-    }
+    // Only the steering servo has a meaningful "centre" — the
+    // dispenser's centre is just half-rotation and would land the
+    // pocket sideways. Leave dispenser at whatever pose servo_init
+    // primed it with.
+    servo_t *s = &g_srv[SERVO_STEER];
+    s->target_us  = SERVO_CENTER_US;
+    s->current_us = SERVO_CENTER_US;
+    pwm_set_chan_level(s->slice, s->channel, SERVO_CENTER_US);
 }
