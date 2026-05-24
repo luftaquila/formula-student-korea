@@ -1,78 +1,55 @@
-"""Spray Node: Servo actuator for spray marking at waypoints.
+"""Dispenser Node: chalk-powder pocket-wheel actuator at waypoints.
 
-Controls a standard RC servo via RPi5 GPIO PWM to actuate spray
-at each reached waypoint.
+Drives an MG995 positional servo whose PWM is owned by the rover MCU
+(RP2040-Zero, GPIO 7, slice 3 ch B). This node converts the per-shot
+target angle to a pulse width in microseconds and publishes it on
+/rover/cmd/dispenser_us; mcu_bridge_node forwards verbatim to the MCU
+as 'D <us>' over USB CDC. The MCU clamps + slews the pulse on the
+servo control tick. No GPIO is touched here.
+
+Each waypoint trigger toggles the wheel between two dispense angles
+(A and B); one toggle = one ~5 g shot of powder. The wheel has only
+two valid rest positions (A and B) — there is no return-to-rest. The
+pocket fills under the hopper at one angle and drops over the drop
+port at the other. State alternates per trigger; toggle_state survives
+across waypoints.
+
+Topic names are retained as /rover/spray/* for compatibility with the
+navigator and bridge nodes.
 
 Subscribed topics:
     /rover/nav/waypoint_reached (std_msgs/Int32) - Waypoint index reached
-    /rover/cmd/emergency_stop (std_msgs/Empty) - Cancel spray in progress
-    /rover/spray/cancel (std_msgs/Int32) - Abort spray on a specific waypoint
-                                           without entering EMERGENCY_STOP state
-                                           (used by navigator on spray timeout
+    /rover/cmd/emergency_stop (std_msgs/Empty) - Cancel dispense in progress
+    /rover/spray/cancel (std_msgs/Int32) - Abort dispense on a specific
+                                           waypoint without entering
+                                           EMERGENCY_STOP state (used by
+                                           navigator on dispense timeout
                                            to suppress a late _signal_done).
 
 Published topics:
-    /rover/spray/done (std_msgs/Empty) - Spray cycle complete
+    /rover/cmd/dispenser_us (std_msgs/Int32) - Servo pulse width in µs,
+                                               consumed by mcu_bridge_node
+                                               and forwarded to the MCU.
+    /rover/spray/done (std_msgs/Empty) - Dispense cycle complete
     /rover/spray/result (std_msgs/String) - JSON {waypoint, outcome}
 """
 
 import json
-import os
 
-import lgpio
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Int32, Empty, String
 
-SERVO_FREQUENCY = 50  # 50Hz for standard RC servos
 
+def _angle_to_pulse_us(angle_deg):
+    """Convert servo angle (0-180°) to pulse width in µs.
 
-def _resolve_gpiochip(configured):
-    """Resolve the RP1 gpiochip number robustly across kernel/firmware revs.
-
-    The Pi 5's RP1 pinctrl appears as /dev/gpiochip{N} where N has shifted
-    over kernel/firmware updates (most recently 4 → 0). The host image
-    ships a stable /dev/gpiochip-rp1 symlink keyed on OF_COMPATIBLE_0,
-    but pilot-run bind-mounts /dev/gpiochip-rp1:/dev/gpiochip-rp1 (host
-    symlink resolved by podman) — so inside pilot, /dev/gpiochip-rp1 is
-    a regular char device, not a symlink, and /dev/gpiochip{N} doesn't
-    exist at all.
-
-    `lgpio.gpiochip_open(N)` always opens `/dev/gpiochip{N}` literally,
-    so we must EITHER materialise that path inside the container OR
-    work out N to match an already-present device. The device file's
-    kernel minor number IS the chip number registered by the gpio core,
-    so reading it via stat works identically on host and container; we
-    additionally synth a `/dev/gpiochip{N}` symlink when missing so
-    lgpio's open path resolves. Falls back to the YAML int when the
-    device is absent (dev tests).
+    0° = 500 µs, 90° = 1500 µs, 180° = 2500 µs (MG995 full travel).
+    The MCU re-clamps per-servo to SERVO_DISPENSER_{MIN,MAX}_US so
+    out-of-range values cannot drive past the mechanical stops.
     """
-    rp1_dev = '/dev/gpiochip-rp1'
-    try:
-        st = os.stat(rp1_dev)
-        chip_num = os.minor(st.st_rdev)
-    except (OSError, AttributeError):
-        return int(configured)
-    target = f'/dev/gpiochip{chip_num}'
-    if not os.path.exists(target):
-        # Best-effort: symlink the canonical path lgpio expects to the
-        # already-bind-mounted RP1 device. Tolerate failure (read-only
-        # /dev in some configs); lgpio will surface the underlying error.
-        try:
-            os.symlink(os.path.basename(rp1_dev), target)
-        except OSError:
-            pass
-    return chip_num
-
-
-def _angle_to_duty(angle_deg):
-    """Convert servo angle (0-180) to duty cycle % for 50Hz PWM.
-
-    0 deg = 500us = 2.5%, 90 deg = 1500us = 7.5%, 180 deg = 2500us = 12.5%
-    """
-    pulse_us = 500 + (angle_deg / 180.0) * 2000
-    return (pulse_us / 20000.0) * 100.0
+    return int(round(500 + (angle_deg / 180.0) * 2000))
 
 
 class SprayNode(Node):
@@ -81,47 +58,43 @@ class SprayNode(Node):
         super().__init__('spray_node')
 
         # Parameters
-        self.declare_parameter('servo_pin', 13)
-        self.declare_parameter('spray_angle', 90)
-        self.declare_parameter('rest_angle', 0)
-        self.declare_parameter('spray_duration', 0.5)
-        self.declare_parameter('retract_delay', 0.3)
-        self.declare_parameter('gpio_chip', 4)
+        # Two dispense angles. The wheel alternates between these on
+        # each waypoint trigger; one toggle = one shot. There is no
+        # "rest" position — A and B are both valid stop positions.
+        self.declare_parameter('dispense_angle_a', 0)
+        self.declare_parameter('dispense_angle_b', 90)
+        # Time to allow the servo to complete its travel and the pocket
+        # to fully empty into the drop tube before publishing done.
+        # MG995 60°/0.16s @ 6V → ~0.25s for 90°; add margin.
+        self.declare_parameter('settle_duration', 0.4)
 
         self._validate_params()
 
-        # Initialize GPIO. Resolve via /dev/gpiochip-rp1 udev symlink so
-        # we ride out the periodic RP1 chip-number reshuffles that come
-        # with bootc kernel/firmware bumps (most recent: 4 → 0).
-        configured_chip = self.get_parameter('gpio_chip').value
-        chip = _resolve_gpiochip(configured_chip)
-        if chip != configured_chip:
-            self.get_logger().info(
-                f'gpio_chip configured={configured_chip}, resolved to {chip} via /dev/gpiochip-rp1'
-            )
-        self._handle = lgpio.gpiochip_open(chip)
-        self._pin = self.get_parameter('servo_pin').value
+        # Publisher: pulse_us to MCU bridge (forwarded as 'D <us>').
+        reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        self._pub_dispenser = self.create_publisher(
+            Int32, '/rover/cmd/dispenser_us', reliable_qos)
 
-        # Start at rest position
-        rest = self.get_parameter('rest_angle').value
-        lgpio.tx_pwm(self._handle, self._pin, SERVO_FREQUENCY, _angle_to_duty(rest))
+        # Drive to angle_a on boot so physical state matches the logical
+        # _toggle_state = 0 (i.e., next dispense will move to angle_b).
+        # Best-effort: the MCU bridge may not yet be ready / connected;
+        # later commands will re-sync the servo regardless.
+        angle_a = self.get_parameter('dispense_angle_a').value
+        self._publish_pulse_us(_angle_to_pulse_us(angle_a))
 
         # State
         self._spraying = False
-        self._spray_timer = None
-        self._retract_timer = None
+        self._dispense_timer = None
         self._current_wp_idx = -1
+        # Toggle state: 0 → next dispense rotates to angle_b; 1 → angle_a.
+        # Starts at 0 because boot drove the servo to angle_a above.
+        self._toggle_state = 0
         # Index of the most recent waypoint cancelled by navigator timeout.
-        # Guards _signal_done from publishing a stale 'success' result for a
-        # waypoint navigator already published 'timeout' for. Race: navigator
-        # times out → /rover/spray/cancel arrives → _on_spray_cancel destroys
-        # the retract_timer; but if _signal_done was already queued on the
-        # executor when cancel arrived, it would still fire and overwrite the
-        # outcome. The flag short-circuits that path.
+        # Guards _signal_done from publishing a stale 'success' result for
+        # a waypoint navigator already published 'timeout' for.
         self._cancelled_wp_idx = -1
 
         # Subscribers
-        reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(Int32, '/rover/nav/waypoint_reached', self._on_waypoint_reached, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_emergency_stop, reliable_qos)
         self.create_subscription(Int32, '/rover/spray/cancel', self._on_spray_cancel, reliable_qos)
@@ -130,32 +103,36 @@ class SprayNode(Node):
         self._pub_done = self.create_publisher(Empty, '/rover/spray/done', reliable_qos)
         self._pub_result = self.create_publisher(String, '/rover/spray/result', reliable_qos)
 
-        self.get_logger().info('Spray node started')
+        self.get_logger().info('Dispenser node started (MCU-routed)')
+
+    def _publish_pulse_us(self, pulse_us):
+        msg = Int32()
+        msg.data = int(pulse_us)
+        self._pub_dispenser.publish(msg)
 
     def _publish_result(self, outcome, wp_idx):
-        """Emit a spray outcome for the course server / UI."""
+        """Emit a dispense outcome for the course server / UI."""
         msg = String()
         msg.data = json.dumps({'waypoint': int(wp_idx), 'outcome': outcome})
         self._pub_result.publish(msg)
 
     def _validate_params(self):
-        """Sanity-check spray parameters."""
-        spray = self.get_parameter('spray_angle').value
-        rest = self.get_parameter('rest_angle').value
-        duration = self.get_parameter('spray_duration').value
-        delay = self.get_parameter('retract_delay').value
+        """Sanity-check dispense parameters."""
+        angle_a = self.get_parameter('dispense_angle_a').value
+        angle_b = self.get_parameter('dispense_angle_b').value
+        settle = self.get_parameter('settle_duration').value
 
-        if not (0 <= spray <= 180):
-            self.get_logger().fatal(f'spray_angle must be in [0, 180]; got {spray}')
+        if not (0 <= angle_a <= 180):
+            self.get_logger().fatal(f'dispense_angle_a must be in [0, 180]; got {angle_a}')
             raise SystemExit(1)
-        if not (0 <= rest <= 180):
-            self.get_logger().fatal(f'rest_angle must be in [0, 180]; got {rest}')
+        if not (0 <= angle_b <= 180):
+            self.get_logger().fatal(f'dispense_angle_b must be in [0, 180]; got {angle_b}')
             raise SystemExit(1)
-        if not (0.0 < duration <= 10.0):
-            self.get_logger().fatal(f'spray_duration must be in (0, 10]s; got {duration}')
+        if angle_a == angle_b:
+            self.get_logger().fatal(f'dispense_angle_a and _b must differ; both = {angle_a}')
             raise SystemExit(1)
-        if not (0.0 <= delay <= 10.0):
-            self.get_logger().fatal(f'retract_delay must be in [0, 10]s; got {delay}')
+        if not (0.0 < settle <= 10.0):
+            self.get_logger().fatal(f'settle_duration must be in (0, 10]s; got {settle}')
             raise SystemExit(1)
 
     def _safe_destroy_timer(self, timer):
@@ -173,37 +150,32 @@ class SprayNode(Node):
         return None
 
     def _on_waypoint_reached(self, msg):
-        """Actuate spray servo at reached waypoint."""
+        """Toggle the dispenser servo and schedule done after settle."""
         if self._spraying:
             return
 
         self._spraying = True
         wp_idx = msg.data
         self._current_wp_idx = wp_idx
-        self.get_logger().info(f'Spraying at waypoint {wp_idx}')
 
-        # Move to spray position
-        spray_angle = self.get_parameter('spray_angle').value
-        lgpio.tx_pwm(self._handle, self._pin, SERVO_FREQUENCY, _angle_to_duty(spray_angle))
+        angle_a = self.get_parameter('dispense_angle_a').value
+        angle_b = self.get_parameter('dispense_angle_b').value
+        # _toggle_state = 0 → physical state is angle_a → move to angle_b.
+        target_angle = angle_b if self._toggle_state == 0 else angle_a
+        target_us = _angle_to_pulse_us(target_angle)
+        self.get_logger().info(
+            f'Dispensing at waypoint {wp_idx} (target {target_angle}° = {target_us} µs)'
+        )
+        self._publish_pulse_us(target_us)
+        self._toggle_state ^= 1
 
-        # Schedule retract after spray_duration
-        duration = self.get_parameter('spray_duration').value
-        self._spray_timer = self.create_timer(duration, self._retract, callback_group=None)
-
-    def _retract(self):
-        """Retract servo to rest position."""
-        self._spray_timer = self._safe_destroy_timer(self._spray_timer)
-
-        rest_angle = self.get_parameter('rest_angle').value
-        lgpio.tx_pwm(self._handle, self._pin, SERVO_FREQUENCY, _angle_to_duty(rest_angle))
-
-        # Schedule done signal after retract_delay
-        delay = self.get_parameter('retract_delay').value
-        self._retract_timer = self.create_timer(delay, self._signal_done, callback_group=None)
+        # Schedule done after the servo settles and the pocket empties.
+        settle = self.get_parameter('settle_duration').value
+        self._dispense_timer = self.create_timer(settle, self._signal_done, callback_group=None)
 
     def _signal_done(self):
-        """Signal spray cycle complete. Always publishes done regardless of timer state."""
-        self._retract_timer = self._safe_destroy_timer(self._retract_timer)
+        """Signal dispense cycle complete. Always publishes done regardless of timer state."""
+        self._dispense_timer = self._safe_destroy_timer(self._dispense_timer)
         was_spraying = self._spraying
         wp_idx = self._current_wp_idx
         self._spraying = False
@@ -219,15 +191,18 @@ class SprayNode(Node):
             if was_spraying and wp_idx >= 0 and not cancelled:
                 self._publish_result('success', wp_idx)
         finally:
-            self.get_logger().info('Spray done')
+            self.get_logger().info('Dispense done')
 
     def _on_emergency_stop(self, _msg):
-        """Emergency: retract immediately."""
-        self._spray_timer = self._safe_destroy_timer(self._spray_timer)
-        self._retract_timer = self._safe_destroy_timer(self._retract_timer)
+        """Emergency stop: cancel any pending timer; do NOT move the servo.
 
-        rest_angle = self.get_parameter('rest_angle').value
-        lgpio.tx_pwm(self._handle, self._pin, SERVO_FREQUENCY, _angle_to_duty(rest_angle))
+        Both dispense angles are valid stop positions for the wheel —
+        there is no "rest" to retract to. On E-stop we simply abort the
+        pending settle timer and let the wheel sit at whichever angle
+        it last rotated to. The logical _toggle_state remains coherent
+        because we already flipped it when the dispense was issued.
+        """
+        self._dispense_timer = self._safe_destroy_timer(self._dispense_timer)
         was_spraying = self._spraying
         wp_idx = self._current_wp_idx
         self._spraying = False
@@ -235,32 +210,30 @@ class SprayNode(Node):
             self._publish_result('cancelled', wp_idx)
 
     def _on_spray_cancel(self, msg):
-        """Abort the current spray cycle without leaving SPRAYING for EMERGENCY_STOP.
+        """Abort the current dispense cycle without leaving SPRAYING for EMERGENCY_STOP.
 
-        Used when the navigator times out waiting for spray/done: we need the
-        servo to come back to rest AND the pending signal_done timer to stop
-        publishing a late 'success' result for a waypoint the navigator has
-        already flagged as 'timeout'.
+        Used when the navigator times out waiting for spray/done.
+        The wheel position is left where it is (both angles are valid stops).
         """
         target_idx = int(msg.data)
         if not self._spraying or self._current_wp_idx != target_idx:
             return
-        self._spray_timer = self._safe_destroy_timer(self._spray_timer)
-        self._retract_timer = self._safe_destroy_timer(self._retract_timer)
+        self._dispense_timer = self._safe_destroy_timer(self._dispense_timer)
         # Mark this waypoint cancelled so a queued _signal_done callback
         # racing on the single-threaded executor can't publish a stale
         # 'success' for what navigator has already declared a 'timeout'.
         self._cancelled_wp_idx = target_idx
-
-        rest_angle = self.get_parameter('rest_angle').value
-        lgpio.tx_pwm(self._handle, self._pin, SERVO_FREQUENCY, _angle_to_duty(rest_angle))
         self._spraying = False
         # Intentionally do NOT publish a result here — navigator already did.
 
     def destroy_node(self):
-        rest_angle = self.get_parameter('rest_angle').value
-        lgpio.tx_pwm(self._handle, self._pin, SERVO_FREQUENCY, _angle_to_duty(rest_angle))
-        lgpio.gpiochip_close(self._handle)
+        # Park the servo at angle_a so subsequent boots align logical and
+        # physical state. Best-effort: MCU bridge may have shut down too.
+        try:
+            angle_a = self.get_parameter('dispense_angle_a').value
+            self._publish_pulse_us(_angle_to_pulse_us(angle_a))
+        except Exception:
+            pass
         super().destroy_node()
 
 

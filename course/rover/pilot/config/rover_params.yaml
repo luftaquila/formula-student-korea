@@ -165,12 +165,18 @@ navigator_node:
 
 spray_node:
   ros__parameters:
-    servo_pin: 13                      # Spray servo GPIO pin (HW PWM channel 1)
-    spray_angle: 90                    # Servo angle for spray position (degrees)
-    rest_angle: 0                      # Servo angle for rest position (degrees)
-    spray_duration: 0.5                # Seconds to hold spray position
-    retract_delay: 0.3                 # Seconds to wait after retract before done
-    gpio_chip: 4                       # GPIO chip number (RPi5 RP1 = 4)
+    # Dispenser servo PWM is owned by the MCU (RP2040-Zero, GPIO 7,
+    # slice 3 ch B). spray_node publishes the pulse width in µs on
+    # /rover/cmd/dispenser_us and mcu_bridge_node forwards it to the
+    # MCU as 'D <us>'. No Pi GPIO is touched here.
+    #
+    # MG995 drives a 2-port chalk dispenser wheel between two valid
+    # stop positions. Each /rover/nav/waypoint_reached toggles between
+    # them; one toggle = one ~5 g shot. There is no rest position.
+    dispense_angle_a: 0                # Drum pocket faces UP — hopper fills it
+    dispense_angle_b: 180              # Drum pocket faces DOWN — gravity dumps it
+    settle_duration: 0.7               # Time for servo travel + pocket to fully empty.
+                                       # MG995 60°/0.16s @ 6V → 180° ≈ 0.5s + margin.
 
 mcu_bridge_node:
   ros__parameters:

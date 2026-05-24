@@ -242,6 +242,9 @@ class McuBridgeNode(Node):
         self.create_subscription(String, '/rover/cmd/apply_wheel_scales', self._on_apply_wheel_scales, reliable)
         self.create_subscription(String, '/rover/cmd/apply_steering_trim', self._on_apply_steering_trim, reliable)
         self.create_subscription(Empty, '/rover/cmd/reset_wheel_cal', self._on_reset_wheel_cal, reliable)
+        # Chalk-dispenser servo target. spray_node publishes the pulse
+        # width in microseconds; we forward verbatim to the MCU as 'D'.
+        self.create_subscription(Int32, '/rover/cmd/dispenser_us', self._on_dispenser_us, reliable)
 
         self._pub_status = self.create_publisher(String, '/rover/motor/status', 10)
         self._pub_battery = self.create_publisher(String, '/rover/battery', 10)
@@ -955,6 +958,14 @@ class McuBridgeNode(Node):
         self.get_logger().warn(
             'wheel/steering calibration reset: scales=(1.0, 1.0), trim=0.0 µs'
         )
+
+    # ------------------------- dispenser
+
+    def _on_dispenser_us(self, msg):
+        # spray_node already clamps to the dispenser servo's safe range;
+        # the MCU re-clamps per-servo before commanding the PWM hardware.
+        us = int(msg.data)
+        self._send(f'D {us}')
 
     # ------------------------- shutdown
 
