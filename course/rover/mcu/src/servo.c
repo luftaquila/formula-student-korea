@@ -10,6 +10,8 @@ typedef struct {
     uint pin;
     uint slice;
     uint channel;
+    uint16_t min_us;
+    uint16_t max_us;
     uint16_t target_us;
     uint16_t current_us;
 } servo_t;
@@ -18,8 +20,11 @@ static servo_t g_srv[SERVO_COUNT_];
 
 // Convert pulse_us to PWM level given current slice config.
 // We pick clkdiv so wrap = SERVO_PERIOD_US, then level = pulse_us directly.
-static void setup_servo(servo_t *s, uint pin) {
-    s->pin = pin;
+static void setup_servo(servo_t *s, uint pin,
+                        uint16_t min_us, uint16_t max_us) {
+    s->pin    = pin;
+    s->min_us = min_us;
+    s->max_us = max_us;
     gpio_set_function(pin, GPIO_FUNC_PWM);
     s->slice   = pwm_gpio_to_slice_num(pin);
     s->channel = pwm_gpio_to_channel(pin);
@@ -36,17 +41,23 @@ static void setup_servo(servo_t *s, uint pin) {
 }
 
 void servo_init(void) {
-    setup_servo(&g_srv[SERVO_STEER], PIN_SERVO_STEER);
+    setup_servo(&g_srv[SERVO_STEER],
+                PIN_SERVO_STEER,
+                SERVO_MIN_US, SERVO_MAX_US);
+    setup_servo(&g_srv[SERVO_DISPENSER],
+                PIN_SERVO_DISPENSER,
+                SERVO_DISPENSER_MIN_US, SERVO_DISPENSER_MAX_US);
 }
 
 void servo_set_target_us(servo_id_t id, uint16_t pulse_us) {
     if (id >= SERVO_COUNT_) return;
-    if (pulse_us < SERVO_MIN_US) pulse_us = SERVO_MIN_US;
-    if (pulse_us > SERVO_MAX_US) pulse_us = SERVO_MAX_US;
-    int32_t delta = (int32_t)pulse_us - (int32_t)g_srv[id].target_us;
+    servo_t *s = &g_srv[id];
+    if (pulse_us < s->min_us) pulse_us = s->min_us;
+    if (pulse_us > s->max_us) pulse_us = s->max_us;
+    int32_t delta = (int32_t)pulse_us - (int32_t)s->target_us;
     if (delta < 0) delta = -delta;
     if (delta < SERVO_DEADBAND_US) return;  // ignore sub-deadzone wobble
-    g_srv[id].target_us = pulse_us;
+    s->target_us = pulse_us;
 }
 
 void servo_tick(void) {

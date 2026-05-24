@@ -25,8 +25,13 @@
 #define PIN_MOT_RIGHT_DIR   13
 
 // Servo PWM output (50 Hz, 1000-2000 us nominal). slice4 chA.
-#define PIN_SERVO_STEER     8   // S20F front steering (mission-specific
-                                // spray servo stays on the Pi)
+#define PIN_SERVO_STEER     8   // S20F front steering
+
+// Chalk dispenser servo (MG995, mission-specific). slice3 chB —
+// slice3 chA is GP6 (E-stop) which is configured as a digital input,
+// so slice 3 HW is otherwise unused and runs at the dispenser's own
+// frequency independent of the steering servo.
+#define PIN_SERVO_DISPENSER 7
 
 // E-Stop input. NC momentary, fail-safe wiring:
 //   GP6 ── NC button ── GND, with the MCU's internal pull-up enabled.
@@ -64,6 +69,11 @@
 #define SERVO_RANGE_US          500       // +- from center; full lock at 1000-2000us
 #define SERVO_MIN_US            1000
 #define SERVO_MAX_US            2000
+// Dispenser servo uses full 500-2500 us range (MG995 0-180° travel).
+// The steering S20F is mechanically limited at the linkage so its
+// 1000-2000 range is preserved separately.
+#define SERVO_DISPENSER_MIN_US  500
+#define SERVO_DISPENSER_MAX_US  2500
 // S20F datasheet: 0.18 s/60deg => ~3 ms/deg.
 // 50 Hz tick = 20 ms => mechanical 6.7 deg/tick.
 // Limit command rate to ~80% of mechanical capability.

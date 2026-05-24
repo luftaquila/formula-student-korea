@@ -3,7 +3,11 @@
 
 #include <stdint.h>
 
-typedef enum { SERVO_STEER = 0, SERVO_COUNT_ } servo_id_t;
+typedef enum {
+    SERVO_STEER     = 0,
+    SERVO_DISPENSER = 1,
+    SERVO_COUNT_
+} servo_id_t;
 
 void servo_init(void);
 
