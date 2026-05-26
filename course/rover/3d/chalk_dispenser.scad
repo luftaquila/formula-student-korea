@@ -34,7 +34,7 @@
 //   • origin = drum centre
 
 $fn = 64;
-view = "exploded";    // exploded | assembled | drum | top | bot | hopper | columns | antenna_cap
+view = "exploded";    // exploded | assembled | drum | top | bot | hopper | columns | antenna_cap | lid | brace
 
 // ---- Drum ----
 // Drum rotation axis is along world X. Z height of that axis (was 0).
@@ -83,7 +83,7 @@ servo_clearance   = 0.4;
 // ---- Body / chamber / hopper / nozzle ----
 chamber_slop_r = 0.4;
 chamber_slop_x = 0.4;
-wall_t         = 3;
+wall_t         = 5;
 // Inlet matches the drum pocket TOP-DOWN PROJECTION (pocket_h ×
 // pocket_d = 30 × 22). Anything dropped within this rectangle from
 // above lands on the pocket opening on the drum surface.
@@ -92,15 +92,39 @@ wall_t         = 3;
 // to the box footprint, eliminating the open ledge between them.
 // Interior is split into a long vertical cavity on top and a short
 // funnel zone at the bottom that tapers to the Ø16 inlet.
-hopper_box_x        = 200;     // ≤ 250
-hopper_box_y        = 200;     // ≤ 250
+// Box stretched along +X (forward/back direction) to fit chassis
+// width budget while keeping the 2.5 L volume. Skirt-wall overhangs
+// when printed upside-down (open box on bed, lip on top) — see
+// hopper_skirt_h below for per-face angles. Asymmetric in X due to
+// hopper_box_offset_x = +40.
+hopper_box_x        = 200;     // box width along X. With offset = +50,
+                               // X range −50 to +150 (= reaches
+                               // chassis_hole_x_far2 = 134.4 with
+                               // 15.6 mm margin, lip −X distance 30).
+hopper_box_y        = 160;
 hopper_lip_h        = 6;     // recess bottom stays ≥1 mm above the
                              // chamber bore top so the bore doesn't
                              // poke through into the recess area
-hopper_skirt_h      = 20;      // lip-to-box transition
-hopper_funnel_h     = 30;      // funnel rise INSIDE the box
-hopper_top_cavity_h = 100;     // vertical (straight) cavity
-hopper_box_h        = hopper_funnel_h + hopper_top_cavity_h;   // 130
+// Sloped section runs the full inner-funnel height so outer slope
+// matches the inner slope (constant 5 mm wall through the frustum).
+// Printed pyramid-style — open box face on the build plate, lip
+// on top — so the frustum slope IS the overhang seen by the
+// printer. Per-face overhang (rise 80 mm; angle from vertical /
+// from horizontal):
+//   +X  run 130 → 58.4° / 31.6°   (servo side — steepest, edge of
+//                                   printable without supports)
+//   −X  run  50 → 32.0° / 58.0°
+//   ±Y  run  62.7 → 38.1° / 51.9°
+// All inner faces (= chalk slide angles) are >35° from horizontal
+// → well past chalk's angle of repose.
+hopper_skirt_h      = 109;     // +X face slope at 40° from horizontal
+                               // (= 50° from vertical). ΔX from lip +X
+                               // (+20) to box +X (+150) is 130 →
+                               // ΔZ = 130·tan(40°) ≈ 109.
+hopper_funnel_h     = 0;       // no separate inner funnel above the skirt
+hopper_top_cavity_h = 45;      // tuned so total interior ≈ 2.49 L
+                               // (1.20 L frustum + 1.28 L box).
+hopper_box_h        = hopper_funnel_h + hopper_top_cavity_h;   // 45
 
 // Antenna mount inside the hopper, sitting at the box's top edge
 // height (so nothing protrudes above the hopper). Three thick struts
@@ -112,8 +136,18 @@ sma_hole_d       = 6.5;     // SMA bulkhead clearance (standard)
 mount_plate_d    = 16;       // platform OD around the SMA hole
 mount_plate_h    = 4;        // platform thickness (= struts thickness)
 mount_bridge_w   = 14;       // strut Y/X cross-section width
-mount_diag_low_z = 80;       // anchor Z (above funnel_top) for each
-                             // diagonal brace. Higher = shorter brace.
+// Diagonal brace: vertical rise from wall anchor up to the disc.
+// Keeping this fixed (not mount_diag_low_z) ensures the brace stays
+// the same length / angle as hopper_top_cavity_h shrinks.
+mount_diag_rise     = 10;    // vertical span of ±Y diagonal braces
+mount_diag_rise_nx  = 6;     // vertical span of the −X brace (shorter so
+                             // the wall-side cable hole below it gets more
+                             // clearance)
+mount_diag_low_z    = hopper_top_cavity_h - mount_plate_h - mount_diag_rise;
+                             // anchor Z above funnel_top; auto-tracks
+                             // hopper_top_cavity_h. Higher = shorter brace.
+mount_diag_low_z_nx = hopper_top_cavity_h - mount_plate_h - mount_diag_rise_nx;
+                             // same anchor-Z formula but for the −X brace
 
 // ---- Chassis-fix columns (hopper → plate self-tap posts) ----
 //   • 4 vertical columns drop from the hopper's lip-extension flange
@@ -132,19 +166,26 @@ fix_col_pilot_d   = 2.6;       // = m3_pilot, inlined to dodge SCAD's
                                // forward-evaluation order
 fix_col_pilot_h   = 8;         // self-tap depth from column bottom
 
-// ---- GPS board mount (TBD — spec only, not modelled yet) ----
-//   • 4 mounting holes, Ø3.7
-//   • 38 mm × 38 mm square centre-to-centre pitch
-//   • To be held by 4 vertical bosses (self-tap), TBD location.
-                             // Triangle in side view: vertical on
-                             // wall, horizontal under strut,
-                             // hypotenuse as the diagonal.
+// ---- Hopper-side bolt seats for chassis_fix_columns ----
+// Flat cylindrical pillars on the inside of the hopper at each
+// column's (X, Y) — provide a horizontal seat for M3 bolts that
+// thread DOWN from inside the hopper through the pillar + skirt
+// wall, self-tapping into the column top. Adds a second clamp
+// point per column (the bottom self-tap pilots clamp the column
+// to the chassis from below).
+hopper_pillar_above = 0;       // flat top sits AT the slope's highest
+                               // point within the footprint (= is_hi);
+                               // no protrusion above the slope on the
+                               // +X side, only the natural slope rise
+                               // across the pillar footprint remains.
+fix_col_top_pilot_h = 7;       // M3 self-tap depth from column TOP
+
 // Brace stops 15 mm short of the mount centre so the area around
 // the SMA hole stays as flat strut only (no brace material covering
 // the connector seat).
 mount_diag_clear = 15;
-mount_diag_run_x = 50 - mount_diag_clear;   // = 35 (wall 50 mm away)
-mount_diag_run_y = 100 - mount_diag_clear;  // = 85 (wall 100 mm away)
+// (mount_diag_run_x/_y defined AFTER hopper_box_* below — SCAD does
+// not hoist forward references through arithmetic.)
 
 // Asymmetric mount — the body+nozzle assembly sits at the hopper's
 // −X corner (far side from the +X servo). The lip+inlet stay above
@@ -155,8 +196,102 @@ mount_diag_run_y = 100 - mount_diag_clear;  // = 85 (wall 100 mm away)
 // counter the forward-protruding nozzle.
 hopper_lip_x_size   = 40;
 hopper_offset_x     = 0;       // lip/inlet stay centred on body
-hopper_box_offset_x = +50;     // toward SERVO side (+X), 50 mm in
-                               // from the very end.
+hopper_box_offset_x = +50;     // toward SERVO side (+X). With box_x=200:
+                               // −X edge at −50 (30 mm from lip −X),
+                               // +X edge at +150 (15.6 mm past
+                               // chassis_hole_x_far2 at 134.4).
+
+// Diagonal brace horizontal runs (derived after the box dims above).
+mount_diag_run_x = (hopper_box_x/2 - hopper_box_offset_x) - mount_diag_clear;
+                                            // -X wall 70 mm away → 55
+mount_diag_run_y = hopper_box_y/2 - mount_diag_clear;
+                                            // ±Y wall 80 mm away → 65
+
+// ---- ZED-F9P GPS board mount (on −X hinge-side sloped face) ----
+// 4 M3 self-tap bosses arranged as a 38 × 38 mm square (same hole
+// pattern as zed-f9p.scad's board_dx/dy). Bosses are perpendicular
+// to the slope — not vertical — so the PCB ends up tilted at the
+// slope angle. The NEAREST mounting boss centre (= up-slope row,
+// closest to the box-to-skirt junction) sits f9p_near_boss_slope_dist
+// mm DOWN THE SLOPE from the junction at X = -70, Z = 80. PCB
+// centroid is f9p_board_d/2 further down the slope from there.
+// Laterally centred at Y = 0. Pilots bore 5 mm through each boss
+// + 2 mm into the wall → wall stays intact (perpendicular wall
+// thickness ≈ 4.24 mm, leaving ≈ 2.24 mm between pilot tip and
+// hopper interior).
+f9p_board_d              = 38;  // M3 hole pitch (= zed-f9p board_dx/dy)
+f9p_boss_od              = 7;   // boss OD (widened 1 mm from
+                                // zed-f9p boss_od=6 for grip)
+f9p_boss_h               = 8;   // boss height (raised 3 mm from
+                                // zed-f9p boss_h=5)
+f9p_pilot_h              = 10;  // 8 mm boss + 2 mm wall grip
+f9p_near_boss_slope_dist = 30;  // slope distance from junction to the
+                                // NEAREST boss centre (up-slope row)
+
+// −X skirt slope geometry (run 50 mm horizontal, rise 80 mm vertical
+// → α ≈ 32° from vertical).
+nx_slope_run    = (hopper_box_x/2 - hopper_box_offset_x)
+                  - hopper_lip_x_size/2;                   // 50
+nx_slope_len    = sqrt(nx_slope_run * nx_slope_run
+                       + hopper_skirt_h * hopper_skirt_h); // 94.34
+nx_slope_sin    = nx_slope_run   / nx_slope_len;           // 0.530
+nx_slope_cos    = hopper_skirt_h / nx_slope_len;           // 0.848
+nx_slope_alpha  = atan(nx_slope_run / hopper_skirt_h);     // 32.005°
+// Rotation about +Y that maps +Z onto the slope's outward normal
+// (−cos(α), 0, −sin(α)). Algebraic identity: −(90 + α).
+nx_normal_rot_y = -(90 + nx_slope_alpha);                  // ≈ -122°
+
+// PCB centroid slope-distance = nearest boss slope-distance + half
+// the hole pitch. PCB centroid X/Z = junction + that distance walked
+// down the slope toward the lip.
+f9p_center_slope_dist = f9p_near_boss_slope_dist
+                        + f9p_board_d/2;                   // 30 + 19 = 49
+f9p_center_x    = (hopper_box_offset_x - hopper_box_x/2)
+                  + f9p_center_slope_dist * nx_slope_sin;  // -70 + 49·0.530 = -44.03
+f9p_center_z    = hopper_skirt_h
+                  - f9p_center_slope_dist * nx_slope_cos;  //  80 - 49·0.848 =  38.45
+
+// ---- Hopper lid ----
+lid_thickness     = 3;       // flat sheet that bolts onto the hopper top
+lid_center_hole_d = 30;      // antenna-passage hole at world (0, 0)
+
+// 3 stations along the box Y axis for the +X edge LATCH bolts. The
+// two outer bolts sit dead-centre at the +X / ±Y corners — i.e.,
+// at the wall-thickness midpoint in both X (already set by the
+// shared X expression in hopper()/hopper_lid()) and Y (= ±(box_y/2
+// − wall_t/2)).
+lid_bolt_ys = [
+    -hopper_box_y/2 + wall_t/2,
+    0,
+    +hopper_box_y/2 - wall_t/2,
+];
+
+// ---- Lid ↔ hopper hinge (along −X edge) ----
+// Hinge = 3 INDEPENDENT GROUPS at Y in hinge_group_ys. Each group is
+// a hopper–lid–hopper sandwich clamped by a single M3×15 bolt + M3
+// nut. All knuckle holes are slip-fit clearance (Ø3.4) — no self-tap;
+// nut on far side retains the pin. The lid hinge OUTER profile is
+// the unique DOUBLY-TANGENT blend arc — tangent to the lid plate
+// TOP at the corner AND tangent (externally) to the cylinder OD,
+// no sharp angle anywhere along the outer face. The lower side
+// is a straight tangent to the plate bottom-left corner (hidden
+// when the lid is shut).
+knuckle_d        = 6;
+knuckle_pin_d    = 3.4;       // = m3_clearance
+knuckle_gap      = 1;
+knuckle_length_h = 4;
+knuckle_length_l = 4;
+hinge_group_ys   = [-60, 0, +60];
+hinge_step       = knuckle_length_h/2 + knuckle_gap
+                       + knuckle_length_l/2;   // = 5
+lid_knuckle_ys    = hinge_group_ys;
+hopper_knuckle_ys = [
+    for (yc = hinge_group_ys)
+        each [yc - hinge_step, yc + hinge_step]
+];
+hinge_axis_x = hopper_box_offset_x - hopper_box_x/2
+                   - knuckle_d/2 - knuckle_gap;   // -74
+                                            // outside −X wall by R+gap
 hopper_bolt_x_rel   = (pocket_h/2 + hopper_lip_x_size/2) / 2;
                                // = (15 + 20) / 2 = 17.5 (lip-frame)
 nozzle_inlet_d = 28.8;  // = chamber_bore_d — the entire chamber floor
@@ -219,9 +354,12 @@ top_boss_z_offset   = 1;      // raise upper servo boss 1 mm in Z;
                               // lower boss stays at -servo_mount_shaft_to_far
 servo_boss_wide     = 2 * servo_mount_short_y + 6;   // = 16
 servo_boss_thick    = 6;                              // = 6
-servo_boss_pilot_d  = m4_pilot;                       // 3.3 (M4 self-tap;
-                                                      // M4 shank fills Ø4.5
-                                                      // servo hole snugly)
+servo_boss_pilot_d  = m3_pilot;                       // 2.6 (M3 self-tap).
+                                                      // M3 shank is loose in
+                                                      // the Ø4.5 servo ear
+                                                      // hole — washers
+                                                      // recommended for a
+                                                      // clean clamp.
 
 // Ear pattern is asymmetric in Z — its centre sits 10 mm off the
 // spline (shaft) on the far side. The body Z is shifted by the same
@@ -381,6 +519,17 @@ module body_full() {
                        -servo_mount_shaft_to_far])
                 translate([body_x/2 - 0.05, 0, sz])
                     servo_boss();
+            // Brace tie boss on the nozzle's +X bottom region.
+            // Anchored on the nozzle bottom edge (Z=brace_boss_z_bot)
+            // and extends upward by 9.5 mm. Never below the nozzle's
+            // bottom edge. Flat perpendicular-to-X face for a clean
+            // M3 pilot (no ellipse on slope).
+            translate([brace_boss_x_inner,
+                       -brace_boss_y/2,
+                       brace_boss_z_bot])
+                cube([brace_boss_x_outer - brace_boss_x_inner,
+                      brace_boss_y,
+                      brace_boss_z_top - brace_boss_z_bot]);
         }
 
         // Chamber bore — horizontal cylinder along the X axis,
@@ -483,21 +632,15 @@ module body_top() {
             cube([hopper_lip_x_size + 2*lip_slop,
                   body_y - 2*lip_inset,
                   hopper_lip_h + 0.1]);
-        // Hopper-bolt clearance + counterbore through body_top ±Y
-        // outer walls. Bolt X is asymmetric: shifted with the lip.
-        for (s = join_bolts) {
+        // Hopper-bolt clearance through body_top ±Y outer walls —
+        // straight through-hole, no counterbore for the bolt head.
+        for (s = join_bolts)
             translate([hopper_offset_x + s[0] * hopper_bolt_x_rel,
                        s[1] * (body_y/2 + 0.1),
                        hopper_bolt_z])
                 rotate([90 * s[1], 0, 0])
                     cylinder(d = m3_clearance,
                              h = lip_inset + lip_slop + 0.2);
-            translate([hopper_offset_x + s[0] * hopper_bolt_x_rel,
-                       s[1] * (body_y/2 + 0.1),
-                       hopper_bolt_z])
-                rotate([90 * s[1], 0, 0])
-                    cylinder(d = m3_head_d, h = cbore_depth + 0.1);
-        }
         // M2 bolt self-tap pilots into the lip's long-side wall —
         // 4 corners, bolts enter through ±Y face of body.
         for (s = join_bolts)
@@ -629,32 +772,68 @@ module body_bot() {
             cube([body_x - 2*lip_inset,
                   body_y - 2*lip_inset,
                   lip_h + 0.1]);
-        // M2 bolt clearance + counterbore.
-        for (s = join_bolts) {
+        // M2 bolt clearance — straight through-hole, no counterbore.
+        for (s = join_bolts)
             translate([s[0] * join_bolt_x,
                        s[1] * (body_y/2 + 0.1),
                        bolt_z])
                 rotate([90 * s[1], 0, 0])
                     cylinder(d = m2_clearance,
                              h = lip_inset + lip_slop + 0.2);
-            translate([s[0] * join_bolt_x,
-                       s[1] * (body_y/2 + 0.1),
-                       bolt_z])
-                rotate([90 * s[1], 0, 0])
-                    cylinder(d = m2_head_d, h = cbore_depth + 0.1);
-        }
         // 4× chassis mount holes — vertical (−Z direction).
         for (hx = [chassis_hole_x_near, chassis_hole_x_far])
             for (hy = [-chassis_hole_y, chassis_hole_y])
                 translate([hx, hy, chassis_mount_z_bot - 0.1])
                     cylinder(d = chassis_hole_d,
                              h = chassis_mount_h + 0.2);
+        // M3 self-tap pilot through the boss's +X face into the
+        // boss + nozzle wall. Clean perpendicular cylinder (no
+        // ellipse on a slope). The brace's matching hole is a
+        // CLEARANCE through-hole (so the bolt enters from the +X
+        // side of the brace and self-taps into the boss).
+        translate([brace_boss_x_outer + 0.1, 0, brace_boss_pilot_z])
+            rotate([0, -90, 0])
+                cylinder(d = m3_pilot, h = 6 + 0.1);
     }
 }
 
 // ============================================================
 // Reference / visualisation (not printed)
 // ============================================================
+
+// ----------------------------------------------------------------
+// hopper_support_pillar — flat-topped tapered prism sitting on the
+// inner-skirt slope at a chassis_fix_column footprint. Bottom face
+// is on the slope (with 1 mm overlap into the wall material for a
+// clean union); top face is flat horizontal at hopper_pillar_above
+// mm above the +X edge of the inner-skirt face within the footprint.
+// Used both as added material (union into hopper) and as exclusion
+// volume (so the cavity subtraction leaves the pillar intact).
+// Cross-section matches the column (same X/Y bounds passed in).
+// ----------------------------------------------------------------
+module hopper_support_pillar(x_lo, x_hi, y_lo, y_hi) {
+    int_x_local = hopper_box_x - 2 * wall_t;
+    inner_skirt_max_x = hopper_box_offset_x + int_x_local/2;
+    is_lo = (x_lo - pocket_h/2)
+            / (inner_skirt_max_x - pocket_h/2)
+            * hopper_skirt_h;
+    is_hi = (x_hi - pocket_h/2)
+            / (inner_skirt_max_x - pocket_h/2)
+            * hopper_skirt_h;
+    z_flat = is_hi + hopper_pillar_above;
+    overlap = 1;
+    d = 0.01;
+    hull() {
+        translate([x_lo, y_lo, is_lo - overlap]) cube(d);
+        translate([x_hi, y_lo, is_hi - overlap]) cube(d);
+        translate([x_hi, y_hi, is_hi - overlap]) cube(d);
+        translate([x_lo, y_hi, is_lo - overlap]) cube(d);
+        translate([x_lo, y_lo, z_flat]) cube(d);
+        translate([x_hi, y_lo, z_flat]) cube(d);
+        translate([x_hi, y_hi, z_flat]) cube(d);
+        translate([x_lo, y_hi, z_flat]) cube(d);
+    }
+}
 
 // ----------------------------------------------------------------
 // Hopper — separate printed part. Rectangular box exterior with
@@ -697,13 +876,18 @@ module hopper() {
                     cube([hopper_lip_x,
                           hopper_lip_y,
                           hopper_lip_h + 0.05]);
-                // Skirt — hull from lip footprint at Z=0 to the
-                // OFFSET box footprint at Z=skirt_top. Box centre
-                // is shifted +X by hopper_box_offset_x.
+                // Skirt — outer frustum that lands EXACTLY on the lip
+                // footprint. Bottom rect = lip rect (hopper_lip_x ×
+                // hopper_lip_y), centred on hopper_offset_x. Top rect
+                // = box outer, shifted +X by hopper_box_offset_x. No
+                // overhang/step between skirt and lip — the slope
+                // terminates AT the lip top edge on every side.
+                skirt_bot_x = hopper_lip_x;
+                skirt_bot_y = hopper_lip_y;
                 hull() {
-                    translate([hopper_offset_x - hopper_lip_x/2,
-                               -hopper_lip_y/2, -0.05])
-                        cube([hopper_lip_x, hopper_lip_y, 0.1]);
+                    translate([hopper_offset_x - skirt_bot_x/2,
+                               -skirt_bot_y/2, -0.05])
+                        cube([skirt_bot_x, skirt_bot_y, 0.1]);
                     translate([hopper_box_offset_x - hopper_box_x/2,
                                -hopper_box_y/2, skirt_top - 0.05])
                         cube([hopper_box_x, hopper_box_y, 0.1]);
@@ -748,11 +932,11 @@ module hopper() {
                 // X-Z (or Y-Z) plane: vertical leg on the wall,
                 // horizontal leg under the strut, hypotenuse = the
                 // real diagonal beam.
-                // −X brace
+                // −X brace (shorter rise than ±Y, see mount_diag_rise_nx)
                 hull() {
                     translate([hopper_box_offset_x - hopper_box_x/2,
                                -mount_bridge_w/2,
-                               funnel_top + mount_diag_low_z])
+                               funnel_top + mount_diag_low_z_nx])
                         cube([wall_t, mount_bridge_w, 0.1]);
                     translate([hopper_box_offset_x - hopper_box_x/2,
                                -mount_bridge_w/2,
@@ -788,6 +972,70 @@ module hopper() {
                         cube([mount_bridge_w,
                               wall_t + mount_diag_run_y, 0.1]);
                 }
+
+                // 4× hopper hinge knuckles on the −X edge, arranged
+                // as 2 hopper–lid–hopper sandwich groups at Y =
+                // ±hinge_group_y. Each is a cylindrical BARREL at
+                // the hinge axis plus a STRAIGHT rectangular tab
+                // back to the −X wall. Barrel top is flush with box
+                // top: no protrusion above.
+                for (yc = hopper_knuckle_ys) {
+                    // Cylindrical knuckle barrel along Y.
+                    translate([hinge_axis_x,
+                               yc - knuckle_length_h/2,
+                               box_top_z - knuckle_d/2])
+                        rotate([-90, 0, 0])
+                            cylinder(d = knuckle_d,
+                                     h = knuckle_length_h);
+                    // Tab connecting barrel back to wall outer face.
+                    translate([hinge_axis_x,
+                               yc - knuckle_length_h/2,
+                               box_top_z - knuckle_d])
+                        cube([(hopper_box_offset_x - hopper_box_x/2)
+                                  - hinge_axis_x,
+                              knuckle_length_h,
+                              knuckle_d]);
+                }
+
+                // ZED-F9P PCB mounting bosses on the −X sloped face.
+                // Cylinder axis = slope outward normal. Base sunk
+                // 0.5 mm into the wall for a clean union.
+                translate([f9p_center_x, 0, f9p_center_z])
+                    rotate([0, nx_normal_rot_y, 0])
+                        for (px = [-f9p_board_d/2, f9p_board_d/2])
+                            for (py = [-f9p_board_d/2, f9p_board_d/2])
+                                translate([px, py, -0.5])
+                                    cylinder(d = f9p_boss_od,
+                                             h = f9p_boss_h + 0.5);
+
+                // Flat-topped support pillars inside the hopper at
+                // each chassis_fix_column location — SAME 10×10 mm
+                // cross-section as the column, bottom face sits on
+                // the inner-skirt slope (1 mm overlap into the wall
+                // for a clean union), top face is flat horizontal
+                // at hopper_pillar_above mm above the +X edge of
+                // the inner-skirt face within the footprint. No
+                // material extends below the outer skirt face.
+                hopper_support_pillar(
+                    chassis_hole_x_mid  - fix_col_x_pad,
+                    chassis_hole_x_mid  + fix_col_x_pad,
+                    chassis_hole_y_mid  - fix_col_y_pad,
+                    chassis_hole_y_mid  + fix_col_y_pad);
+                hopper_support_pillar(
+                    chassis_hole_x_mid  - fix_col_x_pad,
+                    chassis_hole_x_mid  + fix_col_x_pad,
+                   -chassis_hole_y_mid  - fix_col_y_pad,
+                   -chassis_hole_y_mid  + fix_col_y_pad);
+                hopper_support_pillar(
+                    chassis_hole_x_far2 - fix_col_x_pad,
+                    chassis_hole_x_far2 + fix_col_x_pad,
+                    chassis_hole_y_far2 - fix_col_y_pad,
+                    chassis_hole_y_far2 + fix_col_y_pad);
+                hopper_support_pillar(
+                    chassis_hole_x_far2 - fix_col_x_pad,
+                    chassis_hole_x_far2 + fix_col_x_pad,
+                   -chassis_hole_y_far2 - fix_col_y_pad,
+                   -chassis_hole_y_far2 + fix_col_y_pad);
             }
             // ---- Interior cavities ----
             // (1) Rectangular inlet through the lip (shifted).
@@ -798,14 +1046,37 @@ module hopper() {
                       pocket_d,
                       hopper_lip_h + 0.2]);
             // (2) Funnel: hull from inlet rect at lip top up to the
-            //     +X-OFFSET box interior at funnel_top.
-            hull() {
-                translate([hopper_offset_x - pocket_h/2,
-                           -pocket_d/2, -0.05])
-                    cube([pocket_h, pocket_d, 0.1]);
-                translate([hopper_box_offset_x - int_x/2,
-                           -int_y/2, funnel_top])
-                    cube([int_x, int_y, 0.1]);
+            //     +X-OFFSET box interior at funnel_top, MINUS the
+            //     hopper pillars (so they survive the cavity cut).
+            difference() {
+                hull() {
+                    translate([hopper_offset_x - pocket_h/2,
+                               -pocket_d/2, -0.05])
+                        cube([pocket_h, pocket_d, 0.1]);
+                    translate([hopper_box_offset_x - int_x/2,
+                               -int_y/2, funnel_top])
+                        cube([int_x, int_y, 0.1]);
+                }
+                hopper_support_pillar(
+                    chassis_hole_x_mid  - fix_col_x_pad,
+                    chassis_hole_x_mid  + fix_col_x_pad,
+                    chassis_hole_y_mid  - fix_col_y_pad,
+                    chassis_hole_y_mid  + fix_col_y_pad);
+                hopper_support_pillar(
+                    chassis_hole_x_mid  - fix_col_x_pad,
+                    chassis_hole_x_mid  + fix_col_x_pad,
+                   -chassis_hole_y_mid  - fix_col_y_pad,
+                   -chassis_hole_y_mid  + fix_col_y_pad);
+                hopper_support_pillar(
+                    chassis_hole_x_far2 - fix_col_x_pad,
+                    chassis_hole_x_far2 + fix_col_x_pad,
+                    chassis_hole_y_far2 - fix_col_y_pad,
+                    chassis_hole_y_far2 + fix_col_y_pad);
+                hopper_support_pillar(
+                    chassis_hole_x_far2 - fix_col_x_pad,
+                    chassis_hole_x_far2 + fix_col_x_pad,
+                   -chassis_hole_y_far2 - fix_col_y_pad,
+                   -chassis_hole_y_far2 + fix_col_y_pad);
             }
             // (3) Vertical cavity from funnel_top to box top —
             //     SHAPED to preserve struts, diagonal braces and
@@ -846,11 +1117,11 @@ module hopper() {
                           int_y/2 + 0.1,
                           mount_plate_h + 0.2]);
                 // Diagonal brace paths
-                // −X brace
+                // −X brace (shorter rise than ±Y, see mount_diag_rise_nx)
                 hull() {
                     translate([hopper_box_offset_x - hopper_box_x/2,
                                -mount_bridge_w/2,
-                               funnel_top + mount_diag_low_z])
+                               funnel_top + mount_diag_low_z_nx])
                         cube([wall_t, mount_bridge_w, 0.1]);
                     translate([hopper_box_offset_x - hopper_box_x/2,
                                -mount_bridge_w/2,
@@ -899,6 +1170,26 @@ module hopper() {
                         cylinder(d = m3_pilot,
                                  h = bolt_depth + 0.1);
 
+            // 3× M3 self-tap pilots in the +X top wall rim (latch
+            // side; −X is the hinge side, handled below).
+            for (yb = lid_bolt_ys)
+                translate([hopper_box_offset_x + hopper_box_x/2 - wall_t/2,
+                           yb,
+                           box_top_z - bolt_depth - 0.05])
+                    cylinder(d = m3_pilot,
+                             h = bolt_depth + 0.1);
+
+            // Hinge pin holes through the 4 hopper knuckles. All
+            // slip-fit clearance — the M3×15 bolt passes straight
+            // through and an M3 nut on the far side retains it.
+            for (yc = hopper_knuckle_ys)
+                translate([hinge_axis_x,
+                           yc - knuckle_length_h/2 - 0.1,
+                           box_top_z - knuckle_d/2])
+                    rotate([-90, 0, 0])
+                        cylinder(d = knuckle_pin_d,
+                                 h = knuckle_length_h + 0.2);
+
             // SMA antenna mount hole — Ø6.5 through the disc at
             // world (0, 0). Bulkhead drops in from above and the
             // nut threads on from below via the open hopper top.
@@ -908,8 +1199,64 @@ module hopper() {
                 cylinder(d = sma_hole_d,
                          h = mount_plate_h + 0.2);
 
-            // (chassis-fix column self-tap pilots live in the
-            // chassis_fix_columns() module now)
+            // Ø10 passage hole through the −X outer wall, DIRECTLY
+            // BELOW the diagonal brace. Centred at Y=0; the hole
+            // top sits 1 mm below the −X brace bottom (tracks
+            // mount_diag_rise_nx, not the ±Y braces' rise).
+            translate([hopper_box_offset_x - hopper_box_x/2 - 1,
+                       0,
+                       (skirt_top + hopper_box_h
+                        - mount_plate_h - mount_diag_rise_nx)
+                       - 5 - 1])
+                rotate([0, 90, 0])
+                    cylinder(d = 10, h = wall_t + 2);
+
+            // ZED-F9P boss pilots — M3 self-tap, perpendicular to
+            // the slope. Bore 5 mm through each boss + 2 mm into
+            // wall, stopping ~2.24 mm short of the hopper interior.
+            translate([f9p_center_x, 0, f9p_center_z])
+                rotate([0, nx_normal_rot_y, 0])
+                    for (px = [-f9p_board_d/2, f9p_board_d/2])
+                        for (py = [-f9p_board_d/2, f9p_board_d/2])
+                            translate([px, py,
+                                       f9p_boss_h - f9p_pilot_h])
+                                cylinder(d = m3_pilot,
+                                         h = f9p_pilot_h + 0.1);
+
+            // (chassis-fix column BOTTOM self-tap pilots live in
+            // the chassis_fix_columns() module)
+
+            // M3 clearance through hopper pillar + skirt wall at
+            // each chassis_fix_column location — vertical bolt
+            // path from above the pillar's flat top down to the
+            // column top (= outer skirt Z at the column X centre).
+            // Pillar top z = inner-skirt Z at col_x_hi + pillar_above.
+            for (pos = [[chassis_hole_x_mid,   chassis_hole_y_mid,  fix_col_x_pad],
+                        [chassis_hole_x_mid,  -chassis_hole_y_mid,  fix_col_x_pad],
+                        [chassis_hole_x_far2,  chassis_hole_y_far2, fix_col_x_pad],
+                        [chassis_hole_x_far2, -chassis_hole_y_far2, fix_col_x_pad]])
+                let (col_x    = pos[0],
+                     col_x_hi = col_x + pos[2],
+                     col_x_lo = col_x - pos[2],
+                     z_flat   = (col_x_hi - pocket_h/2)
+                                / ((hopper_box_offset_x + int_x/2)
+                                   - pocket_h/2)
+                                * hopper_skirt_h
+                                + hopper_pillar_above,
+                     // Use the LOWEST point of the column-top
+                     // sloped face (= outer-skirt Z at col_x_lo)
+                     // as the hole's bottom so the vertical drill
+                     // cuts cleanly through the entire sloped
+                     // surface — otherwise the +X half of the
+                     // hole stays buried inside the column /
+                     // skirt material.
+                     os_z_lo  = (col_x_lo - hopper_lip_x_size/2)
+                                / ((hopper_box_offset_x + hopper_box_x/2)
+                                   - hopper_lip_x_size/2)
+                                * hopper_skirt_h)
+                    translate([col_x, pos[1], os_z_lo - 0.1])
+                        cylinder(d = m3_clearance,
+                                 h = z_flat - os_z_lo + 0.2);
         }
     }
 }
@@ -923,7 +1270,14 @@ module hopper() {
 // ============================================================
 module chassis_fix_columns() {
     skirt_top = hopper_skirt_h;
-    col_z_bot = chassis_mount_z_bot - body_z_top;
+    // Column bottoms extend 1 mm BELOW chassis_mount_z_bot so a
+    // physical print lands flush with the plate underside even
+    // after slicer/first-layer compensation eats ~1 mm off the
+    // sloped top during printing. The plate cube still starts at
+    // chassis_mount_z_bot; only this column-only offset is added
+    // so the assembled rod / boss / chassis hole positions stay
+    // unchanged.
+    col_z_bot = chassis_mount_z_bot - body_z_top - 1;
     // ---- MID column dims ----
     col_x_lo  = chassis_hole_x_mid - fix_col_x_pad;
     col_x_hi  = chassis_hole_x_mid + fix_col_x_pad;
@@ -1000,6 +1354,30 @@ module chassis_fix_columns() {
                            col_z_bot - 0.1])
                     cylinder(d = fix_col_pilot_d,
                              h = fix_col_pilot_h + 0.1);
+
+            // M3 self-tap pilots at column TOPS — bolts thread DOWN
+            // from inside the hopper through the hopper's flat
+            // pillars + skirt wall, clamping the hopper onto the
+            // columns. Pilot spans from ABOVE col_z_top_hi (so the
+            // mouth is fully exposed on the +X / highest half of
+            // the slope) down to fix_col_top_pilot_h BELOW
+            // col_z_top_lo (so the effective tap depth is at least
+            // fix_col_top_pilot_h at every X across the sloped
+            // face — the previous "+0.2 above midpoint" version
+            // left only ≈ 3 mm of bite at the column centre
+            // because the slope eats most of the pilot height).
+            for (cy = [-chassis_hole_y_mid, chassis_hole_y_mid])
+                translate([chassis_hole_x_mid, cy,
+                           col_z_top_lo - fix_col_top_pilot_h])
+                    cylinder(d = fix_col_pilot_d,
+                             h = col_z_top_hi - col_z_top_lo
+                                 + fix_col_top_pilot_h + 0.2);
+            for (cy = [-chassis_hole_y_far2, chassis_hole_y_far2])
+                translate([chassis_hole_x_far2, cy,
+                           col2_z_top_lo - fix_col_top_pilot_h])
+                    cylinder(d = fix_col_pilot_d,
+                             h = col2_z_top_hi - col2_z_top_lo
+                                 + fix_col_top_pilot_h + 0.2);
         }
     }
 }
@@ -1089,6 +1467,147 @@ module antenna_cap() {
     }
 }
 
+// ----------------------------------------------------------------
+// 2D side profile of one lid hinge knuckle — extruded along Y to
+// build the 3D knuckle. Outer (upper) edge is a CURVED BLEND ARC
+// tangent to both the cylinder OD and the lid plate TOP horizontal
+// face; lower edge is a STRAIGHT tangent from the cylinder OD to
+// the lid plate bottom-left corner (X=plate_x, Z=0). Polygon Y is
+// the NEGATED lid-local Z so that a parent rotate([-90, 0, 0]) +
+// linear_extrude produces the correct world orientation.
+// ----------------------------------------------------------------
+module lid_hinge_lobe_profile(cyl_x, cyl_z, cyl_r,
+                              plate_top_z, plate_x) {
+    // Upper blend arc tangent to cyl OD at the cyl's MOST −X point
+    // (cyl_x − cyl_r, cyl_z) — i.e., the BACK of the cyl — AND
+    // passing through the lid plate top corner. The bridge wraps
+    // the cyl from the FRONT (lid plate side) OVER the top to the
+    // BACK, providing real cantilever support to the rotating
+    // barrel. At the cyl−blend tangent point, both arcs share the
+    // SAME direction (vertical, DOWN with CCW traversal), so the
+    // polygon flows smoothly with NO CUSP (the previous external
+    // tangent on cyl's +X side gave OPPOSITE directions = cusp).
+    //
+    //   tangent_point = (cyl_x − cyl_r, cyl_z)        (cyl angle 180°)
+    //   arc center  on Z = cyl_z (horizontal radius perpendicular)
+    //   arc_R = d = (A² + B²) / (2·A)
+    //     with A = plate_x − (cyl_x − cyl_r),  B = plate_top_z − cyl_z
+    //   arc_center = (cyl_x − cyl_r + d, cyl_z)
+    A_u = plate_x - (cyl_x - cyl_r);
+    B_u = plate_top_z - cyl_z;
+    blend_r  = (A_u*A_u + B_u*B_u) / (2*A_u);
+    blend_cx = (cyl_x - cyl_r) + blend_r;
+    blend_cz = cyl_z;
+
+    cyl_upper_ang = 180;     // tangent point at cyl's −X-most point
+
+    // Upper arc spans CCW from the lid-plate-corner angle (on the
+    // arc) to the cyl-tangent angle (= 180° on the arc).
+    blend_start_ang = atan2(plate_top_z - blend_cz,
+                            plate_x     - blend_cx);
+    blend_end_ang = 180;
+    blend_end_ang_ccw = blend_end_ang < blend_start_ang
+        ? blend_end_ang + 360 : blend_end_ang;
+
+    // Lower (straight) tangent from (plate_x, 0) to cyl OD.
+    pc_dx  = cyl_x - plate_x;
+    pc_dz  = cyl_z - 0;
+    pc_len = sqrt(pc_dx*pc_dx + pc_dz*pc_dz);
+    ang_cp = atan2(-pc_dz, -pc_dx);
+    half_a = asin(cyl_r / pc_len);
+    cyl_lower_ang = ang_cp - (90 - half_a);
+    cyl_lower_ang_ccw = cyl_lower_ang < cyl_upper_ang
+        ? cyl_lower_ang + 360 : cyl_lower_ang;
+
+    n = 80;
+    blend_arc_pts = [
+        for (i = [0:n])
+            let(t = blend_start_ang
+                        + (blend_end_ang_ccw - blend_start_ang) * i / n)
+            [blend_cx + blend_r*cos(t),
+             -(blend_cz + blend_r*sin(t))]];
+    cyl_od_pts = [
+        for (i = [0:n])
+            let(t = cyl_upper_ang
+                        + (cyl_lower_ang_ccw - cyl_upper_ang) * i / n)
+            [cyl_x + cyl_r*cos(t),
+             -(cyl_z + cyl_r*sin(t))]];
+
+    polygon(concat(
+        blend_arc_pts,           // (corner) curves smoothly to cyl tangent
+        cyl_od_pts,              // cyl OD CCW around back to lower tan
+        [[plate_x, 0]]           // straight tangent → lid plate bottom-left
+    ));
+}
+
+// ============================================================
+// hopper_lid — flat plate that bolts onto the hopper's top rim.
+// 4× M3 clearance holes match the hopper's self-tap pilots; a
+// Ø30 hole at world (0, 0) gives the antenna body clearance to
+// poke up through the lid while the SMA bulkhead is held by
+// the hopper's internal mount disc below.
+// ============================================================
+module hopper_lid() {
+    lid_z = body_z_top + hopper_skirt_h + hopper_box_h;
+
+    // Hinge axis in LID-LOCAL Z. The lid sits at lid_z (= box top) so
+    // the world hinge_axis_z (= box_top_z − knuckle_d/2) becomes
+    // −knuckle_d/2 in lid-local. Knuckle TOP is at lid-local z=0
+    // (= lid bottom) — knuckle hangs below the lid plate.
+    hinge_axis_z_lid = -knuckle_d/2;
+
+    translate([0, 0, lid_z]) {
+        difference() {
+            union() {
+                // Main lid sheet, same XY footprint as the hopper top.
+                translate([hopper_box_offset_x - hopper_box_x/2,
+                           -hopper_box_y/2, 0])
+                    cube([hopper_box_x, hopper_box_y, lid_thickness]);
+                // 3× lid hinge knuckles. 2D side profile (XZ) is
+                // built as a polygon with a curved BLEND ARC tangent
+                // to both the cylinder OD and the lid plate TOP
+                // (smooth fish-drop). Polygon is extruded along Y by
+                // knuckle_length_l. Lower side is a straight tangent
+                // to the lid plate bottom-left corner (hidden when
+                // shut).
+                for (yc = lid_knuckle_ys)
+                    translate([0, yc - knuckle_length_l/2, 0])
+                        rotate([-90, 0, 0])
+                            linear_extrude(height = knuckle_length_l)
+                                lid_hinge_lobe_profile(
+                                    cyl_x       = hinge_axis_x,
+                                    cyl_z       = hinge_axis_z_lid,
+                                    cyl_r       = knuckle_d/2,
+                                    plate_top_z = lid_thickness,
+                                    plate_x     = hopper_box_offset_x
+                                                      - hopper_box_x/2);
+            }
+
+            // Ø30 antenna-passage hole at world (0, 0).
+            translate([0, 0, -0.05])
+                cylinder(d = lid_center_hole_d,
+                         h = lid_thickness + 0.1);
+
+            // 3× M3 clearance holes on the +X latching side.
+            for (yb = lid_bolt_ys)
+                translate([hopper_box_offset_x + hopper_box_x/2 - wall_t/2,
+                           yb,
+                           -0.05])
+                    cylinder(d = m3_clearance,
+                             h = lid_thickness + 0.1);
+
+            // Hinge pin hole through the 2 lid knuckles.
+            for (yc = lid_knuckle_ys)
+                translate([hinge_axis_x,
+                           yc - knuckle_length_l/2 - 0.1,
+                           hinge_axis_z_lid])
+                    rotate([-90, 0, 0])
+                        cylinder(d = knuckle_pin_d,
+                                 h = knuckle_length_l + 0.2);
+        }
+    }
+}
+
 module servo_dummy() {
     // Servo body cuboid in world frame:
     //   X span = servo_hgt (length axis from face to back),
@@ -1124,6 +1643,8 @@ module assemble() {
     drum_in_chamber();
     hopper();   // anchors itself at body_z_top
     chassis_fix_columns();
+    hopper_lid();
+    nozzle_brace();
 }
 
 module explode() {
@@ -1133,6 +1654,143 @@ module explode() {
     drum_in_chamber();
     translate([0, 0, -30]) chassis_fix_columns();   // drop columns
     translate([0, -130, 80]) antenna_cap();         // beside hopper (−Y)
+    translate([0, 0, 140]) hopper_lid();             // lid lifted above hopper
+    translate([0, 0, -80]) nozzle_brace();           // brace dropped
+}
+
+// ============================================================
+// nozzle_brace — separate printed diagonal strut. Connects the
+// chassis (via M4 clearance hole at chassis end, vertical) to the
+// nozzle's lowermost +X point (via M3 clearance hole at nozzle
+// end, axial along X). Matching M3 self-tap pilot is in body_bot.
+//
+// Nozzle-end face is SLANTED to match the nozzle's outer +X slope
+// (dx/dz = (body_x/2 − nozzle_bot_outer_r) / nozzle_h ≈ 0.456)
+// so the brace contacts the nozzle flush — no air gap, no
+// interference. Brace contact spans Z = nozzle_bot_z up to
+// nz_end_top_z, with bot-left vertex at the nozzle bottom corner.
+// ============================================================
+brace_block         = 10;
+brace_y_thick       = 10;       // square 10 × 10 cross-section to
+                                // match the nozzle boss.
+brace_m4_d          = m4_pilot;     // 3.3 — chassis-end is an M4
+                                    // self-tap pilot, NOT a clearance.
+                                    // Bolt threads UP from below the
+                                    // chassis into the rod cube +
+                                    // bar above; no nut is needed
+                                    // (cube top is covered by the
+                                    // bar so a nut would not fit).
+brace_m3_d          = m3_clearance;
+
+// Brace tie boss on the nozzle's +X bottom region. Anchored on
+// the nozzle bottom corner (Z=body_z_bot − nozzle_h) and extends
+// UPWARD only (never below the nozzle's lowermost Z). Flat
+// perpendicular-to-X face so the M3 pilot is a clean cylinder.
+// M3 pilot Z is 4.5 mm above the nozzle bottom — fully inside the
+// boss material, with 3.2 mm of boss below the pilot for strength.
+brace_boss_z_bot   = body_z_bot - nozzle_h;             // ≈ −66.5
+brace_boss_z_top   = brace_boss_z_bot + brace_block;     // 10 mm tall — same
+                                                         // Z-height as the rod
+                                                         // end cubes.
+// +X face is set so the boss is flush with the nozzle outer slope
+// at brace_boss_z_top (no protrusion in +X at the top of the boss).
+// At lower Z the boss does protrude (the nozzle is narrower there).
+brace_boss_x_outer = (nozzle_bot_d + 2*wall_t)/2
+                     + (brace_boss_z_top - brace_boss_z_bot)
+                       * ((body_x/2 - (nozzle_bot_d + 2*wall_t)/2)
+                            / nozzle_h);
+brace_boss_x_inner = brace_boss_x_outer - brace_block;   // 10 mm X-width —
+                                                         // identical to the
+                                                         // rod end cubes /
+                                                         // bar / chassis cube
+                                                         // so the whole rod
+                                                         // chain shares one
+                                                         // 10 × 8 profile.
+                                                         // Boss penetrates
+                                                         // the nozzle wall
+                                                         // (no cavity breach;
+                                                         // cavity is much
+                                                         // further in).
+brace_boss_y       = brace_y_thick;     // = 10, square 10 × 10
+                                        // cross-section shared with
+                                        // the rod head / bar /
+                                        // chassis cube.
+brace_boss_pilot_z = brace_boss_z_bot + 4.5;             // ≈ −62
+
+module nozzle_brace() {
+    // Mates to the nozzle brace boss on body_bot. Brace's −X face
+    // is FLAT perpendicular to X, contacting the boss +X face at
+    // X = brace_boss_x_outer. M3 self-taps into the boss; brace's
+    // hole is a clearance through-hole (length 30 mm to guarantee
+    // it cuts through the entire hull at the bolt Z, including any
+    // slanted +X side of the hull extending toward the chassis).
+    nz_face_x  = brace_boss_x_outer;           // 24 (boss +X face)
+    nz_face_z  = brace_boss_pilot_z;            // ≈ −62
+    ch_end_x   = chassis_hole_x_near - 20;     // 40.4
+    ch_end_z   = chassis_mount_z_bot - 62;      // −103.5
+
+    cube_top_X    = nz_face_x + brace_block;            // 28.33
+    chassis_top_X = ch_end_x  + brace_block/2;          // 45.4
+    chassis_top_Z = ch_end_z  + brace_block/2;          // −98.5
+    // Chassis-end cube bottom is raised 3 mm relative to the default
+    // (= cube top stays at chassis_top_Z so it remains flush with
+    // the bar's bottom-right vertex; only the bottom lifts). cube
+    // height shrinks from brace_block (10) to brace_block − 3 (7).
+    ch_bot_raise  = 4;
+    ch_cube_h     = brace_block - ch_bot_raise;         // 6
+    ch_cube_bot_z = ch_end_z - brace_block/2 + ch_bot_raise;  // −104.5
+    bar_thickness = brace_block;        // = 10, same X-width as the
+                                        // end cubes — the bar's
+                                        // edges land exactly on the
+                                        // cubes' X corners (no inset
+                                        // step on either +X or −X).
+    bar_y         = brace_y_thick;      // = 10, square Y-thickness.
+
+    difference() {
+        union() {
+            // Nozzle-end cube — flat +X face at X=cube_top_X.
+            translate([nz_face_x,
+                       -brace_y_thick/2,
+                       brace_boss_z_bot])
+                cube([brace_block, brace_y_thick,
+                      brace_boss_z_top - brace_boss_z_bot]);
+
+            // Chassis-end cube — flat top face at Z=chassis_top_Z,
+            // bottom lifted by ch_bot_raise.
+            translate([ch_end_x - brace_block/2,
+                       -brace_y_thick/2,
+                       ch_cube_bot_z])
+                cube([brace_block, brace_y_thick, ch_cube_h]);
+
+            // Slanted parallelogram bar — top-right vertex EXACTLY
+            // at the nozzle cube's bottom-right corner (28.33,
+            // −66.5), bottom-right vertex EXACTLY at the chassis
+            // cube's top-right corner (45.4, −98.5). So the +X
+            // surface of the brace is CONTINUOUS: vertical at the
+            // nozzle cube → slanted on the bar → vertical at the
+            // chassis cube, with NO step at either transition.
+            translate([0, -bar_y/2, 0])
+                rotate([-90, 0, 0])
+                    linear_extrude(height = bar_y)
+                        polygon([
+                            [cube_top_X,                  -brace_boss_z_bot],
+                            [chassis_top_X,               -chassis_top_Z],
+                            [chassis_top_X - bar_thickness, -chassis_top_Z],
+                            [cube_top_X    - bar_thickness, -brace_boss_z_bot],
+                        ]);
+        }
+
+        // M3 clearance through nozzle-end cube only (along X).
+        translate([nz_face_x - 0.1, 0, nz_face_z])
+            rotate([0, 90, 0])
+                cylinder(d = brace_m3_d, h = brace_block + 0.2);
+
+        // M4 self-tap pilot through chassis-end cube (vertical),
+        // bottom raised together with the cube.
+        translate([ch_end_x, 0, ch_cube_bot_z - 0.1])
+            cylinder(d = brace_m4_d,
+                     h = ch_cube_h + 0.2);
+    }
 }
 
 // ============================================================
@@ -1145,5 +1803,7 @@ else if (view == "bot")       body_bot();
 else if (view == "hopper")    hopper();
 else if (view == "columns")   chassis_fix_columns();
 else if (view == "antenna_cap") antenna_cap();
+else if (view == "lid")       hopper_lid();
+else if (view == "brace")     nozzle_brace();
 else if (view == "exploded")  explode();
 else                          assemble();
