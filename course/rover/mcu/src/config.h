@@ -105,14 +105,27 @@
 #define PID_DEFAULT_KP          0.6f
 #define PID_DEFAULT_KI          1.5f
 #define PID_DEFAULT_KD          0.0f
-// Velocity setpoint deadband. A target |v| below this disables the
-// motor (raw duty 0 = H-bridge coast) and resets the PID integrator,
-// instead of letting the closed loop reverse-PWM the wheels to drag a
-// still-spinning encoder to zero. 0.05 m/s is well below creep_speed
-// (0.18 m/s) so dock-approach precision is unaffected.
+// Velocity setpoint deadband. A target |v| below this means "stop here".
+// Instead of coasting (raw duty 0), we ACTIVELY BRAKE: reverse-drive the
+// wheels proportional to their measured speed until nearly stopped, so
+// the rover halts on the spot instead of drifting past the target on
+// inertia. (The drive-only sign clamp above the deadband still prevents
+// reverse-drive during a normal ramp-down; braking is only on a commanded
+// stop.) 0.05 m/s is well below creep_speed (0.18 m/s), so it never trips
+// during a legitimate slow approach (incl. the inner wheel in a turn).
 #define PID_TARGET_DEADBAND_MPS 0.05f
 #define PID_OUT_MIN             -1.0f
 #define PID_OUT_MAX             1.0f
+// Active-braking-at-stop. When |target| < deadband but the wheel is still
+// rolling, reverse-drive duty = brake_kp * |v|, capped at brake_max_duty,
+// in the direction opposing motion. Eases to zero as v→0 so it doesn't
+// reverse past standstill; below brake_stop_mps hold a hard duty 0 (no
+// judder from encoder noise at rest). These are runtime-tunable from the
+// host via the 'K' command (mirrors PID's 'P'); the defaults below seed
+// g_brake_* at boot before the host pushes rover_params values.
+#define BRAKE_DEFAULT_KP        3.0f      // reverse duty per (m/s) residual
+#define BRAKE_DEFAULT_MAX_DUTY  0.6f      // cap; conservative to avoid slip/judder
+#define BRAKE_DEFAULT_STOP_MPS  0.04f     // below this = stopped, hold 0
 #define PID_INTEGRAL_LIMIT      0.5f
 
 // ----- Wheel kinematics (convert encoder counts -> m/s) -----

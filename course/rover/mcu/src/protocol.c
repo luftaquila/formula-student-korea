@@ -27,6 +27,9 @@ extern volatile bool     g_use_raw_motor;
 extern volatile float    g_raw_duty_l;
 extern volatile float    g_raw_duty_r;
 extern volatile bool     g_nav_gps_lost;
+extern volatile float    g_brake_kp;
+extern volatile float    g_brake_max_duty;
+extern volatile float    g_brake_stop_mps;
 
 #define LINE_MAX 96
 static char     g_line[LINE_MAX];
@@ -90,6 +93,19 @@ static void handle_line(char *line) {
             int on = 0;
             if (sscanf(args, "%d", &on) == 1) {
                 g_pid_enabled = (on != 0);
+            }
+            break;
+        }
+        case 'K': {
+            // K <kp> <max_duty> <stop_mps>  Active-brake gains (mirrors 'P').
+            // Runtime-tunable from rover_params so brake strength can be
+            // tuned in the field without re-flashing the MCU. ('B' is taken
+            // by the BOOTSEL reboot command below.)
+            float kp = 0.0f, mx = 0.0f, st = 0.0f;
+            if (sscanf(args, "%f %f %f", &kp, &mx, &st) == 3) {
+                g_brake_kp       = kp;
+                g_brake_max_duty = mx;
+                g_brake_stop_mps = st;
             }
             break;
         }

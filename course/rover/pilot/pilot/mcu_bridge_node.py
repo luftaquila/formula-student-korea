@@ -150,6 +150,14 @@ class McuBridgeNode(Node):
         self.declare_parameter('pid_ki', 3.0)
         self.declare_parameter('pid_kd', 0.0)
 
+        # Active-brake gains (MCU 'K' command). Reverse-drive the wheels
+        # to a stop when a stop is commanded, instead of coasting. Runtime-
+        # tunable so brake strength can be set in the field without
+        # re-flashing the MCU.
+        self.declare_parameter('brake_kp', 5.0)
+        self.declare_parameter('brake_max_duty', 0.8)
+        self.declare_parameter('brake_stop_mps', 0.03)
+
         self._validate_params()
 
         # Cached ackermann conversion kwargs. The set of params here are
@@ -284,6 +292,7 @@ class McuBridgeNode(Node):
         # released, so a genuinely-pressed button stays tripped).
         self._send(f'P {self._p("pid_kp")} {self._p("pid_ki")} {self._p("pid_kd")}')
         self._send(f'L {1 if self._p("use_pid") else 0}')
+        self._send(f'K {self._p("brake_kp")} {self._p("brake_max_duty")} {self._p("brake_stop_mps")}')
         self._send('C')
 
         # Live PID tuning: `ros2 param set /mcu_bridge_node pid_kp 0.8` pushes
@@ -312,12 +321,15 @@ class McuBridgeNode(Node):
         """
         push_pid = False
         push_mode = False
+        push_brake = False
         invalidate_ack = False
         for p in params:
             if p.name in ('pid_kp', 'pid_ki', 'pid_kd'):
                 push_pid = True
             elif p.name == 'use_pid':
                 push_mode = True
+            elif p.name in ('brake_kp', 'brake_max_duty', 'brake_stop_mps'):
+                push_brake = True
             elif p.name in self._ACK_PARAMS:
                 invalidate_ack = True
         if invalidate_ack:
@@ -341,6 +353,13 @@ class McuBridgeNode(Node):
             on = bool(new.get('use_pid', self._p('use_pid')))
             self._send(f'L {1 if on else 0}')
             self.get_logger().info(f'PID mode live-updated: {"on" if on else "off"}')
+        if push_brake:
+            new = {p.name: p.value for p in params}
+            kp = float(new.get('brake_kp', self._p('brake_kp')))
+            mx = float(new.get('brake_max_duty', self._p('brake_max_duty')))
+            st = float(new.get('brake_stop_mps', self._p('brake_stop_mps')))
+            self._send(f'K {kp} {mx} {st}')
+            self.get_logger().info(f'Brake gains live-updated: kp={kp}, max={mx}, stop={st}')
         return SetParametersResult(successful=True)
 
     def _validate_params(self):

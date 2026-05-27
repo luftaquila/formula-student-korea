@@ -27,6 +27,11 @@ volatile bool     g_estop_clear_request = false;
 volatile bool     g_use_raw_motor = true;
 volatile float    g_raw_duty_l   = 0.0f;
 volatile float    g_raw_duty_r   = 0.0f;
+// Active-brake gains, host-tunable via the 'K' command (see protocol.c).
+// Seeded from config defaults; rover_params pushes the operating values.
+volatile float    g_brake_kp       = BRAKE_DEFAULT_KP;
+volatile float    g_brake_max_duty = BRAKE_DEFAULT_MAX_DUTY;
+volatile float    g_brake_stop_mps = BRAKE_DEFAULT_STOP_MPS;
 // Pi-reported navigation fault flag. Set/cleared via the 'N' protocol
 // command. Surfaces in telemetry as FLAG_GPS_LOST and drives the
 // LED_GPS_LOST (orange blink) status indication.
@@ -120,8 +125,17 @@ static void core1_main(void) {
             // sign-clamped against the target sign — wheels decelerate
             // on friction, never on reverse-drive.
             if (fabsf(g_target_vel_l) < PID_TARGET_DEADBAND_MPS) {
+                // Commanded stop: brake hard instead of coasting. Reverse-
+                // drive opposing motion, proportional to speed and capped,
+                // until nearly stopped; then hold a hard 0.
                 pid_reset(&g_pid_left);
-                motor_set(0, 0.0f);
+                if (fabsf(vl) > g_brake_stop_mps) {
+                    float bd = g_brake_kp * fabsf(vl);
+                    if (bd > g_brake_max_duty) bd = g_brake_max_duty;
+                    motor_set(0, vl > 0.0f ? -bd : bd);
+                } else {
+                    motor_set(0, 0.0f);
+                }
             } else {
                 float ul = pid_step(&g_pid_left, g_target_vel_l, vl, dt);
                 if ((g_target_vel_l > 0.0f && ul < 0.0f)
@@ -131,8 +145,15 @@ static void core1_main(void) {
                 motor_set(0, ul);
             }
             if (fabsf(g_target_vel_r) < PID_TARGET_DEADBAND_MPS) {
+                // Commanded stop: brake hard (see left wheel above).
                 pid_reset(&g_pid_right);
-                motor_set(1, 0.0f);
+                if (fabsf(vr) > g_brake_stop_mps) {
+                    float bd = g_brake_kp * fabsf(vr);
+                    if (bd > g_brake_max_duty) bd = g_brake_max_duty;
+                    motor_set(1, vr > 0.0f ? -bd : bd);
+                } else {
+                    motor_set(1, 0.0f);
+                }
             } else {
                 float ur = pid_step(&g_pid_right, g_target_vel_r, vr, dt);
                 if ((g_target_vel_r > 0.0f && ur < 0.0f)

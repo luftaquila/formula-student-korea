@@ -54,6 +54,9 @@ def bridge():
         'pid_kp': 0.6,
         'pid_ki': 1.5,
         'pid_kd': 0.0,
+        'brake_kp': 5.0,
+        'brake_max_duty': 0.8,
+        'brake_stop_mps': 0.03,
     }
 
     class _Logger:
@@ -172,6 +175,26 @@ def test_drive_emits_V_when_pid_enabled(bridge):
     line = next(line for line in out if line.startswith('V '))
     parts = line.strip().split()
     assert abs(float(parts[1])) <= bridge._params['max_speed'] + 1e-9
+
+
+def test_brake_gains_live_push_K_command(bridge):
+    """Changing brake_* params live-pushes a 'K kp max stop' command to the
+    MCU (mirrors PID's 'P'), so brake strength is tunable without
+    re-flashing the firmware. ('B' is the MCU's BOOTSEL command.)"""
+    import types
+    bridge._serial.writes.clear()
+    params = [
+        types.SimpleNamespace(name='brake_kp', value=8.0),
+        types.SimpleNamespace(name='brake_max_duty', value=0.6),
+        types.SimpleNamespace(name='brake_stop_mps', value=0.05),
+    ]
+    res = bridge._on_param_change(params)
+    assert res.successful
+    line = next(l for l in _writes_text(bridge) if l.startswith('K '))
+    parts = line.strip().split()
+    assert float(parts[1]) == pytest.approx(8.0)
+    assert float(parts[2]) == pytest.approx(0.6)
+    assert float(parts[3]) == pytest.approx(0.05)
 
 
 def test_velocity_ramps_on_chassis_speed_not_duty(bridge):
