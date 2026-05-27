@@ -2493,20 +2493,20 @@ onUnmounted(() => {
             </div>
 
             <div class="cal-subsection">
-              <div class="cal-subsection-title">수동 입력 (권장)</div>
+              <div class="cal-subsection-title">수동 입력</div>
               <div class="cal-manual-row">
                 <label class="cal-manual-field">
                   <span>a_x (mm)</span>
                   <input
                     type="number" step="1" inputmode="numeric"
-                    v-model="antennaManualX" placeholder="예: 300"
+                    v-model="antennaManualX" placeholder="300"
                   />
                 </label>
                 <label class="cal-manual-field">
                   <span>a_y (mm)</span>
                   <input
                     type="number" step="1" inputmode="numeric"
-                    v-model="antennaManualY" placeholder="예: 50"
+                    v-model="antennaManualY" placeholder="50"
                   />
                 </label>
                 <button
@@ -2519,15 +2519,15 @@ onUnmounted(() => {
 
             <div class="cal-subsection">
               <div class="cal-subsection-title">자동 보정</div>
-              <div class="cal-space-req">필요 공간: 전후좌우 5 m</div>
-              <div v-if="antennaCalRunning" class="modal-status">진행 중...</div>
-              <div class="cal-section-actions">
+              <div class="cal-space-req-row">
+                <span class="cal-space-req">필요 공간: 전후좌우 5 m</span>
                 <button
                   class="btn btn-ghost btn-sm"
                   :disabled="antennaCalSubmitting || antennaCalRunning || !antennaCalCanStart"
                   @click="submitAntennaCal"
                 >{{ antennaCalSubmitting ? '전송 중...' : (antennaCalRunning ? '진행 중' : antennaCalBtnLabel) }}</button>
               </div>
+              <div v-if="antennaCalRunning" class="modal-status">진행 중...</div>
             </div>
           </section>
 
@@ -3305,7 +3305,7 @@ onUnmounted(() => {
    the layout for the current-state grid + the input row. */
 .cal-current {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: max-content 1fr max-content 1fr;
   column-gap: 0.75rem;
   row-gap: 0.25rem;
   margin-bottom: 0.75rem;
@@ -3456,6 +3456,18 @@ onUnmounted(() => {
   font-size: 0.8rem;
   color: var(--text-secondary);
   margin-bottom: 0.4rem;
+}
+/* Auto-cal: keep the space-requirement text and the start button on one
+   row, vertically centred, so the button sits at the text's height. */
+.cal-space-req-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.cal-space-req-row .cal-space-req {
+  margin-bottom: 0;
 }
 .cal-input-row input {
   padding: 0.5rem 0.6rem;
