@@ -32,7 +32,7 @@ return and runs a `settle_readings`-tick stability check inside
 `settle_tolerance` before spraying.
 """
 
-from math import atan2, cos, hypot, sin, tan
+from math import atan2, cos, hypot, pi, sin, tan
 
 from pilot.lib.geo_utils import normalize_angle
 
@@ -142,8 +142,18 @@ class L1Tracker:
                     and target_dist >= self._kturn_exit_dist_m):
                 self._kturn_active = False
         else:
+            # A genuine overshoot (|eta| > 90°) puts the target behind the
+            # antenna's heading, where the forward unicycle law below would
+            # command cos(eta) < 0 (reverse) with a wrong-sign saturated κ —
+            # it cannot close on target and stalls. The kturn_min_dist guard
+            # (meant to suppress needless backups for *small* near-target
+            # attitude jitter) must NOT block this case, or the rover gets
+            # trapped oscillating just outside cm_capture. Hand off to the
+            # K-turn regardless of distance once we've overshot; the 60°
+            # enter threshold still filters out the small-jitter case.
+            overshot = abs_eta > (pi / 2)
             if (abs_eta > self._kturn_enter_rad
-                    and target_dist > self._kturn_min_dist_m):
+                    and (target_dist > self._kturn_min_dist_m or overshot)):
                 self._kturn_active = True
 
         if self._kturn_active:

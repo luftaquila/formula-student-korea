@@ -20,7 +20,8 @@ Tests pin the behaviours that the field failures led us to:
   - brake_zone ramp: cmd v scales linearly from cruise_speed at the
     zone edge down to min_speed at target.
   - K-turn enter at |eta|>60° AND dist>kturn_min_dist (close-target
-    suppression).
+    suppression) — but an overshoot (|eta|>90°) overrides the distance
+    guard so the rover doesn't stall just outside cm_capture.
   - K-turn exit requires BOTH alignment (|eta|<5°) AND standoff
     (dist>=50 cm). Either alone keeps the chassis in K-turn.
   - K-turn phase A (saturated κ) vs phase B (κ=0) split: phase B
@@ -234,21 +235,41 @@ class TestKturnEnter:
         assert kappa == _PARAMS['max_curvature']
         assert t._kturn_active
 
-    def test_no_kturn_inside_min_dist(self):
-        """Within kturn_min_dist of target, K-turn is suppressed even
-        on a large eta — chassis takes the small forward arc
-        through the antenna-unicycle transform instead."""
+    def test_no_kturn_inside_min_dist_moderate_eta(self):
+        """Within kturn_min_dist with a MODERATE attitude error
+        (60° < |eta| < 90°, where the forward law still makes forward
+        progress), K-turn stays suppressed — small near-target jitter
+        shouldn't trigger a needless backup cycle."""
         t = L1Tracker(_PARAMS)
         seg = _seg(target=(1.0, 0.0))
-        # Antenna 20 cm from target, ψ off by 90°.
+        # Antenna 20 cm from target, ψ off by 75° (forward-progressing).
         antenna = (0.80, 0.0)
-        chassis = _chassis_for_antenna_at(*antenna, psi=radians(90))
+        chassis = _chassis_for_antenna_at(*antenna, psi=radians(75))
         v, kappa, _ = t.step(chassis, seg, t_now=0.0,
                              antenna_world=antenna)
         assert not t._kturn_active
-        # Forward branch: cos(-90°)·v_des ≈ 0, tan(-90°)/L → clamped κ.
-        # v should be small (cos≈0) but non-negative direction.
-        assert v == pytest.approx(0.0, abs=1e-6)
+        # cos(-75°) > 0 → still forward; tan(-75°)/L → clamped κ.
+        assert v > 0.0
+        assert abs(kappa) == _PARAMS['max_curvature']
+
+    def test_enters_kturn_on_overshoot_inside_min_dist(self):
+        """Overshoot (|eta| > 90°) within kturn_min_dist must STILL hand
+        off to K-turn. Otherwise the forward law commands a wrong-sign
+        reverse with saturated κ and the rover stalls just outside
+        cm_capture — the field WP1 trap (antenna 7 cm past target,
+        eta ≈ 104°, dist < 30 cm, bbox_disp collapsed to ~2 cm)."""
+        t = L1Tracker(_PARAMS)
+        seg = _seg(target=(1.0, 0.0))
+        # Antenna 7 cm PAST the target along +x → bearing flips ~180°.
+        antenna = (1.07, 0.0)
+        chassis = _chassis_for_antenna_at(*antenna, psi=radians(5))
+        v, kappa, status = t.step(chassis, seg, t_now=0.0,
+                                  antenna_world=antenna)
+        assert status == 'tracking'
+        assert t._kturn_active, "overshoot inside min_dist must engage K-turn"
+        # K-turn reverses to rebuild a clean straight-in approach.
+        assert v == -_PARAMS['approach_speed']
+        assert abs(kappa) == _PARAMS['max_curvature']
 
 
 class TestKturnExit:
