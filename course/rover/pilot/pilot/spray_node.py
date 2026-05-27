@@ -1,18 +1,27 @@
-"""Dispenser Node: chalk-powder pocket-wheel actuator at waypoints.
+"""Dispenser Node: chalk-powder drum actuator at waypoints.
 
 Drives an MG995 positional servo whose PWM is owned by the rover MCU
-(RP2040-Zero, GPIO 7, slice 3 ch B). This node converts the per-shot
-target angle to a pulse width in microseconds and publishes it on
+(RP2040-Zero, GPIO 7, slice 3 ch B). This node converts the target
+angle to a pulse width in microseconds and publishes it on
 /rover/cmd/dispenser_us; mcu_bridge_node forwards verbatim to the MCU
 as 'D <us>' over USB CDC. The MCU clamps + slews the pulse on the
 servo control tick. No GPIO is touched here.
 
-Each waypoint trigger toggles the wheel between two dispense angles
-(A and B); one toggle = one ~5 g shot of powder. The wheel has only
-two valid rest positions (A and B) — there is no return-to-rest. The
-pocket fills under the hopper at one angle and drops over the drop
-port at the other. State alternates per trigger; toggle_state survives
-across waypoints.
+Dispense model: the drum has ONE rest position — LOAD (angle_a, pocket
+up). While the rover drives, the drum sits at LOAD so chassis vibration
+packs powder into it. A shot is fired by a short dump-and-return cycle
+at the waypoint:
+
+    arrive (drum already at LOAD)
+      → wait arrive_to_dump_delay   (rover has stopped; let it settle)
+      → rotate to DUMP (angle_b, pocket down — gravity drops the shot)
+      → wait dump_hold_duration     (powder fully clears the drop port)
+      → rotate back to LOAD
+      → publish done → navigator departs immediately
+
+The drum therefore ends every cycle back at LOAD, so the next driving
+leg refills it. There is no per-waypoint A/B toggle; every waypoint
+runs the identical load→dump→load cycle.
 
 Topic names are retained as /rover/spray/* for compatibility with the
 navigator and bridge nodes.
@@ -28,11 +37,9 @@ Subscribed topics:
     /rover/cmd/dispenser_set_position (std_msgs/String) - Operator override
                                            from the manual-control panel.
                                            Payload "load" → angle_a (pocket
-                                           up, hopper fills); "dump" →
+                                           up, drum fills); "dump" →
                                            angle_b (pocket down, gravity
-                                           dumps). Updates _toggle_state so
-                                           the next auto-dispense stays
-                                           consistent.
+                                           dumps). Ignored mid-cycle.
 
 Published topics:
     /rover/cmd/dispenser_us (std_msgs/Int32) - Servo pulse width in µs,
@@ -66,15 +73,18 @@ class SprayNode(Node):
         super().__init__('spray_node')
 
         # Parameters
-        # Two dispense angles. The wheel alternates between these on
-        # each waypoint trigger; one toggle = one shot. There is no
-        # "rest" position — A and B are both valid stop positions.
+        # angle_a is the LOAD / rest pose (pocket up, drum fills under the
+        # hopper). angle_b is the DUMP pose (pocket down, gravity drops the
+        # shot). The drum sits at angle_a whenever it is not mid-cycle.
         self.declare_parameter('dispense_angle_a', 0)
         self.declare_parameter('dispense_angle_b', 90)
-        # Time to allow the servo to complete its travel and the pocket
-        # to fully empty into the drop tube before publishing done.
-        # MG995 60°/0.16s @ 6V → ~0.25s for 90°; add margin.
-        self.declare_parameter('settle_duration', 0.4)
+        # Cycle timing. arrive_to_dump_delay: dwell at LOAD after the rover
+        # stops at the waypoint, before rotating to DUMP. dump_hold_duration:
+        # dwell at DUMP so the shot fully clears the drop port before
+        # returning to LOAD. Both are timed from when the command is issued;
+        # the MCU's slew limiter adds ~0.4 s of one-way travel on top.
+        self.declare_parameter('arrive_to_dump_delay', 1.0)
+        self.declare_parameter('dump_hold_duration', 2.0)
 
         self._validate_params()
 
@@ -83,22 +93,17 @@ class SprayNode(Node):
         self._pub_dispenser = self.create_publisher(
             Int32, '/rover/cmd/dispenser_us', reliable_qos)
 
-        # Drive to angle_b (dump position) on boot so any chalk left in
-        # the pocket from a previous run drops out before the rover
-        # starts moving. Best-effort: the MCU bridge may not yet be
-        # ready / connected; later commands will re-sync the servo
-        # regardless.
-        angle_b = self.get_parameter('dispense_angle_b').value
-        self._publish_pulse_us(_angle_to_pulse_us(angle_b))
+        # Drive to angle_a (LOAD) on boot so the drum is in its rest pose and
+        # the first driving leg packs powder into it. Best-effort: the MCU
+        # bridge may not yet be ready / connected; later commands re-sync the
+        # servo regardless.
+        angle_a = self.get_parameter('dispense_angle_a').value
+        self._publish_pulse_us(_angle_to_pulse_us(angle_a))
 
         # State
         self._spraying = False
         self._dispense_timer = None
         self._current_wp_idx = -1
-        # Toggle state: 0 → next dispense rotates to angle_b; 1 → angle_a.
-        # Starts at 1 because boot drove the servo to angle_b above, so
-        # the first waypoint rotates back to angle_a (load the pocket).
-        self._toggle_state = 1
         # Index of the most recent waypoint cancelled by navigator timeout.
         # Guards _signal_done from publishing a stale 'success' result for
         # a waypoint navigator already published 'timeout' for.
@@ -131,7 +136,8 @@ class SprayNode(Node):
         """Sanity-check dispense parameters."""
         angle_a = self.get_parameter('dispense_angle_a').value
         angle_b = self.get_parameter('dispense_angle_b').value
-        settle = self.get_parameter('settle_duration').value
+        pre = self.get_parameter('arrive_to_dump_delay').value
+        hold = self.get_parameter('dump_hold_duration').value
 
         if not (0 <= angle_a <= 180):
             self.get_logger().fatal(f'dispense_angle_a must be in [0, 180]; got {angle_a}')
@@ -142,8 +148,11 @@ class SprayNode(Node):
         if angle_a == angle_b:
             self.get_logger().fatal(f'dispense_angle_a and _b must differ; both = {angle_a}')
             raise SystemExit(1)
-        if not (0.0 < settle <= 10.0):
-            self.get_logger().fatal(f'settle_duration must be in (0, 10]s; got {settle}')
+        if not (0.0 < pre <= 10.0):
+            self.get_logger().fatal(f'arrive_to_dump_delay must be in (0, 10]s; got {pre}')
+            raise SystemExit(1)
+        if not (0.0 < hold <= 10.0):
+            self.get_logger().fatal(f'dump_hold_duration must be in (0, 10]s; got {hold}')
             raise SystemExit(1)
 
     def _safe_destroy_timer(self, timer):
@@ -161,28 +170,57 @@ class SprayNode(Node):
         return None
 
     def _on_waypoint_reached(self, msg):
-        """Toggle the dispenser servo and schedule done after settle."""
+        """Run the dump-and-return cycle: LOAD → wait → DUMP → wait → LOAD.
+
+        The drum is assumed to be at LOAD on entry (its rest pose). We do
+        not command it again here; we just wait arrive_to_dump_delay for the
+        chassis to settle before rotating to DUMP in _do_dump.
+        """
         if self._spraying:
             return
 
         self._spraying = True
-        wp_idx = msg.data
-        self._current_wp_idx = wp_idx
+        self._current_wp_idx = msg.data
 
-        angle_a = self.get_parameter('dispense_angle_a').value
-        angle_b = self.get_parameter('dispense_angle_b').value
-        # _toggle_state = 0 → physical state is angle_a → move to angle_b.
-        target_angle = angle_b if self._toggle_state == 0 else angle_a
-        target_us = _angle_to_pulse_us(target_angle)
+        pre = self.get_parameter('arrive_to_dump_delay').value
+        hold = self.get_parameter('dump_hold_duration').value
         self.get_logger().info(
-            f'Dispensing at waypoint {wp_idx} (target {target_angle}° = {target_us} µs)'
+            f'Waypoint {self._current_wp_idx} reached; dispense cycle '
+            f'(load → {pre}s → dump → {hold}s → load)'
         )
-        self._publish_pulse_us(target_us)
-        self._toggle_state ^= 1
+        # Step 1: dwell at LOAD, then rotate to DUMP.
+        self._dispense_timer = self.create_timer(pre, self._do_dump)
 
-        # Schedule done after the servo settles and the pocket empties.
-        settle = self.get_parameter('settle_duration').value
-        self._dispense_timer = self.create_timer(settle, self._signal_done, callback_group=None)
+    def _do_dump(self):
+        """Pre-dump dwell elapsed: rotate the drum to DUMP and hold."""
+        self._dispense_timer = self._safe_destroy_timer(self._dispense_timer)
+        # Cancelled / E-stopped during the pre-dump dwell.
+        if not self._spraying:
+            return
+        angle_b = self.get_parameter('dispense_angle_b').value
+        self.get_logger().info(
+            f'Dump at waypoint {self._current_wp_idx} ({angle_b}° = {_angle_to_pulse_us(angle_b)} µs)'
+        )
+        self._publish_pulse_us(_angle_to_pulse_us(angle_b))
+        # Step 2: hold at DUMP, then return to LOAD and finish.
+        hold = self.get_parameter('dump_hold_duration').value
+        self._dispense_timer = self.create_timer(hold, self._do_load_and_done)
+
+    def _do_load_and_done(self):
+        """Dump hold elapsed: rotate back to LOAD (rest) and signal done."""
+        # Cancelled / E-stopped during the dump hold — leave the drum where
+        # it is (the cancel path already cleared state) and drop the timer.
+        if not self._spraying:
+            self._dispense_timer = self._safe_destroy_timer(self._dispense_timer)
+            return
+        angle_a = self.get_parameter('dispense_angle_a').value
+        self.get_logger().info(
+            f'Return to load at waypoint {self._current_wp_idx} '
+            f'({angle_a}° = {_angle_to_pulse_us(angle_a)} µs)'
+        )
+        self._publish_pulse_us(_angle_to_pulse_us(angle_a))
+        # _signal_done destroys the hold timer (still held in _dispense_timer).
+        self._signal_done()
 
     def _signal_done(self):
         """Signal dispense cycle complete. Always publishes done regardless of timer state."""
@@ -205,13 +243,13 @@ class SprayNode(Node):
             self.get_logger().info('Dispense done')
 
     def _on_emergency_stop(self, _msg):
-        """Emergency stop: cancel any pending timer; do NOT move the servo.
+        """Emergency stop: cancel the pending cycle; do NOT move the servo.
 
-        Both dispense angles are valid stop positions for the wheel —
-        there is no "rest" to retract to. On E-stop we simply abort the
-        pending settle timer and let the wheel sit at whichever angle
-        it last rotated to. The logical _toggle_state remains coherent
-        because we already flipped it when the dispense was issued.
+        We abort whichever step timer is pending and leave the drum at
+        whatever pose it last rotated to (LOAD if E-stop hit during the
+        pre-dump dwell, DUMP if it hit during the hold). We deliberately
+        do not command a new pose during an emergency — the operator can
+        use the manual Load button to return the drum to its rest pose.
         """
         self._dispense_timer = self._safe_destroy_timer(self._dispense_timer)
         was_spraying = self._spraying
@@ -223,11 +261,9 @@ class SprayNode(Node):
     def _on_set_position(self, msg):
         """Operator manual override: drive the dispenser directly.
 
-        Accepts the string "load" (angle_a, pocket up) or "dump"
-        (angle_b, pocket down). Ignored mid-dispense so it can't race
-        the toggle path. The internal _toggle_state is set so that the
-        NEXT auto-dispense rotates to the OPPOSITE pose, keeping the
-        load/dump alternation consistent after a manual move.
+        Accepts the string "load" (angle_a, pocket up — rest pose) or
+        "dump" (angle_b, pocket down). Ignored mid-cycle so it can't race
+        the dump-and-return path.
         """
         if self._spraying:
             self.get_logger().info(
@@ -237,12 +273,8 @@ class SprayNode(Node):
         position = (msg.data or '').strip().lower()
         if position == 'load':
             angle = self.get_parameter('dispense_angle_a').value
-            # state = 0 → next auto-dispense rotates to angle_b (dump)
-            self._toggle_state = 0
         elif position == 'dump':
             angle = self.get_parameter('dispense_angle_b').value
-            # state = 1 → next auto-dispense rotates to angle_a (load)
-            self._toggle_state = 1
         else:
             self.get_logger().warn(
                 f'dispenser_set_position: unknown payload {msg.data!r}'
@@ -255,10 +287,10 @@ class SprayNode(Node):
         self._publish_pulse_us(target_us)
 
     def _on_spray_cancel(self, msg):
-        """Abort the current dispense cycle without leaving SPRAYING for EMERGENCY_STOP.
+        """Abort the current cycle without leaving SPRAYING for EMERGENCY_STOP.
 
         Used when the navigator times out waiting for spray/done.
-        The wheel position is left where it is (both angles are valid stops).
+        The drum is left where it is (the next leg / manual Load resets it).
         """
         target_idx = int(msg.data)
         if not self._spraying or self._current_wp_idx != target_idx:
@@ -272,9 +304,10 @@ class SprayNode(Node):
         # Intentionally do NOT publish a result here — navigator already did.
 
     def destroy_node(self):
-        # Park the servo at angle_b (dump) so subsequent boots align
-        # logical and physical state, and any loaded pocket drops on
-        # shutdown. Best-effort: MCU bridge may have shut down too.
+        # Park the drum at angle_b (DUMP) on shutdown so any loaded powder
+        # drops out rather than sitting in the drum during storage. Boot
+        # independently re-commands LOAD, so this does not affect the rest
+        # pose. Best-effort: the MCU bridge may have shut down too.
         try:
             angle_b = self.get_parameter('dispense_angle_b').value
             self._publish_pulse_us(_angle_to_pulse_us(angle_b))

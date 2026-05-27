@@ -1,8 +1,16 @@
-"""Tests for the chalk dispenser (SprayNode) toggle logic and timer safety.
+"""Tests for the chalk dispenser (SprayNode) cycle logic and timer safety.
 
 The dispenser servo is driven by the MCU; SprayNode publishes the target
 pulse width on /rover/cmd/dispenser_us. These tests intercept the
 publisher to assert command intent without touching real hardware.
+
+The dispense model is a load→dump→load cycle: the drum rests at LOAD
+(angle_a) while driving, rotates to DUMP (angle_b) to drop a shot at the
+waypoint, then returns to LOAD. The cycle is driven by two chained
+timers (arrive_to_dump_delay → DUMP, dump_hold_duration → LOAD). The
+fake Node in conftest does NOT auto-fire timers, so tests advance the
+cycle by calling the step callbacks (_do_dump, _do_load_and_done)
+directly.
 """
 
 import json
@@ -28,6 +36,17 @@ def test_angle_to_pulse_us_endpoints():
     assert _angle_to_pulse_us(0) == 500
     assert _angle_to_pulse_us(90) == 1500
     assert _angle_to_pulse_us(180) == 2500
+
+
+def test_boot_commands_load(monkeypatch):
+    """On boot the drum is driven to LOAD (angle_a) — its rest pose — so
+    the first driving leg packs powder into it.
+    """
+    calls = []
+    monkeypatch.setattr(SprayNode, '_publish_pulse_us', lambda self, us: calls.append(int(us)))
+    node = SprayNode()
+    angle_a = node.get_parameter('dispense_angle_a').value
+    assert calls == [_angle_to_pulse_us(angle_a)]
 
 
 def test_safe_destroy_timer_none_ok(spray):
@@ -77,12 +96,11 @@ def test_emergency_stop_clears_active_timer(spray):
 
 
 def test_emergency_stop_does_not_command_servo(spray, captured_pulses):
-    """E-stop must NOT emit a new dispenser pulse — both dispense angles
-    are valid stops. The earlier liquid-spray design retracted to a rest
-    angle on E-stop; the pocket-wheel has no such rest position and
-    re-commanding would spill the loaded pocket or hammer the wheel.
+    """E-stop must NOT emit a new dispenser pulse — we abort the pending
+    cycle and leave the drum at whatever pose it last rotated to. The
+    operator returns it to rest via the manual Load button.
     """
-    # Clear any pulses queued by __init__ (boot publishes angle_b).
+    # Clear any pulses queued by __init__ (boot publishes LOAD).
     captured_pulses.clear()
     spray._spraying = True
     spray._current_wp_idx = 7
@@ -155,83 +173,105 @@ def test_spray_cancel_for_stale_wp_noop(spray):
     assert results == []
 
 
-def test_toggle_alternates_and_drives_targets(spray, captured_pulses):
-    """Two waypoint triggers must drive angle_a then angle_b.
-
-    Boot drives the servo to dispense_angle_b (set in __init__), so the
-    first trigger should rotate TO angle_a (load the pocket). The
-    toggle_state flips each time; the second trigger rotates back to
-    angle_b (dump).
+def test_waypoint_reached_no_immediate_pulse_and_arms_timer(spray, captured_pulses):
+    """Reaching a waypoint must NOT command the servo immediately — the
+    drum is already at LOAD. It only marks spraying and arms the pre-dump
+    timer; the DUMP command waits for that timer to fire.
     """
     captured_pulses.clear()
-    wp1 = type('M', (), {'data': 10})()
-    wp2 = type('M', (), {'data': 11})()
+    wp = type('M', (), {'data': 12})()
+    spray._on_waypoint_reached(wp)
+    assert captured_pulses == [], "no servo command on arrival — drum is already at load"
+    assert spray._spraying is True
+    assert spray._current_wp_idx == 12
+    assert spray._dispense_timer is not None
 
+
+def test_full_cycle_dumps_then_loads(spray, captured_pulses):
+    """The full cycle commands DUMP (angle_b) then LOAD (angle_a), and
+    finishes back at LOAD with a success result.
+    """
+    captured_pulses.clear()
     angle_a = spray.get_parameter('dispense_angle_a').value
     angle_b = spray.get_parameter('dispense_angle_b').value
 
-    # First trigger: state is 1 → drive to angle_a
-    spray._on_waypoint_reached(wp1)
-    assert spray._toggle_state == 0, "state must flip after dispense"
-    assert spray._spraying is True
-    # Mark the dispense complete so the second trigger isn't blocked.
-    spray._signal_done()
+    done = []
+    results = []
+    spray._pub_done.publish = lambda msg: done.append(msg)
+    spray._pub_result.publish = lambda msg: results.append(msg)
+
+    wp = type('M', (), {'data': 9})()
+    spray._on_waypoint_reached(wp)
+    # Pre-dump timer fires → rotate to DUMP.
+    spray._do_dump()
+    # Dump-hold timer fires → rotate back to LOAD + signal done.
+    spray._do_load_and_done()
+
+    assert captured_pulses == [_angle_to_pulse_us(angle_b), _angle_to_pulse_us(angle_a)], \
+        "cycle must command dump then load"
     assert spray._spraying is False
-
-    # Second trigger: state is 0 → drive to angle_b
-    spray._on_waypoint_reached(wp2)
-    assert spray._toggle_state == 1, "state must flip back"
-
-    expected = [_angle_to_pulse_us(angle_a), _angle_to_pulse_us(angle_b)]
-    assert captured_pulses == expected, \
-        f"expected pulses {expected}, got {captured_pulses}"
+    assert len(done) == 1
+    assert json.loads(results[0].data) == {"waypoint": 9, "outcome": "success"}
 
 
-def test_set_position_load_drives_angle_a_and_sets_state_0(spray, captured_pulses):
+def test_do_dump_noop_when_not_spraying(spray, captured_pulses):
+    """If the cycle was cancelled during the pre-dump dwell, the queued
+    _do_dump callback must not command the servo.
+    """
     captured_pulses.clear()
-    spray._toggle_state = 1
+    spray._spraying = False
+    spray._do_dump()
+    assert captured_pulses == []
+
+
+def test_do_load_and_done_noop_when_not_spraying(spray, captured_pulses):
+    """If the cycle was cancelled during the dump hold, the queued
+    _do_load_and_done callback must not command the servo or signal done.
+    """
+    captured_pulses.clear()
+    done = []
+    spray._pub_done.publish = lambda msg: done.append(msg)
+    spray._spraying = False
+    spray._do_load_and_done()
+    assert captured_pulses == []
+    assert done == []
+
+
+def test_set_position_load_drives_angle_a(spray, captured_pulses):
+    captured_pulses.clear()
     msg = type('M', (), {'data': 'load'})()
     spray._on_set_position(msg)
     angle_a = spray.get_parameter('dispense_angle_a').value
     assert captured_pulses == [_angle_to_pulse_us(angle_a)]
-    assert spray._toggle_state == 0, "next auto-dispense must rotate to dump"
 
 
-def test_set_position_dump_drives_angle_b_and_sets_state_1(spray, captured_pulses):
+def test_set_position_dump_drives_angle_b(spray, captured_pulses):
     captured_pulses.clear()
-    spray._toggle_state = 0
     msg = type('M', (), {'data': 'dump'})()
     spray._on_set_position(msg)
     angle_b = spray.get_parameter('dispense_angle_b').value
     assert captured_pulses == [_angle_to_pulse_us(angle_b)]
-    assert spray._toggle_state == 1, "next auto-dispense must rotate to load"
 
 
 def test_set_position_unknown_payload_noop(spray, captured_pulses):
     captured_pulses.clear()
-    pre = spray._toggle_state
     msg = type('M', (), {'data': 'banana'})()
     spray._on_set_position(msg)
     assert captured_pulses == []
-    assert spray._toggle_state == pre
 
 
 def test_set_position_ignored_while_spraying(spray, captured_pulses):
     captured_pulses.clear()
     spray._spraying = True
-    pre = spray._toggle_state
     msg = type('M', (), {'data': 'load'})()
     spray._on_set_position(msg)
     assert captured_pulses == []
-    assert spray._toggle_state == pre
 
 
 def test_waypoint_reached_blocked_while_spraying(spray, captured_pulses):
-    """A second trigger arriving while a dispense is in progress is ignored."""
+    """A second trigger arriving while a cycle is in progress is ignored."""
     captured_pulses.clear()
     spray._spraying = True
-    pre_toggle = spray._toggle_state
     wp = type('M', (), {'data': 5})()
     spray._on_waypoint_reached(wp)
     assert captured_pulses == [], "no servo command while busy"
-    assert spray._toggle_state == pre_toggle, "no toggle while busy"

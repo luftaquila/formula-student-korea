@@ -170,13 +170,15 @@ spray_node:
     # /rover/cmd/dispenser_us and mcu_bridge_node forwards it to the
     # MCU as 'D <us>'. No Pi GPIO is touched here.
     #
-    # MG995 drives a 2-port chalk dispenser wheel between two valid
-    # stop positions. Each /rover/nav/waypoint_reached toggles between
-    # them; one toggle = one ~5 g shot. There is no rest position.
-    dispense_angle_a: 0                # Drum pocket faces UP — hopper fills it
-    dispense_angle_b: 180              # Drum pocket faces DOWN — gravity dumps it
-    settle_duration: 0.7               # Time for servo travel + pocket to fully empty.
-                                       # MG995 60°/0.16s @ 6V → 180° ≈ 0.5s + margin.
+    # MG995 drives the chalk drum. LOAD (angle_a) is the rest pose: the
+    # drum sits there while driving so chassis vibration packs powder into
+    # it. Each /rover/nav/waypoint_reached runs one load→dump→load cycle =
+    # one ~5 g shot, ending back at LOAD for the next leg.
+    dispense_angle_a: 0                # LOAD — pocket UP, drum fills (rest pose)
+    dispense_angle_b: 180              # DUMP — pocket DOWN, gravity dumps the shot
+    arrive_to_dump_delay: 1.0          # Dwell at LOAD after stopping, before DUMP
+    dump_hold_duration: 2.0            # Dwell at DUMP so the shot clears, before LOAD.
+                                       # Servo slew (~0.4s one-way) adds to each move.
 
 mcu_bridge_node:
   ros__parameters:
