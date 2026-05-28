@@ -139,6 +139,14 @@ class McuBridgeNode(Node):
         # the yaml fails to load (test harness, direct `ros2 run`).
         self.declare_parameter('servo_center_us', 1500)
         self.declare_parameter('servo_range_us', 500)
+        # Chassis-clearance limits on the FINAL steering pulse (post-trim),
+        # asymmetric. The left wheel fouls the bodywork before the servo's
+        # electrical max, so the left (upper) bound is narrowed below 2000
+        # on rigs where that happens; full right (1000) clears. Independent
+        # of the symmetric servo_center±servo_range ackermann uses for the
+        # κ→pulse map. Live-tunable via `ros2 param set`.
+        self.declare_parameter('steer_min_us', 1000)
+        self.declare_parameter('steer_max_us', 2000)
         self.declare_parameter('max_steering_angle_deg', 30.5)
         self.declare_parameter('wheelbase', 0.33)
         self.declare_parameter('track_width', 0.33)
@@ -399,6 +407,9 @@ class McuBridgeNode(Node):
         if not (0 <= self._p('servo_range_us') <= 1000):
             self.get_logger().fatal('servo_range_us out of range')
             raise SystemExit(1)
+        if not (500 <= self._p('steer_min_us') < self._p('steer_max_us') <= 2500):
+            self.get_logger().fatal('steer_min_us/steer_max_us out of range or inverted')
+            raise SystemExit(1)
 
     def _open_serial(self):
         port = self._p('serial_port')
@@ -657,10 +668,14 @@ class McuBridgeNode(Node):
         # trim near full-lock never pushes the servo past its stops.
         with self._steering_trim_lock:
             trim = self._steering_trim_us
-        center = self._p('servo_center_us')
-        rng = self._p('servo_range_us')
         trimmed = servo_us + trim
-        trimmed = max(center - rng, min(center + rng, trimmed))
+        # Chassis-clearance clamp (asymmetric). Bounds the final post-trim
+        # pulse, separate from the symmetric servo_center±servo_range that
+        # ackermann uses for the κ→pulse map: the left wheel can foul the
+        # bodywork before the servo's electrical max, so steer_max_us is
+        # narrowed on that side while the right (steer_min_us) keeps full
+        # travel. Defaults (1000/2000) reproduce the old servo-limit clamp.
+        trimmed = max(self._p('steer_min_us'), min(self._p('steer_max_us'), trimmed))
         self._cur_steer_us = int(round(trimmed))
 
         if self._p('use_pid'):

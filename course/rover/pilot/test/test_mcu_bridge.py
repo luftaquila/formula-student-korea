@@ -44,6 +44,8 @@ def bridge():
         'reconnect_delay_s': 2.0,
         'servo_center_us': 1500,
         'servo_range_us': 500,
+        'steer_min_us': 1000,
+        'steer_max_us': 2000,
         'max_steering_angle_deg': 25.0,
         'wheelbase': 0.38,
         'track_width': 0.30,
@@ -186,6 +188,28 @@ def test_manual_dropped_while_estopped(bridge):
     assert not any(l.startswith(('M ', 'V ')) for l in _writes_text(bridge))
 
 
+def test_drive_clamps_left_to_steer_max_us(bridge):
+    # Asymmetric chassis clamp: full-left servo_us (2000) must be capped at
+    # steer_max_us, while full-right (1000) is untouched by steer_min_us.
+    bridge._params['steer_min_us'] = 1000
+    bridge._params['steer_max_us'] = 1850
+    bridge._drive(left_pct=0.0, right_pct=0.0, servo_us=2000)   # full left
+    assert bridge._cur_steer_us == 1850
+    bridge._drive(left_pct=0.0, right_pct=0.0, servo_us=1000)   # full right
+    assert bridge._cur_steer_us == 1000
+    # An in-range command passes through unclamped.
+    bridge._drive(left_pct=0.0, right_pct=0.0, servo_us=1700)
+    assert bridge._cur_steer_us == 1700
+
+
+def test_steer_limit_defaults_reproduce_servo_range(bridge):
+    # Defaults (1000/2000) must not clip anything inside the servo range.
+    assert bridge._params['steer_min_us'] == 1000
+    assert bridge._params['steer_max_us'] == 2000
+    bridge._drive(left_pct=0.0, right_pct=0.0, servo_us=2000)
+    assert bridge._cur_steer_us == 2000
+
+
 def test_drive_emits_M_in_raw_mode(bridge):
     # _drive is a pure passthrough now — ramping happens upstream in
     # _on_velocity / _on_manual on chassis speed, not on per-wheel duty.
@@ -315,8 +339,9 @@ def test_velocity_zero_target_ramps_smoothly(bridge):
 
 def test_drive_applies_steering_trim_and_clamps(bridge):
     """Persisted trim must offset every commanded servo_us, but the
-    final pulse must stay inside [center - range, center + range] so
-    adding trim near full lock doesn't push the servo past its stops."""
+    final pulse must stay inside [steer_min_us, steer_max_us] (defaults
+    1000/2000 here) so adding trim near full lock doesn't push the servo
+    past its stops."""
     bridge._steering_trim_us = 8.0
     bridge._drive(40.0, 60.0, 1500.0)
     parts = _writes_text(bridge)[-1].strip().split()

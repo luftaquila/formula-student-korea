@@ -10,7 +10,8 @@
 // Wiring: LEFT  B → GP2, LEFT  A → GP3
 //         RIGHT B → GP4, RIGHT A → GP5
 // If wheel-forward ends up reading negative on first power-up, swap
-// the two encoder wires at the connector (per side).
+// the two encoder wires at the connector (per side). The MD36L encoder
+// connector is XH2.54-4P.
 #define PIN_ENC_LEFT_BASE   2
 #define PIN_ENC_RIGHT_BASE  4
 
@@ -66,12 +67,16 @@
 #define SERVO_FREQ_HZ           50
 #define SERVO_PERIOD_US         20000
 #define SERVO_CENTER_US         1500
-#define SERVO_RANGE_US          500       // +- from center; full lock at 1000-2000us
+#define SERVO_RANGE_US          500       // +- from center; nominal full-lock span
+// Steering servo HARD bounds (servo-protection stops). Bench-measured
+// 2026-05-29: the right linkage bottoms out at ~1000 µs (its natural
+// mechanical max, kept as the floor) and the left wheel fouls the
+// bodywork at ~1850 µs, BEFORE the 2000 µs max. The asymmetric
+// OPERATIONAL limit on the left is enforced host-side (mcu_bridge
+// steer_max_us=1850, live-tunable), separate from these firmware bounds.
 #define SERVO_MIN_US            1000
 #define SERVO_MAX_US            2000
 // Dispenser servo uses full 500-2500 us range (MG995 0-180° travel).
-// The steering S20F is mechanically limited at the linkage so its
-// 1000-2000 range is preserved separately.
 #define SERVO_DISPENSER_MIN_US  500
 #define SERVO_DISPENSER_MAX_US  2500
 // S20F datasheet: 0.18 s/60deg => ~3 ms/deg.
