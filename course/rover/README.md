@@ -14,7 +14,7 @@ for remote access.
 | RTK corrections | NTRIP caster (NGII) | TCP |
 | Motor driver | Cytron MDD10A | MCU PWM + DIR |
 | Drive | 2× MD36L P27 DC gearmotor (27:1) on Wheeltec R550 rear | one MDD10A channel per wheel |
-| Wheel encoders | 2× quadrature on motor shaft, 3.3 V push-pull, 500 PPR (×4 × 27 = 54000 counts/wheel rev) | MCU PIO + 3V3 |
+| Wheel encoders | 2× quadrature on motor shaft, 3.3 V push-pull, 500 PPR (×4 × 27 = 54000 counts/wheel rev); XH2.54-4P connector | MCU PIO + 3V3 |
 | Wheels | 125 mm dia (Wheeltec R550) | rear drive, front passive |
 | Steering servo | Wheeltec S20F (5–6.5 V, 20 kg·cm, stall 1.8 A) | MCU PWM |
 | Spray servo | Standard RC | Pi GPIO PWM |
