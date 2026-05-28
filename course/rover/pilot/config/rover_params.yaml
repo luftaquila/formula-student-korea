@@ -54,7 +54,7 @@ navigator_node:
     # ── Speeds ──────────────────────────────────────────────────────────
     cruise_speed: 1.0                  # m/s away from target
     approach_speed: 0.4                # m/s magnitude during K-turn (backward)
-    calibration_speed: 0.5             # m/s during cold-start heading discovery. Independent of heading_speed_threshold — calibration uses fit_chord_heading on GPS antenna ENU positions, not GPS heading-of-motion.
+    calibration_speed: 1.0             # m/s during cold-start heading discovery. Raised 0.5→1.0 to cut mission-start latency (~5 s → ~2 s at the new 1.5 m calibration_distance). Straight-line drive so the tire-scrub argument that caps antenna_cal_speed at 0.5 m/s does not apply here. Independent of heading_speed_threshold — calibration uses fit_chord_heading on GPS antenna ENU positions, not GPS heading-of-motion.
     # Antenna offset auto-calibration STRAIGHT phase chord length. Drives
     # κ=0 for this distance, fits ψ_init from antenna ENU. 2 m gives a
     # chord well above the 1.5 m calibration_chord_min_m gate even when
@@ -116,9 +116,9 @@ navigator_node:
     stuck_timeout: 12.0                # seconds without progress before retry/skip
 
     # ── Calibration quality gates ───────────────────────────────────────
-    calibration_distance: 2.5          # meters of straight drive
+    calibration_distance: 1.5          # meters of straight drive. Lowered 2.5→1.5 — i.e. zero buffer above the calibration_chord_min_m floor, sized for the case where RTK is fixed at mission start (the operator policy makes this the only acceptable start condition; see fix_accept_float_max_h_acc_mm). The 0.5 m buffer that used to sit between was costing ~50 % of cold-start latency for an RTK-noise margin that, at ±1 cm 1σ, leaves residual RMS already an order of magnitude below the 5 cm gate. If a fix briefly degrades during cal, the auto-extension (+1.5 m via _cal_extended) still recovers up to calibration_max_distance.
     calibration_max_distance: 5.0      # meters cap — ERROR if heading still untrustworthy
-    calibration_min_samples: 20        # ≥1 second at 20 Hz
+    calibration_min_samples: 15        # 1.5 s at 10 Hz GPS — lowered from 20 so it doesn't dominate over the (newly shortened) distance gate at the higher calibration_speed. A 2-D line fit through 15 cm-precise samples is already well below the 5 cm residual gate, so reliability isn't sacrificed.
     calibration_chord_min_m: 1.5       # require this chord length for trustworthy heading fit
     calibration_residual_max: 0.05     # meters RMS of perpendicular residuals (~2° heading 1σ at 1.5 m chord)
 
