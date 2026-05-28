@@ -233,6 +233,6 @@ mcu_bridge_node:
     # brake_fire_above_mps: skip the pulse if |v| ≤ this on deadband entry
     # (no point braking when already at rest; saves drivetrain wear).
     # Tunable live via `ros2 param set /mcu_bridge_node brake_pulse_duty <v>`.
-    brake_pulse_duty: 0.35
+    brake_pulse_duty: 0.08
     brake_pulse_ms: 100.0
     brake_fire_above_mps: 0.04
