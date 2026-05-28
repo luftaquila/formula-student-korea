@@ -100,8 +100,10 @@ def bridge():
     node._pub_odom = _Pub()
     node._pub_emergency_stop = _Pub()
     node._pub_clear_emergency = _Pub()
-    # Hardware-estop edge-detection state.
-    node._last_hw_estop = None
+    # Combined E-Stop state (software latch OR physical button).
+    node._sw_latched = False
+    node._hw_pressed = False
+    node._estop_synced = False
 
     # Battery calibration state — same defaults the real __init__ sets.
     import threading as _t
@@ -348,8 +350,39 @@ def test_sw_estop_sends_E_and_clears_state(bridge):
 
 
 def test_sw_clear_sends_C_and_syncs(bridge):
+    bridge._on_sw_estop(None)        # engage first so there is something to clear
+    bridge._serial.writes.clear()
     bridge._on_sw_clear(None)
     assert any(w.strip() == 'C' for w in _writes_text(bridge))
+    assert len(bridge._pub_clear_emergency.published) == 1
+
+
+def test_sw_clear_does_not_release_while_button_held(bridge):
+    # Physical button latched, THEN a software clear arrives. 'C' must go
+    # to the MCU (clears g_tripped) but the navigator must stay stopped —
+    # a physical stop is only released by twisting the button open. This
+    # is the regression for the "web clear → looks released → juddering"
+    # bug: the navigator was being released while the MCU still tripped.
+    bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x80')   # button pressed
+    assert len(bridge._pub_emergency_stop.published) == 1
+    bridge._serial.writes.clear()
+    bridge._on_sw_clear(None)                                # web clear
+    assert any(w.strip() == 'C' for w in _writes_text(bridge))   # latch cleared on MCU
+    assert len(bridge._pub_clear_emergency.published) == 0       # navigator NOT released
+    # Now twist the button open — only this releases the navigator.
+    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x0')
+    assert len(bridge._pub_clear_emergency.published) == 1
+
+
+def test_button_does_not_release_while_sw_latched(bridge):
+    # Symmetric: software stop engaged, then the button is pressed and
+    # released. The physical release must NOT release a software latch.
+    bridge._on_sw_estop(None)                                # software stop
+    assert len(bridge._pub_emergency_stop.published) == 1
+    bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x80')    # button pressed
+    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x0')     # button released
+    assert len(bridge._pub_clear_emergency.published) == 0    # still latched in sw
+    bridge._on_sw_clear(None)                                 # software clear
     assert len(bridge._pub_clear_emergency.published) == 1
 
 
@@ -503,12 +536,11 @@ def test_hardware_estop_press_publishes_emergency_stop(bridge):
 
 
 def test_hardware_estop_release_publishes_clear(bridge):
-    bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x80')  # already pressed
+    bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x80')  # pressed (from rest)
     bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x0')   # released (twist)
-    # Rising edge from unknown → True does NOT emit (avoids spurious
-    # estop on pilot restart with the button already pressed); falling
-    # edge from True → False does emit clear.
-    assert len(bridge._pub_emergency_stop.published) == 0
+    # A button already pressed at the first tick correctly stops the
+    # navigator (safe), and the subsequent release clears it.
+    assert len(bridge._pub_emergency_stop.published) == 1
     assert len(bridge._pub_clear_emergency.published) == 1
     # Release is not relayed to the MCU either — the MCU clears the
     # hardware stop on its own line drop, not via 'C'.

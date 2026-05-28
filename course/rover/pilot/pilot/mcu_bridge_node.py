@@ -284,8 +284,14 @@ class McuBridgeNode(Node):
             Empty, '/rover/cmd/emergency_stop', reliable)
         self._pub_clear_emergency = self.create_publisher(
             Empty, '/rover/cmd/clear_emergency', reliable)
-        # Last seen hardware-estop bit so we only emit on edges.
-        self._last_hw_estop = None
+        # Combined E-Stop state. The navigator/spray are stopped while
+        # EITHER source is active; _sync_estop() publishes only on the
+        # combined edge. _sw_latched: software 'E' latch (cleared by 'C').
+        # _hw_pressed: raw physical button line (FLAG_ESTOP_LINE).
+        # _estop_synced: last combined state we published downstream.
+        self._sw_latched = False
+        self._hw_pressed = False
+        self._estop_synced = False
         # Last seen FLAG_HW_WDT_REBOOT bit (telemetry bit 5). Edge-
         # logged on the first telemetry tick after the MCU comes up so
         # an unattended watchdog reboot leaves a trace in journalctl
@@ -565,40 +571,51 @@ class McuBridgeNode(Node):
             self._last_manual_t = 0.0
         self._nav_state = new_state
 
-    def _engage_estop(self, *, relay_mcu, source):
-        # Stop the local drive output, optionally latch the MCU software
-        # flag, and sync the navigator / spray state machines. relay_mcu
-        # is True only for a software-originated stop: a physical press is
-        # already enforced by the MCU's hardware line, so echoing 'E'
-        # would just latch g_tripped and deadlock the release.
+    def _zero_local_drive(self):
+        # Drop the bridge's own drive output so a stale velocity frame can't
+        # leak to the MCU while stopped. Idempotent.
         self._mode = 'stopped'
         self._cur_speed = 0.0
         self._cur_left = 0.0
         self._cur_right = 0.0
         self._cur_steer_us = self._p('servo_center_us')
         self._last_drive_t = None
-        if relay_mcu:
-            self._send('E')
-        # Safe to publish: this node no longer subscribes to the topic, so
-        # there is no relay loop back into _engage_estop.
-        self._pub_emergency_stop.publish(Empty())
-        self.get_logger().warn(f'EMERGENCY STOP ({source})')
 
-    def _clear_estop(self, *, relay_mcu, source):
-        # relay_mcu True clears the MCU software latch (g_tripped). The MCU
-        # clears it unconditionally now, but g_tripped is only ever set by
-        # a software 'E', so this releases a software stop only — a
-        # physically-held button keeps tripping via its own live line.
-        if relay_mcu:
-            self._send('C')
-        self._pub_clear_emergency.publish(Empty())
-        self.get_logger().info(f'Emergency-stop cleared ({source})')
+    def _sync_estop(self):
+        # The navigator / spray see ONE combined E-Stop: engaged while
+        # EITHER the software latch or the physical button is active. This
+        # is what enforces "software clears software, hardware clears
+        # hardware" at the navigator level — a software clear leaves the
+        # navigator stopped if the button is still latched (and vice-
+        # versa), so it can never *look* released while the MCU is still
+        # physically tripping the motors (which is what made the chassis
+        # judder: navigator commanding motion the MCU refuses). We only
+        # publish on the combined edge so the reliable-QoS topics don't
+        # back up.
+        engaged = self._sw_latched or self._hw_pressed
+        if engaged and not self._estop_synced:
+            self._estop_synced = True
+            self._pub_emergency_stop.publish(Empty())
+            self.get_logger().warn(
+                f'EMERGENCY STOP (sw={self._sw_latched} hw={self._hw_pressed})')
+        elif not engaged and self._estop_synced:
+            self._estop_synced = False
+            self._pub_clear_emergency.publish(Empty())
+            self.get_logger().info('Emergency-stop cleared (sw + hw both released)')
 
     def _on_sw_estop(self, _msg):
-        self._engage_estop(relay_mcu=True, source='software')
+        self._sw_latched = True
+        self._zero_local_drive()
+        self._send('E')          # latch the MCU software flag (g_tripped)
+        self._sync_estop()
 
     def _on_sw_clear(self, _msg):
-        self._clear_estop(relay_mcu=True, source='software')
+        # Clears the SOFTWARE latch only. 'C' clears g_tripped on the MCU;
+        # a physically-held button keeps tripping via its own live line and
+        # _sync_estop() keeps the navigator stopped until it is released.
+        self._sw_latched = False
+        self._send('C')
+        self._sync_estop()
 
     def _on_brake_pulse(self, _msg):
         # Arm the MCU brake pulse for the next deadband-edge entry. We
@@ -761,28 +778,25 @@ class McuBridgeNode(Node):
                 '(FLAG_HW_WDT_REBOOT)')
         self._last_wdt_reboot = wdt_reboot
 
-        # Forward hardware estop button transitions to the navigator/spray.
-        # Edge-trigger on the RAW physical line (FLAG_ESTOP_LINE, bit 7),
-        # not the combined FLAG_ESTOP_ACTIVE — the latter ORs in the
-        # software latch, which would never fall back on a release. We
-        # only sync the navigator / spray here; we never relay the
-        # physical button to the MCU (it self-stops on the hardware line),
-        # so a latching button pressed → can only be cleared by twisting
-        # it open, never by a software 'C'.
-        # Edge-trigger only — re-publishing every tick would back up the
-        # reliable-QoS topic. _last_hw_estop starts None (unknown), so we
-        # only fire on a known False→True edge: a pilot restart that comes
-        # up with the button already pressed won't replay a stale press.
-        hw_estop = bool(flags & 0x80)
-        if self._last_hw_estop is False and hw_estop:
-            self.get_logger().warn(
-                'Hardware emergency-stop pressed (MCU FLAG_ESTOP_LINE)')
-            self._engage_estop(relay_mcu=False, source='hardware')
-        elif self._last_hw_estop is True and not hw_estop:
-            self.get_logger().info(
-                'Hardware emergency-stop released (MCU FLAG_ESTOP_LINE)')
-            self._clear_estop(relay_mcu=False, source='hardware')
-        self._last_hw_estop = hw_estop
+        # Track the RAW physical line (FLAG_ESTOP_LINE, bit 7), not the
+        # combined FLAG_ESTOP_ACTIVE — the latter ORs in the software latch
+        # and would never fall back on a physical release. We never relay
+        # the button to the MCU (it self-stops on the hardware line); we
+        # only fold it into the combined navigator/spray state via
+        # _sync_estop(). A change from the initial False is honoured, so a
+        # pilot restart with the button already pressed correctly stops the
+        # navigator instead of coming up live.
+        hw = bool(flags & 0x80)
+        if hw != self._hw_pressed:
+            self._hw_pressed = hw
+            if hw:
+                self.get_logger().warn(
+                    'Hardware emergency-stop pressed (MCU FLAG_ESTOP_LINE)')
+                self._zero_local_drive()
+            else:
+                self.get_logger().info(
+                    'Hardware emergency-stop released (MCU FLAG_ESTOP_LINE)')
+            self._sync_estop()
 
         # Odometry — integrate (vl, vr) into a 2D pose.
         now_t = time.monotonic()
