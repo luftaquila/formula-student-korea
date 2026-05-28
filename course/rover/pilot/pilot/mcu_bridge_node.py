@@ -150,13 +150,15 @@ class McuBridgeNode(Node):
         self.declare_parameter('pid_ki', 3.0)
         self.declare_parameter('pid_kd', 0.0)
 
-        # Active-brake gains (MCU 'K' command). Reverse-drive the wheels
-        # to a stop when a stop is commanded, instead of coasting. Runtime-
-        # tunable so brake strength can be set in the field without
-        # re-flashing the MCU.
-        self.declare_parameter('brake_kp', 5.0)
-        self.declare_parameter('brake_max_duty', 0.8)
-        self.declare_parameter('brake_stop_mps', 0.03)
+        # Settle-at-waypoint brake (MCU 'K' parameters + 'A' arm). MCU
+        # fires a single open-loop reverse pulse on the next deadband
+        # edge IFF the host armed it via 'A' within the last second.
+        # Navigator publishes /rover/cmd/brake_pulse only at settle-on-
+        # target; manual stick release coasts. Runtime-tunable from
+        # rover_params without re-flashing.
+        self.declare_parameter('brake_pulse_duty', 0.35)
+        self.declare_parameter('brake_pulse_ms', 100.0)
+        self.declare_parameter('brake_fire_above_mps', 0.04)
 
         self._validate_params()
 
@@ -241,6 +243,11 @@ class McuBridgeNode(Node):
         self.create_subscription(Twist, '/rover/cmd/manual_control', self._on_manual, 10)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_estop, reliable)
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_estop, reliable)
+        # Brake-pulse arm. Navigator publishes this once when it commits a
+        # settle-at-waypoint stop; we forward to the MCU as 'A' so the next
+        # deadband-edge fires the configured monostable reverse pulse.
+        # Manual stick release does NOT publish here, so it just coasts.
+        self.create_subscription(Empty, '/rover/cmd/brake_pulse', self._on_brake_pulse, reliable)
         # Pi-reported navigation faults (currently: RTK fix lost / below
         # required quality). Forwarded to the MCU via 'N <0|1>' so the
         # operator-visible status LED can show LED_GPS_LOST (orange
@@ -292,7 +299,7 @@ class McuBridgeNode(Node):
         # released, so a genuinely-pressed button stays tripped).
         self._send(f'P {self._p("pid_kp")} {self._p("pid_ki")} {self._p("pid_kd")}')
         self._send(f'L {1 if self._p("use_pid") else 0}')
-        self._send(f'K {self._p("brake_kp")} {self._p("brake_max_duty")} {self._p("brake_stop_mps")}')
+        self._send(f'K {self._p("brake_pulse_duty")} {self._p("brake_pulse_ms")} {self._p("brake_fire_above_mps")}')
         self._send('C')
 
         # Live PID tuning: `ros2 param set /mcu_bridge_node pid_kp 0.8` pushes
@@ -328,7 +335,7 @@ class McuBridgeNode(Node):
                 push_pid = True
             elif p.name == 'use_pid':
                 push_mode = True
-            elif p.name in ('brake_kp', 'brake_max_duty', 'brake_stop_mps'):
+            elif p.name in ('brake_pulse_duty', 'brake_pulse_ms', 'brake_fire_above_mps'):
                 push_brake = True
             elif p.name in self._ACK_PARAMS:
                 invalidate_ack = True
@@ -355,11 +362,12 @@ class McuBridgeNode(Node):
             self.get_logger().info(f'PID mode live-updated: {"on" if on else "off"}')
         if push_brake:
             new = {p.name: p.value for p in params}
-            kp = float(new.get('brake_kp', self._p('brake_kp')))
-            mx = float(new.get('brake_max_duty', self._p('brake_max_duty')))
-            st = float(new.get('brake_stop_mps', self._p('brake_stop_mps')))
-            self._send(f'K {kp} {mx} {st}')
-            self.get_logger().info(f'Brake gains live-updated: kp={kp}, max={mx}, stop={st}')
+            duty = float(new.get('brake_pulse_duty', self._p('brake_pulse_duty')))
+            ms   = float(new.get('brake_pulse_ms',   self._p('brake_pulse_ms')))
+            fa   = float(new.get('brake_fire_above_mps', self._p('brake_fire_above_mps')))
+            self._send(f'K {duty} {ms} {fa}')
+            self.get_logger().info(
+                f'Brake pulse live-updated: duty={duty}, ms={ms}, fire_above={fa}')
         return SetParametersResult(successful=True)
 
     def _validate_params(self):
@@ -563,6 +571,14 @@ class McuBridgeNode(Node):
         # held button keeps the latch on.
         self._send('C')
         self.get_logger().info('Emergency-stop clear sent to MCU')
+
+    def _on_brake_pulse(self, _msg):
+        # Arm the MCU brake pulse for the next deadband-edge entry. We
+        # send 'A' here and the next 'V 0 0 ...' (from the navigator's
+        # settle stop) will trigger the configured monostable pulse on
+        # the MCU. The arm auto-expires after BRAKE_ARM_WINDOW_MS on the
+        # MCU side so a stale arm can't bite an unrelated later stop.
+        self._send('A')
 
     def _on_nav_fault(self, msg):
         # 1 → GPS fix lost / nav fault active. 0 → cleared.

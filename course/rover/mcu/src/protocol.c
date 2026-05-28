@@ -27,9 +27,10 @@ extern volatile bool     g_use_raw_motor;
 extern volatile float    g_raw_duty_l;
 extern volatile float    g_raw_duty_r;
 extern volatile bool     g_nav_gps_lost;
-extern volatile float    g_brake_kp;
-extern volatile float    g_brake_max_duty;
-extern volatile float    g_brake_stop_mps;
+extern volatile float    g_brake_pulse_duty;
+extern volatile float    g_brake_pulse_ms;
+extern volatile float    g_brake_fire_above_mps;
+extern volatile uint32_t g_brake_arm_until_ms;
 
 #define LINE_MAX 96
 static char     g_line[LINE_MAX];
@@ -97,16 +98,27 @@ static void handle_line(char *line) {
             break;
         }
         case 'K': {
-            // K <kp> <max_duty> <stop_mps>  Active-brake gains (mirrors 'P').
-            // Runtime-tunable from rover_params so brake strength can be
-            // tuned in the field without re-flashing the MCU. ('B' is taken
-            // by the BOOTSEL reboot command below.)
-            float kp = 0.0f, mx = 0.0f, st = 0.0f;
-            if (sscanf(args, "%f %f %f", &kp, &mx, &st) == 3) {
-                g_brake_kp       = kp;
-                g_brake_max_duty = mx;
-                g_brake_stop_mps = st;
+            // K <pulse_duty> <pulse_ms> <fire_above_mps>
+            // One-shot brake-pulse parameters (mirrors 'P' for PID). The
+            // pulse itself only fires when 'A' has armed it within the
+            // last BRAKE_ARM_WINDOW_MS; manual stops are never armed and
+            // therefore never brake. ('B' is taken by BOOTSEL below.)
+            float duty = 0.0f, ms = 0.0f, fa = 0.0f;
+            if (sscanf(args, "%f %f %f", &duty, &ms, &fa) == 3) {
+                g_brake_pulse_duty     = duty;
+                g_brake_pulse_ms       = ms;
+                g_brake_fire_above_mps = fa;
             }
+            break;
+        }
+        case 'A': {
+            // Arm a single brake pulse on the next deadband edge. The
+            // host (mcu_bridge_node) sends this just before the
+            // settle-at-waypoint 'V 0 0 ...' so that only deliberate
+            // autonomous stops brake; the arm auto-expires after
+            // BRAKE_ARM_WINDOW_MS to avoid biting an unrelated later stop.
+            g_brake_arm_until_ms = to_ms_since_boot(get_absolute_time())
+                                 + BRAKE_ARM_WINDOW_MS;
             break;
         }
         case 'D': {

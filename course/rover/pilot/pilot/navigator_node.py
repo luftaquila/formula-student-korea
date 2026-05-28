@@ -250,6 +250,11 @@ class NavigatorNode(Node):
         # published on entering ERROR with data=1, on exiting ERROR
         # back to NAVIGATING with data=0.
         self._pub_nav_fault = self.create_publisher(Int32, '/rover/cmd/nav_fault', reliable_qos)
+        # Brake-pulse arm — published once when the navigator commits a
+        # settle-on-target stop so mcu_bridge can send 'A' to the MCU.
+        # All OTHER navigator stops (ERROR, state transitions, manual
+        # overrides) leave this silent so they just coast.
+        self._pub_brake_pulse = self.create_publisher(Empty, '/rover/cmd/brake_pulse', reliable_qos)
 
         # Subscribers.
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps, 10)
@@ -1042,6 +1047,12 @@ class NavigatorNode(Node):
             if self._cur_wp_idx != seg.waypoint_index:
                 self._settle_retries = 0
             self._cur_wp_idx = seg.waypoint_index
+            # Arm the MCU brake pulse for the imminent V 0 0. This is the
+            # ONLY navigator stop that brakes — other stop sites (ERROR,
+            # state transitions, etc.) just coast. The MCU's arm window
+            # expires after ~1 s so we publish unconditionally here even
+            # if a previous settle hadn't actually moved on yet.
+            self._pub_brake_pulse.publish(Empty())
             self._stop_motors()
             self._settle_count = 0
             self._settle_enter_time = time.monotonic()

@@ -222,13 +222,17 @@ mcu_bridge_node:
     pid_kp: 1.0
     pid_ki: 3.0
     pid_kd: 0.0
-    # Active brake at a commanded stop (MCU 'B'). On |target|<deadband the
-    # MCU reverse-drives the wheels to a halt instead of coasting, so the
-    # rover stops on the spot at a waypoint. Runtime-tunable (no re-flash):
-    #   ros2 param set /mcu_bridge_node brake_kp <v>
-    # Start conservative to avoid low-speed judder, then raise for a harder
-    # stop. brake_kp: reverse duty per m/s of residual speed; brake_max_duty:
-    # cap; brake_stop_mps: speed below which to hold a hard 0.
-    brake_kp: 3.0
-    brake_max_duty: 0.6
-    brake_stop_mps: 0.04
+    # Settle-at-waypoint brake (MCU 'A' arm + monostable pulse). Only
+    # navigator-side waypoint settle arms the brake (via /rover/cmd/brake_pulse);
+    # manual stick release never does — it coasts, matching stick-feel.
+    # The pulse is open-loop (fixed duty × fixed duration with sign frozen
+    # at start), so the encoder-noise chattering ("드드득") that the previous
+    # closed-loop proportional brake produced is structurally impossible.
+    # brake_pulse_duty: reverse duty during the pulse.
+    # brake_pulse_ms: pulse duration in milliseconds.
+    # brake_fire_above_mps: skip the pulse if |v| ≤ this on deadband entry
+    # (no point braking when already at rest; saves drivetrain wear).
+    # Tunable live via `ros2 param set /mcu_bridge_node brake_pulse_duty <v>`.
+    brake_pulse_duty: 0.35
+    brake_pulse_ms: 100.0
+    brake_fire_above_mps: 0.04

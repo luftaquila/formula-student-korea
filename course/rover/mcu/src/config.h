@@ -106,26 +106,32 @@
 #define PID_DEFAULT_KI          1.5f
 #define PID_DEFAULT_KD          0.0f
 // Velocity setpoint deadband. A target |v| below this means "stop here".
-// Instead of coasting (raw duty 0), we ACTIVELY BRAKE: reverse-drive the
-// wheels proportional to their measured speed until nearly stopped, so
-// the rover halts on the spot instead of drifting past the target on
-// inertia. (The drive-only sign clamp above the deadband still prevents
-// reverse-drive during a normal ramp-down; braking is only on a commanded
-// stop.) 0.05 m/s is well below creep_speed (0.18 m/s), so it never trips
-// during a legitimate slow approach (incl. the inner wheel in a turn).
+// On the rising edge into the deadband we fire a single open-loop reverse
+// pulse (see BRAKE_DEFAULT_* below) to kill the residual that would
+// otherwise coast (MDD10A with PWM=0 is Hi-Z on this wiring, NOT
+// short-brake); afterwards we hold a hard duty 0. 0.05 m/s is well below
+// creep_speed (0.18 m/s) so it never trips during a legitimate slow
+// approach (incl. the inner wheel in a turn).
 #define PID_TARGET_DEADBAND_MPS 0.05f
 #define PID_OUT_MIN             -1.0f
 #define PID_OUT_MAX             1.0f
-// Active-braking-at-stop. When |target| < deadband but the wheel is still
-// rolling, reverse-drive duty = brake_kp * |v|, capped at brake_max_duty,
-// in the direction opposing motion. Eases to zero as v→0 so it doesn't
-// reverse past standstill; below brake_stop_mps hold a hard duty 0 (no
-// judder from encoder noise at rest). These are runtime-tunable from the
-// host via the 'K' command (mirrors PID's 'P'); the defaults below seed
-// g_brake_* at boot before the host pushes rover_params values.
-#define BRAKE_DEFAULT_KP        3.0f      // reverse duty per (m/s) residual
-#define BRAKE_DEFAULT_MAX_DUTY  0.6f      // cap; conservative to avoid slip/judder
-#define BRAKE_DEFAULT_STOP_MPS  0.04f     // below this = stopped, hold 0
+// Brake-at-stop pulse. On the rising edge into the deadband, IF
+// |v| > brake_fire_above_mps, drive the wheel in REVERSE at brake_pulse_duty
+// for brake_pulse_ms milliseconds, with the sign frozen at the pulse start
+// — then go to duty 0 for the rest of the deadband window. Single-shot
+// monostable, not a closed loop, so the encoder-noise chattering that the
+// previous (proportional) brake produced is structurally impossible:
+// even if the wheel briefly crosses zero during the pulse we keep driving
+// the original reverse direction instead of chasing the sign flip.
+// Runtime-tunable via the 'K' command ('B' is taken by the BOOTSEL reboot).
+#define BRAKE_DEFAULT_PULSE_DUTY      0.35f  // reverse duty during the pulse
+#define BRAKE_DEFAULT_PULSE_MS        100.0f // pulse duration (ms)
+#define BRAKE_DEFAULT_FIRE_ABOVE_MPS  0.04f  // skip the pulse if |v| ≤ this on entry
+// 'A'-arm validity window. The host must arm within this many ms before
+// the deadband-entry tick for the pulse to fire. Long enough to absorb
+// serial latency + a couple of control ticks, short enough that a stale
+// arm can't bite an unrelated later stop.
+#define BRAKE_ARM_WINDOW_MS           1000u
 #define PID_INTEGRAL_LIMIT      0.5f
 
 // ----- Wheel kinematics (convert encoder counts -> m/s) -----
