@@ -1208,10 +1208,35 @@ class NavigatorNode(Node):
             self._cur_seg_idx = len(self._segments)
             return
 
-        # Reuse the ENU target the planner already cached on the
-        # segment — same value as enu_from_gps(wp['lat'], wp['lng'], …)
-        # but skips the per-tick lat/lon conversion.
-        antenna_e, antenna_n = self._estimator.antenna_position()
+        # The settle gate is on RAW GPS antenna position, not the
+        # estimator's fused antenna_position(). At a standstill the
+        # estimator converges to GPS within ~1 s of corrections, so the
+        # two are close in practice — but the estimator's antenna can
+        # carry a heading-drift × antenna-offset bias (psi error rotates
+        # the body-frame offset into a lateral offset in ENU; with the
+        # 0.30 m antenna_offset_x, a 20° psi error becomes ~10 cm of
+        # apparent lateral error in antenna_position()). Sourcing the
+        # gate directly from the freshly-measured RTK antenna makes the
+        # gate semantics match what the operator reads ("3 cm of the
+        # GPS target") and removes that bias entirely.
+        gps_timeout = self.get_parameter('gps_timeout').value
+        gps_fresh = (
+            self._gps_lat is not None
+            and self._ref_lat is not None
+            and (time.monotonic() - self._last_gps_time) < gps_timeout
+            and self._has_required_fix()
+        )
+        if not gps_fresh:
+            # No usable raw fix this tick — don't sample the gate, and
+            # don't let settle_count carry over from earlier fresh
+            # readings. settle_timeout still ticks and will retry/skip
+            # if the outage persists.
+            self._settle_count = 0
+            self._stop_motors()
+            return
+
+        antenna_e, antenna_n = enu_from_gps(
+            self._gps_lat, self._gps_lon, self._ref_lat, self._ref_lon)
         target_e, target_n = self._segments[self._cur_seg_idx].target_antenna
         dist = hypot(target_e - antenna_e, target_n - antenna_n)
 
@@ -1220,24 +1245,21 @@ class NavigatorNode(Node):
         settle_readings = self.get_parameter('settle_readings').value
         settle_timeout = self.get_parameter('settle_timeout').value
 
-        # Diagnostic: log estimator state vs raw GPS antenna at the moment
-        # of timeout / settle decision, so we can pin down whether settle
-        # failures come from estimator drift, antenna_offset error, or
-        # dock_tracker stop accuracy.
+        # Diagnostic: also log the estimator's antenna at the moment of
+        # timeout so a divergence between RTK and the estimator can be
+        # pinpointed (heading-drift bias, antenna_offset error, etc.).
+        # `dist` is the raw-GPS distance the gate actually uses.
         if time.monotonic() - self._settle_enter_time > settle_timeout:
             cx, cy, cpsi = self._estimator.chassis_pose()
-            gps_e = gps_n = float('nan')
-            if self._gps_lat is not None and self._ref_lat is not None:
-                gps_e, gps_n = enu_from_gps(
-                    self._gps_lat, self._gps_lon, self._ref_lat, self._ref_lon)
+            est_e, est_n = self._estimator.antenna_position()
             self.get_logger().info(
                 f'WP{self._cur_wp_idx + 1} timeout diag: '
                 f'chassis=({cx:.3f}, {cy:.3f}, {degrees(cpsi):.1f}°) '
-                f'ant_est=({antenna_e:.3f}, {antenna_n:.3f}) '
-                f'ant_gps=({gps_e:.3f}, {gps_n:.3f}) '
+                f'ant_gps=({antenna_e:.3f}, {antenna_n:.3f}) '
+                f'ant_est=({est_e:.3f}, {est_n:.3f}) '
                 f'target=({target_e:.3f}, {target_n:.3f}) '
-                f'dist_est={dist*100:.1f}cm '
-                f'dist_gps={hypot(target_e-gps_e, target_n-gps_n)*100:.1f}cm'
+                f'dist_gps={dist*100:.1f}cm '
+                f'dist_est={hypot(target_e-est_e, target_n-est_n)*100:.1f}cm'
             )
             # Don't spray on a moving target. If the antenna is currently
             # outside waypoint_tolerance (still in re-approach via the
