@@ -179,6 +179,7 @@ spray_node:
     arrive_to_dump_delay: 1.0          # Dwell at LOAD after stopping, before DUMP
     dump_hold_duration: 2.0            # Dwell at DUMP so the shot clears, before LOAD.
                                        # Servo slew (~0.4s one-way) adds to each move.
+    load_settle_duration: 0.5          # Hold after the LOAD pulse before signalling done. Sequentialises the LOAD slew with the next-WP drive so chassis acceleration doesn't overlap a still-tilting pocket and fling residual powder sideways. MCU slew is 100 µs/tick × 50 Hz = 5000 µs/s, so a 2000 µs DUMP→LOAD swing = 0.40 s; the extra 0.1 s absorbs CDC latency and gives the drum a moment to physically stop ringing before chassis motion resumes.
 
 mcu_bridge_node:
   ros__parameters:

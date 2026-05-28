@@ -7,10 +7,10 @@ publisher to assert command intent without touching real hardware.
 The dispense model is a load→dump→load cycle: the drum rests at LOAD
 (angle_a) while driving, rotates to DUMP (angle_b) to drop a shot at the
 waypoint, then returns to LOAD. The cycle is driven by two chained
-timers (arrive_to_dump_delay → DUMP, dump_hold_duration → LOAD). The
-fake Node in conftest does NOT auto-fire timers, so tests advance the
-cycle by calling the step callbacks (_do_dump, _do_load_and_done)
-directly.
+timers (arrive_to_dump_delay → DUMP, dump_hold_duration → LOAD,
+load_settle_duration → done). The fake Node in conftest does NOT auto-
+fire timers, so tests advance the cycle by calling the step callbacks
+(_do_dump, _do_load, _done_after_load_settle) directly.
 """
 
 import json
@@ -188,8 +188,9 @@ def test_waypoint_reached_no_immediate_pulse_and_arms_timer(spray, captured_puls
 
 
 def test_full_cycle_dumps_then_loads(spray, captured_pulses):
-    """The full cycle commands DUMP (angle_b) then LOAD (angle_a), and
-    finishes back at LOAD with a success result.
+    """The full cycle commands DUMP (angle_b) then LOAD (angle_a), waits
+    for the LOAD slew to complete, then signals done with a success
+    result.
     """
     captured_pulses.clear()
     angle_a = spray.get_parameter('dispense_angle_a').value
@@ -204,8 +205,12 @@ def test_full_cycle_dumps_then_loads(spray, captured_pulses):
     spray._on_waypoint_reached(wp)
     # Pre-dump timer fires → rotate to DUMP.
     spray._do_dump()
-    # Dump-hold timer fires → rotate back to LOAD + signal done.
-    spray._do_load_and_done()
+    # Dump-hold timer fires → rotate back to LOAD. Done NOT yet signalled.
+    spray._do_load()
+    assert spray._spraying is True, "done must not fire until load-settle elapses"
+    assert done == [], "load-slew still in progress; navigator must not depart yet"
+    # Load-settle timer fires → signal done.
+    spray._done_after_load_settle()
 
     assert captured_pulses == [_angle_to_pulse_us(angle_b), _angle_to_pulse_us(angle_a)], \
         "cycle must command dump then load"
@@ -224,16 +229,29 @@ def test_do_dump_noop_when_not_spraying(spray, captured_pulses):
     assert captured_pulses == []
 
 
-def test_do_load_and_done_noop_when_not_spraying(spray, captured_pulses):
+def test_do_load_noop_when_not_spraying(spray, captured_pulses):
     """If the cycle was cancelled during the dump hold, the queued
-    _do_load_and_done callback must not command the servo or signal done.
+    _do_load callback must not command the servo or schedule the
+    load-settle timer.
     """
     captured_pulses.clear()
     done = []
     spray._pub_done.publish = lambda msg: done.append(msg)
     spray._spraying = False
-    spray._do_load_and_done()
+    spray._do_load()
     assert captured_pulses == []
+    assert done == []
+
+
+def test_done_after_load_settle_noop_when_not_spraying(spray):
+    """If the cycle was cancelled between the LOAD pulse and the
+    load-settle timer firing, the done event must NOT be published
+    (the cancel path emits its own cancelled / timeout result).
+    """
+    done = []
+    spray._pub_done.publish = lambda msg: done.append(msg)
+    spray._spraying = False
+    spray._done_after_load_settle()
     assert done == []
 
 

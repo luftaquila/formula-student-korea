@@ -17,7 +17,8 @@ at the waypoint:
       → rotate to DUMP (angle_b, pocket down — gravity drops the shot)
       → wait dump_hold_duration     (powder fully clears the drop port)
       → rotate back to LOAD
-      → publish done → navigator departs immediately
+      → wait load_settle_duration   (drum finishes slewing to LOAD)
+      → publish done → navigator departs
 
 The drum therefore ends every cycle back at LOAD, so the next driving
 leg refills it. There is no per-waypoint A/B toggle; every waypoint
@@ -78,13 +79,23 @@ class SprayNode(Node):
         # shot). The drum sits at angle_a whenever it is not mid-cycle.
         self.declare_parameter('dispense_angle_a', 0)
         self.declare_parameter('dispense_angle_b', 90)
-        # Cycle timing. arrive_to_dump_delay: dwell at LOAD after the rover
-        # stops at the waypoint, before rotating to DUMP. dump_hold_duration:
-        # dwell at DUMP so the shot fully clears the drop port before
-        # returning to LOAD. Both are timed from when the command is issued;
-        # the MCU's slew limiter adds ~0.4 s of one-way travel on top.
+        # Cycle timing.
+        # arrive_to_dump_delay: dwell at LOAD after the rover stops at the
+        #   waypoint, before rotating to DUMP.
+        # dump_hold_duration: dwell at DUMP so the shot fully clears the
+        #   drop port before returning to LOAD.
+        # load_settle_duration: after publishing the LOAD pulse, wait this
+        #   long before signalling done so the drum has actually finished
+        #   rotating to LOAD before the navigator starts driving to the
+        #   next waypoint. Without it, chassis acceleration overlapped the
+        #   final ~0.4 s of slew and could fling residual pocket powder
+        #   sideways. MCU slew limit is 100 µs/tick at 50 Hz = 5000 µs/s,
+        #   so a DUMP→LOAD swing of 2000 µs takes 0.40 s; 0.5 s = 0.4 s
+        #   slew + 0.1 s margin for CDC latency.
+        # All three timers are timed from when the command is issued.
         self.declare_parameter('arrive_to_dump_delay', 1.0)
         self.declare_parameter('dump_hold_duration', 2.0)
+        self.declare_parameter('load_settle_duration', 0.5)
 
         self._validate_params()
 
@@ -154,6 +165,11 @@ class SprayNode(Node):
         if not (0.0 < hold <= 10.0):
             self.get_logger().fatal(f'dump_hold_duration must be in (0, 10]s; got {hold}')
             raise SystemExit(1)
+        load_settle = self.get_parameter('load_settle_duration').value
+        if not (0.0 < load_settle <= 5.0):
+            self.get_logger().fatal(
+                f'load_settle_duration must be in (0, 5]s; got {load_settle}')
+            raise SystemExit(1)
 
     def _safe_destroy_timer(self, timer):
         """Cancel and destroy a timer, ignoring any failure (double-destroy safe)."""
@@ -202,16 +218,26 @@ class SprayNode(Node):
             f'Dump at waypoint {self._current_wp_idx} ({angle_b}° = {_angle_to_pulse_us(angle_b)} µs)'
         )
         self._publish_pulse_us(_angle_to_pulse_us(angle_b))
-        # Step 2: hold at DUMP, then return to LOAD and finish.
+        # Step 2: hold at DUMP, then return to LOAD (which itself
+        # schedules the load_settle timer before signalling done).
         hold = self.get_parameter('dump_hold_duration').value
-        self._dispense_timer = self.create_timer(hold, self._do_load_and_done)
+        self._dispense_timer = self.create_timer(hold, self._do_load)
 
-    def _do_load_and_done(self):
-        """Dump hold elapsed: rotate back to LOAD (rest) and signal done."""
+    def _do_load(self):
+        """Dump hold elapsed: rotate back to LOAD (rest), then schedule
+        the done-signal for after the slew has actually completed. The
+        previous design signalled done in the same call that published
+        the LOAD pulse, so the drum's ~0.4 s DUMP→LOAD slew overlapped
+        the navigator's chassis-accel ramp toward the next waypoint —
+        any residual chalk in the pocket could be flung sideways by the
+        combined pocket-tilt + chassis-accel vector. By holding done
+        until load_settle_duration has elapsed, the drum reaches LOAD
+        first and only then does the chassis move.
+        """
         # Cancelled / E-stopped during the dump hold — leave the drum where
         # it is (the cancel path already cleared state) and drop the timer.
+        self._dispense_timer = self._safe_destroy_timer(self._dispense_timer)
         if not self._spraying:
-            self._dispense_timer = self._safe_destroy_timer(self._dispense_timer)
             return
         angle_a = self.get_parameter('dispense_angle_a').value
         self.get_logger().info(
@@ -219,7 +245,20 @@ class SprayNode(Node):
             f'({angle_a}° = {_angle_to_pulse_us(angle_a)} µs)'
         )
         self._publish_pulse_us(_angle_to_pulse_us(angle_a))
-        # _signal_done destroys the hold timer (still held in _dispense_timer).
+        settle = self.get_parameter('load_settle_duration').value
+        self._dispense_timer = self.create_timer(
+            settle, self._done_after_load_settle)
+
+    def _done_after_load_settle(self):
+        """LOAD-slew has had time to complete — signal done so the
+        navigator can release the SPRAYING lock and drive on."""
+        self._dispense_timer = self._safe_destroy_timer(self._dispense_timer)
+        # Cancelled / E-stopped between LOAD publish and slew settle: the
+        # drum is en route to LOAD (or already there) but the cycle has
+        # been cancelled by another path which suppressed _spraying. Skip
+        # _signal_done so we don't emit a stale 'success' result.
+        if not self._spraying:
+            return
         self._signal_done()
 
     def _signal_done(self):
