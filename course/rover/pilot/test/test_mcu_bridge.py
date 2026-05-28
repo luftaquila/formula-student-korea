@@ -157,6 +157,35 @@ def test_manual_priority_blocks_velocity_during_window(bridge):
     assert bridge._mode == 'autonomous'
 
 
+def test_velocity_dropped_while_estopped(bridge):
+    # While e-stopped the navigator keeps republishing Twist(0,0); we must
+    # NOT forward it. Otherwise the host sends 'V/M 0 0 <centre+trim>' every
+    # tick while the MCU forces the raw centre — the steering servo buzzes.
+    import types
+    msg = types.SimpleNamespace(linear=types.SimpleNamespace(x=0.0, y=0.0, z=0.0),
+                                angular=types.SimpleNamespace(x=0.0, y=0.0, z=0.0))
+    bridge._serial.writes.clear()
+    bridge._hw_pressed = True          # hardware button latched
+    bridge._on_velocity(msg)
+    assert not any(l.startswith(('M ', 'V ')) for l in _writes_text(bridge))
+
+    bridge._hw_pressed = False
+    bridge._sw_latched = True           # software latch
+    bridge._on_velocity(msg)
+    assert not any(l.startswith(('M ', 'V ')) for l in _writes_text(bridge))
+
+
+def test_manual_dropped_while_estopped(bridge):
+    import types
+    msg = types.SimpleNamespace(linear=types.SimpleNamespace(x=20.0, y=0.0, z=0.0),
+                                angular=types.SimpleNamespace(x=0.0, y=0.0, z=15.0))
+    bridge._serial.writes.clear()
+    bridge._nav_state = 'IDLE'          # not an autonomous-active state
+    bridge._sw_latched = True
+    bridge._on_manual(msg)
+    assert not any(l.startswith(('M ', 'V ')) for l in _writes_text(bridge))
+
+
 def test_drive_emits_M_in_raw_mode(bridge):
     # _drive is a pure passthrough now — ramping happens upstream in
     # _on_velocity / _on_manual on chassis speed, not on per-wheel duty.

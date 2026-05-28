@@ -502,6 +502,13 @@ class McuBridgeNode(Node):
     # ------------------------- ROS callbacks
 
     def _on_velocity(self, msg):
+        # Drop chassis commands while emergency-stopped. The navigator
+        # republishes Twist(0,0) every tick in EMERGENCY_STOP, which would
+        # otherwise make us send 'V 0 0 <centre+trim>' continuously while
+        # the MCU's estop branch forces the steering to the raw (un-trimmed)
+        # centre every tick — the two fight 50×/s and the servo buzzes.
+        if self._sw_latched or self._hw_pressed:
+            return
         now = time.monotonic()
         if self._mode == 'manual' and (now - self._last_manual_t) < self._p('manual_priority_s'):
             return
@@ -531,6 +538,11 @@ class McuBridgeNode(Node):
         # updated, so the manual_priority_s window can't be re-armed by
         # ambient UI traffic.
         if self._nav_state in _AUTONOMOUS_ACTIVE_STATES:
+            return
+        # Same estop gate as _on_velocity: no chassis commands while the
+        # combined e-stop is engaged, so nothing fights the MCU's per-tick
+        # steering-centre and the servo can't buzz.
+        if self._sw_latched or self._hw_pressed:
             return
         now = time.monotonic()
         self._last_cmd_t = now
