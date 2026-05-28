@@ -5,7 +5,8 @@ sends rover position updates via REST.
 
 Published topics:
     /rover/cmd/execute_path (std_msgs/String) - JSON waypoints from server
-    /rover/cmd/emergency_stop (std_msgs/Empty) - Emergency stop from server
+    /rover/cmd/sw_estop (std_msgs/Empty) - Software emergency stop from server
+    /rover/cmd/sw_clear (std_msgs/Empty) - Software emergency-stop release from server
     /rover/cmd/manual_control (geometry_msgs/Twist) - Manual joystick from server
     /rover/cmd/request_position (std_msgs/Empty) - Position request from server
 
@@ -73,8 +74,13 @@ class BridgeNode(Node):
         # Publishers
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self._pub_execute = self.create_publisher(String, '/rover/cmd/execute_path', reliable_qos)
-        self._pub_estop = self.create_publisher(Empty, '/rover/cmd/emergency_stop', reliable_qos)
-        self._pub_clear_estop = self.create_publisher(Empty, '/rover/cmd/clear_emergency', reliable_qos)
+        # Software-originated E-Stop goes to the dedicated sw_* topics so
+        # the MCU bridge relays them to the MCU as 'E'/'C'. The bridge in
+        # turn republishes /rover/cmd/{emergency_stop,clear_emergency} for
+        # the navigator/spray. Publishing those logical topics directly
+        # from here would bypass the MCU software latch.
+        self._pub_estop = self.create_publisher(Empty, '/rover/cmd/sw_estop', reliable_qos)
+        self._pub_clear_estop = self.create_publisher(Empty, '/rover/cmd/sw_clear', reliable_qos)
         self._pub_manual = self.create_publisher(Twist, '/rover/cmd/manual_control', 10)
         self._pub_request_pos = self.create_publisher(Empty, '/rover/cmd/request_position', reliable_qos)
         self._pub_calibrate_battery = self.create_publisher(Float32, '/rover/cmd/calibrate_battery', reliable_qos)

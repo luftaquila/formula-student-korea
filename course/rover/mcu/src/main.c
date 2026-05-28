@@ -83,27 +83,22 @@ static void core1_main(void) {
         bool undervolt  = batt_known && g_last_vbat < BATTERY_UNDERVOLT_V;
         bool batt_warn  = batt_known && !undervolt && g_last_vbat < BATTERY_WARN_V;
 
-        // Clear before re-reading the latch, and gate only on the hardware
-        // line. estop_is_active() ORs in g_tripped, so checking "!estop"
-        // here would deadlock the latch — once tripped, it could never
-        // clear regardless of the GPIO state.
+        // The software E-Stop latch ('E'/'C' from the host) and the
+        // physical button are independent sources. 'C' clears the
+        // software latch (g_tripped) unconditionally; it can NOT clear
+        // the hardware line, which estop_is_active() reads live — so a
+        // physically-latched button stays tripped until it is twisted
+        // open, while a software stop is cleared only by software.
         //
-        // Debounced clear: the NC button bounces ~10 ms on release. A
-        // single-sample LOW read could land on a transient bounce while
-        // the operator is still pressing, fire estop_clear(), and let
-        // one full tick (20 ms) of motor motion through before the next
-        // tick re-trips. Require N=5 consecutive LOW samples before
-        // honouring the clear request.
-        static int g_estop_low_samples = 0;
-        if (gpio_get(PIN_ESTOP_IN) == 0) {
-            if (g_estop_low_samples < 100) g_estop_low_samples++;
-        } else {
-            g_estop_low_samples = 0;
-        }
-        if (g_estop_clear_request && g_estop_low_samples >= 5) {
+        // The clear is deliberately NOT gated on the line reading LOW.
+        // That old gate coupled the two sources and, combined with the
+        // host echoing a hardware press back as 'E', deadlocked the
+        // latch: g_tripped held the reported flag high, so the release
+        // edge that would have sent 'C' never fired. The host no longer
+        // relays the physical button to the MCU at all.
+        if (g_estop_clear_request) {
             estop_clear();
             g_estop_clear_request = false;
-            g_estop_low_samples = 0;
         }
         bool estop = estop_is_active();
 
@@ -210,6 +205,10 @@ static void core1_main(void) {
 
         uint32_t flags = 0;
         if (estop)            flags |= FLAG_ESTOP_ACTIVE;
+        // Raw physical button line, reported separately from the combined
+        // active flag so the host can sync press/release of the latching
+        // button independently of the software latch (g_tripped).
+        if (gpio_get(PIN_ESTOP_IN) == 1) flags |= FLAG_ESTOP_LINE;
         if (hb_timeout)       flags |= FLAG_PI_HEARTBEAT_TIMEOUT;
         if (undervolt)        flags |= FLAG_BATTERY_UNDERVOLT;
         if (batt_warn)        flags |= FLAG_BATTERY_WARN;

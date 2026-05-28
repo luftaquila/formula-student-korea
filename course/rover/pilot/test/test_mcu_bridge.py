@@ -336,13 +336,21 @@ def test_apply_steering_trim_rejects_out_of_range(bridge, monkeypatch, tmp_path)
     assert not os.path.exists(steering_trim_path())
 
 
-def test_estop_sends_E_and_clears_state(bridge):
+def test_sw_estop_sends_E_and_clears_state(bridge):
     bridge._cur_left = 50.0
     bridge._cur_right = 50.0
-    bridge._on_estop(None)
+    bridge._on_sw_estop(None)
     assert any(w.strip() == 'E' for w in _writes_text(bridge))
     assert bridge._mode == 'stopped'
     assert bridge._cur_left == 0.0 and bridge._cur_right == 0.0
+    # Navigator / spray are synced via the logical topic too.
+    assert len(bridge._pub_emergency_stop.published) == 1
+
+
+def test_sw_clear_sends_C_and_syncs(bridge):
+    bridge._on_sw_clear(None)
+    assert any(w.strip() == 'C' for w in _writes_text(bridge))
+    assert len(bridge._pub_clear_emergency.published) == 1
 
 
 def test_telemetry_parses_and_publishes_battery_and_odom(bridge):
@@ -482,31 +490,47 @@ def test_odom_integration_advances_when_dt_ok(bridge):
 
 
 def test_hardware_estop_press_publishes_emergency_stop(bridge):
-    # First telemetry observation: estop bit clear. No edge → no publish.
+    # First telemetry observation: line clear. No edge → no publish.
     bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x0')
     assert len(bridge._pub_emergency_stop.published) == 0
-    # Next tick the operator has pressed the button (FLAG_ESTOP_ACTIVE = 1).
-    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x1')
+    # Next tick the latching button is pressed (FLAG_ESTOP_LINE = bit 7).
+    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x80')
     assert len(bridge._pub_emergency_stop.published) == 1
     assert len(bridge._pub_clear_emergency.published) == 0
+    # The physical button must NEVER be relayed to the MCU as 'E' — that
+    # would latch g_tripped and deadlock the release (the original bug).
+    assert not any(w.strip() == 'E' for w in _writes_text(bridge))
 
 
 def test_hardware_estop_release_publishes_clear(bridge):
-    bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x1')  # already pressed
-    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x0')  # released
+    bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x80')  # already pressed
+    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x0')   # released (twist)
     # Rising edge from unknown → True does NOT emit (avoids spurious
     # estop on pilot restart with the button already pressed); falling
     # edge from True → False does emit clear.
     assert len(bridge._pub_emergency_stop.published) == 0
     assert len(bridge._pub_clear_emergency.published) == 1
+    # Release is not relayed to the MCU either — the MCU clears the
+    # hardware stop on its own line drop, not via 'C'.
+    assert not any(w.strip() == 'C' for w in _writes_text(bridge))
 
 
 def test_hardware_estop_steady_state_no_repeat(bridge):
     bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x0')
-    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x1')  # press → publish
-    bridge._handle_telemetry('T 3 0 0 0.0 0.0 25.0 0x1')  # held
-    bridge._handle_telemetry('T 4 0 0 0.0 0.0 25.0 0x1')  # held
+    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x80')  # press → publish
+    bridge._handle_telemetry('T 3 0 0 0.0 0.0 25.0 0x80')  # held
+    bridge._handle_telemetry('T 4 0 0 0.0 0.0 25.0 0x80')  # held
     assert len(bridge._pub_emergency_stop.published) == 1
+    assert len(bridge._pub_clear_emergency.published) == 0
+
+
+def test_software_latch_flag_does_not_trigger_hardware_sync(bridge):
+    # FLAG_ESTOP_ACTIVE (bit 0) alone — e.g. a software 'E' latch with the
+    # physical line released — must NOT be mistaken for a hardware press.
+    # The hardware sync keys off FLAG_ESTOP_LINE (bit 7) only.
+    bridge._handle_telemetry('T 1 0 0 0.0 0.0 25.0 0x0')
+    bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x1')
+    assert len(bridge._pub_emergency_stop.published) == 0
     assert len(bridge._pub_clear_emergency.published) == 0
 
 
