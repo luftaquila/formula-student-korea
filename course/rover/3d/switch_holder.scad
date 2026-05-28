@@ -1,14 +1,17 @@
 // Switch holder — 2-piece sealed enclosure for a panel-mount push-button.
 //
-// CUP (lower): closed bottom + walls (6 mm), open top. Bottom plate has
-// chassis mount holes. 4 corner M3 self-tap pilots embedded in the wall
-// at the top.
+// CUP (lower): cylindrical outer (ø63, r=31.5) with closed bottom and
+// rectangular switch cavity inside (inner_x × inner_y, full inner height).
+// Bottom plate has chassis mount holes and wiring slot. 4 corner M3
+// self-tap pilots embedded in the wall at the top (positions unchanged
+// from the original rectangular outline).
 //
-// LID / PANEL (upper): flat plate (3.5 mm). Center ø22.3 hole for the M22
-// thread. 4 corner counterbored holes — 3 mm deep ø5.7 counterbore (= M3
-// head fully buried) + 0.5 mm shoulder of ø3.4 shank-clearance below, for
-// the bolt head to clamp the lid against the cup. No tongue, no internal
-// protrusion. M22 thread above lid for the nut: 6 - 3.5 = 2.5 mm.
+// LID / PANEL (upper): flat circular plate (ø63 × 3.5 mm). Center ø22.3
+// hole for the M22 thread. 4 corner counterbored holes — 3 mm deep ø5.7
+// counterbore (= M3 head fully buried) + 0.5 mm shoulder of ø3.4 shank-
+// clearance below, for the bolt head to clamp the lid against the cup.
+// No tongue, no internal protrusion. M22 thread above lid for the nut:
+// 6 - 3.5 = 2.5 mm.
 //
 // Box depth math (panel-inside portion fully enclosed):
 //   cup_h = floor_t + sq_h + col_h = 3 + 33.8 + 13 = 49.8 mm
@@ -32,11 +35,19 @@ col_h        = 13;         // ø24 + ø21.8 column height above square base
 panel_d      = 22.3;       // M22 panel hole through lid plate
 
 // ---- Cup ----
-wall         = 6;          // thin enough; gives 0.65 mm material between
-                           // counterbore and plate outer edge with 1.2 mm
-                           // around the M3 self-tap pilot (cavity-side)
+wall         = 6;          // legacy: kept only to size the rectangular
+                           // cavity and to compute the original bolt
+                           // positions (corner_inset, corner_screws). The
+                           // outer shell is now a cylinder (outer_r) — at
+                           // the bolt radial direction the residual wall
+                           // is ~3.78 mm and shoulder past the lid
+                           // counterbore is ~0.93 mm.
 floor_t      = 3;
 clearance    = 0.4;        // cavity clearance per side around square base
+outer_r      = 31.5;       // cup/lid outer cylinder radius. Chosen so
+                           // sqrt(17.5^2 + 21.5^2) + 5.7/2 + 0.93 ≈ 31.5,
+                           // i.e. ~0.93 mm material past the bolt
+                           // counterbore in the bolt's radial direction.
 
 // ---- Lid (panel) ----
 lid_t        = 3.5;        // 3 mm counterbore (M3 head) + 0.5 mm shoulder
@@ -53,19 +64,22 @@ screw_depth  = 10;         // pilot depth into cup wall
 // ---- Mount holes (cup bottom face, into chassis) ----
 // 2× M3 clearance at diagonal corners of a mount_rect_x × mount_rect_y
 // rectangle, shifted along the longer (Y) axis by mount_offset_y from the
-// bottom-face center. 1× M2 clearance for wiring on the opposite side.
+// bottom-face center. Wiring pass-through is a rectangular slot on the
+// opposite side (-Y), sized for a 7.4 × 4.7 connector body + 0.4 mm/side.
 m3_clear        = 3.4;
-m2_clear        = 2.4;
 mount_rect_x    = 1.5;     // mount-hole rectangle width  (X) — small diagonal
 mount_rect_y    = 9;       // mount-hole rectangle depth  (Y)
 mount_offset_y  = 8;       // shift of mount rect along +Y from center
-wiring_offset_y = -12;     // M2 wiring hole position (opposite side, -Y)
+wiring_offset_y = -12;     // wiring slot center along -Y
 
 mount_holes  = [
     [-mount_rect_x/2, mount_offset_y + mount_rect_y/2, m3_clear],
     [ mount_rect_x/2, mount_offset_y - mount_rect_y/2, m3_clear],
-    [0,               wiring_offset_y,                 m2_clear],
 ];
+
+// ---- Wiring slot (rectangular pass-through, cup bottom) ----
+wire_slot_x = 8.2;         // 7.4 + 0.4 clearance/side
+wire_slot_y = 5.5;         // 4.7 + 0.4 clearance/side
 
 // ---- View ----
 view = "exploded";         // "cup" | "lid" | "exploded" | "assembled" | "side"
@@ -86,8 +100,7 @@ corner_screws = [
 
 module cup() {
     difference() {
-        translate([-outer_x/2, -outer_y/2, 0])
-            cube([outer_x, outer_y, cup_h]);
+        cylinder(r = outer_r, h = cup_h);
 
         // Switch cavity — rectangular, full inner height, open top.
         translate([-inner_x/2, -inner_y/2, floor_t])
@@ -97,6 +110,10 @@ module cup() {
         for (h = mount_holes)
             translate([h[0], h[1], -0.1])
                 cylinder(d = h[2], h = floor_t + 0.2);
+
+        // Wiring slot through bottom plate.
+        translate([-wire_slot_x/2, wiring_offset_y - wire_slot_y/2, -0.1])
+            cube([wire_slot_x, wire_slot_y, floor_t + 0.2]);
 
         // Lid screw pilots (top of walls, 4 corners).
         for (p = corner_screws)
@@ -111,8 +128,7 @@ module cup() {
 // the 0.5 mm shoulder of plate left below the counterbore).
 module lid() {
     difference() {
-        translate([-outer_x/2, -outer_y/2, 0])
-            cube([outer_x, outer_y, lid_t]);
+        cylinder(r = outer_r, h = lid_t);
 
         // M22 hole through plate.
         translate([0, 0, -0.1])
