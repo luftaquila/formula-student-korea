@@ -47,12 +47,16 @@ void servo_init(void) {
                 PIN_SERVO_STEER,
                 SERVO_MIN_US, SERVO_MAX_US,
                 SERVO_CENTER_US);
-    // Dispenser boots in the dump position so any chalk left in the
-    // pocket from a previous run drops out before the rover moves.
+    // Dispenser boots in the LOAD position (the drum's rest pose) so
+    // it matches what spray_node commands on boot — eliminating the
+    // brief DUMP→LOAD swing the operator sees on every power-on, and
+    // ensuring no powder is dumped onto the start line if a shot was
+    // already in the pocket. Any residual chalk from a previous run is
+    // handled by the dump-and-return cycle on the first waypoint.
     setup_servo(&g_srv[SERVO_DISPENSER],
                 PIN_SERVO_DISPENSER,
                 SERVO_DISPENSER_MIN_US, SERVO_DISPENSER_MAX_US,
-                SERVO_DISPENSER_MAX_US);
+                SERVO_DISPENSER_MIN_US);
 }
 
 void servo_set_target_us(servo_id_t id, uint16_t pulse_us) {
