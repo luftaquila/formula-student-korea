@@ -27,10 +27,20 @@ done
 # named container behind. Be idempotent.
 podman rm -f "$NAME" >/dev/null 2>&1 || true
 
+# Pin public DNS resolvers instead of inheriting the host's resolv.conf.
+# With --network=host, podman snapshots /etc/resolv.conf at container-create
+# time. On a cold boot pilot.service can beat NetworkManager/Tailscale to it
+# and capture an EMPTY resolv.conf, leaving the container unable to resolve
+# test.luftaquila.io (server SSE) or www.gnssdata.or.kr (NTRIP) until a manual
+# `systemctl restart pilot.service` — i.e. "rover offline on site after a
+# power-cycle". Both targets are public domains, so hardcoded public resolvers
+# break the race and stay correct regardless of Tailscale/host DNS state.
 exec podman run \
     --name "$NAME" \
     --rm \
     --network=host \
+    --dns=1.1.1.1 \
+    --dns=8.8.8.8 \
     --label=io.containers.autoupdate=registry \
     --label=PODMAN_SYSTEMD_UNIT=pilot.service \
     "${DEVS[@]}" \
