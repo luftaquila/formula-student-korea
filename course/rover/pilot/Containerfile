@@ -18,8 +18,7 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir --break-system-packages \
         'pyserial>=3.5' \
-        'requests>=2.31' \
-        'lgpio>=0.2.2.0'
+        'requests>=2.31'
 
 WORKDIR /opt/pilot_ws
 

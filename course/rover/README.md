@@ -17,20 +17,16 @@ for remote access.
 | Wheel encoders | 2× quadrature on motor shaft, 3.3 V push-pull, 500 PPR (×4 × 27 = 54000 counts/wheel rev); XH2.54-4P connector | MCU PIO + 3V3 |
 | Wheels | 125 mm dia (Wheeltec R550) | rear drive, front passive |
 | Steering servo | Wheeltec S20F (5–6.5 V, 20 kg·cm, stall 1.8 A) | MCU PWM |
-| Spray servo | Standard RC | Pi GPIO PWM |
-| E-Stop | NC momentary, fail-safe | MCU GP14, internal pull-up |
+| Spray/dispenser servo | MG995 | MCU PWM (GP7) |
+| E-Stop | NC momentary, fail-safe | MCU GP6, internal pull-up |
 | Platform | Wheeltec R550 AKM Plus | Ackermann |
 | Battery | 25.6 V (8S) LiFePO4, 6.6 Ah | XT60, BMS |
 | Pi supply | 5 V 5 A buck → USB-C PD | Pi only |
 | Servo supply | MP1584EN @ 5.5 V, ≥3 A | S20F + spray VCC |
 
-Pi GPIO (BCM, RP1 — overridable in `pilot/config/rover_params.yaml`):
-
-| Pin | Signal |
-|-----|--------|
-| 13  | Spray servo |
-
-Pilot reaches RP1 via `/dev/gpiochip-rp1` + `/dev/gpiomem0`.
+The Pi drives no GPIO: the dispenser/spray servo PWM moved to the MCU
+(GP7 — see Pinout below). `spray_node` only computes the pulse width and
+forwards it via `mcu_bridge_node` as `D <us>`.
 
 ### Power chain
 
@@ -46,9 +42,10 @@ Pilot reaches RP1 via `/dev/gpiochip-rp1` + `/dev/gpiomem0`.
 
 ### Drive control split
 
-- **MCU**: encoders, motor PWM, steering, battery ADC, E-Stop, WDTs.
-  Pi link USB CDC @ 50 Hz.
-- **Pi**: navigation, RTK, course bridge, spray servo.
+- **MCU**: encoders, motor PWM, steering, dispenser servo, battery ADC,
+  E-Stop, WDTs. Pi link USB CDC @ 50 Hz.
+- **Pi**: navigation, RTK, course bridge, dispense sequencing (servo PWM
+  on the MCU).
 
 Bridge: `mcu_bridge_node`. Firmware CI: `.github/workflows/rover-mcu.yml`.
 
@@ -289,6 +286,7 @@ sudo journalctl -u pilot.service -n 200
 | Right enc B/A | GP4, GP5 | |
 | E-Stop | GP6 | NC + pull-up; HIGH = tripped |
 | Steering servo | GP8 | S20F signal |
+| Dispenser servo | GP7 | MG995 signal; slice3 chB |
 | Left mot PWM/DIR | GP10, GP11 | → MDD10A |
 | Right mot PWM/DIR | GP12, GP13 | → MDD10A |
 | Status LED | GP16 | onboard WS2812 |
@@ -304,7 +302,7 @@ sudo journalctl -u pilot.service -n 200
 ### Battery divider
 
 ```
-Vbat ─[100 kΩ 1%]─┬─ GP26
+Vbat ─[100 kΩ 1%]─┬─ GP27
                   ├─ 100 nF ─ GND
                   ├─ 3.3 V Zener/TVS ─ GND
                   └─[10 kΩ 1%]─ GND
@@ -341,9 +339,13 @@ Pi → MCU:
 | `M` | `<l_duty> <r_duty> <steer_us>` | Raw duty [-1,1]; sets RAW lane |
 | `V` | `<l_mps> <r_mps> <steer_us>` | Closed-loop; sets PID lane |
 | `E` | — | SW E-Stop |
-| `C` | — | Clear E-Stop (after GPIO returns to rest) |
+| `C` | — | Clear SW E-Stop latch (a still-open HW line stays tripped) |
 | `P` | `<kp> <ki> <kd>` | PID gains |
 | `L` | `<0\|1>` | PID gate (`1` allow, `0` force RAW) |
+| `K` | `<pulse_duty> <pulse_ms> <fire_above_mps>` | Brake-pulse params |
+| `A` | — | Arm one brake pulse on the next setpoint-deadband entry |
+| `D` | `<pulse_us>` | Dispenser servo target (independent of M/V) |
+| `N` | `<0\|1>` | Nav fault from Pi (GPS lost): `1` set, `0` clear |
 | `B` | — | Reboot to BOOTSEL; emits `! BOOTSEL` first |
 
 PID runs only when `L 1` AND last setpoint was `V`.
@@ -360,6 +362,8 @@ Flags (hex):
 | 3 | Battery warn (≤ 22 V) |
 | 4 | PID active |
 | 5 | Last boot from HW WDT |
+| 6 | Nav GPS lost (Pi-reported; chassis stopped Pi-side) |
+| 7 | Raw E-Stop line (physical button/wire HIGH; bit 0 also ORs the SW latch) |
 
 Async: `! <msg>` (e.g. `! WDT TIMEOUT`).
 
@@ -372,6 +376,7 @@ Async: `! <msg>` (e.g. `! WDT TIMEOUT`).
 | blue | driving |
 | yellow | heartbeat timeout / battery warn |
 | magenta | undervolt |
+| orange blink | nav GPS lost |
 | red blink | E-Stop |
 
 ### Build

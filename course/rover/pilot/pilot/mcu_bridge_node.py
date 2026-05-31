@@ -1,8 +1,9 @@
 """MCU Bridge Node: USB CDC link to the RP2040 coprocessor.
 
 The MCU owns drive I/O — encoder, motor PWM, steering servo, battery
-ADC, E-Stop, watchdog. The mission-specific spray servo stays on Pi
-GPIO (see `spray_node`).
+ADC, E-Stop, watchdog — and the mission-specific dispenser servo PWM
+(GP7); this node forwards spray_node's pulse-width as `D <us>`
+(see `spray_node`).
 
 Subscribed topics:
     /rover/cmd/velocity        (geometry_msgs/Twist)  speed/curvature

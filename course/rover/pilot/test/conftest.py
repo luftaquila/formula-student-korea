@@ -154,17 +154,6 @@ def _install_ros_msgs():
 
 
 def _install_hardware():
-    lgpio = _install_stub("lgpio", {
-        "gpiochip_open": lambda *_a, **_kw: 0,
-        "gpiochip_close": lambda *_a, **_kw: None,
-        "tx_pwm": lambda *_a, **_kw: None,
-        "gpio_claim_output": lambda *_a, **_kw: None,
-        "gpio_claim_input": lambda *_a, **_kw: None,
-        "gpio_write": lambda *_a, **_kw: None,
-        "gpio_free": lambda *_a, **_kw: None,
-        "tx_servo": lambda *_a, **_kw: None,
-    })
-
     class _FakeSerial:
         def __init__(self, *_a, **_kw):
             self.in_waiting = 0

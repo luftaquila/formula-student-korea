@@ -18,7 +18,6 @@ setup(
         'setuptools',
         'pyserial>=3.5',
         'requests>=2.31',
-        'lgpio>=0.2.2.0',  # spray_node only — drive I/O moved to the MCU
     ],
     zip_safe=True,
     maintainer='luftaquila',

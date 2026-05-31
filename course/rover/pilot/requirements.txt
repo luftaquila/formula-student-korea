@@ -2,5 +2,4 @@
 # Install with: pip install -r requirements.txt
 
 pyserial>=3.5          # ZED-F9P UBX + RP2040 USB CDC
-lgpio>=0.2.2.0         # Spray servo (Pi GPIO 13). Drive I/O lives on the RP2040.
 requests>=2.31         # HTTP client for REST API and SSE streaming

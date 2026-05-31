@@ -31,14 +31,3 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="1546", ATTR{idProduct}=="01a9", \
     ATTR{power/control}="on"
 SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="000a", \
     ATTR{power/control}="on"
-
-# Raspberry Pi 5 RP1 pinctrl (lgpio target) -> /dev/gpiochip-rp1
-# RP1 introduced /dev/gpiochip0..N where the RP1 chip number has shifted
-# across kernel/firmware revisions (most recently 0 -> 4). Match by the
-# device tree compatible string udev exports as $env{OF_COMPATIBLE_0};
-# the gpiochip's `label` attribute lives under /sys/class/gpio/... but
-# udev sees the chip via /sys/bus/gpio/..., so ATTRS{label} doesn't
-# resolve.
-KERNEL=="gpiochip*", SUBSYSTEM=="gpio", \
-    ENV{OF_COMPATIBLE_0}=="raspberrypi,rp1-gpio", \
-    SYMLINK+="gpiochip-rp1"

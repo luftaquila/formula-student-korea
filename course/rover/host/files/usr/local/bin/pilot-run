@@ -14,11 +14,11 @@ IMAGE="ghcr.io/luftaquila/fsk-rover-pilot:candidate"
 NAME="pilot"
 
 DEVS=()
-for dev in /dev/ttyGPS /dev/ttyMCU /dev/gpiochip-rp1 /dev/gpiomem0; do
+for dev in /dev/ttyGPS /dev/ttyMCU; do
     if [ -e "$dev" ]; then
         # Explicit host:container mapping — without it podman dereferences
-        # the udev symlink and exposes the canonical /dev/ttyACM*/gpiochipN
-        # name inside the container, which the pilot code never opens.
+        # the udev symlink and exposes the canonical /dev/ttyACM* name
+        # inside the container, which the pilot code never opens.
         DEVS+=(--device "$dev:$dev")
     fi
 done
