@@ -19,6 +19,7 @@ add_executable(rover_mcu
     src/pid.c
     src/estop.c
     src/status_led.c
+    src/nav_lights.c
     src/protocol.c
 )
 # (No motor current sensing — MDD10A self-protects, encoder velocity = 0

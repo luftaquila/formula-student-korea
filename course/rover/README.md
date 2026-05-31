@@ -19,10 +19,12 @@ for remote access.
 | Steering servo | Wheeltec S20F (5–6.5 V, 20 kg·cm, stall 1.8 A) | MCU PWM |
 | Spray/dispenser servo | MG995 | MCU PWM (GP7) |
 | E-Stop | NC momentary, fail-safe | MCU GP6, internal pull-up |
+| Status sticks | 2× NeoPixel Stick (8× WS2812 each) | MCU PIO via 2N7002 level shifter (GP11); mirrors onboard LED 1:1 |
+| Nav lights | red/green 5 V lamps (≤0.5 W ea) | MCU low-side SS8050 switch (GP9); steady on |
 | Platform | Wheeltec R550 AKM Plus | Ackermann |
 | Battery | 25.6 V (8S) LiFePO4, 6.6 Ah | XT60, BMS |
 | Pi supply | 5 V 5 A buck → USB-C PD | Pi only |
-| Servo supply | MP1584EN @ 5.5 V, ≥3 A | S20F + spray VCC |
+| Servo supply | MP1584EN @ 5.5 V, ≥3 A | S20F + dispenser + NeoPixel sticks + nav lights |
 
 The Pi drives no GPIO: the dispenser/spray servo PWM moved to the MCU
 (GP7 — see Pinout below). `spray_node` only computes the pulse width and
@@ -43,7 +45,8 @@ forwards it via `mcu_bridge_node` as `D <us>`.
 ### Drive control split
 
 - **MCU**: encoders, motor PWM, steering, dispenser servo, battery ADC,
-  E-Stop, WDTs. Pi link USB CDC @ 50 Hz.
+  E-Stop, status LEDs (onboard + external sticks), nav lights, WDTs.
+  Pi link USB CDC @ 50 Hz.
 - **Pi**: navigation, RTK, course bridge, dispense sequencing (servo PWM
   on the MCU).
 
@@ -287,24 +290,27 @@ sudo journalctl -u pilot.service -n 200
 | E-Stop | GP6 | NC + pull-up; HIGH = tripped |
 | Steering servo | GP8 | S20F signal |
 | Dispenser servo | GP7 | MG995 signal; slice3 chB |
-| Left mot PWM/DIR | GP10, GP11 | → MDD10A |
-| Right mot PWM/DIR | GP12, GP13 | → MDD10A |
-| Status LED | GP16 | onboard WS2812 |
-| Battery V | GP27 (ADC1) | 100 kΩ : 10 kΩ |
+| Left mot PWM/DIR | GP15, GP27 | → MDD10A (PWM slice7B; DIR digital) |
+| Right mot PWM/DIR | GP28, GP29 | → MDD10A (PWM slice6A; DIR digital) |
+| Onboard status LED | GP16 | onboard WS2812 |
+| Ext NeoPixel data | GP11 | 16-LED stick chain via 2N7002 shifter (firmware-inverted) |
+| Nav lights | GP9 | red/green, low-side SS8050 switch (on/off) |
+| Battery V | GP26 (ADC0) | 100 kΩ : 10 kΩ |
 
 ### Firmware internals
 
 - PIO0 SM0/SM1: quadrature decoders.
-- PIO1 SM0: WS2812.
+- PIO1 SM0: onboard WS2812. PIO1 SM1: external 16-LED stick chain (mirrors onboard 1:1).
+- GP11 (ext LEDs) inverted via `gpio_set_outover` to cancel the 2N7002 level shifter; idle line stays low so the WS2812 reset gap is preserved.
+- Nav lights (GP9): held on at boot, steady; on/off only (no PWM).
 - Encoder VCC/signal off RP2040 3V3 rail.
 - E-Stop fail-safe: open contact → tripped.
 
 ### Battery divider
 
 ```
-Vbat ─[100 kΩ 1%]─┬─ GP27
+Vbat ─[100 kΩ 1%]─┬─ GP26 (ADC0)
                   ├─ 100 nF ─ GND
-                  ├─ 3.3 V Zener/TVS ─ GND
                   └─[10 kΩ 1%]─ GND
 ```
 
@@ -378,6 +384,10 @@ Async: `! <msg>` (e.g. `! WDT TIMEOUT`).
 | magenta | undervolt |
 | orange blink | nav GPS lost |
 | red blink | E-Stop |
+
+The two external NeoPixel Sticks (16 LEDs, GP11) mirror this onboard LED 1:1
+— same colour and blink. The nav lights (GP9) are independent: steady on
+whenever the MCU is powered, not tied to status.
 
 ### Build
 
