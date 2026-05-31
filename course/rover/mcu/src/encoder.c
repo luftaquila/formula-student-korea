@@ -17,6 +17,7 @@ typedef struct {
     uint sm;
     uint pin_base;     // A pin; B must be pin_base + 1
     int32_t last_count;
+    int32_t reported_count;
     float velocity_mps;
 } enc_state_t;
 
@@ -28,6 +29,7 @@ static void init_one(enc_state_t *e, PIO pio, uint sm, uint pin_base) {
     e->sm = sm;
     e->pin_base = pin_base;
     e->last_count = 0;
+    e->reported_count = 0;
     e->velocity_mps = 0.0f;
     quadrature_encoder_program_init(pio, sm, pin_base, 0);
 }
@@ -48,7 +50,7 @@ void encoder_init(void) {
 
 int32_t encoder_get_count(encoder_id_t id) {
     if (id >= ENC_COUNT_) return 0;
-    return quadrature_encoder_get_count(g_enc[id].pio, g_enc[id].sm);
+    return g_enc[id].reported_count;
 }
 
 float encoder_get_velocity(encoder_id_t id) {
@@ -82,6 +84,7 @@ void encoder_tick(void) {
         if (d == 1 || d == -1) {
             d = 0;
         }
+        g_enc[i].reported_count += d;
         g_enc[i].velocity_mps = (float)d * METERS_PER_COUNT / dt;
     }
 }

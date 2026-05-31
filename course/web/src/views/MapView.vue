@@ -6,6 +6,9 @@ import { useNotification } from "@shared/useNotification.js";
 
 const { error: notifyError, warning: notifyWarn } = useNotification();
 const stopping = inject("stopping", ref(false));
+const sseReconnecting = inject("sseReconnecting", ref(false));
+const appRoverConnected = inject("roverConnected", null);
+const appNavState = inject("navState", null);
 
 /* ── State ─────────────────────────────────────────── */
 const courses = ref([]);
@@ -84,6 +87,17 @@ const roverStatus = ref({
   ntrip: null,
   gps: null,
 });
+
+function syncAppRoverStatus(data) {
+  if (!data || typeof data !== "object") return;
+  if (appRoverConnected && typeof data.connected === "boolean") {
+    appRoverConnected.value = data.connected;
+  }
+  if (appNavState && typeof data.nav_state === "string") {
+    appNavState.value = data.nav_state;
+  }
+}
+
 let manualFailCount = 0;
 
 // sprayResults: Map<globalWaypointIdx, { outcome, at }>
@@ -967,6 +981,7 @@ function rebuildAllMarkers() {
               updates.push({ id, lat: origPos.lat + dLat, lng: origPos.lng + dLng });
             }
 
+            const rollbackPositions = dragStartPositions;
             isMultiDragging = false;
             dragStartPositions = null;
             dragOrigin = null;
@@ -978,7 +993,15 @@ function rebuildAllMarkers() {
                   body: JSON.stringify({ lat: u.lat, lng: u.lng }),
                 })
               ));
-            } catch {}
+            } catch (err) {
+              notifyError(`콘 위치 저장 실패: ${err.message}`);
+              marker.setLatLng([cone.lat, cone.lng]);
+              for (const [id, origPos] of rollbackPositions || []) {
+                const key = `${activeCourseId.value}-${id}`;
+                const m = markers[key];
+                if (m) m.setLatLng([origPos.lat, origPos.lng]);
+              }
+            }
 
             suppressRebuild = false;
             rebuildAllMarkers();
@@ -987,7 +1010,7 @@ function rebuildAllMarkers() {
             try {
               await request(`/api/cones/${cone.id}`, { method: "PATCH", body: JSON.stringify({ lat, lng }) });
             } catch (err) {
-              console.error("cone drag PATCH failed", err);
+              notifyError(`콘 위치 저장 실패: ${err.message}`);
               marker.setLatLng([cone.lat, cone.lng]);
             }
           }
@@ -2142,9 +2165,16 @@ function connectSSE() {
   const base = import.meta.env.PROD ? "/course" : "";
   eventSource = new EventSource(`${base}/api/events`);
 
-  eventSource.addEventListener("error", () => { sseHadError = true; });
+  eventSource.addEventListener("error", () => {
+    sseHadError = true;
+    sseReconnecting.value = true;
+  });
   eventSource.addEventListener("open", () => {
-    if (sseHadError) { sseHadError = false; fetchRoverStatus(); }
+    if (sseHadError) {
+      sseHadError = false;
+      sseReconnecting.value = false;
+      fetchRoverStatus();
+    }
   });
 
   eventSource.addEventListener("init", (e) => {
@@ -2184,6 +2214,7 @@ function connectSSE() {
   eventSource.addEventListener("rover:status", (e) => {
     const data = JSON.parse(e.data);
     roverStatus.value = { ...roverStatus.value, ...data };
+    syncAppRoverStatus(data);
     // Live-update the rover marker on the map whenever the server
     // forwards a fresh position (rover→server SSE is the truth).
     const lp = data.last_position;
@@ -2275,6 +2306,7 @@ async function fetchRoverStatus() {
     const res = await request("/api/rover/status", { method: "GET" });
     const data = await res.json();
     roverStatus.value = { ...roverStatus.value, ...data };
+    syncAppRoverStatus(data);
     // Sync the rover marker with the cached server-side position on
     // first load — without this the map only shows the rover after the
     // next live SSE update, which can be 1+ seconds away.
@@ -2407,6 +2439,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  stopReplay();
   window.removeEventListener("resize", checkMobile);
   window.removeEventListener("keydown", onGlobalKeydown);
   document.removeEventListener("click", onGlobalClickForChips);

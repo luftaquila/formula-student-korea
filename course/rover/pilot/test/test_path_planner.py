@@ -188,6 +188,24 @@ class TestReturnToStart:
         assert isclose(tx, 0.0, abs_tol=1e-6)
         assert isclose(ty, 0.0, abs_tol=1e-6)
 
+    def test_return_target_can_be_start_antenna_not_start_chassis(self):
+        """Mission start stores both chassis and antenna anchors. The return
+        target must be the antenna anchor; using chassis_xy shifts the final
+        dock by the antenna offset."""
+        wps = [_gps(2.0, 0.0)]
+        segments = plan(
+            current_chassis_pose=(0.0, 0.0, 0.0),
+            antenna_offset=(0.30, 0.0),
+            waypoints_lat_lng=wps,
+            ref_lat_lon=(REF_LAT, REF_LON),
+            return_to_start=True,
+            start_chassis_xy=(-0.30, 0.0),
+            start_antenna_xy=(0.0, 0.0),
+        )
+        tx, ty = segments[-1].target_antenna
+        assert isclose(tx, 0.0, abs_tol=1e-6)
+        assert isclose(ty, 0.0, abs_tol=1e-6)
+
     def test_no_return_segment_when_disabled(self):
         wps = [_gps(2.0, 0.0)]
         segments = plan(

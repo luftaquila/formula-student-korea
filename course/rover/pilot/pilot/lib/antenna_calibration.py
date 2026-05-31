@@ -91,6 +91,7 @@ ANTENNA_OFFSET_FILENAME = 'antenna_offset.json'
 # Sanity bounds for persisted values. The rover chassis is < 1 m on every
 # axis, so anything outside this range is corrupt or wildly wrong.
 OFFSET_BOUND_M = 1.0
+OFFSET_MIN_FORWARD_M = 0.05
 RMS_BOUND_M = 0.5
 
 # Solver acceptance gates.
@@ -131,7 +132,12 @@ def antenna_offset_path():
     return os.path.join(base, ANTENNA_OFFSET_FILENAME)
 
 
-def load_antenna_offset(default=(0.0, 0.0)):
+def _valid_offset(a_x, a_y):
+    return (OFFSET_MIN_FORWARD_M <= a_x <= OFFSET_BOUND_M
+            and -OFFSET_BOUND_M <= a_y <= OFFSET_BOUND_M)
+
+
+def load_antenna_offset(default=(0.30, 0.0)):
     """Read the persisted (a_x, a_y).
 
     Returns a 2-tuple `(offset, payload)` where `offset` is the final value to
@@ -154,8 +160,7 @@ def load_antenna_offset(default=(0.0, 0.0)):
     a_y = data.get('a_y')
     if not (isinstance(a_x, (int, float)) and isinstance(a_y, (int, float))):
         return default, None
-    if not (-OFFSET_BOUND_M <= a_x <= OFFSET_BOUND_M
-            and -OFFSET_BOUND_M <= a_y <= OFFSET_BOUND_M):
+    if not _valid_offset(a_x, a_y):
         return default, None
     rms = data.get('rms_residual_m')
     if isinstance(rms, (int, float)) and rms > RMS_BOUND_M:
@@ -175,8 +180,7 @@ def save_antenna_offset(a_x, a_y, *, rms_residual_m, samples, drive_distance_m,
     The UI uses this to label the persisted offset and skip RMS / samples
     when irrelevant for manual entries.
     """
-    if not (-OFFSET_BOUND_M <= a_x <= OFFSET_BOUND_M
-            and -OFFSET_BOUND_M <= a_y <= OFFSET_BOUND_M):
+    if not _valid_offset(a_x, a_y):
         raise ValueError(f'offset out of range: ({a_x}, {a_y})')
     payload = {
         'a_x': round(float(a_x), 4),

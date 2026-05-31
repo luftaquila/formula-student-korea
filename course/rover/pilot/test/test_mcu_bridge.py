@@ -252,6 +252,15 @@ def test_brake_pulse_params_live_push_K_command(bridge):
     assert float(parts[3]) == pytest.approx(0.05)
 
 
+def test_brake_pulse_params_reject_out_of_range(bridge):
+    import types
+    bridge._serial.writes.clear()
+    params = [types.SimpleNamespace(name='brake_pulse_ms', value=2000.0)]
+    res = bridge._on_param_change(params)
+    assert not res.successful
+    assert not any(l.startswith('K ') for l in _writes_text(bridge))
+
+
 def test_brake_pulse_arm_emits_A(bridge):
     """The /rover/cmd/brake_pulse subscription forwards to the MCU as a
     bare 'A' command — that's the one-shot arm that gates the next
@@ -618,5 +627,4 @@ def test_software_latch_flag_does_not_trigger_hardware_sync(bridge):
     bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x1')
     assert len(bridge._pub_emergency_stop.published) == 0
     assert len(bridge._pub_clear_emergency.published) == 0
-
 

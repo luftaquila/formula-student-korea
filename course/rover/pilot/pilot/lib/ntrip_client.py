@@ -307,6 +307,9 @@ class NTRIPClient:
                     except socket.timeout:
                         data = None
 
+                    if data == b"":
+                        break  # connection closed
+
                     if data:
                         self._serial.write(data)
                         self._bytes_received += len(data)
@@ -322,9 +325,6 @@ class NTRIPClient:
                         except Exception as exc:
                             self._last_error = f"gga_send: {exc}"
                             break
-
-                    if data == b"":
-                        break  # connection closed
 
             except Exception as e:
                 self._last_error = str(e)

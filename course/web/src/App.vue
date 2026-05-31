@@ -11,6 +11,8 @@ const route = useRoute();
 const roverConnected = ref(false);
 const navState = ref(null);
 const stopping = ref(false);
+provide("roverConnected", roverConnected);
+provide("navState", navState);
 // Visible to MapView (and any future descendant) via inject so the path-execute
 // button can surface "정지 요청 중..." in the same window the global e-stop
 // latch is held — both buttons need to reflect the same in-flight command.
@@ -26,7 +28,6 @@ provide("sseReconnecting", sseReconnecting);
 // a 5s safety timeout so a missed update can never freeze the button.
 let stopRequestedKind = null; // "stop" | "clear" | null
 let stopReleaseTimer = null;
-let es = null;
 
 const ACTIVE_NAV_STATES = new Set([
   "CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING",
@@ -83,24 +84,9 @@ async function fetchStatus() {
 
 onMounted(async () => {
   await fetchStatus();
-
-  const base = import.meta.env.PROD ? "/course" : "";
-  es = new EventSource(`${base}/api/events`);
-  es.addEventListener("error", () => { sseReconnecting.value = true; });
-  es.addEventListener("open", () => {
-    if (sseReconnecting.value) { sseReconnecting.value = false; fetchStatus(); }
-  });
-  es.addEventListener("rover:status", (e) => {
-    try {
-      const data = JSON.parse(e.data);
-      if (typeof data.connected === "boolean") roverConnected.value = data.connected;
-      if (typeof data.nav_state === "string") navState.value = data.nav_state;
-    } catch {}
-  });
 });
 
 onUnmounted(() => {
-  if (es) es.close();
   if (stopReleaseTimer) clearTimeout(stopReleaseTimer);
 });
 </script>

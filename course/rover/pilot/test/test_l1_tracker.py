@@ -117,6 +117,15 @@ class TestReached:
 
 
 class TestForwardUnicycleTransform:
+    def test_rejects_non_forward_antenna_offset(self):
+        params = dict(_PARAMS)
+        params['antenna_offset_x'] = 0.0
+        with pytest.raises(ValueError):
+            L1Tracker(params)
+        params['antenna_offset_x'] = -0.1
+        with pytest.raises(ValueError):
+            L1Tracker(params)
+
     def test_aligned_chassis_drives_straight(self):
         """Chassis ψ exactly aligned with antenna→target bearing →
         eta = 0 → κ = tan(0)/L = 0, straight forward."""

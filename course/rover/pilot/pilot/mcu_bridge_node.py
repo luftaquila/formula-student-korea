@@ -116,6 +116,12 @@ BATTERY_CAL_GAIN_MIN = 0.5
 BATTERY_CAL_GAIN_MAX = 2.0
 BATTERY_CAL_MEASURED_MIN_V = 15.0
 BATTERY_CAL_MEASURED_MAX_V = 32.0
+BRAKE_PULSE_DUTY_MIN = 0.0
+BRAKE_PULSE_DUTY_MAX = 1.0
+BRAKE_PULSE_MS_MIN = 0.0
+BRAKE_PULSE_MS_MAX = 1000.0
+BRAKE_FIRE_ABOVE_MPS_MIN = 0.0
+BRAKE_FIRE_ABOVE_MPS_MAX = 1.0
 
 
 def _battery_cal_path():
@@ -390,16 +396,33 @@ class McuBridgeNode(Node):
             duty = float(new.get('brake_pulse_duty', self._p('brake_pulse_duty')))
             ms   = float(new.get('brake_pulse_ms',   self._p('brake_pulse_ms')))
             fa   = float(new.get('brake_fire_above_mps', self._p('brake_fire_above_mps')))
+            if not self._valid_brake_params(duty, ms, fa):
+                reason = (
+                    f'brake_pulse out of range '
+                    f'(duty={duty}, ms={ms}, fire_above={fa})'
+                )
+                self.get_logger().warn(reason)
+                return SetParametersResult(successful=False, reason=reason)
             self._send(f'K {duty} {ms} {fa}')
             self.get_logger().info(
                 f'Brake pulse live-updated: duty={duty}, ms={ms}, fire_above={fa}')
         return SetParametersResult(successful=True)
 
+    def _valid_brake_params(self, duty, ms, fire_above):
+        return (
+            math.isfinite(duty)
+            and BRAKE_PULSE_DUTY_MIN <= duty <= BRAKE_PULSE_DUTY_MAX
+            and math.isfinite(ms)
+            and BRAKE_PULSE_MS_MIN <= ms <= BRAKE_PULSE_MS_MAX
+            and math.isfinite(fire_above)
+            and BRAKE_FIRE_ABOVE_MPS_MIN <= fire_above <= BRAKE_FIRE_ABOVE_MPS_MAX
+        )
+
     def _validate_params(self):
         if self._p('max_speed') < 0.1:
             self.get_logger().fatal('max_speed must be >= 0.1 m/s')
             raise SystemExit(1)
-        if not (0.0 < self._p('accel_limit') <= self._p('max_speed') * 4.0):
+        if not (0.0 < self._p('accel_limit') <= 5.0):
             self.get_logger().fatal('accel_limit out of range')
             raise SystemExit(1)
         if not (500 <= self._p('servo_center_us') <= 2500):
@@ -410,6 +433,12 @@ class McuBridgeNode(Node):
             raise SystemExit(1)
         if not (500 <= self._p('steer_min_us') < self._p('steer_max_us') <= 2500):
             self.get_logger().fatal('steer_min_us/steer_max_us out of range or inverted')
+            raise SystemExit(1)
+        if not self._valid_brake_params(
+                float(self._p('brake_pulse_duty')),
+                float(self._p('brake_pulse_ms')),
+                float(self._p('brake_fire_above_mps'))):
+            self.get_logger().fatal('brake_pulse_* params out of range')
             raise SystemExit(1)
 
     def _open_serial(self):
