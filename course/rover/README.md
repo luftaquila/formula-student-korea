@@ -17,17 +17,17 @@ for remote access.
 | Wheel encoders | 2× quadrature on motor shaft, 3.3 V push-pull, 500 PPR (×4 × 27 = 54000 counts/wheel rev); XH2.54-4P connector | MCU PIO + 3V3 |
 | Wheels | 125 mm dia (Wheeltec R550) | rear drive, front passive |
 | Steering servo | Wheeltec S20F (5–6.5 V, 20 kg·cm, stall 1.8 A) | MCU PWM |
-| Spray/dispenser servo | MG995 | MCU PWM (GP7) |
-| E-Stop | NC momentary, fail-safe | MCU GP6, internal pull-up |
+| Spray/dispenser servo | MG995 | MCU PWM (GP6) |
+| E-Stop | NC momentary, fail-safe | MCU GP7, internal pull-up |
 | Status sticks | 2× NeoPixel Stick (8× WS2812 each) | MCU PIO via 2N7002 level shifter (GP11); mirrors onboard LED 1:1 |
-| Nav lights | red/green 5 V lamps (≤0.5 W ea) | MCU low-side SS8050 switch (GP9); steady on |
+| Nav lights | red/green, 3-pin module (+5V/GND/control) | MCU GP9 direct on/off; steady on |
 | Platform | Wheeltec R550 AKM Plus | Ackermann |
 | Battery | 25.6 V (8S) LiFePO4, 6.6 Ah | XT60, BMS |
 | Pi supply | 5 V 5 A buck → USB-C PD | Pi only |
 | Servo supply | MP1584EN @ 5.5 V, ≥3 A | S20F + dispenser + NeoPixel sticks + nav lights |
 
 The Pi drives no GPIO: the dispenser/spray servo PWM moved to the MCU
-(GP7 — see Pinout below). `spray_node` only computes the pulse width and
+(GP6 — see Pinout below). `spray_node` only computes the pulse width and
 forwards it via `mcu_bridge_node` as `D <us>`.
 
 ### Power chain
@@ -287,14 +287,14 @@ sudo journalctl -u pilot.service -n 200
 |------|-----|-------|
 | Left enc B/A | GP2, GP3 | PIO consecutive pins; lower = bit 0 |
 | Right enc B/A | GP4, GP5 | |
-| E-Stop | GP6 | NC + pull-up; HIGH = tripped |
+| E-Stop | GP7 | NC + pull-up; HIGH = tripped |
 | Steering servo | GP8 | S20F signal |
-| Dispenser servo | GP7 | MG995 signal; slice3 chB |
+| Dispenser servo | GP6 | MG995 signal; slice3 chA |
 | Left mot PWM/DIR | GP15, GP27 | → MDD10A (PWM slice7B; DIR digital) |
 | Right mot PWM/DIR | GP28, GP29 | → MDD10A (PWM slice6A; DIR digital) |
 | Onboard status LED | GP16 | onboard WS2812 |
 | Ext NeoPixel data | GP11 | 16-LED stick chain via 2N7002 shifter (firmware-inverted) |
-| Nav lights | GP9 | red/green, low-side SS8050 switch (on/off) |
+| Nav lights | GP9 | red/green 3-pin module (+5V/GND/control), direct on/off |
 | Battery V | GP26 (ADC0) | 100 kΩ : 10 kΩ |
 
 ### Firmware internals

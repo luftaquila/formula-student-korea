@@ -17,7 +17,7 @@
 // shows LED_GPS_LOST (orange blink) so the operator can distinguish
 // the cause from other warn-class faults (battery, heartbeat).
 #define FLAG_GPS_LOST             (1u << 6)
-// Raw physical E-Stop line (GP6 HIGH = button pressed / wire open).
+// Raw physical E-Stop line (GP7 HIGH = button pressed / wire open).
 // FLAG_ESTOP_ACTIVE additionally ORs in the software latch (g_tripped);
 // this bit is the hardware button alone, letting the host sync physical
 // press/release of the latching button to the navigator without a

@@ -2,7 +2,7 @@
 
 The MCU owns drive I/O — encoder, motor PWM, steering servo, battery
 ADC, E-Stop, watchdog — and the mission-specific dispenser servo PWM
-(GP7); this node forwards spray_node's pulse-width as `D <us>`
+(GP6); this node forwards spray_node's pulse-width as `D <us>`
 (see `spray_node`).
 
 Subscribed topics:

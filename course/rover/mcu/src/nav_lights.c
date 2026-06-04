@@ -4,9 +4,10 @@
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
 
-// Red (port) + green (starboard) nav lights share one low-side N-channel
-// switch on PIN_NAV_LIGHTS. The light current comes from the +5V servo
-// rail; the MCU only gates the switch. Plain on/off — no PWM.
+// Red (port) + green (starboard) nav lights are a 3-pin module powered
+// from the +5V rail (J3: +5V, GND, control). PIN_NAV_LIGHTS drives the
+// module's on/off control line directly, active-high (HIGH = on).
+// Plain on/off — no PWM.
 
 void nav_lights_init(void) {
     gpio_init(PIN_NAV_LIGHTS);

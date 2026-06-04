@@ -32,19 +32,19 @@
 // Servo PWM output (50 Hz, 1000-2000 us nominal). slice4 chA.
 #define PIN_SERVO_STEER     8   // S20F front steering
 
-// Chalk dispenser servo (MG995, mission-specific). slice3 chB —
-// slice3 chA is GP6 (E-stop) which is configured as a digital input,
-// so slice 3 HW is otherwise unused and runs at the dispenser's own
-// frequency independent of the steering servo.
-#define PIN_SERVO_DISPENSER 7
+// Chalk dispenser servo (MG995, mission-specific). slice3 chA — an
+// independent slice from the steering servo (slice4), so each runs at
+// its own frequency. GP7 (E-stop) is slice3 chB but used as a plain
+// digital input, so that channel's PWM hardware stays idle.
+#define PIN_SERVO_DISPENSER 6
 
 // E-Stop input. NC momentary, fail-safe wiring:
-//   GP6 ── NC button ── GND, with the MCU's internal pull-up enabled.
+//   GP7 ── NC button ── GND, with the MCU's internal pull-up enabled.
 // At rest the closed button ties the line LOW; pressing it (or any
 // open in the wire/connector) releases the line and the pull-up pulls
 // it HIGH. We treat HIGH as the active/tripped state so a broken cable
 // or popped connector also stops the rover.
-#define PIN_ESTOP_IN        6
+#define PIN_ESTOP_IN        7
 
 // Status RGB LED on RP2040-Zero (single onboard WS2812 on GP16).
 #define PIN_STATUS_LED      16
@@ -58,9 +58,10 @@
 #define PIN_EXT_LEDS        11
 #define EXT_LED_COUNT       16  // 2 sticks × 8 WS2812
 
-// Navigation lights (aircraft-style red/green). Both colours share one
-// low-side N-channel switch driven by GP9; held on while the MCU runs
-// (steady position lights). On/off only — never PWM'd.
+// Navigation lights (aircraft-style red/green). 3-pin connector J3
+// (+5V, GND, control); GP9 drives the on/off control line directly —
+// no driver transistor, active-high (HIGH = on). Held on while the MCU
+// runs (steady position lights). On/off only — never PWM'd.
 #define PIN_NAV_LIGHTS      9
 
 // ADC-capable GPIOs: GP26=ADC0, GP27=ADC1, GP28=ADC2, GP29=ADC3.

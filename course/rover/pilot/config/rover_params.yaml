@@ -165,8 +165,8 @@ navigator_node:
 
 spray_node:
   ros__parameters:
-    # Dispenser servo PWM is owned by the MCU (RP2040-Zero, GPIO 7,
-    # slice 3 ch B). spray_node publishes the pulse width in µs on
+    # Dispenser servo PWM is owned by the MCU (RP2040-Zero, GPIO 6,
+    # slice 3 ch A). spray_node publishes the pulse width in µs on
     # /rover/cmd/dispenser_us and mcu_bridge_node forwards it to the
     # MCU as 'D <us>'. No Pi GPIO is touched here.
     #
