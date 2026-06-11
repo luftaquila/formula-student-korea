@@ -1,7 +1,7 @@
 """Dispenser Node: chalk-powder drum actuator at waypoints.
 
 Drives an MG995 positional servo whose PWM is owned by the rover MCU
-(RP2040-Zero, GPIO 7, slice 3 ch B). This node converts the target
+(RP2040-Zero, GPIO 6, slice 3 ch A). This node converts the target
 angle to a pulse width in microseconds and publishes it on
 /rover/cmd/dispenser_us; mcu_bridge_node forwards verbatim to the MCU
 as 'D <us>' over USB CDC. The MCU clamps + slews the pulse on the

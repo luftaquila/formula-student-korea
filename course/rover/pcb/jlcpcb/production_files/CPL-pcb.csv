@@ -1,0 +1,24 @@
+Designator,Val,Package,Mid X,Mid Y,Rotation,Layer
+C1,100nF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,113.0,-148.8375,-90.0,top
+C2,3300uF,CP_Radial_D10.0mm_P5.00mm,102.867677,-114.3,180.0,top
+H1,MountingHole_Pad,MountingHole_2.2mm_M2_Pad,90.0,-100.0,0.0,top
+H2,MountingHole_Pad,MountingHole_2.2mm_M2_Pad,126.0,-100.0,0.0,top
+H3,MountingHole_Pad,MountingHole_2.2mm_M2_Pad,90.0,-156.0,0.0,top
+H4,MountingHole_Pad,MountingHole_2.2mm_M2_Pad,126.0,-156.0,0.0,top
+J1,BATT,JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical,117.25,-155.475,0.0,top
+J2,E-STOP,JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical,103.55,-128.1,180.0,top
+J3,NAV,JST_XH_B3B-XH-A_1x03_P2.50mm_Vertical,125.5,-135.1,90.0,top
+J4,STEER,JST_XH_B3B-XH-A_1x03_P2.50mm_Vertical,114.7,-99.475,0.0,top
+J5,DUMP,JST_XH_B3B-XH-A_1x03_P2.50mm_Vertical,101.6,-99.475,0.0,top
+J6,TSAL,JST_XH_B3B-XH-A_1x03_P2.50mm_Vertical,125.5,-146.8,90.0,top
+J7,ENC(L),JST_XH_B4B-XH-A_1x04_P2.50mm_Vertical,90.5,-124.5,-90.0,top
+J8,ENC(R),JST_XH_B4B-XH-A_1x04_P2.50mm_Vertical,90.475,-110.75,-90.0,top
+J9,DRIVER,JST_XH_B5B-XH-A_1x05_P2.50mm_Vertical,102.5,-155.45,0.0,top
+Q1,2N7002,SOT-23,113.9375,-143.2,270.0,top
+R1,100k,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,119.0,-148.8,90.0,top
+R2,10k,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,116.0,-148.8,-90.0,top
+R3,100k,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,114.0,-139.0,0.0,top
+R4,470,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,119.0,-140.0,180.0,top
+R5,330,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,119.0,-143.2,0.0,top
+U1,RP2040-ZERO,MODULE_RP2040-ZERO,98.5,-141.5,90.0,top
+U2,MP1584EN,SRT_MPT1584EN_Module,119.9365,-117.7032,90.0,top

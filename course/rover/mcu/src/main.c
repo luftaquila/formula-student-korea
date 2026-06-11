@@ -6,6 +6,7 @@
 #include "pid.h"
 #include "estop.h"
 #include "status_led.h"
+#include "nav_lights.h"
 #include "protocol.h"
 
 #include "pico/stdlib.h"
@@ -231,6 +232,8 @@ int main(void) {
     battery_init();
     estop_init();
     status_led_init();
+    nav_lights_init();
+    nav_lights_set(true);   // steady position lights while powered
 
     g_last_heartbeat_ms = to_ms_since_boot(get_absolute_time());
 

@@ -16,37 +16,58 @@
 #define PIN_ENC_RIGHT_BASE  4
 
 // MDD10A motor driver (PWM + DIR per channel). PWM on a hardware
-// PWM-capable pin; DIR is plain digital out. Cable layout on rover #1
-// puts the LEFT motor on the lower PWM/DIR pair (GP10/GP11, slice5)
-// and RIGHT on the higher (GP12/GP13, slice6). Independent slices so
-// each motor's PWM frequency is independent.
-#define PIN_MOT_LEFT_PWM    10
-#define PIN_MOT_LEFT_DIR    11
-#define PIN_MOT_RIGHT_PWM   12
-#define PIN_MOT_RIGHT_DIR   13
+// PWM-capable pin; DIR is plain digital out. Pin choice follows the
+// rover-mcu PCB routing:
+//   LEFT  PWM=GP15 (slice7 chB), DIR=GP27
+//   RIGHT PWM=GP28 (slice6 chA), DIR=GP29
+// The two PWM pins sit on independent slices (7 vs 6) so each motor's
+// PWM frequency is independent. GP27/GP29 are ADC-capable pins driven
+// here as plain digital DIR outputs (only GP26/ADC0 is used as an ADC,
+// for the battery sense below).
+#define PIN_MOT_LEFT_PWM    15
+#define PIN_MOT_LEFT_DIR    27
+#define PIN_MOT_RIGHT_PWM   28
+#define PIN_MOT_RIGHT_DIR   29
 
 // Servo PWM output (50 Hz, 1000-2000 us nominal). slice4 chA.
 #define PIN_SERVO_STEER     8   // S20F front steering
 
-// Chalk dispenser servo (MG995, mission-specific). slice3 chB —
-// slice3 chA is GP6 (E-stop) which is configured as a digital input,
-// so slice 3 HW is otherwise unused and runs at the dispenser's own
-// frequency independent of the steering servo.
-#define PIN_SERVO_DISPENSER 7
+// Chalk dispenser servo (MG995, mission-specific). slice3 chA — an
+// independent slice from the steering servo (slice4), so each runs at
+// its own frequency. GP7 (E-stop) is slice3 chB but used as a plain
+// digital input, so that channel's PWM hardware stays idle.
+#define PIN_SERVO_DISPENSER 6
 
 // E-Stop input. NC momentary, fail-safe wiring:
-//   GP6 ── NC button ── GND, with the MCU's internal pull-up enabled.
+//   GP7 ── NC button ── GND, with the MCU's internal pull-up enabled.
 // At rest the closed button ties the line LOW; pressing it (or any
 // open in the wire/connector) releases the line and the pull-up pulls
 // it HIGH. We treat HIGH as the active/tripped state so a broken cable
 // or popped connector also stops the rover.
-#define PIN_ESTOP_IN        6
+#define PIN_ESTOP_IN        7
 
-// Status RGB LED on RP2040-Zero (single WS2812).
+// Status RGB LED on RP2040-Zero (single onboard WS2812 on GP16).
 #define PIN_STATUS_LED      16
 
-// ADC-capable GPIOs: GP26=ADC0, GP27=ADC1, GP28=ADC2.
-#define PIN_BATTERY_ADC     27  // ADC1 — battery via 1:11 divider
+// External status lighting — mirrors the onboard status LED 1:1. Two
+// NeoPixel Sticks (8× WS2812 each) wired as one 16-LED chain. GP11 drives
+// the chain through a 2N7002 common-source level shifter that inverts the
+// line and swings it to the +5V LED rail; the firmware compensates with
+// gpio_set_outover(PIN_EXT_LEDS, INVERT) so the first LED sees the PIO's
+// intended (non-inverted) data, idle-low reset gap included.
+#define PIN_EXT_LEDS        11
+#define EXT_LED_COUNT       16  // 2 sticks × 8 WS2812
+
+// Navigation lights (aircraft-style red/green). 3-pin connector J3
+// (+5V, GND, control); GP9 drives the on/off control line directly —
+// no driver transistor, active-high (HIGH = on). Held on while the MCU
+// runs (steady position lights). On/off only — never PWM'd.
+#define PIN_NAV_LIGHTS      9
+
+// ADC-capable GPIOs: GP26=ADC0, GP27=ADC1, GP28=ADC2, GP29=ADC3.
+// GP27/GP28/GP29 are used as motor DIR/PWM, so the battery sense uses
+// GP26/ADC0.
+#define PIN_BATTERY_ADC     26  // ADC0 — battery via 1:11 divider
 
 // ----- Battery voltage divider -----
 // Vbat -> R1 -> ADC -> R2 -> GND. 8S LiFePO4 max 29.2 V.
