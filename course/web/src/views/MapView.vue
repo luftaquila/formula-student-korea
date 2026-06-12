@@ -3292,11 +3292,11 @@ onUnmounted(() => {
 
 /* ── Top status strip ─────────────────────────────── */
 .status-strip {
-  display: flex; align-items: center; gap: 0.5rem;
-  /* Uniform 0.5rem between every chip (matches .chip-row gap) so spacing is
-     consistent whether two chips share a zone or straddle a zone boundary.
-     Left padding keeps the dot↔first-chip distance balanced (gap 0.5 + dot
-     mr 0.5 = 1rem). */
+  display: flex; align-items: center; gap: 0.75rem;
+  /* Uniform 0.75rem between every chip (matches .chip-row gap) so spacing is
+     consistent whether two chips share a zone or straddle a zone boundary,
+     with comfortable breathing room. Left padding keeps the dot↔first-chip
+     distance balanced (gap 0.75 + dot mr 0.5 = 1.25rem). */
   padding: 0.875rem 1.25rem;
   border-bottom: 1px solid var(--border-primary);
   background: var(--bg-primary); color: var(--text-primary);
@@ -3315,7 +3315,7 @@ onUnmounted(() => {
 .status-strip.rover-badge-warn .status-dot { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
 .status-strip.rover-badge-off .status-dot { background: #94a3b8; }
 
-.chip-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.chip-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .primary-zone { flex: 0 1 auto; }
 .vitals-zone { flex: 0 1 auto; }
 
