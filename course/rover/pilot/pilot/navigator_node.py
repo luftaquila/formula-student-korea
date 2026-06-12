@@ -882,6 +882,10 @@ class NavigatorNode(Node):
                 # control law restarts from a clean state.
                 now = time.monotonic()
                 self._settle_enter_time = now
+                # SPRAYING is a safety-gated state too; without resetting its
+                # timer the resumed spray would see the pre-outage start time
+                # and fire spray_timeout immediately (false 'timeout' + skip).
+                self._spray_enter_time = now
                 self._last_progress_time = now
                 self._last_progress_dist = float('inf')
                 if self._l1_tracker is not None:
@@ -1014,15 +1018,17 @@ class NavigatorNode(Node):
                 start_chassis_xy=self._mission_start_chassis_xy,
                 start_antenna_xy=self._mission_start_antenna_xy,
             )
+            self._cur_seg_idx = 0
+            self._cur_wp_idx = 0
+            # L1Tracker.__init__ raises on a bad antenna offset; keep it inside
+            # the try so a bad offset fails the mission gracefully (ERROR +
+            # stop) instead of crashing the 20 Hz control-loop timer callback.
+            self._l1_tracker = L1Tracker(params)
+            self._l1_tracker.reset()
         except Exception as exc:  # pragma: no cover - defensive
             self._stop_motors()
             self._set_error(f'Path planning failed: {exc}')
             return
-        self._cur_seg_idx = 0
-        self._cur_wp_idx = 0
-
-        self._l1_tracker = L1Tracker(params)
-        self._l1_tracker.reset()
         self._reset_progress()
         self.get_logger().info(
             f'Calibration done: ψ={degrees(psi_math):.1f}° (chord={chord_len:.2f} m, '

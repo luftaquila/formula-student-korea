@@ -376,23 +376,17 @@ class McuBridgeNode(Node):
         # fires, and we trust value bounds to gain sanity (kp ≤ 5 etc.)
         # at the operator level — the MCU clamps PID output to ±1.0
         # duty regardless of gain magnitude, so no runaway risk.
-        if push_pid:
-            # Read effective values AFTER the set succeeds. We can't read
-            # from get_parameter() here because the new values aren't
-            # committed until we return success. Use the param objects.
-            new = {p.name: p.value for p in params}
-            kp = float(new.get('pid_kp', self._p('pid_kp')))
-            ki = float(new.get('pid_ki', self._p('pid_ki')))
-            kd = float(new.get('pid_kd', self._p('pid_kd')))
-            self._send(f'P {kp} {ki} {kd}')
-            self.get_logger().info(f'PID gains live-updated: kp={kp}, ki={ki}, kd={kd}')
-        if push_mode:
-            new = {p.name: p.value for p in params}
-            on = bool(new.get('use_pid', self._p('use_pid')))
-            self._send(f'L {1 if on else 0}')
-            self.get_logger().info(f'PID mode live-updated: {"on" if on else "off"}')
+        #
+        # Read effective values AFTER the set succeeds. We can't read from
+        # get_parameter() here because the new values aren't committed until
+        # we return success — use the param objects in this batch.
+        new = {p.name: p.value for p in params}
+
+        # Validate everything that can be rejected BEFORE pushing anything to
+        # the MCU. Otherwise a mixed batch (valid PID + bad brake) would send
+        # 'P'/'L' and then reject the whole set, leaving the param store and
+        # the MCU out of sync.
         if push_brake:
-            new = {p.name: p.value for p in params}
             duty = float(new.get('brake_pulse_duty', self._p('brake_pulse_duty')))
             ms   = float(new.get('brake_pulse_ms',   self._p('brake_pulse_ms')))
             fa   = float(new.get('brake_fire_above_mps', self._p('brake_fire_above_mps')))
@@ -403,6 +397,18 @@ class McuBridgeNode(Node):
                 )
                 self.get_logger().warn(reason)
                 return SetParametersResult(successful=False, reason=reason)
+
+        if push_pid:
+            kp = float(new.get('pid_kp', self._p('pid_kp')))
+            ki = float(new.get('pid_ki', self._p('pid_ki')))
+            kd = float(new.get('pid_kd', self._p('pid_kd')))
+            self._send(f'P {kp} {ki} {kd}')
+            self.get_logger().info(f'PID gains live-updated: kp={kp}, ki={ki}, kd={kd}')
+        if push_mode:
+            on = bool(new.get('use_pid', self._p('use_pid')))
+            self._send(f'L {1 if on else 0}')
+            self.get_logger().info(f'PID mode live-updated: {"on" if on else "off"}')
+        if push_brake:
             self._send(f'K {duty} {ms} {fa}')
             self.get_logger().info(
                 f'Brake pulse live-updated: duty={duty}, ms={ms}, fire_above={fa}')

@@ -261,6 +261,23 @@ def test_brake_pulse_params_reject_out_of_range(bridge):
     assert not any(l.startswith('K ') for l in _writes_text(bridge))
 
 
+def test_mixed_batch_rejects_before_pushing_pid(bridge):
+    """A batch with a valid PID change AND an out-of-range brake param must
+    reject the WHOLE set without having already pushed 'P'/'L'/'K' to the MCU.
+    Validating before any _send keeps the param store and MCU in sync."""
+    import types
+    bridge._serial.writes.clear()
+    params = [
+        types.SimpleNamespace(name='pid_kp', value=2.0),          # valid
+        types.SimpleNamespace(name='brake_pulse_ms', value=2000.0),  # out of range
+    ]
+    res = bridge._on_param_change(params)
+    assert not res.successful
+    out = _writes_text(bridge)
+    assert not any(l.startswith('P ') for l in out), out
+    assert not any(l.startswith('K ') for l in out), out
+
+
 def test_brake_pulse_arm_emits_A(bridge):
     """The /rover/cmd/brake_pulse subscription forwards to the MCU as a
     bare 'A' command — that's the one-shot arm that gates the next

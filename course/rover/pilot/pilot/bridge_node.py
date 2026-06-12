@@ -126,7 +126,9 @@ class BridgeNode(Node):
         # Request IDs from server-initiated position requests. Echoing one
         # ID on the next explicit position POST lets the server correlate
         # replies and ignore unrelated periodic position reports.
-        self._pending_position_request_ids = collections.deque()
+        # Bounded: if requests pile up while position is unavailable, drop the
+        # oldest (it would have timed out on the server's 5 s race anyway).
+        self._pending_position_request_ids = collections.deque(maxlen=32)
 
         # /rosout log buffer (aggregated across all nodes in the domain)
         self._log_buffer = collections.deque(maxlen=LOG_BUFFER_MAXLEN)

@@ -11,7 +11,10 @@ typedef enum {
 
 void encoder_init(void);
 
-// Atomic 32-bit signed count snapshot (quadrature x4 ticks).
+// Running signed tick count (forward-positive, quadrature x4) accumulated by
+// encoder_tick() with the ±1-count noise deadband applied, so its deltas stay
+// consistent with encoder_get_velocity(). NOT the raw PIO count and NOT a true
+// absolute odometer — single-count creep steps are filtered out.
 int32_t encoder_get_count(encoder_id_t id);
 
 // Speed in m/s, computed by `encoder_tick()` from count delta.

@@ -2440,6 +2440,9 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopReplay();
+  // MapView is the sole writer of the App-owned sseReconnecting ref; clear it
+  // so the "reconnecting" badge can't stick on after this view tears down.
+  sseReconnecting.value = false;
   window.removeEventListener("resize", checkMobile);
   window.removeEventListener("keydown", onGlobalKeydown);
   document.removeEventListener("click", onGlobalClickForChips);

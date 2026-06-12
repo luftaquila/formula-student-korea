@@ -870,9 +870,10 @@ app.post("/api/rover/waypoint_reached", (req, res) => {
   if (!Number.isInteger(index) || index < 0) {
     return res.status(400).send("올바르지 않은 waypoint index입니다.");
   }
+  // 미션 자동 종료(driving→IDLE) 직후 늦게 도착할 수 있다. 진행 인덱스만
+  // 전진시키는 이벤트라 종료 후엔 의미가 없으므로 에러 대신 no-op 처리한다.
   if (currentMissionId == null) {
-    logger.warn(req, "rover.waypoint_reached", { index, error: "no_active_mission" }, "rover");
-    return res.status(409).send("진행 중인 미션이 없습니다.");
+    return res.json({ ok: true });
   }
   if (index >= roverState.mission_progress.waypoints.length) {
     logger.warn(req, "rover.waypoint_reached", { index, error: "index_out_of_range" }, "rover");
@@ -991,16 +992,19 @@ app.post("/api/rover/spray_result", (req, res) => {
   if (!Number.isInteger(index) || index < 0 || !SPRAY_OUTCOMES.has(outcome)) {
     return res.status(400).send("올바르지 않은 spray_result 데이터입니다.");
   }
-  if (currentMissionId == null) {
-    logger.warn(req, "rover.spray_result", { index, outcome, error: "no_active_mission" }, "rover");
-    return res.status(409).send("진행 중인 미션이 없습니다.");
-  }
-  if (index >= roverState.mission_progress.waypoints.length) {
-    logger.warn(req, "rover.spray_result", { index, outcome, error: "index_out_of_range" }, "rover");
-    return res.status(400).send("waypoint index가 현재 미션 범위를 벗어났습니다.");
+  // 마지막 waypoint의 spray_result는 미션이 driving→IDLE로 자동 종료된 직후에
+  // 도착할 수 있다(로버의 spray-post 스레드와 telemetry 스레드가 별도라 순서
+  // 보장 없음). 그 경우에도 live 결과(last_spray_result + 브로드캐스트)는
+  // 기록해 마지막 콘 결과가 유실되지 않게 하고, mission_progress는 미션이
+  // 활성일 때만 변경한다.
+  if (currentMissionId != null) {
+    if (index >= roverState.mission_progress.waypoints.length) {
+      logger.warn(req, "rover.spray_result", { index, outcome, error: "index_out_of_range" }, "rover");
+      return res.status(400).send("waypoint index가 현재 미션 범위를 벗어났습니다.");
+    }
+    roverState.mission_progress.spray_results[String(index)] = outcome;
   }
   roverState.last_spray_result = { waypoint: index, outcome, at: Date.now() };
-  roverState.mission_progress.spray_results[String(index)] = outcome;
   broadcastEvent("rover:spray", { waypoint: index, outcome, at: roverState.last_spray_result.at });
   broadcastRoverStatus();
   res.json({ ok: true });
@@ -1341,9 +1345,9 @@ app.post("/api/rover/waypoint_skipped", (req, res) => {
   if (!Number.isInteger(index) || index < 0) {
     return res.status(400).send("올바르지 않은 waypoint index입니다.");
   }
+  // 미션 자동 종료 직후 늦게 도착할 수 있다. 종료 후엔 의미가 없으므로 no-op.
   if (currentMissionId == null) {
-    logger.warn(req, "rover.waypoint_skipped", { index, error: "no_active_mission" }, "rover");
-    return res.status(409).send("진행 중인 미션이 없습니다.");
+    return res.json({ ok: true });
   }
   if (index >= roverState.mission_progress.waypoints.length) {
     logger.warn(req, "rover.waypoint_skipped", { index, error: "index_out_of_range" }, "rover");
