@@ -245,8 +245,7 @@ int main(void) {
     battery_init();
     estop_init();
     status_led_init();
-    nav_lights_init();
-    nav_lights_set(true);   // steady position lights while powered
+    nav_lights_init();      // aircraft anti-collision strobe; driven in the loop below
 
     g_last_heartbeat_ms = to_ms_since_boot(get_absolute_time());
 
@@ -260,6 +259,7 @@ int main(void) {
 
     while (true) {
         protocol_poll_input();
+        nav_lights_tick(to_ms_since_boot(get_absolute_time()));
 
         if (absolute_time_diff_us(get_absolute_time(), next_tlm) <= 0) {
             next_tlm = delayed_by_ms(next_tlm, TELEMETRY_TICK_MS);
