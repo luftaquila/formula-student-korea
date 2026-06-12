@@ -48,7 +48,7 @@ void status_led_init(void) {
     // program's true polarity, including the idle-low reset gap.
     gpio_set_outover(PIN_EXT_LEDS, GPIO_OVERRIDE_INVERT);
 
-    put_pixel(grb(8, 8, 8));
+    put_pixel(grb(255, 255, 255));
 }
 
 void status_led_set(led_state_t state) {
@@ -59,17 +59,17 @@ void status_led_tick(void) {
     g_tick++;
     bool blink_on = (g_tick % 25) < 13;  // ~2 Hz at 50 Hz tick
     switch (g_state) {
-        case LED_BOOT:    put_pixel(grb(8, 8, 8)); break;
-        case LED_IDLE:    put_pixel(grb(0, 32, 0)); break;
-        case LED_ACTIVE:  put_pixel(grb(0, 0, 64)); break;
-        case LED_WARN:    put_pixel(grb(48, 32, 0)); break;
-        case LED_ESTOP:   put_pixel(blink_on ? grb(80, 0, 0) : 0); break;
-        case LED_FAULT:   put_pixel(grb(48, 0, 48)); break;
-        // Orange (RGB ≈ 255,140,0 scaled to the WS2812 dim band ~64).
-        // Blink at the same ~2 Hz cadence as LED_ESTOP so operators
-        // see the chassis-halted indication at a glance, distinguished
-        // from estop only by hue (orange vs red).
-        case LED_GPS_LOST: put_pixel(blink_on ? grb(64, 28, 0) : 0); break;
+        // Full-brightness WS2812 with hue preserved (largest channel = 255).
+        case LED_BOOT:    put_pixel(grb(255, 255, 255)); break;
+        case LED_IDLE:    put_pixel(grb(0, 255, 0)); break;
+        case LED_ACTIVE:  put_pixel(grb(0, 0, 255)); break;
+        case LED_WARN:    put_pixel(grb(255, 170, 0)); break;
+        case LED_ESTOP:   put_pixel(blink_on ? grb(255, 0, 0) : 0); break;
+        case LED_FAULT:   put_pixel(grb(255, 0, 255)); break;
+        // Orange (RGB ≈ 255,112,0). Blink at the same ~2 Hz cadence as
+        // LED_ESTOP so operators see the chassis-halted indication at a
+        // glance, distinguished from estop only by hue (orange vs red).
+        case LED_GPS_LOST: put_pixel(blink_on ? grb(255, 112, 0) : 0); break;
         default:           put_pixel(0); break;
     }
 }

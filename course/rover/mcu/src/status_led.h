@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 typedef enum {
-    LED_BOOT,        // dim white
+    LED_BOOT,        // white
     LED_IDLE,        // green
     LED_ACTIVE,      // blue (driving)
     LED_WARN,        // yellow (low battery, watchdog warn)
