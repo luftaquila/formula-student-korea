@@ -284,6 +284,7 @@ class McuBridgeNode(Node):
         # Chalk-dispenser servo target. spray_node publishes the pulse
         # width in microseconds; we forward verbatim to the MCU as 'D'.
         self.create_subscription(Int32, '/rover/cmd/dispenser_us', self._on_dispenser_us, reliable)
+        self.create_subscription(Int32, '/rover/cmd/nav_lights', self._on_nav_lights, reliable)
 
         self._pub_status = self.create_publisher(String, '/rover/motor/status', 10)
         self._pub_battery = self.create_publisher(String, '/rover/battery', 10)
@@ -1111,6 +1112,14 @@ class McuBridgeNode(Node):
         # the MCU re-clamps per-servo before commanding the PWM hardware.
         us = int(msg.data)
         self._send(f'D {us}')
+
+    def _on_nav_lights(self, msg):
+        # Nav-light pattern select (0=off 1=steady 2=double-strobe
+        # 3=single-strobe 4=50% blink). MCU command is 'G' — 'N' is the
+        # separate nav-fault flag. MCU ignores out-of-range.
+        mode = int(msg.data)
+        if 0 <= mode < 5:
+            self._send(f'G {mode}')
 
     # ------------------------- shutdown
 

@@ -668,6 +668,9 @@ const roverState = {
   fix_status_at: 0,
   nav_state: null,
   ntrip_connected: null,
+  // Nav-light pattern: 0=off 1=steady 2=double-strobe 3=single-strobe 4=50% blink.
+  // Operator-selected; persisted here and re-sent to the rover on (re)connect.
+  nav_lights_mode: 2,
   last_disconnect_reason: null, // "sse_closed" | "write_failed" | "replaced"
   last_disconnect_at: 0,
   last_spray_result: null, // { waypoint, outcome, at }
@@ -738,6 +741,11 @@ app.get("/api/rover/stream", (req, res) => {
   roverState.last_disconnect_reason = null;
   roverState.last_disconnect_at = 0;
   broadcastRoverStatus();
+
+  // Re-apply the operator's nav-light choice so it survives a pilot restart.
+  if (roverState.nav_lights_mode != null) {
+    sendRoverEvent("nav-lights", { mode: roverState.nav_lights_mode });
+  }
 
   const heartbeat = setInterval(() => {
     try { res.write(": heartbeat\n\n"); } catch {}
@@ -1418,6 +1426,21 @@ app.post("/api/rover/control", (req, res) => {
   }
 
   res.json({ throttle: t, steering: s });
+});
+
+// POST /api/rover/nav-lights - 항공기식 nav 라이트 모드 설정 (admin → SSE)
+// mode: 0=off 1=steady 2=double-strobe 3=single-strobe 4=50% blink
+app.post("/api/rover/nav-lights", (req, res) => {
+  const mode = Number(req.body?.mode);
+  if (!Number.isInteger(mode) || mode < 0 || mode > 4) {
+    return res.status(400).send("mode는 0~4여야 합니다.");
+  }
+  // 선택은 항상 저장한다 — 로버 재연결 시 재전송돼 고착된다. 연결돼 있으면 즉시 전송.
+  roverState.nav_lights_mode = mode;
+  if (roverClient) sendRoverEvent("nav-lights", { mode });
+  logger.log(req, "rover.nav_lights", { mode, connected: !!roverClient }, "rover");
+  broadcastRoverStatus();
+  res.json({ ok: true });
 });
 
 /* ============================================

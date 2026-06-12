@@ -288,6 +288,23 @@ def test_brake_pulse_arm_emits_A(bridge):
     assert any(l.strip() == 'A' for l in out), out
 
 
+def test_nav_lights_sends_G_command(bridge):
+    """A /rover/cmd/nav_lights Int32 forwards to the MCU as 'G <mode>'
+    ('N' is the separate nav-fault command)."""
+    import types
+    bridge._serial.writes.clear()
+    bridge._on_nav_lights(types.SimpleNamespace(data=3))
+    out = _writes_text(bridge)
+    assert any(l.strip() == 'G 3' for l in out), out
+
+
+def test_nav_lights_out_of_range_ignored(bridge):
+    import types
+    bridge._serial.writes.clear()
+    bridge._on_nav_lights(types.SimpleNamespace(data=9))
+    assert not any(l.startswith('G ') for l in _writes_text(bridge))
+
+
 def test_velocity_ramps_on_chassis_speed_not_duty(bridge):
     """Curvature applies instantly through the steering servo; chassis
     speed ramps to honour accel_limit. The previous implementation ramped

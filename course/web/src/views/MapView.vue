@@ -269,6 +269,36 @@ const batteryChip = computed(() => {
   return { percent: p, voltage: s.battery.voltage, tone, rows };
 });
 
+// Nav-light pattern selector. Operator picks here; the server persists the
+// choice and re-sends it to the rover on (re)connect so it sticks.
+const NAV_LIGHT_MODES = [
+  { mode: 0, label: "꺼짐", short: "OFF" },
+  { mode: 1, label: "상시 점등", short: "STEADY" },
+  { mode: 2, label: "더블 스트로브", short: "STROBE2" },
+  { mode: 3, label: "1회 스트로브", short: "STROBE1" },
+  { mode: 4, label: "50% 점멸", short: "BLINK" },
+];
+const navLightsChip = computed(() => {
+  const s = roverStatus.value;
+  if (!s.connected) return null;
+  const mode = Number.isInteger(s.nav_lights_mode) ? s.nav_lights_mode : 2;
+  return { mode, label: (NAV_LIGHT_MODES[mode] || NAV_LIGHT_MODES[2]).short };
+});
+const navLightsBusy = ref(false);
+async function setNavLights(mode) {
+  if (navLightsBusy.value) return;
+  navLightsBusy.value = true;
+  try {
+    await request("/api/rover/nav-lights", { method: "POST", body: JSON.stringify({ mode }) });
+    roverStatus.value = { ...roverStatus.value, nav_lights_mode: mode };
+    activeChipPopover.value = null;
+  } catch (err) {
+    notifyError(`nav 라이트 설정 실패: ${err.message}`);
+  } finally {
+    navLightsBusy.value = false;
+  }
+}
+
 const missionChip = computed(() => {
   if (roverMode.value !== "executing" && roverMode.value !== "stopped") return null;
   if (pathWaypoints.value.length === 0) return null;
@@ -2780,6 +2810,25 @@ onUnmounted(() => {
                   </span>
                 </span>
               </span>
+              <span
+                v-if="navLightsChip"
+                :class="['chip-wrapper', { active: activeChipPopover === 'navlights' }]"
+                @click.stop="toggleChipPopover('navlights', $event)"
+              >
+                <span class="chip chip-neutral">💡 {{ navLightsChip.label }}</span>
+                <span class="chip-popover navlight-popover" :style="popoverStyle">
+                  <button
+                    v-for="m in NAV_LIGHT_MODES" :key="m.mode"
+                    type="button"
+                    :class="['navlight-option', { active: m.mode === navLightsChip.mode }]"
+                    :disabled="navLightsBusy"
+                    @click.stop="setNavLights(m.mode)"
+                  >
+                    <span class="navlight-dot">{{ m.mode === navLightsChip.mode ? '●' : '○' }}</span>
+                    {{ m.label }}
+                  </button>
+                </span>
+              </span>
             </div>
           </template>
 
@@ -3243,8 +3292,11 @@ onUnmounted(() => {
 
 /* ── Top status strip ─────────────────────────────── */
 .status-strip {
-  display: flex; align-items: center; gap: 0.75rem;
-  /* Horizontal padding = dot↔first-chip distance (gap 0.75 + dot mr 0.5). */
+  display: flex; align-items: center; gap: 0.5rem;
+  /* Uniform 0.5rem between every chip (matches .chip-row gap) so spacing is
+     consistent whether two chips share a zone or straddle a zone boundary.
+     Left padding keeps the dot↔first-chip distance balanced (gap 0.5 + dot
+     mr 0.5 = 1rem). */
   padding: 0.875rem 1.25rem;
   border-bottom: 1px solid var(--border-primary);
   background: var(--bg-primary); color: var(--text-primary);
@@ -3547,6 +3599,24 @@ onUnmounted(() => {
   border-color: var(--border-primary);
   color: var(--text-secondary);
 }
+
+/* Nav-light selector popover: vertical list of clickable options, overriding
+   the default 2-column key/value popover grid. */
+.chip-wrapper:hover > .chip-popover.navlight-popover,
+.chip-wrapper.active > .chip-popover.navlight-popover {
+  display: flex; flex-direction: column; gap: 2px; padding: 0.3rem;
+}
+.navlight-option {
+  display: flex; align-items: center; gap: 0.4rem;
+  width: 100%; text-align: left; white-space: nowrap;
+  padding: 0.3rem 0.6rem; border-radius: 4px;
+  background: transparent; border: none; cursor: pointer;
+  color: var(--text-primary); font: inherit; font-size: 0.85rem;
+}
+.navlight-option:hover { background: var(--bg-secondary); }
+.navlight-option.active { color: #3b82f6; font-weight: 600; }
+.navlight-option:disabled { opacity: 0.5; cursor: default; }
+.navlight-dot { font-size: 0.7rem; line-height: 1; }
 @keyframes chip-attention {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.75; }

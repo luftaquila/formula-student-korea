@@ -89,6 +89,7 @@ class BridgeNode(Node):
         self._pub_calibrate_wheels = self.create_publisher(Empty, '/rover/cmd/calibrate_wheels', reliable_qos)
         self._pub_reset_wheel_cal = self.create_publisher(Empty, '/rover/cmd/reset_wheel_cal', reliable_qos)
         self._pub_dispenser_set_pos = self.create_publisher(String, '/rover/cmd/dispenser_set_position', reliable_qos)
+        self._pub_nav_lights = self.create_publisher(Int32, '/rover/cmd/nav_lights', reliable_qos)
 
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps_position, 10)
@@ -593,6 +594,19 @@ class BridgeNode(Node):
             msg = String()
             msg.data = position
             self._pub_dispenser_set_pos.publish(msg)
+
+        elif event == 'nav-lights':
+            try:
+                mode = int(payload.get('mode'))
+            except (TypeError, ValueError):
+                self.get_logger().warn(f'nav-lights: invalid payload {payload!r}')
+                return
+            if not (0 <= mode < 5):
+                self.get_logger().warn(f'nav-lights: out-of-range mode {mode}')
+                return
+            msg = Int32()
+            msg.data = mode
+            self._pub_nav_lights.publish(msg)
 
         elif event == 'fetch-logs':
             # Upload on a worker thread so the SSE reader loop stays responsive.

@@ -4,6 +4,7 @@
 #include "servo.h"
 #include "estop.h"
 #include "pid.h"
+#include "nav_lights.h"
 
 #include "pico/stdlib.h"
 #include "pico/stdio.h"
@@ -140,6 +141,16 @@ static void handle_line(char *line) {
             int us = SERVO_CENTER_US;
             if (sscanf(args, "%d", &us) == 1) {
                 servo_set_target_us(SERVO_DISPENSER, (uint16_t)us);
+            }
+            break;
+        }
+        case 'G': {
+            // G <mode>  Nav-light pattern: 0=off 1=steady 2=double-strobe
+            // 3=single-strobe 4=50% blink. ('N' is the nav-fault flag below,
+            // so nav *lights* use 'G'.) Out-of-range ignored by set_mode().
+            int mode = -1;
+            if (sscanf(args, "%d", &mode) == 1 && mode >= 0) {
+                nav_lights_set_mode((nav_mode_t)mode);
             }
             break;
         }
