@@ -5,6 +5,7 @@
 #include "estop.h"
 #include "pid.h"
 #include "nav_lights.h"
+#include "status_led.h"
 
 #include "pico/stdlib.h"
 #include "pico/stdio.h"
@@ -151,6 +152,14 @@ static void handle_line(char *line) {
             int mode = -1;
             if (sscanf(args, "%d", &mode) == 1 && mode >= 0) {
                 nav_lights_set_mode((nav_mode_t)mode);
+            }
+            break;
+        }
+        case 'I': {
+            // I <0-255>  Status-LED (WS2812) global brightness scale.
+            int b = -1;
+            if (sscanf(args, "%d", &b) == 1 && b >= 0 && b <= 255) {
+                status_led_set_brightness((uint8_t)b);
             }
             break;
         }

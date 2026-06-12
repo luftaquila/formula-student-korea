@@ -299,6 +299,23 @@ async function setNavLights(mode) {
   }
 }
 
+// Status-LED (TSAL) global brightness 0-255, slider in the 💡 popover.
+const ledBrightness = ref(255);
+watch(() => roverStatus.value.led_brightness, (v) => {
+  if (Number.isInteger(v)) ledBrightness.value = v;
+});
+let ledBrightnessTimer = null;
+function onLedBrightnessInput(val) {
+  ledBrightness.value = Number(val);
+  if (ledBrightnessTimer) clearTimeout(ledBrightnessTimer);
+  ledBrightnessTimer = setTimeout(() => {
+    request("/api/rover/led-brightness", {
+      method: "POST",
+      body: JSON.stringify({ brightness: ledBrightness.value }),
+    }).catch((err) => notifyError(`TSAL 밝기 설정 실패: ${err.message}`));
+  }, 200);
+}
+
 const missionChip = computed(() => {
   if (roverMode.value !== "executing" && roverMode.value !== "stopped") return null;
   if (pathWaypoints.value.length === 0) return null;
@@ -2480,6 +2497,7 @@ onUnmounted(() => {
   if (uiTickInterval) clearInterval(uiTickInterval);
   if (controlInterval) clearInterval(controlInterval);
   if (calStatusPollHandle) clearInterval(calStatusPollHandle);
+  if (ledBrightnessTimer) clearTimeout(ledBrightnessTimer);
   if (eventSource) eventSource.close();
   if (map) {
     map.getContainer().removeEventListener("mousedown", onSelectionStart);
@@ -2827,6 +2845,14 @@ onUnmounted(() => {
                     <span class="navlight-dot">{{ m.mode === navLightsChip.mode ? '●' : '○' }}</span>
                     {{ m.label }}
                   </button>
+                  <div class="navlight-bright" @click.stop>
+                    <span class="navlight-bright-label">TSAL 밝기 {{ Math.round(ledBrightness / 255 * 100) }}%</span>
+                    <input
+                      type="range" min="0" max="255" step="5"
+                      :value="ledBrightness"
+                      @input="onLedBrightnessInput($event.target.value)"
+                    />
+                  </div>
                 </span>
               </span>
             </div>
@@ -3617,6 +3643,13 @@ onUnmounted(() => {
 .navlight-option.active { color: #3b82f6; font-weight: 600; }
 .navlight-option:disabled { opacity: 0.5; cursor: default; }
 .navlight-dot { font-size: 0.7rem; line-height: 1; }
+.navlight-bright {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 0.45rem 0.6rem 0.25rem; margin-top: 2px;
+  border-top: 1px solid var(--border-primary);
+}
+.navlight-bright-label { font-size: 0.75rem; color: var(--text-secondary); }
+.navlight-bright input[type="range"] { width: 100%; cursor: pointer; margin: 0; }
 @keyframes chip-attention {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.75; }

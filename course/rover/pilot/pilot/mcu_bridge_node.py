@@ -285,6 +285,7 @@ class McuBridgeNode(Node):
         # width in microseconds; we forward verbatim to the MCU as 'D'.
         self.create_subscription(Int32, '/rover/cmd/dispenser_us', self._on_dispenser_us, reliable)
         self.create_subscription(Int32, '/rover/cmd/nav_lights', self._on_nav_lights, reliable)
+        self.create_subscription(Int32, '/rover/cmd/led_brightness', self._on_led_brightness, reliable)
 
         self._pub_status = self.create_publisher(String, '/rover/motor/status', 10)
         self._pub_battery = self.create_publisher(String, '/rover/battery', 10)
@@ -1120,6 +1121,12 @@ class McuBridgeNode(Node):
         mode = int(msg.data)
         if 0 <= mode < 5:
             self._send(f'G {mode}')
+
+    def _on_led_brightness(self, msg):
+        # Status-LED (WS2812) global brightness scale 0-255. MCU command 'I'.
+        b = int(msg.data)
+        if 0 <= b <= 255:
+            self._send(f'I {b}')
 
     # ------------------------- shutdown
 

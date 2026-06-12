@@ -671,6 +671,8 @@ const roverState = {
   // Nav-light pattern: 0=off 1=steady 2=double-strobe 3=single-strobe 4=50% blink.
   // Operator-selected; persisted here and re-sent to the rover on (re)connect.
   nav_lights_mode: 2,
+  // Status-LED (WS2812) global brightness scale 0-255. Same persist/re-send.
+  led_brightness: 255,
   last_disconnect_reason: null, // "sse_closed" | "write_failed" | "replaced"
   last_disconnect_at: 0,
   last_spray_result: null, // { waypoint, outcome, at }
@@ -745,6 +747,9 @@ app.get("/api/rover/stream", (req, res) => {
   // Re-apply the operator's nav-light choice so it survives a pilot restart.
   if (roverState.nav_lights_mode != null) {
     sendRoverEvent("nav-lights", { mode: roverState.nav_lights_mode });
+  }
+  if (roverState.led_brightness != null) {
+    sendRoverEvent("led-brightness", { brightness: roverState.led_brightness });
   }
 
   const heartbeat = setInterval(() => {
@@ -1439,6 +1444,19 @@ app.post("/api/rover/nav-lights", (req, res) => {
   roverState.nav_lights_mode = mode;
   if (roverClient) sendRoverEvent("nav-lights", { mode });
   logger.log(req, "rover.nav_lights", { mode, connected: !!roverClient }, "rover");
+  broadcastRoverStatus();
+  res.json({ ok: true });
+});
+
+// POST /api/rover/led-brightness - status LED(WS2812) 전역 밝기 0-255 (admin → SSE)
+app.post("/api/rover/led-brightness", (req, res) => {
+  const brightness = Number(req.body?.brightness);
+  if (!Number.isInteger(brightness) || brightness < 0 || brightness > 255) {
+    return res.status(400).send("brightness는 0~255여야 합니다.");
+  }
+  roverState.led_brightness = brightness;
+  if (roverClient) sendRoverEvent("led-brightness", { brightness });
+  logger.log(req, "rover.led_brightness", { brightness, connected: !!roverClient }, "rover");
   broadcastRoverStatus();
   res.json({ ok: true });
 });

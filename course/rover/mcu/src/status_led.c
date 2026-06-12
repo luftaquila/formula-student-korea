@@ -17,10 +17,21 @@ static uint    g_sm     = 0;   // onboard WS2812 (GP16)
 static uint    g_ext_sm = 0;   // external NeoPixel chain (GP11)
 static led_state_t g_state = LED_BOOT;
 static uint32_t g_tick = 0;
+// Global brightness scale (0-255). Applied to every channel so the operator
+// can dim/brighten the whole indicator from the web UI. 255 = full.
+static uint8_t g_brightness = 255;
 
-// WS2812 expects GRB ordering, MSB-first in 24 bits.
+// WS2812 expects GRB ordering, MSB-first in 24 bits. Each channel is scaled
+// by the global brightness before packing.
 static inline uint32_t grb(uint8_t r, uint8_t g, uint8_t b) {
+    r = (uint8_t)((uint32_t)r * g_brightness / 255u);
+    g = (uint8_t)((uint32_t)g * g_brightness / 255u);
+    b = (uint8_t)((uint32_t)b * g_brightness / 255u);
     return ((uint32_t)g << 24) | ((uint32_t)r << 16) | ((uint32_t)b << 8);
+}
+
+void status_led_set_brightness(uint8_t brightness) {
+    g_brightness = brightness;
 }
 
 // Drive the same colour to the onboard LED (1 pixel) and the external

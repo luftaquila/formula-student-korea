@@ -305,6 +305,22 @@ def test_nav_lights_out_of_range_ignored(bridge):
     assert not any(l.startswith('G ') for l in _writes_text(bridge))
 
 
+def test_led_brightness_sends_I_command(bridge):
+    """A /rover/cmd/led_brightness Int32 forwards to the MCU as 'I <0-255>'."""
+    import types
+    bridge._serial.writes.clear()
+    bridge._on_led_brightness(types.SimpleNamespace(data=128))
+    out = _writes_text(bridge)
+    assert any(l.strip() == 'I 128' for l in out), out
+
+
+def test_led_brightness_out_of_range_ignored(bridge):
+    import types
+    bridge._serial.writes.clear()
+    bridge._on_led_brightness(types.SimpleNamespace(data=300))
+    assert not any(l.startswith('I ') for l in _writes_text(bridge))
+
+
 def test_velocity_ramps_on_chassis_speed_not_duty(bridge):
     """Curvature applies instantly through the steering servo; chassis
     speed ramps to honour accel_limit. The previous implementation ramped

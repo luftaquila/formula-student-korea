@@ -15,6 +15,7 @@ typedef enum {
 
 void status_led_init(void);
 void status_led_set(led_state_t state);
+void status_led_set_brightness(uint8_t brightness);  // 0-255 global scale (255 = full)
 void status_led_tick(void);  // call ~50 Hz for blink animations
 
 #endif
