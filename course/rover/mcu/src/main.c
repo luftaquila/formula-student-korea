@@ -68,6 +68,10 @@ static void core1_main(void) {
 
     const float dt = 1.0f / (float)CONTROL_TICK_HZ;
     absolute_time_t next = make_timeout_time_ms(CONTROL_TICK_MS);
+    bool was_in_db_l = false, was_in_db_r = false;
+    bool pulse_active_l = false, pulse_active_r = false;
+    uint32_t pulse_end_ms_l = 0, pulse_end_ms_r = 0;
+    float pulse_sign_l = 0.0f, pulse_sign_r = 0.0f;
 
     while (true) {
         sleep_until(next);
@@ -104,6 +108,19 @@ static void core1_main(void) {
         bool estop = estop_is_active();
 
         if (estop || hb_timeout) {
+            g_raw_duty_l = 0.0f;
+            g_raw_duty_r = 0.0f;
+            g_target_vel_l = 0.0f;
+            g_target_vel_r = 0.0f;
+            g_brake_arm_until_ms = 0;
+            was_in_db_l = false;
+            was_in_db_r = false;
+            pulse_active_l = false;
+            pulse_active_r = false;
+            pulse_end_ms_l = 0;
+            pulse_end_ms_r = 0;
+            pulse_sign_l = 0.0f;
+            pulse_sign_r = 0.0f;
             motor_stop_all();
             servo_set_target_us(SERVO_STEER, SERVO_CENTER_US);
             pid_reset(&g_pid_left);
@@ -129,10 +146,6 @@ static void core1_main(void) {
             // loop reverse pulse to kill the residual coast — open loop
             // because closed-loop reverse-PWM at low |v| was the source
             // of the original "드드득" chatter.
-            static bool was_in_db_l = false, was_in_db_r = false;
-            static bool pulse_active_l = false, pulse_active_r = false;
-            static uint32_t pulse_end_ms_l = 0, pulse_end_ms_r = 0;
-            static float pulse_sign_l = 0.0f, pulse_sign_r = 0.0f;
             bool in_db_l = fabsf(g_target_vel_l) < PID_TARGET_DEADBAND_MPS;
             bool in_db_r = fabsf(g_target_vel_r) < PID_TARGET_DEADBAND_MPS;
             // Both wheels share one arm; consume it the first time either
@@ -232,8 +245,7 @@ int main(void) {
     battery_init();
     estop_init();
     status_led_init();
-    nav_lights_init();
-    nav_lights_set(true);   // steady position lights while powered
+    nav_lights_init();      // aircraft anti-collision strobe; driven in the loop below
 
     g_last_heartbeat_ms = to_ms_since_boot(get_absolute_time());
 
@@ -244,10 +256,10 @@ int main(void) {
     multicore_launch_core1(core1_main);
 
     absolute_time_t next_tlm = make_timeout_time_ms(TELEMETRY_TICK_MS);
-    uint32_t led_div = 0;
 
     while (true) {
         protocol_poll_input();
+        nav_lights_tick(to_ms_since_boot(get_absolute_time()));
 
         if (absolute_time_diff_us(get_absolute_time(), next_tlm) <= 0) {
             next_tlm = delayed_by_ms(next_tlm, TELEMETRY_TICK_MS);
@@ -270,10 +282,7 @@ int main(void) {
                             ((g_target_vel_l != 0.0f) || (g_target_vel_r != 0.0f)));
             status_led_set(pick_led_state(g_last_flags, driving));
 
-            if (++led_div >= 1) {
-                status_led_tick();
-                led_div = 0;
-            }
+            status_led_tick();
         }
 
         watchdog_update();

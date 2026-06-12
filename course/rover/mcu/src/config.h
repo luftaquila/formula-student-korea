@@ -153,6 +153,12 @@
 #define BRAKE_DEFAULT_PULSE_DUTY      0.35f  // reverse duty during the pulse
 #define BRAKE_DEFAULT_PULSE_MS        100.0f // pulse duration (ms)
 #define BRAKE_DEFAULT_FIRE_ABOVE_MPS  0.04f  // skip the pulse if |v| ≤ this on entry
+#define BRAKE_PULSE_DUTY_MIN          0.0f
+#define BRAKE_PULSE_DUTY_MAX          1.0f
+#define BRAKE_PULSE_MS_MIN            0.0f
+#define BRAKE_PULSE_MS_MAX            1000.0f
+#define BRAKE_FIRE_ABOVE_MPS_MIN      0.0f
+#define BRAKE_FIRE_ABOVE_MPS_MAX      1.0f
 // 'A'-arm validity window. The host must arm within this many ms before
 // the deadband-entry tick for the pulse to fire. Long enough to absorb
 // serial latency + a couple of control ticks, short enough that a stale

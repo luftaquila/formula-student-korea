@@ -35,6 +35,7 @@ return and runs a `settle_readings`-tick stability check inside
 from math import atan2, cos, hypot, pi, sin, tan
 
 from pilot.lib.geo_utils import normalize_angle
+from pilot.lib.antenna_calibration import OFFSET_MIN_FORWARD_M
 
 
 class L1Tracker:
@@ -44,6 +45,11 @@ class L1Tracker:
         self._max_curvature = float(params['max_curvature'])
         self._a_x = float(params['antenna_offset_x'])
         self._a_y = float(params['antenna_offset_y'])
+        if self._a_x < OFFSET_MIN_FORWARD_M:
+            raise ValueError(
+                f'antenna_offset_x must be >= {OFFSET_MIN_FORWARD_M:.2f} m '
+                f'for the L1 antenna transform (got {self._a_x:.3f})'
+            )
 
         # cm-precision capture radius. Matches the navigator's
         # waypoint_tolerance and settle_tolerance for one consistent

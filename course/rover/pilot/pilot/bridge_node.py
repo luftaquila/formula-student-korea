@@ -89,6 +89,7 @@ class BridgeNode(Node):
         self._pub_calibrate_wheels = self.create_publisher(Empty, '/rover/cmd/calibrate_wheels', reliable_qos)
         self._pub_reset_wheel_cal = self.create_publisher(Empty, '/rover/cmd/reset_wheel_cal', reliable_qos)
         self._pub_dispenser_set_pos = self.create_publisher(String, '/rover/cmd/dispenser_set_position', reliable_qos)
+        self._pub_nav_lights = self.create_publisher(Int32, '/rover/cmd/nav_lights', reliable_qos)
 
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps_position, 10)
@@ -123,6 +124,13 @@ class BridgeNode(Node):
         # Latest GPS metrics: { h_acc, v_acc, speed, heading, num_sv }
         self._gps_metrics = None
 
+        # Request IDs from server-initiated position requests. Echoing one
+        # ID on the next explicit position POST lets the server correlate
+        # replies and ignore unrelated periodic position reports.
+        # Bounded: if requests pile up while position is unavailable, drop the
+        # oldest (it would have timed out on the server's 5 s race anyway).
+        self._pending_position_request_ids = collections.deque(maxlen=32)
+
         # /rosout log buffer (aggregated across all nodes in the domain)
         self._log_buffer = collections.deque(maxlen=LOG_BUFFER_MAXLEN)
         self._log_upload_in_flight = False
@@ -130,24 +138,24 @@ class BridgeNode(Node):
             from rcl_interfaces.msg import Log as RosoutLog
             self.create_subscription(RosoutLog, '/rosout', self._on_rosout, 10)
 
-        # Start SSE listener thread
+        # Single async-POST worker. The previous implementation spawned a
+        # fresh thread + TCP connection per spray_result / waypoint_reached
+        # callback; bursts during a multi-cone mission piled up dozens of
+        # threads and request sockets. A bounded queue + Session reuses
+        # the connection and back-pressures bursts cleanly.
         self._running = True
+        self._post_queue = queue.Queue(maxsize=64)
+        self._post_session = requests.Session()
+        self._post_thread = threading.Thread(target=self._post_loop, daemon=True)
+        self._post_thread.start()
+
+        # Start network threads after all shared queues/sessions exist.
         self._sse_thread = threading.Thread(target=self._sse_loop, daemon=True)
         self._sse_thread.start()
 
         # Periodic telemetry thread (every 3s)
         self._telemetry_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
         self._telemetry_thread.start()
-
-        # Single async-POST worker. The previous implementation spawned a
-        # fresh thread + TCP connection per spray_result / waypoint_reached
-        # callback; bursts during a multi-cone mission piled up dozens of
-        # threads and request sockets. A bounded queue + Session reuses
-        # the connection and back-pressures bursts cleanly.
-        self._post_queue = queue.Queue(maxsize=64)
-        self._post_session = requests.Session()
-        self._post_thread = threading.Thread(target=self._post_loop, daemon=True)
-        self._post_thread.start()
 
         self.get_logger().info('Bridge node started')
 
@@ -165,7 +173,7 @@ class BridgeNode(Node):
         # If position was explicitly requested, send immediately
         if self._position_requested:
             self._position_requested = False
-            self._report_position()
+            self._report_position(explicit_request=True)
             return
 
         # Periodic reporting — always, regardless of nav_state. The map needs
@@ -413,7 +421,7 @@ class BridgeNode(Node):
                 'wheel_calibration_result(boot)',
             )
 
-    def _report_position(self):
+    def _report_position(self, explicit_request=False):
         """POST current position to the course server."""
         if not self._last_position:
             return
@@ -422,10 +430,19 @@ class BridgeNode(Node):
         if not url:
             return
 
+        request_ids = []
+        if explicit_request and self._pending_position_request_ids:
+            request_ids = list(self._pending_position_request_ids)
+            self._pending_position_request_ids.clear()
+        payload = dict(self._last_position)
+        if request_ids:
+            payload['request_id'] = request_ids[0]
+            payload['request_ids'] = request_ids
+
         try:
             resp = requests.post(
                 f'{url}/api/rover/position',
-                json=self._last_position,
+                json=payload,
                 headers=self._get_headers(),
                 timeout=5.0,
             )
@@ -540,6 +557,9 @@ class BridgeNode(Node):
             self.get_logger().info('SSE handshake complete')
 
         elif event == 'request-position':
+            request_id = payload.get('request_id')
+            if isinstance(request_id, str) and request_id:
+                self._pending_position_request_ids.append(request_id[:64])
             self._position_requested = True
             self._pub_request_pos.publish(Empty())
 
@@ -574,6 +594,19 @@ class BridgeNode(Node):
             msg = String()
             msg.data = position
             self._pub_dispenser_set_pos.publish(msg)
+
+        elif event == 'nav-lights':
+            try:
+                mode = int(payload.get('mode'))
+            except (TypeError, ValueError):
+                self.get_logger().warn(f'nav-lights: invalid payload {payload!r}')
+                return
+            if not (0 <= mode < 5):
+                self.get_logger().warn(f'nav-lights: out-of-range mode {mode}')
+                return
+            msg = Int32()
+            msg.data = mode
+            self._pub_nav_lights.publish(msg)
 
         elif event == 'fetch-logs':
             # Upload on a worker thread so the SSE reader loop stays responsive.

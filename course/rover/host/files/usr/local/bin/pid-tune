@@ -28,6 +28,25 @@ run() {
     sudo podman exec pilot bash -c "source /opt/ros/jazzy/setup.bash && $*"
 }
 
+format_float() {
+    local value="${1:?numeric value required}"
+    if [[ ! "$value" =~ ^[-+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$ ]]; then
+        echo "not a number: $value" >&2
+        exit 2
+    fi
+    printf '%.6f' "$value"
+}
+
+format_positive_float() {
+    local value
+    value="$(format_float "$1")"
+    if [[ "$value" =~ ^- ]] || [[ "$value" == "0.000000" ]]; then
+        echo "must be > 0: $1" >&2
+        exit 2
+    fi
+    printf '%s' "$value"
+}
+
 cmd="${1:-}"; shift || true
 
 case "$cmd" in
@@ -42,15 +61,12 @@ case "$cmd" in
         kp="${1:?usage: pid-tune set <kp> <ki> <kd>}"
         ki="${2:?usage: pid-tune set <kp> <ki> <kd>}"
         kd="${3:?usage: pid-tune set <kp> <ki> <kd>}"
-        # Force float literal — ROS param type is double; an integer
-        # literal is rejected with "Wrong parameter type".
-        printf -v kp '%g' "$(awk "BEGIN{printf \"%.6f\",$kp}")"
-        printf -v ki '%g' "$(awk "BEGIN{printf \"%.6f\",$ki}")"
-        printf -v kd '%g' "$(awk "BEGIN{printf \"%.6f\",$kd}")"
-        # awk %.6f always emits a decimal point (e.g. 1.000000), which is what we need.
-        run "ros2 param set /mcu_bridge_node pid_kp $(awk "BEGIN{printf \"%.6f\",$1}")"
-        run "ros2 param set /mcu_bridge_node pid_ki $(awk "BEGIN{printf \"%.6f\",$2}")"
-        run "ros2 param set /mcu_bridge_node pid_kd $(awk "BEGIN{printf \"%.6f\",$3}")"
+        kp="$(format_float "$kp")"
+        ki="$(format_float "$ki")"
+        kd="$(format_float "$kd")"
+        run "ros2 param set /mcu_bridge_node pid_kp $kp"
+        run "ros2 param set /mcu_bridge_node pid_ki $ki"
+        run "ros2 param set /mcu_bridge_node pid_kd $kd"
         ;;
     mode)
         on="${1:?usage: pid-tune mode on|off}"
@@ -63,6 +79,8 @@ case "$cmd" in
     step)
         target="${1:?usage: pid-tune step <target_v> [secs]}"
         secs="${2:-2}"
+        target="$(format_float "$target")"
+        secs="$(format_positive_float "$secs")"
         # Publish in the background, capture odom for secs+1, then stop.
         echo "stepping to ${target} m/s for ${secs} s..."
         run "(ros2 topic pub --rate 50 /rover/cmd/velocity geometry_msgs/msg/Twist '{linear: {x: ${target}}, angular: {z: 0.0}}' &
@@ -73,6 +91,7 @@ case "$cmd" in
         ;;
     watch)
         secs="${1:-5}"
+        secs="$(format_positive_float "$secs")"
         run "timeout ${secs} ros2 topic echo --no-arr /rover/odom std_msgs/msg/String 2>/dev/null | grep -E 'v_left|v_right' || true"
         ;;
     ""|-h|--help)

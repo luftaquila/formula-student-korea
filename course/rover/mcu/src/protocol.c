@@ -4,6 +4,7 @@
 #include "servo.h"
 #include "estop.h"
 #include "pid.h"
+#include "nav_lights.h"
 
 #include "pico/stdlib.h"
 #include "pico/stdio.h"
@@ -14,6 +15,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 // Live PID gains shared with main.c via a small accessor.
 extern pid_t g_pid_left;
@@ -35,6 +37,14 @@ extern volatile uint32_t g_brake_arm_until_ms;
 #define LINE_MAX 96
 static char     g_line[LINE_MAX];
 static unsigned g_len = 0;
+static bool     g_discard_line = false;
+
+static float clampf(float value, float lo, float hi) {
+    if (!isfinite(value)) return lo;
+    if (value < lo) return lo;
+    if (value > hi) return hi;
+    return value;
+}
 
 static void handle_line(char *line) {
     if (line[0] == '\0') return;
@@ -105,9 +115,12 @@ static void handle_line(char *line) {
             // therefore never brake. ('B' is taken by BOOTSEL below.)
             float duty = 0.0f, ms = 0.0f, fa = 0.0f;
             if (sscanf(args, "%f %f %f", &duty, &ms, &fa) == 3) {
-                g_brake_pulse_duty     = duty;
-                g_brake_pulse_ms       = ms;
-                g_brake_fire_above_mps = fa;
+                g_brake_pulse_duty = clampf(
+                    duty, BRAKE_PULSE_DUTY_MIN, BRAKE_PULSE_DUTY_MAX);
+                g_brake_pulse_ms = clampf(
+                    ms, BRAKE_PULSE_MS_MIN, BRAKE_PULSE_MS_MAX);
+                g_brake_fire_above_mps = clampf(
+                    fa, BRAKE_FIRE_ABOVE_MPS_MIN, BRAKE_FIRE_ABOVE_MPS_MAX);
             }
             break;
         }
@@ -128,6 +141,16 @@ static void handle_line(char *line) {
             int us = SERVO_CENTER_US;
             if (sscanf(args, "%d", &us) == 1) {
                 servo_set_target_us(SERVO_DISPENSER, (uint16_t)us);
+            }
+            break;
+        }
+        case 'G': {
+            // G <mode>  Nav-light pattern: 0=off 1=steady 2=double-strobe
+            // 3=single-strobe 4=50% blink. ('N' is the nav-fault flag below,
+            // so nav *lights* use 'G'.) Out-of-range ignored by set_mode().
+            int mode = -1;
+            if (sscanf(args, "%d", &mode) == 1 && mode >= 0) {
+                nav_lights_set_mode((nav_mode_t)mode);
             }
             break;
         }
@@ -169,10 +192,16 @@ bool protocol_poll_input(void) {
     while ((c = getchar_timeout_us(0)) != PICO_ERROR_TIMEOUT) {
         if (c == '\r') continue;
         if (c == '\n') {
-            g_line[g_len] = '\0';
-            handle_line(g_line);
+            if (!g_discard_line) {
+                g_line[g_len] = '\0';
+                handle_line(g_line);
+            }
             g_len = 0;
+            g_discard_line = false;
             consumed = true;
+            continue;
+        }
+        if (g_discard_line) {
             continue;
         }
         if (g_len < LINE_MAX - 1) {
@@ -180,6 +209,7 @@ bool protocol_poll_input(void) {
         } else {
             // Overflow — discard line.
             g_len = 0;
+            g_discard_line = true;
         }
     }
     return consumed;

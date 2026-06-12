@@ -65,7 +65,7 @@ from pilot.lib.state_estimator import ChassisPoseEstimator
 from pilot.lib.path_planner import plan as plan_path
 from pilot.lib.path_tracker import L1Tracker
 from pilot.lib.antenna_calibration import (
-    OFFSET_BOUND_M,
+    OFFSET_BOUND_M, OFFSET_MIN_FORWARD_M,
     load_antenna_offset, save_antenna_offset,
     solve_antenna_offset_circular,
 )
@@ -282,6 +282,7 @@ class NavigatorNode(Node):
         self._ref_lat = None           # ENU origin for the mission
         self._ref_lon = None
         self._mission_start_chassis_xy = None  # for return-to-start
+        self._mission_start_antenna_xy = None   # ENU origin at mission trigger
 
         # GPS / odometry inputs.
         self._gps_lat = None
@@ -449,6 +450,24 @@ class NavigatorNode(Node):
         omega = (self._odom_v_right - self._odom_v_left) / track
         return v, omega
 
+    def _validate_waypoints(self, waypoints):
+        if not isinstance(waypoints, list) or not waypoints:
+            return None
+        clean = []
+        for wp in waypoints:
+            if not isinstance(wp, dict):
+                return None
+            lat = wp.get('lat')
+            lng = wp.get('lng')
+            if not (isinstance(lat, (int, float))
+                    and isinstance(lng, (int, float))
+                    and isfinite(float(lat)) and isfinite(float(lng))
+                    and -90.0 <= float(lat) <= 90.0
+                    and -180.0 <= float(lng) <= 180.0):
+                return None
+            clean.append({'lat': float(lat), 'lng': float(lng)})
+        return clean
+
     # ── input callbacks ──────────────────────────────────────────────────
 
     def _on_gps(self, msg):
@@ -531,7 +550,9 @@ class NavigatorNode(Node):
         except json.JSONDecodeError:
             self.get_logger().error('Invalid waypoint JSON')
             return
-        if not isinstance(waypoints, list) or not waypoints:
+        waypoints = self._validate_waypoints(waypoints)
+        if waypoints is None:
+            self.get_logger().error('Invalid waypoint payload')
             return
 
         # Preempt guard: only accept new mission from IDLE / ERROR. Mid-
@@ -696,12 +717,13 @@ class NavigatorNode(Node):
                 ok=False, reason='invalid manual offset payload',
             )
             return
-        if not (-OFFSET_BOUND_M <= a_x <= OFFSET_BOUND_M
+        if not (OFFSET_MIN_FORWARD_M <= a_x <= OFFSET_BOUND_M
                 and -OFFSET_BOUND_M <= a_y <= OFFSET_BOUND_M):
             self._publish_cal_antenna_result(
                 ok=False,
                 reason=(f'offset out of bounds ({a_x:.2f}, {a_y:.2f}) — '
-                        f'must be within ±{OFFSET_BOUND_M:.1f} m'),
+                        f'a_x must be {OFFSET_MIN_FORWARD_M:.2f}..{OFFSET_BOUND_M:.1f} m '
+                        f'and a_y within ±{OFFSET_BOUND_M:.1f} m'),
                 a_x=a_x, a_y=a_y,
             )
             return
@@ -734,7 +756,7 @@ class NavigatorNode(Node):
         # immediately on GPS loss.
         active_states = (
             State.CALIBRATING, State.NAVIGATING, State.SETTLING,
-            State.CAL_ANTENNA, State.CAL_WHEELS,
+            State.SPRAYING, State.CAL_ANTENNA, State.CAL_WHEELS,
         )
         if self._state in active_states:
             # Battery critical — stop and ERROR before motors cut out under
@@ -860,6 +882,10 @@ class NavigatorNode(Node):
                 # control law restarts from a clean state.
                 now = time.monotonic()
                 self._settle_enter_time = now
+                # SPRAYING is a safety-gated state too; without resetting its
+                # timer the resumed spray would see the pre-outage start time
+                # and fire spray_timeout immediately (false 'timeout' + skip).
+                self._spray_enter_time = now
                 self._last_progress_time = now
                 self._last_progress_dist = float('inf')
                 if self._l1_tracker is not None:
@@ -978,6 +1004,7 @@ class NavigatorNode(Node):
             -(cos(psi_math) * ax - sin(psi_math) * ay),
             -(sin(psi_math) * ax + cos(psi_math) * ay),
         )
+        self._mission_start_antenna_xy = (0.0, 0.0)
 
         # Plan path now that chassis pose is known.
         params = self._params_for_trackers()
@@ -989,16 +1016,19 @@ class NavigatorNode(Node):
                 ref_lat_lon=(self._ref_lat, self._ref_lon),
                 return_to_start=self.get_parameter('return_to_start').value,
                 start_chassis_xy=self._mission_start_chassis_xy,
+                start_antenna_xy=self._mission_start_antenna_xy,
             )
+            self._cur_seg_idx = 0
+            self._cur_wp_idx = 0
+            # L1Tracker.__init__ raises on a bad antenna offset; keep it inside
+            # the try so a bad offset fails the mission gracefully (ERROR +
+            # stop) instead of crashing the 20 Hz control-loop timer callback.
+            self._l1_tracker = L1Tracker(params)
+            self._l1_tracker.reset()
         except Exception as exc:  # pragma: no cover - defensive
             self._stop_motors()
             self._set_error(f'Path planning failed: {exc}')
             return
-        self._cur_seg_idx = 0
-        self._cur_wp_idx = 0
-
-        self._l1_tracker = L1Tracker(params)
-        self._l1_tracker.reset()
         self._reset_progress()
         self.get_logger().info(
             f'Calibration done: ψ={degrees(psi_math):.1f}° (chord={chord_len:.2f} m, '
@@ -1183,6 +1213,7 @@ class NavigatorNode(Node):
                 ref_lat_lon=(self._ref_lat, self._ref_lon),
                 return_to_start=self.get_parameter('return_to_start').value,
                 start_chassis_xy=self._mission_start_chassis_xy,
+                start_antenna_xy=self._mission_start_antenna_xy,
                 waypoint_index_offset=next_wp_idx,
                 prev_target_xy=prev_xy,
             )

@@ -116,6 +116,12 @@ BATTERY_CAL_GAIN_MIN = 0.5
 BATTERY_CAL_GAIN_MAX = 2.0
 BATTERY_CAL_MEASURED_MIN_V = 15.0
 BATTERY_CAL_MEASURED_MAX_V = 32.0
+BRAKE_PULSE_DUTY_MIN = 0.0
+BRAKE_PULSE_DUTY_MAX = 1.0
+BRAKE_PULSE_MS_MIN = 0.0
+BRAKE_PULSE_MS_MAX = 1000.0
+BRAKE_FIRE_ABOVE_MPS_MIN = 0.0
+BRAKE_FIRE_ABOVE_MPS_MAX = 1.0
 
 
 def _battery_cal_path():
@@ -278,6 +284,7 @@ class McuBridgeNode(Node):
         # Chalk-dispenser servo target. spray_node publishes the pulse
         # width in microseconds; we forward verbatim to the MCU as 'D'.
         self.create_subscription(Int32, '/rover/cmd/dispenser_us', self._on_dispenser_us, reliable)
+        self.create_subscription(Int32, '/rover/cmd/nav_lights', self._on_nav_lights, reliable)
 
         self._pub_status = self.create_publisher(String, '/rover/motor/status', 10)
         self._pub_battery = self.create_publisher(String, '/rover/battery', 10)
@@ -370,36 +377,59 @@ class McuBridgeNode(Node):
         # fires, and we trust value bounds to gain sanity (kp ≤ 5 etc.)
         # at the operator level — the MCU clamps PID output to ±1.0
         # duty regardless of gain magnitude, so no runaway risk.
+        #
+        # Read effective values AFTER the set succeeds. We can't read from
+        # get_parameter() here because the new values aren't committed until
+        # we return success — use the param objects in this batch.
+        new = {p.name: p.value for p in params}
+
+        # Validate everything that can be rejected BEFORE pushing anything to
+        # the MCU. Otherwise a mixed batch (valid PID + bad brake) would send
+        # 'P'/'L' and then reject the whole set, leaving the param store and
+        # the MCU out of sync.
+        if push_brake:
+            duty = float(new.get('brake_pulse_duty', self._p('brake_pulse_duty')))
+            ms   = float(new.get('brake_pulse_ms',   self._p('brake_pulse_ms')))
+            fa   = float(new.get('brake_fire_above_mps', self._p('brake_fire_above_mps')))
+            if not self._valid_brake_params(duty, ms, fa):
+                reason = (
+                    f'brake_pulse out of range '
+                    f'(duty={duty}, ms={ms}, fire_above={fa})'
+                )
+                self.get_logger().warn(reason)
+                return SetParametersResult(successful=False, reason=reason)
+
         if push_pid:
-            # Read effective values AFTER the set succeeds. We can't read
-            # from get_parameter() here because the new values aren't
-            # committed until we return success. Use the param objects.
-            new = {p.name: p.value for p in params}
             kp = float(new.get('pid_kp', self._p('pid_kp')))
             ki = float(new.get('pid_ki', self._p('pid_ki')))
             kd = float(new.get('pid_kd', self._p('pid_kd')))
             self._send(f'P {kp} {ki} {kd}')
             self.get_logger().info(f'PID gains live-updated: kp={kp}, ki={ki}, kd={kd}')
         if push_mode:
-            new = {p.name: p.value for p in params}
             on = bool(new.get('use_pid', self._p('use_pid')))
             self._send(f'L {1 if on else 0}')
             self.get_logger().info(f'PID mode live-updated: {"on" if on else "off"}')
         if push_brake:
-            new = {p.name: p.value for p in params}
-            duty = float(new.get('brake_pulse_duty', self._p('brake_pulse_duty')))
-            ms   = float(new.get('brake_pulse_ms',   self._p('brake_pulse_ms')))
-            fa   = float(new.get('brake_fire_above_mps', self._p('brake_fire_above_mps')))
             self._send(f'K {duty} {ms} {fa}')
             self.get_logger().info(
                 f'Brake pulse live-updated: duty={duty}, ms={ms}, fire_above={fa}')
         return SetParametersResult(successful=True)
 
+    def _valid_brake_params(self, duty, ms, fire_above):
+        return (
+            math.isfinite(duty)
+            and BRAKE_PULSE_DUTY_MIN <= duty <= BRAKE_PULSE_DUTY_MAX
+            and math.isfinite(ms)
+            and BRAKE_PULSE_MS_MIN <= ms <= BRAKE_PULSE_MS_MAX
+            and math.isfinite(fire_above)
+            and BRAKE_FIRE_ABOVE_MPS_MIN <= fire_above <= BRAKE_FIRE_ABOVE_MPS_MAX
+        )
+
     def _validate_params(self):
         if self._p('max_speed') < 0.1:
             self.get_logger().fatal('max_speed must be >= 0.1 m/s')
             raise SystemExit(1)
-        if not (0.0 < self._p('accel_limit') <= self._p('max_speed') * 4.0):
+        if not (0.0 < self._p('accel_limit') <= 5.0):
             self.get_logger().fatal('accel_limit out of range')
             raise SystemExit(1)
         if not (500 <= self._p('servo_center_us') <= 2500):
@@ -410,6 +440,12 @@ class McuBridgeNode(Node):
             raise SystemExit(1)
         if not (500 <= self._p('steer_min_us') < self._p('steer_max_us') <= 2500):
             self.get_logger().fatal('steer_min_us/steer_max_us out of range or inverted')
+            raise SystemExit(1)
+        if not self._valid_brake_params(
+                float(self._p('brake_pulse_duty')),
+                float(self._p('brake_pulse_ms')),
+                float(self._p('brake_fire_above_mps'))):
+            self.get_logger().fatal('brake_pulse_* params out of range')
             raise SystemExit(1)
 
     def _open_serial(self):
@@ -1076,6 +1112,14 @@ class McuBridgeNode(Node):
         # the MCU re-clamps per-servo before commanding the PWM hardware.
         us = int(msg.data)
         self._send(f'D {us}')
+
+    def _on_nav_lights(self, msg):
+        # Nav-light pattern select (0=off 1=steady 2=double-strobe
+        # 3=single-strobe 4=50% blink). MCU command is 'G' — 'N' is the
+        # separate nav-fault flag. MCU ignores out-of-range.
+        mode = int(msg.data)
+        if 0 <= mode < 5:
+            self._send(f'G {mode}')
 
     # ------------------------- shutdown
 

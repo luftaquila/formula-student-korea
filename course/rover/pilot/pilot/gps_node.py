@@ -13,6 +13,7 @@ Subscribed topics:
 """
 
 import json
+import threading
 import time
 
 import serial
@@ -121,6 +122,8 @@ class GpsNode(Node):
         self._last_dop = None
         self._serial = None
         self._ntrip = None
+        self._ntrip_setup_lock = threading.Lock()
+        self._ntrip_setup_in_flight = False
         # NTRIP auto-setup is deferred until we have a real 3D fix so we
         # can pick the nearest base station. These track retry timing.
         self._ntrip_last_attempt = 0.0
@@ -138,7 +141,10 @@ class GpsNode(Node):
         # published base stations, so we need a position first.
 
         # Timer for reading serial data
-        rate = self.get_parameter('publish_rate').value
+        rate = float(self.get_parameter('publish_rate').value)
+        if rate <= 0.0:
+            self.get_logger().fatal(f'publish_rate must be > 0 (got {rate})')
+            raise SystemExit(1)
         self._timer = self.create_timer(1.0 / rate, self._read_serial)
 
         # Periodic NTRIP status publisher (1Hz)
@@ -179,6 +185,8 @@ class GpsNode(Node):
                 pass
             self._ntrip = None
             self._ntrip_last_attempt = 0.0
+            with self._ntrip_setup_lock:
+                self._ntrip_setup_in_flight = False
         try:
             if self._serial is not None:
                 self._serial.close()
@@ -242,50 +250,72 @@ class GpsNode(Node):
         now = time.monotonic()
         if now - self._ntrip_last_attempt < _NTRIP_SETUP_COOLDOWN_S:
             return
-        self._ntrip_last_attempt = now
+        with self._ntrip_setup_lock:
+            if self._ntrip_setup_in_flight:
+                return
+            self._ntrip_setup_in_flight = True
+            self._ntrip_last_attempt = now
 
+        serial_ref = self._serial
+        gga_interval = self.get_parameter('ntrip.gga_interval_s').value
+        threading.Thread(
+            target=self._ntrip_setup_worker,
+            args=(pvt.lat, pvt.lon, username, gga_interval, serial_ref),
+            daemon=True,
+        ).start()
+
+    def _ntrip_setup_worker(self, lat, lon, username, gga_interval, serial_ref):
+        """Fetch source table off the ROS timer thread and start NTRIP."""
         try:
-            table_text = fetch_source_table(_NTRIP_HOST, _NTRIP_PORT)
-        except Exception as exc:
-            self.get_logger().warn(
-                f'NTRIP source table fetch failed ({_NTRIP_HOST}:{_NTRIP_PORT}): {exc} '
-                f'— retry in {_NTRIP_SETUP_COOLDOWN_S:.0f}s'
-            )
-            return
+            try:
+                table_text = fetch_source_table(_NTRIP_HOST, _NTRIP_PORT)
+            except Exception as exc:
+                self.get_logger().warn(
+                    f'NTRIP source table fetch failed ({_NTRIP_HOST}:{_NTRIP_PORT}): {exc} '
+                    f'— retry in {_NTRIP_SETUP_COOLDOWN_S:.0f}s'
+                )
+                return
 
-        entries = parse_source_table(table_text)
-        if not entries:
-            self.get_logger().warn(
-                f'NTRIP source table from {_NTRIP_HOST}:{_NTRIP_PORT} had no parseable STR entries '
-                f'— retry in {_NTRIP_SETUP_COOLDOWN_S:.0f}s'
-            )
-            return
+            entries = parse_source_table(table_text)
+            if not entries:
+                self.get_logger().warn(
+                    f'NTRIP source table from {_NTRIP_HOST}:{_NTRIP_PORT} had no parseable STR entries '
+                    f'— retry in {_NTRIP_SETUP_COOLDOWN_S:.0f}s'
+                )
+                return
 
-        mount = select_nearest_mountpoint(pvt.lat, pvt.lon, entries)
-        if not mount:
-            self.get_logger().warn(
-                f'NTRIP: no RTCM 3.2 mountpoint in source table of {len(entries)} entries '
-                f'— retry in {_NTRIP_SETUP_COOLDOWN_S:.0f}s'
-            )
-            return
+            mount = select_nearest_mountpoint(lat, lon, entries)
+            if not mount:
+                self.get_logger().warn(
+                    f'NTRIP: no RTCM 3.2 mountpoint in source table of {len(entries)} entries '
+                    f'— retry in {_NTRIP_SETUP_COOLDOWN_S:.0f}s'
+                )
+                return
 
-        self.get_logger().info(
-            f'NTRIP: auto-selected "{mount}" for position '
-            f'({pvt.lat:.5f}, {pvt.lon:.5f})'
-        )
-        self._ntrip = NTRIPClient(
-            host=_NTRIP_HOST,
-            port=_NTRIP_PORT,
-            mountpoint=mount,
-            username=username,
-            password=_NTRIP_PASSWORD,
-            serial_port=self._serial,
-            lat=pvt.lat,
-            lon=pvt.lon,
-            logger=self.get_logger(),
-        )
-        self._ntrip._gga_interval = self.get_parameter('ntrip.gga_interval_s').value
-        self._ntrip.start()
+            with self._ntrip_setup_lock:
+                if self._ntrip is not None or self._serial is not serial_ref:
+                    return
+                self.get_logger().info(
+                    f'NTRIP: auto-selected "{mount}" for position '
+                    f'({lat:.5f}, {lon:.5f})'
+                )
+                client = NTRIPClient(
+                    host=_NTRIP_HOST,
+                    port=_NTRIP_PORT,
+                    mountpoint=mount,
+                    username=username,
+                    password=_NTRIP_PASSWORD,
+                    serial_port=serial_ref,
+                    lat=lat,
+                    lon=lon,
+                    logger=self.get_logger(),
+                )
+                client._gga_interval = gga_interval
+                self._ntrip = client
+                client.start()
+        finally:
+            with self._ntrip_setup_lock:
+                self._ntrip_setup_in_flight = False
 
     def _read_serial(self):
         """Read and parse UBX data from serial port.
@@ -442,9 +472,6 @@ class GpsNode(Node):
             'num_sv': pvt.num_sv,
             'pdop': p_dop,
             'tdop': t_dop,
-            # iTOW lets navigator back-date the position correction by
-            # USB-CDC + parse latency (~50-100 ms on the ZED-F9P link).
-            'i_tow_ms': pvt.i_tow_ms,
         }
         msg = String()
         msg.data = json.dumps(metrics)
@@ -462,6 +489,9 @@ class GpsNode(Node):
             self._ntrip.stop()
         if self._serial:
             self._serial.close()
+            self._serial = None
+        with self._ntrip_setup_lock:
+            self._ntrip_setup_in_flight = False
         super().destroy_node()
 
 

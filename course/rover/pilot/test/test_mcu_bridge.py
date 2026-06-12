@@ -252,6 +252,32 @@ def test_brake_pulse_params_live_push_K_command(bridge):
     assert float(parts[3]) == pytest.approx(0.05)
 
 
+def test_brake_pulse_params_reject_out_of_range(bridge):
+    import types
+    bridge._serial.writes.clear()
+    params = [types.SimpleNamespace(name='brake_pulse_ms', value=2000.0)]
+    res = bridge._on_param_change(params)
+    assert not res.successful
+    assert not any(l.startswith('K ') for l in _writes_text(bridge))
+
+
+def test_mixed_batch_rejects_before_pushing_pid(bridge):
+    """A batch with a valid PID change AND an out-of-range brake param must
+    reject the WHOLE set without having already pushed 'P'/'L'/'K' to the MCU.
+    Validating before any _send keeps the param store and MCU in sync."""
+    import types
+    bridge._serial.writes.clear()
+    params = [
+        types.SimpleNamespace(name='pid_kp', value=2.0),          # valid
+        types.SimpleNamespace(name='brake_pulse_ms', value=2000.0),  # out of range
+    ]
+    res = bridge._on_param_change(params)
+    assert not res.successful
+    out = _writes_text(bridge)
+    assert not any(l.startswith('P ') for l in out), out
+    assert not any(l.startswith('K ') for l in out), out
+
+
 def test_brake_pulse_arm_emits_A(bridge):
     """The /rover/cmd/brake_pulse subscription forwards to the MCU as a
     bare 'A' command — that's the one-shot arm that gates the next
@@ -260,6 +286,23 @@ def test_brake_pulse_arm_emits_A(bridge):
     bridge._on_brake_pulse(None)
     out = _writes_text(bridge)
     assert any(l.strip() == 'A' for l in out), out
+
+
+def test_nav_lights_sends_G_command(bridge):
+    """A /rover/cmd/nav_lights Int32 forwards to the MCU as 'G <mode>'
+    ('N' is the separate nav-fault command)."""
+    import types
+    bridge._serial.writes.clear()
+    bridge._on_nav_lights(types.SimpleNamespace(data=3))
+    out = _writes_text(bridge)
+    assert any(l.strip() == 'G 3' for l in out), out
+
+
+def test_nav_lights_out_of_range_ignored(bridge):
+    import types
+    bridge._serial.writes.clear()
+    bridge._on_nav_lights(types.SimpleNamespace(data=9))
+    assert not any(l.startswith('G ') for l in _writes_text(bridge))
 
 
 def test_velocity_ramps_on_chassis_speed_not_duty(bridge):
@@ -618,5 +661,4 @@ def test_software_latch_flag_does_not_trigger_hardware_sync(bridge):
     bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x1')
     assert len(bridge._pub_emergency_stop.published) == 0
     assert len(bridge._pub_clear_emergency.published) == 0
-
 

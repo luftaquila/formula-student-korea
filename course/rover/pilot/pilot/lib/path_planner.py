@@ -61,6 +61,7 @@ def _dock_chassis_pose(target_e, target_n, psi_dock, antenna_offset):
 def plan(current_chassis_pose, antenna_offset,
          waypoints_lat_lng, ref_lat_lon,
          return_to_start=False, start_chassis_xy=None,
+         start_antenna_xy=None,
          waypoint_index_offset=0,
          prev_target_xy=None):
     """Build the segment list for a mission.
@@ -123,8 +124,11 @@ def plan(current_chassis_pose, antenna_offset,
         cur_x, cur_y = dock_x, dock_y
         prev_target = (wp_e, wp_n)
 
-    if return_to_start and start_chassis_xy is not None:
-        start_x, start_y = start_chassis_xy
+    if return_to_start:
+        target_xy = start_antenna_xy if start_antenna_xy is not None else start_chassis_xy
+        if target_xy is None:
+            return segments
+        start_x, start_y = target_xy
         psi_dock = atan2(start_y - cur_y, start_x - cur_x)
         psi_dock = normalize_angle(psi_dock)
         dock_x, dock_y, _ = _dock_chassis_pose(

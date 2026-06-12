@@ -89,6 +89,13 @@ def test_execute_path_with_fix_starts_calibrating(nav):
     assert nav._stuck_retries == 0
 
 
+def test_execute_path_rejects_malformed_waypoint_before_state_change(nav):
+    msg = type('M', (), {'data': json.dumps([{'lat': 35.0001}, {'lat': 35.0, 'lng': 126.0}])})()
+    nav._on_execute_path(msg)
+    assert nav._state == State.IDLE
+    assert nav._waypoints == []
+
+
 def test_execute_path_rejected_during_active_state(nav):
     """Mid-NAVIGATING execute_path must be rejected. Otherwise the chassis
     keeps cruising under the prior tracker for one tick, and the new

@@ -77,11 +77,14 @@ printf '  NTRIP_USERNAME:  %s\n\n' "$NTRIP_USER"
 
 SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 
-# shellcheck disable=SC2086
-ssh $SSH_OPTS \
-    "fsk@$HOST" \
-    "INTERNAL_SECRET='$INTERNAL_SECRET' SERVER_URL='$SERVER_URL' NTRIP_USER='$NTRIP_USER' sh -s" \
-    <<'REMOTE'
+# Send secret values on stdin instead of embedding them in the remote command
+# line. That avoids argv exposure on both machines and preserves values that
+# contain shell metacharacters such as single quotes.
+{
+    printf '%s\n' "$INTERNAL_SECRET"
+    printf '%s\n' "$SERVER_URL"
+    printf '%s\n' "$NTRIP_USER"
+    cat <<'REMOTE'
 set -eu
 
 echo "[rover] writing /etc/pilot/pilot.conf"
@@ -114,6 +117,12 @@ else
     exit 1
 fi
 REMOTE
+} | ssh $SSH_OPTS "fsk@$HOST" \
+    'IFS= read -r INTERNAL_SECRET
+     IFS= read -r SERVER_URL
+     IFS= read -r NTRIP_USER
+     export INTERNAL_SECRET SERVER_URL NTRIP_USER
+     sh -s'
 
 printf '\nprovisioning complete. Tail logs with:\n'
 printf '  ssh fsk@%s sudo journalctl -u pilot.service -f\n' "$HOST"

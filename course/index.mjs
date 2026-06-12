@@ -668,6 +668,9 @@ const roverState = {
   fix_status_at: 0,
   nav_state: null,
   ntrip_connected: null,
+  // Nav-light pattern: 0=off 1=steady 2=double-strobe 3=single-strobe 4=50% blink.
+  // Operator-selected; persisted here and re-sent to the rover on (re)connect.
+  nav_lights_mode: 2,
   last_disconnect_reason: null, // "sse_closed" | "write_failed" | "replaced"
   last_disconnect_at: 0,
   last_spray_result: null, // { waypoint, outcome, at }
@@ -707,6 +710,11 @@ function markRoverDisconnected(reason) {
   roverState.connected = false;
 }
 
+function rejectNoRover(req, res, action, extra = {}) {
+  logger.warn(req, action, { error: "not_connected", ...extra }, "rover");
+  return res.status(503).send("로버가 연결되어 있지 않습니다.");
+}
+
 // GET /api/rover/stream - 로버 SSE 연결 (로버가 호출)
 app.get("/api/rover/stream", (req, res) => {
   res.writeHead(200, {
@@ -734,6 +742,11 @@ app.get("/api/rover/stream", (req, res) => {
   roverState.last_disconnect_at = 0;
   broadcastRoverStatus();
 
+  // Re-apply the operator's nav-light choice so it survives a pilot restart.
+  if (roverState.nav_lights_mode != null) {
+    sendRoverEvent("nav-lights", { mode: roverState.nav_lights_mode });
+  }
+
   const heartbeat = setInterval(() => {
     try { res.write(": heartbeat\n\n"); } catch {}
   }, 30000);
@@ -758,7 +771,7 @@ app.get("/api/rover/stream", (req, res) => {
 
 // POST /api/rover/position - 로버가 현재 위치 전송 (로버가 호출)
 app.post("/api/rover/position", (req, res) => {
-  const { lat, lng } = req.body;
+  const { lat, lng, request_id, request_ids } = req.body;
   const coordValidation = validateCoordinate(lat, lng);
   if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
 
@@ -766,10 +779,16 @@ app.post("/api/rover/position", (req, res) => {
   roverState.last_position = { lat, lng };
   roverState.last_position_at = lastRoverPosition.at;
 
-  // FIFO: 하나의 position은 가장 오래된 pending request 하나만 resolve
-  if (roverPendingResolves.length > 0) {
-    const { resolve } = roverPendingResolves.shift();
-    resolve({ lat, lng });
+  // Resolve only the matching explicit admin request. Periodic rover
+  // position POSTs intentionally do not drain this queue.
+  const ids = Array.isArray(request_ids) ? request_ids : [request_id];
+  for (const id of ids) {
+    if (typeof id !== "string" || !id) continue;
+    const idx = roverPendingResolves.findIndex((entry) => entry.request_id === id);
+    if (idx !== -1) {
+      const [{ resolve }] = roverPendingResolves.splice(idx, 1);
+      resolve({ lat, lng });
+    }
   }
 
   // Telemetry sample for active mission
@@ -858,6 +877,15 @@ app.post("/api/rover/waypoint_reached", (req, res) => {
   const index = Number(req.body?.index);
   if (!Number.isInteger(index) || index < 0) {
     return res.status(400).send("올바르지 않은 waypoint index입니다.");
+  }
+  // 미션 자동 종료(driving→IDLE) 직후 늦게 도착할 수 있다. 진행 인덱스만
+  // 전진시키는 이벤트라 종료 후엔 의미가 없으므로 에러 대신 no-op 처리한다.
+  if (currentMissionId == null) {
+    return res.json({ ok: true });
+  }
+  if (index >= roverState.mission_progress.waypoints.length) {
+    logger.warn(req, "rover.waypoint_reached", { index, error: "index_out_of_range" }, "rover");
+    return res.status(400).send("waypoint index가 현재 미션 범위를 벗어났습니다.");
   }
   // Monotonic: never regress current_waypoint_idx so late or duplicate events
   // from SSE reconnects can't walk progress backwards.
@@ -955,7 +983,7 @@ app.get("/api/rover/logs", (req, res) => {
 
 // POST /api/rover/logs/fetch - 로버에 로그 업로드 요청 (admin → SSE)
 app.post("/api/rover/logs/fetch", (req, res) => {
-  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!roverClient) return rejectNoRover(req, res, "rover.logs.fetch");
   if (!sendRoverEvent("fetch-logs", {})) {
     logger.warn(req, "rover.logs.fetch", { error: "write_failed" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
@@ -972,8 +1000,19 @@ app.post("/api/rover/spray_result", (req, res) => {
   if (!Number.isInteger(index) || index < 0 || !SPRAY_OUTCOMES.has(outcome)) {
     return res.status(400).send("올바르지 않은 spray_result 데이터입니다.");
   }
+  // 마지막 waypoint의 spray_result는 미션이 driving→IDLE로 자동 종료된 직후에
+  // 도착할 수 있다(로버의 spray-post 스레드와 telemetry 스레드가 별도라 순서
+  // 보장 없음). 그 경우에도 live 결과(last_spray_result + 브로드캐스트)는
+  // 기록해 마지막 콘 결과가 유실되지 않게 하고, mission_progress는 미션이
+  // 활성일 때만 변경한다.
+  if (currentMissionId != null) {
+    if (index >= roverState.mission_progress.waypoints.length) {
+      logger.warn(req, "rover.spray_result", { index, outcome, error: "index_out_of_range" }, "rover");
+      return res.status(400).send("waypoint index가 현재 미션 범위를 벗어났습니다.");
+    }
+    roverState.mission_progress.spray_results[String(index)] = outcome;
+  }
   roverState.last_spray_result = { waypoint: index, outcome, at: Date.now() };
-  roverState.mission_progress.spray_results[String(index)] = outcome;
   broadcastEvent("rover:spray", { waypoint: index, outcome, at: roverState.last_spray_result.at });
   broadcastRoverStatus();
   res.json({ ok: true });
@@ -982,8 +1021,7 @@ app.post("/api/rover/spray_result", (req, res) => {
 // POST /api/rover/request - 관리자가 로버 좌표 요청 (프론트엔드가 호출)
 app.post("/api/rover/request", async (req, res) => {
   if (!roverClient) {
-    logger.warn(req, "rover.request", { error: "not_connected" }, "rover");
-    return res.status(503).send("로버가 연결되어 있지 않습니다.");
+    return rejectNoRover(req, res, "rover.request");
   }
 
   if (roverPendingResolves.length >= ROVER_MAX_PENDING_REQUESTS) {
@@ -991,26 +1029,25 @@ app.post("/api/rover/request", async (req, res) => {
     return res.status(503).send("위치 요청이 많아 대기 중입니다.");
   }
 
-  try {
-    roverClient.write("event: request-position\ndata: {}\n\n");
-  } catch {
-    roverClient = null;
-    markRoverDisconnected("write_failed");
-    broadcastRoverStatus();
+  const request_id = crypto.randomUUID();
+  let removeFromQueue;
+  const pending = new Promise((resolve) => {
+    const entry = { request_id, resolve, createdAt: Date.now() };
+    roverPendingResolves.push(entry);
+    removeFromQueue = () => {
+      const idx = roverPendingResolves.indexOf(entry);
+      if (idx !== -1) roverPendingResolves.splice(idx, 1);
+    };
+  });
+
+  if (!sendRoverEvent("request-position", { request_id })) {
+    if (removeFromQueue) removeFromQueue();
     logger.warn(req, "rover.request", { error: "connection_lost" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
 
-  let removeFromQueue;
   const position = await Promise.race([
-    new Promise((resolve) => {
-      const entry = { resolve, createdAt: Date.now() };
-      roverPendingResolves.push(entry);
-      removeFromQueue = () => {
-        const idx = roverPendingResolves.indexOf(entry);
-        if (idx !== -1) roverPendingResolves.splice(idx, 1);
-      };
-    }),
+    pending,
     new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
   ]).catch(() => null);
 
@@ -1049,12 +1086,15 @@ function validateWaypointDistances(waypoints) {
   // 인접 세그먼트 거리 검증 + 중복(<5cm) 제거
   const cleaned = [waypoints[0]];
   for (let i = 1; i < waypoints.length; i++) {
-    const d = haversine(waypoints[i - 1], waypoints[i]);
+    const d = haversine(cleaned[cleaned.length - 1], waypoints[i]);
     if (d < ROVER_MIN_SEGMENT_DIST_M) continue; // 중복 제거
     if (d > ROVER_MAX_SEGMENT_DIST_M) {
       return { valid: false, reason: "segment_too_long", distance: d, index: i };
     }
     cleaned.push(waypoints[i]);
+  }
+  if (waypoints.length > 1 && cleaned.length < 2) {
+    return { valid: false, reason: "path_degenerate", distance: 0 };
   }
   return { valid: true, waypoints: cleaned };
 }
@@ -1082,13 +1122,15 @@ app.post("/api/rover/execute", (req, res) => {
   if (!distCheck.valid) {
     const msg = distCheck.reason === "first_waypoint_far"
       ? `로버 현재 위치에서 첫 웨이포인트까지 ${distCheck.distance.toFixed(1)}m로 너무 멉니다 (최대 ${ROVER_MAX_WAYPOINT_DIST_M}m).`
-      : `${distCheck.index}번 웨이포인트 인접 거리가 ${distCheck.distance.toFixed(1)}m로 너무 큽니다 (최대 ${ROVER_MAX_SEGMENT_DIST_M}m).`;
+      : distCheck.reason === "path_degenerate"
+        ? `웨이포인트가 모두 ${ROVER_MIN_SEGMENT_DIST_M * 100}cm 이내로 겹쳐 실행할 경로가 없습니다.`
+        : `${distCheck.index}번 웨이포인트 인접 거리가 ${distCheck.distance.toFixed(1)}m로 너무 큽니다 (최대 ${ROVER_MAX_SEGMENT_DIST_M}m).`;
     logger.warn(req, "rover.execute", { error: msg, reason: distCheck.reason, distance: distCheck.distance }, "rover");
     return res.status(400).send(msg);
   }
   const finalWaypoints = distCheck.waypoints;
 
-  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!roverClient) return rejectNoRover(req, res, "rover.execute");
 
   // 비상정지 래치가 걸린 상태에서는 새 경로 송신을 거부한다. 운영자가 먼저
   // "비상정지 해제"를 눌러 명시적으로 인지·해제한 뒤에만 다음 동작을 허용해
@@ -1121,7 +1163,7 @@ app.post("/api/rover/execute", (req, res) => {
 
 // POST /api/rover/stop - 비상정지
 app.post("/api/rover/stop", (req, res) => {
-  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!roverClient) return rejectNoRover(req, res, "rover.stop");
 
   if (!sendRoverEvent("emergency-stop", {})) {
     logger.warn(req, "rover.stop", { error: "write_failed" }, "rover");
@@ -1141,7 +1183,7 @@ app.post("/api/rover/calibrate-battery", (req, res) => {
   if (!Number.isFinite(measured_v) || measured_v < 15 || measured_v > 32) {
     return res.status(400).send("측정값은 15~32 V 범위 안의 숫자여야 합니다.");
   }
-  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!roverClient) return rejectNoRover(req, res, "rover.calibrate_battery", { measured_v });
 
   if (!sendRoverEvent("calibrate-battery", { measured_v })) {
     logger.warn(req, "rover.calibrate_battery", { error: "write_failed", measured_v }, "rover");
@@ -1158,8 +1200,9 @@ app.post("/api/rover/calibrate-battery", (req, res) => {
 // 결과는 로버 측 /var/lib/pilot/antenna_offset.json에 영속화되고
 // /api/rover/antenna_calibration_result로 회신된다.
 app.post("/api/rover/calibrate-antenna", (req, res) => {
-  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!roverClient) return rejectNoRover(req, res, "rover.calibrate_antenna");
   if (roverState.nav_state && roverState.nav_state !== "IDLE") {
+    logger.warn(req, "rover.calibrate_antenna", { error: "not_idle", nav_state: roverState.nav_state }, "rover");
     return res.status(409).send(
       `로버가 IDLE이 아닙니다 (현재: ${roverState.nav_state}). 먼저 미션을 종료하세요.`
     );
@@ -1184,10 +1227,10 @@ app.post("/api/rover/set-antenna-offset", (req, res) => {
   if (a_x === null || a_y === null) {
     return res.status(400).send("a_x, a_y는 숫자여야 합니다.");
   }
-  if (Math.abs(a_x) > 1.0 || Math.abs(a_y) > 1.0) {
-    return res.status(400).send("오프셋은 ±1 m 이내여야 합니다.");
+  if (a_x < 0.05 || a_x > 1.0 || Math.abs(a_y) > 1.0) {
+    return res.status(400).send("a_x는 0.05~1 m, a_y는 ±1 m 이내여야 합니다.");
   }
-  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!roverClient) return rejectNoRover(req, res, "rover.set_antenna_offset", { a_x, a_y });
   if (!sendRoverEvent("set-antenna-offset", { a_x, a_y })) {
     logger.warn(req, "rover.set_antenna_offset", { error: "write_failed", a_x, a_y }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
@@ -1232,8 +1275,9 @@ app.post("/api/rover/antenna_calibration_result", (req, res) => {
 // 좌·우 휠 스케일을 추정한다. 결과는 /var/lib/pilot/wheel_cal.json에 영속화되고
 // mcu_bridge가 텔레메트리 vl/vr에 곱해 적용한다. /api/rover/wheel_calibration_result로 회신.
 app.post("/api/rover/calibrate-wheels", (req, res) => {
-  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!roverClient) return rejectNoRover(req, res, "rover.calibrate_wheels");
   if (roverState.nav_state && roverState.nav_state !== "IDLE") {
+    logger.warn(req, "rover.calibrate_wheels", { error: "not_idle", nav_state: roverState.nav_state }, "rover");
     return res.status(409).send(
       `로버가 IDLE이 아닙니다 (현재: ${roverState.nav_state}). 먼저 미션을 종료하세요.`
     );
@@ -1284,8 +1328,9 @@ app.post("/api/rover/wheel_calibration_result", (req, res) => {
 // 휠 cal은 매 실행에서 scale_l/r을 새로 덮어쓰지만 조향 트림은 누적되므로,
 // 비정상 누적값이 적용된 상태를 한 번에 해소하는 escape hatch.
 app.post("/api/rover/reset-wheel-cal", (req, res) => {
-  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!roverClient) return rejectNoRover(req, res, "rover.reset_wheel_cal");
   if (roverState.nav_state && roverState.nav_state !== "IDLE") {
+    logger.warn(req, "rover.reset_wheel_cal", { error: "not_idle", nav_state: roverState.nav_state }, "rover");
     return res.status(409).send(
       `로버가 IDLE이 아닙니다 (현재: ${roverState.nav_state}). 먼저 미션을 종료하세요.`
     );
@@ -1308,6 +1353,14 @@ app.post("/api/rover/waypoint_skipped", (req, res) => {
   if (!Number.isInteger(index) || index < 0) {
     return res.status(400).send("올바르지 않은 waypoint index입니다.");
   }
+  // 미션 자동 종료 직후 늦게 도착할 수 있다. 종료 후엔 의미가 없으므로 no-op.
+  if (currentMissionId == null) {
+    return res.json({ ok: true });
+  }
+  if (index >= roverState.mission_progress.waypoints.length) {
+    logger.warn(req, "rover.waypoint_skipped", { index, error: "index_out_of_range" }, "rover");
+    return res.status(400).send("waypoint index가 현재 미션 범위를 벗어났습니다.");
+  }
   if (index + 1 > roverState.mission_progress.current_waypoint_idx) {
     roverState.mission_progress.current_waypoint_idx = index + 1;
   }
@@ -1318,7 +1371,7 @@ app.post("/api/rover/waypoint_skipped", (req, res) => {
 
 // POST /api/rover/clear-emergency - 비상정지 해제 (operator-acknowledged)
 app.post("/api/rover/clear-emergency", (req, res) => {
-  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!roverClient) return rejectNoRover(req, res, "rover.clear_emergency");
 
   if (!sendRoverEvent("clear-emergency", {})) {
     logger.warn(req, "rover.clear_emergency", { error: "write_failed" }, "rover");
@@ -1347,7 +1400,7 @@ app.post("/api/rover/dispenser", (req, res) => {
   if (position !== "load" && position !== "dump") {
     return res.status(400).send("position must be 'load' or 'dump'.");
   }
-  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  if (!roverClient) return rejectNoRover(req, res, "rover.dispenser", { position });
   if (!sendRoverEvent("dispenser-set-position", { position })) {
     logger.warn(req, "rover.dispenser", { error: "write_failed", position }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
@@ -1363,10 +1416,9 @@ app.post("/api/rover/control", (req, res) => {
     return res.status(400).send("올바르지 않은 제어 데이터입니다.");
   }
 
-  if (!roverClient) return res.status(503).send("로버가 연결되어 있지 않습니다.");
-
   const t = Math.max(-100, Math.min(100, throttle));
   const s = Math.max(-100, Math.min(100, steering));
+  if (!roverClient) return rejectNoRover(req, res, "rover.control", { throttle: t, steering: s });
 
   if (!sendRoverEvent("manual-control", { throttle: t, steering: s })) {
     logger.warn(req, "rover.control", { error: "write_failed" }, "rover");
@@ -1376,9 +1428,28 @@ app.post("/api/rover/control", (req, res) => {
   res.json({ throttle: t, steering: s });
 });
 
+// POST /api/rover/nav-lights - 항공기식 nav 라이트 모드 설정 (admin → SSE)
+// mode: 0=off 1=steady 2=double-strobe 3=single-strobe 4=50% blink
+app.post("/api/rover/nav-lights", (req, res) => {
+  const mode = Number(req.body?.mode);
+  if (!Number.isInteger(mode) || mode < 0 || mode > 4) {
+    return res.status(400).send("mode는 0~4여야 합니다.");
+  }
+  // 선택은 항상 저장한다 — 로버 재연결 시 재전송돼 고착된다. 연결돼 있으면 즉시 전송.
+  roverState.nav_lights_mode = mode;
+  if (roverClient) sendRoverEvent("nav-lights", { mode });
+  logger.log(req, "rover.nav_lights", { mode, connected: !!roverClient }, "rover");
+  broadcastRoverStatus();
+  res.json({ ok: true });
+});
+
 /* ============================================
    SPA Fallback
    ============================================ */
+app.use("/api", (req, res) => {
+  res.status(404).send("API endpoint not found.");
+});
+
 app.get("/{*splat}", (req, res) => {
   res.sendFile("index.html", { root: "./web/dist" });
 });
