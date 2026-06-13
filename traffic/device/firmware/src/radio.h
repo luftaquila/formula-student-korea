@@ -6,9 +6,9 @@
 extern "C" {
 #endif
 
-/* Initialise the SX1262 with the DESIGN §2 parameters. Returns 0 on success,
- * else the (negative) RadioLib error code. */
-int radio_begin(void);
+/* Initialise the SX1262 on the given frequency (MHz) with the DESIGN §2
+ * parameters. Returns 0 on success, else the (negative) RadioLib error code. */
+int radio_begin(float freq_mhz);
 
 #include <stdint.h>
 

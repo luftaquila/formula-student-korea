@@ -1,19 +1,14 @@
-/* Two-board LoRa timing node.
+/* Two-board LoRa timing node — single binary, role by chip ID (node_id.c).
  *
- * MASTER = the controller the PC connects to. It speaks the legacy FSK-TC
- * serial protocol transparently (traffic/device/firmware on main +
- * traffic/web stores/serial.js): VID/PID 0x1999/0x0514, "$...!" framing, ms
- * ticks. Commands $G/$R/$X drive the lights and ack $OK; $HELLO -> $HI; LoRa
- * EVENTs are reported as "$S <sensor> <ms>!". A "$T <sensor> <16MHz tick>!"
- * companion line carries the full HW-capture precision (ignored by the old PC).
- * The master also beacons once per second to keep the sensors time-synced.
+ * MASTER = the controller the PC connects to. Speaks the legacy FSK-TC serial
+ * protocol transparently (VID/PID 0x1999/0x0514, "$...!", ms ticks): $G/$R/$X
+ * drive the lights + ack $OK, $HELLO -> $HI, LoRa EVENTs -> "$S <sensor> <ms>!"
+ * with a "$T <sensor> <16MHz tick>!" high-res companion. Beacons once per
+ * second to keep the sensors synced.
  *
- * SENSOR = remote node: syncs to the master's beacons, HW-captures a SENSOR
- * edge, maps it to master time, and transmits an EVENT.  -DSENSOR_SIM fires a
- * synthetic event for bench testing.
- *
- * Timebase is a 64-bit 16 MHz tick; reported ms = tick/16000 truncated to 32
- * bits (wraps at 49 days like the legacy HAL_GetTick, never mid-run).
+ * SENSOR = remote node: syncs to beacons, HW-captures a SENSOR edge, maps it to
+ * master time, transmits an EVENT tagged with its node id. -DSENSOR_SIM fires a
+ * synthetic event; -DNODE_DEBUG prints the chip id + resolved role.
  */
 #include <stdio.h>
 #include <stddef.h>
@@ -25,16 +20,29 @@
 #include "protocol.h"
 #include "config.h"
 #include "lights.h"
+#include "node_id.h"
 
 #define TICKS_PER_MS 16000u /* TIMER1 is 16 MHz */
 
-#if defined(ROLE_RX)
-static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint16_t *ev_seq)
+#if defined(NODE_DEBUG)
+static void debug_id(const char *role)
+{
+    static uint32_t dl;
+    if ((uint32_t)(board_millis() - dl) < 1000u) { return; }
+    dl = board_millis();
+    char l[56];
+    snprintf(l, sizeof(l), "ID %08lX %08lX %s!\n",
+             (unsigned long)node_devid_hi(), (unsigned long)node_devid_lo(), role);
+    usb_write(l);
+}
+#endif
+
+static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint8_t me, uint16_t *ev_seq)
 {
     event_t e;
     e.type = PKT_TYPE_EVENT;
-    e.set_id = SET_ID_A;
-    e.node_id = NODE_SENSOR;
+    e.set_id = node_set_id();
+    e.node_id = me;
     e.ev_seq = (*ev_seq)++;
     e.ev_master_t = off + ev_tick;
     e.flags = 0;
@@ -42,40 +50,29 @@ static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint16_t *ev_seq)
     radio_transmit((uint8_t *)&e, sizeof(e));
     radio_start_rx();
 }
-#endif
 
-int main(void)
+static void run_sensor(int st)
 {
-    board_init();
-
-    int st = radio_begin();
-    if (st == 0) {
-        capture_init();
-#if defined(ROLE_RX)
-        radio_start_rx();
-#endif
-    }
-
-    usb_init();
-
+    uint64_t prev_l_rx = 0, cur_off = 0;
+    uint8_t prev_seq = 0, me = node_node_id();
+    int have_prev = 0, have_off = 0;
+    uint16_t ev_seq = 0;
     uint32_t last = board_millis();
     uint8_t buf[32];
 
-#if defined(ROLE_RX)
-    /* ---------------- sensor ---------------- */
-    uint64_t prev_l_rx = 0, cur_off = 0;
-    uint8_t prev_seq = 0;
-    int have_prev = 0, have_off = 0;
-    uint16_t ev_seq = 0;
+    if (st == 0) { radio_start_rx(); }
 
     for (;;) {
         usb_task();
+#if defined(NODE_DEBUG)
+        debug_id("sensor");
+#endif
         if (st != 0) {
             uint32_t now = board_millis();
             if ((uint32_t)(now - last) >= 1000u) { last = now; board_led_toggle(); }
             continue;
         }
-        capture_now64(); /* keep the wrap accounting current */
+        capture_now64();
 
         int n = radio_receive(buf, sizeof(buf));
         if (n >= (int)sizeof(beacon_t)) {
@@ -95,29 +92,31 @@ int main(void)
 
         uint64_t ev_tick;
         if (capture_sensor_get(&ev_tick) && have_off) {
-            sensor_send_event(ev_tick, cur_off, &ev_seq);
+            sensor_send_event(ev_tick, cur_off, me, &ev_seq);
         }
-
 #if defined(SENSOR_SIM)
         static uint32_t sim_last;
         if (have_off && (uint32_t)(board_millis() - sim_last) >= 3000u) {
             sim_last = board_millis();
-            sensor_send_event(capture_now64(), cur_off, &ev_seq);
+            sensor_send_event(capture_now64(), cur_off, me, &ev_seq);
         }
 #endif
     }
-#else
-    /* ---------------- master / controller ---------------- */
+}
+
+static void run_master(int st)
+{
     char line[80];
     lights_init();
     uint8_t seq = 0;
     uint64_t m_tx_last = 0;
     int in_cmd = 0;
+    uint32_t last = board_millis();
+    uint8_t buf[32];
 
     for (;;) {
         usb_task();
 
-        /* Legacy controller commands from the PC. */
         int c;
         while ((c = usb_read_byte()) >= 0) {
             if (c == '$') { in_cmd = 1; continue; }
@@ -132,22 +131,22 @@ int main(void)
                 break;
             case 'R': lights_set(LIGHTS_RED);   usb_write("$OK R!\n"); break;
             case 'X': lights_set(LIGHTS_OFF);   usb_write("$OK X!\n"); break;
-            case 'H': usb_write("$HI!\n"); break; /* $HELLO */
+            case 'H': usb_write("$HI!\n"); break;
             default:  usb_write("$E!\n");  break;
             }
         }
-
-        if (st != 0) {
-            continue; /* radio dead: still serve USB so a reflash works */
-        }
-        capture_now64(); /* keep the wrap accounting current */
+#if defined(NODE_DEBUG)
+        debug_id("master");
+#endif
+        if (st != 0) { continue; }
+        capture_now64();
 
         uint32_t now = board_millis();
         if ((uint32_t)(now - last) >= 1000u) {
             last = now;
             beacon_t b;
             b.type = PKT_TYPE_BEACON;
-            b.set_id = SET_ID_A;
+            b.set_id = node_set_id();
             b.seq = seq;
             b.m_tx_prev = m_tx_last;
             b.period_ms = 1000;
@@ -175,5 +174,23 @@ int main(void)
             }
         }
     }
-#endif
+}
+
+int main(void)
+{
+    board_init();
+    node_init();
+
+    int st = radio_begin(node_freq_mhz());
+    if (st == 0) {
+        capture_init();
+    }
+
+    usb_init();
+
+    if (node_role() == ROLE_MASTER) {
+        run_master(st);
+    } else {
+        run_sensor(st);
+    }
 }

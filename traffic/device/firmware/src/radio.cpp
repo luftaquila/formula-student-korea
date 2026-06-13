@@ -14,13 +14,13 @@ static NrfHal hal(PIN_LORA_SCK, PIN_LORA_MISO, PIN_LORA_MOSI);
 static Module mod(&hal, PIN_LORA_NSS, PIN_LORA_DIO1, PIN_LORA_NRST, PIN_LORA_BUSY);
 static SX1262 radio(&mod);
 
-extern "C" int radio_begin(void)
+extern "C" int radio_begin(float freq_mhz)
 {
     /* begin() occasionally fails with garbled SPI readback on the hand-built
      * board; retry a few times (each begin() re-resets the radio). */
     int state = RADIOLIB_ERR_NONE;
     for (int attempt = 0; attempt < 5; attempt++) {
-        state = radio.begin(LORA_FREQ_MHZ, LORA_BW_KHZ, LORA_SF, LORA_CR,
+        state = radio.begin(freq_mhz, LORA_BW_KHZ, LORA_SF, LORA_CR,
                             LORA_SYNCWORD, LORA_POWER_DBM, LORA_PREAMBLE,
                             LORA_TCXO_V, false);
         if (state == RADIOLIB_ERR_NONE) {

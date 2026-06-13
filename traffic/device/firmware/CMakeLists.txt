@@ -84,6 +84,7 @@ add_executable(${ELF}
     src/sensor.c
     src/capture.c
     src/protocol.c
+    src/node_id.c
     src/radio_hal.cpp
     src/radio.cpp
     src/runtime.cpp
@@ -97,16 +98,19 @@ target_include_directories(${ELF} PRIVATE
 
 target_compile_definitions(${ELF} PRIVATE NRF52840_XXAA)
 
-# Two-board link test: default builds the TX role; -DROLE_RX=ON builds the RX.
-option(ROLE_RX "Build the receiver-role firmware variant" OFF)
-if(ROLE_RX)
-    target_compile_definitions(${ELF} PRIVATE ROLE_RX)
-endif()
+# Single binary for all boards — role/set/channel resolved at runtime from the
+# chip's FICR.DEVICEID (src/node_id.c).
 
 # Test-only: sensor synthesizes a periodic event (physical SENSOR line unwired).
 option(SENSOR_SIM "Sensor fires a synthetic event every 3 s (testing only)" OFF)
 if(SENSOR_SIM)
     target_compile_definitions(${ELF} PRIVATE SENSOR_SIM)
+endif()
+
+# Debug: print the chip id + resolved role over USB once per second.
+option(NODE_DEBUG "Print chip id / role over USB (testing only)" OFF)
+if(NODE_DEBUG)
+    target_compile_definitions(${ELF} PRIVATE NODE_DEBUG)
 endif()
 
 target_compile_options(${ELF} PRIVATE
