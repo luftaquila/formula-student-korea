@@ -48,4 +48,9 @@
 #define LORA_PREAMBLE   8
 #define LORA_TCXO_V     1.6f    /* Ra-01SH TCXO via DIO3; if begin() fails XOSC, try 1.8/3.0 */
 
+/* Fixed TxDone->RxDone air delay in 16 MHz ticks (DESIGN §2.9 T_air_ref).
+ * Placeholder 0 until measured — only shifts the absolute offset, not its
+ * stability, so it does not affect the Stage-3b sync verification. */
+#define T_AIR_REF_TICKS 0u
+
 #endif /* CONFIG_H */

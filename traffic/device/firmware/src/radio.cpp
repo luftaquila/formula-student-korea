@@ -36,10 +36,9 @@ extern "C" int radio_begin(void)
     return RADIOLIB_ERR_NONE;
 }
 
-extern "C" int radio_transmit_beacon(void)
+extern "C" int radio_transmit(const uint8_t *data, int len)
 {
-    uint8_t msg[] = {'F', 'S', 'K', '-', 'A'};
-    return radio.transmit(msg, sizeof(msg));
+    return radio.transmit(const_cast<uint8_t *>(data), (size_t)len);
 }
 
 extern "C" int radio_start_rx(void)
@@ -47,15 +46,18 @@ extern "C" int radio_start_rx(void)
     return radio.startReceive();
 }
 
-extern "C" int radio_poll_rx(void)
+extern "C" int radio_receive(uint8_t *buf, int maxlen)
 {
     /* DIO1 is mapped to RxDone (+ error/timeout) by startReceive(); we poll it
      * since attachInterrupt is a stub in this stage. */
     if (gpio_read(PIN_LORA_DIO1) == 0) {
         return 0;
     }
-    uint8_t buf[64];
-    int16_t state = radio.readData(buf, sizeof(buf));
+    size_t len = radio.getPacketLength();
+    if (len > (size_t)maxlen) {
+        len = (size_t)maxlen;
+    }
+    int16_t state = radio.readData(buf, len);
     radio.startReceive(); /* re-arm */
-    return (state == RADIOLIB_ERR_NONE) ? 1 : -1;
+    return (state == RADIOLIB_ERR_NONE) ? (int)len : -1;
 }

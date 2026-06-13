@@ -83,6 +83,7 @@ add_executable(${ELF}
     src/lights.c
     src/sensor.c
     src/capture.c
+    src/protocol.c
     src/radio_hal.cpp
     src/radio.cpp
     src/runtime.cpp

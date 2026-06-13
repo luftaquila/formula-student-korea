@@ -10,15 +10,17 @@ extern "C" {
  * else the (negative) RadioLib error code. */
 int radio_begin(void);
 
-/* Blocking transmit of a fixed bring-up beacon. Returns 0 on success. */
-int radio_transmit_beacon(void);
+#include <stdint.h>
+
+/* Blocking transmit of len bytes. Returns 0 on success. */
+int radio_transmit(const uint8_t *data, int len);
 
 /* Put the radio into continuous receive. Returns 0 on success. */
 int radio_start_rx(void);
 
-/* Non-blocking RX poll: 1 = a clean packet was received (and re-armed),
- * 0 = nothing yet, <0 = receive error. */
-int radio_poll_rx(void);
+/* Non-blocking RX poll: >0 = bytes read into buf (and re-armed), 0 = nothing
+ * yet, <0 = receive error. */
+int radio_receive(uint8_t *buf, int maxlen);
 
 #ifdef __cplusplus
 }
