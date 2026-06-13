@@ -1,16 +1,19 @@
-/* Stage-3c: sensor event timestamping end-to-end (DESIGN.md §2.4-§2.6).
+/* Two-board LoRa timing node.
  *
- * Sensor: receives beacons and tracks the master-time offset (Stage 3b); on a
- * SENSOR falling edge it HW-captures the event tick, maps it to master time
- * (offset + tick), and transmits an EVENT packet (briefly leaving RX, §2.8).
- * Master: beacons once per second, then listens between beacons and prints any
- * EVENT it collects, in master time — the PC-facing output (DESIGN §8).
+ * MASTER = the controller the PC connects to. It speaks the legacy FSK-TC
+ * serial protocol transparently (traffic/device/firmware on main +
+ * traffic/web stores/serial.js): VID/PID 0x1999/0x0514, "$...!" framing, ms
+ * ticks. Commands $G/$R/$X drive the lights and ack $OK; $HELLO -> $HI; LoRa
+ * EVENTs are reported as "$S <sensor> <ms>!". A "$T <sensor> <16MHz tick>!"
+ * companion line carries the full HW-capture precision (ignored by the old PC).
+ * The master also beacons once per second to keep the sensors time-synced.
  *
- * USB CDC:
- *   master: "TX seq=<s>"            and  "EVENT node=<n> seq=<e> t=<masterTick>"
- *   sensor: "RX off=<offset>"       and  "EV seq=<e> t=<masterTick>"
+ * SENSOR = remote node: syncs to the master's beacons, HW-captures a SENSOR
+ * edge, maps it to master time, and transmits an EVENT.  -DSENSOR_SIM fires a
+ * synthetic event for bench testing.
  *
- * Bench test: ground the SENSOR line (P1.11) -> master prints an EVENT.
+ * Master ticks are TIMER1/16000 (ms), shared by the green reference and the
+ * event times so the PC's "sensor - start" math matches the legacy device.
  */
 #include <stdio.h>
 #include <stddef.h>
@@ -21,10 +24,11 @@
 #include "capture.h"
 #include "protocol.h"
 #include "config.h"
+#include "lights.h"
+
+#define TICKS_PER_MS 16000u /* TIMER1 is 16 MHz */
 
 #if defined(ROLE_RX)
-/* Map a captured event tick to master time and send an EVENT, then resume RX.
- * Logs locally over USB. */
 static void sensor_send_event(uint32_t ev_tick, uint32_t off, uint16_t *ev_seq)
 {
     event_t e;
@@ -37,11 +41,6 @@ static void sensor_send_event(uint32_t ev_tick, uint32_t off, uint16_t *ev_seq)
     e.crc = crc16_ccitt((uint8_t *)&e, offsetof(event_t, crc));
     radio_transmit((uint8_t *)&e, sizeof(e));
     radio_start_rx();
-
-    char line[48];
-    snprintf(line, sizeof(line), "EV seq=%u t=%lu\r\n",
-             e.ev_seq, (unsigned long)e.ev_master_t);
-    usb_write(line);
 }
 #endif
 
@@ -52,7 +51,9 @@ int main(void)
     int st = radio_begin();
     if (st == 0) {
         capture_init();
+#if defined(ROLE_RX)
         radio_start_rx();
+#endif
     }
 
     usb_init();
@@ -62,7 +63,7 @@ int main(void)
     uint8_t buf[32];
 
 #if defined(ROLE_RX)
-    /* sensor */
+    /* ---------------- sensor ---------------- */
     uint32_t prev_l_rx = 0, cur_off = 0;
     uint8_t prev_seq = 0;
     int have_prev = 0, have_off = 0;
@@ -87,9 +88,6 @@ int main(void)
                 if (have_prev && prev_seq == (uint8_t)(b->seq - 1u)) {
                     cur_off = b->m_tx_prev + T_AIR_REF_TICKS - prev_l_rx;
                     have_off = 1;
-                    snprintf(line, sizeof(line), "RX seq=%u off=%lu\r\n",
-                             b->seq, (unsigned long)cur_off);
-                    usb_write(line);
                 }
                 prev_l_rx = l_rx; prev_seq = b->seq; have_prev = 1;
             }
@@ -101,8 +99,6 @@ int main(void)
         }
 
 #if defined(SENSOR_SIM)
-        /* Test-only: synthesize a sensor event every 3 s (the physical SENSOR
-         * line isn't wired during bench bring-up). */
         static uint32_t sim_last;
         if (have_off && (uint32_t)(board_millis() - sim_last) >= 3000u) {
             sim_last = board_millis();
@@ -111,18 +107,42 @@ int main(void)
 #endif
     }
 #else
-    /* master */
+    /* ---------------- master / controller ---------------- */
+    lights_init();
     uint8_t seq = 0;
     uint32_t m_tx_last = 0;
+    int in_cmd = 0;
 
     for (;;) {
         usb_task();
 
-        uint32_t now = board_millis();
-        if (st == 0 && (uint32_t)(now - last) >= 1000u) {
-            last = now;
-            board_led_toggle();
+        /* Legacy controller commands from the PC. */
+        int c;
+        while ((c = usb_read_byte()) >= 0) {
+            if (c == '$') { in_cmd = 1; continue; }
+            if (!in_cmd) { continue; }
+            in_cmd = 0;
+            switch (c) {
+            case 'G':
+                lights_set(LIGHTS_GREEN);
+                snprintf(line, sizeof(line), "$OK G %lu!\n",
+                         (unsigned long)(capture_now() / TICKS_PER_MS));
+                usb_write(line);
+                break;
+            case 'R': lights_set(LIGHTS_RED);   usb_write("$OK R!\n"); break;
+            case 'X': lights_set(LIGHTS_OFF);   usb_write("$OK X!\n"); break;
+            case 'H': usb_write("$HI!\n"); break; /* $HELLO */
+            default:  usb_write("$E!\n");  break;
+            }
+        }
 
+        if (st != 0) {
+            continue; /* radio dead: still serve USB so a reflash works */
+        }
+
+        uint32_t now = board_millis();
+        if ((uint32_t)(now - last) >= 1000u) {
+            last = now;
             beacon_t b;
             b.type = PKT_TYPE_BEACON;
             b.set_id = SET_ID_A;
@@ -131,25 +151,10 @@ int main(void)
             b.period_ms = 1000;
             b.crc = crc16_ccitt((uint8_t *)&b, offsetof(beacon_t, crc));
             radio_transmit((uint8_t *)&b, sizeof(b));
-
             uint32_t cap = 0;
-            if (capture_dio1_get(&cap)) {
-                m_tx_last = cap;
-            }
-            radio_start_rx(); /* listen for EVENTs until the next beacon */
-            snprintf(line, sizeof(line), "TX seq=%u\r\n", seq);
-            usb_write(line);
+            if (capture_dio1_get(&cap)) { m_tx_last = cap; }
+            radio_start_rx();
             seq++;
-            continue;
-        }
-
-        if (st != 0) {
-            if ((uint32_t)(now - last) >= 1000u) {
-                last = now;
-                board_led_toggle();
-                snprintf(line, sizeof(line), "TX begin=%d\r\n", st);
-                usb_write(line);
-            }
             continue;
         }
 
@@ -158,8 +163,11 @@ int main(void)
             event_t *e = (event_t *)buf;
             if (e->type == PKT_TYPE_EVENT &&
                 crc16_ccitt(buf, offsetof(event_t, crc)) == e->crc) {
-                snprintf(line, sizeof(line), "EVENT node=%u seq=%u t=%lu\r\n",
-                         e->node_id, e->ev_seq, (unsigned long)e->ev_master_t);
+                snprintf(line, sizeof(line), "$S %u %lu!\n",
+                         e->node_id, (unsigned long)(e->ev_master_t / TICKS_PER_MS));
+                usb_write(line);
+                snprintf(line, sizeof(line), "$T %u %lu!\n",
+                         e->node_id, (unsigned long)e->ev_master_t);
                 usb_write(line);
             }
         }

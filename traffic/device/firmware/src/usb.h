@@ -17,6 +17,9 @@ void usb_task(void);
  * host is attached). */
 void usb_write(const char *s);
 
+/* Read one byte from the CDC port; returns the byte (0-255) or -1 if none. */
+int usb_read_byte(void);
+
 /* Non-zero when a host has opened the CDC port (DTR asserted). */
 int usb_connected(void);
 

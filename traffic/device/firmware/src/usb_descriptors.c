@@ -1,8 +1,10 @@
 /* USB descriptors for a single CDC-ACM device. */
 #include "tusb.h"
 
-#define USB_VID 0x1209 /* pid.codes open VID */
-#define USB_PID 0xF5C0 /* FSK course device (arbitrary, within pid.codes test range) */
+/* Match the legacy STM32 controller (traffic/device/firmware on main) so the PC
+ * traffic app (stores/serial.js filters on this VID/PID) sees us transparently. */
+#define USB_VID 0x1999
+#define USB_PID 0x0514
 
 /* ---- Device descriptor ---- */
 static const tusb_desc_device_t desc_device = {
@@ -51,9 +53,9 @@ const uint8_t *tud_descriptor_configuration_cb(uint8_t index)
 static const char *string_desc_arr[] = {
     (const char[]){0x09, 0x04}, /* 0: English (0x0409) */
     "FSK",                       /* 1: Manufacturer */
-    "FSK Course Device",         /* 2: Product */
+    "FSK-TC",                    /* 2: Product (matches legacy controller) */
     "0001",                      /* 3: Serial */
-    "FSK CDC",                   /* 4: CDC interface */
+    "FSK-TC",                    /* 4: CDC interface */
 };
 
 static uint16_t desc_str[32];

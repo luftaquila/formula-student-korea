@@ -85,6 +85,17 @@ int usb_connected(void)
     return tud_cdc_connected();
 }
 
+int usb_read_byte(void)
+{
+    if (tud_cdc_available()) {
+        uint8_t c;
+        if (tud_cdc_read(&c, 1) == 1) {
+            return c;
+        }
+    }
+    return -1;
+}
+
 /* ---- 1200-baud touch -> enter the Adafruit UF2 bootloader (DFU) ----
  * The host opening the port at 1200 baud and dropping DTR is the standard
  * "reset to bootloader" gesture (adafruit-nrfutil --touch 1200). We stash the
