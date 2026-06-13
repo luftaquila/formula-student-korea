@@ -1,43 +1,40 @@
-/* Stage-2b: two-board LoRa link with USB-CDC serial output.
+/* Stage-3a: hardware timestamp capture on top of the working LoRa link.
  *
- * Build twice: default = TX role, -DROLE_RX = RX role. Flash one board each.
- * Status is emitted on the USB CDC port (/dev/ttyACM*) once per second so it is
- * visible regardless of when the host opens the port:
+ * TIMER1 (16 MHz) latches DIO1's rising edge (Tx/RxDone) via GPIOTE->PPI with
+ * no CPU involvement. Output on the USB CDC port confirms the capture:
  *
- *   TX: "TX begin=<c> tx=<r> n=<count>"   (begin/transmit return codes; 0 = ok)
- *   RX: "RX begin=<c> pkts=<count>"       + "RX <- packet" on each reception
+ *   TX: "TX n=<N> tx=<r> cap=<tick> dt=<ticks>"   dt ≈ 16e6 between beacons (1 s)
+ *   RX: "RX pkts=<M> cap=<tick>"                   per received packet
  *
- * Link confirmed when the RX board's pkts count climbs in step with the TX
- * board's n. The USB stack also gives 1200-baud-touch bootloader entry, so
- * reflashing needs no physical reset.
+ * This is the deterministic timebase the sync protocol (Stage 3b) builds on.
  */
 #include <stdio.h>
 
 #include "board.h"
 #include "radio.h"
 #include "usb.h"
+#include "capture.h"
 
 int main(void)
 {
     board_init();
 
-    /* Bring up the radio BEFORE USB: usb_init() makes the dcd start the HFXO,
-     * and that HFCLK switch was disturbing the SPI during radio.begin()
-     * (-707 SPI_CMD_FAILED). On stable HFINT, begin() succeeds (as in Stage 2a). */
     int st = radio_begin();
 
-#if defined(ROLE_RX)
     if (st == 0) {
+        capture_init();
+#if defined(ROLE_RX)
         radio_start_rx();
-    }
 #endif
+    }
 
     usb_init();
 
     uint32_t pkts = 0;
     uint32_t n = 0;
+    uint32_t prev_cap = 0;
     uint32_t last = board_millis();
-    char line[64];
+    char line[80];
 
     for (;;) {
         usb_task();
@@ -46,7 +43,11 @@ int main(void)
         if (st == 0 && radio_poll_rx() > 0) {
             pkts++;
             board_led_toggle();
-            usb_write("RX <- packet\r\n");
+            uint32_t cap = 0;
+            capture_dio1_get(&cap);
+            snprintf(line, sizeof(line), "RX pkts=%lu cap=%lu\r\n",
+                     (unsigned long)pkts, (unsigned long)cap);
+            usb_write(line);
         }
 #endif
 
@@ -60,11 +61,21 @@ int main(void)
                 board_led_toggle();
             }
 #else
-            int t = (st == 0) ? radio_transmit_beacon() : -999;
-            n++;
             board_led_toggle();
-            snprintf(line, sizeof(line), "TX begin=%d tx=%d n=%lu\r\n", st, t, (unsigned long)n);
-            usb_write(line);
+            if (st == 0) {
+                int t = radio_transmit_beacon();
+                n++;
+                uint32_t cap = 0;
+                capture_dio1_get(&cap);
+                snprintf(line, sizeof(line), "TX n=%lu tx=%d cap=%lu dt=%lu\r\n",
+                         (unsigned long)n, t, (unsigned long)cap,
+                         (unsigned long)(cap - prev_cap));
+                prev_cap = cap;
+                usb_write(line);
+            } else {
+                snprintf(line, sizeof(line), "TX begin=%d\r\n", st);
+                usb_write(line);
+            }
 #endif
         }
     }
