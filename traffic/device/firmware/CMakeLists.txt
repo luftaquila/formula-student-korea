@@ -103,6 +103,12 @@ if(ROLE_RX)
     target_compile_definitions(${ELF} PRIVATE ROLE_RX)
 endif()
 
+# Test-only: sensor synthesizes a periodic event (physical SENSOR line unwired).
+option(SENSOR_SIM "Sensor fires a synthetic event every 3 s (testing only)" OFF)
+if(SENSOR_SIM)
+    target_compile_definitions(${ELF} PRIVATE SENSOR_SIM)
+endif()
+
 target_compile_options(${ELF} PRIVATE
     -Wall -Wextra
     -ffunction-sections -fdata-sections

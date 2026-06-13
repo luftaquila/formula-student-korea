@@ -19,6 +19,10 @@ void capture_init(void);
  * in *tick and return 1; otherwise return 0. */
 int capture_dio1_get(uint32_t *tick);
 
+/* Same for a SENSOR falling edge (NPN open-collector pulls the line low on an
+ * event). Returns 1 + tick if one was latched since the last call. */
+int capture_sensor_get(uint32_t *tick);
+
 /* Current free-running TIMER1 tick (16 MHz). */
 uint32_t capture_now(void);
 
