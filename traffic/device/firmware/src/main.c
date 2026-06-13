@@ -12,8 +12,8 @@
  * edge, maps it to master time, and transmits an EVENT.  -DSENSOR_SIM fires a
  * synthetic event for bench testing.
  *
- * Master ticks are TIMER1/16000 (ms), shared by the green reference and the
- * event times so the PC's "sensor - start" math matches the legacy device.
+ * Timebase is a 64-bit 16 MHz tick; reported ms = tick/16000 truncated to 32
+ * bits (wraps at 49 days like the legacy HAL_GetTick, never mid-run).
  */
 #include <stdio.h>
 #include <stddef.h>
@@ -29,7 +29,7 @@
 #define TICKS_PER_MS 16000u /* TIMER1 is 16 MHz */
 
 #if defined(ROLE_RX)
-static void sensor_send_event(uint32_t ev_tick, uint32_t off, uint16_t *ev_seq)
+static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint16_t *ev_seq)
 {
     event_t e;
     e.type = PKT_TYPE_EVENT;
@@ -58,13 +58,12 @@ int main(void)
 
     usb_init();
 
-    char line[80];
     uint32_t last = board_millis();
     uint8_t buf[32];
 
 #if defined(ROLE_RX)
     /* ---------------- sensor ---------------- */
-    uint32_t prev_l_rx = 0, cur_off = 0;
+    uint64_t prev_l_rx = 0, cur_off = 0;
     uint8_t prev_seq = 0;
     int have_prev = 0, have_off = 0;
     uint16_t ev_seq = 0;
@@ -76,10 +75,11 @@ int main(void)
             if ((uint32_t)(now - last) >= 1000u) { last = now; board_led_toggle(); }
             continue;
         }
+        capture_now64(); /* keep the wrap accounting current */
 
         int n = radio_receive(buf, sizeof(buf));
         if (n >= (int)sizeof(beacon_t)) {
-            uint32_t l_rx = 0;
+            uint64_t l_rx = 0;
             capture_dio1_get(&l_rx);
             beacon_t *b = (beacon_t *)buf;
             if (b->type == PKT_TYPE_BEACON &&
@@ -93,7 +93,7 @@ int main(void)
             }
         }
 
-        uint32_t ev_tick;
+        uint64_t ev_tick;
         if (capture_sensor_get(&ev_tick) && have_off) {
             sensor_send_event(ev_tick, cur_off, &ev_seq);
         }
@@ -102,15 +102,16 @@ int main(void)
         static uint32_t sim_last;
         if (have_off && (uint32_t)(board_millis() - sim_last) >= 3000u) {
             sim_last = board_millis();
-            sensor_send_event(capture_now(), cur_off, &ev_seq);
+            sensor_send_event(capture_now64(), cur_off, &ev_seq);
         }
 #endif
     }
 #else
     /* ---------------- master / controller ---------------- */
+    char line[80];
     lights_init();
     uint8_t seq = 0;
-    uint32_t m_tx_last = 0;
+    uint64_t m_tx_last = 0;
     int in_cmd = 0;
 
     for (;;) {
@@ -126,7 +127,7 @@ int main(void)
             case 'G':
                 lights_set(LIGHTS_GREEN);
                 snprintf(line, sizeof(line), "$OK G %lu!\n",
-                         (unsigned long)(capture_now() / TICKS_PER_MS));
+                         (unsigned long)(uint32_t)(capture_now64() / TICKS_PER_MS));
                 usb_write(line);
                 break;
             case 'R': lights_set(LIGHTS_RED);   usb_write("$OK R!\n"); break;
@@ -139,6 +140,7 @@ int main(void)
         if (st != 0) {
             continue; /* radio dead: still serve USB so a reflash works */
         }
+        capture_now64(); /* keep the wrap accounting current */
 
         uint32_t now = board_millis();
         if ((uint32_t)(now - last) >= 1000u) {
@@ -151,7 +153,7 @@ int main(void)
             b.period_ms = 1000;
             b.crc = crc16_ccitt((uint8_t *)&b, offsetof(beacon_t, crc));
             radio_transmit((uint8_t *)&b, sizeof(b));
-            uint32_t cap = 0;
+            uint64_t cap = 0;
             if (capture_dio1_get(&cap)) { m_tx_last = cap; }
             radio_start_rx();
             seq++;
@@ -164,10 +166,11 @@ int main(void)
             if (e->type == PKT_TYPE_EVENT &&
                 crc16_ccitt(buf, offsetof(event_t, crc)) == e->crc) {
                 snprintf(line, sizeof(line), "$S %u %lu!\n",
-                         e->node_id, (unsigned long)(e->ev_master_t / TICKS_PER_MS));
+                         e->node_id,
+                         (unsigned long)(uint32_t)(e->ev_master_t / TICKS_PER_MS));
                 usb_write(line);
                 snprintf(line, sizeof(line), "$T %u %lu!\n",
-                         e->node_id, (unsigned long)e->ev_master_t);
+                         e->node_id, (unsigned long)(uint32_t)e->ev_master_t);
                 usb_write(line);
             }
         }

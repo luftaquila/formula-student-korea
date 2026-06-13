@@ -49,8 +49,10 @@
 #define LORA_TCXO_V     1.6f    /* Ra-01SH TCXO via DIO3; if begin() fails XOSC, try 1.8/3.0 */
 
 /* Fixed TxDone->RxDone air delay in 16 MHz ticks (DESIGN §2.9 T_air_ref).
- * Placeholder 0 until measured — only shifts the absolute offset, not its
- * stability, so it does not affect the Stage-3b sync verification. */
+ * Bias-only constant: it cancels for sensor-to-sensor splits (both biased
+ * equally) and only shifts green-to-sensor (launch) timing. Measure once on a
+ * scope (master DIO1 TxDone edge -> sensor DIO1 RxDone edge at close range);
+ * 0 is acceptable for split timing. Will move to the per-set ID_SETUP table. */
 #define T_AIR_REF_TICKS 0u
 
 #endif /* CONFIG_H */

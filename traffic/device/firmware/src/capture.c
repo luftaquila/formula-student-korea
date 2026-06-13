@@ -52,28 +52,51 @@ void capture_init(void)
     NRF_PPI->CHENSET = (1UL << CAP_PPI_DIO1) | (1UL << CAP_PPI_SENS);
 }
 
-int capture_dio1_get(uint32_t *tick)
+/* 32->64-bit extension. capture_now64() polls the 32-bit counter and bumps the
+ * high word on wrap; it must be called more often than the ~268 s wrap period. */
+static uint64_t s_base; /* accumulated multiples of 2^32 */
+static uint32_t s_prev; /* last low word observed */
+
+static uint32_t timer1_now32(void)
+{
+    NRF_TIMER1->TASKS_CAPTURE[CAP_CC_NOW] = 1;
+    return NRF_TIMER1->CC[CAP_CC_NOW];
+}
+
+uint64_t capture_now64(void)
+{
+    uint32_t low = timer1_now32();
+    if (low < s_prev) {
+        s_base += (uint64_t)1 << 32;
+    }
+    s_prev = low;
+    return s_base + low;
+}
+
+/* Widen a recently-latched 32-bit capture (< 2^32 ticks ago) to 64 bits. */
+static uint64_t widen(uint32_t cap_low)
+{
+    uint64_t now = capture_now64();
+    uint32_t delta = (uint32_t)now - cap_low; /* ticks since capture (mod 2^32) */
+    return now - delta;
+}
+
+int capture_dio1_get(uint64_t *tick)
 {
     if (NRF_GPIOTE->EVENTS_IN[CAP_GPIOTE_DIO1] == 0) {
         return 0;
     }
     NRF_GPIOTE->EVENTS_IN[CAP_GPIOTE_DIO1] = 0;
-    *tick = NRF_TIMER1->CC[CAP_CC_DIO1];
+    *tick = widen(NRF_TIMER1->CC[CAP_CC_DIO1]);
     return 1;
 }
 
-int capture_sensor_get(uint32_t *tick)
+int capture_sensor_get(uint64_t *tick)
 {
     if (NRF_GPIOTE->EVENTS_IN[CAP_GPIOTE_SENS] == 0) {
         return 0;
     }
     NRF_GPIOTE->EVENTS_IN[CAP_GPIOTE_SENS] = 0;
-    *tick = NRF_TIMER1->CC[CAP_CC_SENS];
+    *tick = widen(NRF_TIMER1->CC[CAP_CC_SENS]);
     return 1;
-}
-
-uint32_t capture_now(void)
-{
-    NRF_TIMER1->TASKS_CAPTURE[CAP_CC_NOW] = 1;
-    return NRF_TIMER1->CC[CAP_CC_NOW];
 }
