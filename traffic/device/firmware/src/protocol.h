@@ -10,6 +10,7 @@
 
 #define PKT_TYPE_BEACON 0x01u
 #define PKT_TYPE_EVENT  0x02u
+#define PKT_TYPE_ACK    0x03u
 
 #define SET_ID_A    0u
 #define NODE_MASTER 0u
@@ -36,6 +37,16 @@ typedef struct __attribute__((packed)) {
     uint8_t  flags;
     uint16_t crc;
 } event_t;
+
+/* Master -> sensor: acknowledges a received EVENT so the sensor stops
+ * retransmitting (DESIGN §2.8 reliable event delivery). */
+typedef struct __attribute__((packed)) {
+    uint8_t  type;     /* PKT_TYPE_ACK */
+    uint8_t  set_id;
+    uint8_t  node_id;  /* sensor being acked */
+    uint16_t ev_seq;   /* event being acked */
+    uint16_t crc;
+} ack_t;
 
 /* CRC16-CCITT (poly 0x1021, init 0xFFFF). */
 uint16_t crc16_ccitt(const uint8_t *data, uint32_t len);

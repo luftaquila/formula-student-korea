@@ -37,6 +37,10 @@ static void debug_id(const char *role)
 }
 #endif
 
+/* Send an EVENT reliably: listen-before-talk, then transmit and wait for the
+ * master's ACK; retransmit (same ev_seq, so the master dedups) up to 4 times.
+ * DESIGN §2.8 — the event time is preserved across retransmits, so a recovered
+ * event is still accurate. */
 static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint8_t me, uint16_t *ev_seq)
 {
     event_t e;
@@ -47,8 +51,30 @@ static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint8_t me, uint16
     e.ev_master_t = off + ev_tick;
     e.flags = 0;
     e.crc = crc16_ccitt((uint8_t *)&e, offsetof(event_t, crc));
-    radio_transmit((uint8_t *)&e, sizeof(e));
-    radio_start_rx();
+    uint16_t this_seq = e.ev_seq;
+
+    for (int attempt = 0; attempt < 4; attempt++) {
+        if (attempt > 0 || radio_channel_busy()) {
+            board_delay_ms(5u + (this_seq & 7u)); /* backoff, jittered per event */
+        }
+        radio_transmit((uint8_t *)&e, sizeof(e));
+        radio_start_rx();
+
+        uint32_t t0 = board_millis();
+        while ((uint32_t)(board_millis() - t0) < 60u) {
+            uint8_t b[16];
+            int n = radio_receive(b, sizeof(b));
+            if (n >= (int)sizeof(ack_t)) {
+                ack_t *a = (ack_t *)b;
+                if (a->type == PKT_TYPE_ACK && a->node_id == me &&
+                    a->ev_seq == this_seq &&
+                    crc16_ccitt(b, offsetof(ack_t, crc)) == a->crc) {
+                    return; /* acked */
+                }
+            }
+        }
+    }
+    radio_start_rx(); /* gave up after retries */
 }
 
 static void run_sensor(int st)
@@ -113,6 +139,8 @@ static void run_master(int st)
     int in_cmd = 0;
     uint32_t last = board_millis();
     uint8_t buf[32];
+    uint16_t last_seq[3] = {0, 0, 0}; /* per-node dedup (node 0..2) */
+    int have_seq[3] = {0, 0, 0};
 
     for (;;) {
         usb_task();
@@ -164,13 +192,28 @@ static void run_master(int st)
             event_t *e = (event_t *)buf;
             if (e->type == PKT_TYPE_EVENT &&
                 crc16_ccitt(buf, offsetof(event_t, crc)) == e->crc) {
-                snprintf(line, sizeof(line), "$S %u %lu!\n",
-                         e->node_id,
-                         (unsigned long)(uint32_t)(e->ev_master_t / TICKS_PER_MS));
-                usb_write(line);
-                snprintf(line, sizeof(line), "$T %u %lu!\n",
-                         e->node_id, (unsigned long)(uint32_t)e->ev_master_t);
-                usb_write(line);
+                uint8_t nd = (e->node_id <= 2) ? e->node_id : 0;
+                /* Report only the first copy; retransmits share the ev_seq. */
+                if (!(have_seq[nd] && last_seq[nd] == e->ev_seq)) {
+                    have_seq[nd] = 1;
+                    last_seq[nd] = e->ev_seq;
+                    snprintf(line, sizeof(line), "$S %u %lu!\n",
+                             e->node_id,
+                             (unsigned long)(uint32_t)(e->ev_master_t / TICKS_PER_MS));
+                    usb_write(line);
+                    snprintf(line, sizeof(line), "$T %u %lu!\n",
+                             e->node_id, (unsigned long)(uint32_t)e->ev_master_t);
+                    usb_write(line);
+                }
+                /* ACK every copy so the sensor stops retransmitting. */
+                ack_t a;
+                a.type = PKT_TYPE_ACK;
+                a.set_id = e->set_id;
+                a.node_id = e->node_id;
+                a.ev_seq = e->ev_seq;
+                a.crc = crc16_ccitt((uint8_t *)&a, offsetof(ack_t, crc));
+                radio_transmit((uint8_t *)&a, sizeof(a));
+                radio_start_rx();
             }
         }
     }

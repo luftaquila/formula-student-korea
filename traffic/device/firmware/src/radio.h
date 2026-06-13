@@ -22,6 +22,10 @@ int radio_start_rx(void);
  * yet, <0 = receive error. */
 int radio_receive(uint8_t *buf, int maxlen);
 
+/* Channel Activity Detection: non-zero if LoRa activity is present (listen
+ * before talk, DESIGN §2.8). */
+int radio_channel_busy(void);
+
 #ifdef __cplusplus
 }
 #endif

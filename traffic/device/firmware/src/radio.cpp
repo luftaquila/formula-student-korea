@@ -46,6 +46,11 @@ extern "C" int radio_start_rx(void)
     return radio.startReceive();
 }
 
+extern "C" int radio_channel_busy(void)
+{
+    return radio.scanChannel() == RADIOLIB_LORA_DETECTED;
+}
+
 extern "C" int radio_receive(uint8_t *buf, int maxlen)
 {
     /* DIO1 is mapped to RxDone (+ error/timeout) by startReceive(); we poll it
