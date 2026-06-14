@@ -480,7 +480,10 @@ async function handleAddRecord() {
   <div class="page-layout">
     <!-- 경기 모드 활성화/비활성화 -->
     <section class="event-mode-card">
-      <div class="card-header"><h3>경기 모드 활성화</h3></div>
+      <div class="card-header record-header-row">
+        <h3>경기 모드 활성화</h3>
+        <router-link to="/wireless" class="wireless-switch" data-testid="wireless-switch">📡 무선 계측</router-link>
+      </div>
       <div class="event-mode-body">
         <button
           v-for="(enabled, type) in eventModes"
@@ -782,6 +785,30 @@ async function handleAddRecord() {
 .event-mode-card .card-header {
   padding: 1rem 1.5rem;
   border-bottom: 1px solid var(--border-color);
+}
+
+.record-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.wireless-switch {
+  text-decoration: none;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0.4rem 0.85rem;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.wireless-switch:hover {
+  background: var(--bg-hover);
 }
 
 .event-mode-card .card-header h3 {

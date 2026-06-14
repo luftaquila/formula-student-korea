@@ -22,6 +22,12 @@ int radio_start_rx(void);
  * yet, <0 = receive error. */
 int radio_receive(uint8_t *buf, int maxlen);
 
+/* Same as radio_receive, but also returns the last packet's link quality
+ * (RSSI dBm, SNR dB) sampled before the radio is re-armed. Used by the master
+ * for per-sensor diagnostics. The rssi/snr outputs are only meaningful when the
+ * return value is > 0. */
+int radio_receive_q(uint8_t *buf, int maxlen, float *rssi, float *snr);
+
 /* Channel Activity Detection: non-zero if LoRa activity is present (listen
  * before talk, DESIGN §2.8). */
 int radio_channel_busy(void);

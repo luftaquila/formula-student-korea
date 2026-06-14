@@ -3,8 +3,8 @@
 KR920 LoRa 기반 시간동기 이벤트 측정 + 신호등 제어 시스템. **MCU = SuperMini nRF52840** (nice!nano 핀호환).
 **하나의 PCB를 전부 실장**하고, **펌웨어로 역할만 전환**한다:
 
-- **마스터 역할** — USB로 PC 연결, LoRa 비콘 송신 + 이벤트 수집, **신호등(SSR) 제어**, USB 시리얼 출력.
-- **센서 역할** — 센서 1개 연결, 배터리 구동, 이벤트 HW 타임스탬프 → 마스터 시각 변환 → LoRa 송신.
+- **마스터 역할** — USB로 PC 연결, LoRa 비콘 송신 + 모든 센서의 이벤트·진단 수집, **신호등(SSR) 제어**, USB 시리얼 출력.
+- **센서 역할** — 센서 1개 연결, 배터리 구동, 이벤트 HW 타임스탬프 → 마스터 시각 변환 → LoRa 송신 + 주기적 동기 진단 보고.
 
 > 보드는 **항상 18650 장착**. 마스터는 USB가 충전+PC데이터, 센서는 배터리 구동.
 
@@ -12,16 +12,16 @@ KR920 LoRa 기반 시간동기 이벤트 측정 + 신호등 제어 시스템. **
 
 ## 1. 시스템 개요 & 토폴로지
 
-- **세트 = 마스터 1 + 센서 2.** 동시 **2~3 세트** 독립 운용.
-- 각 세트 = 전용 주파수 채널 + 자기 타임베이스(그 세트 마스터). 세트 간 RF·시각 **독립**(그랜드마스터 없음).
-- 센서가 이벤트 HW 타임스탬프 → 마스터 시각 변환 → 송신. 마스터가 수집 → USB 시리얼로 PC(set_id 태그) + 신호등 제어.
+- **마스터 1개 + 센서 최대 6개.** 전부 **하나의 채널**에서 **하나의 타임베이스**(마스터 TIMER1)를 공유.
+- 센서가 이벤트 HW 타임스탬프 → 마스터 시각 변환 → 송신. 마스터가 모든 센서를 수집 → USB 시리얼로 PC(node_id 태그) + 신호등 제어.
+- **여러 경기(세트)를 동시에 운용**하더라도 무선은 마스터 1개·채널 1개로 통합한다. 어느 센서가 어느 경기의 어느 역할(출발/도착/레인)인지의 **매핑은 서버/PC 측에서 설정**하고, 펌웨어는 node_id만 다룬다. 신호등은 마스터의 단일 SSR 출력이며 한 번에 한 경기가 점유한다.
 
 ```
-세트 A (921.3MHz)      세트 B (922.1MHz)      세트 C (922.9MHz)
- 마스터A ─USB┐          마스터B ─USB┐          마스터C ─USB┐
-  센서A1     │           센서B1     │           센서C1     │ → PC
-  센서A2     ┘           센서B2     ┘           센서C2     ┘
- (독립 채널·독립 타임베이스)        마스터는 SSR로 신호등도 제어
+                 마스터 ─USB→ PC (모든 node 수집, 신호등 SSR 제어)
+                   │  단일 채널 921.3MHz, 단일 타임베이스
+   ┌────────┬──────┼──────┬────────┬────────┐
+ 센서1    센서2   센서3   센서4   센서5   센서6
+ (각자 고유 node_id, 마스터 비콘에 동기, 이벤트/진단 업링크)
 ```
 
 ### 설계 근거 (요약)
@@ -42,16 +42,10 @@ KR920 LoRa 기반 시간동기 이벤트 측정 + 신호등 제어 시스템. **
 KR920, **SF7 / BW250** (심볼 512µs), 고정 길이 패킷. 출력 **EIRP ≤ +14dBm** (안테나 ~2dBi → conducted ~+12dBm).
 
 ### 2.2 채널 계획
-| 세트 | set_id | 주파수(BW250) | sync word |
-|---|---|---|---|
-| A | 0 | 921.3 MHz | 0x12 |
-| B | 1 | 922.1 MHz | 0x12 |
-| C | 2 | 922.9 MHz | 0x12 |
-
-~800kHz 간격 → 겹침 0. 센서는 자기 채널만 청취.
+**단일 채널 921.3 MHz / BW250 / sync word 0x12.** 모든 노드(마스터 + 센서 전부)가 이 채널을 공유한다. SX1262는 한 번에 한 채널만 듣고 송신하므로(동시 다채널 불가) 채널 분리 대신 §2.8의 MAC(비콘 앵커 + node별 TDMA STATUS + 이벤트 CSMA)으로 충돌을 처리한다.
 
 ### 2.3 주소
-**set_id**(0~2) + **node_id**(마스터=0, 센서=1·2). **node_id로 역할 결정**(0=마스터, 1·2=센서).
+**node_id가 유일한 식별자**: 마스터=0, 센서=1..6. set_id는 폐기(패킷에 없음). 센서→경기·역할 매핑은 서버/PC 설정값이며 펌웨어는 관여하지 않는다. 노드별 배열은 `MAX_NODES(=7)`로 잡고 node_id로 직접 인덱싱(`1 ≤ id < MAX_NODES`), 미등록 보드는 node_id `0xFF`로 두어 마스터가 무시한다.
 
 ### 2.4 타임베이스
 각자 자유진행 TIMER(16MHz, 62.5ns), 32→64bit 소프트 확장. 노드는 로컬 tick→마스터 시각 매핑:
@@ -69,22 +63,39 @@ master_time = offset + (local−L_ref)*(1+skew) + L_ref       (skew 보정 시)
 
 공통 기준점 TxDone↔RxDone(둘 다 패킷 끝) → T_air_ref 작고 결정론적, 1회 캘리브레이션.
 
-### 2.6 패킷 (리틀엔디언, 고정 길이)
+### 2.6 패킷 (리틀엔디언, 고정 길이; set_id 없음)
 ```
-BEACON  : type=0x01, set_id, seq, m_tx_prev(8), period, CRC16
-EVENT   : type=0x02, set_id, node_id, ev_seq(2), ev_master_t(8), flags, CRC16
-ID_SETUP: type=0x10(req)/0x11(cfg), set_id, node_id, channel, sf/bw, period, T_air_ref(8), sync, CRC16
+BEACON : type=0x01, ver, seq, m_tx_prev(8), period_ms(2), slot_us(2), CRC16
+EVENT  : type=0x02, node_id, ev_seq(2), ev_master_t(8), flags, CRC16
+ACK    : type=0x03, node_id, ev_seq(2), CRC16
+STATUS : type=0x04, node_id, seq, offset_tick(i64), skew_ppm(i32), rx_miss(2), beacon_gap(2), batt_mv(2), CRC16
 ```
-EVENT의 ev_master_t = 노드가 미리 변환한 마스터 시각.
+- EVENT의 ev_master_t = 노드가 미리 변환한 마스터 시각.
+- BEACON의 slot_us = STATUS TDMA 슬롯 폭(센서 스케줄링용, §2.8). ver = 프로토콜 버전.
+- STATUS = 센서가 자기 TDMA 슬롯에서 보내는 주기 진단(§2.10).
+- 프로비저닝은 보드의 FICR.DEVICEID 정적 테이블(node_id.c)로 한다 — 과거의 over-air ID_SETUP 패킷은 폐기.
 
 ### 2.7 재동기 주기
 표준 크리스털(~40ppm), 예산 1ms → **15~25s**. 비콘 주기 = 노드 sync 주기, beacon period 필드로 통지.
 
-### 2.8 충돌 처리
-세트 간: 채널 분리. 세트 내: 노드 **TX 전 CAD**. 이벤트 중요 시 **마스터 ACK + 노드 재전송**(시각 보존돼 정확). 우선순위: 이벤트 TX > sync RX.
+### 2.8 충돌 처리 — 단일 채널 계층형 접근
+SF7/BW250 패킷은 ≤ ~30ms airtime. 세 종류 트래픽을 계층으로 분리해 서로 부딪치지 않게 한다:
+
+1. **비콘 = 동기 앵커.** 마스터가 매 1s 프레임의 t=0에 송신. 각 센서의 비콘 RxDone이 그 프레임의 슬롯-0 기준.
+2. **STATUS = node별 TDMA(센서가 시각 동기돼 있으므로 충돌 0).** 센서는 자기 비콘 RxDone(`prev_l_rx`)에서
+   `slot_off_ms = TDMA_BASE_MS + (node_id−1)·SLOT_WIDTH_MS + STATUS_GUARD_MS` 만큼 뒤에 STATUS 송신.
+   기본값 `TDMA_BASE_MS=60, SLOT_WIDTH_MS=50, STATUS_GUARD_MS=10`(config.h). 50ms 슬롯이 ~30ms airtime +
+   1s당 클럭오차(<40µs) + Rx/Tx 전환을 모두 흡수. `STATUS_PERIOD_S(=4)` 프레임마다 한 번씩 라운드로빈으로 부하 분산.
+3. **EVENT = 비동기 CSMA.** 이벤트는 예측 불가하므로 즉시 송신: **CAD(listen-before-talk) + 마스터 ACK + 재전송(≤4)**.
+   백오프는 node로 디코릴레이트 `30 + ((ev_seq·7 + node·11) & 63) ms` → 두 센서가 동시에 쏴도 분리·복구. ev_master_t는 재전송에도 보존돼 복구된 이벤트도 정확.
 
 ### 2.9 캘리브레이션 (T_air_ref)
-고정 길이 → airtime 결정론. T_air_ref = TxDone↔RxDone 고정지연. 근거리 1회 측정 후 ID_SETUP에 저장.
+고정 길이 → airtime 결정론. T_air_ref = TxDone↔RxDone 고정지연. 근거리 1회 측정 후 config.h `T_AIR_REF_TICKS`에 저장(현재 0 — 분할 타이밍엔 영향 없음, §2.5).
+
+### 2.10 진단 (diagnostics)
+센서·링크 상태를 마스터가 USB로 PC에 보고(§8 `D` 라인). 두 출처를 합친다:
+- **센서 측(STATUS에 실어 업링크):** 현재 offset(`offset_tick`), 드리프트 `skew_ppm`(최근 ~8비콘 offset 링에서 산출), 누락 비콘 `rx_miss`/현재 연속 누락 `beacon_gap`.
+- **마스터 측(수신 시 측정):** 패킷별 RSSI/SNR(`radio_receive_q` — readData 직후·재무장 전 `getRSSI(true)`/`getSNR()`), node별 last-seen(board_millis 기준 OK ≤8s / STALE ≤15s / LOST), 무선 지연 `lat_ms = (now − ev_master_t)/16MHz`.
 
 ---
 
@@ -250,20 +261,24 @@ LCSC#·분류 = JLCPCB API(`preferredComponentFlag`). Basic·Preferred = 셋업 
 
 ## 8. 펌웨어
 
-RadioLib 기반. node_id로 역할 분기(0=마스터, 1·2=센서). 구현은 §2 프로토콜 + 아래 사양대로 (실제 코드는 펌웨어 프로젝트에 — 이 문서엔 사양만).
+RadioLib(커스텀 HAL) 기반. node_id로 역할 분기(0=마스터, 1..6=센서). 구현은 §2 프로토콜 + 아래 사양대로 (실제 코드는 펌웨어 프로젝트에 — 이 문서엔 사양만).
 
 - **타임스탬프 캡처**: TIMER1 자유진행 16MHz = 공통 타임베이스. DIO1·SENSOR 엣지 → GPIOTE→PPI→TIMER CAPTURE (CPU 무관 HW 래치, 손실0). GPIOTE PSEL 설정 시 **해당 핀의 PORT 비트 포함**(P1 핀이면 bit13). port0/1 간 정확도 차이 없음.
 - **라디오/SPI**: 할당 핀으로 커스텀 SPIClass. **`setRfSwitchPins(RXEN,TXEN)` 필수**. `begin(…, tcxoVoltage)`(내부 TCXO). 부팅 시 **EXT_POWER(P0.13) HIGH**.
-- **센서 역할**: 이벤트 캡처 → 마스터 시각 변환 → EVENT 송신.
-- **마스터 역할**: 비콘 송신(TxDone 캡처) + EVENT 수집 → USB CDC `SET=%c node=%u seq=%u t=%llu`. **신호등**: `$G`→녹, `$R`→적, `$X`→off. 상태 = 온보드 LED(P0.15).
+- **센서 역할**: 비콘 동기 → 이벤트 캡처 → 마스터 시각 변환 → EVENT 송신(CAD+ACK+재전송) + 자기 TDMA 슬롯에서 STATUS 주기 송신.
+- **USB 프로토콜 (FSK-WL, 줄단위 텍스트, 레거시 `$...!` 폐기)**:
+  - VID `0x1999` / **PID `0x0515`** / product **"FSK-WL"**. 호스트는 연결 후 `?ID`를 보내고 `I FSK-WL …` 응답으로 장치를 확인(PID와 무관한 핸드셰이크). 레거시 유선 앱(PID 0x0514)과 상호 비매칭.
+  - 마스터→PC: `I FSK-WL <fw> <devid16> <chan> <sf> <bw> <ticks_per_ms>` · `H <now_tick> <uptime_ms> <beacon_seq> <nseen>` · `E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr>` · `D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms>` · `L <RED|GREEN|OFF> <tick>` · `A <cmd> OK` · `X <reason>`.
+  - PC→마스터: `G`(녹+green tick 캡처) · `R`(적) · `O`(off) · `?ID` · `?STATUS` · `PING`.
+  - 64-bit tick은 십진수 그대로(절단 없음). 상태 = 온보드 LED(P0.15).
 - NFC핀(P0.09/0.10)을 GPIO로 쓰면 **NFC 비활성화(UICR)** 필요.
 
 ---
 
-## 9. 멀티세트 운용
-- 세트별 전용 채널(§2.2) + 자기 타임베이스. ID_SETUP으로 set_id·node_id·channel 배정.
-- PC: 마스터당 USB 1개씩 수집, set_id 태그로 정렬.
-- 세트 내 센서1 vs 센서2 = 같은 마스터 tick이라 정밀. 세트 간 비교 안 함.
+## 9. 운용 (단일 마스터 / 멀티 경기)
+- 마스터 1개·채널 1개·타임베이스 1개. 모든 센서가 같은 마스터 tick으로 보고되므로 어떤 센서쌍의 분할도 정밀.
+- 마스터에 USB로 연결된 PC 1대가 **브리지 겸 콘솔**: 모든 node의 이벤트·진단을 수집해 서버로 push, 신호등을 제어. 다른 클라이언트는 서버(인터넷)에서 데이터를 받아 운용.
+- 여러 경기를 동시에 돌리되 어느 node가 어느 경기·역할인지는 **서버 측 매핑 설정**으로 정하고, 신호등은 한 번에 한 경기가 점유한다(서버 잠금). 프로비저닝(node_id 배정)은 보드 DEVICEID 테이블(node_id.c)로.
 
 ---
 

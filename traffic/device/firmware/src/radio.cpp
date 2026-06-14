@@ -66,3 +66,20 @@ extern "C" int radio_receive(uint8_t *buf, int maxlen)
     radio.startReceive(); /* re-arm */
     return (state == RADIOLIB_ERR_NONE) ? (int)len : -1;
 }
+
+extern "C" int radio_receive_q(uint8_t *buf, int maxlen, float *rssi, float *snr)
+{
+    if (gpio_read(PIN_LORA_DIO1) == 0) {
+        return 0;
+    }
+    size_t len = radio.getPacketLength();
+    if (len > (size_t)maxlen) {
+        len = (size_t)maxlen;
+    }
+    int16_t state = radio.readData(buf, len);
+    /* Sample link quality of the just-read packet BEFORE re-arming. */
+    if (rssi) { *rssi = radio.getRSSI(true); }
+    if (snr)  { *snr = radio.getSNR(); }
+    radio.startReceive(); /* re-arm */
+    return (state == RADIOLIB_ERR_NONE) ? (int)len : -1;
+}

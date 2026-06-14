@@ -1,10 +1,12 @@
 /* USB descriptors for a single CDC-ACM device. */
 #include "tusb.h"
 
-/* Match the legacy STM32 controller (traffic/device/firmware on main) so the PC
- * traffic app (stores/serial.js filters on this VID/PID) sees us transparently. */
+/* Wireless LoRa controller. Keep the FSK VID, but a NEW PID + product string so
+ * the legacy wired app (stores/serial.js, PID 0x0514) and the new wireless app
+ * never cross-match. Device identity is confirmed by the "I FSK-WL ..." reply to
+ * the "?ID" handshake, independent of the descriptor. */
 #define USB_VID 0x1999
-#define USB_PID 0x0514
+#define USB_PID 0x0515
 
 /* ---- Device descriptor ---- */
 static const tusb_desc_device_t desc_device = {
@@ -53,9 +55,9 @@ const uint8_t *tud_descriptor_configuration_cb(uint8_t index)
 static const char *string_desc_arr[] = {
     (const char[]){0x09, 0x04}, /* 0: English (0x0409) */
     "FSK",                       /* 1: Manufacturer */
-    "FSK-TC",                    /* 2: Product (matches legacy controller) */
+    "FSK-WL",                    /* 2: Product (wireless LoRa controller) */
     "0001",                      /* 3: Serial */
-    "FSK-TC",                    /* 4: CDC interface */
+    "FSK-WL",                    /* 4: CDC interface */
 };
 
 static uint16_t desc_str[32];

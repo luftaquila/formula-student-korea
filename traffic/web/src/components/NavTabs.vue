@@ -2,13 +2,15 @@
 import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { useSerialStore } from "../stores/serial";
+import { useWirelessStore } from "../stores/wireless";
 import { useSSE } from "../composables/useSSE";
 
 const route = useRoute();
 const serial = useSerialStore();
+const wireless = useWirelessStore();
 const { eventModes } = useSSE();
 
-const allNavItems = [
+const wiredNavItems = [
   { id: "record", label: "📋 기록", path: "/record" },
   { id: "accel", label: "🏎️ 가속", path: "/accel", eventType: "가속" },
   { id: "skidpad", label: "⏱️ 스키드패드", path: "/skidpad", eventType: "스키드패드" },
@@ -17,9 +19,28 @@ const allNavItems = [
   { id: "scoreboard", label: "📺 전광판", path: "/scoreboard" },
 ];
 
-const navItems = computed(() =>
-  allNavItems.filter((item) => !item.eventType || eventModes.value[item.eventType] !== false),
+const wirelessNavItems = [
+  { id: "wl-home", label: "📡 무선 설정", path: "/wireless" },
+  { id: "wl-accel", label: "🏎️ 가속", path: "/wireless/accel", eventType: "가속" },
+  { id: "wl-skidpad", label: "⏱️ 스키드패드", path: "/wireless/skidpad", eventType: "스키드패드" },
+  { id: "wl-autocross", label: "🚧 오토크로스", path: "/wireless/autocross", eventType: "오토크로스" },
+  { id: "wl-gymkhana", label: "🏁 짐카나", path: "/wireless/gymkhana", eventType: "짐카나" },
+  { id: "record", label: "📋 기록", path: "/record" },
+];
+
+const isWireless = computed(() => route.path.startsWith("/wireless"));
+
+// 무선 모드: 브리지에서 점유 중인 경기의 신호등이 green이면 탭 전환 잠금
+const locked = computed(() =>
+  isWireless.value
+    ? wireless.bridgeIsSelf && wireless.ownerKey && wireless.lightColorFor(wireless.ownerKey) === "green"
+    : serial.green.active,
 );
+
+const navItems = computed(() => {
+  const base = isWireless.value ? wirelessNavItems : wiredNavItems;
+  return base.filter((item) => !item.eventType || eventModes.value[item.eventType] !== false);
+});
 </script>
 
 <template>
@@ -27,9 +48,9 @@ const navItems = computed(() =>
     <router-link
       v-for="item in navItems"
       :key="item.id"
-      :to="serial.green.active ? route.path : item.path"
+      :to="locked ? route.path : item.path"
       class="nav-tab"
-      :class="{ active: route.path === item.path, disabled: serial.green.active }"
+      :class="{ active: route.path === item.path, disabled: locked }"
     >
       {{ item.label }}
     </router-link>

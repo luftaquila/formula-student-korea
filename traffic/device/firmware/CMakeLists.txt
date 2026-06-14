@@ -84,6 +84,7 @@ add_executable(${ELF}
     src/sensor.c
     src/capture.c
     src/protocol.c
+    src/proto_usb.c
     src/node_id.c
     src/radio_hal.cpp
     src/radio.cpp

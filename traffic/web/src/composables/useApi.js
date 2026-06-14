@@ -61,3 +61,63 @@ export async function toggleEventMode(eventType) {
   });
   return res.json();
 }
+
+/* ── 무선 LoRa 계측 ───────────────────────────────────────────────── */
+
+export async function fetchWirelessState() {
+  const res = await request("/api/wireless/state");
+  return res.json();
+}
+
+export async function fetchWirelessMapping() {
+  const res = await request("/api/wireless/mapping");
+  return res.json();
+}
+
+export async function putWirelessMapping(nodeId, body) {
+  const res = await request(`/api/wireless/mapping/${encodeURIComponent(nodeId)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+export async function deleteWirelessMapping(nodeId) {
+  await request(`/api/wireless/mapping/${encodeURIComponent(nodeId)}`, { method: "DELETE" });
+}
+
+export async function ingestWireless(batch) {
+  await request("/api/wireless/ingest", {
+    method: "POST",
+    body: JSON.stringify(batch),
+  });
+}
+
+export async function reportLight(state) {
+  const res = await request("/api/wireless/light", {
+    method: "POST",
+    body: JSON.stringify(state),
+  });
+  return res.json();
+}
+
+export async function claimLight(eventType) {
+  const res = await request("/api/wireless/light/claim", {
+    method: "POST",
+    body: JSON.stringify({ event_type: eventType }),
+  });
+  return res.json();
+}
+
+export async function releaseLight(eventType, force = false) {
+  const res = await request("/api/wireless/light/release", {
+    method: "POST",
+    body: JSON.stringify({ event_type: eventType, force }),
+  });
+  return res.json();
+}
+
+export async function fetchWirelessEvents(since = 0, limit = 200) {
+  const res = await request(`/api/wireless/events?since=${since}&limit=${limit}`);
+  return res.json();
+}

@@ -1,4 +1,4 @@
-/* Board pin map — verbatim from traffic/device/DESIGN.md §4 (정본).
+/* Board pin map — verbatim from traffic/DESIGN.md §4 (정본).
  *
  * SuperMini nRF52840 GPIO numbering: P0.n == n, P1.n == 32 + n.
  * PIN(port, n) matches Nordic's NRF_GPIO_PIN_MAP(port, n).
@@ -38,8 +38,10 @@
 /* VCC enable gate — must be driven HIGH at boot (DESIGN.md §8) */
 #define PIN_EXT_POWER  PIN(0, 13)
 
-/* LoRa radio parameters — DESIGN.md §2.1/§2.2 (KR920, set A). Bring-up tunables. */
-#define LORA_FREQ_MHZ   921.3f  /* set A; B=922.1, C=922.9 */
+/* LoRa radio parameters — DESIGN.md §2.1/§2.2 (KR920). One master + up to 6
+ * sensors share this ONE channel; collisions are handled in the MAC, not by
+ * channel separation. Bring-up tunables. */
+#define LORA_FREQ_MHZ   921.3f
 #define LORA_BW_KHZ     250.0f  /* SF7/BW250, symbol 512us */
 #define LORA_SF         7
 #define LORA_CR         5       /* coding rate 4/5 */
@@ -54,5 +56,16 @@
  * scope (master DIO1 TxDone edge -> sensor DIO1 RxDone edge at close range);
  * 0 is acceptable for split timing. Will move to the per-set ID_SETUP table. */
 #define T_AIR_REF_TICKS 0u
+
+/* Channel-access timing on the one shared channel (DESIGN §2.8). The beacon at
+ * the top of each 1 s frame is the sync anchor; each sensor sends its periodic
+ * STATUS in a node-keyed TDMA slot measured from its beacon RxDone, so STATUS
+ * uplinks never collide. Asynchronous EVENTs use CAD + ACK + backoff in the rest
+ * of the frame. An SF7/BW250 packet is <= ~30 ms on air; a 50 ms slot clears it
+ * with margin for clock error (<40 us/s) and Rx/Tx turnaround. */
+#define SLOT_WIDTH_MS   50u  /* per-node STATUS slot width */
+#define STATUS_GUARD_MS 10u  /* sensor waits this long into its slot before TX */
+#define TDMA_BASE_MS    60u  /* first slot starts here (beacon airtime drains) */
+#define STATUS_PERIOD_S 4u   /* a node sends STATUS once per this many beacons */
 
 #endif /* CONFIG_H */
