@@ -15,9 +15,17 @@ import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
 import { useEntryStore } from "../stores/entry";
 import { msToClockStr } from "../stores/serial";
+import { useRoute } from "vue-router";
 
 
 const { notyf } = useNotification();
+const route = useRoute();
+// 같은 RecordView를 유선(/record)·무선(/wireless/record) 양쪽에서 쓰고, 토글 버튼만 방향을 바꾼다.
+const measureToggle = computed(() =>
+  route.path.startsWith("/wireless")
+    ? { to: "/record", label: "🔌 유선 계측" }
+    : { to: "/wireless/record", label: "📡 무선 계측" },
+);
 const { recordFiles, selectedFile, lastUpdate, eventModes, recordVisibility } = useSSE();
 const entryStore = useEntryStore();
 
@@ -482,7 +490,7 @@ async function handleAddRecord() {
     <section class="event-mode-card">
       <div class="card-header record-header-row">
         <h3>경기 모드 활성화</h3>
-        <router-link to="/wireless" class="wireless-switch" data-testid="wireless-switch">📡 무선 계측</router-link>
+        <router-link :to="measureToggle.to" class="wireless-switch" data-testid="wireless-switch">{{ measureToggle.label }}</router-link>
       </div>
       <div class="event-mode-body">
         <button

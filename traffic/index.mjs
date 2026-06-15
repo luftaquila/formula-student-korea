@@ -179,7 +179,7 @@ function getMapping() {
 function getLiveTelemetry() {
   const out = [];
   for (const [node_id, t] of liveTelemetry) {
-    out.push({ node_id, rssi: t.rssi, snr: t.snr, offset_us: t.offset_us, skew_ppm: t.skew_ppm, latency_ms: t.latency_ms, link_state: t.link_state, last_seen: t.last_seen });
+    out.push({ node_id, rssi: t.rssi, snr: t.snr, offset_us: t.offset_us, skew_ppm: t.skew_ppm, latency_ms: t.latency_ms, rx_miss: t.rx_miss, beacon_gap: t.beacon_gap, link_state: t.link_state, last_seen: t.last_seen });
   }
   return out;
 }
@@ -703,14 +703,17 @@ app.post("/api/wireless/ingest", (req, res) => {
       const skew = typeof t.skew_ppm === "number" ? t.skew_ppm : null;
       const lat = typeof t.latency_ms === "number" ? t.latency_ms : null;
       const link = typeof t.link_state === "string" ? t.link_state : null;
+      const rxMiss = Number.isFinite(t.rx_miss) ? Math.trunc(t.rx_miss) : null;
+      const gap = Number.isFinite(t.beacon_gap) ? Math.trunc(t.beacon_gap) : null;
       const prev = liveTelemetry.get(node) || {};
-      const entry = { rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, link_state: link, last_seen: nowIso, _lastPersist: prev._lastPersist || 0 };
+      // rx_miss/beacon_gap는 실시간(SSE)으로만 전달 — 스냅샷 테이블 스키마는 그대로.
+      const entry = { rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, link_state: link, last_seen: nowIso, _lastPersist: prev._lastPersist || 0 };
       if (now - entry._lastPersist >= TELEMETRY_PERSIST_MS) {
         tins.run(node, rssi, snr, offset, skew, lat, link);
         entry._lastPersist = now;
       }
       liveTelemetry.set(node, entry);
-      tOut.push({ node_id: node, rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, link_state: link, last_seen: nowIso });
+      tOut.push({ node_id: node, rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, link_state: link, last_seen: nowIso });
     }
     return { inserted, deduped, telemetry: tOut };
   })());
@@ -757,51 +760,29 @@ app.post("/api/wireless/light", (req, res) => {
   res.json(result.result);
 });
 
-// POST /api/wireless/light/claim - 종목이 신호등 점유(서버 권위 배타).
-app.post("/api/wireless/light/claim", (req, res) => {
-  const eventType = req.body?.event_type;
-  if (typeof eventType !== "string" || !EVENT_TYPES.includes(eventType)) {
+// PUT /api/wireless/physical-event - 물리(실제) 신호등을 사용할 경기 지정. null = 없음.
+// 기본은 모든 경기가 가상 신호등으로 동작하고, 지정된 경기만 마스터의 SSR을 실제 제어.
+// owner_event = 지정된 경기(런타임 점유가 아니라 설정).
+app.put("/api/wireless/physical-event", (req, res) => {
+  const ev = req.body?.event_type;
+  const value = ev == null ? null : ev;
+  if (value !== null && !(typeof value === "string" && EVENT_TYPES.includes(value))) {
     return res.status(400).send("올바르지 않은 종목입니다.");
   }
   const result = dbRun(() => {
-    const cur = db.prepare("SELECT owner_event FROM wireless_light WHERE id = 1").get();
-    if (cur.owner_event && cur.owner_event !== eventType) {
-      const err = new Error("다른 종목이 신호등을 점유 중입니다."); err.status = 409; throw err;
-    }
-    db.prepare("UPDATE wireless_light SET owner_event = ?, owner_actor = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE id = 1").run(eventType, req.user?.email || null);
-    return { row: getLightState(), prev: cur.owner_event || null };
+    const prev = db.prepare("SELECT owner_event FROM wireless_light WHERE id = 1").get();
+    db.prepare(
+      "UPDATE wireless_light SET owner_event = ?, owner_actor = ?, light_color = CASE WHEN ? IS NULL THEN 'off' ELSE light_color END, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE id = 1",
+    ).run(value, req.user?.email || null, value);
+    return { row: getLightState(), prev: prev?.owner_event || null };
   });
   if (!result.success) {
-    logger.warn(req, "wireless.light.claim", { error: result.error, requested: eventType }, eventType);
+    logger.warn(req, "wireless.physical_event", { error: result.error, requested: value });
     return res.status(result.status).send(result.error);
   }
-  logger.log(req, "wireless.light.claim", { event_type: eventType, prev_owner: result.result.prev }, eventType);
+  logger.log(req, "wireless.physical_event", { event_type: value, prev: result.result.prev });
   broadcastEvent("wireless:light", result.result.row);
   res.json(result.result.row);
-});
-
-// POST /api/wireless/light/release - 점유 해제(점유자 또는 force).
-app.post("/api/wireless/light/release", (req, res) => {
-  const eventType = req.body?.event_type;
-  const force = !!req.body?.force;
-  if (typeof eventType !== "string" || !EVENT_TYPES.includes(eventType)) {
-    return res.status(400).send("올바르지 않은 종목입니다.");
-  }
-  const result = dbRun(() => {
-    const cur = db.prepare("SELECT owner_event FROM wireless_light WHERE id = 1").get();
-    if (cur.owner_event && cur.owner_event !== eventType && !force) {
-      const err = new Error("점유자만 해제할 수 있습니다."); err.status = 409; throw err;
-    }
-    db.prepare("UPDATE wireless_light SET owner_event = NULL, owner_actor = NULL, light_color = 'off', updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE id = 1").run();
-    return getLightState();
-  });
-  if (!result.success) {
-    logger.warn(req, "wireless.light.release", { error: result.error, requested: eventType, forced: force }, eventType);
-    return res.status(result.status).send(result.error);
-  }
-  logger.log(req, "wireless.light.release", { event_type: eventType, forced: force }, eventType);
-  broadcastEvent("wireless:light", result.result);
-  res.json(result.result);
 });
 
 // GET /api/wireless/mapping - 센서->경기·역할 매핑 전체 조회.

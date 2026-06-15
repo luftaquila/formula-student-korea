@@ -264,9 +264,8 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | POST | `/api/wireless/ingest` | admin | `{ events?: [{ node_id, master_tick(str 64-bit), ev_seq, rssi?, snr?, link_state? }], telemetry?: [{ node_id, rssi?, snr?, offset_us?, skew_ppm?, latency_ms?, link_state? }] }` (각 ≤200) | `{ stored, deduped }` | 브리지 배치 ingest. `(node_id, ev_seq)` 멱등. 도착 = 브리지 heartbeat. `wireless:event`/`wireless:telemetry`/`wireless:bridge` 브로드캐스트 |
-| POST | `/api/wireless/light` | admin | `{ color: red\|green\|yellow\|off, green_tick?(str) }` | `{ ...light }` | 콘솔이 현재 신호등 색 보고(green tick은 green일 때만 갱신). `wireless:light` 브로드캐스트 |
-| POST | `/api/wireless/light/claim` | admin | `{ event_type }` | `{ ...light }` / 409 | 종목이 신호등 점유. 타 종목 점유 중이면 409 |
-| POST | `/api/wireless/light/release` | admin | `{ event_type, force? }` | `{ ...light }` / 409 | 점유 해제(점유자 또는 force) |
+| POST | `/api/wireless/light` | admin | `{ color: red\|green\|yellow\|off, green_tick?(str) }` | `{ ...light }` | 브리지가 물리 신호등 색 보고(green tick은 green일 때만 갱신). `wireless:light` 브로드캐스트 |
+| PUT | `/api/wireless/physical-event` | admin | `{ event_type: <type>\|null }` | `{ ...light }` | 실제 신호등(SSR)을 사용할 경기 지정(`owner_event`). null=없음(전부 가상). 기본은 모든 경기가 가상, 지정 경기만 실제 제어. `wireless:light` 브로드캐스트 |
 | GET | `/api/wireless/mapping` | admin | — | `[{ node_id, event_type, role, label, enabled, updated_at }]` | 센서→경기·역할 매핑 |
 | PUT | `/api/wireless/mapping/:node_id` | admin | `{ event_type, role(start\|finish\|laneN), label?, enabled? }` | `{ ...row }` | 매핑 upsert (`wireless:mapping` 브로드캐스트) |
 | DELETE | `/api/wireless/mapping/:node_id` | admin | — | 200 | 매핑 삭제 |

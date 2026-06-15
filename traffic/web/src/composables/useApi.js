@@ -101,18 +101,11 @@ export async function reportLight(state) {
   return res.json();
 }
 
-export async function claimLight(eventType) {
-  const res = await request("/api/wireless/light/claim", {
-    method: "POST",
+// 물리 신호등을 사용할 경기 지정(eventType=null → 없음, 전부 가상).
+export async function putPhysicalEvent(eventType) {
+  const res = await request("/api/wireless/physical-event", {
+    method: "PUT",
     body: JSON.stringify({ event_type: eventType }),
-  });
-  return res.json();
-}
-
-export async function releaseLight(eventType, force = false) {
-  const res = await request("/api/wireless/light/release", {
-    method: "POST",
-    body: JSON.stringify({ event_type: eventType, force }),
   });
   return res.json();
 }

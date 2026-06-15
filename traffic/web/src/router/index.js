@@ -9,8 +9,22 @@ const routes = [
   },
   {
     path: "/wireless",
-    name: "Wireless",
+    redirect: "/wireless/record",
+  },
+  {
+    path: "/wireless/record",
+    name: "WirelessRecord",
+    component: () => import("../views/RecordView.vue"),
+  },
+  {
+    path: "/wireless/settings",
+    name: "WirelessSettings",
     component: () => import("../views/WirelessHomeView.vue"),
+  },
+  {
+    path: "/wireless/scoreboard",
+    name: "WirelessScoreboard",
+    component: () => import("../views/ScoreboardView.vue"),
   },
   {
     path: "/wireless/accel",

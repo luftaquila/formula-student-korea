@@ -20,7 +20,7 @@ test.describe("Wireless sensor mapping", () => {
       data: { telemetry: [{ node_id: NODE, rssi: -70, snr: 9, offset_us: 100, skew_ppm: 3, latency_ms: 20, link_state: "online" }] },
     });
 
-    await page.goto("/traffic/wireless");
+    await page.goto("/traffic/wireless/settings");
     await waitForPageReady(page);
 
     // 진단 SSE로 매핑 행이 등장

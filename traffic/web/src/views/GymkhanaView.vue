@@ -7,7 +7,8 @@ import { addRecord } from "../composables/useApi";
 
 const { notyf } = useNotification();
 const entryStore = useEntryStore();
-const serial = useSerialStore();
+const props = defineProps({ source: { type: Object, default: null }, wireless: { type: Boolean, default: false } });
+const serial = props.source ?? useSerialStore();
 
 const eventName = ref("");
 const selectedTeamLane1 = ref(null);
@@ -73,6 +74,8 @@ const entryDisplay2 = computed(() =>
   entry2.value ? `#${entry2.value.num} ${entry2.value.univ} ${entry2.value.team}` : "",
 );
 const isLocked = computed(() => serial.green.active);
+const lightReady = computed(() => (props.wireless ? serial.isBridge : serial.connected));
+const canStopLight = computed(() => (props.wireless ? serial.isBridge : serial.connected));
 const entries = computed(() => entryStore.entries);
 const canAutoSave = computed(() => eventName.value.trim() && (selectedTeamLane1.value || selectedTeamLane2.value));
 
@@ -139,8 +142,8 @@ async function handleDNF(lane) {
 <template>
   <div class="page-layout">
     <aside class="sidebar">
-      <!-- 컨트롤러 연결 카드 -->
-      <div class="card">
+      <!-- 컨트롤러 연결 카드 (무선 모드에선 숨김 — 마스터 연결은 무선 설정 탭) -->
+      <div v-if="!wireless" class="card">
         <div class="card-header">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
@@ -180,24 +183,24 @@ async function handleDNF(lane) {
               <circle cx="12" cy="8" r="2" />
               <circle cx="12" cy="16" r="2" />
             </svg>
-            신호등 제어
+            신호등 제어<span v-if="wireless"> ({{ serial.isPhysical ? "물리" : "가상" }})</span>
           </h3>
         </div>
         <div class="card-body">
           <div class="btn-group">
-            <button class="btn btn-success" :disabled="!serial.connected || serial.green.active" @click="handleGreen">
+            <button class="btn btn-success" :disabled="!lightReady || serial.green.active" @click="handleGreen">
               녹색등
             </button>
             <button
               class="btn btn-ghost"
-              :disabled="!serial.connected || serial.lightColor === 'grey'"
+              :disabled="!canStopLight || serial.lightColor === 'grey'"
               @click="handleOff"
             >
               OFF
             </button>
             <button
               class="btn btn-danger"
-              :disabled="!serial.connected || serial.lightColor === 'red'"
+              :disabled="!canStopLight || serial.lightColor === 'red'"
               @click="handleRed"
             >
               적색등

@@ -1,37 +1,38 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
-// 신호등 점유 잠금: 서버 권위 배타 + 클라이언트(SSE)에 점유자 표시.
-test.describe("Wireless light lock", () => {
+// 물리 신호등 사용 경기 지정(무선 설정). 기본은 전부 가상, 지정된 1개만 실제 제어.
+test.describe("Wireless physical-event designation", () => {
   test.use({ storageState: storageStatePath("admin") });
 
   test.afterAll(async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("admin") });
     const p = await ctx.newPage();
-    await p.request.post("/traffic/api/wireless/light/release", { data: { event_type: "가속", force: true } }).catch(() => {});
+    await p.request.put("/traffic/api/wireless/physical-event", { data: { event_type: null } }).catch(() => {});
     await ctx.close();
   });
 
-  test("claim is exclusive and the owner is shown to clients", async ({ page }) => {
-    await page.goto("/traffic/wireless");
+  test("designates and changes the physical-light event, and can clear it", async ({ page }) => {
+    await page.goto("/traffic/wireless/settings");
     await waitForPageReady(page);
 
-    // 가속이 점유
-    const claim = await page.request.post("/traffic/api/wireless/light/claim", { data: { event_type: "가속" } });
-    expect(claim.ok()).toBeTruthy();
+    // 가속을 물리 신호등 경기로 지정
+    const a = await page.request.put("/traffic/api/wireless/physical-event", { data: { event_type: "가속" } });
+    expect(a.ok()).toBeTruthy();
+    expect((await a.json()).owner_event).toBe("가속");
 
-    // 클라이언트가 SSE로 점유자 표시
-    await expect(page.locator(".wl-lockline")).toContainText("가속", { timeout: 8000 });
+    // 다른 경기로 변경
+    const b = await page.request.put("/traffic/api/wireless/physical-event", { data: { event_type: "스키드패드" } });
+    expect(b.ok()).toBeTruthy();
+    expect((await b.json()).owner_event).toBe("스키드패드");
 
-    // 다른 종목의 점유 시도는 409
-    const conflict = await page.request.post("/traffic/api/wireless/light/claim", { data: { event_type: "스키드패드" } });
-    expect(conflict.status()).toBe(409);
+    // 없음(전부 가상)으로 해제
+    const c = await page.request.put("/traffic/api/wireless/physical-event", { data: { event_type: null } });
+    expect(c.ok()).toBeTruthy();
+    expect((await c.json()).owner_event).toBeNull();
 
-    // 해제 후 다른 종목이 점유 가능
-    const rel = await page.request.post("/traffic/api/wireless/light/release", { data: { event_type: "가속" } });
-    expect(rel.ok()).toBeTruthy();
-    const claim2 = await page.request.post("/traffic/api/wireless/light/claim", { data: { event_type: "스키드패드" } });
-    expect(claim2.ok()).toBeTruthy();
-    await page.request.post("/traffic/api/wireless/light/release", { data: { event_type: "스키드패드", force: true } });
+    // 잘못된 종목은 400
+    const d = await page.request.put("/traffic/api/wireless/physical-event", { data: { event_type: "없는종목" } });
+    expect(d.status()).toBe(400);
   });
 });

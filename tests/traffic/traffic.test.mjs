@@ -694,47 +694,39 @@ describe('Wireless mapping', () => {
   });
 });
 
-// ─── Wireless: light claim exclusivity ──────────────────────────────────
-describe('Wireless light lock', () => {
-  it('claim sets owner', async () => {
-    const res = await client.post('/api/wireless/light/claim', { body: { event_type: '가속' }, cookie: adminCookie });
+// ─── Wireless: physical-light event designation ─────────────────────────
+describe('Wireless physical-event designation', () => {
+  it('PUT designates the physical-light event', async () => {
+    const res = await client.put('/api/wireless/physical-event', { body: { event_type: '가속' }, cookie: adminCookie });
     assert.equal(res.status, 200);
     assert.equal((await res.json()).owner_event, '가속');
   });
 
-  it('second claim by a different event is rejected (409)', async () => {
-    const res = await client.post('/api/wireless/light/claim', { body: { event_type: '스키드패드' }, cookie: adminCookie });
-    assert.equal(res.status, 409);
-  });
-
-  it('re-claim by the same event is idempotent (200)', async () => {
-    const res = await client.post('/api/wireless/light/claim', { body: { event_type: '가속' }, cookie: adminCookie });
+  it('PUT can change the designation to another event', async () => {
+    const res = await client.put('/api/wireless/physical-event', { body: { event_type: '스키드패드' }, cookie: adminCookie });
     assert.equal(res.status, 200);
+    assert.equal((await res.json()).owner_event, '스키드패드');
   });
 
-  it('release by non-owner is rejected (409)', async () => {
-    const res = await client.post('/api/wireless/light/release', { body: { event_type: '스키드패드' }, cookie: adminCookie });
-    assert.equal(res.status, 409);
+  it('PUT null clears the designation (all virtual)', async () => {
+    const res = await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).owner_event, null);
   });
 
-  it('owner releases and another event can then claim', async () => {
-    const rel = await client.post('/api/wireless/light/release', { body: { event_type: '가속' }, cookie: adminCookie });
-    assert.equal(rel.status, 200);
-    assert.equal((await rel.json()).owner_event, null);
-    const claim2 = await client.post('/api/wireless/light/claim', { body: { event_type: '스키드패드' }, cookie: adminCookie });
-    assert.equal(claim2.status, 200);
-    // cleanup: release so other tests start unlocked
-    await client.post('/api/wireless/light/release', { body: { event_type: '스키드패드' }, cookie: adminCookie });
+  it('PUT rejects an invalid event (400)', async () => {
+    const res = await client.put('/api/wireless/physical-event', { body: { event_type: '없는종목' }, cookie: adminCookie });
+    assert.equal(res.status, 400);
   });
 
-  it('light report updates color and green tick for the owner', async () => {
-    await client.post('/api/wireless/light/claim', { body: { event_type: '가속' }, cookie: adminCookie });
+  it('light report updates color and green tick for the designated event', async () => {
+    await client.put('/api/wireless/physical-event', { body: { event_type: '가속' }, cookie: adminCookie });
     const res = await client.post('/api/wireless/light', { body: { color: 'green', green_tick: '987654321012' }, cookie: adminCookie });
     assert.equal(res.status, 200);
     const row = await res.json();
     assert.equal(row.light_color, 'green');
     assert.equal(row.green_tick, '987654321012');
-    await client.post('/api/wireless/light/release', { body: { event_type: '가속' }, cookie: adminCookie });
+    await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
   });
 });
 
@@ -777,16 +769,16 @@ describe('Wireless state & SSE', () => {
     assert.ok(ev.data.events.some(x => x.node_id === '5'));
   });
 
-  it('claim broadcasts wireless:light over SSE', async () => {
+  it('physical-event designation broadcasts wireless:light over SSE', async () => {
     const sse = connectSSE(baseUrl, '/api/events', adminCookie);
     await sse.ready;
-    await client.post('/api/wireless/light/claim', { body: { event_type: '짐카나' }, cookie: adminCookie });
+    await client.put('/api/wireless/physical-event', { body: { event_type: '짐카나' }, cookie: adminCookie });
     await new Promise(r => setTimeout(r, 200));
     sse.close();
     const ev = sse.events.find(e => e.event === 'wireless:light');
     assert.ok(ev, 'received wireless:light');
     assert.equal(ev.data.owner_event, '짐카나');
-    await client.post('/api/wireless/light/release', { body: { event_type: '짐카나' }, cookie: adminCookie });
+    await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
   });
 
   it('mapping PUT broadcasts wireless:mapping over SSE', async () => {
@@ -812,8 +804,8 @@ describe('Wireless auth enforcement', () => {
     const res = await client.put('/api/wireless/mapping/9', { body: { event_type: '가속', role: 'start' } });
     assert.equal(res.status, 401);
   });
-  it('POST /api/wireless/light/claim without auth returns 401', async () => {
-    const res = await client.post('/api/wireless/light/claim', { body: { event_type: '가속' } });
+  it('PUT /api/wireless/physical-event without auth returns 401', async () => {
+    const res = await client.put('/api/wireless/physical-event', { body: { event_type: '가속' } });
     assert.equal(res.status, 401);
   });
   it('GET /api/wireless/state without auth returns 401', async () => {

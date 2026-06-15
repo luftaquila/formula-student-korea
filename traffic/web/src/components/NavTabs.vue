@@ -20,12 +20,13 @@ const wiredNavItems = [
 ];
 
 const wirelessNavItems = [
-  { id: "wl-home", label: "📡 무선 설정", path: "/wireless" },
+  { id: "wl-record", label: "📋 기록", path: "/wireless/record" },
   { id: "wl-accel", label: "🏎️ 가속", path: "/wireless/accel", eventType: "가속" },
   { id: "wl-skidpad", label: "⏱️ 스키드패드", path: "/wireless/skidpad", eventType: "스키드패드" },
   { id: "wl-autocross", label: "🚧 오토크로스", path: "/wireless/autocross", eventType: "오토크로스" },
   { id: "wl-gymkhana", label: "🏁 짐카나", path: "/wireless/gymkhana", eventType: "짐카나" },
-  { id: "record", label: "📋 기록", path: "/record" },
+  { id: "wl-scoreboard", label: "📺 전광판", path: "/wireless/scoreboard" },
+  { id: "wl-settings", label: "⚙️ 무선 설정", path: "/wireless/settings" },
 ];
 
 const isWireless = computed(() => route.path.startsWith("/wireless"));

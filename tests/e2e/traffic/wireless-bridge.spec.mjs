@@ -7,7 +7,7 @@ test.describe("Wireless bridge status", () => {
   test.use({ storageState: storageStatePath("admin") });
 
   test("bridge status reflects ingest heartbeat over SSE", async ({ page }) => {
-    await page.goto("/traffic/wireless");
+    await page.goto("/traffic/wireless/settings");
     await waitForPageReady(page);
 
     // 초기: 브리지 오프라인
