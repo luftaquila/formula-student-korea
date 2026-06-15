@@ -1,0 +1,47 @@
+name: Verify Rover GPS Unit
+
+# The GPS-registration unit ships as plain Python deployed by
+# scripts/provision-gps.sh (no OCI image), so this workflow is a test
+# gate only — compile + pytest the agent and the pilot.lib.* modules it
+# reuses.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'course/rover/gps/**'
+      - 'course/rover/pilot/pilot/lib/**'
+      - '.github/workflows/rover-gps.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rover-gps-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pytest
+          python3 -m pip install -r course/rover/gps/requirements.txt
+
+      - name: Compile agent sources
+        run: python3 -m compileall course/rover/gps/gps_register.py course/rover/gps/test
+
+      - name: Run gps pytest
+        run: |
+          cd course/rover/gps
+          python3 -m pytest test/ -q

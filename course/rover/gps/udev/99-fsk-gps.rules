@@ -1,0 +1,16 @@
+# FSK GPS-registration unit device symlink. Installed to
+# /etc/udev/rules.d/ by scripts/provision-gps.sh. The agent opens the
+# stable /dev/ttyGPS symlink so it survives kernel/USB re-enumeration.
+# This is the GPS half of the rover's 99-fsk-rover.rules (no MCU here).
+
+# u-blox ZED-F9P GNSS receiver -> /dev/ttyGPS
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1546", ATTRS{idProduct}=="01a9", \
+    SYMLINK+="ttyGPS", MODE="0660", GROUP="dialout"
+
+# Pin USB autosuspend OFF on the ZED-F9P CDC interface. Default behaviour
+# suspends idle CDC devices after ~2 s and resume can fail silently,
+# stalling UBX input; the agent reopens on a hard drop but holding the
+# link active avoids the gap. Match the parent USB device (power/control
+# lives on the usb node, not the tty).
+SUBSYSTEM=="usb", ATTR{idVendor}=="1546", ATTR{idProduct}=="01a9", \
+    ATTR{power/control}="on"

@@ -1,0 +1,22 @@
+[Unit]
+Description=FSK GPS-registration agent (ZED-F9P RTK -> course server)
+Documentation=https://github.com/luftaquila/formula-student-korea
+# RTK and the SSE bridge both need the network; the agent itself retries
+# forever, but ordering after the network keeps the journal clean on boot.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# SERVER_URL / INTERNAL_SECRET / NTRIP_USERNAME are written here by
+# scripts/provision-gps.sh (0600, root-owned — it holds secrets).
+EnvironmentFile=/etc/gps-register/gps.conf
+WorkingDirectory=/opt/gps-register
+ExecStart=/usr/bin/python3 /opt/gps-register/gps_register.py
+# Runs as root: reads the 0600 secret file and the dialout serial node,
+# matching the rover's rootful posture. Single-purpose device.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

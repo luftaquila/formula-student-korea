@@ -1,0 +1,7 @@
+# FSK GPS-registration agent dependencies (ROS-free).
+# On the Pi these are installed from apt (python3-serial, python3-requests)
+# by provision-gps.sh — Debian is externally-managed (PEP 668). This file
+# is for local dev / CI: pip install -r requirements.txt
+
+pyserial>=3.5          # ZED-F9P UBX over USB CDC
+requests>=2.31         # course-server REST + SSE
