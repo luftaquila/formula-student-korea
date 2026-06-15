@@ -20,6 +20,7 @@ const CURRENT_YEAR = new Date().getFullYear();
 const PREV_YEAR = CURRENT_YEAR - 1;
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
+const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
 
 let server, baseUrl, client, db, dbPath;
@@ -62,7 +63,7 @@ describe('Template CRUD', () => {
     assert.equal(data.length, 0);
   });
 
-  it('POST /api/sheet/template creates category (requires admin)', async () => {
+  it('POST /api/sheet/template creates category (requires chief)', async () => {
     const res = await client.post('/api/sheet/template', {
       body: { year: CURRENT_YEAR, level: 'category', name: 'Mechanical' },
       cookie: adminCookie,
@@ -996,7 +997,15 @@ describe('Auth enforcement', () => {
     assert.equal(res.status, 200);
   });
 
-  it('POST /api/sheet/template with official cookie returns 403 (admin required)', async () => {
+  it('POST /api/sheet/template with chief cookie returns 200 (chief access)', async () => {
+    const res = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'category', name: 'ChiefTry' },
+      cookie: chiefCookie,
+    });
+    assert.equal(res.status, 200);
+  });
+
+  it('POST /api/sheet/template with official cookie returns 403 (chief required)', async () => {
     const res = await client.post('/api/sheet/template', {
       body: { year: CURRENT_YEAR, level: 'category', name: 'OfficialTry' },
       cookie: officialCookie,
