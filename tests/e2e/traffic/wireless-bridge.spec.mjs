@@ -10,8 +10,9 @@ test.describe("Wireless bridge status", () => {
     await page.goto("/traffic/wireless/settings");
     await waitForPageReady(page);
 
-    // 초기: 브리지 오프라인
-    await expect(page.getByTestId("bridge-status")).toHaveClass(/bad/);
+    // bridge_online은 마지막 ingest 후 15s TTL의 서버 전역 상태(traffic/index.mjs)라,
+    // 병렬 실행 시 형제 무선 테스트의 ingest가 online을 유지시켜 초기 offline을 단언할 수 없다.
+    // 핵심(heartbeat ingest → wireless:bridge online SSE 반영)만 검증한다.
 
     // 서버로 heartbeat ingest → wireless:bridge online 브로드캐스트
     const res = await page.request.post("/traffic/api/wireless/ingest", { data: { events: [], telemetry: [] } });

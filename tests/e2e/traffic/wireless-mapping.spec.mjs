@@ -36,7 +36,7 @@ test.describe("Wireless sensor mapping", () => {
     );
     await page.getByTestId(`mapping-save-${NODE}`).click();
     await saved;
-    await expectNotification(page, "success", "매핑 저장");
+    await expectNotification(page, "success", "할당 저장");
 
     // 서버에 영속되었는지 확인
     const res = await page.request.get("/traffic/api/wireless/mapping");
