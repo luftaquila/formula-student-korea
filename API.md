@@ -230,7 +230,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/events` | admin | — | SSE stream | Real-time record/event-mode updates; initial data: `{ recordFiles, eventModes }` |
+| GET | `/api/events` | admin | — | SSE stream | Real-time record/event-mode + wireless updates. init: `{ recordFiles, eventModes, recordVisibility, wireless: { light, mapping, telemetry, bridge } }`. Wireless event names: `wireless:event`, `wireless:telemetry`, `wireless:light`, `wireless:mapping`, `wireless:bridge` |
 
 ### Record Management
 
@@ -256,6 +256,21 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/event-modes` | admin | — | `[{ event_type, enabled }]` | Event mode statuses |
 | PUT | `/api/event-modes/:type` | admin | — | `{ event_type, enabled }` | Toggle event mode (broadcasts SSE) |
+
+### Wireless LoRa Timing (one master + ≤6 sensors, single channel)
+
+마스터 노드에 USB로 연결된 브리지 PC가 모든 센서의 raw 이벤트·진단·신호등 상태를 서버로 push하고, 나머지 클라이언트는 SSE로 수신한다. 신호등 점유 잠금은 서버 권위(배타). 최종 경기 기록은 기존 `/api/records`로 그대로 저장(변경 없음).
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| POST | `/api/wireless/ingest` | admin | `{ events?: [{ node_id, master_tick(str 64-bit), ev_seq, rssi?, snr?, link_state? }], telemetry?: [{ node_id, rssi?, snr?, offset_us?, skew_ppm?, latency_ms?, link_state? }] }` (각 ≤200) | `{ stored, deduped }` | 브리지 배치 ingest. `(node_id, ev_seq)` 멱등. 도착 = 브리지 heartbeat. `wireless:event`/`wireless:telemetry`/`wireless:bridge` 브로드캐스트 |
+| POST | `/api/wireless/light` | admin | `{ color: red\|green\|yellow\|off, green_tick?(str) }` | `{ ...light }` | 브리지가 물리 신호등 색 보고(green tick은 green일 때만 갱신). `wireless:light` 브로드캐스트 |
+| PUT | `/api/wireless/physical-event` | admin | `{ event_type: <type>\|null }` | `{ ...light }` | 실제 신호등(SSR)을 사용할 경기 지정(`owner_event`). null=없음(전부 가상). 기본은 모든 경기가 가상, 지정 경기만 실제 제어. `wireless:light` 브로드캐스트 |
+| GET | `/api/wireless/mapping` | admin | — | `[{ node_id, event_type, role, label, enabled, updated_at }]` | 센서→경기·역할 매핑 |
+| PUT | `/api/wireless/mapping/:node_id` | admin | `{ event_type, role(start\|finish\|laneN), label?, enabled? }` | `{ ...row }` | 매핑 upsert (`wireless:mapping` 브로드캐스트) |
+| DELETE | `/api/wireless/mapping/:node_id` | admin | — | 200 | 매핑 삭제 |
+| GET | `/api/wireless/state` | admin | — | `{ light, mapping, telemetry, bridge }` | 신선 로드용 종합 스냅샷 |
+| GET | `/api/wireless/events` | admin | `?since=<id>&limit=<n≤1000>` | `[{ id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state, raw }]` | 늦게 합류한 클라이언트의 raw 이벤트 백필 |
 
 ---
 

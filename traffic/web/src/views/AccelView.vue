@@ -7,7 +7,9 @@ import { addRecord } from "../composables/useApi";
 
 const { notyf } = useNotification();
 const entryStore = useEntryStore();
-const serial = useSerialStore();
+// source 미지정 시 유선(serial) store. 무선 모드에선 wireless store의 facade가 주입됨.
+const props = defineProps({ source: { type: Object, default: null }, wireless: { type: Boolean, default: false } });
+const serial = props.source ?? useSerialStore();
 
 const eventName = ref("");
 const selectedTeam = ref(null);
@@ -68,6 +70,9 @@ const currentYear = computed(() => new Date().getFullYear());
 const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || "Acceleration"}`);
 const selectedEntry = computed(() => (selectedTeam.value ? entryStore.getEntryByNum(selectedTeam.value) : null));
 const isLocked = computed(() => serial.green.active);
+// 신호등 게이팅: 유선=연결 여부, 무선=녹색등(인수)은 브리지면 가능 / 적·소등은 점유자만.
+const lightReady = computed(() => (props.wireless ? serial.isBridge : serial.connected));
+const canStopLight = computed(() => (props.wireless ? serial.isBridge : serial.connected));
 const startRecords = computed(() => serial.records.filter((r) => r.sensor === 1));
 const endRecords = computed(() => serial.records.filter((r) => r.sensor === 2));
 const entries = computed(() => entryStore.entries);
@@ -124,8 +129,8 @@ async function handleDNF() {
 <template>
   <div class="page-layout">
     <aside class="sidebar">
-      <!-- 컨트롤러 연결 카드 -->
-      <div class="card">
+      <!-- 컨트롤러 연결 카드 (무선 모드에선 숨김 — 마스터 연결은 무선 설정 탭) -->
+      <div v-if="!wireless" class="card">
         <div class="card-header">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="header-icon">
@@ -165,24 +170,24 @@ async function handleDNF() {
               <circle cx="12" cy="8" r="2" />
               <circle cx="12" cy="16" r="2" />
             </svg>
-            신호등 제어
+            신호등 제어<span v-if="wireless"> ({{ serial.isPhysical ? "물리" : "가상" }})</span>
           </h3>
         </div>
         <div class="card-body">
           <div class="btn-group">
-            <button class="btn btn-success" :disabled="!serial.connected || serial.green.active" @click="handleGreen">
+            <button class="btn btn-success" :disabled="!lightReady || serial.green.active" @click="handleGreen">
               녹색등
             </button>
             <button
               class="btn btn-ghost"
-              :disabled="!serial.connected || serial.lightColor === 'grey'"
+              :disabled="!canStopLight || serial.lightColor === 'grey'"
               @click="handleOff"
             >
               OFF
             </button>
             <button
               class="btn btn-danger"
-              :disabled="!serial.connected || serial.lightColor === 'red'"
+              :disabled="!canStopLight || serial.lightColor === 'red'"
               @click="handleRed"
             >
               적색등

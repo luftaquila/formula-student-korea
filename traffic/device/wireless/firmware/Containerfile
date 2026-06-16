@@ -1,0 +1,23 @@
+# ARM bare-metal build environment for the traffic-device nRF52840 firmware.
+#
+# The host (lufthafen) is a deploy server with no cross toolchain; this image
+# carries arm-none-eabi-gcc + cmake/ninja so builds stay off the host. The CI
+# workflow (.github/workflows/traffic-device.yml) installs the same packages on
+# the runner, so local-container and CI builds are byte-for-byte equivalent.
+#
+# Build:  podman build -t fsk-traffic-fw traffic/device/wireless/firmware
+# Use:    podman run --rm -v "$PWD/traffic/device/wireless/firmware":/work:Z fsk-traffic-fw tools/build.sh
+FROM docker.io/library/debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc-arm-none-eabi \
+        libnewlib-arm-none-eabi \
+        libstdc++-arm-none-eabi-newlib \
+        cmake \
+        ninja-build \
+        python3 \
+        git \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work

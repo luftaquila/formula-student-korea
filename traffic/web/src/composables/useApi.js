@@ -61,3 +61,56 @@ export async function toggleEventMode(eventType) {
   });
   return res.json();
 }
+
+/* ── 무선 LoRa 계측 ───────────────────────────────────────────────── */
+
+export async function fetchWirelessState() {
+  const res = await request("/api/wireless/state");
+  return res.json();
+}
+
+export async function fetchWirelessMapping() {
+  const res = await request("/api/wireless/mapping");
+  return res.json();
+}
+
+export async function putWirelessMapping(nodeId, body) {
+  const res = await request(`/api/wireless/mapping/${encodeURIComponent(nodeId)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+export async function deleteWirelessMapping(nodeId) {
+  await request(`/api/wireless/mapping/${encodeURIComponent(nodeId)}`, { method: "DELETE" });
+}
+
+export async function ingestWireless(batch) {
+  await request("/api/wireless/ingest", {
+    method: "POST",
+    body: JSON.stringify(batch),
+  });
+}
+
+export async function reportLight(state) {
+  const res = await request("/api/wireless/light", {
+    method: "POST",
+    body: JSON.stringify(state),
+  });
+  return res.json();
+}
+
+// 물리 신호등을 사용할 경기 지정(eventType=null → 없음, 전부 가상).
+export async function putPhysicalEvent(eventType) {
+  const res = await request("/api/wireless/physical-event", {
+    method: "PUT",
+    body: JSON.stringify({ event_type: eventType }),
+  });
+  return res.json();
+}
+
+export async function fetchWirelessEvents(since = 0, limit = 200) {
+  const res = await request(`/api/wireless/events?since=${since}&limit=${limit}`);
+  return res.json();
+}

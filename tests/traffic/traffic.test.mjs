@@ -587,3 +587,229 @@ describe('SSE broadcast payloads', () => {
     await client.delete(`/api/records/${encodeURIComponent(tableName)}`, { cookie: adminCookie });
   });
 });
+
+// ─── Wireless: ingest & raw events ──────────────────────────────────────
+describe('POST /api/wireless/ingest', () => {
+  it('stores raw events and preserves 64-bit master_tick as string', async () => {
+    const bigTick = '1844674407370955161'; // > 2^53, must survive as string
+    const res = await client.post('/api/wireless/ingest', {
+      body: { events: [{ node_id: '1', master_tick: bigTick, ev_seq: 1, rssi: -70.5, snr: 9.25 }] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.stored, 1);
+    assert.equal(data.deduped, 0);
+
+    const listRes = await client.get('/api/wireless/events?since=0', { cookie: adminCookie });
+    const rows = await listRes.json();
+    const row = rows.find(r => r.node_id === '1' && r.ev_seq === 1);
+    assert.ok(row, 'event row should be present');
+    assert.equal(row.master_tick, bigTick, 'master_tick string preserved');
+    assert.equal(row.rssi, -70.5);
+  });
+
+  it('is idempotent on (node_id, ev_seq)', async () => {
+    const ev = { node_id: '2', master_tick: '1000', ev_seq: 7 };
+    const r1 = await client.post('/api/wireless/ingest', { body: { events: [ev] }, cookie: adminCookie });
+    assert.equal((await r1.json()).stored, 1);
+    const r2 = await client.post('/api/wireless/ingest', { body: { events: [ev] }, cookie: adminCookie });
+    const d2 = await r2.json();
+    assert.equal(d2.stored, 0);
+    assert.equal(d2.deduped, 1);
+  });
+
+  it('rejects malformed body (events not array of valid rows)', async () => {
+    const res = await client.post('/api/wireless/ingest', {
+      body: { events: [{ node_id: '1', master_tick: 'not-a-number', ev_seq: 1 }] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('persists at most one throttled telemetry snapshot per node, live state has latest', async () => {
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: 'tnode', rssi: -80, snr: 5, offset_us: 100, skew_ppm: 3.0, latency_ms: 20, link_state: 'online' }] },
+      cookie: adminCookie,
+    });
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: 'tnode', rssi: -82, snr: 6, offset_us: 120, skew_ppm: 3.1, latency_ms: 22, link_state: 'online' }] },
+      cookie: adminCookie,
+    });
+    const snapCount = db.prepare("SELECT COUNT(*) AS c FROM wireless_telemetry WHERE node_id = 'tnode'").get().c;
+    assert.equal(snapCount, 1, 'only one snapshot persisted within throttle window');
+
+    const stateRes = await client.get('/api/wireless/state', { cookie: adminCookie });
+    const state = await stateRes.json();
+    const live = state.telemetry.find(t => t.node_id === 'tnode');
+    assert.ok(live, 'live telemetry present');
+    assert.equal(live.rssi, -82, 'live state reflects latest values');
+    assert.equal(live.offset_us, 120);
+  });
+});
+
+// ─── Wireless: mapping CRUD ─────────────────────────────────────────────
+describe('Wireless mapping', () => {
+  it('GET returns array (initially without our node)', async () => {
+    const res = await client.get('/api/wireless/mapping', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(await res.json()));
+  });
+
+  it('PUT upserts a mapping', async () => {
+    const res = await client.put('/api/wireless/mapping/3', {
+      body: { event_type: '가속', role: 'start', label: '출발선' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const row = await res.json();
+    assert.equal(row.node_id, '3');
+    assert.equal(row.event_type, '가속');
+    assert.equal(row.role, 'start');
+
+    const list = await (await client.get('/api/wireless/mapping', { cookie: adminCookie })).json();
+    assert.ok(list.some(m => m.node_id === '3' && m.role === 'start'));
+  });
+
+  it('PUT rejects invalid event_type and invalid role', async () => {
+    const r1 = await client.put('/api/wireless/mapping/3', { body: { event_type: '없는종목', role: 'start' }, cookie: adminCookie });
+    assert.equal(r1.status, 400);
+    const r2 = await client.put('/api/wireless/mapping/3', { body: { event_type: '가속', role: 'middle' }, cookie: adminCookie });
+    assert.equal(r2.status, 400);
+  });
+
+  it('PUT updates existing node_id (no duplicate row)', async () => {
+    await client.put('/api/wireless/mapping/3', { body: { event_type: '오토크로스', role: 'start' }, cookie: adminCookie });
+    const list = await (await client.get('/api/wireless/mapping', { cookie: adminCookie })).json();
+    const rows3 = list.filter(m => m.node_id === '3');
+    assert.equal(rows3.length, 1);
+    assert.equal(rows3[0].event_type, '오토크로스');
+  });
+
+  it('DELETE removes the mapping', async () => {
+    const res = await client.delete('/api/wireless/mapping/3', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const list = await (await client.get('/api/wireless/mapping', { cookie: adminCookie })).json();
+    assert.ok(!list.some(m => m.node_id === '3'));
+  });
+});
+
+// ─── Wireless: physical-light event designation ─────────────────────────
+describe('Wireless physical-event designation', () => {
+  it('PUT designates the physical-light event', async () => {
+    const res = await client.put('/api/wireless/physical-event', { body: { event_type: '가속' }, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).owner_event, '가속');
+  });
+
+  it('PUT can change the designation to another event', async () => {
+    const res = await client.put('/api/wireless/physical-event', { body: { event_type: '스키드패드' }, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).owner_event, '스키드패드');
+  });
+
+  it('PUT null clears the designation (all virtual)', async () => {
+    const res = await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).owner_event, null);
+  });
+
+  it('PUT rejects an invalid event (400)', async () => {
+    const res = await client.put('/api/wireless/physical-event', { body: { event_type: '없는종목' }, cookie: adminCookie });
+    assert.equal(res.status, 400);
+  });
+
+  it('light report updates color and green tick for the designated event', async () => {
+    await client.put('/api/wireless/physical-event', { body: { event_type: '가속' }, cookie: adminCookie });
+    const res = await client.post('/api/wireless/light', { body: { color: 'green', green_tick: '987654321012' }, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const row = await res.json();
+    assert.equal(row.light_color, 'green');
+    assert.equal(row.green_tick, '987654321012');
+    await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
+  });
+});
+
+// ─── Wireless: state & SSE ──────────────────────────────────────────────
+describe('Wireless state & SSE', () => {
+  it('GET /api/wireless/state returns light/mapping/telemetry/bridge', async () => {
+    const res = await client.get('/api/wireless/state', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const s = await res.json();
+    assert.ok(s.light && 'owner_event' in s.light);
+    assert.ok(Array.isArray(s.mapping));
+    assert.ok(Array.isArray(s.telemetry));
+    assert.ok(s.bridge && 'online' in s.bridge);
+  });
+
+  it('SSE init frame includes the wireless block', async () => {
+    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
+    await sse.ready;
+    sse.close();
+    const init = sse.events.find(e => e.event === 'init');
+    assert.ok(init, 'init event received');
+    assert.ok(init.data.wireless, 'init has wireless block');
+    assert.ok('light' in init.data.wireless);
+    assert.ok(Array.isArray(init.data.wireless.mapping));
+    assert.ok(Array.isArray(init.data.wireless.telemetry));
+    assert.ok('bridge' in init.data.wireless);
+  });
+
+  it('ingest broadcasts wireless:event over SSE', async () => {
+    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
+    await sse.ready;
+    await client.post('/api/wireless/ingest', {
+      body: { events: [{ node_id: '5', master_tick: '5000', ev_seq: 1, rssi: -60, snr: 11 }] },
+      cookie: adminCookie,
+    });
+    await new Promise(r => setTimeout(r, 200));
+    sse.close();
+    const ev = sse.events.find(e => e.event === 'wireless:event');
+    assert.ok(ev, 'received wireless:event');
+    assert.ok(ev.data.events.some(x => x.node_id === '5'));
+  });
+
+  it('physical-event designation broadcasts wireless:light over SSE', async () => {
+    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
+    await sse.ready;
+    await client.put('/api/wireless/physical-event', { body: { event_type: '짐카나' }, cookie: adminCookie });
+    await new Promise(r => setTimeout(r, 200));
+    sse.close();
+    const ev = sse.events.find(e => e.event === 'wireless:light');
+    assert.ok(ev, 'received wireless:light');
+    assert.equal(ev.data.owner_event, '짐카나');
+    await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
+  });
+
+  it('mapping PUT broadcasts wireless:mapping over SSE', async () => {
+    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
+    await sse.ready;
+    await client.put('/api/wireless/mapping/6', { body: { event_type: '짐카나', role: 'lane1' }, cookie: adminCookie });
+    await new Promise(r => setTimeout(r, 200));
+    sse.close();
+    const ev = sse.events.find(e => e.event === 'wireless:mapping');
+    assert.ok(ev, 'received wireless:mapping');
+    assert.equal(ev.data.node_id, '6');
+    await client.delete('/api/wireless/mapping/6', { cookie: adminCookie });
+  });
+});
+
+// ─── Wireless: auth enforcement ─────────────────────────────────────────
+describe('Wireless auth enforcement', () => {
+  it('POST /api/wireless/ingest without auth returns 401', async () => {
+    const res = await client.post('/api/wireless/ingest', { body: { events: [] } });
+    assert.equal(res.status, 401);
+  });
+  it('PUT /api/wireless/mapping/:node without auth returns 401', async () => {
+    const res = await client.put('/api/wireless/mapping/9', { body: { event_type: '가속', role: 'start' } });
+    assert.equal(res.status, 401);
+  });
+  it('PUT /api/wireless/physical-event without auth returns 401', async () => {
+    const res = await client.put('/api/wireless/physical-event', { body: { event_type: '가속' } });
+    assert.equal(res.status, 401);
+  });
+  it('GET /api/wireless/state without auth returns 401', async () => {
+    const res = await client.get('/api/wireless/state');
+    assert.equal(res.status, 401);
+  });
+});
