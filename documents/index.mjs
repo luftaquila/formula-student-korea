@@ -597,6 +597,47 @@ app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
   res.sendFile(filePath);
 });
 
+// GET /api/submissions/:subId/zip - 본인 제출 파일 전체 압축 다운로드
+app.get("/api/submissions/:subId/zip", async (req, res) => {
+  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
+  if (!team) return res.status(403).send("팀이 등록되지 않았습니다.");
+
+  const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
+  if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
+  if (sub.team_num !== team.team_num) return res.status(403).send("권한이 없습니다.");
+
+  // 해당 submission의 세션이 학생 팀에 할당된 세션인지 검증
+  const isTarget = db.prepare("SELECT 1 FROM session_team st JOIN session s ON s.id = st.session_id WHERE st.session_id = ? AND st.team_num = ? AND s.year = ?").get(sub.session_id, team.team_num, team.year);
+  if (!isTarget) return res.status(403).send("권한이 없습니다.");
+
+  const files = db.prepare("SELECT * FROM submission_file WHERE submission_id = ?").all(sub.id);
+  if (files.length === 0) return res.status(404).send("다운로드할 파일이 없습니다.");
+
+  const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
+  const sanitize = (s) => s.replace(/[/\\:*?"<>|]/g, "_");
+  const zipName = `${sanitize(session?.name || String(sub.session_id))}.zip`;
+
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(zipName)}`);
+
+  const archive = archiver("zip", { zlib: { level: 5 } });
+  archive.on("error", (err) => {
+    logger.warn(req, "file.zip", { error: err.message, submission_id: sub.id }, `#${sub.team_num}`);
+    if (!res.headersSent) res.status(500).send("압축 중 오류가 발생했습니다.");
+  });
+  archive.pipe(res);
+
+  for (const f of files) {
+    const filePath = path.join(UPLOADS_DIR, String(sub.session_id), String(sub.team_num), String(sub.id), f.stored_name);
+    if (fs.existsSync(filePath)) {
+      archive.file(filePath, { name: f.original_name });
+    }
+  }
+
+  archive.finalize();
+  logger.log(req, "file.zip", { session_name: session?.name, team_num: sub.team_num, files: files.length }, `#${sub.team_num}`);
+});
+
 /* ============================================
    Chief/Admin API
    ============================================ */
