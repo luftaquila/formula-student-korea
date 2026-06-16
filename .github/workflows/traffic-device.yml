@@ -4,14 +4,14 @@ on:
   push:
     branches: [main]
     paths:
-      - 'traffic/device/firmware/**'
+      - 'traffic/device/wireless/firmware/**'
       - '.github/workflows/traffic-device.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Keep in sync with traffic/device/firmware/tools/build.sh.
+# Keep in sync with traffic/device/wireless/firmware/tools/build.sh.
 env:
   NRFX_REF: 'v4.3.0'
   CMSIS_REF: '5.9.0'
@@ -38,27 +38,27 @@ jobs:
       - name: Cache bare-metal deps
         uses: actions/cache@v5
         with:
-          path: traffic/device/firmware/vendor
+          path: traffic/device/wireless/firmware/vendor
           key: nrf-deps-nrfx${{ env.NRFX_REF }}-cmsis${{ env.CMSIS_REF }}
 
       - name: Build
         # build.sh clones nrfx + CMSIS at the pinned refs (skipped on cache hit),
         # then configures + builds with the arm-none-eabi toolchain file.
-        run: traffic/device/firmware/tools/build.sh
+        run: traffic/device/wireless/firmware/tools/build.sh
 
       - name: Verify firmware artifacts
         run: |
-          ls -la traffic/device/firmware/build/traffic_device.uf2
-          ls -la traffic/device/firmware/build/traffic_device.elf
-          arm-none-eabi-size traffic/device/firmware/build/traffic_device.elf
+          ls -la traffic/device/wireless/firmware/build/traffic_device.uf2
+          ls -la traffic/device/wireless/firmware/build/traffic_device.elf
+          arm-none-eabi-size traffic/device/wireless/firmware/build/traffic_device.elf
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v7
         with:
           name: traffic-device-firmware
           path: |
-            traffic/device/firmware/build/traffic_device.uf2
-            traffic/device/firmware/build/traffic_device.elf
-            traffic/device/firmware/build/traffic_device.bin
+            traffic/device/wireless/firmware/build/traffic_device.uf2
+            traffic/device/wireless/firmware/build/traffic_device.elf
+            traffic/device/wireless/firmware/build/traffic_device.bin
           if-no-files-found: error
           retention-days: 30

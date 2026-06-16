@@ -295,7 +295,7 @@ RadioLib(커스텀 HAL) 기반. node_id로 역할 분기(0=마스터, 1..6=센�
 ---
 
 ## 11. KiCad
-- 프로젝트: `device/hardware/fsk-traffic.kicad_sch`. 라이브러리 `device/hardware/lib/`:
+- 프로젝트: `device/wireless/hardware/fsk-traffic.kicad_sch`. 라이브러리 `device/wireless/hardware/lib/`:
   - 심볼 `SuperMini_NRF52840.kicad_sym` → **`SuperMini_nRF52840`(또는 `nice_nano`, 동일)** 배치.
   - 풋프린트 `SuperMini_NRF52840.kicad_mod`.
 - A1 결선은 **핀 이름(P0.xx)** 으로. Ra-01SH·SSR·Molex 커넥터 심볼/풋프린트는 별도 추가 필요.
