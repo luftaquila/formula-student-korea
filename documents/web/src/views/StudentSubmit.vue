@@ -178,6 +178,11 @@ function downloadFile(fileId) {
   window.open(`${BASE_URL}/api/submissions/${submission.value.id}/files/${fileId}`, "_blank");
 }
 
+function downloadAll() {
+  if (!submission.value) return;
+  window.open(`${BASE_URL}/api/submissions/${submission.value.id}/zip`, "_blank");
+}
+
 onMounted(fetchSession);
 </script>
 
@@ -237,6 +242,10 @@ onMounted(fetchSession);
             </div>
           </div>
           <div class="file-list">
+            <div v-if="existingFiles.length > 1" class="file-item file-zip" @click="downloadAll">
+              <span class="file-name">📦 전체 다운로드</span>
+              <span class="file-size">{{ formatSize(submission.total_size) }}</span>
+            </div>
             <div v-for="f in existingFiles" :key="f.id" class="file-item" @click="downloadFile(f.id)">
               <span class="file-name">{{ f.original_name }}</span>
               <span class="file-size">{{ formatSize(f.size) }}</span>
@@ -385,6 +394,12 @@ onMounted(fetchSession);
 
 .file-item:hover {
   background: var(--bg-hover);
+}
+
+.file-zip .file-name,
+.file-zip .file-size {
+  color: var(--accent-primary);
+  font-weight: 600;
 }
 
 .file-name {

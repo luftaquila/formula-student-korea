@@ -737,6 +737,36 @@ describe('File download (student)', () => {
   });
 });
 
+describe('Submission zip download (student)', () => {
+  it('GET /api/submissions/:subId/zip serves a zip for own team', async () => {
+    const res = await fetch(`${baseUrl}/api/submissions/${submissionId}/zip`, {
+      headers: { 'Cookie': studentCookie },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'application/zip');
+    const disposition = res.headers.get('content-disposition');
+    assert.ok(disposition.includes('attachment'), 'zip should be attachment');
+    assert.ok(disposition.includes('.zip'), 'filename should end with .zip');
+    const buf = Buffer.from(await res.arrayBuffer());
+    assert.ok(buf.length > 0, 'zip body should not be empty');
+    assert.equal(buf.subarray(0, 2).toString('latin1'), 'PK', 'body should be a zip archive');
+  });
+
+  it('GET /api/submissions/:subId/zip 403 for wrong team', async () => {
+    const res = await fetch(`${baseUrl}/api/submissions/${submissionId}/zip`, {
+      headers: { 'Cookie': student2Cookie },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('GET /api/submissions/:subId/zip 404 for non-existent submission', async () => {
+    const res = await fetch(`${baseUrl}/api/submissions/99999/zip`, {
+      headers: { 'Cookie': studentCookie },
+    });
+    assert.equal(res.status, 404);
+  });
+});
+
 describe('File download (admin)', () => {
   it('GET /api/admin/submissions/:subId/files/:fileId serves PDF inline', async () => {
     const res = await fetch(`${baseUrl}/api/admin/submissions/${submissionId}/files/${fileId}`, {
