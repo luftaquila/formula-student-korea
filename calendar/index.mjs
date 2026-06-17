@@ -60,7 +60,10 @@ function toEventResponse(row) {
 // List events (public access, filtered by user role)
 app.get("/api/events", (req, res) => {
   const { timeMin, timeMax } = req.query;
-  if (!timeMin || !timeMax) return res.status(400).json({ error: "timeMin and timeMax are required" });
+  if (!timeMin || !timeMax) {
+    logger.warn(req, "event.list", { error: "timeMin and timeMax are required" });
+    return res.status(400).json({ error: "timeMin and timeMax are required" });
+  }
 
   // Normalize to comparable strings (YYYY-MM-DD or YYYY-MM-DD HH:mm)
   const normalize = (s) => s.replace("T", " ").slice(0, 16);
@@ -87,11 +90,20 @@ app.get("/api/events", (req, res) => {
 // Create event
 app.post("/api/events", (req, res) => {
   const { title, start, end } = req.body;
-  if (!title || !start || !end) return res.status(400).json({ error: "title, start, and end are required" });
-  if (start > end) return res.status(400).json({ error: "start must not be after end" });
+  if (!title || !start || !end) {
+    logger.warn(req, "event.create", { error: "title, start, and end are required", title, start, end });
+    return res.status(400).json({ error: "title, start, and end are required" });
+  }
+  if (start > end) {
+    logger.warn(req, "event.create", { error: "start must not be after end", start, end });
+    return res.status(400).json({ error: "start must not be after end" });
+  }
 
   const role = req.body.role || "official";
-  if (!ALLOWED_EVENT_ROLES.includes(role)) return res.status(400).json({ error: "Invalid role value" });
+  if (!ALLOWED_EVENT_ROLES.includes(role)) {
+    logger.warn(req, "event.create", { error: "Invalid role value", role });
+    return res.status(400).json({ error: "Invalid role value" });
+  }
   const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
   if (EVENT_ROLE_LEVELS[role] > userLevel) {
     logger.warn(req, "event.create", { error: "role exceeds own level", requested: role, actual: req.user?.role }, null);
@@ -121,11 +133,20 @@ app.post("/api/events", (req, res) => {
 app.put("/api/events/:id", (req, res) => {
   const { id } = req.params;
   const { title, start, end } = req.body;
-  if (!title || !start || !end) return res.status(400).json({ error: "title, start, and end are required" });
-  if (start > end) return res.status(400).json({ error: "start must not be after end" });
+  if (!title || !start || !end) {
+    logger.warn(req, "event.update", { error: "title, start, and end are required", title, start, end }, id);
+    return res.status(400).json({ error: "title, start, and end are required" });
+  }
+  if (start > end) {
+    logger.warn(req, "event.update", { error: "start must not be after end", start, end }, id);
+    return res.status(400).json({ error: "start must not be after end" });
+  }
 
   const role = req.body.role || "official";
-  if (!ALLOWED_EVENT_ROLES.includes(role)) return res.status(400).json({ error: "Invalid role value" });
+  if (!ALLOWED_EVENT_ROLES.includes(role)) {
+    logger.warn(req, "event.update", { error: "Invalid role value", role }, id);
+    return res.status(400).json({ error: "Invalid role value" });
+  }
   const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
   if (EVENT_ROLE_LEVELS[role] > userLevel) {
     logger.warn(req, "event.update", { error: "role exceeds own level", requested: role, actual: req.user?.role }, id);
@@ -188,11 +209,13 @@ app.get("/api/events/subscribe", (req, res) => {
 app.get("/api/events/ical", (req, res) => {
   const { role, sig } = req.query;
   if (!role || !sig || !ALLOWED_EVENT_ROLES.includes(role)) {
+    logger.warn(req, "event.ical", { error: "invalid parameters", role }, role ?? null);
     return res.status(400).send("Invalid parameters");
   }
 
   const expected = generateICalSig(role);
   if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig, "utf8"), Buffer.from(expected, "utf8"))) {
+    logger.warn(req, "event.ical", { error: "invalid signature", role }, role);
     return res.status(403).send("Invalid signature");
   }
 

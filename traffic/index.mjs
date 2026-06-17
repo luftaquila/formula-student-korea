@@ -220,7 +220,10 @@ const bridgeWatch = setInterval(() => {
       broadcastEvent("wireless:bridge", getBridgeState());
       logger.log(null, "wireless.bridge", { online: false, last_seen: lastBridgeSeenIso }, "bridge",
         { email: "system", name: "system", role: "admin" });
-    } catch (e) { console.error("[wireless] bridge watch:", e.message || e); }
+    } catch (e) {
+      logger.warn(null, "wireless.bridge", { error: e.message || String(e), online: false }, "bridge", { email: "system", name: "system", role: "admin" });
+      console.error("[wireless] bridge watch:", e.message || e);
+    }
   }
 }, 5000);
 bridgeWatch.unref?.();
@@ -233,7 +236,10 @@ const eventRetention = setInterval(() => {
     if (row && row.m > RETAIN_EVENTS) {
       db.prepare("DELETE FROM wireless_event WHERE id <= ?").run(row.m - RETAIN_EVENTS);
     }
-  } catch (e) { console.error("[wireless] event retention:", e.message || e); }
+  } catch (e) {
+    logger.warn(null, "wireless.event.retention", { error: e.message || String(e) }, "wireless_event", { email: "system", name: "system", role: "admin" });
+    console.error("[wireless] event retention:", e.message || e);
+  }
 }, 60000);
 eventRetention.unref?.();
 
@@ -356,6 +362,7 @@ app.get("/api/records/visibility", (req, res) => {
 app.put("/api/records/:name/visibility", (req, res) => {
   const validation = validateRecordName(req.params.name);
   if (!validation.valid) {
+    logger.warn(req, "record.visibility", { error: validation.error }, req.params.name);
     return res.status(400).send(validation.error);
   }
 
@@ -568,7 +575,7 @@ app.delete("/api/records/:name", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "record.delete", null, name);
+  logger.log(req, "record.delete", { dropped: true }, name);
 
   // SSE 브로드캐스트
   broadcastEvent("records", { type: "delete", name, recordFiles: getRecordFiles() });
@@ -639,7 +646,10 @@ app.get("/api/event-modes", (req, res) => {
 app.put("/api/event-modes/:type", (req, res) => {
   const eventType = req.params.type;
   const row = db.prepare("SELECT enabled FROM event_mode WHERE event_type = ?").get(eventType);
-  if (!row) return res.status(404).send("경기 모드를 찾을 수 없습니다.");
+  if (!row) {
+    logger.warn(req, "event_mode.toggle", { error: "not_found" }, eventType);
+    return res.status(404).send("경기 모드를 찾을 수 없습니다.");
+  }
 
   const newEnabled = row.enabled ? 0 : 1;
   const result = dbRun(() =>
@@ -746,7 +756,7 @@ app.post("/api/wireless/light", (req, res) => {
   if (gt === undefined) return res.status(400).send("green_tick이 올바르지 않습니다.");
   const gtParam = color === "green" ? gt : null; // green tick은 green일 때만 갱신
 
-  markBridgeSeen();
+  if (markBridgeSeen()) logger.log(req, "wireless.bridge", { online: true, last_seen: lastBridgeSeenIso }, "bridge");
   const result = dbRun(() => {
     db.prepare("UPDATE wireless_light SET light_color = ?, green_tick = COALESCE(?, green_tick), updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE id = 1").run(color, gtParam);
     return getLightState();

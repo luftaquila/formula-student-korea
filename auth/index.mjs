@@ -92,6 +92,17 @@ const validateUser = (email) => {
 
 const logger = createLogger(db, "auth");
 
+// 로그 집계 실패 폭주 방지: action+service별 최소 60초 간격 throttle
+const _aggWarn = new Map();
+function warnAggThrottled(action, detail, target) {
+  const t = Date.now();
+  const k = action + "|" + (target || "");
+  const last = _aggWarn.get(k) || 0;
+  if (t - last < 60000) return;
+  _aggWarn.set(k, t);
+  logger.warn(null, action, detail, target);
+}
+
 const EMAIL_SERVER = process.env.EMAIL_SERVER;
 
 async function notifyNewUser(emails) {
@@ -148,12 +159,21 @@ app.get("/api/session", (req, res) => {
 app.get("/api/forward-auth", (req, res) => {
   const key = req.headers["x-forward-auth-key"];
   const secret = process.env.INTERNAL_SECRET;
-  if (!key || !secret) return res.status(403).send();
+  if (!key || !secret) {
+    logger.warn(req, "auth.forward_auth_denied", { reason: "missing_key_or_secret" });
+    return res.status(403).send();
+  }
   const keyHash = crypto.createHash("sha256").update(key).digest();
   const secretHash = crypto.createHash("sha256").update(secret).digest();
-  if (!crypto.timingSafeEqual(keyHash, secretHash)) return res.status(403).send();
+  if (!crypto.timingSafeEqual(keyHash, secretHash)) {
+    logger.warn(req, "auth.forward_auth_denied", { reason: "key_mismatch" });
+    return res.status(403).send();
+  }
   const requiredRole = req.query.role || "official";
-  if (!req.user) return res.status(401).send("인증이 필요합니다.");
+  if (!req.user) {
+    logger.warn(req, "auth.forward_auth_denied", { reason: "no_user" });
+    return res.status(401).send("인증이 필요합니다.");
+  }
   if ((ROLE_LEVELS[req.user.role] || 0) < (ROLE_LEVELS[requiredRole] || Infinity)) {
     logger.warn(req, "auth.forward_auth_denied", { required: requiredRole, actual: req.user.role }, req.user.email);
     return res.status(403).send("권한이 없습니다.");
@@ -407,6 +427,7 @@ app.post("/api/users", (req, res) => {
 
   if (!result.success) {
     if (result.error.includes("UNIQUE")) {
+      logger.warn(req, "user.create", { error: "duplicate" }, email.trim().toLowerCase());
       return res.status(400).send("이미 등록된 이메일입니다.");
     }
     logger.warn(req, "user.create", { error: result.error }, email.trim().toLowerCase());
@@ -470,7 +491,10 @@ app.patch("/api/users/bulk", (req, res) => {
   // ADMIN_EMAIL 보호
   if (ADMIN_EMAIL && !active) {
     const protectedUser = db.prepare("SELECT id FROM users WHERE email = ?").get(ADMIN_EMAIL);
-    if (protectedUser && numIds.includes(protectedUser.id)) return res.status(400).send("기본 관리자는 비활성화할 수 없습니다.");
+    if (protectedUser && numIds.includes(protectedUser.id)) {
+      logger.warn(req, "user.bulk_toggle", { reason: "protected_admin", id: protectedUser.id });
+      return res.status(400).send("기본 관리자는 비활성화할 수 없습니다.");
+    }
   }
 
   const placeholders = numIds.map(() => "?").join(",");
@@ -500,16 +524,23 @@ app.delete("/api/users/bulk", (req, res) => {
   // ADMIN_EMAIL 보호
   if (ADMIN_EMAIL) {
     const protectedUser = db.prepare(`SELECT id FROM users WHERE email = ?`).get(ADMIN_EMAIL);
-    if (protectedUser && numIds.includes(protectedUser.id)) return res.status(400).send("기본 관리자는 삭제할 수 없습니다.");
+    if (protectedUser && numIds.includes(protectedUser.id)) {
+      logger.warn(req, "user.bulk_delete", { reason: "protected_admin", id: protectedUser.id });
+      return res.status(400).send("기본 관리자는 삭제할 수 없습니다.");
+    }
   }
 
   const placeholders = numIds.map(() => "?").join(",");
 
+  let denyReason = null;
   const txResult = dbRun(() => db.transaction(() => {
     // 마지막 관리자 삭제 방지
     const totalAdmins = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
     const adminsToDelete = db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND id IN (${placeholders})`).get(...numIds).cnt;
-    if (totalAdmins - adminsToDelete < 1) throw { status: 400, message: "마지막 관리자는 삭제할 수 없습니다." };
+    if (totalAdmins - adminsToDelete < 1) {
+      denyReason = "last_admin";
+      throw { status: 400, message: "마지막 관리자는 삭제할 수 없습니다." };
+    }
 
     const emails = db.prepare(`SELECT email FROM users WHERE id IN (${placeholders})`).all(...numIds).map(r => r.email);
     db.prepare(`DELETE FROM ops_display WHERE user_id IN (${placeholders})`).run(...numIds);
@@ -517,7 +548,7 @@ app.delete("/api/users/bulk", (req, res) => {
     return { changes: delResult.changes, emails };
   })());
   if (!txResult.success) {
-    logger.warn(req, "user.bulk_delete", { error: txResult.error });
+    logger.warn(req, "user.bulk_delete", denyReason ? { error: txResult.error, reason: denyReason, ids: numIds } : { error: txResult.error });
     return res.status(txResult.status).send(txResult.error);
   }
 
@@ -536,19 +567,27 @@ app.patch("/api/users/:id", (req, res) => {
   // 사전 검증
   if (role !== undefined) {
     if (!VALID_ROLES.includes(role)) return res.status(400).send("올바르지 않은 역할입니다.");
-    if (user.email === ADMIN_EMAIL && role !== "admin") return res.status(400).send("기본 관리자의 역할은 변경할 수 없습니다.");
+    if (user.email === ADMIN_EMAIL && role !== "admin") {
+      logger.warn(req, "user.update", { reason: "protected_admin", role }, user.email);
+      return res.status(400).send("기본 관리자의 역할은 변경할 수 없습니다.");
+    }
   }
 
   if (active !== undefined && user.email === ADMIN_EMAIL) {
+    logger.warn(req, "user.update", { reason: "protected_admin", active }, user.email);
     return res.status(400).send("기본 관리자는 비활성화할 수 없습니다.");
   }
 
   // 트랜잭션으로 원자적 업데이트
+  let denyReason = null;
   const result = dbRun(() => {
     db.transaction(() => {
       if (role !== undefined && user.role === "admin" && role !== "admin") {
         const adminCount = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
-        if (adminCount <= 1) throw { status: 400, message: "마지막 관리자는 강등할 수 없습니다." };
+        if (adminCount <= 1) {
+          denyReason = "last_admin_demote";
+          throw { status: 400, message: "마지막 관리자는 강등할 수 없습니다." };
+        }
       }
       if (role !== undefined) db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id);
       if (realname !== undefined) db.prepare("UPDATE users SET realname = ? WHERE id = ?").run(realname, id);
@@ -558,7 +597,7 @@ app.patch("/api/users/:id", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "user.update", { error: result.error }, user.email);
+    logger.warn(req, "user.update", denyReason ? { error: result.error, reason: denyReason, role } : { error: result.error }, user.email);
     return res.status(result.status).send(result.error);
   }
 
@@ -580,12 +619,18 @@ app.delete("/api/users/:id", (req, res) => {
   if (!user) return res.status(404).send("사용자를 찾을 수 없습니다.");
 
   // ADMIN_EMAIL 보호
-  if (user.email === ADMIN_EMAIL) return res.status(400).send("기본 관리자는 삭제할 수 없습니다.");
+  if (user.email === ADMIN_EMAIL) {
+    logger.warn(req, "user.delete", { reason: "protected_admin" }, user.email);
+    return res.status(400).send("기본 관리자는 삭제할 수 없습니다.");
+  }
 
   // 마지막 admin 삭제 방지
   if (user.role === "admin") {
     const adminCount = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
-    if (adminCount <= 1) return res.status(400).send("마지막 관리자는 삭제할 수 없습니다.");
+    if (adminCount <= 1) {
+      logger.warn(req, "user.delete", { reason: "last_admin" }, user.email);
+      return res.status(400).send("마지막 관리자는 삭제할 수 없습니다.");
+    }
   }
 
   const result = dbRun(() => db.transaction(() => {
@@ -623,7 +668,10 @@ app.post("/api/ops-contacts", (req, res) => {
 
   const user = db.prepare("SELECT email, name, role FROM users WHERE id = ? AND active = 1").get(user_id);
   if (!user) return res.status(404).send("사용자를 찾을 수 없습니다.");
-  if (!["official", "chief", "admin"].includes(user.role)) return res.status(400).send("official 이상 권한 사용자만 추가할 수 있습니다.");
+  if (!["official", "chief", "admin"].includes(user.role)) {
+    logger.warn(req, "ops_contact.create", { reason: "insufficient_role", role: user.role }, user.email);
+    return res.status(400).send("official 이상 권한 사용자만 추가할 수 있습니다.");
+  }
 
   const result = dbRun(() => db.prepare("INSERT OR IGNORE INTO ops_display (user_id) VALUES (?)").run(user_id));
   if (!result.success) {
@@ -708,7 +756,7 @@ app.get("/api/admin/logs", async (req, res) => {
         const total = db.prepare(`SELECT COUNT(*) as cnt FROM logs ${where}`).get(...params).cnt;
         const logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY id DESC LIMIT 500`).all(...params);
         return { name, logs: logs.map(l => ({ ...l, _service: name })), total };
-      } catch (e) { console.error("[auth] log query error:", name, e.message); return { name, logs: [], total: 0 }; }
+      } catch (e) { console.error("[auth] log query error:", name, e.message); logger.warn(null, "logs.query_failed", { error: e.message }, "auth"); return { name, logs: [], total: 0 }; }
     }
 
     try {
@@ -716,11 +764,15 @@ app.get("/api/admin/logs", async (req, res) => {
         headers: { "X-Internal-Service": process.env.INTERNAL_SECRET || "" },
         signal: AbortSignal.timeout(5000),
       });
-      if (!fetchRes.ok) return { name, logs: [], total: 0 };
+      if (!fetchRes.ok) {
+        warnAggThrottled("logs.aggregate_failed", { service: name, status: fetchRes.status }, name);
+        return { name, logs: [], total: 0 };
+      }
       const data = await fetchRes.json();
       return { name, logs: (data.logs || []).map(l => ({ ...l, _service: name })), total: data.total || 0 };
     } catch (e) {
       console.error("[auth] log fetch error:", name, e.message);
+      warnAggThrottled("logs.aggregate_failed", { service: name, error: e.message }, name);
       return { name, logs: [], total: 0 };
     }
   });
