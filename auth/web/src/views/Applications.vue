@@ -1,0 +1,282 @@
+<script setup>
+import { ref, computed, onMounted } from "vue";
+import { useNotification } from "@shared/useNotification.js";
+
+const BASE_URL = import.meta.env.PROD ? "/auth" : "";
+const { success, error } = useNotification();
+
+// 관리자 확인
+function getUserFromCookie() {
+  const m = document.cookie.match(/fsk_user=([^;]+)/);
+  if (!m) return null;
+  try { return JSON.parse(decodeURIComponent(m[1])); }
+  catch { return null; }
+}
+const currentUser = getUserFromCookie();
+if (!currentUser || currentUser.role !== "admin") {
+  window.location.href = "/";
+}
+
+const applications = ref([]);
+const loading = ref(true);
+const selectedIds = ref(new Set());
+const approveRole = ref("student");
+const applicationsOpen = ref(false);
+
+const allSelected = computed(
+  () => applications.value.length > 0 && applications.value.every((a) => selectedIds.value.has(a.id)),
+);
+
+function toggleAll() {
+  selectedIds.value = allSelected.value ? new Set() : new Set(applications.value.map((a) => a.id));
+}
+
+function toggleOne(id) {
+  const s = new Set(selectedIds.value);
+  if (s.has(id)) s.delete(id);
+  else s.add(id);
+  selectedIds.value = s;
+}
+
+async function fetchApplications(showLoading = false) {
+  if (showLoading) loading.value = true;
+  try {
+    const res = await fetch(`${BASE_URL}/api/applications`);
+    if (res.status === 401) { window.location.href = "/"; return; }
+    if (!res.ok) throw new Error(await res.text());
+    applications.value = await res.json();
+    selectedIds.value = new Set();
+  } catch (e) {
+    error(e.message);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function fetchConfig() {
+  try {
+    const res = await fetch(`${BASE_URL}/api/apply/config`);
+    if (res.ok) applicationsOpen.value = (await res.json()).open;
+  } catch { /* noop */ }
+}
+
+async function toggleOpen() {
+  const next = !applicationsOpen.value;
+  try {
+    const res = await fetch(`${BASE_URL}/api/applications/config`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ open: next }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    applicationsOpen.value = next;
+    success(next ? "신청을 받습니다." : "신청을 받지 않습니다.");
+  } catch (e) {
+    error(e.message);
+  }
+}
+
+async function approveSelected() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  if (!confirm(`선택한 ${ids.length}건을 ${approveRole.value} 권한으로 계정에 추가할까요?`)) return;
+  try {
+    const res = await fetch(`${BASE_URL}/api/applications/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, role: approveRole.value }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    let msg = `${data.added}건을 계정에 추가했습니다.`;
+    if (data.skipped > 0) msg += ` · ${data.skipped}건은 이미 등록`;
+    success(msg);
+    await fetchApplications();
+  } catch (e) {
+    error(e.message);
+  }
+}
+
+function fmtDate(s) {
+  return s ? new Date(s + "Z").toLocaleString("ko-KR") : "-";
+}
+
+onMounted(() => {
+  fetchApplications(true);
+  fetchConfig();
+});
+</script>
+
+<template>
+  <div class="applications-container">
+    <div class="page-nav">
+      <router-link to="/" class="btn btn-sm btn-ghost">← 계정 관리</router-link>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h3>계정 신청 <span class="count-badge">{{ applications.length }}</span></h3>
+        <div class="header-actions">
+          <label class="open-toggle">
+            <span>신청 받기</span>
+            <span class="toggle">
+              <input type="checkbox" :checked="applicationsOpen" @change="toggleOpen" />
+              <span class="toggle-slider"></span>
+            </span>
+          </label>
+          <select v-model="approveRole" class="role-select">
+            <option value="student">Student</option>
+            <option value="official">Official</option>
+            <option value="chief">Chief</option>
+            <option value="admin">Admin</option>
+          </select>
+          <button class="btn btn-sm btn-primary" :disabled="selectedIds.size === 0" @click="approveSelected">
+            선택 계정 추가 ({{ selectedIds.size }})
+          </button>
+        </div>
+      </div>
+
+      <div class="card-body table-body">
+        <div v-if="loading" class="loading">
+          <div class="loading-spinner"></div>
+        </div>
+
+        <div v-else class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
+                <th class="col-email">이메일</th>
+                <th class="col-name">이름</th>
+                <th class="col-realname">실명</th>
+                <th class="col-phone">전화번호</th>
+                <th class="col-affiliation">학교/팀</th>
+                <th class="col-date">신청일</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="a in applications" :key="a.id">
+                <td class="col-check"><input type="checkbox" :checked="selectedIds.has(a.id)" @change="toggleOne(a.id)" /></td>
+                <td class="col-email">{{ a.email }}</td>
+                <td class="col-name">{{ a.name || "-" }}</td>
+                <td class="col-realname">{{ a.realname || "-" }}</td>
+                <td class="col-phone">{{ a.phone || "-" }}</td>
+                <td class="col-affiliation">{{ a.affiliation || "-" }}</td>
+                <td class="col-date">{{ fmtDate(a.created_at) }}</td>
+              </tr>
+              <tr v-if="applications.length === 0">
+                <td colspan="7" class="empty-state">신청 내역이 없습니다.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+@import "@shared/styles/base.css";
+</style>
+
+<style scoped>
+.applications-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.page-nav {
+  display: flex;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-left: auto;
+}
+
+.open-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.count-badge {
+  background: var(--accent-primary);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.125rem 0.5rem;
+  border-radius: 12px;
+  margin-left: 0.25rem;
+}
+
+.table-body {
+  padding: 0 !important;
+  overflow: auto;
+}
+
+.col-check {
+  width: 1%;
+  white-space: nowrap;
+  text-align: center !important;
+}
+
+.col-check input[type="checkbox"] {
+  cursor: pointer;
+  width: 1rem;
+  height: 1rem;
+}
+
+.col-email,
+.col-name,
+.col-realname,
+.col-phone,
+.col-affiliation,
+.col-date {
+  width: 1%;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+.col-date {
+  color: var(--text-secondary);
+}
+
+.role-select {
+  padding: 0.25rem 0.375rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+@media (max-width: 768px) {
+  .card-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .header-actions {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+  }
+
+  .open-toggle {
+    justify-content: space-between;
+  }
+}
+</style>

@@ -12,6 +12,8 @@ const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     { path: "/", component: () => import("./views/Manage.vue") },
+    { path: "/applications", component: () => import("./views/Applications.vue") },
+    { path: "/apply", component: () => import("./views/Apply.vue") },
     { path: "/logs", component: () => import("./views/Logs.vue") },
   ],
 });

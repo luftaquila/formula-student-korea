@@ -29,7 +29,7 @@ export function createJWT(payload, secret, expiresInSec = 7 * 24 * 3600) {
   return `${data}.${signature}`;
 }
 
-function verifyJWT(token, secret) {
+export function verifyJWT(token, secret) {
   const [headerB64, payloadB64, signatureB64] = token.split(".");
   if (!headerB64 || !payloadB64 || !signatureB64) throw new Error("Invalid token");
   const header = JSON.parse(Buffer.from(headerB64, "base64url").toString());

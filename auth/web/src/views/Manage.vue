@@ -131,9 +131,10 @@ async function deleteUser(user) {
   }
 }
 
-// Realname / Phone click-to-edit
+// Realname / Phone / Affiliation click-to-edit
 const editingRealnameId = ref(null);
 const editingPhoneId = ref(null);
+const editingAffiliationId = ref(null);
 
 function startRealnameEdit(userId) {
   editingRealnameId.value = userId;
@@ -141,6 +142,10 @@ function startRealnameEdit(userId) {
 
 function startPhoneEdit(userId) {
   editingPhoneId.value = userId;
+}
+
+function startAffiliationEdit(userId) {
+  editingAffiliationId.value = userId;
 }
 
 function inlineInputRef(el) {
@@ -175,6 +180,22 @@ async function handlePhoneChange(user, value) {
     });
     if (!res.ok) throw new Error(await res.text());
     user.phone = formatted;
+  } catch (e) {
+    notyf.error(e.message);
+  }
+}
+
+async function handleAffiliationChange(user, value) {
+  editingAffiliationId.value = null;
+  if (value === (user.affiliation || "")) return;
+  try {
+    const res = await fetch(`${BASE_URL}/api/users/${user.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ affiliation: value }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    user.affiliation = value;
   } catch (e) {
     notyf.error(e.message);
   }
@@ -259,8 +280,8 @@ async function bulkDelete() {
 
 // CSV export
 function exportCSV() {
-  const header = "email,name,role,realname,phone";
-  const rows = users.value.map((u) => [u.email, u.name || "", u.role, u.realname || "", u.phone || ""].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
+  const header = "email,name,role,realname,phone,affiliation";
+  const rows = users.value.map((u) => [u.email, u.name || "", u.role, u.realname || "", u.phone || "", u.affiliation || ""].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
   const csv = "\uFEFF" + [header, ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -290,10 +311,10 @@ function uploadCSV() {
 
     const users = [];
     for (let i = start; i < rows.length; i++) {
-      // CSV format: email, name (ignored — set via Google OAuth), role, realname, phone
-      const [email, , role, realname, phone] = [rows[i][0], rows[i][1], rows[i][2], rows[i][3], rows[i][4]];
+      // CSV format: email, name (ignored — set via Google OAuth), role, realname, phone, affiliation
+      const [email, , role, realname, phone, affiliation] = [rows[i][0], rows[i][1], rows[i][2], rows[i][3], rows[i][4], rows[i][5]];
       if (!email || !email.trim()) continue;
-      users.push({ email: email.trim(), role: role?.trim() || "official", realname: realname?.trim() || "", phone: phone?.trim() || "" });
+      users.push({ email: email.trim(), role: role?.trim() || "official", realname: realname?.trim() || "", phone: phone?.trim() || "", affiliation: affiliation?.trim() || "" });
     }
 
     if (users.length === 0) { notyf.error("추가할 사용자가 없습니다."); return; }
@@ -507,6 +528,7 @@ onMounted(() => {
             </select>
           </div>
           <div class="header-btns">
+            <router-link to="/applications" class="btn btn-sm btn-primary">계정 신청 관리</router-link>
             <button v-if="selectedIds.size > 0" class="btn btn-sm btn-ghost" @click="bulkDeactivate">선택 비활성화 ({{ selectedIds.size }})</button>
             <button v-if="selectedIds.size > 0" class="btn btn-sm btn-danger" @click="bulkDelete">선택 삭제 ({{ selectedIds.size }})</button>
             <button class="btn btn-sm btn-ghost" @click="exportCSV">CSV 다운로드</button>
@@ -530,6 +552,7 @@ onMounted(() => {
                 <th class="col-role sortable" @click="handleSort('role')">역할 <span class="sort-icon">{{ getSortIcon('role') }}</span></th>
                 <th class="col-realname">실명</th>
                 <th class="col-phone">전화번호</th>
+                <th class="col-affiliation">학교/팀</th>
                 <th class="col-date sortable" @click="handleSort('created_at')">등록일 <span class="sort-icon">{{ getSortIcon('created_at') }}</span></th>
                 <th class="col-action">액션</th>
               </tr>
@@ -567,6 +590,18 @@ onMounted(() => {
                   />
                   <span v-else class="inline-edit-text">{{ user.phone || '' }}</span>
                 </td>
+                <td class="col-affiliation inline-edit-cell" @click="startAffiliationEdit(user.id)">
+                  <input
+                    v-if="editingAffiliationId === user.id"
+                    :ref="inlineInputRef"
+                    class="inline-edit-input"
+                    type="text"
+                    :value="user.affiliation || ''"
+                    @blur="handleAffiliationChange(user, $event.target.value)"
+                    @keyup.enter="$event.target.blur()"
+                  />
+                  <span v-else class="inline-edit-text">{{ user.affiliation || '' }}</span>
+                </td>
                 <td class="col-date">{{ user.created_at ? new Date(user.created_at + 'Z').toLocaleString("ko-KR") : "-" }}</td>
                 <td class="col-action">
                   <div class="action-btns">
@@ -603,7 +638,7 @@ onMounted(() => {
                 </td>
               </tr>
               <tr v-if="users.length === 0">
-                <td colspan="8" class="empty-state">사용자가 없습니다.</td>
+                <td colspan="9" class="empty-state">사용자가 없습니다.</td>
               </tr>
             </tbody>
           </table>
@@ -763,6 +798,7 @@ onMounted(() => {
 .col-role,
 .col-realname,
 .col-phone,
+.col-affiliation,
 .col-date,
 .col-action {
   width: 1%;
@@ -770,7 +806,8 @@ onMounted(() => {
 }
 
 .col-realname,
-.col-phone {
+.col-phone,
+.col-affiliation {
   font-size: 0.8125rem;
 }
 

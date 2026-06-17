@@ -979,3 +979,179 @@ describe('Auth middleware integration', () => {
     assert.equal(res.status, 401);
   });
 });
+
+// ─── 계정 신청 (Account Application) ───────────────────────────────────────
+describe('Account applications', () => {
+  let applicantCookie;
+
+  before(async () => {
+    const { createJWT } = await import('../../shared/express-setup.mjs');
+    applicantCookie = (email, name) =>
+      `fsk_applicant=${createJWT({ email, name, applicant: true }, TEST_SECRET, 3600)}`;
+  });
+
+  it('GET /api/apply/config is public and defaults to closed', async () => {
+    const res = await client.get('/api/apply/config');
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).open, false);
+  });
+
+  it('PATCH /api/applications/config requires admin (401 without cookie)', async () => {
+    const res = await client.patch('/api/applications/config', { body: { open: true } });
+    assert.equal(res.status, 401);
+  });
+
+  it('admin can open applications', async () => {
+    const res = await client.patch('/api/applications/config', { body: { open: true }, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await (await client.get('/api/apply/config')).json()).open, true);
+  });
+
+  it('GET /api/apply/me returns 401 without session or applicant cookie', async () => {
+    const res = await client.get('/api/apply/me');
+    assert.equal(res.status, 401);
+  });
+
+  it('GET /api/apply/me reports registered for a logged-in user', async () => {
+    const res = await client.get('/api/apply/me', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).registered, true);
+  });
+
+  it('GET /api/apply/me returns application:null for a new applicant', async () => {
+    const res = await client.get('/api/apply/me', { cookie: applicantCookie('alice@example.com', 'Alice') });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.registered, false);
+    assert.equal(data.application, null);
+    assert.equal(data.applicationsOpen, true);
+    assert.equal(data.email, 'alice@example.com');
+  });
+
+  it('POST /api/apply rejects missing required fields (400)', async () => {
+    const res = await client.post('/api/apply', {
+      body: { realname: 'Alice', phone: '', affiliation: 'KU' },
+      cookie: applicantCookie('alice@example.com', 'Alice'),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('POST /api/apply creates an application', async () => {
+    const c = applicantCookie('alice@example.com', 'Alice');
+    const res = await client.post('/api/apply', {
+      body: { realname: '앨리스', phone: '010-1111-2222', affiliation: '한국대 FSAE' },
+      cookie: c,
+    });
+    assert.equal(res.status, 201);
+    const me = await (await client.get('/api/apply/me', { cookie: c })).json();
+    assert.ok(me.application);
+    assert.equal(me.application.realname, '앨리스');
+    assert.equal(me.application.affiliation, '한국대 FSAE');
+  });
+
+  it('POST /api/apply rejects a duplicate application (409)', async () => {
+    const res = await client.post('/api/apply', {
+      body: { realname: 'A', phone: '010-0000-0000', affiliation: 'X' },
+      cookie: applicantCookie('alice@example.com', 'Alice'),
+    });
+    assert.equal(res.status, 409);
+  });
+
+  it('PATCH /api/apply updates the application', async () => {
+    const c = applicantCookie('alice@example.com', 'Alice');
+    const res = await client.patch('/api/apply', {
+      body: { realname: '앨리스2', phone: '010-3333-4444', affiliation: '한국대 BAJA' },
+      cookie: c,
+    });
+    assert.equal(res.status, 200);
+    const me = await (await client.get('/api/apply/me', { cookie: c })).json();
+    assert.equal(me.application.realname, '앨리스2');
+    assert.equal(me.application.affiliation, '한국대 BAJA');
+  });
+
+  it('applicant cookie cannot access admin API /api/users (401)', async () => {
+    const res = await client.get('/api/users', { cookie: applicantCookie('alice@example.com', 'Alice') });
+    assert.equal(res.status, 401);
+  });
+
+  it('GET /api/applications lists pending applications (admin)', async () => {
+    const res = await client.get('/api/applications', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const apps = await res.json();
+    assert.ok(apps.some((a) => a.email === 'alice@example.com'));
+  });
+
+  it('POST /api/applications/approve creates users (copying affiliation) and clears the application', async () => {
+    const apps = await (await client.get('/api/applications', { cookie: adminCookie })).json();
+    const alice = apps.find((a) => a.email === 'alice@example.com');
+    assert.ok(alice);
+    const res = await client.post('/api/applications/approve', {
+      body: { ids: [alice.id], role: 'student' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).added, 1);
+
+    const users = await (await client.get('/api/users', { cookie: adminCookie })).json();
+    const u = users.find((x) => x.email === 'alice@example.com');
+    assert.ok(u);
+    assert.equal(u.role, 'student');
+    assert.equal(u.realname, '앨리스2');
+    assert.equal(u.affiliation, '한국대 BAJA');
+
+    const apps2 = await (await client.get('/api/applications', { cookie: adminCookie })).json();
+    assert.ok(!apps2.some((a) => a.email === 'alice@example.com'));
+  });
+
+  it('POST /api/applications/approve rejects an invalid role (400)', async () => {
+    const res = await client.post('/api/applications/approve', {
+      body: { ids: [9999], role: 'superuser' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('POST /api/apply rejects an already-registered user (409)', async () => {
+    const res = await client.post('/api/apply', {
+      body: { realname: 'A', phone: '010-0000-0000', affiliation: 'X' },
+      cookie: applicantCookie('alice@example.com', 'Alice'),
+    });
+    assert.equal(res.status, 409);
+  });
+
+  it('POST /api/apply is rejected when applications are closed (403)', async () => {
+    await client.patch('/api/applications/config', { body: { open: false }, cookie: adminCookie });
+    const res = await client.post('/api/apply', {
+      body: { realname: 'Bob', phone: '010-5555-6666', affiliation: 'Y' },
+      cookie: applicantCookie('bob@example.com', 'Bob'),
+    });
+    assert.equal(res.status, 403);
+  });
+});
+
+// ─── affiliation(학교/팀) on users ─────────────────────────────────────────
+describe('users affiliation column', () => {
+  it('PATCH /api/users/:id updates affiliation', async () => {
+    const created = await (await client.post('/api/users', {
+      body: { email: 'carol@example.com', role: 'official' },
+      cookie: adminCookie,
+    })).json();
+    const res = await client.patch(`/api/users/${created.id}`, {
+      body: { affiliation: '서울대 FSAE' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const users = await (await client.get('/api/users', { cookie: adminCookie })).json();
+    assert.equal(users.find((u) => u.email === 'carol@example.com').affiliation, '서울대 FSAE');
+  });
+
+  it('POST /api/users/bulk accepts affiliation', async () => {
+    const res = await client.post('/api/users/bulk', {
+      body: { users: [{ email: 'dave@example.com', role: 'student', realname: 'Dave', phone: '010-7777-8888', affiliation: '연세대' }] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const users = await (await client.get('/api/users', { cookie: adminCookie })).json();
+    assert.equal(users.find((u) => u.email === 'dave@example.com').affiliation, '연세대');
+  });
+});

@@ -2,7 +2,7 @@ import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase, addColumn } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, createJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts } from "../shared/express-setup.mjs";
+import { createApp, setupProcessHandlers, createDbRun, createJWT, verifyJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts } from "../shared/express-setup.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
 import { createLogger } from "../shared/logger.mjs";
 
@@ -58,6 +58,30 @@ if (roleCheck && !roleCheck.sql.includes("student")) {
     `);
   })();
 }
+
+// 마이그레이션: affiliation(학교/팀) 컬럼 추가 (realname/phone과 동일하게 optional)
+// users_new 재빌드(위)는 1회성이라 affiliation을 포함하지 않으므로 idempotent한 addColumn으로 보강
+addColumn(db, "users", "affiliation TEXT DEFAULT ''");
+
+// 관리자 토글 등 key/value 설정 저장소
+db.exec(`CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+)`);
+// 계정 신청 접수 기본값: 닫힘
+db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('applications_open', '0')").run();
+
+// 계정 신청 (승인 시 users로 이동 후 삭제). email UNIQUE로 1인 1신청 보장
+db.exec(`CREATE TABLE IF NOT EXISTS applications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT UNIQUE NOT NULL,
+  name TEXT,
+  realname TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '',
+  affiliation TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
 
 db.exec(`CREATE TABLE IF NOT EXISTS ops_contacts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,6 +154,9 @@ const app = createApp({ express, validateUser, db }, (req) => {
   if (req.path.startsWith("/api/ops-contacts") && req.method !== "GET") return "admin";
   if (req.path.startsWith("/api/ops-contacts")) return "official";
   if (req.path === "/api/logs") return "admin";
+  if (req.path.startsWith("/api/applications")) return "admin"; // 신청 관리: 관리자 전용
+  if (req.path === "/api/apply/config") return null;            // 신청 가능 여부: 공개
+  if (req.path.startsWith("/api/apply")) return null;           // 신청자 API: 공개(핸들러가 fsk_applicant 검증)
   if (req.path.startsWith("/api/")) return "admin"; // API 기본값: default-close
   return null; // SPA
 });
@@ -166,6 +193,27 @@ app.get("/api/forward-auth", (req, res) => {
    DB 헬퍼
    ============================================ */
 const dbRun = createDbRun();
+
+/* ============================================
+   계정 신청 헬퍼
+   ============================================ */
+// 신청 접수가 열려 있는지
+const isApplicationsOpen = () =>
+  db.prepare("SELECT value FROM settings WHERE key = 'applications_open'").get()?.value === "1";
+
+// fsk_applicant 쿠키에서 구글 인증된 신청자 신원을 검증해 반환 (없거나 무효면 null).
+// role이 없는 별도 토큰이므로 어떤 admin/user API도 통과하지 못한다.
+function getApplicant(req) {
+  const token = req.cookies.fsk_applicant;
+  if (!token || !process.env.JWT_SECRET) return null;
+  try {
+    const p = verifyJWT(token, process.env.JWT_SECRET);
+    if (!p.applicant || !p.email) return null;
+    return { email: p.email, name: p.name };
+  } catch {
+    return null;
+  }
+}
 
 /* ============================================
    OAuth Rate Limiter
@@ -322,10 +370,27 @@ app.get("/api/callback", async (req, res) => {
     }
 
     if (!user || !user.active) {
-      const reason = !user ? "unregistered" : "deactivated";
-      logger.warn(req, "user.login_failed", { reason }, email, { email, name });
+      // 비활성 계정: 항상 거부
+      if (user && !user.active) {
+        logger.warn(req, "user.login_failed", { reason: "deactivated" }, email, { email, name });
+        res.setHeader("Set-Cookie", clearNonceCookie);
+        return res.redirect("/?login_error=deactivated");
+      }
+      // 미등록 계정: 신청이 열려 있으면 신청 흐름으로, 아니면 기존대로 거부
+      if (isApplicationsOpen()) {
+        const applicantJwt = createJWT({ email, name, applicant: true }, process.env.JWT_SECRET, 3600);
+        const applicantOpts = formatCookieOpts(3600, isSecureConnection(req));
+        res.setHeader("Set-Cookie", [
+          `fsk_applicant=${applicantJwt}; HttpOnly; ${applicantOpts}`,
+          clearNonceCookie,
+        ]);
+        logger.log(req, "applicant.login", { name }, email, { email, name });
+        // 브라우저는 Caddy의 /auth prefix 스트립을 모르므로 전체 경로로 리다이렉트
+        return res.redirect("/auth/apply");
+      }
+      logger.warn(req, "user.login_failed", { reason: "unregistered" }, email, { email, name });
       res.setHeader("Set-Cookie", clearNonceCookie);
-      return res.redirect(`/?login_error=${reason}`);
+      return res.redirect("/?login_error=unregistered");
     }
 
     // Update name from Google profile
@@ -373,6 +438,167 @@ app.post("/api/logout", (req, res) => {
   res.status(200).send();
 });
 
+/* ============================================
+   계정 신청 (Account Application)
+   ============================================ */
+
+// GET /api/apply/config - 신청 가능 여부 (공개)
+app.get("/api/apply/config", (req, res) => {
+  res.json({ open: isApplicationsOpen() });
+});
+
+// GET /api/apply/me - 현재 세션/신청자 상태
+app.get("/api/apply/me", (req, res) => {
+  // 이미 로그인된(등록된) 사용자
+  if (req.user) {
+    return res.json({ registered: true, email: req.user.email, name: req.user.name });
+  }
+  const applicant = getApplicant(req);
+  if (!applicant) return res.status(401).send("인증이 필요합니다.");
+  const application = db.prepare(
+    "SELECT realname, phone, affiliation, created_at, updated_at FROM applications WHERE email = ?",
+  ).get(applicant.email) || null;
+  res.json({
+    registered: false,
+    email: applicant.email,
+    name: applicant.name,
+    application,
+    applicationsOpen: isApplicationsOpen(),
+  });
+});
+
+// POST /api/apply - 신청서 제출
+app.post("/api/apply", (req, res) => {
+  const applicant = getApplicant(req);
+  if (!applicant) return res.status(401).send("인증이 필요합니다.");
+  if (!isApplicationsOpen()) return res.status(403).send("현재 신청이 마감되었습니다.");
+  if (db.prepare("SELECT 1 FROM users WHERE email = ?").get(applicant.email)) {
+    return res.status(409).send("이미 등록된 계정입니다.");
+  }
+
+  const realname = (req.body.realname || "").trim();
+  const phone = (req.body.phone || "").trim();
+  const affiliation = (req.body.affiliation || "").trim();
+  if (!realname || !phone || !affiliation) {
+    return res.status(400).send("실명, 전화번호, 학교/팀을 모두 입력하세요.");
+  }
+
+  const result = dbRun(() => db.prepare(
+    "INSERT INTO applications (email, name, realname, phone, affiliation) VALUES (?, ?, ?, ?, ?)",
+  ).run(applicant.email, applicant.name, realname, phone, affiliation));
+
+  if (!result.success) {
+    if (result.error.includes("UNIQUE")) {
+      logger.warn(req, "applicant.apply", { error: "duplicate" }, applicant.email);
+      return res.status(409).send("이미 신청서를 제출했습니다.");
+    }
+    logger.warn(req, "applicant.apply", { error: result.error }, applicant.email);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "applicant.apply", { realname, affiliation }, applicant.email, { email: applicant.email, name: applicant.name });
+  res.status(201).json({ ok: true });
+});
+
+// PATCH /api/apply - 본인 신청서 수정 (토글 off여도 수정은 허용)
+app.patch("/api/apply", (req, res) => {
+  const applicant = getApplicant(req);
+  if (!applicant) return res.status(401).send("인증이 필요합니다.");
+
+  const existing = db.prepare("SELECT id FROM applications WHERE email = ?").get(applicant.email);
+  if (!existing) return res.status(404).send("신청 내역을 찾을 수 없습니다.");
+
+  const realname = (req.body.realname || "").trim();
+  const phone = (req.body.phone || "").trim();
+  const affiliation = (req.body.affiliation || "").trim();
+  if (!realname || !phone || !affiliation) {
+    return res.status(400).send("실명, 전화번호, 학교/팀을 모두 입력하세요.");
+  }
+
+  const result = dbRun(() => db.prepare(
+    "UPDATE applications SET realname = ?, phone = ?, affiliation = ?, updated_at = datetime('now') WHERE email = ?",
+  ).run(realname, phone, affiliation, applicant.email));
+
+  if (!result.success) {
+    logger.warn(req, "applicant.apply_edit", { error: result.error }, applicant.email);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "applicant.apply_edit", { realname, affiliation }, applicant.email, { email: applicant.email, name: applicant.name });
+  res.status(200).send();
+});
+
+/* ============================================
+   계정 신청 관리 (관리자)
+   ============================================ */
+
+// GET /api/applications - 대기 중인 신청 목록
+app.get("/api/applications", (req, res) => {
+  const result = dbRun(() => db.prepare(
+    "SELECT id, email, name, realname, phone, affiliation, created_at, updated_at FROM applications ORDER BY id",
+  ).all());
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
+});
+
+// PATCH /api/applications/config - 신청 접수 on/off
+app.patch("/api/applications/config", (req, res) => {
+  const { open } = req.body;
+  if (typeof open !== "boolean") return res.status(400).send("open(boolean) 값이 필요합니다.");
+  const result = dbRun(() => db.prepare(
+    "INSERT INTO settings (key, value) VALUES ('applications_open', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  ).run(open ? "1" : "0"));
+  if (!result.success) {
+    logger.warn(req, "applications.config", { error: result.error });
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "applications.config", { open });
+  res.json({ open });
+});
+
+// POST /api/applications/approve - 선택 신청을 계정으로 일괄 추가 후 목록에서 제거
+app.post("/api/applications/approve", (req, res) => {
+  const { ids, role } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) return res.status(400).send("신청을 선택하세요.");
+  if (!VALID_ROLES.includes(role)) return res.status(400).send("올바르지 않은 역할입니다.");
+
+  const numIds = ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (numIds.length === 0) return res.status(400).send("유효한 ID가 없습니다.");
+  if (numIds.length !== ids.length) return res.status(400).send("일부 ID가 올바르지 않습니다.");
+
+  const placeholders = numIds.map(() => "?").join(",");
+  const insertUser = db.prepare(
+    "INSERT OR IGNORE INTO users (email, role, realname, phone, affiliation) VALUES (?, ?, ?, ?, ?)",
+  );
+
+  // logger는 트랜잭션 밖에서만 호출 (트랜잭션 내부 호출은 롤백됨)
+  const txResult = dbRun(() => db.transaction(() => {
+    const apps = db.prepare(
+      `SELECT id, email, realname, phone, affiliation FROM applications WHERE id IN (${placeholders})`,
+    ).all(...numIds);
+    const added = [];
+    const skipped = [];
+    for (const a of apps) {
+      const email = a.email.trim().toLowerCase();
+      const r = insertUser.run(email, role, a.realname || "", a.phone || "", a.affiliation || "");
+      if (r.changes > 0) added.push(email);
+      else skipped.push(email);
+    }
+    db.prepare(`DELETE FROM applications WHERE id IN (${placeholders})`).run(...numIds);
+    return { added, skipped };
+  })());
+
+  if (!txResult.success) {
+    logger.warn(req, "applications.approve", { error: txResult.error });
+    return res.status(txResult.status).send(txResult.error);
+  }
+
+  const { added, skipped } = txResult.result;
+  logger.log(req, "applications.approve", { role, added, skipped });
+  if (added.length > 0) notifyNewUser(added);
+  res.json({ added: added.length, skipped: skipped.length });
+});
+
 // GET /api/users/exists/:email - 사용자 존재 + 활성 여부 (내부 서비스용)
 app.get("/api/users/exists/:email", (req, res) => {
   const user = db.prepare("SELECT 1 FROM users WHERE email = ? AND active = 1").get(req.params.email);
@@ -389,7 +615,7 @@ app.get("/api/users/role/:email", (req, res) => {
 
 // GET /api/users - 전체 사용자 목록
 app.get("/api/users", (req, res) => {
-  const result = dbRun(() => db.prepare("SELECT id, email, name, role, realname, phone, active, created_at FROM users ORDER BY id").all());
+  const result = dbRun(() => db.prepare("SELECT id, email, name, role, realname, phone, affiliation, active, created_at FROM users ORDER BY id").all());
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result.map((u) => ({ ...u, protected: u.email === ADMIN_EMAIL })));
 });
@@ -423,7 +649,7 @@ app.post("/api/users/bulk", (req, res) => {
   const { users: rows } = req.body;
   if (!Array.isArray(rows) || rows.length === 0) return res.status(400).send("추가할 사용자 목록이 비어있습니다.");
 
-  const insert = db.prepare("INSERT OR IGNORE INTO users (email, role, realname, phone) VALUES (?, ?, ?, ?)");
+  const insert = db.prepare("INSERT OR IGNORE INTO users (email, role, realname, phone, affiliation) VALUES (?, ?, ?, ?, ?)");
   const added = [];
   const skipped = [];
   const errors = [];
@@ -439,8 +665,9 @@ app.post("/api/users/bulk", (req, res) => {
       }
       const realname = (row.realname || "").trim();
       const phone = (row.phone || "").trim();
+      const affiliation = (row.affiliation || "").trim();
 
-      const result = insert.run(email, role, realname, phone);
+      const result = insert.run(email, role, realname, phone, affiliation);
       if (result.changes > 0) added.push(email);
       else skipped.push(email);
     }
@@ -528,7 +755,7 @@ app.delete("/api/users/bulk", (req, res) => {
 // PATCH /api/users/:id - 역할/실명/전화번호/활성 변경
 app.patch("/api/users/:id", (req, res) => {
   const id = Number(req.params.id);
-  const { role, realname, phone, active } = req.body;
+  const { role, realname, phone, affiliation, active } = req.body;
 
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
   if (!user) return res.status(404).send("사용자를 찾을 수 없습니다.");
@@ -553,6 +780,7 @@ app.patch("/api/users/:id", (req, res) => {
       if (role !== undefined) db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id);
       if (realname !== undefined) db.prepare("UPDATE users SET realname = ? WHERE id = ?").run(realname, id);
       if (phone !== undefined) db.prepare("UPDATE users SET phone = ? WHERE id = ?").run(phone, id);
+      if (affiliation !== undefined) db.prepare("UPDATE users SET affiliation = ? WHERE id = ?").run(affiliation, id);
       if (active !== undefined) db.prepare("UPDATE users SET active = ? WHERE id = ?").run(active ? 1 : 0, id);
     })();
   });
@@ -566,6 +794,7 @@ app.patch("/api/users/:id", (req, res) => {
   if (role !== undefined) changes.role = role;
   if (realname !== undefined) changes.realname = realname;
   if (phone !== undefined) changes.phone = phone;
+  if (affiliation !== undefined) changes.affiliation = affiliation;
   if (active !== undefined) changes.active = !!active;
   logger.log(req, "user.update", changes, user.email);
 
