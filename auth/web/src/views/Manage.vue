@@ -8,6 +8,17 @@ const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 
 const notyf = new Notyf({ duration: 3000, position: { x: "right", y: "top" } });
 
+const applyUrl = `${window.location.origin}${import.meta.env.PROD ? "/auth/apply" : "/apply"}`;
+
+async function copyApplyUrl() {
+  try {
+    await navigator.clipboard.writeText(applyUrl);
+    notyf.success("신청자 URL을 복사했습니다.");
+  } catch {
+    notyf.error("복사하지 못했습니다.");
+  }
+}
+
 const users = ref([]);
 const loading = ref(true);
 const newEmail = ref("");
@@ -491,6 +502,7 @@ onMounted(() => {
       <div class="card-header">
         <h3>사용자 추가</h3>
         <div class="header-actions">
+          <button type="button" class="btn btn-sm btn-ghost apply-url" title="클릭하여 복사" @click="copyApplyUrl">{{ applyUrl }}</button>
           <router-link to="/applications" class="btn btn-sm btn-primary">계정 신청 관리</router-link>
         </div>
       </div>
@@ -747,6 +759,14 @@ onMounted(() => {
   gap: 0.5rem;
   align-items: center;
   margin-left: auto;
+}
+
+.apply-url {
+  font-family: "JetBrains Mono", monospace;
+  max-width: min(22rem, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-filters,

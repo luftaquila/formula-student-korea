@@ -28,6 +28,12 @@ test.describe("User management", () => {
     await expect(page.locator("td").filter({ hasText: "e2e-student@test.com" })).toBeVisible();
   });
 
+  test("applicant URL is shown next to the 계정 신청 관리 button", async ({ page }) => {
+    const chip = page.locator(".apply-url");
+    await expect(chip).toBeVisible();
+    await expect(chip).toContainText("/auth/apply");
+  });
+
   test("add a new user", async ({ page }) => {
     // Fill in email
     await page.locator(".add-form input[type='email']").fill(TEST_EMAIL);
