@@ -488,7 +488,12 @@ onMounted(() => {
 <template>
   <div class="manage-container">
     <div class="add-form card">
-      <div class="card-header"><h3>사용자 추가</h3></div>
+      <div class="card-header">
+        <h3>사용자 추가</h3>
+        <div class="header-actions">
+          <router-link to="/applications" class="btn btn-sm btn-primary">계정 신청 관리</router-link>
+        </div>
+      </div>
       <div class="card-body">
         <form @submit.prevent="addUser" class="form-row">
           <input
@@ -528,7 +533,6 @@ onMounted(() => {
             </select>
           </div>
           <div class="header-btns">
-            <router-link to="/applications" class="btn btn-sm btn-primary">계정 신청 관리</router-link>
             <button v-if="selectedIds.size > 0" class="btn btn-sm btn-ghost" @click="bulkDeactivate">선택 비활성화 ({{ selectedIds.size }})</button>
             <button v-if="selectedIds.size > 0" class="btn btn-sm btn-danger" @click="bulkDelete">선택 삭제 ({{ selectedIds.size }})</button>
             <button class="btn btn-sm btn-ghost" @click="exportCSV">CSV 다운로드</button>
