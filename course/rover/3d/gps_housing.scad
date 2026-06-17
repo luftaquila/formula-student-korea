@@ -14,7 +14,7 @@
 //                power exits a +Y-wall slot. 4 square join pillars are BUILT INTO
 //                the wall corners and sit on the base-plate top.
 //
-// ALL posts/pillars are SQUARE cross-section.
+// ZED ceiling posts and corner join pillars are SQUARE; Pi bosses are round.
 //
 // Clearances: GPS X 40 mm both sides · RPi front 30 mm · GPS top→ceiling 35 mm.
 //
@@ -30,7 +30,6 @@ eps = 0.1;
 
 // "exploded" | "assembled" | "base" | "housing"
 view        = "exploded";
-show_boards = true;
 explode     = 80;
 
 /* ------------------------------ Boards ------------------------------ */
@@ -59,7 +58,7 @@ wall         = 3;
 ceil_t       = 3;
 base_t       = 4;       // base-plate thickness: M2 head (2.0) buried + 2.0 left
 fit_clear    = 0.4;     // base-plate slip fit inside the walls (0.2/side)
-pi_boss_sq   = 6;       // Pi standoff (square)
+pi_boss_d    = 6;       // Pi standoff (round cylinder)
 zed_post_sq  = 7;       // ZED ceiling post (square)
 corner_sq    = 9;       // base-plate join pillar (square, in the wall corner)
 round_r      = 2;       // exterior edge rounding so it's hand-safe
@@ -77,7 +76,7 @@ join_depth   = 8;
 /* ----------------------- Antenna (ceiling) -------------------------- */
 sma_hole_d   = 6.5;
 sma_pad_d    = 16;
-sma_pad_h    = 4;
+sma_pad_h    = 1;
 
 /* ----------------------- Power-cable notch -------------------------- */
 power_w      = 14;
@@ -130,7 +129,7 @@ module base_plate() {
     difference() {
         union() {
             translate([-base_w/2, -base_d/2, -base_t]) cube([base_w, base_d, base_t]);
-            for (p = pi_holes) sq_post(p[0], p[1], 0, boss_h, pi_boss_sq);
+            for (p = pi_holes) translate([p[0], p[1], 0]) cylinder(d = pi_boss_d, h = boss_h);
         }
         // Pi M2.5 self-tap (driven from the top, into boss + a little plate).
         for (p = pi_holes)
@@ -182,26 +181,15 @@ module housing() {
     }
 }
 
-module pi_ghost() {
-    color([0.2, 0.6, 0.3, 0.5]) translate([-pi_x/2, board_cy - pi_y/2, boss_h]) cube([pi_x, pi_y, pi_pcb_t]);
-}
-module zed_ghost() {
-    color([0.2, 0.4, 0.7, 0.5]) translate([-zed_x/2, board_cy - zed_y/2, zed_z - zed_pcb_t]) cube([zed_x, zed_y, zed_pcb_t]);
-}
-
 /* ============================== VIEW =============================== */
 if (view == "base") {
     base_plate();
-    if (show_boards) pi_ghost();
 } else if (view == "housing") {
     housing();
-    if (show_boards) zed_ghost();
 } else if (view == "assembled") {
     base_plate();
     housing();
-    if (show_boards) { pi_ghost(); zed_ghost(); }
 } else {  // exploded
-    translate([0, 0, -explode]) { base_plate(); if (show_boards) pi_ghost(); }
+    translate([0, 0, -explode]) base_plate();
     housing();
-    if (show_boards) zed_ghost();
 }
