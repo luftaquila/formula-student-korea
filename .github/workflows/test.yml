@@ -9,6 +9,14 @@ on:
       - 'LICENSE'
       - '.env.example'
       - '.gitignore'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'Makefile'
+      - 'LICENSE'
+      - '.env.example'
+      - '.gitignore'
 
 permissions:
   packages: write
