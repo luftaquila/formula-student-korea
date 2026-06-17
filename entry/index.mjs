@@ -203,6 +203,10 @@ async function notifyEntryDeleted(nums, year) {
           method: "DELETE",
           headers,
           signal: AbortSignal.timeout(5000),
+        }).then(res => {
+          if (!res.ok) {
+            logger.warn(null, "entry.notify_delete_fail", { server, num, year, status: res.status });
+          }
         }).catch(e => {
           logger.warn(null, "entry.notify_delete_fail", { server, num, year, error: e.message });
         }),
@@ -400,12 +404,14 @@ app.delete("/api/entries/:num", withYearTable, async (req, res) => {
   }
 
   if (!result.result.changes) {
+    logger.warn(req, "entry.delete", { year, reason: "not_found" }, `#${numValidation.value}`);
     return res.status(404).send("존재하지 않는 엔트리 번호입니다.");
   }
 
   logger.log(req, "entry.delete", { year, univ: entry?.univ, team: entry?.team }, `#${numValidation.value}`);
 
   await notifyEntryDeleted([numValidation.value], year);
+  logger.log(req, "entry.notify_delete", { year, nums: [numValidation.value] }, `#${numValidation.value}`);
   res.status(200).send();
 });
 
@@ -426,6 +432,7 @@ app.delete("/api/entries", withYearTable, async (req, res) => {
 
   if (existingNums.length > 0) {
     await notifyEntryDeleted(existingNums, year);
+    logger.log(req, "entry.notify_delete", { year, count: existingNums.length });
   }
   res.status(200).send();
 });
@@ -469,6 +476,7 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   const removedNums = [...existingNums].filter(n => !newNums.has(n));
   if (removedNums.length > 0) {
     await notifyEntryDeleted(removedNums, year);
+    logger.log(req, "entry.notify_delete", { year, count: removedNums.length, nums: removedNums });
   }
   res.status(200).send();
 });
@@ -511,6 +519,7 @@ app.post("/api/vehicle-types", withYearVtTable, (req, res) => {
   );
   if (!result.success) {
     if (result.error.includes("UNIQUE")) {
+      logger.warn(req, "vehicle_type.create", { error: "duplicate" }, name.trim());
       return res.status(400).send("이미 존재하는 차량 유형입니다.");
     }
     logger.warn(req, "vehicle_type.create", { error: result.error }, name.trim());
@@ -527,7 +536,10 @@ app.patch("/api/vehicle-types/:id", withYearVtTable, (req, res) => {
   if (!id) return res.status(400).send("올바르지 않은 ID입니다.");
 
   const type = db.prepare(`SELECT name, color FROM '${vtTableName}' WHERE id = ?`).get(id);
-  if (!type) return res.status(404).send("존재하지 않는 차량 유형입니다.");
+  if (!type) {
+    logger.warn(req, "vehicle_type.update", { id, reason: "not_found" });
+    return res.status(404).send("존재하지 않는 차량 유형입니다.");
+  }
 
   const { name, color } = req.body;
   const updates = [];

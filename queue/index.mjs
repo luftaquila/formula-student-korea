@@ -592,6 +592,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
     const entries = await getEntries();
 
     if (entries[num] === undefined) {
+      logger.warn(req, "queue.register", { error: "존재하지 않는 엔트리", num }, "#" + num);
       return res.status(400).send("존재하지 않는 엔트리 번호입니다.");
     }
   } catch (e) {
@@ -599,6 +600,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
     return res.status(500).send("엔트리를 조회할 수 없습니다.");
   }
 
+  let denyReason = null;
   const result = dbRun(() => {
     db.transaction(() => {
       if (!db.prepare("SELECT active FROM inspection WHERE type = ?").get(type).active) {
@@ -611,6 +613,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
       const penalty = db.prepare("SELECT * FROM cancel_penalty WHERE num = ? AND inspection = ? AND year = ?").get(num, type, year);
       if (penalty && penalty.until > Date.now()) {
         const remaining = Math.ceil((penalty.until - Date.now()) / 1000 / 60);
+        denyReason = "cancel_penalty";
         throw {
           status: 403,
           message: JSON.stringify({ remaining, until: penalty.until }),
@@ -663,7 +666,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "queue.register", { error: result.error }, `#${num}`);
+    logger.warn(req, "queue.register", denyReason ? { error: result.error, reason: denyReason } : { error: result.error }, `#${num}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -840,6 +843,7 @@ app.delete("/api/admin/priority/:type", (req, res) => {
   }
 
   if (!result.result.changes) {
+    logger.warn(req, "priority.delete", { error: "존재하지 않는 우선순위 엔트리" }, "#" + numValidation.value);
     return res.status(400).send("존재하지 않는 우선순위 엔트리입니다.");
   }
 
@@ -1616,6 +1620,8 @@ async function loadSmsConfig() {
           smsConfig = data;
           return;
         }
+      } else {
+        logger.warn(null, "sms.config_fetch", { status: res.statusCode ?? res.status });
       }
     } catch (e) {
       logger.warn(null, "sms.config_fetch", { error: e.message });

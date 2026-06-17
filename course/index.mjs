@@ -619,6 +619,7 @@ if (orphanRecoveryResult.changes > 0) {
 function startMission(waypoints, actor, courseId) {
   // Close any still-running prior mission as stopped.
   if (currentMissionId != null) {
+    logger.warn(null, "mission.end.superseded", { mission_id: currentMissionId }, "rover");
     finishMission.run(Date.now(), "stopped", currentMissionId);
   }
   const info = insertMission.run(
@@ -864,7 +865,13 @@ app.post("/api/rover/telemetry", (req, res) => {
   if (prevNav && prevNav !== "IDLE" && prevNav !== "EMERGENCY_STOP"
       && nav_state === "IDLE" && currentMissionId != null) {
     const endStatus = prevNav === "ERROR" ? "error" : "completed";
+    const endedId = currentMissionId;
     endMission(endStatus);
+    if (endStatus === "completed") {
+      logger.log(req, "mission.end.completed", { mission_id: endedId, prevNav }, "rover");
+    } else {
+      logger.warn(req, "mission.end.error", { mission_id: endedId, prevNav }, "rover");
+    }
   }
   if (currentMissionId != null) recordTelemetrySample();
 
@@ -1152,8 +1159,14 @@ app.post("/api/rover/execute", (req, res) => {
 
   const actor = req.user ? `${req.user.name || ""} <${req.user.email || ""}>` : null;
   const courseId = Number.isInteger(req.body?.course_id) ? req.body.course_id : null;
-  if (courseId != null && getCourseById(courseId)) {
-    try { takeCourseSnapshot(courseId, actor, `auto: execute mission`); }
+  const course = courseId != null ? getCourseById(courseId) : null;
+  if (courseId != null && course) {
+    try {
+      const snapshotId = takeCourseSnapshot(courseId, actor, `auto: execute mission`);
+      if (snapshotId != null) {
+        logger.log(req, "course.snapshot.auto", { snapshot_id: snapshotId, course_id: courseId }, course?.name);
+      }
+    }
     catch (err) { logger.warn(req, "course.snapshot.auto", { error: String(err) }, `course#${courseId}`); }
   }
   startMission(finalWaypoints, actor, courseId);
@@ -1370,7 +1383,7 @@ app.post("/api/rover/waypoint_skipped", (req, res) => {
     roverState.mission_progress.current_waypoint_idx = index + 1;
   }
   broadcastEvent("rover:skipped", { index });
-  logger.warn(req, "rover.waypoint_skipped", { index }, "rover");
+  logger.warn(req, "rover.waypoint_skipped", { index, mission_id: currentMissionId }, "rover");
   res.json({ ok: true });
 });
 
@@ -1438,6 +1451,7 @@ app.post("/api/rover/control", (req, res) => {
 app.post("/api/rover/nav-lights", (req, res) => {
   const mode = Number(req.body?.mode);
   if (!Number.isInteger(mode) || mode < 0 || mode > 4) {
+    logger.warn(req, "rover.nav_lights", { error: "invalid_mode", mode: req.body?.mode }, "rover");
     return res.status(400).send("mode는 0~4여야 합니다.");
   }
   // 선택은 항상 저장한다 — 로버 재연결 시 재전송돼 고착된다. 연결돼 있으면 즉시 전송.
@@ -1452,6 +1466,7 @@ app.post("/api/rover/nav-lights", (req, res) => {
 app.post("/api/rover/led-brightness", (req, res) => {
   const brightness = Number(req.body?.brightness);
   if (!Number.isInteger(brightness) || brightness < 0 || brightness > 255) {
+    logger.warn(req, "rover.led_brightness", { error: "invalid_brightness", brightness: req.body?.brightness }, "rover");
     return res.status(400).send("brightness는 0~255여야 합니다.");
   }
   roverState.led_brightness = brightness;

@@ -313,13 +313,13 @@ app.get("/api/sessions", (req, res) => {
 // GET /api/sessions/:id - 세션 상세
 app.get("/api/sessions/:id", (req, res) => {
   const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
-  if (!team) return res.status(403).send("팀이 등록되지 않았습니다.");
+  if (!team) { logger.warn(req, "session.view", { error: "no_team" }); return res.status(403).send("팀이 등록되지 않았습니다."); }
 
   const session = db.prepare("SELECT * FROM session WHERE id = ?").get(Number(req.params.id));
   if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
 
   const isTarget = db.prepare("SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?").get(session.id, team.team_num);
-  if (!isTarget) return res.status(403).send("대상 팀이 아닙니다.");
+  if (!isTarget) { logger.warn(req, "session.view", { error: "not_target", session_id: session.id }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
 
   // 최신 제출
   const sub = db.prepare(`
@@ -339,13 +339,13 @@ app.get("/api/sessions/:id", (req, res) => {
 // POST /api/sessions/:id/submit - 파일 업로드
 app.post("/api/sessions/:id/submit", (req, res) => {
   const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
-  if (!team) return res.status(403).send("팀이 등록되지 않았습니다.");
+  if (!team) { logger.warn(req, "submission.create", { error: "no_team" }); return res.status(403).send("팀이 등록되지 않았습니다."); }
 
   const session = db.prepare("SELECT * FROM session WHERE id = ?").get(Number(req.params.id));
   if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
 
   const isTarget = db.prepare("SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?").get(session.id, team.team_num);
-  if (!isTarget) return res.status(403).send("대상 팀이 아닙니다.");
+  if (!isTarget) { logger.warn(req, "submission.create", { error: "not_target", session_id: session.id }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
 
   const startTime = now();
   const effectiveLateEnd = session.late_end_at || session.end_at;
@@ -574,15 +574,15 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 // GET /api/submissions/:subId/files/:fileId - 파일 다운로드
 app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
   const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
-  if (!team) return res.status(403).send("팀이 등록되지 않았습니다.");
+  if (!team) { logger.warn(req, "file.download", { error: "no_team", sub_id: Number(req.params.subId) }); return res.status(403).send("팀이 등록되지 않았습니다."); }
 
   const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
   if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
-  if (sub.team_num !== team.team_num) return res.status(403).send("권한이 없습니다.");
+  if (sub.team_num !== team.team_num) { logger.warn(req, "file.download", { error: "wrong_team", sub_team: sub.team_num, my_team: team.team_num }, `#${sub.team_num}`); return res.status(403).send("권한이 없습니다."); }
 
   // 해당 submission의 세션이 학생 팀에 할당된 세션인지 검증
   const isTarget = db.prepare("SELECT 1 FROM session_team st JOIN session s ON s.id = st.session_id WHERE st.session_id = ? AND st.team_num = ? AND s.year = ?").get(sub.session_id, team.team_num, team.year);
-  if (!isTarget) return res.status(403).send("권한이 없습니다.");
+  if (!isTarget) { logger.warn(req, "file.download", { error: "not_target", session_id: sub.session_id }, `#${sub.team_num}`); return res.status(403).send("권한이 없습니다."); }
 
   const file = db.prepare("SELECT * FROM submission_file WHERE id = ? AND submission_id = ?").get(Number(req.params.fileId), sub.id);
   if (!file) return res.status(404).send("파일을 찾을 수 없습니다.");
@@ -600,15 +600,15 @@ app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
 // GET /api/submissions/:subId/zip - 본인 제출 파일 전체 압축 다운로드
 app.get("/api/submissions/:subId/zip", async (req, res) => {
   const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
-  if (!team) return res.status(403).send("팀이 등록되지 않았습니다.");
+  if (!team) { logger.warn(req, "file.zip", { error: "no_team", sub_id: Number(req.params.subId) }); return res.status(403).send("팀이 등록되지 않았습니다."); }
 
   const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
   if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
-  if (sub.team_num !== team.team_num) return res.status(403).send("권한이 없습니다.");
+  if (sub.team_num !== team.team_num) { logger.warn(req, "file.zip", { error: "wrong_team", sub_team: sub.team_num, my_team: team.team_num }, `#${sub.team_num}`); return res.status(403).send("권한이 없습니다."); }
 
   // 해당 submission의 세션이 학생 팀에 할당된 세션인지 검증
   const isTarget = db.prepare("SELECT 1 FROM session_team st JOIN session s ON s.id = st.session_id WHERE st.session_id = ? AND st.team_num = ? AND s.year = ?").get(sub.session_id, team.team_num, team.year);
-  if (!isTarget) return res.status(403).send("권한이 없습니다.");
+  if (!isTarget) { logger.warn(req, "file.zip", { error: "not_target", session_id: sub.session_id }, `#${sub.team_num}`); return res.status(403).send("권한이 없습니다."); }
 
   const files = db.prepare("SELECT * FROM submission_file WHERE submission_id = ?").all(sub.id);
   if (files.length === 0) return res.status(404).send("다운로드할 파일이 없습니다.");
@@ -841,6 +841,7 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
         signal: AbortSignal.timeout(5000),
       });
       if (entryRes.ok) entries = await entryRes.json();
+      else logger.warn(req, "session.archive", { warning: "entry_fetch_non_ok", status: entryRes.status, session_id: id });
     } catch (e) {
       logger.warn(req, "session.archive", { warning: "entry_fetch_failed", error: e.message, session_id: id });
     }
@@ -935,8 +936,12 @@ app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
         const entries = await entryRes.json();
         const entry = entries[sub.team_num];
         if (entry) teamLabel = `${sub.team_num}_${sanitize(entry.univ)}_${sanitize(entry.team)}`;
+      } else {
+        logger.warn(req, "file.admin_zip", { warning: "entry_fetch_non_ok", status: entryRes.status, submission_id: sub.id });
       }
-    } catch { /* graceful degradation — use team_num only */ }
+    } catch (e) {
+      logger.warn(req, "file.admin_zip", { warning: "entry_fetch_failed", error: e.message, submission_id: sub.id });
+    }
   }
 
   const zipName = `${sessionName}_${teamLabel}.zip`;
@@ -1002,7 +1007,10 @@ app.post("/api/admin/student-teams", (req, res) => {
   );
 
   if (!result.success) {
-    if (result.error.includes("UNIQUE")) return res.status(400).send("이미 등록된 이메일이거나 해당 팀에 이미 학생이 있습니다.");
+    if (result.error.includes("UNIQUE")) {
+      logger.warn(req, "student_team.create", { error: "duplicate", team_num: numTeam, year: numYear }, email.trim().toLowerCase());
+      return res.status(400).send("이미 등록된 이메일이거나 해당 팀에 이미 학생이 있습니다.");
+    }
     logger.warn(req, "student_team.create", { error: result.error }, email.trim().toLowerCase());
     return res.status(result.status).send(result.error);
   }
@@ -1086,6 +1094,7 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
         signal: AbortSignal.timeout(5000),
       });
       if (entryRes.ok) entries = await entryRes.json();
+      else logger.warn(req, "year.archive", { warning: "entry_fetch_non_ok", status: entryRes.status, year });
     } catch (e) {
       logger.warn(req, "year.archive", { warning: "entry_fetch_failed", error: e.message, year });
     }
@@ -1313,7 +1322,10 @@ async function fetchEntries(year) {
       signal: AbortSignal.timeout(5000),
     });
     if (res.ok) return await res.json();
-  } catch {}
+    else logger.warn(null, "entry.fetch", { warning: "non_ok", status: res.status, year });
+  } catch (e) {
+    logger.warn(null, "entry.fetch", { error: e.message, year });
+  }
   return {};
 }
 

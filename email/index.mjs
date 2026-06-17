@@ -115,7 +115,10 @@ app.get("/api/config", (req, res) => {
 
 app.put("/api/config", (req, res) => {
   const { configs } = req.body;
-  if (!Array.isArray(configs)) return res.status(400).send("configs 배열이 필요합니다.");
+  if (!Array.isArray(configs)) {
+    logger.warn(req, "config.update", { error: "configs 배열 누락" });
+    return res.status(400).send("configs 배열이 필요합니다.");
+  }
 
   const updated = [];
   const result = dbRun(() => {
@@ -152,7 +155,10 @@ const CONFIG_GROUPS = {
 app.post("/api/config/reset", (req, res) => {
   const { group } = req.body;
   const keys = CONFIG_GROUPS[group];
-  if (!keys) return res.status(400).send("유효하지 않은 그룹입니다. (brevo | sms)");
+  if (!keys) {
+    logger.warn(req, "config.reset", { error: "유효하지 않은 group", group });
+    return res.status(400).send("유효하지 않은 그룹입니다. (brevo | sms)");
+  }
 
   const result = dbRun(() => {
     const stmt = db.prepare("UPDATE config SET value = '' WHERE key = ?");
@@ -255,12 +261,14 @@ app.get("/api/emails", (req, res) => {
 app.post("/api/send", async (req, res) => {
   const { subject, htmlContent, recipients } = req.body;
   if (!subject || !htmlContent || !Array.isArray(recipients) || recipients.length === 0) {
+    logger.warn(req, "email.send", { error: "필수값 누락 (제목/내용/수신자)" });
     return res.status(400).send("제목, 내용, 수신자가 필요합니다.");
   }
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const invalid = recipients.filter(e => !emailRegex.test(e));
   if (invalid.length > 0) {
+    logger.warn(req, "email.send", { error: "잘못된 이메일 형식", invalid });
     return res.status(400).send(`유효하지 않은 이메일 주소: ${invalid.join(", ")}`);
   }
 
@@ -273,6 +281,7 @@ app.post("/api/send", async (req, res) => {
 app.post("/api/internal/send", async (req, res) => {
   const { subject, htmlContent, recipients, source } = req.body;
   if (!subject || !htmlContent || !Array.isArray(recipients) || recipients.length === 0) {
+    logger.warn(req, "email.send", { error: "필수값 누락 (subject/htmlContent/recipients)", source });
     return res.status(400).send("subject, htmlContent, recipients are required.");
   }
 
@@ -338,6 +347,9 @@ async function sendEmail(req, res, { subject, htmlContent, recipients, source })
         });
         return res.status(400).send(`전송 가능한 메일 수(${remaining}건)가 수신자 수(${recipients.length}명)보다 적습니다.`);
       }
+    } else {
+      const quotaErrText = await quotaResp.text().catch(() => "");
+      logger.warn(req, "email.quota_check", { error: quotaErrText || quotaResp.status, status: quotaResp.status, subject, source });
     }
   } catch (e) {
     logger.warn(req, "email.quota_check", { error: e.message, subject, source });
@@ -435,7 +447,10 @@ app.get("/api/internal/sms-config", (req, res) => {
     }
     return configs;
   });
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "sms_config.fetch", { error: result.error });
+    return res.status(result.status).send(result.error);
+  }
   res.json(result.result);
 });
 
@@ -444,9 +459,13 @@ app.get("/api/internal/sms-config", (req, res) => {
    ============================================ */
 app.post("/api/test-email", async (req, res) => {
   const { recipient } = req.body;
-  if (!recipient) return res.status(400).send("수신자 이메일이 필요합니다.");
+  if (!recipient) {
+    logger.warn(req, "email.test", { error: "recipient 누락" });
+    return res.status(400).send("수신자 이메일이 필요합니다.");
+  }
 
   if (getConfig("email_enabled") === "FALSE") {
+    logger.warn(req, "email.test", { error: "email_disabled", recipient });
     return res.status(503).send("이메일 전송이 비활성화되어 있습니다.");
   }
 
@@ -455,6 +474,7 @@ app.post("/api/test-email", async (req, res) => {
   const senderEmail = getConfig("brevo_sender_email");
 
   if (!apiKey || !senderEmail) {
+    logger.warn(req, "email.test", { error: "Brevo 설정 미완료", recipient });
     return res.status(400).send("Brevo API 키 또는 발신자 이메일이 설정되지 않았습니다.");
   }
 
@@ -504,6 +524,7 @@ app.post("/api/test-sms", async (req, res) => {
   const sender = getConfig("phone_number_sms_sender");
 
   if (!accessKey || !secretKey || !serviceId || !sender) {
+    logger.warn(req, "sms.test", { error: "SMS 설정 미완료", recipient });
     return res.status(400).send("SMS 설정이 완료되지 않았습니다.");
   }
 

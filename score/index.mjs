@@ -90,6 +90,17 @@ const ENDURANCE_SQL = {
    ============================================ */
 const logger = createLogger(db, "score");
 
+// inter-service 실패 로그 폭주 방지: action+year별 최소 60초 간격 throttle
+const _warnThrottle = new Map();
+function warnThrottled(action, detail, windowMs = 60000) {
+  const t = Date.now();
+  const key = `${action}|${detail?.year ?? ""}`;
+  const last = _warnThrottle.get(key) || 0;
+  if (t - last < windowMs) return;
+  _warnThrottle.set(key, t);
+  logger.warn(null, action, detail);
+}
+
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
   return "admin";
@@ -134,7 +145,10 @@ async function fetchYearRecords(year) {
       signal: AbortSignal.timeout(10000),
     }).catch(() => null),
   ]);
-  if (!tablesRes.ok) throw new Error("경기 목록을 가져올 수 없습니다.");
+  if (!tablesRes.ok) {
+    warnThrottled("score.fetch_records", { status: tablesRes.status, year });
+    throw new Error("경기 목록을 가져올 수 없습니다.");
+  }
   const allTables = await tablesRes.json();
   const visibility = visRes?.ok ? await visRes.json() : {};
   const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year}`) && visibility[t] !== false);
@@ -170,6 +184,7 @@ const DATA_RE = /^data:\s*(.*)$/gm;
 // SSE 구독 팩토리 (중복 연결 방지 + exponential backoff)
 function createSSESubscriber(name, serverUrl, eventPath, prefix) {
   let reconnecting = false;
+  let connected = false;
   let backoff = 3000;
   const MAX_BACKOFF = 30000;
 
@@ -179,6 +194,7 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix) {
     const url = new URL(`${serverUrl}${eventPath}`);
     const options = { headers: internalHeaders() };
     const req = http.get(url, options, (res) => {
+      connected = res.statusCode === 200;
       const wasReconnect = backoff > 3000;
       backoff = 3000; // 연결 성공 시 backoff 리셋
       if (wasReconnect) {
@@ -222,6 +238,10 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix) {
   }
 
   function scheduleReconnect() {
+    if (connected) {
+      logger.warn(null, "score.sse_disconnect", { source: name });
+      connected = false;
+    }
     if (reconnecting) return;
     reconnecting = true;
     setTimeout(() => {
@@ -285,7 +305,10 @@ app.get("/api/score", async (req, res) => {
       headers: internalHeaders(),
       signal: AbortSignal.timeout(10000),
     });
-    if (!entryRes.ok) throw new Error("엔트리 정보를 가져올 수 없습니다.");
+    if (!entryRes.ok) {
+      warnThrottled("score.fetch_entries", { status: entryRes.status, year });
+      throw new Error("엔트리 정보를 가져올 수 없습니다.");
+    }
     const entries = await entryRes.json();
 
     // 2. Inspection 서비스에서 카테고리별 PASS/FAIL 요약 fetch
@@ -297,7 +320,10 @@ app.get("/api/score", async (req, res) => {
         headers: internalHeaders(), signal: AbortSignal.timeout(10000),
       }),
     ]);
-    if (!inspectionRes.ok) throw new Error("검차 정보를 가져올 수 없습니다.");
+    if (!inspectionRes.ok) {
+      warnThrottled("score.fetch_inspection", { status: inspectionRes.status, year });
+      throw new Error("검차 정보를 가져올 수 없습니다.");
+    }
     const inspection = await inspectionRes.json();
 
     // 2b. 템플릿 트리에서 코너웨이트 item ID 탐색
@@ -339,11 +365,15 @@ app.get("/api/score", async (req, res) => {
                 if (Object.keys(cw).length > 0) cornerWeight.teams[num] = cw;
               }
             }
+          } else {
+            warnThrottled("score.fetch_bulk_answers", { status: bulkRes.status, year });
           }
         } catch (e) {
           logger.warn(null, "score.fetch_bulk_answers", { error: e.message, year });
         }
       }
+    } else {
+      warnThrottled("score.fetch_template", { status: templateRes.status, year });
     }
 
     inspection.cornerWeight = cornerWeight;
@@ -357,6 +387,8 @@ app.get("/api/score", async (req, res) => {
       if (modesRes.ok) {
         const modes = await modesRes.json();
         enabledModes = new Set(modes.filter((m) => m.enabled).map((m) => m.event_type));
+      } else {
+        warnThrottled("score.fetch_event_modes", { status: modesRes.status, year });
       }
     } catch (e) {
       logger.warn(null, "score.fetch_event_modes", { error: e.message });
@@ -468,7 +500,7 @@ app.get("/api/score", async (req, res) => {
 
     res.json({ entries, inspection, events, manualScores, penalties, settings });
   } catch (e) {
-    logger.warn(req, "score.aggregate", { error: e.message });
+    logger.warn(req, "score.aggregate", { error: e.message, year }, year ? String(year) : null);
     res.status(500).send("데이터 집계 오류가 발생했습니다.");
   }
 });

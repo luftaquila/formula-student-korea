@@ -226,7 +226,10 @@ app.put("/api/sheet/template/:id", (req, res) => {
     logger.warn(req, "template.update", { error: result.error }, node.name);
     return res.status(result.status).send(result.error);
   }
-  if (!result.result.changes) return res.status(404).send("항목을 찾을 수 없습니다.");
+  if (!result.result.changes) {
+    logger.warn(req, "template.update", { changes: 0 }, node.name);
+    return res.status(404).send("항목을 찾을 수 없습니다.");
+  }
   logger.log(req, "template.update", { fields: Object.fromEntries(fields.map((f, i) => [f.split(" = ")[0], params[i]])) }, node.name);
   res.status(200).send();
 });
@@ -236,7 +239,10 @@ app.delete("/api/sheet/template/:id", (req, res) => {
   const id = Number(req.params.id);
   const node = db.prepare("SELECT year, name FROM sheet_template WHERE id = ?").get(id);
   if (!node) return res.status(404).send("노드를 찾을 수 없습니다.");
-  if (node.year < new Date().getFullYear()) return res.status(400).send("이전 연도 템플릿은 수정할 수 없습니다.");
+  if (node.year < new Date().getFullYear()) {
+    logger.warn(req, "template.delete", { error: "이전 연도 템플릿 삭제 거부", year: node.year }, node.name);
+    return res.status(400).send("이전 연도 템플릿은 수정할 수 없습니다.");
+  }
 
   const result = dbRun(() => {
     return db.prepare("DELETE FROM sheet_template WHERE id = ?").run(id);
@@ -271,7 +277,7 @@ app.post("/api/sheet/template/reorder", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "template.reorder", { error: result.error });
+    logger.warn(req, "template.reorder", { error: result.error, count: items.length });
     return res.status(result.status).send(result.error);
   }
   const firstItem = db.prepare("SELECT year FROM sheet_template WHERE id = ?").get(items[0].id);
@@ -305,7 +311,7 @@ app.post("/api/sheet/template/copy", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "template.copy", { error: result.error });
+    logger.warn(req, "template.copy", { error: result.error, from_year, to_year });
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "template.copy", { from_year, to_year });
