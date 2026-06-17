@@ -147,15 +147,30 @@ test.describe("Account applications - applicant page", () => {
     ]);
   }
 
-  test("new applicant sees the form and submits", async ({ page }) => {
+  const field = (page, name) => page.locator(".form-group", { hasText: name }).locator("input");
+
+  test("unlinked visitor sees the Google connect button (no auto-redirect)", async ({ page }) => {
+    await page.goto("/auth/apply");
+    await waitForPageReady(page);
+    await expect(page.getByRole("button", { name: "Google 계정 연동" })).toBeVisible();
+    await expect(page).toHaveURL(/\/auth\/apply/);
+  });
+
+  test("new applicant fills the form, agrees, and submits", async ({ page }) => {
     await asApplicant(page, APPLICANT2);
     await page.goto("/auth/apply");
     await waitForPageReady(page);
 
-    await page.getByPlaceholder("홍길동").fill("이신청");
-    await page.getByPlaceholder("010-1234-5678").fill("01099998888");
-    await page.getByPlaceholder("한국대학교 FSAE").fill("E2E대 FSAE");
-    await page.getByRole("button", { name: "신청하기" }).click();
+    await field(page, "이름").fill("이신청");
+    await field(page, "전화번호").fill("01099998888");
+    await field(page, "학교/팀").fill("E2E대 FSAE");
+
+    // Submit is gated on the consent checkbox.
+    const submit = page.getByRole("button", { name: "신청하기" });
+    await expect(submit).toBeDisabled();
+    await page.locator(".consent input[type='checkbox']").check();
+    await expect(submit).toBeEnabled();
+    await submit.click();
 
     await expectNotification(page, "success", "신청했습니다");
     await expect(page.locator(".badge").filter({ hasText: "검토 대기" })).toBeVisible();
@@ -167,7 +182,7 @@ test.describe("Account applications - applicant page", () => {
     await waitForPageReady(page);
 
     await expect(page.locator(".badge").filter({ hasText: "검토 대기" })).toBeVisible();
-    await page.getByPlaceholder("한국대학교 FSAE").fill("E2E대 BAJA");
+    await field(page, "학교/팀").fill("E2E대 BAJA");
     await page.getByRole("button", { name: "수정하기" }).click();
     await expectNotification(page, "success", "수정했습니다");
   });

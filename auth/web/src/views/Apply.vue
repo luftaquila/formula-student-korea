@@ -4,17 +4,29 @@ import { useNotification } from "@shared/useNotification.js";
 import { formatPhone } from "@shared/format-phone.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
+const APPLY_PATH = import.meta.env.PROD ? "/auth/apply" : "/apply";
 const { success, error } = useNotification();
 
 const loading = ref(true);
-const state = ref(""); // "closed" | "registered" | "form" | "pending"
-const googleName = ref("");
+const state = ref(""); // "closed" | "unlinked" | "registered" | "form" | "pending"
+const email = ref("");
 const submitting = ref(false);
+const agreed = ref(false);
 const form = reactive({ realname: "", phone: "", affiliation: "" });
 
 const canSubmit = computed(
-  () => !!form.realname.trim() && !!form.phone.trim() && !!form.affiliation.trim() && !submitting.value,
+  () =>
+    !!form.realname.trim() &&
+    !!form.phone.trim() &&
+    !!form.affiliation.trim() &&
+    agreed.value &&
+    !submitting.value,
 );
+
+function connectGoogle() {
+  // 자동 리다이렉트 대신 명시적 연동/계정 변경 (select_account로 다른 계정 선택 가능)
+  window.location.href = `/auth/api/login?redirect=${encodeURIComponent(APPLY_PATH)}`;
+}
 
 async function load() {
   loading.value = true;
@@ -28,26 +40,24 @@ async function load() {
 
     const meRes = await fetch(`${BASE_URL}/api/apply/me`);
     if (meRes.status === 401) {
-      // 세션 없음 → 구글 로그인 후 신청 페이지로 복귀
-      const back = import.meta.env.PROD ? "/auth/apply" : "/apply";
-      window.location.href = `/auth/api/login?redirect=${encodeURIComponent(back)}`;
+      state.value = "unlinked"; // 연동 전 — 자동 로그인 리다이렉트하지 않음
       return;
     }
     if (!meRes.ok) throw new Error(await meRes.text());
     const data = await meRes.json();
+    email.value = data.email || "";
 
     if (data.registered) {
       state.value = "registered";
       return;
     }
-    googleName.value = data.name || "";
     if (data.application) {
       form.realname = data.application.realname || "";
       form.phone = data.application.phone || "";
       form.affiliation = data.application.affiliation || "";
+      agreed.value = true; // 최초 제출 시 동의함
       state.value = "pending";
     } else {
-      form.realname = googleName.value; // 편의상 실명에 구글 이름 prefill
       state.value = "form";
     }
   } catch (e) {
@@ -109,38 +119,48 @@ onMounted(load);
       </div>
     </div>
 
+    <div v-else-if="state === 'unlinked'" class="card">
+      <div class="card-header"><h3>Formula Student Korea 계정 신청</h3></div>
+      <div class="card-body">
+        <button type="button" class="btn btn-primary submit-btn" @click="connectGoogle">Google 계정 연동</button>
+      </div>
+    </div>
+
     <div v-else class="card">
       <div class="card-header">
-        <h3>{{ state === 'pending' ? '신청 정보' : '계정 신청' }}</h3>
+        <h3>{{ state === 'pending' ? '신청 정보' : 'Formula Student Korea 계정 신청' }}</h3>
         <span v-if="state === 'pending'" class="badge badge-warning">신청 완료 · 검토 대기</span>
       </div>
       <div class="card-body">
-        <p class="apply-guide">
-          {{ state === 'pending'
-            ? '정보를 수정할 수 있습니다.'
-            : '정보를 입력해 신청하세요. 승인 후 계정이 생성됩니다.' }}
-        </p>
+        <p v-if="state === 'pending'" class="apply-guide">정보를 수정할 수 있습니다.</p>
         <form @submit.prevent="submit">
           <div class="form-group">
-            <label class="form-label">실명</label>
-            <input v-model="form.realname" type="text" class="form-input" placeholder="홍길동" required />
+            <label class="form-label">이름</label>
+            <input v-model="form.realname" type="text" class="form-input" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">이메일</label>
+            <div class="email-row">
+              <input :value="email" type="email" class="form-input" readonly />
+              <button type="button" class="btn btn-sm btn-ghost" @click="connectGoogle">계정 변경</button>
+            </div>
           </div>
           <div class="form-group">
             <label class="form-label">전화번호</label>
-            <input
-              :value="form.phone"
-              @input="onPhoneInput"
-              type="tel"
-              class="form-input"
-              placeholder="010-1234-5678"
-              maxlength="13"
-              required
-            />
+            <input :value="form.phone" @input="onPhoneInput" type="tel" class="form-input" maxlength="13" required />
           </div>
           <div class="form-group">
             <label class="form-label">학교/팀</label>
-            <input v-model="form.affiliation" type="text" class="form-input" placeholder="한국대학교 FSAE" required />
+            <input v-model="form.affiliation" type="text" class="form-input" required />
           </div>
+          <label class="consent">
+            <input type="checkbox" v-model="agreed" />
+            <span class="consent-text">
+              <strong>개인정보 수집·이용 동의 (필수)</strong>
+              <span class="consent-detail">수집 항목: 이메일, 이름, 전화번호, 학교/팀<br />수집 목적: 계정 등록<br />보유 기간: 1년</span>
+              <span class="consent-agree">위 내용에 동의합니다.</span>
+            </span>
+          </label>
           <button type="submit" class="btn btn-primary submit-btn" :disabled="!canSubmit">
             {{ state === 'pending' ? '수정하기' : '신청하기' }}
           </button>
@@ -171,6 +191,62 @@ onMounted(load);
   color: var(--text-secondary);
   margin: 0 0 1rem;
   line-height: 1.6;
+}
+
+.email-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.email-row .form-input {
+  flex: 1;
+}
+
+.form-input[readonly] {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.consent input[type="checkbox"] {
+  margin-top: 0.15rem;
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.consent-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+}
+
+.consent-text strong {
+  font-weight: 600;
+}
+
+.consent-detail {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.consent-agree {
+  font-weight: 500;
 }
 
 .submit-btn {
