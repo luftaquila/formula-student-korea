@@ -1008,7 +1008,7 @@ app.post("/api/admin/student-teams", (req, res) => {
 
   if (!result.success) {
     if (result.error.includes("UNIQUE")) {
-      logger.warn(req, "student_team.create", { error: "duplicate", team_num: numTeam, year: numYear, email: email.trim().toLowerCase() }, email.trim().toLowerCase());
+      logger.warn(req, "student_team.create", { error: "duplicate", team_num: numTeam, year: numYear }, email.trim().toLowerCase());
       return res.status(400).send("이미 등록된 이메일이거나 해당 팀에 이미 학생이 있습니다.");
     }
     logger.warn(req, "student_team.create", { error: result.error }, email.trim().toLowerCase());

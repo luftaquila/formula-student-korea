@@ -90,13 +90,14 @@ const ENDURANCE_SQL = {
    ============================================ */
 const logger = createLogger(db, "score");
 
-// inter-service 실패 로그 폭주 방지: action(+target)별 최소 60초 간격 throttle
+// inter-service 실패 로그 폭주 방지: action+year별 최소 60초 간격 throttle
 const _warnThrottle = new Map();
 function warnThrottled(action, detail, windowMs = 60000) {
   const t = Date.now();
-  const last = _warnThrottle.get(action) || 0;
+  const key = `${action}|${detail?.year ?? ""}`;
+  const last = _warnThrottle.get(key) || 0;
   if (t - last < windowMs) return;
-  _warnThrottle.set(action, t);
+  _warnThrottle.set(key, t);
   logger.warn(null, action, detail);
 }
 
@@ -193,7 +194,7 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix) {
     const url = new URL(`${serverUrl}${eventPath}`);
     const options = { headers: internalHeaders() };
     const req = http.get(url, options, (res) => {
-      connected = true;
+      connected = res.statusCode === 200;
       const wasReconnect = backoff > 3000;
       backoff = 3000; // 연결 성공 시 backoff 리셋
       if (wasReconnect) {
