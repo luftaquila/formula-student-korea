@@ -1155,3 +1155,103 @@ describe('users affiliation column', () => {
     assert.equal(users.find((u) => u.email === 'dave@example.com').affiliation, '연세대');
   });
 });
+
+// ─── OAuth callback → applicant branch ─────────────────────────────────────
+describe('OAuth callback applicant branch', () => {
+  // Drives the real /api/login → /api/callback flow with Google token/userinfo mocked.
+  async function runCallback(email, name) {
+    // Unique source IP so the per-IP OAuth rate limiter (20/min) doesn't trip
+    // late in the suite after the many earlier login/callback calls.
+    const xff = { 'X-Forwarded-For': '203.0.113.50' };
+    const loginRes = await fetch(`${baseUrl}/api/login`, { redirect: 'manual', headers: xff });
+    const nonceCookie = loginRes.headers.get('set-cookie').split(';')[0];
+    const state = new URL(loginRes.headers.get('location')).searchParams.get('state');
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.includes('oauth2.googleapis.com/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (u.includes('/oauth2/v2/userinfo')) {
+        return new Response(JSON.stringify({ email, name }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return origFetch(url, opts);
+    };
+    try {
+      return await origFetch(`${baseUrl}/api/callback?code=testcode&state=${encodeURIComponent(state)}`, {
+        redirect: 'manual',
+        headers: { Cookie: nonceCookie, ...xff },
+      });
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  it('unregistered login while OPEN issues an applicant cookie and redirects to /auth/apply', async () => {
+    await client.patch('/api/applications/config', { body: { open: true }, cookie: adminCookie });
+    const res = await runCallback('cb-applicant@example.com', 'CB Applicant');
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), '/auth/apply');
+    const cookies = res.headers.getSetCookie();
+    assert.ok(cookies.some((c) => /^fsk_applicant=[\w-]+\.[\w-]+\.[\w-]+/.test(c)), 'applicant cookie issued');
+    assert.ok(!cookies.some((c) => /^fsk_session=[^;]/.test(c)), 'no full session issued');
+    assert.equal(db.prepare("SELECT 1 FROM users WHERE email = 'cb-applicant@example.com'").get(), undefined);
+  });
+
+  it('unregistered login while CLOSED is rejected as before', async () => {
+    await client.patch('/api/applications/config', { body: { open: false }, cookie: adminCookie });
+    const res = await runCallback('cb-rejected@example.com', 'CB Rejected');
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), '/?login_error=unregistered');
+    const cookies = res.headers.getSetCookie();
+    assert.ok(!cookies.some((c) => /^fsk_applicant=[^;]/.test(c)), 'no applicant cookie when closed');
+  });
+});
+
+// ─── Account applications - edge cases ─────────────────────────────────────
+describe('Account applications - edge cases', () => {
+  let applicantCookie;
+
+  before(async () => {
+    const { createJWT } = await import('../../shared/express-setup.mjs');
+    applicantCookie = (email, name) => `fsk_applicant=${createJWT({ email, name, applicant: true }, TEST_SECRET, 3600)}`;
+    await client.patch('/api/applications/config', { body: { open: true }, cookie: adminCookie });
+  });
+
+  it('PATCH /api/apply returns 404 when no application exists', async () => {
+    const res = await client.patch('/api/apply', {
+      body: { realname: 'X', phone: '010-0000-0000', affiliation: 'Y' },
+      cookie: applicantCookie('noapp@example.com', 'NoApp'),
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('PATCH /api/apply rejects missing fields (400)', async () => {
+    const c = applicantCookie('edit-missing@example.com', 'EM');
+    await client.post('/api/apply', { body: { realname: 'A', phone: '010-1111-1111', affiliation: 'B' }, cookie: c });
+    const res = await client.patch('/api/apply', { body: { realname: '', phone: '010-1111-1111', affiliation: 'B' }, cookie: c });
+    assert.equal(res.status, 400);
+  });
+
+  it('GET /api/apply/me rejects a malformed applicant cookie (401)', async () => {
+    const res = await client.get('/api/apply/me', { cookie: 'fsk_applicant=not.a.valid.jwt' });
+    assert.equal(res.status, 401);
+  });
+
+  it('POST /api/applications/approve rejects empty ids (400)', async () => {
+    const res = await client.post('/api/applications/approve', { body: { ids: [], role: 'student' }, cookie: adminCookie });
+    assert.equal(res.status, 400);
+  });
+
+  it('POST /api/applications/approve reports skipped for an already-registered email', async () => {
+    db.prepare("INSERT OR IGNORE INTO applications (email, name, realname, phone, affiliation) VALUES ('admin@test.com', 'Admin', 'A', '010', 'X')").run();
+    const app = db.prepare("SELECT id FROM applications WHERE email = 'admin@test.com'").get();
+    const res = await client.post('/api/applications/approve', { body: { ids: [app.id], role: 'student' }, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.added, 0);
+    assert.equal(data.skipped, 1);
+    assert.equal(db.prepare("SELECT 1 FROM applications WHERE email = 'admin@test.com'").get(), undefined);
+  });
+});
