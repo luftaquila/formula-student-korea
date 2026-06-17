@@ -29,11 +29,11 @@ test.describe("Auth CSV user bulk upload via UI", () => {
 
     // Prepare CSV content: header row + 3 users + 1 duplicate (existing admin)
     const csvContent = [
-      "email,name,role,realname,phone",
-      "e2e-csv1@test.com,CSV User 1,student,csv test realname,",
-      "e2e-csv2@test.com,CSV User 2,official,",
-      "e2e-csv3@test.com,CSV User 3,,",
-      "e2e-admin@test.com,Duplicate Admin,admin,should be skipped",
+      "email,name,role,realname,phone,affiliation",
+      "e2e-csv1@test.com,CSV User 1,student,csv test realname,,CSV대 FSAE",
+      "e2e-csv2@test.com,CSV User 2,official,,,",
+      "e2e-csv3@test.com,CSV User 3,,,,",
+      "e2e-admin@test.com,Duplicate Admin,admin,should be skipped,,",
     ].join("\n");
 
     // The uploadCSV function creates a dynamic file input.
@@ -55,6 +55,9 @@ test.describe("Auth CSV user bulk upload via UI", () => {
     for (const email of CSV_EMAILS) {
       await expect(page.locator("td").filter({ hasText: email })).toBeVisible();
     }
+
+    // Affiliation column from the CSV is applied
+    await expect(page.locator("td").filter({ hasText: "CSV대 FSAE" })).toBeVisible();
   });
 
   test("CSV with quoted fields and commas parses correctly", async ({ page }) => {
