@@ -19,6 +19,7 @@ test.describe("User management", () => {
     await expect(table.locator("th").filter({ hasText: "이메일" })).toBeVisible();
     await expect(table.locator("th").filter({ hasText: "역할" })).toBeVisible();
     await expect(table.locator("th").filter({ hasText: "실명" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "학교/팀" })).toBeVisible();
 
     // Verify seeded users appear in the table
     await expect(page.locator("td").filter({ hasText: "e2e-admin@test.com" })).toBeVisible();
@@ -79,6 +80,23 @@ test.describe("User management", () => {
 
     // Wait for save to complete, then verify the text persists
     await expect(row.locator(".col-realname .inline-edit-text")).toHaveText("E2E 테스트 실명");
+  });
+
+  test("edit affiliation inline", async ({ page }) => {
+    const row = page.locator("tr").filter({ hasText: TEST_EMAIL });
+    await expect(row).toBeVisible();
+
+    // Click the affiliation cell to start editing
+    await row.locator(".col-affiliation.inline-edit-cell").click();
+
+    const affiliationInput = row.locator(".col-affiliation .inline-edit-input");
+    await expect(affiliationInput).toBeVisible();
+    await affiliationInput.fill("E2E대학교 FSAE");
+
+    // Enter triggers blur → save
+    await affiliationInput.press("Enter");
+
+    await expect(row.locator(".col-affiliation .inline-edit-text")).toHaveText("E2E대학교 FSAE");
   });
 
   test("deactivate and activate user", async ({ page }) => {
