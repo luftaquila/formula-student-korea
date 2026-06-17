@@ -5,8 +5,16 @@ import NavMenu from "@shared/NavMenu.vue";
 
 const route = useRoute();
 const isLogs = computed(() => route.path === "/logs");
-const pageIcon = computed(() => isLogs.value ? "📜" : "🔑");
-const pageTitle = computed(() => isLogs.value ? "FSK 시스템 로그" : "FSK 계정 관리");
+const isApply = computed(() => route.path === "/apply");
+const isApplications = computed(() => route.path === "/applications");
+const pageIcon = computed(() =>
+  isApply.value ? "📝" : isApplications.value ? "📋" : isLogs.value ? "📜" : "🔑");
+const pageTitle = computed(() =>
+  isApply.value ? "FSK 계정 신청"
+  : isApplications.value ? "FSK 계정 신청 관리"
+  : isLogs.value ? "FSK 시스템 로그"
+  : "FSK 계정 관리");
+// 계정 신청 관리(/applications)는 별도 메뉴 없이 계정 관리(/auth) 하위로 취급 → 네비에서 계정 관리 활성
 const currentPath = computed(() => isLogs.value ? "/auth/logs" : "/auth");
 
 watch(pageTitle, (v) => { document.title = v; }, { immediate: true });
@@ -21,7 +29,7 @@ watch(pageTitle, (v) => { document.title = v; }, { immediate: true });
           <h1>{{ pageTitle }}</h1>
         </a>
         <div class="header-actions">
-          <NavMenu :currentPath="currentPath" />
+          <NavMenu v-if="!isApply" :currentPath="currentPath" />
         </div>
       </div>
     </header>
