@@ -1159,11 +1159,13 @@ describe('users affiliation column', () => {
 // ─── OAuth callback → applicant branch ─────────────────────────────────────
 describe('OAuth callback applicant branch', () => {
   // Drives the real /api/login → /api/callback flow with Google token/userinfo mocked.
-  async function runCallback(email, name) {
+  async function runCallback(email, name, redirect = undefined) {
     // Unique source IP so the per-IP OAuth rate limiter (20/min) doesn't trip
     // late in the suite after the many earlier login/callback calls.
     const xff = { 'X-Forwarded-For': '203.0.113.50' };
-    const loginRes = await fetch(`${baseUrl}/api/login`, { redirect: 'manual', headers: xff });
+    const loginUrl = new URL(`${baseUrl}/api/login`);
+    if (redirect) loginUrl.searchParams.set('redirect', redirect);
+    const loginRes = await fetch(loginUrl, { redirect: 'manual', headers: xff });
     const nonceCookie = loginRes.headers.get('set-cookie').split(';')[0];
     const state = new URL(loginRes.headers.get('location')).searchParams.get('state');
 
@@ -1190,13 +1192,23 @@ describe('OAuth callback applicant branch', () => {
 
   it('unregistered login while OPEN issues an applicant cookie and redirects to /auth/apply', async () => {
     await client.patch('/api/applications/config', { body: { open: true }, cookie: adminCookie });
-    const res = await runCallback('cb-applicant@example.com', 'CB Applicant');
+    const res = await runCallback('cb-applicant@example.com', 'CB Applicant', '/auth/apply');
     assert.equal(res.status, 302);
     assert.equal(res.headers.get('location'), '/auth/apply');
     const cookies = res.headers.getSetCookie();
     assert.ok(cookies.some((c) => /^fsk_applicant=[\w-]+\.[\w-]+\.[\w-]+/.test(c)), 'applicant cookie issued');
     assert.ok(!cookies.some((c) => /^fsk_session=[^;]/.test(c)), 'no full session issued');
     assert.equal(db.prepare("SELECT 1 FROM users WHERE email = 'cb-applicant@example.com'").get(), undefined);
+  });
+
+  it('unregistered sidebar login while OPEN is rejected and does not issue an applicant cookie', async () => {
+    await client.patch('/api/applications/config', { body: { open: true }, cookie: adminCookie });
+    const res = await runCallback('cb-sidebar@example.com', 'CB Sidebar', '/');
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), '/?login_error=unregistered');
+    const cookies = res.headers.getSetCookie();
+    assert.ok(!cookies.some((c) => /^fsk_applicant=[^;]/.test(c)), 'no applicant cookie from non-apply login');
+    assert.equal(db.prepare("SELECT 1 FROM users WHERE email = 'cb-sidebar@example.com'").get(), undefined);
   });
 
   it('unregistered login while CLOSED is rejected as before', async () => {
