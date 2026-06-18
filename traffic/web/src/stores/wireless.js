@@ -195,14 +195,17 @@ export const useWirelessStore = defineStore("wireless", () => {
         lastMasterMs = Number(t[1]) / TICKS_PER_MS;
         lastWall = Date.now();
         break;
-      case "D": // D node state offset skew rx_miss gap last_seen rssi snr lat
+      case "D": // D node state offset skew rx_miss gap last_seen rssi snr lat temp_c10 batt_mv
         telemetryBuf.set(t[1], {
           node_id: t[1], rssi: Number(t[8]), snr: Number(t[9]),
           offset_us: Math.round(Number(t[3]) / 16), skew_ppm: Number(t[4]),
           rx_miss: Number(t[5]), beacon_gap: Number(t[6]),
           // t[7] = 마스터가 이 노드를 마지막으로 들은 뒤 경과(ms). 서버가 절대 "수신" 시각으로 환산.
           last_seen_ms: Number(t[7]),
-          latency_ms: Number(t[10]), link_state: stateMap(t[2]),
+          latency_ms: Number(t[10]),
+          // t[11] = 다이 온도(deci-°C), t[12] = 배터리/충전레일(mV). 마스터(node 0)는 자기 값.
+          temp_c10: Number(t[11]), batt_mv: Number(t[12]),
+          link_state: stateMap(t[2]),
         });
         break;
       case "L": // L state tick → 물리 신호등 상태를 서버에 보고

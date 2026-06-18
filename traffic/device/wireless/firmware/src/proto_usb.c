@@ -114,10 +114,11 @@ void pu_emit_event(uint8_t node, uint16_t ev_seq, uint64_t tmaster, uint8_t flag
 
 void pu_emit_diag(uint8_t node, int state, int64_t offset_tick, int32_t skew_ppm,
                   uint16_t rx_miss, uint16_t beacon_gap, uint32_t last_seen_ms,
-                  float rssi, float snr, uint32_t lat_ms)
+                  float rssi, float snr, uint32_t lat_ms,
+                  int16_t temp_c10, uint16_t batt_mv)
 {
     const char *st = state == PU_STATE_OK ? "OK" : (state == PU_STATE_STALE ? "STALE" : "LOST");
-    char line[96];
+    char line[112];
     lb_t b; lb_init(&b, line, sizeof(line));
     lb_str(&b, "D ");
     lb_u32(&b, node);
@@ -130,6 +131,8 @@ void pu_emit_diag(uint8_t node, int state, int64_t offset_tick, int32_t skew_ppm
     lb_ch(&b, ' '); lb_f2(&b, rssi);
     lb_ch(&b, ' '); lb_f2(&b, snr);
     lb_ch(&b, ' '); lb_u32(&b, lat_ms);
+    lb_ch(&b, ' '); lb_i32(&b, temp_c10);
+    lb_ch(&b, ' '); lb_u32(&b, batt_mv);
     lb_finish(&b);
     usb_write(line);
 }

@@ -679,6 +679,42 @@ describe('POST /api/wireless/ingest', () => {
     const seen = new Date(live.last_seen).getTime();
     assert.ok(seen >= before - 100 && seen <= after + 100, 'last_seen ~= ingest time on fallback');
   });
+
+  it('carries temperature and battery through to live state', async () => {
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: 'battnode', rssi: -75, snr: 7, skew_ppm: 2, link_state: 'online', temp_c10: 235, batt_mv: 3920 }] },
+      cookie: adminCookie,
+    });
+    const state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const live = state.telemetry.find(t => t.node_id === 'battnode');
+    assert.ok(live, 'live telemetry present');
+    assert.equal(live.temp_c10, 235, 'die temp (deci-C) carried through');
+    assert.equal(live.batt_mv, 3920, 'battery mV carried through');
+  });
+
+  it('accepts the master self-diag row (node 0) with temp + charge-rail mV', async () => {
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: '0', link_state: 'online', temp_c10: 310, batt_mv: 4280 }] },
+      cookie: adminCookie,
+    });
+    const state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const master = state.telemetry.find(t => t.node_id === '0');
+    assert.ok(master, 'master row present');
+    assert.equal(master.temp_c10, 310);
+    assert.equal(master.batt_mv, 4280);
+  });
+
+  it('leaves temp/batt null when absent', async () => {
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: 'notempnode', rssi: -70, link_state: 'online' }] },
+      cookie: adminCookie,
+    });
+    const state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const live = state.telemetry.find(t => t.node_id === 'notempnode');
+    assert.ok(live, 'live telemetry present');
+    assert.equal(live.temp_c10, null);
+    assert.equal(live.batt_mv, null);
+  });
 });
 
 // ─── Wireless: mapping CRUD ─────────────────────────────────────────────
