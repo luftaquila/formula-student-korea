@@ -82,6 +82,7 @@ add_executable(${ELF}
     src/board.c
     src/lights.c
     src/sensor.c
+    src/meas.c
     src/capture.c
     src/protocol.c
     src/proto_usb.c

@@ -646,6 +646,75 @@ describe('POST /api/wireless/ingest', () => {
     assert.equal(live.rssi, -82, 'live state reflects latest values');
     assert.equal(live.offset_us, 120);
   });
+
+  it('last_seen reflects firmware last_seen_ms (age), not ingest time', async () => {
+    // A diag line reporting "lost" carries a large age; "수신"은 ingest 시각이 아니라
+    // 마스터가 마지막으로 들은 시각이어야 한다(= now - last_seen_ms).
+    const before = Date.now();
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: 'agednode', rssi: -90, snr: 2, skew_ppm: 0, link_state: 'lost', last_seen_ms: 20000 }] },
+      cookie: adminCookie,
+    });
+    const after = Date.now();
+
+    const state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const live = state.telemetry.find(t => t.node_id === 'agednode');
+    assert.ok(live, 'live telemetry present');
+    const age = after - new Date(live.last_seen).getTime();
+    // 20s age (±오차) — 절대 "방금"이면 안 됨.
+    assert.ok(age >= 20000 - 100 && age <= 20000 + (after - before) + 100,
+      `last_seen should be ~20s old, got ${age}ms`);
+  });
+
+  it('last_seen falls back to ingest time when last_seen_ms is absent', async () => {
+    const before = Date.now();
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: 'freshnode', rssi: -70, snr: 8, skew_ppm: 1, link_state: 'online' }] },
+      cookie: adminCookie,
+    });
+    const after = Date.now();
+    const state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const live = state.telemetry.find(t => t.node_id === 'freshnode');
+    assert.ok(live, 'live telemetry present');
+    const seen = new Date(live.last_seen).getTime();
+    assert.ok(seen >= before - 100 && seen <= after + 100, 'last_seen ~= ingest time on fallback');
+  });
+
+  it('carries temperature and battery through to live state', async () => {
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: 'battnode', rssi: -75, snr: 7, skew_ppm: 2, link_state: 'online', temp_c10: 235, batt_mv: 3920 }] },
+      cookie: adminCookie,
+    });
+    const state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const live = state.telemetry.find(t => t.node_id === 'battnode');
+    assert.ok(live, 'live telemetry present');
+    assert.equal(live.temp_c10, 235, 'die temp (deci-C) carried through');
+    assert.equal(live.batt_mv, 3920, 'battery mV carried through');
+  });
+
+  it('accepts the master self-diag row (node 0) with temp + charge-rail mV', async () => {
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: '0', link_state: 'online', temp_c10: 310, batt_mv: 4280 }] },
+      cookie: adminCookie,
+    });
+    const state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const master = state.telemetry.find(t => t.node_id === '0');
+    assert.ok(master, 'master row present');
+    assert.equal(master.temp_c10, 310);
+    assert.equal(master.batt_mv, 4280);
+  });
+
+  it('leaves temp/batt null when absent', async () => {
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: 'notempnode', rssi: -70, link_state: 'online' }] },
+      cookie: adminCookie,
+    });
+    const state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const live = state.telemetry.find(t => t.node_id === 'notempnode');
+    assert.ok(live, 'live telemetry present');
+    assert.equal(live.temp_c10, null);
+    assert.equal(live.batt_mv, null);
+  });
 });
 
 // ─── Wireless: mapping CRUD ─────────────────────────────────────────────

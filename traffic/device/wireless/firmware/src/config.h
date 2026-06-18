@@ -66,6 +66,11 @@
 #define SLOT_WIDTH_MS   50u  /* per-node STATUS slot width */
 #define STATUS_GUARD_MS 10u  /* sensor waits this long into its slot before TX */
 #define TDMA_BASE_MS    60u  /* first slot starts here (beacon airtime drains) */
-#define STATUS_PERIOD_S 4u   /* a node sends STATUS once per this many beacons */
+#define STATUS_PERIOD_S 5u   /* a node sends STATUS once per this many beacons (= 5 s) */
+
+/* W5 Schottky drop between the cell and VDDH (DESIGN: BAT60B ~0.24 V; some boards
+ * ship a silicon diode ~0.7 V). Added back to the sensor's measured VDDH to
+ * estimate cell voltage. Master reports raw VDDH (charge rail), so it skips this. */
+#define BATT_DIODE_DROP_MV 240u
 
 #endif /* CONFIG_H */

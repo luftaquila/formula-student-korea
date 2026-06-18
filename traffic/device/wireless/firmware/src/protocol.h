@@ -16,7 +16,7 @@
 #define PKT_TYPE_ACK    0x03u
 #define PKT_TYPE_STATUS 0x04u
 
-#define PROTO_VER   2u
+#define PROTO_VER   3u  /* 3: STATUS gains temp_c10 (battery + die temp) */
 
 /* node_id 0 = master, 1..6 = sensors. Per-node arrays are sized to MAX_NODES and
  * indexed directly by node_id, so node_id must satisfy 1 <= id < MAX_NODES. */
@@ -66,7 +66,8 @@ typedef struct __attribute__((packed)) {
     int32_t  skew_ppm;    /* clock drift estimate, signed ppm */
     uint16_t rx_miss;     /* beacons missed since boot (saturating) */
     uint16_t beacon_gap;  /* consecutive beacons missed right now */
-    uint16_t batt_mv;     /* reserved (0 until VBAT ADC wired) */
+    uint16_t batt_mv;     /* cell estimate (VDDH via SAADC VDDHDIV5 + diode drop) */
+    int16_t  temp_c10;    /* nRF die temperature, deci-degrees C (235 = 23.5 C) */
     uint16_t crc;
 } status_t;
 

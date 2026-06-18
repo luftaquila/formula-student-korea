@@ -7,7 +7,8 @@
  *     I FSK-WL <fw> <devid16hex> <chan> <sf> <bw> <ticks_per_ms>
  *     H <now_tick> <uptime_ms> <beacon_seq> <nsensors_seen>
  *     E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr>
- *     D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms>
+ *     D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms> <temp_c10> <batt_mv>
+ *       (node 0 = master self-report: temp + charge-rail batt_mv; LoRa fields 0)
  *     L <RED|GREEN|OFF> <tick>
  *     A <cmd> OK
  *     X <reason>
@@ -39,7 +40,8 @@ void pu_emit_event(uint8_t node, uint16_t ev_seq, uint64_t tmaster, uint8_t flag
                    float rssi, float snr);
 void pu_emit_diag(uint8_t node, int state, int64_t offset_tick, int32_t skew_ppm,
                   uint16_t rx_miss, uint16_t beacon_gap, uint32_t last_seen_ms,
-                  float rssi, float snr, uint32_t lat_ms);
+                  float rssi, float snr, uint32_t lat_ms,
+                  int16_t temp_c10, uint16_t batt_mv);
 void pu_emit_light(int state, uint64_t tick);
 void pu_emit_ack(const char *cmd);
 void pu_emit_err(const char *reason);

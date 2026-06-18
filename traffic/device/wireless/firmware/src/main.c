@@ -24,6 +24,7 @@
 #include "config.h"
 #include "lights.h"
 #include "node_id.h"
+#include "meas.h"
 
 #define TICKS_PER_MS 16000u /* TIMER1 is 16 MHz */
 #define OFF_HIST     8u     /* offset ring depth for the skew estimate */
@@ -101,7 +102,10 @@ static void sensor_send_status(uint8_t me, uint8_t *sseq, uint64_t off, int32_t 
     s.skew_ppm = skew;
     s.rx_miss = rx_miss;
     s.beacon_gap = gap;
-    s.batt_mv = 0;
+    /* Cell estimate: VDDH (via SAADC VDDHDIV5) + the W5 diode drop. Sampled here,
+     * right before TX, so VDDH reflects near-peak load. */
+    s.batt_mv = (uint16_t)(meas_vddh_mv() + BATT_DIODE_DROP_MV);
+    s.temp_c10 = meas_temp_c10();
     s.crc = crc16_ccitt((uint8_t *)&s, offsetof(status_t, crc));
     if (radio_channel_busy()) { board_delay_ms(3u); }
     radio_transmit((uint8_t *)&s, sizeof(s));
@@ -217,6 +221,8 @@ typedef struct {
     int64_t  offset_tick;
     int32_t  skew_ppm;
     uint16_t rx_miss, beacon_gap;
+    uint16_t batt_mv;
+    int16_t  temp_c10;
     uint32_t last_lat_ms;
     int      last_state;
 } node_stat_t;
@@ -244,7 +250,8 @@ static void master_emit_diag(unsigned i, int state, uint32_t now)
     pu_emit_diag((uint8_t)i, state, g_node[i].offset_tick, g_node[i].skew_ppm,
                  g_node[i].rx_miss, g_node[i].beacon_gap,
                  (uint32_t)(now - g_node[i].last_seen_ms),
-                 g_node[i].rssi, g_node[i].snr, g_node[i].last_lat_ms);
+                 g_node[i].rssi, g_node[i].snr, g_node[i].last_lat_ms,
+                 g_node[i].temp_c10, g_node[i].batt_mv);
 }
 
 static void run_master(int st)
@@ -337,6 +344,14 @@ static void run_master(int st)
                     master_emit_diag(i, ls, now);
                 }
             }
+
+            /* Master self-diag (node 0) every STATUS_PERIOD_S beacons: its own die
+             * temp + charge-rail voltage. last_seen=0 (just measured); LoRa-only
+             * fields are 0 since they don't apply to the master itself. */
+            if ((uint8_t)(seq % STATUS_PERIOD_S) == 0u) {
+                pu_emit_diag(0, PU_STATE_OK, 0, 0, 0, 0, 0, 0.0f, 0.0f, 0,
+                             meas_temp_c10(), meas_vddh_mv());
+            }
             continue;
         }
 
@@ -388,6 +403,8 @@ static void run_master(int st)
             ns->skew_ppm = s->skew_ppm;
             ns->rx_miss = s->rx_miss;
             ns->beacon_gap = s->beacon_gap;
+            ns->batt_mv = s->batt_mv;
+            ns->temp_c10 = s->temp_c10;
             int ls = link_state_of(board_millis(), ns);
             ns->last_state = ls;
             master_emit_diag(s->node_id, ls, board_millis());

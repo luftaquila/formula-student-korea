@@ -179,7 +179,7 @@ function getMapping() {
 function getLiveTelemetry() {
   const out = [];
   for (const [node_id, t] of liveTelemetry) {
-    out.push({ node_id, rssi: t.rssi, snr: t.snr, offset_us: t.offset_us, skew_ppm: t.skew_ppm, latency_ms: t.latency_ms, rx_miss: t.rx_miss, beacon_gap: t.beacon_gap, link_state: t.link_state, last_seen: t.last_seen });
+    out.push({ node_id, rssi: t.rssi, snr: t.snr, offset_us: t.offset_us, skew_ppm: t.skew_ppm, latency_ms: t.latency_ms, rx_miss: t.rx_miss, beacon_gap: t.beacon_gap, temp_c10: t.temp_c10, batt_mv: t.batt_mv, link_state: t.link_state, last_seen: t.last_seen });
   }
   return out;
 }
@@ -715,15 +715,23 @@ app.post("/api/wireless/ingest", (req, res) => {
       const link = typeof t.link_state === "string" ? t.link_state : null;
       const rxMiss = Number.isFinite(t.rx_miss) ? Math.trunc(t.rx_miss) : null;
       const gap = Number.isFinite(t.beacon_gap) ? Math.trunc(t.beacon_gap) : null;
+      // 다이 온도(deci-°C)와 배터리/충전레일(mV). 마스터(node 0)는 충전 레일 전압.
+      const tempC10 = Number.isFinite(t.temp_c10) ? Math.trunc(t.temp_c10) : null;
+      const battMv = Number.isFinite(t.batt_mv) ? Math.trunc(t.batt_mv) : null;
       const prev = liveTelemetry.get(node) || {};
+      // "수신"은 마스터가 그 센서를 마지막으로 들은 시각이어야 한다. 펌웨어가 진단 라인으로
+      // 보내는 last_seen_ms(들은 뒤 경과 ms)를 절대시각으로 환산 — 이렇게 해야 끊김/지연을
+      // 보고하는 줄이 도착해도 "수신"이 방금으로 리셋되지 않는다. 누락 시 ingest 시각으로 폴백.
+      const heardAgeMs = Number.isFinite(t.last_seen_ms) && t.last_seen_ms >= 0 ? Math.trunc(t.last_seen_ms) : null;
+      const lastSeenIso = heardAgeMs === null ? nowIso : new Date(now - heardAgeMs).toISOString();
       // rx_miss/beacon_gap는 실시간(SSE)으로만 전달 — 스냅샷 테이블 스키마는 그대로.
-      const entry = { rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, link_state: link, last_seen: nowIso, _lastPersist: prev._lastPersist || 0 };
+      const entry = { rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, link_state: link, last_seen: lastSeenIso, _lastPersist: prev._lastPersist || 0 };
       if (now - entry._lastPersist >= TELEMETRY_PERSIST_MS) {
         tins.run(node, rssi, snr, offset, skew, lat, link);
         entry._lastPersist = now;
       }
       liveTelemetry.set(node, entry);
-      tOut.push({ node_id: node, rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, link_state: link, last_seen: nowIso });
+      tOut.push({ node_id: node, rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, link_state: link, last_seen: lastSeenIso });
     }
     return { inserted, deduped, telemetry: tOut };
   })());

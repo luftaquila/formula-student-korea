@@ -41,6 +41,11 @@ function markDirty(node) {
   if (d) d._dirty = true;
 }
 
+// 행의 저장 상태. saved = DB와 일치(저장됨), 그 외(편집 미저장 or 미할당) = 저장 필요.
+function isSaved(node) {
+  return store.mapping.some((m) => m.node_id === node) && !draft[node]?._dirty;
+}
+
 async function save(node) {
   const d = draft[node];
   try {
@@ -86,7 +91,14 @@ async function remove(node) {
               <input type="checkbox" v-model="draft[node].enabled" @change="markDirty(node)" />
             </td>
             <td class="actions">
-              <button class="btn btn-success btn-sm" :data-testid="`mapping-save-${node}`" @click="save(node)">저장</button>
+              <button
+                class="btn btn-sm save-btn"
+                :class="isSaved(node) ? 'btn-ghost is-saved' : 'btn-success'"
+                :disabled="isSaved(node)"
+                :data-testid="`mapping-save-${node}`"
+                :data-state="isSaved(node) ? 'saved' : 'unsaved'"
+                @click="save(node)"
+              >{{ isSaved(node) ? "✓ 저장됨" : "저장" }}</button>
               <button class="btn btn-ghost btn-sm" @click="remove(node)">삭제</button>
             </td>
           </tr>
@@ -108,6 +120,9 @@ async function remove(node) {
 .center { text-align: center; }
 .actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
 .btn-sm { padding: 0.35rem 0.7rem; font-size: 0.8rem; }
+/* 저장됨 상태: 누를 게 없음을 흐림 + 기본 커서로 표시 */
+.save-btn.is-saved { opacity: 0.6; cursor: default; }
+.save-btn { min-width: 4.5rem; }
 @media (max-width: 640px) {
   .assign-table, .assign-table thead, .assign-table tbody, .assign-table tr, .assign-table td { display: block; }
   .assign-table thead { display: none; }
