@@ -716,14 +716,19 @@ app.post("/api/wireless/ingest", (req, res) => {
       const rxMiss = Number.isFinite(t.rx_miss) ? Math.trunc(t.rx_miss) : null;
       const gap = Number.isFinite(t.beacon_gap) ? Math.trunc(t.beacon_gap) : null;
       const prev = liveTelemetry.get(node) || {};
+      // "수신"은 마스터가 그 센서를 마지막으로 들은 시각이어야 한다. 펌웨어가 진단 라인으로
+      // 보내는 last_seen_ms(들은 뒤 경과 ms)를 절대시각으로 환산 — 이렇게 해야 끊김/지연을
+      // 보고하는 줄이 도착해도 "수신"이 방금으로 리셋되지 않는다. 누락 시 ingest 시각으로 폴백.
+      const heardAgeMs = Number.isFinite(t.last_seen_ms) && t.last_seen_ms >= 0 ? Math.trunc(t.last_seen_ms) : null;
+      const lastSeenIso = heardAgeMs === null ? nowIso : new Date(now - heardAgeMs).toISOString();
       // rx_miss/beacon_gap는 실시간(SSE)으로만 전달 — 스냅샷 테이블 스키마는 그대로.
-      const entry = { rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, link_state: link, last_seen: nowIso, _lastPersist: prev._lastPersist || 0 };
+      const entry = { rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, link_state: link, last_seen: lastSeenIso, _lastPersist: prev._lastPersist || 0 };
       if (now - entry._lastPersist >= TELEMETRY_PERSIST_MS) {
         tins.run(node, rssi, snr, offset, skew, lat, link);
         entry._lastPersist = now;
       }
       liveTelemetry.set(node, entry);
-      tOut.push({ node_id: node, rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, link_state: link, last_seen: nowIso });
+      tOut.push({ node_id: node, rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, link_state: link, last_seen: lastSeenIso });
     }
     return { inserted, deduped, telemetry: tOut };
   })());

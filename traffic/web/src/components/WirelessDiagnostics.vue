@@ -37,7 +37,16 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
       <div v-if="!rows.length" class="empty-state">수신된 센서가 없습니다.</div>
       <table v-else class="diag-table">
         <thead>
-          <tr><th>노드</th><th>상태</th><th>RSSI</th><th>SNR</th><th>드리프트</th><th>누락</th><th>지연</th><th>수신</th></tr>
+          <tr>
+            <th>노드</th>
+            <th>상태</th>
+            <th class="has-tip" title="마스터가 측정한 센서 신호 세기 (dBm). 0에 가까울수록 강함">RSSI</th>
+            <th class="has-tip" title="신호 대 잡음비 (dB). 높을수록 깨끗한 수신">SNR</th>
+            <th class="has-tip" title="센서 클럭의 마스터 대비 편차 (ppm). 0에 가까워야 정상">드리프트</th>
+            <th class="has-tip" title="센서가 부팅 후 놓친 비콘 수. (연속 N)은 지금 연속으로 놓친 개수">누락</th>
+            <th class="has-tip" title="이벤트가 마스터에 도달하기까지 걸린 시간 (ms)">지연</th>
+            <th class="has-tip" title="마스터가 이 센서를 마지막으로 들은 시각">수신</th>
+          </tr>
         </thead>
         <tbody>
           <tr v-for="r in rows" :key="r.node_id" :data-testid="`diag-row-${r.node_id}`">
@@ -68,6 +77,8 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
 .diag-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; table-layout: fixed; }
 .diag-table th, .diag-table td { padding: 0.55rem 0.6rem; text-align: left; border-bottom: 1px solid var(--border-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .diag-table th { color: var(--text-tertiary); font-weight: 600; }
+/* 설명 툴팁(native title)이 달린 헤더 — 호버 가능함을 점선 밑줄 + help 커서로 암시 */
+.diag-table th.has-tip { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
 .diag-table tbody tr:last-child td { border-bottom: none; }
 .diag-table th:nth-child(1), .diag-table td:nth-child(1) { width: 8%; }
 .diag-table th:nth-child(2), .diag-table td:nth-child(2) { width: 12%; }
