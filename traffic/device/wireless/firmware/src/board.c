@@ -18,10 +18,21 @@
  * every role's timebase is crystal-disciplined (±40 ppm) regardless of USB. */
 static void hfclk_init(void)
 {
+    /* The nice!nano/Adafruit bootloader uses USB, so it hands off with HFXO
+     * ALREADY running. Re-triggering HFCLKSTART in that state does not regenerate
+     * EVENTS_HFCLKSTARTED, so an unconditional wait spins forever and the boot
+     * hangs before USB ever comes up. Guard: if HFCLK is already sourced from the
+     * crystal, there's nothing to do; otherwise start it with a bounded wait that
+     * can never hang (HFXO normally settles in <1 ms). */
+    if ((NRF_CLOCK->HFCLKSTAT & CLOCK_HFCLKSTAT_STATE_Msk) &&
+        (((NRF_CLOCK->HFCLKSTAT & CLOCK_HFCLKSTAT_SRC_Msk) >> CLOCK_HFCLKSTAT_SRC_Pos)
+            == CLOCK_HFCLKSTAT_SRC_Xtal)) {
+        return;
+    }
     NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
     NRF_CLOCK->TASKS_HFCLKSTART = 1;
-    while (NRF_CLOCK->EVENTS_HFCLKSTARTED == 0) {
-        /* spin until the crystal is running and HFCLK has switched to it */
+    for (volatile uint32_t i = 0; i < 1000000u && NRF_CLOCK->EVENTS_HFCLKSTARTED == 0; i++) {
+        /* bounded — proceed even if it never signals (TinyUSB will start it too) */
     }
 }
 
