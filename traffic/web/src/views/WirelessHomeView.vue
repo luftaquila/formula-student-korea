@@ -41,10 +41,6 @@ async function simTelemetry() {
               <option v-for="k in store.WIRELESS_EVENTS" :key="k" :value="k">{{ store.EVENT_TYPE[k] }}</option>
             </select>
           </div>
-          <p class="wl-hint">
-            지정한 경기만 마스터가 실제 신호등(SSR)을 제어하고, 신호등이 켜진 시점부터 측정합니다.
-            나머지 경기는 가상 신호등(측정만)으로 동작합니다.
-          </p>
         </div>
       </div>
     </div>
@@ -82,7 +78,6 @@ async function simTelemetry() {
   gap: 1.5rem;
   align-items: start;
 }
-.wl-hint { font-size: 0.78rem; color: var(--text-tertiary); margin-top: 0.5rem; line-height: 1.5; }
 .sim-row { display: flex; align-items: center; gap: 0.6rem; }
 .sim-node { max-width: 90px; }
 .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
