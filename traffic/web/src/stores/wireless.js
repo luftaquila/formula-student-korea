@@ -200,6 +200,8 @@ export const useWirelessStore = defineStore("wireless", () => {
           node_id: t[1], rssi: Number(t[8]), snr: Number(t[9]),
           offset_us: Math.round(Number(t[3]) / 16), skew_ppm: Number(t[4]),
           rx_miss: Number(t[5]), beacon_gap: Number(t[6]),
+          // t[7] = 마스터가 이 노드를 마지막으로 들은 뒤 경과(ms). 서버가 절대 "수신" 시각으로 환산.
+          last_seen_ms: Number(t[7]),
           latency_ms: Number(t[10]), link_state: stateMap(t[2]),
         });
         break;

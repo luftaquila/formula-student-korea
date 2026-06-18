@@ -646,6 +646,39 @@ describe('POST /api/wireless/ingest', () => {
     assert.equal(live.rssi, -82, 'live state reflects latest values');
     assert.equal(live.offset_us, 120);
   });
+
+  it('last_seen reflects firmware last_seen_ms (age), not ingest time', async () => {
+    // A diag line reporting "lost" carries a large age; "수신"은 ingest 시각이 아니라
+    // 마스터가 마지막으로 들은 시각이어야 한다(= now - last_seen_ms).
+    const before = Date.now();
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: 'agednode', rssi: -90, snr: 2, skew_ppm: 0, link_state: 'lost', last_seen_ms: 20000 }] },
+      cookie: adminCookie,
+    });
+    const after = Date.now();
+
+    const state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const live = state.telemetry.find(t => t.node_id === 'agednode');
+    assert.ok(live, 'live telemetry present');
+    const age = after - new Date(live.last_seen).getTime();
+    // 20s age (±오차) — 절대 "방금"이면 안 됨.
+    assert.ok(age >= 20000 - 100 && age <= 20000 + (after - before) + 100,
+      `last_seen should be ~20s old, got ${age}ms`);
+  });
+
+  it('last_seen falls back to ingest time when last_seen_ms is absent', async () => {
+    const before = Date.now();
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: 'freshnode', rssi: -70, snr: 8, skew_ppm: 1, link_state: 'online' }] },
+      cookie: adminCookie,
+    });
+    const after = Date.now();
+    const state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const live = state.telemetry.find(t => t.node_id === 'freshnode');
+    assert.ok(live, 'live telemetry present');
+    const seen = new Date(live.last_seen).getTime();
+    assert.ok(seen >= before - 100 && seen <= after + 100, 'last_seen ~= ingest time on fallback');
+  });
 });
 
 // ─── Wireless: mapping CRUD ─────────────────────────────────────────────
