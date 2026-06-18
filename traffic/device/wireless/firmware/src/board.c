@@ -8,6 +8,23 @@
  * vector table so interrupts dispatch to us, not the SoftDevice's. */
 #define APP_VECTOR_BASE 0x00026000UL
 
+/* Switch HFCLK from the 64 MHz internal RC (HFINT, the reset default) to the
+ * external crystal (HFXO). The TIMERs derive PCLK16M from HFCLK, so the capture
+ * timebase (TIMER1) inherits the source's accuracy. HFINT is only ~±1-2% — two
+ * nodes on RC drift apart by ~1% (skew_ppm reads ~10000 and never settles). The
+ * external SX1262 radio does not need the nRF RADIO peripheral, so nothing else
+ * forces HFXO on; previously only the USB-connected master got HFXO for free
+ * (TinyUSB starts it on VBUS), leaving battery sensors on RC. Start it here so
+ * every role's timebase is crystal-disciplined (±40 ppm) regardless of USB. */
+static void hfclk_init(void)
+{
+    NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
+    NRF_CLOCK->TASKS_HFCLKSTART = 1;
+    while (NRF_CLOCK->EVENTS_HFCLKSTARTED == 0) {
+        /* spin until the crystal is running and HFCLK has switched to it */
+    }
+}
+
 static void timebase_init(void)
 {
     /* TIMER2 free-running at 1 MHz (16 MHz / 2^4). TIMER0 belongs to the
@@ -35,6 +52,7 @@ void board_init(void)
 {
     SCB->VTOR = APP_VECTOR_BASE;
 
+    hfclk_init();
     timebase_init();
     board_ext_power_on();
 
