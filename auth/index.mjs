@@ -280,6 +280,11 @@ function sanitizeRedirect(url) {
   return "/";
 }
 
+function isApplyRedirect(url) {
+  const path = String(url || "").split(/[?#]/)[0];
+  return path === "/auth/apply" || path === "/apply";
+}
+
 /* ============================================
    API 라우트
    ============================================ */
@@ -332,8 +337,12 @@ app.get("/api/callback", async (req, res) => {
   }
 
   // Clear nonce cookie helper
-  const secureNonce = isSecureConnection(req);
-  const clearNonceCookie = `fsk_oauth_nonce=; HttpOnly; Path=/auth; SameSite=Lax; Max-Age=0${secureNonce ? "; Secure" : ""}`;
+  const secure = isSecureConnection(req);
+  const clearNonceCookie = `fsk_oauth_nonce=; HttpOnly; Path=/auth; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`;
+  const clearCookieOpts = formatCookieOpts(0, secure);
+  const clearSessionCookie = `fsk_session=; HttpOnly; ${clearCookieOpts}`;
+  const clearUserCookie = `fsk_user=; ${clearCookieOpts}`;
+  const clearApplicantCookie = `fsk_applicant=; HttpOnly; ${clearCookieOpts}`;
 
   if (!code) {
     res.setHeader("Set-Cookie", clearNonceCookie);
@@ -393,23 +402,26 @@ app.get("/api/callback", async (req, res) => {
       // 비활성 계정: 항상 거부
       if (user && !user.active) {
         logger.warn(req, "user.login_failed", { reason: "deactivated" }, email, { email, name });
-        res.setHeader("Set-Cookie", clearNonceCookie);
+        res.setHeader("Set-Cookie", [clearNonceCookie, clearSessionCookie, clearUserCookie, clearApplicantCookie]);
         return res.redirect("/?login_error=deactivated");
       }
-      // 미등록 계정: 신청이 열려 있으면 신청 흐름으로, 아니면 기존대로 거부
-      if (isApplicationsOpen()) {
+      // 미등록 계정: 신청 페이지에서 시작한 로그인만 신청 흐름으로 허용한다.
+      // 일반 사이드바 로그인은 신청 링크 우회가 되지 않도록 기존처럼 거부한다.
+      if (isApplicationsOpen() && isApplyRedirect(redirectUrl)) {
         const applicantJwt = createJWT({ email, name, applicant: true }, process.env.JWT_SECRET, 3600);
         const applicantOpts = formatCookieOpts(3600, isSecureConnection(req));
         res.setHeader("Set-Cookie", [
           `fsk_applicant=${applicantJwt}; HttpOnly; ${applicantOpts}`,
           clearNonceCookie,
+          clearSessionCookie,
+          clearUserCookie,
         ]);
         logger.log(req, "applicant.login", { name }, email, { email, name });
         // 브라우저는 Caddy의 /auth prefix 스트립을 모르므로 전체 경로로 리다이렉트
         return res.redirect("/auth/apply");
       }
       logger.warn(req, "user.login_failed", { reason: "unregistered" }, email, { email, name });
-      res.setHeader("Set-Cookie", clearNonceCookie);
+      res.setHeader("Set-Cookie", [clearNonceCookie, clearSessionCookie, clearUserCookie, clearApplicantCookie]);
       return res.redirect("/?login_error=unregistered");
     }
 
@@ -431,6 +443,7 @@ app.get("/api/callback", async (req, res) => {
       `fsk_session=${jwt}; HttpOnly; ${cookieOpts}`,
       `fsk_user=${encodeURIComponent(JSON.stringify({ name, role: user.role }))}; ${cookieOpts}`,
       clearNonceCookie,
+      clearApplicantCookie,
     ]);
 
     logger.log(req, "user.login", { name, role: user.role }, email, { email, name, role: user.role });
