@@ -58,18 +58,22 @@ base_fit = 0.3;        // base clearance per side inside the lid bottom opening
 
 /* [Molex Mini-Fit Jr cutouts — left/-X wall] */
 // KiCad +Y is screen-DOWN, OpenSCAD +Y is UP  ->  model_Y = 139.5 - boardY  (Y is flipped).
-// board y-centre 139.5; J1 (sensor) @140.65 -> -1.15, J2 (light) @152.85 -> -13.35
-molex_y = [-1.15, -13.35];   // connector Y centres (model)
+// Opening centre = connector WIDTH centre (pin centroid), NOT the footprint origin: the 2 circuits sit
+// +2.1mm (local-X) from the origin -> J1 boardY 140.65 -> 139.5-(140.65-2.1) = 0.95; J2 -> -11.25.
+molex_y = [0.95, -11.25];   // connector opening Y centres (model)
 molex_cut_w = 11;          // opening width (Y) — clears the 9.6mm shroud (Molex SD-5569) + margin
 molex_cut_h = 12;          // opening height above PCB (Z) — 9.6mm shroud + right-angle standoff
 molex_latch_w = 3.5;       // latch slot width — clears the 3.0mm engaging tongue (Molex SD-5557 ".12[3.0]"); the 5.4mm is the external release handle, not through the wall
 molex_latch_h = 5;         // latch slot extra height — must clear the latch at MAX deflection during mating (rest ~2.5mm + flex), not just at rest; SD shows rest only, so kept generous
 
 /* [USB-C cutout — -Y wall] */
-usb_x = 13.7;      // X centre (SuperMini USB @ board x~155.7 -> +13.7)
-usb_cut_w = 13;    // opening width (X) incl. cable-boot clearance
-usb_cut_h = 7;     // opening height (Z)
-usb_drop = 1;      // start this far below PCB top
+// USB-C sits on the SuperMini's short end (board Y~167, at the -Y wall). Its X centre is the MODULE-WIDTH
+// centre, NOT the footprint origin (origin = a corner pad): end pads span board X 140.47..155.71 ->
+// centre 148.09 -> model 6.09. Port CENTRE height is measured 6.4mm above the PCB bottom face.
+usb_x = 6.1;          // X centre of the USB-C port (model)
+usb_cut_w = 13;       // opening width (X) incl. cable-boot clearance
+usb_cut_h = 7;        // opening height (Z)
+usb_above_bot = 6.4;  // port CENTRE height above the PCB bottom face (measured)
 
 /* [Toggle switch bushing hole — -Y wall, LEFT (-X), clear of the Molex] */
 // 6mm bushing toggle (MTS-/STM- 6mm series). The switch body needs a sw_cube clearance box
@@ -77,7 +81,7 @@ usb_drop = 1;      // start this far below PCB top
 // model X -27.45 (J1 Y -4.35..+6.25, J2 Y -16.55..-5.95, Z 7.1..18), and ABOVE the PCB.
 sw_d = 6;          // bushing through-hole (6mm toggle)
 sw_cube = 14;      // required interior body-clearance cube (edge length)
-sw_x = -20;        // hole X centre on the -Y wall: cube -X edge (sw_x - sw_cube/2 = -27) clears Molex (+X edge -27.45)
+sw_x = -15;        // hole X centre on the -Y wall (moved +5mm toward the tripod/+X side); cube -X edge -22 clears Molex (+X edge -27.45)
 sw_z = 19;         // hole Z centre: cube spans z 12..26 -> above PCB + low parts (incl. L1 ~z10), below ceiling 37.6
 
 /* [SMA antenna hole — -X (left) wall, between the two Molex connectors] */
@@ -118,6 +122,7 @@ base_r = inner_r - base_fit;
 
 pcb_bot_z = base_th + standoff_h;    // PCB underside
 pcb_top_z = pcb_bot_z + pcb_th;      // PCB top surface
+usb_z     = pcb_bot_z + usb_above_bot;   // USB-C port centre Z (measured from the PCB bottom face)
 // height: max of battery, latch-slot reach, and "tripod bore at face centre while its box clears the Ra-01"
 cavity    = max(batt_h + tri_gap, molex_cut_h + molex_latch_h + 2, 2*(pcb_top_z + ra01_h + 4 + tri_pilot_d/2) - pcb_top_z - lid_th);
 ceil_z    = pcb_top_z + cavity;      // lid inner ceiling
@@ -213,8 +218,8 @@ module lid() {
             translate([-outer_l/2-eps, cy-molex_latch_w/2, pcb_top_z-0.5+molex_cut_h])
                 cube([wall+pcb_clear+1+eps, molex_latch_w, molex_latch_h]);
         }
-        // USB-C (-Y wall) — opening with r=1 rounded corners
-        translate([usb_x, -inner_w/2+eps, pcb_top_z-usb_drop+usb_cut_h/2])
+        // USB-C (-Y wall) — opening with r=1 rounded corners, centred at usb_z
+        translate([usb_x, -inner_w/2+eps, usb_z])
             rotate([90,0,0])
                 linear_extrude(wall+pcb_clear+1+eps) rrect(usb_cut_w, usb_cut_h, 1);
         // toggle switch bushing (-Y wall, left, clear of the Molex)
@@ -261,9 +266,11 @@ module pcb_ref() {
             translate([bx+41.5,by,(pcb_top_z+bt)/2]) cube([4.9,7.5,bt-pcb_top_z],center=true);  // end contact +X
         }
         color([0.2,0.2,0.28,0.5]) translate([28.33,-7.92,pcb_top_z+ra01_h/2]) cube([18.5,18,ra01_h],center=true);  // Ra-01 module (board 147.42 -> 139.5-147.42 = -7.92)
-        // Molex 5569 right-angle body envelope (courtyard) — reaches model X -27.45; model Y = cy + [-3.2,+7.4]
+        // Molex 5569 right-angle body envelope (courtyard) — reaches model X -27.45; ±5.3 in Y about the opening centre
         color([0.85,0.5,0.15,0.4]) for (cy=molex_y)
-            translate([-inner_l/2, cy-3.2, pcb_top_z]) cube([(-27.45)+inner_l/2, 10.6, 11]);
+            translate([-inner_l/2, cy-5.3, pcb_top_z]) cube([(-27.45)+inner_l/2, 10.6, 11]);
+        // USB-C receptacle (SuperMini short end) at the -Y wall — centred (usb_x, usb_z)
+        color([0.55,0.55,0.6,0.6]) translate([usb_x, -inner_w/2+3.5, usb_z]) cube([8.94,7,3.26],center=true);
         // toggle switch body clearance cube (must not foul anything) — sits at the -Y wall, reaching inward
         %translate([sw_x, -inner_w/2 + sw_cube/2, sw_z]) cube(sw_cube, center=true);
     }
