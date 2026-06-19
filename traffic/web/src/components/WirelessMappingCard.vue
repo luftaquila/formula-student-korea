@@ -117,11 +117,13 @@ async function remove(node) {
 .table-scroll { overflow-x: auto; }
 .assign-table { width: 100%; min-width: 32rem; border-collapse: collapse; white-space: nowrap; }
 .assign-table th, .assign-table td { padding: 0.5rem 0.6rem; text-align: left; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
-/* 각 열은 내용 최소 너비, 마지막(작업) 열만 확장해 테이블이 끝까지 차게 */
-.assign-table th:not(:last-child), .assign-table td:not(:last-child) { width: 1%; }
+/* 노드·사용·작업은 내용 최소 너비, 경기·역할(드롭다운)이 남는 폭을 나눠 가져 넓게 표시 → 테이블도 끝까지 참 */
+.assign-table th:nth-child(1), .assign-table td:nth-child(1),
+.assign-table th:nth-child(4), .assign-table td:nth-child(4),
+.assign-table th:nth-child(5), .assign-table td:nth-child(5) { width: 1%; }
 .assign-table th { color: var(--text-tertiary); font-weight: 600; font-size: 0.8rem; }
 .assign-table tbody tr:last-child td { border-bottom: none; }
-.assign-table .form-input { padding: 0.45rem 0.6rem; }
+.assign-table .form-input { padding: 0.45rem 0.6rem; width: 100%; }
 .node { font-weight: 700; }
 .mono { font-family: "JetBrains Mono", monospace; }
 .center { text-align: center; }
