@@ -115,15 +115,13 @@ async function remove(node) {
 @import "../assets/styles/event-view.css";
 /* 좁은 화면: 테이블 구조 유지하고 가로 스크롤(블록 스택 X). 다른 서비스 테이블과 동일. */
 .table-scroll { overflow-x: auto; }
-.assign-table { width: 100%; min-width: 32rem; border-collapse: collapse; white-space: nowrap; }
+/* width:100% 자동 레이아웃 — 셀 내용대로 크기 잡고 남는 폭은 분배(계정 관리 테이블과 동일).
+   드롭다운/버튼을 강제로 늘리지 않으므로 짤리거나 겹치지 않는다. min-width로 모바일 가로 스크롤. */
+.assign-table { width: 100%; min-width: 32rem; border-collapse: collapse; }
 .assign-table th, .assign-table td { padding: 0.5rem 0.6rem; text-align: left; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
-/* 노드·사용·작업은 내용 최소 너비, 경기·역할(드롭다운)이 남는 폭을 나눠 가져 넓게 표시 → 테이블도 끝까지 참 */
-.assign-table th:nth-child(1), .assign-table td:nth-child(1),
-.assign-table th:nth-child(4), .assign-table td:nth-child(4),
-.assign-table th:nth-child(5), .assign-table td:nth-child(5) { width: 1%; }
 .assign-table th { color: var(--text-tertiary); font-weight: 600; font-size: 0.8rem; }
 .assign-table tbody tr:last-child td { border-bottom: none; }
-.assign-table .form-input { padding: 0.45rem 0.6rem; width: 100%; }
+.assign-table .form-input { padding: 0.45rem 0.6rem; }
 .node { font-weight: 700; }
 .mono { font-family: "JetBrains Mono", monospace; }
 .center { text-align: center; }
