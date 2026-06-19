@@ -579,6 +579,13 @@ describe('File upload', () => {
       { name: 'test.exe', type: 'application/octet-stream', content: fileContent },
     ]);
     assert.equal(res.status, 400);
+
+    // rejection must be logged (CLAUDE.md logging policy)
+    const log = db.prepare(
+      "SELECT * FROM logs WHERE action = 'submission.create' AND level = 'warn' AND detail LIKE '%invalid_extension%' ORDER BY id DESC LIMIT 1",
+    ).get();
+    assert.ok(log, 'extension rejection should be logged');
+    assert.match(log.detail, /test\.exe/);
   });
 
   it('POST /api/sessions/:id/submit allows docx extension', async () => {
@@ -814,6 +821,64 @@ describe('File download (admin)', () => {
   });
 });
 
+// -- Download logging: one log per download, not per HTTP Range request --
+// Browsers fetch inline files (PDF preview) via many partial Range requests;
+// res.sendFile re-runs the handler each time, so logging must be gated to the
+// initial request only. Uses an isolated session to avoid touching the shared
+// submissionId/sessionId chain.
+describe('Download logging (Range dedup)', () => {
+  let rangeSubId, rangeFileId;
+
+  before(async () => {
+    const sessionRes = await client.post('/api/admin/sessions', {
+      cookie: chiefCookie,
+      body: {
+        name: 'Range Dedup Test',
+        start_at: '2020-01-01T00:00',
+        end_at: '2030-12-31T23:59',
+        late_end_at: '',
+        max_file_size: 52428800,
+        year: 2026,
+        teams: [1],
+        allowed_extensions: '',
+      },
+    });
+    const { id } = await sessionRes.json();
+    const up = await uploadFile(id, studentCookie, [
+      { name: 'ranged.pdf', type: 'application/pdf', content: Buffer.alloc(4096, 'a') },
+    ]);
+    assert.equal(up.status, 200);
+    rangeSubId = (await up.json()).id;
+    rangeFileId = db.prepare('SELECT id FROM submission_file WHERE submission_id = ? LIMIT 1').get(rangeSubId).id;
+  });
+
+  for (const variant of [
+    { label: 'student', action: 'file.download', path: () => `/api/submissions/${rangeSubId}/files/${rangeFileId}`, cookie: () => studentCookie },
+    { label: 'admin', action: 'file.admin_download', path: () => `/api/admin/submissions/${rangeSubId}/files/${rangeFileId}`, cookie: () => adminCookie },
+  ]) {
+    it(`${variant.label}: logs once per download, not on each Range request`, async () => {
+      const countLogs = () => db.prepare(
+        `SELECT COUNT(*) AS c FROM logs WHERE action = ? AND detail LIKE '%ranged.pdf%'`,
+      ).get(variant.action).c;
+      const before = countLogs();
+
+      // Initial request (no Range header) logs once.
+      const full = await fetch(`${baseUrl}${variant.path()}`, { headers: { Cookie: variant.cookie() } });
+      assert.equal(full.status, 200);
+      await full.arrayBuffer();
+      assert.equal(countLogs(), before + 1, 'initial download should log once');
+
+      // A Range continuation (start > 0) is served as 206 and must NOT log again.
+      const partial = await fetch(`${baseUrl}${variant.path()}`, {
+        headers: { Cookie: variant.cookie(), Range: 'bytes=10-20' },
+      });
+      assert.equal(partial.status, 206);
+      await partial.arrayBuffer();
+      assert.equal(countLogs(), before + 1, 'Range continuation must not log again');
+    });
+  }
+});
+
 // -- Session status after submission --
 describe('Session status after submission', () => {
   it('GET /api/admin/sessions/:id/status shows submission and submissionCount', async () => {
@@ -942,6 +1007,13 @@ describe('File size limit', () => {
       { name: 'big.pdf', type: 'application/pdf', content: largeContent },
     ]);
     assert.equal(res.status, 413);
+
+    // rejection must be logged (CLAUDE.md logging policy)
+    const log = db.prepare(
+      "SELECT * FROM logs WHERE action = 'submission.create' AND level = 'warn' AND detail LIKE '%file_size_exceeded%' ORDER BY id DESC LIMIT 1",
+    ).get();
+    assert.ok(log, 'size rejection should be logged');
+    assert.match(log.detail, /"max_file_size":100/);
   });
 });
 

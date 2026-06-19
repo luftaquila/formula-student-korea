@@ -98,12 +98,15 @@ test.describe("Entry deletion cascade to queue and documents", () => {
     });
     expect(createRes.status).toBe(201);
 
-    // 2. Create student-team mapping for team #90
+    // 2. Create student-team mapping for team #90.
+    // Use an email unique to this spec: student_team has PRIMARY KEY (email, year),
+    // so sharing an email+year with another spec (e.g. admin-dashboard) collides
+    // under parallel project runs and yields a 400.
     const mapRes = await fetch(`${BASE_URL}/documents/api/admin/student-teams`, {
       method: "POST",
       headers: chiefHeaders,
       body: JSON.stringify({
-        email: "e2e-student2@test.com",
+        email: "e2e-cascade-student@test.com",
         team_num: 90,
         year: YEAR,
       }),

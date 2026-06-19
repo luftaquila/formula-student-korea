@@ -279,6 +279,15 @@ function setFileResponseHeaders(res, file) {
   }
 }
 
+// 브라우저 인라인 뷰어(PDF 등)는 Range 요청으로 파일을 여러 조각으로 나눠 가져온다.
+// res.sendFile은 매 Range 요청마다 핸들러를 재실행하므로, 모든 요청에서 로깅하면
+// 다운로드 1회에 로그가 수십 건 찍힌다. 초기 요청(Range 없음 또는 bytes=0-)에서만
+// 로깅해 다운로드 1회당 로그 1건을 유지한다.
+function isInitialDownload(req) {
+  const range = req.headers.range;
+  return !range || range.startsWith("bytes=0-");
+}
+
 /* ============================================
    학생 API
    ============================================ */
@@ -385,7 +394,10 @@ app.post("/api/sessions/:id/submit", (req, res) => {
         aborted = true;
         fileStream.resume();
         rmDir(tmpDir);
-        if (!res.headersSent) res.status(400).send(`허용되지 않는 파일 형식입니다. (허용: ${allowedExts.join(", ")})`);
+        if (!res.headersSent) {
+          logger.warn(req, "submission.create", { error: "invalid_extension", filename: info.filename, ext, allowed: allowedExts, session_id: session.id, team_num: team.team_num }, session.name);
+          res.status(400).send(`허용되지 않는 파일 형식입니다. (허용: ${allowedExts.join(", ")})`);
+        }
         return;
       }
     }
@@ -433,7 +445,10 @@ app.post("/api/sessions/:id/submit", (req, res) => {
         fileStream.resume();
         ws.destroy();
         rmDir(tmpDir);
-        if (!res.headersSent) res.status(413).send(`파일 용량 제한(${Math.round(session.max_file_size / 1024 / 1024)}MB)을 초과했습니다.`);
+        if (!res.headersSent) {
+          logger.warn(req, "submission.create", { error: "file_size_exceeded", max_file_size: session.max_file_size, total_size: totalSize, filename: info.filename, session_id: session.id, team_num: team.team_num }, session.name);
+          res.status(413).send(`파일 용량 제한(${Math.round(session.max_file_size / 1024 / 1024)}MB)을 초과했습니다.`);
+        }
       }
     });
 
@@ -441,7 +456,10 @@ app.post("/api/sessions/:id/submit", (req, res) => {
       aborted = true;
       ws.destroy();
       rmDir(tmpDir);
-      if (!res.headersSent) res.status(413).send(`파일 용량 제한(${Math.round(session.max_file_size / 1024 / 1024)}MB)을 초과했습니다.`);
+      if (!res.headersSent) {
+        logger.warn(req, "submission.create", { error: "file_size_exceeded", max_file_size: session.max_file_size, filename: info.filename, session_id: session.id, team_num: team.team_num }, session.name);
+        res.status(413).send(`파일 용량 제한(${Math.round(session.max_file_size / 1024 / 1024)}MB)을 초과했습니다.`);
+      }
     });
 
     fileStream.pipe(ws);
@@ -450,20 +468,27 @@ app.post("/api/sessions/:id/submit", (req, res) => {
   busboy.on("filesLimit", () => {
     aborted = true;
     rmDir(tmpDir);
-    if (!res.headersSent) res.status(400).send("파일 수가 100개를 초과했습니다.");
+    if (!res.headersSent) {
+      logger.warn(req, "submission.create", { error: "files_limit_exceeded", limit: 100, session_id: session.id, team_num: team.team_num }, session.name);
+      res.status(400).send("파일 수가 100개를 초과했습니다.");
+    }
   });
 
-  busboy.on("error", () => {
+  busboy.on("error", (err) => {
     aborted = true;
     rmDir(tmpDir);
-    if (!res.headersSent) res.status(500).send("업로드 중 오류가 발생했습니다.");
+    if (!res.headersSent) {
+      logger.warn(req, "submission.create", { error: err?.message || "busboy_error", session_id: session.id, team_num: team.team_num }, session.name);
+      res.status(500).send("업로드 중 오류가 발생했습니다.");
+    }
   });
 
   busboy.on("finish", async () => {
     if (aborted) return;
 
     // 모든 파일 write stream이 완료될 때까지 대기
-    try { await Promise.all(filePromises); } catch {
+    try { await Promise.all(filePromises); } catch (writeErr) {
+      logger.warn(req, "submission.create", { error: writeErr?.message || "file_write_failed", phase: "write_stream", session_id: session.id, team_num: team.team_num }, session.name);
       rmDir(tmpDir);
       if (!res.headersSent) res.status(500).send("파일 저장 중 오류가 발생했습니다.");
       return;
@@ -592,7 +617,7 @@ app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
-  logger.log(req, "file.download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
+  if (isInitialDownload(req)) logger.log(req, "file.download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
   setFileResponseHeaders(res, file);
   res.sendFile(filePath);
 });
@@ -906,7 +931,7 @@ app.get("/api/admin/submissions/:subId/files/:fileId", (req, res) => {
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
-  logger.log(req, "file.admin_download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
+  if (isInitialDownload(req)) logger.log(req, "file.admin_download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
   setFileResponseHeaders(res, file);
   res.sendFile(filePath);
 });
