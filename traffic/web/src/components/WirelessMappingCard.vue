@@ -74,7 +74,7 @@ async function remove(node) {
       <div v-else class="table-scroll">
       <table class="assign-table">
         <thead>
-          <tr><th>센서</th><th>경기</th><th>역할</th><th>사용</th><th></th></tr>
+          <tr><th>노드</th><th>경기</th><th>역할</th><th>사용</th><th></th></tr>
         </thead>
         <tbody>
           <tr v-for="node in nodes" :key="node" :data-testid="`mapping-row-${node}`">

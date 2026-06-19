@@ -778,6 +778,22 @@ app.post("/api/wireless/light", (req, res) => {
   res.json(result.result);
 });
 
+// POST /api/wireless/bridge/offline - 브리지(콘솔)가 연결 해제 시 즉시 오프라인 보고.
+// 이게 없으면 15s 워치독이 풀어줄 때까지 bridge.online이 남아 "마스터 연결" 버튼이
+// 비활성으로 묶인다(새로고침해도 동일). lastBridgeSeen=0으로 둬서 실제 브리지가 아직
+// 살아있으면 다음 ingest가 바로 다시 online으로 돌린다(오인 시 self-heal).
+app.post("/api/wireless/bridge/offline", (req, res) => {
+  if (bridgeOnline) {
+    bridgeOnline = false;
+    lastBridgeSeen = 0;
+    try { db.prepare("UPDATE wireless_light SET bridge_online = 0 WHERE id = 1").run(); }
+    catch (e) { logger.warn(req, "wireless.bridge", { error: e.message || String(e), online: false }, "bridge"); }
+    broadcastEvent("wireless:bridge", getBridgeState());
+    logger.log(req, "wireless.bridge", { online: false, last_seen: lastBridgeSeenIso }, "bridge");
+  }
+  res.json(getBridgeState());
+});
+
 // PUT /api/wireless/physical-event - 물리(실제) 신호등을 사용할 경기 지정. null = 없음.
 // 기본은 모든 경기가 가상 신호등으로 동작하고, 지정된 경기만 마스터의 SSR을 실제 제어.
 // owner_event = 지정된 경기(런타임 점유가 아니라 설정).

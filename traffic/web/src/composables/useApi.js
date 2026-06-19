@@ -101,6 +101,11 @@ export async function reportLight(state) {
   return res.json();
 }
 
+// 브리지 연결 해제 시 서버에 즉시 오프라인 보고(15s 워치독 대기 없이).
+export async function reportBridgeOffline() {
+  await request("/api/wireless/bridge/offline", { method: "POST" });
+}
+
 // 물리 신호등을 사용할 경기 지정(eventType=null → 없음, 전부 가상).
 export async function putPhysicalEvent(eventType) {
   const res = await request("/api/wireless/physical-event", {
