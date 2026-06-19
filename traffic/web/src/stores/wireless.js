@@ -5,6 +5,7 @@ import { msToClockStr } from "./serial";
 import {
   ingestWireless,
   reportLight,
+  reportBridgeOffline,
   putPhysicalEvent as apiPutPhysicalEvent,
 } from "../composables/useApi";
 import {
@@ -258,11 +259,14 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
 
   async function closeSerial() {
+    const wasBridge = bridgeIsSelf.value;
     if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
     try { await serialReader?.cancel(); } catch { /* ignore */ }
     try { await serialPort?.close(); } catch { /* ignore */ }
     serialPort = null; serialReader = null;
     serialConnected.value = false; bridgeIsSelf.value = false; role.value = "client";
+    // 서버에 즉시 오프라인 보고 → "마스터 연결"이 15s 워치독을 기다리지 않고 바로 풀린다.
+    if (wasBridge) reportBridgeOffline().catch(() => {});
   }
 
   /* ── 신호등 제어 (브리지 콘솔 전용) ──────────────────────────────── */
@@ -287,7 +291,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     if (!requireBridge()) return;
     const missing = missingRoles(mode);
     if (missing.length) {
-      notyf.open({ type: "warning", message: `센서 미할당: ${missing.map((r) => ROLE_LABEL[r] || r).join(", ")} — 해당 구간은 기록되지 않습니다.` });
+      notyf.open({ type: "warning", message: `센서 미할당: ${missing.map((r) => ROLE_LABEL[r] || r).join(", ")}` });
     }
     if (isPhysical(mode)) {
       transmitLine("G"); // SSR on; L GREEN → reportLight → SSE → applyLight가 슬롯 green 설정

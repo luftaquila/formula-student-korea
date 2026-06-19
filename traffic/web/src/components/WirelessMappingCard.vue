@@ -71,9 +71,10 @@ async function remove(node) {
       <div v-if="!nodes.length" class="empty-state">
         아직 발견된 센서가 없습니다. 마스터 연결 후 센서가 동기화되면 표시됩니다.
       </div>
-      <table v-else class="assign-table">
+      <div v-else class="table-scroll">
+      <table class="assign-table">
         <thead>
-          <tr><th>센서</th><th>경기</th><th>역할</th><th>사용</th><th></th></tr>
+          <tr><th>노드</th><th>경기</th><th>역할</th><th>사용</th><th></th></tr>
         </thead>
         <tbody>
           <tr v-for="node in nodes" :key="node" :data-testid="`mapping-row-${node}`">
@@ -105,14 +106,19 @@ async function remove(node) {
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
 @import "../assets/styles/event-view.css";
-.assign-table { width: 100%; border-collapse: collapse; }
+/* 좁은 화면: 테이블 구조 유지하고 가로 스크롤(블록 스택 X). 다른 서비스 테이블과 동일. */
+.table-scroll { overflow-x: auto; }
+.assign-table { width: 100%; min-width: 32rem; border-collapse: collapse; white-space: nowrap; }
 .assign-table th, .assign-table td { padding: 0.5rem 0.6rem; text-align: left; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
+/* 각 열은 내용 최소 너비, 마지막(작업) 열만 확장해 테이블이 끝까지 차게 */
+.assign-table th:not(:last-child), .assign-table td:not(:last-child) { width: 1%; }
 .assign-table th { color: var(--text-tertiary); font-weight: 600; font-size: 0.8rem; }
 .assign-table tbody tr:last-child td { border-bottom: none; }
 .assign-table .form-input { padding: 0.45rem 0.6rem; }
@@ -124,11 +130,4 @@ async function remove(node) {
 /* 저장됨 상태: 누를 게 없음을 흐림 + 기본 커서로 표시 */
 .save-btn.is-saved { opacity: 0.6; cursor: default; }
 .save-btn { min-width: 4.5rem; }
-@media (max-width: 640px) {
-  .assign-table, .assign-table thead, .assign-table tbody, .assign-table tr, .assign-table td { display: block; }
-  .assign-table thead { display: none; }
-  .assign-table tr { border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 0.6rem; padding: 0.4rem; }
-  .assign-table td { border: none; }
-  .actions { justify-content: flex-start; }
-}
 </style>
