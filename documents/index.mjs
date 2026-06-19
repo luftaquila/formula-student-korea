@@ -385,7 +385,10 @@ app.post("/api/sessions/:id/submit", (req, res) => {
         aborted = true;
         fileStream.resume();
         rmDir(tmpDir);
-        if (!res.headersSent) res.status(400).send(`허용되지 않는 파일 형식입니다. (허용: ${allowedExts.join(", ")})`);
+        if (!res.headersSent) {
+          logger.warn(req, "submission.create", { error: "invalid_extension", filename: info.filename, ext, allowed: allowedExts, session_id: session.id, team_num: team.team_num }, session.name);
+          res.status(400).send(`허용되지 않는 파일 형식입니다. (허용: ${allowedExts.join(", ")})`);
+        }
         return;
       }
     }
@@ -433,7 +436,10 @@ app.post("/api/sessions/:id/submit", (req, res) => {
         fileStream.resume();
         ws.destroy();
         rmDir(tmpDir);
-        if (!res.headersSent) res.status(413).send(`파일 용량 제한(${Math.round(session.max_file_size / 1024 / 1024)}MB)을 초과했습니다.`);
+        if (!res.headersSent) {
+          logger.warn(req, "submission.create", { error: "file_size_exceeded", max_file_size: session.max_file_size, total_size: totalSize, filename: info.filename, session_id: session.id, team_num: team.team_num }, session.name);
+          res.status(413).send(`파일 용량 제한(${Math.round(session.max_file_size / 1024 / 1024)}MB)을 초과했습니다.`);
+        }
       }
     });
 
@@ -441,7 +447,10 @@ app.post("/api/sessions/:id/submit", (req, res) => {
       aborted = true;
       ws.destroy();
       rmDir(tmpDir);
-      if (!res.headersSent) res.status(413).send(`파일 용량 제한(${Math.round(session.max_file_size / 1024 / 1024)}MB)을 초과했습니다.`);
+      if (!res.headersSent) {
+        logger.warn(req, "submission.create", { error: "file_size_exceeded", max_file_size: session.max_file_size, filename: info.filename, session_id: session.id, team_num: team.team_num }, session.name);
+        res.status(413).send(`파일 용량 제한(${Math.round(session.max_file_size / 1024 / 1024)}MB)을 초과했습니다.`);
+      }
     });
 
     fileStream.pipe(ws);
@@ -450,20 +459,27 @@ app.post("/api/sessions/:id/submit", (req, res) => {
   busboy.on("filesLimit", () => {
     aborted = true;
     rmDir(tmpDir);
-    if (!res.headersSent) res.status(400).send("파일 수가 100개를 초과했습니다.");
+    if (!res.headersSent) {
+      logger.warn(req, "submission.create", { error: "files_limit_exceeded", limit: 100, session_id: session.id, team_num: team.team_num }, session.name);
+      res.status(400).send("파일 수가 100개를 초과했습니다.");
+    }
   });
 
-  busboy.on("error", () => {
+  busboy.on("error", (err) => {
     aborted = true;
     rmDir(tmpDir);
-    if (!res.headersSent) res.status(500).send("업로드 중 오류가 발생했습니다.");
+    if (!res.headersSent) {
+      logger.warn(req, "submission.create", { error: err?.message || "busboy_error", session_id: session.id, team_num: team.team_num }, session.name);
+      res.status(500).send("업로드 중 오류가 발생했습니다.");
+    }
   });
 
   busboy.on("finish", async () => {
     if (aborted) return;
 
     // 모든 파일 write stream이 완료될 때까지 대기
-    try { await Promise.all(filePromises); } catch {
+    try { await Promise.all(filePromises); } catch (writeErr) {
+      logger.warn(req, "submission.create", { error: writeErr?.message || "file_write_failed", phase: "write_stream", session_id: session.id, team_num: team.team_num }, session.name);
       rmDir(tmpDir);
       if (!res.headersSent) res.status(500).send("파일 저장 중 오류가 발생했습니다.");
       return;

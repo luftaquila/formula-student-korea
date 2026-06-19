@@ -579,6 +579,13 @@ describe('File upload', () => {
       { name: 'test.exe', type: 'application/octet-stream', content: fileContent },
     ]);
     assert.equal(res.status, 400);
+
+    // rejection must be logged (CLAUDE.md logging policy)
+    const log = db.prepare(
+      "SELECT * FROM logs WHERE action = 'submission.create' AND level = 'warn' AND detail LIKE '%invalid_extension%' ORDER BY id DESC LIMIT 1",
+    ).get();
+    assert.ok(log, 'extension rejection should be logged');
+    assert.match(log.detail, /test\.exe/);
   });
 
   it('POST /api/sessions/:id/submit allows docx extension', async () => {
@@ -942,6 +949,13 @@ describe('File size limit', () => {
       { name: 'big.pdf', type: 'application/pdf', content: largeContent },
     ]);
     assert.equal(res.status, 413);
+
+    // rejection must be logged (CLAUDE.md logging policy)
+    const log = db.prepare(
+      "SELECT * FROM logs WHERE action = 'submission.create' AND level = 'warn' AND detail LIKE '%file_size_exceeded%' ORDER BY id DESC LIMIT 1",
+    ).get();
+    assert.ok(log, 'size rejection should be logged');
+    assert.match(log.detail, /"max_file_size":100/);
   });
 });
 
