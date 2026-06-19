@@ -16,9 +16,10 @@ function roleOptions(et) {
 }
 const roleLabel = { start: "출발", finish: "도착", lane1: "레인 1", lane2: "레인 2" };
 
-// 발견된 노드 = 진단 수신 노드 ∪ 기존 매핑 노드
+// 발견된 노드 = 진단 수신 노드 ∪ 기존 매핑 노드. node 0 = 마스터(자가진단)라 센서 할당 대상에서 제외.
 const nodes = computed(() => {
   const s = new Set([...Object.keys(store.telemetry), ...store.mapping.map((m) => m.node_id)]);
+  s.delete("0");
   return [...s].sort();
 });
 

@@ -270,9 +270,25 @@ export const useWirelessStore = defineStore("wireless", () => {
     if (!bridgeIsSelf.value) { notyf.error("신호등은 마스터에 연결된 PC에서만 제어할 수 있습니다."); return false; }
     return true;
   }
+
+  // 경기별 필요 역할(센서). 미할당 역할이 있으면 그 구간은 기록되지 않는다.
+  const REQUIRED_ROLES = { accel: ["start", "finish"], gymkhana: ["lane1", "lane2"], skidpad: ["start"], autocross: ["start"] };
+  const ROLE_LABEL = { start: "출발", finish: "도착", lane1: "레인 1", lane2: "레인 2" };
+  // 해당 경기에서 enabled 매핑이 없는(미할당) 필요 역할 목록.
+  function missingRoles(mode) {
+    const have = new Set(
+      mapping.value.filter((m) => m.enabled !== 0 && m.event_type === EVENT_TYPE[mode]).map((m) => m.role),
+    );
+    return (REQUIRED_ROLES[mode] || []).filter((r) => !have.has(r));
+  }
+
   // green/red/off: 물리 지정 경기 → 마스터 SSR 제어, 그 외 → 가상(로컬) 신호등.
   function greenFor(mode) {
     if (!requireBridge()) return;
+    const missing = missingRoles(mode);
+    if (missing.length) {
+      notyf.open({ type: "warning", message: `센서 미할당: ${missing.map((r) => ROLE_LABEL[r] || r).join(", ")} — 해당 구간은 기록되지 않습니다.` });
+    }
     if (isPhysical(mode)) {
       transmitLine("G"); // SSR on; L GREEN → reportLight → SSE → applyLight가 슬롯 green 설정
     } else {
