@@ -279,6 +279,15 @@ function setFileResponseHeaders(res, file) {
   }
 }
 
+// 브라우저 인라인 뷰어(PDF 등)는 Range 요청으로 파일을 여러 조각으로 나눠 가져온다.
+// res.sendFile은 매 Range 요청마다 핸들러를 재실행하므로, 모든 요청에서 로깅하면
+// 다운로드 1회에 로그가 수십 건 찍힌다. 초기 요청(Range 없음 또는 bytes=0-)에서만
+// 로깅해 다운로드 1회당 로그 1건을 유지한다.
+function isInitialDownload(req) {
+  const range = req.headers.range;
+  return !range || range.startsWith("bytes=0-");
+}
+
 /* ============================================
    학생 API
    ============================================ */
@@ -608,7 +617,7 @@ app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
-  logger.log(req, "file.download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
+  if (isInitialDownload(req)) logger.log(req, "file.download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
   setFileResponseHeaders(res, file);
   res.sendFile(filePath);
 });
@@ -922,7 +931,7 @@ app.get("/api/admin/submissions/:subId/files/:fileId", (req, res) => {
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
-  logger.log(req, "file.admin_download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
+  if (isInitialDownload(req)) logger.log(req, "file.admin_download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
   setFileResponseHeaders(res, file);
   res.sendFile(filePath);
 });
