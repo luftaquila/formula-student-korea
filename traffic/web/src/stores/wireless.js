@@ -164,6 +164,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   /* ── 브리지(시리얼) ───────────────────────────────────────────────── */
   let serialPort = null;
   let serialReader = null;
+  let intentionalClose = false; // closeSerial()로 끊는 중인지 — read 루프 종료가 분리인지 구분
   const eventBuf = [];
   const telemetryBuf = new Map();
   let flushScheduled = false;
@@ -237,8 +238,14 @@ export const useWirelessStore = defineStore("wireless", () => {
           while ((idx = buffer.indexOf("\n")) > -1) { parseLine(buffer.slice(0, idx)); buffer = buffer.slice(idx + 1); }
         }
       }
-    } catch (e) { notyf.error(`마스터 수신 실패: ${e}`); }
-    finally { if (serialReader) serialReader.releaseLock(); }
+    } catch { /* 디바이스 분리 / 리더 취소 — 아래에서 정리 */ }
+    finally { try { serialReader?.releaseLock(); } catch { /* ignore */ } }
+    // read 루프가 끝났다 = 시리얼 끊김. 의도적 closeSerial이 아니라면(케이블 분리 등)
+    // 즉시 연결 해제 처리해서 UI가 바로 끊김으로 바뀐다(서버 오프라인 보고 포함).
+    if (!intentionalClose) {
+      notyf.error("마스터 연결이 끊어졌습니다.");
+      closeSerial();
+    }
   }
 
   async function openSerial() {
@@ -247,6 +254,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     try {
       serialPort = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x1999, usbProductId: 0x0515 }] });
       await serialPort.open({ baudRate: 115200 });
+      intentionalClose = false;
       role.value = "bridge";
       bridgeIsSelf.value = true;
       serialConnected.value = true;
@@ -260,6 +268,7 @@ export const useWirelessStore = defineStore("wireless", () => {
 
   async function closeSerial() {
     const wasBridge = bridgeIsSelf.value;
+    intentionalClose = true; // read 루프가 이 종료를 분리로 오인하지 않도록
     if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
     try { await serialReader?.cancel(); } catch { /* ignore */ }
     try { await serialPort?.close(); } catch { /* ignore */ }
