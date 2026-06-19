@@ -715,6 +715,22 @@ describe('POST /api/wireless/ingest', () => {
     assert.equal(live.temp_c10, null);
     assert.equal(live.batt_mv, null);
   });
+
+  it('POST /bridge/offline clears bridge.online immediately', async () => {
+    await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: '1', link_state: 'online' }] },
+      cookie: adminCookie,
+    });
+    let s = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    assert.equal(s.bridge.online, true, 'bridge online after ingest');
+
+    const res = await client.post('/api/wireless/bridge/offline', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).online, false);
+
+    s = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    assert.equal(s.bridge.online, false, 'bridge offline without waiting for the 15s watchdog');
+  });
 });
 
 // ─── Wireless: mapping CRUD ─────────────────────────────────────────────
