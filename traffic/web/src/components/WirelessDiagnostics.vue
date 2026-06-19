@@ -36,10 +36,10 @@ function fmtVolt(mv) { return mv == null || Number.isNaN(mv) ? "—" : `${(Numbe
 function socPct(mv) {
   return Math.max(0, Math.min(100, Math.round(((mv - 3300) / (4200 - 3300)) * 100)));
 }
-// 배터리 보조 라벨: 마스터(USB) 또는 셀 최대 초과(>4.25 V = 충전 중)면 "충전", 아니면 SoC %.
+// 배터리 보조 라벨: 마스터는 USB(충전 레일)라 "충전", 센서는 셀 SoC %(꽉 찬 셀 4.2 V≈100%).
 function battTag(r) {
   if (r.batt_mv == null || Number.isNaN(r.batt_mv)) return "";
-  return isMaster(r) || r.batt_mv > 4250 ? "충전" : `${socPct(r.batt_mv)}%`;
+  return isMaster(r) ? "충전" : `${socPct(r.batt_mv)}%`;
 }
 const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
 </script>
@@ -49,7 +49,8 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
     <div class="card-header"><h3>📶 센서 진단</h3></div>
     <div class="card-body">
       <div v-if="!rows.length" class="empty-state">수신된 센서가 없습니다.</div>
-      <table v-else class="diag-table">
+      <div v-else class="table-scroll">
+      <table class="diag-table">
         <thead>
           <tr>
             <th>노드</th>
@@ -89,15 +90,20 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
 @import "../assets/styles/event-view.css";
-/* auto 레이아웃 → 각 열이 내용에 필요한 최소 너비만 차지(누락=1 같은 짧은 칸은 좁게). 다른 서비스 테이블과 동일 패턴. */
-.diag-table { width: auto; border-collapse: collapse; font-size: 0.85rem; }
+/* 좁은 화면에선 가로 스크롤(테이블 구조 유지) — 다른 서비스 테이블과 동일 패턴. */
+.table-scroll { overflow-x: auto; }
+/* 카드 전체 폭을 채우되(width:100%) 각 열은 내용 최소 너비(width:1%)로, 마지막 열(수신)만
+   남는 공간을 흡수해 테이블이 끝까지 차게 한다. RecordView와 동일 패턴. */
+.diag-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .diag-table th, .diag-table td { padding: 0.55rem 0.8rem; text-align: left; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
+.diag-table th:not(:last-child), .diag-table td:not(:last-child) { width: 1%; }
 .diag-table th { color: var(--text-tertiary); font-weight: 600; }
 /* 설명 툴팁(native title)이 달린 헤더 — 호버 가능함을 점선 밑줄 + help 커서로 암시 */
 .diag-table th.has-tip { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
