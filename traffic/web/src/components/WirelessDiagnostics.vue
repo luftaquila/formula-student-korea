@@ -26,16 +26,20 @@ function linkState(r) {
 }
 function fmtAge(a) {
   if (!isFinite(a)) return "-";
-  if (a < 1500) return "방금";
   const s = Math.floor(a / 1000);
-  return s < 60 ? `${s}s 전` : `${Math.floor(s / 60)}m 전`;
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m`;
 }
 function fmtNum(v, d = 1) { return v == null || Number.isNaN(v) ? "-" : Number(v).toFixed(d); }
-function fmtTemp(v) { return v == null || Number.isNaN(v) ? "-" : `${(Number(v) / 10).toFixed(1)} °C`; }
+function fmtTemp(v) { return v == null || Number.isNaN(v) ? "—" : `${(Number(v) / 10).toFixed(1)} °C`; }
+function fmtVolt(mv) { return mv == null || Number.isNaN(mv) ? "—" : `${(Number(mv) / 1000).toFixed(3)} V`; }
 // 대략적 Li-ion SoC: 3.3 V→0 %, 4.2 V→100 % (clamp). 정밀 게이지 아님.
 function socPct(mv) {
-  if (mv == null || Number.isNaN(mv)) return null;
   return Math.max(0, Math.min(100, Math.round(((mv - 3300) / (4200 - 3300)) * 100)));
+}
+// 배터리 보조 라벨: 마스터(USB) 또는 셀 최대 초과(>4.25 V = 충전 중)면 "충전", 아니면 SoC %.
+function battTag(r) {
+  if (r.batt_mv == null || Number.isNaN(r.batt_mv)) return "";
+  return isMaster(r) || r.batt_mv > 4250 ? "충전" : `${socPct(r.batt_mv)}%`;
 }
 const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
 </script>
@@ -78,9 +82,8 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
             <td class="mono">{{ isMaster(r) ? "—" : `${fmtNum(r.latency_ms, 0)} ms` }}</td>
             <td class="mono" :data-testid="`diag-temp-${r.node_id}`">{{ fmtTemp(r.temp_c10) }}</td>
             <td class="mono" :data-testid="`diag-batt-${r.node_id}`">
-              <template v-if="r.batt_mv == null">-</template>
-              <template v-else-if="isMaster(r)">{{ fmtNum(r.batt_mv, 0) }} mV<span class="charging"> 충전</span></template>
-              <template v-else>{{ fmtNum(r.batt_mv, 0) }} mV<span class="soc"> {{ socPct(r.batt_mv) }}%</span></template>
+              <template v-if="r.batt_mv == null">—</template>
+              <template v-else>{{ fmtVolt(r.batt_mv) }}<span class="batt-tag">{{ battTag(r) }}</span></template>
             </td>
             <td class="mono">{{ fmtAge(ageMs(r.last_seen)) }}</td>
           </tr>
@@ -92,9 +95,9 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
 
 <style scoped>
 @import "../assets/styles/event-view.css";
-/* table-layout: fixed + 고정 너비 → 셀 내용 길이가 바뀌어도 열 폭이 안 흔들림 */
-.diag-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; table-layout: fixed; }
-.diag-table th, .diag-table td { padding: 0.55rem 0.6rem; text-align: left; border-bottom: 1px solid var(--border-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* auto 레이아웃 → 각 열이 내용에 필요한 최소 너비만 차지(누락=1 같은 짧은 칸은 좁게). 다른 서비스 테이블과 동일 패턴. */
+.diag-table { width: auto; border-collapse: collapse; font-size: 0.85rem; }
+.diag-table th, .diag-table td { padding: 0.55rem 0.8rem; text-align: left; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
 .diag-table th { color: var(--text-tertiary); font-weight: 600; }
 /* 설명 툴팁(native title)이 달린 헤더 — 호버 가능함을 점선 밑줄 + help 커서로 암시 */
 .diag-table th.has-tip { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
@@ -102,20 +105,9 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
 .diag-table td.node { font-weight: 700; }
 /* 마스터 행 강조 */
 .diag-table tr.master-row td { background: var(--bg-secondary, rgba(127,127,127,0.06)); }
-.diag-table th:nth-child(1),  .diag-table td:nth-child(1)  { width: 7%; }
-.diag-table th:nth-child(2),  .diag-table td:nth-child(2)  { width: 10%; }
-.diag-table th:nth-child(3),  .diag-table td:nth-child(3)  { width: 11%; }
-.diag-table th:nth-child(4),  .diag-table td:nth-child(4)  { width: 9%; }
-.diag-table th:nth-child(5),  .diag-table td:nth-child(5)  { width: 12%; }
-.diag-table th:nth-child(6),  .diag-table td:nth-child(6)  { width: 11%; }
-.diag-table th:nth-child(7),  .diag-table td:nth-child(7)  { width: 9%; }
-.diag-table th:nth-child(8),  .diag-table td:nth-child(8)  { width: 10%; }
-.diag-table th:nth-child(9),  .diag-table td:nth-child(9)  { width: 14%; }
-.diag-table th:nth-child(10), .diag-table td:nth-child(10) { width: 7%; }
 .mono { font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; }
 .gap { color: var(--accent-warning, #f59e0b); }
-.soc { color: var(--text-tertiary); }
-.charging { color: var(--accent-success); }
+.batt-tag { margin-left: 0.45rem; color: var(--text-tertiary); }
 .badge { padding: 0.15rem 0.6rem; border-radius: 6px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
 .badge.online { background: rgba(16,185,129,0.18); color: var(--accent-success); }
 .badge.degraded { background: rgba(245,158,11,0.18); color: var(--accent-warning, #f59e0b); }

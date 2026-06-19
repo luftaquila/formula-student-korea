@@ -22,22 +22,23 @@ const masterOk = computed(() => store.bridgeIsSelf || store.bridge.online);
           <span class="wl-label">마스터</span>
           <span class="wl-dot" :class="masterOk ? 'ok' : 'bad'" data-testid="bridge-status"></span>
         </div>
+        <button
+          v-if="!store.bridgeIsSelf"
+          class="btn btn-success wl-conn-btn"
+          :disabled="store.bridge.online"
+          data-testid="bridge-connect"
+          @click="store.openSerial()"
+        >마스터 연결</button>
+        <button v-else class="btn btn-ghost wl-conn-btn" @click="store.closeSerial()">연결 해제</button>
       </div>
-      <button
-        v-if="!store.bridgeIsSelf"
-        class="btn btn-success btn-block mt-1"
-        :disabled="store.bridge.online"
-        data-testid="bridge-connect"
-        @click="store.openSerial()"
-      >마스터 연결</button>
-      <button v-else class="btn btn-ghost btn-block mt-1" @click="store.closeSerial()">연결 해제</button>
     </div>
   </div>
 </template>
 
 <style scoped>
 @import "../assets/styles/event-view.css";
-.wl-conn { display: flex; align-items: center; gap: 1.5rem; margin-bottom: 0.75rem; }
+.wl-conn { display: flex; align-items: center; gap: 1.5rem; }
+.wl-conn-btn { margin-left: auto; padding: 0.4rem 0.9rem; font-size: 0.85rem; }
 .wl-line { display: flex; align-items: center; gap: 0.5rem; }
 .wl-label { color: var(--text-secondary); font-size: 0.9rem; }
 .wl-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
