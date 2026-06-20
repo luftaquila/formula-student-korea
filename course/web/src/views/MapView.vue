@@ -1847,28 +1847,124 @@ function routeCost(pts) {
   return cost;
 }
 
-function twoOpt(route, end) {
-  const pts = [...route];
-  if (pts.length <= 2) return pts;
-  let improved = true;
-  let iterations = 0;
-  while (improved && iterations < 500) {
-    iterations++;
-    improved = false;
-    for (let i = 0; i < pts.length - 1; i++) {
-      for (let j = i + 2; j < pts.length; j++) {
-        // Try reversing segment [i+1 .. j]
-        const newPts = [...pts.slice(0, i + 1), ...pts.slice(i + 1, j + 1).reverse(), ...pts.slice(j + 1)];
-        const full = [...newPts, end];
-        const fullOld = [...pts, end];
-        if (routeCost(full) < routeCost(fullOld)) {
-          for (let k = 0; k < pts.length; k++) pts[k] = newPts[k];
+// 닫힌 루프 seq(= [start, ...route, start], 양 끝 start 고정)에서 seq[i..j]를
+// 뒤집을 때 값이 바뀌는 비용 항(끊기는 두 변 + 이음매 4개 꼭짓점의 회전 페널티)
+// 만 합산한다. 뒤집힌 구간 내부의 변 길이와 회전각은 보존되므로 이 항들만
+// before/after로 비교하면 한 번의 reverse를 O(1)로 정확히 평가할 수 있다.
+function loopLocalCost(seq, i, j) {
+  const last = seq.length - 1;
+  let s = 0;
+  // 바뀌는 변: (i-1,i), (j,j+1)
+  for (const e of [i - 1, j]) {
+    if (e >= 0 && e < last) s += haversine(seq[e], seq[e + 1]);
+  }
+  // 바뀌는 회전 꼭짓점: i-1, i, j, j+1 (start 꼭짓점 0·last 제외)
+  for (const v of [i - 1, i, j, j + 1]) {
+    if (v >= 1 && v <= last - 1) s += turnAngle(seq[v - 1], seq[v], seq[v + 1]) * TURN_PENALTY;
+  }
+  return s;
+}
+
+// start에서 출발해 모든 콘을 한 번씩 찍고 start로 돌아오는 닫힌 루프에 대한
+// 2-opt. 변경마다 전체 비용을 다시 계산하던 기존 구현은 O(passes·n^3)이라 콘이
+// 수백 개면 브라우저가 멈췄다 → loopLocalCost로 한 수를 O(1)에 평가하여
+// O(passes·n^2)로 낮췄다. first-improvement + 패스/시간 상한으로 항상 종료.
+function twoOptLoop(route, start, budgetMs = 2000, maxPasses = 40) {
+  const n = route.length;
+  if (n < 3) return route.map((p) => ({ lat: p.lat, lng: p.lng }));
+  const seq = [start, ...route.map((p) => ({ lat: p.lat, lng: p.lng })), start];
+  const reverse = (lo, hi) => {
+    while (lo < hi) { const t = seq[lo]; seq[lo] = seq[hi]; seq[hi] = t; lo++; hi--; }
+  };
+  const t0 = performance.now();
+  let improved = true, passes = 0;
+  while (improved && passes < maxPasses && performance.now() - t0 < budgetMs) {
+    improved = false; passes++;
+    for (let i = 1; i <= n; i++) {
+      for (let j = i + 1; j <= n; j++) {
+        const before = loopLocalCost(seq, i, j);
+        reverse(i, j);
+        if (loopLocalCost(seq, i, j) < before - 1e-9) improved = true;
+        else reverse(i, j); // 개선 없으면 원복
+      }
+      if (performance.now() - t0 >= budgetMs) break;
+    }
+  }
+  return seq.slice(1, n + 1);
+}
+
+// 한 경계선(같은 side의 콘들)을 거리 기준 최근접 이웃으로 잇는 열린 체인.
+// 극단점(무게중심에서 가장 먼 콘)에서 출발 — 경계가 1차원 곡선이라 NN이 곧
+// 경계 순서를 복원한다.
+function nnChain(pts) {
+  const n = pts.length;
+  if (n <= 2) return pts.map((p) => ({ lat: p.lat, lng: p.lng }));
+  const clat = pts.reduce((s, p) => s + p.lat, 0) / n;
+  const clng = pts.reduce((s, p) => s + p.lng, 0) / n;
+  const cen = { lat: clat, lng: clng };
+  let s = 0, sd = -1;
+  for (let k = 0; k < n; k++) { const d = haversine(pts[k], cen); if (d > sd) { sd = d; s = k; } }
+  const used = new Array(n).fill(false);
+  const order = [s]; used[s] = true; let cur = s;
+  for (let step = 0; step < n - 1; step++) {
+    let best = -1, bd = Infinity;
+    for (let k = 0; k < n; k++) {
+      if (used[k]) continue;
+      const d = haversine(pts[cur], pts[k]);
+      if (d < bd) { bd = d; best = k; }
+    }
+    used[best] = true; order.push(best); cur = best;
+  }
+  return order.map((i) => ({ lat: pts[i].lat, lng: pts[i].lng }));
+}
+
+// 열린 경로 2-opt(거리만, 회전 페널티 없음): 경계 체인의 꼬임을 편다. 한 수를
+// 양 끝 두 변의 길이로 O(1) 평가.
+function twoOptOpen(route, budgetMs = 800, maxPasses = 40) {
+  const pts = route.map((p) => ({ lat: p.lat, lng: p.lng }));
+  const n = pts.length;
+  if (n < 4) return pts;
+  const t0 = performance.now();
+  let improved = true, passes = 0;
+  while (improved && passes < maxPasses && performance.now() - t0 < budgetMs) {
+    improved = false; passes++;
+    for (let i = 0; i < n - 1; i++) {
+      for (let j = i + 2; j < n; j++) {
+        const a = pts[i], b = pts[i + 1], c = pts[j], dn = j + 1 < n ? pts[j + 1] : null;
+        const oldD = haversine(a, b) + (dn ? haversine(c, dn) : 0);
+        const newD = haversine(a, c) + (dn ? haversine(b, dn) : 0);
+        if (newD < oldD - 1e-9) {
+          let lo = i + 1, hi = j;
+          while (lo < hi) { const t = pts[lo]; pts[lo] = pts[hi]; pts[hi] = t; lo++; hi--; }
           improved = true;
         }
       }
     }
   }
   return pts;
+}
+
+// 재구성한 경계 체인들을 start에서부터 그리디로 연결. 각 체인은 양방향 모두
+// 시도해 가까운 끝에서 진입 → 연결 구간(경계 사이 이동)을 최소화.
+function stitchChains(start, chains) {
+  const remaining = chains.filter((c) => c.length > 0);
+  const route = [];
+  let cur = start;
+  while (remaining.length) {
+    let bestIdx = -1, bestDist = Infinity, bestRev = false;
+    for (let idx = 0; idx < remaining.length; idx++) {
+      const ch = remaining[idx];
+      const d0 = haversine(cur, ch[0]);
+      const d1 = haversine(cur, ch[ch.length - 1]);
+      if (d0 < bestDist) { bestDist = d0; bestIdx = idx; bestRev = false; }
+      if (d1 < bestDist) { bestDist = d1; bestIdx = idx; bestRev = true; }
+    }
+    const seg = remaining.splice(bestIdx, 1)[0];
+    const ordered = bestRev ? [...seg].reverse() : seg;
+    for (const p of ordered) route.push({ lat: p.lat, lng: p.lng });
+    cur = route[route.length - 1];
+  }
+  return route;
 }
 
 function startPathPick() {
@@ -1891,26 +1987,18 @@ function computePath(startLat, startLng) {
 
   const start = { lat: startLat, lng: startLng };
 
-  // Step 1: Nearest Neighbor initial solution
-  const visited = new Set();
-  const route = [];
-  let current = start;
+  // 콘 등록(id) 순서는 신뢰할 수 없다(좌/우 블록이 섞이고 큰 점프 존재). 따라서
+  // 순서에 의존하지 않고 기하학으로 경로를 만든다.
+  //   1) side별로 묶어 각 경계선을 NN 체인 + 열린 2-opt로 순서 복원
+  //   2) start에서부터 체인들을 그리디로 이어 붙여 시드 경로 구성
+  //   3) 닫힌 루프 2-opt(거리 + 회전 페널티)로 연결 구간을 다듬어 거리 단축
+  const chains = ["left", "right", "center"]
+    .map((side) => allCones.filter((c) => c.side === side))
+    .filter((g) => g.length > 0)
+    .map((g) => twoOptOpen(nnChain(g)));
 
-  while (visited.size < allCones.length) {
-    let nearest = null, nearestDist = Infinity;
-    for (const cone of allCones) {
-      if (visited.has(cone.id)) continue;
-      const d = haversine(current, cone);
-      if (d < nearestDist) { nearest = cone; nearestDist = d; }
-    }
-    if (!nearest) break;
-    visited.add(nearest.id);
-    route.push({ lat: nearest.lat, lng: nearest.lng });
-    current = nearest;
-  }
-
-  // Step 2: 2-opt improvement (distance + turn penalty)
-  const optimized = twoOpt(route, start);
+  const seed = stitchChains(start, chains);
+  const optimized = twoOptLoop(seed, start);
 
   pathStart = { lat: startLat, lng: startLng };
   pathWaypoints.value = optimized;
