@@ -86,13 +86,19 @@ test.describe("Documents admin dashboard", () => {
   test("deletes student-team mapping via clear button", async ({ page }) => {
     const table = page.locator(".main-table");
 
-    // Find team 2 (한양대학교) which should have no mapping
-    const row = table.locator("tbody tr").filter({ hasText: "한양대학교" });
+    // Use a team + email this test owns exclusively. student_team has
+    // PRIMARY KEY(email, year) and UNIQUE(team_num, year), so sharing the email
+    // or team with the dropdown test (team 2 / e2e-student2) lets a leftover or
+    // parallel mapping make this INSERT hit the unique constraint (flaky 400).
+    const TEAM_UNIV = "성균관대학교"; // team #3, not mapped by any other test
+    const EMAIL = "e2e-clear-test@test.com";
+
+    const row = table.locator("tbody tr").filter({ hasText: TEAM_UNIV });
     await expect(row).toBeVisible();
 
     // Create a mapping via API first
     const res = await page.request.post("/documents/api/admin/student-teams", {
-      data: { email: "e2e-student2@test.com", team_num: 2, year: YEAR },
+      data: { email: EMAIL, team_num: 3, year: YEAR },
     });
     expect(res.ok()).toBeTruthy();
 
@@ -101,15 +107,15 @@ test.describe("Documents admin dashboard", () => {
     await waitForPageReady(page);
 
     // Verify mapping is shown
-    const mappedRow = table.locator("tbody tr").filter({ hasText: "한양대학교" });
-    await expect(mappedRow.locator(".selected-email")).toContainText("e2e-student2@test.com");
+    const mappedRow = table.locator("tbody tr").filter({ hasText: TEAM_UNIV });
+    await expect(mappedRow.locator(".selected-email")).toContainText(EMAIL);
 
     // Click the clear button to delete the mapping
     await mappedRow.locator(".clear-btn").click();
     await waitForPageReady(page);
 
     // Verify mapping is cleared (placeholder "-" shown)
-    const clearedRow = table.locator("tbody tr").filter({ hasText: "한양대학교" });
+    const clearedRow = table.locator("tbody tr").filter({ hasText: TEAM_UNIV });
     await expect(clearedRow.locator(".select-placeholder")).toHaveText("-");
   });
 
