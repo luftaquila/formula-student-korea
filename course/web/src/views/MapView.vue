@@ -961,20 +961,28 @@ function multiSelectIcon(side, num) {
 // drawing hundreds of cones in a single canvas pass instead of hundreds of DOM
 // nodes. Overrides L.Canvas._updateCircle (Leaflet 1.9), drawing the number
 // right after the base circle while the layer's canvas point is current.
-const CONE_LABEL_MIN_ZOOM = 20; // draw cone numbers only at/above this zoom
+const CONE_MIN_R = 2.5, CONE_MAX_R = 9; // dot radius (px), scaled by zoom
+// A Leaflet circleMarker is a fixed pixel size, so when you zoom out the dots
+// stay 9px and pack into a solid blanket that hides the map. Scale the radius
+// with zoom (≈halving per zoom level out) so dots stay roughly proportional to
+// cone spacing, and clamp to a sane range.
+function coneRadiusForZoom(zoom) {
+  return Math.max(CONE_MIN_R, Math.min(CONE_MAX_R, CONE_MAX_R * Math.pow(2, zoom - 20)));
+}
 const LabeledConeCanvas = L.Canvas.extend({
   _updateCircle(layer) {
+    const r = coneRadiusForZoom(this._map.getZoom());
+    layer._radius = r;
+    layer.options.weight = r < 5 ? 1 : 2; // thinner outline on small dots
     L.Canvas.prototype._updateCircle.call(this, layer);
     if (!this._drawing || layer._empty() || layer.options.label == null) return;
-    // Numbers only when zoomed in enough to read them. Zoomed out the whole
-    // course is on screen (hundreds of cones) and the per-dot fillText is both
-    // illegible and the dominant redraw cost that lags manual control.
-    if (this._map.getZoom() < CONE_LABEL_MIN_ZOOM) return;
+    // Numbers always drawn, scaled with the dot — they shrink when zoomed out
+    // instead of abruptly vanishing.
     const p = layer._point, ctx = this._ctx;
     ctx.save();
     ctx.globalAlpha = layer.options.fillOpacity ?? 1;
     ctx.fillStyle = "#fff";
-    ctx.font = "700 10px ui-sans-serif, system-ui, sans-serif";
+    ctx.font = `700 ${(r * 1.15).toFixed(1)}px ui-sans-serif, system-ui, sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(String(layer.options.label), p.x, p.y);
@@ -3970,7 +3978,7 @@ onUnmounted(() => {
 
 /* Cone-add floating controls (courses tab) — top-right of the map. */
 .map-fab-panel {
-  position: absolute; top: 0.75rem; right: 0.75rem; z-index: 500;
+  position: absolute; bottom: 1.5rem; right: 0.75rem; z-index: 500;
   display: flex; align-items: center; gap: 0.4rem;
   background: rgba(17, 24, 39, 0.82); backdrop-filter: blur(4px);
   padding: 0.4rem; border-radius: 10px;
