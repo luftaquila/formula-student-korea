@@ -13,7 +13,7 @@ const appNavState = inject("navState", null);
 /* ── State ─────────────────────────────────────────── */
 const courses = ref([]);
 const conesMap = ref({});
-const visibility = ref({});
+const visibility = ref(loadPref("visibility", {}, (v) => JSON.parse(v))); // per-course show/hide, persisted
 const activeCourseId = ref(null);
 const loading = ref(true);
 const newCourseName = ref("");
@@ -763,8 +763,10 @@ let eventSource = null;
 let controlInterval = null;
 let suppressRebuild = false;
 let coneRenderer = null;       // shared <canvas> renderer for cone dots (rover/history tabs)
-let followRafId = null;        // rAF handle coalescing follow-pan to one recentre per frame
+let followTimer = null;        // throttle handle: at most one follow-pan per FOLLOW_MIN_MS
 let followTarget = null;       // latest { lat, lng } to recentre on
+let followLastPan = 0;         // timestamp of the last follow-pan
+const FOLLOW_MIN_MS = 150;     // cap follow-pans to ~6-7/s — each pan redraws the cone canvas
 let isMultiDragging = false;
 let dragStartPositions = null;
 let dragOrigin = null;
@@ -811,7 +813,7 @@ watch([inspectorWidth, sheetHeight, isMobile], () => {
   });
 }, { flush: "pre" });
 
-const SIDE_COLORS = { left: "#8b5cf6", right: "#06b6d4", center: "#f59e0b" };
+const SIDE_COLORS = { left: "#f59e0b", right: "#06b6d4", center: "#ef4444" };
 
 /* ── Computed ──────────────────────────────────────── */
 const activeCourse = computed(() => courses.value.find((c) => c.id === activeCourseId.value));
@@ -955,10 +957,15 @@ function multiSelectIcon(side, num) {
 // drawing hundreds of cones in a single canvas pass instead of hundreds of DOM
 // nodes. Overrides L.Canvas._updateCircle (Leaflet 1.9), drawing the number
 // right after the base circle while the layer's canvas point is current.
+const CONE_LABEL_MIN_ZOOM = 20; // draw cone numbers only at/above this zoom
 const LabeledConeCanvas = L.Canvas.extend({
   _updateCircle(layer) {
     L.Canvas.prototype._updateCircle.call(this, layer);
     if (!this._drawing || layer._empty() || layer.options.label == null) return;
+    // Numbers only when zoomed in enough to read them. Zoomed out the whole
+    // course is on screen (hundreds of cones) and the per-dot fillText is both
+    // illegible and the dominant redraw cost that lags manual control.
+    if (this._map.getZoom() < CONE_LABEL_MIN_ZOOM) return;
     const p = layer._point, ctx = this._ctx;
     ctx.save();
     ctx.globalAlpha = layer.options.fillOpacity ?? 1;
@@ -1169,6 +1176,9 @@ watch(editLocked, (v) => {
 });
 // Filter change reflows the list — jump back to the top and hide the button.
 watch(coneFilter, () => { coneListScrolled.value = false; coneListEl.value?.scrollTo({ top: 0 }); });
+// Persist per-course show/hide across reloads (course selection already persists
+// via activeCourseId). Deep watch since visibility is a per-id map.
+watch(visibility, (v) => savePref("visibility", JSON.stringify(v)), { deep: true });
 watch(selectedConeId, (id) => {
   const aid = activeCourseId.value;
   Object.entries(markers).forEach(([key, marker]) => {
@@ -1866,20 +1876,23 @@ function toggleFollowRover() {
   if (followRover.value) centerOnRover();
 }
 
-// Follow-pan coalesced to one non-animated recentre per animation frame.
-// Rover position events can arrive several times per frame; Leaflet's default
-// animated pan would then reposition every marker every frame and make manual
-// control feel sluggish. Non-animated + rAF = one cheap recentre per frame.
+// Follow-pan, throttled and non-animated. Each pan moves the map, which forces
+// a redraw of the cone canvas (hundreds of cones), so doing it on every rover
+// position event (the rover + rover:status SSE pair can fire >10×/s) is what
+// makes manual control lag on mobile. Cap to one pan per FOLLOW_MIN_MS, always
+// using the latest position; animate:false avoids per-frame redraws.
 function scheduleFollow(lat, lng) {
   followTarget = { lat, lng };
-  if (followRafId != null) return;
-  followRafId = requestAnimationFrame(() => {
-    followRafId = null;
+  if (followTimer != null) return;
+  const wait = Math.max(0, FOLLOW_MIN_MS - (performance.now() - followLastPan));
+  followTimer = setTimeout(() => {
+    followTimer = null;
+    followLastPan = performance.now();
     if (!map || !followTarget) return;
     const t = followTarget;
     followTarget = null;
     panToVisibleCenter(t.lat, t.lng, { animate: false });
-  });
+  }, wait);
 }
 
 function updateRoverMarker(lat, lng) {
@@ -2681,7 +2694,7 @@ onUnmounted(() => {
   if (controlInterval) clearInterval(controlInterval);
   if (calStatusPollHandle) clearInterval(calStatusPollHandle);
   if (ledBrightnessTimer) clearTimeout(ledBrightnessTimer);
-  if (followRafId != null) cancelAnimationFrame(followRafId);
+  if (followTimer != null) clearTimeout(followTimer);
   if (eventSource) eventSource.close();
   if (map) {
     map.getContainer().removeEventListener("mousedown", onSelectionStart);
@@ -3084,8 +3097,8 @@ onUnmounted(() => {
                 :title="editLocked ? '편집 잠김 — 화면 탭/드래그로 콘 추가·이동 불가 (눌러서 해제)' : '편집 가능 — 눌러서 잠그면 화면 탭/드래그 편집 방지'"
               >{{ editLocked ? '🔒' : '🔓' }}</button>
               <div class="side-toggle">
-                <button :class="['side-btn', { active: currentSide === 'left' }]" @click="currentSide = 'left'" style="--side-color: #8b5cf6" title="왼쪽">L</button>
-                <button :class="['side-btn', { active: currentSide === 'center' }]" @click="currentSide = 'center'" style="--side-color: #f59e0b" title="가운데">C</button>
+                <button :class="['side-btn', { active: currentSide === 'left' }]" @click="currentSide = 'left'" style="--side-color: #f59e0b" title="왼쪽">L</button>
+                <button :class="['side-btn', { active: currentSide === 'center' }]" @click="currentSide = 'center'" style="--side-color: #ef4444" title="가운데">C</button>
                 <button :class="['side-btn', { active: currentSide === 'right' }]" @click="currentSide = 'right'" style="--side-color: #06b6d4" title="오른쪽">R</button>
               </div>
               <button
