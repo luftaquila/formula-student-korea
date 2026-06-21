@@ -19,8 +19,11 @@ const loading = ref(true);
 const newCourseName = ref("");
 const currentSide = ref("left");
 const roverLoading = ref(false);
+const editLocked = ref(false);        // when true, screen tap/drag can't add or move cones
+const coneListEl = ref(null);         // cone-list scroll container (for scroll-to-top)
+const coneListScrolled = ref(false);  // true once the list is scrolled down a bit
 const coneFilter = ref("all");
-const CONE_FILTER_LABELS = { all: "전체", left: "L", center: "M", right: "R" };
+const CONE_FILTER_LABELS = { all: "전체", left: "L", center: "C", right: "R" };
 const SIDE_LABELS = { left: "왼쪽", center: "가운데", right: "오른쪽" };
 const coneFilterLabel = computed(() => CONE_FILTER_LABELS[coneFilter.value] || coneFilter.value);
 const currentSideLabel = computed(() => SIDE_LABELS[currentSide.value] || "");
@@ -1022,7 +1025,7 @@ function rebuildAllMarkers() {
 
       // Drag is courses-tab only; non-active cones opt out of hit-testing so
       // Leaflet doesn't probe every marker on every touchmove (mobile jank).
-      const canDrag = isActive && activeTab.value === "courses";
+      const canDrag = isActive && activeTab.value === "courses" && !editLocked.value;
       const marker = L.marker([cone.lat, cone.lng], {
         icon,
         draggable: canDrag,
@@ -1149,7 +1152,20 @@ function clearMultiSelection() {
   updateMultiSelectIcons();
 }
 
+function onConeListScroll(e) {
+  coneListScrolled.value = e.target.scrollTop > 200;
+}
+
+function scrollConeListTop() {
+  coneListEl.value?.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 /* ── Watchers ─────────────────────────────────────── */
+// Toggling the edit lock changes whether cone markers are draggable, so the
+// marker layer has to be rebuilt with the new draggable flag.
+watch(editLocked, () => { if (map && activeTab.value === "courses") rebuildAllMarkers(); });
+// Filter change reflows the list — jump back to the top and hide the button.
+watch(coneFilter, () => { coneListScrolled.value = false; coneListEl.value?.scrollTo({ top: 0 }); });
 watch(selectedConeId, (id) => {
   const aid = activeCourseId.value;
   Object.entries(markers).forEach(([key, marker]) => {
@@ -1185,6 +1201,7 @@ watch(activeCourseId, (v) => {
   selectedConeId.value = null;
   multiSelectedIds.value = new Set();
   coneFilter.value = "all";
+  coneListScrolled.value = false;
   clearPath();
   if (map) rebuildAllMarkers();
   if (v != null) {
@@ -1267,7 +1284,7 @@ function onMapClick(e) {
   // Cone-add fires on a tap only when the courses tab is active and a course
   // is selected. Other contexts (other tabs, no course) ignore the tap —
   // long-press shows a coordinate popover instead.
-  if (activeTab.value === "courses" && activeCourseId.value && roverMode.value !== "manual") {
+  if (activeTab.value === "courses" && activeCourseId.value && roverMode.value !== "manual" && !editLocked.value) {
     addCone(e.latlng.lat, e.latlng.lng, currentSide.value);
   }
 }
@@ -3054,6 +3071,27 @@ onUnmounted(() => {
                 @click="computePathFromRover"
               >현재 로버 위치에서 시작</button>
             </div>
+
+            <!-- Cone-add floating controls (courses tab) -->
+            <div v-if="activeTab === 'courses' && activeCourse" class="map-fab-panel">
+              <button
+                :class="['fab-icon-btn', 'fab-lock', { locked: editLocked }]"
+                @click="editLocked = !editLocked"
+                :aria-label="editLocked ? '편집 잠김 (눌러서 해제)' : '편집 가능 (눌러서 잠금)'"
+                :title="editLocked ? '편집 잠김 — 화면 탭/드래그로 콘 추가·이동 불가 (눌러서 해제)' : '편집 가능 — 눌러서 잠그면 화면 탭/드래그 편집 방지'"
+              >{{ editLocked ? '🔒' : '🔓' }}</button>
+              <div class="side-toggle">
+                <button :class="['side-btn', { active: currentSide === 'left' }]" @click="currentSide = 'left'" style="--side-color: #8b5cf6" title="왼쪽">L</button>
+                <button :class="['side-btn', { active: currentSide === 'center' }]" @click="currentSide = 'center'" style="--side-color: #f59e0b" title="가운데">C</button>
+                <button :class="['side-btn', { active: currentSide === 'right' }]" @click="currentSide = 'right'" style="--side-color: #06b6d4" title="오른쪽">R</button>
+              </div>
+              <button
+                class="fab-icon-btn fab-rover"
+                @click="addConeFromRover" :disabled="roverLoading"
+                aria-label="로버 위치로 콘 추가"
+                title="로버 GPS 위치로 콘 추가"
+              >{{ roverLoading ? '⏳' : '📍' }}</button>
+            </div>
           </div>
 
           <!-- Resize handle (desktop only) -->
@@ -3135,20 +3173,10 @@ onUnmounted(() => {
                   <header class="tab-header tab-header-sub">
                     <h3>{{ activeCourse.name }} 콘</h3>
                   </header>
-                  <div class="inspector-group">
-                    <div class="group-title">콘 추가</div>
-                    <div class="side-rover-row">
-                      <div class="side-toggle">
-                        <button :class="['side-btn', { active: currentSide === 'left' }]" @click="currentSide = 'left'" style="--side-color: #8b5cf6" title="왼쪽">L</button>
-                        <button :class="['side-btn', { active: currentSide === 'center' }]" @click="currentSide = 'center'" style="--side-color: #f59e0b" title="가운데">M</button>
-                        <button :class="['side-btn', { active: currentSide === 'right' }]" @click="currentSide = 'right'" style="--side-color: #06b6d4" title="오른쪽">R</button>
-                      </div>
-                      <button class="btn btn-primary btn-lg-touch rover-btn" @click="addConeFromRover" :disabled="roverLoading">
-                        {{ roverLoading ? '수신중...' : '로버 위치' }}
-                      </button>
-                    </div>
-                    <p class="hint">지도 클릭으로도 현재 <b>{{ coneFilterLabel === '전체' ? currentSideLabel : '' }}</b> 콘을 놓을 수 있습니다.</p>
-                  </div>
+                  <p class="hint cone-add-hint">
+                    지도 위 <b>{{ currentSideLabel }}</b> 컨트롤에서 변(L/C/R)을 고른 뒤, 지도를 탭하거나 <b>📍 로버 위치</b>로 콘을 추가합니다.
+                    <span v-if="editLocked" class="locked-note">🔒 편집 잠김 상태</span>
+                  </p>
 
                   <div v-if="multiSelectedIds.size > 0" class="inspector-group selected">
                     <div class="group-title">{{ multiSelectedIds.size }}개 선택됨</div>
@@ -3165,7 +3193,7 @@ onUnmounted(() => {
                       <input v-model="editLng" type="number" step="any" placeholder="경도" />
                       <select v-model="editSide">
                         <option value="left">L 왼쪽</option>
-                        <option value="center">M 가운데</option>
+                        <option value="center">C 가운데</option>
                         <option value="right">R 오른쪽</option>
                       </select>
                     </div>
@@ -3185,11 +3213,11 @@ onUnmounted(() => {
                       <div class="cone-filter">
                         <button :class="['filter-btn', { active: coneFilter === 'all' }]" @click="coneFilter = 'all'" title="전체 콘 표시">전체</button>
                         <button :class="['filter-btn', { active: coneFilter === 'left' }]" @click="coneFilter = 'left'" :style="{ '--fc': SIDE_COLORS.left }" title="왼쪽">L</button>
-                        <button :class="['filter-btn', { active: coneFilter === 'center' }]" @click="coneFilter = 'center'" :style="{ '--fc': SIDE_COLORS.center }" title="가운데">M</button>
+                        <button :class="['filter-btn', { active: coneFilter === 'center' }]" @click="coneFilter = 'center'" :style="{ '--fc': SIDE_COLORS.center }" title="가운데">C</button>
                         <button :class="['filter-btn', { active: coneFilter === 'right' }]" @click="coneFilter = 'right'" :style="{ '--fc': SIDE_COLORS.right }" title="오른쪽">R</button>
                       </div>
                     </div>
-                    <div class="cone-list">
+                    <div class="cone-list" ref="coneListEl" @scroll="onConeListScroll">
                       <div
                         v-for="cone in filteredCones" :key="cone.id"
                         :data-cone-id="cone.id"
@@ -3202,6 +3230,12 @@ onUnmounted(() => {
                       </div>
                       <div v-if="filteredCones.length === 0" class="empty-msg">콘이 없습니다.</div>
                     </div>
+                    <button
+                      v-show="coneListScrolled"
+                      class="cone-scrolltop"
+                      @click="scrollConeListTop"
+                      title="목록 맨 위로"
+                    >↑</button>
                   </div>
                 </template>
               </section>
@@ -3900,6 +3934,32 @@ onUnmounted(() => {
 .map-overlay-row > span { white-space: nowrap; }
 .map-overlay-row .btn { white-space: nowrap; }
 
+/* Cone-add floating controls (courses tab) — top-right of the map. */
+.map-fab-panel {
+  position: absolute; top: 0.75rem; right: 0.75rem; z-index: 500;
+  display: flex; align-items: center; gap: 0.4rem;
+  background: rgba(17, 24, 39, 0.82); backdrop-filter: blur(4px);
+  padding: 0.4rem; border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+}
+.map-fab-panel .side-toggle { flex: none; gap: 0.25rem; }
+.map-fab-panel .side-btn { min-width: 34px; padding: 0.35rem 0.5rem; }
+.fab-icon-btn {
+  flex: none; width: 38px; height: 38px;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--border-primary); border-radius: 8px;
+  background: var(--bg-secondary); color: var(--text-primary);
+  font-size: 1.1rem; line-height: 1; cursor: pointer; transition: all 0.15s;
+}
+.fab-icon-btn:disabled { opacity: 0.55; cursor: default; }
+.fab-lock.locked {
+  border-color: #f59e0b;
+  background: color-mix(in srgb, #f59e0b 22%, var(--bg-secondary));
+}
+.fab-rover { border-color: var(--accent-primary); }
+
 .coord-popover-body {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.8rem;
@@ -4096,10 +4156,8 @@ onUnmounted(() => {
 
 .import-btn { cursor: pointer; }
 
-/* Side + Rover row */
-.side-rover-row { display: flex; gap: 0.5rem; align-items: stretch; }
+/* Side toggle (L/C/R) */
 .side-toggle { display: flex; gap: 0.25rem; flex: 1; }
-.rover-btn { white-space: nowrap; }
 
 .side-btn {
   flex: 1; padding: 0.375rem;
@@ -4442,7 +4500,22 @@ onUnmounted(() => {
 .edit-section { background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-primary)); }
 
 /* Cone list */
-.cone-list-section { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.cone-list-section { position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+
+/* One-tap jump to the top of a long cone list. */
+.cone-scrolltop {
+  position: absolute; right: 0.7rem; bottom: 1rem; z-index: 5;
+  width: 40px; height: 40px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border-primary);
+  background: rgba(17, 24, 39, 0.9); color: var(--text-primary);
+  font-size: 1.1rem; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.cone-scrolltop:hover { background: rgba(31, 41, 55, 0.95); }
+
+.cone-add-hint { margin: 0 0 0.5rem; }
+.cone-add-hint .locked-note { color: #f59e0b; font-weight: 600; margin-left: 0.25rem; }
 
 .cone-list-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem; }
 .cone-list-header h3 { margin: 0; }
