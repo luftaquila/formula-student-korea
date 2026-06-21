@@ -935,19 +935,22 @@ function coneSideIndex(courseId, coneId) {
 // zoom level, see applyConeScale), so cones shrink when zoomed out instead of
 // staying a fixed pixel size that blankets the map. A fixed 26px wrapper keeps
 // the dot centred on the cone's latlng regardless of the inner size.
-function coneDot(side, num, borderColor, borderPx, opacity) {
-  return `<div style="opacity:${opacity};width:100%;height:100%;display:flex;align-items:center;justify-content:center;"><div style="width:var(--cone-px,18px);height:var(--cone-px,18px);border-radius:50%;background:${SIDE_COLORS[side]};border:${borderPx}px solid ${borderColor};display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:calc(var(--cone-px,18px)*0.5);font-weight:700;line-height:1;">${num}</span></div></div>`;
+function coneDot(side, num, borderColor, borderRatio, opacity) {
+  // content-box + a border that scales with --cone-px, so a fixed-thickness
+  // outline never eats the number when the dot is small (zoomed out).
+  const border = `max(1px, calc(var(--cone-px,18px) * ${borderRatio}))`;
+  return `<div style="opacity:${opacity};width:100%;height:100%;display:flex;align-items:center;justify-content:center;"><div style="box-sizing:content-box;width:var(--cone-px,18px);height:var(--cone-px,18px);border-radius:50%;background:${SIDE_COLORS[side]};border:${border} solid ${borderColor};display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:calc(var(--cone-px,18px)*0.5);font-weight:700;line-height:1;">${num}</span></div></div>`;
 }
 function coneIcon(side, num, active) {
-  return L.divIcon({ className: "", html: coneDot(side, num, "#fff", 2, active ? 1 : 0.45), iconSize: [26, 26], iconAnchor: [13, 13] });
+  return L.divIcon({ className: "", html: coneDot(side, num, "#fff", 0.1, active ? 1 : 0.45), iconSize: [26, 26], iconAnchor: [13, 13] });
 }
 
 function highlightIcon(side, num) {
-  return L.divIcon({ className: "", html: coneDot(side, num, "#fbbf24", 3, 1), iconSize: [26, 26], iconAnchor: [13, 13] });
+  return L.divIcon({ className: "", html: coneDot(side, num, "#fbbf24", 0.16, 1), iconSize: [26, 26], iconAnchor: [13, 13] });
 }
 
 function multiSelectIcon(side, num) {
-  return L.divIcon({ className: "", html: coneDot(side, num, "#38bdf8", 3, 1), iconSize: [26, 26], iconAnchor: [13, 13] });
+  return L.divIcon({ className: "", html: coneDot(side, num, "#38bdf8", 0.16, 1), iconSize: [26, 26], iconAnchor: [13, 13] });
 }
 
 // Canvas renderer that also paints each circleMarker's `label` (the cone's
@@ -971,7 +974,7 @@ const LabeledConeCanvas = L.Canvas.extend({
   _updateCircle(layer) {
     const r = coneRadiusForZoom(this._map.getZoom());
     layer._radius = r;
-    layer.options.weight = r < 5 ? 1 : 2; // thinner outline on small dots
+    layer.options.weight = Math.max(1, r * 0.22); // outline scales with the dot
     L.Canvas.prototype._updateCircle.call(this, layer);
     if (!this._drawing || layer._empty() || layer.options.label == null) return;
     // Numbers always drawn, scaled with the dot — they shrink when zoomed out
@@ -3121,7 +3124,7 @@ onUnmounted(() => {
             <div
               v-if="activeTab === 'courses' && activeCourse"
               class="map-fab-panel"
-              :style="isMobile ? { bottom: `calc(${sheetHeight}px + env(safe-area-inset-bottom) + 70px)` } : null"
+              :style="isMobile ? { position: 'fixed', right: '0.75rem', bottom: `calc(${sheetHeight}px + env(safe-area-inset-bottom) + 70px)`, zIndex: 650 } : null"
             >
               <button
                 :class="['fab-icon-btn', 'fab-lock', { locked: editLocked }]"
