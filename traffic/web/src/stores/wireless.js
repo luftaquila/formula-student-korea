@@ -123,11 +123,15 @@ export const useWirelessStore = defineStore("wireless", () => {
   applyLight(light.value);
 
   /* ── 센서 라우팅(serial.handleSensorReport와 동일 순서) ───────────── */
-  function routeSensor(mode, sensor, tick, nowMs) {
+  // skipCooldown: 백필(재연결 시 누락분 재생)은 이미 일어난 별개 라디오 이벤트들을
+  // 한 번에 재생하므로, 라이브 바운스 디바운스(쿨다운)에 연속 랩이 먹히면 안 된다.
+  function routeSensor(mode, sensor, tick, nowMs, skipCooldown = false) {
     const slot = timing[mode];
     if (!slot.green.active) return;
-    const last = slot.lastSensorTrigger[sensor];
-    if (last && nowMs - last < SENSOR_COOLDOWN_MS) return;
+    if (!skipCooldown) {
+      const last = slot.lastSensorTrigger[sensor];
+      if (last && nowMs - last < SENSOR_COOLDOWN_MS) return;
+    }
 
     const payload = {
       sensor, tick,
@@ -152,11 +156,12 @@ export const useWirelessStore = defineStore("wireless", () => {
     const tick = tickToMs(ev.master_tick);
     const node = String(ev.node_id);
     const nowMs = Date.now();
+    const backfill = ev._backfill === true; // 재연결 누락분 재생 — 쿨다운 우회
     for (const row of mapping.value) {
       if (row.node_id !== node || row.enabled === 0) continue;
       const mode = TYPE_TO_KEY[row.event_type];
       if (!mode) continue;
-      routeSensor(mode, roleToSensor(mode, row.role), tick, nowMs);
+      routeSensor(mode, roleToSensor(mode, row.role), tick, nowMs, backfill);
     }
   }
   onWirelessEvent(handleWirelessEvent);
@@ -167,17 +172,34 @@ export const useWirelessStore = defineStore("wireless", () => {
   let intentionalClose = false; // closeSerial()로 끊는 중인지 — read 루프 종료가 분리인지 구분
   const eventBuf = [];
   const telemetryBuf = new Map();
+  const MAX_EVENT_BUF = 2000; // 재시도 누적 폭주 방지(타이밍 이벤트가 수천 개면 이미 비정상)
   let flushScheduled = false;
+  let flushInFlight = false;
   let hbTimer = null;
 
   function stateMap(s) { return s === "OK" ? "online" : s === "STALE" ? "degraded" : "lost"; }
 
   async function flushIngest() {
+    if (flushInFlight) return; // 직렬화: 동시 flush로 같은 events 중복 전송/순서 꼬임 방지
+    if (!eventBuf.length && !telemetryBuf.size) return;
+    flushInFlight = true;
     const events = eventBuf.splice(0, eventBuf.length);
     const tel = [...telemetryBuf.values()];
     telemetryBuf.clear();
-    try { await ingestWireless({ events, telemetry: tel }); }
-    catch (e) { notyf.error(`서버 전송 실패: ${e.message}`); }
+    try {
+      await ingestWireless({ events, telemetry: tel });
+    } catch (e) {
+      // 전송 실패(네트워크 끊김·서버 재배포·503 등) 시 이벤트를 유실하면 안 되므로 버퍼
+      // 앞으로 되돌려 다음 flush(≤2s heartbeat)에서 재시도. 텔레메트리는 최신값만 의미
+      // 있어 재시도하지 않는다.
+      if (events.length) {
+        eventBuf.unshift(...events);
+        if (eventBuf.length > MAX_EVENT_BUF) eventBuf.splice(0, eventBuf.length - MAX_EVENT_BUF);
+      }
+      notyf.error(`서버 전송 실패(재시도 예정): ${e.message}`);
+    } finally {
+      flushInFlight = false;
+    }
   }
   function scheduleEventFlush() {
     if (flushScheduled) return;

@@ -40,7 +40,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS record_visibility (
    ============================================ */
 
 // 모든 센서의 raw 타이밍 이벤트(전부 영구 저장). master_tick은 64-bit라 TEXT로
-// 저장(JS 정수 정밀도 손실 방지). (node_id, ev_seq) UNIQUE로 멱등 ingest.
+// 저장(JS 정수 정밀도 손실 방지). (node_id, ev_seq, master_tick) UNIQUE로 멱등 ingest.
 db.exec(`CREATE TABLE IF NOT EXISTS wireless_event (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   node_id     TEXT NOT NULL,
@@ -53,7 +53,18 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_event (
   raw         TEXT
 );`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_wevent_server_time ON wireless_event(server_time)");
-db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_wevent_dedupe ON wireless_event(node_id, ev_seq)");
+// 멱등 dedup 키. ev_seq는 2바이트(DESIGN §9)라 65536에서 wrap하고 노드 재부팅 시 0부터
+// 재시작하므로 (node_id, ev_seq)만으로는 재사용된 seq의 새 이벤트가 옛 행과 충돌해 조용히
+// 버려졌다. master_tick(ev_master_t)은 재전송에도 보존되고 이벤트마다 고유(DESIGN §9)이므로
+// 키에 포함하면 재전송 멱등성은 유지하면서 재부팅/wrap 충돌은 사라진다.
+// 기존 2-컬럼 인덱스가 있으면 마이그레이션(컬럼이 다를 때만 재생성).
+{
+  const cols = db.prepare("SELECT name FROM pragma_index_info('idx_wevent_dedupe')").all().map((r) => r.name);
+  if (cols.length && !cols.includes("master_tick")) {
+    db.exec("DROP INDEX IF EXISTS idx_wevent_dedupe");
+  }
+}
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_wevent_dedupe ON wireless_event(node_id, ev_seq, master_tick)");
 
 // 센서 -> 경기·역할 매핑 (UI에서 설정, 서버 영구 저장).
 db.exec(`CREATE TABLE IF NOT EXISTS wireless_mapping (
@@ -186,6 +197,11 @@ function getLiveTelemetry() {
 function getBridgeState() {
   return { online: bridgeOnline, last_seen: lastBridgeSeenIso };
 }
+// 최신 raw 이벤트 id. 클라이언트가 (재)연결 시 백필 기준점으로 사용.
+function getLastEventId() {
+  const row = db.prepare("SELECT MAX(id) AS m FROM wireless_event").get();
+  return row && row.m != null ? row.m : 0;
+}
 // 브리지 ingest 도착 = heartbeat. 오프라인->온라인 전환 시 true 반환(SSE 발행됨).
 function markBridgeSeen() {
   lastBridgeSeen = Date.now();
@@ -253,6 +269,7 @@ app.get("/api/events", sseHandler(() => ({
     mapping: getMapping(),
     telemetry: getLiveTelemetry(),
     bridge: getBridgeState(),
+    lastEventId: getLastEventId(),
   },
 })));
 
@@ -685,12 +702,17 @@ app.post("/api/wireless/ingest", (req, res) => {
   const result = dbRun(() => db.transaction(() => {
     const inserted = [];
     let deduped = 0;
+    let rejected = 0;
+    const reasons = {}; // 사유별 카운트(로깅용)
+    const reject = (why) => { rejected++; reasons[why] = (reasons[why] || 0) + 1; };
     const ins = db.prepare("INSERT OR IGNORE INTO wireless_event (node_id, master_tick, ev_seq, rssi, snr, link_state, raw) VALUES (?, ?, ?, ?, ?, ?, ?)");
     const sel = db.prepare("SELECT id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state FROM wireless_event WHERE id = ?");
+    // 불량 항목 하나가 배치 전체를 날리지 않도록 throw 대신 skip — 시리얼 라인 깨짐 등으로
+    // 한 줄이 망가져도 같은 flush에 묶인 정상 이벤트는 저장·broadcast된다.
     for (const e of events) {
-      if (!validateNodeId(String(e.node_id))) { const err = new Error("node_id가 올바르지 않습니다."); err.status = 400; throw err; }
+      if (!validateNodeId(String(e.node_id))) { reject("node_id"); continue; }
       const tick = tickToText(e.master_tick);
-      if (tick === undefined) { const err = new Error("master_tick이 올바르지 않습니다."); err.status = 400; throw err; }
+      if (tick === undefined) { reject("master_tick"); continue; }
       const evSeq = Number.isInteger(e.ev_seq) ? e.ev_seq : null;
       const rssi = typeof e.rssi === "number" ? e.rssi : null;
       const snr = typeof e.snr === "number" ? e.snr : null;
@@ -705,7 +727,7 @@ app.post("/api/wireless/ingest", (req, res) => {
     const tOut = [];
     const tins = db.prepare("INSERT INTO wireless_telemetry (node_id, rssi, snr, offset_us, skew_ppm, latency_ms, link_state) VALUES (?, ?, ?, ?, ?, ?, ?)");
     for (const t of telemetry) {
-      if (!validateNodeId(String(t.node_id))) { const err = new Error("node_id가 올바르지 않습니다."); err.status = 400; throw err; }
+      if (!validateNodeId(String(t.node_id))) { reject("tel.node_id"); continue; }
       const node = String(t.node_id);
       const rssi = typeof t.rssi === "number" ? t.rssi : null;
       const snr = typeof t.snr === "number" ? t.snr : null;
@@ -733,7 +755,7 @@ app.post("/api/wireless/ingest", (req, res) => {
       liveTelemetry.set(node, entry);
       tOut.push({ node_id: node, rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, link_state: link, last_seen: lastSeenIso });
     }
-    return { inserted, deduped, telemetry: tOut };
+    return { inserted, deduped, rejected, reasons, telemetry: tOut };
   })());
 
   if (!result.success) {
@@ -744,13 +766,17 @@ app.post("/api/wireless/ingest", (req, res) => {
   if (transitioned) {
     logger.log(req, "wireless.bridge", { online: true, last_seen: lastBridgeSeenIso }, "bridge");
   }
+  // 부분 거부는 데이터 손실 가능성이라 반드시 로깅(어떤 사유로 몇 건이 버려졌는지).
+  if (result.result.rejected > 0) {
+    logger.warn(req, "wireless.ingest", { rejected: result.result.rejected, reasons: result.result.reasons, counts: { events: events.length, telemetry: telemetry.length } });
+  }
   if (result.result.inserted.length > 0) {
     broadcastEvent("wireless:event", { events: result.result.inserted });
   }
   if (result.result.telemetry.length > 0) {
     broadcastEvent("wireless:telemetry", { telemetry: result.result.telemetry });
   }
-  res.json({ stored: result.result.inserted.length, deduped: result.result.deduped });
+  res.json({ stored: result.result.inserted.length, deduped: result.result.deduped, rejected: result.result.rejected });
 });
 
 // POST /api/wireless/light - 브리지(콘솔)가 현재 신호등 색 + green tick 보고.
@@ -880,6 +906,7 @@ app.get("/api/wireless/state", (req, res) => {
     mapping: getMapping(),
     telemetry: getLiveTelemetry(),
     bridge: getBridgeState(),
+    lastEventId: getLastEventId(),
   }));
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result);

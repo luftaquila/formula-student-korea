@@ -609,7 +609,8 @@ describe('POST /api/wireless/ingest', () => {
     assert.equal(row.rssi, -70.5);
   });
 
-  it('is idempotent on (node_id, ev_seq)', async () => {
+  it('is idempotent on (node_id, ev_seq, master_tick) — retransmits dedupe', async () => {
+    // 재전송은 같은 node_id·ev_seq·ev_master_t로 다시 도착하므로 한 번만 저장된다.
     const ev = { node_id: '2', master_tick: '1000', ev_seq: 7 };
     const r1 = await client.post('/api/wireless/ingest', { body: { events: [ev] }, cookie: adminCookie });
     assert.equal((await r1.json()).stored, 1);
@@ -619,12 +620,63 @@ describe('POST /api/wireless/ingest', () => {
     assert.equal(d2.deduped, 1);
   });
 
-  it('rejects malformed body (events not array of valid rows)', async () => {
+  it('a reused ev_seq with a new master_tick is NOT deduped (node reboot / seq wrap)', async () => {
+    // 노드 재부팅/16-bit seq wrap으로 ev_seq가 재사용돼도 master_tick이 다르면 별개 이벤트.
+    // (node_id, ev_seq)만으로 dedupe하면 진짜 이벤트가 옛 행과 충돌해 조용히 사라진다.
+    const a = { node_id: 'reboot', master_tick: '5000', ev_seq: 3 };
+    const b = { node_id: 'reboot', master_tick: '9000', ev_seq: 3 }; // 같은 seq, 새 tick
+    assert.equal((await (await client.post('/api/wireless/ingest', { body: { events: [a] }, cookie: adminCookie })).json()).stored, 1);
+    const d = await (await client.post('/api/wireless/ingest', { body: { events: [b] }, cookie: adminCookie })).json();
+    assert.equal(d.stored, 1, 'new master_tick → stored, not deduped');
+    assert.equal(d.deduped, 0);
+  });
+
+  it('skips a malformed item but stores the good ones in the same batch (no batch-wide loss)', async () => {
+    // 시리얼 라인 깨짐 등으로 한 항목이 불량이어도 같은 flush의 정상 이벤트는 저장돼야 한다.
     const res = await client.post('/api/wireless/ingest', {
-      body: { events: [{ node_id: '1', master_tick: 'not-a-number', ev_seq: 1 }] },
+      body: { events: [
+        { node_id: 'mix', master_tick: '111', ev_seq: 1 },           // good
+        { node_id: 'mix', master_tick: 'not-a-number', ev_seq: 2 },  // bad master_tick → skip
+        { node_id: 'mix', master_tick: '222', ev_seq: 3 },           // good
+      ] },
       cookie: adminCookie,
     });
+    assert.equal(res.status, 200, 'request succeeds (per-item skip, not batch reject)');
+    const d = await res.json();
+    assert.equal(d.stored, 2, 'both good events stored');
+    assert.equal(d.rejected, 1, 'one bad item rejected');
+
+    const rows = await (await client.get('/api/wireless/events?since=0', { cookie: adminCookie })).json();
+    assert.ok(rows.some(r => r.node_id === 'mix' && r.ev_seq === 1));
+    assert.ok(rows.some(r => r.node_id === 'mix' && r.ev_seq === 3));
+    assert.ok(!rows.some(r => r.node_id === 'mix' && r.ev_seq === 2), 'bad item not stored');
+  });
+
+  it('rejects an oversized batch (>200) as a malformed request', async () => {
+    const events = Array.from({ length: 201 }, (_, i) => ({ node_id: 'big', master_tick: String(i + 1), ev_seq: i }));
+    const res = await client.post('/api/wireless/ingest', { body: { events }, cookie: adminCookie });
     assert.equal(res.status, 400);
+  });
+
+  it('exposes a monotonic lastEventId for client reconnect backfill', async () => {
+    const before = (await (await client.get('/api/wireless/state', { cookie: adminCookie })).json()).lastEventId;
+    assert.equal(typeof before, 'number');
+    await client.post('/api/wireless/ingest', { body: { events: [{ node_id: 'lid', master_tick: '1', ev_seq: 1 }] }, cookie: adminCookie });
+    const after = (await (await client.get('/api/wireless/state', { cookie: adminCookie })).json()).lastEventId;
+    assert.ok(after > before, 'lastEventId advances after a new event');
+  });
+
+  it('backfill endpoint returns events with id > since in ascending order', async () => {
+    // 재연결 클라이언트가 누락분을 받는 경로. since 이후만, id 오름차순.
+    const since = (await (await client.get('/api/wireless/state', { cookie: adminCookie })).json()).lastEventId;
+    await client.post('/api/wireless/ingest', { body: { events: [
+      { node_id: 'bf', master_tick: '10', ev_seq: 1 },
+      { node_id: 'bf', master_tick: '20', ev_seq: 2 },
+    ] }, cookie: adminCookie });
+    const rows = await (await client.get(`/api/wireless/events?since=${since}`, { cookie: adminCookie })).json();
+    assert.ok(rows.length >= 2, 'missed events returned');
+    assert.ok(rows.every(r => r.id > since), 'only events after since');
+    for (let i = 1; i < rows.length; i++) assert.ok(rows[i].id > rows[i - 1].id, 'ascending id');
   });
 
   it('persists at most one throttled telemetry snapshot per node, live state has latest', async () => {
