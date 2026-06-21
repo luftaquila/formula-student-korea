@@ -46,7 +46,12 @@ test.describe("Inspection summary dashboard", () => {
   });
 
   test("shows category result badges after setting results", async ({ page, browser }) => {
-    // First, set a category result for team 1 via API
+    // Use a team this spec owns exclusively (연세대학교, #31) so a parallel
+    // inspection spec mutating team 1's result can't clear the badge before
+    // this assertion runs. The team is seeded, so it shows in the table.
+    const TEAM = 31;
+    const TEAM_UNIV = "연세대학교";
+
     const context = await browser.newContext({ storageState: storageStatePath("official") });
     const apiPage = await context.newPage();
 
@@ -57,33 +62,33 @@ test.describe("Inspection summary dashboard", () => {
 
     // Set inspector name (required for category result)
     await apiPage.request.put("/inspection/api/sheet/inspector", {
-      data: { year: YEAR, team_num: 1, category_id: firstCatId, inspector: "테스트관" },
+      data: { year: YEAR, team_num: TEAM, category_id: firstCatId, inspector: "테스트관" },
     });
 
-    // Set category result to PASS for team 1
+    // Set category result to PASS for the team
     await apiPage.request.put("/inspection/api/sheet/category-result", {
-      data: { year: YEAR, team_num: 1, category_id: firstCatId, result: "PASS" },
+      data: { year: YEAR, team_num: TEAM, category_id: firstCatId, result: "PASS" },
     });
 
     await context.close();
 
-    // Now navigate to summary and verify badge
+    // Now navigate to summary and verify the badge on this team's row
     await page.goto("/inspection");
     await waitForPageReady(page);
 
     const table = page.locator(".sheet-table");
-    const team1Row = table.locator("tbody tr.clickable-row").first();
-    const passBadge = team1Row.locator(".badge-success").first();
+    const teamRow = table.locator("tbody tr.clickable-row").filter({ hasText: TEAM_UNIV });
+    const passBadge = teamRow.locator(".badge-success").first();
     await expect(passBadge).toContainText("PASS");
 
     // Clean up: clear the result and inspector
     const cleanupCtx = await browser.newContext({ storageState: storageStatePath("official") });
     const cleanupPage = await cleanupCtx.newPage();
     await cleanupPage.request.put("/inspection/api/sheet/category-result", {
-      data: { year: YEAR, team_num: 1, category_id: firstCatId, result: "" },
+      data: { year: YEAR, team_num: TEAM, category_id: firstCatId, result: "" },
     });
     await cleanupPage.request.put("/inspection/api/sheet/inspector", {
-      data: { year: YEAR, team_num: 1, category_id: firstCatId, inspector: "" },
+      data: { year: YEAR, team_num: TEAM, category_id: firstCatId, inspector: "" },
     });
     await cleanupCtx.close();
   });

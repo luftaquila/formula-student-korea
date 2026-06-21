@@ -85,24 +85,31 @@ test.describe("Inspection template advanced features", () => {
     const item1 = items[0]; // 절연 저항 측정 (number)
     const item2 = items[1]; // 전압 확인 (passfail)
 
+    // Dedicated team numbers for this test so it can't be clobbered by other
+    // inspection specs writing answers in parallel (sheet-fill uses team 1,
+    // realtime-sync uses team 2). The answer table keys on team_num with no
+    // FK to entries, so unseeded high numbers are fine.
+    const TEAM_A = 101;
+    const TEAM_B = 102;
+
     // Read current values and pick different ones to avoid stale data
     const curBulk = await page.request.get(
       `/inspection/api/sheet/bulk-answers?year=${YEAR}&item_ids=${item1.id},${item2.id}`,
     );
     const curData = await curBulk.json();
-    const val1 = curData["1"]?.[item1.id] === "42.5" ? "55.0" : "42.5";
-    const val2 = curData["1"]?.[item2.id] === "PASS" ? "FAIL" : "PASS";
-    const val3 = curData["2"]?.[item1.id] === "38.2" ? "60.0" : "38.2";
+    const val1 = curData[TEAM_A]?.[item1.id] === "42.5" ? "55.0" : "42.5";
+    const val2 = curData[TEAM_A]?.[item2.id] === "PASS" ? "FAIL" : "PASS";
+    const val3 = curData[TEAM_B]?.[item1.id] === "38.2" ? "60.0" : "38.2";
 
-    // Set answers for team 1 and team 2
+    // Set answers for TEAM_A (both items) and TEAM_B (one item)
     await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: 1, item_id: item1.id, value: val1 },
+      data: { year: YEAR, team_num: TEAM_A, item_id: item1.id, value: val1 },
     });
     await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: 1, item_id: item2.id, value: val2 },
+      data: { year: YEAR, team_num: TEAM_A, item_id: item2.id, value: val2 },
     });
     await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: 2, item_id: item1.id, value: val3 },
+      data: { year: YEAR, team_num: TEAM_B, item_id: item1.id, value: val3 },
     });
 
     // Fetch bulk answers
@@ -112,25 +119,25 @@ test.describe("Inspection template advanced features", () => {
     expect(bulkRes.status()).toBe(200);
     const data = await bulkRes.json();
 
-    // Verify team 1 has both answers
-    expect(data["1"]).toBeTruthy();
-    expect(data["1"][item1.id]).toBe(val1);
-    expect(data["1"][item2.id]).toBe(val2);
+    // Verify TEAM_A has both answers
+    expect(data[TEAM_A]).toBeTruthy();
+    expect(data[TEAM_A][item1.id]).toBe(val1);
+    expect(data[TEAM_A][item2.id]).toBe(val2);
 
-    // Verify team 2 has only one answer
-    expect(data["2"]).toBeTruthy();
-    expect(data["2"][item1.id]).toBe(val3);
-    expect(data["2"][item2.id]).toBeUndefined();
+    // Verify TEAM_B has only one answer
+    expect(data[TEAM_B]).toBeTruthy();
+    expect(data[TEAM_B][item1.id]).toBe(val3);
+    expect(data[TEAM_B][item2.id]).toBeUndefined();
 
     // Clean up answers
     await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: 1, item_id: item1.id, value: "" },
+      data: { year: YEAR, team_num: TEAM_A, item_id: item1.id, value: "" },
     });
     await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: 1, item_id: item2.id, value: "" },
+      data: { year: YEAR, team_num: TEAM_A, item_id: item2.id, value: "" },
     });
     await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: 2, item_id: item1.id, value: "" },
+      data: { year: YEAR, team_num: TEAM_B, item_id: item1.id, value: "" },
     });
   });
 
