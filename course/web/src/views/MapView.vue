@@ -931,29 +931,23 @@ function coneSideIndex(courseId, coneId) {
 
 // No box-shadow/text-shadow on cone icons — they cause mobile pan jank with
 // dozens of markers (each becomes its own GPU compositing layer).
+// The dot sizes off the --cone-px CSS variable (set on the map container per
+// zoom level, see applyConeScale), so cones shrink when zoomed out instead of
+// staying a fixed pixel size that blankets the map. A fixed 26px wrapper keeps
+// the dot centred on the cone's latlng regardless of the inner size.
+function coneDot(side, num, borderColor, borderPx, opacity) {
+  return `<div style="opacity:${opacity};width:100%;height:100%;display:flex;align-items:center;justify-content:center;"><div style="width:var(--cone-px,18px);height:var(--cone-px,18px);border-radius:50%;background:${SIDE_COLORS[side]};border:${borderPx}px solid ${borderColor};display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:calc(var(--cone-px,18px)*0.5);font-weight:700;line-height:1;">${num}</span></div></div>`;
+}
 function coneIcon(side, num, active) {
-  const opacity = active ? 1 : 0.45;
-  return L.divIcon({
-    className: "",
-    html: `<div style="opacity:${opacity};position:relative;width:20px;height:20px;border-radius:50%;background:${SIDE_COLORS[side]};border:2px solid #fff;display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:10px;font-weight:700;line-height:1;">${num}</span></div>`,
-    iconSize: [20, 20], iconAnchor: [10, 10],
-  });
+  return L.divIcon({ className: "", html: coneDot(side, num, "#fff", 2, active ? 1 : 0.45), iconSize: [26, 26], iconAnchor: [13, 13] });
 }
 
 function highlightIcon(side, num) {
-  return L.divIcon({
-    className: "",
-    html: `<div style="position:relative;width:24px;height:24px;border-radius:50%;background:${SIDE_COLORS[side]};border:3px solid #fbbf24;display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:11px;font-weight:700;line-height:1;">${num}</span></div>`,
-    iconSize: [24, 24], iconAnchor: [12, 12],
-  });
+  return L.divIcon({ className: "", html: coneDot(side, num, "#fbbf24", 3, 1), iconSize: [26, 26], iconAnchor: [13, 13] });
 }
 
 function multiSelectIcon(side, num) {
-  return L.divIcon({
-    className: "",
-    html: `<div style="position:relative;width:24px;height:24px;border-radius:50%;background:${SIDE_COLORS[side]};border:3px solid #38bdf8;display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:11px;font-weight:700;line-height:1;">${num}</span></div>`,
-    iconSize: [24, 24], iconAnchor: [12, 12],
-  });
+  return L.divIcon({ className: "", html: coneDot(side, num, "#38bdf8", 3, 1), iconSize: [26, 26], iconAnchor: [13, 13] });
 }
 
 // Canvas renderer that also paints each circleMarker's `label` (the cone's
@@ -968,6 +962,10 @@ const CONE_MIN_R = 2.5, CONE_MAX_R = 9; // dot radius (px), scaled by zoom
 // cone spacing, and clamp to a sane range.
 function coneRadiusForZoom(zoom) {
   return Math.max(CONE_MIN_R, Math.min(CONE_MAX_R, CONE_MAX_R * Math.pow(2, zoom - 20)));
+}
+// DOM cone-icon diameter (courses tab) — same zoom curve as the canvas dots.
+function coneDiameterForZoom(zoom) {
+  return 2 * coneRadiusForZoom(zoom);
 }
 const LabeledConeCanvas = L.Canvas.extend({
   _updateCircle(layer) {
@@ -1273,6 +1271,12 @@ function initMap() {
   L.tileLayer("https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2", {
     subdomains: "0123", attribution: "&copy; Google", maxZoom: 21,
   }).addTo(map);
+
+  // Keep the DOM cone-icon size (--cone-px) in step with zoom so courses-tab
+  // cones scale like the canvas dots on the other tabs.
+  const applyConeScale = () => map.getContainer().style.setProperty("--cone-px", coneDiameterForZoom(map.getZoom()).toFixed(1) + "px");
+  applyConeScale();
+  map.on("zoomend", applyConeScale);
 
   map.on("click", onMapClick);
   // Coordinate popover is gated on long-press / right-click — Leaflet's
@@ -3114,7 +3118,11 @@ onUnmounted(() => {
             </div>
 
             <!-- Cone-add floating controls (courses tab) -->
-            <div v-if="activeTab === 'courses' && activeCourse" class="map-fab-panel">
+            <div
+              v-if="activeTab === 'courses' && activeCourse"
+              class="map-fab-panel"
+              :style="isMobile ? { bottom: `calc(${sheetHeight}px + env(safe-area-inset-bottom) + 70px)` } : null"
+            >
               <button
                 :class="['fab-icon-btn', 'fab-lock', { locked: editLocked }]"
                 @click="editLocked = !editLocked"
