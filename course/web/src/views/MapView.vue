@@ -759,6 +759,9 @@ let executionStartIdx = 0; // global waypoint index the current execute/resume c
 let eventSource = null;
 let controlInterval = null;
 let suppressRebuild = false;
+let coneRenderer = null;       // shared <canvas> renderer for cone dots (rover/history tabs)
+let followRafId = null;        // rAF handle coalescing follow-pan to one recentre per frame
+let followTarget = null;       // latest { lat, lng } to recentre on
 let isMultiDragging = false;
 let dragStartPositions = null;
 let dragOrigin = null;
@@ -944,15 +947,68 @@ function multiSelectIcon(side, num) {
   });
 }
 
+// Canvas renderer that also paints each circleMarker's `label` (the cone's
+// side index) in the centre — so non-editing tabs keep the numbers while still
+// drawing hundreds of cones in a single canvas pass instead of hundreds of DOM
+// nodes. Overrides L.Canvas._updateCircle (Leaflet 1.9), drawing the number
+// right after the base circle while the layer's canvas point is current.
+const LabeledConeCanvas = L.Canvas.extend({
+  _updateCircle(layer) {
+    L.Canvas.prototype._updateCircle.call(this, layer);
+    if (!this._drawing || layer._empty() || layer.options.label == null) return;
+    const p = layer._point, ctx = this._ctx;
+    ctx.save();
+    ctx.globalAlpha = layer.options.fillOpacity ?? 1;
+    ctx.fillStyle = "#fff";
+    ctx.font = "700 10px ui-sans-serif, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(layer.options.label), p.x, p.y);
+    ctx.restore();
+  },
+});
+
+// Canvas-rendered cone for non-editing tabs (rover/history): a coloured dot
+// with its side-index number, matching the editing-tab marker but drawn to the
+// shared canvas (no per-cone DOM node to reposition on every pan). Read-only —
+// click/drag are courses-tab only.
+function coneCircle(cone, num, isActive) {
+  return L.circleMarker([cone.lat, cone.lng], {
+    renderer: coneRenderer,
+    radius: 9,
+    color: "#fff",
+    weight: 2,
+    fillColor: SIDE_COLORS[cone.side],
+    fillOpacity: isActive ? 1 : 0.45,
+    opacity: isActive ? 1 : 0.45,
+    interactive: false,
+    label: num,
+  });
+}
+
 /* ── Map markers ──────────────────────────────────── */
 function rebuildAllMarkers() {
   Object.values(markers).forEach((m) => map.removeLayer(m));
   markers = {};
 
+  // Only the courses (editing) tab needs draggable, numbered, clickable DOM
+  // markers. Everywhere else (rover/manual, history) cones are read-only, so
+  // render them as canvas dots to keep the map smooth with hundreds of points.
+  const editing = activeTab.value === "courses";
+
   for (const course of courses.value) {
     if (!visibility.value[course.id]) continue;
     const cones = conesMap.value[course.id] || [];
     const isActive = course.id === activeCourseId.value;
+
+    if (!editing) {
+      for (const cone of cones) {
+        const num = coneSideIndex(course.id, cone.id);
+        const marker = coneCircle(cone, num, isActive).addTo(map);
+        markers[`${course.id}-${cone.id}`] = marker;
+      }
+      continue;
+    }
 
     for (const cone of cones) {
       const num = coneSideIndex(course.id, cone.id);
@@ -1076,7 +1132,7 @@ function updateMultiSelectIcons() {
   for (const cone of (conesMap.value[aid] || [])) {
     const key = `${aid}-${cone.id}`;
     const m = markers[key];
-    if (!m) continue;
+    if (!m || !m.setIcon) continue; // canvas dots (non-editing tab) have no icon
     const num = coneSideIndex(aid, cone.id);
     if (selectedConeId.value === cone.id) {
       m.setIcon(highlightIcon(cone.side, num));
@@ -1097,7 +1153,7 @@ function clearMultiSelection() {
 watch(selectedConeId, (id) => {
   const aid = activeCourseId.value;
   Object.entries(markers).forEach(([key, marker]) => {
-    if (!key.startsWith(`${aid}-`)) return;
+    if (!key.startsWith(`${aid}-`) || !marker.setIcon) return; // skip canvas dots
     const coneId = parseInt(key.split("-")[1]);
     const cone = (conesMap.value[aid] || []).find((c) => c.id === coneId);
     if (!cone) return;
@@ -1169,6 +1225,9 @@ async function fetchAll() {
 /* ── Map init ─────────────────────────────────────── */
 function initMap() {
   map = L.map("map", { zoomControl: true, maxZoom: 21, boxZoom: false }).setView([35.292012, 126.574415], 19);
+  // One canvas for all cone dots on non-editing tabs — hundreds of cones become
+  // a single redraw on pan/zoom instead of hundreds of DOM marker transforms.
+  coneRenderer = new LabeledConeCanvas({ padding: 0.5 });
   L.tileLayer("https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2", {
     subdomains: "0123", attribution: "&copy; Google", maxZoom: 21,
   }).addTo(map);
@@ -1787,6 +1846,22 @@ function toggleFollowRover() {
   if (followRover.value) centerOnRover();
 }
 
+// Follow-pan coalesced to one non-animated recentre per animation frame.
+// Rover position events can arrive several times per frame; Leaflet's default
+// animated pan would then reposition every marker every frame and make manual
+// control feel sluggish. Non-animated + rAF = one cheap recentre per frame.
+function scheduleFollow(lat, lng) {
+  followTarget = { lat, lng };
+  if (followRafId != null) return;
+  followRafId = requestAnimationFrame(() => {
+    followRafId = null;
+    if (!map || !followTarget) return;
+    const t = followTarget;
+    followTarget = null;
+    panToVisibleCenter(t.lat, t.lng, { animate: false });
+  });
+}
+
 function updateRoverMarker(lat, lng) {
   if (!map) return;
   if (roverMarker) {
@@ -2342,7 +2417,7 @@ function connectSSE() {
   eventSource.addEventListener("rover", (e) => {
     const data = JSON.parse(e.data);
     updateRoverMarker(data.lat, data.lng);
-    if (followRover.value) panToVisibleCenter(data.lat, data.lng);
+    if (followRover.value) scheduleFollow(data.lat, data.lng);
     if (roverMode.value === "executing") updatePathProgress(data.lat, data.lng);
   });
 
@@ -2355,7 +2430,7 @@ function connectSSE() {
     const lp = data.last_position;
     if (lp && typeof lp.lat === "number" && typeof lp.lng === "number") {
       updateRoverMarker(lp.lat, lp.lng);
-      if (followRover.value) panToVisibleCenter(lp.lat, lp.lng);
+      if (followRover.value) scheduleFollow(lp.lat, lp.lng);
     }
     // If the rover disconnected mid-manual-control, release immediately.
     if (!data.connected && roverMode.value === "manual") {
@@ -2586,6 +2661,7 @@ onUnmounted(() => {
   if (controlInterval) clearInterval(controlInterval);
   if (calStatusPollHandle) clearInterval(calStatusPollHandle);
   if (ledBrightnessTimer) clearTimeout(ledBrightnessTimer);
+  if (followRafId != null) cancelAnimationFrame(followRafId);
   if (eventSource) eventSource.close();
   if (map) {
     map.getContainer().removeEventListener("mousedown", onSelectionStart);
