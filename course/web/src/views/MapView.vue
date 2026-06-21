@@ -19,7 +19,7 @@ const loading = ref(true);
 const newCourseName = ref("");
 const currentSide = ref("left");
 const roverLoading = ref(false);
-const editLocked = ref(false);        // when true, screen tap/drag can't add or move cones
+const editLocked = ref(loadPref("editLocked", false, (v) => v === "true")); // screen tap/drag can't add/move cones; persisted
 const coneListEl = ref(null);         // cone-list scroll container (for scroll-to-top)
 const coneListScrolled = ref(false);  // true once the list is scrolled down a bit
 const coneFilter = ref("all");
@@ -1163,7 +1163,10 @@ function scrollConeListTop() {
 /* ── Watchers ─────────────────────────────────────── */
 // Toggling the edit lock changes whether cone markers are draggable, so the
 // marker layer has to be rebuilt with the new draggable flag.
-watch(editLocked, () => { if (map && activeTab.value === "courses") rebuildAllMarkers(); });
+watch(editLocked, (v) => {
+  savePref("editLocked", v);
+  if (map && activeTab.value === "courses") rebuildAllMarkers();
+});
 // Filter change reflows the list — jump back to the top and hide the button.
 watch(coneFilter, () => { coneListScrolled.value = false; coneListEl.value?.scrollTo({ top: 0 }); });
 watch(selectedConeId, (id) => {
