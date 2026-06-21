@@ -74,6 +74,10 @@ const pathProgress = ref(0);
 const pathDistance = ref(0);
 const manualThrottle = ref(0);
 const manualSteering = ref(0);
+// Joystick DOM refs: the knob + readout are updated imperatively while dragging
+// so a pointermove (≈120Hz on mobile) doesn't re-render this whole component.
+const joystickKnobEl = ref(null);
+const joystickInfoEl = ref(null);
 const dispenserBusy = ref(false);
 
 // Rover live status (from SSE rover:status event)
@@ -2379,6 +2383,18 @@ function onJoystickUp(e) {
   activePointerId = null;
   manualThrottle.value = 0;
   manualSteering.value = 0;
+  syncJoystickDom();
+}
+
+// Push the current throttle/steering to the knob + readout imperatively.
+// These are intentionally NOT reactive template bindings — at pointer-event
+// rates a reactive write would re-render the entire MapView component and make
+// the joystick stutter. sendControl still reads the refs at 20Hz.
+function syncJoystickDom() {
+  const knob = joystickKnobEl.value;
+  if (knob) knob.style.transform = `translate(${manualSteering.value * 0.82}px, ${-manualThrottle.value * 0.82}px)`;
+  const info = joystickInfoEl.value;
+  if (info) info.textContent = `T: ${manualThrottle.value} / S: ${manualSteering.value}`;
 }
 
 function updateJoystick(e) {
@@ -2396,6 +2412,7 @@ function updateJoystick(e) {
 
   manualSteering.value = Math.round(dx * 100);
   manualThrottle.value = Math.round(dy * 100);
+  syncJoystickDom();
 }
 
 /* ── SSE ──────────────────────────────────────────── */
@@ -3381,7 +3398,7 @@ onUnmounted(() => {
 
                   <!-- Manual joystick -->
                   <div v-if="roverMode === 'manual'" class="joystick-area">
-                    <div class="joystick-info">T: {{ manualThrottle }} / S: {{ manualSteering }}</div>
+                    <div class="joystick-info" ref="joystickInfoEl">T: 0 / S: 0</div>
                     <div
                       class="joystick"
                       @pointerdown.prevent="onJoystickDown"
@@ -3393,7 +3410,8 @@ onUnmounted(() => {
                         <div class="joystick-crosshair"></div>
                         <div
                           class="joystick-knob"
-                          :style="{ transform: `translate(${manualSteering * 0.82}px, ${-manualThrottle * 0.82}px)` }"
+                          ref="joystickKnobEl"
+                          style="transform: translate(0px, 0px)"
                         ></div>
                       </div>
                       <div class="joystick-labels">
