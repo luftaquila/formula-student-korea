@@ -4455,7 +4455,7 @@ onUnmounted(() => {
      consistent whether two chips share a zone or straddle a zone boundary,
      with comfortable breathing room. */
   padding: 0.875rem 1.25rem;
-  border-bottom: 1px solid var(--border-primary);
+  border-bottom: 1px solid var(--border-color);
   background: var(--bg-primary); color: var(--text-primary);
   font-size: 0.85rem;
   flex-wrap: wrap;
@@ -4485,7 +4485,7 @@ onUnmounted(() => {
   padding: 0.55rem 0.75rem;
   background: var(--bg-primary);
   color: var(--text-primary);
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
   font-size: 0.9rem;
@@ -4616,7 +4616,7 @@ onUnmounted(() => {
 .calibration-modal > .preflight-actions { flex: 0 0 auto; }
 .calibration-modal .cal-section {
   padding: 0.75rem 0;
-  border-top: 1px solid var(--border-primary);
+  border-top: 1px solid var(--border-color);
 }
 .calibration-modal .cal-section:first-of-type { border-top: none; padding-top: 0; }
 .calibration-modal > .cal-section:first-of-type { padding-top: 0.5rem; }
@@ -4650,7 +4650,7 @@ onUnmounted(() => {
 .cal-subsection {
   margin-top: 0.6rem;
   padding-top: 0.6rem;
-  border-top: 1px dashed color-mix(in srgb, var(--border-primary) 60%, transparent);
+  border-top: 1px dashed color-mix(in srgb, var(--border-color) 60%, transparent);
 }
 .cal-subsection-title {
   font-size: 0.85rem; font-weight: 600;
@@ -4675,7 +4675,7 @@ onUnmounted(() => {
   font-family: "JetBrains Mono", monospace;
   padding: 0.3rem 0.4rem;
   border-radius: 4px;
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   background: var(--bg-primary); color: var(--text-primary);
   width: 100%; box-sizing: border-box;
 }
@@ -4745,7 +4745,7 @@ onUnmounted(() => {
 }
 .chip-neutral {
   background: var(--bg-secondary);
-  border-color: var(--border-primary);
+  border-color: var(--border-color);
   color: var(--text-secondary);
 }
 
@@ -4769,7 +4769,7 @@ onUnmounted(() => {
 .navlight-bright {
   display: flex; flex-direction: column; gap: 4px;
   padding: 0.45rem 0.6rem 0.25rem; margin-top: 2px;
-  border-top: 1px solid var(--border-primary);
+  border-top: 1px solid var(--border-color);
 }
 .navlight-bright-label { font-size: 0.75rem; color: var(--text-secondary); }
 .navlight-bright input[type="range"] { width: 100%; cursor: pointer; margin: 0; }
@@ -4784,7 +4784,7 @@ onUnmounted(() => {
   flex: 1 1 220px; min-width: 0;
   padding: 0.25rem 0.7rem;
   background: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   border-radius: 999px;
   font-family: "JetBrains Mono", monospace; font-size: 0.85rem;
 }
@@ -4813,7 +4813,7 @@ onUnmounted(() => {
 /* Mirrors inspector-handle width on the rail side. Visual only. */
 .rail-spacer {
   width: 8px; flex-shrink: 0;
-  background: var(--border-primary);
+  background: var(--border-color);
 }
 /* Mirrors rail-spacer / inspector-handle widths so rail and inspector
    have equal whitespace on both sides. Desktop only. */
@@ -4822,7 +4822,7 @@ onUnmounted(() => {
 }
 .rail-divider {
   height: 1px; margin: 0.25rem 0.75rem;
-  background: var(--border-primary);
+  background: var(--border-color);
 }
 .rail-btn {
   display: flex; flex-direction: column; align-items: center;
@@ -4971,7 +4971,7 @@ onUnmounted(() => {
 
 .inspector-handle {
   width: 8px; flex-shrink: 0;
-  background: var(--border-primary);
+  background: var(--border-color);
   cursor: col-resize;
   touch-action: none;
   transition: background 0.12s;
@@ -4998,18 +4998,18 @@ onUnmounted(() => {
 .tab-header {
   display: flex; align-items: center; justify-content: space-between;
   padding-bottom: 0.5rem; margin-bottom: 0.25rem;
-  border-bottom: 1px solid var(--border-primary);
+  border-bottom: 1px solid var(--border-color);
 }
 .tab-header h3 { margin: 0; font-size: 1rem; font-weight: 700; }
 .tab-header-sub {
   margin-top: 0.875rem;
-  border-top: 1px solid var(--border-primary);
+  border-top: 1px solid var(--border-color);
   padding-top: 0.625rem;
-  border-bottom: 1px solid var(--border-primary);
+  border-bottom: 1px solid var(--border-color);
 }
 .history-switcher {
   display: inline-flex;
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -5021,7 +5021,7 @@ onUnmounted(() => {
   font-size: 0.8rem;
   cursor: pointer;
 }
-.history-switch-btn + .history-switch-btn { border-left: 1px solid var(--border-primary); }
+.history-switch-btn + .history-switch-btn { border-left: 1px solid var(--border-color); }
 .history-switch-btn.active {
   background: var(--accent-primary);
   color: var(--accent-primary-fg, #fff);
@@ -5032,7 +5032,7 @@ onUnmounted(() => {
 .inspector-group {
   padding: 0.625rem 0.75rem;
   background: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex; flex-direction: column; gap: 0.5rem;
 }
@@ -5058,7 +5058,7 @@ onUnmounted(() => {
 
 .course-add input {
   flex: 1; min-width: 0; padding: 0.375rem 0.5rem;
-  border: 1px solid var(--border-primary); border-radius: 4px;
+  border: 1px solid var(--border-color); border-radius: 4px;
   background: var(--bg-secondary); color: var(--text-primary); font-size: 0.8rem;
 }
 .course-add input:focus { outline: none; border-color: var(--accent-primary); }
@@ -5128,7 +5128,7 @@ onUnmounted(() => {
 
 .side-btn {
   flex: 1; padding: 0.375rem;
-  border: 2px solid var(--border-primary); border-radius: 6px;
+  border: 2px solid var(--border-color); border-radius: 6px;
   background: var(--bg-secondary); color: var(--text-primary);
   cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: all 0.15s;
 }
@@ -5144,7 +5144,7 @@ onUnmounted(() => {
 .rover-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .camera-view {
   margin-top: 0.5rem;
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   overflow: hidden;
   background: #000;
@@ -5195,7 +5195,7 @@ onUnmounted(() => {
 .mission-card {
   padding: 0.6rem 0.75rem;
   background: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.1s, border-color 0.1s;
@@ -5228,7 +5228,7 @@ onUnmounted(() => {
 .replay-speed {
   padding: 0.4rem 0.5rem; min-height: 36px;
   background: var(--bg-primary); color: var(--text-primary);
-  border: 1px solid var(--border-primary); border-radius: 6px;
+  border: 1px solid var(--border-color); border-radius: 6px;
   font-family: "JetBrains Mono", monospace;
 }
 .replay-state {
@@ -5257,7 +5257,7 @@ onUnmounted(() => {
 }
 .preflight-modal {
   background: var(--bg-primary); color: var(--text-primary);
-  border: 1px solid var(--border-primary); border-radius: 10px;
+  border: 1px solid var(--border-color); border-radius: 10px;
   padding: 1rem 1.25rem; min-width: 320px; max-width: 440px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
 }
@@ -5265,7 +5265,7 @@ onUnmounted(() => {
 .preflight-list { list-style: none; padding: 0; margin: 0 0 0.75rem 0; }
 .preflight-item {
   display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.4rem 0.25rem; border-bottom: 1px solid var(--border-primary);
+  padding: 0.4rem 0.25rem; border-bottom: 1px solid var(--border-color);
   font-size: 0.9rem;
 }
 .preflight-item:last-child { border-bottom: none; }
@@ -5292,7 +5292,7 @@ onUnmounted(() => {
   /* Breathing room above the close/confirm buttons in every modal. */
   margin-top: 1rem;
   padding-top: 0.5rem;
-  border-top: 1px solid color-mix(in srgb, var(--border-primary) 50%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 50%, transparent);
 }
 
 .logs-modal { max-width: 800px; width: 90vw; max-height: 85vh; display: flex; flex-direction: column; }
@@ -5303,7 +5303,7 @@ onUnmounted(() => {
 .logs-meta { font-size: 0.75rem; color: var(--text-secondary); margin-left: auto; }
 .logs-view {
   flex: 1; overflow-y: auto;
-  background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: 6px;
+  background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px;
   padding: 0.5rem; font-family: "JetBrains Mono", monospace; font-size: 0.75rem;
   line-height: 1.45;
 }
@@ -5319,7 +5319,7 @@ onUnmounted(() => {
 .logs-view:not(.logs-view-inline) .log-row > span {
   display: table-cell;
   padding: 0.1rem 0.5rem 0.1rem 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border-primary) 30%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 30%, transparent);
   vertical-align: top;
 }
 .logs-view:not(.logs-view-inline) .log-time,
@@ -5345,11 +5345,11 @@ onUnmounted(() => {
 .snapshot-create input {
   flex: 1; padding: 0.4rem 0.6rem;
   background: var(--bg-secondary); color: var(--text-primary);
-  border: 1px solid var(--border-primary); border-radius: 6px;
+  border: 1px solid var(--border-color); border-radius: 6px;
 }
 .snapshot-list { flex: 1; overflow-y: auto; margin-bottom: 0.75rem; }
 .snapshot-item {
-  padding: 0.5rem; border-bottom: 1px solid var(--border-primary);
+  padding: 0.5rem; border-bottom: 1px solid var(--border-color);
   font-size: 0.85rem;
 }
 .snapshot-top { display: flex; justify-content: space-between; align-items: center; }
@@ -5361,7 +5361,7 @@ onUnmounted(() => {
 
 .waypoint-list {
   margin-top: 0.5rem; max-height: 250px; overflow-y: auto;
-  border: 1px solid var(--border-primary); border-radius: 6px;
+  border: 1px solid var(--border-color); border-radius: 6px;
   background: var(--bg-primary);
 }
 .waypoint-list-header {
@@ -5373,7 +5373,7 @@ onUnmounted(() => {
 .waypoint-hint { color: var(--text-secondary); font-weight: 400; font-size: 0.75rem; }
 .waypoint-item {
   display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--border-primary);
+  padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--border-color);
   font-size: 0.8rem;
 }
 .waypoint-item:last-child { border-bottom: none; }
@@ -5383,7 +5383,7 @@ onUnmounted(() => {
 .arrow-btn {
   width: 22px; height: 22px; padding: 0;
   background: var(--bg-secondary); color: var(--text-primary);
-  border: 1px solid var(--border-primary); border-radius: 4px;
+  border: 1px solid var(--border-color); border-radius: 4px;
   font-size: 0.8rem; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
 }
@@ -5400,7 +5400,7 @@ onUnmounted(() => {
   flex: 1; min-width: 0;
   padding: 0.3rem 0.5rem;
   background: var(--bg-primary); color: var(--text-primary);
-  border: 1px solid var(--border-primary); border-radius: 6px;
+  border: 1px solid var(--border-color); border-radius: 6px;
   font-family: "JetBrains Mono", monospace; font-size: 0.8rem;
 }
 
@@ -5421,17 +5421,17 @@ onUnmounted(() => {
 .joystick-bg {
   position: absolute; inset: 0;
   background: var(--bg-secondary); border-radius: 50%;
-  border: 2px solid var(--border-primary);
+  border: 2px solid var(--border-color);
   display: flex; align-items: center; justify-content: center;
 }
 
 .joystick-crosshair {
-  width: 1px; height: 100%; background: var(--border-primary);
+  width: 1px; height: 100%; background: var(--border-color);
   position: absolute;
 }
 .joystick-crosshair::after {
   content: ""; display: block;
-  width: 100%; height: 1px; background: var(--border-primary);
+  width: 100%; height: 1px; background: var(--border-color);
   position: absolute; top: 50%; left: -9900%;
   width: 20000%;
 }
@@ -5460,7 +5460,7 @@ onUnmounted(() => {
 .dispenser-btn {
   flex: 1; max-width: 80px;
   padding: 0.4rem 0.6rem;
-  border: 1px solid var(--border-primary); border-radius: 4px;
+  border: 1px solid var(--border-color); border-radius: 4px;
   background: var(--bg-secondary); color: var(--text-primary);
   font-size: 0.8rem; cursor: pointer;
 }
@@ -5472,7 +5472,7 @@ onUnmounted(() => {
 
 .coord-inputs input, .coord-inputs select {
   padding: 0.375rem 0.5rem;
-  border: 1px solid var(--border-primary); border-radius: 4px;
+  border: 1px solid var(--border-color); border-radius: 4px;
   background: var(--bg-secondary); color: var(--text-primary);
   font-size: 0.8rem; font-family: "JetBrains Mono", monospace;
 }
@@ -5491,7 +5491,7 @@ onUnmounted(() => {
   position: absolute; right: 0.7rem; bottom: 1rem; z-index: 5;
   width: 40px; height: 40px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   background: rgba(17, 24, 39, 0.9); color: var(--text-primary);
   font-size: 1.1rem; cursor: pointer;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
@@ -5507,7 +5507,7 @@ onUnmounted(() => {
 .cone-filter { display: flex; gap: 0.25rem; }
 
 .filter-btn {
-  padding: 0.3rem 0.6rem; border: 1px solid var(--border-primary);
+  padding: 0.3rem 0.6rem; border: 1px solid var(--border-color);
   border-radius: 6px; background: var(--bg-secondary);
   color: var(--text-secondary); cursor: pointer;
   font-size: 0.8rem; font-weight: 500; transition: all 0.15s;
@@ -5585,7 +5585,7 @@ onUnmounted(() => {
     left: 0; right: 0; bottom: 0;
     width: 100%;
     flex-direction: row;
-    border-top: 1px solid var(--border-primary);
+    border-top: 1px solid var(--border-color);
     padding: 0.25rem 0.5rem; gap: 0.25rem;
     justify-content: space-around;
     background: var(--bg-primary);
@@ -5618,7 +5618,7 @@ onUnmounted(() => {
     width: 100% !important;
     max-width: 100%; min-width: 0;
     max-height: 75vh;
-    border-top: 1px solid var(--border-primary);
+    border-top: 1px solid var(--border-color);
     border-radius: 12px 12px 0 0;
     box-shadow: 0 -4px 20px rgba(0,0,0,0.25);
     z-index: 600;
@@ -5653,7 +5653,7 @@ onUnmounted(() => {
     display: flex; flex-wrap: wrap;
     column-gap: 0.5rem; row-gap: 0.05rem;
     padding: 0.2rem 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--border-primary) 30%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--border-color) 30%, transparent);
   }
   .logs-view:not(.logs-view-inline) .log-row > span {
     display: inline; padding: 0; border: none; vertical-align: baseline;
