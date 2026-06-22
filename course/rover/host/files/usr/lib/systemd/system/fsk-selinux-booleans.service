@@ -1,11 +1,12 @@
 [Unit]
 Description=FSK rover SELinux boolean overrides
-# Policy needs to be loaded before setsebool can flip a boolean, and
-# the runtime change has to land before pilot.service starts pilot-run
-# — without container_use_devices, the pilot-run `--device` flags fail
-# at runtime under enforcing mode.
+# Policy needs to be loaded before setsebool can flip a boolean, and the
+# runtime change has to land before pilot.service / perception.service start
+# their run wrappers — without container_use_devices, the `--device` flags
+# (ttyGPS/ttyMCU for pilot, /dev/video* for perception) fail at runtime under
+# enforcing mode.
 After=selinux-autorelabel-mark.service local-fs.target
-Before=podman.socket pilot.service
+Before=podman.socket pilot.service perception.service
 
 [Service]
 Type=oneshot

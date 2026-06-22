@@ -184,25 +184,40 @@ function isInternalRequest(req) {
 }
 
 const app = createApp({ express }, (req) => {
-  if (req.path === "/api/health") return null;
+  // Normalize before matching: Express 5 routing is case-insensitive and
+  // trailing-slash-insensitive by default, so `/API/rover/camera` and
+  // `/api/rover/camera/` reach the same handlers. A raw `req.path ===` gate
+  // would NOT match those variants and would fall through to "admin", letting
+  // a logged-in admin browser bypass the internal-strict rover endpoints
+  // (seize the rover/camera-control slot, inject frames). Canonicalize the
+  // path the same way the router does so the gate can't be slipped.
+  const p = (req.path || "/").toLowerCase().replace(/\/+$/, "") || "/";
+  if (p === "/api/health") return null;
   // Rover-only endpoints. /api/rover/stream is internal-strict — falling
   // back to "admin" let any logged-in operator open the SSE in a browser
   // and clobber the single roverClient slot, which silently kicked the
   // real rover off and routed subsequent calibrate-* events to the
   // browser response. Symptom on the operator side: cal start button
   // does nothing despite RTK-fixed + IDLE. Internal-only closes the door.
-  if (req.path === "/api/rover/stream") {
+  if (
+    p === "/api/rover/stream" ||
+    // Camera control SSE + frame upload are rover→server only. Internal-strict
+    // (deny browsers) for the same reason as /stream: a browser must not be
+    // able to occupy the single camera-control slot or inject frames.
+    p === "/api/rover/camera/control" ||
+    p === "/api/rover/camera"
+  ) {
     return isInternalRequest(req) ? null : "deny";
   }
   if (
-    req.path === "/api/rover/position" ||
-    req.path === "/api/rover/telemetry" ||
-    req.path === "/api/rover/waypoint_reached" ||
-    req.path === "/api/rover/waypoint_skipped" ||
-    req.path === "/api/rover/spray_result" ||
-    req.path === "/api/rover/antenna_calibration_result" ||
-    req.path === "/api/rover/wheel_calibration_result" ||
-    req.path === "/api/rover/logs"
+    p === "/api/rover/position" ||
+    p === "/api/rover/telemetry" ||
+    p === "/api/rover/waypoint_reached" ||
+    p === "/api/rover/waypoint_skipped" ||
+    p === "/api/rover/spray_result" ||
+    p === "/api/rover/antenna_calibration_result" ||
+    p === "/api/rover/wheel_calibration_result" ||
+    p === "/api/rover/logs"
   ) {
     return isInternalRequest(req) ? null : "admin";
   }
@@ -1717,6 +1732,167 @@ app.post("/api/rover/led-brightness", (req, res) => {
   logger.log(req, "rover.led_brightness", { brightness, connected: !!roverClient }, "rover");
   broadcastRoverStatus();
   res.json({ ok: true });
+});
+
+/* ============================================
+   Camera relay (rover → server → browser, MJPEG)
+   ============================================
+   In-memory only — frames are ephemeral, never touch the DB. Tailscale-free:
+   the rover's perception container pushes JPEG frames OUT to this server, and
+   admin browsers pull them from the same server as multipart/x-mixed-replace
+   (native <img> rendering). The rover only captures while someone is watching:
+   a viewer connecting/leaving toggles a camera-start/stop event on the rover's
+   control SSE. Separate from the pilot's /api/rover/stream so streaming load
+   never interferes with the mission command channel. */
+let cameraControlClient = null;   // perception container's control SSE (res)
+const cameraViewers = new Set();  // browser multipart responses
+let cameraLatestFrame = null;     // { buf, at } — last JPEG, replayed to new viewers
+const CAMERA_FRAME_FRESH_MS = 2000;
+// Drop frames for a viewer whose socket is this far behind rather than buffering
+// JPEGs unboundedly — a slow viewer (cellular/phone) must never OOM the mission
+// server. ~4 MB ≈ several frames of headroom at our resolution.
+const CAMERA_VIEWER_MAX_BACKLOG = 4 * 1024 * 1024;
+// Bound the camera feature's footprint on the SHARED mission server.
+const MAX_CAMERA_VIEWERS = 8;                 // cap held-open MJPEG responses
+const CAMERA_MIN_FRAME_INTERVAL_MS = 40;      // relay ≤ ~25 fps regardless of rover
+let cameraLastRelayAt = 0;
+
+function sendCameraControl(event) {
+  if (!cameraControlClient) return;
+  try {
+    cameraControlClient.write(`event: ${event}\ndata: {}\n\n`);
+  } catch {
+    try { cameraControlClient.end(); } catch {}
+    cameraControlClient = null;
+  }
+}
+
+function removeCameraViewer(res) {
+  if (!cameraViewers.delete(res)) return;
+  // Last viewer gone → stop the rover capture and release the cached frame so
+  // a stale image can't be replayed when the stream next reopens.
+  if (cameraViewers.size === 0) {
+    cameraLatestFrame = null;
+    syncCameraCapture();
+  }
+}
+
+// Capture only while at least one browser is watching.
+function syncCameraCapture() {
+  sendCameraControl(cameraViewers.size > 0 ? "camera-start" : "camera-stop");
+}
+
+// GET /api/rover/camera/control - perception container SSE (internal-strict).
+// Receives camera-start / camera-stop so it captures only on demand.
+app.get("/api/rover/camera/control", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.write("event: connected\ndata: {}\n\n");
+  // Async socket errors (peer reset) don't throw — without a listener they'd
+  // crash the process. Just drop the slot.
+  res.on("error", () => { if (cameraControlClient === res) cameraControlClient = null; });
+  if (cameraControlClient && cameraControlClient !== res) {
+    // Session takeover (e.g. a perception container replaced by auto-update) —
+    // leave an audit trail, mirroring /api/rover/stream's rover.stream.replaced.
+    logger.warn(req, "rover.camera.control_replaced", null, "rover");
+    try { cameraControlClient.end(); } catch {}
+  }
+  cameraControlClient = res;
+  // If viewers are already waiting, start capturing immediately.
+  if (cameraViewers.size > 0) sendCameraControl("camera-start");
+  const heartbeat = setInterval(() => {
+    try { res.write(": heartbeat\n\n"); } catch {}
+  }, 30000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    if (cameraControlClient === res) cameraControlClient = null;
+  });
+});
+
+// POST /api/rover/camera - JPEG frame upload (internal-strict, raw body).
+// express.raw only consumes image/jpeg; the global express.json skips it.
+app.post("/api/rover/camera", express.raw({ type: "image/jpeg", limit: "3mb" }), (req, res) => {
+  const buf = req.body;
+  if (!Buffer.isBuffer(buf) || buf.length === 0) {
+    return res.status(400).send("empty frame");
+  }
+  // Rate-cap the relay: drop frames arriving faster than ~25 fps so a fast or
+  // misbehaving rover (the rover self-caps, but defense in depth on the shared
+  // mission server) can't drive unbounded Buffer alloc + fan-out CPU here.
+  const now = Date.now();
+  if (now - cameraLastRelayAt < CAMERA_MIN_FRAME_INTERVAL_MS) {
+    return res.status(204).end();
+  }
+  cameraLastRelayAt = now;
+  cameraLatestFrame = { buf, at: now };
+  const header = Buffer.from(
+    `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${buf.length}\r\n\r\n`
+  );
+  for (const viewer of cameraViewers) {
+    // A viewer can close between its 'close' handler and this write; writing to
+    // an ended/destroyed response emits an async 'error' (uncatchable here), so
+    // skip + reap it. And bound memory: drop this frame for a backed-up viewer
+    // instead of queueing it.
+    if (viewer.writableEnded || viewer.destroyed) { removeCameraViewer(viewer); continue; }
+    if (viewer.writableLength > CAMERA_VIEWER_MAX_BACKLOG) continue;
+    try {
+      viewer.write(header);
+      viewer.write(buf);
+      viewer.write("\r\n");
+    } catch { removeCameraViewer(viewer); }
+  }
+  res.status(204).end();
+});
+
+// GET /api/rover/camera/stream - browser MJPEG viewer (admin).
+app.get("/api/rover/camera/stream", (req, res) => {
+  // Cap concurrent held-open MJPEG responses so a scripted/looping admin can't
+  // exhaust sockets/heap on the shared server (mirrors the SSE manager's cap).
+  if (cameraViewers.size >= MAX_CAMERA_VIEWERS) {
+    logger.warn(req, "rover.camera.view", { error: "too_many_viewers", viewers: cameraViewers.size }, "rover");
+    return res.status(503).send("카메라 시청자가 너무 많습니다.");
+  }
+  res.writeHead(200, {
+    "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    Pragma: "no-cache",
+    Connection: "keep-alive",
+  });
+  // Flush headers now: with no Content-Length, Node would otherwise hold the
+  // headers until the first body write, so a viewer that connects before any
+  // frame is pushed would see the request hang instead of an open MJPEG stream.
+  res.flushHeaders();
+  res.on("error", () => removeCameraViewer(res));
+  cameraViewers.add(res);
+  // Replay the most recent frame so a joining viewer sees something at once.
+  if (cameraLatestFrame && Date.now() - cameraLatestFrame.at < CAMERA_FRAME_FRESH_MS) {
+    try {
+      res.write(Buffer.from(
+        `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${cameraLatestFrame.buf.length}\r\n\r\n`
+      ));
+      res.write(cameraLatestFrame.buf);
+      res.write("\r\n");
+    } catch { /* ignore */ }
+  }
+  if (cameraViewers.size === 1) syncCameraCapture(); // first viewer → start
+  logger.log(req, "rover.camera.view", { viewers: cameraViewers.size }, "rover");
+  req.on("close", () => removeCameraViewer(res));
+});
+
+// GET /api/rover/camera/status - camera availability for the UI (admin).
+app.get("/api/rover/camera/status", (req, res) => {
+  res.json({
+    camera_connected: !!cameraControlClient,
+    viewers: cameraViewers.size,
+    // Server-COMPUTED age, never a raw server epoch: the client must not diff
+    // its own (possibly NTP-skewed) clock against a server timestamp — that
+    // mismatch paints a working stream as "신호 없음" or hides a dead one (the
+    // same client-clock trap as the course UI's "UPDATE Ns").
+    last_frame_age_ms: cameraLatestFrame ? (Date.now() - cameraLatestFrame.at) : null,
+  });
 });
 
 /* ============================================

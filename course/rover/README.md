@@ -54,7 +54,8 @@ Bridge: `mcu_bridge_node`. Firmware CI: `.github/workflows/rover-mcu.yml`.
 
 ## Architecture
 
-Five ROS 2 Jazzy nodes, one rootful podman container, `--network=host`:
+Five ROS 2 Jazzy nodes in the rootful `pilot` container, `--network=host` (a
+separate `perception` container handles camera streaming — see `perception/`):
 
 ```
 course server (port 10000)
@@ -164,8 +165,9 @@ Fleet-wide identical: hardware, NTRIP endpoint, `rover_params.yaml`. Per-rover d
 
 | Image | Built by | Updates | Owns |
 |-------|----------|---------|------|
-| `ghcr.io/luftaquila/fsk-rover-host:{candidate,edge,vX.Y.Z}` | `host/Containerfile` | `bootc upgrade` (24 h, reboot) | AlmaLinux 10 + Pi 5 firmware/DTB, NM, sshd, tailscale, podman, udev, `pilot.service` + `pilot-run`, fsk user |
+| `ghcr.io/luftaquila/fsk-rover-host:{candidate,edge,vX.Y.Z}` | `host/Containerfile` | `bootc upgrade` (24 h, reboot) | AlmaLinux 10 + Pi 5 firmware/DTB, NM, sshd, tailscale, podman, udev, `pilot.service` + `pilot-run`, `perception.service` + `perception-run`, fsk user |
 | `ghcr.io/luftaquila/fsk-rover-pilot:{candidate,edge,vX.Y.Z}` | `pilot/Containerfile` | `podman auto-update` (24 h, in-place) | ROS 2 Jazzy + the five `pilot` nodes |
+| `ghcr.io/luftaquila/fsk-rover-perception:{candidate,edge,vX.Y.Z}` | `perception/Containerfile` | `podman auto-update` (24 h, in-place) | OpenCV camera streamer (see `perception/`) |
 
 - Host base: `quay.io/almalinuxorg/almalinux-bootc-rpi:10`.
 - Stock `almalinux-bootc:10` lacks Pi 5 firmware and won't boot.
@@ -421,6 +423,7 @@ Address as `/dev/ttyMCU` — `/dev/ttyACM*` ordering is non-deterministic.
 | Workflow | Trigger | Output |
 |----------|---------|--------|
 | `rover-pilot-image.yml` | `main` push under `pilot/**`; manual | `fsk-rover-pilot` OCI; pytest gate |
+| `rover-perception-image.yml` | `main` push under `perception/**`; manual | `fsk-rover-perception` OCI; compileall gate |
 | `rover-host-image.yml` | `main` push under `host/**`; manual | `fsk-rover-host` OCI |
 | `rover-sd-image.yml` | manual only | `fsk-rover-sd.img.xz` |
 | `rover-mcu.yml` | `main` push under `mcu/**`; manual | `rover_mcu.uf2` |

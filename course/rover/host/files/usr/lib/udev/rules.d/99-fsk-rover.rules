@@ -31,3 +31,12 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="1546", ATTR{idProduct}=="01a9", \
     ATTR{power/control}="on"
 SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="000a", \
     ATTR{power/control}="on"
+
+# USB camera (UVC) hot-plug → restart perception.service so perception-run
+# re-probes /dev/video*. SUBSYSTEMS=="usb" restricts this to cameras hanging off
+# USB — WITHOUT it, the Pi 5's onboard CSI/ISP pipeline (rp1-cfe + bcm2835-isp)
+# registers a dozen non-USB video4linux nodes at every boot, each firing this
+# rule and storming fsk-perception-replug into its StartLimit lockout.
+# fsk-perception-replug still debounces the burst a multi-node UVC cam emits.
+SUBSYSTEM=="video4linux", SUBSYSTEMS=="usb", ACTION=="add|remove", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="fsk-perception-replug.service"

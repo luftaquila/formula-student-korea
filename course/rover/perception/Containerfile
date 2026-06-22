@@ -1,0 +1,32 @@
+# FSK rover perception container — captures the USB stereo webcam and streams
+# JPEG frames to the course server's MJPEG relay (Phase 2). Phase 3 will add
+# stereo depth + obstacle detection here (hence the OpenCV base, kept out of
+# the lean ROS `pilot` image).
+#
+# Built by .github/workflows/rover-perception-image.yml and pushed to
+# ghcr.io/luftaquila/fsk-rover-perception:{candidate,edge,vX.Y.Z}.
+# Pulled at runtime by the host's perception.service systemd unit, which
+# invokes /usr/local/bin/perception-run to `podman run` this image with the
+# /dev/video* nodes that are present.
+
+FROM docker.io/library/python:3.13-slim
+
+# opencv-python-headless still dlopens libGL + glib at import time even though
+# it ships no GUI; install the minimal shared libs so `import cv2` works on the
+# slim base.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         libgl1 \
+         libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /opt/perception/requirements.txt
+RUN pip install --no-cache-dir -r /opt/perception/requirements.txt
+
+COPY camera_streamer.py /opt/perception/camera_streamer.py
+WORKDIR /opt/perception
+
+# Opt in to `podman auto-update` (driven by the host's podman-auto-update.timer).
+LABEL io.containers.autoupdate=registry
+
+ENTRYPOINT ["python3", "camera_streamer.py"]

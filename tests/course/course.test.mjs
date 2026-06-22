@@ -1347,6 +1347,178 @@ describe('Mission schema migration', () => {
   });
 });
 
+// ─── Camera relay (MJPEG) ───────────────────────────────────────────────
+describe('Camera relay', () => {
+  let srv, url, cli, localDb, localDbPath;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  before(async () => {
+    localDbPath = tmpDbPath();
+    const result = createCourseApp({ dbPath: localDbPath });
+    localDb = result.db;
+    const started = await startServer(result.app);
+    srv = started.server;
+    url = started.baseUrl;
+    cli = createClient(url);
+  });
+
+  after(async () => {
+    await stopServer(srv);
+    localDb.close();
+    cleanup(localDbPath);
+  });
+
+  it('rejects the control SSE and frame upload without the internal secret', async () => {
+    const ctl = await fetch(`${url}/api/rover/camera/control`, { headers: { Accept: 'text/event-stream' } });
+    assert.ok(ctl.status === 401 || ctl.status === 403, 'control SSE is internal-strict');
+    try { await ctl.body?.cancel(); } catch { /* ignore */ }
+
+    const up = await fetch(`${url}/api/rover/camera`, {
+      method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    });
+    assert.ok(up.status === 401 || up.status === 403, 'frame upload is internal-strict');
+  });
+
+  it('internal-strict camera paths resist path-variant bypass by a browser admin', async () => {
+    // Express 5 routes a trailing-slash variant to the same handler, so an
+    // exact-match gate would fall through to "admin" and let a browser admin
+    // inject a frame (204) / open the control SSE (200). The security property:
+    // none of these variants may produce a SUCCESS for a non-internal caller
+    // (403 denied or 404 unrouted are both fine — the internal action ran iff
+    // 200/204).
+    const cases = [
+      { method: 'POST', path: '/api/rover/camera/', headers: { 'Content-Type': 'image/jpeg' }, body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) },
+      { method: 'POST', path: '/api/rover/camera//', headers: { 'Content-Type': 'image/jpeg' }, body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) },
+      { method: 'GET', path: '/api/rover/camera/control/', headers: { Accept: 'text/event-stream' } },
+    ];
+    for (const c of cases) {
+      const r = await fetch(`${url}${c.path}`, {
+        method: c.method, headers: { Cookie: adminCookie, ...c.headers }, body: c.body,
+      });
+      assert.ok(![200, 204].includes(r.status),
+        `${c.method} ${c.path} must NOT succeed for a browser admin (got ${r.status})`);
+      try { await r.body?.cancel(); } catch { /* ignore */ }
+    }
+  });
+
+  // Accumulate decoded stream bytes into `sink.text`, bounded so a stalled
+  // read can never hang the test. Returns a stop() that aborts the reader.
+  function pump(reader, sink) {
+    sink.text = '';
+    const dec = new TextDecoder('latin1');
+    let stopped = false;
+    (async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || stopped) break;
+          if (value) sink.text += dec.decode(value);
+        }
+      } catch { /* aborted/cancelled */ }
+    })();
+    return () => { stopped = true; reader.cancel().catch(() => {}); };
+  }
+  async function waitFor(cond, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) { if (cond()) return true; await sleep(20); }
+    return cond();
+  }
+
+  it('relays a frame rover→browser and toggles capture on first/last viewer', async () => {
+    // Perception container's control SSE.
+    const ctlAc = new AbortController();
+    const ctl = await fetch(`${url}/api/rover/camera/control`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ctlAc.signal,
+    });
+    assert.equal(ctl.status, 200);
+    const ctlSink = {};
+    const stopCtl = pump(ctl.body.getReader(), ctlSink);
+    await sleep(60);
+
+    // No viewer yet → camera connected but idle.
+    let st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
+    assert.equal(st.camera_connected, true);
+    assert.equal(st.viewers, 0);
+
+    // Browser viewer connects → first viewer triggers camera-start.
+    const viewAc = new AbortController();
+    const view = await fetch(`${url}/api/rover/camera/stream`, {
+      headers: { Cookie: adminCookie }, signal: viewAc.signal,
+    });
+    assert.equal(view.status, 200);
+    assert.match(view.headers.get('content-type'), /multipart\/x-mixed-replace/);
+    const viewSink = {};
+    const stopView = pump(view.body.getReader(), viewSink);
+    assert.ok(await waitFor(() => ctlSink.text.includes('camera-start'), 1000),
+      'first viewer triggers camera-start');
+
+    // Rover pushes a JPEG frame.
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 0xff, 0xd9]);
+    const up = await fetch(`${url}/api/rover/camera`, {
+      method: 'POST', headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, 'Content-Type': 'image/jpeg' }, body: jpeg,
+    });
+    assert.equal(up.status, 204);
+
+    // Viewer receives the multipart frame.
+    assert.ok(await waitFor(() => viewSink.text.includes('--frame'), 1000),
+      'viewer receives the multipart boundary');
+    assert.ok(viewSink.text.includes('Content-Type: image/jpeg'), 'frame carries a JPEG part header');
+
+    st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
+    assert.equal(st.viewers, 1);
+    assert.ok(st.last_frame_age_ms != null && st.last_frame_age_ms >= 0, 'status reports a server-computed frame age');
+
+    // Last viewer leaves → camera-stop.
+    stopView();
+    viewAc.abort();
+    assert.ok(await waitFor(() => ctlSink.text.includes('camera-stop'), 1500),
+      'last viewer triggers camera-stop');
+
+    stopCtl();
+    ctlAc.abort();
+  });
+
+  it('caps concurrent viewers (503 past the limit)', async () => {
+    // The viewer cap is the only thing stopping a scripted/looping admin from
+    // exhausting sockets/heap on the shared mission server, so guard it.
+    // Use raw node:http with agent:false: each viewer gets a DISTINCT socket
+    // that stays open. (fetch/undici reuses+evicts held, unconsumed streaming
+    // connections, which under-counts viewers and made this flaky.)
+    const http = (await import('node:http')).default;
+    const MAX = 8; // mirrors MAX_CAMERA_VIEWERS in course/index.mjs
+    const u = new URL(`${url}/api/rover/camera/stream`);
+    const opened = [];
+    const openStream = () => new Promise((resolve) => {
+      const req = http.request(
+        { hostname: u.hostname, port: u.port, path: u.pathname, method: 'GET', headers: { Cookie: adminCookie }, agent: false },
+        (res) => { res.on('data', () => {}); res.on('error', () => {}); resolve({ status: res.statusCode, req }); },
+      );
+      req.on('error', () => resolve({ status: 0, req }));
+      req.end();
+    });
+    const viewers = async () => (await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()).viewers;
+    try {
+      for (let i = 0; i < MAX; i++) {
+        const r = await openStream();
+        opened.push(r);
+        assert.equal(r.status, 200, `viewer ${i + 1} should be accepted`);
+      }
+      // A held stream registers server-side a beat after the headers arrive;
+      // wait until all MAX are counted so the over-cap check isn't racy.
+      for (let t = 0; t < 50 && (await viewers()) < MAX; t++) await sleep(20);
+      assert.equal(await viewers(), MAX, 'server should have registered all viewers');
+
+      const over = await openStream();
+      opened.push(over);
+      assert.equal(over.status, 503, 'a viewer past the cap must be rejected');
+    } finally {
+      for (const o of opened) { try { o.req.destroy(); } catch { /* ignore */ } }
+      await sleep(150); // let the server reap the closed viewers before the next test
+    }
+  });
+});
+
 describe('Mission telemetry historizes NTRIP link health', () => {
   const ac = new AbortController();
   let missionId;

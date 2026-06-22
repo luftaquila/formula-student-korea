@@ -103,8 +103,12 @@ done
 printf '%s' "$INTERNAL_SECRET" | sudo podman secret create internal-secret - >/dev/null
 printf '%s' "$NTRIP_USER"      | sudo podman secret create ntrip-username -  >/dev/null
 
-echo "[rover] restarting pilot.service"
+echo "[rover] restarting pilot.service + perception.service"
 sudo systemctl restart pilot.service
+# perception.service shares /etc/pilot/pilot.conf + the internal-secret we just
+# (re)wrote, but it was started at boot before they existed — restart it too so
+# it picks up SERVER_URL/secret instead of sitting in its StartLimit lockout.
+sudo systemctl restart perception.service || true
 
 # Give the container a moment to settle before asserting health —
 # secret-driven crashes show up within ~10 s.
@@ -115,6 +119,14 @@ else
     echo "[rover] pilot.service: NOT active — recent log:" >&2
     sudo journalctl -u pilot.service -n 30 --no-pager >&2
     exit 1
+fi
+# perception is non-critical (camera streaming) — report but don't fail
+# provisioning if it isn't up (e.g. no camera attached yet).
+if sudo systemctl is-active --quiet perception.service; then
+    echo "[rover] perception.service: active"
+else
+    echo "[rover] perception.service: not active (camera optional) — recent log:"
+    sudo journalctl -u perception.service -n 10 --no-pager || true
 fi
 REMOTE
 } | ssh $SSH_OPTS "fsk@$HOST" \

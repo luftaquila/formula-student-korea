@@ -2972,6 +2972,80 @@ async function sendControl() {
   }
 }
 
+/* ── Live camera (MJPEG) ──────────────────────────────
+   The <img> points at the server's multipart relay. Mounting it opens the
+   stream (server tells the rover to start capturing); unmounting closes it
+   (rover stops). cameraReqId cache-busts so re-opening starts a fresh stream. */
+const cameraOn = ref(false);
+const cameraError = ref(false);
+const cameraReqId = ref(0);
+let cameraStatusPoll = null;
+let cameraLastOkAt = 0;            // last poll that saw fresh frames (ms)
+const cameraStreamUrl = computed(() => {
+  if (!cameraOn.value) return "";
+  const base = import.meta.env.PROD ? "/course" : "";
+  // cameraReqId is the cache-bust AND the reconnect lever: bumping it makes the
+  // <img> re-request a fresh stream (multipart/x-mixed-replace does NOT
+  // auto-reconnect after a server restart / dropped socket).
+  return `${base}/api/rover/camera/stream?t=${cameraReqId.value}`;
+});
+// The MJPEG <img> only fires `error` if the HTTP connection breaks — when it
+// stays open but no frames arrive (no camera / server restarted and the <img>
+// is now a dead socket) the box just sits black. Poll the status endpoint
+// (server-computed frame age, clock-skew-proof) to surface "신호 없음" AND to
+// self-heal a dead <img> by re-requesting the stream.
+async function pollCameraStatus() {
+  if (!cameraOn.value) return;
+  try {
+    const res = await request("/api/rover/camera/status", { method: "GET" });
+    const s = await res.json();
+    const healthy = s.camera_connected
+      && s.last_frame_age_ms != null && s.last_frame_age_ms < 3000;
+    cameraError.value = !healthy;
+    if (healthy) {
+      cameraLastOkAt = Date.now();
+    } else if (s.camera_connected && s.viewers === 0 && Date.now() - cameraLastOkAt > 5000) {
+      // The rover is connected but the server has ZERO viewers — our <img>
+      // socket died server-side (server restart / proxy drop) while we still
+      // think it's open. Re-request the stream to re-register and resume.
+      // (If viewers > 0 the server still has us and frames are merely absent —
+      // a dead/unplugged camera — so reconnecting wouldn't help; we just show
+      // "신호 없음" and avoid churning the control channel.)
+      cameraReqId.value = Date.now();
+      cameraLastOkAt = Date.now();
+    }
+  } catch { /* keep last known state */ }
+}
+function stopCameraStream() {
+  cameraOn.value = false;
+  cameraError.value = false;
+  if (cameraStatusPoll) { clearInterval(cameraStatusPoll); cameraStatusPoll = null; }
+}
+function toggleCamera() {
+  if (cameraOn.value) { stopCameraStream(); return; }
+  cameraOn.value = true;
+  cameraError.value = false;
+  cameraReqId.value = Date.now();
+  cameraLastOkAt = Date.now();   // grace the cold-start window before reconnecting
+  pollCameraStatus();
+  cameraStatusPoll = setInterval(pollCameraStatus, 2000);
+}
+function onCameraError() {
+  cameraError.value = true;
+}
+// A rover SSE drop flips connected false→true; just flag the gap. Do NOT tear
+// the stream down — the operator's intent (cameraOn) is preserved and
+// pollCameraStatus auto-reconnects the <img> once the rover is back, instead of
+// leaving them with a permanently black box after a transient blip.
+watch(() => roverStatus.value.connected, (connected) => {
+  if (!connected && cameraOn.value) cameraError.value = true;
+});
+// The rover panel is v-show (stays mounted), so leaving the tab would keep the
+// MJPEG <img> connected and the rover capturing invisibly. Stop on tab-leave.
+watch(activeTab, (tab) => {
+  if (tab !== "rover" && cameraOn.value) stopCameraStream();
+});
+
 async function setDispenserPosition(position) {
   if (dispenserBusy.value) return;
   dispenserBusy.value = true;
@@ -3377,6 +3451,7 @@ onUnmounted(() => {
   document.removeEventListener("keydown", onGlobalKeyForChips);
   if (uiTickInterval) clearInterval(uiTickInterval);
   if (controlInterval) clearInterval(controlInterval);
+  if (cameraStatusPoll) clearInterval(cameraStatusPoll);
   if (calStatusPollHandle) clearInterval(calStatusPollHandle);
   if (ledBrightnessTimer) clearTimeout(ledBrightnessTimer);
   if (followTimer != null) clearTimeout(followTimer);
@@ -4113,6 +4188,21 @@ onUnmounted(() => {
                       :disabled="roverMode !== 'manual' && (!roverStatus.connected || (roverMode === 'executing' && roverStatus.nav_state !== 'PAUSED') || roverMode === 'stopped')"
                       @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
                     >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
+                  </div>
+
+                  <!-- Live camera (MJPEG, relayed via the course server). Opening
+                       the stream tells the rover to start capturing; closing it
+                       stops capture. Useful for manual driving / clearing an
+                       obstacle while paused. -->
+                  <div v-if="roverStatus.connected" class="rover-controls">
+                    <button
+                      :class="['btn', 'btn-lg-touch', cameraOn ? 'btn-primary' : 'btn-ghost']"
+                      @click="toggleCamera"
+                    >{{ cameraOn ? '📷 카메라 끄기' : '📷 카메라' }}</button>
+                  </div>
+                  <div v-if="cameraOn" class="camera-view">
+                    <img v-if="cameraStreamUrl" :src="cameraStreamUrl" alt="rover camera" @error="onCameraError" />
+                    <div v-if="cameraError" class="camera-error">카메라 신호 없음 (로버에 카메라가 연결됐는지 확인)</div>
                   </div>
 
                   <div v-if="pathDistance > 0" class="path-info">
@@ -4992,6 +5082,22 @@ onUnmounted(() => {
 
 /* Rover controls */
 .rover-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.camera-view {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #000;
+  min-height: 80px;
+  position: relative;
+}
+.camera-view img { display: block; width: 100%; height: auto; }
+.camera-error {
+  padding: 1rem 0.75rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  text-align: center;
+}
 .rover-controls-grid {
   display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem;
 }
