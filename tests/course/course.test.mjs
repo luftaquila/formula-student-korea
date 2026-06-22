@@ -1247,6 +1247,30 @@ describe('Mission soft pause / resume', () => {
 
     await disconnect();
   });
+
+  it('keeps a paused mission paused across a stray active-nav frame and a disconnect', async () => {
+    const disconnect = await connectRover();
+    await cli.post('/api/rover/execute', {
+      body: { waypoints: [{ lat: 35.00001, lng: 126.00001 }, { lat: 35.00002, lng: 126.00002 }] },
+      cookie: adminCookie,
+    });
+    assert.equal((await cli.post('/api/rover/pause', { cookie: adminCookie })).status, 200);
+
+    // A stray active-nav telemetry frame (rover hasn't left NAVIGATING yet) must
+    // NOT auto-resume an operator pause — only an 'interrupted' mission flips.
+    await cli.post('/api/rover/telemetry', {
+      body: { nav_state: 'NAVIGATING' },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    let st = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(st.mission_progress.status, 'paused', 'stray active frame must not un-pause');
+
+    // A disconnect must keep it 'paused' (resumable in place), not downgrade to
+    // 'interrupted' (which would make the UI 재개 button 409).
+    await disconnect();
+    st = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(st.mission_progress.status, 'paused', 'paused mission stays paused across a drop');
+  });
 });
 
 // ─── Mission schema migration (old DB → new columns + statuses) ─────────
@@ -1272,8 +1296,20 @@ describe('Mission schema migration', () => {
       actor TEXT,
       FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE SET NULL
     )`);
-    raw.prepare("INSERT INTO mission (started_at, status, waypoints_json) VALUES (?, 'completed', ?)")
-      .run(Date.now() - 1000, '[{"lat":35,"lng":126}]');
+    const missionId = raw.prepare("INSERT INTO mission (started_at, status, waypoints_json) VALUES (?, 'completed', ?)")
+      .run(Date.now() - 1000, '[{"lat":35,"lng":126}]').lastInsertRowid;
+    // Telemetry history with an ON DELETE CASCADE FK onto mission(id). The
+    // migration's DROP TABLE mission must NOT cascade-wipe this (it would under
+    // foreign_keys=ON without the pragma toggle) — this is the regression guard
+    // for the data-loss bug.
+    raw.exec(`CREATE TABLE mission_telemetry (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      mission_id INTEGER NOT NULL,
+      t INTEGER NOT NULL, lat REAL, lng REAL, fix_status TEXT, nav_state TEXT,
+      FOREIGN KEY (mission_id) REFERENCES mission(id) ON DELETE CASCADE
+    )`);
+    raw.prepare("INSERT INTO mission_telemetry (mission_id, t, lat, lng) VALUES (?, ?, ?, ?)")
+      .run(missionId, Date.now(), 35.0, 126.0);
     raw.close();
 
     const { createCourseApp } = await import('../../course/index.mjs?v=migrate');
@@ -1285,6 +1321,10 @@ describe('Mission schema migration', () => {
       const data = await (await localClient.get('/api/missions', { cookie: adminCookie })).json();
       assert.equal(data.missions.length, 1);
       assert.equal(data.missions[0].status, 'completed');
+
+      // Telemetry history survived (DROP TABLE mission did NOT cascade-delete it).
+      const tcount = result.db.prepare("SELECT COUNT(*) AS c FROM mission_telemetry").get().c;
+      assert.equal(tcount, 1, 'mission_telemetry must survive the mission table rebuild');
 
       // New columns present.
       const cols = result.db.prepare("PRAGMA table_info(mission)").all().map((c) => c.name);

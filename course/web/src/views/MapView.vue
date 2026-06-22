@@ -2926,7 +2926,12 @@ function startManualControl() {
     notifyWarn("로버가 연결되어 있지 않습니다.");
     return;
   }
-  clearPath();
+  // During a soft pause the operator drives manually to clear an obstacle, then
+  // resumes — so KEEP the mission overlay/progress. clearPath() would not only
+  // wipe the overlay (only rebuilt on mount/SSE-reconnect) but also POST
+  // /api/rover/end-mission, abandoning the very mission we want to resume.
+  // Outside a pause, manual mode discards any in-progress path pick as before.
+  if (roverStatus.value.nav_state !== "PAUSED") clearPath();
   roverMode.value = "manual";
   manualThrottle.value = 0;
   manualSteering.value = 0;

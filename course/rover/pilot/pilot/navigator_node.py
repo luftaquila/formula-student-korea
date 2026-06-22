@@ -658,18 +658,28 @@ class NavigatorNode(Node):
         self._set_state(State.PAUSED)
 
     def _on_resume(self, _msg):
-        """Resume a paused mission: re-acquire the current segment and drive on.
+        """Resume a paused mission, re-planning from the live chassis pose.
 
-        The estimator kept tracking chassis pose through the pause (including any
-        manual repositioning), so the L1 tracker just needs a reset to drop stale
-        lookahead/integral state before it steps from the current pose.
+        Mirrors the ERROR-recovery resume (see _handle_error): the operator may
+        have driven the rover manually while paused, and the pause may have
+        lasted arbitrarily long, so we (1) reset the wall-clock timers that ran
+        through the hold — otherwise stuck/settle/spray timeouts fire on the
+        first tick — (2) reset the tracker's D/I terms, and (3) replan the
+        remaining segments from the current pose so the rover doesn't track the
+        stale dock corridor (which would trip the dock reverse-recovery latch).
         """
         if self._state != State.PAUSED:
             return
+        now = time.monotonic()
+        self._settle_enter_time = now
+        self._spray_enter_time = now
+        self._last_progress_time = now
+        self._last_progress_dist = float('inf')
         if self._l1_tracker is not None:
             self._l1_tracker.reset()
         self.get_logger().info('Mission resumed by operator')
         self._set_state(State.NAVIGATING)
+        self._replan_from_current_chassis()
 
     def _on_spray_done(self, _msg):
         if self._state != State.SPRAYING:

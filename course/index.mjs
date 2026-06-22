@@ -107,27 +107,40 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(m
 {
   const info = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='mission'").get();
   if (info && (!info.sql.includes("current_waypoint_idx") || !info.sql.includes("'interrupted'"))) {
-    db.transaction(() => {
-      db.exec(`CREATE TABLE mission_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        course_id INTEGER,
-        started_at INTEGER NOT NULL,
-        ended_at INTEGER,
-        status TEXT NOT NULL CHECK(status IN ('running', 'paused', 'interrupted', 'completed', 'stopped', 'error')) DEFAULT 'running',
-        waypoints_json TEXT NOT NULL,
-        current_waypoint_idx INTEGER NOT NULL DEFAULT 0,
-        spray_results_json TEXT NOT NULL DEFAULT '{}',
-        updated_at INTEGER,
-        actor TEXT,
-        FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE SET NULL
-      )`);
-      db.exec(`INSERT INTO mission_new
-                 (id, course_id, started_at, ended_at, status, waypoints_json, actor)
-               SELECT id, course_id, started_at, ended_at, status, waypoints_json, actor FROM mission`);
-      db.exec(`DROP TABLE mission`);
-      db.exec(`ALTER TABLE mission_new RENAME TO mission`);
-      db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_started ON mission(started_at)`);
-    })();
+    // CRITICAL: disable FK enforcement around the table rebuild. mission_telemetry
+    // has `FOREIGN KEY (mission_id) REFERENCES mission(id) ON DELETE CASCADE`, so
+    // `DROP TABLE mission` under foreign_keys=ON would cascade-delete the ENTIRE
+    // telemetry history before the rename. PRAGMA foreign_keys cannot be toggled
+    // inside a transaction, so we toggle it around the whole block — this is
+    // exactly the procedure SQLite's docs prescribe for a rename-based rebuild of
+    // a table that other tables reference. (The cone migration above is safe
+    // without this only because nothing FK-references cone.)
+    db.pragma("foreign_keys = OFF");
+    try {
+      db.transaction(() => {
+        db.exec(`CREATE TABLE mission_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          course_id INTEGER,
+          started_at INTEGER NOT NULL,
+          ended_at INTEGER,
+          status TEXT NOT NULL CHECK(status IN ('running', 'paused', 'interrupted', 'completed', 'stopped', 'error')) DEFAULT 'running',
+          waypoints_json TEXT NOT NULL,
+          current_waypoint_idx INTEGER NOT NULL DEFAULT 0,
+          spray_results_json TEXT NOT NULL DEFAULT '{}',
+          updated_at INTEGER,
+          actor TEXT,
+          FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE SET NULL
+        )`);
+        db.exec(`INSERT INTO mission_new
+                   (id, course_id, started_at, ended_at, status, waypoints_json, actor)
+                 SELECT id, course_id, started_at, ended_at, status, waypoints_json, actor FROM mission`);
+        db.exec(`DROP TABLE mission`);
+        db.exec(`ALTER TABLE mission_new RENAME TO mission`);
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_started ON mission(started_at)`);
+      })();
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
   }
 }
 
@@ -719,11 +732,18 @@ function persistProgress() {
 // we flag it 'interrupted' (resumable) and keep currentMissionId +
 // mission_progress in memory. The next telemetry showing an active nav_state
 // flips it back to 'running' (see /api/rover/telemetry).
+//
+// A mission that was operator-'paused' stays 'paused' across the drop: the rover
+// is holding in PAUSED and is still resumable in place via /api/rover/resume, so
+// we must not downgrade it to 'interrupted' (that would make the UI's 재개 button
+// 409 against the paused-only resume guard). Only a 'running' mission interrupts.
 function interruptMission() {
   if (currentMissionId == null) return;
   persistProgress();
-  setMissionStatus.run("interrupted", Date.now(), currentMissionId);
-  roverState.mission_progress.status = "interrupted";
+  if (roverState.mission_progress.status === "running") {
+    setMissionStatus.run("interrupted", Date.now(), currentMissionId);
+    roverState.mission_progress.status = "interrupted";
+  }
 }
 
 function recordTelemetrySample() {
@@ -787,7 +807,7 @@ const roverState = {
 {
   const open = db.prepare(
     `SELECT id, waypoints_json, current_waypoint_idx, spray_results_json, status
-     FROM mission WHERE status IN ('interrupted', 'paused') ORDER BY started_at DESC LIMIT 1`
+     FROM mission WHERE status IN ('interrupted', 'paused') ORDER BY id DESC LIMIT 1`
   ).get();
   if (open) {
     let waypoints = [];
@@ -838,6 +858,12 @@ app.get("/api/rover/stream", (req, res) => {
   // endMission('error')로 미션을 통째로 버려, wifi 블립/pilot 재시작 한 번에
   // 진행상황이 사라지는 원인이었다.)
   if (roverClient && roverClient !== res) {
+    // Session takeover — leave an audit trail (the old endMission path used to
+    // log this; the mission itself is intentionally preserved for the new
+    // session to inherit). The replaced connection's own req.on('close') can't
+    // log it: roverClient has already been reassigned by then, so its
+    // `roverClient === res` guard is false.
+    logger.warn(req, "rover.stream.replaced", { mission_id: currentMissionId }, "rover");
     markRoverDisconnected("replaced");
     try { roverClient.end(); } catch {}
   }
@@ -966,12 +992,18 @@ app.post("/api/rover/telemetry", (req, res) => {
     };
   }
 
-  // Mission resumed: an interrupted (or paused) mission whose rover is reporting
-  // an active nav state again has clearly resumed driving — flip it back to
-  // 'running'. This also guards the natural-completion check below: a rover
-  // that reconnected IDLE after a reboot must NOT be auto-completed.
+  // Mission auto-resumed from an INTERRUPTED state: a rover that dropped mid-
+  // mission and is reporting an active nav state again has clearly resumed
+  // driving on its own — flip it back to 'running'. This also guards the
+  // natural-completion check below: a rover that reconnected IDLE after a
+  // reboot must NOT be auto-completed.
+  //
+  // 'paused' is deliberately NOT auto-flipped here: an operator pause is only
+  // released by /api/rover/resume (which also commands the rover). A stray
+  // active-nav telemetry frame arriving in the gap between the pause command
+  // and the rover actually leaving NAVIGATING must not silently un-pause it.
   if (currentMissionId != null
-      && roverState.mission_progress.status !== "running"
+      && roverState.mission_progress.status === "interrupted"
       && ACTIVE_NAV_STATES.has(nav_state)) {
     setMissionStatus.run("running", Date.now(), currentMissionId);
     roverState.mission_progress.status = "running";
