@@ -29,11 +29,8 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await page.goto("/traffic/wireless/accel");
     await waitForPageReady(page);
 
-    // 경기 설정(표시용) — 무선은 StartFinishView 재사용 → 동일 셀렉터
-    await page.locator('.form-input[type="text"]').fill(EVENT);
-    await page.locator("select.form-input").selectOption("1");
-
-    // 서버 권위 기록 엔진의 귀속(팀·이벤트명)은 세션 select로 공유(브리지가 보내는 것을 시뮬레이션).
+    // 무선 입력칸(이벤트명·팀)은 lease 보유 컨트롤러만 편집 가능(disabled). 이 페이지는 관찰자라
+    // UI로 채우지 않고, 귀속(팀·이벤트명)은 세션 select API로 공유한다(브리지/컨트롤러 시뮬레이션).
     await page.request.post("/traffic/api/wireless/select", {
       data: { event_type: "가속", team: { num: 1, univ: "E2E-Univ", team: "E2E-Team" }, event_name: EVENT },
     });
