@@ -19,7 +19,7 @@ const loading = ref(true);
 const newCourseName = ref("");
 const currentSide = ref("left");
 const roverLoading = ref(false);
-const editLocked = ref(loadPref("editLocked", false, (v) => v === "true")); // screen tap/drag can't add/move cones; persisted
+const editLocked = ref(loadPref("editLocked", true, (v) => v === "true")); // default locked; screen tap/drag can't add/move/rotate/delete cones; persisted
 const coneListEl = ref(null);         // cone-list scroll container (for scroll-to-top)
 const coneListScrolled = ref(false);  // true once the list is scrolled down a bit
 const coneFilter = ref("all");
@@ -59,6 +59,17 @@ function restoreLiveMapLayers() {
 // trip a TDZ because `activeTab` is a `const` defined below.
 const selectedConeId = ref(null);
 const multiSelectedIds = ref(new Set());
+// Rotate-selection state: a draggable on-map handle spins the whole selection
+// around its centroid; rotateAngle is the live delta shown in the HUD (deg, CW+).
+const rotateMode = ref(false);
+const rotateAngle = ref(0);
+const rotateInput = ref(""); // exact-angle text entry (deg, clockwise positive)
+const rotateAngleAbs = computed(() => Math.abs(rotateAngle.value).toFixed(1));
+const rotateDirIcon = computed(() => (rotateAngle.value < 0 ? "↺" : "↻"));
+// Measurement tools — read-only, usable even when edit is locked.
+const toolMode = ref("none");   // none | ruler | protractor
+const measureHint = ref("");    // next-step instruction for the active tool
+const measureResult = ref("");  // distance total / measured angle for the overlay
 const editLat = ref("");
 const editLng = ref("");
 const editSide = ref("left");
@@ -653,6 +664,11 @@ watch(historyView, (v) => savePref("historyView", v));
 // crossing that boundary. Skip missions transitions; isMissionsView owns those.
 watch(activeTab, (next, prev) => {
   if (!map) return;
+  // Leaving the editing tab tears down its rotate/measure overlays.
+  if (prev === "courses" && next !== "courses") {
+    if (rotateMode.value) exitRotateMode();
+    if (toolMode.value !== "none") exitToolMode();
+  }
   const prevWasMissions = prev === "history" && historyView.value === "missions";
   const nextIsMissions = next === "history" && historyView.value === "missions";
   if (prevWasMissions || nextIsMissions) return;
@@ -775,6 +791,22 @@ let isMultiDragging = false;
 let dragStartPositions = null;
 let dragOrigin = null;
 let justFinishedBoxSelect = false;
+
+// Rotate-selection layers + drag bookkeeping. Rotation is done in container-pixel
+// space (Web Mercator is locally conformal) so the on-screen shape is preserved
+// exactly; the rotated pixel points are converted back to lat/lng on commit.
+let rotatePivot = null;          // L.latLng centroid of the selection
+let rotatePivotMarker = null;
+let rotateHandleMarker = null;
+let rotateLine = null;           // pivot → handle guide line
+let rotateStartVectors = null;   // Map<id, {x,y}> cone offset from pivot (px) at drag start
+let rotateStartPositions = null; // Map<id, {lat,lng}> for rollback on save failure
+let rotateStartBearing = 0;      // pivot→handle bearing (rad) at drag start
+const ROTATE_RADIUS_PX = 72;     // resting screen distance of the handle from the pivot
+
+// Measurement tools (ruler / protractor) overlays.
+let measureLayer = null;         // L.layerGroup holding the active tool's overlays
+let measurePoints = [];          // [L.latLng] taps collected for the active tool
 
 // Visible-area center of the map: container center on desktop (sibling
 // layout), but on mobile the inspector overlays the bottom of the
@@ -1045,7 +1077,10 @@ function rebuildAllMarkers() {
 
       // Drag is courses-tab only; non-active cones opt out of hit-testing so
       // Leaflet doesn't probe every marker on every touchmove (mobile jank).
-      const canDrag = isActive && activeTab.value === "courses" && !editLocked.value;
+      // Per-cone drag is also suspended while rotating or measuring so those
+      // gestures don't accidentally move a single cone.
+      const canDrag = isActive && activeTab.value === "courses" && !editLocked.value
+        && !rotateMode.value && toolMode.value === "none";
       const marker = L.marker([cone.lat, cone.lng], {
         icon,
         draggable: canDrag,
@@ -1054,6 +1089,10 @@ function rebuildAllMarkers() {
 
       if (isActive) {
         marker.on("click", (e) => {
+          // A measurement tool consumes cone taps as measurement points.
+          if (toolMode.value !== "none") { handleMeasureClick(L.latLng(cone.lat, cone.lng)); return; }
+          // While rotating, cone taps are ignored — the selection is locked in.
+          if (rotateMode.value) return;
           if (e.originalEvent && e.originalEvent.shiftKey) {
             const newSet = new Set(multiSelectedIds.value);
             if (newSet.has(cone.id)) newSet.delete(cone.id);
@@ -1168,6 +1207,7 @@ function updateMultiSelectIcons() {
 }
 
 function clearMultiSelection() {
+  if (rotateMode.value) exitRotateMode();
   multiSelectedIds.value = new Set();
   updateMultiSelectIcons();
 }
@@ -1185,7 +1225,15 @@ function scrollConeListTop() {
 // marker layer has to be rebuilt with the new draggable flag.
 watch(editLocked, (v) => {
   savePref("editLocked", v);
+  if (v && rotateMode.value) exitRotateMode(); // rotate is an edit op — locking exits it
   if (map && activeTab.value === "courses") rebuildAllMarkers();
+});
+// Keep the rotate handle pinned to the selection's centroid. If the selection
+// drops below two cones there's nothing to rotate, so leave rotate mode.
+watch(multiSelectedIds, (set) => {
+  if (!rotateMode.value) return;
+  if (set.size < 2) exitRotateMode();
+  else setupRotateHandle();
 });
 // Filter change reflows the list — jump back to the top and hide the button.
 watch(coneFilter, () => { coneListScrolled.value = false; coneListEl.value?.scrollTo({ top: 0 }); });
@@ -1224,6 +1272,8 @@ watch(selectedConeId, (id) => {
 });
 
 watch(activeCourseId, (v) => {
+  if (rotateMode.value) exitRotateMode();
+  if (toolMode.value !== "none") exitToolMode();
   selectedConeId.value = null;
   multiSelectedIds.value = new Set();
   coneFilter.value = "all";
@@ -1298,6 +1348,14 @@ function initMap() {
 
 function onMapClick(e) {
   if (justFinishedBoxSelect) return;
+  // Measurement tools claim map taps (snapping to the nearest cone if one is close).
+  if (toolMode.value !== "none") {
+    const c = nearestCone(e.latlng);
+    handleMeasureClick(c ? L.latLng(c.lat, c.lng) : e.latlng);
+    return;
+  }
+  // While rotating, map taps are inert so a stray tap can't add a cone or drop the selection.
+  if (rotateMode.value) return;
   if (roverMode.value === "path-pick") {
     computePath(e.latlng.lat, e.latlng.lng);
     return;
@@ -1334,6 +1392,7 @@ function showCoordPopover(latlng) {
 /* ── Box selection (Shift+drag) ───────────────────── */
 function onSelectionStart(e) {
   if (!e.shiftKey || !activeCourseId.value || e.button !== 0) return;
+  if (rotateMode.value || toolMode.value !== "none") return; // box-select is off while rotating/measuring
 
   map.dragging.disable();
 
@@ -1854,6 +1913,353 @@ async function deleteCone(id) {
     await request(`/api/cones/${id}`, { method: "DELETE" });
     if (selectedConeId.value === id) selectedConeId.value = null;
   } catch (err) { notifyError(err.message); }
+}
+
+// Delete every cone in the multi-selection. SSE `cones` deletes rebuild the
+// marker layer, so we only have to fire the requests and clear local state.
+async function deleteSelected() {
+  const ids = [...multiSelectedIds.value];
+  if (ids.length === 0 || editLocked.value) return;
+  if (!confirm(`선택한 콘 ${ids.length}개를 삭제하시겠습니까?`)) return;
+  if (rotateMode.value) exitRotateMode();
+  try {
+    await Promise.all(ids.map((id) => request(`/api/cones/${id}`, { method: "DELETE" })));
+  } catch (err) {
+    notifyError(`콘 삭제 실패: ${err.message}`);
+  }
+  if (ids.includes(selectedConeId.value)) selectedConeId.value = null;
+  multiSelectedIds.value = new Set();
+  updateMultiSelectIcons();
+}
+
+/* ── Rotate selection ─────────────────────────────── */
+// All rotation is geometric on the cone *positions* (cones have no orientation
+// field) — the whole selection spins rigidly around its centroid.
+function selectionCentroid() {
+  const cones = (conesMap.value[activeCourseId.value] || []).filter((c) => multiSelectedIds.value.has(c.id));
+  if (cones.length === 0) return null;
+  let lat = 0, lng = 0;
+  for (const c of cones) { lat += c.lat; lng += c.lng; }
+  return L.latLng(lat / cones.length, lng / cones.length);
+}
+
+function normalizeDeg(d) {
+  d = d % 360;
+  if (d > 180) d -= 360;
+  if (d <= -180) d += 360;
+  return d;
+}
+
+function enterRotateMode() {
+  if (rotateMode.value) { exitRotateMode(); return; }
+  if (editLocked.value) return;
+  if (multiSelectedIds.value.size < 2) { notifyWarn("회전하려면 콘을 2개 이상 선택하세요."); return; }
+  if (toolMode.value !== "none") exitToolMode(); // mutually exclusive with measurement tools
+  rotateMode.value = true;
+  rotateAngle.value = 0;
+  rotateInput.value = "";
+  rebuildAllMarkers();      // drops per-cone draggability while rotating
+  setupRotateHandle();
+}
+
+function exitRotateMode() {
+  if (!rotateMode.value) return;
+  rotateMode.value = false;
+  rotateAngle.value = 0;
+  suppressRebuild = false;
+  teardownRotateHandle();
+  if (map && activeTab.value === "courses") rebuildAllMarkers();
+}
+
+function teardownRotateHandle() {
+  for (const layer of [rotateLine, rotatePivotMarker, rotateHandleMarker]) {
+    if (layer) { try { map.removeLayer(layer); } catch {} }
+  }
+  rotateLine = rotatePivotMarker = rotateHandleMarker = null;
+  rotateStartVectors = null;
+  rotateStartPositions = null;
+}
+
+function setupRotateHandle() {
+  teardownRotateHandle();
+  if (!map) return;
+  rotatePivot = selectionCentroid();
+  if (!rotatePivot) return;
+
+  const pivotPt = map.latLngToContainerPoint(rotatePivot);
+  const handleLatLng = map.containerPointToLatLng(L.point(pivotPt.x, pivotPt.y - ROTATE_RADIUS_PX));
+
+  rotateLine = L.polyline([rotatePivot, handleLatLng], {
+    color: "#38bdf8", weight: 2, dashArray: "4 4", interactive: false,
+  }).addTo(map);
+
+  rotatePivotMarker = L.marker(rotatePivot, {
+    icon: L.divIcon({ className: "", html: `<div class="rotate-pivot"></div>`, iconSize: [14, 14], iconAnchor: [7, 7] }),
+    interactive: false, zIndexOffset: 900,
+  }).addTo(map);
+
+  rotateHandleMarker = L.marker(handleLatLng, {
+    icon: L.divIcon({ className: "", html: `<div class="rotate-handle">↻</div>`, iconSize: [32, 32], iconAnchor: [16, 16] }),
+    draggable: true, zIndexOffset: 1100,
+  }).addTo(map);
+  rotateHandleMarker.on("dragstart", onRotateDragStart);
+  rotateHandleMarker.on("drag", onRotateDrag);
+  rotateHandleMarker.on("dragend", onRotateDragEnd);
+}
+
+function onRotateDragStart() {
+  if (!rotatePivot) return;
+  const pivotPt = map.latLngToContainerPoint(rotatePivot);
+  const hPt = map.latLngToContainerPoint(rotateHandleMarker.getLatLng());
+  rotateStartBearing = Math.atan2(hPt.y - pivotPt.y, hPt.x - pivotPt.x);
+  rotateStartVectors = new Map();
+  rotateStartPositions = new Map();
+  for (const c of (conesMap.value[activeCourseId.value] || [])) {
+    if (!multiSelectedIds.value.has(c.id)) continue;
+    const pt = map.latLngToContainerPoint([c.lat, c.lng]);
+    rotateStartVectors.set(c.id, { x: pt.x - pivotPt.x, y: pt.y - pivotPt.y });
+    rotateStartPositions.set(c.id, { lat: c.lat, lng: c.lng });
+  }
+  suppressRebuild = true; // hold off SSE-driven rebuilds until we commit
+}
+
+function onRotateDrag(e) {
+  if (!rotateStartVectors || !rotatePivot) return;
+  const pivotPt = map.latLngToContainerPoint(rotatePivot);
+  const handleLatLng = rotateHandleMarker.getLatLng();
+  const hPt = map.latLngToContainerPoint(handleLatLng);
+  let delta = Math.atan2(hPt.y - pivotPt.y, hPt.x - pivotPt.x) - rotateStartBearing;
+  let deg = delta * 180 / Math.PI;
+  if (e?.originalEvent?.shiftKey) { deg = Math.round(deg / 5) * 5; delta = deg * Math.PI / 180; } // Shift → 5° steps
+  rotateAngle.value = normalizeDeg(deg);
+
+  const cos = Math.cos(delta), sin = Math.sin(delta);
+  for (const [id, v] of rotateStartVectors) {
+    const nx = v.x * cos - v.y * sin;
+    const ny = v.x * sin + v.y * cos;
+    const m = markers[`${activeCourseId.value}-${id}`];
+    if (m) m.setLatLng(map.containerPointToLatLng(L.point(pivotPt.x + nx, pivotPt.y + ny)));
+  }
+  if (rotateLine) rotateLine.setLatLngs([rotatePivot, handleLatLng]);
+}
+
+async function onRotateDragEnd() {
+  if (!rotateStartVectors) return;
+  const startPositions = rotateStartPositions;
+  const updates = [];
+  for (const [id] of rotateStartVectors) {
+    const m = markers[`${activeCourseId.value}-${id}`];
+    if (m) { const { lat, lng } = m.getLatLng(); updates.push({ id, lat, lng }); }
+  }
+  rotateStartVectors = null;
+  rotateStartPositions = null;
+
+  try {
+    await Promise.all(updates.map((u) =>
+      request(`/api/cones/${u.id}`, { method: "PATCH", body: JSON.stringify({ lat: u.lat, lng: u.lng }) })
+    ));
+  } catch (err) {
+    notifyError(`콘 회전 저장 실패: ${err.message}`);
+    for (const [id, p] of (startPositions || [])) {
+      const m = markers[`${activeCourseId.value}-${id}`];
+      if (m) m.setLatLng([p.lat, p.lng]);
+    }
+  }
+  suppressRebuild = false;
+  rotateAngle.value = 0;
+  rebuildAllMarkers();
+  if (rotateMode.value) setupRotateHandle(); // re-anchor handle to the new centroid
+}
+
+// Rotate the selection by an exact angle (clockwise positive) typed into the panel.
+async function rotateByDegrees(deg) {
+  if (editLocked.value || multiSelectedIds.value.size < 2 || !map) return;
+  const pivot = selectionCentroid();
+  if (!pivot) return;
+  const pivotPt = map.latLngToContainerPoint(pivot);
+  const delta = deg * Math.PI / 180;
+  const cos = Math.cos(delta), sin = Math.sin(delta);
+  const cones = (conesMap.value[activeCourseId.value] || []).filter((c) => multiSelectedIds.value.has(c.id));
+  const startPositions = cones.map((c) => ({ id: c.id, lat: c.lat, lng: c.lng }));
+  const updates = [];
+  for (const c of cones) {
+    const pt = map.latLngToContainerPoint([c.lat, c.lng]);
+    const vx = pt.x - pivotPt.x, vy = pt.y - pivotPt.y;
+    const nx = vx * cos - vy * sin, ny = vx * sin + vy * cos;
+    const ll = map.containerPointToLatLng(L.point(pivotPt.x + nx, pivotPt.y + ny));
+    updates.push({ id: c.id, lat: ll.lat, lng: ll.lng });
+  }
+  suppressRebuild = true;
+  for (const u of updates) { const m = markers[`${activeCourseId.value}-${u.id}`]; if (m) m.setLatLng([u.lat, u.lng]); }
+  try {
+    await Promise.all(updates.map((u) =>
+      request(`/api/cones/${u.id}`, { method: "PATCH", body: JSON.stringify({ lat: u.lat, lng: u.lng }) })
+    ));
+  } catch (err) {
+    notifyError(`콘 회전 저장 실패: ${err.message}`);
+    for (const p of startPositions) { const m = markers[`${activeCourseId.value}-${p.id}`]; if (m) m.setLatLng([p.lat, p.lng]); }
+  }
+  suppressRebuild = false;
+  rebuildAllMarkers();
+  if (rotateMode.value) setupRotateHandle();
+}
+
+function applyRotateInput() {
+  const deg = parseFloat(rotateInput.value);
+  if (isNaN(deg) || deg === 0) return;
+  rotateByDegrees(deg);
+  rotateInput.value = "";
+}
+
+/* ── Measurement tools (ruler / protractor) ───────── */
+// Local metric scale at a latitude — longitude degrees shrink by cos(lat), so a
+// raw lat/lng angle/length would be skewed. Used for the protractor's true angle.
+const M_PER_DEG_LAT = 111320;
+function mPerDegLng(lat) { return M_PER_DEG_LAT * Math.cos(lat * Math.PI / 180); }
+
+// Angle (deg, 0–180) at `vertex` between the rays to `a` and `c`.
+function angleAtVertex(vertex, a, c) {
+  const mLng = mPerDegLng(vertex.lat);
+  const v1 = { x: (a.lng - vertex.lng) * mLng, y: (a.lat - vertex.lat) * M_PER_DEG_LAT };
+  const v2 = { x: (c.lng - vertex.lng) * mLng, y: (c.lat - vertex.lat) * M_PER_DEG_LAT };
+  const m1 = Math.hypot(v1.x, v1.y), m2 = Math.hypot(v2.x, v2.y);
+  if (m1 < 1e-9 || m2 < 1e-9) return 0;
+  const cos = Math.max(-1, Math.min(1, (v1.x * v2.x + v1.y * v2.y) / (m1 * m2)));
+  return Math.acos(cos) * 180 / Math.PI;
+}
+
+function fmtDist(m) {
+  return m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${m.toFixed(2)} m`;
+}
+
+function enterToolMode(mode) {
+  if (toolMode.value === mode) { exitToolMode(); return; }
+  if (rotateMode.value) exitRotateMode();
+  // Measuring is its own mode — drop any selection so its icons/handles don't distract.
+  if (multiSelectedIds.value.size > 0) { multiSelectedIds.value = new Set(); updateMultiSelectIcons(); }
+  selectedConeId.value = null;
+  toolMode.value = mode;
+  if (!measureLayer) measureLayer = L.layerGroup();
+  measureLayer.addTo(map);
+  resetMeasure();
+  rebuildAllMarkers(); // suspend per-cone drag while a tool is active
+}
+
+function exitToolMode() {
+  if (toolMode.value === "none") return;
+  toolMode.value = "none";
+  measurePoints = [];
+  if (measureLayer) { measureLayer.clearLayers(); try { map.removeLayer(measureLayer); } catch {} }
+  measureResult.value = "";
+  measureHint.value = "";
+  if (map && activeTab.value === "courses") rebuildAllMarkers();
+}
+
+function resetMeasure() {
+  measurePoints = [];
+  if (measureLayer) measureLayer.clearLayers();
+  measureResult.value = "";
+  updateMeasureHint();
+}
+
+function updateMeasureHint() {
+  if (toolMode.value === "ruler") {
+    measureHint.value = measurePoints.length === 0
+      ? "콘을 차례로 탭해 거리를 잽니다."
+      : "다음 콘을 탭하면 구간이 이어집니다.";
+  } else if (toolMode.value === "protractor") {
+    const steps = ["첫 번째 콘을 탭하세요.", "꼭짓점(가운데) 콘을 탭하세요.", "세 번째 콘을 탭하세요.", "측정 완료 — 탭하면 새로 시작합니다."];
+    measureHint.value = steps[Math.min(measurePoints.length, 3)];
+  } else {
+    measureHint.value = "";
+  }
+}
+
+// Snap a tap to the nearest active-course cone within `maxPx` screen pixels.
+function nearestCone(latlng, maxPx = 24) {
+  const cones = conesMap.value[activeCourseId.value] || [];
+  if (!cones.length || !map) return null;
+  const p = map.latLngToContainerPoint(latlng);
+  let best = null, bestD = maxPx;
+  for (const c of cones) {
+    const d = p.distanceTo(map.latLngToContainerPoint([c.lat, c.lng]));
+    if (d <= bestD) { bestD = d; best = c; }
+  }
+  return best;
+}
+
+function measureDot(latlng) {
+  return L.marker(latlng, {
+    icon: L.divIcon({ className: "", html: `<div class="measure-dot"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }),
+    interactive: false, zIndexOffset: 1200,
+  });
+}
+
+function measureLabel(latlng, text, cls) {
+  return L.marker(latlng, {
+    icon: L.divIcon({ className: "", html: `<div class="measure-label${cls ? " " + cls : ""}">${text}</div>`, iconSize: [0, 0] }),
+    interactive: false, zIndexOffset: 1250,
+  });
+}
+
+function handleMeasureClick(latlng) {
+  if (toolMode.value === "ruler") handleRulerClick(latlng);
+  else if (toolMode.value === "protractor") handleProtractorClick(latlng);
+}
+
+function handleRulerClick(latlng) {
+  measurePoints.push(latlng);
+  measureDot(latlng).addTo(measureLayer);
+  const n = measurePoints.length;
+  if (n >= 2) {
+    const a = measurePoints[n - 2], b = measurePoints[n - 1];
+    L.polyline([a, b], { color: "#22d3ee", weight: 3 }).addTo(measureLayer);
+    const seg = haversine(a, b);
+    measureLabel(L.latLng((a.lat + b.lat) / 2, (a.lng + b.lng) / 2), fmtDist(seg)).addTo(measureLayer);
+    let total = 0;
+    for (let i = 1; i < measurePoints.length; i++) total += haversine(measurePoints[i - 1], measurePoints[i]);
+    measureResult.value = n > 2 ? `구간 ${fmtDist(seg)} · 합계 ${fmtDist(total)}` : fmtDist(seg);
+  }
+  updateMeasureHint();
+}
+
+function handleProtractorClick(latlng) {
+  if (measurePoints.length >= 3) resetMeasure(); // 4th tap starts a fresh measurement
+  measurePoints.push(latlng);
+  measureDot(latlng).addTo(measureLayer);
+  if (measurePoints.length === 2) {
+    L.polyline([measurePoints[0], measurePoints[1]], { color: "#f59e0b", weight: 3 }).addTo(measureLayer);
+  } else if (measurePoints.length === 3) {
+    const [a, b, c] = measurePoints; // b is the vertex
+    L.polyline([b, c], { color: "#f59e0b", weight: 3 }).addTo(measureLayer);
+    const ang = angleAtVertex(b, a, c);
+    const { arc, labelAt } = angleArc(b, a, c);
+    L.polyline(arc, { color: "#fbbf24", weight: 2 }).addTo(measureLayer);
+    measureLabel(labelAt, `${ang.toFixed(1)}°`, "angle").addTo(measureLayer);
+    measureResult.value = `∠ ${ang.toFixed(1)}°`;
+  }
+  updateMeasureHint();
+}
+
+// Arc swept from ray b→a to ray b→c (the short way, ≤180°) plus a label anchor
+// just outside it on the bisector, all in pixel space so it tracks the screen.
+function angleArc(vertex, a, c, radiusPx = 36) {
+  const vp = map.latLngToContainerPoint(vertex);
+  const ap = map.latLngToContainerPoint(a);
+  const cp = map.latLngToContainerPoint(c);
+  const a1 = Math.atan2(ap.y - vp.y, ap.x - vp.x);
+  const a2 = Math.atan2(cp.y - vp.y, cp.x - vp.x);
+  let diff = a2 - a1;
+  while (diff <= -Math.PI) diff += 2 * Math.PI;
+  while (diff > Math.PI) diff -= 2 * Math.PI;
+  const steps = 28, arc = [];
+  for (let i = 0; i <= steps; i++) {
+    const ang = a1 + diff * (i / steps);
+    arc.push(map.containerPointToLatLng(L.point(vp.x + radiusPx * Math.cos(ang), vp.y + radiusPx * Math.sin(ang))));
+  }
+  const bis = a1 + diff / 2;
+  const labelAt = map.containerPointToLatLng(L.point(vp.x + (radiusPx + 22) * Math.cos(bis), vp.y + (radiusPx + 22) * Math.sin(bis)));
+  return { arc, labelAt };
 }
 
 function panToCone(cone) {
@@ -2681,13 +3087,28 @@ function onChipStripScroll() {
 }
 
 function onGlobalKeydown(e) {
-  if (e.key !== "Escape") return;
-  // Highest-open modal wins; others remain so a stack of prompts collapses one level at a time.
-  if (showLogs.value) { showLogs.value = false; e.preventDefault(); return; }
-  if (showSnapshots.value) { showSnapshots.value = false; e.preventDefault(); return; }
-  if (showBatteryCal.value) { showBatteryCal.value = false; e.preventDefault(); return; }
-  if (showCalibration.value) { closeCalibration(); e.preventDefault(); return; }
-  if (showPreflight.value) { cancelPreflight(); e.preventDefault(); return; }
+  if (e.key === "Escape") {
+    // Highest-open modal wins; others remain so a stack of prompts collapses one level at a time.
+    if (showLogs.value) { showLogs.value = false; e.preventDefault(); return; }
+    if (showSnapshots.value) { showSnapshots.value = false; e.preventDefault(); return; }
+    if (showBatteryCal.value) { showBatteryCal.value = false; e.preventDefault(); return; }
+    if (showCalibration.value) { closeCalibration(); e.preventDefault(); return; }
+    if (showPreflight.value) { cancelPreflight(); e.preventDefault(); return; }
+    // Then back out of the editing modes.
+    if (rotateMode.value) { exitRotateMode(); e.preventDefault(); return; }
+    if (toolMode.value !== "none") { exitToolMode(); e.preventDefault(); return; }
+    return;
+  }
+  // Delete key removes the multi-selection (ignored while typing in a field).
+  if (e.key === "Delete") {
+    const t = e.target;
+    const tag = t && t.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return;
+    if (activeTab.value === "courses" && !editLocked.value && multiSelectedIds.value.size > 0) {
+      e.preventDefault();
+      deleteSelected();
+    }
+  }
 }
 
 /* ── Lifecycle ────────────────────────────────────── */
@@ -2729,6 +3150,8 @@ onUnmounted(() => {
   if (followTimer != null) clearTimeout(followTimer);
   if (eventSource) eventSource.close();
   if (map) {
+    teardownRotateHandle();
+    if (measureLayer) { try { map.removeLayer(measureLayer); } catch {} }
     map.getContainer().removeEventListener("mousedown", onSelectionStart);
     map.remove();
   }
@@ -3143,6 +3566,36 @@ onUnmounted(() => {
                 aria-label="로버 위치로 콘 추가"
                 title="로버 GPS 위치로 콘 추가"
               >{{ roverLoading ? '⏳' : '📍' }}</button>
+              <span class="fab-sep"></span>
+              <!-- Measurement tools — read-only, available even when editing is locked. -->
+              <button
+                :class="['fab-icon-btn', 'fab-tool', { active: toolMode === 'ruler' }]"
+                @click="enterToolMode('ruler')"
+                aria-label="거리 측정"
+                title="자 — 콘 사이 거리 측정"
+              >📏</button>
+              <button
+                :class="['fab-icon-btn', 'fab-tool', { active: toolMode === 'protractor' }]"
+                @click="enterToolMode('protractor')"
+                aria-label="각도 측정"
+                title="각도기 — 콘 3개의 각도 측정"
+              >📐</button>
+            </div>
+
+            <!-- Rotation angle HUD — visible while rotating so the operator can stop at an exact angle. -->
+            <div v-if="rotateMode" class="rotate-hud">
+              <span class="rotate-hud-icon">{{ rotateDirIcon }}</span>
+              <span class="rotate-hud-val">{{ rotateAngleAbs }}°</span>
+              <span class="rotate-hud-hint">핸들을 돌려 회전 · Shift: 5° 단위</span>
+            </div>
+
+            <!-- Measurement tool overlay (distance / angle). -->
+            <div v-if="toolMode !== 'none'" class="map-overlay map-overlay-row measure-overlay">
+              <span class="measure-tool-name">{{ toolMode === 'ruler' ? '📏 거리' : '📐 각도' }}</span>
+              <span class="measure-hint">{{ measureHint }}</span>
+              <span v-if="measureResult" class="measure-result">{{ measureResult }}</span>
+              <button class="btn btn-ghost btn-sm" @click="resetMeasure">초기화</button>
+              <button class="btn btn-ghost btn-sm" @click="exitToolMode">닫기</button>
             </div>
           </div>
 
@@ -3232,9 +3685,22 @@ onUnmounted(() => {
 
                   <div v-if="multiSelectedIds.size > 0" class="inspector-group selected">
                     <div class="group-title">{{ multiSelectedIds.size }}개 선택됨</div>
+                    <p class="multi-select-hint" v-if="!editLocked">드래그로 이동 · 회전 · 삭제(Del)</p>
+                    <p class="multi-select-hint locked-note" v-else>🔒 편집 잠김 — 이동·회전·삭제 불가</p>
                     <div class="edit-buttons">
-                      <span class="multi-select-hint">드래그로 일괄 이동</span>
+                      <button
+                        :class="['btn', 'btn-lg-touch', rotateMode ? 'btn-primary' : 'btn-ghost']"
+                        :disabled="editLocked || multiSelectedIds.size < 2"
+                        @click="enterRotateMode"
+                        title="선택한 콘을 중심점 기준으로 회전"
+                      >{{ rotateMode ? '회전 종료' : '회전' }}</button>
+                      <button class="btn btn-danger btn-lg-touch" :disabled="editLocked" @click="deleteSelected">삭제 ({{ multiSelectedIds.size }})</button>
                       <button class="btn btn-ghost btn-lg-touch" @click="clearMultiSelection">선택 해제</button>
+                    </div>
+                    <div v-if="rotateMode" class="rotate-controls">
+                      <label>정확한 각도</label>
+                      <input v-model="rotateInput" type="number" step="any" placeholder="시계방향 +, 예: 90" @keyup.enter="applyRotateInput" />
+                      <button class="btn btn-ghost btn-sm" @click="applyRotateInput">적용</button>
                     </div>
                   </div>
 
@@ -3991,6 +4457,7 @@ onUnmounted(() => {
 .map-fab-panel {
   position: absolute; bottom: 1.5rem; right: 0.75rem; z-index: 500;
   display: flex; align-items: center; gap: 0.4rem;
+  flex-wrap: wrap; justify-content: flex-end; max-width: calc(100vw - 1.5rem);
   background: rgba(17, 24, 39, 0.82); backdrop-filter: blur(4px);
   padding: 0.4rem; border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -3999,6 +4466,7 @@ onUnmounted(() => {
 }
 .map-fab-panel .side-toggle { flex: none; gap: 0.25rem; }
 .map-fab-panel .side-btn { min-width: 34px; padding: 0.35rem 0.5rem; }
+.fab-sep { width: 1px; align-self: stretch; margin: 0.1rem 0.15rem; background: rgba(255, 255, 255, 0.18); }
 .fab-icon-btn {
   flex: none; width: 38px; height: 38px;
   display: flex; align-items: center; justify-content: center;
@@ -4012,6 +4480,31 @@ onUnmounted(() => {
   background: color-mix(in srgb, #f59e0b 22%, var(--bg-secondary));
 }
 .fab-rover { border-color: var(--accent-primary); }
+.fab-tool.active {
+  border-color: #38bdf8;
+  background: color-mix(in srgb, #38bdf8 24%, var(--bg-secondary));
+}
+
+/* Live rotation angle readout — pinned top-centre of the map while rotating. */
+.rotate-hud {
+  position: absolute; top: 1rem; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: baseline; gap: 0.5rem; z-index: 600;
+  background: rgba(8, 15, 30, 0.88); border: 1px solid #38bdf8; border-radius: 10px;
+  padding: 0.4rem 0.9rem; pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.rotate-hud-icon { font-size: 1.1rem; color: #38bdf8; }
+.rotate-hud-val { font-size: 1.6rem; font-weight: 700; color: #fff; }
+.rotate-hud-hint { font-size: 0.72rem; color: var(--text-secondary); }
+.rotate-controls { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; }
+.rotate-controls label { font-size: 0.78rem; color: var(--text-secondary); white-space: nowrap; }
+.rotate-controls input { flex: 1; min-width: 0; }
+
+/* Measurement tool overlay (distance / angle), top-centre of the map. */
+.measure-overlay { top: 1rem; }
+.measure-tool-name { font-weight: 700; white-space: nowrap; }
+.measure-hint { color: #cbd5e1; font-size: 0.82rem; }
+.measure-result { font-weight: 700; color: #22d3ee; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 .coord-popover-body {
   font-family: "JetBrains Mono", monospace;
@@ -4549,7 +5042,8 @@ onUnmounted(() => {
 .coord-inputs input:focus, .coord-inputs select:focus { outline: none; border-color: var(--accent-primary); }
 
 .edit-buttons { display: flex; gap: 0.5rem; margin-top: 0.5rem; align-items: center; }
-.multi-select-hint { font-size: 0.8rem; color: var(--text-secondary); flex: 1; }
+.multi-select-hint { font-size: 0.8rem; color: var(--text-secondary); flex: 1; margin: 0 0 0.4rem; }
+.multi-select-hint.locked-note { color: #f59e0b; font-weight: 600; }
 .edit-section { background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-primary)); }
 
 /* Cone list */
@@ -4754,4 +5248,30 @@ onUnmounted(() => {
   border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
 }
 .rover-tooltip::before { border-top-color: #a855f7; }
+
+/* Rotation handle/pivot + measurement overlays are drawn into Leaflet's DOM via
+   L.divIcon, so they live outside the component's scoped styles. */
+.rotate-pivot {
+  width: 14px; height: 14px; border-radius: 50%; box-sizing: border-box;
+  border: 2px solid #38bdf8; background: rgba(56, 189, 248, 0.35);
+}
+.rotate-handle {
+  width: 32px; height: 32px; border-radius: 50%; box-sizing: border-box;
+  border: 2px solid #38bdf8; background: #0b1220; color: #38bdf8;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; line-height: 1; cursor: grab;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+}
+.rotate-handle:active { cursor: grabbing; }
+.measure-dot {
+  width: 12px; height: 12px; border-radius: 50%; box-sizing: border-box;
+  background: #fff; border: 2px solid #0ea5e9; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+.measure-label {
+  position: absolute; transform: translate(-50%, -50%); white-space: nowrap;
+  background: rgba(8, 15, 30, 0.92); color: #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 6px;
+  padding: 1px 6px; font: 600 12px/1.3 "JetBrains Mono", ui-monospace, monospace;
+}
+.measure-label.angle { color: #fbbf24; border-color: #f59e0b; }
 </style>
