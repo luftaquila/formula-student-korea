@@ -54,10 +54,120 @@ jobs:
           path: test-results.xml
           reporter: java-junit
 
+  # Decide which service images each e2e shard must build vs pull. main's CI
+  # (build.yml) publishes ghcr.io/<repo>/<svc>:latest for every service, so a
+  # shard only needs to build services whose code differs from main; the rest
+  # are pulled. A change to shared/, Dockerfile.service or entrypoint.sh rebuilds
+  # everything (all service images depend on them); landing/ rebuilds caddy.
+  changes:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      bake_targets: ${{ steps.plan.outputs.bake_targets }}
+      pull_std: ${{ steps.plan.outputs.pull_std }}
+      pull_caddy: ${{ steps.plan.outputs.pull_caddy }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            shared:
+              - 'shared/**'
+            dockerfile-service:
+              - 'Dockerfile.service'
+              - 'entrypoint.sh'
+            landing:
+              - 'landing/**'
+            auth:
+              - 'auth/**'
+            entry:
+              - 'entry/**'
+            queue:
+              - 'queue/**'
+            inspection:
+              - 'inspection/**'
+            traffic:
+              - 'traffic/**'
+            score:
+              - 'score/**'
+            documents:
+              - 'documents/**'
+            course:
+              - 'course/**'
+
+      - name: Plan builds vs pulls
+        id: plan
+        env:
+          SHARED: ${{ steps.filter.outputs.shared }}
+          DOCKERFILE_SVC: ${{ steps.filter.outputs.dockerfile-service }}
+          LANDING: ${{ steps.filter.outputs.landing }}
+          F_AUTH: ${{ steps.filter.outputs.auth }}
+          F_ENTRY: ${{ steps.filter.outputs.entry }}
+          F_QUEUE: ${{ steps.filter.outputs.queue }}
+          F_INSPECTION: ${{ steps.filter.outputs.inspection }}
+          F_TRAFFIC: ${{ steps.filter.outputs.traffic }}
+          F_SCORE: ${{ steps.filter.outputs.score }}
+          F_DOCUMENTS: ${{ steps.filter.outputs.documents }}
+          F_COURSE: ${{ steps.filter.outputs.course }}
+        run: |
+          declare -A F=(
+            [auth]="$F_AUTH" [entry]="$F_ENTRY" [queue]="$F_QUEUE"
+            [inspection]="$F_INSPECTION" [traffic]="$F_TRAFFIC" [score]="$F_SCORE"
+            [documents]="$F_DOCUMENTS" [course]="$F_COURSE"
+          )
+          STD=(auth entry queue inspection traffic score documents course)
+          rebuild_all=false
+          if [ "$SHARED" = "true" ] || [ "$DOCKERFILE_SVC" = "true" ]; then rebuild_all=true; fi
+          build=(); pull=()
+          for svc in "${STD[@]}"; do
+            if [ "$rebuild_all" = "true" ] || [ "${F[$svc]}" = "true" ]; then
+              build+=("$svc")
+            else
+              pull+=("$svc")
+            fi
+          done
+          targets=("${build[@]}")
+          if [ "$LANDING" = "true" ] || [ "$SHARED" = "true" ]; then
+            targets+=("caddy-local"); pull_caddy=false
+          else
+            pull_caddy=true
+          fi
+          bake=$(IFS=,; echo "${targets[*]}")
+          pull_std=$(IFS=' '; echo "${pull[*]}")
+          echo "bake_targets=$bake" >> "$GITHUB_OUTPUT"
+          echo "pull_std=$pull_std" >> "$GITHUB_OUTPUT"
+          echo "pull_caddy=$pull_caddy" >> "$GITHUB_OUTPUT"
+          echo "Plan: build=[$bake]  pull_std=[$pull_std]  pull_caddy=$pull_caddy"
+
   e2e:
+    needs: changes
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Shard the e2e run across parallel jobs, each on its own docker stack.
+        # --no-deps skips dependency projects (data comes from global-setup, not
+        # upstream tests), so auth/entry aren't re-run per shard. Co-located only
+        # where safe: queue+traffic and inspection+documents already run
+        # concurrently today (entry-deps siblings); score+entry touch disjoint
+        # services (score is kept away from traffic/inspection, whose data it
+        # aggregates). auth and cross-service run isolated: cross-service's
+        # multi-service load broke auth's log-aggregation page when co-located.
+        include:
+          - shard: auth
+            projects: --project=auth
+          - shard: cross-service
+            projects: --project=cross-service
+          - shard: queue-traffic
+            projects: --project=queue --project=traffic
+          - shard: inspection-documents
+            projects: --project=inspection --project=documents
+          - shard: score-entry
+            projects: --project=score --project=entry
 
     steps:
       - uses: actions/checkout@v6
@@ -87,13 +197,26 @@ jobs:
         with:
           driver-opts: network=host
 
-      - name: Build images with cache
+      # Pull prebuilt :latest for services unchanged vs main; build only changed
+      # ones below. This is the wall-clock win: a test-only change pulls every
+      # image and builds nothing.
+      - name: Pull prebuilt images for unchanged services
+        run: |
+          if [ -n "${{ needs.changes.outputs.pull_std }}" ]; then
+            docker compose pull ${{ needs.changes.outputs.pull_std }}
+          fi
+          if [ "${{ needs.changes.outputs.pull_caddy }}" = "true" ]; then
+            docker compose --profile local pull caddy-local
+          fi
+
+      - name: Build changed images
+        if: needs.changes.outputs.bake_targets != ''
         uses: docker/bake-action@v7
         env:
           DOCKER_BUILD_SUMMARY: false
         with:
           files: compose.yml
-          targets: auth,entry,queue,inspection,traffic,score,documents,course,caddy-local
+          targets: ${{ needs.changes.outputs.bake_targets }}
           set: |
             *.cache-from=type=gha,scope=e2e
             *.cache-to=type=gha,scope=e2e,mode=min
@@ -138,7 +261,7 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit == 'true'
 
       - name: Run E2E tests
-        run: npx playwright test
+        run: npx playwright test --no-deps ${{ matrix.projects }}
 
       - name: Save Playwright cache
         uses: actions/cache/save@v5
@@ -150,7 +273,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: playwright-report/
           retention-days: 7
 
@@ -158,7 +281,7 @@ jobs:
         uses: dorny/test-reporter@v3
         if: always()
         with:
-          name: E2E Tests
+          name: E2E Tests (${{ matrix.shard }})
           path: e2e-results.xml
           reporter: java-junit
 
