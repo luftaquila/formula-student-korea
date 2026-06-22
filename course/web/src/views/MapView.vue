@@ -193,9 +193,13 @@ const FIX_STATUS_META = {
 
 const fixChip = computed(() => {
   const s = roverStatus.value;
-  if (!s.connected || !s.fix_status) return null;
-  const label = s.fix_status.replace(/_/g, " ").toUpperCase();
-  const meta = FIX_STATUS_META[s.fix_status] || { tone: "bad" };
+  if (!s.connected) return null;
+  // GPS may be down (no fix_status reported). Still show the chip in an error
+  // state with the cause in the popover instead of hiding it — a missing chip
+  // reads as "no GPS feature" rather than "GPS not working".
+  const hasFix = !!s.fix_status;
+  const label = hasFix ? s.fix_status.replace(/_/g, " ").toUpperCase() : "NO GPS";
+  const meta = hasFix ? (FIX_STATUS_META[s.fix_status] || { tone: "bad" }) : { tone: "bad" };
   // Stale position during an active mission is a hard fail signal — operator
   // needs to see the chip degrade even when the latched fix_status looks fine.
   // 5s warn / 15s bad are aligned with the existing UPDATE-row thresholds in
@@ -209,6 +213,7 @@ const fixChip = computed(() => {
   else if (stale) tone = tone === "ok" ? "warn" : tone;
   // [key, value, valTone?] — valTone (optional) colors the value text.
   const rows = [["MODE", label, tone]];
+  if (!hasFix) rows.push(["GPS", "신호 없음", "bad"]);
   if (s.last_position?.lat != null && s.last_position?.lng != null) {
     rows.push(["POS", `${s.last_position.lat.toFixed(6)}, ${s.last_position.lng.toFixed(6)}`]);
   }
@@ -506,15 +511,6 @@ const remainingDistanceM = computed(() => {
   if (roverMode.value !== "executing") return null;
   if (pathTotalDist <= 0) return null;
   return pathTotalDist * Math.max(0, (100 - pathProgress.value) / 100);
-});
-
-const roverStatusClass = computed(() => {
-  const s = roverStatus.value;
-  if (!s.connected) return "rover-badge-off";
-  const lowBattery = s.battery && s.battery.percent != null && s.battery.percent <= BATTERY_WARN_PERCENT;
-  if (lowBattery) return "rover-badge-warn";
-  if (s.fix_status === "rtk_fixed" && s.ntrip_connected !== false) return "rover-badge-ok";
-  return "rover-badge-warn";
 });
 
 // Inspector (desktop right panel)
@@ -3046,6 +3042,46 @@ watch(activeTab, (tab) => {
   if (tab !== "rover" && cameraOn.value) stopCameraStream();
 });
 
+/* ── Camera health chip ───────────────────────────────
+   A persistent diagnostic chip in the status strip, independent of the live
+   stream: polls the camera status endpoint while the rover is connected so the
+   operator can see camera health WITHOUT opening the stream. */
+const cameraStatus = ref(null); // { camera_connected, viewers, last_frame_age_ms } | null
+let cameraChipPoll = null;
+
+async function pollCameraChipStatus() {
+  if (!roverStatus.value.connected) { cameraStatus.value = null; return; }
+  try {
+    const res = await request("/api/rover/camera/status", { method: "GET" });
+    cameraStatus.value = await res.json();
+  } catch { /* keep last known state */ }
+}
+
+const cameraChip = computed(() => {
+  if (!roverStatus.value.connected) return null;
+  const cs = cameraStatus.value;
+  if (!cs) return { tone: "neutral", label: "확인 중", rows: [["상태", "상태 확인 중…"]] };
+  const ageMs = cs.last_frame_age_ms;
+  const fresh = ageMs != null && ageMs < 3000;
+  const rows = [];
+  let tone, label;
+  if (!cs.camera_connected) {
+    tone = "bad"; label = "오프라인";
+    rows.push(["연결", "카메라 스트리머 오프라인", "bad"]);
+    rows.push(["원인", "로버 카메라·perception 컨테이너 확인", "bad"]);
+  } else if (!fresh) {
+    tone = "warn"; label = "신호 없음";
+    rows.push(["연결", "스트리머 온라인", "ok"]);
+    rows.push(["프레임", ageMs == null ? "수신된 프레임 없음" : `${(ageMs / 1000).toFixed(1)}s 지연`, "bad"]);
+  } else {
+    tone = "ok"; label = cameraOn.value ? "스트리밍" : "정상";
+    rows.push(["연결", "스트리머 온라인", "ok"]);
+    rows.push(["프레임", `${(ageMs / 1000).toFixed(1)}s 전`, "ok"]);
+  }
+  rows.push(["시청자", `${cs.viewers ?? 0}명`]);
+  return { tone, label, rows };
+});
+
 async function setDispenserPosition(position) {
   if (dispenserBusy.value) return;
   dispenserBusy.value = true;
@@ -3438,6 +3474,8 @@ onMounted(async () => {
   }
   connectSSE();
   fetchRoverStatus();
+  pollCameraChipStatus();
+  cameraChipPoll = setInterval(pollCameraChipStatus, 3000);
 });
 
 onUnmounted(() => {
@@ -3452,6 +3490,7 @@ onUnmounted(() => {
   if (uiTickInterval) clearInterval(uiTickInterval);
   if (controlInterval) clearInterval(controlInterval);
   if (cameraStatusPoll) clearInterval(cameraStatusPoll);
+  if (cameraChipPoll) clearInterval(cameraChipPoll);
   if (calStatusPollHandle) clearInterval(calStatusPollHandle);
   if (ledBrightnessTimer) clearTimeout(ledBrightnessTimer);
   if (followTimer != null) clearTimeout(followTimer);
@@ -3712,11 +3751,10 @@ onUnmounted(() => {
 
         <!-- Persistent status strip (always visible across tabs) -->
         <div
-          :class="['status-strip', roverStatusClass]"
+          class="status-strip"
           @scroll.passive="onChipStripScroll"
         >
           <template v-if="!roverStatus.connected">
-            <span class="status-dot"></span>
             <span
               :class="['chip-wrapper', { active: activeChipPopover === 'disconnect' }]"
               @click.stop="toggleChipPopover('disconnect', $event)"
@@ -3732,7 +3770,6 @@ onUnmounted(() => {
 
           <!-- Connected: three zones (primary / mission / vitals) of chips -->
           <template v-else>
-            <span class="status-dot"></span>
             <div class="chip-row primary-zone">
               <span
                 v-if="fixChip"
@@ -3815,6 +3852,17 @@ onUnmounted(() => {
                 </span>
               </span>
             </div>
+            <!-- Camera health — persistent diagnostic chip at the end of the strip. -->
+            <span
+              v-if="cameraChip"
+              :class="['chip-wrapper', { active: activeChipPopover === 'camera' }]"
+              @click.stop="toggleChipPopover('camera', $event)"
+            >
+              <span :class="['chip', `chip-${cameraChip.tone}`]">📷 {{ cameraChip.label }}</span>
+              <span class="chip-popover" :style="popoverStyle">
+                <span class="popover-row" v-for="r in cameraChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span :class="['popover-val', r[2] && `popover-val-${r[2]}`]">{{ r[1] }}</span></span>
+              </span>
+            </span>
           </template>
 
         </div>
@@ -4200,15 +4248,15 @@ onUnmounted(() => {
                        the stream tells the rover to start capturing; closing it
                        stops capture. Useful for manual driving / clearing an
                        obstacle while paused. -->
-                  <div v-if="roverStatus.connected" class="rover-controls">
+                  <div v-if="roverStatus.connected" class="rover-controls rover-controls-grid">
                     <button
                       :class="['btn', 'btn-lg-touch', cameraOn ? 'btn-primary' : 'btn-ghost']"
                       @click="toggleCamera"
-                    >{{ cameraOn ? '📷 카메라 끄기' : '📷 카메라' }}</button>
+                    >{{ cameraOn ? '카메라 끄기' : '카메라' }}</button>
                   </div>
                   <div v-if="cameraOn" class="camera-view">
                     <img v-if="cameraStreamUrl" :src="cameraStreamUrl" alt="rover camera" @error="onCameraError" />
-                    <div v-if="cameraError" class="camera-error">카메라 신호 없음 (로버에 카메라가 연결됐는지 확인)</div>
+                    <div v-if="cameraError" class="camera-error">카메라 신호 없음</div>
                   </div>
 
                   <div v-if="pathDistance > 0" class="path-info">
@@ -4405,8 +4453,7 @@ onUnmounted(() => {
   display: flex; align-items: center; gap: 0.75rem;
   /* Uniform 0.75rem between every chip (matches .chip-row gap) so spacing is
      consistent whether two chips share a zone or straddle a zone boundary,
-     with comfortable breathing room. Left padding keeps the dot↔first-chip
-     distance balanced (gap 0.75 + dot mr 0.5 = 1.25rem). */
+     with comfortable breathing room. */
   padding: 0.875rem 1.25rem;
   border-bottom: 1px solid var(--border-primary);
   background: var(--bg-primary); color: var(--text-primary);
@@ -4416,14 +4463,6 @@ onUnmounted(() => {
   position: relative;
   z-index: 999;
 }
-.status-dot {
-  width: 10px; height: 10px; border-radius: 50%;
-  background: #94a3b8; flex-shrink: 0;
-  margin-right: 0.5rem;
-}
-.status-strip.rover-badge-ok .status-dot { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
-.status-strip.rover-badge-warn .status-dot { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
-.status-strip.rover-badge-off .status-dot { background: #94a3b8; }
 
 .chip-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .primary-zone { flex: 0 1 auto; }
