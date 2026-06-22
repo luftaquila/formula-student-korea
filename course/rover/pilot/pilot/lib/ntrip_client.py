@@ -289,10 +289,24 @@ class NTRIPClient:
         self._last_error = None
         self._log_info(f"Connected to NTRIP {self._host}:{self._port}/{self._mountpoint}")
 
+    def _reconnect_delay(self):
+        """Backoff before the next reconnect attempt, from self._fail_count.
+
+        Exponential: 1, 2, 4, 8, 16, 32, 60s (1s base, capped at 60s). A
+        transient Wi-Fi blip mid-mission drops this socket → corrections stop →
+        the receiver falls to rtk_float/3d_fix and the navigator HALTS (it
+        requires rtk_fixed). The old 5s base + 300s cap turned every blip into a
+        multi-second stop and a sustained outage into minutes parked. 1s base
+        recovers RTK within ~1s of the AP returning; 60s cap still avoids
+        hammering the caster during a long outage.
+        """
+        base = 1.0
+        return min(base * (2 ** max(0, min(self._fail_count - 1, 6))), 60.0)
+
     def _run(self):
         """Main loop: connect, receive RTCM3, reconnect on failure.
 
-        Reconnect uses exponential backoff: 5s, 10s, 20s, ... capped at 300s.
+        Reconnect uses exponential backoff (see _reconnect_delay): 1s … 60s.
         Successful handshake resets the counter.
         """
         while self._running:
@@ -340,9 +354,7 @@ class NTRIPClient:
                     self._sock = None
 
             if self._running:
-                # Exponential backoff: 5s * 2^(fail_count-1), capped at 300s
-                base = 5.0
-                delay = min(base * (2 ** max(0, min(self._fail_count - 1, 6))), 300.0)
+                delay = self._reconnect_delay()
                 self._log_info(f"NTRIP reconnecting in {delay:.0f}s (fail={self._fail_count})")
                 # Event.wait returns True if set() was called → stop has
                 # been requested, so exit the outer loop without waiting
