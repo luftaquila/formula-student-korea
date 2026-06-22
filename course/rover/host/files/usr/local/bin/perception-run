@@ -1,0 +1,40 @@
+#!/bin/bash
+# Perception container launcher (camera streaming).
+#
+# Mirrors pilot-run: probes /dev for camera video nodes and passes only those
+# present to `podman run`, so a missing/unplugged camera doesn't make podman
+# refuse to create the container. fsk-perception-replug.service restarts this
+# unit on video device plug/unplug so the wrapper re-probes.
+
+set -euo pipefail
+
+IMAGE="ghcr.io/luftaquila/fsk-rover-perception:candidate"
+NAME="perception"
+
+DEVS=()
+# USB UVC cameras enumerate as /dev/video* (a stereo cam often exposes two
+# nodes — pass them all; camera_streamer.py opens the first that works).
+for dev in /dev/video*; do
+    [ -e "$dev" ] || continue
+    DEVS+=(--device "$dev:$dev")
+done
+
+# --rm should clean up on exit, but a hard kill / OOM can leave the named
+# container behind. Be idempotent.
+podman rm -f "$NAME" >/dev/null 2>&1 || true
+
+# Pin public DNS resolvers (same rationale as pilot-run): with --network=host,
+# podman snapshots /etc/resolv.conf at create time and can capture an empty one
+# on a cold boot before NetworkManager is up.
+exec podman run \
+    --name "$NAME" \
+    --rm \
+    --network=host \
+    --dns=1.1.1.1 \
+    --dns=8.8.8.8 \
+    --label=io.containers.autoupdate=registry \
+    --label=PODMAN_SYSTEMD_UNIT=perception.service \
+    "${DEVS[@]}" \
+    --env-file /etc/pilot/pilot.conf \
+    --secret internal-secret,type=env,target=INTERNAL_SECRET \
+    "$IMAGE"

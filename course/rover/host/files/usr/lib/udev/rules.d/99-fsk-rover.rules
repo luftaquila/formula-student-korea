@@ -31,3 +31,10 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="1546", ATTR{idProduct}=="01a9", \
     ATTR{power/control}="on"
 SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="000a", \
     ATTR{power/control}="on"
+
+# USB camera (UVC) hot-plug → restart perception.service so perception-run
+# re-probes /dev/video*. Generic video4linux match: the rover carries a single
+# USB stereo webcam; fsk-perception-replug debounces the burst of events a
+# multi-node cam emits.
+SUBSYSTEM=="video4linux", ACTION=="add|remove", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="fsk-perception-replug.service"

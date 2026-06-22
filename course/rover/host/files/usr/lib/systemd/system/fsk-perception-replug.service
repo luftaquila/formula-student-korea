@@ -1,0 +1,14 @@
+[Unit]
+Description=Restart perception.service on camera plug/unplug
+# Rate-limit our own start counter so a flapping camera cable can't loop
+# perception.service indefinitely.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+# Coalesce bursts: a stereo cam exposing two /dev/video* nodes fires two udev
+# events; the second start is dropped while this oneshot is still sleeping, so
+# perception restarts once instead of twice.
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/bin/systemctl restart perception.service
