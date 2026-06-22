@@ -90,9 +90,11 @@ export const useWirelessStore = defineStore("wireless", () => {
     return timing[mode].light;
   }
 
-  // 경기별 세션의 controller(lease 보유자). 표시·게이팅용.
+  // controller 식별자는 email#sessionId(같은 계정의 다른 탭 구분용). 표시는 email만.
+  const controllerLabel = (c) => (c ? String(c).split("#")[0] : c);
+  // 경기별 세션의 controller(lease 보유자). 표시용(세션 접미 #sid 제거).
   function controllerFor(mode) {
-    return sessions.value?.[EVENT_TYPE[mode]]?.controller || null;
+    return controllerLabel(sessions.value?.[EVENT_TYPE[mode]]?.controller) || null;
   }
 
   // 마스터 시계 추적(브리지가 H 하트비트로). 가상 신호등 green의 master-time 기준값 산출.
@@ -345,6 +347,16 @@ export const useWirelessStore = defineStore("wireless", () => {
       if (document.visibilityState === "visible" && bridgeIsSelf.value) acquireWakeLock();
     });
   }
+  // 케이블 분리 등 갑작스런 시리얼 끊김은 read 루프가 즉시 못 잡을 수 있어, OS가 보고하는
+  // navigator.serial 'disconnect'로도 우리 포트면 바로 정리(경고 + 오프라인 보고).
+  if (typeof navigator !== "undefined" && "serial" in navigator) {
+    navigator.serial.addEventListener("disconnect", (e) => {
+      if (serialPort && e.target === serialPort) {
+        notyf.error("마스터 연결이 끊어졌습니다.");
+        closeSerial();
+      }
+    });
+  }
 
   async function openSerial() {
     if (!("serial" in navigator)) { notyf.error("이 브라우저는 Web Serial을 지원하지 않습니다."); return false; }
@@ -389,7 +401,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     return !!myActor.value && !!s && s.controller === myActor.value;
   }
   function requireControl(mode) {
-    if (!holdsLease(mode)) { notyf.error("먼저 제어권을 잡으세요(제어 잡기)."); return false; }
+    if (!holdsLease(mode)) { notyf.error("먼저 제어권을 잡으세요(제어 버튼)."); return false; }
     return true;
   }
   let leaseTimer = null;
@@ -456,8 +468,18 @@ export const useWirelessStore = defineStore("wireless", () => {
       .catch((e) => { slot.light = prevLight; notyf.error(e.message); });
   }
   function physicalControl(mode, action, serialCmd) {
-    if (bridgeIsSelf.value) transmitLine(serialCmd); // 브리지: 직접 시리얼
-    else commandPhysical(mode, action);              // 비-브리지: 서버→브리지 다운링크
+    if (bridgeIsSelf.value) {
+      // 브리지: 직접 시리얼. 분리된 포트면 transmitLine이 조용히 무시되던 것을 막고
+      // 경고 + 상태 정리(끊김을 read 루프/disconnect가 아직 못 잡은 경우도 여기서 드러난다).
+      if (!serialConnected.value || !serialPort?.writable) {
+        notyf.error("마스터에 연결되어 있지 않습니다.");
+        closeSerial();
+        return;
+      }
+      transmitLine(serialCmd);
+    } else {
+      commandPhysical(mode, action); // 비-브리지: 서버→브리지 다운링크(브리지 없으면 서버가 409 경고)
+    }
   }
   function greenFor(mode) {
     if (!requireControl(mode)) return;
@@ -512,7 +534,7 @@ export const useWirelessStore = defineStore("wireless", () => {
       get isPhysical() { return isPhysical(mode); },
       // 제어권: lease 보유자만 제어. 관찰자(미보유)는 read-only.
       get isController() { return holdsLease(mode); },
-      get controller() { return sessions.value?.[EVENT_TYPE[mode]]?.controller || null; },
+      get controller() { return controllerLabel(sessions.value?.[EVENT_TYPE[mode]]?.controller) || null; },
       // 경기 세션(서버 권위 선택·arm). 관찰자 뷰가 컨트롤러의 팀·이벤트명을 미러하는 데 사용.
       get session() { return sessions.value?.[EVENT_TYPE[mode]] || null; },
       get green() { return slot.green; },
