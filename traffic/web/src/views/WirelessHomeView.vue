@@ -25,7 +25,8 @@ const isDev = import.meta.env.DEV;
 const simNode = ref("1");
 let simSeq = 1000;
 async function simEvent() {
-  await ingestWireless({ events: [{ node_id: simNode.value, master_tick: String(Date.now() * 16), ev_seq: simSeq++, rssi: -62, snr: 9.5, link_state: "online" }] });
+  // master_tick은 16MHz tick(16000/ms). 합성값도 실제 스케일에 맞춰야 클라 변환(tickToMs)이 맞다.
+  await ingestWireless({ events: [{ node_id: simNode.value, master_tick: String(Date.now() * 16000), ev_seq: simSeq++, rssi: -62, snr: 9.5, link_state: "online" }] });
 }
 async function simTelemetry() {
   await ingestWireless({ telemetry: [{ node_id: simNode.value, rssi: -68, snr: 8.5, offset_us: 120, skew_ppm: 4, latency_ms: 22, rx_miss: 0, beacon_gap: 0, link_state: "online" }] });
@@ -101,7 +102,6 @@ async function simTelemetry() {
 .debounce-row { display: flex; align-items: center; gap: 0.5rem; }
 .debounce-input { max-width: 120px; }
 .debounce-row .unit { color: var(--text-muted, #888); font-size: 0.9rem; }
-.hint { margin: 0.5rem 0 0; font-size: 0.8rem; color: var(--text-muted, #888); }
 .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
 @media (max-width: 768px) {
   .wl-row { grid-template-columns: 1fr; }

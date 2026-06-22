@@ -116,6 +116,9 @@ export const useWirelessStore = defineStore("wireless", () => {
     } catch { /* 이전 오프셋 유지 */ }
   }
   syncServerTime();
+  // 서버 보정 현재시각(ms). last_seen 등 서버 시계 기준 값과의 경과를 계산할 때 사용 —
+  // 클라 벽시계를 그대로 쓰면 PC 시계 오차만큼 진단(나이·링크상태)이 틀어진다.
+  function serverNow() { return Date.now() + serverOffsetMs; }
 
   /* ── 클럭 ──────────────────────────────────────────────────────── */
   function startClock(slot) {
@@ -481,7 +484,7 @@ export const useWirelessStore = defineStore("wireless", () => {
       commandPhysical(mode, action); // 비-브리지: 서버→브리지 다운링크(브리지 없으면 서버가 409 경고)
     }
   }
-  function greenFor(mode) {
+  function greenFor(mode, team = null, eventName = null) {
     if (!requireControl(mode)) return;
     const missing = missingRoles(mode);
     if (missing.length) {
@@ -490,11 +493,13 @@ export const useWirelessStore = defineStore("wireless", () => {
     if (isPhysical(mode)) { physicalControl(mode, "green", "G"); return; }
     // 가상: 클릭 즉시 arm을 낙관 반영(green.active=true → 녹색등 버튼 즉시 잠금, 전처럼).
     // applySession이 같은 green_tick으로 reconcile(재활성 안 함). POST 실패 시 롤백.
+    // team·event_name을 arm 본문에 실어 bind-at-arm: /select POST와의 도착 순서 레이스와
+    // 무관하게 서버가 arm 시점 귀속을 고정한다(서버 엔진이 run.bound로 사용).
     const gtRaw = String(Math.round(masterNowMs() * TICKS_PER_MS));
     const slot = timing[mode];
     slot.light = "green";
     activateGreen(mode, tickToMs(gtRaw));
-    armWirelessEvent({ event_type: EVENT_TYPE[mode], action: "green", green_tick: gtRaw })
+    armWirelessEvent({ event_type: EVENT_TYPE[mode], action: "green", green_tick: gtRaw, team: team || null, event_name: eventName || null })
       .catch((e) => { deactivateGreen(mode); slot.light = "grey"; notyf.error(e.message); });
   }
   function redFor(mode) {
@@ -546,7 +551,7 @@ export const useWirelessStore = defineStore("wireless", () => {
       claimLease: () => claimLease(mode),
       releaseLease: () => releaseLease(mode),
       takeoverLease: () => takeoverLease(mode),
-      sendGreen: () => greenFor(mode),
+      sendGreen: (team, eventName) => greenFor(mode, team, eventName),
       sendRed: () => redFor(mode),
       sendOff: () => offFor(mode),
       reset: () => resetFor(mode),
@@ -574,6 +579,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     claimLease, releaseLease,
     debounceMs, setDebounceMs,
     openSerial, closeSerial,
+    serverNow,
     EVENT_TYPE, WIRELESS_EVENTS,
   };
 });

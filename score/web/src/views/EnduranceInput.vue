@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed, watch } from "vue";
-import * as XLSX from "xlsx";
 import { fetchEntryYears, fetchEntries, fetchEndurance, fetchScore, updateEndurance } from "../api";
+import { exportTable } from "../composables/exportTable";
 import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
@@ -365,10 +365,7 @@ function exportData(format) {
       getStatus(num) || "",
     ];
   });
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "내구 기록");
-  XLSX.writeFile(wb, `내구기록_${selectedYear.value}.${format === "csv" ? "csv" : "xlsx"}`);
+  exportTable({ sheetName: "내구 기록", fileBase: `내구기록_${selectedYear.value}`, headers, rows, format });
 }
 </script>
 

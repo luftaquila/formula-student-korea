@@ -296,24 +296,28 @@ function clockStr(ms) {
 }
 // 경기별 런 상태(메모리). arm(green)에서 리셋. 서버 재기동 중 진행 런은 유실(드문 엣지) — 멱등
 // ingest라 재전송돼도 dedupe되어 중복 저장 없음.
-const engineRun = new Map(); // event_type -> { debounce:{}, startTick, saved, lastTick, lapCount, lap2 }
-function resetEngineRun(eventType) {
-  engineRun.set(eventType, { debounce: {}, startTick: null, saved: false, lastTick: null, lapCount: 0, lap2: null });
+const engineRun = new Map(); // event_type -> { debounce:{}, startTick, saved, lastTick, lapCount, lap2, bound }
+// bound = arm 시점에 고정된 귀속 스냅샷 {team, event_name}|null. 가상 경기는 arm 본문으로
+// atomic 바인딩되어 arm 후 세션 선택이 바뀌어도 기록은 arm 시점 팀에 귀속된다(bind-at-arm).
+// null(물리 경기·서버 재기동 후 lazy 리셋)이면 저장 시 live 세션으로 폴백.
+function resetEngineRun(eventType, bound = null) {
+  engineRun.set(eventType, { debounce: {}, startTick: null, saved: false, lastTick: null, lapCount: 0, lap2: null, bound });
 }
 function getDebounceMs() {
   const row = db.prepare("SELECT debounce_ms FROM wireless_light WHERE id = 1").get();
   return Number.isFinite(row?.debounce_ms) ? row.debounce_ms : 300;
 }
 // 동적 기록 테이블에 한 줄 저장 + records 브로드캐스트.
+// binding = 귀속 정보 {team, event_name}: arm 스냅샷(run.bound) 또는 live 세션.
 // 선택 정보(team·event_name) 자체가 없으면 = 테스트 모드 → 조용히 skip(경고 없음).
 // 선택은 됐는데 검증 실패(잘못된 팀/이름) → warn 로그(유선의 POST /api/records와 동일 검증).
-function engineSaveRecord(eventType, sess, result, detail) {
+function engineSaveRecord(eventType, binding, result, detail) {
   const SYS = { email: "system", name: "system", role: "admin" };
-  const t = sess?.team;
-  if (!sess?.event_name || !t) return false; // 미선택 = 테스트 모드(조용히)
-  const nv = validateRecordName(sess.event_name);
+  const t = binding?.team;
+  if (!binding?.event_name || !t) return false; // 미선택 = 테스트 모드(조용히)
+  const nv = validateRecordName(binding.event_name);
   if (!nv.valid) {
-    logger.warn(null, "wireless.record", { error: nv.error, event_name: sess.event_name }, "record", SYS);
+    logger.warn(null, "wireless.record", { error: nv.error, event_name: binding.event_name }, "record", SYS);
     return false;
   }
   // 유선 저장과 동일 검증 재사용 — 무선이라고 약식 검증하지 않는다.
@@ -379,8 +383,9 @@ function processRecordEngine(rows) {
         if (run.lapCount === 4 && run.lap2 != null && !run.saved) {
           const total = run.lap2 + lap;
           // 음수/역순 가드: 재전송·재정렬로 lap2·lap4·합이 하나라도 음수면 저장하지 않는다.
+          // 귀속은 arm 시점 스냅샷(run.bound) 우선, 없으면 live 세션 폴백(물리 경기 등).
           if (run.lap2 >= 0 && lap >= 0 && total >= 0 &&
-              engineSaveRecord(et, sess, total, `${clockStr(run.lap2)} / ${clockStr(lap)}`)) run.saved = true;
+              engineSaveRecord(et, run.bound || sess, total, `${clockStr(run.lap2)} / ${clockStr(lap)}`)) run.saved = true;
         }
       } else {
         // accel·오토크로스: 출발(1) 래치 → 도착(2) 기록.
@@ -389,7 +394,8 @@ function processRecordEngine(rows) {
         } else if (sensor === 2 && run.startTick != null && !run.saved) {
           const result = tickMs - run.startTick;
           // 음수/역순 가드: 도착이 출발보다 앞선 tick이면(재전송·재정렬) 저장하지 않는다.
-          if (result >= 0 && engineSaveRecord(et, sess, result, null)) run.saved = true;
+          // 귀속은 arm 시점 스냅샷(run.bound) 우선, 없으면 live 세션 폴백(물리 경기 등).
+          if (result >= 0 && engineSaveRecord(et, run.bound || sess, result, null)) run.saved = true;
         }
       }
     }
@@ -453,6 +459,7 @@ const leaseWatch = setInterval(() => {
       broadcastEvent("wireless:session", getSession(event_type));
     }
   } catch (e) {
+    logger.warn(null, "wireless.lease.watch", { error: e.message || String(e) }, "lease", { email: "system", name: "system", role: "admin" });
     console.error("[wireless] lease watch:", e.message || e);
   }
 }, 5000);
@@ -540,6 +547,27 @@ function validateRecordData(data) {
   }
 
   return { valid: true };
+}
+
+// 팀·이벤트명 선택값 검증(빈/누락 허용 → null). /api/wireless/select와 arm green이 공유.
+// 반환: { valid, error?, team(object|null), event_name(string|null) }.
+function validateSelection(body) {
+  const teamRaw = body?.team;
+  if (teamRaw != null) {
+    if (typeof teamRaw !== "object" || !Number.isInteger(teamRaw.num) || teamRaw.num < 1 ||
+        typeof teamRaw.univ !== "string" || !teamRaw.univ ||
+        typeof teamRaw.team !== "string" || !teamRaw.team) {
+      return { valid: false, error: "올바르지 않은 팀 정보입니다." };
+    }
+  }
+  let event_name = typeof body?.event_name === "string" ? body.event_name.trim() : null;
+  if (event_name === "") event_name = null;
+  if (event_name != null) {
+    const nv = validateRecordName(event_name);
+    if (!nv.valid) return { valid: false, error: nv.error };
+    event_name = nv.value;
+  }
+  return { valid: true, team: teamRaw != null ? teamRaw : null, event_name };
 }
 
 function validateControllerData({ timestamp, data }) {
@@ -927,7 +955,9 @@ app.post("/api/wireless/ingest", (req, res) => {
     for (const e of events) {
       if (!validateNodeId(String(e.node_id))) { reject("node_id"); continue; }
       const tick = tickToText(e.master_tick);
-      if (tick === undefined) { reject("master_tick"); continue; }
+      // 타이밍 이벤트는 master_tick(ev_master_t)이 필수다. null/누락이면 거부 — 저장하면
+      // dedup UNIQUE 인덱스의 NULL이 서로 구별돼 멱등성이 깨지고 엔진이 tick 0으로 오계산한다.
+      if (tick === undefined || tick === null) { reject("master_tick"); continue; }
       const evSeq = Number.isInteger(e.ev_seq) ? e.ev_seq : null;
       const rssi = typeof e.rssi === "number" ? e.rssi : null;
       const snr = typeof e.snr === "number" ? e.snr : null;
@@ -1126,13 +1156,32 @@ app.post("/api/wireless/arm", (req, res) => {
     green_tick = tickToText(req.body?.green_tick);
     if (green_tick === undefined) return res.status(400).send("green_tick이 올바르지 않습니다.");
   }
-  // 선택(팀·이벤트명)은 /api/wireless/select가 관리. arm은 건드리지 않는다(무장 중 선택은
-  // UI에서 잠기므로 = bind-at-arm). green=새 런 → 기록 엔진 상태 리셋.
-  if (action === "green") resetEngineRun(event_type);
+  // bind-at-arm: green 요청 본문에 team·event_name이 실려 오면 arm과 atomic하게 바인딩한다.
+  // 본문에 없으면(구형 클라/기타 호출) 세션 선택을 건드리지 않고 live 세션으로 폴백(bound=null).
+  // → /select POST와 /arm POST의 도착 순서 레이스와 무관하게 귀속이 정확하고, arm 후 선택이
+  //   바뀌어도 기록은 arm 시점 팀에 귀속된다(엔진이 run.bound 우선 사용).
+  const body = req.body || {};
+  const hasSel = action === "green" && ("team" in body || "event_name" in body);
+  let bound = null;
+  if (hasSel) {
+    const v = validateSelection(body);
+    if (!v.valid) {
+      logger.warn(req, "wireless.arm", { error: v.error, event_type }, event_type);
+      return res.status(400).send(v.error);
+    }
+    bound = { team: v.team, event_name: v.event_name };
+  }
+  // green=새 런 → 기록 엔진 상태 리셋(arm 시점 귀속 스냅샷 고정).
+  if (action === "green") resetEngineRun(event_type, bound);
   const result = dbRun(() => {
     if (action === "green") {
-      db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, armed_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?")
-        .run(green_tick, new Date().toISOString(), event_type);
+      if (hasSel) {
+        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, team_json = ?, event_name = ?, armed_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?")
+          .run(green_tick, bound.team ? JSON.stringify(bound.team) : null, bound.event_name, new Date().toISOString(), event_type);
+      } else {
+        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, armed_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?")
+          .run(green_tick, new Date().toISOString(), event_type);
+      }
     } else {
       // red = 정지(표시는 적색), off = 소등(grey). 둘 다 disarm.
       db.prepare("UPDATE wireless_session SET armed = 0, light_color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?")
@@ -1163,23 +1212,11 @@ app.post("/api/wireless/select", (req, res) => {
     return res.status(409).send(`다른 사용자가 제어 중입니다: ${controllerEmail(sess.controller)}`);
   }
   // 선택 시점 검증(유선 POST /api/records와 동일 기준) — 잘못된 팀/이름은 여기서 400 → 즉시 토스트.
-  // null은 선택 해제로 허용.
-  const teamRaw = req.body?.team;
-  if (teamRaw != null) {
-    if (typeof teamRaw !== "object" || !Number.isInteger(teamRaw.num) || teamRaw.num < 1 ||
-        typeof teamRaw.univ !== "string" || !teamRaw.univ ||
-        typeof teamRaw.team !== "string" || !teamRaw.team) {
-      return res.status(400).send("올바르지 않은 팀 정보입니다.");
-    }
-  }
-  let event_name = typeof req.body?.event_name === "string" ? req.body.event_name.trim() : null;
-  if (event_name === "") event_name = null;
-  if (event_name != null) {
-    const nv = validateRecordName(event_name);
-    if (!nv.valid) return res.status(400).send(nv.error);
-    event_name = nv.value;
-  }
-  const team = teamRaw != null ? JSON.stringify(teamRaw) : null;
+  // null은 선택 해제로 허용. (arm green의 bind-at-arm과 동일 검증을 공유.)
+  const v = validateSelection(req.body);
+  if (!v.valid) return res.status(400).send(v.error);
+  const team = v.team != null ? JSON.stringify(v.team) : null;
+  const event_name = v.event_name;
   const result = dbRun(() => {
     db.prepare("UPDATE wireless_session SET team_json = ?, event_name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?")
       .run(team, event_name, event_type);
@@ -1211,14 +1248,18 @@ app.post("/api/wireless/dnf", (req, res) => {
     return res.status(400).send("arm(녹색등)되지 않은 경기는 DNF 기록할 수 없습니다.");
   }
   // 이미 그 런에서 결과가 저장됐으면 DNF 이중 기록 금지.
-  const run = engineRun.get(event_type);
+  let run = engineRun.get(event_type);
   if (run?.saved) {
     return res.status(409).send("이미 기록이 저장된 경기입니다.");
   }
-  const ok = engineSaveRecord(event_type, sess, -1, null);
+  // 귀속은 arm 스냅샷(run.bound) 우선, 없으면 live 세션.
+  const ok = engineSaveRecord(event_type, run?.bound || sess, -1, null);
   if (!ok) return res.status(500).send("DNF 기록 저장에 실패했습니다.");
   // 늦게 도착하는 도착 센서가 이중 저장하지 않도록 런을 저장됨으로 표시.
-  if (run) run.saved = true;
+  // 서버 재기동 등으로 런이 비어 있으면 생성 후 표시 — 안 하면 뒤이은 센서가 새 런을
+  // 만들어 실기록을 추가 저장(DNF + 실기록 이중 저장)할 수 있다.
+  if (!run) { resetEngineRun(event_type); run = engineRun.get(event_type); }
+  run.saved = true;
   res.json({ ok: true });
 });
 

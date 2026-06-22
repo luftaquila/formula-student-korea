@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
-import * as XLSX from "xlsx";
+import { exportTable } from "../composables/exportTable";
 import { fetchEntryYears, fetchScore, fetchVehicleTypes, updateManualScore, updatePenalty, updateSetting } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
@@ -619,10 +619,7 @@ function exportData(format) {
     return row;
   });
 
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "성적표");
-  XLSX.writeFile(wb, `성적표_${selectedYear.value}.${format === "csv" ? "csv" : "xlsx"}`);
+  exportTable({ sheetName: "성적표", fileBase: `성적표_${selectedYear.value}`, headers, rows, format });
 }
 </script>
 

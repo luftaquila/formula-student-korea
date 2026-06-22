@@ -3,20 +3,22 @@ import { computed, ref, onMounted, onUnmounted } from "vue";
 import { useWirelessStore } from "../stores/wireless";
 
 const store = useWirelessStore();
-const now = ref(Date.now());
+// 서버 보정 현재시각으로 1초마다 갱신(재렌더 트리거 + last_seen 경과 계산 기준).
+const now = ref(store.serverNow());
 let timer = null;
-onMounted(() => { timer = setInterval(() => { now.value = Date.now(); }, 1000); });
+onMounted(() => { timer = setInterval(() => { now.value = store.serverNow(); }, 1000); });
 onUnmounted(() => { if (timer) clearInterval(timer); });
 
-// node 0 = 마스터(자체 진단), 1.. = 센서. "0"이 먼저 정렬되어 맨 위에 온다.
+// node 0 = 마스터(자체 진단), 1.. = 센서. 숫자 기준 정렬(마스터 0이 맨 위, "10"이 "2" 뒤).
 const rows = computed(() =>
-  Object.values(store.telemetry).sort((a, b) => String(a.node_id).localeCompare(String(b.node_id))),
+  Object.values(store.telemetry).sort((a, b) => Number(a.node_id) - Number(b.node_id)),
 );
 
 function isMaster(r) { return String(r.node_id) === "0"; }
 const nodeLabel = (r) => (isMaster(r) ? "마스터" : r.node_id);
 
-// 서버 last_seen은 서버 시계 기준 → 클라이언트 시계와 살짝 어긋나면 음수가 될 수 있어 0으로 클램프.
+// last_seen은 서버 시계 기준 → now도 서버 보정시각(store.serverNow)이라 클라 PC 시계 오차와
+// 무관하게 경과가 정확하다. 미세 음수는 0으로 클램프.
 function ageMs(iso) { return iso ? Math.max(0, now.value - new Date(iso).getTime()) : Infinity; }
 function linkState(r) {
   const a = ageMs(r.last_seen);
