@@ -264,6 +264,20 @@ function getSessions() {
 function getSession(eventType) {
   return getSessions().find((s) => s.event_type === eventType) || null;
 }
+// 제어권 식별자: 같은 계정이라도 브라우저 탭(세션)별로 구분돼야 한 탭의 claim/takeover가
+// 다른 탭에 잘못 반영되지 않는다. 클라가 보내는 X-Session-Id로 email#sid 합성(헤더 없으면 email).
+function wirelessActor(req) {
+  const email = req.user?.email || null;
+  if (!email) return null;
+  const sid = req.get("X-Session-Id");
+  return sid ? `${email}#${sid}` : email;
+}
+// 표시·계정 게이팅용: controller에서 email 부분만(세션 접미 #sid 제거).
+function controllerEmail(c) {
+  if (!c) return c;
+  const i = c.indexOf("#");
+  return i === -1 ? c : c.slice(0, i);
+}
 
 /* ── 서버 권위 기록 엔진 ──────────────────────────────────────────────
  * ingest로 들어온 raw 이벤트를 매핑·세션으로 라우팅해 서버가 직접 기록을 계산·저장한다.
@@ -1103,9 +1117,9 @@ app.post("/api/wireless/arm", (req, res) => {
   }
   // A안: 해당 경기를 점유한 controller만 제어. 점유자 없으면 허용(첫 제어).
   const sess = getSession(event_type);
-  const actor = req.user?.email || null;
+  const actor = wirelessActor(req);
   if (sess?.controller && sess.controller !== actor) {
-    return res.status(409).send(`다른 사용자가 제어 중입니다: ${sess.controller}`);
+    return res.status(409).send(`다른 사용자가 제어 중입니다: ${controllerEmail(sess.controller)}`);
   }
   let green_tick = null;
   if (action === "green") {
@@ -1144,9 +1158,9 @@ app.post("/api/wireless/select", (req, res) => {
     return res.status(400).send("올바르지 않은 종목입니다.");
   }
   const sess = getSession(event_type);
-  const actor = req.user?.email || null;
+  const actor = wirelessActor(req);
   if (sess?.controller && sess.controller !== actor) {
-    return res.status(409).send(`다른 사용자가 제어 중입니다: ${sess.controller}`);
+    return res.status(409).send(`다른 사용자가 제어 중입니다: ${controllerEmail(sess.controller)}`);
   }
   // 선택 시점 검증(유선 POST /api/records와 동일 기준) — 잘못된 팀/이름은 여기서 400 → 즉시 토스트.
   // null은 선택 해제로 허용.
@@ -1186,9 +1200,9 @@ app.post("/api/wireless/dnf", (req, res) => {
     return res.status(400).send("올바르지 않은 종목입니다.");
   }
   const sess = getSession(event_type);
-  const actor = req.user?.email || null;
+  const actor = wirelessActor(req);
   if (sess?.controller && sess.controller !== actor) {
-    return res.status(409).send(`다른 사용자가 제어 중입니다: ${sess.controller}`);
+    return res.status(409).send(`다른 사용자가 제어 중입니다: ${controllerEmail(sess.controller)}`);
   }
   if (!sess?.event_name || !sess?.team) {
     return res.status(400).send("이벤트 이름과 팀을 먼저 선택하세요.");
@@ -1220,9 +1234,9 @@ app.post("/api/wireless/command", (req, res) => {
     return res.status(400).send("올바르지 않은 동작입니다.");
   }
   const sess = getSession(event_type);
-  const actor = req.user?.email || null;
+  const actor = wirelessActor(req);
   if (sess?.controller && sess.controller !== actor) {
-    return res.status(409).send(`다른 사용자가 제어 중입니다: ${sess.controller}`);
+    return res.status(409).send(`다른 사용자가 제어 중입니다: ${controllerEmail(sess.controller)}`);
   }
   const light = getLightState();
   if (light.owner_event !== event_type) {
@@ -1241,11 +1255,11 @@ app.post("/api/wireless/command", (req, res) => {
 app.post("/api/wireless/lease/:event", (req, res) => {
   const event_type = decodeURIComponent(req.params.event);
   if (!EVENT_TYPES.includes(event_type)) return res.status(400).send("올바르지 않은 종목입니다.");
-  const actor = req.user?.email || null;
+  const actor = wirelessActor(req);
   if (!actor) return res.status(401).send("인증이 필요합니다.");
   const sess = getSession(event_type);
   if (sess?.controller && sess.controller !== actor) {
-    return res.status(409).send(`다른 사용자가 제어 중입니다: ${sess.controller}`);
+    return res.status(409).send(`다른 사용자가 제어 중입니다: ${controllerEmail(sess.controller)}`);
   }
   // heartbeat(이미 내가 점유) vs 신규 점유 구분: heartbeat는 만료만 연장하고 broadcast 생략
   // (12초마다 전 클라에 불필요 fan-out 방지). 점유자 변화가 있을 때만 broadcast.
@@ -1264,9 +1278,10 @@ app.post("/api/wireless/lease/:event", (req, res) => {
 app.delete("/api/wireless/lease/:event", (req, res) => {
   const event_type = decodeURIComponent(req.params.event);
   if (!EVENT_TYPES.includes(event_type)) return res.status(400).send("올바르지 않은 종목입니다.");
-  const actor = req.user?.email || null;
+  // release/takeover는 email 기준: 같은 계정은 자기 다른 세션(멈춘 탭 등)을 회수 가능,
+  // 타 계정 회수는 admin만. (claim/제어는 세션 단위라 다른 세션이면 명시적 가로채기 필요.)
   const sess = getSession(event_type);
-  if (sess?.controller && sess.controller !== actor && req.user?.role !== "admin") {
+  if (sess?.controller && controllerEmail(sess.controller) !== (req.user?.email || null) && req.user?.role !== "admin") {
     return res.status(409).send("다른 사용자의 제어를 해제할 수 없습니다.");
   }
   const result = dbRun(() => {

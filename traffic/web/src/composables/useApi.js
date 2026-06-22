@@ -4,6 +4,20 @@ const { request, fetchEntries } = createApiClient("/traffic");
 
 export { fetchEntries };
 
+// 브라우저 탭(세션)별 고유 식별자. 같은 계정으로 로그인한 다른 탭과 제어권(lease)을 구분하기
+// 위해 제어/lease 요청에 X-Session-Id로 동봉한다(서버는 email#sid로 controller 식별). request는
+// options.headers를 통째로 덮으므로 Content-Type을 함께 병합한다.
+const SESSION_ID =
+  typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `s-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+function ctrlRequest(endpoint, options = {}) {
+  return request(endpoint, {
+    ...options,
+    headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID, ...(options.headers || {}) },
+  });
+}
+
 export async function fetchRecord(name) {
   const res = await request(`/api/records/${encodeURIComponent(name)}`);
   return res.json();
@@ -131,7 +145,7 @@ export async function fetchWirelessEvents(since = 0, limit = 200) {
 
 // 경기 arm/disarm(green=arm). 가상 경기를 전 클라에 공유. body: {event_type, action, green_tick?, team?, event_name?}
 export async function armWirelessEvent(body) {
-  const res = await request("/api/wireless/arm", {
+  const res = await ctrlRequest("/api/wireless/arm", {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -140,13 +154,13 @@ export async function armWirelessEvent(body) {
 
 // 경기 독점 제어 lease 획득/갱신(heartbeat).
 export async function claimWirelessLease(eventType) {
-  const res = await request(`/api/wireless/lease/${encodeURIComponent(eventType)}`, { method: "POST" });
+  const res = await ctrlRequest(`/api/wireless/lease/${encodeURIComponent(eventType)}`, { method: "POST" });
   return res.json();
 }
 
 // 경기 lease 해제.
 export async function releaseWirelessLease(eventType) {
-  const res = await request(`/api/wireless/lease/${encodeURIComponent(eventType)}`, { method: "DELETE" });
+  const res = await ctrlRequest(`/api/wireless/lease/${encodeURIComponent(eventType)}`, { method: "DELETE" });
   return res.json();
 }
 
@@ -158,18 +172,18 @@ export async function fetchServerTime() {
 
 // 경기 선택(팀·이벤트명) 공유 — 서버 기록 엔진의 귀속 정보.
 export async function selectWirelessEvent(body) {
-  const res = await request("/api/wireless/select", { method: "POST", body: JSON.stringify(body) });
+  const res = await ctrlRequest("/api/wireless/select", { method: "POST", body: JSON.stringify(body) });
   return res.json();
 }
 
 // DNF 기록(서버 저장). 세션 선택 정보로 귀속.
 export async function dnfWirelessEvent(eventType) {
-  const res = await request("/api/wireless/dnf", { method: "POST", body: JSON.stringify({ event_type: eventType }) });
+  const res = await ctrlRequest("/api/wireless/dnf", { method: "POST", body: JSON.stringify({ event_type: eventType }) });
   return res.json();
 }
 
 // 물리 신호등 원격 제어(비-브리지 컨트롤러 → 서버 → 브리지 시리얼). 물리 지정 경기만.
 export async function commandWirelessPhysical(eventType, action) {
-  const res = await request("/api/wireless/command", { method: "POST", body: JSON.stringify({ event_type: eventType, action }) });
+  const res = await ctrlRequest("/api/wireless/command", { method: "POST", body: JSON.stringify({ event_type: eventType, action }) });
   return res.json();
 }
