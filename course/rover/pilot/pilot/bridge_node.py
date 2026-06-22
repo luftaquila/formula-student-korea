@@ -507,7 +507,12 @@ class BridgeNode(Node):
             f'{url}/api/rover/stream',
             headers=headers,
             stream=True,
-            timeout=(10.0, 90.0),  # connect timeout, read timeout (heartbeat is 30s)
+            # connect timeout, read timeout. Server heartbeat is 10s, so a 25s
+            # read timeout tolerates two missed beats before declaring the
+            # socket dead. Was (10, 90): a Wi-Fi drop (no FIN/RST) left the
+            # rover blocked on the dead socket up to 90s before reconnecting,
+            # so the command channel (E-Stop, execute) lagged ~1.5 min.
+            timeout=(5.0, 25.0),
         )
         resp.raise_for_status()
         connection_succeeded = True

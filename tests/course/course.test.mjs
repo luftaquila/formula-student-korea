@@ -1346,3 +1346,90 @@ describe('Mission schema migration', () => {
     }
   });
 });
+
+describe('Mission telemetry historizes NTRIP link health', () => {
+  const ac = new AbortController();
+  let missionId;
+
+  before(async () => {
+    // Connect a fake rover over SSE so /api/rover/execute can start a mission.
+    // Drain the stream in the background (heartbeats) and swallow the abort
+    // error raised on teardown so it doesn't surface as an unhandled rejection.
+    const streamRes = await fetch(`${baseUrl}/api/rover/stream`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ac.signal,
+    });
+    const reader = streamRes.body.getReader();
+    (async () => { try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ } })();
+    // Wait until the server registers the rover as connected.
+    for (let i = 0; i < 100; i++) {
+      const s = await client.get('/api/rover/status', { cookie: adminCookie });
+      if (s.status === 200 && (await s.json()).connected) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  });
+
+  after(async () => {
+    try { ac.abort(); } catch { /* ignore */ }
+    // Let the server process the SSE disconnect (which interrupts the still-
+    // running mission — a DB write) before the top-level after() closes the db,
+    // otherwise that write can race db.close() and throw on teardown.
+    await new Promise((r) => setTimeout(r, 100));
+  });
+
+  it('persists ntrip_connected / corr_age_ms / ntrip_fail_count / h_acc_m and serves them back', async () => {
+    // Anchor the rover position so the single waypoint passes distance validation.
+    await client.post('/api/rover/position', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { lat: 35.292, lng: 126.574 },
+    });
+    const execRes = await client.post('/api/rover/execute', {
+      body: { waypoints: [{ lat: 35.292, lng: 126.574 }] },
+      cookie: adminCookie,
+    });
+    assert.equal(execRes.status, 200);
+
+    // Connected but corrections ~1.5 s stale → the "caster silent" signature,
+    // on a float fix with a known h_acc and a non-zero reconnect fail_count.
+    const corrAtSec = Date.now() / 1000 - 1.5;
+    const telRes = await client.post('/api/rover/telemetry', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: {
+        nav_state: 'NAVIGATING',
+        fix_status: 'rtk_float',
+        ntrip_connected: true,
+        ntrip: { host: 'ntrip.ngii.go.kr', port: 2101, mountpoint: 'SEJN-RTCM32', fail_count: 3, last_correction_at: corrAtSec, bytes_received: 4096 },
+        gps: { h_acc: 0.021 },
+      },
+    });
+    assert.equal(telRes.status, 200);
+
+    missionId = db.prepare('SELECT id FROM mission ORDER BY id DESC LIMIT 1').get().id;
+    const res = await client.get(`/api/missions/${missionId}/telemetry`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const { samples } = await res.json();
+    assert.ok(samples.length >= 1);
+    const last = samples[samples.length - 1];
+    assert.equal(last.ntrip_connected, 1);
+    assert.equal(last.ntrip_fail_count, 3);
+    assert.equal(last.h_acc_m, 0.021);
+    assert.equal(last.fix_status, 'rtk_float');
+    // corr_age ≈ 1500 ms; generous slack for test scheduling jitter.
+    assert.ok(last.corr_age_ms >= 1000 && last.corr_age_ms <= 6000, `corr_age_ms=${last.corr_age_ms}`);
+  });
+
+  it('records the disconnect flag with a null correction age (network-drop shape)', async () => {
+    // ntrip_connected:false zeroes roverState.ntrip server-side, so the sample
+    // carries the disconnect flag with a null age rather than a stale one.
+    await client.post('/api/rover/telemetry', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { nav_state: 'ERROR', fix_status: '3d_fix', ntrip_connected: false },
+    });
+    const res = await client.get(`/api/missions/${missionId}/telemetry`, { cookie: adminCookie });
+    const { samples } = await res.json();
+    const last = samples[samples.length - 1];
+    assert.equal(last.ntrip_connected, 0);
+    assert.equal(last.corr_age_ms, null);
+    assert.equal(last.fix_status, '3d_fix');
+  });
+});
