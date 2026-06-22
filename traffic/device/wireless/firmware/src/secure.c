@@ -7,6 +7,14 @@
 #include "monocypher.h"
 #include "nrf.h"
 
+/* Release builds (-DFLEET_KEY_REQUIRED, see CMakeLists.txt) refuse to compile
+ * against the all-zero placeholder key, so a deployment can never silently ship
+ * with no security. The placeholder defines LORA_PSK_PLACEHOLDER; a real key
+ * does not. */
+#if defined(FLEET_KEY_REQUIRED) && defined(LORA_PSK_PLACEHOLDER)
+#error "FLEET_KEY_REQUIRED build but src/secret.h is the placeholder key. Generate a real fleet key (see secret.h.example)."
+#endif
+
 /* Fleet-wide pre-shared key. All boards must be flashed with the same key. */
 static const uint8_t KEY[32] = { LORA_PSK_BYTES };
 
@@ -64,6 +72,10 @@ int sec_seal(uint8_t *out, int out_cap, uint8_t type, uint8_t node_id,
     h.type = type;
     h.node_id = node_id;
     h.boot_id = g_boot_id;
+    /* Never let ctr wrap: a repeated (boot_id, ctr) would reuse a nonce, which is
+     * catastrophic for the stream cipher. 2^32 seals is unreachable in a session
+     * (decades at any real packet rate); refuse rather than wrap. */
+    if (g_tx_ctr == 0xFFFFFFFFu) { return -3; }
     h.ctr = ++g_tx_ctr; /* first sealed packet uses ctr = 1 */
 
     uint8_t nonce[24];

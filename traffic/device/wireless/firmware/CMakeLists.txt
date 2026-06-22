@@ -37,9 +37,16 @@ foreach(req
     endif()
 endforeach()
 
-# Fleet pre-shared key (src/secret.h, gitignored). Seed a placeholder from the
-# committed example on first build so dev/CI compile; deployments must replace it.
+# Fleet pre-shared key (src/secret.h, gitignored). Dev/CI builds auto-seed a
+# placeholder from the committed example so they compile; release/deploy builds
+# pass -DFLEET_KEY_REQUIRED=ON, which (a) refuses to auto-seed a missing key and
+# (b) makes secure.c #error on the placeholder — so a deployment can never
+# silently ship with the all-zero key.
+option(FLEET_KEY_REQUIRED "Require a real (non-placeholder) src/secret.h; for release/deploy builds" OFF)
 if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/src/secret.h")
+    if(FLEET_KEY_REQUIRED)
+        message(FATAL_ERROR "FLEET_KEY_REQUIRED: src/secret.h is missing. Create it from secret.h.example with a real fleet key before a release build.")
+    endif()
     message(WARNING "src/secret.h not found — seeding a placeholder (all-zero) key from secret.h.example. This provides NO security; create src/secret.h with a real key before deploying (see secret.h.example).")
     configure_file("${CMAKE_CURRENT_LIST_DIR}/src/secret.h.example"
                    "${CMAKE_CURRENT_LIST_DIR}/src/secret.h" COPYONLY)
@@ -116,6 +123,11 @@ target_include_directories(${ELF} PRIVATE
 )
 
 target_compile_definitions(${ELF} PRIVATE NRF52840_XXAA)
+
+# Propagate the release key requirement to secure.c's placeholder #error guard.
+if(FLEET_KEY_REQUIRED)
+    target_compile_definitions(${ELF} PRIVATE FLEET_KEY_REQUIRED)
+endif()
 
 # Single binary for all boards — role/set/channel resolved at runtime from the
 # chip's FICR.DEVICEID (src/node_id.c).

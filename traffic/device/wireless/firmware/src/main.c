@@ -57,11 +57,13 @@ static void debug_id(const char *role)
  * ACK; retransmit (same ev_seq, so the master dedups) up to 4 times. The event
  * time is preserved across retransmits (DESIGN §2.8). Backoff is keyed by node
  * so two sensors firing at once de-correlate. */
-static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint8_t me, uint16_t *ev_seq)
+static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint8_t me,
+                              uint32_t master_boot_id, uint16_t *ev_seq)
 {
     event_pl_t e;
     e.ev_seq = (*ev_seq)++;
     e.ev_master_t = off + ev_tick;
+    e.master_boot_id = master_boot_id; /* binds the event to the current master session */
     e.flags = 0;
     uint16_t this_seq = e.ev_seq;
 
@@ -74,6 +76,7 @@ static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint8_t me, uint16
          * window accepts (a verbatim resend would be dropped as a replay). */
         uint8_t tx[WIRE_EVENT];
         int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_EVENT, me, &e, sizeof(e));
+        if (wlen < 0) { break; } /* tx counter exhausted (unreachable in a session) */
         radio_transmit(tx, wlen);
         radio_start_rx();
 
@@ -111,6 +114,7 @@ static void sensor_send_status(uint8_t me, uint8_t *sseq, uint64_t off, int32_t 
     s.temp_c10 = meas_temp_c10();
     uint8_t tx[WIRE_STATUS];
     int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_STATUS, me, &s, sizeof(s));
+    if (wlen < 0) { radio_start_rx(); return; } /* tx counter exhausted */
     if (radio_channel_busy()) { board_delay_ms(3u); }
     radio_transmit(tx, wlen);
     radio_start_rx();
@@ -135,6 +139,7 @@ static void run_sensor(int st)
     uint32_t last_blink = board_millis();
     uint8_t buf[WIRE_MAX];
     sec_replay_t from_master = {0}; /* replay window for the master's beacons/acks */
+    uint32_t master_boot_id = 0;    /* current master session, learned from beacons */
 
     if (st == 0) { radio_start_rx(); }
 
@@ -161,6 +166,7 @@ static void run_sensor(int st)
                 m.node_id == NODE_MASTER && b.ver == PROTO_VER &&
                 sec_replay(&from_master, m.boot_id, m.ctr)) {
                 board_led_toggle();
+                master_boot_id = m.boot_id; /* track the session events bind to */
                 if (have_prev) {
                     if (b.seq == (uint8_t)(prev_seq + 1u)) {
                         cur_off = b.m_tx_prev + T_AIR_REF_TICKS - prev_l_rx;
@@ -193,7 +199,7 @@ static void run_sensor(int st)
 
         uint64_t ev_tick;
         if (capture_sensor_get(&ev_tick) && have_off && me < MAX_NODES) {
-            sensor_send_event(ev_tick, cur_off, me, &ev_seq);
+            sensor_send_event(ev_tick, cur_off, me, master_boot_id, &ev_seq);
         }
 
         /* TDMA STATUS: only on frames selected for this node, and only once we
@@ -212,7 +218,7 @@ static void run_sensor(int st)
         static uint32_t sim_last;
         if (have_off && me < MAX_NODES && (uint32_t)(board_millis() - sim_last) >= 3000u) {
             sim_last = board_millis();
-            sensor_send_event(capture_now64(), cur_off, me, &ev_seq);
+            sensor_send_event(capture_now64(), cur_off, me, master_boot_id, &ev_seq);
         }
 #endif
     }
@@ -337,9 +343,11 @@ static void run_master(int st)
             b.slot_us = (uint16_t)(SLOT_WIDTH_MS * 1000u);
             uint8_t tx[WIRE_BEACON];
             int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_BEACON, NODE_MASTER, &b, sizeof(b));
-            radio_transmit(tx, wlen);
-            uint64_t cap = 0;
-            if (capture_dio1_get(&cap)) { m_tx_last = cap; }
+            if (wlen > 0) {
+                radio_transmit(tx, wlen);
+                uint64_t cap = 0;
+                if (capture_dio1_get(&cap)) { m_tx_last = cap; }
+            }
             radio_start_rx();
 
             pu_emit_heartbeat(capture_now64(), now, seq, node_count_seen());
@@ -375,20 +383,26 @@ static void run_master(int st)
             sec_meta_t m;
             event_pl_t e;
             if (sec_unseal(buf, n, &m, &e, sizeof(e)) != 0) { continue; }
+            /* Session binding: the event must name THIS master's current boot_id.
+             * An event captured under a previous master power-cycle names the old
+             * session and is dropped — closing cross-reboot EVENT replay
+             * (DESIGN §2.11). A sensor learns the current id from live beacons, so
+             * after a master swap its events re-bind as soon as it re-syncs. */
+            if (e.master_boot_id != sec_boot_id()) { continue; }
             if (!sec_replay(&g_node[m.node_id].rx, m.boot_id, m.ctr)) { continue; }
-            /* Freshness: reject a replayed/forged event whose master-time tick is
-             * implausibly far from now, even if it carried a fresh boot_id
-             * (DESIGN §2.11). dt = now - event-time, normally a few ms. */
+            /* Freshness backstop: reject a timestamp too far in the past (stale
+             * replay) or implausibly in the future. Asymmetric — a real event is
+             * at most a few ms ahead of master time (sync error). dt = now - ev. */
             uint64_t now_t = capture_now64();
             int64_t dt = (int64_t)now_t - (int64_t)e.ev_master_t;
-            int64_t fresh = (int64_t)EVENT_FRESH_MS * (int64_t)TICKS_PER_MS;
-            if (dt < -fresh || dt > fresh) { continue; }
+            if (dt > (int64_t)EVENT_FRESH_MS * (int64_t)TICKS_PER_MS ||
+                dt < -((int64_t)EVENT_FUTURE_MS * (int64_t)TICKS_PER_MS)) { continue; }
             node_stat_t *ns = &g_node[m.node_id];
             ns->seen = 1;
             ns->rssi = rssi;
             ns->snr = snr;
             ns->last_seen_ms = board_millis();
-            ns->last_lat_ms = (uint32_t)((now_t - e.ev_master_t) / TICKS_PER_MS);
+            ns->last_lat_ms = (uint32_t)((dt < 0 ? 0 : dt) / TICKS_PER_MS);
             /* Report only the first copy; retransmits share the ev_seq. */
             if (!(ns->have_ev && ns->last_ev_seq == e.ev_seq)) {
                 ns->have_ev = 1;
@@ -401,7 +415,7 @@ static void run_master(int st)
             a.ev_seq = e.ev_seq;
             uint8_t tx[WIRE_ACK];
             int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_ACK, NODE_MASTER, &a, sizeof(a));
-            radio_transmit(tx, wlen);
+            if (wlen > 0) { radio_transmit(tx, wlen); }
             radio_start_rx();
         } else if (type == PKT_TYPE_STATUS && n >= WIRE_STATUS) {
             sec_meta_t m;

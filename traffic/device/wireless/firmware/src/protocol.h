@@ -54,10 +54,15 @@ typedef struct __attribute__((packed)) {
     uint16_t slot_us;    /* TDMA status slot width in microseconds */
 } beacon_pl_t;
 
-/* Sensor -> master. ev_master_t = event tick already mapped to master time. */
+/* Sensor -> master. ev_master_t = event tick already mapped to master time.
+ * master_boot_id = boot_id of the master session this event is synced to (from
+ * the beacons the sensor is tracking). The master rejects events that don't name
+ * its current session, so an event captured under a previous master power-cycle
+ * cannot be replayed after the master reboots (DESIGN §2.11). */
 typedef struct __attribute__((packed)) {
     uint16_t ev_seq;
     uint64_t ev_master_t;
+    uint32_t master_boot_id;
     uint8_t  flags;
 } event_pl_t;
 
@@ -92,7 +97,7 @@ typedef struct __attribute__((packed)) {
 #define SEC_WIRE_LEN(pl) (SEC_OVERHEAD + (int)(pl))
 
 #define WIRE_BEACON SEC_WIRE_LEN(sizeof(beacon_pl_t)) /* 40 */
-#define WIRE_EVENT  SEC_WIRE_LEN(sizeof(event_pl_t))  /* 37 */
+#define WIRE_EVENT  SEC_WIRE_LEN(sizeof(event_pl_t))  /* 41 */
 #define WIRE_ACK    SEC_WIRE_LEN(sizeof(ack_pl_t))    /* 29 */
 #define WIRE_STATUS SEC_WIRE_LEN(sizeof(status_pl_t)) /* 47 */
 #define WIRE_MAX    64 /* RX buffer size; largest sealed packet is WIRE_STATUS */

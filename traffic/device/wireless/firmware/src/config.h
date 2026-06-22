@@ -62,22 +62,25 @@
  * STATUS in a node-keyed TDMA slot measured from its beacon RxDone, so STATUS
  * uplinks never collide. Asynchronous EVENTs use CAD + ACK + backoff in the rest
  * of the frame. AEAD sealing (DESIGN §2.11) adds 26 B/packet (10 B header +
- * 16 B tag), so the largest packet (sealed STATUS, 47 B) is ~62 ms on air vs the
- * ~30 ms of the old plaintext format. Slots/base widened to keep margin for that
- * plus clock error (<40 us/s) and Rx/Tx turnaround. 6 sensors fit easily:
- * 80 + 6*90 = 620 ms of the 1 s frame. */
-#define SLOT_WIDTH_MS   90u  /* per-node STATUS slot width (sealed STATUS ~62 ms) */
+ * 16 B tag); the largest packet (sealed STATUS, 47 B) is ~46 ms on air at
+ * SF7/BW250/CR4-5 vs the ~31 ms of the old plaintext format. Slots/base widened
+ * to keep margin for that plus clock error (<40 us/s) and Rx/Tx turnaround.
+ * 6 sensors fit easily: 80 + 6*90 = 620 ms of the 1 s frame. */
+#define SLOT_WIDTH_MS   90u  /* per-node STATUS slot width (sealed STATUS ~46 ms + guard) */
 #define STATUS_GUARD_MS 10u  /* sensor waits this long into its slot before TX */
-#define TDMA_BASE_MS    80u  /* first slot starts here (sealed beacon ~53 ms drains) */
+#define TDMA_BASE_MS    80u  /* first slot starts here (sealed beacon ~41 ms drains) */
 #define STATUS_PERIOD_S 5u   /* a node sends STATUS once per this many beacons (= 5 s) */
 
-/* EVENT freshness gate (DESIGN §2.11). An EVENT carries an absolute master-time
- * tick; the master rejects one whose timestamp is more than this far from "now",
- * which kills replays of captured events even if the attacker forges a fresh
- * boot_id (the AEAD itself can't tell a verbatim replay of a valid packet from a
- * new session). The bound is generous vs the few-ms air latency so legitimate
- * events under sync error always pass. */
-#define EVENT_FRESH_MS  3000u
+/* EVENT freshness gate (DESIGN §2.11), a defence-in-depth backstop to the
+ * master-session binding (event names the master boot_id) and the per-sensor
+ * replay counter. An EVENT carries an absolute master-time tick; the master
+ * rejects one whose timestamp is too old (stale replay within a session) or
+ * implausibly in the future. The window is asymmetric: a real event is at most a
+ * few ms in the future (sensor sync error), but can be a few s in the past if
+ * the link was momentarily congested, so the past bound is generous and the
+ * future bound is tight. */
+#define EVENT_FRESH_MS  3000u /* max age (past) accepted */
+#define EVENT_FUTURE_MS 250u  /* max future skew accepted (sync error headroom) */
 
 /* W5 Schottky drop between the cell and VDDH (DESIGN: BAT60B ~0.24 V; some boards
  * ship a silicon diode ~0.7 V). Added back to the sensor's measured VDDH to
