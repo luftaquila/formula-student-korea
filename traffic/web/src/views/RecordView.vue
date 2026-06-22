@@ -120,6 +120,15 @@ function isEditingRow(rowid) {
   return editingDetailId.value === rowid || editingConesId.value === rowid || editingOcId.value === rowid;
 }
 
+// 편집 종료 시 호출: 편집 중 보류된 SSE 갱신이 있고 그 행 편집이 끝났으면 데이터 재동기.
+// (낙관적 저장 PATCH 완료 후에 호출해야 refetch가 방금 저장분을 포함 — 레이스 없음.)
+function flushMissedUpdate(rowid) {
+  if (missedUpdate.value && !isEditingRow(rowid)) {
+    missedUpdate.value = false;
+    refreshRecords();
+  }
+}
+
 // SSE 업데이트 시 부분 갱신 (편집 보호, 비활성 시 defer)
 watch(lastUpdate, (update) => {
   if (!update || update.name !== selectedFile.value) return;
@@ -130,7 +139,10 @@ watch(lastUpdate, (update) => {
   }
 
   if (update.type === "add" && update.record) {
-    records.value = [...records.value, update.record];
+    // rowid 중복 방어: 로컬 refetch와 add SSE가 겹치면 같은 행이 두 번 들어올 수 있다.
+    if (!records.value.some((r) => r.rowid === update.record.rowid)) {
+      records.value = [...records.value, update.record];
+    }
   } else if (update.type === "update" && update.record) {
     if (isEditingRow(update.record.rowid)) {
       missedUpdate.value = true;
@@ -273,14 +285,7 @@ async function downloadXLSX() {
   const blob = new Blob([buf], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
-
-  const filename = `${selectedFile.value}.xlsx`;
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadBlob(blob, `${selectedFile.value}.xlsx`);
 }
 
 function downloadBlob(blob, filename) {
@@ -350,20 +355,19 @@ function detailInputRef(el) {
 
 async function handleDetailChange(record, value) {
   editingDetailId.value = null;
-  if (missedUpdate.value && !isEditingRow(record.rowid)) {
-    missedUpdate.value = false;
-    refreshRecords();
-  }
-  if (value === (record.detail || '')) return;
-  try {
-    const result = await updateRecord(selectedFile.value, record.rowid, "detail", value);
-    const idx = records.value.findIndex((r) => r.rowid === record.rowid);
-    if (idx !== -1) {
-      records.value[idx].detail = result.detail;
+  if (value !== (record.detail || '')) {
+    try {
+      const result = await updateRecord(selectedFile.value, record.rowid, "detail", value);
+      const idx = records.value.findIndex((r) => r.rowid === record.rowid);
+      if (idx !== -1) {
+        records.value[idx].detail = result.detail;
+      }
+    } catch (e) {
+      notyf.error(`상세 저장 실패: ${e.message}`);
     }
-  } catch (e) {
-    notyf.error(`상세 저장 실패: ${e.message}`);
   }
+  // 쓰기 완료 후에 편집 중 보류된 SSE 갱신 반영(refetch가 방금 저장분을 포함 → 레이스 없음).
+  flushMissedUpdate(record.rowid);
 }
 
 function startConesEdit(rowid) {
@@ -376,21 +380,19 @@ function conesInputRef(el) {
 
 async function handleConesChange(record, value) {
   editingConesId.value = null;
-  if (missedUpdate.value && !isEditingRow(record.rowid)) {
-    missedUpdate.value = false;
-    refreshRecords();
-  }
   const numValue = parseInt(value, 10) || 0;
-  if (numValue === (record.cones || 0)) return;
-  try {
-    const result = await updateRecord(selectedFile.value, record.rowid, "cones", String(numValue));
-    const idx = records.value.findIndex((r) => r.rowid === record.rowid);
-    if (idx !== -1) {
-      records.value[idx].cones = result.cones;
+  if (numValue !== (record.cones || 0)) {
+    try {
+      const result = await updateRecord(selectedFile.value, record.rowid, "cones", String(numValue));
+      const idx = records.value.findIndex((r) => r.rowid === record.rowid);
+      if (idx !== -1) {
+        records.value[idx].cones = result.cones;
+      }
+    } catch (e) {
+      notyf.error(`콘터치 저장 실패: ${e.message}`);
     }
-  } catch (e) {
-    notyf.error(`콘터치 저장 실패: ${e.message}`);
   }
+  flushMissedUpdate(record.rowid);
 }
 
 function startOcEdit(rowid) {
@@ -403,21 +405,19 @@ function ocInputRef(el) {
 
 async function handleOcChange(record, value) {
   editingOcId.value = null;
-  if (missedUpdate.value && !isEditingRow(record.rowid)) {
-    missedUpdate.value = false;
-    refreshRecords();
-  }
   const numValue = parseInt(value, 10) || 0;
-  if (numValue === (record.oc || 0)) return;
-  try {
-    const result = await updateRecord(selectedFile.value, record.rowid, "oc", String(numValue));
-    const idx = records.value.findIndex((r) => r.rowid === record.rowid);
-    if (idx !== -1) {
-      records.value[idx].oc = result.oc;
+  if (numValue !== (record.oc || 0)) {
+    try {
+      const result = await updateRecord(selectedFile.value, record.rowid, "oc", String(numValue));
+      const idx = records.value.findIndex((r) => r.rowid === record.rowid);
+      if (idx !== -1) {
+        records.value[idx].oc = result.oc;
+      }
+    } catch (e) {
+      notyf.error(`코스 이탈 저장 실패: ${e.message}`);
     }
-  } catch (e) {
-    notyf.error(`코스 이탈 저장 실패: ${e.message}`);
   }
+  flushMissedUpdate(record.rowid);
 }
 
 async function handleScoreboardToggle(record) {

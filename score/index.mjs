@@ -182,7 +182,10 @@ const EVENT_RE = /^event:\s*(.+)$/m;
 const DATA_RE = /^data:\s*(.*)$/gm;
 
 // SSE 구독 팩토리 (중복 연결 방지 + exponential backoff)
-function createSSESubscriber(name, serverUrl, eventPath, prefix) {
+// allowedEvents: 재전파할 이벤트 이름 화이트리스트(Set). null=전부. score 프론트가 실제로
+// 구독하는 이벤트만 재전파해 traffic의 wireless 텔레메트리/이벤트 firehose(초당 다수)가
+// 핸들러도 없는 모든 score 클라로 흘러가 대역폭·CPU를 낭비하는 것을 막는다.
+function createSSESubscriber(name, serverUrl, eventPath, prefix, allowedEvents = null) {
   let reconnecting = false;
   let connected = false;
   let backoff = 3000;
@@ -215,11 +218,14 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix) {
         for (const msg of messages) {
           try {
             const eventMatch = msg.match(EVENT_RE);
+            if (!eventMatch) continue;
+            const evName = eventMatch[1].trim();
+            // 화이트리스트 밖 이벤트는 파싱·재전파하지 않는다(firehose 차단).
+            if (allowedEvents && !allowedEvents.has(evName)) continue;
             const dataLines = msg.match(DATA_RE);
-            if (eventMatch && dataLines) {
-              const jsonStr = dataLines.map(l => l.replace(/^data:\s*/, "")).join("\n");
-              broadcastEvent(`${prefix}:${eventMatch[1]}`, JSON.parse(jsonStr));
-            }
+            if (!dataLines) continue;
+            const jsonStr = dataLines.map(l => l.replace(/^data:\s*/, "")).join("\n");
+            broadcastEvent(`${prefix}:${evName}`, JSON.parse(jsonStr));
           } catch (e) {
             logger.warn(null, "score.sse_parse_error", { source: name, error: e.message });
           }
@@ -255,8 +261,9 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix) {
 }
 
 if (!options.skipSSESubscriptions) {
-  const subscribeInspectionSSE = createSSESubscriber("Inspection", INSPECTION_SERVER, "/api/sheet/events", "inspection");
-  const subscribeTrafficSSE = createSSESubscriber("Traffic", TRAFFIC_SERVER, "/api/events", "traffic");
+  // score 프론트(useSSE.js)가 실제 구독하는 이벤트만 재전파.
+  const subscribeInspectionSSE = createSSESubscriber("Inspection", INSPECTION_SERVER, "/api/sheet/events", "inspection", new Set(["category-result", "answer"]));
+  const subscribeTrafficSSE = createSSESubscriber("Traffic", TRAFFIC_SERVER, "/api/events", "traffic", new Set(["records", "record-visibility"]));
   subscribeInspectionSSE();
   subscribeTrafficSSE();
 }
@@ -294,12 +301,29 @@ function findItemsInCategory(tree, categoryName, itemNames) {
    API 라우트
    ============================================ */
 
+// year -> Promise. 같은 연도 동시 집계 요청을 하나로 합쳐 업스트림 호출 증폭을 막는다.
+const inflightScore = new Map();
+
 // GET /api/score?year=YYYY — 메인 집계 엔드포인트
 app.get("/api/score", async (req, res) => {
   const year = Number(req.query.year);
   if (!year) return res.status(400).send("연도를 지정해야 합니다.");
-
+  // in-flight 합치기: 기록 추가 시 다수 score 클라가 동시에 refetch해도 1회만 집계.
+  let p = inflightScore.get(year);
+  if (!p) {
+    p = computeScore(year).finally(() => inflightScore.delete(year));
+    inflightScore.set(year, p);
+  }
   try {
+    res.json(await p);
+  } catch (e) {
+    logger.warn(req, "score.aggregate", { error: e.message, year }, String(year));
+    res.status(500).send("데이터 집계 오류가 발생했습니다.");
+  }
+});
+
+// 연도별 성적 집계(엔트리·검차·경기기록·수동점수·설정). 실패 시 throw(라우트가 500 처리).
+async function computeScore(year) {
     // 1. Entry 서비스에서 엔트리 목록 fetch
     const entryRes = await fetch(`${ENTRY_SERVER}/api/entries?year=${year}`, {
       headers: internalHeaders(),
@@ -498,12 +522,8 @@ app.get("/api/score", async (req, res) => {
       settings[row.event_type][row.setting_key] = row.value;
     }
 
-    res.json({ entries, inspection, events, manualScores, penalties, settings });
-  } catch (e) {
-    logger.warn(req, "score.aggregate", { error: e.message, year }, year ? String(year) : null);
-    res.status(500).send("데이터 집계 오류가 발생했습니다.");
-  }
-});
+    return { entries, inspection, events, manualScores, penalties, settings };
+}
 
 // PUT /api/score/manual — 수동 입력 점수 저장 (보고서, 에너지)
 app.put("/api/score/manual", (req, res) => {

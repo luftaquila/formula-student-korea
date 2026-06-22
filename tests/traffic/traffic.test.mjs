@@ -1348,4 +1348,38 @@ describe('Wireless save guards', () => {
     await client.delete(`/api/wireless/mapping/${NS}`, { cookie: adminCookie });
     await client.delete(`/api/wireless/mapping/${NF}`, { cookie: adminCookie });
   });
+
+  // bind-at-arm: arm 본문에 실린 팀으로 귀속이 고정 → arm 후 select가 팀을 바꿔도 기록은 arm 시점 팀.
+  it('binds team at arm; a later select change does NOT re-attribute the record', async () => {
+    const ev = '오토크로스';
+    const NS = 'bind-s', NF = 'bind-f', NAME = 'ENG-BIND';
+    await client.put(`/api/wireless/mapping/${NS}`, { body: { event_type: ev, role: 'start' }, cookie: adminCookie });
+    await client.put(`/api/wireless/mapping/${NF}`, { body: { event_type: ev, role: 'finish' }, cookie: adminCookie });
+    // arm 본문에 팀A(num 21) + event_name을 실어 bind-at-arm
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'green', green_tick: '1600000000', team: { num: 21, univ: 'AU', team: 'TeamA' }, event_name: NAME }, cookie: adminCookie });
+    await client.post('/api/wireless/ingest', { body: { events: [{ node_id: NS, master_tick: '1600000000', ev_seq: 1 }] }, cookie: adminCookie }); // 출발
+    // 런 진행 중 팀B(num 22)로 select 변경 — 귀속은 바뀌면 안 됨
+    await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 22, univ: 'BU', team: 'TeamB' }, event_name: NAME }, cookie: adminCookie });
+    await client.post('/api/wireless/ingest', { body: { events: [{ node_id: NF, master_tick: '1600160000', ev_seq: 1 }] }, cookie: adminCookie }); // 도착(10ms)
+    const rows = await (await client.get(`/api/records/${encodeURIComponent(`FSK ${YEAR} ${NAME}`)}`, { cookie: adminCookie })).json();
+    assert.ok(rows.some((r) => r.num === 21 && r.team === 'TeamA' && r.result === 10), 'arm 시점 팀A로 귀속');
+    assert.ok(!rows.some((r) => r.num === 22), '중간 select의 팀B로 귀속되지 않음');
+    await client.delete(`/api/records/${encodeURIComponent(`FSK ${YEAR} ${NAME}`)}`, { cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
+    await client.delete(`/api/wireless/mapping/${NS}`, { cookie: adminCookie });
+    await client.delete(`/api/wireless/mapping/${NF}`, { cookie: adminCookie });
+  });
+
+  it('arm green rejects a malformed team in the body (400)', async () => {
+    const res = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'green', green_tick: '100', team: { num: 0, univ: 'X', team: 'Y' } }, cookie: adminCookie });
+    assert.equal(res.status, 400);
+  });
+
+  it('ingest rejects an event with a missing master_tick', async () => {
+    const res = await client.post('/api/wireless/ingest', { body: { events: [{ node_id: 'no-tick', ev_seq: 1 }] }, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.stored, 0, 'master_tick 없는 이벤트는 저장 안 함');
+    assert.equal(body.rejected, 1, 'rejected로 계수');
+  });
 });

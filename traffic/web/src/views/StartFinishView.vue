@@ -104,9 +104,10 @@ function handleGreen() {
   startRecord.value = null;
   savedRecord.value = null;
   displayRecord.value = null;
-  // 무선: arm 직전 현재 선택을 서버 세션에 flush(디바운스 레이스 제거) → 서버 기록 귀속 보장.
+  // 무선: arm 직전 현재 선택을 서버 세션에 flush(물리 경기 귀속 + 관찰자 미러). 가상 경기는
+  // 추가로 sendGreen에 선택을 실어 arm 본문으로 bind-at-arm(레이스 무관 귀속 고정).
   if (props.wireless) serial.selectEvent?.(selectedEntry.value, eventName.value.trim() || null);
-  serial.sendGreen();
+  serial.sendGreen(selectedEntry.value, eventName.value.trim() || null);
 }
 function handleRed() {
   serial.sendRed();
