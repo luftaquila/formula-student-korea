@@ -1482,23 +1482,39 @@ describe('Camera relay', () => {
   it('caps concurrent viewers (503 past the limit)', async () => {
     // The viewer cap is the only thing stopping a scripted/looping admin from
     // exhausting sockets/heap on the shared mission server, so guard it.
+    // Use raw node:http with agent:false: each viewer gets a DISTINCT socket
+    // that stays open. (fetch/undici reuses+evicts held, unconsumed streaming
+    // connections, which under-counts viewers and made this flaky.)
+    const http = (await import('node:http')).default;
     const MAX = 8; // mirrors MAX_CAMERA_VIEWERS in course/index.mjs
-    const acs = [];
+    const u = new URL(`${url}/api/rover/camera/stream`);
+    const opened = [];
+    const openStream = () => new Promise((resolve) => {
+      const req = http.request(
+        { hostname: u.hostname, port: u.port, path: u.pathname, method: 'GET', headers: { Cookie: adminCookie }, agent: false },
+        (res) => { res.on('data', () => {}); res.on('error', () => {}); resolve({ status: res.statusCode, req }); },
+      );
+      req.on('error', () => resolve({ status: 0, req }));
+      req.end();
+    });
+    const viewers = async () => (await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()).viewers;
     try {
       for (let i = 0; i < MAX; i++) {
-        const ac = new AbortController();
-        acs.push(ac);
-        const r = await fetch(`${url}/api/rover/camera/stream`, { headers: { Cookie: adminCookie }, signal: ac.signal });
+        const r = await openStream();
+        opened.push(r);
         assert.equal(r.status, 200, `viewer ${i + 1} should be accepted`);
       }
-      const ac = new AbortController();
-      acs.push(ac);
-      const over = await fetch(`${url}/api/rover/camera/stream`, { headers: { Cookie: adminCookie }, signal: ac.signal });
+      // A held stream registers server-side a beat after the headers arrive;
+      // wait until all MAX are counted so the over-cap check isn't racy.
+      for (let t = 0; t < 50 && (await viewers()) < MAX; t++) await sleep(20);
+      assert.equal(await viewers(), MAX, 'server should have registered all viewers');
+
+      const over = await openStream();
+      opened.push(over);
       assert.equal(over.status, 503, 'a viewer past the cap must be rejected');
-      try { await over.body?.cancel(); } catch { /* ignore */ }
     } finally {
-      for (const ac of acs) ac.abort();
-      await sleep(150); // let the server reap the aborted viewers before the next test
+      for (const o of opened) { try { o.req.destroy(); } catch { /* ignore */ } }
+      await sleep(150); // let the server reap the closed viewers before the next test
     }
   });
 });

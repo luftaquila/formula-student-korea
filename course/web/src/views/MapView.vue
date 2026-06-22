@@ -3004,10 +3004,13 @@ async function pollCameraStatus() {
     cameraError.value = !healthy;
     if (healthy) {
       cameraLastOkAt = Date.now();
-    } else if (s.camera_connected && Date.now() - cameraLastOkAt > 6000) {
-      // Server has a camera but our view has been stale a while → the <img>
-      // socket is likely dead (server restart / proxy drop). Re-request it.
-      // Throttle to ~6s so we don't reconnect-storm a genuinely missing camera.
+    } else if (s.camera_connected && s.viewers === 0 && Date.now() - cameraLastOkAt > 5000) {
+      // The rover is connected but the server has ZERO viewers — our <img>
+      // socket died server-side (server restart / proxy drop) while we still
+      // think it's open. Re-request the stream to re-register and resume.
+      // (If viewers > 0 the server still has us and frames are merely absent —
+      // a dead/unplugged camera — so reconnecting wouldn't help; we just show
+      // "신호 없음" and avoid churning the control channel.)
       cameraReqId.value = Date.now();
       cameraLastOkAt = Date.now();
     }

@@ -153,14 +153,19 @@ class CameraStreamer:
 
     def start(self):
         # Cancel any pending debounced release — a viewer reconnected within the
-        # linger, so keep capturing without releasing/reopening the device.
+        # linger, so keep capturing without releasing/reopening the device. The
+        # _enabled mutation MUST be under the same lock as _deferred_stop's
+        # clear(): otherwise a start() interleaving between _deferred_stop()
+        # releasing the lock and clearing _enabled would be lost, wedging
+        # capture off with a viewer watching.
         with self._lock:
             if self._stop_timer is not None:
                 self._stop_timer.cancel()
                 self._stop_timer = None
-        if not self._enabled.is_set():
-            log("capture START")
+            was_set = self._enabled.is_set()
             self._enabled.set()
+        if not was_set:
+            log("capture START")
 
     def stop(self):
         # Debounce: don't release the device immediately — a rapid toggle or a
@@ -174,10 +179,14 @@ class CameraStreamer:
             self._stop_timer.start()
 
     def _deferred_stop(self):
+        # Clear _enabled under the lock, and only if a start() didn't already
+        # cancel/supersede this timer (it nulls _stop_timer when it does).
         with self._lock:
+            if self._stop_timer is None:
+                return
             self._stop_timer = None
+            self._enabled.clear()
         log("capture STOP")
-        self._enabled.clear()
 
     def run(self):
         self._worker.start()
