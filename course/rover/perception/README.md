@@ -47,7 +47,7 @@ podman secret. A udev `add|remove` on a video device restarts the unit via
 | `CAMERA_WIDTH` / `CAMERA_HEIGHT` | 1280 / 480 | capture resolution |
 | `CAMERA_FPS` | 8 | max frames/s pushed |
 | `CAMERA_JPEG_QUALITY` | 70 | 1–100 |
-| `CAMERA_VIEW` | full | `full` \| `left` \| `right` — crop one sensor of a side-by-side stereo frame for a single clean view |
+| `CAMERA_VIEW` | left | `left` \| `right` \| `full` — a side-by-side stereo frame shows doubled as `full`; `left`/`right` crop one sensor for a single clean operator view |
 
 Override per-rover with `podman` env or by editing `/etc/pilot/pilot.conf`
 (then `sudo systemctl restart perception.service`).

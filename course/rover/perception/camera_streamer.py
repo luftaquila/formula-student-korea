@@ -30,9 +30,9 @@ Config (environment):
   CAMERA_HEIGHT       capture height (default 480)
   CAMERA_FPS          max frames/s pushed to the server (default 8)
   CAMERA_JPEG_QUALITY 1-100 (default 70)
-  CAMERA_VIEW         full | left | right — for a side-by-side stereo frame,
-                      'left'/'right' crop one sensor for a single clean view
-                      (default: full)
+  CAMERA_VIEW         left | right | full — a side-by-side stereo frame shows a
+                      doubled image as 'full'; 'left'/'right' crop one sensor
+                      for a single clean operator view (default: left)
   SERVER_URL_ALLOW_HTTP  "true" to permit http:// (trusted internal only)
 """
 
@@ -64,7 +64,10 @@ CAMERA_WIDTH = _env_int("CAMERA_WIDTH", 1280)
 CAMERA_HEIGHT = _env_int("CAMERA_HEIGHT", 480)
 CAMERA_FPS = max(1, _env_int("CAMERA_FPS", 8))
 CAMERA_JPEG_QUALITY = min(100, max(1, _env_int("CAMERA_JPEG_QUALITY", 70)))
-CAMERA_VIEW = (_env("CAMERA_VIEW", "full") or "full").lower()
+# Default 'left': a 60 mm-baseline USB stereo cam exposes a single side-by-side
+# UVC frame, so 'full' would show the operator a doubled image. 'left' crops one
+# sensor for a clean single view; set 'full' for a genuinely single-sensor cam.
+CAMERA_VIEW = (_env("CAMERA_VIEW", "left") or "left").lower()
 ALLOW_HTTP = (_env("SERVER_URL_ALLOW_HTTP", "false") or "").lower() == "true"
 
 SSE_RECONNECT_MAX_S = 30.0
@@ -130,6 +133,15 @@ class CameraStreamer:
         self._running = True
         self._session = requests.Session()
         self._worker = threading.Thread(target=self._capture_loop, daemon=True)
+        self._last_warn_t = 0.0
+
+    def _warn_throttled(self, msg):
+        # Rate-limit noisy per-frame failures (rejected POSTs, network blips) so
+        # a persistent misconfig logs a steady ~1/10s breadcrumb, not a flood.
+        now = time.monotonic()
+        if now - self._last_warn_t >= 10.0:
+            self._last_warn_t = now
+            log(msg)
 
     def start(self):
         if not self._enabled.is_set():
@@ -185,15 +197,21 @@ class CameraStreamer:
 
     def _post_frame(self, jpeg_bytes):
         try:
-            self._session.post(
+            resp = self._session.post(
                 f"{SERVER_URL}/api/rover/camera",
                 data=jpeg_bytes,
                 headers={**headers(), "Content-Type": "image/jpeg"},
                 timeout=POST_TIMEOUT_S,
             )
+            # A 2xx round-trip is normal (server returns 204). A 4xx/5xx is a
+            # *successful* HTTP exchange, so it won't raise — surface it
+            # (e.g. 403 = bad/rotated INTERNAL_SECRET) instead of silently
+            # burning uplink pushing frames the server rejects.
+            if resp.status_code >= 400:
+                self._warn_throttled(f"frame POST rejected: HTTP {resp.status_code}")
         except requests.RequestException as e:
             # A viewer dropping or a transient network blip — keep going.
-            log(f"frame POST error: {e}")
+            self._warn_throttled(f"frame POST error: {e}")
 
     # ── control SSE ────────────────────────────────────────────────────────
     def _sse_loop(self):
@@ -217,6 +235,11 @@ class CameraStreamer:
             f"{SERVER_URL}/api/rover/camera/control",
             headers=h, stream=True, timeout=(10.0, 90.0),
         )
+        if resp.status_code in (401, 403):
+            # Don't let an auth rejection (missing/rotated INTERNAL_SECRET) fail
+            # silently behind the generic backoff — call it out by name.
+            log(f"control SSE auth rejected: HTTP {resp.status_code} "
+                "(check INTERNAL_SECRET)")
         resp.raise_for_status()
         log("control SSE connected")
         for line in resp.iter_lines(decode_unicode=True):
@@ -240,6 +263,14 @@ def main():
     if not SERVER_URL.startswith("https://") and not ALLOW_HTTP:
         log(f"FATAL: SERVER_URL must be https:// (got {SERVER_URL!r}); "
             "set SERVER_URL_ALLOW_HTTP=true to override on a trusted network")
+        sys.exit(1)
+    if not INTERNAL_SECRET:
+        # Exit non-zero rather than retry forever: the server denies every
+        # request without the secret, so a silent retry loop would show the
+        # unit 'active' while the camera never works. Exiting lets
+        # perception.service's Restart=on-failure + StartLimit surface a
+        # genuinely failed unit for the operator.
+        log("FATAL: INTERNAL_SECRET not set — cannot authenticate to the server")
         sys.exit(1)
     CameraStreamer().run()
 

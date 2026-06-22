@@ -1379,6 +1379,28 @@ describe('Camera relay', () => {
     assert.ok(up.status === 401 || up.status === 403, 'frame upload is internal-strict');
   });
 
+  it('internal-strict camera paths resist path-variant bypass by a browser admin', async () => {
+    // Express 5 routes a trailing-slash variant to the same handler, so an
+    // exact-match gate would fall through to "admin" and let a browser admin
+    // inject a frame (204) / open the control SSE (200). The security property:
+    // none of these variants may produce a SUCCESS for a non-internal caller
+    // (403 denied or 404 unrouted are both fine — the internal action ran iff
+    // 200/204).
+    const cases = [
+      { method: 'POST', path: '/api/rover/camera/', headers: { 'Content-Type': 'image/jpeg' }, body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) },
+      { method: 'POST', path: '/api/rover/camera//', headers: { 'Content-Type': 'image/jpeg' }, body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) },
+      { method: 'GET', path: '/api/rover/camera/control/', headers: { Accept: 'text/event-stream' } },
+    ];
+    for (const c of cases) {
+      const r = await fetch(`${url}${c.path}`, {
+        method: c.method, headers: { Cookie: adminCookie, ...c.headers }, body: c.body,
+      });
+      assert.ok(![200, 204].includes(r.status),
+        `${c.method} ${c.path} must NOT succeed for a browser admin (got ${r.status})`);
+      try { await r.body?.cancel(); } catch { /* ignore */ }
+    }
+  });
+
   // Accumulate decoded stream bytes into `sink.text`, bounded so a stalled
   // read can never hang the test. Returns a stop() that aborts the reader.
   function pump(reader, sink) {

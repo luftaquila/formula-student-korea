@@ -3017,6 +3017,11 @@ function onCameraError() {
 watch(() => roverStatus.value.connected, (connected) => {
   if (!connected && cameraOn.value) stopCameraStream();
 });
+// The rover panel is v-show (stays mounted), so leaving the tab would keep the
+// MJPEG <img> connected and the rover capturing invisibly. Stop on tab-leave.
+watch(activeTab, (tab) => {
+  if (tab !== "rover" && cameraOn.value) stopCameraStream();
+});
 
 async function setDispenserPosition(position) {
   if (dispenserBusy.value) return;

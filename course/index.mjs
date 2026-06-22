@@ -163,7 +163,15 @@ function isInternalRequest(req) {
 }
 
 const app = createApp({ express }, (req) => {
-  if (req.path === "/api/health") return null;
+  // Normalize before matching: Express 5 routing is case-insensitive and
+  // trailing-slash-insensitive by default, so `/API/rover/camera` and
+  // `/api/rover/camera/` reach the same handlers. A raw `req.path ===` gate
+  // would NOT match those variants and would fall through to "admin", letting
+  // a logged-in admin browser bypass the internal-strict rover endpoints
+  // (seize the rover/camera-control slot, inject frames). Canonicalize the
+  // path the same way the router does so the gate can't be slipped.
+  const p = (req.path || "/").toLowerCase().replace(/\/+$/, "") || "/";
+  if (p === "/api/health") return null;
   // Rover-only endpoints. /api/rover/stream is internal-strict — falling
   // back to "admin" let any logged-in operator open the SSE in a browser
   // and clobber the single roverClient slot, which silently kicked the
@@ -171,24 +179,24 @@ const app = createApp({ express }, (req) => {
   // browser response. Symptom on the operator side: cal start button
   // does nothing despite RTK-fixed + IDLE. Internal-only closes the door.
   if (
-    req.path === "/api/rover/stream" ||
+    p === "/api/rover/stream" ||
     // Camera control SSE + frame upload are rover→server only. Internal-strict
     // (deny browsers) for the same reason as /stream: a browser must not be
     // able to occupy the single camera-control slot or inject frames.
-    req.path === "/api/rover/camera/control" ||
-    req.path === "/api/rover/camera"
+    p === "/api/rover/camera/control" ||
+    p === "/api/rover/camera"
   ) {
     return isInternalRequest(req) ? null : "deny";
   }
   if (
-    req.path === "/api/rover/position" ||
-    req.path === "/api/rover/telemetry" ||
-    req.path === "/api/rover/waypoint_reached" ||
-    req.path === "/api/rover/waypoint_skipped" ||
-    req.path === "/api/rover/spray_result" ||
-    req.path === "/api/rover/antenna_calibration_result" ||
-    req.path === "/api/rover/wheel_calibration_result" ||
-    req.path === "/api/rover/logs"
+    p === "/api/rover/position" ||
+    p === "/api/rover/telemetry" ||
+    p === "/api/rover/waypoint_reached" ||
+    p === "/api/rover/waypoint_skipped" ||
+    p === "/api/rover/spray_result" ||
+    p === "/api/rover/antenna_calibration_result" ||
+    p === "/api/rover/wheel_calibration_result" ||
+    p === "/api/rover/logs"
   ) {
     return isInternalRequest(req) ? null : "admin";
   }
@@ -1701,6 +1709,10 @@ const CAMERA_FRAME_FRESH_MS = 2000;
 // JPEGs unboundedly — a slow viewer (cellular/phone) must never OOM the mission
 // server. ~4 MB ≈ several frames of headroom at our resolution.
 const CAMERA_VIEWER_MAX_BACKLOG = 4 * 1024 * 1024;
+// Bound the camera feature's footprint on the SHARED mission server.
+const MAX_CAMERA_VIEWERS = 8;                 // cap held-open MJPEG responses
+const CAMERA_MIN_FRAME_INTERVAL_MS = 40;      // relay ≤ ~25 fps regardless of rover
+let cameraLastRelayAt = 0;
 
 function sendCameraControl(event) {
   if (!cameraControlClient) return;
@@ -1764,7 +1776,15 @@ app.post("/api/rover/camera", express.raw({ type: "image/jpeg", limit: "3mb" }),
   if (!Buffer.isBuffer(buf) || buf.length === 0) {
     return res.status(400).send("empty frame");
   }
-  cameraLatestFrame = { buf, at: Date.now() };
+  // Rate-cap the relay: drop frames arriving faster than ~25 fps so a fast or
+  // misbehaving rover (the rover self-caps, but defense in depth on the shared
+  // mission server) can't drive unbounded Buffer alloc + fan-out CPU here.
+  const now = Date.now();
+  if (now - cameraLastRelayAt < CAMERA_MIN_FRAME_INTERVAL_MS) {
+    return res.status(204).end();
+  }
+  cameraLastRelayAt = now;
+  cameraLatestFrame = { buf, at: now };
   const header = Buffer.from(
     `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${buf.length}\r\n\r\n`
   );
@@ -1786,6 +1806,12 @@ app.post("/api/rover/camera", express.raw({ type: "image/jpeg", limit: "3mb" }),
 
 // GET /api/rover/camera/stream - browser MJPEG viewer (admin).
 app.get("/api/rover/camera/stream", (req, res) => {
+  // Cap concurrent held-open MJPEG responses so a scripted/looping admin can't
+  // exhaust sockets/heap on the shared server (mirrors the SSE manager's cap).
+  if (cameraViewers.size >= MAX_CAMERA_VIEWERS) {
+    logger.warn(req, "rover.camera.view", { error: "too_many_viewers", viewers: cameraViewers.size }, "rover");
+    return res.status(503).send("카메라 시청자가 너무 많습니다.");
+  }
   res.writeHead(200, {
     "Content-Type": "multipart/x-mixed-replace; boundary=frame",
     "Cache-Control": "no-cache, no-store, must-revalidate",
