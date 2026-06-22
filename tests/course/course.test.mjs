@@ -660,6 +660,18 @@ describe('Rover telemetry + status (internal)', () => {
     assert.equal(data.battery.calibrated_at, calibratedAt);
   });
 
+  it('passes through the MCU status flag bitfield (for fault-cause decoding in the UI)', async () => {
+    // Realistic fault combo: raw E-stop line (0x80) + combined latch (0x01) + undervolt (0x04).
+    const flags = 0x80 | 0x01 | 0x04;
+    const res = await client.post('/api/rover/telemetry', {
+      body: { battery: { voltage: 19.5, percent: 0, source: 'mcu', flags } },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+    const data = await (await client.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(data.battery.flags, flags, 'MCU flags must be exposed for the error-cause popover');
+  });
+
   it('ignores null ntrip_connected (distinguishes unknown from disconnected)', async () => {
     // First set it to true via a boolean
     await client.post('/api/rover/telemetry', {
@@ -896,13 +908,16 @@ describe('Course snapshots', () => {
   });
 });
 
-describe('Mission orphan recovery (on startup)', () => {
-  it('marks running missions as error when the app boots on an existing DB', async () => {
-    // Write an orphan row into the existing DB, then boot a second app instance
-    // against the same file so its startup migration runs against our fixture.
+describe('Mission orphan recovery + boot re-adopt (on startup)', () => {
+  it('keeps a running mission resumable (interrupted, not error) and re-adopts it into memory', async () => {
+    // A row left 'running' means the server died mid-mission. The rover keeps
+    // driving and reconnects, so the mission must NOT be discarded — it becomes
+    // 'interrupted' (resumable, not ended) and is reloaded into mission_progress
+    // so the reconnecting rover stays attached and the UI can rebuild the view.
     const started_at = Date.now() - 60000;
-    db.prepare("INSERT INTO mission (started_at, status, waypoints_json) VALUES (?, 'running', ?)")
-      .run(started_at, '[]');
+    db.prepare(
+      "INSERT INTO mission (started_at, status, waypoints_json, current_waypoint_idx, spray_results_json) VALUES (?, 'running', ?, ?, ?)"
+    ).run(started_at, '[{"lat":35,"lng":126},{"lat":35.0001,"lng":126.0001},{"lat":35.0002,"lng":126.0002}]', 2, '{"0":"success"}');
     const orphanId = db.prepare("SELECT id FROM mission WHERE started_at = ?").get(started_at).id;
 
     const { createCourseApp } = await import('../../course/index.mjs?v=orphan');
@@ -910,12 +925,19 @@ describe('Mission orphan recovery (on startup)', () => {
     const started = await startServer(result.app);
     const localClient = createClient(started.baseUrl);
     try {
-      const res = await localClient.get('/api/missions', { cookie: adminCookie });
-      const data = await res.json();
+      const data = await (await localClient.get('/api/missions', { cookie: adminCookie })).json();
       const m = data.missions.find((x) => x.id === orphanId);
       assert.ok(m, 'orphan mission row disappeared');
-      assert.equal(m.status, 'error');
-      assert.ok(m.ended_at, 'ended_at should be populated');
+      assert.equal(m.status, 'interrupted', 'running orphan must become resumable, not error');
+      assert.ok(!m.ended_at, 'interrupted mission must not be ended');
+
+      // Re-adopted into memory: mission_progress restored with persisted index.
+      const status = await (await localClient.get('/api/rover/status', { cookie: adminCookie })).json();
+      assert.equal(status.mission_progress.mission_id, orphanId);
+      assert.equal(status.mission_progress.current_waypoint_idx, 2);
+      assert.equal(status.mission_progress.status, 'interrupted');
+      assert.equal(status.mission_progress.waypoints.length, 3);
+      assert.equal(status.mission_progress.spray_results['0'], 'success');
     } finally {
       await stopServer(started.server);
       result.db.close();
@@ -1037,5 +1059,175 @@ describe('POST /api/rover/spray_result (internal)', () => {
       headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
     });
     assert.equal(res.status, 400);
+  });
+});
+
+// ─── Mission interruption survival + resume ─────────────────────────────
+// A dedicated server/db so opening + dropping a rover SSE doesn't leak global
+// roverState into the shared suite.
+describe('Mission interruption survival + resume', () => {
+  let srv, url, cli, localDb, localDbPath;
+
+  // Open a rover SSE (internal secret) and drain it so the server registers
+  // roverClient. Returns an abort fn that closes it like a real disconnect.
+  async function connectRover() {
+    const ac = new AbortController();
+    const res = await fetch(`${url}/api/rover/stream`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ac.signal,
+    });
+    assert.equal(res.status, 200);
+    const reader = res.body.getReader();
+    const drained = (async () => {
+      try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
+    })();
+    await new Promise((r) => setTimeout(r, 60)); // let the handler register roverClient
+    return async () => { ac.abort(); await drained; await new Promise((r) => setTimeout(r, 120)); };
+  }
+
+  before(async () => {
+    localDbPath = tmpDbPath();
+    const result = createCourseApp({ dbPath: localDbPath });
+    localDb = result.db;
+    const started = await startServer(result.app);
+    srv = started.server;
+    url = started.baseUrl;
+    cli = createClient(url);
+    await cli.post('/api/rover/position', {
+      body: { lat: 35.0, lng: 126.0 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+  });
+
+  after(async () => {
+    await stopServer(srv);
+    localDb.close();
+    cleanup(localDbPath);
+  });
+
+  let missionId;
+
+  it('keeps the mission resumable (interrupted, progress persisted) across a rover SSE drop', async () => {
+    const disconnect = await connectRover();
+
+    const exec = await cli.post('/api/rover/execute', {
+      body: { waypoints: [
+        { lat: 35.00001, lng: 126.00001 },
+        { lat: 35.00002, lng: 126.00002 },
+        { lat: 35.00003, lng: 126.00003 },
+      ] },
+      cookie: adminCookie,
+    });
+    assert.equal(exec.status, 200);
+    missionId = (await exec.json()).mission_id;
+    assert.ok(Number.isInteger(missionId));
+
+    // Advance one waypoint, then yank the rover offline.
+    await cli.post('/api/rover/waypoint_reached', {
+      body: { index: 0 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    await disconnect();
+
+    // Mission must survive — interrupted + resumable, progress preserved.
+    const status = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(status.connected, false);
+    assert.equal(status.mission_progress.mission_id, missionId, 'mission must survive the disconnect');
+    assert.equal(status.mission_progress.status, 'interrupted');
+    assert.equal(status.mission_progress.current_waypoint_idx, 1, 'progress must be preserved');
+
+    // DB row reflects interrupted, not a terminal error, and is not ended.
+    const m = await (await cli.get(`/api/missions/${missionId}`, { cookie: adminCookie })).json();
+    assert.equal(m.status, 'interrupted');
+    assert.ok(!m.ended_at, 'interrupted mission must not be ended');
+  });
+
+  it('flips back to running when the reconnected rover reports an active nav state', async () => {
+    const before = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(before.mission_progress.status, 'interrupted');
+
+    const disconnect = await connectRover();
+    await cli.post('/api/rover/telemetry', {
+      body: { nav_state: 'NAVIGATING' },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+
+    const after = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(after.mission_progress.status, 'running', 'active telemetry must resume the mission');
+    assert.equal(after.mission_progress.mission_id, missionId);
+
+    await disconnect();
+  });
+
+  it('does NOT auto-complete an interrupted mission that reconnects IDLE (rover rebooted)', async () => {
+    // After the previous disconnect the mission is interrupted again. A rover
+    // that comes back IDLE (rebooted) must stay resumable, not be marked done.
+    const disconnect = await connectRover();
+    await cli.post('/api/rover/telemetry', {
+      body: { nav_state: 'IDLE' },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    const after = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(after.mission_progress.mission_id, missionId, 'mission must NOT be cleared');
+    assert.equal(after.mission_progress.status, 'interrupted');
+    await disconnect();
+  });
+});
+
+// ─── Mission schema migration (old DB → new columns + statuses) ─────────
+describe('Mission schema migration', () => {
+  it('migrates an old-schema mission table, preserving rows and adding progress columns', async () => {
+    // better-sqlite3 only resolves from course/node_modules, not from the test
+    // dir — reuse the live suite db's constructor to open a raw fixture DB.
+    const Database = db.constructor;
+    const p = tmpDbPath();
+    const raw = new Database(p);
+    raw.pragma("foreign_keys = ON");
+    // Parent table must exist (mission FK-references it) — mirror production,
+    // where course is created before mission.
+    raw.exec(`CREATE TABLE course (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE)`);
+    // OLD schema: no progress columns, CHECK without paused/interrupted.
+    raw.exec(`CREATE TABLE mission (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      course_id INTEGER,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER,
+      status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'stopped', 'error')) DEFAULT 'running',
+      waypoints_json TEXT NOT NULL,
+      actor TEXT,
+      FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE SET NULL
+    )`);
+    raw.prepare("INSERT INTO mission (started_at, status, waypoints_json) VALUES (?, 'completed', ?)")
+      .run(Date.now() - 1000, '[{"lat":35,"lng":126}]');
+    raw.close();
+
+    const { createCourseApp } = await import('../../course/index.mjs?v=migrate');
+    const result = createCourseApp({ dbPath: p });
+    const started = await startServer(result.app);
+    const localClient = createClient(started.baseUrl);
+    try {
+      // Existing row preserved through the rebuild.
+      const data = await (await localClient.get('/api/missions', { cookie: adminCookie })).json();
+      assert.equal(data.missions.length, 1);
+      assert.equal(data.missions[0].status, 'completed');
+
+      // New columns present.
+      const cols = result.db.prepare("PRAGMA table_info(mission)").all().map((c) => c.name);
+      assert.ok(cols.includes('current_waypoint_idx'), 'current_waypoint_idx column added');
+      assert.ok(cols.includes('spray_results_json'), 'spray_results_json column added');
+      assert.ok(cols.includes('updated_at'), 'updated_at column added');
+
+      // New statuses accepted by the widened CHECK constraint.
+      assert.doesNotThrow(() => {
+        result.db.prepare("INSERT INTO mission (started_at, status, waypoints_json) VALUES (?, 'interrupted', '[]')")
+          .run(Date.now());
+        result.db.prepare("INSERT INTO mission (started_at, status, waypoints_json) VALUES (?, 'paused', '[]')")
+          .run(Date.now());
+      });
+    } finally {
+      await stopServer(started.server);
+      result.db.close();
+      cleanup(p);
+    }
   });
 });

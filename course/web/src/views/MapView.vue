@@ -255,6 +255,64 @@ const fixChip = computed(() => {
   return { label, tone, rows };
 });
 
+// MCU status-flag bits (course/rover/mcu T-frame `flags`, see rover README).
+// The MCU status LED encodes these by colour (red=e-stop, magenta=undervolt,
+// yellow=heartbeat/batt-warn, orange=nav-GPS-lost); the chip only said
+// "ERROR", so we decode them into a plain-English cause list.
+const MCU_FLAG = {
+  ESTOP: 0x01,        // combined sw+hw E-stop latch
+  HEARTBEAT: 0x02,    // Pi↔MCU heartbeat timeout (motors gated)
+  UNDERVOLT: 0x04,    // battery ≤20 V (motors gated)
+  BATT_WARN: 0x08,    // battery ≤22 V
+  NAV_GPS_LOST: 0x40, // Pi-reported navigation GPS loss
+  ESTOP_LINE: 0x80,   // raw physical E-stop button line
+};
+
+// Short, bullet-style English explanations for why the rover is in ERROR /
+// EMERGENCY_STOP, decoded from MCU flags + GPS/NTRIP/battery state. Each row is
+// [key, phrase, tone]; keys are unique so they survive the popover v-for :key.
+function roverFaultRows(s) {
+  const rows = [];
+  const flags = Number.isInteger(s.battery?.flags) ? s.battery.flags : 0;
+  const estop = s.nav_state === "EMERGENCY_STOP";
+
+  // E-stop (LED: red blink).
+  if (estop || (flags & MCU_FLAG.ESTOP)) {
+    rows.push((flags & MCU_FLAG.ESTOP_LINE)
+      ? ["E-STOP", "Hardware E-stop button pressed", "bad"]
+      : ["E-STOP", "Software E-stop (operator or server)", "bad"]);
+  }
+  // Pi↔MCU link (LED: yellow).
+  if (flags & MCU_FLAG.HEARTBEAT) {
+    rows.push(["LINK", "Pi↔MCU heartbeat timeout — motors gated", "bad"]);
+  }
+  // Battery (LED: magenta = undervolt, yellow = warn).
+  if (flags & MCU_FLAG.UNDERVOLT) {
+    rows.push(["BATTERY", "Undervolt cutoff (≤20 V) — motors gated", "bad"]);
+  } else if (flags & MCU_FLAG.BATT_WARN) {
+    rows.push(["BATTERY", "Low-battery warning (≤22 V)", "warn"]);
+  } else if (s.battery?.percent != null && s.battery.percent <= BATTERY_CRIT_PERCENT) {
+    rows.push(["BATTERY", `Battery critically low (${s.battery.percent}%)`, "bad"]);
+  }
+  // Navigation GPS loss (LED: orange blink). Infer from fix status too, since
+  // the navigator can raise ERROR Pi-side before the MCU bit propagates.
+  const fixBad = s.fix_status && s.fix_status !== "rtk_fixed";
+  if ((flags & MCU_FLAG.NAV_GPS_LOST) || (s.nav_state === "ERROR" && fixBad)) {
+    const fixLabel = s.fix_status ? s.fix_status.replace(/_/g, " ").toUpperCase() : "UNKNOWN";
+    rows.push(["GPS", `RTK fix lost (now ${fixLabel}); holds until rtk_fixed`, "bad"]);
+  }
+  // NTRIP corrections offline — the usual root cause of an RTK-fix drop.
+  if (s.ntrip_connected === false) {
+    const err = s.ntrip?.last_error ? `: ${s.ntrip.last_error}` : "";
+    rows.push(["NTRIP", `RTK corrections offline${err}`, "bad"]);
+  }
+  // Never leave a fault popover empty.
+  if (rows.length === 0 && (s.nav_state === "ERROR" || estop)) {
+    rows.push(["CAUSE", "Cause unclear — check rover logs", "warn"]);
+  }
+  return rows;
+}
+
 const navChip = computed(() => {
   const s = roverStatus.value;
   if (!s.connected || !s.nav_state) return null;
@@ -268,6 +326,11 @@ const navChip = computed(() => {
     : "ok";
   const rows = [["STATUS", stateLabel, tone]];
   if (dist != null) rows.push(["NEXT", `#${executedIndex.value + 1} · ${dist.toFixed(1)} m`]);
+  // On a fault, spell out WHY in short English bullets (the operator otherwise
+  // only sees "ERROR" while the MCU LED shows the real condition).
+  if (s.nav_state === "ERROR" || s.nav_state === "EMERGENCY_STOP") {
+    rows.push(...roverFaultRows(s));
+  }
   return { label, tone, rows };
 });
 
@@ -476,8 +539,8 @@ const replayIdx = ref(0);
 const replaySpeed = ref(1);
 let playTimer = null;
 
-const MISSION_STATUS_LABEL = { running: "진행 중", completed: "완료", stopped: "정지됨", error: "오류" };
-const MISSION_STATUS_COLOR = { running: "#3b82f6", completed: "#22c55e", stopped: "#f59e0b", error: "#ef4444" };
+const MISSION_STATUS_LABEL = { running: "진행 중", paused: "일시정지", interrupted: "중단됨", completed: "완료", stopped: "정지됨", error: "오류" };
+const MISSION_STATUS_COLOR = { running: "#3b82f6", paused: "#a855f7", interrupted: "#f97316", completed: "#22c55e", stopped: "#f59e0b", error: "#ef4444" };
 
 function formatMissionDuration(started, ended) {
   if (!ended) return "—";
@@ -3140,7 +3203,26 @@ function reconcileRoverMode(s) {
 
   const nav = s?.nav_state;
   const hasMission = !!s?.mission_progress?.mission_id;
+  const missionStatus = s?.mission_progress?.status;
   const connected = !!s?.connected;
+  // A mission the server is holding open but the rover is not actively driving:
+  // paused by the operator, or interrupted by a connection drop. Resumable via
+  // "이어서 실행" — independent of nav_state (rover may be IDLE or offline).
+  const resumable = hasMission && (missionStatus === "interrupted" || missionStatus === "paused");
+
+  // Actively executing wins regardless of connection blips.
+  if (connected && ACTIVE_NAV_STATES.has(nav)) { roverMode.value = "executing"; return; }
+
+  // Resumable: e-stop / error latch, or a paused / interrupted mission. Show
+  // "이어서 실행". Works whether or not the rover is currently connected — the
+  // server gates the actual resume until the rover SSE is back.
+  if (nav === "EMERGENCY_STOP" || nav === "ERROR" || resumable) {
+    if (roverMode.value !== "stopped") {
+      roverMode.value = "stopped";
+      if (resumeStartIdx.value === 0) resumeStartIdx.value = executedIndex.value;
+    }
+    return;
+  }
 
   if (!connected) {
     if (roverMode.value === "executing" || roverMode.value === "stopped") {
@@ -3148,17 +3230,10 @@ function reconcileRoverMode(s) {
     }
     return;
   }
-  if (ACTIVE_NAV_STATES.has(nav)) { roverMode.value = "executing"; return; }
-  if (nav === "EMERGENCY_STOP" || nav === "ERROR") {
-    if (roverMode.value !== "stopped") {
-      roverMode.value = "stopped";
-      if (resumeStartIdx.value === 0) resumeStartIdx.value = executedIndex.value;
-    }
-    return;
-  }
-  // nav IDLE/null — only step out of executing/stopped once the server has
-  // also cleared the mission, so we don't bounce while the rover briefly
-  // touches IDLE between phases.
+
+  // nav IDLE/null + no resumable mission — only step out of executing/stopped
+  // once the server has also cleared the mission, so we don't bounce while the
+  // rover briefly touches IDLE between phases.
   if (!hasMission && (roverMode.value === "executing" || roverMode.value === "stopped")) {
     roverMode.value = pathWaypoints.value.length ? "path-ready" : "none";
     pathProgress.value = 0;

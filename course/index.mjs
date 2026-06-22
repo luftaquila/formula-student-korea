@@ -55,8 +55,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS mission (
   course_id INTEGER,
   started_at INTEGER NOT NULL,
   ended_at INTEGER,
-  status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'stopped', 'error')) DEFAULT 'running',
+  status TEXT NOT NULL CHECK(status IN ('running', 'paused', 'interrupted', 'completed', 'stopped', 'error')) DEFAULT 'running',
   waypoints_json TEXT NOT NULL,
+  current_waypoint_idx INTEGER NOT NULL DEFAULT 0,
+  spray_results_json TEXT NOT NULL DEFAULT '{}',
+  updated_at INTEGER,
   actor TEXT,
   FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE SET NULL
 );`);
@@ -93,6 +96,37 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(m
       db.exec(`DROP TABLE cone`);
       db.exec(`ALTER TABLE cone_new RENAME TO cone`);
       db.exec(`CREATE INDEX IF NOT EXISTS idx_cone_course ON cone(course_id)`);
+    })();
+  }
+}
+
+// 기존 DB 마이그레이션: mission에 paused/interrupted 상태 + 진행상황 영속 컬럼
+// (current_waypoint_idx, spray_results_json, updated_at) 추가. 이전 버전은 진행
+// 인덱스를 in-memory로만 들고 있어 로버 SSE 끊김 한 번에 미션 진행이 통째로
+// 유실됐다. 이제 DB에 영속화해 끊김/새로고침/서버 재시작에도 재개 가능.
+{
+  const info = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='mission'").get();
+  if (info && (!info.sql.includes("current_waypoint_idx") || !info.sql.includes("'interrupted'"))) {
+    db.transaction(() => {
+      db.exec(`CREATE TABLE mission_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        course_id INTEGER,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER,
+        status TEXT NOT NULL CHECK(status IN ('running', 'paused', 'interrupted', 'completed', 'stopped', 'error')) DEFAULT 'running',
+        waypoints_json TEXT NOT NULL,
+        current_waypoint_idx INTEGER NOT NULL DEFAULT 0,
+        spray_results_json TEXT NOT NULL DEFAULT '{}',
+        updated_at INTEGER,
+        actor TEXT,
+        FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE SET NULL
+      )`);
+      db.exec(`INSERT INTO mission_new
+                 (id, course_id, started_at, ended_at, status, waypoints_json, actor)
+               SELECT id, course_id, started_at, ended_at, status, waypoints_json, actor FROM mission`);
+      db.exec(`DROP TABLE mission`);
+      db.exec(`ALTER TABLE mission_new RENAME TO mission`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_started ON mission(started_at)`);
     })();
   }
 }
@@ -585,12 +619,31 @@ let roverClient = null;
 const roverPendingResolves = [];
 let lastRoverPosition = null; // { lat, lng, at: epoch ms }
 
+// Nav states in which the rover OWNS the velocity stream (actively executing a
+// mission). Mirrors navigator_node's State enum and the web ACTIVE_NAV_STATES.
+// Used to tell "rover is still driving the mission" from "rover went idle".
+const ACTIVE_NAV_STATES = new Set([
+  "CALIBRATING", "CAL_ANTENNA", "CAL_WHEELS", "NAVIGATING", "SETTLING", "SPRAYING",
+]);
+
 // Active mission tracking
 const insertMission = db.prepare(
   "INSERT INTO mission (course_id, started_at, waypoints_json, actor) VALUES (?, ?, ?, ?)"
 );
+// Terminal transition. Allowed from any non-terminal state (running/paused/
+// interrupted) so an operator can end a paused/interrupted mission, and a
+// superseding execute can close a still-open prior one.
 const finishMission = db.prepare(
-  "UPDATE mission SET ended_at = ?, status = ? WHERE id = ? AND status = 'running'"
+  "UPDATE mission SET ended_at = ?, status = ?, updated_at = ? WHERE id = ? AND status IN ('running', 'paused', 'interrupted')"
+);
+// Non-terminal status change (running ⇄ paused ⇄ interrupted), no ended_at.
+const setMissionStatus = db.prepare(
+  "UPDATE mission SET status = ?, updated_at = ? WHERE id = ? AND status IN ('running', 'paused', 'interrupted')"
+);
+// Persist in-flight progress so a disconnect / reload / server restart can
+// rebuild the executing view and resume from the right waypoint.
+const persistMissionProgress = db.prepare(
+  "UPDATE mission SET current_waypoint_idx = ?, spray_results_json = ?, updated_at = ? WHERE id = ?"
 );
 const insertTelemetry = db.prepare(
   "INSERT INTO mission_telemetry (mission_id, t, lat, lng, fix_status, nav_state) VALUES (?, ?, ?, ?, ?, ?)"
@@ -598,29 +651,25 @@ const insertTelemetry = db.prepare(
 
 let currentMissionId = null;
 
-// Recover from unclean shutdowns: any row left running in the DB is impossible
-// to re-attach to (the roverClient SSE connection is gone). Mark them as error
-// with ended_at = the last telemetry timestamp we have, or started_at as a
-// fallback, so the history view doesn't show zero-duration phantoms.
+// Recover from unclean shutdowns: a row left 'running' means the server died
+// mid-mission. The rover keeps driving on its own (it already has the
+// waypoints) and will reconnect, so the mission is NOT lost — mark it
+// 'interrupted' (resumable) rather than terminal 'error'. The persisted
+// current_waypoint_idx lets the operator resume, and the boot re-adopt below
+// reloads it into memory so the reconnecting rover stays attached to it.
 const orphanRecoveryResult = db.prepare(
-  `UPDATE mission
-   SET status = 'error',
-       ended_at = COALESCE(
-         (SELECT MAX(t) FROM mission_telemetry WHERE mission_id = mission.id),
-         started_at
-       )
-   WHERE status = 'running'`
-).run();
+  `UPDATE mission SET status = 'interrupted', updated_at = ? WHERE status = 'running'`
+).run(Date.now());
 if (orphanRecoveryResult.changes > 0) {
   logger.log(null, "mission.orphan_recovery", { count: orphanRecoveryResult.changes }, "rover",
     { email: "system", name: "boot", role: "admin" });
 }
 
 function startMission(waypoints, actor, courseId) {
-  // Close any still-running prior mission as stopped.
+  // Close any still-open prior mission as stopped.
   if (currentMissionId != null) {
     logger.warn(null, "mission.end.superseded", { mission_id: currentMissionId }, "rover");
-    finishMission.run(Date.now(), "stopped", currentMissionId);
+    finishMission.run(Date.now(), "stopped", Date.now(), currentMissionId);
   }
   const info = insertMission.run(
     courseId || null,
@@ -634,19 +683,47 @@ function startMission(waypoints, actor, courseId) {
     waypoints,
     current_waypoint_idx: 0,
     spray_results: {},
+    status: "running",
   };
 }
 
 function endMission(status) {
   if (currentMissionId == null) return;
-  finishMission.run(Date.now(), status, currentMissionId);
+  finishMission.run(Date.now(), status, Date.now(), currentMissionId);
   currentMissionId = null;
   roverState.mission_progress = {
     mission_id: null,
     waypoints: [],
     current_waypoint_idx: 0,
     spray_results: {},
+    status: null,
   };
+}
+
+// Persist the in-flight waypoint index + spray results to the DB so a rover
+// disconnect, a UI reload, or a server restart can rebuild the executing view
+// and resume from the right place. Cheap; called on every progress event.
+function persistProgress() {
+  if (currentMissionId == null) return;
+  const mp = roverState.mission_progress;
+  persistMissionProgress.run(
+    mp.current_waypoint_idx || 0,
+    JSON.stringify(mp.spray_results || {}),
+    Date.now(),
+    currentMissionId,
+  );
+}
+
+// The rover SSE dropped (or the server is shutting down) mid-mission. The rover
+// keeps driving autonomously and will reconnect, so we do NOT end the mission —
+// we flag it 'interrupted' (resumable) and keep currentMissionId +
+// mission_progress in memory. The next telemetry showing an active nav_state
+// flips it back to 'running' (see /api/rover/telemetry).
+function interruptMission() {
+  if (currentMissionId == null) return;
+  persistProgress();
+  setMissionStatus.run("interrupted", Date.now(), currentMissionId);
+  roverState.mission_progress.status = "interrupted";
 }
 
 function recordTelemetrySample() {
@@ -696,9 +773,37 @@ const roverState = {
     waypoints: [],          // last waypoint set broadcast to the rover
     current_waypoint_idx: 0, // 1-based: count of waypoints reached so far
     spray_results: {},      // { [waypointIndex]: outcome }
+    // running | paused | interrupted | null. Lets the UI distinguish an
+    // operator pause from a connection interruption, and gates auto-complete.
+    status: null,
   },
   updated_at: 0,
 };
+
+// Boot re-adopt: if a mission was left open (interrupted by an unclean shutdown,
+// or paused) reload it into memory. The rover keeps driving and reconnects, so
+// the server must stay attached to the same mission_id; and the UI rebuilds the
+// in-flight overlay from mission_progress on first status fetch. Newest wins.
+{
+  const open = db.prepare(
+    `SELECT id, waypoints_json, current_waypoint_idx, spray_results_json, status
+     FROM mission WHERE status IN ('interrupted', 'paused') ORDER BY started_at DESC LIMIT 1`
+  ).get();
+  if (open) {
+    let waypoints = [];
+    let spray = {};
+    try { waypoints = JSON.parse(open.waypoints_json); } catch { /* leave [] */ }
+    try { spray = JSON.parse(open.spray_results_json); } catch { /* leave {} */ }
+    currentMissionId = open.id;
+    roverState.mission_progress = {
+      mission_id: open.id,
+      waypoints: Array.isArray(waypoints) ? waypoints : [],
+      current_waypoint_idx: open.current_waypoint_idx || 0,
+      spray_results: spray && typeof spray === "object" ? spray : {},
+      status: open.status,
+    };
+  }
+}
 
 function broadcastRoverStatus() {
   roverState.updated_at = Date.now();
@@ -727,15 +832,12 @@ app.get("/api/rover/stream", (req, res) => {
   });
   res.write("event: connected\ndata: {}\n\n");
 
-  // 기존 연결이 있으면 종료(중복 스트림 방지). 이 시점에 진행 중이던 미션은
-  // 새 세션이 이어받을 수 없으므로 'error'로 즉시 마감한다 — 다음 execute가
-  // 올 때까지 in-memory 상태를 남겨두면 감사 로그가 지연된다.
+  // 기존 연결이 있으면 종료(중복 스트림 방지). 진행 중이던 미션은 폐기하지
+  // 않는다 — 로버는 끊겼다 재연결하는 동안에도 받은 waypoint로 자율 주행을
+  // 계속하므로, 새 세션이 같은 미션을 그대로 이어받는다. (이전 동작은 여기서
+  // endMission('error')로 미션을 통째로 버려, wifi 블립/pilot 재시작 한 번에
+  // 진행상황이 사라지는 원인이었다.)
   if (roverClient && roverClient !== res) {
-    if (currentMissionId != null) {
-      const endedId = currentMissionId;
-      endMission("error");
-      logger.warn(req, "mission.end.rover_replaced", { mission_id: endedId }, "rover");
-    }
     markRoverDisconnected("replaced");
     try { roverClient.end(); } catch {}
   }
@@ -762,13 +864,14 @@ app.get("/api/rover/stream", (req, res) => {
     if (roverClient === res) {
       roverClient = null;
       markRoverDisconnected("sse_closed");
-      // If a mission was running when the rover dropped off, record it and
-      // leave an audit trail so operators can tell "mission failed" from
-      // "operator hit e-stop" after the fact.
+      // The rover dropped off mid-mission. It keeps driving on its own and
+      // will reconnect, so DON'T end the mission — flag it 'interrupted'
+      // (resumable) and keep the persisted progress. The reconnecting rover's
+      // first active telemetry flips it back to 'running'. This is what makes
+      // the mission survive a wifi blip / pilot auto-update restart / reload.
       if (currentMissionId != null) {
-        const endedId = currentMissionId;
-        endMission("error");
-        logger.warn(req, "mission.end.sse_disconnect", { mission_id: endedId }, "rover");
+        interruptMission();
+        logger.warn(req, "mission.interrupted", { mission_id: currentMissionId, reason: "sse_disconnect" }, "rover");
       }
       broadcastRoverStatus();
     }
@@ -832,6 +935,11 @@ app.post("/api/rover/telemetry", (req, res) => {
       gain: typeof battery.gain === "number" ? battery.gain : null,
       measured_v: typeof battery.measured_v === "number" ? battery.measured_v : null,
       calibrated_at: Number.isInteger(battery.calibrated_at) ? battery.calibrated_at : null,
+      // Raw MCU status flag bitfield (T-frame flags 7). Lets the UI decode the
+      // exact fault behind an ERROR / EMERGENCY_STOP chip — e-stop source,
+      // undervolt, heartbeat timeout, nav-GPS-lost — the same conditions the
+      // MCU status LED encodes by colour.
+      flags: Number.isInteger(battery.flags) ? battery.flags : null,
     };
   }
   if (gps && typeof gps === "object" && !Array.isArray(gps)) {
@@ -858,12 +966,28 @@ app.post("/api/rover/telemetry", (req, res) => {
     };
   }
 
+  // Mission resumed: an interrupted (or paused) mission whose rover is reporting
+  // an active nav state again has clearly resumed driving — flip it back to
+  // 'running'. This also guards the natural-completion check below: a rover
+  // that reconnected IDLE after a reboot must NOT be auto-completed.
+  if (currentMissionId != null
+      && roverState.mission_progress.status !== "running"
+      && ACTIVE_NAV_STATES.has(nav_state)) {
+    setMissionStatus.run("running", Date.now(), currentMissionId);
+    roverState.mission_progress.status = "running";
+    logger.log(req, "mission.resumed", { mission_id: currentMissionId, nav_state }, "rover");
+  }
+
   // Mission lifecycle: end on natural completion (driving → IDLE) or rover ERROR.
   // EMERGENCY_STOP is operator-acknowledged and *preserves* the mission across
   // the clear-emergency → IDLE transition so "이어서 실행" remains available.
+  // Only auto-end a mission we believe is actively 'running' — an 'interrupted'
+  // mission going IDLE (e.g. rover rebooted) stays resumable instead of being
+  // falsely marked completed/error from a stale prevNav.
   // Operator must explicitly abandon via /api/rover/end-mission to commit.
   if (prevNav && prevNav !== "IDLE" && prevNav !== "EMERGENCY_STOP"
-      && nav_state === "IDLE" && currentMissionId != null) {
+      && nav_state === "IDLE" && currentMissionId != null
+      && roverState.mission_progress.status === "running") {
     const endStatus = prevNav === "ERROR" ? "error" : "completed";
     const endedId = currentMissionId;
     endMission(endStatus);
@@ -904,6 +1028,7 @@ app.post("/api/rover/waypoint_reached", (req, res) => {
   if (index + 1 > roverState.mission_progress.current_waypoint_idx) {
     roverState.mission_progress.current_waypoint_idx = index + 1;
   }
+  persistProgress();
   broadcastEvent("rover:waypoint", { index });
   res.json({ ok: true });
 });
@@ -1023,6 +1148,7 @@ app.post("/api/rover/spray_result", (req, res) => {
       return res.status(400).send("waypoint index가 현재 미션 범위를 벗어났습니다.");
     }
     roverState.mission_progress.spray_results[String(index)] = outcome;
+    persistProgress();
   }
   roverState.last_spray_result = { waypoint: index, outcome, at: Date.now() };
   broadcastEvent("rover:spray", { waypoint: index, outcome, at: roverState.last_spray_result.at });
@@ -1382,6 +1508,7 @@ app.post("/api/rover/waypoint_skipped", (req, res) => {
   if (index + 1 > roverState.mission_progress.current_waypoint_idx) {
     roverState.mission_progress.current_waypoint_idx = index + 1;
   }
+  persistProgress();
   broadcastEvent("rover:skipped", { index });
   logger.warn(req, "rover.waypoint_skipped", { index, mission_id: currentMissionId }, "rover");
   res.json({ ok: true });
