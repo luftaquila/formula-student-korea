@@ -33,8 +33,8 @@ export const useSerialStore = defineStore("serial", () => {
   const currentMode = ref(null);
   let onSensorCallback = null;
 
-  // Sensor cooldown
-  const SENSOR_COOLDOWN_MS = 1000;
+  // Sensor debounce window (ms). 유선은 무선 설정과 별도로 기본 300ms 고정.
+  const SENSOR_COOLDOWN_MS = 300;
   const lastSensorTrigger = ref({});
 
   // Manual mode state

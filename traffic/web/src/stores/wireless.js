@@ -7,6 +7,7 @@ import {
   reportLight,
   reportBridgeOffline,
   putPhysicalEvent as apiPutPhysicalEvent,
+  putWirelessDebounce,
 } from "../composables/useApi";
 import {
   wirelessLight,
@@ -19,7 +20,7 @@ import { WIRELESS_EVENTS, EVENT_TYPE, roleToSensor } from "../composables/useEve
 import { acceptSensorTick } from "../composables/sensorDebounce";
 
 const TICKS_PER_MS = 16000;
-const SENSOR_COOLDOWN_MS = 1000;
+const DEFAULT_DEBOUNCE_MS = 300;
 const TYPE_TO_KEY = Object.fromEntries(Object.entries(EVENT_TYPE).map(([k, v]) => [v, k]));
 const tickToMs = (t) => Math.round(Number(t || 0) / TICKS_PER_MS);
 
@@ -52,6 +53,16 @@ export const useWirelessStore = defineStore("wireless", () => {
   const mapping = wirelessMapping;
   const telemetry = wirelessTelemetry;
   const bridge = wirelessBridge;
+
+  // 센서 디바운스 창(ms). 서버(wireless_light)에 저장돼 wireless:light로 공유. 기본 300ms.
+  const debounceMs = computed(() => {
+    const v = light.value?.debounce_ms;
+    return Number.isFinite(v) ? v : DEFAULT_DEBOUNCE_MS;
+  });
+  async function setDebounceMs(ms) {
+    try { await putWirelessDebounce(ms); }
+    catch (e) { notyf.error(e.message); }
+  }
 
   // 물리(실제) 신호등을 사용하도록 지정된 경기(무선 설정). null = 없음(전부 가상).
   const physicalKey = computed(() => {
@@ -129,7 +140,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   function routeSensor(mode, sensor, tick, nowMs) {
     const slot = timing[mode];
     if (!slot.green.active) return;
-    if (!acceptSensorTick(slot.lastSensorTrigger, sensor, tick, SENSOR_COOLDOWN_MS)) return;
+    if (!acceptSensorTick(slot.lastSensorTrigger, sensor, tick, debounceMs.value)) return;
 
     const payload = {
       sensor, tick,
@@ -384,6 +395,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     timing, light, mapping, telemetry, bridge,
     physicalKey, isPhysical, lightColorFor,
     sourceFor, setPhysicalEvent,
+    debounceMs, setDebounceMs,
     openSerial, closeSerial,
     EVENT_TYPE, WIRELESS_EVENTS,
   };

@@ -785,6 +785,38 @@ describe('POST /api/wireless/ingest', () => {
   });
 });
 
+// ─── Wireless: debounce setting ─────────────────────────────────────────
+describe("Wireless debounce setting", () => {
+  it("defaults to 300ms in state", async () => {
+    const s = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    assert.equal(s.light.debounce_ms, 300);
+  });
+
+  it("PUT updates the window and reflects in state (shared via light row)", async () => {
+    const res = await client.put('/api/wireless/debounce', { body: { ms: 250 }, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).debounce_ms, 250);
+    const s = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    assert.equal(s.light.debounce_ms, 250);
+    // restore default
+    await client.put('/api/wireless/debounce', { body: { ms: 300 }, cookie: adminCookie });
+  });
+
+  it("accepts 0 (debounce off)", async () => {
+    const res = await client.put('/api/wireless/debounce', { body: { ms: 0 }, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).debounce_ms, 0);
+    await client.put('/api/wireless/debounce', { body: { ms: 300 }, cookie: adminCookie });
+  });
+
+  it("rejects out-of-range or non-integer values", async () => {
+    assert.equal((await client.put('/api/wireless/debounce', { body: { ms: -1 }, cookie: adminCookie })).status, 400);
+    assert.equal((await client.put('/api/wireless/debounce', { body: { ms: 99999 }, cookie: adminCookie })).status, 400);
+    assert.equal((await client.put('/api/wireless/debounce', { body: { ms: 1.5 }, cookie: adminCookie })).status, 400);
+    assert.equal((await client.put('/api/wireless/debounce', { body: {}, cookie: adminCookie })).status, 400);
+  });
+});
+
 // ─── Wireless: mapping CRUD ─────────────────────────────────────────────
 describe('Wireless mapping', () => {
   it('GET returns array (initially without our node)', async () => {

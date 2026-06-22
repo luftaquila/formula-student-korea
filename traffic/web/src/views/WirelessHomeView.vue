@@ -15,6 +15,11 @@ function onPhysical(e) {
   store.setPhysicalEvent(e.target.value || null);
 }
 
+function onDebounce(e) {
+  const v = Math.max(0, Math.min(5000, parseInt(e.target.value, 10) || 0));
+  store.setDebounceMs(v);
+}
+
 // 개발용 시뮬레이션: 서버로 합성 데이터를 ingest해 (하드웨어 없이) 클라이언트 경로 검증
 const isDev = import.meta.env.DEV;
 const simNode = ref("1");
@@ -42,6 +47,20 @@ async function simTelemetry() {
             </select>
           </div>
         </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><h3>⏱️ 센서 디바운스</h3></div>
+      <div class="card-body">
+        <div class="debounce-row">
+          <input
+            type="number" class="form-input debounce-input" min="0" max="5000" step="50"
+            :value="store.debounceMs" data-testid="debounce-ms" @change="onDebounce"
+          />
+          <span class="unit">ms</span>
+        </div>
+        <p class="hint">한 번의 통과에 센서가 쏘는 다중 엣지(바운스)를 하나로 접는 간격. 기본 300ms, 0이면 끔. 모든 화면 공용.</p>
       </div>
     </div>
 
@@ -80,6 +99,10 @@ async function simTelemetry() {
 }
 .sim-row { display: flex; align-items: center; gap: 0.6rem; }
 .sim-node { max-width: 90px; }
+.debounce-row { display: flex; align-items: center; gap: 0.5rem; }
+.debounce-input { max-width: 120px; }
+.debounce-row .unit { color: var(--text-muted, #888); font-size: 0.9rem; }
+.hint { margin: 0.5rem 0 0; font-size: 0.8rem; color: var(--text-muted, #888); }
 .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
 @media (max-width: 768px) {
   .wl-row { grid-template-columns: 1fr; }

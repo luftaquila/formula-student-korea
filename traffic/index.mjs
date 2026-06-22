@@ -90,7 +90,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_telemetry (
 );`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_wtel_node_time ON wireless_telemetry(node_id, server_time)");
 
-// 신호등/콘솔 단일 상태(점유 잠금 + 현재 색 + green tick). 서버 재시작에도 유지.
+// 신호등/콘솔 단일 상태(점유 잠금 + 현재 색 + green tick) + 무선 공용 설정(센서 디바운스
+// 창). 서버 재시작에도 유지. debounce_ms: 한 통과의 다중 엣지(바운스)를 접는 간격(ms).
 db.exec(`CREATE TABLE IF NOT EXISTS wireless_light (
   id            INTEGER PRIMARY KEY CHECK (id = 1),
   owner_event   TEXT,
@@ -98,9 +99,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_light (
   light_color   TEXT,
   green_tick    TEXT,
   bridge_online INTEGER NOT NULL DEFAULT 0,
+  debounce_ms   INTEGER NOT NULL DEFAULT 300,
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))
 );`);
 db.exec("INSERT OR IGNORE INTO wireless_light (id, light_color, bridge_online) VALUES (1, 'off', 0)");
+// 기존 DB 마이그레이션: debounce_ms 컬럼 추가(기본 300ms).
+if (!db.prepare("PRAGMA table_info('wireless_light')").all().some((c) => c.name === "debounce_ms")) {
+  db.exec("ALTER TABLE wireless_light ADD COLUMN debounce_ms INTEGER NOT NULL DEFAULT 300");
+}
 
 // 기본 경기 모드 시딩
 {
@@ -182,7 +188,7 @@ let lastBridgeSeen = 0;
 let lastBridgeSeenIso = null;
 
 function getLightState() {
-  return db.prepare("SELECT owner_event, owner_actor, light_color, green_tick, bridge_online, updated_at FROM wireless_light WHERE id = 1").get();
+  return db.prepare("SELECT owner_event, owner_actor, light_color, green_tick, bridge_online, debounce_ms, updated_at FROM wireless_light WHERE id = 1").get();
 }
 function getMapping() {
   return db.prepare("SELECT node_id, event_type, role, label, enabled, updated_at FROM wireless_mapping ORDER BY event_type, role").all();
@@ -843,6 +849,26 @@ app.put("/api/wireless/physical-event", (req, res) => {
   logger.log(req, "wireless.physical_event", { event_type: value, prev: result.result.prev });
   broadcastEvent("wireless:light", result.result.row);
   res.json(result.result.row);
+});
+
+// PUT /api/wireless/debounce - 센서 디바운스 창(ms) 설정. 무선 공용 설정이라 wireless_light에
+// 저장하고 wireless:light로 브로드캐스트(모든 화면 공유). 0이면 디바운스 끔.
+app.put("/api/wireless/debounce", (req, res) => {
+  const ms = req.body?.ms;
+  if (!Number.isInteger(ms) || ms < 0 || ms > 5000) {
+    return res.status(400).send("올바르지 않은 디바운스 값입니다(0~5000ms 정수).");
+  }
+  const result = dbRun(() => {
+    db.prepare("UPDATE wireless_light SET debounce_ms = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE id = 1").run(ms);
+    return getLightState();
+  });
+  if (!result.success) {
+    logger.warn(req, "wireless.debounce", { error: result.error, ms }, "settings");
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "wireless.debounce", { ms }, "settings");
+  broadcastEvent("wireless:light", result.result);
+  res.json(result.result);
 });
 
 // GET /api/wireless/mapping - 센서->경기·역할 매핑 전체 조회.
