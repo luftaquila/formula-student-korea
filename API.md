@@ -230,7 +230,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/events` | admin | — | SSE stream | Real-time record/event-mode + wireless updates. init: `{ recordFiles, eventModes, recordVisibility, wireless: { light, mapping, telemetry, bridge } }`. Wireless event names: `wireless:event`, `wireless:telemetry`, `wireless:light`, `wireless:mapping`, `wireless:bridge` |
+| GET | `/api/events` | admin | — | SSE stream | Real-time record/event-mode + wireless updates. init: `{ recordFiles, eventModes, recordVisibility, wireless: { light, mapping, telemetry, bridge, sessions, lastEventId } }`. Wireless event names: `wireless:event`, `wireless:telemetry`, `wireless:light`, `wireless:mapping`, `wireless:bridge`, `wireless:session`, `wireless:command` |
 
 ### Record Management
 
@@ -259,19 +259,28 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 ### Wireless LoRa Timing (one master + ≤6 sensors, single channel)
 
-마스터 노드에 USB로 연결된 브리지 PC가 모든 센서의 raw 이벤트·진단·신호등 상태를 서버로 push하고, 나머지 클라이언트는 SSE로 수신한다. 신호등 점유 잠금은 서버 권위(배타). 최종 경기 기록은 기존 `/api/records`로 그대로 저장(변경 없음).
+마스터 노드에 USB로 연결된 브리지 PC가 모든 센서의 raw 이벤트·진단·신호등 상태를 서버로 push한다. 서버가 권위 상태(경기별 세션: arm·선택·신호등·lease)를 보유하고 모든 클라이언트가 SSE로 동일하게 본다. `green = arm`(측정 t0는 출발 센서). 경기 기록은 **서버 기록 엔진**이 ingest 이벤트로 직접 계산·저장한다(가속/오토크로스 = 출발→도착, 스키드패드 = lap2+lap4) — 무선 클라는 표시만(이중저장 없음). 제어는 경기별 **독점 lease**(claim/heartbeat/release/takeover)로, lease 보유자면 비-브리지도 가상 경기를 제어하고 물리 신호등은 다운링크(`/command`)로 제어한다. 경기: 가속·스키드패드·오토크로스(짐카나 제거).
+
+세션 객체: `{ event_type, armed, light_color, green_tick, armed_at, team, event_name, controller, lease_expires_at, updated_at }`.
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| POST | `/api/wireless/ingest` | admin | `{ events?: [{ node_id, master_tick(str 64-bit), ev_seq, rssi?, snr?, link_state? }], telemetry?: [{ node_id, rssi?, snr?, offset_us?, skew_ppm?, latency_ms?, link_state? }] }` (각 ≤200) | `{ stored, deduped, rejected }` | 브리지 배치 ingest. `(node_id, ev_seq, master_tick)` 멱등(재전송 보존, 재부팅 seq 재사용 구분). 불량 항목은 배치 전체 실패 없이 skip(`rejected`). 도착 = 브리지 heartbeat. `wireless:event`/`wireless:telemetry`/`wireless:bridge` 브로드캐스트 |
+| POST | `/api/wireless/ingest` | admin | `{ events?: [{ node_id, master_tick(str 64-bit), ev_seq, rssi?, snr?, link_state? }], telemetry?: [{ node_id, rssi?, snr?, offset_us?, skew_ppm?, latency_ms?, link_state? }] }` (각 ≤200) | `{ stored, deduped, rejected }` | 브리지 배치 ingest. `(node_id, ev_seq, master_tick)` 멱등(재전송 보존, 재부팅 seq 재사용 구분). 불량 항목은 배치 전체 실패 없이 skip(`rejected`). 도착 = 브리지 heartbeat. 신규 이벤트는 **서버 기록 엔진**을 거쳐 armed 경기의 기록을 자동 저장(`records` 브로드캐스트). `wireless:event`/`wireless:telemetry`/`wireless:bridge` 브로드캐스트 |
 | POST | `/api/wireless/light` | admin | `{ color: red\|green\|yellow\|off, green_tick?(str) }` | `{ ...light }` | 브리지가 물리 신호등 색 보고(green tick은 green일 때만 갱신). `wireless:light` 브로드캐스트 |
 | PUT | `/api/wireless/physical-event` | admin | `{ event_type: <type>\|null }` | `{ ...light }` | 실제 신호등(SSR)을 사용할 경기 지정(`owner_event`). null=없음(전부 가상). 기본은 모든 경기가 가상, 지정 경기만 실제 제어. `wireless:light` 브로드캐스트 |
 | PUT | `/api/wireless/debounce` | admin | `{ ms: 0~5000 정수 }` | `{ ...light }` | 센서 디바운스 창(ms). 한 통과의 다중 엣지(바운스)를 접는 간격. 기본 300, 0이면 끔. `wireless_light.debounce_ms`에 저장, `wireless:light` 브로드캐스트(모든 화면 공유) |
 | GET | `/api/wireless/mapping` | admin | — | `[{ node_id, event_type, role, label, enabled, updated_at }]` | 센서→경기·역할 매핑 |
-| PUT | `/api/wireless/mapping/:node_id` | admin | `{ event_type, role(start\|finish\|laneN), label?, enabled? }` | `{ ...row }` | 매핑 upsert (`wireless:mapping` 브로드캐스트) |
+| PUT | `/api/wireless/mapping/:node_id` | admin | `{ event_type, role(start\|finish), label?, enabled? }` | `{ ...row }` | 매핑 upsert (`wireless:mapping` 브로드캐스트). 가속·오토크로스=start+finish, 스키드패드=start |
 | DELETE | `/api/wireless/mapping/:node_id` | admin | — | 200 | 매핑 삭제 |
-| GET | `/api/wireless/state` | admin | — | `{ light, mapping, telemetry, bridge }` | 신선 로드용 종합 스냅샷 |
+| GET | `/api/wireless/state` | admin | — | `{ light, mapping, telemetry, bridge, sessions, lastEventId }` | 신선 로드용 종합 스냅샷 |
 | GET | `/api/wireless/events` | admin | `?since=<id>&limit=<n≤1000>` | `[{ id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state, raw }]` | 늦게 합류한 클라이언트의 raw 이벤트 백필 |
+| POST | `/api/wireless/arm` | admin | `{ event_type, action: green\|red\|off, green_tick?(str) }` | `{ ...session }` | 경기 arm/disarm(green=arm). 가상 경기를 전 클라에 공유. lease 점유자 있으면 그만(409). green은 기록 엔진 런 리셋. `wireless:session` 브로드캐스트 |
+| POST | `/api/wireless/select` | admin | `{ event_type, team?: { num, univ, team }\|null, event_name?: string\|null }` | `{ ...session }` | 경기 선택(팀·이벤트명) 공유 — 서버 기록 귀속. 팀/이름 검증(잘못되면 400), null=해제. lease 점유자만. `wireless:session` 브로드캐스트 |
+| POST | `/api/wireless/dnf` | admin | `{ event_type }` | `{ ok }` | 진행 경기 DNF(result -1) 저장(세션 선택으로 귀속). 미arm 400, 이미 기록된 런 409, 미선택 400. lease 점유자만 |
+| POST | `/api/wireless/command` | admin | `{ event_type, action: green\|red\|off }` | `{ ok }` | 물리 신호등(SSR) 원격 제어 다운링크 — 서버→브리지(`wireless:command`)→시리얼. 물리 지정 경기+브리지 online+lease 필요(아니면 409). 브리지가 실행 직전 isPhysical 재검사 |
+| POST | `/api/wireless/lease/:event` | admin | — | `{ ...session }` | 경기 독점 제어 lease 획득/갱신(heartbeat). 타인 점유 시 409. 점유자 변경 시만 `wireless:session` 브로드캐스트(heartbeat는 조용히 만료 연장) |
+| DELETE | `/api/wireless/lease/:event` | admin | — | `{ ...session }` | lease 해제(보유자 또는 admin 강제 회수). `wireless:session` 브로드캐스트 |
+| GET | `/api/time` | public | — | `{ now }` | 서버 epoch ms — 클라가 라이브 클럭을 서버 기준으로 동기화(오프셋 추정). 인증 면제 |
 
 ---
 
