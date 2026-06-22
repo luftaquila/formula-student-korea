@@ -70,6 +70,10 @@ const rotateDirIcon = computed(() => (rotateAngle.value < 0 ? "↺" : "↻"));
 const toolMode = ref("none");   // none | ruler | protractor
 const measureHint = ref("");    // next-step instruction for the active tool
 const measureResult = ref("");  // distance total / measured angle for the overlay
+// Box-select mode — drag-to-select that also works on touch (no Shift key needed).
+const selectMode = ref(false);
+// Undo stack of {label, undo} entries; each `undo` reverses one edit via the API.
+const undoStack = ref([]);
 const editLat = ref("");
 const editLng = ref("");
 const editSide = ref("left");
@@ -664,10 +668,11 @@ watch(historyView, (v) => savePref("historyView", v));
 // crossing that boundary. Skip missions transitions; isMissionsView owns those.
 watch(activeTab, (next, prev) => {
   if (!map) return;
-  // Leaving the editing tab tears down its rotate/measure overlays.
+  // Leaving the editing tab tears down its rotate/measure/select overlays.
   if (prev === "courses" && next !== "courses") {
     if (rotateMode.value) exitRotateMode();
     if (toolMode.value !== "none") exitToolMode();
+    selectMode.value = false;
   }
   const prevWasMissions = prev === "history" && historyView.value === "missions";
   const nextIsMissions = next === "history" && historyView.value === "missions";
@@ -1080,7 +1085,7 @@ function rebuildAllMarkers() {
       // Per-cone drag is also suspended while rotating or measuring so those
       // gestures don't accidentally move a single cone.
       const canDrag = isActive && activeTab.value === "courses" && !editLocked.value
-        && !rotateMode.value && toolMode.value === "none";
+        && !rotateMode.value && toolMode.value === "none" && !selectMode.value;
       const marker = L.marker([cone.lat, cone.lng], {
         icon,
         draggable: canDrag,
@@ -1093,7 +1098,8 @@ function rebuildAllMarkers() {
           if (toolMode.value !== "none") { handleMeasureClick(L.latLng(cone.lat, cone.lng)); return; }
           // While rotating, cone taps are ignored — the selection is locked in.
           if (rotateMode.value) return;
-          if (e.originalEvent && e.originalEvent.shiftKey) {
+          // Select mode (and Shift+click) toggle the cone in/out of the multi-selection.
+          if (selectMode.value || (e.originalEvent && e.originalEvent.shiftKey)) {
             const newSet = new Set(multiSelectedIds.value);
             if (newSet.has(cone.id)) newSet.delete(cone.id);
             else newSet.add(cone.id);
@@ -1147,6 +1153,10 @@ function rebuildAllMarkers() {
             }
 
             const rollbackPositions = dragStartPositions;
+            // Pre-move positions for undo: the dragged cone's origin + the others'.
+            const courseId = activeCourseId.value;
+            const before = [{ id: cone.id, lat: dragOrigin.lat, lng: dragOrigin.lng }];
+            for (const [id, origPos] of dragStartPositions) before.push({ id, lat: origPos.lat, lng: origPos.lng });
             isMultiDragging = false;
             dragStartPositions = null;
             dragOrigin = null;
@@ -1157,6 +1167,9 @@ function rebuildAllMarkers() {
                   method: "PATCH",
                   body: JSON.stringify({ lat: u.lat, lng: u.lng }),
                 })
+              ));
+              pushUndo(`콘 ${before.length}개 이동`, () => Promise.all(
+                before.map((b) => request(`/api/cones/${b.id}`, { method: "PATCH", body: JSON.stringify({ lat: b.lat, lng: b.lng }) }))
               ));
             } catch (err) {
               notifyError(`콘 위치 저장 실패: ${err.message}`);
@@ -1171,9 +1184,11 @@ function rebuildAllMarkers() {
             suppressRebuild = false;
             rebuildAllMarkers();
           } else {
+            const before = { lat: cone.lat, lng: cone.lng };
             const { lat, lng } = marker.getLatLng();
             try {
               await request(`/api/cones/${cone.id}`, { method: "PATCH", body: JSON.stringify({ lat, lng }) });
+              pushUndo("콘 이동", () => request(`/api/cones/${cone.id}`, { method: "PATCH", body: JSON.stringify({ lat: before.lat, lng: before.lng }) }));
             } catch (err) {
               notifyError(`콘 위치 저장 실패: ${err.message}`);
               marker.setLatLng([cone.lat, cone.lng]);
@@ -1235,6 +1250,21 @@ watch(multiSelectedIds, (set) => {
   if (set.size < 2) exitRotateMode();
   else setupRotateHandle();
 });
+// Box-select mode is mutually exclusive with rotate/measure; toggling it changes
+// cone draggability and the container's touch-action, so rebuild the markers.
+watch(selectMode, (on) => {
+  if (on) {
+    if (rotateMode.value) exitRotateMode();
+    if (toolMode.value !== "none") exitToolMode();
+  }
+  if (map) {
+    // Pin the map while selecting so a drag draws a box instead of panning;
+    // touch-action:none (via the class) stops the browser scrolling the page.
+    if (on) map.dragging.disable(); else map.dragging.enable();
+    map.getContainer().classList.toggle("select-mode-active", on);
+    if (activeTab.value === "courses") rebuildAllMarkers();
+  }
+});
 // Filter change reflows the list — jump back to the top and hide the button.
 watch(coneFilter, () => { coneListScrolled.value = false; coneListEl.value?.scrollTo({ top: 0 }); });
 // Persist per-course show/hide across reloads (course selection already persists
@@ -1274,6 +1304,8 @@ watch(selectedConeId, (id) => {
 watch(activeCourseId, (v) => {
   if (rotateMode.value) exitRotateMode();
   if (toolMode.value !== "none") exitToolMode();
+  selectMode.value = false;
+  undoStack.value = []; // undo entries reference cone ids of the old course
   selectedConeId.value = null;
   multiSelectedIds.value = new Set();
   coneFilter.value = "all";
@@ -1356,6 +1388,8 @@ function onMapClick(e) {
   }
   // While rotating, map taps are inert so a stray tap can't add a cone or drop the selection.
   if (rotateMode.value) return;
+  // In select mode, taps only toggle cones / draw boxes — never add or clear on empty space.
+  if (selectMode.value) return;
   if (roverMode.value === "path-pick") {
     computePath(e.latlng.lat, e.latlng.lng);
     return;
@@ -1389,42 +1423,56 @@ function showCoordPopover(latlng) {
     .openOn(map);
 }
 
-/* ── Box selection (Shift+drag) ───────────────────── */
+/* ── Box selection (Shift+drag, or touch in select mode) ── */
+// Pointer Events so the same path covers mouse, touch, and pen. Triggers on
+// Shift+left-mouse (desktop) or whenever select mode is on (works on touch).
+let selectionActive = false;
 function onSelectionStart(e) {
-  if (!e.shiftKey || !activeCourseId.value || e.button !== 0) return;
-  if (rotateMode.value || toolMode.value !== "none") return; // box-select is off while rotating/measuring
+  if (!activeCourseId.value || selectionActive) return;
+  if (rotateMode.value || toolMode.value !== "none") return; // off while rotating/measuring
+  const isMouse = (e.pointerType || "mouse") === "mouse";
+  const viaShift = isMouse && e.shiftKey && e.button === 0;
+  if (!selectMode.value && !viaShift) return;
+  if (isMouse && e.button !== 0) return;
 
-  map.dragging.disable();
+  selectionActive = true;
+  const pointerId = e.pointerId;
+  // In select mode the map is already pinned (dragging disabled globally); for the
+  // Shift path we disable it just for this gesture.
+  if (!selectMode.value) map.dragging.disable();
 
   const container = map.getContainer();
   const containerRect = container.getBoundingClientRect();
   const startPx = { x: e.clientX - containerRect.left, y: e.clientY - containerRect.top };
+  let endPx = { ...startPx };
 
   const boxEl = document.createElement("div");
   boxEl.className = "selection-box";
   container.appendChild(boxEl);
 
-  function onMove(ev) {
-    const curPx = { x: ev.clientX - containerRect.left, y: ev.clientY - containerRect.top };
-    boxEl.style.left = Math.min(startPx.x, curPx.x) + "px";
-    boxEl.style.top = Math.min(startPx.y, curPx.y) + "px";
-    boxEl.style.width = Math.abs(curPx.x - startPx.x) + "px";
-    boxEl.style.height = Math.abs(curPx.y - startPx.y) + "px";
+  function draw() {
+    boxEl.style.left = Math.min(startPx.x, endPx.x) + "px";
+    boxEl.style.top = Math.min(startPx.y, endPx.y) + "px";
+    boxEl.style.width = Math.abs(endPx.x - startPx.x) + "px";
+    boxEl.style.height = Math.abs(endPx.y - startPx.y) + "px";
   }
 
-  function onUp(ev) {
-    document.removeEventListener("mousemove", onMove);
-    document.removeEventListener("mouseup", onUp);
+  function onMove(ev) {
+    if (ev.pointerId !== pointerId) return;
+    endPx = { x: ev.clientX - containerRect.left, y: ev.clientY - containerRect.top };
+    draw();
+  }
 
-    const endPx = { x: ev.clientX - containerRect.left, y: ev.clientY - containerRect.top };
-    const bounds = {
-      left: Math.min(startPx.x, endPx.x),
-      top: Math.min(startPx.y, endPx.y),
-      right: Math.max(startPx.x, endPx.x),
-      bottom: Math.max(startPx.y, endPx.y),
-    };
+  function finish(applySelection) {
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", onUp);
+    document.removeEventListener("pointercancel", onCancel);
 
-    if (bounds.right - bounds.left > 5 || bounds.bottom - bounds.top > 5) {
+    if (applySelection && (Math.abs(endPx.x - startPx.x) > 5 || Math.abs(endPx.y - startPx.y) > 5)) {
+      const bounds = {
+        left: Math.min(startPx.x, endPx.x), top: Math.min(startPx.y, endPx.y),
+        right: Math.max(startPx.x, endPx.x), bottom: Math.max(startPx.y, endPx.y),
+      };
       const cones = conesMap.value[activeCourseId.value] || [];
       const newSet = new Set(multiSelectedIds.value);
       for (const cone of cones) {
@@ -1439,17 +1487,21 @@ function onSelectionStart(e) {
     }
 
     boxEl.remove();
-    map.dragging.enable();
+    if (!selectMode.value) map.dragging.enable();
+    selectionActive = false;
     justFinishedBoxSelect = true;
     setTimeout(() => { justFinishedBoxSelect = false; }, 100);
   }
+  function onUp(ev) { if (ev.pointerId === pointerId) finish(true); }
+  function onCancel(ev) { if (ev.pointerId === pointerId) finish(false); }
 
-  document.addEventListener("mousemove", onMove);
-  document.addEventListener("mouseup", onUp);
+  document.addEventListener("pointermove", onMove);
+  document.addEventListener("pointerup", onUp);
+  document.addEventListener("pointercancel", onCancel);
 }
 
 function setupSelectionBox() {
-  map.getContainer().addEventListener("mousedown", onSelectionStart);
+  map.getContainer().addEventListener("pointerdown", onSelectionStart);
 }
 
 /* ── Course CRUD ──────────────────────────────────── */
@@ -1885,13 +1937,35 @@ function formatSnapshotTime(ms) {
   return new Date(ms).toLocaleString("ko-KR", { hour12: false });
 }
 
+/* ── Undo ─────────────────────────────────────────── */
+// Each edit records an inverse closure. Undo functions hit the API directly so
+// they don't re-enter the recording paths (no redo is tracked). Deleted cones
+// are restored by re-creating them, so they come back with fresh ids.
+const MAX_UNDO = 50;
+function pushUndo(label, undo) {
+  undoStack.value.push({ label, undo });
+  if (undoStack.value.length > MAX_UNDO) undoStack.value.shift();
+}
+async function performUndo() {
+  if (editLocked.value) return;
+  const entry = undoStack.value.pop();
+  if (!entry) return;
+  try { await entry.undo(); }
+  catch (err) { notifyError(`실행취소 실패: ${err.message}`); }
+}
+
 /* ── Cone CRUD ────────────────────────────────────── */
 async function addCone(lat, lng, side) {
   if (!activeCourseId.value) return;
   try {
-    await request(`/api/courses/${activeCourseId.value}/cones`, {
+    const res = await request(`/api/courses/${activeCourseId.value}/cones`, {
       method: "POST", body: JSON.stringify({ lat, lng, side }),
     });
+    const created = await res.json().catch(() => null);
+    if (created && created.id != null) {
+      const cid = created.id;
+      pushUndo("콘 추가", () => request(`/api/cones/${cid}`, { method: "DELETE" }));
+    }
   } catch (err) { notifyError(err.message); }
 }
 
@@ -1900,18 +1974,28 @@ async function updateCone() {
   const lat = parseFloat(editLat.value);
   const lng = parseFloat(editLng.value);
   if (isNaN(lat) || isNaN(lng)) return;
+  const id = selectedConeId.value;
+  const before = (conesMap.value[activeCourseId.value] || []).find((c) => c.id === id);
   try {
-    await request(`/api/cones/${selectedConeId.value}`, {
+    await request(`/api/cones/${id}`, {
       method: "PATCH", body: JSON.stringify({ lat, lng, side: editSide.value }),
     });
+    if (before) pushUndo("콘 수정", () => request(`/api/cones/${id}`, {
+      method: "PATCH", body: JSON.stringify({ lat: before.lat, lng: before.lng, side: before.side }),
+    }));
     selectedConeId.value = null;
   } catch (err) { notifyError(err.message); }
 }
 
 async function deleteCone(id) {
+  const courseId = activeCourseId.value;
+  const before = (conesMap.value[courseId] || []).find((c) => c.id === id);
   try {
     await request(`/api/cones/${id}`, { method: "DELETE" });
     if (selectedConeId.value === id) selectedConeId.value = null;
+    if (before) pushUndo("콘 삭제", () => request(`/api/courses/${courseId}/cones`, {
+      method: "POST", body: JSON.stringify({ lat: before.lat, lng: before.lng, side: before.side }),
+    }));
   } catch (err) { notifyError(err.message); }
 }
 
@@ -1922,8 +2006,15 @@ async function deleteSelected() {
   if (ids.length === 0 || editLocked.value) return;
   if (!confirm(`선택한 콘 ${ids.length}개를 삭제하시겠습니까?`)) return;
   if (rotateMode.value) exitRotateMode();
+  const courseId = activeCourseId.value;
+  const removed = (conesMap.value[courseId] || [])
+    .filter((c) => multiSelectedIds.value.has(c.id))
+    .map((c) => ({ lat: c.lat, lng: c.lng, side: c.side }));
   try {
     await Promise.all(ids.map((id) => request(`/api/cones/${id}`, { method: "DELETE" })));
+    if (removed.length) pushUndo(`콘 ${removed.length}개 삭제`, () => Promise.all(
+      removed.map((r) => request(`/api/courses/${courseId}/cones`, { method: "POST", body: JSON.stringify(r) }))
+    ));
   } catch (err) {
     notifyError(`콘 삭제 실패: ${err.message}`);
   }
@@ -1955,6 +2046,7 @@ function enterRotateMode() {
   if (editLocked.value) return;
   if (multiSelectedIds.value.size < 2) { notifyWarn("회전하려면 콘을 2개 이상 선택하세요."); return; }
   if (toolMode.value !== "none") exitToolMode(); // mutually exclusive with measurement tools
+  selectMode.value = false;
   rotateMode.value = true;
   rotateAngle.value = 0;
   rotateInput.value = "";
@@ -2054,9 +2146,13 @@ async function onRotateDragEnd() {
   rotateStartVectors = null;
   rotateStartPositions = null;
 
+  const undoPositions = startPositions ? [...startPositions].map(([id, p]) => ({ id, lat: p.lat, lng: p.lng })) : [];
   try {
     await Promise.all(updates.map((u) =>
       request(`/api/cones/${u.id}`, { method: "PATCH", body: JSON.stringify({ lat: u.lat, lng: u.lng }) })
+    ));
+    if (undoPositions.length) pushUndo("콘 회전", () => Promise.all(
+      undoPositions.map((p) => request(`/api/cones/${p.id}`, { method: "PATCH", body: JSON.stringify({ lat: p.lat, lng: p.lng }) }))
     ));
   } catch (err) {
     notifyError(`콘 회전 저장 실패: ${err.message}`);
@@ -2094,6 +2190,9 @@ async function rotateByDegrees(deg) {
   try {
     await Promise.all(updates.map((u) =>
       request(`/api/cones/${u.id}`, { method: "PATCH", body: JSON.stringify({ lat: u.lat, lng: u.lng }) })
+    ));
+    pushUndo("콘 회전", () => Promise.all(
+      startPositions.map((p) => request(`/api/cones/${p.id}`, { method: "PATCH", body: JSON.stringify({ lat: p.lat, lng: p.lng }) }))
     ));
   } catch (err) {
     notifyError(`콘 회전 저장 실패: ${err.message}`);
@@ -2135,6 +2234,7 @@ function fmtDist(m) {
 function enterToolMode(mode) {
   if (toolMode.value === mode) { exitToolMode(); return; }
   if (rotateMode.value) exitRotateMode();
+  selectMode.value = false;
   // Measuring is its own mode — drop any selection so its icons/handles don't distract.
   if (multiSelectedIds.value.size > 0) { multiSelectedIds.value = new Set(); updateMultiSelectIcons(); }
   selectedConeId.value = null;
@@ -3096,14 +3196,25 @@ function onGlobalKeydown(e) {
     if (showPreflight.value) { cancelPreflight(); e.preventDefault(); return; }
     // Then back out of the editing modes.
     if (rotateMode.value) { exitRotateMode(); e.preventDefault(); return; }
+    if (selectMode.value) { selectMode.value = false; e.preventDefault(); return; }
     if (toolMode.value !== "none") { exitToolMode(); e.preventDefault(); return; }
     return;
   }
-  // Delete key removes the multi-selection (ignored while typing in a field).
+  const t = e.target;
+  const tag = t && t.tagName;
+  const inField = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable);
+  // Ctrl/Cmd+Z undoes the last cone edit (not while typing or locked).
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "z" || e.key === "Z")) {
+    if (inField) return;
+    if (activeTab.value === "courses" && !editLocked.value && undoStack.value.length > 0) {
+      e.preventDefault();
+      performUndo();
+    }
+    return;
+  }
+  // Delete key removes the multi-selection.
   if (e.key === "Delete") {
-    const t = e.target;
-    const tag = t && t.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return;
+    if (inField) return;
     if (activeTab.value === "courses" && !editLocked.value && multiSelectedIds.value.size > 0) {
       e.preventDefault();
       deleteSelected();
@@ -3152,7 +3263,7 @@ onUnmounted(() => {
   if (map) {
     teardownRotateHandle();
     if (measureLayer) { try { map.removeLayer(measureLayer); } catch {} }
-    map.getContainer().removeEventListener("mousedown", onSelectionStart);
+    map.getContainer().removeEventListener("pointerdown", onSelectionStart);
     map.remove();
   }
 });
@@ -3555,6 +3666,13 @@ onUnmounted(() => {
                 :aria-label="editLocked ? '편집 잠김 (눌러서 해제)' : '편집 가능 (눌러서 잠금)'"
                 :title="editLocked ? '편집 잠김 — 화면 탭/드래그로 콘 추가·이동 불가 (눌러서 해제)' : '편집 가능 — 눌러서 잠그면 화면 탭/드래그 편집 방지'"
               >{{ editLocked ? '🔒' : '🔓' }}</button>
+              <button
+                class="fab-icon-btn fab-undo"
+                :disabled="editLocked || undoStack.length === 0"
+                @click="performUndo"
+                aria-label="실행취소"
+                title="마지막 작업 실행취소 (Ctrl+Z)"
+              >↩</button>
               <div class="side-toggle">
                 <button :class="['side-btn', { active: currentSide === 'left' }]" @click="currentSide = 'left'" style="--side-color: #f59e0b" title="왼쪽">L</button>
                 <button :class="['side-btn', { active: currentSide === 'center' }]" @click="currentSide = 'center'" style="--side-color: #ef4444" title="가운데">C</button>
@@ -3567,6 +3685,12 @@ onUnmounted(() => {
                 title="로버 GPS 위치로 콘 추가"
               >{{ roverLoading ? '⏳' : '📍' }}</button>
               <span class="fab-sep"></span>
+              <button
+                :class="['fab-icon-btn', 'fab-tool', { active: selectMode }]"
+                @click="selectMode = !selectMode"
+                aria-label="박스 선택 모드"
+                title="박스 선택 — 드래그로 여러 콘 선택 (터치 지원)"
+              >⬚</button>
               <!-- Measurement tools — read-only, available even when editing is locked. -->
               <button
                 :class="['fab-icon-btn', 'fab-tool', { active: toolMode === 'ruler' }]"
@@ -3596,6 +3720,15 @@ onUnmounted(() => {
               <span v-if="measureResult" class="measure-result">{{ measureResult }}</span>
               <button class="btn btn-ghost btn-sm" @click="resetMeasure">초기화</button>
               <button class="btn btn-ghost btn-sm" @click="exitToolMode">닫기</button>
+            </div>
+
+            <!-- Box-select mode overlay. -->
+            <div v-if="selectMode" class="map-overlay map-overlay-row measure-overlay">
+              <span class="measure-tool-name">⬚ 선택</span>
+              <span class="measure-hint">드래그로 영역 선택 · 콘 탭으로 토글</span>
+              <span v-if="multiSelectedIds.size" class="measure-result">{{ multiSelectedIds.size }}개</span>
+              <button v-if="multiSelectedIds.size" class="btn btn-ghost btn-sm" @click="clearMultiSelection">해제</button>
+              <button class="btn btn-ghost btn-sm" @click="selectMode = false">닫기</button>
             </div>
           </div>
 
@@ -5274,4 +5407,8 @@ onUnmounted(() => {
   padding: 1px 6px; font: 600 12px/1.3 "JetBrains Mono", ui-monospace, monospace;
 }
 .measure-label.angle { color: #fbbf24; border-color: #f59e0b; }
+
+/* In select mode the map is pinned; stop the browser from scrolling/zooming the
+   page so a touch drag draws a selection box instead. */
+.select-mode-active { touch-action: none !important; }
 </style>
