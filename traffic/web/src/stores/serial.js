@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { addControllerLog } from "../composables/useApi";
+import { acceptSensorTick } from "../composables/sensorDebounce";
 
 // Utility function for time formatting (분:초.밀리초, 분은 60 이상 가능)
 export function msToClockStr(ms) {
@@ -20,7 +21,7 @@ export const useSerialStore = defineStore("serial", () => {
   const port = ref(null);
   const connected = ref(false);
   const clockInterval = ref(null);
-  const clockDisplay = ref("00:00:00.000");
+  const clockDisplay = ref("00:00.000");
 
   const start = ref({ tick: null, timestamp: null });
   const green = ref({ active: false, tick: null, timestamp: null });
@@ -132,7 +133,7 @@ export const useSerialStore = defineStore("serial", () => {
     lightColor.value = "grey";
     port.value = null;
     stopClock();
-    clockDisplay.value = "00:00:00.000";
+    clockDisplay.value = "00:00.000";
     records.value = [];
     start.value = { tick: null, timestamp: null };
     lastSensorTrigger.value = {};
@@ -146,7 +147,7 @@ export const useSerialStore = defineStore("serial", () => {
     } else if (data.startsWith("$HI")) {
       connected.value = true;
       lightColor.value = "grey";
-      clockDisplay.value = "00:00:00.000";
+      clockDisplay.value = "00:00.000";
       notyf.success("컨트롤러 연결 완료");
     } else if (data.startsWith("$OK G")) {
       handleGreenLight(Number(data.slice(6)));
@@ -165,7 +166,7 @@ export const useSerialStore = defineStore("serial", () => {
     green.value.timestamp = new Date();
     lightColor.value = "green";
 
-    clockDisplay.value = "00:00:00.000";
+    clockDisplay.value = "00:00.000";
     records.value = [];
     start.value.tick = null;
     start.value.timestamp = null;
@@ -196,11 +197,9 @@ export const useSerialStore = defineStore("serial", () => {
 
     if (!green.value.active) return;
 
-    // Check cooldown
-    const lastTrigger = lastSensorTrigger.value[sensor];
-    if (lastTrigger && timestamp.getTime() - lastTrigger < SENSOR_COOLDOWN_MS) {
-      return;
-    }
+    // 디바운스(수신 계층, tick 기준): 한 통과의 다중 엣지(바운스, ~30~150ms)를 접는다.
+    // 뷰의 setSensorCooldown에 의존하지 않으므로 첫 통과 등 모든 경로가 보호된다.
+    if (!acceptSensorTick(lastSensorTrigger.value, sensor, tick, SENSOR_COOLDOWN_MS)) return;
 
     // Call the callback with sensor data
     if (onSensorCallback) {
@@ -250,9 +249,8 @@ export const useSerialStore = defineStore("serial", () => {
     }
   }
 
-  function setSensorCooldown(sensor) {
-    lastSensorTrigger.value[sensor] = Date.now();
-  }
+  // 디바운스는 handleSensorReport가 tick 기준으로 직접 처리. 뷰 호환용 no-op.
+  function setSensorCooldown() {}
 
   async function transmit(data) {
     if (!port.value) return false;
@@ -302,7 +300,7 @@ export const useSerialStore = defineStore("serial", () => {
 
   function reset() {
     stopClock();
-    clockDisplay.value = "00:00:00.000";
+    clockDisplay.value = "00:00.000";
     records.value = [];
     start.value = { tick: null, timestamp: null };
     lastSensorTrigger.value = {};

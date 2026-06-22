@@ -16,6 +16,7 @@ import {
   onWirelessEvent,
 } from "../composables/useSSE";
 import { WIRELESS_EVENTS, EVENT_TYPE, roleToSensor } from "../composables/useEventTiming";
+import { acceptSensorTick } from "../composables/sensorDebounce";
 
 const TICKS_PER_MS = 16000;
 const SENSOR_COOLDOWN_MS = 1000;
@@ -27,7 +28,7 @@ function makeSlot() {
     green: { active: false, tick: null, timestamp: null },
     start: { tick: null, timestamp: null },
     records: [],
-    clockDisplay: "00:00:00.000",
+    clockDisplay: "00:00.000",
     clockRAF: null,
     lastSensorTrigger: {},
     light: "grey", // 가상 신호등의 로컬 색(물리 지정 경기는 SSE 색을 따름)
@@ -91,7 +92,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   function activateGreen(mode, greenTickMs) {
     const slot = timing[mode];
     slot.green = { active: true, tick: greenTickMs, timestamp: new Date() };
-    slot.clockDisplay = "00:00:00.000";
+    slot.clockDisplay = "00:00.000";
     slot.records = [];
     slot.start = { tick: null, timestamp: null };
     slot.lastSensorTrigger = {};
@@ -123,15 +124,12 @@ export const useWirelessStore = defineStore("wireless", () => {
   applyLight(light.value);
 
   /* ── 센서 라우팅(serial.handleSensorReport와 동일 순서) ───────────── */
-  // skipCooldown: 백필(재연결 시 누락분 재생)은 이미 일어난 별개 라디오 이벤트들을
-  // 한 번에 재생하므로, 라이브 바운스 디바운스(쿨다운)에 연속 랩이 먹히면 안 된다.
-  function routeSensor(mode, sensor, tick, nowMs, skipCooldown = false) {
+  // 디바운스(tick 기준): 한 통과의 다중 엣지(바운스, ~30~150ms)를 접는다. 벽시계가 아니라
+  // 이벤트 캡처 시각(tick)으로 비교하므로 버퍼링·지연·재전송·백필로 도착이 흩어져도 안전.
+  function routeSensor(mode, sensor, tick, nowMs) {
     const slot = timing[mode];
     if (!slot.green.active) return;
-    if (!skipCooldown) {
-      const last = slot.lastSensorTrigger[sensor];
-      if (last && nowMs - last < SENSOR_COOLDOWN_MS) return;
-    }
+    if (!acceptSensorTick(slot.lastSensorTrigger, sensor, tick, SENSOR_COOLDOWN_MS)) return;
 
     const payload = {
       sensor, tick,
@@ -156,12 +154,11 @@ export const useWirelessStore = defineStore("wireless", () => {
     const tick = tickToMs(ev.master_tick);
     const node = String(ev.node_id);
     const nowMs = Date.now();
-    const backfill = ev._backfill === true; // 재연결 누락분 재생 — 쿨다운 우회
     for (const row of mapping.value) {
       if (row.node_id !== node || row.enabled === 0) continue;
       const mode = TYPE_TO_KEY[row.event_type];
       if (!mode) continue;
-      routeSensor(mode, roleToSensor(mode, row.role), tick, nowMs, backfill);
+      routeSensor(mode, roleToSensor(mode, row.role), tick, nowMs);
     }
   }
   onWirelessEvent(handleWirelessEvent);
@@ -344,7 +341,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   function resetFor(mode) {
     const slot = timing[mode];
     stopClock(slot);
-    slot.clockDisplay = "00:00:00.000"; slot.records = []; slot.start = { tick: null, timestamp: null };
+    slot.clockDisplay = "00:00.000"; slot.records = []; slot.start = { tick: null, timestamp: null };
     slot.lastSensorTrigger = {}; slot.green.active = false; slot.light = "grey";
     if (isPhysical(mode) && bridgeIsSelf.value) transmitLine("O");
   }
@@ -373,7 +370,8 @@ export const useWirelessStore = defineStore("wireless", () => {
       sendRed: () => redFor(mode),
       sendOff: () => offFor(mode),
       reset: () => resetFor(mode),
-      setSensorCooldown: (sensor) => { slot.lastSensorTrigger[sensor] = Date.now(); },
+      // 디바운스는 routeSensor가 tick 기준으로 직접 처리. 뷰 호환용 no-op.
+      setSensorCooldown: () => {},
       // 매뉴얼 모드는 무선에서 미사용(컨트롤러 카드 숨김). 인터페이스 호환용 no-op.
       enableManualMode: () => {},
       disableManualMode: () => {},
