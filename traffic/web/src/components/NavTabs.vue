@@ -15,7 +15,6 @@ const wiredNavItems = [
   { id: "accel", label: "🏎️ 가속", path: "/accel", eventType: "가속" },
   { id: "skidpad", label: "⏱️ 스키드패드", path: "/skidpad", eventType: "스키드패드" },
   { id: "autocross", label: "🚧 오토크로스", path: "/autocross", eventType: "오토크로스" },
-  { id: "gymkhana", label: "🏁 짐카나", path: "/gymkhana", eventType: "짐카나" },
   { id: "scoreboard", label: "📺 전광판", path: "/scoreboard" },
 ];
 
@@ -24,7 +23,7 @@ const wirelessNavItems = [
   { id: "wl-accel", label: "🏎️ 가속", path: "/wireless/accel", eventType: "가속" },
   { id: "wl-skidpad", label: "⏱️ 스키드패드", path: "/wireless/skidpad", eventType: "스키드패드" },
   { id: "wl-autocross", label: "🚧 오토크로스", path: "/wireless/autocross", eventType: "오토크로스" },
-  { id: "wl-gymkhana", label: "🏁 짐카나", path: "/wireless/gymkhana", eventType: "짐카나" },
+  { id: "wl-overview", label: "🗂️ 현황", path: "/wireless/overview" },
   { id: "wl-scoreboard", label: "📺 전광판", path: "/wireless/scoreboard" },
   { id: "wl-settings", label: "⚙️ 무선 설정", path: "/wireless/settings" },
 ];

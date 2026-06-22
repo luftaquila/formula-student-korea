@@ -401,7 +401,7 @@ app.get("/api/score", async (req, res) => {
 
     for (const { tableName, records } of allTableRecords) {
       for (const rec of records) {
-        const eventType = rec.type; // 경기 종목: 가속, 스키드패드, 짐카나 등
+        const eventType = rec.type; // 경기 종목: 가속, 스키드패드, 오토크로스 등
         if (!eventType) continue;
 
         if (!typeMap.has(eventType)) {

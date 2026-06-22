@@ -22,6 +22,11 @@ const routes = [
     component: () => import("../views/WirelessHomeView.vue"),
   },
   {
+    path: "/wireless/overview",
+    name: "WirelessOverview",
+    component: () => import("../views/WirelessOverviewView.vue"),
+  },
+  {
     path: "/wireless/scoreboard",
     name: "WirelessScoreboard",
     component: () => import("../views/ScoreboardView.vue"),
@@ -42,14 +47,10 @@ const routes = [
     component: () => import("../views/WirelessAutocrossView.vue"),
   },
   {
-    path: "/wireless/gymkhana",
-    name: "WirelessGymkhana",
-    component: () => import("../views/WirelessGymkhanaView.vue"),
-  },
-  {
     path: "/accel",
     name: "Accel",
-    component: () => import("../views/AccelView.vue"),
+    component: () => import("../views/StartFinishView.vue"),
+    props: { config: { mode: "accel", type: "가속", defaultTitle: "Acceleration" } },
   },
   {
     path: "/skidpad",
@@ -59,12 +60,8 @@ const routes = [
   {
     path: "/autocross",
     name: "Autocross",
-    component: () => import("../views/AutocrossView.vue"),
-  },
-  {
-    path: "/gymkhana",
-    name: "Gymkhana",
-    component: () => import("../views/GymkhanaView.vue"),
+    component: () => import("../views/StartFinishView.vue"),
+    props: { config: { mode: "autocross", type: "오토크로스", defaultTitle: "Autocross" } },
   },
   {
     path: "/record",

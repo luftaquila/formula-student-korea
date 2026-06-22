@@ -1,23 +1,20 @@
 /* Wireless event helpers.
  *
- * The per-event timing RULES live in the (reused) wired event views
- * (AccelView/SkidpadView/AutocrossView/GymkhanaView) — wireless mode renders the
- * same components with a wireless `source` facade, so the logic is identical by
- * construction. This module only holds the event keys and the sensor-role → role
- * index mapping the wireless store needs to route incoming events.
+ * 경기별 타이밍 RULE은 `shared/event-timing.js`(순수 모듈)에 있고, 유선 store(serial)·
+ * 무선 store(wireless)가 그 규칙을 공유한다. 이 모듈은 경기 키·표시 이름과
+ * 센서-role → 센서 인덱스 매핑만 담는다(라우팅용).
  */
-export const WIRELESS_EVENTS = ["accel", "skidpad", "autocross", "gymkhana"];
+export const WIRELESS_EVENTS = ["accel", "skidpad", "autocross"];
 
 export const EVENT_TYPE = {
   accel: "가속",
   skidpad: "스키드패드",
   autocross: "오토크로스",
-  gymkhana: "짐카나",
 };
 
 // 역할(role) → 센서 인덱스(1/2). 매핑은 서버에 저장되고, 뷰 로직은 인덱스로 동작.
 export function roleToSensor(eventKey, role) {
-  if (eventKey === "accel") return role === "finish" ? 2 : 1; // start→1, finish→2
-  if (eventKey === "gymkhana") return role === "lane2" ? 2 : 1; // lane1→1, lane2→2
-  return 1; // skidpad / autocross: 단일 센서
+  // accel/autocross: 출발/도착 2센서. skidpad: 단일 센서.
+  if (eventKey === "accel" || eventKey === "autocross") return role === "finish" ? 2 : 1;
+  return 1; // skidpad: 단일 센서
 }

@@ -17,13 +17,20 @@ const wirelessLight = ref(null);
 const wirelessMapping = ref([]);
 const wirelessTelemetry = ref({}); // node_id -> { rssi, snr, offset_us, skew_ppm, latency_ms, link_state, last_seen }
 const wirelessBridge = ref({ online: false, last_seen: null });
+const wirelessSessions = ref({}); // event_type -> { armed, light_color, green_tick, team, event_name, controller, ... }
 // wireless:event는 last-value ref로 모으면 빠른 연속 이벤트가 합쳐지므로 fan-out 사용
 const wirelessEventSubs = new Set();
 export function onWirelessEvent(fn) {
   wirelessEventSubs.add(fn);
   return () => wirelessEventSubs.delete(fn);
 }
-export { wirelessLight, wirelessMapping, wirelessTelemetry, wirelessBridge };
+// 물리 신호등 다운링크 명령(서버→브리지). 브리지만 의미 있게 처리(시리얼 전달).
+const wirelessCommandSubs = new Set();
+export function onWirelessCommand(fn) {
+  wirelessCommandSubs.add(fn);
+  return () => wirelessCommandSubs.delete(fn);
+}
+export { wirelessLight, wirelessMapping, wirelessTelemetry, wirelessBridge, wirelessSessions };
 
 // ── raw 이벤트 디스패치 + 재연결 백필 ──────────────────────────────────────
 // SSE가 잠깐 끊기면 그동안 broadcast된 wireless:event를 놓친다(브라우저 EventSource는
@@ -99,6 +106,9 @@ on("init", (e) => {
     for (const t of data.wireless.telemetry || []) tmap[t.node_id] = t;
     wirelessTelemetry.value = tmap;
     wirelessBridge.value = data.wireless.bridge || { online: false, last_seen: null };
+    const smap = {};
+    for (const s of data.wireless.sessions || []) smap[s.event_type] = s;
+    wirelessSessions.value = smap;
     // 첫 연결: 현재 위치만 기준점으로 잡고 백필 안 함. 재연결: init이 다시 와도 기준점은
     // 유지하고, 끊긴 동안 누락분을 백필. (mapping은 위에서 이미 갱신돼 라우팅이 최신값 사용.)
     if (lastWirelessEventId == null) {
@@ -146,6 +156,21 @@ on("wireless:bridge", (e) => {
   wirelessBridge.value = data;
 });
 
+on("wireless:session", (e) => {
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
+  if (!data || !data.event_type) return;
+  wirelessSessions.value = { ...wirelessSessions.value, [data.event_type]: data };
+});
+
+on("wireless:command", (e) => {
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
+  for (const fn of wirelessCommandSubs) {
+    try { fn(data); } catch { /* subscriber error ignored */ }
+  }
+});
+
 on("records", (e) => {
   let data;
   try { data = JSON.parse(e.data); } catch { return; }
@@ -185,5 +210,6 @@ export function useSSE() {
     wirelessMapping,
     wirelessTelemetry,
     wirelessBridge,
+    wirelessSessions,
   };
 }

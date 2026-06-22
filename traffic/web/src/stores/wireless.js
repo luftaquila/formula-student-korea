@@ -8,16 +8,26 @@ import {
   reportBridgeOffline,
   putPhysicalEvent as apiPutPhysicalEvent,
   putWirelessDebounce,
+  armWirelessEvent,
+  claimWirelessLease,
+  releaseWirelessLease,
+  fetchServerTime,
+  selectWirelessEvent,
+  dnfWirelessEvent,
+  commandWirelessPhysical,
 } from "../composables/useApi";
 import {
   wirelessLight,
   wirelessMapping,
   wirelessTelemetry,
   wirelessBridge,
+  wirelessSessions,
   onWirelessEvent,
+  onWirelessCommand,
 } from "../composables/useSSE";
 import { WIRELESS_EVENTS, EVENT_TYPE, roleToSensor } from "../composables/useEventTiming";
 import { acceptSensorTick } from "../composables/sensorDebounce";
+import { ruleFor, shouldLatchStart, shouldIgnore, lapTime } from "@shared/event-timing.js";
 
 const TICKS_PER_MS = 16000;
 const DEFAULT_DEBOUNCE_MS = 300;
@@ -27,7 +37,7 @@ const tickToMs = (t) => Math.round(Number(t || 0) / TICKS_PER_MS);
 function makeSlot() {
   return {
     green: { active: false, tick: null, timestamp: null },
-    start: { tick: null, timestamp: null },
+    start: { tick: null, timestamp: null, serverMs: null },
     records: [],
     clockDisplay: "00:00.000",
     clockRAF: null,
@@ -53,6 +63,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   const mapping = wirelessMapping;
   const telemetry = wirelessTelemetry;
   const bridge = wirelessBridge;
+  const sessions = wirelessSessions; // event_type -> 세션(arm/light/lease) — 서버 권위
 
   // 센서 디바운스 창(ms). 서버(wireless_light)에 저장돼 wireless:light로 공유. 기본 300ms.
   const debounceMs = computed(() => {
@@ -79,6 +90,11 @@ export const useWirelessStore = defineStore("wireless", () => {
     return timing[mode].light;
   }
 
+  // 경기별 세션의 controller(lease 보유자). 표시·게이팅용.
+  function controllerFor(mode) {
+    return sessions.value?.[EVENT_TYPE[mode]]?.controller || null;
+  }
+
   // 마스터 시계 추적(브리지가 H 하트비트로). 가상 신호등 green의 master-time 기준값 산출.
   let lastMasterMs = null;
   let lastWall = 0;
@@ -86,11 +102,28 @@ export const useWirelessStore = defineStore("wireless", () => {
     return lastMasterMs != null ? Math.round(lastMasterMs + (Date.now() - lastWall)) : Date.now();
   }
 
+  // 공유 클럭: 서버 시각과 내 시계의 오프셋(ms). 출발이벤트 server_time을 이 오프셋으로 보정해
+  // 전 클라가 동일한 경과시간을 표시한다(표시용; 기록값은 master-tick으로 정확).
+  let serverOffsetMs = 0;
+  async function syncServerTime() {
+    try {
+      const t0 = Date.now();
+      const { now } = await fetchServerTime();
+      const t1 = Date.now();
+      if (Number.isFinite(now)) serverOffsetMs = now - (t0 + t1) / 2;
+    } catch { /* 이전 오프셋 유지 */ }
+  }
+  syncServerTime();
+
   /* ── 클럭 ──────────────────────────────────────────────────────── */
   function startClock(slot) {
     stopClock(slot);
     const tick = () => {
-      if (slot.start.timestamp) slot.clockDisplay = msToClockStr(Date.now() - slot.start.timestamp.getTime());
+      if (slot.start.serverMs != null) {
+        slot.clockDisplay = msToClockStr(Date.now() + serverOffsetMs - slot.start.serverMs);
+      } else if (slot.start.timestamp) {
+        slot.clockDisplay = msToClockStr(Date.now() - slot.start.timestamp.getTime());
+      }
       slot.clockRAF = requestAnimationFrame(tick);
     };
     slot.clockRAF = requestAnimationFrame(tick);
@@ -105,12 +138,9 @@ export const useWirelessStore = defineStore("wireless", () => {
     slot.green = { active: true, tick: greenTickMs, timestamp: new Date() };
     slot.clockDisplay = "00:00.000";
     slot.records = [];
-    slot.start = { tick: null, timestamp: null };
+    slot.start = { tick: null, timestamp: null, serverMs: null };
     slot.lastSensorTrigger = {};
-    if (mode === "gymkhana" || mode === "autocross") {
-      slot.start = { tick: greenTickMs, timestamp: slot.green.timestamp };
-      startClock(slot);
-    }
+    // green = arm일 뿐 t0가 아니다. 전 경기 t0는 출발 센서(routeSensor에서 래치).
   }
   function deactivateGreen(mode) {
     const slot = timing[mode];
@@ -118,26 +148,31 @@ export const useWirelessStore = defineStore("wireless", () => {
     stopClock(slot);
   }
 
-  // 물리 지정 경기의 신호등 상태(SSE)를 그 경기 슬롯에 반영.
-  function applyLight(l) {
-    const pKey = l?.owner_event ? TYPE_TO_KEY[l.owner_event] || null : null;
-    if (!pKey) return;
-    const slot = timing[pKey];
-    const color = l?.light_color || "off";
-    if (color === "green") {
-      const gt = tickToMs(l.green_tick);
-      if (!slot.green.active || slot.green.tick !== gt) activateGreen(pKey, gt);
+  // 경기별 세션(SSE, 서버 권위)을 그 경기 슬롯에 반영 — 가상·물리 공통. green=arm.
+  // 가상 경기도 서버 세션으로 공유되므로 브리지가 아닌 모든 클라가 동일하게 본다.
+  function applySession(s) {
+    if (!s) return;
+    const mode = TYPE_TO_KEY[s.event_type];
+    if (!mode || !timing[mode]) return;
+    const slot = timing[mode];
+    slot.light = s.light_color === "off" ? "grey" : s.light_color || "grey";
+    if (s.armed) {
+      const gt = tickToMs(s.green_tick);
+      if (!slot.green.active || slot.green.tick !== gt) activateGreen(mode, gt);
     } else {
-      deactivateGreen(pKey);
+      deactivateGreen(mode);
     }
   }
-  watch(light, (l) => applyLight(l), { deep: true });
-  applyLight(light.value);
+  function applyAllSessions() {
+    for (const s of Object.values(sessions.value || {})) applySession(s);
+  }
+  watch(sessions, applyAllSessions, { deep: true });
+  applyAllSessions();
 
   /* ── 센서 라우팅(serial.handleSensorReport와 동일 순서) ───────────── */
   // 디바운스(tick 기준): 한 통과의 다중 엣지(바운스, ~30~150ms)를 접는다. 벽시계가 아니라
   // 이벤트 캡처 시각(tick)으로 비교하므로 버퍼링·지연·재전송·백필로 도착이 흩어져도 안전.
-  function routeSensor(mode, sensor, tick, nowMs) {
+  function routeSensor(mode, sensor, tick, nowMs, serverMs) {
     const slot = timing[mode];
     if (!slot.green.active) return;
     if (!acceptSensorTick(slot.lastSensorTrigger, sensor, tick, debounceMs.value)) return;
@@ -151,13 +186,16 @@ export const useWirelessStore = defineStore("wireless", () => {
     };
     try { callbacks[mode]?.(payload); } catch (e) { notyf.error(`기록 처리 실패: ${e.message}`); }
 
-    if ((mode === "accel" || mode === "skidpad") && sensor === 1 && !slot.start.timestamp) {
+    // 출발 센서에서 t0 래치(accel/autocross/skidpad 모두 센서 1). green은 arm일 뿐.
+    const rule = ruleFor(mode);
+    if (shouldLatchStart(rule, sensor, !!slot.start.timestamp)) {
       slot.start.tick = tick;
       slot.start.timestamp = new Date(nowMs);
+      slot.start.serverMs = serverMs ?? null; // 공유 클럭 앵커(출발이벤트 서버 시각)
       startClock(slot);
     }
-    if (mode === "skidpad" && sensor !== 1) return;
-    const time = slot.start.tick ? tick - slot.start.tick : tick - slot.green.tick;
+    if (shouldIgnore(rule, sensor)) return;
+    const time = lapTime(tick, slot.start.tick, slot.green.tick);
     slot.records.push({ sensor, tick, time, timestamp: new Date(nowMs) });
   }
 
@@ -165,14 +203,27 @@ export const useWirelessStore = defineStore("wireless", () => {
     const tick = tickToMs(ev.master_tick);
     const node = String(ev.node_id);
     const nowMs = Date.now();
+    // server_time은 UTC(strftime 'now', tz 마커 없음) → Z 부착해 UTC로 파싱. 전 클라 동일 기준.
+    const st = ev.server_time;
+    const serverMs = st ? Date.parse(st.endsWith("Z") ? st : st + "Z") : null;
     for (const row of mapping.value) {
       if (row.node_id !== node || row.enabled === 0) continue;
       const mode = TYPE_TO_KEY[row.event_type];
       if (!mode) continue;
-      routeSensor(mode, roleToSensor(mode, row.role), tick, nowMs);
+      routeSensor(mode, roleToSensor(mode, row.role), tick, nowMs, Number.isFinite(serverMs) ? serverMs : null);
     }
   }
   onWirelessEvent(handleWirelessEvent);
+
+  // 물리 신호등 다운링크: 브리지만 처리. 실행 직전 isPhysical 재검사(TOCTOU 방어) 후 시리얼 전달.
+  onWirelessCommand((cmd) => {
+    if (!bridgeIsSelf.value || !cmd) return;
+    const mode = TYPE_TO_KEY[cmd.event_type];
+    if (!mode || !isPhysical(mode)) return; // 물리 지정 경기가 아니면 무시
+    if (cmd.action === "green") transmitLine("G");
+    else if (cmd.action === "red") transmitLine("R");
+    else if (cmd.action === "off") transmitLine("O");
+  });
 
   /* ── 브리지(시리얼) ───────────────────────────────────────────────── */
   let serialPort = null;
@@ -278,6 +329,23 @@ export const useWirelessStore = defineStore("wireless", () => {
     }
   }
 
+  // ── Screen Wake Lock(브리지 견고화) ── 브리지로 동작하는 동안 화면 sleep 방지.
+  // Wake Lock은 탭이 hidden되면 자동 해제되므로 visible 복귀 시 재획득.
+  let wakeLock = null;
+  async function acquireWakeLock() {
+    try { if ("wakeLock" in navigator && !wakeLock) wakeLock = await navigator.wakeLock.request("screen"); }
+    catch { /* 권한·정책으로 실패해도 무시(견고화 보조 수단) */ }
+  }
+  function releaseWakeLock() {
+    try { wakeLock?.release(); } catch { /* ignore */ }
+    wakeLock = null;
+  }
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && bridgeIsSelf.value) acquireWakeLock();
+    });
+  }
+
   async function openSerial() {
     if (!("serial" in navigator)) { notyf.error("이 브라우저는 Web Serial을 지원하지 않습니다."); return false; }
     if (bridge.value.online && !bridgeIsSelf.value) { notyf.error("이미 다른 PC가 마스터에 연결되어 있습니다."); return false; }
@@ -288,6 +356,7 @@ export const useWirelessStore = defineStore("wireless", () => {
       role.value = "bridge";
       bridgeIsSelf.value = true;
       serialConnected.value = true;
+      acquireWakeLock(); // 브리지 동작 중 화면 sleep 방지
       transmitLine("?ID");
       hbTimer = setInterval(flushIngest, 2000);
       bridgeReadLoop();
@@ -304,20 +373,72 @@ export const useWirelessStore = defineStore("wireless", () => {
     try { await serialPort?.close(); } catch { /* ignore */ }
     serialPort = null; serialReader = null;
     serialConnected.value = false; bridgeIsSelf.value = false; role.value = "client";
+    releaseWakeLock();
     // 서버에 즉시 오프라인 보고 → "마스터 연결"이 15s 워치독을 기다리지 않고 바로 풀린다.
     if (wasBridge) reportBridgeOffline().catch(() => {});
   }
 
-  /* ── 신호등 제어 (브리지 콘솔 전용) ──────────────────────────────── */
-  function requireBridge() {
-    if (!bridgeIsSelf.value) { notyf.error("신호등은 마스터에 연결된 PC에서만 제어할 수 있습니다."); return false; }
+  /* ── 경기 제어 (lease 보유자) ─────────────────────────────────────── */
+  // 내가 점유한 경기(EVENT_TYPE 값). heartbeat 대상. 보유자만 제어 가능.
+  const myLeases = reactive(new Set());
+  const myActor = ref(null); // claim 응답에서 학습한 내 식별자(이메일).
+  // 제어권 판정은 **서버 세션의 controller** 기준 — wireless:session 브로드캐스트로 즉시 반영되어
+  // 서버가 lease를 회수/만료하면 UI가 바로 풀린다(로컬 staleness 제거).
+  function holdsLease(mode) {
+    const s = sessions.value?.[EVENT_TYPE[mode]];
+    return !!myActor.value && !!s && s.controller === myActor.value;
+  }
+  function requireControl(mode) {
+    if (!holdsLease(mode)) { notyf.error("먼저 제어권을 잡으세요(제어 잡기)."); return false; }
     return true;
+  }
+  let leaseTimer = null;
+  function ensureLeaseHeartbeat() {
+    if (leaseTimer || myLeases.size === 0) return;
+    // TTL 30s → 12s마다 갱신. 갱신 실패(만료 후 타인 점유 등)면 그 경기 점유 해제.
+    leaseTimer = setInterval(async () => {
+      for (const et of [...myLeases]) {
+        try { await claimWirelessLease(et); }
+        catch { myLeases.delete(et); notyf.error(`제어권 상실: ${et}`); }
+      }
+      if (myLeases.size === 0) { clearInterval(leaseTimer); leaseTimer = null; }
+    }, 12000);
+  }
+  async function claimLease(mode) {
+    const et = EVENT_TYPE[mode];
+    try {
+      const s = await claimWirelessLease(et);
+      if (s?.controller) myActor.value = s.controller; // 내 식별자 학습 → holdsLease 판정 기준
+      myLeases.add(et);
+      ensureLeaseHeartbeat();
+    } catch (e) { notyf.error(e.message); }
+  }
+  async function releaseLease(mode) {
+    const et = EVENT_TYPE[mode];
+    myLeases.delete(et);
+    if (myLeases.size === 0 && leaseTimer) { clearInterval(leaseTimer); leaseTimer = null; }
+    try { await releaseWirelessLease(et); }
+    catch { /* ignore */ }
+  }
+  // 강제 가로채기: 현재 점유를 회수(서버는 admin 허용)한 뒤 내가 claim. 멈춘 탭이 lease를 쥔 경우.
+  async function takeoverLease(mode) {
+    const et = EVENT_TYPE[mode];
+    try {
+      await releaseWirelessLease(et);
+      const s = await claimWirelessLease(et);
+      if (s?.controller) myActor.value = s.controller;
+      myLeases.add(et);
+      ensureLeaseHeartbeat();
+    } catch (e) { notyf.error(e.message); }
+  }
+  // 물리 신호등 원격 제어(비-브리지 컨트롤러 → 서버 → 브리지 시리얼 다운링크).
+  function commandPhysical(mode, action) {
+    commandWirelessPhysical(EVENT_TYPE[mode], action).catch((e) => notyf.error(e.message));
   }
 
   // 경기별 필요 역할(센서). 미할당 역할이 있으면 그 구간은 기록되지 않는다.
-  const REQUIRED_ROLES = { accel: ["start", "finish"], gymkhana: ["lane1", "lane2"], skidpad: ["start"], autocross: ["start"] };
-  const ROLE_LABEL = { start: "출발", finish: "도착", lane1: "레인 1", lane2: "레인 2" };
-  // 해당 경기에서 enabled 매핑이 없는(미할당) 필요 역할 목록.
+  const REQUIRED_ROLES = { accel: ["start", "finish"], skidpad: ["start"], autocross: ["start", "finish"] };
+  const ROLE_LABEL = { start: "출발", finish: "도착" };
   function missingRoles(mode) {
     const have = new Set(
       mapping.value.filter((m) => m.enabled !== 0 && m.event_type === EVENT_TYPE[mode]).map((m) => m.role),
@@ -325,36 +446,54 @@ export const useWirelessStore = defineStore("wireless", () => {
     return (REQUIRED_ROLES[mode] || []).filter((r) => !have.has(r));
   }
 
-  // green/red/off: 물리 지정 경기 → 마스터 SSR 제어, 그 외 → 가상(로컬) 신호등.
+  // green/red/off(=arm/disarm): 가상 → 서버 arm(전 클라 공유). 물리 → 브리지면 시리얼, 아니면 다운링크.
+  function armAction(mode, action, greenTickRaw) {
+    // 낙관적(4d): 신호등 색만 즉시 반영. arm·기록·클럭은 applySession이 권위 reconcile. 실패 시 롤백.
+    const slot = timing[mode];
+    const prevLight = slot.light;
+    slot.light = action === "green" ? "green" : action === "red" ? "red" : "grey";
+    armWirelessEvent({ event_type: EVENT_TYPE[mode], action, green_tick: greenTickRaw })
+      .catch((e) => { slot.light = prevLight; notyf.error(e.message); });
+  }
+  function physicalControl(mode, action, serialCmd) {
+    if (bridgeIsSelf.value) transmitLine(serialCmd); // 브리지: 직접 시리얼
+    else commandPhysical(mode, action);              // 비-브리지: 서버→브리지 다운링크
+  }
   function greenFor(mode) {
-    if (!requireBridge()) return;
+    if (!requireControl(mode)) return;
     const missing = missingRoles(mode);
     if (missing.length) {
       notyf.open({ type: "warning", message: `센서 미할당: ${missing.map((r) => ROLE_LABEL[r] || r).join(", ")}` });
     }
-    if (isPhysical(mode)) {
-      transmitLine("G"); // SSR on; L GREEN → reportLight → SSE → applyLight가 슬롯 green 설정
-    } else {
-      timing[mode].light = "green";
-      activateGreen(mode, masterNowMs());
-    }
+    if (isPhysical(mode)) { physicalControl(mode, "green", "G"); return; }
+    // 가상: 클릭 즉시 arm을 낙관 반영(green.active=true → 녹색등 버튼 즉시 잠금, 전처럼).
+    // applySession이 같은 green_tick으로 reconcile(재활성 안 함). POST 실패 시 롤백.
+    const gtRaw = String(Math.round(masterNowMs() * TICKS_PER_MS));
+    const slot = timing[mode];
+    slot.light = "green";
+    activateGreen(mode, tickToMs(gtRaw));
+    armWirelessEvent({ event_type: EVENT_TYPE[mode], action: "green", green_tick: gtRaw })
+      .catch((e) => { deactivateGreen(mode); slot.light = "grey"; notyf.error(e.message); });
   }
   function redFor(mode) {
-    if (!requireBridge()) return;
-    if (isPhysical(mode)) transmitLine("R");
-    else { timing[mode].light = "red"; deactivateGreen(mode); }
+    if (!requireControl(mode)) return;
+    if (isPhysical(mode)) physicalControl(mode, "red", "R");
+    else armAction(mode, "red");
   }
   function offFor(mode) {
-    if (!requireBridge()) return;
-    if (isPhysical(mode)) transmitLine("O");
-    else { timing[mode].light = "grey"; deactivateGreen(mode); }
+    if (!requireControl(mode)) return;
+    if (isPhysical(mode)) physicalControl(mode, "off", "O");
+    else armAction(mode, "off");
   }
   function resetFor(mode) {
     const slot = timing[mode];
     stopClock(slot);
-    slot.clockDisplay = "00:00.000"; slot.records = []; slot.start = { tick: null, timestamp: null };
+    slot.clockDisplay = "00:00.000"; slot.records = []; slot.start = { tick: null, timestamp: null, serverMs: null };
     slot.lastSensorTrigger = {}; slot.green.active = false; slot.light = "grey";
-    if (isPhysical(mode) && bridgeIsSelf.value) transmitLine("O");
+    if (!holdsLease(mode)) return;
+    // 진행 중 경기를 정지(disarm)해 전 클라가 함께 풀리도록 서버에도 반영.
+    if (isPhysical(mode)) physicalControl(mode, "off", "O");
+    else armAction(mode, "off");
   }
 
   // 무선 설정: 물리 신호등 사용 경기 지정
@@ -371,16 +510,31 @@ export const useWirelessStore = defineStore("wireless", () => {
       get manualMode() { return false; },
       get isBridge() { return bridgeIsSelf.value; },
       get isPhysical() { return isPhysical(mode); },
+      // 제어권: lease 보유자만 제어. 관찰자(미보유)는 read-only.
+      get isController() { return holdsLease(mode); },
+      get controller() { return sessions.value?.[EVENT_TYPE[mode]]?.controller || null; },
+      // 경기 세션(서버 권위 선택·arm). 관찰자 뷰가 컨트롤러의 팀·이벤트명을 미러하는 데 사용.
+      get session() { return sessions.value?.[EVENT_TYPE[mode]] || null; },
       get green() { return slot.green; },
       get records() { return slot.records; },
       get clockDisplay() { return slot.clockDisplay; },
       get lightColor() { return lightColorFor(mode); },
       setMode: (_m, cb) => { callbacks[mode] = cb; },
       connect: () => openSerial(),
+      claimLease: () => claimLease(mode),
+      releaseLease: () => releaseLease(mode),
+      takeoverLease: () => takeoverLease(mode),
       sendGreen: () => greenFor(mode),
       sendRed: () => redFor(mode),
       sendOff: () => offFor(mode),
       reset: () => resetFor(mode),
+      // 선택(팀·이벤트명) 공유 — lease 보유자만. 서버 기록 엔진이 이 값으로 귀속.
+      selectEvent: (team, eventName) => {
+        if (!holdsLease(mode)) return;
+        selectWirelessEvent({ event_type: EVENT_TYPE[mode], team: team || null, event_name: eventName || null }).catch(() => {});
+      },
+      // DNF는 서버가 저장(세션 선택 정보로 귀속).
+      dnf: () => dnfWirelessEvent(EVENT_TYPE[mode]),
       // 디바운스는 routeSensor가 tick 기준으로 직접 처리. 뷰 호환용 no-op.
       setSensorCooldown: () => {},
       // 매뉴얼 모드는 무선에서 미사용(컨트롤러 카드 숨김). 인터페이스 호환용 no-op.
@@ -392,9 +546,10 @@ export const useWirelessStore = defineStore("wireless", () => {
 
   return {
     role, bridgeIsSelf, serialConnected,
-    timing, light, mapping, telemetry, bridge,
-    physicalKey, isPhysical, lightColorFor,
+    timing, light, mapping, telemetry, bridge, sessions,
+    physicalKey, isPhysical, lightColorFor, controllerFor,
     sourceFor, setPhysicalEvent,
+    claimLease, releaseLease,
     debounceMs, setDebounceMs,
     openSerial, closeSerial,
     EVENT_TYPE, WIRELESS_EVENTS,

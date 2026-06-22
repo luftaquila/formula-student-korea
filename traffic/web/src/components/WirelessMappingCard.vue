@@ -10,11 +10,10 @@ const store = useWirelessStore();
 const eventTypes = Object.values(EVENT_TYPE);
 
 function roleOptions(et) {
-  if (et === "가속") return ["start", "finish"];
-  if (et === "짐카나") return ["lane1", "lane2"];
+  if (et === "가속" || et === "오토크로스") return ["start", "finish"];
   return ["start"];
 }
-const roleLabel = { start: "출발", finish: "도착", lane1: "레인 1", lane2: "레인 2" };
+const roleLabel = { start: "출발", finish: "도착" };
 
 // 발견된 노드 = 진단 수신 노드 ∪ 기존 매핑 노드. node 0 = 마스터(자가진단)라 센서 할당 대상에서 제외.
 const nodes = computed(() => {

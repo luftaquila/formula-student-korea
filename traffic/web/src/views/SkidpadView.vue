@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onActivated } from "vue";
+import { ref, computed, watch, onMounted, onActivated, onDeactivated, onUnmounted } from "vue";
 import { useEntryStore } from "../stores/entry";
 import { useSerialStore, msToClockStr } from "../stores/serial";
 import { useNotification } from "@shared/useNotification.js";
@@ -40,6 +40,8 @@ async function onSensor({ sensor, tick, startTick }) {
   if (!eventName.value.trim() || !entry) {
     return;
   }
+  // 무선: 서버 기록 엔진이 lap2+lap4를 계산·저장. 클라는 랩 표시만 — 이중저장 방지.
+  if (props.wireless) return;
 
   // 랩 2: 시간만 저장해두고 실제 저장은 하지 않음
   if (lapNumber === 2) {
@@ -81,8 +83,16 @@ const currentYear = computed(() => new Date().getFullYear());
 const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || "Skidpad"}`);
 const selectedEntry = computed(() => (selectedTeam.value ? entryStore.getEntryByNum(selectedTeam.value) : null));
 const isLocked = computed(() => serial.green.active);
-const lightReady = computed(() => (props.wireless ? serial.isBridge : serial.connected));
-const canStopLight = computed(() => (props.wireless ? serial.isBridge : serial.connected));
+// 컨트롤러(무선=lease 보유자, 유선=로컬)만 선택·제어. 관찰자는 read-only — 세션에서 미러.
+const isController = computed(() => (props.wireless ? serial.isController : true));
+const lightReady = computed(() => (props.wireless ? isController.value : serial.connected));
+const canStopLight = computed(() => (props.wireless ? isController.value : serial.connected));
+const session = computed(() => serial.session);
+watch(session, (s) => {
+  if (!props.wireless || isController.value || !s) return;
+  eventName.value = s.event_name || "";
+  selectedTeam.value = s.team?.num ?? null;
+}, { immediate: true });
 const totalTime = computed(() => msToClockStr(lapTimes.value.reduce((sum, lap) => sum + lap.time, 0)));
 const entries = computed(() => entryStore.entries);
 const canAutoSave = computed(() => eventName.value.trim() && selectedTeam.value);
@@ -98,6 +108,8 @@ function handleGreen() {
   lastTick.value = null;
   lap2Time.value = null;
   savedRecord.value = null;
+  // 무선: arm 직전 현재 선택을 서버 세션에 flush(디바운스 레이스 제거) → 서버 기록 귀속 보장.
+  if (props.wireless) serial.selectEvent?.(selectedEntry.value, eventName.value.trim() || null);
   serial.sendGreen();
 }
 function handleRed() {
@@ -121,6 +133,13 @@ async function handleDNF() {
     return;
   }
 
+  // 무선: 서버가 세션 선택 정보로 DNF 저장. 유선: 로컬 저장.
+  if (props.wireless) {
+    try { await serial.dnf(); notyf.success("DNF 기록 저장"); }
+    catch (e) { notyf.error(`DNF 저장 실패: ${e.message}`); }
+    return;
+  }
+
   const recordData = {
     time: new Date(),
     type: "스키드패드",
@@ -135,6 +154,29 @@ async function handleDNF() {
     notyf.error(`DNF 저장 실패: ${e.message}`);
   }
 }
+
+// 무선: 선택(팀·이벤트명)을 세션에 공유(컨트롤러만). 디바운스.
+let selectTimer = null;
+watch([eventName, selectedTeam], () => {
+  if (!props.wireless) return;
+  clearTimeout(selectTimer);
+  selectTimer = setTimeout(() => {
+    serial.selectEvent?.(selectedEntry.value, eventName.value.trim() || null);
+  }, 400);
+});
+// keep-alive: 탭 이탈은 onDeactivated(언마운트 아님). 둘 다에서 디바운스 타이머 정리.
+onDeactivated(() => clearTimeout(selectTimer));
+onUnmounted(() => clearTimeout(selectTimer));
+
+// 새 arm(green.active false→true) 시 view-local 클리어. 관찰자도 새 런마다 깨끗해진다.
+watch(() => serial.green.active, (active, prev) => {
+  if (active && !prev) {
+    lapTimes.value = [];
+    lastTick.value = null;
+    lap2Time.value = null;
+    savedRecord.value = null;
+  }
+});
 </script>
 
 <template>
@@ -184,6 +226,15 @@ async function handleDNF() {
           </h3>
         </div>
         <div class="card-body">
+          <!-- 경기 제어권(lease): 보유자만 제어. 비-브리지 PC도 제어권을 잡아 네트워크 제어 가능. -->
+          <div v-if="wireless" class="lease-row">
+            <button v-if="!serial.controller" class="btn btn-block btn-ghost" @click="serial.claimLease()">제어 잡기</button>
+            <button v-else-if="isController" class="btn btn-block btn-success" @click="serial.releaseLease()">내가 제어 중 · 놓기</button>
+            <div v-else class="lease-locked">
+              🔒 {{ serial.controller }} 제어 중
+              <button class="btn btn-ghost lease-take" @click="serial.takeoverLease()">가로채기</button>
+            </div>
+          </div>
           <div class="btn-group">
             <button class="btn btn-success" :disabled="!lightReady || serial.green.active" @click="handleGreen">
               녹색등
@@ -221,11 +272,11 @@ async function handleDNF() {
         <div class="card-body">
           <div class="form-group">
             <label class="form-label">이벤트 이름</label>
-            <input v-model="eventName" type="text" class="form-input" :disabled="isLocked" />
+            <input v-model="eventName" type="text" class="form-input" :disabled="isLocked || !isController" />
           </div>
           <div class="form-group">
             <label class="form-label">참가팀</label>
-            <select v-model="selectedTeam" class="form-input" :disabled="isLocked">
+            <select v-model="selectedTeam" class="form-input" :disabled="isLocked || !isController">
               <option :value="null" disabled>팀 선택</option>
               <option v-for="entry in entries" :key="entry.num" :value="entry.num">
                 {{ entry.num }} {{ entry.univ }} {{ entry.team }}
@@ -234,14 +285,14 @@ async function handleDNF() {
           </div>
           <button
             class="btn btn-danger btn-block"
-            :disabled="!canAutoSave || (!serial.records.length && !serial.green.active)"
+            :disabled="!isController || !canAutoSave || (!serial.records.length && !serial.green.active)"
             @click="handleDNF"
           >
             DNF
           </button>
           <button
             class="btn btn-warning btn-block mt-1"
-            :disabled="!serial.records.length && !serial.green.active"
+            :disabled="!isController || (!serial.records.length && !serial.green.active)"
             @click="handleReset"
           >
             초기화
@@ -316,6 +367,23 @@ async function handleDNF() {
 
 <style scoped>
 @import "../assets/styles/event-view.css";
+
+.lease-row {
+  margin-bottom: 0.75rem;
+}
+.lease-locked {
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  font-size: 0.875rem;
+  text-align: center;
+}
+.lease-take {
+  margin-left: 0.5rem;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
+}
 
 .team-card {
   text-align: center;

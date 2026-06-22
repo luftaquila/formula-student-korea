@@ -22,7 +22,6 @@ const EVENT_CONFIG = {
   가속: { label: "ACCELERATION", color: "#ffd000" },
   스키드패드: { label: "SKIDPAD", color: "#00e5ff" },
   오토크로스: { label: "AUTOCROSS", color: "#ff6b6b" },
-  짐카나: { label: "GYMKHANA", color: "#bf5af2" },
 };
 
 let fetchSeq = 0;
