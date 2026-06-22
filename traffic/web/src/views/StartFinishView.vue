@@ -376,15 +376,18 @@ watch(() => serial.green.active, (active, prev) => {
   margin-bottom: 0.75rem;
 }
 .lease-locked {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
   padding: 0.5rem 0.75rem;
   border-radius: 8px;
   background: var(--bg-secondary);
   color: var(--text-tertiary);
   font-size: 0.875rem;
-  text-align: center;
 }
 .lease-take {
-  margin-left: 0.5rem;
   padding: 0.125rem 0.5rem;
   font-size: 0.75rem;
 }
