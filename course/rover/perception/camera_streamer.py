@@ -68,7 +68,9 @@ CAMERA_VIEW = (_env("CAMERA_VIEW", "full") or "full").lower()
 ALLOW_HTTP = (_env("SERVER_URL_ALLOW_HTTP", "false") or "").lower() == "true"
 
 SSE_RECONNECT_MAX_S = 30.0
-POST_TIMEOUT_S = 5.0
+# Keep short: a slow POST blocks the capture thread, so this also bounds how
+# long the device stays held after a camera-stop.
+POST_TIMEOUT_S = 2.0
 
 
 def log(msg):
@@ -99,10 +101,17 @@ def open_capture():
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-            log(f"opened camera {dev!r} ({CAMERA_WIDTH}x{CAMERA_HEIGHT})")
-            return cap
+            # isOpened() is not enough: a metadata/ISP node (or a busy device)
+            # can open but never deliver frames. Require a real grab so the
+            # auto-probe falls through to the actual capture node instead of
+            # live-locking on a dead /dev/video0.
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                log(f"opened camera {dev!r} ({CAMERA_WIDTH}x{CAMERA_HEIGHT})")
+                return cap
+            log(f"device {dev!r} opened but yields no frames; skipping")
         cap.release()
-    log("no camera device could be opened")
+    log("no usable camera device found")
     return None
 
 
@@ -163,7 +172,9 @@ class CameraStreamer:
                 time.sleep(0.5)
                 continue
             ok, buf = cv2.imencode(".jpg", crop_view(frame), encode_params)
-            if ok:
+            # Honor a camera-stop that arrived during read/encode before paying
+            # for a network POST (the loop top then releases the device).
+            if ok and self._enabled.is_set():
                 self._post_frame(buf.tobytes())
             # Cap the push rate.
             dt = time.monotonic() - t0

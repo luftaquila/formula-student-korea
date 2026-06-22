@@ -1697,6 +1697,10 @@ let cameraControlClient = null;   // perception container's control SSE (res)
 const cameraViewers = new Set();  // browser multipart responses
 let cameraLatestFrame = null;     // { buf, at } — last JPEG, replayed to new viewers
 const CAMERA_FRAME_FRESH_MS = 2000;
+// Drop frames for a viewer whose socket is this far behind rather than buffering
+// JPEGs unboundedly — a slow viewer (cellular/phone) must never OOM the mission
+// server. ~4 MB ≈ several frames of headroom at our resolution.
+const CAMERA_VIEWER_MAX_BACKLOG = 4 * 1024 * 1024;
 
 function sendCameraControl(event) {
   if (!cameraControlClient) return;
@@ -1705,6 +1709,16 @@ function sendCameraControl(event) {
   } catch {
     try { cameraControlClient.end(); } catch {}
     cameraControlClient = null;
+  }
+}
+
+function removeCameraViewer(res) {
+  if (!cameraViewers.delete(res)) return;
+  // Last viewer gone → stop the rover capture and release the cached frame so
+  // a stale image can't be replayed when the stream next reopens.
+  if (cameraViewers.size === 0) {
+    cameraLatestFrame = null;
+    syncCameraCapture();
   }
 }
 
@@ -1722,7 +1736,13 @@ app.get("/api/rover/camera/control", (req, res) => {
     Connection: "keep-alive",
   });
   res.write("event: connected\ndata: {}\n\n");
+  // Async socket errors (peer reset) don't throw — without a listener they'd
+  // crash the process. Just drop the slot.
+  res.on("error", () => { if (cameraControlClient === res) cameraControlClient = null; });
   if (cameraControlClient && cameraControlClient !== res) {
+    // Session takeover (e.g. a perception container replaced by auto-update) —
+    // leave an audit trail, mirroring /api/rover/stream's rover.stream.replaced.
+    logger.warn(req, "rover.camera.control_replaced", null, "rover");
     try { cameraControlClient.end(); } catch {}
   }
   cameraControlClient = res;
@@ -1749,11 +1769,17 @@ app.post("/api/rover/camera", express.raw({ type: "image/jpeg", limit: "3mb" }),
     `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${buf.length}\r\n\r\n`
   );
   for (const viewer of cameraViewers) {
+    // A viewer can close between its 'close' handler and this write; writing to
+    // an ended/destroyed response emits an async 'error' (uncatchable here), so
+    // skip + reap it. And bound memory: drop this frame for a backed-up viewer
+    // instead of queueing it.
+    if (viewer.writableEnded || viewer.destroyed) { removeCameraViewer(viewer); continue; }
+    if (viewer.writableLength > CAMERA_VIEWER_MAX_BACKLOG) continue;
     try {
       viewer.write(header);
       viewer.write(buf);
       viewer.write("\r\n");
-    } catch { /* viewer cleaned up on its own 'close' */ }
+    } catch { removeCameraViewer(viewer); }
   }
   res.status(204).end();
 });
@@ -1770,6 +1796,7 @@ app.get("/api/rover/camera/stream", (req, res) => {
   // headers until the first body write, so a viewer that connects before any
   // frame is pushed would see the request hang instead of an open MJPEG stream.
   res.flushHeaders();
+  res.on("error", () => removeCameraViewer(res));
   cameraViewers.add(res);
   // Replay the most recent frame so a joining viewer sees something at once.
   if (cameraLatestFrame && Date.now() - cameraLatestFrame.at < CAMERA_FRAME_FRESH_MS) {
@@ -1783,10 +1810,7 @@ app.get("/api/rover/camera/stream", (req, res) => {
   }
   if (cameraViewers.size === 1) syncCameraCapture(); // first viewer → start
   logger.log(req, "rover.camera.view", { viewers: cameraViewers.size }, "rover");
-  req.on("close", () => {
-    cameraViewers.delete(res);
-    if (cameraViewers.size === 0) syncCameraCapture(); // last viewer → stop
-  });
+  req.on("close", () => removeCameraViewer(res));
 });
 
 // GET /api/rover/camera/status - camera availability for the UI (admin).

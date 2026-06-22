@@ -2979,24 +2979,43 @@ async function sendControl() {
 const cameraOn = ref(false);
 const cameraError = ref(false);
 const cameraReqId = ref(0);
+let cameraStatusPoll = null;
 const cameraStreamUrl = computed(() => {
   if (!cameraOn.value) return "";
   const base = import.meta.env.PROD ? "/course" : "";
   return `${base}/api/rover/camera/stream?t=${cameraReqId.value}`;
 });
-function toggleCamera() {
-  cameraOn.value = !cameraOn.value;
+// The MJPEG <img> only fires `error` if the HTTP connection breaks — when the
+// connection stays open but no frames arrive (no perception container / no
+// camera), the box would just sit black forever. Poll the status endpoint so
+// "신호 없음" actually surfaces.
+async function pollCameraStatus() {
+  try {
+    const res = await request("/api/rover/camera/status", { method: "GET" });
+    const s = await res.json();
+    const stale = !s.last_frame_at || (Date.now() - s.last_frame_at) > 3000;
+    cameraError.value = !s.camera_connected || stale;
+  } catch { /* keep last known state */ }
+}
+function stopCameraStream() {
+  cameraOn.value = false;
   cameraError.value = false;
-  if (cameraOn.value) cameraReqId.value = Date.now();
+  if (cameraStatusPoll) { clearInterval(cameraStatusPoll); cameraStatusPoll = null; }
+}
+function toggleCamera() {
+  if (cameraOn.value) { stopCameraStream(); return; }
+  cameraOn.value = true;
+  cameraError.value = false;
+  cameraReqId.value = Date.now();
+  pollCameraStatus();
+  cameraStatusPoll = setInterval(pollCameraStatus, 2000);
 }
 function onCameraError() {
-  // The stream connects (headers flush) before any frame arrives, so a missing
-  // camera surfaces as an <img> decode error rather than a failed request.
   cameraError.value = true;
 }
 // Drop the stream when the rover goes offline so we don't hold a dead request.
 watch(() => roverStatus.value.connected, (connected) => {
-  if (!connected && cameraOn.value) { cameraOn.value = false; cameraError.value = false; }
+  if (!connected && cameraOn.value) stopCameraStream();
 });
 
 async function setDispenserPosition(position) {
@@ -3404,6 +3423,7 @@ onUnmounted(() => {
   document.removeEventListener("keydown", onGlobalKeyForChips);
   if (uiTickInterval) clearInterval(uiTickInterval);
   if (controlInterval) clearInterval(controlInterval);
+  if (cameraStatusPoll) clearInterval(cameraStatusPoll);
   if (calStatusPollHandle) clearInterval(calStatusPollHandle);
   if (ledBrightnessTimer) clearTimeout(ledBrightnessTimer);
   if (followTimer != null) clearTimeout(followTimer);
