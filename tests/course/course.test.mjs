@@ -1174,6 +1174,81 @@ describe('Mission interruption survival + resume', () => {
   });
 });
 
+// ─── Mission soft pause / resume ────────────────────────────────────────
+describe('Mission soft pause / resume', () => {
+  let srv, url, cli, localDb, localDbPath;
+
+  async function connectRover() {
+    const ac = new AbortController();
+    const res = await fetch(`${url}/api/rover/stream`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ac.signal,
+    });
+    assert.equal(res.status, 200);
+    const reader = res.body.getReader();
+    const drained = (async () => {
+      try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
+    })();
+    await new Promise((r) => setTimeout(r, 60));
+    return async () => { ac.abort(); await drained; await new Promise((r) => setTimeout(r, 120)); };
+  }
+
+  before(async () => {
+    localDbPath = tmpDbPath();
+    const result = createCourseApp({ dbPath: localDbPath });
+    localDb = result.db;
+    const started = await startServer(result.app);
+    srv = started.server;
+    url = started.baseUrl;
+    cli = createClient(url);
+    await cli.post('/api/rover/position', {
+      body: { lat: 35.0, lng: 126.0 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+  });
+
+  after(async () => {
+    await stopServer(srv);
+    localDb.close();
+    cleanup(localDbPath);
+  });
+
+  it('rejects pause/resume when no rover is connected (503)', async () => {
+    assert.equal((await cli.post('/api/rover/pause', { cookie: adminCookie })).status, 503);
+    assert.equal((await cli.post('/api/rover/resume', { cookie: adminCookie })).status, 503);
+  });
+
+  it('pauses a running mission, then resumes it; guards double-pause / stray-resume', async () => {
+    const disconnect = await connectRover();
+    const exec = await cli.post('/api/rover/execute', {
+      body: { waypoints: [{ lat: 35.00001, lng: 126.00001 }, { lat: 35.00002, lng: 126.00002 }] },
+      cookie: adminCookie,
+    });
+    assert.equal(exec.status, 200);
+
+    // Resume before pausing → 409 (mission is running, not paused).
+    assert.equal((await cli.post('/api/rover/resume', { cookie: adminCookie })).status, 409);
+
+    // Pause.
+    assert.equal((await cli.post('/api/rover/pause', { cookie: adminCookie })).status, 200);
+    let st = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(st.mission_progress.status, 'paused');
+
+    // Double-pause → 409 (no running mission to pause).
+    assert.equal((await cli.post('/api/rover/pause', { cookie: adminCookie })).status, 409);
+
+    // Resume.
+    assert.equal((await cli.post('/api/rover/resume', { cookie: adminCookie })).status, 200);
+    st = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+    assert.equal(st.mission_progress.status, 'running');
+
+    // Resume again → 409 (already running).
+    assert.equal((await cli.post('/api/rover/resume', { cookie: adminCookie })).status, 409);
+
+    await disconnect();
+  });
+});
+
 // ─── Mission schema migration (old DB → new columns + statuses) ─────────
 describe('Mission schema migration', () => {
   it('migrates an old-schema mission table, preserving rows and adding progress columns', async () => {

@@ -7,6 +7,8 @@ Published topics:
     /rover/cmd/execute_path (std_msgs/String) - JSON waypoints from server
     /rover/cmd/sw_estop (std_msgs/Empty) - Software emergency stop from server
     /rover/cmd/sw_clear (std_msgs/Empty) - Software emergency-stop release from server
+    /rover/cmd/pause (std_msgs/Empty) - Soft mission pause from server
+    /rover/cmd/resume (std_msgs/Empty) - Mission resume from server
     /rover/cmd/manual_control (geometry_msgs/Twist) - Manual joystick from server
     /rover/cmd/request_position (std_msgs/Empty) - Position request from server
 
@@ -81,6 +83,10 @@ class BridgeNode(Node):
         # from here would bypass the MCU software latch.
         self._pub_estop = self.create_publisher(Empty, '/rover/cmd/sw_estop', reliable_qos)
         self._pub_clear_estop = self.create_publisher(Empty, '/rover/cmd/sw_clear', reliable_qos)
+        # Soft pause/resume (NOT E-Stop): holds the mission while still allowing
+        # manual control, then resumes from the current waypoint.
+        self._pub_pause = self.create_publisher(Empty, '/rover/cmd/pause', reliable_qos)
+        self._pub_resume = self.create_publisher(Empty, '/rover/cmd/resume', reliable_qos)
         self._pub_manual = self.create_publisher(Twist, '/rover/cmd/manual_control', 10)
         self._pub_request_pos = self.create_publisher(Empty, '/rover/cmd/request_position', reliable_qos)
         self._pub_calibrate_battery = self.create_publisher(Float32, '/rover/cmd/calibrate_battery', reliable_qos)
@@ -578,6 +584,14 @@ class BridgeNode(Node):
         elif event == 'clear-emergency':
             self.get_logger().info('Emergency-stop release received from server')
             self._pub_clear_estop.publish(Empty())
+
+        elif event == 'pause-mission':
+            self.get_logger().info('Mission pause received from server')
+            self._pub_pause.publish(Empty())
+
+        elif event == 'resume-mission':
+            self.get_logger().info('Mission resume received from server')
+            self._pub_resume.publish(Empty())
 
         elif event == 'manual-control':
             msg = Twist()

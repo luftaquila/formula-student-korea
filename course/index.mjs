@@ -1318,6 +1318,47 @@ app.post("/api/rover/stop", (req, res) => {
   res.json({ stopped: true });
 });
 
+// POST /api/rover/pause - 미션 소프트 일시정지 (E-Stop 아님)
+// 자율 주행을 멈추되 MCU 래치를 걸지 않아 수동 제어가 가능하다. 진행상황은
+// 보존되고 /api/rover/resume 로 현재 waypoint부터 이어서 주행한다. 장애물
+// 발견 시 운영자가 멈추고 수동으로 비켜 운전한 뒤 재개하는 흐름의 핵심.
+app.post("/api/rover/pause", (req, res) => {
+  if (!roverClient) return rejectNoRover(req, res, "rover.pause");
+  if (currentMissionId == null || roverState.mission_progress.status !== "running") {
+    logger.warn(req, "rover.pause",
+      { error: "no_running_mission", status: roverState.mission_progress.status }, "rover");
+    return res.status(409).send("일시정지할 진행 중인 미션이 없습니다.");
+  }
+  if (!sendRoverEvent("pause-mission", {})) {
+    logger.warn(req, "rover.pause", { error: "write_failed" }, "rover");
+    return res.status(503).send("로버 연결이 끊어졌습니다.");
+  }
+  setMissionStatus.run("paused", Date.now(), currentMissionId);
+  roverState.mission_progress.status = "paused";
+  broadcastRoverStatus();
+  logger.log(req, "rover.pause", { mission_id: currentMissionId }, "rover");
+  res.json({ paused: true });
+});
+
+// POST /api/rover/resume - 일시정지된 미션 재개 (현재 waypoint부터 이어 주행)
+app.post("/api/rover/resume", (req, res) => {
+  if (!roverClient) return rejectNoRover(req, res, "rover.resume");
+  if (currentMissionId == null || roverState.mission_progress.status !== "paused") {
+    logger.warn(req, "rover.resume",
+      { error: "not_paused", status: roverState.mission_progress.status }, "rover");
+    return res.status(409).send("재개할 일시정지된 미션이 없습니다.");
+  }
+  if (!sendRoverEvent("resume-mission", {})) {
+    logger.warn(req, "rover.resume", { error: "write_failed" }, "rover");
+    return res.status(503).send("로버 연결이 끊어졌습니다.");
+  }
+  setMissionStatus.run("running", Date.now(), currentMissionId);
+  roverState.mission_progress.status = "running";
+  broadcastRoverStatus();
+  logger.log(req, "rover.resume", { mission_id: currentMissionId }, "rover");
+  res.json({ resumed: true });
+});
+
 // POST /api/rover/calibrate-battery - 배터리 전압 1점 게인 보정 (admin)
 // 운영자가 멀티미터로 측정한 실제 전압을 입력하면, 로버가 같은 시점의 ADC raw
 // 값과 비교해 V_real = V_raw × gain 의 게인 하나를 갱신·영구 저장한다.
