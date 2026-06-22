@@ -83,6 +83,10 @@ class State(Enum):
     SPRAYING = 'SPRAYING'
     CAL_ANTENNA = 'CAL_ANTENNA'
     CAL_WHEELS = 'CAL_WHEELS'
+    # Operator/obstacle soft-pause: holds position WITHOUT the E-Stop latch, so
+    # manual control still works (mcu_bridge allows manual outside the autonomous
+    # states). The mission is preserved and resumes from the current waypoint.
+    PAUSED = 'PAUSED'
     EMERGENCY_STOP = 'EMERGENCY_STOP'
     ERROR = 'ERROR'
 
@@ -265,6 +269,8 @@ class NavigatorNode(Node):
         self.create_subscription(String, '/rover/cmd/execute_path', self._on_execute_path, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_emergency_stop, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_emergency, reliable_qos)
+        self.create_subscription(Empty, '/rover/cmd/pause', self._on_pause, reliable_qos)
+        self.create_subscription(Empty, '/rover/cmd/resume', self._on_resume, reliable_qos)
         self.create_subscription(Empty, '/rover/spray/done', self._on_spray_done, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/calibrate_antenna', self._on_calibrate_antenna, reliable_qos)
         self.create_subscription(String, '/rover/cmd/set_antenna_offset', self._on_set_antenna_offset, reliable_qos)
@@ -563,7 +569,7 @@ class NavigatorNode(Node):
         # the active mission first. (CAL_ANTENNA / CAL_WHEELS already
         # apply this guard via their own callbacks; mirror it here for
         # consistency.)
-        if self._state not in (State.IDLE, State.ERROR):
+        if self._state not in (State.IDLE, State.ERROR, State.PAUSED):
             self.get_logger().warn(
                 f'execute_path rejected: state={self._state.value} '
                 '(stop the current activity first)'
@@ -621,6 +627,59 @@ class NavigatorNode(Node):
         if self._state == State.EMERGENCY_STOP:
             self.get_logger().info('Emergency-stop cleared by operator')
             self._set_state(State.IDLE)
+
+    # Mission states from which a soft pause is meaningful — the rover is driving
+    # (or parked at a cone) under autonomy. CALIBRATING is excluded: it runs
+    # before the L1 tracker / segments exist, so there is nothing to resume into
+    # (a pause there should be an E-Stop instead).
+    _PAUSABLE_STATES = (State.NAVIGATING, State.SETTLING, State.SPRAYING)
+
+    def _on_pause(self, _msg):
+        """Soft-pause the mission: hold position, keep the plan, allow manual.
+
+        Unlike E-Stop this does NOT latch the MCU, so the operator can drive
+        the rover manually (e.g. around an obstacle) while paused. The L1
+        tracker is preserved; resume re-acquires from the current pose.
+        """
+        if self._state not in self._PAUSABLE_STATES:
+            self.get_logger().warn(
+                f'pause ignored: state={self._state.value} (not a pausable mission state)'
+            )
+            return
+        # Abort an in-flight dispense WITHOUT entering EMERGENCY_STOP — publish a
+        # targeted cancel so spray_node drops the cycle and we don't emit a stale
+        # 'success'. (emergency_stop would latch the MCU and block manual.)
+        if self._state == State.SPRAYING and self._cur_wp_idx >= 0:
+            cancel = Int32()
+            cancel.data = int(self._cur_wp_idx)
+            self._pub_spray_cancel.publish(cancel)
+        self._stop_motors()
+        self.get_logger().info(f'Mission paused (from {self._state.value})')
+        self._set_state(State.PAUSED)
+
+    def _on_resume(self, _msg):
+        """Resume a paused mission, re-planning from the live chassis pose.
+
+        Mirrors the ERROR-recovery resume (see _handle_error): the operator may
+        have driven the rover manually while paused, and the pause may have
+        lasted arbitrarily long, so we (1) reset the wall-clock timers that ran
+        through the hold — otherwise stuck/settle/spray timeouts fire on the
+        first tick — (2) reset the tracker's D/I terms, and (3) replan the
+        remaining segments from the current pose so the rover doesn't track the
+        stale dock corridor (which would trip the dock reverse-recovery latch).
+        """
+        if self._state != State.PAUSED:
+            return
+        now = time.monotonic()
+        self._settle_enter_time = now
+        self._spray_enter_time = now
+        self._last_progress_time = now
+        self._last_progress_dist = float('inf')
+        if self._l1_tracker is not None:
+            self._l1_tracker.reset()
+        self.get_logger().info('Mission resumed by operator')
+        self._set_state(State.NAVIGATING)
+        self._replan_from_current_chassis()
 
     def _on_spray_done(self, _msg):
         if self._state != State.SPRAYING:
@@ -807,7 +866,7 @@ class NavigatorNode(Node):
             v, om = self._odom_chassis_kinematics()
             self._estimator.predict(v, om, time.monotonic())
 
-        if self._state in (State.IDLE, State.EMERGENCY_STOP):
+        if self._state in (State.IDLE, State.EMERGENCY_STOP, State.PAUSED):
             # Keep republishing Twist(0,0) every tick so mcu_bridge's
             # accel-limit ramp can decay any residual speed smoothly to a
             # stop. Without this, the single zero-twist published on
@@ -816,7 +875,10 @@ class NavigatorNode(Node):
             # whatever the ramp landed on (the original "끝나도 계속
             # 직진" symptom). Manual control is unaffected — mcu_bridge
             # ignores autonomous Twists during the manual_priority_s
-            # window after the operator's last joystick input.
+            # window after the operator's last joystick input. PAUSED
+            # relies on exactly that: the operator can drive manually
+            # (it is not an autonomous state) while these zero-twists
+            # hold the chassis whenever the joystick is released.
             self._stop_motors()
             return
         if self._state == State.ERROR:

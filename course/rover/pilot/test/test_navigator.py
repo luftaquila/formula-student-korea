@@ -538,3 +538,56 @@ def test_persisted_offset_loaded_into_instance(nav, tmp_path, monkeypatch):
     assert fresh._antenna_offset_x == pytest.approx(0.42)
     assert fresh._antenna_offset_y == pytest.approx(0.07)
     assert fresh._antenna_offset_source == 'persisted'
+
+
+# ── Soft pause / resume ────────────────────────────────────────────────────
+
+def test_pause_from_pausable_states_enters_paused(nav):
+    for s in (State.NAVIGATING, State.SETTLING, State.SPRAYING):
+        nav._state = s
+        nav._cur_wp_idx = 0
+        nav._on_pause(None)
+        assert nav._state == State.PAUSED
+
+
+def test_pause_ignored_outside_pausable_states(nav):
+    # CALIBRATING has no tracker/segments yet (nothing to resume into), and the
+    # idle/fault states have no mission to hold — pause must be a no-op there.
+    for s in (State.IDLE, State.CALIBRATING, State.ERROR,
+              State.EMERGENCY_STOP, State.CAL_ANTENNA, State.CAL_WHEELS):
+        nav._state = s
+        nav._on_pause(None)
+        assert nav._state == s
+
+
+def test_resume_from_paused_enters_navigating(nav):
+    nav._state = State.PAUSED
+    nav._on_resume(None)
+    assert nav._state == State.NAVIGATING
+
+
+def test_resume_ignored_when_not_paused(nav):
+    for s in (State.NAVIGATING, State.IDLE, State.EMERGENCY_STOP):
+        nav._state = s
+        nav._on_resume(None)
+        assert nav._state == s
+
+
+def test_paused_holds_through_gps_loss(nav, monkeypatch):
+    # Unlike an active driving state, PAUSED is an intentional hold: a stale GPS
+    # clock must NOT trip ERROR (the operator may be manually clearing an
+    # obstacle with the antenna momentarily occluded).
+    nav._state = State.PAUSED
+    t = [time.monotonic()]
+    monkeypatch.setattr(time, 'monotonic', lambda: t[0])
+    nav._last_gps_time = t[0] - 10.0  # well past gps_timeout
+    nav._control_loop()
+    assert nav._state == State.PAUSED
+
+
+def test_execute_path_preempts_paused(nav):
+    # A fresh path (also the re-send resume fallback) may preempt a soft pause.
+    nav._state = State.PAUSED
+    msg = type('M', (), {'data': json.dumps([{'lat': 35.0001, 'lng': 126.0001}])})()
+    nav._on_execute_path(msg)
+    assert nav._state == State.CALIBRATING
