@@ -115,6 +115,15 @@ export async function putPhysicalEvent(eventType) {
   return res.json();
 }
 
+// 센서 디바운스 창(ms) 설정. 무선 공용(서버 저장 + SSE 공유).
+export async function putWirelessDebounce(ms) {
+  const res = await request("/api/wireless/debounce", {
+    method: "PUT",
+    body: JSON.stringify({ ms }),
+  });
+  return res.json();
+}
+
 export async function fetchWirelessEvents(since = 0, limit = 200) {
   const res = await request(`/api/wireless/events?since=${since}&limit=${limit}`);
   return res.json();

@@ -63,7 +63,8 @@ async function backfillWirelessEvents() {
       catch { break; } // best-effort: 다음 재연결이 다시 시도
       if (!Array.isArray(rows) || rows.length === 0) break;
       for (const ev of rows) {
-        ev._backfill = true; // 구독자(wireless store)가 쿨다운 우회하도록 표시
+        // 디바운스는 wireless store가 tick 기준으로 처리하므로 백필 클러스터도 올바르게
+        // 접힌다 — 별도 우회 표시 불필요.
         dispatchWirelessEvent(ev);
         if (ev.id != null && ev.id > cursor) cursor = ev.id;
       }
