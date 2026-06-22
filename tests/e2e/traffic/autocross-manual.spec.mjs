@@ -1,71 +1,95 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications } from "../helpers/utils.mjs";
 
+const YEAR = new Date().getFullYear();
+
+// 오토크로스는 가속과 동일한 출발 센서(1) → 도착 센서(2) 측정 방식(StartFinishView 공용).
 test.describe("Autocross manual mode measurement", () => {
   test.use({ storageState: storageStatePath("admin") });
+
+  test.afterAll(async ({ browser }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("admin") });
+    const page = await context.newPage();
+    for (const name of ["E2E-Autocross", "E2E-Autocross-DNF", "E2E-Autocross-Reset"]) {
+      await page.request.delete(`/traffic/api/records/FSK ${YEAR} ${name}`);
+    }
+    await context.close();
+  });
 
   test.beforeEach(async ({ page }) => {
     await page.goto("/traffic/autocross");
     await waitForPageReady(page);
   });
 
-  test("saves record on second sensor pass", async ({ page }) => {
-    // Enable manual mode
+  test("enables manual mode and measures a record (start → finish)", async ({ page }) => {
     const manualToggle = page.getByTestId("manual-mode-toggle");
+    await expect(manualToggle).toBeVisible();
     await manualToggle.click();
     await expect(manualToggle).toContainText("매뉴얼 모드 ON");
 
-    // Set event name
     await page.locator('.form-input[type="text"]').fill("E2E-Autocross");
+    await page.locator("select.form-input").selectOption("1");
 
-    // Select team 10
-    await page.locator("select.form-input").selectOption("10");
-
-    // Click green light
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();
 
-    // Sensor 1 button should appear (autocross uses only sensor 1)
+    // 출발/도착 두 센서 버튼 모두 표시(2센서 경기).
     const sensor1 = page.getByTestId("manual-sensor-1");
+    const sensor2 = page.getByTestId("manual-sensor-2");
     await expect(sensor1).toBeVisible();
+    await expect(sensor2).toBeVisible();
 
-    // First pass (ignored for saving, just records delay)
-    await sensor1.click();
-    await page.waitForTimeout(1100);
+    await sensor1.click(); // 출발
+    await page.waitForTimeout(500);
+    await sensor2.click(); // 도착 → 기록
 
-    // Second pass -- triggers save
-    await sensor1.click();
+    const savedSection = page.locator(".saved-section");
+    await expect(savedSection).toBeVisible({ timeout: 5000 });
+    await expect(savedSection).toContainText("측정 기록");
 
-    // Verify saved notification
     await expectNotification(page, "success", "기록 저장");
-
-    // Verify saved record appears with save indicator
-    const teamCard = page.locator(".team-card");
-    await expect(teamCard).toBeVisible({ timeout: 5000 });
-    await expect(teamCard).toContainText("KAIST");
   });
 
-  test("first pass does not trigger save", async ({ page }) => {
-    // Enable manual mode
+  test("records DNF when DNF button is clicked", async ({ page }) => {
     await page.getByTestId("manual-mode-toggle").click();
-
-    // Set event name and team
-    await page.locator('.form-input[type="text"]').fill("E2E-Autocross-First");
+    await page.locator('.form-input[type="text"]').fill("E2E-Autocross-DNF");
     await page.locator("select.form-input").selectOption("2");
 
-    // Click green light
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();
 
+    const dnfBtn = page.locator("button.btn-danger.btn-block", { hasText: "DNF" });
+    await expect(dnfBtn).toBeEnabled();
+    await dnfBtn.click();
+
+    await expectNotification(page, "success", "DNF 기록 저장");
+  });
+
+  test("resets and re-measures after reset", async ({ page }) => {
+    await page.getByTestId("manual-mode-toggle").click();
+    await page.locator('.form-input[type="text"]').fill("E2E-Autocross-Reset");
+    await page.locator("select.form-input").selectOption("3");
+
+    await page.locator("button.btn-success", { hasText: "녹색등" }).click();
     const sensor1 = page.getByTestId("manual-sensor-1");
-
-    // First pass only
+    const sensor2 = page.getByTestId("manual-sensor-2");
     await sensor1.click();
-
-    // Wait briefly to confirm no save notification appears
     await page.waitForTimeout(500);
+    await sensor2.click();
 
-    // The record-list should have only 1 record item (first pass), no save indicator
-    const recordItems = page.locator(".record-item");
-    await expect(recordItems).toHaveCount(1);
-    await expect(page.locator(".record-item.is-saved")).toHaveCount(0);
+    await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
+    await dismissNotifications(page);
+
+    const resetBtn = page.locator("button.btn-warning.btn-block", { hasText: "초기화" });
+    await resetBtn.click();
+
+    await expect(page.locator(".saved-section")).not.toBeVisible();
+
+    await page.locator("button.btn-success", { hasText: "녹색등" }).click();
+    await expect(sensor1).toBeVisible();
+    await sensor1.click();
+    await page.waitForTimeout(500);
+    await sensor2.click();
+
+    await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
+    await expectNotification(page, "success", "기록 저장");
   });
 });

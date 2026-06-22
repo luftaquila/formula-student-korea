@@ -192,11 +192,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Docker Hub intermittently times out the buildkit image manifest/token
+      # (anonymous rate limit), which fails the buildx setup's single pull and
+      # kills the job at the setup step. Pre-pull with retry so the setup below
+      # reuses the local image instead of hitting Docker Hub again. Gated on the
+      # same condition as the buildx setup — skipped when nothing needs building.
+      - name: Pre-pull BuildKit image (retry; Docker Hub pulls flake)
+        if: needs.changes.outputs.bake_targets != ''
+        run: |
+          for i in 1 2 3 4 5; do
+            docker pull moby/buildkit:buildx-stable-1 && exit 0
+            echo "::warning::moby/buildkit pull attempt $i failed; retrying in 15s"
+            sleep 15
+          done
+          exit 1
+
       - name: Set up Docker Buildx
         if: needs.changes.outputs.bake_targets != ''
         uses: docker/setup-buildx-action@v4
         with:
-          driver-opts: network=host
+          driver-opts: |
+            network=host
+            image=moby/buildkit:buildx-stable-1
+          # Route Docker Hub (docker.io) base-image pulls through Google's
+          # pull-through mirror. A shared/ change rebuilds all 9 images on every
+          # shard (~45 builds/run), and anonymous Docker Hub pulls rate-limit /
+          # 5xx (auth.docker.io 520, manifest 504) at that volume — there are no
+          # Docker Hub creds in this repo. The mirror serves the same official
+          # base images without the anonymous per-IP limit.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
 
       # Pull prebuilt :latest for services unchanged vs main; build only changed
       # ones below. This is the wall-clock win: a test-only change pulls every
@@ -218,9 +244,14 @@ jobs:
         with:
           files: compose.yml
           targets: ${{ needs.changes.outputs.bake_targets }}
+          # The 5 e2e shards build concurrently. A shared cache scope races on
+          # the gha manifest ("blob not found"), so each shard owns its scope.
+          # The gha cache backend also intermittently 504s on export under load;
+          # ignore-error keeps a failed cache export from failing the build —
+          # the image is already built and loaded, the cache is just a speedup.
           set: |
-            *.cache-from=type=gha,scope=e2e
-            *.cache-to=type=gha,scope=e2e,mode=min
+            *.cache-from=type=gha,scope=e2e-${{ matrix.shard }}
+            *.cache-to=type=gha,scope=e2e-${{ matrix.shard }},mode=min,ignore-error=true
             auth.tags=ghcr.io/${{ github.repository }}/auth:latest
             entry.tags=ghcr.io/${{ github.repository }}/entry:latest
             queue.tags=ghcr.io/${{ github.repository }}/queue:latest

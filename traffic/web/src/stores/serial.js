@@ -3,6 +3,7 @@ import { ref } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { addControllerLog } from "../composables/useApi";
 import { acceptSensorTick } from "../composables/sensorDebounce";
+import { ruleFor, shouldLatchStart, shouldIgnore, lapTime } from "@shared/event-timing.js";
 
 // Utility function for time formatting (분:초.밀리초, 분은 60 이상 가능)
 export function msToClockStr(ms) {
@@ -171,13 +172,7 @@ export const useSerialStore = defineStore("serial", () => {
     start.value.tick = null;
     start.value.timestamp = null;
     lastSensorTrigger.value = {};
-
-    // For gymkhana, start clock immediately from green light
-    if (currentMode.value === "gymkhana" || currentMode.value === "autocross") {
-      start.value.tick = green.value.tick;
-      start.value.timestamp = green.value.timestamp;
-      startClock();
-    }
+    // green = arm일 뿐 t0가 아니다. 전 경기 t0는 출발 센서(handleSensorReport에서 래치).
   }
 
   function handleRedLight() {
@@ -213,21 +208,18 @@ export const useSerialStore = defineStore("serial", () => {
       });
     }
 
-    // Handle clock start for modes that need first sensor trigger
-    if (currentMode.value === "accel" && sensor === 1 && !start.value.timestamp) {
-      start.value.tick = tick;
-      start.value.timestamp = timestamp;
-      startClock();
-    } else if (currentMode.value === "skidpad" && sensor === 1 && !start.value.timestamp) {
+    // 출발 센서에서 t0 래치(accel/autocross/skidpad 모두 센서 1). green은 arm일 뿐.
+    const rule = ruleFor(currentMode.value);
+    if (shouldLatchStart(rule, sensor, !!start.value.timestamp)) {
       start.value.tick = tick;
       start.value.timestamp = timestamp;
       startClock();
     }
 
-    // Add to records for display (스키드패드 모드에서는 센서 1만)
-    if (currentMode.value === "skidpad" && sensor !== 1) return;
+    // 단일 센서 경기(스키드패드)는 출발 센서 외 무시.
+    if (shouldIgnore(rule, sensor)) return;
 
-    const time = start.value.tick ? tick - start.value.tick : tick - green.value.tick;
+    const time = lapTime(tick, start.value.tick, green.value.tick);
     records.value.push({ sensor, tick, time, timestamp });
   }
 
@@ -304,7 +296,7 @@ export const useSerialStore = defineStore("serial", () => {
     records.value = [];
     start.value = { tick: null, timestamp: null };
     lastSensorTrigger.value = {};
-    green.value = { active: false, startTick: null, timestamp: null };
+    green.value = { active: false, tick: null, timestamp: null };
     lightColor.value = "grey";
     if (!manualMode.value) transmit("$X");
   }

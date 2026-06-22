@@ -317,7 +317,7 @@ function formatResult(result) {
   return msToClockStr(result);
 }
 
-const typeMap = { [EVENT_TYPES[0]]: "accel", [EVENT_TYPES[1]]: "skidpad", [EVENT_TYPES[2]]: "autocross", [EVENT_TYPES[3]]: "gymkhana" };
+const typeMap = { [EVENT_TYPES[0]]: "accel", [EVENT_TYPES[1]]: "skidpad", [EVENT_TYPES[2]]: "autocross" };
 
 function getTypeClass(type) {
   return typeMap[type] || type;
@@ -861,12 +861,6 @@ async function handleAddRecord() {
   border-color: #ff6b6b;
 }
 
-.event-mode-btn.gymkhana {
-  background: rgba(139, 92, 246, 0.15);
-  color: var(--accent-secondary);
-  border-color: var(--accent-secondary);
-}
-
 .event-mode-btn.disabled {
   background: var(--bg-hover);
   color: var(--text-tertiary);
@@ -1058,11 +1052,6 @@ async function handleAddRecord() {
   color: var(--accent-primary);
 }
 
-.filter-label.gymkhana {
-  background: rgba(139, 92, 246, 0.1);
-  color: var(--accent-secondary);
-}
-
 .filter-label.skidpad {
   background: rgba(245, 158, 11, 0.1);
   color: var(--accent-warning);
@@ -1166,10 +1155,6 @@ async function handleAddRecord() {
 .type-badge.accel {
   background: rgba(94, 106, 210, 0.1);
   color: var(--accent-primary);
-}
-.type-badge.gymkhana {
-  background: rgba(139, 92, 246, 0.1);
-  color: var(--accent-secondary);
 }
 .type-badge.skidpad {
   background: rgba(245, 158, 11, 0.1);
