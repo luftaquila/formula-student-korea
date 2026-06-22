@@ -101,6 +101,36 @@ function fmtDate(s) {
   return s ? new Date(s + "Z").toLocaleString("ko-KR") : "-";
 }
 
+// Sorting (mirrors Manage.vue). 전화번호/학교·팀은 정렬 비활성화라 그 헤더는
+// handleSort를 호출하지 않는다. 초기엔 정렬 없이 API 순서(id) 그대로.
+const sortKey = ref("");
+const sortOrder = ref("asc");
+
+function handleSort(key) {
+  if (sortKey.value === key) {
+    sortOrder.value = sortOrder.value === "asc" ? "desc" : "asc";
+  } else {
+    sortKey.value = key;
+    sortOrder.value = "asc";
+  }
+}
+
+function getSortIcon(key) {
+  if (sortKey.value !== key) return "↕";
+  return sortOrder.value === "asc" ? "↑" : "↓";
+}
+
+const sortedApplications = computed(() => {
+  if (!sortKey.value) return applications.value;
+  const k = sortKey.value;
+  const dir = sortOrder.value === "asc" ? 1 : -1;
+  return [...applications.value].sort((a, b) => {
+    const va = (a[k] || "").toString().toLowerCase();
+    const vb = (b[k] || "").toString().toLowerCase();
+    return va < vb ? -dir : va > vb ? dir : 0;
+  });
+});
+
 onMounted(() => {
   fetchApplications(true);
   fetchConfig();
@@ -146,16 +176,16 @@ onMounted(() => {
             <thead>
               <tr>
                 <th class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
-                <th class="col-email">이메일</th>
-                <th class="col-name">이름</th>
-                <th class="col-realname">실명</th>
+                <th class="col-email sortable" @click="handleSort('email')">이메일 <span class="sort-icon">{{ getSortIcon('email') }}</span></th>
+                <th class="col-name sortable" @click="handleSort('name')">이름 <span class="sort-icon">{{ getSortIcon('name') }}</span></th>
+                <th class="col-realname sortable" @click="handleSort('realname')">실명 <span class="sort-icon">{{ getSortIcon('realname') }}</span></th>
                 <th class="col-phone">전화번호</th>
                 <th class="col-affiliation">학교/팀</th>
-                <th class="col-date">신청일</th>
+                <th class="col-date sortable" @click="handleSort('created_at')">신청일 <span class="sort-icon">{{ getSortIcon('created_at') }}</span></th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="a in applications" :key="a.id">
+              <tr v-for="a in sortedApplications" :key="a.id">
                 <td class="col-check"><input type="checkbox" :checked="selectedIds.has(a.id)" @change="toggleOne(a.id)" /></td>
                 <td class="col-email">{{ a.email }}</td>
                 <td class="col-name">{{ a.name || "-" }}</td>
@@ -251,6 +281,25 @@ onMounted(() => {
 
 .col-date {
   color: var(--text-secondary);
+}
+
+/* Sortable headers (matches Manage.vue) */
+.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease;
+}
+
+.sortable:hover {
+  background: var(--bg-hover);
+}
+
+.sort-icon {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+  opacity: 0.5;
+  font-size: 0.75rem;
 }
 
 .role-select {

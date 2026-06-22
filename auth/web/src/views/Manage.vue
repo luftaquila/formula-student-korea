@@ -566,7 +566,7 @@ onMounted(() => {
                 <th class="col-email sortable" @click="handleSort('email')">이메일 <span class="sort-icon">{{ getSortIcon('email') }}</span></th>
                 <th class="col-name sortable" @click="handleSort('name')">이름 <span class="sort-icon">{{ getSortIcon('name') }}</span></th>
                 <th class="col-role sortable" @click="handleSort('role')">역할 <span class="sort-icon">{{ getSortIcon('role') }}</span></th>
-                <th class="col-realname">실명</th>
+                <th class="col-realname sortable" @click="handleSort('realname')">실명 <span class="sort-icon">{{ getSortIcon('realname') }}</span></th>
                 <th class="col-phone">전화번호</th>
                 <th class="col-affiliation">학교/팀</th>
                 <th class="col-date sortable" @click="handleSort('created_at')">등록일 <span class="sort-icon">{{ getSortIcon('created_at') }}</span></th>
