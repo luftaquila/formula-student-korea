@@ -3850,10 +3850,10 @@ onUnmounted(() => {
               >현재 로버 위치에서 시작</button>
             </div>
 
-            <!-- Cone-add floating controls (courses tab) -->
+            <!-- Cone-add edit controls (courses tab) — bottom-right of the map. -->
             <div
               v-if="activeTab === 'courses' && activeCourse"
-              class="map-fab-panel"
+              class="map-fab-panel map-fab-edit"
               :style="isMobile ? { position: 'fixed', right: '0.75rem', bottom: `calc(${sheetHeight}px + env(safe-area-inset-bottom) + 70px)`, zIndex: 650 } : null"
             >
               <button
@@ -3880,14 +3880,20 @@ onUnmounted(() => {
                 aria-label="로버 위치로 콘 추가"
                 title="로버 GPS 위치로 콘 추가"
               >{{ roverLoading ? '⏳' : '📍' }}</button>
-              <span class="fab-sep"></span>
+            </div>
+
+            <!-- Measurement / selection tools (영역 · 자 · 각도기) — separate
+                 top-right panel. Read-only, usable even when editing is locked. -->
+            <div
+              v-if="activeTab === 'courses' && activeCourse"
+              class="map-fab-panel map-fab-tools"
+            >
               <button
                 :class="['fab-icon-btn', 'fab-tool', { active: selectMode }]"
                 @click="selectMode = !selectMode"
-                aria-label="박스 선택 모드"
-                title="박스 선택 — 드래그로 여러 콘 선택 (터치 지원)"
+                aria-label="영역 선택 모드"
+                title="영역 — 드래그로 여러 콘 선택 (터치 지원)"
               >⬚</button>
-              <!-- Measurement tools — read-only, available even when editing is locked. -->
               <button
                 :class="['fab-icon-btn', 'fab-tool', { active: toolMode === 'ruler' }]"
                 @click="enterToolMode('ruler')"
@@ -4814,24 +4820,34 @@ onUnmounted(() => {
 .map-overlay-row > span { white-space: nowrap; }
 .map-overlay-row .btn { white-space: nowrap; }
 
-/* Cone-add floating controls (courses tab) — top-right of the map. */
+/* Floating map controls (courses tab). Two panels share this base look:
+   the edit panel (bottom-right) and the tools panel (top-right). Theme-aware
+   so the surface follows light/dark like the buttons it holds. */
 .map-fab-panel {
   position: absolute; bottom: 1.5rem; right: 0.75rem; z-index: 500;
   display: flex; align-items: center; gap: 0.4rem;
   flex-wrap: wrap; justify-content: flex-end; max-width: calc(100vw - 1.5rem);
-  background: rgba(17, 24, 39, 0.82); backdrop-filter: blur(4px);
+  background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+  backdrop-filter: blur(6px);
   padding: 0.4rem; border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-hover);
   pointer-events: auto;
 }
+/* 영역 · 자 · 각도기 tools live in their own panel, pinned top-right. */
+.map-fab-tools { top: 0.75rem; bottom: auto; }
 .map-fab-panel .side-toggle { flex: none; gap: 0.25rem; }
-.map-fab-panel .side-btn { min-width: 34px; padding: 0.35rem 0.5rem; }
-.fab-sep { width: 1px; align-self: stretch; margin: 0.1rem 0.15rem; background: rgba(255, 255, 255, 0.18); }
+/* Every control in the panels is the same square so a row reads as one set. */
+.map-fab-panel .side-btn {
+  flex: none; width: 38px; height: 38px; min-width: 0; padding: 0;
+  border: 2px solid var(--border-color); border-radius: 8px;
+  font-size: 1rem; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+}
 .fab-icon-btn {
   flex: none; width: 38px; height: 38px;
   display: flex; align-items: center; justify-content: center;
-  border: 2px solid var(--border-primary); border-radius: 8px;
+  border: 2px solid var(--border-color); border-radius: 8px;
   background: var(--bg-secondary); color: var(--text-primary);
   font-size: 1.1rem; line-height: 1; cursor: pointer; transition: all 0.15s;
 }
@@ -4844,6 +4860,11 @@ onUnmounted(() => {
 .fab-tool.active {
   border-color: #38bdf8;
   background: color-mix(in srgb, #38bdf8 24%, var(--bg-secondary));
+}
+/* Bigger touch targets on coarse pointers, kept uniform across both panels. */
+@media (any-pointer: coarse) {
+  .map-fab-panel .fab-icon-btn,
+  .map-fab-panel .side-btn { width: 44px; height: 44px; min-height: 0; }
 }
 
 /* Live rotation angle readout — pinned top-centre of the map while rotating. */
@@ -5542,6 +5563,10 @@ onUnmounted(() => {
   .rail-label { font-size: 0.68rem; }
 
   .map-wrap { flex: 1; min-height: 220px; }
+
+  /* Stack the top-right tools vertically so they hug the edge and leave the
+     centred active-tool overlay room on narrow screens. */
+  .map-fab-tools { flex-direction: column; flex-wrap: nowrap; }
 
   .inspector-handle { display: none; }
 
