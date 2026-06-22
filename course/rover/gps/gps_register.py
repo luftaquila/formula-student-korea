@@ -439,7 +439,9 @@ class GpsRegisterAgent:
         headers["Cache-Control"] = "no-cache"
         resp = self._sse_session.get(
             f"{self._url}/api/rover/stream", headers=headers,
-            stream=True, timeout=(10.0, 90.0),
+            # connect, read. Server heartbeat is 10s; 25s read timeout detects a
+            # dead socket (Wi-Fi drop, no FIN/RST) in ~25s instead of ~90s.
+            stream=True, timeout=(5.0, 25.0),
         )
         resp.raise_for_status()
         log.info("SSE connected to %s", self._url)

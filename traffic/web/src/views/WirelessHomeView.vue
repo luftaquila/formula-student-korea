@@ -60,7 +60,6 @@ async function simTelemetry() {
           />
           <span class="unit">ms</span>
         </div>
-        <p class="hint">한 번의 통과에 센서가 쏘는 다중 엣지(바운스)를 하나로 접는 간격. 기본 300ms, 0이면 끔. 모든 화면 공용.</p>
       </div>
     </div>
 

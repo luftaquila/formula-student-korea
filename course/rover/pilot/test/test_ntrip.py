@@ -48,16 +48,16 @@ def test_custom_logger_warn_called(monkeypatch):
 
 
 def test_backoff_delay_progression():
-    """Exponential backoff: 5, 10, 20, 40, 80, 160, 300 (cap)."""
+    """Exponential backoff: 1, 2, 4, 8, 16, 32, 60 (cap). Calls the real
+    _reconnect_delay so a tuning change can't silently drift from this spec."""
     c = _make_client()
     delays = []
     for fail in range(1, 9):
         c._fail_count = fail
-        base = 5.0
-        delay = min(base * (2 ** max(0, min(c._fail_count - 1, 6))), 300.0)
-        delays.append(delay)
-    assert delays[:4] == [5.0, 10.0, 20.0, 40.0]
-    assert delays[-1] == 300.0  # capped
+        delays.append(c._reconnect_delay())
+    assert delays[:5] == [1.0, 2.0, 4.0, 8.0, 16.0]
+    assert delays[5] == 32.0
+    assert delays[-1] == 60.0  # capped (would be 64 without the cap)
 
 
 def test_gga_interval_default():

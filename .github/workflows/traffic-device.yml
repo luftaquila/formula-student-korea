@@ -15,6 +15,7 @@ permissions:
 env:
   NRFX_REF: 'v4.3.0'
   CMSIS_REF: '5.9.0'
+  MONOCYPHER_REF: '4.0.2'
 
 jobs:
   build:
@@ -39,7 +40,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: traffic/device/wireless/firmware/vendor
-          key: nrf-deps-nrfx${{ env.NRFX_REF }}-cmsis${{ env.CMSIS_REF }}
+          key: nrf-deps-nrfx${{ env.NRFX_REF }}-cmsis${{ env.CMSIS_REF }}-mc${{ env.MONOCYPHER_REF }}
 
       - name: Build
         # build.sh clones nrfx + CMSIS at the pinned refs (skipped on cache hit),

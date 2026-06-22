@@ -1095,6 +1095,47 @@ describe('Wireless lease (per-event exclusive control)', () => {
   });
 });
 
+describe('Wireless lease (per-session identity)', () => {
+  // 같은 계정(이메일)이라도 브라우저 탭(X-Session-Id)별로 controller가 구분돼야 한 탭의
+  // claim/takeover가 다른 탭에 잘못 반영되지 않는다.
+  const ET = '스키드패드';
+  const sid1 = { 'X-Session-Id': 'tab-1' };
+  const sid2 = { 'X-Session-Id': 'tab-2' };
+
+  it('distinguishes same-account sessions; control gated to holder; takeover transfers', async () => {
+    // 탭1 claim → controller = email#tab-1
+    const c1 = await client.post(`/api/wireless/lease/${encodeURIComponent(ET)}`, { cookie: adminCookie, headers: sid1 });
+    assert.equal(c1.status, 200);
+    assert.equal((await c1.json()).controller, 'admin@test.com#tab-1');
+
+    // 탭2(같은 계정 다른 세션) claim은 409 — 다른 세션 점유 중, 명시적 가로채기 필요.
+    const c2 = await client.post(`/api/wireless/lease/${encodeURIComponent(ET)}`, { cookie: adminCookie, headers: sid2 });
+    assert.equal(c2.status, 409);
+
+    // 제어는 점유 세션만: 탭2 arm 409, 탭1 arm 200. 409 메시지는 #sid를 가려 email만 노출.
+    const arm2 = await client.post('/api/wireless/arm', { body: { event_type: ET, action: 'green', green_tick: '16000000' }, cookie: adminCookie, headers: sid2 });
+    assert.equal(arm2.status, 409);
+    const msg = await arm2.text();
+    assert.ok(msg.includes('admin@test.com') && !msg.includes('#tab-1'), 'controller label hides session id');
+    const arm1 = await client.post('/api/wireless/arm', { body: { event_type: ET, action: 'green', green_tick: '16000000' }, cookie: adminCookie, headers: sid1 });
+    assert.equal(arm1.status, 200);
+
+    // 가로채기: 같은 계정은 자기 다른 세션 lease를 회수(DELETE) 후 claim 가능.
+    const del2 = await client.delete(`/api/wireless/lease/${encodeURIComponent(ET)}`, { cookie: adminCookie, headers: sid2 });
+    assert.equal(del2.status, 200);
+    const c2b = await client.post(`/api/wireless/lease/${encodeURIComponent(ET)}`, { cookie: adminCookie, headers: sid2 });
+    assert.equal(c2b.status, 200);
+    assert.equal((await c2b.json()).controller, 'admin@test.com#tab-2');
+
+    // 가로채기당한 탭1은 더 이상 제어 못 함(409).
+    const arm1b = await client.post('/api/wireless/arm', { body: { event_type: ET, action: 'green', green_tick: '16000000' }, cookie: adminCookie, headers: sid1 });
+    assert.equal(arm1b.status, 409);
+
+    await client.delete(`/api/wireless/lease/${encodeURIComponent(ET)}`, { cookie: adminCookie, headers: sid2 });
+    await client.post('/api/wireless/arm', { body: { event_type: ET, action: 'off' }, cookie: adminCookie, headers: sid2 });
+  });
+});
+
 // ─── 공유 클럭: /api/time (Phase 3c) ──────────────────────────────────────
 describe('GET /api/time (shared clock)', () => {
   it('returns server epoch ms without auth', async () => {

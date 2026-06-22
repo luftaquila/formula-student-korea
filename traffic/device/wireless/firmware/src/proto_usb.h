@@ -4,7 +4,7 @@
  * printf, which newlib-nano omits) so 64-bit ticks survive intact.
  *
  *   Master -> PC:
- *     I FSK-WL <fw> <devid16hex> <chan> <sf> <bw> <ticks_per_ms>
+ *     I FSK-WL <fw> <devid16hex> <freq_mhz> <sf> <bw> <ticks_per_ms>
  *     H <now_tick> <uptime_ms> <beacon_seq> <nsensors_seen>
  *     E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr>
  *     D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms> <temp_c10> <batt_mv>

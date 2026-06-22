@@ -145,6 +145,16 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/setup-buildx-action@v4
+        with:
+          # Route Docker Hub (docker.io) base-image pulls through Google's
+          # pull-through mirror. A shared/ or Dockerfile change rebuilds every
+          # service across both arches (~22 jobs), and anonymous Docker Hub
+          # pulls rate-limit / 5xx at that volume — there are no Docker Hub
+          # creds here. The mirror serves the same official base images
+          # without the anonymous per-IP limit.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
 
       - name: Set build config
         id: config
@@ -162,6 +172,7 @@ jobs:
 
       - name: Build and push by digest
         id: build
+        continue-on-error: true
         uses: docker/build-push-action@v7
         with:
           context: ${{ steps.config.outputs.context }}
@@ -173,12 +184,36 @@ jobs:
           provenance: false
           outputs: type=image,name=ghcr.io/${{ github.repository }}/${{ matrix.service }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.arch }}
-          cache-to: type=gha,scope=${{ matrix.service }}-${{ matrix.arch }},mode=min
+          cache-to: type=gha,scope=${{ matrix.service }}-${{ matrix.arch }},mode=min,ignore-error=true
+
+      # The gha cache backend intermittently 404s an evicted blob mid-import
+      # ("BlobNotFound"), which fails the whole build even though the cache is
+      # only a speedup. Retry once without cache-from so a corrupt/evicted cache
+      # entry degrades to a cold build instead of a red main build; cache-to
+      # still refreshes the scope (ignore-error keeps a failed export non-fatal).
+      - name: Build and push by digest (retry without cache import)
+        id: build_retry
+        if: steps.build.outcome == 'failure'
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ steps.config.outputs.context }}
+          file: ${{ steps.config.outputs.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            ${{ matrix.port && format('SERVICE={0}', matrix.service) || '' }}
+            ${{ matrix.port && format('PORT={0}', matrix.port) || '' }}
+          provenance: false
+          outputs: type=image,name=ghcr.io/${{ github.repository }}/${{ matrix.service }},push-by-digest=true,name-canonical=true,push=true
+          cache-to: type=gha,scope=${{ matrix.service }}-${{ matrix.arch }},mode=min,ignore-error=true
 
       - name: Export digest
         run: |
+          digest="${{ steps.build.outputs.digest || steps.build_retry.outputs.digest }}"
+          if [ -z "$digest" ]; then
+            echo "::error::both build attempts produced no digest" >&2
+            exit 1
+          fi
           mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest

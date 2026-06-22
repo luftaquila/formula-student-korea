@@ -73,9 +73,30 @@ db.exec(`CREATE TABLE IF NOT EXISTS mission_telemetry (
   lng REAL,
   fix_status TEXT,
   nav_state TEXT,
+  ntrip_connected INTEGER,
+  corr_age_ms INTEGER,
+  ntrip_fail_count INTEGER,
+  h_acc_m REAL,
   FOREIGN KEY (mission_id) REFERENCES mission(id) ON DELETE CASCADE
 );`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(mission_id, t);`);
+
+// 기존 DB 마이그레이션: mission_telemetry에 NTRIP 링크 건강도 + 측위 정확도 컬럼
+// 추가. fix_status/nav_state만으로는 "가다서다"(로버가 미션 중 정지 반복)의 원인을
+// 구분할 수 없다 — 같은 'rtk_fixed→3d_fix' 추락이라도 (a) ntrip_connected=0이면
+// 네트워크/Wi-Fi 끊김, (b) 연결됐는데 corr_age_ms가 치솟으면 캐스터/마운트포인트
+// 침묵, (c) 연결·보정 정상인데 h_acc_m/fix_status만 나쁘면 marginal sky-view 다.
+// nullable ADD COLUMN이라 비파괴적(테이블 재구축·FK 영향 없음).
+{
+  const cols = db.prepare("PRAGMA table_info(mission_telemetry)").all().map((c) => c.name);
+  const addColumn = (name, type) => {
+    if (!cols.includes(name)) db.exec(`ALTER TABLE mission_telemetry ADD COLUMN ${name} ${type}`);
+  };
+  addColumn("ntrip_connected", "INTEGER"); // 0/1: 로버↔NGII 캐스터 TCP 소켓 상태
+  addColumn("corr_age_ms", "INTEGER");     // 마지막 RTCM 수신 후 경과(ms). 연결됐는데 크면 캐스터 침묵
+  addColumn("ntrip_fail_count", "INTEGER");// 누적 재연결 실패 횟수
+  addColumn("h_acc_m", "REAL");            // 수평 정확도(m). float 수용 게이트 판단 근거
+}
 
 // 기존 DB 마이그레이션: side CHECK 제약에 'center' 추가
 {
@@ -674,7 +695,9 @@ const persistMissionProgress = db.prepare(
   "UPDATE mission SET current_waypoint_idx = ?, spray_results_json = ?, updated_at = ? WHERE id = ?"
 );
 const insertTelemetry = db.prepare(
-  "INSERT INTO mission_telemetry (mission_id, t, lat, lng, fix_status, nav_state) VALUES (?, ?, ?, ?, ?, ?)"
+  `INSERT INTO mission_telemetry
+     (mission_id, t, lat, lng, fix_status, nav_state, ntrip_connected, corr_age_ms, ntrip_fail_count, h_acc_m)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
 
 let currentMissionId = null;
@@ -764,13 +787,29 @@ function interruptMission() {
 function recordTelemetrySample() {
   if (currentMissionId == null) return;
   const pos = roverState.last_position;
+  const now = Date.now();
+  // NTRIP link health at this sample. ntrip_connected===false zeroes
+  // roverState.ntrip (see /api/rover/telemetry), so corr_age/fail_count are
+  // null while disconnected — that's intended: ntrip_connected=0 alone is the
+  // "network drop" signature; corr_age only matters while connected (caster
+  // silent). last_correction_at is the rover's unix-seconds clock; both rover
+  // and server are NTP-synced so the ms delta is meaningful for diagnosis.
+  const ntrip = roverState.ntrip;
+  const corrAgeMs =
+    ntrip && typeof ntrip.last_correction_at === "number" && ntrip.last_correction_at > 0
+      ? Math.max(0, now - Math.round(ntrip.last_correction_at * 1000))
+      : null;
   insertTelemetry.run(
     currentMissionId,
-    Date.now(),
+    now,
     pos ? pos.lat : null,
     pos ? pos.lng : null,
     roverState.fix_status,
     roverState.nav_state,
+    typeof roverState.ntrip_connected === "boolean" ? (roverState.ntrip_connected ? 1 : 0) : null,
+    corrAgeMs,
+    ntrip && Number.isInteger(ntrip.fail_count) ? ntrip.fail_count : null,
+    roverState.gps && typeof roverState.gps.h_acc === "number" ? roverState.gps.h_acc : null,
   );
 }
 const roverState = {
@@ -896,9 +935,12 @@ app.get("/api/rover/stream", (req, res) => {
     sendRoverEvent("led-brightness", { brightness: roverState.led_brightness });
   }
 
+  // 10s heartbeat (was 30s). The rover's SSE read timeout is 25s, so a dead
+  // connection (Wi-Fi dropped → no FIN/RST) is detected within ~25s instead of
+  // ~90s. Keep heartbeat ≤ read_timeout/2 so normal jitter never false-trips.
   const heartbeat = setInterval(() => {
     try { res.write(": heartbeat\n\n"); } catch {}
-  }, 30000);
+  }, 10000);
 
   req.on("close", () => {
     clearInterval(heartbeat);
@@ -1099,7 +1141,8 @@ const selectMissionById = db.prepare(
    FROM mission m LEFT JOIN course c ON c.id = m.course_id WHERE m.id = ?`
 );
 const selectMissionTelemetry = db.prepare(
-  "SELECT t, lat, lng, fix_status, nav_state FROM mission_telemetry WHERE mission_id = ? ORDER BY t"
+  `SELECT t, lat, lng, fix_status, nav_state, ntrip_connected, corr_age_ms, ntrip_fail_count, h_acc_m
+   FROM mission_telemetry WHERE mission_id = ? ORDER BY t`
 );
 
 app.get("/api/missions", (req, res) => {

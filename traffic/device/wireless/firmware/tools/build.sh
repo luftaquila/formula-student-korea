@@ -11,6 +11,7 @@ NRFX_REF=v4.3.0
 CMSIS_REF=5.9.0
 RADIOLIB_REF=7.7.1
 TINYUSB_REF=0.20.0
+MONOCYPHER_REF=4.0.2
 
 if [ ! -d "$VENDOR/nrfx" ]; then
     git clone --depth 1 --branch "$NRFX_REF" \
@@ -31,6 +32,11 @@ fi
 if [ ! -d "$VENDOR/tinyusb" ]; then
     git clone --depth 1 --branch "$TINYUSB_REF" \
         https://github.com/hathach/tinyusb.git "$VENDOR/tinyusb"
+fi
+
+if [ ! -d "$VENDOR/monocypher" ]; then
+    git clone --depth 1 --branch "$MONOCYPHER_REF" \
+        https://github.com/LoupVaillant/Monocypher.git "$VENDOR/monocypher"
 fi
 
 cmake -G Ninja -S "$HERE" -B "$HERE/build" -DCMAKE_BUILD_TYPE=RelWithDebInfo

@@ -61,7 +61,7 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
             <th class="has-tip" title="센서가 부팅 후 놓친 비콘 수. (연속 N)은 지금 연속으로 놓친 개수">누락</th>
             <th class="has-tip" title="이벤트가 마스터에 도달하기까지 걸린 시간 (ms)">지연</th>
             <th class="has-tip" title="nRF 다이(칩) 온도. 주변 온도보다 몇 °C 높게 나옴">온도</th>
-            <th class="has-tip" title="센서=배터리 셀 추정치, 마스터=충전 레일 전압 (mV)">배터리</th>
+            <th class="has-tip batt-col" title="센서=배터리 셀 추정치, 마스터=충전 레일 전압 (mV)">배터리</th>
             <th class="has-tip" title="마스터가 이 노드를 마지막으로 들은 시각">수신</th>
           </tr>
         </thead>
@@ -82,7 +82,7 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
             </td>
             <td class="mono">{{ isMaster(r) ? "—" : `${fmtNum(r.latency_ms, 0)} ms` }}</td>
             <td class="mono" :data-testid="`diag-temp-${r.node_id}`">{{ fmtTemp(r.temp_c10) }}</td>
-            <td class="mono" :data-testid="`diag-batt-${r.node_id}`">
+            <td class="mono batt-col" :data-testid="`diag-batt-${r.node_id}`">
               <template v-if="r.batt_mv == null">—</template>
               <template v-else>{{ fmtVolt(r.batt_mv) }}<span class="batt-tag">{{ battTag(r) }}</span></template>
             </td>
@@ -99,11 +99,13 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
 @import "../assets/styles/event-view.css";
 /* 좁은 화면에선 가로 스크롤(테이블 구조 유지) — 다른 서비스 테이블과 동일 패턴. */
 .table-scroll { overflow-x: auto; }
-/* 카드 전체 폭을 채우되(width:100%) 각 열은 내용 최소 너비(width:1%)로, 마지막 열(수신)만
-   남는 공간을 흡수해 테이블이 끝까지 차게 한다. RecordView와 동일 패턴. */
+/* 카드 전체 폭을 채우되(width:100%) 각 열은 내용 최소 너비(width:1%)로, 배터리 열만
+   width:100%로 남는 공간을 흡수한다(auth 계정관리 테이블과 동일 관용구). 남는 공간이 없는
+   좁은 화면에선 모든 열이 내용 너비가 돼 .table-scroll로 가로 스크롤(기존 동작 유지). */
 .diag-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .diag-table th, .diag-table td { padding: 0.55rem 0.8rem; text-align: left; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
-.diag-table th:not(:last-child), .diag-table td:not(:last-child) { width: 1%; }
+.diag-table th:not(.batt-col), .diag-table td:not(.batt-col) { width: 1%; }
+.diag-table th.batt-col, .diag-table td.batt-col { width: 100%; }
 .diag-table th { color: var(--text-tertiary); font-weight: 600; }
 /* 설명 툴팁(native title)이 달린 헤더 — 호버 가능함을 점선 밑줄 + help 커서로 암시 */
 .diag-table th.has-tip { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
