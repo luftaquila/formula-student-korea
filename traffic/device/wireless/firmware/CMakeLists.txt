@@ -37,20 +37,9 @@ foreach(req
     endif()
 endforeach()
 
-# Fleet pre-shared key (src/secret.h, gitignored). Dev/CI builds auto-seed a
-# placeholder from the committed example so they compile; release/deploy builds
-# pass -DFLEET_KEY_REQUIRED=ON, which (a) refuses to auto-seed a missing key and
-# (b) makes secure.c #error on the placeholder — so a deployment can never
-# silently ship with the all-zero key.
-option(FLEET_KEY_REQUIRED "Require a real (non-placeholder) src/secret.h; for release/deploy builds" OFF)
-if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/src/secret.h")
-    if(FLEET_KEY_REQUIRED)
-        message(FATAL_ERROR "FLEET_KEY_REQUIRED: src/secret.h is missing. Create it from secret.h.example with a real fleet key before a release build.")
-    endif()
-    message(WARNING "src/secret.h not found — seeding a placeholder (all-zero) key from secret.h.example. This provides NO security; create src/secret.h with a real key before deploying (see secret.h.example).")
-    configure_file("${CMAKE_CURRENT_LIST_DIR}/src/secret.h.example"
-                   "${CMAKE_CURRENT_LIST_DIR}/src/secret.h" COPYONLY)
-endif()
+# The fleet key is NOT compiled in. It is provisioned per board at runtime into
+# a reserved flash page (keystore.c) over the serial 'K' command, so this build
+# is key-less and safe to publish from CI on a public repo (DESIGN §2.11).
 
 # RadioLib as a static library. Non-Arduino mode (ARDUINO is undefined → the
 # library uses our custom HAL). Built without our -Wall to avoid upstream noise;
@@ -108,6 +97,7 @@ add_executable(${ELF}
     src/meas.c
     src/capture.c
     src/secure.c
+    src/keystore.c
     src/proto_usb.c
     src/node_id.c
     src/radio_hal.cpp
@@ -123,11 +113,6 @@ target_include_directories(${ELF} PRIVATE
 )
 
 target_compile_definitions(${ELF} PRIVATE NRF52840_XXAA)
-
-# Propagate the release key requirement to secure.c's placeholder #error guard.
-if(FLEET_KEY_REQUIRED)
-    target_compile_definitions(${ELF} PRIVATE FLEET_KEY_REQUIRED)
-endif()
 
 # Single binary for all boards — role/set/channel resolved at runtime from the
 # chip's FICR.DEVICEID (src/node_id.c).

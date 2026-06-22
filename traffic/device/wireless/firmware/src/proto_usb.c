@@ -166,8 +166,31 @@ void pu_emit_err(const char *reason)
 }
 
 /* ---- command parser -------------------------------------------------------- */
-static char s_line[32];
+static char s_line[80];      /* must hold "K " + 64 hex + NUL */
 static unsigned s_len;
+static uint8_t s_key[32];    /* parsed payload of the last K command */
+
+const uint8_t *pu_setkey(void) { return s_key; }
+
+static int hexval(char c)
+{
+    if (c >= '0' && c <= '9') { return c - '0'; }
+    if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
+    if (c >= 'A' && c <= 'F') { return c - 'A' + 10; }
+    return -1;
+}
+
+/* Parse exactly 64 hex chars (NUL-terminated) into s_key. Returns 1 on success. */
+static int parse_key(const char *s)
+{
+    for (int i = 0; i < 32; i++) {
+        int hi = hexval(s[2 * i]);
+        int lo = hexval(s[2 * i + 1]);
+        if (hi < 0 || lo < 0) { return 0; }
+        s_key[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return s[64] == '\0'; /* reject trailing junk / wrong length */
+}
 
 static pu_cmd_t classify(const char *s)
 {
@@ -178,6 +201,7 @@ static pu_cmd_t classify(const char *s)
     if (!strcmp(s, "?ID")) { return PU_CMD_ID; }
     if (!strcmp(s, "?STATUS")) { return PU_CMD_STATUS; }
     if (!strcmp(s, "PING")) { return PU_CMD_PING; }
+    if (s[0] == 'K' && s[1] == ' ') { return parse_key(s + 2) ? PU_CMD_SETKEY : PU_CMD_BAD; }
     return PU_CMD_BAD;
 }
 

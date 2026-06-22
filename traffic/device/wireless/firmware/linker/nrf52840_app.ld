@@ -14,15 +14,18 @@
  * peripherals at runtime (TIMER0/RTC0/PPI stay free for the capture design);
  * boot chain is MBR -> S140 -> app@0x26000. main() sets SCB->VTOR = 0x26000.
  *
- * LENGTH stops at the bootloader region (0xF4000); nrf_common.ld ASSERTs on
- * overflow.
+ * LENGTH stops one page below the bootloader region: 0xF3000..0xF4000 is the
+ * fleet-key store (keystore.c), carved out of FLASH so the app never occupies
+ * it and the app .uf2 never rewrites it (the key survives DFU). nrf_common.ld
+ * ASSERTs on overflow.
  */
 SEARCH_DIR(.)
 GROUP(-lgcc -lc)
 
 MEMORY
 {
-  FLASH (rx) : ORIGIN = 0x00026000, LENGTH = 0x000CE000
+  /* 0x26000..0xF3000 app; 0xF3000..0xF4000 reserved for keystore.c (DESIGN §2.11) */
+  FLASH (rx) : ORIGIN = 0x00026000, LENGTH = 0x000CD000
   RAM  (rwx) : ORIGIN = 0x20000000, LENGTH = 0x00040000
 }
 

@@ -109,14 +109,14 @@ AEAD 봉인으로 패킷당 26B(헤더10+MAC16)가 늘어 가장 큰 패킷(STAT
 raw LoRa는 평문이라 누구나 도청·위조할 수 있다. 위조 EVENT/BEACON으로 타이밍 결과나 신호등(SSR) 제어를 교란할 수 있으므로 모든 공중 패킷을 봉인한다. (USB↔PC 구간은 유선 신뢰 구간이라 대상 아님.)
 
 - **원시(primitive):** XChaCha20-Poly1305 AEAD (Monocypher, vendored 단일 파일). 직접 조합한 암호 대신 검증된 1-함수 AEAD로 기밀성·무결성·송신자 인증을 한 번에.
-- **키:** 플릿 공유 **사전공유키(PSK) 256-bit**, `src/secret.h`(gitignore). `secret.h.example`에서 복사해 운영자가 1회 생성, **마스터+모든 센서 동일 키로 플래시**. 키가 다르면 전 패킷 MAC 실패 → 통신 불가. 키 회전 = 전 보드 재플래시. CI/dev는 없으면 all-zero 플레이스홀더로 빌드만(경고 출력, 무보안).
+- **키 — 런타임 프로비저닝(컴파일 안 함):** 플릿 공유 PSK 256-bit를 **빌드에 박지 않는다**. 각 보드의 예약 flash 페이지(`0xF3000`, keystore.c, magic+CRC32 검증)에 저장되고 부팅 시 로드되며, **USB 시리얼 `K <64hex>` 명령(write-only)으로 보드마다 1회 주입**한다(§8). → CI는 **키 없는 앱**만 빌드하므로 public repo 아티팩트가 노출돼도 안전. 키는 운영자 로컬에만 존재(repo·CI·채팅 금지). 마스터+전 센서 동일 키 필수(다르면 전 패킷 MAC 실패). 키 회전 = 보드별 재주입. flash 페이지는 앱 영역 최상단(linker FLASH에서 제외)이라 앱 DFU에도 보존.
 - **인증 대상(AD) vs 암호화:** 평문 보안헤더(type/node_id/boot_id/ctr)는 AEAD의 associated data로 인증만(라우팅·replay 판단을 복호화 전에). 페이로드(타임스탬프·offset 등)는 암호화. MAC 16B가 옛 CRC16을 대체.
 - **논스(절대 재사용 금지):** 24B = `domain | type | node_id | boot_id(4) | ctr(4)`. `ctr`은 송신마다 증가(부팅 내 유일), `boot_id`는 부팅마다 RNG 신규(재부팅 후 ctr가 0으로 돌아가도 논스 충돌 없음). node_id로 7송신자, domain으로 타용도와 분리. `ctr`은 wrap 직전 seal을 거부해 논스 재사용을 원천 차단(2³² seal은 세션 내 도달 불가).
 - **재전송(replay) 방어 + 독립 재부팅 지원:** 수신자는 (송신자, 방향)별로 `(boot_id, max_ctr)`를 추적해 `ctr ≤ max_ctr`이면 거부. 마스터는 센서별, 센서는 마스터용 1개. **새 boot_id면 재기준(re-baseline)** — 이것이 마스터/센서의 독립 전원 재투입을 지원한다: 센서가 켜진 채 마스터를 뺐다 꽂으면(새 마스터 boot_id) 센서들이 비콘에서 재기준해 재동기하고, 반대로 마스터가 켜진 채 센서를 재부팅하면 마스터가 그 센서 창을 재기준한다. 어느 쪽을 언제 껐다 켜도 복구.
 - **EVENT 마스터 세션 바인딩:** EVENT는 자신이 동기된 마스터 세션 `master_boot_id`(비콘에서 학습)를 실어 보내고, 마스터는 그 값이 자기 현재 boot_id가 아니면 거부. → 이전 마스터 전원주기에 캡처한 EVENT는 재부팅 후에도 재전송 불가(재기준만으로는 못 막는 cross-reboot EVENT replay를 암호학적으로 차단).
 - **EVENT 신선도 백스톱:** 세션 바인딩 + replay 카운터에 더해, `ev_master_t`가 너무 과거(stale)거나 비현실적 미래면 거부. 정상 이벤트는 기껏 수ms 미래(동기오차)뿐이라 **비대칭** 창: 과거 `EVENT_FRESH_MS(3s)` / 미래 `EVENT_FUTURE_MS(250ms)`.
 - **boot_id 엔트로피:** nRF52840 하드웨어 RNG(`NRF_RNG`, 바이어스 보정)로 부팅 시 32-bit 1회 시드(`sec_init`).
-- **키 안전장치:** 릴리스/배포 빌드는 `-DFLEET_KEY_REQUIRED=ON`으로 빌드 — `src/secret.h`가 없거나 플레이스홀더(all-zero)면 빌드 실패시켜 무보안 펌웨어 출하를 막는다. dev/CI는 플래그 없이 플레이스홀더 자동 시드(경고만).
+- **미프로비저닝 동작:** 키가 없으면 `sec_provisioned()=0` → seal/unseal이 거부되어 보드는 무선 inert(비콘·이벤트 미전송, 잘못된 평문도 안 나감). 마스터는 USB로 `X noprov`를 주기 통지해 운영자가 알 수 있다. 시리얼 `K` 주입(+`sec_reload`) 즉시 활성(재부팅 불필요).
 - **남는 한계(문서화):** EVENT는 세션 바인딩으로 cross-reboot replay까지 차단. BEACON/STATUS/ACK는 재부팅 후 캡처본 1개가 재기준으로 수용될 여지는 있으나 타이밍 위조 가치 없음(비콘은 seq+1 연속성 게이트로 offset 오염 안 됨 → DoS급). 32-bit boot_id의 두 코너: ① 충돌 시 nonce 재사용 ② 마스터가 같은 boot_id로 재부팅하면 센서가 그 비콘을 거부(센서 재부팅 전까지) — 둘 다 ~2⁻³²라 무시 가능, boot_id를 64-bit로 넓히면 완전 제거(선택). 구현: `src/secure.{h,c}`.
 
 ---
@@ -288,11 +288,12 @@ RadioLib(커스텀 HAL) 기반. node_id로 역할 분기(0=마스터, 1..6=센�
 - **타임스탬프 캡처**: TIMER1 자유진행 16MHz = 공통 타임베이스. DIO1·SENSOR 엣지 → GPIOTE→PPI→TIMER CAPTURE (CPU 무관 HW 래치, 손실0). GPIOTE PSEL 설정 시 **해당 핀의 PORT 비트 포함**(P1 핀이면 bit13). port0/1 간 정확도 차이 없음.
 - **라디오/SPI**: 할당 핀으로 커스텀 SPIClass. **`setRfSwitchPins(RXEN,TXEN)` 필수**. `begin(…, tcxoVoltage)`(내부 TCXO). 부팅 시 **EXT_POWER(P0.13) HIGH**.
 - **센서 역할**: 비콘 동기 → 이벤트 캡처 → 마스터 시각 변환 → EVENT 송신(CAD+ACK+재전송) + 자기 TDMA 슬롯에서 STATUS 주기 송신.
-- **무선 보안(§2.11)**: 전 패킷 XChaCha20-Poly1305 AEAD 봉인(Monocypher). 플릿 공유 PSK = `src/secret.h`(gitignore, `secret.h.example`에서 복사). 부팅 시 `sec_init()`로 RNG boot_id 시드. 구현 `src/secure.{h,c}`.
+- **무선 보안(§2.11)**: 전 패킷 XChaCha20-Poly1305 AEAD 봉인(Monocypher). 플릿 PSK는 컴파일하지 않고 flash keystore(`0xF3000`)에서 로드 — 시리얼 `K` 명령으로 보드별 주입. 부팅 시 `sec_init()`가 boot_id 시드 + 키 로드. 구현 `src/secure.{h,c}` + `src/keystore.{h,c}`.
 - **USB 프로토콜 (FSK-WL, 줄단위 텍스트, 레거시 `$...!` 폐기)**:
   - VID `0x1999` / **PID `0x0515`** / product **"FSK-WL"**. 호스트는 연결 후 `?ID`를 보내고 `I FSK-WL …` 응답으로 장치를 확인(PID와 무관한 핸드셰이크). 레거시 유선 앱(PID 0x0514)과 상호 비매칭.
   - 마스터→PC: `I FSK-WL <fw> <devid16> <freq_mhz> <sf> <bw> <ticks_per_ms>` · `H <now_tick> <uptime_ms> <beacon_seq> <nseen>` · `E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr>` · `D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms> <temp_c10> <batt_mv>` (node 0 = 마스터 자기보고: temp + 충전레일 batt_mv, LoRa 필드 0) · `L <RED|GREEN|OFF> <tick>` · `A <cmd> OK` · `X <reason>`.
-  - PC→마스터: `G`(녹+green tick 캡처) · `R`(적) · `O`(off) · `?ID` · `?STATUS` · `PING`.
+  - PC→마스터: `G`(녹+green tick 캡처) · `R`(적) · `O`(off) · `?ID` · `?STATUS` · `PING` · `K <64hex>`(플릿 키 주입, write-only → `A K OK`/`X keyfail`).
+  - **프로비저닝:** `K`/`?ID`/`PING`은 **센서도 수용**(역할·무선 상태 무관). 각 보드를 USB로 꽂아 `K <64hex>` 1회 전송 → keystore에 기록·즉시 활성. 키 read-back 명령 없음(시리얼 유출 불가).
   - 64-bit tick은 십진수 그대로(절단 없음). 상태 = 온보드 LED(P0.15).
 - NFC핀(P0.09/0.10)을 GPIO로 쓰면 **NFC 비활성화(UICR)** 필요.
 
@@ -314,7 +315,7 @@ RadioLib(커스텀 HAL) 기반. node_id로 역할 분기(0=마스터, 1..6=센�
 - [ ] Molex 5569-04A1 JLC 카테고리 확인 (MMBT3904=C20526 Basic, MMBT3906=C7420354 Preferred 확인됨).
 - [ ] T_air_ref 실측(§2.9).
 - [ ] P0.02/P0.29가 SuperMini에서 자유 GPIO인지 실물 확인.
-- [ ] **배포 전 실 PSK 생성**(§2.11) — `src/secret.h`를 `openssl rand`로 만들어 전 보드 동일 키로 플래시. all-zero 플레이스홀더는 무보안.
+- [ ] **배포 전 키 주입**(§2.11) — `openssl rand -hex 32`로 생성한 1개 키를 각 보드에 시리얼 `K <64hex>`로 주입(마스터+전 센서 동일). 키는 로컬 전용, repo/CI 금지. 미주입 보드는 무선 inert.
 
 ---
 

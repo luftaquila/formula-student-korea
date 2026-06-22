@@ -1,10 +1,12 @@
 /* Authenticated encryption for the LoRa air link (DESIGN.md §2.11).
  *
  * Every packet is sealed with XChaCha20-Poly1305 (Monocypher) under a fleet-wide
- * 32-byte pre-shared key (src/secret.h, gitignored). Confidentiality + integrity
- * + sender authenticity come from the AEAD; replay resistance comes from a
- * per-boot random id plus a monotonic per-boot counter carried in the cleartext
- * header (sec_hdr_t) and bound into the nonce.
+ * 32-byte pre-shared key loaded at boot from the flash keystore (keystore.h) —
+ * the key is provisioned per board over the serial 'K' command, never compiled
+ * in, so CI builds a key-less app. Confidentiality + integrity + sender
+ * authenticity come from the AEAD; replay resistance comes from a per-boot
+ * random id plus a monotonic per-boot counter carried in the cleartext header
+ * (sec_hdr_t) and bound into the nonce.
  *
  * Nonce uniqueness (the one rule a stream cipher must never break): the 24-byte
  * nonce is (domain | type | node_id | boot_id | ctr). ctr increments on every
@@ -20,9 +22,17 @@
 extern "C" {
 #endif
 
-/* Seed this node's boot_id (hardware RNG) and reset the tx counter. Call once
- * at startup, before any sec_seal(). */
+/* Seed this node's boot_id (hardware RNG), reset the tx counter, and load the
+ * fleet key from the flash keystore. Call once at startup, before any sec_seal(). */
 void sec_init(void);
+
+/* Reload the key from the keystore — call after a successful re-provisioning so
+ * the new key takes effect without a reboot. */
+void sec_reload(void);
+
+/* 1 if a fleet key is present (seal/unseal work), 0 if unprovisioned — the radio
+ * stays inert until a key is written via the serial 'K' command. */
+int sec_provisioned(void);
 
 uint32_t sec_boot_id(void); /* this node's per-boot random id (for diagnostics) */
 
