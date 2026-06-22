@@ -170,7 +170,14 @@ const app = createApp({ express }, (req) => {
   // real rover off and routed subsequent calibrate-* events to the
   // browser response. Symptom on the operator side: cal start button
   // does nothing despite RTK-fixed + IDLE. Internal-only closes the door.
-  if (req.path === "/api/rover/stream") {
+  if (
+    req.path === "/api/rover/stream" ||
+    // Camera control SSE + frame upload are rover→server only. Internal-strict
+    // (deny browsers) for the same reason as /stream: a browser must not be
+    // able to occupy the single camera-control slot or inject frames.
+    req.path === "/api/rover/camera/control" ||
+    req.path === "/api/rover/camera"
+  ) {
     return isInternalRequest(req) ? null : "deny";
   }
   if (
@@ -1674,6 +1681,121 @@ app.post("/api/rover/led-brightness", (req, res) => {
   logger.log(req, "rover.led_brightness", { brightness, connected: !!roverClient }, "rover");
   broadcastRoverStatus();
   res.json({ ok: true });
+});
+
+/* ============================================
+   Camera relay (rover → server → browser, MJPEG)
+   ============================================
+   In-memory only — frames are ephemeral, never touch the DB. Tailscale-free:
+   the rover's perception container pushes JPEG frames OUT to this server, and
+   admin browsers pull them from the same server as multipart/x-mixed-replace
+   (native <img> rendering). The rover only captures while someone is watching:
+   a viewer connecting/leaving toggles a camera-start/stop event on the rover's
+   control SSE. Separate from the pilot's /api/rover/stream so streaming load
+   never interferes with the mission command channel. */
+let cameraControlClient = null;   // perception container's control SSE (res)
+const cameraViewers = new Set();  // browser multipart responses
+let cameraLatestFrame = null;     // { buf, at } — last JPEG, replayed to new viewers
+const CAMERA_FRAME_FRESH_MS = 2000;
+
+function sendCameraControl(event) {
+  if (!cameraControlClient) return;
+  try {
+    cameraControlClient.write(`event: ${event}\ndata: {}\n\n`);
+  } catch {
+    try { cameraControlClient.end(); } catch {}
+    cameraControlClient = null;
+  }
+}
+
+// Capture only while at least one browser is watching.
+function syncCameraCapture() {
+  sendCameraControl(cameraViewers.size > 0 ? "camera-start" : "camera-stop");
+}
+
+// GET /api/rover/camera/control - perception container SSE (internal-strict).
+// Receives camera-start / camera-stop so it captures only on demand.
+app.get("/api/rover/camera/control", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.write("event: connected\ndata: {}\n\n");
+  if (cameraControlClient && cameraControlClient !== res) {
+    try { cameraControlClient.end(); } catch {}
+  }
+  cameraControlClient = res;
+  // If viewers are already waiting, start capturing immediately.
+  if (cameraViewers.size > 0) sendCameraControl("camera-start");
+  const heartbeat = setInterval(() => {
+    try { res.write(": heartbeat\n\n"); } catch {}
+  }, 30000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    if (cameraControlClient === res) cameraControlClient = null;
+  });
+});
+
+// POST /api/rover/camera - JPEG frame upload (internal-strict, raw body).
+// express.raw only consumes image/jpeg; the global express.json skips it.
+app.post("/api/rover/camera", express.raw({ type: "image/jpeg", limit: "3mb" }), (req, res) => {
+  const buf = req.body;
+  if (!Buffer.isBuffer(buf) || buf.length === 0) {
+    return res.status(400).send("empty frame");
+  }
+  cameraLatestFrame = { buf, at: Date.now() };
+  const header = Buffer.from(
+    `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${buf.length}\r\n\r\n`
+  );
+  for (const viewer of cameraViewers) {
+    try {
+      viewer.write(header);
+      viewer.write(buf);
+      viewer.write("\r\n");
+    } catch { /* viewer cleaned up on its own 'close' */ }
+  }
+  res.status(204).end();
+});
+
+// GET /api/rover/camera/stream - browser MJPEG viewer (admin).
+app.get("/api/rover/camera/stream", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    Pragma: "no-cache",
+    Connection: "keep-alive",
+  });
+  // Flush headers now: with no Content-Length, Node would otherwise hold the
+  // headers until the first body write, so a viewer that connects before any
+  // frame is pushed would see the request hang instead of an open MJPEG stream.
+  res.flushHeaders();
+  cameraViewers.add(res);
+  // Replay the most recent frame so a joining viewer sees something at once.
+  if (cameraLatestFrame && Date.now() - cameraLatestFrame.at < CAMERA_FRAME_FRESH_MS) {
+    try {
+      res.write(Buffer.from(
+        `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${cameraLatestFrame.buf.length}\r\n\r\n`
+      ));
+      res.write(cameraLatestFrame.buf);
+      res.write("\r\n");
+    } catch { /* ignore */ }
+  }
+  if (cameraViewers.size === 1) syncCameraCapture(); // first viewer → start
+  logger.log(req, "rover.camera.view", { viewers: cameraViewers.size }, "rover");
+  req.on("close", () => {
+    cameraViewers.delete(res);
+    if (cameraViewers.size === 0) syncCameraCapture(); // last viewer → stop
+  });
+});
+
+// GET /api/rover/camera/status - camera availability for the UI (admin).
+app.get("/api/rover/camera/status", (req, res) => {
+  res.json({
+    camera_connected: !!cameraControlClient,
+    viewers: cameraViewers.size,
+    last_frame_at: cameraLatestFrame ? cameraLatestFrame.at : null,
+  });
 });
 
 /* ============================================

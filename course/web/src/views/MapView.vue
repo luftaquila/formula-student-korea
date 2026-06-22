@@ -2972,6 +2972,33 @@ async function sendControl() {
   }
 }
 
+/* ── Live camera (MJPEG) ──────────────────────────────
+   The <img> points at the server's multipart relay. Mounting it opens the
+   stream (server tells the rover to start capturing); unmounting closes it
+   (rover stops). cameraReqId cache-busts so re-opening starts a fresh stream. */
+const cameraOn = ref(false);
+const cameraError = ref(false);
+const cameraReqId = ref(0);
+const cameraStreamUrl = computed(() => {
+  if (!cameraOn.value) return "";
+  const base = import.meta.env.PROD ? "/course" : "";
+  return `${base}/api/rover/camera/stream?t=${cameraReqId.value}`;
+});
+function toggleCamera() {
+  cameraOn.value = !cameraOn.value;
+  cameraError.value = false;
+  if (cameraOn.value) cameraReqId.value = Date.now();
+}
+function onCameraError() {
+  // The stream connects (headers flush) before any frame arrives, so a missing
+  // camera surfaces as an <img> decode error rather than a failed request.
+  cameraError.value = true;
+}
+// Drop the stream when the rover goes offline so we don't hold a dead request.
+watch(() => roverStatus.value.connected, (connected) => {
+  if (!connected && cameraOn.value) { cameraOn.value = false; cameraError.value = false; }
+});
+
 async function setDispenserPosition(position) {
   if (dispenserBusy.value) return;
   dispenserBusy.value = true;
@@ -4115,6 +4142,21 @@ onUnmounted(() => {
                     >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
                   </div>
 
+                  <!-- Live camera (MJPEG, relayed via the course server). Opening
+                       the stream tells the rover to start capturing; closing it
+                       stops capture. Useful for manual driving / clearing an
+                       obstacle while paused. -->
+                  <div v-if="roverStatus.connected" class="rover-controls">
+                    <button
+                      :class="['btn', 'btn-lg-touch', cameraOn ? 'btn-primary' : 'btn-ghost']"
+                      @click="toggleCamera"
+                    >{{ cameraOn ? '📷 카메라 끄기' : '📷 카메라' }}</button>
+                  </div>
+                  <div v-if="cameraOn" class="camera-view">
+                    <img v-if="cameraStreamUrl" :src="cameraStreamUrl" alt="rover camera" @error="onCameraError" />
+                    <div v-if="cameraError" class="camera-error">카메라 신호 없음 (로버에 카메라가 연결됐는지 확인)</div>
+                  </div>
+
                   <div v-if="pathDistance > 0" class="path-info">
                     <div>예상 주행 거리: {{ pathDistance >= 1000 ? (pathDistance / 1000).toFixed(2) + ' km' : pathDistance.toFixed(1) + ' m' }}</div>
                     <div v-if="roverMode === 'executing' || roverMode === 'stopped'">
@@ -4992,6 +5034,22 @@ onUnmounted(() => {
 
 /* Rover controls */
 .rover-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.camera-view {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #000;
+  min-height: 80px;
+  position: relative;
+}
+.camera-view img { display: block; width: 100%; height: auto; }
+.camera-error {
+  padding: 1rem 0.75rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  text-align: center;
+}
 .rover-controls-grid {
   display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem;
 }
