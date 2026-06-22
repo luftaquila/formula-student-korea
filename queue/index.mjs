@@ -1607,24 +1607,39 @@ async function getEntries() {
 
 let smsConfig = null;
 
-async function loadSmsConfig() {
+// On a co-restart the email service is usually not up yet, so a connection
+// failure here is a transient startup race — the 5-min refresh recovers it.
+// Retry the startup window (retries > 0) before logging, so a normal restart
+// doesn't leave a "fetch failed" warning every time. An HTTP error response
+// (email up but the endpoint is failing) is a real problem and warns at once.
+async function loadSmsConfig({ retries = 0, delayMs = 3000 } = {}) {
   const emailServer = process.env.EMAIL_SERVER;
   if (emailServer) {
-    try {
-      const headers = {};
-      if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
-      const res = await fetch(`${emailServer}/api/internal/sms-config`, { headers, signal: AbortSignal.timeout(5000) });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.naver_cloud_access_key && data.naver_cloud_secret_key && data.naver_cloud_sms_service_id && data.phone_number_sms_sender) {
-          smsConfig = data;
-          return;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const headers = {};
+        if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+        const res = await fetch(`${emailServer}/api/internal/sms-config`, { headers, signal: AbortSignal.timeout(5000) });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.naver_cloud_access_key && data.naver_cloud_secret_key && data.naver_cloud_sms_service_id && data.phone_number_sms_sender) {
+            smsConfig = data;
+            return;
+          }
+        } else {
+          logger.warn(null, "sms.config_fetch", { status: res.statusCode ?? res.status });
         }
-      } else {
-        logger.warn(null, "sms.config_fetch", { status: res.statusCode ?? res.status });
+        break; // got a response (incomplete config or HTTP error) — retrying won't help
+      } catch (e) {
+        // Connection failure: email not reachable yet. Retry quietly, then warn
+        // once the startup grace window is exhausted (a genuine outage).
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        logger.warn(null, "sms.config_fetch", { error: e.message });
       }
-    } catch (e) {
-      logger.warn(null, "sms.config_fetch", { error: e.message });
+      break;
     }
   }
   if (!smsConfig) {
@@ -1775,5 +1790,9 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db, loadSmsConfig: load } = createQueueApp();
   setupProcessHandlers(db);
-  load().then(() => app.listen(9300));
+  // Serve immediately; SMS config loads in the background and retries through
+  // the startup window so a co-restart with the email service doesn't block
+  // listening or log a spurious "fetch failed" warning.
+  app.listen(9300);
+  load({ retries: 10, delayMs: 3000 });
 }
