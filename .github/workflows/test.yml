@@ -193,6 +193,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
+        if: needs.changes.outputs.bake_targets != ''
         uses: docker/setup-buildx-action@v4
         with:
           driver-opts: network=host
@@ -231,12 +232,14 @@ jobs:
             caddy-local.tags=ghcr.io/${{ github.repository }}/caddy:latest
           load: true
 
+      # No --wait: services boot in the background while node/playwright install
+      # below, and global-setup polls every 2s for readiness. The compose
+      # healthcheck interval is 30s, so --wait blocked ~30s even though the
+      # services are actually up within a few seconds.
       - name: Start services
         run: |
-          docker compose up -d --wait --no-build auth entry queue inspection traffic score documents course
+          docker compose up -d --no-build auth entry queue inspection traffic score documents course
           docker compose --profile local up -d --no-deps --no-build caddy-local
-          sleep 3
-          curl -sf http://localhost:9000/auth/api/health
 
       - uses: actions/setup-node@v6
         with:
