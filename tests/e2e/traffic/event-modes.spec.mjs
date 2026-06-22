@@ -11,32 +11,32 @@ test.describe("Traffic event mode management", () => {
     // Verify navigation has the event tabs initially
     const navTabs = page.locator(".nav-tabs");
     await expect(navTabs).toBeVisible();
-    await expect(navTabs).toContainText("짐카나");
+    await expect(navTabs).toContainText("오토크로스");
 
     // Find the event mode section on the record page
     const eventModeSection = page.locator(".event-mode-card");
     await expect(eventModeSection).toBeVisible();
 
-    // Click the 짐카나 button to disable it
-    const gymkhanaBtn = eventModeSection.locator(".event-mode-btn", { hasText: "짐카나" });
-    await expect(gymkhanaBtn).toBeVisible();
-    await expect(gymkhanaBtn).not.toHaveClass(/disabled/);
-    await gymkhanaBtn.click();
+    // Click the 오토크로스 button to disable it
+    const autocrossBtn = eventModeSection.locator(".event-mode-btn", { hasText: "오토크로스" });
+    await expect(autocrossBtn).toBeVisible();
+    await expect(autocrossBtn).not.toHaveClass(/disabled/);
+    await autocrossBtn.click();
 
     // Verify the button now has the disabled class
-    await expect(gymkhanaBtn).toHaveClass(/disabled/);
+    await expect(autocrossBtn).toHaveClass(/disabled/);
 
-    // Verify the nav tab for 짐카나 disappears
-    await expect(navTabs).not.toContainText("짐카나");
+    // Verify the nav tab for 오토크로스 disappears
+    await expect(navTabs).not.toContainText("오토크로스");
 
     // Toggle it back on
-    await gymkhanaBtn.click();
+    await autocrossBtn.click();
 
     // Verify the button no longer has the disabled class
-    await expect(gymkhanaBtn).not.toHaveClass(/disabled/);
+    await expect(autocrossBtn).not.toHaveClass(/disabled/);
 
     // Verify the nav tab reappears
-    await expect(navTabs).toContainText("짐카나");
+    await expect(navTabs).toContainText("오토크로스");
   });
 
   test("event mode toggles persist across page navigation", async ({ page }) => {

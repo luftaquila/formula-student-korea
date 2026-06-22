@@ -57,12 +57,13 @@ test.describe("Simultaneous event measurement", () => {
     await page1.waitForTimeout(500);
     await accelSensor2.click();
 
-    // Autocross: sensor1 twice (first pass + second pass)
-    const autocrossSensor = page2.getByTestId("manual-sensor-1");
-    await expect(autocrossSensor).toBeVisible();
-    await autocrossSensor.click();
-    await page2.waitForTimeout(1100);
-    await autocrossSensor.click();
+    // Autocross: sensor1 → sensor2 (가속과 동일한 출발/도착 2센서)
+    const autocrossSensor1 = page2.getByTestId("manual-sensor-1");
+    const autocrossSensor2 = page2.getByTestId("manual-sensor-2");
+    await expect(autocrossSensor1).toBeVisible();
+    await autocrossSensor1.click();
+    await page2.waitForTimeout(500);
+    await autocrossSensor2.click();
 
     // Both should save successfully
     await expectNotification(page1, "success", "기록 저장");

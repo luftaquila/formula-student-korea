@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 const EVENT = "E2E-WL-Accel";
@@ -21,7 +21,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await ctx.close();
   });
 
-  test("routes mapped sensor events into a saved accel record", async ({ page }) => {
+  test("server engine saves an accel record from mapped sensor events", async ({ page }) => {
     // 매핑: 출발=NODE_S, 도착=NODE_F (goto 전에 설정 → init SSE에 포함)
     await page.request.put(`/traffic/api/wireless/mapping/${NODE_S}`, { data: { event_type: "가속", role: "start" } });
     await page.request.put(`/traffic/api/wireless/mapping/${NODE_F}`, { data: { event_type: "가속", role: "finish" } });
@@ -29,36 +29,38 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await page.goto("/traffic/wireless/accel");
     await waitForPageReady(page);
 
-    // 경기 설정 (무선 모드는 유선 AccelView를 그대로 재사용 → 동일 셀렉터)
+    // 경기 설정(표시용) — 무선은 StartFinishView 재사용 → 동일 셀렉터
     await page.locator('.form-input[type="text"]').fill(EVENT);
     await page.locator("select.form-input").selectOption("1");
 
-    // 가속을 물리 신호등 경기로 지정 + green (브리지 시리얼 대신 서버 API로 동일 상태)
+    // 서버 권위 기록 엔진의 귀속(팀·이벤트명)은 세션 select로 공유(브리지가 보내는 것을 시뮬레이션).
+    await page.request.post("/traffic/api/wireless/select", {
+      data: { event_type: "가속", team: { num: 1, univ: "E2E-Univ", team: "E2E-Team" }, event_name: EVENT },
+    });
+    // 가속을 물리 경기로 지정 + green(=arm). 서버가 세션에 arm 미러.
     await page.request.put("/traffic/api/wireless/physical-event", { data: { event_type: "가속" } });
     await page.request.post("/traffic/api/wireless/light", { data: { color: "green", green_tick: "16000000" } });
 
     // 클라이언트가 SSE로 green 반영
     await expect(page.locator(".traffic-light.green")).toBeVisible({ timeout: 8000 });
 
-    // 출발 이벤트 → 도착 이벤트. 도착 시 기록 저장(POST /api/records) 발생.
-    const saved = page.waitForResponse(
-      (r) => r.url().includes("/api/records") && r.request().method() === "POST" && r.status() === 201,
-    );
+    // 출발 → 도착. 서버 기록 엔진이 ingest에서 직접 저장(클라 저장 아님).
     await page.request.post("/traffic/api/wireless/ingest", {
       data: { events: [{ node_id: NODE_S, master_tick: "1600000000", ev_seq: 1, rssi: -60, snr: 9 }] },
     });
     await page.request.post("/traffic/api/wireless/ingest", {
       data: { events: [{ node_id: NODE_F, master_tick: "1600160000", ev_seq: 1, rssi: -61, snr: 9 }] },
     });
-    await saved;
 
+    // 클라이언트는 표시만(서버가 저장) — 측정 기록 섹션 노출
     await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
-    await expectNotification(page, "success", "기록 저장");
 
-    // 서버 기록 확인
-    const res = await page.request.get(`/traffic/api/records/FSK ${YEAR} ${EVENT}`);
-    const rows = await res.json();
-    expect(rows.length).toBeGreaterThanOrEqual(1);
-    expect(rows.some((r) => r.type === "가속" && r.result === 10)).toBeTruthy();
+    // 서버 기록 확인(엔진은 ingest 내 동기 저장; 폴링으로 안전 대기)
+    await expect.poll(async () => {
+      const res = await page.request.get(`/traffic/api/records/FSK ${YEAR} ${EVENT}`);
+      if (res.status() !== 200) return 0;
+      const rows = await res.json();
+      return rows.filter((r) => r.type === "가속" && r.result === 10).length;
+    }, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
   });
 });
