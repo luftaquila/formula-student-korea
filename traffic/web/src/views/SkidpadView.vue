@@ -228,8 +228,8 @@ watch(() => serial.green.active, (active, prev) => {
         <div class="card-body">
           <!-- 경기 제어권(lease): 보유자만 제어. 비-브리지 PC도 제어권을 잡아 네트워크 제어 가능. -->
           <div v-if="wireless" class="lease-row">
-            <button v-if="!serial.controller" class="btn btn-block btn-ghost" @click="serial.claimLease()">제어 잡기</button>
-            <button v-else-if="isController" class="btn btn-block btn-success" @click="serial.releaseLease()">내가 제어 중 · 놓기</button>
+            <button v-if="!serial.controller" class="btn btn-block btn-ghost" @click="serial.claimLease()">제어</button>
+            <button v-else-if="isController" class="btn btn-block btn-success" @click="serial.releaseLease()">제어 해제</button>
             <div v-else class="lease-locked">
               🔒 {{ serial.controller }} 제어 중
               <button class="btn btn-ghost lease-take" @click="serial.takeoverLease()">가로채기</button>

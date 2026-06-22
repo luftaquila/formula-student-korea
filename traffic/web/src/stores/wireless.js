@@ -389,7 +389,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     return !!myActor.value && !!s && s.controller === myActor.value;
   }
   function requireControl(mode) {
-    if (!holdsLease(mode)) { notyf.error("먼저 제어권을 잡으세요(제어 잡기)."); return false; }
+    if (!holdsLease(mode)) { notyf.error("먼저 제어권을 잡으세요(제어 버튼)."); return false; }
     return true;
   }
   let leaseTimer = null;
