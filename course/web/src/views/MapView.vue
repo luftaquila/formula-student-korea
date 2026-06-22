@@ -2980,21 +2980,37 @@ const cameraOn = ref(false);
 const cameraError = ref(false);
 const cameraReqId = ref(0);
 let cameraStatusPoll = null;
+let cameraLastOkAt = 0;            // last poll that saw fresh frames (ms)
 const cameraStreamUrl = computed(() => {
   if (!cameraOn.value) return "";
   const base = import.meta.env.PROD ? "/course" : "";
+  // cameraReqId is the cache-bust AND the reconnect lever: bumping it makes the
+  // <img> re-request a fresh stream (multipart/x-mixed-replace does NOT
+  // auto-reconnect after a server restart / dropped socket).
   return `${base}/api/rover/camera/stream?t=${cameraReqId.value}`;
 });
-// The MJPEG <img> only fires `error` if the HTTP connection breaks — when the
-// connection stays open but no frames arrive (no perception container / no
-// camera), the box would just sit black forever. Poll the status endpoint so
-// "신호 없음" actually surfaces.
+// The MJPEG <img> only fires `error` if the HTTP connection breaks — when it
+// stays open but no frames arrive (no camera / server restarted and the <img>
+// is now a dead socket) the box just sits black. Poll the status endpoint
+// (server-computed frame age, clock-skew-proof) to surface "신호 없음" AND to
+// self-heal a dead <img> by re-requesting the stream.
 async function pollCameraStatus() {
+  if (!cameraOn.value) return;
   try {
     const res = await request("/api/rover/camera/status", { method: "GET" });
     const s = await res.json();
-    const stale = !s.last_frame_at || (Date.now() - s.last_frame_at) > 3000;
-    cameraError.value = !s.camera_connected || stale;
+    const healthy = s.camera_connected
+      && s.last_frame_age_ms != null && s.last_frame_age_ms < 3000;
+    cameraError.value = !healthy;
+    if (healthy) {
+      cameraLastOkAt = Date.now();
+    } else if (s.camera_connected && Date.now() - cameraLastOkAt > 6000) {
+      // Server has a camera but our view has been stale a while → the <img>
+      // socket is likely dead (server restart / proxy drop). Re-request it.
+      // Throttle to ~6s so we don't reconnect-storm a genuinely missing camera.
+      cameraReqId.value = Date.now();
+      cameraLastOkAt = Date.now();
+    }
   } catch { /* keep last known state */ }
 }
 function stopCameraStream() {
@@ -3007,15 +3023,19 @@ function toggleCamera() {
   cameraOn.value = true;
   cameraError.value = false;
   cameraReqId.value = Date.now();
+  cameraLastOkAt = Date.now();   // grace the cold-start window before reconnecting
   pollCameraStatus();
   cameraStatusPoll = setInterval(pollCameraStatus, 2000);
 }
 function onCameraError() {
   cameraError.value = true;
 }
-// Drop the stream when the rover goes offline so we don't hold a dead request.
+// A rover SSE drop flips connected false→true; just flag the gap. Do NOT tear
+// the stream down — the operator's intent (cameraOn) is preserved and
+// pollCameraStatus auto-reconnects the <img> once the rover is back, instead of
+// leaving them with a permanently black box after a transient blip.
 watch(() => roverStatus.value.connected, (connected) => {
-  if (!connected && cameraOn.value) stopCameraStream();
+  if (!connected && cameraOn.value) cameraError.value = true;
 });
 // The rover panel is v-show (stays mounted), so leaving the tab would keep the
 // MJPEG <img> connected and the rover capturing invisibly. Stop on tab-leave.

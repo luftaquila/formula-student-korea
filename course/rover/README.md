@@ -54,7 +54,8 @@ Bridge: `mcu_bridge_node`. Firmware CI: `.github/workflows/rover-mcu.yml`.
 
 ## Architecture
 
-Five ROS 2 Jazzy nodes, one rootful podman container, `--network=host`:
+Five ROS 2 Jazzy nodes in the rootful `pilot` container, `--network=host` (a
+separate `perception` container handles camera streaming — see `perception/`):
 
 ```
 course server (port 10000)

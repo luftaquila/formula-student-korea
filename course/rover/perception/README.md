@@ -52,6 +52,13 @@ podman secret. A udev `add|remove` on a video device restarts the unit via
 Override per-rover with `podman` env or by editing `/etc/pilot/pilot.conf`
 (then `sudo systemctl restart perception.service`).
 
+> **Uplink budget:** video shares the rover's uplink with the safety-critical
+> pilot channel (telemetry / emergency-stop / pause). The defaults are tuned for
+> a good LAN; on a constrained/cellular link lower `CAMERA_FPS` /
+> `CAMERA_JPEG_QUALITY` (and prefer cropping to one sensor via `CAMERA_VIEW`) so
+> the stream can't crowd out mission commands. The server also rate-caps the
+> relay (~25 fps) and only asks the rover to capture while someone is watching.
+
 ## Verify on the rover
 
 ```bash

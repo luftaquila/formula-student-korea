@@ -1467,7 +1467,7 @@ describe('Camera relay', () => {
 
     st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
     assert.equal(st.viewers, 1);
-    assert.ok(st.last_frame_at > 0);
+    assert.ok(st.last_frame_age_ms != null && st.last_frame_age_ms >= 0, 'status reports a server-computed frame age');
 
     // Last viewer leaves → camera-stop.
     stopView();
@@ -1477,5 +1477,28 @@ describe('Camera relay', () => {
 
     stopCtl();
     ctlAc.abort();
+  });
+
+  it('caps concurrent viewers (503 past the limit)', async () => {
+    // The viewer cap is the only thing stopping a scripted/looping admin from
+    // exhausting sockets/heap on the shared mission server, so guard it.
+    const MAX = 8; // mirrors MAX_CAMERA_VIEWERS in course/index.mjs
+    const acs = [];
+    try {
+      for (let i = 0; i < MAX; i++) {
+        const ac = new AbortController();
+        acs.push(ac);
+        const r = await fetch(`${url}/api/rover/camera/stream`, { headers: { Cookie: adminCookie }, signal: ac.signal });
+        assert.equal(r.status, 200, `viewer ${i + 1} should be accepted`);
+      }
+      const ac = new AbortController();
+      acs.push(ac);
+      const over = await fetch(`${url}/api/rover/camera/stream`, { headers: { Cookie: adminCookie }, signal: ac.signal });
+      assert.equal(over.status, 503, 'a viewer past the cap must be rejected');
+      try { await over.body?.cancel(); } catch { /* ignore */ }
+    } finally {
+      for (const ac of acs) ac.abort();
+      await sleep(150); // let the server reap the aborted viewers before the next test
+    }
   });
 });

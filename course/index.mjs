@@ -1844,7 +1844,11 @@ app.get("/api/rover/camera/status", (req, res) => {
   res.json({
     camera_connected: !!cameraControlClient,
     viewers: cameraViewers.size,
-    last_frame_at: cameraLatestFrame ? cameraLatestFrame.at : null,
+    // Server-COMPUTED age, never a raw server epoch: the client must not diff
+    // its own (possibly NTP-skewed) clock against a server timestamp — that
+    // mismatch paints a working stream as "신호 없음" or hides a dead one (the
+    // same client-clock trap as the course UI's "UPDATE Ns").
+    last_frame_age_ms: cameraLatestFrame ? (Date.now() - cameraLatestFrame.at) : null,
   });
 });
 

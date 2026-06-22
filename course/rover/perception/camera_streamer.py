@@ -74,6 +74,11 @@ SSE_RECONNECT_MAX_S = 30.0
 # Keep short: a slow POST blocks the capture thread, so this also bounds how
 # long the device stays held after a camera-stop.
 POST_TIMEOUT_S = 2.0
+# Linger before actually releasing the device on camera-stop, so a rapid
+# toggle / a flapping viewer connection doesn't thrash open()/release() on the
+# UVC device (many cams wedge on rapid reopen). A start() within the linger
+# cancels the pending release and capture continues uninterrupted.
+STOP_LINGER_S = 3.0
 
 
 def log(msg):
@@ -134,6 +139,9 @@ class CameraStreamer:
         self._session = requests.Session()
         self._worker = threading.Thread(target=self._capture_loop, daemon=True)
         self._last_warn_t = 0.0
+        # Guards the debounced stop timer (start/stop arrive on the SSE thread).
+        self._lock = threading.Lock()
+        self._stop_timer = None
 
     def _warn_throttled(self, msg):
         # Rate-limit noisy per-frame failures (rejected POSTs, network blips) so
@@ -144,14 +152,32 @@ class CameraStreamer:
             log(msg)
 
     def start(self):
+        # Cancel any pending debounced release — a viewer reconnected within the
+        # linger, so keep capturing without releasing/reopening the device.
+        with self._lock:
+            if self._stop_timer is not None:
+                self._stop_timer.cancel()
+                self._stop_timer = None
         if not self._enabled.is_set():
             log("capture START")
             self._enabled.set()
 
     def stop(self):
-        if self._enabled.is_set():
-            log("capture STOP")
-            self._enabled.clear()
+        # Debounce: don't release the device immediately — a rapid toggle or a
+        # flapping viewer would otherwise thrash open()/release() (UVC cams wedge
+        # on rapid reopen). Schedule the actual disable; start() cancels it.
+        with self._lock:
+            if not self._enabled.is_set() or self._stop_timer is not None:
+                return
+            self._stop_timer = threading.Timer(STOP_LINGER_S, self._deferred_stop)
+            self._stop_timer.daemon = True
+            self._stop_timer.start()
+
+    def _deferred_stop(self):
+        with self._lock:
+            self._stop_timer = None
+        log("capture STOP")
+        self._enabled.clear()
 
     def run(self):
         self._worker.start()
