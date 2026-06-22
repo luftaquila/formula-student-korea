@@ -68,7 +68,7 @@ master_time = offset + (local−L_ref)*(1+skew) + L_ref       (skew 보정 시)
 ```
 sec_hdr (평문, 인증됨) : type, node_id(송신자), boot_id(4), ctr(4)          = 10B
   + 암호화 페이로드:
-    BEACON  : ver, seq, m_tx_prev(8), period_ms(2), slot_us(2)              (14B)
+    BEACON  : ver, seq, m_tx_prev(8), period_ms(2), slot_ms(2)              (14B)
     EVENT   : ev_seq(2), ev_master_t(8), master_boot_id(4), flags           (15B)
     ACK     : node_id(대상 센서), ev_seq(2)                                  (3B)
     STATUS  : seq, offset_tick(i64), skew_ppm(i32), rx_miss(2), beacon_gap(2), batt_mv(2), temp_c10(i16) (21B)
@@ -79,7 +79,7 @@ sec_hdr (평문, 인증됨) : type, node_id(송신자), boot_id(4), ctr(4)      
 - 보안헤더의 `node_id`는 **송신자**(0=마스터, 1..6=센서). ACK는 마스터가 보내므로 헤더 node_id=0이고, **대상 센서는 페이로드** node_id로 지정.
 - EVENT의 ev_master_t = 노드가 미리 변환한 마스터 시각.
 - EVENT의 master_boot_id = 이 이벤트가 동기된 마스터 세션 boot_id(추적 중인 비콘에서 학습). 마스터는 자기 현재 세션을 지칭하지 않는 이벤트를 거부 → 마스터 재부팅 후 이전 세션에서 캡처된 이벤트는 재전송 불가(§2.11).
-- BEACON의 slot_us = STATUS TDMA 슬롯 폭(센서 스케줄링용, §2.8). ver = 프로토콜 버전(현재 4).
+- BEACON의 slot_ms = STATUS TDMA 슬롯 폭(ms, 정보용 — 센서는 컴파일타임 매크로로 스케줄, §2.8). ver = 프로토콜 버전(현재 4).
 - STATUS = 센서가 자기 TDMA 슬롯에서 보내는 주기 진단(§2.10).
 - 프로비저닝은 보드의 FICR.DEVICEID 정적 테이블(node_id.c)로 한다 — 과거의 over-air ID_SETUP 패킷은 폐기.
 
@@ -103,7 +103,7 @@ AEAD 봉인으로 패킷당 26B(헤더10+MAC16)가 늘어 가장 큰 패킷(STAT
 ### 2.10 진단 (diagnostics)
 센서·링크 상태를 마스터가 USB로 PC에 보고(§8 `D` 라인). 두 출처를 합친다:
 - **센서 측(STATUS에 실어 업링크):** 현재 offset(`offset_tick`), 드리프트 `skew_ppm`(최근 ~8비콘 offset 링에서 산출), 누락 비콘 `rx_miss`/현재 연속 누락 `beacon_gap`.
-- **마스터 측(수신 시 측정):** 패킷별 RSSI/SNR(`radio_receive_q` — readData 직후·재무장 전 `getRSSI(true)`/`getSNR()`), node별 last-seen(board_millis 기준 OK ≤8s / STALE ≤15s / LOST), 무선 지연 `lat_ms = (now − ev_master_t)/16MHz`.
+- **마스터 측(수신 시 측정):** 패킷별 RSSI/SNR(`radio_receive_q` — readData 직후·재무장 전 `getRSSI(true)`/`getSNR()`), node별 last-seen(board_millis 기준 OK ≤10s(=2×STATUS_PERIOD_S) / STALE ≤15s / LOST), 무선 지연 `lat_ms = max(0, now − ev_master_t)/16000` (틱→ms, TICKS_PER_MS; 음수는 0 클램프).
 
 ### 2.11 무선 보안 — AEAD (기밀성 + 인증 + 재전송 방어)
 raw LoRa는 평문이라 누구나 도청·위조할 수 있다. 위조 EVENT/BEACON으로 타이밍 결과나 신호등(SSR) 제어를 교란할 수 있으므로 모든 공중 패킷을 봉인한다. (USB↔PC 구간은 유선 신뢰 구간이라 대상 아님.)

@@ -340,7 +340,7 @@ static void run_master(int st)
             b.seq = seq;
             b.m_tx_prev = m_tx_last;
             b.period_ms = 1000;
-            b.slot_us = (uint16_t)(SLOT_WIDTH_MS * 1000u);
+            b.slot_ms = SLOT_WIDTH_MS;
             uint8_t tx[WIRE_BEACON];
             int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_BEACON, NODE_MASTER, &b, sizeof(b));
             if (wlen > 0) {

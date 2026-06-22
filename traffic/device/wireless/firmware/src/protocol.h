@@ -51,7 +51,8 @@ typedef struct __attribute__((packed)) {
     uint8_t  seq;        /* beacon sequence (wraps at 256) */
     uint64_t m_tx_prev;  /* master TxDone tick of beacon (seq-1) */
     uint16_t period_ms;  /* beacon/sync period (1000) */
-    uint16_t slot_us;    /* TDMA status slot width in microseconds */
+    uint16_t slot_ms;    /* TDMA status slot width in ms (= SLOT_WIDTH_MS;
+                          * informational — sensors schedule from the macro, not this) */
 } beacon_pl_t;
 
 /* Sensor -> master. ev_master_t = event tick already mapped to master time.
