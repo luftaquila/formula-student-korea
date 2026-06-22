@@ -26,6 +26,7 @@
 #include "node_id.h"
 #include "meas.h"
 #include "secure.h"
+#include "keystore.h"
 
 #define TICKS_PER_MS 16000u /* TIMER1 is 16 MHz */
 #define OFF_HIST     8u     /* offset ring depth for the skew estimate */
@@ -50,6 +51,20 @@ static void debug_id(const char *role)
     usb_write(l);
 }
 #endif
+
+/* Write the fleet key from a PU_CMD_SETKEY command to the flash keystore and
+ * reload it live. Common to both roles — any board is provisioned by plugging it
+ * into USB and sending `K <64-hex>`. Write-only: there is no read-back command,
+ * so the key can't be exfiltrated over serial. */
+static void provision_key(void)
+{
+    if (keystore_write(pu_setkey()) == 0) {
+        sec_reload();
+        pu_emit_ack("K");
+    } else {
+        pu_emit_err("keyfail");
+    }
+}
 
 /* ===== sensor =========================================================== */
 
@@ -145,6 +160,18 @@ static void run_sensor(int st)
 
     for (;;) {
         usb_task();
+        /* Serial provisioning works regardless of radio/role: plug the board in
+         * and send `K <64-hex>` (also ?ID to identify it). */
+        int uc;
+        while ((uc = usb_read_byte()) >= 0) {
+            switch (pu_feed(uc)) {
+            case PU_CMD_SETKEY: provision_key(); break;
+            case PU_CMD_ID: pu_emit_identity(node_devid_hi(), node_devid_lo()); pu_emit_ack("ID"); break;
+            case PU_CMD_PING: pu_emit_ack("PING"); break;
+            case PU_CMD_BAD: pu_emit_err("badcmd"); break;
+            default: break;
+            }
+        }
 #if defined(NODE_DEBUG)
         debug_id(me == 0xFFu ? "unprov" : "sensor");
 #endif
@@ -319,6 +346,9 @@ static void run_master(int st)
             case PU_CMD_PING:
                 pu_emit_ack("PING");
                 break;
+            case PU_CMD_SETKEY:
+                provision_key();
+                break;
             case PU_CMD_BAD:
                 pu_emit_err("badcmd");
                 break;
@@ -335,6 +365,8 @@ static void run_master(int st)
         uint32_t now = board_millis();
         if ((uint32_t)(now - last) >= 1000u) {
             last = now;
+            /* No key yet → sec_seal refuses, so no beacon goes out; tell the PC. */
+            if (!sec_provisioned() && (seq % 5u) == 0u) { pu_emit_err("noprov"); }
             beacon_pl_t b;
             b.ver = PROTO_VER;
             b.seq = seq;

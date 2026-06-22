@@ -1,9 +1,5 @@
 build*/
 vendor/
-
-# fleet pre-shared key — never commit; copy from src/secret.h.example
-src/secret.h
-
 *.uf2
 *.bin
 *.hex

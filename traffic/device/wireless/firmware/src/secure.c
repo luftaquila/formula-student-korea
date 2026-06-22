@@ -3,25 +3,20 @@
 #include <string.h>
 
 #include "protocol.h"
-#include "secret.h"   /* LORA_PSK_BYTES — gitignored; see secret.h.example */
+#include "keystore.h"
 #include "monocypher.h"
 #include "nrf.h"
-
-/* Release builds (-DFLEET_KEY_REQUIRED, see CMakeLists.txt) refuse to compile
- * against the all-zero placeholder key, so a deployment can never silently ship
- * with no security. The placeholder defines LORA_PSK_PLACEHOLDER; a real key
- * does not. */
-#if defined(FLEET_KEY_REQUIRED) && defined(LORA_PSK_PLACEHOLDER)
-#error "FLEET_KEY_REQUIRED build but src/secret.h is the placeholder key. Generate a real fleet key (see secret.h.example)."
-#endif
-
-/* Fleet-wide pre-shared key. All boards must be flashed with the same key. */
-static const uint8_t KEY[32] = { LORA_PSK_BYTES };
 
 /* Nonce domain byte — separates this protocol's use of the key from any other.
  * 'W' for FSK-WL (wireless). */
 #define NONCE_DOMAIN 0x57u
 
+/* Fleet-wide pre-shared key, loaded at boot from the flash keystore (NOT
+ * compiled in — see keystore.h / DESIGN §2.11). g_provisioned is 0 until a key
+ * is present; seal/unseal then refuse, so an unprovisioned board is inert on
+ * the air. */
+static uint8_t  KEY[KEYSTORE_KEY_LEN];
+static int      g_provisioned;
 static uint32_t g_boot_id;
 static uint32_t g_tx_ctr;
 
@@ -45,7 +40,15 @@ void sec_init(void)
 {
     g_boot_id = rng32();
     g_tx_ctr = 0;
+    sec_reload();
 }
+
+void sec_reload(void)
+{
+    g_provisioned = keystore_load(KEY);
+}
+
+int sec_provisioned(void) { return g_provisioned; }
 
 uint32_t sec_boot_id(void) { return g_boot_id; }
 
@@ -65,6 +68,7 @@ static void build_nonce(uint8_t nonce[24], uint8_t type, uint8_t node_id,
 int sec_seal(uint8_t *out, int out_cap, uint8_t type, uint8_t node_id,
              const void *payload, int payload_len)
 {
+    if (!g_provisioned) { return -4; } /* no key — refuse to transmit */
     int wire = SEC_OVERHEAD + payload_len;
     if (out_cap < wire) { return -1; }
 
@@ -93,6 +97,7 @@ int sec_seal(uint8_t *out, int out_cap, uint8_t type, uint8_t node_id,
 int sec_unseal(const uint8_t *in, int in_len, sec_meta_t *meta,
                void *out_payload, int payload_len)
 {
+    if (!g_provisioned) { return -3; } /* no key — can't authenticate anything */
     int wire = SEC_OVERHEAD + payload_len;
     if (in_len < wire) { return -1; }
 

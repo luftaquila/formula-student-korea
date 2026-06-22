@@ -12,8 +12,8 @@
  *     L <RED|GREEN|OFF> <tick>
  *     A <cmd> OK
  *     X <reason>
- *   PC -> Master:
- *     G | R | O | ?ID | ?STATUS | PING
+ *   PC -> Master (K and ?ID/PING also accepted by sensors, for provisioning):
+ *     G | R | O | ?ID | ?STATUS | PING | K <64-hex>   (K = write fleet key)
  */
 #ifndef PROTO_USB_H
 #define PROTO_USB_H
@@ -55,12 +55,17 @@ typedef enum {
     PU_CMD_ID,
     PU_CMD_STATUS,
     PU_CMD_PING,
+    PU_CMD_SETKEY,   /* K <64-hex>: write the 32-byte fleet key (see pu_setkey) */
     PU_CMD_BAD,      /* a full line was parsed but unrecognised */
 } pu_cmd_t;
 
 /* Feed one received byte. Returns a command when a full line terminates, else
  * PU_CMD_NONE. */
 pu_cmd_t pu_feed(int c);
+
+/* The 32-byte key parsed from the most recent PU_CMD_SETKEY line. Valid only
+ * immediately after pu_feed() returns PU_CMD_SETKEY. */
+const uint8_t *pu_setkey(void);
 
 #ifdef __cplusplus
 }
