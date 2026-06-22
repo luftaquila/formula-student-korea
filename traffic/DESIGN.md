@@ -296,6 +296,13 @@ RadioLib(커스텀 HAL) 기반. node_id로 역할 분기(0=마스터, 1..6=센�
   - **프로비저닝:** `K`/`?ID`/`PING`은 **센서도 수용**(역할·무선 상태 무관). 각 보드를 USB로 꽂아 `K <64hex>` 1회 전송 → keystore에 기록·즉시 활성. 키 read-back 명령 없음(시리얼 유출 불가).
   - 64-bit tick은 십진수 그대로(절단 없음). 상태 = 온보드 LED(P0.15).
 - NFC핀(P0.09/0.10)을 GPIO로 쓰면 **NFC 비활성화(UICR)** 필요.
+- **펌웨어 업로드 (DFU)**: 부트로더 = nice!nano(Adafruit nRF52, S140 v6.1.1). 앱은 **0x26000**에 링크(S140 user-app base; `linker/nrf52840_app.ld`). 키스토어 페이지 `0xF3000`은 linker FLASH 길이에서 제외돼 앱 DFU에 보존(§2.11).
+  - **Linux에서 UF2 드라이브로 `cp`/`dd`는 플래시 안 됨** — 쓰기는 성공해도 이 부트로더는 플래시하지 않는다(RP2040과 다름). UF2 드래그앤드롭은 Windows 전용.
+  - 플래시 = **부트로더 CDC로 serial DFU**, sudo 불필요(유저가 `dialout`):
+    1. 펌웨어 = CI 아티팩트(`traffic-device.yml` → `traffic-device-firmware`의 `.bin`)를 `0x26000` 오프셋으로 hex 변환 → `adafruit-nrfutil dfu genpkg --dev-type 0x0052 --application <hex> pkg.zip`.
+    2. **부트로더 진입(버튼 없이)**: 앱 CDC를 **1200 baud로 열고 DTR drop** → 앱이 `NRF_POWER->GPREGRET=0x57` 설정 후 리셋(`src/usb.c`). 부트로더가 새 `/dev/ttyACM*` + UF2 매스스토리지로 재등장. 앱이 행(hang)이면 물리 RST 더블탭.
+    3. `adafruit-nrfutil dfu serial --package pkg.zip -p /dev/ttyACM<부트로더> -b 115200 --singlebank` → `Device programmed.` 후 앱이 부팅하며 FSK-WL CDC로 복귀.
+- **프로비저닝 절차 (§2.11·§10)**: `openssl rand -hex 32`로 플릿 키 1개 생성(마스터+전 센서 **동일** 키) → 운영자 로컬에만 보관(repo/CI/chat 금지) → 각 보드 플래시 후 앱 CDC(115200)로 `K <64hex>` 전송 → `A K OK`. write-only(read-back 없음). 미주입 마스터는 `X noprov` 주기 송신, 센서는 USB 무출력(명령 응답만).
 
 ---
 
