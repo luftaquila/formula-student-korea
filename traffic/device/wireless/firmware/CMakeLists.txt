@@ -17,10 +17,11 @@ string(APPEND CMAKE_CXX_FLAGS
     " -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit")
 
 # Vendored bare-metal deps (cloned by tools/build.sh / CI at pinned refs).
-set(NRFX_PATH     "${CMAKE_CURRENT_LIST_DIR}/vendor/nrfx"     CACHE PATH "nrfx checkout")
-set(CMSIS_PATH    "${CMAKE_CURRENT_LIST_DIR}/vendor/CMSIS_5"  CACHE PATH "CMSIS_5 checkout")
-set(RADIOLIB_PATH "${CMAKE_CURRENT_LIST_DIR}/vendor/RadioLib" CACHE PATH "RadioLib checkout")
-set(MDK_DIR       "${NRFX_PATH}/bsp/stable/mdk")
+set(NRFX_PATH       "${CMAKE_CURRENT_LIST_DIR}/vendor/nrfx"       CACHE PATH "nrfx checkout")
+set(CMSIS_PATH      "${CMAKE_CURRENT_LIST_DIR}/vendor/CMSIS_5"    CACHE PATH "CMSIS_5 checkout")
+set(RADIOLIB_PATH   "${CMAKE_CURRENT_LIST_DIR}/vendor/RadioLib"   CACHE PATH "RadioLib checkout")
+set(MONOCYPHER_PATH "${CMAKE_CURRENT_LIST_DIR}/vendor/monocypher" CACHE PATH "Monocypher checkout")
+set(MDK_DIR         "${NRFX_PATH}/bsp/stable/mdk")
 
 foreach(req
         "${MDK_DIR}/gcc_startup_nrf52840.S"
@@ -29,11 +30,20 @@ foreach(req
         "${CMSIS_PATH}/CMSIS/Core/Include/core_cm4.h"
         "${RADIOLIB_PATH}/src/RadioLib.h"
         "${CMAKE_CURRENT_LIST_DIR}/vendor/tinyusb/src/tusb.h"
+        "${MONOCYPHER_PATH}/src/monocypher.c"
         "${NRFX_PATH}/drivers/src/nrfx_power.c")
     if(NOT EXISTS "${req}")
-        message(FATAL_ERROR "missing vendored dependency: ${req}\nRun tools/build.sh (it clones nrfx + CMSIS_5 + RadioLib + tinyusb).")
+        message(FATAL_ERROR "missing vendored dependency: ${req}\nRun tools/build.sh (it clones nrfx + CMSIS_5 + RadioLib + tinyusb + monocypher).")
     endif()
 endforeach()
+
+# Fleet pre-shared key (src/secret.h, gitignored). Seed a placeholder from the
+# committed example on first build so dev/CI compile; deployments must replace it.
+if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/src/secret.h")
+    message(WARNING "src/secret.h not found — seeding a placeholder (all-zero) key from secret.h.example. This provides NO security; create src/secret.h with a real key before deploying (see secret.h.example).")
+    configure_file("${CMAKE_CURRENT_LIST_DIR}/src/secret.h.example"
+                   "${CMAKE_CURRENT_LIST_DIR}/src/secret.h" COPYONLY)
+endif()
 
 # RadioLib as a static library. Non-Arduino mode (ARDUINO is undefined → the
 # library uses our custom HAL). Built without our -Wall to avoid upstream noise;
@@ -42,6 +52,12 @@ file(GLOB_RECURSE RADIOLIB_SRC "${RADIOLIB_PATH}/src/*.cpp")
 add_library(radiolib STATIC ${RADIOLIB_SRC})
 target_include_directories(radiolib PUBLIC "${RADIOLIB_PATH}/src")
 target_compile_options(radiolib PRIVATE -ffunction-sections -fdata-sections)
+
+# Monocypher — single-file XChaCha20-Poly1305 AEAD for the secured air link
+# (DESIGN §2.11). Built with -w to keep it off our -Wall surface.
+add_library(monocypher STATIC "${MONOCYPHER_PATH}/src/monocypher.c")
+target_include_directories(monocypher PUBLIC "${MONOCYPHER_PATH}/src")
+target_compile_options(monocypher PRIVATE -ffunction-sections -fdata-sections -w)
 
 # nRF USB stack: TinyUSB CDC-ACM device + nrfx_power (USB power events) + our
 # usb.c/usb_descriptors.c. -w silences upstream warnings; config/ holds
@@ -84,7 +100,7 @@ add_executable(${ELF}
     src/sensor.c
     src/meas.c
     src/capture.c
-    src/protocol.c
+    src/secure.c
     src/proto_usb.c
     src/node_id.c
     src/radio_hal.cpp
@@ -94,6 +110,7 @@ add_executable(${ELF}
 
 target_include_directories(${ELF} PRIVATE
     src
+    "${MONOCYPHER_PATH}/src"
     "${MDK_DIR}"
     "${CMSIS_PATH}/CMSIS/Core/Include"
 )
@@ -121,7 +138,7 @@ target_compile_options(${ELF} PRIVATE
     $<$<COMPILE_LANGUAGE:C>:-std=gnu11>
 )
 
-target_link_libraries(${ELF} radiolib nrfusb)
+target_link_libraries(${ELF} radiolib nrfusb monocypher)
 
 # Link with newlib (nano) + nosys stubs; our startup calls _start. The custom
 # linker script places the app at 0x26000; -L<mdk> lets it INCLUDE nrf_common.ld.

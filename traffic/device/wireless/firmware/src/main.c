@@ -25,6 +25,7 @@
 #include "lights.h"
 #include "node_id.h"
 #include "meas.h"
+#include "secure.h"
 
 #define TICKS_PER_MS 16000u /* TIMER1 is 16 MHz */
 #define OFF_HIST     8u     /* offset ring depth for the skew estimate */
@@ -58,30 +59,34 @@ static void debug_id(const char *role)
  * so two sensors firing at once de-correlate. */
 static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint8_t me, uint16_t *ev_seq)
 {
-    event_t e;
-    e.type = PKT_TYPE_EVENT;
-    e.node_id = me;
+    event_pl_t e;
     e.ev_seq = (*ev_seq)++;
     e.ev_master_t = off + ev_tick;
     e.flags = 0;
-    e.crc = crc16_ccitt((uint8_t *)&e, offsetof(event_t, crc));
     uint16_t this_seq = e.ev_seq;
 
     for (int attempt = 0; attempt < 4; attempt++) {
         if (attempt > 0 || radio_channel_busy()) {
-            board_delay_ms(30u + (uint32_t)((this_seq * 7u + me * 11u) & 63u));
+            board_delay_ms(60u + (uint32_t)((this_seq * 7u + me * 11u) & 63u));
         }
-        radio_transmit((uint8_t *)&e, sizeof(e));
+        /* Re-seal each attempt: same ev_seq (master dedups), fresh ctr so every
+         * retransmit is a distinct authenticated message the master's replay
+         * window accepts (a verbatim resend would be dropped as a replay). */
+        uint8_t tx[WIRE_EVENT];
+        int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_EVENT, me, &e, sizeof(e));
+        radio_transmit(tx, wlen);
         radio_start_rx();
 
         uint32_t t0 = board_millis();
-        while ((uint32_t)(board_millis() - t0) < 60u) {
-            uint8_t b[16];
+        while ((uint32_t)(board_millis() - t0) < 120u) {
+            uint8_t b[WIRE_MAX];
             int n = radio_receive(b, sizeof(b));
-            if (n >= (int)sizeof(ack_t) && b[0] == PKT_TYPE_ACK) {
-                ack_t *a = (ack_t *)b;
-                if (a->node_id == me && a->ev_seq == this_seq &&
-                    crc16_ccitt(b, offsetof(ack_t, crc)) == a->crc) {
+            if (n >= WIRE_ACK && b[0] == PKT_TYPE_ACK) {
+                sec_meta_t m;
+                ack_pl_t a;
+                if (sec_unseal(b, n, &m, &a, sizeof(a)) == 0 &&
+                    m.node_id == NODE_MASTER &&
+                    a.node_id == me && a.ev_seq == this_seq) {
                     return; /* acked */
                 }
             }
@@ -94,9 +99,7 @@ static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint8_t me, uint16
 static void sensor_send_status(uint8_t me, uint8_t *sseq, uint64_t off, int32_t skew,
                                uint16_t rx_miss, uint16_t gap)
 {
-    status_t s;
-    s.type = PKT_TYPE_STATUS;
-    s.node_id = me;
+    status_pl_t s;
     s.seq = (*sseq)++;
     s.offset_tick = (int64_t)off;
     s.skew_ppm = skew;
@@ -106,9 +109,10 @@ static void sensor_send_status(uint8_t me, uint8_t *sseq, uint64_t off, int32_t 
      * right before TX, so VDDH reflects near-peak load. */
     s.batt_mv = (uint16_t)(meas_vddh_mv() + BATT_DIODE_DROP_MV);
     s.temp_c10 = meas_temp_c10();
-    s.crc = crc16_ccitt((uint8_t *)&s, offsetof(status_t, crc));
+    uint8_t tx[WIRE_STATUS];
+    int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_STATUS, me, &s, sizeof(s));
     if (radio_channel_busy()) { board_delay_ms(3u); }
-    radio_transmit((uint8_t *)&s, sizeof(s));
+    radio_transmit(tx, wlen);
     radio_start_rx();
 }
 
@@ -129,7 +133,8 @@ static void run_sensor(int st)
     uint8_t frame_seq = 0;
 
     uint32_t last_blink = board_millis();
-    uint8_t buf[32];
+    uint8_t buf[WIRE_MAX];
+    sec_replay_t from_master = {0}; /* replay window for the master's beacons/acks */
 
     if (st == 0) { radio_start_rx(); }
 
@@ -147,15 +152,18 @@ static void run_sensor(int st)
 
         float rssi, snr;
         int n = radio_receive_q(buf, sizeof(buf), &rssi, &snr);
-        if (n >= (int)sizeof(beacon_t) && buf[0] == PKT_TYPE_BEACON) {
+        if (n >= WIRE_BEACON && buf[0] == PKT_TYPE_BEACON) {
             uint64_t l_rx = 0;
             capture_dio1_get(&l_rx);
-            beacon_t *b = (beacon_t *)buf;
-            if (crc16_ccitt(buf, offsetof(beacon_t, crc)) == b->crc) {
+            sec_meta_t m;
+            beacon_pl_t b;
+            if (sec_unseal(buf, n, &m, &b, sizeof(b)) == 0 &&
+                m.node_id == NODE_MASTER && b.ver == PROTO_VER &&
+                sec_replay(&from_master, m.boot_id, m.ctr)) {
                 board_led_toggle();
                 if (have_prev) {
-                    if (b->seq == (uint8_t)(prev_seq + 1u)) {
-                        cur_off = b->m_tx_prev + T_AIR_REF_TICKS - prev_l_rx;
+                    if (b.seq == (uint8_t)(prev_seq + 1u)) {
+                        cur_off = b.m_tx_prev + T_AIR_REF_TICKS - prev_l_rx;
                         have_off = 1;
                         beacon_gap = 0;
                         off_hist[hist_i] = (int64_t)cur_off;
@@ -170,14 +178,14 @@ static void run_sensor(int st)
                             if (dl != 0) { cur_skew = (int32_t)((doff * 1000000) / dl); }
                         }
                     } else {
-                        uint8_t miss = (uint8_t)(b->seq - prev_seq - 1u);
+                        uint8_t miss = (uint8_t)(b.seq - prev_seq - 1u);
                         if ((uint16_t)(rx_miss + miss) >= rx_miss) { rx_miss += miss; }
                         beacon_gap = miss;
                     }
                 }
                 prev_l_rx = l_rx;
-                prev_seq = b->seq;
-                frame_seq = b->seq;
+                prev_seq = b.seq;
+                frame_seq = b.seq;
                 have_prev = 1;
                 sent_status_frame = 0;
             }
@@ -225,6 +233,7 @@ typedef struct {
     int16_t  temp_c10;
     uint32_t last_lat_ms;
     int      last_state;
+    sec_replay_t rx;   /* per-sensor replay window (EVENT + STATUS uplinks) */
 } node_stat_t;
 
 static node_stat_t g_node[MAX_NODES];
@@ -262,7 +271,7 @@ static void run_master(int st)
     uint64_t m_tx_last = 0;
     uint64_t green_tick = 0;
     uint32_t last = board_millis();
-    uint8_t buf[32];
+    uint8_t buf[WIRE_MAX];
 
     pu_emit_identity(node_devid_hi(), node_devid_lo());
 
@@ -320,15 +329,15 @@ static void run_master(int st)
         uint32_t now = board_millis();
         if ((uint32_t)(now - last) >= 1000u) {
             last = now;
-            beacon_t b;
-            b.type = PKT_TYPE_BEACON;
+            beacon_pl_t b;
             b.ver = PROTO_VER;
             b.seq = seq;
             b.m_tx_prev = m_tx_last;
             b.period_ms = 1000;
             b.slot_us = (uint16_t)(SLOT_WIDTH_MS * 1000u);
-            b.crc = crc16_ccitt((uint8_t *)&b, offsetof(beacon_t, crc));
-            radio_transmit((uint8_t *)&b, sizeof(b));
+            uint8_t tx[WIRE_BEACON];
+            int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_BEACON, NODE_MASTER, &b, sizeof(b));
+            radio_transmit(tx, wlen);
             uint64_t cap = 0;
             if (capture_dio1_get(&cap)) { m_tx_last = cap; }
             radio_start_rx();
@@ -359,55 +368,66 @@ static void run_master(int st)
         int n = radio_receive_q(buf, sizeof(buf), &rssi, &snr);
         if (n <= 0) { continue; }
         uint8_t type = buf[0];
+        uint8_t sender = buf[1]; /* sec_hdr.node_id (authenticated below) */
+        if (sender < 1u || sender >= MAX_NODES) { continue; }
 
-        if (type == PKT_TYPE_EVENT && n >= (int)sizeof(event_t)) {
-            event_t *e = (event_t *)buf;
-            if (crc16_ccitt(buf, offsetof(event_t, crc)) != e->crc) { continue; }
-            if (e->node_id < 1u || e->node_id >= MAX_NODES) { continue; }
-            node_stat_t *ns = &g_node[e->node_id];
+        if (type == PKT_TYPE_EVENT && n >= WIRE_EVENT) {
+            sec_meta_t m;
+            event_pl_t e;
+            if (sec_unseal(buf, n, &m, &e, sizeof(e)) != 0) { continue; }
+            if (!sec_replay(&g_node[m.node_id].rx, m.boot_id, m.ctr)) { continue; }
+            /* Freshness: reject a replayed/forged event whose master-time tick is
+             * implausibly far from now, even if it carried a fresh boot_id
+             * (DESIGN §2.11). dt = now - event-time, normally a few ms. */
+            uint64_t now_t = capture_now64();
+            int64_t dt = (int64_t)now_t - (int64_t)e.ev_master_t;
+            int64_t fresh = (int64_t)EVENT_FRESH_MS * (int64_t)TICKS_PER_MS;
+            if (dt < -fresh || dt > fresh) { continue; }
+            node_stat_t *ns = &g_node[m.node_id];
             ns->seen = 1;
             ns->rssi = rssi;
             ns->snr = snr;
             ns->last_seen_ms = board_millis();
-            ns->last_lat_ms = (uint32_t)((capture_now64() - e->ev_master_t) / TICKS_PER_MS);
+            ns->last_lat_ms = (uint32_t)((now_t - e.ev_master_t) / TICKS_PER_MS);
             /* Report only the first copy; retransmits share the ev_seq. */
-            if (!(ns->have_ev && ns->last_ev_seq == e->ev_seq)) {
+            if (!(ns->have_ev && ns->last_ev_seq == e.ev_seq)) {
                 ns->have_ev = 1;
-                ns->last_ev_seq = e->ev_seq;
-                pu_emit_event(e->node_id, e->ev_seq, e->ev_master_t, e->flags, rssi, snr);
+                ns->last_ev_seq = e.ev_seq;
+                pu_emit_event(m.node_id, e.ev_seq, e.ev_master_t, e.flags, rssi, snr);
             }
             /* ACK every copy so the sensor stops retransmitting. */
-            ack_t a;
-            a.type = PKT_TYPE_ACK;
-            a.node_id = e->node_id;
-            a.ev_seq = e->ev_seq;
-            a.crc = crc16_ccitt((uint8_t *)&a, offsetof(ack_t, crc));
-            radio_transmit((uint8_t *)&a, sizeof(a));
+            ack_pl_t a;
+            a.node_id = m.node_id;
+            a.ev_seq = e.ev_seq;
+            uint8_t tx[WIRE_ACK];
+            int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_ACK, NODE_MASTER, &a, sizeof(a));
+            radio_transmit(tx, wlen);
             radio_start_rx();
-        } else if (type == PKT_TYPE_STATUS && n >= (int)sizeof(status_t)) {
-            status_t *s = (status_t *)buf;
-            if (crc16_ccitt(buf, offsetof(status_t, crc)) != s->crc) { continue; }
-            if (s->node_id < 1u || s->node_id >= MAX_NODES) { continue; }
-            node_stat_t *ns = &g_node[s->node_id];
+        } else if (type == PKT_TYPE_STATUS && n >= WIRE_STATUS) {
+            sec_meta_t m;
+            status_pl_t s;
+            if (sec_unseal(buf, n, &m, &s, sizeof(s)) != 0) { continue; }
+            if (!sec_replay(&g_node[m.node_id].rx, m.boot_id, m.ctr)) { continue; }
+            node_stat_t *ns = &g_node[m.node_id];
             if (ns->have_status) {
-                uint8_t d = (uint8_t)(s->seq - ns->last_status_seq);
+                uint8_t d = (uint8_t)(s.seq - ns->last_status_seq);
                 if (d > 1u) { ns->status_miss += (uint16_t)(d - 1u); }
             }
             ns->have_status = 1;
-            ns->last_status_seq = s->seq;
+            ns->last_status_seq = s.seq;
             ns->seen = 1;
             ns->rssi = rssi;
             ns->snr = snr;
             ns->last_seen_ms = board_millis();
-            ns->offset_tick = s->offset_tick;
-            ns->skew_ppm = s->skew_ppm;
-            ns->rx_miss = s->rx_miss;
-            ns->beacon_gap = s->beacon_gap;
-            ns->batt_mv = s->batt_mv;
-            ns->temp_c10 = s->temp_c10;
+            ns->offset_tick = s.offset_tick;
+            ns->skew_ppm = s.skew_ppm;
+            ns->rx_miss = s.rx_miss;
+            ns->beacon_gap = s.beacon_gap;
+            ns->batt_mv = s.batt_mv;
+            ns->temp_c10 = s.temp_c10;
             int ls = link_state_of(board_millis(), ns);
             ns->last_state = ls;
-            master_emit_diag(s->node_id, ls, board_millis());
+            master_emit_diag(m.node_id, ls, board_millis());
         }
     }
 }
@@ -416,6 +436,7 @@ int main(void)
 {
     board_init();
     node_init();
+    sec_init(); /* seed boot_id (RNG) + reset tx counter before any sealed TX */
 
     int st = radio_begin(node_freq_mhz());
     if (st == 0) {

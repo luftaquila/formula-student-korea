@@ -64,14 +64,21 @@ master_time = offset + (local−L_ref)*(1+skew) + L_ref       (skew 보정 시)
 공통 기준점 TxDone↔RxDone(둘 다 패킷 끝) → T_air_ref 작고 결정론적, 1회 캘리브레이션.
 
 ### 2.6 패킷 (리틀엔디언, 고정 길이; set_id 없음)
+모든 패킷은 §2.11의 AEAD로 봉인된다. 와이어 = **평문 보안헤더 + 암호화 페이로드 + MAC(16)**:
 ```
-BEACON : type=0x01, ver, seq, m_tx_prev(8), period_ms(2), slot_us(2), CRC16
-EVENT  : type=0x02, node_id, ev_seq(2), ev_master_t(8), flags, CRC16
-ACK    : type=0x03, node_id, ev_seq(2), CRC16
-STATUS : type=0x04, node_id, seq, offset_tick(i64), skew_ppm(i32), rx_miss(2), beacon_gap(2), batt_mv(2), CRC16
+sec_hdr (평문, 인증됨) : type, node_id(송신자), boot_id(4), ctr(4)          = 10B
+  + 암호화 페이로드:
+    BEACON  : ver, seq, m_tx_prev(8), period_ms(2), slot_us(2)              (14B)
+    EVENT   : ev_seq(2), ev_master_t(8), flags                              (11B)
+    ACK     : node_id(대상 센서), ev_seq(2)                                  (3B)
+    STATUS  : seq, offset_tick(i64), skew_ppm(i32), rx_miss(2), beacon_gap(2), batt_mv(2), temp_c10(i16) (21B)
+  + MAC(16, Poly1305)
+→ 와이어 길이: BEACON 40, EVENT 37, ACK 29, STATUS 47 (B)
 ```
+- 옛 CRC16은 폐기 — MAC이 비트오류 + 위변조를 모두 검출(§2.11).
+- 보안헤더의 `node_id`는 **송신자**(0=마스터, 1..6=센서). ACK는 마스터가 보내므로 헤더 node_id=0이고, **대상 센서는 페이로드** node_id로 지정.
 - EVENT의 ev_master_t = 노드가 미리 변환한 마스터 시각.
-- BEACON의 slot_us = STATUS TDMA 슬롯 폭(센서 스케줄링용, §2.8). ver = 프로토콜 버전.
+- BEACON의 slot_us = STATUS TDMA 슬롯 폭(센서 스케줄링용, §2.8). ver = 프로토콜 버전(현재 4).
 - STATUS = 센서가 자기 TDMA 슬롯에서 보내는 주기 진단(§2.10).
 - 프로비저닝은 보드의 FICR.DEVICEID 정적 테이블(node_id.c)로 한다 — 과거의 over-air ID_SETUP 패킷은 폐기.
 
@@ -79,15 +86,15 @@ STATUS : type=0x04, node_id, seq, offset_tick(i64), skew_ppm(i32), rx_miss(2), b
 표준 크리스털(~40ppm), 예산 1ms → **15~25s**. 비콘 주기 = 노드 sync 주기, beacon period 필드로 통지.
 
 ### 2.8 충돌 처리 — 단일 채널 계층형 접근
-SF7/BW250 패킷은 ≤ ~30ms airtime. 세 종류 트래픽을 계층으로 분리해 서로 부딪치지 않게 한다:
+AEAD 봉인으로 패킷당 26B(헤더10+MAC16)가 늘어 가장 큰 패킷(STATUS 47B)은 ~62ms, 비콘 40B는 ~53ms airtime(옛 평문 ~30ms 대비). 세 종류 트래픽을 계층으로 분리해 서로 부딪치지 않게 한다:
 
 1. **비콘 = 동기 앵커.** 마스터가 매 1s 프레임의 t=0에 송신. 각 센서의 비콘 RxDone이 그 프레임의 슬롯-0 기준.
 2. **STATUS = node별 TDMA(센서가 시각 동기돼 있으므로 충돌 0).** 센서는 자기 비콘 RxDone(`prev_l_rx`)에서
    `slot_off_ms = TDMA_BASE_MS + (node_id−1)·SLOT_WIDTH_MS + STATUS_GUARD_MS` 만큼 뒤에 STATUS 송신.
-   기본값 `TDMA_BASE_MS=60, SLOT_WIDTH_MS=50, STATUS_GUARD_MS=10`(config.h). 50ms 슬롯이 ~30ms airtime +
-   1s당 클럭오차(<40µs) + Rx/Tx 전환을 모두 흡수. `STATUS_PERIOD_S(=4)` 프레임마다 한 번씩 라운드로빈으로 부하 분산.
+   값 `TDMA_BASE_MS=80, SLOT_WIDTH_MS=90, STATUS_GUARD_MS=10`(config.h, §2.11 봉인 후 상향). 90ms 슬롯이 ~62ms airtime +
+   1s당 클럭오차(<40µs) + Rx/Tx 전환을 흡수. 6센서 = 80+6·90 = 620ms로 1s 프레임 내. `STATUS_PERIOD_S(=5)` 프레임마다 한 번씩 라운드로빈으로 부하 분산.
 3. **EVENT = 비동기 CSMA.** 이벤트는 예측 불가하므로 즉시 송신: **CAD(listen-before-talk) + 마스터 ACK + 재전송(≤4)**.
-   백오프는 node로 디코릴레이트 `30 + ((ev_seq·7 + node·11) & 63) ms` → 두 센서가 동시에 쏴도 분리·복구. ev_master_t는 재전송에도 보존돼 복구된 이벤트도 정확.
+   백오프는 node로 디코릴레이트 `60 + ((ev_seq·7 + node·11) & 63) ms`, ACK 대기창 120ms(봉인된 EVENT+ACK 왕복 ~95ms 수용) → 두 센서가 동시에 쏴도 분리·복구. ev_master_t는 재전송에도 보존돼 복구된 이벤트도 정확. 재전송은 ev_seq 고정·ctr 갱신으로 다시 봉인(§2.11 — 동일 바이트 재전송은 replay로 거부되므로).
 
 ### 2.9 캘리브레이션 (T_air_ref)
 고정 길이 → airtime 결정론. T_air_ref = TxDone↔RxDone 고정지연. 근거리 1회 측정 후 config.h `T_AIR_REF_TICKS`에 저장(현재 0 — 분할 타이밍엔 영향 없음, §2.5).
@@ -96,6 +103,18 @@ SF7/BW250 패킷은 ≤ ~30ms airtime. 세 종류 트래픽을 계층으로 분�
 센서·링크 상태를 마스터가 USB로 PC에 보고(§8 `D` 라인). 두 출처를 합친다:
 - **센서 측(STATUS에 실어 업링크):** 현재 offset(`offset_tick`), 드리프트 `skew_ppm`(최근 ~8비콘 offset 링에서 산출), 누락 비콘 `rx_miss`/현재 연속 누락 `beacon_gap`.
 - **마스터 측(수신 시 측정):** 패킷별 RSSI/SNR(`radio_receive_q` — readData 직후·재무장 전 `getRSSI(true)`/`getSNR()`), node별 last-seen(board_millis 기준 OK ≤8s / STALE ≤15s / LOST), 무선 지연 `lat_ms = (now − ev_master_t)/16MHz`.
+
+### 2.11 무선 보안 — AEAD (기밀성 + 인증 + 재전송 방어)
+raw LoRa는 평문이라 누구나 도청·위조할 수 있다. 위조 EVENT/BEACON으로 타이밍 결과나 신호등(SSR) 제어를 교란할 수 있으므로 모든 공중 패킷을 봉인한다. (USB↔PC 구간은 유선 신뢰 구간이라 대상 아님.)
+
+- **원시(primitive):** XChaCha20-Poly1305 AEAD (Monocypher, vendored 단일 파일). 직접 조합한 암호 대신 검증된 1-함수 AEAD로 기밀성·무결성·송신자 인증을 한 번에.
+- **키:** 플릿 공유 **사전공유키(PSK) 256-bit**, `src/secret.h`(gitignore). `secret.h.example`에서 복사해 운영자가 1회 생성, **마스터+모든 센서 동일 키로 플래시**. 키가 다르면 전 패킷 MAC 실패 → 통신 불가. 키 회전 = 전 보드 재플래시. CI/dev는 없으면 all-zero 플레이스홀더로 빌드만(경고 출력, 무보안).
+- **인증 대상(AD) vs 암호화:** 평문 보안헤더(type/node_id/boot_id/ctr)는 AEAD의 associated data로 인증만(라우팅·replay 판단을 복호화 전에). 페이로드(타임스탬프·offset 등)는 암호화. MAC 16B가 옛 CRC16을 대체.
+- **논스(절대 재사용 금지):** 24B = `domain | type | node_id | boot_id(4) | ctr(4)`. `ctr`은 송신마다 증가(부팅 내 유일), `boot_id`는 부팅마다 RNG 신규(재부팅 후 ctr가 0으로 돌아가도 논스 충돌 없음). node_id로 7송신자, domain으로 타용도와 분리.
+- **재전송(replay) 방어:** 수신자는 (송신자, 방향)별로 `(boot_id, max_ctr)`를 추적해 `ctr ≤ max_ctr`이면 거부. 마스터는 센서별, 센서는 마스터용 1개. 배터리 센서가 재부팅하면 새 boot_id로 **재기준(re-baseline)** 해 정상 동작.
+- **EVENT 신선도 게이트:** AEAD만으로는 "유효 패킷의 그대로 재전송"을 막을 수 없고(공격자가 새 boot_id를 위조하면 재기준됨), EVENT는 타이밍에 직접 영향이 크므로 추가로 `|now − ev_master_t| > EVENT_FRESH_MS(3s)`면 거부 → 과거에 캡처한 이벤트의 재전송은 stale로 탈락.
+- **boot_id 엔트로피:** nRF52840 하드웨어 RNG(`NRF_RNG`, 바이어스 보정)로 부팅 시 32-bit 1회 시드(`sec_init`).
+- **남는 한계(문서화):** BEACON/STATUS/ACK는 새 boot_id 위조 시 재기준되어 재전송될 여지가 있으나 타이밍 위조 가치는 없음(EVENT만 신선도로 추가 차단). 32-bit boot_id 충돌은 재부팅 ~2^16회 birthday 수준으로 키 수명 내 무시 가능. 구현: `src/secure.{h,c}`.
 
 ---
 
@@ -266,6 +285,7 @@ RadioLib(커스텀 HAL) 기반. node_id로 역할 분기(0=마스터, 1..6=센�
 - **타임스탬프 캡처**: TIMER1 자유진행 16MHz = 공통 타임베이스. DIO1·SENSOR 엣지 → GPIOTE→PPI→TIMER CAPTURE (CPU 무관 HW 래치, 손실0). GPIOTE PSEL 설정 시 **해당 핀의 PORT 비트 포함**(P1 핀이면 bit13). port0/1 간 정확도 차이 없음.
 - **라디오/SPI**: 할당 핀으로 커스텀 SPIClass. **`setRfSwitchPins(RXEN,TXEN)` 필수**. `begin(…, tcxoVoltage)`(내부 TCXO). 부팅 시 **EXT_POWER(P0.13) HIGH**.
 - **센서 역할**: 비콘 동기 → 이벤트 캡처 → 마스터 시각 변환 → EVENT 송신(CAD+ACK+재전송) + 자기 TDMA 슬롯에서 STATUS 주기 송신.
+- **무선 보안(§2.11)**: 전 패킷 XChaCha20-Poly1305 AEAD 봉인(Monocypher). 플릿 공유 PSK = `src/secret.h`(gitignore, `secret.h.example`에서 복사). 부팅 시 `sec_init()`로 RNG boot_id 시드. 구현 `src/secure.{h,c}`.
 - **USB 프로토콜 (FSK-WL, 줄단위 텍스트, 레거시 `$...!` 폐기)**:
   - VID `0x1999` / **PID `0x0515`** / product **"FSK-WL"**. 호스트는 연결 후 `?ID`를 보내고 `I FSK-WL …` 응답으로 장치를 확인(PID와 무관한 핸드셰이크). 레거시 유선 앱(PID 0x0514)과 상호 비매칭.
   - 마스터→PC: `I FSK-WL <fw> <devid16> <chan> <sf> <bw> <ticks_per_ms>` · `H <now_tick> <uptime_ms> <beacon_seq> <nseen>` · `E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr>` · `D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms>` · `L <RED|GREEN|OFF> <tick>` · `A <cmd> OK` · `X <reason>`.
@@ -291,6 +311,7 @@ RadioLib(커스텀 HAL) 기반. node_id로 역할 분기(0=마스터, 1..6=센�
 - [ ] Molex 5569-04A1 JLC 카테고리 확인 (MMBT3904=C20526 Basic, MMBT3906=C7420354 Preferred 확인됨).
 - [ ] T_air_ref 실측(§2.9).
 - [ ] P0.02/P0.29가 SuperMini에서 자유 GPIO인지 실물 확인.
+- [ ] **배포 전 실 PSK 생성**(§2.11) — `src/secret.h`를 `openssl rand`로 만들어 전 보드 동일 키로 플래시. all-zero 플레이스홀더는 무보안.
 
 ---
 
