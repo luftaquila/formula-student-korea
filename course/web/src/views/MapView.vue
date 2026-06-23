@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch, inject } from "
 import L from "leaflet";
 import { request } from "../api.js";
 import { useNotification } from "@shared/useNotification.js";
+import { haversine } from "@shared/geo.mjs";
 
 const { error: notifyError, warning: notifyWarn } = useNotification();
 const stopping = inject("stopping", ref(false));
@@ -2597,14 +2598,6 @@ async function addConeFromRover() {
 }
 
 /* ── Path planning (TSP + 2-opt) ──────────────────── */
-function haversine(a, b) {
-  const R = 6371e3;
-  const toRad = (d) => d * Math.PI / 180;
-  const dLat = toRad(b.lat - a.lat);
-  const dLng = toRad(b.lng - a.lng);
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
 
 function turnAngle(a, b, c) {
   const ax = b.lng - a.lng, ay = b.lat - a.lat;

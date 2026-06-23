@@ -95,8 +95,8 @@ router.beforeEach((to, from) => {
   const wireless = useWirelessStore();
   if (
     wireless.bridgeIsSelf &&
-    wireless.ownerKey &&
-    wireless.lightColorFor(wireless.ownerKey) === "green" &&
+    wireless.physicalKey &&
+    wireless.lightColorFor(wireless.physicalKey) === "green" &&
     from.path.startsWith("/wireless/") &&
     to.path !== from.path
   ) {

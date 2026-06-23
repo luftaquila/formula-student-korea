@@ -6,6 +6,7 @@ import { createDatabase, addColumn } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
+import { validateEntryNum } from "../shared/validation.mjs";
 
 export const INSPECTIONS = {
   battery: "배터리",
@@ -269,14 +270,6 @@ app.get("/api/events", sseHandler(() => {
 /* ============================================
    Validation 헬퍼
    ============================================ */
-function validateEntryNum(num) {
-  const parsed = Number(num);
-  if (num === "" || num === undefined || Number.isNaN(parsed) || parsed < 1 || !Number.isInteger(parsed)) {
-    return { valid: false, error: "올바르지 않은 엔트리 번호입니다." };
-  }
-  return { valid: true, value: parsed };
-}
-
 function validatePhone(phone) {
   if (!phone || !/^010\d{8}$/.test(phone)) {
     return { valid: false, error: "전화번호가 올바르지 않습니다." };
@@ -1651,6 +1644,7 @@ async function loadSmsConfig({ retries = 0, delayMs = 3000 } = {}) {
 setInterval(loadSmsConfig, 5 * 60 * 1000);
 
 function sendSmsNotification(type, prev) {
+  let target;
   try {
     if (db.prepare(`SELECT value FROM settings WHERE key = 'sms'`).get()?.value !== "TRUE") {
       return;
@@ -1658,7 +1652,7 @@ function sendSmsNotification(type, prev) {
 
     const year = currentYear();
     const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
-    const target = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(...getQueueParams(type, year), smsRank - 1);
+    target = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(...getQueueParams(type, year), smsRank - 1);
 
     if (target && (!prev || target.num !== prev.num)) {
       if (!smsConfig) return;

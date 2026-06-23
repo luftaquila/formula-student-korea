@@ -216,6 +216,11 @@ function safeExt(filename) {
   return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : "";
 }
 
+// zip 엔트리/아카이브 폴더명에서 경로 구분자·금지 문자를 "_"로 치환.
+function sanitize(s) {
+  return s.replace(/[/\\:*?"<>|]/g, "_");
+}
+
 function rmDir(dir) {
   try {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -639,7 +644,6 @@ app.get("/api/submissions/:subId/zip", async (req, res) => {
   if (files.length === 0) return res.status(404).send("다운로드할 파일이 없습니다.");
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
-  const sanitize = (s) => s.replace(/[/\\:*?"<>|]/g, "_");
   const zipName = `${sanitize(session?.name || String(sub.session_id))}.zip`;
 
   res.setHeader("Content-Type", "application/zip");
@@ -880,7 +884,6 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
     ) latest ON sub.id = latest.max_id
   `).all(id);
 
-  const sanitize = (s) => s.replace(/[/\\:*?"<>|]/g, "_");
   const sessionName = sanitize(session.name);
   const archiveFiles = [];
 
@@ -945,7 +948,6 @@ app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
   if (files.length === 0) return res.status(404).send("다운로드할 파일이 없습니다.");
 
   const session = db.prepare("SELECT name, year FROM session WHERE id = ?").get(sub.session_id);
-  const sanitize = (s) => s.replace(/[/\\:*?"<>|]/g, "_");
   const sessionName = sanitize(session?.name || String(sub.session_id));
 
   // entry 서비스에서 팀 정보 조회
@@ -1142,9 +1144,9 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
         const diskPath = path.join(UPLOADS_DIR, String(s.id), String(sub.team_num), String(sub.id), f.stored_name);
         if (fs.existsSync(diskPath)) {
           const entry = entries[sub.team_num];
-          const sessionName = s.name.replace(/[/\\:*?"<>|]/g, "_");
+          const sessionName = sanitize(s.name);
           const teamFolder = entry
-            ? `${sub.team_num}_${entry.univ}_${entry.team}`.replace(/[/\\:*?"<>|]/g, "_")
+            ? sanitize(`${sub.team_num}_${entry.univ}_${entry.team}`)
             : String(sub.team_num);
           archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
         }

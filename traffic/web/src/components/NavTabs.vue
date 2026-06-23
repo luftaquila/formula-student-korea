@@ -34,7 +34,7 @@ const isWireless = computed(() => route.path.startsWith("/wireless"));
 // 무선 모드: 브리지에서 점유 중인 경기의 신호등이 green이면 탭 전환 잠금
 const locked = computed(() =>
   isWireless.value
-    ? wireless.bridgeIsSelf && wireless.ownerKey && wireless.lightColorFor(wireless.ownerKey) === "green"
+    ? wireless.bridgeIsSelf && wireless.physicalKey && wireless.lightColorFor(wireless.physicalKey) === "green"
     : serial.green.active,
 );
 

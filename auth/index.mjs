@@ -425,14 +425,16 @@ app.get("/api/callback", async (req, res) => {
       return res.redirect("/?login_error=unregistered");
     }
 
-    // Update name from Google profile
+    // Update name from Google profile (best-effort: a sync failure must not block login)
     if (name && name !== user.name) {
-      db.prepare("UPDATE users SET name = ? WHERE id = ?").run(name, user.id);
+      const r = dbRun(() => db.prepare("UPDATE users SET name = ? WHERE id = ?").run(name, user.id));
+      if (!r.success) logger.warn(req, "user.name_sync", { error: r.error }, email, { email, name, role: user.role });
     }
 
     // 최초 로그인 시 created_at 기록
     if (!user.created_at) {
-      db.prepare("UPDATE users SET created_at = datetime('now') WHERE id = ?").run(user.id);
+      const r = dbRun(() => db.prepare("UPDATE users SET created_at = datetime('now') WHERE id = ?").run(user.id));
+      if (!r.success) logger.warn(req, "user.created_at_init", { error: r.error }, email, { email, name, role: user.role });
     }
 
     // Set JWT cookie

@@ -3,6 +3,8 @@ import Database from "better-sqlite3";
 import { createDatabase } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
+import { validateEntryNum } from "../shared/validation.mjs";
+import { VEHICLE_COLORS } from "../shared/constants.js";
 
 export function createEntryApp(options = {}) {
 
@@ -92,8 +94,6 @@ for (const year of getAvailableYears()) {
   catch (e) { /* column already exists */ }
 }
 
-const VALID_COLORS = ["blue", "green", "orange", "purple", "red", "teal"];
-
 /* ============================================
    Express 앱 설정
    ============================================ */
@@ -114,14 +114,6 @@ app.get("/api/health", (req, res) => res.send("ok"));
 /* ============================================
    Validation 헬퍼
    ============================================ */
-function validateEntryNum(num) {
-  const parsed = Number(num);
-  if (num === "" || num === undefined || Number.isNaN(parsed) || parsed < 1 || !Number.isInteger(parsed)) {
-    return { valid: false, error: "올바르지 않은 엔트리 번호입니다." };
-  }
-  return { valid: true, value: parsed };
-}
-
 function validateEntryData({ univ, team, type }, year) {
   if (typeof univ !== "string" || univ.trim() === "") {
     return { valid: false, error: "올바르지 않은 학교명입니다." };
@@ -511,7 +503,7 @@ app.post("/api/vehicle-types", withYearVtTable, (req, res) => {
     return res.status(400).send("유형 이름을 입력하세요.");
   }
 
-  const safeColor = VALID_COLORS.includes(color) ? color : "blue";
+  const safeColor = VEHICLE_COLORS.includes(color) ? color : "blue";
   const maxOrder = db.prepare(`SELECT MAX(sort_order) as max FROM '${vtTableName}'`).get();
   const nextOrder = (maxOrder?.max ?? -1) + 1;
   const result = dbRun(() =>
@@ -546,7 +538,7 @@ app.patch("/api/vehicle-types/:id", withYearVtTable, (req, res) => {
   const params = [];
 
   if (color !== undefined) {
-    if (!VALID_COLORS.includes(color)) return res.status(400).send("올바르지 않은 색상입니다.");
+    if (!VEHICLE_COLORS.includes(color)) return res.status(400).send("올바르지 않은 색상입니다.");
     updates.push("color = ?");
     params.push(color);
   }

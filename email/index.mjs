@@ -516,7 +516,10 @@ app.post("/api/test-email", async (req, res) => {
    ============================================ */
 app.post("/api/test-sms", async (req, res) => {
   const { recipient } = req.body;
-  if (!recipient) return res.status(400).send("수신자 전화번호가 필요합니다.");
+  if (!recipient) {
+    logger.warn(req, "sms.test", { error: "recipient 누락" });
+    return res.status(400).send("수신자 전화번호가 필요합니다.");
+  }
 
   const accessKey = getConfig("naver_cloud_access_key");
   const secretKey = getConfig("naver_cloud_secret_key");

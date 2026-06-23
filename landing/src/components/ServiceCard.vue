@@ -99,17 +99,6 @@ p {
     padding: 2.5rem 1.5rem 2rem;
   }
 
-  .icon {
-    font-size: 3rem;
-    height: 3rem;
-    margin-bottom: 1.25rem;
-  }
-
-  .icon-svg :deep(svg) {
-    width: 3rem;
-    height: 3rem;
-  }
-
   h3 {
     font-size: 1.125rem;
   }
