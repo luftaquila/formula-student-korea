@@ -105,7 +105,7 @@ class PerceptionNode(Node):
         secret = _env("INTERNAL_SECRET", "")
         allow_http = (_env("SERVER_URL_ALLOW_HTTP", "false") or "").lower() == "true"
 
-        self._device = _env("CAMERA_DEVICE")  # None → auto-probe
+        self._device = _env("CAMERA_DEVICE")  # left / SBS device; None → auto-probe
         self._width = _env_int("CAMERA_WIDTH", 1280)
         self._height = _env_int("CAMERA_HEIGHT", 480)
         self._fps = max(1, _env_int("CAMERA_FPS", 8))
@@ -113,6 +113,16 @@ class PerceptionNode(Node):
         self._view = (_env("CAMERA_VIEW", "left") or "left").lower()
         self._detect_fps = max(1, _env_int("DETECT_FPS", 4))
         self._detect_master = (_env("OBSTACLE_DETECTION", "true") or "").lower() != "false"
+        # Stereo layout. "dual": the two eyes are SEPARATE /dev/video nodes
+        # (the rover's "Stereo Vision" cam — left=video0, right=video2); the
+        # stream uses the left eye whole (no crop). "sbs": one side-by-side
+        # frame split in half, and CAMERA_VIEW crops one eye for the stream.
+        self._layout = (_env("STEREO_LAYOUT", "dual") or "dual").lower()
+        self._right_device = _env("STEREO_RIGHT_DEVICE", "/dev/video2")
+        # In dual layout pin the left eye to video0 so auto-probe can't pick the
+        # right eye as "left" (which would feed the detector two right frames).
+        if self._device is None and self._layout == "dual":
+            self._device = "/dev/video0"
 
         # Cap OpenCV's thread pool so block matching / encode can't fan out
         # across every core and stall the navigator's control tick on the
@@ -131,8 +141,8 @@ class PerceptionNode(Node):
         )
         if self._detector.enabled:
             self.get_logger().info(
-                f"obstacle detection ENABLED (calib {cfg.calib_path}, "
-                f"ROI {cfg.roi}, band {cfg.near_m}-{cfg.far_m} m)")
+                f"obstacle detection ENABLED (layout={self._layout}, calib "
+                f"{cfg.calib_path}, ROI {cfg.roi}, band {cfg.near_m}-{cfg.far_m} m)")
         else:
             self.get_logger().warn(
                 "obstacle detection DISABLED — no usable stereo calibration at "
@@ -189,8 +199,8 @@ class PerceptionNode(Node):
                 self._publish_obstacle(False)
                 self._published_obstacle = False
 
-    def _run_detection(self, sbs_frame):
-        obstacle, info = self._detector.detect(sbs_frame)
+    def _run_detection(self, left, right):
+        obstacle, info = self._detector.detect(left, right)
         state, _rising = self._debouncer.update(obstacle)
         if state != self._published_obstacle:
             self._publish_obstacle(state)
@@ -201,13 +211,34 @@ class PerceptionNode(Node):
             else:
                 self.get_logger().info("obstacle cleared")
 
+    def _stereo_eyes(self, left_frame, right_cap):
+        """Return (left, right) eye frames for the detector, or None if unavailable.
+
+        dual: right_cap is a second device; sbs: split the one frame in half.
+        """
+        if self._layout == "dual":
+            if right_cap is None:
+                return None
+            ok, right = right_cap.read()
+            if not ok or right is None:
+                return None
+            return left_frame, right
+        return stereo.split_sbs(left_frame)
+
     def _capture_loop(self):
-        cap = None
+        cap = None          # left eye (dual) or the single SBS device
+        right_cap = None     # right eye, dual layout only; held only while detecting
         idle_deadline = None
         last_detect = 0.0
         stream_interval = 1.0 / self._fps
         detect_interval = 1.0 / self._detect_fps
         encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self._quality]
+
+        def release_right():
+            nonlocal right_cap
+            if right_cap is not None:
+                right_cap.release()
+                right_cap = None
 
         while self._running:
             stream = self._cloud.stream_wanted.is_set()
@@ -215,7 +246,7 @@ class PerceptionNode(Node):
             self._set_detect_active(detect)
 
             if not (stream or detect):
-                # Release the device after a short linger (avoid UVC thrash).
+                # Release devices after a short linger (avoid UVC thrash).
                 now = time.monotonic()
                 if cap is not None:
                     if idle_deadline is None:
@@ -223,6 +254,7 @@ class PerceptionNode(Node):
                     elif now >= idle_deadline:
                         cap.release()
                         cap = None
+                        release_right()
                         idle_deadline = None
                 time.sleep(0.2)
                 continue
@@ -241,20 +273,30 @@ class PerceptionNode(Node):
                 self.get_logger().warn("frame grab failed; reopening device")
                 cap.release()
                 cap = None
+                release_right()
                 time.sleep(0.5)
                 continue
 
             if stream:
-                ok2, buf = cv2.imencode(".jpg", crop_view(frame, self._view),
-                                        encode_params)
+                # dual: stream the left eye whole. sbs: crop one eye per CAMERA_VIEW.
+                out = frame if self._layout == "dual" else crop_view(frame, self._view)
+                ok2, buf = cv2.imencode(".jpg", out, encode_params)
                 # Re-check stream_wanted: a camera-stop may have arrived during
                 # read/encode, and we shouldn't push a frame nobody's watching.
                 if ok2 and self._cloud.stream_wanted.is_set():
                     self._cloud.post_frame(buf.tobytes())
 
-            if detect and (t0 - last_detect) >= detect_interval:
-                last_detect = t0
-                self._run_detection(frame)
+            if detect:
+                if self._layout == "dual" and right_cap is None:
+                    right_cap = open_capture(self._right_device, self._width,
+                                             self._height, self.get_logger().warn)
+                if (t0 - last_detect) >= detect_interval:
+                    last_detect = t0
+                    eyes = self._stereo_eyes(frame, right_cap)
+                    if eyes is not None:
+                        self._run_detection(eyes[0], eyes[1])
+            else:
+                release_right()  # streaming-only → free the second eye
 
             # Capture at the stream rate when watched, else the (slower) detect
             # rate — no point grabbing faster than the only active consumer.
@@ -265,6 +307,7 @@ class PerceptionNode(Node):
 
         if cap is not None:
             cap.release()
+        release_right()
 
     def destroy_node(self):
         self._running = False

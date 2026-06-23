@@ -1,12 +1,17 @@
 # FSK Rover Perception
 
-Owns the rover's USB stereo webcam and serves two concerns off the one device:
+Owns the rover's USB stereo webcam and serves two concerns off it:
 
-1. **Streaming (Phase 2)** — relays JPEG frames to the operator via the course
-   server's MJPEG relay, capturing only while someone is watching.
+1. **Streaming (Phase 2)** — relays JPEG frames (the left eye) to the operator
+   via the course server's MJPEG relay, capturing only while someone is watching.
 2. **Obstacle detection (Phase 3)** — while the rover is driving a mission, runs
-   stereo depth on the side-by-side frame and, on a corridor obstacle, pauses
-   the mission **locally over ROS** so the operator can drive around it.
+   stereo depth on the two eyes and, on a corridor obstacle, pauses the mission
+   **locally over ROS** so the operator can drive around it.
+
+> **Camera layout.** The rover's "Stereo Vision" unit is **dual-node**: the two
+> eyes are separate `/dev/video` nodes (left=`video0`, right=`video2`, each
+> 1280×720) — NOT a side-by-side frame. `STEREO_LAYOUT=dual` (default) opens both;
+> `STEREO_LAYOUT=sbs` handles a camera that emits one combined frame instead.
 
 Runs as its own container alongside `pilot`, so the lean ROS image stays
 untouched and the heavier OpenCV stack lives here. It shares pilot's
@@ -56,16 +61,18 @@ goes through the server (`/api/rover/resume`) exactly like an operator pause.
 Tailscale-free, outbound-only like `pilot`: the node holds a control SSE to the
 server; the server emits `camera-start` when an operator opens the live view and
 `camera-stop` when the last viewer leaves. While streaming is wanted the capture
-loop JPEG-encodes one eye (`CAMERA_VIEW`) and POSTs each frame; the server fans
-them to browsers as `multipart/x-mixed-replace`.
+loop JPEG-encodes one eye — the left node whole in dual layout, or `CAMERA_VIEW`
+cropped from the SBS frame — and POSTs each frame; the server fans them to
+browsers as `multipart/x-mixed-replace`.
 
 ## How detection works (Phase 3)
 
 - **Gated to driving.** The node subscribes to `/rover/nav/state` and only runs
   detection while it equals `NAVIGATING`. SETTLING/SPRAYING are stationary at a
   cone (no collision risk); everything else has no mission to interrupt.
-- **Depth.** The SBS frame is split, rectified with the stored calibration, run
-  through `StereoSGBM` to a disparity map, and reprojected to metric depth.
+- **Depth.** The two eyes (dual: `video0`+`video2`; sbs: one frame split) are
+  rectified with the stored calibration, run through `StereoSGBM` to a disparity
+  map, and reprojected to metric depth.
 - **Decision.** If enough valid pixels in the driving-corridor ROI fall inside
   the `[OBSTACLE_NEAR_M, OBSTACLE_FAR_M]` band (fraction ≥ `OBSTACLE_MIN_FILL`,
   with a floor of `OBSTACLE_MIN_VALID_PX` valid pixels so a textureless corridor
@@ -108,11 +115,13 @@ a video device restarts the unit via `fsk-perception-replug.service`.
 | `SERVER_URL` | — | course server base (from `/etc/pilot/pilot.conf`) |
 | `INTERNAL_SECRET` | — | `X-Internal-Service` auth (podman secret) |
 | `ROS_DOMAIN_ID` | 0 | must match `pilot` (from `/etc/pilot/pilot.conf`) |
-| `CAMERA_DEVICE` | auto | v4l2 index/path; blank → probe `/dev/video0..9` |
-| `CAMERA_WIDTH` / `CAMERA_HEIGHT` | 1280 / 480 | SBS capture resolution |
+| `STEREO_LAYOUT` | dual | `dual` (two `/dev/video` nodes) \| `sbs` (one side-by-side frame) |
+| `CAMERA_DEVICE` | auto | left eye / SBS device; blank → probe `/dev/video0..9` (dual pins `video0`) |
+| `STEREO_RIGHT_DEVICE` | `/dev/video2` | right eye (dual layout) |
+| `CAMERA_WIDTH` / `CAMERA_HEIGHT` | 1280 / 480 | capture resolution per device (rover cam delivers 1280×720; set 720) |
 | `CAMERA_FPS` | 8 | max frames/s pushed while streaming |
 | `CAMERA_JPEG_QUALITY` | 70 | 1–100 |
-| `CAMERA_VIEW` | left | `left` \| `right` \| `full` — one sensor for a clean operator view |
+| `CAMERA_VIEW` | left | sbs layout only: `left`\|`right`\|`full` crop. Dual streams the left eye whole. |
 | `OBSTACLE_DETECTION` | true | master switch; `false` disables detection entirely |
 | `DETECT_FPS` | 4 | detection rate (sub-samples capture; a few fps is plenty) |
 | `STEREO_CALIB_PATH` | `/var/lib/perception/stereo_calib.npz` | calibration file |
@@ -158,12 +167,13 @@ sudo systemctl stop perception.service
 #    --square-m is the printed square edge IN METRES — it sets the depth units.
 #    Calibrate at the SAME resolution the node runs at (CAMERA_WIDTH/HEIGHT).
 sudo podman run --rm --network=host \
-  --device /dev/video0:/dev/video0 \
+  --device /dev/video0:/dev/video0 --device /dev/video2:/dev/video2 \
   --volume /var/lib/perception:/var/lib/perception:z \
   --entrypoint python3 \
   ghcr.io/luftaquila/fsk-rover-perception:candidate \
   /opt/perception/stereo_calibrate.py \
-    --cols 9 --rows 6 --square-m 0.025 --width 1280 --height 480
+    --device /dev/video0 --right-device /dev/video2 \
+    --cols 9 --rows 6 --square-m 0.025 --width 1280 --height 720
 
 # 3. Restart the node — it picks up /var/lib/perception/stereo_calib.npz.
 sudo systemctl start perception.service

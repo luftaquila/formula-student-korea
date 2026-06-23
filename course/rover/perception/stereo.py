@@ -1,11 +1,16 @@
 """Stereo depth + obstacle detection for the FSK rover perception node (Phase 3).
 
-A 60 mm-baseline USB stereo webcam exposes a single side-by-side (SBS) UVC
-frame. We split it into left/right, rectify with a one-time checkerboard
+Given a LEFT and RIGHT eye frame, we rectify each with a one-time checkerboard
 calibration (see stereo_calibrate.py), run block matching to a disparity map,
 convert to metric depth, and flag an obstacle when enough rectified pixels in
 the *driving corridor* (a rectangle ahead of the rover) are closer than a
 threshold band.
+
+This module is layout-agnostic: it takes the two eyes already separated. The
+node supplies them per the camera's layout — most USB "stereo" webcams (incl.
+the rover's "Stereo Vision" unit) expose the two eyes as SEPARATE /dev/video
+nodes (dual-node); a few emit one side-by-side (SBS) frame, for which
+split_sbs() below cuts it in half. The depth math is identical either way.
 
 Cost discipline (this runs on the Pi 5 alongside the ROS pilot nodes):
   - cv2.setNumThreads() is capped so block matching can't grab every core and
@@ -34,6 +39,13 @@ try:
     import cv2
 except ImportError:  # pure obstacle_in_roi() stays importable without OpenCV
     cv2 = None
+
+
+def split_sbs(frame):
+    """Split a side-by-side stereo frame into (left, right) halves (SBS layout)."""
+    w = frame.shape[1]
+    half = w // 2
+    return frame[:, :half], frame[:, half:half * 2]
 
 
 # ── pure decision (no cv2) ──────────────────────────────────────────────────
@@ -217,12 +229,6 @@ class StereoDepth:
         )
         self.enabled = True
 
-    def split_sbs(self, frame):
-        """Split a side-by-side stereo frame into (left, right) halves."""
-        w = frame.shape[1]
-        half = w // 2
-        return frame[:, :half], frame[:, half:half * 2]
-
     def _prep_eye(self, eye, map_x, map_y, size):
         """Resize an eye to the calibrated size, rectify, return grayscale."""
         if (eye.shape[1], eye.shape[0]) != size:
@@ -232,13 +238,12 @@ class StereoDepth:
             rect = cv2.cvtColor(rect, cv2.COLOR_BGR2GRAY)
         return rect
 
-    def compute_depth(self, sbs_frame):
-        """SBS frame → (depth_z metres, valid mask). None if disabled."""
+    def compute_depth(self, left, right):
+        """Left + right eye frames → (depth_z metres, valid mask). None if disabled."""
         if not self.enabled:
             return None
         c = self._calib
         size = c["image_size"]
-        left, right = self.split_sbs(sbs_frame)
         gl = self._prep_eye(left, c["map1x"], c["map1y"], size)
         gr = self._prep_eye(right, c["map2x"], c["map2y"], size)
         # StereoSGBM returns fixed-point disparity (×16) as int16.
@@ -253,15 +258,15 @@ class StereoDepth:
         valid &= np.isfinite(depth_z)
         return depth_z, valid
 
-    def detect(self, sbs_frame):
-        """SBS frame → (obstacle: bool, info: dict).
+    def detect(self, left, right):
+        """Left + right eye frames → (obstacle: bool, info: dict).
 
         info always carries 'enabled'; when enabled it adds fill / counts /
         nearest-corridor-depth for logging + the operator alert payload.
         """
         if not self.enabled:
             return False, {"enabled": False}
-        depth_z, valid = self.compute_depth(sbs_frame)
+        depth_z, valid = self.compute_depth(left, right)
         cfg = self.cfg
         obstacle, fill, near_count, valid_count = obstacle_in_roi(
             depth_z, valid, cfg.roi, cfg.near_m, cfg.far_m,

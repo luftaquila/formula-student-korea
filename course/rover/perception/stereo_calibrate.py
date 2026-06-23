@@ -12,16 +12,22 @@ the frame at varied distances/angles; the tool auto-grabs a pair whenever the
 board is found in BOTH eyes and has moved enough since the last grab, printing
 progress, until it has enough pairs.
 
-Usage (inside the perception container, camera passed through):
+The rover's "Stereo Vision" cam is dual-node (default): the two eyes are
+separate /dev/video nodes (left=video0, right=video2). Pass --layout sbs for a
+camera that emits one side-by-side frame instead.
+
+Usage (inside the perception container, both eyes passed through):
   python3 stereo_calibrate.py \
       --cols 9 --rows 6 --square-m 0.025 \
-      --width 1280 --height 480 \
+      --device /dev/video0 --right-device /dev/video2 \
+      --width 1280 --height 720 \
       --out /var/lib/perception/stereo_calib.npz
 
+  --layout       = dual (two nodes, default) | sbs (one side-by-side frame)
   --cols/--rows  = number of INNER corners (a 10x7-square board → 9x6 corners)
   --square-m     = printed square edge in METRES (this sets depth units!)
-  --width/--height = the SBS capture size; calibrate at the SAME resolution the
-                     node runs at (CAMERA_WIDTH/CAMERA_HEIGHT) so the maps match.
+  --width/--height = capture size PER device; calibrate at the SAME resolution
+                     the node runs at (CAMERA_WIDTH/CAMERA_HEIGHT) so maps match.
 
 Saves an .npz with: map1x, map1y, map2x, map2y (per-eye rectify maps), Q
 (reprojection), image_size (per-eye w,h). stereo.load_calibration() reads it.
@@ -61,9 +67,14 @@ def _find_corners(gray, pattern):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="FSK rover stereo calibration")
-    ap.add_argument("--device", default="0", help="v4l2 index or /dev path")
-    ap.add_argument("--width", type=int, default=1280, help="SBS capture width")
-    ap.add_argument("--height", type=int, default=480, help="SBS capture height")
+    ap.add_argument("--layout", choices=["dual", "sbs"], default="dual",
+                    help="dual: two /dev/video nodes; sbs: one side-by-side frame")
+    ap.add_argument("--device", default="/dev/video0",
+                    help="left eye (dual) or the SBS device")
+    ap.add_argument("--right-device", default="/dev/video2",
+                    help="right eye (dual layout only)")
+    ap.add_argument("--width", type=int, default=1280, help="capture width per device")
+    ap.add_argument("--height", type=int, default=720, help="capture height per device")
     ap.add_argument("--cols", type=int, default=9, help="inner corners per row")
     ap.add_argument("--rows", type=int, default=6, help="inner corners per col")
     ap.add_argument("--square-m", type=float, default=0.025,
@@ -82,6 +93,13 @@ def main(argv=None):
         print(f"FATAL: cannot open camera {args.device!r} at "
               f"{args.width}x{args.height}", file=sys.stderr)
         return 1
+    right_cap = None
+    if args.layout == "dual":
+        right_cap = _open_camera(args.right_device, args.width, args.height)
+        if right_cap is None:
+            print(f"FATAL: cannot open right eye {args.right_device!r}", file=sys.stderr)
+            cap.release()
+            return 1
 
     # Object points: the board's corners in its own frame, scaled to metres so
     # T (and therefore depth) comes out in metres.
@@ -105,8 +123,15 @@ def main(argv=None):
         if not ok or frame is None:
             time.sleep(0.05)
             continue
-        w = frame.shape[1] // 2
-        left, right = frame[:, :w], frame[:, w:w * 2]
+        if args.layout == "dual":
+            ok2, rframe = right_cap.read()
+            if not ok2 or rframe is None:
+                time.sleep(0.05)
+                continue
+            left, right = frame, rframe
+        else:
+            w = frame.shape[1] // 2
+            left, right = frame[:, :w], frame[:, w:w * 2]
         if eye_size is None:
             eye_size = (left.shape[1], left.shape[0])
         gl = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
@@ -128,6 +153,8 @@ def main(argv=None):
         print(f"  captured {len(objpoints)}/{args.count}")
 
     cap.release()
+    if right_cap is not None:
+        right_cap.release()
     if len(objpoints) < 6:
         print(f"FATAL: only {len(objpoints)} pairs — need >= 6 for a stable "
               "calibration. Improve lighting / board visibility and retry.",

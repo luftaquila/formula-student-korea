@@ -126,6 +126,15 @@ def test_debouncer_releases_after_off_frames():
     assert d.update(False) == (False, False)         # 2nd clear → released
 
 
+def test_detector_disabled_without_calibration():
+    # No calibration file (or no cv2) → detector disabled, and detect() returns
+    # "no obstacle" for any left/right pair without touching the frames, so a
+    # missing calibration can never auto-pause a mission.
+    d = stereo.StereoDepth(stereo.StereoConfig(calib_path="/no/such/calib.npz"))
+    assert d.enabled is False
+    assert d.detect(None, None) == (False, {"enabled": False})
+
+
 def test_debouncer_reset_fully_clears_state_and_runs():
     # reset() must drop the asserted state too, so a debouncer that was asserted
     # when detection paused does not re-fire on reactivation with a clear view.
