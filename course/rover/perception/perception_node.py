@@ -297,19 +297,23 @@ class PerceptionNode(Node):
                 if right_cap is None and t0 >= right_open_after:
                     right_cap = open_capture(self._right_device, self._width,
                                              self._height, self.get_logger().warn)
+                    if right_cap is None:
+                        # Open failed (missing/flaky device) — back off so we
+                        # don't spam open() + its log every detect cycle; the gate
+                        # below lets us retry once the window elapses. Set ONLY on
+                        # a real attempt, never on a gated-out cycle, or the window
+                        # would keep sliding forward and never reopen.
+                        right_open_after = t0 + RIGHT_OPEN_RETRY_S
                 if right_cap is not None:
                     okr, right_frame = right_cap.read()
                     if not okr or right_frame is None:
                         # A transient right-eye glitch must not silently kill
                         # detection for the rest of the mission — drop the handle
-                        # so it reopens (mirrors the left cap).
+                        # and back off the reopen (mirrors the left cap, bounded).
                         self.get_logger().warn("right eye grab failed; reopening")
                         release_right()
                         right_frame = None
-                if right_cap is None:
-                    # Open failed or read failed+released — back off so a missing
-                    # /flaky right device can't spam open() every detect cycle.
-                    right_open_after = t0 + RIGHT_OPEN_RETRY_S
+                        right_open_after = t0 + RIGHT_OPEN_RETRY_S
 
             if stream:
                 # dual: stream the left eye whole. sbs: crop one eye per CAMERA_VIEW.
