@@ -322,7 +322,7 @@ function formatResult(result) {
   return msToClockStr(result);
 }
 
-const typeMap = { [EVENT_TYPES[0]]: "accel", [EVENT_TYPES[1]]: "skidpad", [EVENT_TYPES[2]]: "autocross" };
+const typeMap = { [EVENT_TYPES[0]]: "accel", [EVENT_TYPES[1]]: "skidpad", [EVENT_TYPES[2]]: "autocross", [EVENT_TYPES[3]]: "endurance" };
 
 function getTypeClass(type) {
   return typeMap[type] || type;
@@ -1062,6 +1062,11 @@ async function handleAddRecord() {
   color: #ff6b6b;
 }
 
+.filter-label.endurance {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--accent-success);
+}
+
 .loading-container {
   display: flex;
   flex-direction: column;
@@ -1163,6 +1168,10 @@ async function handleAddRecord() {
 .type-badge.autocross {
   background: rgba(255, 107, 107, 0.1);
   color: #ff6b6b;
+}
+.type-badge.endurance {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--accent-success);
 }
 
 .result-cell {

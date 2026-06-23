@@ -5,6 +5,7 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { EVENT_TYPES } from "../shared/constants.js";
+import { formatEnduranceDetail, enduranceTotal } from "../shared/event-timing.js";
 
 export function createTrafficApp(options = {}) {
 
@@ -108,7 +109,7 @@ if (!db.prepare("PRAGMA table_info('wireless_light')").all().some((c) => c.name 
   db.exec("ALTER TABLE wireless_light ADD COLUMN debounce_ms INTEGER NOT NULL DEFAULT 300");
 }
 
-// 기본 경기 모드 시딩
+// 기본 경기 모드 시딩 (내구 포함 — EVENT_TYPES). 탭 on/off 토글 대상.
 {
   const insert = db.prepare("INSERT OR IGNORE INTO event_mode (event_type, enabled) VALUES (?, 1)");
   for (const type of EVENT_TYPES) {
@@ -301,7 +302,8 @@ const engineRun = new Map(); // event_type -> { debounce:{}, startTick, saved, l
 // atomic 바인딩되어 arm 후 세션 선택이 바뀌어도 기록은 arm 시점 팀에 귀속된다(bind-at-arm).
 // null(물리 경기·서버 재기동 후 lazy 리셋)이면 저장 시 live 세션으로 폴백.
 function resetEngineRun(eventType, bound = null) {
-  engineRun.set(eventType, { debounce: {}, startTick: null, saved: false, lastTick: null, lapCount: 0, lap2: null, bound });
+  // laps/recordName/recordRowid: 내구는 랩을 기록 1건에 이어붙이므로 누적 랩과 그 기록 행을 추적.
+  engineRun.set(eventType, { debounce: {}, startTick: null, saved: false, lastTick: null, lapCount: 0, lap2: null, bound, laps: [], recordName: null, recordRowid: null });
 }
 function getDebounceMs() {
   const row = db.prepare("SELECT debounce_ms FROM wireless_light WHERE id = 1").get();
@@ -350,6 +352,64 @@ function engineSaveRecord(eventType, binding, result, detail) {
   broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: r.result });
   return true;
 }
+// 내구: 랩을 기록 1건에 이어붙인다. run.laps 전체로 result(총합)·detail(랩 목록)을 매 랩 갱신 —
+// 첫 저장은 INSERT(rowid 보관), 이후는 같은 행 UPDATE. 귀속(team+event_name) 없으면 skip(테스트 모드).
+function enduranceUpsertRecord(eventType, binding, run) {
+  const SYS = { email: "system", name: "system", role: "admin" };
+  const t = binding?.team;
+  if (!binding?.event_name || !t) return; // 미선택 = 테스트 모드(표시만)
+  const nv = validateRecordName(binding.event_name);
+  if (!nv.valid) {
+    logger.warn(null, "wireless.record", { error: nv.error, event_name: binding.event_name }, "record", SYS);
+    return;
+  }
+  const total = enduranceTotal(run.laps);
+  const detail = formatEnduranceDetail(run.laps);
+
+  if (run.recordRowid == null) {
+    // 첫 랩: 유선 저장과 동일 검증 후 INSERT, rowid/테이블명 보관.
+    const name = `FSK ${new Date().getFullYear()} ${nv.value}`;
+    const data = { time: new Date().toISOString(), type: eventType, entry: t, result: total, detail };
+    const dv = validateRecordData(data);
+    if (!dv.valid) {
+      logger.warn(null, "wireless.record", { error: dv.error, event_type: eventType }, nv.value, SYS);
+      return;
+    }
+    const r = dbRun(() => db.transaction(() => {
+      const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name);
+      if (!exists) {
+        db.exec(`CREATE TABLE IF NOT EXISTS '${name}' (
+          time TEXT NOT NULL, num INTEGER NOT NULL, univ TEXT NOT NULL, team TEXT NOT NULL,
+          type TEXT NOT NULL, result INTEGER NOT NULL, detail TEXT,
+          cones INTEGER DEFAULT 0, oc INTEGER DEFAULT 0, invalidated INTEGER DEFAULT 0, scoreboard INTEGER DEFAULT 1
+        );`);
+        db.prepare("INSERT OR IGNORE INTO record_visibility (name, visible) VALUES (?, 1)").run(name);
+      }
+      db.prepare(`INSERT INTO '${name}' (time, num, univ, team, type, result, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(data.time, t.num, t.univ, t.team, eventType, total, detail);
+      return db.prepare(`SELECT rowid, * FROM '${name}' WHERE rowid = last_insert_rowid()`).get();
+    })());
+    if (!r.success) {
+      logger.warn(null, "wireless.record", { error: r.error, event_type: eventType }, name, SYS);
+      return;
+    }
+    run.recordName = name;
+    run.recordRowid = r.result.rowid;
+    logger.log(null, "wireless.record", { type: eventType, result: total, num: t.num, laps: run.laps.length }, name, SYS);
+    broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: r.result });
+  } else {
+    // 이후 랩: 같은 행 UPDATE(총합·랩 목록).
+    const r = dbRun(() => {
+      db.prepare(`UPDATE '${run.recordName}' SET result = ?, detail = ? WHERE rowid = ?`).run(total, detail, run.recordRowid);
+      return db.prepare(`SELECT rowid, * FROM '${run.recordName}' WHERE rowid = ?`).get(run.recordRowid);
+    });
+    if (!r.success) {
+      logger.warn(null, "wireless.record", { error: r.error, event_type: eventType }, run.recordName, SYS);
+      return;
+    }
+    broadcastEvent("records", { type: "update", name: run.recordName, field: "result", recordFiles: getRecordFiles(), record: r.result });
+  }
+}
 // 새로 삽입된 이벤트들을 라우팅해 기록 계산. (dedupe된 재전송은 inserted에 없으므로 재처리 안 됨.)
 function processRecordEngine(rows) {
   if (!rows || !rows.length) return;
@@ -387,6 +447,17 @@ function processRecordEngine(rows) {
           if (run.lap2 >= 0 && lap >= 0 && total >= 0 &&
               engineSaveRecord(et, run.bound || sess, total, `${clockStr(run.lap2)} / ${clockStr(lap)}`)) run.saved = true;
         }
+      } else if (et === "내구") {
+        // 단일 센서 멀티랩. 첫 통과=출발선(t0), 이후 통과마다 1랩을 기록 1건에 이어붙인다.
+        if (sensor !== 1) continue;
+        if (run.lastTick == null) { run.lastTick = tickMs; continue; } // 첫 크로싱=출발선
+        const lap = tickMs - run.lastTick;
+        run.lastTick = tickMs;
+        if (lap < 0) continue; // 음수/역순 가드(재전송·재정렬)
+        run.laps.push(lap);
+        run.lapCount += 1;
+        // 귀속은 arm 시점 스냅샷(run.bound) 우선, 없으면 live 세션 폴백. 미선택이면 표시만(저장 skip).
+        enduranceUpsertRecord(et, run.bound || sess, run);
       } else {
         // accel·오토크로스: 출발(1) 래치 → 도착(2) 기록.
         if (sensor === 1 && run.startTick == null) {
@@ -731,7 +802,9 @@ app.post("/api/records", (req, res) => {
     record: result.result,
   });
 
-  res.status(201).send();
+  // 생성된 테이블명 + 행(rowid 포함) 반환 — 내구처럼 같은 기록에 이어붙이는 클라가 PATCH에 쓸
+  // 테이블명/rowid를 받는다. 기존 호출부는 본문을 무시하므로 하위호환.
+  res.status(201).json({ name, record: result.result });
 });
 
 // PATCH /api/records/:name/:rowid - 기록 필드 업데이트
@@ -754,8 +827,12 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   }
 
   const { field, value } = req.body;
-  if (!["invalidated", "scoreboard", "detail", "cones", "oc"].includes(field)) {
+  if (!["invalidated", "scoreboard", "detail", "cones", "oc", "result"].includes(field)) {
     return res.status(400).send("올바르지 않은 필드입니다.");
+  }
+  // result는 정수만(내구 등 누적 총합 갱신용). 음수(-1=DNF)도 허용.
+  if (field === "result" && !Number.isInteger(value)) {
+    return res.status(400).send("결과값이 올바르지 않습니다.");
   }
 
   const result = dbRun(() => {
@@ -783,6 +860,9 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
     } else if (field === "detail") {
       db.prepare(`UPDATE '${name}' SET detail = ? WHERE rowid = ?`).run(value ?? null, rowid);
       return { num: row.num, invalidated: row.invalidated, scoreboard: row.scoreboard, detail: value ?? null };
+    } else if (field === "result") {
+      db.prepare(`UPDATE '${name}' SET result = ? WHERE rowid = ?`).run(value, rowid);
+      return { num: row.num, invalidated: row.invalidated, scoreboard: row.scoreboard, result: value };
     } else if (field === "cones") {
       const numValue = Math.max(0, parseInt(value, 10) || 0);
       db.prepare(`UPDATE '${name}' SET cones = ? WHERE rowid = ?`).run(numValue, rowid);

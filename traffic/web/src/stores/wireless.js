@@ -419,7 +419,15 @@ export const useWirelessStore = defineStore("wireless", () => {
       if (myLeases.size === 0) { clearInterval(leaseTimer); leaseTimer = null; }
     }, 12000);
   }
+  // 마스터(브리지) 미연결 경고: 오프라인이면 센서 이벤트가 수신되지 않아 기록이 되지 않는다.
+  // 비차단 — 가상 전용/마스터 재연결 중 시나리오를 막지 않으려 경고만 띄운다.
+  function warnIfMasterOffline() {
+    if (!bridge.value?.online) {
+      notyf.open({ type: "warning", message: "마스터(브리지) 미연결 — 센서 기록이 수신되지 않습니다" });
+    }
+  }
   async function claimLease(mode) {
+    warnIfMasterOffline();
     const et = EVENT_TYPE[mode];
     try {
       const s = await claimWirelessLease(et);
@@ -437,6 +445,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
   // 강제 가로채기: 현재 점유를 회수(서버는 admin 허용)한 뒤 내가 claim. 멈춘 탭이 lease를 쥔 경우.
   async function takeoverLease(mode) {
+    warnIfMasterOffline();
     const et = EVENT_TYPE[mode];
     try {
       await releaseWirelessLease(et);
@@ -452,7 +461,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
 
   // 경기별 필요 역할(센서). 미할당 역할이 있으면 그 구간은 기록되지 않는다.
-  const REQUIRED_ROLES = { accel: ["start", "finish"], skidpad: ["start"], autocross: ["start", "finish"] };
+  const REQUIRED_ROLES = { accel: ["start", "finish"], skidpad: ["start"], autocross: ["start", "finish"], endurance: ["start"] };
   const ROLE_LABEL = { start: "출발", finish: "도착" };
   function missingRoles(mode) {
     const have = new Set(
@@ -486,6 +495,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
   function greenFor(mode, team = null, eventName = null) {
     if (!requireControl(mode)) return;
+    warnIfMasterOffline();
     const missing = missingRoles(mode);
     if (missing.length) {
       notyf.open({ type: "warning", message: `센서 미할당: ${missing.map((r) => ROLE_LABEL[r] || r).join(", ")}` });

@@ -418,11 +418,12 @@ describe('GET /api/event-modes', () => {
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.ok(Array.isArray(data));
-    assert.equal(data.length, 3);
+    assert.equal(data.length, 4);
     const types = data.map(d => d.event_type);
     assert.ok(types.includes('가속'));
     assert.ok(types.includes('스키드패드'));
     assert.ok(types.includes('오토크로스'));
+    assert.ok(types.includes('내구'));
     for (const mode of data) {
       assert.equal(mode.enabled, 1);
     }
@@ -989,9 +990,9 @@ describe('Wireless sessions & arm', () => {
     assert.equal(res.status, 200);
     const s = await res.json();
     assert.ok(Array.isArray(s.sessions));
-    assert.equal(s.sessions.length, 3);
+    assert.equal(s.sessions.length, 4);
     const types = s.sessions.map((x) => x.event_type).sort();
-    assert.deepEqual(types, ['가속', '스키드패드', '오토크로스'].sort());
+    assert.deepEqual(types, ['가속', '스키드패드', '오토크로스', '내구'].sort());
     // 각 세션은 arm 상태(불리언)와 light_color를 노출한다.
     for (const sess of s.sessions) {
       assert.equal(typeof sess.armed, 'boolean');
@@ -1189,6 +1190,28 @@ describe('Wireless server-authoritative record engine', () => {
     assert.equal(res.status, 200);
     const rows = await res.json();
     assert.ok(rows.some((r) => r.type === ev && r.result === 3000 && r.num === 8), 'skidpad lap2+lap4 saved');
+
+    await client.delete(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
+    await client.delete(`/api/wireless/mapping/${N}`, { cookie: adminCookie });
+  });
+
+  it('appends endurance laps into a single record (result=total, detail=lap list)', async () => {
+    const ev = '내구';
+    const N = 'eng-en', NAME = 'ENG-EN';
+    await client.put(`/api/wireless/mapping/${N}`, { body: { event_type: ev, role: 'start' }, cookie: adminCookie });
+    await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 12, univ: 'HU', team: 'EN' }, event_name: NAME }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'green', green_tick: '1600000000' }, cookie: adminCookie });
+    // 4회 통과: 첫 통과=출발선, 이후 랩 1000/2000/1500ms → 총합 4500, detail 3개
+    const ticks = ['1600000000', '1616000000', '1648000000', '1672000000'];
+    for (let i = 0; i < ticks.length; i++) {
+      await client.post('/api/wireless/ingest', { body: { events: [{ node_id: N, master_tick: ticks[i], ev_seq: i + 1 }] }, cookie: adminCookie });
+    }
+    const rows = await (await client.get(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie })).json();
+    const mine = rows.filter((r) => r.type === ev && r.num === 12);
+    assert.equal(mine.length, 1, '랩이 한 기록에 이어붙는다(행 1개)');
+    assert.equal(mine[0].result, 4500, '총합 시간');
+    assert.equal(mine[0].detail, '00:01.000 / 00:02.000 / 00:01.500', '랩 목록 detail');
 
     await client.delete(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie });
     await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });

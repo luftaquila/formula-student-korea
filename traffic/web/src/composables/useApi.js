@@ -23,11 +23,14 @@ export async function fetchRecord(name) {
   return res.json();
 }
 
+// 반환: { name, record } — name은 실제 테이블명("FSK <year> <이름>"), record는 rowid 포함 생성 행.
+// 내구처럼 같은 기록에 랩을 이어붙이는 호출자가 PATCH 대상(name/rowid)을 받는 데 쓴다.
 export async function addRecord(name, data) {
-  await request("/api/records", {
+  const res = await request("/api/records", {
     method: "POST",
     body: JSON.stringify({ name, data }),
   });
+  return res.json();
 }
 
 export async function deleteRecord(name) {
