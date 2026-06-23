@@ -1,7 +1,7 @@
 // Raspberry Pi 5 → rover chassis mount plate.
 // 4 board mounts (RPi5 standard 58 × 49) + 4 chassis points (A, B, C, D),
 // where TL=A and BR=D are shared XY positions.
-// Board side: all 4 mounts use M2 self-tap into the boss (including the
+// Board side: all 4 mounts use M2.5 self-tap into the boss (including the
 // shared TL/BR — those engage the boss only, not the chassis).
 // Chassis side: plate-to-chassis fastening uses M3 at the chassis-only
 // points B and C.
@@ -15,10 +15,10 @@ chassis_pad_r   = 4;      // rim around chassis holes that exit the base
 
 // ---- Fasteners ----
 m3_clearance   = 3.4;     // M3 through-hole (chassis-only screws B, C)
-m2_self_pilot  = 1.7;     // M2 self-tap pilot (all board-side bosses)
+m25_self_pilot = 2.1;     // M2.5 self-tap pilot (all board-side bosses)
 
 // ---- Board-side bosses ----
-boss_h          = 5;      // standoff height under PCB
+boss_h          = 10;     // standoff height under PCB
 boss_od         = 6;
 
 // ---- Board screws (RPi5 mounting holes, 4 corners of 58 × 49) ----
@@ -36,18 +36,19 @@ board_screws_p  = [board_TL, board_TR, board_BL, board_BR];
 A = board_TL;
 D = board_BR;
 C = A + [-1, -19];
-// B base was D + [0, 30]; field tweak: right 1.5, up 0.5.
+// B base was D + [0, 30]; field tweak: left 1, up 0.5.
 B = D + [-1, 30.5];
 chassis_screws = [A, B, C, D];
 
 // Position groups
 chassis_only_positions = [B, C];                  // plate clearance only, no boss
-// All 4 board positions get a boss + M2 self-tap pilot (TL/A and BR/D
+// All 4 board positions get a boss + M2.5 self-tap pilot (TL/A and BR/D
 // engage the boss; no chassis through-hole at those shared points).
 
 // Chassis holes too close to the base outline to leave material around them
 // → extend the plate toward the deficient side via a circular lobe.
-external_chassis = [B, C];
+// Only C qualifies; B sits inside the board hull, so it needs no lobe.
+external_chassis = [C];
 
 module hole(d, depth) {
     translate([0, 0, -0.1])
@@ -84,9 +85,9 @@ module rpi5_plate() {
         // Chassis-only (B, C): M3 clearance through plate (no boss above).
         for (p = chassis_only_positions)
             translate([p[0], p[1], 0]) hole(m3_clearance, plate_thickness);
-        // All board positions: M2 self-tap pilot through plate + boss.
+        // All board positions: M2.5 self-tap pilot through plate + boss.
         for (p = board_screws_p)
-            translate([p[0], p[1], 0]) hole(m2_self_pilot, full_depth);
+            translate([p[0], p[1], 0]) hole(m25_self_pilot, full_depth);
     }
 }
 
