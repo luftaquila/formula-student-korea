@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed, watch } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import { fetchEntries, registerToQueue } from "../api";
 import { useSSE } from "../composables/useSSE";
 import { useNotification } from "@shared/useNotification.js";
@@ -140,10 +140,6 @@ function resetForm() {
   elapsedTimes.value = {};
   warning("입력이 초기화되었습니다.");
 }
-
-onUnmounted(() => {
-  // Timers are auto-cleaned by useBoothTimers onUnmounted
-});
 </script>
 
 <template>
