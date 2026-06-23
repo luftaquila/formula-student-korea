@@ -104,6 +104,7 @@ AEAD 봉인으로 패킷당 26B(헤더10+MAC16)가 늘어 가장 큰 패킷(STAT
 센서·링크 상태를 마스터가 USB로 PC에 보고(§8 `D` 라인). 두 출처를 합친다:
 - **센서 측(STATUS에 실어 업링크):** 현재 offset(`offset_tick`), 드리프트 `skew_ppm`(최근 ~8비콘 offset 링에서 산출), 누락 비콘 `rx_miss`/현재 연속 누락 `beacon_gap`.
 - **마스터 측(수신 시 측정):** 패킷별 RSSI/SNR(`radio_receive_q` — readData 직후·재무장 전 `getRSSI(true)`/`getSNR()`), node별 last-seen(board_millis 기준 OK ≤10s(=2×STATUS_PERIOD_S) / STALE ≤15s / LOST), 무선 지연 `lat_ms = max(0, now − ev_master_t)/16000` (틱→ms, TICKS_PER_MS; 음수는 0 클램프).
+- **보안 관측(§2.11):** 조용히 버려지던 거부를 카운터로 노출 → 위조/키불일치/replay 탐지 가능. 글로벌 `auth_drop`(AEAD 검증 실패 — node 귀속 불가)는 node 0 자기보고 D 라인의 `sec_drop` 슬롯에, 센서별 `sec_drop`(인증후 replay/freshness/session-binding 거부)는 각 D 라인에, `provisioned`(키 보유 여부)는 모든 D 라인에 실린다. 카운터는 마스터가 USB로만 보고(공중 패킷·에어타임 불변). 서버는 ingest에서 증가분/미프로비저닝을 `wireless.security` 로그로 남긴다(`/api/logs`).
 
 ### 2.11 무선 보안 — AEAD (기밀성 + 인증 + 재전송 방어)
 raw LoRa는 평문이라 누구나 도청·위조할 수 있다. 위조 EVENT/BEACON으로 타이밍 결과나 신호등(SSR) 제어를 교란할 수 있으므로 모든 공중 패킷을 봉인한다. (USB↔PC 구간은 유선 신뢰 구간이라 대상 아님.)
@@ -291,7 +292,7 @@ RadioLib(커스텀 HAL) 기반. node_id로 역할 분기(0=마스터, 1..6=센�
 - **무선 보안(§2.11)**: 전 패킷 XChaCha20-Poly1305 AEAD 봉인(Monocypher). 플릿 PSK는 컴파일하지 않고 flash keystore(`0xF3000`)에서 로드 — 시리얼 `K` 명령으로 보드별 주입. 부팅 시 `sec_init()`가 boot_id 시드 + 키 로드. 구현 `src/secure.{h,c}` + `src/keystore.{h,c}`.
 - **USB 프로토콜 (FSK-WL, 줄단위 텍스트, 레거시 `$...!` 폐기)**:
   - VID `0x1999` / **PID `0x0515`** / product **"FSK-WL"**. 호스트는 연결 후 `?ID`를 보내고 `I FSK-WL …` 응답으로 장치를 확인(PID와 무관한 핸드셰이크). 레거시 유선 앱(PID 0x0514)과 상호 비매칭.
-  - 마스터→PC: `I FSK-WL <fw> <devid16> <freq_mhz> <sf> <bw> <ticks_per_ms>` · `H <now_tick> <uptime_ms> <beacon_seq> <nseen>` · `E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr>` · `D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms> <temp_c10> <batt_mv>` (node 0 = 마스터 자기보고: temp + 충전레일 batt_mv, LoRa 필드 0) · `L <RED|GREEN|OFF> <tick>` · `A <cmd> OK` · `X <reason>`.
+  - 마스터→PC: `I FSK-WL <fw> <devid16> <freq_mhz> <sf> <bw> <ticks_per_ms>` · `H <now_tick> <uptime_ms> <beacon_seq> <nseen>` · `E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr>` · `D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms> <temp_c10> <batt_mv> <sec_drop> <provisioned>` (node 0 = 마스터 자기보고: temp + 충전레일 batt_mv + sec_drop=마스터 AEAD 검증실패수 + provisioned, LoRa 필드 0; node 1..6 = 그 센서의 인증후 거부수) · `L <RED|GREEN|OFF> <tick>` · `A <cmd> OK` · `X <reason>`.
   - PC→마스터: `G`(녹+green tick 캡처) · `R`(적) · `O`(off) · `?ID` · `?STATUS` · `PING` · `K <64hex>`(플릿 키 주입, write-only → `A K OK`/`X keyfail`).
   - **프로비저닝:** `K`/`?ID`/`PING`은 **센서도 수용**(역할·무선 상태 무관). 각 보드를 USB로 꽂아 `K <64hex>` 1회 전송 → keystore에 기록·즉시 활성. 키 read-back 명령 없음(시리얼 유출 불가).
   - 64-bit tick은 십진수 그대로(절단 없음). 상태 = 온보드 LED(P0.15).
