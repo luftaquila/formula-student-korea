@@ -63,7 +63,7 @@ const cards = computed(() =>
           </div>
           <div class="ov-row">
             <span class="ov-k">제어</span>
-            <span class="ov-v">{{ c.controller || "미점유" }}</span>
+            <span class="ov-v">{{ c.controller || "—" }}</span>
           </div>
         </div>
       </div>
