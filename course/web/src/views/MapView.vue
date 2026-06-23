@@ -1781,6 +1781,62 @@ function closeCalibration() {
   }
 }
 
+// Print the stereo-calibration checkerboard. Geometry MUST match the command
+// shown in the modal: 9×6 inner corners = 10×7 squares, 25 mm. Squares are
+// foreground SVG <rect> fills (print regardless of the dialog's "Background
+// graphics" toggle) sized in mm via the viewBox, so they come out at true
+// scale when printed at 100%. Rendered in a hidden iframe (its own @page A4
+// landscape) so it doesn't disturb the app and isn't blocked like window.open.
+function printCheckerboard() {
+  const COLS = 10, ROWS = 7, SQ = 25;          // squares; 25 mm each
+  const W = COLS * SQ, H = ROWS * SQ;          // 250 × 175 mm
+  let rects = `<rect width="${W}" height="${H}" fill="#fff"/>`;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if ((r + c) % 2 === 0) {
+        rects += `<rect x="${c * SQ}" y="${r * SQ}" width="${SQ}" height="${SQ}" `
+               + `fill="#000" shape-rendering="crispEdges"/>`;
+      }
+    }
+  }
+  const board = `<svg class="board" viewBox="0 0 ${W} ${H}" width="${W}mm" height="${H}mm" `
+    + `xmlns="http://www.w3.org/2000/svg">${rects}</svg>`;
+  // Verification bar: line + ticks on top, label well below — one SVG, so the
+  // label can't overlap the line.
+  const ruler = `<svg class="ruler" viewBox="0 0 100 9" width="100mm" height="9mm" `
+    + `xmlns="http://www.w3.org/2000/svg">`
+    + `<line x1="0" y1="2.5" x2="100" y2="2.5" stroke="#000" stroke-width="0.4" shape-rendering="crispEdges"/>`
+    + `<line x1="0" y1="0.5" x2="0" y2="4.5" stroke="#000" stroke-width="0.4"/>`
+    + `<line x1="50" y1="1.2" x2="50" y2="3.8" stroke="#000" stroke-width="0.4"/>`
+    + `<line x1="100" y1="0.5" x2="100" y2="4.5" stroke="#000" stroke-width="0.4"/>`
+    + `<text x="50" y="8" text-anchor="middle" font-family="monospace" font-size="3" fill="#000">100 mm</text>`
+    + `</svg>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>checkerboard</title>`
+    + `<style>`
+    + `@page { size: A4 landscape; margin: 0; }`
+    + `html,body { margin:0; background:#fff; }`
+    + `.sheet { display:flex; flex-direction:column; align-items:center; padding-top:10mm; }`
+    + `.ruler { margin-top:6mm; }`
+    + `svg { display:block; print-color-adjust:exact; -webkit-print-color-adjust:exact; }`
+    + `</style></head><body><div class="sheet">${board}${ruler}</div></body></html>`;
+
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("aria-hidden", "true");
+  iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
+  iframe.onload = () => {
+    const cleanup = () => iframe.remove();
+    try {
+      iframe.contentWindow.onafterprint = cleanup;
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+    } catch { /* ignore */ }
+    // Fallback only — remove well after any print dialog, never mid-preview.
+    setTimeout(cleanup, 60000);
+  };
+  iframe.srcdoc = html;
+  document.body.appendChild(iframe);
+}
+
 async function submitAntennaCal() {
   if (!antennaCalCanStart.value) return;
   antennaCalSubmitting.value = true;
@@ -3630,6 +3686,30 @@ onUnmounted(() => {
               >{{ wheelCalSubmitting ? '전송 중...' : (wheelCalRunning ? '진행 중' : (wheelCalCanStart ? '시작' : wheelCalBtnLabel)) }}</button>
             </div>
           </section>
+
+          <section class="cal-section">
+            <div class="cal-section-title">스테레오 카메라 교정</div>
+            <ol class="cal-steps">
+              <li><b>인쇄</b> — 체커보드를 A4 가로, 배율 <b>100% (실제 크기)</b>로. “페이지에 맞춤” 금지.</li>
+              <li><b>검증</b> — 인쇄물의 <b>100 mm 바</b>를 자로 확인. 어긋나면 재인쇄, 또는 실측 칸 크기를 <code>--square-m</code>에 입력 (예: 24 mm → 0.024).</li>
+              <li><b>고정</b> — 폼보드·클립보드에 평평하게 부착. 휘면 교정 실패.</li>
+              <li><b>실행</b> — 로버에서 아래 명령 실행 → 보드를 <b>양쪽 카메라</b>에 다양한 거리·각도로 비춤.</li>
+            </ol>
+            <pre class="cal-cmd">sudo systemctl stop perception.service
+sudo podman run --rm --network=host \
+  --device /dev/video0:/dev/video0 --device /dev/video2:/dev/video2 \
+  --volume /var/lib/perception:/var/lib/perception:z \
+  --entrypoint python3 ghcr.io/luftaquila/fsk-rover-perception:candidate \
+  /opt/perception/stereo_calibrate.py \
+    --cols 9 --rows 6 --square-m 0.025 \
+    --device /dev/video0 --right-device /dev/video2 --width 1280 --height 720
+sudo systemctl start perception.service</pre>
+            <div class="cal-section-actions">
+              <button class="btn btn-primary btn-sm" @click="printCheckerboard">
+                체커보드 인쇄 (9×6 · 25 mm · A4)
+              </button>
+            </div>
+          </section>
         </div>
       </div>
 
@@ -4580,6 +4660,36 @@ onUnmounted(() => {
   border-radius: 4px;
   font-size: 0.8rem;
   color: var(--text-primary);
+}
+
+/* Stereo-calibration section: terse method steps + the shell command. */
+.cal-steps {
+  margin: 0.25rem 0 0.6rem;
+  padding-left: 1.2rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+.cal-steps li { margin: 0.2rem 0; }
+.cal-steps code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  background: rgba(127, 127, 127, 0.18);
+  padding: 0 0.25rem;
+  border-radius: 3px;
+}
+.cal-cmd {
+  margin: 0 0 0.6rem;
+  padding: 0.6rem 0.7rem;
+  background: #0e1116;
+  color: #e9ecf1;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  white-space: pre;
+  overflow-x: auto;
 }
 
 /* The cal modal can grow taller than the mobile viewport (two long
