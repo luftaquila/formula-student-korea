@@ -6,6 +6,7 @@ import { createDatabase, addColumn } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
+import { validateEntryNum } from "../shared/validation.mjs";
 
 export const INSPECTIONS = {
   battery: "배터리",
@@ -269,14 +270,6 @@ app.get("/api/events", sseHandler(() => {
 /* ============================================
    Validation 헬퍼
    ============================================ */
-function validateEntryNum(num) {
-  const parsed = Number(num);
-  if (num === "" || num === undefined || Number.isNaN(parsed) || parsed < 1 || !Number.isInteger(parsed)) {
-    return { valid: false, error: "올바르지 않은 엔트리 번호입니다." };
-  }
-  return { valid: true, value: parsed };
-}
-
 function validatePhone(phone) {
   if (!phone || !/^010\d{8}$/.test(phone)) {
     return { valid: false, error: "전화번호가 올바르지 않습니다." };

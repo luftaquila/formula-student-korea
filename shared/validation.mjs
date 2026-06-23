@@ -1,0 +1,12 @@
+/**
+ * 엔트리 번호 입력값을 검증한다. 1 이상의 정수만 유효.
+ * @param {*} num - 검증할 값 (문자열/숫자)
+ * @returns {{ valid: true, value: number } | { valid: false, error: string }}
+ */
+export function validateEntryNum(num) {
+  const parsed = Number(num);
+  if (num === "" || num === undefined || Number.isNaN(parsed) || parsed < 1 || !Number.isInteger(parsed)) {
+    return { valid: false, error: "올바르지 않은 엔트리 번호입니다." };
+  }
+  return { valid: true, value: parsed };
+}
