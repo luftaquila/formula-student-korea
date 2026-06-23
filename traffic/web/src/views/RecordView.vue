@@ -360,10 +360,10 @@ function enduranceStats(record) {
   laps.forEach((ms, i) => { sum += ms; if (ms < best) { best = ms; bestIdx = i; } });
   return { laps, count: laps.length, best, bestIdx: bestIdx + 1, avg: Math.round(sum / laps.length), total: sum };
 }
-// 내구 detail 셀 요약: "Total: N lap / Best: MM:SS.mmm (#n)". 파싱 실패 시 원문 폴백.
+// 내구 detail 셀 요약: "Best: MM:SS.mmm (#최고랩번호/총랩수)". 파싱 실패 시 원문 폴백.
 function enduranceSummary(record) {
   const s = enduranceStats(record);
-  return s ? `Total: ${s.count} lap / Best: ${msToClockStr(s.best)} (#${s.bestIdx})` : (record.detail || "");
+  return s ? `Best: ${msToClockStr(s.best)} (#${s.bestIdx}/${s.count})` : (record.detail || "");
 }
 // 내구 detail 셀 클릭: 인라인 편집 대신 랩 목록 팝업. 그 외 종목은 기존 인라인 편집.
 function onDetailCellClick(record) {
@@ -816,7 +816,10 @@ async function handleAddRecord() {
     <div v-if="lapPopup" class="lap-popup-overlay" @click.self="closeLapPopup">
       <div class="lap-popup">
         <div class="lap-popup-header">
-          <h3>🏁 내구 랩 기록 — <span class="lap-popup-team">#{{ lapPopup.num }} {{ lapPopup.team }}</span></h3>
+          <div class="lap-popup-titles">
+            <h3>🏁 내구 랩 기록</h3>
+            <p class="lap-popup-team">#{{ lapPopup.num }} {{ lapPopup.team }}</p>
+          </div>
           <button class="lap-popup-close" title="닫기" @click="closeLapPopup">✕</button>
         </div>
         <div class="lap-popup-stats">
@@ -1336,11 +1339,17 @@ async function handleAddRecord() {
 }
 .lap-popup-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
   padding: 1rem 1.25rem;
   border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+}
+.lap-popup-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
 }
 .lap-popup-header h3 {
   font-size: 1rem;
@@ -1349,6 +1358,7 @@ async function handleAddRecord() {
 .lap-popup-team {
   color: var(--text-secondary);
   font-weight: 600;
+  font-size: 0.875rem;
 }
 .lap-popup-close {
   background: none;

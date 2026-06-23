@@ -109,6 +109,11 @@ async function simTelemetry() {
 .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
 /* 임베드된 현황: 자체 페이지 패딩/최대폭 제거해 설정 카드 열과 정렬. */
 .wl-overview-embed :deep(.overview) { padding: 0; max-width: none; margin: 0; }
+/* 카드가 데스크탑에선 여러 열로 채워지고(좁은 카드), 모바일에선 자동으로 단일열이 되도록. */
+.wl-overview-embed :deep(.overview-grid) {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
 @media (max-width: 768px) {
   .wl-row { grid-template-columns: 1fr; }
 }
