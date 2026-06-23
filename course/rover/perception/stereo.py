@@ -31,7 +31,7 @@ missing/corrupt calibration must never auto-pause a mission on disparity noise.
 """
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 

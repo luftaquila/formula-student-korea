@@ -117,8 +117,7 @@ def main(argv=None):
                 continue
             left, right = frame, rframe
         else:
-            w = frame.shape[1] // 2
-            left, right = frame[:, :w], frame[:, w:w * 2]
+            left, right = stereo.split_sbs(frame)
         if eye_size is None:
             eye_size = (left.shape[1], left.shape[0])
         gl = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
