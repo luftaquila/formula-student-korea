@@ -107,10 +107,13 @@ async function simTelemetry() {
 .debounce-input { max-width: 120px; }
 .debounce-row .unit { color: var(--text-muted, #888); font-size: 0.9rem; }
 .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
-/* 임베드된 현황: 자체 페이지 패딩/최대폭 제거해 설정 카드 열과 정렬. */
-.wl-overview-embed :deep(.overview) { padding: 0; max-width: none; margin: 0; }
-/* 카드가 데스크탑에선 여러 열로 채워지고(좁은 카드), 모바일에선 자동으로 단일열이 되도록. */
-.wl-overview-embed :deep(.overview-grid) {
+/* 임베드된 현황: 자체 페이지 패딩/최대폭/auto 마진 제거. (마진 auto가 남으면 flex 열에서
+   stretch 대신 shrink-to-fit 되어 auto-fit 그리드가 1열로 collapse된다.)
+   선택자는 조상 .wl-settings 기준 — 클래스 wl-overview-embed는 .overview 루트 자신이라
+   ".wl-overview-embed .overview"(하위 탐색)로는 매칭되지 않는다. */
+.wl-settings :deep(.overview) { padding: 0; max-width: none; margin: 0; }
+/* 카드가 데스크탑에선 여러 열로, 모바일에선 자동 단일열로. */
+.wl-settings :deep(.overview-grid) {
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 1rem;
 }
