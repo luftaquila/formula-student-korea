@@ -112,12 +112,15 @@ async function simTelemetry() {
    선택자는 조상 .wl-settings 기준 — 클래스 wl-overview-embed는 .overview 루트 자신이라
    ".wl-overview-embed .overview"(하위 탐색)로는 매칭되지 않는다. */
 .wl-settings :deep(.overview) { padding: 0; max-width: none; margin: 0; }
-/* 카드가 데스크탑에선 여러 열로, 모바일에선 자동 단일열로. */
+/* 한 줄에 최대 2열(데스크탑/태블릿), 좁은 화면에선 단일열. */
 .wl-settings :deep(.overview-grid) {
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
 }
 @media (max-width: 768px) {
   .wl-row { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .wl-settings :deep(.overview-grid) { grid-template-columns: 1fr; }
 }
 </style>
