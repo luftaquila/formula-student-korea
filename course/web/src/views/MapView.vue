@@ -193,9 +193,13 @@ const FIX_STATUS_META = {
 
 const fixChip = computed(() => {
   const s = roverStatus.value;
-  if (!s.connected || !s.fix_status) return null;
-  const label = s.fix_status.replace(/_/g, " ").toUpperCase();
-  const meta = FIX_STATUS_META[s.fix_status] || { tone: "bad" };
+  if (!s.connected) return null;
+  // GPS may be down (no fix_status reported). Still show the chip in an error
+  // state with the cause in the popover instead of hiding it — a missing chip
+  // reads as "no GPS feature" rather than "GPS not working".
+  const hasFix = !!s.fix_status;
+  const label = hasFix ? s.fix_status.replace(/_/g, " ").toUpperCase() : "NO GPS";
+  const meta = hasFix ? (FIX_STATUS_META[s.fix_status] || { tone: "bad" }) : { tone: "bad" };
   // Stale position during an active mission is a hard fail signal — operator
   // needs to see the chip degrade even when the latched fix_status looks fine.
   // 5s warn / 15s bad are aligned with the existing UPDATE-row thresholds in
@@ -209,6 +213,7 @@ const fixChip = computed(() => {
   else if (stale) tone = tone === "ok" ? "warn" : tone;
   // [key, value, valTone?] — valTone (optional) colors the value text.
   const rows = [["MODE", label, tone]];
+  if (!hasFix) rows.push(["GPS", "신호 없음", "bad"]);
   if (s.last_position?.lat != null && s.last_position?.lng != null) {
     rows.push(["POS", `${s.last_position.lat.toFixed(6)}, ${s.last_position.lng.toFixed(6)}`]);
   }
@@ -506,15 +511,6 @@ const remainingDistanceM = computed(() => {
   if (roverMode.value !== "executing") return null;
   if (pathTotalDist <= 0) return null;
   return pathTotalDist * Math.max(0, (100 - pathProgress.value) / 100);
-});
-
-const roverStatusClass = computed(() => {
-  const s = roverStatus.value;
-  if (!s.connected) return "rover-badge-off";
-  const lowBattery = s.battery && s.battery.percent != null && s.battery.percent <= BATTERY_WARN_PERCENT;
-  if (lowBattery) return "rover-badge-warn";
-  if (s.fix_status === "rtk_fixed" && s.ntrip_connected !== false) return "rover-badge-ok";
-  return "rover-badge-warn";
 });
 
 // Inspector (desktop right panel)
@@ -3046,6 +3042,46 @@ watch(activeTab, (tab) => {
   if (tab !== "rover" && cameraOn.value) stopCameraStream();
 });
 
+/* ── Camera health chip ───────────────────────────────
+   A persistent diagnostic chip in the status strip, independent of the live
+   stream: polls the camera status endpoint while the rover is connected so the
+   operator can see camera health WITHOUT opening the stream. */
+const cameraStatus = ref(null); // { camera_connected, viewers, last_frame_age_ms } | null
+let cameraChipPoll = null;
+
+async function pollCameraChipStatus() {
+  if (!roverStatus.value.connected) { cameraStatus.value = null; return; }
+  try {
+    const res = await request("/api/rover/camera/status", { method: "GET" });
+    cameraStatus.value = await res.json();
+  } catch { /* keep last known state */ }
+}
+
+const cameraChip = computed(() => {
+  if (!roverStatus.value.connected) return null;
+  const cs = cameraStatus.value;
+  if (!cs) return { tone: "neutral", label: "확인 중", rows: [["상태", "상태 확인 중…"]] };
+  const ageMs = cs.last_frame_age_ms;
+  const fresh = ageMs != null && ageMs < 3000;
+  const rows = [];
+  let tone, label;
+  if (!cs.camera_connected) {
+    tone = "bad"; label = "오프라인";
+    rows.push(["연결", "카메라 스트리머 오프라인", "bad"]);
+    rows.push(["원인", "로버 카메라·perception 컨테이너 확인", "bad"]);
+  } else if (!fresh) {
+    tone = "warn"; label = "신호 없음";
+    rows.push(["연결", "스트리머 온라인", "ok"]);
+    rows.push(["프레임", ageMs == null ? "수신된 프레임 없음" : `${(ageMs / 1000).toFixed(1)}s 지연`, "bad"]);
+  } else {
+    tone = "ok"; label = cameraOn.value ? "스트리밍" : "정상";
+    rows.push(["연결", "스트리머 온라인", "ok"]);
+    rows.push(["프레임", `${(ageMs / 1000).toFixed(1)}s 전`, "ok"]);
+  }
+  rows.push(["시청자", `${cs.viewers ?? 0}명`]);
+  return { tone, label, rows };
+});
+
 async function setDispenserPosition(position) {
   if (dispenserBusy.value) return;
   dispenserBusy.value = true;
@@ -3438,6 +3474,8 @@ onMounted(async () => {
   }
   connectSSE();
   fetchRoverStatus();
+  pollCameraChipStatus();
+  cameraChipPoll = setInterval(pollCameraChipStatus, 3000);
 });
 
 onUnmounted(() => {
@@ -3452,6 +3490,7 @@ onUnmounted(() => {
   if (uiTickInterval) clearInterval(uiTickInterval);
   if (controlInterval) clearInterval(controlInterval);
   if (cameraStatusPoll) clearInterval(cameraStatusPoll);
+  if (cameraChipPoll) clearInterval(cameraChipPoll);
   if (calStatusPollHandle) clearInterval(calStatusPollHandle);
   if (ledBrightnessTimer) clearTimeout(ledBrightnessTimer);
   if (followTimer != null) clearTimeout(followTimer);
@@ -3712,11 +3751,10 @@ onUnmounted(() => {
 
         <!-- Persistent status strip (always visible across tabs) -->
         <div
-          :class="['status-strip', roverStatusClass]"
+          class="status-strip"
           @scroll.passive="onChipStripScroll"
         >
           <template v-if="!roverStatus.connected">
-            <span class="status-dot"></span>
             <span
               :class="['chip-wrapper', { active: activeChipPopover === 'disconnect' }]"
               @click.stop="toggleChipPopover('disconnect', $event)"
@@ -3732,7 +3770,6 @@ onUnmounted(() => {
 
           <!-- Connected: three zones (primary / mission / vitals) of chips -->
           <template v-else>
-            <span class="status-dot"></span>
             <div class="chip-row primary-zone">
               <span
                 v-if="fixChip"
@@ -3815,6 +3852,17 @@ onUnmounted(() => {
                 </span>
               </span>
             </div>
+            <!-- Camera health — persistent diagnostic chip at the end of the strip. -->
+            <span
+              v-if="cameraChip"
+              :class="['chip-wrapper', { active: activeChipPopover === 'camera' }]"
+              @click.stop="toggleChipPopover('camera', $event)"
+            >
+              <span :class="['chip', `chip-${cameraChip.tone}`]">📷 {{ cameraChip.label }}</span>
+              <span class="chip-popover" :style="popoverStyle">
+                <span class="popover-row" v-for="r in cameraChip.rows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span :class="['popover-val', r[2] && `popover-val-${r[2]}`]">{{ r[1] }}</span></span>
+              </span>
+            </span>
           </template>
 
         </div>
@@ -3850,10 +3898,10 @@ onUnmounted(() => {
               >현재 로버 위치에서 시작</button>
             </div>
 
-            <!-- Cone-add floating controls (courses tab) -->
+            <!-- Cone-add edit controls (courses tab) — bottom-right of the map. -->
             <div
               v-if="activeTab === 'courses' && activeCourse"
-              class="map-fab-panel"
+              class="map-fab-panel map-fab-edit"
               :style="isMobile ? { position: 'fixed', right: '0.75rem', bottom: `calc(${sheetHeight}px + env(safe-area-inset-bottom) + 70px)`, zIndex: 650 } : null"
             >
               <button
@@ -3880,14 +3928,20 @@ onUnmounted(() => {
                 aria-label="로버 위치로 콘 추가"
                 title="로버 GPS 위치로 콘 추가"
               >{{ roverLoading ? '⏳' : '📍' }}</button>
-              <span class="fab-sep"></span>
+            </div>
+
+            <!-- Measurement / selection tools (영역 · 자 · 각도기) — separate
+                 top-right panel. Read-only, usable even when editing is locked. -->
+            <div
+              v-if="activeTab === 'courses' && activeCourse"
+              class="map-fab-panel map-fab-tools"
+            >
               <button
                 :class="['fab-icon-btn', 'fab-tool', { active: selectMode }]"
                 @click="selectMode = !selectMode"
-                aria-label="박스 선택 모드"
-                title="박스 선택 — 드래그로 여러 콘 선택 (터치 지원)"
+                aria-label="영역 선택 모드"
+                title="영역 — 드래그로 여러 콘 선택 (터치 지원)"
               >⬚</button>
-              <!-- Measurement tools — read-only, available even when editing is locked. -->
               <button
                 :class="['fab-icon-btn', 'fab-tool', { active: toolMode === 'ruler' }]"
                 @click="enterToolMode('ruler')"
@@ -4194,15 +4248,15 @@ onUnmounted(() => {
                        the stream tells the rover to start capturing; closing it
                        stops capture. Useful for manual driving / clearing an
                        obstacle while paused. -->
-                  <div v-if="roverStatus.connected" class="rover-controls">
+                  <div v-if="roverStatus.connected" class="rover-controls rover-controls-grid">
                     <button
                       :class="['btn', 'btn-lg-touch', cameraOn ? 'btn-primary' : 'btn-ghost']"
                       @click="toggleCamera"
-                    >{{ cameraOn ? '📷 카메라 끄기' : '📷 카메라' }}</button>
+                    >{{ cameraOn ? '카메라 끄기' : '카메라' }}</button>
                   </div>
                   <div v-if="cameraOn" class="camera-view">
                     <img v-if="cameraStreamUrl" :src="cameraStreamUrl" alt="rover camera" @error="onCameraError" />
-                    <div v-if="cameraError" class="camera-error">카메라 신호 없음 (로버에 카메라가 연결됐는지 확인)</div>
+                    <div v-if="cameraError" class="camera-error">카메라 신호 없음</div>
                   </div>
 
                   <div v-if="pathDistance > 0" class="path-info">
@@ -4399,10 +4453,9 @@ onUnmounted(() => {
   display: flex; align-items: center; gap: 0.75rem;
   /* Uniform 0.75rem between every chip (matches .chip-row gap) so spacing is
      consistent whether two chips share a zone or straddle a zone boundary,
-     with comfortable breathing room. Left padding keeps the dot↔first-chip
-     distance balanced (gap 0.75 + dot mr 0.5 = 1.25rem). */
+     with comfortable breathing room. */
   padding: 0.875rem 1.25rem;
-  border-bottom: 1px solid var(--border-primary);
+  border-bottom: 1px solid var(--border-color);
   background: var(--bg-primary); color: var(--text-primary);
   font-size: 0.85rem;
   flex-wrap: wrap;
@@ -4410,14 +4463,6 @@ onUnmounted(() => {
   position: relative;
   z-index: 999;
 }
-.status-dot {
-  width: 10px; height: 10px; border-radius: 50%;
-  background: #94a3b8; flex-shrink: 0;
-  margin-right: 0.5rem;
-}
-.status-strip.rover-badge-ok .status-dot { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
-.status-strip.rover-badge-warn .status-dot { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
-.status-strip.rover-badge-off .status-dot { background: #94a3b8; }
 
 .chip-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .primary-zone { flex: 0 1 auto; }
@@ -4440,7 +4485,7 @@ onUnmounted(() => {
   padding: 0.55rem 0.75rem;
   background: var(--bg-primary);
   color: var(--text-primary);
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
   font-size: 0.9rem;
@@ -4571,7 +4616,7 @@ onUnmounted(() => {
 .calibration-modal > .preflight-actions { flex: 0 0 auto; }
 .calibration-modal .cal-section {
   padding: 0.75rem 0;
-  border-top: 1px solid var(--border-primary);
+  border-top: 1px solid var(--border-color);
 }
 .calibration-modal .cal-section:first-of-type { border-top: none; padding-top: 0; }
 .calibration-modal > .cal-section:first-of-type { padding-top: 0.5rem; }
@@ -4605,7 +4650,7 @@ onUnmounted(() => {
 .cal-subsection {
   margin-top: 0.6rem;
   padding-top: 0.6rem;
-  border-top: 1px dashed color-mix(in srgb, var(--border-primary) 60%, transparent);
+  border-top: 1px dashed color-mix(in srgb, var(--border-color) 60%, transparent);
 }
 .cal-subsection-title {
   font-size: 0.85rem; font-weight: 600;
@@ -4630,7 +4675,7 @@ onUnmounted(() => {
   font-family: "JetBrains Mono", monospace;
   padding: 0.3rem 0.4rem;
   border-radius: 4px;
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   background: var(--bg-primary); color: var(--text-primary);
   width: 100%; box-sizing: border-box;
 }
@@ -4700,7 +4745,7 @@ onUnmounted(() => {
 }
 .chip-neutral {
   background: var(--bg-secondary);
-  border-color: var(--border-primary);
+  border-color: var(--border-color);
   color: var(--text-secondary);
 }
 
@@ -4724,7 +4769,7 @@ onUnmounted(() => {
 .navlight-bright {
   display: flex; flex-direction: column; gap: 4px;
   padding: 0.45rem 0.6rem 0.25rem; margin-top: 2px;
-  border-top: 1px solid var(--border-primary);
+  border-top: 1px solid var(--border-color);
 }
 .navlight-bright-label { font-size: 0.75rem; color: var(--text-secondary); }
 .navlight-bright input[type="range"] { width: 100%; cursor: pointer; margin: 0; }
@@ -4739,7 +4784,7 @@ onUnmounted(() => {
   flex: 1 1 220px; min-width: 0;
   padding: 0.25rem 0.7rem;
   background: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   border-radius: 999px;
   font-family: "JetBrains Mono", monospace; font-size: 0.85rem;
 }
@@ -4768,7 +4813,7 @@ onUnmounted(() => {
 /* Mirrors inspector-handle width on the rail side. Visual only. */
 .rail-spacer {
   width: 8px; flex-shrink: 0;
-  background: var(--border-primary);
+  background: var(--border-color);
 }
 /* Mirrors rail-spacer / inspector-handle widths so rail and inspector
    have equal whitespace on both sides. Desktop only. */
@@ -4777,7 +4822,7 @@ onUnmounted(() => {
 }
 .rail-divider {
   height: 1px; margin: 0.25rem 0.75rem;
-  background: var(--border-primary);
+  background: var(--border-color);
 }
 .rail-btn {
   display: flex; flex-direction: column; align-items: center;
@@ -4814,24 +4859,34 @@ onUnmounted(() => {
 .map-overlay-row > span { white-space: nowrap; }
 .map-overlay-row .btn { white-space: nowrap; }
 
-/* Cone-add floating controls (courses tab) — top-right of the map. */
+/* Floating map controls (courses tab). Two panels share this base look:
+   the edit panel (bottom-right) and the tools panel (top-right). Theme-aware
+   so the surface follows light/dark like the buttons it holds. */
 .map-fab-panel {
   position: absolute; bottom: 1.5rem; right: 0.75rem; z-index: 500;
   display: flex; align-items: center; gap: 0.4rem;
   flex-wrap: wrap; justify-content: flex-end; max-width: calc(100vw - 1.5rem);
-  background: rgba(17, 24, 39, 0.82); backdrop-filter: blur(4px);
+  background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+  backdrop-filter: blur(6px);
   padding: 0.4rem; border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-hover);
   pointer-events: auto;
 }
+/* 영역 · 자 · 각도기 tools live in their own panel, pinned top-right. */
+.map-fab-tools { top: 0.75rem; bottom: auto; }
 .map-fab-panel .side-toggle { flex: none; gap: 0.25rem; }
-.map-fab-panel .side-btn { min-width: 34px; padding: 0.35rem 0.5rem; }
-.fab-sep { width: 1px; align-self: stretch; margin: 0.1rem 0.15rem; background: rgba(255, 255, 255, 0.18); }
+/* Every control in the panels is the same square so a row reads as one set. */
+.map-fab-panel .side-btn {
+  flex: none; width: 38px; height: 38px; min-width: 0; padding: 0;
+  border: 2px solid var(--border-color); border-radius: 8px;
+  font-size: 1rem; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+}
 .fab-icon-btn {
   flex: none; width: 38px; height: 38px;
   display: flex; align-items: center; justify-content: center;
-  border: 2px solid var(--border-primary); border-radius: 8px;
+  border: 2px solid var(--border-color); border-radius: 8px;
   background: var(--bg-secondary); color: var(--text-primary);
   font-size: 1.1rem; line-height: 1; cursor: pointer; transition: all 0.15s;
 }
@@ -4844,6 +4899,11 @@ onUnmounted(() => {
 .fab-tool.active {
   border-color: #38bdf8;
   background: color-mix(in srgb, #38bdf8 24%, var(--bg-secondary));
+}
+/* Bigger touch targets on coarse pointers, kept uniform across both panels. */
+@media (any-pointer: coarse) {
+  .map-fab-panel .fab-icon-btn,
+  .map-fab-panel .side-btn { width: 44px; height: 44px; min-height: 0; }
 }
 
 /* Live rotation angle readout — pinned top-centre of the map while rotating. */
@@ -4911,7 +4971,7 @@ onUnmounted(() => {
 
 .inspector-handle {
   width: 8px; flex-shrink: 0;
-  background: var(--border-primary);
+  background: var(--border-color);
   cursor: col-resize;
   touch-action: none;
   transition: background 0.12s;
@@ -4938,18 +4998,18 @@ onUnmounted(() => {
 .tab-header {
   display: flex; align-items: center; justify-content: space-between;
   padding-bottom: 0.5rem; margin-bottom: 0.25rem;
-  border-bottom: 1px solid var(--border-primary);
+  border-bottom: 1px solid var(--border-color);
 }
 .tab-header h3 { margin: 0; font-size: 1rem; font-weight: 700; }
 .tab-header-sub {
   margin-top: 0.875rem;
-  border-top: 1px solid var(--border-primary);
+  border-top: 1px solid var(--border-color);
   padding-top: 0.625rem;
-  border-bottom: 1px solid var(--border-primary);
+  border-bottom: 1px solid var(--border-color);
 }
 .history-switcher {
   display: inline-flex;
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -4961,7 +5021,7 @@ onUnmounted(() => {
   font-size: 0.8rem;
   cursor: pointer;
 }
-.history-switch-btn + .history-switch-btn { border-left: 1px solid var(--border-primary); }
+.history-switch-btn + .history-switch-btn { border-left: 1px solid var(--border-color); }
 .history-switch-btn.active {
   background: var(--accent-primary);
   color: var(--accent-primary-fg, #fff);
@@ -4972,7 +5032,7 @@ onUnmounted(() => {
 .inspector-group {
   padding: 0.625rem 0.75rem;
   background: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   display: flex; flex-direction: column; gap: 0.5rem;
 }
@@ -4998,7 +5058,7 @@ onUnmounted(() => {
 
 .course-add input {
   flex: 1; min-width: 0; padding: 0.375rem 0.5rem;
-  border: 1px solid var(--border-primary); border-radius: 4px;
+  border: 1px solid var(--border-color); border-radius: 4px;
   background: var(--bg-secondary); color: var(--text-primary); font-size: 0.8rem;
 }
 .course-add input:focus { outline: none; border-color: var(--accent-primary); }
@@ -5068,7 +5128,7 @@ onUnmounted(() => {
 
 .side-btn {
   flex: 1; padding: 0.375rem;
-  border: 2px solid var(--border-primary); border-radius: 6px;
+  border: 2px solid var(--border-color); border-radius: 6px;
   background: var(--bg-secondary); color: var(--text-primary);
   cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: all 0.15s;
 }
@@ -5084,7 +5144,7 @@ onUnmounted(() => {
 .rover-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .camera-view {
   margin-top: 0.5rem;
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   overflow: hidden;
   background: #000;
@@ -5135,7 +5195,7 @@ onUnmounted(() => {
 .mission-card {
   padding: 0.6rem 0.75rem;
   background: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.1s, border-color 0.1s;
@@ -5168,7 +5228,7 @@ onUnmounted(() => {
 .replay-speed {
   padding: 0.4rem 0.5rem; min-height: 36px;
   background: var(--bg-primary); color: var(--text-primary);
-  border: 1px solid var(--border-primary); border-radius: 6px;
+  border: 1px solid var(--border-color); border-radius: 6px;
   font-family: "JetBrains Mono", monospace;
 }
 .replay-state {
@@ -5197,7 +5257,7 @@ onUnmounted(() => {
 }
 .preflight-modal {
   background: var(--bg-primary); color: var(--text-primary);
-  border: 1px solid var(--border-primary); border-radius: 10px;
+  border: 1px solid var(--border-color); border-radius: 10px;
   padding: 1rem 1.25rem; min-width: 320px; max-width: 440px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
 }
@@ -5205,7 +5265,7 @@ onUnmounted(() => {
 .preflight-list { list-style: none; padding: 0; margin: 0 0 0.75rem 0; }
 .preflight-item {
   display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.4rem 0.25rem; border-bottom: 1px solid var(--border-primary);
+  padding: 0.4rem 0.25rem; border-bottom: 1px solid var(--border-color);
   font-size: 0.9rem;
 }
 .preflight-item:last-child { border-bottom: none; }
@@ -5232,7 +5292,7 @@ onUnmounted(() => {
   /* Breathing room above the close/confirm buttons in every modal. */
   margin-top: 1rem;
   padding-top: 0.5rem;
-  border-top: 1px solid color-mix(in srgb, var(--border-primary) 50%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 50%, transparent);
 }
 
 .logs-modal { max-width: 800px; width: 90vw; max-height: 85vh; display: flex; flex-direction: column; }
@@ -5243,7 +5303,7 @@ onUnmounted(() => {
 .logs-meta { font-size: 0.75rem; color: var(--text-secondary); margin-left: auto; }
 .logs-view {
   flex: 1; overflow-y: auto;
-  background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: 6px;
+  background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px;
   padding: 0.5rem; font-family: "JetBrains Mono", monospace; font-size: 0.75rem;
   line-height: 1.45;
 }
@@ -5259,7 +5319,7 @@ onUnmounted(() => {
 .logs-view:not(.logs-view-inline) .log-row > span {
   display: table-cell;
   padding: 0.1rem 0.5rem 0.1rem 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border-primary) 30%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 30%, transparent);
   vertical-align: top;
 }
 .logs-view:not(.logs-view-inline) .log-time,
@@ -5285,11 +5345,11 @@ onUnmounted(() => {
 .snapshot-create input {
   flex: 1; padding: 0.4rem 0.6rem;
   background: var(--bg-secondary); color: var(--text-primary);
-  border: 1px solid var(--border-primary); border-radius: 6px;
+  border: 1px solid var(--border-color); border-radius: 6px;
 }
 .snapshot-list { flex: 1; overflow-y: auto; margin-bottom: 0.75rem; }
 .snapshot-item {
-  padding: 0.5rem; border-bottom: 1px solid var(--border-primary);
+  padding: 0.5rem; border-bottom: 1px solid var(--border-color);
   font-size: 0.85rem;
 }
 .snapshot-top { display: flex; justify-content: space-between; align-items: center; }
@@ -5301,7 +5361,7 @@ onUnmounted(() => {
 
 .waypoint-list {
   margin-top: 0.5rem; max-height: 250px; overflow-y: auto;
-  border: 1px solid var(--border-primary); border-radius: 6px;
+  border: 1px solid var(--border-color); border-radius: 6px;
   background: var(--bg-primary);
 }
 .waypoint-list-header {
@@ -5313,7 +5373,7 @@ onUnmounted(() => {
 .waypoint-hint { color: var(--text-secondary); font-weight: 400; font-size: 0.75rem; }
 .waypoint-item {
   display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--border-primary);
+  padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--border-color);
   font-size: 0.8rem;
 }
 .waypoint-item:last-child { border-bottom: none; }
@@ -5323,7 +5383,7 @@ onUnmounted(() => {
 .arrow-btn {
   width: 22px; height: 22px; padding: 0;
   background: var(--bg-secondary); color: var(--text-primary);
-  border: 1px solid var(--border-primary); border-radius: 4px;
+  border: 1px solid var(--border-color); border-radius: 4px;
   font-size: 0.8rem; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
 }
@@ -5340,7 +5400,7 @@ onUnmounted(() => {
   flex: 1; min-width: 0;
   padding: 0.3rem 0.5rem;
   background: var(--bg-primary); color: var(--text-primary);
-  border: 1px solid var(--border-primary); border-radius: 6px;
+  border: 1px solid var(--border-color); border-radius: 6px;
   font-family: "JetBrains Mono", monospace; font-size: 0.8rem;
 }
 
@@ -5361,17 +5421,17 @@ onUnmounted(() => {
 .joystick-bg {
   position: absolute; inset: 0;
   background: var(--bg-secondary); border-radius: 50%;
-  border: 2px solid var(--border-primary);
+  border: 2px solid var(--border-color);
   display: flex; align-items: center; justify-content: center;
 }
 
 .joystick-crosshair {
-  width: 1px; height: 100%; background: var(--border-primary);
+  width: 1px; height: 100%; background: var(--border-color);
   position: absolute;
 }
 .joystick-crosshair::after {
   content: ""; display: block;
-  width: 100%; height: 1px; background: var(--border-primary);
+  width: 100%; height: 1px; background: var(--border-color);
   position: absolute; top: 50%; left: -9900%;
   width: 20000%;
 }
@@ -5400,7 +5460,7 @@ onUnmounted(() => {
 .dispenser-btn {
   flex: 1; max-width: 80px;
   padding: 0.4rem 0.6rem;
-  border: 1px solid var(--border-primary); border-radius: 4px;
+  border: 1px solid var(--border-color); border-radius: 4px;
   background: var(--bg-secondary); color: var(--text-primary);
   font-size: 0.8rem; cursor: pointer;
 }
@@ -5412,7 +5472,7 @@ onUnmounted(() => {
 
 .coord-inputs input, .coord-inputs select {
   padding: 0.375rem 0.5rem;
-  border: 1px solid var(--border-primary); border-radius: 4px;
+  border: 1px solid var(--border-color); border-radius: 4px;
   background: var(--bg-secondary); color: var(--text-primary);
   font-size: 0.8rem; font-family: "JetBrains Mono", monospace;
 }
@@ -5431,7 +5491,7 @@ onUnmounted(() => {
   position: absolute; right: 0.7rem; bottom: 1rem; z-index: 5;
   width: 40px; height: 40px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-color);
   background: rgba(17, 24, 39, 0.9); color: var(--text-primary);
   font-size: 1.1rem; cursor: pointer;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
@@ -5447,7 +5507,7 @@ onUnmounted(() => {
 .cone-filter { display: flex; gap: 0.25rem; }
 
 .filter-btn {
-  padding: 0.3rem 0.6rem; border: 1px solid var(--border-primary);
+  padding: 0.3rem 0.6rem; border: 1px solid var(--border-color);
   border-radius: 6px; background: var(--bg-secondary);
   color: var(--text-secondary); cursor: pointer;
   font-size: 0.8rem; font-weight: 500; transition: all 0.15s;
@@ -5525,7 +5585,7 @@ onUnmounted(() => {
     left: 0; right: 0; bottom: 0;
     width: 100%;
     flex-direction: row;
-    border-top: 1px solid var(--border-primary);
+    border-top: 1px solid var(--border-color);
     padding: 0.25rem 0.5rem; gap: 0.25rem;
     justify-content: space-around;
     background: var(--bg-primary);
@@ -5543,6 +5603,10 @@ onUnmounted(() => {
 
   .map-wrap { flex: 1; min-height: 220px; }
 
+  /* Stack the top-right tools vertically so they hug the edge and leave the
+     centred active-tool overlay room on narrow screens. */
+  .map-fab-tools { flex-direction: column; flex-wrap: nowrap; }
+
   .inspector-handle { display: none; }
 
   /* Pinned to visual viewport (same as rail) so address-bar reflow
@@ -5554,7 +5618,7 @@ onUnmounted(() => {
     width: 100% !important;
     max-width: 100%; min-width: 0;
     max-height: 75vh;
-    border-top: 1px solid var(--border-primary);
+    border-top: 1px solid var(--border-color);
     border-radius: 12px 12px 0 0;
     box-shadow: 0 -4px 20px rgba(0,0,0,0.25);
     z-index: 600;
@@ -5589,7 +5653,7 @@ onUnmounted(() => {
     display: flex; flex-wrap: wrap;
     column-gap: 0.5rem; row-gap: 0.05rem;
     padding: 0.2rem 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--border-primary) 30%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--border-color) 30%, transparent);
   }
   .logs-view:not(.logs-view-inline) .log-row > span {
     display: inline; padding: 0; border: none; vertical-align: baseline;
