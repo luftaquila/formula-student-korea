@@ -103,8 +103,9 @@ def _install_rclpy():
     })
     node_mod = _install_stub("rclpy.node", {"Node": _FakeNode})
     qos_mod = _install_stub("rclpy.qos", {
-        "QoSProfile": lambda depth=10, reliability=None: types.SimpleNamespace(depth=depth, reliability=reliability),
+        "QoSProfile": lambda depth=10, reliability=None, durability=None: types.SimpleNamespace(depth=depth, reliability=reliability, durability=durability),
         "ReliabilityPolicy": types.SimpleNamespace(RELIABLE="reliable", BEST_EFFORT="best_effort"),
+        "DurabilityPolicy": types.SimpleNamespace(TRANSIENT_LOCAL="transient_local", VOLATILE="volatile"),
     })
     rclpy.node = node_mod
     rclpy.qos = qos_mod
@@ -117,6 +118,7 @@ def _install_ros_msgs():
         "Float32": type("Float32", (), {"__init__": lambda self: setattr(self, "data", 0.0)}),
         "Float64": type("Float64", (), {"__init__": lambda self: setattr(self, "data", 0.0)}),
         "Int32": type("Int32", (), {"__init__": lambda self: setattr(self, "data", 0)}),
+        "Bool": type("Bool", (), {"__init__": lambda self: setattr(self, "data", False)}),
         "Empty": type("Empty", (), {"__init__": lambda self: None}),
     })
     _install_stub("std_msgs", {"msg": std_msgs_msg})

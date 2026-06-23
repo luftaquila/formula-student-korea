@@ -108,6 +108,7 @@ const roverStatus = ref({
   battery: null,
   ntrip: null,
   gps: null,
+  obstacle: { active: false, at: 0, nearest_m: null },
 });
 
 function syncAppRoverStatus(data) {
@@ -2920,6 +2921,18 @@ async function resumeMission() {
   }
 }
 
+// Perception flagged a driving-corridor obstacle. The rover ALREADY paused
+// itself locally over ROS (this is just the operator-facing half): jump to the
+// rover tab and auto-open the camera so the operator can see what's blocking,
+// then drive manually around it and resume. The persistent banner is driven by
+// roverStatus.obstacle.active (server-side, so a late-joining tab still sees it).
+function onObstacle(data) {
+  const dist = typeof data?.nearest_m === "number" ? ` (~${data.nearest_m.toFixed(1)} m)` : "";
+  notifyWarn(`주행 경로 장애물 감지${dist} — 미션 자동 일시정지. 카메라로 확인 후 수동으로 비켜 운전하고 재개하세요.`);
+  if (activeTab.value !== "rover") activeTab.value = "rover";
+  startCamera();
+}
+
 /* ── Manual control ───────────────────────────────── */
 function startManualControl() {
   if (!roverStatus.value.connected) {
@@ -3021,14 +3034,20 @@ function stopCameraStream() {
   cameraError.value = false;
   if (cameraStatusPoll) { clearInterval(cameraStatusPoll); cameraStatusPoll = null; }
 }
-function toggleCamera() {
-  if (cameraOn.value) { stopCameraStream(); return; }
+// Idempotent "ensure the stream is on" — used by the toggle and by the obstacle
+// auto-open, which must not toggle a manually-opened stream back off.
+function startCamera() {
+  if (cameraOn.value) return;
   cameraOn.value = true;
   cameraError.value = false;
   cameraReqId.value = Date.now();
   cameraLastOkAt = Date.now();   // grace the cold-start window before reconnecting
   pollCameraStatus();
   cameraStatusPoll = setInterval(pollCameraStatus, 2000);
+}
+function toggleCamera() {
+  if (cameraOn.value) { stopCameraStream(); return; }
+  startCamera();
 }
 function onCameraError() {
   cameraError.value = true;
@@ -3214,6 +3233,10 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     if (!Number.isInteger(data?.waypoint) || !data.outcome) return;
     onSprayResult(data.waypoint, data.outcome);
+  });
+
+  eventSource.addEventListener("rover:obstacle", (e) => {
+    onObstacle(JSON.parse(e.data));
   });
 }
 
@@ -4160,6 +4183,17 @@ onUnmounted(() => {
                       :disabled="activeCones.length === 0 || roverMode === 'manual' || (stopping && (roverMode === 'executing' || roverMode === 'stopped'))"
                     >{{ pathBtnLabel }}</button>
                   </div>
+                  <!-- Obstacle alert — the rover auto-paused on a corridor
+                       obstacle. Persistent (driven by server state) so a tab
+                       opened after the event still sees it; clears on resume. -->
+                  <div v-if="roverStatus.obstacle && roverStatus.obstacle.active" class="obstacle-alert">
+                    <div class="obstacle-alert-title">
+                      ⚠ 주행 경로 장애물 — 미션 자동 일시정지됨<span
+                        v-if="roverStatus.obstacle.nearest_m != null"> (약 {{ roverStatus.obstacle.nearest_m.toFixed(1) }} m 앞)</span>
+                    </div>
+                    <div class="obstacle-alert-hint">카메라로 확인 후 수동 제어로 비켜 운전하고 재개하세요.</div>
+                  </div>
+
                   <!-- Soft pause / resume — shown while a mission is in progress.
                        Pause holds without E-Stop so the operator can drive
                        manually around an obstacle, then resume from the cone. -->
@@ -5082,6 +5116,16 @@ onUnmounted(() => {
 
 /* Rover controls */
 .rover-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.obstacle-alert {
+  margin: 0.5rem 0;
+  padding: 0.6rem 0.75rem;
+  border: 2px solid #ef4444;
+  border-radius: 6px;
+  background: color-mix(in srgb, #ef4444 14%, var(--bg-secondary));
+  color: var(--text-primary);
+}
+.obstacle-alert-title { font-weight: 700; font-size: 0.9rem; }
+.obstacle-alert-hint { margin-top: 0.25rem; font-size: 0.82rem; color: var(--text-secondary); }
 .camera-view {
   margin-top: 0.5rem;
   border: 1px solid var(--border-primary);

@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""FSK rover perception node (Phase 3).
+
+Single owner of the USB stereo webcam. One capture loop serves two independent
+concerns off the same device (a UVC node allows only one opener, so they must
+share one loop):
+
+  - Streaming (operator-driven): while the server reports an operator is
+    watching (CloudLink.stream_wanted), crop one eye, JPEG-encode, POST to the
+    MJPEG relay. Unchanged from Phase 2.
+  - Obstacle detection (mission-driven): while the navigator is NAVIGATING and
+    a stereo calibration is loaded, run stereo depth on the raw side-by-side
+    frame at a low rate; on a debounced obstacle in the driving corridor,
+    publish /rover/perception/obstacle (Bool). The navigator pauses the mission
+    LOCALLY on the rising edge, so the control decision never leaves the Pi and
+    survives an uplink blip. A best-effort POST to /api/rover/obstacle asks the
+    server to alert the operator + auto-open the camera (the human-facing parts
+    that need the server regardless).
+
+Published topics:
+    /rover/perception/obstacle (std_msgs/Bool) - debounced corridor obstacle
+
+Subscribed topics:
+    /rover/nav/state (std_msgs/String) - gates detection to mission driving
+"""
+
+import os
+import sys
+import threading
+import time
+
+import cv2
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from std_msgs.msg import Bool, String
+
+from cloud_link import CloudLink
+import stereo
+
+
+def _env(name, default=None):
+    v = os.environ.get(name)
+    return v if v not in (None, "") else default
+
+
+def _env_int(name, default):
+    try:
+        return int(_env(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+# Linger before releasing the camera when neither streaming nor detecting, so a
+# flapping viewer / a brief IDLE between waypoints doesn't thrash the UVC device
+# (many cams wedge on rapid reopen).
+STOP_LINGER_S = 3.0
+# Detection runs only while the navigator reports this state — the rover is
+# driving under autonomy and could drive INTO something. SETTLING/SPRAYING are
+# stationary at a cone, so an obstacle there isn't a collision risk.
+DRIVING_STATE = "NAVIGATING"
+
+
+def open_capture(device, width, height, log):
+    """Open the first working camera. Returns a cv2.VideoCapture or None."""
+    if device is not None:
+        candidates = [int(device) if str(device).isdigit() else device]
+    else:
+        candidates = list(range(10))  # auto-probe /dev/video0..9
+    for dev in candidates:
+        cap = cv2.VideoCapture(dev)
+        if cap.isOpened():
+            # Prefer hardware MJPG so we don't pay a YUYV → re-encode round trip.
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            # isOpened() is not enough: a metadata node (or a busy device) can
+            # open but never deliver frames. Require a real grab so auto-probe
+            # falls through to the actual capture node.
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                log(f"opened camera {dev!r} ({width}x{height})")
+                return cap
+            log(f"device {dev!r} opened but yields no frames; skipping")
+        cap.release()
+    log("no usable camera device found")
+    return None
+
+
+def crop_view(frame, view):
+    """For a side-by-side stereo frame, crop one sensor for a clean stream."""
+    if view not in ("left", "right"):
+        return frame
+    w = frame.shape[1]
+    half = w // 2
+    return frame[:, :half] if view == "left" else frame[:, half:half * 2]
+
+
+class PerceptionNode(Node):
+    def __init__(self):
+        super().__init__("perception_node")
+        self._running = True
+
+        self._server_url = (_env("SERVER_URL") or "").rstrip("/")
+        secret = _env("INTERNAL_SECRET", "")
+        allow_http = (_env("SERVER_URL_ALLOW_HTTP", "false") or "").lower() == "true"
+
+        self._device = _env("CAMERA_DEVICE")  # None → auto-probe
+        self._width = _env_int("CAMERA_WIDTH", 1280)
+        self._height = _env_int("CAMERA_HEIGHT", 480)
+        self._fps = max(1, _env_int("CAMERA_FPS", 8))
+        self._quality = min(100, max(1, _env_int("CAMERA_JPEG_QUALITY", 70)))
+        self._view = (_env("CAMERA_VIEW", "left") or "left").lower()
+        self._detect_fps = max(1, _env_int("DETECT_FPS", 4))
+        self._detect_master = (_env("OBSTACLE_DETECTION", "true") or "").lower() != "false"
+
+        # Cap OpenCV's thread pool so block matching / encode can't fan out
+        # across every core and stall the navigator's control tick on the
+        # shared Pi. (StereoDepth also sets this; doing it here covers the
+        # encode path when no calibration is loaded.)
+        cfg = stereo.config_from_env()
+        try:
+            cv2.setNumThreads(max(1, int(cfg.cv_threads)))
+        except Exception:  # noqa: BLE001 - non-fatal tuning call
+            pass
+
+        self._detector = stereo.StereoDepth(cfg)
+        self._debouncer = stereo.EdgeDebouncer(
+            on_frames=_env_int("OBSTACLE_ON_FRAMES", 3),
+            off_frames=_env_int("OBSTACLE_OFF_FRAMES", 5),
+        )
+        if self._detector.enabled:
+            self.get_logger().info(
+                f"obstacle detection ENABLED (calib {cfg.calib_path}, "
+                f"ROI {cfg.roi}, band {cfg.near_m}-{cfg.far_m} m)")
+        else:
+            self.get_logger().warn(
+                "obstacle detection DISABLED — no usable stereo calibration at "
+                f"{cfg.calib_path}. Run stereo_calibrate.py. Streaming still works.")
+
+        self._cloud = CloudLink(self._server_url, secret, allow_http,
+                                log=self.get_logger().info)
+        self._cloud.start()
+
+        reliable = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        self._pub_obstacle = self.create_publisher(
+            Bool, "/rover/perception/obstacle", reliable)
+        # Latched, matching navigator's TRANSIENT_LOCAL nav/state publisher: if
+        # this node (re)starts mid-mission (camera udev replug, auto-update), it
+        # must get the CURRENT nav state at once — otherwise detection would stay
+        # off until the next state transition.
+        state_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                               durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.create_subscription(String, "/rover/nav/state", self._on_nav_state, state_qos)
+
+        self._nav_state = ""
+        self._detect_active = False
+        self._published_obstacle = False
+
+        self._worker = threading.Thread(target=self._capture_loop, daemon=True)
+        self._worker.start()
+        self.get_logger().info("Perception node started")
+
+    def _on_nav_state(self, msg):
+        self._nav_state = msg.data
+
+    def _detection_wanted(self):
+        return (self._detect_master and self._detector.enabled
+                and self._nav_state == DRIVING_STATE)
+
+    def _publish_obstacle(self, present):
+        msg = Bool()
+        msg.data = bool(present)
+        self._pub_obstacle.publish(msg)
+
+    def _set_detect_active(self, active):
+        """Track the detect-active edge; clear the signal when detection stops.
+
+        When detection deactivates (mission left NAVIGATING — e.g. we just
+        auto-paused), drop the debounce run and assert 'no obstacle' so a stale
+        True can't linger on the topic into the next driving stretch.
+        """
+        if active == self._detect_active:
+            return
+        self._detect_active = active
+        if not active:
+            self._debouncer.reset()
+            if self._published_obstacle:
+                self._publish_obstacle(False)
+                self._published_obstacle = False
+
+    def _run_detection(self, sbs_frame):
+        obstacle, info = self._detector.detect(sbs_frame)
+        state, _rising = self._debouncer.update(obstacle)
+        if state != self._published_obstacle:
+            self._publish_obstacle(state)
+            self._published_obstacle = state
+            if state:
+                self.get_logger().warn(f"OBSTACLE in driving corridor: {info}")
+                self._cloud.post_obstacle({"reason": "stereo", **info})
+            else:
+                self.get_logger().info("obstacle cleared")
+
+    def _capture_loop(self):
+        cap = None
+        idle_deadline = None
+        last_detect = 0.0
+        stream_interval = 1.0 / self._fps
+        detect_interval = 1.0 / self._detect_fps
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self._quality]
+
+        while self._running:
+            stream = self._cloud.stream_wanted.is_set()
+            detect = self._detection_wanted()
+            self._set_detect_active(detect)
+
+            if not (stream or detect):
+                # Release the device after a short linger (avoid UVC thrash).
+                now = time.monotonic()
+                if cap is not None:
+                    if idle_deadline is None:
+                        idle_deadline = now + STOP_LINGER_S
+                    elif now >= idle_deadline:
+                        cap.release()
+                        cap = None
+                        idle_deadline = None
+                time.sleep(0.2)
+                continue
+            idle_deadline = None
+
+            if cap is None:
+                cap = open_capture(self._device, self._width, self._height,
+                                   self.get_logger().warn)
+                if cap is None:
+                    time.sleep(1.0)  # camera may be unplugged; retry
+                    continue
+
+            t0 = time.monotonic()
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                self.get_logger().warn("frame grab failed; reopening device")
+                cap.release()
+                cap = None
+                time.sleep(0.5)
+                continue
+
+            if stream:
+                ok2, buf = cv2.imencode(".jpg", crop_view(frame, self._view),
+                                        encode_params)
+                # Re-check stream_wanted: a camera-stop may have arrived during
+                # read/encode, and we shouldn't push a frame nobody's watching.
+                if ok2 and self._cloud.stream_wanted.is_set():
+                    self._cloud.post_frame(buf.tobytes())
+
+            if detect and (t0 - last_detect) >= detect_interval:
+                last_detect = t0
+                self._run_detection(frame)
+
+            # Capture at the stream rate when watched, else the (slower) detect
+            # rate — no point grabbing faster than the only active consumer.
+            target = stream_interval if stream else detect_interval
+            dt = time.monotonic() - t0
+            if dt < target:
+                time.sleep(target - dt)
+
+        if cap is not None:
+            cap.release()
+
+    def destroy_node(self):
+        self._running = False
+        self._cloud.stop()
+        worker = getattr(self, "_worker", None)
+        if worker is not None:
+            worker.join(timeout=3.0)
+        super().destroy_node()
+
+
+def main(args=None):
+    server_url = (_env("SERVER_URL") or "").rstrip("/")
+    allow_http = (_env("SERVER_URL_ALLOW_HTTP", "false") or "").lower() == "true"
+    if not server_url:
+        print("[perception] FATAL: SERVER_URL not set", flush=True)
+        sys.exit(1)
+    if not server_url.startswith("https://") and not allow_http:
+        print(f"[perception] FATAL: SERVER_URL must be https:// (got {server_url!r}); "
+              "set SERVER_URL_ALLOW_HTTP=true to override on a trusted network",
+              flush=True)
+        sys.exit(1)
+    if not _env("INTERNAL_SECRET", ""):
+        # Exit non-zero rather than retry forever: the server denies every
+        # request without the secret, so a silent loop would show the unit
+        # 'active' while nothing works. Restart=on-failure surfaces it.
+        print("[perception] FATAL: INTERNAL_SECRET not set", flush=True)
+        sys.exit(1)
+
+    rclpy.init(args=args)
+    node = PerceptionNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+if __name__ == "__main__":
+    main()

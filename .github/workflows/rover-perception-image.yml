@@ -38,6 +38,13 @@ jobs:
       - name: Compile perception sources
         run: python3 -m compileall course/rover/perception
 
+      - name: Run perception pytest
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pytest numpy
+          cd course/rover/perception
+          python3 -m pytest test/ -q
+
   build:
     runs-on: ubuntu-24.04-arm
     needs: verify

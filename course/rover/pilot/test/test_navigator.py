@@ -573,6 +573,55 @@ def test_resume_ignored_when_not_paused(nav):
         assert nav._state == s
 
 
+# ── Obstacle auto-pause (perception → navigator, local) ────────────────────
+
+class _Obs:
+    def __init__(self, present):
+        self.data = present
+
+
+def test_obstacle_rising_edge_pauses_while_navigating(nav):
+    nav._state = State.NAVIGATING
+    nav._cur_wp_idx = 0
+    nav._on_obstacle(_Obs(True))
+    assert nav._state == State.PAUSED
+    assert nav._obstacle_present is True
+
+
+def test_obstacle_ignored_when_not_navigating(nav):
+    # SETTLING/SPRAYING are stationary at a cone (no collision risk) and the
+    # idle/fault states have no driving to interrupt — obstacle must be a no-op,
+    # even though SETTLING/SPRAYING are otherwise pausable by the operator.
+    for s in (State.IDLE, State.SETTLING, State.SPRAYING, State.PAUSED,
+              State.EMERGENCY_STOP, State.ERROR):
+        nav._state = s
+        nav._obstacle_present = False
+        nav._on_obstacle(_Obs(True))
+        assert nav._state == s
+
+
+def test_obstacle_held_true_does_not_repause(nav):
+    nav._state = State.NAVIGATING
+    nav._on_obstacle(_Obs(True))
+    assert nav._state == State.PAUSED
+    # Operator resumes while the detector still asserts True (no clear yet). The
+    # held signal is not a rising edge, so it must NOT immediately re-pause.
+    nav._state = State.NAVIGATING
+    nav._on_obstacle(_Obs(True))
+    assert nav._state == State.NAVIGATING
+
+
+def test_obstacle_rearms_after_clear(nav):
+    nav._state = State.NAVIGATING
+    nav._on_obstacle(_Obs(True))
+    assert nav._state == State.PAUSED
+    nav._state = State.NAVIGATING
+    nav._on_obstacle(_Obs(False))      # corridor cleared → re-arm
+    assert nav._obstacle_present is False
+    nav._on_obstacle(_Obs(True))       # fresh rising edge → pause again
+    assert nav._state == State.PAUSED
+
+
 def test_paused_holds_through_gps_loss(nav, monkeypatch):
     # Unlike an active driving state, PAUSED is an intentional hold: a stale GPS
     # clock must NOT trip ERROR (the operator may be manually clearing an

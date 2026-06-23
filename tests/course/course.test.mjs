@@ -1273,6 +1273,127 @@ describe('Mission soft pause / resume', () => {
   });
 });
 
+// ─── Obstacle auto-pause (perception → server reflection + alert) ───────
+describe('Mission obstacle auto-pause (perception)', () => {
+  let srv, url, cli, localDb, localDbPath;
+
+  async function connectRover() {
+    const ac = new AbortController();
+    const res = await fetch(`${url}/api/rover/stream`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ac.signal,
+    });
+    assert.equal(res.status, 200);
+    const reader = res.body.getReader();
+    const drained = (async () => {
+      try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
+    })();
+    await new Promise((r) => setTimeout(r, 60));
+    return async () => { ac.abort(); await drained; await new Promise((r) => setTimeout(r, 120)); };
+  }
+
+  const exec = () => cli.post('/api/rover/execute', {
+    body: { waypoints: [{ lat: 35.00001, lng: 126.00001 }, { lat: 35.00002, lng: 126.00002 }] },
+    cookie: adminCookie,
+  });
+  const obstacle = (body) => cli.post('/api/rover/obstacle', {
+    body: body || {}, headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+  });
+  const telemetry = (nav_state) => cli.post('/api/rover/telemetry', {
+    body: { nav_state }, headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+  });
+  const status = async () => (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+
+  before(async () => {
+    localDbPath = tmpDbPath();
+    const result = createCourseApp({ dbPath: localDbPath });
+    localDb = result.db;
+    const started = await startServer(result.app);
+    srv = started.server;
+    url = started.baseUrl;
+    cli = createClient(url);
+    await cli.post('/api/rover/position', {
+      body: { lat: 35.0, lng: 126.0 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+  });
+
+  after(async () => {
+    await stopServer(srv);
+    localDb.close();
+    cleanup(localDbPath);
+  });
+
+  it('is internal-strict: a browser admin cannot spoof an obstacle', async () => {
+    const pub = await fetch(`${url}/api/rover/obstacle`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    assert.ok(pub.status === 401 || pub.status === 403, 'public obstacle POST denied');
+    const adm = await fetch(`${url}/api/rover/obstacle`, {
+      method: 'POST', headers: { Cookie: adminCookie, 'Content-Type': 'application/json' }, body: '{}',
+    });
+    assert.ok(![200, 204].includes(adm.status), `browser admin must not succeed (got ${adm.status})`);
+  });
+
+  it('does not pause when there is no running mission (paused:false)', async () => {
+    const res = await obstacle({ nearest_m: 1.2 });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).paused, false);
+    const st = await status();
+    assert.notEqual(st.mission_progress.status, 'paused');
+  });
+
+  it("reflects the rover's local pause and raises an obstacle alert", async () => {
+    const disconnect = await connectRover();
+    assert.equal((await exec()).status, 200);
+
+    const res = await obstacle({ nearest_m: 0.8 });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).paused, true);
+
+    const st = await status();
+    assert.equal(st.mission_progress.status, 'paused');
+    assert.equal(st.obstacle.active, true);
+    assert.equal(st.obstacle.nearest_m, 0.8);
+
+    // Resume clears the obstacle hold and returns the mission to running.
+    assert.equal((await cli.post('/api/rover/resume', { cookie: adminCookie })).status, 200);
+    const st2 = await status();
+    assert.equal(st2.mission_progress.status, 'running');
+    assert.equal(st2.obstacle.active, false);
+
+    await disconnect();
+  });
+
+  it('reconciles a rover-local pause from telemetry when the alert was lost', async () => {
+    const disconnect = await connectRover();
+    assert.equal((await exec()).status, 200);
+
+    // The obstacle POST was lost (uplink blip): the rover paused itself locally
+    // and only telemetry reports PAUSED. The server reconciles so resume works.
+    await telemetry('PAUSED');
+    const st = await status();
+    assert.equal(st.mission_progress.status, 'paused', 'PAUSED telemetry reconciles to paused');
+    assert.equal(st.obstacle.active, true, 'reconcile also raises the operator alert');
+
+    await cli.post('/api/rover/resume', { cookie: adminCookie });
+    await disconnect();
+  });
+
+  it('does not let a stale PAUSED frame bounce a just-resumed mission (grace window)', async () => {
+    const disconnect = await connectRover();
+    assert.equal((await exec()).status, 200);
+    assert.equal((await cli.post('/api/rover/pause', { cookie: adminCookie })).status, 200);
+    // Resume, then a stale in-flight PAUSED telemetry arrives immediately after.
+    assert.equal((await cli.post('/api/rover/resume', { cookie: adminCookie })).status, 200);
+    await telemetry('PAUSED');
+    const st = await status();
+    assert.equal(st.mission_progress.status, 'running',
+      'a PAUSED frame within the resume grace window must not re-pause');
+    await disconnect();
+  });
+});
+
 // ─── Mission schema migration (old DB → new columns + statuses) ─────────
 describe('Mission schema migration', () => {
   it('migrates an old-schema mission table, preserving rows and adding progress columns', async () => {
