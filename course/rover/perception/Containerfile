@@ -1,32 +1,47 @@
-# FSK rover perception container — captures the USB stereo webcam and streams
-# JPEG frames to the course server's MJPEG relay (Phase 2). Phase 3 will add
-# stereo depth + obstacle detection here (hence the OpenCV base, kept out of
-# the lean ROS `pilot` image).
+# FSK rover perception container — owns the USB stereo webcam and serves two
+# concerns off it:
+#   - Phase 2: streams JPEG frames to the course server's MJPEG relay (operator
+#     live view), capturing only while watched.
+#   - Phase 3: runs stereo depth + obstacle detection and, on a corridor
+#     obstacle, publishes /rover/perception/obstacle so the navigator pauses the
+#     mission LOCALLY over ROS (no server round trip; survives an uplink blip).
+#
+# Shares pilot's ROS 2 Jazzy base so the detector can publish onto the same ROS
+# graph as the navigator — both run --network=host with one ROS_DOMAIN_ID, so
+# DDS discovery is automatic. podman dedupes the shared ros-base layers on the
+# rover, so the marginal cost over the pilot image is just the OpenCV wheel
+# (the heavy CV that's deliberately kept out of the lean pilot image).
 #
 # Built by .github/workflows/rover-perception-image.yml and pushed to
 # ghcr.io/luftaquila/fsk-rover-perception:{candidate,edge,vX.Y.Z}.
-# Pulled at runtime by the host's perception.service systemd unit, which
-# invokes /usr/local/bin/perception-run to `podman run` this image with the
-# /dev/video* nodes that are present.
+# Pulled at runtime by the host's perception.service, which invokes
+# /usr/local/bin/perception-run to `podman run` this image with the /dev/video*
+# nodes that are present.
 
-FROM docker.io/library/python:3.13-slim
+FROM docker.io/ros:jazzy-ros-base
 
-# opencv-python-headless still dlopens libGL + glib at import time even though
-# it ships no GUI; install the minimal shared libs so `import cv2` works on the
-# slim base.
+# python3-pip for the OpenCV/requests wheels; libgl1 + libglib2.0-0 because
+# opencv-python-headless still dlopens libGL + glib at import time.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+         python3-pip \
          libgl1 \
          libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /opt/perception/requirements.txt
-RUN pip install --no-cache-dir -r /opt/perception/requirements.txt
+RUN pip install --no-cache-dir --break-system-packages -r /opt/perception/requirements.txt
 
-COPY camera_streamer.py /opt/perception/camera_streamer.py
+# All perception sources: perception_node.py (entrypoint), cloud_link.py,
+# stereo.py, and stereo_calibrate.py (run on-demand via `podman run ... python3
+# stereo_calibrate.py`, see README).
+COPY *.py /opt/perception/
 WORKDIR /opt/perception
 
 # Opt in to `podman auto-update` (driven by the host's podman-auto-update.timer).
 LABEL io.containers.autoupdate=registry
 
-ENTRYPOINT ["python3", "camera_streamer.py"]
+# Source ROS so rclpy / std_msgs import, then exec the node so it gets PID 1's
+# SIGTERM from `podman stop` for a clean shutdown.
+ENTRYPOINT ["/bin/bash", "-lc", \
+    ". /opt/ros/jazzy/setup.bash && exec python3 /opt/perception/perception_node.py"]

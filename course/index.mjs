@@ -205,7 +205,11 @@ const app = createApp({ express }, (req) => {
     // (deny browsers) for the same reason as /stream: a browser must not be
     // able to occupy the single camera-control slot or inject frames.
     p === "/api/rover/camera/control" ||
-    p === "/api/rover/camera"
+    p === "/api/rover/camera" ||
+    // Obstacle reports come from the perception node only. Internal-strict so a
+    // browser can't spoof an obstacle to pause a running mission + raise a false
+    // operator alarm.
+    p === "/api/rover/obstacle"
   ) {
     return isInternalRequest(req) ? null : "deny";
   }
@@ -667,6 +671,11 @@ app.delete("/api/cones/:id", (req, res) => {
 let roverClient = null;
 const roverPendingResolves = [];
 let lastRoverPosition = null; // { lat, lng, at: epoch ms }
+// When the operator last issued a resume. Telemetry's PAUSED→paused reconcile
+// (below) ignores frames within this window so a stale PAUSED frame in flight at
+// resume time can't bounce a just-resumed mission back to paused.
+let roverLastResumeAt = 0;
+const ROVER_PAUSE_RECONCILE_GRACE_MS = 5000;
 
 // Nav states in which the rover OWNS the velocity stream (actively executing a
 // mission). Mirrors navigator_node's State enum and the web ACTIVE_NAV_STATES.
@@ -729,6 +738,11 @@ function startMission(waypoints, actor, courseId) {
     actor || null,
   );
   currentMissionId = Number(info.lastInsertRowid);
+  // A fresh mission starts with a clean slate — never inherit a previous run's
+  // obstacle alert, and scope the resume grace window to THIS mission so a
+  // prior mission's resume can't suppress this one's pause reconcile.
+  roverState.obstacle = { active: false, at: 0, nearest_m: null };
+  roverLastResumeAt = 0;
   roverState.mission_progress = {
     mission_id: currentMissionId,
     waypoints,
@@ -742,6 +756,8 @@ function endMission(status) {
   if (currentMissionId == null) return;
   finishMission.run(Date.now(), status, Date.now(), currentMissionId);
   currentMissionId = null;
+  // The mission is over — any obstacle hold is moot; clear the operator alert.
+  roverState.obstacle = { active: false, at: 0, nearest_m: null };
   roverState.mission_progress = {
     mission_id: null,
     waypoints: [],
@@ -839,6 +855,10 @@ const roverState = {
   battery: null, // { voltage, percent, source }
   ntrip: null, // { host, port, mountpoint, fail_count, last_error, last_correction_at, bytes_received }
   gps: null, // { h_acc, v_acc, altitude, speed, heading, num_sv, pdop, tdop } from rover GPS metrics
+  // Most recent driving-corridor obstacle reported by the perception node. The
+  // rover auto-pauses the mission LOCALLY over ROS; this only mirrors it for the
+  // operator UI (alert banner + auto-open camera). { active, at, nearest_m }
+  obstacle: { active: false, at: 0, nearest_m: null },
   // Session-scoped per-mission progress used for tab-close recovery — the
   // server acts as the source of truth so reloading the UI rebuilds the
   // executing/stopped view exactly.
@@ -1065,6 +1085,33 @@ app.post("/api/rover/telemetry", (req, res) => {
     setMissionStatus.run("running", Date.now(), currentMissionId);
     roverState.mission_progress.status = "running";
     logger.log(req, "mission.resumed", { mission_id: currentMissionId, nav_state }, "rover");
+  }
+
+  // Reflect a rover-initiated pause that we DIDN'T already record (the obstacle
+  // alert / pause command that would have flipped status was lost — e.g. an
+  // uplink blip while the rover paused itself locally on an obstacle). This is
+  // the running→paused direction only — it never auto-un-pauses (paused→running
+  // stays operator-driven). The grace window prevents a stale PAUSED frame in
+  // flight at resume time from bouncing a just-resumed mission back to paused.
+  if (currentMissionId != null
+      && (roverState.mission_progress.status === "running"
+          || roverState.mission_progress.status === "interrupted")
+      && nav_state === "PAUSED"
+      && (now - roverLastResumeAt) > ROVER_PAUSE_RECONCILE_GRACE_MS) {
+    setMissionStatus.run("paused", now, currentMissionId);
+    roverState.mission_progress.status = "paused";
+    // A rover reporting PAUSED that we didn't record as paused can only be an
+    // obstacle auto-pause (an operator pause goes through /api/rover/pause, which
+    // sets status=paused). This also rescues the 'interrupted + PAUSED' corner:
+    // an SSE drop marks the mission interrupted, then the rover pauses itself on
+    // an obstacle — without this it would stay interrupted (the reconnect
+    // interrupted→running flip needs an ACTIVE nav state, which PAUSED is not)
+    // and /api/rover/resume (requires 'paused') would 409. Raise the operator
+    // alert too — the lost-POST backup must not pause silently. nearest_m
+    // unknown on this path.
+    roverState.obstacle = { active: true, at: now, nearest_m: null };
+    broadcastEvent("rover:obstacle", { at: now, nearest_m: null, paused: true });
+    logger.warn(req, "mission.paused.reconciled", { mission_id: currentMissionId }, "rover");
   }
 
   // Mission lifecycle: end on natural completion (driving → IDLE) or rover ERROR.
@@ -1444,9 +1491,61 @@ app.post("/api/rover/resume", (req, res) => {
   }
   setMissionStatus.run("running", Date.now(), currentMissionId);
   roverState.mission_progress.status = "running";
+  // Clear any obstacle hold and open the reconcile grace window so a stale
+  // PAUSED telemetry frame in flight can't immediately re-pause the mission.
+  roverState.obstacle = { active: false, at: 0, nearest_m: null };
+  roverLastResumeAt = Date.now();
   broadcastRoverStatus();
   logger.log(req, "rover.resume", { mission_id: currentMissionId }, "rover");
   res.json({ resumed: true });
+});
+
+// POST /api/rover/obstacle - perception이 주행 경로 장애물 감지 보고 (internal)
+// 로버는 이미 ROS로 미션을 로컬 PAUSE했다(서버 왕복·blip 무관). 이 엔드포인트는
+// 사람 대응 부분만 담당: (1) 미션 상태를 paused로 미러링해 재개 버튼을 활성화,
+// (2) 운영자에게 경보를 broadcast해 배너 + 카메라 자동 표시를 트리거한다.
+// pause-mission SSE는 보내지 않는다 — 로버가 스스로 멈췄으므로 중복 명령이다.
+app.post("/api/rover/obstacle", (req, res) => {
+  const body = req.body || {};
+  const nearest = typeof body.nearest_m === "number" ? body.nearest_m : null;
+  const at = Date.now();
+  // No active mission → nothing to pause, and an alert nothing could clear. A
+  // best-effort obstacle POST from the final NAVIGATING cycle can land just
+  // after the mission ended (endMission nulled currentMissionId); raising the
+  // persistent banner then would stick until the next mission (resume 409s).
+  // No-op, mirroring /api/rover/waypoint_reached.
+  if (currentMissionId == null) {
+    return res.json({ ok: true, paused: false });
+  }
+  // Drop a stale obstacle POST that was in flight when the operator just
+  // resumed: reflecting it would re-pause + re-alert a mission they deliberately
+  // resumed (the rover already cleared its local obstacle edge on resume). Same
+  // grace window the telemetry reconcile uses. If the obstacle genuinely
+  // persists, the rover re-pauses LOCALLY and the post-grace telemetry reconcile
+  // mirrors it — nothing is permanently lost.
+  if (at - roverLastResumeAt <= ROVER_PAUSE_RECONCILE_GRACE_MS) {
+    logger.log(req, "rover.obstacle", { ignored: "resume_grace" }, "rover");
+    return res.json({ ok: true, paused: false, ignored: true });
+  }
+  // Mirror the rover's local pause so /api/rover/resume (status==='paused') is
+  // reachable. From 'running' or 'interrupted' (the rover can pause itself on an
+  // obstacle while its mission SSE is briefly dropped); never command the rover.
+  let reflected = false;
+  if (currentMissionId != null
+      && (roverState.mission_progress.status === "running"
+          || roverState.mission_progress.status === "interrupted")) {
+    setMissionStatus.run("paused", at, currentMissionId);
+    roverState.mission_progress.status = "paused";
+    reflected = true;
+  }
+  roverState.obstacle = { active: true, at, nearest_m: nearest };
+  broadcastRoverStatus();
+  // Discrete alert: drives the one-shot banner + camera auto-open in the UI
+  // (late joiners still see it via roverState.obstacle in the status snapshot).
+  broadcastEvent("rover:obstacle", { at, nearest_m: nearest, paused: reflected });
+  logger.warn(req, "rover.obstacle",
+    { mission_id: currentMissionId, nearest_m: nearest, reflected }, "rover");
+  res.json({ ok: true, paused: reflected });
 });
 
 // POST /api/rover/calibrate-battery - 배터리 전압 1점 게인 보정 (admin)
@@ -1801,6 +1900,12 @@ app.get("/api/rover/camera/control", (req, res) => {
     try { cameraControlClient.end(); } catch {}
   }
   cameraControlClient = res;
+  // Audit the perception container's control-channel attach/detach. Without
+  // this there is NO log trail for "is the camera/perception process connected"
+  // (camera_connected lives only in the live /camera/status response), which
+  // makes "the camera shows nothing" hard to triage — connected vs. never
+  // attached look identical in the logs.
+  logger.log(req, "rover.camera.control_connected", null, "rover");
   // If viewers are already waiting, start capturing immediately.
   if (cameraViewers.size > 0) sendCameraControl("camera-start");
   const heartbeat = setInterval(() => {
@@ -1808,7 +1913,10 @@ app.get("/api/rover/camera/control", (req, res) => {
   }, 30000);
   req.on("close", () => {
     clearInterval(heartbeat);
-    if (cameraControlClient === res) cameraControlClient = null;
+    if (cameraControlClient === res) {
+      cameraControlClient = null;
+      logger.warn(req, "rover.camera.control_closed", null, "rover");
+    }
   });
 });
 

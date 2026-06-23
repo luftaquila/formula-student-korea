@@ -31,6 +31,7 @@ Subscribed:
     /rover/cmd/execute_path (std_msgs/String)       — JSON waypoints
     /rover/cmd/emergency_stop  (std_msgs/Empty)
     /rover/cmd/clear_emergency (std_msgs/Empty)
+    /rover/perception/obstacle (std_msgs/Bool)       — corridor obstacle → local auto-pause
     /rover/spray/done      (std_msgs/Empty)
 
 Published:
@@ -52,10 +53,10 @@ from math import atan2, radians, degrees, hypot, cos, sin, tan, isfinite, pi
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import NavSatFix
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float64, String, Int32, Empty
+from std_msgs.msg import Bool, Float64, String, Int32, Empty
 
 from pilot.lib.geo_utils import (
     enu_from_gps, fit_chord_heading, haversine, normalize_angle,
@@ -239,7 +240,17 @@ class NavigatorNode(Node):
 
         # Publishers.
         self._pub_velocity = self.create_publisher(Twist, '/rover/cmd/velocity', 10)
-        self._pub_state = self.create_publisher(String, '/rover/nav/state', 10)
+        # Latched (TRANSIENT_LOCAL, depth 1): nav/state is a CURRENT-STATE topic,
+        # so a late-joining subscriber must get the last state immediately. The
+        # perception node restarts independently (camera udev replug, auto-update)
+        # and gates obstacle detection on this — without latching, a perception
+        # restart mid-NAVIGATING would never see the (already-sent) state and
+        # would silently leave detection off for the rest of the mission. A
+        # TRANSIENT_LOCAL publisher is still compatible with the bridge's VOLATILE
+        # subscriber (offered durability >= requested).
+        state_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                               durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._pub_state = self.create_publisher(String, '/rover/nav/state', state_qos)
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self._pub_waypoint_reached = self.create_publisher(Int32, '/rover/nav/waypoint_reached', reliable_qos)
         self._pub_spray_result = self.create_publisher(String, '/rover/spray/result', reliable_qos)
@@ -271,6 +282,10 @@ class NavigatorNode(Node):
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_emergency, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/pause', self._on_pause, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/resume', self._on_resume, reliable_qos)
+        # Obstacle detector (perception container) — a debounced Bool. A rising
+        # edge while NAVIGATING auto-pauses the mission locally (no server round
+        # trip), so the rover stops itself even during an uplink blip.
+        self.create_subscription(Bool, '/rover/perception/obstacle', self._on_obstacle, reliable_qos)
         self.create_subscription(Empty, '/rover/spray/done', self._on_spray_done, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/calibrate_antenna', self._on_calibrate_antenna, reliable_qos)
         self.create_subscription(String, '/rover/cmd/set_antenna_offset', self._on_set_antenna_offset, reliable_qos)
@@ -279,6 +294,9 @@ class NavigatorNode(Node):
 
         # ── runtime state ────────────────────────────────────────────────
         self._state = State.IDLE
+        # Last value seen on /rover/perception/obstacle, for edge detection — we
+        # auto-pause on the rising edge only, never re-pause on a held signal.
+        self._obstacle_present = False
         self._waypoints = []           # original [{lat, lng}, ...] from operator
         self._segments = []            # planner output; len = 2 × len(waypoints) (+2 if return)
         self._cur_seg_idx = 0
@@ -670,6 +688,7 @@ class NavigatorNode(Node):
         """
         if self._state != State.PAUSED:
             return
+        # (_set_state(NAVIGATING) below re-arms the obstacle edge.)
         now = time.monotonic()
         self._settle_enter_time = now
         self._spray_enter_time = now
@@ -680,6 +699,28 @@ class NavigatorNode(Node):
         self.get_logger().info('Mission resumed by operator')
         self._set_state(State.NAVIGATING)
         self._replan_from_current_chassis()
+
+    def _on_obstacle(self, msg):
+        """Perception flagged a corridor obstacle — auto-pause if driving.
+
+        Edge-triggered: only the False→True transition acts, so a held signal
+        won't repeatedly re-pause. We gate strictly on NAVIGATING — SETTLING and
+        SPRAYING are stationary at a cone (no collision risk), and pausing from
+        there would be spurious. Reuses _on_pause so the obstacle pause is
+        identical to an operator pause (manual driving stays enabled); the
+        operator clears it by driving around and pressing resume.
+        """
+        present = bool(msg.data)
+        rising = present and not self._obstacle_present
+        self._obstacle_present = present
+        if not rising:
+            return
+        if self._state != State.NAVIGATING:
+            self.get_logger().info(
+                f'obstacle signal ignored: state={self._state.value} (not driving)')
+            return
+        self.get_logger().warn('AUTO-PAUSE: obstacle detected in driving corridor')
+        self._on_pause(None)
 
     def _on_spray_done(self, _msg):
         if self._state != State.SPRAYING:
@@ -1988,6 +2029,13 @@ class NavigatorNode(Node):
         if self._state != new_state:
             self.get_logger().info(f'State: {self._state.value} → {new_state.value}')
             leaving_error = (self._state == State.ERROR and new_state != State.ERROR)
+            if new_state == State.NAVIGATING:
+                # Entering a driving leg — re-arm the obstacle rising-edge so a
+                # stale-True can't suppress the next auto-pause. Covers resume,
+                # new mission, segment advance (SETTLING/SPRAYING→NAVIGATING), and
+                # ERROR recovery — any case where perception may have missed
+                # publishing the clearing False (restart / timing).
+                self._obstacle_present = False
             self._state = new_state
             self._publish_state()
             if leaving_error:

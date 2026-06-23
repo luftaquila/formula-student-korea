@@ -13,7 +13,7 @@ NAME="perception"
 
 DEVS=()
 # USB UVC cameras enumerate as /dev/video* (a stereo cam often exposes two
-# nodes — pass them all; camera_streamer.py opens the first that works).
+# nodes — pass them all; perception_node.py opens the first that works).
 for dev in /dev/video*; do
     [ -e "$dev" ] || continue
     DEVS+=(--device "$dev:$dev")
@@ -35,6 +35,7 @@ exec podman run \
     --label=io.containers.autoupdate=registry \
     --label=PODMAN_SYSTEMD_UNIT=perception.service \
     "${DEVS[@]}" \
+    --volume /var/lib/perception:/var/lib/perception:z \
     --env-file /etc/pilot/pilot.conf \
     --secret internal-secret,type=env,target=INTERNAL_SECRET \
     "$IMAGE"

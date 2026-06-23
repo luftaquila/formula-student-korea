@@ -1,5 +1,5 @@
 [Unit]
-Description=FSK Rover Perception (camera streaming)
+Description=FSK Rover Perception (camera streaming + stereo obstacle detection)
 After=network-online.target podman.socket
 Wants=network-online.target
 # Camera comes and goes at runtime — fsk-perception-replug.service restarts

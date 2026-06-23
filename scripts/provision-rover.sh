@@ -93,7 +93,15 @@ sudo install -d -m 755 /etc/pilot
 # what we want for a non-secret KEY=VALUE file. No explicit chmod —
 # sudoers.d/fsk only whitelists install/tee/podman/systemctl/nmcli/
 # tailscale/bootc.
-printf 'SERVER_URL=%s\nROS_DOMAIN_ID=0\n' "$SERVER_URL" \
+# Camera config for the dual-node "Stereo Vision" cam (each eye a separate
+# /dev/video node at 1280x720, NOT side-by-side):
+#  - CAMERA_HEIGHT=720 matches the eye resolution the cam actually delivers.
+#  - CAMERA_VIEW=full prevents the SBS-crop default (CAMERA_VIEW=left) from
+#    slicing a single eye in half (which looked portrait). NOTE: the perception
+#    node's dual layout streams the left eye whole regardless of CAMERA_VIEW —
+#    this only matters for the crop-based (SBS) image / STEREO_LAYOUT=sbs, where
+#    it must stay 'full'. Detection defaults to dual (left=video0, right=video2).
+printf 'SERVER_URL=%s\nROS_DOMAIN_ID=0\nCAMERA_VIEW=full\nCAMERA_HEIGHT=720\n' "$SERVER_URL" \
     | sudo tee /etc/pilot/pilot.conf >/dev/null
 
 echo "[rover] (re)creating podman secrets"
