@@ -1674,6 +1674,91 @@ describe('Camera relay', () => {
   });
 });
 
+// ─── Stereo calibration (UI-triggered) ──────────────────────────────────
+describe('Stereo calibration trigger', () => {
+  let srv, url, cli, localDb, localDbPath;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const progress = (body) => fetch(`${url}/api/rover/calibration-progress`, {
+    method: 'POST',
+    headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const status = async () => (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+
+  before(async () => {
+    localDbPath = tmpDbPath();
+    const result = createCourseApp({ dbPath: localDbPath });
+    localDb = result.db;
+    const started = await startServer(result.app);
+    srv = started.server; url = started.baseUrl; cli = createClient(url);
+  });
+  after(async () => { await stopServer(srv); localDb.close(); cleanup(localDbPath); });
+
+  it('calibration-progress is internal-strict and updates status', async () => {
+    const pub = await fetch(`${url}/api/rover/calibration-progress`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    assert.ok(pub.status === 401 || pub.status === 403, 'public progress denied');
+    assert.equal((await progress({ phase: 'collecting', captured: 5, target: 20 })).status, 200);
+    let st = await status();
+    assert.equal(st.stereo_calibration.status, 'running');
+    assert.equal(st.stereo_calibration.captured, 5);
+    assert.equal(st.stereo_calibration.target, 20);
+    // done(ok) → status done with the result fields.
+    await progress({ phase: 'done', ok: true, rms: 0.4, baseline_mm: 61.2, pairs: 18 });
+    st = await status();
+    assert.equal(st.stereo_calibration.status, 'done');
+    assert.equal(st.stereo_calibration.rms, 0.4);
+    assert.equal(st.stereo_calibration.baseline_mm, 61.2);
+  });
+
+  it('calibrate-stereo needs admin, a valid square, and a connected perception', async () => {
+    const pub = await fetch(`${url}/api/rover/calibrate-stereo`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ square_m: 0.025 }),
+    });
+    assert.ok(pub.status === 401 || pub.status === 403, 'public denied');
+    assert.equal((await cli.post('/api/rover/calibrate-stereo', { body: { square_m: 5 }, cookie: adminCookie })).status, 400);
+    // No perception control SSE connected → 503.
+    assert.equal((await cli.post('/api/rover/calibrate-stereo', { body: { square_m: 0.025 }, cookie: adminCookie })).status, 503);
+  });
+
+  it('calibrate-stereo emits the calibrate command (with square_m) to perception', async () => {
+    const ac = new AbortController();
+    const ctl = await fetch(`${url}/api/rover/camera/control`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ac.signal,
+    });
+    assert.equal(ctl.status, 200);
+    let text = '';
+    const reader = ctl.body.getReader();
+    const dec = new TextDecoder();
+    const drained = (async () => {
+      try { for (;;) { const { done, value } = await reader.read(); if (done) break; text += dec.decode(value, { stream: true }); } } catch { /* aborted */ }
+    })();
+    await sleep(60);
+
+    assert.equal((await cli.post('/api/rover/calibrate-stereo', { body: { square_m: 0.03 }, cookie: adminCookie })).status, 200);
+    let ok = false;
+    for (let i = 0; i < 20 && !ok; i++) {
+      if (text.includes('event: calibrate') && text.includes('0.03')) ok = true;
+      else await sleep(50);
+    }
+    assert.ok(ok, 'perception control SSE receives calibrate with square_m');
+    assert.equal((await status()).stereo_calibration.status, 'running');
+    // Perception disconnects mid-calibration → status must flip to 'failed' so
+    // the operator isn't locked out (not stuck 'running' forever).
+    ac.abort();
+    await drained.catch(() => {});
+    let failed = false;
+    for (let i = 0; i < 20 && !failed; i++) {
+      if ((await status()).stereo_calibration.status === 'failed') failed = true;
+      else await sleep(50);
+    }
+    assert.ok(failed, 'a perception disconnect mid-calibration flips status to failed');
+  });
+});
+
 describe('Mission telemetry historizes NTRIP link health', () => {
   const ac = new AbortController();
   let missionId;

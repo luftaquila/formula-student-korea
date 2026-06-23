@@ -19,6 +19,7 @@ Tailscale-free: this process connects OUT to the public server, so nothing has
 to reach INTO the rover.
 """
 
+import json
 import threading
 import time
 
@@ -39,6 +40,9 @@ class CloudLink:
         self._running = True
         # Set while an operator is watching (server camera-start..camera-stop).
         self.stream_wanted = threading.Event()
+        # Called with the square size (m) when the server requests a calibration
+        # (operator pressed 교정). Set by the node; runs on the SSE thread.
+        self.on_calibrate = None
         self._last_warn_t = 0.0
         self._sse_thread = None
 
@@ -91,6 +95,18 @@ class CloudLink:
         except requests.RequestException as e:
             self._warn_throttled(f"obstacle POST error: {e}")
 
+    def post_calibration_progress(self, payload):
+        """Report calibration progress / result to the server (→ operator UI)."""
+        try:
+            self._session.post(
+                f"{self.server_url}/api/rover/calibration-progress",
+                json=payload,
+                headers={**self._headers(), "Content-Type": "application/json"},
+                timeout=POST_TIMEOUT_S,
+            )
+        except requests.RequestException as e:
+            self._warn_throttled(f"calibration-progress POST error: {e}")
+
     # ── control SSE ───────────────────────────────────────────────────────────
     def _sse_loop(self):
         delay = 3.0
@@ -119,15 +135,35 @@ class CloudLink:
                       "(check INTERNAL_SECRET)")
         resp.raise_for_status()
         self._log("control SSE connected")
+        event, data_lines = None, []
         for line in resp.iter_lines(decode_unicode=True):
             if not self._running:
                 break
-            if not line or not line.startswith("event: "):
+            if line is None:
                 continue
-            event = line[7:].strip()
-            if event == "camera-start":
-                self.stream_wanted.set()
-            elif event == "camera-stop":
-                self.stream_wanted.clear()
+            if line.startswith("event: "):
+                event = line[7:].strip()
+            elif line.startswith("data: "):
+                data_lines.append(line[6:])
+            elif line == "":                       # blank line ends an event
+                if event:
+                    self._dispatch(event, "\n".join(data_lines))
+                event, data_lines = None, []
+            # ":"-prefixed heartbeats and anything else are ignored.
         resp.close()
         return True
+
+    def _dispatch(self, event, data):
+        if event == "camera-start":
+            self.stream_wanted.set()
+        elif event == "camera-stop":
+            self.stream_wanted.clear()
+        elif event == "calibrate":
+            square_m = 0.025
+            try:
+                square_m = float((json.loads(data or "{}") or {}).get("square_m", 0.025))
+            except (ValueError, TypeError):
+                pass
+            cb = self.on_calibrate
+            if cb is not None:
+                cb(square_m)

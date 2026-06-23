@@ -30,6 +30,7 @@ import threading
 import time
 
 import cv2
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
@@ -135,11 +136,24 @@ class PerceptionNode(Node):
         if self._device is None and self._layout == "dual":
             self._device = "/dev/video0"
 
+        # UI-triggered calibration. cols/rows = INNER corners (must match the
+        # printed board: 9×6). square_m comes from the operator (the calibrate
+        # command). A request from the SSE thread just sets a flag the capture
+        # loop picks up — the collection runs there, never on the SSE thread.
+        self._calib_cols = _env_int("STEREO_CALIB_COLS", 9)
+        self._calib_rows = _env_int("STEREO_CALIB_ROWS", 6)
+        self._calib_count = max(6, _env_int("STEREO_CALIB_COUNT", 20))
+        self._calib_min_shift = _env_int("STEREO_CALIB_MIN_SHIFT_PX", 25)
+        self._calib_timeout_s = _env_int("STEREO_CALIB_TIMEOUT_S", 180)
+        self._calib_lock = threading.Lock()
+        self._calib_request = None  # square_m (m) when a calibration is pending
+
         # Cap OpenCV's thread pool so block matching / encode can't fan out
         # across every core and stall the navigator's control tick on the
         # shared Pi. (StereoDepth also sets this; doing it here covers the
         # encode path when no calibration is loaded.)
         cfg = stereo.config_from_env()
+        self._calib_path = cfg.calib_path
         try:
             cv2.setNumThreads(max(1, int(cfg.cv_threads)))
         except Exception:  # noqa: BLE001 - non-fatal tuning call
@@ -161,6 +175,7 @@ class PerceptionNode(Node):
 
         self._cloud = CloudLink(self._server_url, secret, allow_http,
                                 log=self.get_logger().info)
+        self._cloud.on_calibrate = self._request_calibration
         self._cloud.start()
 
         reliable = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
@@ -232,6 +247,120 @@ class PerceptionNode(Node):
             return None if right_frame is None else (left_frame, right_frame)
         return stereo.split_sbs(left_frame)
 
+    # ── UI-triggered calibration ────────────────────────────────────────────
+    def _request_calibration(self, square_m):
+        """Flag a calibration (called from the SSE thread). The capture loop
+        runs it — never block the SSE thread on the ~minute-long collection."""
+        with self._calib_lock:
+            self._calib_request = float(square_m)
+        self.get_logger().info(f"stereo calibration requested (square={square_m} m)")
+
+    def _take_calib_request(self):
+        with self._calib_lock:
+            sq, self._calib_request = self._calib_request, None
+            return sq
+
+    def _progress(self, payload):
+        self._cloud.post_calibration_progress(payload)
+
+    def _run_calibration(self, square_m):
+        """Collect checkerboard pairs from both eyes, compute + save the
+        calibration, and reload the detector. Runs in the capture thread (the
+        loop has already released its own camera handles). Streams the left eye
+        throughout so the operator can aim the board, and reports progress."""
+        cols, rows = self._calib_cols, self._calib_rows
+        pattern = (cols, rows)
+        target = self._calib_count
+        self.get_logger().info(
+            f"calibration START ({cols}×{rows} inner corners, {square_m} m, "
+            f"target {target} pairs)")
+        self._progress({"phase": "start", "captured": 0, "target": target})
+
+        left_cap = open_capture(self._device, self._width, self._height,
+                                self.get_logger().warn)
+        right_cap = None
+        if self._layout == "dual":
+            right_cap = open_capture(self._right_device, self._width,
+                                     self._height, self.get_logger().warn)
+        if left_cap is None or (self._layout == "dual" and right_cap is None):
+            if left_cap is not None:
+                left_cap.release()
+            if right_cap is not None:
+                right_cap.release()
+            self._progress({"phase": "done", "ok": False, "error": "camera open failed"})
+            return
+
+        objp = stereo.board_object_points(cols, rows, square_m)
+        objpoints, imgL, imgR = [], [], []
+        last_mean = None
+        eye_size = None
+        start = time.monotonic()
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self._quality]
+        try:
+            while len(objpoints) < target and self._running:
+                if time.monotonic() - start > self._calib_timeout_s:
+                    break
+                ok, frame = left_cap.read()
+                if not ok or frame is None:
+                    time.sleep(0.05)
+                    continue
+                if self._layout == "dual":
+                    okr, rframe = right_cap.read()
+                    if not okr or rframe is None:
+                        time.sleep(0.05)
+                        continue
+                    left, right = frame, rframe
+                else:
+                    left, right = stereo.split_sbs(frame)
+                if eye_size is None:
+                    eye_size = (left.shape[1], left.shape[0])
+                # Stream the left eye so the operator can see what they're aiming.
+                if self._cloud.stream_wanted.is_set():
+                    shown = frame if self._layout == "dual" else crop_view(frame, self._view)
+                    ok2, buf = cv2.imencode(".jpg", shown, encode_params)
+                    if ok2:
+                        self._cloud.post_frame(buf.tobytes())
+                cl = stereo.find_chessboard(cv2.cvtColor(left, cv2.COLOR_BGR2GRAY), pattern)
+                if cl is None:
+                    continue
+                cr = stereo.find_chessboard(cv2.cvtColor(right, cv2.COLOR_BGR2GRAY), pattern)
+                if cr is None:
+                    continue
+                mean = cl.reshape(-1, 2).mean(axis=0)
+                if last_mean is not None and float(np.linalg.norm(mean - last_mean)) < self._calib_min_shift:
+                    continue  # too similar to the last grab — keep sweeping
+                last_mean = mean
+                objpoints.append(objp.copy())
+                imgL.append(cl)
+                imgR.append(cr)
+                self._progress({"phase": "collecting", "captured": len(objpoints),
+                                "target": target})
+        finally:
+            left_cap.release()
+            if right_cap is not None:
+                right_cap.release()
+
+        if len(objpoints) < 6:
+            self._progress({"phase": "done", "ok": False,
+                            "error": f"only {len(objpoints)} board pairs (need ≥ 6)"})
+            self.get_logger().warn(f"calibration FAILED: {len(objpoints)} pairs")
+            return
+        try:
+            result = stereo.compute_stereo_calibration(objpoints, imgL, imgR, eye_size)
+            stereo.save_calibration(self._calib_path, result, square_m)
+        except Exception as e:  # noqa: BLE001 - report failure to the operator
+            self._progress({"phase": "done", "ok": False, "error": f"compute/save failed: {e}"})
+            self.get_logger().error(f"calibration compute/save failed: {e}")
+            return
+        # Reload the detector so detection activates without a restart.
+        self._detector = stereo.StereoDepth(stereo.config_from_env())
+        rms = round(result["stereo_rms"], 3)
+        baseline_mm = round(result["baseline_m"] * 1000, 1)
+        self._progress({"phase": "done", "ok": True, "rms": rms,
+                        "baseline_mm": baseline_mm, "pairs": len(objpoints)})
+        self.get_logger().info(
+            f"calibration DONE: {len(objpoints)} pairs, RMS {rms} px, baseline {baseline_mm} mm")
+
     def _capture_loop(self):
         cap = None          # left eye (dual) or the single SBS device
         right_cap = None     # right eye, dual layout only; held only while detecting
@@ -250,6 +379,20 @@ class PerceptionNode(Node):
                 right_cap = None
 
         while self._running:
+            # A pending calibration takes over: free this loop's camera handles
+            # so the calibration can open both eyes exclusively, run it (it
+            # streams + reports progress itself), then resume the normal loop.
+            calib_square_m = self._take_calib_request()
+            if calib_square_m is not None:
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                release_right()
+                idle_deadline = None
+                self._set_detect_active(False)
+                self._run_calibration(calib_square_m)
+                continue
+
             stream = self._cloud.stream_wanted.is_set()
             detect = self._detection_wanted()
             self._set_detect_active(detect)
