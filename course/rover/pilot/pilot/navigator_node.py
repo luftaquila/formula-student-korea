@@ -594,10 +594,6 @@ class NavigatorNode(Node):
             )
             return
 
-        # New mission — start with a clean obstacle edge so a stale-True (from a
-        # prior run / a perception restart) can't suppress the first auto-pause.
-        self._obstacle_present = False
-
         if self._gps_lat is None or not self._has_required_fix():
             self._set_error('Cannot start mission without RTK-fixed GPS position')
             return
@@ -692,12 +688,7 @@ class NavigatorNode(Node):
         """
         if self._state != State.PAUSED:
             return
-        # Re-arm the obstacle edge. If perception restarted while we held PAUSED
-        # (camera replug / auto-update) it never published the clearing False, so
-        # _obstacle_present could be stale-True — the next genuine obstacle would
-        # then not be a rising edge and the rover would drive into it. Reset so a
-        # fresh True after resume re-pauses.
-        self._obstacle_present = False
+        # (_set_state(NAVIGATING) below re-arms the obstacle edge.)
         now = time.monotonic()
         self._settle_enter_time = now
         self._spray_enter_time = now
@@ -2038,6 +2029,13 @@ class NavigatorNode(Node):
         if self._state != new_state:
             self.get_logger().info(f'State: {self._state.value} → {new_state.value}')
             leaving_error = (self._state == State.ERROR and new_state != State.ERROR)
+            if new_state == State.NAVIGATING:
+                # Entering a driving leg — re-arm the obstacle rising-edge so a
+                # stale-True can't suppress the next auto-pause. Covers resume,
+                # new mission, segment advance (SETTLING/SPRAYING→NAVIGATING), and
+                # ERROR recovery — any case where perception may have missed
+                # publishing the clearing False (restart / timing).
+                self._obstacle_present = False
             self._state = new_state
             self._publish_state()
             if leaving_error:

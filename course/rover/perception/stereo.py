@@ -81,7 +81,9 @@ def obstacle_in_roi(depth_z, valid, roi_frac, near_m, far_m, min_fill,
     valid_roi = valid[ya:yb, xa:xb]
     z_roi = depth_z[ya:yb, xa:xb]
     valid_count = int(np.count_nonzero(valid_roi))
-    if valid_count < min_valid_px:
+    # max(1, ...) guarantees valid_count >= 1 before the division below — guards
+    # the fill = near_count / valid_count divide when min_valid_px is set to 0.
+    if valid_count < max(1, min_valid_px):
         return False, 0.0, 0, valid_count
 
     near = valid_roi & (z_roi >= near_m) & (z_roi <= far_m)

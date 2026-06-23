@@ -1094,17 +1094,21 @@ app.post("/api/rover/telemetry", (req, res) => {
   // stays operator-driven). The grace window prevents a stale PAUSED frame in
   // flight at resume time from bouncing a just-resumed mission back to paused.
   if (currentMissionId != null
-      && roverState.mission_progress.status === "running"
+      && (roverState.mission_progress.status === "running"
+          || roverState.mission_progress.status === "interrupted")
       && nav_state === "PAUSED"
       && (now - roverLastResumeAt) > ROVER_PAUSE_RECONCILE_GRACE_MS) {
     setMissionStatus.run("paused", now, currentMissionId);
     roverState.mission_progress.status = "paused";
-    // A rover that paused itself without us recording it can only be an obstacle
-    // auto-pause whose alert POST was lost (an operator pause goes through
-    // /api/rover/pause, which already set status=paused). So raise the operator
-    // alert here too — otherwise the backup path silently pauses the mission
-    // with no banner/camera, defeating the alert on exactly the lost-POST case
-    // it exists to cover. nearest_m is unknown on this path.
+    // A rover reporting PAUSED that we didn't record as paused can only be an
+    // obstacle auto-pause (an operator pause goes through /api/rover/pause, which
+    // sets status=paused). This also rescues the 'interrupted + PAUSED' corner:
+    // an SSE drop marks the mission interrupted, then the rover pauses itself on
+    // an obstacle — without this it would stay interrupted (the reconnect
+    // interrupted→running flip needs an ACTIVE nav state, which PAUSED is not)
+    // and /api/rover/resume (requires 'paused') would 409. Raise the operator
+    // alert too — the lost-POST backup must not pause silently. nearest_m
+    // unknown on this path.
     roverState.obstacle = { active: true, at: now, nearest_m: null };
     broadcastEvent("rover:obstacle", { at: now, nearest_m: null, paused: true });
     logger.warn(req, "mission.paused.reconciled", { mission_id: currentMissionId }, "rover");
@@ -1516,9 +1520,12 @@ app.post("/api/rover/obstacle", (req, res) => {
     return res.json({ ok: true, paused: false, ignored: true });
   }
   // Mirror the rover's local pause so /api/rover/resume (status==='paused') is
-  // reachable. Only when a mission is actually running; never command the rover.
+  // reachable. From 'running' or 'interrupted' (the rover can pause itself on an
+  // obstacle while its mission SSE is briefly dropped); never command the rover.
   let reflected = false;
-  if (currentMissionId != null && roverState.mission_progress.status === "running") {
+  if (currentMissionId != null
+      && (roverState.mission_progress.status === "running"
+          || roverState.mission_progress.status === "interrupted")) {
     setMissionStatus.run("paused", at, currentMissionId);
     roverState.mission_progress.status = "paused";
     reflected = true;

@@ -1407,6 +1407,23 @@ describe('Mission obstacle auto-pause (perception)', () => {
     assert.equal(st.obstacle.active, false);
     await disconnect();
   });
+
+  it('rescues interrupted + local PAUSED so resume works (SSE drop then obstacle)', async () => {
+    let disconnect = await connectRover();
+    assert.equal((await exec()).status, 200);
+    await disconnect();                          // SSE drop mid-mission → interrupted
+    let st = await status();
+    assert.equal(st.mission_progress.status, 'interrupted');
+    // Rover reconnects and reports it paused ITSELF on an obstacle while dropped.
+    disconnect = await connectRover();
+    await telemetry('PAUSED');
+    st = await status();
+    assert.equal(st.mission_progress.status, 'paused',
+      'interrupted + PAUSED must reconcile to paused (else resume 409s)');
+    assert.equal(st.obstacle.active, true);
+    assert.equal((await cli.post('/api/rover/resume', { cookie: adminCookie })).status, 200);
+    await disconnect();
+  });
 });
 
 // ─── Mission schema migration (old DB → new columns + statuses) ─────────

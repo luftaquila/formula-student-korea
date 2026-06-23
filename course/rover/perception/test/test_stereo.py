@@ -61,6 +61,19 @@ def test_min_valid_px_floor_rejects_sparse_corridor():
     assert vc == 100
 
 
+def test_min_valid_px_zero_empty_corridor_no_divide_by_zero():
+    # min_valid_px=0 + a corridor with zero valid pixels must NOT raise
+    # ZeroDivisionError on fill = near_count / valid_count.
+    depth = np.full((100, 100), 1.0, np.float32)
+    valid = np.zeros((100, 100), bool)            # nothing matched
+    obstacle, fill, near, vc = stereo.obstacle_in_roi(
+        depth, valid, _full_roi(), near_m=0.4, far_m=2.5,
+        min_fill=0.12, min_valid_px=0)
+    assert obstacle is False
+    assert vc == 0
+    assert fill == 0.0
+
+
 def test_near_clip_excludes_too_close():
     # Pixels closer than near_m are lens-edge noise / the rover's own nose, not
     # an obstacle ahead — they must not count.

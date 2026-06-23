@@ -238,6 +238,7 @@ class PerceptionNode(Node):
         right_open_after = 0.0  # backoff gate for reopening a failed right eye
         idle_deadline = None
         last_detect = 0.0
+        last_err_log = 0.0   # throttle the per-iteration exception log
         stream_interval = 1.0 / self._fps
         detect_interval = 1.0 / self._detect_fps
         encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self._quality]
@@ -291,44 +292,54 @@ class PerceptionNode(Node):
             # Only at the detect rate; the handle is opened lazily and kept open
             # until full idle (NOT released per NAVIGATING<->other transition),
             # so a flap while streaming can't thrash the UVC device.
-            due = detect and (t0 - last_detect) >= detect_interval
-            right_frame = None
-            if due and self._layout == "dual":
-                if right_cap is None and t0 >= right_open_after:
-                    right_cap = open_capture(self._right_device, self._width,
-                                             self._height, self.get_logger().warn)
-                    if right_cap is None:
-                        # Open failed (missing/flaky device) — back off so we
-                        # don't spam open() + its log every detect cycle; the gate
-                        # below lets us retry once the window elapses. Set ONLY on
-                        # a real attempt, never on a gated-out cycle, or the window
-                        # would keep sliding forward and never reopen.
-                        right_open_after = t0 + RIGHT_OPEN_RETRY_S
-                if right_cap is not None:
-                    okr, right_frame = right_cap.read()
-                    if not okr or right_frame is None:
-                        # A transient right-eye glitch must not silently kill
-                        # detection for the rest of the mission — drop the handle
-                        # and back off the reopen (mirrors the left cap, bounded).
-                        self.get_logger().warn("right eye grab failed; reopening")
-                        release_right()
-                        right_frame = None
-                        right_open_after = t0 + RIGHT_OPEN_RETRY_S
+            # Everything below works on a frame and may touch OpenCV (encode,
+            # remap, block matching, reproject). Guard it: a single bad frame /
+            # transient cv2 error must be logged-and-skipped, never propagate out
+            # of the daemon thread — that would silently kill BOTH streaming and
+            # detection while rclpy.spin keeps the process 'active' (so systemd
+            # never restarts it).
+            try:
+                due = detect and (t0 - last_detect) >= detect_interval
+                right_frame = None
+                if due and self._layout == "dual":
+                    if right_cap is None and t0 >= right_open_after:
+                        right_cap = open_capture(self._right_device, self._width,
+                                                 self._height, self.get_logger().warn)
+                        if right_cap is None:
+                            # Open failed (missing/flaky device) — back off so we
+                            # don't spam open() + its log every detect cycle; the
+                            # gate retries once the window elapses. Set ONLY on a
+                            # real attempt, never on a gated-out cycle, or the
+                            # window would keep sliding forward and never reopen.
+                            right_open_after = t0 + RIGHT_OPEN_RETRY_S
+                    if right_cap is not None:
+                        okr, right_frame = right_cap.read()
+                        if not okr or right_frame is None:
+                            # A transient right-eye glitch must not silently kill
+                            # detection — drop the handle and back off the reopen.
+                            self.get_logger().warn("right eye grab failed; reopening")
+                            release_right()
+                            right_frame = None
+                            right_open_after = t0 + RIGHT_OPEN_RETRY_S
 
-            if stream:
-                # dual: stream the left eye whole. sbs: crop one eye per CAMERA_VIEW.
-                out = frame if self._layout == "dual" else crop_view(frame, self._view)
-                ok2, buf = cv2.imencode(".jpg", out, encode_params)
-                # Re-check stream_wanted: a camera-stop may have arrived during
-                # read/encode, and we shouldn't push a frame nobody's watching.
-                if ok2 and self._cloud.stream_wanted.is_set():
-                    self._cloud.post_frame(buf.tobytes())
+                if stream:
+                    # dual: stream the left eye whole. sbs: crop per CAMERA_VIEW.
+                    out = frame if self._layout == "dual" else crop_view(frame, self._view)
+                    ok2, buf = cv2.imencode(".jpg", out, encode_params)
+                    # Re-check stream_wanted: a camera-stop may have arrived during
+                    # read/encode, and we shouldn't push a frame nobody's watching.
+                    if ok2 and self._cloud.stream_wanted.is_set():
+                        self._cloud.post_frame(buf.tobytes())
 
-            if due:
-                last_detect = t0
-                eyes = self._stereo_eyes(frame, right_frame)
-                if eyes is not None:
-                    self._run_detection(eyes[0], eyes[1])
+                if due:
+                    last_detect = t0
+                    eyes = self._stereo_eyes(frame, right_frame)
+                    if eyes is not None:
+                        self._run_detection(eyes[0], eyes[1])
+            except Exception as e:  # noqa: BLE001 - keep the capture thread alive
+                if (t0 - last_err_log) >= 5.0:
+                    last_err_log = t0
+                    self.get_logger().warn(f"capture iteration error (skipped frame): {e}")
 
             # Capture at the stream rate when watched, else the (slower) detect
             # rate — no point grabbing faster than the only active consumer.
