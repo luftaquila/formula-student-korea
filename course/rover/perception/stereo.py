@@ -280,11 +280,15 @@ class StereoDepth:
         }
         if obstacle:
             # Nearest in-band depth in the corridor — handy for the operator
-            # alert ("obstacle ~0.8 m ahead") and for tuning.
+            # alert ("obstacle ~0.8 m ahead") and for tuning. Clamp the fractions
+            # to [0,1] like obstacle_in_roi (a negative fraction would otherwise
+            # index from the array end and corrupt the reported depth).
             h, w = depth_z.shape[:2]
             x0, y0, x1, y1 = cfg.roi
-            xa, xb = int(round(min(x0, x1) * w)), int(round(max(x0, x1) * w))
-            ya, yb = int(round(min(y0, y1) * h)), int(round(max(y0, y1) * h))
+            xa = int(round(np.clip(min(x0, x1), 0.0, 1.0) * w))
+            xb = int(round(np.clip(max(x0, x1), 0.0, 1.0) * w))
+            ya = int(round(np.clip(min(y0, y1), 0.0, 1.0) * h))
+            yb = int(round(np.clip(max(y0, y1), 0.0, 1.0) * h))
             zr = depth_z[ya:yb, xa:xb]
             vr = valid[ya:yb, xa:xb] & (zr >= cfg.near_m) & (zr <= cfg.far_m)
             if np.any(vr):

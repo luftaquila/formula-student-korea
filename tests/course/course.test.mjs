@@ -1392,6 +1392,21 @@ describe('Mission obstacle auto-pause (perception)', () => {
       'a PAUSED frame within the resume grace window must not re-pause');
     await disconnect();
   });
+
+  it('ignores a stale obstacle POST right after a resume (grace window)', async () => {
+    const disconnect = await connectRover();
+    assert.equal((await exec()).status, 200);
+    assert.equal((await obstacle({ nearest_m: 0.7 })).status, 200);   // pause via obstacle
+    assert.equal((await cli.post('/api/rover/resume', { cookie: adminCookie })).status, 200);
+    // A stale obstacle POST in flight at resume time must NOT re-pause / re-alert.
+    const res = await obstacle({ nearest_m: 0.7 });
+    assert.equal((await res.json()).ignored, true);
+    const st = await status();
+    assert.equal(st.mission_progress.status, 'running',
+      'a stale obstacle POST within the resume grace window must not re-pause');
+    assert.equal(st.obstacle.active, false);
+    await disconnect();
+  });
 });
 
 // ─── Mission schema migration (old DB → new columns + statuses) ─────────

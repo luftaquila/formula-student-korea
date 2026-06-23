@@ -145,3 +145,46 @@ def test_debouncer_reset_fully_clears_state_and_runs():
     # (no spurious re-assert), and re-asserting takes a fresh rising edge.
     assert d.update(False) == (False, False)
     assert d.update(True) == (True, True)
+
+
+# ── split_sbs (sbs layout) ──────────────────────────────────────────────────
+
+def test_split_sbs_halves():
+    frame = np.zeros((10, 20, 3), np.uint8)
+    frame[:, 10:, :] = 255                      # right half white, left black
+    left, right = stereo.split_sbs(frame)
+    assert left.shape == (10, 10, 3)
+    assert right.shape == (10, 10, 3)
+    assert int(left.max()) == 0
+    assert int(right.min()) == 255
+
+
+def test_split_sbs_odd_width_drops_last_column():
+    # half*2 bound: an odd-width frame yields two equal halves, last column dropped.
+    frame = np.zeros((4, 21, 3), np.uint8)
+    left, right = stereo.split_sbs(frame)
+    assert left.shape[1] == 10 and right.shape[1] == 10
+
+
+# ── config_from_env ─────────────────────────────────────────────────────────
+
+def test_config_from_env_parses_overrides():
+    cfg = stereo.config_from_env({
+        "STEREO_NUM_DISPARITIES": "128",
+        "OBSTACLE_NEAR_M": "0.5",
+        "OBSTACLE_ROI_X0": "0.1", "OBSTACLE_ROI_Y0": "0.2",
+        "OBSTACLE_ROI_X1": "0.9", "OBSTACLE_ROI_Y1": "0.95",
+        "OBSTACLE_MIN_VALID_PX": "bad",         # invalid → falls back to default
+    })
+    assert cfg.num_disparities == 128
+    assert cfg.near_m == 0.5
+    assert cfg.roi == (0.1, 0.2, 0.9, 0.95)
+    assert cfg.min_valid_px == 400              # invalid value → default
+
+
+def test_config_from_env_defaults_on_empty():
+    cfg = stereo.config_from_env({})
+    assert cfg.num_disparities == 96
+    assert cfg.near_m == 0.4
+    assert cfg.far_m == 2.5
+    assert cfg.roi == (0.30, 0.55, 0.70, 0.98)

@@ -9,8 +9,8 @@ share one loop):
     watching (CloudLink.stream_wanted), crop one eye, JPEG-encode, POST to the
     MJPEG relay. Unchanged from Phase 2.
   - Obstacle detection (mission-driven): while the navigator is NAVIGATING and
-    a stereo calibration is loaded, run stereo depth on the raw side-by-side
-    frame at a low rate; on a debounced obstacle in the driving corridor,
+    a stereo calibration is loaded, run stereo depth on the two eyes (dual-node
+    by default) at a low rate; on a debounced obstacle in the driving corridor,
     publish /rover/perception/obstacle (Bool). The navigator pauses the mission
     LOCALLY on the rising edge, so the control decision never leaves the Pi and
     survives an uplink blip. A best-effort POST to /api/rover/obstacle asks the
@@ -55,6 +55,11 @@ def _env_int(name, default):
 # flapping viewer / a brief IDLE between waypoints doesn't thrash the UVC device
 # (many cams wedge on rapid reopen).
 STOP_LINGER_S = 3.0
+# Back off right-eye (re)open attempts on failure so a missing / flaky
+# STEREO_RIGHT_DEVICE can't spam open() + its "no usable camera" log every
+# detect cycle. Detection stays inactive (with a throttled warning) until the
+# device recovers; the rover keeps driving meanwhile.
+RIGHT_OPEN_RETRY_S = 2.0
 # Detection runs only while the navigator reports this state — the rover is
 # driving under autonomy and could drive INTO something. SETTLING/SPRAYING are
 # stationary at a cone, so an obstacle there isn't a collision risk.
@@ -74,6 +79,12 @@ def open_capture(device, width, height, log):
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            # Minimise the driver FIFO so read() returns the most recent frame.
+            # The left eye is read every loop but the right only at the detect
+            # rate; without a shallow buffer the right cam's queue fills and
+            # read() returns a stale frame, desyncing the stereo pair. Best-effort
+            # (some V4L2 drivers ignore it).
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             # isOpened() is not enough: a metadata node (or a busy device) can
             # open but never deliver frames. Require a real grab so auto-probe
             # falls through to the actual capture node.
@@ -224,6 +235,7 @@ class PerceptionNode(Node):
     def _capture_loop(self):
         cap = None          # left eye (dual) or the single SBS device
         right_cap = None     # right eye, dual layout only; held only while detecting
+        right_open_after = 0.0  # backoff gate for reopening a failed right eye
         idle_deadline = None
         last_detect = 0.0
         stream_interval = 1.0 / self._fps
@@ -282,7 +294,7 @@ class PerceptionNode(Node):
             due = detect and (t0 - last_detect) >= detect_interval
             right_frame = None
             if due and self._layout == "dual":
-                if right_cap is None:
+                if right_cap is None and t0 >= right_open_after:
                     right_cap = open_capture(self._right_device, self._width,
                                              self._height, self.get_logger().warn)
                 if right_cap is not None:
@@ -290,10 +302,14 @@ class PerceptionNode(Node):
                     if not okr or right_frame is None:
                         # A transient right-eye glitch must not silently kill
                         # detection for the rest of the mission — drop the handle
-                        # so it reopens next cycle (mirrors the left cap).
+                        # so it reopens (mirrors the left cap).
                         self.get_logger().warn("right eye grab failed; reopening")
                         release_right()
                         right_frame = None
+                if right_cap is None:
+                    # Open failed or read failed+released — back off so a missing
+                    # /flaky right device can't spam open() every detect cycle.
+                    right_open_after = t0 + RIGHT_OPEN_RETRY_S
 
             if stream:
                 # dual: stream the left eye whole. sbs: crop one eye per CAMERA_VIEW.

@@ -1505,6 +1505,16 @@ app.post("/api/rover/obstacle", (req, res) => {
   const body = req.body || {};
   const nearest = typeof body.nearest_m === "number" ? body.nearest_m : null;
   const at = Date.now();
+  // Drop a stale obstacle POST that was in flight when the operator just
+  // resumed: reflecting it would re-pause + re-alert a mission they deliberately
+  // resumed (the rover already cleared its local obstacle edge on resume). Same
+  // grace window the telemetry reconcile uses. If the obstacle genuinely
+  // persists, the rover re-pauses LOCALLY and the post-grace telemetry reconcile
+  // mirrors it — nothing is permanently lost.
+  if (at - roverLastResumeAt <= ROVER_PAUSE_RECONCILE_GRACE_MS) {
+    logger.log(req, "rover.obstacle", { ignored: "resume_grace" }, "rover");
+    return res.json({ ok: true, paused: false, ignored: true });
+  }
   // Mirror the rover's local pause so /api/rover/resume (status==='paused') is
   // reachable. Only when a mission is actually running; never command the rover.
   let reflected = false;

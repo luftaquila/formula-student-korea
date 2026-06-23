@@ -622,6 +622,22 @@ def test_obstacle_rearms_after_clear(nav):
     assert nav._state == State.PAUSED
 
 
+def test_obstacle_rearms_on_resume_without_clear(nav):
+    # Perception can restart while we hold PAUSED (camera replug / auto-update)
+    # and never publish the clearing False, leaving _obstacle_present stale-True.
+    # Resume must re-arm the edge so the still-present obstacle re-pauses instead
+    # of the rover driving into it.
+    nav._state = State.NAVIGATING
+    nav._on_obstacle(_Obs(True))
+    assert nav._state == State.PAUSED
+    assert nav._obstacle_present is True
+    nav._on_resume(None)               # resume → re-arm (no clearing False seen)
+    assert nav._state == State.NAVIGATING
+    assert nav._obstacle_present is False
+    nav._on_obstacle(_Obs(True))       # same obstacle still ahead → re-pause
+    assert nav._state == State.PAUSED
+
+
 def test_paused_holds_through_gps_loss(nav, monkeypatch):
     # Unlike an active driving state, PAUSED is an intentional hold: a stale GPS
     # clock must NOT trip ERROR (the operator may be manually clearing an
