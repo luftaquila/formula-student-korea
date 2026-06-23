@@ -3645,14 +3645,14 @@ onUnmounted(() => {
                   <span>a_x (mm)</span>
                   <input
                     type="number" step="1" inputmode="numeric"
-                    v-model="antennaManualX" placeholder="300"
+                    v-model="antennaManualX"
                   />
                 </label>
                 <label class="cal-manual-field">
                   <span>a_y (mm)</span>
                   <input
                     type="number" step="1" inputmode="numeric"
-                    v-model="antennaManualY" placeholder="50"
+                    v-model="antennaManualY"
                   />
                 </label>
                 <button
@@ -3719,8 +3719,8 @@ onUnmounted(() => {
             <div class="cal-section-title">스테레오 카메라 교정</div>
             <ol class="cal-steps">
               <li>체커보드를 <b>A4 Landscape, 100% scale</b>로 인쇄.</li>
-              <li><b>100 mm 바</b> 길이를 자로 확인. 불일치 시 한 칸 길이를 아래에 입력.</li>
-              <li>휘지 않도록 단단하게 고정 후 <b>교정 실행</b>. 보드를 양쪽 카메라에 다양한 거리·각도로 비춤.</li>
+              <li><b>100 mm 바</b> 길이를 자로 확인. 불일치 시 한 칸 길이를 입력.</li>
+              <li>휘지 않도록 고정 후 <b>교정 실행</b>. 보드를 양쪽 카메라에 다양한 거리·각도로 비춤.</li>
             </ol>
             <label class="cal-manual-field cal-square-field">
               <span>한 칸 길이 (mm)</span>
