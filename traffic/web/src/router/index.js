@@ -4,8 +4,9 @@ import { useWirelessStore } from "../stores/wireless";
 
 const routes = [
   {
+    // 계측 시스템 진입 시 무선 계측 모드를 기본으로 보여준다(유선은 헤더 버튼으로 전환).
     path: "/",
-    redirect: "/record",
+    redirect: "/wireless",
   },
   {
     path: "/wireless",
@@ -47,6 +48,11 @@ const routes = [
     component: () => import("../views/WirelessAutocrossView.vue"),
   },
   {
+    path: "/wireless/endurance",
+    name: "WirelessEndurance",
+    component: () => import("../views/WirelessEnduranceView.vue"),
+  },
+  {
     path: "/accel",
     name: "Accel",
     component: () => import("../views/StartFinishView.vue"),
@@ -62,6 +68,11 @@ const routes = [
     name: "Autocross",
     component: () => import("../views/StartFinishView.vue"),
     props: { config: { mode: "autocross", type: "오토크로스", defaultTitle: "Autocross" } },
+  },
+  {
+    path: "/endurance",
+    name: "Endurance",
+    component: () => import("../views/EnduranceView.vue"),
   },
   {
     path: "/record",
