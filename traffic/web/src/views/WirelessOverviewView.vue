@@ -3,12 +3,16 @@
 // 한 화면에 표시. 제어 없음 — 대형 스크린/관전/총괄 모니터링용. 제어는 경기별 뷰에서.
 import { computed } from "vue";
 import { useWirelessStore } from "../stores/wireless";
+import { useSSE } from "../composables/useSSE";
 
 const store = useWirelessStore();
+const { eventModes } = useSSE(); // 경기 모드 on/off (기록 탭에서 토글). 비활성 경기는 현황에서 제외.
 const LABEL = store.EVENT_TYPE; // { accel: "가속", ... }
 
 const cards = computed(() =>
-  store.WIRELESS_EVENTS.map((mode) => {
+  store.WIRELESS_EVENTS
+    .filter((mode) => eventModes.value[LABEL[mode]] !== false) // 비활성(false)인 경기 모드는 카드 숨김
+    .map((mode) => {
     const sess = store.sessions?.[LABEL[mode]] || null;
     const slot = store.timing[mode] || {};
     return {
