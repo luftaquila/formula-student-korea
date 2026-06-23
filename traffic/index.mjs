@@ -970,6 +970,7 @@ app.post("/api/wireless/ingest", (req, res) => {
     const now = Date.now();
     const nowIso = new Date(now).toISOString();
     const tOut = [];
+    const secLog = []; // 보안 관측(인증 실패 증가/미프로비저닝) — 트랜잭션 밖에서 logger.warn
     const tins = db.prepare("INSERT INTO wireless_telemetry (node_id, rssi, snr, offset_us, skew_ppm, latency_ms, link_state) VALUES (?, ?, ?, ?, ?, ?, ?)");
     for (const t of telemetry) {
       if (!validateNodeId(String(t.node_id))) { reject("tel.node_id"); continue; }
@@ -985,22 +986,33 @@ app.post("/api/wireless/ingest", (req, res) => {
       // 다이 온도(deci-°C)와 배터리/충전레일(mV). 마스터(node 0)는 충전 레일 전압.
       const tempC10 = Number.isFinite(t.temp_c10) ? Math.trunc(t.temp_c10) : null;
       const battMv = Number.isFinite(t.batt_mv) ? Math.trunc(t.batt_mv) : null;
+      // 보안 관측 필드(펌웨어 D 라인 신규): 인증 거부 카운터 + 프로비저닝 여부.
+      const secDrop = Number.isFinite(t.sec_drop) ? Math.trunc(t.sec_drop) : null;
+      const provisioned = (t.provisioned === 0 || t.provisioned === 1) ? t.provisioned
+                        : (typeof t.provisioned === "boolean" ? (t.provisioned ? 1 : 0) : null);
       const prev = liveTelemetry.get(node) || {};
       // "수신"은 마스터가 그 센서를 마지막으로 들은 시각이어야 한다. 펌웨어가 진단 라인으로
       // 보내는 last_seen_ms(들은 뒤 경과 ms)를 절대시각으로 환산 — 이렇게 해야 끊김/지연을
       // 보고하는 줄이 도착해도 "수신"이 방금으로 리셋되지 않는다. 누락 시 ingest 시각으로 폴백.
       const heardAgeMs = Number.isFinite(t.last_seen_ms) && t.last_seen_ms >= 0 ? Math.trunc(t.last_seen_ms) : null;
       const lastSeenIso = heardAgeMs === null ? nowIso : new Date(now - heardAgeMs).toISOString();
-      // rx_miss/beacon_gap는 실시간(SSE)으로만 전달 — 스냅샷 테이블 스키마는 그대로.
-      const entry = { rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, link_state: link, last_seen: lastSeenIso, _lastPersist: prev._lastPersist || 0 };
+      // rx_miss/beacon_gap/sec_drop/provisioned는 실시간(SSE)으로만 — 스냅샷 테이블 스키마는 그대로.
+      // 보안 이벤트 수집(인증거부 증가분 + 미프로비저닝 전이). 카운터는 보드 재부팅 시 0 리셋이라
+      // 증가(secDrop>prev)일 때만 로깅 → 재부팅 후 리셋이 거짓 알림을 내지 않음.
+      const prevDrop = Number.isFinite(prev.sec_drop) ? prev.sec_drop : 0;
+      if (secDrop !== null && secDrop > prevDrop) { secLog.push({ node, sec_drop: secDrop, delta: secDrop - prevDrop }); }
+      let provWarned = prev._provWarned || false;
+      if (provisioned === 0 && !provWarned) { secLog.push({ node, unprovisioned: true }); provWarned = true; }
+      else if (provisioned === 1) { provWarned = false; }
+      const entry = { rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, sec_drop: secDrop, provisioned, link_state: link, last_seen: lastSeenIso, _lastPersist: prev._lastPersist || 0, _provWarned: provWarned };
       if (now - entry._lastPersist >= TELEMETRY_PERSIST_MS) {
         tins.run(node, rssi, snr, offset, skew, lat, link);
         entry._lastPersist = now;
       }
       liveTelemetry.set(node, entry);
-      tOut.push({ node_id: node, rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, link_state: link, last_seen: lastSeenIso });
+      tOut.push({ node_id: node, rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, sec_drop: secDrop, provisioned, link_state: link, last_seen: lastSeenIso });
     }
-    return { inserted, deduped, rejected, reasons, telemetry: tOut };
+    return { inserted, deduped, rejected, reasons, telemetry: tOut, security: secLog };
   })());
 
   if (!result.success) {
@@ -1014,6 +1026,14 @@ app.post("/api/wireless/ingest", (req, res) => {
   // 부분 거부는 데이터 손실 가능성이라 반드시 로깅(어떤 사유로 몇 건이 버려졌는지).
   if (result.result.rejected > 0) {
     logger.warn(req, "wireless.ingest", { rejected: result.result.rejected, reasons: result.result.reasons, counts: { events: events.length, telemetry: telemetry.length } });
+  }
+  // 보안 관측: 인증거부(위조/키불일치/replay 등) 증가 또는 미프로비저닝을 /api/logs로 가시화.
+  // node 0 = 마스터의 AEAD 검증 실패(귀속 불가), node 1..6 = 그 센서의 인증후 거부.
+  for (const s of (result.result.security || [])) {
+    logger.warn(req, "wireless.security",
+      s.unprovisioned ? { node: s.node, unprovisioned: true }
+                      : { node: s.node, sec_drop: s.sec_drop, delta: s.delta },
+      `node ${s.node}`);
   }
   if (result.result.inserted.length > 0) {
     broadcastEvent("wireless:event", { events: result.result.inserted });

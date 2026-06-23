@@ -267,9 +267,16 @@ typedef struct {
     uint32_t last_lat_ms;
     int      last_state;
     sec_replay_t rx;   /* per-sensor replay window (EVENT + STATUS uplinks) */
+    uint32_t sec_drop; /* authenticated-but-rejected packets from this sensor
+                        * (replay / freshness / session-binding) — observability */
 } node_stat_t;
 
 static node_stat_t g_node[MAX_NODES];
+
+/* Master-side AEAD verification failures (forgery / wrong key / corruption).
+ * Unattributable (the node_id in a failed packet isn't authenticated), so it's a
+ * single global counter, surfaced on the node-0 self-report D line. */
+static uint32_t g_auth_drop;
 
 static int node_count_seen(void)
 {
@@ -293,7 +300,8 @@ static void master_emit_diag(unsigned i, int state, uint32_t now)
                  g_node[i].rx_miss, g_node[i].beacon_gap,
                  (uint32_t)(now - g_node[i].last_seen_ms),
                  g_node[i].rssi, g_node[i].snr, g_node[i].last_lat_ms,
-                 g_node[i].temp_c10, g_node[i].batt_mv);
+                 g_node[i].temp_c10, g_node[i].batt_mv,
+                 g_node[i].sec_drop, sec_provisioned());
 }
 
 static void run_master(int st)
@@ -396,10 +404,13 @@ static void run_master(int st)
 
             /* Master self-diag (node 0) every STATUS_PERIOD_S beacons: its own die
              * temp + charge-rail voltage. last_seen=0 (just measured); LoRa-only
-             * fields are 0 since they don't apply to the master itself. */
+             * fields are 0 since they don't apply to the master itself. The
+             * sec_drop slot carries the global AEAD-failure count, and the
+             * provisioned flag rides here so the server sees both. */
             if ((uint8_t)(seq % STATUS_PERIOD_S) == 0u) {
                 pu_emit_diag(0, PU_STATE_OK, 0, 0, 0, 0, 0, 0.0f, 0.0f, 0,
-                             meas_temp_c10(), meas_vddh_mv());
+                             meas_temp_c10(), meas_vddh_mv(),
+                             g_auth_drop, sec_provisioned());
             }
             continue;
         }
@@ -414,21 +425,23 @@ static void run_master(int st)
         if (type == PKT_TYPE_EVENT && n >= WIRE_EVENT) {
             sec_meta_t m;
             event_pl_t e;
-            if (sec_unseal(buf, n, &m, &e, sizeof(e)) != 0) { continue; }
+            if (sec_unseal(buf, n, &m, &e, sizeof(e)) != 0) { g_auth_drop++; continue; }
             /* Session binding: the event must name THIS master's current boot_id.
              * An event captured under a previous master power-cycle names the old
              * session and is dropped — closing cross-reboot EVENT replay
              * (DESIGN §2.11). A sensor learns the current id from live beacons, so
              * after a master swap its events re-bind as soon as it re-syncs. */
-            if (e.master_boot_id != sec_boot_id()) { continue; }
-            if (!sec_replay(&g_node[m.node_id].rx, m.boot_id, m.ctr)) { continue; }
+            if (e.master_boot_id != sec_boot_id()) { g_node[m.node_id].sec_drop++; continue; }
+            if (!sec_replay(&g_node[m.node_id].rx, m.boot_id, m.ctr)) { g_node[m.node_id].sec_drop++; continue; }
             /* Freshness backstop: reject a timestamp too far in the past (stale
              * replay) or implausibly in the future. Asymmetric — a real event is
              * at most a few ms ahead of master time (sync error). dt = now - ev. */
             uint64_t now_t = capture_now64();
             int64_t dt = (int64_t)now_t - (int64_t)e.ev_master_t;
             if (dt > (int64_t)EVENT_FRESH_MS * (int64_t)TICKS_PER_MS ||
-                dt < -((int64_t)EVENT_FUTURE_MS * (int64_t)TICKS_PER_MS)) { continue; }
+                dt < -((int64_t)EVENT_FUTURE_MS * (int64_t)TICKS_PER_MS)) {
+                g_node[m.node_id].sec_drop++; continue;
+            }
             node_stat_t *ns = &g_node[m.node_id];
             ns->seen = 1;
             ns->rssi = rssi;
@@ -452,8 +465,8 @@ static void run_master(int st)
         } else if (type == PKT_TYPE_STATUS && n >= WIRE_STATUS) {
             sec_meta_t m;
             status_pl_t s;
-            if (sec_unseal(buf, n, &m, &s, sizeof(s)) != 0) { continue; }
-            if (!sec_replay(&g_node[m.node_id].rx, m.boot_id, m.ctr)) { continue; }
+            if (sec_unseal(buf, n, &m, &s, sizeof(s)) != 0) { g_auth_drop++; continue; }
+            if (!sec_replay(&g_node[m.node_id].rx, m.boot_id, m.ctr)) { g_node[m.node_id].sec_drop++; continue; }
             node_stat_t *ns = &g_node[m.node_id];
             if (ns->have_status) {
                 uint8_t d = (uint8_t)(s.seq - ns->last_status_seq);
