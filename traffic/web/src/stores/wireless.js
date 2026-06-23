@@ -423,7 +423,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   // 비차단 — 가상 전용/마스터 재연결 중 시나리오를 막지 않으려 경고만 띄운다.
   function warnIfMasterOffline() {
     if (!bridge.value?.online) {
-      notyf.open({ type: "warning", message: "마스터(브리지) 미연결 — 센서 기록이 수신되지 않습니다" });
+      notyf.open({ type: "warning", message: "마스터 연결 안 됨" });
     }
   }
   async function claimLease(mode) {
@@ -438,6 +438,11 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
   async function releaseLease(mode) {
     const et = EVENT_TYPE[mode];
+    // 제어권 반납 전, 공유 선택(팀·이벤트명)을 비워 다음 컨트롤러/관찰자가 깨끗한 상태에서
+    // 시작하도록 한다. selectWirelessEvent는 lease 보유자만 반영되므로 release보다 먼저,
+    // 순차로 호출(release가 먼저 처리되면 선택 비우기가 거부돼 팀이 남는 레이스 방지).
+    try { await selectWirelessEvent({ event_type: et, team: null, event_name: null }); }
+    catch { /* ignore */ }
     myLeases.delete(et);
     if (myLeases.size === 0 && leaseTimer) { clearInterval(leaseTimer); leaseTimer = null; }
     try { await releaseWirelessLease(et); }

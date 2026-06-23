@@ -2,12 +2,10 @@
 import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { useSerialStore } from "../stores/serial";
-import { useWirelessStore } from "../stores/wireless";
 import { useSSE } from "../composables/useSSE";
 
 const route = useRoute();
 const serial = useSerialStore();
-const wireless = useWirelessStore();
 const { eventModes } = useSSE();
 
 const wiredNavItems = [
@@ -31,12 +29,10 @@ const wirelessNavItems = [
 
 const isWireless = computed(() => route.path.startsWith("/wireless"));
 
-// 무선 모드: 브리지에서 점유 중인 경기의 신호등이 green이면 탭 전환 잠금
-const locked = computed(() =>
-  isWireless.value
-    ? wireless.bridgeIsSelf && wireless.physicalKey && wireless.lightColorFor(wireless.physicalKey) === "green"
-    : serial.green.active,
-);
+// 유선 모드: 측정 중(green)이면 탭 전환 잠금 — 다른 경기 탭으로 가면 시리얼 콜백이 그 경기로
+// 덮여 진행 중인 기록이 어긋나기 때문. 무선 모드는 경기별 콜백·라우팅이 스토어 레벨이라 안전 →
+// 잠그지 않는다.
+const locked = computed(() => (isWireless.value ? false : serial.green.active));
 
 const navItems = computed(() => {
   const base = isWireless.value ? wirelessNavItems : wiredNavItems;

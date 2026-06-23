@@ -5,11 +5,23 @@ import { useSerialStore, msToClockStr } from "../stores/serial";
 import { useNotification } from "@shared/useNotification.js";
 import { formatEnduranceDetail, enduranceTotal } from "@shared/event-timing.js";
 import { addRecord, updateRecord } from "../composables/useApi";
+import { useSSE } from "../composables/useSSE";
 
 const { notyf } = useNotification();
 const entryStore = useEntryStore();
 const props = defineProps({ source: { type: Object, default: null }, wireless: { type: Boolean, default: false } });
 const serial = props.source ?? useSerialStore();
+
+// 이벤트 이름 자동완성: 기존 기록 파일명(FSK <year> <이름>)에서 이름만 뽑아 datalist로 제시.
+const { recordFiles } = useSSE();
+const eventNameSuggestions = computed(() => [
+  ...new Set(
+    recordFiles.value
+      .filter((f) => f && f !== "controller")
+      .map((f) => f.replace(/^FSK \d{4} /, ""))
+      .filter(Boolean),
+  ),
+]);
 
 const eventName = ref("");
 const selectedTeam = ref(null);
@@ -259,12 +271,15 @@ watch(() => serial.green.active, (active, prev) => {
         <div class="card-body">
           <div class="form-group">
             <label class="form-label">이벤트 이름</label>
-            <input v-model="eventName" type="text" class="form-input" :disabled="isLocked || !isController" />
+            <input v-model="eventName" type="text" class="form-input" list="event-names-endurance" :disabled="isLocked || !isController" />
+            <datalist id="event-names-endurance">
+              <option v-for="name in eventNameSuggestions" :key="name" :value="name" />
+            </datalist>
           </div>
           <div class="form-group">
             <label class="form-label">참가팀</label>
             <select v-model="selectedTeam" class="form-input" :disabled="isLocked || !isController">
-              <option :value="null" disabled>팀 선택</option>
+              <option :value="null">팀 선택</option>
               <option v-for="entry in entries" :key="entry.num" :value="entry.num">
                 {{ entry.num }} {{ entry.univ }} {{ entry.team }}
               </option>
@@ -395,8 +410,8 @@ watch(() => serial.green.active, (active, prev) => {
   font-size: 0.875rem;
 }
 .lease-take {
-  padding: 0.125rem 0.5rem;
-  font-size: 0.75rem;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.8125rem;
 }
 
 .team-card {

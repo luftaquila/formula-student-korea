@@ -40,6 +40,19 @@ async function simTelemetry() {
       <WirelessBridgeCard />
 
       <div class="card">
+        <div class="card-header"><h3>⏱️ 센서 디바운스</h3></div>
+        <div class="card-body">
+          <div class="debounce-row">
+            <input
+              type="number" class="form-input debounce-input" min="0" max="5000" step="50"
+              :value="store.debounceMs" data-testid="debounce-ms" @change="onDebounce"
+            />
+            <span class="unit">ms</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-header"><h3>🚦 물리 신호등</h3></div>
         <div class="card-body">
           <div class="form-group">
@@ -48,19 +61,6 @@ async function simTelemetry() {
               <option v-for="k in store.WIRELESS_EVENTS" :key="k" :value="k">{{ store.EVENT_TYPE[k] }}</option>
             </select>
           </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-header"><h3>⏱️ 센서 디바운스</h3></div>
-      <div class="card-body">
-        <div class="debounce-row">
-          <input
-            type="number" class="form-input debounce-input" min="0" max="5000" step="50"
-            :value="store.debounceMs" data-testid="debounce-ms" @change="onDebounce"
-          />
-          <span class="unit">ms</span>
         </div>
       </div>
     </div>
@@ -97,7 +97,7 @@ async function simTelemetry() {
 }
 .wl-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 1.5rem;
   align-items: start;
 }
