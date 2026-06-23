@@ -101,6 +101,22 @@ async function simTelemetry() {
   gap: 1.5rem;
   align-items: stretch;
 }
+/* 카드들이 같은 높이로 늘어나므로, 본문 내용을 세로 가운데로 정렬해 위·아래 여백을 같게 한다
+   (안 그러면 짧은 카드의 남는 공간이 아래쪽에만 몰림). */
+.wl-row > .card {
+  display: flex;
+  flex-direction: column;
+}
+.wl-row > .card :deep(.card-body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+/* 단독 form-group의 하단 마진 제거 — 가운데 정렬 후 아래만 처지는 것 방지. */
+.wl-row :deep(.form-group) {
+  margin-bottom: 0;
+}
 .sim-row { display: flex; align-items: center; gap: 0.6rem; }
 .sim-node { max-width: 90px; }
 .debounce-row { display: flex; align-items: center; gap: 0.5rem; }
