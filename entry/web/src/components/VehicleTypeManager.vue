@@ -1,5 +1,6 @@
 <script setup>
 import { ref } from "vue";
+import { VEHICLE_COLORS as colors } from "@shared/constants.js";
 
 defineProps({
   vehicleTypes: { type: Array, default: () => [] },
@@ -7,7 +8,6 @@ defineProps({
 
 const emit = defineEmits(["add", "update", "delete"]);
 
-const colors = ["blue", "green", "orange", "purple", "red", "teal"];
 const colorLabels = { blue: "파랑", green: "초록", orange: "주황", purple: "보라", red: "빨강", teal: "청록" };
 
 const newTypeName = ref("");
