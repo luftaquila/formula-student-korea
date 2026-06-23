@@ -109,6 +109,7 @@ const roverStatus = ref({
   ntrip: null,
   gps: null,
   obstacle: { active: false, at: 0, nearest_m: null },
+  stereo_calibration: { status: "idle" },
 });
 
 function syncAppRoverStatus(data) {
@@ -1835,6 +1836,33 @@ function printCheckerboard() {
   };
   iframe.srcdoc = html;
   document.body.appendChild(iframe);
+}
+
+// Stereo calibration is triggered here and runs on the rover (perception owns
+// the cameras). Progress/result arrive via roverStatus.stereo_calibration.
+const stereoSquareMm = ref("25");
+const stereoSquareValid = computed(() => {
+  const v = parseFloat(stereoSquareMm.value);
+  return Number.isFinite(v) && v >= 5 && v <= 200;
+});
+const stereoCal = computed(() => roverStatus.value.stereo_calibration || { status: "idle" });
+
+async function startStereoCalibration() {
+  if (!stereoSquareValid.value) {
+    notifyWarn("한 칸 길이를 5~200 mm 범위로 입력하세요.");
+    return;
+  }
+  const square_m = parseFloat(stereoSquareMm.value) / 1000;
+  // Open the live view so the operator can aim the board while it collects.
+  startCamera();
+  try {
+    await request("/api/rover/calibrate-stereo", {
+      method: "POST",
+      body: JSON.stringify({ square_m }),
+    });
+  } catch (err) {
+    notifyError(`교정 시작 실패: ${err.message}`);
+  }
 }
 
 async function submitAntennaCal() {
@@ -3640,7 +3668,7 @@ onUnmounted(() => {
               <div class="cal-space-req-row">
                 <span class="cal-space-req">필요 공간: 전후좌우 5 m</span>
                 <button
-                  class="btn btn-ghost btn-sm"
+                  class="btn btn-primary btn-sm"
                   :disabled="antennaCalSubmitting || antennaCalRunning || !antennaCalCanStart"
                   @click="submitAntennaCal"
                 >{{ antennaCalSubmitting ? '전송 중...' : (antennaCalRunning ? '진행 중' : antennaCalBtnLabel) }}</button>
@@ -3690,24 +3718,37 @@ onUnmounted(() => {
           <section class="cal-section">
             <div class="cal-section-title">스테레오 카메라 교정</div>
             <ol class="cal-steps">
-              <li><b>인쇄</b> — 체커보드를 A4 가로, 배율 <b>100% (실제 크기)</b>로. “페이지에 맞춤” 금지.</li>
-              <li><b>검증</b> — 인쇄물의 <b>100 mm 바</b>를 자로 확인. 어긋나면 재인쇄, 또는 실측 칸 크기를 <code>--square-m</code>에 입력 (예: 24 mm → 0.024).</li>
-              <li><b>고정</b> — 폼보드·클립보드에 평평하게 부착. 휘면 교정 실패.</li>
-              <li><b>실행</b> — 로버에서 아래 명령 실행 → 보드를 <b>양쪽 카메라</b>에 다양한 거리·각도로 비춤.</li>
+              <li>체커보드를 <b>A4 Landscape, 100% scale</b>로 인쇄.</li>
+              <li><b>100 mm 바</b> 길이를 자로 확인. 불일치 시 한 칸 길이를 아래에 입력.</li>
+              <li>휘지 않도록 단단하게 고정 후 <b>교정 실행</b>. 보드를 양쪽 카메라에 다양한 거리·각도로 비춤.</li>
             </ol>
-            <pre class="cal-cmd">sudo systemctl stop perception.service
-sudo podman run --rm --network=host \
-  --device /dev/video0:/dev/video0 --device /dev/video2:/dev/video2 \
-  --volume /var/lib/perception:/var/lib/perception:z \
-  --entrypoint python3 ghcr.io/luftaquila/fsk-rover-perception:candidate \
-  /opt/perception/stereo_calibrate.py \
-    --cols 9 --rows 6 --square-m 0.025 \
-    --device /dev/video0 --right-device /dev/video2 --width 1280 --height 720
-sudo systemctl start perception.service</pre>
+            <label class="cal-manual-field cal-square-field">
+              <span>한 칸 길이 (mm)</span>
+              <input
+                type="number" step="0.1" min="5" max="200" inputmode="decimal"
+                v-model="stereoSquareMm" placeholder="25"
+              />
+            </label>
+            <div v-if="stereoCal.status === 'running'" class="modal-status">
+              교정 중… {{ stereoCal.captured != null
+                ? `수집 ${stereoCal.captured}${stereoCal.target ? ' / ' + stereoCal.target : ''} 쌍`
+                : '카메라 준비 중' }} — 보드를 양쪽 카메라에 다양한 각도로 비추세요.
+            </div>
+            <div v-else-if="stereoCal.status === 'done'" class="modal-status">
+              교정 완료 — RMS {{ stereoCal.rms ?? '—' }} px · baseline {{ stereoCal.baseline_mm ?? '—' }} mm · {{ stereoCal.pairs ?? '—' }}쌍
+            </div>
+            <div v-else-if="stereoCal.status === 'failed'" class="cal-error">
+              교정 실패: {{ stereoCal.error || '알 수 없는 오류' }}
+            </div>
             <div class="cal-section-actions">
-              <button class="btn btn-primary btn-sm" @click="printCheckerboard">
-                체커보드 인쇄 (9×6 · 25 mm · A4)
+              <button class="btn btn-ghost btn-sm" @click="printCheckerboard">
+                체커보드 인쇄
               </button>
+              <button
+                class="btn btn-primary btn-sm"
+                :disabled="!roverStatus.connected || stereoCal.status === 'running' || !stereoSquareValid"
+                @click="startStereoCalibration"
+              >{{ stereoCal.status === 'running' ? '교정 중…' : '교정' }}</button>
             </div>
           </section>
         </div>
@@ -4671,26 +4712,7 @@ sudo systemctl start perception.service</pre>
   color: var(--text-primary);
 }
 .cal-steps li { margin: 0.2rem 0; }
-.cal-steps code {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 0.78rem;
-  background: rgba(127, 127, 127, 0.18);
-  padding: 0 0.25rem;
-  border-radius: 3px;
-}
-.cal-cmd {
-  margin: 0 0 0.6rem;
-  padding: 0.6rem 0.7rem;
-  background: #0e1116;
-  color: #e9ecf1;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 0.72rem;
-  line-height: 1.45;
-  white-space: pre;
-  overflow-x: auto;
-}
+.cal-square-field { max-width: 12rem; margin: 0.3rem 0 0.6rem; }
 
 /* The cal modal can grow taller than the mobile viewport (two long
    warnings + scale rows + trim rows + a status line each). Cap its

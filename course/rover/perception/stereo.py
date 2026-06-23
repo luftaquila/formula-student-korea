@@ -167,6 +167,72 @@ def load_calibration(path):
     }
 
 
+# Calibration compute/IO — shared by stereo_calibrate.py (CLI) and the node's
+# UI-triggered calibration, so the math + the .npz layout live in one place.
+# These need cv2 (called only on the rover, where it's installed).
+def find_chessboard(gray, pattern):
+    """Sub-pixel chessboard inner corners in a grayscale image, or None."""
+    flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
+    found, corners = cv2.findChessboardCorners(gray, pattern, flags)
+    if not found:
+        return None
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    return cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+
+
+def board_object_points(cols, rows, square_m):
+    """Checkerboard corner coordinates in its own frame, scaled to metres so the
+    recovered translation (and therefore depth) comes out in metres."""
+    objp = np.zeros((rows * cols, 3), np.float32)
+    objp[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
+    objp *= float(square_m)
+    return objp
+
+
+def compute_stereo_calibration(objpoints, imgL, imgR, eye_size):
+    """Per-eye intrinsics, then stereo extrinsics + rectification maps + Q.
+
+    eye_size is (width, height). Returns a dict with the rectify maps, Q,
+    image_size, recovered baseline (m), and RMS errors (px).
+    """
+    rms_l, K1, D1, _, _ = cv2.calibrateCamera(objpoints, imgL, eye_size, None, None)
+    rms_r, K2, D2, _, _ = cv2.calibrateCamera(objpoints, imgR, eye_size, None, None)
+    stereo_rms, K1, D1, K2, D2, R, T, _, _ = cv2.stereoCalibrate(
+        objpoints, imgL, imgR, K1, D1, K2, D2, eye_size,
+        criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-5),
+        flags=cv2.CALIB_FIX_INTRINSIC,
+    )
+    R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
+        K1, D1, K2, D2, eye_size, R, T,
+        flags=cv2.CALIB_ZERO_DISPARITY, alpha=0,
+    )
+    m1x, m1y = cv2.initUndistortRectifyMap(K1, D1, R1, P1, eye_size, cv2.CV_32FC1)
+    m2x, m2y = cv2.initUndistortRectifyMap(K2, D2, R2, P2, eye_size, cv2.CV_32FC1)
+    return {
+        "map1x": m1x, "map1y": m1y, "map2x": m2x, "map2y": m2y, "Q": Q,
+        "image_size": (int(eye_size[0]), int(eye_size[1])),
+        "baseline_m": float(np.linalg.norm(T)),
+        "stereo_rms": float(stereo_rms),
+        "rms_l": float(rms_l), "rms_r": float(rms_r),
+    }
+
+
+def save_calibration(path, result, square_m):
+    """Write a calibration dict (from compute_stereo_calibration) to an .npz."""
+    out_dir = os.path.dirname(os.path.abspath(path))
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    np.savez(
+        path,
+        map1x=result["map1x"], map1y=result["map1y"],
+        map2x=result["map2x"], map2y=result["map2y"], Q=result["Q"],
+        image_size=np.array(result["image_size"], dtype=np.int32),
+        baseline_m=np.float32(result["baseline_m"]),
+        stereo_rms=np.float32(result["stereo_rms"]),
+        square_m=np.float32(square_m),
+    )
+
+
 @dataclass
 class StereoConfig:
     calib_path: str = ""

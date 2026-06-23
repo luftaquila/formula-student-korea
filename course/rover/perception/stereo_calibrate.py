@@ -34,12 +34,13 @@ Saves an .npz with: map1x, map1y, map2x, map2y (per-eye rectify maps), Q
 """
 
 import argparse
-import os
 import sys
 import time
 
 import cv2
 import numpy as np
+
+import stereo  # shared corner-finding + calibration compute/IO
 
 
 def _open_camera(device, width, height):
@@ -54,15 +55,6 @@ def _open_camera(device, width, height):
         cap.release()
         return None
     return cap
-
-
-def _find_corners(gray, pattern):
-    flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
-    found, corners = cv2.findChessboardCorners(gray, pattern, flags)
-    if not found:
-        return None
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-    return cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
 
 
 def main(argv=None):
@@ -101,12 +93,7 @@ def main(argv=None):
             cap.release()
             return 1
 
-    # Object points: the board's corners in its own frame, scaled to metres so
-    # T (and therefore depth) comes out in metres.
-    objp = np.zeros((args.rows * args.cols, 3), np.float32)
-    objp[:, :2] = np.mgrid[0:args.cols, 0:args.rows].T.reshape(-1, 2)
-    objp *= float(args.square_m)
-
+    objp = stereo.board_object_points(args.cols, args.rows, args.square_m)
     objpoints, imgL, imgR = [], [], []
     last_mean = None
     eye_size = None  # (w, h) of one eye
@@ -136,10 +123,10 @@ def main(argv=None):
             eye_size = (left.shape[1], left.shape[0])
         gl = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
         gr = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
-        cl = _find_corners(gl, pattern)
+        cl = stereo.find_chessboard(gl, pattern)
         if cl is None:
             continue
-        cr = _find_corners(gr, pattern)
+        cr = stereo.find_chessboard(gr, pattern)
         if cr is None:
             continue
         mean = cl.reshape(-1, 2).mean(axis=0)
@@ -161,39 +148,17 @@ def main(argv=None):
               file=sys.stderr)
         return 1
 
-    # Per-eye intrinsics first, then stereo extrinsics with intrinsics fixed.
-    rms_l, K1, D1, _, _ = cv2.calibrateCamera(objpoints, imgL, eye_size, None, None)
-    rms_r, K2, D2, _, _ = cv2.calibrateCamera(objpoints, imgR, eye_size, None, None)
-    stereo_rms, K1, D1, K2, D2, R, T, _, _ = cv2.stereoCalibrate(
-        objpoints, imgL, imgR, K1, D1, K2, D2, eye_size,
-        criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-5),
-        flags=cv2.CALIB_FIX_INTRINSIC,
-    )
-    R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
-        K1, D1, K2, D2, eye_size, R, T,
-        flags=cv2.CALIB_ZERO_DISPARITY, alpha=0,
-    )
-    map1x, map1y = cv2.initUndistortRectifyMap(K1, D1, R1, P1, eye_size, cv2.CV_32FC1)
-    map2x, map2y = cv2.initUndistortRectifyMap(K2, D2, R2, P2, eye_size, cv2.CV_32FC1)
-
-    baseline_m = float(np.linalg.norm(T))
-    print(f"per-eye RMS: L={rms_l:.3f} R={rms_r:.3f}  stereo RMS={stereo_rms:.3f} px")
-    print(f"recovered baseline: {baseline_m * 1000:.1f} mm "
+    result = stereo.compute_stereo_calibration(objpoints, imgL, imgR, eye_size)
+    print(f"per-eye RMS: L={result['rms_l']:.3f} R={result['rms_r']:.3f}  "
+          f"stereo RMS={result['stereo_rms']:.3f} px")
+    print(f"recovered baseline: {result['baseline_m'] * 1000:.1f} mm "
           f"(expected ~60 mm — large deviation means a bad calibration)")
-    if stereo_rms > 1.0:
+    if result["stereo_rms"] > 1.0:
         print("WARNING: stereo RMS > 1.0 px — calibration is poor; depth will "
               "be noisy. Recapture with a flatter board and better lighting.",
               file=sys.stderr)
 
-    out_dir = os.path.dirname(os.path.abspath(args.out))
-    os.makedirs(out_dir, exist_ok=True)
-    np.savez(
-        args.out,
-        map1x=map1x, map1y=map1y, map2x=map2x, map2y=map2y,
-        Q=Q, image_size=np.array(eye_size, dtype=np.int32),
-        baseline_m=np.float32(baseline_m), stereo_rms=np.float32(stereo_rms),
-        square_m=np.float32(args.square_m),
-    )
+    stereo.save_calibration(args.out, result, args.square_m)
     print(f"saved calibration → {args.out}")
     return 0
 

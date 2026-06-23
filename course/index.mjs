@@ -209,7 +209,9 @@ const app = createApp({ express }, (req) => {
     // Obstacle reports come from the perception node only. Internal-strict so a
     // browser can't spoof an obstacle to pause a running mission + raise a false
     // operator alarm.
-    p === "/api/rover/obstacle"
+    p === "/api/rover/obstacle" ||
+    // Calibration progress is reported by the perception node only.
+    p === "/api/rover/calibration-progress"
   ) {
     return isInternalRequest(req) ? null : "deny";
   }
@@ -859,6 +861,10 @@ const roverState = {
   // rover auto-pauses the mission LOCALLY over ROS; this only mirrors it for the
   // operator UI (alert banner + auto-open camera). { active, at, nearest_m }
   obstacle: { active: false, at: 0, nearest_m: null },
+  // UI-triggered stereo calibration progress/result, reported by the perception
+  // node. { status: idle|running|done|failed, phase, captured, target, rms,
+  // baseline_mm, pairs, error, at }
+  stereo_calibration: { status: "idle", at: 0 },
   // Session-scoped per-mission progress used for tab-close recovery — the
   // server acts as the source of truth so reloading the UI rebuilds the
   // executing/stopped view exactly.
@@ -1548,6 +1554,57 @@ app.post("/api/rover/obstacle", (req, res) => {
   res.json({ ok: true, paused: reflected });
 });
 
+// POST /api/rover/calibrate-stereo - 운영자가 스테레오 카메라 교정 시작 (admin)
+// 명령을 perception의 카메라 control SSE로 보낸다 → 로버가 그 자리에서 양안으로
+// 체커보드를 수집·계산·저장하고 detector를 재로드한다. 진행/결과는 perception이
+// /api/rover/calibration-progress 로 회신해 UI에 표시된다.
+app.post("/api/rover/calibrate-stereo", (req, res) => {
+  const sq = Number(req.body?.square_m);
+  if (!Number.isFinite(sq) || sq < 0.005 || sq > 0.2) {
+    return res.status(400).send("정사각 한 칸 크기(square_m)는 0.005~0.2 m 범위의 숫자여야 합니다.");
+  }
+  if (!cameraControlClient) {
+    logger.warn(req, "rover.calibrate_stereo", { error: "perception_not_connected" }, "rover");
+    return res.status(503).send("카메라(perception)가 연결되어 있지 않습니다.");
+  }
+  if (!sendCameraControl("calibrate", { square_m: sq })) {
+    logger.warn(req, "rover.calibrate_stereo", { error: "write_failed" }, "rover");
+    return res.status(503).send("카메라 제어 채널 전송에 실패했습니다.");
+  }
+  roverState.stereo_calibration = {
+    status: "running", phase: "start", captured: 0, target: null,
+    rms: null, baseline_mm: null, pairs: null, error: null,
+    square_m: sq, at: Date.now(),
+  };
+  broadcastRoverStatus();
+  logger.log(req, "rover.calibrate_stereo", { square_m: sq }, "rover");
+  res.json({ ok: true });
+});
+
+// POST /api/rover/calibration-progress - perception이 교정 진행/결과 보고 (internal)
+app.post("/api/rover/calibration-progress", (req, res) => {
+  const b = req.body || {};
+  const phase = typeof b.phase === "string" ? b.phase : "";
+  const done = phase === "done";
+  roverState.stereo_calibration = {
+    status: done ? (b.ok ? "done" : "failed") : "running",
+    phase,
+    captured: Number.isInteger(b.captured) ? b.captured : null,
+    target: Number.isInteger(b.target) ? b.target : null,
+    rms: typeof b.rms === "number" ? b.rms : null,
+    baseline_mm: typeof b.baseline_mm === "number" ? b.baseline_mm : null,
+    pairs: Number.isInteger(b.pairs) ? b.pairs : null,
+    error: typeof b.error === "string" ? b.error.slice(0, 200) : null,
+    at: Date.now(),
+  };
+  broadcastRoverStatus();
+  if (done) {
+    logger.log(req, "rover.calibration",
+      { ok: !!b.ok, rms: b.rms ?? null, baseline_mm: b.baseline_mm ?? null, error: b.error ?? null }, "rover");
+  }
+  res.json({ ok: true });
+});
+
 // POST /api/rover/calibrate-battery - 배터리 전압 1점 게인 보정 (admin)
 // 운영자가 멀티미터로 측정한 실제 전압을 입력하면, 로버가 같은 시점의 ADC raw
 // 값과 비교해 V_real = V_raw × gain 의 게인 하나를 갱신·영구 저장한다.
@@ -1856,13 +1913,15 @@ const MAX_CAMERA_VIEWERS = 8;                 // cap held-open MJPEG responses
 const CAMERA_MIN_FRAME_INTERVAL_MS = 40;      // relay ≤ ~25 fps regardless of rover
 let cameraLastRelayAt = 0;
 
-function sendCameraControl(event) {
-  if (!cameraControlClient) return;
+function sendCameraControl(event, data) {
+  if (!cameraControlClient) return false;
   try {
-    cameraControlClient.write(`event: ${event}\ndata: {}\n\n`);
+    cameraControlClient.write(`event: ${event}\ndata: ${data ? JSON.stringify(data) : "{}"}\n\n`);
+    return true;
   } catch {
     try { cameraControlClient.end(); } catch {}
     cameraControlClient = null;
+    return false;
   }
 }
 
@@ -1916,6 +1975,16 @@ app.get("/api/rover/camera/control", (req, res) => {
     if (cameraControlClient === res) {
       cameraControlClient = null;
       logger.warn(req, "rover.camera.control_closed", null, "rover");
+      // If a calibration was mid-run, the perception node that was running it is
+      // gone — mark it failed so the operator isn't locked out of retrying (the
+      // 교정 button is disabled while 'running' and nothing else would clear it).
+      if (roverState.stereo_calibration.status === "running") {
+        roverState.stereo_calibration = {
+          status: "failed", phase: "done",
+          error: "카메라(perception) 연결이 끊겼습니다.", at: Date.now(),
+        };
+        broadcastRoverStatus();
+      }
     }
   });
 });
