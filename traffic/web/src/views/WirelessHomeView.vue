@@ -99,7 +99,7 @@ async function simTelemetry() {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 1.5rem;
-  align-items: start;
+  align-items: stretch;
 }
 .sim-row { display: flex; align-items: center; gap: 0.6rem; }
 .sim-node { max-width: 90px; }
