@@ -23,11 +23,6 @@ const routes = [
     component: () => import("../views/WirelessHomeView.vue"),
   },
   {
-    path: "/wireless/overview",
-    name: "WirelessOverview",
-    component: () => import("../views/WirelessOverviewView.vue"),
-  },
-  {
     path: "/wireless/scoreboard",
     name: "WirelessScoreboard",
     component: () => import("../views/ScoreboardView.vue"),

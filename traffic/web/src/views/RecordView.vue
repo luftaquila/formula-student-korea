@@ -861,6 +861,12 @@ async function handleAddRecord() {
   border-color: #ff6b6b;
 }
 
+.event-mode-btn.endurance {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-success);
+  border-color: var(--accent-success);
+}
+
 .event-mode-btn.disabled {
   background: var(--bg-hover);
   color: var(--text-tertiary);
@@ -1188,12 +1194,20 @@ async function handleAddRecord() {
   color: var(--text-primary);
   font-size: 0.875rem;
   cursor: text;
+  /* 긴 detail(내구 랩 목록 등)이 열을 무한정 넓혀 우측 액션 버튼을 밀어내지 않도록 폭을 제한. */
+  max-width: 320px;
 }
 
 .detail-text {
-  display: inline-block;
+  display: block;
   min-width: 2em;
   min-height: 1.25em;
+  max-width: 320px;
+  /* 길면 가로로 늘어나지 않고 줄바꿈 + 세로 스크롤(셀 안에서 처리). */
+  max-height: 3.4em;
+  overflow-y: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .detail-input {
