@@ -15,14 +15,3 @@ export function haversine(a, b) {
     Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
   return 2 * R_EARTH * Math.asin(Math.sqrt(h));
 }
-
-export function bearing(a, b) {
-  const dLng = toRad(b.lng - a.lng);
-  const la1 = toRad(a.lat);
-  const la2 = toRad(b.lat);
-  const x = Math.sin(dLng) * Math.cos(la2);
-  const y =
-    Math.cos(la1) * Math.sin(la2) -
-    Math.sin(la1) * Math.cos(la2) * Math.cos(dLng);
-  return Math.atan2(x, y);
-}
