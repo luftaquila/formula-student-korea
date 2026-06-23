@@ -211,18 +211,14 @@ class PerceptionNode(Node):
             else:
                 self.get_logger().info("obstacle cleared")
 
-    def _stereo_eyes(self, left_frame, right_cap):
+    def _stereo_eyes(self, left_frame, right_frame):
         """Return (left, right) eye frames for the detector, or None if unavailable.
 
-        dual: right_cap is a second device; sbs: split the one frame in half.
+        dual: right_frame is the already-read second-device frame (None if its
+        read failed / device not open); sbs: split the one frame in half.
         """
         if self._layout == "dual":
-            if right_cap is None:
-                return None
-            ok, right = right_cap.read()
-            if not ok or right is None:
-                return None
-            return left_frame, right
+            return None if right_frame is None else (left_frame, right_frame)
         return stereo.split_sbs(left_frame)
 
     def _capture_loop(self):
@@ -277,6 +273,28 @@ class PerceptionNode(Node):
                 time.sleep(0.5)
                 continue
 
+            # Grab the right eye BACK-TO-BACK with the left (dual + due only), so
+            # the two unsynchronised USB cams' frames are as close in time as
+            # possible — before the stream encode/POST, which can take a while.
+            # Only at the detect rate; the handle is opened lazily and kept open
+            # until full idle (NOT released per NAVIGATING<->other transition),
+            # so a flap while streaming can't thrash the UVC device.
+            due = detect and (t0 - last_detect) >= detect_interval
+            right_frame = None
+            if due and self._layout == "dual":
+                if right_cap is None:
+                    right_cap = open_capture(self._right_device, self._width,
+                                             self._height, self.get_logger().warn)
+                if right_cap is not None:
+                    okr, right_frame = right_cap.read()
+                    if not okr or right_frame is None:
+                        # A transient right-eye glitch must not silently kill
+                        # detection for the rest of the mission — drop the handle
+                        # so it reopens next cycle (mirrors the left cap).
+                        self.get_logger().warn("right eye grab failed; reopening")
+                        release_right()
+                        right_frame = None
+
             if stream:
                 # dual: stream the left eye whole. sbs: crop one eye per CAMERA_VIEW.
                 out = frame if self._layout == "dual" else crop_view(frame, self._view)
@@ -286,17 +304,11 @@ class PerceptionNode(Node):
                 if ok2 and self._cloud.stream_wanted.is_set():
                     self._cloud.post_frame(buf.tobytes())
 
-            if detect:
-                if self._layout == "dual" and right_cap is None:
-                    right_cap = open_capture(self._right_device, self._width,
-                                             self._height, self.get_logger().warn)
-                if (t0 - last_detect) >= detect_interval:
-                    last_detect = t0
-                    eyes = self._stereo_eyes(frame, right_cap)
-                    if eyes is not None:
-                        self._run_detection(eyes[0], eyes[1])
-            else:
-                release_right()  # streaming-only → free the second eye
+            if due:
+                last_detect = t0
+                eyes = self._stereo_eyes(frame, right_frame)
+                if eyes is not None:
+                    self._run_detection(eyes[0], eyes[1])
 
             # Capture at the stream rate when watched, else the (slower) detect
             # rate — no point grabbing faster than the only active consumer.
