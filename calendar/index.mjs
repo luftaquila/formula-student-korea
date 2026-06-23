@@ -87,28 +87,40 @@ app.get("/api/events", (req, res) => {
   res.json(events);
 });
 
-// Create event
-app.post("/api/events", (req, res) => {
+// 이벤트 입력 검증 (생성·수정 공유). 실패 시 응답을 보내고 null 반환, 성공 시 { role }.
+function validateEventInput(req, res, action, target) {
   const { title, start, end } = req.body;
   if (!title || !start || !end) {
-    logger.warn(req, "event.create", { error: "title, start, and end are required", title, start, end });
-    return res.status(400).json({ error: "title, start, and end are required" });
+    logger.warn(req, action, { error: "title, start, and end are required", title, start, end }, target);
+    res.status(400).json({ error: "title, start, and end are required" });
+    return null;
   }
   if (start > end) {
-    logger.warn(req, "event.create", { error: "start must not be after end", start, end });
-    return res.status(400).json({ error: "start must not be after end" });
+    logger.warn(req, action, { error: "start must not be after end", start, end }, target);
+    res.status(400).json({ error: "start must not be after end" });
+    return null;
   }
-
   const role = req.body.role || "official";
   if (!ALLOWED_EVENT_ROLES.includes(role)) {
-    logger.warn(req, "event.create", { error: "Invalid role value", role });
-    return res.status(400).json({ error: "Invalid role value" });
+    logger.warn(req, action, { error: "Invalid role value", role }, target);
+    res.status(400).json({ error: "Invalid role value" });
+    return null;
   }
   const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
   if (EVENT_ROLE_LEVELS[role] > userLevel) {
-    logger.warn(req, "event.create", { error: "role exceeds own level", requested: role, actual: req.user?.role }, null);
-    return res.status(403).json({ error: "Cannot set visibility above your own role" });
+    logger.warn(req, action, { error: "role exceeds own level", requested: role, actual: req.user?.role }, target);
+    res.status(403).json({ error: "Cannot set visibility above your own role" });
+    return null;
   }
+  return { role };
+}
+
+// Create event
+app.post("/api/events", (req, res) => {
+  const { title, start, end } = req.body;
+  const valid = validateEventInput(req, res, "event.create", null);
+  if (!valid) return;
+  const { role } = valid;
 
   const allDay = req.body.allDay ? 1 : 0;
   const description = req.body.description || "";
@@ -133,25 +145,9 @@ app.post("/api/events", (req, res) => {
 app.put("/api/events/:id", (req, res) => {
   const { id } = req.params;
   const { title, start, end } = req.body;
-  if (!title || !start || !end) {
-    logger.warn(req, "event.update", { error: "title, start, and end are required", title, start, end }, id);
-    return res.status(400).json({ error: "title, start, and end are required" });
-  }
-  if (start > end) {
-    logger.warn(req, "event.update", { error: "start must not be after end", start, end }, id);
-    return res.status(400).json({ error: "start must not be after end" });
-  }
-
-  const role = req.body.role || "official";
-  if (!ALLOWED_EVENT_ROLES.includes(role)) {
-    logger.warn(req, "event.update", { error: "Invalid role value", role }, id);
-    return res.status(400).json({ error: "Invalid role value" });
-  }
-  const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
-  if (EVENT_ROLE_LEVELS[role] > userLevel) {
-    logger.warn(req, "event.update", { error: "role exceeds own level", requested: role, actual: req.user?.role }, id);
-    return res.status(403).json({ error: "Cannot set visibility above your own role" });
-  }
+  const valid = validateEventInput(req, res, "event.update", id);
+  if (!valid) return;
+  const { role } = valid;
 
   const existing = db.prepare("SELECT id FROM events WHERE id = ?").get(id);
   if (!existing) return res.status(404).json({ error: "Event not found" });
