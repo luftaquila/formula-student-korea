@@ -6,6 +6,7 @@ import { ingestWireless } from "../composables/useApi";
 import WirelessBridgeCard from "../components/WirelessBridgeCard.vue";
 import WirelessMappingCard from "../components/WirelessMappingCard.vue";
 import WirelessDiagnostics from "../components/WirelessDiagnostics.vue";
+import WirelessOverviewView from "./WirelessOverviewView.vue";
 
 // 연결 유지(이 뷰가 떠 있는 동안 SSE 구독)
 useSSE();
@@ -78,6 +79,9 @@ async function simTelemetry() {
         </div>
       </div>
     </div>
+
+    <!-- 전 경기 라이브 현황(읽기 전용) — 무선 설정 하단에 통합. -->
+    <WirelessOverviewView class="wl-overview-embed" />
   </div>
 </template>
 
@@ -103,6 +107,8 @@ async function simTelemetry() {
 .debounce-input { max-width: 120px; }
 .debounce-row .unit { color: var(--text-muted, #888); font-size: 0.9rem; }
 .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
+/* 임베드된 현황: 자체 페이지 패딩/최대폭 제거해 설정 카드 열과 정렬. */
+.wl-overview-embed :deep(.overview) { padding: 0; max-width: none; margin: 0; }
 @media (max-width: 768px) {
   .wl-row { grid-template-columns: 1fr; }
 }

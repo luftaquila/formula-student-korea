@@ -345,6 +345,38 @@ async function handleInvalidate(record) {
   }
 }
 
+// 내구 기록의 detail은 랩 목록 문자열("MM:SS.mmm / ..."). 요약 표시 + 클릭 팝업용으로 파싱.
+const ENDURANCE_TYPE = "내구";
+const lapPopup = ref(null); // { num, team, laps[], count, best, bestIdx, avg, total } | null
+function clockToMs(s) {
+  const m = /^(\d+):(\d{2})\.(\d{3})$/.exec((s || "").trim());
+  return m ? (+m[1]) * 60000 + (+m[2]) * 1000 + (+m[3]) : null;
+}
+function enduranceStats(record) {
+  if (record.type !== ENDURANCE_TYPE || !record.detail) return null;
+  const laps = record.detail.split("/").map(clockToMs).filter((n) => n != null);
+  if (!laps.length) return null;
+  let best = laps[0], bestIdx = 0, sum = 0;
+  laps.forEach((ms, i) => { sum += ms; if (ms < best) { best = ms; bestIdx = i; } });
+  return { laps, count: laps.length, best, bestIdx: bestIdx + 1, avg: Math.round(sum / laps.length), total: sum };
+}
+// 내구 detail 셀 요약: "Total: N lap / Best: MM:SS.mmm (#n)". 파싱 실패 시 원문 폴백.
+function enduranceSummary(record) {
+  const s = enduranceStats(record);
+  return s ? `Total: ${s.count} lap / Best: ${msToClockStr(s.best)} (#${s.bestIdx})` : (record.detail || "");
+}
+// 내구 detail 셀 클릭: 인라인 편집 대신 랩 목록 팝업. 그 외 종목은 기존 인라인 편집.
+function onDetailCellClick(record) {
+  if (record.type === ENDURANCE_TYPE) openLapPopup(record);
+  else startDetailEdit(record.rowid);
+}
+function openLapPopup(record) {
+  const s = enduranceStats(record);
+  if (!s) return;
+  lapPopup.value = { num: record.num, team: `${record.univ} ${record.team}`, ...s };
+}
+function closeLapPopup() { lapPopup.value = null; }
+
 function startDetailEdit(rowid) {
   editingDetailId.value = rowid;
 }
@@ -723,17 +755,24 @@ async function handleAddRecord() {
                 />
                 <span v-else class="penalty-text">{{ record.oc || 0 }}</span>
               </td>
-              <td class="detail-cell" @click="startDetailEdit(record.rowid)">
-                <input
-                  v-if="editingDetailId === record.rowid"
-                  :ref="detailInputRef"
-                  class="detail-input"
-                  type="text"
-                  :value="record.detail || ''"
-                  @blur="handleDetailChange(record, $event.target.value)"
-                  @keyup.enter="$event.target.blur()"
-                />
-                <span v-else class="detail-text">{{ record.detail || '' }}</span>
+              <td class="detail-cell" @click="onDetailCellClick(record)">
+                <span
+                  v-if="record.type === ENDURANCE_TYPE"
+                  class="endurance-summary"
+                  title="랩 상세 보기"
+                >{{ enduranceSummary(record) }}</span>
+                <template v-else>
+                  <input
+                    v-if="editingDetailId === record.rowid"
+                    :ref="detailInputRef"
+                    class="detail-input"
+                    type="text"
+                    :value="record.detail || ''"
+                    @blur="handleDetailChange(record, $event.target.value)"
+                    @keyup.enter="$event.target.blur()"
+                  />
+                  <span v-else class="detail-text">{{ record.detail || '' }}</span>
+                </template>
               </td>
               <td class="center col-shrink">
                 <button
@@ -772,6 +811,34 @@ async function handleAddRecord() {
         <p>기록 파일을 선택하세요</p>
       </div>
     </section>
+
+    <!-- 내구 랩 상세 팝업 -->
+    <div v-if="lapPopup" class="lap-popup-overlay" @click.self="closeLapPopup">
+      <div class="lap-popup">
+        <div class="lap-popup-header">
+          <h3>🏁 내구 랩 기록 — <span class="lap-popup-team">#{{ lapPopup.num }} {{ lapPopup.team }}</span></h3>
+          <button class="lap-popup-close" title="닫기" @click="closeLapPopup">✕</button>
+        </div>
+        <div class="lap-popup-stats">
+          <div class="lps-item"><span class="lps-k">총 랩</span><span class="lps-v">{{ lapPopup.count }}</span></div>
+          <div class="lps-item"><span class="lps-k">최고 랩</span><span class="lps-v">{{ msToClockStr(lapPopup.best) }} (#{{ lapPopup.bestIdx }})</span></div>
+          <div class="lps-item"><span class="lps-k">평균 랩</span><span class="lps-v">{{ msToClockStr(lapPopup.avg) }}</span></div>
+          <div class="lps-item"><span class="lps-k">총 시간</span><span class="lps-v">{{ msToClockStr(lapPopup.total) }}</span></div>
+        </div>
+        <div class="lap-popup-list">
+          <div
+            v-for="(ms, i) in lapPopup.laps"
+            :key="i"
+            class="lap-popup-row"
+            :class="{ best: i + 1 === lapPopup.bestIdx }"
+          >
+            <span class="lpr-no">Lap {{ i + 1 }}</span>
+            <span class="lpr-t">{{ msToClockStr(ms) }}</span>
+            <span class="lpr-tag">{{ i + 1 === lapPopup.bestIdx ? 'BEST' : '' }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -859,6 +926,12 @@ async function handleAddRecord() {
   background: rgba(255, 107, 107, 0.15);
   color: #ff6b6b;
   border-color: #ff6b6b;
+}
+
+.event-mode-btn.endurance {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-success);
+  border-color: var(--accent-success);
 }
 
 .event-mode-btn.disabled {
@@ -1188,12 +1261,20 @@ async function handleAddRecord() {
   color: var(--text-primary);
   font-size: 0.875rem;
   cursor: text;
+  /* 긴 detail(내구 랩 목록 등)이 열을 무한정 넓혀 우측 액션 버튼을 밀어내지 않도록 폭을 제한. */
+  max-width: 320px;
 }
 
 .detail-text {
-  display: inline-block;
+  display: block;
   min-width: 2em;
   min-height: 1.25em;
+  max-width: 320px;
+  /* 길면 가로로 늘어나지 않고 줄바꿈 + 세로 스크롤(셀 안에서 처리). */
+  max-height: 3.4em;
+  overflow-y: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .detail-input {
@@ -1216,6 +1297,121 @@ async function handleAddRecord() {
   background: var(--bg-input);
   border-color: var(--border-focus);
   box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
+}
+
+/* 내구 detail 요약(클릭 → 팝업) */
+.endurance-summary {
+  cursor: pointer;
+  color: var(--accent-success);
+  font-weight: 600;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+.endurance-summary:hover {
+  text-decoration: underline;
+}
+
+/* 내구 랩 상세 팝업 */
+.lap-popup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+.lap-popup {
+  background: var(--bg-card);
+  border-radius: 12px;
+  box-shadow: var(--shadow-card), 0 12px 40px rgba(0, 0, 0, 0.4);
+  width: 100%;
+  max-width: 420px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.lap-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+}
+.lap-popup-header h3 {
+  font-size: 1rem;
+  font-weight: 700;
+}
+.lap-popup-team {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.lap-popup-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0.25rem;
+  flex-shrink: 0;
+}
+.lap-popup-close:hover {
+  color: var(--text-primary);
+}
+.lap-popup-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+}
+.lps-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.lps-k {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+.lps-v {
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.lap-popup-list {
+  overflow-y: auto;
+  padding: 0.5rem 1.25rem 1rem;
+}
+.lap-popup-row {
+  display: grid;
+  grid-template-columns: 4rem 1fr 3.5rem;
+  align-items: center;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-family: "JetBrains Mono", monospace;
+}
+.lpr-no {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.lpr-t {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.lpr-tag {
+  text-align: right;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--accent-success);
+}
+.lap-popup-row.best .lpr-t {
+  color: var(--accent-success);
 }
 
 .penalty-cell {
