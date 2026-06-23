@@ -1509,6 +1509,14 @@ app.post("/api/rover/obstacle", (req, res) => {
   const body = req.body || {};
   const nearest = typeof body.nearest_m === "number" ? body.nearest_m : null;
   const at = Date.now();
+  // No active mission → nothing to pause, and an alert nothing could clear. A
+  // best-effort obstacle POST from the final NAVIGATING cycle can land just
+  // after the mission ended (endMission nulled currentMissionId); raising the
+  // persistent banner then would stick until the next mission (resume 409s).
+  // No-op, mirroring /api/rover/waypoint_reached.
+  if (currentMissionId == null) {
+    return res.json({ ok: true, paused: false });
+  }
   // Drop a stale obstacle POST that was in flight when the operator just
   // resumed: reflecting it would re-pause + re-alert a mission they deliberately
   // resumed (the rover already cleared its local obstacle edge on resume). Same

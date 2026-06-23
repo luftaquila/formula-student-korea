@@ -1335,12 +1335,14 @@ describe('Mission obstacle auto-pause (perception)', () => {
     assert.ok(![200, 204].includes(adm.status), `browser admin must not succeed (got ${adm.status})`);
   });
 
-  it('does not pause when there is no running mission (paused:false)', async () => {
+  it('does not pause OR raise a banner when there is no running mission', async () => {
     const res = await obstacle({ nearest_m: 1.2 });
     assert.equal(res.status, 200);
     assert.equal((await res.json()).paused, false);
     const st = await status();
     assert.notEqual(st.mission_progress.status, 'paused');
+    // No mission → no persistent alert (it would be unclearable: resume 409s).
+    assert.equal(st.obstacle.active, false);
   });
 
   it("reflects the rover's local pause and raises an obstacle alert", async () => {
