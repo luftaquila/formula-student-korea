@@ -1875,6 +1875,12 @@ app.get("/api/rover/camera/control", (req, res) => {
     try { cameraControlClient.end(); } catch {}
   }
   cameraControlClient = res;
+  // Audit the perception container's control-channel attach/detach. Without
+  // this there is NO log trail for "is the camera/perception process connected"
+  // (camera_connected lives only in the live /camera/status response), which
+  // makes "the camera shows nothing" hard to triage — connected vs. never
+  // attached look identical in the logs.
+  logger.log(req, "rover.camera.control_connected", null, "rover");
   // If viewers are already waiting, start capturing immediately.
   if (cameraViewers.size > 0) sendCameraControl("camera-start");
   const heartbeat = setInterval(() => {
@@ -1882,7 +1888,10 @@ app.get("/api/rover/camera/control", (req, res) => {
   }, 30000);
   req.on("close", () => {
     clearInterval(heartbeat);
-    if (cameraControlClient === res) cameraControlClient = null;
+    if (cameraControlClient === res) {
+      cameraControlClient = null;
+      logger.warn(req, "rover.camera.control_closed", null, "rover");
+    }
   });
 });
 
