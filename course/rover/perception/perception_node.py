@@ -390,7 +390,16 @@ class PerceptionNode(Node):
                 release_right()
                 idle_deadline = None
                 self._set_detect_active(False)
-                self._run_calibration(calib_square_m)
+                # The collection loop touches OpenCV per frame; an unexpected
+                # error there must not propagate out of this daemon thread (that
+                # kills BOTH streaming and detection while rclpy keeps the process
+                # 'active'). Catch, report to the operator, and resume.
+                try:
+                    self._run_calibration(calib_square_m)
+                except Exception as e:  # noqa: BLE001 - keep the capture thread alive
+                    self.get_logger().error(f"calibration crashed: {e}")
+                    self._progress({"phase": "done", "ok": False,
+                                    "error": f"calibration crashed: {e}"})
                 continue
 
             stream = self._cloud.stream_wanted.is_set()
