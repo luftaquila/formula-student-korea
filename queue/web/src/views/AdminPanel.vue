@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed, watch } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
   fetchEntries,
@@ -263,10 +263,6 @@ async function toggleBoothActive(type, boothNum, currentActive, ev) {
 function formatTime(timestamp) {
   return new Date(timestamp).toLocaleTimeString("ko-KR");
 }
-
-onUnmounted(() => {
-  // Timers are auto-cleaned by useBoothTimers onUnmounted
-});
 
 function goToRegister() {
   router.push("/register");

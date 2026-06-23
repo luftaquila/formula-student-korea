@@ -6,7 +6,7 @@ import { createCalendar, viewMonthGrid, viewMonthAgenda } from "@schedule-x/cale
 import { createEventsServicePlugin } from "@schedule-x/events-service";
 import { createEventModalPlugin } from "@schedule-x/event-modal";
 import "@schedule-x/theme-default/dist/index.css";
-import { isAuthenticated, isChief, showOfficials } from "@shared/officialsStore.js";
+import { isAuthenticated, isChief } from "@shared/officialsStore.js";
 import { Notyf } from "notyf";
 import { request } from "../api.js";
 import EventModal from "../components/EventModal.vue";
