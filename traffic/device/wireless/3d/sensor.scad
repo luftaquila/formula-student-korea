@@ -1,4 +1,4 @@
-// PCB Housing — FSK-TRAFFIC v2 (wireless LoRa timing node)
+// PCB Housing — FSK-TRAFFIC v2 (wireless LoRa timing node) — SENSOR variant (sensor I/O only, no light)
 // Board: 92 x 57 mm, corner r 3, 4x M2 mounting holes (86 x 51 rectangle),
 // all tall components on the TOP side (18650 holder dominates the cavity height).
 //
@@ -12,10 +12,11 @@
 // base plate + PCB and self-tap into the posts hanging from the lid ceiling, pulling the
 // base + PCB up against the posts and seating the base flush in the lid's bottom opening.
 //
-// Wall features:
-//   - left  (-X): 2x Molex Mini-Fit Jr  (J1 sensor +12V/SENSE, J2 light GN/RD)  + SMA antenna (raised, between the two connectors)
+// Wall features (SENSOR variant — sensor I/O only; the light connector is not used):
+//   - left  (-X): 1x Molex Mini-Fit Jr (J1 sensor +12V/SENSE). J2 (light GN/RD) opening is blanked off
+//                 (solid wall). SMA antenna stays between the connector positions.
 //   - right (+X): 1/4" tripod mount     (Ra-01 IPEX -> pigtail across the box -> antenna on the left)
-//   - front (-Y): USB-C  (nRF52840 SuperMini)
+//   - front (-Y): USB-C  (nRF52840 SuperMini) + 6mm toggle switch bushing (-Y wall, left)
 //   - back  (+Y): blank
 //
 // Coordinate frame: PCB centred at XY origin; Z=0 at the outer bottom of the assembly.
@@ -58,18 +59,22 @@ base_fit = 0.3;        // base clearance per side inside the lid bottom opening
 
 /* [Molex Mini-Fit Jr cutouts — left/-X wall] */
 // KiCad +Y is screen-DOWN, OpenSCAD +Y is UP  ->  model_Y = 139.5 - boardY  (Y is flipped).
-// board y-centre 139.5; J1 (sensor) @140.65 -> -1.15, J2 (light) @152.85 -> -13.35
-molex_y = [-1.15, -13.35];   // connector Y centres (model)
+// Opening centre = connector WIDTH centre (pin centroid), NOT the footprint origin: the 2 circuits sit
+// +2.1mm (local-X) from the origin -> J1 boardY 140.65 -> 139.5-(140.65-2.1) = 0.95; J2 -> -11.25.
+molex_y = [0.95, -11.25];   // connector opening Y centres (model)
 molex_cut_w = 11;          // opening width (Y) — clears the 9.6mm shroud (Molex SD-5569) + margin
-molex_cut_h = 12;          // opening height above PCB (Z) — 9.6mm shroud + right-angle standoff
-molex_latch_w = 3.5;       // latch slot width — clears the 3.0mm engaging tongue (Molex SD-5557 ".12[3.0]"); the 5.4mm is the external release handle, not through the wall
-molex_latch_h = 5;         // latch slot extra height — must clear the latch at MAX deflection during mating (rest ~2.5mm + flex), not just at rest; SD shows rest only, so kept generous
+molex_cut_h = 11;          // opening height above PCB (Z) — 9.6mm shroud + right-angle standoff (sensor variant: lowered 1mm, latch slot drops with it but keeps its height)
+molex_latch_w = 4;         // latch slot width — clears the 3.0mm engaging tongue (Molex SD-5557 ".12[3.0]"); the 5.4mm is the external release handle, not through the wall (sensor variant: widened 0.5mm)
+molex_latch_h = 4.5;       // latch slot extra height — must clear the latch at MAX deflection during mating (rest ~2.5mm + flex), not just at rest; SD shows rest only, so kept generous (sensor variant: net -0.5mm from baseline 5)
 
 /* [USB-C cutout — -Y wall] */
-usb_x = 13.7;      // X centre (SuperMini USB @ board x~155.7 -> +13.7)
-usb_cut_w = 13;    // opening width (X) incl. cable-boot clearance
-usb_cut_h = 7;     // opening height (Z)
-usb_drop = 1;      // start this far below PCB top
+// USB-C sits on the SuperMini's short end (board Y~167, at the -Y wall). Its X centre is the MODULE-WIDTH
+// centre, NOT the footprint origin (origin = a corner pad): end pads span board X 140.47..155.71 ->
+// centre 148.09 -> model 6.09. Port CENTRE height is measured 6.4mm above the PCB bottom face.
+usb_x = 6.1;          // X centre of the USB-C port (model)
+usb_cut_w = 13;       // opening width (X) incl. cable-boot clearance
+usb_cut_h = 7;        // opening height (Z)
+usb_above_bot = 6.4;  // port CENTRE height above the PCB bottom face (measured)
 
 /* [Toggle switch bushing hole — -Y wall, LEFT (-X), clear of the Molex] */
 // 6mm bushing toggle (MTS-/STM- 6mm series). The switch body needs a sw_cube clearance box
@@ -77,17 +82,14 @@ usb_drop = 1;      // start this far below PCB top
 // model X -27.45 (J1 Y -4.35..+6.25, J2 Y -16.55..-5.95, Z 7.1..18), and ABOVE the PCB.
 sw_d = 6;          // bushing through-hole (6mm toggle)
 sw_cube = 14;      // required interior body-clearance cube (edge length)
-sw_x = -20;        // hole X centre on the -Y wall: cube -X edge (sw_x - sw_cube/2 = -27) clears Molex (+X edge -27.45)
+sw_x = -15;        // hole X centre on the -Y wall (moved +5mm toward the tripod/+X side); cube -X edge -22 clears Molex (+X edge -27.45)
 sw_z = 19;         // hole Z centre: cube spans z 12..26 -> above PCB + low parts (incl. L1 ~z10), below ceiling 37.6
 
-/* [SMA antenna hole — -X (left) wall, between the two Molex connectors] */
-// Centred in Y between J1 and J2, and raised in Z as high as the wall allows while leaving ant_top_margin
-// of FLAT wall above the bore (below the rounded top edge) so the SMA nut/washer seats on a flat ring.
-// At that height the wall is solid (above the connector openings) and the battery (holder -Y edge ~ +6.75)
-// is entirely north of it, so the SMA clears the connectors AND the battery with margin.
-ant_y = (molex_y[0] + molex_y[1]) / 2;   // midway between the two Molex connectors (Y)
+/* [SMA antenna hole — -X (left) wall] */
+// sensor variant (J2/light blanked off): bore centred above box mid-height (Z), and in Y midway between
+// the -Y end of the J1 (sensor) opening and the -Y inner wall, nudged toward the connector, into the
+// wall freed where J2 used to be.  (ant_y/ant_z are computed in the derived section, where inner_w exists.)
 ant_d = 6.5;                             // SMA bulkhead through-hole
-ant_top_margin = 3;                      // flat wall kept above the bore (for the nut/washer to seat clear of the rounding)
 
 /* [Tripod mount — +X (right) wall, ceiling-integrated box (prints support-free)] */
 // On the right wall (antenna side). A box hangs from the ceiling (fused to ceiling + wall; printed
@@ -97,7 +99,7 @@ ant_top_margin = 3;                      // flat wall kept above the bore (for t
 tri_box_w = 12;    // box width (Y)
 tri_y = -1.5;      // box Y centre — shifted -Y off the face centre so it clears the battery holder body (-Y edge ~ +6.75)
 tri_box_d = 10;    // box depth into the cavity (X from the wall)
-tri_pilot_d = 5.4; // 1/4"-20 self-tap pilot in plastic
+tri_pilot_d = 5.7; // 1/4"-20 self-tap pilot in plastic (was 5.4 — too tight to thread in)
 tri_depth = 8;     // thread engagement depth from the outer wall face
 tri_gap = 2;       // clearance between the box bottom and the Molex envelope
 
@@ -118,6 +120,7 @@ base_r = inner_r - base_fit;
 
 pcb_bot_z = base_th + standoff_h;    // PCB underside
 pcb_top_z = pcb_bot_z + pcb_th;      // PCB top surface
+usb_z     = pcb_bot_z + usb_above_bot;   // USB-C port centre Z (measured from the PCB bottom face)
 // height: max of battery, latch-slot reach, and "tripod bore at face centre while its box clears the Ra-01"
 cavity    = max(batt_h + tri_gap, molex_cut_h + molex_latch_h + 2, 2*(pcb_top_z + ra01_h + 4 + tri_pilot_d/2) - pcb_top_z - lid_th);
 ceil_z    = pcb_top_z + cavity;      // lid inner ceiling
@@ -126,7 +129,8 @@ post_len  = ceil_z - pcb_top_z;      // = cavity
 
 tri_hole_z  = outer_h/2;                          // 1/4" bore at the vertical CENTRE of the right face
 tri_box_bot = pcb_top_z + ra01_h + 2;             // box hangs from the ceiling down to here (clears the Ra-01 module)
-ant_z       = outer_h - edge_r - ant_top_margin - ant_d/2;   // hole top = ant_top_margin below where the top-edge fillet begins (flat seating ring)
+ant_y       = ((molex_y[0] - molex_cut_w/2) + (-inner_w/2)) / 2 + 1;   // midway: sensor-hole -Y end <-> -Y inner wall, +1mm toward the connector
+ant_z       = outer_h/2 + 8;                      // sensor variant: above box mid-height
 
 mx = pcb_l/2 - mount_inset;          // 43
 my = pcb_w/2 - mount_inset;          // 25.5
@@ -207,14 +211,15 @@ module lid() {
         for (p=mount_pos) translate([p[0],p[1],pcb_top_z-eps]) cylinder(h=post_pilot_depth, d=post_pilot_d);
 
         // Molex cutouts (-X wall): main opening + latch slot
-        for (cy = molex_y) {
+        // sensor variant: J2 (light) is blanked off — only J1 (sensor) is cut.
+        for (cy = [molex_y[0]]) {
             translate([-outer_l/2-eps, cy-molex_cut_w/2, pcb_top_z-0.5])
                 cube([wall+pcb_clear+1+eps, molex_cut_w, molex_cut_h+0.5]);
             translate([-outer_l/2-eps, cy-molex_latch_w/2, pcb_top_z-0.5+molex_cut_h])
                 cube([wall+pcb_clear+1+eps, molex_latch_w, molex_latch_h]);
         }
-        // USB-C (-Y wall) — opening with r=1 rounded corners
-        translate([usb_x, -inner_w/2+eps, pcb_top_z-usb_drop+usb_cut_h/2])
+        // USB-C (-Y wall) — opening with r=1 rounded corners, centred at usb_z
+        translate([usb_x, -inner_w/2+eps, usb_z])
             rotate([90,0,0])
                 linear_extrude(wall+pcb_clear+1+eps) rrect(usb_cut_w, usb_cut_h, 1);
         // toggle switch bushing (-Y wall, left, clear of the Molex)
@@ -261,9 +266,11 @@ module pcb_ref() {
             translate([bx+41.5,by,(pcb_top_z+bt)/2]) cube([4.9,7.5,bt-pcb_top_z],center=true);  // end contact +X
         }
         color([0.2,0.2,0.28,0.5]) translate([28.33,-7.92,pcb_top_z+ra01_h/2]) cube([18.5,18,ra01_h],center=true);  // Ra-01 module (board 147.42 -> 139.5-147.42 = -7.92)
-        // Molex 5569 right-angle body envelope (courtyard) — reaches model X -27.45; model Y = cy + [-3.2,+7.4]
+        // Molex 5569 right-angle body envelope (courtyard) — reaches model X -27.45; ±5.3 in Y about the opening centre
         color([0.85,0.5,0.15,0.4]) for (cy=molex_y)
-            translate([-inner_l/2, cy-3.2, pcb_top_z]) cube([(-27.45)+inner_l/2, 10.6, 11]);
+            translate([-inner_l/2, cy-5.3, pcb_top_z]) cube([(-27.45)+inner_l/2, 10.6, 11]);
+        // USB-C receptacle (SuperMini short end) at the -Y wall — centred (usb_x, usb_z)
+        color([0.55,0.55,0.6,0.6]) translate([usb_x, -inner_w/2+3.5, usb_z]) cube([8.94,7,3.26],center=true);
         // toggle switch body clearance cube (must not foul anything) — sits at the -Y wall, reaching inward
         %translate([sw_x, -inner_w/2 + sw_cube/2, sw_z]) cube(sw_cube, center=true);
     }
