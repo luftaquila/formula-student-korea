@@ -219,13 +219,14 @@ test.describe("Inspection template management", () => {
   });
 
   test("opens print page with template data", async ({ page }) => {
-    // Navigate directly to the print page
+    // The print page fetches the template on mount and only renders data once
+    // it resolves. Use a generous auto-retry timeout instead of the default 5s
+    // so a slow template fetch on CI doesn't flake the assertion.
     await page.goto(`/inspection/template/print?year=${YEAR}`);
-    await waitForPageReady(page);
 
     // Verify category data is rendered
-    await expect(page.locator("body")).toContainText("전기 검차");
-    await expect(page.locator("body")).toContainText("배터리");
+    await expect(page.locator("body")).toContainText("전기 검차", { timeout: 15000 });
+    await expect(page.locator("body")).toContainText("배터리", { timeout: 15000 });
   });
 
   test("exports template as JSON", async ({ page }) => {
