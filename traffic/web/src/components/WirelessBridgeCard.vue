@@ -21,6 +21,7 @@ const masterOk = computed(() => store.bridgeIsSelf || store.bridge.online);
         <div class="wl-line">
           <span class="wl-label">마스터</span>
           <span class="wl-dot" :class="masterOk ? 'ok' : 'bad'" data-testid="bridge-status"></span>
+          <span v-if="store.masterId" class="wl-id mono" data-testid="bridge-master-id">{{ store.masterId }}</span>
         </div>
         <button
           v-if="!store.bridgeIsSelf"
@@ -41,6 +42,8 @@ const masterOk = computed(() => store.bridgeIsSelf || store.bridge.online);
 .wl-conn-btn { margin-left: auto; padding: 0.4rem 0.9rem; font-size: 0.85rem; }
 .wl-line { display: flex; align-items: center; gap: 0.5rem; }
 .wl-label { color: var(--text-secondary); font-size: 0.9rem; }
+.wl-id { color: var(--text-tertiary); font-size: 0.8rem; letter-spacing: 0.02em; }
+.mono { font-family: "JetBrains Mono", monospace; }
 .wl-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .wl-dot.ok { background: var(--accent-success); box-shadow: 0 0 6px var(--accent-success); }
 .wl-dot.bad { background: var(--accent-danger); }

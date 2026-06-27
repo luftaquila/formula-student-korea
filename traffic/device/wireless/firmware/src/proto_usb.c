@@ -68,6 +68,14 @@ static void lb_hex8(lb_t *b, uint32_t v)
 
 static void lb_finish(lb_t *b) { lb_ch(b, '\n'); *b->p = '\0'; }
 
+/* Node token: the master's self-report uses the literal "0", every sensor uses
+ * its 32-bit id as 8 hex chars (so the PC/server identify boards by their id). */
+static void lb_node(lb_t *b, uint32_t node_id, int is_master)
+{
+    if (is_master) { lb_ch(b, '0'); return; }
+    lb_hex8(b, node_id);
+}
+
 /* ---- emit helpers ---------------------------------------------------------- */
 void pu_emit_identity(uint32_t devid_hi, uint32_t devid_lo)
 {
@@ -96,13 +104,13 @@ void pu_emit_heartbeat(uint64_t now_tick, uint32_t uptime_ms, uint8_t beacon_seq
     usb_write(line);
 }
 
-void pu_emit_event(uint8_t node, uint16_t ev_seq, uint64_t tmaster, uint8_t flags,
-                   float rssi, float snr)
+void pu_emit_event(uint32_t node_id, uint16_t ev_seq, uint64_t tmaster,
+                   uint8_t flags, float rssi, float snr)
 {
     char line[80];
     lb_t b; lb_init(&b, line, sizeof(line));
     lb_str(&b, "E ");
-    lb_u32(&b, node);
+    lb_node(&b, node_id, 0);
     lb_ch(&b, ' '); lb_u32(&b, ev_seq);
     lb_ch(&b, ' '); lb_u64(&b, tmaster);
     lb_ch(&b, ' '); lb_u32(&b, flags);
@@ -112,7 +120,8 @@ void pu_emit_event(uint8_t node, uint16_t ev_seq, uint64_t tmaster, uint8_t flag
     usb_write(line);
 }
 
-void pu_emit_diag(uint8_t node, int state, int64_t offset_tick, int32_t skew_ppm,
+void pu_emit_diag(uint32_t node_id, int is_master,
+                  int state, int64_t offset_tick, int32_t skew_ppm,
                   uint16_t rx_miss, uint16_t beacon_gap, uint32_t last_seen_ms,
                   float rssi, float snr, uint32_t lat_ms,
                   int16_t temp_c10, uint16_t batt_mv,
@@ -122,7 +131,7 @@ void pu_emit_diag(uint8_t node, int state, int64_t offset_tick, int32_t skew_ppm
     char line[160];
     lb_t b; lb_init(&b, line, sizeof(line));
     lb_str(&b, "D ");
-    lb_u32(&b, node);
+    lb_node(&b, node_id, is_master);
     lb_ch(&b, ' '); lb_str(&b, st);
     lb_ch(&b, ' '); lb_i64(&b, offset_tick);
     lb_ch(&b, ' '); lb_i32(&b, skew_ppm);

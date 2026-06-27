@@ -85,6 +85,15 @@ int usb_connected(void)
     return tud_cdc_connected();
 }
 
+int usb_host_present(void)
+{
+    /* tud_mounted() is set once a host completes enumeration (SET_CONFIGURATION)
+     * and cleared on cable removal / bus reset. Unlike VBUS detection it stays
+     * false for a charger with no USB host, and unlike tud_cdc_connected() (DTR)
+     * it does not depend on the host app opening the port. */
+    return tud_mounted() ? 1 : 0;
+}
+
 int usb_read_byte(void)
 {
     if (tud_cdc_available()) {

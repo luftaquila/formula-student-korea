@@ -54,18 +54,18 @@ uint32_t sec_boot_id(void) { return g_boot_id; }
 
 /* 24-byte XChaCha nonce from the message identity. Unique per (key, message):
  * ctr never repeats within a boot, boot_id makes it unique across boots. */
-static void build_nonce(uint8_t nonce[24], uint8_t type, uint8_t node_id,
+static void build_nonce(uint8_t nonce[24], uint8_t type, uint32_t node_id,
                         uint32_t boot_id, uint32_t ctr)
 {
     memset(nonce, 0, 24);
     nonce[0] = NONCE_DOMAIN;
     nonce[1] = type;
-    nonce[2] = node_id;
-    memcpy(&nonce[4], &boot_id, 4);
-    memcpy(&nonce[8], &ctr, 4);
+    memcpy(&nonce[2], &node_id, 4);
+    memcpy(&nonce[6], &boot_id, 4);
+    memcpy(&nonce[10], &ctr, 4);
 }
 
-int sec_seal(uint8_t *out, int out_cap, uint8_t type, uint8_t node_id,
+int sec_seal(uint8_t *out, int out_cap, uint8_t type, uint32_t node_id,
              const void *payload, int payload_len)
 {
     if (!g_provisioned) { return -4; } /* no key — refuse to transmit */

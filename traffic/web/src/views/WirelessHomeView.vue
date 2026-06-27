@@ -23,7 +23,7 @@ function onDebounce(e) {
 
 // 개발용 시뮬레이션: 서버로 합성 데이터를 ingest해 (하드웨어 없이) 클라이언트 경로 검증
 const isDev = import.meta.env.DEV;
-const simNode = ref("1");
+const simNode = ref("0d2243b0"); // 실제 센서가 보내는 칩 ID 하위 32비트(8-hex) 형태의 예시
 let simSeq = 1000;
 async function simEvent() {
   // master_tick은 16MHz tick(16000/ms). 합성값도 실제 스케일에 맞춰야 클라 변환(tickToMs)이 맞다.
@@ -118,7 +118,7 @@ async function simTelemetry() {
   margin-bottom: 0;
 }
 .sim-row { display: flex; align-items: center; gap: 0.6rem; }
-.sim-node { max-width: 90px; }
+.sim-node { max-width: 16rem; font-family: "JetBrains Mono", monospace; }
 .debounce-row { display: flex; align-items: center; gap: 0.5rem; }
 .debounce-input { max-width: 120px; }
 .debounce-row .unit { color: var(--text-muted, #888); font-size: 0.9rem; }

@@ -13,7 +13,7 @@ KR920 LoRa 기반 시간동기 이벤트 측정 + 신호등 제어 시스템. **
 ## 1. 시스템 개요 & 토폴로지
 
 - **마스터 1개 + 센서 최대 6개.** 전부 **하나의 채널**에서 **하나의 타임베이스**(마스터 TIMER1)를 공유.
-- 센서가 이벤트 HW 타임스탬프 → 마스터 시각 변환 → 송신. 마스터가 모든 센서를 수집 → USB 시리얼로 PC(node_id 태그) + 신호등 제어.
+- 센서가 이벤트 HW 타임스탬프 → 마스터 시각 변환 → 송신. 마스터가 모든 센서를 수집 → USB 시리얼로 PC(센서 칩 ID 태그) + 신호등 제어.
 - **여러 경기(세트)를 동시에 운용**하더라도 무선은 마스터 1개·채널 1개로 통합한다. 어느 센서가 어느 경기의 어느 역할(출발/도착)인지의 **매핑은 서버/PC 측에서 설정**하고, 펌웨어는 node_id만 다룬다. 신호등은 마스터의 단일 SSR 출력 — 기본은 모든 경기가 **가상 신호등**(측정만)이고, 무선 설정에서 **지정한 1개 경기만 실제 SSR 램프를 구동**한다(표시용).
 
 ```
@@ -42,10 +42,16 @@ KR920 LoRa 기반 시간동기 이벤트 측정 + 신호등 제어 시스템. **
 KR920, **SF7 / BW250** (심볼 512µs), 고정 길이 패킷. 출력 **EIRP ≤ +14dBm** (안테나 ~2dBi → conducted ~+12dBm).
 
 ### 2.2 채널 계획
-**단일 채널 921.3 MHz / BW250 / sync word 0x12.** 모든 노드(마스터 + 센서 전부)가 이 채널을 공유한다. SX1262는 한 번에 한 채널만 듣고 송신하므로(동시 다채널 불가) 채널 분리 대신 §2.8의 MAC(비콘 앵커 + node별 TDMA STATUS + 이벤트 CSMA)으로 충돌을 처리한다.
+**단일 채널 921.3 MHz / BW250 / sync word 0x12.** 모든 노드(마스터 + 센서 전부)가 이 채널을 공유한다. SX1262는 한 번에 한 채널만 듣고 송신하므로(동시 다채널 불가) 채널 분리 대신 §2.8의 MAC(비콘 앵커 + 센서별 해시 위상 STATUS + 이벤트 CSMA)으로 충돌을 처리한다.
 
 ### 2.3 주소
-**node_id가 유일한 식별자**: 마스터=0, 센서=1..6. set_id는 폐기(패킷에 없음). 센서→경기·역할 매핑은 서버/PC 설정값이며 펌웨어는 관여하지 않는다. 노드별 배열은 `MAX_NODES(=7)`로 잡고 node_id로 직접 인덱싱(`1 ≤ id < MAX_NODES`), 미등록 보드는 node_id `0xFF`로 두어 마스터가 무시한다.
+**안정 식별자 = 칩 고유 ID(FICR.DEVICEID, 64-bit).** 하드코딩 테이블은 폐기 — 어떤 보드를 추가하든 꽂거나(센서는 전원만 넣어도) 자동 등록된다. set_id도 폐기(패킷에 없음). 센서→경기·역할 매핑은 서버/PC 설정값이며 펌웨어는 관여하지 않는다.
+
+공중 패킷의 `node_id`는 **송신자 자신의 ID** — 칩 ID(FICR.DEVICEID) 하위 32비트다(마스터는 예약 ID 0). 슬롯·번호 개념이 없고 핸드셰이크도 없다: 센서는 자기 ID로 바로 송신하고, 마스터는 **첫 인증 패킷에서 그 ID를 처음 보면 레지스트리에 자동 등록**한다(`node_find_or_add`). PSK(플릿 키)가 멤버십 게이트이므로 키를 가진 보드만 등록된다(§2.11).
+
+- 마스터 레지스트리는 `MAX_NODES(=7)` 엔트리의 **집합**(ID로 선형 탐색, 인덱스 의미 없음). 가득 차면 LOST 센서 자리를 회수, 그래도 없으면 신규는 무시.
+- 마스터는 USB로 센서를 **그 ID(하위 32비트, 8-hex)**로 보고하고, 자기 ID는 `I` 라인에 전체 16-hex로 노출한다(§8). 사용자는 번호를 보거나 지정하지 않는다.
+- 송신자 ID는 절대 0이 아니다(`node_sender_id()` — 하위 워드가 0이면 상위 워드로 폴백) → 센서가 마스터(예약 ID 0)로 오인되지 않는다. 6대 기준 하위 32비트 충돌 확률 ≈ 3.5e-9로 사실상 0.
 
 ### 2.4 타임베이스
 각자 자유진행 TIMER(16MHz, 62.5ns), 32→64bit 소프트 확장. 노드는 로컬 tick→마스터 시각 매핑:
@@ -66,22 +72,22 @@ master_time = offset + (local−L_ref)*(1+skew) + L_ref       (skew 보정 시)
 ### 2.6 패킷 (리틀엔디언, 고정 길이; set_id 없음)
 모든 패킷은 §2.11의 AEAD로 봉인된다. 와이어 = **평문 보안헤더 + 암호화 페이로드 + MAC(16)**:
 ```
-sec_hdr (평문, 인증됨) : type, node_id(송신자), boot_id(4), ctr(4)          = 10B
+sec_hdr (평문, 인증됨) : type, node_id(송신자 ID, 4B), boot_id(4), ctr(4)    = 13B
   + 암호화 페이로드:
-    BEACON  : ver, seq, m_tx_prev(8), period_ms(2), slot_ms(2)              (14B)
-    EVENT   : ev_seq(2), ev_master_t(8), master_boot_id(4), flags           (15B)
-    ACK     : node_id(대상 센서), ev_seq(2)                                  (3B)
-    STATUS  : seq, offset_tick(i64), skew_ppm(i32), rx_miss(2), beacon_gap(2), batt_mv(2), temp_c10(i16) (21B)
+    BEACON   : ver, seq, m_tx_prev(8), period_ms(2), status_period_ms(2)    (14B)
+    EVENT    : ev_seq(2), ev_master_t(8), master_boot_id(4), flags          (15B)
+    ACK      : node_id(대상 센서 ID, 4B), ev_seq(2)                          (6B)
+    STATUS   : seq, offset_tick(i64), skew_ppm(i32), rx_miss(2), beacon_gap(2), batt_mv(2), temp_c10(i16) (21B)
   + MAC(16, Poly1305)
-→ 와이어 길이: BEACON 40, EVENT 41, ACK 29, STATUS 47 (B)
+→ 와이어 길이: BEACON 43, EVENT 44, ACK 35, STATUS 50 (B)
 ```
 - 옛 CRC16은 폐기 — MAC이 비트오류 + 위변조를 모두 검출(§2.11).
-- 보안헤더의 `node_id`는 **송신자**(0=마스터, 1..6=센서). ACK는 마스터가 보내므로 헤더 node_id=0이고, **대상 센서는 페이로드** node_id로 지정.
+- 보안헤더의 `node_id`는 **송신자의 32비트 ID**(0=마스터, 그 외=센서 칩 ID 하위 32비트). ACK는 마스터가 보내므로 헤더 node_id=0이고, **대상 센서는 페이로드** node_id(32비트)로 지정.
 - EVENT의 ev_master_t = 노드가 미리 변환한 마스터 시각.
 - EVENT의 master_boot_id = 이 이벤트가 동기된 마스터 세션 boot_id(추적 중인 비콘에서 학습). 마스터는 자기 현재 세션을 지칭하지 않는 이벤트를 거부 → 마스터 재부팅 후 이전 세션에서 캡처된 이벤트는 재전송 불가(§2.11).
-- BEACON의 slot_ms = STATUS TDMA 슬롯 폭(ms, 정보용 — 센서는 컴파일타임 매크로로 스케줄, §2.8). ver = 프로토콜 버전(현재 4).
-- STATUS = 센서가 자기 TDMA 슬롯에서 보내는 주기 진단(§2.10).
-- 프로비저닝은 보드의 FICR.DEVICEID 정적 테이블(node_id.c)로 한다 — 과거의 over-air ID_SETUP 패킷은 폐기.
+- BEACON의 status_period_ms = STATUS 해시 위상 주기(ms, §2.8). ver = 프로토콜 버전(현재 5).
+- STATUS = 센서가 해시 위상에서 보내는 주기 진단(§2.8, §2.10).
+- 역할은 USB(§8), 식별은 칩 ID로 정해진다 — 과거의 정적 DEVICEID 테이블(node_id.c)·over-air ID_SETUP 패킷은 모두 폐기.
 
 ### 2.7 재동기 주기
 표준 크리스털(~40ppm), 예산 1ms. 비콘 주기 = 노드 sync 주기 = **1s**(§2.8 프레임 앵커), beacon period 필드(`period_ms=1000`)로 통지.
@@ -89,11 +95,8 @@ sec_hdr (평문, 인증됨) : type, node_id(송신자), boot_id(4), ctr(4)      
 ### 2.8 충돌 처리 — 단일 채널 계층형 접근
 AEAD 봉인으로 패킷당 26B(헤더10+MAC16)가 늘어 가장 큰 패킷(STATUS 47B)은 ~46ms, 비콘 40B는 ~41ms airtime(SF7/BW250/CR4-5, 옛 평문 ~31ms 대비). 세 종류 트래픽을 계층으로 분리해 서로 부딪치지 않게 한다:
 
-1. **비콘 = 동기 앵커.** 마스터가 매 1s 프레임의 t=0에 송신. 각 센서의 비콘 RxDone이 그 프레임의 슬롯-0 기준.
-2. **STATUS = node별 TDMA(센서가 시각 동기돼 있으므로 충돌 0).** 센서는 자기 비콘 RxDone(`prev_l_rx`)에서
-   `slot_off_ms = TDMA_BASE_MS + (node_id−1)·SLOT_WIDTH_MS + STATUS_GUARD_MS` 만큼 뒤에 STATUS 송신.
-   값 `TDMA_BASE_MS=80, SLOT_WIDTH_MS=90, STATUS_GUARD_MS=10`(config.h, §2.11 봉인 후 상향). 90ms 슬롯이 ~46ms airtime +
-   1s당 클럭오차(<40µs) + Rx/Tx 전환을 흡수. 6센서 = 80+6·90 = 620ms로 1s 프레임 내. `STATUS_PERIOD_S(=5)` 프레임마다 한 번씩 라운드로빈으로 부하 분산.
+1. **비콘 = 동기 앵커.** 마스터가 매 1s 프레임의 t=0에 송신. 각 센서의 비콘 RxDone으로 마스터 시각을 추정.
+2. **STATUS = 동기 해시 위상(조정자 없는 충돌 내성).** 센서는 `STATUS_PERIOD_MS(=5000)` 주기마다 한 번 STATUS를 보내되, **동기된 5초 사이클 안의 위상**을 `phase = hash(자기 ID, 사이클번호) mod (5000−margin)`로 정한다. 센서들이 마스터 시각을 공유하므로 위상이 공통 창에 흩어져 거의 겹치지 않는다. 정적 위상이 아니라 **사이클마다 재해시**하므로 충돌이 영구 쌍이 되지 않고(자가회복), 송신 직전 **CAD**가 근접 충돌을 지연으로 전환한다(busy면 ID 기반 지터 후 그 사이클은 건너뜀 — STATUS는 유실 관대). 6대·46ms 패킷·5000ms 창 기준 정적 위상이라면 한 사이클에 어딘가 충돌할 확률 ≈24%·센서당 ≈9%지만, 재해시+CAD로 실효 충돌은 ~1%대로 떨어지고 자가회복한다. (절대적 충돌-0은 조정자 없이는 불가능 — 비둘기집.)
 3. **EVENT = 비동기 CSMA.** 이벤트는 예측 불가하므로 즉시 송신: **CAD(listen-before-talk) + 마스터 ACK + 재전송(≤4)**.
    백오프는 node로 디코릴레이트 `60 + ((ev_seq·7 + node·11) & 63) ms`, ACK 대기창 120ms(봉인된 EVENT 41B + ACK 29B 왕복 ~85ms 수용) → 두 센서가 동시에 쏴도 분리·복구. ev_master_t는 재전송에도 보존돼 복구된 이벤트도 정확. 재전송은 ev_seq 고정·ctr 갱신으로 다시 봉인(§2.11 — 동일 바이트 재전송은 replay로 거부되므로).
 
@@ -284,15 +287,15 @@ LCSC#·분류 = JLCPCB API(`preferredComponentFlag`). Basic·Preferred = 셋업 
 
 ## 8. 펌웨어
 
-RadioLib(커스텀 HAL) 기반. node_id로 역할 분기(0=마스터, 1..6=센서). 구현은 §2 프로토콜 + 아래 사양대로 (실제 코드는 펌웨어 프로젝트에 — 이 문서엔 사양만).
+RadioLib(커스텀 HAL) 기반. **역할은 USB로 분기** — 부팅 후 ROLE_SETTLE_MS 안에 USB 호스트(PC)가 enumerate하면 마스터, 아니면 센서. VBUS 전원만으로는 판정하지 않는다(센서도 충전·플래시 때 USB에 꽂히므로 — 더미 충전기는 enumerate하지 않음). 판정은 실시간 재확인되어 USB 상태가 역할과 ROLE_RECHECK_MS 이상 모순되면 `NVIC_SystemReset`으로 재판정(마스터 케이블 분리→센서, 센서를 PC에 연결→마스터). 구현은 §2 프로토콜 + 아래 사양대로 (실제 코드는 펌웨어 프로젝트에 — 이 문서엔 사양만).
 
 - **타임스탬프 캡처**: TIMER1 자유진행 16MHz = 공통 타임베이스. DIO1·SENSOR 엣지 → GPIOTE→PPI→TIMER CAPTURE (CPU 무관 HW 래치, 손실0). GPIOTE PSEL 설정 시 **해당 핀의 PORT 비트 포함**(P1 핀이면 bit13). port0/1 간 정확도 차이 없음.
 - **라디오/SPI**: 할당 핀으로 커스텀 SPIClass. **`setRfSwitchPins(RXEN,TXEN)` 필수**. `begin(…, tcxoVoltage)`(내부 TCXO). 부팅 시 **EXT_POWER(P0.13) HIGH**.
-- **센서 역할**: 비콘 동기 → 이벤트 캡처 → 마스터 시각 변환 → EVENT 송신(CAD+ACK+재전송) + 자기 TDMA 슬롯에서 STATUS 주기 송신.
+- **센서 역할**: 자기 칩 ID로 송신(별도 등록 단계 없음, §2.3) → 비콘 동기 → 이벤트 캡처 → 마스터 시각 변환 → EVENT 송신(CAD+ACK+재전송) + 해시 위상에서 STATUS 주기 송신(§2.8).
 - **무선 보안(§2.11)**: 전 패킷 XChaCha20-Poly1305 AEAD 봉인(Monocypher). 플릿 PSK는 컴파일하지 않고 flash keystore(`0xF3000`)에서 로드 — 시리얼 `K` 명령으로 보드별 주입. 부팅 시 `sec_init()`가 boot_id 시드 + 키 로드. 구현 `src/secure.{h,c}` + `src/keystore.{h,c}`.
 - **USB 프로토콜 (FSK-WL, 줄단위 텍스트, 레거시 `$...!` 폐기)**:
   - VID `0x1999` / **PID `0x0515`** / product **"FSK-WL"**. 호스트는 연결 후 `?ID`를 보내고 `I FSK-WL …` 응답으로 장치를 확인(PID와 무관한 핸드셰이크). 레거시 유선 앱(PID 0x0514)과 상호 비매칭.
-  - 마스터→PC: `I FSK-WL <fw> <devid16> <freq_mhz> <sf> <bw> <ticks_per_ms>` · `H <now_tick> <uptime_ms> <beacon_seq> <nseen>` · `E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr>` · `D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms> <temp_c10> <batt_mv> <sec_drop> <provisioned>` (node 0 = 마스터 자기보고: temp + 충전레일 batt_mv + sec_drop=마스터 AEAD 검증실패수 + provisioned, LoRa 필드 0; node 1..6 = 그 센서의 인증후 거부수) · `L <RED|GREEN|OFF> <tick>` · `A <cmd> OK` · `X <reason>`.
+  - 마스터→PC: `I FSK-WL <fw> <devid16> <freq_mhz> <sf> <bw> <ticks_per_ms>` · `H <now_tick> <uptime_ms> <beacon_seq> <nseen>` · `E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr>` · `D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms> <temp_c10> <batt_mv> <sec_drop> <provisioned>` (`<node>` = 센서 칩 ID 하위 32비트 8-hex; `node 0` = 마스터 자기보고: temp + 충전레일 batt_mv + sec_drop=마스터 AEAD 검증실패수 + provisioned, LoRa 필드 0; 센서 라인의 sec_drop = 그 센서의 인증후 거부수) · `L <RED|GREEN|OFF> <tick>` · `A <cmd> OK` · `X <reason>`. 마스터 자기 ID는 `I` 라인의 `<devid16>`로 노출.
   - PC→마스터: `G`(녹+green tick 캡처) · `R`(적) · `O`(off) · `?ID` · `?STATUS` · `PING` · `K <64hex>`(플릿 키 주입, write-only → `A K OK`/`X keyfail`).
   - **프로비저닝:** `K`/`?ID`/`PING`은 **센서도 수용**(역할·무선 상태 무관). 각 보드를 USB로 꽂아 `K <64hex>` 1회 전송 → keystore에 기록·즉시 활성. 키 read-back 명령 없음(시리얼 유출 불가).
   - 64-bit tick은 십진수 그대로(절단 없음). 상태 = 온보드 LED(P0.15).
@@ -310,7 +313,7 @@ RadioLib(커스텀 HAL) 기반. node_id로 역할 분기(0=마스터, 1..6=센�
 ## 9. 운용 (단일 마스터 / 멀티 경기)
 - 마스터 1개·채널 1개·타임베이스 1개. 모든 센서가 같은 마스터 tick으로 보고되므로 어떤 센서쌍의 분할도 정밀.
 - 마스터에 USB로 연결된 PC 1대가 **브리지**: 모든 node의 이벤트·진단을 수집해 서버로 push하고 물리 SSR을 구동. 단 **제어는 브리지 전용이 아니다** — 서버가 권위 상태(경기별 세션·기록)를 갖고, 경기별 **독점 lease**를 잡은 클라이언트면 비-브리지 PC도 그 경기를 제어한다(가상은 서버 arm, 물리는 다운링크로 브리지가 SSR 구동). 기록은 서버가 ingest 이벤트로 직접 계산·저장.
-- 여러 경기를 동시에 돌리되 어느 node가 어느 경기·역할인지는 **서버 측 매핑 설정**으로 정한다. 신호등은 기본 가상이며 무선 설정에서 **지정한 1개 경기만 실제 SSR 램프를 구동**한다(표시용). 전 경기 측정 t0는 **출발 센서**이고 green은 경기 arm일 뿐이다. 프로비저닝(node_id 배정)은 보드 DEVICEID 테이블(node_id.c)로.
+- 여러 경기를 동시에 돌리되 어느 센서가 어느 경기·역할인지는 **서버 측 매핑 설정**으로 정한다(센서 칩 ID 기준). 신호등은 기본 가상이며 무선 설정에서 **지정한 1개 경기만 실제 SSR 램프를 구동**한다(표시용). 전 경기 측정 t0는 **출발 센서**이고 green은 경기 arm일 뿐이다. 센서 등록은 자동(§2.3) — 별도 프로비저닝/번호 배정 없이 칩 ID로 식별되고, 첫 패킷에서 마스터가 등록해 진단을 보내는 즉시 매핑 UI에 나타난다.
 
 ---
 
