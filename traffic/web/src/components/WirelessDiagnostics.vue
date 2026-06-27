@@ -24,6 +24,9 @@ const nodeLabel = (r) => (isMaster(r) ? "마스터" : r.node_id);
 // last_seen은 서버 시계 기준 → now도 서버 보정시각(store.serverNow)이라 클라 PC 시계 오차와
 // 무관하게 경과가 정확하다. 미세 음수는 0으로 클램프.
 function ageMs(iso) { return iso ? Math.max(0, now.value - new Date(iso).getTime()) : Infinity; }
+// STATUS는 5초마다 도착한다. 비콘-앵커 STATUS라 정상이면 유실이 없어 경과는 5초 이내를
+// 오간다. 임계를 빡빡하게 둬(지연 >8s, 끊김 >15s) STATUS 한 번이라도 빠지면 즉시 드러나게
+// 한다 — 너그러운 창으로 누락을 가리지 않는다. 펌웨어가 보낸 link_state도 OR로 존중.
 function linkState(r) {
   const a = ageMs(r.last_seen);
   if (!isFinite(a) || a > 15000 || r.link_state === "lost") return "lost";

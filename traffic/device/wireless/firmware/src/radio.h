@@ -28,9 +28,11 @@ int radio_receive(uint8_t *buf, int maxlen);
  * return value is > 0. */
 int radio_receive_q(uint8_t *buf, int maxlen, float *rssi, float *snr);
 
-/* Channel Activity Detection: non-zero if LoRa activity is present (listen
- * before talk, DESIGN §2.8). */
-int radio_channel_busy(void);
+/* Listen-before-talk energy detect (DESIGN §2.8, KR920 coexistence): senses the
+ * channel for LBT_SENSE_MS and returns non-zero only if it stayed clear (peak
+ * RSSI below LBT_RSSI_DBM) the whole time. Call immediately before every
+ * transmit; transmit only when this returns non-zero. Leaves the radio in RX. */
+int radio_lbt_clear(void);
 
 #ifdef __cplusplus
 }
