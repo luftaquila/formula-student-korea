@@ -64,7 +64,7 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
             <th class="has-tip" title="마스터가 측정한 센서 신호 세기 (dBm). 0에 가까울수록 강함">RSSI</th>
             <th class="has-tip" title="신호 대 잡음비 (dB). 높을수록 깨끗한 수신">SNR</th>
             <th class="has-tip" title="센서 클럭의 마스터 대비 편차 (ppm). 0에 가까워야 정상">드리프트</th>
-            <th class="has-tip" title="센서가 부팅 후 놓친 비콘 수. (연속 N)은 지금 연속으로 놓친 개수">누락</th>
+            <th class="has-tip" title="센서가 부팅 후 놓친 비콘 수. (N)은 지금 연속으로 놓친 개수">누락</th>
             <th class="has-tip" title="이벤트가 마스터에 도달하기까지 걸린 시간 (ms)">지연</th>
             <th class="has-tip" title="nRF 다이(칩) 온도. 주변 온도보다 몇 °C 높게 나옴">온도</th>
             <th class="has-tip batt-col" title="센서=배터리 셀 추정치, 마스터=충전 레일 전압 (mV)">배터리</th>
@@ -84,7 +84,7 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
             <td class="mono">{{ isMaster(r) ? "—" : `${fmtNum(r.skew_ppm)} ppm` }}</td>
             <td class="mono">
               <template v-if="isMaster(r)">—</template>
-              <template v-else>{{ r.rx_miss ?? 0 }}<span v-if="r.beacon_gap" class="gap"> (연속 {{ r.beacon_gap }})</span></template>
+              <template v-else>{{ r.rx_miss ?? 0 }}<span v-if="r.beacon_gap" class="gap"> ({{ r.beacon_gap }})</span></template>
             </td>
             <td class="mono">{{ isMaster(r) ? "—" : `${fmtNum(r.latency_ms, 0)} ms` }}</td>
             <td class="mono" :data-testid="`diag-temp-${r.node_id}`">{{ fmtTemp(r.temp_c10) }}</td>
