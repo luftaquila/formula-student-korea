@@ -114,8 +114,10 @@ target_include_directories(${ELF} PRIVATE
 
 target_compile_definitions(${ELF} PRIVATE NRF52840_XXAA)
 
-# Single binary for all boards — role/set/channel resolved at runtime from the
-# chip's FICR.DEVICEID (src/node_id.c).
+# Single binary for all boards — role is chosen at runtime from USB (master = a
+# PC host enumerates us, else sensor; src/main.c). A sensor's on-air identity is
+# the low 32 bits of its chip's FICR.DEVICEID (src/node_id.c); the master
+# auto-registers it on first contact. Nothing is hardcoded per board.
 
 # Test-only: sensor synthesizes a periodic event (physical SENSOR line unwired).
 option(SENSOR_SIM "Sensor fires a synthetic event every 3 s (testing only)" OFF)

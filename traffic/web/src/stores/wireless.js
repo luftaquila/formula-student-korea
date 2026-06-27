@@ -52,6 +52,8 @@ export const useWirelessStore = defineStore("wireless", () => {
   const role = ref("client");
   const bridgeIsSelf = ref(false);
   const serialConnected = ref(false);
+  // 연결된 마스터의 자기 칩 ID(16-hex). 마스터가 USB로 보내는 I 라인에서 학습. 연결 카드에 표시.
+  const masterId = ref(null);
 
   // 경기별 타이밍 상태(유선 serial store의 flat 상태를 경기별로 namespace)
   const timing = reactive({});
@@ -299,7 +301,10 @@ export const useWirelessStore = defineStore("wireless", () => {
       case "L": // L state tick → 물리 신호등 상태를 서버에 보고
         reportLight({ color: (t[1] || "off").toLowerCase(), green_tick: t[2] || "0" }).catch(() => {});
         break;
-      default: break; // I/A/X 무시
+      case "I": // I FSK-WL <fw> <devid16hex> <freq> <sf> <bw> <ticks> — 마스터 자기 ID
+        if (t[3]) masterId.value = t[3];
+        break;
+      default: break; // A/X 무시
     }
   }
 
@@ -388,6 +393,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     try { await serialPort?.close(); } catch { /* ignore */ }
     serialPort = null; serialReader = null;
     serialConnected.value = false; bridgeIsSelf.value = false; role.value = "client";
+    masterId.value = null; // 다음 연결의 I 라인에서 다시 학습
     releaseWakeLock();
     // 서버에 즉시 오프라인 보고 → "마스터 연결"이 15s 워치독을 기다리지 않고 바로 풀린다.
     if (wasBridge) reportBridgeOffline().catch(() => {});
@@ -587,7 +593,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
 
   return {
-    role, bridgeIsSelf, serialConnected,
+    role, bridgeIsSelf, serialConnected, masterId,
     timing, light, mapping, telemetry, bridge, sessions,
     physicalKey, isPhysical, lightColorFor, controllerFor,
     sourceFor, setPhysicalEvent,

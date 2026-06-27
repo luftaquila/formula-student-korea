@@ -1,8 +1,11 @@
 /* Secured LoRa packet formats + time-sync helpers (DESIGN.md §2.5, §2.6, §2.11).
  *
  * One master + up to 6 sensors, single channel, single timebase (the master's
- * 16 MHz TIMER1). node_id is the only node identity (0 = master, 1..6 sensors);
- * the sensor->event mapping lives on the server, so packets carry no set_id.
+ * 16 MHz TIMER1). node_id is the SENDER's own identity = the low 32 bits of its
+ * chip id (FICR.DEVICEID); the master is the reserved id 0. Nothing is hardcoded
+ * and there is no slot/number: a sensor transmits under its own id and the master
+ * auto-registers it on first contact, reporting that id over USB. The
+ * sensor->event mapping lives on the server, so packets carry no set_id.
  *
  * SECURITY (DESIGN §2.11): every air packet is sealed with XChaCha20-Poly1305
  * (Monocypher) under a fleet-wide pre-shared key. Wire layout is
@@ -19,16 +22,18 @@
 
 #include <stdint.h>
 
-#define PKT_TYPE_BEACON 0x01u
-#define PKT_TYPE_EVENT  0x02u
-#define PKT_TYPE_ACK    0x03u
-#define PKT_TYPE_STATUS 0x04u
+#define PKT_TYPE_BEACON   0x01u
+#define PKT_TYPE_EVENT    0x02u
+#define PKT_TYPE_ACK      0x03u
+#define PKT_TYPE_STATUS   0x04u
 
-#define PROTO_VER   4u  /* 4: AEAD-secured air protocol (was 3: plaintext + CRC16) */
+#define PROTO_VER   5u  /* 5: chip-id identity + hashed-phase STATUS (was 4: fixed node_id) */
 
-/* node_id 0 = master, 1..6 = sensors. Per-node arrays are sized to MAX_NODES and
- * indexed directly by node_id, so node_id must satisfy 1 <= id < MAX_NODES. */
-#define MAX_NODES   7u
+/* node_id is a 32-bit identity: the master is the reserved id 0 (NODE_MASTER), a
+ * sensor is the low 32 bits of its own chip id (never 0 — see node_sender_id()).
+ * The master tracks sensors in a small registry (MAX_NODES entries) keyed by id,
+ * auto-registering on first contact; entries are a set, not indexed by id. */
+#define MAX_NODES   7u  /* max sensors tracked at once (registry capacity) */
 #define NODE_MASTER 0u
 
 /* Cleartext security header — prepended to every packet, authenticated as AEAD
@@ -36,7 +41,7 @@
  * the clear so a receiver can route + replay-check before spending a decrypt. */
 typedef struct __attribute__((packed)) {
     uint8_t  type;     /* PKT_TYPE_* */
-    uint8_t  node_id;  /* SENDER node_id (0 = master, 1..6 = sensors) */
+    uint32_t node_id;  /* SENDER id (0 = master, else sensor's low-32 chip id) */
     uint32_t boot_id;  /* sender's per-boot random id — replay re-baseline anchor */
     uint32_t ctr;      /* sender's monotonic per-boot tx counter — nonce + replay */
 } sec_hdr_t;
@@ -51,8 +56,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  seq;        /* beacon sequence (wraps at 256) */
     uint64_t m_tx_prev;  /* master TxDone tick of beacon (seq-1) */
     uint16_t period_ms;  /* beacon/sync period (1000) */
-    uint16_t slot_ms;    /* TDMA status slot width in ms (= SLOT_WIDTH_MS;
-                          * informational — sensors schedule from the macro, not this) */
+    uint16_t status_period_ms; /* STATUS cycle the sensors hash their phase into (§2.8) */
 } beacon_pl_t;
 
 /* Sensor -> master. ev_master_t = event tick already mapped to master time.
@@ -69,15 +73,16 @@ typedef struct __attribute__((packed)) {
 
 /* Master -> sensor: acknowledges a received EVENT so the sensor stops
  * retransmitting (DESIGN §2.8). The sec_hdr node_id is the master (0); the
- * acked sensor is named here in the payload. */
+ * acked sensor is named here in the payload by its 32-bit id. */
 typedef struct __attribute__((packed)) {
-    uint8_t  node_id;  /* sensor being acked (1..6) */
+    uint32_t node_id;  /* sensor being acked (its low-32 chip id) */
     uint16_t ev_seq;   /* event being acked */
 } ack_pl_t;
 
-/* Sensor -> master: periodic diagnostics, transmitted in the node's TDMA slot
- * (DESIGN §2.10). offset/skew are the sensor's own sync health; the master adds
- * RSSI/SNR/last-seen/latency on its side. */
+/* Sensor -> master: periodic diagnostics (DESIGN §2.10), sent once per STATUS
+ * cycle at a chip-id-hashed phase within the synced cycle (collision-resistant
+ * without coordination, §2.8). offset/skew are the sensor's own sync health; the
+ * master adds RSSI/SNR/last-seen/latency on its side. */
 typedef struct __attribute__((packed)) {
     uint8_t  seq;         /* status sequence (uplink-loss detect) */
     int64_t  offset_tick; /* current master-time offset (master_t - local_t) */
@@ -90,17 +95,17 @@ typedef struct __attribute__((packed)) {
 
 /* ---- Wire sizes ---------------------------------------------------------- */
 
-#define SEC_HDR_LEN   ((int)sizeof(sec_hdr_t)) /* 10 */
+#define SEC_HDR_LEN   ((int)sizeof(sec_hdr_t)) /* 13 (type 1 + node_id 4 + boot_id 4 + ctr 4) */
 #define SEC_MAC_LEN   16                       /* Poly1305 tag */
 #define SEC_OVERHEAD  (SEC_HDR_LEN + SEC_MAC_LEN)
 
 /* Sealed wire length for a given plaintext payload length. */
 #define SEC_WIRE_LEN(pl) (SEC_OVERHEAD + (int)(pl))
 
-#define WIRE_BEACON SEC_WIRE_LEN(sizeof(beacon_pl_t)) /* 40 */
-#define WIRE_EVENT  SEC_WIRE_LEN(sizeof(event_pl_t))  /* 41 */
-#define WIRE_ACK    SEC_WIRE_LEN(sizeof(ack_pl_t))    /* 29 */
-#define WIRE_STATUS SEC_WIRE_LEN(sizeof(status_pl_t)) /* 47 */
-#define WIRE_MAX    64 /* RX buffer size; largest sealed packet is WIRE_STATUS */
+#define WIRE_BEACON   SEC_WIRE_LEN(sizeof(beacon_pl_t))   /* 43 */
+#define WIRE_EVENT    SEC_WIRE_LEN(sizeof(event_pl_t))    /* 44 */
+#define WIRE_ACK      SEC_WIRE_LEN(sizeof(ack_pl_t))      /* 35 */
+#define WIRE_STATUS   SEC_WIRE_LEN(sizeof(status_pl_t))   /* 50 */
+#define WIRE_MAX      64 /* RX buffer size; largest sealed packet is WIRE_STATUS */
 
 #endif /* PROTOCOL_H */

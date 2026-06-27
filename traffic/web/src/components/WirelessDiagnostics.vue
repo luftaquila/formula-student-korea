@@ -9,9 +9,13 @@ let timer = null;
 onMounted(() => { timer = setInterval(() => { now.value = store.serverNow(); }, 1000); });
 onUnmounted(() => { if (timer) clearInterval(timer); });
 
-// node 0 = 마스터(자체 진단), 1.. = 센서. 숫자 기준 정렬(마스터 0이 맨 위, "10"이 "2" 뒤).
+// node "0" = 마스터(자체 진단), 그 외 = 센서(칩 ID 16-hex). 마스터를 맨 위로, 센서는 ID 문자열 순.
 const rows = computed(() =>
-  Object.values(store.telemetry).sort((a, b) => Number(a.node_id) - Number(b.node_id)),
+  Object.values(store.telemetry).sort((a, b) => {
+    const am = String(a.node_id) === "0", bm = String(b.node_id) === "0";
+    if (am !== bm) return am ? -1 : 1; // 마스터 먼저
+    return String(a.node_id).localeCompare(String(b.node_id));
+  }),
 );
 
 function isMaster(r) { return String(r.node_id) === "0"; }

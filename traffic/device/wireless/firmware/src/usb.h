@@ -23,6 +23,11 @@ int usb_read_byte(void);
 /* Non-zero when a host has opened the CDC port (DTR asserted). */
 int usb_connected(void);
 
+/* Non-zero when a USB host has enumerated us (TinyUSB mounted). Distinguishes a
+ * real PC data connection from a dumb charger that only supplies VBUS, so it is
+ * the basis for the master/sensor role decision (DESIGN §8). */
+int usb_host_present(void);
+
 #ifdef __cplusplus
 }
 #endif

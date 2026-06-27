@@ -58,18 +58,17 @@
 #define T_AIR_REF_TICKS 0u
 
 /* Channel-access timing on the one shared channel (DESIGN §2.8). The beacon at
- * the top of each 1 s frame is the sync anchor; each sensor sends its periodic
- * STATUS in a node-keyed TDMA slot measured from its beacon RxDone, so STATUS
- * uplinks never collide. Asynchronous EVENTs use CAD + ACK + backoff in the rest
- * of the frame. AEAD sealing (DESIGN §2.11) adds 26 B/packet (10 B header +
- * 16 B tag); the largest packet (sealed STATUS, 47 B) is ~46 ms on air at
- * SF7/BW250/CR4-5 vs the ~31 ms of the old plaintext format. Slots/base widened
- * to keep margin for that plus clock error (<40 us/s) and Rx/Tx turnaround.
- * 6 sensors fit easily: 80 + 6*90 = 620 ms of the 1 s frame. */
-#define SLOT_WIDTH_MS   90u  /* per-node STATUS slot width (sealed STATUS ~46 ms + guard) */
-#define STATUS_GUARD_MS 10u  /* sensor waits this long into its slot before TX */
-#define TDMA_BASE_MS    80u  /* first slot starts here (sealed beacon ~41 ms drains) */
-#define STATUS_PERIOD_S 5u   /* a node sends STATUS once per this many beacons (= 5 s) */
+ * the top of each 1 s frame is the sync anchor. Asynchronous EVENTs use CAD +
+ * ACK + backoff. STATUS is periodic diagnostics: each sensor sends it once per
+ * STATUS_PERIOD cycle at a phase derived from hash(its chip id, cycle) within the
+ * SYNCED cycle, so the (time-synced) sensors spread out and rarely overlap, with
+ * no master coordination. A fresh hash each cycle means any overlap is transient
+ * (self-healing, not a permanent pairing), and a CAD just before TX turns a near
+ * overlap into a deferral. AEAD sealing (DESIGN §2.11) makes the largest packet
+ * (sealed STATUS, 50 B) ~47 ms on air at SF7/BW250/CR4-5. */
+#define STATUS_PERIOD_S  5u                       /* STATUS cycle length in seconds */
+#define STATUS_PERIOD_MS (STATUS_PERIOD_S * 1000u)/* = 5000; the hashed-phase window */
+#define STATUS_TX_MARGIN_MS 60u                   /* keep the phase clear of the cycle end (packet airtime) */
 
 /* EVENT freshness gate (DESIGN §2.11), a defence-in-depth backstop to the
  * master-session binding (event names the master boot_id) and the per-sensor
@@ -81,6 +80,16 @@
  * future bound is tight. */
 #define EVENT_FRESH_MS  3000u /* max age (past) accepted */
 #define EVENT_FUTURE_MS 250u  /* max future skew accepted (sync error headroom) */
+
+/* Role (master/sensor) is decided from USB host enumeration (DESIGN §8): the
+ * master is the board a PC connects to over USB-CDC. At boot we pump the USB
+ * stack up to ROLE_SETTLE_MS for a host to enumerate; if one does, this board is
+ * the master, else a sensor. The decision is re-checked live and a sustained
+ * disagreement (ROLE_RECHECK_MS) resets the MCU to re-pick — e.g. the master's
+ * cable is pulled (→ becomes a sensor) or a sensor is plugged into a PC for
+ * flashing (→ becomes the master). */
+#define ROLE_SETTLE_MS   1500u
+#define ROLE_RECHECK_MS  2000u
 
 /* W5 Schottky drop between the cell and VDDH (DESIGN: BAT60B ~0.24 V; some boards
  * ship a silicon diode ~0.7 V). Added back to the sensor's measured VDDH to

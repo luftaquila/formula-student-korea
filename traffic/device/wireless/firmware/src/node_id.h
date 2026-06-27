@@ -1,25 +1,26 @@
-/* Per-chip role/node assignment from the nRF52840 factory unique ID
- * (FICR.DEVICEID), so every board runs the SAME binary and self-assigns
- * (DESIGN §2.3). The bootloader's USB serial is the same DEVICEID, so boards are
- * identified by the serials we already know. One master + up to 6 sensors, all
- * on one channel — adding a sensor = add its DEVICEID row with a node_id.
+/* This board's stable identity is the nRF52840 factory-unique chip id
+ * (FICR.DEVICEID), so every board runs the SAME binary. Role is NOT baked in: it
+ * is decided at runtime from USB (master = the node a PC host connects to over
+ * USB-CDC, else sensor — DESIGN §8), and a sensor's compact on-air slot is
+ * assigned by the master via the JOIN handshake (DESIGN §2.3). Adding a sensor =
+ * plug it in / power it on; it auto-registers by its chip id, no table to edit.
  */
 #ifndef NODE_ID_H
 #define NODE_ID_H
 
 #include <stdint.h>
 
-typedef enum { ROLE_MASTER, ROLE_SENSOR } node_role_t;
-
-/* Read FICR.DEVICEID and resolve this board's role/node. */
+/* Read FICR.DEVICEID into this module. Call once at startup. */
 void node_init(void);
 
-node_role_t node_role(void);
-uint8_t node_node_id(void); /* 0 = master, 1..6 = sensors, 0xFF = unprovisioned */
 float node_freq_mhz(void);  /* the single shared channel frequency */
 
-/* Raw 64-bit chip ID (for debug / provisioning). */
+/* Raw 64-bit chip id — the full identity reported over USB on the I line. */
 uint32_t node_devid_hi(void);
 uint32_t node_devid_lo(void);
+
+/* The 32-bit on-air sender identity for this board (low 32 bits of the chip id,
+ * forced nonzero so it never collides with the master's reserved id 0). */
+uint32_t node_sender_id(void);
 
 #endif /* NODE_ID_H */

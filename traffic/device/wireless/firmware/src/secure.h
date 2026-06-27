@@ -39,13 +39,13 @@ uint32_t sec_boot_id(void); /* this node's per-boot random id (for diagnostics) 
 /* Seal payload into out[] as [sec_hdr | ciphertext | mac]. node_id is the
  * SENDER's id. Returns the total wire length (SEC_OVERHEAD + payload_len), or
  * <0 if out is too small. Advances this node's tx counter. */
-int sec_seal(uint8_t *out, int out_cap, uint8_t type, uint8_t node_id,
+int sec_seal(uint8_t *out, int out_cap, uint8_t type, uint32_t node_id,
              const void *payload, int payload_len);
 
 /* Parsed cleartext header of a received packet. */
 typedef struct {
     uint8_t  type;
-    uint8_t  node_id;
+    uint32_t node_id;
     uint32_t boot_id;
     uint32_t ctr;
 } sec_meta_t;

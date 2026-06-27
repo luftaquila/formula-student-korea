@@ -8,6 +8,8 @@
  *     H <now_tick> <uptime_ms> <beacon_seq> <nsensors_seen>
  *     E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr>
  *     D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms> <temp_c10> <batt_mv> <sec_drop> <provisioned>
+ *       (<node> is the sensor's 16-hex chip id; the master's own self-report D line
+ *        uses the literal "0" so the PC can tell the master apart from sensors)
  *       (node 0 = master self-report: temp + charge-rail batt_mv; LoRa fields 0;
  *        sec_drop = security drops — for node 0 the master's AEAD-verify failures
  *        (forgery/wrong-key), for a sensor its replay/freshness/binding rejects;
@@ -39,9 +41,13 @@ extern "C" {
 
 void pu_emit_identity(uint32_t devid_hi, uint32_t devid_lo);
 void pu_emit_heartbeat(uint64_t now_tick, uint32_t uptime_ms, uint8_t beacon_seq, int nseen);
-void pu_emit_event(uint8_t node, uint16_t ev_seq, uint64_t tmaster, uint8_t flags,
-                   float rssi, float snr);
-void pu_emit_diag(uint8_t node, int state, int64_t offset_tick, int32_t skew_ppm,
+/* node = the sensor's 32-bit id, emitted as 8 hex chars. */
+void pu_emit_event(uint32_t node_id, uint16_t ev_seq, uint64_t tmaster,
+                   uint8_t flags, float rssi, float snr);
+/* is_master=1 emits the literal "0" node token (master self-report); otherwise the
+ * sensor's 32-bit id as 8 hex chars. */
+void pu_emit_diag(uint32_t node_id, int is_master,
+                  int state, int64_t offset_tick, int32_t skew_ppm,
                   uint16_t rx_miss, uint16_t beacon_gap, uint32_t last_seen_ms,
                   float rssi, float snr, uint32_t lat_ms,
                   int16_t temp_c10, uint16_t batt_mv,
