@@ -527,6 +527,7 @@ static void run_master(int st)
                     board_delay_ms(BEACON_LBT_GAP_MS);
                 }
                 radio_transmit(tx, wlen);
+                board_led_toggle(); /* heartbeat: blink on each beacon TX, mirroring the sensor's blink on beacon RX */
                 uint64_t cap = 0;
                 if (capture_dio1_get(&cap)) { m_tx_last = cap; }
             }
