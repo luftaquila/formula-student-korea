@@ -84,7 +84,7 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
             <td class="mono">{{ isMaster(r) ? "—" : `${fmtNum(r.skew_ppm)} ppm` }}</td>
             <td class="mono">
               <template v-if="isMaster(r)">—</template>
-              <template v-else>{{ r.rx_miss ?? 0 }}<span v-if="r.beacon_gap" class="gap"> ({{ r.beacon_gap }})</span></template>
+              <template v-else>{{ r.rx_miss ?? 0 }}<span :class="{ gap: r.beacon_gap }"> ({{ r.beacon_gap ?? 0 }})</span></template>
             </td>
             <td class="mono">{{ isMaster(r) ? "—" : `${fmtNum(r.latency_ms, 0)} ms` }}</td>
             <td class="mono" :data-testid="`diag-temp-${r.node_id}`">{{ fmtTemp(r.temp_c10) }}</td>
