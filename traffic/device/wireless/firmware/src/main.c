@@ -94,12 +94,12 @@ static void provision_key(void)
  * ACK; retransmit (same ev_seq, so the master dedups) up to 4 times. The event
  * time is preserved across retransmits (DESIGN §2.8). Backoff is keyed by our id
  * so two sensors firing at once de-correlate. */
-static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint32_t id,
+static void sensor_send_event(uint64_t ev_master_t, uint32_t id,
                               uint32_t master_boot_id, uint16_t *ev_seq)
 {
     event_pl_t e;
     e.ev_seq = (*ev_seq)++;
-    e.ev_master_t = off + ev_tick;
+    e.ev_master_t = ev_master_t; /* caller converts local→master time (offset + skew) */
     e.master_boot_id = (uint16_t)master_boot_id; /* low 16 bits bind to the master session */
     e.flags = 0;
     uint16_t this_seq = e.ev_seq;
@@ -175,6 +175,25 @@ static uint32_t hash32(uint32_t a, uint32_t b)
     return h;
 }
 
+/* Sensor-local capture tick → master time. Offset-only unless the skew estimate is
+ * validated (DESIGN §2.5): then the clock drift since the offset's anchor (sync_ref_tick)
+ * is corrected. Guards: only forward of the anchor (keeps the subtract non-negative — no
+ * implementation-defined large-uint64→int64 cast — and drops pre-sync latched events), and
+ * within a bounded window so a long gap doesn't extrapolate wildly. skew_valid already
+ * implies |skew_ppm| ≤ SKEW_CLAMP_PPM. */
+static uint64_t ev_to_master_t(uint64_t ev_tick, uint64_t cur_off, uint64_t sync_ref_tick,
+                               int32_t skew_ppm, int skew_valid)
+{
+    uint64_t mt = cur_off + ev_tick;
+    if (skew_valid && ev_tick >= sync_ref_tick &&
+        (ev_tick - sync_ref_tick) <= (uint64_t)SKEW_MAX_EXTRAP_MS * TICKS_PER_MS) {
+        int64_t corr = (int64_t)(ev_tick - sync_ref_tick) * skew_ppm / 1000000;
+        if (corr >= 0) { mt += (uint64_t)corr; }
+        else           { mt -= (uint64_t)(-corr); }
+    }
+    return mt;
+}
+
 static void run_sensor(int st)
 {
     uint64_t prev_l_rx = 0, cur_off = 0;
@@ -186,7 +205,9 @@ static void run_sensor(int st)
     int64_t off_hist[OFF_HIST];
     uint64_t lrx_hist[OFF_HIST];
     unsigned hist_n = 0, hist_i = 0;
-    int32_t cur_skew = 0;
+    int32_t cur_skew = 0;          /* measured skew (ppm), reported raw (i16-clamped) in STATUS */
+    int skew_valid = 0;            /* cur_skew is plausible + enough samples → ok for event-time correction */
+    uint64_t sync_ref_tick = 0;    /* sensor tick cur_off is anchored at (= prev_l_rx when cur_off was computed) */
     uint16_t rx_miss = 0, beacon_gap = 0;
     uint8_t status_seq = 0;
     int sent_status = 0; /* already sent STATUS in the current beacon frame (reset on each beacon) */
@@ -247,11 +268,12 @@ static void run_sensor(int st)
                     master_boot_id = m.boot_id;
                     have_off = 0;
                     hist_n = 0; hist_i = 0;
-                    cur_skew = 0;
+                    cur_skew = 0; skew_valid = 0; sync_ref_tick = 0;
                     beacon_gap = 0;
                 } else if (have_prev) {
                     if (b.seq == (uint8_t)(prev_seq + 1u)) {
                         cur_off = b.m_tx_prev + T_AIR_REF_TICKS - prev_l_rx;
+                        sync_ref_tick = prev_l_rx; /* anchor for skew extrapolation (l_rx[N-1]) */
                         have_off = 1;
                         beacon_gap = 0;
                         off_hist[hist_i] = (int64_t)cur_off;
@@ -263,7 +285,16 @@ static void run_sensor(int st)
                             unsigned oldest = (hist_n < OFF_HIST) ? 0u : hist_i;
                             int64_t doff = off_hist[newest] - off_hist[oldest];
                             int64_t dl = (int64_t)(lrx_hist[newest] - lrx_hist[oldest]);
-                            if (dl != 0) { cur_skew = (int32_t)((doff * 1000000) / dl); }
+                            if (dl >= (int64_t)SKEW_MIN_DL_TICKS) {
+                                int64_t cand = (doff * 1000000) / dl;
+                                /* diag: keep the real measurement for STATUS, clamped only to the
+                                 * i16 wire range so a fault (RC fallback ~10000 ppm) stays visible. */
+                                cur_skew = (int32_t)(cand > 32767 ? 32767 : (cand < -32768 ? -32768 : cand));
+                                /* apply gate: trust it for event timestamps only if it's a plausible
+                                 * XO drift and we have enough samples. */
+                                skew_valid = (hist_n >= SKEW_MIN_SAMPLES) &&
+                                             (cand <= SKEW_CLAMP_PPM) && (cand >= -SKEW_CLAMP_PPM);
+                            }
                         }
                     } else {
                         uint8_t miss = (uint8_t)(b.seq - prev_seq - 1u);
@@ -280,7 +311,8 @@ static void run_sensor(int st)
 
         uint64_t ev_tick;
         if (capture_sensor_get(&ev_tick) && have_off) {
-            sensor_send_event(ev_tick, cur_off, my_id, master_boot_id, &ev_seq);
+            sensor_send_event(ev_to_master_t(ev_tick, cur_off, sync_ref_tick, cur_skew, skew_valid),
+                              my_id, master_boot_id, &ev_seq);
         }
 
         /* STATUS: once per STATUS_PERIOD_S beacons, at a hash-chosen offset measured
@@ -314,7 +346,9 @@ static void run_sensor(int st)
         static uint32_t sim_last;
         if (have_off && (uint32_t)(board_millis() - sim_last) >= 3000u) {
             sim_last = board_millis();
-            sensor_send_event(capture_now64(), cur_off, my_id, master_boot_id, &ev_seq);
+            uint64_t sim_tick = capture_now64();
+            sensor_send_event(ev_to_master_t(sim_tick, cur_off, sync_ref_tick, cur_skew, skew_valid),
+                              my_id, master_boot_id, &ev_seq);
         }
 #endif
     }
