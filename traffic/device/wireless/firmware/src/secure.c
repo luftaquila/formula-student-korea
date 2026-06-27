@@ -69,27 +69,39 @@ int sec_seal(uint8_t *out, int out_cap, uint8_t type, uint32_t node_id,
              const void *payload, int payload_len)
 {
     if (!g_provisioned) { return -4; } /* no key — refuse to transmit */
-    int wire = SEC_OVERHEAD + payload_len;
+    int has_node = SEC_TYPE_HAS_NODE(type);
+    int hdr = has_node ? SEC_HDR_UL : SEC_HDR_DL;
+    int wire = hdr + payload_len + SEC_MAC_LEN;
     if (out_cap < wire) { return -1; }
 
-    sec_hdr_t h;
-    h.type = type;
-    h.node_id = node_id;
-    h.boot_id = g_boot_id;
     /* Never let ctr wrap: a repeated (boot_id, ctr) would reuse a nonce, which is
-     * catastrophic for the stream cipher. 2^32 seals is unreachable in a session
-     * (decades at any real packet rate); refuse rather than wrap. */
-    if (g_tx_ctr == 0xFFFFFFFFu) { return -3; }
-    h.ctr = ++g_tx_ctr; /* first sealed packet uses ctr = 1 */
+     * catastrophic for the stream cipher. 2^24 seals is unreachable in a session
+     * (194 days at 1 Hz); refuse rather than wrap. */
+    if (g_tx_ctr >= 0xFFFFFFu) { return -3; }
+    uint32_t ctr = ++g_tx_ctr; /* first sealed packet uses ctr = 1 */
+
+    /* Downlink packets are always sent by the master (id 0): both sides feed
+     * NODE_MASTER to the nonce and the id is omitted from the wire. */
+    uint32_t nid = has_node ? node_id : NODE_MASTER;
+
+    /* Serialize the cleartext header — this is also the AEAD associated data, so
+     * any tamper of vt/boot_id/ctr/node_id fails the tag. Little-endian; the
+     * 24-bit ctr's implicit high byte is 0 (matched in build_nonce). */
+    uint8_t *p = out;
+    *p++ = SEC_VT(PROTO_VER, type);
+    memcpy(p, &g_boot_id, 4); p += 4;
+    *p++ = (uint8_t)(ctr & 0xFFu);
+    *p++ = (uint8_t)((ctr >> 8) & 0xFFu);
+    *p++ = (uint8_t)((ctr >> 16) & 0xFFu);
+    if (has_node) { memcpy(p, &nid, 4); p += 4; }
 
     uint8_t nonce[24];
-    build_nonce(nonce, type, node_id, h.boot_id, h.ctr);
+    build_nonce(nonce, type, nid, g_boot_id, ctr);
 
-    memcpy(out, &h, SEC_HDR_LEN);
-    crypto_aead_lock(out + SEC_HDR_LEN,           /* ciphertext */
-                     out + SEC_HDR_LEN + payload_len, /* mac (16) */
+    crypto_aead_lock(out + hdr,               /* ciphertext */
+                     out + hdr + payload_len, /* mac (16) */
                      KEY, nonce,
-                     out, SEC_HDR_LEN,            /* associated data = header */
+                     out, (size_t)hdr,        /* associated data = header */
                      (const uint8_t *)payload, (size_t)payload_len);
     return wire;
 }
@@ -98,31 +110,41 @@ int sec_unseal(const uint8_t *in, int in_len, sec_meta_t *meta,
                void *out_payload, int payload_len)
 {
     if (!g_provisioned) { return -3; } /* no key — can't authenticate anything */
-    int wire = SEC_OVERHEAD + payload_len;
+    if (in_len < 1) { return -1; }
+
+    uint8_t vt = in[0];
+    if (SEC_VT_VER(vt) != PROTO_VER) { return -4; } /* foreign / old protocol version */
+    uint8_t type = SEC_VT_TYPE(vt);
+    int has_node = SEC_TYPE_HAS_NODE(type);
+    int hdr = has_node ? SEC_HDR_UL : SEC_HDR_DL;
+    int wire = hdr + payload_len + SEC_MAC_LEN;
     if (in_len < wire) { return -1; }
 
-    sec_hdr_t h;
-    memcpy(&h, in, SEC_HDR_LEN);
+    const uint8_t *p = in + 1;
+    uint32_t boot_id; memcpy(&boot_id, p, 4); p += 4;
+    uint32_t ctr = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16); p += 3;
+    uint32_t nid = NODE_MASTER;
+    if (has_node) { memcpy(&nid, p, 4); p += 4; }
 
     uint8_t nonce[24];
-    build_nonce(nonce, h.type, h.node_id, h.boot_id, h.ctr);
+    build_nonce(nonce, type, nid, boot_id, ctr);
 
     uint8_t plain[WIRE_MAX];
     if (crypto_aead_unlock(plain,
-                           in + SEC_HDR_LEN + payload_len, /* mac */
+                           in + hdr + payload_len, /* mac */
                            KEY, nonce,
-                           in, SEC_HDR_LEN,                /* associated data */
-                           in + SEC_HDR_LEN, (size_t)payload_len) != 0) {
+                           in, (size_t)hdr,        /* associated data */
+                           in + hdr, (size_t)payload_len) != 0) {
         return -2; /* forgery / bit error / wrong key */
     }
 
     memcpy(out_payload, plain, (size_t)payload_len);
     crypto_wipe(plain, sizeof(plain));
 
-    meta->type = h.type;
-    meta->node_id = h.node_id;
-    meta->boot_id = h.boot_id;
-    meta->ctr = h.ctr;
+    meta->type = type;
+    meta->node_id = nid;
+    meta->boot_id = boot_id;
+    meta->ctr = ctr;
     return 0;
 }
 

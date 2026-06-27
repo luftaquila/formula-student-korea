@@ -29,7 +29,6 @@
 #include "meas.h"
 #include "secure.h"
 #include "keystore.h"
-#include "nrf.h" /* NVIC_SystemReset for the live role re-check */
 
 #define TICKS_PER_MS 16000u /* TIMER1 is 16 MHz */
 #define OFF_HIST     8u     /* offset ring depth for the skew estimate */
@@ -58,7 +57,13 @@ static void debug_id(const char *role)
 /* ===== role by USB ====================================================== */
 
 /* Pump the USB stack up to ROLE_SETTLE_MS for a PC to enumerate us. Returns 1
- * (master) as soon as a host is present, else 0 (sensor) when the window closes. */
+ * (master) as soon as a host is present, else 0 (sensor) when the window closes.
+ * Role is decided ONCE here at boot. There is deliberately no live re-check /
+ * auto-reset: USB host presence (tud_mounted) can drop when the host isn't
+ * actively holding the CDC port (e.g. USB autosuspend), and an auto-reset on that
+ * rebooted the master — resetting the beacon sequence and wrecking sensor sync.
+ * To change a board's role, reset/power-cycle it (you reboot it on reconnect
+ * anyway). */
 static int role_decide_master(void)
 {
     uint32_t t0 = board_millis();
@@ -67,21 +72,6 @@ static int role_decide_master(void)
         if (usb_host_present()) { return 1; }
         if ((uint32_t)(board_millis() - t0) >= ROLE_SETTLE_MS) { return 0; }
     }
-}
-
-/* Live role re-check (called every main-loop iteration; the caller pumps
- * usb_task). Returns 1 when USB host presence has disagreed with the current
- * role for ROLE_RECHECK_MS straight — debounced so a brief glitch doesn't reset
- * us — meaning we should NVIC_SystemReset and re-pick the role. */
-static int role_should_reset(int am_master)
-{
-    static int disagreeing = 0;
-    static uint32_t since = 0;
-    int disagree = am_master ? !usb_host_present() : usb_host_present();
-    if (!disagree) { disagreeing = 0; return 0; }
-    uint32_t now = board_millis();
-    if (!disagreeing) { disagreeing = 1; since = now; return 0; }
-    return (uint32_t)(now - since) >= ROLE_RECHECK_MS;
 }
 
 /* Write the fleet key from a PU_CMD_SETKEY command to the flash keystore and
@@ -110,14 +100,17 @@ static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint32_t id,
     event_pl_t e;
     e.ev_seq = (*ev_seq)++;
     e.ev_master_t = off + ev_tick;
-    e.master_boot_id = master_boot_id; /* binds the event to the current master session */
+    e.master_boot_id = (uint16_t)master_boot_id; /* low 16 bits bind to the master session */
     e.flags = 0;
     uint16_t this_seq = e.ev_seq;
 
     for (int attempt = 0; attempt < 4; attempt++) {
-        if (attempt > 0 || radio_channel_busy()) {
+        if (attempt > 0) {
             board_delay_ms(60u + (uint32_t)((this_seq * 7u + id * 11u) & 63u));
         }
+        /* LBT (KR920): transmit only on a clear channel. Busy → back off into the
+         * next attempt rather than transmit. */
+        if (!radio_lbt_clear()) { continue; }
         /* Re-seal each attempt: same ev_seq (master dedups), fresh ctr so every
          * retransmit is a distinct authenticated message the master's replay
          * window accepts (a verbatim resend would be dropped as a replay). */
@@ -131,7 +124,7 @@ static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint32_t id,
         while ((uint32_t)(board_millis() - t0) < 120u) {
             uint8_t b[WIRE_MAX];
             int n = radio_receive(b, sizeof(b));
-            if (n >= WIRE_ACK && b[0] == PKT_TYPE_ACK) {
+            if (n >= WIRE_ACK && SEC_VT_TYPE(b[0]) == PKT_TYPE_ACK) {
                 sec_meta_t m;
                 ack_pl_t a;
                 if (sec_unseal(b, n, &m, &a, sizeof(a)) == 0 &&
@@ -145,18 +138,18 @@ static void sensor_send_event(uint64_t ev_tick, uint64_t off, uint32_t id,
     radio_start_rx(); /* gave up after retries */
 }
 
-/* Fire-and-forget diagnostics uplink. A CAD just before TX (radio_channel_busy)
- * turns a near-overlap with another sensor's STATUS into a short deferral rather
- * than a collision (DESIGN §2.8). */
+/* Fire-and-forget diagnostics uplink. The LBT sense just before TX turns a near-
+ * overlap with another sensor's STATUS into a short deferral rather than a
+ * collision (DESIGN §2.8). */
 static void sensor_send_status(uint32_t id, uint8_t *sseq, uint64_t off, int32_t skew,
                                uint16_t rx_miss, uint16_t gap)
 {
     status_pl_t s;
     s.seq = (*sseq)++;
     s.offset_tick = (int64_t)off;
-    s.skew_ppm = skew;
+    s.skew_ppm = (int16_t)(skew > 32767 ? 32767 : (skew < -32768 ? -32768 : skew));
     s.rx_miss = rx_miss;
-    s.beacon_gap = gap;
+    s.beacon_gap = (uint8_t)(gap > 255u ? 255u : gap);
     /* Cell estimate: VDDH (via SAADC VDDHDIV5) + the W5 diode drop. Sampled here,
      * right before TX, so VDDH reflects near-peak load. */
     s.batt_mv = (uint16_t)(meas_vddh_mv() + BATT_DIODE_DROP_MV);
@@ -164,10 +157,10 @@ static void sensor_send_status(uint32_t id, uint8_t *sseq, uint64_t off, int32_t
     uint8_t tx[WIRE_STATUS];
     int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_STATUS, id, &s, sizeof(s));
     if (wlen < 0) { radio_start_rx(); return; } /* tx counter exhausted */
-    /* If a peer is mid-transmission, back off a short id-derived jitter (so the
-     * two colliders de-correlate) and let this cycle's slot pass — STATUS is
-     * loss-tolerant and the next cycle re-hashes to a fresh phase. */
-    if (radio_channel_busy()) { board_delay_ms(3u + (uint32_t)(id & 7u)); radio_start_rx(); return; }
+    /* LBT (KR920): transmit only on a clear channel. Busy → back off a short
+     * id-derived jitter and let this cycle pass; STATUS is loss-tolerant and the
+     * next cycle re-hashes to a fresh phase. */
+    if (!radio_lbt_clear()) { board_delay_ms(3u + (uint32_t)(id & 7u)); radio_start_rx(); return; }
     radio_transmit(tx, wlen);
     radio_start_rx();
 }
@@ -196,7 +189,7 @@ static void run_sensor(int st)
     int32_t cur_skew = 0;
     uint16_t rx_miss = 0, beacon_gap = 0;
     uint8_t status_seq = 0;
-    uint32_t last_status_cycle = 0xFFFFFFFFu; /* STATUS cycle we last transmitted in */
+    int sent_status = 0; /* already sent STATUS in the current beacon frame (reset on each beacon) */
 
     uint32_t last_blink = board_millis();
     uint8_t buf[WIRE_MAX];
@@ -219,9 +212,6 @@ static void run_sensor(int st)
             default: break;
             }
         }
-        /* A PC enumerated us → we should be the master, not a sensor: reset to
-         * re-pick the role (debounced in role_should_reset). */
-        if (role_should_reset(0)) { NVIC_SystemReset(); }
 #if defined(NODE_DEBUG)
         debug_id("sensor");
 #endif
@@ -234,13 +224,13 @@ static void run_sensor(int st)
 
         float rssi, snr;
         int n = radio_receive_q(buf, sizeof(buf), &rssi, &snr);
-        if (n >= WIRE_BEACON && buf[0] == PKT_TYPE_BEACON) {
+        if (n >= WIRE_BEACON && SEC_VT_TYPE(buf[0]) == PKT_TYPE_BEACON) {
             uint64_t l_rx = 0;
             capture_dio1_get(&l_rx);
             sec_meta_t m;
             beacon_pl_t b;
             if (sec_unseal(buf, n, &m, &b, sizeof(b)) == 0 &&
-                m.node_id == NODE_MASTER && b.ver == PROTO_VER &&
+                m.node_id == NODE_MASTER &&
                 sec_replay(&from_master, m.boot_id, m.ctr)) {
                 board_led_toggle();
                 master_boot_id = m.boot_id; /* track the session our events bind to */
@@ -269,6 +259,7 @@ static void run_sensor(int st)
                 prev_l_rx = l_rx;
                 prev_seq = b.seq;
                 have_prev = 1;
+                sent_status = 0; /* new beacon frame — re-evaluate the STATUS slot */
             }
         }
 
@@ -277,21 +268,30 @@ static void run_sensor(int st)
             sensor_send_event(ev_tick, cur_off, my_id, master_boot_id, &ev_seq);
         }
 
-        /* STATUS: once per synced STATUS cycle, at a phase hashed from (our id,
-         * cycle) within that cycle. Since the sensors share master time the phases
-         * land in a common window and rarely overlap; a fresh hash each cycle keeps
-         * any overlap transient, and the CAD in sensor_send_status defers a near
-         * collision (DESIGN §2.8). master_ms is our local clock mapped to master
-         * time, exactly as EVENT timestamps are. */
-        if (have_off) {
-            uint64_t master_ms = (cur_off + capture_now64()) / TICKS_PER_MS;
-            uint32_t cycle = (uint32_t)(master_ms / STATUS_PERIOD_MS);
-            if (cycle != last_status_cycle) {
-                uint32_t phase = hash32(my_id, cycle) % (STATUS_PERIOD_MS - STATUS_TX_MARGIN_MS);
-                if (master_ms >= (uint64_t)cycle * STATUS_PERIOD_MS + phase) {
-                    sensor_send_status(my_id, &status_seq, cur_off, cur_skew, rx_miss, beacon_gap);
-                    last_status_cycle = cycle;
-                }
+        /* STATUS: once per STATUS_PERIOD_S beacons, at a hash-chosen offset measured
+         * FROM the beacon RxDone (prev_l_rx) so the ~46 ms transmit sits in the
+         * guarded middle of an inter-beacon gap and is never on air when a beacon
+         * arrives — the radio can't receive while it transmits, so the previous
+         * absolute-phase scheme made us deaf to the beacons it overlapped (DESIGN
+         * §2.8). The (id, period) hash picks which beacon in the period carries our
+         * STATUS and the offset within its gap, so sensors self-assign with no master
+         * coordination and re-hash each period; the CAD in sensor_send_status defers a
+         * rare sensor-vs-sensor overlap. */
+        if (have_off && have_prev && !sent_status &&
+            (uint8_t)(prev_seq % STATUS_PERIOD_S) == (uint8_t)(my_id % STATUS_PERIOD_S)) {
+            /* Fixed beacon phase (my_id % STATUS_PERIOD_S) → STATUS lands on the same
+             * 1-of-5 beacons every period, so the interval is a regular ~5 s (no jitter,
+             * never drifts toward the STALE window) — like the old fixed slot, but self-
+             * assigned from the chip id with no slot number. Only the in-gap offset is
+             * re-hashed per period, so two sensors that share a phase still don't collide
+             * permanently (self-healing); the CAD in sensor_send_status defers the rare
+             * same-period overlap, and a lost STATUS is loss-tolerant. */
+            uint32_t period = (uint32_t)(prev_seq / STATUS_PERIOD_S);
+            uint32_t within = STATUS_GAP_GUARD_MS + hash32(my_id, period) % STATUS_GAP_SPAN_MS;
+            uint64_t status_tick = prev_l_rx + (uint64_t)within * TICKS_PER_MS;
+            if (capture_now64() >= status_tick) {
+                sensor_send_status(my_id, &status_seq, cur_off, cur_skew, rx_miss, beacon_gap);
+                sent_status = 1;
             }
         }
 
@@ -345,6 +345,9 @@ static int link_state_of(uint32_t now, const node_stat_t *s)
 {
     if (!s->seen) { return PU_STATE_LOST; }
     uint32_t age = now - s->last_seen_ms;
+    /* STATUS arrives every STATUS_PERIOD_S; with beacon-anchored STATUS it should
+     * not be missed, so keep this tight — one missed STATUS already means something
+     * is wrong and should surface, not be hidden behind a lenient window. */
     if (age <= 2u * STATUS_PERIOD_S * 1000u) { return PU_STATE_OK; }
     if (age <= 15000u) { return PU_STATE_STALE; }
     return PU_STATE_LOST;
@@ -447,9 +450,6 @@ static void run_master(int st)
                 break;
             }
         }
-        /* The PC host went away (cable pulled / PC off) → a master makes no sense:
-         * reset to re-pick the role (debounced). */
-        if (role_should_reset(1)) { NVIC_SystemReset(); }
 #if defined(NODE_DEBUG)
         debug_id("master");
 #endif
@@ -462,14 +462,21 @@ static void run_master(int st)
             /* No key yet → sec_seal refuses, so no beacon goes out; tell the PC. */
             if (!sec_provisioned() && (seq % 5u) == 0u) { pu_emit_err("noprov"); }
             beacon_pl_t b;
-            b.ver = PROTO_VER;
             b.seq = seq;
             b.m_tx_prev = m_tx_last;
-            b.period_ms = 1000;
-            b.status_period_ms = STATUS_PERIOD_MS;
             uint8_t tx[WIRE_BEACON];
             int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_BEACON, NODE_MASTER, &b, sizeof(b));
+            /* Best-effort LBT before the beacon (KR920): sense the channel and, if
+             * busy, re-sense up to BEACON_LBT_TRIES times spaced BEACON_LBT_GAP_MS
+             * apart so an in-flight peer STATUS (~46 ms) finishes — then transmit
+             * regardless. The beacon is the sync anchor with no retransmit, so it is
+             * never dropped (a skip makes every sensor miss it). The wait does not
+             * affect sync accuracy: sync rides the actual TxDone capture below, not
+             * the nominal beacon instant. */
             if (wlen > 0) {
+                for (unsigned i = 0; i < BEACON_LBT_TRIES && !radio_lbt_clear(); i++) {
+                    board_delay_ms(BEACON_LBT_GAP_MS);
+                }
                 radio_transmit(tx, wlen);
                 uint64_t cap = 0;
                 if (capture_dio1_get(&cap)) { m_tx_last = cap; }
@@ -504,7 +511,7 @@ static void run_master(int st)
         float rssi = 0, snr = 0;
         int n = radio_receive_q(buf, sizeof(buf), &rssi, &snr);
         if (n <= 0) { continue; }
-        uint8_t type = buf[0];
+        uint8_t type = SEC_VT_TYPE(buf[0]);
 
         if (type == PKT_TYPE_EVENT && n >= WIRE_EVENT) {
             sec_meta_t m;
@@ -518,7 +525,7 @@ static void run_master(int st)
              * session and is dropped — closing cross-reboot EVENT replay
              * (DESIGN §2.11). A sensor learns the current id from live beacons, so
              * after a master swap its events re-bind as soon as it re-syncs. */
-            if (e.master_boot_id != sec_boot_id()) { ns->sec_drop++; continue; }
+            if (e.master_boot_id != (uint16_t)sec_boot_id()) { ns->sec_drop++; continue; }
             if (!sec_replay(&ns->rx, m.boot_id, m.ctr)) { ns->sec_drop++; continue; }
             /* Freshness backstop: reject a timestamp too far in the past (stale
              * replay) or implausibly in the future. Asymmetric — a real event is
@@ -546,7 +553,9 @@ static void run_master(int st)
             a.ev_seq = e.ev_seq;
             uint8_t tx[WIRE_ACK];
             int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_ACK, NODE_MASTER, &a, sizeof(a));
-            if (wlen > 0) { radio_transmit(tx, wlen); }
+            /* LBT before the ACK (KR920); if busy, skip — the sensor retransmits
+             * and we re-ACK. */
+            if (wlen > 0 && radio_lbt_clear()) { radio_transmit(tx, wlen); }
             radio_start_rx();
         } else if (type == PKT_TYPE_STATUS && n >= WIRE_STATUS) {
             sec_meta_t m;

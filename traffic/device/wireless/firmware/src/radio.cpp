@@ -46,9 +46,16 @@ extern "C" int radio_start_rx(void)
     return radio.startReceive();
 }
 
-extern "C" int radio_channel_busy(void)
+extern "C" int radio_lbt_clear(void)
 {
-    return radio.scanChannel() == RADIOLIB_LORA_DETECTED;
+    /* CAD-based listen-before-talk (DESIGN §2.8): clear unless a LoRa preamble is
+     * detected on-channel. This is the exact channel check the pre-LBT firmware
+     * used for EVENT/STATUS backoff — proven, no false-busy — unlike the
+     * instantaneous-RSSI energy detect which mis-read right after startReceive()
+     * (~0 dBm default) and starved the master's beacon, wrecking sensor sync.
+     * Anything other than a positive detection (including a scan error) counts as
+     * clear, so the sync-critical beacon is never starved by a flaky scan. */
+    return radio.scanChannel() != RADIOLIB_LORA_DETECTED;
 }
 
 extern "C" int radio_receive(uint8_t *buf, int maxlen)

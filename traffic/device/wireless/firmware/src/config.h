@@ -60,15 +60,48 @@
 /* Channel-access timing on the one shared channel (DESIGN §2.8). The beacon at
  * the top of each 1 s frame is the sync anchor. Asynchronous EVENTs use CAD +
  * ACK + backoff. STATUS is periodic diagnostics: each sensor sends it once per
- * STATUS_PERIOD cycle at a phase derived from hash(its chip id, cycle) within the
- * SYNCED cycle, so the (time-synced) sensors spread out and rarely overlap, with
- * no master coordination. A fresh hash each cycle means any overlap is transient
- * (self-healing, not a permanent pairing), and a CAD just before TX turns a near
- * overlap into a deferral. AEAD sealing (DESIGN §2.11) makes the largest packet
- * (sealed STATUS, 50 B) ~47 ms on air at SF7/BW250/CR4-5. */
-#define STATUS_PERIOD_S  5u                       /* STATUS cycle length in seconds */
-#define STATUS_PERIOD_MS (STATUS_PERIOD_S * 1000u)/* = 5000; the hashed-phase window */
-#define STATUS_TX_MARGIN_MS 60u                   /* keep the phase clear of the cycle end (packet airtime) */
+ * STATUS_PERIOD_S beacons, at a hash-chosen offset MEASURED FROM THE BEACON RxDone
+ * so the transmit sits in the guarded middle of an inter-beacon gap — never on air
+ * when a beacon arrives. The radio is half-duplex: while transmitting it is deaf, so
+ * a STATUS placed on top of a beacon makes the sensor miss that beacon. (The earlier
+ * absolute-phase scheme picked an offset anywhere in the 5 s cycle, ignorant of
+ * beacon timing, so ~8% of STATUS transmits clobbered a beacon — the regression that
+ * made rx_miss climb at point-blank range. The original slot-based design was beacon-
+ * relative for exactly this reason; this keeps that property without slots.) The
+ * beacon phase is FIXED per sensor (my_id % STATUS_PERIOD_S) so STATUS lands on the
+ * same 1-of-5 beacons every period → a regular ~5 s interval (no jitter toward the
+ * STALE window), self-assigned from the chip id with no slot number. Only the in-gap
+ * offset is re-hashed per period, so two sensors sharing a phase still avoid a
+ * permanent collision (self-healing); a CAD just before TX defers the rare same-
+ * period overlap, and a lost STATUS is loss-tolerant. AEAD
+ * sealing (DESIGN §2.11) makes the largest packet (sealed STATUS, 46 B) ~46 ms on
+ * air at SF7/BW250/CR4-5. */
+#define STATUS_PERIOD_S     5u    /* STATUS sent once per this many beacons */
+#define STATUS_GAP_GUARD_MS 200u  /* earliest offset after a beacon RxDone for STATUS TX — clears the beacon air + best-effort beacon delay */
+#define STATUS_GAP_SPAN_MS  500u  /* width of the hash-chosen offset window; GUARD+SPAN (=700) < ~1000 ms beacon gap → STATUS air ends well before the next beacon */
+
+/* Listen-before-talk (DESIGN §2.8) — KR920 coexistence. Before every transmit the
+ * node runs a LoRa CAD (radio_lbt_clear → SX1262 scanChannel) and transmits only
+ * if no preamble is detected; this is the channel check the pre-LBT firmware
+ * already used for EVENT/STATUS backoff. NOTE: CAD detects LoRa activity on our
+ * SF, not arbitrary energy — for a strict energy-threshold LBT (the RRA 고시 may
+ * require −65 dBm energy detect) a working instantaneous-RSSI path must be
+ * validated on hardware; the earlier RSSI attempt mis-read after startReceive and
+ * starved the beacon, so it was reverted to CAD.
+ *
+ * The asynchronous traffic (EVENT/STATUS) gives up on a busy channel — EVENT
+ * backs off into its next ACK retry, STATUS skips the cycle (loss-tolerant). The
+ * beacon must NOT give up: it is the sync anchor with no retransmit, so a skip
+ * makes every sensor miss it (rx_miss++ in lockstep) and ages links toward STALE.
+ * Instead the master runs BEST-EFFORT LBT for the beacon — it senses and, if busy,
+ * re-senses a few times within a bounded window long enough for an in-flight peer
+ * STATUS (~46 ms at SF7/BW250) to finish, then transmits regardless. "Listen
+ * before talk" still holds for every transmit; only the give-up is replaced by a
+ * bounded wait. The wait is harmless to sync — sync rides the actual TxDone
+ * capture, not the nominal beacon instant — and almost always zero (channel ~95%
+ * idle). BEACON_LBT_TRIES × BEACON_LBT_GAP_MS sets the window (≈ one STATUS air). */
+#define BEACON_LBT_TRIES  8u
+#define BEACON_LBT_GAP_MS 6u
 
 /* EVENT freshness gate (DESIGN §2.11), a defence-in-depth backstop to the
  * master-session binding (event names the master boot_id) and the per-sensor
@@ -81,15 +114,14 @@
 #define EVENT_FRESH_MS  3000u /* max age (past) accepted */
 #define EVENT_FUTURE_MS 250u  /* max future skew accepted (sync error headroom) */
 
-/* Role (master/sensor) is decided from USB host enumeration (DESIGN §8): the
- * master is the board a PC connects to over USB-CDC. At boot we pump the USB
- * stack up to ROLE_SETTLE_MS for a host to enumerate; if one does, this board is
- * the master, else a sensor. The decision is re-checked live and a sustained
- * disagreement (ROLE_RECHECK_MS) resets the MCU to re-pick — e.g. the master's
- * cable is pulled (→ becomes a sensor) or a sensor is plugged into a PC for
- * flashing (→ becomes the master). */
+/* Role (master/sensor) is decided ONCE at boot from USB host enumeration
+ * (DESIGN §8): the master is the board a PC enumerates over USB-CDC. At boot we
+ * pump the USB stack up to ROLE_SETTLE_MS for a host to appear; if one does this
+ * board is the master, else a sensor. There is no live re-check/auto-reset — USB
+ * presence can drop when the host isn't holding the port (autosuspend) and an
+ * auto-reset on that rebooted the master, breaking sync. Change role = reset the
+ * board. */
 #define ROLE_SETTLE_MS   1500u
-#define ROLE_RECHECK_MS  2000u
 
 /* W5 Schottky drop between the cell and VDDH (DESIGN: BAT60B ~0.24 V; some boards
  * ship a silicon diode ~0.7 V). Added back to the sensor's measured VDDH to

@@ -6,7 +6,7 @@
  * in, so CI builds a key-less app. Confidentiality + integrity + sender
  * authenticity come from the AEAD; replay resistance comes from a per-boot
  * random id plus a monotonic per-boot counter carried in the cleartext header
- * (sec_hdr_t) and bound into the nonce.
+ * (see protocol.h SEC_HDR_*) and bound into the nonce.
  *
  * Nonce uniqueness (the one rule a stream cipher must never break): the 24-byte
  * nonce is (domain | type | node_id | boot_id | ctr). ctr increments on every
@@ -36,9 +36,10 @@ int sec_provisioned(void);
 
 uint32_t sec_boot_id(void); /* this node's per-boot random id (for diagnostics) */
 
-/* Seal payload into out[] as [sec_hdr | ciphertext | mac]. node_id is the
- * SENDER's id. Returns the total wire length (SEC_OVERHEAD + payload_len), or
- * <0 if out is too small. Advances this node's tx counter. */
+/* Seal payload into out[] as [header | ciphertext | mac]. node_id is the
+ * SENDER's id (ignored for downlink types, which are always master id 0 and omit
+ * it from the wire). Returns the total wire length, or <0: -1 out too small,
+ * -3 tx counter exhausted, -4 unprovisioned. Advances this node's tx counter. */
 int sec_seal(uint8_t *out, int out_cap, uint8_t type, uint32_t node_id,
              const void *payload, int payload_len);
 
@@ -52,9 +53,10 @@ typedef struct {
 
 /* Verify + decrypt a received packet of the given payload length. On success
  * fills meta and copies the decrypted payload into out_payload, returns 0.
- * Returns <0 on short buffer, length mismatch, or MAC failure (forgery / bit
- * error / wrong key). Does NOT enforce replay — callers do that with sec_replay
- * once they know which (sender, direction) state to use. */
+ * Returns <0: -1 short buffer / length mismatch, -2 MAC failure (forgery / bit
+ * error / wrong key), -3 unprovisioned, -4 protocol-version mismatch. Does NOT
+ * enforce replay — callers do that with sec_replay once they know which
+ * (sender, direction) state to use. */
 int sec_unseal(const uint8_t *in, int in_len, sec_meta_t *meta,
                void *out_payload, int payload_len);
 
