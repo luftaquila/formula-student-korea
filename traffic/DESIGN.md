@@ -69,6 +69,8 @@ master_time = offset + (local−L_ref)*(1+skew) + L_ref       (skew 보정 시)
 
 공통 기준점 TxDone↔RxDone(둘 다 패킷 끝) → T_air_ref 작고 결정론적, 1회 캘리브레이션.
 
+**세션 경계.** 마스터가 재부팅하면 새 boot_id로 비콘이 오는데, 그 마스터 TIMER는 0부터 다시 시작하므로 옛 offset/skew는 폐기된 타임베이스 기준이다. 센서는 **새 boot_id를 보면(일반 비콘 누락과 구분) 동기를 끊고(have_off=0, offset 링·skew 리셋) 그 비콘을 새 baseline으로** 잡는다 → 다음 연속 비콘이 새 세션 offset을 만들 때까지 이벤트를 내보내지 않아, stale offset이 새 세션에 바인딩되는 일이 없다. (boot_id는 RNG라 0도 유효값이므로 `have_master_session` 플래그로 첫 접속을 판별; master_boot_id==0을 sentinel로 쓰지 않는다.) 일반 비콘 누락(같은 세션)은 추정기를 보존한다(§2.8).
+
 ### 2.6 패킷 (리틀엔디언, 고정 길이; set_id 없음)
 모든 패킷은 §2.11의 AEAD로 봉인된다. 와이어 = **평문 보안헤더 + 암호화 페이로드 + MAC(16)**:
 ```

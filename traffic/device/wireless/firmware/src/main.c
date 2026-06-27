@@ -195,6 +195,7 @@ static void run_sensor(int st)
     uint8_t buf[WIRE_MAX];
     sec_replay_t from_master = {0}; /* replay window for the master's beacons/acks */
     uint32_t master_boot_id = 0;    /* current master session, learned from beacons */
+    int have_master_session = 0;    /* a master session has been latched (boot_id is RNG, so 0 is a valid value — don't use master_boot_id==0 as a sentinel) */
 
     if (st == 0) { radio_start_rx(); }
 
@@ -233,8 +234,22 @@ static void run_sensor(int st)
                 m.node_id == NODE_MASTER &&
                 sec_replay(&from_master, m.boot_id, m.ctr)) {
                 board_led_toggle();
-                master_boot_id = m.boot_id; /* track the session our events bind to */
-                if (have_prev) {
+                if (!have_master_session || m.boot_id != master_boot_id) {
+                    /* New master session (reboot) or first contact. The old offset/skew
+                     * relate to a now-defunct master timebase (its TIMER restarts on
+                     * boot), so drop sync and re-baseline on THIS beacon — distinct from
+                     * an in-session gap, which preserves the estimator. Without this an
+                     * event arriving before the next consecutive beacon would be stamped
+                     * with a stale cross-session offset yet bound to the new session.
+                     * rx_miss is cumulative-since-boot so it is kept; beacon_gap (current
+                     * streak) is cleared. */
+                    have_master_session = 1;
+                    master_boot_id = m.boot_id;
+                    have_off = 0;
+                    hist_n = 0; hist_i = 0;
+                    cur_skew = 0;
+                    beacon_gap = 0;
+                } else if (have_prev) {
                     if (b.seq == (uint8_t)(prev_seq + 1u)) {
                         cur_off = b.m_tx_prev + T_AIR_REF_TICKS - prev_l_rx;
                         have_off = 1;
