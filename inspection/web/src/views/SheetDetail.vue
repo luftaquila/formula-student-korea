@@ -159,21 +159,9 @@ async function onCategoryResultToggle(catId, val) {
   }
 }
 
-// 검차관 이름 자동완성 (localStorage)
-const inspectorNames = ref(JSON.parse(localStorage.getItem("inspectorNames") || "[]"));
-
-function saveInspectorName(name) {
-  if (!name || name.length < 2) return;
-  const names = new Set(inspectorNames.value);
-  names.add(name);
-  inspectorNames.value = [...names];
-  localStorage.setItem("inspectorNames", JSON.stringify(inspectorNames.value));
-}
-
 async function onInspectorBlur(catId) {
   clearTimeout(debounceTimers[`inspector-${catId}`]);
   const inspector = getInspector(catId);
-  saveInspectorName(inspector);
   try {
     await updateSheetInspector({ year, team_num: num, category_id: catId, inspector, broadcast: true });
   } catch (e) {
@@ -595,11 +583,7 @@ watch(reconnected, async () => {
               @blur="onInspectorBlur(currentCategory.id)"
               :disabled="isReadOnly"
               placeholder="이름"
-              list="inspector-names"
             />
-            <datalist id="inspector-names">
-              <option v-for="name in inspectorNames" :key="name" :value="name" />
-            </datalist>
             <button
               class="btn btn-sm btn-ghost inspector-fill-btn"
               :disabled="isReadOnly"
@@ -906,7 +890,6 @@ watch(reconnected, async () => {
 .inspector-input {
   flex: 1;
   min-width: 0;
-  max-width: 320px;
 }
 
 .inspector-fill-btn {
@@ -916,7 +899,11 @@ watch(reconnected, async () => {
 
 .result-toggle {
   display: flex;
-  gap: 0.375rem;
+  gap: 0.5rem;
+}
+
+.result-toggle button {
+  flex: 1;
 }
 
 .panel-body {
@@ -1417,9 +1404,4 @@ watch(reconnected, async () => {
   transform: translateY(8px);
 }
 
-@media (max-width: 640px) {
-  .inspector-input {
-    max-width: none;
-  }
-}
 </style>
