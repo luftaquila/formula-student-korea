@@ -177,10 +177,12 @@ static uint32_t hash32(uint32_t a, uint32_t b)
 
 /* Sensor-local capture tick → master time. Offset-only unless the skew estimate is
  * validated (DESIGN §2.5): then the clock drift since the offset's anchor (sync_ref_tick)
- * is corrected. Guards: only forward of the anchor (keeps the subtract non-negative — no
- * implementation-defined large-uint64→int64 cast — and drops pre-sync latched events), and
- * within a bounded window so a long gap doesn't extrapolate wildly. skew_valid already
- * implies |skew_ppm| ≤ SKEW_CLAMP_PPM. */
+ * is corrected. Guards: correct only forward of the anchor (keeps the subtract non-negative
+ * — no implementation-defined large-uint64→int64 cast — and an event before the anchor, e.g.
+ * a latched pre-sync edge, falls back to offset-only here instead of extrapolating backward;
+ * the actual drop of fully-unsynced events is the caller's capture_sensor_get() && have_off
+ * ordering, not this function), and only within a bounded window so a long gap doesn't
+ * extrapolate wildly. skew_valid already implies |skew_ppm| ≤ SKEW_CLAMP_PPM. */
 static uint64_t ev_to_master_t(uint64_t ev_tick, uint64_t cur_off, uint64_t sync_ref_tick,
                                int32_t skew_ppm, int skew_valid)
 {
