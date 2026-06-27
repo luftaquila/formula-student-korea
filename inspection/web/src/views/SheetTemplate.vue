@@ -59,8 +59,23 @@ function onScroll() {
   }, 200);
 }
 
-onMounted(() => window.addEventListener("scroll", onScroll));
-onBeforeUnmount(() => window.removeEventListener("scroll", onScroll));
+// 뷰포트/방향 변경 시 textarea 높이 재계산 (모바일 회전·리사이즈 대응)
+let resizeTimer = null;
+function onResize() {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resizeAllTextareas, 150);
+}
+
+onMounted(() => {
+  window.addEventListener("scroll", onScroll);
+  window.addEventListener("resize", onResize);
+  window.addEventListener("orientationchange", onResize);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("scroll", onScroll);
+  window.removeEventListener("resize", onResize);
+  window.removeEventListener("orientationchange", onResize);
+});
 
 async function loadTemplate() {
   try {
@@ -1023,6 +1038,10 @@ function goBack() {
 
   .node-row {
     flex-wrap: wrap;
+  }
+
+  .item-textarea {
+    flex-basis: 100%;
   }
 
   .node-actions {

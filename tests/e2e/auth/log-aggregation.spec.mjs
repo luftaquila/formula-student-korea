@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath } from "../helpers/utils.mjs";
 
 test.describe("Multi-service log aggregation", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -39,12 +39,18 @@ test.describe("Multi-service log aggregation", () => {
   });
 
   test("log page UI shows service badges from multiple services", async ({ page }) => {
+    // The page fetches a cross-service log aggregation on mount and renders the
+    // table only after it resolves (which can be slow). Wait for that response
+    // before asserting so the gated table is in the DOM.
+    const logsResp = page.waitForResponse(
+      (r) => r.url().includes("/api/admin/logs") && r.status() === 200,
+    );
     await page.goto("/auth/logs");
-    await waitForPageReady(page);
+    await logsResp;
 
     // Wait for log table to load
     const table = page.locator("table.data-table");
-    await expect(table).toBeVisible();
+    await expect(table).toBeVisible({ timeout: 10000 });
 
     const rows = table.locator("tbody tr");
     await expect(rows.first()).toBeVisible({ timeout: 10000 });

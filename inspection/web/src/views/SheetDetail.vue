@@ -11,6 +11,7 @@ import {
   updateSheetInspector,
 } from "../api";
 import { useNotification } from "@shared/useNotification.js";
+import { user } from "@shared/officialsStore.js";
 import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();
@@ -158,21 +159,9 @@ async function onCategoryResultToggle(catId, val) {
   }
 }
 
-// 검차관 이름 자동완성 (localStorage)
-const inspectorNames = ref(JSON.parse(localStorage.getItem("inspectorNames") || "[]"));
-
-function saveInspectorName(name) {
-  if (!name || name.length < 2) return;
-  const names = new Set(inspectorNames.value);
-  names.add(name);
-  inspectorNames.value = [...names];
-  localStorage.setItem("inspectorNames", JSON.stringify(inspectorNames.value));
-}
-
 async function onInspectorBlur(catId) {
   clearTimeout(debounceTimers[`inspector-${catId}`]);
   const inspector = getInspector(catId);
-  saveInspectorName(inspector);
   try {
     await updateSheetInspector({ year, team_num: num, category_id: catId, inspector, broadcast: true });
   } catch (e) {
@@ -189,6 +178,22 @@ async function onInspectorChange(catId, inspector) {
       error("저장에 실패했습니다.");
     }
   });
+}
+
+// 검차관 입력란에 내 실명 추가 (없으면 set, 있으면 append, 이미 있으면 무시)
+function fillMyName(catId) {
+  if (isReadOnly.value) return;
+  const myName = user.value?.name?.trim();
+  if (!myName) {
+    error("로그인 정보를 찾을 수 없습니다.");
+    return;
+  }
+  const current = getInspector(catId).trim();
+  const names = current ? current.split(",").map((n) => n.trim()).filter(Boolean) : [];
+  if (names.includes(myName)) return; // 이미 있으면 무시
+  const newVal = names.length ? `${current.replace(/\s*$/, "")}, ${myName}` : myName;
+  onInspectorChange(catId, newVal); // 모델 갱신 + debounced 저장 예약
+  onInspectorBlur(catId); // debounce 취소 후 broadcast 포함 즉시 저장
 }
 
 // Click-to-edit memo
@@ -276,21 +281,22 @@ const unansweredItems = computed(() => {
   const result = getCategoryResult(cat.id);
   if (result !== "PASS") return [];
   const items = [];
-  for (const sub of cat.subcategories || []) {
-    for (const grp of sub.groups || []) {
-      for (const item of grp.items || []) {
+  for (const [si, sub] of (cat.subcategories || []).entries()) {
+    for (const [gi, grp] of (sub.groups || []).entries()) {
+      for (const [ii, item] of (grp.items || []).entries()) {
+        const itemNumber = `${subNum(si)}-${grpNum(gi)} ${itemNum(ii)}`;
         if (item.answer_type === "checktable") {
           const config = getChecktableConfig(item);
           const val = getChecktableValue(item.id);
           for (let ri = 0; ri < config.rows.length; ri++) {
             for (let ci = 0; ci < config.columns.length; ci++) {
               if (!val[`${ri}_${ci}`]) {
-                items.push({ id: item.id, name: `${config.rows[ri]} - ${config.columns[ci]}`, sub: sub.name, grp: grp.name });
+                items.push({ id: item.id, num: itemNumber, name: `${config.rows[ri]} - ${config.columns[ci]}`, sub: sub.name, grp: grp.name });
               }
             }
           }
         } else if (!getAnswer(item.id)) {
-          items.push({ id: item.id, name: item.name, sub: sub.name, grp: grp.name });
+          items.push({ id: item.id, num: itemNumber, name: item.name, sub: sub.name, grp: grp.name });
         }
       }
     }
@@ -305,11 +311,11 @@ const failedItems = computed(() => {
   const cat = currentCategory.value;
   if (!cat) return [];
   const items = [];
-  for (const sub of cat.subcategories || []) {
-    for (const grp of sub.groups || []) {
-      for (const item of grp.items || []) {
+  for (const [si, sub] of (cat.subcategories || []).entries()) {
+    for (const [gi, grp] of (sub.groups || []).entries()) {
+      for (const [ii, item] of (grp.items || []).entries()) {
         if (item.answer_type === "passfail" && getAnswer(item.id) === "FAIL") {
-          items.push({ id: item.id, name: item.name, sub: sub.name, grp: grp.name });
+          items.push({ id: item.id, num: `${subNum(si)}-${grpNum(gi)} ${itemNum(ii)}`, name: item.name, sub: sub.name, grp: grp.name });
         }
       }
     }
@@ -536,7 +542,7 @@ watch(reconnected, async () => {
           <div v-if="missingOpen" class="missing-list">
             <button v-for="item in unansweredItems" :key="item.id" class="missing-item" @click="scrollToItem(item.id)">
               <span class="missing-item-path">{{ item.sub }} &rsaquo; {{ item.grp }}</span>
-              <span class="missing-item-name">{{ item.name }}</span>
+              <span class="missing-item-name"><span class="item-list-num">{{ item.num }}</span> {{ item.name }}</span>
             </button>
           </div>
         </Transition>
@@ -559,7 +565,7 @@ watch(reconnected, async () => {
           <div v-if="failedOpen" class="failed-list">
             <button v-for="item in failedItems" :key="item.id" class="failed-item" @click="scrollToItem(item.id)">
               <span class="failed-item-path">{{ item.sub }} &rsaquo; {{ item.grp }}</span>
-              <span class="failed-item-name">{{ item.name }}</span>
+              <span class="failed-item-name"><span class="item-list-num">{{ item.num }}</span> {{ item.name }}</span>
             </button>
           </div>
         </Transition>
@@ -577,11 +583,13 @@ watch(reconnected, async () => {
               @blur="onInspectorBlur(currentCategory.id)"
               :disabled="isReadOnly"
               placeholder="이름"
-              list="inspector-names"
             />
-            <datalist id="inspector-names">
-              <option v-for="name in inspectorNames" :key="name" :value="name" />
-            </datalist>
+            <button
+              class="btn btn-sm btn-ghost inspector-fill-btn"
+              :disabled="isReadOnly"
+              @click="fillMyName(currentCategory.id)"
+              title="내 이름 추가"
+            >내 이름</button>
           </div>
           <div class="result-toggle">
             <button
@@ -861,9 +869,9 @@ watch(reconnected, async () => {
 /* Panel */
 .panel-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.75rem;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.625rem;
 }
 
 .inspector-row {
@@ -880,13 +888,22 @@ watch(reconnected, async () => {
 }
 
 .inspector-input {
-  width: 120px;
-  min-width: 80px;
+  flex: 1;
+  min-width: 0;
+}
+
+.inspector-fill-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .result-toggle {
   display: flex;
-  gap: 0.375rem;
+  gap: 0.5rem;
+}
+
+.result-toggle button {
+  flex: 1;
 }
 
 .panel-body {
@@ -1016,7 +1033,8 @@ watch(reconnected, async () => {
 }
 
 .text-input {
-  width: 120px;
+  width: 180px;
+  max-width: 100%;
 }
 
 .input-with-unit {
@@ -1283,6 +1301,12 @@ watch(reconnected, async () => {
   text-overflow: ellipsis;
 }
 
+.item-list-num {
+  font-family: "JetBrains Mono", monospace;
+  color: var(--text-tertiary);
+  margin-right: 0.25rem;
+}
+
 .failed-list-enter-active,
 .failed-list-leave-active {
   transition: max-height 0.2s ease, opacity 0.2s ease;
@@ -1380,9 +1404,4 @@ watch(reconnected, async () => {
   transform: translateY(8px);
 }
 
-@media (max-width: 640px) {
-  .inspector-input {
-    width: 100px;
-  }
-}
 </style>
