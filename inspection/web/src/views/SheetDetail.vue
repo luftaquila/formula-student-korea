@@ -188,10 +188,12 @@ function fillMyName(catId) {
     error("로그인 정보를 찾을 수 없습니다.");
     return;
   }
-  const current = getInspector(catId).trim();
-  const names = current ? current.split(",").map((n) => n.trim()).filter(Boolean) : [];
-  if (names.includes(myName)) return; // 이미 있으면 무시
-  const newVal = names.length ? `${current.replace(/\s*$/, "")}, ${myName}` : myName;
+  // 구분자(,)로 나눠 빈 토큰을 정리한 뒤 내 이름을 토글: 있으면 제거, 없으면 추가
+  const names = getInspector(catId).split(",").map((n) => n.trim()).filter(Boolean);
+  const idx = names.indexOf(myName);
+  if (idx === -1) names.push(myName);
+  else names.splice(idx, 1);
+  const newVal = names.join(", ");
   onInspectorChange(catId, newVal); // 모델 갱신 + debounced 저장 예약
   onInspectorBlur(catId); // debounce 취소 후 broadcast 포함 즉시 저장
 }
@@ -588,7 +590,7 @@ watch(reconnected, async () => {
               class="btn btn-sm btn-ghost inspector-fill-btn"
               :disabled="isReadOnly"
               @click="fillMyName(currentCategory.id)"
-              title="내 이름 추가"
+              title="내 이름 추가/제거"
             >내 이름</button>
           </div>
           <div class="result-toggle">
@@ -895,6 +897,7 @@ watch(reconnected, async () => {
 .inspector-fill-btn {
   flex-shrink: 0;
   white-space: nowrap;
+  align-self: stretch;
 }
 
 .result-toggle {

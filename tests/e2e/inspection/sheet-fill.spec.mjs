@@ -145,6 +145,37 @@ test.describe("Inspection sheet filling", () => {
     await page.locator(".tab").filter({ hasText: "전기 검차" }).click();
   });
 
+  test("내 이름 button toggles the current user's name", async ({ page }) => {
+    // 샤시 검차 tab (owned by this file's serial tests) to avoid cross-file collision
+    await page.locator(".tab").filter({ hasText: "샤시 검차" }).click();
+    const input = page.locator(".inspector-input");
+    await expect(input).toBeVisible();
+    const fillBtn = page.locator(".inspector-fill-btn");
+
+    // Known start state: empty
+    await saveInspector(page, input, "");
+    await expect(input).toHaveValue("");
+
+    // Empty → adds my name
+    await fillBtn.click();
+    await expect(input).toHaveValue("E2E Official");
+
+    // Pressing again removes my name (toggle off)
+    await fillBtn.click();
+    await expect(input).toHaveValue("");
+
+    // With an existing name, mine appends/removes without leaving a dangling separator
+    await saveInspector(page, input, "홍길동");
+    await fillBtn.click();
+    await expect(input).toHaveValue("홍길동, E2E Official");
+    await fillBtn.click();
+    await expect(input).toHaveValue("홍길동");
+
+    // Cleanup + restore first tab for subsequent tests
+    await saveInspector(page, input, "");
+    await page.locator(".tab").filter({ hasText: "전기 검차" }).click();
+  });
+
   test("sets category result to PASS", async ({ page }) => {
     // Switch to "샤시 검차" tab to avoid collision with summary tests on first tab
     await page.locator(".tab").filter({ hasText: "샤시 검차" }).click();
