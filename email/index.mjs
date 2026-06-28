@@ -34,6 +34,7 @@ export function createEmailApp(options = {}) {
 
 const fetchFn = options.fetchFn || globalThis.fetch;
 const db = createDatabase(Database, options.dbPath || "./data/email.db");
+const EMAIL_LOG_MAX_ROWS = Number.parseInt(process.env.EMAIL_LOG_MAX_ROWS || "50000", 10);
 
 db.exec(`CREATE TABLE IF NOT EXISTS config (
   key TEXT PRIMARY KEY,
@@ -65,7 +66,8 @@ try { db.exec("ALTER TABLE email_log DROP COLUMN recipients"); } catch { /* alre
 try { db.exec("ALTER TABLE email_log DROP COLUMN recipient_count"); } catch { /* already dropped */ }
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_el_sent_at ON email_log(sent_at)`);
-db.exec(`CREATE INDEX IF NOT EXISTS idx_el_status ON email_log(status)`);
+db.exec("DROP INDEX IF EXISTS idx_el_status");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_el_status_sent_at ON email_log(status, sent_at)`);
 
 // Seed config keys
 const insertConfig = db.prepare("INSERT OR IGNORE INTO config (key, value) VALUES (?, '')");
@@ -83,6 +85,22 @@ const app = createApp({ express }, (req) => {
 
 app.get("/api/health", (req, res) => res.send("ok"));
 app.get("/api/logs", logger.queryHandler);
+
+function pruneEmailLog() {
+  if (!Number.isInteger(EMAIL_LOG_MAX_ROWS) || EMAIL_LOG_MAX_ROWS <= 0) return;
+  db.prepare(`
+    DELETE FROM email_log
+    WHERE id <= COALESCE((
+      SELECT id FROM email_log ORDER BY id DESC LIMIT 1 OFFSET ?
+    ), 0)
+  `).run(EMAIL_LOG_MAX_ROWS);
+}
+
+function requireInternalRequest(req, res) {
+  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
+  res.status(403).send("내부 서비스 호출만 허용됩니다.");
+  return false;
+}
 
 /* ============================================
    Config
@@ -232,7 +250,10 @@ app.get("/api/emails", (req, res) => {
   const status = req.query.status;
 
   const result = dbRun(() => {
-    let query = "SELECT * FROM email_log";
+    let query = `
+      SELECT id, subject, recipient, status, error, message_id, source, sent_at, sent_by
+      FROM email_log
+    `;
     let countQuery = "SELECT COUNT(*) as total FROM email_log";
     const params = [];
 
@@ -252,6 +273,26 @@ app.get("/api/emails", (req, res) => {
     logger.warn(req, "emails.list", { error: result.error });
     return res.status(result.status).send(result.error);
   }
+  res.json(result.result);
+});
+
+app.get("/api/emails/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).send("Invalid email id");
+
+  const result = dbRun(() =>
+    db.prepare(`
+      SELECT id, subject, recipient, status, error, message_id, html_content, source, sent_at, sent_by
+      FROM email_log
+      WHERE id = ?
+    `).get(id)
+  );
+
+  if (!result.success) {
+    logger.warn(req, "emails.get", { error: result.error }, String(id));
+    return res.status(result.status).send(result.error);
+  }
+  if (!result.result) return res.status(404).send("Email not found");
   res.json(result.result);
 });
 
@@ -279,6 +320,8 @@ app.post("/api/send", async (req, res) => {
    Internal Send API (for other services)
    ============================================ */
 app.post("/api/internal/send", async (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
   const { subject, htmlContent, recipients, source } = req.body;
   if (!subject || !htmlContent || !Array.isArray(recipients) || recipients.length === 0) {
     logger.warn(req, "email.send", { error: "필수값 누락 (subject/htmlContent/recipients)", source });
@@ -396,6 +439,8 @@ ${htmlContent}
     }
   }
 
+  pruneEmailLog();
+
   if (successCount === 0) {
     logger.warn(req, "email.send", { error: lastError || "전송 실패", subject, recipientCount: recipients.length, source });
     return res.status(lastErrorStatus).send(lastError || "전송 실패");
@@ -440,6 +485,8 @@ app.get("/api/recipients", async (req, res) => {
    Internal API: SMS Config for queue service
    ============================================ */
 app.get("/api/internal/sms-config", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
   const result = dbRun(() => {
     const configs = {};
     for (const key of CONFIG_KEYS.filter((k) => k.startsWith("naver_") || k === "phone_number_sms_sender")) {

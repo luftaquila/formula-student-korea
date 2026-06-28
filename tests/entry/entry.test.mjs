@@ -644,12 +644,14 @@ describe('Auth enforcement', () => {
   });
 });
 
-// ─── Documents Sync on Number Change ────────────────────────────────────
+// ─── Lifecycle Sync on Number Change ────────────────────────────────────
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const expressForMock = require('../../entry/node_modules/express/index.js');
 
-describe('PATCH /api/entries/:num — documents sync', () => {
+const LIFECYCLE_SERVER_ENVS = ["QUEUE_SERVER", "DOCUMENTS_SERVER", "INSPECTION_SERVER", "SCORE_SERVER", "TRAFFIC_SERVER"];
+
+describe('PATCH /api/entries/:num — lifecycle sync', () => {
 
   let mockDocServer, mockDocUrl;
   let receivedRequests;
@@ -662,19 +664,19 @@ describe('PATCH /api/entries/:num — documents sync', () => {
     });
   });
 
-  it('calls documents internal API when number changes and DOCUMENTS_SERVER is set', async () => {
+  it('calls configured lifecycle internal APIs when number changes', async () => {
     receivedRequests = [];
     const mockApp = expressForMock();
     mockApp.use(expressForMock.json());
     mockApp.patch('/api/internal/team-num', (req, res) => {
-      receivedRequests.push(req.body);
+      receivedRequests.push({ body: req.body, service: req.headers['x-internal-service'] });
       res.status(200).send();
     });
     const started = await startServer(mockApp);
     mockDocServer = started.server;
     mockDocUrl = started.baseUrl;
 
-    process.env.DOCUMENTS_SERVER = mockDocUrl;
+    for (const key of LIFECYCLE_SERVER_ENVS) process.env[key] = mockDocUrl;
 
     const res = await client.patch('/api/entries/70', {
       body: { num: 71, univ: 'SyncUniv', team: 'SyncTeam' },
@@ -685,16 +687,17 @@ describe('PATCH /api/entries/:num — documents sync', () => {
     // Small delay for async fetch to complete
     await new Promise(r => setTimeout(r, 100));
 
-    assert.equal(receivedRequests.length, 1);
-    assert.equal(receivedRequests[0].prevNum, 70);
-    assert.equal(receivedRequests[0].newNum, 71);
-    assert.equal(receivedRequests[0].year, new Date().getFullYear());
+    assert.equal(receivedRequests.length, LIFECYCLE_SERVER_ENVS.length);
+    assert.ok(receivedRequests.every(r => r.body.prevNum === 70));
+    assert.ok(receivedRequests.every(r => r.body.newNum === 71));
+    assert.ok(receivedRequests.every(r => r.body.year === new Date().getFullYear()));
+    assert.ok(receivedRequests.every(r => r.body.entry.univ === 'SyncUniv'));
 
     await stopServer(mockDocServer);
-    delete process.env.DOCUMENTS_SERVER;
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
   });
 
-  it('does not call documents when number does not change', async () => {
+  it('does not call lifecycle services when number does not change', async () => {
     receivedRequests = [];
     const mockApp = expressForMock();
     mockApp.use(expressForMock.json());
@@ -706,7 +709,7 @@ describe('PATCH /api/entries/:num — documents sync', () => {
     mockDocServer = started.server;
     mockDocUrl = started.baseUrl;
 
-    process.env.DOCUMENTS_SERVER = mockDocUrl;
+    for (const key of LIFECYCLE_SERVER_ENVS) process.env[key] = mockDocUrl;
 
     // Update entry 71 without changing its number
     const res = await client.patch('/api/entries/71', {
@@ -717,13 +720,13 @@ describe('PATCH /api/entries/:num — documents sync', () => {
 
     await new Promise(r => setTimeout(r, 100));
 
-    assert.equal(receivedRequests.length, 0, 'should not call documents when number unchanged');
+    assert.equal(receivedRequests.length, 0, 'should not call lifecycle services when number unchanged');
 
     await stopServer(mockDocServer);
-    delete process.env.DOCUMENTS_SERVER;
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
   });
 
-  it('entry update returns 502 and rolls back when documents service sync fails', async () => {
+  it('entry update succeeds and leaves outbox rows when lifecycle sync fails', async () => {
     receivedRequests = [];
     const mockApp = expressForMock();
     mockApp.use(expressForMock.json());
@@ -741,18 +744,22 @@ describe('PATCH /api/entries/:num — documents sync', () => {
       body: { num: 72, univ: 'SyncUnivUpdated', team: 'SyncTeamUpdated' },
       cookie: adminCookie,
     });
-    assert.equal(res.status, 502, 'entry update should return 502 when documents sync fails');
+    assert.equal(res.status, 200, 'entry update should not roll back when lifecycle sync fails');
 
     await new Promise(r => setTimeout(r, 100));
 
     assert.equal(receivedRequests.length, 1, 'should have attempted the call');
 
-    // Verify entry number was rolled back (data was SyncUnivUpdated before this PATCH)
     const getRes = await client.get('/api/entries');
     const data = await getRes.json();
-    assert.ok(!data[72], 'entry 72 should not exist (rolled back)');
-    assert.ok(data[71], 'entry 71 should still exist');
-    assert.equal(data[71].univ, 'SyncUnivUpdated', 'univ should be rolled back to pre-PATCH state');
+    assert.ok(data[72], 'entry 72 should exist after successful local update');
+    assert.ok(!data[71], 'entry 71 should no longer exist');
+
+    const pending = db.prepare("SELECT service, attempts, last_error FROM lifecycle_outbox WHERE event_type = 'team.renumber'").all();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].service, 'documents');
+    assert.equal(pending[0].attempts, 1);
+    assert.match(pending[0].last_error, /status 500/);
 
     await stopServer(mockDocServer);
     delete process.env.DOCUMENTS_SERVER;
@@ -775,8 +782,7 @@ describe('Entry delete → service notifications', () => {
     mockServer = started.server;
     mockUrl = started.baseUrl;
 
-    process.env.QUEUE_SERVER = mockUrl;
-    process.env.DOCUMENTS_SERVER = mockUrl;
+    for (const key of LIFECYCLE_SERVER_ENVS) process.env[key] = mockUrl;
 
     // Create entries for delete tests
     await client.post('/api/entries', { body: { num: 80, univ: 'DelUniv', team: 'DelTeam' }, cookie: adminCookie });
@@ -786,20 +792,18 @@ describe('Entry delete → service notifications', () => {
 
   after(async () => {
     await stopServer(mockServer);
-    delete process.env.QUEUE_SERVER;
-    delete process.env.DOCUMENTS_SERVER;
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
   });
 
-  it('DELETE /api/entries/:num notifies queue and documents', async () => {
+  it('DELETE /api/entries/:num notifies configured lifecycle services', async () => {
     deletedNums = [];
     const res = await client.delete('/api/entries/80', { cookie: adminCookie });
     assert.equal(res.status, 200);
 
     await new Promise(r => setTimeout(r, 200));
 
-    // queue + documents = 2 calls for num 80
     const calls = deletedNums.filter(d => d.num === 80);
-    assert.equal(calls.length, 2, 'should notify both queue and documents');
+    assert.equal(calls.length, LIFECYCLE_SERVER_ENVS.length, 'should notify all configured lifecycle services');
   });
 
   it('POST /api/entries/bulk notifies for removed entries', async () => {

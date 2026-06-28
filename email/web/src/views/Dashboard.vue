@@ -267,7 +267,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from "vue";
 import { useNotification } from "@shared/useNotification.js";
-import { fetchStats as apiFetchStats, fetchQuota as apiFetchQuota, fetchEmails, sendEmail, fetchRecipients, fetchConfig as apiFetchConfig, updateConfig, testEmail as apiTestEmail, testSms as apiTestSms, resetConfig as apiResetConfig } from "../api.js";
+import { fetchStats as apiFetchStats, fetchQuota as apiFetchQuota, fetchEmails, fetchEmail, sendEmail, fetchRecipients, fetchConfig as apiFetchConfig, updateConfig, testEmail as apiTestEmail, testSms as apiTestSms, resetConfig as apiResetConfig } from "../api.js";
 
 const { success, error: showError } = useNotification();
 
@@ -314,8 +314,13 @@ function goLogPage(p) {
   fetchEmailLog(false);
 }
 
-function openLogDetail(log) {
+async function openLogDetail(log) {
   selectedLog.value = log;
+  try {
+    selectedLog.value = await fetchEmail(log.id);
+  } catch (e) {
+    showError(e.message);
+  }
 }
 
 

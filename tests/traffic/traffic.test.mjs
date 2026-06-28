@@ -145,6 +145,55 @@ describe('POST /api/records', () => {
   });
 });
 
+// ─── Records yearly summary and internal lifecycle ──────────────────────
+describe('Records lifecycle sync', () => {
+  const YEAR = new Date().getFullYear();
+  const RECORD_NAME = `FSK ${YEAR} Lifecycle Run`;
+
+  it('returns year records in one response and renumbers/invalidates team rows', async () => {
+    const createRes = await client.post('/api/records', {
+      body: {
+        name: 'Lifecycle Run',
+        data: {
+          time: '2026-01-02T10:00:00',
+          type: '가속',
+          entry: { num: 901, univ: 'OldUniv', team: 'OldTeam' },
+          result: 45000,
+        },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(createRes.status, 201);
+
+    const yearRes = await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie });
+    assert.equal(yearRes.status, 200);
+    const yearRows = await yearRes.json();
+    const table = yearRows.find((row) => row.name === RECORD_NAME);
+    assert.ok(table, 'year endpoint should include lifecycle record table');
+    assert.ok(table.records.some((row) => row.num === 901));
+
+    const patchRes = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { year: YEAR, prevNum: 901, newNum: 902, entry: { univ: 'NewUniv', team: 'NewTeam' } },
+    });
+    assert.equal(patchRes.status, 200);
+    let rows = await (await client.get(`/api/records/${encodeURIComponent(RECORD_NAME)}`, { cookie: adminCookie })).json();
+    let row = rows.find((r) => r.num === 902);
+    assert.ok(row);
+    assert.equal(row.univ, 'NewUniv');
+    assert.equal(row.team, 'NewTeam');
+
+    const deleteRes = await client.delete(`/api/internal/team/902?year=${YEAR}`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(deleteRes.status, 200);
+    rows = await (await client.get(`/api/records/${encodeURIComponent(RECORD_NAME)}`, { cookie: adminCookie })).json();
+    row = rows.find((r) => r.num === 902);
+    assert.equal(row.invalidated, 1);
+    assert.equal(row.scoreboard, 0);
+  });
+});
+
 describe('GET /api/records (after creation)', () => {
   it('includes the created table', async () => {
     const res = await client.get('/api/records', { cookie: adminCookie });

@@ -26,6 +26,9 @@ services:
       AUTH_SERVER: http://auth:9100
       DOCUMENTS_SERVER: http://documents:9700
       QUEUE_SERVER: http://queue:9300
+      INSPECTION_SERVER: http://inspection:9400
+      SCORE_SERVER: http://score:9600
+      TRAFFIC_SERVER: http://traffic:9500
     volumes:
       - ./entry/data:/home/node/fsk-entry/data
     restart: unless-stopped

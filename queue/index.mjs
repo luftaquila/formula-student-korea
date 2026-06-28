@@ -22,6 +22,15 @@ export const INSPECTIONS = {
 export function createQueueApp(options = {}) {
 
 const inspections = INSPECTIONS;
+const QUEUE_LOG_MAX_ROWS = 100000;
+const BOOTH_LOG_MAX_ROWS = 100000;
+
+function primaryKeyColumns(db, table) {
+  return db.prepare(`PRAGMA table_info('${table}')`).all()
+    .filter((col) => col.pk > 0)
+    .sort((a, b) => a.pk - b.pk)
+    .map((col) => col.name);
+}
 
 // Rate limiter for public endpoints
 const rateLimitMap = new Map();
@@ -75,14 +84,17 @@ db.transaction(() => {
     num INTEGER NOT NULL,
     inspection TEXT NOT NULL,
     timestamp INTEGER NOT NULL,
-    PRIMARY KEY (num, inspection, timestamp)
+    year INTEGER NOT NULL,
+    PRIMARY KEY (num, inspection, year, timestamp)
   );`);
 
   // 현재 대기중인 엔트리 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS current (
-    num INTEGER PRIMARY KEY,
+    num INTEGER NOT NULL,
     phone TEXT NOT NULL,
-    inspection TEXT NOT NULL
+    inspection TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    PRIMARY KEY (num, year)
   );`);
 
   // 설정 테이블
@@ -139,9 +151,11 @@ db.transaction(() => {
   for (const [k, v] of Object.entries(inspections)) {
     db.prepare(`INSERT OR IGNORE INTO inspection (type, name) VALUES (?, ?)`).run(k, v);
     db.exec(`CREATE TABLE IF NOT EXISTS '${k}' (
-      num INTEGER PRIMARY KEY,
+      num INTEGER NOT NULL,
       phone TEXT NOT NULL,
-      timestamp INTEGER NOT NULL
+      timestamp INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      PRIMARY KEY (num, year)
     );`);
 
     // 부스 기본 설정: 검차 종류당 1개 부스
@@ -157,12 +171,27 @@ db.transaction(() => {
   // loadSmsConfig()에서 비동기로 확인 후 활성화
 
   // 인덱스 생성
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_ih_num_insp ON inspection_history(num, inspection)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_tp_insp_prio ON team_priority(inspection, priority, num)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_active ON booth_log(num, inspection, booth_num, exited_at)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_num ON queue_log(num)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_insp_ts ON queue_log(inspection, timestamp)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_cp_num_insp ON cancel_penalty(num, inspection)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_timestamp ON queue_log(timestamp)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_entered ON booth_log(entered_at)`);
+  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_queue_log_retention
+    AFTER INSERT ON queue_log
+    BEGIN
+      DELETE FROM queue_log
+      WHERE id <= COALESCE((
+        SELECT id FROM queue_log ORDER BY id DESC LIMIT 1 OFFSET ${QUEUE_LOG_MAX_ROWS}
+      ), 0);
+    END;`);
+  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_booth_log_retention
+    AFTER INSERT ON booth_log
+    BEGIN
+      DELETE FROM booth_log
+      WHERE id <= COALESCE((
+        SELECT id FROM booth_log ORDER BY id DESC LIMIT 1 OFFSET ${BOOTH_LOG_MAX_ROWS}
+      ), 0);
+    END;`);
 })();
 
 // 연도 컬럼 마이그레이션 (기존 스키마 생성과 분리)
@@ -213,6 +242,70 @@ db.transaction(() => {
   for (const k of Object.keys(INSPECTIONS)) {
     addColumn(db, `'${k}'`, `year INTEGER NOT NULL DEFAULT ${yr}`);
   }
+
+  if (primaryKeyColumns(db, "current").join(",") !== "num,year") {
+    db.transaction(() => {
+      db.exec(`CREATE TABLE current_new (
+        num INTEGER NOT NULL,
+        phone TEXT NOT NULL,
+        inspection TEXT NOT NULL,
+        year INTEGER NOT NULL,
+        PRIMARY KEY (num, year)
+      )`);
+      db.exec(`INSERT OR REPLACE INTO current_new (num, phone, inspection, year)
+        SELECT num, phone, inspection, year FROM current`);
+      db.exec(`DROP TABLE current`);
+      db.exec(`ALTER TABLE current_new RENAME TO current`);
+    })();
+  }
+
+  if (primaryKeyColumns(db, "inspection_history").join(",") !== "num,inspection,year,timestamp") {
+    db.transaction(() => {
+      db.exec(`CREATE TABLE inspection_history_new (
+        num INTEGER NOT NULL,
+        inspection TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        year INTEGER NOT NULL,
+        PRIMARY KEY (num, inspection, year, timestamp)
+      )`);
+      db.exec(`INSERT OR IGNORE INTO inspection_history_new (num, inspection, timestamp, year)
+        SELECT num, inspection, timestamp, year FROM inspection_history`);
+      db.exec(`DROP TABLE inspection_history`);
+      db.exec(`ALTER TABLE inspection_history_new RENAME TO inspection_history`);
+    })();
+  }
+
+  for (const k of Object.keys(INSPECTIONS)) {
+    if (primaryKeyColumns(db, k).join(",") !== "num,year") {
+      db.transaction(() => {
+        db.exec(`CREATE TABLE '${k}_new' (
+          num INTEGER NOT NULL,
+          phone TEXT NOT NULL,
+          timestamp INTEGER NOT NULL,
+          year INTEGER NOT NULL,
+          PRIMARY KEY (num, year)
+        )`);
+        db.exec(`INSERT OR REPLACE INTO '${k}_new' (num, phone, timestamp, year)
+          SELECT num, phone, timestamp, year FROM '${k}'`);
+        db.exec(`DROP TABLE '${k}'`);
+        db.exec(`ALTER TABLE '${k}_new' RENAME TO '${k}'`);
+      })();
+    }
+  }
+
+  db.exec(`DROP INDEX IF EXISTS idx_ih_num_insp`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ih_year_num_insp ON inspection_history(year, num, inspection)`);
+  db.exec(`DROP INDEX IF EXISTS idx_tp_insp_prio`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tp_insp_prio ON team_priority(year, inspection, priority, num)`);
+  db.exec(`DROP INDEX IF EXISTS idx_cp_num_insp`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_cp_num_insp ON cancel_penalty(year, num, inspection)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_year_entered ON booth_log(year, entered_at)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_year_ts ON queue_log(year, timestamp)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_timestamp ON queue_log(timestamp)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_entered ON booth_log(entered_at)`);
+  for (const k of Object.keys(INSPECTIONS)) {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_${k}_year_timestamp ON '${k}'(year, timestamp)`);
+  }
 }
 
 /* ============================================
@@ -220,6 +313,41 @@ db.transaction(() => {
    ============================================ */
 function currentYear() {
   return new Date().getFullYear();
+}
+
+function withInspectionLengths(rows, year = currentYear()) {
+  return rows.map((row) => ({
+    ...row,
+    length: db.prepare(`SELECT COUNT(*) AS count FROM '${row.type}' WHERE year = ?`).get(year).count,
+  }));
+}
+
+function getActiveInspections(year = currentYear()) {
+  return withInspectionLengths(db.prepare("SELECT * FROM inspection WHERE active = TRUE").all(), year);
+}
+
+function getAllInspections(year = currentYear()) {
+  return withInspectionLengths(db.prepare("SELECT * FROM inspection").all(), year);
+}
+
+function requireInternalRequest(req, res) {
+  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
+  res.status(403).send("내부 서비스 호출만 허용됩니다.");
+  return false;
+}
+
+function renumberNumYearRows(table, prevNum, newNum, year, quoted = false) {
+  const tableRef = quoted ? `'${table}'` : table;
+  const existing = db.prepare(`SELECT COUNT(*) AS count FROM ${tableRef} WHERE num = ? AND year = ?`).get(prevNum, year).count;
+  if (existing === 0) return 0;
+  db.prepare(`DELETE FROM ${tableRef} WHERE num = ? AND year = ?`).run(newNum, year);
+  return db.prepare(`UPDATE ${tableRef} SET num = ? WHERE num = ? AND year = ?`).run(newNum, prevNum, year).changes;
+}
+
+function renumberLogRows(table, prevNum, newNum, year) {
+  const existing = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE num = ? AND year = ?`).get(prevNum, year).count;
+  if (existing === 0) return 0;
+  return db.prepare(`UPDATE ${table} SET num = ? WHERE num = ? AND year = ?`).run(newNum, prevNum, year).changes;
 }
 
 const logger = createLogger(db, "queue");
@@ -259,7 +387,7 @@ const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 // SSE 엔드포인트
 app.get("/api/events", sseHandler(() => {
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   const allBooths = {};
   for (const row of db.prepare("SELECT inspection, booth_num, active, occupied_by, entered_at FROM booth ORDER BY inspection, booth_num").all()) {
     (allBooths[row.inspection] ||= []).push(row);
@@ -372,7 +500,7 @@ function getQueueRank(inspection, num, year) {
 
 // GET /api/active - 활성화된 검차 목록 조회
 app.get("/api/active", (req, res) => {
-  const result = dbRun(() => db.prepare("SELECT * FROM inspection WHERE active = TRUE").all());
+  const result = dbRun(() => getActiveInspections());
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
@@ -476,7 +604,7 @@ app.get("/api/booths/:type", (req, res) => {
 
 // GET /api/admin/all - 모든 검차 목록 조회
 app.get("/api/admin/all", (req, res) => {
-  const result = dbRun(() => db.prepare("SELECT * FROM inspection").all());
+  const result = dbRun(() => getAllInspections());
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
@@ -523,7 +651,7 @@ app.patch("/api/admin/inspection/:type", (req, res) => {
   logger.log(req, "inspection.toggle", { active: req.body.active === true }, req.params.type);
 
   // SSE 브로드캐스트: 활성 검차 목록 변경
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   broadcastEvent("inspections", { activeInspections });
 
   res.status(200).send();
@@ -550,7 +678,7 @@ app.patch("/api/admin/inspection/:type/visibility", (req, res) => {
   logger.log(req, "inspection.visibility", { active: !(req.body.hidden === true) }, req.params.type);
 
   // SSE 브로드캐스트: 활성 검차 목록 변경 (hidden 정보 포함)
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   broadcastEvent("inspections", { activeInspections });
 
   res.status(200).send();
@@ -667,7 +795,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
   logger.log(req, "queue.register", { inspection: type, phone: maskedPhone }, `#${num}`);
 
   // SSE 브로드캐스트: 대기열 변경
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   broadcastEvent("queue", { type, activeInspections });
 
   res.status(201).send();
@@ -744,7 +872,7 @@ app.post("/api/admin/cancel/:type", (req, res) => {
   logger.log(req, "queue.cancel", { inspection: type }, `#${num}`);
 
   // SSE 브로드캐스트: 대기열 변경
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   broadcastEvent("queue", { type, activeInspections });
 
   res.status(200).send();
@@ -806,7 +934,7 @@ app.post("/api/admin/priority/:type", (req, res) => {
   logger.log(req, "priority.set", { inspection: req.params.type, priority: priorityValidation.value }, `#${numValidation.value}`);
 
   // SSE 브로드캐스트: 우선순위 변경 -> 대기열 순서 변경
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   broadcastEvent("queue", { type: req.params.type, activeInspections });
 
   res.status(201).send();
@@ -843,7 +971,7 @@ app.delete("/api/admin/priority/:type", (req, res) => {
   logger.log(req, "priority.delete", { inspection: req.params.type, priority: prior?.priority }, `#${numValidation.value}`);
 
   // SSE 브로드캐스트: 우선순위 변경 -> 대기열 순서 변경
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   broadcastEvent("queue", { type: req.params.type, activeInspections });
 
   res.status(200).send();
@@ -866,7 +994,7 @@ app.delete("/api/admin/priority/:type/all", (req, res) => {
   logger.log(req, "priority.clear", null, req.params.type);
 
   // SSE 브로드캐스트: 우선순위 변경 -> 대기열 순서 변경
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   broadcastEvent("queue", { type: req.params.type, activeInspections });
 
   res.status(200).send();
@@ -911,7 +1039,7 @@ app.delete("/api/admin/history/:type", (req, res) => {
   logger.log(req, "history.clear", { year }, type);
 
   // SSE 브로드캐스트: 이력 초기화 -> 대기열 순서 변경 및 부스 상태 변경
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   broadcastEvent("queue", { type, activeInspections });
   broadcastEvent("booth", { type, booths: getBoothsForType(type) });
 
@@ -948,7 +1076,7 @@ app.put("/api/admin/inspection/:type/ignore", (req, res) => {
   logger.log(req, "inspection.ignore", { field, value: !!value }, type);
 
   // SSE 브로드캐스트: 설정 변경 -> 대기열 순서 변경
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   broadcastEvent("queue", { type, activeInspections });
 
   res.status(200).send();
@@ -1171,7 +1299,7 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
   logger.log(req, "booth.enter", { inspection: type, booth: boothNum }, `#${num}`);
 
   // SSE 브로드캐스트: 부스 및 대기열 변경
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   broadcastEvent("booth", { type, booths: getBoothsForType(type) });
   broadcastEvent("queue", { type, activeInspections });
 
@@ -1195,6 +1323,8 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
     return res.status(400).send("올바르지 않은 부스 번호입니다.");
   }
 
+  const year = currentYear();
+
   const result = dbRun(() => {
     db.transaction(() => {
       const booth = db.prepare("SELECT * FROM booth WHERE inspection = ? AND booth_num = ?").get(type, boothNum);
@@ -1215,11 +1345,11 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
 
       // 부스 로그 퇴장 시간 기록
       db.prepare(
-        "UPDATE booth_log SET exited_at = ? WHERE num = ? AND inspection = ? AND booth_num = ? AND exited_at IS NULL"
-      ).run(now, num, type, boothNum);
+        "UPDATE booth_log SET exited_at = ? WHERE num = ? AND inspection = ? AND booth_num = ? AND year = ? AND exited_at IS NULL"
+      ).run(now, num, type, boothNum, year);
 
       // 검차 이력에 추가 (재검 판단용)
-      db.prepare("INSERT INTO inspection_history (num, inspection, timestamp, year) VALUES (?, ?, ?, ?)").run(num, type, now, currentYear());
+      db.prepare("INSERT INTO inspection_history (num, inspection, timestamp, year) VALUES (?, ?, ?, ?)").run(num, type, now, year);
     })();
   });
 
@@ -1228,10 +1358,10 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "booth.exit", { inspection: type, booth: boothNum }, `#${db.prepare("SELECT num FROM booth_log WHERE inspection = ? AND booth_num = ? ORDER BY id DESC LIMIT 1").get(type, boothNum)?.num || "?"}`);
+  logger.log(req, "booth.exit", { inspection: type, booth: boothNum }, `#${db.prepare("SELECT num FROM booth_log WHERE inspection = ? AND booth_num = ? AND year = ? ORDER BY id DESC LIMIT 1").get(type, boothNum, year)?.num || "?"}`);
 
   // SSE 브로드캐스트: 부스 및 대기열 변경
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   broadcastEvent("booth", { type, booths: getBoothsForType(type) });
   broadcastEvent("queue", { type, activeInspections });
 
@@ -1607,11 +1737,10 @@ let smsConfig = null;
 // (email up but the endpoint is failing) is a real problem and warns at once.
 async function loadSmsConfig({ retries = 0, delayMs = 3000 } = {}) {
   const emailServer = process.env.EMAIL_SERVER;
-  if (emailServer) {
+  if (emailServer && process.env.INTERNAL_SECRET) {
     for (let attempt = 0; ; attempt++) {
       try {
-        const headers = {};
-        if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+        const headers = { "X-Internal-Service": process.env.INTERNAL_SECRET };
         const res = await fetch(`${emailServer}/api/internal/sms-config`, { headers, signal: AbortSignal.timeout(5000) });
         if (res.ok) {
           const data = await res.json();
@@ -1717,6 +1846,8 @@ function sendSmsNotification(type, prev) {
 
 // DELETE /api/internal/team/:num - 엔트리 삭제 시 관련 데이터 정리
 app.delete("/api/internal/team/:num", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
   const numValidation = validateEntryNum(req.params.num);
   if (!numValidation.valid) {
     return res.status(400).send(numValidation.error);
@@ -1748,7 +1879,19 @@ app.delete("/api/internal/team/:num", (req, res) => {
       db.prepare("DELETE FROM inspection_history WHERE num = ? AND year = ?").run(num, year);
 
       // 부스 점유 해제
-      const booths = db.prepare("SELECT inspection, booth_num FROM booth WHERE occupied_by = ?").all(num);
+      const booths = db.prepare(`
+        SELECT inspection, booth_num
+        FROM booth
+        WHERE occupied_by = ?
+          AND EXISTS (
+            SELECT 1 FROM booth_log l
+            WHERE l.num = ?
+              AND l.year = ?
+              AND l.inspection = booth.inspection
+              AND l.booth_num = booth.booth_num
+              AND l.exited_at IS NULL
+          )
+      `).all(num, num, year);
       for (const b of booths) {
         db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ? AND booth_num = ?").run(b.inspection, b.booth_num);
       }
@@ -1763,8 +1906,71 @@ app.delete("/api/internal/team/:num", (req, res) => {
   logger.log(req, "team.cascade_delete", { year }, "#" + num);
 
   // SSE 브로드캐스트
-  const activeInspections = db.prepare("SELECT * FROM inspection WHERE active = TRUE").all();
+  const activeInspections = getActiveInspections();
   broadcastEvent("queue", { type: null, activeInspections });
+
+  res.status(200).send();
+});
+
+// PATCH /api/internal/team-num - 엔트리 번호 변경 시 대기열 관련 num 일괄 갱신
+app.patch("/api/internal/team-num", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
+  const prevNumValidation = validateEntryNum(req.body.prevNum);
+  const newNumValidation = validateEntryNum(req.body.newNum);
+  const year = Number(req.body.year);
+  if (!prevNumValidation.valid) return res.status(400).send(prevNumValidation.error);
+  if (!newNumValidation.valid) return res.status(400).send(newNumValidation.error);
+  if (!Number.isInteger(year)) return res.status(400).send("연도를 지정해야 합니다.");
+
+  const prevNum = prevNumValidation.value;
+  const newNum = newNumValidation.value;
+
+  const result = dbRun(() => {
+    return db.transaction(() => {
+      let changed = 0;
+      for (const type of Object.keys(inspections)) {
+        changed += renumberNumYearRows(type, prevNum, newNum, year, true);
+      }
+      changed += renumberNumYearRows("current", prevNum, newNum, year);
+      changed += renumberNumYearRows("team_priority", prevNum, newNum, year);
+      changed += renumberNumYearRows("cancel_penalty", prevNum, newNum, year);
+      changed += renumberNumYearRows("inspection_history", prevNum, newNum, year);
+      changed += db.prepare(`
+        UPDATE booth
+        SET occupied_by = ?
+        WHERE occupied_by = ?
+          AND EXISTS (
+            SELECT 1 FROM booth_log l
+            WHERE l.num = ?
+              AND l.year = ?
+              AND l.inspection = booth.inspection
+              AND l.booth_num = booth.booth_num
+              AND l.exited_at IS NULL
+          )
+      `).run(newNum, prevNum, prevNum, year).changes;
+      changed += renumberLogRows("booth_log", prevNum, newNum, year);
+      changed += renumberLogRows("queue_log", prevNum, newNum, year);
+      if (changed > 0) {
+        db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)")
+          .run("renumber", newNum, null, Date.now(), year);
+      }
+      return changed;
+    })();
+  });
+
+  if (!result.success) {
+    logger.warn(req, "team_num.update", { error: result.error, year, prevNum, newNum });
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "team_num.update", { year, prevNum, newNum });
+
+  const activeInspections = getActiveInspections();
+  broadcastEvent("queue", { type: null, activeInspections });
+  for (const type of Object.keys(inspections)) {
+    broadcastEvent("booth", { type, booths: getBoothsForType(type) });
+  }
 
   res.status(200).send();
 });

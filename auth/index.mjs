@@ -83,15 +83,13 @@ db.exec(`CREATE TABLE IF NOT EXISTS applications (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 )`);
 
-db.exec(`CREATE TABLE IF NOT EXISTS ops_contacts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  phone TEXT NOT NULL
-)`);
+db.exec("DROP TABLE IF EXISTS ops_contacts");
 
 db.exec(`CREATE TABLE IF NOT EXISTS ops_display (
   user_id INTEGER PRIMARY KEY REFERENCES users(id)
 )`);
+db.exec("DELETE FROM ops_display WHERE user_id NOT IN (SELECT id FROM users)");
+db.pragma("foreign_keys = ON");
 
 // Bootstrap: ADMIN_EMAIL이 DB에 없으면 admin으로 등록
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;

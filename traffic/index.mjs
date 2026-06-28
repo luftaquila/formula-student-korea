@@ -7,6 +7,9 @@ import { createSSEManager } from "../shared/sse.mjs";
 import { EVENT_TYPES } from "../shared/constants.js";
 import { formatEnduranceDetail, enduranceTotal } from "../shared/event-timing.js";
 
+const WIRELESS_TELEMETRY_MAX_ROWS = 50000;
+const CONTROLLER_MAX_ROWS = 100000;
+
 export function createTrafficApp(options = {}) {
 
 const db = createDatabase(Database, options.dbPath || "./data/traffic.db");
@@ -23,6 +26,15 @@ db.exec(`CREATE TABLE IF NOT EXISTS controller (
   timestamp TEXT NOT NULL,
   data TEXT NOT NULL
 );`);
+db.exec("CREATE INDEX IF NOT EXISTS idx_controller_timestamp ON controller(timestamp)");
+db.exec(`CREATE TRIGGER IF NOT EXISTS trg_controller_retention
+  AFTER INSERT ON controller
+  BEGIN
+    DELETE FROM controller
+    WHERE rowid <= COALESCE((
+      SELECT rowid FROM controller ORDER BY rowid DESC LIMIT 1 OFFSET ${CONTROLLER_MAX_ROWS}
+    ), 0);
+  END;`);
 
 db.exec(`CREATE TABLE IF NOT EXISTS event_mode (
   event_type TEXT PRIMARY KEY,
@@ -53,7 +65,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_event (
   link_state  TEXT,
   raw         TEXT
 );`);
-db.exec("CREATE INDEX IF NOT EXISTS idx_wevent_server_time ON wireless_event(server_time)");
+db.exec("DROP INDEX IF EXISTS idx_wevent_server_time");
 // 멱등 dedup 키. ev_seq는 2바이트(DESIGN §9)라 65536에서 wrap하고 노드 재부팅 시 0부터
 // 재시작하므로 (node_id, ev_seq)만으로는 재사용된 seq의 새 이벤트가 옛 행과 충돌해 조용히
 // 버려졌다. master_tick(ev_master_t)은 재전송에도 보존되고 이벤트마다 고유(DESIGN §9)이므로
@@ -89,7 +101,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_telemetry (
   latency_ms  REAL,
   link_state  TEXT
 );`);
-db.exec("CREATE INDEX IF NOT EXISTS idx_wtel_node_time ON wireless_telemetry(node_id, server_time)");
+db.exec("DROP INDEX IF EXISTS idx_wtel_node_time");
 
 // 신호등/콘솔 단일 상태(점유 잠금 + 현재 색 + green tick) + 무선 공용 설정(센서 디바운스
 // 창). 서버 재시작에도 유지. debounce_ms: 한 통과의 다중 엣지(바운스)를 접는 간격(ms).
@@ -184,6 +196,12 @@ app.get("/api/logs", logger.queryHandler);
 
 app.get("/api/health", (req, res) => res.send("ok"));
 
+function requireInternalRequest(req, res) {
+  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
+  res.status(403).send("내부 서비스 호출만 허용됩니다.");
+  return false;
+}
+
 // 서버 시각(epoch ms). 클라가 자기 시계와의 오프셋을 추정해 라이브 클럭을 전 클라 동기화(공유 클럭).
 app.get("/api/time", (req, res) => res.json({ now: Date.now() }));
 
@@ -193,10 +211,15 @@ app.get("/api/time", (req, res) => res.json({ now: Date.now() }));
 const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 function getRecordFiles() {
-  const tables = db
+  return db
     .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN (${reservedSql})`)
-    .all();
-  return tables.map((table) => table.name);
+    .all()
+    .map((table) => table.name)
+    .filter((name) => /^[A-Za-z0-9가-힣 .\-_]+$/.test(name));
+}
+
+function getYearRecordFiles(year) {
+  return getRecordFiles().filter((name) => name.startsWith(`FSK ${Number(year)} `));
 }
 
 function getEventModes() {
@@ -669,12 +692,7 @@ const dbRun = createDbRun();
 // GET /api/records - 모든 기록 테이블 목록 조회
 app.get("/api/records", (req, res) => {
   const result = dbRun(() => {
-    const tables = db
-      .prepare(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN (${reservedSql})`,
-      )
-      .all();
-    return tables.map((table) => table.name);
+    return getRecordFiles();
   });
 
   if (!result.success) {
@@ -687,6 +705,25 @@ app.get("/api/records", (req, res) => {
 // GET /api/records/visibility - 기록 파일별 성적 반영 상태 조회
 app.get("/api/records/visibility", (req, res) => {
   res.json(getRecordVisibility());
+});
+
+// GET /api/records/year/:year - score 집계용 연도별 기록 일괄 조회
+app.get("/api/records/year/:year", (req, res) => {
+  const year = Number(req.params.year);
+  if (!Number.isInteger(year) || year < 2000 || year > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
+
+  const result = dbRun(() => {
+    const visibility = getRecordVisibility();
+    return getYearRecordFiles(year)
+      .filter((name) => visibility[name] !== false)
+      .map((name) => ({
+        name,
+        records: db.prepare(`SELECT rowid, * FROM '${name}'`).all(),
+      }));
+  });
+
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
 });
 
 // PUT /api/records/:name/visibility - 기록 파일 성적 반영 토글
@@ -924,6 +961,78 @@ app.delete("/api/records/:name", (req, res) => {
 });
 
 /* ============================================
+   Internal API: 엔트리 라이프사이클 연동
+   ============================================ */
+
+app.delete("/api/internal/team/:num", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
+  const num = Number(req.params.num);
+  const year = Number(req.query.year);
+  if (!Number.isInteger(num) || num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  if (!Number.isInteger(year)) return res.status(400).send("연도를 지정해야 합니다.");
+
+  const result = dbRun(() => {
+    let changed = 0;
+    for (const name of getYearRecordFiles(year)) {
+      changed += db.prepare(`UPDATE '${name}' SET invalidated = 1, scoreboard = 0 WHERE num = ?`).run(num).changes;
+    }
+    return changed;
+  });
+
+  if (!result.success) {
+    logger.warn(req, "team.cascade_delete", { error: result.error, year }, `#${num}`);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "team.cascade_delete", { year, invalidated: result.result }, `#${num}`);
+  broadcastEvent("records", { type: "team-delete", year, num, recordFiles: getRecordFiles() });
+  res.status(200).send();
+});
+
+app.patch("/api/internal/team-num", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
+  const prevNum = Number(req.body.prevNum);
+  const newNum = Number(req.body.newNum);
+  const year = Number(req.body.year);
+  const entry = req.body.entry && typeof req.body.entry === "object" ? req.body.entry : {};
+  if (!Number.isInteger(prevNum) || prevNum < 1 || !Number.isInteger(newNum) || newNum < 1 || !Number.isInteger(year)) {
+    return res.status(400).send("올바르지 않은 요청입니다.");
+  }
+
+  const result = dbRun(() => {
+    let changed = 0;
+    const updates = ["num = ?"];
+    const params = [newNum];
+    if (typeof entry.univ === "string" && entry.univ.trim()) {
+      updates.push("univ = ?");
+      params.push(entry.univ.trim());
+    }
+    if (typeof entry.team === "string" && entry.team.trim()) {
+      updates.push("team = ?");
+      params.push(entry.team.trim());
+    }
+    for (const name of getYearRecordFiles(year)) {
+      const existing = db.prepare(`SELECT COUNT(*) AS count FROM '${name}' WHERE num = ?`).get(prevNum).count;
+      if (existing === 0) continue;
+      db.prepare(`UPDATE '${name}' SET invalidated = 1, scoreboard = 0 WHERE num = ?`).run(newNum);
+      changed += db.prepare(`UPDATE '${name}' SET ${updates.join(", ")} WHERE num = ?`).run(...params, prevNum).changes;
+    }
+    return changed;
+  });
+
+  if (!result.success) {
+    logger.warn(req, "team_num.update", { error: result.error, year, prevNum, newNum });
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "team_num.update", { year, prevNum, newNum, updated: result.result });
+  broadcastEvent("records", { type: "team-renumber", year, prevNum, newNum, recordFiles: getRecordFiles() });
+  res.status(200).send();
+});
+
+/* ============================================
    API 라우트: /api/controllers
    ============================================ */
 
@@ -1050,6 +1159,7 @@ app.post("/api/wireless/ingest", (req, res) => {
     const now = Date.now();
     const nowIso = new Date(now).toISOString();
     const tOut = [];
+    let telemetryPersisted = 0;
     const secLog = []; // 보안 관측(인증 실패 증가/미프로비저닝) — 트랜잭션 밖에서 logger.warn
     const tins = db.prepare("INSERT INTO wireless_telemetry (node_id, rssi, snr, offset_us, skew_ppm, latency_ms, link_state) VALUES (?, ?, ?, ?, ?, ?, ?)");
     for (const t of telemetry) {
@@ -1086,11 +1196,19 @@ app.post("/api/wireless/ingest", (req, res) => {
       else if (provisioned === 1) { provWarned = false; }
       const entry = { rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, sec_drop: secDrop, provisioned, link_state: link, last_seen: lastSeenIso, _lastPersist: prev._lastPersist || 0, _provWarned: provWarned };
       if (now - entry._lastPersist >= TELEMETRY_PERSIST_MS) {
-        tins.run(node, rssi, snr, offset, skew, lat, link);
+        telemetryPersisted += tins.run(node, rssi, snr, offset, skew, lat, link).changes;
         entry._lastPersist = now;
       }
       liveTelemetry.set(node, entry);
       tOut.push({ node_id: node, rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, sec_drop: secDrop, provisioned, link_state: link, last_seen: lastSeenIso });
+    }
+    if (telemetryPersisted > 0) {
+      db.prepare(`
+        DELETE FROM wireless_telemetry
+        WHERE id <= COALESCE((
+          SELECT id FROM wireless_telemetry ORDER BY id DESC LIMIT 1 OFFSET ?
+        ), 0)
+      `).run(WIRELESS_TELEMETRY_MAX_ROWS);
     }
     return { inserted, deduped, rejected, reasons, telemetry: tOut, security: secLog };
   })());

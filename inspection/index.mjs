@@ -79,6 +79,9 @@ db.transaction(() => {
     PRIMARY KEY (year, team_num, item_id),
     FOREIGN KEY (item_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_sa_item ON sheet_answer(item_id);`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_sa_year_item_team_value
+    ON sheet_answer(year, item_id, team_num, value);`);
 
   // 검차 시트 큰 카테고리별 결과 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS sheet_category_result (
@@ -89,6 +92,7 @@ db.transaction(() => {
     PRIMARY KEY (year, team_num, category_id),
     FOREIGN KEY (category_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_scr_category ON sheet_category_result(category_id);`);
 
   // 검차 시트 큰 카테고리별 검차관 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS sheet_inspector (
@@ -99,6 +103,7 @@ db.transaction(() => {
     PRIMARY KEY (year, team_num, category_id),
     FOREIGN KEY (category_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_si_category ON sheet_inspector(category_id);`);
 })();
 
 /* ============================================
@@ -108,6 +113,7 @@ const logger = createLogger(db, "inspection");
 
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
+  if (req.path.startsWith("/api/internal/")) return "admin";
   if (req.path.startsWith("/api/sheet/template") && req.method !== "GET") return "chief";
   if (req.path === "/api/logs") return "admin";
   if (req.path.startsWith("/api/")) return "official";
@@ -117,6 +123,19 @@ const app = createApp({ express }, (req) => {
 app.get("/api/logs", logger.queryHandler);
 
 app.get("/api/health", (req, res) => res.send("ok"));
+
+function requireInternalRequest(req, res) {
+  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
+  res.status(403).send("내부 서비스 호출만 허용됩니다.");
+  return false;
+}
+
+function renumberTeamRows(table, prevNum, newNum, year) {
+  const existing = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE year = ? AND team_num = ?`).get(year, prevNum).count;
+  if (existing === 0) return 0;
+  db.prepare(`DELETE FROM ${table} WHERE year = ? AND team_num = ?`).run(year, newNum);
+  return db.prepare(`UPDATE ${table} SET team_num = ? WHERE year = ? AND team_num = ?`).run(newNum, year, prevNum).changes;
+}
 
 /* ============================================
    DB 헬퍼
@@ -591,6 +610,68 @@ app.put("/api/sheet/inspector", (req, res) => {
   logger.log(req, "inspector.update", { year, category_id, category_name: templateCat.name, inspector }, `#${team_num}`);
   broadcastEvent("inspector", { year, team_num, category_id, inspector: inspector ?? "" });
 
+  res.status(200).send();
+});
+
+/* ============================================
+   Internal API: 엔트리 라이프사이클 연동
+   ============================================ */
+
+app.delete("/api/internal/team/:num", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
+  const num = Number(req.params.num);
+  const year = Number(req.query.year);
+  if (!Number.isInteger(num) || num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  if (!Number.isInteger(year)) return res.status(400).send("연도를 지정해야 합니다.");
+
+  const result = dbRun(() => {
+    db.transaction(() => {
+      db.prepare("DELETE FROM sheet_answer WHERE year = ? AND team_num = ?").run(year, num);
+      db.prepare("DELETE FROM sheet_category_result WHERE year = ? AND team_num = ?").run(year, num);
+      db.prepare("DELETE FROM sheet_inspector WHERE year = ? AND team_num = ?").run(year, num);
+    })();
+  });
+
+  if (!result.success) {
+    logger.warn(req, "team.cascade_delete", { error: result.error, year }, `#${num}`);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "team.cascade_delete", { year }, `#${num}`);
+  broadcastEvent("answer", { year, team_num: num, deleted: true });
+  broadcastEvent("category-result", { year, team_num: num, deleted: true });
+  broadcastEvent("inspector", { year, team_num: num, deleted: true });
+  res.status(200).send();
+});
+
+app.patch("/api/internal/team-num", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
+  const prevNum = Number(req.body.prevNum);
+  const newNum = Number(req.body.newNum);
+  const year = Number(req.body.year);
+  if (!Number.isInteger(prevNum) || prevNum < 1 || !Number.isInteger(newNum) || newNum < 1 || !Number.isInteger(year)) {
+    return res.status(400).send("올바르지 않은 요청입니다.");
+  }
+
+  const result = dbRun(() => {
+    db.transaction(() => {
+      renumberTeamRows("sheet_answer", prevNum, newNum, year);
+      renumberTeamRows("sheet_category_result", prevNum, newNum, year);
+      renumberTeamRows("sheet_inspector", prevNum, newNum, year);
+    })();
+  });
+
+  if (!result.success) {
+    logger.warn(req, "team_num.update", { error: result.error, year, prevNum, newNum });
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "team_num.update", { year, prevNum, newNum });
+  broadcastEvent("answer", { year, prevNum, team_num: newNum, renumbered: true });
+  broadcastEvent("category-result", { year, prevNum, team_num: newNum, renumbered: true });
+  broadcastEvent("inspector", { year, prevNum, team_num: newNum, renumbered: true });
   res.status(200).send();
 });
 

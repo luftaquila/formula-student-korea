@@ -374,9 +374,23 @@ describe('Email API', () => {
       const logs = data.rows.filter(r => r.subject === 'Test Email');
       assert.equal(logs.length, 2);
       assert.ok(logs.every(r => r.status === 'sent'));
+      assert.ok(logs.every(r => !Object.hasOwn(r, 'html_content')));
       const recipients = logs.map(r => r.recipient).sort();
       assert.deepEqual(recipients, ['user1@test.com', 'user2@test.com']);
       assert.equal(logs[0].source, 'manual');
+    });
+
+    it('returns html content only from email detail endpoint', async () => {
+      const listRes = await client.get('/api/emails', { cookie: adminCookie });
+      const list = await listRes.json();
+      const log = list.rows.find(r => r.subject === 'Test Email');
+      assert.ok(log);
+      assert.ok(!Object.hasOwn(log, 'html_content'));
+
+      const detailRes = await client.get(`/api/emails/${log.id}`, { cookie: adminCookie });
+      assert.equal(detailRes.status, 200);
+      const detail = await detailRes.json();
+      assert.equal(detail.html_content, '<p>Hello</p>');
     });
 
     it('rejects missing fields', async () => {

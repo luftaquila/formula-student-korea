@@ -26,6 +26,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS events (
   all_day INTEGER NOT NULL DEFAULT 0,
   role TEXT NOT NULL DEFAULT 'official'
 )`);
+db.exec("CREATE INDEX IF NOT EXISTS idx_events_start_end ON events(start, end)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_events_end_start ON events(end, start)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_events_role_start ON events(role, start)");
 
 const logger = createLogger(db, "calendar");
 const dbRun = createDbRun();
@@ -57,6 +60,32 @@ function toEventResponse(row) {
   };
 }
 
+function validDateParts(year, month, day, hour = 0, minute = 0) {
+  const d = new Date(Date.UTC(year, month - 1, day, hour, minute));
+  return d.getUTCFullYear() === year
+    && d.getUTCMonth() === month - 1
+    && d.getUTCDate() === day
+    && d.getUTCHours() === hour
+    && d.getUTCMinutes() === minute;
+}
+
+function normalizeDateTime(value, { allDay = false, requireTime = false } = {}) {
+  if (typeof value !== "string") return null;
+  const input = value.trim().replace("T", " ");
+  const dateOnly = input.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnly) {
+    const [, y, m, d] = dateOnly.map(Number);
+    if (!validDateParts(y, m, d)) return null;
+    if (requireTime && !allDay) return null;
+    return input;
+  }
+  const dateTime = input.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/);
+  if (!dateTime) return null;
+  const [, y, m, d, hh, mm] = dateTime.map(Number);
+  if (!validDateParts(y, m, d, hh, mm)) return null;
+  return allDay ? input.slice(0, 10) : input;
+}
+
 // List events (public access, filtered by user role)
 app.get("/api/events", (req, res) => {
   const { timeMin, timeMax } = req.query;
@@ -65,11 +94,15 @@ app.get("/api/events", (req, res) => {
     return res.status(400).json({ error: "timeMin and timeMax are required" });
   }
 
-  // Normalize to comparable strings (YYYY-MM-DD or YYYY-MM-DD HH:mm)
-  const normalize = (s) => s.replace("T", " ").slice(0, 16);
+  const normalizedMin = normalizeDateTime(String(timeMin));
+  const normalizedMax = normalizeDateTime(String(timeMax));
+  if (!normalizedMin || !normalizedMax) {
+    logger.warn(req, "event.list", { error: "invalid timeMin/timeMax", timeMin, timeMax });
+    return res.status(400).json({ error: "Invalid time range" });
+  }
 
   const result = dbRun(() =>
-    db.prepare("SELECT * FROM events WHERE end >= ? AND start <= ? ORDER BY start").all(normalize(timeMin), normalize(timeMax))
+    db.prepare("SELECT * FROM events WHERE end >= ? AND start <= ? ORDER BY start").all(normalizedMin, normalizedMax)
   );
 
   if (!result.success) {
@@ -95,8 +128,16 @@ function validateEventInput(req, res, action, target) {
     res.status(400).json({ error: "title, start, and end are required" });
     return null;
   }
-  if (start > end) {
-    logger.warn(req, action, { error: "start must not be after end", start, end }, target);
+  const allDay = !!req.body.allDay;
+  const normalizedStart = normalizeDateTime(start, { allDay, requireTime: true });
+  const normalizedEnd = normalizeDateTime(end, { allDay, requireTime: true });
+  if (!normalizedStart || !normalizedEnd) {
+    logger.warn(req, action, { error: "invalid start/end format", start, end, allDay }, target);
+    res.status(400).json({ error: "Invalid start or end format" });
+    return null;
+  }
+  if (normalizedStart > normalizedEnd) {
+    logger.warn(req, action, { error: "start must not be after end", start: normalizedStart, end: normalizedEnd }, target);
     res.status(400).json({ error: "start must not be after end" });
     return null;
   }
@@ -112,23 +153,22 @@ function validateEventInput(req, res, action, target) {
     res.status(403).json({ error: "Cannot set visibility above your own role" });
     return null;
   }
-  return { role };
+  return { role, start: normalizedStart, end: normalizedEnd, allDay };
 }
 
 // Create event
 app.post("/api/events", (req, res) => {
-  const { title, start, end } = req.body;
+  const { title } = req.body;
   const valid = validateEventInput(req, res, "event.create", null);
   if (!valid) return;
-  const { role } = valid;
+  const { role, start, end, allDay } = valid;
 
-  const allDay = req.body.allDay ? 1 : 0;
   const description = req.body.description || "";
   const location = req.body.location || "";
 
   const result = dbRun(() =>
     db.prepare("INSERT INTO events (title, description, location, start, end, all_day, role) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(title, description, location, start, end, allDay, role)
+      .run(title, description, location, start, end, allDay ? 1 : 0, role)
   );
 
   if (!result.success) {
@@ -137,28 +177,27 @@ app.post("/api/events", (req, res) => {
   }
 
   const event = db.prepare("SELECT * FROM events WHERE id = ?").get(result.result.lastInsertRowid);
-  logger.log(req, "event.create", { title, start, end, allDay: !!allDay, role }, `${event.id}`);
+  logger.log(req, "event.create", { title, start, end, allDay, role }, `${event.id}`);
   res.status(201).json(toEventResponse(event));
 });
 
 // Update event
 app.put("/api/events/:id", (req, res) => {
   const { id } = req.params;
-  const { title, start, end } = req.body;
+  const { title } = req.body;
   const valid = validateEventInput(req, res, "event.update", id);
   if (!valid) return;
-  const { role } = valid;
+  const { role, start, end, allDay } = valid;
 
   const existing = db.prepare("SELECT id FROM events WHERE id = ?").get(id);
   if (!existing) return res.status(404).json({ error: "Event not found" });
 
-  const allDay = req.body.allDay ? 1 : 0;
   const description = req.body.description || "";
   const location = req.body.location || "";
 
   const result = dbRun(() =>
     db.prepare("UPDATE events SET title = ?, description = ?, location = ?, start = ?, end = ?, all_day = ?, role = ? WHERE id = ?")
-      .run(title, description, location, start, end, allDay, role, id)
+      .run(title, description, location, start, end, allDay ? 1 : 0, role, id)
   );
 
   if (!result.success) {
@@ -167,7 +206,7 @@ app.put("/api/events/:id", (req, res) => {
   }
 
   const event = db.prepare("SELECT * FROM events WHERE id = ?").get(id);
-  logger.log(req, "event.update", { title, start, end, allDay: !!allDay, role }, id);
+  logger.log(req, "event.update", { title, start, end, allDay, role }, id);
   res.json(toEventResponse(event));
 });
 

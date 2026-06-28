@@ -70,9 +70,11 @@ function getTableName(year) {
 
 function ensureYearTable(year) {
   const tableName = getTableName(year);
+  const y = Number(year) || new Date().getFullYear();
   db.exec(`CREATE TABLE IF NOT EXISTS '${tableName}' (
     num INTEGER PRIMARY KEY, univ TEXT NOT NULL, team TEXT NOT NULL, type TEXT DEFAULT NULL
   )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${y}_type ON '${tableName}'(type)`);
   return tableName;
 }
 
@@ -87,11 +89,28 @@ function getAvailableYears() {
 ensureYearTable(new Date().getFullYear());
 ensureVtTable(new Date().getFullYear());
 
+db.exec(`CREATE TABLE IF NOT EXISTS lifecycle_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_type TEXT NOT NULL,
+  service TEXT NOT NULL,
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  body TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending',
+  next_attempt_at INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+)`);
+db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_ready ON lifecycle_outbox(status, next_attempt_at, id)");
+
 // 기존 테이블에 type 컬럼 마이그레이션
 for (const year of getAvailableYears()) {
   const tableName = getTableName(year);
   try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN type TEXT DEFAULT NULL`); }
   catch (e) { /* column already exists */ }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${Number(year)}_type ON '${tableName}'(type)`);
 }
 
 /* ============================================
@@ -179,33 +198,138 @@ const dbRun = createDbRun();
 /* ============================================
    서비스 간 알림 헬퍼
    ============================================ */
-async function notifyEntryDeleted(nums, year) {
+const LIFECYCLE_SERVICES = [
+  { name: "queue", env: "QUEUE_SERVER" },
+  { name: "documents", env: "DOCUMENTS_SERVER" },
+  { name: "inspection", env: "INSPECTION_SERVER" },
+  { name: "score", env: "SCORE_SERVER" },
+  { name: "traffic", env: "TRAFFIC_SERVER" },
+];
+
+let lifecycleOutboxProcessing = false;
+
+function configuredLifecycleServices() {
+  return LIFECYCLE_SERVICES.filter((svc) => process.env[svc.env]);
+}
+
+function lifecycleServer(service) {
+  const svc = LIFECYCLE_SERVICES.find((s) => s.name === service);
+  return svc ? process.env[svc.env] : null;
+}
+
+function lifecycleHeaders(hasBody = false) {
   const headers = {};
   if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+  if (hasBody) headers["Content-Type"] = "application/json";
+  return headers;
+}
 
-  const services = [];
-  if (process.env.QUEUE_SERVER) services.push(process.env.QUEUE_SERVER);
-  if (process.env.DOCUMENTS_SERVER) services.push(process.env.DOCUMENTS_SERVER);
-  if (services.length === 0) return;
-
-  await Promise.allSettled(
-    nums.flatMap(num =>
-      services.map(server =>
-        fetch(`${server}/api/internal/team/${num}?year=${Number(year)}`, {
-          method: "DELETE",
-          headers,
-          signal: AbortSignal.timeout(5000),
-        }).then(res => {
-          if (!res.ok) {
-            logger.warn(null, "entry.notify_delete_fail", { server, num, year, status: res.status });
-          }
-        }).catch(e => {
-          logger.warn(null, "entry.notify_delete_fail", { server, num, year, error: e.message });
-        }),
-      ),
-    ),
+function insertLifecycleEvents(events) {
+  if (events.length === 0) return [];
+  const insert = db.prepare(`
+    INSERT INTO lifecycle_outbox (event_type, service, method, path, body, next_attempt_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const now = Date.now();
+  return events.map((event) =>
+    insert.run(event.eventType, event.service, event.method, event.path, event.body ? JSON.stringify(event.body) : null, now).lastInsertRowid,
   );
 }
+
+function markLifecycleDelivered(id) {
+  db.prepare("DELETE FROM lifecycle_outbox WHERE id = ?").run(id);
+}
+
+function markLifecycleFailed(row, error) {
+  const attempts = row.attempts + 1;
+  const delayMs = Math.min(5 * 60_000, 1000 * 2 ** Math.min(attempts, 8));
+  db.prepare(`
+    UPDATE lifecycle_outbox
+    SET attempts = ?, next_attempt_at = ?, last_error = ?, updated_at = strftime('%s','now') * 1000
+    WHERE id = ?
+  `).run(attempts, Date.now() + delayMs, String(error).slice(0, 500), row.id);
+}
+
+async function deliverLifecycleRow(row) {
+  const server = lifecycleServer(row.service);
+  if (!server) {
+    markLifecycleFailed(row, `missing server env for ${row.service}`);
+    return;
+  }
+  try {
+    const res = await fetch(`${server}${row.path}`, {
+      method: row.method,
+      headers: lifecycleHeaders(!!row.body),
+      body: row.body || undefined,
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    markLifecycleDelivered(row.id);
+  } catch (e) {
+    markLifecycleFailed(row, e.message || e);
+    logger.warn(null, "entry.lifecycle_dispatch_fail", {
+      id: row.id,
+      event_type: row.event_type,
+      service: row.service,
+      path: row.path,
+      attempts: row.attempts + 1,
+      error: e.message || String(e),
+    });
+  }
+}
+
+async function processLifecycleOutbox({ ids = null, limit = 50 } = {}) {
+  if (lifecycleOutboxProcessing) return;
+  lifecycleOutboxProcessing = true;
+  try {
+    const now = Date.now();
+    let rows;
+    if (ids?.length) {
+      const placeholders = ids.map(() => "?").join(",");
+      rows = db.prepare(`SELECT * FROM lifecycle_outbox WHERE id IN (${placeholders})`).all(...ids);
+    } else {
+      rows = db.prepare(`
+        SELECT * FROM lifecycle_outbox
+        WHERE status = 'pending' AND next_attempt_at <= ?
+        ORDER BY id
+        LIMIT ?
+      `).all(now, limit);
+    }
+    await Promise.all(rows.map((row) => deliverLifecycleRow(row)));
+  } finally {
+    lifecycleOutboxProcessing = false;
+  }
+}
+
+function startLifecycleOutboxRetry() {
+  const timer = setInterval(() => {
+    processLifecycleOutbox().catch((e) => logger.warn(null, "entry.lifecycle_retry_error", { error: e.message || String(e) }));
+  }, 30_000);
+  timer.unref?.();
+}
+
+function buildEntryDeletedEvents(nums, year) {
+  return nums.flatMap((num) =>
+    configuredLifecycleServices().map((svc) => ({
+      eventType: "team.delete",
+      service: svc.name,
+      method: "DELETE",
+      path: `/api/internal/team/${num}?year=${Number(year)}`,
+    })),
+  );
+}
+
+function buildEntryRenumberedEvents(prevNum, newNum, year, entry) {
+  return configuredLifecycleServices().map((svc) => ({
+    eventType: "team.renumber",
+    service: svc.name,
+    method: "PATCH",
+    path: "/api/internal/team-num",
+    body: { prevNum, newNum, year: Number(year), entry },
+  }));
+}
+
+startLifecycleOutboxRetry();
 
 /* ============================================
    연도/테이블 미들웨어
@@ -307,11 +431,9 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
   const newNum = newNumValidation.value;
   const numChanged = prevNum !== newNum;
 
-  // 번호 변경 시 롤백을 위해 원본 데이터 보존
-  const originalEntry = numChanged ? db.prepare(`SELECT univ, team, type FROM '${tableName}' WHERE num = ?`).get(prevNum) : null;
-
   const result = dbRun(() => {
     return db.transaction(() => {
+      let eventIds = [];
       if (numChanged) {
         const numResult = db.prepare(`UPDATE '${tableName}' SET num = ? WHERE num = ?`).run(newNum, prevNum);
         if (!numResult.changes) {
@@ -326,7 +448,15 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
         throw { status: 404, message: "존재하지 않는 엔트리 번호입니다." };
       }
 
-      return updateResult;
+      if (numChanged) {
+        eventIds = insertLifecycleEvents(buildEntryRenumberedEvents(prevNum, newNum, year, {
+          univ: dataValidation.univ,
+          team: dataValidation.team,
+          type: dataValidation.type,
+        }));
+      }
+
+      return { updateResult, eventIds };
     })();
   });
 
@@ -335,43 +465,9 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  // 번호 변경 시 documents 서비스 team_num 동기화 (실패 시 롤백)
-  if (numChanged && process.env.DOCUMENTS_SERVER) {
-    let syncFailed = false;
-    let failReason = "";
-    try {
-      const syncRes = await fetch(`${process.env.DOCUMENTS_SERVER}/api/internal/team-num`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", "X-Internal-Service": process.env.INTERNAL_SECRET },
-        body: JSON.stringify({ prevNum, newNum, year: Number(year) }),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!syncRes.ok) {
-        syncFailed = true;
-        failReason = `status ${syncRes.status}`;
-      }
-    } catch (e) {
-      syncFailed = true;
-      failReason = e.message;
-    }
-
-    if (syncFailed) {
-      // 엔트리 번호 및 데이터 롤백
-      const rollbackResult = dbRun(() => {
-        db.transaction(() => {
-          db.prepare(`UPDATE '${tableName}' SET num = ? WHERE num = ?`).run(prevNum, newNum);
-          if (originalEntry) {
-            db.prepare(`UPDATE '${tableName}' SET univ = ?, team = ?, type = ? WHERE num = ?`)
-              .run(originalEntry.univ, originalEntry.team, originalEntry.type, prevNum);
-          }
-        })();
-      });
-      if (!rollbackResult.success) {
-        logger.warn(req, "entry.rollback_failed", { error: rollbackResult.error, prevNum, newNum, year }, `#${newNum}`);
-      }
-      logger.warn(req, "entry.docs_sync_fail_rollback", { prevNum, newNum, year, reason: failReason, rollbackSuccess: rollbackResult.success });
-      return res.status(502).send("문서 서비스 동기화에 실패하여 변경이 취소되었습니다.");
-    }
+  if (numChanged) {
+    await processLifecycleOutbox({ ids: result.result.eventIds });
+    logger.log(req, "entry.notify_renumber", { year, prevNum, newNum, events: result.result.eventIds.length }, `#${newNum}`);
   }
 
   logger.log(req, "entry.update", { year, univ: dataValidation.univ, team: dataValidation.team, type: dataValidation.type }, `#${newNum}`);
@@ -387,22 +483,29 @@ app.delete("/api/entries/:num", withYearTable, async (req, res) => {
     return res.status(400).send(numValidation.error);
   }
 
-  const entry = db.prepare(`SELECT univ, team FROM '${tableName}' WHERE num = ?`).get(numValidation.value);
-  const result = dbRun(() => db.prepare(`DELETE FROM '${tableName}' WHERE num = ?`).run(numValidation.value));
+  const result = dbRun(() => db.transaction(() => {
+    const entry = db.prepare(`SELECT univ, team FROM '${tableName}' WHERE num = ?`).get(numValidation.value);
+    const deleteResult = db.prepare(`DELETE FROM '${tableName}' WHERE num = ?`).run(numValidation.value);
+    const eventIds = deleteResult.changes
+      ? insertLifecycleEvents(buildEntryDeletedEvents([numValidation.value], year))
+      : [];
+    return { deleteResult, entry, eventIds };
+  })());
 
   if (!result.success) {
     logger.warn(req, "entry.delete", { error: result.error, year }, `#${numValidation.value}`);
     return res.status(result.status).send(result.error);
   }
 
-  if (!result.result.changes) {
+  if (!result.result.deleteResult.changes) {
     logger.warn(req, "entry.delete", { year, reason: "not_found" }, `#${numValidation.value}`);
     return res.status(404).send("존재하지 않는 엔트리 번호입니다.");
   }
 
+  const { entry, eventIds } = result.result;
   logger.log(req, "entry.delete", { year, univ: entry?.univ, team: entry?.team }, `#${numValidation.value}`);
 
-  await notifyEntryDeleted([numValidation.value], year);
+  await processLifecycleOutbox({ ids: eventIds });
   logger.log(req, "entry.notify_delete", { year, nums: [numValidation.value] }, `#${numValidation.value}`);
   res.status(200).send();
 });
@@ -411,9 +514,14 @@ app.delete("/api/entries/:num", withYearTable, async (req, res) => {
 app.delete("/api/entries", withYearTable, async (req, res) => {
   const { tableName, year } = req;
 
-  const existingNums = db.prepare(`SELECT num FROM '${tableName}'`).all().map(r => r.num);
-
-  const result = dbRun(() => db.prepare(`DELETE FROM '${tableName}'`).run());
+  const result = dbRun(() => db.transaction(() => {
+    const existingNums = db.prepare(`SELECT num FROM '${tableName}'`).all().map(r => r.num);
+    const deleteResult = db.prepare(`DELETE FROM '${tableName}'`).run();
+    const eventIds = existingNums.length > 0
+      ? insertLifecycleEvents(buildEntryDeletedEvents(existingNums, year))
+      : [];
+    return { existingNums, deleteResult, eventIds };
+  })());
 
   if (!result.success) {
     logger.warn(req, "entry.clear", { error: result.error, year });
@@ -422,8 +530,9 @@ app.delete("/api/entries", withYearTable, async (req, res) => {
 
   logger.log(req, "entry.clear", { year });
 
+  const { existingNums, eventIds } = result.result;
   if (existingNums.length > 0) {
-    await notifyEntryDeleted(existingNums, year);
+    await processLifecycleOutbox({ ids: eventIds });
     logger.log(req, "entry.notify_delete", { year, count: existingNums.length });
   }
   res.status(200).send();
@@ -438,14 +547,14 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
     return res.status(400).send(validation.error);
   }
 
-  // 트랜잭션 전 기존 엔트리 스냅샷
-  const existingNums = new Set(db.prepare(`SELECT num FROM '${tableName}'`).all().map(r => r.num));
-
   const result = dbRun(() => {
-    db.transaction(() => {
+    return db.transaction(() => {
+      const existingNums = new Set(db.prepare(`SELECT num FROM '${tableName}'`).all().map(r => r.num));
       db.prepare(`DELETE FROM '${tableName}'`).run();
       const vtTable = ensureVtTable(year);
       const validTypes = new Set(db.prepare(`SELECT name FROM '${vtTable}'`).all().map(t => t.name));
+      const newNums = new Set(Object.keys(validation.data).map(Number));
+      const removedNums = [...existingNums].filter(n => !newNums.has(n));
       const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`);
       for (const [k, v] of Object.entries(validation.data)) {
         const validatedType = v.type || null;
@@ -454,6 +563,10 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
         }
         query.run(Number(k), v.univ.trim(), v.team.trim(), validatedType);
       }
+      const eventIds = removedNums.length > 0
+        ? insertLifecycleEvents(buildEntryDeletedEvents(removedNums, year))
+        : [];
+      return { removedNums, eventIds };
     })();
   });
 
@@ -464,10 +577,9 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
 
   logger.log(req, "entry.bulk_upload", { year, count: Object.keys(validation.data).length });
 
-  const newNums = new Set(Object.keys(validation.data).map(Number));
-  const removedNums = [...existingNums].filter(n => !newNums.has(n));
+  const { removedNums, eventIds } = result.result;
   if (removedNums.length > 0) {
-    await notifyEntryDeleted(removedNums, year);
+    await processLifecycleOutbox({ ids: eventIds });
     logger.log(req, "entry.notify_delete", { year, count: removedNums.length, nums: removedNums });
   }
   res.status(200).send();

@@ -110,6 +110,19 @@ app.get("/api/logs", logger.queryHandler);
 
 app.get("/api/health", (req, res) => res.send("ok"));
 
+function requireInternalRequest(req, res) {
+  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
+  res.status(403).send("내부 서비스 호출만 허용됩니다.");
+  return false;
+}
+
+function renumberTeamRows(table, prevNum, newNum, year) {
+  const existing = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE year = ? AND team_num = ?`).get(year, prevNum).count;
+  if (existing === 0) return 0;
+  db.prepare(`DELETE FROM ${table} WHERE year = ? AND team_num = ?`).run(year, newNum);
+  return db.prepare(`UPDATE ${table} SET team_num = ? WHERE year = ? AND team_num = ?`).run(newNum, year, prevNum).changes;
+}
+
 /* ============================================
    설정
    ============================================ */
@@ -135,6 +148,22 @@ function validateKey(key, label) {
 }
 
 async function fetchYearRecords(year) {
+  try {
+    const yearRes = await fetch(`${TRAFFIC_SERVER}/api/records/year/${year}`, {
+      headers: internalHeaders(),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (yearRes.ok) {
+      const rows = await yearRes.json();
+      return rows.map((row) => ({ tableName: row.name, records: row.records || [] }));
+    }
+    if (yearRes.status !== 404) {
+      warnThrottled("score.fetch_records", { status: yearRes.status, year });
+    }
+  } catch (e) {
+    logger.warn(null, "score.fetch_records", { error: e.message, year, endpoint: "year" });
+  }
+
   const [tablesRes, visRes] = await Promise.all([
     fetch(`${TRAFFIC_SERVER}/api/records`, {
       headers: internalHeaders(),
@@ -703,6 +732,64 @@ app.put("/api/score/endurance", (req, res) => {
   logger.log(req, "endurance.update", { year: numYear, field, value: dbValue }, `#${numTeamNum}`);
   broadcastEvent("endurance", { year: numYear, team_num: numTeamNum, field, value: dbValue });
 
+  res.status(200).send();
+});
+
+/* ============================================
+   Internal API: 엔트리 라이프사이클 연동
+   ============================================ */
+
+app.delete("/api/internal/team/:num", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
+  const num = Number(req.params.num);
+  const year = Number(req.query.year);
+  if (!Number.isInteger(num) || num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  if (!Number.isInteger(year)) return res.status(400).send("연도를 지정해야 합니다.");
+
+  const result = dbRun(() => {
+    db.transaction(() => {
+      db.prepare("DELETE FROM score_manual WHERE year = ? AND team_num = ?").run(year, num);
+      db.prepare("DELETE FROM score_endurance WHERE year = ? AND team_num = ?").run(year, num);
+    })();
+  });
+
+  if (!result.success) {
+    logger.warn(req, "team.cascade_delete", { error: result.error, year }, `#${num}`);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "team.cascade_delete", { year }, `#${num}`);
+  broadcastEvent("manual-score", { year, team_num: num, deleted: true });
+  broadcastEvent("endurance", { year, team_num: num, deleted: true });
+  res.status(200).send();
+});
+
+app.patch("/api/internal/team-num", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
+  const prevNum = Number(req.body.prevNum);
+  const newNum = Number(req.body.newNum);
+  const year = Number(req.body.year);
+  if (!Number.isInteger(prevNum) || prevNum < 1 || !Number.isInteger(newNum) || newNum < 1 || !Number.isInteger(year)) {
+    return res.status(400).send("올바르지 않은 요청입니다.");
+  }
+
+  const result = dbRun(() => {
+    db.transaction(() => {
+      renumberTeamRows("score_manual", prevNum, newNum, year);
+      renumberTeamRows("score_endurance", prevNum, newNum, year);
+    })();
+  });
+
+  if (!result.success) {
+    logger.warn(req, "team_num.update", { error: result.error, year, prevNum, newNum });
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "team_num.update", { year, prevNum, newNum });
+  broadcastEvent("manual-score", { year, prevNum, team_num: newNum, renumbered: true });
+  broadcastEvent("endurance", { year, prevNum, team_num: newNum, renumbered: true });
   res.status(200).send();
 });
 

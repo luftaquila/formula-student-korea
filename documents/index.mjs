@@ -86,6 +86,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS submission_file (
   mime_type TEXT DEFAULT '',
   FOREIGN KEY (submission_id) REFERENCES submission(id) ON DELETE CASCADE
 )`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_sf_submission
+  ON submission_file(submission_id)`);
 
 // 마이그레이션: allowed_extensions 컬럼 추가
 addColumn(db, "session", "allowed_extensions TEXT DEFAULT ''");
@@ -143,6 +145,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS scheduled_notification (
   FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
 )`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_sn_pending ON scheduled_notification(sent, scheduled_at)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_sn_session_sent ON scheduled_notification(session_id, sent)");
 
 // 업로드 디렉토리 생성
 const UPLOADS_DIR = options.uploadsDir || path.resolve("./data/uploads");
@@ -180,6 +183,12 @@ app.get("/api/logs", logger.queryHandler);
 app.get("/api/health", (req, res) => res.send("ok"));
 
 const dbRun = createDbRun();
+
+function requireInternalRequest(req, res) {
+  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
+  res.status(403).send("내부 서비스 호출만 허용됩니다.");
+  return false;
+}
 
 /* ============================================
    헬퍼
@@ -1180,6 +1189,8 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
 
 // PATCH /api/internal/team-num - 엔트리 번호 변경 시 team_num 일괄 갱신
 app.patch("/api/internal/team-num", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
   const prevNum = Number(req.body.prevNum);
   const newNum = Number(req.body.newNum);
   const year = Number(req.body.year);
@@ -1187,8 +1198,46 @@ app.patch("/api/internal/team-num", (req, res) => {
     return res.status(400).send("올바르지 않은 요청입니다.");
   }
 
+  const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
+  const prevExists = db.prepare(`
+    SELECT 1
+    WHERE EXISTS (SELECT 1 FROM student_team WHERE team_num = ? AND year = ?)
+       OR EXISTS (
+         SELECT 1 FROM session_team
+         WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)
+       )
+       OR EXISTS (
+         SELECT 1 FROM submission
+         WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)
+       )
+  `).get(prevNum, year, prevNum, year, prevNum, year);
+
+  if (!prevExists) {
+    logger.log(req, "team_num.update", { year, prevNum, newNum, noop: true });
+    return res.status(200).send();
+  }
+
+  for (const s of sessions) {
+    const oldDir = path.join(UPLOADS_DIR, String(s.id), String(prevNum));
+    const newDir = path.join(UPLOADS_DIR, String(s.id), String(newNum));
+    const staleTarget = db.prepare(`
+      SELECT 1
+      WHERE EXISTS (SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?)
+         OR EXISTS (SELECT 1 FROM submission WHERE session_id = ? AND team_num = ?)
+    `).get(s.id, newNum, s.id, newNum);
+    if (staleTarget && fs.existsSync(oldDir) && fs.existsSync(newDir)) {
+      rmDir(newDir);
+    }
+  }
+
   const txResult = dbRun(() => {
     db.transaction(() => {
+      db.prepare("DELETE FROM submission WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
+        .run(newNum, year);
+      db.prepare("DELETE FROM session_team WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
+        .run(newNum, year);
+      db.prepare("DELETE FROM student_team WHERE team_num = ? AND year = ?")
+        .run(newNum, year);
       db.prepare("UPDATE student_team SET team_num = ? WHERE team_num = ? AND year = ?")
         .run(newNum, prevNum, year);
       db.prepare("UPDATE session_team SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
@@ -1201,7 +1250,6 @@ app.patch("/api/internal/team-num", (req, res) => {
   if (!txResult.success) { logger.warn(req, "team_num.update", { error: txResult.error, year, prevNum, newNum }); return res.status(txResult.status).send(txResult.error); }
 
   // 업로드 디렉토리 이름 변경
-  const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
   const renamedDirs = [];
   const failedRenames = [];
   for (const s of sessions) {
@@ -1249,6 +1297,8 @@ app.patch("/api/internal/team-num", (req, res) => {
 
 // DELETE /api/internal/team/:num - 엔트리 삭제 시 관련 데이터 정리
 app.delete("/api/internal/team/:num", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
   const num = Number(req.params.num);
   const year = Number(req.query.year);
   if (!Number.isInteger(num) || num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");

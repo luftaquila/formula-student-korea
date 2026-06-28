@@ -1294,6 +1294,44 @@ describe('DELETE /api/internal/team/:num', () => {
   });
 });
 
+// ─── Internal API: team renumber ────────────────────────────────────────
+describe('PATCH /api/internal/team-num', () => {
+  it('renumbers queue rows, priorities, penalties, history, booths, and logs', async () => {
+    const year = new Date().getFullYear();
+    db.prepare("INSERT OR REPLACE INTO braking (num, phone, timestamp, year) VALUES (?, ?, ?, ?)")
+      .run(903, '01033333333', Date.now(), year);
+    db.prepare("INSERT OR REPLACE INTO current (num, phone, inspection, year) VALUES (?, ?, ?, ?)")
+      .run(903, '01033333333', 'braking', year);
+    db.prepare("INSERT OR REPLACE INTO team_priority (num, inspection, year, priority) VALUES (?, ?, ?, ?)")
+      .run(903, 'braking', year, 2);
+    db.prepare("INSERT OR REPLACE INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)")
+      .run(903, 'braking', year, Date.now() + 60000);
+    db.prepare("INSERT OR IGNORE INTO inspection_history (num, inspection, timestamp, year) VALUES (?, ?, ?, ?)")
+      .run(903, 'braking', Date.now(), year);
+    db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, created_at, year) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(903, 'braking', 1, Date.now(), Date.now(), year);
+    db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)")
+      .run('register', 903, 'braking', Date.now(), year);
+    db.prepare("UPDATE booth SET occupied_by = ?, entered_at = ? WHERE inspection = ? AND booth_num = 1")
+      .run(903, Date.now(), 'braking');
+
+    const res = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { prevNum: 903, newNum: 904, year },
+    });
+    assert.equal(res.status, 200);
+
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM braking WHERE num = ? AND year = ?").get(904, year).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM current WHERE num = ? AND year = ?").get(904, year).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_priority WHERE num = ? AND year = ?").get(904, year).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM cancel_penalty WHERE num = ? AND year = ?").get(904, year).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = ? AND year = ?").get(904, year).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM booth_log WHERE num = ? AND year = ?").get(904, year).c, 1);
+    assert.equal(db.prepare("SELECT occupied_by FROM booth WHERE inspection = ? AND booth_num = 1").get('braking').occupied_by, 904);
+    assert.ok(db.prepare("SELECT COUNT(*) AS c FROM queue_log WHERE event = 'renumber' AND num = ? AND year = ?").get(904, year).c >= 1);
+  });
+});
+
 // ─── Year isolation ──────────────────────────────────────────────────────
 describe('Year isolation', () => {
   it('queue queries filter by current year', async () => {
