@@ -16,7 +16,7 @@
       <section class="section">
         <h2 class="section-title">Services</h2>
         <div class="services">
-          <ServiceCard v-if="isAuthenticated" title="서류 제출" description="" path="/documents" icon="📄" />
+          <ServiceCard v-if="isStudent" title="서류 제출" description="" path="/documents" icon="📄" />
           <ServiceCard title="검차 대기열" description="" path="/queue" icon="🔧" />
           <ServiceCard title="에너지미터" description="" path="/energymeter" icon="⚡" />
           <ServiceCard title="대회 일정" description="" path="/calendar" icon="📅" />
@@ -45,6 +45,7 @@
           <ServiceCard title="검차 대기 관리" description="" path="/queue/admin" icon="🛠️" />
           <ServiceCard title="인스펙션 시트" description="" path="/inspection" icon="📋" />
           <ServiceCard v-if="isChief" title="서류 제출 관리" description="" path="/documents/admin" icon="📑" />
+          <ServiceCard v-if="isChief" title="코스 관리" description="" path="/course" icon="📍" />
           <ServiceCard v-if="isChief" title="파일 클라우드" description="" path="/files/" icon="📁" external />
         </div>
       </section>
@@ -55,7 +56,6 @@
           <ServiceCard title="엔트리 관리" description="" path="/entry" icon="🏁" />
           <ServiceCard title="계측 시스템" description="" path="/traffic" icon="🚦" />
           <ServiceCard title="성적 관리" description="" path="/score" icon="📊" />
-          <ServiceCard title="코스 관리" description="" path="/course" icon="📍" />
           <ServiceCard title="계정 관리" description="" path="/auth" icon="🔑" />
           <ServiceCard title="이메일/SMS" description="" path="/email" icon="✉️" />
           <ServiceCard title="시스템 로그" description="" path="/auth/logs" icon="📜" />
@@ -69,7 +69,7 @@
 import { ref, onMounted } from "vue";
 import ServiceCard from "./components/ServiceCard.vue";
 import NavMenu from "@shared/NavMenu.vue";
-import { user, isAuthenticated, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
+import { user, isStudent, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
 import { forumSvg } from "@shared/nav-config.js";
 
 const LOGIN_ERROR_MESSAGES = {

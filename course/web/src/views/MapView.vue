@@ -4,6 +4,7 @@ import L from "leaflet";
 import { request } from "../api.js";
 import { useNotification } from "@shared/useNotification.js";
 import { haversine } from "@shared/geo.mjs";
+import { isAdmin } from "@shared/officialsStore.js";
 
 const { error: notifyError, warning: notifyWarn } = useNotification();
 const stopping = inject("stopping", ref(false));
@@ -516,12 +517,15 @@ const remainingDistanceM = computed(() => {
   return pathTotalDist * Math.max(0, (100 - pathProgress.value) / 100);
 });
 
-// Inspector (desktop right panel)
+// Inspector (desktop right panel). Rover control and mission history are
+// admin-only; chief sees only the 코스 (cone-editing) tab. The backend enforces
+// the same split — /api/rover/* and /api/missions/* require admin.
 const INSPECTOR_TABS = [
-  { key: "rover", label: "로버", icon: "🚗" },
+  { key: "rover", label: "로버", icon: "🚗", adminOnly: true },
   { key: "courses", label: "코스", icon: "📋" },
-  { key: "history", label: "기록", icon: "📊" },
+  { key: "history", label: "기록", icon: "📊", adminOnly: true },
 ];
+const visibleTabs = computed(() => INSPECTOR_TABS.filter((t) => isAdmin.value || !t.adminOnly));
 
 // Mission history state (integrated into this view so the same map + rail +
 // inspector structure serves both the live operation and replay).
@@ -702,10 +706,13 @@ const currentSampleTime = computed(() => {
 const currentSampleState = computed(() => missionSamples.value[replayIdx.value]?.nav_state || "—");
 const currentSampleFix = computed(() => missionSamples.value[replayIdx.value]?.fix_status || "—");
 const activeTab = ref((() => {
-  const v = loadPref("activeTab", "courses");
+  let v = loadPref("activeTab", "courses");
   // Migrate stale tab keys from the pre-merge layout.
-  if (v === "cones") return "courses";
-  if (v === "logs" || v === "missions") return "history";
+  if (v === "cones") v = "courses";
+  if (v === "logs" || v === "missions") v = "history";
+  // Rover/history are admin-only — a non-admin (chief) only ever lands on 코스,
+  // even if a stale localStorage pref from a prior admin session says otherwise.
+  if (!isAdmin.value && v !== "courses") v = "courses";
   return v;
 })());
 const historyView = ref(loadPref("historyView", "missions"));
@@ -3533,7 +3540,8 @@ onMounted(async () => {
     if (cones.length > 0) panToVisibleCenter(cones[0].lat, cones[0].lng, { animate: false });
   }
   connectSSE();
-  fetchRoverStatus();
+  // /api/rover/status is admin-only; chief never opens the rover tab, so skip it.
+  if (isAdmin.value) fetchRoverStatus();
 });
 
 onUnmounted(() => {
@@ -3955,7 +3963,7 @@ onUnmounted(() => {
           <!-- Left icon rail -->
           <nav class="rail" aria-label="인스펙터 카테고리">
             <button
-              v-for="t in INSPECTOR_TABS" :key="t.key"
+              v-for="t in visibleTabs" :key="t.key"
               :class="['rail-btn', { active: activeTab === t.key }]"
               @click="onRailClick(t.key)"
               :title="t.label"

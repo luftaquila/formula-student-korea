@@ -227,7 +227,14 @@ const app = createApp({ express }, (req) => {
   ) {
     return isInternalRequest(req) ? null : "admin";
   }
-  return "admin";
+  // Rover control, mission history, and system logs stay admin-only. Only
+  // course/cone management — plus the SPA shell and the SSE it needs for live
+  // cone sync — is exposed to chief. The frontend hides the 로버/기록 tabs from
+  // non-admins; these gates are the enforcing backstop.
+  if (p.startsWith("/api/rover")) return "admin";
+  if (p.startsWith("/api/missions")) return "admin";
+  if (p === "/api/logs") return "admin";
+  return "chief";
 });
 
 app.get("/api/logs", logger.queryHandler);

@@ -1,6 +1,9 @@
 export const services = [
   { name: "홈", href: "/", icon: "home" },
-  { name: "서류 제출", href: "/documents", icon: "documents", auth: "student" },
+  // studentOnly (exact role, not hierarchical): staff use 서류 제출 관리 instead.
+  // Shown to any student — including those without an assigned team; the
+  // documents page itself explains "팀이 배정되지 않았습니다" on entry.
+  { name: "서류 제출", href: "/documents", icon: "documents", studentOnly: true },
   { name: "검차 대기열", href: "/queue", icon: "queue" },
   { name: "에너지미터", href: "/energymeter", icon: "energy" },
   { name: "대회 일정", href: "/calendar", icon: "calendar" },
@@ -17,6 +20,7 @@ export const officials = [
   { name: "검차 대기 관리", href: "/queue/admin", icon: "queue-admin" },
   { name: "인스펙션 시트", href: "/inspection", icon: "sheet" },
   { name: "서류 제출 관리", href: "/documents/admin", icon: "documents-admin", auth: "chief" },
+  { name: "코스 관리", href: "/course", icon: "course", auth: "chief" },
   { name: "파일 클라우드", href: "/files/", icon: "files", auth: "chief" },
 ];
 
@@ -24,7 +28,6 @@ export const admins = [
   { name: "엔트리 관리", href: "/entry", icon: "entry" },
   { name: "계측 시스템", href: "/traffic", icon: "traffic" },
   { name: "성적 관리", href: "/score", icon: "score" },
-  { name: "코스 관리", href: "/course", icon: "course" },
   { name: "계정 관리", href: "/auth", icon: "auth" },
   { name: "이메일/SMS", href: "/email", icon: "email" },
   { name: "시스템 로그", href: "/auth/logs", icon: "logs" },
