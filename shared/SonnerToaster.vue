@@ -28,5 +28,5 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <Toaster rich-colors :theme="theme" position="top-center" :duration="3500" />
+  <Toaster rich-colors :theme="theme" position="bottom-right" :duration="3500" />
 </template>
