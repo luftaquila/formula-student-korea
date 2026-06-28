@@ -45,6 +45,7 @@
           <ServiceCard title="검차 대기 관리" description="" path="/queue/admin" icon="🛠️" />
           <ServiceCard title="인스펙션 시트" description="" path="/inspection" icon="📋" />
           <ServiceCard v-if="isChief" title="서류 제출 관리" description="" path="/documents/admin" icon="📑" />
+          <ServiceCard v-if="isChief" title="코스 관리" description="" path="/course" icon="📍" />
           <ServiceCard v-if="isChief" title="파일 클라우드" description="" path="/files/" icon="📁" external />
         </div>
       </section>
@@ -55,7 +56,6 @@
           <ServiceCard title="엔트리 관리" description="" path="/entry" icon="🏁" />
           <ServiceCard title="계측 시스템" description="" path="/traffic" icon="🚦" />
           <ServiceCard title="성적 관리" description="" path="/score" icon="📊" />
-          <ServiceCard title="코스 관리" description="" path="/course" icon="📍" />
           <ServiceCard title="계정 관리" description="" path="/auth" icon="🔑" />
           <ServiceCard title="이메일/SMS" description="" path="/email" icon="✉️" />
           <ServiceCard title="시스템 로그" description="" path="/auth/logs" icon="📜" />

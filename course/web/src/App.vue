@@ -4,6 +4,7 @@ import NavMenu from "@shared/NavMenu.vue";
 import { useRoute } from "vue-router";
 import { request } from "./api.js";
 import { useNotification } from "@shared/useNotification.js";
+import { isAdmin } from "@shared/officialsStore.js";
 
 const { error: notifyError } = useNotification();
 
@@ -83,7 +84,10 @@ async function fetchStatus() {
 }
 
 onMounted(async () => {
-  await fetchStatus();
+  // Rover control (status, e-stop) is admin-only; chief manages cones only, so
+  // skip the status poll — roverConnected stays false and the global e-stop and
+  // its underlying /api/rover/* calls never engage.
+  if (isAdmin.value) await fetchStatus();
 });
 
 onUnmounted(() => {

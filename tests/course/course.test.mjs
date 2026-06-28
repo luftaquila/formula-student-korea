@@ -47,15 +47,32 @@ describe('GET /api/health', () => {
 
 // ─── Auth ───────────────────────────────────────────────────────────────
 describe('Auth enforcement', () => {
+  const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
+  const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
+
   it('rejects unauthenticated requests to /api/courses', async () => {
     const res = await client.get('/api/courses');
     assert.equal(res.status, 401);
   });
 
-  it('rejects non-admin requests to /api/courses', async () => {
+  it('rejects below-chief roles from /api/courses', async () => {
     const studentCookie = makeAuthCookie({ email: 'student@test.com', name: 'Student', role: 'student' });
-    const res = await client.get('/api/courses', { cookie: studentCookie });
-    assert.equal(res.status, 403);
+    const studentRes = await client.get('/api/courses', { cookie: studentCookie });
+    assert.equal(studentRes.status, 403);
+    const officialRes = await client.get('/api/courses', { cookie: officialCookie });
+    assert.equal(officialRes.status, 403);
+  });
+
+  it('allows chief to manage courses (cone management is chief-level)', async () => {
+    const res = await client.get('/api/courses', { cookie: chiefCookie });
+    assert.equal(res.status, 200);
+  });
+
+  it('keeps rover control and mission history admin-only (chief is rejected)', async () => {
+    const rover = await client.get('/api/rover/status', { cookie: chiefCookie });
+    assert.equal(rover.status, 403);
+    const missions = await client.get('/api/missions', { cookie: chiefCookie });
+    assert.equal(missions.status, 403);
   });
 });
 
