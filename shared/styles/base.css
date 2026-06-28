@@ -480,30 +480,6 @@ input[type="number"] {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
-/* Notyf Warning Icon */
-.notyf__icon--warning {
-  width: 22px;
-  height: 20px;
-  background: white;
-  clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-}
-
-.notyf__icon--warning::before {
-  content: "!";
-  position: absolute;
-  top: 7px;
-  font-size: 13px;
-  font-weight: 700;
-  font-style: normal;
-  color: #f59e0b;
-  line-height: 1;
-  font-family: Arial, sans-serif;
-}
-
 /* Loading Spinner */
 .loading-spinner {
   width: 32px;

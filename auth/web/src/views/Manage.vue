@@ -1,12 +1,12 @@
 <script setup>
 import { ref, onMounted, computed } from "vue";
-import { Notyf } from "notyf";
+import { useNotification } from "@shared/useNotification.js";
 import { formatPhone } from "@shared/format-phone.js";
 import { ROLE_LEVELS } from "@shared/constants.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 
-const notyf = new Notyf({ duration: 3000, position: { x: "right", y: "top" } });
+const { notyf } = useNotification();
 
 const applyUrl = `${window.location.origin}${import.meta.env.PROD ? "/auth/apply" : "/apply"}`;
 

@@ -5,16 +5,13 @@ export async function waitForSSEUpdate(page, selector, expectedText, timeout = 5
 }
 
 export async function expectNotification(page, type, text) {
-  const selector = type === "success" ? ".notyf__toast--success" : type === "error" ? ".notyf__toast--error" : ".notyf__toast--warning";
-  await expect(page.locator(selector).last()).toContainText(text, { timeout: 5000 });
+  await expect(page.locator(`[data-sonner-toast][data-type="${type}"]`).last()).toContainText(text, { timeout: 5000 });
 }
 
 export async function dismissNotifications(page) {
-  const toasts = page.locator(".notyf__toast");
-  const count = await toasts.count();
-  for (let i = 0; i < count; i++) {
-    await toasts.nth(i).click({ force: true }).catch(() => {});
-  }
+  // vue-sonner 토스트는 notyf 처럼 클릭으로 닫히지 않는다(닫기 버튼 미사용).
+  // 다음 단언이 직전 토스트가 아닌 새 토스트를 보도록, 현재 배치가 자동 소멸할 때까지 대기.
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0, { timeout: 6000 }).catch(() => {});
 }
 
 export async function waitForPageReady(page) {

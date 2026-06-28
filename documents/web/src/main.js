@@ -2,7 +2,7 @@ import { createApp } from "vue";
 import { createRouter, createWebHistory } from "vue-router";
 import App from "./App.vue";
 import "./styles/main.css";
-import "notyf/notyf.min.css";
+import "vue-sonner/style.css";
 import { initTheme } from "@shared/theme-init.js";
 import { initTestBanner } from "@shared/test-banner.js";
 import { isChief } from "@shared/officialsStore.js";

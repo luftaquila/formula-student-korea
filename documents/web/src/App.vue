@@ -2,6 +2,7 @@
 import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import NavMenu from "@shared/NavMenu.vue";
+import SonnerToaster from "@shared/SonnerToaster.vue";
 
 const route = useRoute();
 const title = computed(() => route.path.startsWith("/admin") ? "FSK 서류 제출 관리" : "FSK 서류 제출");
@@ -11,6 +12,7 @@ watch(title, (v) => { document.title = v; }, { immediate: true });
 
 <template>
   <div class="app-container">
+    <SonnerToaster />
     <header class="header">
       <div class="header-content">
         <a href="/" class="logo">

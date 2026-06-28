@@ -2,6 +2,7 @@
 import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import NavMenu from "@shared/NavMenu.vue";
+import SonnerToaster from "@shared/SonnerToaster.vue";
 
 const route = useRoute();
 const isLogs = computed(() => route.path === "/logs");
@@ -24,6 +25,7 @@ watch(pageTitle, (v) => { document.title = v; }, { immediate: true });
 
 <template>
   <div class="app-container" :class="{ 'full-width': isManage }">
+    <SonnerToaster />
     <header class="header">
       <div class="header-content">
         <a href="/" class="logo">

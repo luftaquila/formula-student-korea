@@ -280,7 +280,7 @@ test.describe("Inspection sheet filling", () => {
     await resultPassBtn.click();
 
     // Should show error notification
-    const errorToast = page.locator(".notyf__toast--error");
+    const errorToast = page.locator("[data-sonner-toast][data-type='error']");
     await expect(errorToast.last()).toContainText("검차관 이름을 입력하세요", { timeout: 5000 });
 
     // PASS button should not be active

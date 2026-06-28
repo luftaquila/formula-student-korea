@@ -1,12 +1,12 @@
 <script setup>
 import { ref, onMounted, computed, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { Notyf } from "notyf";
+import { useNotification } from "@shared/useNotification.js";
 import { request, fetchEntryYears, fetchEntries, fetchVehicleTypes } from "../api.js";
 
 const route = useRoute();
 const router = useRouter();
-const notyf = new Notyf({ duration: 3000, position: { x: "right", y: "top" } });
+const { notyf } = useNotification();
 
 const isEdit = computed(() => !!route.params.id && route.path.endsWith("/edit"));
 const loading = ref(true);

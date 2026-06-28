@@ -1,6 +1,7 @@
 <script setup>
 import { ref, watch, provide, onMounted, onUnmounted } from "vue";
 import NavMenu from "@shared/NavMenu.vue";
+import SonnerToaster from "@shared/SonnerToaster.vue";
 import { useRoute } from "vue-router";
 import { request } from "./api.js";
 import { useNotification } from "@shared/useNotification.js";
@@ -97,6 +98,7 @@ onUnmounted(() => {
 
 <template>
   <div class="app-container app-fullheight">
+    <SonnerToaster />
     <header class="header">
       <div class="header-content">
         <a href="/" class="logo">

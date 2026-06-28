@@ -1,14 +1,14 @@
 <script setup>
 import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { Notyf } from "notyf";
+import { useNotification } from "@shared/useNotification.js";
 import { request, fetchEntries, fetchVehicleTypes } from "../api.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 
 const route = useRoute();
 const router = useRouter();
-const notyf = new Notyf({ duration: 3000, position: { x: "right", y: "top" } });
+const { notyf } = useNotification();
 
 const tableRef = ref(null);
 const { stickyCols, lineX, startDrag } = useStickyColumns({
