@@ -12,6 +12,7 @@ backups/
 .gstack/
 .omc/
 .codex/
+.claude/
 __pycache__/
 *.pyc
 *.pyo
