@@ -59,7 +59,7 @@ test.describe("Queue public status query success flow", () => {
 
       await page.getByRole("button", { name: "조회" }).click();
 
-      await expect(page.locator("[data-sonner-toast][data-type='error']").last()).toBeVisible({ timeout: 5000 });
+      await expect(page.locator("[data-sonner-toast][data-type='error']").first()).toBeVisible({ timeout: 5000 });
     } finally {
       await page.request.post(`/queue/api/admin/booths/${TYPE}/1/enter`, {
         data: { num: ENTRY_NUM },

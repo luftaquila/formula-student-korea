@@ -5,7 +5,7 @@ export async function waitForSSEUpdate(page, selector, expectedText, timeout = 5
 }
 
 export async function expectNotification(page, type, text) {
-  await expect(page.locator(`[data-sonner-toast][data-type="${type}"]`).last()).toContainText(text, { timeout: 5000 });
+  await expect(page.locator(`[data-sonner-toast][data-type="${type}"]`).first()).toContainText(text, { timeout: 5000 });
 }
 
 export async function dismissNotifications(page) {

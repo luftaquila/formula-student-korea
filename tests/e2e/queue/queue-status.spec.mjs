@@ -38,7 +38,7 @@ test.describe("Queue public status page", () => {
     await page.getByRole("button", { name: "조회" }).click();
 
     // Should show error notification
-    await expect(page.locator("[data-sonner-toast][data-type='error']").last()).toBeVisible({ timeout: 5000 });
+    await expect(page.locator("[data-sonner-toast][data-type='error']").first()).toBeVisible({ timeout: 5000 });
   });
 
   test("querying without entry number shows error", async ({ page }) => {
@@ -47,7 +47,7 @@ test.describe("Queue public status page", () => {
 
     await page.getByRole("button", { name: "조회" }).click();
 
-    await expect(page.locator("[data-sonner-toast][data-type='error']").last()).toContainText("엔트리 번호를 입력하세요", { timeout: 5000 });
+    await expect(page.locator("[data-sonner-toast][data-type='error']").first()).toContainText("엔트리 번호를 입력하세요", { timeout: 5000 });
   });
 
   test("querying with valid entry but no queue shows no-queue message", async ({ page }) => {
@@ -63,7 +63,7 @@ test.describe("Queue public status page", () => {
     await page.getByRole("button", { name: "조회" }).click();
 
     // Should show error that phone doesn't match or no queue
-    await expect(page.locator("[data-sonner-toast]").last()).toBeVisible({ timeout: 5000 });
+    await expect(page.locator("[data-sonner-toast]").first()).toBeVisible({ timeout: 5000 });
   });
 
   test("result section shows placeholder when no query made", async ({ page }) => {
