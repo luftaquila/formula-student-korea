@@ -7,11 +7,11 @@ import { createEventsServicePlugin } from "@schedule-x/events-service";
 import { createEventModalPlugin } from "@schedule-x/event-modal";
 import "@schedule-x/theme-default/dist/index.css";
 import { isAuthenticated, isChief } from "@shared/officialsStore.js";
-import { Notyf } from "notyf";
+import { useNotification } from "@shared/useNotification.js";
 import { request } from "../api.js";
 import EventModal from "../components/EventModal.vue";
 
-const notyf = new Notyf({ position: { x: "center", y: "top" }, duration: 3000 });
+const { notyf } = useNotification();
 
 const showEventModal = ref(false);
 const editingEvent = ref(null);

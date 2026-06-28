@@ -2,6 +2,7 @@
 import { watch } from "vue";
 import { useRoute } from "vue-router";
 import NavMenu from "@shared/NavMenu.vue";
+import SonnerToaster from "@shared/SonnerToaster.vue";
 
 const route = useRoute();
 
@@ -22,6 +23,7 @@ watch(() => route.path, () => { document.title = `FSK ${getPageTitle()}`; }, { i
 
 <template>
   <div class="app-container">
+    <SonnerToaster />
     <header class="header">
       <div class="header-content">
         <a href="/" class="logo">

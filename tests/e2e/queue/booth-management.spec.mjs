@@ -223,7 +223,7 @@ test.describe("Queue booth management", () => {
     await cancelBtn.click();
 
     // Should show warning notification for cancel
-    await expect(page.locator(".notyf__toast").last()).toBeVisible({ timeout: 5000 });
+    await expect(page.locator("[data-sonner-toast]").first()).toBeVisible({ timeout: 5000 });
   });
 
   test("admin page navigation buttons work", async ({ page }) => {

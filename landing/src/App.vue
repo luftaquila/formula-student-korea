@@ -1,5 +1,6 @@
 <template>
   <div class="app-container">
+    <SonnerToaster />
     <header class="header">
       <div class="header-content">
         <a href="/" class="logo">
@@ -11,7 +12,6 @@
         </div>
       </div>
     </header>
-    <div v-if="loginError" class="toast-error" @click="loginError = ''">{{ loginError }}</div>
     <main class="main">
       <section class="section">
         <h2 class="section-title">Services</h2>
@@ -66,9 +66,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from "vue";
+import { onMounted } from "vue";
 import ServiceCard from "./components/ServiceCard.vue";
 import NavMenu from "@shared/NavMenu.vue";
+import SonnerToaster from "@shared/SonnerToaster.vue";
+import { useNotification } from "@shared/useNotification.js";
 import { user, isStudent, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
 import { forumSvg } from "@shared/nav-config.js";
 
@@ -83,13 +85,13 @@ const LOGIN_ERROR_MESSAGES = {
   rate_limit: "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
 };
 
-const loginError = ref("");
+const { error: notifyError } = useNotification();
 
 onMounted(() => {
   const params = new URLSearchParams(window.location.search);
-  const error = params.get("login_error");
-  if (error) {
-    loginError.value = LOGIN_ERROR_MESSAGES[error] || "로그인에 실패했습니다.";
+  const code = params.get("login_error");
+  if (code) {
+    notifyError(LOGIN_ERROR_MESSAGES[code] || "로그인에 실패했습니다.");
     history.replaceState(null, "", "/");
   }
 
@@ -205,25 +207,4 @@ onMounted(() => {
   }
 }
 
-.toast-error {
-  position: fixed;
-  top: 1rem;
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--danger, #ef4444);
-  color: #fff;
-  padding: 0.75rem 1.5rem;
-  border-radius: 8px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-  cursor: pointer;
-  z-index: 9999;
-  animation: toast-in 0.3s ease;
-}
-
-@keyframes toast-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(-1rem); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
-}
 </style>

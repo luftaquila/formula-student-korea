@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref } from "vue";
 import NavTabs from "./components/NavTabs.vue";
 import NavMenu from "@shared/NavMenu.vue";
+import SonnerToaster from "@shared/SonnerToaster.vue";
 import { useEntryStore } from "./stores/entry";
 
 const entryStore = useEntryStore();
@@ -29,6 +30,7 @@ onUnmounted(() => {
 
 <template>
   <div class="app-container">
+    <SonnerToaster />
     <header class="header" v-show="!isScoreboardFullscreen">
       <div class="header-content">
         <a href="/" class="logo">

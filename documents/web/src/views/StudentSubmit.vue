@@ -1,12 +1,12 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { Notyf } from "notyf";
+import { useNotification } from "@shared/useNotification.js";
 import { request } from "../api.js";
 
 const route = useRoute();
 const router = useRouter();
-const notyf = new Notyf({ duration: 3000, position: { x: "right", y: "top" } });
+const { notyf } = useNotification();
 
 const BASE_URL = import.meta.env.PROD ? "/documents" : "";
 
