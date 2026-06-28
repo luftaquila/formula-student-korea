@@ -6,7 +6,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
-import { isAdmin } from "@shared/officialsStore.js";
+import { isChief } from "@shared/officialsStore.js";
 
 const tableRef = ref(null);
 const { stickyCols, lineX, startDrag } = useStickyColumns({
@@ -128,7 +128,7 @@ watch(lastInspectorUpdate, (update) => {
         <label class="filter-label">검색</label>
         <input class="filter-input" v-model="searchQuery" placeholder="번호 / 학교 / 팀명" />
       </div>
-      <div v-if="isAdmin" class="filter-group template-action">
+      <div v-if="isChief" class="filter-group template-action">
         <label class="filter-label">&nbsp;</label>
         <button class="btn btn-ghost" @click="router.push('/template')">템플릿 관리</button>
       </div>
