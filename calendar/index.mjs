@@ -71,19 +71,22 @@ function validDateParts(year, month, day, hour = 0, minute = 0) {
 
 function normalizeDateTime(value, { allDay = false, requireTime = false } = {}) {
   if (typeof value !== "string") return null;
-  const input = value.trim().replace("T", " ");
+  const input = value.trim();
   const dateOnly = input.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (dateOnly) {
-    const [, y, m, d] = dateOnly.map(Number);
+    const [, yy, mm, dd] = dateOnly;
+    const [y, m, d] = [Number(yy), Number(mm), Number(dd)];
     if (!validDateParts(y, m, d)) return null;
     if (requireTime && !allDay) return null;
-    return input;
+    return `${yy}-${mm}-${dd}`;
   }
-  const dateTime = input.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/);
+  const dateTime = input.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/);
   if (!dateTime) return null;
-  const [, y, m, d, hh, mm] = dateTime.map(Number);
-  if (!validDateParts(y, m, d, hh, mm)) return null;
-  return allDay ? input.slice(0, 10) : input;
+  const [, yy, mo, dd, hh, mi] = dateTime;
+  const [y, m, d, hour, minute] = [Number(yy), Number(mo), Number(dd), Number(hh), Number(mi)];
+  if (!validDateParts(y, m, d, hour, minute)) return null;
+  const normalized = `${yy}-${mo}-${dd} ${hh}:${mi}`;
+  return allDay ? normalized.slice(0, 10) : normalized;
 }
 
 // List events (public access, filtered by user role)

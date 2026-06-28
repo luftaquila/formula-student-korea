@@ -27,13 +27,12 @@ db.exec(`CREATE TABLE IF NOT EXISTS controller (
   data TEXT NOT NULL
 );`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_controller_timestamp ON controller(timestamp)");
+db.exec("DROP TRIGGER IF EXISTS trg_controller_retention");
 db.exec(`CREATE TRIGGER IF NOT EXISTS trg_controller_retention
   AFTER INSERT ON controller
   BEGIN
     DELETE FROM controller
-    WHERE rowid <= COALESCE((
-      SELECT rowid FROM controller ORDER BY rowid DESC LIMIT 1 OFFSET ${CONTROLLER_MAX_ROWS}
-    ), 0);
+    WHERE rowid <= COALESCE((SELECT MAX(rowid) FROM controller), 0) - ${CONTROLLER_MAX_ROWS};
   END;`);
 
 db.exec(`CREATE TABLE IF NOT EXISTS event_mode (
@@ -718,7 +717,10 @@ app.get("/api/records/year/:year", (req, res) => {
       .filter((name) => visibility[name] !== false)
       .map((name) => ({
         name,
-        records: db.prepare(`SELECT rowid, * FROM '${name}'`).all(),
+        records: db.prepare(`
+          SELECT rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard
+          FROM '${name}'
+        `).all(),
       }));
   });
 
@@ -1205,9 +1207,7 @@ app.post("/api/wireless/ingest", (req, res) => {
     if (telemetryPersisted > 0) {
       db.prepare(`
         DELETE FROM wireless_telemetry
-        WHERE id <= COALESCE((
-          SELECT id FROM wireless_telemetry ORDER BY id DESC LIMIT 1 OFFSET ?
-        ), 0)
+        WHERE id <= COALESCE((SELECT MAX(id) FROM wireless_telemetry), 0) - ?
       `).run(WIRELESS_TELEMETRY_MAX_ROWS);
     }
     return { inserted, deduped, rejected, reasons, telemetry: tOut, security: secLog };

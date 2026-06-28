@@ -83,7 +83,16 @@ db.exec(`CREATE TABLE IF NOT EXISTS applications (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 )`);
 
-db.exec("DROP TABLE IF EXISTS ops_contacts");
+// Preserve legacy free-form contacts instead of dropping production data.
+// The new sidebar model uses ops_display(user_id), so old rows cannot be
+// losslessly mapped without an explicit admin decision.
+{
+  const legacyOpsContacts = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ops_contacts'").get();
+  const preservedOpsContacts = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ops_contacts_legacy'").get();
+  if (legacyOpsContacts && !preservedOpsContacts) {
+    db.exec("ALTER TABLE ops_contacts RENAME TO ops_contacts_legacy");
+  }
+}
 
 db.exec(`CREATE TABLE IF NOT EXISTS ops_display (
   user_id INTEGER PRIMARY KEY REFERENCES users(id)

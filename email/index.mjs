@@ -90,9 +90,7 @@ function pruneEmailLog() {
   if (!Number.isInteger(EMAIL_LOG_MAX_ROWS) || EMAIL_LOG_MAX_ROWS <= 0) return;
   db.prepare(`
     DELETE FROM email_log
-    WHERE id <= COALESCE((
-      SELECT id FROM email_log ORDER BY id DESC LIMIT 1 OFFSET ?
-    ), 0)
+    WHERE id <= COALESCE((SELECT MAX(id) FROM email_log), 0) - ?
   `).run(EMAIL_LOG_MAX_ROWS);
 }
 

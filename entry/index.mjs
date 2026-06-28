@@ -206,7 +206,8 @@ const LIFECYCLE_SERVICES = [
   { name: "traffic", env: "TRAFFIC_SERVER" },
 ];
 
-let lifecycleOutboxProcessing = false;
+let lifecycleOutboxTail = Promise.resolve();
+let lifecycleOutboxRetryQueued = false;
 
 function configuredLifecycleServices() {
   return LIFECYCLE_SERVICES.filter((svc) => process.env[svc.env]);
@@ -278,27 +279,37 @@ async function deliverLifecycleRow(row) {
   }
 }
 
-async function processLifecycleOutbox({ ids = null, limit = 50 } = {}) {
-  if (lifecycleOutboxProcessing) return;
-  lifecycleOutboxProcessing = true;
-  try {
-    const now = Date.now();
-    let rows;
-    if (ids?.length) {
-      const placeholders = ids.map(() => "?").join(",");
-      rows = db.prepare(`SELECT * FROM lifecycle_outbox WHERE id IN (${placeholders})`).all(...ids);
-    } else {
-      rows = db.prepare(`
-        SELECT * FROM lifecycle_outbox
-        WHERE status = 'pending' AND next_attempt_at <= ?
-        ORDER BY id
-        LIMIT ?
-      `).all(now, limit);
-    }
-    await Promise.all(rows.map((row) => deliverLifecycleRow(row)));
-  } finally {
-    lifecycleOutboxProcessing = false;
+async function processLifecycleOutboxBatch({ ids = null, limit = 50 } = {}) {
+  const now = Date.now();
+  let rows;
+  if (ids?.length) {
+    const placeholders = ids.map(() => "?").join(",");
+    rows = db.prepare(`SELECT * FROM lifecycle_outbox WHERE id IN (${placeholders}) ORDER BY id`).all(...ids);
+  } else {
+    rows = db.prepare(`
+      SELECT * FROM lifecycle_outbox
+      WHERE status = 'pending' AND next_attempt_at <= ?
+      ORDER BY id
+      LIMIT ?
+    `).all(now, limit);
   }
+  await Promise.all(rows.map((row) => deliverLifecycleRow(row)));
+}
+
+function processLifecycleOutbox(options = {}) {
+  const targeted = Array.isArray(options.ids) && options.ids.length > 0;
+  if (!targeted && lifecycleOutboxRetryQueued) return lifecycleOutboxTail;
+  if (!targeted) lifecycleOutboxRetryQueued = true;
+  const run = lifecycleOutboxTail
+    .then(
+      () => processLifecycleOutboxBatch(options),
+      () => processLifecycleOutboxBatch(options),
+    )
+    .finally(() => {
+      if (!targeted) lifecycleOutboxRetryQueued = false;
+    });
+  lifecycleOutboxTail = run.catch(() => {});
+  return run;
 }
 
 function startLifecycleOutboxRetry() {

@@ -1217,6 +1217,29 @@ app.patch("/api/internal/team-num", (req, res) => {
     return res.status(200).send();
   }
 
+  const stagedDirs = [];
+  const backupDirs = [];
+  const rollbackStagedDirs = () => {
+    for (const { oldDir, newDir } of [...stagedDirs].reverse()) {
+      try {
+        if (fs.existsSync(newDir)) fs.renameSync(newDir, oldDir);
+      } catch (e) {
+        logger.warn(req, "team_num.update", { error: e.message, phase: "rollback_rename", oldDir, newDir });
+      }
+    }
+    for (const { backupDir, newDir } of [...backupDirs].reverse()) {
+      try {
+        if (fs.existsSync(backupDir)) {
+          if (fs.existsSync(newDir)) rmDir(newDir);
+          fs.renameSync(backupDir, newDir);
+        }
+      } catch (e) {
+        logger.warn(req, "team_num.update", { error: e.message, phase: "rollback_target", backupDir, newDir });
+      }
+    }
+  };
+
+  const failedRenames = [];
   for (const s of sessions) {
     const oldDir = path.join(UPLOADS_DIR, String(s.id), String(prevNum));
     const newDir = path.join(UPLOADS_DIR, String(s.id), String(newNum));
@@ -1225,9 +1248,26 @@ app.patch("/api/internal/team-num", (req, res) => {
       WHERE EXISTS (SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?)
          OR EXISTS (SELECT 1 FROM submission WHERE session_id = ? AND team_num = ?)
     `).get(s.id, newNum, s.id, newNum);
-    if (staleTarget && fs.existsSync(oldDir) && fs.existsSync(newDir)) {
-      rmDir(newDir);
+    try {
+      if ((staleTarget || fs.existsSync(oldDir)) && fs.existsSync(newDir)) {
+        const backupDir = path.join(TMP_DIR, `renumber-${s.id}-${crypto.randomUUID()}`);
+        fs.renameSync(newDir, backupDir);
+        backupDirs.push({ backupDir, newDir });
+      }
+      if (fs.existsSync(oldDir)) {
+        fs.renameSync(oldDir, newDir);
+        stagedDirs.push({ oldDir, newDir });
+      }
+    } catch (e) {
+      failedRenames.push({ sessionId: s.id, error: e.message });
+      break;
     }
+  }
+
+  if (failedRenames.length > 0) {
+    rollbackStagedDirs();
+    logger.warn(req, "team_num.rename_fail", { year, prevNum, newNum, failedRenames, stage: "pre_db" });
+    return res.status(500).send("업로드 디렉토리 이름 변경에 실패하여 변경하지 않았습니다.");
   }
 
   const txResult = dbRun(() => {
@@ -1247,47 +1287,21 @@ app.patch("/api/internal/team-num", (req, res) => {
     })();
   });
 
-  if (!txResult.success) { logger.warn(req, "team_num.update", { error: txResult.error, year, prevNum, newNum }); return res.status(txResult.status).send(txResult.error); }
+  if (!txResult.success) {
+    rollbackStagedDirs();
+    logger.warn(req, "team_num.update", { error: txResult.error, year, prevNum, newNum });
+    return res.status(txResult.status).send(txResult.error);
+  }
 
-  // 업로드 디렉토리 이름 변경
-  const renamedDirs = [];
-  const failedRenames = [];
-  for (const s of sessions) {
-    const oldDir = path.join(UPLOADS_DIR, String(s.id), String(prevNum));
-    const newDir = path.join(UPLOADS_DIR, String(s.id), String(newNum));
-    if (fs.existsSync(oldDir)) {
-      try {
-        fs.renameSync(oldDir, newDir);
-        renamedDirs.push({ oldDir, newDir });
-      } catch (e) {
-        failedRenames.push({ sessionId: s.id, error: e.message });
-      }
+  for (const { backupDir } of backupDirs) {
+    try {
+      rmDir(backupDir);
+    } catch (e) {
+      logger.warn(req, "team_num.update", { error: e.message, phase: "cleanup_backup", backupDir });
     }
   }
 
-  if (failedRenames.length > 0) {
-    // 성공한 rename 되돌리기
-    for (const { oldDir, newDir } of renamedDirs) {
-      try { fs.renameSync(newDir, oldDir); } catch (e) { logger.warn(req, "team_num.update", { error: e.message, phase: "rollback_rename", oldDir, newDir }); }
-    }
-
-    // DB 롤백: 원래 값으로 복원
-    const rollbackResult = dbRun(() => {
-      db.transaction(() => {
-        db.prepare("UPDATE student_team SET team_num = ? WHERE team_num = ? AND year = ?")
-          .run(prevNum, newNum, year);
-        db.prepare("UPDATE session_team SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-          .run(prevNum, newNum, year);
-        db.prepare("UPDATE submission SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-          .run(prevNum, newNum, year);
-      })();
-    });
-
-    logger.warn(req, "team_num.rename_fail", { year, prevNum, newNum, failedRenames, rollback: rollbackResult.success });
-    return res.status(500).send("업로드 디렉토리 이름 변경에 실패하여 롤백되었습니다.");
-  }
-
-  logger.log(req, "team_num.update", { year, prevNum, newNum });
+  logger.log(req, "team_num.update", { year, prevNum, newNum, renamedDirs: stagedDirs.length, replacedTargets: backupDirs.length });
   res.status(200).send();
 });
 

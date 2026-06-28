@@ -176,10 +176,7 @@ on("records", (e) => {
   try { data = JSON.parse(e.data); } catch { return; }
   recordFiles.value = ["controller", ...data.recordFiles];
   lastUpdate.value = {
-    type: data.type,
-    name: data.name,
-    field: data.field,
-    record: data.record,
+    ...data,
     timestamp: Date.now(),
   };
 });

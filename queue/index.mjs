@@ -176,21 +176,19 @@ db.transaction(() => {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_insp_ts ON queue_log(inspection, timestamp)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_timestamp ON queue_log(timestamp)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_entered ON booth_log(entered_at)`);
+  db.exec(`DROP TRIGGER IF EXISTS trg_queue_log_retention`);
   db.exec(`CREATE TRIGGER IF NOT EXISTS trg_queue_log_retention
     AFTER INSERT ON queue_log
     BEGIN
       DELETE FROM queue_log
-      WHERE id <= COALESCE((
-        SELECT id FROM queue_log ORDER BY id DESC LIMIT 1 OFFSET ${QUEUE_LOG_MAX_ROWS}
-      ), 0);
+      WHERE id <= COALESCE((SELECT MAX(id) FROM queue_log), 0) - ${QUEUE_LOG_MAX_ROWS};
     END;`);
+  db.exec(`DROP TRIGGER IF EXISTS trg_booth_log_retention`);
   db.exec(`CREATE TRIGGER IF NOT EXISTS trg_booth_log_retention
     AFTER INSERT ON booth_log
     BEGIN
       DELETE FROM booth_log
-      WHERE id <= COALESCE((
-        SELECT id FROM booth_log ORDER BY id DESC LIMIT 1 OFFSET ${BOOTH_LOG_MAX_ROWS}
-      ), 0);
+      WHERE id <= COALESCE((SELECT MAX(id) FROM booth_log), 0) - ${BOOTH_LOG_MAX_ROWS};
     END;`);
 })();
 
