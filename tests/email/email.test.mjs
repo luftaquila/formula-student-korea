@@ -156,6 +156,26 @@ describe('Email API', () => {
     });
   });
 
+  describe('SPA gating (non-API paths)', () => {
+    // The email SPA is admin-only: authRoleFn returns "admin" for the SPA
+    // fallback, so non-admins are redirected instead of being served a shell
+    // whose every API call then 401/403s.
+    it('redirects unauthenticated users away from the SPA', async () => {
+      const res = await fetch(`${baseUrl}/`, { redirect: 'manual' });
+      assert.equal(res.status, 302);
+    });
+
+    it('redirects non-admin users away from the SPA', async () => {
+      const res = await fetch(`${baseUrl}/`, { redirect: 'manual', headers: { Cookie: studentCookie } });
+      assert.equal(res.status, 302);
+    });
+
+    it('lets admin users through the SPA gate', async () => {
+      const res = await fetch(`${baseUrl}/`, { redirect: 'manual', headers: { Cookie: adminCookie } });
+      assert.notEqual(res.status, 302);
+    });
+  });
+
   describe('GET /api/config', () => {
     it('returns config with masked secrets', async () => {
       const res = await client.get('/api/config', { cookie: adminCookie });

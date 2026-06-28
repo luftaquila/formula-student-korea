@@ -78,7 +78,7 @@ const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/logs") return "admin";
   if (req.path.startsWith("/api/")) return "admin";
-  return null;
+  return "admin"; // SPA — admin only (redirect non-admins instead of serving a dead shell)
 });
 
 app.get("/api/health", (req, res) => res.send("ok"));
