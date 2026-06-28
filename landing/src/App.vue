@@ -16,7 +16,7 @@
       <section class="section">
         <h2 class="section-title">Services</h2>
         <div class="services">
-          <ServiceCard v-if="isAuthenticated" title="서류 제출" description="" path="/documents" icon="📄" />
+          <ServiceCard v-if="isStudent" title="서류 제출" description="" path="/documents" icon="📄" />
           <ServiceCard title="검차 대기열" description="" path="/queue" icon="🔧" />
           <ServiceCard title="에너지미터" description="" path="/energymeter" icon="⚡" />
           <ServiceCard title="대회 일정" description="" path="/calendar" icon="📅" />
@@ -69,7 +69,7 @@
 import { ref, onMounted } from "vue";
 import ServiceCard from "./components/ServiceCard.vue";
 import NavMenu from "@shared/NavMenu.vue";
-import { user, isAuthenticated, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
+import { user, isStudent, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
 import { forumSvg } from "@shared/nav-config.js";
 
 const LOGIN_ERROR_MESSAGES = {

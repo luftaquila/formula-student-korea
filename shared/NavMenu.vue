@@ -2,10 +2,13 @@
 import { ref, watch } from "vue";
 import ThemeToggle from "./ThemeToggle.vue";
 import { services, resources, officials, admins, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
-import { user, isAuthenticated, showOfficials, isChief, isAdmin } from "./officialsStore.js";
+import { user, isAuthenticated, isStudent, showOfficials, isChief, isAdmin } from "./officialsStore.js";
 
 const roleCheck = { student: isAuthenticated, official: showOfficials, chief: isChief, admin: isAdmin };
-function canShow(item) { return !item.auth || roleCheck[item.auth]?.value; }
+function canShow(item) {
+  if (item.studentOnly) return isStudent.value; // exact student, hidden from staff
+  return !item.auth || roleCheck[item.auth]?.value;
+}
 
 const props = defineProps({
   currentPath: {
