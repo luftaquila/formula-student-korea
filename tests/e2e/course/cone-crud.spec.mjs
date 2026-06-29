@@ -85,7 +85,9 @@ test.describe("Course + cone CRUD (UI)", () => {
   test("creating a course via the new-course input + add button", async ({ page }) => {
     const baseline = await page.locator(".course-item").count();
     const newName = `e2e-crud-new-${Date.now()}-${test.info().parallelIndex}`;
-    await page.locator(".course-add input").fill(newName);
+    // .course-add also holds a hidden file input (inline JSON import), so target
+    // the named text input specifically.
+    await page.locator('.course-add input[placeholder="새 코스 이름"]').fill(newName);
 
     const createResp = page.waitForResponse(
       (r) => r.url().includes("/course/api/courses") && r.request().method() === "POST" && r.status() === 201,
