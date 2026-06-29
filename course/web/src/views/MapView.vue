@@ -19,6 +19,7 @@ const visibility = ref(loadPref("visibility", {}, (v) => JSON.parse(v))); // per
 const activeCourseId = ref(null);
 const loading = ref(true);
 const newCourseName = ref("");
+const importInput = ref(null);
 const currentSide = ref("left");
 const roverLoading = ref(false);
 const editLocked = ref(loadPref("editLocked", true, (v) => v === "true")); // default locked; screen tap/drag can't add/move/rotate/delete cones; persisted
@@ -1714,18 +1715,29 @@ async function exportCourse(id) {
   } catch (err) { notifyError(err.message); }
 }
 
+function triggerImport() {
+  if (!newCourseName.value.trim()) return;
+  importInput.value?.click();
+}
+
 async function importCourse(e) {
   const file = e.target.files[0];
   if (!file) return;
   e.target.value = "";
+  // The imported course takes the name typed in the new-course input, not the
+  // name baked into the file — so the operator names it on the spot and avoids
+  // UNIQUE collisions with an existing course of the same exported name.
+  const name = newCourseName.value.trim();
+  if (!name) return;
   try {
     const text = await file.text();
     const data = JSON.parse(text);
     const res = await request("/api/courses/import", {
       method: "POST",
-      body: JSON.stringify(data),
+      body: JSON.stringify({ name, cones: data.cones }),
     });
     const created = await res.json();
+    newCourseName.value = "";
     activeCourseId.value = created.id;
     visibility.value[created.id] = true;
   } catch (err) {
@@ -4219,15 +4231,16 @@ onUnmounted(() => {
                 </header>
                 <div class="course-add">
                   <input v-model="newCourseName" placeholder="새 코스 이름" maxlength="100" @keyup.enter="createCourse" />
-                  <button class="btn btn-primary btn-lg-touch" @click="createCourse" :disabled="!newCourseName.trim()">추가</button>
+                  <button class="btn btn-primary btn-lg-touch btn-icon-only" @click="createCourse" :disabled="!newCourseName.trim()" title="코스 추가">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  </button>
+                  <button class="btn btn-ghost btn-lg-touch btn-icon-only" @click="triggerImport" :disabled="!newCourseName.trim()" title="JSON 가져오기 (입력한 이름으로 추가)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  </button>
+                  <input ref="importInput" type="file" accept=".json" hidden @change="importCourse" />
                 </div>
-                <div class="course-toolbar">
-                  <label class="btn btn-ghost btn-lg-touch import-btn" title="JSON 가져오기">
-                    ↑ 가져오기
-                    <input type="file" accept=".json" hidden @change="importCourse" />
-                  </label>
+                <div class="course-toolbar" v-if="isAdmin">
                   <button
-                    v-if="isAdmin"
                     class="btn btn-ghost btn-lg-touch"
                     :disabled="!activeCourseId"
                     @click="openSnapshots"
@@ -4253,8 +4266,10 @@ onUnmounted(() => {
                         {{ c.name }} <span class="cone-count">({{ c.cone_count }})</span>
                       </span>
                     </template>
-                    <button class="dl-btn" @click.stop="exportCourse(c.id)" title="JSON 내보내기">↓</button>
-                    <button class="del-btn" @click.stop="deleteCourse(c.id)" title="삭제">×</button>
+                    <button class="dl-btn" @click.stop="exportCourse(c.id)" title="JSON 내보내기">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    </button>
+                    <button v-if="isAdmin" class="del-btn" @click.stop="deleteCourse(c.id)" title="삭제">×</button>
                   </div>
                   <div v-if="courses.length === 0" class="empty-msg">코스를 추가하세요.</div>
                 </div>
@@ -5285,6 +5300,9 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+/* Icon-only action button: square tap target, no text padding. */
+.btn-icon-only { padding: 0.5rem; min-width: 44px; flex-shrink: 0; }
+
 /* Course list */
 .course-add { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
 
@@ -5329,6 +5347,7 @@ onUnmounted(() => {
   border: none; background: none; cursor: pointer;
   color: var(--text-secondary); font-size: 0.85rem; padding: 0 0.2rem;
   line-height: 1; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 .dl-btn:hover { color: var(--accent-primary); }
 .del-btn:hover { color: var(--accent-danger, #ef4444); }
@@ -5352,8 +5371,6 @@ onUnmounted(() => {
   .cone-item { min-height: 44px; padding: 0.5rem 0.375rem; }
   .waypoint-item { min-height: 44px; padding: 0.5rem 0.6rem; }
 }
-
-.import-btn { cursor: pointer; }
 
 /* Side toggle (L/C/R) */
 .side-toggle { display: flex; gap: 0.25rem; flex: 1; }

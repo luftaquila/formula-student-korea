@@ -238,6 +238,10 @@ const app = createApp({ express }, (req) => {
   // deleted — admin-only, above plain cone management. Covers list/create/
   // restore/delete. The frontend hides the 스냅샷 button from non-admins too.
   if (/^\/api\/courses\/\d+\/snapshots/.test(p)) return "admin";
+  // Deleting a course cascade-wipes its cones AND every snapshot of it (both
+  // FK to course(id) ON DELETE CASCADE) — irreversible, so admin-only, in line
+  // with snapshot delete above. Create/rename and cone editing stay chief.
+  if (req.method === "DELETE" && /^\/api\/courses\/\d+$/.test(p)) return "admin";
   return "chief";
 });
 
