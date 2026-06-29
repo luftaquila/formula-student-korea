@@ -4,6 +4,10 @@ import { createJWT } from "../../../shared/express-setup.mjs";
 
 const JWT_SECRET = process.env.JWT_SECRET || "e2e-test-secret";
 const BASE_URL = process.env.BASE_URL || "http://localhost:9000";
+// Mirrors the CI/compose value (.github/workflows/test.yml "Create .env"). Used
+// by security tests to forge the inter-service header and prove Caddy strips it,
+// and by tests that legitimately drive rover-side endpoints through Caddy.
+const INTERNAL_SECRET = process.env.INTERNAL_SECRET || "e2e-internal-secret";
 
 export const TEST_USERS = {
   admin: { email: "e2e-admin@test.com", name: "E2E Admin", role: "admin" },
@@ -44,4 +48,12 @@ export function getAuthCookie(role = "admin") {
   return `fsk_session=${createJWT(user, JWT_SECRET)}`;
 }
 
-export { BASE_URL };
+// Header an internal service would send. Through Caddy this is stripped on every
+// path EXCEPT /course/api/rover/* (rover lives on the open internet), so it
+// doubles as the "forged header" for stripping tests and the real header for
+// rover-edge tests.
+export function internalHeaders() {
+  return { "X-Internal-Service": INTERNAL_SECRET };
+}
+
+export { BASE_URL, INTERNAL_SECRET };
