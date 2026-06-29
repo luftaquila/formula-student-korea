@@ -12,7 +12,11 @@ test.describe("Entry data integrity (vehicle types <-> entries)", () => {
 
   // Unique year per test keeps the year-scoped vehicle_types_<year> and
   // entry_<year> tables isolated from other workers and from seeded data.
-  let yearCounter = 2090;
+  // PAST years (descending year dropdowns sort these last, so the score/entry
+  // "first option = current year" assertions in the same shard stay correct;
+  // future years would float to the top and break them). 2010+ avoids the
+  // seeded current year and PREV_YEAR used by *-year-switch specs.
+  let yearCounter = 2010;
   function nextYear() {
     return yearCounter++;
   }

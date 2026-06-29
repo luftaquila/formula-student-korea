@@ -146,16 +146,16 @@ test.describe("Queue booth occupancy + public scoping", () => {
 
     // Grow by one booth (chief).
     const grow = await setBoothCount(TYPE, grownCount);
-    test.skip(grow.status() !== 200, `grow returned ${grow.status()} (contended)`);
+    test.skip(grow.status !== 200, `grow returned ${grow.status} (contended)`);
 
     try {
       // Register our entry and occupy the NEW highest booth — the one a shrink
       // back to startCount would try to remove first.
       const reg = await register(BOOTH_NUM);
-      test.skip(reg.status() !== 201, `register returned ${reg.status()} (contended)`);
+      test.skip(reg.status !== 201, `register returned ${reg.status} (contended)`);
 
       const enter = await enterBooth(TYPE, grownCount, BOOTH_NUM);
-      test.skip(enter.status() !== 200, `enter returned ${enter.status()} (contended)`);
+      test.skip(enter.status !== 200, `enter returned ${enter.status} (contended)`);
 
       // Confirm occupancy immediately before the guarded action, so the 400 we
       // assert can only come from the occupancy guard.
@@ -165,7 +165,7 @@ test.describe("Queue booth occupancy + public scoping", () => {
 
       // Shrinking below the occupied booth must be rejected with 400.
       const shrink = await setBoothCount(TYPE, startCount);
-      expect(shrink.status()).toBe(400);
+      expect(shrink.status).toBe(400);
       expect(await shrink.text()).toContain("사용 중이므로 삭제할 수 없습니다");
 
       // The shrink is atomic: the occupied top booth still exists.
@@ -176,9 +176,9 @@ test.describe("Queue booth occupancy + public scoping", () => {
 
       // Freeing it lets the shrink succeed.
       const exit = await exitBooth(TYPE, grownCount);
-      expect(exit.status()).toBe(200);
+      expect(exit.status).toBe(200);
       const shrinkAgain = await setBoothCount(TYPE, startCount);
-      expect(shrinkAgain.status()).toBe(200);
+      expect(shrinkAgain.status).toBe(200);
     } finally {
       // Best-effort restore to the original count regardless of where we bailed.
       await exitBooth(TYPE, grownCount).catch(() => {});
@@ -206,7 +206,7 @@ test.describe("Queue booth occupancy + public scoping", () => {
     // The phone check only fires once the entry is actually queued, so register
     // our entry first. Skip if a concurrent op kept us out of the queue.
     const reg = await register(STATE_NUM);
-    test.skip(reg.status() !== 201, `register returned ${reg.status()} (contended)`);
+    test.skip(reg.status !== 201, `register returned ${reg.status} (contended)`);
 
     // A non-string phone is rejected. The rate limiter is keyed on req.ip (Caddy
     // strips X-Forwarded-For, so all calls share one proxy IP) and only resets

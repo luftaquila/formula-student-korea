@@ -17,7 +17,10 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 // Isolated, in-range (2000-2099) year, unique per run to avoid colliding with a
 // parallel shard or a retry that also wipes a whole year.
-const ISO_YEAR = 2080 + (Date.now() % 20);
+// PAST isolated year (2010-2019): in-range, not the current/seeded year, and
+// kept below the current year so it never floats to the top of any year
+// dropdown (descending order) and breaks "first option = current year" specs.
+const ISO_YEAR = 2010 + (Date.now() % 10);
 const STAMP = Date.now();
 // Unique team nums far from seeded 1..32; documents student_team is UNIQUE(team_num, year).
 const NUMS = [STAMP % 100000 + 500, STAMP % 100000 + 501, STAMP % 100000 + 502];
