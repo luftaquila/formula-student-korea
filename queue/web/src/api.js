@@ -147,6 +147,7 @@ export async function getStatsTimerange(year) {
 
 export async function getStats(params = {}) {
   const query = new URLSearchParams();
+  if (params.year) query.set("year", params.year);
   if (params.from) query.set("from", params.from);
   if (params.to) query.set("to", params.to);
   if (params.inspection) query.set("inspection", params.inspection);
@@ -157,6 +158,7 @@ export async function getStats(params = {}) {
 
 export async function getTeamStats(num, params = {}) {
   const query = new URLSearchParams();
+  if (params.year) query.set("year", params.year);
   if (params.from) query.set("from", params.from);
   if (params.to) query.set("to", params.to);
   if (params.inspection) query.set("inspection", params.inspection);

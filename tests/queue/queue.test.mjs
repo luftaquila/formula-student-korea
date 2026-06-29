@@ -1308,6 +1308,10 @@ describe('PATCH /api/internal/team-num', () => {
       .run(903, 'braking', 1, Date.now(), Date.now(), year);
     db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)")
       .run('register', 903, 'braking', Date.now(), year);
+    db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, exited_at, created_at, year) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(904, 'braking', 2, Date.now() - 1000, Date.now(), Date.now(), year);
+    db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)")
+      .run('cancel', 904, 'braking', Date.now(), year);
     db.prepare("UPDATE booth SET occupied_by = ?, entered_at = ? WHERE inspection = ? AND booth_num = 1")
       .run(903, Date.now(), 'braking');
 
@@ -1323,6 +1327,8 @@ describe('PATCH /api/internal/team-num', () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM cancel_penalty WHERE num = ? AND year = ?").get(904, year).c, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = ? AND year = ?").get(904, year).c, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM booth_log WHERE num = ? AND year = ?").get(904, year).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM queue_log WHERE event = 'cancel' AND num = ? AND year = ?").get(904, year).c, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM queue_log WHERE event = 'register' AND num = ? AND year = ?").get(904, year).c, 1);
     assert.equal(db.prepare("SELECT occupied_by FROM booth WHERE inspection = ? AND booth_num = 1").get('braking').occupied_by, 904);
     assert.ok(db.prepare("SELECT COUNT(*) AS c FROM queue_log WHERE event = 'renumber' AND num = ? AND year = ?").get(904, year).c >= 1);
   });
@@ -1342,6 +1348,32 @@ describe('Year isolation', () => {
 
     // Verify year column is present
     assert.equal(data[0].year, new Date().getFullYear(), 'year column should be current year');
+  });
+
+  it('stats APIs filter by year even when no from/to range is supplied', async () => {
+    const year = 2033;
+    const otherYear = 2034;
+    const now = Date.now();
+    db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)")
+      .run('register', 777, 'battery', now, year);
+    db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)")
+      .run('register', 778, 'battery', now, otherYear);
+    db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, exited_at, created_at, year) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(777, 'battery', 1, now, now + 1000, now, year);
+    db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, exited_at, created_at, year) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(778, 'battery', 1, now, now + 1000, now, otherYear);
+
+    const statsRes = await client.get(`/api/admin/stats?year=${year}`, { cookie: officialCookie });
+    assert.equal(statsRes.status, 200);
+    const stats = await statsRes.json();
+    assert.ok(stats.some((row) => row.num === 777), 'selected year row should be included');
+    assert.ok(!stats.some((row) => row.num === 778), 'other year row should be excluded');
+
+    const detailRes = await client.get(`/api/admin/stats/778?year=${year}`, { cookie: officialCookie });
+    assert.equal(detailRes.status, 200);
+    const detail = await detailRes.json();
+    assert.equal(detail.summary.registrations, 0);
+    assert.equal(detail.timeline.length, 0);
   });
 });
 

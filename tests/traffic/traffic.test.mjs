@@ -1455,4 +1455,16 @@ describe('Wireless save guards', () => {
     assert.equal(body.stored, 0, 'master_tick 없는 이벤트는 저장 안 함');
     assert.equal(body.rejected, 1, 'rejected로 계수');
   });
+
+  it('ingest rejects an event with a missing ev_seq so dedupe cannot be bypassed by NULL', async () => {
+    const event = { node_id: 'no-seq', master_tick: '123456' };
+    const r1 = await client.post('/api/wireless/ingest', { body: { events: [event] }, cookie: adminCookie });
+    const r2 = await client.post('/api/wireless/ingest', { body: { events: [event] }, cookie: adminCookie });
+    assert.equal((await r1.json()).stored, 0);
+    const body = await r2.json();
+    assert.equal(body.stored, 0, 'ev_seq 없는 이벤트는 저장 안 함');
+    assert.equal(body.rejected, 1, '재전송도 rejected로 계수');
+    const count = db.prepare("SELECT COUNT(*) AS c FROM wireless_event WHERE node_id = ? AND master_tick = ?").get('no-seq', '123456').c;
+    assert.equal(count, 0, 'NULL ev_seq 중복 row가 남지 않아야 함');
+  });
 });

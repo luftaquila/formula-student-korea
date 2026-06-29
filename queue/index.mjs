@@ -336,6 +336,11 @@ function currentYear() {
   return new Date().getFullYear();
 }
 
+function parseYearQuery(value) {
+  const year = value == null || value === "" ? currentYear() : Number(value);
+  return Number.isInteger(year) && year >= 2000 && year <= 2099 ? year : null;
+}
+
 function withInspectionLengths(rows, year = currentYear()) {
   return rows.map((row) => ({
     ...row,
@@ -427,6 +432,7 @@ function renumberQueueRows(type, prevNum, newNum, year) {
 function renumberLogRows(table, prevNum, newNum, year) {
   const existing = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE num = ? AND year = ?`).get(prevNum, year).count;
   if (existing === 0) return 0;
+  db.prepare(`DELETE FROM ${table} WHERE num = ? AND year = ?`).run(newNum, year);
   return db.prepare(`UPDATE ${table} SET num = ? WHERE num = ? AND year = ?`).run(newNum, prevNum, year).changes;
 }
 
@@ -1441,17 +1447,18 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
 
 // GET /api/admin/stats/timerange - 특정 연도의 로그 시간 범위 조회
 app.get("/api/admin/stats/timerange", (req, res) => {
-  const year = Number(req.query.year) || new Date().getFullYear();
+  const year = parseYearQuery(req.query.year);
+  if (year == null) return res.status(400).send("올바르지 않은 연도입니다.");
   const yearStart = new Date(year, 0, 1).getTime();
   const yearEnd = new Date(year + 1, 0, 1).getTime() - 1;
 
   const result = dbRun(() => {
     const q = db.prepare(
-      "SELECT MIN(timestamp) as minTs, MAX(timestamp) as maxTs FROM queue_log WHERE timestamp >= ? AND timestamp <= ?"
-    ).get(yearStart, yearEnd);
+      "SELECT MIN(timestamp) as minTs, MAX(timestamp) as maxTs FROM queue_log WHERE year = ? AND timestamp >= ? AND timestamp <= ?"
+    ).get(year, yearStart, yearEnd);
     const b = db.prepare(
-      "SELECT MIN(entered_at) as minTs, MAX(COALESCE(exited_at, entered_at)) as maxTs FROM booth_log WHERE entered_at >= ? AND entered_at <= ?"
-    ).get(yearStart, yearEnd);
+      "SELECT MIN(entered_at) as minTs, MAX(COALESCE(exited_at, entered_at)) as maxTs FROM booth_log WHERE year = ? AND entered_at >= ? AND entered_at <= ?"
+    ).get(year, yearStart, yearEnd);
 
     const mins = [q?.minTs, b?.minTs].filter(Boolean);
     const maxs = [q?.maxTs, b?.maxTs].filter(Boolean);
@@ -1472,6 +1479,8 @@ app.get("/api/admin/stats/timerange", (req, res) => {
 // GET /api/admin/stats - 전체 팀별 통계 조회
 app.get("/api/admin/stats", (req, res) => {
   const { from, to, inspection } = req.query;
+  const year = parseYearQuery(req.query.year);
+  if (year == null) return res.status(400).send("올바르지 않은 연도입니다.");
 
   if (inspection) {
     const typeValidation = validateInspection(inspection);
@@ -1480,10 +1489,10 @@ app.get("/api/admin/stats", (req, res) => {
     }
   }
 
-  const queueLogConditions = [];
-  const queueLogParams = [];
-  const boothLogConditions = ["exited_at IS NOT NULL"];
-  const boothLogParams = [];
+  const queueLogConditions = ["year = ?"];
+  const queueLogParams = [year];
+  const boothLogConditions = ["year = ?", "exited_at IS NOT NULL"];
+  const boothLogParams = [year];
 
   if (from) {
     queueLogConditions.push("timestamp >= ?");
@@ -1568,6 +1577,8 @@ app.get("/api/admin/stats/:num", (req, res) => {
 
   const num = numValidation.value;
   const { from, to, inspection } = req.query;
+  const year = parseYearQuery(req.query.year);
+  if (year == null) return res.status(400).send("올바르지 않은 연도입니다.");
 
   if (inspection) {
     const typeValidation = validateInspection(inspection);
@@ -1576,12 +1587,12 @@ app.get("/api/admin/stats/:num", (req, res) => {
     }
   }
 
-  const queueLogConditions = ["num = ?"];
-  const queueLogParams = [num];
-  const boothLogConditions = ["num = ?"];
-  const boothLogParams = [num];
-  const boothLogOccupyConditions = ["num = ?", "exited_at IS NOT NULL"];
-  const boothLogOccupyParams = [num];
+  const queueLogConditions = ["num = ?", "year = ?"];
+  const queueLogParams = [num, year];
+  const boothLogConditions = ["num = ?", "year = ?"];
+  const boothLogParams = [num, year];
+  const boothLogOccupyConditions = ["num = ?", "year = ?", "exited_at IS NOT NULL"];
+  const boothLogOccupyParams = [num, year];
 
   if (from) {
     queueLogConditions.push("timestamp >= ?");

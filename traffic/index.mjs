@@ -1211,10 +1211,11 @@ app.post("/api/wireless/ingest", (req, res) => {
     for (const e of events) {
       if (!validateNodeId(String(e.node_id))) { reject("node_id"); continue; }
       const tick = tickToText(e.master_tick);
-      // 타이밍 이벤트는 master_tick(ev_master_t)이 필수다. null/누락이면 거부 — 저장하면
-      // dedup UNIQUE 인덱스의 NULL이 서로 구별돼 멱등성이 깨지고 엔진이 tick 0으로 오계산한다.
+      // 타이밍 이벤트는 dedupe key 전체가 필수다. SQLite UNIQUE는 NULL을 서로 다른 값으로
+      // 취급하므로 누락된 key를 저장하면 재전송 멱등성이 깨진다.
       if (tick === undefined || tick === null) { reject("master_tick"); continue; }
-      const evSeq = Number.isInteger(e.ev_seq) ? e.ev_seq : null;
+      if (!Number.isInteger(e.ev_seq)) { reject("ev_seq"); continue; }
+      const evSeq = e.ev_seq;
       const rssi = typeof e.rssi === "number" ? e.rssi : null;
       const snr = typeof e.snr === "number" ? e.snr : null;
       const link = typeof e.link_state === "string" ? e.link_state : null;

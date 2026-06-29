@@ -147,6 +147,22 @@ db.exec(`CREATE TABLE IF NOT EXISTS scheduled_notification (
 db.exec("CREATE INDEX IF NOT EXISTS idx_sn_pending ON scheduled_notification(sent, scheduled_at)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_sn_session_sent ON scheduled_notification(session_id, sent)");
 
+db.exec(`CREATE TABLE IF NOT EXISTS team_renumber_file_work (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  year INTEGER NOT NULL,
+  prev_num INTEGER NOT NULL,
+  new_num INTEGER NOT NULL,
+  session_id INTEGER NOT NULL,
+  move_old INTEGER NOT NULL DEFAULT 0,
+  delete_target INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+  UNIQUE(year, prev_num, new_num, session_id),
+  FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+)`);
+db.exec("CREATE INDEX IF NOT EXISTS idx_trfw_key ON team_renumber_file_work(year, prev_num, new_num)");
+
 // 업로드 디렉토리 생성
 const UPLOADS_DIR = options.uploadsDir || path.resolve("./data/uploads");
 const TMP_DIR = path.join(UPLOADS_DIR, "_tmp");
@@ -272,6 +288,78 @@ function rmDir(dir) {
   } catch (err) {
     logger.warn(null, "file.cleanup", { error: err.message, dir });
   }
+}
+
+function teamUploadDir(sessionId, teamNum) {
+  return path.join(UPLOADS_DIR, String(sessionId), String(teamNum));
+}
+
+function pendingRenumberFileWorkCount(prevNum, newNum, year) {
+  return db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM team_renumber_file_work
+    WHERE year = ? AND prev_num = ? AND new_num = ?
+  `).get(year, prevNum, newNum).count;
+}
+
+function renumberMarkerName(prevNum, newNum, year) {
+  return `.fsk-renumber-${year}-${prevNum}-to-${newNum}.pending`;
+}
+
+function processRenumberFileWork(req, prevNum, newNum, year) {
+  const rows = db.prepare(`
+    SELECT *
+    FROM team_renumber_file_work
+    WHERE year = ? AND prev_num = ? AND new_num = ?
+    ORDER BY id
+  `).all(year, prevNum, newNum);
+  const failures = [];
+  let moved = 0;
+  let replaced = 0;
+
+  for (const row of rows) {
+    const oldDir = teamUploadDir(row.session_id, prevNum);
+    const newDir = teamUploadDir(row.session_id, newNum);
+    const markerName = renumberMarkerName(prevNum, newNum, year);
+    const oldMarker = path.join(oldDir, markerName);
+    const newMarker = path.join(newDir, markerName);
+    try {
+      if (row.move_old) {
+        if (fs.existsSync(oldDir)) {
+          fs.writeFileSync(oldMarker, JSON.stringify({ year, prevNum, newNum, sessionId: row.session_id }));
+          if (fs.existsSync(newDir)) {
+            if (!row.delete_target) throw new Error("target upload directory already exists");
+            fs.rmSync(newDir, { recursive: true, force: true });
+            replaced += 1;
+          }
+          fs.mkdirSync(path.dirname(newDir), { recursive: true });
+          fs.renameSync(oldDir, newDir);
+          if (fs.existsSync(newMarker)) fs.rmSync(newMarker, { force: true });
+          moved += 1;
+        } else if (fs.existsSync(newMarker)) {
+          fs.rmSync(newMarker, { force: true });
+        } else if (!fs.existsSync(newDir)) {
+          throw new Error("source upload directory missing");
+        } else {
+          throw new Error("source upload directory missing and completion marker absent");
+        }
+      } else if (row.delete_target && fs.existsSync(newDir)) {
+        fs.rmSync(newDir, { recursive: true, force: true });
+        replaced += 1;
+      }
+      db.prepare("DELETE FROM team_renumber_file_work WHERE id = ?").run(row.id);
+    } catch (e) {
+      db.prepare(`
+        UPDATE team_renumber_file_work
+        SET last_error = ?, updated_at = ?
+        WHERE id = ?
+      `).run(e.message || String(e), Date.now(), row.id);
+      failures.push({ sessionId: row.session_id, error: e.message || String(e) });
+      logger.warn(req, "team_num.file_work", { error: e.message || String(e), year, prevNum, newNum, sessionId: row.session_id });
+    }
+  }
+
+  return { success: failures.length === 0, failures, moved, replaced, total: rows.length };
 }
 
 // 브라우저에서 안전하게 인라인으로 표시 가능한 MIME/확장자 화이트리스트.
@@ -1253,99 +1341,85 @@ app.patch("/api/internal/team-num", (req, res) => {
        )
   `).get(prevNum, year, prevNum, year, prevNum, year);
 
-  if (!prevExists) {
+  const pendingFileWork = pendingRenumberFileWorkCount(prevNum, newNum, year);
+  if (!prevExists && pendingFileWork === 0) {
     logger.log(req, "team_num.update", { year, prevNum, newNum, noop: true });
     return res.status(200).send();
   }
 
-  const stagedDirs = [];
-  const backupDirs = [];
-  const rollbackStagedDirs = () => {
-    for (const { oldDir, newDir } of [...stagedDirs].reverse()) {
-      try {
-        if (fs.existsSync(newDir)) fs.renameSync(newDir, oldDir);
-      } catch (e) {
-        logger.warn(req, "team_num.update", { error: e.message, phase: "rollback_rename", oldDir, newDir });
+  const filePlans = [];
+  if (prevExists) {
+    for (const s of sessions) {
+      const oldDir = teamUploadDir(s.id, prevNum);
+      const newDir = teamUploadDir(s.id, newNum);
+      const oldExists = fs.existsSync(oldDir);
+      const newExists = fs.existsSync(newDir);
+      const staleTarget = db.prepare(`
+        SELECT 1
+        WHERE EXISTS (SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?)
+           OR EXISTS (SELECT 1 FROM submission WHERE session_id = ? AND team_num = ?)
+      `).get(s.id, newNum, s.id, newNum);
+      if (!staleTarget && oldExists && newExists) {
+        logger.warn(req, "team_num.rename_fail", {
+          year, prevNum, newNum, failedRenames: [{ sessionId: s.id, error: "target upload directory already exists" }], stage: "pre_db",
+        });
+        return res.status(500).send("업로드 디렉토리 이름 변경에 실패하여 변경하지 않았습니다.");
+      }
+      if (oldExists || (staleTarget && newExists)) {
+        filePlans.push({
+          sessionId: s.id,
+          moveOld: oldExists ? 1 : 0,
+          deleteTarget: staleTarget && newExists ? 1 : 0,
+        });
       }
     }
-    for (const { backupDir, newDir } of [...backupDirs].reverse()) {
-      try {
-        if (fs.existsSync(backupDir)) {
-          if (fs.existsSync(newDir)) rmDir(newDir);
-          fs.renameSync(backupDir, newDir);
-        }
-      } catch (e) {
-        logger.warn(req, "team_num.update", { error: e.message, phase: "rollback_target", backupDir, newDir });
-      }
-    }
-  };
-
-  const failedRenames = [];
-  for (const s of sessions) {
-    const oldDir = path.join(UPLOADS_DIR, String(s.id), String(prevNum));
-    const newDir = path.join(UPLOADS_DIR, String(s.id), String(newNum));
-    const staleTarget = db.prepare(`
-      SELECT 1
-      WHERE EXISTS (SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?)
-         OR EXISTS (SELECT 1 FROM submission WHERE session_id = ? AND team_num = ?)
-    `).get(s.id, newNum, s.id, newNum);
-    try {
-      if (!staleTarget && fs.existsSync(oldDir) && fs.existsSync(newDir)) {
-        throw new Error("target upload directory already exists");
-      }
-      if (staleTarget && fs.existsSync(newDir)) {
-        const backupDir = path.join(TMP_DIR, `renumber-${s.id}-${crypto.randomUUID()}`);
-        fs.renameSync(newDir, backupDir);
-        backupDirs.push({ backupDir, newDir });
-      }
-      if (fs.existsSync(oldDir)) {
-        fs.renameSync(oldDir, newDir);
-        stagedDirs.push({ oldDir, newDir });
-      }
-    } catch (e) {
-      failedRenames.push({ sessionId: s.id, error: e.message });
-      break;
-    }
-  }
-
-  if (failedRenames.length > 0) {
-    rollbackStagedDirs();
-    logger.warn(req, "team_num.rename_fail", { year, prevNum, newNum, failedRenames, stage: "pre_db" });
-    return res.status(500).send("업로드 디렉토리 이름 변경에 실패하여 변경하지 않았습니다.");
   }
 
   const txResult = dbRun(() => {
     db.transaction(() => {
-      db.prepare("DELETE FROM submission WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-        .run(newNum, year);
-      db.prepare("DELETE FROM session_team WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-        .run(newNum, year);
-      db.prepare("DELETE FROM student_team WHERE team_num = ? AND year = ?")
-        .run(newNum, year);
-      db.prepare("UPDATE student_team SET team_num = ? WHERE team_num = ? AND year = ?")
-        .run(newNum, prevNum, year);
-      db.prepare("UPDATE session_team SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-        .run(newNum, prevNum, year);
-      db.prepare("UPDATE submission SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-        .run(newNum, prevNum, year);
+      if (prevExists) {
+        const insertFileWork = db.prepare(`
+          INSERT INTO team_renumber_file_work (year, prev_num, new_num, session_id, move_old, delete_target, last_error, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, '', ?)
+          ON CONFLICT(year, prev_num, new_num, session_id) DO UPDATE SET
+            move_old = CASE WHEN team_renumber_file_work.move_old OR excluded.move_old THEN 1 ELSE 0 END,
+            delete_target = CASE WHEN team_renumber_file_work.delete_target OR excluded.delete_target THEN 1 ELSE 0 END,
+            last_error = '',
+            updated_at = excluded.updated_at
+        `);
+        const now = Date.now();
+        for (const plan of filePlans) {
+          insertFileWork.run(year, prevNum, newNum, plan.sessionId, plan.moveOld, plan.deleteTarget, now);
+        }
+
+        db.prepare("DELETE FROM submission WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
+          .run(newNum, year);
+        db.prepare("DELETE FROM session_team WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
+          .run(newNum, year);
+        db.prepare("DELETE FROM student_team WHERE team_num = ? AND year = ?")
+          .run(newNum, year);
+        db.prepare("UPDATE student_team SET team_num = ? WHERE team_num = ? AND year = ?")
+          .run(newNum, prevNum, year);
+        db.prepare("UPDATE session_team SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
+          .run(newNum, prevNum, year);
+        db.prepare("UPDATE submission SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
+          .run(newNum, prevNum, year);
+      }
     })();
   });
 
   if (!txResult.success) {
-    rollbackStagedDirs();
     logger.warn(req, "team_num.update", { error: txResult.error, year, prevNum, newNum });
     return res.status(txResult.status).send(txResult.error);
   }
 
-  for (const { backupDir } of backupDirs) {
-    try {
-      rmDir(backupDir);
-    } catch (e) {
-      logger.warn(req, "team_num.update", { error: e.message, phase: "cleanup_backup", backupDir });
-    }
+  const fileResult = processRenumberFileWork(req, prevNum, newNum, year);
+  if (!fileResult.success) {
+    logger.warn(req, "team_num.file_work_failed", { year, prevNum, newNum, failures: fileResult.failures });
+    return res.status(500).send("업로드 디렉토리 이름 변경에 실패하여 변경하지 않았습니다.");
   }
 
-  logger.log(req, "team_num.update", { year, prevNum, newNum, renamedDirs: stagedDirs.length, replacedTargets: backupDirs.length });
+  logger.log(req, "team_num.update", { year, prevNum, newNum, renamedDirs: fileResult.moved, replacedTargets: fileResult.replaced, fileWork: fileResult.total });
   res.status(200).send();
 });
 
