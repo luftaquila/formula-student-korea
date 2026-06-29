@@ -1424,9 +1424,28 @@ function initMap() {
   // One canvas for all cone dots on non-editing tabs — hundreds of cones become
   // a single redraw on pan/zoom instead of hundreds of DOM marker transforms.
   coneRenderer = new LabeledConeCanvas({ padding: 0.5 });
-  L.tileLayer("https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2", {
-    subdomains: "0123", attribution: "&copy; Google", maxZoom: 21,
-  }).addTo(map);
+  // Basemap. VWorld satellite when a key is configured (window.__VWORLD_KEY__,
+  // injected at container start by entrypoint.sh from $VWORLD_KEY). VWorld's
+  // imagery is georeferenced to the Korean national datum, so RTK WGS84 points
+  // land where they actually are — Google's Korea satellite tiles are offset
+  // several meters. Falls back to Google where no key is set (local dev,
+  // production) so those environments stay unchanged.
+  // VWorld tiles top out at native zoom 19; maxNativeZoom upscales 19→21 so the
+  // map's 21 max stays usable (blurry past 19, but no blank tiles).
+  const vworldKey = window.__VWORLD_KEY__;
+  if (vworldKey) {
+    L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${vworldKey}/Satellite/{z}/{y}/{x}.jpeg`, {
+      attribution: "&copy; VWorld", maxNativeZoom: 19, maxZoom: 21,
+    }).addTo(map);
+    // Transparent road/place-label overlay, matching Google hybrid's labels.
+    L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${vworldKey}/Hybrid/{z}/{y}/{x}.png`, {
+      attribution: "&copy; VWorld", maxNativeZoom: 19, maxZoom: 21,
+    }).addTo(map);
+  } else {
+    L.tileLayer("https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2", {
+      subdomains: "0123", attribution: "&copy; Google", maxZoom: 21,
+    }).addTo(map);
+  }
 
   // Keep the DOM cone-icon size (--cone-px) in step with zoom so courses-tab
   // cones scale like the canvas dots on the other tabs.
