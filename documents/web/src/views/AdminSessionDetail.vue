@@ -128,8 +128,10 @@ async function loadStatus() {
 }
 
 function formatDate(d) {
-  if (!d) return "-";
-  return new Date(d + "Z").toLocaleString("ko-KR");
+  const s = String(d || "");
+  if (!s) return "-";
+  const date = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("ko-KR");
 }
 
 function formatSize(bytes) {

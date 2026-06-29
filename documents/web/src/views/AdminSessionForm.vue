@@ -100,7 +100,9 @@ const allFilteredSelected = computed(() => {
 
 function utcToLocal(utc) {
   if (!utc) return "";
-  const d = new Date(utc + "Z");
+  const s = String(utc);
+  const d = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
+  if (Number.isNaN(d.getTime())) return "";
   const offset = d.getTimezoneOffset();
   const local = new Date(d.getTime() - offset * 60000);
   return local.toISOString().slice(0, 16);
@@ -109,7 +111,7 @@ function utcToLocal(utc) {
 function localToUTC(datetimeLocal) {
   if (!datetimeLocal) return "";
   const d = new Date(datetimeLocal);
-  return d.toISOString().replace("T", " ").slice(0, 19);
+  return d.toISOString();
 }
 
 async function loadSession() {

@@ -45,6 +45,18 @@ if (!currentUser || currentUser.role !== "admin") {
   window.location.href = "/";
 }
 
+function parseDbTimestamp(value) {
+  const s = String(value || "");
+  if (!s) return null;
+  const d = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatTimestamp(value) {
+  const d = parseDbTimestamp(value);
+  return d ? d.toLocaleString("ko-KR") : "-";
+}
+
 async function fetchUsers(showLoading = false) {
   if (showLoading) loading.value = true;
   try {
@@ -618,7 +630,7 @@ onMounted(() => {
                   />
                   <span v-else class="inline-edit-text">{{ user.affiliation || '' }}</span>
                 </td>
-                <td class="col-date">{{ user.created_at ? new Date(user.created_at + 'Z').toLocaleString("ko-KR") : "-" }}</td>
+                <td class="col-date">{{ formatTimestamp(user.created_at) }}</td>
                 <td class="col-action">
                   <div class="action-btns">
                     <select

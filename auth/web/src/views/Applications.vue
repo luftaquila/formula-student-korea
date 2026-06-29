@@ -97,8 +97,16 @@ async function approveSelected() {
   }
 }
 
+function parseDbTimestamp(value) {
+  const s = String(value || "");
+  if (!s) return null;
+  const d = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function fmtDate(s) {
-  return s ? new Date(s + "Z").toLocaleString("ko-KR") : "-";
+  const d = parseDbTimestamp(s);
+  return d ? d.toLocaleString("ko-KR") : "-";
 }
 
 // Sorting (mirrors Manage.vue). 전화번호/학교·팀은 정렬 비활성화라 그 헤더는

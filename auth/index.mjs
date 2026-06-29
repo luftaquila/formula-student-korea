@@ -79,8 +79,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS applications (
   realname TEXT NOT NULL DEFAULT '',
   phone TEXT NOT NULL DEFAULT '',
   affiliation TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 )`);
 
 // Preserve legacy free-form contacts instead of dropping production data.
@@ -99,6 +99,31 @@ db.exec(`CREATE TABLE IF NOT EXISTS ops_display (
 )`);
 db.exec("DELETE FROM ops_display WHERE user_id NOT IN (SELECT id FROM users)");
 db.pragma("foreign_keys = ON");
+
+function normalizeUtcTextTimestamp(value) {
+  const s = String(value || "");
+  if (!s) return null;
+  const text = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z";
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function normalizeTimestampColumn(table, column) {
+  const rows = db.prepare(`SELECT rowid AS _rowid, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL AND ${column} != ''`).all();
+  const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
+  for (const row of rows) {
+    const normalized = normalizeUtcTextTimestamp(row.value);
+    if (normalized && normalized !== row.value) update.run(normalized, row._rowid);
+  }
+}
+
+for (const [table, column] of [
+  ["users", "created_at"],
+  ["applications", "created_at"],
+  ["applications", "updated_at"],
+]) {
+  normalizeTimestampColumn(table, column);
+}
 
 // Bootstrap: ADMIN_EMAIL이 DB에 없으면 admin으로 등록
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
@@ -400,7 +425,7 @@ app.get("/api/callback", async (req, res) => {
 
     // TEST_SERVER 모드: 미등록 사용자 자동 admin 등록
     if (!user && process.env.TEST_SERVER) {
-      db.prepare("INSERT INTO users (email, name, role, active, created_at) VALUES (?, ?, 'admin', 1, datetime('now'))").run(email, name);
+      db.prepare("INSERT INTO users (email, name, role, active, created_at) VALUES (?, ?, 'admin', 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(email, name);
       user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
       logger.log(req, "user.auto_register", { name, role: "admin", test_server: true }, email, { email, name });
     }
@@ -440,7 +465,7 @@ app.get("/api/callback", async (req, res) => {
 
     // 최초 로그인 시 created_at 기록
     if (!user.created_at) {
-      const r = dbRun(() => db.prepare("UPDATE users SET created_at = datetime('now') WHERE id = ?").run(user.id));
+      const r = dbRun(() => db.prepare("UPDATE users SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(user.id));
       if (!r.success) logger.warn(req, "user.created_at_init", { error: r.error }, email, { email, name, role: user.role });
     }
 
@@ -558,7 +583,7 @@ app.patch("/api/apply", (req, res) => {
   }
 
   const result = dbRun(() => db.prepare(
-    "UPDATE applications SET realname = ?, phone = ?, affiliation = ?, updated_at = datetime('now') WHERE email = ?",
+    "UPDATE applications SET realname = ?, phone = ?, affiliation = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE email = ?",
   ).run(realname, phone, affiliation, applicant.email));
 
   if (!result.success) {

@@ -50,7 +50,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS email_log (
   message_id TEXT,
   html_content TEXT,
   source TEXT NOT NULL DEFAULT 'manual',
-  sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   sent_by TEXT
 )`);
 
@@ -64,6 +64,24 @@ try {
 } catch { /* already migrated */ }
 try { db.exec("ALTER TABLE email_log DROP COLUMN recipients"); } catch { /* already dropped */ }
 try { db.exec("ALTER TABLE email_log DROP COLUMN recipient_count"); } catch { /* already dropped */ }
+
+function normalizeEmailSentAt(value) {
+  const s = String(value || "");
+  if (!s) return null;
+  const base = s.replace(" ", "T");
+  const text = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(base) ? base : `${base}+09:00`;
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+{
+  const rows = db.prepare("SELECT id, sent_at FROM email_log WHERE sent_at IS NOT NULL AND sent_at != ''").all();
+  const update = db.prepare("UPDATE email_log SET sent_at = ? WHERE id = ?");
+  for (const row of rows) {
+    const normalized = normalizeEmailSentAt(row.sent_at);
+    if (normalized && normalized !== row.sent_at) update.run(normalized, row.id);
+  }
+}
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_el_sent_at ON email_log(sent_at)`);
 db.exec("DROP INDEX IF EXISTS idx_el_status");
@@ -195,10 +213,13 @@ app.post("/api/config/reset", (req, res) => {
    Stats
    ============================================ */
 app.get("/api/stats", (req, res) => {
-  const today = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+  const kstDate = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+  const dayStart = new Date(`${kstDate}T00:00:00+09:00`);
+  const start = dayStart.toISOString();
+  const end = new Date(dayStart.getTime() + 86400000).toISOString();
   const result = dbRun(() => {
-    const sent = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE sent_at >= ? AND status = 'sent'").get(today);
-    const errors = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE sent_at >= ? AND status = 'error'").get(today);
+    const sent = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE status = 'sent' AND sent_at >= ? AND sent_at < ?").get(start, end);
+    const errors = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE status = 'error' AND sent_at >= ? AND sent_at < ?").get(start, end);
     const totalSent = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE status = 'sent'").get();
     const totalErrors = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE status = 'error'").get();
     return { sent: sent.count, errors: errors.count, totalSent: totalSent.count, totalErrors: totalErrors.count };
@@ -421,7 +442,7 @@ ${htmlContent}
     // Per-recipient DB log
     if (result.ok) {
       const logResult = dbRun(() =>
-        db.prepare("INSERT INTO email_log (subject, recipient, status, message_id, html_content, source, sent_by, sent_at) VALUES (?, ?, 'sent', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))")
+        db.prepare("INSERT INTO email_log (subject, recipient, status, message_id, html_content, source, sent_by, sent_at) VALUES (?, ?, 'sent', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
           .run(subject, recipient, result.messageId || null, htmlContent, source, sentBy)
       );
       if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, recipient, source });
@@ -429,7 +450,7 @@ ${htmlContent}
       lastMessageId = result.messageId || lastMessageId;
     } else {
       const logResult = dbRun(() =>
-        db.prepare("INSERT INTO email_log (subject, recipient, status, error, html_content, source, sent_by, sent_at) VALUES (?, ?, 'error', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))")
+        db.prepare("INSERT INTO email_log (subject, recipient, status, error, html_content, source, sent_by, sent_at) VALUES (?, ?, 'error', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
           .run(subject, recipient, result.error, htmlContent, source, sentBy)
       );
       if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, recipient, source });

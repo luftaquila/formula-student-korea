@@ -27,9 +27,12 @@ const teamEntry = computed(() => {
 });
 
 function getStatuses(s) {
-  const now = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const now = Date.now();
   const deadline = s.late_end_at || s.end_at;
-  const isClosed = now > deadline;
+  const deadlineTime = timestampMs(deadline);
+  const endTime = timestampMs(s.end_at);
+  const startTime = timestampMs(s.start_at);
+  const isClosed = deadlineTime ? now > deadlineTime : false;
   const result = [];
 
   if (s.submission) {
@@ -37,10 +40,10 @@ function getStatuses(s) {
   } else if (isClosed) {
     result.push("closed");
     return result;
-  } else if (s.late_end_at && now > s.end_at) {
+  } else if (s.late_end_at && endTime && now > endTime) {
     result.push("overdue");
     return result;
-  } else if (now < s.start_at) {
+  } else if (startTime && now < startTime) {
     result.push("upcoming");
     return result;
   } else {
@@ -55,9 +58,20 @@ function getStatuses(s) {
 const statusLabels = { submitted: "제출 완료", late: "지각 제출", pending: "미제출", overdue: "지각", closed: "마감", upcoming: "예정" };
 const statusClasses = { submitted: "badge-success", late: "badge-warning", pending: "badge-default", overdue: "badge-warning", closed: "badge-danger", upcoming: "badge-primary" };
 
+function parseDbTimestamp(value) {
+  const s = String(value || "");
+  if (!s) return null;
+  const d = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function timestampMs(value) {
+  return parseDbTimestamp(value)?.getTime() ?? 0;
+}
+
 function formatDate(d) {
-  if (!d) return "-";
-  return new Date(d + "Z").toLocaleString("ko-KR");
+  const date = parseDbTimestamp(d);
+  return date ? date.toLocaleString("ko-KR") : "-";
 }
 
 onMounted(load);

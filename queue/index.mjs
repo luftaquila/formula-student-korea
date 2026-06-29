@@ -26,10 +26,15 @@ const QUEUE_LOG_MAX_ROWS = 100000;
 const BOOTH_LOG_MAX_ROWS = 100000;
 
 function primaryKeyColumns(db, table) {
+  if (!tableExists(db, table)) return [];
   return db.prepare(`PRAGMA table_info('${table}')`).all()
     .filter((col) => col.pk > 0)
     .sort((a, b) => a.pk - b.pk)
     .map((col) => col.name);
+}
+
+function tableExists(db, table) {
+  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
 }
 
 // Rate limiter for public endpoints
@@ -86,15 +91,6 @@ db.transaction(() => {
     timestamp INTEGER NOT NULL,
     year INTEGER NOT NULL,
     PRIMARY KEY (num, inspection, year, timestamp)
-  );`);
-
-  // 현재 대기중인 엔트리 테이블
-  db.exec(`CREATE TABLE IF NOT EXISTS current (
-    num INTEGER NOT NULL,
-    phone TEXT NOT NULL,
-    inspection TEXT NOT NULL,
-    year INTEGER NOT NULL,
-    PRIMARY KEY (num, year)
   );`);
 
   db.exec(`CREATE TABLE IF NOT EXISTS current_inspection (
@@ -168,16 +164,9 @@ db.transaction(() => {
     timestamp INTEGER
   );`);
 
-  // 검차 종류별 대기열 테이블 생성 및 부스 기본 데이터 생성
+  // 검차 종류 메타 및 부스 기본 데이터 생성
   for (const [k, v] of Object.entries(inspections)) {
     db.prepare(`INSERT OR IGNORE INTO inspection (type, name) VALUES (?, ?)`).run(k, v);
-    db.exec(`CREATE TABLE IF NOT EXISTS '${k}' (
-      num INTEGER NOT NULL,
-      phone TEXT NOT NULL,
-      timestamp INTEGER NOT NULL,
-      year INTEGER NOT NULL,
-      PRIMARY KEY (num, year)
-    );`);
 
     // 부스 기본 설정: 검차 종류당 1개 부스
     db.prepare(`INSERT OR IGNORE INTO booth_config (inspection, count) VALUES (?, 1)`).run(k);
@@ -263,59 +252,20 @@ db.transaction(() => {
 
   // 나머지 테이블: year 컬럼 추가
   addColumn(db, "inspection_history", `year INTEGER NOT NULL DEFAULT ${yr}`);
-  addColumn(db, "current", `year INTEGER NOT NULL DEFAULT ${yr}`);
   addColumn(db, "booth_log", `year INTEGER NOT NULL DEFAULT ${yr}`);
   addColumn(db, "queue_log", `year INTEGER NOT NULL DEFAULT ${yr}`);
-  for (const k of Object.keys(INSPECTIONS)) {
-    addColumn(db, `'${k}'`, `year INTEGER NOT NULL DEFAULT ${yr}`);
-  }
 
-  if (primaryKeyColumns(db, "current").join(",") !== "num,year") {
-    db.transaction(() => {
-      db.exec(`CREATE TABLE current_new (
-        num INTEGER NOT NULL,
-        phone TEXT NOT NULL,
-        inspection TEXT NOT NULL,
-        year INTEGER NOT NULL,
-        PRIMARY KEY (num, year)
-      )`);
-      db.exec(`INSERT OR REPLACE INTO current_new (num, phone, inspection, year)
-        SELECT num, phone, inspection, year FROM current`);
-      db.exec(`DROP TABLE current`);
-      db.exec(`ALTER TABLE current_new RENAME TO current`);
-    })();
-  }
-
-  db.prepare("DELETE FROM current_inspection").run();
-  const ciInsert = db.prepare("INSERT OR IGNORE INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)");
-  for (const row of db.prepare("SELECT num, phone, inspection, year FROM current").all()) {
-    for (const type of String(row.inspection || "").split(",").filter((t) => INSPECTIONS[t])) {
-      ciInsert.run(row.num, type, row.phone, row.year);
+  if (tableExists(db, "current")) {
+    const currentCols = db.prepare("PRAGMA table_info('current')").all().map((c) => c.name);
+    const yearExpr = currentCols.includes("year") ? "year" : `${yr} AS year`;
+    const ciInsert = db.prepare("INSERT OR IGNORE INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)");
+    for (const row of db.prepare(`SELECT num, phone, inspection, ${yearExpr} FROM current`).all()) {
+      for (const type of String(row.inspection || "").split(",").filter((t) => INSPECTIONS[t])) {
+        ciInsert.run(row.num, type, row.phone, row.year);
+      }
     }
+    db.exec("DROP TABLE current");
   }
-  const ciTriggerInserts = (alias) => Object.keys(INSPECTIONS).map((type) => `
-      INSERT OR REPLACE INTO current_inspection (num, inspection, phone, year)
-      SELECT ${alias}.num, '${type}', ${alias}.phone, ${alias}.year
-      WHERE instr(',' || ${alias}.inspection || ',', ',${type},') > 0;`).join("");
-  db.exec("DROP TRIGGER IF EXISTS trg_current_ci_insert");
-  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_current_ci_insert
-    AFTER INSERT ON current
-    BEGIN
-      ${ciTriggerInserts("NEW")}
-    END;`);
-  db.exec("DROP TRIGGER IF EXISTS trg_current_ci_update");
-  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_current_ci_update
-    AFTER UPDATE ON current
-    BEGIN
-      DELETE FROM current_inspection WHERE num = OLD.num AND year = OLD.year;
-      ${ciTriggerInserts("NEW")}
-    END;`);
-  db.exec("DROP TRIGGER IF EXISTS trg_current_ci_delete");
-  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_current_ci_delete
-    AFTER DELETE ON current
-    BEGIN
-      DELETE FROM current_inspection WHERE num = OLD.num AND year = OLD.year;
-    END;`);
 
   if (primaryKeyColumns(db, "inspection_history").join(",") !== "num,inspection,year,timestamp") {
     db.transaction(() => {
@@ -334,46 +284,19 @@ db.transaction(() => {
   }
 
   for (const k of Object.keys(INSPECTIONS)) {
-    if (primaryKeyColumns(db, k).join(",") !== "num,year") {
-      db.transaction(() => {
-        db.exec(`CREATE TABLE '${k}_new' (
-          num INTEGER NOT NULL,
-          phone TEXT NOT NULL,
-          timestamp INTEGER NOT NULL,
-          year INTEGER NOT NULL,
-          PRIMARY KEY (num, year)
-        )`);
-        db.exec(`INSERT OR REPLACE INTO '${k}_new' (num, phone, timestamp, year)
-          SELECT num, phone, timestamp, year FROM '${k}'`);
-        db.exec(`DROP TABLE '${k}'`);
-        db.exec(`ALTER TABLE '${k}_new' RENAME TO '${k}'`);
-      })();
+    if (!tableExists(db, k)) continue;
+    const cols = db.prepare(`PRAGMA table_info('${k}')`).all().map((c) => c.name);
+    if (cols.includes("num") && cols.includes("phone") && cols.includes("timestamp")) {
+      const yearExpr = cols.includes("year") ? "year" : `${yr} AS year`;
+      db.prepare(`
+        INSERT OR IGNORE INTO inspection_queue (inspection, num, phone, timestamp, year)
+        SELECT ?, num, phone, timestamp, ${yearExpr} FROM '${k}'
+      `).run(k);
     }
-    db.prepare(`
-      INSERT OR IGNORE INTO inspection_queue (inspection, num, phone, timestamp, year)
-      SELECT ?, num, phone, timestamp, year FROM '${k}'
-    `).run(k);
     db.exec(`DROP TRIGGER IF EXISTS trg_${k}_iq_insert`);
-    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_${k}_iq_insert
-      AFTER INSERT ON '${k}'
-      BEGIN
-        INSERT OR REPLACE INTO inspection_queue (inspection, num, phone, timestamp, year)
-        VALUES ('${k}', NEW.num, NEW.phone, NEW.timestamp, NEW.year);
-      END;`);
     db.exec(`DROP TRIGGER IF EXISTS trg_${k}_iq_update`);
-    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_${k}_iq_update
-      AFTER UPDATE ON '${k}'
-      BEGIN
-        DELETE FROM inspection_queue WHERE inspection = '${k}' AND num = OLD.num AND year = OLD.year;
-        INSERT OR REPLACE INTO inspection_queue (inspection, num, phone, timestamp, year)
-        VALUES ('${k}', NEW.num, NEW.phone, NEW.timestamp, NEW.year);
-      END;`);
     db.exec(`DROP TRIGGER IF EXISTS trg_${k}_iq_delete`);
-    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_${k}_iq_delete
-      AFTER DELETE ON '${k}'
-      BEGIN
-        DELETE FROM inspection_queue WHERE inspection = '${k}' AND num = OLD.num AND year = OLD.year;
-      END;`);
+    db.exec(`DROP TABLE '${k}'`);
   }
 
   db.exec(`DROP INDEX IF EXISTS idx_ih_num_insp`);
@@ -386,9 +309,6 @@ db.transaction(() => {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_year_ts ON queue_log(year, timestamp)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_timestamp ON queue_log(timestamp)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_entered ON booth_log(entered_at)`);
-  for (const k of Object.keys(INSPECTIONS)) {
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_${k}_year_timestamp ON '${k}'(year, timestamp)`);
-  }
 }
 
 /* ============================================
@@ -429,26 +349,13 @@ function getCurrentEntry(num, year) {
       year,
     };
   }
-  const legacy = db.prepare("SELECT * FROM current WHERE num = ? AND year = ?").get(num, year);
-  if (!legacy) return null;
-  const types = String(legacy.inspection || "").split(",").filter((type) => INSPECTIONS[type]);
-  setCurrentInspections(num, legacy.phone, types, year);
-  return { ...legacy, inspection: types.join(","), inspections: types };
+  return null;
 }
 
 function setCurrentInspections(num, phone, types, year) {
   const uniqueTypes = [...new Set(types.filter((type) => INSPECTIONS[type]))];
   db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(num, year);
-  if (uniqueTypes.length === 0) {
-    db.prepare("DELETE FROM current WHERE num = ? AND year = ?").run(num, year);
-    return;
-  }
-  const csv = uniqueTypes.join(",");
-  db.prepare(`
-    INSERT INTO current (num, phone, inspection, year)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(num, year) DO UPDATE SET phone = excluded.phone, inspection = excluded.inspection
-  `).run(num, phone, csv, year);
+  if (uniqueTypes.length === 0) return;
   const insert = db.prepare("INSERT OR REPLACE INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)");
   for (const type of uniqueTypes) insert.run(num, type, phone, year);
 }
@@ -456,9 +363,8 @@ function setCurrentInspections(num, phone, types, year) {
 function renumberCurrentRows(prevNum, newNum, year) {
   const current = getCurrentEntry(prevNum, year);
   if (!current) return 0;
-  db.prepare("DELETE FROM current WHERE num = ? AND year = ?").run(newNum, year);
+  db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(newNum, year);
   db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(prevNum, year);
-  db.prepare("DELETE FROM current WHERE num = ? AND year = ?").run(prevNum, year);
   setCurrentInspections(newNum, current.phone, current.inspections, year);
   return 1;
 }
@@ -480,14 +386,10 @@ function renumberNumYearRows(table, prevNum, newNum, year, quoted = false) {
 function insertQueueRow(type, num, phone, timestamp, year) {
   db.prepare("INSERT INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES (?, ?, ?, ?, ?)")
     .run(type, num, phone, timestamp, year);
-  db.prepare(`INSERT INTO '${type}' (num, phone, timestamp, year) VALUES (?, ?, ?, ?)`)
-    .run(num, phone, timestamp, year);
 }
 
 function deleteQueueRow(type, num, year) {
-  const ret = db.prepare("DELETE FROM inspection_queue WHERE inspection = ? AND num = ? AND year = ?").run(type, num, year);
-  const legacy = db.prepare(`DELETE FROM '${type}' WHERE num = ? AND year = ?`).run(num, year);
-  return { changes: ret.changes || legacy.changes ? 1 : 0 };
+  return db.prepare("DELETE FROM inspection_queue WHERE inspection = ? AND num = ? AND year = ?").run(type, num, year);
 }
 
 function getQueueRow(type, num, year) {
@@ -500,11 +402,8 @@ function renumberQueueRows(type, prevNum, newNum, year) {
     .get(type, prevNum, year).count;
   if (existing === 0) return 0;
   db.prepare("DELETE FROM inspection_queue WHERE inspection = ? AND num = ? AND year = ?").run(type, newNum, year);
-  db.prepare(`DELETE FROM '${type}' WHERE num = ? AND year = ?`).run(newNum, year);
-  const changed = db.prepare("UPDATE inspection_queue SET num = ? WHERE inspection = ? AND num = ? AND year = ?")
+  return db.prepare("UPDATE inspection_queue SET num = ? WHERE inspection = ? AND num = ? AND year = ?")
     .run(newNum, type, prevNum, year).changes;
-  db.prepare(`UPDATE '${type}' SET num = ? WHERE num = ? AND year = ?`).run(newNum, prevNum, year);
-  return changed;
 }
 
 function renumberLogRows(table, prevNum, newNum, year) {
@@ -941,7 +840,6 @@ app.post("/api/admin/register/:type", async (req, res) => {
 
       const now = Date.now();
       insertQueueRow(type, num, phone, now, year);
-      db.prepare("UPDATE inspection SET length = length + 1 WHERE type = ?").run(type);
 
       // 대기열 이벤트 로그 기록 (트랜잭션 내부)
       db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)").run("register", num, type, now, year);
@@ -990,8 +888,6 @@ app.post("/api/admin/cancel/:type", (req, res) => {
       if (!ret.changes) {
         throw { status: 400, message: "존재하지 않는 엔트리입니다." };
       }
-
-      db.prepare("UPDATE inspection SET length = length - 1 WHERE type = ?").run(type);
 
       // 페널티 적용
       const penaltyMinutes = parseInt(
@@ -1419,7 +1315,6 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
 
       // 대기열에서 제거 및 길이 감소
       deleteQueueRow(type, num, year);
-      db.prepare("UPDATE inspection SET length = length - 1 WHERE type = ?").run(type);
 
       // 부스 점유
       db.prepare("UPDATE booth SET occupied_by = ?, entered_at = ? WHERE inspection = ? AND booth_num = ?").run(
@@ -2014,15 +1909,11 @@ app.delete("/api/internal/team/:num", (req, res) => {
     db.transaction(() => {
       // 모든 검차 대기열에서 제거
       for (const type of Object.keys(inspections)) {
-        const deleted = deleteQueueRow(type, num, year);
-        if (deleted.changes) {
-          db.prepare("UPDATE inspection SET length = length - 1 WHERE type = ?").run(type);
-        }
+        deleteQueueRow(type, num, year);
       }
 
       // current에서 제거
       db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(num, year);
-      db.prepare("DELETE FROM current WHERE num = ? AND year = ?").run(num, year);
 
       // 우선순위 제거
       db.prepare("DELETE FROM team_priority WHERE num = ? AND year = ?").run(num, year);

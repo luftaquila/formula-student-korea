@@ -51,7 +51,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS session (
   late_end_at TEXT NOT NULL,
   max_file_size INTEGER NOT NULL DEFAULT 52428800,
   created_by TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   year INTEGER NOT NULL
 )`);
 
@@ -194,30 +194,66 @@ function requireInternalRequest(req, res) {
    헬퍼
    ============================================ */
 function now() {
-  return new Date().toISOString().replace("T", " ").slice(0, 19);
+  return new Date().toISOString();
 }
 
-/** "YYYY-MM-DD HH:MM" 또는 "YYYY-MM-DDTHH:MM" → "YYYY-MM-DD HH:MM:SS" (19자) 정규화. 실패 시 null */
+/** "YYYY-MM-DD HH:MM" 또는 ISO-like 입력 → UTC ISO. 실패 시 null */
 function normalizeTimestamp(str) {
   if (!str || typeof str !== "string") return null;
-  const m = str.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(:\d{2})?/);
+  const m = str.trim().match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/);
   if (!m) return null;
-  return `${m[1]} ${m[2]}${m[3] || ":00"}`;
+  const [, yy, mo, dd, hh, mi, ss = "00", zone] = m;
+  const text = zone
+    ? `${yy}-${mo}-${dd}T${hh}:${mi}:${ss}${zone}`
+    : `${yy}-${mo}-${dd}T${hh}:${mi}:${ss}Z`;
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function parseDbDate(utcStr) {
+  if (!utcStr) return null;
+  const s = String(utcStr);
+  const text = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z";
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 /** UTC DB date string → KST display "YYYY-MM-DD HH:MM" */
 function toKST(utcStr) {
   if (!utcStr) return "";
-  const d = new Date(utcStr.replace(" ", "T") + "Z");
+  const d = parseDbDate(utcStr);
+  if (!d) return "";
   d.setHours(d.getHours() + 9);
   return d.toISOString().replace("T", " ").slice(0, 16);
 }
 
 /** Subtract hours from UTC date string → UTC date string */
 function subtractHours(utcStr, hours) {
-  const d = new Date(utcStr.replace(" ", "T") + "Z");
+  const d = parseDbDate(utcStr);
+  if (!d) return "";
   d.setHours(d.getHours() - hours);
-  return d.toISOString().replace("T", " ").slice(0, 19);
+  return d.toISOString();
+}
+
+function normalizeTimestampColumn(table, column) {
+  const rows = db.prepare(`SELECT rowid AS _rowid, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL AND ${column} != ''`).all();
+  const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
+  for (const row of rows) {
+    const normalized = normalizeTimestamp(String(row.value));
+    if (normalized && normalized !== row.value) update.run(normalized, row._rowid);
+  }
+}
+
+for (const [table, column] of [
+  ["session", "start_at"],
+  ["session", "end_at"],
+  ["session", "late_end_at"],
+  ["session", "created_at"],
+  ["submission", "started_at"],
+  ["submission", "submitted_at"],
+  ["scheduled_notification", "scheduled_at"],
+]) {
+  normalizeTimestampColumn(table, column);
 }
 
 function safeExt(filename) {
@@ -569,7 +605,6 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     } catch (fsErr) {
       logger.warn(req, "submission.create", { error: fsErr.message, phase: "file_move" }, session.name);
       try {
-        db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(txResult.result.id);
         db.prepare("DELETE FROM submission WHERE id = ?").run(txResult.result.id);
       } catch (rollbackErr) {
         logger.warn(req, "submission.create", { error: rollbackErr.message, phase: "rollback", submission_id: txResult.result.id }, session.name);
@@ -581,7 +616,6 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 
     for (const oldId of txResult.result.toDelete) {
       try {
-        db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(oldId);
         db.prepare("DELETE FROM submission WHERE id = ?").run(oldId);
       } catch (e) {
         logger.warn(req, "submission.create", { error: e.message, phase: "prev_cleanup", prev_id: oldId }, session.name);
@@ -781,9 +815,8 @@ app.put("/api/admin/sessions/:id", (req, res) => {
       for (const oldTeam of oldTeams) {
         if (!newTeamsSet.has(oldTeam)) {
           const subs = db.prepare("SELECT id FROM submission WHERE session_id = ? AND team_num = ?").all(id, oldTeam);
-          for (const sub of subs) {
-            db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(sub.id);
-            db.prepare("DELETE FROM submission WHERE id = ?").run(sub.id);
+          if (subs.length) {
+            db.prepare("DELETE FROM submission WHERE session_id = ? AND team_num = ?").run(id, oldTeam);
           }
           if (subs.length) removedTeamNums.push({ team: oldTeam, subIds: subs.map(s => s.id) });
         }
@@ -895,18 +928,22 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
 
   const sessionName = sanitize(session.name);
   const archiveFiles = [];
+  const subById = new Map(subs.map((sub) => [sub.id, sub]));
+  const subIds = subs.map((sub) => sub.id);
+  const files = subIds.length
+    ? db.prepare(`SELECT submission_id, original_name, stored_name FROM submission_file WHERE submission_id IN (${subIds.map(() => "?").join(",")})`).all(...subIds)
+    : [];
 
-  for (const sub of subs) {
-    const files = db.prepare("SELECT original_name, stored_name FROM submission_file WHERE submission_id = ?").all(sub.id);
-    for (const f of files) {
-      const diskPath = path.join(UPLOADS_DIR, String(id), String(sub.team_num), String(sub.id), f.stored_name);
-      if (fs.existsSync(diskPath)) {
-        const entry = entries[sub.team_num];
-        const teamFolder = entry
-          ? `${sub.team_num}_${sanitize(entry.univ)}_${sanitize(entry.team)}`
-          : String(sub.team_num);
-        archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
-      }
+  for (const f of files) {
+    const sub = subById.get(f.submission_id);
+    if (!sub) continue;
+    const diskPath = path.join(UPLOADS_DIR, String(id), String(sub.team_num), String(sub.id), f.stored_name);
+    if (fs.existsSync(diskPath)) {
+      const entry = entries[sub.team_num];
+      const teamFolder = entry
+        ? `${sub.team_num}_${sanitize(entry.univ)}_${sanitize(entry.team)}`
+        : String(sub.team_num);
+      archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
     }
   }
 
@@ -1088,12 +1125,12 @@ app.delete("/api/admin/years/:year/files", (req, res) => {
   let fileCount = 0;
   const txResult = dbRun(() => {
     db.transaction(() => {
-      for (const s of sessions) {
-        const subs = db.prepare("SELECT id FROM submission WHERE session_id = ?").all(s.id);
-        for (const sub of subs) {
-          const deleted = db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(sub.id);
-          fileCount += deleted.changes;
-        }
+      const sessionIds = sessions.map((s) => s.id);
+      const placeholders = sessionIds.map(() => "?").join(",");
+      const subIds = db.prepare(`SELECT id FROM submission WHERE session_id IN (${placeholders})`).all(...sessionIds).map((s) => s.id);
+      if (subIds.length) {
+        const subPlaceholders = subIds.map(() => "?").join(",");
+        fileCount = db.prepare(`DELETE FROM submission_file WHERE submission_id IN (${subPlaceholders})`).run(...subIds).changes;
       }
     })();
   });
@@ -1146,19 +1183,23 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
         FROM submission WHERE session_id = ? GROUP BY session_id, team_num
       ) latest ON sub.id = latest.max_id
     `).all(s.id);
+    const subById = new Map(subs.map((sub) => [sub.id, sub]));
+    const subIds = subs.map((sub) => sub.id);
+    const files = subIds.length
+      ? db.prepare(`SELECT submission_id, original_name, stored_name FROM submission_file WHERE submission_id IN (${subIds.map(() => "?").join(",")})`).all(...subIds)
+      : [];
 
-    for (const sub of subs) {
-      const files = db.prepare("SELECT original_name, stored_name FROM submission_file WHERE submission_id = ?").all(sub.id);
-      for (const f of files) {
-        const diskPath = path.join(UPLOADS_DIR, String(s.id), String(sub.team_num), String(sub.id), f.stored_name);
-        if (fs.existsSync(diskPath)) {
-          const entry = entries[sub.team_num];
-          const sessionName = sanitize(s.name);
-          const teamFolder = entry
-            ? sanitize(`${sub.team_num}_${entry.univ}_${entry.team}`)
-            : String(sub.team_num);
-          archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
-        }
+    for (const f of files) {
+      const sub = subById.get(f.submission_id);
+      if (!sub) continue;
+      const diskPath = path.join(UPLOADS_DIR, String(s.id), String(sub.team_num), String(sub.id), f.stored_name);
+      if (fs.existsSync(diskPath)) {
+        const entry = entries[sub.team_num];
+        const sessionName = sanitize(s.name);
+        const teamFolder = entry
+          ? sanitize(`${sub.team_num}_${entry.univ}_${entry.team}`)
+          : String(sub.team_num);
+        archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
       }
     }
   }
@@ -1331,9 +1372,10 @@ app.delete("/api/internal/team/:num", (req, res) => {
         db.prepare("DELETE FROM session_team WHERE session_id = ? AND team_num = ?").run(s.id, num);
         const subs = db.prepare("SELECT id FROM submission WHERE session_id = ? AND team_num = ?").all(s.id, num);
         for (const sub of subs) {
-          db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(sub.id);
-          db.prepare("DELETE FROM submission WHERE id = ?").run(sub.id);
           removedFiles.push({ sessionId: s.id, subId: sub.id });
+        }
+        if (subs.length) {
+          db.prepare("DELETE FROM submission WHERE session_id = ? AND team_num = ?").run(s.id, num);
         }
       }
     })();

@@ -7,7 +7,6 @@ import { createSSEManager } from "../shared/sse.mjs";
 import { EVENT_TYPES } from "../shared/constants.js";
 import { formatEnduranceDetail, enduranceTotal } from "../shared/event-timing.js";
 
-const WIRELESS_TELEMETRY_MAX_ROWS = 50000;
 const CONTROLLER_MAX_ROWS = 100000;
 
 export function createTrafficApp(options = {}) {
@@ -97,7 +96,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_event (
   node_id     TEXT NOT NULL,
   master_tick TEXT,
   ev_seq      INTEGER,
-  server_time TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+  server_time TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   rssi        REAL,
   snr         REAL,
   link_state  TEXT,
@@ -124,26 +123,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_mapping (
   role       TEXT NOT NULL,
   label      TEXT,
   enabled    INTEGER NOT NULL DEFAULT 1,
-  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );`);
 
-// 진단 스냅샷 이력(경량 — node당 throttle 저장). 실시간 값은 메모리 + SSE.
-db.exec(`CREATE TABLE IF NOT EXISTS wireless_telemetry (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  node_id     TEXT NOT NULL,
-  server_time TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
-  rssi        REAL,
-  snr         REAL,
-  offset_us   INTEGER,
-  skew_ppm    REAL,
-  latency_ms  REAL,
-  link_state  TEXT
-);`);
 db.exec("DROP INDEX IF EXISTS idx_wtel_node_time");
-db.prepare(`
-  DELETE FROM wireless_telemetry
-  WHERE id <= COALESCE((SELECT MAX(id) FROM wireless_telemetry), 0) - ?
-`).run(WIRELESS_TELEMETRY_MAX_ROWS);
+db.exec("DROP TABLE IF EXISTS wireless_telemetry");
 
 // 신호등/콘솔 단일 상태(점유 잠금 + 현재 색 + green tick) + 무선 공용 설정(센서 디바운스
 // 창). 서버 재시작에도 유지. debounce_ms: 한 통과의 다중 엣지(바운스)를 접는 간격(ms).
@@ -155,7 +139,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_light (
   green_tick    TEXT,
   bridge_online INTEGER NOT NULL DEFAULT 0,
   debounce_ms   INTEGER NOT NULL DEFAULT 300,
-  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );`);
 db.exec("INSERT OR IGNORE INTO wireless_light (id, light_color, bridge_online) VALUES (1, 'off', 0)");
 // 기존 DB 마이그레이션: debounce_ms 컬럼 추가(기본 300ms).
@@ -189,7 +173,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_session (
   event_name        TEXT,
   controller        TEXT,
   lease_expires_at  TEXT,
-  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );`);
 {
   const insert = db.prepare("INSERT OR IGNORE INTO wireless_session (event_type) VALUES (?)");
@@ -200,8 +184,35 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_session (
   ).run(...EVENT_TYPES);
 }
 
-// 기존 record별 동적 테이블을 단일 record 테이블로 흡수한다. legacy 테이블은
-// 기록 삭제 시 함께 drop된다. 이미 흡수된 이름은 중복 import하지 않는다.
+function normalizeUtcTextTimestamp(value) {
+  const s = String(value || "");
+  if (!s) return null;
+  const text = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z";
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function normalizeTimestampColumn(table, column) {
+  const rows = db.prepare(`SELECT rowid AS _rowid, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL AND ${column} != ''`).all();
+  const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
+  for (const row of rows) {
+    const normalized = normalizeUtcTextTimestamp(row.value);
+    if (normalized && normalized !== row.value) update.run(normalized, row._rowid);
+  }
+}
+
+for (const [table, column] of [
+  ["wireless_event", "server_time"],
+  ["wireless_mapping", "updated_at"],
+  ["wireless_light", "updated_at"],
+  ["wireless_session", "updated_at"],
+  ["wireless_session", "armed_at"],
+  ["wireless_session", "lease_expires_at"],
+]) {
+  normalizeTimestampColumn(table, column);
+}
+
+// 기존 record별 동적 테이블을 단일 record 테이블로 흡수한 뒤 drop한다.
 {
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN (${reservedSql})`)
@@ -226,17 +237,15 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_session (
     if (!columns.some((c) => c.name === "oc")) {
       db.exec(`ALTER TABLE '${name}' ADD COLUMN oc INTEGER DEFAULT 0`);
     }
-    const migrated = db.prepare("SELECT 1 FROM record WHERE name = ? LIMIT 1").get(name);
-    if (!migrated) {
-      db.prepare(`
-        INSERT INTO record (name, legacy_rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard)
-        SELECT ?, rowid, time, num, univ, team, type, result, ${detailExpr},
-               COALESCE(cones, 0), COALESCE(oc, 0), COALESCE(invalidated, 0), COALESCE(scoreboard, 1)
-        FROM '${name}'
-        ORDER BY rowid
-      `).run(name);
-      db.prepare("INSERT OR IGNORE INTO record_visibility (name, visible) VALUES (?, 1)").run(name);
-    }
+    db.prepare(`
+      INSERT OR IGNORE INTO record (name, legacy_rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard)
+      SELECT ?, rowid, time, num, univ, team, type, result, ${detailExpr},
+             COALESCE(cones, 0), COALESCE(oc, 0), COALESCE(invalidated, 0), COALESCE(scoreboard, 1)
+      FROM '${name}'
+      ORDER BY rowid
+    `).run(name);
+    db.prepare("INSERT OR IGNORE INTO record_visibility (name, visible) VALUES (?, 1)").run(name);
+    db.exec(`DROP TABLE '${name}'`);
   }
 }
 
@@ -326,7 +335,6 @@ function getRecordVisibility() {
    ============================================ */
 // node별 최신 진단(실시간, 미영속). _lastPersist는 throttle 저장용 내부 필드.
 const liveTelemetry = new Map();
-const TELEMETRY_PERSIST_MS = 10000;
 let bridgeOnline = false;
 let lastBridgeSeen = 0;
 let lastBridgeSeenIso = null;
@@ -611,7 +619,7 @@ const leaseWatch = setInterval(() => {
       .prepare("SELECT event_type FROM wireless_session WHERE controller IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?")
       .all(new Date().toISOString());
     for (const { event_type } of expired) {
-      db.prepare("UPDATE wireless_session SET controller = NULL, lease_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?").run(event_type);
+      db.prepare("UPDATE wireless_session SET controller = NULL, lease_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?").run(event_type);
       broadcastEvent("wireless:session", getSession(event_type));
     }
   } catch (e) {
@@ -1197,9 +1205,7 @@ app.post("/api/wireless/ingest", (req, res) => {
     const now = Date.now();
     const nowIso = new Date(now).toISOString();
     const tOut = [];
-    let telemetryPersisted = 0;
     const secLog = []; // 보안 관측(인증 실패 증가/미프로비저닝) — 트랜잭션 밖에서 logger.warn
-    const tins = db.prepare("INSERT INTO wireless_telemetry (node_id, rssi, snr, offset_us, skew_ppm, latency_ms, link_state) VALUES (?, ?, ?, ?, ?, ?, ?)");
     for (const t of telemetry) {
       if (!validateNodeId(String(t.node_id))) { reject("tel.node_id"); continue; }
       const node = String(t.node_id);
@@ -1232,19 +1238,9 @@ app.post("/api/wireless/ingest", (req, res) => {
       let provWarned = prev._provWarned || false;
       if (provisioned === 0 && !provWarned) { secLog.push({ node, unprovisioned: true }); provWarned = true; }
       else if (provisioned === 1) { provWarned = false; }
-      const entry = { rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, sec_drop: secDrop, provisioned, link_state: link, last_seen: lastSeenIso, _lastPersist: prev._lastPersist || 0, _provWarned: provWarned };
-      if (now - entry._lastPersist >= TELEMETRY_PERSIST_MS) {
-        telemetryPersisted += tins.run(node, rssi, snr, offset, skew, lat, link).changes;
-        entry._lastPersist = now;
-      }
+      const entry = { rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, sec_drop: secDrop, provisioned, link_state: link, last_seen: lastSeenIso, _provWarned: provWarned };
       liveTelemetry.set(node, entry);
       tOut.push({ node_id: node, rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, sec_drop: secDrop, provisioned, link_state: link, last_seen: lastSeenIso });
-    }
-    if (telemetryPersisted > 0) {
-      db.prepare(`
-        DELETE FROM wireless_telemetry
-        WHERE id <= COALESCE((SELECT MAX(id) FROM wireless_telemetry), 0) - ?
-      `).run(WIRELESS_TELEMETRY_MAX_ROWS);
     }
     return { inserted, deduped, rejected, reasons, telemetry: tOut, security: secLog };
   })());
@@ -1294,7 +1290,7 @@ app.post("/api/wireless/light", (req, res) => {
 
   if (markBridgeSeen()) logger.log(req, "wireless.bridge", { online: true, last_seen: lastBridgeSeenIso }, "bridge");
   const result = dbRun(() => {
-    db.prepare("UPDATE wireless_light SET light_color = ?, green_tick = COALESCE(?, green_tick), updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE id = 1").run(color, gtParam);
+    db.prepare("UPDATE wireless_light SET light_color = ?, green_tick = COALESCE(?, green_tick), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1").run(color, gtParam);
     const light = getLightState();
     // 물리 지정 경기의 arm 상태를 세션에도 반영(green=arm). 전 클라가 wireless:session으로 공유.
     let session = null;
@@ -1306,11 +1302,11 @@ app.post("/api/wireless/light", (req, res) => {
         const dup = cur && cur.armed && cur.light_color === "green" && (gtParam == null || cur.green_tick === gtParam);
         if (!dup) {
           resetEngineRun(light.owner_event); // 물리 경기 새 런 — 기록 엔진 리셋
-          db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = COALESCE(?, green_tick), armed_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?")
+          db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = COALESCE(?, green_tick), armed_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
             .run(gtParam, new Date().toISOString(), light.owner_event);
         }
       } else {
-        db.prepare("UPDATE wireless_session SET armed = 0, light_color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?")
+        db.prepare("UPDATE wireless_session SET armed = 0, light_color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
           .run(color === "red" ? "red" : "off", light.owner_event);
       }
       session = getSession(light.owner_event);
@@ -1355,7 +1351,7 @@ app.put("/api/wireless/physical-event", (req, res) => {
   const result = dbRun(() => {
     const prev = db.prepare("SELECT owner_event FROM wireless_light WHERE id = 1").get();
     db.prepare(
-      "UPDATE wireless_light SET owner_event = ?, owner_actor = ?, light_color = CASE WHEN ? IS NULL THEN 'off' ELSE light_color END, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE id = 1",
+      "UPDATE wireless_light SET owner_event = ?, owner_actor = ?, light_color = CASE WHEN ? IS NULL THEN 'off' ELSE light_color END, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1",
     ).run(value, req.user?.email || null, value);
     return { row: getLightState(), prev: prev?.owner_event || null };
   });
@@ -1376,7 +1372,7 @@ app.put("/api/wireless/debounce", (req, res) => {
     return res.status(400).send("올바르지 않은 디바운스 값입니다(0~5000ms 정수).");
   }
   const result = dbRun(() => {
-    db.prepare("UPDATE wireless_light SET debounce_ms = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE id = 1").run(ms);
+    db.prepare("UPDATE wireless_light SET debounce_ms = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1").run(ms);
     return getLightState();
   });
   if (!result.success) {
@@ -1430,15 +1426,15 @@ app.post("/api/wireless/arm", (req, res) => {
   const result = dbRun(() => {
     if (action === "green") {
       if (hasSel) {
-        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, team_json = ?, event_name = ?, armed_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?")
+        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, team_json = ?, event_name = ?, armed_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
           .run(green_tick, bound.team ? JSON.stringify(bound.team) : null, bound.event_name, new Date().toISOString(), event_type);
       } else {
-        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, armed_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?")
+        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, armed_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
           .run(green_tick, new Date().toISOString(), event_type);
       }
     } else {
       // red = 정지(표시는 적색), off = 소등(grey). 둘 다 disarm.
-      db.prepare("UPDATE wireless_session SET armed = 0, light_color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?")
+      db.prepare("UPDATE wireless_session SET armed = 0, light_color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
         .run(action === "red" ? "red" : "off", event_type);
     }
     return getSession(event_type);
@@ -1472,7 +1468,7 @@ app.post("/api/wireless/select", (req, res) => {
   const team = v.team != null ? JSON.stringify(v.team) : null;
   const event_name = v.event_name;
   const result = dbRun(() => {
-    db.prepare("UPDATE wireless_session SET team_json = ?, event_name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?")
+    db.prepare("UPDATE wireless_session SET team_json = ?, event_name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
       .run(team, event_name, event_type);
     return getSession(event_type);
   });
@@ -1561,7 +1557,7 @@ app.post("/api/wireless/lease/:event", (req, res) => {
   const isHeartbeat = sess?.controller === actor;
   const expires = new Date(Date.now() + LEASE_TTL_MS).toISOString();
   const result = dbRun(() => {
-    db.prepare("UPDATE wireless_session SET controller = ?, lease_expires_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?").run(actor, expires, event_type);
+    db.prepare("UPDATE wireless_session SET controller = ?, lease_expires_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?").run(actor, expires, event_type);
     return getSession(event_type);
   });
   if (!result.success) return res.status(result.status).send(result.error);
@@ -1580,7 +1576,7 @@ app.delete("/api/wireless/lease/:event", (req, res) => {
     return res.status(409).send("다른 사용자의 제어를 해제할 수 없습니다.");
   }
   const result = dbRun(() => {
-    db.prepare("UPDATE wireless_session SET controller = NULL, lease_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE event_type = ?").run(event_type);
+    db.prepare("UPDATE wireless_session SET controller = NULL, lease_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?").run(event_type);
     return getSession(event_type);
   });
   if (!result.success) return res.status(result.status).send(result.error);
@@ -1611,7 +1607,7 @@ app.put("/api/wireless/mapping/:node_id", (req, res) => {
   const result = dbRun(() => {
     const prev = db.prepare("SELECT event_type, role, label, enabled FROM wireless_mapping WHERE node_id = ?").get(node) || null;
     db.prepare(`INSERT INTO wireless_mapping (node_id, event_type, role, label, enabled, updated_at)
-      VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now'))
+      VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
       ON CONFLICT(node_id) DO UPDATE SET event_type=excluded.event_type, role=excluded.role, label=excluded.label, enabled=excluded.enabled, updated_at=excluded.updated_at`).run(node, event_type, role, label, enabled);
     return { row: db.prepare("SELECT node_id, event_type, role, label, enabled, updated_at FROM wireless_mapping WHERE node_id = ?").get(node), prev };
   });

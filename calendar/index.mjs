@@ -69,6 +69,17 @@ function validDateParts(year, month, day, hour = 0, minute = 0) {
     && d.getUTCMinutes() === minute;
 }
 
+function toUtcIso({ yy, mo, dd, hh = "00", mi = "00", ss = "00", zone = "" }) {
+  const text = zone
+    ? `${yy}-${mo}-${dd}T${hh}:${mi}:${ss}${zone}`
+    : new Date(Date.UTC(Number(yy), Number(mo) - 1, Number(dd), Number(hh) - 9, Number(mi), Number(ss))).toISOString();
+  if (zone) {
+    const d = new Date(text);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  return text;
+}
+
 function normalizeDateTime(value, { allDay = false, requireTime = false } = {}) {
   if (typeof value !== "string") return null;
   const input = value.trim();
@@ -80,13 +91,38 @@ function normalizeDateTime(value, { allDay = false, requireTime = false } = {}) 
     if (requireTime && !allDay) return null;
     return `${yy}-${mm}-${dd}`;
   }
-  const dateTime = input.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+  const dateTime = input.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/);
   if (!dateTime) return null;
-  const [, yy, mo, dd, hh, mi] = dateTime;
+  const [, yy, mo, dd, hh, mi, ss = "00", zone = ""] = dateTime;
   const [y, m, d, hour, minute] = [Number(yy), Number(mo), Number(dd), Number(hh), Number(mi)];
   if (!validDateParts(y, m, d, hour, minute)) return null;
-  const normalized = `${yy}-${mo}-${dd} ${hh}:${mi}`;
-  return allDay ? normalized.slice(0, 10) : normalized;
+  return allDay ? `${yy}-${mo}-${dd}` : toUtcIso({ yy, mo, dd, hh, mi, ss, zone });
+}
+
+function normalizeRangeBound(value, endOfDay = false) {
+  if (typeof value !== "string") return null;
+  const input = value.trim();
+  const dateOnly = input.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnly) {
+    const [, yy, mo, dd] = dateOnly;
+    const [y, m, d] = [Number(yy), Number(mo), Number(dd)];
+    if (!validDateParts(y, m, d)) return null;
+    const localMs = Date.UTC(y, m - 1, d, endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0);
+    return new Date(localMs - 9 * 3600000).toISOString();
+  }
+  return normalizeDateTime(input);
+}
+
+{
+  const update = db.prepare("UPDATE events SET start = ?, end = ? WHERE id = ?");
+  for (const event of db.prepare("SELECT id, start, end, all_day FROM events").all()) {
+    const allDay = !!event.all_day;
+    const start = normalizeDateTime(event.start, { allDay, requireTime: !allDay });
+    const end = normalizeDateTime(event.end, { allDay, requireTime: !allDay });
+    if (start && end && (start !== event.start || end !== event.end)) {
+      update.run(start, end, event.id);
+    }
+  }
 }
 
 // List events (public access, filtered by user role)
@@ -97,8 +133,8 @@ app.get("/api/events", (req, res) => {
     return res.status(400).json({ error: "timeMin and timeMax are required" });
   }
 
-  const normalizedMin = normalizeDateTime(String(timeMin));
-  const normalizedMax = normalizeDateTime(String(timeMax));
+  const normalizedMin = normalizeRangeBound(String(timeMin), false);
+  const normalizedMax = normalizeRangeBound(String(timeMax), true);
   if (!normalizedMin || !normalizedMax) {
     logger.warn(req, "event.list", { error: "invalid timeMin/timeMax", timeMin, timeMax });
     return res.status(400).json({ error: "Invalid time range" });
@@ -279,7 +315,12 @@ function escapeICalText(text) {
 }
 
 function formatICalDateTime(dateStr) {
-  // "YYYY-MM-DD HH:MM" → "YYYYMMDDTHHMMSS"
+  const d = /[zZ]$/.test(String(dateStr)) ? new Date(dateStr) : null;
+  if (d && !Number.isNaN(d.getTime())) {
+    d.setHours(d.getHours() + 9);
+    const iso = d.toISOString();
+    return iso.slice(0, 10).replace(/-/g, "") + "T" + iso.slice(11, 19).replace(/:/g, "");
+  }
   return dateStr.slice(0, 10).replace(/-/g, "") + "T" + dateStr.slice(11, 16).replace(/:/g, "") + "00";
 }
 

@@ -220,10 +220,17 @@ function getSubmissionForTeam(session, teamNum) {
   return session._status.find((s) => s.team_num === teamNum)?.submission || null;
 }
 
+function parseDbTimestamp(value) {
+  const s = String(value || "");
+  if (!s) return null;
+  const d = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function isSessionClosed(s) {
-  const now = new Date().toISOString().replace("T", " ").slice(0, 19);
   const deadline = s.late_end_at || s.end_at;
-  return now > deadline;
+  const deadlineTime = parseDbTimestamp(deadline)?.getTime();
+  return deadlineTime ? Date.now() > deadlineTime : false;
 }
 
 function submissionCellClass(session, sub) {
@@ -233,8 +240,8 @@ function submissionCellClass(session, sub) {
 }
 
 function formatDate(d) {
-  if (!d) return "-";
-  return new Date(d + "Z").toLocaleString("ko-KR");
+  const date = parseDbTimestamp(d);
+  return date ? date.toLocaleString("ko-KR") : "-";
 }
 
 async function loadTypeColors() {

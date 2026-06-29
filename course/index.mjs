@@ -26,8 +26,8 @@ db.pragma("foreign_keys = ON");
 db.exec(`CREATE TABLE IF NOT EXISTS course (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );`);
 
 db.exec(`CREATE TABLE IF NOT EXISTS cone (
@@ -37,8 +37,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS cone (
   lng REAL NOT NULL,
   alt REAL,
   side TEXT NOT NULL CHECK(side IN ('left', 'right', 'center')),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
 );`);
 
@@ -142,8 +142,8 @@ db.exec(`CREATE TRIGGER IF NOT EXISTS trg_mission_telemetry_retention
         lng REAL NOT NULL,
         alt REAL,
         side TEXT NOT NULL CHECK(side IN ('left', 'right', 'center')),
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
         FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
       )`);
       db.exec(`INSERT INTO cone_new (id, course_id, lat, lng, alt, side, created_at, updated_at)
@@ -197,6 +197,32 @@ db.exec(`CREATE TRIGGER IF NOT EXISTS trg_mission_telemetry_retention
       db.pragma("foreign_keys = ON");
     }
   }
+}
+
+function normalizeUtcTextTimestamp(value) {
+  const s = String(value || "");
+  if (!s) return null;
+  const text = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z";
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function normalizeTimestampColumn(table, column) {
+  const rows = db.prepare(`SELECT rowid AS _rowid, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL AND ${column} != ''`).all();
+  const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
+  for (const row of rows) {
+    const normalized = normalizeUtcTextTimestamp(row.value);
+    if (normalized && normalized !== row.value) update.run(normalized, row._rowid);
+  }
+}
+
+for (const [table, column] of [
+  ["course", "created_at"],
+  ["course", "updated_at"],
+  ["cone", "created_at"],
+  ["cone", "updated_at"],
+]) {
+  normalizeTimestampColumn(table, column);
 }
 
 /* ============================================
@@ -407,7 +433,7 @@ app.patch("/api/courses/:id", (req, res) => {
   if (!validation.valid) return res.status(400).send(validation.error);
 
   const result = dbRun(() => {
-    db.prepare("UPDATE course SET name = ?, updated_at = datetime('now') WHERE id = ?").run(validation.value, id);
+    db.prepare("UPDATE course SET name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(validation.value, id);
     return db.prepare("SELECT * FROM course WHERE id = ?").get(id);
   });
 
@@ -718,7 +744,7 @@ app.patch("/api/cones/:id", (req, res) => {
     return res.status(400).send("수정할 필드가 없습니다.");
   }
 
-  setClauses.push("updated_at = datetime('now')");
+  setClauses.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')");
 
   const result = dbRun(() => {
     values.push(id);
