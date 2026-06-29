@@ -234,6 +234,10 @@ const app = createApp({ express }, (req) => {
   if (p.startsWith("/api/rover")) return "admin";
   if (p.startsWith("/api/missions")) return "admin";
   if (p === "/api/logs") return "admin";
+  // Snapshots overwrite the whole course on restore (destructive) and can be
+  // deleted — admin-only, above plain cone management. Covers list/create/
+  // restore/delete. The frontend hides the 스냅샷 button from non-admins too.
+  if (/^\/api\/courses\/\d+\/snapshots/.test(p)) return "admin";
   return "chief";
 });
 
@@ -478,6 +482,24 @@ app.post("/api/courses/:id/snapshots/:sid/restore", (req, res) => {
   logger.log(req, "course.snapshot.restore", { snapshot_id: sid, cone_count: cones.length }, course.name);
   broadcastEvent("cones", { type: "restore", courseId: id, cones: result.result });
   res.json({ cones: result.result });
+});
+
+app.delete("/api/courses/:id/snapshots/:sid", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const sid = parseInt(req.params.sid, 10);
+  if (isNaN(id) || isNaN(sid)) return res.status(400).send("올바르지 않은 ID입니다.");
+  const course = getCourseById(id);
+  if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
+  const snap = selectSnapshotById.get(sid);
+  if (!snap || snap.course_id !== id) return res.status(404).send("스냅샷을 찾을 수 없습니다.");
+
+  const result = dbRun(() => db.prepare("DELETE FROM course_snapshot WHERE id = ?").run(sid));
+  if (!result.success) {
+    logger.warn(req, "course.snapshot.delete", { error: result.error, snapshot_id: sid }, course.name);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "course.snapshot.delete", { snapshot_id: sid }, course.name);
+  res.status(204).end();
 });
 
 // POST /api/courses/import - JSON으로 코스 추가

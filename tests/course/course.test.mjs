@@ -1862,3 +1862,76 @@ describe('Mission telemetry historizes NTRIP link health', () => {
     assert.equal(last.fix_status, '3d_fix');
   });
 });
+
+// ─── Snapshots (admin-only + delete) ──────────────────────────────────────
+describe('Course snapshots', () => {
+  const chiefCookie = makeAuthCookie({ email: 'chief-snap@test.com', name: 'Chief', role: 'chief' });
+  let courseId;
+  let snapshotId;
+
+  before(async () => {
+    const c = await client.post('/api/courses', { body: { name: '스냅샷 테스트 코스' }, cookie: adminCookie });
+    courseId = (await c.json()).id;
+    await client.post(`/api/courses/${courseId}/cones`, { body: { lat: 35.1, lng: 126.1, side: 'left' }, cookie: adminCookie });
+    await client.post(`/api/courses/${courseId}/cones`, { body: { lat: 35.2, lng: 126.2, side: 'right' }, cookie: adminCookie });
+  });
+
+  it('rejects chief from every snapshot route (admin-only)', async () => {
+    assert.equal((await client.get(`/api/courses/${courseId}/snapshots`, { cookie: chiefCookie })).status, 403);
+    assert.equal((await client.post(`/api/courses/${courseId}/snapshots`, { body: { reason: 'x' }, cookie: chiefCookie })).status, 403);
+    assert.equal((await client.post(`/api/courses/${courseId}/snapshots/1/restore`, { cookie: chiefCookie })).status, 403);
+    assert.equal((await client.delete(`/api/courses/${courseId}/snapshots/1`, { cookie: chiefCookie })).status, 403);
+  });
+
+  it('lets admin create and list a snapshot', async () => {
+    const res = await client.post(`/api/courses/${courseId}/snapshots`, { body: { reason: 'first' }, cookie: adminCookie });
+    assert.equal(res.status, 201);
+    snapshotId = (await res.json()).id;
+    assert.ok(snapshotId);
+    const list = await client.get(`/api/courses/${courseId}/snapshots`, { cookie: adminCookie });
+    assert.equal(list.status, 200);
+    const { snapshots } = await list.json();
+    assert.equal(snapshots.length, 1);
+    assert.equal(snapshots[0].cone_count, 2);
+    assert.equal(snapshots[0].reason, 'first');
+  });
+
+  it('rejects snapshotting a course with no cones', async () => {
+    const empty = await client.post('/api/courses', { body: { name: '빈 코스' }, cookie: adminCookie });
+    const emptyId = (await empty.json()).id;
+    const res = await client.post(`/api/courses/${emptyId}/snapshots`, { body: {}, cookie: adminCookie });
+    assert.equal(res.status, 400);
+  });
+
+  it('lets admin restore a snapshot (auto-snapshots current state first)', async () => {
+    const res = await client.post(`/api/courses/${courseId}/snapshots/${snapshotId}/restore`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const { cones } = await res.json();
+    assert.equal(cones.length, 2);
+    // Restore takes a pre-restore safety snapshot → two snapshots now exist.
+    const { snapshots } = await (await client.get(`/api/courses/${courseId}/snapshots`, { cookie: adminCookie })).json();
+    assert.equal(snapshots.length, 2);
+  });
+
+  it('lets admin delete a snapshot', async () => {
+    const del = await client.delete(`/api/courses/${courseId}/snapshots/${snapshotId}`, { cookie: adminCookie });
+    assert.equal(del.status, 204);
+    const { snapshots } = await (await client.get(`/api/courses/${courseId}/snapshots`, { cookie: adminCookie })).json();
+    assert.equal(snapshots.length, 1);
+    assert.ok(!snapshots.some((s) => s.id === snapshotId));
+  });
+
+  it('returns 404 deleting a non-existent snapshot', async () => {
+    const res = await client.delete(`/api/courses/${courseId}/snapshots/999999`, { cookie: adminCookie });
+    assert.equal(res.status, 404);
+  });
+
+  it('returns 404 deleting a snapshot that belongs to another course', async () => {
+    const other = await client.post('/api/courses', { body: { name: '다른 스냅샷 코스' }, cookie: adminCookie });
+    const otherId = (await other.json()).id;
+    const { snapshots } = await (await client.get(`/api/courses/${courseId}/snapshots`, { cookie: adminCookie })).json();
+    const existingId = snapshots[0].id;
+    const res = await client.delete(`/api/courses/${otherId}/snapshots/${existingId}`, { cookie: adminCookie });
+    assert.equal(res.status, 404);
+  });
+});

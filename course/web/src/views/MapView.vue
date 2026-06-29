@@ -616,14 +616,18 @@ function renderMissionMap() {
   clearMissionMap();
 
   const waypoints = missionDetail.value.waypoints || [];
+  // Planned waypoints (one per cone on the spray path) render to the shared
+  // cone canvas instead of a DOM marker each, so a course with many cones stays
+  // smooth on pan/zoom — same approach as the live cone dots (coneCircle).
   waypoints.forEach((wp, i) => {
-    const marker = L.marker([wp.lat, wp.lng], {
-      icon: L.divIcon({
-        className: "",
-        html: `<div style="width:22px;height:22px;border-radius:50%;background:#8b5cf6;border:2px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,0.4);">${i + 1}</div>`,
-        iconSize: [22, 22], iconAnchor: [11, 11],
-      }),
+    const marker = L.circleMarker([wp.lat, wp.lng], {
+      renderer: coneRenderer,
+      radius: 9,
+      color: "#fff",
+      weight: 2,
+      fillColor: "#8b5cf6",
       interactive: false,
+      label: i + 1,
     }).addTo(map);
     missionPlannedMarkers.push(marker);
   });
@@ -718,6 +722,10 @@ const activeTab = ref((() => {
 const historyView = ref(loadPref("historyView", "missions"));
 const inspectorWidth = ref(Math.max(280, Math.min(Number(loadPref("inspectorWidth", 360, Number)), 600)));
 const inspectorResizing = ref(false);
+// Map rotation (leaflet-rotate). 90° steps only, persisted, shared by all tabs
+// (one map instance). Snapped to {0,90,180,270} so the button always lands on a
+// clean quarter-turn after a reload.
+const mapBearing = ref(((Number(loadPref("mapBearing", 0, Number)) % 360) + 360) % 360);
 
 function loadPref(key, fallback, parse = (x) => x) {
   try {
@@ -1078,23 +1086,48 @@ function coneRadiusForZoom(zoom) {
 function coneDiameterForZoom(zoom) {
   return 2 * coneRadiusForZoom(zoom);
 }
+// Draw each cone pixel-identical to the courses-tab DOM marker (coneDot): a
+// coloured disc of radius r, a white ring of thickness max(1px, diameter*0.1)
+// sitting OUTSIDE it (the DOM uses a content-box border), and a centred number
+// at font = 0.5*diameter in the app font. All on one shared canvas so the
+// non-editing tabs stay smooth with hundreds of cones.
+// The courses-tab DOM cone number inherits Leaflet's `.leaflet-container` font,
+// not the app body font — so the canvas labels must use the SAME stack to look
+// identical. (Verified at runtime: the DOM cone computes to this family, and the
+// canvas cannot render the app's Noto Sans KR web font, so reusing that would
+// diverge.) Match Leaflet's default exactly.
+const CONE_FONT = `"Helvetica Neue", Arial, Helvetica, sans-serif`;
 const LabeledConeCanvas = L.Canvas.extend({
   _updateCircle(layer) {
     const r = coneRadiusForZoom(this._map.getZoom());
     layer._radius = r;
-    layer.options.weight = Math.max(1, r * 0.22); // outline scales with the dot
+    // No centred stroke — the base call paints only the coloured fill (radius r);
+    // we add the white ring OUTSIDE it below to mirror the DOM's content-box border.
+    layer.options.weight = 0;
     L.Canvas.prototype._updateCircle.call(this, layer);
-    if (!this._drawing || layer._empty() || layer.options.label == null) return;
-    // Numbers always drawn, scaled with the dot — they shrink when zoomed out
-    // instead of abruptly vanishing.
+    if (!this._drawing || layer._empty()) return;
     const p = layer._point, ctx = this._ctx;
+    const border = Math.max(1, 2 * r * 0.1); // = DOM border: max(1px, --cone-px*0.1)
     ctx.save();
-    ctx.globalAlpha = layer.options.fillOpacity ?? 1;
-    ctx.fillStyle = "#fff";
-    ctx.font = `700 ${(r * 1.15).toFixed(1)}px ui-sans-serif, system-ui, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(String(layer.options.label), p.x, p.y);
+    ctx.globalAlpha = layer.options.opacity ?? 1;
+    // White border ring, just outside the coloured fill (so the fill stays a full
+    // radius r, exactly like the DOM circle whose border is added outside it).
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r + border / 2, 0, Math.PI * 2);
+    ctx.lineWidth = border;
+    ctx.strokeStyle = "#fff";
+    ctx.stroke();
+    // Centred number at the DOM font size/family. Counter-rotate by the current
+    // bearing so it stays upright while the canvas pane is rotated.
+    if (layer.options.label != null) {
+      ctx.fillStyle = "#fff";
+      ctx.font = `700 ${r.toFixed(1)}px ${CONE_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.translate(p.x, p.y);
+      ctx.rotate(-(this._map._bearing || 0));
+      ctx.fillText(String(layer.options.label), 0, 0);
+    }
     ctx.restore();
   },
 });
@@ -1419,11 +1452,24 @@ async function fetchAll() {
 }
 
 /* ── Map init ─────────────────────────────────────── */
-function initMap() {
-  map = L.map("map", { zoomControl: true, maxZoom: 21, boxZoom: false }).setView([35.292012, 126.574415], 19);
+async function initMap() {
+  // leaflet-rotate is a UMD plugin that patches the global `L`. Expose L on
+  // globalThis first, then dynamically import it (a static import is hoisted
+  // above this assignment and would run with L undefined). After this, the map
+  // supports map.setBearing() and rotates tiles/cones/paths together.
+  globalThis.L = L;
+  await import("leaflet-rotate");
+  map = L.map("map", {
+    zoomControl: true, maxZoom: 21, boxZoom: false,
+    // Button-driven 90° rotation only — no built-in compass control, no
+    // two-finger free rotation (that would desync the snapped mapBearing).
+    rotate: true, rotateControl: false, touchRotate: false,
+    bearing: renderBearing(mapBearing.value),
+  }).setView([35.292012, 126.574415], 19);
   // One canvas for all cone dots on non-editing tabs — hundreds of cones become
   // a single redraw on pan/zoom instead of hundreds of DOM marker transforms.
   coneRenderer = new LabeledConeCanvas({ padding: 0.5 });
+
   // Basemap. VWorld satellite when a key is configured (window.__VWORLD_KEY__,
   // injected at container start by entrypoint.sh from $VWORLD_KEY). VWorld's
   // imagery is georeferenced to the Korean national datum, so RTK WGS84 points
@@ -1466,6 +1512,28 @@ function initMap() {
   map.on("dragstart", () => { if (followRover.value) followRover.value = false; });
   setupSelectionBox();
   rebuildAllMarkers();
+}
+
+
+// An exact 180° rotation renders as the matrix [-1,0,0,-1] (a pure x/y flip).
+// Browsers snap transforms within ~0.05° of that to an "axis-aligned" fast path
+// that fails to paint the rotated raster tiles (verified empirically: 179.9°
+// paints fine, 179.99° and 180° break; 90°/270° are axis-swap rotations and are
+// unaffected, and the cones are positioned in the non-rotated pane so they never
+// depended on this). Nudge an exact 180° by 0.1° — past the snap threshold but
+// ~1.7px at the screen edge, visually indistinguishable.
+function renderBearing(deg) {
+  return deg === 180 ? 179.9 : deg;
+}
+
+// Floating bottom-left button: each press turns the map a quarter-turn
+// counter-clockwise (matching the ↺ icon) and persists the angle so it survives
+// reloads and is shared across all tabs.
+function rotateMap() {
+  if (!map) return;
+  mapBearing.value = (((mapBearing.value - 90) % 360) + 360) % 360;
+  map.setBearing(renderBearing(mapBearing.value));
+  savePref("mapBearing", mapBearing.value);
 }
 
 function onMapClick(e) {
@@ -2102,6 +2170,15 @@ async function restoreSnapshot(sid) {
     await request(`/api/courses/${activeCourseId.value}/snapshots/${sid}/restore`, { method: "POST" });
     await loadSnapshots();
     showSnapshots.value = false;
+  } catch (err) { notifyError(err.message); }
+}
+
+async function deleteSnapshot(sid) {
+  if (!activeCourseId.value) return;
+  if (!confirm("이 스냅샷을 삭제합니다. 계속하시겠습니까?")) return;
+  try {
+    await request(`/api/courses/${activeCourseId.value}/snapshots/${sid}`, { method: "DELETE" });
+    await loadSnapshots();
   } catch (err) { notifyError(err.message); }
 }
 
@@ -3550,7 +3627,7 @@ onMounted(async () => {
   uiTickInterval = setInterval(() => { uiTick.value = (uiTick.value + 1) % 3600; }, 1000);
   await fetchAll();
   await nextTick();
-  initMap();
+  await initMap();
   // fetchAll restores activeCourseId before initMap exists, so the
   // course watcher's pan was a no-op. Re-apply once the map is ready
   // so a refresh lands centered on the restored course's first cone.
@@ -3829,6 +3906,7 @@ onUnmounted(() => {
               <div v-if="s.actor" class="snapshot-actor">{{ s.actor }}</div>
               <div class="snapshot-actions">
                 <button class="btn btn-ghost btn-sm" @click="restoreSnapshot(s.id)">되돌리기</button>
+                <button class="btn btn-ghost btn-sm snapshot-delete" @click="deleteSnapshot(s.id)">삭제</button>
               </div>
             </div>
           </div>
@@ -3998,6 +4076,20 @@ onUnmounted(() => {
           <!-- Map (center) -->
           <div class="map-wrap">
             <div id="map" class="map"></div>
+            <!-- Map rotation — bottom-left, available on every tab. Each press
+                 turns the whole map (tiles + cones + paths) 90° counter-clockwise. -->
+            <button
+              class="fab-icon-btn map-fab-rotate"
+              :style="isMobile ? { position: 'fixed', left: '0.75rem', bottom: `calc(${sheetHeight}px + env(safe-area-inset-bottom) + 70px)`, zIndex: 650 } : null"
+              @click="rotateMap"
+              aria-label="지도 90° 회전"
+              title="지도 90° 회전 (반시계방향)"
+            >
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+              </svg>
+            </button>
             <!-- Path pick overlay stays inside the map area -->
             <div v-if="roverMode === 'path-pick'" class="map-overlay map-overlay-row">
               <span>시작점을 지도에서 클릭하거나</span>
@@ -4135,6 +4227,7 @@ onUnmounted(() => {
                     <input type="file" accept=".json" hidden @change="importCourse" />
                   </label>
                   <button
+                    v-if="isAdmin"
                     class="btn btn-ghost btn-lg-touch"
                     :disabled="!activeCourseId"
                     @click="openSnapshots"
@@ -5032,10 +5125,17 @@ onUnmounted(() => {
   border-color: #38bdf8;
   background: color-mix(in srgb, #38bdf8 24%, var(--bg-secondary));
 }
+/* Standalone rotation button — bottom-left, on every tab (not in a panel). */
+.map-fab-rotate {
+  position: absolute; bottom: 1.5rem; left: 0.75rem; z-index: 500;
+  box-shadow: var(--shadow-hover); pointer-events: auto;
+  font-size: 1.3rem;
+}
 /* Bigger touch targets on coarse pointers, kept uniform across both panels. */
 @media (any-pointer: coarse) {
   .map-fab-panel .fab-icon-btn,
-  .map-fab-panel .side-btn { width: 44px; height: 44px; min-height: 0; }
+  .map-fab-panel .side-btn,
+  .map-fab-rotate { width: 44px; height: 44px; min-height: 0; }
 }
 
 /* Live rotation angle readout — pinned top-centre of the map while rotating. */
@@ -5499,7 +5599,8 @@ onUnmounted(() => {
 .snapshot-count { color: var(--text-secondary); font-size: 0.8rem; }
 .snapshot-reason { color: var(--text-secondary); font-size: 0.8rem; margin-top: 0.15rem; }
 .snapshot-actor { color: var(--text-secondary); font-size: 0.75rem; margin-top: 0.15rem; }
-.snapshot-actions { margin-top: 0.3rem; display: flex; justify-content: flex-end; }
+.snapshot-actions { margin-top: 0.3rem; display: flex; justify-content: flex-end; gap: 0.4rem; }
+.snapshot-delete { color: #ef4444; }
 
 .waypoint-list {
   margin-top: 0.5rem; max-height: 250px; overflow-y: auto;
