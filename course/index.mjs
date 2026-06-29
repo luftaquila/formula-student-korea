@@ -52,6 +52,17 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_cone_course ON cone(course_id);`);
   if (!cols.includes("alt")) db.exec("ALTER TABLE cone ADD COLUMN alt REAL");
 }
 
+function ensureUtcTimestampColumns(table) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes("created_at")) db.exec(`ALTER TABLE ${table} ADD COLUMN created_at TEXT`);
+  if (!cols.includes("updated_at")) db.exec(`ALTER TABLE ${table} ADD COLUMN updated_at TEXT`);
+  db.prepare(`UPDATE ${table} SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE created_at IS NULL OR created_at = ''`).run();
+  db.prepare(`UPDATE ${table} SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''`).run();
+}
+
+ensureUtcTimestampColumns("course");
+ensureUtcTimestampColumns("cone");
+
 db.exec(`CREATE TABLE IF NOT EXISTS course_snapshot (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   course_id INTEGER NOT NULL,
@@ -403,7 +414,7 @@ app.post("/api/courses", (req, res) => {
   if (!validation.valid) return res.status(400).send(validation.error);
 
   const result = dbRun(() => {
-    db.prepare("INSERT INTO course (name) VALUES (?)").run(validation.value);
+    db.prepare("INSERT INTO course (name, created_at, updated_at) VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(validation.value);
     return db.prepare("SELECT * FROM course WHERE id = last_insert_rowid()").get();
   });
 
@@ -544,7 +555,7 @@ app.post("/api/courses/:id/snapshots/:sid/restore", (req, res) => {
     return db.transaction(() => {
       takeCourseSnapshot(id, actor, safetyReason);
       db.prepare("DELETE FROM cone WHERE course_id = ?").run(id);
-      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side) VALUES (?, ?, ?, ?, ?)");
+      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side, created_at, updated_at) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
       // 이전 버전 스냅샷에는 alt가 없으므로 undefined → null로 보존.
       for (const c of cones) insert.run(id, c.lat, c.lng, typeof c.alt === "number" ? c.alt : null, c.side);
       return getCones(id);
@@ -613,9 +624,9 @@ app.post("/api/courses/import", (req, res) => {
 
   const result = dbRun(() => {
     return db.transaction(() => {
-      db.prepare("INSERT INTO course (name) VALUES (?)").run(nameValidation.value);
+      db.prepare("INSERT INTO course (name, created_at, updated_at) VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(nameValidation.value);
       const courseId = db.prepare("SELECT id FROM course WHERE id = last_insert_rowid()").get().id;
-      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side) VALUES (?, ?, ?, ?, ?)");
+      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side, created_at, updated_at) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
       for (const cone of cones) insert.run(courseId, cone.lat, cone.lng, typeof cone.alt === "number" ? cone.alt : null, cone.side);
       return { course: db.prepare("SELECT * FROM course WHERE id = ?").get(courseId), cones: getCones(courseId) };
     })();
@@ -690,7 +701,7 @@ app.post("/api/courses/:id/cones", (req, res) => {
   if (!sideValidation.valid) return res.status(400).send(sideValidation.error);
 
   const result = dbRun(() => {
-    db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side) VALUES (?, ?, ?, ?, ?)").run(courseId, lat, lng, altValidation.value, side);
+    db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side, created_at, updated_at) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(courseId, lat, lng, altValidation.value, side);
     return db.prepare("SELECT * FROM cone WHERE id = last_insert_rowid()").get();
   });
 

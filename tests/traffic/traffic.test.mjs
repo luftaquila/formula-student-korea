@@ -729,7 +729,7 @@ describe('POST /api/wireless/ingest', () => {
     for (let i = 1; i < rows.length; i++) assert.ok(rows[i].id > rows[i - 1].id, 'ascending id');
   });
 
-  it('persists at most one throttled telemetry snapshot per node, live state has latest', async () => {
+  it('keeps latest telemetry in live state without persisted snapshots', async () => {
     await client.post('/api/wireless/ingest', {
       body: { telemetry: [{ node_id: 'tnode', rssi: -80, snr: 5, offset_us: 100, skew_ppm: 3.0, latency_ms: 20, link_state: 'online' }] },
       cookie: adminCookie,
@@ -738,8 +738,8 @@ describe('POST /api/wireless/ingest', () => {
       body: { telemetry: [{ node_id: 'tnode', rssi: -82, snr: 6, offset_us: 120, skew_ppm: 3.1, latency_ms: 22, link_state: 'online' }] },
       cookie: adminCookie,
     });
-    const snapCount = db.prepare("SELECT COUNT(*) AS c FROM wireless_telemetry WHERE node_id = 'tnode'").get().c;
-    assert.equal(snapCount, 1, 'only one snapshot persisted within throttle window');
+    const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wireless_telemetry'").get();
+    assert.equal(table, undefined, 'wireless_telemetry table is removed');
 
     const stateRes = await client.get('/api/wireless/state', { cookie: adminCookie });
     const state = await stateRes.json();
