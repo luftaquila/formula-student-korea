@@ -74,6 +74,13 @@ describe('Auth enforcement', () => {
     const missions = await client.get('/api/missions', { cookie: chiefCookie });
     assert.equal(missions.status, 403);
   });
+
+  it('makes course deletion admin-only (chief is rejected, gate runs before handler)', async () => {
+    // The auth gate returns 403 ahead of the handler, so this holds whether or
+    // not a course with this id exists. Chief keeps create/rename/cone edits.
+    const res = await client.delete('/api/courses/1', { cookie: chiefCookie });
+    assert.equal(res.status, 403);
+  });
 });
 
 // ─── Courses ────────────────────────────────────────────────────────────
