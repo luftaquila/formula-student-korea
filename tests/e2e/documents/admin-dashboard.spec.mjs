@@ -93,30 +93,53 @@ test.describe("Documents admin dashboard", () => {
     const TEAM_UNIV = "성균관대학교"; // team #3, not mapped by any other test
     const EMAIL = "e2e-clear-test@test.com";
 
-    const row = table.locator("tbody tr").filter({ hasText: TEAM_UNIV });
-    await expect(row).toBeVisible();
+    // Idempotency: a run that fails before the clear step below leaves this
+    // mapping behind, so the next attempt's INSERT would 400 on the unique
+    // constraint. Remove any leftover up front, and again in `finally` so a
+    // mid-test failure can't poison a retry. DELETE is keyed by email+year.
+    const removeMapping = () =>
+      page.request.delete(`/documents/api/admin/student-teams/${encodeURIComponent(EMAIL)}/${YEAR}`);
+    await removeMapping();
 
-    // Create a mapping via API first
-    const res = await page.request.post("/documents/api/admin/student-teams", {
-      data: { email: EMAIL, team_num: 3, year: YEAR },
-    });
-    expect(res.ok()).toBeTruthy();
+    try {
+      const row = table.locator("tbody tr").filter({ hasText: TEAM_UNIV });
+      await expect(row).toBeVisible();
 
-    // Reload to see the mapping
-    await page.reload();
-    await waitForPageReady(page);
+      // Create a mapping via API first
+      const res = await page.request.post("/documents/api/admin/student-teams", {
+        data: { email: EMAIL, team_num: 3, year: YEAR },
+      });
+      expect(res.ok()).toBeTruthy();
 
-    // Verify mapping is shown
-    const mappedRow = table.locator("tbody tr").filter({ hasText: TEAM_UNIV });
-    await expect(mappedRow.locator(".selected-email")).toContainText(EMAIL);
+      // Reload, then wait for the dashboard's mapping fetch to resolve before
+      // asserting. reload() only guarantees domcontentloaded, not that the
+      // table data has loaded, so asserting straight away races the fetch under
+      // CI load — that race was the flake. (waitForResponse set up before the
+      // navigation that triggers it, per the deterministic-wait policy.)
+      const mappingsLoaded = page.waitForResponse(
+        (r) => r.url().includes("/api/admin/student-teams") && r.request().method() === "GET" && r.ok(),
+      );
+      await page.reload();
+      await mappingsLoaded;
 
-    // Click the clear button to delete the mapping
-    await mappedRow.locator(".clear-btn").click();
-    await waitForPageReady(page);
+      // Verify mapping is shown
+      const mappedRow = table.locator("tbody tr").filter({ hasText: TEAM_UNIV });
+      await expect(mappedRow.locator(".selected-email")).toContainText(EMAIL);
 
-    // Verify mapping is cleared (placeholder "-" shown)
-    const clearedRow = table.locator("tbody tr").filter({ hasText: TEAM_UNIV });
-    await expect(clearedRow.locator(".select-placeholder")).toHaveText("-");
+      // Click the clear button; clearStudent() DELETEs then re-fetches the
+      // mappings, so wait on that GET for a deterministic cleared state.
+      const mappingsReloaded = page.waitForResponse(
+        (r) => r.url().includes("/api/admin/student-teams") && r.request().method() === "GET" && r.ok(),
+      );
+      await mappedRow.locator(".clear-btn").click();
+      await mappingsReloaded;
+
+      // Verify mapping is cleared (placeholder "-" shown)
+      const clearedRow = table.locator("tbody tr").filter({ hasText: TEAM_UNIV });
+      await expect(clearedRow.locator(".select-placeholder")).toHaveText("-");
+    } finally {
+      await removeMapping();
+    }
   });
 
   test("search filter works on team list", async ({ page }) => {
