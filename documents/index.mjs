@@ -323,6 +323,7 @@ function processRenumberFileWork(req, prevNum, newNum, year) {
     const markerName = renumberMarkerName(prevNum, newNum, year);
     const oldMarker = path.join(oldDir, markerName);
     const newMarker = path.join(newDir, markerName);
+    let cleanupMarker = null;
     try {
       if (row.move_old) {
         if (fs.existsSync(oldDir)) {
@@ -334,10 +335,10 @@ function processRenumberFileWork(req, prevNum, newNum, year) {
           }
           fs.mkdirSync(path.dirname(newDir), { recursive: true });
           fs.renameSync(oldDir, newDir);
-          if (fs.existsSync(newMarker)) fs.rmSync(newMarker, { force: true });
+          cleanupMarker = newMarker;
           moved += 1;
         } else if (fs.existsSync(newMarker)) {
-          fs.rmSync(newMarker, { force: true });
+          cleanupMarker = newMarker;
         } else if (!fs.existsSync(newDir)) {
           throw new Error("source upload directory missing");
         } else {
@@ -348,6 +349,13 @@ function processRenumberFileWork(req, prevNum, newNum, year) {
         replaced += 1;
       }
       db.prepare("DELETE FROM team_renumber_file_work WHERE id = ?").run(row.id);
+      if (cleanupMarker) {
+        try {
+          if (fs.existsSync(cleanupMarker)) fs.rmSync(cleanupMarker, { force: true });
+        } catch (e) {
+          logger.warn(req, "team_num.marker_cleanup", { error: e.message || String(e), year, prevNum, newNum, sessionId: row.session_id });
+        }
+      }
     } catch (e) {
       db.prepare(`
         UPDATE team_renumber_file_work

@@ -1288,6 +1288,18 @@ describe('DELETE /api/internal/team/:num', () => {
     });
     assert.equal(res.status, 400);
   });
+
+  it('returns 400 when year is missing or invalid', async () => {
+    const missing = await client.delete('/api/internal/team/2', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(missing.status, 400);
+
+    const invalid = await client.delete('/api/internal/team/2?year=abc', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(invalid.status, 400);
+  });
 });
 
 // ─── Internal API: team renumber ────────────────────────────────────────

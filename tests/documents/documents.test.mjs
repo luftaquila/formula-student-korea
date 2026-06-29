@@ -1412,6 +1412,46 @@ describe('PATCH /api/internal/team-num', () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 0);
   });
 
+  it('does not keep retrying completed upload work when marker cleanup fails', async () => {
+    const year = 2034;
+    const prevNum = 640;
+    const newNum = 641;
+    const sessionId = db.prepare(
+      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2034-01-01 00:00', '2034-12-31 23:59', '', 52428800, 'admin@test.com', ?)",
+    ).run('Renumber Marker Cleanup Session', year).lastInsertRowid;
+    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-marker-cleanup@test.com', newNum, year);
+    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, newNum);
+    db.prepare(`
+      INSERT INTO team_renumber_file_work (year, prev_num, new_num, session_id, move_old, delete_target)
+      VALUES (?, ?, ?, ?, 1, 1)
+    `).run(year, prevNum, newNum, sessionId);
+
+    const newDir = path.join(uploadsDir, String(sessionId), String(newNum));
+    const marker = path.join(newDir, `.fsk-renumber-${year}-${prevNum}-to-${newNum}.pending`);
+    fs.mkdirSync(newDir, { recursive: true });
+    fs.writeFileSync(path.join(newDir, 'prev.txt'), 'prev');
+    fs.writeFileSync(marker, 'pending');
+
+    const originalRmSync = fs.rmSync;
+    fs.rmSync = (target, options) => {
+      if (target === marker) throw new Error('simulated marker cleanup failure');
+      return originalRmSync.call(fs, target, options);
+    };
+    try {
+      const res = await client.patch('/api/internal/team-num', {
+        body: { prevNum, newNum, year },
+        headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      });
+      assert.equal(res.status, 200);
+    } finally {
+      fs.rmSync = originalRmSync;
+    }
+
+    assert.ok(fs.existsSync(marker), 'marker may remain when best-effort cleanup fails');
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 0);
+    fs.rmSync(marker, { force: true });
+  });
+
   it('returns 400 for non-integer prevNum', async () => {
     const res = await client.patch('/api/internal/team-num', {
       body: { prevNum: 'abc', newNum: 2, year: 2025 },

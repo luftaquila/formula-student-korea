@@ -198,12 +198,7 @@ db.transaction(() => {
   // SMS 설정은 이메일 서비스에서 가져오거나 환경변수로 폴백
   // loadSmsConfig()에서 비동기로 확인 후 활성화
 
-  // 인덱스 생성
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_active ON booth_log(num, inspection, booth_num, exited_at)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_num ON queue_log(num)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_insp_ts ON queue_log(inspection, timestamp)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_timestamp ON queue_log(timestamp)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_entered ON booth_log(entered_at)`);
+  // year-aware indexes are created after the year-column migration below.
   db.exec(`DROP TRIGGER IF EXISTS trg_queue_log_retention`);
   db.exec(`CREATE TRIGGER IF NOT EXISTS trg_queue_log_retention
     AFTER INSERT ON queue_log
@@ -323,10 +318,17 @@ db.transaction(() => {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tp_insp_prio ON team_priority(year, inspection, priority, num)`);
   db.exec(`DROP INDEX IF EXISTS idx_cp_num_insp`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_cp_num_insp ON cancel_penalty(year, num, inspection)`);
+  db.exec(`DROP INDEX IF EXISTS idx_bl_active`);
+  db.exec(`DROP INDEX IF EXISTS idx_ql_num`);
+  db.exec(`DROP INDEX IF EXISTS idx_ql_insp_ts`);
+  db.exec(`DROP INDEX IF EXISTS idx_ql_timestamp`);
+  db.exec(`DROP INDEX IF EXISTS idx_bl_entered`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_year_num_ts ON queue_log(year, num, timestamp)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_year_insp_ts ON queue_log(year, inspection, timestamp)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_year_entered ON booth_log(year, entered_at)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_year_num_entered ON booth_log(year, num, entered_at)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_year_open ON booth_log(year, num, inspection, booth_num, exited_at)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_year_ts ON queue_log(year, timestamp)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_ql_timestamp ON queue_log(timestamp)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_bl_entered ON booth_log(entered_at)`);
 }
 
 /* ============================================
@@ -1932,7 +1934,10 @@ app.delete("/api/internal/team/:num", (req, res) => {
   }
 
   const num = numValidation.value;
-  const year = Number(req.query.year) || currentYear();
+  const year = Number(req.query.year);
+  if (!Number.isInteger(year) || year < 2000 || year > 2099) {
+    return res.status(400).send("연도를 지정해야 합니다.");
+  }
 
   const result = dbRun(() => {
     db.transaction(() => {
