@@ -826,6 +826,12 @@ function maxSheetHeight() {
 }
 
 function onSheetTouchStart(e) {
+  // Cancel the touch's default action so the browser doesn't emit the
+  // compatibility mouse/click ("ghost click") for this tap. Without this, a
+  // tap-to-expand fires a synthetic click at the original touch point AFTER the
+  // sheet has grown — landing on whatever course/cone list row now sits there
+  // and selecting it. (A drag is already covered by preventDefault in touchmove.)
+  if (e.cancelable) e.preventDefault();
   dragStartY = e.touches[0].clientY;
   dragStartHeight = sheetHeight.value;
   wasDrag = false;

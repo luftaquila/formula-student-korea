@@ -166,8 +166,8 @@ jobs:
             projects: --project=queue --project=traffic
           - shard: inspection-documents
             projects: --project=inspection --project=documents
-          - shard: score-entry
-            projects: --project=score --project=entry
+          - shard: score-entry-course
+            projects: --project=score --project=entry --project=course
 
     steps:
       - uses: actions/checkout@v6
