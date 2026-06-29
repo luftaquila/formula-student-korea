@@ -1108,15 +1108,19 @@ const LabeledConeCanvas = L.Canvas.extend({
     L.Canvas.prototype._updateCircle.call(this, layer);
     if (!this._drawing || layer._empty()) return;
     const p = layer._point, ctx = this._ctx;
-    const border = Math.max(1, 2 * r * 0.1); // = DOM border: max(1px, --cone-px*0.1)
+    // Ring thickness/colour mirror the DOM cone: white at ratio 0.1 by default,
+    // but a selected/multi-selected cone on the locked courses tab gets the same
+    // amber/sky highlight ring the DOM markers use (set via coneCircle options).
+    const ratio = layer.options.ringRatio ?? 0.1;
+    const border = Math.max(1, 2 * r * ratio); // = DOM border: max(1px, --cone-px*ratio)
     ctx.save();
     ctx.globalAlpha = layer.options.opacity ?? 1;
-    // White border ring, just outside the coloured fill (so the fill stays a full
+    // Border ring, just outside the coloured fill (so the fill stays a full
     // radius r, exactly like the DOM circle whose border is added outside it).
     ctx.beginPath();
     ctx.arc(p.x, p.y, r + border / 2, 0, Math.PI * 2);
     ctx.lineWidth = border;
-    ctx.strokeStyle = "#fff";
+    ctx.strokeStyle = layer.options.ringColor || "#fff";
     ctx.stroke();
     // Centred number at the DOM font size/family. Counter-rotate by the current
     // bearing so it stays upright while the canvas pane is rotated.
@@ -1133,11 +1137,19 @@ const LabeledConeCanvas = L.Canvas.extend({
   },
 });
 
-// Canvas-rendered cone for non-editing tabs (rover/history): a coloured dot
-// with its side-index number, matching the editing-tab marker but drawn to the
-// shared canvas (no per-cone DOM node to reposition on every pan). Read-only —
-// click/drag are courses-tab only.
+// Canvas-rendered cone for read-only contexts: the rover/history tabs and the
+// LOCKED courses tab. A coloured dot with its side-index number, matching the
+// editable DOM marker but drawn to the shared canvas (no per-cone DOM node to
+// reposition on every pan). Click/drag belong to the unlocked courses tab; the
+// current selection is shown here by the ring colour instead — amber for the
+// single selection, sky for the multi-selection — mirroring highlightIcon /
+// multiSelectIcon. Only the active course on the courses tab has a selection.
 function coneCircle(cone, num, isActive) {
+  let ringColor = "#fff", ringRatio = 0.1;
+  if (isActive && activeTab.value === "courses") {
+    if (selectedConeId.value === cone.id) { ringColor = "#fbbf24"; ringRatio = 0.16; }
+    else if (multiSelectedIds.value.has(cone.id)) { ringColor = "#38bdf8"; ringRatio = 0.16; }
+  }
   return L.circleMarker([cone.lat, cone.lng], {
     renderer: coneRenderer,
     radius: 9,
@@ -1148,6 +1160,8 @@ function coneCircle(cone, num, isActive) {
     opacity: isActive ? 1 : 0.45,
     interactive: false,
     label: num,
+    ringColor,
+    ringRatio,
   });
 }
 
@@ -1156,10 +1170,14 @@ function rebuildAllMarkers() {
   Object.values(markers).forEach((m) => map.removeLayer(m));
   markers = {};
 
-  // Only the courses (editing) tab needs draggable, numbered, clickable DOM
-  // markers. Everywhere else (rover/manual, history) cones are read-only, so
-  // render them as canvas dots to keep the map smooth with hundreds of points.
-  const editing = activeTab.value === "courses";
+  // DOM markers (one node per cone — expensive) exist only for editing:
+  // draggable, clickable, re-iconnable. We only pay that on the UNLOCKED courses
+  // tab. When the courses tab is locked (the default) cones can't be added/moved/
+  // rotated by gesture, so — like the read-only rover/history tabs — they render
+  // as canvas dots: one redraw for hundreds of cones instead of hundreds of DOM
+  // transforms. Tap-to-select and the selection highlight are still preserved on
+  // the canvas (see onMapClick's locked branch and coneCircle).
+  const editing = activeTab.value === "courses" && !editLocked.value;
 
   for (const course of courses.value) {
     if (!visibility.value[course.id]) continue;
@@ -1311,6 +1329,9 @@ function rebuildAllMarkers() {
 function updateMultiSelectIcons() {
   const aid = activeCourseId.value;
   if (!aid) return;
+  // Locked courses tab: cones are canvas dots with no setIcon — repaint their
+  // rings by rebuilding (cheap for canvas markers, unlike DOM ones).
+  if (activeTab.value === "courses" && editLocked.value) { rebuildAllMarkers(); return; }
   for (const cone of (conesMap.value[aid] || [])) {
     const key = `${aid}-${cone.id}`;
     const m = markers[key];
@@ -1341,8 +1362,9 @@ function scrollConeListTop() {
 }
 
 /* ── Watchers ─────────────────────────────────────── */
-// Toggling the edit lock changes whether cone markers are draggable, so the
-// marker layer has to be rebuilt with the new draggable flag.
+// Toggling the edit lock flips cones between DOM markers (unlocked: draggable,
+// clickable, re-iconnable) and fast canvas dots (locked: read-only), so the
+// marker layer has to be rebuilt on every toggle.
 watch(editLocked, (v) => {
   savePref("editLocked", v);
   if (v && rotateMode.value) exitRotateMode(); // rotate is an edit op — locking exits it
@@ -1377,26 +1399,30 @@ watch(coneFilter, () => { coneListScrolled.value = false; coneListEl.value?.scro
 watch(visibility, (v) => savePref("visibility", JSON.stringify(v)), { deep: true });
 watch(selectedConeId, (id) => {
   const aid = activeCourseId.value;
-  Object.entries(markers).forEach(([key, marker]) => {
-    if (!key.startsWith(`${aid}-`) || !marker.setIcon) return; // skip canvas dots
-    const coneId = parseInt(key.split("-")[1]);
-    const cone = (conesMap.value[aid] || []).find((c) => c.id === coneId);
-    if (!cone) return;
-    if (coneId === id) {
-      marker.setIcon(highlightIcon(cone.side, coneSideIndex(aid, cone.id)));
-      // panToCone() (list click) owns map re-centering — map taps don't pan.
-      nextTick(() => {
-        const el = document.querySelector(`[data-cone-id="${id}"]`);
-        if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      });
-    } else if (multiSelectedIds.value.has(coneId)) {
-      marker.setIcon(multiSelectIcon(cone.side, coneSideIndex(aid, cone.id)));
-    } else {
-      marker.setIcon(coneIcon(cone.side, coneSideIndex(aid, cone.id), true));
-    }
-  });
+  // Locked courses tab draws canvas dots (no setIcon); rebuild so the newly
+  // selected cone picks up its amber highlight ring. The unlocked tab re-icons
+  // only the affected DOM markers (no full rebuild).
+  if (activeTab.value === "courses" && editLocked.value) {
+    rebuildAllMarkers();
+  } else {
+    Object.entries(markers).forEach(([key, marker]) => {
+      if (!key.startsWith(`${aid}-`) || !marker.setIcon) return; // skip canvas dots
+      const coneId = parseInt(key.split("-")[1]);
+      const cone = (conesMap.value[aid] || []).find((c) => c.id === coneId);
+      if (!cone) return;
+      if (coneId === id) marker.setIcon(highlightIcon(cone.side, coneSideIndex(aid, cone.id)));
+      else if (multiSelectedIds.value.has(coneId)) marker.setIcon(multiSelectIcon(cone.side, coneSideIndex(aid, cone.id)));
+      else marker.setIcon(coneIcon(cone.side, coneSideIndex(aid, cone.id), true));
+    });
+  }
 
   if (id) {
+    // Scroll the list to the selected cone — for list clicks and (now) map taps.
+    // panToCone() owns map re-centering; selecting via a map tap doesn't pan.
+    nextTick(() => {
+      const el = document.querySelector(`[data-cone-id="${id}"]`);
+      if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
     const cone = activeCones.value.find((c) => c.id === id);
     if (cone) {
       editLat.value = cone.lat.toString();
@@ -1558,6 +1584,21 @@ function onMapClick(e) {
     return;
   }
   if (roverMode.value === "executing") return;
+  // Locked courses tab: cones are canvas dots (no per-marker click), so the map
+  // tap does the selection the DOM marker normally would — snap to the nearest
+  // cone to select it (the inspector can still edit/delete a selected cone while
+  // locked). A tap on empty space clears the current selection.
+  if (activeTab.value === "courses" && editLocked.value && activeCourseId.value) {
+    const c = nearestCone(e.latlng);
+    if (c) {
+      if (multiSelectedIds.value.size > 0) multiSelectedIds.value = new Set();
+      selectedConeId.value = c.id;
+      return;
+    }
+    if (multiSelectedIds.value.size > 0) { multiSelectedIds.value = new Set(); updateMultiSelectIcons(); return; }
+    if (selectedConeId.value) selectedConeId.value = null;
+    return;
+  }
   if (multiSelectedIds.value.size > 0) {
     multiSelectedIds.value = new Set();
     updateMultiSelectIcons();
