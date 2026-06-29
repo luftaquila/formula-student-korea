@@ -41,7 +41,10 @@ test.describe("Inspection validation and SSE no-op semantics", () => {
 
   test("answer/memo for an item_id not in the requested year → 400", async ({ page }) => {
     // 미래 연도에 일회용 item을 만들고(이 노드는 YEAR에 존재하지 않음) 그 id를 YEAR 컨텍스트에서 쓴다.
-    const otherYear = YEAR + 7000 + (Date.now() % 1000); // 병렬 충돌 회피용 유니크 미래 연도
+    // PAST in-range year (2001-2008): distinct from YEAR/PREV_YEAR, and below the
+    // current year so the throwaway template never floats to the top of the
+    // inspection year dropdown (a future year would, breaking year-selector specs).
+    const otherYear = 2001 + (Date.now() % 8);
     const catRes = await page.request.post("/inspection/api/sheet/template", {
       data: { year: otherYear, level: "category", name: `E2E-VAL-CAT-${Date.now()}` },
     });
