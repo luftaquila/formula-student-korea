@@ -21,6 +21,7 @@ export default defineConfig({
     { name: "traffic", testDir: "./tests/e2e/traffic", dependencies: ["entry"], use: { browserName: "chromium" } },
     { name: "score", testDir: "./tests/e2e/score", dependencies: ["inspection", "traffic"], use: { browserName: "chromium" } },
     { name: "documents", testDir: "./tests/e2e/documents", dependencies: ["entry"], use: { browserName: "chromium" } },
+    { name: "course", testDir: "./tests/e2e/course", use: { browserName: "chromium" } },
     { name: "cross-service", testDir: "./tests/e2e/cross-service", dependencies: ["score"], use: { browserName: "chromium" } },
   ],
   reporter: [["html", { open: "never" }], ["list"], ...(process.env.CI ? [["github"], ["junit", { outputFile: "e2e-results.xml" }]] : [])],
