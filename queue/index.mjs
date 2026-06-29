@@ -65,7 +65,6 @@ db.transaction(() => {
   db.exec(`CREATE TABLE IF NOT EXISTS inspection (
     type TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    length INTEGER NOT NULL DEFAULT 0,
     active BOOLEAN NOT NULL DEFAULT TRUE,
     ignore_priority BOOLEAN NOT NULL DEFAULT FALSE,
     ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE
@@ -75,6 +74,25 @@ db.transaction(() => {
   addColumn(db, "inspection", "ignore_priority BOOLEAN NOT NULL DEFAULT FALSE");
   addColumn(db, "inspection", "ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE");
   addColumn(db, "inspection", "hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE");
+  {
+    const cols = db.prepare("PRAGMA table_info(inspection)").all().map((c) => c.name);
+    if (cols.includes("length")) {
+      db.transaction(() => {
+        db.exec(`CREATE TABLE inspection_new (
+          type TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          active BOOLEAN NOT NULL DEFAULT TRUE,
+          ignore_priority BOOLEAN NOT NULL DEFAULT FALSE,
+          ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE,
+          hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE
+        )`);
+        db.exec(`INSERT OR REPLACE INTO inspection_new (type, name, active, ignore_priority, ignore_reinspection, hidden_from_register)
+          SELECT type, name, active, ignore_priority, ignore_reinspection, hidden_from_register FROM inspection`);
+        db.exec("DROP TABLE inspection");
+        db.exec("ALTER TABLE inspection_new RENAME TO inspection");
+      })();
+    }
+  }
 
   // 팀별 검차별 우선순위 테이블 (0이 가장 높음, 숫자가 클수록 낮음)
   db.exec(`CREATE TABLE IF NOT EXISTS team_priority (

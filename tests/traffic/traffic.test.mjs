@@ -637,9 +637,9 @@ describe('SSE broadcast payloads', () => {
   });
 });
 
-// ─── Wireless: ingest & raw events ──────────────────────────────────────
+// ─── Wireless: ingest events ────────────────────────────────────────────
 describe('POST /api/wireless/ingest', () => {
-  it('stores raw events and preserves 64-bit master_tick as string', async () => {
+  it('stores events and preserves 64-bit master_tick as string', async () => {
     const bigTick = '1844674407370955161'; // > 2^53, must survive as string
     const res = await client.post('/api/wireless/ingest', {
       body: { events: [{ node_id: '1', master_tick: bigTick, ev_seq: 1, rssi: -70.5, snr: 9.25 }] },
@@ -656,6 +656,7 @@ describe('POST /api/wireless/ingest', () => {
     assert.ok(row, 'event row should be present');
     assert.equal(row.master_tick, bigTick, 'master_tick string preserved');
     assert.equal(row.rssi, -70.5);
+    assert.equal(Object.hasOwn(row, 'raw'), false);
   });
 
   it('is idempotent on (node_id, ev_seq, master_tick) — retransmits dedupe', async () => {

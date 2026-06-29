@@ -451,11 +451,9 @@ describe('POST /api/admin/cancel/:type', () => {
     db.prepare("DELETE FROM cancel_penalty WHERE num = 1 AND inspection = 'report'").run();
   });
 
-  it('handles current table (removes inspection from comma-separated list)', async () => {
+  it('handles current inspection state', async () => {
     // Entry 1 currently has battery,chassis (report was cancelled)
-    const current = db.prepare("SELECT * FROM current WHERE num = 1").get();
-    assert.ok(current);
-    const types = current.inspection.split(',');
+    const types = db.prepare("SELECT inspection FROM current_inspection WHERE num = 1").all().map((row) => row.inspection);
     assert.ok(!types.includes('report'));
     assert.ok(types.includes('battery'));
     assert.ok(types.includes('chassis'));
@@ -896,7 +894,7 @@ describe('Queue sorting', () => {
   before(async () => {
     // Clean up: cancel all entries in all queues, reset penalties
     for (const type of Object.keys(INSPECTIONS)) {
-      const queue = db.prepare(`SELECT num FROM '${type}'`).all();
+      const queue = db.prepare("SELECT num FROM inspection_queue WHERE inspection = ?").all(type);
       for (const entry of queue) {
         await client.post(`/api/admin/cancel/${type}`, {
           body: { num: entry.num },
@@ -905,7 +903,7 @@ describe('Queue sorting', () => {
       }
     }
     db.prepare("DELETE FROM cancel_penalty").run();
-    db.prepare("DELETE FROM current").run();
+    db.prepare("DELETE FROM current_inspection").run();
     // Keep history for entry 2 (it has inspection_history from booth exit)
     // Entry 1's history was cleared in the DELETE /api/admin/history test
   });
@@ -979,12 +977,10 @@ describe('Queue sorting with ignore flags', () => {
         }
       }
       // Clear queue tables
-      db.prepare(`DELETE FROM '${type}'`).run();
-      // Reset inspection length
-      db.prepare("UPDATE inspection SET length = 0 WHERE type = ?").run(type);
+      db.prepare("DELETE FROM inspection_queue WHERE inspection = ?").run(type);
     }
     db.prepare("DELETE FROM cancel_penalty").run();
-    db.prepare("DELETE FROM current").run();
+    db.prepare("DELETE FROM current_inspection").run();
 
     // Ensure the inspection type is active
     await client.patch(`/api/admin/inspection/${testType}`, {
@@ -1180,9 +1176,9 @@ describe('POST /api/state/:num (with registered entry)', () => {
     const data = await queue.json();
     if (!data.some(d => d.num === 1)) {
       // Clear current entry if needed
-      const current = db.prepare("SELECT * FROM current WHERE num = 1").get();
-      if (current) {
-        for (const type of current.inspection.split(',')) {
+      const current = db.prepare("SELECT inspection FROM current_inspection WHERE num = 1").all();
+      if (current.length) {
+        for (const { inspection: type } of current) {
           await client.post(`/api/admin/cancel/${type}`, { body: { num: 1 }, cookie: officialCookie });
         }
         db.prepare("DELETE FROM cancel_penalty WHERE num = 1").run();
@@ -1213,7 +1209,7 @@ describe('POST /api/state/:num (with registered entry)', () => {
 
   it('returns comma-separated queue names and ranks for multi-registered entry', async () => {
     // Clean up entry 3 state
-    db.prepare("DELETE FROM current WHERE num = 3").run();
+    db.prepare("DELETE FROM current_inspection WHERE num = 3").run();
     db.prepare("DELETE FROM cancel_penalty WHERE num = 3").run();
 
     // Register entry 3 in both battery and report (report is always compatible)
@@ -1298,10 +1294,10 @@ describe('DELETE /api/internal/team/:num', () => {
 describe('PATCH /api/internal/team-num', () => {
   it('renumbers queue rows, priorities, penalties, history, booths, and logs', async () => {
     const year = new Date().getFullYear();
-    db.prepare("INSERT OR REPLACE INTO braking (num, phone, timestamp, year) VALUES (?, ?, ?, ?)")
-      .run(903, '01033333333', Date.now(), year);
-    db.prepare("INSERT OR REPLACE INTO current (num, phone, inspection, year) VALUES (?, ?, ?, ?)")
-      .run(903, '01033333333', 'braking', year);
+    db.prepare("INSERT OR REPLACE INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES (?, ?, ?, ?, ?)")
+      .run('braking', 903, '01033333333', Date.now(), year);
+    db.prepare("INSERT OR REPLACE INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)")
+      .run(903, 'braking', '01033333333', year);
     db.prepare("INSERT OR REPLACE INTO team_priority (num, inspection, year, priority) VALUES (?, ?, ?, ?)")
       .run(903, 'braking', year, 2);
     db.prepare("INSERT OR REPLACE INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)")
@@ -1321,8 +1317,8 @@ describe('PATCH /api/internal/team-num', () => {
     });
     assert.equal(res.status, 200);
 
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM braking WHERE num = ? AND year = ?").get(904, year).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM current WHERE num = ? AND year = ?").get(904, year).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE inspection = ? AND num = ? AND year = ?").get('braking', 904, year).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM current_inspection WHERE inspection = ? AND num = ? AND year = ?").get('braking', 904, year).c, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_priority WHERE num = ? AND year = ?").get(904, year).c, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM cancel_penalty WHERE num = ? AND year = ?").get(904, year).c, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = ? AND year = ?").get(904, year).c, 1);

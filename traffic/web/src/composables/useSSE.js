@@ -32,7 +32,7 @@ export function onWirelessCommand(fn) {
 }
 export { wirelessLight, wirelessMapping, wirelessTelemetry, wirelessBridge, wirelessSessions };
 
-// ── raw 이벤트 디스패치 + 재연결 백필 ──────────────────────────────────────
+// ── 무선 이벤트 디스패치 + 재연결 백필 ──────────────────────────────────────
 // SSE가 잠깐 끊기면 그동안 broadcast된 wireless:event를 놓친다(브라우저 EventSource는
 // 재연결 시 누락분을 재생하지 않음). 재연결마다 서버 백필 API로 누락 id 구간을 다시 받아
 // 같은 fan-out으로 재생한다. 라이브와 백필이 같은 이벤트를 두 번 처리(이중 기록)하지 않도록

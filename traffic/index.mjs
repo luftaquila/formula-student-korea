@@ -85,12 +85,12 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_record_name_num ON record(name, num)");
 
 /* ============================================
    무선(LoRa) 계측 서브시스템 테이블
-   - 마스터 노드에 연결된 브리지 PC가 모든 센서의 raw 이벤트·진단·신호등 상태를
+   - 마스터 노드에 연결된 브리지 PC가 모든 센서의 타이밍 이벤트·진단·신호등 상태를
      서버로 push, 나머지 클라이언트는 SSE로 수신. (DESIGN §9)
    ============================================ */
 
-// 모든 센서의 raw 타이밍 이벤트(전부 영구 저장). master_tick은 64-bit라 TEXT로
-// 저장(JS 정수 정밀도 손실 방지). (node_id, ev_seq, master_tick) UNIQUE로 멱등 ingest.
+// 모든 센서의 타이밍 이벤트(전부 영구 저장). master_tick은 64-bit라 TEXT로 저장(JS 정수
+// 정밀도 손실 방지). (node_id, ev_seq, master_tick) UNIQUE로 멱등 ingest.
 db.exec(`CREATE TABLE IF NOT EXISTS wireless_event (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   node_id     TEXT NOT NULL,
@@ -99,10 +99,31 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_event (
   server_time TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   rssi        REAL,
   snr         REAL,
-  link_state  TEXT,
-  raw         TEXT
+  link_state  TEXT
 );`);
 db.exec("DROP INDEX IF EXISTS idx_wevent_server_time");
+{
+  const cols = db.prepare("PRAGMA table_info(wireless_event)").all().map((c) => c.name);
+  if (cols.includes("raw")) {
+    db.transaction(() => {
+      db.exec("DROP INDEX IF EXISTS idx_wevent_dedupe");
+      db.exec(`CREATE TABLE wireless_event_new (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        node_id     TEXT NOT NULL,
+        master_tick TEXT,
+        ev_seq      INTEGER,
+        server_time TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        rssi        REAL,
+        snr         REAL,
+        link_state  TEXT
+      )`);
+      db.exec(`INSERT INTO wireless_event_new (id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state)
+        SELECT id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state FROM wireless_event`);
+      db.exec("DROP TABLE wireless_event");
+      db.exec("ALTER TABLE wireless_event_new RENAME TO wireless_event");
+    })();
+  }
+}
 // 멱등 dedup 키. ev_seq는 2바이트(DESIGN §9)라 65536에서 wrap하고 노드 재부팅 시 0부터
 // 재시작하므로 (node_id, ev_seq)만으로는 재사용된 seq의 새 이벤트가 옛 행과 충돌해 조용히
 // 버려졌다. master_tick(ev_master_t)은 재전송에도 보존되고 이벤트마다 고유(DESIGN §9)이므로
@@ -400,7 +421,7 @@ function controllerEmail(c) {
 }
 
 /* ── 서버 권위 기록 엔진 ──────────────────────────────────────────────
- * ingest로 들어온 raw 이벤트를 매핑·세션으로 라우팅해 서버가 직접 기록을 계산·저장한다.
+ * ingest로 들어온 타이밍 이벤트를 매핑·세션으로 라우팅해 서버가 직접 기록을 계산·저장한다.
  * 클라(StartFinishView/SkidpadView)의 onSensor 로직과 동일 의미: start/finish(accel·오토크로스),
  * skidpad lap2+lap4 합산. green=arm이라 t0는 출발 센서. 디바운스는 클라와 같은 tick 기준.
  * 세션에 team·event_name(선택 공유)이 있을 때만 persist — 없으면 표시만(클라가 라이브 계산).
@@ -565,7 +586,7 @@ function processRecordEngine(rows) {
     }
   }
 }
-// 최신 raw 이벤트 id. 클라이언트가 (재)연결 시 백필 기준점으로 사용.
+// 최신 무선 이벤트 id. 클라이언트가 (재)연결 시 백필 기준점으로 사용.
 function getLastEventId() {
   const row = db.prepare("SELECT MAX(id) AS m FROM wireless_event").get();
   return row && row.m != null ? row.m : 0;
@@ -629,7 +650,7 @@ const leaseWatch = setInterval(() => {
 }, 5000);
 leaseWatch.unref?.();
 
-// raw 이벤트 보존 한도(약 50만 행). 백그라운드 트림.
+// 무선 이벤트 보존 한도(약 50만 행). 백그라운드 트림.
 const RETAIN_EVENTS = 500000;
 const eventRetention = setInterval(() => {
   try {
@@ -1165,7 +1186,7 @@ app.put("/api/event-modes/:type", (req, res) => {
    API 라우트: /api/wireless (무선 LoRa 계측)
    ============================================ */
 
-// POST /api/wireless/ingest - 브리지가 모든 센서의 raw 이벤트 + 진단을 push.
+// POST /api/wireless/ingest - 브리지가 모든 센서의 타이밍 이벤트 + 진단을 push.
 // 성공은 로그하지 않음(텔레메트리 firehose); 실패·브리지 전환만 로그.
 app.post("/api/wireless/ingest", (req, res) => {
   const body = req.body || {};
@@ -1183,7 +1204,7 @@ app.post("/api/wireless/ingest", (req, res) => {
     let rejected = 0;
     const reasons = {}; // 사유별 카운트(로깅용)
     const reject = (why) => { rejected++; reasons[why] = (reasons[why] || 0) + 1; };
-    const ins = db.prepare("INSERT OR IGNORE INTO wireless_event (node_id, master_tick, ev_seq, rssi, snr, link_state, raw) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    const ins = db.prepare("INSERT OR IGNORE INTO wireless_event (node_id, master_tick, ev_seq, rssi, snr, link_state) VALUES (?, ?, ?, ?, ?, ?)");
     const sel = db.prepare("SELECT id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state FROM wireless_event WHERE id = ?");
     // 불량 항목 하나가 배치 전체를 날리지 않도록 throw 대신 skip — 시리얼 라인 깨짐 등으로
     // 한 줄이 망가져도 같은 flush에 묶인 정상 이벤트는 저장·broadcast된다.
@@ -1197,7 +1218,7 @@ app.post("/api/wireless/ingest", (req, res) => {
       const rssi = typeof e.rssi === "number" ? e.rssi : null;
       const snr = typeof e.snr === "number" ? e.snr : null;
       const link = typeof e.link_state === "string" ? e.link_state : null;
-      const info = ins.run(String(e.node_id), tick, evSeq, rssi, snr, link, JSON.stringify(e));
+      const info = ins.run(String(e.node_id), tick, evSeq, rssi, snr, link);
       if (info.changes > 0) { inserted.push(sel.get(Number(info.lastInsertRowid))); }
       else { deduped++; }
     }
@@ -1652,7 +1673,7 @@ app.get("/api/wireless/state", (req, res) => {
   res.json(result.result);
 });
 
-// GET /api/wireless/events?since=&limit= - 늦게 합류한 클라이언트의 raw 이벤트 백필.
+// GET /api/wireless/events?since=&limit= - 늦게 합류한 클라이언트의 이벤트 백필.
 app.get("/api/wireless/events", (req, res) => {
   const since = Number.parseInt(req.query.since, 10);
   const sinceId = Number.isFinite(since) ? since : 0;
@@ -1660,7 +1681,7 @@ app.get("/api/wireless/events", (req, res) => {
   if (!Number.isFinite(limit)) limit = 200;
   limit = Math.max(1, Math.min(limit, 1000));
   const result = dbRun(() =>
-    db.prepare("SELECT id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state, raw FROM wireless_event WHERE id > ? ORDER BY id ASC LIMIT ?").all(sinceId, limit),
+    db.prepare("SELECT id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state FROM wireless_event WHERE id > ? ORDER BY id ASC LIMIT ?").all(sinceId, limit),
   );
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result);
