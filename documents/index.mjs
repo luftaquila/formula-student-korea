@@ -1249,7 +1249,10 @@ app.patch("/api/internal/team-num", (req, res) => {
          OR EXISTS (SELECT 1 FROM submission WHERE session_id = ? AND team_num = ?)
     `).get(s.id, newNum, s.id, newNum);
     try {
-      if ((staleTarget || fs.existsSync(oldDir)) && fs.existsSync(newDir)) {
+      if (!staleTarget && fs.existsSync(oldDir) && fs.existsSync(newDir)) {
+        throw new Error("target upload directory already exists");
+      }
+      if (staleTarget && fs.existsSync(newDir)) {
         const backupDir = path.join(TMP_DIR, `renumber-${s.id}-${crypto.randomUUID()}`);
         fs.renameSync(newDir, backupDir);
         backupDirs.push({ backupDir, newDir });

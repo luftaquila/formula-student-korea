@@ -293,7 +293,9 @@ async function processLifecycleOutboxBatch({ ids = null, limit = 50 } = {}) {
       LIMIT ?
     `).all(now, limit);
   }
-  await Promise.all(rows.map((row) => deliverLifecycleRow(row)));
+  for (let i = 0; i < rows.length; i += limit) {
+    await Promise.all(rows.slice(i, i + limit).map((row) => deliverLifecycleRow(row)));
+  }
 }
 
 function processLifecycleOutbox(options = {}) {

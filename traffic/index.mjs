@@ -17,7 +17,7 @@ const db = createDatabase(Database, options.dbPath || "./data/traffic.db");
 // 동적 기록 테이블과 구분되는 예약 테이블 이름. 동적 테이블을 열거하는 모든
 // 쿼리에서 제외해야 한다(아래 reservedSql).
 const RESERVED_TABLES = [
-  "controller", "event_mode", "record_visibility", "logs",
+  "controller", "event_mode", "record_visibility", "record", "logs",
   "wireless_event", "wireless_mapping", "wireless_telemetry", "wireless_light", "wireless_session",
 ];
 const reservedSql = RESERVED_TABLES.map((n) => `'${n}'`).join(", ");
@@ -34,6 +34,10 @@ db.exec(`CREATE TRIGGER IF NOT EXISTS trg_controller_retention
     DELETE FROM controller
     WHERE rowid <= COALESCE((SELECT MAX(rowid) FROM controller), 0) - ${CONTROLLER_MAX_ROWS};
   END;`);
+db.prepare(`
+  DELETE FROM controller
+  WHERE rowid <= COALESCE((SELECT MAX(rowid) FROM controller), 0) - ?
+`).run(CONTROLLER_MAX_ROWS);
 
 db.exec(`CREATE TABLE IF NOT EXISTS event_mode (
   event_type TEXT PRIMARY KEY,
@@ -44,6 +48,41 @@ db.exec(`CREATE TABLE IF NOT EXISTS record_visibility (
   name TEXT PRIMARY KEY,
   visible INTEGER NOT NULL DEFAULT 1
 );`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS record (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  legacy_rowid INTEGER NOT NULL,
+  time TEXT NOT NULL,
+  num INTEGER NOT NULL,
+  univ TEXT NOT NULL,
+  team TEXT NOT NULL,
+  type TEXT NOT NULL,
+  result INTEGER NOT NULL,
+  detail TEXT,
+  cones INTEGER DEFAULT 0,
+  oc INTEGER DEFAULT 0,
+  invalidated INTEGER DEFAULT 0,
+  scoreboard INTEGER DEFAULT 1
+);`);
+{
+  const cols = db.prepare("PRAGMA table_info(record)").all().map((c) => c.name);
+  if (!cols.includes("legacy_rowid")) {
+    db.exec("ALTER TABLE record ADD COLUMN legacy_rowid INTEGER");
+    db.exec(`
+      WITH ranked AS (
+        SELECT id, ROW_NUMBER() OVER (PARTITION BY name ORDER BY id) AS rn
+        FROM record
+      )
+      UPDATE record
+      SET legacy_rowid = (SELECT rn FROM ranked WHERE ranked.id = record.id)
+      WHERE legacy_rowid IS NULL
+    `);
+  }
+}
+db.exec("CREATE INDEX IF NOT EXISTS idx_record_name_id ON record(name, id)");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_record_name_legacy_rowid ON record(name, legacy_rowid)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_record_name_num ON record(name, num)");
 
 /* ============================================
    무선(LoRa) 계측 서브시스템 테이블
@@ -101,6 +140,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_telemetry (
   link_state  TEXT
 );`);
 db.exec("DROP INDEX IF EXISTS idx_wtel_node_time");
+db.prepare(`
+  DELETE FROM wireless_telemetry
+  WHERE id <= COALESCE((SELECT MAX(id) FROM wireless_telemetry), 0) - ?
+`).run(WIRELESS_TELEMETRY_MAX_ROWS);
 
 // 신호등/콘솔 단일 상태(점유 잠금 + 현재 색 + green tick) + 무선 공용 설정(센서 디바운스
 // 창). 서버 재시작에도 유지. debounce_ms: 한 통과의 다중 엣지(바운스)를 접는 간격(ms).
@@ -157,7 +200,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_session (
   ).run(...EVENT_TYPES);
 }
 
-// 기존 동적 테이블들에 누락 컬럼 추가 (startup에서 1회 실행)
+// 기존 record별 동적 테이블을 단일 record 테이블로 흡수한다. legacy 테이블은
+// 기록 삭제 시 함께 drop된다. 이미 흡수된 이름은 중복 import하지 않는다.
 {
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN (${reservedSql})`)
@@ -165,6 +209,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_session (
   for (const { name } of tables) {
     if (!/^[A-Za-z0-9가-힣 .\-_]+$/.test(name)) continue;
     const columns = db.prepare(`PRAGMA table_info('${name}')`).all();
+    const hasColumn = (col) => columns.some((c) => c.name === col);
+    const hasRequired = ["time", "num", "univ", "team", "type", "result"].every(hasColumn);
+    if (!hasRequired) continue;
+    const detailExpr = hasColumn("detail") ? "detail" : "NULL";
     if (!columns.some((c) => c.name === "invalidated")) {
       db.exec(`ALTER TABLE '${name}' ADD COLUMN invalidated INTEGER DEFAULT 0`);
     }
@@ -177,6 +225,17 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_session (
     }
     if (!columns.some((c) => c.name === "oc")) {
       db.exec(`ALTER TABLE '${name}' ADD COLUMN oc INTEGER DEFAULT 0`);
+    }
+    const migrated = db.prepare("SELECT 1 FROM record WHERE name = ? LIMIT 1").get(name);
+    if (!migrated) {
+      db.prepare(`
+        INSERT INTO record (name, legacy_rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard)
+        SELECT ?, rowid, time, num, univ, team, type, result, ${detailExpr},
+               COALESCE(cones, 0), COALESCE(oc, 0), COALESCE(invalidated, 0), COALESCE(scoreboard, 1)
+        FROM '${name}'
+        ORDER BY rowid
+      `).run(name);
+      db.prepare("INSERT OR IGNORE INTO record_visibility (name, visible) VALUES (?, 1)").run(name);
     }
   }
 }
@@ -211,14 +270,44 @@ const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 function getRecordFiles() {
   return db
-    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN (${reservedSql})`)
+    .prepare("SELECT DISTINCT name FROM record ORDER BY name")
     .all()
-    .map((table) => table.name)
-    .filter((name) => /^[A-Za-z0-9가-힣 .\-_]+$/.test(name));
+    .map((row) => row.name);
 }
 
 function getYearRecordFiles(year) {
   return getRecordFiles().filter((name) => name.startsWith(`FSK ${Number(year)} `));
+}
+
+function getRecordRows(name) {
+  return db.prepare(`
+    SELECT legacy_rowid AS rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard
+    FROM record
+    WHERE name = ?
+    ORDER BY legacy_rowid
+  `).all(name);
+}
+
+function getRecordRow(name, rowid) {
+  return db.prepare(`
+    SELECT legacy_rowid AS rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard
+    FROM record
+    WHERE name = ? AND legacy_rowid = ?
+  `).get(name, rowid);
+}
+
+function recordFileExists(name) {
+  return !!db.prepare("SELECT 1 FROM record WHERE name = ? LIMIT 1").get(name);
+}
+
+function insertRecordRow(name, data) {
+  db.prepare("INSERT OR IGNORE INTO record_visibility (name, visible) VALUES (?, 1)").run(name);
+  const nextRowid = db.prepare("SELECT COALESCE(MAX(legacy_rowid), 0) + 1 AS value FROM record WHERE name = ?").get(name).value;
+  db.prepare(`
+    INSERT INTO record (name, legacy_rowid, time, num, univ, team, type, result, detail)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(name, nextRowid, data.time, data.entry.num, data.entry.univ, data.entry.team, data.type, data.result, data.detail ?? null);
+  return getRecordRow(name, nextRowid);
 }
 
 function getEventModes() {
@@ -352,20 +441,7 @@ function engineSaveRecord(eventType, binding, result, detail) {
     return false;
   }
   const name = `FSK ${new Date().getFullYear()} ${nv.value}`;
-  const r = dbRun(() => db.transaction(() => {
-    const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name);
-    if (!exists) {
-      db.exec(`CREATE TABLE IF NOT EXISTS '${name}' (
-        time TEXT NOT NULL, num INTEGER NOT NULL, univ TEXT NOT NULL, team TEXT NOT NULL,
-        type TEXT NOT NULL, result INTEGER NOT NULL, detail TEXT,
-        cones INTEGER DEFAULT 0, oc INTEGER DEFAULT 0, invalidated INTEGER DEFAULT 0, scoreboard INTEGER DEFAULT 1
-      );`);
-      db.prepare("INSERT OR IGNORE INTO record_visibility (name, visible) VALUES (?, 1)").run(name);
-    }
-    db.prepare(`INSERT INTO '${name}' (time, num, univ, team, type, result, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(data.time, t.num, t.univ, t.team, eventType, result, data.detail);
-    return db.prepare(`SELECT rowid, * FROM '${name}' WHERE rowid = last_insert_rowid()`).get();
-  })());
+  const r = dbRun(() => db.transaction(() => insertRecordRow(name, data))());
   if (!r.success) {
     logger.warn(null, "wireless.record", { error: r.error, event_type: eventType }, name, SYS);
     return false;
@@ -397,20 +473,7 @@ function enduranceUpsertRecord(eventType, binding, run) {
       logger.warn(null, "wireless.record", { error: dv.error, event_type: eventType }, nv.value, SYS);
       return;
     }
-    const r = dbRun(() => db.transaction(() => {
-      const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name);
-      if (!exists) {
-        db.exec(`CREATE TABLE IF NOT EXISTS '${name}' (
-          time TEXT NOT NULL, num INTEGER NOT NULL, univ TEXT NOT NULL, team TEXT NOT NULL,
-          type TEXT NOT NULL, result INTEGER NOT NULL, detail TEXT,
-          cones INTEGER DEFAULT 0, oc INTEGER DEFAULT 0, invalidated INTEGER DEFAULT 0, scoreboard INTEGER DEFAULT 1
-        );`);
-        db.prepare("INSERT OR IGNORE INTO record_visibility (name, visible) VALUES (?, 1)").run(name);
-      }
-      db.prepare(`INSERT INTO '${name}' (time, num, univ, team, type, result, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .run(data.time, t.num, t.univ, t.team, eventType, total, detail);
-      return db.prepare(`SELECT rowid, * FROM '${name}' WHERE rowid = last_insert_rowid()`).get();
-    })());
+    const r = dbRun(() => db.transaction(() => insertRecordRow(name, data))());
     if (!r.success) {
       logger.warn(null, "wireless.record", { error: r.error, event_type: eventType }, name, SYS);
       return;
@@ -422,8 +485,8 @@ function enduranceUpsertRecord(eventType, binding, run) {
   } else {
     // 이후 랩: 같은 행 UPDATE(총합·랩 목록).
     const r = dbRun(() => {
-      db.prepare(`UPDATE '${run.recordName}' SET result = ?, detail = ? WHERE rowid = ?`).run(total, detail, run.recordRowid);
-      return db.prepare(`SELECT rowid, * FROM '${run.recordName}' WHERE rowid = ?`).get(run.recordRowid);
+      db.prepare("UPDATE record SET result = ?, detail = ? WHERE name = ? AND legacy_rowid = ?").run(total, detail, run.recordName, run.recordRowid);
+      return getRecordRow(run.recordName, run.recordRowid);
     });
     if (!r.success) {
       logger.warn(null, "wireless.record", { error: r.error, event_type: eventType }, run.recordName, SYS);
@@ -604,7 +667,7 @@ function validateRecordName(name) {
 }
 
 function tableExists(name) {
-  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name);
+  return recordFileExists(name);
 }
 
 function validateRecordData(data) {
@@ -717,10 +780,7 @@ app.get("/api/records/year/:year", (req, res) => {
       .filter((name) => visibility[name] !== false)
       .map((name) => ({
         name,
-        records: db.prepare(`
-          SELECT rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard
-          FROM '${name}'
-        `).all(),
+        records: getRecordRows(name),
       }));
   });
 
@@ -774,9 +834,7 @@ app.get("/api/records/:name", (req, res) => {
     return res.status(404).send("기록을 찾을 수 없습니다.");
   }
 
-  const result = dbRun(() => {
-    return db.prepare(`SELECT rowid, * FROM '${name}'`).all();
-  });
+  const result = dbRun(() => getRecordRows(name));
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
@@ -801,31 +859,7 @@ app.post("/api/records", (req, res) => {
   const data = req.body.data;
 
   const result = dbRun(() => {
-    return db.transaction(() => {
-      const table = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name = ?`).get(name);
-
-      if (!table) {
-        db.exec(`CREATE TABLE IF NOT EXISTS '${name}' (
-          time TEXT NOT NULL,
-          num INTEGER NOT NULL,
-          univ TEXT NOT NULL,
-          team TEXT NOT NULL,
-          type TEXT NOT NULL,
-          result INTEGER NOT NULL,
-          detail TEXT,
-          cones INTEGER DEFAULT 0,
-          oc INTEGER DEFAULT 0,
-          invalidated INTEGER DEFAULT 0,
-          scoreboard INTEGER DEFAULT 1
-        );`);
-        db.prepare("INSERT OR IGNORE INTO record_visibility (name, visible) VALUES (?, 1)").run(name);
-      }
-
-      db.prepare(
-        `INSERT INTO '${name}' (time, num, univ, team, type, result, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(data.time, data.entry.num, data.entry.univ, data.entry.team, data.type, data.result, data.detail);
-      return db.prepare(`SELECT rowid, * FROM '${name}' WHERE rowid = last_insert_rowid()`).get();
-    })();
+    return db.transaction(() => insertRecordRow(name, data))();
   });
 
   if (!result.success) {
@@ -875,7 +909,7 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   }
 
   const result = dbRun(() => {
-    const row = db.prepare(`SELECT num, invalidated, scoreboard, cones, oc FROM '${name}' WHERE rowid = ?`).get(rowid);
+    const row = db.prepare("SELECT num, invalidated, scoreboard, cones, oc FROM record WHERE name = ? AND legacy_rowid = ?").get(name, rowid);
     if (!row) {
       const err = new Error("기록을 찾을 수 없습니다.");
       err.status = 404;
@@ -886,29 +920,29 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
       const newStatus = row.invalidated ? 0 : 1;
       if (newStatus === 1) {
         // 무효화 ON → 전광판도 자동 OFF
-        db.prepare(`UPDATE '${name}' SET invalidated = 1, scoreboard = 0 WHERE rowid = ?`).run(rowid);
+        db.prepare("UPDATE record SET invalidated = 1, scoreboard = 0 WHERE name = ? AND legacy_rowid = ?").run(name, rowid);
         return { num: row.num, invalidated: 1, scoreboard: 0 };
       } else {
-        db.prepare(`UPDATE '${name}' SET invalidated = 0, scoreboard = 1 WHERE rowid = ?`).run(rowid);
+        db.prepare("UPDATE record SET invalidated = 0, scoreboard = 1 WHERE name = ? AND legacy_rowid = ?").run(name, rowid);
         return { num: row.num, invalidated: 0, scoreboard: 1 };
       }
     } else if (field === "scoreboard") {
       const newStatus = row.scoreboard ? 0 : 1;
-      db.prepare(`UPDATE '${name}' SET scoreboard = ? WHERE rowid = ?`).run(newStatus, rowid);
+      db.prepare("UPDATE record SET scoreboard = ? WHERE name = ? AND legacy_rowid = ?").run(newStatus, name, rowid);
       return { num: row.num, invalidated: row.invalidated, scoreboard: newStatus };
     } else if (field === "detail") {
-      db.prepare(`UPDATE '${name}' SET detail = ? WHERE rowid = ?`).run(value ?? null, rowid);
+      db.prepare("UPDATE record SET detail = ? WHERE name = ? AND legacy_rowid = ?").run(value ?? null, name, rowid);
       return { num: row.num, invalidated: row.invalidated, scoreboard: row.scoreboard, detail: value ?? null };
     } else if (field === "result") {
-      db.prepare(`UPDATE '${name}' SET result = ? WHERE rowid = ?`).run(value, rowid);
+      db.prepare("UPDATE record SET result = ? WHERE name = ? AND legacy_rowid = ?").run(value, name, rowid);
       return { num: row.num, invalidated: row.invalidated, scoreboard: row.scoreboard, result: value };
     } else if (field === "cones") {
       const numValue = Math.max(0, parseInt(value, 10) || 0);
-      db.prepare(`UPDATE '${name}' SET cones = ? WHERE rowid = ?`).run(numValue, rowid);
+      db.prepare("UPDATE record SET cones = ? WHERE name = ? AND legacy_rowid = ?").run(numValue, name, rowid);
       return { num: row.num, cones: numValue };
     } else if (field === "oc") {
       const numValue = Math.max(0, parseInt(value, 10) || 0);
-      db.prepare(`UPDATE '${name}' SET oc = ? WHERE rowid = ?`).run(numValue, rowid);
+      db.prepare("UPDATE record SET oc = ? WHERE name = ? AND legacy_rowid = ?").run(numValue, name, rowid);
       return { num: row.num, oc: numValue };
     }
   });
@@ -922,7 +956,7 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
 
   // SSE 브로드캐스트 (업데이트된 전체 행 포함)
   try {
-    const updatedRow = db.prepare(`SELECT rowid, * FROM '${name}' WHERE rowid = ?`).get(rowid);
+    const updatedRow = getRecordRow(name, rowid);
     broadcastEvent("records", { type: "update", name, field, recordFiles: getRecordFiles(), record: updatedRow });
   } catch (e) {
     logger.warn(req, "record.update", { error: e.message, phase: "sse_broadcast" }, name);
@@ -945,7 +979,9 @@ app.delete("/api/records/:name", (req, res) => {
   }
 
   const result = dbRun(() => {
-    db.exec(`DROP TABLE IF EXISTS '${name}'`);
+    db.prepare("DELETE FROM record WHERE name = ?").run(name);
+    const legacy = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? AND name NOT IN (${reservedSql})`).get(name);
+    if (legacy) db.exec(`DROP TABLE IF EXISTS '${name}'`);
     db.prepare("DELETE FROM record_visibility WHERE name = ?").run(name);
   });
 
@@ -975,11 +1011,11 @@ app.delete("/api/internal/team/:num", (req, res) => {
   if (!Number.isInteger(year)) return res.status(400).send("연도를 지정해야 합니다.");
 
   const result = dbRun(() => {
-    let changed = 0;
-    for (const name of getYearRecordFiles(year)) {
-      changed += db.prepare(`UPDATE '${name}' SET invalidated = 1, scoreboard = 0 WHERE num = ?`).run(num).changes;
-    }
-    return changed;
+    return db.prepare(`
+      UPDATE record
+      SET invalidated = 1, scoreboard = 0
+      WHERE name LIKE ? AND num = ?
+    `).run(`FSK ${year} %`, num).changes;
   });
 
   if (!result.success) {
@@ -1016,10 +1052,10 @@ app.patch("/api/internal/team-num", (req, res) => {
       params.push(entry.team.trim());
     }
     for (const name of getYearRecordFiles(year)) {
-      const existing = db.prepare(`SELECT COUNT(*) AS count FROM '${name}' WHERE num = ?`).get(prevNum).count;
+      const existing = db.prepare("SELECT COUNT(*) AS count FROM record WHERE name = ? AND num = ?").get(name, prevNum).count;
       if (existing === 0) continue;
-      db.prepare(`UPDATE '${name}' SET invalidated = 1, scoreboard = 0 WHERE num = ?`).run(newNum);
-      changed += db.prepare(`UPDATE '${name}' SET ${updates.join(", ")} WHERE num = ?`).run(...params, prevNum).changes;
+      db.prepare("UPDATE record SET invalidated = 1, scoreboard = 0 WHERE name = ? AND num = ?").run(name, newNum);
+      changed += db.prepare(`UPDATE record SET ${updates.join(", ")} WHERE name = ? AND num = ?`).run(...params, name, prevNum).changes;
     }
     return changed;
   });

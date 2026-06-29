@@ -93,6 +93,7 @@ function pruneEmailLog() {
     WHERE id <= COALESCE((SELECT MAX(id) FROM email_log), 0) - ?
   `).run(EMAIL_LOG_MAX_ROWS);
 }
+pruneEmailLog();
 
 function requireInternalRequest(req, res) {
   if (req.user?.email === "internal" && req.user?.role === "admin") return true;
