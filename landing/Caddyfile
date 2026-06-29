@@ -74,7 +74,7 @@
 	# Course service (map tiles require relaxed CSP)
 	redir /course /course/
 	handle_path /course/* {
-		header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https://mt0.google.com https://mt1.google.com https://mt2.google.com https://mt3.google.com; connect-src 'self'; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; frame-ancestors 'self'"
+		header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https://mt0.google.com https://mt1.google.com https://mt2.google.com https://mt3.google.com https://api.vworld.kr; connect-src 'self'; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; frame-ancestors 'self'"
 
 		# Rover-side SSE/REST endpoints authenticate via X-Internal-Service.
 		# The rover sits on the open internet (no Tailscale) so on these
