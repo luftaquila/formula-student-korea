@@ -116,17 +116,23 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(m
   const info = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='cone'").get();
   if (info && !info.sql.includes("center")) {
     db.transaction(() => {
+      // 위 alt ADD COLUMN 마이그레이션이 먼저 실행되므로 이 시점의 cone에는 항상
+      // alt가 존재한다(8컬럼). cone_new에도 alt를 두고 컬럼을 명시적으로 나열해
+      // 복사한다 — `SELECT *`는 cone(8) vs cone_new 컬럼 수가 어긋나면 기동 시
+      // "N columns but M values were supplied"로 throw해 서비스가 뜨지 못한다.
       db.exec(`CREATE TABLE cone_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         course_id INTEGER NOT NULL,
         lat REAL NOT NULL,
         lng REAL NOT NULL,
+        alt REAL,
         side TEXT NOT NULL CHECK(side IN ('left', 'right', 'center')),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
       )`);
-      db.exec(`INSERT INTO cone_new SELECT * FROM cone`);
+      db.exec(`INSERT INTO cone_new (id, course_id, lat, lng, alt, side, created_at, updated_at)
+               SELECT id, course_id, lat, lng, alt, side, created_at, updated_at FROM cone`);
       db.exec(`DROP TABLE cone`);
       db.exec(`ALTER TABLE cone_new RENAME TO cone`);
       db.exec(`CREATE INDEX IF NOT EXISTS idx_cone_course ON cone(course_id)`);

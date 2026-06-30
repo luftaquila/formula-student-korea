@@ -1592,6 +1592,54 @@ describe('Mission schema migration', () => {
   });
 });
 
+describe('Cone schema migration (center + alt ordering)', () => {
+  it('migrates a pre-center, pre-alt cone table without a column-count crash', async () => {
+    // Regression guard: the alt ADD COLUMN migration runs before the 'center'
+    // CHECK-constraint rebuild, so at rebuild time cone has 8 columns. If that
+    // rebuild copied via `INSERT INTO cone_new SELECT *` into a 7-column
+    // cone_new (no alt), the startup transaction would throw "7 columns but 8
+    // values were supplied" and the service would not boot.
+    const Database = db.constructor;
+    const p = tmpDbPath();
+    const raw = new Database(p);
+    raw.pragma("foreign_keys = ON");
+    raw.exec(`CREATE TABLE course (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE)`);
+    raw.prepare("INSERT INTO course (name) VALUES (?)").run('legacy-course');
+    // OLD schema: no alt column, CHECK without 'center'.
+    raw.exec(`CREATE TABLE cone (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      course_id INTEGER NOT NULL,
+      lat REAL NOT NULL,
+      lng REAL NOT NULL,
+      side TEXT NOT NULL CHECK(side IN ('left', 'right')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
+    )`);
+    raw.prepare("INSERT INTO cone (course_id, lat, lng, side) VALUES (1, ?, ?, 'left')").run(37.5, 126.9);
+    raw.close();
+
+    // Opening the app runs the migrations — this is the step that crashed.
+    const { createCourseApp } = await import('../../course/index.mjs?v=conemigrate');
+    let result;
+    assert.doesNotThrow(() => { result = createCourseApp({ dbPath: p }); }, 'app must boot on a pre-center, pre-alt cone DB');
+    try {
+      // Legacy cone row preserved through the rebuild; alt defaulted to null.
+      const row = result.db.prepare("SELECT * FROM cone WHERE id = 1").get();
+      assert.equal(row.side, 'left');
+      assert.equal(row.lat, 37.5);
+      assert.equal(row.alt, null, 'alt column present and null for the legacy row');
+      // Widened CHECK now accepts 'center'.
+      assert.doesNotThrow(() => {
+        result.db.prepare("INSERT INTO cone (course_id, lat, lng, side) VALUES (1, ?, ?, 'center')").run(37.6, 126.8);
+      });
+    } finally {
+      result.db.close();
+      cleanup(p);
+    }
+  });
+});
+
 // ─── Camera relay (MJPEG) ───────────────────────────────────────────────
 describe('Camera relay', () => {
   let srv, url, cli, localDb, localDbPath;
