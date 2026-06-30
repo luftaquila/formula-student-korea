@@ -11,6 +11,7 @@ async function waitForServices(maxRetries = 30, intervalMs = 2000) {
     "/score/api/health",
     "/documents/api/health",
     "/course/api/health",
+    "/calendar/api/health",
   ];
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {

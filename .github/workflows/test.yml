@@ -96,6 +96,8 @@ jobs:
               - 'documents/**'
             course:
               - 'course/**'
+            calendar:
+              - 'calendar/**'
 
       - name: Plan builds vs pulls
         id: plan
@@ -111,13 +113,14 @@ jobs:
           F_SCORE: ${{ steps.filter.outputs.score }}
           F_DOCUMENTS: ${{ steps.filter.outputs.documents }}
           F_COURSE: ${{ steps.filter.outputs.course }}
+          F_CALENDAR: ${{ steps.filter.outputs.calendar }}
         run: |
           declare -A F=(
             [auth]="$F_AUTH" [entry]="$F_ENTRY" [queue]="$F_QUEUE"
             [inspection]="$F_INSPECTION" [traffic]="$F_TRAFFIC" [score]="$F_SCORE"
-            [documents]="$F_DOCUMENTS" [course]="$F_COURSE"
+            [documents]="$F_DOCUMENTS" [course]="$F_COURSE" [calendar]="$F_CALENDAR"
           )
-          STD=(auth entry queue inspection traffic score documents course)
+          STD=(auth entry queue inspection traffic score documents course calendar)
           rebuild_all=false
           if [ "$SHARED" = "true" ] || [ "$DOCKERFILE_SVC" = "true" ]; then rebuild_all=true; fi
           build=(); pull=()
@@ -168,6 +171,8 @@ jobs:
             projects: --project=inspection --project=documents
           - shard: score-entry-course
             projects: --project=score --project=entry --project=course
+          - shard: calendar-security
+            projects: --project=calendar --project=security
 
     steps:
       - uses: actions/checkout@v6
@@ -269,7 +274,7 @@ jobs:
       # services are actually up within a few seconds.
       - name: Start services
         run: |
-          docker compose up -d --no-build auth entry queue inspection traffic score documents course
+          docker compose up -d --no-build auth entry queue inspection traffic score documents course calendar
           docker compose --profile local up -d --no-deps --no-build caddy-local
 
       - uses: actions/setup-node@v6
