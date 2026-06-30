@@ -2,7 +2,7 @@ import https from "https";
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, addColumn } from "../shared/db-setup.mjs";
+import { createDatabase, addColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
@@ -199,28 +199,8 @@ db.transaction(() => {
   // loadSmsConfig()에서 비동기로 확인 후 활성화
 
   // year-aware indexes are created after the year-column migration below.
-  db.exec(`DROP TRIGGER IF EXISTS trg_queue_log_retention`);
-  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_queue_log_retention
-    AFTER INSERT ON queue_log
-    BEGIN
-      DELETE FROM queue_log
-      WHERE id <= COALESCE((SELECT MAX(id) FROM queue_log), 0) - ${QUEUE_LOG_MAX_ROWS};
-    END;`);
-  db.prepare(`
-    DELETE FROM queue_log
-    WHERE id <= COALESCE((SELECT MAX(id) FROM queue_log), 0) - ?
-  `).run(QUEUE_LOG_MAX_ROWS);
-  db.exec(`DROP TRIGGER IF EXISTS trg_booth_log_retention`);
-  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_booth_log_retention
-    AFTER INSERT ON booth_log
-    BEGIN
-      DELETE FROM booth_log
-      WHERE id <= COALESCE((SELECT MAX(id) FROM booth_log), 0) - ${BOOTH_LOG_MAX_ROWS};
-    END;`);
-  db.prepare(`
-    DELETE FROM booth_log
-    WHERE id <= COALESCE((SELECT MAX(id) FROM booth_log), 0) - ?
-  `).run(BOOTH_LOG_MAX_ROWS);
+  setupRowCapRetention(db, "queue_log", QUEUE_LOG_MAX_ROWS);
+  setupRowCapRetention(db, "booth_log", BOOTH_LOG_MAX_ROWS);
 })();
 
 // 연도 컬럼 마이그레이션 (기존 스키마 생성과 분리)

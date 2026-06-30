@@ -367,6 +367,9 @@ async function deliverLifecycleRow(row, options = {}) {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) throw new Error(`status ${res.status}`);
+    // 202 = downstream이 DB 변경은 커밋했으나 후속 작업(파일 이동 등)이 재시도 대기 중.
+    // 파일까지 정합 상태가 될 때까지 renumber를 "미완료"로 보고 재시도한다 — 그 사이
+    // assertNoPendingLifecycleRefs가 같은 번호의 추가 편집을 막아 일관성을 보장한다.
     if (res.status === 202) throw new Error("status 202 pending");
     markLifecycleDelivered(claimed);
     return true;

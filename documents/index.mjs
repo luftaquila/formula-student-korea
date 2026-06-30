@@ -3,7 +3,7 @@ import path from "path";
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn } from "../shared/db-setup.mjs";
+import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn, parseLegacyTimestamp } from "../shared/db-setup.mjs";
 import Busboy from "busboy";
 import archiver from "archiver";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
@@ -213,18 +213,8 @@ function now() {
   return new Date().toISOString();
 }
 
-/** "YYYY-MM-DD HH:MM" 또는 ISO-like 입력 → UTC ISO. 실패 시 null */
-function normalizeTimestamp(str) {
-  if (!str || typeof str !== "string") return null;
-  const m = str.trim().match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/);
-  if (!m) return null;
-  const [, yy, mo, dd, hh, mi, ss = "00", zone] = m;
-  const text = zone
-    ? `${yy}-${mo}-${dd}T${hh}:${mi}:${ss}${zone}`
-    : `${yy}-${mo}-${dd}T${hh}:${mi}:${ss}Z`;
-  const d = new Date(text);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
+/** "YYYY-MM-DD HH:MM" 또는 ISO-like 입력 → UTC ISO(zone 없으면 UTC로 해석). 실패 시 null */
+const normalizeTimestamp = (str) => parseLegacyTimestamp(str);
 
 /** UTC DB date string → KST display "YYYY-MM-DD HH:MM" */
 function toKST(utcStr) {

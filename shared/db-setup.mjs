@@ -24,6 +24,19 @@ export function normalizeUtcTextTimestamp(value) {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+// 레거시/사용자 입력 타임스탬프를 UTC ISO로 파싱한다. `YYYY-MM-DD[T ]HH:MM[:SS][.fff]`에
+// 선택적 zone(`Z`/`+09:00`)을 허용하며, zone이 없으면 naiveOffset(기본 UTC `Z`)으로
+// 해석한다. 형식이 맞지 않으면 null. 서비스별 naive 값 해석(UTC vs KST 등)만 naiveOffset로
+// 주입하면 파싱 코어를 한 곳에서 공유할 수 있다.
+export function parseLegacyTimestamp(value, { naiveOffset = "Z" } = {}) {
+  if (typeof value !== "string") return null;
+  const m = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/);
+  if (!m) return null;
+  const [, yy, mo, dd, hh, mi, ss = "00", zone] = m;
+  const d = new Date(`${yy}-${mo}-${dd}T${hh}:${mi}:${ss}${zone || naiveOffset}`);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 // 한 컬럼의 모든 행을 정규화해 in-place로 다시 쓴다. rowid 키셋 페이지네이션으로
 // 대용량 테이블에서도 전체 결과를 메모리에 올리지 않는다. normalize는 값→ISO
 // 문자열(또는 null) 변환 함수로, 서비스별로 더 엄격한 파서를 주입할 수 있다.
@@ -47,6 +60,23 @@ export function normalizeTimestampColumn(db, table, column, normalize = normaliz
       if (normalized && normalized !== row.value) update.run(normalized, row._rowid);
     }
   }
+}
+
+// 테이블을 "최신 maxRows행만 보존"하도록 강제한다. AFTER INSERT 트리거로 매 삽입마다
+// 한도를 넘는 오래된 행을 즉시 정리하고, 기존 초과분도 한 번 정리한다. keyColumn은
+// 단조 증가하는 정수 키(기본 "id"; rowid 테이블은 "rowid"). maxRows가 양의 정수가
+// 아니면 보존 비활성화(트리거 미생성).
+export function setupRowCapRetention(db, table, maxRows, { keyColumn = "id" } = {}) {
+  if (!Number.isInteger(maxRows) || maxRows <= 0) return;
+  const trigger = `trg_${table}_retention`;
+  const condition = `${keyColumn} <= COALESCE((SELECT MAX(${keyColumn}) FROM ${table}), 0) - ${maxRows}`;
+  db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+  db.exec(`CREATE TRIGGER IF NOT EXISTS ${trigger}
+    AFTER INSERT ON ${table}
+    BEGIN
+      DELETE FROM ${table} WHERE ${condition};
+    END;`);
+  db.exec(`DELETE FROM ${table} WHERE ${condition}`);
 }
 
 export function runMigrationOnce(db, name, fn, { transaction = true } = {}) {

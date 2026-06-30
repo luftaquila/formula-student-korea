@@ -2,7 +2,7 @@ import express from "express";
 import crypto from "node:crypto";
 import https from "node:https";
 import Database from "better-sqlite3";
-import { createDatabase, runMigrationOnce } from "../shared/db-setup.mjs";
+import { createDatabase, runMigrationOnce, setupRowCapRetention, parseLegacyTimestamp } from "../shared/db-setup.mjs";
 import { createApp, createDbRun, setupProcessHandlers, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
@@ -79,14 +79,8 @@ try { db.exec("ALTER TABLE email_log ADD COLUMN html_content TEXT"); } catch { /
   }
 }
 
-function normalizeEmailSentAt(value) {
-  const s = String(value || "");
-  if (!s) return null;
-  const base = s.replace(" ", "T");
-  const text = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(base) ? base : `${base}+09:00`;
-  const d = new Date(text);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
+// 레거시 sent_at은 zone 없는 KST 로컬 값으로 저장됐으므로 +09:00으로 해석한다.
+const normalizeEmailSentAt = (value) => parseLegacyTimestamp(value, { naiveOffset: "+09:00" });
 
 runMigrationOnce(db, "email.sent_at_utc_normalization.v1", () => {
   const rows = db.prepare("SELECT id, sent_at FROM email_log WHERE sent_at IS NOT NULL AND sent_at != ''").all();
@@ -118,14 +112,9 @@ const app = createApp({ express }, (req) => {
 app.get("/api/health", (req, res) => res.send("ok"));
 app.get("/api/logs", logger.queryHandler);
 
-function pruneEmailLog() {
-  if (!Number.isInteger(EMAIL_LOG_MAX_ROWS) || EMAIL_LOG_MAX_ROWS <= 0) return;
-  db.prepare(`
-    DELETE FROM email_log
-    WHERE id <= COALESCE((SELECT MAX(id) FROM email_log), 0) - ?
-  `).run(EMAIL_LOG_MAX_ROWS);
-}
-pruneEmailLog();
+// AFTER INSERT 트리거로 매 발송 로그 삽입마다 최신 N행만 보존한다(인터벌 prune과 달리
+// 한도를 초과하는 구간이 생기지 않음).
+setupRowCapRetention(db, "email_log", EMAIL_LOG_MAX_ROWS);
 
 /* ============================================
    Config
@@ -466,8 +455,6 @@ ${htmlContent}
       lastErrorStatus = result.status;
     }
   }
-
-  pruneEmailLog();
 
   if (successCount === 0) {
     logger.warn(req, "email.send", { error: lastError || "전송 실패", subject, recipientCount: recipients.length, source });

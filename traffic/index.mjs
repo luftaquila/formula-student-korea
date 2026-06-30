@@ -1,6 +1,6 @@
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, runMigrationOnce, normalizeUtcTextTimestamp, normalizeTimestampColumn } from "../shared/db-setup.mjs";
+import { createDatabase, runMigrationOnce, normalizeUtcTextTimestamp, normalizeTimestampColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
@@ -27,17 +27,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS controller (
   data TEXT NOT NULL
 );`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_controller_timestamp ON controller(timestamp)");
-db.exec("DROP TRIGGER IF EXISTS trg_controller_retention");
-db.exec(`CREATE TRIGGER IF NOT EXISTS trg_controller_retention
-  AFTER INSERT ON controller
-  BEGIN
-    DELETE FROM controller
-    WHERE rowid <= COALESCE((SELECT MAX(rowid) FROM controller), 0) - ${CONTROLLER_MAX_ROWS};
-  END;`);
-db.prepare(`
-  DELETE FROM controller
-  WHERE rowid <= COALESCE((SELECT MAX(rowid) FROM controller), 0) - ?
-`).run(CONTROLLER_MAX_ROWS);
+setupRowCapRetention(db, "controller", CONTROLLER_MAX_ROWS, { keyColumn: "rowid" });
 
 db.exec(`CREATE TABLE IF NOT EXISTS event_mode (
   event_type TEXT PRIMARY KEY,
@@ -1189,6 +1179,10 @@ app.patch("/api/internal/team-num", (req, res) => {
       for (const name of getYearRecordFiles(year)) {
         const existing = db.prepare("SELECT COUNT(*) AS count FROM record WHERE name = ? AND num = ?").get(name, prevNum).count;
         if (existing === 0) continue;
+        // 목적지(newNum)의 기존 기록은 삭제하지 않고 무효화한다(다른 소비자는 DELETE):
+        // 경기 기록은 감사/재집계를 위해 보존하되, score가 invalidated 행을 집계에서
+        // 제외하므로 스코어보드에선 삭제와 동일한 효과를 낸다. 이어지는 rename은
+        // invalidated/scoreboard 플래그를 건드리지 않아 이동되는 팀의 유효 기록은 보존된다.
         db.prepare("UPDATE record SET invalidated = 1, scoreboard = 0 WHERE name = ? AND num = ?").run(name, newNum);
         changed += db.prepare(`UPDATE record SET ${updates.join(", ")} WHERE name = ? AND num = ?`).run(...params, name, prevNum).changes;
       }

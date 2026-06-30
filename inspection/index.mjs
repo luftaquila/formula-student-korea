@@ -4,6 +4,7 @@ import { createDatabase } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
+import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
 
 export function createInspectionApp(options = {}) {
 
@@ -123,13 +124,6 @@ const app = createApp({ express }, (req) => {
 app.get("/api/logs", logger.queryHandler);
 
 app.get("/api/health", (req, res) => res.send("ok"));
-
-function renumberTeamRows(table, prevNum, newNum, year) {
-  const existing = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE year = ? AND team_num = ?`).get(year, prevNum).count;
-  if (existing === 0) return 0;
-  db.prepare(`DELETE FROM ${table} WHERE year = ? AND team_num = ?`).run(year, newNum);
-  return db.prepare(`UPDATE ${table} SET team_num = ? WHERE year = ? AND team_num = ?`).run(newNum, year, prevNum).changes;
-}
 
 /* ============================================
    DB 헬퍼
@@ -611,71 +605,10 @@ app.put("/api/sheet/inspector", (req, res) => {
    Internal API: 엔트리 라이프사이클 연동
    ============================================ */
 
-app.delete("/api/internal/team/:num", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-
-  const num = Number(req.params.num);
-  const year = Number(req.query.year);
-  if (!Number.isInteger(num) || num < 1) {
-    logger.warn(req, "team.cascade_delete", { error: "invalid team num", num: req.params.num });
-    return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  }
-  if (!Number.isInteger(year)) {
-    logger.warn(req, "team.cascade_delete", { error: "invalid year", year: req.query.year }, `#${num}`);
-    return res.status(400).send("연도를 지정해야 합니다.");
-  }
-
-  const result = dbRun(() => {
-    db.transaction(() => {
-      db.prepare("DELETE FROM sheet_answer WHERE year = ? AND team_num = ?").run(year, num);
-      db.prepare("DELETE FROM sheet_category_result WHERE year = ? AND team_num = ?").run(year, num);
-      db.prepare("DELETE FROM sheet_inspector WHERE year = ? AND team_num = ?").run(year, num);
-    })();
-  });
-
-  if (!result.success) {
-    logger.warn(req, "team.cascade_delete", { error: result.error, year }, `#${num}`);
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "team.cascade_delete", { year }, `#${num}`);
-  broadcastEvent("answer", { year, team_num: num, deleted: true });
-  broadcastEvent("category-result", { year, team_num: num, deleted: true });
-  broadcastEvent("inspector", { year, team_num: num, deleted: true });
-  res.status(200).send();
-});
-
-app.patch("/api/internal/team-num", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-
-  const prevNum = Number(req.body.prevNum);
-  const newNum = Number(req.body.newNum);
-  const year = Number(req.body.year);
-  if (!Number.isInteger(prevNum) || prevNum < 1 || !Number.isInteger(newNum) || newNum < 1 || !Number.isInteger(year)) {
-    logger.warn(req, "team_num.update", { error: "invalid request", prevNum: req.body.prevNum, newNum: req.body.newNum, year: req.body.year });
-    return res.status(400).send("올바르지 않은 요청입니다.");
-  }
-  // self-renumber는 helper가 목적지(=자기 번호) 행을 먼저 지운 뒤 갱신하므로 데이터 손실. 조기 반환.
-  if (prevNum === newNum) return res.status(200).send();
-
-  const result = dbRun(() => {
-    db.transaction(() => {
-      renumberTeamRows("sheet_answer", prevNum, newNum, year);
-      renumberTeamRows("sheet_category_result", prevNum, newNum, year);
-      renumberTeamRows("sheet_inspector", prevNum, newNum, year);
-    })();
-  });
-
-  if (!result.success) {
-    logger.warn(req, "team_num.update", { error: result.error, year, prevNum, newNum });
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "team_num.update", { year, prevNum, newNum });
-  broadcastEvent("answer", { year, prevNum, team_num: newNum, renumbered: true });
-  broadcastEvent("category-result", { year, prevNum, team_num: newNum, renumbered: true });
-  broadcastEvent("inspector", { year, prevNum, team_num: newNum, renumbered: true });
-  res.status(200).send();
+registerTeamLifecycleRoutes(app, {
+  db, dbRun, logger, requireInternalRequest, broadcastEvent,
+  tables: ["sheet_answer", "sheet_category_result", "sheet_inspector"],
+  channels: ["answer", "category-result", "inspector"],
 });
 
 /* ============================================

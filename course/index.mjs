@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, runMigrationOnce, normalizeTimestampColumn } from "../shared/db-setup.mjs";
+import { createDatabase, runMigrationOnce, normalizeTimestampColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
@@ -108,17 +108,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS mission_telemetry (
   FOREIGN KEY (mission_id) REFERENCES mission(id) ON DELETE CASCADE
 );`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(mission_id, t);`);
-db.prepare(`
-  DELETE FROM mission_telemetry
-  WHERE id <= COALESCE((SELECT MAX(id) FROM mission_telemetry), 0) - ?
-`).run(MISSION_TELEMETRY_MAX_ROWS);
-db.exec("DROP TRIGGER IF EXISTS trg_mission_telemetry_retention");
-db.exec(`CREATE TRIGGER IF NOT EXISTS trg_mission_telemetry_retention
-  AFTER INSERT ON mission_telemetry
-  BEGIN
-    DELETE FROM mission_telemetry
-    WHERE id <= COALESCE((SELECT MAX(id) FROM mission_telemetry), 0) - ${MISSION_TELEMETRY_MAX_ROWS};
-  END;`);
+setupRowCapRetention(db, "mission_telemetry", MISSION_TELEMETRY_MAX_ROWS);
 
 // 기존 DB 마이그레이션: mission_telemetry에 NTRIP 링크 건강도 + 측위 정확도 컬럼
 // 추가. fix_status/nav_state만으로는 "가다서다"(로버가 미션 중 정지 반복)의 원인을
