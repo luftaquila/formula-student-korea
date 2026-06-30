@@ -128,7 +128,7 @@ class BridgeNode(Node):
         # Battery telemetry
         self._battery = None  # { voltage, percent, source }
 
-        # Latest GPS metrics: { h_acc, v_acc, speed, heading, num_sv }
+        # Latest GPS metrics: { h_acc, v_acc, altitude, speed, heading, num_sv, pdop, tdop }
         self._gps_metrics = None
 
         # Request IDs from server-initiated position requests. Echoing one
@@ -175,7 +175,10 @@ class BridgeNode(Node):
 
     def _on_gps_position(self, msg):
         """Handle GPS position update."""
-        self._last_position = {'lat': msg.latitude, 'lng': msg.longitude}
+        # msg.altitude is MSL height (gps_node sets it from NAV-PVT h_msl), same
+        # datum as the gps-register rover — keep it bound to this fix so the cone
+        # gets lat/lng/alt from a single GPS solution.
+        self._last_position = {'lat': msg.latitude, 'lng': msg.longitude, 'alt': msg.altitude}
 
         # If position was explicitly requested, send immediately
         if self._position_requested:

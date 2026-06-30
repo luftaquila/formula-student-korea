@@ -1044,6 +1044,10 @@ const filteredCones = computed(() => {
   return activeCones.value.filter((c) => c.side === coneFilter.value);
 });
 
+const selectedCone = computed(() =>
+  selectedConeId.value ? activeCones.value.find((c) => c.id === selectedConeId.value) : null
+);
+
 /* ── Icon helpers ──────────────────────────────────── */
 function coneSideIndex(courseId, coneId) {
   const cones = conesMap.value[courseId] || [];
@@ -2264,11 +2268,13 @@ async function performUndo() {
 }
 
 /* ── Cone CRUD ────────────────────────────────────── */
-async function addCone(lat, lng, side) {
+async function addCone(lat, lng, side, alt) {
   if (!activeCourseId.value) return;
   try {
+    // alt가 undefined면 JSON.stringify가 키를 빼므로 수동(지도 클릭) 콘은 고도 없이
+    // 저장되고, 로버에서 받은 콘만 RTK 고도(m)를 함께 보존한다.
     const res = await request(`/api/courses/${activeCourseId.value}/cones`, {
-      method: "POST", body: JSON.stringify({ lat, lng, side }),
+      method: "POST", body: JSON.stringify({ lat, lng, side, alt }),
     });
     const created = await res.json().catch(() => null);
     if (created && created.id != null) {
@@ -2303,7 +2309,7 @@ async function deleteCone(id) {
     await request(`/api/cones/${id}`, { method: "DELETE" });
     if (selectedConeId.value === id) selectedConeId.value = null;
     if (before) pushUndo("콘 삭제", () => request(`/api/courses/${courseId}/cones`, {
-      method: "POST", body: JSON.stringify({ lat: before.lat, lng: before.lng, side: before.side }),
+      method: "POST", body: JSON.stringify({ lat: before.lat, lng: before.lng, side: before.side, alt: before.alt }),
     }));
   } catch (err) { notifyError(err.message); }
 }
@@ -2751,9 +2757,9 @@ async function addConeFromRover() {
   roverLoading.value = true;
   try {
     const res = await request("/api/rover/request", { method: "POST" });
-    const { lat, lng } = await res.json();
+    const { lat, lng, alt } = await res.json();
     updateRoverMarker(lat, lng);
-    await addCone(lat, lng, currentSide.value);
+    await addCone(lat, lng, currentSide.value, alt);
   } catch (err) {
     notifyError(err.message || "로버 위치 수신에 실패했습니다.");
   } finally { roverLoading.value = false; }
@@ -4363,6 +4369,9 @@ onUnmounted(() => {
                         <option value="right">R 오른쪽</option>
                       </select>
                     </div>
+                    <div v-if="selectedCone && selectedCone.alt != null" class="cone-alt-readout" title="고도 (MSL) — RTK 측정값, 편집 불가">
+                      고도 {{ selectedCone.alt.toFixed(2) }} m
+                    </div>
                     <div class="edit-buttons">
                       <button class="btn btn-primary btn-lg-touch" @click="updateCone">저장</button>
                       <button class="btn btn-danger btn-lg-touch" @click="deleteCone(selectedConeId)">삭제</button>
@@ -4392,6 +4401,7 @@ onUnmounted(() => {
                       >
                         <span class="cone-num" :style="{ color: SIDE_COLORS[cone.side] }">#{{ coneSideIndex(activeCourseId, cone.id) }}</span>
                         <span class="cone-coords">{{ cone.lat.toFixed(6) }}, {{ cone.lng.toFixed(6) }}</span>
+                        <span v-if="cone.alt != null" class="cone-alt" title="고도 (MSL)">{{ cone.alt.toFixed(1) }} m</span>
                         <button class="del-btn" @click.stop="deleteCone(cone.id)" title="삭제">×</button>
                       </div>
                       <div v-if="filteredCones.length === 0" class="empty-msg">콘이 없습니다.</div>
@@ -5853,6 +5863,16 @@ onUnmounted(() => {
 .cone-coords {
   flex: 1; font-family: "JetBrains Mono", monospace;
   font-size: 0.8rem; color: var(--text-primary);
+}
+
+.cone-alt {
+  flex-shrink: 0; font-family: "JetBrains Mono", monospace;
+  font-size: 0.75rem; color: var(--text-secondary);
+}
+
+.cone-alt-readout {
+  margin-top: 0.4rem; font-family: "JetBrains Mono", monospace;
+  font-size: 0.8rem; color: var(--text-secondary);
 }
 
 .empty-msg { text-align: center; padding: 1rem 0; color: var(--text-secondary); font-size: 0.85rem; }
