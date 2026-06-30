@@ -1999,6 +1999,8 @@ app.patch("/api/internal/team-num", (req, res) => {
 
   const prevNum = prevNumValidation.value;
   const newNum = newNumValidation.value;
+  // self-renumber는 helper가 목적지(=자기 번호) 행을 먼저 지운 뒤 갱신하므로 데이터 손실. 조기 반환.
+  if (prevNum === newNum) return res.status(200).send();
 
   const result = dbRun(() => {
     return db.transaction(() => {

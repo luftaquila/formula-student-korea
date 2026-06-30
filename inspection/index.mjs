@@ -648,6 +648,8 @@ app.patch("/api/internal/team-num", (req, res) => {
   if (!Number.isInteger(prevNum) || prevNum < 1 || !Number.isInteger(newNum) || newNum < 1 || !Number.isInteger(year)) {
     return res.status(400).send("올바르지 않은 요청입니다.");
   }
+  // self-renumber는 helper가 목적지(=자기 번호) 행을 먼저 지운 뒤 갱신하므로 데이터 손실. 조기 반환.
+  if (prevNum === newNum) return res.status(200).send();
 
   const result = dbRun(() => {
     db.transaction(() => {

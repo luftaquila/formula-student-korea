@@ -80,7 +80,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS record (
     `);
   }
 }
-db.exec("CREATE INDEX IF NOT EXISTS idx_record_name_id ON record(name, id)");
+// record 조회는 모두 legacy_rowid 또는 num 기준이라 (name, id) 인덱스는 미사용. 제거(기존 배포본 정리 포함).
+db.exec("DROP INDEX IF EXISTS idx_record_name_id");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_record_name_legacy_rowid ON record(name, legacy_rowid)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_record_name_num ON record(name, num)");
 
@@ -1092,10 +1093,12 @@ app.delete("/api/records/:name", (req, res) => {
   }
 
   const result = dbRun(() => {
-    db.prepare("DELETE FROM record WHERE name = ?").run(name);
-    const legacy = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? AND name NOT IN (${reservedSql})`).get(name);
-    if (legacy) db.exec(`DROP TABLE IF EXISTS '${name}'`);
-    db.prepare("DELETE FROM record_visibility WHERE name = ?").run(name);
+    db.transaction(() => {
+      db.prepare("DELETE FROM record WHERE name = ?").run(name);
+      const legacy = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? AND name NOT IN (${reservedSql})`).get(name);
+      if (legacy) db.exec(`DROP TABLE IF EXISTS '${name}'`);
+      db.prepare("DELETE FROM record_visibility WHERE name = ?").run(name);
+    })();
   });
 
   if (!result.success) {
@@ -1160,6 +1163,8 @@ app.patch("/api/internal/team-num", (req, res) => {
   if (!Number.isInteger(prevNum) || prevNum < 1 || !Number.isInteger(newNum) || newNum < 1 || !Number.isInteger(year)) {
     return res.status(400).send("올바르지 않은 요청입니다.");
   }
+  // self-renumber는 목적지(=자기 번호) record를 먼저 invalidate하므로 자기 데이터를 망가뜨림. 조기 반환.
+  if (prevNum === newNum) return res.status(200).send();
 
   const result = dbRun(() => {
     return db.transaction(() => {

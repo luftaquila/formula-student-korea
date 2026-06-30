@@ -56,6 +56,7 @@ services:
     environment:
       <<: *common-env
       AUTH_SERVER: http://auth:9100
+      MISSION_TELEMETRY_MAX_ROWS: ${MISSION_TELEMETRY_MAX_ROWS:-}
     volumes:
       - ./course/data:/home/node/fsk-course/data
     restart: unless-stopped
@@ -271,6 +272,7 @@ services:
     environment:
       <<: *common-env
       AUTH_SERVER: http://auth:9100
+      EMAIL_LOG_MAX_ROWS: ${EMAIL_LOG_MAX_ROWS:-}
     volumes:
       - ./email/data:/home/node/fsk-email/data
     restart: unless-stopped

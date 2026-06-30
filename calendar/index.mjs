@@ -26,8 +26,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS events (
   all_day INTEGER NOT NULL DEFAULT 0,
   role TEXT NOT NULL DEFAULT 'official'
 )`);
-db.exec("CREATE INDEX IF NOT EXISTS idx_events_start_end ON events(start, end)");
-db.exec("CREATE INDEX IF NOT EXISTS idx_events_end_start ON events(end, start)");
+// 범위 조회는 idx_events_all_day_end_start, 정렬 조회는 idx_events_role_start가 커버.
+// 단독 (start,end)/(end,start) 인덱스는 매칭되는 쿼리가 없어 제거(기존 배포본 정리 포함).
+db.exec("DROP INDEX IF EXISTS idx_events_start_end");
+db.exec("DROP INDEX IF EXISTS idx_events_end_start");
 db.exec("CREATE INDEX IF NOT EXISTS idx_events_role_start ON events(role, start)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_events_all_day_end_start ON events(all_day, end, start)");
 

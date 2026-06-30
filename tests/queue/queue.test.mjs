@@ -1344,6 +1344,27 @@ describe('PATCH /api/internal/team-num', () => {
     assert.equal(db.prepare("SELECT occupied_by FROM booth WHERE inspection = ? AND booth_num = 1").get('braking').occupied_by, 904);
     assert.ok(db.prepare("SELECT COUNT(*) AS c FROM queue_log WHERE event = 'renumber' AND num = ? AND year = ?").get(904, year).c >= 1);
   });
+
+  it('treats prevNum === newNum as a no-op and preserves the team\'s rows', async () => {
+    const year = new Date().getFullYear();
+    db.prepare("INSERT OR REPLACE INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES (?, ?, ?, ?, ?)")
+      .run('braking', 905, '01055555555', Date.now(), year);
+    db.prepare("INSERT OR REPLACE INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)")
+      .run(905, 'braking', '01055555555', year);
+    db.prepare("INSERT OR REPLACE INTO team_priority (num, inspection, year, priority) VALUES (?, ?, ?, ?)")
+      .run(905, 'braking', year, 1);
+
+    const res = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { prevNum: 905, newNum: 905, year },
+    });
+    assert.equal(res.status, 200);
+
+    // self-renumber는 목적지(=자기 번호) 행을 먼저 지우므로, 가드가 없으면 데이터가 사라진다.
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE inspection = ? AND num = ? AND year = ?").get('braking', 905, year).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM current_inspection WHERE inspection = ? AND num = ? AND year = ?").get('braking', 905, year).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_priority WHERE num = ? AND year = ?").get(905, year).c, 1);
+  });
 });
 
 // ─── Year isolation ──────────────────────────────────────────────────────

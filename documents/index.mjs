@@ -75,8 +75,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS submission (
   FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
 )`);
 
-db.exec(`CREATE INDEX IF NOT EXISTS idx_sub_session_team
-  ON submission(session_id, team_num)`);
+// idx_sub_session_team_id(session_id, team_num, id DESC)가 (session_id, team_num) 조회도
+// 커버하므로 prefix 인덱스 idx_sub_session_team은 제거(기존 배포본 정리 포함).
+db.exec("DROP INDEX IF EXISTS idx_sub_session_team");
 db.exec(`CREATE INDEX IF NOT EXISTS idx_sub_session_team_id
   ON submission(session_id, team_num, id DESC)`);
 
@@ -164,7 +165,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS team_renumber_file_work (
   UNIQUE(year, prev_num, new_num, session_id),
   FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
 )`);
-db.exec("CREATE INDEX IF NOT EXISTS idx_trfw_key ON team_renumber_file_work(year, prev_num, new_num)");
+// UNIQUE(year, prev_num, new_num, session_id)가 자동 생성하는 인덱스의 prefix이므로 idx_trfw_key는 불필요.
+db.exec("DROP INDEX IF EXISTS idx_trfw_key");
 
 // 업로드 디렉토리 생성
 const UPLOADS_DIR = options.uploadsDir || path.resolve("./data/uploads");
@@ -1379,6 +1381,8 @@ app.patch("/api/internal/team-num", (req, res) => {
   if (!Number.isInteger(prevNum) || !Number.isInteger(newNum) || !Number.isInteger(year)) {
     return res.status(400).send("올바르지 않은 요청입니다.");
   }
+  // self-renumber는 동일 업로드 디렉토리를 이동/삭제 대상으로 잡으므로 데이터 손실 위험. 조기 반환.
+  if (prevNum === newNum) return res.status(200).send();
 
   const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
   const prevExists = db.prepare(`

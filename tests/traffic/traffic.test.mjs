@@ -193,6 +193,35 @@ describe('Records lifecycle sync', () => {
     assert.equal(row.scoreboard, 0);
   });
 
+  it('treats prevNum === newNum as a no-op and does not invalidate the team\'s records', async () => {
+    const createRes = await client.post('/api/records', {
+      body: {
+        name: 'Self Renumber Run',
+        data: {
+          time: '2026-01-03T10:00:00',
+          type: '가속',
+          entry: { num: 905, univ: 'SelfUniv', team: 'SelfTeam' },
+          result: 46000,
+        },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(createRes.status, 201);
+    const name = `FSK ${YEAR} Self Renumber Run`;
+
+    const res = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { year: YEAR, prevNum: 905, newNum: 905, entry: { univ: 'SelfUniv', team: 'SelfTeam' } },
+    });
+    assert.equal(res.status, 200);
+
+    const rows = await (await client.get(`/api/records/${encodeURIComponent(name)}`, { cookie: adminCookie })).json();
+    const row = rows.find((r) => r.num === 905);
+    assert.ok(row, 'record for #905 should still exist');
+    // self-renumber는 목적지(=자기 번호) record를 invalidate하므로, 가드가 없으면 invalidated=1이 된다.
+    assert.equal(row.invalidated, 0, 'self-renumber must not invalidate the team\'s own records');
+  });
+
   it('clears armed wireless sessions on team delete and updates bound runs on renumber', async () => {
     const deleteSelect = await client.post('/api/wireless/select', {
       body: { event_type: '가속', team: { num: 977, univ: 'DeleteUniv', team: 'DeleteTeam' }, event_name: 'LIFE-DELETE' },

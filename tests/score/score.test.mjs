@@ -1008,4 +1008,22 @@ describe('Score internal entry lifecycle sync', () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = ?").get(year, 902).c, 0);
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_num = ?").get(year, 902).c, 0);
   });
+
+  it('treats prevNum === newNum as a no-op and preserves score rows', async () => {
+    const year = 2026;
+    db.prepare("INSERT OR REPLACE INTO score_manual (year, team_num, score_type, value) VALUES (?, ?, ?, ?)")
+      .run(year, 905, 'report', 33.3);
+    db.prepare("INSERT OR REPLACE INTO score_endurance (year, team_num, status, driver1_time) VALUES (?, ?, ?, ?)")
+      .run(year, 905, 'FINISH', 54321);
+
+    const res = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { year, prevNum: 905, newNum: 905 },
+    });
+    assert.equal(res.status, 200);
+
+    // self-renumber는 목적지(=자기 번호) 행을 먼저 삭제하므로, 가드가 없으면 점수가 사라진다.
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = ?").get(year, 905).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_num = ?").get(year, 905).c, 1);
+  });
 });
