@@ -3,7 +3,7 @@ import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase, addColumn } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum } from "../shared/validation.mjs";
@@ -392,12 +392,6 @@ function renumberCurrentRows(prevNum, newNum, year) {
   db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(prevNum, year);
   setCurrentInspections(newNum, current.phone, current.inspections, year);
   return 1;
-}
-
-function requireInternalRequest(req, res) {
-  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
-  res.status(403).send("내부 서비스 호출만 허용됩니다.");
-  return false;
 }
 
 function renumberNumYearRows(table, prevNum, newNum, year, quoted = false) {

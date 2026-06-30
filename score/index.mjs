@@ -2,7 +2,7 @@ import http from "http";
 import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase, addColumn } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 
@@ -109,12 +109,6 @@ const app = createApp({ express }, (req) => {
 app.get("/api/logs", logger.queryHandler);
 
 app.get("/api/health", (req, res) => res.send("ok"));
-
-function requireInternalRequest(req, res) {
-  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
-  res.status(403).send("내부 서비스 호출만 허용됩니다.");
-  return false;
-}
 
 function renumberTeamRows(table, prevNum, newNum, year) {
   const existing = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE year = ? AND team_num = ?`).get(year, prevNum).count;

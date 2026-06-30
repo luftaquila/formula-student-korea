@@ -3,6 +3,7 @@ import { ref, onMounted, computed, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useNotification } from "@shared/useNotification.js";
 import { request, fetchEntryYears, fetchEntries, fetchVehicleTypes } from "../api.js";
+import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -99,10 +100,8 @@ const allFilteredSelected = computed(() => {
 });
 
 function utcToLocal(utc) {
-  if (!utc) return "";
-  const s = String(utc);
-  const d = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
-  if (Number.isNaN(d.getTime())) return "";
+  const d = parseDbTimestamp(utc);
+  if (!d) return "";
   const offset = d.getTimezoneOffset();
   const local = new Date(d.getTime() - offset * 60000);
   return local.toISOString().slice(0, 16);

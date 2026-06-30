@@ -3,10 +3,10 @@ import path from "path";
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, addColumn, runMigrationOnce } from "../shared/db-setup.mjs";
+import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn } from "../shared/db-setup.mjs";
 import Busboy from "busboy";
 import archiver from "archiver";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
 export function createDocumentsApp(options = {}) {
@@ -203,12 +203,6 @@ app.get("/api/health", (req, res) => res.send("ok"));
 
 const dbRun = createDbRun();
 
-function requireInternalRequest(req, res) {
-  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
-  res.status(403).send("내부 서비스 호출만 허용됩니다.");
-  return false;
-}
-
 /* ============================================
    헬퍼
    ============================================ */
@@ -254,15 +248,6 @@ function subtractHours(utcStr, hours) {
   return d.toISOString();
 }
 
-function normalizeTimestampColumn(table, column) {
-  const rows = db.prepare(`SELECT rowid AS _rowid, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL AND ${column} != ''`).all();
-  const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
-  for (const row of rows) {
-    const normalized = normalizeTimestamp(String(row.value));
-    if (normalized && normalized !== row.value) update.run(normalized, row._rowid);
-  }
-}
-
 runMigrationOnce(db, "documents.utc_timestamp_normalization.v1", () => {
   for (const [table, column] of [
     ["session", "start_at"],
@@ -273,7 +258,7 @@ runMigrationOnce(db, "documents.utc_timestamp_normalization.v1", () => {
     ["submission", "submitted_at"],
     ["scheduled_notification", "scheduled_at"],
   ]) {
-    normalizeTimestampColumn(table, column);
+    normalizeTimestampColumn(db, table, column, normalizeTimestamp);
   }
 });
 

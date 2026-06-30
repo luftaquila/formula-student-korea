@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from "vue";
 import { request, fetchEntries } from "../api.js";
+import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const loading = ref(true);
 const team = ref(null);
@@ -57,13 +58,6 @@ function getStatuses(s) {
 
 const statusLabels = { submitted: "제출 완료", late: "지각 제출", pending: "미제출", overdue: "지각", closed: "마감", upcoming: "예정" };
 const statusClasses = { submitted: "badge-success", late: "badge-warning", pending: "badge-default", overdue: "badge-warning", closed: "badge-danger", upcoming: "badge-primary" };
-
-function parseDbTimestamp(value) {
-  const s = String(value || "");
-  if (!s) return null;
-  const d = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
-  return Number.isNaN(d.getTime()) ? null : d;
-}
 
 function timestampMs(value) {
   return parseDbTimestamp(value)?.getTime() ?? 0;

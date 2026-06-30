@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import https from "node:https";
 import Database from "better-sqlite3";
 import { createDatabase, runMigrationOnce } from "../shared/db-setup.mjs";
-import { createApp, createDbRun, setupProcessHandlers, ensureDataDir } from "../shared/express-setup.mjs";
+import { createApp, createDbRun, setupProcessHandlers, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
 const PORT = 9900;
@@ -126,12 +126,6 @@ function pruneEmailLog() {
   `).run(EMAIL_LOG_MAX_ROWS);
 }
 pruneEmailLog();
-
-function requireInternalRequest(req, res) {
-  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
-  res.status(403).send("내부 서비스 호출만 허용됩니다.");
-  return false;
-}
 
 /* ============================================
    Config

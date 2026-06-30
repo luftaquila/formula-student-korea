@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, addColumn, runMigrationOnce } from "../shared/db-setup.mjs";
+import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, createJWT, verifyJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts } from "../shared/express-setup.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
 import { createLogger } from "../shared/logger.mjs";
@@ -100,30 +100,13 @@ db.exec(`CREATE TABLE IF NOT EXISTS ops_display (
 db.exec("DELETE FROM ops_display WHERE user_id NOT IN (SELECT id FROM users)");
 db.pragma("foreign_keys = ON");
 
-function normalizeUtcTextTimestamp(value) {
-  const s = String(value || "");
-  if (!s) return null;
-  const text = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z";
-  const d = new Date(text);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-function normalizeTimestampColumn(table, column) {
-  const rows = db.prepare(`SELECT rowid AS _rowid, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL AND ${column} != ''`).all();
-  const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
-  for (const row of rows) {
-    const normalized = normalizeUtcTextTimestamp(row.value);
-    if (normalized && normalized !== row.value) update.run(normalized, row._rowid);
-  }
-}
-
 runMigrationOnce(db, "auth.utc_timestamp_normalization.v1", () => {
   for (const [table, column] of [
     ["users", "created_at"],
     ["applications", "created_at"],
     ["applications", "updated_at"],
   ]) {
-    normalizeTimestampColumn(table, column);
+    normalizeTimestampColumn(db, table, column);
   }
 });
 

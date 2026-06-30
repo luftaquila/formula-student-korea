@@ -5,6 +5,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { request, fetchEntries, fetchVehicleTypes } from "../api.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
+import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -128,10 +129,8 @@ async function loadStatus() {
 }
 
 function formatDate(d) {
-  const s = String(d || "");
-  if (!s) return "-";
-  const date = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
-  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("ko-KR");
+  const date = parseDbTimestamp(d);
+  return date ? date.toLocaleString("ko-KR") : "-";
 }
 
 function formatSize(bytes) {

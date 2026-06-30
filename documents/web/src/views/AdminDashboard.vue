@@ -4,6 +4,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { request, fetchEntryYears, fetchEntries, fetchVehicleTypes } from "../api.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
+import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const { notyf } = useNotification();
 
@@ -218,13 +219,6 @@ function isTargetTeam(session, teamNum) {
 function getSubmissionForTeam(session, teamNum) {
   if (!session._status) return null;
   return session._status.find((s) => s.team_num === teamNum)?.submission || null;
-}
-
-function parseDbTimestamp(value) {
-  const s = String(value || "");
-  if (!s) return null;
-  const d = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
-  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 function isSessionClosed(s) {

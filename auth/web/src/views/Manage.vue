@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { formatPhone } from "@shared/format-phone.js";
 import { ROLE_LEVELS } from "@shared/constants.js";
+import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 
@@ -43,13 +44,6 @@ const currentUser = getUserFromCookie();
 // Redirect if not admin
 if (!currentUser || currentUser.role !== "admin") {
   window.location.href = "/";
-}
-
-function parseDbTimestamp(value) {
-  const s = String(value || "");
-  if (!s) return null;
-  const d = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
-  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 function formatTimestamp(value) {

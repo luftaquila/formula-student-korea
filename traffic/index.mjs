@@ -1,7 +1,7 @@
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, runMigrationOnce } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createDatabase, runMigrationOnce, normalizeUtcTextTimestamp, normalizeTimestampColumn } from "../shared/db-setup.mjs";
+import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { EVENT_TYPES } from "../shared/constants.js";
@@ -214,36 +214,6 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_session (
   ).run(...EVENT_TYPES);
 }
 
-function normalizeUtcTextTimestamp(value) {
-  const s = String(value || "");
-  if (!s) return null;
-  const text = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z";
-  const d = new Date(text);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-function normalizeTimestampColumn(table, column) {
-  const batchSize = 1000;
-  let lastRowid = 0;
-  const select = db.prepare(`
-    SELECT rowid AS _rowid, ${column} AS value
-    FROM ${table}
-    WHERE rowid > ? AND ${column} IS NOT NULL AND ${column} != ''
-    ORDER BY rowid
-    LIMIT ?
-  `);
-  const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
-  while (true) {
-    const rows = select.all(lastRowid, batchSize);
-    if (rows.length === 0) break;
-    for (const row of rows) {
-      lastRowid = row._rowid;
-      const normalized = normalizeUtcTextTimestamp(row.value);
-      if (normalized && normalized !== row.value) update.run(normalized, row._rowid);
-    }
-  }
-}
-
 runMigrationOnce(db, "traffic.utc_timestamp_normalization.v1", () => {
   pruneWirelessEvents();
   for (const [table, column] of [
@@ -255,7 +225,7 @@ runMigrationOnce(db, "traffic.utc_timestamp_normalization.v1", () => {
     ["wireless_session", "armed_at"],
     ["wireless_session", "lease_expires_at"],
   ]) {
-    normalizeTimestampColumn(table, column);
+    normalizeTimestampColumn(db, table, column);
   }
 }, { transaction: false });
 
@@ -309,12 +279,6 @@ const app = createApp({ express }, (req) => {
 app.get("/api/logs", logger.queryHandler);
 
 app.get("/api/health", (req, res) => res.send("ok"));
-
-function requireInternalRequest(req, res) {
-  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
-  res.status(403).send("내부 서비스 호출만 허용됩니다.");
-  return false;
-}
 
 // 서버 시각(epoch ms). 클라가 자기 시계와의 오프셋을 추정해 라이브 클럭을 전 클라 동기화(공유 클럭).
 app.get("/api/time", (req, res) => res.json({ now: Date.now() }));

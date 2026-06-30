@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onUnmounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useNotification } from "@shared/useNotification.js";
 import { request } from "../api.js";
+import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -46,13 +47,6 @@ const acceptAttr = computed(() => allowedExts.value.map((e) => `.${e}`).join(","
 const now = ref(Date.now());
 const nowTimer = setInterval(() => { now.value = Date.now(); }, 60000);
 onUnmounted(() => clearInterval(nowTimer));
-function parseDbTimestamp(value) {
-  const s = String(value || "");
-  if (!s) return null;
-  const d = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
 function timestampMs(value) {
   return parseDbTimestamp(value)?.getTime() ?? 0;
 }

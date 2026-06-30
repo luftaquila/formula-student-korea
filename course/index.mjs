@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, runMigrationOnce } from "../shared/db-setup.mjs";
+import { createDatabase, runMigrationOnce, normalizeTimestampColumn } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
@@ -212,23 +212,6 @@ db.exec(`CREATE TRIGGER IF NOT EXISTS trg_mission_telemetry_retention
   }
 }
 
-function normalizeUtcTextTimestamp(value) {
-  const s = String(value || "");
-  if (!s) return null;
-  const text = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z";
-  const d = new Date(text);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-function normalizeTimestampColumn(table, column) {
-  const rows = db.prepare(`SELECT rowid AS _rowid, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL AND ${column} != ''`).all();
-  const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
-  for (const row of rows) {
-    const normalized = normalizeUtcTextTimestamp(row.value);
-    if (normalized && normalized !== row.value) update.run(normalized, row._rowid);
-  }
-}
-
 runMigrationOnce(db, "course.utc_timestamp_normalization.v1", () => {
   for (const [table, column] of [
     ["course", "created_at"],
@@ -236,7 +219,7 @@ runMigrationOnce(db, "course.utc_timestamp_normalization.v1", () => {
     ["cone", "created_at"],
     ["cone", "updated_at"],
   ]) {
-    normalizeTimestampColumn(table, column);
+    normalizeTimestampColumn(db, table, column);
   }
 });
 
