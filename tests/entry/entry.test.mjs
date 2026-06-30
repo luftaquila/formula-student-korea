@@ -744,7 +744,7 @@ describe('PATCH /api/entries/:num — lifecycle sync', () => {
       body: { num: 72, univ: 'SyncUnivUpdated', team: 'SyncTeamUpdated' },
       cookie: adminCookie,
     });
-    assert.equal(res.status, 200, 'entry update should not roll back when lifecycle sync fails');
+    assert.equal(res.status, 202, 'entry update should expose pending lifecycle sync without rolling back');
 
     await new Promise(r => setTimeout(r, 100));
 
@@ -760,6 +760,106 @@ describe('PATCH /api/entries/:num — lifecycle sync', () => {
     assert.equal(pending[0].service, 'documents');
     assert.equal(pending[0].attempts, 1);
     assert.match(pending[0].last_error, /status 500/);
+
+    await stopServer(mockDocServer);
+    delete process.env.DOCUMENTS_SERVER;
+  });
+
+  it('blocks number reuse while an older lifecycle event for that number is pending', async () => {
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await client.post('/api/entries/bulk', {
+      body: {
+        data: {
+          170: { univ: 'OrderUnivA', team: 'OrderTeamA' },
+          171: { univ: 'OrderUnivB', team: 'OrderTeamB' },
+        },
+      },
+      cookie: adminCookie,
+    });
+
+    const calls = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.delete('/api/internal/team/:num', (req, res) => {
+      calls.push({ method: 'DELETE', num: Number(req.params.num) });
+      res.status(500).send('still down');
+    });
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      calls.push({ method: 'PATCH', body: req.body });
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    mockDocServer = started.server;
+    mockDocUrl = started.baseUrl;
+    process.env.DOCUMENTS_SERVER = mockDocUrl;
+
+    const del = await client.delete('/api/entries/171', { cookie: adminCookie });
+    assert.equal(del.status, 202);
+    const patch = await client.patch('/api/entries/170', {
+      body: { num: 171, univ: 'OrderUnivA', team: 'OrderTeamA' },
+      cookie: adminCookie,
+    });
+    assert.equal(patch.status, 409);
+
+    await new Promise(r => setTimeout(r, 150));
+    assert.ok(calls.some(c => c.method === 'DELETE' && c.num === 171), 'older delete should be attempted');
+    assert.equal(calls.some(c => c.method === 'PATCH'), false, 'renumber must not be enqueued while the reused number has pending lifecycle work');
+
+    const pendingRenumber = db.prepare("SELECT COUNT(*) AS c FROM lifecycle_outbox WHERE event_type = 'team.renumber' AND service = 'documents'").get().c;
+    assert.equal(pendingRenumber, 0, 'blocked renumber should not create another outbox row');
+
+    await stopServer(mockDocServer);
+    delete process.env.DOCUMENTS_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+
+  it('treats downstream 202 as pending and retries it before later same-service events', async () => {
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await client.post('/api/entries/bulk', {
+      body: {
+        data: {
+          172: { univ: 'PendingUnivA', team: 'PendingTeamA' },
+          173: { univ: 'PendingUnivB', team: 'PendingTeamB' },
+        },
+      },
+      cookie: adminCookie,
+    });
+
+    const calls = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      calls.push(req.body);
+      if (req.body.prevNum === 172 && calls.filter(c => c.prevNum === 172).length === 1) {
+        return res.status(202).json({ status: 'pending_file_work' });
+      }
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    mockDocServer = started.server;
+    mockDocUrl = started.baseUrl;
+    process.env.DOCUMENTS_SERVER = mockDocUrl;
+
+    const first = await client.patch('/api/entries/172', {
+      body: { num: 175, univ: 'PendingUnivA', team: 'PendingTeamA' },
+      cookie: adminCookie,
+    });
+    assert.equal(first.status, 202);
+    let pending = db.prepare("SELECT attempts, last_error FROM lifecycle_outbox WHERE event_type = 'team.renumber' AND service = 'documents'").all();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].attempts, 1);
+    assert.match(pending[0].last_error, /status 202/);
+
+    const second = await client.patch('/api/entries/173', {
+      body: { num: 174, univ: 'PendingUnivB', team: 'PendingTeamB' },
+      cookie: adminCookie,
+    });
+    assert.equal(second.status, 200);
+    await new Promise(r => setTimeout(r, 150));
+
+    assert.deepEqual(calls.map(c => [c.prevNum, c.newNum]), [[172, 175], [172, 175], [173, 174]]);
+    pending = db.prepare("SELECT COUNT(*) AS c FROM lifecycle_outbox WHERE service = 'documents'").get().c;
+    assert.equal(pending, 0);
 
     await stopServer(mockDocServer);
     delete process.env.DOCUMENTS_SERVER;
@@ -821,5 +921,226 @@ describe('Entry delete → service notifications', () => {
     assert.ok(removedNumSet.has(81), 'should notify deletion of entry 81');
     assert.ok(removedNumSet.has(82), 'should notify deletion of entry 82');
     assert.ok(!removedNumSet.has(90), 'should not notify for new entry 90');
+  });
+
+  it('POST /api/entries/bulk emits renumber events for moved teams', async () => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await client.post('/api/entries/bulk', {
+      body: {
+        data: {
+          300: { univ: 'BulkMoveUnivA', team: 'BulkMoveTeamA' },
+          301: { univ: 'BulkMoveUnivB', team: 'BulkMoveTeamB' },
+        },
+      },
+      cookie: adminCookie,
+    });
+
+    const renumbers = [];
+    const deletes = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      renumbers.push(req.body);
+      res.status(200).send();
+    });
+    mockApp.delete('/api/internal/team/:num', (req, res) => {
+      deletes.push(Number(req.params.num));
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    process.env.DOCUMENTS_SERVER = started.baseUrl;
+
+    const res = await client.post('/api/entries/bulk', {
+      body: {
+        data: {
+          301: { univ: 'BulkMoveUnivB', team: 'BulkMoveTeamB' },
+          302: { univ: 'BulkMoveUnivA', team: 'BulkMoveTeamA' },
+        },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    await new Promise(r => setTimeout(r, 150));
+
+    assert.deepEqual(renumbers.map(r => [r.prevNum, r.newNum]), [[300, 302]]);
+    assert.equal(renumbers[0].entry.univ, 'BulkMoveUnivA');
+    assert.equal(deletes.includes(300), false, 'moved team should not be treated as a delete');
+
+    await stopServer(started.server);
+    delete process.env.DOCUMENTS_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+
+  it('POST /api/entries/bulk deletes a displaced target team before renumbering into its number', async () => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await client.post('/api/entries/bulk', {
+      body: {
+        data: {
+          320: { univ: 'BulkDisplaceUnivA', team: 'BulkDisplaceTeamA' },
+          321: { univ: 'BulkDisplaceUnivB', team: 'BulkDisplaceTeamB' },
+        },
+      },
+      cookie: adminCookie,
+    });
+
+    const calls = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.delete('/api/internal/team/:num', (req, res) => {
+      calls.push({ method: 'DELETE', num: Number(req.params.num) });
+      res.status(200).send();
+    });
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      calls.push({ method: 'PATCH', prevNum: req.body.prevNum, newNum: req.body.newNum });
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    process.env.DOCUMENTS_SERVER = started.baseUrl;
+
+    const res = await client.post('/api/entries/bulk', {
+      body: {
+        data: {
+          321: { univ: 'BulkDisplaceUnivA', team: 'BulkDisplaceTeamA' },
+        },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    await new Promise(r => setTimeout(r, 150));
+
+    assert.deepEqual(calls, [
+      { method: 'DELETE', num: 321 },
+      { method: 'PATCH', prevNum: 320, newNum: 321 },
+    ]);
+
+    await stopServer(started.server);
+    delete process.env.DOCUMENTS_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+
+  it('POST /api/entries/bulk accepts explicit renumber mapping when display names also change', async () => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await client.post('/api/entries/bulk', {
+      body: { data: { 330: { univ: 'BulkMapUnivOld', team: 'BulkMapTeamOld' } } },
+      cookie: adminCookie,
+    });
+
+    const calls = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.delete('/api/internal/team/:num', (req, res) => {
+      calls.push({ method: 'DELETE', num: Number(req.params.num) });
+      res.status(200).send();
+    });
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      calls.push({ method: 'PATCH', body: req.body });
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    process.env.DOCUMENTS_SERVER = started.baseUrl;
+
+    const res = await client.post('/api/entries/bulk', {
+      body: {
+        renumbers: { 330: 331 },
+        data: { 331: { univ: 'BulkMapUnivNew', team: 'BulkMapTeamNew' } },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    await new Promise(r => setTimeout(r, 150));
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].method, 'PATCH');
+    assert.equal(calls[0].body.prevNum, 330);
+    assert.equal(calls[0].body.newNum, 331);
+    assert.equal(calls[0].body.entry.univ, 'BulkMapUnivNew');
+
+    await stopServer(started.server);
+    delete process.env.DOCUMENTS_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+
+  it('POST /api/entries/bulk treats same-number name corrections as retained entries', async () => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await client.post('/api/entries/bulk', {
+      body: { data: { 305: { univ: 'BulkCorrectUniv', team: 'BulkCorrectTeam' } } },
+      cookie: adminCookie,
+    });
+
+    const calls = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      calls.push({ method: 'PATCH', body: req.body });
+      res.status(200).send();
+    });
+    mockApp.delete('/api/internal/team/:num', (req, res) => {
+      calls.push({ method: 'DELETE', num: Number(req.params.num) });
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    process.env.DOCUMENTS_SERVER = started.baseUrl;
+
+    const res = await client.post('/api/entries/bulk', {
+      body: { data: { 305: { univ: 'BulkCorrectUnivFixed', team: 'BulkCorrectTeamFixed' } } },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    await new Promise(r => setTimeout(r, 150));
+    assert.deepEqual(calls, [], 'same number with corrected display fields should not trigger lifecycle delete/renumber');
+
+    await stopServer(started.server);
+    delete process.env.DOCUMENTS_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+
+  it('POST /api/entries/bulk uses a temporary renumber for number swaps', async () => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await client.post('/api/entries/bulk', {
+      body: {
+        data: {
+          310: { univ: 'BulkSwapUnivA', team: 'BulkSwapTeamA' },
+          311: { univ: 'BulkSwapUnivB', team: 'BulkSwapTeamB' },
+        },
+      },
+      cookie: adminCookie,
+    });
+
+    const renumbers = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      renumbers.push(req.body);
+      res.status(200).send();
+    });
+    mockApp.delete('/api/internal/team/:num', (_req, res) => res.status(200).send());
+    const started = await startServer(mockApp);
+    process.env.DOCUMENTS_SERVER = started.baseUrl;
+
+    const res = await client.post('/api/entries/bulk', {
+      body: {
+        data: {
+          310: { univ: 'BulkSwapUnivB', team: 'BulkSwapTeamB' },
+          311: { univ: 'BulkSwapUnivA', team: 'BulkSwapTeamA' },
+        },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    await new Promise(r => setTimeout(r, 150));
+
+    assert.equal(renumbers.length, 3);
+    const temp = renumbers[0].newNum;
+    assert.ok(temp >= 1_000_000_000, 'first step should park one team in a temporary number');
+    assert.deepEqual(renumbers.map(r => [r.prevNum, r.newNum]), [[310, temp], [311, 310], [temp, 311]]);
+
+    await stopServer(started.server);
+    delete process.env.DOCUMENTS_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 });

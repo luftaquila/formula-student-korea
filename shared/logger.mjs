@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { runMigrationOnce } from "./db-setup.mjs";
 
 export function createLogger(db, serviceName, maxRows = 50000) {
   db.exec(`CREATE TABLE IF NOT EXISTS logs (
@@ -16,7 +17,7 @@ export function createLogger(db, serviceName, maxRows = 50000) {
   db.exec("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_logs_action ON logs(action)");
 
-  {
+  runMigrationOnce(db, "shared.logs_timestamp_utc_normalization.v1", () => {
     const rows = db.prepare("SELECT id, timestamp FROM logs WHERE timestamp IS NOT NULL AND timestamp != ''").all();
     const update = db.prepare("UPDATE logs SET timestamp = ? WHERE id = ?");
     for (const row of rows) {
@@ -28,7 +29,7 @@ export function createLogger(db, serviceName, maxRows = 50000) {
         if (normalized !== row.timestamp) update.run(normalized, row.id);
       }
     }
-  }
+  });
 
   function getIP(req) {
     return req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;

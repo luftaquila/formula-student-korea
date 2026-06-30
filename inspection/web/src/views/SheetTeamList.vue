@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, watch } from "vue";
+import { ref, onMounted, onBeforeUnmount, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { fetchEntries, fetchEntryYears, fetchSheetSummary, fetchVehicleTypes } from "../api";
 import { useNotification } from "@shared/useNotification.js";
@@ -26,6 +26,7 @@ const availableYears = ref([]);
 const typeColorMap = ref({});
 const loading = ref(true);
 const searchQuery = ref("");
+let lifecycleRefreshTimer = null;
 
 const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
 
@@ -82,6 +83,17 @@ async function onYearChange() {
   loading.value = false;
 }
 
+function scheduleLifecycleRefresh() {
+  clearTimeout(lifecycleRefreshTimer);
+  lifecycleRefreshTimer = setTimeout(() => {
+    loadData();
+  }, 100);
+}
+
+onBeforeUnmount(() => {
+  clearTimeout(lifecycleRefreshTimer);
+});
+
 function goToSheet(num) {
   router.push(`/${selectedYear.value}/${num}`);
 }
@@ -97,6 +109,19 @@ function getInspector(num, catId) {
 // SSE로 카테고리 결과 실시간 반영
 watch(lastUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
+  if (update.deleted) {
+    delete summary.value.teams[update.team_num];
+    scheduleLifecycleRefresh();
+    return;
+  }
+  if (update.renumbered) {
+    if (summary.value.teams[update.prevNum]) {
+      summary.value.teams[update.team_num] = summary.value.teams[update.prevNum];
+      delete summary.value.teams[update.prevNum];
+    }
+    scheduleLifecycleRefresh();
+    return;
+  }
   const { team_num, category_id, result } = update;
   if (!summary.value.teams[team_num]) {
     summary.value.teams[team_num] = { inspectors: {}, results: {} };
@@ -107,6 +132,19 @@ watch(lastUpdate, (update) => {
 // SSE로 검차관 이름 실시간 반영
 watch(lastInspectorUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
+  if (update.deleted) {
+    delete summary.value.teams[update.team_num];
+    scheduleLifecycleRefresh();
+    return;
+  }
+  if (update.renumbered) {
+    if (summary.value.teams[update.prevNum]) {
+      summary.value.teams[update.team_num] = summary.value.teams[update.prevNum];
+      delete summary.value.teams[update.prevNum];
+    }
+    scheduleLifecycleRefresh();
+    return;
+  }
   const { team_num, category_id, inspector } = update;
   if (!summary.value.teams[team_num]) {
     summary.value.teams[team_num] = { inspectors: {}, results: {} };

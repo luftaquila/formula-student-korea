@@ -213,6 +213,19 @@ describe('Calendar API', () => {
       assert.ok(Array.isArray(events));
       assert.ok(events.length >= 1);
     });
+
+    it('includes all-day events when range bounds are ISO timestamps', async () => {
+      const create = await client.post('/api/events', {
+        cookie: chiefCookie,
+        body: { title: 'ISO Bound All Day', start: '2026-09-03', end: '2026-09-03', allDay: true },
+      });
+      assert.equal(create.status, 201);
+
+      const res = await client.get('/api/events?timeMin=2026-09-02T15:00:00.000Z&timeMax=2026-09-03T14:59:59.999Z', { cookie: officialCookie });
+      assert.equal(res.status, 200);
+      const events = await res.json();
+      assert.ok(events.some(e => e.title === 'ISO Bound All Day'));
+    });
   });
 
   describe('CRUD operations', () => {

@@ -80,6 +80,30 @@ async function onYearChange() {
 // SSE (편집 가드: 포커스된 셀은 deferred)
 watch(lastEnduranceUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
+  if (update.deleted) {
+    delete endurance.value[update.team_num];
+    if (focusedCell.value?.num === update.team_num) {
+      focusedCell.value = null;
+      deferredEnduranceUpdate.value = null;
+      cellEdited = false;
+    }
+    loadData();
+    return;
+  }
+  if (update.renumbered) {
+    if (endurance.value[update.prevNum]) {
+      endurance.value[update.team_num] = endurance.value[update.prevNum];
+      delete endurance.value[update.prevNum];
+    }
+    if (focusedCell.value?.num === update.prevNum) {
+      focusedCell.value = { ...focusedCell.value, num: update.team_num };
+    }
+    if (deferredEnduranceUpdate.value?.team_num === update.prevNum) {
+      deferredEnduranceUpdate.value = { ...deferredEnduranceUpdate.value, team_num: update.team_num };
+    }
+    loadData();
+    return;
+  }
   const { team_num, field, value } = update;
   if (focusedCell.value && focusedCell.value.num === team_num && focusedCell.value.field === field) {
     deferredEnduranceUpdate.value = update;

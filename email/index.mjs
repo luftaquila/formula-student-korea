@@ -2,7 +2,7 @@ import express from "express";
 import crypto from "node:crypto";
 import https from "node:https";
 import Database from "better-sqlite3";
-import { createDatabase } from "../shared/db-setup.mjs";
+import { createDatabase, runMigrationOnce } from "../shared/db-setup.mjs";
 import { createApp, createDbRun, setupProcessHandlers, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
@@ -58,12 +58,26 @@ db.exec(`CREATE TABLE IF NOT EXISTS email_log (
 try { db.exec("ALTER TABLE email_log ADD COLUMN html_content TEXT"); } catch { /* already exists */ }
 
 // Migration: recipients JSON array → recipient single string, drop legacy columns
-try {
-  db.exec("ALTER TABLE email_log ADD COLUMN recipient TEXT NOT NULL DEFAULT ''");
-  db.exec("UPDATE email_log SET recipient = json_extract(recipients, '$[0]') WHERE recipients LIKE '[%'");
-} catch { /* already migrated */ }
-try { db.exec("ALTER TABLE email_log DROP COLUMN recipients"); } catch { /* already dropped */ }
-try { db.exec("ALTER TABLE email_log DROP COLUMN recipient_count"); } catch { /* already dropped */ }
+{
+  const columns = () => db.prepare("PRAGMA table_info(email_log)").all().map((c) => c.name);
+  let cols = columns();
+  if (!cols.includes("recipient")) {
+    db.exec("ALTER TABLE email_log ADD COLUMN recipient TEXT NOT NULL DEFAULT ''");
+    cols = columns();
+  }
+  if (cols.includes("recipients")) {
+    db.prepare(`
+      UPDATE email_log
+      SET recipient = COALESCE(NULLIF(json_extract(recipients, '$[0]'), ''), recipient, '')
+      WHERE (recipient IS NULL OR recipient = '') AND recipients LIKE '[%' AND json_valid(recipients)
+    `).run();
+    db.exec("ALTER TABLE email_log DROP COLUMN recipients");
+    cols = columns();
+  }
+  if (cols.includes("recipient_count")) {
+    db.exec("ALTER TABLE email_log DROP COLUMN recipient_count");
+  }
+}
 
 function normalizeEmailSentAt(value) {
   const s = String(value || "");
@@ -74,14 +88,14 @@ function normalizeEmailSentAt(value) {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-{
+runMigrationOnce(db, "email.sent_at_utc_normalization.v1", () => {
   const rows = db.prepare("SELECT id, sent_at FROM email_log WHERE sent_at IS NOT NULL AND sent_at != ''").all();
   const update = db.prepare("UPDATE email_log SET sent_at = ? WHERE id = ?");
   for (const row of rows) {
     const normalized = normalizeEmailSentAt(row.sent_at);
     if (normalized && normalized !== row.sent_at) update.run(normalized, row.id);
   }
-}
+});
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_el_sent_at ON email_log(sent_at)`);
 db.exec("DROP INDEX IF EXISTS idx_el_status");

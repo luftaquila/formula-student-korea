@@ -192,6 +192,52 @@ describe('Records lifecycle sync', () => {
     assert.equal(row.invalidated, 1);
     assert.equal(row.scoreboard, 0);
   });
+
+  it('clears armed wireless sessions on team delete and updates bound runs on renumber', async () => {
+    const deleteSelect = await client.post('/api/wireless/select', {
+      body: { event_type: '가속', team: { num: 977, univ: 'DeleteUniv', team: 'DeleteTeam' }, event_name: 'LIFE-DELETE' },
+      cookie: adminCookie,
+    });
+    assert.equal(deleteSelect.status, 200);
+    await client.post('/api/wireless/arm', {
+      body: { event_type: '가속', action: 'green', green_tick: '1600000000', team: { num: 977, univ: 'DeleteUniv', team: 'DeleteTeam' }, event_name: 'LIFE-DELETE' },
+      cookie: adminCookie,
+    });
+    const del = await client.delete(`/api/internal/team/977?year=${YEAR}`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(del.status, 200);
+    let state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    let accel = state.sessions.find(s => s.event_type === '가속');
+    assert.equal(accel.armed, false);
+    assert.equal(accel.team, null);
+    assert.equal(accel.event_name, null);
+
+    const NAME = 'LIFE-RENUMBER';
+    await client.post('/api/wireless/arm', {
+      body: { event_type: '오토크로스', action: 'green', green_tick: '1600000000', team: { num: 978, univ: 'OldUniv', team: 'OldTeam' }, event_name: NAME },
+      cookie: adminCookie,
+    });
+    const renumber = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { year: YEAR, prevNum: 978, newNum: 979, entry: { univ: 'NewUniv', team: 'NewTeam' } },
+    });
+    assert.equal(renumber.status, 200);
+    state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const autoX = state.sessions.find(s => s.event_type === '오토크로스');
+    assert.equal(autoX.team.num, 979);
+    assert.equal(autoX.team.univ, 'NewUniv');
+    assert.equal(autoX.team.team, 'NewTeam');
+
+    const dnf = await client.post('/api/wireless/dnf', { body: { event_type: '오토크로스' }, cookie: adminCookie });
+    assert.equal(dnf.status, 200);
+    const rows = await (await client.get(`/api/records/${encodeURIComponent(`FSK ${YEAR} ${NAME}`)}`, { cookie: adminCookie })).json();
+    assert.ok(rows.some(r => r.num === 979 && r.univ === 'NewUniv' && r.team === 'NewTeam' && r.result === -1), 'renumbered bound run should save under new team number');
+    assert.ok(!rows.some(r => r.num === 978), 'stale team number should not be used after renumber');
+
+    await client.delete(`/api/records/${encodeURIComponent(`FSK ${YEAR} ${NAME}`)}`, { cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: '오토크로스', action: 'off' }, cookie: adminCookie });
+  });
 });
 
 describe('GET /api/records (after creation)', () => {
@@ -443,7 +489,7 @@ describe('GET /api/controllers (after creation)', () => {
     const data = await res.json();
     assert.ok(Array.isArray(data));
     assert.equal(data.length, 1);
-    assert.equal(data[0].timestamp, '2026-01-01T10:00:00');
+    assert.equal(data[0].timestamp, '2026-01-01T10:00:00.000Z');
     assert.equal(data[0].data, 'test data');
   });
 });

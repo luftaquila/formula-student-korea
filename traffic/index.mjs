@@ -1,6 +1,6 @@
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase } from "../shared/db-setup.mjs";
+import { createDatabase, runMigrationOnce } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
@@ -8,6 +8,7 @@ import { EVENT_TYPES } from "../shared/constants.js";
 import { formatEnduranceDetail, enduranceTotal } from "../shared/event-timing.js";
 
 const CONTROLLER_MAX_ROWS = 100000;
+const RETAIN_EVENTS = 500000;
 
 export function createTrafficApp(options = {}) {
 
@@ -137,6 +138,14 @@ db.exec("DROP INDEX IF EXISTS idx_wevent_server_time");
 }
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_wevent_dedupe ON wireless_event(node_id, ev_seq, master_tick)");
 
+function pruneWirelessEvents() {
+  const row = db.prepare("SELECT MAX(id) AS m FROM wireless_event").get();
+  if (row && row.m > RETAIN_EVENTS) {
+    return db.prepare("DELETE FROM wireless_event WHERE id <= ?").run(row.m - RETAIN_EVENTS).changes;
+  }
+  return 0;
+}
+
 // 센서 -> 경기·역할 매핑 (UI에서 설정, 서버 영구 저장).
 db.exec(`CREATE TABLE IF NOT EXISTS wireless_mapping (
   node_id    TEXT PRIMARY KEY,
@@ -214,24 +223,41 @@ function normalizeUtcTextTimestamp(value) {
 }
 
 function normalizeTimestampColumn(table, column) {
-  const rows = db.prepare(`SELECT rowid AS _rowid, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL AND ${column} != ''`).all();
+  const batchSize = 1000;
+  let lastRowid = 0;
+  const select = db.prepare(`
+    SELECT rowid AS _rowid, ${column} AS value
+    FROM ${table}
+    WHERE rowid > ? AND ${column} IS NOT NULL AND ${column} != ''
+    ORDER BY rowid
+    LIMIT ?
+  `);
   const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
-  for (const row of rows) {
-    const normalized = normalizeUtcTextTimestamp(row.value);
-    if (normalized && normalized !== row.value) update.run(normalized, row._rowid);
+  while (true) {
+    const rows = select.all(lastRowid, batchSize);
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      lastRowid = row._rowid;
+      const normalized = normalizeUtcTextTimestamp(row.value);
+      if (normalized && normalized !== row.value) update.run(normalized, row._rowid);
+    }
   }
 }
 
-for (const [table, column] of [
-  ["wireless_event", "server_time"],
-  ["wireless_mapping", "updated_at"],
-  ["wireless_light", "updated_at"],
-  ["wireless_session", "updated_at"],
-  ["wireless_session", "armed_at"],
-  ["wireless_session", "lease_expires_at"],
-]) {
-  normalizeTimestampColumn(table, column);
-}
+runMigrationOnce(db, "traffic.utc_timestamp_normalization.v1", () => {
+  pruneWirelessEvents();
+  for (const [table, column] of [
+    ["controller", "timestamp"],
+    ["wireless_event", "server_time"],
+    ["wireless_mapping", "updated_at"],
+    ["wireless_light", "updated_at"],
+    ["wireless_session", "updated_at"],
+    ["wireless_session", "armed_at"],
+    ["wireless_session", "lease_expires_at"],
+  ]) {
+    normalizeTimestampColumn(table, column);
+  }
+}, { transaction: false });
 
 // 기존 record별 동적 테이블을 단일 record 테이블로 흡수한 뒤 drop한다.
 {
@@ -306,7 +332,12 @@ function getRecordFiles() {
 }
 
 function getYearRecordFiles(year) {
-  return getRecordFiles().filter((name) => name.startsWith(`FSK ${Number(year)} `));
+  const startName = `FSK ${Number(year)} `;
+  const endName = `FSK ${Number(year) + 1} `;
+  return db
+    .prepare("SELECT DISTINCT name FROM record WHERE name >= ? AND name < ? ORDER BY name")
+    .all(startName, endName)
+    .map((row) => row.name);
 }
 
 function getRecordRows(name) {
@@ -316,6 +347,30 @@ function getRecordRows(name) {
     WHERE name = ?
     ORDER BY legacy_rowid
   `).all(name);
+}
+
+function getYearRecordGroups(year) {
+  const startName = `FSK ${Number(year)} `;
+  const endName = `FSK ${Number(year) + 1} `;
+  const rows = db.prepare(`
+    SELECT r.name, r.legacy_rowid AS rowid, r.time, r.num, r.univ, r.team, r.type,
+           r.result, r.detail, r.cones, r.oc, r.invalidated, r.scoreboard
+    FROM record r
+    LEFT JOIN record_visibility v ON v.name = r.name
+    WHERE r.name >= ? AND r.name < ? AND COALESCE(v.visible, 1) != 0
+    ORDER BY r.name, r.legacy_rowid
+  `).all(startName, endName);
+  const groups = [];
+  let current = null;
+  for (const row of rows) {
+    const { name, ...record } = row;
+    if (!current || current.name !== name) {
+      current = { name, records: [] };
+      groups.push(current);
+    }
+    current.records.push(record);
+  }
+  return groups;
 }
 
 function getRecordRow(name, rowid) {
@@ -444,6 +499,79 @@ const engineRun = new Map(); // event_type -> { debounce:{}, startTick, saved, l
 function resetEngineRun(eventType, bound = null) {
   // laps/recordName/recordRowid: 내구는 랩을 기록 1건에 이어붙이므로 누적 랩과 그 기록 행을 추적.
   engineRun.set(eventType, { debounce: {}, startTick: null, saved: false, lastTick: null, lapCount: 0, lap2: null, bound, laps: [], recordName: null, recordRowid: null });
+}
+function currentRecordYear() {
+  return new Date().getFullYear();
+}
+function parseTeamJson(value) {
+  if (!value) return null;
+  try { return JSON.parse(value); }
+  catch { return null; }
+}
+function matchingTeam(team, num) {
+  return !!team && Number(team.num) === num;
+}
+function updateWirelessBindingsForDelete(num, year) {
+  if (Number(year) !== currentRecordYear()) return [];
+  const touched = new Set();
+  for (const row of db.prepare("SELECT event_type, team_json FROM wireless_session").all()) {
+    const sessionTeam = parseTeamJson(row.team_json);
+    const run = engineRun.get(row.event_type);
+    const sessionMatches = matchingTeam(sessionTeam, num);
+    const boundMatches = matchingTeam(run?.bound?.team, num);
+    if (!sessionMatches && !boundMatches) continue;
+
+    if (sessionMatches) {
+      db.prepare(`
+        UPDATE wireless_session
+        SET armed = 0, light_color = 'off', team_json = NULL, event_name = NULL,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE event_type = ?
+      `).run(row.event_type);
+    } else {
+      db.prepare(`
+        UPDATE wireless_session
+        SET armed = 0, light_color = 'off', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE event_type = ?
+      `).run(row.event_type);
+    }
+    resetEngineRun(row.event_type);
+    touched.add(row.event_type);
+  }
+  return [...touched];
+}
+function updateWirelessBindingsForRenumber(prevNum, newNum, year, entry) {
+  if (Number(year) !== currentRecordYear()) return [];
+  const touched = new Set();
+  for (const row of db.prepare("SELECT event_type, team_json FROM wireless_session").all()) {
+    const sessionTeam = parseTeamJson(row.team_json);
+    if (!matchingTeam(sessionTeam, prevNum)) continue;
+    const nextTeam = {
+      num: newNum,
+      univ: typeof entry.univ === "string" && entry.univ.trim() ? entry.univ.trim() : sessionTeam.univ,
+      team: typeof entry.team === "string" && entry.team.trim() ? entry.team.trim() : sessionTeam.team,
+    };
+    db.prepare(`
+      UPDATE wireless_session
+      SET team_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      WHERE event_type = ?
+    `).run(JSON.stringify(nextTeam), row.event_type);
+    touched.add(row.event_type);
+  }
+  for (const [eventType, run] of engineRun.entries()) {
+    if (!matchingTeam(run?.bound?.team, prevNum)) continue;
+    run.bound = {
+      ...run.bound,
+      team: {
+        ...run.bound.team,
+        num: newNum,
+        univ: typeof entry.univ === "string" && entry.univ.trim() ? entry.univ.trim() : run.bound.team.univ,
+        team: typeof entry.team === "string" && entry.team.trim() ? entry.team.trim() : run.bound.team.team,
+      },
+    };
+    touched.add(eventType);
+  }
+  return [...touched];
 }
 function getDebounceMs() {
   const row = db.prepare("SELECT debounce_ms FROM wireless_light WHERE id = 1").get();
@@ -651,13 +779,9 @@ const leaseWatch = setInterval(() => {
 leaseWatch.unref?.();
 
 // 무선 이벤트 보존 한도(약 50만 행). 백그라운드 트림.
-const RETAIN_EVENTS = 500000;
 const eventRetention = setInterval(() => {
   try {
-    const row = db.prepare("SELECT MAX(id) AS m FROM wireless_event").get();
-    if (row && row.m > RETAIN_EVENTS) {
-      db.prepare("DELETE FROM wireless_event WHERE id <= ?").run(row.m - RETAIN_EVENTS);
-    }
+    pruneWirelessEvents();
   } catch (e) {
     logger.warn(null, "wireless.event.retention", { error: e.message || String(e) }, "wireless_event", { email: "system", name: "system", role: "admin" });
     console.error("[wireless] event retention:", e.message || e);
@@ -762,13 +886,17 @@ function validateControllerData({ timestamp, data }) {
   if (typeof timestamp !== "string") {
     return { valid: false, error: "타임스탬프 형식이 올바르지 않습니다." };
   }
+  const normalizedTimestamp = normalizeUtcTextTimestamp(timestamp);
+  if (!normalizedTimestamp) {
+    return { valid: false, error: "타임스탬프 형식이 올바르지 않습니다." };
+  }
   if (data === undefined || data === null) {
     return { valid: false, error: "데이터가 누락되었습니다." };
   }
   if (typeof data !== "string") {
     return { valid: false, error: "데이터 형식이 올바르지 않습니다." };
   }
-  return { valid: true };
+  return { valid: true, timestamp: normalizedTimestamp };
 }
 
 /* ============================================
@@ -803,15 +931,7 @@ app.get("/api/records/year/:year", (req, res) => {
   const year = Number(req.params.year);
   if (!Number.isInteger(year) || year < 2000 || year > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
 
-  const result = dbRun(() => {
-    const visibility = getRecordVisibility();
-    return getYearRecordFiles(year)
-      .filter((name) => visibility[name] !== false)
-      .map((name) => ({
-        name,
-        records: getRecordRows(name),
-      }));
-  });
+  const result = dbRun(() => getYearRecordGroups(year));
 
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result);
@@ -1040,11 +1160,17 @@ app.delete("/api/internal/team/:num", (req, res) => {
   if (!Number.isInteger(year)) return res.status(400).send("연도를 지정해야 합니다.");
 
   const result = dbRun(() => {
-    return db.prepare(`
-      UPDATE record
-      SET invalidated = 1, scoreboard = 0
-      WHERE name LIKE ? AND num = ?
-    `).run(`FSK ${year} %`, num).changes;
+    return db.transaction(() => {
+      const startName = `FSK ${year} `;
+      const endName = `FSK ${year + 1} `;
+      const invalidated = db.prepare(`
+        UPDATE record
+        SET invalidated = 1, scoreboard = 0
+        WHERE name >= ? AND name < ? AND num = ?
+      `).run(startName, endName, num).changes;
+      const wirelessSessions = updateWirelessBindingsForDelete(num, year);
+      return { invalidated, wirelessSessions };
+    })();
   });
 
   if (!result.success) {
@@ -1052,8 +1178,11 @@ app.delete("/api/internal/team/:num", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "team.cascade_delete", { year, invalidated: result.result }, `#${num}`);
+  logger.log(req, "team.cascade_delete", { year, invalidated: result.result.invalidated, wirelessSessions: result.result.wirelessSessions.length }, `#${num}`);
   broadcastEvent("records", { type: "team-delete", year, num, recordFiles: getRecordFiles() });
+  for (const eventType of result.result.wirelessSessions) {
+    broadcastEvent("wireless:session", getSession(eventType));
+  }
   res.status(200).send();
 });
 
@@ -1069,24 +1198,27 @@ app.patch("/api/internal/team-num", (req, res) => {
   }
 
   const result = dbRun(() => {
-    let changed = 0;
-    const updates = ["num = ?"];
-    const params = [newNum];
-    if (typeof entry.univ === "string" && entry.univ.trim()) {
-      updates.push("univ = ?");
-      params.push(entry.univ.trim());
-    }
-    if (typeof entry.team === "string" && entry.team.trim()) {
-      updates.push("team = ?");
-      params.push(entry.team.trim());
-    }
-    for (const name of getYearRecordFiles(year)) {
-      const existing = db.prepare("SELECT COUNT(*) AS count FROM record WHERE name = ? AND num = ?").get(name, prevNum).count;
-      if (existing === 0) continue;
-      db.prepare("UPDATE record SET invalidated = 1, scoreboard = 0 WHERE name = ? AND num = ?").run(name, newNum);
-      changed += db.prepare(`UPDATE record SET ${updates.join(", ")} WHERE name = ? AND num = ?`).run(...params, name, prevNum).changes;
-    }
-    return changed;
+    return db.transaction(() => {
+      let changed = 0;
+      const updates = ["num = ?"];
+      const params = [newNum];
+      if (typeof entry.univ === "string" && entry.univ.trim()) {
+        updates.push("univ = ?");
+        params.push(entry.univ.trim());
+      }
+      if (typeof entry.team === "string" && entry.team.trim()) {
+        updates.push("team = ?");
+        params.push(entry.team.trim());
+      }
+      for (const name of getYearRecordFiles(year)) {
+        const existing = db.prepare("SELECT COUNT(*) AS count FROM record WHERE name = ? AND num = ?").get(name, prevNum).count;
+        if (existing === 0) continue;
+        db.prepare("UPDATE record SET invalidated = 1, scoreboard = 0 WHERE name = ? AND num = ?").run(name, newNum);
+        changed += db.prepare(`UPDATE record SET ${updates.join(", ")} WHERE name = ? AND num = ?`).run(...params, name, prevNum).changes;
+      }
+      const wirelessSessions = updateWirelessBindingsForRenumber(prevNum, newNum, year, entry);
+      return { changed, wirelessSessions };
+    })();
   });
 
   if (!result.success) {
@@ -1094,8 +1226,11 @@ app.patch("/api/internal/team-num", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "team_num.update", { year, prevNum, newNum, updated: result.result });
+  logger.log(req, "team_num.update", { year, prevNum, newNum, updated: result.result.changed, wirelessSessions: result.result.wirelessSessions.length });
   broadcastEvent("records", { type: "team-renumber", year, prevNum, newNum, recordFiles: getRecordFiles() });
+  for (const eventType of result.result.wirelessSessions) {
+    broadcastEvent("wireless:session", getSession(eventType));
+  }
   res.status(200).send();
 });
 
@@ -1122,7 +1257,7 @@ app.post("/api/controllers", (req, res) => {
   }
 
   const result = dbRun(() =>
-    db.prepare("INSERT INTO controller (timestamp, data) VALUES (?, ?)").run(req.body.timestamp, req.body.data),
+    db.prepare("INSERT INTO controller (timestamp, data) VALUES (?, ?)").run(validation.timestamp, req.body.data),
   );
 
   if (!result.success) {
@@ -1130,7 +1265,7 @@ app.post("/api/controllers", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "controller.upload", { timestamp: req.body.timestamp });
+  logger.log(req, "controller.upload", { timestamp: validation.timestamp });
   res.status(201).send();
 });
 

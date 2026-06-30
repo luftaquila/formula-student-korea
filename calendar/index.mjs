@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase } from "../shared/db-setup.mjs";
+import { createDatabase, runMigrationOnce } from "../shared/db-setup.mjs";
 import { createApp, createDbRun, setupProcessHandlers, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
@@ -29,6 +29,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS events (
 db.exec("CREATE INDEX IF NOT EXISTS idx_events_start_end ON events(start, end)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_events_end_start ON events(end, start)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_events_role_start ON events(role, start)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_events_all_day_end_start ON events(all_day, end, start)");
 
 const logger = createLogger(db, "calendar");
 const dbRun = createDbRun();
@@ -113,7 +114,13 @@ function normalizeRangeBound(value, endOfDay = false) {
   return normalizeDateTime(input);
 }
 
-{
+function kstDateFromUtcIso(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date(d.getTime() + 9 * 3600000).toISOString().slice(0, 10);
+}
+
+runMigrationOnce(db, "calendar.event_timestamp_normalization.v1", () => {
   const update = db.prepare("UPDATE events SET start = ?, end = ? WHERE id = ?");
   for (const event of db.prepare("SELECT id, start, end, all_day FROM events").all()) {
     const allDay = !!event.all_day;
@@ -123,7 +130,7 @@ function normalizeRangeBound(value, endOfDay = false) {
       update.run(start, end, event.id);
     }
   }
-}
+});
 
 // List events (public access, filtered by user role)
 app.get("/api/events", (req, res) => {
@@ -139,9 +146,18 @@ app.get("/api/events", (req, res) => {
     logger.warn(req, "event.list", { error: "invalid timeMin/timeMax", timeMin, timeMax });
     return res.status(400).json({ error: "Invalid time range" });
   }
+  const minAllDayDate = kstDateFromUtcIso(normalizedMin);
+  const maxAllDayDate = kstDateFromUtcIso(normalizedMax);
 
   const result = dbRun(() =>
-    db.prepare("SELECT * FROM events WHERE end >= ? AND start <= ? ORDER BY start").all(normalizedMin, normalizedMax)
+    db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM events WHERE all_day = 0 AND end >= ? AND start <= ?
+        UNION ALL
+        SELECT * FROM events WHERE all_day = 1 AND end >= ? AND start <= ?
+      )
+      ORDER BY start
+    `).all(normalizedMin, normalizedMax, minAllDayDate, maxAllDayDate)
   );
 
   if (!result.success) {
