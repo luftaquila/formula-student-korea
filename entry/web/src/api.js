@@ -34,12 +34,37 @@ export async function addEntry({ num, univ, team, type }, year) {
 
 /**
  * 엔트리 수정
+ *
+ * 번호는 그대로 둔 채 학교/팀명이 바뀌면(명칭 정정 vs 팀 교체) 서버는 409와 함께
+ * `{ message, ambiguous }`를 반환한다. bulk와 동일하게 ambiguous를 throw에 실어
+ * 호출부가 운영자에게 의도를 물은 뒤 intent(retain|replacement)로 재전송하게 한다.
  */
-export async function updateEntry({ num, univ, team, type, prev }, year) {
-  await request(`/api/entries/${prev}${yearParam(year)}`, {
+export async function updateEntry({ num, univ, team, type, prev, intent }, year) {
+  const base = import.meta.env.PROD ? "/entry" : "";
+  const body = { num, univ, team, type };
+  if (intent) body.intent = intent;
+
+  const res = await fetch(`${base}/api/entries/${prev}${yearParam(year)}`, {
     method: "PATCH",
-    body: JSON.stringify({ num, univ, team, type }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
+
+  if (res.status === 401) {
+    window.location.href = `/auth/api/login?redirect=${encodeURIComponent(window.location.pathname)}`;
+    throw new Error("인증이 필요합니다.");
+  }
+  if (res.status === 409) {
+    const payload = await res.json().catch(() => null);
+    if (payload?.ambiguous) {
+      const e = new Error(payload.message || "선택이 필요합니다.");
+      e.ambiguous = payload.ambiguous;
+      throw e;
+    }
+  }
+  if (!res.ok) {
+    throw new Error((await res.text()) || `요청 실패 (${res.status})`);
+  }
 }
 
 /**

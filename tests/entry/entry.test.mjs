@@ -18,12 +18,13 @@ import { createEntryApp } from '../../entry/index.mjs';
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 
-let server, baseUrl, client, db, dbPath;
+let server, baseUrl, client, db, dbPath, stopLifecycleOutboxRetry;
 
 before(async () => {
   dbPath = tmpDbPath();
   const result = createEntryApp({ dbPath });
   db = result.db;
+  stopLifecycleOutboxRetry = result.stopLifecycleOutboxRetry;
   const started = await startServer(result.app);
   server = started.server;
   baseUrl = started.baseUrl;
@@ -31,6 +32,7 @@ before(async () => {
 });
 
 after(async () => {
+  stopLifecycleOutboxRetry?.();
   await stopServer(server);
   db.close();
   cleanup(dbPath);
@@ -389,8 +391,9 @@ describe('GET /api/entries (populated)', () => {
 
 describe('PATCH /api/entries/:num', () => {
   it('updates entry data', async () => {
+    // 같은 번호에서 학교/팀명을 바꾸는 것은 명칭 정정(retain)으로 명시해야 한다.
     const res = await client.patch('/api/entries/1', {
-      body: { num: 1, univ: 'UpdatedUniv', team: 'UpdatedTeam' },
+      body: { num: 1, univ: 'UpdatedUniv', team: 'UpdatedTeam', intent: 'retain' },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
@@ -711,9 +714,10 @@ describe('PATCH /api/entries/:num — lifecycle sync', () => {
 
     for (const key of LIFECYCLE_SERVER_ENVS) process.env[key] = mockDocUrl;
 
-    // Update entry 71 without changing its number
+    // Update entry 71 without changing its number — same-number identity change is a
+    // name correction (retain), which must not dispatch any lifecycle (renumber) events.
     const res = await client.patch('/api/entries/71', {
-      body: { num: 71, univ: 'SyncUnivUpdated', team: 'SyncTeamUpdated' },
+      body: { num: 71, univ: 'SyncUnivUpdated', team: 'SyncTeamUpdated', intent: 'retain' },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
@@ -1226,5 +1230,171 @@ describe('Entry delete → service notifications', () => {
     await stopServer(started.server);
     delete process.env.DOCUMENTS_SERVER;
     db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+});
+
+// ─── Single-PATCH same-number identity intent ────────────────────────────
+describe('PATCH /api/entries/:num — same-number identity intent', () => {
+  before(async () => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await client.post('/api/entries', { body: { num: 600, univ: 'IdUnivA', team: 'IdTeamA' }, cookie: adminCookie });
+  });
+
+  after(() => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+
+  it('returns 409 ambiguous when team identity changes on the same number without intent', async () => {
+    const res = await client.patch('/api/entries/600', {
+      body: { num: 600, univ: 'IdUnivB', team: 'IdTeamB' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 409);
+    const payload = await res.json();
+    assert.ok(Array.isArray(payload.ambiguous), 'response carries the ambiguous list');
+    assert.equal(payload.ambiguous[0].num, 600);
+    assert.equal(payload.ambiguous[0].from.team, 'IdTeamA');
+    assert.equal(payload.ambiguous[0].to.team, 'IdTeamB');
+
+    const data = await (await client.get('/api/entries')).json();
+    assert.equal(data['600'].team, 'IdTeamA', 'entry must not change on an unresolved ambiguous edit');
+  });
+
+  it('an identical-identity edit is a no-op update, never ambiguous', async () => {
+    const res = await client.patch('/api/entries/600', {
+      body: { num: 600, univ: 'IdUnivA', team: 'IdTeamA' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200, 'unchanged identity must not be reported ambiguous');
+  });
+
+  it('retain intent updates identity without dispatching lifecycle events', async () => {
+    const calls = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.delete('/api/internal/team/:num', (req, res) => { calls.push({ method: 'DELETE', num: Number(req.params.num) }); res.status(200).send(); });
+    mockApp.patch('/api/internal/team-num', (req, res) => { calls.push({ method: 'PATCH', body: req.body }); res.status(200).send(); });
+    const started = await startServer(mockApp);
+    for (const key of LIFECYCLE_SERVER_ENVS) process.env[key] = started.baseUrl;
+
+    const res = await client.patch('/api/entries/600', {
+      body: { num: 600, univ: 'IdUnivB', team: 'IdTeamB', intent: 'retain' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    await new Promise(r => setTimeout(r, 100));
+    assert.deepEqual(calls, [], 'retain (name correction) keeps downstream data, no events dispatched');
+
+    const data = await (await client.get('/api/entries')).json();
+    assert.equal(data['600'].team, 'IdTeamB', 'entry identity is updated');
+
+    await stopServer(started.server);
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+
+  it('replacement intent updates identity and emits a delete event to drop downstream data', async () => {
+    const calls = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.delete('/api/internal/team/:num', (req, res) => { calls.push({ method: 'DELETE', num: Number(req.params.num) }); res.status(200).send(); });
+    mockApp.patch('/api/internal/team-num', (req, res) => { calls.push({ method: 'PATCH', body: req.body }); res.status(200).send(); });
+    const started = await startServer(mockApp);
+    process.env.DOCUMENTS_SERVER = started.baseUrl;
+
+    const res = await client.patch('/api/entries/600', {
+      body: { num: 600, univ: 'IdUnivC', team: 'IdTeamC', intent: 'replacement' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    await new Promise(r => setTimeout(r, 150));
+    assert.deepEqual(calls, [{ method: 'DELETE', num: 600 }], 'replacement drops the old team\'s downstream data via a delete event');
+
+    const data = await (await client.get('/api/entries')).json();
+    assert.equal(data['600'].team, 'IdTeamC', 'entry table holds the new team');
+
+    await stopServer(started.server);
+    delete process.env.DOCUMENTS_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+});
+
+// ─── Lifecycle outbox: dead-letter + admin recovery ──────────────────────
+describe('lifecycle outbox — dead-letter + admin recovery', () => {
+  let failServer;
+
+  before(async () => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.delete('/api/internal/team/:num', (req, res) => res.status(500).send('down'));
+    mockApp.patch('/api/internal/team-num', (req, res) => res.status(500).send('down'));
+    const started = await startServer(mockApp);
+    failServer = started.server;
+    process.env.DOCUMENTS_SERVER = started.baseUrl;
+  });
+
+  after(async () => {
+    await stopServer(failServer);
+    delete process.env.DOCUMENTS_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+
+  it('transitions a permanently-failing row to dead and stops blocking the referenced number', async () => {
+    await client.post('/api/entries', { body: { num: 900, univ: 'DeadUniv', team: 'DeadTeam' }, cookie: adminCookie });
+    const del = await client.delete('/api/entries/900', { cookie: adminCookie });
+    assert.equal(del.status, 202, 'delete exposes pending sync without rolling back');
+
+    const rowA = db.prepare("SELECT id FROM lifecycle_outbox WHERE service='documents' AND path LIKE '%/team/900%'").get();
+    assert.ok(rowA, 'a delete event was enqueued for #900');
+
+    // While pending and still blocking, #900 cannot be re-created.
+    const blocked = await client.post('/api/entries', { body: { num: 900, univ: 'X', team: 'Y' }, cookie: adminCookie });
+    assert.equal(blocked.status, 409, 'pending lifecycle ref blocks reuse of #900');
+
+    // Simulate near-exhausted attempts, then trigger one more drain via a second failing op.
+    db.prepare("UPDATE lifecycle_outbox SET attempts = 23, status = 'pending', next_attempt_at = 0, locked_until = 0, locked_by = '' WHERE id = ?").run(rowA.id);
+    await client.post('/api/entries', { body: { num: 901, univ: 'DeadUniv2', team: 'DeadTeam2' }, cookie: adminCookie });
+    await client.delete('/api/entries/901', { cookie: adminCookie });
+    await new Promise(r => setTimeout(r, 150));
+
+    const deadRow = db.prepare("SELECT status, attempts FROM lifecycle_outbox WHERE id = ?").get(rowA.id);
+    assert.equal(deadRow.status, 'dead', 'row goes dead after exceeding LIFECYCLE_MAX_ATTEMPTS');
+    assert.ok(deadRow.attempts >= 24, 'attempts reflect the terminal failure');
+
+    // A dead row must no longer 409-block operations on its number.
+    const recreate = await client.post('/api/entries', { body: { num: 900, univ: 'NewTeamUniv', team: 'NewTeam' }, cookie: adminCookie });
+    assert.equal(recreate.status, 201, 'a dead lifecycle row must not permanently block the referenced number');
+  });
+
+  it('admin can list, retry, and discard outbox rows', async () => {
+    // Isolate from rows left by the previous test: a documents row drains oldest-first,
+    // so a stale older pending row would block the synthetic row under test.
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    const year = new Date().getFullYear();
+    const insert = db.prepare("INSERT INTO lifecycle_outbox (event_type, service, method, path, body, attempts, status, next_attempt_at) VALUES ('team.delete','documents','DELETE',?,NULL,24,'dead',0)")
+      .run(`/api/internal/team/950?year=${year}`);
+    const id = Number(insert.lastInsertRowid);
+
+    const list = await client.get('/api/admin/lifecycle-outbox?status=dead', { cookie: adminCookie });
+    assert.equal(list.status, 200);
+    const rows = await list.json();
+    assert.ok(rows.some(r => r.id === id && r.status === 'dead'), 'dead row is listed');
+
+    const retry = await client.post(`/api/admin/lifecycle-outbox/${id}/retry`, { cookie: adminCookie });
+    assert.equal(retry.status, 200);
+    const afterRetry = db.prepare("SELECT status, attempts FROM lifecycle_outbox WHERE id = ?").get(id);
+    assert.notEqual(afterRetry.status, 'dead', 'retry resets a dead row back to pending');
+    assert.equal(afterRetry.attempts, 1, 'retry zeroes attempts then re-dispatches once (which fails)');
+
+    const discard = await client.delete(`/api/admin/lifecycle-outbox/${id}`, { cookie: adminCookie });
+    assert.equal(discard.status, 200);
+    assert.equal(db.prepare("SELECT 1 FROM lifecycle_outbox WHERE id = ?").get(id), undefined, 'discard removes the row');
+
+    const missing = await client.delete(`/api/admin/lifecycle-outbox/${id}`, { cookie: adminCookie });
+    assert.equal(missing.status, 404, 'discarding a missing row is 404');
   });
 });

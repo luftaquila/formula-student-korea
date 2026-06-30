@@ -91,6 +91,20 @@ async function handleUpdate(entry) {
     success(`${entry.num}번 엔트리를 수정했습니다.`);
     entries.value = await fetchEntries(selectedYear.value);
   } catch (e) {
+    // 번호를 그대로 둔 채 팀이 바뀐 경우: 명칭 정정인지 팀 교체인지 운영자가 정해야
+    // downstream(제출·점수·검차) 데이터를 유지할지 삭제할지 결정할 수 있다.
+    if (e.ambiguous) {
+      const c = e.ambiguous[0];
+      const keep = confirm(
+        `${c.num}번 엔트리의 팀이 변경되었습니다.\n\n` +
+          `기존: ${c.from.univ} ${c.from.team}\n` +
+          `신규: ${c.to.univ} ${c.to.team}\n\n` +
+          `같은 팀의 이름을 정정한 것입니까?\n\n` +
+          `[확인] 명칭 정정 — 기존 제출/점수/검차 데이터를 유지합니다.\n` +
+          `[취소] 팀 교체 — 기존 ${c.num}번 데이터를 삭제합니다.`,
+      );
+      return handleUpdate({ ...entry, intent: keep ? "retain" : "replacement" });
+    }
     error(e.message);
   }
 }
