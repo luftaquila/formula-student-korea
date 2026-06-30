@@ -1123,8 +1123,14 @@ app.delete("/api/internal/team/:num", (req, res) => {
 
   const num = Number(req.params.num);
   const year = Number(req.query.year);
-  if (!Number.isInteger(num) || num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!Number.isInteger(year)) return res.status(400).send("연도를 지정해야 합니다.");
+  if (!Number.isInteger(num) || num < 1) {
+    logger.warn(req, "team.cascade_delete", { error: "invalid team num", num: req.params.num });
+    return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  }
+  if (!Number.isInteger(year)) {
+    logger.warn(req, "team.cascade_delete", { error: "invalid year", year: req.query.year }, `#${num}`);
+    return res.status(400).send("연도를 지정해야 합니다.");
+  }
 
   const result = dbRun(() => {
     return db.transaction(() => {
@@ -1161,6 +1167,7 @@ app.patch("/api/internal/team-num", (req, res) => {
   const year = Number(req.body.year);
   const entry = req.body.entry && typeof req.body.entry === "object" ? req.body.entry : {};
   if (!Number.isInteger(prevNum) || prevNum < 1 || !Number.isInteger(newNum) || newNum < 1 || !Number.isInteger(year)) {
+    logger.warn(req, "team_num.update", { error: "invalid request", prevNum: req.body.prevNum, newNum: req.body.newNum, year: req.body.year });
     return res.status(400).send("올바르지 않은 요청입니다.");
   }
   // self-renumber는 목적지(=자기 번호) record를 먼저 invalidate하므로 자기 데이터를 망가뜨림. 조기 반환.

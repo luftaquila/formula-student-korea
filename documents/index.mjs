@@ -8,6 +8,7 @@ import Busboy from "busboy";
 import archiver from "archiver";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
+import { parseDbTimestamp } from "../shared/parse-timestamp.js";
 
 export function createDocumentsApp(options = {}) {
 
@@ -225,18 +226,10 @@ function normalizeTimestamp(str) {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-function parseDbDate(utcStr) {
-  if (!utcStr) return null;
-  const s = String(utcStr);
-  const text = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z";
-  const d = new Date(text);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
 /** UTC DB date string → KST display "YYYY-MM-DD HH:MM" */
 function toKST(utcStr) {
   if (!utcStr) return "";
-  const d = parseDbDate(utcStr);
+  const d = parseDbTimestamp(utcStr);
   if (!d) return "";
   d.setHours(d.getHours() + 9);
   return d.toISOString().replace("T", " ").slice(0, 16);
@@ -244,7 +237,7 @@ function toKST(utcStr) {
 
 /** Subtract hours from UTC date string → UTC date string */
 function subtractHours(utcStr, hours) {
-  const d = parseDbDate(utcStr);
+  const d = parseDbTimestamp(utcStr);
   if (!d) return "";
   d.setHours(d.getHours() - hours);
   return d.toISOString();
@@ -378,7 +371,9 @@ function processPendingRenumberFileWork(limit = 25) {
     if (!result.success) failed += result.failures.length;
   }
   if (processed > 0) {
-    logger.log(null, "team_num.file_work_retry", { groups: groups.length, processed, failed });
+    // 실패가 남았으면 warn으로 올려 레벨 필터로 장애를 찾을 수 있게 한다.
+    const log = failed > 0 ? logger.warn : logger.log;
+    log(null, "team_num.file_work_retry", { groups: groups.length, processed, failed });
   }
   return { groups: groups.length, processed, failed };
 }
@@ -1379,6 +1374,7 @@ app.patch("/api/internal/team-num", (req, res) => {
   const newNum = Number(req.body.newNum);
   const year = Number(req.body.year);
   if (!Number.isInteger(prevNum) || !Number.isInteger(newNum) || !Number.isInteger(year)) {
+    logger.warn(req, "team_num.update", { error: "invalid request", prevNum: req.body.prevNum, newNum: req.body.newNum, year: req.body.year });
     return res.status(400).send("올바르지 않은 요청입니다.");
   }
   // self-renumber는 동일 업로드 디렉토리를 이동/삭제 대상으로 잡으므로 데이터 손실 위험. 조기 반환.
@@ -1494,8 +1490,14 @@ app.delete("/api/internal/team/:num", (req, res) => {
 
   const num = Number(req.params.num);
   const year = Number(req.query.year);
-  if (!Number.isInteger(num) || num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!Number.isInteger(year)) return res.status(400).send("연도를 지정해야 합니다.");
+  if (!Number.isInteger(num) || num < 1) {
+    logger.warn(req, "team.cascade_delete", { error: "invalid team num", num: req.params.num });
+    return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  }
+  if (!Number.isInteger(year)) {
+    logger.warn(req, "team.cascade_delete", { error: "invalid year", year: req.query.year }, `#${num}`);
+    return res.status(400).send("연도를 지정해야 합니다.");
+  }
 
   const removedFiles = [];
   const txResult = dbRun(() => {

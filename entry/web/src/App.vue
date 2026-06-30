@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, watch } from "vue";
+import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import EntryTable from "./components/EntryTable.vue";
 import EntryForm from "./components/EntryForm.vue";
 import FileManager from "./components/FileManager.vue";
@@ -85,6 +85,51 @@ async function handleAdd(entry) {
   }
 }
 
+// 동일 번호에서 팀 정체성(학교/팀명)이 바뀐 경우의 의도 확인. confirm()은 Esc·닫기·
+// 취소가 모두 false라 "작업 중단"과 "팀 교체(파괴적 삭제)"를 구분할 수 없으므로,
+// 명칭 정정 / 팀 교체 / 취소를 명시 버튼으로 받는 모달을 쓴다. 취소·닫기는 항상 중단(no-op).
+const ambiguity = ref(null); // { items, index, retains, replacements, resolve }
+
+const currentAmbiguity = computed(() => {
+  const a = ambiguity.value;
+  return a ? a.items[a.index] : null;
+});
+
+function askTeamIdentityIntent(items) {
+  return new Promise((resolve) => {
+    ambiguity.value = { items, index: 0, retains: [], replacements: [], resolve };
+  });
+}
+
+function resolveIntent(choice) {
+  const a = ambiguity.value;
+  if (!a) return;
+  const cur = a.items[a.index];
+  if (choice === "replacement") a.replacements.push(cur.num);
+  else a.retains.push(cur.num);
+  if (a.index + 1 < a.items.length) {
+    a.index += 1;
+  } else {
+    const { retains, replacements, resolve } = a;
+    ambiguity.value = null;
+    resolve({ retains, replacements });
+  }
+}
+
+function cancelIntent() {
+  const a = ambiguity.value;
+  if (!a) return;
+  const resolve = a.resolve;
+  ambiguity.value = null;
+  resolve(null); // 작업 중단: 아무 데이터도 변경/삭제하지 않는다.
+}
+
+function onIntentKeydown(e) {
+  if (e.key === "Escape" && ambiguity.value) cancelIntent();
+}
+onMounted(() => window.addEventListener("keydown", onIntentKeydown));
+onUnmounted(() => window.removeEventListener("keydown", onIntentKeydown));
+
 async function handleUpdate(entry) {
   try {
     await updateEntry(entry, selectedYear.value);
@@ -94,16 +139,11 @@ async function handleUpdate(entry) {
     // 번호를 그대로 둔 채 팀이 바뀐 경우: 명칭 정정인지 팀 교체인지 운영자가 정해야
     // downstream(제출·점수·검차) 데이터를 유지할지 삭제할지 결정할 수 있다.
     if (e.ambiguous) {
+      const decision = await askTeamIdentityIntent(e.ambiguous);
+      if (!decision) return; // 취소 → 작업 중단(파괴적 동작 없음)
       const c = e.ambiguous[0];
-      const keep = confirm(
-        `${c.num}번 엔트리의 팀이 변경되었습니다.\n\n` +
-          `기존: ${c.from.univ} ${c.from.team}\n` +
-          `신규: ${c.to.univ} ${c.to.team}\n\n` +
-          `같은 팀의 이름을 정정한 것입니까?\n\n` +
-          `[확인] 명칭 정정 — 기존 제출/점수/검차 데이터를 유지합니다.\n` +
-          `[취소] 팀 교체 — 기존 ${c.num}번 데이터를 삭제합니다.`,
-      );
-      return handleUpdate({ ...entry, intent: keep ? "retain" : "replacement" });
+      const intent = decision.replacements.includes(c.num) ? "replacement" : "retain";
+      return handleUpdate({ ...entry, intent });
     }
     error(e.message);
   }
@@ -128,21 +168,9 @@ async function handleUpload(data, intents) {
     // 동일 번호에서 팀이 바뀐 항목은 명칭 정정인지 팀 교체인지 운영자가 정해야
     // downstream(제출·점수·검차) 데이터를 유지할지 삭제할지 결정할 수 있다.
     if (e.ambiguous) {
-      const replacements = [];
-      const retains = [];
-      for (const c of e.ambiguous) {
-        const keep = confirm(
-          `${c.num}번 엔트리의 팀이 변경되었습니다.\n\n` +
-            `기존: ${c.from.univ} ${c.from.team}\n` +
-            `신규: ${c.to.univ} ${c.to.team}\n\n` +
-            `같은 팀의 이름을 정정한 것입니까?\n\n` +
-            `[확인] 명칭 정정 — 기존 제출/점수/검차 데이터를 유지합니다.\n` +
-            `[취소] 팀 교체 — 기존 ${c.num}번 데이터를 삭제합니다.`,
-        );
-        if (keep) retains.push(c.num);
-        else replacements.push(c.num);
-      }
-      return handleUpload(data, { replacements, retains });
+      const decision = await askTeamIdentityIntent(e.ambiguous);
+      if (!decision) return; // 취소 → 작업 중단(파괴적 동작 없음)
+      return handleUpload(data, { replacements: decision.replacements, retains: decision.retains });
     }
     error(e.message);
   }
@@ -257,6 +285,27 @@ onMounted(async () => {
         <EntryTable v-else :entries="filteredEntries" :vehicle-types="vehicleTypes" @update="handleUpdate" @delete="handleDelete" />
       </section>
     </main>
+
+    <div v-if="currentAmbiguity" class="ambiguity-overlay" @click.self="cancelIntent">
+      <div class="ambiguity-modal" role="dialog" aria-modal="true">
+        <h3 class="ambiguity-title">{{ currentAmbiguity.num }}번 엔트리의 팀이 변경되었습니다</h3>
+        <p v-if="ambiguity.items.length > 1" class="ambiguity-progress">{{ ambiguity.index + 1 }} / {{ ambiguity.items.length }}</p>
+        <div class="ambiguity-diff">
+          <div><span class="ambiguity-tag">기존</span>{{ currentAmbiguity.from.univ }} {{ currentAmbiguity.from.team }}</div>
+          <div><span class="ambiguity-tag">신규</span>{{ currentAmbiguity.to.univ }} {{ currentAmbiguity.to.team }}</div>
+        </div>
+        <p class="ambiguity-question">같은 팀의 이름을 정정한 것입니까, 아니면 다른 팀으로 교체한 것입니까?</p>
+        <div class="ambiguity-actions">
+          <button type="button" class="ambiguity-btn retain" @click="resolveIntent('retain')">
+            명칭 정정<small>제출·점수·검차 데이터 유지</small>
+          </button>
+          <button type="button" class="ambiguity-btn replace" @click="resolveIntent('replacement')">
+            팀 교체<small>기존 {{ currentAmbiguity.num }}번 데이터 삭제</small>
+          </button>
+          <button type="button" class="ambiguity-btn cancel" @click="cancelIntent">취소</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -394,6 +443,124 @@ onMounted(async () => {
   justify-content: center;
   padding: 4rem;
   color: var(--text-secondary);
+}
+
+.ambiguity-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.ambiguity-modal {
+  background: var(--bg-card);
+  border-radius: 12px;
+  box-shadow: var(--shadow-card);
+  padding: 1.5rem;
+  width: 100%;
+  max-width: 460px;
+}
+
+.ambiguity-title {
+  margin: 0 0 0.25rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ambiguity-progress {
+  margin: 0 0 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.ambiguity-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin: 0.5rem 0 1rem;
+  font-size: 0.9375rem;
+  color: var(--text-primary);
+}
+
+.ambiguity-tag {
+  display: inline-block;
+  min-width: 2.75rem;
+  margin-right: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.ambiguity-question {
+  margin: 0 0 1.25rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.ambiguity-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.ambiguity-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.125rem;
+  padding: 0.625rem 0.875rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ambiguity-btn small {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+
+.ambiguity-btn.retain:hover {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.1);
+}
+
+.ambiguity-btn.replace {
+  border-color: rgba(220, 53, 69, 0.4);
+}
+
+.ambiguity-btn.replace:hover {
+  border-color: #dc3545;
+  box-shadow: 0 0 0 3px rgba(220, 53, 69, 0.12);
+}
+
+.ambiguity-btn.replace small {
+  color: #dc3545;
+}
+
+.ambiguity-btn.cancel {
+  align-items: center;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.ambiguity-btn.cancel:hover {
+  background: var(--bg-secondary);
 }
 
 @media (max-width: 1024px) {

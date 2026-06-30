@@ -1067,6 +1067,40 @@ describe('Entry delete → service notifications', () => {
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
+  it('POST /api/entries/bulk rejects a self-map renumber so it cannot bypass the same-number ambiguity guard', async () => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await client.post('/api/entries/bulk', {
+      body: { data: { 340: { univ: 'SelfMapUnivA', team: 'SelfMapTeamA' } } },
+      cookie: adminCookie,
+    });
+
+    const calls = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.delete('/api/internal/team/:num', (req, res) => { calls.push({ method: 'DELETE', num: Number(req.params.num) }); res.status(200).send(); });
+    mockApp.patch('/api/internal/team-num', (req, res) => { calls.push({ method: 'PATCH', body: req.body }); res.status(200).send(); });
+    const started = await startServer(mockApp);
+    process.env.DOCUMENTS_SERVER = started.baseUrl;
+
+    // self-map(340→340)을 explicit renumber로 실으면 ambiguous 검사를 우회해
+    // downstream 데이터가 새 팀에 조용히 승계될 수 있었다. 이제 400으로 거부되어야 한다.
+    const res = await client.post('/api/entries/bulk', {
+      body: { renumbers: { 340: 340 }, data: { 340: { univ: 'SelfMapUnivB', team: 'SelfMapTeamB' } } },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400, 'self-map renumber must be rejected');
+    await new Promise(r => setTimeout(r, 100));
+    assert.deepEqual(calls, [], 'no lifecycle events are dispatched for a rejected self-map');
+
+    const after = await (await client.get('/api/entries', { cookie: adminCookie })).json();
+    assert.equal(after['340'].team, 'SelfMapTeamA', 'entry table is unchanged on a rejected self-map');
+
+    await stopServer(started.server);
+    delete process.env.DOCUMENTS_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+
   it('POST /api/entries/bulk treats a same-number change declared as a name correction (retains) as a retained entry', async () => {
     for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
     db.prepare("DELETE FROM lifecycle_outbox").run();

@@ -205,8 +205,11 @@ function validateBulkRenumbers(data) {
     if (!/^\d+$/.test(from)) return { valid: false, error: "올바르지 않은 번호 변경 매핑입니다." };
     const prevNum = Number(from);
     const newNum = Number(to);
+    // self-map(from === to)은 explicit renumber로 취급되어 same-number identity
+    // ambiguous 검사를 우회시키므로(downstream 데이터가 새 팀에 조용히 승계됨) 거부한다.
     if (!Number.isInteger(prevNum) || prevNum < 1 || prevNum >= LIFECYCLE_TEMP_NUM_START ||
         !Number.isInteger(newNum) || newNum < 1 || newNum >= LIFECYCLE_TEMP_NUM_START ||
+        prevNum === newNum ||
         targets.has(newNum)) {
       return { valid: false, error: "올바르지 않은 번호 변경 매핑입니다." };
     }
@@ -259,6 +262,16 @@ const LIFECYCLE_TEMP_NUM_START = 1_000_000_000;
 
 function configuredLifecycleServices() {
   return LIFECYCLE_SERVICES.filter((svc) => process.env[svc.env]);
+}
+
+// 라이프사이클 동기화 대상이지만 *_SERVER env가 빠진 서비스는 outbox row 자체가
+// 생성되지 않아 재시도·dead-letter·admin recovery 대상에서 사라진다. 최소한 감사
+// 추적이 가능하도록, 동기화가 필요한 작업이 발생했을 때 누락된 서비스를 경고로 남긴다.
+function warnUnconfiguredLifecycleServices(req, context) {
+  const missing = LIFECYCLE_SERVICES.filter((svc) => !process.env[svc.env]).map((svc) => svc.name);
+  if (missing.length > 0) {
+    logger.warn(req, "entry.lifecycle_unconfigured", { ...context, missing });
+  }
 }
 
 function lifecycleServer(service) {
@@ -917,6 +930,10 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
     });
   }
 
+  if (numChanged || intent === "replacement") {
+    warnUnconfiguredLifecycleServices(req, { op: numChanged ? "renumber" : "replacement", year, prevNum, newNum });
+  }
+
   const eventIds = result.result.eventIds;
   if (eventIds.length > 0) {
     await processLifecycleOutbox({ ids: eventIds });
@@ -963,6 +980,7 @@ app.delete("/api/entries/:num", withYearTable, async (req, res) => {
   const { entry, eventIds } = result.result;
   logger.log(req, "entry.delete", { year, univ: entry?.univ, team: entry?.team }, `#${numValidation.value}`);
 
+  warnUnconfiguredLifecycleServices(req, { op: "delete", year, nums: [numValidation.value] });
   await processLifecycleOutbox({ ids: eventIds });
   logger.log(req, "entry.notify_delete", { year, nums: [numValidation.value] }, `#${numValidation.value}`);
   if (sendLifecyclePending(res, eventIds, "엔트리 삭제는 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다.")) return;
@@ -992,6 +1010,7 @@ app.delete("/api/entries", withYearTable, async (req, res) => {
 
   const { existingNums, eventIds } = result.result;
   if (existingNums.length > 0) {
+    warnUnconfiguredLifecycleServices(req, { op: "clear", year, count: existingNums.length });
     await processLifecycleOutbox({ ids: eventIds });
     logger.log(req, "entry.notify_delete", { year, count: existingNums.length });
     if (sendLifecyclePending(res, eventIds, "엔트리 전체 삭제는 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다.")) return;
@@ -1079,6 +1098,9 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   logger.log(req, "entry.bulk_upload", { year, count: Object.keys(validation.data).length });
 
   const { deletedNums, renumberCount, eventIds } = result.result;
+  if (deletedNums.length > 0 || renumberCount > 0) {
+    warnUnconfiguredLifecycleServices(req, { op: "bulk", year, deleted: deletedNums.length, renumbered: renumberCount });
+  }
   if (eventIds.length > 0) {
     await processLifecycleOutbox({ ids: eventIds });
     logger.log(req, "entry.notify_bulk_lifecycle", { year, deleted: deletedNums.length, renumbered: renumberCount, events: eventIds.length, nums: deletedNums });

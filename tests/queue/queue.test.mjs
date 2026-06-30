@@ -1475,10 +1475,15 @@ describe('Queue legacy → normalized migration', () => {
     assert.deepEqual(pk, ['num', 'inspection', 'year', 'timestamp']);
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = 5 AND year = ?").get(yr).c, 1);
 
-    // legacy tables dropped
+    // legacy tables consumed
     const has = (t) => !!migDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(t);
-    assert.equal(has('current'), false, 'legacy current dropped');
+    assert.equal(has('current'), false, 'legacy current consumed');
     assert.equal(has('battery'), false, 'legacy per-inspection table dropped');
+
+    // current는 DROP되지 않고 current_legacy로 보존되어, INSPECTIONS에서 사라진 타입으로만
+    // 등록된 행도 잃지 않는다(원본 raw 행 보존).
+    assert.equal(has('current_legacy'), true, 'legacy current preserved as current_legacy');
+    assert.equal(migDb.prepare("SELECT inspection FROM current_legacy WHERE num = 1").get().inspection, 'battery,braking,bogus');
   });
 
   it('is idempotent — re-opening the migrated DB makes no further changes and does not error', () => {

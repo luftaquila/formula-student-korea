@@ -277,7 +277,14 @@ db.transaction(() => {
         ciInsert.run(row.num, type, row.phone, row.year);
       }
     }
-    db.exec("DROP TABLE current");
+    // INSPECTIONS에서 사라진 검차 타입으로만 등록된 행은 위 필터에서 한 건도 옮겨지지
+    // 못한다. 무조건 DROP하면 그 등록 상태가 영구 소실되므로, raw 테이블을 삭제하지 않고
+    // current_legacy로 보존한다(auth의 ops_contacts_legacy 패턴과 동일).
+    if (tableExists(db, "current_legacy")) {
+      db.exec("DROP TABLE current");
+    } else {
+      db.exec("ALTER TABLE current RENAME TO current_legacy");
+    }
   }
 
   if (primaryKeyColumns(db, "inspection_history").join(",") !== "num,inspection,year,timestamp") {
@@ -344,10 +351,12 @@ function parseYearQuery(value) {
 }
 
 function withInspectionLengths(rows, year = currentYear()) {
-  return rows.map((row) => ({
-    ...row,
-    length: db.prepare("SELECT COUNT(*) AS count FROM inspection_queue WHERE inspection = ? AND year = ?").get(row.type, year).count,
-  }));
+  // 행마다 COUNT(*)를 돌리는 N+1 대신 한 번의 GROUP BY로 길이를 집계한다.
+  const counts = new Map();
+  for (const r of db.prepare("SELECT inspection, COUNT(*) AS count FROM inspection_queue WHERE year = ? GROUP BY inspection").all(year)) {
+    counts.set(r.inspection, r.count);
+  }
+  return rows.map((row) => ({ ...row, length: counts.get(row.type) || 0 }));
 }
 
 function getActiveInspections(year = currentYear()) {
@@ -1924,12 +1933,14 @@ app.delete("/api/internal/team/:num", (req, res) => {
 
   const numValidation = validateEntryNum(req.params.num);
   if (!numValidation.valid) {
+    logger.warn(req, "team.cascade_delete", { error: numValidation.error, num: req.params.num });
     return res.status(400).send(numValidation.error);
   }
 
   const num = numValidation.value;
   const year = Number(req.query.year);
   if (!Number.isInteger(year) || year < 2000 || year > 2099) {
+    logger.warn(req, "team.cascade_delete", { error: "invalid year", year: req.query.year }, `#${num}`);
     return res.status(400).send("연도를 지정해야 합니다.");
   }
 
@@ -1993,9 +2004,18 @@ app.patch("/api/internal/team-num", (req, res) => {
   const prevNumValidation = validateEntryNum(req.body.prevNum);
   const newNumValidation = validateEntryNum(req.body.newNum);
   const year = Number(req.body.year);
-  if (!prevNumValidation.valid) return res.status(400).send(prevNumValidation.error);
-  if (!newNumValidation.valid) return res.status(400).send(newNumValidation.error);
-  if (!Number.isInteger(year)) return res.status(400).send("연도를 지정해야 합니다.");
+  if (!prevNumValidation.valid) {
+    logger.warn(req, "team_num.update", { error: prevNumValidation.error, prevNum: req.body.prevNum });
+    return res.status(400).send(prevNumValidation.error);
+  }
+  if (!newNumValidation.valid) {
+    logger.warn(req, "team_num.update", { error: newNumValidation.error, newNum: req.body.newNum });
+    return res.status(400).send(newNumValidation.error);
+  }
+  if (!Number.isInteger(year) || year < 2000 || year > 2099) {
+    logger.warn(req, "team_num.update", { error: "invalid year", year: req.body.year });
+    return res.status(400).send("연도를 지정해야 합니다.");
+  }
 
   const prevNum = prevNumValidation.value;
   const newNum = newNumValidation.value;

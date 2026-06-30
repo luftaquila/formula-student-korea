@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { runMigrationOnce } from "./db-setup.mjs";
+import { runMigrationOnce, normalizeUtcTextTimestamp } from "./db-setup.mjs";
 
 export function createLogger(db, serviceName, maxRows = 50000) {
   db.exec(`CREATE TABLE IF NOT EXISTS logs (
@@ -21,13 +21,8 @@ export function createLogger(db, serviceName, maxRows = 50000) {
     const rows = db.prepare("SELECT id, timestamp FROM logs WHERE timestamp IS NOT NULL AND timestamp != ''").all();
     const update = db.prepare("UPDATE logs SET timestamp = ? WHERE id = ?");
     for (const row of rows) {
-      const s = String(row.timestamp);
-      const text = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z";
-      const d = new Date(text);
-      if (!Number.isNaN(d.getTime())) {
-        const normalized = d.toISOString();
-        if (normalized !== row.timestamp) update.run(normalized, row.id);
-      }
+      const normalized = normalizeUtcTextTimestamp(row.timestamp);
+      if (normalized && normalized !== row.timestamp) update.run(normalized, row.id);
     }
   });
 
