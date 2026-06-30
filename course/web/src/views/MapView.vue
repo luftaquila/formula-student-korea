@@ -4,6 +4,7 @@ import L from "leaflet";
 import { request } from "../api.js";
 import { useNotification } from "@shared/useNotification.js";
 import { haversine } from "@shared/geo.mjs";
+import { computeCenterline } from "@shared/centerline.mjs";
 import { isAdmin } from "@shared/officialsStore.js";
 
 const { error: notifyError, warning: notifyWarn } = useNotification();
@@ -23,13 +24,13 @@ const importInput = ref(null);
 const currentSide = ref("left");
 const roverLoading = ref(false);
 const editLocked = ref(loadPref("editLocked", true, (v) => v === "true")); // default locked; screen tap/drag can't add/move/rotate/delete cones; persisted
+const showCenterline = ref(loadPref("showCenterline", true, (v) => v === "true")); // course centerline graphic; default on; persisted
+const centerline = ref(null); // computed centerline of the active course: { ok, closed, length, points } | null
 const coneListEl = ref(null);         // cone-list scroll container (for scroll-to-top)
 const coneListScrolled = ref(false);  // true once the list is scrolled down a bit
 const coneFilter = ref("all");
 const CONE_FILTER_LABELS = { all: "전체", left: "L", center: "C", right: "R" };
-const SIDE_LABELS = { left: "왼쪽", center: "가운데", right: "오른쪽" };
 const coneFilterLabel = computed(() => CONE_FILTER_LABELS[coneFilter.value] || coneFilter.value);
-const currentSideLabel = computed(() => SIDE_LABELS[currentSide.value] || "");
 
 // Rail icon click just switches tabs; the inspector is always open.
 // (We removed the click-to-collapse behaviour because it confused
@@ -601,6 +602,8 @@ async function selectMission(id) {
 let missionPlannedMarkers = [];
 let missionPlannedPath = null;
 let missionActualPath = null;
+let centerlineLayer = null;   // Leaflet layer group drawing the active course centerline
+let centerlineTimer = null;   // debounce handle for recompute
 let missionReplayMarker = null;
 
 function clearMissionMap() {
@@ -1047,6 +1050,34 @@ const filteredCones = computed(() => {
 const selectedCone = computed(() =>
   selectedConeId.value ? activeCones.value.find((c) => c.id === selectedConeId.value) : null
 );
+
+/* ── Course centerline (ported from centerline.py → shared/centerline.mjs) ──
+   Computed client-side from the active course's cones; the toggle only controls
+   the on-map graphic, not the (always-computed) header length. Recompute is
+   debounced and rides cone/course changes (edit commit / SSE), never mid-drag. */
+function scheduleCenterline() {
+  if (centerlineTimer) clearTimeout(centerlineTimer);
+  centerlineTimer = setTimeout(recomputeCenterline, 250);
+}
+function recomputeCenterline() {
+  centerlineTimer = null;
+  const cones = activeCones.value;
+  centerline.value = cones.length >= 6 ? computeCenterline(cones, { step: 1.0 }) : null;
+  drawCenterline();
+}
+function drawCenterline() {
+  if (centerlineLayer) { try { map.removeLayer(centerlineLayer); } catch {} centerlineLayer = null; }
+  if (!map || activeTab.value !== "courses" || !showCenterline.value || !centerline.value?.ok) return;
+  const latlngs = centerline.value.points.map((p) => [p.lat, p.lng]);
+  // Dark casing under a light dashed line so the centerline reads over satellite tiles.
+  centerlineLayer = L.layerGroup([
+    L.polyline(latlngs, { color: "#0b1021", weight: 5, opacity: 0.45, interactive: false }),
+    L.polyline(latlngs, { color: "#f8fafc", weight: 2.5, opacity: 0.95, dashArray: "7 6", interactive: false }),
+  ]).addTo(map);
+}
+watch(showCenterline, (v) => { savePref("showCenterline", v); drawCenterline(); });
+watch(activeCones, scheduleCenterline);
+watch(activeTab, drawCenterline);
 
 /* ── Icon helpers ──────────────────────────────────── */
 function coneSideIndex(courseId, coneId) {
@@ -3700,6 +3731,7 @@ onMounted(async () => {
     const cones = conesMap.value[activeCourseId.value] || [];
     if (cones.length > 0) panToVisibleCenter(cones[0].lat, cones[0].lng, { animate: false });
   }
+  recomputeCenterline(); // draw the restored course's centerline on first paint
   connectSSE();
   // /api/rover/status is admin-only; chief never opens the rover tab, so skip it.
   if (isAdmin.value) fetchRoverStatus();
@@ -3719,6 +3751,7 @@ onUnmounted(() => {
   if (cameraStatusPoll) clearInterval(cameraStatusPoll);
   if (calStatusPollHandle) clearInterval(calStatusPollHandle);
   if (ledBrightnessTimer) clearTimeout(ledBrightnessTimer);
+  if (centerlineTimer) clearTimeout(centerlineTimer);
   if (followTimer != null) clearTimeout(followTimer);
   if (eventSource) eventSource.close();
   if (map) {
@@ -4204,6 +4237,18 @@ onUnmounted(() => {
               class="map-fab-panel map-fab-tools"
             >
               <button
+                :class="['fab-icon-btn', 'fab-tool', { active: showCenterline }]"
+                @click="showCenterline = !showCenterline"
+                aria-label="중심선 표시"
+                title="중심선 — 코스 중심선 표시/숨김"
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 18c4 0 5-12 9-12s5 12 9 12" stroke-dasharray="3 3" />
+                  <circle cx="3" cy="18" r="1.7" fill="currentColor" stroke="none" />
+                  <circle cx="21" cy="18" r="1.7" fill="currentColor" stroke="none" />
+                </svg>
+              </button>
+              <button
                 :class="['fab-icon-btn', 'fab-tool', { active: selectMode }]"
                 @click="selectMode = !selectMode"
                 aria-label="영역 선택 모드"
@@ -4330,12 +4375,8 @@ onUnmounted(() => {
                 <!-- Cones panel for the selected course -->
                 <template v-if="activeCourse">
                   <header class="tab-header tab-header-sub">
-                    <h3>{{ activeCourse.name }} 콘</h3>
+                    <h3>{{ activeCourse.name }}<span v-if="centerline?.ok" class="centerline-len"> ({{ Math.round(centerline.length) }} m)</span><span v-if="editLocked" class="lock-badge" title="편집 잠김">🔒</span></h3>
                   </header>
-                  <p class="hint cone-add-hint">
-                    지도 위 <b>{{ currentSideLabel }}</b> 컨트롤에서 변(L/C/R)을 고른 뒤, 지도를 탭하거나 <b>📍 로버 위치</b>로 콘을 추가합니다.
-                    <span v-if="editLocked" class="locked-note">🔒 편집 잠김 상태</span>
-                  </p>
 
                   <div v-if="multiSelectedIds.size > 0" class="inspector-group selected">
                     <div class="group-title">{{ multiSelectedIds.size }}개 선택됨</div>
@@ -5305,6 +5346,8 @@ onUnmounted(() => {
   border-bottom: 1px solid var(--border-color);
 }
 .tab-header h3 { margin: 0; font-size: 1rem; font-weight: 700; }
+.tab-header-sub h3 .centerline-len { font-weight: 400; font-size: 0.85em; color: var(--text-secondary); }
+.tab-header-sub h3 .lock-badge { margin-left: 0.3rem; font-size: 0.85em; opacity: 0.85; }
 .tab-header-sub {
   margin-top: 0.875rem;
   border-top: 1px solid var(--border-color);
@@ -5815,8 +5858,6 @@ onUnmounted(() => {
 }
 .cone-scrolltop:hover { background: rgba(31, 41, 55, 0.95); }
 
-.cone-add-hint { margin: 0 0 0.5rem; }
-.cone-add-hint .locked-note { color: #f59e0b; font-weight: 600; margin-left: 0.25rem; }
 
 .cone-list-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem; }
 .cone-list-header h3 { margin: 0; }
