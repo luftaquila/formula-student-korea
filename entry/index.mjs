@@ -216,6 +216,22 @@ function validateBulkRenumbers(data) {
   return { valid: true, renumbers };
 }
 
+// 동일 번호에서 팀 정체성(univ/team)이 바뀐 경우, 명칭 정정(retain)인지 팀
+// 교체(replacement)인지 페이로드만으로는 구분할 수 없다. 운영자가 명시한 의도를
+// 번호 배열로 받는다. 둘 다 양수 엔트리 번호여야 한다.
+function validateBulkIntentList(data, label) {
+  if (data === undefined || data === null) return { valid: true, nums: new Set() };
+  if (!Array.isArray(data)) return { valid: false, error: `올바르지 않은 ${label} 목록입니다.` };
+  const nums = new Set();
+  for (const v of data) {
+    if (!Number.isInteger(v) || v < 1 || v >= LIFECYCLE_TEMP_NUM_START) {
+      return { valid: false, error: `올바르지 않은 ${label} 목록입니다.` };
+    }
+    nums.add(v);
+  }
+  return { valid: true, nums };
+}
+
 /* ============================================
    DB 헬퍼
    ============================================ */
@@ -311,6 +327,14 @@ async function deliverLifecycleRow(row, options = {}) {
   const server = lifecycleServer(row.service);
   if (!server) {
     markLifecycleFailed(claimed, `missing server env for ${row.service}`);
+    logger.warn(null, "entry.lifecycle_dispatch_fail", {
+      id: row.id,
+      event_type: row.event_type,
+      service: row.service,
+      path: row.path,
+      attempts: row.attempts + 1,
+      error: `missing server env for ${row.service}`,
+    });
     return false;
   }
   try {
@@ -545,7 +569,7 @@ function sendLifecyclePending(res, eventIds, message) {
   return true;
 }
 
-function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers = new Map()) {
+function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers = new Map(), replacements = new Set(), retains = new Set()) {
   const newNums = new Set(newRowsByNum.keys());
   const oldRowsByNum = new Map(oldRows.map((row) => [row.num, row]));
   const oldIdentityCounts = new Map();
@@ -606,9 +630,33 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
       }
     }
   }
+  // 번호가 사라졌거나(삭제) 다른 팀이 그 번호로 이동(displaced)한 경우는 삭제.
+  // 번호는 신규 목록에 그대로 있는데 identity 매칭에서 빠진 경우는 "동일 번호에서
+  // 팀이 바뀜" — 명칭 정정인지 팀 교체인지 페이로드만으로 알 수 없으므로, 운영자가
+  // replacements/retains로 명시하지 않으면 조용히 승계하지 않고 ambiguous로 보고한다.
+  const ambiguous = [];
   for (const oldRow of oldRows) {
     if (matchedOldNums.has(oldRow.num)) continue;
-    if (!newNums.has(oldRow.num) || movedTargetNums.has(oldRow.num)) deletedNums.push(oldRow.num);
+    if (!newNums.has(oldRow.num) || movedTargetNums.has(oldRow.num)) {
+      deletedNums.push(oldRow.num);
+      continue;
+    }
+    const newRow = newRowsByNum.get(oldRow.num);
+    if (entryIdentity(newRow) === entryIdentity(oldRow)) continue; // 동일 팀 유지 → 이벤트 없음
+    if (replacements.has(oldRow.num)) {
+      deletedNums.push(oldRow.num); // 팀 교체 확정 → 기존 downstream 데이터 삭제
+    } else if (retains.has(oldRow.num)) {
+      continue; // 명칭 정정 확정 → 기존 데이터 유지(이벤트 없음)
+    } else {
+      ambiguous.push({
+        num: oldRow.num,
+        from: { univ: oldRow.univ, team: oldRow.team },
+        to: { univ: newRow.univ, team: newRow.team },
+      });
+    }
+  }
+  if (ambiguous.length > 0) {
+    return { events: [], deletedNums: [], renumberCount: 0, ambiguous };
   }
 
   const events = [
@@ -621,7 +669,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
   for (const move of buildRenumberPlan(moves, reservedNums)) {
     events.push(...buildEntryRenumberedEvents(move.prevNum, move.newNum, year, move.entry));
   }
-  return { events, deletedNums, renumberCount: moves.length };
+  return { events, deletedNums, renumberCount: moves.length, ambiguous };
 }
 
 /* ============================================
@@ -858,6 +906,14 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   if (!renumberValidation.valid) {
     return res.status(400).send(renumberValidation.error);
   }
+  const replacementsValidation = validateBulkIntentList(req.body.replacements, "팀 교체");
+  if (!replacementsValidation.valid) {
+    return res.status(400).send(replacementsValidation.error);
+  }
+  const retainsValidation = validateBulkIntentList(req.body.retains, "명칭 정정");
+  if (!retainsValidation.valid) {
+    return res.status(400).send(retainsValidation.error);
+  }
 
   const result = dbRun(() => {
     return db.transaction(() => {
@@ -883,7 +939,14 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
         ...oldRows.map((row) => row.num),
         ...newRowsByNum.keys(),
       ], year);
-      const { events, deletedNums, renumberCount } = buildBulkLifecycleEvents(oldRows, newRowsByNum, year, renumberValidation.renumbers);
+      const { events, deletedNums, renumberCount, ambiguous } = buildBulkLifecycleEvents(
+        oldRows, newRowsByNum, year, renumberValidation.renumbers, replacementsValidation.nums, retainsValidation.nums,
+      );
+      // 동일 번호의 팀 변경이 미선언 상태면 아무것도 쓰지 않고(읽기 전용 트랜잭션)
+      // 운영자에게 의도 확인을 요청한다.
+      if (ambiguous.length > 0) {
+        return { ambiguous };
+      }
 
       db.prepare(`DELETE FROM '${tableName}'`).run();
       for (const row of newRowsByNum.values()) {
@@ -897,6 +960,15 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   if (!result.success) {
     logger.warn(req, "entry.bulk_upload", { error: result.error, year });
     return res.status(result.status).send(result.error);
+  }
+
+  if (result.result.ambiguous) {
+    const ambiguous = result.result.ambiguous;
+    logger.warn(req, "entry.bulk_upload_ambiguous", { year, nums: ambiguous.map((a) => a.num) });
+    return res.status(409).json({
+      message: "동일 번호에서 팀이 변경되었습니다. 명칭 정정(데이터 유지)인지 팀 교체(데이터 삭제)인지 선택해 주세요.",
+      ambiguous,
+    });
   }
 
   logger.log(req, "entry.bulk_upload", { year, count: Object.keys(validation.data).length });

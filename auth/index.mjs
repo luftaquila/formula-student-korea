@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, addColumn } from "../shared/db-setup.mjs";
+import { createDatabase, addColumn, runMigrationOnce } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, createJWT, verifyJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts } from "../shared/express-setup.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
 import { createLogger } from "../shared/logger.mjs";
@@ -117,13 +117,15 @@ function normalizeTimestampColumn(table, column) {
   }
 }
 
-for (const [table, column] of [
-  ["users", "created_at"],
-  ["applications", "created_at"],
-  ["applications", "updated_at"],
-]) {
-  normalizeTimestampColumn(table, column);
-}
+runMigrationOnce(db, "auth.utc_timestamp_normalization.v1", () => {
+  for (const [table, column] of [
+    ["users", "created_at"],
+    ["applications", "created_at"],
+    ["applications", "updated_at"],
+  ]) {
+    normalizeTimestampColumn(table, column);
+  }
+});
 
 // Bootstrap: ADMIN_EMAIL이 DB에 없으면 admin으로 등록
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;

@@ -105,12 +105,31 @@ async function handleDelete(num) {
   }
 }
 
-async function handleUpload(data) {
+async function handleUpload(data, intents) {
   try {
-    await uploadEntries(data, selectedYear.value);
+    await uploadEntries(data, selectedYear.value, intents);
     success("엔트리 목록을 업로드했습니다.");
     await loadEntries();
   } catch (e) {
+    // 동일 번호에서 팀이 바뀐 항목은 명칭 정정인지 팀 교체인지 운영자가 정해야
+    // downstream(제출·점수·검차) 데이터를 유지할지 삭제할지 결정할 수 있다.
+    if (e.ambiguous) {
+      const replacements = [];
+      const retains = [];
+      for (const c of e.ambiguous) {
+        const keep = confirm(
+          `${c.num}번 엔트리의 팀이 변경되었습니다.\n\n` +
+            `기존: ${c.from.univ} ${c.from.team}\n` +
+            `신규: ${c.to.univ} ${c.to.team}\n\n` +
+            `같은 팀의 이름을 정정한 것입니까?\n\n` +
+            `[확인] 명칭 정정 — 기존 제출/점수/검차 데이터를 유지합니다.\n` +
+            `[취소] 팀 교체 — 기존 ${c.num}번 데이터를 삭제합니다.`,
+        );
+        if (keep) retains.push(c.num);
+        else replacements.push(c.num);
+      }
+      return handleUpload(data, { replacements, retains });
+    }
     error(e.message);
   }
 }

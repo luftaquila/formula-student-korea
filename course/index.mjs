@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase } from "../shared/db-setup.mjs";
+import { createDatabase, runMigrationOnce } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
@@ -60,8 +60,10 @@ function ensureUtcTimestampColumns(table) {
   db.prepare(`UPDATE ${table} SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''`).run();
 }
 
-ensureUtcTimestampColumns("course");
-ensureUtcTimestampColumns("cone");
+runMigrationOnce(db, "course.ensure_utc_timestamp_columns.v1", () => {
+  ensureUtcTimestampColumns("course");
+  ensureUtcTimestampColumns("cone");
+});
 
 db.exec(`CREATE TABLE IF NOT EXISTS course_snapshot (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,14 +229,16 @@ function normalizeTimestampColumn(table, column) {
   }
 }
 
-for (const [table, column] of [
-  ["course", "created_at"],
-  ["course", "updated_at"],
-  ["cone", "created_at"],
-  ["cone", "updated_at"],
-]) {
-  normalizeTimestampColumn(table, column);
-}
+runMigrationOnce(db, "course.utc_timestamp_normalization.v1", () => {
+  for (const [table, column] of [
+    ["course", "created_at"],
+    ["course", "updated_at"],
+    ["cone", "created_at"],
+    ["cone", "updated_at"],
+  ]) {
+    normalizeTimestampColumn(table, column);
+  }
+});
 
 /* ============================================
    Express 앱 설정

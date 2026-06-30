@@ -1063,7 +1063,7 @@ describe('Entry delete → service notifications', () => {
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
-  it('POST /api/entries/bulk treats same-number name corrections as retained entries', async () => {
+  it('POST /api/entries/bulk treats a same-number change declared as a name correction (retains) as a retained entry', async () => {
     for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await client.post('/api/entries/bulk', {
@@ -1086,12 +1086,96 @@ describe('Entry delete → service notifications', () => {
     process.env.DOCUMENTS_SERVER = started.baseUrl;
 
     const res = await client.post('/api/entries/bulk', {
-      body: { data: { 305: { univ: 'BulkCorrectUnivFixed', team: 'BulkCorrectTeamFixed' } } },
+      body: { data: { 305: { univ: 'BulkCorrectUnivFixed', team: 'BulkCorrectTeamFixed' } }, retains: [305] },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
     await new Promise(r => setTimeout(r, 150));
-    assert.deepEqual(calls, [], 'same number with corrected display fields should not trigger lifecycle delete/renumber');
+    assert.deepEqual(calls, [], 'a same number explicitly declared a name correction should not trigger lifecycle delete/renumber');
+
+    await stopServer(started.server);
+    delete process.env.DOCUMENTS_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+
+  it('POST /api/entries/bulk rejects an undeclared same-number team change with 409', async () => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await client.post('/api/entries/bulk', {
+      body: { data: { 306: { univ: 'BulkAmbigUnivA', team: 'BulkAmbigTeamA' } } },
+      cookie: adminCookie,
+    });
+
+    const calls = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      calls.push({ method: 'PATCH', body: req.body });
+      res.status(200).send();
+    });
+    mockApp.delete('/api/internal/team/:num', (req, res) => {
+      calls.push({ method: 'DELETE', num: Number(req.params.num) });
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    process.env.DOCUMENTS_SERVER = started.baseUrl;
+
+    const res = await client.post('/api/entries/bulk', {
+      body: { data: { 306: { univ: 'BulkAmbigUnivB', team: 'BulkAmbigTeamB' } } },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 409);
+    const payload = await res.json();
+    assert.ok(Array.isArray(payload.ambiguous), 'response carries the ambiguous list');
+    const entry = payload.ambiguous.find(a => a.num === 306);
+    assert.ok(entry, '306 reported as ambiguous');
+    assert.equal(entry.from.team, 'BulkAmbigTeamA');
+    assert.equal(entry.to.team, 'BulkAmbigTeamB');
+
+    await new Promise(r => setTimeout(r, 150));
+    assert.deepEqual(calls, [], 'no lifecycle events are dispatched while the change is unresolved');
+
+    // The upload was rolled back: 306 still holds the original team.
+    const after = await (await client.get('/api/entries', { cookie: adminCookie })).json();
+    assert.equal(after['306'].team, 'BulkAmbigTeamA', 'entry table is unchanged on a 409');
+
+    await stopServer(started.server);
+    delete process.env.DOCUMENTS_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+
+  it('POST /api/entries/bulk deletes downstream data when a same-number change is declared a replacement', async () => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await client.post('/api/entries/bulk', {
+      body: { data: { 307: { univ: 'BulkReplaceUnivA', team: 'BulkReplaceTeamA' } } },
+      cookie: adminCookie,
+    });
+
+    const calls = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      calls.push({ method: 'PATCH', body: req.body });
+      res.status(200).send();
+    });
+    mockApp.delete('/api/internal/team/:num', (req, res) => {
+      calls.push({ method: 'DELETE', num: Number(req.params.num) });
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    process.env.DOCUMENTS_SERVER = started.baseUrl;
+
+    const res = await client.post('/api/entries/bulk', {
+      body: { data: { 307: { univ: 'BulkReplaceUnivB', team: 'BulkReplaceTeamB' } }, replacements: [307] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    await new Promise(r => setTimeout(r, 150));
+    assert.deepEqual(calls, [{ method: 'DELETE', num: 307 }], 'a declared replacement drops the old team\'s downstream data');
+
+    const after = await (await client.get('/api/entries', { cookie: adminCookie })).json();
+    assert.equal(after['307'].team, 'BulkReplaceTeamB', 'entry table holds the new team');
 
     await stopServer(started.server);
     delete process.env.DOCUMENTS_SERVER;

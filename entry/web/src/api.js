@@ -62,12 +62,38 @@ export async function deleteAllEntries(year) {
 
 /**
  * JSON 파일로 엔트리 일괄 업로드
+ *
+ * 동일 번호에서 팀이 바뀐 경우(명칭 정정 vs 팀 교체) 서버는 409와 함께
+ * `{ message, ambiguous }`를 반환한다. 이때 ambiguous를 throw에 실어 호출부가
+ * 운영자에게 의도를 물은 뒤 replacements/retains로 재전송할 수 있게 한다.
  */
-export async function uploadEntries(data, year) {
-  await request(`/api/entries/bulk${yearParam(year)}`, {
+export async function uploadEntries(data, year, { replacements = [], retains = [] } = {}) {
+  const base = import.meta.env.PROD ? "/entry" : "";
+  const body = { data };
+  if (replacements.length) body.replacements = replacements;
+  if (retains.length) body.retains = retains;
+
+  const res = await fetch(`${base}/api/entries/bulk${yearParam(year)}`, {
     method: "POST",
-    body: JSON.stringify({ data }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
+
+  if (res.status === 401) {
+    window.location.href = `/auth/api/login?redirect=${encodeURIComponent(window.location.pathname)}`;
+    throw new Error("인증이 필요합니다.");
+  }
+  if (res.status === 409) {
+    const payload = await res.json().catch(() => null);
+    if (payload?.ambiguous) {
+      const e = new Error(payload.message || "선택이 필요합니다.");
+      e.ambiguous = payload.ambiguous;
+      throw e;
+    }
+  }
+  if (!res.ok) {
+    throw new Error((await res.text()) || `요청 실패 (${res.status})`);
+  }
 }
 
 /**
