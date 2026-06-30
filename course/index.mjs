@@ -31,6 +31,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS cone (
   course_id INTEGER NOT NULL,
   lat REAL NOT NULL,
   lng REAL NOT NULL,
+  alt REAL,
   side TEXT NOT NULL CHECK(side IN ('left', 'right', 'center')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -38,6 +39,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS cone (
 );`);
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_cone_course ON cone(course_id);`);
+
+// 기존 DB 마이그레이션: cone에 alt(고도) 컬럼 추가. 로버 RTK fix의 MSL 고도(m)를
+// lat/lng와 같은 fix에서 함께 받아 보존한다. 지도 클릭 등 수동으로 찍은 콘은 고도가
+// 없으므로 nullable. 비파괴적 ADD COLUMN(테이블 재구축·FK 영향 없음).
+{
+  const cols = db.prepare("PRAGMA table_info(cone)").all().map((c) => c.name);
+  if (!cols.includes("alt")) db.exec("ALTER TABLE cone ADD COLUMN alt REAL");
+}
 
 db.exec(`CREATE TABLE IF NOT EXISTS course_snapshot (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,6 +86,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS mission_telemetry (
   corr_age_ms INTEGER,
   ntrip_fail_count INTEGER,
   h_acc_m REAL,
+  altitude_m REAL,
+  v_acc_m REAL,
   FOREIGN KEY (mission_id) REFERENCES mission(id) ON DELETE CASCADE
 );`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(mission_id, t);`);
@@ -96,6 +107,8 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(m
   addColumn("corr_age_ms", "INTEGER");     // 마지막 RTCM 수신 후 경과(ms). 연결됐는데 크면 캐스터 침묵
   addColumn("ntrip_fail_count", "INTEGER");// 누적 재연결 실패 횟수
   addColumn("h_acc_m", "REAL");            // 수평 정확도(m). float 수용 게이트 판단 근거
+  addColumn("altitude_m", "REAL");         // MSL 고도(m). 미션 경로의 표고 프로파일
+  addColumn("v_acc_m", "REAL");            // 수직 정확도(m). 고도값 신뢰도
 }
 
 // 기존 DB 마이그레이션: side CHECK 제약에 'center' 추가
@@ -280,6 +293,17 @@ function validateCoordinate(lat, lng) {
   return { valid: true };
 }
 
+// 고도(MSL, m)는 선택값. 없으면(null/undefined) null로 저장하고, 있으면 지표면에서
+// 로버가 닿을 수 있는 합리적 범위의 유한수만 허용한다. value에 정규화된 값을 담아
+// 호출부가 그대로 저장하도록 한다.
+function validateAltitude(alt) {
+  if (alt === undefined || alt === null) return { valid: true, value: null };
+  if (typeof alt !== "number" || !Number.isFinite(alt) || alt < -1000 || alt > 10000) {
+    return { valid: false, error: "고도가 올바르지 않습니다. (-1000 ~ 10000 m)" };
+  }
+  return { valid: true, value: alt };
+}
+
 function validateSide(side) {
   if (side !== "left" && side !== "right" && side !== "center") {
     return { valid: false, error: "콘 방향이 올바르지 않습니다. (left, right 또는 center)" };
@@ -376,7 +400,7 @@ app.get("/api/courses/:id/export", (req, res) => {
   const cones = getCones(id);
   const data = {
     name: course.name,
-    cones: cones.map((c) => ({ lat: c.lat, lng: c.lng, side: c.side })),
+    cones: cones.map((c) => ({ lat: c.lat, lng: c.lng, alt: c.alt, side: c.side })),
   };
 
   logger.log(req, "course.export", { cone_count: cones.length }, course.name);
@@ -404,7 +428,7 @@ const selectSnapshotById = db.prepare(
 function takeCourseSnapshot(courseId, actor, reason) {
   const cones = getCones(courseId);
   if (cones.length === 0) return null;
-  const simplified = cones.map((c) => ({ lat: c.lat, lng: c.lng, side: c.side }));
+  const simplified = cones.map((c) => ({ lat: c.lat, lng: c.lng, alt: c.alt, side: c.side }));
   const info = insertSnapshot.run(courseId, Date.now(), actor || null, reason || null, JSON.stringify(simplified));
   return Number(info.lastInsertRowid);
 }
@@ -458,8 +482,9 @@ app.post("/api/courses/:id/snapshots/:sid/restore", (req, res) => {
     return db.transaction(() => {
       takeCourseSnapshot(id, actor, safetyReason);
       db.prepare("DELETE FROM cone WHERE course_id = ?").run(id);
-      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, side) VALUES (?, ?, ?, ?)");
-      for (const c of cones) insert.run(id, c.lat, c.lng, c.side);
+      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side) VALUES (?, ?, ?, ?, ?)");
+      // 이전 버전 스냅샷에는 alt가 없으므로 undefined → null로 보존.
+      for (const c of cones) insert.run(id, c.lat, c.lng, typeof c.alt === "number" ? c.alt : null, c.side);
       return getCones(id);
     })();
   });
@@ -499,14 +524,19 @@ app.post("/api/courses/import", (req, res) => {
       logger.warn(req, "course.import", sv.error, name);
       return res.status(400).send(sv.error);
     }
+    const av = validateAltitude(cone.alt);
+    if (!av.valid) {
+      logger.warn(req, "course.import", av.error, name);
+      return res.status(400).send(av.error);
+    }
   }
 
   const result = dbRun(() => {
     return db.transaction(() => {
       db.prepare("INSERT INTO course (name) VALUES (?)").run(nameValidation.value);
       const courseId = db.prepare("SELECT id FROM course WHERE id = last_insert_rowid()").get().id;
-      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, side) VALUES (?, ?, ?, ?)");
-      for (const cone of cones) insert.run(courseId, cone.lat, cone.lng, cone.side);
+      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side) VALUES (?, ?, ?, ?, ?)");
+      for (const cone of cones) insert.run(courseId, cone.lat, cone.lng, typeof cone.alt === "number" ? cone.alt : null, cone.side);
       return { course: db.prepare("SELECT * FROM course WHERE id = ?").get(courseId), cones: getCones(courseId) };
     })();
   });
@@ -568,16 +598,19 @@ app.post("/api/courses/:id/cones", (req, res) => {
   const course = getCourseById(courseId);
   if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
 
-  const { lat, lng, side } = req.body;
+  const { lat, lng, side, alt } = req.body;
 
   const coordValidation = validateCoordinate(lat, lng);
   if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
+
+  const altValidation = validateAltitude(alt);
+  if (!altValidation.valid) return res.status(400).send(altValidation.error);
 
   const sideValidation = validateSide(side);
   if (!sideValidation.valid) return res.status(400).send(sideValidation.error);
 
   const result = dbRun(() => {
-    db.prepare("INSERT INTO cone (course_id, lat, lng, side) VALUES (?, ?, ?, ?)").run(courseId, lat, lng, side);
+    db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side) VALUES (?, ?, ?, ?, ?)").run(courseId, lat, lng, altValidation.value, side);
     return db.prepare("SELECT * FROM cone WHERE id = last_insert_rowid()").get();
   });
 
@@ -586,7 +619,7 @@ app.post("/api/courses/:id/cones", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "cone.create", { lat, lng, side }, course.name);
+  logger.log(req, "cone.create", { lat, lng, alt: altValidation.value, side }, course.name);
   broadcastEvent("cones", { type: "add", courseId, cone: result.result, cones: getCones(courseId) });
   res.status(201).json(result.result);
 });
@@ -615,6 +648,12 @@ app.patch("/api/cones/:id", (req, res) => {
     if (req.body.lng !== undefined) { setClauses.push("lng = ?"); values.push(lng); }
   }
 
+  if (req.body.alt !== undefined) {
+    const altValidation = validateAltitude(req.body.alt);
+    if (!altValidation.valid) return res.status(400).send(altValidation.error);
+    setClauses.push("alt = ?"); values.push(altValidation.value);
+  }
+
   if (req.body.side !== undefined) {
     const sideValidation = validateSide(req.body.side);
     if (!sideValidation.valid) return res.status(400).send(sideValidation.error);
@@ -640,7 +679,7 @@ app.patch("/api/cones/:id", (req, res) => {
   }
 
   const updateCourse = getCourseById(cone.course_id);
-  logger.log(req, "cone.update", { before: { lat: cone.lat, lng: cone.lng, side: cone.side }, after: { lat: result.result.lat, lng: result.result.lng, side: result.result.side } }, updateCourse?.name);
+  logger.log(req, "cone.update", { before: { lat: cone.lat, lng: cone.lng, alt: cone.alt, side: cone.side }, after: { lat: result.result.lat, lng: result.result.lng, alt: result.result.alt, side: result.result.side } }, updateCourse?.name);
   broadcastEvent("cones", { type: "update", courseId: cone.course_id, cone: result.result, cones: getCones(cone.course_id) });
   res.json(result.result);
 });
@@ -707,8 +746,8 @@ const persistMissionProgress = db.prepare(
 );
 const insertTelemetry = db.prepare(
   `INSERT INTO mission_telemetry
-     (mission_id, t, lat, lng, fix_status, nav_state, ntrip_connected, corr_age_ms, ntrip_fail_count, h_acc_m)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     (mission_id, t, lat, lng, fix_status, nav_state, ntrip_connected, corr_age_ms, ntrip_fail_count, h_acc_m, altitude_m, v_acc_m)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
 
 let currentMissionId = null;
@@ -828,6 +867,8 @@ function recordTelemetrySample() {
     corrAgeMs,
     ntrip && Number.isInteger(ntrip.fail_count) ? ntrip.fail_count : null,
     roverState.gps && typeof roverState.gps.h_acc === "number" ? roverState.gps.h_acc : null,
+    roverState.gps && typeof roverState.gps.altitude === "number" ? roverState.gps.altitude : null,
+    roverState.gps && typeof roverState.gps.v_acc === "number" ? roverState.gps.v_acc : null,
   );
 }
 const roverState = {
@@ -989,12 +1030,16 @@ app.get("/api/rover/stream", (req, res) => {
 
 // POST /api/rover/position - 로버가 현재 위치 전송 (로버가 호출)
 app.post("/api/rover/position", (req, res) => {
-  const { lat, lng, request_id, request_ids } = req.body;
+  const { lat, lng, alt, request_id, request_ids } = req.body;
   const coordValidation = validateCoordinate(lat, lng);
   if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
+  const altValidation = validateAltitude(alt);
+  if (!altValidation.valid) return res.status(400).send(altValidation.error);
+  // RTK fix의 MSL 고도. lat/lng와 같은 fix에서 온 값이라 콘에 그대로 박아 둔다.
+  const altValue = altValidation.value;
 
-  lastRoverPosition = { lat, lng, at: Date.now() };
-  roverState.last_position = { lat, lng };
+  lastRoverPosition = { lat, lng, alt: altValue, at: Date.now() };
+  roverState.last_position = { lat, lng, alt: altValue };
   roverState.last_position_at = lastRoverPosition.at;
 
   // Resolve only the matching explicit admin request. Periodic rover
@@ -1005,16 +1050,16 @@ app.post("/api/rover/position", (req, res) => {
     const idx = roverPendingResolves.findIndex((entry) => entry.request_id === id);
     if (idx !== -1) {
       const [{ resolve }] = roverPendingResolves.splice(idx, 1);
-      resolve({ lat, lng });
+      resolve({ lat, lng, alt: altValue });
     }
   }
 
   // Telemetry sample for active mission
   if (currentMissionId != null) recordTelemetrySample();
 
-  broadcastEvent("rover", { lat, lng });
+  broadcastEvent("rover", { lat, lng, alt: altValue });
   broadcastRoverStatus();
-  res.json({ lat, lng });
+  res.json({ lat, lng, alt: altValue });
 });
 
 // POST /api/rover/telemetry - 로버 상태 텔레메트리 (internal)
@@ -1194,7 +1239,7 @@ const selectMissionById = db.prepare(
    FROM mission m LEFT JOIN course c ON c.id = m.course_id WHERE m.id = ?`
 );
 const selectMissionTelemetry = db.prepare(
-  `SELECT t, lat, lng, fix_status, nav_state, ntrip_connected, corr_age_ms, ntrip_fail_count, h_acc_m
+  `SELECT t, lat, lng, fix_status, nav_state, ntrip_connected, corr_age_ms, ntrip_fail_count, h_acc_m, altitude_m, v_acc_m
    FROM mission_telemetry WHERE mission_id = ? ORDER BY t`
 );
 
@@ -1338,7 +1383,7 @@ app.post("/api/rover/request", async (req, res) => {
     logger.warn(req, "rover.request", { result: "timeout" }, "rover");
     return res.status(504).send("로버 응답 시간 초과");
   }
-  logger.log(req, "rover.request", { lat: position.lat, lng: position.lng }, "rover");
+  logger.log(req, "rover.request", { lat: position.lat, lng: position.lng, alt: position.alt }, "rover");
   res.json(position);
 });
 

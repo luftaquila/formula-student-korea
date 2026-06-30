@@ -172,7 +172,7 @@ class GpsRegisterAgent:
         self._ntrip_last_attempt = 0.0
 
         self._lock = threading.Lock()
-        self._last_position = None     # {'lat','lng'}
+        self._last_position = None     # {'lat','lng','alt'} (alt = MSL height, m)
         self._last_pvt = None
         self._last_hpposllh = None
         self._last_dop = None
@@ -323,7 +323,7 @@ class GpsRegisterAgent:
             self._gps_metrics = metrics
             # NAV-PVT position is the fallback until the first HPPOSLLH.
             if self._last_hpposllh is None:
-                self._last_position = {"lat": pvt.lat, "lng": pvt.lon}
+                self._last_position = {"lat": pvt.lat, "lng": pvt.lon, "alt": pvt.h_msl}
         self._maybe_setup_ntrip(pvt.lat, pvt.lon, pvt.fix_type)
         if self._ntrip:
             self._ntrip.update_position(pvt.lat, pvt.lon)
@@ -331,7 +331,7 @@ class GpsRegisterAgent:
     def _on_hpposllh(self, hp):
         with self._lock:
             self._last_hpposllh = hp
-            self._last_position = {"lat": hp.lat, "lng": hp.lon}
+            self._last_position = {"lat": hp.lat, "lng": hp.lon, "alt": hp.h_msl}
 
     def _metrics_from(self, pvt):
         """Build the telemetry `gps` block, preferring HPPOSLLH/DOP detail."""

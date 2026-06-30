@@ -175,7 +175,10 @@ class BridgeNode(Node):
 
     def _on_gps_position(self, msg):
         """Handle GPS position update."""
-        self._last_position = {'lat': msg.latitude, 'lng': msg.longitude}
+        # msg.altitude is MSL height (gps_node sets it from NAV-PVT h_msl), same
+        # datum as the gps-register rover — keep it bound to this fix so the cone
+        # gets lat/lng/alt from a single GPS solution.
+        self._last_position = {'lat': msg.latitude, 'lng': msg.longitude, 'alt': msg.altitude}
 
         # If position was explicitly requested, send immediately
         if self._position_requested:

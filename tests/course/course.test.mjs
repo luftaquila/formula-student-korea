@@ -167,14 +167,17 @@ describe('POST /api/courses/:id/cones', () => {
     assert.equal(data.lat, 37.5665);
     assert.equal(data.lng, 126.978);
     assert.equal(data.side, 'left');
+    assert.equal(data.alt, null); // alt omitted → stored null (manual/map-click cone)
   });
 
-  it('adds a right cone', async () => {
+  it('adds a right cone with altitude', async () => {
     const res = await client.post('/api/courses/1/cones', {
-      body: { lat: 37.5666, lng: 126.9781, side: 'right' },
+      body: { lat: 37.5666, lng: 126.9781, side: 'right', alt: 42.5 },
       cookie: adminCookie,
     });
     assert.equal(res.status, 201);
+    const data = await res.json();
+    assert.equal(data.alt, 42.5); // RTK MSL altitude persisted alongside lat/lng
   });
 
   it('adds a center cone', async () => {
@@ -206,6 +209,22 @@ describe('POST /api/courses/:id/cones', () => {
   it('rejects invalid side', async () => {
     const res = await client.post('/api/courses/1/cones', {
       body: { lat: 37.5, lng: 126.9, side: 'invalid' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('rejects out-of-range altitude', async () => {
+    const res = await client.post('/api/courses/1/cones', {
+      body: { lat: 37.5, lng: 126.9, side: 'left', alt: 999999 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('rejects non-numeric altitude', async () => {
+    const res = await client.post('/api/courses/1/cones', {
+      body: { lat: 37.5, lng: 126.9, side: 'left', alt: 'high' },
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
@@ -259,9 +278,38 @@ describe('PATCH /api/cones/:id', () => {
     assert.equal(data.side, 'right');
   });
 
+  it('updates cone altitude', async () => {
+    const res = await client.patch('/api/cones/1', {
+      body: { alt: 12.34 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.alt, 12.34);
+  });
+
+  it('preserves altitude when patching only lat/lng', async () => {
+    const res = await client.patch('/api/cones/1', {
+      body: { lat: 37.568 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.lat, 37.568);
+    assert.equal(data.alt, 12.34); // alt untouched by a lat-only PATCH
+  });
+
   it('rejects invalid coordinate', async () => {
     const res = await client.patch('/api/cones/1', {
       body: { lat: -91 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('rejects invalid altitude', async () => {
+    const res = await client.patch('/api/cones/1', {
+      body: { alt: 'high' },
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
@@ -350,7 +398,7 @@ describe('DELETE /api/courses/:id (remaining)', () => {
 describe('GET /api/courses/:id/export', () => {
   before(async () => {
     await client.post('/api/courses', { body: { name: 'export-test' }, cookie: adminCookie });
-    await client.post('/api/courses/3/cones', { body: { lat: 35.0, lng: 126.0, side: 'left' }, cookie: adminCookie });
+    await client.post('/api/courses/3/cones', { body: { lat: 35.0, lng: 126.0, side: 'left', alt: 88.8 }, cookie: adminCookie });
   });
 
   it('exports course as JSON', async () => {
@@ -361,6 +409,7 @@ describe('GET /api/courses/:id/export', () => {
     assert.equal(data.cones.length, 1);
     assert.equal(data.cones[0].lat, 35.0);
     assert.equal(data.cones[0].side, 'left');
+    assert.equal(data.cones[0].alt, 88.8); // altitude included in export
   });
 
   it('returns 404 for non-existent course', async () => {
@@ -400,6 +449,28 @@ describe('POST /api/courses/import', () => {
     assert.equal(res.status, 400);
   });
 
+  it('imports cone altitude and persists it', async () => {
+    const res = await client.post('/api/courses/import', {
+      body: { name: 'alt-import', cones: [{ lat: 35.3, lng: 126.3, side: 'left', alt: 55.5 }, { lat: 35.4, lng: 126.4, side: 'right' }] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    const course = await res.json();
+    const conesRes = await client.get(`/api/courses/${course.id}/cones`, { cookie: adminCookie });
+    const cones = await conesRes.json();
+    assert.equal(cones.length, 2);
+    assert.equal(cones[0].alt, 55.5); // alt preserved through import
+    assert.equal(cones[1].alt, null); // cone without alt → null
+  });
+
+  it('rejects import with invalid altitude', async () => {
+    const res = await client.post('/api/courses/import', {
+      body: { name: 'bad-alt-import', cones: [{ lat: 35.0, lng: 126.0, side: 'left', alt: 'high' }] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
   after(async () => {
     // cleanup
     const res = await client.get('/api/courses', { cookie: adminCookie });
@@ -421,6 +492,17 @@ describe('POST /api/rover/position', () => {
     const data = await res.json();
     assert.equal(data.lat, 35.292);
     assert.equal(data.lng, 126.574);
+    assert.equal(data.alt, null); // no alt sent → echoed back as null
+  });
+
+  it('accepts and echoes altitude', async () => {
+    const res = await client.post('/api/rover/position', {
+      body: { lat: 35.292, lng: 126.574, alt: 36.7 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.alt, 36.7);
   });
 
   it('rejects without auth', async () => {
@@ -433,6 +515,14 @@ describe('POST /api/rover/position', () => {
   it('rejects invalid coordinates', async () => {
     const res = await client.post('/api/rover/position', {
       body: { lat: 91, lng: 0 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('rejects invalid altitude', async () => {
+    const res = await client.post('/api/rover/position', {
+      body: { lat: 35.0, lng: 126.0, alt: 'high' },
       headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
     });
     assert.equal(res.status, 400);
@@ -1843,5 +1933,22 @@ describe('Mission telemetry historizes NTRIP link health', () => {
     assert.equal(last.ntrip_connected, 0);
     assert.equal(last.corr_age_ms, null);
     assert.equal(last.fix_status, '3d_fix');
+  });
+
+  it('persists altitude_m / v_acc_m from the gps block and serves them back', async () => {
+    await client.post('/api/rover/telemetry', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: {
+        nav_state: 'NAVIGATING',
+        fix_status: 'rtk_fixed',
+        ntrip_connected: true,
+        gps: { h_acc: 0.014, v_acc: 0.022, altitude: 47.35 },
+      },
+    });
+    const res = await client.get(`/api/missions/${missionId}/telemetry`, { cookie: adminCookie });
+    const { samples } = await res.json();
+    const last = samples[samples.length - 1];
+    assert.equal(last.altitude_m, 47.35); // MSL altitude historized for the route profile
+    assert.equal(last.v_acc_m, 0.022);    // vertical accuracy historized alongside
   });
 });
