@@ -1424,3 +1424,68 @@ describe('Public endpoint rate limiting', () => {
     assert.equal(lastStatus, 429, 'should rate limit after 30 requests');
   });
 });
+
+// ─── Legacy → normalized migration ───────────────────────────────────────
+describe('Queue legacy → normalized migration', () => {
+  const Database = require('better-sqlite3');
+  let migPath, migDb;
+  const yr = new Date().getFullYear();
+
+  before(() => {
+    migPath = tmpDbPath();
+    const seed = new Database(migPath);
+    // legacy inspection meta WITH the removed `length` cache column
+    seed.exec(`CREATE TABLE inspection (type TEXT PRIMARY KEY, name TEXT NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE, length INTEGER NOT NULL DEFAULT 0)`);
+    seed.prepare("INSERT INTO inspection (type, name, active, length) VALUES (?, ?, ?, ?)").run('battery', '배터리', 1, 7);
+    // legacy `current` (no year column); inspection is a comma list incl. an invalid type
+    seed.exec(`CREATE TABLE current (num INTEGER PRIMARY KEY, phone TEXT, inspection TEXT)`);
+    seed.prepare("INSERT INTO current (num, phone, inspection) VALUES (?, ?, ?)").run(1, '01011112222', 'battery,braking,bogus');
+    // legacy per-inspection queue table
+    seed.exec(`CREATE TABLE battery (num INTEGER PRIMARY KEY, phone TEXT, timestamp INTEGER)`);
+    seed.prepare("INSERT INTO battery (num, phone, timestamp) VALUES (?, ?, ?)").run(10, '01099998888', 1000);
+    seed.prepare("INSERT INTO battery (num, phone, timestamp) VALUES (?, ?, ?)").run(11, '01077776666', 2000);
+    // legacy inspection_history with a NON-year-scoped PK
+    seed.exec(`CREATE TABLE inspection_history (num INTEGER NOT NULL, inspection TEXT NOT NULL, timestamp INTEGER NOT NULL, PRIMARY KEY (num, inspection))`);
+    seed.prepare("INSERT INTO inspection_history (num, inspection, timestamp) VALUES (?, ?, ?)").run(5, 'braking', 1234);
+    seed.close();
+  });
+
+  after(() => {
+    migDb?.close();
+    cleanup(migPath);
+  });
+
+  it('migrates legacy current/per-inspection/history into normalized tables and drops legacy tables', () => {
+    migDb = createQueueApp({ dbPath: migPath }).db;
+
+    // current → current_inspection: comma list split, invalid type dropped, default year applied
+    const ci = migDb.prepare("SELECT inspection FROM current_inspection WHERE num = 1 AND year = ? ORDER BY inspection").all(yr).map((r) => r.inspection);
+    assert.deepEqual(ci, ['battery', 'braking'], 'comma list split; bogus type filtered out');
+
+    // per-inspection `battery` table → inspection_queue
+    const iq = migDb.prepare("SELECT num FROM inspection_queue WHERE inspection = 'battery' AND year = ? ORDER BY num").all(yr).map((r) => r.num);
+    assert.deepEqual(iq, [10, 11]);
+
+    // `length` cache column removed from inspection meta
+    const insCols = migDb.prepare("PRAGMA table_info(inspection)").all().map((c) => c.name);
+    assert.ok(!insCols.includes('length'), 'length cache column removed');
+
+    // inspection_history PK is now year-scoped and the legacy row survived
+    const pk = migDb.prepare("PRAGMA table_info(inspection_history)").all().filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
+    assert.deepEqual(pk, ['num', 'inspection', 'year', 'timestamp']);
+    assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = 5 AND year = ?").get(yr).c, 1);
+
+    // legacy tables dropped
+    const has = (t) => !!migDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(t);
+    assert.equal(has('current'), false, 'legacy current dropped');
+    assert.equal(has('battery'), false, 'legacy per-inspection table dropped');
+  });
+
+  it('is idempotent — re-opening the migrated DB makes no further changes and does not error', () => {
+    migDb.close();
+    migDb = createQueueApp({ dbPath: migPath }).db;
+    assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM current_inspection WHERE num = 1").get().c, 2);
+    assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE inspection = 'battery'").get().c, 2);
+    assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = 5").get().c, 1);
+  });
+});

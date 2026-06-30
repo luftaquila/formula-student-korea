@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -15,6 +16,9 @@ import {
 setupTestEnv();
 
 import { createTrafficApp } from '../../traffic/index.mjs';
+
+const requireFromTraffic = createRequire(import.meta.resolve('../../traffic/index.mjs'));
+const Database = requireFromTraffic('better-sqlite3');
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 
@@ -1541,5 +1545,57 @@ describe('Wireless save guards', () => {
     assert.equal(body.rejected, 1, '재전송도 rejected로 계수');
     const count = db.prepare("SELECT COUNT(*) AS c FROM wireless_event WHERE node_id = ? AND master_tick = ?").get('no-seq', '123456').c;
     assert.equal(count, 0, 'NULL ev_seq 중복 row가 남지 않아야 함');
+  });
+});
+
+// ─── Legacy per-record table → normalized `record` migration ─────────────
+describe('Traffic legacy record consolidation migration', () => {
+  let migPath, migDb;
+  const LEGACY = 'FSK 2026 Accel';
+
+  before(() => {
+    migPath = tmpDbPath();
+    const seed = new Database(migPath);
+    // A legacy per-record dynamic table WITHOUT invalidated/scoreboard/cones/oc
+    // (those must be backfilled). rowid order must be preserved as legacy_rowid.
+    seed.exec(`CREATE TABLE '${LEGACY}' (time TEXT, num INTEGER, univ TEXT, team TEXT, type TEXT, result INTEGER, detail TEXT)`);
+    const ins = seed.prepare(`INSERT INTO '${LEGACY}' (time, num, univ, team, type, result, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    ins.run('2026-01-01T10:00:00Z', 5, 'U5', 'T5', '가속', 45000, 'd5'); // rowid 1
+    ins.run('2026-01-01T10:05:00Z', 6, 'U6', 'T6', '가속', 46000, null); // rowid 2
+    // A non-record table (missing required columns) must survive untouched.
+    seed.exec(`CREATE TABLE random_notes (foo TEXT)`);
+    seed.prepare("INSERT INTO random_notes (foo) VALUES ('keep me')").run();
+    seed.close();
+  });
+
+  after(() => {
+    migDb?.close();
+    cleanup(migPath);
+  });
+
+  it('absorbs the legacy table into `record` preserving rowid order, backfills columns, and drops it', () => {
+    migDb = createTrafficApp({ dbPath: migPath }).db;
+
+    const rows = migDb.prepare("SELECT legacy_rowid, num, detail, invalidated, scoreboard, cones, oc FROM record WHERE name = ? ORDER BY legacy_rowid").all(LEGACY);
+    assert.equal(rows.length, 2);
+    // legacy rowid preserved and ordered
+    assert.deepEqual(rows.map((r) => [r.legacy_rowid, r.num]), [[1, 5], [2, 6]]);
+    assert.equal(rows[0].detail, 'd5');
+    assert.equal(rows[1].detail, null);
+    // backfilled defaults
+    assert.deepEqual(rows.map((r) => [r.invalidated, r.scoreboard, r.cones, r.oc]), [[0, 1, 0, 0], [0, 1, 0, 0]]);
+
+    // visibility seeded, legacy table dropped, non-record table untouched
+    assert.equal(migDb.prepare("SELECT visible FROM record_visibility WHERE name = ?").get(LEGACY).visible, 1);
+    const has = (t) => !!migDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(t);
+    assert.equal(has(LEGACY), false, 'legacy per-record table dropped after import');
+    assert.equal(has('random_notes'), true, 'non-record table must not be migrated or dropped');
+  });
+
+  it('is idempotent — re-opening the consolidated DB does not duplicate or error', () => {
+    migDb.close();
+    migDb = createTrafficApp({ dbPath: migPath }).db;
+    assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ?").get(LEGACY).c, 2, 'no duplicate rows on re-run');
+    assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name = 'random_notes'").get().c, 1);
   });
 });
