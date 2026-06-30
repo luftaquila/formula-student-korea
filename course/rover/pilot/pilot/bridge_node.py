@@ -128,7 +128,7 @@ class BridgeNode(Node):
         # Battery telemetry
         self._battery = None  # { voltage, percent, source }
 
-        # Latest GPS metrics: { h_acc, v_acc, speed, heading, num_sv }
+        # Latest GPS metrics: { h_acc, v_acc, altitude, speed, heading, num_sv, pdop, tdop }
         self._gps_metrics = None
 
         # Request IDs from server-initiated position requests. Echoing one
