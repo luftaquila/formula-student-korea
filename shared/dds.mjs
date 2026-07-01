@@ -127,3 +127,21 @@ export function grassDDS(size = 256) {
   const rgba = boxBlur(noisyBase(size, [56, 84, 48], 14, 2), size, size);
   return writeDDS(size, size, rgba);
 }
+
+/**
+ * Traffic-cone texture in a given base colour with a white reflective band. v
+ * runs along the cone height (0 = base, 1 = apex), so the band shows as a ring.
+ */
+export function coneDDS(rgb = [240, 110, 20], size = 64) {
+  const rgba = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    const v = y / (size - 1);            // 0 = base row, 1 = apex row
+    const white = v > 0.45 && v < 0.7;   // reflective band
+    const col = white ? [240, 240, 236] : rgb;
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 4;
+      rgba[i] = col[0]; rgba[i + 1] = col[1]; rgba[i + 2] = col[2]; rgba[i + 3] = 255;
+    }
+  }
+  return writeDDS(size, size, rgba);
+}
