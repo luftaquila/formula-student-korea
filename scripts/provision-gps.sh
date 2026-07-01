@@ -54,8 +54,8 @@ REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 # --env-file lets you point at a production .env (e.g. the deploy host's)
 # without committing real secrets into the repo's dev .env.
 ENV_FILE="${ENV_FILE_OVERRIDE:-$REPO_ROOT/.env}"
-GPS_DIR="$REPO_ROOT/course/rover/gps"
-PILOT_LIB="$REPO_ROOT/course/rover/pilot/pilot/lib"
+GPS_DIR="$REPO_ROOT/rover/gps"
+PILOT_LIB="$REPO_ROOT/rover/pilot/pilot/lib"
 [ -f "$ENV_FILE" ] || { echo "cannot find $ENV_FILE" >&2; exit 1; }
 [ -d "$GPS_DIR" ]  || { echo "cannot find $GPS_DIR" >&2; exit 1; }
 

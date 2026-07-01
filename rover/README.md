@@ -401,8 +401,8 @@ sudo apt install cmake gcc-arm-none-eabi libnewlib-arm-none-eabi \
 git clone --depth 1 --recurse-submodules \
     https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
 export PICO_SDK_PATH=~/pico-sdk
-cmake -S course/rover/mcu -B course/rover/mcu/build -DPICO_BOARD=pico
-cmake --build course/rover/mcu/build -j
+cmake -S rover/mcu -B rover/mcu/build -DPICO_BOARD=pico
+cmake --build rover/mcu/build -j
 ```
 
 Output: `build/rover_mcu.uf2`. Overrides (defaults r=62.5 mm, PPR=500, gear=27):
@@ -479,7 +479,7 @@ ros2 topic echo /rover/gps/position
 ## Tests
 
 ```bash
-cd course/rover/pilot && python3 -m pytest test/ -q
+cd rover/pilot && python3 -m pytest test/ -q
 npm run test:course
 npm run test:shared
 ```

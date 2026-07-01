@@ -169,7 +169,7 @@ time.
 ## Tests
 
 ```bash
-cd course/rover/gps
+cd rover/gps
 python3 -m pytest test/ -q     # pure logic: fix status, telemetry, SSE parse
 ```
 

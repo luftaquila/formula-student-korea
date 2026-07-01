@@ -4,7 +4,7 @@
 # Built by .github/workflows/rover-pilot-image.yml and pushed to
 # ghcr.io/luftaquila/fsk-rover-pilot:{candidate,edge,vX.Y.Z}.
 # Pulled at runtime by the host's pilot.service systemd unit
-# (see course/rover/host/files/usr/lib/systemd/system/pilot.service),
+# (see rover/host/files/usr/lib/systemd/system/pilot.service),
 # which invokes /usr/local/bin/pilot-run to `podman run` this image
 # with only the /dev nodes actually present.
 

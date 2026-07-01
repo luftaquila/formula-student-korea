@@ -183,7 +183,7 @@ spray_node:
 
 mcu_bridge_node:
   ros__parameters:
-    # USB CDC link to the RP2040 coprocessor (course/rover/mcu/).
+    # USB CDC link to the RP2040 coprocessor (rover/mcu/).
     serial_port: "/dev/ttyMCU"         # udev symlink (see scripts/99-fsk-rover.rules)
     baud_rate: 115200                  # USB CDC ignores this but pyserial requires it
     heartbeat_hz: 10.0                 # MCU Pi-link WDT = 500 ms

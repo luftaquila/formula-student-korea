@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'course/rover/pilot/**'
+      - 'rover/pilot/**'
       - '.github/workflows/rover-pilot-image.yml'
   workflow_dispatch:
     inputs:
@@ -39,14 +39,14 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install pytest
-          python3 -m pip install -r course/rover/pilot/requirements.txt || true
+          python3 -m pip install -r rover/pilot/requirements.txt || true
 
       - name: Compile rover sources
-        run: python3 -m compileall course/rover/pilot/pilot course/rover/pilot/test course/rover/pilot/launch
+        run: python3 -m compileall rover/pilot/pilot rover/pilot/test rover/pilot/launch
 
       - name: Run pilot pytest
         run: |
-          cd course/rover/pilot
+          cd rover/pilot
           python3 -m pytest test/ -q
 
   build:
@@ -78,8 +78,8 @@ jobs:
       - name: Build and push pilot image
         uses: docker/build-push-action@v7
         with:
-          context: course/rover/pilot
-          file: course/rover/pilot/Containerfile
+          context: rover/pilot
+          file: rover/pilot/Containerfile
           platforms: linux/arm64
           push: true
           tags: ${{ steps.tag.outputs.tag }}

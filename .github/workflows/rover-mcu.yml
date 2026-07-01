@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'course/rover/mcu/**'
+      - 'rover/mcu/**'
       - '.github/workflows/rover-mcu.yml'
   workflow_dispatch:
 
@@ -54,27 +54,27 @@ jobs:
           PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
         run: |
           cmake -G Ninja \
-            -S course/rover/mcu \
-            -B course/rover/mcu/build \
+            -S rover/mcu \
+            -B rover/mcu/build \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DPICO_BOARD=${PICO_BOARD}
 
       - name: Build
-        run: cmake --build course/rover/mcu/build --parallel
+        run: cmake --build rover/mcu/build --parallel
 
       - name: Verify firmware artifacts
         run: |
-          ls -la course/rover/mcu/build/rover_mcu.uf2
-          ls -la course/rover/mcu/build/rover_mcu.elf
-          arm-none-eabi-size course/rover/mcu/build/rover_mcu.elf
+          ls -la rover/mcu/build/rover_mcu.uf2
+          ls -la rover/mcu/build/rover_mcu.elf
+          arm-none-eabi-size rover/mcu/build/rover_mcu.elf
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v7
         with:
           name: rover-mcu-firmware
           path: |
-            course/rover/mcu/build/rover_mcu.uf2
-            course/rover/mcu/build/rover_mcu.elf
-            course/rover/mcu/build/rover_mcu.bin
+            rover/mcu/build/rover_mcu.uf2
+            rover/mcu/build/rover_mcu.elf
+            rover/mcu/build/rover_mcu.bin
           if-no-files-found: error
           retention-days: 30
