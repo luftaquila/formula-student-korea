@@ -80,3 +80,20 @@ describe("buildRoadEdges — banked course (alt tilt)", () => {
     assert.ok(Math.abs(Math.min(...e.zC)) < 1e-9);
   });
 });
+
+describe("buildRoadEdges — extra width (except slalom)", () => {
+  const cones = loadFixture("endurance").cones;
+  const cl = computeCenterline(cones, { step: 1.0, metric: true });
+  const median = (a) => { const s = a.slice().sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+
+  it("widens each side by extraWidthPerSide but leaves the slalom untouched", () => {
+    const base = buildRoadEdges(cl, { extraWidthPerSide: 0 });
+    const wide = buildRoadEdges(cl, { extraWidthPerSide: 1 });
+    // ~+2 m to the median road width (1 m per side)
+    assert.ok(Math.abs((median(wide.width) - median(base.width)) - 2) < 0.4,
+      `median delta ${(median(wide.width) - median(base.width)).toFixed(2)} m`);
+    // the slalom (widest, center-boosted) stretch is excluded -> max unchanged
+    assert.ok(Math.abs(Math.max(...wide.width) - Math.max(...base.width)) < 0.25,
+      "slalom width should not change");
+  });
+});

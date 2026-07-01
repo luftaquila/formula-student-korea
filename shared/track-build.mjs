@@ -9,7 +9,7 @@ import {
   writeKn5, meshNode, dummyNode, translationMatrix, acVec, IDENTITY,
 } from "./kn5.mjs";
 import { writeFastLane } from "./ai-line.mjs";
-import { asphaltDDS, grassDDS } from "./dds.mjs";
+import { asphaltDDS, grassDDS, coneDDS } from "./dds.mjs";
 
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -76,6 +76,52 @@ function buildGround(Le, Re, zLevel = -0.05, margin = 60.0, tile = 6.0) {
     normals: corners.map(() => [0, 1, 0]),
     uvs: corners.map(([cx, cy]) => [cx / tile, cy / tile]),
     indices: [0, 1, 2, 0, 2, 3],
+  };
+}
+
+// Small cones (autocross size) at the given cone positions, merged into one
+// AC-space mesh. Each is a base ring + apex, placed on the road at the nearest
+// centerline station's elevation. Visual only (car passes through).
+function buildCones(pts, P, zC, { height = 0.30, radius = 0.12, segs = 8 } = {}) {
+  const groundZ = (cx, cy) => {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < P.length; i++) {
+      const d = (P[i][0] - cx) ** 2 + (P[i][1] - cy) ** 2;
+      if (d < bd) { bd = d; bi = i; }
+    }
+    return zC[bi] || 0;
+  };
+  const positions = [], normals = [], uvs = [], indices = [];
+  for (const c of pts) {
+    const cx = c[0], cy = c[1], z0 = groundZ(cx, cy);
+    const base0 = positions.length;
+    // apex
+    positions.push([cx, cy, z0 + height]);
+    normals.push([0, 0, 1]);
+    uvs.push([0.5, 1]);
+    // base ring
+    for (let i = 0; i < segs; i++) {
+      const t = (2 * Math.PI * i) / segs;
+      const ce = Math.cos(t), se = Math.sin(t);
+      positions.push([cx + radius * ce, cy + radius * se, z0]);
+      const n = [ce, se, 0.4];
+      const nl = norm3(n);
+      normals.push([n[0] / nl, n[1] / nl, n[2] / nl]);
+      uvs.push([i / segs, 0]);
+    }
+    for (let i = 0; i < segs; i++) {
+      const a = base0;                         // apex
+      const b = base0 + 1 + i;                 // base i
+      const d = base0 + 1 + ((i + 1) % segs);  // base i+1
+      indices.push(a, b, d);
+    }
+  }
+  // world (x_e, y_n, z_up) -> AC (x, z, -y)
+  return {
+    positions: positions.map((p) => [p[0], p[2], -p[1]]),
+    normals: normals.map((n) => [n[0], n[2], -n[1]]),
+    uvs,
+    indices,
   };
 }
 
@@ -182,10 +228,26 @@ export function buildTrackModel(cl, edges, opts = {}) {
   const ground = buildGround(Le, Re);
   const grass = meshNode("1GRASS", ground.positions, ground.normals, ground.uvs, ground.indices, 1);
 
+  // A cone at every cone position, coloured by side: left = yellow, right =
+  // blue, center = red. Names do NOT start with a digit ("CONE_*"), so AC keeps
+  // them graphics-only (no collision — the car passes through). Materials 2,3,4
+  // in the order of the sides that actually have cones.
+  const M = cl.metric || {};
+  const coneSpecs = [
+    { tag: "L", pts: M.left, rgb: [240, 205, 15] },   // left  -> yellow
+    { tag: "R", pts: M.right, rgb: [30, 90, 235] },   // right -> blue
+    { tag: "C", pts: M.centers, rgb: [225, 35, 30] }, // center-> red
+  ].filter((s) => s.pts && s.pts.length);
+  const coneNodes = coneSpecs.map((s, i) => {
+    const cm = buildCones(s.pts, P, zC);
+    return meshNode(`CONE_${s.tag}`, cm.positions, cm.normals, cm.uvs, cm.indices, 2 + i);
+  });
+
   const c0 = [(Le[0][0] + Re[0][0]) / 2, (Le[0][1] + Re[0][1]) / 2, zC[0]];
   const tan = [P[1][0] - P[0][0], P[1][1] - P[0][1]];
   const nodes = [
     road, grass,
+    ...coneNodes,
     dummyNode("AC_PIT_0", spawnMatrix(c0, tan)),
     dummyNode("AC_START_0", spawnMatrix(c0, tan)),
     dummyNode("AC_TIME_0_L", translationMatrix(acVec([Le[0][0], Le[0][1], zL[0]]))),
@@ -198,6 +260,11 @@ export function buildTrackModel(cl, edges, opts = {}) {
     mat("road", "asphalt.dds", 0.6, 0.5, 0.2),
     mat("grass", "grass.dds", 0.5, 0.4, 0.0),
   ];
+  coneSpecs.forEach((s) => {
+    const tex = `cone_${s.tag}.dds`;
+    textures.push([tex, coneDDS(s.rgb)]);
+    materials.push(mat(`cone_${s.tag}`, tex, 0.85, 0.75, 0.05));
+  });
   const kn5 = writeKn5({ textures, materials, root });
 
   const ai = buildAiLine(P, zC, halfLeft, halfRight, bank);

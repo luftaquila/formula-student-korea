@@ -28,10 +28,12 @@ describe("buildTrackModel — kn5 structure", () => {
     assert.equal(got.leftover, 0);
   });
 
-  it("has the required AC node tree", () => {
+  it("has the required AC node tree (incl. per-side cones)", () => {
+    // the endurance fixture has left, right and center cones -> CONE_L/R/C
     assert.deepEqual(
       got.nodes.map((n) => n.name),
-      ["내구", "1ROAD", "1GRASS", "AC_PIT_0", "AC_START_0", "AC_TIME_0_L", "AC_TIME_0_R"],
+      ["내구", "1ROAD", "1GRASS", "CONE_L", "CONE_R", "CONE_C",
+        "AC_PIT_0", "AC_START_0", "AC_TIME_0_L", "AC_TIME_0_R"],
     );
   });
 
@@ -44,9 +46,21 @@ describe("buildTrackModel — kn5 structure", () => {
     assert.equal(grass.vertices, 4);
   });
 
-  it("embeds the two DDS textures and two materials", () => {
-    assert.deepEqual(got.textures.map((t) => t[0]), ["asphalt.dds", "grass.dds"]);
-    assert.deepEqual(got.materials.map((m) => m.name), ["road", "grass"]);
+  it("cone meshes are graphics-only (non-digit names) with materials 2/3/4", () => {
+    for (const [name, mat] of [["CONE_L", 2], ["CONE_R", 3], ["CONE_C", 4]]) {
+      const c = got.nodes.find((n) => n.name === name);
+      assert.ok(c, `${name} missing`);
+      assert.ok(!/^\d/.test(c.name), `${name} must not start with a digit (would collide)`);
+      assert.equal(c.materialId, mat);
+      assert.ok(c.vertices > 0);
+    }
+  });
+
+  it("embeds road/grass + per-side cone textures and materials", () => {
+    assert.deepEqual(got.textures.map((t) => t[0]),
+      ["asphalt.dds", "grass.dds", "cone_L.dds", "cone_R.dds", "cone_C.dds"]);
+    assert.deepEqual(got.materials.map((m) => m.name),
+      ["road", "grass", "cone_L", "cone_R", "cone_C"]);
   });
 });
 

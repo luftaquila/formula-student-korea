@@ -1900,7 +1900,7 @@ async function exportCourse(id) {
     const cl = computeCenterline(cones, { step: 1.0, metric: true, ...courseDirOpts(id, cones) });
     if (!cl.ok) { notifyError(`중심선 생성 실패: ${cl.reason}`); return; }
 
-    const edges = buildRoadEdges(cl);
+    const edges = buildRoadEdges(cl);   // AC track road: widened +1 m/side (except slalom)
     const track = buildTrackModel(cl, edges, { name: safeName });
 
     // inner Assetto Corsa track zip (content/tracks/<safeName>/...); the in-game
@@ -1913,7 +1913,10 @@ async function exportCourse(id) {
     const trackZipBlob = await trackZip.generateAsync({ type: "blob", compression: "DEFLATE" });
 
     const enriched = buildEnrichedJSON({ name, cones, cl, edges, track });
-    const png = await renderTwoPanelPNG(cl, edges, { name });
+    // Preview PNG shows the cone-true road width (survey), unaffected by the AC
+    // drivability widening above.
+    const pngEdges = buildRoadEdges(cl, { extraWidthPerSide: 0 });
+    const png = await renderTwoPanelPNG(cl, pngEdges, { name });
 
     // outer zip with the three deliverables (path-safe file names)
     const outer = new JSZip();
