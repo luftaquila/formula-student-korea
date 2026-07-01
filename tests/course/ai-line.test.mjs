@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { writeFastLane, readFastLane } from "../../shared/ai-line.mjs";
+import { writeFastLane, readFastLane } from "../../course/lib/ai-line.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (name) => readFileSync(join(here, "fixtures", name));

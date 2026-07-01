@@ -5,7 +5,7 @@ import { createDatabase, runMigrationOnce, normalizeTimestampColumn, setupRowCap
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
-import { haversine } from "../shared/geo.mjs";
+import { haversine } from "./lib/geo.mjs";
 
 const ROVER_MAX_WAYPOINT_DIST_M = Number(process.env.ROVER_MAX_WAYPOINT_DIST_M) || 200;
 const ROVER_MAX_SEGMENT_DIST_M = Number(process.env.ROVER_MAX_SEGMENT_DIST_M) || 50;

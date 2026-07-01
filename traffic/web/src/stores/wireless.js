@@ -27,7 +27,7 @@ import {
 } from "../composables/useSSE";
 import { WIRELESS_EVENTS, EVENT_TYPE, roleToSensor } from "../composables/useEventTiming";
 import { acceptSensorTick } from "../composables/sensorDebounce";
-import { ruleFor, shouldLatchStart, shouldIgnore, lapTime } from "@shared/event-timing.js";
+import { ruleFor, shouldLatchStart, shouldIgnore, lapTime } from "@lib/event-timing.mjs";
 
 const TICKS_PER_MS = 16000;
 const DEFAULT_DEBOUNCE_MS = 300;

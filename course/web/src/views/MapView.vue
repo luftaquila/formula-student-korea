@@ -3,12 +3,12 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch, inject } from "
 import L from "leaflet";
 import { request } from "../api.js";
 import { useNotification } from "@shared/useNotification.js";
-import { haversine } from "@shared/geo.mjs";
-import { computeCenterline } from "@shared/centerline.mjs";
-import { buildRoadEdges } from "@shared/road-edges.mjs";
-import { buildTrackModel } from "@shared/track-build.mjs";
-import { packTrackEntries, safeTrackName } from "@shared/pack-track.mjs";
-import { buildEnrichedJSON } from "@shared/course-export.mjs";
+import { haversine } from "@lib/geo.mjs";
+import { computeCenterline } from "@lib/centerline.mjs";
+import { buildRoadEdges } from "@lib/road-edges.mjs";
+import { buildTrackModel } from "@lib/track-build.mjs";
+import { packTrackEntries, safeTrackName } from "@lib/pack-track.mjs";
+import { buildEnrichedJSON } from "@lib/course-export.mjs";
 import { renderTwoPanelPNG } from "../export/panel-canvas.js";
 import JSZip from "jszip";
 import { isAdmin } from "@shared/officialsStore.js";
@@ -1059,7 +1059,7 @@ const selectedCone = computed(() =>
   selectedConeId.value ? activeCones.value.find((c) => c.id === selectedConeId.value) : null
 );
 
-/* ── Course centerline (ported from centerline.py → shared/centerline.mjs) ──
+/* ── Course centerline (ported from centerline.py → course/lib/centerline.mjs) ──
    Computed client-side from the active course's cones; the toggle only controls
    the on-map graphic, not the (always-computed) header length. Recompute is
    debounced and rides cone/course changes (edit commit / SSE), never mid-drag. */

@@ -5,7 +5,7 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInt
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { EVENT_TYPES } from "../shared/constants.js";
-import { formatEnduranceDetail, enduranceTotal } from "../shared/event-timing.js";
+import { formatEnduranceDetail, enduranceTotal } from "./lib/event-timing.mjs";
 
 const CONTROLLER_MAX_ROWS = 100000;
 const RETAIN_EVENTS = 500000;

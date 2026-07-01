@@ -4,11 +4,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { computeCenterline } from "../../shared/centerline.mjs";
-import { buildRoadEdges } from "../../shared/road-edges.mjs";
-import { buildTrackModel } from "../../shared/track-build.mjs";
-import { readKn5 } from "../../shared/kn5.mjs";
-import { readFastLane } from "../../shared/ai-line.mjs";
+import { computeCenterline } from "../../course/lib/centerline.mjs";
+import { buildRoadEdges } from "../../course/lib/road-edges.mjs";
+import { buildTrackModel } from "../../course/lib/track-build.mjs";
+import { readKn5 } from "../../course/lib/kn5.mjs";
+import { readFastLane } from "../../course/lib/ai-line.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const loadFixture = (name) =>

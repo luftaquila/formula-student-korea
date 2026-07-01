@@ -1,7 +1,7 @@
 // Track centerline from cone positions — dependency-free port of centerline.py.
 // Keep this file dependency-free (no npm imports) so it can run unchanged in the
 // browser (course MapView draws the line) and in Node (tests + future export
-// targets such as Assetto Corsa). Mirrors shared/geo.mjs's browser+Node contract.
+// targets such as Assetto Corsa). Mirrors geo.mjs's browser+Node contract.
 //
 // Method (auto-derived from the data, faithfully ported from centerline.py):
 //   1. Project lat/lng -> local metres (equirectangular about the centroid).
