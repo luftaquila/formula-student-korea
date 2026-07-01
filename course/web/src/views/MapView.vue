@@ -1611,6 +1611,12 @@ async function initMap() {
   globalThis.L = L;
   await import("leaflet-rotate");
   map = L.map("map", {
+    // Render vector layers (centerline, direction arrow, mission/rotate/measure
+    // paths) on a single shared <canvas> instead of one SVG node each — the
+    // 850+-point centerline was re-projected as SVG on every pan under
+    // leaflet-rotate, which janks the drag. (Locked/read-only cone dots already
+    // use their own canvas renderer, so canvas + rotation is proven here.)
+    preferCanvas: true,
     zoomControl: true, maxZoom: 21, boxZoom: false,
     // Button-driven 90° rotation only — no built-in compass control, no
     // two-finger free rotation (that would desync the snapped mapBearing).
