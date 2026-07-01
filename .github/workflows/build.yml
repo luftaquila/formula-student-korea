@@ -15,6 +15,17 @@ permissions:
   packages: write
   contents: read
 
+# Serialize all Build Images runs. Each service is pushed by digest as an
+# UNTAGGED image, then the merge job creates the :latest manifest list and its
+# "Delete orphaned versions" step prunes every untagged version not referenced
+# by :latest. With no guard, two runs from back-to-back main merges overlap and
+# one run's prune deletes the other run's just-pushed (still untagged) digests,
+# so its manifest create fails with "sha256:...: not found". Serializing (never
+# cancelling, so an in-flight publish always finishes) removes the cross-run race.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   changes:
     runs-on: ubuntu-latest
