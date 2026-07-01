@@ -9,8 +9,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'course/rover/gps/**'
-      - 'course/rover/pilot/pilot/lib/**'
+      - 'rover/gps/**'
+      - 'rover/pilot/pilot/lib/**'
       - '.github/workflows/rover-gps.yml'
   workflow_dispatch:
 
@@ -36,12 +36,12 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install pytest
-          python3 -m pip install -r course/rover/gps/requirements.txt
+          python3 -m pip install -r rover/gps/requirements.txt
 
       - name: Compile agent sources
-        run: python3 -m compileall course/rover/gps/gps_register.py course/rover/gps/test
+        run: python3 -m compileall rover/gps/gps_register.py rover/gps/test
 
       - name: Run gps pytest
         run: |
-          cd course/rover/gps
+          cd rover/gps
           python3 -m pytest test/ -q

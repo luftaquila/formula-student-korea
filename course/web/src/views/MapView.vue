@@ -274,7 +274,7 @@ const fixChip = computed(() => {
   return { label, tone, rows };
 });
 
-// MCU status-flag bits (course/rover/mcu T-frame `flags`, see rover README).
+// MCU status-flag bits (rover/mcu T-frame `flags`, see rover README).
 // The MCU status LED encodes these by colour (red=e-stop, magenta=undervolt,
 // yellow=heartbeat/batt-warn, orange=nav-GPS-lost); the chip only said
 // "ERROR", so we decode them into a plain-English cause list.

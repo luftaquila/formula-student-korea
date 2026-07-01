@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'course/rover/perception/**'
+      - 'rover/perception/**'
       - '.github/workflows/rover-perception-image.yml'
   workflow_dispatch:
     inputs:
@@ -38,7 +38,7 @@ jobs:
           python-version: '3.12'
 
       - name: Compile perception sources
-        run: python3 -m compileall course/rover/perception
+        run: python3 -m compileall rover/perception
 
       - name: Run perception pytest
         run: |
@@ -48,7 +48,7 @@ jobs:
           # too so the disabled-detector test exercises the real "missing
           # calibration" path, not the cv2-absent fallback.
           python3 -m pip install pytest 'numpy<2' 'opencv-python-headless<4.10'
-          cd course/rover/perception
+          cd rover/perception
           python3 -m pytest test/ -q
 
   build:
@@ -80,8 +80,8 @@ jobs:
       - name: Build and push perception image
         uses: docker/build-push-action@v7
         with:
-          context: course/rover/perception
-          file: course/rover/perception/Containerfile
+          context: rover/perception
+          file: rover/perception/Containerfile
           platforms: linux/arm64
           push: true
           tags: ${{ steps.tag.outputs.tag }}

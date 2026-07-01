@@ -46,7 +46,7 @@ import requests
 
 # Import the pilot's pure (ROS-free) helpers without duplicating them.
 # Two layouts are supported: the in-repo tree (this file at
-# course/rover/gps/, pilot package one dir over at ../pilot/pilot) and the
+# rover/gps/, pilot package one dir over at ../pilot/pilot) and the
 # on-rover deploy (/opt/gps-register/ with the lib files copied to
 # /opt/gps-register/pilot/lib by provision-gps.sh). In both, the package
 # *root* that makes `import pilot.lib.*` resolve is what we add to sys.path.

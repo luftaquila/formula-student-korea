@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'course/rover/host/**'
+      - 'rover/host/**'
       - '.github/workflows/rover-host-image.yml'
   workflow_dispatch:
     inputs:
@@ -53,8 +53,8 @@ jobs:
       - name: Build and push host image
         uses: docker/build-push-action@v7
         with:
-          context: course/rover/host
-          file: course/rover/host/Containerfile
+          context: rover/host
+          file: rover/host/Containerfile
           platforms: linux/arm64
           push: true
           tags: ${{ steps.tag.outputs.tag }}

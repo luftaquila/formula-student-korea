@@ -18,7 +18,7 @@ Published topics:
     /rover/cmd/emergency_stop  (std_msgs/Empty)  sync (sw + hardware button)
     /rover/cmd/clear_emergency (std_msgs/Empty)  sync (sw + hardware button)
 
-Wire protocol: see course/rover/README.md (§ MCU coprocessor).
+Wire protocol: see rover/README.md (§ MCU coprocessor).
 """
 
 import json

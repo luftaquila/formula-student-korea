@@ -8,6 +8,7 @@
 .env*
 .htpasswd*
 energymeter
+rover
 traffic/device
 traffic/assets
 filebrowser
