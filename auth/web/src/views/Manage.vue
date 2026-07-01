@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { formatPhone } from "@shared/format-phone.js";
 import { ROLE_LEVELS } from "@shared/constants.js";
+import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 
@@ -43,6 +44,11 @@ const currentUser = getUserFromCookie();
 // Redirect if not admin
 if (!currentUser || currentUser.role !== "admin") {
   window.location.href = "/";
+}
+
+function formatTimestamp(value) {
+  const d = parseDbTimestamp(value);
+  return d ? d.toLocaleString("ko-KR") : "-";
 }
 
 async function fetchUsers(showLoading = false) {
@@ -618,7 +624,7 @@ onMounted(() => {
                   />
                   <span v-else class="inline-edit-text">{{ user.affiliation || '' }}</span>
                 </td>
-                <td class="col-date">{{ user.created_at ? new Date(user.created_at + 'Z').toLocaleString("ko-KR") : "-" }}</td>
+                <td class="col-date">{{ formatTimestamp(user.created_at) }}</td>
                 <td class="col-action">
                   <div class="action-btns">
                     <select

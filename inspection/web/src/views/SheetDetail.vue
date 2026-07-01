@@ -412,18 +412,37 @@ watch(template, (t) => {
 // SSE로 카테고리 결과 실시간 반영 (같은 팀의 변경사항)
 watch(lastUpdate, (update) => {
   if (!update || update.year !== year || update.team_num !== num) return;
+  if (update.deleted) {
+    router.replace("/");
+    return;
+  }
+  if (update.renumbered) return;
   sheetData.value.results[update.category_id] = update.result;
 });
 
 // SSE로 검차관 실시간 반영
 watch(lastInspectorUpdate, (update) => {
   if (!update || update.year !== year || update.team_num !== num) return;
+  if (update.deleted) {
+    router.replace("/");
+    return;
+  }
+  if (update.renumbered) return;
   sheetData.value.inspectors[update.category_id] = update.inspector;
 });
 
 // SSE로 개별 항목 답변 실시간 반영 (self-echo 필터 + 편집 가드 + deferred)
 watch(lastAnswerUpdate, (update) => {
-  if (!update || update.year !== year || update.team_num !== num) return;
+  if (!update || update.year !== year) return;
+  if (update.renumbered && update.prevNum === num) {
+    router.replace("/");
+    return;
+  }
+  if (update.team_num !== num) return;
+  if (update.deleted) {
+    router.replace("/");
+    return;
+  }
   const sentKey = `answer-${update.item_id}`;
   if (lastSentValues[sentKey] === update.value) {
     delete lastSentValues[sentKey];
@@ -442,6 +461,10 @@ watch(lastAnswerUpdate, (update) => {
 // SSE로 메모 실시간 반영 (self-echo 필터 + 편집 가드 + deferred)
 watch(lastMemoUpdate, (update) => {
   if (!update || update.year !== year || update.team_num !== num) return;
+  if (update.deleted) {
+    router.replace("/");
+    return;
+  }
   const sentKey = `memo-${update.item_id}`;
   if (lastSentValues[sentKey] === update.memo) {
     delete lastSentValues[sentKey];

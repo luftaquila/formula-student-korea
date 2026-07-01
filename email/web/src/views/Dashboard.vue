@@ -189,7 +189,7 @@
               </div>
               <div v-if="selectedLog.html_content" class="modal-row modal-row-content">
                 <span class="modal-label">내용</span>
-                <div class="modal-value email-content" v-html="selectedLog.html_content"></div>
+                <iframe class="modal-value email-content-frame" :srcdoc="selectedLogSrcdoc" sandbox="" title="메일 내용"></iframe>
               </div>
             </div>
           </div>
@@ -267,7 +267,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from "vue";
 import { useNotification } from "@shared/useNotification.js";
-import { fetchStats as apiFetchStats, fetchQuota as apiFetchQuota, fetchEmails, sendEmail, fetchRecipients, fetchConfig as apiFetchConfig, updateConfig, testEmail as apiTestEmail, testSms as apiTestSms, resetConfig as apiResetConfig } from "../api.js";
+import { fetchStats as apiFetchStats, fetchQuota as apiFetchQuota, fetchEmails, fetchEmail, sendEmail, fetchRecipients, fetchConfig as apiFetchConfig, updateConfig, testEmail as apiTestEmail, testSms as apiTestSms, resetConfig as apiResetConfig } from "../api.js";
 
 const { success, error: showError } = useNotification();
 
@@ -292,6 +292,12 @@ const logTotal = ref(0);
 const PAGE_SIZE = 10;
 const logTotalPages = computed(() => Math.max(1, Math.ceil(logTotal.value / PAGE_SIZE)));
 const selectedLog = ref(null);
+const EMAIL_PREVIEW_CSP = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'";
+const selectedLogSrcdoc = computed(() => {
+  const html = selectedLog.value?.html_content;
+  if (!html) return "";
+  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${EMAIL_PREVIEW_CSP}"><style>body{margin:12px;font:14px system-ui,sans-serif;color:#111;word-break:break-word;}</style>${html}`;
+});
 
 async function fetchEmailLog(reset) {
   if (reset) logPage.value = 1;
@@ -314,8 +320,13 @@ function goLogPage(p) {
   fetchEmailLog(false);
 }
 
-function openLogDetail(log) {
+async function openLogDetail(log) {
   selectedLog.value = log;
+  try {
+    selectedLog.value = await fetchEmail(log.id);
+  } catch (e) {
+    showError(e.message);
+  }
 }
 
 
@@ -946,15 +957,13 @@ onMounted(async () => {
   width: auto;
 }
 
-.email-content {
+.email-content-frame {
+  width: 100%;
+  min-height: 300px;
+  max-height: 300px;
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  padding: 1rem;
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  max-height: 300px;
-  overflow-y: auto;
-  word-break: break-word;
+  background: var(--bg-primary);
 }
 
 .mono {

@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onUnmounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useNotification } from "@shared/useNotification.js";
 import { request } from "../api.js";
+import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -43,26 +44,30 @@ const allowedExts = computed(() => {
 });
 const acceptAttr = computed(() => allowedExts.value.map((e) => `.${e}`).join(",") || undefined);
 
-const now = ref(new Date().toISOString().replace("T", " ").slice(0, 19));
-const nowTimer = setInterval(() => { now.value = new Date().toISOString().replace("T", " ").slice(0, 19); }, 60000);
+const now = ref(Date.now());
+const nowTimer = setInterval(() => { now.value = Date.now(); }, 60000);
 onUnmounted(() => clearInterval(nowTimer));
+function timestampMs(value) {
+  return parseDbTimestamp(value)?.getTime() ?? 0;
+}
+
 const isUpcoming = computed(() => {
   if (!session.value) return false;
-  return now.value < session.value.start_at;
+  return now.value < timestampMs(session.value.start_at);
 });
 const canSubmit = computed(() => {
   if (!session.value) return false;
   const deadline = session.value.late_end_at || session.value.end_at;
-  return now.value >= session.value.start_at && now.value <= deadline;
+  return now.value >= timestampMs(session.value.start_at) && now.value <= timestampMs(deadline);
 });
 const isLate = computed(() => {
   if (!session.value) return false;
-  return !!session.value.late_end_at && now.value > session.value.end_at;
+  return !!session.value.late_end_at && now.value > timestampMs(session.value.end_at);
 });
 
 function formatDate(d) {
-  if (!d) return "-";
-  return new Date(d + "Z").toLocaleString("ko-KR");
+  const date = parseDbTimestamp(d);
+  return date ? date.toLocaleString("ko-KR") : "-";
 }
 
 function formatSize(bytes) {

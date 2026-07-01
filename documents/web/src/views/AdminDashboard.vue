@@ -4,6 +4,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { request, fetchEntryYears, fetchEntries, fetchVehicleTypes } from "../api.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
+import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const { notyf } = useNotification();
 
@@ -221,9 +222,9 @@ function getSubmissionForTeam(session, teamNum) {
 }
 
 function isSessionClosed(s) {
-  const now = new Date().toISOString().replace("T", " ").slice(0, 19);
   const deadline = s.late_end_at || s.end_at;
-  return now > deadline;
+  const deadlineTime = parseDbTimestamp(deadline)?.getTime();
+  return deadlineTime ? Date.now() > deadlineTime : false;
 }
 
 function submissionCellClass(session, sub) {
@@ -233,8 +234,8 @@ function submissionCellClass(session, sub) {
 }
 
 function formatDate(d) {
-  if (!d) return "-";
-  return new Date(d + "Z").toLocaleString("ko-KR");
+  const date = parseDbTimestamp(d);
+  return date ? date.toLocaleString("ko-KR") : "-";
 }
 
 async function loadTypeColors() {

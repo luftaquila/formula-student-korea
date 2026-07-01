@@ -81,6 +81,13 @@ onDeactivated(() => {
 
 const isControllerLog = computed(() => selectedFile.value === "controller");
 
+function updateMatchesSelectedFile(update) {
+  if (!selectedFile.value || selectedFile.value === "controller") return false;
+  if (update.name) return update.name === selectedFile.value;
+  if (update.year) return selectedFile.value.startsWith(`FSK ${update.year} `);
+  return false;
+}
+
 // 필터링된 레코드
 const filteredRecords = computed(() => {
   if (isControllerLog.value) return records.value;
@@ -131,7 +138,7 @@ function flushMissedUpdate(rowid) {
 
 // SSE 업데이트 시 부분 갱신 (편집 보호, 비활성 시 defer)
 watch(lastUpdate, (update) => {
-  if (!update || update.name !== selectedFile.value) return;
+  if (!update || !updateMatchesSelectedFile(update)) return;
 
   if (!isActive.value) {
     missedUpdate.value = true;

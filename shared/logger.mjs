@@ -1,9 +1,10 @@
 import crypto from "crypto";
+import { runMigrationOnce, normalizeUtcTextTimestamp } from "./db-setup.mjs";
 
 export function createLogger(db, serviceName, maxRows = 50000) {
   db.exec(`CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+    timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     level TEXT NOT NULL DEFAULT 'info',
     action TEXT NOT NULL,
     actor_email TEXT,
@@ -15,6 +16,15 @@ export function createLogger(db, serviceName, maxRows = 50000) {
   )`);
   db.exec("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_logs_action ON logs(action)");
+
+  runMigrationOnce(db, "shared.logs_timestamp_utc_normalization.v1", () => {
+    const rows = db.prepare("SELECT id, timestamp FROM logs WHERE timestamp IS NOT NULL AND timestamp != ''").all();
+    const update = db.prepare("UPDATE logs SET timestamp = ? WHERE id = ?");
+    for (const row of rows) {
+      const normalized = normalizeUtcTextTimestamp(row.timestamp);
+      if (normalized && normalized !== row.timestamp) update.run(normalized, row.id);
+    }
+  });
 
   function getIP(req) {
     return req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;

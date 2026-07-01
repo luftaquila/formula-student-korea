@@ -70,9 +70,11 @@ function getTableName(year) {
 
 function ensureYearTable(year) {
   const tableName = getTableName(year);
+  const y = Number(year) || new Date().getFullYear();
   db.exec(`CREATE TABLE IF NOT EXISTS '${tableName}' (
     num INTEGER PRIMARY KEY, univ TEXT NOT NULL, team TEXT NOT NULL, type TEXT DEFAULT NULL
   )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${y}_type ON '${tableName}'(type)`);
   return tableName;
 }
 
@@ -87,11 +89,32 @@ function getAvailableYears() {
 ensureYearTable(new Date().getFullYear());
 ensureVtTable(new Date().getFullYear());
 
+db.exec(`CREATE TABLE IF NOT EXISTS lifecycle_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_type TEXT NOT NULL,
+  service TEXT NOT NULL,
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  body TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending',
+  next_attempt_at INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+)`);
+try { db.exec("ALTER TABLE lifecycle_outbox ADD COLUMN locked_until INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
+try { db.exec("ALTER TABLE lifecycle_outbox ADD COLUMN locked_by TEXT NOT NULL DEFAULT ''"); } catch { /* already exists */ }
+db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_ready ON lifecycle_outbox(status, next_attempt_at, id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_service_id ON lifecycle_outbox(service, id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_service_status_id ON lifecycle_outbox(service, status, id)");
+
 // 기존 테이블에 type 컬럼 마이그레이션
 for (const year of getAvailableYears()) {
   const tableName = getTableName(year);
   try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN type TEXT DEFAULT NULL`); }
   catch (e) { /* column already exists */ }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${Number(year)}_type ON '${tableName}'(type)`);
 }
 
 /* ============================================
@@ -146,7 +169,7 @@ function validateBulkData(data) {
   }
 
   for (const key in parsed) {
-    if (!/^\d+$/.test(key) || Number(key) < 1) {
+    if (!/^\d+$/.test(key) || Number(key) < 1 || Number(key) >= LIFECYCLE_TEMP_NUM_START) {
       return { valid: false, error: "올바르지 않은 JSON 형식입니다." };
     }
 
@@ -171,6 +194,47 @@ function validateBulkData(data) {
   return { valid: true, data: parsed };
 }
 
+function validateBulkRenumbers(data) {
+  if (data === undefined || data === null) return { valid: true, renumbers: new Map() };
+  if (typeof data !== "object" || Array.isArray(data)) {
+    return { valid: false, error: "올바르지 않은 번호 변경 매핑입니다." };
+  }
+  const renumbers = new Map();
+  const targets = new Set();
+  for (const [from, to] of Object.entries(data)) {
+    if (!/^\d+$/.test(from)) return { valid: false, error: "올바르지 않은 번호 변경 매핑입니다." };
+    const prevNum = Number(from);
+    const newNum = Number(to);
+    // self-map(from === to)은 explicit renumber로 취급되어 same-number identity
+    // ambiguous 검사를 우회시키므로(downstream 데이터가 새 팀에 조용히 승계됨) 거부한다.
+    if (!Number.isInteger(prevNum) || prevNum < 1 || prevNum >= LIFECYCLE_TEMP_NUM_START ||
+        !Number.isInteger(newNum) || newNum < 1 || newNum >= LIFECYCLE_TEMP_NUM_START ||
+        prevNum === newNum ||
+        targets.has(newNum)) {
+      return { valid: false, error: "올바르지 않은 번호 변경 매핑입니다." };
+    }
+    renumbers.set(prevNum, newNum);
+    targets.add(newNum);
+  }
+  return { valid: true, renumbers };
+}
+
+// 동일 번호에서 팀 정체성(univ/team)이 바뀐 경우, 명칭 정정(retain)인지 팀
+// 교체(replacement)인지 페이로드만으로는 구분할 수 없다. 운영자가 명시한 의도를
+// 번호 배열로 받는다. 둘 다 양수 엔트리 번호여야 한다.
+function validateBulkIntentList(data, label) {
+  if (data === undefined || data === null) return { valid: true, nums: new Set() };
+  if (!Array.isArray(data)) return { valid: false, error: `올바르지 않은 ${label} 목록입니다.` };
+  const nums = new Set();
+  for (const v of data) {
+    if (!Number.isInteger(v) || v < 1 || v >= LIFECYCLE_TEMP_NUM_START) {
+      return { valid: false, error: `올바르지 않은 ${label} 목록입니다.` };
+    }
+    nums.add(v);
+  }
+  return { valid: true, nums };
+}
+
 /* ============================================
    DB 헬퍼
    ============================================ */
@@ -179,32 +243,516 @@ const dbRun = createDbRun();
 /* ============================================
    서비스 간 알림 헬퍼
    ============================================ */
-async function notifyEntryDeleted(nums, year) {
+const LIFECYCLE_SERVICES = [
+  { name: "queue", env: "QUEUE_SERVER" },
+  { name: "documents", env: "DOCUMENTS_SERVER" },
+  { name: "inspection", env: "INSPECTION_SERVER" },
+  { name: "score", env: "SCORE_SERVER" },
+  { name: "traffic", env: "TRAFFIC_SERVER" },
+];
+
+let lifecycleOutboxTail = Promise.resolve();
+let lifecycleOutboxRetryQueued = false;
+const LIFECYCLE_LOCK_MS = 30_000;
+// 이 횟수만큼 전달에 실패하면 행을 terminal 'dead' 상태로 전이시켜 무한 재시도와
+// assertNoPendingLifecycleRefs의 영구 409 차단을 끊는다. dead 행은 관리자 재시도/폐기로만 해소.
+const LIFECYCLE_MAX_ATTEMPTS = 24;
+const LIFECYCLE_WORKER_ID = `${process.pid}-${Math.random().toString(36).slice(2)}`;
+const LIFECYCLE_TEMP_NUM_START = 1_000_000_000;
+
+function configuredLifecycleServices() {
+  return LIFECYCLE_SERVICES.filter((svc) => process.env[svc.env]);
+}
+
+// 라이프사이클 동기화 대상이지만 *_SERVER env가 빠진 서비스는 outbox row 자체가
+// 생성되지 않아 재시도·dead-letter·admin recovery 대상에서 사라진다. 최소한 감사
+// 추적이 가능하도록, 동기화가 필요한 작업이 발생했을 때 누락된 서비스를 경고로 남긴다.
+function warnUnconfiguredLifecycleServices(req, context) {
+  const missing = LIFECYCLE_SERVICES.filter((svc) => !process.env[svc.env]).map((svc) => svc.name);
+  if (missing.length > 0) {
+    logger.warn(req, "entry.lifecycle_unconfigured", { ...context, missing });
+  }
+}
+
+function lifecycleServer(service) {
+  const svc = LIFECYCLE_SERVICES.find((s) => s.name === service);
+  return svc ? process.env[svc.env] : null;
+}
+
+function lifecycleHeaders(hasBody = false) {
   const headers = {};
   if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
+  if (hasBody) headers["Content-Type"] = "application/json";
+  return headers;
+}
 
-  const services = [];
-  if (process.env.QUEUE_SERVER) services.push(process.env.QUEUE_SERVER);
-  if (process.env.DOCUMENTS_SERVER) services.push(process.env.DOCUMENTS_SERVER);
-  if (services.length === 0) return;
-
-  await Promise.allSettled(
-    nums.flatMap(num =>
-      services.map(server =>
-        fetch(`${server}/api/internal/team/${num}?year=${Number(year)}`, {
-          method: "DELETE",
-          headers,
-          signal: AbortSignal.timeout(5000),
-        }).then(res => {
-          if (!res.ok) {
-            logger.warn(null, "entry.notify_delete_fail", { server, num, year, status: res.status });
-          }
-        }).catch(e => {
-          logger.warn(null, "entry.notify_delete_fail", { server, num, year, error: e.message });
-        }),
-      ),
-    ),
+function insertLifecycleEvents(events) {
+  if (events.length === 0) return [];
+  const insert = db.prepare(`
+    INSERT INTO lifecycle_outbox (event_type, service, method, path, body, next_attempt_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const now = Date.now();
+  return events.map((event) =>
+    insert.run(event.eventType, event.service, event.method, event.path, event.body ? JSON.stringify(event.body) : null, now).lastInsertRowid,
   );
+}
+
+function markLifecycleDelivered(row) {
+  db.prepare("DELETE FROM lifecycle_outbox WHERE id = ? AND locked_by = ?").run(row.id, row.locked_by || LIFECYCLE_WORKER_ID);
+}
+
+function markLifecycleFailed(row, error) {
+  const attempts = row.attempts + 1;
+  const dead = attempts >= LIFECYCLE_MAX_ATTEMPTS;
+  const delayMs = Math.min(5 * 60_000, 1000 * 2 ** Math.min(attempts, 8));
+  db.prepare(`
+    UPDATE lifecycle_outbox
+    SET status = ?, attempts = ?, next_attempt_at = ?, last_error = ?,
+        locked_until = 0, locked_by = '', updated_at = strftime('%s','now') * 1000
+    WHERE id = ? AND locked_by = ?
+  `).run(dead ? "dead" : "pending", attempts, Date.now() + delayMs, String(error).slice(0, 500), row.id, row.locked_by || LIFECYCLE_WORKER_ID);
+  return dead;
+}
+
+function lifecycleRowClaimable(row, now, { ignoreDelay = false } = {}) {
+  if (row.status === "pending") return ignoreDelay || row.next_attempt_at <= now;
+  return row.status === "processing" && row.locked_until <= now;
+}
+
+function claimLifecycleRow(row, { ignoreDelay = false } = {}) {
+  const now = Date.now();
+  if (!lifecycleRowClaimable(row, now, { ignoreDelay })) return null;
+  const lockedUntil = now + LIFECYCLE_LOCK_MS;
+  const result = db.prepare(`
+    UPDATE lifecycle_outbox
+    SET status = 'processing', locked_until = ?, locked_by = ?, updated_at = strftime('%s','now') * 1000
+    WHERE id = ?
+      AND (
+        (status = 'pending' ${ignoreDelay ? "" : "AND next_attempt_at <= ?"})
+        OR (status = 'processing' AND locked_until <= ?)
+      )
+  `).run(...(ignoreDelay
+    ? [lockedUntil, LIFECYCLE_WORKER_ID, row.id, now]
+    : [lockedUntil, LIFECYCLE_WORKER_ID, row.id, now, now]));
+  if (result.changes === 0) return null;
+  return { ...row, status: "processing", locked_until: lockedUntil, locked_by: LIFECYCLE_WORKER_ID };
+}
+
+async function deliverLifecycleRow(row, options = {}) {
+  const claimed = claimLifecycleRow(row, options);
+  if (!claimed) return false;
+  const fail = (errMsg) => {
+    const dead = markLifecycleFailed(claimed, errMsg);
+    const detail = {
+      id: row.id,
+      event_type: row.event_type,
+      service: row.service,
+      path: row.path,
+      attempts: row.attempts + 1,
+      error: errMsg,
+    };
+    logger.warn(null, "entry.lifecycle_dispatch_fail", { ...detail, dead });
+    // terminal 전이는 별도 액션으로 남겨 관리자가 재시도/폐기 대상을 찾을 수 있게 한다.
+    if (dead) logger.warn(null, "entry.lifecycle_dead", detail);
+    return false;
+  };
+  const server = lifecycleServer(row.service);
+  if (!server) return fail(`missing server env for ${row.service}`);
+  try {
+    const res = await fetch(`${server}${row.path}`, {
+      method: row.method,
+      headers: lifecycleHeaders(!!row.body),
+      body: row.body || undefined,
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    // 202 = downstream이 DB 변경은 커밋했으나 후속 작업(파일 이동 등)이 재시도 대기 중.
+    // 파일까지 정합 상태가 될 때까지 renumber를 "미완료"로 보고 재시도한다 — 그 사이
+    // assertNoPendingLifecycleRefs가 같은 번호의 추가 편집을 막아 일관성을 보장한다.
+    if (res.status === 202) throw new Error("status 202 pending");
+    markLifecycleDelivered(claimed);
+    return true;
+  } catch (e) {
+    return fail(e.message || String(e));
+  }
+}
+
+async function processLifecycleOutboxBatch({ ids = null, limit = 50 } = {}) {
+  const now = Date.now();
+  let rows;
+  if (ids?.length) {
+    const targetIds = ids.map(Number).filter(Number.isFinite);
+    if (targetIds.length === 0) return;
+    const placeholders = targetIds.map(() => "?").join(",");
+    const targets = db.prepare(`
+      SELECT service, MAX(id) AS max_id
+      FROM lifecycle_outbox
+      WHERE id IN (${placeholders})
+      GROUP BY service
+    `).all(...targetIds);
+    rows = targets.flatMap((target) => db.prepare(`
+      SELECT * FROM lifecycle_outbox
+      WHERE status IN ('pending', 'processing') AND service = ? AND id <= ?
+      ORDER BY id
+    `).all(target.service, target.max_id));
+    rows.sort((a, b) => a.id - b.id);
+  } else {
+    const blockedServices = new Set();
+    let deliveredRows = 0;
+    while (deliveredRows < limit) {
+      const blocked = [...blockedServices];
+      const blockedClause = blocked.length ? `AND service NOT IN (${blocked.map(() => "?").join(",")})` : "";
+      rows = db.prepare(`
+        WITH oldest AS (
+          SELECT service, MIN(id) AS id
+          FROM lifecycle_outbox
+          WHERE status IN ('pending', 'processing') ${blockedClause}
+          GROUP BY service
+        )
+        SELECT o.*
+        FROM lifecycle_outbox o
+        JOIN oldest ON oldest.id = o.id
+        WHERE (o.status = 'pending' AND o.next_attempt_at <= ?)
+           OR (o.status = 'processing' AND o.locked_until <= ?)
+        ORDER BY o.id
+        LIMIT ?
+      `).all(...blocked, now, now, limit - deliveredRows);
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        const delivered = await deliverLifecycleRow(row);
+        deliveredRows += 1;
+        if (!delivered) blockedServices.add(row.service);
+      }
+    }
+    return;
+  }
+  const blockedServices = new Set();
+  for (const row of rows) {
+    if (blockedServices.has(row.service)) continue;
+    if (row.status === "processing" && row.locked_until > now && row.locked_by !== LIFECYCLE_WORKER_ID) {
+      blockedServices.add(row.service);
+      continue;
+    }
+    const delivered = await deliverLifecycleRow(row, { ignoreDelay: true });
+    if (!delivered) blockedServices.add(row.service);
+  }
+}
+
+function processLifecycleOutbox(options = {}) {
+  const targeted = Array.isArray(options.ids) && options.ids.length > 0;
+  if (!targeted && lifecycleOutboxRetryQueued) return lifecycleOutboxTail;
+  if (!targeted) lifecycleOutboxRetryQueued = true;
+  const run = lifecycleOutboxTail
+    .then(
+      () => processLifecycleOutboxBatch(options),
+      () => processLifecycleOutboxBatch(options),
+    )
+    .finally(() => {
+      if (!targeted) lifecycleOutboxRetryQueued = false;
+    });
+  lifecycleOutboxTail = run.catch(() => {});
+  return run;
+}
+
+function startLifecycleOutboxRetry() {
+  const timer = setInterval(() => {
+    processLifecycleOutbox().catch((e) => logger.warn(null, "entry.lifecycle_retry_error", { error: e.message || String(e) }));
+  }, 30_000);
+  timer.unref?.();
+  return timer;
+}
+
+function buildEntryDeletedEvents(nums, year) {
+  return nums.flatMap((num) =>
+    configuredLifecycleServices().map((svc) => ({
+      eventType: "team.delete",
+      service: svc.name,
+      method: "DELETE",
+      path: `/api/internal/team/${num}?year=${Number(year)}`,
+    })),
+  );
+}
+
+function buildEntryRenumberedEvents(prevNum, newNum, year, entry) {
+  return configuredLifecycleServices().map((svc) => ({
+    eventType: "team.renumber",
+    service: svc.name,
+    method: "PATCH",
+    path: "/api/internal/team-num",
+    body: { prevNum, newNum, year: Number(year), entry },
+  }));
+}
+
+const lifecycleRetryTimer = startLifecycleOutboxRetry();
+
+/* ============================================
+   Admin: lifecycle outbox 운영 (조회/재시도/폐기)
+   dead 상태는 LIFECYCLE_MAX_ATTEMPTS 초과로 자동 차단 해제된 행이며,
+   downstream을 복구한 뒤 재시도하거나 해소 불가 시 폐기한다.
+   ============================================ */
+// GET /api/admin/lifecycle-outbox?status=dead|pending|all - 미해결 이벤트 조회
+app.get("/api/admin/lifecycle-outbox", (req, res) => {
+  let where = "";
+  if (req.query.status === "dead") where = "WHERE status = 'dead'";
+  else if (req.query.status === "pending") where = "WHERE status IN ('pending', 'processing')";
+  const result = dbRun(() => db.prepare(`
+    SELECT id, event_type, service, method, path, body, attempts, status,
+           next_attempt_at, last_error, created_at, updated_at
+    FROM lifecycle_outbox ${where}
+    ORDER BY (status = 'dead') DESC, id
+    LIMIT 500
+  `).all());
+  if (!result.success) {
+    logger.warn(req, "entry.lifecycle_list", { error: result.error });
+    return res.status(result.status).send(result.error);
+  }
+  res.json(result.result);
+});
+
+// POST /api/admin/lifecycle-outbox/:id/retry - 행을 즉시 재시도 대상으로 복구 후 1회 처리
+app.post("/api/admin/lifecycle-outbox/:id/retry", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).send("올바르지 않은 ID입니다.");
+  const result = dbRun(() => db.prepare(`
+    UPDATE lifecycle_outbox
+    SET status = 'pending', attempts = 0, next_attempt_at = 0, last_error = '',
+        locked_until = 0, locked_by = '', updated_at = strftime('%s','now') * 1000
+    WHERE id = ?
+  `).run(id));
+  if (!result.success) {
+    logger.warn(req, "entry.lifecycle_retry", { error: result.error, id });
+    return res.status(result.status).send(result.error);
+  }
+  if (result.result.changes === 0) {
+    logger.warn(req, "entry.lifecycle_retry", { error: "not found", id });
+    return res.status(404).send("이벤트를 찾을 수 없습니다.");
+  }
+  logger.log(req, "entry.lifecycle_retry", { id });
+  await processLifecycleOutbox({ ids: [id] });
+  res.status(200).json({ pending: countPendingLifecycleEvents([id]) });
+});
+
+// DELETE /api/admin/lifecycle-outbox/:id - 해소 불가능한 이벤트 폐기 (감사 로깅)
+app.delete("/api/admin/lifecycle-outbox/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).send("올바르지 않은 ID입니다.");
+  const row = db.prepare("SELECT id, event_type, service, path, attempts, status, last_error FROM lifecycle_outbox WHERE id = ?").get(id);
+  if (!row) return res.status(404).send("이벤트를 찾을 수 없습니다.");
+  const result = dbRun(() => db.prepare("DELETE FROM lifecycle_outbox WHERE id = ?").run(id));
+  if (!result.success) {
+    logger.warn(req, "entry.lifecycle_discard", { error: result.error, id, event_type: row.event_type, service: row.service, path: row.path });
+    return res.status(result.status).send(result.error);
+  }
+  // 파괴적 작업: downstream 동기화 이벤트를 영구 폐기하므로 감사 로그를 남긴다.
+  logger.warn(req, "entry.lifecycle_discard", {
+    id, event_type: row.event_type, service: row.service, path: row.path,
+    attempts: row.attempts, status: row.status, last_error: row.last_error,
+  });
+  res.status(200).send();
+});
+
+function entryIdentity(row) {
+  return `${String(row.univ || "").trim()}\u0000${String(row.team || "").trim()}`;
+}
+
+function chooseTempNum(usedNums) {
+  let candidate = LIFECYCLE_TEMP_NUM_START;
+  while (usedNums.has(candidate)) candidate += 1;
+  usedNums.add(candidate);
+  return candidate;
+}
+
+function buildRenumberPlan(moves, reservedNums = []) {
+  const remaining = new Map(moves.map((move) => [move.prevNum, { ...move }]));
+  const usedNums = new Set([...reservedNums, ...moves.flatMap((move) => [move.prevNum, move.newNum])]);
+  const plan = [];
+
+  while (remaining.size > 0) {
+    let progressed = false;
+    for (const [prevNum, move] of [...remaining.entries()]) {
+      if (!remaining.has(move.newNum)) {
+        plan.push(move);
+        remaining.delete(prevNum);
+        progressed = true;
+      }
+    }
+    if (progressed) continue;
+
+    const [cyclePrev, cycleMove] = remaining.entries().next().value;
+    const tempNum = chooseTempNum(usedNums);
+    plan.push({
+      prevNum: cyclePrev,
+      newNum: tempNum,
+      entry: {
+        univ: cycleMove.oldEntry.univ,
+        team: cycleMove.oldEntry.team,
+        type: cycleMove.oldEntry.type || null,
+      },
+    });
+    remaining.delete(cyclePrev);
+    remaining.set(tempNum, {
+      prevNum: tempNum,
+      newNum: cycleMove.newNum,
+      entry: cycleMove.entry,
+      oldEntry: cycleMove.oldEntry,
+    });
+  }
+
+  return plan;
+}
+
+function lifecycleRowRefsNumber(row, num, year) {
+  const targetNum = Number(num);
+  const targetYear = Number(year);
+  if (row.event_type === "team.delete") {
+    const match = String(row.path || "").match(/^\/api\/internal\/team\/(\d+)\?year=(\d+)$/);
+    return !!match && Number(match[1]) === targetNum && Number(match[2]) === targetYear;
+  }
+  if (row.event_type === "team.renumber" && row.body) {
+    try {
+      const body = JSON.parse(row.body);
+      return Number(body.year) === targetYear
+        && (Number(body.prevNum) === targetNum || Number(body.newNum) === targetNum);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function pendingLifecycleRefsForNums(nums, year) {
+  const targetNums = new Set([...nums].map(Number).filter((n) => Number.isInteger(n) && n > 0));
+  if (targetNums.size === 0) return [];
+  const pending = db.prepare("SELECT id, event_type, path, body FROM lifecycle_outbox WHERE status IN ('pending', 'processing') ORDER BY id").all();
+  return pending.filter((row) => [...targetNums].some((num) => lifecycleRowRefsNumber(row, num, year)));
+}
+
+function assertNoPendingLifecycleRefs(nums, year) {
+  const refs = pendingLifecycleRefsForNums(nums, year);
+  if (refs.length > 0) {
+    const ids = refs.slice(0, 5).map((row) => row.id).join(", ");
+    throw {
+      status: 409,
+      message: `이전 엔트리 라이프사이클 동기화가 완료되지 않아 변경할 수 없습니다. 잠시 후 다시 시도하세요. (pending: ${ids})`,
+    };
+  }
+}
+
+function countPendingLifecycleEvents(ids) {
+  if (!ids.length) return 0;
+  const placeholders = ids.map(() => "?").join(",");
+  return db.prepare(`SELECT COUNT(*) AS count FROM lifecycle_outbox WHERE id IN (${placeholders})`).get(...ids).count;
+}
+
+function sendLifecyclePending(res, eventIds, message) {
+  const pending = countPendingLifecycleEvents(eventIds);
+  if (pending === 0) return false;
+  res.status(202).json({ status: "pending_lifecycle", pending, message });
+  return true;
+}
+
+function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers = new Map(), replacements = new Set(), retains = new Set()) {
+  const newNums = new Set(newRowsByNum.keys());
+  const oldRowsByNum = new Map(oldRows.map((row) => [row.num, row]));
+  const oldIdentityCounts = new Map();
+  const newIdentityCounts = new Map();
+  for (const row of oldRows) oldIdentityCounts.set(entryIdentity(row), (oldIdentityCounts.get(entryIdentity(row)) || 0) + 1);
+  for (const row of newRowsByNum.values()) newIdentityCounts.set(entryIdentity(row), (newIdentityCounts.get(entryIdentity(row)) || 0) + 1);
+
+  const uniqueNewByIdentity = new Map();
+  for (const row of newRowsByNum.values()) {
+    const identity = entryIdentity(row);
+    if (newIdentityCounts.get(identity) === 1) uniqueNewByIdentity.set(identity, row);
+  }
+
+  const deletedNums = [];
+  const moves = [];
+  const matchedOldNums = new Set();
+  const movedTargetNums = new Set();
+  const explicitTargets = new Set(explicitRenumbers.values());
+  for (const [prevNum, newNum] of explicitRenumbers.entries()) {
+    const oldRow = oldRowsByNum.get(prevNum);
+    const newRow = newRowsByNum.get(newNum);
+    if (!oldRow || !newRow) {
+      throw { status: 400, message: "번호 변경 매핑이 기존/신규 엔트리와 일치하지 않습니다." };
+    }
+    matchedOldNums.add(prevNum);
+    if (prevNum !== newNum) {
+      movedTargetNums.add(newNum);
+      moves.push({
+        prevNum,
+        newNum,
+        entry: {
+          univ: newRow.univ,
+          team: newRow.team,
+          type: newRow.type || null,
+        },
+        oldEntry: oldRow,
+      });
+    }
+  }
+  for (const oldRow of oldRows) {
+    if (matchedOldNums.has(oldRow.num)) continue;
+    const identity = entryIdentity(oldRow);
+    const matchedNew = oldIdentityCounts.get(identity) === 1 ? uniqueNewByIdentity.get(identity) : null;
+    if (matchedNew && !explicitTargets.has(matchedNew.num)) {
+      matchedOldNums.add(oldRow.num);
+      if (oldRow.num !== matchedNew.num) {
+        movedTargetNums.add(matchedNew.num);
+        moves.push({
+          prevNum: oldRow.num,
+          newNum: matchedNew.num,
+          entry: {
+            univ: matchedNew.univ,
+            team: matchedNew.team,
+            type: matchedNew.type || null,
+          },
+          oldEntry: oldRow,
+        });
+      }
+    }
+  }
+  // 번호가 사라졌거나(삭제) 다른 팀이 그 번호로 이동(displaced)한 경우는 삭제.
+  // 번호는 신규 목록에 그대로 있는데 identity 매칭에서 빠진 경우는 "동일 번호에서
+  // 팀이 바뀜" — 명칭 정정인지 팀 교체인지 페이로드만으로 알 수 없으므로, 운영자가
+  // replacements/retains로 명시하지 않으면 조용히 승계하지 않고 ambiguous로 보고한다.
+  const ambiguous = [];
+  for (const oldRow of oldRows) {
+    if (matchedOldNums.has(oldRow.num)) continue;
+    if (!newNums.has(oldRow.num) || movedTargetNums.has(oldRow.num)) {
+      deletedNums.push(oldRow.num);
+      continue;
+    }
+    const newRow = newRowsByNum.get(oldRow.num);
+    if (entryIdentity(newRow) === entryIdentity(oldRow)) continue; // 동일 팀 유지 → 이벤트 없음
+    if (replacements.has(oldRow.num)) {
+      deletedNums.push(oldRow.num); // 팀 교체 확정 → 기존 downstream 데이터 삭제
+    } else if (retains.has(oldRow.num)) {
+      continue; // 명칭 정정 확정 → 기존 데이터 유지(이벤트 없음)
+    } else {
+      ambiguous.push({
+        num: oldRow.num,
+        from: { univ: oldRow.univ, team: oldRow.team },
+        to: { univ: newRow.univ, team: newRow.team },
+      });
+    }
+  }
+  if (ambiguous.length > 0) {
+    return { events: [], deletedNums: [], renumberCount: 0, ambiguous };
+  }
+
+  const events = [
+    ...buildEntryDeletedEvents(deletedNums, year),
+  ];
+  const reservedNums = [
+    ...oldRows.map((row) => row.num),
+    ...newRowsByNum.keys(),
+  ];
+  for (const move of buildRenumberPlan(moves, reservedNums)) {
+    events.push(...buildEntryRenumberedEvents(move.prevNum, move.newNum, year, move.entry));
+  }
+  return { events, deletedNums, renumberCount: moves.length, ambiguous };
 }
 
 /* ============================================
@@ -263,6 +811,9 @@ app.post("/api/entries", withYearTable, (req, res) => {
   if (!numValidation.valid) {
     return res.status(400).send(numValidation.error);
   }
+  if (numValidation.value >= LIFECYCLE_TEMP_NUM_START) {
+    return res.status(400).send(numValidation.error);
+  }
 
   const dataValidation = validateEntryData(req.body, year);
   if (!dataValidation.valid) {
@@ -270,9 +821,12 @@ app.post("/api/entries", withYearTable, (req, res) => {
   }
 
   const result = dbRun(() =>
-    db
-      .prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`)
-      .run(numValidation.value, dataValidation.univ, dataValidation.team, dataValidation.type),
+    db.transaction(() => {
+      assertNoPendingLifecycleRefs([numValidation.value], year);
+      return db
+        .prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`)
+        .run(numValidation.value, dataValidation.univ, dataValidation.team, dataValidation.type);
+    })(),
   );
 
   if (!result.success) {
@@ -297,6 +851,9 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
   if (!newNumValidation.valid) {
     return res.status(400).send(newNumValidation.error);
   }
+  if (newNumValidation.value >= LIFECYCLE_TEMP_NUM_START) {
+    return res.status(400).send(newNumValidation.error);
+  }
 
   const dataValidation = validateEntryData(req.body, year);
   if (!dataValidation.valid) {
@@ -306,16 +863,40 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
   const prevNum = prevNumValidation.value;
   const newNum = newNumValidation.value;
   const numChanged = prevNum !== newNum;
-
-  // 번호 변경 시 롤백을 위해 원본 데이터 보존
-  const originalEntry = numChanged ? db.prepare(`SELECT univ, team, type FROM '${tableName}' WHERE num = ?`).get(prevNum) : null;
+  // 같은 번호를 유지한 채 팀 정체성(학교/팀명)이 바뀌는 경우 retain/replacement intent.
+  const intent = req.body.intent;
 
   const result = dbRun(() => {
     return db.transaction(() => {
+      let events = [];
       if (numChanged) {
+        assertNoPendingLifecycleRefs([prevNum, newNum], year);
         const numResult = db.prepare(`UPDATE '${tableName}' SET num = ? WHERE num = ?`).run(newNum, prevNum);
         if (!numResult.changes) {
           throw { status: 404, message: "존재하지 않는 엔트리 번호입니다." };
+        }
+      } else {
+        // 번호가 그대로일 때 identity 변경 여부를 확인한다. 명칭 정정인지 팀 교체인지
+        // 페이로드만으로 알 수 없으므로, intent 미선언이면 bulk와 동일하게 ambiguous(409)로 보고하고
+        // 아무것도 쓰지 않는다(읽기 전용 트랜잭션). 다른 팀이 downstream을 조용히 승계하지 못하게 막는다.
+        const existing = db.prepare(`SELECT univ, team FROM '${tableName}' WHERE num = ?`).get(newNum);
+        if (!existing) {
+          throw { status: 404, message: "존재하지 않는 엔트리 번호입니다." };
+        }
+        if (entryIdentity(existing) !== entryIdentity(dataValidation)) {
+          if (intent === "replacement") {
+            assertNoPendingLifecycleRefs([newNum], year);
+            events = buildEntryDeletedEvents([newNum], year); // 팀 교체 확정 → 기존 downstream 삭제
+          } else if (intent !== "retain") {
+            return {
+              ambiguous: [{
+                num: newNum,
+                from: { univ: existing.univ, team: existing.team },
+                to: { univ: dataValidation.univ, team: dataValidation.team },
+              }],
+            };
+          }
+          // intent === "retain" → 명칭 정정 확정 → downstream 유지(이벤트 없음)
         }
       }
 
@@ -326,7 +907,15 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
         throw { status: 404, message: "존재하지 않는 엔트리 번호입니다." };
       }
 
-      return updateResult;
+      if (numChanged) {
+        events = buildEntryRenumberedEvents(prevNum, newNum, year, {
+          univ: dataValidation.univ,
+          team: dataValidation.team,
+          type: dataValidation.type,
+        });
+      }
+
+      return { eventIds: insertLifecycleEvents(events) };
     })();
   });
 
@@ -335,43 +924,27 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  // 번호 변경 시 documents 서비스 team_num 동기화 (실패 시 롤백)
-  if (numChanged && process.env.DOCUMENTS_SERVER) {
-    let syncFailed = false;
-    let failReason = "";
-    try {
-      const syncRes = await fetch(`${process.env.DOCUMENTS_SERVER}/api/internal/team-num`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", "X-Internal-Service": process.env.INTERNAL_SECRET },
-        body: JSON.stringify({ prevNum, newNum, year: Number(year) }),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!syncRes.ok) {
-        syncFailed = true;
-        failReason = `status ${syncRes.status}`;
-      }
-    } catch (e) {
-      syncFailed = true;
-      failReason = e.message;
-    }
+  if (result.result.ambiguous) {
+    const ambiguous = result.result.ambiguous;
+    logger.warn(req, "entry.update_ambiguous", { year, nums: ambiguous.map((a) => a.num) });
+    return res.status(409).json({
+      message: "동일 번호에서 팀이 변경되었습니다. 명칭 정정(데이터 유지)인지 팀 교체(데이터 삭제)인지 선택해 주세요.",
+      ambiguous,
+    });
+  }
 
-    if (syncFailed) {
-      // 엔트리 번호 및 데이터 롤백
-      const rollbackResult = dbRun(() => {
-        db.transaction(() => {
-          db.prepare(`UPDATE '${tableName}' SET num = ? WHERE num = ?`).run(prevNum, newNum);
-          if (originalEntry) {
-            db.prepare(`UPDATE '${tableName}' SET univ = ?, team = ?, type = ? WHERE num = ?`)
-              .run(originalEntry.univ, originalEntry.team, originalEntry.type, prevNum);
-          }
-        })();
-      });
-      if (!rollbackResult.success) {
-        logger.warn(req, "entry.rollback_failed", { error: rollbackResult.error, prevNum, newNum, year }, `#${newNum}`);
-      }
-      logger.warn(req, "entry.docs_sync_fail_rollback", { prevNum, newNum, year, reason: failReason, rollbackSuccess: rollbackResult.success });
-      return res.status(502).send("문서 서비스 동기화에 실패하여 변경이 취소되었습니다.");
-    }
+  if (numChanged || intent === "replacement") {
+    warnUnconfiguredLifecycleServices(req, { op: numChanged ? "renumber" : "replacement", year, prevNum, newNum });
+  }
+
+  const eventIds = result.result.eventIds;
+  if (eventIds.length > 0) {
+    await processLifecycleOutbox({ ids: eventIds });
+    logger.log(req, numChanged ? "entry.notify_renumber" : "entry.notify_replacement",
+      { year, prevNum, newNum, events: eventIds.length }, `#${newNum}`);
+    if (sendLifecyclePending(res, eventIds, numChanged
+      ? "엔트리 번호 변경은 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다."
+      : "엔트리 팀 교체는 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다.")) return;
   }
 
   logger.log(req, "entry.update", { year, univ: dataValidation.univ, team: dataValidation.team, type: dataValidation.type }, `#${newNum}`);
@@ -387,23 +960,33 @@ app.delete("/api/entries/:num", withYearTable, async (req, res) => {
     return res.status(400).send(numValidation.error);
   }
 
-  const entry = db.prepare(`SELECT univ, team FROM '${tableName}' WHERE num = ?`).get(numValidation.value);
-  const result = dbRun(() => db.prepare(`DELETE FROM '${tableName}' WHERE num = ?`).run(numValidation.value));
+  const result = dbRun(() => db.transaction(() => {
+    const entry = db.prepare(`SELECT univ, team FROM '${tableName}' WHERE num = ?`).get(numValidation.value);
+    if (entry) assertNoPendingLifecycleRefs([numValidation.value], year);
+    const deleteResult = db.prepare(`DELETE FROM '${tableName}' WHERE num = ?`).run(numValidation.value);
+    const eventIds = deleteResult.changes
+      ? insertLifecycleEvents(buildEntryDeletedEvents([numValidation.value], year))
+      : [];
+    return { deleteResult, entry, eventIds };
+  })());
 
   if (!result.success) {
     logger.warn(req, "entry.delete", { error: result.error, year }, `#${numValidation.value}`);
     return res.status(result.status).send(result.error);
   }
 
-  if (!result.result.changes) {
+  if (!result.result.deleteResult.changes) {
     logger.warn(req, "entry.delete", { year, reason: "not_found" }, `#${numValidation.value}`);
     return res.status(404).send("존재하지 않는 엔트리 번호입니다.");
   }
 
+  const { entry, eventIds } = result.result;
   logger.log(req, "entry.delete", { year, univ: entry?.univ, team: entry?.team }, `#${numValidation.value}`);
 
-  await notifyEntryDeleted([numValidation.value], year);
+  warnUnconfiguredLifecycleServices(req, { op: "delete", year, nums: [numValidation.value] });
+  await processLifecycleOutbox({ ids: eventIds });
   logger.log(req, "entry.notify_delete", { year, nums: [numValidation.value] }, `#${numValidation.value}`);
+  if (sendLifecyclePending(res, eventIds, "엔트리 삭제는 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다.")) return;
   res.status(200).send();
 });
 
@@ -411,9 +994,15 @@ app.delete("/api/entries/:num", withYearTable, async (req, res) => {
 app.delete("/api/entries", withYearTable, async (req, res) => {
   const { tableName, year } = req;
 
-  const existingNums = db.prepare(`SELECT num FROM '${tableName}'`).all().map(r => r.num);
-
-  const result = dbRun(() => db.prepare(`DELETE FROM '${tableName}'`).run());
+  const result = dbRun(() => db.transaction(() => {
+    const existingNums = db.prepare(`SELECT num FROM '${tableName}'`).all().map(r => r.num);
+    assertNoPendingLifecycleRefs(existingNums, year);
+    const deleteResult = db.prepare(`DELETE FROM '${tableName}'`).run();
+    const eventIds = existingNums.length > 0
+      ? insertLifecycleEvents(buildEntryDeletedEvents(existingNums, year))
+      : [];
+    return { existingNums, deleteResult, eventIds };
+  })());
 
   if (!result.success) {
     logger.warn(req, "entry.clear", { error: result.error, year });
@@ -422,9 +1011,12 @@ app.delete("/api/entries", withYearTable, async (req, res) => {
 
   logger.log(req, "entry.clear", { year });
 
+  const { existingNums, eventIds } = result.result;
   if (existingNums.length > 0) {
-    await notifyEntryDeleted(existingNums, year);
+    warnUnconfiguredLifecycleServices(req, { op: "clear", year, count: existingNums.length });
+    await processLifecycleOutbox({ ids: eventIds });
     logger.log(req, "entry.notify_delete", { year, count: existingNums.length });
+    if (sendLifecyclePending(res, eventIds, "엔트리 전체 삭제는 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다.")) return;
   }
   res.status(200).send();
 });
@@ -437,23 +1029,58 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   if (!validation.valid) {
     return res.status(400).send(validation.error);
   }
-
-  // 트랜잭션 전 기존 엔트리 스냅샷
-  const existingNums = new Set(db.prepare(`SELECT num FROM '${tableName}'`).all().map(r => r.num));
+  const renumberValidation = validateBulkRenumbers(req.body.renumbers);
+  if (!renumberValidation.valid) {
+    return res.status(400).send(renumberValidation.error);
+  }
+  const replacementsValidation = validateBulkIntentList(req.body.replacements, "팀 교체");
+  if (!replacementsValidation.valid) {
+    return res.status(400).send(replacementsValidation.error);
+  }
+  const retainsValidation = validateBulkIntentList(req.body.retains, "명칭 정정");
+  if (!retainsValidation.valid) {
+    return res.status(400).send(retainsValidation.error);
+  }
 
   const result = dbRun(() => {
-    db.transaction(() => {
-      db.prepare(`DELETE FROM '${tableName}'`).run();
+    return db.transaction(() => {
+      const oldRows = db.prepare(`SELECT num, univ, team, type FROM '${tableName}'`).all();
       const vtTable = ensureVtTable(year);
       const validTypes = new Set(db.prepare(`SELECT name FROM '${vtTable}'`).all().map(t => t.name));
+      const newRowsByNum = new Map();
       const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`);
       for (const [k, v] of Object.entries(validation.data)) {
         const validatedType = v.type || null;
         if (validatedType && !validTypes.has(validatedType)) {
           throw { status: 400, message: `엔트리 ${k}: 존재하지 않는 차량 유형 '${validatedType}'` };
         }
-        query.run(Number(k), v.univ.trim(), v.team.trim(), validatedType);
+        newRowsByNum.set(Number(k), {
+          num: Number(k),
+          univ: v.univ.trim(),
+          team: v.team.trim(),
+          type: validatedType,
+        });
       }
+
+      assertNoPendingLifecycleRefs([
+        ...oldRows.map((row) => row.num),
+        ...newRowsByNum.keys(),
+      ], year);
+      const { events, deletedNums, renumberCount, ambiguous } = buildBulkLifecycleEvents(
+        oldRows, newRowsByNum, year, renumberValidation.renumbers, replacementsValidation.nums, retainsValidation.nums,
+      );
+      // 동일 번호의 팀 변경이 미선언 상태면 아무것도 쓰지 않고(읽기 전용 트랜잭션)
+      // 운영자에게 의도 확인을 요청한다.
+      if (ambiguous.length > 0) {
+        return { ambiguous };
+      }
+
+      db.prepare(`DELETE FROM '${tableName}'`).run();
+      for (const row of newRowsByNum.values()) {
+        query.run(row.num, row.univ, row.team, row.type);
+      }
+      const eventIds = insertLifecycleEvents(events);
+      return { deletedNums, renumberCount, eventIds };
     })();
   });
 
@@ -462,13 +1089,25 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
+  if (result.result.ambiguous) {
+    const ambiguous = result.result.ambiguous;
+    logger.warn(req, "entry.bulk_upload_ambiguous", { year, nums: ambiguous.map((a) => a.num) });
+    return res.status(409).json({
+      message: "동일 번호에서 팀이 변경되었습니다. 명칭 정정(데이터 유지)인지 팀 교체(데이터 삭제)인지 선택해 주세요.",
+      ambiguous,
+    });
+  }
+
   logger.log(req, "entry.bulk_upload", { year, count: Object.keys(validation.data).length });
 
-  const newNums = new Set(Object.keys(validation.data).map(Number));
-  const removedNums = [...existingNums].filter(n => !newNums.has(n));
-  if (removedNums.length > 0) {
-    await notifyEntryDeleted(removedNums, year);
-    logger.log(req, "entry.notify_delete", { year, count: removedNums.length, nums: removedNums });
+  const { deletedNums, renumberCount, eventIds } = result.result;
+  if (deletedNums.length > 0 || renumberCount > 0) {
+    warnUnconfiguredLifecycleServices(req, { op: "bulk", year, deleted: deletedNums.length, renumbered: renumberCount });
+  }
+  if (eventIds.length > 0) {
+    await processLifecycleOutbox({ ids: eventIds });
+    logger.log(req, "entry.notify_bulk_lifecycle", { year, deleted: deletedNums.length, renumbered: renumberCount, events: eventIds.length, nums: deletedNums });
+    if (sendLifecyclePending(res, eventIds, "엔트리 일괄 업로드는 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다.")) return;
   }
   res.status(200).send();
 });
@@ -605,7 +1244,7 @@ app.delete("/api/vehicle-types/:id", withYearVtTable, (req, res) => {
   res.status(200).send();
 });
 
-return { app, db };
+return { app, db, stopLifecycleOutboxRetry: () => clearInterval(lifecycleRetryTimer) };
 }
 
 const isDirectRun = import.meta.filename === process.argv[1];

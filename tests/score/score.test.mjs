@@ -48,6 +48,14 @@ function createMockInspectionServer() {
 
 function createMockTrafficServer() {
   const app = express();
+  const records = [
+    { rowid: 1, time: '2026-01-01T10:00:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 50000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+    { rowid: 2, time: '2026-01-01T10:05:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 48000, cones: 1, oc: 0, invalidated: 0, scoreboard: 1 },
+    { rowid: 3, time: '2026-01-01T10:10:00', num: 2, univ: '카이스트', team: '팀B', type: '가속', result: 52000, cones: 0, oc: 1, invalidated: 0, scoreboard: 1 },
+  ];
+  app.get('/api/records/year/:year', (req, res) => {
+    res.json([{ name: `FSK ${req.params.year} 가속 1차`, records }]);
+  });
   app.get('/api/records', (req, res) => {
     const year = new Date().getFullYear();
     res.json([`FSK ${year} 가속 1차`]);
@@ -57,11 +65,7 @@ function createMockTrafficServer() {
     res.json({ [`FSK ${year} 가속 1차`]: true });
   });
   app.get('/api/records/:name', (req, res) => {
-    res.json([
-      { rowid: 1, time: '2026-01-01T10:00:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 50000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
-      { rowid: 2, time: '2026-01-01T10:05:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 48000, cones: 1, oc: 0, invalidated: 0, scoreboard: 1 },
-      { rowid: 3, time: '2026-01-01T10:10:00', num: 2, univ: '카이스트', team: '팀B', type: '가속', result: 52000, cones: 0, oc: 1, invalidated: 0, scoreboard: 1 },
-    ]);
+    res.json(records);
   });
   app.get('/api/event-modes', (req, res) => {
     res.json([
@@ -977,5 +981,49 @@ describe('Score visibility filtering', () => {
     // Only 가속 1차 (50000) should be included, 가속 2차 (40000) is hidden
     assert.equal(accel.records[1].result, 50000, 'should use only visible file records');
     assert.equal(accel.records[1].allRuns.length, 1, 'hidden file runs should be excluded');
+  });
+});
+
+// ─── Internal API: entry lifecycle ──────────────────────────────────────
+describe('Score internal entry lifecycle sync', () => {
+  it('renumbers and deletes manual/endurance rows', async () => {
+    const year = 2026;
+    db.prepare("INSERT OR REPLACE INTO score_manual (year, team_num, score_type, value) VALUES (?, ?, ?, ?)")
+      .run(year, 901, 'report', 12.5);
+    db.prepare("INSERT OR REPLACE INTO score_endurance (year, team_num, status, driver1_time) VALUES (?, ?, ?, ?)")
+      .run(year, 901, 'DNF', 12345);
+
+    const patchRes = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { year, prevNum: 901, newNum: 902 },
+    });
+    assert.equal(patchRes.status, 200);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = ?").get(year, 902).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_num = ?").get(year, 902).c, 1);
+
+    const deleteRes = await client.delete(`/api/internal/team/902?year=${year}`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(deleteRes.status, 200);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = ?").get(year, 902).c, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_num = ?").get(year, 902).c, 0);
+  });
+
+  it('treats prevNum === newNum as a no-op and preserves score rows', async () => {
+    const year = 2026;
+    db.prepare("INSERT OR REPLACE INTO score_manual (year, team_num, score_type, value) VALUES (?, ?, ?, ?)")
+      .run(year, 905, 'report', 33.3);
+    db.prepare("INSERT OR REPLACE INTO score_endurance (year, team_num, status, driver1_time) VALUES (?, ?, ?, ?)")
+      .run(year, 905, 'FINISH', 54321);
+
+    const res = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { year, prevNum: 905, newNum: 905 },
+    });
+    assert.equal(res.status, 200);
+
+    // self-renumber는 목적지(=자기 번호) 행을 먼저 삭제하므로, 가드가 없으면 점수가 사라진다.
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = ?").get(year, 905).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_num = ?").get(year, 905).c, 1);
   });
 });

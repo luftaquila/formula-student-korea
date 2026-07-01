@@ -163,6 +163,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted } from "vue";
 import { createApiClient } from "@shared/api-base.js";
+import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const api = createApiClient("/auth");
 const PAGE_SIZE = 100;
@@ -248,8 +249,8 @@ function levelBadge(level) {
 }
 
 function formatTime(ts) {
-  if (!ts) return "-";
-  return new Date(ts + "Z").toLocaleString("ko-KR");
+  const d = parseDbTimestamp(ts);
+  return d ? d.toLocaleString("ko-KR") : "-";
 }
 
 function formatActor(log) {

@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, addColumn } from "../shared/db-setup.mjs";
+import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, createJWT, verifyJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts } from "../shared/express-setup.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
 import { createLogger } from "../shared/logger.mjs";
@@ -79,19 +79,36 @@ db.exec(`CREATE TABLE IF NOT EXISTS applications (
   realname TEXT NOT NULL DEFAULT '',
   phone TEXT NOT NULL DEFAULT '',
   affiliation TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 )`);
 
-db.exec(`CREATE TABLE IF NOT EXISTS ops_contacts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  phone TEXT NOT NULL
-)`);
+// Preserve legacy free-form contacts instead of dropping production data.
+// The new sidebar model uses ops_display(user_id), so old rows cannot be
+// losslessly mapped without an explicit admin decision.
+{
+  const legacyOpsContacts = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ops_contacts'").get();
+  const preservedOpsContacts = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ops_contacts_legacy'").get();
+  if (legacyOpsContacts && !preservedOpsContacts) {
+    db.exec("ALTER TABLE ops_contacts RENAME TO ops_contacts_legacy");
+  }
+}
 
 db.exec(`CREATE TABLE IF NOT EXISTS ops_display (
   user_id INTEGER PRIMARY KEY REFERENCES users(id)
 )`);
+db.exec("DELETE FROM ops_display WHERE user_id NOT IN (SELECT id FROM users)");
+db.pragma("foreign_keys = ON");
+
+runMigrationOnce(db, "auth.utc_timestamp_normalization.v1", () => {
+  for (const [table, column] of [
+    ["users", "created_at"],
+    ["applications", "created_at"],
+    ["applications", "updated_at"],
+  ]) {
+    normalizeTimestampColumn(db, table, column);
+  }
+});
 
 // Bootstrap: ADMIN_EMAIL이 DB에 없으면 admin으로 등록
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
@@ -393,7 +410,7 @@ app.get("/api/callback", async (req, res) => {
 
     // TEST_SERVER 모드: 미등록 사용자 자동 admin 등록
     if (!user && process.env.TEST_SERVER) {
-      db.prepare("INSERT INTO users (email, name, role, active, created_at) VALUES (?, ?, 'admin', 1, datetime('now'))").run(email, name);
+      db.prepare("INSERT INTO users (email, name, role, active, created_at) VALUES (?, ?, 'admin', 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(email, name);
       user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
       logger.log(req, "user.auto_register", { name, role: "admin", test_server: true }, email, { email, name });
     }
@@ -433,7 +450,7 @@ app.get("/api/callback", async (req, res) => {
 
     // 최초 로그인 시 created_at 기록
     if (!user.created_at) {
-      const r = dbRun(() => db.prepare("UPDATE users SET created_at = datetime('now') WHERE id = ?").run(user.id));
+      const r = dbRun(() => db.prepare("UPDATE users SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(user.id));
       if (!r.success) logger.warn(req, "user.created_at_init", { error: r.error }, email, { email, name, role: user.role });
     }
 
@@ -551,7 +568,7 @@ app.patch("/api/apply", (req, res) => {
   }
 
   const result = dbRun(() => db.prepare(
-    "UPDATE applications SET realname = ?, phone = ?, affiliation = ?, updated_at = datetime('now') WHERE email = ?",
+    "UPDATE applications SET realname = ?, phone = ?, affiliation = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE email = ?",
   ).run(realname, phone, affiliation, applicant.email));
 
   if (!result.success) {

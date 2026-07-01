@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -15,6 +16,9 @@ import {
 setupTestEnv();
 
 import { createTrafficApp } from '../../traffic/index.mjs';
+
+const requireFromTraffic = createRequire(import.meta.resolve('../../traffic/index.mjs'));
+const Database = requireFromTraffic('better-sqlite3');
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 
@@ -142,6 +146,130 @@ describe('POST /api/records', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
+  });
+});
+
+// ─── Records yearly summary and internal lifecycle ──────────────────────
+describe('Records lifecycle sync', () => {
+  const YEAR = new Date().getFullYear();
+  const RECORD_NAME = `FSK ${YEAR} Lifecycle Run`;
+
+  it('returns year records in one response and renumbers/invalidates team rows', async () => {
+    const createRes = await client.post('/api/records', {
+      body: {
+        name: 'Lifecycle Run',
+        data: {
+          time: '2026-01-02T10:00:00',
+          type: '가속',
+          entry: { num: 901, univ: 'OldUniv', team: 'OldTeam' },
+          result: 45000,
+        },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(createRes.status, 201);
+
+    const yearRes = await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie });
+    assert.equal(yearRes.status, 200);
+    const yearRows = await yearRes.json();
+    const table = yearRows.find((row) => row.name === RECORD_NAME);
+    assert.ok(table, 'year endpoint should include lifecycle record table');
+    assert.ok(table.records.some((row) => row.num === 901));
+
+    const patchRes = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { year: YEAR, prevNum: 901, newNum: 902, entry: { univ: 'NewUniv', team: 'NewTeam' } },
+    });
+    assert.equal(patchRes.status, 200);
+    let rows = await (await client.get(`/api/records/${encodeURIComponent(RECORD_NAME)}`, { cookie: adminCookie })).json();
+    let row = rows.find((r) => r.num === 902);
+    assert.ok(row);
+    assert.equal(row.univ, 'NewUniv');
+    assert.equal(row.team, 'NewTeam');
+
+    const deleteRes = await client.delete(`/api/internal/team/902?year=${YEAR}`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(deleteRes.status, 200);
+    rows = await (await client.get(`/api/records/${encodeURIComponent(RECORD_NAME)}`, { cookie: adminCookie })).json();
+    row = rows.find((r) => r.num === 902);
+    assert.equal(row.invalidated, 1);
+    assert.equal(row.scoreboard, 0);
+  });
+
+  it('treats prevNum === newNum as a no-op and does not invalidate the team\'s records', async () => {
+    const createRes = await client.post('/api/records', {
+      body: {
+        name: 'Self Renumber Run',
+        data: {
+          time: '2026-01-03T10:00:00',
+          type: '가속',
+          entry: { num: 905, univ: 'SelfUniv', team: 'SelfTeam' },
+          result: 46000,
+        },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(createRes.status, 201);
+    const name = `FSK ${YEAR} Self Renumber Run`;
+
+    const res = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { year: YEAR, prevNum: 905, newNum: 905, entry: { univ: 'SelfUniv', team: 'SelfTeam' } },
+    });
+    assert.equal(res.status, 200);
+
+    const rows = await (await client.get(`/api/records/${encodeURIComponent(name)}`, { cookie: adminCookie })).json();
+    const row = rows.find((r) => r.num === 905);
+    assert.ok(row, 'record for #905 should still exist');
+    // self-renumber는 목적지(=자기 번호) record를 invalidate하므로, 가드가 없으면 invalidated=1이 된다.
+    assert.equal(row.invalidated, 0, 'self-renumber must not invalidate the team\'s own records');
+  });
+
+  it('clears armed wireless sessions on team delete and updates bound runs on renumber', async () => {
+    const deleteSelect = await client.post('/api/wireless/select', {
+      body: { event_type: '가속', team: { num: 977, univ: 'DeleteUniv', team: 'DeleteTeam' }, event_name: 'LIFE-DELETE' },
+      cookie: adminCookie,
+    });
+    assert.equal(deleteSelect.status, 200);
+    await client.post('/api/wireless/arm', {
+      body: { event_type: '가속', action: 'green', green_tick: '1600000000', team: { num: 977, univ: 'DeleteUniv', team: 'DeleteTeam' }, event_name: 'LIFE-DELETE' },
+      cookie: adminCookie,
+    });
+    const del = await client.delete(`/api/internal/team/977?year=${YEAR}`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(del.status, 200);
+    let state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    let accel = state.sessions.find(s => s.event_type === '가속');
+    assert.equal(accel.armed, false);
+    assert.equal(accel.team, null);
+    assert.equal(accel.event_name, null);
+
+    const NAME = 'LIFE-RENUMBER';
+    await client.post('/api/wireless/arm', {
+      body: { event_type: '오토크로스', action: 'green', green_tick: '1600000000', team: { num: 978, univ: 'OldUniv', team: 'OldTeam' }, event_name: NAME },
+      cookie: adminCookie,
+    });
+    const renumber = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { year: YEAR, prevNum: 978, newNum: 979, entry: { univ: 'NewUniv', team: 'NewTeam' } },
+    });
+    assert.equal(renumber.status, 200);
+    state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const autoX = state.sessions.find(s => s.event_type === '오토크로스');
+    assert.equal(autoX.team.num, 979);
+    assert.equal(autoX.team.univ, 'NewUniv');
+    assert.equal(autoX.team.team, 'NewTeam');
+
+    const dnf = await client.post('/api/wireless/dnf', { body: { event_type: '오토크로스' }, cookie: adminCookie });
+    assert.equal(dnf.status, 200);
+    const rows = await (await client.get(`/api/records/${encodeURIComponent(`FSK ${YEAR} ${NAME}`)}`, { cookie: adminCookie })).json();
+    assert.ok(rows.some(r => r.num === 979 && r.univ === 'NewUniv' && r.team === 'NewTeam' && r.result === -1), 'renumbered bound run should save under new team number');
+    assert.ok(!rows.some(r => r.num === 978), 'stale team number should not be used after renumber');
+
+    await client.delete(`/api/records/${encodeURIComponent(`FSK ${YEAR} ${NAME}`)}`, { cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: '오토크로스', action: 'off' }, cookie: adminCookie });
   });
 });
 
@@ -394,7 +522,7 @@ describe('GET /api/controllers (after creation)', () => {
     const data = await res.json();
     assert.ok(Array.isArray(data));
     assert.equal(data.length, 1);
-    assert.equal(data[0].timestamp, '2026-01-01T10:00:00');
+    assert.equal(data[0].timestamp, '2026-01-01T10:00:00.000Z');
     assert.equal(data[0].data, 'test data');
   });
 });
@@ -588,9 +716,9 @@ describe('SSE broadcast payloads', () => {
   });
 });
 
-// ─── Wireless: ingest & raw events ──────────────────────────────────────
+// ─── Wireless: ingest events ────────────────────────────────────────────
 describe('POST /api/wireless/ingest', () => {
-  it('stores raw events and preserves 64-bit master_tick as string', async () => {
+  it('stores events and preserves 64-bit master_tick as string', async () => {
     const bigTick = '1844674407370955161'; // > 2^53, must survive as string
     const res = await client.post('/api/wireless/ingest', {
       body: { events: [{ node_id: '1', master_tick: bigTick, ev_seq: 1, rssi: -70.5, snr: 9.25 }] },
@@ -607,6 +735,7 @@ describe('POST /api/wireless/ingest', () => {
     assert.ok(row, 'event row should be present');
     assert.equal(row.master_tick, bigTick, 'master_tick string preserved');
     assert.equal(row.rssi, -70.5);
+    assert.equal(Object.hasOwn(row, 'raw'), false);
   });
 
   it('is idempotent on (node_id, ev_seq, master_tick) — retransmits dedupe', async () => {
@@ -679,7 +808,7 @@ describe('POST /api/wireless/ingest', () => {
     for (let i = 1; i < rows.length; i++) assert.ok(rows[i].id > rows[i - 1].id, 'ascending id');
   });
 
-  it('persists at most one throttled telemetry snapshot per node, live state has latest', async () => {
+  it('keeps latest telemetry in live state without persisted snapshots', async () => {
     await client.post('/api/wireless/ingest', {
       body: { telemetry: [{ node_id: 'tnode', rssi: -80, snr: 5, offset_us: 100, skew_ppm: 3.0, latency_ms: 20, link_state: 'online' }] },
       cookie: adminCookie,
@@ -688,8 +817,8 @@ describe('POST /api/wireless/ingest', () => {
       body: { telemetry: [{ node_id: 'tnode', rssi: -82, snr: 6, offset_us: 120, skew_ppm: 3.1, latency_ms: 22, link_state: 'online' }] },
       cookie: adminCookie,
     });
-    const snapCount = db.prepare("SELECT COUNT(*) AS c FROM wireless_telemetry WHERE node_id = 'tnode'").get().c;
-    assert.equal(snapCount, 1, 'only one snapshot persisted within throttle window');
+    const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wireless_telemetry'").get();
+    assert.equal(table, undefined, 'wireless_telemetry table is removed');
 
     const stateRes = await client.get('/api/wireless/state', { cookie: adminCookie });
     const state = await stateRes.json();
@@ -1404,5 +1533,69 @@ describe('Wireless save guards', () => {
     const body = await res.json();
     assert.equal(body.stored, 0, 'master_tick 없는 이벤트는 저장 안 함');
     assert.equal(body.rejected, 1, 'rejected로 계수');
+  });
+
+  it('ingest rejects an event with a missing ev_seq so dedupe cannot be bypassed by NULL', async () => {
+    const event = { node_id: 'no-seq', master_tick: '123456' };
+    const r1 = await client.post('/api/wireless/ingest', { body: { events: [event] }, cookie: adminCookie });
+    const r2 = await client.post('/api/wireless/ingest', { body: { events: [event] }, cookie: adminCookie });
+    assert.equal((await r1.json()).stored, 0);
+    const body = await r2.json();
+    assert.equal(body.stored, 0, 'ev_seq 없는 이벤트는 저장 안 함');
+    assert.equal(body.rejected, 1, '재전송도 rejected로 계수');
+    const count = db.prepare("SELECT COUNT(*) AS c FROM wireless_event WHERE node_id = ? AND master_tick = ?").get('no-seq', '123456').c;
+    assert.equal(count, 0, 'NULL ev_seq 중복 row가 남지 않아야 함');
+  });
+});
+
+// ─── Legacy per-record table → normalized `record` migration ─────────────
+describe('Traffic legacy record consolidation migration', () => {
+  let migPath, migDb;
+  const LEGACY = 'FSK 2026 Accel';
+
+  before(() => {
+    migPath = tmpDbPath();
+    const seed = new Database(migPath);
+    // A legacy per-record dynamic table WITHOUT invalidated/scoreboard/cones/oc
+    // (those must be backfilled). rowid order must be preserved as legacy_rowid.
+    seed.exec(`CREATE TABLE '${LEGACY}' (time TEXT, num INTEGER, univ TEXT, team TEXT, type TEXT, result INTEGER, detail TEXT)`);
+    const ins = seed.prepare(`INSERT INTO '${LEGACY}' (time, num, univ, team, type, result, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    ins.run('2026-01-01T10:00:00Z', 5, 'U5', 'T5', '가속', 45000, 'd5'); // rowid 1
+    ins.run('2026-01-01T10:05:00Z', 6, 'U6', 'T6', '가속', 46000, null); // rowid 2
+    // A non-record table (missing required columns) must survive untouched.
+    seed.exec(`CREATE TABLE random_notes (foo TEXT)`);
+    seed.prepare("INSERT INTO random_notes (foo) VALUES ('keep me')").run();
+    seed.close();
+  });
+
+  after(() => {
+    migDb?.close();
+    cleanup(migPath);
+  });
+
+  it('absorbs the legacy table into `record` preserving rowid order, backfills columns, and drops it', () => {
+    migDb = createTrafficApp({ dbPath: migPath }).db;
+
+    const rows = migDb.prepare("SELECT legacy_rowid, num, detail, invalidated, scoreboard, cones, oc FROM record WHERE name = ? ORDER BY legacy_rowid").all(LEGACY);
+    assert.equal(rows.length, 2);
+    // legacy rowid preserved and ordered
+    assert.deepEqual(rows.map((r) => [r.legacy_rowid, r.num]), [[1, 5], [2, 6]]);
+    assert.equal(rows[0].detail, 'd5');
+    assert.equal(rows[1].detail, null);
+    // backfilled defaults
+    assert.deepEqual(rows.map((r) => [r.invalidated, r.scoreboard, r.cones, r.oc]), [[0, 1, 0, 0], [0, 1, 0, 0]]);
+
+    // visibility seeded, legacy table dropped, non-record table untouched
+    assert.equal(migDb.prepare("SELECT visible FROM record_visibility WHERE name = ?").get(LEGACY).visible, 1);
+    const has = (t) => !!migDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(t);
+    assert.equal(has(LEGACY), false, 'legacy per-record table dropped after import');
+    assert.equal(has('random_notes'), true, 'non-record table must not be migrated or dropped');
+  });
+
+  it('is idempotent — re-opening the consolidated DB does not duplicate or error', () => {
+    migDb.close();
+    migDb = createTrafficApp({ dbPath: migPath }).db;
+    assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ?").get(LEGACY).c, 2, 'no duplicate rows on re-run');
+    assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name = 'random_notes'").get().c, 1);
   });
 });

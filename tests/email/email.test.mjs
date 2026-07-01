@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const express = require('../../email/node_modules/express/index.js');
+const Database = require('../../email/node_modules/better-sqlite3');
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -123,6 +124,47 @@ after(async () => {
 /* ============================================
    Tests
    ============================================ */
+
+describe('email_log migration', () => {
+  it('backfills legacy recipients even when recipient column was already added before a crash', () => {
+    const legacyPath = tmpDbPath();
+    const legacyDb = new Database(legacyPath);
+    legacyDb.exec(`
+      CREATE TABLE email_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject TEXT NOT NULL,
+        recipients TEXT,
+        recipient_count INTEGER,
+        recipient TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'sent',
+        error TEXT,
+        message_id TEXT,
+        html_content TEXT,
+        source TEXT NOT NULL DEFAULT 'manual',
+        sent_at TEXT NOT NULL DEFAULT '2026-01-01 10:00:00',
+        sent_by TEXT
+      );
+      INSERT INTO email_log (subject, recipients, recipient_count, recipient)
+      VALUES ('legacy', '["legacy1@test.com","legacy2@test.com"]', 2, '');
+    `);
+    legacyDb.close();
+
+    const migrated = createEmailApp({
+      dbPath: legacyPath,
+      fetchFn: createMockFetch(process.env.AUTH_SERVER),
+    });
+    try {
+      const row = migrated.db.prepare("SELECT recipient FROM email_log WHERE subject = 'legacy'").get();
+      assert.equal(row.recipient, 'legacy1@test.com');
+      const cols = migrated.db.prepare("PRAGMA table_info(email_log)").all().map(c => c.name);
+      assert.equal(cols.includes('recipients'), false);
+      assert.equal(cols.includes('recipient_count'), false);
+    } finally {
+      migrated.db.close();
+      cleanup(legacyPath);
+    }
+  });
+});
 
 describe('Email API', () => {
 
@@ -374,9 +416,23 @@ describe('Email API', () => {
       const logs = data.rows.filter(r => r.subject === 'Test Email');
       assert.equal(logs.length, 2);
       assert.ok(logs.every(r => r.status === 'sent'));
+      assert.ok(logs.every(r => !Object.hasOwn(r, 'html_content')));
       const recipients = logs.map(r => r.recipient).sort();
       assert.deepEqual(recipients, ['user1@test.com', 'user2@test.com']);
       assert.equal(logs[0].source, 'manual');
+    });
+
+    it('returns html content only from email detail endpoint', async () => {
+      const listRes = await client.get('/api/emails', { cookie: adminCookie });
+      const list = await listRes.json();
+      const log = list.rows.find(r => r.subject === 'Test Email');
+      assert.ok(log);
+      assert.ok(!Object.hasOwn(log, 'html_content'));
+
+      const detailRes = await client.get(`/api/emails/${log.id}`, { cookie: adminCookie });
+      assert.equal(detailRes.status, 200);
+      const detail = await detailRes.json();
+      assert.equal(detail.html_content, '<p>Hello</p>');
     });
 
     it('rejects missing fields', async () => {

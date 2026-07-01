@@ -209,6 +209,15 @@ export function setupProcessHandlers(db) {
   process.on("SIGTERM", () => process.exit(128 + 15));
 }
 
+// 내부 서비스 호출만 허용하는 가드. createApp 미들웨어가 X-Internal-Service
+// 헤더 검증에 성공하면 req.user = { email: "internal", role: "admin" }로 설정한다.
+// 허용 시 true, 아니면 403 응답 후 false를 반환한다.
+export function requireInternalRequest(req, res) {
+  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
+  res.status(403).send("내부 서비스 호출만 허용됩니다.");
+  return false;
+}
+
 export function createDbRun() {
   return function dbRun(fn) {
     try {

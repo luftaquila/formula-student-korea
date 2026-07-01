@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase } from "../shared/db-setup.mjs";
+import { createDatabase, runMigrationOnce, normalizeTimestampColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
@@ -12,6 +12,10 @@ const ROVER_MAX_SEGMENT_DIST_M = Number(process.env.ROVER_MAX_SEGMENT_DIST_M) ||
 const ROVER_MIN_SEGMENT_DIST_M = 0.05;
 const ROVER_MAX_PENDING_REQUESTS = 32;
 const ROVER_POSITION_STALE_MS = 30 * 1000;
+const parsedMissionTelemetryMaxRows = Number.parseInt(process.env.MISSION_TELEMETRY_MAX_ROWS || "500000", 10);
+const MISSION_TELEMETRY_MAX_ROWS = Number.isInteger(parsedMissionTelemetryMaxRows) && parsedMissionTelemetryMaxRows > 0
+  ? parsedMissionTelemetryMaxRows
+  : 500000;
 
 export function createCourseApp(options = {}) {
 
@@ -22,8 +26,8 @@ db.pragma("foreign_keys = ON");
 db.exec(`CREATE TABLE IF NOT EXISTS course (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );`);
 
 db.exec(`CREATE TABLE IF NOT EXISTS cone (
@@ -33,8 +37,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS cone (
   lng REAL NOT NULL,
   alt REAL,
   side TEXT NOT NULL CHECK(side IN ('left', 'right', 'center')),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
 );`);
 
@@ -47,6 +51,19 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_cone_course ON cone(course_id);`);
   const cols = db.prepare("PRAGMA table_info(cone)").all().map((c) => c.name);
   if (!cols.includes("alt")) db.exec("ALTER TABLE cone ADD COLUMN alt REAL");
 }
+
+function ensureUtcTimestampColumns(table) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes("created_at")) db.exec(`ALTER TABLE ${table} ADD COLUMN created_at TEXT`);
+  if (!cols.includes("updated_at")) db.exec(`ALTER TABLE ${table} ADD COLUMN updated_at TEXT`);
+  db.prepare(`UPDATE ${table} SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE created_at IS NULL OR created_at = ''`).run();
+  db.prepare(`UPDATE ${table} SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''`).run();
+}
+
+runMigrationOnce(db, "course.ensure_utc_timestamp_columns.v1", () => {
+  ensureUtcTimestampColumns("course");
+  ensureUtcTimestampColumns("cone");
+});
 
 db.exec(`CREATE TABLE IF NOT EXISTS course_snapshot (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,6 +108,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS mission_telemetry (
   FOREIGN KEY (mission_id) REFERENCES mission(id) ON DELETE CASCADE
 );`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(mission_id, t);`);
+setupRowCapRetention(db, "mission_telemetry", MISSION_TELEMETRY_MAX_ROWS);
 
 // 기존 DB 마이그레이션: mission_telemetry에 NTRIP 링크 건강도 + 측위 정확도 컬럼
 // 추가. fix_status/nav_state만으로는 "가다서다"(로버가 미션 중 정지 반복)의 원인을
@@ -127,8 +145,8 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(m
         lng REAL NOT NULL,
         alt REAL,
         side TEXT NOT NULL CHECK(side IN ('left', 'right', 'center')),
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
         FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
       )`);
       db.exec(`INSERT INTO cone_new (id, course_id, lat, lng, alt, side, created_at, updated_at)
@@ -183,6 +201,17 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(m
     }
   }
 }
+
+runMigrationOnce(db, "course.utc_timestamp_normalization.v1", () => {
+  for (const [table, column] of [
+    ["course", "created_at"],
+    ["course", "updated_at"],
+    ["cone", "created_at"],
+    ["cone", "updated_at"],
+  ]) {
+    normalizeTimestampColumn(db, table, column);
+  }
+});
 
 /* ============================================
    Express 앱 설정
@@ -362,7 +391,7 @@ app.post("/api/courses", (req, res) => {
   if (!validation.valid) return res.status(400).send(validation.error);
 
   const result = dbRun(() => {
-    db.prepare("INSERT INTO course (name) VALUES (?)").run(validation.value);
+    db.prepare("INSERT INTO course (name, created_at, updated_at) VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(validation.value);
     return db.prepare("SELECT * FROM course WHERE id = last_insert_rowid()").get();
   });
 
@@ -392,7 +421,7 @@ app.patch("/api/courses/:id", (req, res) => {
   if (!validation.valid) return res.status(400).send(validation.error);
 
   const result = dbRun(() => {
-    db.prepare("UPDATE course SET name = ?, updated_at = datetime('now') WHERE id = ?").run(validation.value, id);
+    db.prepare("UPDATE course SET name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(validation.value, id);
     return db.prepare("SELECT * FROM course WHERE id = ?").get(id);
   });
 
@@ -503,7 +532,7 @@ app.post("/api/courses/:id/snapshots/:sid/restore", (req, res) => {
     return db.transaction(() => {
       takeCourseSnapshot(id, actor, safetyReason);
       db.prepare("DELETE FROM cone WHERE course_id = ?").run(id);
-      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side) VALUES (?, ?, ?, ?, ?)");
+      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side, created_at, updated_at) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
       // 이전 버전 스냅샷에는 alt가 없으므로 undefined → null로 보존.
       for (const c of cones) insert.run(id, c.lat, c.lng, typeof c.alt === "number" ? c.alt : null, c.side);
       return getCones(id);
@@ -572,9 +601,9 @@ app.post("/api/courses/import", (req, res) => {
 
   const result = dbRun(() => {
     return db.transaction(() => {
-      db.prepare("INSERT INTO course (name) VALUES (?)").run(nameValidation.value);
+      db.prepare("INSERT INTO course (name, created_at, updated_at) VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(nameValidation.value);
       const courseId = db.prepare("SELECT id FROM course WHERE id = last_insert_rowid()").get().id;
-      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side) VALUES (?, ?, ?, ?, ?)");
+      const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side, created_at, updated_at) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
       for (const cone of cones) insert.run(courseId, cone.lat, cone.lng, typeof cone.alt === "number" ? cone.alt : null, cone.side);
       return { course: db.prepare("SELECT * FROM course WHERE id = ?").get(courseId), cones: getCones(courseId) };
     })();
@@ -649,7 +678,7 @@ app.post("/api/courses/:id/cones", (req, res) => {
   if (!sideValidation.valid) return res.status(400).send(sideValidation.error);
 
   const result = dbRun(() => {
-    db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side) VALUES (?, ?, ?, ?, ?)").run(courseId, lat, lng, altValidation.value, side);
+    db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side, created_at, updated_at) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(courseId, lat, lng, altValidation.value, side);
     return db.prepare("SELECT * FROM cone WHERE id = last_insert_rowid()").get();
   });
 
@@ -703,7 +732,7 @@ app.patch("/api/cones/:id", (req, res) => {
     return res.status(400).send("수정할 필드가 없습니다.");
   }
 
-  setClauses.push("updated_at = datetime('now')");
+  setClauses.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')");
 
   const result = dbRun(() => {
     values.push(id);

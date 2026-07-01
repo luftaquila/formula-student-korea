@@ -2,9 +2,10 @@ import http from "http";
 import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase, addColumn } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
+import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
 
 export function createScoreApp(options = {}) {
 
@@ -135,6 +136,22 @@ function validateKey(key, label) {
 }
 
 async function fetchYearRecords(year) {
+  try {
+    const yearRes = await fetch(`${TRAFFIC_SERVER}/api/records/year/${year}`, {
+      headers: internalHeaders(),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (yearRes.ok) {
+      const rows = await yearRes.json();
+      return rows.map((row) => ({ tableName: row.name, records: row.records || [] }));
+    }
+    if (yearRes.status !== 404) {
+      warnThrottled("score.fetch_records", { status: yearRes.status, year });
+    }
+  } catch (e) {
+    logger.warn(null, "score.fetch_records", { error: e.message, year, endpoint: "year" });
+  }
+
   const [tablesRes, visRes] = await Promise.all([
     fetch(`${TRAFFIC_SERVER}/api/records`, {
       headers: internalHeaders(),
@@ -151,7 +168,10 @@ async function fetchYearRecords(year) {
   }
   const allTables = await tablesRes.json();
   const visibility = visRes?.ok ? await visRes.json() : {};
-  const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year}`) && visibility[t] !== false);
+  // 끝 공백 포함 접두사로 traffic 기본 경로(`FSK {year} ` <= name < `FSK {year+1} `)와
+  // 동일한 경계를 쓴다. 공백 없이 `t.startsWith('FSK 2026')`이면 `FSK 20260`/`FSK 2026X`
+  // 같은 인접 연도/이름을 잘못 포함한다.
+  const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year} `) && visibility[t] !== false);
 
   return Promise.all(
     yearTables.map(async (tableName) => {
@@ -704,6 +724,16 @@ app.put("/api/score/endurance", (req, res) => {
   broadcastEvent("endurance", { year: numYear, team_num: numTeamNum, field, value: dbValue });
 
   res.status(200).send();
+});
+
+/* ============================================
+   Internal API: 엔트리 라이프사이클 연동
+   ============================================ */
+
+registerTeamLifecycleRoutes(app, {
+  db, dbRun, logger, requireInternalRequest, broadcastEvent,
+  tables: ["score_manual", "score_endurance"],
+  channels: ["manual-score", "endurance"],
 });
 
 /* ============================================

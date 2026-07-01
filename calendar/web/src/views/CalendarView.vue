@@ -106,6 +106,7 @@ function toTemporal(dateStr) {
   const s = String(dateStr);
   if (s.length === 10) return Temporal.PlainDate.from(s);
   try {
+    if (/[zZ]$/.test(s)) return Temporal.Instant.from(s).toZonedDateTimeISO("Asia/Seoul");
     return Temporal.ZonedDateTime.from(s.replace(" ", "T"));
   } catch {
     return Temporal.PlainDate.from(s.slice(0, 10));

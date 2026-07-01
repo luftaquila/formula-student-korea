@@ -1013,3 +1013,39 @@ describe('Auth enforcement', () => {
     assert.equal(res.status, 403);
   });
 });
+
+// ─── Internal API: entry lifecycle ──────────────────────────────────────
+describe('Internal entry lifecycle sync', () => {
+  it('renumbers and deletes sheet data for a team', async () => {
+    const categoryId = db.prepare(
+      "INSERT INTO sheet_template (year, level, sort_order, name) VALUES (?, 'category', 0, ?)"
+    ).run(CURRENT_YEAR, 'LifecycleCat').lastInsertRowid;
+    const itemId = db.prepare(
+      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type) VALUES (?, 'item', ?, 0, ?, 'text')"
+    ).run(CURRENT_YEAR, categoryId, 'LifecycleItem').lastInsertRowid;
+
+    db.prepare("INSERT INTO sheet_answer (year, team_num, item_id, value, memo) VALUES (?, ?, ?, ?, ?)")
+      .run(CURRENT_YEAR, 901, itemId, 'OK', 'memo');
+    db.prepare("INSERT INTO sheet_category_result (year, team_num, category_id, result) VALUES (?, ?, ?, 'PASS')")
+      .run(CURRENT_YEAR, 901, categoryId);
+    db.prepare("INSERT INTO sheet_inspector (year, team_num, category_id, inspector) VALUES (?, ?, ?, ?)")
+      .run(CURRENT_YEAR, 901, categoryId, 'Inspector');
+
+    const patchRes = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { prevNum: 901, newNum: 902, year: CURRENT_YEAR },
+    });
+    assert.equal(patchRes.status, 200);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_answer WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_category_result WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_inspector WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 1);
+
+    const deleteRes = await client.delete(`/api/internal/team/902?year=${CURRENT_YEAR}`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(deleteRes.status, 200);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_answer WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_category_result WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_inspector WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 0);
+  });
+});

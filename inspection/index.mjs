@@ -1,9 +1,10 @@
 import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
+import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
 
 export function createInspectionApp(options = {}) {
 
@@ -79,6 +80,9 @@ db.transaction(() => {
     PRIMARY KEY (year, team_num, item_id),
     FOREIGN KEY (item_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_sa_item ON sheet_answer(item_id);`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_sa_year_item_team_value
+    ON sheet_answer(year, item_id, team_num, value);`);
 
   // 검차 시트 큰 카테고리별 결과 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS sheet_category_result (
@@ -89,6 +93,7 @@ db.transaction(() => {
     PRIMARY KEY (year, team_num, category_id),
     FOREIGN KEY (category_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_scr_category ON sheet_category_result(category_id);`);
 
   // 검차 시트 큰 카테고리별 검차관 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS sheet_inspector (
@@ -99,6 +104,7 @@ db.transaction(() => {
     PRIMARY KEY (year, team_num, category_id),
     FOREIGN KEY (category_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_si_category ON sheet_inspector(category_id);`);
 })();
 
 /* ============================================
@@ -108,6 +114,7 @@ const logger = createLogger(db, "inspection");
 
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
+  if (req.path.startsWith("/api/internal/")) return "admin";
   if (req.path.startsWith("/api/sheet/template") && req.method !== "GET") return "chief";
   if (req.path === "/api/logs") return "admin";
   if (req.path.startsWith("/api/")) return "official";
@@ -592,6 +599,16 @@ app.put("/api/sheet/inspector", (req, res) => {
   broadcastEvent("inspector", { year, team_num, category_id, inspector: inspector ?? "" });
 
   res.status(200).send();
+});
+
+/* ============================================
+   Internal API: 엔트리 라이프사이클 연동
+   ============================================ */
+
+registerTeamLifecycleRoutes(app, {
+  db, dbRun, logger, requireInternalRequest, broadcastEvent,
+  tables: ["sheet_answer", "sheet_category_result", "sheet_inspector"],
+  channels: ["answer", "category-result", "inspector"],
 });
 
 /* ============================================

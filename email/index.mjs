@@ -2,8 +2,8 @@ import express from "express";
 import crypto from "node:crypto";
 import https from "node:https";
 import Database from "better-sqlite3";
-import { createDatabase } from "../shared/db-setup.mjs";
-import { createApp, createDbRun, setupProcessHandlers, ensureDataDir } from "../shared/express-setup.mjs";
+import { createDatabase, runMigrationOnce, setupRowCapRetention, parseLegacyTimestamp } from "../shared/db-setup.mjs";
+import { createApp, createDbRun, setupProcessHandlers, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
 const PORT = 9900;
@@ -34,6 +34,7 @@ export function createEmailApp(options = {}) {
 
 const fetchFn = options.fetchFn || globalThis.fetch;
 const db = createDatabase(Database, options.dbPath || "./data/email.db");
+const EMAIL_LOG_MAX_ROWS = Number.parseInt(process.env.EMAIL_LOG_MAX_ROWS || "50000", 10);
 
 db.exec(`CREATE TABLE IF NOT EXISTS config (
   key TEXT PRIMARY KEY,
@@ -49,7 +50,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS email_log (
   message_id TEXT,
   html_content TEXT,
   source TEXT NOT NULL DEFAULT 'manual',
-  sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+  sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   sent_by TEXT
 )`);
 
@@ -57,15 +58,42 @@ db.exec(`CREATE TABLE IF NOT EXISTS email_log (
 try { db.exec("ALTER TABLE email_log ADD COLUMN html_content TEXT"); } catch { /* already exists */ }
 
 // Migration: recipients JSON array → recipient single string, drop legacy columns
-try {
-  db.exec("ALTER TABLE email_log ADD COLUMN recipient TEXT NOT NULL DEFAULT ''");
-  db.exec("UPDATE email_log SET recipient = json_extract(recipients, '$[0]') WHERE recipients LIKE '[%'");
-} catch { /* already migrated */ }
-try { db.exec("ALTER TABLE email_log DROP COLUMN recipients"); } catch { /* already dropped */ }
-try { db.exec("ALTER TABLE email_log DROP COLUMN recipient_count"); } catch { /* already dropped */ }
+{
+  const columns = () => db.prepare("PRAGMA table_info(email_log)").all().map((c) => c.name);
+  let cols = columns();
+  if (!cols.includes("recipient")) {
+    db.exec("ALTER TABLE email_log ADD COLUMN recipient TEXT NOT NULL DEFAULT ''");
+    cols = columns();
+  }
+  if (cols.includes("recipients")) {
+    db.prepare(`
+      UPDATE email_log
+      SET recipient = COALESCE(NULLIF(json_extract(recipients, '$[0]'), ''), recipient, '')
+      WHERE (recipient IS NULL OR recipient = '') AND recipients LIKE '[%' AND json_valid(recipients)
+    `).run();
+    db.exec("ALTER TABLE email_log DROP COLUMN recipients");
+    cols = columns();
+  }
+  if (cols.includes("recipient_count")) {
+    db.exec("ALTER TABLE email_log DROP COLUMN recipient_count");
+  }
+}
+
+// 레거시 sent_at은 zone 없는 KST 로컬 값으로 저장됐으므로 +09:00으로 해석한다.
+const normalizeEmailSentAt = (value) => parseLegacyTimestamp(value, { naiveOffset: "+09:00" });
+
+runMigrationOnce(db, "email.sent_at_utc_normalization.v1", () => {
+  const rows = db.prepare("SELECT id, sent_at FROM email_log WHERE sent_at IS NOT NULL AND sent_at != ''").all();
+  const update = db.prepare("UPDATE email_log SET sent_at = ? WHERE id = ?");
+  for (const row of rows) {
+    const normalized = normalizeEmailSentAt(row.sent_at);
+    if (normalized && normalized !== row.sent_at) update.run(normalized, row.id);
+  }
+});
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_el_sent_at ON email_log(sent_at)`);
-db.exec(`CREATE INDEX IF NOT EXISTS idx_el_status ON email_log(status)`);
+db.exec("DROP INDEX IF EXISTS idx_el_status");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_el_status_sent_at ON email_log(status, sent_at)`);
 
 // Seed config keys
 const insertConfig = db.prepare("INSERT OR IGNORE INTO config (key, value) VALUES (?, '')");
@@ -83,6 +111,10 @@ const app = createApp({ express }, (req) => {
 
 app.get("/api/health", (req, res) => res.send("ok"));
 app.get("/api/logs", logger.queryHandler);
+
+// AFTER INSERT 트리거로 매 발송 로그 삽입마다 최신 N행만 보존한다(인터벌 prune과 달리
+// 한도를 초과하는 구간이 생기지 않음).
+setupRowCapRetention(db, "email_log", EMAIL_LOG_MAX_ROWS);
 
 /* ============================================
    Config
@@ -178,10 +210,13 @@ app.post("/api/config/reset", (req, res) => {
    Stats
    ============================================ */
 app.get("/api/stats", (req, res) => {
-  const today = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+  const kstDate = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+  const dayStart = new Date(`${kstDate}T00:00:00+09:00`);
+  const start = dayStart.toISOString();
+  const end = new Date(dayStart.getTime() + 86400000).toISOString();
   const result = dbRun(() => {
-    const sent = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE sent_at >= ? AND status = 'sent'").get(today);
-    const errors = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE sent_at >= ? AND status = 'error'").get(today);
+    const sent = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE status = 'sent' AND sent_at >= ? AND sent_at < ?").get(start, end);
+    const errors = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE status = 'error' AND sent_at >= ? AND sent_at < ?").get(start, end);
     const totalSent = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE status = 'sent'").get();
     const totalErrors = db.prepare("SELECT COUNT(*) as count FROM email_log WHERE status = 'error'").get();
     return { sent: sent.count, errors: errors.count, totalSent: totalSent.count, totalErrors: totalErrors.count };
@@ -232,7 +267,10 @@ app.get("/api/emails", (req, res) => {
   const status = req.query.status;
 
   const result = dbRun(() => {
-    let query = "SELECT * FROM email_log";
+    let query = `
+      SELECT id, subject, recipient, status, error, message_id, source, sent_at, sent_by
+      FROM email_log
+    `;
     let countQuery = "SELECT COUNT(*) as total FROM email_log";
     const params = [];
 
@@ -252,6 +290,26 @@ app.get("/api/emails", (req, res) => {
     logger.warn(req, "emails.list", { error: result.error });
     return res.status(result.status).send(result.error);
   }
+  res.json(result.result);
+});
+
+app.get("/api/emails/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).send("Invalid email id");
+
+  const result = dbRun(() =>
+    db.prepare(`
+      SELECT id, subject, recipient, status, error, message_id, html_content, source, sent_at, sent_by
+      FROM email_log
+      WHERE id = ?
+    `).get(id)
+  );
+
+  if (!result.success) {
+    logger.warn(req, "emails.get", { error: result.error }, String(id));
+    return res.status(result.status).send(result.error);
+  }
+  if (!result.result) return res.status(404).send("Email not found");
   res.json(result.result);
 });
 
@@ -279,6 +337,8 @@ app.post("/api/send", async (req, res) => {
    Internal Send API (for other services)
    ============================================ */
 app.post("/api/internal/send", async (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
   const { subject, htmlContent, recipients, source } = req.body;
   if (!subject || !htmlContent || !Array.isArray(recipients) || recipients.length === 0) {
     logger.warn(req, "email.send", { error: "필수값 누락 (subject/htmlContent/recipients)", source });
@@ -379,7 +439,7 @@ ${htmlContent}
     // Per-recipient DB log
     if (result.ok) {
       const logResult = dbRun(() =>
-        db.prepare("INSERT INTO email_log (subject, recipient, status, message_id, html_content, source, sent_by, sent_at) VALUES (?, ?, 'sent', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))")
+        db.prepare("INSERT INTO email_log (subject, recipient, status, message_id, html_content, source, sent_by, sent_at) VALUES (?, ?, 'sent', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
           .run(subject, recipient, result.messageId || null, htmlContent, source, sentBy)
       );
       if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, recipient, source });
@@ -387,7 +447,7 @@ ${htmlContent}
       lastMessageId = result.messageId || lastMessageId;
     } else {
       const logResult = dbRun(() =>
-        db.prepare("INSERT INTO email_log (subject, recipient, status, error, html_content, source, sent_by, sent_at) VALUES (?, ?, 'error', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours'))")
+        db.prepare("INSERT INTO email_log (subject, recipient, status, error, html_content, source, sent_by, sent_at) VALUES (?, ?, 'error', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
           .run(subject, recipient, result.error, htmlContent, source, sentBy)
       );
       if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, recipient, source });
@@ -440,6 +500,8 @@ app.get("/api/recipients", async (req, res) => {
    Internal API: SMS Config for queue service
    ============================================ */
 app.get("/api/internal/sms-config", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
   const result = dbRun(() => {
     const configs = {};
     for (const key of CONFIG_KEYS.filter((k) => k.startsWith("naver_") || k === "phone_number_sms_sender")) {

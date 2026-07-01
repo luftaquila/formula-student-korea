@@ -127,7 +127,7 @@ onMounted(async () => {
 async function fetchStats() {
   fetching.value = true;
   try {
-    const params = {};
+    const params = { year: selectedYear.value };
     const fromTs = parseLocalDate(filterFrom.value);
     const toTs = parseLocalDate(filterTo.value);
     if (fromTs) params.from = fromTs;
@@ -174,7 +174,7 @@ async function toggleTeamDetail(num) {
   expandedTeam.value = num;
   timelineLoading.value = true;
   try {
-    const params = {};
+    const params = { year: selectedYear.value };
     const fromTs = parseLocalDate(filterFrom.value);
     const toTs = parseLocalDate(filterTo.value);
     if (fromTs) params.from = fromTs;

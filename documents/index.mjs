@@ -3,11 +3,12 @@ import path from "path";
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, addColumn } from "../shared/db-setup.mjs";
+import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn, parseLegacyTimestamp } from "../shared/db-setup.mjs";
 import Busboy from "busboy";
 import archiver from "archiver";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
+import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
+import { parseDbTimestamp } from "../shared/parse-timestamp.js";
 
 export function createDocumentsApp(options = {}) {
 
@@ -25,7 +26,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS student_team (
 {
   const info = db.prepare("PRAGMA table_info(student_team)").all();
   const emailCol = info.find(c => c.name === "email");
-  if (emailCol && emailCol.pk === 1) {
+  const yearCol = info.find(c => c.name === "year");
+  if (emailCol && emailCol.pk === 1 && (!yearCol || yearCol.pk !== 2)) {
     // 기존 스키마: email이 단독 PK → (email, year) 복합 PK로 마이그레이션
     db.transaction(() => {
       db.exec(`CREATE TABLE student_team_new (
@@ -51,7 +53,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS session (
   late_end_at TEXT NOT NULL,
   max_file_size INTEGER NOT NULL DEFAULT 52428800,
   created_by TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   year INTEGER NOT NULL
 )`);
 
@@ -74,8 +76,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS submission (
   FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
 )`);
 
-db.exec(`CREATE INDEX IF NOT EXISTS idx_sub_session_team
-  ON submission(session_id, team_num)`);
+// idx_sub_session_team_id(session_id, team_num, id DESC)가 (session_id, team_num) 조회도
+// 커버하므로 prefix 인덱스 idx_sub_session_team은 제거(기존 배포본 정리 포함).
+db.exec("DROP INDEX IF EXISTS idx_sub_session_team");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_sub_session_team_id
+  ON submission(session_id, team_num, id DESC)`);
 
 db.exec(`CREATE TABLE IF NOT EXISTS submission_file (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +91,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS submission_file (
   mime_type TEXT DEFAULT '',
   FOREIGN KEY (submission_id) REFERENCES submission(id) ON DELETE CASCADE
 )`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_sf_submission
+  ON submission_file(submission_id)`);
 
 // 마이그레이션: allowed_extensions 컬럼 추가
 addColumn(db, "session", "allowed_extensions TEXT DEFAULT ''");
@@ -143,6 +150,24 @@ db.exec(`CREATE TABLE IF NOT EXISTS scheduled_notification (
   FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
 )`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_sn_pending ON scheduled_notification(sent, scheduled_at)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_sn_session_sent ON scheduled_notification(session_id, sent)");
+
+db.exec(`CREATE TABLE IF NOT EXISTS team_renumber_file_work (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  year INTEGER NOT NULL,
+  prev_num INTEGER NOT NULL,
+  new_num INTEGER NOT NULL,
+  session_id INTEGER NOT NULL,
+  move_old INTEGER NOT NULL DEFAULT 0,
+  delete_target INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+  UNIQUE(year, prev_num, new_num, session_id),
+  FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+)`);
+// UNIQUE(year, prev_num, new_num, session_id)가 자동 생성하는 인덱스의 prefix이므로 idx_trfw_key는 불필요.
+db.exec("DROP INDEX IF EXISTS idx_trfw_key");
 
 // 업로드 디렉토리 생성
 const UPLOADS_DIR = options.uploadsDir || path.resolve("./data/uploads");
@@ -185,31 +210,42 @@ const dbRun = createDbRun();
    헬퍼
    ============================================ */
 function now() {
-  return new Date().toISOString().replace("T", " ").slice(0, 19);
+  return new Date().toISOString();
 }
 
-/** "YYYY-MM-DD HH:MM" 또는 "YYYY-MM-DDTHH:MM" → "YYYY-MM-DD HH:MM:SS" (19자) 정규화. 실패 시 null */
-function normalizeTimestamp(str) {
-  if (!str || typeof str !== "string") return null;
-  const m = str.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(:\d{2})?/);
-  if (!m) return null;
-  return `${m[1]} ${m[2]}${m[3] || ":00"}`;
-}
+/** "YYYY-MM-DD HH:MM" 또는 ISO-like 입력 → UTC ISO(zone 없으면 UTC로 해석). 실패 시 null */
+const normalizeTimestamp = (str) => parseLegacyTimestamp(str);
 
 /** UTC DB date string → KST display "YYYY-MM-DD HH:MM" */
 function toKST(utcStr) {
   if (!utcStr) return "";
-  const d = new Date(utcStr.replace(" ", "T") + "Z");
+  const d = parseDbTimestamp(utcStr);
+  if (!d) return "";
   d.setHours(d.getHours() + 9);
   return d.toISOString().replace("T", " ").slice(0, 16);
 }
 
 /** Subtract hours from UTC date string → UTC date string */
 function subtractHours(utcStr, hours) {
-  const d = new Date(utcStr.replace(" ", "T") + "Z");
+  const d = parseDbTimestamp(utcStr);
+  if (!d) return "";
   d.setHours(d.getHours() - hours);
-  return d.toISOString().replace("T", " ").slice(0, 19);
+  return d.toISOString();
 }
+
+runMigrationOnce(db, "documents.utc_timestamp_normalization.v1", () => {
+  for (const [table, column] of [
+    ["session", "start_at"],
+    ["session", "end_at"],
+    ["session", "late_end_at"],
+    ["session", "created_at"],
+    ["submission", "started_at"],
+    ["submission", "submitted_at"],
+    ["scheduled_notification", "scheduled_at"],
+  ]) {
+    normalizeTimestampColumn(db, table, column, normalizeTimestamp);
+  }
+});
 
 function safeExt(filename) {
   const ext = path.extname(filename || "").toLowerCase();
@@ -227,6 +263,109 @@ function rmDir(dir) {
   } catch (err) {
     logger.warn(null, "file.cleanup", { error: err.message, dir });
   }
+}
+
+function teamUploadDir(sessionId, teamNum) {
+  return path.join(UPLOADS_DIR, String(sessionId), String(teamNum));
+}
+
+function pendingRenumberFileWorkCount(prevNum, newNum, year) {
+  return db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM team_renumber_file_work
+    WHERE year = ? AND prev_num = ? AND new_num = ?
+  `).get(year, prevNum, newNum).count;
+}
+
+function renumberMarkerName(prevNum, newNum, year) {
+  return `.fsk-renumber-${year}-${prevNum}-to-${newNum}.pending`;
+}
+
+function processRenumberFileWork(req, prevNum, newNum, year) {
+  const rows = db.prepare(`
+    SELECT *
+    FROM team_renumber_file_work
+    WHERE year = ? AND prev_num = ? AND new_num = ?
+    ORDER BY id
+  `).all(year, prevNum, newNum);
+  const failures = [];
+  let moved = 0;
+  let replaced = 0;
+
+  for (const row of rows) {
+    const oldDir = teamUploadDir(row.session_id, prevNum);
+    const newDir = teamUploadDir(row.session_id, newNum);
+    const markerName = renumberMarkerName(prevNum, newNum, year);
+    const oldMarker = path.join(oldDir, markerName);
+    const newMarker = path.join(newDir, markerName);
+    let cleanupMarker = null;
+    try {
+      if (row.move_old) {
+        if (fs.existsSync(oldDir)) {
+          fs.writeFileSync(oldMarker, JSON.stringify({ year, prevNum, newNum, sessionId: row.session_id }));
+          if (fs.existsSync(newDir)) {
+            if (!row.delete_target) throw new Error("target upload directory already exists");
+            fs.rmSync(newDir, { recursive: true, force: true });
+            replaced += 1;
+          }
+          fs.mkdirSync(path.dirname(newDir), { recursive: true });
+          fs.renameSync(oldDir, newDir);
+          cleanupMarker = newMarker;
+          moved += 1;
+        } else if (fs.existsSync(newMarker)) {
+          cleanupMarker = newMarker;
+        } else if (!fs.existsSync(newDir)) {
+          throw new Error("source upload directory missing");
+        } else {
+          throw new Error("source upload directory missing and completion marker absent");
+        }
+      } else if (row.delete_target && fs.existsSync(newDir)) {
+        fs.rmSync(newDir, { recursive: true, force: true });
+        replaced += 1;
+      }
+      db.prepare("DELETE FROM team_renumber_file_work WHERE id = ?").run(row.id);
+      if (cleanupMarker) {
+        try {
+          if (fs.existsSync(cleanupMarker)) fs.rmSync(cleanupMarker, { force: true });
+        } catch (e) {
+          logger.warn(req, "team_num.marker_cleanup", { error: e.message || String(e), year, prevNum, newNum, sessionId: row.session_id });
+        }
+      }
+    } catch (e) {
+      db.prepare(`
+        UPDATE team_renumber_file_work
+        SET last_error = ?, updated_at = ?
+        WHERE id = ?
+      `).run(e.message || String(e), Date.now(), row.id);
+      failures.push({ sessionId: row.session_id, error: e.message || String(e) });
+      logger.warn(req, "team_num.file_work", { error: e.message || String(e), year, prevNum, newNum, sessionId: row.session_id });
+    }
+  }
+
+  return { success: failures.length === 0, failures, moved, replaced, total: rows.length };
+}
+
+function processPendingRenumberFileWork(limit = 25) {
+  const groups = db.prepare(`
+    SELECT year, prev_num, new_num, MIN(id) AS first_id, COUNT(*) AS count
+    FROM team_renumber_file_work
+    GROUP BY year, prev_num, new_num
+    ORDER BY first_id
+    LIMIT ?
+  `).all(limit);
+  let processed = 0;
+  let failed = 0;
+  for (const group of groups) {
+    const result = processRenumberFileWork(null, group.prev_num, group.new_num, group.year);
+    processed += result.total;
+    if (!result.success) failed += result.failures.length;
+  }
+  if (processed > 0) {
+    // 실패가 남았으면 warn으로 올려 레벨 필터로 장애를 찾을 수 있게 한다.
+    const log = failed > 0 ? logger.warn : logger.log;
+    log(null, "team_num.file_work_retry", { groups: groups.length, processed, failed });
+  }
+  return { groups: groups.length, processed, failed };
 }
 
 // 브라우저에서 안전하게 인라인으로 표시 가능한 MIME/확장자 화이트리스트.
@@ -560,7 +699,6 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     } catch (fsErr) {
       logger.warn(req, "submission.create", { error: fsErr.message, phase: "file_move" }, session.name);
       try {
-        db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(txResult.result.id);
         db.prepare("DELETE FROM submission WHERE id = ?").run(txResult.result.id);
       } catch (rollbackErr) {
         logger.warn(req, "submission.create", { error: rollbackErr.message, phase: "rollback", submission_id: txResult.result.id }, session.name);
@@ -572,7 +710,6 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 
     for (const oldId of txResult.result.toDelete) {
       try {
-        db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(oldId);
         db.prepare("DELETE FROM submission WHERE id = ?").run(oldId);
       } catch (e) {
         logger.warn(req, "submission.create", { error: e.message, phase: "prev_cleanup", prev_id: oldId }, session.name);
@@ -772,9 +909,8 @@ app.put("/api/admin/sessions/:id", (req, res) => {
       for (const oldTeam of oldTeams) {
         if (!newTeamsSet.has(oldTeam)) {
           const subs = db.prepare("SELECT id FROM submission WHERE session_id = ? AND team_num = ?").all(id, oldTeam);
-          for (const sub of subs) {
-            db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(sub.id);
-            db.prepare("DELETE FROM submission WHERE id = ?").run(sub.id);
+          if (subs.length) {
+            db.prepare("DELETE FROM submission WHERE session_id = ? AND team_num = ?").run(id, oldTeam);
           }
           if (subs.length) removedTeamNums.push({ team: oldTeam, subIds: subs.map(s => s.id) });
         }
@@ -831,21 +967,51 @@ app.get("/api/admin/sessions/:id/status", (req, res) => {
 
   const teams = db.prepare("SELECT team_num FROM session_team WHERE session_id = ? ORDER BY team_num").all(id);
 
-  const subStmt = db.prepare(`
-    SELECT s.id, s.submitted_at, s.total_size, s.is_late, s.submitted_by, s.attempt_no
-    FROM submission s
-    WHERE s.session_id = ? AND s.team_num = ?
-    ORDER BY s.id DESC LIMIT 2
-  `);
+  const submissions = db.prepare(`
+    SELECT id, team_num, submitted_at, total_size, is_late, submitted_by, attempt_no, rn
+    FROM (
+      SELECT s.id, s.team_num, s.submitted_at, s.total_size, s.is_late, s.submitted_by, s.attempt_no,
+             ROW_NUMBER() OVER (PARTITION BY s.team_num ORDER BY s.id DESC) AS rn
+      FROM submission s
+      WHERE s.session_id = ?
+    )
+    WHERE rn <= 2
+    ORDER BY team_num, rn
+  `).all(id);
+  const submissionsByTeam = new Map();
+  for (const sub of submissions) {
+    const list = submissionsByTeam.get(sub.team_num) || [];
+    list.push(sub);
+    submissionsByTeam.set(sub.team_num, list);
+  }
 
-  const fileStmt = db.prepare("SELECT id, original_name, size, mime_type FROM submission_file WHERE submission_id = ?");
+  const filesBySubmission = new Map();
+  if (submissions.length > 0) {
+    const placeholders = submissions.map(() => "?").join(",");
+    const files = db.prepare(`
+      SELECT submission_id, id, original_name, size, mime_type
+      FROM submission_file
+      WHERE submission_id IN (${placeholders})
+      ORDER BY id
+    `).all(...submissions.map((s) => s.id));
+    for (const file of files) {
+      const list = filesBySubmission.get(file.submission_id) || [];
+      list.push({
+        id: file.id,
+        original_name: file.original_name,
+        size: file.size,
+        mime_type: file.mime_type,
+      });
+      filesBySubmission.set(file.submission_id, list);
+    }
+  }
 
   const status = teams.map((t) => {
-    const subs = subStmt.all(id, t.team_num);
-    const sub = subs[0] || null;
-    const files = sub ? fileStmt.all(sub.id) : [];
-    const prevSub = subs[1] || null;
-    const prevFiles = prevSub ? fileStmt.all(prevSub.id) : [];
+    const subs = submissionsByTeam.get(t.team_num) || [];
+    const sub = subs[0] ? (({ team_num, rn, ...rest }) => rest)(subs[0]) : null;
+    const files = sub ? filesBySubmission.get(sub.id) || [] : [];
+    const prevSub = subs[1] ? (({ team_num, rn, ...rest }) => rest)(subs[1]) : null;
+    const prevFiles = prevSub ? filesBySubmission.get(prevSub.id) || [] : [];
     // 백필 누락 등으로 attempt_no가 0이면 최소 1로 보정 (sub이 존재하니 최소 1회 제출은 있음)
     const submissionCount = sub ? (sub.attempt_no || 1) : 0;
     return { team_num: t.team_num, submission: sub, files, prevSubmission: prevSub, prevFiles, submissionCount };
@@ -886,18 +1052,22 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
 
   const sessionName = sanitize(session.name);
   const archiveFiles = [];
+  const subById = new Map(subs.map((sub) => [sub.id, sub]));
+  const subIds = subs.map((sub) => sub.id);
+  const files = subIds.length
+    ? db.prepare(`SELECT submission_id, original_name, stored_name FROM submission_file WHERE submission_id IN (${subIds.map(() => "?").join(",")})`).all(...subIds)
+    : [];
 
-  for (const sub of subs) {
-    const files = db.prepare("SELECT original_name, stored_name FROM submission_file WHERE submission_id = ?").all(sub.id);
-    for (const f of files) {
-      const diskPath = path.join(UPLOADS_DIR, String(id), String(sub.team_num), String(sub.id), f.stored_name);
-      if (fs.existsSync(diskPath)) {
-        const entry = entries[sub.team_num];
-        const teamFolder = entry
-          ? `${sub.team_num}_${sanitize(entry.univ)}_${sanitize(entry.team)}`
-          : String(sub.team_num);
-        archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
-      }
+  for (const f of files) {
+    const sub = subById.get(f.submission_id);
+    if (!sub) continue;
+    const diskPath = path.join(UPLOADS_DIR, String(id), String(sub.team_num), String(sub.id), f.stored_name);
+    if (fs.existsSync(diskPath)) {
+      const entry = entries[sub.team_num];
+      const teamFolder = entry
+        ? `${sub.team_num}_${sanitize(entry.univ)}_${sanitize(entry.team)}`
+        : String(sub.team_num);
+      archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
     }
   }
 
@@ -1079,12 +1249,12 @@ app.delete("/api/admin/years/:year/files", (req, res) => {
   let fileCount = 0;
   const txResult = dbRun(() => {
     db.transaction(() => {
-      for (const s of sessions) {
-        const subs = db.prepare("SELECT id FROM submission WHERE session_id = ?").all(s.id);
-        for (const sub of subs) {
-          const deleted = db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(sub.id);
-          fileCount += deleted.changes;
-        }
+      const sessionIds = sessions.map((s) => s.id);
+      const placeholders = sessionIds.map(() => "?").join(",");
+      const subIds = db.prepare(`SELECT id FROM submission WHERE session_id IN (${placeholders})`).all(...sessionIds).map((s) => s.id);
+      if (subIds.length) {
+        const subPlaceholders = subIds.map(() => "?").join(",");
+        fileCount = db.prepare(`DELETE FROM submission_file WHERE submission_id IN (${subPlaceholders})`).run(...subIds).changes;
       }
     })();
   });
@@ -1129,28 +1299,36 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
 
   // 각 세션의 최신 제출 + 파일 조회
   const archiveFiles = [];
-  for (const s of sessions) {
-    const subs = db.prepare(`
-      SELECT sub.id, sub.team_num FROM submission sub
-      INNER JOIN (
-        SELECT session_id, team_num, MAX(id) AS max_id
-        FROM submission WHERE session_id = ? GROUP BY session_id, team_num
-      ) latest ON sub.id = latest.max_id
-    `).all(s.id);
+  const sessionById = new Map(sessions.map((s) => [s.id, s]));
+  const files = db.prepare(`
+    WITH latest AS (
+      SELECT id, session_id, team_num
+      FROM (
+        SELECT sub.id, sub.session_id, sub.team_num,
+               ROW_NUMBER() OVER (PARTITION BY sub.session_id, sub.team_num ORDER BY sub.id DESC) AS rn
+        FROM submission sub
+        JOIN session s ON s.id = sub.session_id
+        WHERE s.year = ?
+      )
+      WHERE rn = 1
+    )
+    SELECT latest.id AS submission_id, latest.session_id, latest.team_num, f.original_name, f.stored_name
+    FROM latest
+    JOIN submission_file f ON f.submission_id = latest.id
+    ORDER BY latest.session_id, latest.team_num, f.id
+  `).all(year);
 
-    for (const sub of subs) {
-      const files = db.prepare("SELECT original_name, stored_name FROM submission_file WHERE submission_id = ?").all(sub.id);
-      for (const f of files) {
-        const diskPath = path.join(UPLOADS_DIR, String(s.id), String(sub.team_num), String(sub.id), f.stored_name);
-        if (fs.existsSync(diskPath)) {
-          const entry = entries[sub.team_num];
-          const sessionName = sanitize(s.name);
-          const teamFolder = entry
-            ? sanitize(`${sub.team_num}_${entry.univ}_${entry.team}`)
-            : String(sub.team_num);
-          archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
-        }
-      }
+  for (const f of files) {
+    const s = sessionById.get(f.session_id);
+    if (!s) continue;
+    const diskPath = path.join(UPLOADS_DIR, String(s.id), String(f.team_num), String(f.submission_id), f.stored_name);
+    if (fs.existsSync(diskPath)) {
+      const entry = entries[f.team_num];
+      const sessionName = sanitize(s.name);
+      const teamFolder = entry
+        ? sanitize(`${f.team_num}_${entry.univ}_${entry.team}`)
+        : String(f.team_num);
+      archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
     }
   }
 
@@ -1180,66 +1358,115 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
 
 // PATCH /api/internal/team-num - 엔트리 번호 변경 시 team_num 일괄 갱신
 app.patch("/api/internal/team-num", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
   const prevNum = Number(req.body.prevNum);
   const newNum = Number(req.body.newNum);
   const year = Number(req.body.year);
   if (!Number.isInteger(prevNum) || !Number.isInteger(newNum) || !Number.isInteger(year)) {
+    logger.warn(req, "team_num.update", { error: "invalid request", prevNum: req.body.prevNum, newNum: req.body.newNum, year: req.body.year });
     return res.status(400).send("올바르지 않은 요청입니다.");
   }
+  // self-renumber는 동일 업로드 디렉토리를 이동/삭제 대상으로 잡으므로 데이터 손실 위험. 조기 반환.
+  if (prevNum === newNum) return res.status(200).send();
 
-  const txResult = dbRun(() => {
-    db.transaction(() => {
-      db.prepare("UPDATE student_team SET team_num = ? WHERE team_num = ? AND year = ?")
-        .run(newNum, prevNum, year);
-      db.prepare("UPDATE session_team SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-        .run(newNum, prevNum, year);
-      db.prepare("UPDATE submission SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-        .run(newNum, prevNum, year);
-    })();
-  });
-
-  if (!txResult.success) { logger.warn(req, "team_num.update", { error: txResult.error, year, prevNum, newNum }); return res.status(txResult.status).send(txResult.error); }
-
-  // 업로드 디렉토리 이름 변경
   const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
-  const renamedDirs = [];
-  const failedRenames = [];
-  for (const s of sessions) {
-    const oldDir = path.join(UPLOADS_DIR, String(s.id), String(prevNum));
-    const newDir = path.join(UPLOADS_DIR, String(s.id), String(newNum));
-    if (fs.existsSync(oldDir)) {
-      try {
-        fs.renameSync(oldDir, newDir);
-        renamedDirs.push({ oldDir, newDir });
-      } catch (e) {
-        failedRenames.push({ sessionId: s.id, error: e.message });
+  const prevExists = db.prepare(`
+    SELECT 1
+    WHERE EXISTS (SELECT 1 FROM student_team WHERE team_num = ? AND year = ?)
+       OR EXISTS (
+         SELECT 1 FROM session_team
+         WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)
+       )
+       OR EXISTS (
+         SELECT 1 FROM submission
+         WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)
+       )
+  `).get(prevNum, year, prevNum, year, prevNum, year);
+
+  const pendingFileWork = pendingRenumberFileWorkCount(prevNum, newNum, year);
+  if (!prevExists && pendingFileWork === 0) {
+    logger.log(req, "team_num.update", { year, prevNum, newNum, noop: true });
+    return res.status(200).send();
+  }
+
+  const filePlans = [];
+  if (prevExists) {
+    for (const s of sessions) {
+      const oldDir = teamUploadDir(s.id, prevNum);
+      const newDir = teamUploadDir(s.id, newNum);
+      const oldExists = fs.existsSync(oldDir);
+      const newExists = fs.existsSync(newDir);
+      const staleTarget = db.prepare(`
+        SELECT 1
+        WHERE EXISTS (SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?)
+           OR EXISTS (SELECT 1 FROM submission WHERE session_id = ? AND team_num = ?)
+      `).get(s.id, newNum, s.id, newNum);
+      if (!staleTarget && oldExists && newExists) {
+        logger.warn(req, "team_num.rename_fail", {
+          year, prevNum, newNum, failedRenames: [{ sessionId: s.id, error: "target upload directory already exists" }], stage: "pre_db",
+        });
+        return res.status(500).send("업로드 디렉토리 이름 변경에 실패하여 변경하지 않았습니다.");
+      }
+      if (oldExists || (staleTarget && newExists)) {
+        filePlans.push({
+          sessionId: s.id,
+          moveOld: oldExists ? 1 : 0,
+          deleteTarget: staleTarget && newExists ? 1 : 0,
+        });
       }
     }
   }
 
-  if (failedRenames.length > 0) {
-    // 성공한 rename 되돌리기
-    for (const { oldDir, newDir } of renamedDirs) {
-      try { fs.renameSync(newDir, oldDir); } catch (e) { logger.warn(req, "team_num.update", { error: e.message, phase: "rollback_rename", oldDir, newDir }); }
-    }
+  const txResult = dbRun(() => {
+    db.transaction(() => {
+      if (prevExists) {
+        const insertFileWork = db.prepare(`
+          INSERT INTO team_renumber_file_work (year, prev_num, new_num, session_id, move_old, delete_target, last_error, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, '', ?)
+          ON CONFLICT(year, prev_num, new_num, session_id) DO UPDATE SET
+            move_old = CASE WHEN team_renumber_file_work.move_old OR excluded.move_old THEN 1 ELSE 0 END,
+            delete_target = CASE WHEN team_renumber_file_work.delete_target OR excluded.delete_target THEN 1 ELSE 0 END,
+            last_error = '',
+            updated_at = excluded.updated_at
+        `);
+        const now = Date.now();
+        for (const plan of filePlans) {
+          insertFileWork.run(year, prevNum, newNum, plan.sessionId, plan.moveOld, plan.deleteTarget, now);
+        }
 
-    // DB 롤백: 원래 값으로 복원
-    const rollbackResult = dbRun(() => {
-      db.transaction(() => {
+        db.prepare("DELETE FROM submission WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
+          .run(newNum, year);
+        db.prepare("DELETE FROM session_team WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
+          .run(newNum, year);
+        db.prepare("DELETE FROM student_team WHERE team_num = ? AND year = ?")
+          .run(newNum, year);
         db.prepare("UPDATE student_team SET team_num = ? WHERE team_num = ? AND year = ?")
-          .run(prevNum, newNum, year);
+          .run(newNum, prevNum, year);
         db.prepare("UPDATE session_team SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-          .run(prevNum, newNum, year);
+          .run(newNum, prevNum, year);
         db.prepare("UPDATE submission SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-          .run(prevNum, newNum, year);
-      })();
-    });
+          .run(newNum, prevNum, year);
+      }
+    })();
+  });
 
-    logger.warn(req, "team_num.rename_fail", { year, prevNum, newNum, failedRenames, rollback: rollbackResult.success });
-    return res.status(500).send("업로드 디렉토리 이름 변경에 실패하여 롤백되었습니다.");
+  if (!txResult.success) {
+    logger.warn(req, "team_num.update", { error: txResult.error, year, prevNum, newNum });
+    return res.status(txResult.status).send(txResult.error);
   }
 
-  logger.log(req, "team_num.update", { year, prevNum, newNum });
+  const fileResult = processRenumberFileWork(req, prevNum, newNum, year);
+  if (!fileResult.success) {
+    logger.warn(req, "team_num.file_work_failed", { year, prevNum, newNum, failures: fileResult.failures });
+    return res.status(202).json({
+      status: "pending_file_work",
+      message: "팀 번호 변경은 반영되었고 업로드 디렉토리 작업은 재시도 대기 중입니다.",
+      failures: fileResult.failures,
+    });
+  }
+
+  logger.log(req, "team_num.update", { year, prevNum, newNum, renamedDirs: fileResult.moved, replacedTargets: fileResult.replaced, fileWork: fileResult.total });
   res.status(200).send();
 });
 
@@ -1249,10 +1476,18 @@ app.patch("/api/internal/team-num", (req, res) => {
 
 // DELETE /api/internal/team/:num - 엔트리 삭제 시 관련 데이터 정리
 app.delete("/api/internal/team/:num", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
   const num = Number(req.params.num);
   const year = Number(req.query.year);
-  if (!Number.isInteger(num) || num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!Number.isInteger(year)) return res.status(400).send("연도를 지정해야 합니다.");
+  if (!Number.isInteger(num) || num < 1) {
+    logger.warn(req, "team.cascade_delete", { error: "invalid team num", num: req.params.num });
+    return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  }
+  if (!Number.isInteger(year)) {
+    logger.warn(req, "team.cascade_delete", { error: "invalid year", year: req.query.year }, `#${num}`);
+    return res.status(400).send("연도를 지정해야 합니다.");
+  }
 
   const removedFiles = [];
   const txResult = dbRun(() => {
@@ -1264,9 +1499,10 @@ app.delete("/api/internal/team/:num", (req, res) => {
         db.prepare("DELETE FROM session_team WHERE session_id = ? AND team_num = ?").run(s.id, num);
         const subs = db.prepare("SELECT id FROM submission WHERE session_id = ? AND team_num = ?").all(s.id, num);
         for (const sub of subs) {
-          db.prepare("DELETE FROM submission_file WHERE submission_id = ?").run(sub.id);
-          db.prepare("DELETE FROM submission WHERE id = ?").run(sub.id);
           removedFiles.push({ sessionId: s.id, subId: sub.id });
+        }
+        if (subs.length) {
+          db.prepare("DELETE FROM submission WHERE session_id = ? AND team_num = ?").run(s.id, num);
         }
       }
     })();
@@ -1464,6 +1700,16 @@ const _schedulerInterval = setInterval(processScheduledNotifications, 60_000);
 // 서버 시작 후 5초 뒤 첫 실행 (밀린 알림 즉시 처리)
 setTimeout(processScheduledNotifications, 5000);
 
+const _renumberFileWorkInterval = setInterval(() => {
+  try { processPendingRenumberFileWork(); }
+  catch (e) { logger.warn(null, "team_num.file_work_retry", { error: e.message || String(e) }); }
+}, 30_000);
+_renumberFileWorkInterval.unref?.();
+const _renumberFileWorkStartupTimer = setTimeout(() => {
+  try { processPendingRenumberFileWork(); }
+  catch (e) { logger.warn(null, "team_num.file_work_retry", { error: e.message || String(e) }); }
+}, 1000).unref?.();
+
 /** 계정 할당 시 현재 열린 세션 알림 */
 async function notifyOpenSessions(req, email, teamNum, year) {
   const emailServer = process.env.EMAIL_SERVER;
@@ -1517,7 +1763,7 @@ app.get("/{*splat}", (req, res) => {
   res.sendFile("index.html", { root: "./web/dist" });
 });
 
-return { app, db, _schedulerInterval };
+return { app, db, _schedulerInterval, _renumberFileWorkInterval, _renumberFileWorkStartupTimer };
 }
 
 const isDirectRun = import.meta.filename === process.argv[1];

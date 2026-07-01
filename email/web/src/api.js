@@ -22,6 +22,11 @@ export async function fetchEmails(params = {}) {
   return res.json();
 }
 
+export async function fetchEmail(id) {
+  const res = await api.request(`/api/emails/${id}`);
+  return res.json();
+}
+
 export async function sendEmail(payload) {
   const res = await api.request("/api/send", {
     method: "POST",

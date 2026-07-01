@@ -393,6 +393,19 @@ function getSortIcon(key) {
 // SSE로 검차 결과 실시간 반영
 watch(lastInspectionUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
+  if (update.deleted) {
+    delete inspection.value.teams[update.team_num];
+    debouncedRefresh();
+    return;
+  }
+  if (update.renumbered) {
+    if (inspection.value.teams[update.prevNum]) {
+      inspection.value.teams[update.team_num] = inspection.value.teams[update.prevNum];
+      delete inspection.value.teams[update.prevNum];
+    }
+    debouncedRefresh();
+    return;
+  }
   const { team_num, category_id, result } = update;
   if (!inspection.value.teams[team_num]) {
     inspection.value.teams[team_num] = { inspectors: {}, results: {} };
@@ -403,6 +416,25 @@ watch(lastInspectionUpdate, (update) => {
 // SSE로 검차 답변(코너웨이트) 실시간 반영
 watch(lastAnswerUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
+  if (update.deleted) {
+    delete inspection.value.teams[update.team_num];
+    if (inspection.value.cornerWeight?.teams) delete inspection.value.cornerWeight.teams[update.team_num];
+    debouncedRefresh();
+    return;
+  }
+  if (update.renumbered) {
+    if (inspection.value.teams[update.prevNum]) {
+      inspection.value.teams[update.team_num] = inspection.value.teams[update.prevNum];
+      delete inspection.value.teams[update.prevNum];
+    }
+    const cwTeams = inspection.value.cornerWeight?.teams;
+    if (cwTeams?.[update.prevNum]) {
+      cwTeams[update.team_num] = cwTeams[update.prevNum];
+      delete cwTeams[update.prevNum];
+    }
+    debouncedRefresh();
+    return;
+  }
   const { team_num, item_id, value } = update;
 
   // 코너웨이트 항목 매칭
@@ -421,6 +453,17 @@ watch(lastAnswerUpdate, (update) => {
 // SSE로 수동 점수 실시간 반영
 watch(lastManualScoreUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
+  if (update.deleted) {
+    delete manualScores.value[update.team_num];
+    return;
+  }
+  if (update.renumbered) {
+    if (manualScores.value[update.prevNum]) {
+      manualScores.value[update.team_num] = manualScores.value[update.prevNum];
+      delete manualScores.value[update.prevNum];
+    }
+    return;
+  }
   const { team_num, score_type, value } = update;
   if (!manualScores.value[team_num]) manualScores.value[team_num] = {};
   manualScores.value[team_num][score_type] = value;

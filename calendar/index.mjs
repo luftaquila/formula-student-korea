@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase } from "../shared/db-setup.mjs";
+import { createDatabase, runMigrationOnce } from "../shared/db-setup.mjs";
 import { createApp, createDbRun, setupProcessHandlers, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
@@ -26,6 +26,12 @@ db.exec(`CREATE TABLE IF NOT EXISTS events (
   all_day INTEGER NOT NULL DEFAULT 0,
   role TEXT NOT NULL DEFAULT 'official'
 )`);
+// 범위 조회는 idx_events_all_day_end_start, 정렬 조회는 idx_events_role_start가 커버.
+// 단독 (start,end)/(end,start) 인덱스는 매칭되는 쿼리가 없어 제거(기존 배포본 정리 포함).
+db.exec("DROP INDEX IF EXISTS idx_events_start_end");
+db.exec("DROP INDEX IF EXISTS idx_events_end_start");
+db.exec("CREATE INDEX IF NOT EXISTS idx_events_role_start ON events(role, start)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_events_all_day_end_start ON events(all_day, end, start)");
 
 const logger = createLogger(db, "calendar");
 const dbRun = createDbRun();
@@ -57,6 +63,77 @@ function toEventResponse(row) {
   };
 }
 
+function validDateParts(year, month, day, hour = 0, minute = 0) {
+  const d = new Date(Date.UTC(year, month - 1, day, hour, minute));
+  return d.getUTCFullYear() === year
+    && d.getUTCMonth() === month - 1
+    && d.getUTCDate() === day
+    && d.getUTCHours() === hour
+    && d.getUTCMinutes() === minute;
+}
+
+function toUtcIso({ yy, mo, dd, hh = "00", mi = "00", ss = "00", zone = "" }) {
+  const text = zone
+    ? `${yy}-${mo}-${dd}T${hh}:${mi}:${ss}${zone}`
+    : new Date(Date.UTC(Number(yy), Number(mo) - 1, Number(dd), Number(hh) - 9, Number(mi), Number(ss))).toISOString();
+  if (zone) {
+    const d = new Date(text);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  return text;
+}
+
+function normalizeDateTime(value, { allDay = false, requireTime = false } = {}) {
+  if (typeof value !== "string") return null;
+  const input = value.trim();
+  const dateOnly = input.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnly) {
+    const [, yy, mm, dd] = dateOnly;
+    const [y, m, d] = [Number(yy), Number(mm), Number(dd)];
+    if (!validDateParts(y, m, d)) return null;
+    if (requireTime && !allDay) return null;
+    return `${yy}-${mm}-${dd}`;
+  }
+  const dateTime = input.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/);
+  if (!dateTime) return null;
+  const [, yy, mo, dd, hh, mi, ss = "00", zone = ""] = dateTime;
+  const [y, m, d, hour, minute] = [Number(yy), Number(mo), Number(dd), Number(hh), Number(mi)];
+  if (!validDateParts(y, m, d, hour, minute)) return null;
+  return allDay ? `${yy}-${mo}-${dd}` : toUtcIso({ yy, mo, dd, hh, mi, ss, zone });
+}
+
+function normalizeRangeBound(value, endOfDay = false) {
+  if (typeof value !== "string") return null;
+  const input = value.trim();
+  const dateOnly = input.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnly) {
+    const [, yy, mo, dd] = dateOnly;
+    const [y, m, d] = [Number(yy), Number(mo), Number(dd)];
+    if (!validDateParts(y, m, d)) return null;
+    const localMs = Date.UTC(y, m - 1, d, endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0);
+    return new Date(localMs - 9 * 3600000).toISOString();
+  }
+  return normalizeDateTime(input);
+}
+
+function kstDateFromUtcIso(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date(d.getTime() + 9 * 3600000).toISOString().slice(0, 10);
+}
+
+runMigrationOnce(db, "calendar.event_timestamp_normalization.v1", () => {
+  const update = db.prepare("UPDATE events SET start = ?, end = ? WHERE id = ?");
+  for (const event of db.prepare("SELECT id, start, end, all_day FROM events").all()) {
+    const allDay = !!event.all_day;
+    const start = normalizeDateTime(event.start, { allDay, requireTime: !allDay });
+    const end = normalizeDateTime(event.end, { allDay, requireTime: !allDay });
+    if (start && end && (start !== event.start || end !== event.end)) {
+      update.run(start, end, event.id);
+    }
+  }
+});
+
 // List events (public access, filtered by user role)
 app.get("/api/events", (req, res) => {
   const { timeMin, timeMax } = req.query;
@@ -65,11 +142,24 @@ app.get("/api/events", (req, res) => {
     return res.status(400).json({ error: "timeMin and timeMax are required" });
   }
 
-  // Normalize to comparable strings (YYYY-MM-DD or YYYY-MM-DD HH:mm)
-  const normalize = (s) => s.replace("T", " ").slice(0, 16);
+  const normalizedMin = normalizeRangeBound(String(timeMin), false);
+  const normalizedMax = normalizeRangeBound(String(timeMax), true);
+  if (!normalizedMin || !normalizedMax) {
+    logger.warn(req, "event.list", { error: "invalid timeMin/timeMax", timeMin, timeMax });
+    return res.status(400).json({ error: "Invalid time range" });
+  }
+  const minAllDayDate = kstDateFromUtcIso(normalizedMin);
+  const maxAllDayDate = kstDateFromUtcIso(normalizedMax);
 
   const result = dbRun(() =>
-    db.prepare("SELECT * FROM events WHERE end >= ? AND start <= ? ORDER BY start").all(normalize(timeMin), normalize(timeMax))
+    db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM events WHERE all_day = 0 AND end >= ? AND start <= ?
+        UNION ALL
+        SELECT * FROM events WHERE all_day = 1 AND end >= ? AND start <= ?
+      )
+      ORDER BY start
+    `).all(normalizedMin, normalizedMax, minAllDayDate, maxAllDayDate)
   );
 
   if (!result.success) {
@@ -95,8 +185,16 @@ function validateEventInput(req, res, action, target) {
     res.status(400).json({ error: "title, start, and end are required" });
     return null;
   }
-  if (start > end) {
-    logger.warn(req, action, { error: "start must not be after end", start, end }, target);
+  const allDay = !!req.body.allDay;
+  const normalizedStart = normalizeDateTime(start, { allDay, requireTime: true });
+  const normalizedEnd = normalizeDateTime(end, { allDay, requireTime: true });
+  if (!normalizedStart || !normalizedEnd) {
+    logger.warn(req, action, { error: "invalid start/end format", start, end, allDay }, target);
+    res.status(400).json({ error: "Invalid start or end format" });
+    return null;
+  }
+  if (normalizedStart > normalizedEnd) {
+    logger.warn(req, action, { error: "start must not be after end", start: normalizedStart, end: normalizedEnd }, target);
     res.status(400).json({ error: "start must not be after end" });
     return null;
   }
@@ -112,23 +210,22 @@ function validateEventInput(req, res, action, target) {
     res.status(403).json({ error: "Cannot set visibility above your own role" });
     return null;
   }
-  return { role };
+  return { role, start: normalizedStart, end: normalizedEnd, allDay };
 }
 
 // Create event
 app.post("/api/events", (req, res) => {
-  const { title, start, end } = req.body;
+  const { title } = req.body;
   const valid = validateEventInput(req, res, "event.create", null);
   if (!valid) return;
-  const { role } = valid;
+  const { role, start, end, allDay } = valid;
 
-  const allDay = req.body.allDay ? 1 : 0;
   const description = req.body.description || "";
   const location = req.body.location || "";
 
   const result = dbRun(() =>
     db.prepare("INSERT INTO events (title, description, location, start, end, all_day, role) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(title, description, location, start, end, allDay, role)
+      .run(title, description, location, start, end, allDay ? 1 : 0, role)
   );
 
   if (!result.success) {
@@ -137,28 +234,27 @@ app.post("/api/events", (req, res) => {
   }
 
   const event = db.prepare("SELECT * FROM events WHERE id = ?").get(result.result.lastInsertRowid);
-  logger.log(req, "event.create", { title, start, end, allDay: !!allDay, role }, `${event.id}`);
+  logger.log(req, "event.create", { title, start, end, allDay, role }, `${event.id}`);
   res.status(201).json(toEventResponse(event));
 });
 
 // Update event
 app.put("/api/events/:id", (req, res) => {
   const { id } = req.params;
-  const { title, start, end } = req.body;
+  const { title } = req.body;
   const valid = validateEventInput(req, res, "event.update", id);
   if (!valid) return;
-  const { role } = valid;
+  const { role, start, end, allDay } = valid;
 
   const existing = db.prepare("SELECT id FROM events WHERE id = ?").get(id);
   if (!existing) return res.status(404).json({ error: "Event not found" });
 
-  const allDay = req.body.allDay ? 1 : 0;
   const description = req.body.description || "";
   const location = req.body.location || "";
 
   const result = dbRun(() =>
     db.prepare("UPDATE events SET title = ?, description = ?, location = ?, start = ?, end = ?, all_day = ?, role = ? WHERE id = ?")
-      .run(title, description, location, start, end, allDay, role, id)
+      .run(title, description, location, start, end, allDay ? 1 : 0, role, id)
   );
 
   if (!result.success) {
@@ -167,7 +263,7 @@ app.put("/api/events/:id", (req, res) => {
   }
 
   const event = db.prepare("SELECT * FROM events WHERE id = ?").get(id);
-  logger.log(req, "event.update", { title, start, end, allDay: !!allDay, role }, id);
+  logger.log(req, "event.update", { title, start, end, allDay, role }, id);
   res.json(toEventResponse(event));
 });
 
@@ -237,7 +333,12 @@ function escapeICalText(text) {
 }
 
 function formatICalDateTime(dateStr) {
-  // "YYYY-MM-DD HH:MM" → "YYYYMMDDTHHMMSS"
+  const d = /[zZ]$/.test(String(dateStr)) ? new Date(dateStr) : null;
+  if (d && !Number.isNaN(d.getTime())) {
+    d.setHours(d.getHours() + 9);
+    const iso = d.toISOString();
+    return iso.slice(0, 10).replace(/-/g, "") + "T" + iso.slice(11, 19).replace(/:/g, "");
+  }
   return dateStr.slice(0, 10).replace(/-/g, "") + "T" + dateStr.slice(11, 16).replace(/:/g, "") + "00";
 }
 

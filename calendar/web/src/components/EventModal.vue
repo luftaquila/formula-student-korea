@@ -31,11 +31,25 @@ const isValid = computed(() => title.value.trim() && startDate.value && endDate.
 
 function parseDate(val) {
   if (!val) return "";
+  if (/[zZ]$/.test(String(val))) {
+    const d = new Date(val);
+    if (!Number.isNaN(d.getTime())) {
+      d.setHours(d.getHours() + 9);
+      return d.toISOString().slice(0, 10);
+    }
+  }
   return String(val).slice(0, 10);
 }
 
 function parseTime(val) {
   if (!val) return "09:00";
+  if (/[zZ]$/.test(String(val))) {
+    const d = new Date(val);
+    if (!Number.isNaN(d.getTime())) {
+      d.setHours(d.getHours() + 9);
+      return d.toISOString().slice(11, 16);
+    }
+  }
   const match = String(val).match(/(\d{2}:\d{2})/);
   return match ? match[1] : "09:00";
 }

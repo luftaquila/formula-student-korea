@@ -72,6 +72,12 @@ test.describe("Entry CRUD operations", () => {
     await editInput.fill("카이스트");
     await editInput.press("Enter");
 
+    // 같은 번호에서 학교명이 바뀌면 명칭 정정(데이터 유지)인지 팀 교체(데이터 삭제)인지
+    // 묻는 모달이 뜬다. 단순 명칭 정정이므로 "명칭 정정"을 선택한다.
+    const modal = page.locator(".ambiguity-modal");
+    await expect(modal).toBeVisible();
+    await modal.locator(".ambiguity-btn.retain").click();
+
     // Verify success notification
     await expectNotification(page, "success", "10번 엔트리를 수정했습니다.");
 
@@ -79,13 +85,15 @@ test.describe("Entry CRUD operations", () => {
     await waitForPageReady(page);
     await expect(table.locator("tbody")).toContainText("카이스트");
 
-    // Revert: edit back to original
+    // Revert: edit back to original (학교명이 다시 바뀌므로 동일한 모달이 뜬다)
     const updatedRow = table.locator("tbody tr").filter({ hasText: "카이스트" });
     await updatedRow.locator("td.col-univ .cell-text").click();
     const revertInput = table.locator("input.edit-input");
     await expect(revertInput).toBeVisible();
     await revertInput.fill("KAIST");
     await revertInput.press("Enter");
+    await expect(modal).toBeVisible();
+    await modal.locator(".ambiguity-btn.retain").click();
     await waitForPageReady(page);
   });
 

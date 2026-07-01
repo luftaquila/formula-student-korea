@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from "vue";
 import { useNotification } from "@shared/useNotification.js";
+import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 const { success, error } = useNotification();
@@ -98,7 +99,8 @@ async function approveSelected() {
 }
 
 function fmtDate(s) {
-  return s ? new Date(s + "Z").toLocaleString("ko-KR") : "-";
+  const d = parseDbTimestamp(s);
+  return d ? d.toLocaleString("ko-KR") : "-";
 }
 
 // Sorting (mirrors Manage.vue). 전화번호/학교·팀은 정렬 비활성화라 그 헤더는

@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const express = require('../../documents/node_modules/express/index.js');
+const Database = require('../../documents/node_modules/better-sqlite3');
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -59,6 +60,47 @@ const studentCookie = makeAuthCookie({ email: 'student1@test.com', name: 'Studen
 const student2Cookie = makeAuthCookie({ email: 'student2@test.com', name: 'Student 2', role: 'student' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
 
+describe('student_team migration', () => {
+  it('migrates legacy email-only PK once and keeps composite PK on restart', () => {
+    const legacyPath = tmpDbPath();
+    const legacyUploads = path.join(os.tmpdir(), `fsk-test-uploads-${crypto.randomUUID()}`);
+    const legacyDb = new Database(legacyPath);
+    legacyDb.exec(`
+      CREATE TABLE student_team (
+        email TEXT PRIMARY KEY,
+        team_num INTEGER NOT NULL,
+        year INTEGER NOT NULL,
+        UNIQUE(team_num, year)
+      );
+      INSERT INTO student_team (email, team_num, year) VALUES ('legacy@test.com', 7, 2026);
+    `);
+    legacyDb.close();
+
+    const first = createDocumentsApp({ dbPath: legacyPath, uploadsDir: legacyUploads });
+    if (first._schedulerInterval) clearInterval(first._schedulerInterval);
+    if (first._renumberFileWorkInterval) clearInterval(first._renumberFileWorkInterval);
+    if (first._renumberFileWorkStartupTimer) clearTimeout(first._renumberFileWorkStartupTimer);
+    let info = first.db.prepare("PRAGMA table_info(student_team)").all();
+    assert.equal(info.find(c => c.name === 'email').pk, 1);
+    assert.equal(info.find(c => c.name === 'year').pk, 2);
+    first.db.close();
+
+    const second = createDocumentsApp({ dbPath: legacyPath, uploadsDir: legacyUploads });
+    if (second._schedulerInterval) clearInterval(second._schedulerInterval);
+    if (second._renumberFileWorkInterval) clearInterval(second._renumberFileWorkInterval);
+    if (second._renumberFileWorkStartupTimer) clearTimeout(second._renumberFileWorkStartupTimer);
+    info = second.db.prepare("PRAGMA table_info(student_team)").all();
+    assert.equal(info.find(c => c.name === 'email').pk, 1);
+    assert.equal(info.find(c => c.name === 'year').pk, 2);
+    assert.deepEqual(second.db.prepare("SELECT email, team_num, year FROM student_team").all(), [
+      { email: 'legacy@test.com', team_num: 7, year: 2026 },
+    ]);
+    second.db.close();
+    cleanup(legacyPath);
+    cleanup(legacyUploads);
+  });
+});
+
 before(async () => {
   const mockApp = createMockAuthServer();
   const mockStarted = await startServer(mockApp);
@@ -70,6 +112,8 @@ before(async () => {
   const result = createDocumentsApp({ dbPath, uploadsDir });
   db = result.db;
   if (result._schedulerInterval) clearInterval(result._schedulerInterval);
+  if (result._renumberFileWorkInterval) clearInterval(result._renumberFileWorkInterval);
+  if (result._renumberFileWorkStartupTimer) clearTimeout(result._renumberFileWorkStartupTimer);
   const started = await startServer(result.app);
   server = started.server;
   baseUrl = started.baseUrl;
@@ -1302,6 +1346,201 @@ describe('PATCH /api/internal/team-num', () => {
     fs.rmSync(s1OldDir, { recursive: true, force: true });
     fs.rmSync(s2OldDir, { recursive: true, force: true });
     db.prepare("DELETE FROM session WHERE id = ?").run(session2Id);
+  });
+
+  it('replaces stale target rows and upload directory on renumber collision', async () => {
+    const year = 2031;
+    const prevNum = 600;
+    const newNum = 601;
+    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-prev@test.com', prevNum, year);
+    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-target@test.com', newNum, year);
+    const sessionId = db.prepare(
+      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2031-01-01 00:00', '2031-12-31 23:59', '', 52428800, 'admin@test.com', ?)",
+    ).run('Renumber Collision Session', year).lastInsertRowid;
+    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, prevNum);
+    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, newNum);
+    db.prepare(
+      "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late) VALUES (?, ?, ?, '2031-06-01 11:59', '2031-06-01 12:00', 1024, 0)",
+    ).run(sessionId, prevNum, 'renumber-prev@test.com');
+    db.prepare(
+      "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late) VALUES (?, ?, ?, '2031-06-01 11:59', '2031-06-01 12:00', 2048, 0)",
+    ).run(sessionId, newNum, 'renumber-target@test.com');
+
+    const oldDir = path.join(uploadsDir, String(sessionId), String(prevNum));
+    const newDir = path.join(uploadsDir, String(sessionId), String(newNum));
+    fs.mkdirSync(oldDir, { recursive: true });
+    fs.writeFileSync(path.join(oldDir, 'prev.txt'), 'prev');
+    fs.mkdirSync(newDir, { recursive: true });
+    fs.writeFileSync(path.join(newDir, 'stale.txt'), 'stale');
+
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum, newNum, year },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM student_team WHERE team_num = ? AND year = ?").get(newNum, year).c, 1);
+    assert.equal(db.prepare("SELECT team_num FROM student_team WHERE email = ? AND year = ?").get('renumber-prev@test.com', year).team_num, newNum);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM session_team WHERE session_id = ? AND team_num = ?").get(sessionId, newNum).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM submission WHERE session_id = ? AND team_num = ?").get(sessionId, newNum).c, 1);
+    assert.ok(!fs.existsSync(oldDir), 'old upload dir should be gone');
+    assert.ok(fs.existsSync(path.join(newDir, 'prev.txt')), 'prev files should move to new dir');
+    assert.ok(!fs.existsSync(path.join(newDir, 'stale.txt')), 'stale target files should be removed');
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 0);
+  });
+
+  it('resumes pending upload directory work after the DB renumber has already committed', async () => {
+    const year = 2032;
+    const prevNum = 620;
+    const newNum = 621;
+    const sessionId = db.prepare(
+      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2032-01-01 00:00', '2032-12-31 23:59', '', 52428800, 'admin@test.com', ?)",
+    ).run('Renumber Retry Session', year).lastInsertRowid;
+    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-retry@test.com', newNum, year);
+    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, newNum);
+    db.prepare(
+      "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late) VALUES (?, ?, ?, '2032-06-01 11:59', '2032-06-01 12:00', 1024, 0)",
+    ).run(sessionId, newNum, 'renumber-retry@test.com');
+
+    const oldDir = path.join(uploadsDir, String(sessionId), String(prevNum));
+    const newDir = path.join(uploadsDir, String(sessionId), String(newNum));
+    fs.mkdirSync(oldDir, { recursive: true });
+    fs.writeFileSync(path.join(oldDir, 'prev.txt'), 'prev');
+    fs.mkdirSync(newDir, { recursive: true });
+    fs.writeFileSync(path.join(newDir, 'stale.txt'), 'stale');
+    db.prepare(`
+      INSERT INTO team_renumber_file_work (year, prev_num, new_num, session_id, move_old, delete_target)
+      VALUES (?, ?, ?, ?, 1, 1)
+    `).run(year, prevNum, newNum, sessionId);
+
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum, newNum, year },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(!fs.existsSync(oldDir), 'old upload dir should be consumed by retry');
+    assert.ok(fs.existsSync(path.join(newDir, 'prev.txt')), 'retry should preserve prev files under new number');
+    assert.ok(!fs.existsSync(path.join(newDir, 'stale.txt')), 'retry should remove stale target files');
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 0);
+  });
+
+  it('returns 202 and keeps retryable file work when disk rename fails after DB commit', async () => {
+    const year = 2035;
+    const prevNum = 650;
+    const newNum = 651;
+    const sessionId = db.prepare(
+      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2035-01-01 00:00', '2035-12-31 23:59', '', 52428800, 'admin@test.com', ?)",
+    ).run('Renumber Post Commit Retry Session', year).lastInsertRowid;
+    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-post-commit@test.com', prevNum, year);
+    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, prevNum);
+    db.prepare(
+      "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late) VALUES (?, ?, ?, '2035-06-01 11:59', '2035-06-01 12:00', 1024, 0)",
+    ).run(sessionId, prevNum, 'renumber-post-commit@test.com');
+
+    const oldDir = path.join(uploadsDir, String(sessionId), String(prevNum));
+    const newDir = path.join(uploadsDir, String(sessionId), String(newNum));
+    fs.mkdirSync(oldDir, { recursive: true });
+    fs.writeFileSync(path.join(oldDir, 'prev.txt'), 'prev');
+
+    const originalRenameSync = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      if (from === oldDir && to === newDir) throw new Error('simulated rename failure');
+      return originalRenameSync.call(fs, from, to);
+    };
+    try {
+      const res = await client.patch('/api/internal/team-num', {
+        body: { prevNum, newNum, year },
+        headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      });
+      assert.equal(res.status, 202, 'post-commit file failure should be retryable, not reported as unchanged');
+    } finally {
+      fs.renameSync = originalRenameSync;
+    }
+
+    assert.equal(db.prepare("SELECT team_num FROM student_team WHERE email = ? AND year = ?").get('renumber-post-commit@test.com', year).team_num, newNum);
+    assert.ok(fs.existsSync(oldDir), 'old dir remains for retry');
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 1);
+
+    const retry = await client.patch('/api/internal/team-num', {
+      body: { prevNum, newNum, year },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(retry.status, 200);
+    assert.ok(!fs.existsSync(oldDir), 'retry should consume old dir');
+    assert.ok(fs.existsSync(path.join(newDir, 'prev.txt')), 'retry should move files');
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 0);
+  });
+
+  it('finishes pending upload work when a prior attempt already moved the directory with a marker', async () => {
+    const year = 2033;
+    const prevNum = 630;
+    const newNum = 631;
+    const sessionId = db.prepare(
+      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2033-01-01 00:00', '2033-12-31 23:59', '', 52428800, 'admin@test.com', ?)",
+    ).run('Renumber Marker Retry Session', year).lastInsertRowid;
+    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-marker@test.com', newNum, year);
+    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, newNum);
+    db.prepare(`
+      INSERT INTO team_renumber_file_work (year, prev_num, new_num, session_id, move_old, delete_target)
+      VALUES (?, ?, ?, ?, 1, 1)
+    `).run(year, prevNum, newNum, sessionId);
+
+    const oldDir = path.join(uploadsDir, String(sessionId), String(prevNum));
+    const newDir = path.join(uploadsDir, String(sessionId), String(newNum));
+    const marker = path.join(newDir, `.fsk-renumber-${year}-${prevNum}-to-${newNum}.pending`);
+    fs.mkdirSync(newDir, { recursive: true });
+    fs.writeFileSync(path.join(newDir, 'prev.txt'), 'prev');
+    fs.writeFileSync(marker, 'pending');
+
+    const res = await client.patch('/api/internal/team-num', {
+      body: { prevNum, newNum, year },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(!fs.existsSync(oldDir), 'old upload dir should remain absent');
+    assert.ok(fs.existsSync(path.join(newDir, 'prev.txt')), 'already moved files should remain');
+    assert.ok(!fs.existsSync(marker), 'completion marker should be removed');
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 0);
+  });
+
+  it('does not keep retrying completed upload work when marker cleanup fails', async () => {
+    const year = 2034;
+    const prevNum = 640;
+    const newNum = 641;
+    const sessionId = db.prepare(
+      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2034-01-01 00:00', '2034-12-31 23:59', '', 52428800, 'admin@test.com', ?)",
+    ).run('Renumber Marker Cleanup Session', year).lastInsertRowid;
+    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-marker-cleanup@test.com', newNum, year);
+    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, newNum);
+    db.prepare(`
+      INSERT INTO team_renumber_file_work (year, prev_num, new_num, session_id, move_old, delete_target)
+      VALUES (?, ?, ?, ?, 1, 1)
+    `).run(year, prevNum, newNum, sessionId);
+
+    const newDir = path.join(uploadsDir, String(sessionId), String(newNum));
+    const marker = path.join(newDir, `.fsk-renumber-${year}-${prevNum}-to-${newNum}.pending`);
+    fs.mkdirSync(newDir, { recursive: true });
+    fs.writeFileSync(path.join(newDir, 'prev.txt'), 'prev');
+    fs.writeFileSync(marker, 'pending');
+
+    const originalRmSync = fs.rmSync;
+    fs.rmSync = (target, options) => {
+      if (target === marker) throw new Error('simulated marker cleanup failure');
+      return originalRmSync.call(fs, target, options);
+    };
+    try {
+      const res = await client.patch('/api/internal/team-num', {
+        body: { prevNum, newNum, year },
+        headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      });
+      assert.equal(res.status, 200);
+    } finally {
+      fs.rmSync = originalRmSync;
+    }
+
+    assert.ok(fs.existsSync(marker), 'marker may remain when best-effort cleanup fails');
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 0);
+    fs.rmSync(marker, { force: true });
   });
 
   it('returns 400 for non-integer prevNum', async () => {
