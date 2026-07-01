@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "jszip": "^3.10.1",
     "leaflet": "^1.9.4",
     "leaflet-rotate": "^0.2.8",
     "vue": "^3.5.26",
