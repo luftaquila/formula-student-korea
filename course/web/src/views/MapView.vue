@@ -6132,9 +6132,11 @@ onUnmounted(() => {
 
   .map-wrap { flex: 1; min-height: 220px; }
 
-  /* Stack the top-right tools vertically so they hug the edge and leave the
-     centred active-tool overlay room on narrow screens. */
-  .map-fab-tools { flex-direction: column; flex-wrap: nowrap; }
+  /* Keep the top-right tools in a single horizontal row on mobile (they were
+     stacked vertically before). Drop the centred active-tool overlay / rotation
+     HUD below the tool row so they don't collide on narrow screens. */
+  .map-fab-tools { flex-direction: row; flex-wrap: nowrap; }
+  .measure-overlay, .rotate-hud { top: 4.5rem; }
 
   .inspector-handle { display: none; }
 
