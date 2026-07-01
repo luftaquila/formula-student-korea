@@ -5,6 +5,12 @@ import { request } from "../api.js";
 import { useNotification } from "@shared/useNotification.js";
 import { haversine } from "@shared/geo.mjs";
 import { computeCenterline } from "@shared/centerline.mjs";
+import { buildRoadEdges } from "@shared/road-edges.mjs";
+import { buildTrackModel } from "@shared/track-build.mjs";
+import { packTrackEntries, safeTrackName } from "@shared/pack-track.mjs";
+import { buildEnrichedJSON } from "@shared/course-export.mjs";
+import { renderTwoPanelPNG } from "../export/panel-canvas.js";
+import JSZip from "jszip";
 import { isAdmin } from "@shared/officialsStore.js";
 
 const { error: notifyError, warning: notifyWarn } = useNotification();
@@ -25,6 +31,8 @@ const currentSide = ref("left");
 const roverLoading = ref(false);
 const editLocked = ref(loadPref("editLocked", true, (v) => v === "true")); // default locked; screen tap/drag can't add/move/rotate/delete cones; persisted
 const showCenterline = ref(loadPref("showCenterline", true, (v) => v === "true")); // course centerline graphic; default on; persisted
+const courseStart = ref(loadPref("courseStart", {}, (v) => JSON.parse(v)));   // per-course start cone id { [courseId]: coneId }; persisted
+const courseReverse = ref(loadPref("courseReverse", {}, (v) => JSON.parse(v))); // per-course reversed travel direction { [courseId]: true }; persisted
 const centerline = ref(null); // computed centerline of the active course: { ok, closed, length, points } | null
 const coneListEl = ref(null);         // cone-list scroll container (for scroll-to-top)
 const coneListScrolled = ref(false);  // true once the list is scrolled down a bit
@@ -1059,25 +1067,100 @@ function scheduleCenterline() {
   if (centerlineTimer) clearTimeout(centerlineTimer);
   centerlineTimer = setTimeout(recomputeCenterline, 250);
 }
+// Start-point + direction options for a course, shared by the on-map graphic and
+// the ZIP export so they always agree. start = the station nearest the chosen
+// cone; reverse = flipped travel direction.
+function courseDirOpts(courseId, cones) {
+  const opts = {};
+  const startId = courseStart.value[courseId];
+  const startCone = startId != null ? cones.find((c) => c.id === startId) : null;
+  if (startCone) opts.start = { lat: startCone.lat, lng: startCone.lng };
+  if (courseReverse.value[courseId]) opts.reverse = true;
+  return opts;
+}
 function recomputeCenterline() {
   centerlineTimer = null;
   const cones = activeCones.value;
-  centerline.value = cones.length >= 6 ? computeCenterline(cones, { step: 1.0 }) : null;
+  centerline.value = cones.length >= 6
+    ? computeCenterline(cones, { step: 1.0, ...courseDirOpts(activeCourseId.value, cones) })
+    : null;
   drawCenterline();
 }
 function drawCenterline() {
   if (centerlineLayer) { try { map.removeLayer(centerlineLayer); } catch {} centerlineLayer = null; }
   if (!map || activeTab.value !== "courses" || !showCenterline.value || !centerline.value?.ok) return;
-  const latlngs = centerline.value.points.map((p) => [p.lat, p.lng]);
+  const pts = centerline.value.points;
+  const latlngs = pts.map((p) => [p.lat, p.lng]);
   // Dark casing under a light dashed line so the centerline reads over satellite tiles.
-  centerlineLayer = L.layerGroup([
+  const layers = [
     L.polyline(latlngs, { color: "#0b1021", weight: 5, opacity: 0.45, interactive: false }),
     L.polyline(latlngs, { color: "#f8fafc", weight: 2.5, opacity: 0.95, dashArray: "7 6", interactive: false }),
-  ]).addTo(map);
+  ];
+  const arrow = startArrow(pts);
+  if (arrow) layers.push(...arrow);
+  centerlineLayer = L.layerGroup(layers).addTo(map);
+}
+
+// Start marker + a travel-direction arrow at points[0], drawn in geographic
+// coordinates (metres → lat/lng) so it scales and rotates with the map. The
+// heading is taken a few points ahead for stability; flips with reverse.
+function startArrow(pts) {
+  if (!pts || pts.length < 3) return null;
+  const a = pts[0];
+  const b = pts[Math.min(6, pts.length - 1)];
+  const latRad = (a.lat * Math.PI) / 180;
+  const mLat = 110540, mLng = 111320 * Math.cos(latRad);
+  let fe = (b.lng - a.lng) * mLng, fn = (b.lat - a.lat) * mLat;   // forward (east, north) metres
+  const fm = Math.hypot(fe, fn);
+  if (fm < 1e-6) return null;
+  fe /= fm; fn /= fm;
+  const toLL = (em, nm) => [a.lat + nm / mLat, a.lng + em / mLng];
+  const pe = -fn, pn = fe;                                        // left-perpendicular unit
+  // ONE arrow polygon (shaft + head): a single continuous outline, so there is
+  // no seam between the stem and the triangle and no stem poking past the tip.
+  const HEAD = 7, HEADLEN = 3.2, HW = 1.5, SW = 0.55;            // metres: tip dist, head length, head/shaft half-width
+  const B = HEAD - HEADLEN;                                       // head base distance from start
+  const pt = (along, off) => toLL(along * fe + off * pe, along * fn + off * pn);
+  const arrow = [pt(0, SW), pt(B, SW), pt(B, HW), pt(HEAD, 0), pt(B, -HW), pt(B, -SW), pt(0, -SW)];
+  const C = "#2fe36a";                                            // bright green
+  const EDGE = "#0b1021";                                         // dark casing so it reads on any basemap
+  return [
+    L.polygon(arrow, { color: EDGE, weight: 2, lineJoin: "round", fillColor: C, fillOpacity: 1, interactive: false }),
+    // start dot in METRES (like the shaft) with radius = shaft half-width, so it
+    // is exactly as wide as the stem at every zoom (a pixel circleMarker wasn't).
+    L.circle([a.lat, a.lng], { radius: SW, color: EDGE, weight: 2, fillColor: C, fillOpacity: 1, interactive: false }),
+  ];
 }
 watch(showCenterline, (v) => { savePref("showCenterline", v); drawCenterline(); });
 watch(activeCones, scheduleCenterline);
 watch(activeTab, drawCenterline);
+watch(courseStart, (v) => savePref("courseStart", JSON.stringify(v)), { deep: true });
+watch(courseReverse, (v) => savePref("courseReverse", JSON.stringify(v)), { deep: true });
+// (course switches already recompute via the activeCones watcher above, which
+//  reads the newly-active course's stored start/direction.)
+
+// The currently selected cone is this course's start line.
+const isStartCone = computed(() =>
+  selectedConeId.value != null && courseStart.value[activeCourseId.value] === selectedConeId.value
+);
+// Set the selected cone as the start (or clear it back to the auto start gate).
+function setStartCone() {
+  const id = activeCourseId.value;
+  if (id == null || selectedConeId.value == null) return;
+  const next = { ...courseStart.value };
+  if (next[id] === selectedConeId.value) delete next[id]; // toggle off -> auto gate
+  else next[id] = selectedConeId.value;
+  courseStart.value = next;
+  recomputeCenterline();
+}
+// Flip the course's travel direction.
+function toggleReverse() {
+  const id = activeCourseId.value;
+  if (id == null) return;
+  courseReverse.value = { ...courseReverse.value, [id]: !courseReverse.value[id] };
+  recomputeCenterline();
+}
+const isReversed = computed(() => !!courseReverse.value[activeCourseId.value]);
 
 /* ── Icon helpers ──────────────────────────────────── */
 function coneSideIndex(courseId, coneId) {
@@ -1486,12 +1569,12 @@ watch(activeCourseId, (v) => {
   if (map) rebuildAllMarkers();
   if (v != null) {
     savePref("activeCourseId", v);
-    // Pan to the first cone of the newly selected course so the operator
-    // doesn't have to hand-pan after switching courses (and after a page
-    // refresh the restored course pulls the map with it).
+    // Pan to the newly selected course so the operator doesn't hand-pan: the
+    // designated start cone if one is set, else the first cone in the data.
     const cones = conesMap.value[v] || [];
     if (cones.length > 0 && map) {
-      panToVisibleCenter(cones[0].lat, cones[0].lng);
+      const startCone = cones.find((c) => c.id === courseStart.value[v]) || cones[0];
+      panToVisibleCenter(startCone.lat, startCone.lng);
     }
   }
 });
@@ -1528,6 +1611,12 @@ async function initMap() {
   globalThis.L = L;
   await import("leaflet-rotate");
   map = L.map("map", {
+    // Render vector layers (centerline, direction arrow, mission/rotate/measure
+    // paths) on a single shared <canvas> instead of one SVG node each — the
+    // 850+-point centerline was re-projected as SVG on every pan under
+    // leaflet-rotate, which janks the drag. (Locked/read-only cone dots already
+    // use their own canvas renderer, so canvas + rotation is proven here.)
+    preferCanvas: true,
     zoomControl: true, maxZoom: 21, boxZoom: false,
     // Button-driven 90° rotation only — no built-in compass control, no
     // two-finger free rotation (that would desync the snapped mapBearing).
@@ -1783,18 +1872,66 @@ async function saveCourseName(id) {
   } catch (err) { notifyError(err.message); }
 }
 
+// Fixed per-file timestamp so a re-export of the same course is reproducible
+// (JSZip otherwise stamps the current time into every entry).
+const EXPORT_DATE = new Date("2020-01-01T00:00:00Z");
+const exportingId = ref(null);
+
+// Export a course as a ZIP holding three items:
+//   <name>.json        enriched, re-importable course record (every numeric artifact)
+//   <name>_width.png   2-panel preview (centerline | road width)
+//   <name>_track.zip   installable Assetto Corsa track (extracts into AC content/)
+// The whole pipeline runs client-side (native JS in shared/), no server compute.
 async function exportCourse(id) {
-  const base = import.meta.env.PROD ? "/course" : "";
+  if (exportingId.value) return;
   const course = courses.value.find((c) => c.id === id);
+  const name = course?.name || "course";       // in-game display name (kept as-is)
+  const safeName = safeTrackName(name);         // path-safe base for file/folder names
+  exportingId.value = id;
   try {
-    const res = await request(`/api/courses/${id}/export`);
-    const blob = await res.blob();
+    // cones: prefer the already-loaded map, else fetch (allows a non-active course)
+    let cones = conesMap.value[id];
+    if (!cones || !cones.length) {
+      const res = await request(`/api/courses/${id}/cones`);
+      cones = await res.json();
+    }
+
+    // same start/direction as the on-map centerline so the export matches
+    const cl = computeCenterline(cones, { step: 1.0, metric: true, ...courseDirOpts(id, cones) });
+    if (!cl.ok) { notifyError(`중심선 생성 실패: ${cl.reason}`); return; }
+
+    const edges = buildRoadEdges(cl);
+    const track = buildTrackModel(cl, edges, { name: safeName });
+
+    // inner Assetto Corsa track zip (content/tracks/<safeName>/...); the in-game
+    // UI name (ui_track.json) keeps the original, spaces and all.
+    const entries = packTrackEntries(cl, edges, track, { name: safeName, uiName: name });
+    const trackZip = new JSZip();
+    for (const [path, content] of Object.entries(entries)) {
+      trackZip.file(path, content, { date: EXPORT_DATE });
+    }
+    const trackZipBlob = await trackZip.generateAsync({ type: "blob", compression: "DEFLATE" });
+
+    const enriched = buildEnrichedJSON({ name, cones, cl, edges, track });
+    const png = await renderTwoPanelPNG(cl, edges, { name });
+
+    // outer zip with the three deliverables (path-safe file names)
+    const outer = new JSZip();
+    outer.file(`${safeName}.json`, JSON.stringify(enriched), { date: EXPORT_DATE });
+    outer.file(`${safeName}.png`, png, { date: EXPORT_DATE });
+    outer.file(`${safeName}-track.zip`, trackZipBlob, { date: EXPORT_DATE });
+    const blob = await outer.generateAsync({ type: "blob", compression: "DEFLATE" });
+
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${course?.name || "course"}.json`;
+    a.download = `${safeName}.zip`;
     a.click();
     URL.revokeObjectURL(a.href);
-  } catch (err) { notifyError(err.message); }
+  } catch (err) {
+    notifyError(err?.message || String(err));
+  } finally {
+    exportingId.value = null;
+  }
 }
 
 function triggerImport() {
@@ -3726,10 +3863,13 @@ onMounted(async () => {
   await initMap();
   // fetchAll restores activeCourseId before initMap exists, so the
   // course watcher's pan was a no-op. Re-apply once the map is ready
-  // so a refresh lands centered on the restored course's first cone.
+  // so a refresh lands centered on the restored course's start (or first cone).
   if (activeCourseId.value != null) {
     const cones = conesMap.value[activeCourseId.value] || [];
-    if (cones.length > 0) panToVisibleCenter(cones[0].lat, cones[0].lng, { animate: false });
+    if (cones.length > 0) {
+      const startCone = cones.find((c) => c.id === courseStart.value[activeCourseId.value]) || cones[0];
+      panToVisibleCenter(startCone.lat, startCone.lng, { animate: false });
+    }
   }
   recomputeCenterline(); // draw the restored course's centerline on first paint
   connectSSE();
@@ -4237,6 +4377,20 @@ onUnmounted(() => {
               class="map-fab-panel map-fab-tools"
             >
               <button
+                v-if="centerline?.ok"
+                :class="['fab-icon-btn', 'fab-tool', { active: isReversed }]"
+                @click="toggleReverse"
+                aria-label="진행방향 전환"
+                :title="isReversed ? '진행방향: 역방향 (탭 → 정방향)' : '진행방향: 정방향 (탭 → 역방향)'"
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="16 4 21 8 16 12" />
+                  <line x1="3" y1="8" x2="21" y2="8" />
+                  <polyline points="8 12 3 16 8 20" />
+                  <line x1="3" y1="16" x2="21" y2="16" />
+                </svg>
+              </button>
+              <button
                 :class="['fab-icon-btn', 'fab-tool', { active: showCenterline }]"
                 @click="showCenterline = !showCenterline"
                 aria-label="중심선 표시"
@@ -4364,7 +4518,7 @@ onUnmounted(() => {
                         {{ c.name }} <span class="cone-count">({{ c.cone_count }})</span>
                       </span>
                     </template>
-                    <button class="dl-btn" @click.stop="exportCourse(c.id)" title="JSON 내보내기">
+                    <button class="dl-btn" @click.stop="exportCourse(c.id)" :disabled="exportingId === c.id" :title="exportingId === c.id ? '내보내는 중…' : 'ZIP 내보내기 (AC 트랙 + JSON + 미리보기)'">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     </button>
                     <button v-if="isAdmin" class="del-btn" @click.stop="deleteCourse(c.id)" title="삭제">×</button>
@@ -4417,6 +4571,13 @@ onUnmounted(() => {
                       <button class="btn btn-primary btn-lg-touch" @click="updateCone">저장</button>
                       <button class="btn btn-danger btn-lg-touch" @click="deleteCone(selectedConeId)">삭제</button>
                       <button class="btn btn-ghost btn-lg-touch" @click="selectedConeId = null">취소</button>
+                    </div>
+                    <div class="edit-buttons">
+                      <button
+                        :class="['btn', 'btn-lg-touch', isStartCone ? 'btn-primary' : 'btn-ghost']"
+                        @click="setStartCone"
+                        title="이 콘에서 가장 가까운 센터라인 지점을 코스 시작점으로 지정"
+                      >{{ isStartCone ? '시작점 해제' : '시작점 지정' }}</button>
                     </div>
                   </div>
 
@@ -5971,9 +6132,11 @@ onUnmounted(() => {
 
   .map-wrap { flex: 1; min-height: 220px; }
 
-  /* Stack the top-right tools vertically so they hug the edge and leave the
-     centred active-tool overlay room on narrow screens. */
-  .map-fab-tools { flex-direction: column; flex-wrap: nowrap; }
+  /* Keep the top-right tools in a single horizontal row on mobile (they were
+     stacked vertically before). Drop the centred active-tool overlay / rotation
+     HUD below the tool row so they don't collide on narrow screens. */
+  .map-fab-tools { flex-direction: row; flex-wrap: nowrap; }
+  .measure-overlay, .rotate-hud { top: 4.5rem; }
 
   .inspector-handle { display: none; }
 

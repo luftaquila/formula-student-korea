@@ -15,15 +15,22 @@
 //   5. Resample + light smoothing + safety clamp + slalom snapping.
 //
 // One deliberate divergence from centerline.py: the slalom pass uses scipy's
-// FITPACK smoothing spline (splprep). That is impractical to reimplement 1:1, so
-// snapSlaloms() uses a centripetal Catmull-Rom through the slalom cones plus
-// run-in/run-out anchors — visually equivalent (passes next to the cones,
-// tangent-continuous) but not byte-identical to the Python output.
+// FITPACK smoothing spline (splprep). No JS port of FITPACK exists, so
+// snapSlaloms() uses a Reinsch weighted cubic smoothing spline (shared/
+// smoothing-spline.mjs) — the SAME class of estimator (penalised, smooths rather
+// than interpolates), which reliably suppresses the small slalom kinks/"삐침".
+// Not byte-identical to the Python output; verified instead by the length
+// tolerance and the max-turn-angle smoothness gate in the centerline test.
+
+import { fitParametric } from "./smoothing-spline.mjs";
 
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
 // ----------------------------------------------------------------- projection
-// Returns { P, back } where P[i] = [x, y] metres and back(x, y) -> [lat, lng].
+// Equirectangular projection about the cone centroid. Returns the metric points
+// P[i] = [x, y], the inverse back(x,y) -> [lat,lng], AND the frame constants
+// (lat0,lng0,mlat,mlng) so the WHOLE downstream (road edges, mesh, enriched JSON)
+// shares ONE projection and never re-projects lat/lng.
 function project(cones) {
   const lat0 = cones.reduce((s, c) => s + c.lat, 0) / cones.length;
   const lng0 = cones.reduce((s, c) => s + c.lng, 0) / cones.length;
@@ -31,7 +38,7 @@ function project(cones) {
   const mlng = 111320.0 * Math.cos((lat0 * Math.PI) / 180);
   const P = cones.map((c) => [(c.lng - lng0) * mlng, (c.lat - lat0) * mlat]);
   const back = (x, y) => [lat0 + y / mlat, lng0 + x / mlng];
-  return { P, back };
+  return { P, back, lat0, lng0, mlat, mlng };
 }
 
 // ----------------------------------------------------------------- nearest cone
@@ -477,49 +484,19 @@ function slalomGroups(centers, width) {
   return groups;
 }
 
-// Centripetal Catmull-Rom (alpha = 0.5) through `pts`, sampled into ~N points.
-// Replaces scipy splprep/splev for the slalom pass: interpolating rather than
-// smoothing, but C1-continuous and passes next to the (high-weight) cones.
-function catmullRom(pts, N) {
-  const m = pts.length;
-  if (m < 3) return pts.slice();
-  const pad = [pts[0], ...pts, pts[m - 1]];
-  let total = 0;
-  const segLen = [];
-  for (let i = 0; i < m - 1; i++) { const d = dist(pts[i], pts[i + 1]); segLen.push(d); total += d; }
-  if (total < 1e-9) return pts.slice();
-
-  const lerpT = (a, b, ta, tb, t) => {
-    if (tb - ta < 1e-9) return [a[0], a[1]];
-    const f = (t - ta) / (tb - ta);
-    return [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1])];
-  };
-  const seg = (p0, p1, p2, p3, t) => {
-    const tj = (ti, pa, pb) => ti + Math.pow(Math.hypot(pb[0] - pa[0], pb[1] - pa[1]), 0.5);
-    const t0 = 0, t1 = tj(t0, p0, p1), t2 = tj(t1, p1, p2), t3 = tj(t2, p2, p3);
-    const T = t1 + (t2 - t1) * t;
-    const A1 = lerpT(p0, p1, t0, t1, T);
-    const A2 = lerpT(p1, p2, t1, t2, T);
-    const A3 = lerpT(p2, p3, t2, t3, T);
-    const B1 = lerpT(A1, A2, t0, t2, T);
-    const B2 = lerpT(A2, A3, t1, t3, T);
-    return lerpT(B1, B2, t1, t2, T);
-  };
-
-  const out = [];
-  for (let i = 0; i < m - 1; i++) {
-    const steps = Math.max(2, Math.round(N * (segLen[i] / total)));
-    for (let s = 0; s < steps; s++) out.push(seg(pad[i], pad[i + 1], pad[i + 2], pad[i + 3], s / steps));
-  }
-  out.push(pts[m - 1]);
-  return out;
-}
-
+// Route the centerline smoothly through each slalom, mirroring snap_slaloms in
+// centerline.py: fit a smoothing spline through the slalom's center cones (high
+// weight) plus K run-in/run-out chain points on each side (weight 1), then
+// resample. The Reinsch spline (shared/smoothing-spline.mjs) plays the role of
+// splprep(w=dw, s=len*1.5) — it passes next to the cones AND stays tangent-
+// continuous with the adjacent track (no bulge, no notch/kink at entry/exit).
 function snapSlaloms(sk, closed, centers, width) {
   if (!centers.length || !closed) return sk;
   let pts = sk.slice(0, -1);
   let n = pts.length;
-  const K = 9;
+  const K = 9;          // chain points used on each side (longer run-in smooths
+                        // the slalom entry/exit bends into the adjacent track)
+  const CONE_W = 20.0;  // center cones weighted high so the spline passes THROUGH
   for (const g of slalomGroups(centers, width)) {
     let i0 = 0, d0 = Infinity, i1 = 0, d1 = Infinity;
     for (let i = 0; i < n; i++) {
@@ -534,14 +511,16 @@ function snapSlaloms(sk, closed, centers, width) {
     const pre = pts.slice(Math.max(0, a - K), a + 1);
     const post = pts.slice(b, b + K + 1);
     const anchors = pre.concat(segCones, post);
+    const wts = pre.map(() => 1.0).concat(segCones.map(() => CONE_W), post.map(() => 1.0));
     const ded = [anchors[0]];
+    const dw = [wts[0]];
     for (let i = 1; i < anchors.length; i++) {
-      if (dist(anchors[i], ded[ded.length - 1]) > 0.4) ded.push(anchors[i]);
+      if (dist(anchors[i], ded[ded.length - 1]) > 0.4) { ded.push(anchors[i]); dw.push(wts[i]); }
     }
     if (ded.length < 4) continue;
     let length = 0;
     for (let i = 0; i < ded.length - 1; i++) length += dist(ded[i], ded[i + 1]);
-    const newseg = catmullRom(ded, Math.max(4, Math.round(length)));
+    const newseg = fitParametric(ded, dw, ded.length * 1.5, Math.max(4, Math.round(length)));
     pts = pts.slice(0, Math.max(0, a - K)).concat(newseg, pts.slice(b + K + 1));
     n = pts.length;
   }
@@ -553,7 +532,11 @@ function snapSlaloms(sk, closed, centers, width) {
 /**
  * Compute a track centerline from cone positions.
  * @param {Array<{lat:number,lng:number,side:'left'|'right'|'center'}>} cones
- * @param {{step?:number}} [opts]  step = point spacing in metres (default 1.0)
+ * @param {{step?:number, metric?:boolean, start?:{lat:number,lng:number}, reverse?:boolean}} [opts]
+ *   step    = point spacing in metres (default 1.0)
+ *   metric  = attach the shared projection frame + metric arrays (for the export)
+ *   start   = make the station nearest this point the loop start (else auto gate)
+ *   reverse = flip the travel direction, keeping the same start station
  * @returns {{ok:true,closed:boolean,length:number,points:Array<{lat,lng,width}>}
  *          | {ok:false,reason:string}}
  */
@@ -562,7 +545,7 @@ export function computeCenterline(cones, opts = {}) {
   if (!Array.isArray(cones) || cones.length < 6) {
     return { ok: false, reason: "need at least 3 left and 3 right cones" };
   }
-  const { P, back } = project(cones);
+  const { P, back, lat0, lng0, mlat, mlng } = project(cones);
 
   const left = [], right = [], centers = [];
   let firstRight = null;
@@ -601,28 +584,80 @@ export function computeCenterline(cones, opts = {}) {
   sk = clampInside(sk, closed, left, right, width, 0.50, 0.35, 0.5, 6);
   sk = smooth(resample(sk, step, closed), closed, 1);
 
-  // Rotate a closed loop so it starts near the start gate (first cone + first right cone).
-  if (closed && sk.length > 3 && firstRight) {
-    const L0 = P[0], R0 = firstRight;
-    const gate = [(L0[0] + R0[0]) / 2, (L0[1] + R0[1]) / 2];
+  // Orient the loop: pick a start station, then optionally reverse travel.
+  //   - opts.start {lat,lng}: rotate so the station NEAREST that point is first
+  //     (used to make a chosen cone the start line). Falls back to the auto start
+  //     gate (first cone + first right cone) when absent.
+  //   - opts.reverse: flip the travel direction, keeping the same start station.
+  // This is the single source of truth for direction/start, so the on-map graphic
+  // and the exported track (road edges recomputed from the reversed stations,
+  // hence L/R and bank flip naturally) always agree.
+  if (closed && sk.length > 3) {
+    let ring = sk.slice();
+    if (ring.length > 1 && dist(ring[0], ring[ring.length - 1]) < 1e-9) ring = ring.slice(0, -1);
+
     let si = 0, sd = Infinity;
-    for (let i = 0; i < sk.length - 1; i++) {
-      const d = dist(sk[i], gate);
-      if (d < sd) { sd = d; si = i; }
+    let target = null;
+    if (opts.start && Number.isFinite(opts.start.lat) && Number.isFinite(opts.start.lng)) {
+      target = [(opts.start.lng - lng0) * mlng, (opts.start.lat - lat0) * mlat];
+    } else if (firstRight) {
+      target = [(P[0][0] + firstRight[0]) / 2, (P[0][1] + firstRight[1]) / 2];
     }
-    sk = sk.slice(si, -1).concat(sk.slice(0, si));
-    sk.push(sk[0]);
+    if (target) {
+      for (let i = 0; i < ring.length; i++) {
+        const d = dist(ring[i], target);
+        if (d < sd) { sd = d; si = i; }
+      }
+    }
+    ring = ring.slice(si).concat(ring.slice(0, si));                    // start first
+    if (opts.reverse) ring = [ring[0]].concat(ring.slice(1).reverse()); // flip, keep start
+    sk = ring.concat([ring[0]]);                                        // re-close (trailing dup)
+  } else if (!closed && opts.reverse) {
+    sk = sk.slice().reverse();
   }
 
   let length = 0;
   for (let i = 0; i < sk.length - 1; i++) length += dist(sk[i], sk[i + 1]);
 
+  // per-station corridor width = nearest-left + nearest-right cone distance
+  // (matches centerline.py widths_at / the CSV width_m column).
   const points = sk.map((xy) => {
     const [lat, lng] = back(xy[0], xy[1]);
-    return { lat, lng };
+    return { lat, lng, width: nearestDist(xy, left) + nearestDist(xy, right) };
   });
 
-  return { ok: true, closed, length, points };
+  const result = { ok: true, closed, length, points };
+
+  if (opts.metric) {
+    // Canonical station list for the whole downstream pipeline: strip the closing
+    // duplicate a rotated closed loop leaves at the end (road edges add their own
+    // periodicity, so a duplicate would create a zero-length segment/vertex).
+    const isDup = sk.length > 1 && dist(sk[0], sk[sk.length - 1]) < 1e-9;
+    const stations = isDup ? sk.slice(0, -1) : sk;
+    // cone arrays carry [x, y, alt] — alt is the per-cone elevation field (null
+    // when absent), consumed by road-edges for the banked cross-section.
+    const withAlt = (sideName) => {
+      const out = [];
+      for (let i = 0; i < cones.length; i++) {
+        if (cones[i].side === sideName) {
+          const a = cones[i].alt;
+          out.push([P[i][0], P[i][1], typeof a === "number" && Number.isFinite(a) ? a : null]);
+        }
+      }
+      return out;
+    };
+    result.metric = {
+      lat0, lng0, mlat, mlng, step,
+      reverse: !!opts.reverse,   // the applied travel direction (recorded for the export)
+      P: stations.map((p) => [p[0], p[1]]),
+      left: withAlt("left"),
+      right: withAlt("right"),
+      centers: withAlt("center"),
+      width,
+    };
+  }
+
+  return result;
 }
 
 /**
