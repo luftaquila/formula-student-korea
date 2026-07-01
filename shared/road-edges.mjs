@@ -82,6 +82,7 @@ export function buildRoadEdges(cl, opts = {}) {
   const sigma = opts.sigma ?? 3.0;
   const centerBoost = opts.centerBoost ?? 5.0;
   const elevSigma = opts.elevSigma ?? 10.0;
+  const extraWidthPerSide = opts.extraWidthPerSide ?? 1.0; // widen each side, except over slalom runs
 
   const P = cl.metric.P;                       // centerline stations [x,y]
   const boundary = cl.metric.left.concat(cl.metric.right); // wall cones [x,y,alt]
@@ -136,11 +137,12 @@ export function buildRoadEdges(cl, opts = {}) {
   let hl = halfProfile((v) => v > 0);
   let hr = halfProfile((v) => v < 0);
 
-  // widen the road smoothly over center-cone runs (periodic morphological
-  // closing so a run boosts as one continuous band, not scalloping per cone)
-  if (center.length && centerBoost) {
-    const cidx = center.map((c) => nearestIndex(c, P));
-    const cs = cidx.map((i) => sAt[i]);
+  // slalomAmt[i] in 0..1: 1 over center-cone (slalom) runs, tapering to 0. Built
+  // by a periodic morphological closing (so a run reads as one band, not
+  // scalloping per cone) then smoothed.
+  const slalomAmt = new Array(N).fill(0);
+  if (center.length) {
+    const cs = center.map((c) => sAt[nearestIndex(c, P)]);
     const mask = new Array(N).fill(false);
     for (let i = 0; i < N; i++) {
       let mn = Infinity;
@@ -150,9 +152,17 @@ export function buildRoadEdges(cl, opts = {}) {
     const L = 6;
     const notd = (a) => a.map((v) => !v);
     const closed = notd(dilate(notd(dilate(mask, L)), L));   // closing = erode(dilate)
-    const boost = circGauss(closed.map((v) => (v ? 1 : 0) * (centerBoost / 2.0)), 2.5);
-    hl = hl.map((v, i) => v + boost[i]);
-    hr = hr.map((v, i) => v + boost[i]);
+    const sm = circGauss(closed.map((v) => (v ? 1 : 0)), 2.5);
+    for (let i = 0; i < N; i++) slalomAmt[i] = sm[i];
+  }
+  // Over slalom runs: boost width by centerBoost (split both sides), tapered.
+  // Everywhere else: widen each side by extraWidthPerSide. The two blend via
+  // slalomAmt so the slalom keeps only its boost (no extra 1 m) and the join is
+  // smooth.
+  for (let i = 0; i < N; i++) {
+    const add = slalomAmt[i] * (centerBoost / 2.0) + (1 - slalomAmt[i]) * extraWidthPerSide;
+    hl[i] += add;
+    hr[i] += add;
   }
 
   // edges = centerline ± N * half-width, then light final smoothing to remove
