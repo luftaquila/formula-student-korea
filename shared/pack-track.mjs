@@ -9,7 +9,7 @@ import { encodePNG } from "./png.mjs";
 // data/surfaces.ini — static (byte-identical to pack_track.py).
 const SURFACES_INI = `[SURFACE_0]
 KEY=ROAD
-FRICTION=0.96
+FRICTION=0.99
 DAMPING=0
 WAV=
 WAV_PITCH=0
