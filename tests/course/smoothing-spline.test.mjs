@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { fitParametric, reinschFit } from "../../shared/smoothing-spline.mjs";
+import { fitParametric, reinschFit } from "../../course/lib/smoothing-spline.mjs";
 
 describe("reinschFit", () => {
   it("interpolates exactly at the knots when s = 0", () => {

@@ -9,6 +9,7 @@ RUN npm --prefix web ci --ignore-scripts
 RUN node web/node_modules/esbuild/install.js
 COPY ${SERVICE}/index.mjs ./
 COPY ${SERVICE}/web/ web/
+COPY ${SERVICE}/lib ./lib
 COPY shared ../shared
 RUN ln -s /build/web/node_modules /node_modules
 RUN npm --prefix web run build
@@ -22,6 +23,7 @@ WORKDIR /home/node/fsk-${SERVICE}
 COPY --from=builder /build/node_modules node_modules/
 COPY --from=builder /build/package.json ./
 COPY --from=builder /build/index.mjs ./
+COPY --from=builder /build/lib ./lib
 COPY --from=builder /build/web/dist web/dist/
 COPY shared ../shared
 COPY entrypoint.sh /usr/local/bin/

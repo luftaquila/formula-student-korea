@@ -3,7 +3,7 @@ import { ref } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { addControllerLog } from "../composables/useApi";
 import { acceptSensorTick } from "../composables/sensorDebounce";
-import { ruleFor, shouldLatchStart, shouldIgnore, lapTime } from "@shared/event-timing.js";
+import { ruleFor, shouldLatchStart, shouldIgnore, lapTime } from "@lib/event-timing.mjs";
 
 // Utility function for time formatting (분:초.밀리초, 분은 60 이상 가능)
 export function msToClockStr(ms) {

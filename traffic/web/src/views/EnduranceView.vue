@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted, onActivated, onDeactivated, onUnmounte
 import { useEntryStore } from "../stores/entry";
 import { useSerialStore, msToClockStr } from "../stores/serial";
 import { useNotification } from "@shared/useNotification.js";
-import { formatEnduranceDetail, enduranceTotal } from "@shared/event-timing.js";
+import { formatEnduranceDetail, enduranceTotal } from "@lib/event-timing.mjs";
 import { addRecord, updateRecord } from "../composables/useApi";
 import { useSSE } from "../composables/useSSE";
 

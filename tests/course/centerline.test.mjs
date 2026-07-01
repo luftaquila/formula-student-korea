@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import {
   computeCenterline,
   centerlineToGeoJSON,
-} from "../../shared/centerline.mjs";
+} from "../../course/lib/centerline.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const loadFixture = (name) =>
