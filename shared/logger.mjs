@@ -1,5 +1,50 @@
-import crypto from "crypto";
 import { runMigrationOnce, normalizeUtcTextTimestamp } from "./db-setup.mjs";
+import { createSecretChecker } from "./express-setup.mjs";
+
+// logs 테이블 필터 쿼리 파라미터(level/action/actor/from/to/search)를 WHERE 절과
+// 바인딩 파라미터로 변환한다. queryHandler와 auth의 로그 집계 로컬 쿼리가 공유한다.
+// 쿼리 파라미터가 중복 지정되어 배열로 오는 경우(?level=a&level=b)도 안전하게 처리.
+export function buildLogFilter(query) {
+  const str = (v) => (Array.isArray(v) ? v.join(",") : v == null ? "" : String(v));
+  const conditions = [];
+  const params = [];
+
+  const level = str(query.level);
+  if (level) {
+    const levels = level.split(",").map(l => l.trim()).filter(Boolean);
+    if (levels.length) {
+      conditions.push(`level IN (${levels.map(() => "?").join(",")})`);
+      params.push(...levels);
+    }
+  }
+  const action = str(query.action);
+  if (action) {
+    conditions.push("action LIKE ?");
+    params.push(action + "%");
+  }
+  const actor = str(query.actor);
+  if (actor) {
+    conditions.push("(actor_email LIKE ? OR actor_name LIKE ?)");
+    params.push(`%${actor}%`, `%${actor}%`);
+  }
+  const from = str(query.from);
+  if (from) {
+    conditions.push("timestamp >= ?");
+    params.push(from);
+  }
+  const to = str(query.to);
+  if (to) {
+    conditions.push("timestamp <= ?");
+    params.push(to);
+  }
+  const search = str(query.search);
+  if (search) {
+    conditions.push("(action LIKE ? OR target LIKE ? OR detail LIKE ?)");
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+  }
+
+  return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
+}
 
 export function createLogger(db, serviceName, maxRows = 50000) {
   db.exec(`CREATE TABLE IF NOT EXISTS logs (
@@ -53,24 +98,14 @@ export function createLogger(db, serviceName, maxRows = 50000) {
       console.error(`[logger] cleanup error: ${e.message}`);
     }
   };
-  setInterval(cleanup, 3600000);
+  setInterval(cleanup, 3600000).unref();
 
-  // Pre-compute secret hash at init time
-  const internalSecret = process.env.INTERNAL_SECRET;
-  const cachedSecretHash = internalSecret
-    ? crypto.createHash("sha256").update(internalSecret).digest()
-    : null;
+  const isInternalSecret = createSecretChecker(process.env.INTERNAL_SECRET);
 
   // Query handler (used as Express route handler for GET /api/logs)
   function queryHandler(req, res) {
     // Auth check: admin or internal service
-    const header = req.headers["x-internal-service"];
-    let isInternal = false;
-    if (cachedSecretHash && header) {
-      const headerHash = crypto.createHash("sha256").update(header).digest();
-      isInternal = headerHash.length === cachedSecretHash.length && crypto.timingSafeEqual(headerHash, cachedSecretHash);
-    }
-
+    const isInternal = isInternalSecret(req.headers["x-internal-service"]);
     if (!isInternal && req.user?.role !== "admin") {
       return res.status(403).send("권한이 없습니다.");
     }
@@ -78,36 +113,7 @@ export function createLogger(db, serviceName, maxRows = 50000) {
     const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
     const offset = Number(req.query.offset) || 0;
 
-    const conditions = [];
-    const params = [];
-
-    if (req.query.level) {
-      const levels = req.query.level.split(",").map(l => l.trim()).filter(Boolean);
-      conditions.push(`level IN (${levels.map(() => "?").join(",")})`);
-      params.push(...levels);
-    }
-    if (req.query.action) {
-      conditions.push("action LIKE ?");
-      params.push(req.query.action + "%");
-    }
-    if (req.query.actor) {
-      conditions.push("(actor_email LIKE ? OR actor_name LIKE ?)");
-      params.push(`%${req.query.actor}%`, `%${req.query.actor}%`);
-    }
-    if (req.query.from) {
-      conditions.push("timestamp >= ?");
-      params.push(req.query.from);
-    }
-    if (req.query.to) {
-      conditions.push("timestamp <= ?");
-      params.push(req.query.to);
-    }
-    if (req.query.search) {
-      conditions.push("(action LIKE ? OR target LIKE ? OR detail LIKE ?)");
-      params.push(`%${req.query.search}%`, `%${req.query.search}%`, `%${req.query.search}%`);
-    }
-
-    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const { where, params } = buildLogFilter(req.query);
 
     const total = db.prepare(`SELECT COUNT(*) as cnt FROM logs ${where}`).get(...params).cnt;
     const logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);

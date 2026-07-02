@@ -154,3 +154,35 @@ describe('createLogger', () => {
     cleanDb.close();
   });
 });
+
+import { buildLogFilter } from '../../shared/logger.mjs';
+
+describe('buildLogFilter', () => {
+  it('returns empty WHERE for no filters', () => {
+    assert.deepEqual(buildLogFilter({}), { where: '', params: [] });
+  });
+
+  it('builds level IN clause from comma-separated values', () => {
+    const { where, params } = buildLogFilter({ level: 'info,warn' });
+    assert.match(where, /level IN \(\?,\?\)/);
+    assert.deepEqual(params, ['info', 'warn']);
+  });
+
+  it('coerces repeated query params (arrays) instead of throwing', () => {
+    const { where, params } = buildLogFilter({ level: ['info', 'warn'], action: ['a.b'] });
+    assert.match(where, /level IN/);
+    assert.deepEqual(params.slice(0, 2), ['info', 'warn']);
+    assert.ok(params.includes('a.b%'));
+  });
+
+  it('combines action/actor/from/to/search filters', () => {
+    const { where, params } = buildLogFilter({
+      action: 'entry', actor: 'kim', from: '2026-01-01', to: '2026-12-31', search: 'x',
+    });
+    assert.match(where, /action LIKE \?/);
+    assert.match(where, /actor_email LIKE \? OR actor_name LIKE \?/);
+    assert.match(where, /timestamp >= \?/);
+    assert.match(where, /timestamp <= \?/);
+    assert.equal(params.length, 8);
+  });
+});

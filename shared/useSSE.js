@@ -78,3 +78,23 @@ export function createSSEConnection(endpointUrl) {
 
   return { on, useSSE, connected };
 }
+
+// 서비스 앱 공용 SSE 진입점. base path 계산(api-base.js와 동일하게 PROD 키 사용),
+// init 기반 connected 확정과 재연결 감지(reconnected)까지 한 곳에서 제공해 앱별
+// composable의 드리프트(env 플래그 반전, 재연결 감지 누락)를 막는다.
+export function createServiceSSE(basePath, eventPath = "/api/events") {
+  const base = import.meta.env.PROD ? basePath : "";
+  const conn = createSSEConnection(`${base}${eventPath}`);
+  const reconnected = ref(null);
+  let initCount = 0;
+  conn.on("init", () => {
+    conn.connected.value = true;
+    if (++initCount > 1) reconnected.value = Date.now();
+  });
+  return { ...conn, reconnected };
+}
+
+// SSE 프레임의 JSON 페이로드 파싱. 손상 프레임은 null — 리스너가 조기 반환한다.
+export function parseSSEData(e) {
+  try { return JSON.parse(e.data); } catch { return null; }
+}
