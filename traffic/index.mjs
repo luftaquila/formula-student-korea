@@ -1374,8 +1374,13 @@ app.post("/api/wireless/ingest", (req, res) => {
       // rx_miss/beacon_gap/sec_drop/provisioned는 실시간(SSE)으로만 — 스냅샷 테이블 스키마는 그대로.
       // 보안 이벤트 수집(인증거부 증가분 + 미프로비저닝 전이). 카운터는 보드 재부팅 시 0 리셋이라
       // 증가(secDrop>prev)일 때만 로깅 → 재부팅 후 리셋이 거짓 알림을 내지 않음.
-      const prevDrop = Number.isFinite(prev.sec_drop) ? prev.sec_drop : 0;
-      if (secDrop !== null && secDrop > prevDrop) { secLog.push({ node, sec_drop: secDrop, delta: secDrop - prevDrop }); }
+      // baseline(prev.sec_drop)이 실재할 때만 증가를 경고한다. prev가 비었으면(첫 관측
+      // 또는 liveTelemetry TTL prune 후 재등장) 없는 0 기준과 비교하지 않고 조용히
+      // baseline만 세운다 — 재부팅 안 한 노드가 침묵 후 재등장할 때의 거짓 경고 방지.
+      const prevHadDrop = Number.isFinite(prev.sec_drop);
+      if (secDrop !== null && prevHadDrop && secDrop > prev.sec_drop) {
+        secLog.push({ node, sec_drop: secDrop, delta: secDrop - prev.sec_drop });
+      }
       let provWarned = prev._provWarned || false;
       if (provisioned === 0 && !provWarned) { secLog.push({ node, unprovisioned: true }); provWarned = true; }
       else if (provisioned === 1) { provWarned = false; }

@@ -309,6 +309,39 @@ describe('Records lifecycle sync', () => {
   });
 });
 
+describe('Wireless security observation (sec_drop baseline)', () => {
+  const node = 'sectest-node';
+  const secLogs = () =>
+    db.prepare("SELECT detail FROM logs WHERE action = 'wireless.security' AND target = ?").all(`node ${node}`);
+
+  async function ingestSecDrop(sec_drop) {
+    const res = await client.post('/api/wireless/ingest', {
+      body: { telemetry: [{ node_id: node, sec_drop }] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+  }
+
+  it('does not warn on first observation of a non-zero counter (no baseline yet)', async () => {
+    // 첫 관측 = TTL prune 후 재등장과 동일(prev 비어 있음). 없는 0 기준과 비교해
+    // 거짓 증가 경고를 내면 안 된다.
+    await ingestSecDrop(5);
+    assert.equal(secLogs().length, 0, 'first sight of sec_drop=5 must not emit a security warning');
+  });
+
+  it('does not warn when the counter is unchanged after re-appearing', async () => {
+    await ingestSecDrop(5);
+    assert.equal(secLogs().length, 0, 'unchanged counter must not warn');
+  });
+
+  it('warns only on a genuine increase over the established baseline', async () => {
+    await ingestSecDrop(8);
+    const logs = secLogs();
+    assert.equal(logs.length, 1, 'a real increase must emit exactly one warning');
+    assert.equal(JSON.parse(logs[0].detail).delta, 3, 'delta must be measured from the real baseline (8-5)');
+  });
+});
+
 describe('GET /api/records (after creation)', () => {
   it('includes the created table', async () => {
     const res = await client.get('/api/records', { cookie: adminCookie });
