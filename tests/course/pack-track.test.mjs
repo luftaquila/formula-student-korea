@@ -88,9 +88,9 @@ describe("packTrackEntries — text files", () => {
     const ui = JSON.parse(entries[`${root}/ui/ui_track.json`]);
     assert.equal(ui.name, NAME);
     assert.equal(ui.run, "clockwise");
-    assert.equal(ui.author, "cone2track");
+    assert.equal(ui.author, "luftaquila");
     assert.equal(ui.pitboxes, "1");
-    assert.deepEqual(ui.tags, ["autogen", "cones"]);
+    assert.deepEqual(ui.tags, ["circuit", "autogen", "cones"]);
     assert.match(ui.length, /^\d+$/);
     assert.match(ui.width, /^\d+\.\d$/);
   });

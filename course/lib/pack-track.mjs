@@ -188,8 +188,8 @@ export function packTrackEntries(cl, edges, track, opts = {}) {
 
   const ui = {
     name: uiName,
-    description: `Auto-generated from cone-GPS survey. Length ~${length.toFixed(0)} m, width ~${width.toFixed(1)} m.`,
-    tags: ["autogen", "cones"],
+    description: `Auto-generated from RTK GPS survey. Length ~${length.toFixed(0)} m, width ~${width.toFixed(1)} m.`,
+    tags: ["circuit", "autogen", "cones"],
     geotags: [],
     country: "South Korea",
     city: "",
@@ -197,9 +197,9 @@ export function packTrackEntries(cl, edges, track, opts = {}) {
     width: `${width.toFixed(1)}`,
     pitboxes: "1",
     run: "clockwise",
-    author: "cone2track",
+    author: "luftaquila",
     version: "1.0",
-    url: "",
+    url: "https://github.com/luftaquila",
   };
 
   const entries = {};
