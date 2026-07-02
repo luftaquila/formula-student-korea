@@ -129,8 +129,8 @@ describe('Calendar API', () => {
         body: { title: 'Bad Role', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'superadmin' },
       });
       assert.equal(res.status, 400);
-      const body = await res.json();
-      assert.match(body.error, /Invalid role/i);
+      const body = await res.text();
+      assert.match(body, /공개 범위/);
     });
 
     it('rejects invalid role value on update', async () => {
@@ -275,8 +275,8 @@ describe('Calendar API', () => {
         body: { title: 'Backwards', start: '2026-07-20', end: '2026-07-15', allDay: true },
       });
       assert.equal(res.status, 400);
-      const body = await res.json();
-      assert.match(body.error, /start/i);
+      const body = await res.text();
+      assert.match(body, /시작/);
     });
 
     it('PUT /api/events/:id - rejects start after end', async () => {
@@ -285,8 +285,8 @@ describe('Calendar API', () => {
         body: { title: 'Backwards', start: '2026-07-20', end: '2026-07-15', allDay: true },
       });
       assert.equal(res.status, 400);
-      const body = await res.json();
-      assert.match(body.error, /start/i);
+      const body = await res.text();
+      assert.match(body, /시작/);
     });
 
     it('PUT /api/events/:id - updates an event', async () => {

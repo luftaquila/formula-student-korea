@@ -56,17 +56,6 @@ function createMockTrafficServer() {
   app.get('/api/records/year/:year', (req, res) => {
     res.json([{ name: `FSK ${req.params.year} 가속 1차`, records }]);
   });
-  app.get('/api/records', (req, res) => {
-    const year = new Date().getFullYear();
-    res.json([`FSK ${year} 가속 1차`]);
-  });
-  app.get('/api/records/visibility', (req, res) => {
-    const year = new Date().getFullYear();
-    res.json({ [`FSK ${year} 가속 1차`]: true });
-  });
-  app.get('/api/records/:name', (req, res) => {
-    res.json(records);
-  });
   app.get('/api/event-modes', (req, res) => {
     res.json([
       { event_type: '가속', enabled: 1 },
@@ -118,52 +107,39 @@ function createRichMockTrafficServer() {
   const app = express();
   const year = new Date().getFullYear();
 
-  app.get('/api/records', (req, res) => {
-    // Two tables for same event type "가속" (multi-table merge test)
-    // Plus one table for "스키드패드"
+  // 실제 traffic의 /api/records/year/:year 형태(가시 테이블 + 기록 일괄)를 흉내낸다.
+  app.get('/api/records/year/:year', (req, res) => {
     res.json([
-      `FSK ${year} 가속 1차`,
-      `FSK ${year} 가속 2차`,
-      `FSK ${year} 스키드패드`,
+      {
+        // Two tables for same event type "가속" (multi-table merge test)
+        name: `FSK ${year} 가속 1차`,
+        records: [
+          // Team 1: valid run
+          { rowid: 1, time: 'T1', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, cones: 1, oc: 0, invalidated: 0, scoreboard: 1 },
+          // Team 2: invalidated run
+          { rowid: 2, time: 'T2', num: 2, univ: 'B', team: 'B', type: '가속', result: 48000, cones: 0, oc: 0, invalidated: 1, scoreboard: 0 },
+          // Team 3: DNF run (result < 0)
+          { rowid: 3, time: 'T3', num: 3, univ: 'C', team: 'C', type: '가속', result: -1, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+        ],
+      },
+      {
+        name: `FSK ${year} 가속 2차`,
+        records: [
+          // Team 1: another run (worse time) - tests multi-table merge + best run selection
+          { rowid: 4, time: 'T4', num: 1, univ: 'A', team: 'A', type: '가속', result: 55000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+          // Team 2: another run (also invalidated) - all runs invalidated → result: null
+          { rowid: 5, time: 'T5', num: 2, univ: 'B', team: 'B', type: '가속', result: 49000, cones: 0, oc: 0, invalidated: 1, scoreboard: 0 },
+          // Team 3: another DNF run - all valid but all DNF → result: -1
+          { rowid: 6, time: 'T6', num: 3, univ: 'C', team: 'C', type: '가속', result: -1, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+        ],
+      },
+      {
+        name: `FSK ${year} 스키드패드`,
+        records: [
+          { rowid: 7, time: 'T7', num: 1, univ: 'A', team: 'A', type: '스키드패드', result: 30000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+        ],
+      },
     ]);
-  });
-
-  app.get('/api/records/visibility', (req, res) => {
-    res.json({
-      [`FSK ${year} 가속 1차`]: true,
-      [`FSK ${year} 가속 2차`]: true,
-      [`FSK ${year} 스키드패드`]: true,
-    });
-  });
-
-  app.get('/api/records/:name', (req, res) => {
-    const name = decodeURIComponent(req.params.name);
-
-    if (name.includes('가속 1차')) {
-      res.json([
-        // Team 1: valid run
-        { rowid: 1, time: 'T1', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, cones: 1, oc: 0, invalidated: 0, scoreboard: 1 },
-        // Team 2: invalidated run
-        { rowid: 2, time: 'T2', num: 2, univ: 'B', team: 'B', type: '가속', result: 48000, cones: 0, oc: 0, invalidated: 1, scoreboard: 0 },
-        // Team 3: DNF run (result < 0)
-        { rowid: 3, time: 'T3', num: 3, univ: 'C', team: 'C', type: '가속', result: -1, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
-      ]);
-    } else if (name.includes('가속 2차')) {
-      res.json([
-        // Team 1: another run (worse time) - tests multi-table merge + best run selection
-        { rowid: 4, time: 'T4', num: 1, univ: 'A', team: 'A', type: '가속', result: 55000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
-        // Team 2: another run (also invalidated) - all runs invalidated → result: null
-        { rowid: 5, time: 'T5', num: 2, univ: 'B', team: 'B', type: '가속', result: 49000, cones: 0, oc: 0, invalidated: 1, scoreboard: 0 },
-        // Team 3: another DNF run - all valid but all DNF → result: -1
-        { rowid: 6, time: 'T6', num: 3, univ: 'C', team: 'C', type: '가속', result: -1, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
-      ]);
-    } else if (name.includes('스키드패드')) {
-      res.json([
-        { rowid: 7, time: 'T7', num: 1, univ: 'A', team: 'A', type: '스키드패드', result: 30000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
-      ]);
-    } else {
-      res.json([]);
-    }
   });
 
   app.get('/api/event-modes', (req, res) => {
@@ -924,22 +900,15 @@ describe('Score visibility filtering', () => {
     const inspApp = createMockInspectionServer();
 
     const trafficApp = express();
-    trafficApp.get('/api/records', (req, res) => {
-      res.json([`FSK ${YEAR} 가속 1차`, `FSK ${YEAR} 가속 2차`]);
-    });
-    trafficApp.get('/api/records/visibility', (req, res) => {
-      // 가속 2차 is hidden
-      res.json({ [`FSK ${YEAR} 가속 1차`]: true, [`FSK ${YEAR} 가속 2차`]: false });
-    });
-    trafficApp.get('/api/records/:name', (req, res) => {
-      const name = decodeURIComponent(req.params.name);
-      if (name.includes('가속 1차')) {
-        res.json([{ rowid: 1, time: 'T1', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 }]);
-      } else if (name.includes('가속 2차')) {
-        res.json([{ rowid: 2, time: 'T2', num: 1, univ: 'A', team: 'A', type: '가속', result: 40000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 }]);
-      } else {
-        res.json([]);
-      }
+    // 실제 traffic의 year 엔드포인트는 visibility 필터를 적용해 응답한다 —
+    // 가속 2차는 숨김 처리되어 응답에서 제외
+    trafficApp.get('/api/records/year/:year', (req, res) => {
+      res.json([
+        {
+          name: `FSK ${YEAR} 가속 1차`,
+          records: [{ rowid: 1, time: 'T1', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 }],
+        },
+      ]);
     });
     trafficApp.get('/api/event-modes', (req, res) => {
       res.json([{ event_type: '가속', enabled: 1 }]);

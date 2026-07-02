@@ -6,6 +6,8 @@ import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
 
+const PORT = 9400;
+
 export function createInspectionApp(options = {}) {
 
 const db = createDatabase(Database, options.dbPath || "./data/sheet.db");
@@ -207,17 +209,17 @@ app.post("/api/sheet/template", (req, res) => {
 // PUT /api/sheet/template/:id - 노드 수정
 app.put("/api/sheet/template/:id", (req, res) => {
   const id = Number(req.params.id);
-  const ALLOWED_FIELDS = new Set(["name", "sort_order", "answer_type", "remarks", "unit", "pdf_include"]);
+  // 수정 가능 필드는 아래 구조 분해로 고정된다 — body의 다른 키는 도달 불가
   const { name, sort_order, answer_type, remarks, unit, pdf_include } = req.body;
 
   const fields = [];
   const params = [];
-  if (name !== undefined && ALLOWED_FIELDS.has("name")) { fields.push("name = ?"); params.push(name); }
-  if (sort_order !== undefined && ALLOWED_FIELDS.has("sort_order")) { fields.push("sort_order = ?"); params.push(sort_order); }
-  if (answer_type !== undefined && ALLOWED_FIELDS.has("answer_type")) { fields.push("answer_type = ?"); params.push(answer_type || null); }
-  if (remarks !== undefined && ALLOWED_FIELDS.has("remarks")) { fields.push("remarks = ?"); params.push(remarks); }
-  if (unit !== undefined && ALLOWED_FIELDS.has("unit")) { fields.push("unit = ?"); params.push(unit); }
-  if (pdf_include !== undefined && ALLOWED_FIELDS.has("pdf_include")) { fields.push("pdf_include = ?"); params.push(pdf_include ? 1 : 0); }
+  if (name !== undefined) { fields.push("name = ?"); params.push(name); }
+  if (sort_order !== undefined) { fields.push("sort_order = ?"); params.push(sort_order); }
+  if (answer_type !== undefined) { fields.push("answer_type = ?"); params.push(answer_type || null); }
+  if (remarks !== undefined) { fields.push("remarks = ?"); params.push(remarks); }
+  if (unit !== undefined) { fields.push("unit = ?"); params.push(unit); }
+  if (pdf_include !== undefined) { fields.push("pdf_include = ?"); params.push(pdf_include ? 1 : 0); }
 
   if (!fields.length) return res.status(400).send("수정할 필드가 없습니다.");
   params.push(id);
@@ -626,5 +628,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createInspectionApp();
   setupProcessHandlers(db);
-  app.listen(9400);
+  app.listen(PORT, () => console.log(`Inspection service running on port ${PORT}`));
 }

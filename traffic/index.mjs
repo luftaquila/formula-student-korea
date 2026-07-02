@@ -7,6 +7,8 @@ import { createSSEManager } from "../shared/sse.mjs";
 import { EVENT_TYPES } from "../shared/constants.js";
 import { formatEnduranceDetail, enduranceTotal } from "./lib/event-timing.mjs";
 
+const PORT = 9500;
+
 const CONTROLLER_MAX_ROWS = 100000;
 const RETAIN_EVENTS = 500000;
 
@@ -743,6 +745,18 @@ const eventRetention = setInterval(() => {
   }
 }, 60000);
 eventRetention.unref?.();
+
+// liveTelemetry TTL 정리: 오래 안 보인 node 항목을 제거해 무한 성장(임의 node_id 유입)과
+// SSE init 페이로드 비대를 막는다. wireless_event와 달리 실시간 상태라 짧게 유지.
+const LIVE_TELEMETRY_TTL_MS = 10 * 60 * 1000;
+const telemetryRetention = setInterval(() => {
+  const cutoff = Date.now() - LIVE_TELEMETRY_TTL_MS;
+  for (const [node, t] of liveTelemetry) {
+    const seen = Date.parse(t.last_seen || "");
+    if (!Number.isFinite(seen) || seen < cutoff) liveTelemetry.delete(node);
+  }
+}, 60000);
+telemetryRetention.unref?.();
 
 // SSE 엔드포인트
 app.get("/api/events", sseHandler(() => ({
@@ -1808,5 +1822,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createTrafficApp();
   setupProcessHandlers(db);
-  app.listen(9500);
+  app.listen(PORT, () => console.log(`Traffic service running on port ${PORT}`));
 }
