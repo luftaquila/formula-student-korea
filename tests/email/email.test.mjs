@@ -461,8 +461,29 @@ describe('Email API', () => {
       assert.ok(text.includes('not-an-email'));
     });
 
+    it('ignores non-string config values without crashing', async () => {
+      const res = await client.put('/api/config', {
+        cookie: adminCookie,
+        body: {
+          configs: [
+            { key: 'brevo_sender_name', value: 123 },
+            { key: 'email_enabled', value: { nested: true } },
+          ],
+        },
+      });
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.ok(!data.updated.includes('brevo_sender_name'));
+      assert.ok(!data.updated.includes('email_enabled'));
+    });
+
     it('rejects when quota is insufficient', async () => {
       brevoAccountResponse = { plan: [{ type: "free", creditsType: "sendLimit", credits: 1 }] };
+      // 쿼터는 apiKey 단위 60초 캐시라, 새 키로 교체해 재조회를 강제한다
+      await client.put('/api/config', {
+        cookie: adminCookie,
+        body: { configs: [{ key: 'brevo_api_key', value: 'xkeysib-quota-test-key-0000' }] },
+      });
       const res = await client.post('/api/send', {
         cookie: adminCookie,
         body: {
@@ -475,7 +496,34 @@ describe('Email API', () => {
       const text = await res.text();
       assert.ok(text.includes('전송 가능한 메일 수'));
       // Restore
+      await client.put('/api/config', {
+        cookie: adminCookie,
+        body: { configs: [{ key: 'brevo_api_key', value: 'xkeysib-test-api-key-1234' }] },
+      });
       brevoAccountResponse = { plan: [{ type: "free", creditsType: "sendLimit", credits: 300 }] };
+    });
+
+    it('caches quota lookups per api key for consecutive sends', async () => {
+      // 새 키로 캐시를 비운 뒤 연속 발송 — /account 조회는 1회여야 한다
+      await client.put('/api/config', {
+        cookie: adminCookie,
+        body: { configs: [{ key: 'brevo_api_key', value: 'xkeysib-cache-test-key-0000' }] },
+      });
+      brevoCallLog = [];
+      for (const recipient of ['q1@test.com', 'q2@test.com']) {
+        const res = await client.post('/api/send', {
+          cookie: adminCookie,
+          body: { subject: 'Cache Test', htmlContent: '<p>Hi</p>', recipients: [recipient] },
+        });
+        assert.equal(res.status, 200);
+      }
+      const accountCalls = brevoCallLog.filter(c => c.type === 'account');
+      assert.equal(accountCalls.length, 1);
+      // Restore
+      await client.put('/api/config', {
+        cookie: adminCookie,
+        body: { configs: [{ key: 'brevo_api_key', value: 'xkeysib-test-api-key-1234' }] },
+      });
     });
 
     it('records error when Brevo returns failure', async () => {

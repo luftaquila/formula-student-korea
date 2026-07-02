@@ -2,9 +2,11 @@ import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, createJWT, verifyJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts } from "../shared/express-setup.mjs";
+import { createApp, setupProcessHandlers, createDbRun, createJWT, verifyJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts, createSecretChecker } from "../shared/express-setup.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
-import { createLogger } from "../shared/logger.mjs";
+import { createLogger, buildLogFilter } from "../shared/logger.mjs";
+
+const PORT = 9100;
 
 export function createAuthApp(options = {}) {
 
@@ -200,16 +202,14 @@ app.get("/api/session", (req, res) => {
 });
 
 // Forward auth endpoint for Caddy forward_auth (FileBrowser etc.)
+const isForwardAuthKey = createSecretChecker(process.env.INTERNAL_SECRET);
 app.get("/api/forward-auth", (req, res) => {
   const key = req.headers["x-forward-auth-key"];
-  const secret = process.env.INTERNAL_SECRET;
-  if (!key || !secret) {
+  if (!key || !process.env.INTERNAL_SECRET) {
     logger.warn(req, "auth.forward_auth_denied", { reason: "missing_key_or_secret" });
     return res.status(403).send();
   }
-  const keyHash = crypto.createHash("sha256").update(key).digest();
-  const secretHash = crypto.createHash("sha256").update(secret).digest();
-  if (!crypto.timingSafeEqual(keyHash, secretHash)) {
+  if (!isForwardAuthKey(key)) {
     logger.warn(req, "auth.forward_auth_denied", { reason: "key_mismatch" });
     return res.status(403).send();
   }
@@ -380,6 +380,7 @@ app.get("/api/callback", async (req, res) => {
         redirect_uri: redirectUri,
         grant_type: "authorization_code",
       }),
+      signal: AbortSignal.timeout(5000),
     });
 
     if (!tokenRes.ok) {
@@ -393,6 +394,7 @@ app.get("/api/callback", async (req, res) => {
     // Get user info
     const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      signal: AbortSignal.timeout(5000),
     });
 
     if (!userInfoRes.ok) {
@@ -1001,23 +1003,14 @@ app.get("/api/admin/logs", async (req, res) => {
     if (name === "auth") {
       // Local query (no HTTP)
       try {
-        const conditions = [];
-        const params = [];
-        if (filters.level) {
-          const levels = filters.level.split(",").map(l => l.trim()).filter(Boolean);
-          conditions.push(`level IN (${levels.map(() => "?").join(",")})`);
-          params.push(...levels);
-        }
-        if (filters.action) { conditions.push("action LIKE ?"); params.push(filters.action + "%"); }
-        if (filters.actor) { conditions.push("(actor_email LIKE ? OR actor_name LIKE ?)"); params.push(`%${filters.actor}%`, `%${filters.actor}%`); }
-        if (filters.from) { conditions.push("timestamp >= ?"); params.push(filters.from); }
-        if (filters.to) { conditions.push("timestamp <= ?"); params.push(filters.to); }
-        if (filters.search) { conditions.push("(action LIKE ? OR target LIKE ? OR detail LIKE ?)"); params.push(`%${filters.search}%`, `%${filters.search}%`, `%${filters.search}%`); }
-        const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+        const { where, params } = buildLogFilter(filters);
         const total = db.prepare(`SELECT COUNT(*) as cnt FROM logs ${where}`).get(...params).cnt;
         const logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY id DESC LIMIT 500`).all(...params);
         return { name, logs: logs.map(l => ({ ...l, _service: name })), total };
-      } catch (e) { console.error("[auth] log query error:", name, e.message); logger.warn(null, "logs.query_failed", { error: e.message }, "auth"); return { name, logs: [], total: 0 }; }
+      } catch (e) {
+        logger.warn(null, "logs.query_failed", { error: e.message }, "auth");
+        return { name, logs: [], total: 0 };
+      }
     }
 
     try {
@@ -1032,7 +1025,6 @@ app.get("/api/admin/logs", async (req, res) => {
       const data = await fetchRes.json();
       return { name, logs: (data.logs || []).map(l => ({ ...l, _service: name })), total: data.total || 0 };
     } catch (e) {
-      console.error("[auth] log fetch error:", name, e.message);
       warnAggThrottled("logs.aggregate_failed", { service: name, error: e.message }, name);
       return { name, logs: [], total: 0 };
     }
@@ -1047,7 +1039,7 @@ app.get("/api/admin/logs", async (req, res) => {
     merged.push(...r.logs);
     totalSum += r.total;
   }
-  merged.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  merged.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
 
   // Apply offset/limit on merged result
   const paged = merged.slice(offset, offset + limit);
@@ -1070,5 +1062,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createAuthApp();
   setupProcessHandlers(db);
-  app.listen(9100);
+  app.listen(PORT, () => console.log(`Auth service running on port ${PORT}`));
 }

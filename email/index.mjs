@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import https from "node:https";
 import Database from "better-sqlite3";
 import { createDatabase, runMigrationOnce, setupRowCapRetention, parseLegacyTimestamp } from "../shared/db-setup.mjs";
-import { createApp, createDbRun, setupProcessHandlers, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
+import { createApp, createDbRun, setupProcessHandlers, ensureDataDir, requireInternalRequest, createSecretChecker } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 
 const PORT = 9900;
@@ -101,6 +101,7 @@ for (const key of CONFIG_KEYS) insertConfig.run(key);
 
 const logger = createLogger(db, "email");
 const dbRun = createDbRun();
+const isInternalSecret = createSecretChecker(process.env.INTERNAL_SECRET);
 
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
@@ -157,7 +158,7 @@ app.put("/api/config", (req, res) => {
     const stmt = db.prepare("UPDATE config SET value = ? WHERE key = ?");
     for (const { key, value } of configs) {
       if (!CONFIG_KEYS.includes(key)) continue;
-      if (!value && value !== "") continue; // skip null/undefined
+      if (typeof value !== "string") continue; // skip null/undefined/non-string (config 값은 TEXT)
       if (value === "") continue; // skip empty (unchanged masked field)
       if (MASKED_KEYS.has(key) && value.startsWith("****")) continue; // skip masked placeholder
       stmt.run(value, key);
@@ -371,6 +372,39 @@ async function sendBrevo({ apiKey, senderName, senderEmail, subject, wrappedHtml
 /* ============================================
    Shared Send Logic — config/quota, per-recipient loop, logging
    ============================================ */
+// Brevo 잔여 쿼터 캐시(60초). documents 예약 알림처럼 수신자별로 /api/internal/send를
+// 연속 호출하면 매 호출마다 /account 왕복이 발생하므로 짧게 캐시한다. 발송 성공 시
+// successCount만큼 차감해 60초 내 연속 발송에서도 잔여치가 과대평가되지 않게 한다.
+const QUOTA_CACHE_MS = 60000;
+let quotaCache = { apiKey: null, remaining: 0, fetchedAt: 0 };
+
+// 잔여 쿼터를 반환한다. 확인 실패는 non-fatal이므로 null을 반환하고 발송은 진행한다.
+async function getRemainingQuota(apiKey, req, { subject, source }) {
+  const now = Date.now();
+  if (quotaCache.apiKey === apiKey && now - quotaCache.fetchedAt < QUOTA_CACHE_MS) {
+    return quotaCache.remaining;
+  }
+  try {
+    const quotaResp = await fetchFn(`${BREVO_API_BASE}/account`, {
+      headers: { "api-key": apiKey, Accept: "application/json" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!quotaResp.ok) {
+      const quotaErrText = await quotaResp.text().catch(() => "");
+      logger.warn(req, "email.quota_check", { error: quotaErrText || quotaResp.status, status: quotaResp.status, subject, source });
+      return null;
+    }
+    const quotaData = await quotaResp.json();
+    const freePlan = quotaData.plan?.find((p) => p.type === "free" && p.creditsType === "sendLimit");
+    const remaining = freePlan?.credits ?? 0;
+    quotaCache = { apiKey, remaining, fetchedAt: now };
+    return remaining;
+  } catch (e) {
+    logger.warn(req, "email.quota_check", { error: e.message, subject, source });
+    return null;
+  }
+}
+
 async function sendEmail(req, res, { subject, htmlContent, recipients, source }) {
   if (getConfig("email_enabled") === "FALSE") {
     logger.warn(req, "email.send", { error: "email_disabled", subject, recipientCount: recipients.length, source });
@@ -387,33 +421,17 @@ async function sendEmail(req, res, { subject, htmlContent, recipients, source })
     return res.status(400).send("Brevo API 키 또는 발신자 이메일이 설정되지 않았습니다.");
   }
 
-  // Check quota before sending
-  try {
-    const quotaResp = await fetchFn(`${BREVO_API_BASE}/account`, {
-      headers: { "api-key": apiKey, Accept: "application/json" },
-      signal: AbortSignal.timeout(5000),
+  // Check quota before sending (60초 캐시, 확인 실패는 non-fatal)
+  const remaining = await getRemainingQuota(apiKey, req, { subject, source });
+  if (remaining != null && remaining < recipients.length) {
+    logger.warn(req, "email.send", {
+      error: "quota_exceeded",
+      remaining,
+      recipientCount: recipients.length,
+      subject,
+      source,
     });
-    if (quotaResp.ok) {
-      const quotaData = await quotaResp.json();
-      const freePlan = quotaData.plan?.find((p) => p.type === "free" && p.creditsType === "sendLimit");
-      const remaining = freePlan?.credits ?? 0;
-      if (remaining < recipients.length) {
-        logger.warn(req, "email.send", {
-          error: "quota_exceeded",
-          remaining,
-          recipientCount: recipients.length,
-          subject,
-          source,
-        });
-        return res.status(400).send(`전송 가능한 메일 수(${remaining}건)가 수신자 수(${recipients.length}명)보다 적습니다.`);
-      }
-    } else {
-      const quotaErrText = await quotaResp.text().catch(() => "");
-      logger.warn(req, "email.quota_check", { error: quotaErrText || quotaResp.status, status: quotaResp.status, subject, source });
-    }
-  } catch (e) {
-    logger.warn(req, "email.quota_check", { error: e.message, subject, source });
-    // Quota check failure is non-fatal — proceed with send attempt
+    return res.status(400).send(`전송 가능한 메일 수(${remaining}건)가 수신자 수(${recipients.length}명)보다 적습니다.`);
   }
 
   const wrappedHtml = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
@@ -423,18 +441,32 @@ async function sendEmail(req, res, { subject, htmlContent, recipients, source })
 ${htmlContent}
 </body></html>`;
 
+  // 수신자별 Brevo 호출을 소규모 동시성 풀로 처리한다. 대량 수동 발송에서 수신자 수만큼
+  // 왕복이 직렬화되어 요청이 수 분간 열려 있던 것을 방지. DB 로그·집계는 원래 순서대로
+  // 아래에서 일괄 수행해 기존 시맨틱(lastError = 마지막 수신자 순 오류)을 유지한다.
+  const SEND_CONCURRENCY = 5;
+  const results = new Array(recipients.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < recipients.length) {
+      const i = nextIndex++;
+      try {
+        results[i] = await sendBrevo({ apiKey, senderName, senderEmail, subject, wrappedHtml, recipient: recipients[i] });
+      } catch (e) {
+        results[i] = { ok: false, error: e.message, status: 500 };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(SEND_CONCURRENCY, recipients.length) }, worker));
+
   let successCount = 0;
   let lastMessageId = null;
   let lastError = null;
   let lastErrorStatus = 500;
 
-  for (const recipient of recipients) {
-    let result;
-    try {
-      result = await sendBrevo({ apiKey, senderName, senderEmail, subject, wrappedHtml, recipient });
-    } catch (e) {
-      result = { ok: false, error: e.message, status: 500 };
-    }
+  for (let i = 0; i < recipients.length; i++) {
+    const recipient = recipients[i];
+    const result = results[i];
 
     // Per-recipient DB log
     if (result.ok) {
@@ -456,6 +488,11 @@ ${htmlContent}
     }
   }
 
+  // 발송분만큼 쿼터 캐시 차감 (60초 내 연속 발송 과대평가 방지)
+  if (quotaCache.apiKey === apiKey) {
+    quotaCache.remaining = Math.max(0, quotaCache.remaining - successCount);
+  }
+
   if (successCount === 0) {
     logger.warn(req, "email.send", { error: lastError || "전송 실패", subject, recipientCount: recipients.length, source });
     return res.status(lastErrorStatus).send(lastError || "전송 실패");
@@ -467,7 +504,7 @@ ${htmlContent}
   // 내부 서비스에서 호출한 경우(예: documents 예약 알림은 수신자별 1건씩 호출), 호출자가
   // 자체 집계 로그(`schedule.*`)를 남기므로 성공 info는 생략해 로그 노이즈를 줄인다.
   // email_log 테이블에는 수신자별 행이 그대로 남아 추적 가능.
-  const isInternal = req.headers["x-internal-service"] && req.headers["x-internal-service"] === process.env.INTERNAL_SECRET;
+  const isInternal = isInternalSecret(req.headers["x-internal-service"]);
   if (!isInternal) {
     logger.log(req, "email.send", { subject, recipientCount: successCount, messageId: lastMessageId, source });
   }
@@ -478,7 +515,7 @@ ${htmlContent}
    Recipients (proxy to auth service)
    ============================================ */
 app.get("/api/recipients", async (req, res) => {
-  const authServer = process.env.AUTH_SERVER || "http://auth:9100";
+  const authServer = process.env.AUTH_SERVER || "http://localhost:9100";
   try {
     const headers = {};
     if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
