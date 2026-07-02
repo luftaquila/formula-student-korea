@@ -28,7 +28,7 @@ All 10 backend services share `Dockerfile.service` (root) with `ARG SERVICE` + `
 - entry, inspection, traffic, documents, course, email, calendar → auth (`AUTH_SERVER`)
 - queue → entry (`ENTRY_SERVER`), auth (`AUTH_SERVER`), email (`EMAIL_SERVER`)
 - auth, documents → email (`EMAIL_SERVER`)
-- entry → documents (`DOCUMENTS_SERVER`), queue (`QUEUE_SERVER`)
+- entry → queue, documents, inspection, score, traffic (`QUEUE_SERVER`, `DOCUMENTS_SERVER`, `INSPECTION_SERVER`, `SCORE_SERVER`, `TRAFFIC_SERVER` — lifecycle outbox 팬아웃 대상)
 - documents → entry (`ENTRY_SERVER`), email (`EMAIL_SERVER`)
 - score → entry, inspection, traffic, auth
 
@@ -59,8 +59,8 @@ make backup                    # → ./backups/fsk-backup-YYYYMMDD-HHMMSS.zip
 make backup DEST=/mnt/nas      # Custom destination
 make restore ZIP=backups/fsk-backup-20260323-120000.zip
 
-# Rover bring-up after a fresh image flash (reads .env, connects plugs,
-# applies snap set, restarts pilot; idempotent)
+# Rover bring-up after a fresh image flash (reads .env, writes pilot.conf,
+# recreates podman secrets, restarts pilot/perception services; idempotent)
 scripts/provision-rover.sh <rover-ip> [--ntrip-username=<id>]
 ```
 
@@ -86,7 +86,7 @@ Tests: `tests/<service>/<service>.test.mjs`, utils: `tests/helpers/test-utils.mj
 
 ### E2E (Playwright) — CI only, do NOT run locally
 
-Tests: `tests/e2e/{service}/*.spec.mjs` · CI: `.github/workflows/test.yml` (push to main) · Check: `gh run list` → `gh run view <id> --log-failed`
+Tests: `tests/e2e/{service}/*.spec.mjs` · CI: `.github/workflows/test.yml` (push/PR to main) · Check: `gh run list` → `gh run view <id> --log-failed`
 
 **Never use `waitForTimeout` for API saves.** Use deterministic waits:
 
@@ -135,6 +135,7 @@ logger.warn(req, action, detail, target, actorOverride)   // level: warn (실패
      return res.status(result.status).send(result.error);
    }
    ```
+   단, 핸들러 진입부의 **단순 입력 검증 400**(형식/누락 등 비즈니스 로직 도달 전 조기 반환)의 로깅은 선택이다 — DB·비즈니스 로직·서비스 간 통신 실패가 필수 대상이다.
 
 2. **같은 액션의 성공/실패는 반드시 레벨로 구분한다.** 같은 action 문자열을 써도 성공은 `logger.log`, 실패는 `logger.warn`. 로그 뷰어에서 레벨 필터링으로 장애를 찾을 수 있어야 한다.
 
