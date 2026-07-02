@@ -885,7 +885,11 @@ describe('Score aggregation business logic', () => {
 
 // ─── Record visibility filtering ──────────────────────────────────────
 
-describe('Score visibility filtering', () => {
+// NOTE: record-visibility 제외 자체(숨긴 테이블을 빼는 것)는 이제 traffic
+// getYearRecordGroups가 담당하며 tests/traffic/traffic.test.mjs에서 직접 검증한다.
+// 여기서는 score가 traffic year 응답(이미 필터된 상태)을 그대로 받아 종목별로
+// pass-through 집계하는지만 확인한다 — mock은 필터된 결과(가속 1차만)를 반환한다.
+describe('Score aggregation over the pre-filtered traffic year response', () => {
   let srv, url, cli, database, dp;
   let mEntry, mInsp, mTraffic;
   const cookie = adminCookie;
@@ -900,8 +904,8 @@ describe('Score visibility filtering', () => {
     const inspApp = createMockInspectionServer();
 
     const trafficApp = express();
-    // 실제 traffic의 year 엔드포인트는 visibility 필터를 적용해 응답한다 —
-    // 가속 2차는 숨김 처리되어 응답에서 제외
+    // traffic year 엔드포인트가 이미 visibility 필터를 적용한 뒤의 응답을 흉내낸다
+    // (가속 1차만 노출; 숨긴 테이블은 애초에 응답에 없음).
     trafficApp.get('/api/records/year/:year', (req, res) => {
       res.json([
         {
@@ -940,16 +944,17 @@ describe('Score visibility filtering', () => {
     cleanup(dp);
   });
 
-  it('excludes hidden record files from score aggregation', async () => {
+  it('aggregates only the tables present in the traffic year response', async () => {
     const res = await cli.get(`/api/score?year=${YEAR}`, { cookie });
     assert.equal(res.status, 200);
     const data = await res.json();
 
     const accel = data.events.find(e => e.type === '가속');
     assert.ok(accel, '가속 event should exist');
-    // Only 가속 1차 (50000) should be included, 가속 2차 (40000) is hidden
-    assert.equal(accel.records[1].result, 50000, 'should use only visible file records');
-    assert.equal(accel.records[1].allRuns.length, 1, 'hidden file runs should be excluded');
+    // traffic이 가속 1차(50000)만 돌려주므로 그 하나만 집계되어야 한다
+    // (실제 숨김 필터링 검증은 tests/traffic/traffic.test.mjs).
+    assert.equal(accel.records[1].result, 50000, 'should aggregate the single returned run');
+    assert.equal(accel.records[1].allRuns.length, 1, 'no extra runs should appear');
   });
 });
 

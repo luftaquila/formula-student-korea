@@ -48,6 +48,8 @@ let brevoCallLog = [];
 let brevoAccountResponse = { plan: [{ type: "free", creditsType: "sendLimit", credits: 300 }] };
 let brevoSendResponse = { messageId: '<test-msg-id>' };
 let brevoSendStatus = 201;
+// 특정 수신자만 실패시키기 위한 집합 (동시성 풀 per-index 매핑 검증용)
+let brevoFailRecipients = new Set();
 
 function createMockFetch(authBaseUrl) {
   return async function mockFetch(url, options) {
@@ -65,6 +67,14 @@ function createMockFetch(authBaseUrl) {
     // Brevo send endpoint
     if (urlStr.includes('/v3/smtp/email')) {
       brevoCallLog.push({ type: 'send', url: urlStr, body: options?.body });
+      let toEmail = null;
+      try { toEmail = JSON.parse(options?.body || '{}').to?.[0]?.email; } catch { /* ignore */ }
+      if (toEmail && brevoFailRecipients.has(toEmail)) {
+        return new Response(JSON.stringify({ message: `rejected ${toEmail}` }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       return new Response(JSON.stringify(brevoSendResponse), {
         status: brevoSendStatus,
         headers: { 'Content-Type': 'application/json' },
@@ -524,6 +534,47 @@ describe('Email API', () => {
         cookie: adminCookie,
         body: { configs: [{ key: 'brevo_api_key', value: 'xkeysib-test-api-key-1234' }] },
       });
+    });
+
+    it('processes every recipient when the count exceeds the concurrency pool', async () => {
+      // 기본 quota 300 → 게이트 통과. 7 > SEND_CONCURRENCY(5)라 워커가 루프를 재진입해야 하고,
+      // while→if나 nextIndex off-by-one이면 일부 수신자가 누락/중복된다.
+      brevoCallLog = [];
+      const recipients = Array.from({ length: 7 }, (_, i) => `pool${i}@test.com`);
+      const res = await client.post('/api/send', {
+        cookie: adminCookie,
+        body: { subject: 'Pool Drain', htmlContent: '<p>Hi</p>', recipients },
+      });
+      assert.equal(res.status, 200);
+      assert.equal(brevoCallLog.filter(c => c.type === 'send').length, 7);
+      const list = await (await client.get('/api/emails', { cookie: adminCookie })).json();
+      const rows = list.rows.filter(r => r.subject === 'Pool Drain');
+      assert.equal(rows.length, 7);
+      assert.ok(rows.every(r => r.status === 'sent'));
+      const logged = rows.map(r => r.recipient).sort();
+      assert.deepEqual(logged, recipients.slice().sort());
+    });
+
+    it('maps per-recipient success/failure correctly under partial failure', async () => {
+      // 중간 수신자 하나만 실패 → results[i]↔recipients[i] 매핑과 부분 실패 집계 검증
+      brevoCallLog = [];
+      brevoFailRecipients = new Set(['mix2@test.com']);
+      const recipients = ['mix0@test.com', 'mix1@test.com', 'mix2@test.com', 'mix3@test.com'];
+      const res = await client.post('/api/send', {
+        cookie: adminCookie,
+        body: { subject: 'Mixed Outcome', htmlContent: '<p>Hi</p>', recipients },
+      });
+      // successCount > 0 → 200 (부분 성공)
+      assert.equal(res.status, 200);
+      const list = await (await client.get('/api/emails', { cookie: adminCookie })).json();
+      const rows = list.rows.filter(r => r.subject === 'Mixed Outcome');
+      assert.equal(rows.length, 4);
+      const byRecipient = Object.fromEntries(rows.map(r => [r.recipient, r.status]));
+      assert.equal(byRecipient['mix2@test.com'], 'error', 'the failed recipient must be logged as error');
+      for (const ok of ['mix0@test.com', 'mix1@test.com', 'mix3@test.com']) {
+        assert.equal(byRecipient[ok], 'sent', `${ok} must be logged as sent`);
+      }
+      brevoFailRecipients = new Set();
     });
 
     it('records error when Brevo returns failure', async () => {

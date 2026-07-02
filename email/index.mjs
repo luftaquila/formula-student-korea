@@ -423,6 +423,10 @@ async function sendEmail(req, res, { subject, htmlContent, recipients, source })
 
   // Check quota before sending (60초 캐시, 확인 실패는 non-fatal)
   const remaining = await getRemainingQuota(apiKey, req, { subject, source });
+  // 발송 후 차감이 어느 캐시 스냅샷을 기준으로 하는지 고정한다. 발송 중 다른 요청이
+  // 새 /account fetch로 캐시를 갱신하면(fetchedAt 변경) 그 값은 이미 실제 잔여를
+  // 반영하므로, 내 차감을 건너뛰어 이중 차감(→ 오탐 quota_exceeded)을 막는다.
+  const quotaSnapshot = quotaCache.apiKey === apiKey ? quotaCache.fetchedAt : null;
   if (remaining != null && remaining < recipients.length) {
     logger.warn(req, "email.send", {
       error: "quota_exceeded",
@@ -488,8 +492,10 @@ ${htmlContent}
     }
   }
 
-  // 발송분만큼 쿼터 캐시 차감 (60초 내 연속 발송 과대평가 방지)
-  if (quotaCache.apiKey === apiKey) {
+  // 발송분만큼 쿼터 캐시 차감 (60초 내 연속 발송 과대평가 방지). 단, 발송 중 캐시가
+  // 새 fetch로 교체되지 않았을 때만 — 교체됐다면 그 값이 이미 실제 잔여를 반영하므로
+  // 차감하면 이중 계산이 된다.
+  if (quotaCache.apiKey === apiKey && quotaCache.fetchedAt === quotaSnapshot) {
     quotaCache.remaining = Math.max(0, quotaCache.remaining - successCount);
   }
 

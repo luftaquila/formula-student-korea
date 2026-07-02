@@ -848,15 +848,21 @@ describe('Zip entry name sanitization (zip-slip)', () => {
     assert.ok(!fileRow.original_name.includes('/') && !fileRow.original_name.includes('\\'),
       'stored original_name must not contain path separators');
 
+    // 2차 방어(sanitize)를 실제로 exercise한다: busboy를 우회해 DB에 경로 구분자·금지
+    // 문자가 든 이름을 직접 심는다 (손상/레거시 행 시나리오). 이렇게 해야 아카이브
+    // 빌더의 sanitize()가 no-op이 아니라 진짜로 치환하는지 검증된다.
+    db.prepare('UPDATE submission_file SET original_name = ? WHERE submission_id = ?')
+      .run('../../../evil:*.pdf', sub.id);
+
     const res = await fetch(`${baseUrl}/api/submissions/${sub.id}/zip`, {
       headers: { 'Cookie': studentCookie },
     });
     assert.equal(res.status, 200);
-    // 2차 방어: 아카이브 엔트리명은 sanitize()를 거친다 — zip 로컬 파일 헤더에
-    // 엔트리명이 평문으로 들어가므로 바이트 검색으로 검증
+    // zip 로컬 파일 헤더에 엔트리명이 평문으로 들어가므로 바이트 검색으로 검증.
+    // sanitize('../../../evil:*.pdf') === '.._.._.._evil__.pdf'
     const body = Buffer.from(await res.arrayBuffer()).toString('latin1');
-    assert.ok(!body.includes('../../../evil.pdf'), 'zip must not contain raw traversal entry name');
-    assert.ok(body.includes('evil.pdf'), 'zip should contain the sanitized basename entry');
+    assert.ok(!body.includes('../../../evil'), 'zip must not contain raw traversal entry name');
+    assert.ok(body.includes('.._.._.._evil__.pdf'), 'zip must contain the sanitized entry name');
   });
 });
 

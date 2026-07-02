@@ -197,6 +197,42 @@ describe('Records lifecycle sync', () => {
     assert.equal(row.scoreboard, 0);
   });
 
+  it('excludes hidden record tables from the year endpoint (visibility filter)', async () => {
+    // record-visibility 제외는 score에서 traffic getYearRecordGroups로 이동했으므로
+    // 여기서 COALESCE(v.visible, 1) != 0 필터를 직접 검증한다.
+    const createRes = await client.post('/api/records', {
+      body: {
+        name: 'Hidden Run',
+        data: {
+          time: '2026-01-04T10:00:00',
+          type: '가속',
+          entry: { num: 910, univ: 'HideUniv', team: 'HideTeam' },
+          result: 47000,
+        },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(createRes.status, 201);
+    const name = `FSK ${YEAR} Hidden Run`;
+
+    const included = await (await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie })).json();
+    assert.ok(included.some((t) => t.name === name), 'visible table should appear in the year endpoint');
+
+    // 숨김 토글 (첫 PUT은 visible=0)
+    const hideRes = await client.put(`/api/records/${encodeURIComponent(name)}/visibility`, { cookie: adminCookie });
+    assert.equal(hideRes.status, 200);
+    assert.equal((await hideRes.json()).visible, 0);
+
+    const afterHide = await (await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie })).json();
+    assert.ok(!afterHide.some((t) => t.name === name), 'hidden table must be excluded from the year endpoint');
+
+    // 다시 표시 토글 (visible=1)
+    const showRes = await client.put(`/api/records/${encodeURIComponent(name)}/visibility`, { cookie: adminCookie });
+    assert.equal((await showRes.json()).visible, 1);
+    const afterShow = await (await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie })).json();
+    assert.ok(afterShow.some((t) => t.name === name), 'un-hidden table should reappear in the year endpoint');
+  });
+
   it('treats prevNum === newNum as a no-op and does not invalidate the team\'s records', async () => {
     const createRes = await client.post('/api/records', {
       body: {
