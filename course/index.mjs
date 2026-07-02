@@ -30,6 +30,16 @@ db.exec(`CREATE TABLE IF NOT EXISTS course (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );`);
 
+// 코스 진행 방향(reverse)과 시작 콘(start_cone_id)을 코스 행에 저장한다. 예전에는 웹 UI가
+// localStorage에 코스별로 들고 있어 조작자·기기마다 값이 달랐다. 서버에 저장해 모든
+// 클라이언트가 같은 진행 방향/시작점을 공유하도록 한다. SQLite에 boolean 타입이 없어
+// reverse는 0/1 정수, start_cone_id는 cone.id 또는 null. 비파괴적 ADD COLUMN.
+{
+  const cols = db.prepare("PRAGMA table_info(course)").all().map((c) => c.name);
+  if (!cols.includes("reverse")) db.exec("ALTER TABLE course ADD COLUMN reverse INTEGER NOT NULL DEFAULT 0");
+  if (!cols.includes("start_cone_id")) db.exec("ALTER TABLE course ADD COLUMN start_cone_id INTEGER");
+}
+
 db.exec(`CREATE TABLE IF NOT EXISTS cone (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   course_id INTEGER NOT NULL,
@@ -304,7 +314,7 @@ const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 function getCourses() {
   return db.prepare(`
-    SELECT c.id, c.name, c.created_at, c.updated_at,
+    SELECT c.id, c.name, c.created_at, c.updated_at, c.reverse, c.start_cone_id,
            COUNT(cn.id) AS cone_count
     FROM course c
     LEFT JOIN cone cn ON cn.course_id = c.id
@@ -436,6 +446,60 @@ app.patch("/api/courses/:id", (req, res) => {
 
   logger.log(req, "course.rename", { before: course.name, after: validation.value }, course.name);
   broadcastEvent("courses", { type: "rename", course: result.result, courses: getCourses() });
+  res.json(result.result);
+});
+
+// PATCH /api/courses/:id/direction - 코스 진행 방향/시작 콘 저장 (모든 클라이언트 공유).
+// reverse·start_cone_id 중 요청에 담긴 것만 갱신한다. start_cone_id는 이 코스에 속한
+// 콘이어야 하며 null이면 자동 시작 게이트로 되돌린다.
+app.patch("/api/courses/:id/direction", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).send("올바르지 않은 코스 ID입니다.");
+
+  const course = getCourseById(id);
+  if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
+
+  const sets = [];
+  const params = [];
+  const detail = {};
+
+  if ("reverse" in req.body) {
+    if (typeof req.body.reverse !== "boolean") {
+      return res.status(400).send("진행 방향(reverse)은 true 또는 false여야 합니다.");
+    }
+    sets.push("reverse = ?");
+    params.push(req.body.reverse ? 1 : 0);
+    detail.reverse = req.body.reverse;
+  }
+
+  if ("start_cone_id" in req.body) {
+    const sc = req.body.start_cone_id;
+    if (sc !== null) {
+      if (!Number.isInteger(sc)) return res.status(400).send("시작 콘 ID가 올바르지 않습니다.");
+      const cone = getConeById(sc);
+      if (!cone || cone.course_id !== id) {
+        return res.status(400).send("시작 콘이 이 코스에 속하지 않습니다.");
+      }
+    }
+    sets.push("start_cone_id = ?");
+    params.push(sc);
+    detail.start_cone_id = sc;
+  }
+
+  if (sets.length === 0) return res.status(400).send("변경할 항목이 없습니다.");
+
+  const result = dbRun(() => {
+    db.prepare(`UPDATE course SET ${sets.join(", ")}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`).run(...params, id);
+    return db.prepare("SELECT * FROM course WHERE id = ?").get(id);
+  });
+
+  if (!result.success) {
+    logger.warn(req, "course.direction", { error: result.error, ...detail }, course.name);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "course.direction", detail, course.name);
+  broadcastEvent("courses", { type: "direction", course: result.result, courses: getCourses() });
   res.json(result.result);
 });
 

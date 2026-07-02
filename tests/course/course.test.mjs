@@ -505,6 +505,122 @@ describe('POST /api/courses/import', () => {
   });
 });
 
+// ─── Course direction / start cone (server-shared) ───────────────────────
+describe('PATCH /api/courses/:id/direction', () => {
+  let courseId, coneId, otherCourseId, otherConeId;
+
+  it('sets up two courses each with a cone', async () => {
+    const cRes = await client.post('/api/courses', {
+      body: { name: '방향테스트 코스' }, cookie: adminCookie,
+    });
+    courseId = (await cRes.json()).id;
+    const coneRes = await client.post(`/api/courses/${courseId}/cones`, {
+      body: { lat: 37.6, lng: 126.99, side: 'left' }, cookie: adminCookie,
+    });
+    coneId = (await coneRes.json()).id;
+
+    const oRes = await client.post('/api/courses', {
+      body: { name: '방향테스트 다른 코스' }, cookie: adminCookie,
+    });
+    otherCourseId = (await oRes.json()).id;
+    const oConeRes = await client.post(`/api/courses/${otherCourseId}/cones`, {
+      body: { lat: 37.7, lng: 126.9, side: 'right' }, cookie: adminCookie,
+    });
+    otherConeId = (await oConeRes.json()).id;
+  });
+
+  it('defaults to forward (reverse 0) and no start cone', async () => {
+    const res = await client.get('/api/courses', { cookie: adminCookie });
+    const course = (await res.json()).find((c) => c.id === courseId);
+    assert.equal(course.reverse, 0);
+    assert.equal(course.start_cone_id, null);
+  });
+
+  it('sets and clears the travel direction', async () => {
+    let res = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: { reverse: true }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).reverse, 1); // 0/1: SQLite has no boolean type
+
+    res = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: { reverse: false }, cookie: adminCookie,
+    });
+    assert.equal((await res.json()).reverse, 0);
+  });
+
+  it('rejects a non-boolean reverse', async () => {
+    const res = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: { reverse: 'yes' }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('sets and clears the start cone', async () => {
+    let res = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: { start_cone_id: coneId }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).start_cone_id, coneId);
+
+    res = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: { start_cone_id: null }, cookie: adminCookie,
+    });
+    assert.equal((await res.json()).start_cone_id, null);
+  });
+
+  it('rejects a start cone from another course', async () => {
+    const res = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: { start_cone_id: otherConeId }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('rejects a non-integer start cone id', async () => {
+    const res = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: { start_cone_id: 'abc' }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('updates reverse and start_cone_id together', async () => {
+    const res = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: { reverse: true, start_cone_id: coneId }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.reverse, 1);
+    assert.equal(data.start_cone_id, coneId);
+  });
+
+  it('rejects an empty body (nothing to update)', async () => {
+    const res = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: {}, cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('returns 404 for a non-existent course', async () => {
+    const res = await client.patch('/api/courses/999999/direction', {
+      body: { reverse: true }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('allows chief but rejects below-chief roles', async () => {
+    const chiefCookie = makeAuthCookie({ email: 'chief2@test.com', name: 'Chief', role: 'chief' });
+    const officialCookie = makeAuthCookie({ email: 'official2@test.com', name: 'Official', role: 'official' });
+    const chiefRes = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: { reverse: false }, cookie: chiefCookie,
+    });
+    assert.equal(chiefRes.status, 200);
+    const officialRes = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: { reverse: true }, cookie: officialCookie,
+    });
+    assert.equal(officialRes.status, 403);
+  });
+});
+
 // ─── Rover ──────────────────────────────────────────────────────────────
 describe('POST /api/rover/position', () => {
   it('accepts position from rover (with internal secret)', async () => {
