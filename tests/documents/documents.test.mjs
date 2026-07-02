@@ -818,6 +818,48 @@ describe('Submission zip download (student)', () => {
   });
 });
 
+describe('Zip entry name sanitization (zip-slip)', () => {
+  it('sanitizes path separators in original filenames inside the zip', async () => {
+    // 격리된 세션에서 경로 순회 문자가 든 파일명을 업로드
+    const sessionRes = await client.post('/api/admin/sessions', {
+      body: {
+        name: 'ZipSlip Session',
+        start_at: '2020-01-01T00:00',
+        end_at: '2030-12-31T23:59',
+        late_end_at: '',
+        max_file_size: 10485760,
+        year: 2026,
+        teams: [1],
+        allowed_extensions: 'pdf',
+      },
+      cookie: chiefCookie,
+    });
+    assert.equal(sessionRes.status, 201);
+    const { id: slipSessionId } = await sessionRes.json();
+
+    const up = await uploadFile(slipSessionId, studentCookie, [
+      { name: '../../../evil.pdf', type: 'application/pdf', content: Buffer.from('malicious') },
+    ]);
+    assert.equal(up.status, 200);
+    const sub = await up.json();
+
+    // 1차 방어: busboy(preservePath:false)가 업로드 시점에 경로를 제거한다
+    const fileRow = db.prepare('SELECT original_name FROM submission_file WHERE submission_id = ?').get(sub.id);
+    assert.ok(!fileRow.original_name.includes('/') && !fileRow.original_name.includes('\\'),
+      'stored original_name must not contain path separators');
+
+    const res = await fetch(`${baseUrl}/api/submissions/${sub.id}/zip`, {
+      headers: { 'Cookie': studentCookie },
+    });
+    assert.equal(res.status, 200);
+    // 2차 방어: 아카이브 엔트리명은 sanitize()를 거친다 — zip 로컬 파일 헤더에
+    // 엔트리명이 평문으로 들어가므로 바이트 검색으로 검증
+    const body = Buffer.from(await res.arrayBuffer()).toString('latin1');
+    assert.ok(!body.includes('../../../evil.pdf'), 'zip must not contain raw traversal entry name');
+    assert.ok(body.includes('evil.pdf'), 'zip should contain the sanitized basename entry');
+  });
+});
+
 describe('File download (admin)', () => {
   it('GET /api/admin/submissions/:subId/files/:fileId serves PDF inline', async () => {
     const res = await fetch(`${baseUrl}/api/admin/submissions/${submissionId}/files/${fileId}`, {
