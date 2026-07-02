@@ -46,6 +46,8 @@ SERVICES=(
   "score:score/data/score.db"
   "documents:documents/data/documents.db"
   "calendar:calendar/data/calendar.db"
+  "course:course/data/course.db"
+  "email:email/data/email.db"
   "filebrowser:filebrowser/data/database.db"
 )
 

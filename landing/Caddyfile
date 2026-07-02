@@ -130,6 +130,9 @@
 		request_header -X-Internal-Service
 		request_header -Authuser
 		request_header -X-Forwarded-For
+		# FileBrowser는 X-Forwarded-User만으로 인증한다. forward_auth의 copy_headers가
+		# 성공 시 덮어쓰지만, 그 단일 지점에만 의존하지 않도록 인바운드 값을 항상 제거.
+		request_header -X-Forwarded-User
 		forward_auth auth:9100 {
 			uri /api/forward-auth?role=chief
 			header_up X-Forward-Auth-Key {env.INTERNAL_SECRET}

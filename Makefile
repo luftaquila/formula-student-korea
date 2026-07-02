@@ -1,6 +1,8 @@
 .PHONY: build deploy restart backup restore
 
 PROFILE ?= production
+# caddy 서비스는 프로파일별로 다르다 (production: caddy, local: caddy-local)
+CADDY_SVC := $(if $(filter local,$(PROFILE)),caddy-local,caddy)
 
 build:
 	-podman image prune -f --filter "dangling=true" 2>/dev/null
@@ -10,11 +12,11 @@ deploy:
 	-podman image prune -f --filter "dangling=true" 2>/dev/null
 	podman compose --profile $(PROFILE) pull $(SVC)
 	podman compose --profile $(PROFILE) up -d --force-recreate
-	podman compose --profile $(PROFILE) restart caddy
+	podman compose --profile $(PROFILE) restart $(CADDY_SVC)
 
 restart:
 	podman compose --profile $(PROFILE) up -d --force-recreate
-	podman compose --profile $(PROFILE) restart caddy
+	podman compose --profile $(PROFILE) restart $(CADDY_SVC)
 
 backup:
 	./scripts/backup.sh $(DEST)

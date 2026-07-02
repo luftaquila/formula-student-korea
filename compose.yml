@@ -57,6 +57,9 @@ services:
       <<: *common-env
       AUTH_SERVER: http://auth:9100
       MISSION_TELEMETRY_MAX_ROWS: ${MISSION_TELEMETRY_MAX_ROWS:-}
+      VWORLD_KEY: ${VWORLD_KEY:-}
+      ROVER_MAX_WAYPOINT_DIST_M: ${ROVER_MAX_WAYPOINT_DIST_M:-}
+      ROVER_MAX_SEGMENT_DIST_M: ${ROVER_MAX_SEGMENT_DIST_M:-}
     volumes:
       - ./course/data:/home/node/fsk-course/data
     restart: unless-stopped
