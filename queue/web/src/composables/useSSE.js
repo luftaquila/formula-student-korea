@@ -1,8 +1,7 @@
 import { ref } from "vue";
-import { createSSEConnection } from "@shared/useSSE.js";
+import { createServiceSSE, parseSSEData } from "@shared/useSSE.js";
 
-const API_BASE = import.meta.env.DEV ? "" : "/queue";
-const { on, useSSE: useConnection } = createSSEConnection(`${API_BASE}/api/events`);
+const { on, useSSE: useConnection, reconnected } = createServiceSSE("/queue");
 
 // Shared state across all components
 const activeInspections = ref([]);
@@ -11,8 +10,8 @@ const allBooths = ref({});
 const lastBoothUpdate = ref(null);
 
 on("init", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   activeInspections.value = data.activeInspections;
   if (data.allBooths) {
     allBooths.value = data.allBooths;
@@ -20,21 +19,21 @@ on("init", (e) => {
 });
 
 on("inspections", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   activeInspections.value = data.activeInspections;
 });
 
 on("queue", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   activeInspections.value = data.activeInspections;
   lastQueueUpdate.value = { type: data.type, timestamp: Date.now() };
 });
 
 on("booth", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   allBooths.value[data.type] = data.booths;
   lastBoothUpdate.value = { type: data.type, timestamp: Date.now() };
 });
@@ -47,5 +46,6 @@ export function useSSE() {
     lastQueueUpdate,
     allBooths,
     lastBoothUpdate,
+    reconnected,
   };
 }

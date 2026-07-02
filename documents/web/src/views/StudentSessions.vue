@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from "vue";
 import { request, fetchEntries } from "../api.js";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
+import { formatDate } from "@shared/format-date.js";
 
 const loading = ref(true);
 const team = ref(null);
@@ -61,11 +62,6 @@ const statusClasses = { submitted: "badge-success", late: "badge-warning", pendi
 
 function timestampMs(value) {
   return parseDbTimestamp(value)?.getTime() ?? 0;
-}
-
-function formatDate(d) {
-  const date = parseDbTimestamp(d);
-  return date ? date.toLocaleString("ko-KR") : "-";
 }
 
 onMounted(load);

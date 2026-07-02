@@ -5,7 +5,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { request, fetchEntries, fetchVehicleTypes } from "../api.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
-import { parseDbTimestamp } from "@shared/parse-timestamp.js";
+import { formatDate, formatSize } from "@shared/format-date.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -126,18 +126,6 @@ async function loadStatus() {
   } finally {
     loading.value = false;
   }
-}
-
-function formatDate(d) {
-  const date = parseDbTimestamp(d);
-  return date ? date.toLocaleString("ko-KR") : "-";
-}
-
-function formatSize(bytes) {
-  if (!bytes) return "-";
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / 1024 / 1024).toFixed(1) + " MB";
 }
 
 function formatExts(exts) {

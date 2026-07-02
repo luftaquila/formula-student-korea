@@ -4,6 +4,7 @@ import { exportTable } from "../composables/exportTable";
 import { fetchEntryYears, fetchScore, fetchVehicleTypes, updateManualScore, updatePenalty, updateSetting } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
+import { createKeyedDebouncer } from "@shared/debounce.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
 
@@ -484,10 +485,9 @@ async function refreshEventData() {
   }
 }
 
-let refreshTimer = null;
+const { debounce: debounceRefresh } = createKeyedDebouncer(300);
 function debouncedRefresh() {
-  clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(refreshEventData, 300);
+  debounceRefresh("refresh", refreshEventData);
 }
 
 // SSE로 페널티 설정 실시간 반영

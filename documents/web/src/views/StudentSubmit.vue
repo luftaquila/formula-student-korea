@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useNotification } from "@shared/useNotification.js";
 import { request } from "../api.js";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
+import { formatDate, formatSize } from "@shared/format-date.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -64,17 +65,6 @@ const isLate = computed(() => {
   if (!session.value) return false;
   return !!session.value.late_end_at && now.value > timestampMs(session.value.end_at);
 });
-
-function formatDate(d) {
-  const date = parseDbTimestamp(d);
-  return date ? date.toLocaleString("ko-KR") : "-";
-}
-
-function formatSize(bytes) {
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / 1024 / 1024).toFixed(1) + " MB";
-}
 
 function handleDrop(e) {
   dragOver.value = false;
