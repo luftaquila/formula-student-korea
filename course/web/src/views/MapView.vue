@@ -1059,10 +1059,10 @@ const filteredCones = computed(() => {
   return activeCones.value.filter((c) => c.side === coneFilter.value);
 });
 
-// 메모는 활성 코스의 것만, 그 코스가 표시 상태일 때만 지도에 그린다.
+// 메모는 콘 숨김(visibility)과 무관하다 — 코스가 선택돼 있으면 항상 그린다.
 const activeMemos = computed(() => {
   const id = activeCourseId.value;
-  if (!id || visibility.value[id] === false) return [];
+  if (!id) return [];
   return memosMap.value[id] || [];
 });
 
@@ -1079,11 +1079,19 @@ function memoStyle(m) {
   if (!map) return { display: "none" };
   const pt = map.latLngToContainerPoint([m.lat, m.lng]); // 회전 반영된 화면 좌표
   const mpp = metersPerPixel(m.lat);
+  const wpx = m.width / mpp;
+  const hpx = m.height / mpp;
+  // 글씨도 라벨 크기(=줌)에 맞춰 스케일한다 — 고정 px면 줌아웃 때 라벨은 작아지는데
+  // 글씨는 그대로라 잘린다. 높이·너비에 비례시키고 상·하한만 둔다.
+  const fontPx = Math.max(8, Math.min(hpx * 0.5, wpx * 0.6, 40));
   return {
     left: `${pt.x}px`,
     top: `${pt.y}px`,
-    width: `${m.width / mpp}px`,
-    height: `${m.height / mpp}px`,
+    width: `${wpx}px`,
+    height: `${hpx}px`,
+    fontSize: `${fontPx}px`,
+    // 중심 정렬(translate) + 사용자 회전. 인라인이라 CSS transform을 덮어쓴다.
+    transform: `translate(-50%, -50%) rotate(${m.rotation || 0}deg)`,
   };
 }
 
@@ -1978,6 +1986,12 @@ async function exportCourse(id) {
       cones = await res.json();
     }
 
+    // memos ride along in the JSON so a course round-trips with its labels.
+    let memos = memosMap.value[id];
+    if (!memos) {
+      try { memos = await (await request(`/api/courses/${id}/memos`)).json(); } catch { memos = []; }
+    }
+
     // same start/direction as the on-map centerline so the export matches
     const cl = computeCenterline(cones, { step: 1.0, metric: true, ...courseDirOpts(id, cones) });
     if (!cl.ok) { notifyError(`중심선 생성 실패: ${cl.reason}`); return; }
@@ -1994,7 +2008,7 @@ async function exportCourse(id) {
     }
     const trackZipBlob = await trackZip.generateAsync({ type: "blob", compression: "DEFLATE" });
 
-    const enriched = buildEnrichedJSON({ name, cones, cl, edges, track });
+    const enriched = buildEnrichedJSON({ name, cones, memos, cl, edges, track });
     // Preview PNG shows the cone-true road width (survey), unaffected by the AC
     // drivability widening above.
     const pngEdges = buildRoadEdges(cl, { extraWidthPerSide: 0 });
@@ -2599,6 +2613,7 @@ async function deleteSelected() {
 let memoBusy = false;
 let memoDrag = null;   // { id, startLat, startLng, origLat, origLng }
 let memoResize = null; // { id, startX, startY, origW, origH, mpp }
+let memoRotate = null; // { id, cx, cy, startAngle, orig, wasDragging }
 let memoEditOrig = null; // 입력 시작 시점의 내용(undo·변경감지용)
 
 function findMemo(id) {
@@ -2614,7 +2629,7 @@ async function addMemo() {
   try {
     const res = await request(`/api/courses/${courseId}/memos`, {
       method: "POST",
-      body: JSON.stringify({ lat: center.lat, lng: center.lng, width: 170 * mpp, height: 120 * mpp, content: "" }),
+      body: JSON.stringify({ lat: center.lat, lng: center.lng, width: 150 * mpp, height: 48 * mpp, content: "" }),
     });
     const created = await res.json().catch(() => null);
     if (created && created.id != null) {
@@ -2623,7 +2638,7 @@ async function addMemo() {
       if (!list.some((x) => x.id === created.id)) list.push(created);
       pushUndo("메모 추가", () => request(`/api/memos/${created.id}`, { method: "DELETE" }));
       nextTick(() => {
-        document.querySelector(`.memo-sticker[data-id="${created.id}"] .memo-text`)?.focus();
+        document.querySelector(`.memo-label[data-id="${created.id}"] .memo-text`)?.focus();
       });
     }
   } catch (err) { notifyError(err.message); }
@@ -2725,6 +2740,67 @@ async function onMemoResizeEnd() {
   try {
     await request(`/api/memos/${r.id}`, { method: "PATCH", body: JSON.stringify({ width: m.width, height: m.height }) });
     pushUndo("메모 크기 조절", () => request(`/api/memos/${r.id}`, { method: "PATCH", body: JSON.stringify({ width: r.origW, height: r.origH }) }));
+  } catch (err) { notifyError(err.message); }
+}
+
+// 회전: 좌하단 핸들 드래그. 칩 중심 기준 포인터 각도의 변화량을 현재 각도에 더한다.
+// 중심은 회전 중에도 고정(transform-origin=center)이라 시작 시 한 번만 구한다.
+function onMemoRotateStart(m, e) {
+  if (!map) return;
+  e.preventDefault(); e.stopPropagation();
+  memoBusy = true;
+  const chip = e.currentTarget.closest(".memo-label");
+  const box = chip.getBoundingClientRect();
+  const cx = box.left + box.width / 2;
+  const cy = box.top + box.height / 2;
+  const startAngle = (Math.atan2(e.clientY - cy, e.clientX - cx) * 180) / Math.PI;
+  // sx/sy + dragged는 클릭(=초기화)과 드래그(=회전)를 구분하기 위한 것. 이동이
+  // 임계값 미만이면 클릭으로 보고 회전을 0으로 초기화한다.
+  memoRotate = { id: m.id, cx, cy, startAngle, orig: m.rotation || 0, wasDragging: map.dragging.enabled(), sx: e.clientX, sy: e.clientY, dragged: false };
+  map.dragging.disable();
+  window.addEventListener("pointermove", onMemoRotateMove);
+  window.addEventListener("pointerup", onMemoRotateEnd);
+}
+function onMemoRotateMove(e) {
+  if (!memoRotate) return;
+  const m = findMemo(memoRotate.id);
+  if (!m) return;
+  if (!memoRotate.dragged) {
+    const dx = e.clientX - memoRotate.sx, dy = e.clientY - memoRotate.sy;
+    if (dx * dx + dy * dy > 9) memoRotate.dragged = true; // 3px 초과 이동 → 드래그
+  }
+  const a = (Math.atan2(e.clientY - memoRotate.cy, e.clientX - memoRotate.cx) * 180) / Math.PI;
+  m.rotation = memoRotate.orig + (a - memoRotate.startAngle);
+  mapFrame.value++;
+}
+async function onMemoRotateEnd() {
+  window.removeEventListener("pointermove", onMemoRotateMove);
+  window.removeEventListener("pointerup", onMemoRotateEnd);
+  if (map && memoRotate?.wasDragging) map.dragging.enable();
+  const rr = memoRotate; memoRotate = null; memoBusy = false;
+  if (!rr) return;
+  const m = findMemo(rr.id);
+  if (!m) return;
+
+  // 클릭(드래그 아님) → 회전 0으로 초기화.
+  if (!rr.dragged) {
+    m.rotation = 0;
+    mapFrame.value++;
+    if (rr.orig === 0) return; // 이미 0이면 저장 불필요
+    try {
+      await request(`/api/memos/${rr.id}`, { method: "PATCH", body: JSON.stringify({ rotation: 0 }) });
+      pushUndo("메모 회전 초기화", () => request(`/api/memos/${rr.id}`, { method: "PATCH", body: JSON.stringify({ rotation: rr.orig }) }));
+    } catch (err) { notifyError(err.message); }
+    return;
+  }
+
+  // 드래그 → 회전 각도 저장.
+  const norm = (((m.rotation || 0) % 360) + 360) % 360;
+  m.rotation = norm;
+  if (norm === rr.orig) return;
+  try {
+    await request(`/api/memos/${rr.id}`, { method: "PATCH", body: JSON.stringify({ rotation: norm }) });
+    pushUndo("메모 회전", () => request(`/api/memos/${rr.id}`, { method: "PATCH", body: JSON.stringify({ rotation: rr.orig }) }));
   } catch (err) { notifyError(err.message); }
 }
 
@@ -4697,31 +4773,39 @@ onUnmounted(() => {
               <button class="btn btn-ghost btn-sm" @click="selectMode = false">닫기</button>
             </div>
 
-            <!-- Memo sticker layer — geo-anchored HTML annotations over the map.
-                 The layer is inert (map stays draggable); each sticker re-enables
+            <!-- Memo label layer — geo-anchored text annotations over the map.
+                 The layer is inert (map stays draggable); each label re-enables
                  pointer events. Positions/sizes recompute via mapFrame on every
-                 map move/zoom/rotate. -->
+                 map move/zoom/rotate. Move/delete/resize float in on hover/focus. -->
             <div v-if="activeTab === 'courses' && activeCourse" class="memo-layer">
               <div
                 v-for="m in activeMemos"
                 :key="m.id"
-                class="memo-sticker"
+                class="memo-label"
                 :data-id="m.id"
                 :style="memoStyle(m)"
               >
-                <div class="memo-head" @pointerdown="onMemoDragStart(m, $event)" title="드래그하여 이동">
-                  <span class="memo-grip">⠿</span>
-                  <button class="memo-del" @pointerdown.stop @click="deleteMemo(m.id)" title="메모 삭제">×</button>
-                </div>
-                <textarea
+                <input
                   class="memo-text"
+                  type="text"
                   v-model="m.content"
-                  placeholder="메모 입력…"
+                  placeholder="라벨"
                   @focus="onMemoFocus(m)"
                   @blur="onMemoBlur(m)"
                   @pointerdown.stop
-                ></textarea>
-                <div class="memo-resize" @pointerdown="onMemoResizeStart(m, $event)" title="드래그하여 크기 조절"></div>
+                />
+                <span class="memo-move" @pointerdown="onMemoDragStart(m, $event)" title="드래그하여 이동" aria-label="이동">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+                </span>
+                <button class="memo-del" @pointerdown.stop @click="deleteMemo(m.id)" title="라벨 삭제" aria-label="삭제">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+                <span class="memo-rotate" @pointerdown="onMemoRotateStart(m, $event)" title="드래그하여 회전 · 클릭하면 초기화" aria-label="회전 (클릭 시 초기화)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                </span>
+                <span class="memo-resize" @pointerdown="onMemoResizeStart(m, $event)" title="드래그하여 크기 조절" aria-label="크기 조절">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                </span>
               </div>
             </div>
           </div>
@@ -5690,43 +5774,85 @@ onUnmounted(() => {
   .map-fab-rotate { width: 44px; height: 44px; min-height: 0; }
 }
 
-/* Memo sticker layer. Inert container over the map (map stays draggable);
-   each sticker re-enables pointer events. Stickers are geo-anchored — centred
-   on their coordinate (translate) and sized in meters (scaled to px by
-   memoStyle), so they pan/zoom/rotate with the course like cones do. */
+/* Memo CHIP layer — geo-anchored map labels styled as a UI chip: pill shape,
+   translucent plate, centred label text that reads over satellite imagery. Text
+   scales with zoom (font-size from memoStyle) so it never clips. No window
+   chrome — move (✜), delete (×) and the resize grip appear ONLY on hover/focus,
+   so at rest it is just a clean centred chip. Chips are centred on their
+   coordinate (translate) and sized in meters, so they pan/zoom/rotate with the
+   course like cones. */
 .memo-layer { position: absolute; inset: 0; z-index: 450; overflow: hidden; pointer-events: none; }
-.memo-sticker {
+.memo-label {
   position: absolute; transform: translate(-50%, -50%);
-  display: flex; flex-direction: column; box-sizing: border-box;
-  min-width: 44px; min-height: 34px;
-  background: color-mix(in srgb, #fde68a 94%, transparent);
-  border: 1px solid #caa032; border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  pointer-events: auto; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+  min-width: 32px; min-height: 20px;
+  background: rgba(17, 24, 39, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
-.memo-head {
-  display: flex; align-items: center; justify-content: space-between;
-  flex: none; height: 18px; padding: 0 4px;
-  background: color-mix(in srgb, #caa032 32%, transparent);
-  cursor: move; touch-action: none; user-select: none;
+.memo-label:hover, .memo-label:focus-within {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 1px var(--accent-primary), 0 2px 8px rgba(0, 0, 0, 0.5);
 }
-.memo-grip { font-size: 11px; line-height: 1; color: #6b5010; }
-.memo-del {
-  border: none; background: transparent; color: #6b5010;
-  font-size: 15px; line-height: 1; padding: 0 2px; cursor: pointer;
+/* Hover-bridge: the corner controls sit OUTSIDE the pill (negative offsets), so
+   moving the cursor from the pill to a control crosses a gap and drops :hover,
+   hiding the control before you reach it. This transparent halo (18px past every
+   edge, past the 11px controls) is part of the label, so hovering it keeps the
+   label hovered. It only captures pointer events WHILE hovered/focused, so at
+   rest it never blocks the map; z-index keeps it behind the text and controls. */
+.memo-label::after {
+  content: ""; position: absolute; inset: -18px; z-index: -1; pointer-events: none;
 }
-.memo-del:hover { color: #b91c1c; }
+.memo-label:hover::after, .memo-label:focus-within::after { pointer-events: auto; }
 .memo-text {
-  flex: 1; width: 100%; min-height: 0; box-sizing: border-box;
-  border: none; outline: none; resize: none; background: transparent;
-  color: #3f2d00; font-family: inherit; font-size: 12px; line-height: 1.3; padding: 4px;
+  flex: 1; width: 100%; min-width: 0; box-sizing: border-box;
+  border: none; outline: none; background: transparent;
+  color: #fff; font-family: inherit; font-weight: 600; line-height: 1.1;
+  padding: 4px 12px; cursor: text; text-align: center;
+  text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+  /* font-size is set inline by memoStyle so it scales with zoom */
 }
-.memo-text::placeholder { color: #a1793a; }
+.memo-text::placeholder { color: rgba(255, 255, 255, 0.6); font-weight: 400; }
+/* Floating controls — hidden (and non-interactive) until hover/focus. */
+.memo-move, .memo-del, .memo-rotate, .memo-resize {
+  position: absolute; opacity: 0; pointer-events: none; transition: opacity 0.12s ease; z-index: 1;
+}
+.memo-label:hover .memo-move, .memo-label:hover .memo-del, .memo-label:hover .memo-rotate, .memo-label:hover .memo-resize,
+.memo-label:focus-within .memo-move, .memo-label:focus-within .memo-del, .memo-label:focus-within .memo-rotate, .memo-label:focus-within .memo-resize {
+  opacity: 1; pointer-events: auto;
+}
+.memo-move {
+  top: -11px; left: -11px; width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-primary); color: #fff; font-size: 13px; line-height: 1;
+  cursor: move; touch-action: none; user-select: none; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+.memo-del {
+  top: -11px; right: -11px; width: 22px; height: 22px; border-radius: 50%; padding: 0; border: none;
+  display: flex; align-items: center; justify-content: center;
+  background: #ef4444; color: #fff; font-size: 15px; line-height: 1;
+  cursor: pointer; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+.memo-rotate {
+  bottom: -11px; left: -11px; width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-primary); color: #fff; font-size: 13px; line-height: 1;
+  cursor: grab; touch-action: none; user-select: none; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
 .memo-resize {
-  position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
-  cursor: nwse-resize; touch-action: none;
-  background: linear-gradient(135deg, transparent 55%, #caa032 55%, #caa032 65%,
-    transparent 65%, transparent 78%, #caa032 78%, #caa032 88%, transparent 88%);
+  right: -11px; bottom: -11px; width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-primary); color: #fff;
+  cursor: nwse-resize; touch-action: none; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+/* SVG glyphs render crisp and perfectly centred by the flex box (no font-glyph
+   baseline drift like the old ✜/↻/× text icons). */
+.memo-move svg, .memo-del svg, .memo-rotate svg, .memo-resize svg {
+  display: block; width: 13px; height: 13px;
 }
 
 /* Live rotation angle readout — pinned top-centre of the map while rotating. */

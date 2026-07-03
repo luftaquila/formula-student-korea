@@ -2419,6 +2419,37 @@ describe('Memo stickers', () => {
     assert.equal(data.content, '수정된 내용');
   });
 
+  it('defaults rotation to 0 when omitted', async () => {
+    const res = await client.post(`/api/courses/${memoCourseId}/memos`, {
+      body: { lat: 37.5, lng: 126.9, width: 10, height: 10 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    assert.equal((await res.json()).rotation, 0);
+  });
+
+  it('creates and updates rotation, normalizing to [0,360)', async () => {
+    const create = await client.post(`/api/courses/${memoCourseId}/memos`, {
+      body: { lat: 37.5, lng: 126.9, width: 10, height: 10, rotation: 45 },
+      cookie: adminCookie,
+    });
+    assert.equal((await create.json()).rotation, 45);
+    const res = await client.patch(`/api/memos/${memoId}`, {
+      body: { rotation: 405 }, // 405 → 45
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).rotation, 45);
+  });
+
+  it('rejects a non-finite rotation', async () => {
+    const res = await client.post(`/api/courses/${memoCourseId}/memos`, {
+      body: { lat: 37.5, lng: 126.9, width: 10, height: 10, rotation: 'sideways' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
   it('rejects a patch with no editable fields', async () => {
     const res = await client.patch(`/api/memos/${memoId}`, { body: {}, cookie: adminCookie });
     assert.equal(res.status, 400);
@@ -2477,5 +2508,30 @@ describe('Memo stickers', () => {
     await client.delete(`/api/courses/${cid}`, { cookie: adminCookie });
     const res = await client.patch(`/api/memos/${mid}`, { body: { content: 'x' }, cookie: adminCookie });
     assert.equal(res.status, 404);
+  });
+
+  it('round-trips memos through export → import', async () => {
+    const c = await client.post('/api/courses', { body: { name: '메모 왕복' }, cookie: adminCookie });
+    const cid = (await c.json()).id;
+    await client.post(`/api/courses/${cid}/cones`, { body: { lat: 35, lng: 126, side: 'left' }, cookie: adminCookie });
+    await client.post(`/api/courses/${cid}/memos`, {
+      body: { lat: 35.1, lng: 126.1, width: 20, height: 8, rotation: 30, content: '왕복 라벨' },
+      cookie: adminCookie,
+    });
+    // export includes memos
+    const exp = await (await client.get(`/api/courses/${cid}/export`, { cookie: adminCookie })).json();
+    assert.equal(exp.memos.length, 1);
+    assert.equal(exp.memos[0].content, '왕복 라벨');
+    assert.equal(exp.memos[0].rotation, 30);
+    // import restores them onto a new course
+    const imp = await client.post('/api/courses/import', { body: { ...exp, name: '메모 왕복 2' }, cookie: adminCookie });
+    assert.equal(imp.status, 201);
+    const newId = (await imp.json()).id;
+    const memos = await (await client.get(`/api/courses/${newId}/memos`, { cookie: adminCookie })).json();
+    assert.equal(memos.length, 1);
+    assert.equal(memos[0].content, '왕복 라벨');
+    assert.equal(memos[0].rotation, 30);
+    assert.equal(memos[0].width, 20);
+    assert.equal(memos[0].height, 8);
   });
 });

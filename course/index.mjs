@@ -69,12 +69,19 @@ db.exec(`CREATE TABLE IF NOT EXISTS memo (
   lng REAL NOT NULL,
   width REAL NOT NULL,
   height REAL NOT NULL,
+  rotation REAL NOT NULL DEFAULT 0,
   content TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
 );`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_memo_course ON memo(course_id);`);
+
+// 기존 DB 마이그레이션: memo에 rotation(회전 각도, deg) 추가. 비파괴적 ADD COLUMN.
+{
+  const cols = db.prepare("PRAGMA table_info(memo)").all().map((c) => c.name);
+  if (!cols.includes("rotation")) db.exec("ALTER TABLE memo ADD COLUMN rotation REAL NOT NULL DEFAULT 0");
+}
 
 function ensureUtcTimestampColumns(table) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -392,6 +399,15 @@ function validateMemoDimension(v, label) {
   return { valid: true, value: v };
 }
 
+// 메모 회전 각도(deg). 없으면 0, 있으면 유한수만 허용하고 [0,360)으로 정규화한다.
+function validateMemoRotation(v) {
+  if (v === undefined || v === null) return { valid: true, value: 0 };
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    return { valid: false, error: "메모 회전 각도가 올바르지 않습니다." };
+  }
+  return { valid: true, value: ((v % 360) + 360) % 360 };
+}
+
 // 메모 본문. 비어 있어도 되지만 무한정 커지지 않도록 상한을 둔다.
 function validateMemoContent(content) {
   if (content === undefined || content === null) return { valid: true, value: "" };
@@ -563,6 +579,7 @@ app.get("/api/courses/:id/export", (req, res) => {
     reverse: !!course.reverse,
     start_cone_index: startIndex >= 0 ? startIndex : null,
     cones: cones.map((c) => ({ lat: c.lat, lng: c.lng, alt: c.alt, side: c.side })),
+    memos: getMemos(id).map((m) => ({ lat: m.lat, lng: m.lng, width: m.width, height: m.height, rotation: m.rotation, content: m.content })),
   };
 
   logger.log(req, "course.export", { cone_count: cones.length }, course.name);
@@ -715,6 +732,21 @@ app.post("/api/courses/import", (req, res) => {
     }
   }
 
+  // 메모는 선택 항목(예전 파일엔 없음). 있으면 각 필드를 콘과 같은 방식으로 검증한다.
+  const memos = Array.isArray(req.body.memos) ? req.body.memos : [];
+  for (const memo of memos) {
+    const cv = validateCoordinate(memo.lat, memo.lng);
+    if (!cv.valid) { logger.warn(req, "course.import", cv.error, name); return res.status(400).send(cv.error); }
+    const wv = validateMemoDimension(memo.width, "너비");
+    if (!wv.valid) { logger.warn(req, "course.import", wv.error, name); return res.status(400).send(wv.error); }
+    const hv = validateMemoDimension(memo.height, "높이");
+    if (!hv.valid) { logger.warn(req, "course.import", hv.error, name); return res.status(400).send(hv.error); }
+    const rv = validateMemoRotation(memo.rotation);
+    if (!rv.valid) { logger.warn(req, "course.import", rv.error, name); return res.status(400).send(rv.error); }
+    const cnv = validateMemoContent(memo.content);
+    if (!cnv.valid) { logger.warn(req, "course.import", cnv.error, name); return res.status(400).send(cnv.error); }
+  }
+
   const reverse = req.body.reverse ? 1 : 0;
   const startIndex = req.body.start_cone_index;
   const result = dbRun(() => {
@@ -729,7 +761,13 @@ app.post("/api/courses/import", (req, res) => {
         ? coneIds[startIndex]
         : null;
       db.prepare("UPDATE course SET reverse = ?, start_cone_id = ? WHERE id = ?").run(reverse, startId, courseId);
-      return { course: db.prepare("SELECT * FROM course WHERE id = ?").get(courseId), cones: getCones(courseId) };
+      if (memos.length) {
+        const memoInsert = db.prepare("INSERT INTO memo (course_id, lat, lng, width, height, rotation, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
+        for (const memo of memos) {
+          memoInsert.run(courseId, memo.lat, memo.lng, memo.width, memo.height, validateMemoRotation(memo.rotation).value, typeof memo.content === "string" ? memo.content : "");
+        }
+      }
+      return { course: db.prepare("SELECT * FROM course WHERE id = ?").get(courseId), cones: getCones(courseId), memos: getMemos(courseId) };
     })();
   });
 
@@ -740,9 +778,12 @@ app.post("/api/courses/import", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "course.import", { cone_count: cones.length }, nameValidation.value);
+  logger.log(req, "course.import", { cone_count: cones.length, memo_count: memos.length }, nameValidation.value);
   broadcastEvent("courses", { type: "create", course: result.result.course, courses: getCourses() });
   broadcastEvent("cones", { type: "add", courseId: result.result.course.id, cones: result.result.cones });
+  if (result.result.memos.length) {
+    broadcastEvent("memos", { type: "add", courseId: result.result.course.id, memos: result.result.memos });
+  }
   res.status(201).json(result.result.course);
 });
 
@@ -929,7 +970,7 @@ app.post("/api/courses/:id/memos", (req, res) => {
   const course = getCourseById(courseId);
   if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
 
-  const { lat, lng, width, height, content } = req.body;
+  const { lat, lng, width, height, rotation, content } = req.body;
 
   const coordValidation = validateCoordinate(lat, lng);
   if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
@@ -937,11 +978,13 @@ app.post("/api/courses/:id/memos", (req, res) => {
   if (!wV.valid) return res.status(400).send(wV.error);
   const hV = validateMemoDimension(height, "높이");
   if (!hV.valid) return res.status(400).send(hV.error);
+  const rV = validateMemoRotation(rotation);
+  if (!rV.valid) return res.status(400).send(rV.error);
   const cV = validateMemoContent(content);
   if (!cV.valid) return res.status(400).send(cV.error);
 
   const result = dbRun(() => {
-    db.prepare("INSERT INTO memo (course_id, lat, lng, width, height, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(courseId, lat, lng, wV.value, hV.value, cV.value);
+    db.prepare("INSERT INTO memo (course_id, lat, lng, width, height, rotation, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(courseId, lat, lng, wV.value, hV.value, rV.value, cV.value);
     return db.prepare("SELECT * FROM memo WHERE id = last_insert_rowid()").get();
   });
 
@@ -950,7 +993,7 @@ app.post("/api/courses/:id/memos", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "memo.create", { lat, lng, width: wV.value, height: hV.value }, course.name);
+  logger.log(req, "memo.create", { lat, lng, width: wV.value, height: hV.value, rotation: rV.value }, course.name);
   broadcastEvent("memos", { type: "add", courseId, memo: result.result, memos: getMemos(courseId) });
   res.status(201).json(result.result);
 });
@@ -985,6 +1028,12 @@ app.patch("/api/memos/:id", (req, res) => {
     const hV = validateMemoDimension(req.body.height, "높이");
     if (!hV.valid) return res.status(400).send(hV.error);
     setClauses.push("height = ?"); values.push(hV.value);
+  }
+
+  if (req.body.rotation !== undefined) {
+    const rV = validateMemoRotation(req.body.rotation);
+    if (!rV.valid) return res.status(400).send(rV.error);
+    setClauses.push("rotation = ?"); values.push(rV.value);
   }
 
   if (req.body.content !== undefined) {
