@@ -31,8 +31,9 @@ const currentSide = ref("left");
 const roverLoading = ref(false);
 const editLocked = ref(loadPref("editLocked", true, (v) => v === "true")); // default locked; screen tap/drag can't add/move/rotate/delete cones; persisted
 const showCenterline = ref(loadPref("showCenterline", true, (v) => v === "true")); // course centerline graphic; default on; persisted
-const courseStart = ref(loadPref("courseStart", {}, (v) => JSON.parse(v)));   // per-course start cone id { [courseId]: coneId }; persisted
-const courseReverse = ref(loadPref("courseReverse", {}, (v) => JSON.parse(v))); // per-course reversed travel direction { [courseId]: true }; persisted
+// Per-course start cone + travel direction live on the server course row
+// (course.start_cone_id / course.reverse), shared by every operator and synced
+// over the 'courses' SSE broadcast — no longer a per-device localStorage pref.
 const centerline = ref(null); // computed centerline of the active course: { ok, closed, length, points } | null
 const coneListEl = ref(null);         // cone-list scroll container (for scroll-to-top)
 const coneListScrolled = ref(false);  // true once the list is scrolled down a bit
@@ -1072,10 +1073,12 @@ function scheduleCenterline() {
 // cone; reverse = flipped travel direction.
 function courseDirOpts(courseId, cones) {
   const opts = {};
-  const startId = courseStart.value[courseId];
+  const course = courses.value.find((c) => c.id === courseId);
+  if (!course) return opts;
+  const startId = course.start_cone_id;
   const startCone = startId != null ? cones.find((c) => c.id === startId) : null;
   if (startCone) opts.start = { lat: startCone.lat, lng: startCone.lng };
-  if (courseReverse.value[courseId]) opts.reverse = true;
+  if (course.reverse) opts.reverse = true;
   return opts;
 }
 function recomputeCenterline() {
@@ -1134,33 +1137,59 @@ function startArrow(pts) {
 watch(showCenterline, (v) => { savePref("showCenterline", v); drawCenterline(); });
 watch(activeCones, scheduleCenterline);
 watch(activeTab, drawCenterline);
-watch(courseStart, (v) => savePref("courseStart", JSON.stringify(v)), { deep: true });
-watch(courseReverse, (v) => savePref("courseReverse", JSON.stringify(v)), { deep: true });
+// Start/direction now live on the server course row. Recompute the centerline
+// whenever the active course's reverse/start changes — this client's own edit or
+// another operator's, both echoed through the 'courses' SSE broadcast.
+watch(
+  () => {
+    const c = courses.value.find((cc) => cc.id === activeCourseId.value);
+    return c ? `${c.reverse}|${c.start_cone_id}` : "";
+  },
+  scheduleCenterline,
+);
 // (course switches already recompute via the activeCones watcher above, which
 //  reads the newly-active course's stored start/direction.)
 
 // The currently selected cone is this course's start line.
 const isStartCone = computed(() =>
-  selectedConeId.value != null && courseStart.value[activeCourseId.value] === selectedConeId.value
+  selectedConeId.value != null && activeCourse.value?.start_cone_id === selectedConeId.value
 );
+// Persist start/direction to the server course row, then reflect the saved value
+// locally from the PATCH response — don't wait for the 'courses' SSE echo. On a
+// flaky field link the echo can be mid-reconnect (sseReconnecting), and the
+// toggle button / on-map arrow must flip instantly so a rapid second tap toggles
+// from the new state rather than re-sending the stale one. The echo still arrives
+// and reconciles every other client (same values → the centerline watch no-ops).
+async function saveCourseDirection(id, patch) {
+  try {
+    const res = await request(`/api/courses/${id}/direction`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    const updated = await res.json();
+    const i = courses.value.findIndex((c) => c.id === id);
+    if (i >= 0) {
+      courses.value[i] = { ...courses.value[i], reverse: updated.reverse, start_cone_id: updated.start_cone_id };
+    }
+  } catch (err) {
+    notifyWarn(err.message || "진행 방향을 저장하지 못했습니다.");
+  }
+}
 // Set the selected cone as the start (or clear it back to the auto start gate).
 function setStartCone() {
   const id = activeCourseId.value;
   if (id == null || selectedConeId.value == null) return;
-  const next = { ...courseStart.value };
-  if (next[id] === selectedConeId.value) delete next[id]; // toggle off -> auto gate
-  else next[id] = selectedConeId.value;
-  courseStart.value = next;
-  recomputeCenterline();
+  // toggle off -> null (auto gate) if this cone is already the start
+  const next = activeCourse.value?.start_cone_id === selectedConeId.value ? null : selectedConeId.value;
+  saveCourseDirection(id, { start_cone_id: next });
 }
 // Flip the course's travel direction.
 function toggleReverse() {
   const id = activeCourseId.value;
   if (id == null) return;
-  courseReverse.value = { ...courseReverse.value, [id]: !courseReverse.value[id] };
-  recomputeCenterline();
+  saveCourseDirection(id, { reverse: !isReversed.value });
 }
-const isReversed = computed(() => !!courseReverse.value[activeCourseId.value]);
+const isReversed = computed(() => !!activeCourse.value?.reverse);
 
 /* ── Icon helpers ──────────────────────────────────── */
 function coneSideIndex(courseId, coneId) {
@@ -1573,7 +1602,8 @@ watch(activeCourseId, (v) => {
     // designated start cone if one is set, else the first cone in the data.
     const cones = conesMap.value[v] || [];
     if (cones.length > 0 && map) {
-      const startCone = cones.find((c) => c.id === courseStart.value[v]) || cones[0];
+      const startId = courses.value.find((c) => c.id === v)?.start_cone_id;
+      const startCone = cones.find((c) => c.id === startId) || cones[0];
       panToVisibleCenter(startCone.lat, startCone.lng);
     }
   }
@@ -3882,7 +3912,8 @@ onMounted(async () => {
   if (activeCourseId.value != null) {
     const cones = conesMap.value[activeCourseId.value] || [];
     if (cones.length > 0) {
-      const startCone = cones.find((c) => c.id === courseStart.value[activeCourseId.value]) || cones[0];
+      const startId = courses.value.find((c) => c.id === activeCourseId.value)?.start_cone_id;
+      const startCone = cones.find((c) => c.id === startId) || cones[0];
       panToVisibleCenter(startCone.lat, startCone.lng, { animate: false });
     }
   }
