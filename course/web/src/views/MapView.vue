@@ -2614,7 +2614,7 @@ async function addMemo() {
   try {
     const res = await request(`/api/courses/${courseId}/memos`, {
       method: "POST",
-      body: JSON.stringify({ lat: center.lat, lng: center.lng, width: 170 * mpp, height: 120 * mpp, content: "" }),
+      body: JSON.stringify({ lat: center.lat, lng: center.lng, width: 150 * mpp, height: 48 * mpp, content: "" }),
     });
     const created = await res.json().catch(() => null);
     if (created && created.id != null) {
@@ -2623,7 +2623,7 @@ async function addMemo() {
       if (!list.some((x) => x.id === created.id)) list.push(created);
       pushUndo("메모 추가", () => request(`/api/memos/${created.id}`, { method: "DELETE" }));
       nextTick(() => {
-        document.querySelector(`.memo-sticker[data-id="${created.id}"] .memo-text`)?.focus();
+        document.querySelector(`.memo-label[data-id="${created.id}"] .memo-text`)?.focus();
       });
     }
   } catch (err) { notifyError(err.message); }
@@ -4697,31 +4697,29 @@ onUnmounted(() => {
               <button class="btn btn-ghost btn-sm" @click="selectMode = false">닫기</button>
             </div>
 
-            <!-- Memo sticker layer — geo-anchored HTML annotations over the map.
-                 The layer is inert (map stays draggable); each sticker re-enables
+            <!-- Memo label layer — geo-anchored text annotations over the map.
+                 The layer is inert (map stays draggable); each label re-enables
                  pointer events. Positions/sizes recompute via mapFrame on every
-                 map move/zoom/rotate. -->
+                 map move/zoom/rotate. Move/delete/resize float in on hover/focus. -->
             <div v-if="activeTab === 'courses' && activeCourse" class="memo-layer">
               <div
                 v-for="m in activeMemos"
                 :key="m.id"
-                class="memo-sticker"
+                class="memo-label"
                 :data-id="m.id"
                 :style="memoStyle(m)"
               >
-                <div class="memo-head" @pointerdown="onMemoDragStart(m, $event)" title="드래그하여 이동">
-                  <span class="memo-grip">⠿</span>
-                  <button class="memo-del" @pointerdown.stop @click="deleteMemo(m.id)" title="메모 삭제">×</button>
-                </div>
                 <textarea
                   class="memo-text"
                   v-model="m.content"
-                  placeholder="메모 입력…"
+                  placeholder="라벨 텍스트…"
                   @focus="onMemoFocus(m)"
                   @blur="onMemoBlur(m)"
                   @pointerdown.stop
                 ></textarea>
-                <div class="memo-resize" @pointerdown="onMemoResizeStart(m, $event)" title="드래그하여 크기 조절"></div>
+                <span class="memo-move" @pointerdown="onMemoDragStart(m, $event)" title="드래그하여 이동" aria-label="이동">✜</span>
+                <button class="memo-del" @pointerdown.stop @click="deleteMemo(m.id)" title="라벨 삭제" aria-label="삭제">×</button>
+                <span class="memo-resize" @pointerdown="onMemoResizeStart(m, $event)" title="드래그하여 크기 조절" aria-label="크기 조절"></span>
               </div>
             </div>
           </div>
@@ -5690,50 +5688,61 @@ onUnmounted(() => {
   .map-fab-rotate { width: 44px; height: 44px; min-height: 0; }
 }
 
-/* Memo sticker layer. Inert container over the map (map stays draggable);
-   each sticker re-enables pointer events. Stickers are geo-anchored — centred
-   on their coordinate (translate) and sized in meters (scaled to px by
-   memoStyle), so they pan/zoom/rotate with the course like cones do. */
+/* Memo LABEL layer — geo-anchored map annotations (not a sticky note / card).
+   A translucent plate with light text that reads over satellite imagery; no
+   window chrome. Move (✜), delete (×) and the resize grip float in only on
+   hover/focus so the resting state is just a clean label. Labels are centred on
+   their coordinate (translate) and sized in meters (scaled to px by memoStyle),
+   so they pan/zoom/rotate with the course like cones. */
 .memo-layer { position: absolute; inset: 0; z-index: 450; overflow: hidden; pointer-events: none; }
-.memo-sticker {
+.memo-label {
   position: absolute; transform: translate(-50%, -50%);
-  display: flex; flex-direction: column; box-sizing: border-box;
-  min-width: 72px; min-height: 44px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color); border-radius: 8px;
-  box-shadow: var(--shadow-hover);
-  pointer-events: auto; overflow: hidden;
-  transition: border-color 0.15s ease;
+  display: flex; box-sizing: border-box;
+  min-width: 40px; min-height: 24px;
+  background: rgba(17, 24, 39, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 5px;
+  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
-.memo-sticker:focus-within { border-color: var(--accent-primary); }
-.memo-head {
-  display: flex; align-items: center; justify-content: space-between;
-  flex: none; height: 22px; padding: 0 2px 0 6px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
-  cursor: move; touch-action: none; user-select: none;
+.memo-label:hover, .memo-label:focus-within {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 1px var(--accent-primary), 0 2px 8px rgba(0, 0, 0, 0.5);
 }
-.memo-grip { font-size: 12px; line-height: 1; letter-spacing: 1px; color: var(--text-primary); opacity: 0.4; }
-.memo-del {
-  display: flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; padding: 0; border: none; border-radius: 4px;
-  background: transparent; color: var(--text-primary); opacity: 0.6;
-  font-size: 15px; line-height: 1; cursor: pointer;
-}
-.memo-del:hover { opacity: 1; color: #ef4444; background: color-mix(in srgb, #ef4444 14%, transparent); }
 .memo-text {
   flex: 1; width: 100%; min-height: 0; box-sizing: border-box;
   border: none; outline: none; resize: none; background: transparent;
-  color: var(--text-primary); font-family: inherit; font-size: 13px; line-height: 1.4; padding: 6px 8px;
+  color: #fff; font-family: inherit; font-size: 13px; font-weight: 500;
+  line-height: 1.35; padding: 5px 8px; cursor: text; overflow: auto;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
 }
-.memo-text::placeholder { color: var(--text-primary); opacity: 0.4; }
+.memo-text::placeholder { color: rgba(255, 255, 255, 0.6); font-weight: 400; }
+/* Floating controls — revealed on hover/focus (and always on touch, no hover). */
+.memo-move, .memo-del, .memo-resize { position: absolute; opacity: 0; transition: opacity 0.12s ease; z-index: 1; }
+.memo-label:hover .memo-move, .memo-label:hover .memo-del, .memo-label:hover .memo-resize,
+.memo-label:focus-within .memo-move, .memo-label:focus-within .memo-del, .memo-label:focus-within .memo-resize { opacity: 1; }
+.memo-move {
+  top: -11px; left: -11px; width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-primary); color: #fff; font-size: 13px; line-height: 1;
+  cursor: move; touch-action: none; user-select: none; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+.memo-del {
+  top: -11px; right: -11px; width: 22px; height: 22px; border-radius: 50%; padding: 0; border: none;
+  display: flex; align-items: center; justify-content: center;
+  background: #ef4444; color: #fff; font-size: 15px; line-height: 1;
+  cursor: pointer; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
 .memo-resize {
-  position: absolute; right: 1px; bottom: 1px; width: 14px; height: 14px;
-  cursor: nwse-resize; touch-action: none; opacity: 0.45;
-  background: linear-gradient(135deg, transparent 50%, var(--text-primary) 50%, var(--text-primary) 60%,
-    transparent 60%, transparent 72%, var(--text-primary) 72%, var(--text-primary) 82%, transparent 82%);
+  right: -3px; bottom: -3px; width: 16px; height: 16px; border-radius: 0 0 5px 0;
+  cursor: nwse-resize; touch-action: none;
+  background: linear-gradient(135deg, transparent 42%, var(--accent-primary) 42%);
 }
-.memo-resize:hover { opacity: 0.85; }
+@media (any-pointer: coarse) {
+  .memo-move, .memo-del, .memo-resize { opacity: 1; }
+}
 
 /* Live rotation angle readout — pinned top-centre of the map while rotating. */
 .rotate-hud {
