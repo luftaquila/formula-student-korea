@@ -1986,6 +1986,12 @@ async function exportCourse(id) {
       cones = await res.json();
     }
 
+    // memos ride along in the JSON so a course round-trips with its labels.
+    let memos = memosMap.value[id];
+    if (!memos) {
+      try { memos = await (await request(`/api/courses/${id}/memos`)).json(); } catch { memos = []; }
+    }
+
     // same start/direction as the on-map centerline so the export matches
     const cl = computeCenterline(cones, { step: 1.0, metric: true, ...courseDirOpts(id, cones) });
     if (!cl.ok) { notifyError(`중심선 생성 실패: ${cl.reason}`); return; }
@@ -2002,7 +2008,7 @@ async function exportCourse(id) {
     }
     const trackZipBlob = await trackZip.generateAsync({ type: "blob", compression: "DEFLATE" });
 
-    const enriched = buildEnrichedJSON({ name, cones, cl, edges, track });
+    const enriched = buildEnrichedJSON({ name, cones, memos, cl, edges, track });
     // Preview PNG shows the cone-true road width (survey), unaffected by the AC
     // drivability widening above.
     const pngEdges = buildRoadEdges(cl, { extraWidthPerSide: 0 });
@@ -2748,7 +2754,9 @@ function onMemoRotateStart(m, e) {
   const cx = box.left + box.width / 2;
   const cy = box.top + box.height / 2;
   const startAngle = (Math.atan2(e.clientY - cy, e.clientX - cx) * 180) / Math.PI;
-  memoRotate = { id: m.id, cx, cy, startAngle, orig: m.rotation || 0, wasDragging: map.dragging.enabled() };
+  // sx/sy + dragged는 클릭(=초기화)과 드래그(=회전)를 구분하기 위한 것. 이동이
+  // 임계값 미만이면 클릭으로 보고 회전을 0으로 초기화한다.
+  memoRotate = { id: m.id, cx, cy, startAngle, orig: m.rotation || 0, wasDragging: map.dragging.enabled(), sx: e.clientX, sy: e.clientY, dragged: false };
   map.dragging.disable();
   window.addEventListener("pointermove", onMemoRotateMove);
   window.addEventListener("pointerup", onMemoRotateEnd);
@@ -2757,6 +2765,10 @@ function onMemoRotateMove(e) {
   if (!memoRotate) return;
   const m = findMemo(memoRotate.id);
   if (!m) return;
+  if (!memoRotate.dragged) {
+    const dx = e.clientX - memoRotate.sx, dy = e.clientY - memoRotate.sy;
+    if (dx * dx + dy * dy > 9) memoRotate.dragged = true; // 3px 초과 이동 → 드래그
+  }
   const a = (Math.atan2(e.clientY - memoRotate.cy, e.clientX - memoRotate.cx) * 180) / Math.PI;
   m.rotation = memoRotate.orig + (a - memoRotate.startAngle);
   mapFrame.value++;
@@ -2769,6 +2781,20 @@ async function onMemoRotateEnd() {
   if (!rr) return;
   const m = findMemo(rr.id);
   if (!m) return;
+
+  // 클릭(드래그 아님) → 회전 0으로 초기화.
+  if (!rr.dragged) {
+    m.rotation = 0;
+    mapFrame.value++;
+    if (rr.orig === 0) return; // 이미 0이면 저장 불필요
+    try {
+      await request(`/api/memos/${rr.id}`, { method: "PATCH", body: JSON.stringify({ rotation: 0 }) });
+      pushUndo("메모 회전 초기화", () => request(`/api/memos/${rr.id}`, { method: "PATCH", body: JSON.stringify({ rotation: rr.orig }) }));
+    } catch (err) { notifyError(err.message); }
+    return;
+  }
+
+  // 드래그 → 회전 각도 저장.
   const norm = (((m.rotation || 0) % 360) + 360) % 360;
   m.rotation = norm;
   if (norm === rr.orig) return;
@@ -4774,7 +4800,7 @@ onUnmounted(() => {
                 <button class="memo-del" @pointerdown.stop @click="deleteMemo(m.id)" title="라벨 삭제" aria-label="삭제">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
-                <span class="memo-rotate" @pointerdown="onMemoRotateStart(m, $event)" title="드래그하여 회전" aria-label="회전">
+                <span class="memo-rotate" @pointerdown="onMemoRotateStart(m, $event)" title="드래그하여 회전 · 클릭하면 초기화" aria-label="회전 (클릭 시 초기화)">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
                 </span>
                 <span class="memo-resize" @pointerdown="onMemoResizeStart(m, $event)" title="드래그하여 크기 조절" aria-label="크기 조절">

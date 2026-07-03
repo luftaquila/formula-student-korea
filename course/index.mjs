@@ -579,6 +579,7 @@ app.get("/api/courses/:id/export", (req, res) => {
     reverse: !!course.reverse,
     start_cone_index: startIndex >= 0 ? startIndex : null,
     cones: cones.map((c) => ({ lat: c.lat, lng: c.lng, alt: c.alt, side: c.side })),
+    memos: getMemos(id).map((m) => ({ lat: m.lat, lng: m.lng, width: m.width, height: m.height, rotation: m.rotation, content: m.content })),
   };
 
   logger.log(req, "course.export", { cone_count: cones.length }, course.name);
@@ -731,6 +732,21 @@ app.post("/api/courses/import", (req, res) => {
     }
   }
 
+  // 메모는 선택 항목(예전 파일엔 없음). 있으면 각 필드를 콘과 같은 방식으로 검증한다.
+  const memos = Array.isArray(req.body.memos) ? req.body.memos : [];
+  for (const memo of memos) {
+    const cv = validateCoordinate(memo.lat, memo.lng);
+    if (!cv.valid) { logger.warn(req, "course.import", cv.error, name); return res.status(400).send(cv.error); }
+    const wv = validateMemoDimension(memo.width, "너비");
+    if (!wv.valid) { logger.warn(req, "course.import", wv.error, name); return res.status(400).send(wv.error); }
+    const hv = validateMemoDimension(memo.height, "높이");
+    if (!hv.valid) { logger.warn(req, "course.import", hv.error, name); return res.status(400).send(hv.error); }
+    const rv = validateMemoRotation(memo.rotation);
+    if (!rv.valid) { logger.warn(req, "course.import", rv.error, name); return res.status(400).send(rv.error); }
+    const cnv = validateMemoContent(memo.content);
+    if (!cnv.valid) { logger.warn(req, "course.import", cnv.error, name); return res.status(400).send(cnv.error); }
+  }
+
   const reverse = req.body.reverse ? 1 : 0;
   const startIndex = req.body.start_cone_index;
   const result = dbRun(() => {
@@ -745,7 +761,13 @@ app.post("/api/courses/import", (req, res) => {
         ? coneIds[startIndex]
         : null;
       db.prepare("UPDATE course SET reverse = ?, start_cone_id = ? WHERE id = ?").run(reverse, startId, courseId);
-      return { course: db.prepare("SELECT * FROM course WHERE id = ?").get(courseId), cones: getCones(courseId) };
+      if (memos.length) {
+        const memoInsert = db.prepare("INSERT INTO memo (course_id, lat, lng, width, height, rotation, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
+        for (const memo of memos) {
+          memoInsert.run(courseId, memo.lat, memo.lng, memo.width, memo.height, validateMemoRotation(memo.rotation).value, typeof memo.content === "string" ? memo.content : "");
+        }
+      }
+      return { course: db.prepare("SELECT * FROM course WHERE id = ?").get(courseId), cones: getCones(courseId), memos: getMemos(courseId) };
     })();
   });
 
@@ -756,9 +778,12 @@ app.post("/api/courses/import", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "course.import", { cone_count: cones.length }, nameValidation.value);
+  logger.log(req, "course.import", { cone_count: cones.length, memo_count: memos.length }, nameValidation.value);
   broadcastEvent("courses", { type: "create", course: result.result.course, courses: getCourses() });
   broadcastEvent("cones", { type: "add", courseId: result.result.course.id, cones: result.result.cones });
+  if (result.result.memos.length) {
+    broadcastEvent("memos", { type: "add", courseId: result.result.course.id, memos: result.result.memos });
+  }
   res.status(201).json(result.result.course);
 });
 

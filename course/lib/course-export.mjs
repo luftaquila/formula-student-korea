@@ -13,7 +13,7 @@
  *   track = buildTrackModel result (ordered geometry + ai + meta)
  * @returns {object} the enriched, re-importable record
  */
-export function buildEnrichedJSON({ name, cones, cl, edges, track, generatedAt = null }) {
+export function buildEnrichedJSON({ name, cones, memos = [], cl, edges, track, generatedAt = null }) {
   const { lat0, lng0, mlat, mlng, step } = cl.metric;
   const back = (x, y) => [lat0 + y / mlat, lng0 + x / mlng];
 
@@ -37,6 +37,10 @@ export function buildEnrichedJSON({ name, cones, cl, edges, track, generatedAt =
   return {
     name,
     cones,                                        // untouched -> re-importable
+    memos: (memos || []).map((m) => ({           // map labels -> re-importable
+      lat: m.lat, lng: m.lng, width: m.width, height: m.height,
+      rotation: m.rotation || 0, content: m.content || "",
+    })),
     export: { tool: "cone2track", pipeline: "native-js", schema: 1, generatedAt },
     projection: { lat0, lng0, mlat, mlng },
     centerline: {
