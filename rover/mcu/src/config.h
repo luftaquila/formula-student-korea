@@ -32,11 +32,14 @@
 // Servo PWM output (50 Hz, 1000-2000 us nominal). slice4 chA.
 #define PIN_SERVO_STEER     8   // S20F front steering
 
-// Chalk dispenser servo (MG995, mission-specific). slice3 chA — an
-// independent slice from the steering servo (slice4), so each runs at
-// its own frequency. GP7 (E-stop) is slice3 chB but used as a plain
-// digital input, so that channel's PWM hardware stays idle.
-#define PIN_SERVO_DISPENSER 6
+// Peristaltic pump (mission dispenser). GP6 drives the gate of an
+// IRLZ44N logic-level N-MOSFET (low-side switch) powering the pump from
+// the same rail the dispenser servo used; a 1N4007 flyback diode across
+// the pump clamps the inductive turn-off spike. Simple on/off: gate HIGH
+// = pump runs, LOW = pump off. Driven as plain SIO (formerly slice3 chA
+// PWM for the MG995 dispenser servo); GP7 (E-stop) shares slice3 as a
+// digital input, unaffected.
+#define PIN_PUMP            6
 
 // E-Stop input. NC momentary, fail-safe wiring:
 //   GP7 ── NC button ── GND, with the MCU's internal pull-up enabled.
@@ -97,9 +100,6 @@
 // steer_max_us=1850, live-tunable), separate from these firmware bounds.
 #define SERVO_MIN_US            1000
 #define SERVO_MAX_US            2000
-// Dispenser servo uses full 500-2500 us range (MG995 0-180° travel).
-#define SERVO_DISPENSER_MIN_US  500
-#define SERVO_DISPENSER_MAX_US  2500
 // S20F datasheet: 0.18 s/60deg => ~3 ms/deg.
 // 50 Hz tick = 20 ms => mechanical 6.7 deg/tick.
 // Limit command rate to ~80% of mechanical capability.

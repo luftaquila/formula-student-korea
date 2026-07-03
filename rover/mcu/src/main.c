@@ -3,6 +3,7 @@
 #include "battery.h"
 #include "motor.h"
 #include "servo.h"
+#include "pump.h"
 #include "pid.h"
 #include "estop.h"
 #include "status_led.h"
@@ -242,6 +243,7 @@ int main(void) {
     motor_init();
     servo_init();
     servo_center_all();
+    pump_init();            // peristaltic pump (GP6) — boots off
     battery_init();
     estop_init();
     status_led_init();

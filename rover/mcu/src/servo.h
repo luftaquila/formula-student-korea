@@ -5,7 +5,6 @@
 
 typedef enum {
     SERVO_STEER     = 0,
-    SERVO_DISPENSER = 1,
     SERVO_COUNT_
 } servo_id_t;
 
