@@ -1154,24 +1154,34 @@ watch(
 const isStartCone = computed(() =>
   selectedConeId.value != null && activeCourse.value?.start_cone_id === selectedConeId.value
 );
-// Persist start/direction to the server course row, then reflect the saved value
-// locally from the PATCH response — don't wait for the 'courses' SSE echo. On a
-// flaky field link the echo can be mid-reconnect (sseReconnecting), and the
-// toggle button / on-map arrow must flip instantly so a rapid second tap toggles
-// from the new state rather than re-sending the stale one. The echo still arrives
-// and reconciles every other client (same values → the centerline watch no-ops).
+// Persist start/direction to the server course row, applying the change to local
+// state IMMEDIATELY (before the round-trip) so the toggle button and on-map arrow
+// respond on tap and a rapid second tap toggles from the new state — the PATCH and
+// the 'courses' SSE echo that reconciles other clients can lag on a flaky field
+// link. Only the field(s) being changed are touched (reverse stored 0/1 to match
+// the server row), so a concurrent SSE echo updating the other field isn't
+// clobbered. On failure, roll back just those field(s).
 async function saveCourseDirection(id, patch) {
+  const i = courses.value.findIndex((c) => c.id === id);
+  if (i < 0) return;
+  const before = courses.value[i];
+  const next = { ...before };
+  if ("reverse" in patch) next.reverse = patch.reverse ? 1 : 0;
+  if ("start_cone_id" in patch) next.start_cone_id = patch.start_cone_id;
+  courses.value[i] = next;
   try {
-    const res = await request(`/api/courses/${id}/direction`, {
+    await request(`/api/courses/${id}/direction`, {
       method: "PATCH",
       body: JSON.stringify(patch),
     });
-    const updated = await res.json();
-    const i = courses.value.findIndex((c) => c.id === id);
-    if (i >= 0) {
-      courses.value[i] = { ...courses.value[i], reverse: updated.reverse, start_cone_id: updated.start_cone_id };
-    }
   } catch (err) {
+    const j = courses.value.findIndex((c) => c.id === id);
+    if (j >= 0) {
+      const rolled = { ...courses.value[j] };
+      if ("reverse" in patch) rolled.reverse = before.reverse;
+      if ("start_cone_id" in patch) rolled.start_cone_id = before.start_cone_id;
+      courses.value[j] = rolled;
+    }
     notifyWarn(err.message || "진행 방향을 저장하지 못했습니다.");
   }
 }

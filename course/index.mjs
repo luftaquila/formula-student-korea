@@ -487,6 +487,13 @@ app.patch("/api/courses/:id/direction", (req, res) => {
     logger.warn(req, "course.direction", { error: result.error, ...detail }, course.name);
     return res.status(result.status).send(result.error);
   }
+  if (!result.result) {
+    // The course was deleted between the existence check and the UPDATE, so the
+    // UPDATE matched 0 rows and the follow-up SELECT returned nothing. Report it
+    // as gone rather than sending an empty body the client can't parse.
+    logger.warn(req, "course.direction", { error: "course removed mid-update", ...detail }, course.name);
+    return res.status(404).send("코스를 찾을 수 없습니다.");
+  }
 
   logger.log(req, "course.direction", detail, course.name);
   broadcastEvent("courses", { type: "direction", course: result.result, courses: getCourses() });
@@ -502,8 +509,16 @@ app.get("/api/courses/:id/export", (req, res) => {
   if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
 
   const cones = getCones(id);
+  // Preserve the now-canonical travel direction and start cone. The start cone is
+  // exported by its position in the cones array (cone ids are reassigned on
+  // import), so a re-import restores it to the same physical cone.
+  const startIndex = course.start_cone_id != null
+    ? cones.findIndex((c) => c.id === course.start_cone_id)
+    : -1;
   const data = {
     name: course.name,
+    reverse: !!course.reverse,
+    start_cone_index: startIndex >= 0 ? startIndex : null,
     cones: cones.map((c) => ({ lat: c.lat, lng: c.lng, alt: c.alt, side: c.side })),
   };
 
@@ -589,6 +604,9 @@ app.post("/api/courses/:id/snapshots/:sid/restore", (req, res) => {
       const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side, created_at, updated_at) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
       // 이전 버전 스냅샷에는 alt가 없으므로 undefined → null로 보존.
       for (const c of cones) insert.run(id, c.lat, c.lng, typeof c.alt === "number" ? c.alt : null, c.side);
+      // Cones were replaced with fresh ids, so the designated start cone no longer
+      // exists — reset to the auto start gate (snapshots carry no cone identity).
+      db.prepare("UPDATE course SET start_cone_id = NULL WHERE id = ?").run(id);
       return getCones(id);
     })();
   });
@@ -599,6 +617,7 @@ app.post("/api/courses/:id/snapshots/:sid/restore", (req, res) => {
 
   logger.log(req, "course.snapshot.restore", { snapshot_id: sid, cone_count: cones.length }, course.name);
   broadcastEvent("cones", { type: "restore", courseId: id, cones: result.result });
+  broadcastEvent("courses", { type: "start_reset", course: getCourseById(id), courses: getCourses() });
   res.json({ cones: result.result });
 });
 
@@ -653,12 +672,20 @@ app.post("/api/courses/import", (req, res) => {
     }
   }
 
+  const reverse = req.body.reverse ? 1 : 0;
+  const startIndex = req.body.start_cone_index;
   const result = dbRun(() => {
     return db.transaction(() => {
       db.prepare("INSERT INTO course (name, created_at, updated_at) VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(nameValidation.value);
       const courseId = db.prepare("SELECT id FROM course WHERE id = last_insert_rowid()").get().id;
       const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side, created_at, updated_at) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
-      for (const cone of cones) insert.run(courseId, cone.lat, cone.lng, typeof cone.alt === "number" ? cone.alt : null, cone.side);
+      const coneIds = [];
+      for (const cone of cones) coneIds.push(insert.run(courseId, cone.lat, cone.lng, typeof cone.alt === "number" ? cone.alt : null, cone.side).lastInsertRowid);
+      // Restore travel direction + start cone (array index → the newly-inserted cone id).
+      const startId = Number.isInteger(startIndex) && startIndex >= 0 && startIndex < coneIds.length
+        ? coneIds[startIndex]
+        : null;
+      db.prepare("UPDATE course SET reverse = ?, start_cone_id = ? WHERE id = ?").run(reverse, startId, courseId);
       return { course: db.prepare("SELECT * FROM course WHERE id = ?").get(courseId), cones: getCones(courseId) };
     })();
   });
@@ -814,7 +841,13 @@ app.delete("/api/cones/:id", (req, res) => {
   const cone = getConeById(id);
   if (!cone) return res.status(404).send("콘을 찾을 수 없습니다.");
 
-  const result = dbRun(() => db.prepare("DELETE FROM cone WHERE id = ?").run(id));
+  // If this cone is its course's designated start, clear it in the same tx so the
+  // shared start_cone_id never dangles at a now-deleted cone.
+  const wasStart = getCourseById(cone.course_id)?.start_cone_id === id;
+  const result = dbRun(() => db.transaction(() => {
+    db.prepare("DELETE FROM cone WHERE id = ?").run(id);
+    if (wasStart) db.prepare("UPDATE course SET start_cone_id = NULL WHERE id = ?").run(cone.course_id);
+  })());
   if (!result.success) {
     const delCourse = getCourseById(cone.course_id);
     logger.warn(req, "cone.delete", { error: result.error }, delCourse?.name);
@@ -824,6 +857,7 @@ app.delete("/api/cones/:id", (req, res) => {
   const delCourse = getCourseById(cone.course_id);
   logger.log(req, "cone.delete", { lat: cone.lat, lng: cone.lng, side: cone.side }, delCourse?.name);
   broadcastEvent("cones", { type: "delete", courseId: cone.course_id, coneId: id, cones: getCones(cone.course_id) });
+  if (wasStart) broadcastEvent("courses", { type: "start_reset", course: delCourse, courses: getCourses() });
   res.status(200).send();
 });
 
