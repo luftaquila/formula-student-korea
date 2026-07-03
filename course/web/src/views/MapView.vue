@@ -1079,11 +1079,17 @@ function memoStyle(m) {
   if (!map) return { display: "none" };
   const pt = map.latLngToContainerPoint([m.lat, m.lng]); // 회전 반영된 화면 좌표
   const mpp = metersPerPixel(m.lat);
+  const wpx = m.width / mpp;
+  const hpx = m.height / mpp;
+  // 글씨도 라벨 크기(=줌)에 맞춰 스케일한다 — 고정 px면 줌아웃 때 라벨은 작아지는데
+  // 글씨는 그대로라 잘린다. 높이·너비에 비례시키고 상·하한만 둔다.
+  const fontPx = Math.max(8, Math.min(hpx * 0.5, wpx * 0.6, 40));
   return {
     left: `${pt.x}px`,
     top: `${pt.y}px`,
-    width: `${m.width / mpp}px`,
-    height: `${m.height / mpp}px`,
+    width: `${wpx}px`,
+    height: `${hpx}px`,
+    fontSize: `${fontPx}px`,
   };
 }
 
@@ -4709,14 +4715,15 @@ onUnmounted(() => {
                 :data-id="m.id"
                 :style="memoStyle(m)"
               >
-                <textarea
+                <input
                   class="memo-text"
+                  type="text"
                   v-model="m.content"
-                  placeholder="라벨 텍스트…"
+                  placeholder="라벨"
                   @focus="onMemoFocus(m)"
                   @blur="onMemoBlur(m)"
                   @pointerdown.stop
-                ></textarea>
+                />
                 <span class="memo-move" @pointerdown="onMemoDragStart(m, $event)" title="드래그하여 이동" aria-label="이동">✜</span>
                 <button class="memo-del" @pointerdown.stop @click="deleteMemo(m.id)" title="라벨 삭제" aria-label="삭제">×</button>
                 <span class="memo-resize" @pointerdown="onMemoResizeStart(m, $event)" title="드래그하여 크기 조절" aria-label="크기 조절"></span>
@@ -5688,20 +5695,21 @@ onUnmounted(() => {
   .map-fab-rotate { width: 44px; height: 44px; min-height: 0; }
 }
 
-/* Memo LABEL layer — geo-anchored map annotations (not a sticky note / card).
-   A translucent plate with light text that reads over satellite imagery; no
-   window chrome. Move (✜), delete (×) and the resize grip float in only on
-   hover/focus so the resting state is just a clean label. Labels are centred on
-   their coordinate (translate) and sized in meters (scaled to px by memoStyle),
-   so they pan/zoom/rotate with the course like cones. */
+/* Memo CHIP layer — geo-anchored map labels styled as a UI chip: pill shape,
+   translucent plate, centred label text that reads over satellite imagery. Text
+   scales with zoom (font-size from memoStyle) so it never clips. No window
+   chrome — move (✜), delete (×) and the resize grip appear ONLY on hover/focus,
+   so at rest it is just a clean centred chip. Chips are centred on their
+   coordinate (translate) and sized in meters, so they pan/zoom/rotate with the
+   course like cones. */
 .memo-layer { position: absolute; inset: 0; z-index: 450; overflow: hidden; pointer-events: none; }
 .memo-label {
   position: absolute; transform: translate(-50%, -50%);
-  display: flex; box-sizing: border-box;
-  min-width: 40px; min-height: 24px;
-  background: rgba(17, 24, 39, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 5px;
+  display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+  min-width: 32px; min-height: 20px;
+  background: rgba(17, 24, 39, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
   -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
   pointer-events: auto;
@@ -5712,17 +5720,22 @@ onUnmounted(() => {
   box-shadow: 0 0 0 1px var(--accent-primary), 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 .memo-text {
-  flex: 1; width: 100%; min-height: 0; box-sizing: border-box;
-  border: none; outline: none; resize: none; background: transparent;
-  color: #fff; font-family: inherit; font-size: 13px; font-weight: 500;
-  line-height: 1.35; padding: 5px 8px; cursor: text; overflow: auto;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+  flex: 1; width: 100%; min-width: 0; box-sizing: border-box;
+  border: none; outline: none; background: transparent;
+  color: #fff; font-family: inherit; font-weight: 600; line-height: 1.1;
+  padding: 2px 12px; cursor: text; text-align: center;
+  text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+  /* font-size is set inline by memoStyle so it scales with zoom */
 }
 .memo-text::placeholder { color: rgba(255, 255, 255, 0.6); font-weight: 400; }
-/* Floating controls — revealed on hover/focus (and always on touch, no hover). */
-.memo-move, .memo-del, .memo-resize { position: absolute; opacity: 0; transition: opacity 0.12s ease; z-index: 1; }
+/* Floating controls — hidden (and non-interactive) until hover/focus. */
+.memo-move, .memo-del, .memo-resize {
+  position: absolute; opacity: 0; pointer-events: none; transition: opacity 0.12s ease; z-index: 1;
+}
 .memo-label:hover .memo-move, .memo-label:hover .memo-del, .memo-label:hover .memo-resize,
-.memo-label:focus-within .memo-move, .memo-label:focus-within .memo-del, .memo-label:focus-within .memo-resize { opacity: 1; }
+.memo-label:focus-within .memo-move, .memo-label:focus-within .memo-del, .memo-label:focus-within .memo-resize {
+  opacity: 1; pointer-events: auto;
+}
 .memo-move {
   top: -11px; left: -11px; width: 22px; height: 22px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
@@ -5736,12 +5749,9 @@ onUnmounted(() => {
   cursor: pointer; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
 .memo-resize {
-  right: -3px; bottom: -3px; width: 16px; height: 16px; border-radius: 0 0 5px 0;
+  right: -4px; bottom: -4px; width: 18px; height: 18px; border-radius: 50%;
   cursor: nwse-resize; touch-action: none;
-  background: linear-gradient(135deg, transparent 42%, var(--accent-primary) 42%);
-}
-@media (any-pointer: coarse) {
-  .memo-move, .memo-del, .memo-resize { opacity: 1; }
+  background: var(--accent-primary); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
 
 /* Live rotation angle readout — pinned top-centre of the map while rotating. */
