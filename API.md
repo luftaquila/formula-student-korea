@@ -483,6 +483,17 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | PATCH | `/api/cones/:id` | chief | `{ lat?, lng?, side? }` | `{ id, course_id, lat, lng, side, updated_at }` | 콘 수정 (위치/방향) |
 | DELETE | `/api/cones/:id` | chief | — | 200 | 콘 삭제 |
 
+#### 메모 스티커 (지도 주석)
+
+메모는 중심 좌표(lat/lng)와 실측 크기(width/height, m)로 저장돼 콘처럼 지리 좌표에 고정된다 — 줌/회전에도 코스 위 같은 자리를 가리키며 줌에 따라 함께 커지고 작아진다. course 삭제 시 CASCADE.
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/courses/:id/memos` | chief | — | `[{ id, course_id, lat, lng, width, height, content, created_at, updated_at }]` | 코스의 메모 목록 |
+| POST | `/api/courses/:id/memos` | chief | `{ lat, lng, width, height, content? }` | 201 `{ id, course_id, lat, lng, width, height, content, ... }` | 메모 추가 (width/height 단위 m, 0 초과 100000 이하; content 최대 5000자) |
+| PATCH | `/api/memos/:id` | chief | `{ lat?, lng?, width?, height?, content? }` | `{ id, course_id, lat, lng, width, height, content, updated_at }` | 메모 수정 (이동/크기/내용) |
+| DELETE | `/api/memos/:id` | chief | — | 200 | 메모 삭제 |
+
 ### Rover — 기기 인입 (로버 → 서버)
 
 로버는 SSE(`/api/rover/stream`)로 서버에 연결을 유지하고, 서버 이벤트에 대한 응답과 텔레메트리를 아래 엔드포인트로 POST한다. 라우트 구현은 `course/lib/rover-routes.mjs`.
@@ -545,6 +556,7 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | `init` | `{ courses }` | 연결 시 코스 목록 |
 | `courses` | `{ type, course?, courseId?, courses }` | 코스 생성/수정/삭제 |
 | `cones` | `{ type, courseId, cone?, coneId?, cones }` | 콘 추가/수정/삭제 |
+| `memos` | `{ type, courseId, memo?, memoId?, memos }` | 메모 추가/수정/삭제 |
 | `rover` | `{ lat, lng }` | 로버 위치 수신 시 브로드캐스트 |
 | `rover:status` | `{ connected, nav_state, ... }` | 로버 상태 변화 |
 | `rover:waypoint` / `rover:skipped` / `rover:spray` / `rover:obstacle` | `{ index }` 등 | 미션 진행 이벤트 |
