@@ -165,21 +165,16 @@ navigator_node:
 
 spray_node:
   ros__parameters:
-    # Dispenser servo PWM is owned by the MCU (RP2040-Zero, GPIO 6,
-    # slice 3 ch A). spray_node publishes the pulse width in µs on
-    # /rover/cmd/dispenser_us and mcu_bridge_node forwards it to the
-    # MCU as 'D <us>'. No Pi GPIO is touched here.
+    # The peristaltic pump is switched by the MCU (RP2040-Zero, GPIO 6)
+    # through an IRLZ44N MOSFET. spray_node publishes the pump state (0/1)
+    # on /rover/cmd/pump and mcu_bridge_node forwards it to the MCU as
+    # 'D <0|1>'. No Pi GPIO is touched here.
     #
-    # MG995 drives the chalk drum. LOAD (angle_a) is the rest pose: the
-    # drum sits there while driving so chassis vibration packs powder into
-    # it. Each /rover/nav/waypoint_reached runs one load→dump→load cycle =
-    # one ~5 g shot, ending back at LOAD for the next leg.
-    dispense_angle_a: 0                # LOAD — pocket UP, drum fills (rest pose)
-    dispense_angle_b: 180              # DUMP — pocket DOWN, gravity dumps the shot
-    arrive_to_dump_delay: 1.0          # Dwell at LOAD after stopping, before DUMP
-    dump_hold_duration: 2.0            # Dwell at DUMP so the shot clears, before LOAD.
-                                       # Servo slew (~0.4s one-way) adds to each move.
-    load_settle_duration: 0.5          # Hold after the LOAD pulse before signalling done. Sequentialises the LOAD slew with the next-WP drive so chassis acceleration doesn't overlap a still-tilting pocket and fling residual powder sideways. MCU slew is 100 µs/tick × 50 Hz = 5000 µs/s, so a 2000 µs DUMP→LOAD swing = 0.40 s; the extra 0.1 s absorbs CDC latency and gives the drum a moment to physically stop ringing before chassis motion resumes.
+    # Each /rover/nav/waypoint_reached runs one settle→pump→off cycle =
+    # one shot of marking fluid. pump_run_duration is live-tunable from the
+    # UI (분사 시간 slider) via /rover/cmd/pump_duration.
+    arrive_to_pump_delay: 1.0          # Dwell after stopping, before the pump runs
+    pump_run_duration: 2.0             # How long the pump runs per waypoint (seconds)
 
 mcu_bridge_node:
   ros__parameters:

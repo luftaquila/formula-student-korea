@@ -1,22 +1,20 @@
-"""Tests for the chalk dispenser (SprayNode) cycle logic and timer safety.
+"""Tests for the peristaltic-pump dispenser (SprayNode) cycle logic.
 
-The dispenser servo is driven by the MCU; SprayNode publishes the target
-pulse width on /rover/cmd/dispenser_us. These tests intercept the
-publisher to assert command intent without touching real hardware.
+The pump is switched by the MCU; SprayNode publishes the desired pump
+state (0/1) on /rover/cmd/pump. These tests intercept the publisher to
+assert command intent without touching real hardware.
 
-The dispense model is a load→dump→load cycle: the drum rests at LOAD
-(angle_a) while driving, rotates to DUMP (angle_b) to drop a shot at the
-waypoint, then returns to LOAD. The cycle is driven by two chained
-timers (arrive_to_dump_delay → DUMP, dump_hold_duration → LOAD,
-load_settle_duration → done). The fake Node in conftest does NOT auto-
-fire timers, so tests advance the cycle by calling the step callbacks
-(_do_dump, _do_load, _done_after_load_settle) directly.
+The dispense model is a settle → pump-on → run → pump-off cycle, driven
+by two chained timers (arrive_to_pump_delay → pump on, pump_run_duration
+→ pump off + done). The fake Node in conftest does NOT auto-fire timers,
+so tests advance the cycle by calling the step callbacks (_do_pump_on,
+_do_pump_off) directly.
 """
 
 import json
 
 import pytest
-from pilot.spray_node import SprayNode, _angle_to_pulse_us
+from pilot.spray_node import SprayNode
 
 
 @pytest.fixture
@@ -25,28 +23,19 @@ def spray():
 
 
 @pytest.fixture
-def captured_pulses(spray):
-    """Capture all Int32 pulse_us values published to the MCU bridge."""
-    pulses = []
-    spray._pub_dispenser.publish = lambda msg: pulses.append(int(msg.data))
-    return pulses
+def captured_pump(spray):
+    """Capture all pump states (0/1) published to the MCU bridge."""
+    states = []
+    spray._pub_pump.publish = lambda msg: states.append(int(msg.data))
+    return states
 
 
-def test_angle_to_pulse_us_endpoints():
-    assert _angle_to_pulse_us(0) == 500
-    assert _angle_to_pulse_us(90) == 1500
-    assert _angle_to_pulse_us(180) == 2500
-
-
-def test_boot_commands_load(monkeypatch):
-    """On boot the drum is driven to LOAD (angle_a) — its rest pose — so
-    the first driving leg packs powder into it.
-    """
+def test_boot_commands_pump_off(monkeypatch):
+    """On boot the pump is driven OFF so nothing dispenses on power-on."""
     calls = []
-    monkeypatch.setattr(SprayNode, '_publish_pulse_us', lambda self, us: calls.append(int(us)))
-    node = SprayNode()
-    angle_a = node.get_parameter('dispense_angle_a').value
-    assert calls == [_angle_to_pulse_us(angle_a)]
+    monkeypatch.setattr(SprayNode, '_publish_pump', lambda self, on: calls.append(bool(on)))
+    SprayNode()
+    assert calls == [False]
 
 
 def test_safe_destroy_timer_none_ok(spray):
@@ -95,17 +84,13 @@ def test_emergency_stop_clears_active_timer(spray):
     assert spray._spraying is False
 
 
-def test_emergency_stop_does_not_command_servo(spray, captured_pulses):
-    """E-stop must NOT emit a new dispenser pulse — we abort the pending
-    cycle and leave the drum at whatever pose it last rotated to. The
-    operator returns it to rest via the manual Load button.
-    """
-    # Clear any pulses queued by __init__ (boot publishes LOAD).
-    captured_pulses.clear()
+def test_emergency_stop_forces_pump_off(spray, captured_pump):
+    """E-stop must force the pump OFF — a running pump can't be left on."""
+    captured_pump.clear()
     spray._spraying = True
     spray._current_wp_idx = 7
     spray._on_emergency_stop(None)
-    assert captured_pulses == []
+    assert captured_pump == [0]
 
 
 def test_signal_done_publishes_success_result(spray):
@@ -143,8 +128,10 @@ def test_emergency_stop_silent_when_idle(spray):
     assert results == []
 
 
-def test_spray_cancel_matches_current_wp_suppresses_result(spray):
-    """Cancel on the wp currently dispensing aborts without publishing a result."""
+def test_spray_cancel_matches_current_wp_forces_off_no_result(spray, captured_pump):
+    """Cancel on the wp currently dispensing aborts + forces pump off,
+    without publishing a result (navigator already did)."""
+    captured_pump.clear()
     results = []
     spray._pub_result.publish = lambda msg: results.append(msg)
     spray._spraying = True
@@ -154,11 +141,13 @@ def test_spray_cancel_matches_current_wp_suppresses_result(spray):
     spray._on_spray_cancel(cancel_msg)
 
     assert spray._spraying is False
+    assert captured_pump == [0], "cancel must force the pump off"
     assert results == [], "cancel path must not publish a result — navigator already did"
 
 
-def test_spray_cancel_for_stale_wp_noop(spray):
+def test_spray_cancel_for_stale_wp_noop(spray, captured_pump):
     """Cancel targeting a different wp than the one currently dispensing is ignored."""
+    captured_pump.clear()
     results = []
     spray._pub_result.publish = lambda msg: results.append(msg)
     spray._spraying = True
@@ -170,32 +159,27 @@ def test_spray_cancel_for_stale_wp_noop(spray):
     # Active dispense on wp 4 is untouched; late cancel for wp 2 is ignored.
     assert spray._spraying is True
     assert spray._current_wp_idx == 4
+    assert captured_pump == []
     assert results == []
 
 
-def test_waypoint_reached_no_immediate_pulse_and_arms_timer(spray, captured_pulses):
-    """Reaching a waypoint must NOT command the servo immediately — the
-    drum is already at LOAD. It only marks spraying and arms the pre-dump
-    timer; the DUMP command waits for that timer to fire.
+def test_waypoint_reached_no_immediate_pump_and_arms_timer(spray, captured_pump):
+    """Reaching a waypoint must NOT run the pump immediately — it only marks
+    spraying and arms the settle timer; the pump waits for that timer.
     """
-    captured_pulses.clear()
+    captured_pump.clear()
     wp = type('M', (), {'data': 12})()
     spray._on_waypoint_reached(wp)
-    assert captured_pulses == [], "no servo command on arrival — drum is already at load"
+    assert captured_pump == [], "no pump command on arrival — settle first"
     assert spray._spraying is True
     assert spray._current_wp_idx == 12
     assert spray._dispense_timer is not None
 
 
-def test_full_cycle_dumps_then_loads(spray, captured_pulses):
-    """The full cycle commands DUMP (angle_b) then LOAD (angle_a), waits
-    for the LOAD slew to complete, then signals done with a success
-    result.
-    """
-    captured_pulses.clear()
-    angle_a = spray.get_parameter('dispense_angle_a').value
-    angle_b = spray.get_parameter('dispense_angle_b').value
-
+def test_full_cycle_pumps_then_off(spray, captured_pump):
+    """The full cycle turns the pump ON then OFF, then signals done with a
+    success result."""
+    captured_pump.clear()
     done = []
     results = []
     spray._pub_done.publish = lambda msg: done.append(msg)
@@ -203,93 +187,97 @@ def test_full_cycle_dumps_then_loads(spray, captured_pulses):
 
     wp = type('M', (), {'data': 9})()
     spray._on_waypoint_reached(wp)
-    # Pre-dump timer fires → rotate to DUMP.
-    spray._do_dump()
-    # Dump-hold timer fires → rotate back to LOAD. Done NOT yet signalled.
-    spray._do_load()
-    assert spray._spraying is True, "done must not fire until load-settle elapses"
-    assert done == [], "load-slew still in progress; navigator must not depart yet"
-    # Load-settle timer fires → signal done.
-    spray._done_after_load_settle()
+    assert captured_pump == [], "no pump on arrival"
+    # Settle timer fires → pump ON.
+    spray._do_pump_on()
+    assert spray._spraying is True
+    assert done == [], "done must not fire until the pump run completes"
+    # Pump-run timer fires → pump OFF + done.
+    spray._do_pump_off()
 
-    assert captured_pulses == [_angle_to_pulse_us(angle_b), _angle_to_pulse_us(angle_a)], \
-        "cycle must command dump then load"
+    assert captured_pump == [1, 0], "cycle must turn the pump on then off"
     assert spray._spraying is False
     assert len(done) == 1
     assert json.loads(results[0].data) == {"waypoint": 9, "outcome": "success"}
 
 
-def test_do_dump_noop_when_not_spraying(spray, captured_pulses):
-    """If the cycle was cancelled during the pre-dump dwell, the queued
-    _do_dump callback must not command the servo.
+def test_do_pump_on_noop_when_not_spraying(spray, captured_pump):
+    """If the cycle was cancelled during the settle dwell, the queued
+    _do_pump_on callback must not run the pump.
     """
-    captured_pulses.clear()
+    captured_pump.clear()
     spray._spraying = False
-    spray._do_dump()
-    assert captured_pulses == []
+    spray._do_pump_on()
+    assert captured_pump == []
 
 
-def test_do_load_noop_when_not_spraying(spray, captured_pulses):
-    """If the cycle was cancelled during the dump hold, the queued
-    _do_load callback must not command the servo or schedule the
-    load-settle timer.
+def test_do_pump_off_noop_when_not_spraying(spray, captured_pump):
+    """If the cycle was cancelled during the pump run, the queued
+    _do_pump_off callback must not re-command the pump or signal done.
     """
-    captured_pulses.clear()
+    captured_pump.clear()
     done = []
     spray._pub_done.publish = lambda msg: done.append(msg)
     spray._spraying = False
-    spray._do_load()
-    assert captured_pulses == []
+    spray._do_pump_off()
+    assert captured_pump == []
     assert done == []
 
 
-def test_done_after_load_settle_noop_when_not_spraying(spray):
-    """If the cycle was cancelled between the LOAD pulse and the
-    load-settle timer firing, the done event must NOT be published
-    (the cancel path emits its own cancelled / timeout result).
-    """
-    done = []
-    spray._pub_done.publish = lambda msg: done.append(msg)
-    spray._spraying = False
-    spray._done_after_load_settle()
-    assert done == []
+def test_pump_set_on_drives_pump(spray, captured_pump):
+    captured_pump.clear()
+    msg = type('M', (), {'data': 1})()
+    spray._on_pump_set(msg)
+    assert captured_pump == [1]
 
 
-def test_set_position_load_drives_angle_a(spray, captured_pulses):
-    captured_pulses.clear()
-    msg = type('M', (), {'data': 'load'})()
-    spray._on_set_position(msg)
-    angle_a = spray.get_parameter('dispense_angle_a').value
-    assert captured_pulses == [_angle_to_pulse_us(angle_a)]
+def test_pump_set_off_drives_pump(spray, captured_pump):
+    captured_pump.clear()
+    msg = type('M', (), {'data': 0})()
+    spray._on_pump_set(msg)
+    assert captured_pump == [0]
 
 
-def test_set_position_dump_drives_angle_b(spray, captured_pulses):
-    captured_pulses.clear()
-    msg = type('M', (), {'data': 'dump'})()
-    spray._on_set_position(msg)
-    angle_b = spray.get_parameter('dispense_angle_b').value
-    assert captured_pulses == [_angle_to_pulse_us(angle_b)]
-
-
-def test_set_position_unknown_payload_noop(spray, captured_pulses):
-    captured_pulses.clear()
-    msg = type('M', (), {'data': 'banana'})()
-    spray._on_set_position(msg)
-    assert captured_pulses == []
-
-
-def test_set_position_ignored_while_spraying(spray, captured_pulses):
-    captured_pulses.clear()
+def test_pump_set_ignored_while_spraying(spray, captured_pump):
+    captured_pump.clear()
     spray._spraying = True
-    msg = type('M', (), {'data': 'load'})()
-    spray._on_set_position(msg)
-    assert captured_pulses == []
+    msg = type('M', (), {'data': 1})()
+    spray._on_pump_set(msg)
+    assert captured_pump == []
 
 
-def test_waypoint_reached_blocked_while_spraying(spray, captured_pulses):
+def test_waypoint_reached_blocked_while_spraying(spray, captured_pump):
     """A second trigger arriving while a cycle is in progress is ignored."""
-    captured_pulses.clear()
+    captured_pump.clear()
     spray._spraying = True
     wp = type('M', (), {'data': 5})()
     spray._on_waypoint_reached(wp)
-    assert captured_pulses == [], "no servo command while busy"
+    assert captured_pump == [], "no pump command while busy"
+
+
+def test_pump_duration_live_update(spray):
+    """A valid /rover/cmd/pump_duration updates the live dispense time."""
+    msg = type('M', (), {'data': 3.5})()
+    spray._on_pump_duration(msg)
+    assert spray._pump_run_duration == 3.5
+
+
+def test_pump_duration_out_of_range_ignored(spray):
+    """Out-of-range dispense times are ignored; the live value is unchanged."""
+    spray._pump_run_duration = 2.0
+    for bad in (0.0, -1.0, 11.0):
+        msg = type('M', (), {'data': bad})()
+        spray._on_pump_duration(msg)
+        assert spray._pump_run_duration == 2.0
+
+
+def test_pump_duration_used_by_cycle(spray, captured_pump):
+    """A live dispense-time change is picked up by the next waypoint cycle."""
+    captured_pump.clear()
+    msg = type('M', (), {'data': 4.0})()
+    spray._on_pump_duration(msg)
+    # Run a cycle; the pump-run timer must be armed with the new duration.
+    wp = type('M', (), {'data': 1})()
+    spray._on_waypoint_reached(wp)
+    spray._do_pump_on()
+    assert spray._pump_run_duration == 4.0

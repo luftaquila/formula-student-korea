@@ -1,10 +1,10 @@
 """Launch file for the FSK Rover system.
 
 Drive I/O (motor PWM, steering servo, encoder, battery ADC, E-Stop,
-watchdog) plus the mission-specific dispenser servo (GP6) all live on
-the RP2040 coprocessor (`rover/mcu/`); the Pi drives no GPIO. The
-Pi runs five ROS 2 nodes: gps, navigator, mcu_bridge, spray, bridge
-(course server).
+watchdog) plus the mission-specific peristaltic pump (GP6, IRLZ44N
+MOSFET) all live on the RP2040 coprocessor (`rover/mcu/`); the Pi
+drives no GPIO. The Pi runs five ROS 2 nodes: gps, navigator,
+mcu_bridge, spray, bridge (course server).
 Secrets (INTERNAL_SECRET, NTRIP credentials) come from the environment
 only — never on the ROS param tree.
 """

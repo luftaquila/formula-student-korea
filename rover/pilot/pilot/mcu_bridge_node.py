@@ -1,9 +1,9 @@
 """MCU Bridge Node: USB CDC link to the RP2040 coprocessor.
 
 The MCU owns drive I/O — encoder, motor PWM, steering servo, battery
-ADC, E-Stop, watchdog — and the mission-specific dispenser servo PWM
-(GP6); this node forwards spray_node's pulse-width as `D <us>`
-(see `spray_node`).
+ADC, E-Stop, watchdog — and the mission-specific peristaltic pump
+(GP6, IRLZ44N MOSFET); this node forwards spray_node's pump state as
+`D <0|1>` (see `spray_node`).
 
 Subscribed topics:
     /rover/cmd/velocity        (geometry_msgs/Twist)  speed/curvature
@@ -281,9 +281,9 @@ class McuBridgeNode(Node):
         self.create_subscription(String, '/rover/cmd/apply_wheel_scales', self._on_apply_wheel_scales, reliable)
         self.create_subscription(String, '/rover/cmd/apply_steering_trim', self._on_apply_steering_trim, reliable)
         self.create_subscription(Empty, '/rover/cmd/reset_wheel_cal', self._on_reset_wheel_cal, reliable)
-        # Chalk-dispenser servo target. spray_node publishes the pulse
-        # width in microseconds; we forward verbatim to the MCU as 'D'.
-        self.create_subscription(Int32, '/rover/cmd/dispenser_us', self._on_dispenser_us, reliable)
+        # Peristaltic pump state. spray_node publishes 0/1; we forward
+        # verbatim to the MCU as 'D <0|1>'.
+        self.create_subscription(Int32, '/rover/cmd/pump', self._on_pump, reliable)
         self.create_subscription(Int32, '/rover/cmd/nav_lights', self._on_nav_lights, reliable)
         self.create_subscription(Int32, '/rover/cmd/led_brightness', self._on_led_brightness, reliable)
 
@@ -1106,13 +1106,13 @@ class McuBridgeNode(Node):
             'wheel/steering calibration reset: scales=(1.0, 1.0), trim=0.0 µs'
         )
 
-    # ------------------------- dispenser
+    # ------------------------- pump
 
-    def _on_dispenser_us(self, msg):
-        # spray_node already clamps to the dispenser servo's safe range;
-        # the MCU re-clamps per-servo before commanding the PWM hardware.
-        us = int(msg.data)
-        self._send(f'D {us}')
+    def _on_pump(self, msg):
+        # spray_node publishes the desired pump state (0/1); forward it to
+        # the MCU as 'D <0|1>' (MOSFET gate on GP6).
+        on = 1 if int(msg.data) != 0 else 0
+        self._send(f'D {on}')
 
     def _on_nav_lights(self, msg):
         # Nav-light pattern select (0=off 1=steady 2=double-strobe
