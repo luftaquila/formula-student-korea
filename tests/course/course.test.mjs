@@ -434,6 +434,18 @@ describe('GET /api/courses/:id/export', () => {
     assert.equal(data.cones[0].lat, 35.0);
     assert.equal(data.cones[0].side, 'left');
     assert.equal(data.cones[0].alt, 88.8); // altitude included in export
+    assert.equal(data.reverse, false);         // default forward
+    assert.equal(data.start_cone_index, null); // no start cone designated
+  });
+
+  it('exports the travel direction and start cone (by array index)', async () => {
+    const cones = await (await client.get('/api/courses/3/cones', { cookie: adminCookie })).json();
+    await client.patch('/api/courses/3/direction', {
+      body: { reverse: true, start_cone_id: cones[0].id }, cookie: adminCookie,
+    });
+    const data = await (await client.get('/api/courses/3/export', { cookie: adminCookie })).json();
+    assert.equal(data.reverse, true);
+    assert.equal(data.start_cone_index, 0); // cone ids are reassigned on import → export by position
   });
 
   it('returns 404 for non-existent course', async () => {
@@ -493,6 +505,44 @@ describe('POST /api/courses/import', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
+  });
+
+  it('restores travel direction and start cone from an export', async () => {
+    const res = await client.post('/api/courses/import', {
+      body: {
+        name: 'dir-import',
+        reverse: true,
+        start_cone_index: 1,
+        cones: [{ lat: 35.5, lng: 126.5, side: 'left' }, { lat: 35.6, lng: 126.6, side: 'right' }],
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    const course = await res.json();
+    assert.equal(course.reverse, 1); // stored 0/1
+    const cones = await (await client.get(`/api/courses/${course.id}/cones`, { cookie: adminCookie })).json();
+    assert.equal(course.start_cone_id, cones[1].id); // index 1 → 2nd inserted cone's new id
+  });
+
+  it('defaults to forward / no start when direction fields are absent', async () => {
+    const res = await client.post('/api/courses/import', {
+      body: { name: 'nodir-import', cones: [{ lat: 35.7, lng: 126.7, side: 'left' }] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    const course = await res.json();
+    assert.equal(course.reverse, 0);
+    assert.equal(course.start_cone_id, null);
+  });
+
+  it('ignores an out-of-range start_cone_index (leaves start unset)', async () => {
+    const res = await client.post('/api/courses/import', {
+      body: { name: 'oob-import', start_cone_index: 9, cones: [{ lat: 35.8, lng: 126.8, side: 'left' }] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    const course = await res.json();
+    assert.equal(course.start_cone_id, null);
   });
 
   after(async () => {
@@ -618,6 +668,51 @@ describe('PATCH /api/courses/:id/direction', () => {
       body: { reverse: true }, cookie: officialCookie,
     });
     assert.equal(officialRes.status, 403);
+  });
+});
+
+// ─── start_cone_id dangling cleanup ──────────────────────────────────────
+describe('start_cone_id dangling cleanup', () => {
+  let courseId, coneIds;
+  const startOf = async (id) =>
+    (await (await client.get('/api/courses', { cookie: adminCookie })).json())
+      .find((c) => c.id === id)?.start_cone_id;
+
+  before(async () => {
+    const cRes = await client.post('/api/courses', { body: { name: '시작콘정리 코스' }, cookie: adminCookie });
+    courseId = (await cRes.json()).id;
+    coneIds = [];
+    for (const c of [{ lat: 37.1, lng: 126.1, side: 'left' }, { lat: 37.2, lng: 126.2, side: 'right' }]) {
+      const r = await client.post(`/api/courses/${courseId}/cones`, { body: c, cookie: adminCookie });
+      coneIds.push((await r.json()).id);
+    }
+  });
+
+  it('clears start_cone_id when the designated start cone is deleted', async () => {
+    await client.patch(`/api/courses/${courseId}/direction`, { body: { start_cone_id: coneIds[0] }, cookie: adminCookie });
+    assert.equal(await startOf(courseId), coneIds[0]);
+    await client.delete(`/api/cones/${coneIds[0]}`, { cookie: adminCookie });
+    assert.equal(await startOf(courseId), null); // no longer dangles at the deleted cone
+  });
+
+  it('leaves start_cone_id intact when a non-start cone is deleted', async () => {
+    const r = await client.post(`/api/courses/${courseId}/cones`, { body: { lat: 37.3, lng: 126.3, side: 'center' }, cookie: adminCookie });
+    const thirdId = (await r.json()).id;
+    await client.patch(`/api/courses/${courseId}/direction`, { body: { start_cone_id: coneIds[1] }, cookie: adminCookie });
+    await client.delete(`/api/cones/${thirdId}`, { cookie: adminCookie });
+    assert.equal(await startOf(courseId), coneIds[1]);
+  });
+
+  it('clears start_cone_id on snapshot restore (cones get fresh ids)', async () => {
+    await client.patch(`/api/courses/${courseId}/direction`, { body: { start_cone_id: coneIds[1] }, cookie: adminCookie });
+    const snap = await (await client.post(`/api/courses/${courseId}/snapshots`, { body: { reason: 'test' }, cookie: adminCookie })).json();
+    const restoreRes = await client.post(`/api/courses/${courseId}/snapshots/${snap.id}/restore`, { cookie: adminCookie });
+    assert.equal(restoreRes.status, 200);
+    assert.equal(await startOf(courseId), null);
+  });
+
+  after(async () => {
+    await client.delete(`/api/courses/${courseId}`, { cookie: adminCookie });
   });
 });
 
