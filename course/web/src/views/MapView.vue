@@ -22,6 +22,9 @@ const appNavState = inject("navState", null);
 /* ── State ─────────────────────────────────────────── */
 const courses = ref([]);
 const conesMap = ref({});
+const memosMap = ref({}); // 코스별 메모 스티커: courseId → memo[] { id, course_id, lat, lng, width, height, content }
+// 지도가 움직일 때마다 올려서 지리 좌표 고정 메모의 화면 위치·크기를 재계산시키는 트리거.
+const mapFrame = ref(0);
 const visibility = ref(loadPref("visibility", {}, (v) => JSON.parse(v))); // per-course show/hide, persisted
 const activeCourseId = ref(null);
 const loading = ref(true);
@@ -1056,6 +1059,34 @@ const filteredCones = computed(() => {
   return activeCones.value.filter((c) => c.side === coneFilter.value);
 });
 
+// 메모는 활성 코스의 것만, 그 코스가 표시 상태일 때만 지도에 그린다.
+const activeMemos = computed(() => {
+  const id = activeCourseId.value;
+  if (!id || visibility.value[id] === false) return [];
+  return memosMap.value[id] || [];
+});
+
+// EPSG:3857(웹 메르카토르) 기준 위도별 m/px 해상도. 회전과 무관한 스칼라라
+// leaflet-rotate 상태에서도 m↔px 변환이 정확하다.
+function metersPerPixel(lat) {
+  return (40075016.686 * Math.abs(Math.cos((lat * Math.PI) / 180))) / Math.pow(2, map.getZoom() + 8);
+}
+
+// 메모 스티커의 화면상 위치(중심 좌표)·크기(m→px)를 현재 지도 상태로 계산한다.
+// mapFrame을 읽어 지도 이동/줌/회전 때마다 다시 평가된다. 중심 정렬은 CSS translate.
+function memoStyle(m) {
+  void mapFrame.value; // 반응성 의존성 등록
+  if (!map) return { display: "none" };
+  const pt = map.latLngToContainerPoint([m.lat, m.lng]); // 회전 반영된 화면 좌표
+  const mpp = metersPerPixel(m.lat);
+  return {
+    left: `${pt.x}px`,
+    top: `${pt.y}px`,
+    width: `${m.width / mpp}px`,
+    height: `${m.height / mpp}px`,
+  };
+}
+
 const selectedCone = computed(() =>
   selectedConeId.value ? activeCones.value.find((c) => c.id === selectedConeId.value) : null
 );
@@ -1630,6 +1661,10 @@ async function fetchAll() {
         const r = await request(`/api/courses/${c.id}/cones`);
         conesMap.value[c.id] = await r.json();
       } catch { conesMap.value[c.id] = []; }
+      try {
+        const rm = await request(`/api/courses/${c.id}/memos`);
+        memosMap.value[c.id] = await rm.json();
+      } catch { memosMap.value[c.id] = []; }
     }
     if (!activeCourseId.value && courses.value.length) {
       // Restore the last-used course so a refresh doesn't silently drop
@@ -1707,6 +1742,12 @@ async function initMap() {
   // User-initiated drag should disable follow so the operator isn't
   // fighting an auto-recentre. Programmatic panTo doesn't fire dragstart.
   map.on("dragstart", () => { if (followRover.value) followRover.value = false; });
+  // 메모 스티커는 지리 좌표 고정 HTML 오버레이라 지도가 움직일 때마다 화면 위치·크기를
+  // 다시 계산해야 한다. move/zoom은 애니메이션 중에도 반복 발생하므로 팬·줌 동안에도
+  // 메모가 붙어 따라간다. rotate는 leaflet-rotate의 회전 이벤트.
+  for (const ev of ["move", "zoom", "moveend", "zoomend", "viewreset", "resize", "rotate"]) {
+    map.on(ev, () => { mapFrame.value++; });
+  }
   setupSelectionBox();
   rebuildAllMarkers();
 }
@@ -1731,6 +1772,7 @@ function rotateMap() {
   mapBearing.value = (((mapBearing.value - 90) % 360) + 360) % 360;
   map.setBearing(renderBearing(mapBearing.value));
   savePref("mapBearing", mapBearing.value);
+  mapFrame.value++; // 회전 후 메모 스티커 재배치
 }
 
 function onMapClick(e) {
@@ -2547,6 +2589,143 @@ async function deleteSelected() {
   if (ids.includes(selectedConeId.value)) selectedConeId.value = null;
   multiSelectedIds.value = new Set();
   updateMultiSelectIcons();
+}
+
+/* ── Memo stickers ────────────────────────────────── */
+// 메모는 콘과 별개의 주석 레이어다 — 편집 잠금(콘 오조작 방지)과 무관하게 항상
+// 추가·이동·리사이즈·수정·삭제할 수 있다. 중심 좌표(lat/lng)와 실측 크기(width/
+// height, m)로 서버에 저장하고, 서버가 'memos' SSE로 되쏘면 모든 조작자가 공유한다.
+// 드래그/리사이즈/입력 중에는 memoBusy로 SSE 에코를 막아 조작이 끊기지 않게 한다.
+let memoBusy = false;
+let memoDrag = null;   // { id, startLat, startLng, origLat, origLng }
+let memoResize = null; // { id, startX, startY, origW, origH, mpp }
+let memoEditOrig = null; // 입력 시작 시점의 내용(undo·변경감지용)
+
+function findMemo(id) {
+  return (memosMap.value[activeCourseId.value] || []).find((m) => m.id === id);
+}
+
+// 지도 중앙에 기본 크기(대략 화면 170×120px 상당)의 빈 메모를 추가하고 바로 포커스.
+async function addMemo() {
+  const courseId = activeCourseId.value;
+  if (!courseId || !map) return;
+  const center = map.getCenter();
+  const mpp = metersPerPixel(center.lat);
+  try {
+    const res = await request(`/api/courses/${courseId}/memos`, {
+      method: "POST",
+      body: JSON.stringify({ lat: center.lat, lng: center.lng, width: 170 * mpp, height: 120 * mpp, content: "" }),
+    });
+    const created = await res.json().catch(() => null);
+    if (created && created.id != null) {
+      // SSE 에코 전에 즉시 보이도록 낙관적 추가(에코가 같은 배열로 덮어써도 무해).
+      const list = memosMap.value[courseId] || (memosMap.value[courseId] = []);
+      if (!list.some((x) => x.id === created.id)) list.push(created);
+      pushUndo("메모 추가", () => request(`/api/memos/${created.id}`, { method: "DELETE" }));
+      nextTick(() => {
+        document.querySelector(`.memo-sticker[data-id="${created.id}"] .memo-text`)?.focus();
+      });
+    }
+  } catch (err) { notifyError(err.message); }
+}
+
+async function deleteMemo(id) {
+  const before = findMemo(id);
+  try {
+    await request(`/api/memos/${id}`, { method: "DELETE" });
+    if (before) pushUndo("메모 삭제", () => request(`/api/courses/${before.course_id}/memos`, {
+      method: "POST",
+      body: JSON.stringify({ lat: before.lat, lng: before.lng, width: before.width, height: before.height, content: before.content }),
+    }));
+  } catch (err) { notifyError(err.message); }
+}
+
+// 내용 편집: 포커스 동안 SSE 에코를 막고, blur 때 바뀐 경우에만 저장.
+function onMemoFocus(m) { memoEditOrig = m.content; memoBusy = true; }
+async function onMemoBlur(m) {
+  memoBusy = false;
+  const before = memoEditOrig;
+  memoEditOrig = null;
+  if (before === null || m.content === before) return;
+  try {
+    await request(`/api/memos/${m.id}`, { method: "PATCH", body: JSON.stringify({ content: m.content }) });
+    pushUndo("메모 수정", () => request(`/api/memos/${m.id}`, { method: "PATCH", body: JSON.stringify({ content: before }) }));
+  } catch (err) { m.content = before; notifyError(err.message); }
+}
+
+function memoContainerPoint(e) {
+  const rect = map.getContainer().getBoundingClientRect();
+  return L.point(e.clientX - rect.left, e.clientY - rect.top);
+}
+
+// 이동: 헤더 드래그. 잡은 지점의 위경도 이동량을 중심에 더해 그랩 지점이 안 튀게 한다.
+function onMemoDragStart(m, e) {
+  if (!map) return;
+  e.preventDefault(); e.stopPropagation();
+  memoBusy = true;
+  const ll = map.containerPointToLatLng(memoContainerPoint(e));
+  // 잡은 순간의 지도 드래그 활성 상태를 기억해 끝날 때 그대로 되돌린다 — 영역 선택
+  // 모드는 지도 드래그를 꺼 두므로 무조건 enable()하면 그 모드가 깨진다.
+  memoDrag = { id: m.id, startLat: ll.lat, startLng: ll.lng, origLat: m.lat, origLng: m.lng, wasDragging: map.dragging.enabled() };
+  map.dragging.disable();
+  window.addEventListener("pointermove", onMemoDragMove);
+  window.addEventListener("pointerup", onMemoDragEnd);
+}
+function onMemoDragMove(e) {
+  if (!memoDrag || !map) return;
+  const ll = map.containerPointToLatLng(memoContainerPoint(e));
+  const m = findMemo(memoDrag.id);
+  if (!m) return;
+  m.lat = memoDrag.origLat + (ll.lat - memoDrag.startLat);
+  m.lng = memoDrag.origLng + (ll.lng - memoDrag.startLng);
+  mapFrame.value++;
+}
+async function onMemoDragEnd() {
+  window.removeEventListener("pointermove", onMemoDragMove);
+  window.removeEventListener("pointerup", onMemoDragEnd);
+  if (map && memoDrag?.wasDragging) map.dragging.enable();
+  const d = memoDrag; memoDrag = null; memoBusy = false;
+  if (!d) return;
+  const m = findMemo(d.id);
+  if (!m || (m.lat === d.origLat && m.lng === d.origLng)) return;
+  try {
+    await request(`/api/memos/${d.id}`, { method: "PATCH", body: JSON.stringify({ lat: m.lat, lng: m.lng }) });
+    pushUndo("메모 이동", () => request(`/api/memos/${d.id}`, { method: "PATCH", body: JSON.stringify({ lat: d.origLat, lng: d.origLng }) }));
+  } catch (err) { notifyError(err.message); }
+}
+
+// 크기 조절: 우하단 핸들 드래그. 중심 고정이라 코너를 dx px 끌면 좌우가 함께 벌어져
+// 너비는 2·dx px 증가한다("중심 좌표 기준" 크기와 일관).
+function onMemoResizeStart(m, e) {
+  if (!map) return;
+  e.preventDefault(); e.stopPropagation();
+  memoBusy = true;
+  memoResize = { id: m.id, startX: e.clientX, startY: e.clientY, origW: m.width, origH: m.height, mpp: metersPerPixel(m.lat), wasDragging: map.dragging.enabled() };
+  map.dragging.disable();
+  window.addEventListener("pointermove", onMemoResizeMove);
+  window.addEventListener("pointerup", onMemoResizeEnd);
+}
+function onMemoResizeMove(e) {
+  if (!memoResize) return;
+  const m = findMemo(memoResize.id);
+  if (!m) return;
+  const min = memoResize.mpp * 30; // 최소 대략 30px
+  m.width = Math.max(min, memoResize.origW + (e.clientX - memoResize.startX) * memoResize.mpp * 2);
+  m.height = Math.max(min, memoResize.origH + (e.clientY - memoResize.startY) * memoResize.mpp * 2);
+  mapFrame.value++;
+}
+async function onMemoResizeEnd() {
+  window.removeEventListener("pointermove", onMemoResizeMove);
+  window.removeEventListener("pointerup", onMemoResizeEnd);
+  if (map && memoResize?.wasDragging) map.dragging.enable();
+  const r = memoResize; memoResize = null; memoBusy = false;
+  if (!r) return;
+  const m = findMemo(r.id);
+  if (!m || (m.width === r.origW && m.height === r.origH)) return;
+  try {
+    await request(`/api/memos/${r.id}`, { method: "PATCH", body: JSON.stringify({ width: m.width, height: m.height }) });
+    pushUndo("메모 크기 조절", () => request(`/api/memos/${r.id}`, { method: "PATCH", body: JSON.stringify({ width: r.origW, height: r.origH }) }));
+  } catch (err) { notifyError(err.message); }
 }
 
 /* ── Rotate selection ─────────────────────────────── */
@@ -3645,6 +3824,15 @@ function connectSSE() {
     if (map && !suppressRebuild) rebuildAllMarkers();
   });
 
+  eventSource.addEventListener("memos", (e) => {
+    const data = parseSSE(e);
+    if (!data) return;
+    // 내가 드래그/리사이즈/입력 중인 코스면 에코로 편집 중 배열이 교체돼 조작이
+    // 끊긴다. 그 경우 건너뛰고, 조작 종료 후의 PATCH 에코가 최종 상태로 맞춘다.
+    if (memoBusy && data.courseId === activeCourseId.value) return;
+    memosMap.value[data.courseId] = data.memos;
+  });
+
   eventSource.addEventListener("rover", (e) => {
     const data = parseSSE(e);
     if (!data) return;
@@ -4476,6 +4664,12 @@ onUnmounted(() => {
                 aria-label="각도 측정"
                 title="각도기 — 콘 3개의 각도 측정"
               >📐</button>
+              <button
+                class="fab-icon-btn fab-tool"
+                @click="addMemo"
+                aria-label="메모 추가"
+                title="메모 — 지도 중앙에 메모 스티커 추가"
+              >📝</button>
             </div>
 
             <!-- Rotation angle HUD — visible while rotating so the operator can stop at an exact angle. -->
@@ -4501,6 +4695,34 @@ onUnmounted(() => {
               <span v-if="multiSelectedIds.size" class="measure-result">{{ multiSelectedIds.size }}개</span>
               <button v-if="multiSelectedIds.size" class="btn btn-ghost btn-sm" @click="clearMultiSelection">해제</button>
               <button class="btn btn-ghost btn-sm" @click="selectMode = false">닫기</button>
+            </div>
+
+            <!-- Memo sticker layer — geo-anchored HTML annotations over the map.
+                 The layer is inert (map stays draggable); each sticker re-enables
+                 pointer events. Positions/sizes recompute via mapFrame on every
+                 map move/zoom/rotate. -->
+            <div v-if="activeTab === 'courses' && activeCourse" class="memo-layer">
+              <div
+                v-for="m in activeMemos"
+                :key="m.id"
+                class="memo-sticker"
+                :data-id="m.id"
+                :style="memoStyle(m)"
+              >
+                <div class="memo-head" @pointerdown="onMemoDragStart(m, $event)" title="드래그하여 이동">
+                  <span class="memo-grip">⠿</span>
+                  <button class="memo-del" @pointerdown.stop @click="deleteMemo(m.id)" title="메모 삭제">×</button>
+                </div>
+                <textarea
+                  class="memo-text"
+                  v-model="m.content"
+                  placeholder="메모 입력…"
+                  @focus="onMemoFocus(m)"
+                  @blur="onMemoBlur(m)"
+                  @pointerdown.stop
+                ></textarea>
+                <div class="memo-resize" @pointerdown="onMemoResizeStart(m, $event)" title="드래그하여 크기 조절"></div>
+              </div>
             </div>
           </div>
 
@@ -5466,6 +5688,45 @@ onUnmounted(() => {
   .map-fab-panel .fab-icon-btn,
   .map-fab-panel .side-btn,
   .map-fab-rotate { width: 44px; height: 44px; min-height: 0; }
+}
+
+/* Memo sticker layer. Inert container over the map (map stays draggable);
+   each sticker re-enables pointer events. Stickers are geo-anchored — centred
+   on their coordinate (translate) and sized in meters (scaled to px by
+   memoStyle), so they pan/zoom/rotate with the course like cones do. */
+.memo-layer { position: absolute; inset: 0; z-index: 450; overflow: hidden; pointer-events: none; }
+.memo-sticker {
+  position: absolute; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; box-sizing: border-box;
+  min-width: 44px; min-height: 34px;
+  background: color-mix(in srgb, #fde68a 94%, transparent);
+  border: 1px solid #caa032; border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  pointer-events: auto; overflow: hidden;
+}
+.memo-head {
+  display: flex; align-items: center; justify-content: space-between;
+  flex: none; height: 18px; padding: 0 4px;
+  background: color-mix(in srgb, #caa032 32%, transparent);
+  cursor: move; touch-action: none; user-select: none;
+}
+.memo-grip { font-size: 11px; line-height: 1; color: #6b5010; }
+.memo-del {
+  border: none; background: transparent; color: #6b5010;
+  font-size: 15px; line-height: 1; padding: 0 2px; cursor: pointer;
+}
+.memo-del:hover { color: #b91c1c; }
+.memo-text {
+  flex: 1; width: 100%; min-height: 0; box-sizing: border-box;
+  border: none; outline: none; resize: none; background: transparent;
+  color: #3f2d00; font-family: inherit; font-size: 12px; line-height: 1.3; padding: 4px;
+}
+.memo-text::placeholder { color: #a1793a; }
+.memo-resize {
+  position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+  cursor: nwse-resize; touch-action: none;
+  background: linear-gradient(135deg, transparent 55%, #caa032 55%, #caa032 65%,
+    transparent 65%, transparent 78%, #caa032 78%, #caa032 88%, transparent 88%);
 }
 
 /* Live rotation angle readout — pinned top-centre of the map while rotating. */

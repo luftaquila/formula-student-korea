@@ -2308,3 +2308,174 @@ describe('Course snapshots', () => {
     assert.equal(res.status, 404);
   });
 });
+
+// ─── Memo stickers ──────────────────────────────────────────────────────
+describe('Memo stickers', () => {
+  let memoCourseId;
+  let memoId;
+
+  before(async () => {
+    const res = await client.post('/api/courses', { body: { name: '메모 테스트 코스' }, cookie: adminCookie });
+    memoCourseId = (await res.json()).id;
+  });
+
+  it('creates a memo with center coordinate, size and content', async () => {
+    const res = await client.post(`/api/courses/${memoCourseId}/memos`, {
+      body: { lat: 37.5, lng: 126.9, width: 25, height: 12, content: '슬라럼 구간' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    const data = await res.json();
+    assert.equal(data.course_id, memoCourseId);
+    assert.equal(data.lat, 37.5);
+    assert.equal(data.lng, 126.9);
+    assert.equal(data.width, 25);
+    assert.equal(data.height, 12);
+    assert.equal(data.content, '슬라럼 구간');
+    memoId = data.id;
+  });
+
+  it('defaults content to empty string when omitted', async () => {
+    const res = await client.post(`/api/courses/${memoCourseId}/memos`, {
+      body: { lat: 37.51, lng: 126.91, width: 10, height: 10 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    const data = await res.json();
+    assert.equal(data.content, '');
+  });
+
+  it('lists memos for a course', async () => {
+    const res = await client.get(`/api/courses/${memoCourseId}/memos`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.length, 2);
+    assert.equal(data[0].content, '슬라럼 구간');
+  });
+
+  it('rejects invalid coordinates', async () => {
+    const res = await client.post(`/api/courses/${memoCourseId}/memos`, {
+      body: { lat: 91, lng: 126.9, width: 10, height: 10 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('rejects non-positive or non-finite dimensions', async () => {
+    for (const bad of [{ width: 0, height: 10 }, { width: 10, height: -5 }, { width: 'big', height: 10 }, { width: 10, height: 200000 }]) {
+      const res = await client.post(`/api/courses/${memoCourseId}/memos`, {
+        body: { lat: 37.5, lng: 126.9, ...bad },
+        cookie: adminCookie,
+      });
+      assert.equal(res.status, 400);
+    }
+  });
+
+  it('rejects over-long content', async () => {
+    const res = await client.post(`/api/courses/${memoCourseId}/memos`, {
+      body: { lat: 37.5, lng: 126.9, width: 10, height: 10, content: 'x'.repeat(5001) },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('returns 404 creating a memo on a non-existent course', async () => {
+    const res = await client.post('/api/courses/999999/memos', {
+      body: { lat: 37.5, lng: 126.9, width: 10, height: 10 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('updates memo position (drag)', async () => {
+    const res = await client.patch(`/api/memos/${memoId}`, {
+      body: { lat: 37.6, lng: 127.0 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.lat, 37.6);
+    assert.equal(data.lng, 127.0);
+  });
+
+  it('updates memo size (resize)', async () => {
+    const res = await client.patch(`/api/memos/${memoId}`, {
+      body: { width: 40, height: 30 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.width, 40);
+    assert.equal(data.height, 30);
+  });
+
+  it('updates memo content (edit)', async () => {
+    const res = await client.patch(`/api/memos/${memoId}`, {
+      body: { content: '수정된 내용' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.content, '수정된 내용');
+  });
+
+  it('rejects a patch with no editable fields', async () => {
+    const res = await client.patch(`/api/memos/${memoId}`, { body: {}, cookie: adminCookie });
+    assert.equal(res.status, 400);
+  });
+
+  it('rejects an invalid dimension on update', async () => {
+    const res = await client.patch(`/api/memos/${memoId}`, { body: { width: -1 }, cookie: adminCookie });
+    assert.equal(res.status, 400);
+  });
+
+  it('returns 404 updating a non-existent memo', async () => {
+    const res = await client.patch('/api/memos/999999', { body: { content: 'x' }, cookie: adminCookie });
+    assert.equal(res.status, 404);
+  });
+
+  it('deletes a memo', async () => {
+    const res = await client.delete(`/api/memos/${memoId}`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const list = await (await client.get(`/api/courses/${memoCourseId}/memos`, { cookie: adminCookie })).json();
+    assert.ok(!list.some((m) => m.id === memoId));
+  });
+
+  it('returns 404 deleting a non-existent memo', async () => {
+    const res = await client.delete('/api/memos/999999', { cookie: adminCookie });
+    assert.equal(res.status, 404);
+  });
+
+  it('allows chief to manage memos (course-level annotation)', async () => {
+    const chiefCookie = makeAuthCookie({ email: 'chief2@test.com', name: 'Chief2', role: 'chief' });
+    const res = await client.post(`/api/courses/${memoCourseId}/memos`, {
+      body: { lat: 37.5, lng: 126.9, width: 10, height: 10 },
+      cookie: chiefCookie,
+    });
+    assert.equal(res.status, 201);
+  });
+
+  it('rejects below-chief roles from memo management', async () => {
+    const officialCookie = makeAuthCookie({ email: 'official2@test.com', name: 'Official2', role: 'official' });
+    const list = await client.get(`/api/courses/${memoCourseId}/memos`, { cookie: officialCookie });
+    assert.equal(list.status, 403);
+    const create = await client.post(`/api/courses/${memoCourseId}/memos`, {
+      body: { lat: 37.5, lng: 126.9, width: 10, height: 10 },
+      cookie: officialCookie,
+    });
+    assert.equal(create.status, 403);
+  });
+
+  it('cascade-deletes memos when the course is deleted', async () => {
+    const c = await client.post('/api/courses', { body: { name: '메모 캐스케이드' }, cookie: adminCookie });
+    const cid = (await c.json()).id;
+    const m = await client.post(`/api/courses/${cid}/memos`, {
+      body: { lat: 37.5, lng: 126.9, width: 10, height: 10, content: 'cascade' },
+      cookie: adminCookie,
+    });
+    const mid = (await m.json()).id;
+    await client.delete(`/api/courses/${cid}`, { cookie: adminCookie });
+    const res = await client.patch(`/api/memos/${mid}`, { body: { content: 'x' }, cookie: adminCookie });
+    assert.equal(res.status, 404);
+  });
+});

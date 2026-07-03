@@ -58,6 +58,24 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_cone_course ON cone(course_id);`);
   if (!cols.includes("alt")) db.exec("ALTER TABLE cone ADD COLUMN alt REAL");
 }
 
+// 지도 위 메모 스티커. 코스에 붙는 자유 텍스트 주석으로, 중심 좌표(lat/lng)와
+// 실측 크기(width/height, m)로 저장한다 — 콘처럼 지리 좌표에 고정돼 줌/회전에도
+// 코스 위 같은 자리를 가리키며, 크기는 m로 저장돼 줌에 따라 함께 커지고 작아진다.
+// course 삭제 시 CASCADE로 함께 지워진다.
+db.exec(`CREATE TABLE IF NOT EXISTS memo (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  course_id INTEGER NOT NULL,
+  lat REAL NOT NULL,
+  lng REAL NOT NULL,
+  width REAL NOT NULL,
+  height REAL NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
+);`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_memo_course ON memo(course_id);`);
+
 function ensureUtcTimestampColumns(table) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
   if (!cols.includes("created_at")) db.exec(`ALTER TABLE ${table} ADD COLUMN created_at TEXT`);
@@ -317,6 +335,10 @@ function getCones(courseId) {
   return db.prepare("SELECT * FROM cone WHERE course_id = ? ORDER BY id").all(courseId);
 }
 
+function getMemos(courseId) {
+  return db.prepare("SELECT * FROM memo WHERE course_id = ? ORDER BY id").all(courseId);
+}
+
 app.get("/api/events", sseHandler(() => ({ courses: getCourses() })));
 
 /* ============================================
@@ -361,12 +383,33 @@ function validateSide(side) {
   return { valid: true };
 }
 
+// 메모의 실측 가로/세로 크기(m). 드래그로 조절되는 값이라 양의 유한수만 허용하고,
+// 코스 규모를 훌쩍 넘는 값(오조작·클라이언트 버그)은 거른다.
+function validateMemoDimension(v, label) {
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || v > 100000) {
+    return { valid: false, error: `메모 ${label}가 올바르지 않습니다. (0 초과 100000 m 이하)` };
+  }
+  return { valid: true, value: v };
+}
+
+// 메모 본문. 비어 있어도 되지만 무한정 커지지 않도록 상한을 둔다.
+function validateMemoContent(content) {
+  if (content === undefined || content === null) return { valid: true, value: "" };
+  if (typeof content !== "string") return { valid: false, error: "메모 내용이 올바르지 않습니다." };
+  if (content.length > 5000) return { valid: false, error: "메모 내용이 너무 깁니다. (최대 5000자)" };
+  return { valid: true, value: content };
+}
+
 function getCourseById(id) {
   return db.prepare("SELECT * FROM course WHERE id = ?").get(id);
 }
 
 function getConeById(id) {
   return db.prepare("SELECT * FROM cone WHERE id = ?").get(id);
+}
+
+function getMemoById(id) {
+  return db.prepare("SELECT * FROM memo WHERE id = ?").get(id);
 }
 
 /* ============================================
@@ -858,6 +901,140 @@ app.delete("/api/cones/:id", (req, res) => {
   logger.log(req, "cone.delete", { lat: cone.lat, lng: cone.lng, side: cone.side }, delCourse?.name);
   broadcastEvent("cones", { type: "delete", courseId: cone.course_id, coneId: id, cones: getCones(cone.course_id) });
   if (wasStart) broadcastEvent("courses", { type: "start_reset", course: delCourse, courses: getCourses() });
+  res.status(200).send();
+});
+
+/* ============================================
+   API 라우트: 메모 스티커
+   ============================================ */
+
+// GET /api/courses/:id/memos - 코스의 메모 목록 조회
+app.get("/api/courses/:id/memos", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).send("올바르지 않은 코스 ID입니다.");
+
+  const course = getCourseById(id);
+  if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
+
+  const result = dbRun(() => getMemos(id));
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
+});
+
+// POST /api/courses/:id/memos - 메모 추가
+app.post("/api/courses/:id/memos", (req, res) => {
+  const courseId = parseInt(req.params.id, 10);
+  if (isNaN(courseId)) return res.status(400).send("올바르지 않은 코스 ID입니다.");
+
+  const course = getCourseById(courseId);
+  if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
+
+  const { lat, lng, width, height, content } = req.body;
+
+  const coordValidation = validateCoordinate(lat, lng);
+  if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
+  const wV = validateMemoDimension(width, "너비");
+  if (!wV.valid) return res.status(400).send(wV.error);
+  const hV = validateMemoDimension(height, "높이");
+  if (!hV.valid) return res.status(400).send(hV.error);
+  const cV = validateMemoContent(content);
+  if (!cV.valid) return res.status(400).send(cV.error);
+
+  const result = dbRun(() => {
+    db.prepare("INSERT INTO memo (course_id, lat, lng, width, height, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(courseId, lat, lng, wV.value, hV.value, cV.value);
+    return db.prepare("SELECT * FROM memo WHERE id = last_insert_rowid()").get();
+  });
+
+  if (!result.success) {
+    logger.warn(req, "memo.create", { error: result.error }, course.name);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "memo.create", { lat, lng, width: wV.value, height: hV.value }, course.name);
+  broadcastEvent("memos", { type: "add", courseId, memo: result.result, memos: getMemos(courseId) });
+  res.status(201).json(result.result);
+});
+
+// PATCH /api/memos/:id - 메모 수정 (위치, 크기, 내용)
+app.patch("/api/memos/:id", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).send("올바르지 않은 메모 ID입니다.");
+
+  const memo = getMemoById(id);
+  if (!memo) return res.status(404).send("메모를 찾을 수 없습니다.");
+
+  const setClauses = [];
+  const values = [];
+
+  if (req.body.lat !== undefined || req.body.lng !== undefined) {
+    const lat = req.body.lat !== undefined ? req.body.lat : memo.lat;
+    const lng = req.body.lng !== undefined ? req.body.lng : memo.lng;
+    const coordValidation = validateCoordinate(lat, lng);
+    if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
+    if (req.body.lat !== undefined) { setClauses.push("lat = ?"); values.push(lat); }
+    if (req.body.lng !== undefined) { setClauses.push("lng = ?"); values.push(lng); }
+  }
+
+  if (req.body.width !== undefined) {
+    const wV = validateMemoDimension(req.body.width, "너비");
+    if (!wV.valid) return res.status(400).send(wV.error);
+    setClauses.push("width = ?"); values.push(wV.value);
+  }
+
+  if (req.body.height !== undefined) {
+    const hV = validateMemoDimension(req.body.height, "높이");
+    if (!hV.valid) return res.status(400).send(hV.error);
+    setClauses.push("height = ?"); values.push(hV.value);
+  }
+
+  if (req.body.content !== undefined) {
+    const cV = validateMemoContent(req.body.content);
+    if (!cV.valid) return res.status(400).send(cV.error);
+    setClauses.push("content = ?"); values.push(cV.value);
+  }
+
+  if (setClauses.length === 0) {
+    return res.status(400).send("수정할 필드가 없습니다.");
+  }
+
+  setClauses.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')");
+
+  const result = dbRun(() => {
+    values.push(id);
+    db.prepare(`UPDATE memo SET ${setClauses.join(", ")} WHERE id = ?`).run(...values);
+    return db.prepare("SELECT * FROM memo WHERE id = ?").get(id);
+  });
+
+  if (!result.success) {
+    const memoCourse = getCourseById(memo.course_id);
+    logger.warn(req, "memo.update", { error: result.error }, memoCourse?.name);
+    return res.status(result.status).send(result.error);
+  }
+
+  const memoCourse = getCourseById(memo.course_id);
+  logger.log(req, "memo.update", { fields: Object.keys(req.body) }, memoCourse?.name);
+  broadcastEvent("memos", { type: "update", courseId: memo.course_id, memo: result.result, memos: getMemos(memo.course_id) });
+  res.json(result.result);
+});
+
+// DELETE /api/memos/:id - 메모 삭제
+app.delete("/api/memos/:id", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).send("올바르지 않은 메모 ID입니다.");
+
+  const memo = getMemoById(id);
+  if (!memo) return res.status(404).send("메모를 찾을 수 없습니다.");
+
+  const result = dbRun(() => db.prepare("DELETE FROM memo WHERE id = ?").run(id));
+  if (!result.success) {
+    const delCourse = getCourseById(memo.course_id);
+    logger.warn(req, "memo.delete", { error: result.error }, delCourse?.name);
+    return res.status(result.status).send(result.error);
+  }
+
+  const delCourse = getCourseById(memo.course_id);
+  logger.log(req, "memo.delete", { lat: memo.lat, lng: memo.lng }, delCourse?.name);
+  broadcastEvent("memos", { type: "delete", courseId: memo.course_id, memoId: id, memos: getMemos(memo.course_id) });
   res.status(200).send();
 });
 
