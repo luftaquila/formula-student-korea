@@ -1059,10 +1059,10 @@ const filteredCones = computed(() => {
   return activeCones.value.filter((c) => c.side === coneFilter.value);
 });
 
-// 메모는 활성 코스의 것만, 그 코스가 표시 상태일 때만 지도에 그린다.
+// 메모는 콘 숨김(visibility)과 무관하다 — 코스가 선택돼 있으면 항상 그린다.
 const activeMemos = computed(() => {
   const id = activeCourseId.value;
-  if (!id || visibility.value[id] === false) return [];
+  if (!id) return [];
   return memosMap.value[id] || [];
 });
 
@@ -5698,36 +5698,42 @@ onUnmounted(() => {
 .memo-sticker {
   position: absolute; transform: translate(-50%, -50%);
   display: flex; flex-direction: column; box-sizing: border-box;
-  min-width: 44px; min-height: 34px;
-  background: color-mix(in srgb, #fde68a 94%, transparent);
-  border: 1px solid #caa032; border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  min-width: 72px; min-height: 44px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color); border-radius: 8px;
+  box-shadow: var(--shadow-hover);
   pointer-events: auto; overflow: hidden;
+  transition: border-color 0.15s ease;
 }
+.memo-sticker:focus-within { border-color: var(--accent-primary); }
 .memo-head {
   display: flex; align-items: center; justify-content: space-between;
-  flex: none; height: 18px; padding: 0 4px;
-  background: color-mix(in srgb, #caa032 32%, transparent);
+  flex: none; height: 22px; padding: 0 2px 0 6px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
   cursor: move; touch-action: none; user-select: none;
 }
-.memo-grip { font-size: 11px; line-height: 1; color: #6b5010; }
+.memo-grip { font-size: 12px; line-height: 1; letter-spacing: 1px; color: var(--text-primary); opacity: 0.4; }
 .memo-del {
-  border: none; background: transparent; color: #6b5010;
-  font-size: 15px; line-height: 1; padding: 0 2px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; border: none; border-radius: 4px;
+  background: transparent; color: var(--text-primary); opacity: 0.6;
+  font-size: 15px; line-height: 1; cursor: pointer;
 }
-.memo-del:hover { color: #b91c1c; }
+.memo-del:hover { opacity: 1; color: #ef4444; background: color-mix(in srgb, #ef4444 14%, transparent); }
 .memo-text {
   flex: 1; width: 100%; min-height: 0; box-sizing: border-box;
   border: none; outline: none; resize: none; background: transparent;
-  color: #3f2d00; font-family: inherit; font-size: 12px; line-height: 1.3; padding: 4px;
+  color: var(--text-primary); font-family: inherit; font-size: 13px; line-height: 1.4; padding: 6px 8px;
 }
-.memo-text::placeholder { color: #a1793a; }
+.memo-text::placeholder { color: var(--text-primary); opacity: 0.4; }
 .memo-resize {
-  position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
-  cursor: nwse-resize; touch-action: none;
-  background: linear-gradient(135deg, transparent 55%, #caa032 55%, #caa032 65%,
-    transparent 65%, transparent 78%, #caa032 78%, #caa032 88%, transparent 88%);
+  position: absolute; right: 1px; bottom: 1px; width: 14px; height: 14px;
+  cursor: nwse-resize; touch-action: none; opacity: 0.45;
+  background: linear-gradient(135deg, transparent 50%, var(--text-primary) 50%, var(--text-primary) 60%,
+    transparent 60%, transparent 72%, var(--text-primary) 72%, var(--text-primary) 82%, transparent 82%);
 }
+.memo-resize:hover { opacity: 0.85; }
 
 /* Live rotation angle readout — pinned top-centre of the map while rotating. */
 .rotate-hud {
