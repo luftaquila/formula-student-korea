@@ -124,6 +124,11 @@ static void core1_main(void) {
             pulse_sign_r = 0.0f;
             motor_stop_all();
             servo_set_target_us(SERVO_STEER, SERVO_CENTER_US);
+            // Fail-safe the pump: a liquid pump must not keep running on an
+            // E-Stop or a lost Pi link (heartbeat timeout). Unlike the old
+            // dispenser servo (harmless left in place), a stuck-on pump would
+            // drain the tank. The host re-asserts 'D 1' once cleared.
+            pump_set(false);
             pid_reset(&g_pid_left);
             pid_reset(&g_pid_right);
         } else if (g_pid_enabled && !g_use_raw_motor) {

@@ -8,7 +8,11 @@
 // IRLZ44N switches the whole pump rail, so a HIGH gate runs the pump at
 // full flow and a LOW gate stops it. GP6 was formerly the dispenser
 // servo's PWM pin (slice3 chA); driven here as SIO the slice stays idle.
-static bool g_pump_on = false;
+//
+// Volatile + written from both cores: core0 handles the 'D' command,
+// core1's control loop fails it off on E-Stop / heartbeat loss. Each
+// write is a single atomic SIO gpio_put, so the two never tear.
+static volatile bool g_pump_on = false;
 
 void pump_init(void) {
     gpio_init(PIN_PUMP);
