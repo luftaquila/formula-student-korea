@@ -81,6 +81,8 @@ void status_led_tick(void) {
         // LED_ESTOP so operators see the chassis-halted indication at a
         // glance, distinguished from estop only by hue (orange vs red).
         case LED_GPS_LOST: put_pixel(blink_on ? grb(255, 112, 0) : 0); break;
+        // Pi link down: blank the onboard LED and the external TSAL sticks.
+        case LED_OFF:      put_pixel(0); break;
         default:           put_pixel(0); break;
     }
 }

@@ -384,14 +384,18 @@ Async: `! <msg>` (e.g. `! WDT TIMEOUT`).
 | dim white | boot |
 | green | idle |
 | blue | driving |
-| yellow | heartbeat timeout / battery warn |
+| yellow | battery warn |
 | magenta | undervolt |
 | orange blink | nav GPS lost |
 | red blink | E-Stop |
+| off (dark) | Pi link down (Pi powered off / unplugged) |
 
 The two external NeoPixel Sticks (16 LEDs, GP11) mirror this onboard LED 1:1
-— same colour and blink. The nav lights (GP9) are independent: steady on
-whenever the MCU is powered, not tied to status.
+— same colour and blink. When the Pi heartbeat times out (Pi powered off or
+unplugged) the status LEDs + sticks go dark — the MCU stays powered from the
+battery rail, so without this they would sit lit; E-Stop and undervolt still
+override. The nav lights (GP9) are independent: steady on whenever the MCU is
+powered, not tied to status.
 
 ### Build
 

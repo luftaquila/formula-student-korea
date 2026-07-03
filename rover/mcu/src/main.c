@@ -51,13 +51,20 @@ static volatile float    g_last_vbat  = 0.0f;
 static volatile uint32_t g_last_flags = 0;
 
 static led_state_t pick_led_state(uint32_t flags, bool driving) {
-    // Priority: estop > battery_undervolt > gps_lost (operator must
-    // see RTK-fix failures during a mission) > heartbeat_timeout >
-    // battery_warn > driving > idle.
+    // Priority: estop > battery_undervolt > heartbeat_timeout (Pi link
+    // down → LEDs off) > gps_lost (RTK-fix failure, only meaningful while
+    // the Pi is alive) > battery_warn > driving > idle.
     if (flags & FLAG_ESTOP_ACTIVE)         return LED_ESTOP;
     if (flags & FLAG_BATTERY_UNDERVOLT)    return LED_FAULT;
+    // Pi link down (Pi powered off / unplugged): blank the status LEDs and
+    // the external TSAL sticks. The MCU stays powered from the battery rail,
+    // so without this the sticks sit lit after a Pi shutdown. Ranked above
+    // gps_lost / battery_warn: gps_lost is Pi-reported (stale once the Pi is
+    // gone) and battery_warn is advisory — neither should keep the sticks
+    // lit with the Pi off. E-Stop (red) and undervolt (magenta) still win,
+    // as genuine hardware conditions worth showing even with the Pi off.
+    if (flags & FLAG_PI_HEARTBEAT_TIMEOUT) return LED_OFF;
     if (flags & FLAG_GPS_LOST)             return LED_GPS_LOST;
-    if (flags & FLAG_PI_HEARTBEAT_TIMEOUT) return LED_WARN;
     if (flags & FLAG_BATTERY_WARN)         return LED_WARN;
     return driving ? LED_ACTIVE : LED_IDLE;
 }
