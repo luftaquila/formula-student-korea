@@ -3686,6 +3686,18 @@ function stopManualControl() {
   manualFailCount = 0;
   sendControl();
   if (roverMode.value === "manual") {
+    // Fail the pump off when leaving manual mode. The PUMP toggle only
+    // exists in manual mode, so exiting it (operator click OR the 5-fail
+    // auto-release above) must not strand a running liquid pump — the same
+    // asymmetry we avoid on E-Stop / heartbeat loss. Best-effort: on a lost
+    // link this POST also fails, but then the MCU heartbeat fail-safe stops
+    // the pump anyway.
+    if (pumpOn.value) {
+      request("/api/rover/pump", {
+        method: "POST",
+        body: JSON.stringify({ on: false }),
+      }).catch(() => {});
+    }
     roverMode.value = "none";
     // Snap straight back to the server-truth mode — e.g. if the operator was
     // manually clearing an obstacle during a soft pause, this re-shows the
