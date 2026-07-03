@@ -498,8 +498,29 @@ function snapSlaloms(sk, closed, centers, width) {
                         // the slalom entry/exit bends into the adjacent track)
   const CONE_W = 20.0;  // center cones weighted high so the spline passes THROUGH
   for (const g of slalomGroups(centers, width)) {
-    let i0 = 0, d0 = Infinity, i1 = 0, d1 = Infinity;
+    // Anchor the slalom to ONE pass of the loop: the station nearest the group
+    // centroid. A track that loops back near a slalom (a junction/hairpin) runs
+    // past the SAME center cones twice; matching the group's two end cones by a
+    // GLOBAL nearest-station search then lands them on opposite passes, and the
+    // a..b splice below excises the whole arc between the passes — up to half the
+    // loop. Pinning to the centroid keeps both endpoints on the same pass.
+    let cx = 0, cy = 0;
+    for (const c of g) { cx += c[0]; cy += c[1]; }
+    cx /= g.length; cy /= g.length;
+    let ic = 0, dc = Infinity;
     for (let i = 0; i < n; i++) {
+      const d = dist(pts[i], [cx, cy]);
+      if (d < dc) { dc = d; ic = i; }
+    }
+    // Find the run-in/run-out endpoints only within a window around the anchor:
+    // wide enough for the slalom's own extent plus the K-point run-ins, far too
+    // narrow to reach a different pass of the loop.
+    let glen = 0;
+    for (let i = 1; i < g.length; i++) glen += dist(g[i - 1], g[i]);
+    const win = Math.min(Math.floor(n / 4), 2 * K + Math.ceil(glen) + 20);
+    const lo = Math.max(0, ic - win), hi = Math.min(n - 1, ic + win);
+    let i0 = lo, d0 = Infinity, i1 = lo, d1 = Infinity;
+    for (let i = lo; i <= hi; i++) {
       const da = dist(pts[i], g[0]);
       if (da < d0) { d0 = da; i0 = i; }
       const db = dist(pts[i], g[g.length - 1]);
@@ -526,6 +547,72 @@ function snapSlaloms(sk, closed, centers, width) {
   }
   pts.push(pts[0]);
   return pts;
+}
+
+// ------------------------------------------------- single-wall virtual cones
+// A stretch coned on only ONE side (the opposite wall absent for a span) yields
+// no left/right Delaunay crossings, so medialChains cannot trace it: the loop
+// then jumps across the missing wall — routing through unrelated center cones and
+// cutting through the far wall instead of running down the lone-wall corridor.
+// For each single-wall cone we synthesise a virtual opposite-wall cone offset by
+// one road width toward the track interior (the projection centroid, i.e. the
+// origin), so the medial graph sees a normal corridor and the centerline follows
+// the single wall at half width. Virtual cones steer the geometry only; they are
+// never emitted in the metric export (road edges keep the real cones).
+//
+// Detection is seed-and-grow, because a fixed distance threshold is fragile at
+// the ends of a single-wall run. SEED: a cone whose nearest opposite is beyond
+// the corridor threshold (clearly single-wall). GROW: an along-wall neighbour of
+// a flagged cone that is itself "orphaned" — its nearest opposite cone is nearer
+// to a DIFFERENT same-side cone, i.e. that opposite belongs to another pair. The
+// orphan test alone would over-fire in dense/asymmetric corridors, so it is only
+// consulted while extending an existing single-wall run.
+function virtualOppositeWall(same, opposite, width) {
+  const n = same.length;
+  const argNear = (p, pts) => {
+    let bi = -1, bd = Infinity;
+    for (let i = 0; i < pts.length; i++) { const d = dist(p, pts[i]); if (d < bd) { bd = d; bi = i; } }
+    return bi;
+  };
+  // nearest same-side neighbours of same[i] (excluding itself), within reach
+  const neighbours = (i) => same
+    .map((q, j) => [dist(same[i], q), j])
+    .sort((a, b) => a[0] - b[0])
+    .slice(1, 4)
+    .filter(([d]) => d <= 3.0 * width)
+    .map(([, j]) => j);
+  // orphan: same[i]'s nearest opposite cone does not point back to same[i]
+  const orphan = (i) => {
+    const qi = argNear(same[i], opposite);
+    return qi < 0 || argNear(opposite[qi], same) !== i;
+  };
+
+  const flag = new Array(n).fill(false);
+  const stack = [];
+  for (let i = 0; i < n; i++) {
+    if (nearestDist(same[i], opposite) > 2.6 * width) { flag[i] = true; stack.push(i); }
+  }
+  while (stack.length) {
+    const i = stack.pop();
+    for (const j of neighbours(i)) {
+      if (flag[j]) continue;
+      if (nearestDist(same[j], opposite) > 1.4 * width && orphan(j)) { flag[j] = true; stack.push(j); }
+    }
+  }
+
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    if (!flag[i]) continue;
+    const nb = neighbours(i);
+    if (!nb.length) continue;                          // isolated stray → skip
+    const a = same[nb[0]], b = nb.length > 1 ? same[nb[1]] : same[i];
+    let tx = b[0] - a[0], ty = b[1] - a[1];
+    const tn = Math.hypot(tx, ty) || 1; tx /= tn; ty /= tn;
+    let nx = -ty, ny = tx;                            // wall normal
+    if (nx * -same[i][0] + ny * -same[i][1] < 0) { nx = -nx; ny = -ny; } // toward centroid
+    out.push([same[i][0] + nx * width, same[i][1] + ny * width]);
+  }
+  return out;
 }
 
 // ----------------------------------------------------------------- public API
@@ -564,12 +651,21 @@ export function computeCenterline(cones, opts = {}) {
   const width = widths0[Math.floor(widths0.length / 2)];
   if (!(width > 0)) return { ok: false, reason: "degenerate cone geometry" };
 
-  // wall cones for the medial graph (left = 0, right = 1)
+  // Bridge single-wall stretches with synthetic opposite-wall cones so the medial
+  // graph traces the lone-wall corridor instead of jumping across it. These only
+  // steer the geometry (medial graph, gap fill, clamp, per-station width) — the
+  // metric export below still reports the real cones. Compute both sides from the
+  // real cones before appending, so neither side's detection sees the other's
+  // freshly-added virtual cones.
+  const vLeft = virtualOppositeWall(right, left, width);
+  const vRight = virtualOppositeWall(left, right, width);
+  for (const p of vLeft) left.push(p);
+  for (const p of vRight) right.push(p);
+
+  // wall cones for the medial graph (left = 0, right = 1), incl. virtual cones
   const Pw = [], S = [];
-  for (let i = 0; i < cones.length; i++) {
-    if (cones[i].side === "left") { Pw.push(P[i]); S.push(0); }
-    else if (cones[i].side === "right") { Pw.push(P[i]); S.push(1); }
-  }
+  for (const p of left) { Pw.push(p); S.push(0); }
+  for (const p of right) { Pw.push(p); S.push(1); }
 
   const chains = medialChains(Pw, S, width, centers);
   if (!chains.length) return { ok: false, reason: "no centerline found — check cone sides" };
