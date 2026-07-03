@@ -82,5 +82,43 @@ module brace() {
     }
 }
 
-if (show_plate) t_sign();
-if (show_brace) brace();
+// Stand the part in its as-used pose: the A–F kickstand base face (the −Y-side
+// wedge face) rests flat on Z = 0, so the T sign leans back at tilt_angle from
+// the ground. Drop A onto the X-axis (translate −thickness in Z), then rotate
+// about X by 180° − tilt_angle so the A–F face turns face-down onto Z = 0.
+module place() {
+    rotate([180 - tilt_angle, 0, 0])
+        translate([0, 0, -thickness])
+            children();
+}
+
+// ---- Cap underside flat (wings only; stem kept whole) ----
+// The crossbar is a thin plate leaning at tilt_angle, so its underside is a slope.
+// Shave that slope to a horizontal flat (parallel to Z=0) at cap_flat_z, but ONLY
+// on the crossbar WINGS. The central stem-width column is left uncut, so the stem
+// stays one continuous piece of plate running straight into the crossbar — it can
+// never detach (same solid), and no gap/knife-edge can open at the join.
+cap_flat_z = (height - stroke) * sin(tilt_angle) + thickness * cos(tilt_angle);
+
+// The crossbar's y-band (local y ∈ [height-stroke, height]).
+module cap_band() {
+    translate([-width / 2, height - stroke, -1])
+        cube([width, stroke, foot_z + 2]);
+}
+
+difference() {
+    place() {
+        if (show_plate) t_sign();
+        if (show_brace) brace();
+    }
+    // Shave the WINGS only: (crossbar band − central stem column) below cap_flat_z.
+    intersection() {
+        difference() {
+            place() cap_band();
+            place() translate([-stroke / 2, height - stroke - 1, -foot_z])
+                cube([stroke, stroke + 2, 3 * foot_z]);
+        }
+        translate([-width, -width, cap_flat_z - 1000])
+            cube([2 * width, 2 * width, 1000]);
+    }
+}
