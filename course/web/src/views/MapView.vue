@@ -5798,6 +5798,16 @@ onUnmounted(() => {
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 1px var(--accent-primary), 0 2px 8px rgba(0, 0, 0, 0.5);
 }
+/* Hover-bridge: the corner controls sit OUTSIDE the pill (negative offsets), so
+   moving the cursor from the pill to a control crosses a gap and drops :hover,
+   hiding the control before you reach it. This transparent halo (18px past every
+   edge, past the 11px controls) is part of the label, so hovering it keeps the
+   label hovered. It only captures pointer events WHILE hovered/focused, so at
+   rest it never blocks the map; z-index keeps it behind the text and controls. */
+.memo-label::after {
+  content: ""; position: absolute; inset: -18px; z-index: -1; pointer-events: none;
+}
+.memo-label:hover::after, .memo-label:focus-within::after { pointer-events: auto; }
 .memo-text {
   flex: 1; width: 100%; min-width: 0; box-sizing: border-box;
   border: none; outline: none; background: transparent;
