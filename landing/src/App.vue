@@ -16,49 +16,28 @@
       <section class="section">
         <h2 class="section-title">Services</h2>
         <div class="services">
-          <ServiceCard v-if="isStudent" title="서류 제출" description="" path="/documents" icon="📄" />
-          <ServiceCard title="검차 대기열" description="" path="/queue" icon="🔧" />
-          <ServiceCard title="에너지미터" description="" path="/energymeter" icon="⚡" />
-          <ServiceCard title="대회 일정" description="" path="/calendar" icon="📅" />
+          <ServiceCard v-for="item in serviceItems" :key="item.href" v-bind="cardProps(item)" />
         </div>
       </section>
 
       <section class="section">
         <h2 class="section-title">Resources</h2>
         <div class="services">
-          <ServiceCard title="공지 알림봇" description="" path="https://ksae-notice.luftaquila.io" icon="💡" external />
-          <ServiceCard title="대회 규정집" description="" path="https://ksae-rule.luftaquila.io" icon="📖" external />
-          <ServiceCard title="AI 규정 챗봇" description="" path="https://ksae-qna.luftaquila.io" icon="💽" external />
-          <ServiceCard
-            title="자작자동차포럼"
-            description=""
-            path="https://dnf.luftaquila.io"
-            :svgIcon="forumSvg"
-            external
-          />
+          <ServiceCard v-for="item in resources" :key="item.href" v-bind="cardProps(item)" />
         </div>
       </section>
 
       <section v-if="showOfficials" class="section">
         <h2 class="section-title">Officials</h2>
         <div class="services">
-          <ServiceCard title="검차 대기 관리" description="" path="/queue/admin" icon="🛠️" />
-          <ServiceCard title="인스펙션 시트" description="" path="/inspection" icon="📋" />
-          <ServiceCard v-if="isChief" title="서류 제출 관리" description="" path="/documents/admin" icon="📑" />
-          <ServiceCard v-if="isChief" title="코스 관리" description="" path="/course" icon="📍" />
-          <ServiceCard v-if="isChief" title="파일 클라우드" description="" path="/files/" icon="📁" external />
+          <ServiceCard v-for="item in officialItems" :key="item.href" v-bind="cardProps(item)" />
         </div>
       </section>
 
       <section v-if="isAdmin" class="section">
         <h2 class="section-title">Admin</h2>
         <div class="services">
-          <ServiceCard title="엔트리 관리" description="" path="/entry" icon="🏁" />
-          <ServiceCard title="계측 시스템" description="" path="/traffic" icon="🚦" />
-          <ServiceCard title="성적 관리" description="" path="/score" icon="📊" />
-          <ServiceCard title="계정 관리" description="" path="/auth" icon="🔑" />
-          <ServiceCard title="이메일/SMS" description="" path="/email" icon="✉️" />
-          <ServiceCard title="시스템 로그" description="" path="/auth/logs" icon="📜" />
+          <ServiceCard v-for="item in admins" :key="item.href" v-bind="cardProps(item)" />
         </div>
       </section>
     </main>
@@ -66,13 +45,29 @@
 </template>
 
 <script setup>
-import { onMounted } from "vue";
+import { computed, onMounted } from "vue";
 import ServiceCard from "./components/ServiceCard.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 import { useNotification } from "@shared/useNotification.js";
 import { user, isStudent, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
-import { forumSvg } from "@shared/nav-config.js";
+import { services, resources, officials, admins, getIcon, isSvgIcon, forumSvg } from "@shared/nav-config.js";
+
+// 메뉴 데이터의 단일 소스는 nav-config.js — NavMenu와 landing 카드가 같은 목록을 쓴다.
+// "홈"은 landing 자신이므로 카드에서 제외, studentOnly/auth 가시성 규칙은 NavMenu와 동일.
+const serviceItems = computed(() =>
+  services.filter((item) => item.href !== "/" && (!item.studentOnly || isStudent.value)),
+);
+const officialItems = computed(() =>
+  officials.filter((item) => !item.auth || (item.auth === "chief" && isChief.value)),
+);
+
+function cardProps(item) {
+  const props = { title: item.name, description: "", path: item.href, external: !!item.external };
+  if (isSvgIcon(item.icon)) props.svgIcon = forumSvg;
+  else props.icon = getIcon(item.icon);
+  return props;
+}
 
 const LOGIN_ERROR_MESSAGES = {
   unregistered: "등록되지 않은 계정입니다. 관리자에게 문의하세요.",

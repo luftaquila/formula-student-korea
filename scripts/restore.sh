@@ -15,6 +15,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILE="${PROFILE:-production}"
+# caddy 서비스는 프로파일별로 다르다 (production: caddy, local: caddy-local)
+CADDY_SVC="caddy"; [ "$PROFILE" = "local" ] && CADDY_SVC="caddy-local"
 
 if [ $# -lt 1 ] || [ ! -f "$1" ]; then
   echo "사용법: $0 <백업 zip 파일>" >&2
@@ -46,6 +48,8 @@ SERVICES=(
   "score:score/data/score.db"
   "documents:documents/data/documents.db"
   "calendar:calendar/data/calendar.db"
+  "course:course/data/course.db"
+  "email:email/data/email.db"
   "filebrowser:filebrowser/data/database.db"
 )
 
@@ -100,7 +104,7 @@ fi
 # --- 5) 서비스 재시작 ---
 echo "  서비스 재시작 중..."
 (cd "$ROOT" && podman compose --profile "$PROFILE" up -d --force-recreate)
-(cd "$ROOT" && podman compose --profile "$PROFILE" restart caddy) 2>/dev/null || true
+(cd "$ROOT" && podman compose --profile "$PROFILE" restart "$CADDY_SVC") 2>/dev/null || true
 
 echo ""
 echo "=== 복구 완료 ==="

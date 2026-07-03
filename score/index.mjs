@@ -7,6 +7,8 @@ import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
 
+const PORT = 9600;
+
 export function createScoreApp(options = {}) {
 
 const db = createDatabase(Database, options.dbPath || "./data/score.db");
@@ -95,7 +97,7 @@ const logger = createLogger(db, "score");
 const _warnThrottle = new Map();
 function warnThrottled(action, detail, windowMs = 60000) {
   const t = Date.now();
-  const key = `${action}|${detail?.year ?? ""}`;
+  const key = `${action}|${detail?.year ?? ""}|${detail?.source ?? ""}`;
   const last = _warnThrottle.get(key) || 0;
   if (t - last < windowMs) return;
   _warnThrottle.set(key, t);
@@ -118,6 +120,9 @@ const ENTRY_SERVER = process.env.ENTRY_SERVER || "http://localhost:9200";
 const INSPECTION_SERVER = process.env.INSPECTION_SERVER || "http://localhost:9400";
 const TRAFFIC_SERVER = process.env.TRAFFIC_SERVER || "http://localhost:9500";
 
+// 내부 서비스 호출 타임아웃 — 집계 시 기록 테이블이 커서 5초보다 여유 있게 둔다
+const INTERNAL_FETCH_TIMEOUT_MS = 10000;
+
 function internalHeaders() {
   const h = {};
   if (process.env.INTERNAL_SECRET) h["X-Internal-Service"] = process.env.INTERNAL_SECRET;
@@ -136,57 +141,25 @@ function validateKey(key, label) {
 }
 
 async function fetchYearRecords(year) {
+  // traffic의 연도별 엔드포인트는 기록이 없는 연도도 200/[]로 응답하므로,
+  // 과거에 있던 전체 목록(/api/records + /visibility) 폴백 경로는 정상 운영에서
+  // 도달 불가능한 죽은 코드였다. 실패는 로깅 후 그대로 던진다.
+  let yearRes;
   try {
-    const yearRes = await fetch(`${TRAFFIC_SERVER}/api/records/year/${year}`, {
+    yearRes = await fetch(`${TRAFFIC_SERVER}/api/records/year/${year}`, {
       headers: internalHeaders(),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
     });
-    if (yearRes.ok) {
-      const rows = await yearRes.json();
-      return rows.map((row) => ({ tableName: row.name, records: row.records || [] }));
-    }
-    if (yearRes.status !== 404) {
-      warnThrottled("score.fetch_records", { status: yearRes.status, year });
-    }
   } catch (e) {
     logger.warn(null, "score.fetch_records", { error: e.message, year, endpoint: "year" });
-  }
-
-  const [tablesRes, visRes] = await Promise.all([
-    fetch(`${TRAFFIC_SERVER}/api/records`, {
-      headers: internalHeaders(),
-      signal: AbortSignal.timeout(10000),
-    }),
-    fetch(`${TRAFFIC_SERVER}/api/records/visibility`, {
-      headers: internalHeaders(),
-      signal: AbortSignal.timeout(10000),
-    }).catch(() => null),
-  ]);
-  if (!tablesRes.ok) {
-    warnThrottled("score.fetch_records", { status: tablesRes.status, year });
     throw new Error("경기 목록을 가져올 수 없습니다.");
   }
-  const allTables = await tablesRes.json();
-  const visibility = visRes?.ok ? await visRes.json() : {};
-  // 끝 공백 포함 접두사로 traffic 기본 경로(`FSK {year} ` <= name < `FSK {year+1} `)와
-  // 동일한 경계를 쓴다. 공백 없이 `t.startsWith('FSK 2026')`이면 `FSK 20260`/`FSK 2026X`
-  // 같은 인접 연도/이름을 잘못 포함한다.
-  const yearTables = allTables.filter((t) => t.startsWith(`FSK ${year} `) && visibility[t] !== false);
-
-  return Promise.all(
-    yearTables.map(async (tableName) => {
-      try {
-        const recordRes = await fetch(
-          `${TRAFFIC_SERVER}/api/records/${encodeURIComponent(tableName)}`,
-          { headers: internalHeaders(), signal: AbortSignal.timeout(10000) },
-        );
-        if (recordRes.ok) return { tableName, records: await recordRes.json() };
-      } catch (e) {
-        logger.warn(null, "score.fetch_records", { error: e.message, tableName });
-      }
-      return { tableName, records: [] };
-    })
-  );
+  if (!yearRes.ok) {
+    warnThrottled("score.fetch_records", { status: yearRes.status, year });
+    throw new Error("경기 목록을 가져올 수 없습니다.");
+  }
+  const rows = await yearRes.json();
+  return rows.map((row) => ({ tableName: row.name, records: row.records || [] }));
 }
 
 /* ============================================
@@ -217,7 +190,17 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix, allowedEvents =
     const url = new URL(`${serverUrl}${eventPath}`);
     const options = { headers: internalHeaders() };
     const req = http.get(url, options, (res) => {
-      connected = res.statusCode === 200;
+      if (res.statusCode !== 200) {
+        // 비200 응답(403 시크릿 불일치, 503 maxClients 등)은 연결 성공이 아니다.
+        // backoff를 리셋하지 않아야 영구 실패가 3초 간격 무한 재시도로 상대 서비스를
+        // 두드리지 않고, 로깅해야 설정 오류가 조용히 묻히지 않는다.
+        warnThrottled("score.sse_subscribe_failed", { source: name, status: res.statusCode });
+        res.resume();
+        res.on("end", () => scheduleReconnect());
+        return;
+      }
+
+      connected = true;
       const wasReconnect = backoff > 3000;
       backoff = 3000; // 연결 성공 시 backoff 리셋
       if (wasReconnect) {
@@ -347,7 +330,7 @@ async function computeScore(year) {
     // 1. Entry 서비스에서 엔트리 목록 fetch
     const entryRes = await fetch(`${ENTRY_SERVER}/api/entries?year=${year}`, {
       headers: internalHeaders(),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
     });
     if (!entryRes.ok) {
       warnThrottled("score.fetch_entries", { status: entryRes.status, year });
@@ -358,10 +341,10 @@ async function computeScore(year) {
     // 2. Inspection 서비스에서 카테고리별 PASS/FAIL 요약 fetch
     const [inspectionRes, templateRes] = await Promise.all([
       fetch(`${INSPECTION_SERVER}/api/sheet/summary?year=${year}`, {
-        headers: internalHeaders(), signal: AbortSignal.timeout(10000),
+        headers: internalHeaders(), signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
       }),
       fetch(`${INSPECTION_SERVER}/api/sheet/template?year=${year}`, {
-        headers: internalHeaders(), signal: AbortSignal.timeout(10000),
+        headers: internalHeaders(), signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
       }),
     ]);
     if (!inspectionRes.ok) {
@@ -394,7 +377,7 @@ async function computeScore(year) {
       if (allItemIds.length > 0) {
         try {
           const bulkRes = await fetch(`${INSPECTION_SERVER}/api/sheet/bulk-answers?year=${year}&item_ids=${allItemIds.join(",")}`, {
-            headers: internalHeaders(), signal: AbortSignal.timeout(10000),
+            headers: internalHeaders(), signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
           });
           if (bulkRes.ok) {
             const bulkData = await bulkRes.json(); // { [team_num]: { [item_id]: value } }
@@ -426,7 +409,7 @@ async function computeScore(year) {
     let enabledModes = null;
     try {
       const modesRes = await fetch(`${TRAFFIC_SERVER}/api/event-modes`, {
-        headers: internalHeaders(), signal: AbortSignal.timeout(10000),
+        headers: internalHeaders(), signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
       });
       if (modesRes.ok) {
         const modes = await modesRes.json();
@@ -534,7 +517,7 @@ async function computeScore(year) {
       manualScores[row.team_num][row.score_type] = row.value;
     }
 
-    // 9. 점수 설정 조회
+    // 8. 점수 설정 조회
     const settingRows = db.prepare("SELECT event_type, setting_key, value FROM score_setting WHERE year = ?").all(year);
     const settings = {};
     for (const row of settingRows) {
@@ -751,5 +734,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createScoreApp();
   setupProcessHandlers(db);
-  app.listen(9600);
+  app.listen(PORT, () => console.log(`Score service running on port ${PORT}`));
 }

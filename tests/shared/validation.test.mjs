@@ -37,3 +37,26 @@ describe('validateEntryNum', () => {
     assert.equal(validateEntryNum('').error, '올바르지 않은 엔트리 번호입니다.');
   });
 });
+
+import { validateYear } from '../../shared/validation.mjs';
+
+describe('validateYear', () => {
+  it('accepts years 2000-2099 (number or numeric string)', () => {
+    assert.deepEqual(validateYear(2026), { valid: true, value: 2026 });
+    assert.deepEqual(validateYear('2000'), { valid: true, value: 2000 });
+    assert.deepEqual(validateYear(2099), { valid: true, value: 2099 });
+  });
+
+  it('rejects out-of-range years', () => {
+    assert.equal(validateYear(1999).valid, false);
+    assert.equal(validateYear(2100).valid, false);
+  });
+
+  it('rejects empty / null / undefined / non-numeric / non-integer', () => {
+    assert.equal(validateYear('').valid, false);
+    assert.equal(validateYear(null).valid, false);
+    assert.equal(validateYear(undefined).valid, false);
+    assert.equal(validateYear('abc').valid, false);
+    assert.equal(validateYear(2026.5).valid, false);
+  });
+});

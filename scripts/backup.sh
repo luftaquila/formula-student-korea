@@ -7,7 +7,7 @@
 #   ./scripts/backup.sh /path/to/dir      # 지정 디렉토리에 저장
 #
 # 백업 대상:
-#   - 8개 서비스 SQLite DB (online backup API 사용)
+#   - 10개 서비스 SQLite DB (online backup API 사용)
 #   - FileBrowser DB 및 파일
 #   - 제출 서류 파일 (documents/data/uploads)
 #
@@ -41,6 +41,8 @@ SQLITE_DBS=(
   "score:score/data/score.db"
   "documents:documents/data/documents.db"
   "calendar:calendar/data/calendar.db"
+  "course:course/data/course.db"
+  "email:email/data/email.db"
 )
 
 for entry in "${SQLITE_DBS[@]}"; do

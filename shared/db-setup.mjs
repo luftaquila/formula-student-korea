@@ -5,7 +5,17 @@ export function createDatabase(Database, dbPath) {
   return db;
 }
 
+// SQL에 보간되는 테이블/컬럼 식별자 가드. 현재 호출부는 전부 하드코딩 리터럴이지만,
+// 미래의 호출자가 사용자 입력을 넘기는 실수를 인젝션이 아닌 즉시 예외로 만든다.
+export function assertIdentifier(name) {
+  if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    throw new Error(`올바르지 않은 SQL 식별자입니다: ${name}`);
+  }
+  return name;
+}
+
 export function addColumn(db, table, columnDef) {
+  assertIdentifier(table);
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`); }
   catch (e) {
     if (e.message && e.message.includes("duplicate column")) return;
@@ -41,6 +51,8 @@ export function parseLegacyTimestamp(value, { naiveOffset = "Z" } = {}) {
 // 대용량 테이블에서도 전체 결과를 메모리에 올리지 않는다. normalize는 값→ISO
 // 문자열(또는 null) 변환 함수로, 서비스별로 더 엄격한 파서를 주입할 수 있다.
 export function normalizeTimestampColumn(db, table, column, normalize = normalizeUtcTextTimestamp) {
+  assertIdentifier(table);
+  assertIdentifier(column);
   const batchSize = 1000;
   let lastRowid = 0;
   const select = db.prepare(`
@@ -68,6 +80,8 @@ export function normalizeTimestampColumn(db, table, column, normalize = normaliz
 // 아니면 보존 비활성화(트리거 미생성).
 export function setupRowCapRetention(db, table, maxRows, { keyColumn = "id" } = {}) {
   if (!Number.isInteger(maxRows) || maxRows <= 0) return;
+  assertIdentifier(table);
+  assertIdentifier(keyColumn);
   const trigger = `trg_${table}_retention`;
   const condition = `${keyColumn} <= COALESCE((SELECT MAX(${keyColumn}) FROM ${table}), 0) - ${maxRows}`;
   db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);

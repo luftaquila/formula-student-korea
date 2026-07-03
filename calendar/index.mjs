@@ -139,14 +139,14 @@ app.get("/api/events", (req, res) => {
   const { timeMin, timeMax } = req.query;
   if (!timeMin || !timeMax) {
     logger.warn(req, "event.list", { error: "timeMin and timeMax are required" });
-    return res.status(400).json({ error: "timeMin and timeMax are required" });
+    return res.status(400).send("timeMin과 timeMax가 필요합니다.");
   }
 
   const normalizedMin = normalizeRangeBound(String(timeMin), false);
   const normalizedMax = normalizeRangeBound(String(timeMax), true);
   if (!normalizedMin || !normalizedMax) {
     logger.warn(req, "event.list", { error: "invalid timeMin/timeMax", timeMin, timeMax });
-    return res.status(400).json({ error: "Invalid time range" });
+    return res.status(400).send("올바르지 않은 시간 범위입니다.");
   }
   const minAllDayDate = kstDateFromUtcIso(normalizedMin);
   const maxAllDayDate = kstDateFromUtcIso(normalizedMax);
@@ -182,7 +182,7 @@ function validateEventInput(req, res, action, target) {
   const { title, start, end } = req.body;
   if (!title || !start || !end) {
     logger.warn(req, action, { error: "title, start, and end are required", title, start, end }, target);
-    res.status(400).json({ error: "title, start, and end are required" });
+    res.status(400).send("제목, 시작, 종료는 필수입니다.");
     return null;
   }
   const allDay = !!req.body.allDay;
@@ -190,24 +190,24 @@ function validateEventInput(req, res, action, target) {
   const normalizedEnd = normalizeDateTime(end, { allDay, requireTime: true });
   if (!normalizedStart || !normalizedEnd) {
     logger.warn(req, action, { error: "invalid start/end format", start, end, allDay }, target);
-    res.status(400).json({ error: "Invalid start or end format" });
+    res.status(400).send("시작 또는 종료 형식이 올바르지 않습니다.");
     return null;
   }
   if (normalizedStart > normalizedEnd) {
     logger.warn(req, action, { error: "start must not be after end", start: normalizedStart, end: normalizedEnd }, target);
-    res.status(400).json({ error: "start must not be after end" });
+    res.status(400).send("시작은 종료보다 늦을 수 없습니다.");
     return null;
   }
   const role = req.body.role || "official";
   if (!ALLOWED_EVENT_ROLES.includes(role)) {
     logger.warn(req, action, { error: "Invalid role value", role }, target);
-    res.status(400).json({ error: "Invalid role value" });
+    res.status(400).send("올바르지 않은 공개 범위입니다.");
     return null;
   }
   const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
   if (EVENT_ROLE_LEVELS[role] > userLevel) {
     logger.warn(req, action, { error: "role exceeds own level", requested: role, actual: req.user?.role }, target);
-    res.status(403).json({ error: "Cannot set visibility above your own role" });
+    res.status(403).send("자신의 권한보다 높은 공개 범위는 설정할 수 없습니다.");
     return null;
   }
   return { role, start: normalizedStart, end: normalizedEnd, allDay };
@@ -247,7 +247,7 @@ app.put("/api/events/:id", (req, res) => {
   const { role, start, end, allDay } = valid;
 
   const existing = db.prepare("SELECT id FROM events WHERE id = ?").get(id);
-  if (!existing) return res.status(404).json({ error: "Event not found" });
+  if (!existing) return res.status(404).send("일정을 찾을 수 없습니다.");
 
   const description = req.body.description || "";
   const location = req.body.location || "";
@@ -272,7 +272,7 @@ app.delete("/api/events/:id", (req, res) => {
   const { id } = req.params;
 
   const existing = db.prepare("SELECT title FROM events WHERE id = ?").get(id);
-  if (!existing) return res.status(404).json({ error: "Event not found" });
+  if (!existing) return res.status(404).send("일정을 찾을 수 없습니다.");
 
   const result = dbRun(() => db.prepare("DELETE FROM events WHERE id = ?").run(id));
 
@@ -302,13 +302,13 @@ app.get("/api/events/ical", (req, res) => {
   const { role, sig } = req.query;
   if (!role || !sig || !ALLOWED_EVENT_ROLES.includes(role)) {
     logger.warn(req, "event.ical", { error: "invalid parameters", role }, role ?? null);
-    return res.status(400).send("Invalid parameters");
+    return res.status(400).send("올바르지 않은 요청입니다.");
   }
 
   const expected = generateICalSig(role);
   if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig, "utf8"), Buffer.from(expected, "utf8"))) {
     logger.warn(req, "event.ical", { error: "invalid signature", role }, role);
-    return res.status(403).send("Invalid signature");
+    return res.status(403).send("서명이 올바르지 않습니다.");
   }
 
   const roleLevel = EVENT_ROLE_LEVELS[role];

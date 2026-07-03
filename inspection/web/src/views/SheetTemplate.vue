@@ -1,5 +1,6 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, computed, nextTick, watch } from "vue";
+import { createKeyedDebouncer } from "@shared/debounce.js";
 import { useRouter } from "vue-router";
 import {
   fetchEntryYears,
@@ -75,6 +76,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("scroll", onScroll);
   window.removeEventListener("resize", onResize);
   window.removeEventListener("orientationchange", onResize);
+  flushSaves(); // 대기 중인 저장을 즉시 실행 — 이탈로 인한 입력 유실 방지
 });
 
 async function loadTemplate() {
@@ -223,17 +225,17 @@ async function onDrop(evt, arr, toIndex) {
 }
 
 // ---- Inline editing ----
-const saveTimers = new Map();
+// 키 단위 디바운스: SheetDetail과 동일하게 언마운트 시 flush해 저장 유실을 막는다.
+const { debounce: debounceSave, flush: flushSaves } = createKeyedDebouncer(500);
+
 function onNameChange(node) {
-  clearTimeout(saveTimers.get(node.id));
-  saveTimers.set(node.id, setTimeout(async () => {
-    saveTimers.delete(node.id);
+  debounceSave(`name-${node.id}`, async () => {
     try {
       await updateSheetNode(node.id, { name: node.name });
     } catch (e) {
       error("이름 변경에 실패했습니다.");
     }
-  }, 500));
+  });
 }
 
 async function onAnswerTypeChange(item) {
@@ -249,17 +251,14 @@ async function onAnswerTypeChange(item) {
   }
 }
 
-const remarksTimers = new Map();
 function onRemarksChange(item) {
-  clearTimeout(remarksTimers.get(item.id));
-  remarksTimers.set(item.id, setTimeout(async () => {
-    remarksTimers.delete(item.id);
+  debounceSave(`remarks-${item.id}`, async () => {
     try {
       await updateSheetNode(item.id, { remarks: item.remarks });
     } catch (e) {
       error("비고 변경에 실패했습니다.");
     }
-  }, 500));
+  });
 }
 
 async function onPdfIncludeChange(cat) {
@@ -270,17 +269,14 @@ async function onPdfIncludeChange(cat) {
   }
 }
 
-const unitTimers = new Map();
 function onUnitChange(item) {
-  clearTimeout(unitTimers.get(item.id));
-  unitTimers.set(item.id, setTimeout(async () => {
-    unitTimers.delete(item.id);
+  debounceSave(`unit-${item.id}`, async () => {
     try {
       await updateSheetNode(item.id, { unit: item.unit });
     } catch (e) {
       error("단위 변경에 실패했습니다.");
     }
-  }, 500));
+  });
 }
 
 function onItemNameInput(evt, node) {
@@ -296,25 +292,20 @@ function setChecktableConfig(item, config) {
   onRemarksChange(item);
 }
 
-const checktableTimers = new Map();
 function onChecktableColumnsChange(item, value) {
-  clearTimeout(checktableTimers.get(`col-${item.id}`));
-  checktableTimers.set(`col-${item.id}`, setTimeout(() => {
-    checktableTimers.delete(`col-${item.id}`);
+  debounceSave(`col-${item.id}`, () => {
     const config = getChecktableConfig(item);
     config.columns = value.split(",").map(s => s.trim()).filter(Boolean);
     setChecktableConfig(item, config);
-  }, 500));
+  });
 }
 
 function onChecktableRowsChange(item, value) {
-  clearTimeout(checktableTimers.get(`row-${item.id}`));
-  checktableTimers.set(`row-${item.id}`, setTimeout(() => {
-    checktableTimers.delete(`row-${item.id}`);
+  debounceSave(`row-${item.id}`, () => {
     const config = getChecktableConfig(item);
     config.rows = value.split(",").map(s => s.trim()).filter(Boolean);
     setChecktableConfig(item, config);
-  }, 500));
+  });
 }
 
 // ---- Numbering ----

@@ -22,7 +22,7 @@ export function createSSEManager(maxClients = 200) {
         clients.delete(client);
       }
     }
-  }, 30000);
+  }, 30000).unref();
 
   function handler(initDataFn) {
     return (req, res) => {

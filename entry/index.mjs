@@ -6,6 +6,8 @@ import { createLogger } from "../shared/logger.mjs";
 import { validateEntryNum } from "../shared/validation.mjs";
 import { VEHICLE_COLORS } from "../shared/constants.js";
 
+const PORT = 9200;
+
 export function createEntryApp(options = {}) {
 
 const db = createDatabase(Database, options.dbPath || "./data/entry.db");
@@ -1252,5 +1254,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createEntryApp();
   setupProcessHandlers(db);
-  app.listen(9200);
+  app.listen(PORT, () => console.log(`Entry service running on port ${PORT}`));
 }

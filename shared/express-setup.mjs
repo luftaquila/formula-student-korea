@@ -46,6 +46,19 @@ export function verifyJWT(token, secret) {
   return payload;
 }
 
+// 시크릿 문자열 비교기 팩토리. SHA-256 해시 후 timingSafeEqual로 비교해 길이·내용
+// 모두 타이밍 부채널 없이 검사한다. 시크릿 미설정 또는 문자열 아닌 입력은 항상 false.
+export function createSecretChecker(secret) {
+  const cachedHash = secret ? crypto.createHash("sha256").update(secret).digest() : null;
+  return (value) => {
+    if (!cachedHash || typeof value !== "string" || !value) return false;
+    const valueHash = crypto.createHash("sha256").update(value).digest();
+    // timingSafeEqual throws on length mismatch; with SHA-256 this is always
+    // 32 bytes, but the explicit guard keeps the contract unambiguous.
+    return valueHash.length === cachedHash.length && crypto.timingSafeEqual(cachedHash, valueHash);
+  };
+}
+
 export function createApp(deps, authRoleFn) {
   const { express } = deps;
   ensureDataDir();
@@ -81,7 +94,20 @@ export function createApp(deps, authRoleFn) {
     next();
   });
 
-  // 2. JWT user extraction
+  // 2. CSRF 심층방어: 모던 브라우저가 보내는 Sec-Fetch-Site 헤더가 cross-site인 쓰기
+  // 요청을 차단한다. 1차 방어는 fsk_session 쿠키의 SameSite=Lax이고 이 검사는 두 번째
+  // 계층. 헤더가 없는 요청(내부 서비스 호출, rover, 구형 클라이언트)과
+  // same-origin/same-site/none은 통과한다.
+  const CSRF_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+  app.use((req, res, next) => {
+    if (CSRF_SAFE_METHODS.has(req.method)) return next();
+    if (req.headers["sec-fetch-site"] === "cross-site") {
+      return res.status(403).send("cross-site 요청은 허용되지 않습니다.");
+    }
+    next();
+  });
+
+  // 3. JWT user extraction
   // Build validateUser: direct function from deps, or auto HTTP via AUTH_SERVER
   let validateUser = deps.validateUser || null;
   if (!validateUser && process.env.AUTH_SERVER && process.env.INTERNAL_SECRET) {
@@ -107,23 +133,14 @@ export function createApp(deps, authRoleFn) {
 
   // Pre-compute INTERNAL_SECRET hash (immutable for process lifetime)
   const internalSecret = process.env.INTERNAL_SECRET;
-  const cachedSecretHash = internalSecret
-    ? crypto.createHash("sha256").update(internalSecret).digest()
-    : null;
+  const isInternalSecret = createSecretChecker(internalSecret);
 
   app.use(async (req, res, next) => {
     // Internal service-to-service auth
     const header = req.headers["x-internal-service"];
-    if (cachedSecretHash && header) {
-      const headerHash = crypto.createHash("sha256").update(header).digest();
-      // timingSafeEqual throws on length mismatch; with SHA-256 this is always
-      // 32 bytes, but the explicit guard keeps the contract unambiguous.
-      if (headerHash.length !== cachedSecretHash.length) {
-        return res.status(403).send("Forbidden");
-      }
-      if (crypto.timingSafeEqual(cachedSecretHash, headerHash)) {
+    if (internalSecret && header) {
+      if (isInternalSecret(header)) {
         req.user = { email: "internal", name: "Service", role: "admin" };
-        req.headers.authuser = "internal";
         return next();
       }
       return res.status(403).send("Forbidden");
@@ -132,9 +149,9 @@ export function createApp(deps, authRoleFn) {
     if (token && process.env.JWT_SECRET) {
       try {
         req.user = verifyJWT(token, process.env.JWT_SECRET);
-        req.headers.authuser = req.user.email;
 
-        // Sliding session: 만료까지 절반 이하 남으면 토큰 자동 갱신 (role은 validateUser 블록에서 처리)
+        // Sliding session: 만료(발급 후 7일)까지 6일 미만 남으면, 즉 발급 후 하루가
+        // 지난 첫 요청에서 토큰 자동 갱신 (role은 validateUser 블록에서 처리)
         const remaining = req.user.exp - Math.floor(Date.now() / 1000);
         const threshold = 6 * 24 * 3600; // 6일
         if (remaining < threshold) {
@@ -178,7 +195,7 @@ export function createApp(deps, authRoleFn) {
     next();
   });
 
-  // 3. Auth middleware (when authRoleFn is provided)
+  // 4. Auth middleware (when authRoleFn is provided)
   if (authRoleFn) {
     app.use((req, res, next) => {
       const role = authRoleFn(req);
@@ -196,7 +213,7 @@ export function createApp(deps, authRoleFn) {
     });
   }
 
-  // 4. Static files (after auth middleware)
+  // 5. Static files (after auth middleware)
   app.use(express.static("./web/dist"));
 
   return app;

@@ -1,6 +1,6 @@
 import { createApiClient } from "@shared/api-base.js";
 
-const { request } = createApiClient("/entry");
+const { request, BASE_URL } = createApiClient("/entry");
 
 function yearParam(year, prefix = "?") {
   return year != null ? `${prefix}year=${year}` : "";
@@ -71,11 +71,10 @@ export async function addEntry({ num, univ, team, type }, year) {
  * 호출부가 운영자에게 의도를 물은 뒤 intent(retain|replacement)로 재전송하게 한다.
  */
 export async function updateEntry({ num, univ, team, type, prev, intent }, year) {
-  const base = import.meta.env.PROD ? "/entry" : "";
   const body = { num, univ, team, type };
   if (intent) body.intent = intent;
 
-  const res = await fetch(`${base}/api/entries/${prev}${yearParam(year)}`, {
+  const res = await fetch(`${BASE_URL}/api/entries/${prev}${yearParam(year)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -112,12 +111,11 @@ export async function deleteAllEntries(year) {
  * 운영자에게 의도를 물은 뒤 replacements/retains로 재전송할 수 있게 한다.
  */
 export async function uploadEntries(data, year, { replacements = [], retains = [] } = {}) {
-  const base = import.meta.env.PROD ? "/entry" : "";
   const body = { data };
   if (replacements.length) body.replacements = replacements;
   if (retains.length) body.retains = retains;
 
-  const res = await fetch(`${base}/api/entries/bulk${yearParam(year)}`, {
+  const res = await fetch(`${BASE_URL}/api/entries/bulk${yearParam(year)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -130,8 +128,7 @@ export async function uploadEntries(data, year, { replacements = [], retains = [
  * 엔트리 JSON 다운로드 URL
  */
 export function getDownloadUrl(year) {
-  const base = import.meta.env.PROD ? "/entry" : "";
-  return `${base}/api/entries?download${year != null ? `&year=${year}` : ""}`;
+  return `${BASE_URL}/api/entries?download${year != null ? `&year=${year}` : ""}`;
 }
 
 /**

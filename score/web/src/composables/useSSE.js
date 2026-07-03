@@ -1,8 +1,7 @@
 import { ref } from "vue";
-import { createSSEConnection } from "@shared/useSSE.js";
+import { createServiceSSE, parseSSEData } from "@shared/useSSE.js";
 
-const API_BASE = import.meta.env.DEV ? "" : "/score";
-const { on, useSSE: useConnection, connected } = createSSEConnection(`${API_BASE}/api/score/events`);
+const { on, useSSE: useConnection, reconnected } = createServiceSSE("/score", "/api/score/events");
 
 // Shared state across all components
 const lastInspectionUpdate = ref(null);
@@ -13,18 +12,10 @@ const lastPenaltyUpdate = ref(null);
 const lastSettingUpdate = ref(null);
 const lastEnduranceUpdate = ref(null);
 
-const reconnected = ref(null);
-
 function parseSSE(e, target) {
-  try { target.value = { ...JSON.parse(e.data), timestamp: Date.now() }; }
-  catch { /* malformed */ }
+  const data = parseSSEData(e);
+  if (data) target.value = { ...data, timestamp: Date.now() };
 }
-
-let initCount = 0;
-on("init", () => {
-  connected.value = true;
-  if (++initCount > 1) reconnected.value = Date.now();
-});
 
 on("inspection:category-result", (e) => parseSSE(e, lastInspectionUpdate));
 on("inspection:answer", (e) => parseSSE(e, lastAnswerUpdate));

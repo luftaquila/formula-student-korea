@@ -5,6 +5,7 @@ import { request, fetchEntryYears, fetchEntries, fetchVehicleTypes } from "../ap
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
+import { formatDate } from "@shared/format-date.js";
 
 const { notyf } = useNotification();
 
@@ -231,11 +232,6 @@ function submissionCellClass(session, sub) {
   if (sub) return sub.is_late ? "cell-late" : "cell-submitted";
   if (isSessionClosed(session)) return "cell-missed";
   return "cell-none";
-}
-
-function formatDate(d) {
-  const date = parseDbTimestamp(d);
-  return date ? date.toLocaleString("ko-KR") : "-";
 }
 
 async function loadTypeColors() {

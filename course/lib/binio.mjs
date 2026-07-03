@@ -81,17 +81,25 @@ export class ByteReader {
     this.p = 0;
   }
 
-  u32() { const v = this.view.getUint32(this.p, true); this.p += 4; return v; }
-  i32() { const v = this.view.getInt32(this.p, true); this.p += 4; return v; }
-  u16() { const v = this.view.getUint16(this.p, true); this.p += 2; return v; }
-  u8()  { const v = this.view.getUint8(this.p); this.p += 1; return v; }
+  // 손상/조작된 입력에서 DataView의 RangeError나 subarray의 조용한 클램핑(p가 끝을
+  // 지나쳐 leftover가 음수가 되는) 대신, 읽기 전에 제어된 예외를 던진다.
+  _need(n) {
+    if (!Number.isInteger(n) || n < 0 || this.p + n > this.buf.byteLength) {
+      throw new Error(`ByteReader: ${n} bytes needed at offset ${this.p}, ${this.buf.byteLength - this.p} left`);
+    }
+  }
+
+  u32() { this._need(4); const v = this.view.getUint32(this.p, true); this.p += 4; return v; }
+  i32() { this._need(4); const v = this.view.getInt32(this.p, true); this.p += 4; return v; }
+  u16() { this._need(2); const v = this.view.getUint16(this.p, true); this.p += 2; return v; }
+  u8()  { this._need(1); const v = this.view.getUint8(this.p); this.p += 1; return v; }
   bool() { return this.u8() !== 0; }
-  f32() { const v = this.view.getFloat32(this.p, true); this.p += 4; return v; }
+  f32() { this._need(4); const v = this.view.getFloat32(this.p, true); this.p += 4; return v; }
 
   vec3() { return [this.f32(), this.f32(), this.f32()]; }
 
-  take(n) { const b = this.buf.subarray(this.p, this.p + n); this.p += n; return b; }
-  skip(n) { this.p += n; return this; }
+  take(n) { this._need(n); const b = this.buf.subarray(this.p, this.p + n); this.p += n; return b; }
+  skip(n) { this._need(n); this.p += n; return this; }
 
   str() {
     const n = this.u32();

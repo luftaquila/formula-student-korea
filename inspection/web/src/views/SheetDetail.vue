@@ -12,6 +12,7 @@ import {
 } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { user } from "@shared/officialsStore.js";
+import { createKeyedDebouncer } from "@shared/debounce.js";
 import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();
@@ -82,21 +83,10 @@ function getInspector(catId) {
   return sheetData.value.inspectors[catId] ?? "";
 }
 
-// Debounce timers
-const debounceTimers = {};
+// 키 단위 디바운스 (언마운트 시 flush로 대기 중 저장 유실 방지)
+const { debounce, cancel: cancelDebounce, flush: flushDebounce } = createKeyedDebouncer(300);
 // 마지막으로 전송한 값 추적 (SSE self-echo 방지)
 const lastSentValues = {};
-
-const pendingFns = {};
-
-function debounce(key, fn, delay = 300) {
-  clearTimeout(debounceTimers[key]);
-  pendingFns[key] = fn;
-  debounceTimers[key] = setTimeout(() => {
-    delete pendingFns[key];
-    fn();
-  }, delay);
-}
 
 async function onAnswerChange(itemId, value) {
   if (!sheetData.value.answers[itemId]) {
@@ -160,7 +150,7 @@ async function onCategoryResultToggle(catId, val) {
 }
 
 async function onInspectorBlur(catId) {
-  clearTimeout(debounceTimers[`inspector-${catId}`]);
+  cancelDebounce(`inspector-${catId}`);
   const inspector = getInspector(catId);
   try {
     await updateSheetInspector({ year, team_num: num, category_id: catId, inspector, broadcast: true });
@@ -391,13 +381,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("scroll", onScroll);
-  for (const [key, timer] of Object.entries(debounceTimers)) {
-    clearTimeout(timer);
-    if (pendingFns[key]) {
-      pendingFns[key]();
-      delete pendingFns[key];
-    }
-  }
+  flushDebounce(); // 대기 중인 저장을 즉시 실행 — 이탈로 인한 입력 유실 방지
 });
 
 watch(activeTab, () => {

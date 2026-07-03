@@ -21,7 +21,8 @@ export const officials = [
   { name: "인스펙션 시트", href: "/inspection", icon: "sheet" },
   { name: "서류 제출 관리", href: "/documents/admin", icon: "documents-admin", auth: "chief" },
   { name: "코스 관리", href: "/course", icon: "course", auth: "chief" },
-  { name: "파일 클라우드", href: "/files/", icon: "files", auth: "chief" },
+  // FileBrowser는 독립 SPA라 새 탭으로 연다 (landing 카드와 동일 동작)
+  { name: "파일 클라우드", href: "/files/", icon: "files", auth: "chief", external: true },
 ];
 
 export const admins = [

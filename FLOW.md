@@ -76,10 +76,10 @@
 | 2.1 | 연도 목록 조회 | public | `GET /api/years` | entry_YYYY 테이블 스캔, 내림차순 |
 | 2.2 | 엔트리 목록 조회 | public | `GET /api/entries?year=` | JSON 다운로드 (`?download` 파라미터) |
 | 2.3 | 엔트리 추가 | admin | `POST /api/entries?year=` | `{ num, univ, team, type? }`, type은 해당 연도 vehicle_types에 존재해야 함 |
-| 2.4 | 엔트리 수정 | admin | `PATCH /api/entries/:num?year=` | 번호 변경 시 리넘버링, Documents 동기화 실패 시 롤백 (502) |
-| 2.5 | 엔트리 삭제 | admin | `DELETE /api/entries/:num?year=` | 삭제 후 Queue/Documents에 알림 (fire-and-forget) |
-| 2.6 | 엔트리 전체 삭제 | admin | `DELETE /api/entries?year=` | 연도별 전체 초기화, 삭제된 엔트리 Queue/Documents에 알림 |
-| 2.7 | 엔트리 일괄 업로드 | admin | `POST /api/entries/bulk?year=` | JSON 문자열로 전체 교체, 트랜잭션, 삭제된 엔트리 알림 |
+| 2.4 | 엔트리 수정 | admin | `PATCH /api/entries/:num?year=` | 번호 변경 시 리넘버링. durable lifecycle_outbox로 5개 서비스(queue/documents/inspection/score/traffic)에 재시도 팬아웃 — 동기화 대기분 있으면 202 `pending_lifecycle`. 번호 유지 + 팀명 변경이 모호하면 409 `{ ambiguous }` → `intent: retain|replacement`로 재요청 |
+| 2.5 | 엔트리 삭제 | admin | `DELETE /api/entries/:num?year=` | 삭제 이벤트를 durable outbox로 5개 서비스에 재시도 팬아웃 (대기분 있으면 202) |
+| 2.6 | 엔트리 전체 삭제 | admin | `DELETE /api/entries?year=` | 연도별 전체 초기화, 삭제 이벤트를 outbox로 5개 서비스에 팬아웃 |
+| 2.7 | 엔트리 일괄 업로드 | admin | `POST /api/entries/bulk?year=` | JSON으로 전체 교체(트랜잭션), 삭제/리넘버 이벤트 outbox 팬아웃. 모호한 팀 교체는 409 → replacements/retains 재요청 |
 
 ### 차량 유형
 
@@ -341,8 +341,8 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 8.9 | 로버 SSE 연결 | public | `GET /api/rover/stream` | 로버가 서버에 SSE 연결 유지, `request-position` 이벤트 수신 대기 |
-| 8.10 | 로버 위치 전송 | public | `POST /api/rover/position` | 로버가 `request-position` 수신 시 현재 좌표 `{ lat, lng }` 전송 |
+| 8.9 | 로버 SSE 연결 | 내부 (INTERNAL_SECRET) | `GET /api/rover/stream` | 로버가 서버에 SSE 연결 유지, `request-position` 이벤트 수신 대기. X-Internal-Service 헤더 필수 (admin JWT 불가) |
+| 8.10 | 로버 위치 전송 | 내부/admin | `POST /api/rover/position` | 로버가 `request-position` 수신 시 현재 좌표 `{ lat, lng }` 전송 |
 | 8.11 | 로버 좌표 요청 | admin | `POST /api/rover/request` | 관리자 버튼 클릭 → 서버가 로버에 SSE 이벤트 전송 → 로버 응답 대기 (5초 타임아웃) |
 | 8.12 | 로버 좌표로 콘 등록 | admin | 8.11 → 8.6 | 로버 좌표 수신 후 현재 선택된 방향(L/R)으로 콘 등록 (프론트엔드 연동) |
 
@@ -481,12 +481,12 @@ Queue → Email: GET /api/internal/sms-config (SMS 설정 조회, 5분 주기 �
 ### Entry → Documents 팀 번호 동기화
 
 ```
-Entry → Documents: PATCH /api/entries/:num에서 번호 변경 시 Documents PATCH /api/internal/team-num 호출 (실패 시 롤백 (502))
+Entry → 5개 서비스: 번호 변경을 durable lifecycle_outbox에 기록 후 queue/documents/inspection/score/traffic의 PATCH /api/internal/team-num으로 재시도 전달 (실패분은 dead-letter → /api/admin/lifecycle-outbox에서 복구)
 ```
 
 ### Entry 삭제 → Queue/Documents 정리
 
 ```
-Entry → Queue: DELETE /api/entries/:num 또는 전체/일괄 삭제 시 Queue DELETE /api/internal/team/:num 호출 (fire-and-forget)
-Entry → Documents: 동일하게 Documents DELETE /api/internal/team/:num 호출, student_team/session_team/submission/파일 정리
+Entry → 5개 서비스: 삭제 이벤트를 durable outbox에 기록 후 queue/documents/inspection/score/traffic의 DELETE /api/internal/team/:num으로 재시도 전달
+Documents는 student_team/session_team/submission/파일까지 정리
 ```

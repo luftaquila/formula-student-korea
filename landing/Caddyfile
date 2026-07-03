@@ -130,6 +130,11 @@
 		request_header -X-Internal-Service
 		request_header -Authuser
 		request_header -X-Forwarded-For
+		# NOTE: X-Forwarded-User는 여기서 제거하지 않는다. handle 블록 안에서 Caddy는
+		# 지시어를 작성 순서가 아닌 고정 directive order로 실행해 request_header가
+		# forward_auth 뒤에 돌 수 있고, 그러면 copy_headers가 방금 설정한 헤더를 지워
+		# FileBrowser 인증이 깨진다. 위조 인바운드 값은 forward_auth의 copy_headers가
+		# 200 응답에서 Set(덮어쓰기)하고 비200은 리다이렉트되므로 이미 무력화된다.
 		forward_auth auth:9100 {
 			uri /api/forward-auth?role=chief
 			header_up X-Forward-Auth-Key {env.INTERNAL_SECRET}

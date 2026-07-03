@@ -3553,6 +3553,12 @@ function updateJoystick(e) {
 // once the link is back so the reconciler can absorb missed transitions.
 let sseHadError = false;
 
+// 손상된 SSE 프레임 하나가 해당 리스너를 통째로 죽이고 이벤트를 조용히 삼키지
+// 않도록, 파싱 실패는 null로 처리하고 리스너가 조기 반환한다 (traffic useSSE 관행).
+function parseSSE(e) {
+  try { return JSON.parse(e.data); } catch { return null; }
+}
+
 function connectSSE() {
   const base = import.meta.env.PROD ? "/course" : "";
   eventSource = new EventSource(`${base}/api/events`);
@@ -3570,11 +3576,13 @@ function connectSSE() {
   });
 
   eventSource.addEventListener("init", (e) => {
-    courses.value = JSON.parse(e.data).courses;
+    const data = parseSSE(e);
+    if (data) courses.value = data.courses;
   });
 
   eventSource.addEventListener("courses", (e) => {
-    const data = JSON.parse(e.data);
+    const data = parseSSE(e);
+    if (!data) return;
     courses.value = data.courses;
     for (const id of Object.keys(conesMap.value)) {
       if (!data.courses.find((c) => c.id === parseInt(id))) {
@@ -3591,20 +3599,23 @@ function connectSSE() {
   });
 
   eventSource.addEventListener("cones", (e) => {
-    const data = JSON.parse(e.data);
+    const data = parseSSE(e);
+    if (!data) return;
     conesMap.value[data.courseId] = data.cones;
     if (map && !suppressRebuild) rebuildAllMarkers();
   });
 
   eventSource.addEventListener("rover", (e) => {
-    const data = JSON.parse(e.data);
+    const data = parseSSE(e);
+    if (!data) return;
     updateRoverMarker(data.lat, data.lng);
     if (followRover.value) scheduleFollow(data.lat, data.lng);
     if (roverMode.value === "executing") updatePathProgress(data.lat, data.lng);
   });
 
   eventSource.addEventListener("rover:status", (e) => {
-    const data = JSON.parse(e.data);
+    const data = parseSSE(e);
+    if (!data) return;
     roverStatus.value = { ...roverStatus.value, ...data };
     syncAppRoverStatus(data);
     // Live-update the rover marker on the map whenever the server
@@ -3622,14 +3633,14 @@ function connectSSE() {
   });
 
   eventSource.addEventListener("rover:waypoint", (e) => {
-    const data = JSON.parse(e.data);
+    const data = parseSSE(e);
     if (roverMode.value === "executing" && Number.isInteger(data?.index)) {
       onWaypointReached(data.index);
     }
   });
 
   eventSource.addEventListener("rover:skipped", (e) => {
-    const data = JSON.parse(e.data);
+    const data = parseSSE(e);
     if (roverMode.value === "executing" && Number.isInteger(data?.index)) {
       // Stuck-skip: navigator advanced _cur_seg_idx past this waypoint
       // without firing waypoint_reached. Advance executedIndex the same
@@ -3642,13 +3653,14 @@ function connectSSE() {
   });
 
   eventSource.addEventListener("rover:spray", (e) => {
-    const data = JSON.parse(e.data);
+    const data = parseSSE(e);
     if (!Number.isInteger(data?.waypoint) || !data.outcome) return;
     onSprayResult(data.waypoint, data.outcome);
   });
 
   eventSource.addEventListener("rover:obstacle", (e) => {
-    onObstacle(JSON.parse(e.data));
+    const data = parseSSE(e);
+    if (data) onObstacle(data);
   });
 }
 

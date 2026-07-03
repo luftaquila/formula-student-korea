@@ -69,3 +69,21 @@ describe('addColumn', () => {
     });
   });
 });
+
+import { assertIdentifier } from '../../shared/db-setup.mjs';
+
+describe('assertIdentifier', () => {
+  it('accepts valid SQL identifiers', () => {
+    assert.equal(assertIdentifier('logs'), 'logs');
+    assert.equal(assertIdentifier('entry_2026'), 'entry_2026');
+    assert.equal(assertIdentifier('_tmp'), '_tmp');
+  });
+
+  it('rejects injection-shaped identifiers', () => {
+    assert.throws(() => assertIdentifier('logs; DROP TABLE users'));
+    assert.throws(() => assertIdentifier('a b'));
+    assert.throws(() => assertIdentifier('1abc'));
+    assert.throws(() => assertIdentifier(''));
+    assert.throws(() => assertIdentifier(null));
+  });
+});

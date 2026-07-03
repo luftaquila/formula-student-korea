@@ -8,7 +8,10 @@ import Busboy from "busboy";
 import archiver from "archiver";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
+import { validateYear } from "../shared/validation.mjs";
 import { parseDbTimestamp } from "../shared/parse-timestamp.js";
+
+const PORT = 9700;
 
 export function createDocumentsApp(options = {}) {
 
@@ -56,6 +59,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS session (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   year INTEGER NOT NULL
 )`);
+db.exec("CREATE INDEX IF NOT EXISTS idx_session_year ON session(year)");
 
 db.exec(`CREATE TABLE IF NOT EXISTS session_team (
   session_id INTEGER NOT NULL,
@@ -415,6 +419,8 @@ function inlineDisposition(originalName, mimeType) {
 function setFileResponseHeaders(res, file) {
   const inlineType = inlineDisposition(file.original_name, file.mime_type);
   const encoded = encodeURIComponent(file.original_name);
+  // Caddy가 전역으로 nosniff를 붙이지만, 프록시 없이 직접 접속하는 경로(dev 등)도 방어
+  res.setHeader("X-Content-Type-Options", "nosniff");
   if (inlineType) {
     res.setHeader("Content-Type", inlineType);
     res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encoded}`);
@@ -796,7 +802,8 @@ app.get("/api/submissions/:subId/zip", async (req, res) => {
   for (const f of files) {
     const filePath = path.join(UPLOADS_DIR, String(sub.session_id), String(sub.team_num), String(sub.id), f.stored_name);
     if (fs.existsSync(filePath)) {
-      archive.file(filePath, { name: f.original_name });
+      // zip-slip 방지: 업로드 당시 원본 파일명이 경로 구분자를 포함할 수 있다
+      archive.file(filePath, { name: sanitize(f.original_name) });
     }
   }
 
@@ -830,8 +837,9 @@ app.post("/api/admin/sessions", (req, res) => {
   if (rawLateEnd && !nLateEnd) return res.status(400).send("지연 제출 마감 날짜 형식이 올바르지 않습니다.");
   if (nEnd <= nStart) return res.status(400).send("제출 마감은 시작 이후여야 합니다.");
   if (nLateEnd && nLateEnd < nEnd) return res.status(400).send("지각 마감은 제출 마감 이후여야 합니다.");
-  const numYear = Number(year);
-  if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
+  const yearCheck = validateYear(year);
+  if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
+  const numYear = yearCheck.value;
   if (!Array.isArray(teams) || teams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
 
   const maxSize = max_file_size ? Number(max_file_size) : 52428800;
@@ -1027,20 +1035,7 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
   if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
 
   // entry 서비스에서 팀 정보 조회
-  let entries = {};
-  const entryServer = process.env.ENTRY_SERVER;
-  if (entryServer) {
-    try {
-      const entryRes = await fetch(`${entryServer}/api/entries?year=${session.year}`, {
-        headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (entryRes.ok) entries = await entryRes.json();
-      else logger.warn(req, "session.archive", { warning: "entry_fetch_non_ok", status: entryRes.status, session_id: id });
-    } catch (e) {
-      logger.warn(req, "session.archive", { warning: "entry_fetch_failed", error: e.message, session_id: id });
-    }
-  }
+  const entries = await fetchEntries(session.year, req, "session.archive");
 
   const subs = db.prepare(`
     SELECT sub.id, sub.team_num FROM submission sub
@@ -1067,7 +1062,8 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
       const teamFolder = entry
         ? `${sub.team_num}_${sanitize(entry.univ)}_${sanitize(entry.team)}`
         : String(sub.team_num);
-      archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
+      // zip-slip 방지: 업로드 당시 원본 파일명이 경로 구분자를 포함할 수 있다
+      archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${sanitize(f.original_name)}` });
     }
   }
 
@@ -1122,23 +1118,10 @@ app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
 
   // entry 서비스에서 팀 정보 조회
   let teamLabel = String(sub.team_num);
-  const entryServer = process.env.ENTRY_SERVER;
-  if (entryServer && session?.year) {
-    try {
-      const entryRes = await fetch(`${entryServer}/api/entries?year=${session.year}`, {
-        headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (entryRes.ok) {
-        const entries = await entryRes.json();
-        const entry = entries[sub.team_num];
-        if (entry) teamLabel = `${sub.team_num}_${sanitize(entry.univ)}_${sanitize(entry.team)}`;
-      } else {
-        logger.warn(req, "file.admin_zip", { warning: "entry_fetch_non_ok", status: entryRes.status, submission_id: sub.id });
-      }
-    } catch (e) {
-      logger.warn(req, "file.admin_zip", { warning: "entry_fetch_failed", error: e.message, submission_id: sub.id });
-    }
+  if (session?.year) {
+    const entries = await fetchEntries(session.year, req, "file.admin_zip");
+    const entry = entries[sub.team_num];
+    if (entry) teamLabel = `${sub.team_num}_${sanitize(entry.univ)}_${sanitize(entry.team)}`;
   }
 
   const zipName = `${sessionName}_${teamLabel}.zip`;
@@ -1156,7 +1139,8 @@ app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
   for (const f of files) {
     const filePath = path.join(UPLOADS_DIR, String(sub.session_id), String(sub.team_num), String(sub.id), f.stored_name);
     if (fs.existsSync(filePath)) {
-      archive.file(filePath, { name: f.original_name });
+      // zip-slip 방지: 업로드 당시 원본 파일명이 경로 구분자를 포함할 수 있다
+      archive.file(filePath, { name: sanitize(f.original_name) });
     }
   }
 
@@ -1195,9 +1179,10 @@ app.post("/api/admin/student-teams", (req, res) => {
   const { email, team_num, year } = req.body;
   if (!email?.trim()) return res.status(400).send("이메일을 입력하세요.");
   const numTeam = Number(team_num);
-  const numYear = Number(year);
   if (!Number.isInteger(numTeam) || numTeam < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
+  const yearCheck = validateYear(year);
+  if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
+  const numYear = yearCheck.value;
 
   const result = dbRun(() =>
     db.prepare("INSERT INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run(email.trim().toLowerCase(), numTeam, numYear),
@@ -1240,8 +1225,9 @@ app.delete("/api/admin/student-teams/:email/:year", (req, res) => {
 
 // DELETE /api/admin/years/:year/files - 연도별 파일 데이터 삭제 (제출 기록 유지)
 app.delete("/api/admin/years/:year/files", (req, res) => {
-  const year = Number(req.params.year);
-  if (!Number.isInteger(year) || year < 2000 || year > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
+  const yearCheck = validateYear(req.params.year);
+  if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
+  const year = yearCheck.value;
 
   const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
   if (sessions.length === 0) return res.status(404).send("해당 연도의 세션이 없습니다.");
@@ -1275,27 +1261,15 @@ app.delete("/api/admin/years/:year/files", (req, res) => {
 
 // GET /api/admin/years/:year/archive - 연도별 전체 압축 다운로드
 app.get("/api/admin/years/:year/archive", async (req, res) => {
-  const year = Number(req.params.year);
-  if (!Number.isInteger(year) || year < 2000 || year > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
+  const yearCheck = validateYear(req.params.year);
+  if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
+  const year = yearCheck.value;
 
   const sessions = db.prepare("SELECT * FROM session WHERE year = ? ORDER BY end_at ASC").all(year);
   if (sessions.length === 0) return res.status(404).send("해당 연도의 세션이 없습니다.");
 
   // entry 서비스에서 팀 정보 조회 (실패 시 빈 객체 — graceful degradation)
-  let entries = {};
-  const entryServer = process.env.ENTRY_SERVER;
-  if (entryServer) {
-    try {
-      const entryRes = await fetch(`${entryServer}/api/entries?year=${year}`, {
-        headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (entryRes.ok) entries = await entryRes.json();
-      else logger.warn(req, "year.archive", { warning: "entry_fetch_non_ok", status: entryRes.status, year });
-    } catch (e) {
-      logger.warn(req, "year.archive", { warning: "entry_fetch_failed", error: e.message, year });
-    }
-  }
+  const entries = await fetchEntries(year, req, "year.archive");
 
   // 각 세션의 최신 제출 + 파일 조회
   const archiveFiles = [];
@@ -1328,7 +1302,8 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
       const teamFolder = entry
         ? sanitize(`${f.team_num}_${entry.univ}_${entry.team}`)
         : String(f.team_num);
-      archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${f.original_name}` });
+      // zip-slip 방지: 업로드 당시 원본 파일명이 경로 구분자를 포함할 수 있다
+      archiveFiles.push({ diskPath, zipPath: `${sessionName}/${teamFolder}/${sanitize(f.original_name)}` });
     }
   }
 
@@ -1560,11 +1535,13 @@ async function sendNotificationEmail(subject, htmlContent, recipient) {
   const emailServer = process.env.EMAIL_SERVER;
   if (!emailServer || !process.env.INTERNAL_SECRET) return { ok: false, error: "EMAIL_SERVER not configured" };
 
+  // 이메일 발송은 Brevo 왕복이 포함돼 내부 표준(5초)보다 길게 잡는다
+  const EMAIL_SEND_TIMEOUT_MS = 15000;
   const resp = await fetch(`${emailServer}/api/internal/send`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Internal-Service": process.env.INTERNAL_SECRET },
     body: JSON.stringify({ subject, htmlContent, recipients: [recipient], source: "documents" }),
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(EMAIL_SEND_TIMEOUT_MS),
   });
 
   if (!resp.ok) return { ok: false, error: await resp.text() };
@@ -1575,8 +1552,8 @@ function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-/** 엔트리 정보 조회 */
-async function fetchEntries(year) {
+/** 엔트리 정보 조회 (실패 시 빈 객체 — graceful degradation) */
+async function fetchEntries(year, req = null, action = "entry.fetch") {
   const entryServer = process.env.ENTRY_SERVER;
   if (!entryServer) return {};
   try {
@@ -1585,9 +1562,9 @@ async function fetchEntries(year) {
       signal: AbortSignal.timeout(5000),
     });
     if (res.ok) return await res.json();
-    else logger.warn(null, "entry.fetch", { warning: "non_ok", status: res.status, year });
+    logger.warn(req, action, { warning: "entry_fetch_non_ok", status: res.status, year });
   } catch (e) {
-    logger.warn(null, "entry.fetch", { error: e.message, year });
+    logger.warn(req, action, { warning: "entry_fetch_failed", error: e.message, year });
   }
   return {};
 }
@@ -1771,5 +1748,5 @@ if (isDirectRun) {
   ensureDataDir();
   const { app, db } = createDocumentsApp();
   setupProcessHandlers(db);
-  app.listen(9700);
+  app.listen(PORT, () => console.log(`Documents service running on port ${PORT}`));
 }

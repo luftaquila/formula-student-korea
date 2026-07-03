@@ -316,3 +316,67 @@ describe('createApp auth middleware', () => {
     assert.ok(setCookie.includes('fsk_session='), 'should include refreshed session token');
   });
 });
+
+// ─── createSecretChecker ────────────────────────────────────────────────
+import { createSecretChecker } from '../../shared/express-setup.mjs';
+
+describe('createSecretChecker', () => {
+  it('matches only the exact secret', () => {
+    const check = createSecretChecker('s3cret');
+    assert.equal(check('s3cret'), true);
+    assert.equal(check('s3creT'), false);
+    assert.equal(check('s3cret '), false);
+  });
+
+  it('returns false for empty/non-string values and unset secret', () => {
+    const check = createSecretChecker('s3cret');
+    assert.equal(check(''), false);
+    assert.equal(check(undefined), false);
+    assert.equal(check(['s3cret']), false);
+    const noSecret = createSecretChecker(undefined);
+    assert.equal(noSecret('anything'), false);
+  });
+});
+
+// ─── CSRF (Sec-Fetch-Site) 심층방어 ─────────────────────────────────────
+describe('createApp CSRF middleware', () => {
+  let server, baseUrl;
+
+  before(async () => {
+    const app = createApp({ express, validateUser: async () => ({ valid: true, role: 'admin' }) }, () => null);
+    app.post('/api/write', (req, res) => res.json({ ok: true }));
+    app.get('/api/read', (req, res) => res.json({ ok: true }));
+    const started = await startServer(app);
+    server = started.server;
+    baseUrl = started.baseUrl;
+  });
+
+  after(async () => {
+    if (server) await stopServer(server);
+  });
+
+  it('blocks cross-site write requests', async () => {
+    const res = await fetch(`${baseUrl}/api/write`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'cross-site' },
+      body: '{}',
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('allows same-origin and header-less write requests', async () => {
+    for (const headers of [
+      { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
+      { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'none' },
+      { 'Content-Type': 'application/json' }, // 내부 서비스·rover·구형 클라이언트
+    ]) {
+      const res = await fetch(`${baseUrl}/api/write`, { method: 'POST', headers, body: '{}' });
+      assert.equal(res.status, 200);
+    }
+  });
+
+  it('never blocks reads (GET) regardless of Sec-Fetch-Site', async () => {
+    const res = await fetch(`${baseUrl}/api/read`, { headers: { 'Sec-Fetch-Site': 'cross-site' } });
+    assert.equal(res.status, 200);
+  });
+});

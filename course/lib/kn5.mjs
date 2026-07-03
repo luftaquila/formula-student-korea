@@ -12,8 +12,8 @@ import { ByteWriter, ByteReader } from "./binio.mjs";
 
 const MAGIC = new Uint8Array([0x73, 0x63, 0x36, 0x39, 0x36, 0x39]); // "sc6969"
 const VERSION = 5;
-export const NODE_DUMMY = 1;
-export const NODE_MESH = 2;
+const NODE_DUMMY = 1;
+const NODE_MESH = 2;
 
 // world (x_east, y_north, z_up) -> AC (x, z, -y)
 export function acVec(v) {

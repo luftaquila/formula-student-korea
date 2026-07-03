@@ -9,8 +9,8 @@ import { initTestBanner } from "@shared/test-banner.js";
 
 import MapView from "./views/MapView.vue";
 
-// Mission history is integrated into MapView as the 5th inspector tab so
-// the same rail + map + inspector layout serves both live operation and
+// Mission history is integrated into MapView as the 기록(history) inspector tab
+// so the same rail + map + inspector layout serves both live operation and
 // replay; legacy /missions URLs redirect to the merged view.
 const routes = [
   { path: "/", component: MapView },

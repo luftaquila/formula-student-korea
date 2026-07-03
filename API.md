@@ -71,6 +71,18 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | POST | `/api/ops-contacts` | admin | `{ user_id }` | 201 | Add user to sidebar display (official+ only) |
 | DELETE | `/api/ops-contacts/:userId` | admin | — | 200 | Remove user from sidebar display |
 
+### Account Applications (계정 신청)
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/apply/config` | public | — | `{ open: bool }` | 신청 접수 가능 여부 |
+| GET | `/api/apply/me` | public | — | 신청 내역 or 401/404 | 내 신청 조회 (`fsk_applicant` 쿠키 검증) |
+| POST | `/api/apply` | public | `{ realname, phone, affiliation }` | 201 | 계정 신청 접수 (`fsk_applicant` 쿠키 검증) |
+| PATCH | `/api/apply` | public | `{ realname?, phone?, affiliation? }` | 200 | 신청 내용 수정 (`fsk_applicant` 쿠키 검증) |
+| GET | `/api/applications` | admin | — | `[{ id, email, name, realname, phone, affiliation, ... }]` | 신청 목록 |
+| PATCH | `/api/applications/config` | admin | `{ open: bool }` | 200 | 신청 접수 열기/닫기 |
+| POST | `/api/applications/approve` | admin | `{ ids: [int], role }` | 200 | 신청 승인 → users로 이동, 알림 발송 |
+
 ### Log Aggregation
 
 | Method | Path | Role | Request | Response | Description |
@@ -88,10 +100,20 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | GET | `/api/years` | public | — | `[2025, 2024, ...]` | Available year list |
 | GET | `/api/entries` | public | `?year=&download` | `{ num: { univ, team, type } }` | All entries for year; `download` param triggers JSON file download |
 | POST | `/api/entries` | admin | `{ num, univ, team, type? }?year=` | 201 | Create entry |
-| PATCH | `/api/entries/:num` | admin | `{ num, univ, team, type? }?year=` | 200 or 502 | Update entry (502 if documents sync failed, rollback) |
-| DELETE | `/api/entries/:num` | admin | `?year=` | 200 | Delete single entry |
-| DELETE | `/api/entries` | admin | `?year=` | 200 | Delete all entries for year |
-| POST | `/api/entries/bulk` | admin | `{ data: { "num": { univ, team, type? } } }?year=` | 200 | Bulk upload (replaces all entries for year) |
+| PATCH | `/api/entries/:num` | admin | `{ num, univ, team, type?, intent? }?year=` | 200, 202, or 409 | Update entry. 번호 변경/팀 교체는 durable outbox로 5개 서비스에 팬아웃 — 일부 동기화 대기 시 `202 { status: "pending_lifecycle" }`. 번호 유지 + 팀명 변경이 모호하면 `409 { message, ambiguous }` → `intent: "retain"\|"replacement"`로 재요청 |
+| DELETE | `/api/entries/:num` | admin | `?year=` | 200 or 202 | Delete single entry (동기화 대기 시 202 pending_lifecycle) |
+| DELETE | `/api/entries` | admin | `?year=` | 200 or 202 | Delete all entries for year (동기화 대기 시 202) |
+| POST | `/api/entries/bulk` | admin | `{ data: { "num": { univ, team, type? } }, replacements?, retains? }?year=` | 200, 202, or 409 | Bulk upload (replaces all entries for year). 모호한 팀 교체는 409 ambiguous → replacements/retains로 재요청 |
+
+### Lifecycle Outbox (admin)
+
+엔트리 삭제/번호변경 이벤트는 durable outbox에 저장 후 queue/documents/inspection/score/traffic 5개 서비스로 재시도 전달된다. 전달 실패분(dead-letter)은 아래 API로 복구한다.
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/admin/lifecycle-outbox` | admin | — | `[{ id, service, event, status, attempts, ... }]` | 미전달/실패 이벤트 목록 |
+| POST | `/api/admin/lifecycle-outbox/:id/retry` | admin | — | 200 | 실패 이벤트 즉시 재전달 시도 |
+| DELETE | `/api/admin/lifecycle-outbox/:id` | admin | — | 200 | 실패 이벤트 폐기 |
 
 ### Vehicle Types
 
@@ -151,6 +173,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
+| GET | `/api/admin/history/status` | chief | — | `{ type: [num, ...] }` | 검차별 재검 이력 보유 팀 목록 (현재 연도) |
 | DELETE | `/api/admin/history/:type` | chief | — | 200 | Clear inspection history + booth occupancy for type |
 
 ### Booth Management
@@ -187,6 +210,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team data on entry deletion (queue, priority, penalty, history, booth occupancy) |
+| PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service (queue/priority/history/booth rows) |
 
 ---
 
@@ -203,12 +227,12 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/sheet/template` | official | `?year=` | Tree: `[{ id, name, subcategories: [{ groups: [{ items }] }] }]` | Template tree for year |
-| POST | `/api/sheet/template` | admin | `{ year, level, parent_id?, name, sort_order?, answer_type?, remarks?, unit?, pdf_include? }` | `{ id }` | Create template node |
-| PUT | `/api/sheet/template/:id` | admin | `{ name?, sort_order?, answer_type?, remarks?, unit?, pdf_include? }` | 200 | Update template node |
-| DELETE | `/api/sheet/template/:id` | admin | — | 200 | Delete template node (CASCADE, blocks past years) |
-| POST | `/api/sheet/template/reorder` | admin | `{ items: [{ id, sort_order }] }` | 200 | Reorder sibling nodes |
-| POST | `/api/sheet/template/copy` | admin | `{ from_year, to_year }` | 201 | Copy template across years |
-| POST | `/api/sheet/template/import` | admin | `{ year, template: [...] }` | 201 | Import template from JSON |
+| POST | `/api/sheet/template` | chief | `{ year, level, parent_id?, name, sort_order?, answer_type?, remarks?, unit?, pdf_include? }` | `{ id }` | Create template node |
+| PUT | `/api/sheet/template/:id` | chief | `{ name?, sort_order?, answer_type?, remarks?, unit?, pdf_include? }` | 200 | Update template node |
+| DELETE | `/api/sheet/template/:id` | chief | — | 200 | Delete template node (CASCADE, blocks past years) |
+| POST | `/api/sheet/template/reorder` | chief | `{ items: [{ id, sort_order }] }` | 200 | Reorder sibling nodes |
+| POST | `/api/sheet/template/copy` | chief | `{ from_year, to_year }` | 201 | Copy template across years |
+| POST | `/api/sheet/template/import` | chief | `{ year, template: [...] }` | 201 | Import template from JSON |
 
 ### Sheet Data
 
@@ -238,6 +262,9 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/records` | admin | — | `["FSK 2025 가속 1차", ...]` | List all record table names |
 | GET | `/api/records/:name` | admin | — | `[{ rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard }]` | Get records from table |
+| GET | `/api/records/year/:year` | admin | — | `[{ name, records: [...] }]` | 연도별 기록 일괄 조회 (visibility 필터 적용, score 집계용) |
+| GET | `/api/records/visibility` | admin | — | `{ name: bool }` | 기록 파일별 성적 반영 여부 |
+| PUT | `/api/records/:name/visibility` | admin | — | `{ name, visible }` | 기록 파일 성적 반영 토글 |
 | POST | `/api/records` | admin | `{ name, data: { time, type, entry: { num, univ, team }, result, detail? } }` | 201 | Add record (auto-creates table with `FSK {year}` prefix) |
 | PATCH | `/api/records/:name/:rowid` | admin | `{ field, value }` | `{ num, ... }` | Update record field (`invalidated`, `scoreboard`, `detail`, `cones`, `oc`) |
 | DELETE | `/api/records/:name` | admin | — | 200 | Drop record table |
@@ -281,6 +308,14 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | POST | `/api/wireless/lease/:event` | admin | — | `{ ...session }` | 경기 독점 제어 lease 획득/갱신(heartbeat). 타인 점유 시 409. 점유자 변경 시만 `wireless:session` 브로드캐스트(heartbeat는 조용히 만료 연장) |
 | DELETE | `/api/wireless/lease/:event` | admin | — | `{ ...session }` | lease 해제(보유자 또는 admin 강제 회수). `wireless:session` 브로드캐스트 |
 | GET | `/api/time` | public | — | `{ now }` | 서버 epoch ms — 클라가 라이브 클럭을 서버 기준으로 동기화(오프셋 추정). 인증 면제 |
+| POST | `/api/wireless/bridge/offline` | admin | — | `{ ...bridge }` | 브리지가 종료 직전 오프라인을 즉시 보고 (15초 무수신 감지 대기 없이) |
+
+### Internal API
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team records on entry deletion |
+| PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service |
 
 ---
 
@@ -330,6 +365,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | GET | `/api/sessions/:id` | student | — | `{ session, team_num, submission, files }` | Session detail with files |
 | POST | `/api/sessions/:id/submit` | student | `multipart/form-data` | `{ id, submitted_at, is_late, total_size }` | Upload files (validates time window, extensions, size) |
 | GET | `/api/submissions/:subId/files/:fileId` | student | — | File stream | Download own submission file (PDF/text/image/AV → `inline`, other → `attachment`) |
+| GET | `/api/submissions/:subId/zip` | student | — | ZIP stream | 자기 팀 제출물 전체 zip 다운로드 |
 
 ### Admin/Chief API
 
@@ -341,6 +377,10 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | DELETE | `/api/admin/sessions/:id` | chief | — | 200 | Delete session + all files |
 | GET | `/api/admin/sessions/:id/status` | chief | — | `{ session, status: [{ team_num, submission, files, prevSubmission, prevFiles, submissionCount }] }` | Per-team submission status (`submissionCount` = 누적 제출 횟수, 직전 1건은 `prevSubmission`) |
 | GET | `/api/admin/submissions/:subId/files/:fileId` | chief | — | File stream | Admin file download (PDF/text/image/AV → `inline`, other → `attachment`) |
+| GET | `/api/admin/submissions/:subId/zip` | chief | — | ZIP stream | 제출물 전체 zip 다운로드 (팀 라벨 포함 파일명) |
+| GET | `/api/admin/sessions/:id/archive` | chief | — | ZIP stream | 세션 전체 아카이브 (팀별 폴더 구조) |
+| GET | `/api/admin/years/:year/archive` | chief | — | ZIP stream | 연도 전체 아카이브 (세션/팀별 폴더 구조) |
+| DELETE | `/api/admin/years/:year/files` | chief | — | `{ sessions, files }` | 연도별 파일 데이터 삭제 (제출 기록은 유지) |
 | GET | `/api/admin/students` | chief | — | `[{ email, name }]` | Active student users (fetched from auth service) |
 | GET | `/api/admin/student-teams` | chief | `?year=` | `[{ email, team_num, year }]` | Student-team mappings |
 | POST | `/api/admin/student-teams` | chief | `{ email, team_num, year }` | `{ email, team_num, year }` | Add student-team mapping |
@@ -380,7 +420,8 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/emails` | admin | `?limit=50&offset=0&status=sent\|error` | `{ rows: [{ id, subject, recipients, recipient_count, status, error, message_id, html_content, source, sent_at, sent_by }], total }` | 전송 기록 (페이지네이션, 상태 필터) |
+| GET | `/api/emails` | admin | `?limit=50&offset=0&status=sent\|error` | `{ rows: [{ id, subject, recipient, status, error, message_id, source, sent_at, sent_by }], total }` | 전송 기록 (수신자별 1행, 페이지네이션, 상태 필터. 본문은 미포함) |
+| GET | `/api/emails/:id` | admin | — | `{ id, subject, recipient, ..., html_content }` | 전송 기록 상세 (본문 포함) |
 
 ### Email Sending
 
@@ -411,45 +452,93 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 ## Course Service (port 10000)
 
-RTK GPS 기반 코스 콘 위치 관리 서비스. 모든 엔드포인트 admin 전용 (health, rover/stream, rover/position 제외).
+RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스/콘 CRUD와 SSE(`/api/events`)는 **chief**, 스냅샷·코스 삭제·로버 운용은 **admin**, 로버 기기 인입 엔드포인트는 `X-Internal-Service`(INTERNAL_SECRET) 검증. 역할 표기: `internal` = 내부 시크릿 전용(관리자 JWT로도 불가), `internal/admin` = 내부 시크릿 또는 admin JWT.
 
-### Courses
+### Courses (chief)
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/courses` | admin | — | `[{ id, name, cone_count, created_at, updated_at }]` | 코스 목록 조회 |
-| POST | `/api/courses` | admin | `{ name }` | 201 `{ id, name, created_at, updated_at }` | 코스 생성 |
-| PATCH | `/api/courses/:id` | admin | `{ name }` | `{ id, name, updated_at }` | 코스 이름 수정 |
+| GET | `/api/courses` | chief | — | `[{ id, name, cone_count, created_at, updated_at }]` | 코스 목록 조회 |
+| POST | `/api/courses` | chief | `{ name }` | 201 `{ id, name, created_at, updated_at }` | 코스 생성 |
+| PATCH | `/api/courses/:id` | chief | `{ name }` | `{ id, name, updated_at }` | 코스 이름 수정 |
 | DELETE | `/api/courses/:id` | admin | — | 200 | 코스 삭제 (콘 CASCADE 삭제) |
-| GET | `/api/courses/:id/export` | admin | — | `{ name, cones: [{lat, lng, side}...] }` | 코스+콘 JSON 다운로드 |
-| POST | `/api/courses/import` | admin | `{ name, cones: [{lat, lng, side}...] }` | 201 `{ id, name, ... }` | JSON으로 코스+콘 일괄 생성 (트랜잭션) |
+| GET | `/api/courses/:id/export` | chief | — | `{ name, cones: [{lat, lng, side}...] }` | 코스+콘 JSON 다운로드 |
+| POST | `/api/courses/import` | chief | `{ name, cones: [{lat, lng, side}...] }` | 201 `{ id, name, ... }` | JSON으로 코스+콘 일괄 생성 (트랜잭션) |
 
-### Cones
-
-| Method | Path | Role | Request | Response | Description |
-|--------|------|------|---------|----------|-------------|
-| GET | `/api/courses/:id/cones` | admin | — | `[{ id, course_id, lat, lng, side, created_at, updated_at }]` | 코스의 콘 목록 |
-| POST | `/api/courses/:id/cones` | admin | `{ lat, lng, side }` | 201 `{ id, course_id, lat, lng, side, ... }` | 콘 추가 (side: "left"\|"center"\|"right") |
-| PATCH | `/api/cones/:id` | admin | `{ lat?, lng?, side? }` | `{ id, course_id, lat, lng, side, updated_at }` | 콘 수정 (위치/방향) |
-| DELETE | `/api/cones/:id` | admin | — | 200 | 콘 삭제 |
-
-### Rover
-
-로버는 SSE로 서버에 연결 유지. 관리자가 위치 요청 시 서버가 SSE 이벤트로 로버에 전달, 로버가 즉시 현재 좌표를 POST.
+### Course Snapshots (admin)
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/rover/stream` | public | — | SSE stream | 로버 SSE 연결 (로버가 호출). `request-position` 이벤트 수신 시 위치 전송 |
-| POST | `/api/rover/position` | public | `{ lat, lng }` | `{ lat, lng }` | 로버가 현재 위치 전송 (로버가 호출) |
+| GET | `/api/courses/:id/snapshots` | admin | — | `[{ id, taken_at, actor, reason, cone_count }]` | 코스 스냅샷 목록 |
+| POST | `/api/courses/:id/snapshots` | admin | `{ reason? }` | 201 | 현재 콘 상태 스냅샷 저장 |
+| POST | `/api/courses/:id/snapshots/:sid/restore` | admin | — | 200 | 스냅샷으로 콘 상태 복원 (복원 직전 자동 스냅샷) |
+| DELETE | `/api/courses/:id/snapshots/:sid` | admin | — | 200 | 스냅샷 삭제 |
+
+### Cones (chief)
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/courses/:id/cones` | chief | — | `[{ id, course_id, lat, lng, alt, side, created_at, updated_at }]` | 코스의 콘 목록 |
+| POST | `/api/courses/:id/cones` | chief | `{ lat, lng, alt?, side }` | 201 `{ id, course_id, lat, lng, side, ... }` | 콘 추가 (side: "left"\|"center"\|"right") |
+| PATCH | `/api/cones/:id` | chief | `{ lat?, lng?, side? }` | `{ id, course_id, lat, lng, side, updated_at }` | 콘 수정 (위치/방향) |
+| DELETE | `/api/cones/:id` | chief | — | 200 | 콘 삭제 |
+
+### Rover — 기기 인입 (로버 → 서버)
+
+로버는 SSE(`/api/rover/stream`)로 서버에 연결을 유지하고, 서버 이벤트에 대한 응답과 텔레메트리를 아래 엔드포인트로 POST한다. 라우트 구현은 `course/lib/rover-routes.mjs`.
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/rover/stream` | internal | — | SSE stream | 로버 SSE 연결 (INTERNAL_SECRET 필수 — admin JWT로도 불가). 서버가 `request-position`/`execute-path`/`manual-control` 등 명령 이벤트를 이 스트림으로 전달 |
+| POST | `/api/rover/position` | internal/admin | `{ lat, lng }` | `{ lat, lng }` | 로버가 현재 위치 전송 |
+| POST | `/api/rover/telemetry` | internal/admin | `{ lat, lng, fix_status, nav_state, battery, ntrip_*, h_acc_m, ... }` | 200 | 주기 텔레메트리. 활성 미션이면 mission_telemetry에 영속 (전역 상한 MISSION_TELEMETRY_MAX_ROWS) |
+| POST | `/api/rover/waypoint_reached` | internal/admin | `{ index }` | 200 | 웨이포인트 도달 보고 (미션 진행 영속 + `rover:waypoint` 브로드캐스트) |
+| POST | `/api/rover/waypoint_skipped` | internal/admin | `{ index }` | 200 | stuck 웨이포인트 건너뜀 보고 (`rover:skipped` 브로드캐스트) |
+| POST | `/api/rover/spray_result` | internal/admin | `{ waypoint, outcome: success\|cancelled\|timeout }` | 200 | 도색 결과 보고 (미션에 영속 + `rover:spray` 브로드캐스트) |
+| POST | `/api/rover/obstacle` | internal | `{ ... }` | 200 | 장애물 감지 보고 (`rover:obstacle` 브로드캐스트) |
+| POST | `/api/rover/logs` | internal/admin | `{ entries: [...] }` | 200 | 로버 로그 업로드 (서버 메모리 캐시, 최대 1000줄) |
+| POST | `/api/rover/antenna_calibration_result` | internal/admin | `{ ... }` | 200 | 안테나 캘리브레이션 결과 보고 |
+| POST | `/api/rover/wheel_calibration_result` | internal/admin | `{ ... }` | 200 | 휠 캘리브레이션 결과 보고 |
+| POST | `/api/rover/calibration-progress` | internal | `{ ... }` | 200 | 스테레오 캘리브레이션 진행률 보고 |
+| POST | `/api/rover/camera` | internal | `image/jpeg` (≤3MB) | 200 | 카메라 프레임 push (서버가 뷰어에 MJPEG 릴레이) |
+| GET | `/api/rover/camera/control` | internal | — | SSE stream | perception 컨테이너의 카메라 제어 채널 |
+
+### Rover — 운용 (관리자 → 서버 → 로버)
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/rover/status` | admin | — | `{ connected, nav_state, mission, last_position, ... }` | 로버 종합 상태 스냅샷 |
 | POST | `/api/rover/request` | admin | — | `{ lat, lng }` | 로버에 위치 요청 후 응답 대기 (5초 타임아웃). 503=미연결, 504=타임아웃 |
-| POST | `/api/rover/execute` | admin | `{ waypoints: [{lat,lng}...] }` | `{ sent }` | 경로 waypoint를 로버에 전송 (SSE `execute-path` 이벤트). 409=현재 EMERGENCY_STOP 래치 상태 (먼저 해제 필요) |
+| POST | `/api/rover/execute` | admin | `{ waypoints: [{lat,lng}...] }` | `{ sent }` | 경로 waypoint를 로버에 전송 (SSE `execute-path` 이벤트). 웨이포인트 간 거리 검증. 409=EMERGENCY_STOP 래치 상태 |
 | POST | `/api/rover/stop` | admin | — | `{ stopped: true }` | 비상정지 (SSE `emergency-stop` 이벤트) |
-| POST | `/api/rover/clear-emergency` | admin | — | `{ cleared: true }` | 비상정지 해제 (SSE `clear-emergency` 이벤트). 미션은 자동 종료되지 않고 보존되어 "이어서 실행" 가능 |
-| POST | `/api/rover/end-mission` | admin | — | `{ ended, mission_id? }` | 보존된 미션을 명시적으로 종료 (운영자가 path 폐기 시 호출). 활성 미션 없으면 `ended:false` |
+| POST | `/api/rover/pause` | admin | — | 200 | 미션 일시정지 (SSE `pause` 이벤트) |
+| POST | `/api/rover/resume` | admin | — | 200 | 미션 재개 (SSE `resume` 이벤트) |
+| POST | `/api/rover/clear-emergency` | admin | — | `{ cleared: true }` | 비상정지 해제. 미션은 자동 종료되지 않고 보존되어 "이어서 실행" 가능 |
+| POST | `/api/rover/end-mission` | admin | — | `{ ended, mission_id? }` | 보존된 미션을 명시적으로 종료. 활성 미션 없으면 `ended:false` |
 | POST | `/api/rover/control` | admin | `{ throttle, steering }` | `{ throttle, steering }` | 수동 제어 (-100~100, SSE `manual-control` 이벤트) |
-| POST | `/api/rover/calibrate-battery` | admin | `{ measured_v }` (15~32 V) | `{ ok, measured_v }` | 멀티미터 실측값으로 배터리 ADC 게인 1점 보정 (SSE `calibrate-battery` 이벤트). 로버가 `$SNAP_COMMON/battery_cal.json`에 영구 저장 |
+| POST | `/api/rover/dispenser` | admin | `{ ... }` | 200 | 도색 디스펜서 수동 제어 |
+| POST | `/api/rover/nav-lights` | admin | `{ ... }` | 200 | 항법등 제어 |
+| POST | `/api/rover/led-brightness` | admin | `{ ... }` | 200 | LED 밝기 제어 |
+| POST | `/api/rover/calibrate-battery` | admin | `{ measured_v }` (15~32 V) | `{ ok, measured_v }` | 멀티미터 실측값으로 배터리 ADC 게인 1점 보정. 로버가 영구 저장 |
+| POST | `/api/rover/calibrate-stereo` | admin | — | 200 | 스테레오 카메라 캘리브레이션 시작 |
+| POST | `/api/rover/calibrate-antenna` | admin | — | 200 | GPS 안테나 오프셋 캘리브레이션 시작 |
+| POST | `/api/rover/set-antenna-offset` | admin | `{ ... }` | 200 | 안테나 오프셋 수동 설정 |
+| POST | `/api/rover/calibrate-wheels` | admin | — | 200 | 휠 캘리브레이션 시작 |
+| POST | `/api/rover/reset-wheel-cal` | admin | — | 200 | 휠 캘리브레이션 초기화 |
+| GET | `/api/rover/logs` | internal/admin | — | `{ entries, uploaded_at }` | 업로드된 로버 로그 조회 |
+| POST | `/api/rover/logs/fetch` | admin | — | 200 | 로버에 로그 업로드 요청 (SSE 이벤트) |
+| GET | `/api/rover/camera/stream` | admin | — | MJPEG stream | 라이브 카메라 스트림 (최대 8 뷰어, ≤~25fps 릴레이) |
+| GET | `/api/rover/camera/status` | admin | — | `{ streaming, viewers, last_frame_age_ms, ... }` | 카메라 릴레이 상태 |
 
-### SSE (`/api/events`)
+### Missions (admin)
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/missions` | admin | `?limit=(≤500, 기본 50)&offset=` | `{ missions, total }` | 미션 이력 목록 |
+| GET | `/api/missions/:id` | admin | — | `{ ...mission, waypoints, spray_results }` | 미션 상세 |
+| GET | `/api/missions/:id/telemetry` | admin | — | `{ samples: [...] }` | 미션 텔레메트리 전체 (대용량 가능 — 페이지네이션 미지원, 후속 과제) |
+
+### SSE (`/api/events`, chief)
 
 | Event | Data | Description |
 |-------|------|-------------|
@@ -457,6 +546,8 @@ RTK GPS 기반 코스 콘 위치 관리 서비스. 모든 엔드포인트 admin 
 | `courses` | `{ type, course?, courseId?, courses }` | 코스 생성/수정/삭제 |
 | `cones` | `{ type, courseId, cone?, coneId?, cones }` | 콘 추가/수정/삭제 |
 | `rover` | `{ lat, lng }` | 로버 위치 수신 시 브로드캐스트 |
+| `rover:status` | `{ connected, nav_state, ... }` | 로버 상태 변화 |
+| `rover:waypoint` / `rover:skipped` / `rover:spray` / `rover:obstacle` | `{ index }` 등 | 미션 진행 이벤트 |
 
 ---
 

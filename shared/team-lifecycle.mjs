@@ -8,10 +8,12 @@
 // 이전엔 inspection/score가 이 핸들러 쌍과 renumberTeamRows 헬퍼를 글자 단위로
 // 복붙해 두고 있었다 — self-renumber 데이터 손실 가드/검증/로깅 계약을 양쪽에서
 // 따로 고쳐야 했으므로 한 곳으로 모은다.
+import { assertIdentifier } from "./db-setup.mjs";
 
 // 목적지(newNum) 행을 먼저 지운 뒤 prevNum→newNum으로 갱신한다. prevNum 행이 없으면
 // no-op이라 outbox 재전달에도 멱등하다(목적지 행을 건드리지 않음).
-export function renumberTeamRows(db, table, prevNum, newNum, year) {
+function renumberTeamRows(db, table, prevNum, newNum, year) {
+  assertIdentifier(table);
   const existing = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE year = ? AND team_num = ?`).get(year, prevNum).count;
   if (existing === 0) return 0;
   db.prepare(`DELETE FROM ${table} WHERE year = ? AND team_num = ?`).run(year, newNum);
@@ -36,6 +38,7 @@ export function registerTeamLifecycleRoutes(app, { db, dbRun, logger, requireInt
     const result = dbRun(() => {
       db.transaction(() => {
         for (const table of tables) {
+          assertIdentifier(table);
           db.prepare(`DELETE FROM ${table} WHERE year = ? AND team_num = ?`).run(year, num);
         }
       })();

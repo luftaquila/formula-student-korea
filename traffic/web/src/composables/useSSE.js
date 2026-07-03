@@ -1,9 +1,8 @@
 import { ref, watch } from "vue";
-import { createSSEConnection } from "@shared/useSSE.js";
+import { createServiceSSE, parseSSEData } from "@shared/useSSE.js";
 import { fetchWirelessEvents } from "./useApi";
 
-const API_BASE = import.meta.env.DEV ? "" : "/traffic";
-const { on, useSSE: useConnection } = createSSEConnection(`${API_BASE}/api/events`);
+const { on, useSSE: useConnection } = createServiceSSE("/traffic");
 
 // Shared state across all components
 const recordFiles = ref([]);
@@ -88,8 +87,8 @@ watch(selectedFile, (v) => {
 });
 
 on("init", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   recordFiles.value = ["controller", ...data.recordFiles];
   if (data.eventModes) {
     const modes = {};
@@ -120,28 +119,28 @@ on("init", (e) => {
 });
 
 on("wireless:event", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   for (const ev of data.events || []) dispatchWirelessEvent(ev);
 });
 
 on("wireless:telemetry", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   const m = { ...wirelessTelemetry.value };
   for (const t of data.telemetry || []) m[t.node_id] = t;
   wirelessTelemetry.value = m;
 });
 
 on("wireless:light", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   wirelessLight.value = data;
 });
 
 on("wireless:mapping", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   if (data.deleted) {
     wirelessMapping.value = wirelessMapping.value.filter((m) => m.node_id !== data.node_id);
   } else {
@@ -151,29 +150,29 @@ on("wireless:mapping", (e) => {
 });
 
 on("wireless:bridge", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   wirelessBridge.value = data;
 });
 
 on("wireless:session", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   if (!data || !data.event_type) return;
   wirelessSessions.value = { ...wirelessSessions.value, [data.event_type]: data };
 });
 
 on("wireless:command", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   for (const fn of wirelessCommandSubs) {
     try { fn(data); } catch { /* subscriber error ignored */ }
   }
 });
 
 on("records", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   recordFiles.value = ["controller", ...data.recordFiles];
   lastUpdate.value = {
     ...data,
@@ -182,14 +181,14 @@ on("records", (e) => {
 });
 
 on("record-visibility", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   recordVisibility.value = { ...recordVisibility.value, [data.name]: !!data.visible };
 });
 
 on("event-mode", (e) => {
-  let data;
-  try { data = JSON.parse(e.data); } catch { return; }
+  const data = parseSSEData(e);
+  if (!data) return;
   eventModes.value = { ...eventModes.value, [data.event_type]: !!data.enabled };
 });
 

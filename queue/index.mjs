@@ -6,7 +6,9 @@ import { createDatabase, addColumn, setupRowCapRetention } from "../shared/db-se
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
-import { validateEntryNum } from "../shared/validation.mjs";
+import { validateEntryNum, validateYear } from "../shared/validation.mjs";
+
+const PORT = 9300;
 
 export const INSPECTIONS = {
   battery: "배터리",
@@ -326,8 +328,9 @@ function currentYear() {
 }
 
 function parseYearQuery(value) {
-  const year = value == null || value === "" ? currentYear() : Number(value);
-  return Number.isInteger(year) && year >= 2000 && year <= 2099 ? year : null;
+  if (value == null || value === "") return currentYear();
+  const check = validateYear(value);
+  return check.valid ? check.value : null;
 }
 
 function withInspectionLengths(rows, year = currentYear()) {
@@ -466,6 +469,17 @@ app.get("/api/events", sseHandler(() => {
   return { activeInspections, allBooths };
 }));
 
+// SSE 브로드캐스트 헬퍼 — 대기열/부스/활성검차 변경을 일관된 페이로드로 전파한다.
+function broadcastQueue(type) {
+  broadcastEvent("queue", { type, activeInspections: getActiveInspections() });
+}
+function broadcastBooth(type) {
+  broadcastEvent("booth", { type, booths: getBoothsForType(type) });
+}
+function broadcastInspections() {
+  broadcastEvent("inspections", { activeInspections: getActiveInspections() });
+}
+
 /* ============================================
    Validation 헬퍼
    ============================================ */
@@ -498,13 +512,22 @@ const dbRun = createDbRun();
 
 /**
  * 대기열 조회 쿼리 (정렬 순서: 초검 > 재검, 우선순위 높음 > 낮음, 선착순)
- * 파라미터 순서: [inspection, year, inspection, year, year]
+ * 파라미터 순서: [inspection, year] × 3 (재검 CASE, priority JOIN, WHERE 순)
+ *
+ * 정렬 변형은 (ignore_reinspection, ignore_priority) 조합당 4종뿐이므로 prepared
+ * statement를 메모이즈한다 — 핫패스(등록/취소/입장/SMS/조회)의 매 요청 SQL
+ * 재컴파일과 메타 조회 statement 재생성을 피한다.
  */
-function getQueueQuery(inspection) {
-  const meta = db.prepare("SELECT ignore_priority, ignore_reinspection FROM inspection WHERE type = ?").get(inspection);
-  const ignoreReinspection = meta?.ignore_reinspection;
-  const ignorePriority = meta?.ignore_priority;
+const inspectionMetaStmt = db.prepare("SELECT ignore_priority, ignore_reinspection FROM inspection WHERE type = ?");
+const queueStmtCache = new Map();
+const queueRankStmtCache = new Map();
 
+function getQueueOrderFlags(inspection) {
+  const meta = inspectionMetaStmt.get(inspection);
+  return { ignoreReinspection: !!meta?.ignore_reinspection, ignorePriority: !!meta?.ignore_priority };
+}
+
+function buildQueueQuery({ ignoreReinspection, ignorePriority }) {
   const orderClauses = [];
   if (!ignoreReinspection) orderClauses.push("is_reinspection ASC");
   if (!ignorePriority) orderClauses.push("priority ASC");
@@ -523,6 +546,18 @@ function getQueueQuery(inspection) {
   `;
 }
 
+// variant: "list"(전체 목록) | "offset"(LIMIT 1 OFFSET ? 추가 — 순번 단건 조회)
+function getQueueStmt(inspection, variant = "list") {
+  const flags = getQueueOrderFlags(inspection);
+  const key = `${flags.ignoreReinspection}|${flags.ignorePriority}|${variant}`;
+  let stmt = queueStmtCache.get(key);
+  if (!stmt) {
+    stmt = db.prepare(buildQueueQuery(flags) + (variant === "offset" ? " LIMIT 1 OFFSET ?" : ""));
+    queueStmtCache.set(key, stmt);
+  }
+  return stmt;
+}
+
 function getQueueParams(inspection, year) {
   return [inspection, year, inspection, year, inspection, year];
 }
@@ -531,25 +566,19 @@ function getQueueParams(inspection, year) {
  * 특정 엔트리의 대기열 순위 조회
  */
 function getQueueRank(inspection, num, year) {
-  const meta = db.prepare("SELECT ignore_priority, ignore_reinspection FROM inspection WHERE type = ?").get(inspection);
-  const ignoreReinspection = meta?.ignore_reinspection;
-  const ignorePriority = meta?.ignore_priority;
+  const { ignoreReinspection, ignorePriority } = getQueueOrderFlags(inspection);
 
-  const orderClauses = [];
-  if (!ignoreReinspection) orderClauses.push(`CASE WHEN EXISTS (
+  const key = `${ignoreReinspection}|${ignorePriority}`;
+  let stmt = queueRankStmtCache.get(key);
+  if (!stmt) {
+    const orderClauses = [];
+    if (!ignoreReinspection) orderClauses.push(`CASE WHEN EXISTS (
               SELECT 1 FROM inspection_history h WHERE h.num = t.num AND h.inspection = ? AND h.year = ?
             ) THEN 1 ELSE 0 END ASC`);
-  if (!ignorePriority) orderClauses.push("COALESCE(p.priority, 999) ASC");
-  orderClauses.push("t.timestamp ASC");
+    if (!ignorePriority) orderClauses.push("COALESCE(p.priority, 999) ASC");
+    orderClauses.push("t.timestamp ASC");
 
-  const params = [];
-  if (!ignoreReinspection) params.push(inspection, year);
-  params.push(inspection, year); // for LEFT JOIN team_priority
-  params.push(inspection, year); // for WHERE t.inspection = ? AND t.year = ?
-  params.push(num); // for WHERE sub.num = ?
-
-  const result = db
-    .prepare(`
+    stmt = db.prepare(`
     SELECT sub.rank FROM (
       SELECT t.num,
         ROW_NUMBER() OVER (
@@ -559,8 +588,17 @@ function getQueueRank(inspection, num, year) {
       LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ? AND p.year = ?
       WHERE t.inspection = ? AND t.year = ?
     ) AS sub WHERE sub.num = ?
-  `)
-    .get(...params);
+  `);
+    queueRankStmtCache.set(key, stmt);
+  }
+
+  const params = [];
+  if (!ignoreReinspection) params.push(inspection, year);
+  params.push(inspection, year); // for LEFT JOIN team_priority
+  params.push(inspection, year); // for WHERE t.inspection = ? AND t.year = ?
+  params.push(num); // for WHERE sub.num = ?
+
+  const result = stmt.get(...params);
 
   return result ? result.rank : null;
 }
@@ -640,9 +678,11 @@ app.post("/api/state/:num", rateLimit, async (req, res) => {
 // GET /api/booths/:type - 공개 부스 상태 조회
 app.get("/api/booths/all", (req, res) => {
   const result = dbRun(() => {
+    // 타입별 개별 쿼리(N+1) 대신 단일 조회 후 그룹핑 (SSE init과 동일 패턴)
     const allBooths = {};
-    for (const k of Object.keys(inspections)) {
-      allBooths[k] = getBoothsForType(k);
+    for (const k of Object.keys(inspections)) allBooths[k] = [];
+    for (const { inspection, ...row } of db.prepare("SELECT inspection, booth_num, active, occupied_by, entered_at FROM booth ORDER BY inspection, booth_num").all()) {
+      if (allBooths[inspection]) allBooths[inspection].push(row);
     }
     return allBooths;
   });
@@ -692,7 +732,7 @@ app.get("/api/admin/inspection/:type", (req, res) => {
   }
 
   const year = currentYear();
-  const result = dbRun(() => db.prepare(getQueueQuery(req.params.type)).all(...getQueueParams(req.params.type, year)));
+  const result = dbRun(() => getQueueStmt(req.params.type).all(...getQueueParams(req.params.type, year)));
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
@@ -722,8 +762,7 @@ app.patch("/api/admin/inspection/:type", (req, res) => {
   logger.log(req, "inspection.toggle", { active: req.body.active === true }, req.params.type);
 
   // SSE 브로드캐스트: 활성 검차 목록 변경
-  const activeInspections = getActiveInspections();
-  broadcastEvent("inspections", { activeInspections });
+  broadcastInspections();
 
   res.status(200).send();
 });
@@ -749,8 +788,7 @@ app.patch("/api/admin/inspection/:type/visibility", (req, res) => {
   logger.log(req, "inspection.visibility", { active: !(req.body.hidden === true) }, req.params.type);
 
   // SSE 브로드캐스트: 활성 검차 목록 변경 (hidden 정보 포함)
-  const activeInspections = getActiveInspections();
-  broadcastEvent("inspections", { activeInspections });
+  broadcastInspections();
 
   res.status(200).send();
 });
@@ -864,8 +902,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
   logger.log(req, "queue.register", { inspection: type, phone: maskedPhone }, `#${num}`);
 
   // SSE 브로드캐스트: 대기열 변경
-  const activeInspections = getActiveInspections();
-  broadcastEvent("queue", { type, activeInspections });
+  broadcastQueue(type);
 
   res.status(201).send();
 });
@@ -888,7 +925,7 @@ app.post("/api/admin/cancel/:type", (req, res) => {
 
   // SMS 발송용: 삭제 전 N번째 대기자 조회
   const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
-  const prev = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(...getQueueParams(type, year), smsRank - 1);
+  const prev = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
 
   const result = dbRun(() => {
     db.transaction(() => {
@@ -935,8 +972,7 @@ app.post("/api/admin/cancel/:type", (req, res) => {
   logger.log(req, "queue.cancel", { inspection: type }, `#${num}`);
 
   // SSE 브로드캐스트: 대기열 변경
-  const activeInspections = getActiveInspections();
-  broadcastEvent("queue", { type, activeInspections });
+  broadcastQueue(type);
 
   res.status(200).send();
 
@@ -997,8 +1033,7 @@ app.post("/api/admin/priority/:type", (req, res) => {
   logger.log(req, "priority.set", { inspection: req.params.type, priority: priorityValidation.value }, `#${numValidation.value}`);
 
   // SSE 브로드캐스트: 우선순위 변경 -> 대기열 순서 변경
-  const activeInspections = getActiveInspections();
-  broadcastEvent("queue", { type: req.params.type, activeInspections });
+  broadcastQueue(req.params.type);
 
   res.status(201).send();
 });
@@ -1034,8 +1069,7 @@ app.delete("/api/admin/priority/:type", (req, res) => {
   logger.log(req, "priority.delete", { inspection: req.params.type, priority: prior?.priority }, `#${numValidation.value}`);
 
   // SSE 브로드캐스트: 우선순위 변경 -> 대기열 순서 변경
-  const activeInspections = getActiveInspections();
-  broadcastEvent("queue", { type: req.params.type, activeInspections });
+  broadcastQueue(req.params.type);
 
   res.status(200).send();
 });
@@ -1057,8 +1091,7 @@ app.delete("/api/admin/priority/:type/all", (req, res) => {
   logger.log(req, "priority.clear", null, req.params.type);
 
   // SSE 브로드캐스트: 우선순위 변경 -> 대기열 순서 변경
-  const activeInspections = getActiveInspections();
-  broadcastEvent("queue", { type: req.params.type, activeInspections });
+  broadcastQueue(req.params.type);
 
   res.status(200).send();
 });
@@ -1102,9 +1135,8 @@ app.delete("/api/admin/history/:type", (req, res) => {
   logger.log(req, "history.clear", { year }, type);
 
   // SSE 브로드캐스트: 이력 초기화 -> 대기열 순서 변경 및 부스 상태 변경
-  const activeInspections = getActiveInspections();
-  broadcastEvent("queue", { type, activeInspections });
-  broadcastEvent("booth", { type, booths: getBoothsForType(type) });
+  broadcastQueue(type);
+  broadcastBooth(type);
 
   res.status(200).send();
 });
@@ -1139,8 +1171,7 @@ app.put("/api/admin/inspection/:type/ignore", (req, res) => {
   logger.log(req, "inspection.ignore", { field, value: !!value }, type);
 
   // SSE 브로드캐스트: 설정 변경 -> 대기열 순서 변경
-  const activeInspections = getActiveInspections();
-  broadcastEvent("queue", { type, activeInspections });
+  broadcastQueue(type);
 
   res.status(200).send();
 });
@@ -1298,7 +1329,7 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
 
   // SMS 발송용: 삭제 전 N번째 대기자 조회
   const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
-  const prev = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(...getQueueParams(type, year), smsRank - 1);
+  const prev = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
 
   const result = dbRun(() => {
     db.transaction(() => {
@@ -1357,9 +1388,8 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
   logger.log(req, "booth.enter", { inspection: type, booth: boothNum }, `#${num}`);
 
   // SSE 브로드캐스트: 부스 및 대기열 변경
-  const activeInspections = getActiveInspections();
-  broadcastEvent("booth", { type, booths: getBoothsForType(type) });
-  broadcastEvent("queue", { type, activeInspections });
+  broadcastBooth(type);
+  broadcastQueue(type);
 
   res.status(200).send();
 
@@ -1383,7 +1413,7 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
 
   const year = currentYear();
 
-  const result = dbRun(() => {
+  const result = dbRun(() =>
     db.transaction(() => {
       const booth = db.prepare("SELECT * FROM booth WHERE inspection = ? AND booth_num = ?").get(type, boothNum);
       if (!booth) {
@@ -1408,20 +1438,21 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
 
       // 검차 이력에 추가 (재검 판단용)
       db.prepare("INSERT INTO inspection_history (num, inspection, timestamp, year) VALUES (?, ?, ?, ?)").run(num, type, now, year);
-    })();
-  });
+
+      return num;
+    })()
+  );
 
   if (!result.success) {
     logger.warn(req, "booth.exit", { error: result.error }, type);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "booth.exit", { inspection: type, booth: boothNum }, `#${db.prepare("SELECT num FROM booth_log WHERE inspection = ? AND booth_num = ? AND year = ? ORDER BY id DESC LIMIT 1").get(type, boothNum, year)?.num || "?"}`);
+  logger.log(req, "booth.exit", { inspection: type, booth: boothNum }, `#${result.result}`);
 
   // SSE 브로드캐스트: 부스 및 대기열 변경
-  const activeInspections = getActiveInspections();
-  broadcastEvent("booth", { type, booths: getBoothsForType(type) });
-  broadcastEvent("queue", { type, activeInspections });
+  broadcastBooth(type);
+  broadcastQueue(type);
 
   res.status(200).send();
 });
@@ -1783,7 +1814,7 @@ app.patch("/api/admin/settings/cancel-penalty", (req, res) => {
    유틸리티 함수
    ============================================ */
 async function getEntries() {
-  const entryServer = process.env.ENTRY_SERVER || "http://entry:9200";
+  const entryServer = process.env.ENTRY_SERVER || "http://localhost:9200";
   const headers = {};
   if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
   const res = await fetch(`${entryServer}/api/entries`, { headers, signal: AbortSignal.timeout(5000) });
@@ -1844,7 +1875,7 @@ function sendSmsNotification(type, prev) {
 
     const year = currentYear();
     const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
-    target = db.prepare(getQueueQuery(type) + " LIMIT 1 OFFSET ?").get(...getQueueParams(type, year), smsRank - 1);
+    target = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
 
     if (target && (!prev || target.num !== prev.num)) {
       if (!smsConfig) return;
@@ -1918,11 +1949,12 @@ app.delete("/api/internal/team/:num", (req, res) => {
   }
 
   const num = numValidation.value;
-  const year = Number(req.query.year);
-  if (!Number.isInteger(year) || year < 2000 || year > 2099) {
+  const yearCheck = validateYear(req.query.year);
+  if (!yearCheck.valid) {
     logger.warn(req, "team.cascade_delete", { error: "invalid year", year: req.query.year }, `#${num}`);
     return res.status(400).send("연도를 지정해야 합니다.");
   }
+  const year = yearCheck.value;
 
   const result = dbRun(() => {
     db.transaction(() => {
@@ -1971,8 +2003,7 @@ app.delete("/api/internal/team/:num", (req, res) => {
   logger.log(req, "team.cascade_delete", { year }, "#" + num);
 
   // SSE 브로드캐스트
-  const activeInspections = getActiveInspections();
-  broadcastEvent("queue", { type: null, activeInspections });
+  broadcastQueue(null);
 
   res.status(200).send();
 });
@@ -1992,7 +2023,7 @@ app.patch("/api/internal/team-num", (req, res) => {
     logger.warn(req, "team_num.update", { error: newNumValidation.error, newNum: req.body.newNum });
     return res.status(400).send(newNumValidation.error);
   }
-  if (!Number.isInteger(year) || year < 2000 || year > 2099) {
+  if (!validateYear(year).valid) {
     logger.warn(req, "team_num.update", { error: "invalid year", year: req.body.year });
     return res.status(400).send("연도를 지정해야 합니다.");
   }
@@ -2042,10 +2073,9 @@ app.patch("/api/internal/team-num", (req, res) => {
 
   logger.log(req, "team_num.update", { year, prevNum, newNum });
 
-  const activeInspections = getActiveInspections();
-  broadcastEvent("queue", { type: null, activeInspections });
+  broadcastQueue(null);
   for (const type of Object.keys(inspections)) {
-    broadcastEvent("booth", { type, booths: getBoothsForType(type) });
+    broadcastBooth(type);
   }
 
   res.status(200).send();
@@ -2069,6 +2099,6 @@ if (isDirectRun) {
   // Serve immediately; SMS config loads in the background and retries through
   // the startup window so a co-restart with the email service doesn't block
   // listening or log a spurious "fetch failed" warning.
-  app.listen(9300);
+  app.listen(PORT, () => console.log(`Queue service running on port ${PORT}`));
   load({ retries: 10, delayMs: 3000 });
 }
