@@ -193,6 +193,12 @@ const roverState = {
   nav_lights_mode: 2,
   // Status-LED (WS2812) global brightness scale 0-255. Same persist/re-send.
   led_brightness: 255,
+  // Peristaltic pump manual toggle state (operator PUMP button). Reset to
+  // off on rover (re)connect since the rover boots the pump off.
+  pump_on: false,
+  // Pump dispense time in seconds — how long the pump runs per waypoint.
+  // Operator-tunable; persisted here and re-sent to the rover on (re)connect.
+  pump_run_duration: 2.0,
   last_disconnect_reason: null, // "sse_closed" | "write_failed" | "replaced"
   last_disconnect_at: 0,
   last_spray_result: null, // { waypoint, outcome, at }
@@ -301,6 +307,8 @@ app.get("/api/rover/stream", (req, res) => {
   roverState.connected = true;
   roverState.last_disconnect_reason = null;
   roverState.last_disconnect_at = 0;
+  // The rover boots the pump off; keep the UI toggle in sync on (re)connect.
+  roverState.pump_on = false;
   broadcastRoverStatus();
 
   // Re-apply the operator's nav-light choice so it survives a pilot restart.
@@ -309,6 +317,10 @@ app.get("/api/rover/stream", (req, res) => {
   }
   if (roverState.led_brightness != null) {
     sendRoverEvent("led-brightness", { brightness: roverState.led_brightness });
+  }
+  // Re-apply the operator's pump dispense-time so it survives a pilot restart.
+  if (roverState.pump_run_duration != null) {
+    sendRoverEvent("pump-duration", { seconds: roverState.pump_run_duration });
   }
 
   // 10s heartbeat (was 30s). The rover's SSE read timeout is 25s, so a dead
@@ -1180,19 +1192,36 @@ app.post("/api/rover/end-mission", (req, res) => {
   res.json({ ended: true, mission_id: endedId });
 });
 
-// POST /api/rover/dispenser - 분필 디스펜서 수동 위치 (load/dump)
-app.post("/api/rover/dispenser", (req, res) => {
-  const { position } = req.body;
-  if (position !== "load" && position !== "dump") {
-    return res.status(400).send("position must be 'load' or 'dump'.");
+// POST /api/rover/pump - 페리스탈릭 펌프 수동 on/off 토글 (admin → SSE)
+app.post("/api/rover/pump", (req, res) => {
+  const { on } = req.body;
+  if (typeof on !== "boolean") {
+    return res.status(400).send("on must be a boolean.");
   }
-  if (!roverClient) return rejectNoRover(req, res, "rover.dispenser", { position });
-  if (!sendRoverEvent("dispenser-set-position", { position })) {
-    logger.warn(req, "rover.dispenser", { error: "write_failed", position }, "rover");
+  if (!roverClient) return rejectNoRover(req, res, "rover.pump", { on });
+  if (!sendRoverEvent("pump-set", { on })) {
+    logger.warn(req, "rover.pump", { error: "write_failed", on }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
-  logger.log(req, "rover.dispenser", { position }, "rover");
-  res.json({ position });
+  roverState.pump_on = on;
+  logger.log(req, "rover.pump", { on }, "rover");
+  broadcastRoverStatus();
+  res.json({ on });
+});
+
+// POST /api/rover/pump-duration - 펌프 분사 시간(초) 설정 (admin → SSE)
+app.post("/api/rover/pump-duration", (req, res) => {
+  const seconds = Number(req.body?.seconds);
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 10) {
+    logger.warn(req, "rover.pump_duration", { error: "invalid_seconds", seconds: req.body?.seconds }, "rover");
+    return res.status(400).send("seconds는 0 초과 10 이하여야 합니다.");
+  }
+  // 항상 저장한다 — 로버 재연결 시 재전송돼 고착된다. 연결돼 있으면 즉시 전송.
+  roverState.pump_run_duration = seconds;
+  if (roverClient) sendRoverEvent("pump-duration", { seconds });
+  logger.log(req, "rover.pump_duration", { seconds, connected: !!roverClient }, "rover");
+  broadcastRoverStatus();
+  res.json({ ok: true });
 });
 
 // POST /api/rover/control - 수동 제어

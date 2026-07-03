@@ -109,7 +109,7 @@ const manualSteering = ref(0);
 // so a pointermove (≈120Hz on mobile) doesn't re-render this whole component.
 const joystickKnobEl = ref(null);
 const joystickInfoEl = ref(null);
-const dispenserBusy = ref(false);
+const pumpBusy = ref(false);
 
 // Rover live status (from SSE rover:status event)
 const roverStatus = ref({
@@ -421,6 +421,25 @@ function onLedBrightnessInput(val) {
       method: "POST",
       body: JSON.stringify({ brightness: ledBrightness.value }),
     }).catch((err) => notifyError(`TSAL 밝기 설정 실패: ${err.message}`));
+  }, 200);
+}
+
+// Peristaltic pump: manual on/off toggle (수동제어 PUMP button) + dispense-time
+// slider (분사 시간, in the 💡 popover). Both mirror server rover status.
+const pumpOn = computed(() => roverStatus.value.pump_on === true);
+const pumpDuration = ref(2.0);
+watch(() => roverStatus.value.pump_run_duration, (v) => {
+  if (typeof v === "number" && v > 0) pumpDuration.value = v;
+});
+let pumpDurationTimer = null;
+function onPumpDurationInput(val) {
+  pumpDuration.value = Number(val);
+  if (pumpDurationTimer) clearTimeout(pumpDurationTimer);
+  pumpDurationTimer = setTimeout(() => {
+    request("/api/rover/pump-duration", {
+      method: "POST",
+      body: JSON.stringify({ seconds: pumpDuration.value }),
+    }).catch((err) => notifyError(`분사 시간 설정 실패: ${err.message}`));
   }, 200);
 }
 
@@ -3667,6 +3686,18 @@ function stopManualControl() {
   manualFailCount = 0;
   sendControl();
   if (roverMode.value === "manual") {
+    // Fail the pump off when leaving manual mode. The PUMP toggle only
+    // exists in manual mode, so exiting it (operator click OR the 5-fail
+    // auto-release above) must not strand a running liquid pump — the same
+    // asymmetry we avoid on E-Stop / heartbeat loss. Best-effort: on a lost
+    // link this POST also fails, but then the MCU heartbeat fail-safe stops
+    // the pump anyway.
+    if (pumpOn.value) {
+      request("/api/rover/pump", {
+        method: "POST",
+        body: JSON.stringify({ on: false }),
+      }).catch(() => {});
+    }
     roverMode.value = "none";
     // Snap straight back to the server-truth mode — e.g. if the operator was
     // manually clearing an obstacle during a soft pause, this re-shows the
@@ -3772,18 +3803,19 @@ watch(activeTab, (tab) => {
   if (tab !== "rover" && cameraOn.value) stopCameraStream();
 });
 
-async function setDispenserPosition(position) {
-  if (dispenserBusy.value) return;
-  dispenserBusy.value = true;
+async function togglePump() {
+  if (pumpBusy.value) return;
+  pumpBusy.value = true;
+  const next = !pumpOn.value;
   try {
-    await request("/api/rover/dispenser", {
+    await request("/api/rover/pump", {
       method: "POST",
-      body: JSON.stringify({ position }),
+      body: JSON.stringify({ on: next }),
     });
   } catch (e) {
-    notifyWarn(`디스펜서 제어 실패: ${e?.message || e}`);
+    notifyWarn(`펌프 제어 실패: ${e?.message || e}`);
   } finally {
-    dispenserBusy.value = false;
+    pumpBusy.value = false;
   }
 }
 
@@ -4211,6 +4243,7 @@ onUnmounted(() => {
   if (cameraStatusPoll) clearInterval(cameraStatusPoll);
   if (calStatusPollHandle) clearInterval(calStatusPollHandle);
   if (ledBrightnessTimer) clearTimeout(ledBrightnessTimer);
+  if (pumpDurationTimer) clearTimeout(pumpDurationTimer);
   if (centerlineTimer) clearTimeout(centerlineTimer);
   if (followTimer != null) clearTimeout(followTimer);
   if (eventSource) eventSource.close();
@@ -4604,6 +4637,14 @@ onUnmounted(() => {
                       type="range" min="0" max="255" step="5"
                       :value="ledBrightness"
                       @input="onLedBrightnessInput($event.target.value)"
+                    />
+                  </div>
+                  <div class="navlight-bright" @click.stop>
+                    <span class="navlight-bright-label">분사 시간 {{ pumpDuration.toFixed(1) }}s</span>
+                    <input
+                      type="range" min="0.5" max="10" step="0.5"
+                      :value="pumpDuration"
+                      @input="onPumpDurationInput($event.target.value)"
                     />
                   </div>
                 </span>
@@ -5169,17 +5210,13 @@ onUnmounted(() => {
                         <span class="jl-left">◄</span><span class="jl-right">►</span>
                       </div>
                     </div>
-                    <div class="dispenser-buttons">
+                    <div class="pump-control">
                       <button
-                        class="dispenser-btn"
-                        :disabled="dispenserBusy"
-                        @click="setDispenserPosition('load')"
-                      >Load</button>
-                      <button
-                        class="dispenser-btn"
-                        :disabled="dispenserBusy"
-                        @click="setDispenserPosition('dump')"
-                      >Dump</button>
+                        class="pump-btn"
+                        :class="{ active: pumpOn }"
+                        :disabled="pumpBusy"
+                        @click="togglePump"
+                      >{{ pumpOn ? 'PUMP ●' : 'PUMP ○' }}</button>
                     </div>
                   </div>
                 </template>
@@ -6417,19 +6454,22 @@ onUnmounted(() => {
 .jl-left { position: absolute; left: 6px; top: 50%; transform: translateY(-50%); }
 .jl-right { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); }
 
-.dispenser-buttons {
-  display: flex; gap: 0.5rem; justify-content: center;
+.pump-control {
+  display: flex; justify-content: center;
   margin-top: 0.75rem;
 }
-.dispenser-btn {
-  flex: 1; max-width: 80px;
-  padding: 0.4rem 0.6rem;
+.pump-btn {
+  flex: 1; max-width: 160px;
+  padding: 0.5rem 0.8rem;
   border: 1px solid var(--border-color); border-radius: 4px;
   background: var(--bg-secondary); color: var(--text-primary);
-  font-size: 0.8rem; cursor: pointer;
+  font-size: 0.85rem; font-weight: 600; letter-spacing: 0.02em; cursor: pointer;
 }
-.dispenser-btn:hover:not(:disabled) { background: var(--bg-tertiary); }
-.dispenser-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.pump-btn:hover:not(:disabled) { background: var(--bg-tertiary); }
+.pump-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.pump-btn.active {
+  background: #2e7d32; border-color: #2e7d32; color: #fff;
+}
 
 /* Cone edit */
 .coord-inputs { display: flex; flex-direction: column; gap: 0.5rem; }

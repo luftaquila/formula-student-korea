@@ -42,21 +42,13 @@ static void setup_servo(servo_t *s, uint pin,
 }
 
 void servo_init(void) {
-    // Steering boots centred (S20F linkage rests at center).
+    // Steering boots centred (S20F linkage rests at center). The former
+    // dispenser servo on GP6 is gone — the peristaltic pump owns that pin
+    // now and is initialised separately in pump_init().
     setup_servo(&g_srv[SERVO_STEER],
                 PIN_SERVO_STEER,
                 SERVO_MIN_US, SERVO_MAX_US,
                 SERVO_CENTER_US);
-    // Dispenser boots in the LOAD position (the drum's rest pose) so
-    // it matches what spray_node commands on boot — eliminating the
-    // brief DUMP→LOAD swing the operator sees on every power-on, and
-    // ensuring no powder is dumped onto the start line if a shot was
-    // already in the pocket. Any residual chalk from a previous run is
-    // handled by the dump-and-return cycle on the first waypoint.
-    setup_servo(&g_srv[SERVO_DISPENSER],
-                PIN_SERVO_DISPENSER,
-                SERVO_DISPENSER_MIN_US, SERVO_DISPENSER_MAX_US,
-                SERVO_DISPENSER_MIN_US);
 }
 
 void servo_set_target_us(servo_id_t id, uint16_t pulse_us) {
@@ -82,10 +74,8 @@ void servo_tick(void) {
 }
 
 void servo_center_all(void) {
-    // Only the steering servo has a meaningful "centre" — the
-    // dispenser's centre is just half-rotation and would land the
-    // pocket sideways. Leave dispenser at whatever pose servo_init
-    // primed it with.
+    // Only the steering servo exists now, and centre is its natural
+    // rest pose.
     servo_t *s = &g_srv[SERVO_STEER];
     s->target_us  = SERVO_CENTER_US;
     s->current_us = SERVO_CENTER_US;

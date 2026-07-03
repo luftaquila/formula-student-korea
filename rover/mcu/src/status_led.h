@@ -11,6 +11,7 @@ typedef enum {
     LED_ESTOP,       // red blink
     LED_FAULT,       // magenta (battery undervolt)
     LED_GPS_LOST,    // orange blink (Pi reported RTK fix lost / below required)
+    LED_OFF,         // all dark — Pi link down (Pi powered off / unplugged)
 } led_state_t;
 
 void status_led_init(void);

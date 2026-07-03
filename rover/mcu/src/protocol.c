@@ -2,6 +2,7 @@
 #include "config.h"
 #include "motor.h"
 #include "servo.h"
+#include "pump.h"
 #include "estop.h"
 #include "pid.h"
 #include "nav_lights.h"
@@ -136,12 +137,13 @@ static void handle_line(char *line) {
             break;
         }
         case 'D': {
-            // D <pulse_us>  Set dispenser servo target. Independent of
-            // M/V (steering+drive) so the dispenser can be commanded
-            // without touching motors or steering.
-            int us = SERVO_CENTER_US;
-            if (sscanf(args, "%d", &us) == 1) {
-                servo_set_target_us(SERVO_DISPENSER, (uint16_t)us);
+            // D <0|1>  Peristaltic pump on/off (MOSFET gate on GP6).
+            // Independent of M/V (drive+steer) so the pump can be toggled
+            // without touching motors or steering. Replaces the former
+            // dispenser-servo pulse-width command.
+            int on = 0;
+            if (sscanf(args, "%d", &on) == 1) {
+                pump_set(on != 0);
             }
             break;
         }

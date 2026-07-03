@@ -527,7 +527,8 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | POST | `/api/rover/clear-emergency` | admin | — | `{ cleared: true }` | 비상정지 해제. 미션은 자동 종료되지 않고 보존되어 "이어서 실행" 가능 |
 | POST | `/api/rover/end-mission` | admin | — | `{ ended, mission_id? }` | 보존된 미션을 명시적으로 종료. 활성 미션 없으면 `ended:false` |
 | POST | `/api/rover/control` | admin | `{ throttle, steering }` | `{ throttle, steering }` | 수동 제어 (-100~100, SSE `manual-control` 이벤트) |
-| POST | `/api/rover/dispenser` | admin | `{ ... }` | 200 | 도색 디스펜서 수동 제어 |
+| POST | `/api/rover/pump` | admin | `{ on }` | `{ on }` | 페리스탈릭 펌프 수동 on/off 토글 |
+| POST | `/api/rover/pump-duration` | admin | `{ seconds }` (0~10) | `{ ok }` | 펌프 분사 시간(초) 설정. 로버 재연결 시 재전송 |
 | POST | `/api/rover/nav-lights` | admin | `{ ... }` | 200 | 항법등 제어 |
 | POST | `/api/rover/led-brightness` | admin | `{ ... }` | 200 | LED 밝기 제어 |
 | POST | `/api/rover/calibrate-battery` | admin | `{ measured_v }` (15~32 V) | `{ ok, measured_v }` | 멀티미터 실측값으로 배터리 ADC 게인 1점 보정. 로버가 영구 저장 |

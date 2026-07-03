@@ -16,6 +16,7 @@ add_executable(rover_mcu
     src/battery.c
     src/motor.c
     src/servo.c
+    src/pump.c
     src/pid.c
     src/estop.c
     src/status_led.c

@@ -94,7 +94,8 @@ class BridgeNode(Node):
         self._pub_set_antenna_offset = self.create_publisher(String, '/rover/cmd/set_antenna_offset', reliable_qos)
         self._pub_calibrate_wheels = self.create_publisher(Empty, '/rover/cmd/calibrate_wheels', reliable_qos)
         self._pub_reset_wheel_cal = self.create_publisher(Empty, '/rover/cmd/reset_wheel_cal', reliable_qos)
-        self._pub_dispenser_set_pos = self.create_publisher(String, '/rover/cmd/dispenser_set_position', reliable_qos)
+        self._pub_pump_set = self.create_publisher(Int32, '/rover/cmd/pump_set', reliable_qos)
+        self._pub_pump_duration = self.create_publisher(Float32, '/rover/cmd/pump_duration', reliable_qos)
         self._pub_nav_lights = self.create_publisher(Int32, '/rover/cmd/nav_lights', reliable_qos)
         self._pub_led_brightness = self.create_publisher(Int32, '/rover/cmd/led_brightness', reliable_qos)
 
@@ -607,16 +608,29 @@ class BridgeNode(Node):
             msg.angular.z = float(payload.get('steering', 0))
             self._pub_manual.publish(msg)
 
-        elif event == 'dispenser-set-position':
-            position = (payload.get('position') or '').strip().lower()
-            if position not in ('load', 'dump'):
+        elif event == 'pump-set':
+            on = payload.get('on')
+            if not isinstance(on, bool):
                 self.get_logger().warn(
-                    f'dispenser-set-position: bad payload {payload!r}'
+                    f'pump-set: bad payload {payload!r}'
                 )
                 return
-            msg = String()
-            msg.data = position
-            self._pub_dispenser_set_pos.publish(msg)
+            msg = Int32()
+            msg.data = 1 if on else 0
+            self._pub_pump_set.publish(msg)
+
+        elif event == 'pump-duration':
+            try:
+                seconds = float(payload.get('seconds'))
+            except (TypeError, ValueError):
+                self.get_logger().warn(f'pump-duration: invalid payload {payload!r}')
+                return
+            if not (0.0 < seconds <= 10.0):
+                self.get_logger().warn(f'pump-duration: out-of-range {seconds}')
+                return
+            msg = Float32()
+            msg.data = seconds
+            self._pub_pump_duration.publish(msg)
 
         elif event == 'nav-lights':
             try:

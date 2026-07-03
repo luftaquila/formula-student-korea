@@ -812,27 +812,55 @@ describe('POST /api/rover/clear-emergency', () => {
   });
 });
 
-describe('POST /api/rover/dispenser', () => {
-  it('returns 400 when position is missing', async () => {
-    const res = await client.post('/api/rover/dispenser', {
+describe('POST /api/rover/pump', () => {
+  it('returns 400 when on is missing', async () => {
+    const res = await client.post('/api/rover/pump', {
       cookie: adminCookie,
       body: {},
     });
     assert.equal(res.status, 400);
   });
-  it('returns 400 when position is not load/dump', async () => {
-    const res = await client.post('/api/rover/dispenser', {
+  it('returns 400 when on is not a boolean', async () => {
+    const res = await client.post('/api/rover/pump', {
       cookie: adminCookie,
-      body: { position: 'banana' },
+      body: { on: 'banana' },
     });
     assert.equal(res.status, 400);
   });
   it('returns 503 when rover is not connected', async () => {
-    const res = await client.post('/api/rover/dispenser', {
+    const res = await client.post('/api/rover/pump', {
       cookie: adminCookie,
-      body: { position: 'load' },
+      body: { on: true },
     });
     assert.equal(res.status, 503);
+  });
+});
+
+describe('POST /api/rover/pump-duration', () => {
+  it('returns 400 when seconds is missing', async () => {
+    const res = await client.post('/api/rover/pump-duration', {
+      cookie: adminCookie,
+      body: {},
+    });
+    assert.equal(res.status, 400);
+  });
+  it('returns 400 when seconds is out of range', async () => {
+    const res = await client.post('/api/rover/pump-duration', {
+      cookie: adminCookie,
+      body: { seconds: 99 },
+    });
+    assert.equal(res.status, 400);
+  });
+  it('persists the setting even when the rover is disconnected', async () => {
+    // pump-duration is a stored config (re-sent on reconnect), so it
+    // succeeds without a connected rover — unlike the immediate pump toggle.
+    const res = await client.post('/api/rover/pump-duration', {
+      cookie: adminCookie,
+      body: { seconds: 3.5 },
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.ok, true);
   });
 });
 
