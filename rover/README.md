@@ -17,25 +17,25 @@ for remote access.
 | Wheel encoders | 2× quadrature on motor shaft, 3.3 V push-pull, 500 PPR (×4 × 27 = 54000 counts/wheel rev); XH2.54-4P connector | MCU PIO + 3V3 |
 | Wheels | 125 mm dia (Wheeltec R550) | rear drive, front passive |
 | Steering servo | Wheeltec S20F (5–6.5 V, 20 kg·cm, stall 1.8 A) | MCU PWM |
-| Spray/dispenser servo | MG995 | MCU PWM (GP6) |
+| Peristaltic pump (dispenser) | switched via IRLZ44N logic-level MOSFET + 1N4007 flyback | MCU GP6 on/off; servo 5.5 V rail |
 | E-Stop | NC momentary, fail-safe | MCU GP7, internal pull-up |
 | Status sticks | 2× NeoPixel Stick (8× WS2812 each) | MCU PIO via 2N7002 level shifter (GP11); mirrors onboard LED 1:1 |
 | Nav lights | red/green, 3-pin module (+5V/GND/control) | MCU GP9 direct on/off; steady on |
 | Platform | Wheeltec R550 AKM Plus | Ackermann |
 | Battery | 25.6 V (8S) LiFePO4, 6.6 Ah | XT60, BMS |
 | Pi supply | 5 V 5 A buck → USB-C PD | Pi only |
-| Servo supply | MP1584EN @ 5.5 V, ≥3 A | S20F + dispenser + NeoPixel sticks + nav lights |
+| Servo supply | MP1584EN @ 5.5 V, ≥3 A | S20F + pump + NeoPixel sticks + nav lights |
 
-The Pi drives no GPIO: the dispenser/spray servo PWM moved to the MCU
-(GP6 — see Pinout below). `spray_node` only computes the pulse width and
-forwards it via `mcu_bridge_node` as `D <us>`.
+The Pi drives no GPIO: the peristaltic pump is switched by the MCU
+(GP6 → IRLZ44N MOSFET gate — see Pinout below). `spray_node` only
+decides pump on/off and forwards it via `mcu_bridge_node` as `D <0|1>`.
 
 ### Power chain
 
 ```
 25.6 V LiFePO4 8S 6.6 Ah ─┬─► 5 V 5 A buck ──────► Pi 5 (USB-C PD)
                          ├─► MDD10A V_MOT ─────► rear DC motors
-                         └─► MP1584EN @ 5.5 V ─► S20F + spray VCC
+                         └─► MP1584EN @ 5.5 V ─► S20F + pump VCC
 ```
 
 - All GNDs commoned.
@@ -44,11 +44,11 @@ forwards it via `mcu_bridge_node` as `D <us>`.
 
 ### Drive control split
 
-- **MCU**: encoders, motor PWM, steering, dispenser servo, battery ADC,
-  E-Stop, status LEDs (onboard + external sticks), nav lights, WDTs.
-  Pi link USB CDC @ 50 Hz.
-- **Pi**: navigation, RTK, course bridge, dispense sequencing (servo PWM
-  on the MCU).
+- **MCU**: encoders, motor PWM, steering, peristaltic pump (GP6 MOSFET),
+  battery ADC, E-Stop, status LEDs (onboard + external sticks), nav
+  lights, WDTs. Pi link USB CDC @ 50 Hz.
+- **Pi**: navigation, RTK, course bridge, dispense sequencing (pump
+  on/off on the MCU).
 
 Bridge: `mcu_bridge_node`. Firmware CI: `.github/workflows/rover-mcu.yml`.
 
@@ -293,7 +293,7 @@ sudo journalctl -u pilot.service -n 200
 | Right enc B/A | GP4, GP5 | |
 | E-Stop | GP7 | NC + pull-up; HIGH = tripped |
 | Steering servo | GP8 | S20F signal |
-| Dispenser servo | GP6 | MG995 signal; slice3 chA |
+| Peristaltic pump | GP6 | IRLZ44N MOSFET gate; on/off (plain SIO) |
 | Left mot PWM/DIR | GP15, GP27 | → MDD10A (PWM slice7B; DIR digital) |
 | Right mot PWM/DIR | GP28, GP29 | → MDD10A (PWM slice6A; DIR digital) |
 | Onboard status LED | GP16 | onboard WS2812 |
@@ -354,7 +354,7 @@ Pi → MCU:
 | `L` | `<0\|1>` | PID gate (`1` allow, `0` force RAW) |
 | `K` | `<pulse_duty> <pulse_ms> <fire_above_mps>` | Brake-pulse params |
 | `A` | — | Arm one brake pulse on the next setpoint-deadband entry |
-| `D` | `<pulse_us>` | Dispenser servo target (independent of M/V) |
+| `D` | `<0\|1>` | Peristaltic pump off/on (independent of M/V) |
 | `N` | `<0\|1>` | Nav fault from Pi (GPS lost): `1` set, `0` clear |
 | `B` | — | Reboot to BOOTSEL; emits `! BOOTSEL` first |
 
