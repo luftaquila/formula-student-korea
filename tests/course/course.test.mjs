@@ -2419,6 +2419,37 @@ describe('Memo stickers', () => {
     assert.equal(data.content, '수정된 내용');
   });
 
+  it('defaults rotation to 0 when omitted', async () => {
+    const res = await client.post(`/api/courses/${memoCourseId}/memos`, {
+      body: { lat: 37.5, lng: 126.9, width: 10, height: 10 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    assert.equal((await res.json()).rotation, 0);
+  });
+
+  it('creates and updates rotation, normalizing to [0,360)', async () => {
+    const create = await client.post(`/api/courses/${memoCourseId}/memos`, {
+      body: { lat: 37.5, lng: 126.9, width: 10, height: 10, rotation: 45 },
+      cookie: adminCookie,
+    });
+    assert.equal((await create.json()).rotation, 45);
+    const res = await client.patch(`/api/memos/${memoId}`, {
+      body: { rotation: 405 }, // 405 → 45
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).rotation, 45);
+  });
+
+  it('rejects a non-finite rotation', async () => {
+    const res = await client.post(`/api/courses/${memoCourseId}/memos`, {
+      body: { lat: 37.5, lng: 126.9, width: 10, height: 10, rotation: 'sideways' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
   it('rejects a patch with no editable fields', async () => {
     const res = await client.patch(`/api/memos/${memoId}`, { body: {}, cookie: adminCookie });
     assert.equal(res.status, 400);

@@ -1090,6 +1090,8 @@ function memoStyle(m) {
     width: `${wpx}px`,
     height: `${hpx}px`,
     fontSize: `${fontPx}px`,
+    // 중심 정렬(translate) + 사용자 회전. 인라인이라 CSS transform을 덮어쓴다.
+    transform: `translate(-50%, -50%) rotate(${m.rotation || 0}deg)`,
   };
 }
 
@@ -2605,6 +2607,7 @@ async function deleteSelected() {
 let memoBusy = false;
 let memoDrag = null;   // { id, startLat, startLng, origLat, origLng }
 let memoResize = null; // { id, startX, startY, origW, origH, mpp }
+let memoRotate = null; // { id, cx, cy, startAngle, orig, wasDragging }
 let memoEditOrig = null; // 입력 시작 시점의 내용(undo·변경감지용)
 
 function findMemo(id) {
@@ -2731,6 +2734,47 @@ async function onMemoResizeEnd() {
   try {
     await request(`/api/memos/${r.id}`, { method: "PATCH", body: JSON.stringify({ width: m.width, height: m.height }) });
     pushUndo("메모 크기 조절", () => request(`/api/memos/${r.id}`, { method: "PATCH", body: JSON.stringify({ width: r.origW, height: r.origH }) }));
+  } catch (err) { notifyError(err.message); }
+}
+
+// 회전: 좌하단 핸들 드래그. 칩 중심 기준 포인터 각도의 변화량을 현재 각도에 더한다.
+// 중심은 회전 중에도 고정(transform-origin=center)이라 시작 시 한 번만 구한다.
+function onMemoRotateStart(m, e) {
+  if (!map) return;
+  e.preventDefault(); e.stopPropagation();
+  memoBusy = true;
+  const chip = e.currentTarget.closest(".memo-label");
+  const box = chip.getBoundingClientRect();
+  const cx = box.left + box.width / 2;
+  const cy = box.top + box.height / 2;
+  const startAngle = (Math.atan2(e.clientY - cy, e.clientX - cx) * 180) / Math.PI;
+  memoRotate = { id: m.id, cx, cy, startAngle, orig: m.rotation || 0, wasDragging: map.dragging.enabled() };
+  map.dragging.disable();
+  window.addEventListener("pointermove", onMemoRotateMove);
+  window.addEventListener("pointerup", onMemoRotateEnd);
+}
+function onMemoRotateMove(e) {
+  if (!memoRotate) return;
+  const m = findMemo(memoRotate.id);
+  if (!m) return;
+  const a = (Math.atan2(e.clientY - memoRotate.cy, e.clientX - memoRotate.cx) * 180) / Math.PI;
+  m.rotation = memoRotate.orig + (a - memoRotate.startAngle);
+  mapFrame.value++;
+}
+async function onMemoRotateEnd() {
+  window.removeEventListener("pointermove", onMemoRotateMove);
+  window.removeEventListener("pointerup", onMemoRotateEnd);
+  if (map && memoRotate?.wasDragging) map.dragging.enable();
+  const rr = memoRotate; memoRotate = null; memoBusy = false;
+  if (!rr) return;
+  const m = findMemo(rr.id);
+  if (!m) return;
+  const norm = (((m.rotation || 0) % 360) + 360) % 360;
+  m.rotation = norm;
+  if (norm === rr.orig) return;
+  try {
+    await request(`/api/memos/${rr.id}`, { method: "PATCH", body: JSON.stringify({ rotation: norm }) });
+    pushUndo("메모 회전", () => request(`/api/memos/${rr.id}`, { method: "PATCH", body: JSON.stringify({ rotation: rr.orig }) }));
   } catch (err) { notifyError(err.message); }
 }
 
@@ -4724,9 +4768,18 @@ onUnmounted(() => {
                   @blur="onMemoBlur(m)"
                   @pointerdown.stop
                 />
-                <span class="memo-move" @pointerdown="onMemoDragStart(m, $event)" title="드래그하여 이동" aria-label="이동">✜</span>
-                <button class="memo-del" @pointerdown.stop @click="deleteMemo(m.id)" title="라벨 삭제" aria-label="삭제">×</button>
-                <span class="memo-resize" @pointerdown="onMemoResizeStart(m, $event)" title="드래그하여 크기 조절" aria-label="크기 조절"></span>
+                <span class="memo-move" @pointerdown="onMemoDragStart(m, $event)" title="드래그하여 이동" aria-label="이동">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+                </span>
+                <button class="memo-del" @pointerdown.stop @click="deleteMemo(m.id)" title="라벨 삭제" aria-label="삭제">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+                <span class="memo-rotate" @pointerdown="onMemoRotateStart(m, $event)" title="드래그하여 회전" aria-label="회전">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                </span>
+                <span class="memo-resize" @pointerdown="onMemoResizeStart(m, $event)" title="드래그하여 크기 조절" aria-label="크기 조절">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                </span>
               </div>
             </div>
           </div>
@@ -5723,17 +5776,17 @@ onUnmounted(() => {
   flex: 1; width: 100%; min-width: 0; box-sizing: border-box;
   border: none; outline: none; background: transparent;
   color: #fff; font-family: inherit; font-weight: 600; line-height: 1.1;
-  padding: 2px 12px; cursor: text; text-align: center;
+  padding: 4px 12px; cursor: text; text-align: center;
   text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
   /* font-size is set inline by memoStyle so it scales with zoom */
 }
 .memo-text::placeholder { color: rgba(255, 255, 255, 0.6); font-weight: 400; }
 /* Floating controls — hidden (and non-interactive) until hover/focus. */
-.memo-move, .memo-del, .memo-resize {
+.memo-move, .memo-del, .memo-rotate, .memo-resize {
   position: absolute; opacity: 0; pointer-events: none; transition: opacity 0.12s ease; z-index: 1;
 }
-.memo-label:hover .memo-move, .memo-label:hover .memo-del, .memo-label:hover .memo-resize,
-.memo-label:focus-within .memo-move, .memo-label:focus-within .memo-del, .memo-label:focus-within .memo-resize {
+.memo-label:hover .memo-move, .memo-label:hover .memo-del, .memo-label:hover .memo-rotate, .memo-label:hover .memo-resize,
+.memo-label:focus-within .memo-move, .memo-label:focus-within .memo-del, .memo-label:focus-within .memo-rotate, .memo-label:focus-within .memo-resize {
   opacity: 1; pointer-events: auto;
 }
 .memo-move {
@@ -5748,10 +5801,22 @@ onUnmounted(() => {
   background: #ef4444; color: #fff; font-size: 15px; line-height: 1;
   cursor: pointer; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
+.memo-rotate {
+  bottom: -11px; left: -11px; width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-primary); color: #fff; font-size: 13px; line-height: 1;
+  cursor: grab; touch-action: none; user-select: none; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
 .memo-resize {
-  right: -4px; bottom: -4px; width: 18px; height: 18px; border-radius: 50%;
-  cursor: nwse-resize; touch-action: none;
-  background: var(--accent-primary); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  right: -11px; bottom: -11px; width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-primary); color: #fff;
+  cursor: nwse-resize; touch-action: none; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+/* SVG glyphs render crisp and perfectly centred by the flex box (no font-glyph
+   baseline drift like the old ✜/↻/× text icons). */
+.memo-move svg, .memo-del svg, .memo-rotate svg, .memo-resize svg {
+  display: block; width: 13px; height: 13px;
 }
 
 /* Live rotation angle readout — pinned top-centre of the map while rotating. */
