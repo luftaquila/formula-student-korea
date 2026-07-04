@@ -7,10 +7,12 @@ run, obstacle detection stays disabled (stereo.StereoDepth.enabled == False) and
 the rover never auto-pauses on an obstacle.
 
 Headless by design: the rover has no display, so there is no preview window.
-Hold a printed checkerboard in front of the camera and slowly sweep it across
-the frame at varied distances/angles; the tool auto-grabs a pair whenever the
-board is found in BOTH eyes and has moved enough since the last grab, printing
-progress, until it has enough pairs.
+Hold a printed checkerboard in front of the camera and sweep it across the
+frame at varied distances/angles, PAUSING briefly at each pose; the tool
+auto-grabs a pair whenever the board is found in BOTH eyes, has moved enough
+since the last grab, and is momentarily still — the two eyes capture a few ms
+apart, so grabbing mid-motion lands the board at different places in L vs R and
+inflates the stereo RMS. It prints progress until it has enough pairs.
 
 The rover's "Stereo Vision" cam is dual-node (default): the two eyes are
 separate /dev/video nodes (left=video0, right=video2). Pass --layout sbs for a
@@ -74,6 +76,11 @@ def main(argv=None):
     ap.add_argument("--count", type=int, default=20, help="target board pairs")
     ap.add_argument("--min-shift-px", type=float, default=25.0,
                     help="min mean-corner move between accepted grabs")
+    ap.add_argument("--max-motion-px", type=float, default=3.0,
+                    help="max mean-corner move vs the previous frame to count as "
+                         "'board held still' (dual layout only); only grab while "
+                         "settled so the few-ms gap between the two eyes can't "
+                         "desync a pair. Loose by default for a handheld board")
     ap.add_argument("--timeout-s", type=float, default=180.0,
                     help="give up if not enough pairs in this long")
     ap.add_argument("--out", default="/var/lib/perception/stereo_calib.npz")
@@ -95,7 +102,8 @@ def main(argv=None):
 
     objp = stereo.board_object_points(args.cols, args.rows, args.square_m)
     objpoints, imgL, imgR = [], [], []
-    last_mean = None
+    last_mean = None    # last ACCEPTED grab (coverage gate)
+    prev_mean = None    # last detected frame (stationarity gate)
     eye_size = None  # (w, h) of one eye
     start = time.monotonic()
     print(f"Collecting {args.count} board pairs — sweep the checkerboard "
@@ -106,17 +114,17 @@ def main(argv=None):
             print(f"timeout after {args.timeout_s:.0f}s with "
                   f"{len(objpoints)} pairs", file=sys.stderr)
             break
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            time.sleep(0.05)
-            continue
         if args.layout == "dual":
-            ok2, rframe = right_cap.read()
-            if not ok2 or rframe is None:
+            pair = stereo.read_stereo_pair(cap, right_cap)
+            if pair is None:
                 time.sleep(0.05)
                 continue
-            left, right = frame, rframe
+            left, right = pair
         else:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                time.sleep(0.05)
+                continue
             left, right = stereo.split_sbs(frame)
         if eye_size is None:
             eye_size = (left.shape[1], left.shape[0])
@@ -129,9 +137,21 @@ def main(argv=None):
         if cr is None:
             continue
         mean = cl.reshape(-1, 2).mean(axis=0)
+        # Stationarity gate (dual layout only): only grab while the board is held
+        # still. The two eyes capture a few ms apart, so a pair grabbed mid-motion
+        # lands the board at different places in L vs R and inflates the stereo
+        # RMS. SBS eyes share one hardware-synced frame, so nothing to gate.
+        # Motion is vs the previous detected frame; min_shift below spaces
+        # ACCEPTED grabs for coverage.
+        if args.layout == "dual":
+            motion = (np.linalg.norm(mean - prev_mean)
+                      if prev_mean is not None else float("inf"))
+            prev_mean = mean
+            if motion > args.max_motion_px:
+                continue  # board still moving — let it settle
         if last_mean is not None:
             if np.linalg.norm(mean - last_mean) < args.min_shift_px:
-                continue  # too similar to the last grab — keep sweeping
+                continue  # too similar to the last accepted grab — keep sweeping
         last_mean = mean
         objpoints.append(objp.copy())
         imgL.append(cl)
