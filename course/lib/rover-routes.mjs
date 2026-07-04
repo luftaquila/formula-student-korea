@@ -966,7 +966,8 @@ app.post("/api/rover/calibration-progress", (req, res) => {
   broadcastRoverStatus();
   if (done) {
     logger.log(req, "rover.calibration",
-      { ok: !!b.ok, rms: b.rms ?? null, baseline_mm: b.baseline_mm ?? null, error: b.error ?? null }, "rover");
+      { ok: !!b.ok, rms: b.rms ?? null, rms_l: b.rms_l ?? null, rms_r: b.rms_r ?? null,
+        baseline_mm: b.baseline_mm ?? null, error: b.error ?? null }, "rover");
   }
   res.json({ ok: true });
 });

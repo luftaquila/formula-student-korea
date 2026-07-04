@@ -2106,11 +2106,19 @@ describe('Stereo calibration trigger', () => {
     assert.equal(st.stereo_calibration.captured, 5);
     assert.equal(st.stereo_calibration.target, 20);
     // done(ok) → status done with the result fields.
-    await progress({ phase: 'done', ok: true, rms: 0.4, baseline_mm: 61.2, pairs: 18 });
+    await progress({ phase: 'done', ok: true, rms: 0.4, rms_l: 0.31, rms_r: 0.29, baseline_mm: 61.2, pairs: 18 });
     st = await status();
     assert.equal(st.stereo_calibration.status, 'done');
     assert.equal(st.stereo_calibration.rms, 0.4);
     assert.equal(st.stereo_calibration.baseline_mm, 61.2);
+    // per-eye RMS is persisted in the calibration record for post-hoc diagnosis
+    // (high per-eye → intrinsic; low per-eye but high stereo → eye-sync/extrinsic).
+    const rec = localDb.prepare(
+      "SELECT detail FROM logs WHERE action = 'rover.calibration' ORDER BY id DESC LIMIT 1"
+    ).get();
+    const detail = JSON.parse(rec.detail);
+    assert.equal(detail.rms_l, 0.31);
+    assert.equal(detail.rms_r, 0.29);
   });
 
   it('calibrate-stereo needs admin, a valid square, and a connected perception', async () => {
