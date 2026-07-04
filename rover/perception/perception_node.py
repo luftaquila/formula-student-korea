@@ -52,6 +52,13 @@ def _env_int(name, default):
         return default
 
 
+def _env_float(name, default):
+    try:
+        return float(_env(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 # Linger before releasing the camera when neither streaming nor detecting, so a
 # flapping viewer / a brief IDLE between waypoints doesn't thrash the UVC device
 # (many cams wedge on rapid reopen).
@@ -144,6 +151,14 @@ class PerceptionNode(Node):
         self._calib_rows = _env_int("STEREO_CALIB_ROWS", 6)
         self._calib_count = max(6, _env_int("STEREO_CALIB_COUNT", 20))
         self._calib_min_shift = _env_int("STEREO_CALIB_MIN_SHIFT_PX", 25)
+        # Max mean-corner move (px) between CONSECUTIVE detected frames for a
+        # pair to count as "board held still". The two eyes capture a few ms
+        # apart, so a pair grabbed mid-motion desyncs; only grabbing while settled
+        # makes that gap irrelevant. Distinct from min_shift (spacing between
+        # accepted grabs). Dual layout only. Default is deliberately loose so a
+        # handheld board still collects a full set within the timeout; tighten
+        # via env for a tripod-mounted board.
+        self._calib_max_motion = _env_float("STEREO_CALIB_MAX_MOTION_PX", 3.0)
         self._calib_timeout_s = _env_int("STEREO_CALIB_TIMEOUT_S", 180)
         self._calib_lock = threading.Lock()
         self._calib_request = None  # square_m (m) when a calibration is pending
@@ -292,7 +307,8 @@ class PerceptionNode(Node):
 
         objp = stereo.board_object_points(cols, rows, square_m)
         objpoints, imgL, imgR = [], [], []
-        last_mean = None
+        last_mean = None    # last ACCEPTED grab (drives the coverage gate)
+        prev_mean = None    # last detected frame (drives the stationarity gate)
         eye_size = None
         start = time.monotonic()
         encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self._quality]
@@ -300,17 +316,18 @@ class PerceptionNode(Node):
             while len(objpoints) < target and self._running:
                 if time.monotonic() - start > self._calib_timeout_s:
                     break
-                ok, frame = left_cap.read()
-                if not ok or frame is None:
-                    time.sleep(0.05)
-                    continue
                 if self._layout == "dual":
-                    okr, rframe = right_cap.read()
-                    if not okr or rframe is None:
+                    pair = stereo.read_stereo_pair(left_cap, right_cap)
+                    if pair is None:
                         time.sleep(0.05)
                         continue
-                    left, right = frame, rframe
+                    left, right = pair
+                    frame = left  # the left eye is what we preview/stream
                 else:
+                    ok, frame = left_cap.read()
+                    if not ok or frame is None:
+                        time.sleep(0.05)
+                        continue
                     left, right = stereo.split_sbs(frame)
                 if eye_size is None:
                     eye_size = (left.shape[1], left.shape[0])
@@ -327,8 +344,22 @@ class PerceptionNode(Node):
                 if cr is None:
                     continue
                 mean = cl.reshape(-1, 2).mean(axis=0)
+                # Stationarity gate (dual layout only): only grab while the board
+                # is momentarily still. The two eyes capture a few ms apart, so a
+                # pair grabbed mid-motion lands the board at different places in L
+                # vs R and poisons the stereo solve; letting it settle makes that
+                # inter-eye gap irrelevant. SBS eyes share one hardware-synced
+                # frame, so there is nothing to gate. Motion is measured against
+                # the PREVIOUS detected frame (prev_mean, updated every detected
+                # frame), separate from last_mean (the last ACCEPTED grab).
+                if self._layout == "dual":
+                    motion = (float(np.linalg.norm(mean - prev_mean))
+                              if prev_mean is not None else float("inf"))
+                    prev_mean = mean
+                    if motion > self._calib_max_motion:
+                        continue  # board still moving — let it settle before grabbing
                 if last_mean is not None and float(np.linalg.norm(mean - last_mean)) < self._calib_min_shift:
-                    continue  # too similar to the last grab — keep sweeping
+                    continue  # too similar to the last accepted grab — keep sweeping
                 last_mean = mean
                 objpoints.append(objp.copy())
                 imgL.append(cl)
@@ -358,15 +389,18 @@ class PerceptionNode(Node):
         rms_l = round(result["rms_l"], 3)
         rms_r = round(result["rms_r"], 3)
         baseline_mm = round(result["baseline_m"] * 1000, 1)
+        pairs_used = result.get("pairs_used", len(objpoints))
         # per-eye RMS is reported alongside the stereo RMS so a poor calibration
         # can be diagnosed from the record: high per-eye → intrinsic/distortion;
-        # low per-eye but high stereo → eye-sync / extrinsic.
+        # low per-eye but high stereo → eye-sync / extrinsic. pairs_used < pairs
+        # means desync outliers were culled before the final solve.
         self._progress({"phase": "done", "ok": True, "rms": rms,
                         "rms_l": rms_l, "rms_r": rms_r,
-                        "baseline_mm": baseline_mm, "pairs": len(objpoints)})
+                        "baseline_mm": baseline_mm, "pairs": len(objpoints),
+                        "pairs_used": pairs_used})
         self.get_logger().info(
-            f"calibration DONE: {len(objpoints)} pairs, RMS {rms} px "
-            f"(L {rms_l} / R {rms_r}), baseline {baseline_mm} mm")
+            f"calibration DONE: {pairs_used}/{len(objpoints)} pairs used, "
+            f"RMS {rms} px (L {rms_l} / R {rms_r}), baseline {baseline_mm} mm")
 
     def _capture_loop(self):
         cap = None          # left eye (dual) or the single SBS device
@@ -472,14 +506,27 @@ class PerceptionNode(Node):
                             # window would keep sliding forward and never reopen.
                             right_open_after = t0 + RIGHT_OPEN_RETRY_S
                     if right_cap is not None:
-                        okr, right_frame = right_cap.read()
-                        if not okr or right_frame is None:
-                            # A transient right-eye glitch must not silently kill
-                            # detection — drop the handle and back off the reopen.
-                            self.get_logger().warn("right eye grab failed; reopening")
+                        # Re-grab BOTH eyes back-to-back (grab→grab→retrieve) so
+                        # the detection pair is near-simultaneous despite the
+                        # unsynchronised USB cams. The left frame read at the top
+                        # of the loop was for streaming and may be tens of ms
+                        # stale by now; on success this replaces it with the
+                        # synced left. On any grab miss keep the streaming frame
+                        # and skip detection this cycle (transient right-eye glitch
+                        # must not silently kill detection — drop the handle and
+                        # back off the reopen).
+                        pair = stereo.read_stereo_pair(cap, right_cap)
+                        if pair is None:
+                            # Either eye's grab/retrieve missed. Drop the lazily
+                            # opened right handle and back off its reopen; a left
+                            # miss is independently recovered by the read-fail path
+                            # at the top of the loop next iteration.
+                            self.get_logger().warn("stereo re-grab failed; reopening right eye")
                             release_right()
                             right_frame = None
                             right_open_after = t0 + RIGHT_OPEN_RETRY_S
+                        else:
+                            frame, right_frame = pair
 
                 if stream:
                     # dual: stream the left eye whole. sbs: crop per CAMERA_VIEW.

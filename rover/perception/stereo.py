@@ -48,6 +48,28 @@ def split_sbs(frame):
     return frame[:, :half], frame[:, half:half * 2]
 
 
+def read_stereo_pair(left_cap, right_cap):
+    """Read one near-simultaneous frame from each of two free-running USB eyes.
+
+    grab() only latches each device's current frame (no decode), so issuing both
+    grabs back-to-back BEFORE either retrieve() pins the two capture instants
+    within a grab-to-grab gap (sub-millisecond) — instead of the tens of ms a
+    read()+read() leaves, where the left frame is fully decoded before the right
+    is even grabbed. That gap is what a moving scene turns into stereo disparity
+    error: the pair stays self-consistent per eye but violates the single rigid
+    geometry, so per-eye RMS stays low while the stereo RMS blows up. Returns
+    (left, right) BGR frames, or None on any grab/retrieve miss. Works on any
+    object exposing grab()/retrieve() (no cv2 module call), so it is unit-testable
+    with a fake capture."""
+    if not left_cap.grab() or not right_cap.grab():
+        return None
+    okl, left = left_cap.retrieve()
+    okr, right = right_cap.retrieve()
+    if not okl or not okr or left is None or right is None:
+        return None
+    return left, right
+
+
 # ── pure decision (no cv2) ──────────────────────────────────────────────────
 def obstacle_in_roi(depth_z, valid, roi_frac, near_m, far_m, min_fill,
                     min_valid_px):
@@ -189,19 +211,92 @@ def board_object_points(cols, rows, square_m):
     return objp
 
 
+def select_inlier_pairs(errors, keep_min=8, abs_max_px=1.0, rel_factor=2.0):
+    """Indices of calibration pairs to KEEP for a stereo re-solve, dropping the
+    temporal-desync outliers.
+
+    A pair is culled only when its per-pair RMS reprojection error is an outlier
+    on BOTH counts: above an absolute ceiling (abs_max_px) AND more than
+    rel_factor× the set median (clearly worse than the pack). Requiring both
+    keeps a uniformly-good set intact (nothing exceeds abs_max_px) and a
+    uniformly-mediocre set intact (nothing stands out from the median) — culling
+    fires only when a few pairs are genuinely bad. Never returns fewer than
+    min(keep_min, n) pairs; if the threshold would drop below that, the keep_min
+    lowest-error pairs are kept instead. Pure numpy (no cv2)."""
+    errors = np.asarray(errors, dtype=np.float64)
+    n = int(errors.size)
+    if n == 0:
+        return []
+    med = float(np.median(errors))
+    thresh = max(float(abs_max_px), rel_factor * med)
+    keep = [i for i in range(n) if errors[i] <= thresh]
+    floor = min(keep_min, n)
+    if len(keep) < floor:
+        keep = sorted(int(i) for i in np.argsort(errors, kind="stable")[:floor])
+    return keep
+
+
+def _pair_stereo_errors(objpoints, imgL, imgR, K1, D1, K2, D2, R, T):
+    """Per-pair RMS reprojection error (px) over BOTH eyes, using each pair's own
+    left-eye board pose (solvePnP) composed through the shared stereo (R, T) to
+    place the right eye. A pair whose two eyes were captured at different instants
+    (the board moved between them) fits each eye alone but NOT one rigid R, T — so
+    its right-eye reprojection blows up, which is exactly the signal that marks it
+    a desync outlier. Needs cv2."""
+    errs = []
+    for op, pl, pr in zip(objpoints, imgL, imgR):
+        ok, rvec, tvec = cv2.solvePnP(op, pl, K1, D1)
+        if not ok:
+            errs.append(float("inf"))
+            continue
+        proj_l, _ = cv2.projectPoints(op, rvec, tvec, K1, D1)
+        rot_l, _ = cv2.Rodrigues(rvec)
+        rvec_r, _ = cv2.Rodrigues(R @ rot_l)
+        tvec_r = R @ tvec + T
+        proj_r, _ = cv2.projectPoints(op, rvec_r, tvec_r, K2, D2)
+        d_l = proj_l.reshape(-1, 2) - pl.reshape(-1, 2)
+        d_r = proj_r.reshape(-1, 2) - pr.reshape(-1, 2)
+        m = d_l.shape[0] + d_r.shape[0]
+        errs.append(float(np.sqrt((np.sum(d_l ** 2) + np.sum(d_r ** 2)) / m)))
+    return np.asarray(errs, dtype=np.float64)
+
+
 def compute_stereo_calibration(objpoints, imgL, imgR, eye_size):
     """Per-eye intrinsics, then stereo extrinsics + rectification maps + Q.
 
-    eye_size is (width, height). Returns a dict with the rectify maps, Q,
-    image_size, recovered baseline (m), and RMS errors (px).
+    Runs the stereo extrinsic solve twice: once on all pairs, then again after
+    culling temporal-desync outliers (see below). eye_size is (width, height).
+    Returns a dict with the rectify maps, Q, image_size, recovered baseline (m),
+    RMS errors (px), and how many pairs the final solve used.
     """
+    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-5)
     rms_l, K1, D1, _, _ = cv2.calibrateCamera(objpoints, imgL, eye_size, None, None)
     rms_r, K2, D2, _, _ = cv2.calibrateCamera(objpoints, imgR, eye_size, None, None)
     stereo_rms, K1, D1, K2, D2, R, T, _, _ = cv2.stereoCalibrate(
         objpoints, imgL, imgR, K1, D1, K2, D2, eye_size,
-        criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-5),
-        flags=cv2.CALIB_FIX_INTRINSIC,
+        criteria=crit, flags=cv2.CALIB_FIX_INTRINSIC,
     )
+    # Cull temporal-desync outlier pairs and re-solve the extrinsics. The two
+    # eyes are captured a few ms apart (unsynchronised USB), so a pair grabbed
+    # while the board moved stays self-consistent per eye (intrinsics / per-eye
+    # RMS are unaffected) but violates the single rigid R, T shared by all pairs,
+    # inflating the stereo RMS. Dropping those pairs — flagged by a high per-pair
+    # reprojection error through R, T — sharpens R, T without touching the
+    # (fixed) intrinsics. Skipped when there are too few pairs to spare any.
+    pairs_total = len(objpoints)
+    pairs_used = pairs_total
+    if pairs_total > 8:
+        errs = _pair_stereo_errors(objpoints, imgL, imgR, K1, D1, K2, D2, R, T)
+        keep = select_inlier_pairs(errs)
+        if 0 < len(keep) < pairs_total:
+            k_obj = [objpoints[i] for i in keep]
+            k_l = [imgL[i] for i in keep]
+            k_r = [imgR[i] for i in keep]
+            stereo_rms, K1, D1, K2, D2, R, T, _, _ = cv2.stereoCalibrate(
+                k_obj, k_l, k_r, K1, D1, K2, D2, eye_size,
+                criteria=crit, flags=cv2.CALIB_FIX_INTRINSIC,
+            )
+            pairs_used = len(keep)
     R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
         K1, D1, K2, D2, eye_size, R, T,
         flags=cv2.CALIB_ZERO_DISPARITY, alpha=0,
@@ -214,6 +309,7 @@ def compute_stereo_calibration(objpoints, imgL, imgR, eye_size):
         "baseline_m": float(np.linalg.norm(T)),
         "stereo_rms": float(stereo_rms),
         "rms_l": float(rms_l), "rms_r": float(rms_r),
+        "pairs_used": int(pairs_used), "pairs_total": int(pairs_total),
     }
 
 

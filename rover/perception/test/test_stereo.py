@@ -201,3 +201,150 @@ def test_config_from_env_defaults_on_empty():
     assert cfg.near_m == 0.4
     assert cfg.far_m == 2.5
     assert cfg.roi == (0.30, 0.55, 0.70, 0.98)
+
+
+# ── read_stereo_pair (grab/grab → retrieve/retrieve sync) ────────────────────
+
+class _FakeCap:
+    """Minimal cv2.VideoCapture stand-in that records grab()/retrieve() order."""
+    def __init__(self, name, calls, frame=None, grab_ok=True, retrieve_ok=True):
+        self.name = name
+        self.calls = calls
+        self.frame = frame
+        self.grab_ok = grab_ok
+        self.retrieve_ok = retrieve_ok
+
+    def grab(self):
+        self.calls.append(f"{self.name}.grab")
+        return self.grab_ok
+
+    def retrieve(self):
+        self.calls.append(f"{self.name}.retrieve")
+        return (self.retrieve_ok and self.frame is not None), self.frame
+
+
+def test_read_stereo_pair_grabs_both_before_either_retrieve():
+    # The whole point of grab×2 → retrieve×2 is to pin the two eyes' capture
+    # instants together: BOTH grabs must fire before EITHER decode.
+    calls = []
+    lf = np.zeros((4, 4, 3), np.uint8)
+    rf = np.ones((4, 4, 3), np.uint8)
+    left, right = stereo.read_stereo_pair(
+        _FakeCap("L", calls, frame=lf), _FakeCap("R", calls, frame=rf))
+    assert left is lf and right is rf
+    assert calls == ["L.grab", "R.grab", "L.retrieve", "R.retrieve"]
+
+
+def test_read_stereo_pair_none_on_grab_miss():
+    calls = []
+    assert stereo.read_stereo_pair(
+        _FakeCap("L", calls, frame=np.zeros((4, 4, 3), np.uint8), grab_ok=False),
+        _FakeCap("R", calls, frame=np.zeros((4, 4, 3), np.uint8))) is None
+
+
+def test_read_stereo_pair_none_on_retrieve_miss():
+    calls = []
+    assert stereo.read_stereo_pair(
+        _FakeCap("L", calls, frame=np.zeros((4, 4, 3), np.uint8)),
+        _FakeCap("R", calls, frame=None)) is None   # right eye yields no frame
+
+
+# ── select_inlier_pairs (temporal-desync outlier culling) ────────────────────
+
+def test_select_inlier_pairs_keeps_all_when_uniformly_good():
+    errs = [0.30, 0.40, 0.35, 0.50, 0.42, 0.38, 0.31, 0.29, 0.40, 0.33]
+    assert stereo.select_inlier_pairs(errs) == list(range(len(errs)))
+
+
+def test_select_inlier_pairs_drops_clear_outlier():
+    # idx 8 is a lone desync pair — large in absolute terms AND vs the pack.
+    errs = [0.30, 0.40, 0.35, 0.50, 0.42, 0.38, 0.31, 0.29, 3.20, 0.33]
+    assert stereo.select_inlier_pairs(errs) == [0, 1, 2, 3, 4, 5, 6, 7, 9]
+
+
+def test_select_inlier_pairs_keeps_uniformly_mediocre():
+    # Every pair is above abs_max_px but none stands out from the median, so
+    # there is no outlier to cull (needs BOTH absolute and relative badness).
+    errs = [2.0, 2.1, 1.9, 2.2, 2.0, 1.8, 2.05, 2.1, 1.95, 2.0]
+    assert stereo.select_inlier_pairs(errs) == list(range(len(errs)))
+
+
+def test_select_inlier_pairs_respects_keep_min_floor():
+    # A slim good majority (6) keeps the median low, so the 4 clear outliers
+    # would cull down to 6 — below keep_min(8). The floor keeps the 8
+    # lowest-error pairs instead of dropping below a solvable count.
+    errs = [0.30, 0.32, 0.34, 0.36, 0.38, 0.40, 5.0, 6.0, 7.0, 8.0]
+    assert stereo.select_inlier_pairs(errs, keep_min=8) == [0, 1, 2, 3, 4, 5, 6, 7]
+
+
+def test_select_inlier_pairs_empty():
+    assert stereo.select_inlier_pairs([]) == []
+
+
+# ── compute_stereo_calibration two-pass solve (needs cv2) ────────────────────
+
+def _project(cv2, objp, rvec, tvec, K):
+    pts, _ = cv2.projectPoints(np.asarray(objp, np.float64),
+                               np.asarray(rvec, np.float64),
+                               np.asarray(tvec, np.float64), K, None)
+    return pts.reshape(-1, 1, 2).astype(np.float32)
+
+
+def _synth_board_views(cv2):
+    """Synthetic dual-eye checkerboard views: 12 diverse board poses projected
+    into two ideal cameras 60 mm apart (zero distortion). Returns
+    (objpoints, imgL, imgR, poses, K, R_true, T_true, size)."""
+    W, H = 1280, 720
+    K = np.array([[900., 0, W / 2], [0, 900., H / 2], [0, 0, 1.]])
+    objp = stereo.board_object_points(9, 6, 0.025)   # planar (Z=0), 54 corners
+    R_true = np.eye(3)
+    T_true = np.array([[-0.06], [0.], [0.]])          # 60 mm horizontal baseline
+    tilts = [
+        (0.00, 0.00, 0.35), (0.20, -0.10, 0.40), (-0.15, 0.20, 0.45),
+        (0.10, 0.25, 0.50), (-0.20, -0.20, 0.42), (0.25, 0.10, 0.38),
+        (-0.10, -0.15, 0.55), (0.18, 0.22, 0.48), (-0.22, 0.12, 0.36),
+        (0.05, -0.25, 0.52), (0.15, 0.05, 0.44), (-0.12, -0.08, 0.39),
+    ]
+    objpoints, imgL, imgR, poses = [], [], [], []
+    for rx, ry, z in tilts:
+        rvec = np.array([rx, ry, 0.0]).reshape(3, 1)       # board→left rotation vector
+        tvec = np.array([-0.10, -0.06, z]).reshape(3, 1)   # centre the board
+        rot_l = cv2.Rodrigues(rvec)[0]                     # 3x3
+        rvec_r = cv2.Rodrigues(R_true @ rot_l)[0]          # board→right rotation vector
+        tvec_r = R_true @ tvec + T_true
+        objpoints.append(objp.copy())
+        imgL.append(_project(cv2, objp, rvec, tvec, K))
+        imgR.append(_project(cv2, objp, rvec_r, tvec_r, K))
+        poses.append((rvec, tvec))
+    return objpoints, imgL, imgR, poses, K, R_true, T_true, (W, H)
+
+
+def test_compute_stereo_calibration_clean_set_uses_all_pairs():
+    cv2 = pytest.importorskip("cv2")
+    objpoints, imgL, imgR, _, _, _, _, size = _synth_board_views(cv2)
+    r = stereo.compute_stereo_calibration(objpoints, imgL, imgR, size)
+    assert r["pairs_used"] == r["pairs_total"] == len(objpoints)   # nothing culled
+    assert r["stereo_rms"] < 1.0
+    assert r["baseline_m"] == pytest.approx(0.06, abs=3e-3)
+
+
+def test_compute_stereo_calibration_culls_desync_pair():
+    cv2 = pytest.importorskip("cv2")
+    objpoints, imgL, imgR, poses, K, R_true, T_true, size = _synth_board_views(cv2)
+    # Inject a desynced pair: LEFT from pose 0, but RIGHT from a board that has
+    # rotated + shifted (as if it moved between the two eyes' captures). Each
+    # eye alone is a valid board view, so intrinsics/per-eye RMS are fine, but
+    # the pair violates the shared rigid geometry — it must be culled.
+    rvec0, tvec0 = poses[0]
+    extra = cv2.Rodrigues(np.array([0.15, 0.15, 0.0]).reshape(3, 1))[0]
+    rot_moved = cv2.Rodrigues(rvec0)[0] @ extra
+    moved_t = tvec0 + np.array([0.03, 0.02, 0.0]).reshape(3, 1)
+    objpoints.append(objpoints[0].copy())
+    imgL.append(_project(cv2, objpoints[0], rvec0, tvec0, K))         # left = original pose
+    imgR.append(_project(cv2, objpoints[0], cv2.Rodrigues(R_true @ rot_moved)[0],
+                         R_true @ moved_t + T_true, K))               # right = moved pose
+    r = stereo.compute_stereo_calibration(objpoints, imgL, imgR, size)
+    assert r["pairs_total"] == len(objpoints)
+    assert r["pairs_used"] < r["pairs_total"]        # the desync pair was dropped
+    assert r["stereo_rms"] < 1.0                     # re-solve stays sharp
+    assert r["baseline_m"] == pytest.approx(0.06, abs=5e-3)
