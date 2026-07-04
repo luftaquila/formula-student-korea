@@ -355,11 +355,18 @@ class PerceptionNode(Node):
         # Reload the detector so detection activates without a restart.
         self._detector = stereo.StereoDepth(stereo.config_from_env())
         rms = round(result["stereo_rms"], 3)
+        rms_l = round(result["rms_l"], 3)
+        rms_r = round(result["rms_r"], 3)
         baseline_mm = round(result["baseline_m"] * 1000, 1)
+        # per-eye RMS is reported alongside the stereo RMS so a poor calibration
+        # can be diagnosed from the record: high per-eye → intrinsic/distortion;
+        # low per-eye but high stereo → eye-sync / extrinsic.
         self._progress({"phase": "done", "ok": True, "rms": rms,
+                        "rms_l": rms_l, "rms_r": rms_r,
                         "baseline_mm": baseline_mm, "pairs": len(objpoints)})
         self.get_logger().info(
-            f"calibration DONE: {len(objpoints)} pairs, RMS {rms} px, baseline {baseline_mm} mm")
+            f"calibration DONE: {len(objpoints)} pairs, RMS {rms} px "
+            f"(L {rms_l} / R {rms_r}), baseline {baseline_mm} mm")
 
     def _capture_loop(self):
         cap = None          # left eye (dual) or the single SBS device
