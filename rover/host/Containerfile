@@ -99,6 +99,16 @@ RUN chmod 600 /etc/NetworkManager/system-connections/fsk-default.nmconnection \
 # Set at boot by fsk-selinux-booleans.service (not at image build time —
 # buildkit's environment lacks the policy DB and `setsebool` would fail).
 
+# DNS-free NTP for cold boot. The Pi 5 RTC has no backup cell, so a cold boot
+# starts with a wrong clock; tailscaled then can't do control-server TLS, so
+# MagicDNS (the only nameserver in the tailscale-managed /etc/resolv.conf) is
+# down -> all DNS fails -> chrony can't resolve its pool hostname -> the clock
+# never syncs -> deadlock that only a reboot clears. Pin two anycast NTP servers
+# by IP (Cloudflare + Google) so chrony can step the clock WITHOUT DNS;
+# tailscaled-timesync-recover.service then restarts tailscaled and the tailnet +
+# DNS recover on their own. (Fitting the Pi 5 RTC coin cell removes the need.)
+RUN printf '\n# DNS-free NTP fallback for cold boot (see tailscaled-timesync-recover.service).\nserver 162.159.200.123 iburst\nserver 216.239.35.0 iburst\n' >> /etc/chrony.conf
+
 # OTA: bootc pulls the host image, podman-auto-update pulls the pilot +
 # perception containers. pilot.service / perception.service are hand-written
 # (see files/usr/lib/systemd/system/) rather than quadlets — their run wrappers
