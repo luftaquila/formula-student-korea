@@ -31,9 +31,11 @@ RUN dnf install -y \
         NetworkManager \
         NetworkManager-wifi \
         wpa_supplicant \
+        iw \
         openssh-server \
         podman \
         tailscale \
+        chrony \
         policycoreutils-python-utils \
     && dnf clean all
 
@@ -85,15 +87,28 @@ COPY files/ /
 
 # NM connection files must be 0600 or NetworkManager refuses to load them.
 # pilot-run / flash-mcu / pid-tune need +x to be exec'd by their respective
-# units (pilot-run, flash-mcu) or the operator (pid-tune).
+# units (pilot-run, flash-mcu) or the operator (pid-tune). The NM dispatcher
+# must be 0755 root:root (NM ignores group/other-writable or non-root scripts).
 RUN chmod 600 /etc/NetworkManager/system-connections/fsk-default.nmconnection \
     && chmod 755 /usr/local/bin/flash-mcu /usr/local/bin/pilot-run /usr/local/bin/pid-tune \
-                 /usr/local/bin/perception-run
+                 /usr/local/bin/perception-run \
+                 /etc/NetworkManager/dispatcher.d/50-wifi-powersave-off
 
 # SELinux: container_use_devices boolean must be enabled for the pilot
 # container's --device /dev/* mappings to work under enforcing mode.
 # Set at boot by fsk-selinux-booleans.service (not at image build time —
 # buildkit's environment lacks the policy DB and `setsebool` would fail).
+
+# DNS-free NTP for cold boot. The Pi 5 RTC has no backup cell, so a cold boot
+# starts with a wrong clock; tailscaled then can't do control-server TLS, so
+# MagicDNS (the only nameserver in the tailscale-managed /etc/resolv.conf) is
+# down -> all DNS fails -> chrony can't resolve its pool hostname -> the clock
+# never syncs -> deadlock that only a reboot clears. Pin two anycast NTP servers
+# by IP (Cloudflare + Google) so chrony can step the clock WITHOUT DNS. Then
+# chrony-wait.service releases time-sync.target and tailscaled — ordered after it
+# (see tailscaled.service.d/override.conf) — starts with a correct clock and
+# connects on the first try. (Fitting the Pi 5 RTC coin cell removes the need.)
+RUN printf '\n# DNS-free NTP so chrony can sync without MagicDNS on a cold boot\n# (gates time-sync.target -> tailscaled; see tailscaled.service.d/override.conf).\nserver 162.159.200.123 iburst\nserver 216.239.35.0 iburst\n' >> /etc/chrony.conf
 
 # OTA: bootc pulls the host image, podman-auto-update pulls the pilot +
 # perception containers. pilot.service / perception.service are hand-written
@@ -104,6 +119,8 @@ RUN systemctl enable \
         NetworkManager \
         sshd \
         tailscaled \
+        chronyd \
+        chrony-wait.service \
         podman.socket \
         bootc-fetch-apply-updates.timer \
         podman-auto-update.timer \

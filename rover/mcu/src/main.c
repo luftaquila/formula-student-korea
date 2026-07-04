@@ -273,7 +273,16 @@ int main(void) {
 
     while (true) {
         protocol_poll_input();
-        nav_lights_tick(to_ms_since_boot(get_absolute_time()));
+        // Nav lights follow the Pi link like the status sticks: hold them dark
+        // while the link is down (heartbeat timeout), matching pick_led_state()'s
+        // LED_OFF, so a Pi shutdown/unplug doesn't leave the rover flashing
+        // unattended. The mode (set over 'G') is preserved and resumes on
+        // reconnect. g_last_flags is refreshed every control tick on core1.
+        if (g_last_flags & FLAG_PI_HEARTBEAT_TIMEOUT) {
+            nav_lights_set(false);
+        } else {
+            nav_lights_tick(to_ms_since_boot(get_absolute_time()));
+        }
 
         if (absolute_time_diff_us(get_absolute_time(), next_tlm) <= 0) {
             next_tlm = delayed_by_ms(next_tlm, TELEMETRY_TICK_MS);

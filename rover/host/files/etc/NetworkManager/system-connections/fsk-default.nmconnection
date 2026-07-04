@@ -7,6 +7,10 @@ autoconnect-priority=10
 [wifi]
 mode=infrastructure
 ssid=default
+# Belt-and-suspenders with the 50-wifi-powersave-off NM dispatcher: keep the
+# headless rover reachable when idle. This driver ignores the setting (hence the
+# dispatcher), but set it too so intent is explicit for drivers that honor it.
+powersave=2
 
 [wifi-security]
 key-mgmt=wpa-psk
