@@ -31,9 +31,11 @@ RUN dnf install -y \
         NetworkManager \
         NetworkManager-wifi \
         wpa_supplicant \
+        iw \
         openssh-server \
         podman \
         tailscale \
+        chrony \
         policycoreutils-python-utils \
     && dnf clean all
 
@@ -85,10 +87,12 @@ COPY files/ /
 
 # NM connection files must be 0600 or NetworkManager refuses to load them.
 # pilot-run / flash-mcu / pid-tune need +x to be exec'd by their respective
-# units (pilot-run, flash-mcu) or the operator (pid-tune).
+# units (pilot-run, flash-mcu) or the operator (pid-tune). The NM dispatcher
+# must be 0755 root:root (NM ignores group/other-writable or non-root scripts).
 RUN chmod 600 /etc/NetworkManager/system-connections/fsk-default.nmconnection \
     && chmod 755 /usr/local/bin/flash-mcu /usr/local/bin/pilot-run /usr/local/bin/pid-tune \
-                 /usr/local/bin/perception-run
+                 /usr/local/bin/perception-run \
+                 /etc/NetworkManager/dispatcher.d/50-wifi-powersave-off
 
 # SELinux: container_use_devices boolean must be enabled for the pilot
 # container's --device /dev/* mappings to work under enforcing mode.
@@ -104,6 +108,8 @@ RUN systemctl enable \
         NetworkManager \
         sshd \
         tailscaled \
+        chronyd \
+        tailscaled-timesync-recover.service \
         podman.socket \
         bootc-fetch-apply-updates.timer \
         podman-auto-update.timer \

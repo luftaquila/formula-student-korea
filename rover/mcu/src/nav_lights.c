@@ -9,7 +9,7 @@
 // on/off control line directly, active-high (HIGH = on). Plain on/off, no PWM
 // — colour is fixed, only the on/off *cadence* is selectable.
 //
-// The mode is set over the serial protocol ('N <mode>'): the operator picks it
+// The mode is set over the serial protocol ('G <mode>'): the operator picks it
 // in the web UI → server → pilot → MCU. The pattern renders from a free-running
 // clock, so it's independent of the control/telemetry loop rate.
 
