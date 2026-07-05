@@ -8,13 +8,20 @@
  * it opens a VR gating hold (/api/rover/camera/hold?mode=vr) so the rover captures
  * and publishes, and falls back to the mono MJPEG stream (/api/rover/camera/stream)
  * only if WebRTC can't connect. Control uses /api/rover/control + /stop +
- * /clear-emergency + /resume + /pump. A status HUD (below the screen) shows
- * nav_state, connection/source, and the throttle/steering being sent.
+ * /clear-emergency + /resume + /pump.
  *
- * Controls (right controller): stick = throttle (Y) + steering (X),
- * A = emergency-stop TOGGLE (stop ↔ clear), B = resume, trigger = pump.
+ * In-headset HUD (head-locked, fighter-jet style): battery, speed, GPS fix/sats/
+ * accuracy + coords, nav/link state, throttle/steering. A comfort vignette darkens
+ * the periphery. A world-locked minimap sits to the left of the screen: VWorld
+ * satellite tiles (proxied same-origin) centered on the rover, live position marker,
+ * left-controller keys zoom it.
+ *
+ * Controls — right controller: stick = throttle (Y) + steering (X), trigger = pump,
+ * A = emergency-stop TOGGLE (stop ↔ clear), B = resume. Left controller: X/Y =
+ * minimap zoom out/in.
  */
 import { onMounted, onUnmounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import * as THREE from "three";
 import { VRButton } from "three/addons/webxr/VRButton.js";
 import { request } from "../api.js";
@@ -22,8 +29,14 @@ import { useRoverControl } from "../composables/useRoverControl.js";
 import { useNotification } from "@shared/useNotification.js";
 
 const { error: notifyError, warning: notifyWarn, success: notifySuccess } = useNotification();
+const router = useRouter();
 const containerEl = ref(null);
 const control = useRoverControl();
+
+function goBack() {
+  if (window.history.length > 1) router.back();
+  else router.push("/");
+}
 
 // three handles (not reactive — mutated imperatively in the render loop).
 let renderer = null;
@@ -43,6 +56,9 @@ let vrButtonEl = null;
 let hudCanvas = null;
 let hudCtx = null;
 let hudTexture = null;
+let minimapCanvas = null;
+let minimapCtx = null;
+let minimapTexture = null;
 const usingWebrtc = ref(false); // true once the WHEP video is delivering frames
 
 const STREAM_BASE = import.meta.env.PROD ? "/course" : "";
@@ -51,10 +67,94 @@ const prevBtn = {};    // edge-detection state for buttons
 let pumpOn = false;
 let frame = 0;
 
-// Live rover status (SSE rover:status), for the e-stop toggle + HUD.
+// Live rover status (SSE rover:status) — drives the e-stop toggle, the HUD, and
+// the minimap. rover:status carries the whole roverState, so battery/gps/position
+// are all here.
 const navState = ref(null);
 const roverConnected = ref(false);
+const battery = ref(null);      // { voltage, percent, source }
+const gps = ref(null);          // { speed, heading, h_acc, num_sv, ... }
+const fixStatus = ref(null);
+const roverPos = ref(null);     // { lat, lng }
 let evtSource = null;
+
+// ── minimap (VWorld satellite via same-origin tile proxy) ──────────────────────
+const MINIMAP_PX = 512;
+const MINIMAP_ZOOM_MIN = 15;
+const MINIMAP_ZOOM_MAX = 20;
+let minimapZoom = 18;
+let minimapDirty = true;
+const tileCache = new Map();    // "z/x/y" -> HTMLImageElement | "loading" | "error"
+
+function getTile(z, x, y) {
+  const k = `${z}/${x}/${y}`;
+  const cached = tileCache.get(k);
+  if (cached) return cached instanceof Image ? cached : null;
+  tileCache.set(k, "loading");
+  const img = new Image();
+  img.onload = () => { tileCache.set(k, img); minimapDirty = true; };
+  img.onerror = () => { tileCache.set(k, "error"); };
+  img.src = `${STREAM_BASE}/api/rover/map-tile?z=${z}&x=${x}&y=${y}`;
+  return null;
+}
+function setMinimapZoom(delta) {
+  const z = Math.min(MINIMAP_ZOOM_MAX, Math.max(MINIMAP_ZOOM_MIN, minimapZoom + delta));
+  if (z !== minimapZoom) { minimapZoom = z; minimapDirty = true; }
+}
+function drawMinimap() {
+  if (!minimapCtx) return;
+  const S = MINIMAP_PX, ctx = minimapCtx;
+  ctx.fillStyle = "#0a0f14";
+  ctx.fillRect(0, 0, S, S);
+  const pos = roverPos.value;
+  if (pos) {
+    const z = minimapZoom;
+    const n = 2 ** z;
+    const latRad = (pos.lat * Math.PI) / 180;
+    // slippy-map world pixel of the rover (Web Mercator, 256px tiles)
+    const xW = ((pos.lng + 180) / 360) * n * 256;
+    const yW = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n * 256;
+    const originX = xW - S / 2;  // world px at canvas (0,0) — rover centered
+    const originY = yW - S / 2;
+    const tx0 = Math.floor(originX / 256), tx1 = Math.floor((originX + S) / 256);
+    const ty0 = Math.floor(originY / 256), ty1 = Math.floor((originY + S) / 256);
+    for (let tx = tx0; tx <= tx1; tx++) {
+      for (let ty = ty0; ty <= ty1; ty++) {
+        if (tx < 0 || ty < 0 || tx >= n || ty >= n) continue;
+        const img = getTile(z, tx, ty);
+        if (img) ctx.drawImage(img, Math.round(tx * 256 - originX), Math.round(ty * 256 - originY));
+      }
+    }
+    // rover marker (heading-oriented arrow) fixed at centre
+    const hdg = gps.value && typeof gps.value.heading === "number" ? gps.value.heading : null;
+    ctx.save();
+    ctx.translate(S / 2, S / 2);
+    if (hdg != null) ctx.rotate((hdg * Math.PI) / 180);
+    ctx.fillStyle = "#33ff88";
+    ctx.strokeStyle = "#0a0f14";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, -15); ctx.lineTo(10, 12); ctx.lineTo(0, 5); ctx.lineTo(-10, 12);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  } else {
+    ctx.fillStyle = "#33ff88";
+    ctx.font = "600 30px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("NO GPS", S / 2, S / 2);
+  }
+  // frame + zoom label
+  ctx.strokeStyle = "rgba(51,255,136,0.5)";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(2, 2, S - 4, S - 4);
+  ctx.fillStyle = "#33ff88";
+  ctx.font = "600 24px monospace";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(`MAP  Z${minimapZoom}`, 12, 12);
+  minimapTexture.needsUpdate = true;
+}
 
 function streamUrl() {
   return `${STREAM_BASE}/api/rover/camera/stream?t=${Date.now()}`;
@@ -73,6 +173,12 @@ let holdSource = null;
 function startHold() {
   if (holdSource) return;
   holdSource = new EventSource(`${STREAM_BASE}/api/rover/camera/hold?mode=vr`);
+  // Surfaced reconnect/viewer-cap UX: the hold is subject to the shared viewer cap
+  // (503) and drops with the server. EventSource auto-retries; just flag the gap so
+  // the operator knows the picture may not come (the HUD also shows CONNECTING).
+  holdSource.addEventListener("error", () => {
+    if (!usingWebrtc.value) notifyWarn("카메라 홀드 재연결 중… (뷰어 한도 초과 시 안 보일 수 있음)");
+  });
 }
 function stopHold() {
   if (holdSource) { holdSource.close(); holdSource = null; }
@@ -182,6 +288,7 @@ function pollInput(session) {
     const gp = src.gamepad;
     if (!gp) continue;
     const ax = gp.axes || [];
+    const b = gp.buttons || [];
     // The thumbstick is at axes[2]/[3] in the xr-standard mapping (axes[0]/[1] =
     // legacy touchpad). Some runtimes differ, so use whichever pair is deflected
     // more — robust to the axis-index layout.
@@ -192,12 +299,15 @@ function pollInput(session) {
     if (src.handedness === "right") {
       throttle = -dz(sy) * 100; // stick up = forward
       steering = dz(sx) * 100;  // stick right = steer right
-      const b = gp.buttons || [];
       if (edge("A", b[4]).rising) toggleEstop(); // A: stop ↔ clear
       if (edge("B", b[5]).rising) resumeMission(); // B
       const trig = edge("TRIG", b[0]);
       if (trig.rising) setPump(true);
       if (trig.falling) setPump(false);
+    } else if (src.handedness === "left") {
+      // X (b[4]) = minimap zoom out, Y (b[5]) = zoom in.
+      if (edge("LX", b[4]).rising) setMinimapZoom(-1);
+      if (edge("LY", b[5]).rising) setMinimapZoom(+1);
     }
   }
   control.setInput(throttle, steering);
@@ -223,23 +333,88 @@ function setPump(on) {
     .catch((e) => notifyError("펌프 제어 실패: " + e.message));
 }
 
-// ── status HUD ─────────────────────────────────────────────────────────────────
+// ── fighter-jet HUD (head-locked, drawn to a transparent canvas texture) ───────
+function fmtSigned(v) {
+  const n = Math.round(v);
+  return (n > 0 ? "+" : "") + n;
+}
 function drawHud() {
   if (!hudCtx) return;
-  const c = hudCanvas;
-  hudCtx.fillStyle = "rgba(10,10,16,0.85)";
-  hudCtx.fillRect(0, 0, c.width, c.height);
-  hudCtx.fillStyle = "#e5e7eb";
-  hudCtx.font = "600 32px monospace";
-  hudCtx.textBaseline = "top";
+  const c = hudCanvas, ctx = hudCtx, W = c.width, H = c.height;
+  const G = "#33ff88";
+  const M = 44;
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = G;
+  ctx.fillStyle = G;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = "rgba(51,255,136,0.55)";
+  ctx.shadowBlur = 8;
+  ctx.font = "600 28px monospace";
+
+  // Center bore reticle.
+  ctx.save();
+  ctx.translate(W / 2, H / 2);
+  ctx.beginPath();
+  ctx.arc(0, 0, 11, 0, Math.PI * 2);
+  ctx.moveTo(-30, 0); ctx.lineTo(-15, 0);
+  ctx.moveTo(15, 0); ctx.lineTo(30, 0);
+  ctx.moveTo(0, -30); ctx.lineTo(0, -15);
+  ctx.stroke();
+  ctx.restore();
+
+  // Battery (top-left).
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  const bp = battery.value?.percent, bv = battery.value?.voltage;
+  ctx.fillText(`BATT ${bp != null ? Math.round(bp) + "%" : "--"}${bv != null ? "  " + bv.toFixed(1) + "V" : ""}`, M, M);
+
+  // Speed (top-right).
+  ctx.textAlign = "right";
+  const spd = gps.value?.speed;
+  ctx.fillText(`SPD ${spd != null ? spd.toFixed(1) : "--"} m/s`, W - M, M);
+
+  // Nav / link state (top-center) — reconnect UX.
+  ctx.textAlign = "center";
+  let link = navState.value || "STANDBY";
+  let linkColor = G;
+  if (!roverConnected.value) { link = "◆ LINK LOST"; linkColor = "#ff5555"; }
+  else if (!usingWebrtc.value) { link = "◆ CONNECTING"; linkColor = "#ffcc44"; }
+  ctx.fillStyle = linkColor;
+  ctx.fillText(link, W / 2, M);
+  ctx.fillStyle = G;
+
+  // GPS (bottom-left).
+  ctx.textAlign = "left";
+  ctx.textBaseline = "bottom";
+  const fix = fixStatus.value || "--";
+  const sv = gps.value?.num_sv;
+  const ha = gps.value?.h_acc;
+  ctx.fillText(`GPS ${fix}  SV ${sv ?? "--"}  ±${ha != null ? ha.toFixed(2) : "--"}m`, M, H - M - 34);
+  const p = roverPos.value;
+  ctx.fillText(p ? `${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}` : "-- , --", M, H - M);
+
+  // Throttle / steering / control (bottom-right).
+  ctx.textAlign = "right";
   const post = control.active.value ? (control.ok.value ? "OK" : "FAIL") : "off";
-  const stereo = videoEl && videoEl.videoWidth > videoEl.videoHeight * 2.4;
-  const src = usingWebrtc.value ? `WebRTC(H264 ${stereo ? "3D" : "2D"})` : "MJPEG";
-  const lines = [
-    `state ${navState.value || "-"}   conn ${roverConnected.value ? "yes" : "no"}   src ${src}`,
-    `T ${control.throttle.value}   S ${control.steering.value}   ctrl ${post}`,
-  ];
-  lines.forEach((ln, i) => hudCtx.fillText(ln, 18, 16 + i * 52));
+  ctx.fillText(`THR ${fmtSigned(control.throttle.value)}   STR ${fmtSigned(control.steering.value)}`, W - M, H - M - 34);
+  ctx.fillText(`CTRL ${post}   PUMP ${pumpOn ? "ON" : "off"}`, W - M, H - M);
+
+  // Throttle tape (left of center): vertical scale, fill up=forward / down=reverse.
+  const tapeX = M + 10, tapeCy = H / 2, tapeH = H * 0.30;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(tapeX, tapeCy - tapeH, 14, tapeH * 2);
+  ctx.beginPath(); ctx.moveTo(tapeX, tapeCy); ctx.lineTo(tapeX + 14, tapeCy); ctx.stroke();
+  const tFrac = Math.max(-1, Math.min(1, control.throttle.value / 100));
+  ctx.fillRect(tapeX, tapeCy - tFrac * tapeH, 14, tFrac * tapeH);
+
+  // Steering bar (below center): horizontal scale with a marker.
+  const barW = W * 0.30, barCx = W / 2, barY = H / 2 + tapeH + 30;
+  ctx.strokeRect(barCx - barW, barY, barW * 2, 14);
+  ctx.beginPath(); ctx.moveTo(barCx, barY); ctx.lineTo(barCx, barY + 14); ctx.stroke();
+  const sFrac = Math.max(-1, Math.min(1, control.steering.value / 100));
+  ctx.fillRect(barCx + sFrac * barW - 4, barY - 4, 8, 22);
+
+  ctx.shadowBlur = 0;
   hudTexture.needsUpdate = true;
 }
 
@@ -264,6 +439,7 @@ function render() {
     if (imgEl && imgEl.naturalWidth > 0) texture.needsUpdate = true; // MJPEG needs explicit upload
   }
   if (frame++ % 6 === 0) drawHud(); // ~throttled status refresh
+  if (minimapDirty) { drawMinimap(); minimapDirty = false; }
   renderer.render(scene, camera);
 }
 
@@ -283,8 +459,32 @@ function connectStatus() {
       const d = JSON.parse(e.data);
       navState.value = d.nav_state ?? null;
       roverConnected.value = !!d.connected;
+      battery.value = d.battery ?? null;
+      gps.value = d.gps ?? null;
+      fixStatus.value = d.fix_status ?? null;
+      if (d.last_position && typeof d.last_position.lat === "number") {
+        roverPos.value = { lat: d.last_position.lat, lng: d.last_position.lng };
+        minimapDirty = true; // rover moved → recentre the minimap
+      }
     } catch { /* ignore malformed frame */ }
   });
+}
+
+// Radial-gradient comfort vignette: transparent centre → dark edges. Head-locked,
+// so it always softens the peripheral FOV (reduces vection / motion discomfort).
+function makeVignetteTexture() {
+  const s = 512;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = s;
+  const g = cv.getContext("2d");
+  const grad = g.createRadialGradient(s / 2, s / 2, s * 0.32, s / 2, s / 2, s * 0.5);
+  grad.addColorStop(0, "rgba(0,0,0,0)");
+  grad.addColorStop(1, "rgba(0,0,0,0.55)");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, s, s);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
 onMounted(() => {
@@ -294,6 +494,7 @@ onMounted(() => {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x101014);
   camera = new THREE.PerspectiveCamera(70, w / h, 0.1, 100);
+  scene.add(camera); // so head-locked children (HUD, vignette) render + follow the head
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
@@ -342,20 +543,45 @@ onMounted(() => {
   screenR.layers.set(2);
   scene.add(screenR);
 
-  // Status HUD, below the screen.
+  // Minimap — world-locked to the left of the screen, angled toward the viewer.
+  minimapCanvas = document.createElement("canvas");
+  minimapCanvas.width = minimapCanvas.height = MINIMAP_PX;
+  minimapCtx = minimapCanvas.getContext("2d");
+  minimapTexture = new THREE.CanvasTexture(minimapCanvas);
+  minimapTexture.colorSpace = THREE.SRGBColorSpace;
+  drawMinimap();
+  const minimap = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.3, 1.3),
+    new THREE.MeshBasicMaterial({ map: minimapTexture }),
+  );
+  minimap.position.set(-2.15, 0, -2.15);
+  minimap.rotation.y = 0.6; // face the viewer
+  scene.add(minimap);
+
+  // Fighter-jet HUD — head-locked (child of the camera), transparent, drawn on top.
   hudCanvas = document.createElement("canvas");
-  hudCanvas.width = 720;
-  hudCanvas.height = 260;
+  hudCanvas.width = 1024;
+  hudCanvas.height = 576;
   hudCtx = hudCanvas.getContext("2d");
   hudTexture = new THREE.CanvasTexture(hudCanvas);
   hudTexture.colorSpace = THREE.SRGBColorSpace;
   drawHud();
   const hud = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.44, 0.52),
-    new THREE.MeshBasicMaterial({ map: hudTexture, transparent: true }),
+    new THREE.PlaneGeometry(1.9, 1.07),
+    new THREE.MeshBasicMaterial({ map: hudTexture, transparent: true, depthTest: false, depthWrite: false }),
   );
-  hud.position.set(0, -1.0, -2.0);
-  scene.add(hud);
+  hud.position.set(0, 0, -1.4);
+  hud.renderOrder = 20;
+  camera.add(hud);
+
+  // Comfort vignette — head-locked, peripheral darkening.
+  const vignette = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.6, 1.7),
+    new THREE.MeshBasicMaterial({ map: makeVignetteTexture(), transparent: true, depthTest: false, depthWrite: false }),
+  );
+  vignette.position.set(0, 0, -1.0);
+  vignette.renderOrder = 15;
+  camera.add(vignette);
 
   vrButtonEl = VRButton.createButton(renderer);
   containerEl.value.appendChild(vrButtonEl);
@@ -393,17 +619,23 @@ onUnmounted(() => {
   if (videoTextureL) videoTextureL.dispose();
   if (videoTextureR) videoTextureR.dispose();
   if (hudTexture) hudTexture.dispose();
+  if (minimapTexture) minimapTexture.dispose();
 });
 </script>
 
 <template>
   <div class="vr-root" ref="containerEl">
     <div class="vr-overlay">
-      <router-link to="/" class="vr-back">← 코스로</router-link>
-      <p class="vr-hint">
-        헤드셋에서 <b>VR 진입</b> 후 — 오른손 스틱: 전/후진 + 조향 ·
-        <b>A</b>: 비상정지 토글 · <b>B</b>: 재개 · <b>트리거</b>: 펌프
-      </p>
+      <button class="vr-back" @click="goBack">←</button>
+      <table class="vr-keys">
+        <tbody>
+          <tr><th>오른쪽 스틱</th><td>전/후진 + 조향</td></tr>
+          <tr><th>트리거</th><td>펌프</td></tr>
+          <tr><th>A</th><td>비상정지 토글</td></tr>
+          <tr><th>B</th><td>재개</td></tr>
+          <tr><th>왼쪽 X / Y</th><td>미니맵 축소 / 확대</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </template>
@@ -423,32 +655,49 @@ onUnmounted(() => {
   position: absolute;
   top: 0;
   left: 0;
-  right: 0;
   z-index: 5;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  align-items: flex-start;
+  gap: 0.6rem;
   padding: 1rem;
   pointer-events: none;
 }
 .vr-back {
   pointer-events: auto;
-  align-self: flex-start;
   color: #fff;
   background: rgba(0, 0, 0, 0.5);
-  padding: 0.4rem 0.8rem;
+  border: none;
+  cursor: pointer;
+  width: 2.4rem;
+  height: 2.4rem;
   border-radius: 999px;
-  text-decoration: none;
-  font-weight: 600;
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1;
 }
-.vr-hint {
-  margin: 0;
-  max-width: 40rem;
+.vr-keys {
+  pointer-events: auto;
+  border-collapse: collapse;
   color: #e5e7eb;
-  background: rgba(0, 0, 0, 0.45);
-  padding: 0.5rem 0.8rem;
+  background: rgba(0, 0, 0, 0.5);
   border-radius: 0.5rem;
+  overflow: hidden;
   font-size: 0.85rem;
-  line-height: 1.4;
+}
+.vr-keys th,
+.vr-keys td {
+  padding: 0.3rem 0.7rem;
+  text-align: left;
+}
+.vr-keys th {
+  font-weight: 700;
+  color: #fff;
+  border-right: 1px solid rgba(255, 255, 255, 0.15);
+  white-space: nowrap;
+}
+.vr-keys tr + tr th,
+.vr-keys tr + tr td {
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 </style>
