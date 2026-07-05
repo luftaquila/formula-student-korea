@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, watch, inject } from "vue";
+import { useRouter } from "vue-router";
 import L from "leaflet";
 import { request } from "../api.js";
 import { useNotification } from "@shared/useNotification.js";
@@ -3868,9 +3869,15 @@ watch(webrtcConnected, (isConnected, was) => {
   if (isConnected) mjpegFallback.value = false;
   else if (was && cameraOn.value) mjpegFallback.value = true;
 });
-function toggleCamera() {
-  if (cameraOn.value) { stopCameraStream(); return; }
-  startCamera();
+const router = useRouter();
+function goVr() { router.push("/vr"); }
+// Single camera button cycles three modes so there's no separate 거리 오버레이
+// button: off → plain 2D → depth overlay → off. The label stays "카메라"; the
+// active highlight + the video itself (plain vs heatmap) show which mode is live.
+function cycleCamera() {
+  if (!cameraOn.value) { startCamera(); return; }        // off → plain 2D
+  if (!cameraDepthOn.value) { toggleDepth(); return; }   // 2D → depth overlay
+  stopCameraStream();                                     // depth → off
 }
 // Toggle the both-eyes depth composite (rectified left + depth heatmap + nearest
 // distance). The rover renders it; this just flips the stream mode. Optimistic UI
@@ -5236,20 +5243,20 @@ onUnmounted(() => {
                     >수동 제어</button>
                   </div>
 
-                  <!-- Live camera (MJPEG, relayed via the course server). Opening
-                       the stream tells the rover to start capturing; closing it
-                       stops capture. Useful for manual driving / clearing an
-                       obstacle while paused. -->
-                  <div v-if="roverStatus.connected" class="rover-controls rover-controls-grid">
+                  <!-- Live camera (WebRTC, relayed via the course server). The one
+                       카메라 button cycles off → 2D → depth overlay → off; the VR
+                       button opens the headset teleop view (usable to preview even
+                       while the rover is offline, so it stays enabled). -->
+                  <div class="rover-controls rover-controls-grid">
                     <button
                       :class="['btn', 'btn-lg-touch', cameraOn ? 'btn-primary' : 'btn-ghost']"
-                      @click="toggleCamera"
+                      :disabled="!roverStatus.connected"
+                      @click="cycleCamera"
                     >카메라</button>
                     <button
-                      v-if="cameraOn"
-                      :class="['btn', 'btn-lg-touch', cameraDepthOn ? 'btn-primary' : 'btn-ghost']"
-                      @click="toggleDepth"
-                    >거리 오버레이</button>
+                      class="btn btn-lg-touch btn-ghost"
+                      @click="goVr"
+                    >VR</button>
                   </div>
                   <div v-if="cameraOn" class="camera-view">
                     <!-- WebRTC (low-latency H.264) is the PRIMARY source — we connect
