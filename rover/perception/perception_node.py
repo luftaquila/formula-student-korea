@@ -10,7 +10,9 @@ share one loop):
     MJPEG relay. Normally the plain left eye; when the operator also toggles the
     depth view on (CloudLink.depth_wanted) and a calibration is loaded, the frame
     is a both-eyes composite instead — the sharp rectified left eye with a depth
-    heatmap + nearest-point distance overlaid (stereo.compute_composite).
+    heatmap + nearest-point distance overlaid. Detection and the composite share a
+    single stereo depth pass per frame (stereo.compute_depth → decide +
+    render_composite), so the composite adds no second SGBM.
   - Obstacle detection (mission-driven): while the navigator is NAVIGATING and
     a stereo calibration is loaded, run stereo depth on the two eyes (dual-node
     by default) at a low rate; on a debounced obstacle in the driving corridor,
@@ -136,11 +138,14 @@ class PerceptionNode(Node):
         self._quality = min(100, max(1, _env_int("CAMERA_JPEG_QUALITY", 70)))
         self._view = (_env("CAMERA_VIEW", "left") or "left").lower()
         self._detect_fps = max(1, _env_int("DETECT_FPS", 4))
-        # OpenCV threads for the live depth composite while the mission is NOT
-        # NAVIGATING (paused/idle — when the operator usually watches). While
-        # NAVIGATING it is forced to 1 so block matching can't starve the
-        # navigator's control tick (same reason detection caps STEREO_CV_THREADS).
+        # OpenCV threads for stereo while the mission is NOT NAVIGATING (paused/idle
+        # — when the operator usually watches the composite). While NAVIGATING it
+        # drops to STEREO_CV_THREADS so block matching can't starve the navigator's
+        # control tick.
         self._viz_threads_idle = max(1, _env_int("VIZ_THREADS_IDLE", 3))
+        # Depth-compute resolution as a fraction of calib — the SINGLE stereo pass
+        # (detection + composite share it) runs here. Mirrors stereo's default.
+        self._viz_depth_scale = _env_float("VIZ_DEPTH_SCALE", 0.4)
         self._detect_master = (_env("OBSTACLE_DETECTION", "true") or "").lower() != "false"
         # Stereo layout. "dual": the two eyes are SEPARATE /dev/video nodes
         # (the rover's "Stereo Vision" cam — left=video0, right=video2); the
@@ -254,8 +259,10 @@ class PerceptionNode(Node):
                 self._publish_obstacle(False)
                 self._published_obstacle = False
 
-    def _run_detection(self, left, right):
-        obstacle, info = self._detector.detect(left, right)
+    def _run_detection(self, depth_z, valid):
+        # Decide from a PRECOMPUTED depth map (the pass shared with the composite),
+        # so stereo is never run twice for a frame.
+        obstacle, info = self._detector.decide(depth_z, valid)
         state, _rising = self._debouncer.update(obstacle)
         if state != self._published_obstacle:
             self._publish_obstacle(state)
@@ -508,24 +515,19 @@ class PerceptionNode(Node):
             try:
                 due = detect and (t0 - last_detect) >= detect_interval
                 # Live depth composite is wanted when an operator toggled it on, a
-                # calibration is loaded, we have two eyes (dual), AND the mission is
-                # NOT autonomously driving. During NAVIGATING the safety detector
-                # owns the compute budget — running the per-frame composite serially
-                # in this same thread would delay the obstacle publish and the
-                # auto-pause — so we stream the plain eye while driving. When the
-                # mission pauses (incl. an obstacle auto-pause) nav leaves NAVIGATING
-                # and the composite kicks in, which is exactly when the operator
-                # wants to inspect. Unlike detection it needs the right eye during
-                # plain streaming too — every streamed frame, not just the detect rate.
+                # calibration is loaded, and we have two eyes (dual). It stays on
+                # during NAVIGATING too: detection and the composite SHARE one depth
+                # pass (below), so the composite adds only a cheap overlay, not a
+                # second SGBM — it can't starve the detector. It needs the right eye
+                # during plain streaming too, every streamed frame.
                 depth_stream = (stream and self._cloud.depth_wanted.is_set()
-                                and self._detector.enabled and self._layout == "dual"
-                                and self._nav_state != DRIVING_STATE)
-                # Thread budget: honour the detection cap (STEREO_CV_THREADS) except
-                # while actually compositing (only ever when NOT navigating), where
-                # more cores are safe. Set every iteration so the count can't stay
-                # stuck high across state changes. This never raises threads during
-                # NAVIGATING, so it can't starve the navigator's control tick.
-                cv2.setNumThreads(self._viz_threads_idle if depth_stream else self._cv_threads)
+                                and self._detector.enabled and self._layout == "dual")
+                # Thread budget: drop to the detection cap (STEREO_CV_THREADS) while
+                # NAVIGATING so stereo can't starve the navigator's control tick;
+                # allow more cores when paused/idle (when the operator usually
+                # watches). Set every iteration so it can't stay stuck high.
+                cv2.setNumThreads(self._cv_threads if self._nav_state == DRIVING_STATE
+                                  else self._viz_threads_idle)
                 right_frame = None
                 if (due or depth_stream) and self._layout == "dual":
                     if right_cap is None and t0 >= right_open_after:
@@ -556,24 +558,31 @@ class PerceptionNode(Node):
                         else:
                             frame, right_frame = pair
 
+                # ONE stereo depth pass at the configured scale, reused by BOTH the
+                # composite and detection so SGBM never runs twice for a frame. Only
+                # when something needs it and we have the eye pair.
+                depth = None
+                eyes = self._stereo_eyes(frame, right_frame)
+                if eyes is not None and (due or depth_stream):
+                    depth = self._detector.compute_depth(
+                        eyes[0], eyes[1], scale=self._viz_depth_scale)
+
                 if stream:
-                    # Depth composite (rectified left + heatmap + nearest marker/
-                    # distance) when toggled on + calibrated + we have the pair;
+                    # Depth composite (sharp rectified left + heatmap + nearest
+                    # marker/distance) when toggled on + calibrated + we have depth;
                     # otherwise the plain eye (left whole in dual, cropped in sbs).
-                    if depth_stream and right_frame is not None:
-                        out, _cinfo = self._detector.compute_composite(frame, right_frame)
+                    if depth_stream and depth is not None:
+                        out, _cinfo = self._detector.render_composite(frame, depth[0], depth[1])
                         if out is None:                 # calibration vanished mid-stream
                             out = frame
                     else:
                         out = frame if self._layout == "dual" else crop_view(frame, self._view)
                         # Operator asked for depth but we can't render it here — no
-                        # stereo calibration or not a dual-eye cam — and it's NOT the
-                        # intentional plain-while-driving suppression. Label the frame
-                        # so "depth on but a plain image" reads as "needs calibration",
+                        # stereo calibration or not a dual-eye cam. Label the frame so
+                        # "depth on but a plain image" reads as "needs calibration",
                         # not a broken toggle. Copy first: 'out' aliases the capture
                         # buffer the detector reads. ASCII only (cv2 has no Hangul).
                         if (self._cloud.depth_wanted.is_set()
-                                and self._nav_state != DRIVING_STATE
                                 and not (self._detector.enabled and self._layout == "dual")):
                             out = out.copy()
                             for color, thick in (((0, 0, 0), 4), ((60, 220, 255), 1)):
@@ -586,11 +595,9 @@ class PerceptionNode(Node):
                     if ok2 and self._cloud.stream_wanted.is_set():
                         self._cloud.post_frame(buf.tobytes())
 
-                if due:
+                if due and depth is not None:
                     last_detect = t0
-                    eyes = self._stereo_eyes(frame, right_frame)
-                    if eyes is not None:
-                        self._run_detection(eyes[0], eyes[1])
+                    self._run_detection(depth[0], depth[1])
             except Exception as e:  # noqa: BLE001 - keep the capture thread alive
                 if (t0 - last_err_log) >= 5.0:
                     last_err_log = t0
