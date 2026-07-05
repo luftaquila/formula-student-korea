@@ -58,10 +58,11 @@ class WebRTCPublisher:
     """Publishes push_frame() frames to a WHIP endpoint. start()/stop() are
     cheap and idempotent-ish; create a fresh instance per publish session."""
 
-    def __init__(self, whip_url, fps=15, log=print):
+    def __init__(self, whip_url, fps=15, log=print, internal_secret=""):
         self._whip_url = whip_url
         self._fps = fps
         self._log = log
+        self._secret = internal_secret  # X-Internal-Service on the WHIP POST (caddy gate)
         self._latest = None
         self._lock = threading.Lock()
         self._thread = None
@@ -111,6 +112,18 @@ class WebRTCPublisher:
 
     async def _negotiate(self):
         self._pc = RTCPeerConnection()
+        # Recover from a dead transport: aiortc keeps the publish thread parked in
+        # run_forever even after the peer connection fails (mediamtx redeploy, ICE
+        # blip), so alive() would stay True and the node would never rebuild us.
+        # Stop the loop on a terminal state → the thread exits → the node's
+        # not-alive() path lazily recreates the publisher (after its cooldown).
+        @self._pc.on("connectionstatechange")
+        async def _on_state():  # noqa: unused - registered via decorator
+            if self._pc is not None and self._pc.connectionState in ("failed", "closed"):
+                self._log(f"WebRTC transport {self._pc.connectionState} → restarting publish")
+                if self._loop is not None:
+                    self._loop.call_soon_threadsafe(self._loop.stop)
+
         sender = self._pc.addTrack(_FrameTrack(self._get_frame, self._fps))
         # Force H.264 ONLY (Quest hardware-decodes it; cheaper on battery/latency).
         # If VP8 is ALSO offered, aiortc's sender falls back to VP8 at encode time
@@ -130,8 +143,11 @@ class WebRTCPublisher:
         await self._pc.setLocalDescription(offer)
 
         def _post():
+            headers = {"Content-Type": "application/sdp"}
+            if self._secret:                      # caddy gates WHIP on this (rover publish)
+                headers["X-Internal-Service"] = self._secret
             return requests.post(self._whip_url, data=self._pc.localDescription.sdp,
-                                 headers={"Content-Type": "application/sdp"}, timeout=10)
+                                 headers=headers, timeout=10)
         resp = await self._loop.run_in_executor(None, _post)
         if resp.status_code not in (200, 201):
             raise RuntimeError(f"WHIP {resp.status_code}: {resp.text[:200]}")

@@ -237,6 +237,7 @@ class PerceptionNode(Node):
 
         self._server_url = (_env("SERVER_URL") or "").rstrip("/")
         secret = _env("INTERNAL_SECRET", "")
+        self._internal_secret = secret  # also sent as X-Internal-Service on WHIP publish
         allow_http = (_env("SERVER_URL_ALLOW_HTTP", "false") or "").lower() == "true"
 
         self._device = _env("CAMERA_DEVICE")  # left / SBS device; None → auto-probe
@@ -721,7 +722,8 @@ class PerceptionNode(Node):
                                 self._webrtc_pub_2d.stop()
                             self._webrtc_next_2d = now + 5.0
                             self._webrtc_pub_2d = WebRTCPublisher(
-                                self._whip_url_2d, self._fps, self.get_logger().info)
+                                self._whip_url_2d, self._fps, self.get_logger().info,
+                                self._internal_secret)
                             self._webrtc_pub_2d.start()
                         if self._webrtc_pub_2d is not None:
                             self._webrtc_pub_2d.push_frame(out)
@@ -735,7 +737,8 @@ class PerceptionNode(Node):
                                 self._webrtc_pub_vr.stop()
                             self._webrtc_next_vr = now + 5.0
                             self._webrtc_pub_vr = WebRTCPublisher(
-                                self._whip_url_vr, self._fps, self.get_logger().info)
+                                self._whip_url_vr, self._fps, self.get_logger().info,
+                                self._internal_secret)
                             self._webrtc_pub_vr.start()
                         if self._webrtc_pub_vr is not None and right_frame is not None:
                             sbs = self._detector.rectify_sbs(frame, right_frame)
