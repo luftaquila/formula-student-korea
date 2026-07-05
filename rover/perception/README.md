@@ -76,10 +76,13 @@ match is valid, plus a marker + distance at the **whole-frame nearest point**.
 The heavy SGBM runs on a downscaled copy (`VIZ_DEPTH_SCALE`) so the real image
 stays crisp while depth stays cheap; the marker maps back to the base with a
 simple scale (base and depth share the rectified frame). Rendered on the rover,
-so the server/browser just relay the JPEG. Falls back to the plain stream with
-no calibration. Benchmarked on the Pi 5 (720p base, 512×288 depth, 3WAY): ~5 fps
-on one core (NAVIGATING) / ~10 fps on three (paused/idle). The plain stream and
-the obstacle detector are unaffected.
+so the server/browser just relay the JPEG. Falls back to the plain stream with no
+calibration (labelled so the operator isn't left guessing), and is suppressed
+entirely while NAVIGATING — the safety detector owns the compute budget during
+autonomous driving, so the composite resumes only when the mission pauses (incl.
+an obstacle auto-pause, exactly when you want to inspect). Benchmarked on the Pi 5
+(720p base, 512×288 depth, 3WAY): ~10 fps on three cores when paused/idle (~5 fps
+single-core). The plain stream and the obstacle detector are unaffected.
 
 ## How detection works (Phase 3)
 
@@ -140,7 +143,7 @@ a video device restarts the unit via `fsk-perception-replug.service`.
 | `CAMERA_VIEW` | left | sbs layout only: `left`\|`right`\|`full` crop. Dual streams the left eye whole. |
 | `OBSTACLE_DETECTION` | true | master switch; `false` disables detection entirely |
 | `DETECT_FPS` | 4 | detection rate (sub-samples capture; a few fps is plenty) |
-| `STEREO_SGBM_MODE` | 3way | block matcher: `3way` (fast, multi-core), `sgbm` (accurate, single-core), `hh`/`hh4`. Applies to detection AND the live depth composite. |
+| `STEREO_SGBM_MODE` | sgbm | OBSTACLE DETECTION block matcher: `sgbm` (full 5-path, most accurate — safety default), `3way` (~2x faster, less accurate), `hh`/`hh4`. The live composite always uses `3way` regardless (its accuracy is cosmetic). |
 | `VIZ_NEAR_M` / `VIZ_FAR_M` | 0.3 / 5.0 | live composite: depth range mapped to the heatmap colours + near clip for the nearest-point marker |
 | `VIZ_DEPTH_SCALE` | 0.4 | live composite: depth-compute size as a fraction of the calib (base) size — base renders sharp at full res, SGBM runs on this downscaled copy (0.4 of 720p → 512×288) |
 | `VIZ_THREADS_IDLE` | 3 | OpenCV threads for the composite while NOT navigating (paused/idle); forced to 1 while NAVIGATING so it can't starve the control tick |
