@@ -40,6 +40,11 @@ class CloudLink:
         self._running = True
         # Set while an operator is watching (server camera-start..camera-stop).
         self.stream_wanted = threading.Event()
+        # Set while an operator has toggled the depth composite on (server
+        # depth-on..depth-off). A sub-mode of streaming: only meaningful while
+        # stream_wanted is also set. The capture loop reads it to decide whether
+        # to render the both-eyes depth composite instead of the plain eye.
+        self.depth_wanted = threading.Event()
         # Called with the square size (m) when the server requests a calibration
         # (operator pressed 교정). Set by the node; runs on the SSE thread.
         self.on_calibrate = None
@@ -117,8 +122,10 @@ class CloudLink:
             except Exception as e:  # noqa: BLE001 - keep the loop alive
                 self._log(f"control SSE error: {e}")
             # Server/stream gone → don't keep trying to push frames into a
-            # dead relay; the capture loop drops the stream branch.
+            # dead relay; the capture loop drops the stream branch. The server
+            # re-sends camera-start / depth-on on reconnect if still wanted.
             self.stream_wanted.clear()
+            self.depth_wanted.clear()
             if self._running:
                 time.sleep(delay)
                 delay = min(delay * 2, SSE_RECONNECT_MAX_S)
@@ -158,6 +165,10 @@ class CloudLink:
             self.stream_wanted.set()
         elif event == "camera-stop":
             self.stream_wanted.clear()
+        elif event == "depth-on":
+            self.depth_wanted.set()
+        elif event == "depth-off":
+            self.depth_wanted.clear()
         elif event == "calibrate":
             square_m = 0.025
             try:

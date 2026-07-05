@@ -6,8 +6,11 @@ concerns off the same device (a UVC node allows only one opener, so they must
 share one loop):
 
   - Streaming (operator-driven): while the server reports an operator is
-    watching (CloudLink.stream_wanted), crop one eye, JPEG-encode, POST to the
-    MJPEG relay. Unchanged from Phase 2.
+    watching (CloudLink.stream_wanted), JPEG-encode a frame and POST it to the
+    MJPEG relay. Normally the plain left eye; when the operator also toggles the
+    depth view on (CloudLink.depth_wanted) and a calibration is loaded, the frame
+    is a both-eyes composite instead — the sharp rectified left eye with a depth
+    heatmap + nearest-point distance overlaid (stereo.compute_composite).
   - Obstacle detection (mission-driven): while the navigator is NAVIGATING and
     a stereo calibration is loaded, run stereo depth on the two eyes (dual-node
     by default) at a low rate; on a debounced obstacle in the driving corridor,
@@ -127,10 +130,17 @@ class PerceptionNode(Node):
         self._device = _env("CAMERA_DEVICE")  # left / SBS device; None → auto-probe
         self._width = _env_int("CAMERA_WIDTH", 1280)
         self._height = _env_int("CAMERA_HEIGHT", 480)
-        self._fps = max(1, _env_int("CAMERA_FPS", 8))
+        # Default above the ~13 fps the 720p cam actually delivers, so the camera
+        # (not this cap) is the limiter; lower via env on a constrained uplink.
+        self._fps = max(1, _env_int("CAMERA_FPS", 15))
         self._quality = min(100, max(1, _env_int("CAMERA_JPEG_QUALITY", 70)))
         self._view = (_env("CAMERA_VIEW", "left") or "left").lower()
         self._detect_fps = max(1, _env_int("DETECT_FPS", 4))
+        # OpenCV threads for the live depth composite while the mission is NOT
+        # NAVIGATING (paused/idle — when the operator usually watches). While
+        # NAVIGATING it is forced to 1 so block matching can't starve the
+        # navigator's control tick (same reason detection caps STEREO_CV_THREADS).
+        self._viz_threads_idle = max(1, _env_int("VIZ_THREADS_IDLE", 3))
         self._detect_master = (_env("OBSTACLE_DETECTION", "true") or "").lower() != "false"
         # Stereo layout. "dual": the two eyes are SEPARATE /dev/video nodes
         # (the rover's "Stereo Vision" cam — left=video0, right=video2); the
@@ -493,34 +503,41 @@ class PerceptionNode(Node):
             # never restarts it).
             try:
                 due = detect and (t0 - last_detect) >= detect_interval
+                # Live depth composite is wanted when an operator toggled it on, a
+                # calibration is loaded, and we have two eyes (dual). Unlike
+                # detection, it needs the right eye during PLAIN streaming too —
+                # every streamed frame, not just at the detect rate.
+                depth_stream = (stream and self._cloud.depth_wanted.is_set()
+                                and self._detector.enabled and self._layout == "dual")
+                # Protect the navigator's control tick: 1 OpenCV thread while
+                # NAVIGATING (detection may also be running); allow more cores for
+                # the composite only when the mission is paused/idle. Set every
+                # iteration so the count can't get stuck high across state changes.
+                cv2.setNumThreads(1 if self._nav_state == DRIVING_STATE
+                                  else self._viz_threads_idle)
                 right_frame = None
-                if due and self._layout == "dual":
+                if (due or depth_stream) and self._layout == "dual":
                     if right_cap is None and t0 >= right_open_after:
                         right_cap = open_capture(self._right_device, self._width,
                                                  self._height, self.get_logger().warn)
                         if right_cap is None:
                             # Open failed (missing/flaky device) — back off so we
-                            # don't spam open() + its log every detect cycle; the
-                            # gate retries once the window elapses. Set ONLY on a
-                            # real attempt, never on a gated-out cycle, or the
-                            # window would keep sliding forward and never reopen.
+                            # don't spam open() + its log every cycle; the gate
+                            # retries once the window elapses. Set ONLY on a real
+                            # attempt, never on a gated-out cycle, or the window
+                            # would keep sliding forward and never reopen.
                             right_open_after = t0 + RIGHT_OPEN_RETRY_S
                     if right_cap is not None:
                         # Re-grab BOTH eyes back-to-back (grab→grab→retrieve) so
-                        # the detection pair is near-simultaneous despite the
-                        # unsynchronised USB cams. The left frame read at the top
-                        # of the loop was for streaming and may be tens of ms
-                        # stale by now; on success this replaces it with the
-                        # synced left. On any grab miss keep the streaming frame
-                        # and skip detection this cycle (transient right-eye glitch
-                        # must not silently kill detection — drop the handle and
-                        # back off the reopen).
+                        # the pair is near-simultaneous despite the unsynchronised
+                        # USB cams. The left frame read at the top of the loop was
+                        # for streaming and may be tens of ms stale by now; on
+                        # success this replaces it with the synced left. On any
+                        # grab miss keep the streaming frame and skip depth/detect
+                        # this cycle (a transient right-eye glitch must not silently
+                        # kill either — drop the handle and back off the reopen).
                         pair = stereo.read_stereo_pair(cap, right_cap)
                         if pair is None:
-                            # Either eye's grab/retrieve missed. Drop the lazily
-                            # opened right handle and back off its reopen; a left
-                            # miss is independently recovered by the read-fail path
-                            # at the top of the loop next iteration.
                             self.get_logger().warn("stereo re-grab failed; reopening right eye")
                             release_right()
                             right_frame = None
@@ -529,8 +546,15 @@ class PerceptionNode(Node):
                             frame, right_frame = pair
 
                 if stream:
-                    # dual: stream the left eye whole. sbs: crop per CAMERA_VIEW.
-                    out = frame if self._layout == "dual" else crop_view(frame, self._view)
+                    # Depth composite (rectified left + heatmap + nearest marker/
+                    # distance) when toggled on + calibrated + we have the pair;
+                    # otherwise the plain eye (left whole in dual, cropped in sbs).
+                    if depth_stream and right_frame is not None:
+                        out, _cinfo = self._detector.compute_composite(frame, right_frame)
+                        if out is None:                 # calibration vanished mid-stream
+                            out = frame
+                    else:
+                        out = frame if self._layout == "dual" else crop_view(frame, self._view)
                     ok2, buf = cv2.imencode(".jpg", out, encode_params)
                     # Re-check stream_wanted: a camera-stop may have arrived during
                     # read/encode, and we shouldn't push a frame nobody's watching.
