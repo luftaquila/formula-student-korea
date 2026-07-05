@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, watch, inject } from "vue";
+import { useRouter } from "vue-router";
 import L from "leaflet";
 import { request } from "../api.js";
 import { useNotification } from "@shared/useNotification.js";
@@ -12,6 +13,7 @@ import { buildEnrichedJSON } from "@lib/course-export.mjs";
 import { renderTwoPanelPNG } from "../export/panel-canvas.js";
 import JSZip from "jszip";
 import { isAdmin } from "@shared/officialsStore.js";
+import { useWhepStream } from "../composables/useWhepStream.js";
 
 const { error: notifyError, warning: notifyWarn } = useNotification();
 const stopping = inject("stopping", ref(false));
@@ -3730,19 +3732,53 @@ async function sendControl() {
 const cameraOn = ref(false);
 const cameraError = ref(false);
 const cameraReqId = ref(0);
+// WebRTC is the PRIMARY 2D source (H.264, ~5-10× less uplink than MJPEG). We go
+// straight to it — no MJPEG-first hop. The MJPEG <img> is a pure fallback, opened
+// ONLY if WebRTC can't establish within a grace window or drops mid-session (e.g.
+// a restrictive network with no viable ICE path). `mjpegFallback` gates that.
+const mjpegFallback = ref(false);
+let webrtcFallbackTimer = null;
+const WEBRTC_FALLBACK_MS = 8000;   // WebRTC connect grace before falling back to MJPEG
+// Low-latency WebRTC (rover-2d mono/composite). Preferred when connected; the
+// MJPEG <img> stays as the fallback. The depth composite still works (the rover
+// renders it into this stream too, same as MJPEG).
+const cameraVideoEl = ref(null);
+const cameraImgEl = ref(null);   // MJPEG fallback — needs an explicit src-clear to abort
+const webrtc = useWhepStream();
+// Top-level ref so the template/watch auto-unwrap it. `connected` (track
+// negotiated, stable — no videoWidth blips) drives the MJPEG fallback and the
+// "no signal" notice, so both settle the instant the WebRTC track arrives/dies.
+const webrtcConnected = webrtc.connected;
 // Both-eyes depth composite toggle (rendered on the rover). Only meaningful while
 // the camera is on; the server resets it when the last viewer leaves. Kept in
 // sync with the server's reported state via pollCameraStatus (s.depth).
 const cameraDepthOn = ref(false);
 let cameraStatusPoll = null;
 let cameraLastOkAt = 0;            // last poll that saw fresh frames (ms)
+// 1×1 transparent GIF. Assigning this as the <img> src replaces (and thus aborts)
+// the in-flight MJPEG multipart load — a reliable teardown Chrome does NOT do when
+// the element is merely removed from the DOM.
+const BLANK_IMG = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 const cameraStreamUrl = computed(() => {
-  if (!cameraOn.value) return "";
+  // Open the MJPEG <img> ONLY as a fallback: WebRTC not negotiated AND the grace
+  // window elapsed / it dropped (mjpegFallback). Once WebRTC is `connected`, the
+  // fallback drops (→ mjpeg-off, rover stops JPEG) so a normal 2D session pays only
+  // the low-bandwidth H.264 and never the MJPEG-first hop.
+  if (!cameraOn.value || webrtc.connected.value || !mjpegFallback.value) return "";
   const base = import.meta.env.PROD ? "/course" : "";
   // cameraReqId is the cache-bust AND the reconnect lever: bumping it makes the
   // <img> re-request a fresh stream (multipart/x-mixed-replace does NOT
   // auto-reconnect after a server restart / dropped socket).
   return `${base}/api/rover/camera/stream?t=${cameraReqId.value}`;
+});
+// Text shown over the (black) video box while nothing is rendering yet. Hidden once
+// WebRTC is PLAYING or the MJPEG fallback is visible; surfaces "연결 중…" during the
+// normal WebRTC negotiate/decode window and "카메라 신호 없음" when everything is dead.
+const cameraOverlayText = computed(() => {
+  if (!cameraOn.value || webrtc.playing.value) return "";
+  if (cameraError.value) return "카메라 신호 없음";
+  if (cameraStreamUrl.value) return "";   // MJPEG fallback is on-screen
+  return "연결 중…";
 });
 // The MJPEG <img> only fires `error` if the HTTP connection breaks — when it
 // stays open but no frames arrive (no camera / server restarted and the <img>
@@ -3757,28 +3793,47 @@ async function pollCameraStatus() {
     // Reflect the server's authoritative depth-mode state (it resets to off when
     // the last viewer leaves, and a mid-session perception reconnect restores it).
     cameraDepthOn.value = !!s.depth;
-    const healthy = s.camera_connected
-      && s.last_frame_age_ms != null && s.last_frame_age_ms < 3000;
-    cameraError.value = !healthy;
-    if (healthy) {
+    if (webrtc.connected.value) {
+      // WebRTC track negotiated — the MJPEG frame-age (stale by design once mjpeg
+      // is off) says nothing about health. Use `connected` (stable), not `playing`
+      // (videoWidth, which blips to 0 on a resolution change) so a momentary blip
+      // can't surface a phantom "카메라 신호 없음" behind the live video.
+      cameraError.value = false;
       cameraLastOkAt = Date.now();
-    } else if (s.camera_connected && s.viewers === 0 && Date.now() - cameraLastOkAt > 5000) {
-      // The rover is connected but the server has ZERO viewers — our <img>
-      // socket died server-side (server restart / proxy drop) while we still
-      // think it's open. Re-request the stream to re-register and resume.
-      // (If viewers > 0 the server still has us and frames are merely absent —
-      // a dead/unplugged camera — so reconnecting wouldn't help; we just show
-      // "신호 없음" and avoid churning the control channel.)
-      cameraReqId.value = Date.now();
-      cameraLastOkAt = Date.now();
+    } else if (mjpegFallback.value) {
+      // MJPEG fallback is the active source — now its frame-age reflects health.
+      const healthy = s.camera_connected
+        && s.last_frame_age_ms != null && s.last_frame_age_ms < 3000;
+      cameraError.value = !healthy;
+      if (healthy) {
+        cameraLastOkAt = Date.now();
+      } else if (s.camera_connected && s.viewers === 0 && Date.now() - cameraLastOkAt > 5000) {
+        // Rover connected but server has ZERO viewers — our <img> socket died
+        // server-side (restart / proxy drop). Re-request to re-register + resume.
+        cameraReqId.value = Date.now();
+        cameraLastOkAt = Date.now();
+      }
+    } else {
+      // WebRTC still negotiating (no fallback yet) — a stale MJPEG age is expected
+      // (mjpeg is off), not a fault. Stay in the "연결 중…" state, not "신호 없음".
+      cameraError.value = false;
     }
   } catch { /* keep last known state */ }
 }
 function stopCameraStream() {
+  // Abort the MJPEG <img> BEFORE v-if unmounts it: Chrome does NOT cancel an
+  // in-flight multipart/x-mixed-replace load when the element is merely removed
+  // from the DOM, so a stop during the pre-WebRTC MJPEG phase would otherwise leak
+  // the socket (rover keeps sending JPEG) — and each reopen stacks another one.
+  // Swapping src to a blank data URI is a load the browser DOES abort the prior one for.
+  if (cameraImgEl.value) cameraImgEl.value.src = BLANK_IMG;
   cameraOn.value = false;
   cameraError.value = false;
+  mjpegFallback.value = false;
+  if (webrtcFallbackTimer) { clearTimeout(webrtcFallbackTimer); webrtcFallbackTimer = null; }
   cameraDepthOn.value = false;   // server drops the depth mode when the last viewer leaves
   if (cameraStatusPoll) { clearInterval(cameraStatusPoll); cameraStatusPoll = null; }
+  webrtc.stop();
 }
 // Idempotent "ensure the stream is on" — used by the toggle and by the obstacle
 // auto-open, which must not toggle a manually-opened stream back off.
@@ -3786,14 +3841,43 @@ function startCamera() {
   if (cameraOn.value) return;
   cameraOn.value = true;
   cameraError.value = false;
+  mjpegFallback.value = false;   // go straight to WebRTC; no MJPEG-first hop
   cameraReqId.value = Date.now();
   cameraLastOkAt = Date.now();   // grace the cold-start window before reconnecting
   pollCameraStatus();
   cameraStatusPoll = setInterval(pollCameraStatus, 2000);
+  // Fall back to the MJPEG <img> only if WebRTC hasn't negotiated within the grace
+  // window (e.g. a network with no viable ICE path) — the operator must never be
+  // left blind. Cleared the instant WebRTC connects (watch below).
+  if (webrtcFallbackTimer) clearTimeout(webrtcFallbackTimer);
+  webrtcFallbackTimer = setTimeout(() => {
+    if (cameraOn.value && !webrtc.connected.value) mjpegFallback.value = true;
+  }, WEBRTC_FALLBACK_MS);
+  // WebRTC (rover-2d) primary + gating hold. nextTick so the <video> ref exists
+  // (the panel is v-if="cameraOn").
+  const base = import.meta.env.PROD ? "/course" : "";
+  nextTick(() => {
+    webrtc.start(cameraVideoEl.value,
+      `${base}/api/rtc/rover-2d/whep`,
+      `${base}/api/rover/camera/hold?mode=2d`);
+  });
 }
-function toggleCamera() {
-  if (cameraOn.value) { stopCameraStream(); return; }
-  startCamera();
+// WebRTC connect state drives the MJPEG fallback: connected → drop it (WebRTC is
+// the source); a mid-session DROP (was connected, now terminal failed/closed) →
+// re-raise it so the operator keeps a picture while WebRTC retries in the background.
+watch(webrtcConnected, (isConnected, was) => {
+  if (isConnected) mjpegFallback.value = false;
+  else if (was && cameraOn.value) mjpegFallback.value = true;
+});
+const router = useRouter();
+function goVr() { router.push("/vr"); }
+// Single camera button cycles three modes so there's no separate 거리 오버레이
+// button: off → plain 2D → depth overlay → off. The label stays "카메라"; the
+// active highlight + the video itself (plain vs heatmap) show which mode is live.
+function cycleCamera() {
+  if (!cameraOn.value) { startCamera(); return; }        // off → plain 2D
+  if (!cameraDepthOn.value) { toggleDepth(); return; }   // 2D → depth overlay
+  stopCameraStream();                                     // depth → off
 }
 // Toggle the both-eyes depth composite (rectified left + depth heatmap + nearest
 // distance). The rover renders it; this just flips the stream mode. Optimistic UI
@@ -3814,13 +3898,11 @@ async function toggleDepth() {
 function onCameraError() {
   cameraError.value = true;
 }
-// A rover SSE drop flips connected false→true; just flag the gap. Do NOT tear
-// the stream down — the operator's intent (cameraOn) is preserved and
-// pollCameraStatus auto-reconnects the <img> once the rover is back, instead of
-// leaving them with a permanently black box after a transient blip.
-watch(() => roverStatus.value.connected, (connected) => {
-  if (!connected && cameraOn.value) cameraError.value = true;
-});
+// NOTE: camera health is judged solely by pollCameraStatus (the camera relay's own
+// status) — NOT by the mission SSE's rover.connected. Those are independent channels:
+// a transient mission-SSE blip used to eagerly paint the opaque "카메라 신호 없음"
+// over a perfectly healthy live feed until the next 2s poll cleared it. pollCameraStatus
+// (WebRTC connected → clear; MJPEG fallback → frame-age) already covers a real outage.
 // The rover panel is v-show (stays mounted), so leaving the tab would keep the
 // MJPEG <img> connected and the rover capturing invisibly. Stop on tab-leave.
 watch(activeTab, (tab) => {
@@ -4254,6 +4336,12 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  // Route navigation (e.g. the VR button → /vr) unmounts this view. Without this,
+  // the camera's WebRTC hold SSE + retry intervals + peer connection leak and the
+  // rover keeps encoding rover-2d with nobody watching (each open→leave→return
+  // stacks another orphan toward MAX_CAMERA_VIEWERS). watch(activeTab) only covers
+  // in-page tab switches, not route changes.
+  if (cameraOn.value) stopCameraStream();
   stopReplay();
   // MapView is the sole writer of the App-owned sseReconnecting ref; clear it
   // so the "reconnecting" badge can't stick on after this view tears down.
@@ -5159,24 +5247,35 @@ onUnmounted(() => {
                     >수동 제어</button>
                   </div>
 
-                  <!-- Live camera (MJPEG, relayed via the course server). Opening
-                       the stream tells the rover to start capturing; closing it
-                       stops capture. Useful for manual driving / clearing an
-                       obstacle while paused. -->
-                  <div v-if="roverStatus.connected" class="rover-controls rover-controls-grid">
+                  <!-- Live camera (WebRTC, relayed via the course server). The one
+                       카메라 button cycles off → 2D → depth overlay → off; the VR
+                       button opens the headset teleop view (usable to preview even
+                       while the rover is offline, so it stays enabled). -->
+                  <div class="rover-controls rover-controls-grid">
                     <button
                       :class="['btn', 'btn-lg-touch', cameraOn ? 'btn-primary' : 'btn-ghost']"
-                      @click="toggleCamera"
+                      :disabled="!roverStatus.connected"
+                      @click="cycleCamera"
                     >카메라</button>
                     <button
-                      v-if="cameraOn"
-                      :class="['btn', 'btn-lg-touch', cameraDepthOn ? 'btn-primary' : 'btn-ghost']"
-                      @click="toggleDepth"
-                    >거리 오버레이</button>
+                      class="btn btn-lg-touch btn-ghost"
+                      @click="goVr"
+                    >VR</button>
                   </div>
                   <div v-if="cameraOn" class="camera-view">
-                    <img v-if="cameraStreamUrl" :src="cameraStreamUrl" alt="rover camera" @error="onCameraError" />
-                    <div v-if="cameraError" class="camera-error">카메라 신호 없음</div>
+                    <!-- WebRTC (low-latency H.264) is the PRIMARY source — we connect
+                         straight to it ("연결 중…" over black during the brief
+                         negotiate/decode). The MJPEG <img> only appears as a fallback
+                         (mjpegFallback) if WebRTC can't establish or drops. The video
+                         is always rendered so it decodes (a display:none video may
+                         never reach playing). -->
+                    <video ref="cameraVideoEl" autoplay muted playsinline></video>
+                    <!-- The <img> stays MOUNTED; when WebRTC is playing we swap its
+                         src to a 1×1 blank so Chrome ABORTS the multipart/x-mixed-replace
+                         request (removing the element via v-if leaves that sticky
+                         connection open → the rover keeps sending JPEG = wasted uplink). -->
+                    <img ref="cameraImgEl" v-show="cameraStreamUrl" :src="cameraStreamUrl || BLANK_IMG" class="camera-fallback" alt="rover camera" @error="onCameraError" />
+                    <div v-if="cameraOverlayText" class="camera-error">{{ cameraOverlayText }}</div>
                   </div>
 
                   <div v-if="pathDistance > 0" class="path-info">
@@ -6180,9 +6279,23 @@ onUnmounted(() => {
   min-height: 80px;
   position: relative;
 }
-.camera-view img { display: block; width: 100%; height: auto; }
+/* Video always fills a 16:9 box (sized even with no frames yet, so the container
+   doesn't collapse); the MJPEG fallback overlays it until WebRTC is playing. */
+.camera-view video { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; }
+.camera-view img.camera-fallback { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+/* Overlay (absolute), NOT normal-flow: a normal-flow block would add its own
+   height to .camera-view, making the container taller than the video's 16:9 box —
+   the absolute MJPEG <img> (object-fit:contain) would then letterbox top/bottom
+   inside the taller box. Absolute inset:0 keeps the container at the video's
+   height, so no phantom bars whether or not this notice is shown. */
 .camera-error {
-  padding: 1rem 0.75rem;
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
   color: var(--text-secondary);
   font-size: 0.85rem;
   text-align: center;

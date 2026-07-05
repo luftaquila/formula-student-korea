@@ -960,6 +960,23 @@ describe('POST /api/rover/camera/depth', () => {
   });
 });
 
+// ─── Rover minimap tile proxy ────────────────────────────────────────────
+describe('GET /api/rover/map-tile', () => {
+  it('rejects unauthenticated requests', async () => {
+    const res = await client.get('/api/rover/map-tile?z=18&x=1&y=1');
+    assert.equal(res.status, 401);
+  });
+
+  it('400s on out-of-range / non-integer / missing tile coords', async () => {
+    // Guards the SSRF-adjacent proxy: only valid slippy-map indices reach fetch.
+    // (The success path hits an external tile server, so it's not covered here.)
+    for (const q of ['z=99&x=0&y=0', 'z=18&x=-1&y=0', 'z=18&x=0', 'z=1.5&x=0&y=0', 'z=2&x=4&y=0']) {
+      const res = await client.get(`/api/rover/map-tile?${q}`, { cookie: adminCookie });
+      assert.equal(res.status, 400, `expected 400 for ?${q}`);
+    }
+  });
+});
+
 // ─── Rover telemetry / status ───────────────────────────────────────────
 describe('Rover telemetry + status (internal)', () => {
   it('rejects telemetry without internal secret', async () => {
@@ -2074,6 +2091,55 @@ describe('Camera relay', () => {
       'last viewer also clears the depth mode (depth-off)');
     st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
     assert.equal(st.depth, false, 'depth mode resets when the last viewer leaves');
+
+    stopCtl();
+    ctlAc.abort();
+  });
+
+  it('depth works for a WebRTC-only 2D viewer (no MJPEG) and clears on leave', async () => {
+    // Regression: the 2D operator panel streams via WebRTC — it holds open a
+    // camera/hold?mode=2d gating viewer and pulls NO MJPEG <img>. The depth
+    // composite is baked into the rover's shared `out` frame (feeding both the
+    // MJPEG relay AND rover-2d WebRTC), so depth must gate on ANY 2D viewer, not
+    // just the MJPEG cameraViewers (which are zero in a WebRTC session).
+    const ctlAc = new AbortController();
+    const ctl = await fetch(`${url}/api/rover/camera/control`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ctlAc.signal,
+    });
+    assert.equal(ctl.status, 200);
+    const ctlSink = {};
+    const stopCtl = pump(ctl.body.getReader(), ctlSink);
+    await sleep(60);
+
+    // A WebRTC 2D gating viewer (mode=2d hold). No MJPEG viewer at all.
+    const holdAc = new AbortController();
+    const hold = await fetch(`${url}/api/rover/camera/hold?mode=2d`, {
+      headers: { Cookie: adminCookie, Accept: 'text/event-stream' }, signal: holdAc.signal,
+    });
+    assert.equal(hold.status, 200);
+    const holdSink = {};
+    const stopHold = pump(hold.body.getReader(), holdSink);
+    assert.ok(await waitFor(() => ctlSink.text.includes('webrtc-2d-on'), 1000),
+      'a 2D hold viewer starts the rover-2d WebRTC publish');
+    // A WebRTC-only session must NOT be counted as an MJPEG viewer (no JPEG encode).
+    const st0 = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
+    assert.equal(st0.viewers, 0, 'a WebRTC 2D viewer is not an MJPEG viewer');
+
+    // Depth on with ONLY the WebRTC 2D viewer present → relays depth-on + latches.
+    const dOn = await cli.post('/api/rover/camera/depth', { body: { on: true }, cookie: adminCookie });
+    assert.equal((await dOn.json()).depth, true, 'depth turns on for a WebRTC-only 2D viewer');
+    assert.ok(await waitFor(() => ctlSink.text.includes('depth-on'), 1000),
+      'depth-on is relayed to perception for a WebRTC 2D viewer');
+    assert.equal((await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()).depth, true);
+
+    // The last 2D viewer leaves → depth clears (depth-off) so a reopen starts plain.
+    stopHold();
+    holdAc.abort();
+    assert.ok(await waitFor(() => ctlSink.text.includes('depth-off'), 1500),
+      'the last 2D viewer leaving clears depth (depth-off)');
+    assert.equal((await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()).depth, false,
+      'depth resets when the last 2D viewer leaves');
 
     stopCtl();
     ctlAc.abort();

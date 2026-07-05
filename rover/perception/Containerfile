@@ -30,7 +30,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /opt/perception/requirements.txt
-RUN pip install --no-cache-dir --break-system-packages -r /opt/perception/requirements.txt
+# aiortc pulls a newer `cryptography` than the ros:jazzy base's apt-installed one,
+# which pip can't uninstall ("Cannot uninstall cryptography … RECORD file not found …
+# installed by debian"). Install a fresh cryptography first with --ignore-installed so
+# the requirements install doesn't try to remove the distro package; the numpy 1.x /
+# opencv pins are already satisfied so they're left untouched (keeps the rclpy ABI).
+RUN pip install --no-cache-dir --break-system-packages --ignore-installed cryptography \
+    && pip install --no-cache-dir --break-system-packages -r /opt/perception/requirements.txt
 
 # All perception sources: perception_node.py (entrypoint), cloud_link.py,
 # stereo.py, and stereo_calibrate.py (run on-demand via `podman run ... python3

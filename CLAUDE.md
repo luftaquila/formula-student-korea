@@ -24,6 +24,8 @@ Formula Student Korea Service Hub — microservices web app for vehicle entry, i
 
 All 10 backend services share `Dockerfile.service` (root) with `ARG SERVICE` + `ARG PORT`. Shared modules in `shared/`.
 
+**mediamtx** (WebRTC relay for the rover camera) is a 14th component but is **k3s-only** (deployed via the GitOps repo, not in `compose.yml`). caddy proxies `/course/api/rtc/*` → `mediamtx:8889` for WHIP/WHEP signaling; the rover (aiortc) publishes `rover-2d`/`rover-vr` and the course frontend plays via WHEP. In a local compose stack this route has no backend, so WebRTC is unavailable there (MJPEG fallback only).
+
 **Service dependencies** (env vars in `compose.yml`):
 - entry, inspection, traffic, documents, course, email, calendar → auth (`AUTH_SERVER`)
 - queue → entry (`ENTRY_SERVER`), auth (`AUTH_SERVER`), email (`EMAIL_SERVER`)
@@ -36,7 +38,7 @@ All non-auth services validate via `AUTH_SERVER` (fail-close: only 200 confirms 
 
 ## Tech Stack
 
-Frontend: Vue 3, Vite, Vue Router, Pinia (traffic/energymeter only) · Backend: Node.js 22, Express.js 5, Better-SQLite3 · Auth: Google OAuth 2.0, JWT (HMAC-SHA256) cookies, RBAC · Real-time: SSE (inspection, queue, score, traffic, course) · Deploy: Docker Compose + Caddy · Testing: `node:test` + `node:assert`, Playwright (E2E)
+Frontend: Vue 3, Vite, Vue Router, Pinia (traffic/energymeter only) · Backend: Node.js 22, Express.js 5, Better-SQLite3 · Auth: Google OAuth 2.0, JWT (HMAC-SHA256) cookies, RBAC · Real-time: SSE (inspection, queue, score, traffic, course) + WebRTC (rover camera — WHIP/WHEP via mediamtx, `aiortc` on the rover, three.js/WebXR in the course `/vr` view) · Deploy: Docker Compose + Caddy · Testing: `node:test` + `node:assert`, Playwright (E2E)
 
 ## Commands
 

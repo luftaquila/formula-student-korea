@@ -2,6 +2,13 @@
 # rclpy / std_msgs come from the ros:jazzy-ros-base image, not pip.
 opencv-contrib-python-headless>=4.9,<4.10   # UVC capture, JPEG encode, stereo SGBM + ximgproc WLS disparity filter (hole-fill + confidence)
 requests>=2.31                      # control SSE + frame/obstacle POST to the course server
+# WebRTC (low-latency H.264) publish to the course server's mediamtx relay: aiortc
+# does WHIP/ICE/SRTP, av (PyAV) is the H.264 encoder (its wheel bundles ffmpeg+x264,
+# so no apt libs needed). The import is guarded (perception_node.py) — without these
+# the node runs MJPEG-only, so they are REQUIRED for the WebRTC 2D/VR streams.
+# Verified together on the rover (aarch64): aiortc 1.14.0 + av 16.1.0.
+aiortc>=1.14,<2                     # WHIP publisher — webrtc_pub.py
+av>=16,<17                          # PyAV H.264 encode for aiortc
 # Pin <2: ros:jazzy-ros-base ships numpy 1.x and rclpy / the opencv 4.9 wheel are
 # built against the numpy 1.x ABI — numpy 2.x would break `import cv2` / rclpy.
 numpy>=1.24,<2                      # depth-map math (stereo.py); also an opencv dependency

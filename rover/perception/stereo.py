@@ -499,6 +499,19 @@ class StereoDepth:
         """Resize an eye to the calibrated size, rectify, return grayscale."""
         return self._rectify_eye(eye, map_x, map_y, size, to_gray=True)
 
+    def rectify_sbs(self, left, right):
+        """Rectified COLOUR left|right eyes packed side-by-side, for stereo VR
+        streaming. Rectification row-aligns the two eyes (same stored calibration
+        as depth) so they fuse comfortably in the headset. Returns an ndarray of
+        width 2×eye or None if no calibration is loaded."""
+        if not self.enabled or self._calib is None:
+            return None
+        c = self._calib
+        size = c["image_size"]  # (w, h) of one rectified eye
+        lr = self._rectify_eye(left, c["map1x"], c["map1y"], size, to_gray=False)
+        rr = self._rectify_eye(right, c["map2x"], c["map2y"], size, to_gray=False)
+        return np.hstack([lr, rr])
+
     def compute_depth(self, left, right, scale=1.0):
         """Left + right eye frames → (depth_z metres, valid mask, conf) at `scale`×
         the calibration resolution. None if disabled.

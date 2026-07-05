@@ -2,8 +2,12 @@
 
 Owns the rover's USB stereo webcam and serves two concerns off it:
 
-1. **Streaming (Phase 2)** — relays JPEG frames (the left eye) to the operator
-   via the course server's MJPEG relay, capturing only while someone is watching.
+1. **Streaming (Phase 2)** — sends live video to the operator, capturing only
+   while someone is watching. **WebRTC (H.264) is the primary path**: the node
+   WHIP-publishes to the course server's `mediamtx` relay as two streams —
+   `rover-2d` (mono / depth composite, for the 2D panel) and `rover-vr`
+   (rectified left|right side-by-side stereo, for the WebXR VR view). The MJPEG
+   relay (JPEG POST → `multipart/x-mixed-replace`) remains as the fallback.
 2. **Obstacle detection (Phase 3)** — while the rover is driving a mission, runs
    stereo depth on the two eyes and, on a corridor obstacle, pauses the mission
    **locally over ROS** so the operator can drive around it.
@@ -30,8 +34,9 @@ regardless.
  perception_node.py                                        course server
  ─────────────────                                         ─────────────
   capture loop (one device)
-   ├─ stream branch  ──POST /api/rover/camera (jpeg)──────►  MJPEG relay → browser
-   │   (only while an operator is watching)
+   ├─ stream branch  (only while an operator is watching)
+   │    ├─ WebRTC (H.264) ─WHIP→ mediamtx ─WHEP→ browser   [primary: rover-2d / rover-vr]
+   │    └─ MJPEG ─POST /api/rover/camera (jpeg)→ relay → browser   [fallback]
    │
    └─ detect branch  (only while nav_state == NAVIGATING)
         stereo depth → corridor obstacle?
@@ -51,19 +56,33 @@ goes through the server (`/api/rover/resume`) exactly like an operator pause.
 
 | File | Role |
 |------|------|
-| `perception_node.py` | entrypoint: rclpy node, owns the camera capture loop, wires streaming + detection |
-| `cloud_link.py` | all HTTP to the server — control SSE (stream on/off), frame POST, obstacle alert POST |
-| `stereo.py` | stereo depth + the pure (cv2-free) corridor-obstacle decision + edge debounce |
+| `perception_node.py` | entrypoint: rclpy node, owns the camera capture loop, wires streaming (MJPEG + WebRTC) + detection |
+| `cloud_link.py` | all HTTP to the server — control SSE (camera-start/stop, mjpeg-on/off, webrtc-2d/vr-on/off, depth-on/off), JPEG frame POST, obstacle alert POST |
+| `webrtc_pub.py` | aiortc WHIP publisher — H.264-encodes pushed frames (via PyAV) and streams them to a mediamtx WHIP endpoint; one publisher per stream (rover-2d, rover-vr) |
+| `stereo.py` | stereo depth + rectified SBS (`rectify_sbs`, for the VR stream) + the pure (cv2-free) corridor-obstacle decision + edge debounce |
 | `stereo_calibrate.py` | one-time checkerboard calibration tool (run on-demand, see below) |
 
 ## How streaming works (Phase 2)
 
 Tailscale-free, outbound-only like `pilot`: the node holds a control SSE to the
-server; the server emits `camera-start` when an operator opens the live view and
-`camera-stop` when the last viewer leaves. While streaming is wanted the capture
-loop JPEG-encodes one eye — the left node whole in dual layout, or `CAMERA_VIEW`
-cropped from the SBS frame — and POSTs each frame; the server fans them to
-browsers as `multipart/x-mixed-replace`.
+server. The server tracks viewers and emits fine-grained gating on that channel
+so the rover only does the work someone is watching: `camera-start`/`camera-stop`
+(any viewer at all), `webrtc-2d-on`/`webrtc-vr-on` (a WebRTC viewer of that stream
+is holding), and `mjpeg-on` (an MJPEG fallback `<img>` viewer is attached).
+
+- **WebRTC (primary).** On `webrtc-2d-on`/`webrtc-vr-on` the node lazily starts a
+  `webrtc_pub.py` WHIP publisher for that stream and pushes frames to mediamtx,
+  which relays them to the browser over WHEP. `rover-2d` carries the mono left eye
+  (or the depth composite); `rover-vr` carries the rectified left|right
+  side-by-side stereo (`stereo.rectify_sbs`) that the VR view splits per eye. Each
+  stream is encoded only while its viewer is present, so a 2D-only session pays no
+  VR cost and vice-versa. Frames are paced to `CAMERA_FPS`; the WHIP URLs are built
+  from `SERVER_URL` (`/api/rtc/rover-2d/whip`, `/api/rtc/rover-vr/whip`).
+- **MJPEG (fallback).** On `mjpeg-on` the capture loop also JPEG-encodes one eye —
+  the left node whole in dual layout, or `CAMERA_VIEW` cropped from the SBS frame —
+  and POSTs each frame; the server fans them to browsers as
+  `multipart/x-mixed-replace`. The browser only opens this if WebRTC can't
+  negotiate (e.g. a network with no viable ICE path) or drops mid-session.
 
 ### Depth composite (operator toggle)
 
@@ -75,9 +94,10 @@ full resolution** with a **translucent depth heatmap** overlaid where the stereo
 match is valid, plus a marker + distance at the **whole-frame nearest point**.
 The heavy SGBM runs on a downscaled copy (`VIZ_DEPTH_SCALE`) so the real image
 stays crisp while depth stays cheap; the marker maps back to the base with a
-simple scale (base and depth share the rectified frame). Rendered on the rover,
-so the server/browser just relay the JPEG. Falls back to the plain stream with no
-calibration (labelled so the operator isn't left guessing). **Detection and the
+simple scale (base and depth share the rectified frame). Rendered on the rover
+into the shared 2D output frame, so both the MJPEG relay and the `rover-2d` WebRTC
+stream carry it; the server gates it on any 2D viewer (MJPEG or WebRTC hold). Falls
+back to the plain stream with no calibration (labelled so the operator isn't left guessing). **Detection and the
 composite share ONE stereo depth pass per frame** (`compute_depth` → `decide` +
 `render_composite`), so the composite adds only a cheap overlay — no second SGBM —
 and stays available even while NAVIGATING without starving the detector (during
@@ -130,7 +150,9 @@ so mode barely affects end-to-end rate).
 | `ghcr.io/luftaquila/fsk-rover-perception:{candidate,edge,vX.Y.Z}` | `Containerfile` | `podman auto-update` (24 h, in-place) |
 
 `ros:jazzy-ros-base` (rclpy/std_msgs) + `opencv-python-headless` + `numpy` +
-`requests`.
+`requests` + `aiortc` + `av` (PyAV — the H.264 encoder for the WebRTC publish; its
+wheel bundles ffmpeg+x264, so no extra apt libs). Without `aiortc`/`av` the guarded
+import fails and the node runs **MJPEG-only** — they are required for the WebRTC streams.
 
 ## Runtime
 
@@ -144,14 +166,15 @@ a video device restarts the unit via `fsk-perception-replug.service`.
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `SERVER_URL` | — | course server base (from `/etc/pilot/pilot.conf`) |
+| `SERVER_URL` | — | course server base (from `/etc/pilot/pilot.conf`); also builds the WHIP publish URLs `{SERVER_URL}/api/rtc/rover-2d/whip` + `/rover-vr/whip` |
+| `SERVER_URL_ALLOW_HTTP` | false | allow a plain `http://` SERVER_URL (WHIP/SSE over http); otherwise `https` is required |
 | `INTERNAL_SECRET` | — | `X-Internal-Service` auth (podman secret) |
 | `ROS_DOMAIN_ID` | 0 | must match `pilot` (from `/etc/pilot/pilot.conf`) |
 | `STEREO_LAYOUT` | dual | `dual` (two `/dev/video` nodes) \| `sbs` (one side-by-side frame) |
 | `CAMERA_DEVICE` | auto | left eye / SBS device; blank → probe `/dev/video0..9` (dual pins `video0`) |
 | `STEREO_RIGHT_DEVICE` | `/dev/video2` | right eye (dual layout) |
 | `CAMERA_WIDTH` / `CAMERA_HEIGHT` | 1280 / 480 | capture resolution per device (rover cam delivers 1280×720; set 720) |
-| `CAMERA_FPS` | 15 | max frames/s pushed while streaming (the 720p cam delivers ~13, so this is above the hardware ceiling; lower on a constrained uplink) |
+| `CAMERA_FPS` | 15 | max frames/s pushed while streaming — paces BOTH the MJPEG POST and the WebRTC frame track (the 720p cam delivers ~13, so this is above the hardware ceiling; lower on a constrained uplink) |
 | `CAMERA_JPEG_QUALITY` | 70 | 1–100 |
 | `CAMERA_VIEW` | left | sbs layout only: `left`\|`right`\|`full` crop. Dual streams the left eye whole. |
 | `OBSTACLE_DETECTION` | true | master switch; `false` disables detection entirely |

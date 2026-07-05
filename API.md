@@ -511,8 +511,8 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | POST | `/api/rover/antenna_calibration_result` | internal/admin | `{ ... }` | 200 | 안테나 캘리브레이션 결과 보고 |
 | POST | `/api/rover/wheel_calibration_result` | internal/admin | `{ ... }` | 200 | 휠 캘리브레이션 결과 보고 |
 | POST | `/api/rover/calibration-progress` | internal | `{ ... }` | 200 | 스테레오 캘리브레이션 진행률 보고 |
-| POST | `/api/rover/camera` | internal | `image/jpeg` (≤3MB) | 200 | 카메라 프레임 push (서버가 뷰어에 MJPEG 릴레이) |
-| GET | `/api/rover/camera/control` | internal | — | SSE stream | perception 컨테이너의 카메라 제어 채널 |
+| POST | `/api/rover/camera` | internal | `image/jpeg` (≤3MB) | 200 | 카메라 프레임 push (서버가 뷰어에 MJPEG 릴레이). WebRTC가 기본 경로이므로 이건 **폴백** — MJPEG 뷰어가 있을 때만(`mjpeg-on`) 로버가 POST |
+| GET | `/api/rover/camera/control` | internal | — | SSE stream | perception 컨테이너의 카메라 제어 채널. 서버가 캡처/스트림 제어 이벤트를 전송: `camera-start`/`camera-stop`, `mjpeg-on`/`mjpeg-off`, `webrtc-2d-on`/`webrtc-2d-off`, `webrtc-vr-on`/`webrtc-vr-off`, `depth-on`/`depth-off`. 각 스트림은 해당 뷰어가 있을 때만 인코딩 |
 
 ### Rover — 운용 (관리자 → 서버 → 로버)
 
@@ -539,8 +539,29 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | POST | `/api/rover/reset-wheel-cal` | admin | — | 200 | 휠 캘리브레이션 초기화 |
 | GET | `/api/rover/logs` | internal/admin | — | `{ entries, uploaded_at }` | 업로드된 로버 로그 조회 |
 | POST | `/api/rover/logs/fetch` | admin | — | 200 | 로버에 로그 업로드 요청 (SSE 이벤트) |
-| GET | `/api/rover/camera/stream` | admin | — | MJPEG stream | 라이브 카메라 스트림 (최대 8 뷰어, ≤~25fps 릴레이) |
-| GET | `/api/rover/camera/status` | admin | — | `{ streaming, viewers, last_frame_age_ms, ... }` | 카메라 릴레이 상태 |
+| GET | `/api/rover/camera/stream` | admin | — | MJPEG stream | 카메라 MJPEG 스트림 (최대 8 뷰어, ≤~25fps 릴레이). WebRTC(WHEP) 실패/드롭 시의 **폴백** — 뷰어가 붙으면 서버가 `mjpeg-on`을 로버에 전달 |
+| GET | `/api/rover/camera/hold` | admin | `?mode=2d\|vr` | SSE stream | WebRTC **게이팅 전용** 뷰어. MJPEG 프레임은 안 받고, 로버가 캡처 + 해당 WebRTC 스트림(`mode=2d`→`rover-2d`, `mode=vr`→`rover-vr`)을 publish하도록 유지. 2D 패널/VR 뷰가 세션 동안 열어둠 |
+| POST | `/api/rover/camera/depth` | admin | `{ on }` | `{ ok, depth, camera_connected }` | 양안 깊이 컴포지트(정류 좌안 + 깊이 히트맵 + 최근접 거리, 로버가 렌더) 토글. 2D 뷰어(MJPEG `cameraViewers` **또는** WebRTC `holdViewers2d`)가 있어야 적용 — 뷰어 없으면 무시. 마지막 2D 뷰어 이탈 시 자동 해제 |
+| GET | `/api/rover/camera/status` | admin | — | `{ camera_connected, viewers, depth, last_frame_age_ms }` | 카메라 릴레이 상태. `camera_connected`=perception 제어 SSE 연결됨, `viewers`=MJPEG 뷰어 수, `depth`=컴포지트 모드, `last_frame_age_ms`=서버 계산 프레임 경과(뷰어 없으면 null) |
+| GET | `/api/rover/map-tile` | admin | `?z=&x=&y=` | image (jpeg/png) | VR 미니맵용 위성 타일 **동일 출처 프록시**. WebGL 캔버스가 교차 출처 타일로 오염되지 않도록 VWorld(서버측 `VWORLD_KEY`)·구글 타일을 서버가 대신 가져와 전달. z/x/y는 slippy-map(XYZ) 인덱스, 범위 밖이면 400 |
+
+### Rover 카메라 — WebRTC 시그널링 (mediamtx, WHIP/WHEP)
+
+저지연 카메라(H.264)는 별도 `mediamtx` 릴레이를 통한 WebRTC로 전달된다. caddy가 `/course/api/rtc/*`를 `mediamtx:8889`로 리버스 프록시하며(`landing/Caddyfile`), 시그널링 SDP만 HTTP로 타고 미디어는 별도 UDP/SRTP다. mediamtx는 permit-all + ClusterIP 전용(외부에서 직접 접근 불가)이라 **caddy의 게이트가 곧 접근 제어**다 — 시그널링 교환 없이는 SRTP 키를 세울 수 없어 미디어 포트만으로는 무용하다:
+
+- **WHIP(로버 publish)**: caddy가 `X-Internal-Service` = `INTERNAL_SECRET`를 요구(없으면 403). 로버가 이 헤더를 실어 발행.
+- **WHEP(브라우저 play)**: caddy `forward_auth`로 **admin 세션** 요구(비admin은 401/403).
+
+mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없다 — 로컬 compose 스택에선 WebRTC가 동작하지 않고 MJPEG 폴백만 쓰인다.
+
+| 방향 | 경로 | 인증 | 스트림 | 설명 |
+|------|------|------|--------|------|
+| 로버 publish (WHIP) | `POST /course/api/rtc/rover-2d/whip` | X-Internal-Service | rover-2d | 모노 / 깊이 컴포지트 (2D 패널). aiortc가 발행 |
+| 로버 publish (WHIP) | `POST /course/api/rtc/rover-vr/whip` | X-Internal-Service | rover-vr | 정류 좌·우 side-by-side 스테레오 (VR 뷰) |
+| 브라우저 play (WHEP) | `POST /course/api/rtc/rover-2d/whep` | admin | rover-2d | 2D 운영 패널이 재생 |
+| 브라우저 play (WHEP) | `POST /course/api/rtc/rover-vr/whep` | admin | rover-vr | WebXR VR 뷰가 재생 (눈별 분할) |
+
+로버는 `SERVER_URL`로 WHIP URL을 구성하고, publish 게이팅은 `/api/rover/camera/hold`(위 표)가 담당한다. 프론트는 `course/web/src/composables/useWhepStream.js`(2D)·`course/web/src/views/VrView.vue`(VR)에서 WHEP로 재생하며, WebRTC가 기본이고 MJPEG(`/api/rover/camera/stream`)은 폴백이다.
 
 ### Missions (admin)
 
