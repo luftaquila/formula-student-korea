@@ -357,6 +357,17 @@
 | 8.15b | 미션 종료 | admin | `POST /api/rover/end-mission` | 보존된 미션을 명시적으로 마감 (운영자가 path 폐기 시 자동 호출) |
 | 8.16 | 수동 제어 | admin | `POST /api/rover/control` | 조이스틱 UI로 throttle/steering(-100~100) 50ms 간격 전송, SSE `manual-control` 이벤트 |
 
+### 카메라 & VR 텔레오퍼레이션
+
+저지연 카메라는 WebRTC(H.264, `mediamtx` 릴레이, WHIP/WHEP)가 기본 경로이고 MJPEG은 폴백이다. 로버 perception이 두 스트림을 publish한다: `rover-2d`(모노/깊이 컴포지트), `rover-vr`(스테레오 SBS). 각 스트림은 해당 뷰어가 있을 때만 인코딩된다(`camera/control` SSE의 `webrtc-2d-on`/`webrtc-vr-on`/`mjpeg-on` 게이팅).
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 8.18 | 2D 라이브 카메라 | admin | `GET /api/rover/camera/hold?mode=2d` + WHEP `rover-2d` | 카메라 토글 → WebRTC로 **직행**. hold SSE가 로버에 `webrtc-2d-on`을 걸어 publish 시작, 브라우저는 `/course/api/rtc/rover-2d/whep`로 재생. 8초 내 미연결/드롭 시에만 MJPEG(`/api/rover/camera/stream`) 폴백 |
+| 8.19 | 깊이 맵(거리맵) | admin | `POST /api/rover/camera/depth` | 양안 깊이 컴포지트(정류 좌안 + 히트맵 + 최근접 거리)를 로버가 렌더해 `rover-2d`(및 MJPEG)로 송출. 2D 뷰어(MJPEG 또는 WebRTC hold)가 있어야 적용, 마지막 2D 뷰어 이탈 시 자동 해제 |
+| 8.20 | VR 텔레오퍼레이션 | admin | `/vr` (WebXR) + `GET /api/rover/camera/hold?mode=vr` + WHEP `rover-vr` | Meta Quest 3S 등 WebXR 헤드셋에서 스테레오 SBS를 눈별 분할 재생. 오른쪽 스틱 단일 조작(Y=throttle, X=steering)으로 수동 주행, 트리거=펌프, A=비상정지 토글, B=재개 |
+| 8.21 | 장애물 자동 팝오픈 | admin | (프론트) `rover:obstacle` SSE | 주행 중 장애물 감지 브로드캐스트 수신 시 2D 카메라 패널을 자동으로 열어 운영자가 즉시 확인 |
+
 ### SSE 실시간 동기화
 
 | # | 흐름 | 역할 | API | 설명 |

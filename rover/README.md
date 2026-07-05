@@ -55,8 +55,9 @@ Bridge: `mcu_bridge_node`. Firmware CI: `.github/workflows/rover-mcu.yml`.
 ## Architecture
 
 Five ROS 2 Jazzy nodes in the rootful `pilot` container, `--network=host` (a
-separate `perception` container handles camera streaming + stereo obstacle
-detection — it joins this same ROS graph and publishes `/rover/perception/obstacle`,
+separate `perception` container handles camera streaming — WebRTC (H.264, WHIP →
+mediamtx) primary with an MJPEG fallback, plus a WebXR VR stereo stream — and
+stereo obstacle detection — it joins this same ROS graph and publishes `/rover/perception/obstacle`,
 which `navigator_node` turns into a local mission pause; see `perception/`):
 
 ```
@@ -169,7 +170,7 @@ Fleet-wide identical: hardware, NTRIP endpoint, `rover_params.yaml`. Per-rover d
 |-------|----------|---------|------|
 | `ghcr.io/luftaquila/fsk-rover-host:{candidate,edge,vX.Y.Z}` | `host/Containerfile` | `bootc upgrade` (24 h, reboot) | AlmaLinux 10 + Pi 5 firmware/DTB, NM, sshd, tailscale, podman, udev, `pilot.service` + `pilot-run`, `perception.service` + `perception-run`, fsk user |
 | `ghcr.io/luftaquila/fsk-rover-pilot:{candidate,edge,vX.Y.Z}` | `pilot/Containerfile` | `podman auto-update` (24 h, in-place) | ROS 2 Jazzy + the five `pilot` nodes |
-| `ghcr.io/luftaquila/fsk-rover-perception:{candidate,edge,vX.Y.Z}` | `perception/Containerfile` | `podman auto-update` (24 h, in-place) | OpenCV camera streamer + stereo obstacle detection (see `perception/`) |
+| `ghcr.io/luftaquila/fsk-rover-perception:{candidate,edge,vX.Y.Z}` | `perception/Containerfile` | `podman auto-update` (24 h, in-place) | OpenCV camera streamer (WebRTC/aiortc + MJPEG fallback + VR stereo) + stereo obstacle detection (see `perception/`) |
 
 - Host base: `quay.io/almalinuxorg/almalinux-bootc-rpi:10`.
 - Stock `almalinux-bootc:10` lacks Pi 5 firmware and won't boot.
