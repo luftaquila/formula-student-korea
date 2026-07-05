@@ -960,6 +960,23 @@ describe('POST /api/rover/camera/depth', () => {
   });
 });
 
+// ─── Rover minimap tile proxy ────────────────────────────────────────────
+describe('GET /api/rover/map-tile', () => {
+  it('rejects unauthenticated requests', async () => {
+    const res = await client.get('/api/rover/map-tile?z=18&x=1&y=1');
+    assert.equal(res.status, 401);
+  });
+
+  it('400s on out-of-range / non-integer / missing tile coords', async () => {
+    // Guards the SSRF-adjacent proxy: only valid slippy-map indices reach fetch.
+    // (The success path hits an external tile server, so it's not covered here.)
+    for (const q of ['z=99&x=0&y=0', 'z=18&x=-1&y=0', 'z=18&x=0', 'z=1.5&x=0&y=0', 'z=2&x=4&y=0']) {
+      const res = await client.get(`/api/rover/map-tile?${q}`, { cookie: adminCookie });
+      assert.equal(res.status, 400, `expected 400 for ?${q}`);
+    }
+  });
+});
+
 // ─── Rover telemetry / status ───────────────────────────────────────────
 describe('Rover telemetry + status (internal)', () => {
   it('rejects telemetry without internal secret', async () => {

@@ -1545,4 +1545,34 @@ app.post("/api/rover/camera/depth", (req, res) => {
   res.json({ ok: true, depth: cameraDepthWanted, camera_connected: !!cameraControlClient });
 });
 
+// GET /api/rover/map-tile - same-origin satellite tile proxy for the VR minimap
+// (admin). WebGL cannot texture a canvas tainted by cross-origin tiles, so the VR
+// view can't draw VWorld/Google tiles onto its minimap canvas directly — proxy
+// them here (server-side VWORLD_KEY, else a Google fallback) so the canvas stays
+// same-origin. z/x/y are slippy-map (XYZ) tile indices.
+app.get("/api/rover/map-tile", async (req, res) => {
+  const z = Number(req.query.z), x = Number(req.query.x), y = Number(req.query.y);
+  const okInt = (v, hi) => Number.isInteger(v) && v >= 0 && v <= hi;
+  if (!okInt(z, 21) || !okInt(x, (1 << z) - 1) || !okInt(y, (1 << z) - 1)) {
+    return res.status(400).send("bad tile coords");
+  }
+  const key = process.env.VWORLD_KEY;
+  const url = key
+    ? `https://api.vworld.kr/req/wmts/1.0.0/${key}/Satellite/${z}/${y}/${x}.jpeg`
+    : `https://mt0.google.com/vt/lyrs=y&x=${x}&y=${y}&z=${z}&scale=2`;
+  try {
+    const upstream = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!upstream.ok) {
+      logger.warn(req, "rover.map_tile", { error: `upstream ${upstream.status}`, z, x, y }, "rover");
+      return res.status(502).send("tile upstream error");
+    }
+    res.set("Content-Type", upstream.headers.get("content-type") || "image/jpeg");
+    res.set("Cache-Control", "public, max-age=86400");
+    res.send(Buffer.from(await upstream.arrayBuffer()));
+  } catch (e) {
+    logger.warn(req, "rover.map_tile", { error: String(e?.message || e), z, x, y }, "rover");
+    res.status(502).send("tile fetch failed");
+  }
+});
+
 }
