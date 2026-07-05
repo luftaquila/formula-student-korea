@@ -5095,7 +5095,7 @@ onUnmounted(() => {
                     <button
                       :class="['btn', 'btn-lg-touch', followRover ? 'btn-primary' : 'btn-ghost']"
                       @click="toggleFollowRover"
-                    >{{ followRover ? '추적 중' : '추적' }}</button>
+                    >로버 추적</button>
                   </div>
                   <button
                     v-if="roverStatus.connected"
@@ -5111,7 +5111,7 @@ onUnmounted(() => {
                       :class="['btn', 'btn-lg-touch', followRover ? 'btn-primary' : 'btn-ghost']"
                       :disabled="!roverStatus.connected"
                       @click="toggleFollowRover"
-                    >{{ followRover ? '추적 중' : '추적' }}</button>
+                    >로버 추적</button>
                     <button
                       :class="['btn', 'btn-lg-touch', pathBtnClass]"
                       @click="onPathBtn"
@@ -5156,7 +5156,7 @@ onUnmounted(() => {
                       :class="['btn', 'btn-lg-touch', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
                       :disabled="roverMode !== 'manual' && (!roverStatus.connected || (roverMode === 'executing' && roverStatus.nav_state !== 'PAUSED') || roverMode === 'stopped')"
                       @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
-                    >{{ roverMode === 'manual' ? '수동 종료' : '수동 제어' }}</button>
+                    >수동 제어</button>
                   </div>
 
                   <!-- Live camera (MJPEG, relayed via the course server). Opening
@@ -5167,12 +5167,12 @@ onUnmounted(() => {
                     <button
                       :class="['btn', 'btn-lg-touch', cameraOn ? 'btn-primary' : 'btn-ghost']"
                       @click="toggleCamera"
-                    >{{ cameraOn ? '카메라 끄기' : '카메라' }}</button>
+                    >카메라</button>
                     <button
                       v-if="cameraOn"
                       :class="['btn', 'btn-lg-touch', cameraDepthOn ? 'btn-primary' : 'btn-ghost']"
                       @click="toggleDepth"
-                    >{{ cameraDepthOn ? '깊이 끄기' : '깊이' }}</button>
+                    >거리 오버레이</button>
                   </div>
                   <div v-if="cameraOn" class="camera-view">
                     <img v-if="cameraStreamUrl" :src="cameraStreamUrl" alt="rover camera" @error="onCameraError" />
@@ -5245,7 +5245,7 @@ onUnmounted(() => {
                         :class="{ active: pumpOn }"
                         :disabled="pumpBusy"
                         @click="togglePump"
-                      >{{ pumpOn ? 'PUMP ●' : 'PUMP ○' }}</button>
+                      >PUMP</button>
                     </div>
                   </div>
                 </template>
@@ -6499,6 +6499,10 @@ onUnmounted(() => {
 .pump-btn.active {
   background: #2e7d32; border-color: #2e7d32; color: #fff;
 }
+/* Keep the ON (active) green while hovered — the generic :hover:not(:disabled)
+   above is more specific than .active, so without this the background reverts to
+   the inactive hover colour right after clicking (looks off while still on). */
+.pump-btn.active:hover:not(:disabled) { background: #388e3c; border-color: #388e3c; }
 
 /* Cone edit */
 .coord-inputs { display: flex; flex-direction: column; gap: 0.5rem; }
