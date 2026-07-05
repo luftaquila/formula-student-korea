@@ -88,6 +88,18 @@
 			reverse_proxy course:10000
 		}
 
+		# WebRTC signaling (WHIP publish / WHEP play) → mediamtx. Media (SRTP) does
+		# NOT pass here — it's UDP direct to mediamtx (router-forwarded 8189). Only
+		# the HTTP offer/answer rides 443 → same-origin, so CSP connect-src 'self'
+		# covers the browser side.
+		@rtc path /api/rtc/*
+		handle @rtc {
+			request_header -Authuser
+			request_header -X-Forwarded-For
+			uri strip_prefix /api/rtc
+			reverse_proxy mediamtx:8889
+		}
+
 		handle {
 			request_header -X-Internal-Service
 			request_header -Authuser
