@@ -15,6 +15,8 @@ import MapView from "./views/MapView.vue";
 const routes = [
   { path: "/", component: MapView },
   { path: "/missions", redirect: "/" },
+  // VR teleop (Meta Quest 3S, WebXR). Lazy so three.js stays out of the main bundle.
+  { path: "/vr", component: () => import("./views/VrView.vue") },
 ];
 
 const router = createRouter({
