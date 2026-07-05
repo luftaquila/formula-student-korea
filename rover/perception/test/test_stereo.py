@@ -206,7 +206,7 @@ def test_config_from_env_defaults_on_empty():
     assert cfg.viz_far_m == 5.0
     assert cfg.viz_depth_scale == 0.4       # depth at 0.4× base (512×288 from 720p)
     assert cfg.speckle_filter_size == 200
-    assert cfg.viz_edge_margin == 0.08
+    assert cfg.viz_edge_margin == 0.05
 
 
 def test_config_from_env_parses_sgbm_mode_and_viz():

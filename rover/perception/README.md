@@ -152,7 +152,7 @@ a video device restarts the unit via `fsk-perception-replug.service`.
 | `STEREO_SPECKLE_FILTER_SIZE` | 200 | `cv2.filterSpeckles`: drop connected disparity blobs smaller than this (px) as noise. 0 disables. Sized for ~512×288. |
 | `VIZ_NEAR_M` / `VIZ_FAR_M` | 0.3 / 5.0 | live composite: depth range mapped to the heatmap colours + near clip for the nearest-point marker |
 | `VIZ_DEPTH_SCALE` | 0.4 | stereo depth-compute size as a fraction of calib, SHARED by detection + composite (one pass); the composite base still renders sharp at full res. 0.4 of 720p → 512×288. `OBSTACLE_MIN_VALID_PX` auto-scales to this size. |
-| `VIZ_EDGE_MARGIN` | 0.08 | live composite: ignore this fraction of each frame edge when picking the nearest-point marker (keeps it off the top border / the rover's own structure) |
+| `VIZ_EDGE_MARGIN` | 0.05 | live composite: ignore this fraction of each frame edge when picking the nearest-point marker (keeps it off the top border / the rover's own structure) |
 | `VIZ_THREADS_IDLE` | 3 | OpenCV threads for stereo while NOT navigating (paused/idle); drops to `STEREO_CV_THREADS` while NAVIGATING so it can't starve the control tick |
 | `STEREO_CALIB_PATH` | `/var/lib/perception/stereo_calib.npz` | calibration file |
 | `STEREO_NUM_DISPARITIES` | 96 | max disparity searched (multiple of 16); nearest detectable depth |

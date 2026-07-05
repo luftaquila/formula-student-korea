@@ -392,7 +392,7 @@ class StereoConfig:
     # WHOLE-FRAME nearest-point marker. The top of the FOV often holds the rover's
     # own structure / frame-edge disparity, which otherwise pins the marker to the
     # top border every frame; a margin keeps it on a real interior near point.
-    viz_edge_margin: float = 0.08
+    viz_edge_margin: float = 0.05
     # Live composite depth resolution as a fraction of the calibration (base) size.
     # The base image is rendered SHARP at the full calib resolution, but the
     # expensive SGBM depth runs on a downscaled copy (cost ~ pixels × disparity):
@@ -686,5 +686,5 @@ def config_from_env(env=None):
         viz_far_m=_f("VIZ_FAR_M", 5.0),
         viz_depth_scale=_f("VIZ_DEPTH_SCALE", 0.4),
         speckle_filter_size=_i("STEREO_SPECKLE_FILTER_SIZE", 200),
-        viz_edge_margin=_f("VIZ_EDGE_MARGIN", 0.08),
+        viz_edge_margin=_f("VIZ_EDGE_MARGIN", 0.05),
     )
