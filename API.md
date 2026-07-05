@@ -547,14 +547,19 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 
 ### Rover 카메라 — WebRTC 시그널링 (mediamtx, WHIP/WHEP)
 
-저지연 카메라(H.264)는 별도 `mediamtx` 릴레이를 통한 WebRTC로 전달된다. caddy가 `/course/api/rtc/*`를 `mediamtx:8889`로 리버스 프록시하며(`landing/Caddyfile`), 이 경로는 **course 앱을 거치지 않아 course의 admin 게이트를 우회한다**(시그널링 SDP만 HTTP로, 미디어는 별도 UDP/SRTP). mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없다 — 로컬 compose 스택에선 WebRTC가 동작하지 않고 MJPEG 폴백만 쓰인다.
+저지연 카메라(H.264)는 별도 `mediamtx` 릴레이를 통한 WebRTC로 전달된다. caddy가 `/course/api/rtc/*`를 `mediamtx:8889`로 리버스 프록시하며(`landing/Caddyfile`), 시그널링 SDP만 HTTP로 타고 미디어는 별도 UDP/SRTP다. mediamtx는 permit-all + ClusterIP 전용(외부에서 직접 접근 불가)이라 **caddy의 게이트가 곧 접근 제어**다 — 시그널링 교환 없이는 SRTP 키를 세울 수 없어 미디어 포트만으로는 무용하다:
 
-| 방향 | 경로 | 스트림 | 설명 |
-|------|------|--------|------|
-| 로버 publish (WHIP) | `POST /course/api/rtc/rover-2d/whip` | rover-2d | 모노 / 깊이 컴포지트 (2D 패널). aiortc가 발행 |
-| 로버 publish (WHIP) | `POST /course/api/rtc/rover-vr/whip` | rover-vr | 정류 좌·우 side-by-side 스테레오 (VR 뷰) |
-| 브라우저 play (WHEP) | `POST /course/api/rtc/rover-2d/whep` | rover-2d | 2D 운영 패널이 재생 |
-| 브라우저 play (WHEP) | `POST /course/api/rtc/rover-vr/whep` | rover-vr | WebXR VR 뷰가 재생 (눈별 분할) |
+- **WHIP(로버 publish)**: caddy가 `X-Internal-Service` = `INTERNAL_SECRET`를 요구(없으면 403). 로버가 이 헤더를 실어 발행.
+- **WHEP(브라우저 play)**: caddy `forward_auth`로 **admin 세션** 요구(비admin은 401/403).
+
+mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없다 — 로컬 compose 스택에선 WebRTC가 동작하지 않고 MJPEG 폴백만 쓰인다.
+
+| 방향 | 경로 | 인증 | 스트림 | 설명 |
+|------|------|------|--------|------|
+| 로버 publish (WHIP) | `POST /course/api/rtc/rover-2d/whip` | X-Internal-Service | rover-2d | 모노 / 깊이 컴포지트 (2D 패널). aiortc가 발행 |
+| 로버 publish (WHIP) | `POST /course/api/rtc/rover-vr/whip` | X-Internal-Service | rover-vr | 정류 좌·우 side-by-side 스테레오 (VR 뷰) |
+| 브라우저 play (WHEP) | `POST /course/api/rtc/rover-2d/whep` | admin | rover-2d | 2D 운영 패널이 재생 |
+| 브라우저 play (WHEP) | `POST /course/api/rtc/rover-vr/whep` | admin | rover-vr | WebXR VR 뷰가 재생 (눈별 분할) |
 
 로버는 `SERVER_URL`로 WHIP URL을 구성하고, publish 게이팅은 `/api/rover/camera/hold`(위 표)가 담당한다. 프론트는 `course/web/src/composables/useWhepStream.js`(2D)·`course/web/src/views/VrView.vue`(VR)에서 WHEP로 재생하며, WebRTC가 기본이고 MJPEG(`/api/rover/camera/stream`)은 폴백이다.
 
