@@ -930,6 +930,43 @@ describe('POST /api/rover/calibrate-battery', () => {
   });
 });
 
+// ─── Rover camera depth composite toggle ────────────────────────────────
+describe('POST /api/rover/camera/depth', () => {
+  it('rejects unauthenticated requests', async () => {
+    const res = await client.post('/api/rover/camera/depth', { body: { on: true } });
+    assert.equal(res.status, 401);
+  });
+
+  it('toggles the depth view mode on/off (admin) and reflects it in status', async () => {
+    const on = await client.post('/api/rover/camera/depth', {
+      body: { on: true }, cookie: adminCookie,
+    });
+    assert.equal(on.status, 200);
+    const onBody = await on.json();
+    assert.equal(onBody.ok, true);
+    assert.equal(onBody.depth, true);
+    // No perception control channel is connected in the test, so the event isn't
+    // delivered — but the desired state is stored (and re-sent on reconnect).
+    assert.equal(onBody.camera_connected, false);
+
+    const status = await client.get('/api/rover/camera/status', { cookie: adminCookie });
+    assert.equal((await status.json()).depth, true);
+
+    const off = await client.post('/api/rover/camera/depth', {
+      body: { on: false }, cookie: adminCookie,
+    });
+    assert.equal((await off.json()).depth, false);
+    const status2 = await client.get('/api/rover/camera/status', { cookie: adminCookie });
+    assert.equal((await status2.json()).depth, false);
+  });
+
+  it('coerces a missing body to off (no crash)', async () => {
+    const res = await client.post('/api/rover/camera/depth', { body: {}, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).depth, false);
+  });
+});
+
 // ─── Rover telemetry / status ───────────────────────────────────────────
 describe('Rover telemetry + status (internal)', () => {
   it('rejects telemetry without internal secret', async () => {
