@@ -83,8 +83,12 @@ composite share ONE stereo depth pass per frame** (`compute_depth` → `decide` 
 and stays available even while NAVIGATING without starving the detector (during
 NAVIGATING OpenCV drops to `STEREO_CV_THREADS`). Unifying detection onto that same
 downscaled pass also speeds detection up — it clears `DETECT_FPS` with room, so the
-auto-pause reacts sooner. The depth is full SGBM (clean) + `cv2.filterSpeckles`, and
-the marker ignores a `VIZ_EDGE_MARGIN` border so it isn't pinned to the top edge.
+auto-pause reacts sooner. The depth is full SGBM (clean) + `cv2.filterSpeckles`. For
+display, textureless holes are filled (`cv2.inpaint`) + smoothed so the overlay is solid
+and doesn't shimmer (detection keeps the raw depth, so filled pixels can't fabricate an
+obstacle). The nearest marker is placed on the **centroid** of the nearest equidepth region
+(not the argmin pixel, which — with quantised disparity — pins it to the top of the near
+blob), and it ignores a `VIZ_EDGE_MARGIN` border.
 Benchmarked on the Pi 5 (720p base, 512×288 depth, full SGBM ~23 fps compute):
 composite ~8 fps on three cores when paused/idle (~5 fps single-core; rectify-bound,
 so mode barely affects end-to-end rate).

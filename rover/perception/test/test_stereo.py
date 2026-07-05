@@ -254,6 +254,18 @@ def test_nearest_point_none_when_nothing_valid():
     assert (x, y) == (-1, -1)
 
 
+def test_nearest_point_marks_region_centroid_not_top():
+    # A large equidepth near region ties at the minimum; the marker must land on
+    # the region's CENTROID, not (as argmin would) its top-left-most pixel.
+    depth = np.full((20, 20), 5.0, np.float32)
+    depth[8:14, 6:12] = 1.0                  # 6×6 near block, all equal depth
+    valid = np.ones((20, 20), bool)
+    z, x, y = stereo.nearest_point(depth, valid, near_m=0.3)
+    assert z == pytest.approx(1.0)
+    assert 9 <= y <= 12                      # centroid (~10.5), not the top row (8)
+    assert 7 <= x <= 10                      # centroid (~8.5)
+
+
 def test_nearest_point_ignores_invalid_closer_pixel():
     depth = np.full((10, 10), 2.0, np.float32)
     depth[1, 1] = 0.5                        # closer, but its match is invalid

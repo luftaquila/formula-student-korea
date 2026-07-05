@@ -114,25 +114,27 @@ def obstacle_in_roi(depth_z, valid, roi_frac, near_m, far_m, min_fill,
     return (fill >= min_fill), fill, near_count, valid_count
 
 
-def nearest_point(depth_z, valid, near_m, far_m=None):
-    """Nearest valid pixel over the WHOLE frame — the live-view marker. Pure numpy.
+def nearest_point(depth_z, valid, near_m, far_m=None, tol_m=0.15):
+    """Nearest valid region over the WHOLE frame — the live-view marker. Pure numpy.
 
-    Returns (z_m, x, y) of the closest valid pixel whose depth is in
-    [near_m, far_m] (far_m None → no far clip), or (nan, -1, -1) if none qualify.
-    The near clip rejects lens-edge / speckle depth that would otherwise report an
-    absurd sub-decimetre 'nearest'. This is deliberately NOT the corridor decision
-    (obstacle_in_roi): the operator's live view marks the single closest thing
-    anywhere in frame, while the auto-pause only cares about the driving corridor.
+    Returns (z_m, x, y): z is the closest in-band depth, and (x, y) is the CENTROID
+    of the pixels within tol_m of that closest depth — NOT the raw argmin. Depth is
+    quantised (integer disparity steps), so a whole equidepth near region ties at
+    the minimum, and argmin would return its top-left-most pixel — which pins the
+    marker to the TOP of the near blob rather than a representative nearest point.
+    The centroid puts it in the middle of the nearest region. (nan, -1, -1) if none
+    qualify. The near clip rejects lens-edge / speckle depth. This is deliberately
+    NOT the corridor decision (obstacle_in_roi) — the auto-pause owns that.
     """
     m = valid & np.isfinite(depth_z) & (depth_z >= near_m)
     if far_m is not None:
         m = m & (depth_z <= far_m)
     if not np.any(m):
         return float("nan"), -1, -1
-    # argmin over depth with non-qualifying pixels pushed to +inf.
-    z = np.where(m, depth_z, np.inf)
-    y, x = np.unravel_index(int(np.argmin(z)), z.shape)
-    return float(depth_z[y, x]), int(x), int(y)
+    zmin = float(depth_z[m].min())
+    band = m & (depth_z <= zmin + tol_m)          # the nearest equidepth region
+    ys, xs = np.nonzero(band)
+    return zmin, int(round(float(xs.mean()))), int(round(float(ys.mean())))
 
 
 # ── debounce (no cv2) ───────────────────────────────────────────────────────
@@ -599,18 +601,25 @@ class StereoDepth:
         if base.ndim == 2:
             base = cv2.cvtColor(base, cv2.COLOR_GRAY2BGR)
 
-        # Depth → colour with NEAR = warm; upscale to the base size; blend only
-        # where the match is valid.
+        # Depth → colour with NEAR = warm. Textureless surfaces (floor, glass,
+        # walls) leave many invalid holes that flicker frame-to-frame ("자글거림");
+        # for the DISPLAY ONLY, fill them from neighbours and smooth so the overlay
+        # is solid and stable. Detection is unaffected — decide() runs on the raw
+        # depth/valid, so filled (invented) depth can never fabricate an obstacle.
         near = self.cfg.viz_near_m
         far = max(self.cfg.viz_far_m, near + 0.1)
         norm = np.clip((depth_z - near) / (far - near), 0.0, 1.0)
-        heat = cv2.applyColorMap(((1.0 - norm) * 255).astype(np.uint8), cv2.COLORMAP_JET)
-        mask = (valid.astype(np.uint8)) * 255
+        du8 = ((1.0 - norm) * 255).astype(np.uint8)      # near = bright; garbage where invalid
+        holes = (~valid).astype(np.uint8) * 255
+        if np.any(holes):
+            du8 = cv2.inpaint(du8, holes, 3, cv2.INPAINT_TELEA)   # fill holes from neighbours
+        du8 = cv2.medianBlur(du8, 5)                     # de-shimmer
+        heat = cv2.applyColorMap(du8, cv2.COLORMAP_JET)
         if (heat.shape[1], heat.shape[0]) != size:
             heat = cv2.resize(heat, size, interpolation=cv2.INTER_LINEAR)
-            mask = cv2.resize(mask, size, interpolation=cv2.INTER_NEAREST)
-        blended = cv2.addWeighted(base, 1.0 - alpha, heat, alpha, 0.0)
-        out = np.ascontiguousarray(np.where((mask > 0)[:, :, None], blended, base))
+        # Uniform translucent overlay over the whole (now hole-free) frame — the
+        # sharp base still shows through the alpha.
+        out = np.ascontiguousarray(cv2.addWeighted(base, 1.0 - alpha, heat, alpha, 0.0))
 
         # Whole-frame nearest (at the depth-map res) → scale marker coords up to the
         # base by the actual size ratio (handles any depth scale). Ignore an edge
