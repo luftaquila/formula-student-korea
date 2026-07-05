@@ -16,9 +16,9 @@
  * satellite tiles (proxied same-origin) centered on the rover, live position marker,
  * left-controller keys zoom it.
  *
- * Controls — right controller: stick = throttle (Y) + steering (X), trigger = pump,
- * A = emergency-stop TOGGLE (stop ↔ clear), B = resume. Left controller: X/Y =
- * minimap zoom out/in.
+ * Controls — right controller only: stick = throttle (Y) + steering (X), trigger =
+ * pump, grip (middle finger) = emergency-stop TOGGLE (stop ↔ clear), A / B =
+ * minimap zoom in / out.
  */
 import { onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
@@ -28,7 +28,7 @@ import { request } from "../api.js";
 import { useRoverControl } from "../composables/useRoverControl.js";
 import { useNotification } from "@shared/useNotification.js";
 
-const { error: notifyError, warning: notifyWarn, success: notifySuccess } = useNotification();
+const { error: notifyError, warning: notifyWarn } = useNotification();
 const router = useRouter();
 const containerEl = ref(null);
 const control = useRoverControl();
@@ -60,6 +60,7 @@ let minimapCanvas = null;
 let minimapCtx = null;
 let minimapTexture = null;
 const usingWebrtc = ref(false); // true once the WHEP video is delivering frames
+const hasVideo = ref(false);    // any picture up (WebRTC OR the MJPEG fallback)
 
 const STREAM_BASE = import.meta.env.PROD ? "/course" : "";
 const DEADZONE = 0.08; // thumbstick rest drift
@@ -80,8 +81,15 @@ let evtSource = null;
 
 // ── minimap (VWorld satellite via same-origin tile proxy) ──────────────────────
 const MINIMAP_PX = 512;
+// Fallback centre when the rover has no GPS fix — the course-management default
+// (matches MapView's initial setView), so the minimap shows the venue, not black.
+const DEFAULT_CENTER = { lat: 35.292012, lng: 126.574415 };
 const MINIMAP_ZOOM_MIN = 15;
 const MINIMAP_ZOOM_MAX = 20;
+// VWorld satellite tiles top out at native zoom 19; past it we upscale the z19
+// tiles (like Leaflet's maxNativeZoom) instead of requesting non-existent tiles
+// (which came back as black holes).
+const MINIMAP_NATIVE_MAX = 19;
 let minimapZoom = 18;
 let minimapDirty = true;
 const TILE_CACHE_MAX = 300;   // bound decoded-tile memory over a long session
@@ -115,25 +123,31 @@ function drawMinimap() {
   const S = MINIMAP_PX, ctx = minimapCtx;
   ctx.fillStyle = "#0a0f14";
   ctx.fillRect(0, 0, S, S);
-  const pos = roverPos.value;
-  if (pos) {
-    const z = minimapZoom;
-    const n = 2 ** z;
-    const latRad = (pos.lat * Math.PI) / 180;
-    // slippy-map world pixel of the rover (Web Mercator, 256px tiles)
-    const xW = ((pos.lng + 180) / 360) * n * 256;
-    const yW = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n * 256;
-    const originX = xW - S / 2;  // world px at canvas (0,0) — rover centered
-    const originY = yW - S / 2;
-    const tx0 = Math.floor(originX / 256), tx1 = Math.floor((originX + S) / 256);
-    const ty0 = Math.floor(originY / 256), ty1 = Math.floor((originY + S) / 256);
-    for (let tx = tx0; tx <= tx1; tx++) {
-      for (let ty = ty0; ty <= ty1; ty++) {
-        if (tx < 0 || ty < 0 || tx >= n || ty >= n) continue;
-        const img = getTile(z, tx, ty);
-        if (img) ctx.drawImage(img, Math.round(tx * 256 - originX), Math.round(ty * 256 - originY));
-      }
+  // Always show tiles: centre on the live rover position, or the course default
+  // area when there's no GPS fix (so it's never a black box).
+  const live = roverPos.value;
+  const pos = live || DEFAULT_CENTER;
+  const z = minimapZoom;
+  const tz = Math.min(z, MINIMAP_NATIVE_MAX);  // fetch native-max tiles past 19…
+  const f = 2 ** (z - tz);                     // …and upscale them by this factor
+  const tsize = 256 * f;                       // on-canvas size of one native tile
+  const nt = 2 ** tz;
+  const latRad = (pos.lat * Math.PI) / 180;
+  // slippy-map centre in DISPLAY pixels (native tile px × upscale factor)
+  const xW = ((pos.lng + 180) / 360) * nt * 256 * f;
+  const yW = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * nt * 256 * f;
+  const originX = xW - S / 2;  // display px at canvas (0,0) — centre stays centred
+  const originY = yW - S / 2;
+  const tx0 = Math.floor(originX / tsize), tx1 = Math.floor((originX + S) / tsize);
+  const ty0 = Math.floor(originY / tsize), ty1 = Math.floor((originY + S) / tsize);
+  for (let tx = tx0; tx <= tx1; tx++) {
+    for (let ty = ty0; ty <= ty1; ty++) {
+      if (tx < 0 || ty < 0 || tx >= nt || ty >= nt) continue;
+      const img = getTile(tz, tx, ty);
+      if (img) ctx.drawImage(img, Math.round(tx * tsize - originX), Math.round(ty * tsize - originY), tsize, tsize);
     }
+  }
+  if (live) {
     // rover marker (heading-oriented arrow) fixed at centre
     const hdg = gps.value && typeof gps.value.heading === "number" ? gps.value.heading : null;
     ctx.save();
@@ -147,21 +161,26 @@ function drawMinimap() {
     ctx.closePath(); ctx.fill(); ctx.stroke();
     ctx.restore();
   } else {
-    ctx.fillStyle = "#33ff88";
-    ctx.font = "600 30px monospace";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("NO GPS", S / 2, S / 2);
+    // No-fix marker (centre); the map still shows the course default area.
+    ctx.fillStyle = "rgba(255,204,68,0.95)";
+    ctx.font = "600 24px monospace";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("NO FIX", S / 2, S / 2);
   }
-  // frame + zoom label
+  // GPS lat / lng bottom-left (one per line); horizontal accuracy bottom-right.
+  ctx.fillStyle = "#33ff88";
+  ctx.font = "600 22px monospace";
+  ctx.textBaseline = "bottom";
+  ctx.textAlign = "left";                       // 16px inset all round (matches bottom margin)
+  ctx.fillText("LAT " + (live ? live.lat.toFixed(6) : "--"), 16, S - 44);
+  ctx.fillText("LON " + (live ? live.lng.toFixed(6) : "--"), 16, S - 16);
+  const ha = typeof gps.value?.h_acc === "number" ? gps.value.h_acc : null;
+  ctx.textAlign = "right";
+  ctx.fillText("±" + (ha != null ? ha.toFixed(2) : "--") + " m", S - 16, S - 16);
+  // frame
   ctx.strokeStyle = "rgba(51,255,136,0.5)";
   ctx.lineWidth = 4;
   ctx.strokeRect(2, 2, S - 4, S - 4);
-  ctx.fillStyle = "#33ff88";
-  ctx.font = "600 24px monospace";
-  ctx.textAlign = "left";
-  ctx.textBaseline = "top";
-  ctx.fillText(`MAP  Z${minimapZoom}`, 12, 12);
   minimapTexture.needsUpdate = true;
 }
 
@@ -312,20 +331,21 @@ function pollInput(session) {
     if (src.handedness === "right") {
       throttle = -dz(sy) * 100; // stick up = forward
       steering = dz(sx) * 100;  // stick right = steer right
-      if (edge("A", b[4]).rising) toggleEstop(); // A: stop ↔ clear
-      if (edge("B", b[5]).rising) resumeMission(); // B
+      if (edge("A", b[4]).rising) setMinimapZoom(+1); // A: minimap zoom in
+      if (edge("B", b[5]).rising) setMinimapZoom(-1); // B: minimap zoom out
+      // Grip (squeeze, middle finger) = emergency stop. Separate finger from the
+      // thumb (stick) and index (trigger/pump), so it can't be nudged while driving.
+      if (edge("GRIP", b[1]).rising) toggleEstop();
       const trig = edge("TRIG", b[0]);
       if (trig.rising) setPump(true);
       if (trig.falling) setPump(false);
-    } else if (src.handedness === "left") {
-      // X (b[4]) = minimap zoom out, Y (b[5]) = zoom in.
-      if (edge("LX", b[4]).rising) setMinimapZoom(-1);
-      if (edge("LY", b[5]).rising) setMinimapZoom(+1);
     }
   }
   control.setInput(throttle, steering);
 }
 
+// Grip toggles the e-stop, decided from the live nav_state: /stop while running,
+// /clear-emergency when already latched. So the headset can both stop AND release.
 function toggleEstop() {
   const clearing = navState.value === "EMERGENCY_STOP";
   const path = clearing ? "/api/rover/clear-emergency" : "/api/rover/stop";
@@ -334,11 +354,6 @@ function toggleEstop() {
     .then(() => notifyWarn(clearing ? "비상정지 해제" : "비상정지 전송됨"))
     .catch((e) => notifyError((clearing ? "해제" : "정지") + " 실패: " + e.message));
 }
-function resumeMission() {
-  request("/api/rover/resume", { method: "POST" })
-    .then(() => notifySuccess("미션 재개"))
-    .catch((e) => notifyError("재개 실패: " + e.message));
-}
 function setPump(on) {
   if (pumpOn === on) return;
   pumpOn = on;
@@ -346,86 +361,122 @@ function setPump(on) {
     .catch((e) => notifyError("펌프 제어 실패: " + e.message));
 }
 
-// ── fighter-jet HUD (head-locked, drawn to a transparent canvas texture) ───────
+// ── HUD (head-locked, drawn to a transparent canvas texture) ───────────────────
 function fmtSigned(v) {
   const n = Math.round(v);
   return (n > 0 ? "+" : "") + n;
 }
+// Long nav states blow past the VR FOV; abbreviate to fixed short codes.
+function navShort(s) {
+  if (!s) return "STANDBY";
+  return { EMERGENCY_STOP: "E-STOP", NAVIGATING: "DRIVE", SETTLING: "SETTLE",
+    SPRAYING: "SPRAY", PAUSED: "PAUSED", IDLE: "IDLE" }[s] || s;
+}
+// Fighter-jet style: airspeed/throttle on the LEFT, altitude/systems on the RIGHT,
+// bore reticle + heading + link status down the CENTRE — the classic framing. Every
+// cell is LEFT-aligned monospace with a fixed-width label, so a value changing length
+// never shifts the existing glyphs (no jitter) and no cell overlaps another. Kept
+// well inside the headset FOV (short values, columns pulled toward centre) — the wide
+// corner layout ran off the edges.
+const FIX_SHORT = {
+  rtk_fixed: "RTK", rtk_float: "FLT", "3d_fix": "3D", "2d_fix": "2D", time_only: "NO", no_fix: "NO",
+};
 function drawHud() {
   if (!hudCtx) return;
-  const c = hudCanvas, ctx = hudCtx, W = c.width, H = c.height;
-  const G = "#33ff88";
-  const M = 44;
+  const ctx = hudCtx, W = hudCanvas.width, H = hudCanvas.height;
+  const G = "#33ff88", cx = W / 2, cy = H / 2;
   ctx.clearRect(0, 0, W, H);
-  ctx.strokeStyle = G;
-  ctx.fillStyle = G;
-  ctx.lineWidth = 2;
-  ctx.shadowColor = "rgba(51,255,136,0.55)";
-  ctx.shadowBlur = 8;
-  ctx.font = "600 28px monospace";
+  ctx.strokeStyle = G; ctx.fillStyle = G; ctx.lineWidth = 2.5;
+  ctx.shadowColor = "rgba(51,255,136,0.45)"; ctx.shadowBlur = 6;
 
-  // Center bore reticle.
-  ctx.save();
-  ctx.translate(W / 2, H / 2);
+  const g = gps.value || {}, b = battery.value || {};
+  const thr = control.throttle.value, str = control.steering.value;
+  const num = (v, d, u) => (typeof v === "number" ? v.toFixed(d) + (u || "") : "--");
+
+  // Velocity-vector reticle — TRUE centre of view.
   ctx.beginPath();
-  ctx.arc(0, 0, 11, 0, Math.PI * 2);
-  ctx.moveTo(-30, 0); ctx.lineTo(-15, 0);
-  ctx.moveTo(15, 0); ctx.lineTo(30, 0);
-  ctx.moveTo(0, -30); ctx.lineTo(0, -15);
+  ctx.arc(cx, cy, 16, 0, Math.PI * 2);
+  ctx.moveTo(cx - 36, cy); ctx.lineTo(cx - 16, cy);
+  ctx.moveTo(cx + 16, cy); ctx.lineTo(cx + 36, cy);
+  ctx.moveTo(cx, cy - 16); ctx.lineTo(cx, cy - 32);
   ctx.stroke();
+
+  // Heading tape (top-centre): a horizontal bar with the compass ticks/labels BELOW
+  // it, and the current heading boxed just ABOVE the bar.
+  const hdg = typeof g.heading === "number" ? ((g.heading % 360) + 360) % 360 : null;
+  const HW = 300, ppd = HW / 45, barY = 92;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(cx - HW, 84, HW * 2, 64); ctx.clip();
+  ctx.beginPath(); ctx.moveTo(cx - HW, barY); ctx.lineTo(cx + HW, barY); ctx.stroke();
+  if (hdg != null) {
+    ctx.font = "600 20px monospace"; ctx.textAlign = "center"; ctx.textBaseline = "top";
+    for (let d = Math.ceil((hdg - 45) / 5) * 5; d <= hdg + 45; d += 5) {
+      const x = cx + (d - hdg) * ppd, dd = ((d % 360) + 360) % 360, tall = dd % 10 === 0;
+      ctx.beginPath(); ctx.moveTo(x, barY); ctx.lineTo(x, barY + (tall ? 14 : 8)); ctx.stroke();
+      if (dd % 30 === 0) ctx.fillText(String(dd).padStart(3, "0"), x, barY + 30);
+    }
+  }
   ctx.restore();
+  // Caret (▼) below the bar centre — gap below the bar matches the number box's gap above it (12px).
+  ctx.beginPath(); ctx.moveTo(cx - 9, barY + 12); ctx.lineTo(cx + 9, barY + 12); ctx.lineTo(cx, barY + 25); ctx.closePath(); ctx.fill();
+  ctx.font = "600 26px monospace"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.strokeRect(cx - 34, barY - 42, 68, 30);
+  ctx.fillText(hdg != null ? String(Math.round(hdg)).padStart(3, "0") : "--", cx, barY - 27);
 
-  // Battery (top-left).
-  ctx.textAlign = "left";
-  ctx.textBaseline = "top";
-  const bp = battery.value?.percent, bv = battery.value?.voltage;
-  ctx.fillText(`BATT ${bp != null ? Math.round(bp) + "%" : "--"}${bv != null ? "  " + bv.toFixed(1) + "V" : ""}`, M, M);
+  // Airspeed box (left of centre) + altitude box (right) — classic HUD framing.
+  ctx.textBaseline = "middle";
+  const sx = cx - 380;
+  ctx.strokeRect(sx, cy - 26, 150, 52);
+  ctx.beginPath(); ctx.moveTo(sx + 150, cy - 11); ctx.lineTo(sx + 166, cy); ctx.lineTo(sx + 150, cy + 11); ctx.stroke();
+  ctx.textAlign = "left"; ctx.font = "600 20px monospace"; ctx.fillText("SPD", sx + 4, cy - 42);
+  ctx.font = "600 30px monospace"; ctx.fillText(num(g.speed, 1), sx + 10, cy + 1); // +1: optical nudge (middle baseline centres the em box → digits read a touch high)
+  ctx.textAlign = "right"; ctx.font = "600 18px monospace"; ctx.fillText("m/s", sx + 140, cy + 1); // unit inside box, right margin = left margin (10)
+  const ax = cx + 230;
+  ctx.strokeRect(ax, cy - 26, 150, 52);
+  ctx.beginPath(); ctx.moveTo(ax, cy - 11); ctx.lineTo(ax - 16, cy); ctx.lineTo(ax, cy + 11); ctx.stroke();
+  ctx.textAlign = "left"; ctx.font = "600 20px monospace"; ctx.fillText("ALT", ax + 4, cy - 42);
+  ctx.font = "600 30px monospace"; ctx.fillText(num(g.altitude, 1), ax + 10, cy + 1);
+  ctx.textAlign = "right"; ctx.font = "600 18px monospace"; ctx.fillText("m", ax + 140, cy + 1);
 
-  // Speed (top-right).
-  ctx.textAlign = "right";
-  const spd = gps.value?.speed;
-  ctx.fillText(`SPD ${spd != null ? spd.toFixed(1) : "--"} m/s`, W - M, M);
+  // Throttle bar (left, vertical, fill from centre) + steering bar (bottom, bar only).
+  const tx = 140, tHalf = 150;
+  ctx.strokeRect(tx, cy - tHalf, 26, tHalf * 2);
+  ctx.beginPath(); ctx.moveTo(tx - 8, cy); ctx.lineTo(tx + 34, cy); ctx.stroke();
+  const tf = Math.max(-1, Math.min(1, thr / 100));
+  ctx.fillRect(tx, cy - tf * tHalf, 26, tf * tHalf);
+  ctx.textAlign = "center"; ctx.font = "600 22px monospace";
+  ctx.fillText("THR", tx + 13, cy - tHalf - 24);
+  ctx.fillText(fmtSigned(thr), tx + 13, cy + tHalf + 26);
+  const syb = H - 92, sHalf = 240;
+  ctx.strokeRect(cx - sHalf, syb, sHalf * 2, 24);
+  ctx.beginPath(); ctx.moveTo(cx, syb - 8); ctx.lineTo(cx, syb + 32); ctx.stroke();
+  const sf = Math.max(-1, Math.min(1, str / 100));
+  ctx.fillRect(cx + sf * sHalf - 6, syb - 4, 12, 32);
+  // Link / nav status where the STR text used to be (bottom-centre, above the bar).
+  // Shows the rover's nav_state (IDLE / DRIVE / PAUSED / E-STOP …) whenever the
+  // rover link is up — NOT gated on the WebRTC video (control works over the SSE
+  // even if rover-vr isn't publishing). NO LINK only when the rover is disconnected.
+  let link = navShort(navState.value), lc = G;
+  if (!roverConnected.value) { link = "NO LINK"; lc = "#ff5555"; }
+  else if (!hasVideo.value) { link = "CONNECTING"; lc = "#ffcc44"; }  // no picture yet (any source)
+  else if (navState.value === "EMERGENCY_STOP") { lc = "#ff5555"; }
+  else if (navState.value === "PAUSED") { lc = "#ffcc44"; }
+  ctx.fillStyle = lc; ctx.fillText(link, cx, syb - 26); ctx.fillStyle = G;
 
-  // Nav / link state (top-center) — reconnect UX.
-  ctx.textAlign = "center";
-  let link = navState.value || "STANDBY";
-  let linkColor = G;
-  if (!roverConnected.value) { link = "◆ LINK LOST"; linkColor = "#ff5555"; }
-  else if (!usingWebrtc.value) { link = "◆ CONNECTING"; linkColor = "#ffcc44"; }
-  ctx.fillStyle = linkColor;
-  ctx.fillText(link, W / 2, M);
-  ctx.fillStyle = G;
-
-  // GPS (bottom-left).
-  ctx.textAlign = "left";
-  ctx.textBaseline = "bottom";
-  const fix = fixStatus.value || "--";
-  const sv = gps.value?.num_sv;
-  const ha = gps.value?.h_acc;
-  ctx.fillText(`GPS ${fix}  SV ${sv ?? "--"}  ±${ha != null ? ha.toFixed(2) : "--"}m`, M, H - M - 34);
-  const p = roverPos.value;
-  ctx.fillText(p ? `${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}` : "-- , --", M, H - M);
-
-  // Throttle / steering / control (bottom-right).
-  ctx.textAlign = "right";
-  const post = control.active.value ? (control.ok.value ? "OK" : "FAIL") : "off";
-  ctx.fillText(`THR ${fmtSigned(control.throttle.value)}   STR ${fmtSigned(control.steering.value)}`, W - M, H - M - 34);
-  ctx.fillText(`CTRL ${post}   PUMP ${pumpOn ? "ON" : "off"}`, W - M, H - M);
-
-  // Throttle tape (left of center): vertical scale, fill up=forward / down=reverse.
-  const tapeX = M + 10, tapeCy = H / 2, tapeH = H * 0.30;
-  ctx.lineWidth = 2;
-  ctx.strokeRect(tapeX, tapeCy - tapeH, 14, tapeH * 2);
-  ctx.beginPath(); ctx.moveTo(tapeX, tapeCy); ctx.lineTo(tapeX + 14, tapeCy); ctx.stroke();
-  const tFrac = Math.max(-1, Math.min(1, control.throttle.value / 100));
-  ctx.fillRect(tapeX, tapeCy - tFrac * tapeH, 14, tFrac * tapeH);
-
-  // Steering bar (below center): horizontal scale with a marker.
-  const barW = W * 0.30, barCx = W / 2, barY = H / 2 + tapeH + 30;
-  ctx.strokeRect(barCx - barW, barY, barW * 2, 14);
-  ctx.beginPath(); ctx.moveTo(barCx, barY); ctx.lineTo(barCx, barY + 14); ctx.stroke();
-  const sFrac = Math.max(-1, Math.min(1, control.steering.value / 100));
-  ctx.fillRect(barCx + sFrac * barW - 4, barY - 4, 8, 22);
+  // Corner readouts — left-aligned monospace with fixed-width labels (no jitter).
+  ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.font = "600 24px monospace";
+  const cell = (label, val, x, y, color) => { ctx.fillStyle = color || G; ctx.fillText(label.padEnd(5) + val, x, y); ctx.fillStyle = G; };
+  const fix = fixStatus.value ? (FIX_SHORT[fixStatus.value] || "NO") : "NO";
+  // Left/right clusters, mirror-symmetric about centre (both left-aligned so values
+  // never jitter). Lifted clear of the steering bar at the bottom.
+  const xl = 300, xr = 850;
+  cell("GPS", fix, xr, 178);                                          // top-right, clear of the heading-tape labels
+  cell("ACC", g.h_acc != null ? "±" + g.h_acc.toFixed(2) + "m" : "--", xr, 214);
+  cell("SAT", g.num_sv != null ? String(g.num_sv) : "--", xr, 250);
+  cell("BATT", b.percent != null ? Math.round(b.percent) + "%" : "--", xl, H - 190); // bottom-left
+  cell("VOLT", num(b.voltage, 1, "V"), xl, H - 154);
+  cell("CTRL", control.active.value ? (control.ok.value ? "OK" : "FAIL") : "OFF", xr, H - 190); // bottom-right
+  cell("PUMP", pumpOn ? "ON" : "OFF", xr, H - 154);
 
   ctx.shadowBlur = 0;
   hudTexture.needsUpdate = true;
@@ -438,6 +489,7 @@ function render() {
   const webrtcReady = !!(videoEl && videoEl.videoWidth > 0);
   const inXR = renderer.xr.isPresenting;
   usingWebrtc.value = webrtcReady;
+  hasVideo.value = webrtcReady || !!(imgEl && imgEl.naturalWidth > 0); // WebRTC OR MJPEG fallback
   // Per-eye stereo meshes only render in XR (layers 1/2); show them once video is up.
   screenL.visible = webrtcReady;
   screenR.visible = webrtcReady;
@@ -573,17 +625,19 @@ onMounted(() => {
 
   // Fighter-jet HUD — head-locked (child of the camera), transparent, drawn on top.
   hudCanvas = document.createElement("canvas");
-  hudCanvas.width = 1024;
-  hudCanvas.height = 576;
+  hudCanvas.width = 1280;
+  hudCanvas.height = 720;
   hudCtx = hudCanvas.getContext("2d");
   hudTexture = new THREE.CanvasTexture(hudCanvas);
   hudTexture.colorSpace = THREE.SRGBColorSpace;
   drawHud();
+  // Sized + positioned so the full jet-HUD spread (throttle bar far-left … systems
+  // far-right, ~±28°) stays within the headset FOV without feeling cramped.
   const hud = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.9, 1.07),
+    new THREE.PlaneGeometry(2.0, 1.125),
     new THREE.MeshBasicMaterial({ map: hudTexture, transparent: true, depthTest: false, depthWrite: false }),
   );
-  hud.position.set(0, 0, -1.4);
+  hud.position.set(0, 0, -1.6);
   hud.renderOrder = 20;
   camera.add(hud);
 
@@ -655,10 +709,9 @@ onUnmounted(() => {
       <table class="vr-keys">
         <tbody>
           <tr><th>오른쪽 스틱</th><td>전/후진 + 조향</td></tr>
-          <tr><th>트리거</th><td>펌프</td></tr>
-          <tr><th>A</th><td>비상정지 토글</td></tr>
-          <tr><th>B</th><td>재개</td></tr>
-          <tr><th>왼쪽 X / Y</th><td>미니맵 축소 / 확대</td></tr>
+          <tr><th>오른쪽 트리거</th><td>펌프</td></tr>
+          <tr><th>오른쪽 그립</th><td>비상정지</td></tr>
+          <tr><th>A / B</th><td>미니맵 확대 / 축소</td></tr>
         </tbody>
       </table>
     </div>
