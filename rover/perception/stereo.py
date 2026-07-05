@@ -114,6 +114,27 @@ def obstacle_in_roi(depth_z, valid, roi_frac, near_m, far_m, min_fill,
     return (fill >= min_fill), fill, near_count, valid_count
 
 
+def nearest_point(depth_z, valid, near_m, far_m=None):
+    """Nearest valid pixel over the WHOLE frame — the live-view marker. Pure numpy.
+
+    Returns (z_m, x, y) of the closest valid pixel whose depth is in
+    [near_m, far_m] (far_m None → no far clip), or (nan, -1, -1) if none qualify.
+    The near clip rejects lens-edge / speckle depth that would otherwise report an
+    absurd sub-decimetre 'nearest'. This is deliberately NOT the corridor decision
+    (obstacle_in_roi): the operator's live view marks the single closest thing
+    anywhere in frame, while the auto-pause only cares about the driving corridor.
+    """
+    m = valid & np.isfinite(depth_z) & (depth_z >= near_m)
+    if far_m is not None:
+        m = m & (depth_z <= far_m)
+    if not np.any(m):
+        return float("nan"), -1, -1
+    # argmin over depth with non-qualifying pixels pushed to +inf.
+    z = np.where(m, depth_z, np.inf)
+    y, x = np.unravel_index(int(np.argmin(z)), z.shape)
+    return float(depth_z[y, x]), int(x), int(y)
+
+
 # ── debounce (no cv2) ───────────────────────────────────────────────────────
 class EdgeDebouncer:
     """Hysteresis on a noisy per-frame boolean.
@@ -347,6 +368,24 @@ class StereoConfig:
     min_fill: float = 0.12
     min_valid_px: int = 400
     cv_threads: int = 1                # cap so SGBM can't starve the ROS loop
+    # Block-matcher mode. "3way" (STEREO_SGBM_MODE_SGBM_3WAY) is ~2x faster than
+    # full "sgbm" on the Pi 5 for a small accuracy cost, and — unlike full SGBM,
+    # which runs single-threaded regardless of cv_threads — it actually uses
+    # multiple cores. "sgbm"/"hh" available when accuracy matters more than rate.
+    sgbm_mode: str = "3way"
+    # Live composite view (compute_composite) only: the depth range mapped onto
+    # the heatmap colours, and the near clip for the WHOLE-FRAME nearest-point
+    # marker (reject lens-edge / speckle closer than this, which would otherwise
+    # report an absurd sub-decimetre 'nearest'). Independent of the obstacle band.
+    viz_near_m: float = 0.3
+    viz_far_m: float = 5.0
+    # Live composite depth resolution as a fraction of the calibration (base) size.
+    # The base image is rendered SHARP at the full calib resolution, but the
+    # expensive SGBM depth runs on a downscaled copy (cost ~ pixels × disparity):
+    # 0.4 of a 1280×720 calib → depth at 512×288 (benchmarked ~8 fps end-to-end vs
+    # ~2 fps at full 720p) while the displayed real image stays crisp. 1.0 = depth
+    # at full base resolution (sharpest depth, slowest).
+    viz_depth_scale: float = 0.4
 
 
 class StereoDepth:
@@ -361,6 +400,8 @@ class StereoDepth:
         self.enabled = False
         self._calib = None
         self._matcher = None
+        self._mode = None
+        self._viz_matchers = {}   # numDisparities → SGBM matcher (composite path)
         if cv2 is None:
             return
         calib = load_calibration(cfg.calib_path)
@@ -377,6 +418,15 @@ class StereoDepth:
         # numDisparities must be a positive multiple of 16.
         nd = max(16, (int(cfg.num_disparities) // 16) * 16)
         bs = int(cfg.block_size) | 1  # force odd
+        modes = {
+            "sgbm": cv2.STEREO_SGBM_MODE_SGBM,
+            "hh": cv2.STEREO_SGBM_MODE_HH,
+            "hh4": getattr(cv2, "STEREO_SGBM_MODE_HH4", cv2.STEREO_SGBM_MODE_HH),
+            "3way": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
+        }
+        mode = modes.get((cfg.sgbm_mode or "3way").lower(),
+                         cv2.STEREO_SGBM_MODE_SGBM_3WAY)
+        self._mode = mode
         # P1/P2 are the SGBM smoothness penalties; OpenCV's documented defaults
         # scale with block area for a single-channel (grayscale) match.
         self._matcher = cv2.StereoSGBM_create(
@@ -389,7 +439,7 @@ class StereoDepth:
             uniquenessRatio=int(cfg.uniqueness),
             speckleWindowSize=int(cfg.speckle_window),
             speckleRange=int(cfg.speckle_range),
-            mode=cv2.STEREO_SGBM_MODE_SGBM,
+            mode=mode,
         )
         self.enabled = True
 
@@ -459,6 +509,100 @@ class StereoDepth:
                 info["nearest_m"] = round(float(np.min(zr[vr])), 2)
         return obstacle, info
 
+    def _viz_matcher(self, nd):
+        """SGBM matcher sized for the composite's (downscaled) depth resolution,
+        cached by numDisparities. The main self._matcher's numDisparities is tuned
+        for the full calib resolution; the composite runs on a smaller image where
+        the disparity range scales down, so it needs its own matcher."""
+        m = self._viz_matchers.get(nd)
+        if m is None:
+            bs = int(self.cfg.block_size) | 1
+            m = cv2.StereoSGBM_create(
+                minDisparity=0, numDisparities=nd, blockSize=bs,
+                P1=8 * bs * bs, P2=32 * bs * bs, disp12MaxDiff=1,
+                uniquenessRatio=int(self.cfg.uniqueness),
+                speckleWindowSize=int(self.cfg.speckle_window),
+                speckleRange=int(self.cfg.speckle_range), mode=self._mode)
+            self._viz_matchers[nd] = m
+        return m
+
+    def compute_composite(self, left, right, depth_scale=None, alpha=0.45):
+        """Left + right eyes → (BGR composite image, info) for the operator live view.
+
+        The BASE (real image) is the rectified left eye at the full calibration
+        resolution — SHARP. The depth heatmap + nearest-point marker are computed
+        on a DOWNSCALED copy (depth_scale of the base, e.g. 0.4 → 512×288 from a
+        1280×720 calib) so the expensive SGBM stays cheap, then scaled back up onto
+        the sharp base. Because both the base and the depth live in the RECTIFIED
+        frame (differing only by a uniform scale), the marker maps back with a
+        simple divide — no un-rectify warp. depth_scale=None uses cfg.viz_depth_scale.
+        info carries 'enabled' and 'nearest_m' (metres or None). Returns
+        (None, {"enabled": False}) with no calibration, so the caller falls back to
+        the plain single-eye stream.
+        """
+        if not self.enabled:
+            return None, {"enabled": False}
+        c = self._calib
+        size = c["image_size"]                     # calib / display (base) size, e.g. (1280, 720)
+        w, h = size
+
+        def _rect(eye, mx, my):
+            if (eye.shape[1], eye.shape[0]) != size:
+                eye = cv2.resize(eye, size, interpolation=cv2.INTER_AREA)
+            return cv2.remap(eye, mx, my, cv2.INTER_LINEAR)
+
+        rectL = _rect(left, c["map1x"], c["map1y"])     # base of the composite (sharp)
+        rectR = _rect(right, c["map2x"], c["map2y"])
+        base = rectL if rectL.ndim == 3 else cv2.cvtColor(rectL, cv2.COLOR_GRAY2BGR)
+        gl = cv2.cvtColor(rectL, cv2.COLOR_BGR2GRAY) if rectL.ndim == 3 else rectL
+        gr = cv2.cvtColor(rectR, cv2.COLOR_BGR2GRAY) if rectR.ndim == 3 else rectR
+
+        # SGBM on a downscaled copy; scale Q so metric depth stays correct (the
+        # downscaled disparity d' = s·d, so Q' = Q·diag(1/s,1/s,1/s,1) reprojects it
+        # to the same 3D point). numDisparities scales with the resolution too.
+        s = self.cfg.viz_depth_scale if depth_scale is None else float(depth_scale)
+        s = min(1.0, max(0.05, s))
+        if s < 1.0:
+            dw, dh = max(16, int(round(w * s))), max(16, int(round(h * s)))
+            gl_d = cv2.resize(gl, (dw, dh), interpolation=cv2.INTER_AREA)
+            gr_d = cv2.resize(gr, (dw, dh), interpolation=cv2.INTER_AREA)
+            Q = c["Q"] @ np.diag([1.0 / s, 1.0 / s, 1.0 / s, 1.0]).astype(c["Q"].dtype)
+            nd = max(16, (int(round(self.cfg.num_disparities * s)) // 16) * 16)
+            matcher = self._viz_matcher(nd)
+        else:
+            gl_d, gr_d, Q, matcher = gl, gr, c["Q"], self._matcher
+
+        disp = matcher.compute(gl_d, gr_d).astype(np.float32) / 16.0
+        valid = disp > 0.0
+        depth_z = cv2.reprojectImageTo3D(disp, Q)[:, :, 2]
+        valid &= np.isfinite(depth_z)
+
+        # Depth → colour with NEAR = warm; upscale to the base size; blend only
+        # where the match is valid.
+        near = self.cfg.viz_near_m
+        far = max(self.cfg.viz_far_m, near + 0.1)
+        norm = np.clip((depth_z - near) / (far - near), 0.0, 1.0)
+        heat = cv2.applyColorMap(((1.0 - norm) * 255).astype(np.uint8), cv2.COLORMAP_JET)
+        mask = (valid.astype(np.uint8)) * 255
+        if (heat.shape[1], heat.shape[0]) != size:
+            heat = cv2.resize(heat, size, interpolation=cv2.INTER_LINEAR)
+            mask = cv2.resize(mask, size, interpolation=cv2.INTER_NEAREST)
+        blended = cv2.addWeighted(base, 1.0 - alpha, heat, alpha, 0.0)
+        out = np.ascontiguousarray(np.where((mask > 0)[:, :, None], blended, base))
+
+        # Whole-frame nearest (at depth res) → scale marker coords up to the base.
+        z, x, y = nearest_point(depth_z, valid, near, self.cfg.viz_far_m)
+        info = {"enabled": True, "nearest_m": (round(z, 2) if z == z else None)}
+        if x >= 0:
+            bx, by = int(round(x / s)), int(round(y / s))
+            cv2.drawMarker(out, (bx, by), (255, 255, 255), cv2.MARKER_CROSS, 24, 2)
+            cv2.circle(out, (bx, by), 12, (255, 255, 255), 2)
+            label = f"{z:.2f} m"
+            org = (min(max(0, bx - 24), w - 110), min(max(28, by - 20), h - 10))
+            cv2.putText(out, label, org, cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 5, cv2.LINE_AA)
+            cv2.putText(out, label, org, cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        return out, info
+
 
 def config_from_env(env=None):
     """Build a StereoConfig from environment variables (node-side helper)."""
@@ -495,4 +639,8 @@ def config_from_env(env=None):
         min_fill=_f("OBSTACLE_MIN_FILL", 0.12),
         min_valid_px=_i("OBSTACLE_MIN_VALID_PX", 400),
         cv_threads=_i("STEREO_CV_THREADS", 1),
+        sgbm_mode=(e.get("STEREO_SGBM_MODE") or "3way").lower(),
+        viz_near_m=_f("VIZ_NEAR_M", 0.3),
+        viz_far_m=_f("VIZ_FAR_M", 5.0),
+        viz_depth_scale=_f("VIZ_DEPTH_SCALE", 0.4),
     )
