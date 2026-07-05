@@ -1285,7 +1285,12 @@ app.post("/api/rover/led-brightness", (req, res) => {
    control SSE. Separate from the pilot's /api/rover/stream so streaming load
    never interferes with the mission command channel. */
 let cameraControlClient = null;   // perception container's control SSE (res)
-const cameraViewers = new Set();  // browser multipart responses
+const cameraViewers = new Set();  // browser MJPEG multipart responses
+// WebRTC gating-only viewers (no MJPEG frames): they keep the rover capturing +
+// publishing the matching stream. Split by kind so the rover encodes each stream
+// (rover-2d mono/composite, rover-vr stereo) only while its viewer is present.
+const holdViewers2d = new Set();
+const holdViewersVr = new Set();
 let cameraLatestFrame = null;     // { buf, at } — last JPEG, replayed to new viewers
 // Operator toggled the both-eyes depth composite on. The composite is rendered
 // ON the rover (perception owns the cameras); this flag only records the desired
@@ -1316,24 +1321,30 @@ function sendCameraControl(event, data) {
 
 function removeCameraViewer(res) {
   if (!cameraViewers.delete(res)) return;
-  // Last viewer gone → stop the rover capture and release the cached frame so
-  // a stale image can't be replayed when the stream next reopens. Reset the
-  // depth view mode too, so reopening the camera starts on the plain stream.
-  if (cameraViewers.size === 0) {
-    cameraLatestFrame = null;
-    cameraDepthWanted = false;
-    syncCameraCapture();               // camera-stop
-    // Clear the rover's depth mode too. camera-stop only clears stream_wanted on
-    // the rover; without this the rover's depth_wanted Event stays set and a
-    // reopen (or a mid-session perception reconnect) would resume the composite
-    // even though the server + UI report the plain view.
-    sendCameraControl("depth-off");
-  }
+  // Last MJPEG viewer gone → release the cached frame so a stale image can't be
+  // replayed when the stream next reopens. (Depth is a 2D-view sub-mode and is
+  // cleared in syncCameraCapture once NO 2D viewer — MJPEG or WebRTC — remains.)
+  if (cameraViewers.size === 0) cameraLatestFrame = null;
+  // Always re-sync: emits mjpeg-off, and camera-stop only if no WebRTC hold remains.
+  syncCameraCapture();
 }
 
-// Capture only while at least one browser is watching.
+// Capture while ANY viewer (MJPEG or WebRTC-hold) is watching; JPEG-encode only
+// while an actual MJPEG viewer is attached (a WebRTC-only session skips MJPEG).
 function syncCameraCapture() {
-  sendCameraControl(cameraViewers.size > 0 ? "camera-start" : "camera-stop");
+  const watching = cameraViewers.size > 0 || holdViewers2d.size > 0 || holdViewersVr.size > 0;
+  sendCameraControl(watching ? "camera-start" : "camera-stop");
+  sendCameraControl(cameraViewers.size > 0 ? "mjpeg-on" : "mjpeg-off");
+  // Each WebRTC stream is encoded only while its viewer is present.
+  sendCameraControl(holdViewers2d.size > 0 ? "webrtc-2d-on" : "webrtc-2d-off");
+  sendCameraControl(holdViewersVr.size > 0 ? "webrtc-vr-on" : "webrtc-vr-off");
+  // Depth is a 2D-view sub-mode (baked into the rover's `out` frame, which feeds
+  // BOTH the MJPEG relay and rover-2d WebRTC). Clear it once no 2D viewer remains
+  // so the flag can't get stuck on across sessions.
+  if (cameraDepthWanted && cameraViewers.size === 0 && holdViewers2d.size === 0) {
+    cameraDepthWanted = false;
+    sendCameraControl("depth-off");
+  }
 }
 
 // GET /api/rover/camera/control - perception container SSE (internal-strict).
@@ -1365,11 +1376,18 @@ app.get("/api/rover/camera/control", (req, res) => {
   // the depth view mode if it was on (covers a perception container that
   // reconnected mid-session, e.g. after an auto-update, without the operator
   // having to re-toggle).
-  if (cameraViewers.size > 0) sendCameraControl("camera-start");
-  if (cameraDepthWanted) sendCameraControl("depth-on");
+  // Re-sync the FULL desired state on every (re)connect. The perception node now
+  // keeps its last stream/depth/mjpeg state across an SSE blip (so a transient
+  // drop no longer tears down the WebRTC publisher), so send the current truth —
+  // camera-start/stop + mjpeg-on/off — to also cover a viewer that left while the
+  // SSE was down.
+  syncCameraCapture();
+  sendCameraControl(cameraDepthWanted ? "depth-on" : "depth-off");
+  // 10s heartbeat (was 30s) to match /api/rover/stream — keeps the SSE alive
+  // through proxy idle-close so it doesn't drop every few minutes.
   const heartbeat = setInterval(() => {
     try { res.write(": heartbeat\n\n"); } catch {}
-  }, 30000);
+  }, 10000);
   req.on("close", () => {
     clearInterval(heartbeat);
     if (cameraControlClient === res) {
@@ -1459,6 +1477,32 @@ app.get("/api/rover/camera/stream", (req, res) => {
   req.on("close", () => removeCameraViewer(res));
 });
 
+// GET /api/rover/camera/hold - gating-only viewer (WebRTC/VR). Keeps the rover
+// capturing + WebRTC-publishing WITHOUT pulling MJPEG frames, so the rover skips
+// the JPEG encode+POST while only WebRTC viewers are watching. The browser holds
+// this open (SSE) for the duration of the VR/WebRTC session.
+app.get("/api/rover/camera/hold", (req, res) => {
+  // mode=vr → stereo (rover-vr); anything else → 2D mono/composite (rover-2d).
+  const set = req.query.mode === "vr" ? holdViewersVr : holdViewers2d;
+  if (set.size >= MAX_CAMERA_VIEWERS) {
+    return res.status(503).send("too many viewers");
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.write("event: connected\ndata: {}\n\n");
+  res.on("error", () => { if (set.delete(res)) syncCameraCapture(); });
+  set.add(res);
+  syncCameraCapture();
+  const hb = setInterval(() => { try { res.write(": hb\n\n"); } catch {} }, 10000);
+  req.on("close", () => {
+    clearInterval(hb);
+    if (set.delete(res)) syncCameraCapture();
+  });
+});
+
 // GET /api/rover/camera/status - camera availability for the UI (admin).
 app.get("/api/rover/camera/status", (req, res) => {
   res.json({
@@ -1480,12 +1524,16 @@ app.get("/api/rover/camera/status", (req, res) => {
 // perception reconnect restores the mode (see the control handler above).
 app.post("/api/rover/camera/depth", (req, res) => {
   const on = !!(req.body && req.body.on);
-  // Depth is a sub-mode of an active stream. Ignore an "on" with no viewer so the
-  // flag can't get stuck true (it's only cleared on the last-viewer-leave edge,
-  // which never fires if a viewer never joined).
-  cameraDepthWanted = on && cameraViewers.size > 0;
+  // Depth is a sub-mode of an active 2D stream — the composite is baked into the
+  // rover's `out` frame, shared by the MJPEG relay AND rover-2d WebRTC. So gate on
+  // ANY 2D viewer (MJPEG cameraViewers OR WebRTC holdViewers2d); a WebRTC-only 2D
+  // panel has zero MJPEG viewers. Ignore an "on" with no 2D viewer so the flag
+  // can't get stuck true (it's only cleared on the last-2D-viewer-leave edge).
+  const has2dViewer = cameraViewers.size > 0 || holdViewers2d.size > 0;
+  cameraDepthWanted = on && has2dViewer;
   const delivered = sendCameraControl(cameraDepthWanted ? "depth-on" : "depth-off");
-  const detail = { on, applied: cameraDepthWanted, delivered, viewers: cameraViewers.size };
+  const detail = { on, applied: cameraDepthWanted, delivered,
+    mjpegViewers: cameraViewers.size, webrtc2dViewers: holdViewers2d.size };
   // We wanted depth on (a viewer is present) but couldn't reach perception → an
   // inter-service delivery failure; warn per the logging policy so an operator can
   // find "the depth view didn't apply" by level. Everything else is info.
