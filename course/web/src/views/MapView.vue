@@ -3898,13 +3898,11 @@ async function toggleDepth() {
 function onCameraError() {
   cameraError.value = true;
 }
-// A rover SSE drop flips connected false→true; just flag the gap. Do NOT tear
-// the stream down — the operator's intent (cameraOn) is preserved and
-// pollCameraStatus auto-reconnects the <img> once the rover is back, instead of
-// leaving them with a permanently black box after a transient blip.
-watch(() => roverStatus.value.connected, (connected) => {
-  if (!connected && cameraOn.value) cameraError.value = true;
-});
+// NOTE: camera health is judged solely by pollCameraStatus (the camera relay's own
+// status) — NOT by the mission SSE's rover.connected. Those are independent channels:
+// a transient mission-SSE blip used to eagerly paint the opaque "카메라 신호 없음"
+// over a perfectly healthy live feed until the next 2s poll cleared it. pollCameraStatus
+// (WebRTC connected → clear; MJPEG fallback → frame-age) already covers a real outage.
 // The rover panel is v-show (stays mounted), so leaving the tab would keep the
 // MJPEG <img> connected and the rover capturing invisibly. Stop on tab-leave.
 watch(activeTab, (tab) => {
@@ -4338,6 +4336,12 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  // Route navigation (e.g. the VR button → /vr) unmounts this view. Without this,
+  // the camera's WebRTC hold SSE + retry intervals + peer connection leak and the
+  // rover keeps encoding rover-2d with nobody watching (each open→leave→return
+  // stacks another orphan toward MAX_CAMERA_VIEWERS). watch(activeTab) only covers
+  // in-page tab switches, not route changes.
+  if (cameraOn.value) stopCameraStream();
   stopReplay();
   // MapView is the sole writer of the App-owned sseReconnecting ref; clear it
   // so the "reconnecting" badge can't stick on after this view tears down.

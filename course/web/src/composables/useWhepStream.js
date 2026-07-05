@@ -47,6 +47,9 @@ export function useWhepStream() {
         method: "POST",
         headers: { "Content-Type": "application/sdp" },
         body: p.localDescription.sdp,
+        // Bound the request: without this a hung POST leaves `busy` true forever,
+        // and the 3s retry no-ops for the rest of the session (no WebRTC reconnect).
+        signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) throw new Error(`WHEP ${res.status}`);
       await p.setRemoteDescription({ type: "answer", sdp: await res.text() });
