@@ -201,7 +201,7 @@ def test_config_from_env_defaults_on_empty():
     assert cfg.near_m == 0.4
     assert cfg.far_m == 2.5
     assert cfg.roi == (0.30, 0.55, 0.70, 0.98)
-    assert cfg.sgbm_mode == "sgbm"          # detection defaults to full SGBM (safety); composite uses 3WAY internally
+    assert cfg.sgbm_mode == "3way"          # unified 3WAY (halves auto-pause latency); shared by detection + composite
     assert cfg.viz_near_m == 0.3
     assert cfg.viz_far_m == 5.0
     assert cfg.viz_depth_scale == 0.4       # depth at 0.4× base (512×288 from 720p)
@@ -419,9 +419,7 @@ def test_compute_composite_renders_and_reports(tmp_path):
     stereo.save_calibration(calib_path, result, 0.025)
     det = stereo.StereoDepth(stereo.StereoConfig(calib_path=calib_path))
     assert det.enabled is True
-    # Safety detector stays on full SGBM by default; the composite uses 3WAY.
-    assert det._mode == cv2.STEREO_SGBM_MODE_SGBM
-    assert det._viz_mode == cv2.STEREO_SGBM_MODE_SGBM_3WAY
+    assert det._mode == cv2.STEREO_SGBM_MODE_SGBM_3WAY   # unified 3WAY default
 
     W, H = size
     rng = np.random.default_rng(0)
@@ -441,6 +439,15 @@ def test_compute_composite_renders_and_reports(tmp_path):
     assert out2.shape == (H, W, 3)
     # a matcher sized for the downscaled resolution is cached for reuse
     assert det._viz_matchers                 # populated by the 0.4-scale call
+
+    # Shared-pass decomposition: one downscaled depth feeds BOTH detection (decide)
+    # and the composite (render_composite) — no second SGBM.
+    depth_z, valid = det.compute_depth(left, right, scale=0.4)
+    assert depth_z.shape == (H * 2 // 5, W * 2 // 5)  # 0.4× calib (512×288 from 720p)
+    obstacle, dinfo = det.decide(depth_z, valid)
+    assert dinfo["enabled"] is True and isinstance(obstacle, bool)
+    rout, rinfo = det.render_composite(left, depth_z, valid)
+    assert rout.shape == (H, W, 3) and rinfo["enabled"] is True
 
 
 def test_compute_composite_disabled_without_calibration():
