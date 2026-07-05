@@ -3730,6 +3730,10 @@ async function sendControl() {
 const cameraOn = ref(false);
 const cameraError = ref(false);
 const cameraReqId = ref(0);
+// Both-eyes depth composite toggle (rendered on the rover). Only meaningful while
+// the camera is on; the server resets it when the last viewer leaves. Kept in
+// sync with the server's reported state via pollCameraStatus (s.depth).
+const cameraDepthOn = ref(false);
 let cameraStatusPoll = null;
 let cameraLastOkAt = 0;            // last poll that saw fresh frames (ms)
 const cameraStreamUrl = computed(() => {
@@ -3750,6 +3754,9 @@ async function pollCameraStatus() {
   try {
     const res = await request("/api/rover/camera/status", { method: "GET" });
     const s = await res.json();
+    // Reflect the server's authoritative depth-mode state (it resets to off when
+    // the last viewer leaves, and a mid-session perception reconnect restores it).
+    cameraDepthOn.value = !!s.depth;
     const healthy = s.camera_connected
       && s.last_frame_age_ms != null && s.last_frame_age_ms < 3000;
     cameraError.value = !healthy;
@@ -3770,6 +3777,7 @@ async function pollCameraStatus() {
 function stopCameraStream() {
   cameraOn.value = false;
   cameraError.value = false;
+  cameraDepthOn.value = false;   // server drops the depth mode when the last viewer leaves
   if (cameraStatusPoll) { clearInterval(cameraStatusPoll); cameraStatusPoll = null; }
 }
 // Idempotent "ensure the stream is on" — used by the toggle and by the obstacle
@@ -3786,6 +3794,22 @@ function startCamera() {
 function toggleCamera() {
   if (cameraOn.value) { stopCameraStream(); return; }
   startCamera();
+}
+// Toggle the both-eyes depth composite (rectified left + depth heatmap + nearest
+// distance). The rover renders it; this just flips the stream mode. Optimistic UI
+// update, corrected by the next status poll. No-op on the pixels if the rover has
+// no stereo calibration loaded (it falls back to the plain stream).
+async function toggleDepth() {
+  const next = !cameraDepthOn.value;
+  try {
+    await request("/api/rover/camera/depth", {
+      method: "POST",
+      body: JSON.stringify({ on: next }),
+    });
+    cameraDepthOn.value = next;
+  } catch (e) {
+    notifyWarn(`깊이 뷰 전환 실패: ${e?.message || e}`);
+  }
 }
 function onCameraError() {
   cameraError.value = true;
@@ -5144,6 +5168,11 @@ onUnmounted(() => {
                       :class="['btn', 'btn-lg-touch', cameraOn ? 'btn-primary' : 'btn-ghost']"
                       @click="toggleCamera"
                     >{{ cameraOn ? '카메라 끄기' : '카메라' }}</button>
+                    <button
+                      v-if="cameraOn"
+                      :class="['btn', 'btn-lg-touch', cameraDepthOn ? 'btn-primary' : 'btn-ghost']"
+                      @click="toggleDepth"
+                    >{{ cameraDepthOn ? '깊이 끄기' : '깊이' }}</button>
                   </div>
                   <div v-if="cameraOn" class="camera-view">
                     <img v-if="cameraStreamUrl" :src="cameraStreamUrl" alt="rover camera" @error="onCameraError" />
