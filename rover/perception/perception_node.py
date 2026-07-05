@@ -179,8 +179,12 @@ class PerceptionNode(Node):
         # encode path when no calibration is loaded.)
         cfg = stereo.config_from_env()
         self._calib_path = cfg.calib_path
+        # The detection thread cap (STEREO_CV_THREADS). Honoured whenever the
+        # composite is NOT rendering; the composite may raise it to
+        # VIZ_THREADS_IDLE, but only while paused/idle (never during NAVIGATING).
+        self._cv_threads = max(1, int(cfg.cv_threads))
         try:
-            cv2.setNumThreads(max(1, int(cfg.cv_threads)))
+            cv2.setNumThreads(self._cv_threads)
         except Exception:  # noqa: BLE001 - non-fatal tuning call
             pass
 
@@ -504,17 +508,24 @@ class PerceptionNode(Node):
             try:
                 due = detect and (t0 - last_detect) >= detect_interval
                 # Live depth composite is wanted when an operator toggled it on, a
-                # calibration is loaded, and we have two eyes (dual). Unlike
-                # detection, it needs the right eye during PLAIN streaming too —
-                # every streamed frame, not just at the detect rate.
+                # calibration is loaded, we have two eyes (dual), AND the mission is
+                # NOT autonomously driving. During NAVIGATING the safety detector
+                # owns the compute budget — running the per-frame composite serially
+                # in this same thread would delay the obstacle publish and the
+                # auto-pause — so we stream the plain eye while driving. When the
+                # mission pauses (incl. an obstacle auto-pause) nav leaves NAVIGATING
+                # and the composite kicks in, which is exactly when the operator
+                # wants to inspect. Unlike detection it needs the right eye during
+                # plain streaming too — every streamed frame, not just the detect rate.
                 depth_stream = (stream and self._cloud.depth_wanted.is_set()
-                                and self._detector.enabled and self._layout == "dual")
-                # Protect the navigator's control tick: 1 OpenCV thread while
-                # NAVIGATING (detection may also be running); allow more cores for
-                # the composite only when the mission is paused/idle. Set every
-                # iteration so the count can't get stuck high across state changes.
-                cv2.setNumThreads(1 if self._nav_state == DRIVING_STATE
-                                  else self._viz_threads_idle)
+                                and self._detector.enabled and self._layout == "dual"
+                                and self._nav_state != DRIVING_STATE)
+                # Thread budget: honour the detection cap (STEREO_CV_THREADS) except
+                # while actually compositing (only ever when NOT navigating), where
+                # more cores are safe. Set every iteration so the count can't stay
+                # stuck high across state changes. This never raises threads during
+                # NAVIGATING, so it can't starve the navigator's control tick.
+                cv2.setNumThreads(self._viz_threads_idle if depth_stream else self._cv_threads)
                 right_frame = None
                 if (due or depth_stream) and self._layout == "dual":
                     if right_cap is None and t0 >= right_open_after:
@@ -555,6 +566,20 @@ class PerceptionNode(Node):
                             out = frame
                     else:
                         out = frame if self._layout == "dual" else crop_view(frame, self._view)
+                        # Operator asked for depth but we can't render it here — no
+                        # stereo calibration or not a dual-eye cam — and it's NOT the
+                        # intentional plain-while-driving suppression. Label the frame
+                        # so "depth on but a plain image" reads as "needs calibration",
+                        # not a broken toggle. Copy first: 'out' aliases the capture
+                        # buffer the detector reads. ASCII only (cv2 has no Hangul).
+                        if (self._cloud.depth_wanted.is_set()
+                                and self._nav_state != DRIVING_STATE
+                                and not (self._detector.enabled and self._layout == "dual")):
+                            out = out.copy()
+                            for color, thick in (((0, 0, 0), 4), ((60, 220, 255), 1)):
+                                cv2.putText(out, "DEPTH unavailable - no stereo calibration",
+                                            (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                                            color, thick, cv2.LINE_AA)
                     ok2, buf = cv2.imencode(".jpg", out, encode_params)
                     # Re-check stream_wanted: a camera-stop may have arrived during
                     # read/encode, and we shouldn't push a frame nobody's watching.
