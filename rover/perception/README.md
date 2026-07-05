@@ -65,6 +65,22 @@ loop JPEG-encodes one eye — the left node whole in dual layout, or `CAMERA_VIE
 cropped from the SBS frame — and POSTs each frame; the server fans them to
 browsers as `multipart/x-mixed-replace`.
 
+### Depth composite (operator toggle)
+
+When the operator toggles the depth view on, the server emits `depth-on`
+(`depth-off` to clear) on the same control SSE. While it's on AND a calibration
+is loaded, each streamed frame becomes a **both-eyes composite** instead of the
+plain left eye (`stereo.compute_composite`): the **sharp rectified left eye at
+full resolution** with a **translucent depth heatmap** overlaid where the stereo
+match is valid, plus a marker + distance at the **whole-frame nearest point**.
+The heavy SGBM runs on a downscaled copy (`VIZ_DEPTH_SCALE`) so the real image
+stays crisp while depth stays cheap; the marker maps back to the base with a
+simple scale (base and depth share the rectified frame). Rendered on the rover,
+so the server/browser just relay the JPEG. Falls back to the plain stream with
+no calibration. Benchmarked on the Pi 5 (720p base, 512×288 depth, 3WAY): ~5 fps
+on one core (NAVIGATING) / ~10 fps on three (paused/idle). The plain stream and
+the obstacle detector are unaffected.
+
 ## How detection works (Phase 3)
 
 - **Gated to driving.** The node subscribes to `/rover/nav/state` and only runs
@@ -119,11 +135,15 @@ a video device restarts the unit via `fsk-perception-replug.service`.
 | `CAMERA_DEVICE` | auto | left eye / SBS device; blank → probe `/dev/video0..9` (dual pins `video0`) |
 | `STEREO_RIGHT_DEVICE` | `/dev/video2` | right eye (dual layout) |
 | `CAMERA_WIDTH` / `CAMERA_HEIGHT` | 1280 / 480 | capture resolution per device (rover cam delivers 1280×720; set 720) |
-| `CAMERA_FPS` | 8 | max frames/s pushed while streaming |
+| `CAMERA_FPS` | 15 | max frames/s pushed while streaming (the 720p cam delivers ~13, so this is above the hardware ceiling; lower on a constrained uplink) |
 | `CAMERA_JPEG_QUALITY` | 70 | 1–100 |
 | `CAMERA_VIEW` | left | sbs layout only: `left`\|`right`\|`full` crop. Dual streams the left eye whole. |
 | `OBSTACLE_DETECTION` | true | master switch; `false` disables detection entirely |
 | `DETECT_FPS` | 4 | detection rate (sub-samples capture; a few fps is plenty) |
+| `STEREO_SGBM_MODE` | 3way | block matcher: `3way` (fast, multi-core), `sgbm` (accurate, single-core), `hh`/`hh4`. Applies to detection AND the live depth composite. |
+| `VIZ_NEAR_M` / `VIZ_FAR_M` | 0.3 / 5.0 | live composite: depth range mapped to the heatmap colours + near clip for the nearest-point marker |
+| `VIZ_DEPTH_SCALE` | 0.4 | live composite: depth-compute size as a fraction of the calib (base) size — base renders sharp at full res, SGBM runs on this downscaled copy (0.4 of 720p → 512×288) |
+| `VIZ_THREADS_IDLE` | 3 | OpenCV threads for the composite while NOT navigating (paused/idle); forced to 1 while NAVIGATING so it can't starve the control tick |
 | `STEREO_CALIB_PATH` | `/var/lib/perception/stereo_calib.npz` | calibration file |
 | `STEREO_NUM_DISPARITIES` | 96 | max disparity searched (multiple of 16); nearest detectable depth |
 | `STEREO_BLOCK_SIZE` | 7 | SGBM block size (odd) |
@@ -178,6 +198,21 @@ sudo podman run --rm --network=host \
 # 3. Restart the node — it picks up /var/lib/perception/stereo_calib.npz.
 sudo systemctl start perception.service
 ```
+
+> **Calibrating at a lower depth resolution (for the live depth composite / a faster
+> detect):** stereo block matching cost scales with resolution, so the depth pipeline
+> can run much faster at a smaller size (benchmarked on the Pi 5: 512×288 3WAY ≈ 22 fps
+> on one core vs ~2 fps at 720p). The cam **ignores `--width/--height` and always
+> delivers 720p**, so pass `--proc-width/--proc-height` to downsample each captured eye
+> before solving — that is what fixes the maps' `image_size` at the target size (at
+> runtime `StereoDepth._prep_eye` resizes the 720p eye to match). Keep the aspect 16:9
+> (the sensor is 16:9); 512×288 and 640×360 are good picks. Also set
+> `STEREO_NUM_DISPARITIES` proportionally (720p→96, 512×288→32, 640×360→48):
+> ```bash
+> ... /opt/perception/stereo_calibrate.py \
+>     --device /dev/video0 --right-device /dev/video2 \
+>     --cols 9 --rows 6 --square-m 0.025 --proc-width 512 --proc-height 288
+> ```
 
 The tool prints per-eye + stereo RMS and the recovered baseline (should be
 ~60 mm). Stereo RMS > 1.0 px means a poor calibration (recapture with a flatter
