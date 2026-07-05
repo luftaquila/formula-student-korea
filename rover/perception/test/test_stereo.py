@@ -201,6 +201,65 @@ def test_config_from_env_defaults_on_empty():
     assert cfg.near_m == 0.4
     assert cfg.far_m == 2.5
     assert cfg.roi == (0.30, 0.55, 0.70, 0.98)
+    assert cfg.sgbm_mode == "3way"          # unified 3WAY (halves auto-pause latency); shared by detection + composite
+    assert cfg.viz_near_m == 0.3
+    assert cfg.viz_far_m == 5.0
+    assert cfg.viz_depth_scale == 0.4       # depth at 0.4× base (512×288 from 720p)
+
+
+def test_config_from_env_parses_sgbm_mode_and_viz():
+    cfg = stereo.config_from_env({
+        "STEREO_SGBM_MODE": "SGBM", "VIZ_NEAR_M": "0.5", "VIZ_FAR_M": "8"})
+    assert cfg.sgbm_mode == "sgbm"          # normalised to lower-case
+    assert cfg.viz_near_m == 0.5
+    assert cfg.viz_far_m == 8.0
+
+
+# ── nearest_point (whole-frame live-view marker) ─────────────────────────────
+
+def test_nearest_point_finds_global_min():
+    depth = np.full((20, 30), 5.0, np.float32)
+    depth[7, 12] = 1.5                       # the single closest valid pixel
+    valid = np.ones((20, 30), bool)
+    z, x, y = stereo.nearest_point(depth, valid, near_m=0.3)
+    assert (x, y) == (12, 7)
+    assert z == pytest.approx(1.5)
+
+
+def test_nearest_point_near_clip_excludes_speckle():
+    # A sub-decimetre lens-edge speckle must not be reported as the nearest.
+    depth = np.full((10, 10), 2.0, np.float32)
+    depth[0, 0] = 0.05                        # below the near clip
+    valid = np.ones((10, 10), bool)
+    z, x, y = stereo.nearest_point(depth, valid, near_m=0.3)
+    assert z == pytest.approx(2.0)
+    assert (x, y) != (0, 0)
+
+
+def test_nearest_point_far_clip_excludes_background():
+    depth = np.full((10, 10), 50.0, np.float32)
+    depth[5, 5] = 3.0
+    valid = np.ones((10, 10), bool)
+    z, _, _ = stereo.nearest_point(depth, valid, near_m=0.3, far_m=5.0)
+    assert z == pytest.approx(3.0)
+
+
+def test_nearest_point_none_when_nothing_valid():
+    depth = np.full((10, 10), 2.0, np.float32)
+    valid = np.zeros((10, 10), bool)
+    z, x, y = stereo.nearest_point(depth, valid, near_m=0.3)
+    assert z != z                            # NaN
+    assert (x, y) == (-1, -1)
+
+
+def test_nearest_point_ignores_invalid_closer_pixel():
+    depth = np.full((10, 10), 2.0, np.float32)
+    depth[1, 1] = 0.5                        # closer, but its match is invalid
+    valid = np.ones((10, 10), bool)
+    valid[1, 1] = False
+    z, x, y = stereo.nearest_point(depth, valid, near_m=0.3)
+    assert z == pytest.approx(2.0)
+    assert (x, y) != (1, 1)
 
 
 # ── read_stereo_pair (grab/grab → retrieve/retrieve sync) ────────────────────
@@ -348,3 +407,53 @@ def test_compute_stereo_calibration_culls_desync_pair():
     assert r["pairs_used"] < r["pairs_total"]        # the desync pair was dropped
     assert r["stereo_rms"] < 1.0                     # re-solve stays sharp
     assert r["baseline_m"] == pytest.approx(0.06, abs=5e-3)
+
+
+# ── compute_composite (live-view render; needs cv2 + a loaded calibration) ────
+
+def test_compute_composite_renders_and_reports(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    objpoints, imgL, imgR, _, _, _, _, size = _synth_board_views(cv2)
+    result = stereo.compute_stereo_calibration(objpoints, imgL, imgR, size)
+    calib_path = str(tmp_path / "calib.npz")
+    stereo.save_calibration(calib_path, result, 0.025)
+    det = stereo.StereoDepth(stereo.StereoConfig(calib_path=calib_path))
+    assert det.enabled is True
+    assert det._mode == cv2.STEREO_SGBM_MODE_SGBM_3WAY   # unified 3WAY default
+
+    W, H = size
+    rng = np.random.default_rng(0)
+    left = rng.integers(0, 255, (H, W, 3), dtype=np.uint8)
+    right = rng.integers(0, 255, (H, W, 3), dtype=np.uint8)
+
+    # depth_scale<1 renders the sharp base at the full calib size while running
+    # SGBM on a downscaled copy — output is still the full base resolution.
+    out, info = det.compute_composite(left, right, depth_scale=0.4)
+    assert out.shape == (H, W, 3)            # base = rectified left at calib size
+    assert out.dtype == np.uint8
+    assert info["enabled"] is True
+    assert "nearest_m" in info               # float or None, both acceptable
+
+    # full-resolution depth (scale 1.0) also returns the base-sized composite
+    out2, _ = det.compute_composite(left, right, depth_scale=1.0)
+    assert out2.shape == (H, W, 3)
+    # a matcher sized for the downscaled resolution is cached for reuse
+    assert det._viz_matchers                 # populated by the 0.4-scale call
+
+    # Shared-pass decomposition: one downscaled depth feeds BOTH detection (decide)
+    # and the composite (render_composite) — no second SGBM.
+    depth_z, valid = det.compute_depth(left, right, scale=0.4)
+    assert depth_z.shape == (H * 2 // 5, W * 2 // 5)  # 0.4× calib (512×288 from 720p)
+    obstacle, dinfo = det.decide(depth_z, valid)
+    assert dinfo["enabled"] is True and isinstance(obstacle, bool)
+    rout, rinfo = det.render_composite(left, depth_z, valid)
+    assert rout.shape == (H, W, 3) and rinfo["enabled"] is True
+
+
+def test_compute_composite_disabled_without_calibration():
+    # No calibration → returns no image and enabled=False, so the caller falls
+    # back to the plain single-eye stream instead of rendering garbage.
+    det = stereo.StereoDepth(stereo.StereoConfig(calib_path="/no/such.npz"))
+    out, info = det.compute_composite(None, None)
+    assert out is None
+    assert info == {"enabled": False}

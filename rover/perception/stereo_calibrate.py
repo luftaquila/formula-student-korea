@@ -69,6 +69,14 @@ def main(argv=None):
                     help="right eye (dual layout only)")
     ap.add_argument("--width", type=int, default=1280, help="capture width per device")
     ap.add_argument("--height", type=int, default=720, help="capture height per device")
+    ap.add_argument("--proc-width", type=int, default=0,
+                    help="downsample each captured eye to this width BEFORE solving "
+                         "(0 = use the captured size). The rover cam ignores capture "
+                         "resolution requests and always delivers 720p, so to calibrate "
+                         "at a lower resolution (e.g. 512x288 for a faster depth compute) "
+                         "set --proc-width/--proc-height here, not --width/--height.")
+    ap.add_argument("--proc-height", type=int, default=0,
+                    help="downsample height before solving (see --proc-width)")
     ap.add_argument("--cols", type=int, default=9, help="inner corners per row")
     ap.add_argument("--rows", type=int, default=6, help="inner corners per col")
     ap.add_argument("--square-m", type=float, default=0.025,
@@ -126,6 +134,13 @@ def main(argv=None):
                 time.sleep(0.05)
                 continue
             left, right = stereo.split_sbs(frame)
+        # Downsample to the processing resolution BEFORE corner-finding, so the
+        # maps + image_size come out at that size (the cam ignores capture-size
+        # requests and always delivers 720p; this is how we calibrate at 512x288).
+        if args.proc_width and args.proc_height:
+            proc = (args.proc_width, args.proc_height)
+            left = cv2.resize(left, proc, interpolation=cv2.INTER_AREA)
+            right = cv2.resize(right, proc, interpolation=cv2.INTER_AREA)
         if eye_size is None:
             eye_size = (left.shape[1], left.shape[0])
         gl = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)

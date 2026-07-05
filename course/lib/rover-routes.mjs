@@ -1287,6 +1287,11 @@ app.post("/api/rover/led-brightness", (req, res) => {
 let cameraControlClient = null;   // perception container's control SSE (res)
 const cameraViewers = new Set();  // browser multipart responses
 let cameraLatestFrame = null;     // { buf, at } — last JPEG, replayed to new viewers
+// Operator toggled the both-eyes depth composite on. The composite is rendered
+// ON the rover (perception owns the cameras); this flag only records the desired
+// view mode so it can be (re)sent to the perception control channel — on the
+// toggle itself, and again if the perception container reconnects mid-session.
+let cameraDepthWanted = false;
 const CAMERA_FRAME_FRESH_MS = 2000;
 // Drop frames for a viewer whose socket is this far behind rather than buffering
 // JPEGs unboundedly — a slow viewer (cellular/phone) must never OOM the mission
@@ -1312,10 +1317,17 @@ function sendCameraControl(event, data) {
 function removeCameraViewer(res) {
   if (!cameraViewers.delete(res)) return;
   // Last viewer gone → stop the rover capture and release the cached frame so
-  // a stale image can't be replayed when the stream next reopens.
+  // a stale image can't be replayed when the stream next reopens. Reset the
+  // depth view mode too, so reopening the camera starts on the plain stream.
   if (cameraViewers.size === 0) {
     cameraLatestFrame = null;
-    syncCameraCapture();
+    cameraDepthWanted = false;
+    syncCameraCapture();               // camera-stop
+    // Clear the rover's depth mode too. camera-stop only clears stream_wanted on
+    // the rover; without this the rover's depth_wanted Event stays set and a
+    // reopen (or a mid-session perception reconnect) would resume the composite
+    // even though the server + UI report the plain view.
+    sendCameraControl("depth-off");
   }
 }
 
@@ -1349,8 +1361,12 @@ app.get("/api/rover/camera/control", (req, res) => {
   // makes "the camera shows nothing" hard to triage — connected vs. never
   // attached look identical in the logs.
   logger.log(req, "rover.camera.control_connected", null, "rover");
-  // If viewers are already waiting, start capturing immediately.
+  // If viewers are already waiting, start capturing immediately — and restore
+  // the depth view mode if it was on (covers a perception container that
+  // reconnected mid-session, e.g. after an auto-update, without the operator
+  // having to re-toggle).
   if (cameraViewers.size > 0) sendCameraControl("camera-start");
+  if (cameraDepthWanted) sendCameraControl("depth-on");
   const heartbeat = setInterval(() => {
     try { res.write(": heartbeat\n\n"); } catch {}
   }, 30000);
@@ -1448,12 +1464,37 @@ app.get("/api/rover/camera/status", (req, res) => {
   res.json({
     camera_connected: !!cameraControlClient,
     viewers: cameraViewers.size,
+    depth: cameraDepthWanted,
     // Server-COMPUTED age, never a raw server epoch: the client must not diff
     // its own (possibly NTP-skewed) clock against a server timestamp — that
     // mismatch paints a working stream as "신호 없음" or hides a dead one (the
     // same client-clock trap as the course UI's "UPDATE Ns").
     last_frame_age_ms: cameraLatestFrame ? (Date.now() - cameraLatestFrame.at) : null,
   });
+});
+
+// POST /api/rover/camera/depth - toggle the both-eyes depth composite (admin).
+// The rover renders the composite (rectified left + depth heatmap + nearest
+// distance) itself; this only tells it which stream to send, so it's a no-op on
+// the pixels until an operator is actually watching. Persisted so a mid-session
+// perception reconnect restores the mode (see the control handler above).
+app.post("/api/rover/camera/depth", (req, res) => {
+  const on = !!(req.body && req.body.on);
+  // Depth is a sub-mode of an active stream. Ignore an "on" with no viewer so the
+  // flag can't get stuck true (it's only cleared on the last-viewer-leave edge,
+  // which never fires if a viewer never joined).
+  cameraDepthWanted = on && cameraViewers.size > 0;
+  const delivered = sendCameraControl(cameraDepthWanted ? "depth-on" : "depth-off");
+  const detail = { on, applied: cameraDepthWanted, delivered, viewers: cameraViewers.size };
+  // We wanted depth on (a viewer is present) but couldn't reach perception → an
+  // inter-service delivery failure; warn per the logging policy so an operator can
+  // find "the depth view didn't apply" by level. Everything else is info.
+  if (cameraDepthWanted && !delivered) {
+    logger.warn(req, "rover.camera.depth", { ...detail, error: "perception_not_connected" }, "rover");
+  } else {
+    logger.log(req, "rover.camera.depth", detail, "rover");
+  }
+  res.json({ ok: true, depth: cameraDepthWanted, camera_connected: !!cameraControlClient });
 });
 
 }
