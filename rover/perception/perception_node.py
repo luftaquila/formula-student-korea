@@ -44,6 +44,15 @@ from std_msgs.msg import Bool, String
 from cloud_link import CloudLink
 import stereo
 
+# Optional low-latency WebRTC publish (aiortc). Guarded so a missing/broken
+# aiortc never takes down capture + detection — streaming falls back to MJPEG.
+try:
+    from webrtc_pub import WebRTCPublisher
+    _WEBRTC_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    WebRTCPublisher = None
+    _WEBRTC_AVAILABLE = False
+
 
 def _env(name, default=None):
     v = os.environ.get(name)
@@ -109,6 +118,107 @@ def open_capture(device, width, height, log):
         cap.release()
     log("no usable camera device found")
     return None
+
+
+class StereoReader:
+    """Background thread that continuously reads a GRAB-SYNCED stereo pair, so both
+    the VR stream AND obstacle-detection depth get a sub-millisecond-aligned pair
+    without the capture loop blocking on sequential reads. read_stereo_pair()'s
+    grab→grab (before either retrieve) pins the two capture instants together —
+    critical for depth on a moving rover. When the pair isn't needed (want_pair
+    False, e.g. plain 2D MJPEG) it reads the LEFT eye alone and releases the right,
+    so the left keeps its full USB frame rate."""
+
+    def __init__(self, left_device, right_device, width, height, log, dual):
+        self._left_device = left_device
+        self._right_device = right_device
+        self._width = width
+        self._height = height
+        self._log = log
+        self._dual = dual
+        self._want_pair = dual
+        self._left = None
+        self._right = None
+        self._ts = 0.0
+        self._lock = threading.Lock()
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def set_want_pair(self, want):
+        self._want_pair = bool(want) and self._dual
+
+    def _store(self, left, right):
+        with self._lock:
+            self._left = left
+            self._right = right
+            self._ts = time.monotonic()
+
+    def _loop(self):
+        left_cap = None
+        right_cap = None
+        right_open_after = 0.0
+
+        def drop_right():
+            nonlocal right_cap
+            if right_cap is not None:
+                right_cap.release()
+                right_cap = None
+
+        while self._running:
+            if left_cap is None:
+                left_cap = open_capture(self._left_device, self._width, self._height, self._log)
+                if left_cap is None:
+                    time.sleep(1.0)
+                    continue
+            need_right = self._want_pair
+            if not need_right:
+                drop_right()  # free the right eye's USB bandwidth for the left's fps
+            elif right_cap is None and time.monotonic() >= right_open_after:
+                right_cap = open_capture(self._right_device, self._width, self._height, self._log)
+                if right_cap is None:
+                    right_open_after = time.monotonic() + RIGHT_OPEN_RETRY_S
+            try:
+                if need_right and right_cap is not None:
+                    pair = stereo.read_stereo_pair(left_cap, right_cap)  # grab-grab synced
+                    if pair is None:
+                        self._log("right eye grab failed; reopening")
+                        drop_right()
+                        right_open_after = time.monotonic() + RIGHT_OPEN_RETRY_S
+                        ok, left = left_cap.read()
+                        if ok and left is not None:
+                            self._store(left, None)
+                    else:
+                        self._store(pair[0], pair[1])
+                else:
+                    ok, left = left_cap.read()
+                    if ok and left is not None:
+                        self._store(left, None)
+                    else:
+                        left_cap.release()
+                        left_cap = None
+                        drop_right()
+                        time.sleep(0.3)
+            except Exception:  # noqa: BLE001 - a bad frame must not kill the reader
+                time.sleep(0.1)
+        if left_cap is not None:
+            left_cap.release()
+        drop_right()
+
+    def pair(self, max_age=1.0):
+        """Latest synced (left, right); right is None in mono / until it opens.
+        (None, None) if the frame is stale (camera stalled) so the loop reopens."""
+        with self._lock:
+            if self._left is None or (time.monotonic() - self._ts) >= max_age:
+                return None, None
+            return self._left, self._right
+
+    def release(self):
+        self._running = False
+        try:
+            self._thread.join(timeout=1.5)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def crop_view(frame, view):
@@ -211,6 +321,27 @@ class PerceptionNode(Node):
                                 log=self.get_logger().info)
         self._cloud.on_calibrate = self._request_calibration
         self._cloud.start()
+
+        # Low-latency WebRTC publish (Phase 2b). While an operator is watching
+        # (same stream_wanted gate as MJPEG) the streamed frame is ALSO H.264
+        # WHIP-published to mediamtx at {SERVER_URL}/api/rtc/rover-2d/whip. MJPEG
+        # stays as the fallback. Disabled if aiortc is unavailable.
+        self._webrtc_enabled = _WEBRTC_AVAILABLE and bool(self._server_url) and \
+            (_env("WEBRTC_PUBLISH", "true") or "").lower() != "false"
+        # Two independent WebRTC streams, each encoded only while its viewer is
+        # present: rover-2d = mono / depth-composite (2D panel); rover-vr = rectified
+        # left|right side-by-side stereo (the VR view splits it per eye).
+        self._whip_url_2d = f"{self._server_url}/api/rtc/rover-2d/whip"
+        self._whip_url_vr = f"{self._server_url}/api/rtc/rover-vr/whip"
+        self._webrtc_pub_2d = None
+        self._webrtc_pub_vr = None
+        self._webrtc_next_2d = 0.0   # cooldowns so a failing WHIP can't retry every frame
+        self._webrtc_next_vr = 0.0
+        if self._webrtc_enabled:
+            self.get_logger().info(
+                f"WebRTC publish ENABLED → 2d {self._whip_url_2d} / vr {self._whip_url_vr}")
+        elif not _WEBRTC_AVAILABLE:
+            self.get_logger().warn("WebRTC publish disabled (aiortc unavailable) — MJPEG only")
 
         reliable = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self._pub_obstacle = self.create_publisher(
@@ -425,9 +556,7 @@ class PerceptionNode(Node):
             f"RMS {rms} px (L {rms_l} / R {rms_r}), baseline {baseline_mm} mm")
 
     def _capture_loop(self):
-        cap = None          # left eye (dual) or the single SBS device
-        right_cap = None     # right eye, dual layout only; held only while detecting
-        right_open_after = 0.0  # backoff gate for reopening a failed right eye
+        reader = None        # StereoReader: grab-synced left+right (mono if no right)
         idle_deadline = None
         last_detect = 0.0
         last_err_log = 0.0   # throttle the per-iteration exception log
@@ -435,22 +564,15 @@ class PerceptionNode(Node):
         detect_interval = 1.0 / self._detect_fps
         encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self._quality]
 
-        def release_right():
-            nonlocal right_cap
-            if right_cap is not None:
-                right_cap.release()
-                right_cap = None
-
         while self._running:
             # A pending calibration takes over: free this loop's camera handles
             # so the calibration can open both eyes exclusively, run it (it
             # streams + reports progress itself), then resume the normal loop.
             calib_square_m = self._take_calib_request()
             if calib_square_m is not None:
-                if cap is not None:
-                    cap.release()
-                    cap = None
-                release_right()
+                if reader is not None:
+                    reader.release()
+                    reader = None
                 idle_deadline = None
                 self._set_detect_active(False)
                 # The collection loop touches OpenCV per frame; an unexpected
@@ -469,44 +591,50 @@ class PerceptionNode(Node):
             detect = self._detection_wanted()
             self._set_detect_active(detect)
 
+            # Each WebRTC publisher runs only while streaming AND its viewer wants
+            # it; torn down otherwise so an unwatched stream costs no H.264.
+            if (not (stream and self._cloud.webrtc_2d_wanted.is_set())
+                    and self._webrtc_pub_2d is not None):
+                self._webrtc_pub_2d.stop()
+                self._webrtc_pub_2d = None
+            if (not (stream and self._cloud.webrtc_vr_wanted.is_set())
+                    and self._webrtc_pub_vr is not None):
+                self._webrtc_pub_vr.stop()
+                self._webrtc_pub_vr = None
+
             if not (stream or detect):
                 # Release devices after a short linger (avoid UVC thrash).
                 now = time.monotonic()
-                if cap is not None:
+                if reader is not None:
                     if idle_deadline is None:
                         idle_deadline = now + STOP_LINGER_S
                     elif now >= idle_deadline:
-                        cap.release()
-                        cap = None
-                        release_right()
+                        reader.release()
+                        reader = None
                         idle_deadline = None
                 time.sleep(0.2)
                 continue
             idle_deadline = None
 
-            if cap is None:
-                cap = open_capture(self._device, self._width, self._height,
-                                   self.get_logger().warn)
-                if cap is None:
-                    time.sleep(1.0)  # camera may be unplugged; retry
-                    continue
+            if reader is None:
+                reader = StereoReader(self._device, self._right_device,
+                                      self._width, self._height,
+                                      self.get_logger().warn, dual=(self._layout == "dual"))
+
+            # Keep the right eye (grab-synced pair) only when depth/stereo needs it;
+            # a plain 2D MJPEG viewer reads the left alone at full frame rate.
+            want_pair = detect or (stream and self._detector.enabled
+                                   and self._layout == "dual"
+                                   and (self._cloud.webrtc_vr_wanted.is_set()
+                                        or self._cloud.depth_wanted.is_set()))
+            reader.set_want_pair(want_pair)
 
             t0 = time.monotonic()
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                self.get_logger().warn("frame grab failed; reopening device")
-                cap.release()
-                cap = None
-                release_right()
-                time.sleep(0.5)
+            frame, right_frame = reader.pair()
+            if frame is None:
+                time.sleep(0.05)  # reader warming up, or camera stalled → reopen
                 continue
 
-            # Grab the right eye BACK-TO-BACK with the left (dual + due only), so
-            # the two unsynchronised USB cams' frames are as close in time as
-            # possible — before the stream encode/POST, which can take a while.
-            # Only at the detect rate; the handle is opened lazily and kept open
-            # until full idle (NOT released per NAVIGATING<->other transition),
-            # so a flap while streaming can't thrash the UVC device.
             # Everything below works on a frame and may touch OpenCV (encode,
             # remap, block matching, reproject). Guard it: a single bad frame /
             # transient cv2 error must be logged-and-skipped, never propagate out
@@ -523,41 +651,21 @@ class PerceptionNode(Node):
                 # during plain streaming too, every streamed frame.
                 depth_stream = (stream and self._cloud.depth_wanted.is_set()
                                 and self._detector.enabled and self._layout == "dual")
+                # WebRTC gating: 2D (mono/composite → rover-2d) and VR (stereo SBS →
+                # rover-vr) are independent; VR needs both eyes + a calibration.
+                webrtc_2d = (stream and self._webrtc_enabled
+                             and self._cloud.webrtc_2d_wanted.is_set())
+                webrtc_vr = (stream and self._webrtc_enabled
+                             and self._cloud.webrtc_vr_wanted.is_set()
+                             and self._detector.enabled and self._layout == "dual")
                 # Thread budget: drop to the detection cap (STEREO_CV_THREADS) while
                 # NAVIGATING so stereo can't starve the navigator's control tick;
                 # allow more cores when paused/idle (when the operator usually
                 # watches). Set every iteration so it can't stay stuck high.
                 cv2.setNumThreads(self._cv_threads if self._nav_state == DRIVING_STATE
                                   else self._viz_threads_idle)
-                right_frame = None
-                if (due or depth_stream) and self._layout == "dual":
-                    if right_cap is None and t0 >= right_open_after:
-                        right_cap = open_capture(self._right_device, self._width,
-                                                 self._height, self.get_logger().warn)
-                        if right_cap is None:
-                            # Open failed (missing/flaky device) — back off so we
-                            # don't spam open() + its log every cycle; the gate
-                            # retries once the window elapses. Set ONLY on a real
-                            # attempt, never on a gated-out cycle, or the window
-                            # would keep sliding forward and never reopen.
-                            right_open_after = t0 + RIGHT_OPEN_RETRY_S
-                    if right_cap is not None:
-                        # Re-grab BOTH eyes back-to-back (grab→grab→retrieve) so
-                        # the pair is near-simultaneous despite the unsynchronised
-                        # USB cams. The left frame read at the top of the loop was
-                        # for streaming and may be tens of ms stale by now; on
-                        # success this replaces it with the synced left. On any
-                        # grab miss keep the streaming frame and skip depth/detect
-                        # this cycle (a transient right-eye glitch must not silently
-                        # kill either — drop the handle and back off the reopen).
-                        pair = stereo.read_stereo_pair(cap, right_cap)
-                        if pair is None:
-                            self.get_logger().warn("stereo re-grab failed; reopening right eye")
-                            release_right()
-                            right_frame = None
-                            right_open_after = t0 + RIGHT_OPEN_RETRY_S
-                        else:
-                            frame, right_frame = pair
+                # right_frame is the grab-synced right eye from reader.pair() above
+                # (None in mono / until the right eye opens).
 
                 # ONE stereo depth pass at the configured scale, reused by BOTH the
                 # composite and detection so SGBM never runs twice for a frame. Only
@@ -569,32 +677,71 @@ class PerceptionNode(Node):
                         eyes[0], eyes[1], scale=self._viz_depth_scale)
 
                 if stream:
-                    # Depth composite (sharp rectified left + heatmap + nearest
-                    # marker/distance) when toggled on + calibrated + we have depth;
-                    # otherwise the plain eye (left whole in dual, cropped in sbs).
-                    if depth_stream and depth is not None:
-                        out, _cinfo = self._detector.render_composite(frame, depth[0], depth[1], depth[2])
-                        if out is None:                 # calibration vanished mid-stream
-                            out = frame
-                    else:
-                        out = frame if self._layout == "dual" else crop_view(frame, self._view)
-                        # Operator asked for depth but we can't render it here — no
-                        # stereo calibration or not a dual-eye cam. Label the frame so
-                        # "depth on but a plain image" reads as "needs calibration",
-                        # not a broken toggle. Copy first: 'out' aliases the capture
-                        # buffer the detector reads. ASCII only (cv2 has no Hangul).
-                        if (self._cloud.depth_wanted.is_set()
-                                and not (self._detector.enabled and self._layout == "dual")):
-                            out = out.copy()
-                            for color, thick in (((0, 0, 0), 4), ((60, 220, 255), 1)):
-                                cv2.putText(out, "DEPTH unavailable - no stereo calibration",
-                                            (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                                            color, thick, cv2.LINE_AA)
-                    ok2, buf = cv2.imencode(".jpg", out, encode_params)
-                    # Re-check stream_wanted: a camera-stop may have arrived during
-                    # read/encode, and we shouldn't push a frame nobody's watching.
-                    if ok2 and self._cloud.stream_wanted.is_set():
-                        self._cloud.post_frame(buf.tobytes())
+                    # MJPEG only while an MJPEG viewer is attached (a WebRTC-only VR
+                    # session sends mjpeg-off → skip the JPEG encode+POST entirely).
+                    mjpeg = self._cloud.mjpeg_wanted.is_set()
+                    # 'out' = mono left / depth composite — needed by MJPEG AND the
+                    # 2D WebRTC stream (rover-2d). Computed once, shared by both.
+                    out = None
+                    if mjpeg or webrtc_2d:
+                        # Depth composite (sharp rectified left + heatmap + nearest
+                        # marker/distance) when toggled on + calibrated + we have depth;
+                        # otherwise the plain eye (left whole in dual, cropped in sbs).
+                        if depth_stream and depth is not None:
+                            out, _cinfo = self._detector.render_composite(frame, depth[0], depth[1], depth[2])
+                            if out is None:                 # calibration vanished mid-stream
+                                out = frame
+                        else:
+                            out = frame if self._layout == "dual" else crop_view(frame, self._view)
+                            # Operator asked for depth but we can't render it here — no
+                            # stereo calibration or not a dual-eye cam. Label the frame so
+                            # "depth on but a plain image" reads as "needs calibration".
+                            # Copy first: 'out' aliases the capture buffer. ASCII only.
+                            if (self._cloud.depth_wanted.is_set()
+                                    and not (self._detector.enabled and self._layout == "dual")):
+                                out = out.copy()
+                                for color, thick in (((0, 0, 0), 4), ((60, 220, 255), 1)):
+                                    cv2.putText(out, "DEPTH unavailable - no stereo calibration",
+                                                (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                                                color, thick, cv2.LINE_AA)
+                    if mjpeg and out is not None:
+                        ok2, buf = cv2.imencode(".jpg", out, encode_params)
+                        # Re-check stream_wanted: a camera-stop may have arrived during
+                        # read/encode, and we shouldn't push a frame nobody's watching.
+                        if ok2 and self._cloud.stream_wanted.is_set():
+                            self._cloud.post_frame(buf.tobytes())
+
+                    # 2D WebRTC (mono / depth composite) → rover-2d. Lazy (re)start
+                    # with a cooldown so a failing WHIP can't retry every frame.
+                    if webrtc_2d and out is not None:
+                        now = time.monotonic()
+                        if ((self._webrtc_pub_2d is None or not self._webrtc_pub_2d.alive())
+                                and now >= self._webrtc_next_2d):
+                            if self._webrtc_pub_2d is not None:
+                                self._webrtc_pub_2d.stop()
+                            self._webrtc_next_2d = now + 5.0
+                            self._webrtc_pub_2d = WebRTCPublisher(
+                                self._whip_url_2d, self._fps, self.get_logger().info)
+                            self._webrtc_pub_2d.start()
+                        if self._webrtc_pub_2d is not None:
+                            self._webrtc_pub_2d.push_frame(out)
+
+                    # VR WebRTC (rectified left|right SBS, split per eye) → rover-vr.
+                    if webrtc_vr:
+                        now = time.monotonic()
+                        if ((self._webrtc_pub_vr is None or not self._webrtc_pub_vr.alive())
+                                and now >= self._webrtc_next_vr):
+                            if self._webrtc_pub_vr is not None:
+                                self._webrtc_pub_vr.stop()
+                            self._webrtc_next_vr = now + 5.0
+                            self._webrtc_pub_vr = WebRTCPublisher(
+                                self._whip_url_vr, self._fps, self.get_logger().info)
+                            self._webrtc_pub_vr.start()
+                        if self._webrtc_pub_vr is not None and right_frame is not None:
+                            sbs = self._detector.rectify_sbs(frame, right_frame)
+                            if sbs is not None:
+                                self._webrtc_pub_vr.push_frame(sbs)
+                            # else: no calib/frame → skip (keeps last), no size flip
 
                 if due and depth is not None:
                     last_detect = t0
@@ -611,9 +758,13 @@ class PerceptionNode(Node):
             if dt < target:
                 time.sleep(target - dt)
 
-        if cap is not None:
-            cap.release()
-        release_right()
+        if reader is not None:
+            reader.release()
+        for pub_attr in ("_webrtc_pub_2d", "_webrtc_pub_vr"):
+            pub = getattr(self, pub_attr)
+            if pub is not None:
+                pub.stop()
+                setattr(self, pub_attr, None)
 
     def destroy_node(self):
         self._running = False

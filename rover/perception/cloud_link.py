@@ -45,6 +45,18 @@ class CloudLink:
         # stream_wanted is also set. The capture loop reads it to decide whether
         # to render the both-eyes depth composite instead of the plain eye.
         self.depth_wanted = threading.Event()
+        # Set while an MJPEG viewer is attached (server mjpeg-on..mjpeg-off). A
+        # WebRTC-only (VR) session leaves this clear, so the capture loop skips the
+        # JPEG encode+POST. Default set: if the server never signals (older server),
+        # MJPEG keeps working.
+        self.mjpeg_wanted = threading.Event()
+        self.mjpeg_wanted.set()
+        # Set while a WebRTC viewer of each kind is present (server
+        # webrtc-2d-on/off = mono/composite → rover-2d; webrtc-vr-on/off = stereo
+        # SBS → rover-vr). Default clear: the rover pays each H.264 encode only
+        # while that stream is actually being watched — no viewer, no cost.
+        self.webrtc_2d_wanted = threading.Event()
+        self.webrtc_vr_wanted = threading.Event()
         # Called with the square size (m) when the server requests a calibration
         # (operator pressed 교정). Set by the node; runs on the SSE thread.
         self.on_calibrate = None
@@ -121,11 +133,11 @@ class CloudLink:
                     delay = 3.0
             except Exception as e:  # noqa: BLE001 - keep the loop alive
                 self._log(f"control SSE error: {e}")
-            # Server/stream gone → don't keep trying to push frames into a
-            # dead relay; the capture loop drops the stream branch. The server
-            # re-sends camera-start / depth-on on reconnect if still wanted.
-            self.stream_wanted.clear()
-            self.depth_wanted.clear()
+            # NOTE: do NOT clear stream_wanted/depth_wanted here. A transient SSE
+            # blip (proxy idle-close, redeploy) would otherwise tear down the
+            # WebRTC publisher every few minutes. The server re-syncs the desired
+            # state (camera-start OR camera-stop) on every (re)connect, so keeping
+            # the last state across a blip keeps the publish/stream stable.
             if self._running:
                 time.sleep(delay)
                 delay = min(delay * 2, SSE_RECONNECT_MAX_S)
@@ -169,6 +181,18 @@ class CloudLink:
             self.depth_wanted.set()
         elif event == "depth-off":
             self.depth_wanted.clear()
+        elif event == "mjpeg-on":
+            self.mjpeg_wanted.set()
+        elif event == "mjpeg-off":
+            self.mjpeg_wanted.clear()
+        elif event == "webrtc-2d-on":
+            self.webrtc_2d_wanted.set()
+        elif event == "webrtc-2d-off":
+            self.webrtc_2d_wanted.clear()
+        elif event == "webrtc-vr-on":
+            self.webrtc_vr_wanted.set()
+        elif event == "webrtc-vr-off":
+            self.webrtc_vr_wanted.clear()
         elif event == "calibrate":
             square_m = 0.025
             try:
