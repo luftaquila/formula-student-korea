@@ -77,12 +77,14 @@ The heavy SGBM runs on a downscaled copy (`VIZ_DEPTH_SCALE`) so the real image
 stays crisp while depth stays cheap; the marker maps back to the base with a
 simple scale (base and depth share the rectified frame). Rendered on the rover,
 so the server/browser just relay the JPEG. Falls back to the plain stream with no
-calibration (labelled so the operator isn't left guessing), and is suppressed
-entirely while NAVIGATING — the safety detector owns the compute budget during
-autonomous driving, so the composite resumes only when the mission pauses (incl.
-an obstacle auto-pause, exactly when you want to inspect). Benchmarked on the Pi 5
-(720p base, 512×288 depth, 3WAY): ~10 fps on three cores when paused/idle (~5 fps
-single-core). The plain stream and the obstacle detector are unaffected.
+calibration (labelled so the operator isn't left guessing). **Detection and the
+composite share ONE stereo depth pass per frame** (`compute_depth` → `decide` +
+`render_composite`), so the composite adds only a cheap overlay — no second SGBM —
+and stays available even while NAVIGATING without starving the detector (during
+NAVIGATING OpenCV drops to `STEREO_CV_THREADS`). Unifying detection onto that same
+downscaled 3WAY pass also speeds detection up — it clears `DETECT_FPS` with room,
+so the auto-pause reacts sooner. Benchmarked on the Pi 5 (720p base, 512×288 depth,
+3WAY): composite ~10 fps on three cores when paused/idle (~5 fps single-core).
 
 ## How detection works (Phase 3)
 
@@ -143,10 +145,10 @@ a video device restarts the unit via `fsk-perception-replug.service`.
 | `CAMERA_VIEW` | left | sbs layout only: `left`\|`right`\|`full` crop. Dual streams the left eye whole. |
 | `OBSTACLE_DETECTION` | true | master switch; `false` disables detection entirely |
 | `DETECT_FPS` | 4 | detection rate (sub-samples capture; a few fps is plenty) |
-| `STEREO_SGBM_MODE` | sgbm | OBSTACLE DETECTION block matcher: `sgbm` (full 5-path, most accurate — safety default), `3way` (~2x faster, less accurate), `hh`/`hh4`. The live composite always uses `3way` regardless (its accuracy is cosmetic). |
+| `STEREO_SGBM_MODE` | 3way | block matcher shared by detection + composite: `3way` (fast, multi-core — ~2x quicker, roughly halves auto-pause latency), `sgbm` (full 5-path, most accurate but slower), `hh`/`hh4` |
 | `VIZ_NEAR_M` / `VIZ_FAR_M` | 0.3 / 5.0 | live composite: depth range mapped to the heatmap colours + near clip for the nearest-point marker |
-| `VIZ_DEPTH_SCALE` | 0.4 | live composite: depth-compute size as a fraction of the calib (base) size — base renders sharp at full res, SGBM runs on this downscaled copy (0.4 of 720p → 512×288) |
-| `VIZ_THREADS_IDLE` | 3 | OpenCV threads for the composite while NOT navigating (paused/idle); forced to 1 while NAVIGATING so it can't starve the control tick |
+| `VIZ_DEPTH_SCALE` | 0.4 | stereo depth-compute size as a fraction of calib, SHARED by detection + composite (one pass); the composite base still renders sharp at full res. 0.4 of 720p → 512×288. `OBSTACLE_MIN_VALID_PX` auto-scales to this size. |
+| `VIZ_THREADS_IDLE` | 3 | OpenCV threads for stereo while NOT navigating (paused/idle); drops to `STEREO_CV_THREADS` while NAVIGATING so it can't starve the control tick |
 | `STEREO_CALIB_PATH` | `/var/lib/perception/stereo_calib.npz` | calibration file |
 | `STEREO_NUM_DISPARITIES` | 96 | max disparity searched (multiple of 16); nearest detectable depth |
 | `STEREO_BLOCK_SIZE` | 7 | SGBM block size (odd) |
