@@ -84,16 +84,25 @@ const MINIMAP_ZOOM_MIN = 15;
 const MINIMAP_ZOOM_MAX = 20;
 let minimapZoom = 18;
 let minimapDirty = true;
-const tileCache = new Map();    // "z/x/y" -> HTMLImageElement | "loading" | "error"
+const TILE_CACHE_MAX = 300;   // bound decoded-tile memory over a long session
+const TILE_RETRY_MS = 10000;  // re-fetch a failed tile after this (transient 502s)
+const tileCache = new Map();  // "z/x/y" -> HTMLImageElement | "loading" | { err: ts }
 
 function getTile(z, x, y) {
   const k = `${z}/${x}/${y}`;
   const cached = tileCache.get(k);
-  if (cached) return cached instanceof Image ? cached : null;
+  if (cached instanceof Image) return cached;
+  if (cached === "loading") return null;
+  if (cached && cached.err && Date.now() - cached.err < TILE_RETRY_MS) return null; // backoff, then retry
   tileCache.set(k, "loading");
   const img = new Image();
-  img.onload = () => { tileCache.set(k, img); minimapDirty = true; };
-  img.onerror = () => { tileCache.set(k, "error"); };
+  img.onload = () => {
+    tileCache.set(k, img);
+    minimapDirty = true;
+    // Evict oldest (Map preserves insertion order) so the cache can't grow forever.
+    while (tileCache.size > TILE_CACHE_MAX) tileCache.delete(tileCache.keys().next().value);
+  };
+  img.onerror = () => { tileCache.set(k, { err: Date.now() }); }; // retryable, not permanent
   img.src = `${STREAM_BASE}/api/rover/map-tile?z=${z}&x=${x}&y=${y}`;
   return null;
 }
@@ -224,6 +233,10 @@ async function whepAttempt() {
       // terminal state should drop us back to MJPEG / trigger a re-attempt.
       if (s === "failed" || s === "closed") {
         whepConnected = false;
+        // Clear the stream so videoWidth drops to 0 → render() stops treating the
+        // (now frozen) last stereo frame as live: it reveals the MJPEG fallback and
+        // the HUD flips to CONNECTING/LINK LOST instead of showing a stale image.
+        if (videoEl) { try { videoEl.srcObject = null; } catch {} }
         startStream();      // WebRTC dropped → MJPEG fallback (mjpeg-on)
       }
     };
@@ -605,6 +618,17 @@ onUnmounted(() => {
   stopWhep();
   stopHold();
   if (evtSource) evtSource.close();
+  // Free GPU resources renderer.dispose() does NOT release: every geometry and
+  // material (and each material's texture — including the vignette CanvasTexture,
+  // which has no standalone handle). The camera's HUD/vignette children are in the
+  // graph via scene.add(camera), so the traversal reaches them too.
+  if (scene) {
+    scene.traverse((obj) => {
+      if (obj.geometry) obj.geometry.dispose();
+      const mats = obj.material ? (Array.isArray(obj.material) ? obj.material : [obj.material]) : [];
+      for (const m of mats) { if (m.map) m.map.dispose(); m.dispose(); }
+    });
+  }
   if (renderer) {
     renderer.setAnimationLoop(null);
     renderer.xr.removeEventListener("sessionstart", onSessionStart);
@@ -613,13 +637,14 @@ onUnmounted(() => {
     if (session) session.end().catch(() => {});
     if (renderer.domElement?.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
     renderer.dispose();
+    renderer.forceContextLoss(); // release the WebGL context (browsers cap ~16 live)
   }
   if (vrButtonEl?.parentNode) vrButtonEl.parentNode.removeChild(vrButtonEl);
+  // screenMat.map alternates between these at runtime, so the traversal only
+  // disposed whichever was current — dispose both video textures + the MJPEG one.
   if (texture) texture.dispose();
   if (videoTextureL) videoTextureL.dispose();
   if (videoTextureR) videoTextureR.dispose();
-  if (hudTexture) hudTexture.dispose();
-  if (minimapTexture) minimapTexture.dispose();
 });
 </script>
 
