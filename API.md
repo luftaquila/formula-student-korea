@@ -543,6 +543,7 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | GET | `/api/rover/camera/hold` | admin | `?mode=2d\|vr` | SSE stream | WebRTC **게이팅 전용** 뷰어. MJPEG 프레임은 안 받고, 로버가 캡처 + 해당 WebRTC 스트림(`mode=2d`→`rover-2d`, `mode=vr`→`rover-vr`)을 publish하도록 유지. 2D 패널/VR 뷰가 세션 동안 열어둠 |
 | POST | `/api/rover/camera/depth` | admin | `{ on }` | `{ ok, depth, camera_connected }` | 양안 깊이 컴포지트(정류 좌안 + 깊이 히트맵 + 최근접 거리, 로버가 렌더) 토글. 2D 뷰어(MJPEG `cameraViewers` **또는** WebRTC `holdViewers2d`)가 있어야 적용 — 뷰어 없으면 무시. 마지막 2D 뷰어 이탈 시 자동 해제 |
 | GET | `/api/rover/camera/status` | admin | — | `{ camera_connected, viewers, depth, last_frame_age_ms }` | 카메라 릴레이 상태. `camera_connected`=perception 제어 SSE 연결됨, `viewers`=MJPEG 뷰어 수, `depth`=컴포지트 모드, `last_frame_age_ms`=서버 계산 프레임 경과(뷰어 없으면 null) |
+| GET | `/api/rover/map-tile` | admin | `?z=&x=&y=` | image (jpeg/png) | VR 미니맵용 위성 타일 **동일 출처 프록시**. WebGL 캔버스가 교차 출처 타일로 오염되지 않도록 VWorld(서버측 `VWORLD_KEY`)·구글 타일을 서버가 대신 가져와 전달. z/x/y는 slippy-map(XYZ) 인덱스, 범위 밖이면 400 |
 
 ### Rover 카메라 — WebRTC 시그널링 (mediamtx, WHIP/WHEP)
 
