@@ -207,6 +207,9 @@ def test_config_from_env_defaults_on_empty():
     assert cfg.viz_depth_scale == 0.4       # depth at 0.4× base (512×288 from 720p)
     assert cfg.speckle_filter_size == 200
     assert cfg.viz_edge_margin == 0.05
+    assert cfg.wls_lambda == 8000.0
+    assert cfg.wls_sigma == 1.5
+    assert cfg.conf_min == 128
 
 
 def test_config_from_env_parses_sgbm_mode_and_viz():
@@ -451,16 +454,16 @@ def test_compute_composite_renders_and_reports(tmp_path):
     # full-resolution depth (scale 1.0) also returns the base-sized composite
     out2, _ = det.compute_composite(left, right, depth_scale=1.0)
     assert out2.shape == (H, W, 3)
-    # a matcher sized for the downscaled resolution is cached for reuse
-    assert det._viz_matchers                 # populated by the 0.4-scale call
 
-    # Shared-pass decomposition: one downscaled depth feeds BOTH detection (decide)
-    # and the composite (render_composite) — no second SGBM.
-    depth_z, valid = det.compute_depth(left, right, scale=0.4)
+    # Shared-pass decomposition: one downscaled depth (+ optional WLS confidence)
+    # feeds BOTH detection (decide) and the composite (render_composite) — no
+    # second SGBM. conf is a map when ximgproc/WLS is present, else None.
+    depth_z, valid, conf = det.compute_depth(left, right, scale=0.4)
     assert depth_z.shape == (H * 2 // 5, W * 2 // 5)  # 0.4× calib (512×288 from 720p)
-    obstacle, dinfo = det.decide(depth_z, valid)
+    assert conf is None or conf.shape == depth_z.shape
+    obstacle, dinfo = det.decide(depth_z, valid, conf)
     assert dinfo["enabled"] is True and isinstance(obstacle, bool)
-    rout, rinfo = det.render_composite(left, depth_z, valid)
+    rout, rinfo = det.render_composite(left, depth_z, valid, conf)
     assert rout.shape == (H, W, 3) and rinfo["enabled"] is True
 
 

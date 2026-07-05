@@ -83,12 +83,16 @@ composite share ONE stereo depth pass per frame** (`compute_depth` → `decide` 
 and stays available even while NAVIGATING without starving the detector (during
 NAVIGATING OpenCV drops to `STEREO_CV_THREADS`). Unifying detection onto that same
 downscaled pass also speeds detection up — it clears `DETECT_FPS` with room, so the
-auto-pause reacts sooner. The depth is full SGBM (clean) + `cv2.filterSpeckles`. For
-display, textureless holes are filled (`cv2.inpaint`) + smoothed so the overlay is solid
-and doesn't shimmer (detection keeps the raw depth, so filled pixels can't fabricate an
-obstacle). The nearest marker is placed on the **centroid** of the nearest equidepth region
-(not the argmin pixel, which — with quantised disparity — pins it to the top of the near
-blob), and it ignores a `VIZ_EDGE_MARGIN` border.
+auto-pause reacts sooner. **Depth uses the OpenCV `ximgproc` WLS filter** (left + right
+matcher → edge-aware hole-fill + smoothing guided by the left image, plus a confidence
+map) — the reference fix for stereo's textureless holes / noise / wrong "far" matches.
+The **confidence map gates DETECTION + the nearest marker** (only high-confidence pixels,
+`STEREO_WLS_CONF_MIN`), so the auto-pause never trips on WLS-interpolated (guessed) depth;
+the display keeps the full filled map. `numDisparities` is **not** scaled with the compute
+resolution (doing so floored the near range at ~1.08 m); nd=96 measures to ~0.35 m at
+512×288. The nearest marker is the **centroid** of the nearest equidepth region (not the
+argmin pixel, which quantisation pins to the top of a near blob) and ignores a
+`VIZ_EDGE_MARGIN` border. Without `ximgproc` it falls back to plain SGBM (+ `filterSpeckles`).
 Benchmarked on the Pi 5 (720p base, 512×288 depth, full SGBM ~23 fps compute):
 composite ~8 fps on three cores when paused/idle (~5 fps single-core; rectify-bound,
 so mode barely affects end-to-end rate).
@@ -152,8 +156,10 @@ a video device restarts the unit via `fsk-perception-replug.service`.
 | `CAMERA_VIEW` | left | sbs layout only: `left`\|`right`\|`full` crop. Dual streams the left eye whole. |
 | `OBSTACLE_DETECTION` | true | master switch; `false` disables detection entirely |
 | `DETECT_FPS` | 4 | detection rate (sub-samples capture; a few fps is plenty) |
-| `STEREO_SGBM_MODE` | sgbm | block matcher shared by detection + composite: `sgbm` (full 5-path, clean, most accurate — affordable ~23 fps at 512), `3way` (faster but streaky/noisy at low texture), `hh`/`hh4` |
-| `STEREO_SPECKLE_FILTER_SIZE` | 200 | `cv2.filterSpeckles`: drop connected disparity blobs smaller than this (px) as noise. 0 disables. Sized for ~512×288. |
+| `STEREO_WLS_LAMBDA` / `STEREO_WLS_SIGMA` | 8000 / 1.5 | WLS filter regularisation / edge sensitivity (OpenCV defaults) |
+| `STEREO_WLS_CONF_MIN` | 128 | min WLS confidence (0–255) for a pixel to count in DETECTION + the nearest marker (rejects interpolated depth) |
+| `STEREO_SGBM_MODE` | sgbm | FALLBACK matcher mode when `ximgproc` is absent (`sgbm`/`3way`/`hh`/`hh4`); ignored when WLS is active (its left matcher is 3WAY) |
+| `STEREO_SPECKLE_FILTER_SIZE` | 200 | FALLBACK-only `cv2.filterSpeckles` size (px); WLS does its own cleanup |
 | `VIZ_NEAR_M` / `VIZ_FAR_M` | 0.3 / 5.0 | live composite: depth range mapped to the heatmap colours + near clip for the nearest-point marker |
 | `VIZ_DEPTH_SCALE` | 0.4 | stereo depth-compute size as a fraction of calib, SHARED by detection + composite (one pass); the composite base still renders sharp at full res. 0.4 of 720p → 512×288. `OBSTACLE_MIN_VALID_PX` auto-scales to this size. |
 | `VIZ_EDGE_MARGIN` | 0.05 | live composite: ignore this fraction of each frame edge when picking the nearest-point marker (keeps it off the top border / the rover's own structure) |

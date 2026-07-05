@@ -402,6 +402,16 @@ class StereoConfig:
     # ~2 fps at full 720p) while the displayed real image stays crisp. 1.0 = depth
     # at full base resolution (sharpest depth, slowest).
     viz_depth_scale: float = 0.4
+    # WLS disparity post-filter (cv2.ximgproc): edge-aware hole-fill + smoothing
+    # guided by the left image, plus a confidence map. This is the reference fix
+    # for stereo's textureless holes / noise. lambda ≈ regularisation strength,
+    # sigma ≈ edge sensitivity (OpenCV's documented defaults). conf_min gates the
+    # DETECTION + nearest-marker on the confidence map (0–255) so the auto-pause
+    # never acts on WLS-interpolated (guessed) depth; the display keeps the full
+    # filled map. Falls back to plain SGBM if ximgproc is unavailable.
+    wls_lambda: float = 8000.0
+    wls_sigma: float = 1.5
+    conf_min: int = 128
 
 
 class StereoDepth:
@@ -417,7 +427,8 @@ class StereoDepth:
         self._calib = None
         self._matcher = None
         self._mode = None
-        self._viz_matchers = {}   # numDisparities → SGBM matcher (composite path)
+        self._right_matcher = None
+        self._wls = None
         if cv2 is None:
             return
         calib = load_calibration(cfg.calib_path)
@@ -431,7 +442,10 @@ class StereoDepth:
         except Exception:  # noqa: BLE001 - non-fatal tuning call
             pass
         self._calib = calib
-        # numDisparities must be a positive multiple of 16.
+        # numDisparities sets the CLOSEST measurable depth (max disparity). It is
+        # NOT scaled with viz_depth_scale — doing so floored the near range (e.g.
+        # nd 96→32 at 0.4 pinned the nearest at ~1.08 m). Keep the full value at the
+        # (downscaled) compute resolution: nd=96 measures to ~0.35 m at 512×288.
         nd = max(16, (int(cfg.num_disparities) // 16) * 16)
         modes = {
             "sgbm": cv2.STEREO_SGBM_MODE_SGBM,
@@ -439,17 +453,29 @@ class StereoDepth:
             "hh4": getattr(cv2, "STEREO_SGBM_MODE_HH4", cv2.STEREO_SGBM_MODE_HH),
             "3way": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
         }
-        # One mode for both detection and the composite — they share a single depth
-        # pass (see compute_depth), so there is nothing to diverge.
-        self._mode = modes.get((cfg.sgbm_mode or "3way").lower(), cv2.STEREO_SGBM_MODE_SGBM_3WAY)
-        self._matcher = self._make_matcher(nd, self._mode)
+        self._mode = modes.get((cfg.sgbm_mode or "sgbm").lower(), cv2.STEREO_SGBM_MODE_SGBM)
+        has_wls = hasattr(cv2, "ximgproc")
+        if has_wls:
+            # Reference WLS pipeline: a 3WAY left matcher tuned for WLS (low block,
+            # preFilterCap, no internal speckle — the filter does the cleanup), a
+            # right matcher, and the confidence-capable filter.
+            bs = 3
+            self._matcher = cv2.StereoSGBM_create(
+                minDisparity=0, numDisparities=nd, blockSize=bs,
+                P1=24 * bs * bs, P2=96 * bs * bs, disp12MaxDiff=1,
+                uniquenessRatio=0, speckleWindowSize=0, speckleRange=0,
+                preFilterCap=63, mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY)
+            self._right_matcher = cv2.ximgproc.createRightMatcher(self._matcher)
+            self._wls = cv2.ximgproc.createDisparityWLSFilter(self._matcher)
+            self._wls.setLambda(float(cfg.wls_lambda))
+            self._wls.setSigmaColor(float(cfg.wls_sigma))
+        else:
+            # Fallback (no ximgproc): plain single-matcher SGBM.
+            self._matcher = self._make_matcher(nd, self._mode)
         self.enabled = True
 
     def _make_matcher(self, nd, mode):
-        """StereoSGBM with this module's tuned params at a given disparity range +
-        mode. Shared by the detection matcher and the composite's _viz_matcher so
-        the two can't drift. P1/P2 are the smoothness penalties (OpenCV's
-        block-area defaults for a single-channel match)."""
+        """Plain StereoSGBM (fallback path when ximgproc/WLS is unavailable)."""
         nd = max(16, (int(nd) // 16) * 16)
         bs = int(self.cfg.block_size) | 1  # force odd
         return cv2.StereoSGBM_create(
@@ -474,15 +500,17 @@ class StereoDepth:
         return self._rectify_eye(eye, map_x, map_y, size, to_gray=True)
 
     def compute_depth(self, left, right, scale=1.0):
-        """Left + right eye frames → (depth_z metres, valid mask) at `scale`× the
-        calibration resolution. None if disabled.
+        """Left + right eye frames → (depth_z metres, valid mask, conf) at `scale`×
+        the calibration resolution. None if disabled.
 
-        scale=1.0 is full calib res; scale<1 rectifies at calib res then downscales
-        the grays before SGBM (cost ~ pixels × disparity) and scales the reprojection
-        Q so metric depth stays correct (downscaled disparity d' = s·d, so
-        Q' = Q·diag(1/s,1/s,1/s,1) reprojects the same 3D point). This ONE pass is
-        shared by detection (decide) and the live composite (render_composite), so
-        stereo is never computed twice for the same frame.
+        Rectify at calib res, optionally downscale the grays (scale<1) and scale the
+        reprojection Q so metric depth stays correct (downscaled disparity d' = s·d,
+        so Q' = Q·diag(1/s,1/s,1/s,1)). numDisparities is fixed at the matcher, NOT
+        scaled, so the near range is preserved at any scale. With ximgproc, runs the
+        WLS pipeline (left+right matcher → edge-aware hole-fill + smoothing) and
+        returns its confidence map (0–255); without it, plain SGBM and conf=None.
+        This ONE pass is shared by detection (decide) and the composite
+        (render_composite), so stereo is never computed twice for a frame.
         """
         if not self.enabled:
             return None
@@ -496,38 +524,45 @@ class StereoDepth:
             gl = cv2.resize(gl, (dw, dh), interpolation=cv2.INTER_AREA)
             gr = cv2.resize(gr, (dw, dh), interpolation=cv2.INTER_AREA)
             Q = c["Q"] @ np.diag([1.0 / s, 1.0 / s, 1.0 / s, 1.0]).astype(c["Q"].dtype)
-            nd = max(16, (int(round(self.cfg.num_disparities * s)) // 16) * 16)
-            matcher = self._viz_matcher(nd)
         else:
-            Q, matcher = c["Q"], self._matcher
-        # StereoSGBM returns fixed-point disparity (×16) as int16.
-        raw = matcher.compute(gl, gr)
-        # Drop small speckle blobs (noise) beyond what SGBM's speckleWindowSize
-        # catches — set to 0 so they read as invalid below. In-place on the int16
-        # disparity; maxDiff is in ×16 units (32 ≈ 2 disparity levels).
-        if self.cfg.speckle_filter_size and self.cfg.speckle_filter_size > 0:
-            cv2.filterSpeckles(raw, 0, int(self.cfg.speckle_filter_size), 32)
-        disp = raw.astype(np.float32) / 16.0
-        # Disparities at/below 0 never matched (or fell in the left margin where
-        # the right image has no overlap) — exclude them from depth.
+            Q = c["Q"]
+        conf = None
+        if self._wls is not None:
+            # WLS: filter the left disparity with the right disparity as a
+            # consistency check; the filter fills + smooths edge-aware and exposes a
+            # confidence map. StereoSGBM output is fixed-point (×16) int16.
+            left_disp = self._matcher.compute(gl, gr)
+            right_disp = self._right_matcher.compute(gr, gl)
+            filtered = self._wls.filter(left_disp, gl, disparity_map_right=right_disp)
+            conf = self._wls.getConfidenceMap()
+            disp = filtered.astype(np.float32) / 16.0
+        else:
+            raw = self._matcher.compute(gl, gr)
+            if self.cfg.speckle_filter_size and self.cfg.speckle_filter_size > 0:
+                cv2.filterSpeckles(raw, 0, int(self.cfg.speckle_filter_size), 32)
+            disp = raw.astype(np.float32) / 16.0
+        # Disparities at/below 0 never matched (or fell in the left margin where the
+        # right image has no overlap) — exclude them from depth.
         valid = disp > 0.0
         depth_z = cv2.reprojectImageTo3D(disp, Q)[:, :, 2]
-        # reprojectImageTo3D emits huge/!finite Z where disparity ~0; mask those
-        # out so they can't masquerade as far background.
-        valid &= np.isfinite(depth_z)
-        return depth_z, valid
+        valid &= np.isfinite(depth_z)     # reproject emits !finite Z where disp ~0
+        return depth_z, valid, conf
 
-    def decide(self, depth_z, valid):
+    def decide(self, depth_z, valid, conf=None):
         """Corridor obstacle decision + info from a PRECOMPUTED depth map (from
         compute_depth at any scale). Separated from depth so detection can share the
         composite's single depth pass.
 
-        info always carries 'enabled'; when enabled it adds fill / counts /
-        nearest-corridor-depth for logging + the operator alert payload.
+        When a WLS confidence map is given, only high-confidence pixels
+        (>= cfg.conf_min) count — the auto-pause must never trip on WLS-interpolated
+        (guessed) depth in textureless regions. info always carries 'enabled'; when
+        enabled it adds fill / counts / nearest-corridor-depth for the alert payload.
         """
         if not self.enabled:
             return False, {"enabled": False}
         cfg = self.cfg
+        if conf is not None:
+            valid = valid & (conf >= cfg.conf_min)
         # min_valid_px is authored for the full calib resolution; scale it to the
         # actual depth-map size so the floor means the same fraction of the corridor
         # regardless of the (possibly downscaled) detect resolution.
@@ -566,21 +601,10 @@ class StereoDepth:
         for standalone / test use. Safe with disabled detector (no frame access)."""
         if not self.enabled:
             return False, {"enabled": False}
-        depth_z, valid = self.compute_depth(left, right, scale=scale)
-        return self.decide(depth_z, valid)
+        depth_z, valid, conf = self.compute_depth(left, right, scale=scale)
+        return self.decide(depth_z, valid, conf)
 
-    def _viz_matcher(self, nd):
-        """SGBM matcher for a downscaled depth resolution, cached by numDisparities.
-        The full-res matcher's numDisparities is tuned for the calib resolution;
-        a downscaled pass has a smaller disparity range, so it needs its own matcher.
-        Same mode as detection (they share the depth pass)."""
-        m = self._viz_matchers.get(nd)
-        if m is None:
-            m = self._make_matcher(nd, self._mode)
-            self._viz_matchers[nd] = m
-        return m
-
-    def render_composite(self, left, depth_z, valid, alpha=0.45):
+    def render_composite(self, left, depth_z, valid, conf=None, alpha=0.45):
         """(left eye, PRECOMPUTED depth) → (BGR composite, info) for the live view.
 
         The BASE (real image) is the rectified left eye at the full calibration
@@ -601,36 +625,32 @@ class StereoDepth:
         if base.ndim == 2:
             base = cv2.cvtColor(base, cv2.COLOR_GRAY2BGR)
 
-        # Depth → colour with NEAR = warm. Textureless surfaces (floor, glass,
-        # walls) leave many invalid holes that flicker frame-to-frame ("자글거림");
-        # for the DISPLAY ONLY, fill them from neighbours and smooth so the overlay
-        # is solid and stable. Detection is unaffected — decide() runs on the raw
-        # depth/valid, so filled (invented) depth can never fabricate an obstacle.
+        # Depth → colour with NEAR = warm. WLS has already filled + edge-smoothed
+        # the depth (stable, no per-frame shimmer), so just colourise and overlay
+        # where the (filled) depth is valid; the sharp base shows through the alpha
+        # and through the residual holes (e.g. the left disparity margin).
         near = self.cfg.viz_near_m
         far = max(self.cfg.viz_far_m, near + 0.1)
         norm = np.clip((depth_z - near) / (far - near), 0.0, 1.0)
-        du8 = ((1.0 - norm) * 255).astype(np.uint8)      # near = bright; garbage where invalid
-        holes = (~valid).astype(np.uint8) * 255
-        if np.any(holes):
-            du8 = cv2.inpaint(du8, holes, 3, cv2.INPAINT_TELEA)   # fill holes from neighbours
-        du8 = cv2.medianBlur(du8, 5)                     # de-shimmer
-        heat = cv2.applyColorMap(du8, cv2.COLORMAP_JET)
+        heat = cv2.applyColorMap(((1.0 - norm) * 255).astype(np.uint8), cv2.COLORMAP_JET)
+        mask = (valid.astype(np.uint8)) * 255
         if (heat.shape[1], heat.shape[0]) != size:
             heat = cv2.resize(heat, size, interpolation=cv2.INTER_LINEAR)
-        # Uniform translucent overlay over the whole (now hole-free) frame — the
-        # sharp base still shows through the alpha.
-        out = np.ascontiguousarray(cv2.addWeighted(base, 1.0 - alpha, heat, alpha, 0.0))
+            mask = cv2.resize(mask, size, interpolation=cv2.INTER_NEAREST)
+        blended = cv2.addWeighted(base, 1.0 - alpha, heat, alpha, 0.0)
+        out = np.ascontiguousarray(np.where((mask > 0)[:, :, None], blended, base))
 
-        # Whole-frame nearest (at the depth-map res) → scale marker coords up to the
-        # base by the actual size ratio (handles any depth scale). Ignore an edge
-        # margin so the marker isn't pinned to the top/border by the rover's own
-        # structure or frame-edge disparity.
+        # Nearest marker: only HIGH-CONFIDENCE, interior pixels (not WLS-interpolated
+        # regions, not the frame border) → the centroid of that nearest region.
         dh, dw = depth_z.shape[:2]
         mgn = min(0.45, max(0.0, self.cfg.viz_edge_margin))
         my, mx = int(dh * mgn), int(dw * mgn)
-        interior = np.zeros(depth_z.shape, dtype=bool)
-        interior[my:dh - my, mx:dw - mx] = True
-        z, x, y = nearest_point(depth_z, valid & interior, near, self.cfg.viz_far_m)
+        nmask = np.zeros(depth_z.shape, dtype=bool)
+        nmask[my:dh - my, mx:dw - mx] = True
+        nmask &= valid
+        if conf is not None:
+            nmask &= (conf >= self.cfg.conf_min)
+        z, x, y = nearest_point(depth_z, nmask, near, self.cfg.viz_far_m)
         info = {"enabled": True, "nearest_m": (round(z, 2) if z == z else None)}
         if x >= 0:
             bx = int(round(x * (w / depth_z.shape[1])))
@@ -651,8 +671,8 @@ class StereoDepth:
         if not self.enabled:
             return None, {"enabled": False}
         s = self.cfg.viz_depth_scale if depth_scale is None else float(depth_scale)
-        depth_z, valid = self.compute_depth(left, right, scale=s)
-        return self.render_composite(left, depth_z, valid, alpha=alpha)
+        depth_z, valid, conf = self.compute_depth(left, right, scale=s)
+        return self.render_composite(left, depth_z, valid, conf, alpha=alpha)
 
 
 def config_from_env(env=None):
@@ -696,4 +716,7 @@ def config_from_env(env=None):
         viz_depth_scale=_f("VIZ_DEPTH_SCALE", 0.4),
         speckle_filter_size=_i("STEREO_SPECKLE_FILTER_SIZE", 200),
         viz_edge_margin=_f("VIZ_EDGE_MARGIN", 0.05),
+        wls_lambda=_f("STEREO_WLS_LAMBDA", 8000.0),
+        wls_sigma=_f("STEREO_WLS_SIGMA", 1.5),
+        conf_min=_i("STEREO_WLS_CONF_MIN", 128),
     )
