@@ -368,11 +368,14 @@ class StereoConfig:
     min_fill: float = 0.12
     min_valid_px: int = 400
     cv_threads: int = 1                # cap so SGBM can't starve the ROS loop
-    # Block-matcher mode. "3way" (STEREO_SGBM_MODE_SGBM_3WAY) is ~2x faster than
-    # full "sgbm" on the Pi 5 for a small accuracy cost, and — unlike full SGBM,
-    # which runs single-threaded regardless of cv_threads — it actually uses
-    # multiple cores. "sgbm"/"hh" available when accuracy matters more than rate.
-    sgbm_mode: str = "3way"
+    # Block-matcher mode for OBSTACLE DETECTION (the auto-pause path). Default
+    # "sgbm" — full 5-path, most accurate — so the safety-critical detector keeps
+    # main's behaviour. "3way" (STEREO_SGBM_MODE_SGBM_3WAY) is ~2x faster but less
+    # accurate (may miss thin/low-texture obstacles); opt in with
+    # STEREO_SGBM_MODE=3way only if detection RATE matters more than accuracy.
+    # The live composite always uses 3way regardless (its accuracy is cosmetic and
+    # it needs the speed — see _viz_matcher). "hh"/"hh4" also available.
+    sgbm_mode: str = "sgbm"
     # Live composite view (compute_composite) only: the depth range mapped onto
     # the heatmap colours, and the near clip for the WHOLE-FRAME nearest-point
     # marker (reject lens-edge / speckle closer than this, which would otherwise
@@ -417,40 +420,48 @@ class StereoDepth:
         self._calib = calib
         # numDisparities must be a positive multiple of 16.
         nd = max(16, (int(cfg.num_disparities) // 16) * 16)
-        bs = int(cfg.block_size) | 1  # force odd
         modes = {
             "sgbm": cv2.STEREO_SGBM_MODE_SGBM,
             "hh": cv2.STEREO_SGBM_MODE_HH,
             "hh4": getattr(cv2, "STEREO_SGBM_MODE_HH4", cv2.STEREO_SGBM_MODE_HH),
             "3way": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
         }
-        mode = modes.get((cfg.sgbm_mode or "3way").lower(),
-                         cv2.STEREO_SGBM_MODE_SGBM_3WAY)
-        self._mode = mode
-        # P1/P2 are the SGBM smoothness penalties; OpenCV's documented defaults
-        # scale with block area for a single-channel (grayscale) match.
-        self._matcher = cv2.StereoSGBM_create(
-            minDisparity=0,
-            numDisparities=nd,
-            blockSize=bs,
-            P1=8 * bs * bs,
-            P2=32 * bs * bs,
-            disp12MaxDiff=1,
-            uniquenessRatio=int(cfg.uniqueness),
-            speckleWindowSize=int(cfg.speckle_window),
-            speckleRange=int(cfg.speckle_range),
-            mode=mode,
-        )
+        # Detection matcher uses the configured mode (default full SGBM). The live
+        # composite always uses 3WAY (fast; its accuracy is cosmetic) — kept as a
+        # distinct mode so a STEREO_SGBM_MODE change can't quietly downgrade the
+        # safety detector along with it.
+        self._mode = modes.get((cfg.sgbm_mode or "sgbm").lower(), cv2.STEREO_SGBM_MODE_SGBM)
+        self._viz_mode = cv2.STEREO_SGBM_MODE_SGBM_3WAY
+        self._matcher = self._make_matcher(nd, self._mode)
         self.enabled = True
 
-    def _prep_eye(self, eye, map_x, map_y, size):
-        """Resize an eye to the calibrated size, rectify, return grayscale."""
+    def _make_matcher(self, nd, mode):
+        """StereoSGBM with this module's tuned params at a given disparity range +
+        mode. Shared by the detection matcher and the composite's _viz_matcher so
+        the two can't drift. P1/P2 are the smoothness penalties (OpenCV's
+        block-area defaults for a single-channel match)."""
+        nd = max(16, (int(nd) // 16) * 16)
+        bs = int(self.cfg.block_size) | 1  # force odd
+        return cv2.StereoSGBM_create(
+            minDisparity=0, numDisparities=nd, blockSize=bs,
+            P1=8 * bs * bs, P2=32 * bs * bs, disp12MaxDiff=1,
+            uniquenessRatio=int(self.cfg.uniqueness),
+            speckleWindowSize=int(self.cfg.speckle_window),
+            speckleRange=int(self.cfg.speckle_range), mode=mode)
+
+    def _rectify_eye(self, eye, map_x, map_y, size, to_gray):
+        """Resize an eye to the calibrated size and rectify it; grayscale when
+        to_gray (detection / block matching), colour otherwise (composite base)."""
         if (eye.shape[1], eye.shape[0]) != size:
             eye = cv2.resize(eye, size, interpolation=cv2.INTER_AREA)
         rect = cv2.remap(eye, map_x, map_y, cv2.INTER_LINEAR)
-        if rect.ndim == 3:
+        if to_gray and rect.ndim == 3:
             rect = cv2.cvtColor(rect, cv2.COLOR_BGR2GRAY)
         return rect
+
+    def _prep_eye(self, eye, map_x, map_y, size):
+        """Resize an eye to the calibrated size, rectify, return grayscale."""
+        return self._rectify_eye(eye, map_x, map_y, size, to_gray=True)
 
     def compute_depth(self, left, right):
         """Left + right eye frames → (depth_z metres, valid mask). None if disabled."""
@@ -510,19 +521,15 @@ class StereoDepth:
         return obstacle, info
 
     def _viz_matcher(self, nd):
-        """SGBM matcher sized for the composite's (downscaled) depth resolution,
-        cached by numDisparities. The main self._matcher's numDisparities is tuned
-        for the full calib resolution; the composite runs on a smaller image where
-        the disparity range scales down, so it needs its own matcher."""
+        """SGBM matcher for the composite's (downscaled) depth resolution, cached
+        by numDisparities. The detection matcher's numDisparities is tuned for the
+        full calib resolution; the composite runs on a smaller image where the
+        disparity range scales down, so it needs its own matcher — always in 3WAY
+        (fast; the composite's accuracy is cosmetic), independent of the detector's
+        configured mode."""
         m = self._viz_matchers.get(nd)
         if m is None:
-            bs = int(self.cfg.block_size) | 1
-            m = cv2.StereoSGBM_create(
-                minDisparity=0, numDisparities=nd, blockSize=bs,
-                P1=8 * bs * bs, P2=32 * bs * bs, disp12MaxDiff=1,
-                uniquenessRatio=int(self.cfg.uniqueness),
-                speckleWindowSize=int(self.cfg.speckle_window),
-                speckleRange=int(self.cfg.speckle_range), mode=self._mode)
+            m = self._make_matcher(nd, self._viz_mode)
             self._viz_matchers[nd] = m
         return m
 
@@ -546,13 +553,10 @@ class StereoDepth:
         size = c["image_size"]                     # calib / display (base) size, e.g. (1280, 720)
         w, h = size
 
-        def _rect(eye, mx, my):
-            if (eye.shape[1], eye.shape[0]) != size:
-                eye = cv2.resize(eye, size, interpolation=cv2.INTER_AREA)
-            return cv2.remap(eye, mx, my, cv2.INTER_LINEAR)
-
-        rectL = _rect(left, c["map1x"], c["map1y"])     # base of the composite (sharp)
-        rectR = _rect(right, c["map2x"], c["map2y"])
+        # Rectify both eyes at the base resolution (colour) — same resize+remap as
+        # detection's _prep_eye, shared via _rectify_eye so they can't diverge.
+        rectL = self._rectify_eye(left, c["map1x"], c["map1y"], size, to_gray=False)
+        rectR = self._rectify_eye(right, c["map2x"], c["map2y"], size, to_gray=False)
         base = rectL if rectL.ndim == 3 else cv2.cvtColor(rectL, cv2.COLOR_GRAY2BGR)
         gl = cv2.cvtColor(rectL, cv2.COLOR_BGR2GRAY) if rectL.ndim == 3 else rectL
         gr = cv2.cvtColor(rectR, cv2.COLOR_BGR2GRAY) if rectR.ndim == 3 else rectR
@@ -639,7 +643,7 @@ def config_from_env(env=None):
         min_fill=_f("OBSTACLE_MIN_FILL", 0.12),
         min_valid_px=_i("OBSTACLE_MIN_VALID_PX", 400),
         cv_threads=_i("STEREO_CV_THREADS", 1),
-        sgbm_mode=(e.get("STEREO_SGBM_MODE") or "3way").lower(),
+        sgbm_mode=(e.get("STEREO_SGBM_MODE") or "sgbm").lower(),
         viz_near_m=_f("VIZ_NEAR_M", 0.3),
         viz_far_m=_f("VIZ_FAR_M", 5.0),
         viz_depth_scale=_f("VIZ_DEPTH_SCALE", 0.4),

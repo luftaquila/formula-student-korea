@@ -201,7 +201,7 @@ def test_config_from_env_defaults_on_empty():
     assert cfg.near_m == 0.4
     assert cfg.far_m == 2.5
     assert cfg.roi == (0.30, 0.55, 0.70, 0.98)
-    assert cfg.sgbm_mode == "3way"          # 3WAY is the default (fast, multi-core)
+    assert cfg.sgbm_mode == "sgbm"          # detection defaults to full SGBM (safety); composite uses 3WAY internally
     assert cfg.viz_near_m == 0.3
     assert cfg.viz_far_m == 5.0
     assert cfg.viz_depth_scale == 0.4       # depth at 0.4× base (512×288 from 720p)
@@ -419,6 +419,9 @@ def test_compute_composite_renders_and_reports(tmp_path):
     stereo.save_calibration(calib_path, result, 0.025)
     det = stereo.StereoDepth(stereo.StereoConfig(calib_path=calib_path))
     assert det.enabled is True
+    # Safety detector stays on full SGBM by default; the composite uses 3WAY.
+    assert det._mode == cv2.STEREO_SGBM_MODE_SGBM
+    assert det._viz_mode == cv2.STEREO_SGBM_MODE_SGBM_3WAY
 
     W, H = size
     rng = np.random.default_rng(0)
