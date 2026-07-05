@@ -937,27 +937,20 @@ describe('POST /api/rover/camera/depth', () => {
     assert.equal(res.status, 401);
   });
 
-  it('toggles the depth view mode on/off (admin) and reflects it in status', async () => {
+  it('is a no-op without an active viewer (depth needs a live stream)', async () => {
+    // Depth is a sub-mode of an active stream; toggling it on with zero viewers
+    // must NOT latch the flag true (it would otherwise get stuck — the only reset
+    // is the last-viewer-leave edge). The on-with-viewer path is covered in the
+    // Camera relay suite (which holds a viewer + a control channel open).
     const on = await client.post('/api/rover/camera/depth', {
       body: { on: true }, cookie: adminCookie,
     });
     assert.equal(on.status, 200);
     const onBody = await on.json();
     assert.equal(onBody.ok, true);
-    assert.equal(onBody.depth, true);
-    // No perception control channel is connected in the test, so the event isn't
-    // delivered — but the desired state is stored (and re-sent on reconnect).
-    assert.equal(onBody.camera_connected, false);
-
+    assert.equal(onBody.depth, false);           // guarded: no viewer → stays off
     const status = await client.get('/api/rover/camera/status', { cookie: adminCookie });
-    assert.equal((await status.json()).depth, true);
-
-    const off = await client.post('/api/rover/camera/depth', {
-      body: { on: false }, cookie: adminCookie,
-    });
-    assert.equal((await off.json()).depth, false);
-    const status2 = await client.get('/api/rover/camera/status', { cookie: adminCookie });
-    assert.equal((await status2.json()).depth, false);
+    assert.equal((await status.json()).depth, false);
   });
 
   it('coerces a missing body to off (no crash)', async () => {
@@ -2062,11 +2055,25 @@ describe('Camera relay', () => {
     assert.equal(st.viewers, 1);
     assert.ok(st.last_frame_age_ms != null && st.last_frame_age_ms >= 0, 'status reports a server-computed frame age');
 
-    // Last viewer leaves → camera-stop.
+    // Depth toggle (with a viewer present) relays depth-on to perception and is
+    // reflected in status.
+    const dOn = await cli.post('/api/rover/camera/depth', { body: { on: true }, cookie: adminCookie });
+    assert.equal((await dOn.json()).depth, true, 'depth turns on while a viewer is watching');
+    assert.ok(await waitFor(() => ctlSink.text.includes('depth-on'), 1000),
+      'depth toggle relays depth-on to the perception control channel');
+    st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
+    assert.equal(st.depth, true);
+
+    // Last viewer leaves → camera-stop AND depth-off (so a reopen starts plain),
+    // and the server depth state resets.
     stopView();
     viewAc.abort();
     assert.ok(await waitFor(() => ctlSink.text.includes('camera-stop'), 1500),
       'last viewer triggers camera-stop');
+    assert.ok(await waitFor(() => ctlSink.text.includes('depth-off'), 1500),
+      'last viewer also clears the depth mode (depth-off)');
+    st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
+    assert.equal(st.depth, false, 'depth mode resets when the last viewer leaves');
 
     stopCtl();
     ctlAc.abort();

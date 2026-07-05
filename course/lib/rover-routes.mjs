@@ -1322,7 +1322,12 @@ function removeCameraViewer(res) {
   if (cameraViewers.size === 0) {
     cameraLatestFrame = null;
     cameraDepthWanted = false;
-    syncCameraCapture();
+    syncCameraCapture();               // camera-stop
+    // Clear the rover's depth mode too. camera-stop only clears stream_wanted on
+    // the rover; without this the rover's depth_wanted Event stays set and a
+    // reopen (or a mid-session perception reconnect) would resume the composite
+    // even though the server + UI report the plain view.
+    sendCameraControl("depth-off");
   }
 }
 
@@ -1475,11 +1480,21 @@ app.get("/api/rover/camera/status", (req, res) => {
 // perception reconnect restores the mode (see the control handler above).
 app.post("/api/rover/camera/depth", (req, res) => {
   const on = !!(req.body && req.body.on);
-  cameraDepthWanted = on;
-  const delivered = sendCameraControl(on ? "depth-on" : "depth-off");
-  logger.log(req, "rover.camera.depth",
-    { on, delivered, viewers: cameraViewers.size }, "rover");
-  res.json({ ok: true, depth: on, camera_connected: !!cameraControlClient });
+  // Depth is a sub-mode of an active stream. Ignore an "on" with no viewer so the
+  // flag can't get stuck true (it's only cleared on the last-viewer-leave edge,
+  // which never fires if a viewer never joined).
+  cameraDepthWanted = on && cameraViewers.size > 0;
+  const delivered = sendCameraControl(cameraDepthWanted ? "depth-on" : "depth-off");
+  const detail = { on, applied: cameraDepthWanted, delivered, viewers: cameraViewers.size };
+  // We wanted depth on (a viewer is present) but couldn't reach perception → an
+  // inter-service delivery failure; warn per the logging policy so an operator can
+  // find "the depth view didn't apply" by level. Everything else is info.
+  if (cameraDepthWanted && !delivered) {
+    logger.warn(req, "rover.camera.depth", { ...detail, error: "perception_not_connected" }, "rover");
+  } else {
+    logger.log(req, "rover.camera.depth", detail, "rover");
+  }
+  res.json({ ok: true, depth: cameraDepthWanted, camera_connected: !!cameraControlClient });
 });
 
 }
