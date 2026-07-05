@@ -369,19 +369,30 @@ class StereoConfig:
     min_valid_px: int = 400
     cv_threads: int = 1                # cap so SGBM can't starve the ROS loop
     # Block-matcher mode, shared by detection AND the live composite (one depth
-    # pass serves both). Default "3way" (STEREO_SGBM_MODE_SGBM_3WAY): ~2x faster
-    # than full "sgbm" and multi-core, which HALVES the auto-pause latency
-    # (720p full SGBM ~1.8 fps → 3-frame debounce ~1.9 s; 3way is quicker, and at
-    # the 512×288 detect resolution it clears DETECT_FPS with room → ~0.75 s). The
-    # small accuracy cost is outweighed by reacting sooner. Set "sgbm" to trade
-    # rate for the most accurate disparity. "hh"/"hh4" also available.
-    sgbm_mode: str = "3way"
+    # pass serves both). Default "sgbm" — full 5-path SGBM: most accurate and far
+    # less noisy than 3way (3way's fewer aggregation paths leave streaky
+    # low-texture noise). 3way was only needed to make full SGBM affordable at 720p
+    # (~1.8 fps); at the 512×288 detect/compute resolution full SGBM runs ~23 fps
+    # (benchmarked), so it clears DETECT_FPS + the camera rate with room while
+    # giving a clean depth map. Set "3way" only if you must trade quality for a bit
+    # more rate. "hh"/"hh4" also available.
+    sgbm_mode: str = "sgbm"
     # Live composite view (compute_composite) only: the depth range mapped onto
     # the heatmap colours, and the near clip for the WHOLE-FRAME nearest-point
     # marker (reject lens-edge / speckle closer than this, which would otherwise
     # report an absurd sub-decimetre 'nearest'). Independent of the obstacle band.
     viz_near_m: float = 0.3
     viz_far_m: float = 5.0
+    # Post-SGBM speckle removal (cv2.filterSpeckles): connected disparity blobs
+    # smaller than this many pixels are dropped as noise. 0 disables. Cleans the
+    # shared depth for both detection and the composite. Sized for the ~512×288
+    # compute resolution.
+    speckle_filter_size: int = 200
+    # Live composite only: ignore this fraction of each frame edge when picking the
+    # WHOLE-FRAME nearest-point marker. The top of the FOV often holds the rover's
+    # own structure / frame-edge disparity, which otherwise pins the marker to the
+    # top border every frame; a margin keeps it on a real interior near point.
+    viz_edge_margin: float = 0.08
     # Live composite depth resolution as a fraction of the calibration (base) size.
     # The base image is rendered SHARP at the full calib resolution, but the
     # expensive SGBM depth runs on a downscaled copy (cost ~ pixels × disparity):
@@ -488,7 +499,13 @@ class StereoDepth:
         else:
             Q, matcher = c["Q"], self._matcher
         # StereoSGBM returns fixed-point disparity (×16) as int16.
-        disp = matcher.compute(gl, gr).astype(np.float32) / 16.0
+        raw = matcher.compute(gl, gr)
+        # Drop small speckle blobs (noise) beyond what SGBM's speckleWindowSize
+        # catches — set to 0 so they read as invalid below. In-place on the int16
+        # disparity; maxDiff is in ×16 units (32 ≈ 2 disparity levels).
+        if self.cfg.speckle_filter_size and self.cfg.speckle_filter_size > 0:
+            cv2.filterSpeckles(raw, 0, int(self.cfg.speckle_filter_size), 32)
+        disp = raw.astype(np.float32) / 16.0
         # Disparities at/below 0 never matched (or fell in the left margin where
         # the right image has no overlap) — exclude them from depth.
         valid = disp > 0.0
@@ -596,8 +613,15 @@ class StereoDepth:
         out = np.ascontiguousarray(np.where((mask > 0)[:, :, None], blended, base))
 
         # Whole-frame nearest (at the depth-map res) → scale marker coords up to the
-        # base by the actual size ratio (handles any depth scale).
-        z, x, y = nearest_point(depth_z, valid, near, self.cfg.viz_far_m)
+        # base by the actual size ratio (handles any depth scale). Ignore an edge
+        # margin so the marker isn't pinned to the top/border by the rover's own
+        # structure or frame-edge disparity.
+        dh, dw = depth_z.shape[:2]
+        mgn = min(0.45, max(0.0, self.cfg.viz_edge_margin))
+        my, mx = int(dh * mgn), int(dw * mgn)
+        interior = np.zeros(depth_z.shape, dtype=bool)
+        interior[my:dh - my, mx:dw - mx] = True
+        z, x, y = nearest_point(depth_z, valid & interior, near, self.cfg.viz_far_m)
         info = {"enabled": True, "nearest_m": (round(z, 2) if z == z else None)}
         if x >= 0:
             bx = int(round(x * (w / depth_z.shape[1])))
@@ -657,8 +681,10 @@ def config_from_env(env=None):
         min_fill=_f("OBSTACLE_MIN_FILL", 0.12),
         min_valid_px=_i("OBSTACLE_MIN_VALID_PX", 400),
         cv_threads=_i("STEREO_CV_THREADS", 1),
-        sgbm_mode=(e.get("STEREO_SGBM_MODE") or "3way").lower(),
+        sgbm_mode=(e.get("STEREO_SGBM_MODE") or "sgbm").lower(),
         viz_near_m=_f("VIZ_NEAR_M", 0.3),
         viz_far_m=_f("VIZ_FAR_M", 5.0),
         viz_depth_scale=_f("VIZ_DEPTH_SCALE", 0.4),
+        speckle_filter_size=_i("STEREO_SPECKLE_FILTER_SIZE", 200),
+        viz_edge_margin=_f("VIZ_EDGE_MARGIN", 0.08),
     )

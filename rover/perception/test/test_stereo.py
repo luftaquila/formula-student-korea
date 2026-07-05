@@ -201,10 +201,12 @@ def test_config_from_env_defaults_on_empty():
     assert cfg.near_m == 0.4
     assert cfg.far_m == 2.5
     assert cfg.roi == (0.30, 0.55, 0.70, 0.98)
-    assert cfg.sgbm_mode == "3way"          # unified 3WAY (halves auto-pause latency); shared by detection + composite
+    assert cfg.sgbm_mode == "sgbm"          # full SGBM (clean); affordable at 512, shared by detection + composite
     assert cfg.viz_near_m == 0.3
     assert cfg.viz_far_m == 5.0
     assert cfg.viz_depth_scale == 0.4       # depth at 0.4× base (512×288 from 720p)
+    assert cfg.speckle_filter_size == 200
+    assert cfg.viz_edge_margin == 0.08
 
 
 def test_config_from_env_parses_sgbm_mode_and_viz():
@@ -419,7 +421,7 @@ def test_compute_composite_renders_and_reports(tmp_path):
     stereo.save_calibration(calib_path, result, 0.025)
     det = stereo.StereoDepth(stereo.StereoConfig(calib_path=calib_path))
     assert det.enabled is True
-    assert det._mode == cv2.STEREO_SGBM_MODE_SGBM_3WAY   # unified 3WAY default
+    assert det._mode == cv2.STEREO_SGBM_MODE_SGBM        # full SGBM (clean) at 512
 
     W, H = size
     rng = np.random.default_rng(0)
