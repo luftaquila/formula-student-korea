@@ -92,12 +92,41 @@
 		# NOT pass here — it's UDP direct to mediamtx (router-forwarded 8189). Only
 		# the HTTP offer/answer rides 443 → same-origin, so CSP connect-src 'self'
 		# covers the browser side.
-		@rtc path /api/rtc/*
-		handle @rtc {
-			request_header -Authuser
-			request_header -X-Forwarded-For
-			uri strip_prefix /api/rtc
-			reverse_proxy mediamtx:8889
+		#
+		# mediamtx is permit-all + ClusterIP-only, so these gates ARE the access
+		# control (without a signaling exchange the SRTP keys can't be set up, so
+		# the media UDP port alone is useless): WHIP (rover publish) requires the
+		# internal secret; WHEP (browser play) requires an admin session.
+		@rtcwhip path /api/rtc/*/whip
+		handle @rtcwhip {
+			route {
+				# Rover publish: reject anything without the internal secret. The rover
+				# is on the open internet, so this header (not a network boundary) is
+				# the auth — same model as the /api/rover/* internal endpoints.
+				@noauth not header X-Internal-Service {env.INTERNAL_SECRET}
+				respond @noauth 403
+				request_header -Authuser
+				request_header -X-Forwarded-For
+				request_header -X-Internal-Service
+				uri strip_prefix /api/rtc
+				reverse_proxy mediamtx:8889
+			}
+		}
+
+		@rtcwhep path /api/rtc/*/whep
+		handle @rtcwhep {
+			route {
+				request_header -Authuser
+				request_header -X-Forwarded-For
+				request_header -X-Internal-Service
+				# Browser play: require an admin session (JWT cookie validated by auth).
+				forward_auth auth:9100 {
+					uri /api/forward-auth?role=admin
+					header_up X-Forward-Auth-Key {env.INTERNAL_SECRET}
+				}
+				uri strip_prefix /api/rtc
+				reverse_proxy mediamtx:8889
+			}
 		}
 
 		handle {
