@@ -1,6 +1,6 @@
 # FSK Rover perception Python dependencies (Phase 2 streaming + Phase 3 stereo).
 # rclpy / std_msgs come from the ros:jazzy-ros-base image, not pip.
-opencv-python-headless>=4.9,<4.10   # USB UVC capture, JPEG encode, stereo block matching
+opencv-contrib-python-headless>=4.9,<4.10   # UVC capture, JPEG encode, stereo SGBM + ximgproc WLS disparity filter (hole-fill + confidence)
 requests>=2.31                      # control SSE + frame/obstacle POST to the course server
 # Pin <2: ros:jazzy-ros-base ships numpy 1.x and rclpy / the opencv 4.9 wheel are
 # built against the numpy 1.x ABI — numpy 2.x would break `import cv2` / rclpy.

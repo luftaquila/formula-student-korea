@@ -259,10 +259,11 @@ class PerceptionNode(Node):
                 self._publish_obstacle(False)
                 self._published_obstacle = False
 
-    def _run_detection(self, depth_z, valid):
+    def _run_detection(self, depth_z, valid, conf):
         # Decide from a PRECOMPUTED depth map (the pass shared with the composite),
-        # so stereo is never run twice for a frame.
-        obstacle, info = self._detector.decide(depth_z, valid)
+        # so stereo is never run twice for a frame. conf is the WLS confidence map
+        # (or None) — decide() gates on it so guessed depth can't auto-pause.
+        obstacle, info = self._detector.decide(depth_z, valid, conf)
         state, _rising = self._debouncer.update(obstacle)
         if state != self._published_obstacle:
             self._publish_obstacle(state)
@@ -572,7 +573,7 @@ class PerceptionNode(Node):
                     # marker/distance) when toggled on + calibrated + we have depth;
                     # otherwise the plain eye (left whole in dual, cropped in sbs).
                     if depth_stream and depth is not None:
-                        out, _cinfo = self._detector.render_composite(frame, depth[0], depth[1])
+                        out, _cinfo = self._detector.render_composite(frame, depth[0], depth[1], depth[2])
                         if out is None:                 # calibration vanished mid-stream
                             out = frame
                     else:
@@ -597,7 +598,7 @@ class PerceptionNode(Node):
 
                 if due and depth is not None:
                     last_detect = t0
-                    self._run_detection(depth[0], depth[1])
+                    self._run_detection(depth[0], depth[1], depth[2])
             except Exception as e:  # noqa: BLE001 - keep the capture thread alive
                 if (t0 - last_err_log) >= 5.0:
                     last_err_log = t0
