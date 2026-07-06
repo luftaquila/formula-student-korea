@@ -101,7 +101,11 @@ sudo install -d -m 755 /etc/pilot
 #    node's dual layout streams the left eye whole regardless of CAMERA_VIEW —
 #    this only matters for the crop-based (SBS) image / STEREO_LAYOUT=sbs, where
 #    it must stay 'full'. Detection defaults to dual (left=video0, right=video2).
-printf 'SERVER_URL=%s\nROS_DOMAIN_ID=0\nCAMERA_VIEW=full\nCAMERA_HEIGHT=720\n' "$SERVER_URL" \
+# DETECT_FPS=8 pins the obstacle-detection rate on this rover. It matches the code
+# default (perception_node.py), so it's belt-and-suspenders — kept explicit here
+# alongside the other camera tuning. Bounded by the ~13 fps camera ceiling and the
+# single-thread SGBM cap while NAVIGATING (STEREO_CV_THREADS).
+printf 'SERVER_URL=%s\nROS_DOMAIN_ID=0\nCAMERA_VIEW=full\nCAMERA_HEIGHT=720\nDETECT_FPS=8\n' "$SERVER_URL" \
     | sudo tee /etc/pilot/pilot.conf >/dev/null
 
 echo "[rover] (re)creating podman secrets"

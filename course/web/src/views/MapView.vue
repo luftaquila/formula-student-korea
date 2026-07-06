@@ -133,6 +133,7 @@ const roverStatus = ref({
   gps: null,
   obstacle: { active: false, at: 0, nearest_m: null },
   stereo_calibration: { status: "idle" },
+  ground_calibration: { status: "idle" },
 });
 
 function syncAppRoverStatus(data) {
@@ -2332,6 +2333,29 @@ async function startStereoCalibration() {
   }
 }
 
+// Ground calibration fits the above-ground detector's per-row ground-depth curve
+// on flat empty ground. Needs a stereo calibration first (metric depth). Runs on
+// the rover; progress/result arrive via roverStatus.ground_calibration.
+const groundCal = computed(() => roverStatus.value.ground_calibration || { status: "idle" });
+
+// The calibration modal is tabbed (antenna / wheel / stereo / ground) so it no
+// longer scrolls as one long stack; this tracks the visible tab.
+const calTab = ref("antenna");
+
+async function startGroundCalibration() {
+  // Live view so the operator can confirm the corridor is clean flat ground (an
+  // obstacle in view would corrupt the curve).
+  startCamera();
+  try {
+    await request("/api/rover/calibrate-ground", {
+      method: "POST",
+      body: JSON.stringify({ frames: 30 }),
+    });
+  } catch (err) {
+    notifyError(`지면 교정 시작 실패: ${err.message}`);
+  }
+}
+
 async function submitAntennaCal() {
   if (!antennaCalCanStart.value) return;
   antennaCalSubmitting.value = true;
@@ -4490,13 +4514,29 @@ onUnmounted(() => {
             >×</button>
           </div>
 
-          <section class="cal-section">
+          <div class="cal-tabs">
+            <button class="cal-tab" :class="{ active: calTab === 'antenna' }" @click="calTab = 'antenna'">
+              안테나<span v-if="antennaCalRunning" class="cal-tab-dot" title="진행 중"></span>
+            </button>
+            <button class="cal-tab" :class="{ active: calTab === 'wheel' }" @click="calTab = 'wheel'">
+              휠<span v-if="wheelCalRunning" class="cal-tab-dot" title="진행 중"></span>
+            </button>
+            <button class="cal-tab" :class="{ active: calTab === 'stereo' }" @click="calTab = 'stereo'">
+              스테레오<span v-if="stereoCal.status === 'running'" class="cal-tab-dot" title="진행 중"></span>
+            </button>
+            <button class="cal-tab" :class="{ active: calTab === 'ground' }" @click="calTab = 'ground'">
+              지면<span v-if="groundCal.status === 'running'" class="cal-tab-dot" title="진행 중"></span>
+            </button>
+          </div>
+
+          <section class="cal-section" v-show="calTab === 'antenna'">
             <div class="cal-section-title">
               안테나 오프셋
               <span v-if="antennaCalDisplay.sourceLabel" class="cal-source-tag">
                 {{ antennaCalDisplay.sourceLabel }}
               </span>
             </div>
+            <div class="cal-when">재실행 조건: GPS 안테나를 옮기거나 다시 장착했을 때</div>
             <div class="cal-current">
               <span class="cal-key">a_x</span>
               <span class="cal-val">{{ antennaCalDisplay.a_x }}</span>
@@ -4550,8 +4590,9 @@ onUnmounted(() => {
             </div>
           </section>
 
-          <section class="cal-section">
+          <section class="cal-section" v-show="calTab === 'wheel'">
             <div class="cal-section-title">휠 인코더 스케일</div>
+            <div class="cal-when">재실행 조건: 타이어·휠 교체 후 · 주행거리/직진성이 GPS와 어긋날 때</div>
             <div class="cal-space-req">필요 공간: 전방 12 m</div>
             <div class="cal-current">
               <span class="cal-key">scale_l</span>
@@ -4588,8 +4629,10 @@ onUnmounted(() => {
             </div>
           </section>
 
-          <section class="cal-section">
+          <section class="cal-section" v-show="calTab === 'stereo'">
             <div class="cal-section-title">스테레오 카메라 교정</div>
+            <div class="cal-when">재실행 조건: 카메라를 다시 달거나 부딪혀 두 눈 위치가 틀어졌을 때</div>
+            <div class="cal-when">절차:</div>
             <ol class="cal-steps">
               <li>체커보드를 <b>A4 Landscape, 100% scale</b>로 인쇄.</li>
               <li><b>100 mm 바</b> 길이를 자로 확인. 불일치 시 한 칸 길이를 아래에 입력.</li>
@@ -4622,6 +4665,35 @@ onUnmounted(() => {
                 :disabled="!roverStatus.connected || stereoCal.status === 'running' || !stereoSquareValid"
                 @click="startStereoCalibration"
               >{{ stereoCal.status === 'running' ? '교정 중…' : '교정' }}</button>
+            </div>
+          </section>
+
+          <section class="cal-section" v-show="calTab === 'ground'">
+            <div class="cal-section-title">지면 교정 (장애물 감지 기준면)</div>
+            <div class="cal-when">재실행 조건: 카메라 높이·각도 변경 후 · 스테레오 재교정 후 · 새 노면 첫 주행</div>
+            <div class="cal-when">절차:</div>
+            <ol class="cal-steps">
+              <li><b>스테레오 카메라 교정</b>이 먼저 완료돼 있어야 합니다 (미터 깊이 필요).</li>
+              <li>로버를 <b>평평하고 빈 주행 노면</b>에 주행 자세로 두기 — 앞에 장애물·사람이 없어야 합니다.</li>
+              <li><b>지면 교정</b> 실행 — 카메라가 보는 노면의 행별 기대 깊이를 학습해, 그보다 가까운(솟은) 것만 장애물로 판정합니다.</li>
+            </ol>
+            <div v-if="groundCal.status === 'running'" class="modal-status">
+              지면 교정 중… {{ groundCal.captured != null
+                ? `수집 ${groundCal.captured}${groundCal.target ? ' / ' + groundCal.target : ''} 프레임`
+                : '카메라 준비 중' }} — 장애물 없는 빈 노면을 비추세요.
+            </div>
+            <div v-else-if="groundCal.status === 'done'" class="modal-status">
+              지면 교정 완료 — 근거리 {{ groundCal.near_m ?? '—' }} m · 원거리 {{ groundCal.far_m ?? '—' }} m · {{ groundCal.rows ?? '—' }}행
+            </div>
+            <div v-else-if="groundCal.status === 'failed'" class="cal-error">
+              지면 교정 실패: {{ groundCal.error || '알 수 없는 오류' }}
+            </div>
+            <div class="cal-section-actions">
+              <button
+                class="btn btn-primary btn-sm"
+                :disabled="!roverStatus.connected || groundCal.status === 'running'"
+                @click="startGroundCalibration"
+              >{{ groundCal.status === 'running' ? '교정 중…' : '지면 교정' }}</button>
             </div>
           </section>
         </div>
@@ -5712,6 +5784,48 @@ onUnmounted(() => {
 }
 .cal-steps li { margin: 0.2rem 0; }
 .cal-square-field { max-width: 12rem; margin: 0.3rem 0 0.6rem; }
+
+/* Tabbed calibration modal: one row of tabs switches between antenna / wheel /
+   stereo / ground so the modal no longer scrolls as one long stack. */
+.cal-tabs {
+  display: flex;
+  gap: 0.15rem;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 0.7rem;
+}
+.cal-tab {
+  flex: 1;
+  padding: 0.45rem 0.3rem;
+  font-size: 0.82rem;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;                 /* overlap the tab strip's border */
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cal-tab:hover { color: var(--text-primary); }
+.cal-tab.active {
+  color: var(--accent-primary);
+  border-bottom-color: var(--accent-primary);
+  font-weight: 600;
+}
+/* Running indicator so switching tabs never hides an in-progress calibration. */
+.cal-tab-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-left: 0.3rem;
+  border-radius: 50%;
+  background: #f59e0b;
+  vertical-align: middle;
+}
+/* Terse "when to re-run" hint under each section title. */
+.cal-when {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin: 0.1rem 0 0.55rem;
+}
 
 /* The cal modal can grow taller than the mobile viewport (two long
    warnings + scale rows + trim rows + a status line each). Cap its

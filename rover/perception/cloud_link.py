@@ -57,9 +57,12 @@ class CloudLink:
         # while that stream is actually being watched — no viewer, no cost.
         self.webrtc_2d_wanted = threading.Event()
         self.webrtc_vr_wanted = threading.Event()
-        # Called with the square size (m) when the server requests a calibration
-        # (operator pressed 교정). Set by the node; runs on the SSE thread.
+        # Called with the square size (m) when the server requests a STEREO
+        # calibration (operator pressed 교정). Set by the node; runs on the SSE thread.
         self.on_calibrate = None
+        # Called with the frame count when the server requests a GROUND calibration
+        # (fit the above-ground detector's ground curve). Set by the node.
+        self.on_calibrate_ground = None
         self._last_warn_t = 0.0
         self._sse_thread = None
 
@@ -202,3 +205,12 @@ class CloudLink:
             cb = self.on_calibrate
             if cb is not None:
                 cb(square_m)
+        elif event == "calibrate-ground":
+            frames = 30
+            try:
+                frames = int((json.loads(data or "{}") or {}).get("frames", 30))
+            except (ValueError, TypeError):
+                pass
+            cb = self.on_calibrate_ground
+            if cb is not None:
+                cb(frames)
