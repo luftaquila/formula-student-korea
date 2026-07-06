@@ -69,9 +69,11 @@ RUN install -d -m 700 -o 1500 -g 1500 /usr/share/factory/var/home/fsk \
     && chown 1500:1500 /usr/share/factory/var/home/fsk/.ssh/authorized_keys
 
 # Narrow sudo grant — only the commands provision-rover.sh and operators
-# actually need. Avoids handing fsk full root.
+# actually need. Avoids handing fsk full root. vcgencmd is included for
+# firmware/power diagnostics (get_throttled, get_config usb_max_current_enable):
+# it needs /dev/vcio, which is root-only.
 RUN install -d -m 750 /etc/sudoers.d \
-    && printf 'Defaults secure_path="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin"\nfsk ALL=(ALL) NOPASSWD: /usr/bin/podman, /usr/bin/systemctl, /usr/bin/install, /usr/bin/tee, /usr/bin/nmcli, /usr/bin/tailscale, /usr/bin/bootc, /usr/local/bin/flash-mcu\n' \
+    && printf 'Defaults secure_path="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin"\nfsk ALL=(ALL) NOPASSWD: /usr/bin/podman, /usr/bin/systemctl, /usr/bin/install, /usr/bin/tee, /usr/bin/nmcli, /usr/bin/tailscale, /usr/bin/bootc, /usr/bin/vcgencmd, /usr/local/bin/flash-mcu\n' \
          > /etc/sudoers.d/fsk \
     && chmod 440 /etc/sudoers.d/fsk
 
