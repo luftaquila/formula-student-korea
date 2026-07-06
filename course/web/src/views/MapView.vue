@@ -1016,7 +1016,14 @@ const preflightFlash = ref({});
 // Pre-flight checklist derived from current rover state + planned path.
 const preflightChecks = computed(() => {
   const s = roverStatus.value;
-  const first = pathWaypoints.value[0];
+  // In resume mode the rover drives to the chosen restart waypoint first, not
+  // waypoints[0], so gauge the approach distance against that one (the selector
+  // sits in this same modal, so changing it re-derives this check live).
+  const wps = pathWaypoints.value;
+  const startIdx = preflightMode.value === "resume"
+    ? Math.max(0, Math.min(resumeStartIdx.value, wps.length - 1))
+    : 0;
+  const first = wps[startIdx];
   const firstDist = first && s.last_position
     ? haversine({ lat: s.last_position.lat, lng: s.last_position.lng }, first)
     : null;
@@ -1825,10 +1832,15 @@ function onMapClick(e) {
     computePath(e.latlng.lat, e.latlng.lng);
     return;
   }
-  if (roverMode.value === "path-ready" || roverMode.value === "stopped") {
+  if (roverMode.value === "path-ready") {
     clearPath();
     return;
   }
+  // 'stopped' = 비상정지/중단으로 서버에 보존된 재개 가능한 미션("이어서 실행").
+  // 여기서 clearPath()가 돌면 /api/rover/end-mission 이 POST 되어 미션이 폐기되고
+  // 재개가 불가능해진다. 실수 탭 하나가 미션을 날리지 않도록 무시하고(executing 과
+  // 동일), 폐기는 전용 "미션 종료" 버튼으로만 수행한다.
+  if (roverMode.value === "stopped") return;
   if (roverMode.value === "executing") return;
   // Locked courses tab: cones are canvas dots (no per-marker click), so the map
   // tap does the selection the DOM marker normally would — snap to the nearest
@@ -4628,6 +4640,17 @@ onUnmounted(() => {
       <div v-if="showPreflight" class="preflight-backdrop" @click.self="cancelPreflight">
         <div class="preflight-modal">
           <h3>{{ preflightMode === 'resume' ? '재시작 전 점검' : '경로 실행 전 점검' }}</h3>
+          <!-- Resume-from selector lives here (not the panel) so it sits right
+               above the checks it affects — changing it re-derives the "첫
+               웨이포인트 거리" check against the chosen start waypoint. -->
+          <div v-if="preflightMode === 'resume' && pathWaypoints.length > 0" class="resume-selector">
+            <label class="resume-label">재시작 위치:</label>
+            <select v-model.number="resumeStartIdx" class="resume-select">
+              <option v-for="(wp, idx) in pathWaypoints" :key="idx" :value="idx">
+                #{{ idx + 1 }}{{ idx < executedIndex ? ' (완료)' : '' }}{{ idx === executedIndex ? ' (다음)' : '' }}
+              </option>
+            </select>
+          </div>
           <ul class="preflight-list">
             <li
               v-for="c in preflightChecks" :key="c.key"
@@ -5310,14 +5333,15 @@ onUnmounted(() => {
                     </div>
                   </div>
 
-                  <!-- Resume waypoint selector (stopped only) -->
-                  <div v-if="roverMode === 'stopped' && pathWaypoints.length > 0" class="resume-selector">
-                    <label class="resume-label">재시작 위치:</label>
-                    <select v-model.number="resumeStartIdx" class="resume-select">
-                      <option v-for="(wp, idx) in pathWaypoints" :key="idx" :value="idx">
-                        #{{ idx + 1 }}{{ idx < executedIndex ? ' (완료)' : '' }}{{ idx === executedIndex ? ' (다음)' : '' }}
-                      </option>
-                    </select>
+                  <!-- Abandon the preserved (e-stop/interrupted) mission. Map taps
+                       no longer do this — only this explicit button — so a stray
+                       tap can't wipe "이어서 실행". -->
+                  <div v-if="roverMode === 'stopped'" class="rover-controls">
+                    <button
+                      class="btn btn-lg-touch btn-danger"
+                      :disabled="stopping"
+                      @click="clearPath"
+                    >미션 종료</button>
                   </div>
 
                   <!-- Manual joystick -->
@@ -6409,6 +6433,7 @@ onUnmounted(() => {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
 }
 .preflight-modal h3 { margin: 0 0 0.75rem 0; }
+.preflight-modal .resume-selector { margin-top: 0; margin-bottom: 0.75rem; }
 .preflight-list { list-style: none; padding: 0; margin: 0 0 0.75rem 0; }
 .preflight-item {
   display: flex; align-items: center; gap: 0.5rem;
