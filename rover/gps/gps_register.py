@@ -33,6 +33,7 @@ Config (all via environment, see systemd/gps-register.service):
     SERVER_URL_ALLOW_HTTP   "true" to permit http:// (trusted Tailscale only)
 """
 
+import collections
 import json
 import logging
 import os
@@ -106,6 +107,12 @@ def fix_status_string(pvt):
         FixType.GNSS_DR: "no_fix",
         FixType.TIME_ONLY: "time_only",
     }.get(pvt.fix_type, "no_fix")
+
+
+# Fix statuses whose position is real. Below a 2D fix the receiver reports
+# (0, 0); reporting that would drag the operator map to Null Island, where the
+# satellite basemap has no tiles and the whole view renders blank grey.
+_POSITION_FIX_STATUSES = frozenset({"2d_fix", "3d_fix", "rtk_float", "rtk_fixed"})
 
 
 def build_telemetry(fix_status, ntrip_connected, ntrip_detail, gps_metrics):
@@ -182,7 +189,9 @@ class GpsRegisterAgent:
         # "no NTRIP this session" so it clears any stale cached mountpoint.
         self._ntrip_connected = False
         self._ntrip_detail = None
-        self._pending_request_ids = []
+        # Bounded: with the 2D-fix gate, no-fix windows no longer drain requests
+        # immediately, so cap accumulation (mirrors bridge_node's deque).
+        self._pending_request_ids = collections.deque(maxlen=32)
 
         self._running = True
         self._last_report_time = 0.0
@@ -386,10 +395,15 @@ class GpsRegisterAgent:
         with self._lock:
             if not self._last_position:
                 return
+            # Hold position (and any pending request) until at least a 2D fix:
+            # a no-fix / time-only solution reports (0, 0), which would jump the
+            # operator map to Null Island (blank grey — no basemap tiles).
+            if self._fix_status not in _POSITION_FIX_STATUSES:
+                return
             payload = dict(self._last_position)
             if request_ids is None and self._pending_request_ids:
-                request_ids = self._pending_request_ids
-                self._pending_request_ids = []
+                request_ids = list(self._pending_request_ids)
+                self._pending_request_ids.clear()
         if request_ids:
             payload["request_id"] = request_ids[0]
             payload["request_ids"] = request_ids

@@ -47,6 +47,13 @@ from pilot.lib.steering_calibration import load_steering_trim
 LOG_BUFFER_MAXLEN = 500
 LOG_LEVEL_LABEL = {10: "DEBUG", 20: "INFO", 30: "WARN", 40: "ERROR", 50: "FATAL"}
 
+# Fix statuses whose NAV-PVT carries a real lat/lng. Below a 2D fix the ZED-F9P
+# zeroes the position (no_fix / time_only → 0, 0), and gps_node folds the
+# dead-reckoning variants into no_fix. Only report positions at or above a 2D
+# fix — reporting (0, 0) would drag the operator map to Null Island, where the
+# satellite basemap has no tiles and the whole view renders blank grey.
+_POSITION_FIX_STATUSES = frozenset({'2d_fix', '3d_fix', 'rtk_float', 'rtk_fixed'})
+
 
 class BridgeNode(Node):
 
@@ -176,6 +183,13 @@ class BridgeNode(Node):
 
     def _on_gps_position(self, msg):
         """Handle GPS position update."""
+        # Ignore positions without at least a 2D fix: the receiver reports
+        # (0, 0) with no fix, and forwarding that jumps the operator map to
+        # Null Island (blank grey — no basemap tiles). Hold the last good fix
+        # (and any pending explicit request) until the receiver recovers.
+        if self._fix_status not in _POSITION_FIX_STATUSES:
+            return
+
         # msg.altitude is MSL height (gps_node sets it from NAV-PVT h_msl), same
         # datum as the gps-register rover — keep it bound to this fix so the cone
         # gets lat/lng/alt from a single GPS solution.
