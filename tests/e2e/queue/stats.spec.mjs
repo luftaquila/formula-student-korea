@@ -56,6 +56,29 @@ test.describe("Queue statistics page", () => {
     expect(count).toBe(2); // from and to
   });
 
+  test("date filter values persist across reload via localStorage", async ({ page }) => {
+    await page.goto("/queue/stats");
+    await waitForPageReady(page);
+
+    const fromInput = page.locator('input[type="date"]').first();
+    await expect(fromInput).toBeVisible({ timeout: 10000 });
+
+    // Change the start date and fire change -> onFilterChange saves to localStorage
+    const newFrom = "2000-01-01";
+    await fromInput.fill(newFrom);
+    await fromInput.dispatchEvent("change");
+
+    // The write is synchronous inside the change handler; poll until it lands
+    await expect
+      .poll(async () => page.evaluate(() => localStorage.getItem("queue-stats-daterange")))
+      .toContain(newFrom);
+
+    // Reload — the saved value should be restored for the same year
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(page.locator('input[type="date"]').first()).toHaveValue(newFrom);
+  });
+
   test("inspection type filter dropdown is available", async ({ page }) => {
     await page.goto("/queue/stats");
     await waitForPageReady(page);

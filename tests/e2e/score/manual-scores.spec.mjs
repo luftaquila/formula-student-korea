@@ -97,6 +97,37 @@ test.describe("Score manual score entry", () => {
     await fillAndSave(page, deductionInput, "");
   });
 
+  test("arrow keys move focus between manual score cells", async ({ page }) => {
+    const table = page.locator("table.score-table");
+    const rows = table.locator("tbody tr.team-row");
+    await expect(rows.first()).toBeVisible();
+
+    const firstRow = rows.nth(0);
+    const report = firstRow.locator("input.manual-input").nth(0);
+    const energy = firstRow.locator("input.manual-input").nth(1);
+    const bonus = firstRow.locator("input.manual-input").nth(2);
+    const deduction = firstRow.locator("input.manual-input").nth(3);
+
+    // ArrowRight walks report -> energy -> bonus -> deduction
+    await report.focus();
+    await report.press("ArrowRight");
+    await expect(energy).toBeFocused();
+    await energy.press("ArrowRight");
+    await expect(bonus).toBeFocused();
+    await bonus.press("ArrowRight");
+    await expect(deduction).toBeFocused();
+
+    // ArrowLeft goes back
+    await deduction.press("ArrowLeft");
+    await expect(bonus).toBeFocused();
+
+    // ArrowDown moves to the next team row, same column
+    const secondRowReport = rows.nth(1).locator("input.manual-input").nth(0);
+    await report.focus();
+    await report.press("ArrowDown");
+    await expect(secondRowReport).toBeFocused();
+  });
+
   test("total recalculates when multiple manual scores are set", async ({ page }) => {
     const table = page.locator("table.score-table");
     const row = table.locator("tbody tr.team-row").filter({ hasText: "KAIST" });

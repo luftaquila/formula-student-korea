@@ -96,6 +96,38 @@ async function applyYearRange(year) {
   }
 }
 
+const DATE_RANGE_KEY = "queue-stats-daterange";
+
+// 현재 선택한 시작/종료 날짜를 연도와 함께 로컬스토리지에 저장
+function saveDateRange() {
+  try {
+    localStorage.setItem(
+      DATE_RANGE_KEY,
+      JSON.stringify({ year: selectedYear.value, from: filterFrom.value, to: filterTo.value }),
+    );
+  } catch (e) {
+    // 로컬스토리지 사용 불가 시 무시
+  }
+}
+
+// 저장된 날짜 범위가 해당 연도와 일치하면 복원, 아니면 서버 기본 범위 적용
+async function initDateRange(year) {
+  try {
+    const raw = localStorage.getItem(DATE_RANGE_KEY);
+    if (raw) {
+      const saved = JSON.parse(raw);
+      if (saved && saved.year === year && typeof saved.from === "string" && typeof saved.to === "string") {
+        filterFrom.value = saved.from;
+        filterTo.value = saved.to;
+        return;
+      }
+    }
+  } catch (e) {
+    // 파싱 실패 시 서버 범위로 폴백
+  }
+  await applyYearRange(year);
+}
+
 async function onYearChange() {
   expandedTeam.value = null;
   teamTimeline.value = [];
@@ -104,7 +136,7 @@ async function onYearChange() {
   } catch (e) {
     error("엔트리 정보를 가져올 수 없습니다.");
   }
-  await applyYearRange(selectedYear.value);
+  await initDateRange(selectedYear.value);
   await fetchStats();
 }
 
@@ -116,7 +148,7 @@ onMounted(async () => {
     }
     entries.value = await fetchEntries(selectedYear.value);
     inspections.value = await fetchAllInspections();
-    await applyYearRange(selectedYear.value);
+    await initDateRange(selectedYear.value);
     await fetchStats();
   } catch (e) {
     error("데이터를 가져올 수 없습니다.");
@@ -143,6 +175,7 @@ async function fetchStats() {
 function onFilterChange() {
   expandedTeam.value = null;
   teamTimeline.value = [];
+  saveDateRange();
   fetchStats();
 }
 
@@ -562,6 +595,10 @@ function goBack() {
 .detail-row td {
   padding: 0.5rem 0.75rem !important;
   border-bottom: 1px solid var(--border-color);
+  /* 좌측 고정 열 세로줄(freeze line, z-index 10)이 확장된 상세 내용 위에 그려지지 않도록 위로 올림 */
+  position: relative;
+  z-index: 11;
+  background: var(--bg-card);
 }
 
 .detail-row:hover {

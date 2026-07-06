@@ -184,6 +184,36 @@ test.describe("Queue priority management", () => {
     await expectNotification(page, "success", "이력을 초기화했습니다");
   });
 
+  test("arrow keys move focus between priority inputs", async ({ page }) => {
+    await page.goto("/queue/priority");
+    await waitForPageReady(page);
+    await expect(page.locator(".priority-table")).toBeVisible({ timeout: 10000 });
+
+    const row1 = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^1$/ }) });
+    const row2 = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^2$/ }) });
+    const input1 = row1.locator(".priority-input").first();
+    const input2 = row2.locator(".priority-input").first();
+
+    // ArrowDown: entry 1 -> entry 2 within the same inspection column
+    await input1.focus();
+    await expect(input1).toBeFocused();
+    await input1.press("ArrowDown");
+    await expect(input2).toBeFocused();
+
+    // ArrowUp: back to entry 1
+    await input2.press("ArrowUp");
+    await expect(input1).toBeFocused();
+
+    // ArrowRight/ArrowLeft across inspection columns (only if more than one exists)
+    const colCount = await row1.locator(".priority-input").count();
+    if (colCount > 1) {
+      await input1.press("ArrowRight");
+      await expect(row1.locator(".priority-input").nth(1)).toBeFocused();
+      await row1.locator(".priority-input").nth(1).press("ArrowLeft");
+      await expect(input1).toBeFocused();
+    }
+  });
+
   test("shows inspection config toggles in table header", async ({ page }) => {
     await page.goto("/queue/priority");
     await waitForPageReady(page);
