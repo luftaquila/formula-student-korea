@@ -4490,7 +4490,7 @@ onUnmounted(() => {
                 {{ antennaCalDisplay.sourceLabel }}
               </span>
             </div>
-            <div class="cal-when">언제 다시: GPS 안테나를 옮기거나 다시 장착했을 때</div>
+            <div class="cal-when">재실행 조건: GPS 안테나를 옮기거나 다시 장착했을 때</div>
             <div class="cal-current">
               <span class="cal-key">a_x</span>
               <span class="cal-val">{{ antennaCalDisplay.a_x }}</span>
@@ -4546,7 +4546,7 @@ onUnmounted(() => {
 
           <section class="cal-section" v-show="calTab === 'wheel'">
             <div class="cal-section-title">휠 인코더 스케일</div>
-            <div class="cal-when">언제 다시: 타이어·휠 교체 후 · 주행거리/직진성이 GPS와 어긋날 때</div>
+            <div class="cal-when">재실행 조건: 타이어·휠 교체 후 · 주행거리/직진성이 GPS와 어긋날 때</div>
             <div class="cal-space-req">필요 공간: 전방 12 m</div>
             <div class="cal-current">
               <span class="cal-key">scale_l</span>
@@ -4585,7 +4585,8 @@ onUnmounted(() => {
 
           <section class="cal-section" v-show="calTab === 'stereo'">
             <div class="cal-section-title">스테레오 카메라 교정</div>
-            <div class="cal-when">언제 다시: 카메라를 다시 달거나 부딪혀 두 눈 위치가 틀어졌을 때</div>
+            <div class="cal-when">재실행 조건: 카메라를 다시 달거나 부딪혀 두 눈 위치가 틀어졌을 때</div>
+            <div class="cal-when">절차:</div>
             <ol class="cal-steps">
               <li>체커보드를 <b>A4 Landscape, 100% scale</b>로 인쇄.</li>
               <li><b>100 mm 바</b> 길이를 자로 확인. 불일치 시 한 칸 길이를 아래에 입력.</li>
@@ -4623,7 +4624,8 @@ onUnmounted(() => {
 
           <section class="cal-section" v-show="calTab === 'ground'">
             <div class="cal-section-title">지면 교정 (장애물 감지 기준면)</div>
-            <div class="cal-when">언제 다시: 카메라 높이·각도 변경 후 · 스테레오 재교정 후 · 새 노면 첫 주행</div>
+            <div class="cal-when">재실행 조건: 카메라 높이·각도 변경 후 · 스테레오 재교정 후 · 새 노면 첫 주행</div>
+            <div class="cal-when">절차:</div>
             <ol class="cal-steps">
               <li><b>스테레오 카메라 교정</b>이 먼저 완료돼 있어야 합니다 (미터 깊이 필요).</li>
               <li>로버를 <b>평평하고 빈 주행 노면</b>에 주행 자세로 두기 — 앞에 장애물·사람이 없어야 합니다.</li>
