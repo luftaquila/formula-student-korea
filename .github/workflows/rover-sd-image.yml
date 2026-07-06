@@ -5,10 +5,15 @@ name: Build Rover SD Image
 # variant — smallest stable image that supports Pi 5's modern GPT
 # boot path) and applies two on-image patches:
 #
-#   1. Pi 5 cooling fan pinned to 100% via dtparams in /boot/efi/config.txt.
-#      The Pi 5 VideoCore firmware owns the fan before the kernel boots;
-#      fan_temp{0..3}=0 + fan_temp{0..3}_speed=255 makes it run full-tilt
-#      from power-on regardless of any in-kernel thermal governor.
+#   1. Pi 5 firmware tuning in /boot/efi/config.txt (read by the VideoCore
+#      firmware before the kernel boots):
+#        - cooling fan pinned to 100%: fan_temp{0..3}=0 + fan_temp{0..3}_speed=255
+#          runs it full-tilt from power-on regardless of any thermal governor.
+#        - usb_max_current_enable=1: lifts the USB-A budget from the default
+#          600mA to 1.6A. The rover's custom 8-32V->5V 30W (6A) DC-DC cannot
+#          USB-C PD-negotiate 5A, so the firmware caps USB-A at 600mA; the
+#          stereo-camera USB reconnect inrush then trips a global over-current
+#          that also drops the GPS and MCU. 1.6A of headroom absorbs the inrush.
 #
 #   2. A one-shot first-boot service that runs
 #      `bootc switch ghcr.io/.../fsk-rover-host:candidate && reboot`
@@ -87,7 +92,7 @@ jobs:
           test -n "${EFI:-}"  || { echo "no CIDATA partition found"        >&2; exit 1; }
           test -n "${ROOT:-}" || { echo "no root (OSTree) partition found" >&2; exit 1; }
 
-          # 1a. Pi 5 fan to 100% — CIDATA holds config.txt.
+          # 1a. Pi 5 fan to 100% + full USB current — CIDATA holds config.txt.
           sudo mount "$EFI" .tmp/efi
           printf '%s\n' \
             '' \
@@ -100,6 +105,12 @@ jobs:
             'dtparam=fan_temp2_speed=255' \
             'dtparam=fan_temp3=0' \
             'dtparam=fan_temp3_speed=255' \
+            '' \
+            '# FSK: allow the full 1.6A USB-A budget. The custom 8-32V->5V 30W (6A)' \
+            '# DC-DC cannot USB-C PD-negotiate 5A, so the firmware caps USB-A at' \
+            '# 600mA; the stereo-camera USB reconnect inrush then trips a global' \
+            '# over-current that also drops the GPS and MCU. 1.6A absorbs the inrush.' \
+            'usb_max_current_enable=1' \
             | sudo tee -a .tmp/efi/config.txt >/dev/null
           echo "--- patched config.txt tail ---"
           sudo tail -n 14 .tmp/efi/config.txt
