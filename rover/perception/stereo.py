@@ -266,8 +266,16 @@ def fit_ground_profile(row_fracs, depths, min_depth_m=0.3):
     rf, dm = rf[ok], dm[ok]
     order = np.argsort(rf)
     rf, dm = rf[order], dm[order]
-    # Enforce monotone non-increasing depth with row (running min top→bottom).
-    dm = np.minimum.accumulate(dm)
+    # Enforce non-increasing depth with row (ground gets nearer toward the bottom),
+    # anchored from the RELIABLE near end. Bottom rows have the largest disparity, so
+    # a running max walking bottom→top clamps a spuriously-near reading at a far
+    # (top, least-reliable) bin UP to the established trend — instead of a top→bottom
+    # running-min letting one bad far sample drag the whole curve, including the
+    # reliable near rows, down to it (which would silently blind the above-ground
+    # detector). This keeps calibration errors in the SAFE direction (ground read
+    # farther → over-flag / false positive) rather than the dangerous one (ground
+    # read nearer → obstacles missed).
+    dm = np.maximum.accumulate(dm[::-1])[::-1]
     return rf, dm
 
 

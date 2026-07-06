@@ -496,10 +496,26 @@ def test_fit_ground_profile_sorts_and_drops_invalid():
 
 
 def test_fit_ground_profile_enforces_non_increasing():
-    # A row that reads FARTHER than a higher row (noise) is clamped down, so the
-    # curve never says the ground gets farther toward the rover.
+    # Anchored from the reliable near (bottom) end: a mid/far bin that violates the
+    # non-increasing trend is clamped toward the FAR side, never letting the curve
+    # claim the ground gets nearer than a lower row.
     orf, odm = stereo.fit_ground_profile([0.1, 0.2, 0.3], [2.0, 2.5, 1.0])
-    assert list(odm) == [2.0, 2.0, 1.0]
+    assert list(odm) == [2.5, 2.5, 1.0]
+    assert all(a >= b for a, b in zip(odm, odm[1:]))   # non-increasing
+
+
+def test_fit_ground_profile_near_outlier_at_far_bin_does_not_collapse_curve():
+    # SAFETY regression: a single spuriously-near reading at a top (far, least-reliable)
+    # bin must NOT drag the whole curve down — that collapse silently blinds the
+    # above-ground detector (thresh becomes ~near-clip → real obstacles never flagged).
+    # Bottom-anchored fit clamps the bad far bin UP and preserves the reliable near rows.
+    rf = np.linspace(0.05, 0.95, 10)
+    dm = np.array([0.5, 3.6, 3.2, 2.8, 2.4, 2.0, 1.6, 1.4, 1.2, 1.0])   # only bin0 is bad
+    _orf, odm = stereo.fit_ground_profile(rf, dm)
+    assert odm[0] == 3.6                       # bad far bin clamped up to the trend
+    assert odm[-1] == 1.0                      # near rows preserved
+    assert float(odm.min()) == 1.0             # NOT collapsed to 0.5
+    assert all(a >= b for a, b in zip(odm, odm[1:]))
 
 
 def test_ground_depth_for_rows_interpolates_and_nans_outside():
