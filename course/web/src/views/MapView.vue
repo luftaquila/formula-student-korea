@@ -1557,7 +1557,7 @@ function updateMultiSelectIcons() {
   // Locked courses tab: cones are canvas dots with no setIcon — repaint their
   // rings by rebuilding (cheap for canvas markers, unlike DOM ones).
   if (activeTab.value === "courses" && editLocked.value) { rebuildAllMarkers(); return; }
-  const ranks = buildSideRanks(conesMap.value[aid] || []);
+  const ranks = activeConeSideRanks.value; // aid === active course; reuse the memoized map
   for (const cone of (conesMap.value[aid] || [])) {
     const key = `${aid}-${cone.id}`;
     const m = markers[key];
@@ -1631,7 +1631,7 @@ watch(selectedConeId, (id) => {
   if (activeTab.value === "courses" && editLocked.value) {
     rebuildAllMarkers();
   } else {
-    const ranks = buildSideRanks(conesMap.value[aid] || []);
+    const ranks = activeConeSideRanks.value; // aid === active course; reuse the memoized map
     Object.entries(markers).forEach(([key, marker]) => {
       if (!key.startsWith(`${aid}-`) || !marker.setIcon) return; // skip canvas dots
       const coneId = parseInt(key.split("-")[1]);
