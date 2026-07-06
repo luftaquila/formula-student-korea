@@ -96,15 +96,16 @@ navigator_node:
     l1_min_speed_m_s: 0.07
     # Direct-mode K-turn hysteresis. eta = bearing(antenna→target)
     # − chassis_ψ. K-turn engages when |eta| crosses ABOVE kturn_enter
-    # (60°). Exit when |eta| drops BELOW kturn_exit (5°) AND antenna
-    # is at least kturn_exit_dist (50 cm) behind target. Hysteresis
-    # prevents the near-target |eta|≈±π/2 oscillation that flipped
-    # cmd v between +approach and -approach at 1 Hz in early field
-    # trials. The min_dist suppression keeps a tiny attitude
-    # excursion close to target from triggering a needless back-up.
+    # (60°) at ANY distance — a large heading error close to target is
+    # exactly where the forward arc can't close (min turn radius ≈ 0.59 m
+    # ≫ target distance), so the reverse is mandatory there. Exit once the
+    # reverse has aligned (|eta| dropped BELOW kturn_exit (5°), latched)
+    # AND the antenna is at least kturn_exit_dist (50 cm) behind target.
+    # Hysteresis prevents the near-target |eta|≈±π/2 oscillation that
+    # flipped cmd v between +approach and -approach at 1 Hz in early
+    # field trials.
     l1_kturn_enter_rad: 1.047  # 60°
     l1_kturn_exit_rad: 0.0873  # 5°
-    l1_kturn_min_dist_m: 0.30
     l1_kturn_exit_dist_m: 0.50
 
     # ── Tolerances and timeouts ─────────────────────────────────────────
