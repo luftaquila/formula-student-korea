@@ -22,15 +22,24 @@ turning radius (1/max_curvature ≈ 0.59 m) dwarfs the cm_capture gate,
 so once the antenna is near the target but the chassis points far off
 the bearing, the forward law physically cannot arc onto the target —
 it must reverse first. The K-turn engages at ANY distance (large eta
-close to target is exactly when it's mandatory), reverses with
-saturated κ in the eta-closing direction until it first aligns within
-`kturn_exit_rad` (phase A), then LATCHES that alignment and reverses
-straight (κ=0, phase B) to build a `kturn_exit_dist_m` standoff for the
-post-K-turn forward leg. The alignment latch is what keeps phase B from
-re-saturating the steering on the small eta drift a straight reverse
-induces (the antenna is offset from the rear axle) — re-reading live
-eta there flipped the wheel hard the opposite way and undid the
-alignment.
+close to target is exactly when it's mandatory) and reverses with
+saturated κ, then latches straight-line reverse (κ=0, phase B) once
+aligned to build a `kturn_exit_dist_m` standoff for the post-K-turn
+forward leg.
+
+Two latches keep it robust against the close-range bearing noise that
+makes sign(eta) flip tick-to-tick within a few cm of target:
+  • the ROTATION DIRECTION (κ sign) is fixed at entry and held through
+    phase A, so noisy eta crossing zero can't slam the steering full-lock
+    left↔right (the reverse-thrash the operator sees as "조향이 좌우로
+    미친듯이 와리가리");
+  • the ALIGNMENT latch fires when |eta| enters `kturn_exit_rad` OR eta
+    crosses to the far side of the entry direction (the sign-cross clause
+    guarantees it fires as the chassis rotates through alignment even if
+    noise keeps every sample outside the tight band — a held direction
+    with a missed latch would otherwise run away). Once latched, phase B
+    holds κ=0 through eta drift, so the standoff build never re-saturates
+    the wheel with the opposite sign.
 
 The 'reached' gate fires when antenna→target distance drops below
 `cm_capture` (3 cm). The navigator transitions to SETTLING on that
@@ -95,6 +104,12 @@ class L1Tracker:
         # never re-saturates the wheel on eta drift. Cleared on exit,
         # reach, and reset.
         self._kturn_aligned = False
+        # Rotation direction (κ sign) latched ONCE at K-turn entry and held
+        # through phase A. 0 = not latched. Holding it stops the steering
+        # from slamming full-lock left↔right when close-range bearing noise
+        # flips sign(eta) tick-to-tick during the reverse. Cleared on exit,
+        # reach, and reset.
+        self._kturn_dir = 0.0
 
     def reset(self):
         """Clear latched K-turn state. Called by the navigator on
@@ -102,6 +117,7 @@ class L1Tracker:
         """
         self._kturn_active = False
         self._kturn_aligned = False
+        self._kturn_dir = 0.0
 
     def _antenna_world(self, chassis_pose):
         x, y, psi = chassis_pose
@@ -134,6 +150,7 @@ class L1Tracker:
         if target_dist <= self._cm_capture:
             self._kturn_active = False
             self._kturn_aligned = False
+            self._kturn_dir = 0.0
             return 0.0, 0.0, 'reached'
 
         # Bearing FROM the antenna. The whole point of the antenna-
@@ -160,34 +177,54 @@ class L1Tracker:
         # forward↔K-turn from chattering.
         #
         # Exit: alignment LATCH set AND standoff reached. Phase A reverses
-        # with saturated κ until |eta| first drops within exit_rad, which
-        # sets the latch; phase B then reverses straight (κ=0) to build the
-        # standoff. Gating the exit and phase-B on the latch — not on live
-        # eta — is the mission-#6 fix: a straight reverse drifts eta a few
-        # degrees (the antenna is offset from the rear axle), and the old
-        # live-eta phase A re-saturated the wheel with the OPPOSITE sign
-        # ("aligned nicely, then reversed more and cranked it the other
-        # way, ruining it"). The forward leg below finishes any residual
-        # alignment smoothly once it has the standoff to arc in.
+        # with saturated κ (a rotation direction latched ONCE at entry) until
+        # the chassis aligns; phase B then reverses straight (κ=0) to build
+        # the standoff.
+        #
+        # Two latches, both to survive close-range bearing noise (the
+        # antenna→target bearing, hence eta, gets very noisy within a few cm
+        # of target, so sign(eta) can flip tick-to-tick):
+        #   • _kturn_dir  — the κ sign, fixed at entry. Holding it stops the
+        #     steering from slamming full-lock left↔right as noisy eta crosses
+        #     zero mid-reverse (the "조향이 좌우로 미친듯이 와리가리" thrash).
+        #   • _kturn_aligned — set when |eta| enters the exit band OR eta
+        #     crosses to the far side of the entry direction. The sign-cross
+        #     clause GUARANTEES the latch fires as the chassis rotates through
+        #     alignment even if noise keeps every sample outside the tight ±5°
+        #     band — without it, a held direction with a missed latch would
+        #     keep rotating past 0 and run away. Once latched, phase-B κ=0.
+        # This also subsumes the earlier mission-#6 fix: a straight reverse
+        # that drifts eta no longer re-saturates the wheel with the opposite
+        # sign. The forward leg finishes any residual alignment once it has
+        # the standoff to arc in.
         if self._kturn_active:
-            if abs_eta < self._kturn_exit_rad:
+            if (abs_eta < self._kturn_exit_rad
+                    or eta * self._kturn_dir > 0.0):
                 self._kturn_aligned = True
             if self._kturn_aligned and target_dist >= self._kturn_exit_dist_m:
                 self._kturn_active = False
                 self._kturn_aligned = False
+                self._kturn_dir = 0.0
         elif abs_eta > self._kturn_enter_rad:
             self._kturn_active = True
             self._kturn_aligned = False
+            # κ sign = -sign(eta_entry). eta > 0 → κ < 0 (see below).
+            self._kturn_dir = -1.0 if eta > 0 else 1.0
 
         if self._kturn_active:
-            # Phase A (not yet aligned): saturated κ in the eta-closing
-            # direction. Sign: eta > 0 means bearing is ahead-and-left of
-            # ψ → want ψ̇ > 0 → backward v < 0 needs κ < 0, i.e.
-            # κ = -sign(eta)·max. Phase B (aligned latch set): κ=0 straight
-            # reverse to build the standoff, holding through eta drift.
+            # Phase A (not yet aligned): saturated κ in the entry-latched
+            # rotation direction. Sign: eta > 0 means bearing is ahead-and-
+            # left of ψ → want ψ̇ > 0 → backward v < 0 needs κ < 0, i.e.
+            # κ = -sign(eta_entry)·max. Phase B (aligned): κ=0 straight
+            # reverse to build the standoff.
             if self._kturn_aligned:
                 kappa_kt = 0.0
+            elif self._kturn_dir != 0.0:
+                kappa_kt = self._kturn_dir * self._max_curvature
             else:
+                # Direction not latched (state set externally, e.g. a unit
+                # test poking _kturn_active): fall back to the instantaneous
+                # alignment-closing sign.
                 kappa_kt = (-self._max_curvature if eta > 0
                             else self._max_curvature)
             return -self._approach_speed, \

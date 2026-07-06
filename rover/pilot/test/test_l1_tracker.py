@@ -29,6 +29,10 @@ Tests pin the behaviours that the field failures led us to:
   - Alignment latch (mission-#6 fix): once aligned, phase B holds κ=0
     straight reverse through eta drift instead of re-saturating the
     wheel with the opposite sign.
+  - Direction latch: the K-turn rotation direction (κ sign) is fixed at
+    entry and held through phase A, so close-range eta sign noise can't
+    slam the steering full-lock left↔right (reverse thrash); the
+    alignment latch's sign-cross clause catches rotation through 0.
   - Curvature clamp at ±max_curvature.
 """
 
@@ -112,12 +116,14 @@ class TestReached:
         t = L1Tracker(_PARAMS)
         t._kturn_active = True
         t._kturn_aligned = True
+        t._kturn_dir = -1.0
         seg = _seg(target=(1.0, 0.0))
         antenna = (1.01, 0.0)
         chassis = _chassis_for_antenna_at(*antenna, psi=0.0)
         t.step(chassis, seg, t_now=0.0, antenna_world=antenna)
         assert t._kturn_active is False
         assert t._kturn_aligned is False
+        assert t._kturn_dir == 0.0
 
 
 class TestForwardUnicycleTransform:
@@ -385,6 +391,35 @@ class TestKturnExit:
         assert k2 == 0.0
         assert v == -_PARAMS['approach_speed']
 
+    def test_direction_latch_no_wheel_flip_under_eta_sign_noise(self):
+        """Close-range reverse thrash regression ('조향이 좌우로 미친듯이
+        와리가리'): the K-turn latches its rotation direction at ENTRY and
+        holds κ's sign through phase A, driven through step() (not poked).
+        A noisy eta that flips sign tick-to-tick must NOT slam the wheel
+        full-lock the other way — it either holds the entry sign (same side)
+        or hands off to κ=0 via the alignment latch (opposite side)."""
+        t = L1Tracker(_PARAMS)
+        seg = _seg(target=(0.0, 0.0))
+        # Enter: antenna at (-0.40,0) → bearing 0; ψ=-70° → eta=+70° > 60°.
+        antenna = (-0.40, 0.0)
+        chassis = _chassis_for_antenna_at(*antenna, psi=radians(-70))
+        _, k1, _ = t.step(chassis, seg, t_now=0.0, antenna_world=antenna)
+        assert t._kturn_active
+        assert t._kturn_dir == -1.0                 # κ sign latched (eta>0→κ<0)
+        assert k1 == -_PARAMS['max_curvature']
+        # Same-side variation (eta=+50°, still >exit): hold −max, not aligned.
+        chassis = _chassis_for_antenna_at(*antenna, psi=radians(-50))
+        _, k2, _ = t.step(chassis, seg, t_now=0.0, antenna_world=antenna)
+        assert not t._kturn_aligned
+        assert k2 == -_PARAMS['max_curvature']
+        # Opposite-side sample (eta=−10°): the OLD live-sign logic would slam
+        # κ to +max; the direction+alignment latch instead crosses to aligned
+        # → κ=0. Never a +max flip.
+        chassis = _chassis_for_antenna_at(*antenna, psi=radians(10))
+        _, k3, _ = t.step(chassis, seg, t_now=0.0, antenna_world=antenna)
+        assert t._kturn_aligned
+        assert k3 == 0.0
+
 
 class TestCurvatureClamp:
     def test_forward_kappa_clamped_to_max(self):
@@ -421,6 +456,8 @@ class TestReset:
         t = L1Tracker(_PARAMS)
         t._kturn_active = True
         t._kturn_aligned = True
+        t._kturn_dir = 1.0
         t.reset()
         assert t._kturn_active is False
         assert t._kturn_aligned is False
+        assert t._kturn_dir == 0.0
