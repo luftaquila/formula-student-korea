@@ -656,3 +656,47 @@ def test_execute_path_preempts_paused(nav):
     msg = type('M', (), {'data': json.dumps([{'lat': 35.0001, 'lng': 126.0001}])})()
     nav._on_execute_path(msg)
     assert nav._state == State.CALIBRATING
+
+
+# ── SPRAYING position-hold ─────────────────────────────────────────────────
+
+def _arm_spraying(nav, tracker_cmd):
+    """Wire up a SPRAYING position-hold with a stub tracker returning
+    `tracker_cmd` (v, kappa, status) and the antenna 1 m off target so the
+    handler re-steps the tracker. Returns the (calls) recorder list."""
+    from pilot.lib.path_planner import PathSegment
+    nav._spray_enter_time = time.monotonic()          # no spray_timeout
+    nav._cur_seg_idx = 0
+    nav._cur_wp_idx = 0
+    nav._segments = [PathSegment(end_pose=(2.0, 0.0, 0.0),
+                                 target_antenna=(2.0, 0.0), waypoint_index=0)]
+    nav._estimator = type('E', (), {
+        'initialized': True,
+        'antenna_position': lambda self: (1.0, 0.0),   # 1 m from target
+        'chassis_pose': lambda self: (0.7, 0.0, 0.0),
+    })()
+    nav._l1_tracker = type('T', (), {
+        'step': lambda self, *a, **k: tracker_cmd,
+    })()
+    calls = []
+    nav._stop_motors = lambda: calls.append(('stop',))
+    nav._publish_velocity = lambda v, k: calls.append(('pub', v, k))
+    return calls
+
+
+def test_spray_hold_suppresses_kturn_reverse(nav):
+    # A close-range eta spike makes L1 return a K-turn reverse (v<0). During
+    # SPRAYING that would back the rover off the cone mid-dispense, so the
+    # position-hold must HOLD (stop), never publish the reverse.
+    calls = _arm_spraying(nav, (-0.4, 1.7, 'tracking'))
+    nav._handle_spraying()
+    assert ('stop',) in calls
+    assert not any(c[0] == 'pub' and c[1] < 0 for c in calls)
+
+
+def test_spray_hold_allows_small_forward_correction(nav):
+    # A forward drift-correction (v>0) is still published — the hold only
+    # suppresses reverse, not the small forward nudge it exists for.
+    calls = _arm_spraying(nav, (0.12, 0.3, 'tracking'))
+    nav._handle_spraying()
+    assert ('pub', 0.12, 0.3) in calls

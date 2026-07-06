@@ -1496,7 +1496,19 @@ class NavigatorNode(Node):
                 time.monotonic(),
                 (antenna_e, antenna_n),
             )
-            self._publish_velocity(v, kappa)
+            # Position-hold during spray only nulls out small FORWARD drift.
+            # A reverse command means L1 entered its K-turn (v = -approach) to
+            # rebuild a standoff — correct while NAVIGATING, but here it would
+            # drive the rover backward off the cone mid-dispense. That is easy
+            # to trigger: within a few cm of target the antenna→target bearing
+            # is very noise-sensitive, so RTK jitter spikes |eta| past the 60°
+            # K-turn threshold. Hold instead of reversing; a genuinely lost
+            # dock is handled by the settle/spray timeouts, not by backing up
+            # while the pump is running.
+            if v < 0:
+                self._stop_motors()
+            else:
+                self._publish_velocity(v, kappa)
         else:
             self._stop_motors()
 

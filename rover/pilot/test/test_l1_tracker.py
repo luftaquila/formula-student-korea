@@ -321,6 +321,28 @@ class TestKturnExit:
         assert kappa == pytest.approx(0.0, abs=1e-9)
         assert v > 0.0
 
+    def test_no_exit_when_standoff_reached_but_not_aligned(self):
+        """Exit needs the alignment LATCH, not standoff alone. With ample
+        standoff but never aligned (|eta| stayed outside exit_rad), the
+        tracker MUST stay in the K-turn (phase A). This is the mirror of
+        the wheel-flip bug: a distance-only exit would hand a grossly-
+        misaligned chassis back to the forward law, which cannot close the
+        arc from there — pins that the latch gates the exit."""
+        t = L1Tracker(_PARAMS)
+        t._kturn_active = True
+        seg = _seg(target=(0.0, 0.0))
+        # 60 cm standoff (>= exit_dist 50 cm) but |eta|=45° (never within
+        # exit_rad, so the latch is never set).
+        antenna = (-0.60, 0.0)
+        chassis = _chassis_for_antenna_at(*antenna, psi=radians(45))
+        v, kappa, _ = t.step(chassis, seg, t_now=0.0,
+                             antenna_world=antenna)
+        assert t._kturn_active           # standoff alone must NOT exit
+        assert not t._kturn_aligned
+        # Phase A: eta = 0 − 45° = −45° → κ = +max (alignment-closing).
+        assert kappa == _PARAMS['max_curvature']
+        assert v == -_PARAMS['approach_speed']
+
     def test_phase_a_saturated_kappa_while_misaligned(self):
         """K-turn NOT yet aligned with |eta| > kturn_exit (5°) gives
         saturated κ in the alignment-closing direction (sign =
