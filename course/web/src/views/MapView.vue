@@ -3586,7 +3586,10 @@ async function executePath(opts = {}) {
 }
 
 async function resumePath(opts = {}) {
-  const startIdx = Math.max(0, Math.min(resumeStartIdx.value, pathWaypoints.value.length));
+  // length-1 (not length): keep this in lockstep with the reconcileRoverMode /
+  // preflightChecks clamp so resumeStartIdx can never point past the last
+  // waypoint (which would slice to [] and clearPath instead of resuming).
+  const startIdx = Math.max(0, Math.min(resumeStartIdx.value, pathWaypoints.value.length - 1));
   const prefix = pathWaypoints.value.slice(0, startIdx);
   const remaining = pathWaypoints.value.slice(startIdx);
   if (remaining.length === 0) { clearPath(); return; }
@@ -4245,7 +4248,14 @@ function reconcileRoverMode(s) {
   if (nav === "EMERGENCY_STOP" || nav === "ERROR" || resumable) {
     if (roverMode.value !== "stopped") {
       roverMode.value = "stopped";
-      if (resumeStartIdx.value === 0) resumeStartIdx.value = executedIndex.value;
+      // Clamp to a real waypoint index (0..length-1). An interrupted mission can
+      // report executedIndex === length ("ran off the end but not marked
+      // complete"), which the <select> can't represent (renders blank) and which
+      // slices to an empty resume → silent clearPath on confirm. Pin it to the
+      // last waypoint so resume re-drives the final leg instead of abandoning.
+      if (resumeStartIdx.value === 0) {
+        resumeStartIdx.value = Math.max(0, Math.min(executedIndex.value, pathWaypoints.value.length - 1));
+      }
     }
     return;
   }
