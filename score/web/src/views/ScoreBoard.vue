@@ -376,6 +376,38 @@ function getSetting(eventType, key) {
   return settings.value[eventType]?.[key] ?? null;
 }
 
+// 키보드 방향키 네비게이션 (내구 입력과 동일)
+function handleKeyNav(e) {
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
+  const target = e.target;
+  if (target.tagName !== "INPUT" || target.disabled) return;
+  e.preventDefault();
+
+  const grid = getInputGrid(target);
+  let row = -1, col = -1;
+  for (let r = 0; r < grid.length; r++) {
+    const c = grid[r].indexOf(target);
+    if (c !== -1) { row = r; col = c; break; }
+  }
+  if (row === -1) return;
+
+  let next = null;
+  if (e.key === "ArrowLeft" && col > 0) next = grid[row][col - 1];
+  else if (e.key === "ArrowRight" && col < grid[row].length - 1) next = grid[row][col + 1];
+  else if (e.key === "ArrowUp") {
+    for (let r = row - 1; r >= 0; r--) { if (grid[r][col]) { next = grid[r][col]; break; } }
+  } else if (e.key === "ArrowDown") {
+    for (let r = row + 1; r < grid.length; r++) { if (grid[r][col]) { next = grid[r][col]; break; } }
+  }
+  if (next) { next.focus(); next.select(); }
+}
+
+function getInputGrid(el) {
+  const table = el.closest(".score-table");
+  const rows = Array.from(table.querySelectorAll("tbody tr.team-row"));
+  return rows.map((tr) => Array.from(tr.querySelectorAll("input:not([disabled])")));
+}
+
 // 정렬
 function handleSort(key) {
   if (sortKey.value === key) {
@@ -728,7 +760,7 @@ function exportData(format) {
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
         <div v-else class="sticky-host">
           <div class="table-container">
-          <table ref="tableRef" class="data-table score-table" :data-sticky-cols="stickyCols">
+          <table ref="tableRef" class="data-table score-table" :data-sticky-cols="stickyCols" @keydown="handleKeyNav">
             <thead>
               <tr>
                 <th class="col-num sortable" @click="handleSort('num')">번호 <span class="sort-icon">{{ getSortIcon('num') }}</span></th>
