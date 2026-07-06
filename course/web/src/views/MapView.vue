@@ -10,6 +10,7 @@ import { buildRoadEdges } from "@lib/road-edges.mjs";
 import { buildTrackModel } from "@lib/track-build.mjs";
 import { packTrackEntries, safeTrackName } from "@lib/pack-track.mjs";
 import { buildEnrichedJSON } from "@lib/course-export.mjs";
+import { buildSideRanks } from "@lib/cone-index.mjs";
 import { renderTwoPanelPNG } from "../export/panel-canvas.js";
 import JSZip from "jszip";
 import { isAdmin } from "@shared/officialsStore.js";
@@ -1262,12 +1263,12 @@ function toggleReverse() {
 const isReversed = computed(() => !!activeCourse.value?.reverse);
 
 /* ── Icon helpers ──────────────────────────────────── */
-function coneSideIndex(courseId, coneId) {
-  const cones = conesMap.value[courseId] || [];
-  const cone = cones.find((c) => c.id === coneId);
-  if (!cone) return 0;
-  return cones.filter((c) => c.side === cone.side && c.id <= coneId).length;
-}
+// Per-side #N for each cone of the active course, precomputed once (O(n)) into a
+// Map for O(1) lookup. Replaces coneSideIndex()'s per-cone find+filter, which was
+// O(n²) per render and re-ran on every map pan (via mapFrame). Recomputes only
+// when the active course's cones change. Imperative marker code that needs ranks
+// for a non-active course builds its own map with buildSideRanks(cones).
+const activeConeSideRanks = computed(() => buildSideRanks(activeCones.value));
 
 // No box-shadow/text-shadow on cone icons — they cause mobile pan jank with
 // dozens of markers (each becomes its own GPU compositing layer).
@@ -1406,10 +1407,11 @@ function rebuildAllMarkers() {
     if (!visibility.value[course.id]) continue;
     const cones = conesMap.value[course.id] || [];
     const isActive = course.id === activeCourseId.value;
+    const ranks = buildSideRanks(cones);
 
     if (!editing) {
       for (const cone of cones) {
-        const num = coneSideIndex(course.id, cone.id);
+        const num = ranks.get(cone.id) || 0;
         const marker = coneCircle(cone, num, isActive).addTo(map);
         markers[`${course.id}-${cone.id}`] = marker;
       }
@@ -1417,7 +1419,7 @@ function rebuildAllMarkers() {
     }
 
     for (const cone of cones) {
-      const num = coneSideIndex(course.id, cone.id);
+      const num = ranks.get(cone.id) || 0;
       const isMultiSelected = isActive && multiSelectedIds.value.has(cone.id);
       const isSingleSelected = isActive && selectedConeId.value === cone.id;
       const icon = isSingleSelected
@@ -1555,11 +1557,12 @@ function updateMultiSelectIcons() {
   // Locked courses tab: cones are canvas dots with no setIcon — repaint their
   // rings by rebuilding (cheap for canvas markers, unlike DOM ones).
   if (activeTab.value === "courses" && editLocked.value) { rebuildAllMarkers(); return; }
+  const ranks = activeConeSideRanks.value; // aid === active course; reuse the memoized map
   for (const cone of (conesMap.value[aid] || [])) {
     const key = `${aid}-${cone.id}`;
     const m = markers[key];
     if (!m || !m.setIcon) continue; // canvas dots (non-editing tab) have no icon
-    const num = coneSideIndex(aid, cone.id);
+    const num = ranks.get(cone.id) || 0;
     if (selectedConeId.value === cone.id) {
       m.setIcon(highlightIcon(cone.side, num));
     } else if (multiSelectedIds.value.has(cone.id)) {
@@ -1628,14 +1631,16 @@ watch(selectedConeId, (id) => {
   if (activeTab.value === "courses" && editLocked.value) {
     rebuildAllMarkers();
   } else {
+    const ranks = activeConeSideRanks.value; // aid === active course; reuse the memoized map
     Object.entries(markers).forEach(([key, marker]) => {
       if (!key.startsWith(`${aid}-`) || !marker.setIcon) return; // skip canvas dots
       const coneId = parseInt(key.split("-")[1]);
       const cone = (conesMap.value[aid] || []).find((c) => c.id === coneId);
       if (!cone) return;
-      if (coneId === id) marker.setIcon(highlightIcon(cone.side, coneSideIndex(aid, cone.id)));
-      else if (multiSelectedIds.value.has(coneId)) marker.setIcon(multiSelectIcon(cone.side, coneSideIndex(aid, cone.id)));
-      else marker.setIcon(coneIcon(cone.side, coneSideIndex(aid, cone.id), true));
+      const num = ranks.get(coneId) || 0;
+      if (coneId === id) marker.setIcon(highlightIcon(cone.side, num));
+      else if (multiSelectedIds.value.has(coneId)) marker.setIcon(multiSelectIcon(cone.side, num));
+      else marker.setIcon(coneIcon(cone.side, num, true));
     });
   }
 
@@ -5069,7 +5074,7 @@ onUnmounted(() => {
                   </div>
 
                   <div v-if="selectedConeId && multiSelectedIds.size === 0" class="inspector-group selected">
-                    <div class="group-title">콘 수정 #{{ coneSideIndex(activeCourseId, selectedConeId) }}</div>
+                    <div class="group-title">콘 수정 #{{ activeConeSideRanks.get(selectedConeId) || 0 }}</div>
                     <div class="coord-inputs">
                       <input v-model="editLat" type="number" step="any" placeholder="위도" />
                       <input v-model="editLng" type="number" step="any" placeholder="경도" />
@@ -5116,7 +5121,7 @@ onUnmounted(() => {
                         :class="['cone-item', { selected: selectedConeId === cone.id }]"
                         @click="panToCone(cone)"
                       >
-                        <span class="cone-num" :style="{ color: SIDE_COLORS[cone.side] }">#{{ coneSideIndex(activeCourseId, cone.id) }}</span>
+                        <span class="cone-num" :style="{ color: SIDE_COLORS[cone.side] }">#{{ activeConeSideRanks.get(cone.id) || 0 }}</span>
                         <span class="cone-coords">{{ cone.lat.toFixed(6) }}, {{ cone.lng.toFixed(6) }}</span>
                         <span v-if="cone.alt != null" class="cone-alt" title="고도 (MSL)">{{ cone.alt.toFixed(1) }} m</span>
                         <button class="del-btn" @click.stop="deleteCone(cone.id)" title="삭제">×</button>
