@@ -199,7 +199,7 @@ def load_calibration(path):
         return None
     try:
         data = np.load(path, allow_pickle=False)
-    except (OSError, ValueError):
+    except Exception:  # noqa: BLE001 — unreadable/corrupt/empty archive → stay disabled
         return None
     if not all(k in data for k in CALIB_KEYS):
         return None
@@ -210,6 +210,100 @@ def load_calibration(path):
         # Stored (width, height) of one rectified eye.
         "image_size": tuple(int(v) for v in data["image_size"]),
     }
+
+
+# ── ground profile (above-ground detection) ─────────────────────────────────
+# The expected depth of the CLEAR ground plane as a function of image row is
+# fixed by the camera's (unchanging) height + pitch. We calibrate it once on flat
+# empty ground — per row-fraction, the median valid depth — and store the curve.
+# Detection then flags anything CLOSER than this curve (i.e. protruding above the
+# ground). Stored resolution-independent as (row_frac, depth_m); NaN marks rows
+# with no reliable ground reading (open sky / beyond range) — never flagged.
+GROUND_KEYS = ("row_frac", "depth_m")
+
+
+def default_ground_path(calib_path):
+    """Derive the ground-profile path next to the stereo calibration."""
+    if not calib_path:
+        return ""
+    base = calib_path[:-4] if calib_path.endswith(".npz") else calib_path
+    return base + "_ground.npz"
+
+
+def load_ground_profile(path):
+    """Load a ground curve .npz → {'row_frac','depth_m'} (ascending row_frac), or
+    None on any problem so the detector can fall back cleanly."""
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        data = np.load(path, allow_pickle=False)
+    except Exception:  # noqa: BLE001 — unreadable/corrupt/empty file → None (band fallback)
+        return None
+    if not all(k in data for k in GROUND_KEYS):
+        return None
+    rf = np.asarray(data["row_frac"], dtype=np.float64)
+    dm = np.asarray(data["depth_m"], dtype=np.float64)
+    if rf.ndim != 1 or rf.shape != dm.shape or rf.size < 2:
+        return None
+    order = np.argsort(rf)
+    return {"row_frac": rf[order], "depth_m": dm[order]}
+
+
+def save_ground_profile(path, row_frac, depth_m):
+    """Persist a ground curve. NaN depths (unknown rows) are preserved."""
+    np.savez(path, row_frac=np.asarray(row_frac, dtype=np.float64),
+             depth_m=np.asarray(depth_m, dtype=np.float64))
+
+
+def fit_ground_profile(row_fracs, depths, min_depth_m=0.3):
+    """Turn per-row (row_frac, median depth) samples into a clean stored curve:
+    drop non-finite / too-near samples, sort, and enforce that ground depth is
+    non-increasing as the row grows (the ground gets nearer toward the bottom of
+    the frame). Returns (row_frac, depth_m) arrays ready for save_ground_profile."""
+    rf = np.asarray(row_fracs, dtype=np.float64)
+    dm = np.asarray(depths, dtype=np.float64)
+    ok = np.isfinite(rf) & np.isfinite(dm) & (dm >= min_depth_m)
+    rf, dm = rf[ok], dm[ok]
+    order = np.argsort(rf)
+    rf, dm = rf[order], dm[order]
+    # Enforce monotone non-increasing depth with row (running min top→bottom).
+    dm = np.minimum.accumulate(dm)
+    return rf, dm
+
+
+def ground_depth_for_rows(profile, height):
+    """Interpolate a stored ground curve onto `height` image rows → array of the
+    expected ground depth per row (NaN outside the calibrated row range, so those
+    rows are never treated as having a known ground)."""
+    rf = profile["row_frac"]
+    dm = profile["depth_m"]
+    ys = (np.arange(height) + 0.5) / float(height)
+    out = np.interp(ys, rf, dm, left=np.nan, right=np.nan)
+    # np.interp clamps to edge values by default; the left/right=nan above marks
+    # rows outside [rf.min, rf.max] as unknown instead of extrapolating flat.
+    out[(ys < rf[0]) | (ys > rf[-1])] = np.nan
+    return out
+
+
+def ground_row_medians(depth_z, valid, roi_x0, roi_x1, nbins):
+    """Per horizontal row-bin, the median valid depth within the corridor x-band —
+    one frame's raw material for a ground curve. Returns (row_fracs, depths) with
+    NaN where a bin had no valid pixels. Shared by the UI-triggered node calibration
+    and the ground_calibrate.py CLI so both bin identically. The caller collects
+    these across frames, medians per bin, and feeds fit_ground_profile."""
+    h, w = depth_z.shape[:2]
+    xa = int(round(np.clip(min(roi_x0, roi_x1), 0.0, 1.0) * w))
+    xb = int(round(np.clip(max(roi_x0, roi_x1), 0.0, 1.0) * w))
+    row_fracs = np.empty(nbins, dtype=np.float64)
+    depths = np.full(nbins, np.nan, dtype=np.float64)
+    for b in range(nbins):
+        ya = int(round(b / nbins * h))
+        yb = int(round((b + 1) / nbins * h))
+        row_fracs[b] = (b + 0.5) / nbins
+        vm = valid[ya:yb, xa:xb]
+        if np.any(vm):
+            depths[b] = float(np.median(depth_z[ya:yb, xa:xb][vm]))
+    return row_fracs, depths
 
 
 # Calibration compute/IO — shared by stereo_calibrate.py (CLI) and the node's
@@ -364,7 +458,12 @@ class StereoConfig:
     speckle_range: int = 2
     # Corridor rectangle as (x0, y0, x1, y1) fractions: a band ahead of the
     # rover, lower-centre of the frame (the ground it's about to drive over).
-    roi: tuple = (0.30, 0.55, 0.70, 0.98)
+    # y0 is 0.44 (not 0.55): a standing obstacle at a useful stopping distance
+    # (~2-2.5 m) images around the vertical middle of the frame, so a corridor
+    # that only started at 0.55 caught it late (~1 m). Raising the top edge trips
+    # the pause ~1 m sooner. The extra upper band is safe: flat road there is
+    # beyond far_m (out of band) or low-texture at night (dropped by conf_min).
+    roi: tuple = (0.30, 0.44, 0.70, 0.98)
     near_m: float = 0.4
     far_m: float = 2.5
     min_fill: float = 0.12
@@ -412,6 +511,34 @@ class StereoConfig:
     wls_lambda: float = 8000.0
     wls_sigma: float = 1.5
     conf_min: int = 128
+    # ── obstacle decision mode ────────────────────────────────────────────────
+    # "aboveground" (default): flag depth pixels CLOSER than the expected ground
+    #   at their image row (a calibrated per-row ground curve), cluster them, and
+    #   trip on any cluster of a minimum PHYSICAL size within range. Detects small
+    #   obstacles + people, ignores the flat ground plane, and decouples range from
+    #   ground false-positives. Requires a ground profile (ground_profile_path);
+    #   falls back to "band" if none is loaded.
+    # "band": legacy — fraction of the ROI whose depth is in [near_m, far_m] >=
+    #   min_fill. A bulk/large-obstacle detector; kept as a fallback.
+    detect_mode: str = "aboveground"
+    ground_profile_path: str = ""       # "" → derived from calib_path (…_ground.npz)
+    # A pixel is "above ground" when its depth is closer than the row's expected
+    # ground depth by more than max(rel·ground, abs) — rel absorbs the depth's
+    # proportional noise (it grows with range), abs floors it near the rover.
+    ground_rel_margin: float = 0.18
+    ground_abs_margin_m: float = 0.12
+    # Minimum PHYSICAL cluster size to trip (metres, via focal length). Sized to
+    # catch a low obstacle / a leg while rejecting speckle. Absolute, NOT a frame
+    # fraction — that's the whole point vs the band detector.
+    min_obstacle_w_m: float = 0.08
+    min_obstacle_h_m: float = 0.10
+    # Morphological close (px at compute res) to bridge sparse above-ground pixels
+    # into one blob before connected components, and a pre-size speckle floor.
+    aboveground_close_px: int = 5
+    min_cluster_px: int = 30
+    # Trip only within this range — now safe to be generous since the ground plane
+    # itself is never flagged (unlike far_m in band mode).
+    max_detect_range_m: float = 3.0
 
 
 class StereoDepth:
@@ -429,6 +556,13 @@ class StereoDepth:
         self._mode = None
         self._right_matcher = None
         self._wls = None
+        # Above-ground detection state — safe defaults so a DISABLED detector (no
+        # calibration) still answers detect_mode / decide() without AttributeError.
+        self.detect_mode = "band"
+        self._ground = None
+        self._ground_path = ""
+        self._f_calib = 0.0
+        self._ground_rows_cache = {}
         if cv2 is None:
             return
         calib = load_calibration(cfg.calib_path)
@@ -473,6 +607,27 @@ class StereoDepth:
             # Fallback (no ximgproc): plain single-matcher SGBM.
             self._matcher = self._make_matcher(nd, self._mode)
         self.enabled = True
+
+        # Focal length (px) at the CALIBRATION resolution, from the reprojection Q
+        # (Q[2,3] = f). Used to convert a cluster's pixel extent to metres; scaled
+        # to the depth-map resolution per frame in decide_aboveground.
+        try:
+            self._f_calib = float(abs(calib["Q"][2, 3]))
+        except Exception:  # noqa: BLE001
+            self._f_calib = 0.0
+
+        # Ground profile for above-ground detection. Load the calibrated curve; if
+        # absent, above-ground can't run so we fall back to the band detector.
+        gpath = cfg.ground_profile_path or default_ground_path(cfg.calib_path)
+        self._ground = load_ground_profile(gpath)
+        self._ground_path = gpath
+        self.detect_mode = (cfg.detect_mode or "aboveground").lower()
+        if self.detect_mode == "aboveground" and (self._ground is None or self._f_calib <= 0):
+            why = "no ground profile at %s" % gpath if self._ground is None else "no focal length in calib"
+            print(f"[stereo] aboveground detection unavailable ({why}); "
+                  f"falling back to band mode", flush=True)
+            self.detect_mode = "band"
+        self._ground_rows_cache = {}   # height -> per-row expected depth array
 
     def _make_matcher(self, nd, mode):
         """Plain StereoSGBM (fallback path when ximgproc/WLS is unavailable)."""
@@ -562,17 +717,24 @@ class StereoDepth:
         return depth_z, valid, conf
 
     def decide(self, depth_z, valid, conf=None):
-        """Corridor obstacle decision + info from a PRECOMPUTED depth map (from
-        compute_depth at any scale). Separated from depth so detection can share the
-        composite's single depth pass.
-
-        When a WLS confidence map is given, only high-confidence pixels
-        (>= cfg.conf_min) count — the auto-pause must never trip on WLS-interpolated
-        (guessed) depth in textureless regions. info always carries 'enabled'; when
-        enabled it adds fill / counts / nearest-corridor-depth for the alert payload.
+        """Obstacle decision from a PRECOMPUTED depth map (compute_depth at any
+        scale), shared with the composite's single depth pass. Dispatches by mode:
+        'aboveground' (ground-relative clusters of a minimum physical size) or
+        'band' (legacy corridor fill). Both gate on the WLS confidence map
+        (>= cfg.conf_min) so the auto-pause never acts on interpolated/guessed
+        depth. info always carries 'enabled' + 'mode'.
         """
         if not self.enabled:
             return False, {"enabled": False}
+        if self.detect_mode == "aboveground" and self._ground is not None:
+            return self._decide_aboveground(depth_z, valid, conf)
+        return self._decide_band(depth_z, valid, conf)
+
+    def _decide_band(self, depth_z, valid, conf=None):
+        """Legacy detector: obstacle if the fraction of the ROI's valid pixels with
+        depth in [near_m, far_m] reaches min_fill. A bulk/large-obstacle test that
+        cannot separate the near ground plane from a real obstacle — kept as a
+        fallback for when no ground profile is calibrated (see detect_mode)."""
         cfg = self.cfg
         if conf is not None:
             valid = valid & (conf >= cfg.conf_min)
@@ -587,6 +749,7 @@ class StereoDepth:
         )
         info = {
             "enabled": True,
+            "mode": "band",
             "fill": round(float(fill), 3),
             "near_count": near_count,
             "valid_count": valid_count,
@@ -607,6 +770,79 @@ class StereoDepth:
             if np.any(vr):
                 info["nearest_m"] = round(float(np.min(zr[vr])), 2)
         return obstacle, info
+
+    def _ground_rows(self, height):
+        """Expected ground depth per image row for this depth-map height (cached
+        per height — the depth map is a fixed size at runtime)."""
+        arr = self._ground_rows_cache.get(height)
+        if arr is None:
+            arr = ground_depth_for_rows(self._ground, height)
+            self._ground_rows_cache[height] = arr
+        return arr
+
+    def _decide_aboveground(self, depth_z, valid, conf=None):
+        """Ground-relative detector. Flags valid pixels whose depth is closer than
+        the calibrated ground curve at their row (protruding ABOVE the ground),
+        within the ROI and within max_detect_range_m; morphologically closes the
+        (sparse) flags; and trips on any connected cluster whose PHYSICAL size —
+        pixel extent × depth / focal length — meets min_obstacle_{w,h}_m. Ignores
+        the flat ground plane and catches small obstacles / people that the band
+        detector's fraction threshold would miss."""
+        cfg = self.cfg
+        if conf is not None:
+            valid = valid & (conf >= cfg.conf_min)
+        h, w = depth_z.shape[:2]
+        x0, y0, x1, y1 = cfg.roi
+        xa = int(round(np.clip(min(x0, x1), 0.0, 1.0) * w))
+        xb = int(round(np.clip(max(x0, x1), 0.0, 1.0) * w))
+        ya = int(round(np.clip(min(y0, y1), 0.0, 1.0) * h))
+        yb = int(round(np.clip(max(y0, y1), 0.0, 1.0) * h))
+        exp = self._ground_rows(h)[:, None]                 # (h,1) expected ground depth
+        # A pixel counts as above-ground when it is closer than the row's ground by
+        # more than the margin. The margin grows with range (rel, absorbs depth's
+        # proportional noise) but is floored near the rover (abs).
+        thresh = exp - np.maximum(cfg.ground_rel_margin * exp, cfg.ground_abs_margin_m)
+        above = (valid & np.isfinite(depth_z) & (depth_z > 0)
+                 & (depth_z <= cfg.max_detect_range_m)
+                 & np.isfinite(exp) & (depth_z < thresh))
+        roi = np.zeros((h, w), dtype=bool)
+        roi[ya:yb, xa:xb] = True
+        above &= roi
+        info = {"enabled": True, "mode": "aboveground",
+                "above_px": int(np.count_nonzero(above))}
+        if info["above_px"] < max(1, int(cfg.min_cluster_px)):
+            return False, info
+        mask = above.astype(np.uint8)
+        kk = max(1, int(cfg.aboveground_close_px))
+        if kk > 1:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kk, kk))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        n, labels, stats, _cent = cv2.connectedComponentsWithStats(mask, 8)
+        f_dm = self._f_calib * (w / float(self._calib["image_size"][0]))  # focal @ this res
+        best = None
+        for i in range(1, n):
+            if int(stats[i, cv2.CC_STAT_AREA]) < int(cfg.min_cluster_px):
+                continue
+            bw = int(stats[i, cv2.CC_STAT_WIDTH])
+            bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+            comp = (labels == i) & above           # real above-ground pixels, not gap-fill
+            zc = depth_z[comp]
+            zc = zc[np.isfinite(zc)]
+            if zc.size == 0 or f_dm <= 0:
+                continue
+            zmed = float(np.median(zc))
+            real_w = bw * zmed / f_dm
+            real_h = bh * zmed / f_dm
+            if real_w >= cfg.min_obstacle_w_m and real_h >= cfg.min_obstacle_h_m:
+                if best is None or zmed < best["nearest_m"]:
+                    best = {"nearest_m": round(zmed, 2),
+                            "obstacle_w_m": round(real_w, 2),
+                            "obstacle_h_m": round(real_h, 2),
+                            "cluster_px": int(zc.size)}
+        if best is None:
+            return False, info
+        info.update(best)
+        return True, info
 
     def detect(self, left, right, scale=1.0):
         """Convenience: compute_depth(scale) + decide, in one call. The node
@@ -707,7 +943,7 @@ def config_from_env(env=None):
             return default
 
     roi = (
-        _f("OBSTACLE_ROI_X0", 0.30), _f("OBSTACLE_ROI_Y0", 0.55),
+        _f("OBSTACLE_ROI_X0", 0.30), _f("OBSTACLE_ROI_Y0", 0.44),
         _f("OBSTACLE_ROI_X1", 0.70), _f("OBSTACLE_ROI_Y1", 0.98),
     )
     return StereoConfig(
@@ -732,4 +968,13 @@ def config_from_env(env=None):
         wls_lambda=_f("STEREO_WLS_LAMBDA", 8000.0),
         wls_sigma=_f("STEREO_WLS_SIGMA", 1.5),
         conf_min=_i("STEREO_WLS_CONF_MIN", 128),
+        detect_mode=(e.get("OBSTACLE_DETECT_MODE") or "aboveground").lower(),
+        ground_profile_path=e.get("GROUND_PROFILE_PATH", ""),
+        ground_rel_margin=_f("OBSTACLE_GROUND_REL_MARGIN", 0.18),
+        ground_abs_margin_m=_f("OBSTACLE_GROUND_ABS_MARGIN_M", 0.12),
+        min_obstacle_w_m=_f("OBSTACLE_MIN_W_M", 0.08),
+        min_obstacle_h_m=_f("OBSTACLE_MIN_H_M", 0.10),
+        aboveground_close_px=_i("OBSTACLE_CLOSE_PX", 5),
+        min_cluster_px=_i("OBSTACLE_MIN_CLUSTER_PX", 30),
+        max_detect_range_m=_f("OBSTACLE_MAX_RANGE_M", 3.0),
     )

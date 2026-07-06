@@ -129,6 +129,7 @@ const roverStatus = ref({
   gps: null,
   obstacle: { active: false, at: 0, nearest_m: null },
   stereo_calibration: { status: "idle" },
+  ground_calibration: { status: "idle" },
 });
 
 function syncAppRoverStatus(data) {
@@ -2325,6 +2326,25 @@ async function startStereoCalibration() {
     });
   } catch (err) {
     notifyError(`교정 시작 실패: ${err.message}`);
+  }
+}
+
+// Ground calibration fits the above-ground detector's per-row ground-depth curve
+// on flat empty ground. Needs a stereo calibration first (metric depth). Runs on
+// the rover; progress/result arrive via roverStatus.ground_calibration.
+const groundCal = computed(() => roverStatus.value.ground_calibration || { status: "idle" });
+
+async function startGroundCalibration() {
+  // Live view so the operator can confirm the corridor is clean flat ground (an
+  // obstacle in view would corrupt the curve).
+  startCamera();
+  try {
+    await request("/api/rover/calibrate-ground", {
+      method: "POST",
+      body: JSON.stringify({ frames: 30 }),
+    });
+  } catch (err) {
+    notifyError(`지면 교정 시작 실패: ${err.message}`);
   }
 }
 
@@ -4576,6 +4596,33 @@ onUnmounted(() => {
                 :disabled="!roverStatus.connected || stereoCal.status === 'running' || !stereoSquareValid"
                 @click="startStereoCalibration"
               >{{ stereoCal.status === 'running' ? '교정 중…' : '교정' }}</button>
+            </div>
+          </section>
+
+          <section class="cal-section">
+            <div class="cal-section-title">지면 교정 (장애물 감지 기준면)</div>
+            <ol class="cal-steps">
+              <li><b>스테레오 카메라 교정</b>이 먼저 완료돼 있어야 합니다 (미터 깊이 필요).</li>
+              <li>로버를 <b>평평하고 빈 주행 노면</b>에 주행 자세로 두기 — 앞에 장애물·사람이 없어야 합니다.</li>
+              <li><b>지면 교정</b> 실행 — 카메라가 보는 노면의 행별 기대 깊이를 학습해, 그보다 가까운(솟은) 것만 장애물로 판정합니다.</li>
+            </ol>
+            <div v-if="groundCal.status === 'running'" class="modal-status">
+              지면 교정 중… {{ groundCal.captured != null
+                ? `수집 ${groundCal.captured}${groundCal.target ? ' / ' + groundCal.target : ''} 프레임`
+                : '카메라 준비 중' }} — 장애물 없는 빈 노면을 비추세요.
+            </div>
+            <div v-else-if="groundCal.status === 'done'" class="modal-status">
+              지면 교정 완료 — 근거리 {{ groundCal.near_m ?? '—' }} m · 원거리 {{ groundCal.far_m ?? '—' }} m · {{ groundCal.rows ?? '—' }}행
+            </div>
+            <div v-else-if="groundCal.status === 'failed'" class="cal-error">
+              지면 교정 실패: {{ groundCal.error || '알 수 없는 오류' }}
+            </div>
+            <div class="cal-section-actions">
+              <button
+                class="btn btn-primary btn-sm"
+                :disabled="!roverStatus.connected || groundCal.status === 'running'"
+                @click="startGroundCalibration"
+              >{{ groundCal.status === 'running' ? '교정 중…' : '지면 교정' }}</button>
             </div>
           </section>
         </div>

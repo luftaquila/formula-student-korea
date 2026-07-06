@@ -221,6 +221,10 @@ const roverState = {
   // node. { status: idle|running|done|failed, phase, captured, target, rms,
   // baseline_mm, pairs, error, at }
   stereo_calibration: { status: "idle", at: 0 },
+  // UI-triggered ground calibration progress/result (above-ground detector's
+  // ground-depth curve). { status, phase, captured, target, near_m, far_m, rows,
+  // error, at }. Requires a stereo calibration first (metric depth).
+  ground_calibration: { status: "idle", at: 0 },
   // Session-scoped per-mission progress used for tab-close recovery — the
   // server acts as the source of truth so reloading the UI rebuilds the
   // executing/stopped view exactly.
@@ -947,11 +951,56 @@ app.post("/api/rover/calibrate-stereo", (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/rover/calibration-progress - perception이 교정 진행/결과 보고 (internal)
+// POST /api/rover/calibrate-ground - 운영자가 지면 교정 시작 (admin). above-ground
+// 검출기의 행별 기대 지면 깊이 곡선을 뜬다. 스테레오 교정(미터 깊이)이 선행돼야 하며,
+// 없으면 perception이 done ok:false로 회신한다. 진행/결과는 calibration-progress
+// (kind:"ground")로 회신돼 UI에 표시된다.
+app.post("/api/rover/calibrate-ground", (req, res) => {
+  let frames = Number(req.body?.frames);
+  frames = Number.isFinite(frames) ? Math.max(10, Math.min(120, Math.round(frames))) : 30;
+  if (!cameraControlClient) {
+    logger.warn(req, "rover.calibrate_ground", { error: "perception_not_connected" }, "rover");
+    return res.status(503).send("카메라(perception)가 연결되어 있지 않습니다.");
+  }
+  if (!sendCameraControl("calibrate-ground", { frames })) {
+    logger.warn(req, "rover.calibrate_ground", { error: "write_failed" }, "rover");
+    return res.status(503).send("카메라 제어 채널 전송에 실패했습니다.");
+  }
+  roverState.ground_calibration = {
+    status: "running", phase: "start", captured: 0, target: frames,
+    near_m: null, far_m: null, rows: null, error: null, at: Date.now(),
+  };
+  broadcastRoverStatus();
+  logger.log(req, "rover.calibrate_ground", { frames }, "rover");
+  res.json({ ok: true });
+});
+
+// POST /api/rover/calibration-progress - perception이 교정 진행/결과 보고 (internal).
+// kind:"ground"면 지면 교정, 아니면(기본) 스테레오 교정 상태로 라우팅한다.
 app.post("/api/rover/calibration-progress", (req, res) => {
   const b = req.body || {};
   const phase = typeof b.phase === "string" ? b.phase : "";
   const done = phase === "done";
+  if (b.kind === "ground") {
+    roverState.ground_calibration = {
+      status: done ? (b.ok ? "done" : "failed") : "running",
+      phase,
+      captured: Number.isInteger(b.captured) ? b.captured : null,
+      target: Number.isInteger(b.target) ? b.target : null,
+      near_m: typeof b.near_m === "number" ? b.near_m : null,
+      far_m: typeof b.far_m === "number" ? b.far_m : null,
+      rows: Number.isInteger(b.rows) ? b.rows : null,
+      error: typeof b.error === "string" ? b.error.slice(0, 200) : null,
+      at: Date.now(),
+    };
+    broadcastRoverStatus();
+    if (done) {
+      logger.log(req, "rover.ground_calibration",
+        { ok: !!b.ok, near_m: b.near_m ?? null, far_m: b.far_m ?? null,
+          rows: b.rows ?? null, mode: b.mode ?? null, error: b.error ?? null }, "rover");
+    }
+    return res.json({ ok: true });
+  }
   roverState.stereo_calibration = {
     status: done ? (b.ok ? "done" : "failed") : "running",
     phase,
@@ -1396,13 +1445,22 @@ app.get("/api/rover/camera/control", (req, res) => {
       // If a calibration was mid-run, the perception node that was running it is
       // gone — mark it failed so the operator isn't locked out of retrying (the
       // 교정 button is disabled while 'running' and nothing else would clear it).
+      let flipped = false;
       if (roverState.stereo_calibration.status === "running") {
         roverState.stereo_calibration = {
           status: "failed", phase: "done",
           error: "카메라(perception) 연결이 끊겼습니다.", at: Date.now(),
         };
-        broadcastRoverStatus();
+        flipped = true;
       }
+      if (roverState.ground_calibration.status === "running") {
+        roverState.ground_calibration = {
+          status: "failed", phase: "done",
+          error: "카메라(perception) 연결이 끊겼습니다.", at: Date.now(),
+        };
+        flipped = true;
+      }
+      if (flipped) broadcastRoverStatus();
     }
   });
 });

@@ -200,7 +200,7 @@ def test_config_from_env_defaults_on_empty():
     assert cfg.num_disparities == 96
     assert cfg.near_m == 0.4
     assert cfg.far_m == 2.5
-    assert cfg.roi == (0.30, 0.55, 0.70, 0.98)
+    assert cfg.roi == (0.30, 0.44, 0.70, 0.98)   # y0 raised to catch obstacles further ahead
     assert cfg.sgbm_mode == "sgbm"          # full SGBM (clean); affordable at 512, shared by detection + composite
     assert cfg.viz_near_m == 0.3
     assert cfg.viz_far_m == 5.0
@@ -210,6 +210,9 @@ def test_config_from_env_defaults_on_empty():
     assert cfg.wls_lambda == 8000.0
     assert cfg.wls_sigma == 1.5
     assert cfg.conf_min == 128
+    assert cfg.detect_mode == "aboveground"
+    assert cfg.max_detect_range_m == 3.0
+    assert cfg.min_obstacle_w_m == 0.08 and cfg.min_obstacle_h_m == 0.10
 
 
 def test_config_from_env_parses_sgbm_mode_and_viz():
@@ -474,3 +477,171 @@ def test_compute_composite_disabled_without_calibration():
     out, info = det.compute_composite(None, None)
     assert out is None
     assert info == {"enabled": False}
+
+
+# ── ground profile helpers (cv2-free) ───────────────────────────────────────
+
+def test_default_ground_path():
+    assert stereo.default_ground_path("/a/b/stereo_calib.npz") == "/a/b/stereo_calib_ground.npz"
+    assert stereo.default_ground_path("/a/b/calib") == "/a/b/calib_ground.npz"
+    assert stereo.default_ground_path("") == ""
+
+
+def test_fit_ground_profile_sorts_and_drops_invalid():
+    rf = [0.9, 0.1, 0.5, 0.3]
+    dm = [1.0, 3.0, np.nan, 2.0]              # the 0.5 sample (NaN depth) is dropped
+    orf, odm = stereo.fit_ground_profile(rf, dm)
+    assert list(orf) == [0.1, 0.3, 0.9]        # ascending, NaN removed
+    assert list(odm) == [3.0, 2.0, 1.0]        # already non-increasing
+
+
+def test_fit_ground_profile_enforces_non_increasing():
+    # A row that reads FARTHER than a higher row (noise) is clamped down, so the
+    # curve never says the ground gets farther toward the rover.
+    orf, odm = stereo.fit_ground_profile([0.1, 0.2, 0.3], [2.0, 2.5, 1.0])
+    assert list(odm) == [2.0, 2.0, 1.0]
+
+
+def test_ground_depth_for_rows_interpolates_and_nans_outside():
+    profile = {"row_frac": np.array([0.2, 0.8]), "depth_m": np.array([3.0, 1.0])}
+    out = stereo.ground_depth_for_rows(profile, 10)
+    assert np.isnan(out[0])                    # ys=0.05 is below the calibrated range
+    assert np.isnan(out[-1])                   # ys=0.95 is above it
+    assert out[4] == pytest.approx(2.17, abs=0.05)  # ys≈0.45 → interp of 3 m and 1 m
+
+
+def test_ground_profile_save_load_roundtrip(tmp_path):
+    p = str(tmp_path / "g.npz")
+    stereo.save_ground_profile(p, [0.1, 0.5, 0.9], [3.0, 2.0, 1.0])
+    prof = stereo.load_ground_profile(p)
+    assert prof is not None
+    assert np.allclose(prof["row_frac"], [0.1, 0.5, 0.9])
+    assert np.allclose(prof["depth_m"], [3.0, 2.0, 1.0])
+
+
+def test_ground_row_medians_bins_by_row():
+    depth = np.zeros((40, 40), np.float32)
+    depth[:20, :] = 3.0                          # top half far
+    depth[20:, :] = 1.0                          # bottom half near
+    valid = np.ones((40, 40), bool)
+    rf, dm = stereo.ground_row_medians(depth, valid, 0.0, 1.0, 4)
+    assert list(rf) == [0.125, 0.375, 0.625, 0.875]
+    assert list(dm) == [3.0, 3.0, 1.0, 1.0]      # bins recede top→bottom
+
+
+def test_ground_row_medians_nan_without_valid_pixels():
+    depth = np.ones((20, 20), np.float32)
+    rf, dm = stereo.ground_row_medians(depth, np.zeros((20, 20), bool), 0.0, 1.0, 5)
+    assert np.all(np.isnan(dm))
+
+
+def test_ground_row_medians_respects_x_band():
+    depth = np.full((20, 20), 5.0, np.float32)
+    depth[:, :6] = 1.0                           # only the left edge is near
+    valid = np.ones((20, 20), bool)
+    _rf, dm = stereo.ground_row_medians(depth, valid, 0.5, 1.0, 2)   # sample right half only
+    assert list(dm) == [5.0, 5.0]                # the near left edge is outside the band
+
+
+def test_load_ground_profile_missing_returns_none():
+    assert stereo.load_ground_profile("/no/such_ground.npz") is None
+
+
+def test_load_ground_profile_empty_or_corrupt_returns_none(tmp_path):
+    # A 0-byte or garbage file must NOT crash the detector (np.load raises
+    # EOFError/other) — it returns None so detection falls back to band mode.
+    empty = tmp_path / "empty_ground.npz"
+    empty.write_bytes(b"")
+    assert stereo.load_ground_profile(str(empty)) is None
+    junk = tmp_path / "junk_ground.npz"
+    junk.write_bytes(b"not an npz archive")
+    assert stereo.load_ground_profile(str(junk)) is None
+
+
+# ── above-ground detector (needs cv2 for connected components) ───────────────
+
+def _aboveground_detector(profile, f_calib, calib_w, calib_h, cfg=None):
+    """A StereoDepth with just the state _decide_aboveground needs, bypassing the
+    calibration-loading __init__."""
+    det = object.__new__(stereo.StereoDepth)
+    det.cfg = cfg or stereo.StereoConfig()
+    det._calib = {"image_size": (calib_w, calib_h)}
+    det._f_calib = float(f_calib)
+    det._ground = profile
+    det._ground_rows_cache = {}
+    det.detect_mode = "aboveground"
+    det.enabled = True
+    return det
+
+
+def _ground_scene(H, W):
+    """A flat receding ground (3 m at the top → 1 m at the bottom) plus a matching
+    calibrated profile. depth == expected ground everywhere (no obstacle yet)."""
+    profile_rf = np.linspace(0.05, 0.95, 19)
+    profile_dm = np.linspace(3.0, 1.0, 19)
+    rf, dm = stereo.fit_ground_profile(profile_rf, profile_dm)
+    profile = {"row_frac": rf, "depth_m": dm}
+    exp = stereo.ground_depth_for_rows(profile, H)
+    depth = np.tile(exp[:, None], (1, W)).astype(np.float32)
+    depth[~np.isfinite(depth)] = 5.0            # uncovered top/bottom rows → far
+    valid = np.ones((H, W), bool)
+    return profile, depth, valid
+
+
+def test_aboveground_ignores_flat_ground():
+    pytest.importorskip("cv2")
+    H, W = 120, 120
+    profile, depth, valid = _ground_scene(H, W)
+    det = _aboveground_detector(profile, f_calib=100.0, calib_w=W, calib_h=H)
+    obstacle, info = det._decide_aboveground(depth, valid, None)
+    assert obstacle is False                    # flat ground is NEVER an obstacle…
+    assert info["mode"] == "aboveground"
+    assert info["above_px"] == 0                # …because nothing rises above it
+
+
+def test_aboveground_detects_small_obstacle():
+    pytest.importorskip("cv2")
+    H, W = 120, 120
+    profile, depth, valid = _ground_scene(H, W)
+    depth[50:75, 55:75] = 0.6                   # 20×25 px, 0.6 m — well inside the ground
+    det = _aboveground_detector(profile, f_calib=100.0, calib_w=W, calib_h=H)
+    obstacle, info = det._decide_aboveground(depth, valid, None)
+    assert obstacle is True                     # a SMALL object the band detector would miss
+    assert info["nearest_m"] == pytest.approx(0.6, abs=0.05)
+    assert info["obstacle_w_m"] >= 0.08 and info["obstacle_h_m"] >= 0.10
+
+
+def test_aboveground_detects_wall():
+    pytest.importorskip("cv2")
+    H, W = 120, 120
+    profile, depth, valid = _ground_scene(H, W)
+    depth[40:80, :] = 0.8                        # full-width slab closer than the ground
+    det = _aboveground_detector(profile, f_calib=100.0, calib_w=W, calib_h=H)
+    obstacle, info = det._decide_aboveground(depth, valid, None)
+    assert obstacle is True
+    assert info["nearest_m"] == pytest.approx(0.8, abs=0.05)
+
+
+def test_aboveground_ignores_speckle_below_physical_size():
+    pytest.importorskip("cv2")
+    H, W = 120, 120
+    profile, depth, valid = _ground_scene(H, W)
+    depth[60:63, 60:63] = 0.5                    # 3×3 px speck — too small to be real
+    det = _aboveground_detector(profile, f_calib=100.0, calib_w=W, calib_h=H)
+    obstacle, info = det._decide_aboveground(depth, valid, None)
+    assert obstacle is False
+
+
+def test_aboveground_respects_max_range():
+    pytest.importorskip("cv2")
+    H, W = 120, 120
+    # Uniform far ground (5 m) so the ground itself is never flagged; vary only the
+    # object's distance against a 2.5 m range cap.
+    profile = {"row_frac": np.linspace(0.05, 0.95, 10), "depth_m": np.full(10, 5.0)}
+    valid = np.ones((H, W), bool)
+    cfg = stereo.StereoConfig(max_detect_range_m=2.5)
+    det = _aboveground_detector(profile, f_calib=100.0, calib_w=W, calib_h=H, cfg=cfg)
+    beyond = np.full((H, W), 5.0, np.float32); beyond[40:80, 45:80] = 2.7   # > range
+    assert det._decide_aboveground(beyond, valid, None)[0] is False
+    within = np.full((H, W), 5.0, np.float32); within[40:80, 45:80] = 1.5   # < range
+    assert det._decide_aboveground(within, valid, None)[0] is True

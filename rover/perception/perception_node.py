@@ -248,7 +248,11 @@ class PerceptionNode(Node):
         self._fps = max(1, _env_int("CAMERA_FPS", 15))
         self._quality = min(100, max(1, _env_int("CAMERA_JPEG_QUALITY", 70)))
         self._view = (_env("CAMERA_VIEW", "left") or "left").lower()
-        self._detect_fps = max(1, _env_int("DETECT_FPS", 4))
+        # Obstacle-detection rate. Since detection + the live depth composite share
+        # ONE stereo pass at the 512x288 compute scale, the SGBM cost is paid once
+        # per frame, leaving headroom above the old default of 4. Still bounded by
+        # the ~13 fps camera ceiling and single-thread SGBM while NAVIGATING.
+        self._detect_fps = max(1, _env_int("DETECT_FPS", 8))
         # OpenCV threads for stereo while the mission is NOT NAVIGATING (paused/idle
         # — when the operator usually watches the composite). While NAVIGATING it
         # drops to STEREO_CV_THREADS so block matching can't starve the navigator's
@@ -287,7 +291,8 @@ class PerceptionNode(Node):
         self._calib_max_motion = _env_float("STEREO_CALIB_MAX_MOTION_PX", 3.0)
         self._calib_timeout_s = _env_int("STEREO_CALIB_TIMEOUT_S", 180)
         self._calib_lock = threading.Lock()
-        self._calib_request = None  # square_m (m) when a calibration is pending
+        self._calib_request = None  # square_m (m) when a stereo calibration is pending
+        self._ground_calib_request = None  # frame count when a ground calibration is pending
 
         # Cap OpenCV's thread pool so block matching / encode can't fan out
         # across every core and stall the navigator's control tick on the
@@ -310,9 +315,16 @@ class PerceptionNode(Node):
             off_frames=_env_int("OBSTACLE_OFF_FRAMES", 5),
         )
         if self._detector.enabled:
+            mode = self._detector.detect_mode
+            if mode == "aboveground":
+                detail = (f"aboveground (ground profile {self._detector._ground_path}, "
+                          f"min obstacle {cfg.min_obstacle_w_m}x{cfg.min_obstacle_h_m} m, "
+                          f"range <= {cfg.max_detect_range_m} m)")
+            else:
+                detail = f"band {cfg.near_m}-{cfg.far_m} m, min_fill {cfg.min_fill}"
             self.get_logger().info(
                 f"obstacle detection ENABLED (layout={self._layout}, calib "
-                f"{cfg.calib_path}, ROI {cfg.roi}, band {cfg.near_m}-{cfg.far_m} m)")
+                f"{cfg.calib_path}, ROI {cfg.roi}, mode={mode}: {detail})")
         else:
             self.get_logger().warn(
                 "obstacle detection DISABLED — no usable stereo calibration at "
@@ -321,6 +333,7 @@ class PerceptionNode(Node):
         self._cloud = CloudLink(self._server_url, secret, allow_http,
                                 log=self.get_logger().info)
         self._cloud.on_calibrate = self._request_calibration
+        self._cloud.on_calibrate_ground = self._request_ground_calibration
         self._cloud.start()
 
         # Low-latency WebRTC publish (Phase 2b). While an operator is watching
@@ -428,6 +441,18 @@ class PerceptionNode(Node):
         with self._calib_lock:
             sq, self._calib_request = self._calib_request, None
             return sq
+
+    def _request_ground_calibration(self, frames):
+        """Flag a ground calibration (called from the SSE thread). The capture loop
+        runs it — never block the SSE thread on the multi-second capture."""
+        with self._calib_lock:
+            self._ground_calib_request = int(frames)
+        self.get_logger().info(f"ground calibration requested (frames={frames})")
+
+    def _take_ground_calib_request(self):
+        with self._calib_lock:
+            n, self._ground_calib_request = self._ground_calib_request, None
+            return n
 
     def _progress(self, payload):
         self._cloud.post_calibration_progress(payload)
@@ -556,6 +581,116 @@ class PerceptionNode(Node):
             f"calibration DONE: {pairs_used}/{len(objpoints)} pairs used, "
             f"RMS {rms} px (L {rms_l} / R {rms_r}), baseline {baseline_mm} mm")
 
+    def _run_ground_calibration(self, frames):
+        """Capture flat EMPTY ground and fit the per-row ground-depth curve for
+        above-ground detection, then reload the detector so it switches to
+        aboveground WITHOUT a restart. Runs in the capture thread (handles
+        released). Streams the left eye so the operator can confirm clean flat
+        ground, and reports progress/result to the UI. Requires a stereo
+        calibration (metric depth) — reports a clear error otherwise."""
+        if not self._detector.enabled:
+            self._progress({"kind": "ground", "phase": "done", "ok": False,
+                            "error": "stereo calibration required first"})
+            self.get_logger().warn("ground calibration skipped: no stereo calibration")
+            return
+        cfg = self._detector.cfg
+        frames = max(10, min(120, int(frames)))
+        nbins = max(8, _env_int("GROUND_BINS", 40))
+        x0, _y0, x1, _y1 = cfg.roi
+        scale = cfg.viz_depth_scale
+        self.get_logger().info(f"ground calibration START ({frames} frames, {nbins} bins)")
+        self._progress({"kind": "ground", "phase": "start", "captured": 0, "target": frames})
+
+        left_cap = open_capture(self._device, self._width, self._height, self.get_logger().warn)
+        right_cap = None
+        if self._layout == "dual":
+            right_cap = open_capture(self._right_device, self._width, self._height, self.get_logger().warn)
+        if left_cap is None or (self._layout == "dual" and right_cap is None):
+            if left_cap is not None:
+                left_cap.release()
+            if right_cap is not None:
+                right_cap.release()
+            self._progress({"kind": "ground", "phase": "done", "ok": False, "error": "camera open failed"})
+            return
+
+        bin_acc = [[] for _ in range(nbins)]
+        got = 0
+        start = time.monotonic()
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self._quality]
+        try:
+            for _ in range(6):   # warm up auto-exposure
+                if self._layout == "dual":
+                    stereo.read_stereo_pair(left_cap, right_cap)
+                else:
+                    left_cap.read()
+            while got < frames and self._running:
+                if time.monotonic() - start > 60.0:
+                    break
+                if self._layout == "dual":
+                    pair = stereo.read_stereo_pair(left_cap, right_cap)
+                    if pair is None:
+                        time.sleep(0.03); continue
+                    left, right = pair
+                    frame = left
+                else:
+                    ok, frame = left_cap.read()
+                    if not ok or frame is None:
+                        time.sleep(0.03); continue
+                    left, right = stereo.split_sbs(frame)
+                # Stream the left eye so the operator sees they're aiming at clean
+                # flat ground (an obstacle in view would corrupt the ground curve).
+                if self._cloud.stream_wanted.is_set():
+                    shown = frame if self._layout == "dual" else crop_view(frame, self._view)
+                    ok2, buf = cv2.imencode(".jpg", shown, encode_params)
+                    if ok2:
+                        self._cloud.post_frame(buf.tobytes())
+                depth = self._detector.compute_depth(left, right, scale=scale)
+                if depth is None:
+                    continue
+                dz, valid, conf = depth
+                if conf is not None:
+                    valid = valid & (conf >= cfg.conf_min)
+                _rf, dm = stereo.ground_row_medians(dz, valid, x0, x1, nbins)
+                for b in range(nbins):
+                    if np.isfinite(dm[b]):
+                        bin_acc[b].append(float(dm[b]))
+                got += 1
+                self._progress({"kind": "ground", "phase": "collecting",
+                                "captured": got, "target": frames})
+        finally:
+            left_cap.release()
+            if right_cap is not None:
+                right_cap.release()
+
+        if got == 0:
+            self._progress({"kind": "ground", "phase": "done", "ok": False, "error": "no usable frames"})
+            return
+        row_fracs = [(b + 0.5) / nbins for b in range(nbins)]
+        depths = [float(np.median(bin_acc[b])) if bin_acc[b] else float("nan") for b in range(nbins)]
+        rf, dm = stereo.fit_ground_profile(row_fracs, depths)
+        if rf.size < 2:
+            self._progress({"kind": "ground", "phase": "done", "ok": False,
+                            "error": "too few valid rows — aim at textured flat ground with light"})
+            self.get_logger().warn("ground calibration FAILED: too few valid rows")
+            return
+        gpath = cfg.ground_profile_path or stereo.default_ground_path(cfg.calib_path)
+        try:
+            stereo.save_ground_profile(gpath, rf, dm)
+        except Exception as e:  # noqa: BLE001 - report failure to the operator
+            self._progress({"kind": "ground", "phase": "done", "ok": False, "error": f"save failed: {e}"})
+            self.get_logger().error(f"ground calibration save failed: {e}")
+            return
+        # Reload the detector so it loads the new curve and switches to aboveground.
+        self._detector = stereo.StereoDepth(stereo.config_from_env())
+        near = round(float(np.nanmin(dm)), 2)
+        far = round(float(np.nanmax(dm)), 2)
+        self._progress({"kind": "ground", "phase": "done", "ok": True,
+                        "near_m": near, "far_m": far, "rows": int(rf.size),
+                        "mode": self._detector.detect_mode})
+        self.get_logger().info(
+            f"ground calibration DONE: {rf.size} rows from {got} frames, "
+            f"near {near} m far {far} m, mode={self._detector.detect_mode}")
+
     def _capture_loop(self):
         reader = None        # StereoReader: grab-synced left+right (mono if no right)
         idle_deadline = None
@@ -586,6 +721,22 @@ class PerceptionNode(Node):
                     self.get_logger().error(f"calibration crashed: {e}")
                     self._progress({"phase": "done", "ok": False,
                                     "error": f"calibration crashed: {e}"})
+                continue
+
+            # A pending GROUND calibration likewise takes over the loop.
+            ground_frames = self._take_ground_calib_request()
+            if ground_frames is not None:
+                if reader is not None:
+                    reader.release()
+                    reader = None
+                idle_deadline = None
+                self._set_detect_active(False)
+                try:
+                    self._run_ground_calibration(ground_frames)
+                except Exception as e:  # noqa: BLE001 - keep the capture thread alive
+                    self.get_logger().error(f"ground calibration crashed: {e}")
+                    self._progress({"kind": "ground", "phase": "done", "ok": False,
+                                    "error": f"crashed: {e}"})
                 continue
 
             stream = self._cloud.stream_wanted.is_set()

@@ -2278,6 +2278,86 @@ describe('Stereo calibration trigger', () => {
   });
 });
 
+// ─── Ground calibration (UI-triggered, above-ground detector) ───────────
+describe('Ground calibration trigger', () => {
+  let srv, url, cli, localDb, localDbPath;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const progress = (body) => fetch(`${url}/api/rover/calibration-progress`, {
+    method: 'POST',
+    headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const status = async () => (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+
+  before(async () => {
+    localDbPath = tmpDbPath();
+    const result = createCourseApp({ dbPath: localDbPath });
+    localDb = result.db;
+    const started = await startServer(result.app);
+    srv = started.server; url = started.baseUrl; cli = createClient(url);
+  });
+  after(async () => { await stopServer(srv); localDb.close(); cleanup(localDbPath); });
+
+  it('calibration-progress kind:ground updates ground status without touching stereo', async () => {
+    assert.equal((await progress({ kind: 'ground', phase: 'collecting', captured: 7, target: 30 })).status, 200);
+    let st = await status();
+    assert.equal(st.ground_calibration.status, 'running');
+    assert.equal(st.ground_calibration.captured, 7);
+    assert.equal(st.ground_calibration.target, 30);
+    assert.notEqual(st.stereo_calibration.status, 'running');   // separate channels
+    await progress({ kind: 'ground', phase: 'done', ok: true, near_m: 1.1, far_m: 8.8, rows: 24, mode: 'aboveground' });
+    st = await status();
+    assert.equal(st.ground_calibration.status, 'done');
+    assert.equal(st.ground_calibration.near_m, 1.1);
+    assert.equal(st.ground_calibration.far_m, 8.8);
+    assert.equal(st.ground_calibration.rows, 24);
+    const rec = localDb.prepare(
+      "SELECT detail FROM logs WHERE action = 'rover.ground_calibration' ORDER BY id DESC LIMIT 1"
+    ).get();
+    assert.equal(JSON.parse(rec.detail).mode, 'aboveground');
+  });
+
+  it('calibrate-ground needs admin and a connected perception', async () => {
+    const pub = await fetch(`${url}/api/rover/calibrate-ground`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    assert.ok(pub.status === 401 || pub.status === 403, 'public denied');
+    assert.equal((await cli.post('/api/rover/calibrate-ground', { body: {}, cookie: adminCookie })).status, 503);
+  });
+
+  it('calibrate-ground emits the command; a disconnect flips status to failed', async () => {
+    const ac = new AbortController();
+    const ctl = await fetch(`${url}/api/rover/camera/control`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ac.signal,
+    });
+    assert.equal(ctl.status, 200);
+    let text = '';
+    const reader = ctl.body.getReader();
+    const dec = new TextDecoder();
+    const drained = (async () => {
+      try { for (;;) { const { done, value } = await reader.read(); if (done) break; text += dec.decode(value, { stream: true }); } } catch { /* aborted */ }
+    })();
+    await sleep(60);
+    assert.equal((await cli.post('/api/rover/calibrate-ground', { body: { frames: 30 }, cookie: adminCookie })).status, 200);
+    let ok = false;
+    for (let i = 0; i < 20 && !ok; i++) {
+      if (text.includes('event: calibrate-ground')) ok = true;
+      else await sleep(50);
+    }
+    assert.ok(ok, 'perception control SSE receives calibrate-ground');
+    assert.equal((await status()).ground_calibration.status, 'running');
+    ac.abort();
+    await drained.catch(() => {});
+    let failed = false;
+    for (let i = 0; i < 20 && !failed; i++) {
+      if ((await status()).ground_calibration.status === 'failed') failed = true;
+      else await sleep(50);
+    }
+    assert.ok(failed, 'a perception disconnect mid-ground-calibration flips status to failed');
+  });
+});
+
 describe('Mission telemetry historizes NTRIP link health', () => {
   const ac = new AbortController();
   let missionId;
