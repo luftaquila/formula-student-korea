@@ -1,5 +1,7 @@
 """Unit tests for the pure logic of the GPS-registration agent."""
 
+import collections
+import threading
 from types import SimpleNamespace
 
 from pilot.lib.ubx_parser import CarrierSolution, FixType
@@ -80,3 +82,45 @@ class TestIterSseEvents:
     def test_back_to_back_events(self):
         lines = ["event: a", "data: 1", "", "event: b", "data: 2", ""]
         assert list(gr.iter_sse_events(iter(lines))) == [("a", "1"), ("b", "2")]
+
+
+class TestReportPositionFixGate:
+    """_report_position must not forward a no-fix (0, 0) position — that jumps
+    the operator map to Null Island (blank grey — no basemap tiles)."""
+
+    @staticmethod
+    def _agent(fix_status, last_position=None):
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)  # skip __init__ (serial/threads)
+        agent._lock = threading.Lock()
+        agent._fix_status = fix_status
+        agent._last_position = last_position if last_position is not None else {"lat": 35.29, "lng": 126.57, "alt": 40.0}
+        agent._pending_request_ids = collections.deque(maxlen=32)
+        agent._posts = []
+        agent._enqueue_post = lambda path, payload, label: agent._posts.append((path, payload, label))
+        return agent
+
+    def test_no_fix_is_not_reported(self):
+        for fix in (None, "no_fix", "time_only"):
+            agent = self._agent(fix)
+            agent._report_position()
+            assert agent._posts == []
+
+    def test_valid_fix_is_reported(self):
+        for fix in ("2d_fix", "3d_fix", "rtk_float", "rtk_fixed"):
+            agent = self._agent(fix)
+            agent._report_position()
+            assert len(agent._posts) == 1
+            assert agent._posts[0][0] == "/api/rover/position"
+
+    def test_pending_request_held_until_fix(self):
+        agent = self._agent("no_fix")
+        agent._pending_request_ids.append("req-1")
+        agent._report_position()
+        assert agent._posts == []
+        assert list(agent._pending_request_ids) == ["req-1"]  # not drained — retried on recovery
+
+        agent._fix_status = "rtk_fixed"
+        agent._report_position()
+        assert len(agent._posts) == 1
+        assert agent._posts[0][1]["request_id"] == "req-1"
+        assert list(agent._pending_request_ids) == []

@@ -58,7 +58,11 @@ function onRailClick(key) {
 function hideLiveMapLayers() {
   if (!map) return;
   for (const m of Object.values(markers)) { try { map.removeLayer(m); } catch {} }
-  if (roverMarker) { try { map.removeLayer(roverMarker); } catch {} }
+  // Null the ref, not just detach: updateRoverMarker treats a non-null
+  // roverMarker as "already on the map" and only setLatLng()s it, so leaving a
+  // dangling reference here means restoreLiveMapLayers() can never re-add the
+  // marker — the map pans on follow but the rover dot stays invisible.
+  if (roverMarker) { try { map.removeLayer(roverMarker); } catch {} roverMarker = null; }
   if (pathLine) { try { map.removeLayer(pathLine); } catch {} }
   if (pathStartMarker) { try { map.removeLayer(pathStartMarker); } catch {} }
   if (pathEndMarker) { try { map.removeLayer(pathEndMarker); } catch {} }
@@ -3209,9 +3213,19 @@ function panToVisibleCenter(lat, lng, opts = {}) {
 const followRover = ref(loadPref("followRover", false, (v) => v === "true"));
 watch(followRover, (v) => savePref("followRover", v));
 
+// A rover with no GPS fix reports (0, 0); trusting it would drop the marker on
+// — and pan the map to — Null Island, where the satellite basemap has no tiles
+// and the whole view renders blank grey. Reject the null-island sentinel and
+// any non-finite coordinate before touching the marker or the map. (The rover
+// also gates its position POSTs on a 2D fix, so this is defense-in-depth for
+// the live SSE stream.)
+function isValidRoverPos(lat, lng) {
+  return Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0);
+}
+
 function centerOnRover() {
   const lp = roverStatus.value.last_position;
-  if (!lp || !map) return;
+  if (!lp || !map || !isValidRoverPos(lp.lat, lp.lng)) return;
   panToVisibleCenter(lp.lat, lp.lng);
 }
 
@@ -3226,6 +3240,9 @@ function toggleFollowRover() {
 // makes manual control lag on mobile. Cap to one pan per FOLLOW_MIN_MS, always
 // using the latest position; animate:false avoids per-frame redraws.
 function scheduleFollow(lat, lng) {
+  // No follow-panning while the missions-history view owns the map (live layers
+  // are torn down there); otherwise a streamed position yanks the replay away.
+  if (!isValidRoverPos(lat, lng) || isMissionsView.value) return;
   followTarget = { lat, lng };
   if (followTimer != null) return;
   const wait = Math.max(0, FOLLOW_MIN_MS - (performance.now() - followLastPan));
@@ -3240,7 +3257,10 @@ function scheduleFollow(lat, lng) {
 }
 
 function updateRoverMarker(lat, lng) {
-  if (!map) return;
+  // Live layers (incl. this marker) are torn down while the missions-history
+  // view is open; don't resurrect the marker from a stray SSE frame there —
+  // restoreLiveMapLayers() re-creates it when the operator returns to live.
+  if (!map || isMissionsView.value || !isValidRoverPos(lat, lng)) return;
   if (roverMarker) {
     roverMarker.setLatLng([lat, lng]);
   } else {
@@ -4087,7 +4107,7 @@ function connectSSE() {
 
   eventSource.addEventListener("rover", (e) => {
     const data = parseSSE(e);
-    if (!data) return;
+    if (!data || !isValidRoverPos(data.lat, data.lng)) return;
     updateRoverMarker(data.lat, data.lng);
     if (followRover.value) scheduleFollow(data.lat, data.lng);
     if (roverMode.value === "executing") updatePathProgress(data.lat, data.lng);
@@ -4216,7 +4236,8 @@ function restoreMissionProgress(mp) {
   pathWaypoints.value = mp.waypoints;
   executedIndex.value = Math.max(0, Math.min(mp.current_waypoint_idx || 0, mp.waypoints.length));
   executionStartIdx = 0; // server's waypoints are the active execution's full list
-  pathStart = roverStatus.value.last_position || mp.waypoints[0];
+  const lp = roverStatus.value.last_position;
+  pathStart = (lp && isValidRoverPos(lp.lat, lp.lng)) ? lp : mp.waypoints[0];
 
   // Rebuild path geometry + progress bar using renderPath's cumulative math.
   renderPath();
