@@ -3511,11 +3511,13 @@ function moveWaypoint(idx, delta) {
   renderPath();
 }
 
-function clearPath() {
+function clearPath({ endMissionOnServer = true } = {}) {
   // EMERGENCY_STOP 동안 서버에 보존되어 있던 미션 레코드를 명시적으로 마감.
   // (D1) clear-emergency 가 더 이상 자동으로 끝내지 않으므로, path 폐기 시
-  // dangling running 레코드가 남지 않도록 best-effort 로 정리한다.
-  if (roverStatus.value.mission_progress?.mission_id) {
+  // dangling running 레코드가 남지 않도록 best-effort 로 정리한다. abandonMission
+  // 은 종료 응답을 먼저 await 한 뒤 endMissionOnServer:false 로 호출하므로 여기서
+  // 중복 POST 하지 않는다.
+  if (endMissionOnServer && roverStatus.value.mission_progress?.mission_id) {
     request("/api/rover/end-mission", { method: "POST" }).catch(() => {});
   }
   if (pathLine) { map.removeLayer(pathLine); pathLine = null; }
@@ -3532,6 +3534,22 @@ function clearPath() {
   pathDistance.value = 0;
   clearSprayMarkers();
   if (roverMode.value !== "manual") roverMode.value = "none";
+}
+
+// "미션 종료" 버튼 핸들러. 보존된(비상정지·중단) 미션을 폐기하는 파괴적 작업이라
+// 반드시 확인을 받는다.
+async function abandonMission() {
+  if (!window.confirm("진행 중인 미션을 종료하고 폐기합니다.\n'이어서 실행'할 수 없게 됩니다. 계속하시겠습니까?")) return;
+  // 서버 미션 종료를 먼저 await 한다. 비상정지 래치가 걸려 있으면 nav_state 는
+  // 계속 EMERGENCY_STOP 이므로, reconcileRoverMode 가 mission_progress 가 비워진
+  // (hasMission=false) 상태를 확인하기 전에 로컬 정리를 하면 다음 status tick 에서
+  // 다시 "stopped" 로 튕겨, 미션이 비상정지 해제 후에야 종료되는 것처럼 보인다.
+  // 종료 응답을 받은 뒤 로컬 정리를 해야 그 즉시 종료가 반영된다.
+  if (roverStatus.value.mission_progress?.mission_id) {
+    try { await request("/api/rover/end-mission", { method: "POST" }); }
+    catch (err) { notifyWarn(`미션 종료 실패: ${err.message}`); return; }
+  }
+  clearPath({ endMissionOnServer: false });
 }
 
 function onPathBtn() {
@@ -4237,6 +4255,13 @@ function reconcileRoverMode(s) {
   // rover holds its plan and resumes in place via the dedicated 재개 button,
   // so it stays in the 'executing' view below, not here.)
   const resumable = hasMission && missionStatus === "interrupted";
+  // The "stopped" view (이어서 실행 / 미션 종료) only makes sense when there is
+  // actually something to resume: a mission the server is preserving, or a
+  // planned path still held locally. Once the operator ends the mission via
+  // 미션 종료, both are gone — so even while the E-Stop latch keeps nav_state at
+  // EMERGENCY_STOP, we must NOT force the view back to "stopped" (that made the
+  // mission appear to end only after the latch was later cleared).
+  const hasResumeTarget = hasMission || pathWaypoints.value.length > 0;
 
   // Actively executing — or soft-paused, which is still an in-progress mission
   // (path overlay + progress stay visible; the 일시정지/재개 button toggles it).
@@ -4245,7 +4270,7 @@ function reconcileRoverMode(s) {
   // Resumable: e-stop / error latch, or an interrupted mission. Show
   // "이어서 실행". Works whether or not the rover is currently connected — the
   // server gates the actual resume until the rover SSE is back.
-  if (nav === "EMERGENCY_STOP" || nav === "ERROR" || resumable) {
+  if ((nav === "EMERGENCY_STOP" || nav === "ERROR" || resumable) && hasResumeTarget) {
     if (roverMode.value !== "stopped") {
       roverMode.value = "stopped";
       // Clamp to a real waypoint index (0..length-1). An interrupted mission can
@@ -5348,9 +5373,9 @@ onUnmounted(() => {
                        tap can't wipe "이어서 실행". -->
                   <div v-if="roverMode === 'stopped'" class="rover-controls">
                     <button
-                      class="btn btn-lg-touch btn-danger"
+                      class="btn btn-lg-touch btn-danger btn-block"
                       :disabled="stopping"
-                      @click="clearPath"
+                      @click="abandonMission"
                     >미션 종료</button>
                   </div>
 
