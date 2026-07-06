@@ -17,14 +17,20 @@ saturated κ. Field-verified single-pass cm_capture landings across
 3 consecutive missions on 2026-05-16; 30/30 WPs at mean 0.76 cm error,
 no settle timeout, no orbital lock.
 
-K-turn handling for large attitude errors (|eta| > 60°): chassis
-reverses with saturated κ in the eta-closing direction (phase A),
-drops to κ=0 straight-line reverse once aligned within `kturn_exit_rad`
-(phase B), and exits forward when antenna→target distance also
-satisfies `kturn_exit_dist_m`. The two-phase split prevents the
-antenna from being swept past the target during the rotation portion
-of the K-turn and gives the post-K-turn forward leg a guaranteed
-straight-in standoff for cm_capture.
+K-turn handling for large attitude errors (|eta| > 60°): the minimum
+turning radius (1/max_curvature ≈ 0.59 m) dwarfs the cm_capture gate,
+so once the antenna is near the target but the chassis points far off
+the bearing, the forward law physically cannot arc onto the target —
+it must reverse first. The K-turn engages at ANY distance (large eta
+close to target is exactly when it's mandatory), reverses with
+saturated κ in the eta-closing direction until it first aligns within
+`kturn_exit_rad` (phase A), then LATCHES that alignment and reverses
+straight (κ=0, phase B) to build a `kturn_exit_dist_m` standoff for the
+post-K-turn forward leg. The alignment latch is what keeps phase B from
+re-saturating the steering on the small eta drift a straight reverse
+induces (the antenna is offset from the rear axle) — re-reading live
+eta there flipped the wheel hard the opposite way and undid the
+alignment.
 
 The 'reached' gate fires when antenna→target distance drops below
 `cm_capture` (3 cm). The navigator transitions to SETTLING on that
@@ -32,7 +38,7 @@ return and runs a `settle_readings`-tick stability check inside
 `settle_tolerance` before spraying.
 """
 
-from math import atan2, cos, hypot, pi, sin, tan
+from math import atan2, cos, hypot, sin, tan
 
 from pilot.lib.geo_utils import normalize_angle
 from pilot.lib.antenna_calibration import OFFSET_MIN_FORWARD_M
@@ -69,30 +75,33 @@ class L1Tracker:
         self._min_speed = float(params.get('l1_min_speed_m_s', 0.07))
 
         # K-turn hysteresis. eta = bearing(antenna→target) −
-        # chassis_ψ. Enter K-turn when |eta| > kturn_enter (60°),
-        # exit when |eta| < kturn_exit (5°) AND antenna is at least
-        # kturn_exit_dist (50 cm) behind target. Hysteresis prevents
-        # the near-target |eta|≈±π/2 oscillation that flipped cmd v
-        # between +approach and -approach at 1 Hz in early field
-        # trials. The min_dist suppression keeps a tiny attitude
-        # excursion close to target from triggering a needless
-        # back-up cycle.
+        # chassis_ψ. Enter K-turn when |eta| > kturn_enter (60°) at
+        # ANY distance; exit when the alignment latch is set (|eta| has
+        # dropped below kturn_exit (5°) at some point during the reverse)
+        # AND the antenna is at least kturn_exit_dist (50 cm) behind
+        # target. The 60°→5°+standoff hysteresis prevents the near-target
+        # |eta|≈±π/2 oscillation that flipped cmd v between +approach and
+        # -approach at 1 Hz in early field trials.
         self._kturn_enter_rad = float(
             params.get('l1_kturn_enter_rad', 1.047))   # 60°
         self._kturn_exit_rad = float(
             params.get('l1_kturn_exit_rad', 0.0873))   # 5°
-        self._kturn_min_dist_m = float(
-            params.get('l1_kturn_min_dist_m', 0.30))
         self._kturn_exit_dist_m = float(
             params.get('l1_kturn_exit_dist_m', 0.50))
 
         self._kturn_active = False
+        # Latched once |eta| first drops within kturn_exit during a
+        # K-turn; holds phase B (straight reverse) so the standoff build
+        # never re-saturates the wheel on eta drift. Cleared on exit,
+        # reach, and reset.
+        self._kturn_aligned = False
 
     def reset(self):
         """Clear latched K-turn state. Called by the navigator on
         segment advance and after stuck-handler intervention.
         """
         self._kturn_active = False
+        self._kturn_aligned = False
 
     def _antenna_world(self, chassis_pose):
         x, y, psi = chassis_pose
@@ -124,6 +133,7 @@ class L1Tracker:
         target_dist = hypot(tx - ax, ty - ay)
         if target_dist <= self._cm_capture:
             self._kturn_active = False
+            self._kturn_aligned = False
             return 0.0, 0.0, 'reached'
 
         # Bearing FROM the antenna. The whole point of the antenna-
@@ -135,41 +145,51 @@ class L1Tracker:
         eta = normalize_angle(bearing - psi)
         abs_eta = abs(eta)
 
-        # K-turn state machine. Two-condition exit (alignment AND
-        # standoff). Phase A: saturated κ rotates chassis backward
-        # while turning. Phase B (|eta| < exit_rad): κ=0 straight-
-        # line reverse builds the standoff for the post-K-turn
-        # forward leg. With the antenna-unicycle controller below,
-        # the forward leg corrects any residual alignment drift
-        # smoothly, so K-turn doesn't need to nail ψ exactly — only
-        # enough for forward to take over without re-entering K-turn.
+        # K-turn state machine for large attitude error.
+        #
+        # Entry: |eta| > enter, at ANY distance. The old distance guard
+        # (`target_dist > kturn_min_dist_m`) suppressed entry inside 30 cm
+        # for 60° < |eta| ≤ 90°, dropping the chassis into the forward law
+        # where v·cos(eta) collapses below the MCU drive deadband while κ
+        # stays saturated — wheels cranked hard over, no motion, eta frozen
+        # (mission #6: blue "driving" LED on, operator pushing the rover by
+        # hand). But that close-in large-eta case is precisely where the
+        # forward arc CANNOT close (min radius 0.59 m ≫ target_dist), so
+        # the K-turn is mandatory there, not optional. Enter regardless of
+        # distance; the 60° enter / 5°+standoff exit hysteresis still keeps
+        # forward↔K-turn from chattering.
+        #
+        # Exit: alignment LATCH set AND standoff reached. Phase A reverses
+        # with saturated κ until |eta| first drops within exit_rad, which
+        # sets the latch; phase B then reverses straight (κ=0) to build the
+        # standoff. Gating the exit and phase-B on the latch — not on live
+        # eta — is the mission-#6 fix: a straight reverse drifts eta a few
+        # degrees (the antenna is offset from the rear axle), and the old
+        # live-eta phase A re-saturated the wheel with the OPPOSITE sign
+        # ("aligned nicely, then reversed more and cranked it the other
+        # way, ruining it"). The forward leg below finishes any residual
+        # alignment smoothly once it has the standoff to arc in.
         if self._kturn_active:
-            if (abs_eta < self._kturn_exit_rad
-                    and target_dist >= self._kturn_exit_dist_m):
+            if abs_eta < self._kturn_exit_rad:
+                self._kturn_aligned = True
+            if self._kturn_aligned and target_dist >= self._kturn_exit_dist_m:
                 self._kturn_active = False
-        else:
-            # A genuine overshoot (|eta| > 90°) puts the target behind the
-            # antenna's heading, where the forward unicycle law below would
-            # command cos(eta) < 0 (reverse) with a wrong-sign saturated κ —
-            # it cannot close on target and stalls. The kturn_min_dist guard
-            # (meant to suppress needless backups for *small* near-target
-            # attitude jitter) must NOT block this case, or the rover gets
-            # trapped oscillating just outside cm_capture. Hand off to the
-            # K-turn regardless of distance once we've overshot; the 60°
-            # enter threshold still filters out the small-jitter case.
-            overshot = abs_eta > (pi / 2)
-            if (abs_eta > self._kturn_enter_rad
-                    and (target_dist > self._kturn_min_dist_m or overshot)):
-                self._kturn_active = True
+                self._kturn_aligned = False
+        elif abs_eta > self._kturn_enter_rad:
+            self._kturn_active = True
+            self._kturn_aligned = False
 
         if self._kturn_active:
-            # Sign: eta > 0 means bearing is ahead-and-left of ψ →
-            # want ψ̇ > 0 → backward v < 0 needs κ < 0. κ = -sign(eta)·max.
-            if abs_eta >= self._kturn_exit_rad:
+            # Phase A (not yet aligned): saturated κ in the eta-closing
+            # direction. Sign: eta > 0 means bearing is ahead-and-left of
+            # ψ → want ψ̇ > 0 → backward v < 0 needs κ < 0, i.e.
+            # κ = -sign(eta)·max. Phase B (aligned latch set): κ=0 straight
+            # reverse to build the standoff, holding through eta drift.
+            if self._kturn_aligned:
+                kappa_kt = 0.0
+            else:
                 kappa_kt = (-self._max_curvature if eta > 0
                             else self._max_curvature)
-            else:
-                kappa_kt = 0.0
             return -self._approach_speed, \
                 self._clamp_curvature(kappa_kt), 'tracking'
 

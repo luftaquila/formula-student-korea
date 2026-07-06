@@ -19,13 +19,16 @@ Tests pin the behaviours that the field failures led us to:
     smooth tangent arc.
   - brake_zone ramp: cmd v scales linearly from cruise_speed at the
     zone edge down to min_speed at target.
-  - K-turn enter at |eta|>60° AND dist>kturn_min_dist (close-target
-    suppression) — but an overshoot (|eta|>90°) overrides the distance
-    guard so the rover doesn't stall just outside cm_capture.
-  - K-turn exit requires BOTH alignment (|eta|<5°) AND standoff
-    (dist>=50 cm). Either alone keeps the chassis in K-turn.
-  - K-turn phase A (saturated κ) vs phase B (κ=0) split: phase B
-    only kicks in once aligned.
+  - K-turn enter at |eta|>60° at ANY distance (mission-#6 fix: the old
+    close-target distance guard trapped the rover with wheels cranked
+    and no motion because the forward arc can't close inside the min
+    turning radius).
+  - K-turn exit requires BOTH the alignment latch (|eta| dropped <5° at
+    some point in the reverse) AND standoff (dist>=50 cm). Either alone
+    keeps the chassis in K-turn.
+  - Alignment latch (mission-#6 fix): once aligned, phase B holds κ=0
+    straight reverse through eta drift instead of re-saturating the
+    wheel with the opposite sign.
   - Curvature clamp at ±max_curvature.
 """
 
@@ -50,7 +53,6 @@ _PARAMS = {
     'l1_min_speed_m_s': 0.07,
     'l1_kturn_enter_rad': 1.047,   # 60°
     'l1_kturn_exit_rad': 0.0873,   # 5°
-    'l1_kturn_min_dist_m': 0.30,
     'l1_kturn_exit_dist_m': 0.50,
 }
 
@@ -105,15 +107,17 @@ class TestReached:
         assert status == 'tracking'
 
     def test_reached_clears_kturn_latch(self):
-        """A 'reached' return should clear _kturn_active so the next
-        segment doesn't inherit stale K-turn state."""
+        """A 'reached' return should clear both K-turn latches so the
+        next segment doesn't inherit stale K-turn state."""
         t = L1Tracker(_PARAMS)
         t._kturn_active = True
+        t._kturn_aligned = True
         seg = _seg(target=(1.0, 0.0))
         antenna = (1.01, 0.0)
         chassis = _chassis_for_antenna_at(*antenna, psi=0.0)
         t.step(chassis, seg, t_now=0.0, antenna_world=antenna)
         assert t._kturn_active is False
+        assert t._kturn_aligned is False
 
 
 class TestForwardUnicycleTransform:
@@ -229,11 +233,11 @@ class TestBrakeZone:
 
 class TestKturnEnter:
     def test_enters_kturn_when_eta_above_threshold_and_far(self):
-        """|eta| > 60° AND dist > kturn_min_dist → enter. v negative,
-        κ saturated in alignment-closing direction."""
+        """|eta| > 60° → enter. v negative, κ saturated in
+        alignment-closing direction."""
         t = L1Tracker(_PARAMS)
         seg = _seg(target=(1.0, 0.0))
-        antenna = (0.0, 0.0)  # 1 m from target — well past 30 cm.
+        antenna = (0.0, 0.0)  # 1 m from target.
         # ψ = 90° → bearing(0°) − ψ = −90° → |eta|=90° > 60°.
         chassis = _chassis_for_antenna_at(*antenna, psi=radians(90))
         v, kappa, status = t.step(chassis, seg, t_now=0.0,
@@ -244,29 +248,33 @@ class TestKturnEnter:
         assert kappa == _PARAMS['max_curvature']
         assert t._kturn_active
 
-    def test_no_kturn_inside_min_dist_moderate_eta(self):
-        """Within kturn_min_dist with a MODERATE attitude error
-        (60° < |eta| < 90°, where the forward law still makes forward
-        progress), K-turn stays suppressed — small near-target jitter
-        shouldn't trigger a needless backup cycle."""
+    def test_enters_kturn_close_range_large_eta(self):
+        """Mission-#6 regression: a large attitude error (60° < |eta| <
+        90°) CLOSE to target (inside the old 30 cm distance guard) must
+        engage the K-turn. The forward law there commands v·cos(eta)
+        below the drive deadband while κ stays saturated — the wheels
+        crank hard over and the chassis stalls with no motion (the trap
+        the operator kept pushing the rover out of). Reverse is mandatory
+        because the min turn radius (0.59 m) can't arc onto a target
+        20 cm away."""
         t = L1Tracker(_PARAMS)
         seg = _seg(target=(1.0, 0.0))
-        # Antenna 20 cm from target, ψ off by 75° (forward-progressing).
+        # Antenna 20 cm from target, ψ off by 75°.
         antenna = (0.80, 0.0)
         chassis = _chassis_for_antenna_at(*antenna, psi=radians(75))
         v, kappa, _ = t.step(chassis, seg, t_now=0.0,
                              antenna_world=antenna)
-        assert not t._kturn_active
-        # cos(-75°) > 0 → still forward; tan(-75°)/L → clamped κ.
-        assert v > 0.0
+        assert t._kturn_active, "close-range large eta must engage K-turn"
+        # Reverses to build a clean straight-in approach.
+        assert v == -_PARAMS['approach_speed']
         assert abs(kappa) == _PARAMS['max_curvature']
 
     def test_enters_kturn_on_overshoot_inside_min_dist(self):
-        """Overshoot (|eta| > 90°) within kturn_min_dist must STILL hand
-        off to K-turn. Otherwise the forward law commands a wrong-sign
-        reverse with saturated κ and the rover stalls just outside
-        cm_capture — the field WP1 trap (antenna 7 cm past target,
-        eta ≈ 104°, dist < 30 cm, bbox_disp collapsed to ~2 cm)."""
+        """Overshoot (|eta| > 90°) close to target must hand off to the
+        K-turn. Otherwise the forward law commands a wrong-sign reverse
+        with saturated κ and the rover stalls just outside cm_capture —
+        the field WP1 trap (antenna 7 cm past target, eta ≈ 104°,
+        dist < 30 cm, bbox_disp collapsed to ~2 cm)."""
         t = L1Tracker(_PARAMS)
         seg = _seg(target=(1.0, 0.0))
         # Antenna 7 cm PAST the target along +x → bearing flips ~180°.
@@ -275,7 +283,7 @@ class TestKturnEnter:
         v, kappa, status = t.step(chassis, seg, t_now=0.0,
                                   antenna_world=antenna)
         assert status == 'tracking'
-        assert t._kturn_active, "overshoot inside min_dist must engage K-turn"
+        assert t._kturn_active, "overshoot close to target must engage K-turn"
         # K-turn reverses to rebuild a clean straight-in approach.
         assert v == -_PARAMS['approach_speed']
         assert abs(kappa) == _PARAMS['max_curvature']
@@ -314,17 +322,46 @@ class TestKturnExit:
         assert v > 0.0
 
     def test_phase_a_saturated_kappa_while_misaligned(self):
-        """K-turn with |eta| > kturn_exit (5°) gives saturated κ in
-        the alignment-closing direction (sign = -sign(eta))."""
+        """K-turn NOT yet aligned with |eta| > kturn_exit (5°) gives
+        saturated κ in the alignment-closing direction (sign =
+        -sign(eta))."""
         t = L1Tracker(_PARAMS)
         t._kturn_active = True
         seg = _seg(target=(0.0, 0.0))
         antenna = (-0.40, 0.0)
-        # eta = 0 − 20° = −20° → |eta|>5° → phase A, κ=+max.
+        # eta = 0 − 20° = −20° → |eta|>5°, latch not set → phase A, κ=+max.
         chassis = _chassis_for_antenna_at(*antenna, psi=radians(20))
         _, kappa, _ = t.step(chassis, seg, t_now=0.0,
                              antenna_world=antenna)
+        assert not t._kturn_aligned
         assert kappa == _PARAMS['max_curvature']
+
+    def test_aligned_latch_prevents_reverse_wheel_flip(self):
+        """Mission-#6 regression: once the reverse has aligned the
+        chassis (|eta|<exit), the standoff-building straight reverse must
+        hold κ=0 even as eta drifts back past exit_rad — it must NOT
+        re-saturate the wheel the opposite way ('aligned nicely, then
+        reversed more and cranked it the other way, ruining it')."""
+        t = L1Tracker(_PARAMS)
+        t._kturn_active = True
+        seg = _seg(target=(0.0, 0.0))
+        # Tick 1: aligned (eta≈0), short of the 50 cm standoff → latch
+        # aligned, phase B κ=0, stay in K-turn.
+        antenna = (-0.20, 0.0)
+        chassis = _chassis_for_antenna_at(*antenna, psi=0.0)
+        _, k1, _ = t.step(chassis, seg, t_now=0.0, antenna_world=antenna)
+        assert t._kturn_aligned
+        assert k1 == 0.0
+        assert t._kturn_active
+        # Tick 2: eta drifted to +15° (> exit_rad) but still short of
+        # standoff. Latch holds → κ stays 0 (no opposite-sign flip),
+        # still reversing, still in K-turn.
+        antenna = (-0.30, 0.0)
+        chassis = _chassis_for_antenna_at(*antenna, psi=radians(-15))
+        v, k2, _ = t.step(chassis, seg, t_now=0.0, antenna_world=antenna)
+        assert t._kturn_active
+        assert k2 == 0.0
+        assert v == -_PARAMS['approach_speed']
 
 
 class TestCurvatureClamp:
@@ -361,5 +398,7 @@ class TestReset:
     def test_reset_clears_kturn_state(self):
         t = L1Tracker(_PARAMS)
         t._kturn_active = True
+        t._kturn_aligned = True
         t.reset()
         assert t._kturn_active is False
+        assert t._kturn_aligned is False

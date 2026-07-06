@@ -142,7 +142,6 @@ class NavigatorNode(Node):
         self.declare_parameter('l1_min_speed_m_s', 0.07)
         self.declare_parameter('l1_kturn_enter_rad', 1.047)
         self.declare_parameter('l1_kturn_exit_rad', 0.0873)
-        self.declare_parameter('l1_kturn_min_dist_m', 0.30)
         self.declare_parameter('l1_kturn_exit_dist_m', 0.50)
 
         # Tolerances and timeouts.
@@ -457,7 +456,6 @@ class NavigatorNode(Node):
             'l1_min_speed_m_s': p('l1_min_speed_m_s').value,
             'l1_kturn_enter_rad': p('l1_kturn_enter_rad').value,
             'l1_kturn_exit_rad': p('l1_kturn_exit_rad').value,
-            'l1_kturn_min_dist_m': p('l1_kturn_min_dist_m').value,
             'l1_kturn_exit_dist_m': p('l1_kturn_exit_dist_m').value,
             # Pull from instance, not yaml param, so a fresh auto-cal is
             # picked up on the next mission start without restart.
