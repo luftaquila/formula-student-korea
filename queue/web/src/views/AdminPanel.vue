@@ -172,6 +172,8 @@ async function enterBoothAction(boothNum) {
 async function exitBoothAction(boothNum) {
   const booth = currentBooths.value.find((b) => b.booth_num === boothNum);
   if (!booth || !booth.occupied_by) return;
+  const occupant = entries.value[booth.occupied_by];
+  if (!confirm(`${currentTabName.value}${boothNum} 출차 확인\n#${booth.occupied_by} ${occupant?.univ ?? ""} ${occupant?.team ?? ""}`)) return;
   try {
     await exitBooth(currentTab.value, boothNum);
     success(`엔트리 ${booth.occupied_by}번 ${currentTabName.value}${boothNum} 출차`);
@@ -276,6 +278,13 @@ function goToStats() {
   router.push("/stats");
 }
 
+function goToInspection(num) {
+  // 큐는 항상 현재 연도의 엔트리를 다루므로(getEntries → entry 기본 연도),
+  // 인스펙션 시트 경로 /:year/:num 의 year 는 현재 연도로 이동한다.
+  const base = import.meta.env.PROD ? "/inspection" : "";
+  window.location.href = `${base}/${new Date().getFullYear()}/${num}`;
+}
+
 </script>
 
 <template>
@@ -369,9 +378,14 @@ function goToStats() {
                       <span class="booth-team-name">{{ entries[booth.occupied_by]?.univ }} {{ entries[booth.occupied_by]?.team }}</span>
                     </div>
                     <div class="booth-elapsed">{{ elapsedTimes[`${currentTab}-${booth.booth_num}`] || '00:00' }}</div>
-                    <button class="btn btn-danger btn-sm booth-action-btn" @click="exitBoothAction(booth.booth_num)">
-                      출차
-                    </button>
+                    <div class="booth-action-row">
+                      <button class="btn btn-danger btn-sm" @click="exitBoothAction(booth.booth_num)">
+                        출차
+                      </button>
+                      <button class="btn btn-primary btn-sm" @click="goToInspection(booth.occupied_by)">
+                        인스펙션
+                      </button>
+                    </div>
                   </div>
                   <div v-else-if="booth.active" class="booth-card-body">
                     <select
@@ -383,6 +397,7 @@ function goToStats() {
                         {{ item.num }} - {{ entries[item.num]?.univ }} {{ entries[item.num]?.team }}
                       </option>
                     </select>
+                    <div class="booth-elapsed booth-elapsed-empty">--:--</div>
                     <button
                       class="btn btn-success btn-sm booth-action-btn"
                       :disabled="!boothSelectedTeam[booth.booth_num]"
@@ -961,6 +976,9 @@ function goToStats() {
   display: flex;
   align-items: center;
   gap: 0.375rem;
+  /* 대기 부스의 select 와 같은 높이(min-height 2rem, box-sizing: border-box)로
+     맞춰 입차/대기 부스 카드의 총 높이를 일치시킨다. */
+  min-height: 2rem;
 }
 
 .booth-team-num {
@@ -985,8 +1003,13 @@ function goToStats() {
   text-align: center;
 }
 
+.booth-elapsed-empty {
+  color: var(--text-tertiary);
+}
+
 .booth-select {
   width: 100%;
+  min-height: 2rem;
   padding: 0.375rem 0.5rem;
   border: 1px solid var(--border-color);
   border-radius: 6px;
@@ -1002,6 +1025,15 @@ function goToStats() {
 
 .booth-action-btn {
   width: 100%;
+}
+
+.booth-action-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.booth-action-row .btn {
+  flex: 1;
 }
 
 @media (max-width: 1024px) {
