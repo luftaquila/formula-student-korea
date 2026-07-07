@@ -810,9 +810,17 @@ class StereoDepth:
         # more than the margin. The margin grows with range (rel, absorbs depth's
         # proportional noise) but is floored near the rover (abs).
         thresh = exp - np.maximum(cfg.ground_rel_margin * exp, cfg.ground_abs_margin_m)
+        # Only trust rows whose expected ground is itself within detection range.
+        # Where the calibrated ground is beyond max_detect_range_m (the frame's far
+        # field / horizon), "closer than ground" degenerates to "anything within
+        # range", so ordinary ground or background appearing in those rows (as the
+        # rover pitches, or the scene differs from the flat-ground calibration) trips
+        # a false positive. A real obstacle within range is still caught by its base
+        # in the near rows, whose ground IS within range.
         above = (valid & np.isfinite(depth_z) & (depth_z > 0)
                  & (depth_z <= cfg.max_detect_range_m)
-                 & np.isfinite(exp) & (depth_z < thresh))
+                 & np.isfinite(exp) & (exp <= cfg.max_detect_range_m)
+                 & (depth_z < thresh))
         roi = np.zeros((h, w), dtype=bool)
         roi[ya:yb, xa:xb] = True
         above &= roi

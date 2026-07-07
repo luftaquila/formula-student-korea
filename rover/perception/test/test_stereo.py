@@ -651,13 +651,37 @@ def test_aboveground_ignores_speckle_below_physical_size():
 def test_aboveground_respects_max_range():
     pytest.importorskip("cv2")
     H, W = 120, 120
-    # Uniform far ground (5 m) so the ground itself is never flagged; vary only the
-    # object's distance against a 2.5 m range cap.
-    profile = {"row_frac": np.linspace(0.05, 0.95, 10), "depth_m": np.full(10, 5.0)}
+    # Ground WITHIN detection range (so the range guard keeps these rows); vary the
+    # object's distance against the 3.0 m cap.
+    profile = {"row_frac": np.linspace(0.05, 0.95, 10), "depth_m": np.full(10, 2.8)}
     valid = np.ones((H, W), bool)
-    cfg = stereo.StereoConfig(max_detect_range_m=2.5)
+    cfg = stereo.StereoConfig(max_detect_range_m=3.0)
     det = _aboveground_detector(profile, f_calib=100.0, calib_w=W, calib_h=H, cfg=cfg)
-    beyond = np.full((H, W), 5.0, np.float32); beyond[40:80, 45:80] = 2.7   # > range
+    beyond = np.full((H, W), 2.8, np.float32); beyond[40:80, 45:80] = 3.5   # > range
     assert det._decide_aboveground(beyond, valid, None)[0] is False
-    within = np.full((H, W), 5.0, np.float32); within[40:80, 45:80] = 1.5   # < range
+    within = np.full((H, W), 2.8, np.float32); within[40:80, 45:80] = 1.0   # < range, above ground
     assert det._decide_aboveground(within, valid, None)[0] is True
+
+
+def test_aboveground_skips_rows_whose_ground_is_beyond_range():
+    # SAFETY regression (field false positives): where the calibrated ground is
+    # beyond detection range (the frame's far field / horizon), "closer than ground"
+    # degenerates to "anything within range" — so ordinary ground/background landing
+    # in those rows (rover pitch, or a scene that differs from the open-ground
+    # calibration) falsely trips. The range guard must ignore those rows, while a
+    # real obstacle is still caught in the near rows whose ground IS within range.
+    pytest.importorskip("cv2")
+    H, W = 120, 120
+    profile = {"row_frac": np.array([0.10, 0.45, 0.55, 0.95]),
+               "depth_m": np.array([8.0, 8.0, 2.0, 1.2])}   # far up top, near at bottom
+    valid = np.ones((H, W), bool)
+    cfg = stereo.StereoConfig(max_detect_range_m=3.0)
+    det = _aboveground_detector(profile, f_calib=100.0, calib_w=W, calib_h=H, cfg=cfg)
+    exp = stereo.ground_depth_for_rows(profile, H)
+    ground = (np.where(np.isfinite(exp), exp, 8.0)[:, None] * np.ones((1, W))).astype(np.float32)
+    # (1) near content (2.2 m) filling the FAR-curve upper rows → guard must NOT flag
+    s1 = ground.copy(); s1[int(0.15 * H):int(0.40 * H), 40:80] = 2.2
+    assert det._decide_aboveground(s1, valid, None)[0] is False
+    # (2) a real obstacle (0.8 m) in the NEAR-curve lower rows → still detected
+    s2 = ground.copy(); s2[int(0.78 * H):int(0.96 * H), 45:78] = 0.8
+    assert det._decide_aboveground(s2, valid, None)[0] is True
