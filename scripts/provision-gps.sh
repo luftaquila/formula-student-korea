@@ -92,7 +92,7 @@ cp "$GPS_DIR/systemd/gps-register.service" "$STAGING/systemd/"
 cp "$GPS_DIR/udev/99-fsk-gps.rules" "$STAGING/udev/"
 : > "$STAGING/pilot/__init__.py"
 : > "$STAGING/pilot/lib/__init__.py"
-for m in ubx_parser ntrip_client geo_utils protocol_utils; do
+for m in ubx_parser ntrip_client geo_utils protocol_utils rtcm_utils; do
     cp "$PILOT_LIB/$m.py" "$STAGING/pilot/lib/"
 done
 
