@@ -839,6 +839,36 @@ const receiverConnected = computed(() => !!receiver.value?.connected);
 const baseState = computed(() => receiver.value?.base?.state || "idle");
 const surveyingPointId = computed(() =>
   baseState.value === "surveying" ? (receiver.value?.base?.point_id ?? null) : null);
+
+// Receiver GPS status as status-strip-style chips — same info kinds and tones as
+// the rover's GPS chip (fix, NTRIP, sat, h/v accuracy, PDOP/TDOP, altitude, speed).
+// The server (network) connection is shown separately as text above these.
+const receiverChips = computed(() => {
+  const r = receiver.value;
+  if (!r) return [];
+  const g = r.gps || {};
+  const chips = [];
+  const hasFix = !!r.fix_status;
+  chips.push({
+    key: "fix",
+    label: `🛰️ ${hasFix ? r.fix_status.replace(/_/g, " ").toUpperCase() : "NO GPS"}`,
+    tone: hasFix ? (FIX_STATUS_META[r.fix_status]?.tone || "bad") : "bad",
+  });
+  // The base station makes its own corrections; NTRIP only applies in capture mode.
+  if (r.mode !== "base") {
+    chips.push(r.ntrip_connected
+      ? { key: "ntrip", label: `NTRIP ${r.ntrip?.mountpoint || "ON"}`, tone: "ok" }
+      : { key: "ntrip", label: "NTRIP OFF", tone: "warn" });
+  }
+  if (g.num_sv != null) chips.push({ key: "sat", label: `📡 ${g.num_sv}`, tone: g.num_sv >= 12 ? "ok" : g.num_sv >= 6 ? "warn" : "bad" });
+  if (g.h_acc != null) chips.push({ key: "acc", label: `±${(g.h_acc * 100).toFixed(1)} cm`, tone: g.h_acc <= 0.05 ? "ok" : g.h_acc <= 0.5 ? "warn" : "bad" });
+  if (g.v_acc != null) chips.push({ key: "vacc", label: `V ±${(g.v_acc * 100).toFixed(1)} cm`, tone: "neutral" });
+  if (g.pdop != null) chips.push({ key: "pdop", label: `PDOP ${g.pdop.toFixed(1)}`, tone: g.pdop <= 2 ? "ok" : g.pdop <= 5 ? "warn" : "bad" });
+  if (g.tdop != null) chips.push({ key: "tdop", label: `TDOP ${g.tdop.toFixed(1)}`, tone: g.tdop <= 2 ? "ok" : g.tdop <= 5 ? "warn" : "bad" });
+  if (g.altitude != null) chips.push({ key: "alt", label: `ALT ${g.altitude.toFixed(1)} m`, tone: "neutral" });
+  if (g.speed != null) chips.push({ key: "spd", label: `${g.speed.toFixed(1)} m/s`, tone: "neutral" });
+  return chips;
+});
 // Only surveyed points (with recorded coordinates) can serve as a base station.
 const surveyedPoints = computed(() => surveyPoints.value.filter((p) => p.lat != null && p.lng != null));
 const hasSurveyedPoint = computed(() => surveyedPoints.value.length > 0);
@@ -5880,14 +5910,15 @@ onUnmounted(() => {
                 <!-- Receiver status -->
                 <div class="inspector-group">
                   <div class="group-title">GPS 수신기</div>
+                  <!-- Server (network) connection as text -->
                   <div class="gps-status-row">
                     <span :class="['gps-dot', receiverConnected ? 'on' : 'off']"></span>
-                    <span>{{ receiverConnected ? '연결됨' : '연결 안 됨' }}</span>
-                    <span v-if="receiverConnected && receiver?.fix_status" class="gps-sub">· {{ receiver.fix_status }}</span>
+                    <span>서버 {{ receiverConnected ? '연결됨' : '끊김' }}</span>
                     <span v-if="receiverConnected" class="gps-sub">· {{ receiver.mode === 'base' ? '기준국 모드' : '캡처 모드' }}</span>
                   </div>
-                  <div v-if="receiverConnected && receiver?.gps?.h_acc != null" class="gps-sub">
-                    수평정확도 {{ receiver.gps.h_acc.toFixed(3) }} m · 위성 {{ receiver.gps.num_sv ?? '—' }}개
+                  <!-- GPS status as chips (same style/kinds as the rover status strip) -->
+                  <div v-if="receiverConnected" class="chip-row gps-chip-row">
+                    <span v-for="c in receiverChips" :key="c.key" :class="['chip', `chip-${c.tone}`]">{{ c.label }}</span>
                   </div>
                 </div>
 
@@ -7331,6 +7362,9 @@ onUnmounted(() => {
 
 /* ── GPS 관리 탭 ─────────────────────────────────────────── */
 .gps-status-row { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; flex-wrap: wrap; }
+/* Reuse the status-strip .chip styling but compact for the narrow GPS panel. */
+.gps-chip-row { gap: 0.35rem; margin-top: 0.45rem; }
+.gps-chip-row .chip { font-size: 0.72rem; padding: 0.15rem 0.5rem; }
 .gps-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .gps-dot.on { background: #22c55e; }
 .gps-dot.off { background: var(--border-color); }
