@@ -85,3 +85,21 @@ def test_rtcm_inject_empty_is_noop():
     node = _node()
     node._on_rtcm_inject(_msg(""))
     assert node._serial.written == b""
+
+
+def test_ntrip_setup_worker_aborts_in_base_mode(monkeypatch):
+    # If the operator switched to base, the NGII setup worker must not start a
+    # client (and must early-return before any network fetch).
+    node = _node()
+    node._ntrip_source = "base"
+    node._ntrip = None
+    called = {"fetch": False}
+
+    def _boom(*_a, **_kw):
+        called["fetch"] = True
+        raise AssertionError("must not fetch the source table in base mode")
+
+    monkeypatch.setattr("pilot.gps_node.fetch_source_table", _boom)
+    node._ntrip_setup_worker(37.5, 127.0, "user", 10.0, node._serial)
+    assert node._ntrip is None
+    assert called["fetch"] is False

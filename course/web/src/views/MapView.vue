@@ -4449,12 +4449,14 @@ async function fetchRoverStatus() {
     const data = await res.json();
     roverStatus.value = { ...roverStatus.value, ...data };
     syncAppRoverStatus(data);
-    // Sync the rover marker with the cached server-side position on
-    // first load — without this the map only shows the rover after the
-    // next live SSE update, which can be 1+ seconds away.
-    const lp = data.last_position;
+    // Sync the marker with the cached server-side position on first load —
+    // without this the map only shows it after the next live SSE update, which
+    // can be 1+ seconds away. Use the ACTIVE source (receiver when preferred)
+    // to match restoreLiveMapLayers + the rover:status SSE handler.
+    const src = data.position_source;
+    const lp = src === "receiver" ? data.receiver?.last_position : data.last_position;
     if (lp && typeof lp.lat === "number" && typeof lp.lng === "number") {
-      updateRoverMarker(lp.lat, lp.lng);
+      updateRoverMarker(lp.lat, lp.lng, src);
     }
     // Restore in-flight mission so a tab reload during a mission doesn't lose
     // the path overlay, waypoint counter, or spray markers.

@@ -319,6 +319,10 @@ class GpsNode(Node):
     def _ntrip_setup_worker(self, lat, lon, username, gga_interval, serial_ref):
         """Fetch source table off the ROS timer thread and start NTRIP."""
         try:
+            # The operator may switch to the receiver base station while this
+            # slow fetch is in flight; bail early so we don't pull NGII at all.
+            if self._ntrip_source == 'base':
+                return
             try:
                 table_text = fetch_source_table(_NTRIP_HOST, _NTRIP_PORT)
             except Exception as exc:
@@ -345,7 +349,12 @@ class GpsNode(Node):
                 return
 
             with self._ntrip_setup_lock:
-                if self._ntrip is not None or self._serial is not serial_ref:
+                # Re-check the source UNDER the lock: if we switched to base after
+                # the early check but during the fetch, _on_ntrip_source('base')
+                # couldn't stop a client that didn't exist yet — abort here so we
+                # never start NGII in base mode (which would double-feed the F9P).
+                if (self._ntrip is not None or self._serial is not serial_ref
+                        or self._ntrip_source == 'base'):
                     return
                 self.get_logger().info(
                     f'NTRIP: auto-selected "{mount}" for position '

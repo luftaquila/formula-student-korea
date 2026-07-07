@@ -489,9 +489,13 @@ class GpsRegisterAgent:
             self._last_hpposllh = hp
             self._last_position = {"lat": hp.lat, "lng": hp.lon, "alt": hp.h_msl}
             # During a base survey, average only RTK-fixed samples — this is the
-            # whole point of surveying "while NTRIP is alive".
+            # whole point of surveying "while NTRIP is alive". Use ELLIPSOIDAL
+            # height (hp.height), not MSL: this coordinate feeds CFG-TMODE-HEIGHT
+            # with POS_TYPE=LLH, which u-blox defines as height above the WGS84
+            # ellipsoid. Using h_msl would bias the base ARP by the geoid
+            # separation (~24 m in Korea) and skew every rover absolute altitude.
             if self._survey is not None and self._fix_status == "rtk_fixed":
-                self._survey["samples"].append((hp.lat, hp.lon, hp.h_msl, hp.h_acc))
+                self._survey["samples"].append((hp.lat, hp.lon, hp.height, hp.h_acc))
 
     def _metrics_from(self, pvt):
         """Build the telemetry `gps` block, preferring HPPOSLLH/DOP detail."""
@@ -522,17 +526,22 @@ class GpsRegisterAgent:
                     # Re-assert base output after a reopen (BBR usually survives a
                     # USB re-enumerate, but re-applying is cheap and authoritative).
                     if self._mode == "base-output" and self._base_params:
-                        self._pending_reconfig = ("base", self._base_params)
+                        with self._lock:
+                            self._pending_reconfig = ("base", self._base_params)
                 except (serial.SerialException, OSError) as exc:
                     log.warning("GPS serial (re)open failed: %s", exc)
                     time.sleep(_SERIAL_OPEN_BACKOFF_S)
                     continue
 
             # Apply any pending base/capture reconfiguration here so all serial +
-            # NTRIP lifecycle stays on the single serial-owning thread.
-            pending = self._pending_reconfig
-            if pending is not None:
+            # NTRIP lifecycle stays on the single serial-owning thread. Read+clear
+            # under the lock so a concurrent _activate_base/_deactivate_base write
+            # can't be lost between the read and the clear. Apply OUTSIDE the lock
+            # (_apply_* re-acquire it; the Lock is non-reentrant).
+            with self._lock:
+                pending = self._pending_reconfig
                 self._pending_reconfig = None
+            if pending is not None:
                 kind, payload = pending
                 try:
                     if kind == "base":
@@ -759,13 +768,15 @@ class GpsRegisterAgent:
             "alt": payload.get("alt"), "acc": payload.get("acc"),
         }
         self._mode = "base-output"
-        self._pending_reconfig = ("base", self._base_params)
+        with self._lock:
+            self._pending_reconfig = ("base", self._base_params)
         log.info("base activation requested at (%.7f, %.7f)", payload["lat"], payload["lng"])
 
     def _deactivate_base(self):
         self._base_params = None
         self._mode = "capture"
-        self._pending_reconfig = ("capture", None)
+        with self._lock:
+            self._pending_reconfig = ("capture", None)
         log.info("base deactivation requested")
 
     # ---- lifecycle -----------------------------------------------------

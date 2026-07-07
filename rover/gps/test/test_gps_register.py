@@ -217,3 +217,58 @@ class TestConfigureBase:
         assert cfg[gr.CFG_TMODE_MODE] == 0
         for key in gr._RTCM_MSGOUT_KEYS:
             assert cfg[key] == 0
+
+
+class TestSurveySampleHeight:
+    """Survey must record ELLIPSOIDAL height (feeds TMODE LLH), not MSL."""
+
+    def test_on_hpposllh_collects_ellipsoidal_height(self):
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._lock = threading.Lock()
+        agent._survey = {"point_id": 1, "samples": []}
+        agent._fix_status = "rtk_fixed"
+        agent._last_hpposllh = None
+        agent._last_position = None
+        hp = SimpleNamespace(lat=37.5, lon=127.0, height=65.0, h_msl=40.0, h_acc=0.01)
+        agent._on_hpposllh(hp)
+        # The sampled altitude must be the ellipsoidal height (65.0), never MSL (40.0).
+        assert agent._survey["samples"] == [(37.5, 127.0, 65.0, 0.01)]
+
+    def test_no_sample_unless_rtk_fixed(self):
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._lock = threading.Lock()
+        agent._survey = {"point_id": 1, "samples": []}
+        agent._fix_status = "rtk_float"
+        agent._last_hpposllh = None
+        agent._last_position = None
+        agent._on_hpposllh(SimpleNamespace(lat=37.5, lon=127.0, height=65.0, h_msl=40.0, h_acc=0.5))
+        assert agent._survey["samples"] == []
+
+
+class TestBaseReconfigHandoff:
+    """_activate_base/_deactivate_base latch _pending_reconfig (under the lock)."""
+
+    @staticmethod
+    def _agent():
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._lock = threading.Lock()
+        agent._pending_reconfig = None
+        agent._base_params = None
+        agent._mode = "capture"
+        return agent
+
+    def test_activate_then_deactivate(self):
+        agent = self._agent()
+        agent._activate_base({"lat": 37.5, "lng": 127.0, "alt": 40.0, "acc": 0.01})
+        assert agent._mode == "base-output"
+        assert agent._pending_reconfig == ("base", agent._base_params)
+        agent._deactivate_base()
+        assert agent._mode == "capture"
+        assert agent._pending_reconfig == ("capture", None)
+        assert agent._base_params is None
+
+    def test_activate_ignored_without_coords(self):
+        agent = self._agent()
+        agent._activate_base({"lat": None, "lng": None})
+        assert agent._mode == "capture"
+        assert agent._pending_reconfig is None
