@@ -3427,24 +3427,27 @@ function panToCone(cone) {
 // center and panBy that delta keeps the target visually centered.
 function panToVisibleCenter(lat, lng, opts = {}) {
   if (!map) return;
+  const animate = opts.animate ?? true;
   const visible = getVisibleMapCenter();
-  // Before the flex layout resolves #map's height (first paint), the container
-  // is 0×0. The container↔layer pixel round-trip below is then degenerate, and
-  // under a non-zero map bearing (leaflet-rotate) the rotation no longer
-  // cancels — panBy flings the centre tens of km away (e.g. into the sea, where
-  // the satellite basemap has no tiles and the view renders blank grey). A
-  // direct setView centres exactly on the point with no container-pixel math,
-  // so fall back to it whenever the container has no usable size.
-  const size = map.getSize();
-  if (!visible || size.x === 0 || size.y === 0) {
-    map.setView([lat, lng], map.getZoom(), { animate: opts.animate ?? true });
+  if (!visible) {
+    map.setView([lat, lng], map.getZoom(), { animate });
     return;
   }
-  const targetPx = map.latLngToContainerPoint([lat, lng]);
-  const dx = targetPx.x - visible.x;
-  const dy = targetPx.y - visible.y;
-  if (dx === 0 && dy === 0) return;
-  map.panBy([dx, dy], { animate: opts.animate ?? true });
+  // Place the target at the visible center by computing the new map center and
+  // setView-ing to it — never panBy. For a target far from the current view
+  // (e.g. a course far from where the map is looking) the pan offset exceeds
+  // the map size, and Leaflet's panBy then takes a shortcut that adds a
+  // screen-space offset to a world-space center. Under a non-zero map bearing
+  // (leaflet-rotate) screen space ≠ world space, so that shortcut sends the
+  // center tens of km off — into the sea, where the satellite basemap has no
+  // tiles and the view renders blank grey. containerPointToLatLng applies the
+  // inverse rotation correctly, so this is exact for any bearing, container
+  // size, or target distance. On desktop (visible == size/2) it reduces to
+  // centering on the target; the offset only bites on mobile, where the
+  // inspector overlay shifts the visible center up.
+  const targetPt = map.latLngToContainerPoint([lat, lng]);
+  const centerPt = targetPt.add(map.getSize().divideBy(2)).subtract(visible);
+  map.setView(map.containerPointToLatLng(centerPt), map.getZoom(), { animate });
 }
 
 /* ── Rover position ───────────────────────────────── */
