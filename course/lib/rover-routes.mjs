@@ -1441,26 +1441,40 @@ app.get("/api/rover/camera/control", (req, res) => {
     clearInterval(heartbeat);
     if (cameraControlClient === res) {
       cameraControlClient = null;
-      logger.warn(req, "rover.camera.control_closed", null, "rover");
+      // A bare disconnect is a benign lifecycle event: the perception node
+      // reconnects (client backoff) and the server re-syncs the full desired
+      // state on reconnect, and WebRTC/stream survive the blip. It pairs with
+      // the info-level control_connected, so log at info — a redeploy or a
+      // flaky rover uplink otherwise floods the warn filter with reconnect
+      // churn. warn is reserved for a close that actually broke something
+      // (below).
       // If a calibration was mid-run, the perception node that was running it is
       // gone — mark it failed so the operator isn't locked out of retrying (the
       // 교정 button is disabled while 'running' and nothing else would clear it).
-      let flipped = false;
+      const aborted = [];
       if (roverState.stereo_calibration.status === "running") {
         roverState.stereo_calibration = {
           status: "failed", phase: "done",
           error: "카메라(perception) 연결이 끊겼습니다.", at: Date.now(),
         };
-        flipped = true;
+        aborted.push("stereo");
       }
       if (roverState.ground_calibration.status === "running") {
         roverState.ground_calibration = {
           status: "failed", phase: "done",
           error: "카메라(perception) 연결이 끊겼습니다.", at: Date.now(),
         };
-        flipped = true;
+        aborted.push("ground");
       }
-      if (flipped) broadcastRoverStatus();
+      if (aborted.length) {
+        // This close DID break something the operator was waiting on: warn so it
+        // surfaces under the level filter, with which calibration(s) it killed.
+        logger.warn(req, "rover.camera.control_closed",
+          { aborted_calibration: aborted }, "rover");
+        broadcastRoverStatus();
+      } else {
+        logger.log(req, "rover.camera.control_closed", null, "rover");
+      }
     }
   });
 });
