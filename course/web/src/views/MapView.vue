@@ -2671,6 +2671,27 @@ async function deleteSelected() {
   updateMultiSelectIcons();
 }
 
+// Wipe every cone in the active course in one request. Undo re-adds them (with
+// fresh ids); the SSE `cones` clear rebuilds the marker layer for everyone.
+async function deleteAllCones() {
+  const courseId = activeCourseId.value;
+  if (!courseId) return;
+  const all = (conesMap.value[courseId] || []).map((c) => ({ lat: c.lat, lng: c.lng, side: c.side, alt: c.alt }));
+  if (all.length === 0) return;
+  if (!confirm(`이 코스의 콘 ${all.length}개를 모두 삭제하시겠습니까? 되돌리기 전까지 지도에서 사라집니다.`)) return;
+  if (rotateMode.value) exitRotateMode();
+  try {
+    await request(`/api/courses/${courseId}/cones`, { method: "DELETE" });
+    selectedConeId.value = null;
+    multiSelectedIds.value = new Set();
+    pushUndo(`콘 ${all.length}개 전체 삭제`, () => Promise.all(
+      all.map((c) => request(`/api/courses/${courseId}/cones`, { method: "POST", body: JSON.stringify(c) }))
+    ));
+  } catch (err) {
+    notifyError(`전체 삭제 실패: ${err.message}`);
+  }
+}
+
 /* ── Memo stickers ────────────────────────────────── */
 // 메모는 콘과 별개의 주석 레이어다 — 편집 잠금(콘 오조작 방지)과 무관하게 항상
 // 추가·이동·리사이즈·수정·삭제할 수 있다. 중심 좌표(lat/lng)와 실측 크기(width/
@@ -5285,16 +5306,18 @@ onUnmounted(() => {
                       @click="scrollConeListTop"
                       title="목록 맨 위로"
                     >↑</button>
+                    <button
+                      class="btn btn-danger cone-delete-all"
+                      :disabled="activeCones.length === 0"
+                      @click="deleteAllCones"
+                    >전체 삭제</button>
                   </div>
                 </template>
               </section>
 
-              <!-- Rover tab -->
+              <!-- Rover tab — header/divider intentionally omitted to save
+                   vertical space; the active tab already identifies the pane. -->
               <section v-show="activeTab === 'rover'" class="tab-pane">
-                <header class="tab-header">
-                  <h3>로버 제어</h3>
-                </header>
-
                 <div v-if="roverStatus.connected" class="inspector-group gps-block">
                   <div class="group-title">GPS</div>
                   <div class="gps-grid">
@@ -6500,12 +6523,9 @@ onUnmounted(() => {
   text-align: center;
 }
 .rover-controls-grid {
-  display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem;
 }
 .rover-controls-grid .btn { width: 100%; }
-/* Odd button count: last button spans both columns so the layout never
-   leaves a half-empty trailing row. */
-.rover-controls-grid > *:last-child:nth-child(odd) { grid-column: 1 / -1; }
 
 .course-toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
 .course-toolbar .btn { flex: 1; min-width: 120px; }
@@ -6880,6 +6900,8 @@ onUnmounted(() => {
 }
 
 .cone-list { flex: 1; overflow-y: auto; padding-bottom: 1rem; }
+/* Full-width destructive action pinned below the cone list. */
+.cone-delete-all { width: 100%; margin-top: 0.5rem; flex: none; }
 
 .cone-item {
   display: flex; align-items: center; gap: 0.5rem;
@@ -6990,7 +7012,7 @@ onUnmounted(() => {
 
   .sheet-handle {
     display: flex; align-items: center; justify-content: center;
-    padding: 1.25rem 1rem;
+    padding: 0.6rem 1rem;
     cursor: pointer; flex-shrink: 0;
     touch-action: none;
   }
@@ -6999,7 +7021,7 @@ onUnmounted(() => {
     background: var(--text-secondary); opacity: 0.5;
   }
 
-  .tab-pane { padding: 0.75rem 0.875rem 1.25rem; }
+  .tab-pane { padding: 0.4rem 0.875rem 0.6rem; }
   .joystick-area { display: flex; flex-direction: column; align-items: center; }
   .joystick { max-width: 220px; width: 100%; }
 
