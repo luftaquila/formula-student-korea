@@ -25,6 +25,7 @@ import { useRouter } from "vue-router";
 import * as THREE from "three";
 import { VRButton } from "three/addons/webxr/VRButton.js";
 import { request } from "../api.js";
+import { shapeStick } from "@lib/stick.mjs";
 import { useRoverControl } from "../composables/useRoverControl.js";
 import { useNotification } from "@shared/useNotification.js";
 
@@ -63,7 +64,6 @@ const usingWebrtc = ref(false); // true once the WHEP video is delivering frames
 const hasVideo = ref(false);    // any picture up (WebRTC OR the MJPEG fallback)
 
 const STREAM_BASE = import.meta.env.PROD ? "/course" : "";
-const DEADZONE = 0.08; // thumbstick rest drift
 const prevBtn = {};    // edge-detection state for buttons
 let pumpOn = false;
 let frame = 0;
@@ -303,9 +303,6 @@ function onSessionEnd() {
 }
 
 // ── controller input ─────────────────────────────────────────────────────────
-function dz(v) {
-  return Math.abs(v) < DEADZONE ? 0 : v;
-}
 function edge(key, btn) {
   const now = !!(btn && btn.pressed);
   const was = !!prevBtn[key];
@@ -329,8 +326,8 @@ function pollInput(session) {
     const sx = m23 >= m01 ? (ax[2] || 0) : (ax[0] || 0);
     const sy = m23 >= m01 ? (ax[3] || 0) : (ax[1] || 0);
     if (src.handedness === "right") {
-      throttle = -dz(sy) * 100; // stick up = forward
-      steering = dz(sx) * 100;  // stick right = steer right
+      throttle = -shapeStick(sy) * 100; // stick up = forward
+      steering = shapeStick(sx) * 100;  // stick right = steer right
       if (edge("A", b[4]).rising) setMinimapZoom(+1); // A: minimap zoom in
       if (edge("B", b[5]).rising) setMinimapZoom(-1); // B: minimap zoom out
       // Grip (squeeze, middle finger) = emergency stop. Separate finger from the
