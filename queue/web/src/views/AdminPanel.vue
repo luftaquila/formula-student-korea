@@ -172,6 +172,8 @@ async function enterBoothAction(boothNum) {
 async function exitBoothAction(boothNum) {
   const booth = currentBooths.value.find((b) => b.booth_num === boothNum);
   if (!booth || !booth.occupied_by) return;
+  const occupant = entries.value[booth.occupied_by];
+  if (!confirm(`${currentTabName.value}${boothNum} 출차 확인\n#${booth.occupied_by} ${occupant?.univ ?? ""} ${occupant?.team ?? ""}`)) return;
   try {
     await exitBooth(currentTab.value, boothNum);
     success(`엔트리 ${booth.occupied_by}번 ${currentTabName.value}${boothNum} 출차`);
