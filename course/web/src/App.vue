@@ -81,7 +81,22 @@ async function fetchStatus() {
   } catch { /* best-effort */ }
 }
 
+// Android Chrome only hides the address bar in fullscreen — a normal tab can't
+// dismiss browser chrome. Enter fullscreen on the operator's first touch (a
+// user gesture is required, so we can't do it on load). Desktop mouse input is
+// ignored so the desktop view is never hijacked; iOS Safari lacks the
+// Fullscreen API for non-video elements, so the request rejects into a no-op.
+function enterFullscreenOnTouch(e) {
+  if (e.pointerType && e.pointerType !== "touch") return; // wait for an actual touch
+  window.removeEventListener("pointerdown", enterFullscreenOnTouch);
+  const el = document.documentElement;
+  if (!document.fullscreenElement && el.requestFullscreen) {
+    el.requestFullscreen().catch(() => {});
+  }
+}
+
 onMounted(async () => {
+  window.addEventListener("pointerdown", enterFullscreenOnTouch);
   // Rover control (status, e-stop) is admin-only; chief manages cones only, so
   // skip the status poll — roverConnected stays false and the global e-stop and
   // its underlying /api/rover/* calls never engage.
@@ -89,6 +104,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  window.removeEventListener("pointerdown", enterFullscreenOnTouch);
   if (stopReleaseTimer) clearTimeout(stopReleaseTimer);
 });
 </script>
