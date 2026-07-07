@@ -377,11 +377,11 @@ function goToInspection(num) {
                     </div>
                     <div class="booth-elapsed">{{ elapsedTimes[`${currentTab}-${booth.booth_num}`] || '00:00' }}</div>
                     <div class="booth-action-row">
-                      <button class="btn btn-primary btn-sm" @click="goToInspection(booth.occupied_by)">
-                        인스펙션
-                      </button>
                       <button class="btn btn-danger btn-sm" @click="exitBoothAction(booth.booth_num)">
                         출차
+                      </button>
+                      <button class="btn btn-primary btn-sm" @click="goToInspection(booth.occupied_by)">
+                        인스펙션
                       </button>
                     </div>
                   </div>
