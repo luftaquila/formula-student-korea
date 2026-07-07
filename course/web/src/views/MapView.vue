@@ -5420,35 +5420,37 @@ onUnmounted(() => {
                        overlay → off (blue = 2D, violet = depth); VR opens the
                        headset teleop view (enabled even while offline). -->
                   <div class="rover-controls rover-controls-grid">
+                    <!-- Row 1: 로버 추적 · 카메라 · 수동 제어 -->
                     <button
                       :class="['btn', 'btn-lg-touch', followRover ? 'btn-primary' : 'btn-ghost']"
                       :disabled="!roverStatus.connected"
                       @click="toggleFollowRover"
                     >로버 추적</button>
                     <button
-                      :class="['btn', 'btn-lg-touch', pathBtnClass]"
-                      @click="onPathBtn"
-                      :disabled="activeCones.length === 0 || roverMode === 'manual' || (stopping && (roverMode === 'executing' || roverMode === 'stopped'))"
-                    >{{ pathBtnLabel }}</button>
+                      :class="['btn', 'btn-lg-touch', !cameraOn ? 'btn-ghost' : (cameraDepthOn ? 'camera-btn-depth' : 'btn-primary')]"
+                      :disabled="!roverStatus.connected"
+                      @click="cycleCamera"
+                    >카메라</button>
+                    <button
+                      :class="['btn', 'btn-lg-touch', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
+                      :disabled="roverMode !== 'manual' && (!roverStatus.connected || (roverMode === 'executing' && roverStatus.nav_state !== 'PAUSED') || roverMode === 'stopped')"
+                      @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
+                    >수동 제어</button>
+                    <!-- Row 2: VR · 보정 · 경로 계산 -->
+                    <button
+                      class="btn btn-lg-touch btn-ghost"
+                      @click="goVr"
+                    >VR</button>
                     <button
                       class="btn btn-lg-touch btn-ghost"
                       :disabled="!roverStatus.connected"
                       @click="openCalibration"
                     >보정</button>
                     <button
-                      :class="['btn', 'btn-lg-touch', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
-                      :disabled="roverMode !== 'manual' && (!roverStatus.connected || (roverMode === 'executing' && roverStatus.nav_state !== 'PAUSED') || roverMode === 'stopped')"
-                      @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
-                    >수동 제어</button>
-                    <button
-                      :class="['btn', 'btn-lg-touch', !cameraOn ? 'btn-ghost' : (cameraDepthOn ? 'camera-btn-depth' : 'btn-primary')]"
-                      :disabled="!roverStatus.connected"
-                      @click="cycleCamera"
-                    >카메라</button>
-                    <button
-                      class="btn btn-lg-touch btn-ghost"
-                      @click="goVr"
-                    >VR</button>
+                      :class="['btn', 'btn-lg-touch', pathBtnClass]"
+                      @click="onPathBtn"
+                      :disabled="activeCones.length === 0 || roverMode === 'manual' || (stopping && (roverMode === 'executing' || roverMode === 'stopped'))"
+                    >{{ pathBtnLabel }}</button>
                   </div>
 
                   <!-- Obstacle alert — the rover auto-paused on a corridor
