@@ -395,6 +395,7 @@ function goToInspection(num) {
                         {{ item.num }} - {{ entries[item.num]?.univ }} {{ entries[item.num]?.team }}
                       </option>
                     </select>
+                    <div class="booth-elapsed booth-elapsed-empty">--:--</div>
                     <button
                       class="btn btn-success btn-sm booth-action-btn"
                       :disabled="!boothSelectedTeam[booth.booth_num]"
@@ -995,6 +996,10 @@ function goToInspection(num) {
   font-family: "JetBrains Mono", monospace;
   color: var(--accent-warning, #f59e0b);
   text-align: center;
+}
+
+.booth-elapsed-empty {
+  color: var(--text-tertiary);
 }
 
 .booth-select {
