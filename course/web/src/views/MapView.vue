@@ -1904,6 +1904,29 @@ async function fetchAll() {
 }
 
 /* ── Map init ─────────────────────────────────────── */
+// Resolve once `el` has a non-zero size (ResizeObserver fires an initial
+// callback with the current size on observe, so an already-sized element
+// resolves immediately). A bounded fallback keeps startup from hanging if the
+// element never reports a size (e.g. kept display:none).
+function whenElementSized(el, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    if (!el || (el.clientWidth > 0 && el.clientHeight > 0)) { resolve(); return; }
+    let ro = null, timer = null, done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (ro) ro.disconnect();
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
+    ro = new ResizeObserver(() => {
+      if (el.clientWidth > 0 && el.clientHeight > 0) finish();
+    });
+    ro.observe(el);
+    timer = setTimeout(finish, timeoutMs);
+  });
+}
+
 async function initMap() {
   // leaflet-rotate is a UMD plugin that patches the global `L`. Expose L on
   // globalThis first, then dynamically import it (a static import is hoisted
@@ -1911,6 +1934,15 @@ async function initMap() {
   // supports map.setBearing() and rotates tiles/cones/paths together.
   globalThis.L = L;
   await import("leaflet-rotate");
+  // Create the map only once #map has a real size. leaflet-rotate bakes its
+  // rotation pivot from the container size when setBearing() runs during
+  // construction; on first paint the flex layout may not have sized #map yet
+  // (0×0), which poisons the pivot for the whole session. It can't be re-synced
+  // afterwards (setBearing is relative — re-applying the same angle is a no-op),
+  // so every rotated projection stays off and panBy sends a course far from the
+  // default center into the sea, where the satellite basemap has no tiles and
+  // the view renders blank grey.
+  await whenElementSized(document.getElementById("map"));
   map = L.map("map", {
     // Render vector layers (centerline, direction arrow, mission/rotate/measure
     // paths) on a single shared <canvas> instead of one SVG node each — the
@@ -4697,12 +4729,6 @@ onMounted(async () => {
   await fetchAll();
   await nextTick();
   await initMap();
-  // Make the map measure its container before the first programmatic centre.
-  // On first paint the flex layout may not have given #map its height yet;
-  // centring against a 0×0 container corrupts the (rotated) projection. This
-  // refreshes the cached size when it's available; if the container is still
-  // 0×0, panToVisibleCenter's own guard falls back to a direct setView.
-  map.invalidateSize({ pan: false, animate: false });
   // fetchAll restores activeCourseId before initMap exists, so the
   // course watcher's pan was a no-op. Re-apply once the map is ready
   // so a refresh lands centered on the restored course's start (or first cone).
