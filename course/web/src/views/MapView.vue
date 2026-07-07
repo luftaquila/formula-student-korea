@@ -2421,7 +2421,7 @@ async function submitWheelCal() {
 
 async function submitWheelCalReset() {
   if (!roverStatus.value.connected || wheelCalResetSubmitting.value) return;
-  if (!window.confirm("휠 캘리브레이션을 초기화합니다 (scale_l/r=1.0, trim=0 µs). 계속하시겠습니까?")) {
+  if (!window.confirm("휠 보정을 초기화합니다 (scale_l/r=1.0, trim=0 µs). 계속하시겠습니까?")) {
     return;
   }
   wheelCalResetSubmitting.value = true;
@@ -3975,9 +3975,9 @@ watch(webrtcConnected, (isConnected, was) => {
 const router = useRouter();
 function goVr() { router.push("/vr"); }
 // Single camera button cycles three modes so there's no separate 거리 오버레이
-// button: off → plain 2D → depth overlay → off. Each mode is visually distinct:
-// off = ghost, 2D = blue (btn-primary), depth = violet + "깊이맵" label, so the
-// switch always gives feedback (the video plain-vs-heatmap corroborates it).
+// button: off → plain 2D → depth overlay → off. Each mode has a distinct fill
+// (off = ghost, 2D = blue btn-primary, depth = violet) so switching to the
+// depth map gives feedback (the video plain-vs-heatmap corroborates it).
 function cycleCamera() {
   if (!cameraOn.value) { startCamera(); return; }        // off → plain 2D
   if (!cameraDepthOn.value) { toggleDepth(); return; }   // 2D → depth overlay
@@ -4531,7 +4531,7 @@ onUnmounted(() => {
       <div v-if="showCalibration" class="preflight-backdrop" @click.self="closeCalibration">
         <div class="preflight-modal calibration-modal">
           <div class="modal-titlebar">
-            <h3>캘리브레이션</h3>
+            <h3>보정</h3>
             <button
               class="modal-close-x"
               :disabled="antennaCalSubmitting || wheelCalSubmitting"
@@ -5373,11 +5373,15 @@ onUnmounted(() => {
                     v-if="roverStatus.connected"
                     class="btn btn-lg-touch btn-ghost manual-btn-row"
                     @click="openCalibration"
-                  >캘리브레이션</button>
+                  >보정</button>
                   코스를 먼저 선택하세요.
                   <button class="btn btn-ghost btn-lg-touch" @click="activeTab = 'courses'">코스 탭으로</button>
                 </div>
                 <template v-else>
+                  <!-- All always-on rover controls share ONE grid so they lay
+                       out 3 per row. The 카메라 button cycles off → 2D → depth
+                       overlay → off (blue = 2D, violet = depth); VR opens the
+                       headset teleop view (enabled even while offline). -->
                   <div class="rover-controls rover-controls-grid">
                     <button
                       :class="['btn', 'btn-lg-touch', followRover ? 'btn-primary' : 'btn-ghost']"
@@ -5389,7 +5393,27 @@ onUnmounted(() => {
                       @click="onPathBtn"
                       :disabled="activeCones.length === 0 || roverMode === 'manual' || (stopping && (roverMode === 'executing' || roverMode === 'stopped'))"
                     >{{ pathBtnLabel }}</button>
+                    <button
+                      class="btn btn-lg-touch btn-ghost"
+                      :disabled="!roverStatus.connected"
+                      @click="openCalibration"
+                    >보정</button>
+                    <button
+                      :class="['btn', 'btn-lg-touch', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
+                      :disabled="roverMode !== 'manual' && (!roverStatus.connected || (roverMode === 'executing' && roverStatus.nav_state !== 'PAUSED') || roverMode === 'stopped')"
+                      @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
+                    >수동 제어</button>
+                    <button
+                      :class="['btn', 'btn-lg-touch', !cameraOn ? 'btn-ghost' : (cameraDepthOn ? 'camera-btn-depth' : 'btn-primary')]"
+                      :disabled="!roverStatus.connected"
+                      @click="cycleCamera"
+                    >카메라</button>
+                    <button
+                      class="btn btn-lg-touch btn-ghost"
+                      @click="goVr"
+                    >VR</button>
                   </div>
+
                   <!-- Obstacle alert — the rover auto-paused on a corridor
                        obstacle. Persistent (driven by server state) so a tab
                        opened after the event still sees it; clears on resume. -->
@@ -5417,34 +5441,6 @@ onUnmounted(() => {
                       :disabled="pauseBusy || !roverStatus.connected || !PAUSABLE_NAV.has(roverStatus.nav_state)"
                       @click="pauseMission"
                     >⏸ 일시정지</button>
-                  </div>
-                  <div class="rover-controls rover-controls-grid">
-                    <button
-                      class="btn btn-lg-touch btn-ghost"
-                      :disabled="!roverStatus.connected"
-                      @click="openCalibration"
-                    >캘리브레이션</button>
-                    <button
-                      :class="['btn', 'btn-lg-touch', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
-                      :disabled="roverMode !== 'manual' && (!roverStatus.connected || (roverMode === 'executing' && roverStatus.nav_state !== 'PAUSED') || roverMode === 'stopped')"
-                      @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
-                    >수동 제어</button>
-                  </div>
-
-                  <!-- Live camera (WebRTC, relayed via the course server). The one
-                       카메라 button cycles off → 2D → depth overlay → off; the VR
-                       button opens the headset teleop view (usable to preview even
-                       while the rover is offline, so it stays enabled). -->
-                  <div class="rover-controls rover-controls-grid">
-                    <button
-                      :class="['btn', 'btn-lg-touch', !cameraOn ? 'btn-ghost' : (cameraDepthOn ? 'camera-btn-depth' : 'btn-primary')]"
-                      :disabled="!roverStatus.connected"
-                      @click="cycleCamera"
-                    >{{ cameraOn && cameraDepthOn ? '깊이맵' : '카메라' }}</button>
-                    <button
-                      class="btn btn-lg-touch btn-ghost"
-                      @click="goVr"
-                    >VR</button>
                   </div>
                   <div v-if="cameraOn" class="camera-view">
                     <!-- WebRTC (low-latency H.264) is the PRIMARY source — we connect
@@ -6528,7 +6524,9 @@ onUnmounted(() => {
   text-align: center;
 }
 .rover-controls-grid {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem;
+  /* minmax(0, 1fr) keeps all three columns equal even when a label is wide,
+     instead of a long button stretching its column and breaking the row. */
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem;
 }
 .rover-controls-grid .btn { width: 100%; }
 

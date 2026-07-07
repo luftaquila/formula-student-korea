@@ -82,17 +82,22 @@ async function fetchStatus() {
 }
 
 // Android Chrome only hides the address bar in fullscreen — a normal tab can't
-// dismiss browser chrome. Enter fullscreen on the operator's first touch (a
-// user gesture is required, so we can't do it on load). Desktop mouse input is
-// ignored so the desktop view is never hijacked; iOS Safari lacks the
-// Fullscreen API for non-video elements, so the request rejects into a no-op.
+// dismiss browser chrome. Enter fullscreen on the operator's touch (a user
+// gesture is required, so we can't do it on load). We retry on EVERY touch and
+// only detach once the request actually resolves, so a first attempt that the
+// browser rejects (transient-activation quirks) doesn't permanently give up.
+// Desktop mouse input is ignored so the desktop view is never hijacked; iOS
+// Safari lacks the Fullscreen API for non-video elements → we detach and no-op.
 function enterFullscreenOnTouch(e) {
-  if (e.pointerType && e.pointerType !== "touch") return; // wait for an actual touch
-  window.removeEventListener("pointerdown", enterFullscreenOnTouch);
+  if (e.pointerType !== "touch") return; // wait for an actual touch, ignore mouse/pen
   const el = document.documentElement;
-  if (!document.fullscreenElement && el.requestFullscreen) {
-    el.requestFullscreen().catch(() => {});
+  if (!el.requestFullscreen || document.fullscreenElement) {
+    window.removeEventListener("pointerdown", enterFullscreenOnTouch);
+    return;
   }
+  el.requestFullscreen()
+    .then(() => window.removeEventListener("pointerdown", enterFullscreenOnTouch))
+    .catch(() => { /* transient — leave the listener so the next touch retries */ });
 }
 
 onMounted(async () => {
