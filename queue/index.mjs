@@ -1610,10 +1610,16 @@ app.get("/api/admin/stats/:num", (req, res) => {
   const boothLogOccupyConditions = ["num = ?", "year = ?", "exited_at IS NOT NULL"];
   const boothLogOccupyParams = [num, year];
 
+  // 타임라인용 boothLogConditions 는 구간과 "겹치는" 세션을 넉넉히 가져온다.
+  // 입차/출차 이벤트는 각자 자기 타임스탬프(entered_at/exited_at)로 아래에서
+  // 개별 필터링하므로, 여기서 exited_at 으로 행을 거르면 안 된다. 그렇게 하면
+  // 검차중(exited_at IS NULL) 세션이 통째로 빠져 입차 이벤트가 출차 전까지
+  // 숨겨지고, 출차 시 입차·출차가 동시에 나타나는 버그가 생긴다.
   if (from) {
     queueLogConditions.push("timestamp >= ?");
     queueLogParams.push(Number(from));
-    boothLogConditions.push("entered_at >= ?");
+    // from 이전에 이미 종료된 세션만 제외(검차중 세션은 유지)
+    boothLogConditions.push("(exited_at IS NULL OR exited_at >= ?)");
     boothLogParams.push(Number(from));
     boothLogOccupyConditions.push("entered_at >= ?");
     boothLogOccupyParams.push(Number(from));
@@ -1621,7 +1627,8 @@ app.get("/api/admin/stats/:num", (req, res) => {
   if (to) {
     queueLogConditions.push("timestamp <= ?");
     queueLogParams.push(Number(to));
-    boothLogConditions.push("exited_at <= ?");
+    // to 이후에 시작한 세션만 제외
+    boothLogConditions.push("entered_at <= ?");
     boothLogParams.push(Number(to));
     boothLogOccupyConditions.push("exited_at <= ?");
     boothLogOccupyParams.push(Number(to));
@@ -1675,15 +1682,23 @@ app.get("/api/admin/stats/:num", (req, res) => {
       ORDER BY entered_at ASC
     `).all(...boothLogParams);
 
+    // 입차 이벤트는 entered_at, 출차 이벤트는 exited_at 기준으로 각각 구간에
+    // 속하는지 개별 판단한다. 검차중(exited_at NULL) 세션도 입차가 즉시 노출된다.
+    const fromTs = from ? Number(from) : null;
+    const toTs = to ? Number(to) : null;
+    const inRange = (ts) => (fromTs == null || ts >= fromTs) && (toTs == null || ts <= toTs);
+
     const boothEvents = [];
     for (const row of boothLogs) {
-      boothEvents.push({
-        event: "enter",
-        inspection: row.inspection,
-        boothNum: row.boothNum,
-        timestamp: row.enteredAt,
-      });
-      if (row.exitedAt) {
+      if (inRange(row.enteredAt)) {
+        boothEvents.push({
+          event: "enter",
+          inspection: row.inspection,
+          boothNum: row.boothNum,
+          timestamp: row.enteredAt,
+        });
+      }
+      if (row.exitedAt && inRange(row.exitedAt)) {
         boothEvents.push({
           event: "exit",
           inspection: row.inspection,

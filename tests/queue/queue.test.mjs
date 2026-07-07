@@ -792,6 +792,34 @@ describe('Statistics', () => {
       assert.ok(data.summary.registrations >= 0);
     }
   });
+
+  it('GET /api/admin/stats/:num timeline shows enter of an in-progress (not-yet-exited) session under a to filter', async () => {
+    // Regression: an occupied booth (entered, exited_at IS NULL) must appear
+    // as an "enter" timeline event immediately — not only once it exits. The
+    // stats page always sends a `to` filter, so a `to`-gated exited_at check
+    // used to hide open sessions until 출차.
+    await client.post('/api/admin/register/electric', {
+      body: { num: 3, phone: '01055551234' },
+      cookie: officialCookie,
+    });
+    const enterRes = await client.post('/api/admin/booths/electric/1/enter', {
+      body: { num: 3 },
+      cookie: officialCookie,
+    });
+    assert.equal(enterRes.status, 200);
+
+    // Booth is now occupied and NOT exited.
+    const to = Date.now() + 60000; // window end in the near future
+    const res = await client.get(`/api/admin/stats/3?from=0&to=${to}&inspection=electric`, { cookie: officialCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    const events = data.timeline.map(e => e.event);
+    assert.ok(events.includes('enter'), 'open session enter event should be visible under a to filter');
+    assert.ok(!events.includes('exit'), 'no exit event yet for an in-progress session');
+
+    // Cleanup: exit so later state is clean.
+    await client.post('/api/admin/booths/electric/1/exit', { cookie: officialCookie });
+  });
 });
 
 // ─── Settings ───────────────────────────────────────────────────────────

@@ -193,7 +193,8 @@ test.describe("Queue booth management", () => {
     // The booth should show the team and an exit button
     await expect(page.locator(".booth-team-num", { hasText: "3" })).toBeVisible({ timeout: 10000 });
 
-    // Click exit booth button
+    // Click exit booth button (exit is guarded by a confirm() dialog)
+    page.on("dialog", (dialog) => dialog.accept());
     const exitBtn = page.getByRole("button", { name: "출차" }).first();
     await exitBtn.click();
 
