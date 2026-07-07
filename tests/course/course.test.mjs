@@ -716,6 +716,66 @@ describe('start_cone_id dangling cleanup', () => {
   });
 });
 
+// ─── Bulk cone delete (전체 삭제) ──────────────────────────────────────────
+describe('DELETE /api/courses/:id/cones (delete all)', () => {
+  let courseId, coneIds;
+  const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
+  const startOf = async (id) =>
+    (await (await client.get('/api/courses', { cookie: adminCookie })).json())
+      .find((c) => c.id === id)?.start_cone_id;
+
+  before(async () => {
+    const cRes = await client.post('/api/courses', { body: { name: '전체삭제 코스' }, cookie: adminCookie });
+    courseId = (await cRes.json()).id;
+    coneIds = [];
+    for (const c of [
+      { lat: 37.1, lng: 126.1, side: 'left' },
+      { lat: 37.2, lng: 126.2, side: 'right' },
+      { lat: 37.3, lng: 126.3, side: 'center' },
+    ]) {
+      const r = await client.post(`/api/courses/${courseId}/cones`, { body: c, cookie: adminCookie });
+      coneIds.push((await r.json()).id);
+    }
+  });
+
+  it('returns 404 for a non-existent course', async () => {
+    const res = await client.delete('/api/courses/999999/cones', { cookie: adminCookie });
+    assert.equal(res.status, 404);
+  });
+
+  it('is allowed for chief (parity with per-cone delete)', async () => {
+    // Throwaway course so the main course's cones survive for the next test.
+    const tmpId = (await (await client.post('/api/courses', { body: { name: '전체삭제 chief' }, cookie: adminCookie })).json()).id;
+    await client.post(`/api/courses/${tmpId}/cones`, { body: { lat: 37.0, lng: 126.0, side: 'left' }, cookie: adminCookie });
+    const res = await client.delete(`/api/courses/${tmpId}/cones`, { cookie: chiefCookie });
+    assert.equal(res.status, 200);
+    await client.delete(`/api/courses/${tmpId}`, { cookie: adminCookie });
+  });
+
+  it('deletes every cone and clears the designated start cone', async () => {
+    await client.patch(`/api/courses/${courseId}/direction`, { body: { start_cone_id: coneIds[0] }, cookie: adminCookie });
+    assert.equal(await startOf(courseId), coneIds[0]);
+
+    const res = await client.delete(`/api/courses/${courseId}/cones`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).deleted, 3);
+
+    const cones = await (await client.get(`/api/courses/${courseId}/cones`, { cookie: adminCookie })).json();
+    assert.equal(cones.length, 0);
+    assert.equal(await startOf(courseId), null); // start cone no longer dangles
+  });
+
+  it('is a 200 no-op when the course already has no cones', async () => {
+    const res = await client.delete(`/api/courses/${courseId}/cones`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).deleted, 0);
+  });
+
+  after(async () => {
+    await client.delete(`/api/courses/${courseId}`, { cookie: adminCookie });
+  });
+});
+
 // ─── Rover ──────────────────────────────────────────────────────────────
 describe('POST /api/rover/position', () => {
   it('accepts position from rover (with internal secret)', async () => {

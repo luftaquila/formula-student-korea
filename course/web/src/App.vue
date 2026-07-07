@@ -1,15 +1,12 @@
 <script setup>
 import { ref, watch, provide, onMounted, onUnmounted } from "vue";
-import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
-import { useRoute } from "vue-router";
 import { request } from "./api.js";
 import { useNotification } from "@shared/useNotification.js";
 import { isAdmin } from "@shared/officialsStore.js";
 
 const { error: notifyError } = useNotification();
 
-const route = useRoute();
 const roverConnected = ref(false);
 const navState = ref(null);
 const stopping = ref(false);
@@ -99,18 +96,9 @@ onUnmounted(() => {
 <template>
   <div class="app-container app-fullheight">
     <SonnerToaster />
-    <header class="header">
-      <div class="header-content">
-        <a href="/" class="logo">
-          <span class="logo-icon">📍</span>
-          <h1>FSK 코스 관리</h1>
-        </a>
-        <div class="header-actions">
-          <NavMenu :currentPath="'/course' + route.path" />
-        </div>
-      </div>
-    </header>
-
+    <!-- Header bar and nav menu are intentionally omitted on the course view:
+         this is a dedicated operator screen, so the map takes the full
+         viewport height with no chrome. -->
     <main class="main-fill">
       <router-view />
     </main>
@@ -144,6 +132,11 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100dvh;
+  /* Override the shared .app-container `min-height: 100vh`. On mobile the app
+     never scrolls (overflow: hidden), so the browser address bar stays pinned;
+     a 100vh floor then exceeds the visible 100dvh and pushes the top content
+     (the status chip bar) behind the address bar. Cap the floor at 100dvh. */
+  min-height: 100dvh;
   overflow: hidden;
   position: relative;
 }
@@ -154,7 +147,7 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* z-index 999: same as status-strip; NavMenu drawer (1000) covers it. */
+/* z-index 999: sits above Leaflet panes (max 700) and level with the status strip. */
 .global-estop {
   position: fixed;
   bottom: 1.25rem;

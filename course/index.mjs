@@ -857,6 +857,36 @@ app.post("/api/courses/:id/cones", (req, res) => {
   res.status(201).json(result.result);
 });
 
+// DELETE /api/courses/:id/cones - 코스의 모든 콘 삭제 (전체 삭제).
+// Destructive bulk wipe: a single audit entry (vs. N per-cone deletes) and one
+// SSE broadcast. Chief-allowed, matching per-cone/multi-select delete — a chief
+// can already clear every cone one by one.
+app.delete("/api/courses/:id/cones", (req, res) => {
+  const courseId = parseInt(req.params.id, 10);
+  if (isNaN(courseId)) return res.status(400).send("올바르지 않은 코스 ID입니다.");
+
+  const course = getCourseById(courseId);
+  if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
+
+  const count = getCones(courseId).length;
+  const hadStart = course.start_cone_id != null;
+  const result = dbRun(() => db.transaction(() => {
+    db.prepare("DELETE FROM cone WHERE course_id = ?").run(courseId);
+    // Wiping every cone also invalidates the designated start cone.
+    if (hadStart) db.prepare("UPDATE course SET start_cone_id = NULL WHERE id = ?").run(courseId);
+  })());
+
+  if (!result.success) {
+    logger.warn(req, "cone.delete_all", { error: result.error, count }, course.name);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "cone.delete_all", { count }, course.name);
+  broadcastEvent("cones", { type: "clear", courseId, cones: [] });
+  if (hadStart) broadcastEvent("courses", { type: "start_reset", course: getCourseById(courseId), courses: getCourses() });
+  res.status(200).json({ deleted: count });
+});
+
 /* ============================================
    API 라우트: /api/cones/:id
    ============================================ */

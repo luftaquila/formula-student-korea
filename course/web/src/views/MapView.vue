@@ -2421,7 +2421,7 @@ async function submitWheelCal() {
 
 async function submitWheelCalReset() {
   if (!roverStatus.value.connected || wheelCalResetSubmitting.value) return;
-  if (!window.confirm("휠 캘리브레이션을 초기화합니다 (scale_l/r=1.0, trim=0 µs). 계속하시겠습니까?")) {
+  if (!window.confirm("휠 보정을 초기화합니다 (scale_l/r=1.0, trim=0 µs). 계속하시겠습니까?")) {
     return;
   }
   wheelCalResetSubmitting.value = true;
@@ -2669,6 +2669,27 @@ async function deleteSelected() {
   if (ids.includes(selectedConeId.value)) selectedConeId.value = null;
   multiSelectedIds.value = new Set();
   updateMultiSelectIcons();
+}
+
+// Wipe every cone in the active course in one request. Undo re-adds them (with
+// fresh ids); the SSE `cones` clear rebuilds the marker layer for everyone.
+async function deleteAllCones() {
+  const courseId = activeCourseId.value;
+  if (!courseId) return;
+  const all = (conesMap.value[courseId] || []).map((c) => ({ lat: c.lat, lng: c.lng, side: c.side, alt: c.alt }));
+  if (all.length === 0) return;
+  if (!confirm(`이 코스의 콘 ${all.length}개를 모두 삭제하시겠습니까? 되돌리기 전까지 지도에서 사라집니다.`)) return;
+  if (rotateMode.value) exitRotateMode();
+  try {
+    await request(`/api/courses/${courseId}/cones`, { method: "DELETE" });
+    selectedConeId.value = null;
+    multiSelectedIds.value = new Set();
+    pushUndo(`콘 ${all.length}개 전체 삭제`, () => Promise.all(
+      all.map((c) => request(`/api/courses/${courseId}/cones`, { method: "POST", body: JSON.stringify(c) }))
+    ));
+  } catch (err) {
+    notifyError(`전체 삭제 실패: ${err.message}`);
+  }
 }
 
 /* ── Memo stickers ────────────────────────────────── */
@@ -3953,9 +3974,27 @@ watch(webrtcConnected, (isConnected, was) => {
 });
 const router = useRouter();
 function goVr() { router.push("/vr"); }
+
+// Fullscreen toggle (status-strip button). The only way a normal tab can hide
+// the mobile browser chrome; hidden entirely where the API is absent (iOS
+// Safari has no Fullscreen API for non-video elements). isFullscreen tracks the
+// real state via `fullscreenchange` so the icon/label stay correct even when
+// the user exits via a system gesture (swipe / Esc).
+const fullscreenSupported = typeof document !== "undefined" && !!document.documentElement.requestFullscreen;
+const isFullscreen = ref(false);
+function onFullscreenChange() { isFullscreen.value = !!document.fullscreenElement; }
+async function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  } catch (e) {
+    notifyWarn(`전체화면 전환 실패: ${e?.message || e}`);
+  }
+}
 // Single camera button cycles three modes so there's no separate 거리 오버레이
-// button: off → plain 2D → depth overlay → off. The label stays "카메라"; the
-// active highlight + the video itself (plain vs heatmap) show which mode is live.
+// button: off → plain 2D → depth overlay → off. Each mode has a distinct fill
+// (off = ghost, 2D = blue btn-primary, depth = violet) so switching to the
+// depth map gives feedback (the video plain-vs-heatmap corroborates it).
 function cycleCamera() {
   if (!cameraOn.value) { startCamera(); return; }        // off → plain 2D
   if (!cameraDepthOn.value) { toggleDepth(); return; }   // 2D → depth overlay
@@ -3967,13 +4006,17 @@ function cycleCamera() {
 // no stereo calibration loaded (it falls back to the plain stream).
 async function toggleDepth() {
   const next = !cameraDepthOn.value;
+  // Flip optimistically so the button colour changes the instant it's pressed
+  // (the request + rover re-render take a beat); revert if the server rejects.
+  // The next status poll reconciles with the rover's authoritative state.
+  cameraDepthOn.value = next;
   try {
     await request("/api/rover/camera/depth", {
       method: "POST",
       body: JSON.stringify({ on: next }),
     });
-    cameraDepthOn.value = next;
   } catch (e) {
+    cameraDepthOn.value = !next;
     notifyWarn(`깊이 뷰 전환 실패: ${e?.message || e}`);
   }
 }
@@ -4117,6 +4160,10 @@ function connectSSE() {
     const data = parseSSE(e);
     if (!data) return;
     conesMap.value[data.courseId] = data.cones;
+    // Keep the course list's "(N)" count live. Cone add/delete only broadcasts
+    // `cones` (not `courses`), so without this the count would go stale.
+    const course = courses.value.find((c) => c.id === data.courseId);
+    if (course) course.cone_count = data.cones.length;
     if (map && !suppressRebuild) rebuildAllMarkers();
   });
 
@@ -4407,6 +4454,7 @@ function onGlobalKeydown(e) {
 onMounted(async () => {
   checkMobile();
   window.addEventListener("resize", checkMobile);
+  document.addEventListener("fullscreenchange", onFullscreenChange);
   window.addEventListener("keydown", onGlobalKeydown);
   document.addEventListener("click", onGlobalClickForChips);
   document.addEventListener("keydown", onGlobalKeyForChips);
@@ -4444,6 +4492,7 @@ onUnmounted(() => {
   // so the "reconnecting" badge can't stick on after this view tears down.
   sseReconnecting.value = false;
   window.removeEventListener("resize", checkMobile);
+  document.removeEventListener("fullscreenchange", onFullscreenChange);
   window.removeEventListener("keydown", onGlobalKeydown);
   document.removeEventListener("click", onGlobalClickForChips);
   document.removeEventListener("keydown", onGlobalKeyForChips);
@@ -4505,7 +4554,7 @@ onUnmounted(() => {
       <div v-if="showCalibration" class="preflight-backdrop" @click.self="closeCalibration">
         <div class="preflight-modal calibration-modal">
           <div class="modal-titlebar">
-            <h3>캘리브레이션</h3>
+            <h3>보정</h3>
             <button
               class="modal-close-x"
               :disabled="antennaCalSubmitting || wheelCalSubmitting"
@@ -4807,11 +4856,11 @@ onUnmounted(() => {
       <!-- Workspace: top status strip + body(rail + map + inspector) -->
       <div class="workspace">
 
-        <!-- Persistent status strip (always visible across tabs) -->
-        <div
-          class="status-strip"
-          @scroll.passive="onChipStripScroll"
-        >
+        <!-- Persistent status strip (always visible across tabs). Chips live in
+             an inner scroller so they scroll horizontally up to — but never
+             under — the fullscreen button pinned at the far right. -->
+        <div class="status-strip">
+          <div class="status-strip-chips" @scroll.passive="onChipStripScroll">
           <template v-if="!roverStatus.connected">
             <span
               :class="['chip-wrapper', { active: activeChipPopover === 'disconnect' }]"
@@ -4919,7 +4968,21 @@ onUnmounted(() => {
               </span>
             </div>
           </template>
-
+          </div>
+          <button
+            v-if="fullscreenSupported"
+            class="fullscreen-btn"
+            :title="isFullscreen ? '전체화면 종료' : '전체화면'"
+            :aria-label="isFullscreen ? '전체화면 종료' : '전체화면'"
+            @click="toggleFullscreen"
+          >
+            <svg v-if="!isFullscreen" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3" />
+            </svg>
+          </button>
         </div>
 
         <div class="workspace-body">
@@ -5285,16 +5348,18 @@ onUnmounted(() => {
                       @click="scrollConeListTop"
                       title="목록 맨 위로"
                     >↑</button>
+                    <button
+                      class="btn btn-danger cone-delete-all"
+                      :disabled="activeCones.length === 0"
+                      @click="deleteAllCones"
+                    >전체 삭제</button>
                   </div>
                 </template>
               </section>
 
-              <!-- Rover tab -->
+              <!-- Rover tab — header/divider intentionally omitted to save
+                   vertical space; the active tab already identifies the pane. -->
               <section v-show="activeTab === 'rover'" class="tab-pane">
-                <header class="tab-header">
-                  <h3>로버 제어</h3>
-                </header>
-
                 <div v-if="roverStatus.connected" class="inspector-group gps-block">
                   <div class="group-title">GPS</div>
                   <div class="gps-grid">
@@ -5345,23 +5410,49 @@ onUnmounted(() => {
                     v-if="roverStatus.connected"
                     class="btn btn-lg-touch btn-ghost manual-btn-row"
                     @click="openCalibration"
-                  >캘리브레이션</button>
+                  >보정</button>
                   코스를 먼저 선택하세요.
                   <button class="btn btn-ghost btn-lg-touch" @click="activeTab = 'courses'">코스 탭으로</button>
                 </div>
                 <template v-else>
+                  <!-- All always-on rover controls share ONE grid so they lay
+                       out 3 per row. The 카메라 button cycles off → 2D → depth
+                       overlay → off (blue = 2D, violet = depth); VR opens the
+                       headset teleop view (enabled even while offline). -->
                   <div class="rover-controls rover-controls-grid">
+                    <!-- Row 1: 로버 추적 · 카메라 · 수동 제어 -->
                     <button
                       :class="['btn', 'btn-lg-touch', followRover ? 'btn-primary' : 'btn-ghost']"
                       :disabled="!roverStatus.connected"
                       @click="toggleFollowRover"
                     >로버 추적</button>
                     <button
+                      :class="['btn', 'btn-lg-touch', !cameraOn ? 'btn-ghost' : (cameraDepthOn ? 'camera-btn-depth' : 'btn-primary')]"
+                      :disabled="!roverStatus.connected"
+                      @click="cycleCamera"
+                    >카메라</button>
+                    <button
+                      :class="['btn', 'btn-lg-touch', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
+                      :disabled="roverMode !== 'manual' && (!roverStatus.connected || (roverMode === 'executing' && roverStatus.nav_state !== 'PAUSED') || roverMode === 'stopped')"
+                      @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
+                    >수동 제어</button>
+                    <!-- Row 2: VR · 보정 · 경로 계산 -->
+                    <button
+                      class="btn btn-lg-touch btn-ghost"
+                      @click="goVr"
+                    >VR</button>
+                    <button
+                      class="btn btn-lg-touch btn-ghost"
+                      :disabled="!roverStatus.connected"
+                      @click="openCalibration"
+                    >보정</button>
+                    <button
                       :class="['btn', 'btn-lg-touch', pathBtnClass]"
                       @click="onPathBtn"
                       :disabled="activeCones.length === 0 || roverMode === 'manual' || (stopping && (roverMode === 'executing' || roverMode === 'stopped'))"
                     >{{ pathBtnLabel }}</button>
                   </div>
+
                   <!-- Obstacle alert — the rover auto-paused on a corridor
                        obstacle. Persistent (driven by server state) so a tab
                        opened after the event still sees it; clears on resume. -->
@@ -5389,34 +5480,6 @@ onUnmounted(() => {
                       :disabled="pauseBusy || !roverStatus.connected || !PAUSABLE_NAV.has(roverStatus.nav_state)"
                       @click="pauseMission"
                     >⏸ 일시정지</button>
-                  </div>
-                  <div class="rover-controls rover-controls-grid">
-                    <button
-                      class="btn btn-lg-touch btn-ghost"
-                      :disabled="!roverStatus.connected"
-                      @click="openCalibration"
-                    >캘리브레이션</button>
-                    <button
-                      :class="['btn', 'btn-lg-touch', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
-                      :disabled="roverMode !== 'manual' && (!roverStatus.connected || (roverMode === 'executing' && roverStatus.nav_state !== 'PAUSED') || roverMode === 'stopped')"
-                      @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
-                    >수동 제어</button>
-                  </div>
-
-                  <!-- Live camera (WebRTC, relayed via the course server). The one
-                       카메라 button cycles off → 2D → depth overlay → off; the VR
-                       button opens the headset teleop view (usable to preview even
-                       while the rover is offline, so it stays enabled). -->
-                  <div class="rover-controls rover-controls-grid">
-                    <button
-                      :class="['btn', 'btn-lg-touch', cameraOn ? 'btn-primary' : 'btn-ghost']"
-                      :disabled="!roverStatus.connected"
-                      @click="cycleCamera"
-                    >카메라</button>
-                    <button
-                      class="btn btn-lg-touch btn-ghost"
-                      @click="goVr"
-                    >VR</button>
                   </div>
                   <div v-if="cameraOn" class="camera-view">
                     <!-- WebRTC (low-latency H.264) is the PRIMARY source — we connect
@@ -5623,18 +5686,37 @@ onUnmounted(() => {
 /* ── Top status strip ─────────────────────────────── */
 .status-strip {
   display: flex; align-items: center; gap: 0.75rem;
-  /* Uniform 0.75rem between every chip (matches .chip-row gap) so spacing is
-     consistent whether two chips share a zone or straddle a zone boundary,
-     with comfortable breathing room. */
-  padding: 0.875rem 1.25rem;
+  /* Equal padding all round so the left edge and the fullscreen button's right
+     edge sit the same distance from the border as the top/bottom. */
+  padding: 0.875rem;
   border-bottom: 1px solid var(--border-color);
   background: var(--bg-primary); color: var(--text-primary);
   font-size: 0.85rem;
-  flex-wrap: wrap;
-  /* z-index 999: above Leaflet panes (max 700), below NavMenu drawer (1000). */
+  /* No wrap here: the chips scroller (flex: 1) and the pinned fullscreen button
+     stay on one row. z-index 999: above Leaflet panes (max 700), below the
+     NavMenu drawer (1000). */
   position: relative;
   z-index: 999;
 }
+
+/* Inner chip scroller — grows to fill the strip and (on mobile) scrolls
+   horizontally, leaving the fullscreen button pinned at the far right. The
+   0.75rem gap matches .chip-row so spacing is uniform across zone boundaries. */
+.status-strip-chips {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.fullscreen-btn {
+  flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px;
+  border: 1px solid var(--border-color); border-radius: 8px;
+  background: var(--bg-secondary); color: var(--text-secondary);
+  cursor: pointer; transition: background-color 0.15s, color 0.15s;
+}
+.fullscreen-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 
 .chip-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .primary-zone { flex: 0 1 auto; }
@@ -6500,12 +6582,24 @@ onUnmounted(() => {
   text-align: center;
 }
 .rover-controls-grid {
-  display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem;
+  /* minmax(0, 1fr) keeps all three columns equal even when a label is wide,
+     instead of a long button stretching its column and breaking the row. */
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem;
 }
 .rover-controls-grid .btn { width: 100%; }
-/* Odd button count: last button spans both columns so the layout never
-   leaves a half-empty trailing row. */
-.rover-controls-grid > *:last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+/* Depth-map mode fill: a distinct violet so the camera button visibly changes
+   when cycling plain 2D (blue btn-primary) → depth overlay. */
+.camera-btn-depth {
+  background: #7c3aed;
+  color: #fff;
+  border-color: #7c3aed;
+}
+.camera-btn-depth:hover:not(:disabled) {
+  background: #8b5cf6;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(124, 58, 237, 0.4);
+}
 
 .course-toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
 .course-toolbar .btn { flex: 1; min-width: 120px; }
@@ -6880,6 +6974,8 @@ onUnmounted(() => {
 }
 
 .cone-list { flex: 1; overflow-y: auto; padding-bottom: 1rem; }
+/* Full-width destructive action pinned below the cone list. */
+.cone-delete-all { width: 100%; margin-top: 0.5rem; flex: none; }
 
 .cone-item {
   display: flex; align-items: center; gap: 0.5rem;
@@ -6914,17 +7010,17 @@ onUnmounted(() => {
   .map-layout { padding: 0; }
   .content { border-radius: 0; border: none; }
 
-  /* Strip scrolls horizontally; popovers go position: fixed (see
-     toggleChipPopover) since overflow-x: auto would clip them. */
-  .status-strip {
-    padding: 0.75rem 1.25rem;
+  /* Chips scroll horizontally (up to the pinned fullscreen button); popovers go
+     position: fixed (see toggleChipPopover) since overflow-x: auto clips them. */
+  .status-strip { padding: 0.75rem; }
+  .status-strip-chips {
     flex-wrap: nowrap;
     overflow-x: auto;
     overflow-y: visible;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
   }
-  .status-strip::-webkit-scrollbar { display: none; }
+  .status-strip-chips::-webkit-scrollbar { display: none; }
   .chip-row { flex-wrap: nowrap; flex: 0 0 auto; }
   .mission-wrapper { flex: 0 0 auto; }
   .mission-inline { flex: 0 0 auto; min-width: 180px; }
@@ -6990,7 +7086,7 @@ onUnmounted(() => {
 
   .sheet-handle {
     display: flex; align-items: center; justify-content: center;
-    padding: 1.25rem 1rem;
+    padding: 0.6rem 1rem;
     cursor: pointer; flex-shrink: 0;
     touch-action: none;
   }
@@ -6999,7 +7095,7 @@ onUnmounted(() => {
     background: var(--text-secondary); opacity: 0.5;
   }
 
-  .tab-pane { padding: 0.75rem 0.875rem 1.25rem; }
+  .tab-pane { padding: 0.4rem 0.875rem 0.6rem; }
   .joystick-area { display: flex; flex-direction: column; align-items: center; }
   .joystick { max-width: 220px; width: 100%; }
 
