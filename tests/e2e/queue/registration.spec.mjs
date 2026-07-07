@@ -19,6 +19,16 @@ test.describe("Queue registration", () => {
     await expect(page.getByRole("button", { name: "초기화" })).toBeVisible();
   });
 
+  test("shows queue status QR code with a data-URL image", async ({ page }) => {
+    await page.goto("/queue/register");
+    await waitForPageReady(page);
+
+    const qrImage = page.locator(".qr-card .qr-image");
+    await expect(qrImage).toBeVisible({ timeout: 10000 });
+    await expect(qrImage).toHaveAttribute("src", /^data:image\//);
+    await expect(page.getByText("내 순번 조회")).toBeVisible();
+  });
+
   test("shows active inspection type buttons", async ({ page }) => {
     await page.goto("/queue/register");
     await waitForPageReady(page);
