@@ -578,8 +578,8 @@ def test_load_ground_profile_empty_or_corrupt_returns_none(tmp_path):
 
 def _aboveground_detector(f_calib, calib_w, calib_h, cfg=None, profile=None):
     """A StereoDepth with just the state _decide_aboveground needs, bypassing the
-    calibration-loading __init__. Above-ground estimates the ground PER FRAME, so
-    profile (the static fallback) defaults to None."""
+    calibration-loading __init__. Above-ground uses the calibrated curve's SHAPE, so
+    a profile is required (the per-frame part is only a pitch offset)."""
     det = object.__new__(stereo.StereoDepth)
     det.cfg = cfg or stereo.StereoConfig()
     det._calib = {"image_size": (calib_w, calib_h)}
@@ -591,98 +591,105 @@ def _aboveground_detector(f_calib, calib_w, calib_h, cfg=None, profile=None):
     return det
 
 
-def _plane_ground(H, W, z_top, z_bot):
-    """A planar ground: INVERSE depth linear in row — exactly what the per-frame fit
-    models — receding from z_bot (near, bottom) to z_top (far, top)."""
-    inv = np.linspace(1.0 / z_top, 1.0 / z_bot, H)   # top row -> bottom row
-    z = (1.0 / inv).astype(np.float32)
-    return np.tile(z[:, None], (1, W))
+def _curve_and_plane(H, W, z_far, z_near, ya_frac=0.44, yb_frac=0.98):
+    """A calibrated ground curve (profile) + a matching flat-ground depth image, built
+    so the ground is z_far at the ROI top and z_near at the ROI bottom — inverse-depth
+    linear in row, as a real ground plane is."""
+    ya, yb = ya_frac * (H - 1), yb_frac * (H - 1)
+    inv_far, inv_near = 1.0 / z_far, 1.0 / z_near
+    rows = np.arange(H, dtype=np.float64)
+    inv = np.clip(inv_far + (inv_near - inv_far) * (rows - ya) / (yb - ya), 1e-3, None)
+    z = 1.0 / inv
+    profile = {"row_frac": ((np.arange(H) + 0.5) / H).astype(np.float64),
+               "depth_m": z.astype(np.float64)}
+    depth = np.tile(z[:, None], (1, W)).astype(np.float32)
+    return profile, depth
 
 
 def test_aboveground_ignores_flat_ground():
     pytest.importorskip("cv2")
     H, W = 120, 120
-    depth = _plane_ground(H, W, z_top=5.0, z_bot=1.0)
-    det = _aboveground_detector(f_calib=100.0, calib_w=W, calib_h=H)
+    profile, depth = _curve_and_plane(H, W, z_far=8.0, z_near=1.0)
+    det = _aboveground_detector(100.0, W, H, profile=profile)
     obstacle, info = det._decide_aboveground(depth, np.ones((H, W), bool), None)
     assert obstacle is False                    # flat ground is NEVER an obstacle…
-    assert info["mode"] == "aboveground" and info["ground_src"] == "fit"
-    assert info["above_px"] == 0                # …the per-frame fit matches it exactly
+    assert info["mode"] == "aboveground" and info["ground_src"] == "hybrid"
+    assert info["above_px"] == 0                # …the curve (offset ~0) matches it
 
 
 def test_aboveground_detects_small_obstacle():
     pytest.importorskip("cv2")
     H, W = 120, 120
-    depth = _plane_ground(H, W, z_top=5.0, z_bot=1.0)
-    depth[55:80, 52:74] = 0.6                   # 22×25 px, 0.6 m — well above the ground plane
-    det = _aboveground_detector(f_calib=100.0, calib_w=W, calib_h=H)
+    profile, depth = _curve_and_plane(H, W, z_far=8.0, z_near=1.0)
+    depth[70:92, 52:74] = 0.6                   # 22×22 px, 0.6 m — well above the ground
+    det = _aboveground_detector(100.0, W, H, profile=profile)
     obstacle, info = det._decide_aboveground(depth, np.ones((H, W), bool), None)
     assert obstacle is True                     # a SMALL object the band detector would miss
     assert info["nearest_m"] == pytest.approx(0.6, abs=0.05)
     assert info["obstacle_w_m"] >= 0.08 and info["obstacle_h_m"] >= 0.10
 
 
-def test_aboveground_detects_wall():
+def test_aboveground_detects_obstacle_filling_corridor():
+    # THE KEY FIX: an obstacle (person/wall) filling the mid/upper corridor at a near,
+    # roughly-constant depth. The calibrated SHAPE says those rows are FAR, so the near
+    # obstacle reads as protruding and is flagged — whereas a fully-adaptive per-frame
+    # fit would lock onto the obstacle as "ground" and miss it (the field symptom).
     pytest.importorskip("cv2")
     H, W = 120, 120
-    depth = _plane_ground(H, W, z_top=5.0, z_bot=1.0)
-    depth[50:85, :] = 0.8                        # full-width slab ahead (ground still in front)
-    det = _aboveground_detector(f_calib=100.0, calib_w=W, calib_h=H)
+    profile, depth = _curve_and_plane(H, W, z_far=8.0, z_near=1.0)
+    depth[30:85, 40:82] = 1.25                  # person filling the corridor at 1.25 m
+    det = _aboveground_detector(100.0, W, H, profile=profile)
     obstacle, info = det._decide_aboveground(depth, np.ones((H, W), bool), None)
     assert obstacle is True
-    assert info["nearest_m"] == pytest.approx(0.8, abs=0.05)
+    assert info["ground_src"] == "hybrid"
+    assert info["nearest_m"] == pytest.approx(1.25, abs=0.15)
 
 
 def test_aboveground_ignores_speckle_below_physical_size():
     pytest.importorskip("cv2")
     H, W = 120, 120
-    depth = _plane_ground(H, W, z_top=5.0, z_bot=1.0)
-    depth[60:63, 60:63] = 0.5                    # 3×3 px speck — too small to be real
-    det = _aboveground_detector(f_calib=100.0, calib_w=W, calib_h=H)
+    profile, depth = _curve_and_plane(H, W, z_far=8.0, z_near=1.0)
+    depth[70:73, 60:63] = 0.5                    # 3×3 px speck — too small to be real
+    det = _aboveground_detector(100.0, W, H, profile=profile)
     assert det._decide_aboveground(depth, np.ones((H, W), bool), None)[0] is False
 
 
 def test_aboveground_adapts_to_rover_pitch():
-    # THE FIX: the ground plane is much NEARER than any prior calibration would
-    # expect (rover nosed down under braking, or a different surface). A static
-    # curve would flag this whole ground as "above" (the field false positives);
-    # the per-frame fit tracks it, so flat ground never trips.
+    # THE OTHER FIX: flat ground uniformly NEARER than the calibrated curve (rover
+    # nosed down / a different surface). The per-frame pitch offset from the near strip
+    # shifts the whole curve to match, so flat ground never false-trips.
     pytest.importorskip("cv2")
     H, W = 120, 120
-    depth = _plane_ground(H, W, z_top=2.5, z_bot=0.8)         # entire ground near
-    # A stale, far static curve as the fallback — must NOT be what's used.
-    stale = {"row_frac": np.linspace(0.05, 0.95, 5), "depth_m": np.array([8., 7., 5., 3., 1.5])}
-    det = _aboveground_detector(f_calib=100.0, calib_w=W, calib_h=H, profile=stale)
+    profile, _flat = _curve_and_plane(H, W, z_far=8.0, z_near=1.0)
+    exp = stereo.ground_depth_for_rows(profile, H)
+    depth = np.tile((1.0 / (1.0 / exp + 0.25))[:, None], (1, W)).astype(np.float32)  # all nearer
+    det = _aboveground_detector(100.0, W, H, profile=profile)
     obstacle, info = det._decide_aboveground(depth, np.ones((H, W), bool), None)
-    assert obstacle is False
-    assert info["ground_src"] == "fit"          # the live fit, not the stale curve
-    assert info["above_px"] == 0
+    assert obstacle is False                    # offset absorbs the pitch shift
+    assert info["ground_src"] == "hybrid" and info["above_px"] == 0
 
 
 def test_aboveground_respects_max_range():
     pytest.importorskip("cv2")
     H, W = 120, 120
-    depth = _plane_ground(H, W, z_top=6.0, z_bot=2.0)         # far rows > range
+    profile, depth = _curve_and_plane(H, W, z_far=8.0, z_near=1.5)
     valid = np.ones((H, W), bool)
     cfg = stereo.StereoConfig(max_detect_range_m=3.0)
-    det = _aboveground_detector(f_calib=100.0, calib_w=W, calib_h=H, cfg=cfg)
-    beyond = depth.copy(); beyond[30:50, 45:78] = 3.5         # above ground but > 3 m range
+    det = _aboveground_detector(100.0, W, H, cfg=cfg, profile=profile)
+    beyond = depth.copy(); beyond[55:72, 45:78] = 3.5         # above ground but > 3 m range
     assert det._decide_aboveground(beyond, valid, None)[0] is False
-    within = depth.copy(); within[60:82, 45:78] = 1.0         # within range, above ground (above the fit strip)
+    within = depth.copy(); within[72:92, 45:78] = 1.0         # within range, above ground
     assert det._decide_aboveground(within, valid, None)[0] is True
 
 
-def test_aboveground_falls_back_to_static_when_too_sparse():
-    # When the corridor is too sparse to fit a plane, fall back to the stored static
-    # curve (or, with none, flag nothing rather than guessing).
+def test_aboveground_uses_curve_when_offset_strip_empty():
+    # No valid pixels in the near strip → no pitch offset formed → the curve is used
+    # unshifted (still per-frame 'hybrid'); matching flat ground stays clean.
     pytest.importorskip("cv2")
     H, W = 120, 120
-    profile = {"row_frac": np.linspace(0.05, 0.95, 9), "depth_m": np.linspace(5.0, 1.2, 9)}
-    cfg = stereo.StereoConfig(ground_fit_min_px=100000)      # force the fit to bail
-    det = _aboveground_detector(f_calib=100.0, calib_w=W, calib_h=H, cfg=cfg, profile=profile)
-    # depth == the static curve exactly, so the fallback path sees clean ground
-    exp = stereo.ground_depth_for_rows(profile, H)
-    depth = np.where(np.isfinite(exp), exp, 5.0)[:, None].repeat(W, axis=1).astype(np.float32)
+    profile, depth = _curve_and_plane(H, W, z_far=8.0, z_near=1.0)
     valid = np.ones((H, W), bool)
+    valid[int(0.82 * H):, :] = False            # near strip has nothing to fit an offset
+    det = _aboveground_detector(100.0, W, H, profile=profile)
     ob, info = det._decide_aboveground(depth, valid, None)
-    assert info["ground_src"] == "static" and ob is False    # used the fallback, ground clean
+    assert info["ground_src"] == "hybrid" and ob is False
