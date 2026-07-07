@@ -4160,6 +4160,10 @@ function connectSSE() {
     const data = parseSSE(e);
     if (!data) return;
     conesMap.value[data.courseId] = data.cones;
+    // Keep the course list's "(N)" count live. Cone add/delete only broadcasts
+    // `cones` (not `courses`), so without this the count would go stale.
+    const course = courses.value.find((c) => c.id === data.courseId);
+    if (course) course.cone_count = data.cones.length;
     if (map && !suppressRebuild) rebuildAllMarkers();
   });
 
