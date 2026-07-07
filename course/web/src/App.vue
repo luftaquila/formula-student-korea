@@ -1,15 +1,12 @@
 <script setup>
 import { ref, watch, provide, onMounted, onUnmounted } from "vue";
-import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
-import { useRoute } from "vue-router";
 import { request } from "./api.js";
 import { useNotification } from "@shared/useNotification.js";
 import { isAdmin } from "@shared/officialsStore.js";
 
 const { error: notifyError } = useNotification();
 
-const route = useRoute();
 const roverConnected = ref(false);
 const navState = ref(null);
 const stopping = ref(false);
@@ -99,13 +96,9 @@ onUnmounted(() => {
 <template>
   <div class="app-container app-fullheight">
     <SonnerToaster />
-    <!-- Header bar is intentionally omitted on the course view to give the map
-         the full viewport height. NavMenu is kept as a fixed, top-right
-         floating trigger so navigation stays reachable without the header. -->
-    <div class="floating-nav">
-      <NavMenu :currentPath="'/course' + route.path" />
-    </div>
-
+    <!-- Header bar and nav menu are intentionally omitted on the course view:
+         this is a dedicated operator screen, so the map takes the full
+         viewport height with no chrome. -->
     <main class="main-fill">
       <router-view />
     </main>
@@ -154,16 +147,7 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* Floating NavMenu trigger — replaces the removed header bar. Sits above the
-   map (z-index 1000); the drawer/overlay teleport to <body> and layer above. */
-.floating-nav {
-  position: fixed;
-  top: 0.75rem;
-  right: 0.75rem;
-  z-index: 1000;
-}
-
-/* z-index 999: same as status-strip; NavMenu drawer (1000) covers it. */
+/* z-index 999: sits above Leaflet panes (max 700) and level with the status strip. */
 .global-estop {
   position: fixed;
   bottom: 1.25rem;
