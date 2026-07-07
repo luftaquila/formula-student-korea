@@ -500,9 +500,9 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/rover/stream` | internal | — | SSE stream | 로버 SSE 연결 (INTERNAL_SECRET 필수 — admin JWT로도 불가). 서버가 `request-position`/`execute-path`/`manual-control` 등 명령 이벤트를 이 스트림으로 전달 |
-| POST | `/api/rover/position` | internal/admin | `{ lat, lng }` | `{ lat, lng }` | 로버가 현재 위치 전송 |
-| POST | `/api/rover/telemetry` | internal/admin | `{ lat, lng, fix_status, nav_state, battery, ntrip_*, h_acc_m, ... }` | 200 | 주기 텔레메트리. 활성 미션이면 mission_telemetry에 영속 (전역 상한 MISSION_TELEMETRY_MAX_ROWS) |
+| GET | `/api/rover/stream` | internal | `?device=gps\|rover` | SSE stream | 기기 SSE 연결 (INTERNAL_SECRET 필수). `device=gps`는 GPS 수신기(fsk-rover-gps)의 **별도 슬롯**, 그 외는 로버 — 둘이 동시에 연결 가능(서로 밀어내지 않음). 서버가 `request-position`/`execute-path`/`base-activate`/`rtcm`/`ntrip-source` 등 명령 이벤트를 전달 |
+| POST | `/api/rover/position` | internal/admin | `{ lat, lng, alt?, request_id? }` `?device=gps\|rover` | `{ lat, lng, alt }` | 기기가 현재 위치 전송. `request_id`가 있으면 `/api/rover/request` pending 해소. 활성 소스일 때만 `rover` 라이브 이벤트 브로드캐스트 |
+| POST | `/api/rover/telemetry` | internal/admin | `{ fix_status, nav_state, ntrip_*, gps, mode?, base?, ... }` `?device=gps\|rover` | 200 | 주기 텔레메트리. 로버면 활성 미션 시 mission_telemetry 영속; 수신기(`device=gps`)면 receiverState(fix/ntrip/gps + base 상태) 갱신 |
 | POST | `/api/rover/waypoint_reached` | internal/admin | `{ index }` | 200 | 웨이포인트 도달 보고 (미션 진행 영속 + `rover:waypoint` 브로드캐스트) |
 | POST | `/api/rover/waypoint_skipped` | internal/admin | `{ index }` | 200 | stuck 웨이포인트 건너뜀 보고 (`rover:skipped` 브로드캐스트) |
 | POST | `/api/rover/spray_result` | internal/admin | `{ waypoint, outcome: success\|cancelled\|timeout }` | 200 | 도색 결과 보고 (미션에 영속 + `rover:spray` 브로드캐스트) |
@@ -511,6 +511,8 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | POST | `/api/rover/antenna_calibration_result` | internal/admin | `{ ... }` | 200 | 안테나 캘리브레이션 결과 보고 |
 | POST | `/api/rover/wheel_calibration_result` | internal/admin | `{ ... }` | 200 | 휠 캘리브레이션 결과 보고 |
 | POST | `/api/rover/calibration-progress` | internal | `{ ... }` | 200 | 스테레오 캘리브레이션 진행률 보고 |
+| POST | `/api/rover/base/survey-result` | internal | `{ point_id, lat, lng, alt, h_acc, samples }` | 200 | 수신기(base station)가 측량 결과 보고 → survey_point 갱신 |
+| POST | `/api/rover/base/rtcm` | internal | `{ data: base64 }` | 200 | 수신기(base station)가 RTCM3 청크 전송 → 로버로 릴레이(SSE `rtcm`). 로버 미연결이면 드롭 |
 | POST | `/api/rover/camera` | internal | `image/jpeg` (≤3MB) | 200 | 카메라 프레임 push (서버가 뷰어에 MJPEG 릴레이). WebRTC가 기본 경로이므로 이건 **폴백** — MJPEG 뷰어가 있을 때만(`mjpeg-on`) 로버가 POST |
 | GET | `/api/rover/camera/control` | internal | — | SSE stream | perception 컨테이너의 카메라 제어 채널. 서버가 캡처/스트림 제어 이벤트를 전송: `camera-start`/`camera-stop`, `mjpeg-on`/`mjpeg-off`, `webrtc-2d-on`/`webrtc-2d-off`, `webrtc-vr-on`/`webrtc-vr-off`, `depth-on`/`depth-off`. 각 스트림은 해당 뷰어가 있을 때만 인코딩 |
 
@@ -544,6 +546,26 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | POST | `/api/rover/camera/depth` | admin | `{ on }` | `{ ok, depth, camera_connected }` | 양안 깊이 컴포지트(정류 좌안 + 깊이 히트맵 + 최근접 거리, 로버가 렌더) 토글. 2D 뷰어(MJPEG `cameraViewers` **또는** WebRTC `holdViewers2d`)가 있어야 적용 — 뷰어 없으면 무시. 마지막 2D 뷰어 이탈 시 자동 해제 |
 | GET | `/api/rover/camera/status` | admin | — | `{ camera_connected, viewers, depth, last_frame_age_ms }` | 카메라 릴레이 상태. `camera_connected`=perception 제어 SSE 연결됨, `viewers`=MJPEG 뷰어 수, `depth`=컴포지트 모드, `last_frame_age_ms`=서버 계산 프레임 경과(뷰어 없으면 null) |
 | GET | `/api/rover/map-tile` | admin | `?z=&x=&y=` | image (jpeg/png) | VR 미니맵용 위성 타일 **동일 출처 프록시**. WebGL 캔버스가 교차 출처 타일로 오염되지 않도록 VWorld(서버측 `VWORLD_KEY`)·구글 타일을 서버가 대신 가져와 전달. z/x/y는 slippy-map(XYZ) 인덱스, 범위 밖이면 400 |
+
+### GPS — 수신기 소스 선택 + base station 측량점
+
+콘 좌표 캡처는 GPS 수신기(연결 시)를 우선, 없으면 로버를 사용한다. 로버의 RTK 보정 소스는
+NGII(공용 NTRIP)와 **수신기 base station**(측량점에 고정한 수신기가 RTCM3 생성 → 서버 릴레이 →
+로버) 중 선택한다. 수신기의 "캡처 소스"·"base station" 역할은 상호배타. admin 전용. 구현은
+`course/lib/rover-routes.mjs`, 테이블은 `course/index.mjs`(`gps_config`, `survey_point`).
+
+| Method | Path | 인증 | Body | 응답 | 설명 |
+|--------|------|------|------|------|------|
+| GET | `/api/gps/config` | admin | — | `{ ntrip_source, active_base_point_id }` | 현재 GPS 소스 설정 |
+| PUT | `/api/gps/config` | admin | `{ ntrip_source: ngii\|base, active_base_point_id? }` | config | 소스 변경. base면 측량 완료된 점 필수. 수신기에 `base-activate`/`base-stop`, 로버에 `ntrip-source` 즉시 전송 |
+| GET | `/api/gps/survey-points` | admin | — | `{ points: [...] }` | 측량점 목록 |
+| POST | `/api/gps/survey-points` | admin | `{ name }` | point | 측량점 추가(이름만, 좌표 미측량) |
+| DELETE | `/api/gps/survey-points/:id` | admin | — | 200 | 삭제. 활성 base면 409 |
+| POST | `/api/gps/survey-points/:id/survey` | admin | `{ duration_s? }` | `{ ok, duration_s }` | 수신기 측량 시작(NGII rtk_fixed 위치 평균). 미연결 503, base 모드면 409 |
+| POST | `/api/gps/survey-points/:id/survey/cancel` | admin | — | 200 | 측량 취소 |
+
+기기 방향 이벤트(서버 → 기기, 위 `/api/rover/stream`으로 전달): 수신기 `base-survey-start`/
+`base-survey-cancel`/`base-activate`/`base-stop`, 로버 `rtcm`(base64)·`ntrip-source`(`ngii\|base`).
 
 ### Rover 카메라 — WebRTC 시그널링 (mediamtx, WHIP/WHEP)
 
