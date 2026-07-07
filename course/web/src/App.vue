@@ -99,17 +99,12 @@ onUnmounted(() => {
 <template>
   <div class="app-container app-fullheight">
     <SonnerToaster />
-    <header class="header">
-      <div class="header-content">
-        <a href="/" class="logo">
-          <span class="logo-icon">📍</span>
-          <h1>FSK 코스 관리</h1>
-        </a>
-        <div class="header-actions">
-          <NavMenu :currentPath="'/course' + route.path" />
-        </div>
-      </div>
-    </header>
+    <!-- Header bar is intentionally omitted on the course view to give the map
+         the full viewport height. NavMenu is kept as a fixed, top-right
+         floating trigger so navigation stays reachable without the header. -->
+    <div class="floating-nav">
+      <NavMenu :currentPath="'/course' + route.path" />
+    </div>
 
     <main class="main-fill">
       <router-view />
@@ -152,6 +147,15 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+/* Floating NavMenu trigger — replaces the removed header bar. Sits above the
+   map (z-index 1000); the drawer/overlay teleport to <body> and layer above. */
+.floating-nav {
+  position: fixed;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 1000;
 }
 
 /* z-index 999: same as status-strip; NavMenu drawer (1000) covers it. */

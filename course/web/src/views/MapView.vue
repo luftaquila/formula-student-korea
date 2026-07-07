@@ -6098,8 +6098,10 @@ onUnmounted(() => {
   box-shadow: var(--shadow-hover);
   pointer-events: auto;
 }
-/* 영역 · 자 · 각도기 tools live in their own panel, pinned top-right. */
-.map-fab-tools { top: 0.75rem; bottom: auto; }
+/* 영역 · 자 · 각도기 tools live in their own panel, pinned top-right.
+   Shifted left by the floating NavMenu trigger's footprint (44px button +
+   gap) so it clears the hamburger now that the header bar is gone. */
+.map-fab-tools { top: 0.75rem; bottom: auto; right: calc(0.75rem + 44px + 0.5rem); }
 .map-fab-panel .side-toggle { flex: none; gap: 0.25rem; }
 /* Every control in the panels is the same square so a row reads as one set. */
 .map-fab-panel .side-btn {
