@@ -547,6 +547,19 @@ class StereoConfig:
     # Trip only within this range — now safe to be generous since the ground plane
     # itself is never flagged (unlike far_m in band mode).
     max_detect_range_m: float = 3.0
+    # Per-frame ground plane fit (the primary ground reference). For a planar ground,
+    # inverse depth is affine in image row; we fit 1/z = a·row + b over the corridor
+    # each frame, iteratively rejecting above-line points (obstacles are closer =
+    # larger 1/z) so it converges to the ground envelope. This ADAPTS to the rover's
+    # pitch and the actual surface, unlike a static calibration curve. Needs at least
+    # min_px valid corridor pixels; a stored ground profile (if any) is the fallback.
+    ground_fit_min_px: int = 250
+    ground_fit_iters: int = 3
+    ground_fit_reject_k: float = 2.0
+    # Fit the plane on the bottom (near) fraction of the ROI — the rover's immediate
+    # foreground is reliably ground, so a large obstacle filling the mid/upper
+    # corridor can't hijack the fit — then extrapolate the plane up the frame.
+    ground_fit_bottom_frac: float = 0.45
 
 
 class StereoDepth:
@@ -624,18 +637,19 @@ class StereoDepth:
         except Exception:  # noqa: BLE001
             self._f_calib = 0.0
 
-        # Ground profile for above-ground detection. Load the calibrated curve; if
-        # absent, above-ground can't run so we fall back to the band detector.
+        # Above-ground detection estimates the ground plane PER FRAME (adapts to
+        # pitch/surface), so it needs only a focal length. A stored ground profile,
+        # if present, is kept as a fallback for the rare frame whose corridor is too
+        # sparse to fit. Without a focal length we can't size clusters → band mode.
         gpath = cfg.ground_profile_path or default_ground_path(cfg.calib_path)
         self._ground = load_ground_profile(gpath)
         self._ground_path = gpath
         self.detect_mode = (cfg.detect_mode or "aboveground").lower()
-        if self.detect_mode == "aboveground" and (self._ground is None or self._f_calib <= 0):
-            why = "no ground profile at %s" % gpath if self._ground is None else "no focal length in calib"
-            print(f"[stereo] aboveground detection unavailable ({why}); "
-                  f"falling back to band mode", flush=True)
+        if self.detect_mode == "aboveground" and self._f_calib <= 0:
+            print("[stereo] aboveground detection unavailable (no focal length in "
+                  "calib); falling back to band mode", flush=True)
             self.detect_mode = "band"
-        self._ground_rows_cache = {}   # height -> per-row expected depth array
+        self._ground_rows_cache = {}   # height -> per-row expected depth array (static fallback)
 
     def _make_matcher(self, nd, mode):
         """Plain StereoSGBM (fallback path when ximgproc/WLS is unavailable)."""
@@ -734,7 +748,7 @@ class StereoDepth:
         """
         if not self.enabled:
             return False, {"enabled": False}
-        if self.detect_mode == "aboveground" and self._ground is not None:
+        if self.detect_mode == "aboveground":
             return self._decide_aboveground(depth_z, valid, conf)
         return self._decide_band(depth_z, valid, conf)
 
@@ -780,22 +794,67 @@ class StereoDepth:
         return obstacle, info
 
     def _ground_rows(self, height):
-        """Expected ground depth per image row for this depth-map height (cached
-        per height — the depth map is a fixed size at runtime)."""
+        """STATIC fallback: expected ground depth per row from the stored profile
+        (cached per height). All-NaN when no profile is loaded — then a frame whose
+        per-frame fit fails simply detects nothing rather than acting on a guess."""
         arr = self._ground_rows_cache.get(height)
         if arr is None:
-            arr = ground_depth_for_rows(self._ground, height)
+            if self._ground is None:
+                arr = np.full(height, np.nan, dtype=np.float64)
+            else:
+                arr = ground_depth_for_rows(self._ground, height)
             self._ground_rows_cache[height] = arr
         return arr
 
+    def _fit_ground_rows(self, depth_z, valid, xa, xb, ya, yb, h):
+        """Estimate the ground plane from THIS frame and return per-row ground depth
+        (h,), or None if the corridor is too sparse to fit.
+
+        For a planar ground under a pinhole camera, inverse depth is affine in image
+        row, so we fit 1/z = a·row + b over the corridor's valid pixels, iteratively
+        rejecting points ABOVE the line — obstacles are CLOSER than the ground, i.e.
+        larger 1/z — so the fit converges to the ground envelope. This tracks the
+        ACTUAL ground each frame, adapting to the rover's pitch and the real surface
+        (which a one-shot calibration curve cannot), so ordinary ground never reads
+        as 'above ground' and a protruding obstacle always does."""
+        cfg = self.cfg
+        # Fit only on the NEAR strip (bottom of the ROI) — the rover's immediate
+        # foreground is reliably ground, so a large obstacle filling the mid/upper
+        # corridor can't hijack the fit. The plane is extrapolated up the frame.
+        strip = max(1, int(round(cfg.ground_fit_bottom_frac * (yb - ya))))
+        ys0 = max(ya, yb - strip)
+        sub_v = valid[ys0:yb, xa:xb]
+        sub_z = depth_z[ys0:yb, xa:xb]
+        m = sub_v & np.isfinite(sub_z) & (sub_z > 0)
+        if int(np.count_nonzero(m)) < max(50, int(cfg.ground_fit_min_px)):
+            return None
+        rr, _cc = np.nonzero(m)
+        rows = (rr + ys0).astype(np.float64)            # absolute image row
+        invd = 1.0 / sub_z[m].astype(np.float64)        # inverse depth (∝ disparity)
+        keep = np.ones(rows.shape, dtype=bool)
+        a = b = 0.0
+        for _ in range(max(1, int(cfg.ground_fit_iters))):
+            if int(np.count_nonzero(keep)) < 50:
+                return None
+            a, b = np.polyfit(rows[keep], invd[keep], 1)
+            resid = invd - (a * rows + b)
+            std = float(np.std(resid[keep])) or 1e-6
+            keep = resid <= cfg.ground_fit_reject_k * std   # drop clear above-line (obstacle) points
+        if a <= 0:                                       # non-physical: ground must near toward the bottom
+            return None
+        line = a * np.arange(h, dtype=np.float64) + b
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(line > 1e-6, 1.0 / line, np.nan)
+
     def _decide_aboveground(self, depth_z, valid, conf=None):
         """Ground-relative detector. Flags valid pixels whose depth is closer than
-        the calibrated ground curve at their row (protruding ABOVE the ground),
+        the PER-FRAME-estimated ground at their row (protruding ABOVE the ground),
         within the ROI and within max_detect_range_m; morphologically closes the
         (sparse) flags; and trips on any connected cluster whose PHYSICAL size —
-        pixel extent × depth / focal length — meets min_obstacle_{w,h}_m. Ignores
-        the flat ground plane and catches small obstacles / people that the band
-        detector's fraction threshold would miss."""
+        pixel extent × depth / focal length — meets min_obstacle_{w,h}_m. Estimating
+        the ground each frame (see _fit_ground_rows) means ordinary ground never
+        reads as an obstacle even as the rover pitches, while small obstacles / people
+        the band detector's fraction threshold would miss are still caught."""
         cfg = self.cfg
         if conf is not None:
             valid = valid & (conf >= cfg.conf_min)
@@ -805,26 +864,24 @@ class StereoDepth:
         xb = int(round(np.clip(max(x0, x1), 0.0, 1.0) * w))
         ya = int(round(np.clip(min(y0, y1), 0.0, 1.0) * h))
         yb = int(round(np.clip(max(y0, y1), 0.0, 1.0) * h))
-        exp = self._ground_rows(h)[:, None]                 # (h,1) expected ground depth
-        # A pixel counts as above-ground when it is closer than the row's ground by
-        # more than the margin. The margin grows with range (rel, absorbs depth's
-        # proportional noise) but is floored near the rover (abs).
+        # Ground reference: the PER-FRAME fitted plane (tracks the actual ground,
+        # adapts to pitch); fall back to the stored static curve only when the frame
+        # is too sparse to fit (and to all-NaN if there's no stored curve either, so
+        # nothing is flagged rather than acting on a stale guess).
+        gr = self._fit_ground_rows(depth_z, valid, xa, xb, ya, yb, h)
+        ground_src = "fit" if gr is not None else "static"
+        exp = (gr if gr is not None else self._ground_rows(h))[:, None]   # (h,1)
+        # A pixel is above-ground when it is closer than its row's ground by more
+        # than the margin (grows with range to absorb depth's proportional noise,
+        # floored near the rover). NaN rows (unfittable / uncalibrated) never flag.
         thresh = exp - np.maximum(cfg.ground_rel_margin * exp, cfg.ground_abs_margin_m)
-        # Only trust rows whose expected ground is itself within detection range.
-        # Where the calibrated ground is beyond max_detect_range_m (the frame's far
-        # field / horizon), "closer than ground" degenerates to "anything within
-        # range", so ordinary ground or background appearing in those rows (as the
-        # rover pitches, or the scene differs from the flat-ground calibration) trips
-        # a false positive. A real obstacle within range is still caught by its base
-        # in the near rows, whose ground IS within range.
         above = (valid & np.isfinite(depth_z) & (depth_z > 0)
                  & (depth_z <= cfg.max_detect_range_m)
-                 & np.isfinite(exp) & (exp <= cfg.max_detect_range_m)
-                 & (depth_z < thresh))
+                 & np.isfinite(exp) & (depth_z < thresh))
         roi = np.zeros((h, w), dtype=bool)
         roi[ya:yb, xa:xb] = True
         above &= roi
-        info = {"enabled": True, "mode": "aboveground",
+        info = {"enabled": True, "mode": "aboveground", "ground_src": ground_src,
                 "above_px": int(np.count_nonzero(above))}
         if info["above_px"] < max(1, int(cfg.min_cluster_px)):
             return False, info
@@ -993,4 +1050,8 @@ def config_from_env(env=None):
         aboveground_close_px=_i("OBSTACLE_CLOSE_PX", 5),
         min_cluster_px=_i("OBSTACLE_MIN_CLUSTER_PX", 30),
         max_detect_range_m=_f("OBSTACLE_MAX_RANGE_M", 3.0),
+        ground_fit_min_px=_i("OBSTACLE_GROUND_FIT_MIN_PX", 250),
+        ground_fit_iters=_i("OBSTACLE_GROUND_FIT_ITERS", 3),
+        ground_fit_reject_k=_f("OBSTACLE_GROUND_FIT_REJECT_K", 2.0),
+        ground_fit_bottom_frac=_f("OBSTACLE_GROUND_FIT_BOTTOM_FRAC", 0.45),
     )
