@@ -3393,8 +3393,16 @@ function panToCone(cone) {
 function panToVisibleCenter(lat, lng, opts = {}) {
   if (!map) return;
   const visible = getVisibleMapCenter();
-  if (!visible) {
-    map.panTo([lat, lng], { animate: opts.animate ?? true });
+  // Before the flex layout resolves #map's height (first paint), the container
+  // is 0×0. The container↔layer pixel round-trip below is then degenerate, and
+  // under a non-zero map bearing (leaflet-rotate) the rotation no longer
+  // cancels — panBy flings the centre tens of km away (e.g. into the sea, where
+  // the satellite basemap has no tiles and the view renders blank grey). A
+  // direct setView centres exactly on the point with no container-pixel math,
+  // so fall back to it whenever the container has no usable size.
+  const size = map.getSize();
+  if (!visible || size.x === 0 || size.y === 0) {
+    map.setView([lat, lng], map.getZoom(), { animate: opts.animate ?? true });
     return;
   }
   const targetPx = map.latLngToContainerPoint([lat, lng]);
@@ -4659,6 +4667,12 @@ onMounted(async () => {
   await fetchAll();
   await nextTick();
   await initMap();
+  // Make the map measure its container before the first programmatic centre.
+  // On first paint the flex layout may not have given #map its height yet;
+  // centring against a 0×0 container corrupts the (rotated) projection. This
+  // refreshes the cached size when it's available; if the container is still
+  // 0×0, panToVisibleCenter's own guard falls back to a direct setView.
+  map.invalidateSize({ pan: false, animate: false });
   // fetchAll restores activeCourseId before initMap exists, so the
   // course watcher's pan was a no-op. Re-apply once the map is ready
   // so a refresh lands centered on the restored course's start (or first cone).
