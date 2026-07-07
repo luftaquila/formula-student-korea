@@ -3473,16 +3473,17 @@ function setDeviceMarker(kind, lat, lng) {
   deviceMarkers[kind] = m;
 }
 
-// Show/hide both device markers from a status snapshot: the rover whenever it is
-// connected with a position; the receiver whenever it is connected in CAPTURE
-// mode with a position (in base mode it is a stationary RTCM source, not a live
-// position source, so its marker is hidden). Both show at once when both apply.
+// Show/hide both device markers from a status snapshot. Each marker shows wherever
+// its device has a valid last position — NOT gated on `connected`, matching the
+// original behavior (the marker persists across a brief disconnect, and a one-shot
+// position POST with no SSE stream still shows it). The receiver is a position
+// source only in CAPTURE mode; in base mode it is a stationary RTCM source, so its
+// marker is hidden there. Both show at once when both apply.
 function syncDeviceMarkers(s) {
   if (!s) return;
-  const rover = s.connected ? s.last_position : null;
-  setDeviceMarker("rover", rover?.lat, rover?.lng);
+  setDeviceMarker("rover", s.last_position?.lat, s.last_position?.lng);
   const rc = s.receiver;
-  const recv = rc && rc.connected && rc.mode === "capture" ? rc.last_position : null;
+  const recv = rc && rc.mode === "capture" ? rc.last_position : null;
   setDeviceMarker("receiver", recv?.lat, recv?.lng);
 }
 
