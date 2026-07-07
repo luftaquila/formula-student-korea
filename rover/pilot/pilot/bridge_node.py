@@ -11,6 +11,8 @@ Published topics:
     /rover/cmd/resume (std_msgs/Empty) - Mission resume from server
     /rover/cmd/manual_control (geometry_msgs/Twist) - Manual joystick from server
     /rover/cmd/request_position (std_msgs/Empty) - Position request from server
+    /rover/gps/rtcm_inject (std_msgs/String) - Base-station RTCM3 (base64) from server
+    /rover/cmd/ntrip_source (std_msgs/String) - Correction source selector (ngii|base)
 
 Subscribed topics:
     /rover/gps/position (sensor_msgs/NavSatFix) - GPS position to report to server
@@ -105,6 +107,10 @@ class BridgeNode(Node):
         self._pub_pump_duration = self.create_publisher(Float32, '/rover/cmd/pump_duration', reliable_qos)
         self._pub_nav_lights = self.create_publisher(Int32, '/rover/cmd/nav_lights', reliable_qos)
         self._pub_led_brightness = self.create_publisher(Int32, '/rover/cmd/led_brightness', reliable_qos)
+        # Base-station corrections relayed from the server: RTCM3 (base64) to feed
+        # the GPS receiver, and the NGII-vs-base correction-source selector.
+        self._pub_rtcm_inject = self.create_publisher(String, '/rover/gps/rtcm_inject', reliable_qos)
+        self._pub_ntrip_source = self.create_publisher(String, '/rover/cmd/ntrip_source', reliable_qos)
 
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps_position, 10)
@@ -671,6 +677,23 @@ class BridgeNode(Node):
             msg = Int32()
             msg.data = brightness
             self._pub_led_brightness.publish(msg)
+
+        elif event == 'rtcm':
+            # Base-station RTCM3 (base64) relayed from the receiver → gps_node.
+            data = payload.get('data')
+            if isinstance(data, str) and data:
+                msg = String()
+                msg.data = data
+                self._pub_rtcm_inject.publish(msg)
+
+        elif event == 'ntrip-source':
+            source = payload.get('source')
+            if source in ('ngii', 'base'):
+                msg = String()
+                msg.data = source
+                self._pub_ntrip_source.publish(msg)
+            else:
+                self.get_logger().warn(f'ntrip-source: bad payload {payload!r}')
 
         elif event == 'fetch-logs':
             # Upload on a worker thread so the SSE reader loop stays responsive.
