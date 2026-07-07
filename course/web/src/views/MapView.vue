@@ -3974,6 +3974,23 @@ watch(webrtcConnected, (isConnected, was) => {
 });
 const router = useRouter();
 function goVr() { router.push("/vr"); }
+
+// Fullscreen toggle (status-strip button). The only way a normal tab can hide
+// the mobile browser chrome; hidden entirely where the API is absent (iOS
+// Safari has no Fullscreen API for non-video elements). isFullscreen tracks the
+// real state via `fullscreenchange` so the icon/label stay correct even when
+// the user exits via a system gesture (swipe / Esc).
+const fullscreenSupported = typeof document !== "undefined" && !!document.documentElement.requestFullscreen;
+const isFullscreen = ref(false);
+function onFullscreenChange() { isFullscreen.value = !!document.fullscreenElement; }
+async function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  } catch (e) {
+    notifyWarn(`전체화면 전환 실패: ${e?.message || e}`);
+  }
+}
 // Single camera button cycles three modes so there's no separate 거리 오버레이
 // button: off → plain 2D → depth overlay → off. Each mode has a distinct fill
 // (off = ghost, 2D = blue btn-primary, depth = violet) so switching to the
@@ -4433,6 +4450,7 @@ function onGlobalKeydown(e) {
 onMounted(async () => {
   checkMobile();
   window.addEventListener("resize", checkMobile);
+  document.addEventListener("fullscreenchange", onFullscreenChange);
   window.addEventListener("keydown", onGlobalKeydown);
   document.addEventListener("click", onGlobalClickForChips);
   document.addEventListener("keydown", onGlobalKeyForChips);
@@ -4470,6 +4488,7 @@ onUnmounted(() => {
   // so the "reconnecting" badge can't stick on after this view tears down.
   sseReconnecting.value = false;
   window.removeEventListener("resize", checkMobile);
+  document.removeEventListener("fullscreenchange", onFullscreenChange);
   window.removeEventListener("keydown", onGlobalKeydown);
   document.removeEventListener("click", onGlobalClickForChips);
   document.removeEventListener("keydown", onGlobalKeyForChips);
@@ -4833,11 +4852,11 @@ onUnmounted(() => {
       <!-- Workspace: top status strip + body(rail + map + inspector) -->
       <div class="workspace">
 
-        <!-- Persistent status strip (always visible across tabs) -->
-        <div
-          class="status-strip"
-          @scroll.passive="onChipStripScroll"
-        >
+        <!-- Persistent status strip (always visible across tabs). Chips live in
+             an inner scroller so they scroll horizontally up to — but never
+             under — the fullscreen button pinned at the far right. -->
+        <div class="status-strip">
+          <div class="status-strip-chips" @scroll.passive="onChipStripScroll">
           <template v-if="!roverStatus.connected">
             <span
               :class="['chip-wrapper', { active: activeChipPopover === 'disconnect' }]"
@@ -4945,7 +4964,21 @@ onUnmounted(() => {
               </span>
             </div>
           </template>
-
+          </div>
+          <button
+            v-if="fullscreenSupported"
+            class="fullscreen-btn"
+            :title="isFullscreen ? '전체화면 종료' : '전체화면'"
+            :aria-label="isFullscreen ? '전체화면 종료' : '전체화면'"
+            @click="toggleFullscreen"
+          >
+            <svg v-if="!isFullscreen" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3" />
+            </svg>
+          </button>
         </div>
 
         <div class="workspace-body">
@@ -5647,18 +5680,35 @@ onUnmounted(() => {
 /* ── Top status strip ─────────────────────────────── */
 .status-strip {
   display: flex; align-items: center; gap: 0.75rem;
-  /* Uniform 0.75rem between every chip (matches .chip-row gap) so spacing is
-     consistent whether two chips share a zone or straddle a zone boundary,
-     with comfortable breathing room. */
   padding: 0.875rem 1.25rem;
   border-bottom: 1px solid var(--border-color);
   background: var(--bg-primary); color: var(--text-primary);
   font-size: 0.85rem;
-  flex-wrap: wrap;
-  /* z-index 999: above Leaflet panes (max 700), below NavMenu drawer (1000). */
+  /* No wrap here: the chips scroller (flex: 1) and the pinned fullscreen button
+     stay on one row. z-index 999: above Leaflet panes (max 700), below the
+     NavMenu drawer (1000). */
   position: relative;
   z-index: 999;
 }
+
+/* Inner chip scroller — grows to fill the strip and (on mobile) scrolls
+   horizontally, leaving the fullscreen button pinned at the far right. The
+   0.75rem gap matches .chip-row so spacing is uniform across zone boundaries. */
+.status-strip-chips {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.fullscreen-btn {
+  flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px;
+  border: 1px solid var(--border-color); border-radius: 8px;
+  background: var(--bg-secondary); color: var(--text-secondary);
+  cursor: pointer; transition: background-color 0.15s, color 0.15s;
+}
+.fullscreen-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 
 .chip-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .primary-zone { flex: 0 1 auto; }
@@ -6952,17 +7002,17 @@ onUnmounted(() => {
   .map-layout { padding: 0; }
   .content { border-radius: 0; border: none; }
 
-  /* Strip scrolls horizontally; popovers go position: fixed (see
-     toggleChipPopover) since overflow-x: auto would clip them. */
-  .status-strip {
-    padding: 0.75rem 1.25rem;
+  /* Chips scroll horizontally (up to the pinned fullscreen button); popovers go
+     position: fixed (see toggleChipPopover) since overflow-x: auto clips them. */
+  .status-strip { padding: 0.75rem 1.25rem; }
+  .status-strip-chips {
     flex-wrap: nowrap;
     overflow-x: auto;
     overflow-y: visible;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
   }
-  .status-strip::-webkit-scrollbar { display: none; }
+  .status-strip-chips::-webkit-scrollbar { display: none; }
   .chip-row { flex-wrap: nowrap; flex: 0 0 auto; }
   .mission-wrapper { flex: 0 0 auto; }
   .mission-inline { flex: 0 0 auto; min-width: 180px; }
