@@ -3594,8 +3594,10 @@ async function addConeFromRover() {
   roverLoading.value = true;
   try {
     const res = await request("/api/rover/request", { method: "POST" });
-    const { lat, lng, alt } = await res.json();
-    setDeviceMarker(roverStatus.value.position_source === "receiver" ? "receiver" : "rover", lat, lng);
+    const { lat, lng, alt, source } = await res.json();
+    // Use the source the server actually answered from (not the live, possibly
+    // just-flipped position_source) so the cone lands on the right device marker.
+    setDeviceMarker(source === "receiver" ? "receiver" : "rover", lat, lng);
     await addCone(lat, lng, currentSide.value, alt);
   } catch (err) {
     notifyError(err.message || "로버 위치 수신에 실패했습니다.");
@@ -6031,7 +6033,7 @@ onUnmounted(() => {
                         <span v-else-if="p.lat == null" class="gps-tag gps-tag-warn">미측량</span>
                         <span v-else class="gps-tag gps-tag-ok">측량됨</span>
                       </div>
-                      <div v-if="p.lat != null" class="gps-point-coord">
+                      <div v-if="p.lat != null && p.lng != null" class="gps-point-coord">
                         <span class="gps-point-latlng">{{ p.lat.toFixed(7) }}, {{ p.lng.toFixed(7) }}</span>
                         <span class="gps-sub">
                           <template v-if="p.alt != null">{{ p.alt.toFixed(2) }} m</template><template v-if="p.h_acc_m != null"> · ±{{ (p.h_acc_m * 100).toFixed(1) }} cm</template><template v-if="p.surveyed_at"> · {{ formatSnapshotTime(p.surveyed_at) }}</template>

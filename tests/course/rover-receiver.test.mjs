@@ -107,6 +107,23 @@ async function status() {
   return res.json();
 }
 
+// Run a test against an ISOLATED server so in-memory receiver/rover state (which
+// leaks across the shared server's tests) is deterministic.
+async function withFreshServer(fn) {
+  const p = tmpDbPath();
+  const app2 = createCourseApp({ dbPath: p });
+  const started2 = await startServer(app2.app);
+  const cli2 = createClient(started2.baseUrl);
+  try {
+    await fn({ url: started2.baseUrl, cli: cli2, db: app2.db });
+  } finally {
+    started2.server.closeAllConnections?.();
+    await stopServer(started2.server);
+    app2.db.close();
+    cleanup(p);
+  }
+}
+
 // ─── status shape ─────────────────────────────────────────────────────────
 describe('GET /api/rover/status', () => {
   it('includes receiver block + position_source', async () => {
@@ -158,6 +175,11 @@ describe('POST /api/rover/request routing', () => {
   it('sends request-position to the receiver when it is connected in capture mode', async () => {
     const rover = await openStream('rover');
     const receiver = await openStream('gps');
+    // Give the receiver a fresh fix so it is the active capture source (don't
+    // rely on a position leaking in from an earlier test on the shared server).
+    await client.post('/api/rover/position?device=gps', {
+      headers: internalHeaders, body: { lat: 37.5, lng: 127.0, alt: 10 },
+    });
 
     const reqPromise = client.post('/api/rover/request', { cookie: adminCookie });
     // The receiver (preferred) must be the one asked, not the rover.
@@ -476,6 +498,90 @@ describe('base source without a connected receiver', () => {
       app2.db.close();
       cleanup(dbPath2);
     }
+  });
+});
+
+// ─── live-marker event carries the correct source ────────────────────────────
+describe('live marker event source (device → source mapping)', () => {
+  it('a receiver position broadcasts a rover event with source "receiver"', async () => {
+    await withFreshServer(async ({ url, cli }) => {
+      const browser = await openSse('/api/events', { Cookie: adminCookie }, 'init', url);
+      const receiver = await openSse('/api/rover/stream?device=gps', internalHeaders, 'connected', url);
+      await cli.post('/api/rover/position?device=gps', {
+        headers: internalHeaders, body: { lat: 37.5, lng: 127.0, alt: 30 },
+      });
+      // The receiver is the active source, so the fast-path marker event must fire
+      // and label the coordinate as coming from the receiver (not "gps").
+      const evt = await browser.waitFor('rover', { match: (d) => d.source === 'receiver' });
+      assert.deepEqual({ lat: evt.data.lat, lng: evt.data.lng }, { lat: 37.5, lng: 127.0 });
+      browser.close();
+      receiver.close();
+    });
+  });
+});
+
+// ─── a disconnected receiver stops being the capture source ───────────────────
+describe('receiver disconnect clears its stale position', () => {
+  it('after the receiver drops, capture falls back to the rover (no stale routing)', async () => {
+    await withFreshServer(async ({ url, cli }) => {
+      const rover = await openSse('/api/rover/stream?device=rover', internalHeaders, 'connected', url);
+      const receiver = await openSse('/api/rover/stream?device=gps', internalHeaders, 'connected', url);
+      await cli.post('/api/rover/position?device=gps', {
+        headers: internalHeaders, body: { lat: 37.5, lng: 127.0, alt: 30 },
+      });
+      await cli.post('/api/rover/position?device=rover', {
+        headers: internalHeaders, body: { lat: 36.5, lng: 127.5, alt: 8 },
+      });
+      let s = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+      assert.equal(s.position_source, 'receiver');
+
+      receiver.close();
+      // Wait for the server to observe the SSE close and clear the stale position.
+      await new Promise((r) => setTimeout(r, 200));
+      s = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+      assert.equal(s.receiver.last_position, null, 'stale position dropped on disconnect');
+      assert.equal(s.position_source, 'rover', 'capture falls back to the rover');
+      rover.close();
+    });
+  });
+});
+
+// ─── survey start rejects a concurrent survey ─────────────────────────────────
+describe('survey start conflict', () => {
+  it('returns 409 when a survey is already in progress', async () => {
+    await withFreshServer(async ({ url, cli }) => {
+      const receiver = await openSse('/api/rover/stream?device=gps', internalHeaders, 'connected', url);
+      const create = await cli.post('/api/gps/survey-points', { cookie: adminCookie, body: { name: 'busy-pt' } });
+      const point = await create.json();
+      const first = await cli.post(`/api/gps/survey-points/${point.id}/survey`, {
+        cookie: adminCookie, body: { duration_s: 30 },
+      });
+      assert.equal(first.status, 200);
+      const second = await cli.post(`/api/gps/survey-points/${point.id}/survey`, {
+        cookie: adminCookie, body: { duration_s: 30 },
+      });
+      assert.equal(second.status, 409, 'a second survey while one runs is rejected');
+      receiver.close();
+    });
+  });
+});
+
+// ─── survey-result rejects a malformed success report ─────────────────────────
+describe('survey-result coordinate validation', () => {
+  it('rejects (and logs) an ok:true report with invalid coordinates', async () => {
+    await withFreshServer(async ({ url, cli, db: db2 }) => {
+      const create = await cli.post('/api/gps/survey-points', { cookie: adminCookie, body: { name: 'coord-pt' } });
+      const point = await create.json();
+      const res = await cli.post('/api/rover/base/survey-result', {
+        headers: internalHeaders,
+        body: { point_id: point.id, ok: true, lat: 999, lng: 127.0, alt: 30, h_acc: 0.01, samples: 100 },
+      });
+      assert.equal(res.status, 400);
+      const warned = db2.prepare(
+        "SELECT COUNT(*) AS c FROM logs WHERE action='gps.survey.result' AND level='warn'",
+      ).get().c;
+      assert.ok(warned >= 1, 'invalid ok:true report is audited via logger.warn');
+    });
   });
 });
 

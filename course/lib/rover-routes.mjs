@@ -303,12 +303,19 @@ const receiverState = {
   }
 }
 
+// The receiver reports position at ~1 Hz while it holds a fix, and stops posting
+// when the fix drops. So "posted within this window" is the signal that it has a
+// live, usable fix — treat an older position as stale (fix lost / connection
+// dead) so capture doesn't route to a receiver that can't answer.
+const RECEIVER_POSITION_STALE_MS = 5000;
+
 // The GPS receiver is the preferred cone-capture position source when connected in
-// "capture" mode with a real fix; otherwise fall back to the rover. In "base" mode
-// the receiver is a stationary RTCM source, NOT a position source. Returns
-// "receiver" | "rover" | null (nobody usable).
+// "capture" mode with a RECENT (non-stale) fix; otherwise fall back to the rover.
+// In "base" mode the receiver is a stationary RTCM source, NOT a position source.
+// Returns "receiver" | "rover" | null (nobody usable).
 function activePositionSource() {
-  if (receiverClient && receiverState.mode === "capture" && receiverState.last_position) return "receiver";
+  if (receiverClient && receiverState.mode === "capture" && receiverState.last_position
+      && Date.now() - receiverState.last_position_at < RECEIVER_POSITION_STALE_MS) return "receiver";
   if (roverClient) return "rover";
   return null;
 }
@@ -341,6 +348,12 @@ function markReceiverDisconnected(reason) {
     receiverState.last_disconnect_at = Date.now();
   }
   receiverState.connected = false;
+  // A disconnected receiver has no live fix — drop its last position (and fix
+  // status) so it can't stay the preferred capture source, or leave a stale
+  // marker, until it reconnects and re-posts a fresh fix.
+  receiverState.last_position = null;
+  receiverState.last_position_at = 0;
+  receiverState.fix_status = null;
 }
 
 // Telemetry field sanitizers — shared by the rover and receiver telemetry paths so
@@ -550,7 +563,12 @@ app.post("/api/rover/position", (req, res) => {
 
   // Drive the live map marker only from the ACTIVE source, so a rover heartbeat
   // can't yank the marker off the receiver (the preferred source) or vice-versa.
-  if (device === activePositionSource()) broadcastEvent("rover", { lat, lng, alt: altValue, source: device });
+  // Map device → source ("gps" is the receiver) so the payload's source matches
+  // what the client discriminates on and the guard compares like-for-like.
+  const liveSource = device === "gps" ? "receiver" : "rover";
+  if (liveSource === activePositionSource()) {
+    broadcastEvent("rover", { lat, lng, alt: altValue, source: liveSource });
+  }
   broadcastRoverStatus();
   res.json({ lat, lng, alt: altValue });
 });
@@ -900,7 +918,9 @@ app.post("/api/rover/request", async (req, res) => {
     return res.status(422).send("위치 캡처 실패: 안정된 RTK 고정을 얻지 못했습니다.");
   }
   logger.log(req, "rover.request", { lat: position.lat, lng: position.lng, alt: position.alt, source: target }, "rover");
-  res.json(position);
+  // Return which source actually answered so the client marks the cone on the
+  // right device marker deterministically (not from possibly-flipped live state).
+  res.json({ ...position, source: target });
 });
 
 function sendRoverEvent(event, data) {
@@ -912,6 +932,7 @@ function sendRoverEvent(event, data) {
     try { roverClient.end(); } catch {}
     roverClient = null;
     markRoverDisconnected("write_failed");
+    logger.warn(null, "rover.stream.write_failed", { event }, "rover");
     broadcastRoverStatus();
     return false;
   }
@@ -926,6 +947,7 @@ function sendReceiverEvent(event, data) {
     try { receiverClient.end(); } catch {}
     receiverClient = null;
     markReceiverDisconnected("write_failed");
+    logger.warn(null, "receiver.stream.write_failed", { event }, "receiver");
     broadcastRoverStatus();
     return false;
   }
@@ -1114,6 +1136,11 @@ app.post("/api/gps/survey-points/:id/survey", (req, res) => {
   if (receiverState.mode === "base") {
     return res.status(409).send("수신기가 기준국으로 사용 중입니다. 먼저 NGII 소스로 전환하세요.");
   }
+  if (receiverState.base.state === "surveying") {
+    logger.warn(req, "gps.survey.start",
+      { error: "already_surveying", id, in_progress: receiverState.base.point_id }, point.name);
+    return res.status(409).send("이미 측량이 진행 중입니다.");
+  }
   let duration = Number(req.body?.duration_s);
   if (!Number.isFinite(duration)) duration = SURVEY_DEFAULT_DURATION_S;
   duration = Math.max(SURVEY_MIN_DURATION_S, Math.min(Math.round(duration), SURVEY_MAX_DURATION_S));
@@ -1171,9 +1198,13 @@ app.post("/api/rover/base/survey-result", (req, res) => {
     return res.json({ ok: true });
   }
 
-  // Success: record the surveyed coordinate.
+  // Success: record the surveyed coordinate. An ok:true report with bad coords is
+  // an internal-callback contract violation — log it (CLAUDE.md rule 5) before 400.
   const coordValidation = validateCoordinate(lat, lng);
-  if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
+  if (!coordValidation.valid) {
+    logger.warn(req, "gps.survey.result", { error: coordValidation.error, id, ok: true }, point.name);
+    return res.status(400).send(coordValidation.error);
+  }
   const altValue = typeof alt === "number" && Number.isFinite(alt) ? alt : null;
   const hAccValue = typeof h_acc === "number" && Number.isFinite(h_acc) ? h_acc : null;
   const sampleCount = Number.isInteger(samples) ? samples : null;
