@@ -40,8 +40,14 @@ class TestBuildTelemetry:
     def test_minimal_omits_optional_keys(self):
         t = gr.build_telemetry("3d_fix", False, None, None)
         assert t == {"nav_state": "IDLE", "fix_status": "3d_fix",
-                     "ntrip_connected": False}
-        assert "ntrip" not in t and "gps" not in t
+                     "ntrip_connected": False, "mode": "capture"}
+        assert "ntrip" not in t and "gps" not in t and "base" not in t
+
+    def test_includes_mode_and_base_when_given(self):
+        base = {"state": "active", "rtcm_bytes": 4096}
+        t = gr.build_telemetry("time_only", True, None, None, "base", base)
+        assert t["mode"] == "base"
+        assert t["base"] == base
 
     def test_nav_state_always_idle(self):
         assert gr.build_telemetry("rtk_fixed", True, None, None)["nav_state"] == "IDLE"
@@ -110,7 +116,7 @@ class TestReportPositionFixGate:
             agent = self._agent(fix)
             agent._report_position()
             assert len(agent._posts) == 1
-            assert agent._posts[0][0] == "/api/rover/position"
+            assert agent._posts[0][0] == "/api/rover/position?device=gps"
 
     def test_pending_request_held_until_fix(self):
         agent = self._agent("no_fix")
@@ -124,3 +130,90 @@ class TestReportPositionFixGate:
         assert len(agent._posts) == 1
         assert agent._posts[0][1]["request_id"] == "req-1"
         assert list(agent._pending_request_ids) == []
+
+
+class TestSplitHp:
+    def test_roundtrip_positive_lat(self):
+        deg = 37.1234567891
+        main, hp = gr.split_hp(round(deg * 1e9))
+        assert 0 <= hp <= 99
+        assert abs((main * 1e-7 + hp * 1e-9) - deg) < 1e-9
+
+    def test_roundtrip_negative(self):
+        deg = -122.9876543219
+        main, hp = gr.split_hp(round(deg * 1e9))
+        assert 0 <= hp <= 99
+        assert abs((main * 1e-7 + hp * 1e-9) - deg) < 1e-9
+
+    def test_height_units(self):
+        # height coarse = cm, fine = 0.1 mm
+        alt_m = 41.2345
+        main, hp = gr.split_hp(round(alt_m * 1e4))
+        assert 0 <= hp <= 99
+        assert abs((main * 0.01 + hp * 0.0001) - alt_m) < 1e-4
+
+
+class TestAverageSurveySamples:
+    def test_none_on_empty(self):
+        assert gr.average_survey_samples([]) is None
+
+    def test_mean_of_samples(self):
+        samples = [(10.0, 20.0, 30.0, 0.02), (10.2, 20.2, 32.0, 0.04)]
+        lat, lon, alt, h_acc, n = gr.average_survey_samples(samples)
+        assert n == 2
+        assert abs(lat - 10.1) < 1e-9 and abs(lon - 20.1) < 1e-9
+        assert abs(alt - 31.0) < 1e-9 and abs(h_acc - 0.03) < 1e-9
+
+    def test_alt_hacc_optional(self):
+        samples = [(1.0, 2.0, None, None), (1.0, 2.0, None, None)]
+        lat, lon, alt, h_acc, n = gr.average_survey_samples(samples)
+        assert alt is None and h_acc is None and n == 2
+
+
+class TestConfigureBase:
+    """_configure_base must emit a UBX-CFG-VALSET setting TMODE FIXED (LLH) and
+    enabling the RTCM3 output messages."""
+
+    _SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8}
+
+    @classmethod
+    def _decode_valset(cls, msg):
+        assert msg[0] == 0xB5 and msg[1] == 0x62  # UBX sync
+        length = msg[4] | (msg[5] << 8)
+        payload = msg[6:6 + length]
+        i = 4  # skip version(1) + layer(1) + reserved(2)
+        out = {}
+        while i + 4 <= len(payload):
+            key = int.from_bytes(payload[i:i + 4], "little"); i += 4
+            size = cls._SIZE[(key >> 28) & 0x07]
+            out[key] = int.from_bytes(payload[i:i + size], "little"); i += size
+        return out
+
+    def test_emits_tmode_fixed_and_rtcm(self):
+        class _FakeSerial:
+            def __init__(self): self.written = b""
+            def write(self, data): self.written += bytes(data)
+
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._serial = _FakeSerial()
+        agent._configure_base(37.5, 127.0, 40.0, 0.01)
+
+        cfg = self._decode_valset(agent._serial.written)
+        assert cfg[gr.CFG_TMODE_MODE] == 2       # FIXED
+        assert cfg[gr.CFG_TMODE_POS_TYPE] == 1   # LLH
+        assert cfg[gr.CFG_TMODE_FIXED_POS_ACC] == 100  # 0.01 m -> 100 * 0.1mm
+        for key in gr._RTCM_MSGOUT_KEYS:
+            assert cfg[key] == 1                 # each RTCM message enabled @1Hz
+
+    def test_stop_disables_tmode_and_rtcm(self):
+        class _FakeSerial:
+            def __init__(self): self.written = b""
+            def write(self, data): self.written += bytes(data)
+
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._serial = _FakeSerial()
+        agent._configure_base_stop()
+        cfg = self._decode_valset(agent._serial.written)
+        assert cfg[gr.CFG_TMODE_MODE] == 0
+        for key in gr._RTCM_MSGOUT_KEYS:
+            assert cfg[key] == 0

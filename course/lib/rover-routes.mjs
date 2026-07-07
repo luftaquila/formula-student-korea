@@ -19,6 +19,13 @@ export function registerRoverRoutes(app, { express, db, dbRun, logger, broadcast
    ============================================ */
 
 let roverClient = null;
+// The GPS-receiver unit (fsk-rover-gps) holds its OWN SSE slot, distinct from the
+// rover (fsk-rover). Both connect to /api/rover/stream but self-identify via
+// ?device=gps|rover, so they no longer evict each other — a receiver carried for
+// cone surveying and the rover can be connected at the same time. The receiver is
+// the PREFERRED position source for cone capture (higher RTK-fixed reliability);
+// the rover is the fallback. See activePositionSource().
+let receiverClient = null;
 const roverPendingResolves = [];
 let lastRoverPosition = null; // { lat, lng, at: epoch ms }
 // When the operator last issued a resume. Telemetry's PAUSED→paused reconcile
@@ -240,6 +247,33 @@ const roverState = {
   updated_at: 0,
 };
 
+// GPS-receiver (fsk-rover-gps) state — kept separate from roverState so the two
+// devices can be connected simultaneously. `mode` is SERVER-owned (driven by the
+// GPS-management config / base-station commands, re-applied on receiver reconnect),
+// not by the receiver's telemetry: "capture" = live position source for cone
+// surveying; "base" = stationary RTK base station emitting RTCM (not a position
+// source). The `base` sub-block mirrors survey progress + RTCM link health for the UI.
+const receiverState = {
+  connected: false,
+  last_disconnect_reason: null,
+  last_disconnect_at: 0,
+  mode: "capture", // "capture" | "base"
+  last_position: null, // { lat, lng, alt }
+  last_position_at: 0,
+  fix_status: null,
+  ntrip_connected: null,
+  ntrip: null, // { host, port, mountpoint, fail_count, last_error, last_correction_at, bytes_received }
+  gps: null,   // { h_acc, v_acc, altitude, speed, heading, num_sv, pdop, tdop }
+  base: {
+    state: "idle",       // idle | surveying | active
+    point_id: null,      // survey_point.id being surveyed / used as base
+    survey: null,        // { started_at, duration_s, samples } while surveying
+    last_rtcm_at: 0,     // epoch ms of last relayed RTCM chunk
+    rtcm_bytes: 0,       // cumulative RTCM bytes relayed this base session
+  },
+  updated_at: 0,
+};
+
 // Boot re-adopt: if a mission was left open (interrupted by an unclean shutdown,
 // or paused) reload it into memory. The rover keeps driving and reconnects, so
 // the server must stay attached to the same mission_id; and the UI rebuilds the
@@ -265,9 +299,25 @@ const roverState = {
   }
 }
 
+// The GPS receiver is the preferred cone-capture position source when connected in
+// "capture" mode with a real fix; otherwise fall back to the rover. In "base" mode
+// the receiver is a stationary RTCM source, NOT a position source. Returns
+// "receiver" | "rover" | null (nobody usable).
+function activePositionSource() {
+  if (receiverClient && receiverState.mode === "capture" && receiverState.last_position) return "receiver";
+  if (roverClient) return "rover";
+  return null;
+}
+
 function broadcastRoverStatus() {
-  roverState.updated_at = Date.now();
-  broadcastEvent("rover:status", { ...roverState });
+  const now = Date.now();
+  roverState.updated_at = now;
+  receiverState.updated_at = now;
+  broadcastEvent("rover:status", {
+    ...roverState,
+    receiver: { ...receiverState },
+    position_source: activePositionSource(),
+  });
 }
 
 function markRoverDisconnected(reason) {
@@ -276,6 +326,43 @@ function markRoverDisconnected(reason) {
     roverState.last_disconnect_at = Date.now();
   }
   roverState.connected = false;
+}
+
+function markReceiverDisconnected(reason) {
+  if (receiverState.connected) {
+    receiverState.last_disconnect_reason = reason;
+    receiverState.last_disconnect_at = Date.now();
+  }
+  receiverState.connected = false;
+}
+
+// Telemetry field sanitizers — shared by the rover and receiver telemetry paths so
+// both devices' GPS/NTRIP blocks are validated identically. Return null when the
+// block is absent/malformed (caller then leaves the cached value untouched).
+function sanitizeGpsMetrics(gps) {
+  if (!gps || typeof gps !== "object" || Array.isArray(gps)) return null;
+  return {
+    h_acc: typeof gps.h_acc === "number" ? gps.h_acc : null,
+    v_acc: typeof gps.v_acc === "number" ? gps.v_acc : null,
+    altitude: typeof gps.altitude === "number" ? gps.altitude : null,
+    speed: typeof gps.speed === "number" ? gps.speed : null,
+    heading: typeof gps.heading === "number" ? gps.heading : null,
+    num_sv: Number.isInteger(gps.num_sv) ? gps.num_sv : null,
+    pdop: typeof gps.pdop === "number" ? gps.pdop : null,
+    tdop: typeof gps.tdop === "number" ? gps.tdop : null,
+  };
+}
+function sanitizeNtripDetail(ntrip) {
+  if (!ntrip || typeof ntrip !== "object" || Array.isArray(ntrip)) return null;
+  return {
+    host: typeof ntrip.host === "string" ? ntrip.host.slice(0, 128) : null,
+    port: Number.isInteger(ntrip.port) ? ntrip.port : null,
+    mountpoint: typeof ntrip.mountpoint === "string" ? ntrip.mountpoint.slice(0, 64) : null,
+    fail_count: Number.isInteger(ntrip.fail_count) ? ntrip.fail_count : null,
+    last_error: typeof ntrip.last_error === "string" ? ntrip.last_error.slice(0, 256) : null,
+    last_correction_at: typeof ntrip.last_correction_at === "number" ? ntrip.last_correction_at : null,
+    bytes_received: Number.isInteger(ntrip.bytes_received) ? ntrip.bytes_received : null,
+  };
 }
 
 function rejectNoRover(req, res, action, extra = {}) {
@@ -291,6 +378,37 @@ app.get("/api/rover/stream", (req, res) => {
     Connection: "keep-alive",
   });
   res.write("event: connected\ndata: {}\n\n");
+
+  // The GPS receiver (fsk-rover-gps) self-identifies with ?device=gps and takes its
+  // OWN slot; anything else is the rover (default keeps legacy pilots working). The
+  // receiver never drives, so its path has no mission lifecycle — it only owns the
+  // receiverClient slot + connection state and re-applies any base-station config.
+  if (req.query.device === "gps") {
+    if (receiverClient && receiverClient !== res) {
+      logger.warn(req, "receiver.stream.replaced", null, "receiver");
+      markReceiverDisconnected("replaced");
+      try { receiverClient.end(); } catch {}
+    }
+    receiverClient = res;
+    receiverState.connected = true;
+    receiverState.last_disconnect_reason = null;
+    receiverState.last_disconnect_at = 0;
+    broadcastRoverStatus();
+    reapplyReceiverBaseState();
+
+    const heartbeat = setInterval(() => {
+      try { res.write(": heartbeat\n\n"); } catch {}
+    }, 10000);
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      if (receiverClient === res) {
+        receiverClient = null;
+        markReceiverDisconnected("sse_closed");
+        broadcastRoverStatus();
+      }
+    });
+    return;
+  }
 
   // 기존 연결이 있으면 종료(중복 스트림 방지). 진행 중이던 미션은 폐기하지
   // 않는다 — 로버는 끊겼다 재연결하는 동안에도 받은 waypoint로 자율 주행을
@@ -326,6 +444,9 @@ app.get("/api/rover/stream", (req, res) => {
   if (roverState.pump_run_duration != null) {
     sendRoverEvent("pump-duration", { seconds: roverState.pump_run_duration });
   }
+  // Re-apply the correction source (NGII vs receiver base station) so a base-station
+  // selection survives a pilot restart / reconnect.
+  applyNtripSource(getGpsConfig().ntrip_source);
 
   // 10s heartbeat (was 30s). The rover's SSE read timeout is 25s, so a dead
   // connection (Wi-Fi dropped → no FIN/RST) is detected within ~25s instead of
@@ -353,8 +474,9 @@ app.get("/api/rover/stream", (req, res) => {
   });
 });
 
-// POST /api/rover/position - 로버가 현재 위치 전송 (로버가 호출)
+// POST /api/rover/position - 로버/수신기가 현재 위치 전송 (기기가 호출, ?device=gps|rover)
 app.post("/api/rover/position", (req, res) => {
+  const device = req.query.device === "gps" ? "gps" : "rover";
   const { lat, lng, alt, request_id, request_ids } = req.body;
   const coordValidation = validateCoordinate(lat, lng);
   if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
@@ -362,13 +484,20 @@ app.post("/api/rover/position", (req, res) => {
   if (!altValidation.valid) return res.status(400).send(altValidation.error);
   // RTK fix의 MSL 고도. lat/lng와 같은 fix에서 온 값이라 콘에 그대로 박아 둔다.
   const altValue = altValidation.value;
+  const now = Date.now();
 
-  lastRoverPosition = { lat, lng, alt: altValue, at: Date.now() };
-  roverState.last_position = { lat, lng, alt: altValue };
-  roverState.last_position_at = lastRoverPosition.at;
+  if (device === "gps") {
+    receiverState.last_position = { lat, lng, alt: altValue };
+    receiverState.last_position_at = now;
+  } else {
+    lastRoverPosition = { lat, lng, alt: altValue, at: now };
+    roverState.last_position = { lat, lng, alt: altValue };
+    roverState.last_position_at = now;
+  }
 
-  // Resolve only the matching explicit admin request. Periodic rover
-  // position POSTs intentionally do not drain this queue.
+  // Resolve only the matching explicit admin request, regardless of which device
+  // answered — request-position went to exactly one device, so only that device
+  // echoes the id. Periodic position POSTs (no id) don't drain the queue.
   const ids = Array.isArray(request_ids) ? request_ids : [request_id];
   for (const id of ids) {
     if (typeof id !== "string" || !id) continue;
@@ -379,18 +508,43 @@ app.post("/api/rover/position", (req, res) => {
     }
   }
 
-  // Telemetry sample for active mission
-  if (currentMissionId != null) recordTelemetrySample();
+  // Mission telemetry is a rover-only concern (the receiver never drives).
+  if (device === "rover" && currentMissionId != null) recordTelemetrySample();
 
-  broadcastEvent("rover", { lat, lng, alt: altValue });
+  // Drive the live map marker only from the ACTIVE source, so a rover heartbeat
+  // can't yank the marker off the receiver (the preferred source) or vice-versa.
+  if (device === activePositionSource()) broadcastEvent("rover", { lat, lng, alt: altValue, source: device });
   broadcastRoverStatus();
   res.json({ lat, lng, alt: altValue });
 });
 
-// POST /api/rover/telemetry - 로버 상태 텔레메트리 (internal)
+// POST /api/rover/telemetry - 로버/수신기 상태 텔레메트리 (internal, ?device=gps|rover)
 app.post("/api/rover/telemetry", (req, res) => {
+  const device = req.query.device === "gps" ? "gps" : "rover";
   const { nav_state, fix_status, ntrip_connected, battery, ntrip, gps } = req.body || {};
   const now = Date.now();
+
+  // Receiver telemetry has no mission lifecycle — it only refreshes the receiver's
+  // fix/NTRIP/GPS snapshot and its base-session state for the UI. `mode` stays
+  // server-owned (driven by base-station config), never taken from the device.
+  if (device === "gps") {
+    if (typeof fix_status === "string") receiverState.fix_status = fix_status;
+    if (typeof ntrip_connected === "boolean") {
+      receiverState.ntrip_connected = ntrip_connected;
+      if (ntrip_connected === false) receiverState.ntrip = null;
+    }
+    const gpsMetrics = sanitizeGpsMetrics(gps);
+    if (gpsMetrics) receiverState.gps = gpsMetrics;
+    const ntripDetail = sanitizeNtripDetail(ntrip);
+    if (ntripDetail) receiverState.ntrip = ntripDetail;
+    const base = req.body?.base;
+    if (base && typeof base === "object" && !Array.isArray(base) && typeof base.state === "string") {
+      receiverState.base.state = base.state.slice(0, 16);
+    }
+    broadcastRoverStatus();
+    return res.json({ ok: true });
+  }
+
   const prevNav = roverState.nav_state;
   if (typeof nav_state === "string") roverState.nav_state = nav_state;
   if (typeof fix_status === "string") {
@@ -421,29 +575,10 @@ app.post("/api/rover/telemetry", (req, res) => {
       flags: Number.isInteger(battery.flags) ? battery.flags : null,
     };
   }
-  if (gps && typeof gps === "object" && !Array.isArray(gps)) {
-    roverState.gps = {
-      h_acc: typeof gps.h_acc === "number" ? gps.h_acc : null,
-      v_acc: typeof gps.v_acc === "number" ? gps.v_acc : null,
-      altitude: typeof gps.altitude === "number" ? gps.altitude : null,
-      speed: typeof gps.speed === "number" ? gps.speed : null,
-      heading: typeof gps.heading === "number" ? gps.heading : null,
-      num_sv: Number.isInteger(gps.num_sv) ? gps.num_sv : null,
-      pdop: typeof gps.pdop === "number" ? gps.pdop : null,
-      tdop: typeof gps.tdop === "number" ? gps.tdop : null,
-    };
-  }
-  if (ntrip && typeof ntrip === "object" && !Array.isArray(ntrip)) {
-    roverState.ntrip = {
-      host: typeof ntrip.host === "string" ? ntrip.host.slice(0, 128) : null,
-      port: Number.isInteger(ntrip.port) ? ntrip.port : null,
-      mountpoint: typeof ntrip.mountpoint === "string" ? ntrip.mountpoint.slice(0, 64) : null,
-      fail_count: Number.isInteger(ntrip.fail_count) ? ntrip.fail_count : null,
-      last_error: typeof ntrip.last_error === "string" ? ntrip.last_error.slice(0, 256) : null,
-      last_correction_at: typeof ntrip.last_correction_at === "number" ? ntrip.last_correction_at : null,
-      bytes_received: Number.isInteger(ntrip.bytes_received) ? ntrip.bytes_received : null,
-    };
-  }
+  const gpsMetrics = sanitizeGpsMetrics(gps);
+  if (gpsMetrics) roverState.gps = gpsMetrics;
+  const ntripDetail = sanitizeNtripDetail(ntrip);
+  if (ntripDetail) roverState.ntrip = ntripDetail;
 
   // Mission auto-resumed from an INTERRUPTED state: a rover that dropped mid-
   // mission and is reporting an active nav state again has clearly resumed
@@ -515,9 +650,9 @@ app.post("/api/rover/telemetry", (req, res) => {
   res.json({ ok: true });
 });
 
-// GET /api/rover/status - 로버 상태 스냅샷 (admin)
+// GET /api/rover/status - 로버+수신기 상태 스냅샷 (admin)
 app.get("/api/rover/status", (req, res) => {
-  res.json({ ...roverState });
+  res.json({ ...roverState, receiver: { ...receiverState }, position_source: activePositionSource() });
 });
 
 // POST /api/rover/waypoint_reached - 로버가 웨이포인트 도달 알림 (internal)
@@ -669,9 +804,13 @@ app.post("/api/rover/spray_result", (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/rover/request - 관리자가 로버 좌표 요청 (프론트엔드가 호출)
+// POST /api/rover/request - 관리자가 콘 좌표 요청 (프론트엔드가 호출)
+// 수신기(캡처 모드)가 연결돼 있으면 수신기를 우선 사용하고, 없으면 로버로 폴백한다.
 app.post("/api/rover/request", async (req, res) => {
-  if (!roverClient) {
+  const target =
+    (receiverClient && receiverState.mode === "capture") ? "receiver"
+    : (roverClient ? "rover" : null);
+  if (!target) {
     return rejectNoRover(req, res, "rover.request");
   }
 
@@ -691,9 +830,12 @@ app.post("/api/rover/request", async (req, res) => {
     };
   });
 
-  if (!sendRoverEvent("request-position", { request_id })) {
+  const sent = target === "receiver"
+    ? sendReceiverEvent("request-position", { request_id })
+    : sendRoverEvent("request-position", { request_id });
+  if (!sent) {
     if (removeFromQueue) removeFromQueue();
-    logger.warn(req, "rover.request", { error: "connection_lost" }, "rover");
+    logger.warn(req, "rover.request", { error: "connection_lost", target }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
 
@@ -705,10 +847,10 @@ app.post("/api/rover/request", async (req, res) => {
   if (removeFromQueue) removeFromQueue();
 
   if (!position) {
-    logger.warn(req, "rover.request", { result: "timeout" }, "rover");
+    logger.warn(req, "rover.request", { result: "timeout", target }, "rover");
     return res.status(504).send("로버 응답 시간 초과");
   }
-  logger.log(req, "rover.request", { lat: position.lat, lng: position.lng, alt: position.alt }, "rover");
+  logger.log(req, "rover.request", { lat: position.lat, lng: position.lng, alt: position.alt, source: target }, "rover");
   res.json(position);
 });
 
@@ -725,6 +867,266 @@ function sendRoverEvent(event, data) {
     return false;
   }
 }
+
+function sendReceiverEvent(event, data) {
+  if (!receiverClient) return false;
+  try {
+    receiverClient.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    return true;
+  } catch {
+    try { receiverClient.end(); } catch {}
+    receiverClient = null;
+    markReceiverDisconnected("write_failed");
+    broadcastRoverStatus();
+    return false;
+  }
+}
+
+/* ============================================
+   GPS 관리: 수신기 소스 선택 + base station 측량점
+   ============================================ */
+
+const getGpsConfigStmt = db.prepare("SELECT value FROM gps_config WHERE key = ?");
+const setGpsConfigStmt = db.prepare(
+  "INSERT INTO gps_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+);
+function gpsConfigGet(key, def = null) {
+  const row = getGpsConfigStmt.get(key);
+  return row && row.value != null ? row.value : def;
+}
+function getGpsConfig() {
+  const ntrip_source = gpsConfigGet("ntrip_source", "ngii") === "base" ? "base" : "ngii";
+  const raw = gpsConfigGet("active_base_point_id", null);
+  const active_base_point_id =
+    raw != null && raw !== "" && Number.isInteger(Number(raw)) ? Number(raw) : null;
+  return { ntrip_source, active_base_point_id };
+}
+
+const listSurveyPointsStmt = db.prepare("SELECT * FROM survey_point ORDER BY id");
+const getSurveyPointStmt = db.prepare("SELECT * FROM survey_point WHERE id = ?");
+const insertSurveyPointStmt = db.prepare("INSERT INTO survey_point (name) VALUES (?)");
+const deleteSurveyPointStmt = db.prepare("DELETE FROM survey_point WHERE id = ?");
+const updateSurveyPointResultStmt = db.prepare(
+  `UPDATE survey_point
+     SET lat = ?, lng = ?, alt = ?, h_acc_m = ?, samples = ?,
+         surveyed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+   WHERE id = ?`
+);
+
+const SURVEY_DEFAULT_DURATION_S = 120;
+const SURVEY_MIN_DURATION_S = 10;
+const SURVEY_MAX_DURATION_S = 1800;
+
+// 로버에 어떤 보정 소스를 쓸지 알린다(NGII vs 수신기 base). 로버 미연결이면
+// no-op — 로버 재연결 시 stream 핸들러에서 재적용된다.
+function applyNtripSource(source) {
+  sendRoverEvent("ntrip-source", { source: source === "base" ? "base" : "ngii" });
+}
+
+// 수신기를 기준국으로 전환하고(측량 좌표로 F9P TMODE3 FIXED) 로버를 base 소스로 돌린다.
+function activateBase(point) {
+  receiverState.mode = "base";
+  receiverState.base = {
+    state: "active", point_id: point.id, survey: null, last_rtcm_at: 0, rtcm_bytes: 0,
+  };
+  sendReceiverEvent("base-activate", {
+    point_id: point.id, lat: point.lat, lng: point.lng, alt: point.alt, acc: point.h_acc_m,
+  });
+  applyNtripSource("base");
+}
+
+// 수신기를 캡처 모드로 되돌리고 로버를 NGII 소스로 돌린다.
+function deactivateBase() {
+  receiverState.mode = "capture";
+  receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
+  sendReceiverEvent("base-stop", {});
+  applyNtripSource("ngii");
+}
+
+// 수신기 재연결 시 서버가 소유한 base 설정을 재적용한다. base 소스이고 활성
+// 측량점에 좌표가 있으면 기준국으로, 아니면 캡처 모드로 둔다. (stream 핸들러에서 호출)
+function reapplyReceiverBaseState() {
+  const cfg = getGpsConfig();
+  if (cfg.ntrip_source === "base" && cfg.active_base_point_id != null) {
+    const point = getSurveyPointStmt.get(cfg.active_base_point_id);
+    if (point && point.lat != null && point.lng != null) {
+      activateBase(point);
+      return;
+    }
+  }
+  receiverState.mode = "capture";
+}
+
+// GET /api/gps/config - 현재 GPS 소스 설정 (admin)
+app.get("/api/gps/config", (req, res) => {
+  res.json(getGpsConfig());
+});
+
+// PUT /api/gps/config - GPS 소스 설정 변경 (admin)
+app.put("/api/gps/config", (req, res) => {
+  const { ntrip_source, active_base_point_id } = req.body || {};
+  if (ntrip_source !== "ngii" && ntrip_source !== "base") {
+    return res.status(400).send("ntrip_source는 'ngii' 또는 'base'여야 합니다.");
+  }
+  let point = null;
+  if (ntrip_source === "base") {
+    const pid = Number(active_base_point_id);
+    if (!Number.isInteger(pid)) {
+      return res.status(400).send("base 소스에는 측량점을 지정해야 합니다.");
+    }
+    point = getSurveyPointStmt.get(pid);
+    if (!point) return res.status(404).send("측량점을 찾을 수 없습니다.");
+    if (point.lat == null || point.lng == null) {
+      logger.warn(req, "gps.config.update", { error: "point_not_surveyed", point_id: pid }, "gps");
+      return res.status(400).send("아직 측량되지 않은 지점입니다. 먼저 위치를 측량하세요.");
+    }
+  }
+  const result = dbRun(() => {
+    setGpsConfigStmt.run("ntrip_source", ntrip_source);
+    setGpsConfigStmt.run("active_base_point_id", point ? String(point.id) : "");
+  });
+  if (!result.success) {
+    logger.warn(req, "gps.config.update", { error: result.error }, "gps");
+    return res.status(result.status).send(result.error);
+  }
+  // 저장 후 즉시 기기에 반영.
+  if (point) activateBase(point); else deactivateBase();
+  logger.log(req, "gps.config.update",
+    { ntrip_source, active_base_point_id: point ? point.id : null }, "gps");
+  broadcastRoverStatus();
+  res.json(getGpsConfig());
+});
+
+// GET /api/gps/survey-points - 측량점 목록 (admin)
+app.get("/api/gps/survey-points", (req, res) => {
+  res.json({ points: listSurveyPointsStmt.all() });
+});
+
+// POST /api/gps/survey-points - 측량점 추가(이름만) (admin)
+app.post("/api/gps/survey-points", (req, res) => {
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  if (!name) return res.status(400).send("측량점 이름이 비어 있습니다.");
+  if (name.length > 100) return res.status(400).send("측량점 이름이 너무 깁니다.");
+  const result = dbRun(() => {
+    const info = insertSurveyPointStmt.run(name);
+    return getSurveyPointStmt.get(Number(info.lastInsertRowid));
+  });
+  if (!result.success) {
+    logger.warn(req, "gps.survey_point.create", { error: result.error }, name);
+    return res.status(result.status).send(
+      result.error?.includes("UNIQUE") ? "이미 존재하는 측량점 이름입니다." : result.error);
+  }
+  logger.log(req, "gps.survey_point.create", null, name);
+  broadcastRoverStatus();
+  res.status(201).json(result.result);
+});
+
+// DELETE /api/gps/survey-points/:id - 측량점 삭제 (admin)
+app.delete("/api/gps/survey-points/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).send("올바르지 않은 id입니다.");
+  const point = getSurveyPointStmt.get(id);
+  if (!point) return res.status(404).send("측량점을 찾을 수 없습니다.");
+  const cfg = getGpsConfig();
+  if (cfg.ntrip_source === "base" && cfg.active_base_point_id === id) {
+    return res.status(409).send("현재 기준국으로 사용 중인 측량점입니다. 먼저 NGII 소스로 전환하세요.");
+  }
+  const result = dbRun(() => deleteSurveyPointStmt.run(id));
+  if (!result.success) {
+    logger.warn(req, "gps.survey_point.delete", { error: result.error, id }, point.name);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "gps.survey_point.delete", { id }, point.name);
+  broadcastRoverStatus();
+  res.json({ ok: true });
+});
+
+// POST /api/gps/survey-points/:id/survey - 수신기 위치 측량 시작 (admin)
+app.post("/api/gps/survey-points/:id/survey", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).send("올바르지 않은 id입니다.");
+  const point = getSurveyPointStmt.get(id);
+  if (!point) return res.status(404).send("측량점을 찾을 수 없습니다.");
+  if (!receiverClient) {
+    logger.warn(req, "gps.survey.start", { error: "receiver_not_connected", id }, point.name);
+    return res.status(503).send("GPS 수신기가 연결되어 있지 않습니다.");
+  }
+  if (receiverState.mode === "base") {
+    return res.status(409).send("수신기가 기준국으로 사용 중입니다. 먼저 NGII 소스로 전환하세요.");
+  }
+  let duration = Number(req.body?.duration_s);
+  if (!Number.isFinite(duration)) duration = SURVEY_DEFAULT_DURATION_S;
+  duration = Math.max(SURVEY_MIN_DURATION_S, Math.min(Math.round(duration), SURVEY_MAX_DURATION_S));
+  if (!sendReceiverEvent("base-survey-start", { point_id: id, duration_s: duration })) {
+    logger.warn(req, "gps.survey.start", { error: "connection_lost", id }, point.name);
+    return res.status(503).send("수신기 연결이 끊어졌습니다.");
+  }
+  receiverState.base = {
+    state: "surveying", point_id: id,
+    survey: { started_at: Date.now(), duration_s: duration, samples: 0 },
+    last_rtcm_at: 0, rtcm_bytes: 0,
+  };
+  logger.log(req, "gps.survey.start", { id, duration_s: duration }, point.name);
+  broadcastRoverStatus();
+  res.json({ ok: true, duration_s: duration });
+});
+
+// POST /api/gps/survey-points/:id/survey/cancel - 측량 취소 (admin)
+app.post("/api/gps/survey-points/:id/survey/cancel", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).send("올바르지 않은 id입니다.");
+  sendReceiverEvent("base-survey-cancel", { point_id: id });
+  if (receiverState.base.state === "surveying" && receiverState.base.point_id === id) {
+    receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
+  }
+  logger.log(req, "gps.survey.cancel", { id }, "gps");
+  broadcastRoverStatus();
+  res.json({ ok: true });
+});
+
+// POST /api/rover/base/survey-result - 수신기가 측량 결과 보고 (internal)
+app.post("/api/rover/base/survey-result", (req, res) => {
+  const { point_id, lat, lng, alt, h_acc, samples } = req.body || {};
+  const id = Number(point_id);
+  if (!Number.isInteger(id)) return res.status(400).send("올바르지 않은 point_id입니다.");
+  const coordValidation = validateCoordinate(lat, lng);
+  if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
+  const point = getSurveyPointStmt.get(id);
+  if (!point) {
+    logger.warn(req, "gps.survey.result", { error: "point_not_found", id }, "gps");
+    return res.status(404).send("측량점을 찾을 수 없습니다.");
+  }
+  const altValue = typeof alt === "number" && Number.isFinite(alt) ? alt : null;
+  const hAccValue = typeof h_acc === "number" && Number.isFinite(h_acc) ? h_acc : null;
+  const sampleCount = Number.isInteger(samples) ? samples : null;
+  const result = dbRun(() =>
+    updateSurveyPointResultStmt.run(lat, lng, altValue, hAccValue, sampleCount, id));
+  if (!result.success) {
+    logger.warn(req, "gps.survey.result", { error: result.error, id }, point.name);
+    return res.status(result.status).send(result.error);
+  }
+  if (receiverState.base.state === "surveying" && receiverState.base.point_id === id) {
+    receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
+  }
+  logger.log(req, "gps.survey.result",
+    { id, lat, lng, alt: altValue, h_acc: hAccValue, samples: sampleCount }, point.name);
+  broadcastRoverStatus();
+  res.json({ ok: true });
+});
+
+// POST /api/rover/base/rtcm - 수신기(기준국)가 RTCM 청크 전송 → 로버로 릴레이 (internal)
+// hot path: 초당 여러 번 호출되므로 broadcastRoverStatus는 하지 않는다(주기 텔레메트리가 UI 갱신).
+app.post("/api/rover/base/rtcm", (req, res) => {
+  const data = req.body?.data;
+  if (typeof data !== "string" || !data) return res.status(400).send("RTCM data가 비어 있습니다.");
+  receiverState.base.last_rtcm_at = Date.now();
+  // base64 길이로 대략적 바이트 누적(원바이트 수 근사, 링크 활성 지표로 충분).
+  receiverState.base.rtcm_bytes += Math.floor((data.length * 3) / 4);
+  // 로버 연결 시에만 릴레이. 미연결이면 드롭(로버 재연결 시 자연 재개).
+  if (roverClient) sendRoverEvent("rtcm", { data });
+  res.json({ ok: true });
+});
 
 function validateWaypointDistances(waypoints) {
   // 첫 waypoint와 최신 rover 위치 간 거리 검증

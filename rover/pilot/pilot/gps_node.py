@@ -12,6 +12,7 @@ Subscribed topics:
     /rover/cmd/request_position (std_msgs/Empty) - Trigger immediate position publish
 """
 
+import base64
 import json
 import threading
 import time
@@ -114,6 +115,10 @@ class GpsNode(Node):
         # Subscriber for position request
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(Empty, '/rover/cmd/request_position', self._on_request_position, reliable_qos)
+        # Base-station corrections relayed by the server from the GPS receiver
+        # acting as a base (RTCM3, base64), plus the correction-source selector.
+        self.create_subscription(String, '/rover/gps/rtcm_inject', self._on_rtcm_inject, reliable_qos)
+        self.create_subscription(String, '/rover/cmd/ntrip_source', self._on_ntrip_source, reliable_qos)
 
         # State
         self._parser = UBXParser()
@@ -122,6 +127,10 @@ class GpsNode(Node):
         self._last_dop = None
         self._serial = None
         self._ntrip = None
+        # Correction source: 'ngii' pulls the public NTRIP caster (default);
+        # 'base' consumes RTCM relayed from the receiver base via _on_rtcm_inject
+        # and suppresses NGII auto-setup.
+        self._ntrip_source = 'ngii'
         self._ntrip_setup_lock = threading.Lock()
         self._ntrip_setup_in_flight = False
         # NTRIP auto-setup is deferred until we have a real 3D fix so we
@@ -169,6 +178,47 @@ class GpsNode(Node):
         msg = String()
         msg.data = json.dumps(status)
         self._pub_ntrip_status.publish(msg)
+
+    def _on_rtcm_inject(self, msg):
+        """Write server-relayed base-station RTCM3 (base64) to the receiver.
+
+        When the operator selects the receiver as the base station, the server
+        relays its RTCM over the rover's command SSE; bridge_node republishes it
+        here. We just feed the bytes to the F9P serial port — exactly what the
+        NGII NTRIP client would have done, minus the network."""
+        if not msg.data or self._serial is None:
+            return
+        try:
+            raw = base64.b64decode(msg.data)
+        except (ValueError, TypeError) as exc:
+            self.get_logger().warn(f'bad RTCM inject payload: {exc}')
+            return
+        try:
+            self._serial.write(raw)
+        except (serial.SerialException, OSError) as exc:
+            self.get_logger().warn(f'RTCM inject serial write failed: {exc}')
+
+    def _on_ntrip_source(self, msg):
+        """Switch correction source: 'base' (relayed RTCM) vs 'ngii' (own NTRIP)."""
+        source = (msg.data or 'ngii').strip()
+        if source not in ('ngii', 'base'):
+            self.get_logger().warn(f'ntrip-source: unknown source {source!r}')
+            return
+        if source == self._ntrip_source:
+            return
+        self._ntrip_source = source
+        self.get_logger().info(f'NTRIP correction source -> {source}')
+        if source == 'base':
+            # Stop pulling NGII; the receiver base now supplies RTCM via inject.
+            if self._ntrip is not None:
+                try:
+                    self._ntrip.stop()
+                except Exception:
+                    pass
+                self._ntrip = None
+        else:
+            # Back to NGII — allow immediate re-setup on the next 3D fix.
+            self._ntrip_last_attempt = 0.0
 
     def _teardown_serial(self):
         """Close NTRIP and the serial port for a clean reopen.
@@ -240,6 +290,8 @@ class GpsNode(Node):
         after _NTRIP_SETUP_COOLDOWN_S — GPS continues publishing single-
         precision fixes in the meantime.
         """
+        if self._ntrip_source == 'base':
+            return  # corrections arrive via _on_rtcm_inject from the receiver base
         if self._ntrip is not None:
             return
         if pvt.fix_type < FixType.FIX_3D:

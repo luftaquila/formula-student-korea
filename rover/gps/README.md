@@ -21,10 +21,16 @@ headless via **cloud-init**, with the agent as a plain `systemd` Python
 service — no ROS, no container. It still reuses the rover's proven,
 ROS-free GPS/NTRIP code (see [Code reuse](#code-reuse)).
 
-> **One rover slot.** The course server tracks a single rover connection.
-> Run **either** the full rover **or** this GPS unit against a given server
-> at a time — both authenticate with the same `INTERNAL_SECRET` and would
-> otherwise kick each other off the SSE stream.
+> **Two slots.** The unit connects with `?device=gps` and holds its **own**
+> slot on the course server, separate from the rover (`?device=rover`), so
+> both can be connected at once — the receiver is the **preferred** cone-capture
+> source, the rover the fallback. (Both still authenticate with the same
+> `INTERNAL_SECRET`.)
+
+> **Base station.** Beyond cone capture, this unit can act as an RTK **base
+> station**: survey a fixed point with NGII once, then reuse that coordinate to
+> emit RTCM3 corrections for the rover — no on-site internet needed. See
+> [Base station](#base-station).
 
 ## Hardware
 
@@ -59,23 +65,45 @@ HTTP to the course server (port 10000):
   and POSTs position every `POSITION_REPORT_INTERVAL` s.
 - **ntrip** — on the first 3D fix, fetches the NGII source table, picks the
   nearest RTCM 3.2 base, and streams corrections back into the receiver.
-- **sse** — holds `/api/rover/stream`; on `request-position` replies with
-  the current fix tagged with the request id. Other rover commands
-  (execute-path, manual-control, calibrate-\*) are no-ops here.
-- **telemetry** — every 3 s POSTs `fix_status`, NTRIP status, and GPS
-  accuracy so the operator UI shows live RTK quality. `nav_state` is always
-  `IDLE`.
+- **sse** — holds `/api/rover/stream?device=gps`; on `request-position` replies
+  with the current fix tagged with the request id, and handles the base-station
+  commands (`base-survey-start`/`base-survey-cancel`/`base-activate`/`base-stop`).
+  Other rover commands (execute-path, manual-control, calibrate-\*) are no-ops.
+- **telemetry** — every 3 s POSTs `fix_status`, NTRIP status, GPS accuracy,
+  plus `mode`/`base` (base-session state + relayed RTCM bytes) so the operator
+  UI shows live RTK quality. `nav_state` is always `IDLE`.
 
 ## Server endpoints used
 
 | Endpoint | Direction | Purpose |
 |----------|-----------|---------|
-| `GET /api/rover/stream` | unit → server (SSE) | receive `request-position` |
-| `POST /api/rover/position` | unit → server | live marker + request replies |
-| `POST /api/rover/telemetry` | unit → server | fix status / RTK quality |
+| `GET /api/rover/stream?device=gps` | unit → server (SSE) | commands (request-position, base-\*) |
+| `POST /api/rover/position?device=gps` | unit → server | live marker + request replies |
+| `POST /api/rover/telemetry?device=gps` | unit → server | fix status / RTK quality / base state |
+| `POST /api/rover/base/survey-result` | unit → server | surveyed base coordinate |
+| `POST /api/rover/base/rtcm` | unit → server | RTCM3 chunks (relayed to the rover) |
 
-All three are internal-strict — the unit sends `X-Internal-Service:
-$INTERNAL_SECRET`.
+All are internal-strict — the unit sends `X-Internal-Service: $INTERNAL_SECRET`.
+
+## Base station
+
+Managed from the course UI's **GPS** tab (admin). Two steps:
+
+1. **Survey** a named point (`측량`): while NGII RTK is `rtk_fixed`, the unit
+   averages `NAV-HPPOSLLH` positions for the chosen duration (default 120 s) and
+   records the mean as the point's coordinate (`POST /api/rover/base/survey-result`).
+2. **Activate** it as the base (select **수신기 base station** + the point): the
+   server sends `base-activate`, the unit switches the F9P to **TMODE FIXED (LLH)**
+   at the surveyed coordinate and enables RTCM3 (MSM7 1077/1087/1097/1127 + 1005 +
+   1230) on USB. It extracts complete RTCM3 frames from the serial stream (see
+   `pilot/lib/rtcm_utils.py`) and relays them via `POST /api/rover/base/rtcm`; the
+   server forwards them to the rover over its SSE (`rtcm` event → GPS serial). No
+   NGII needed while acting as a fixed base.
+
+Cone-capture and base-station roles are mutually exclusive (`_mode`): in base mode
+the unit is not a position source, so cone capture falls back to the rover (which
+is now getting RTK from this base). Switching the source back to **NGII** sends
+`base-stop`, reverts TMODE, and resumes normal capture.
 
 ## Provisioning
 
@@ -160,11 +188,11 @@ source of truth, no vendored copies in git:
 | `pilot.lib.ntrip_client` | NTRIP v2 client, source-table, nearest-mount |
 | `pilot.lib.geo_utils` | haversine (used by ntrip_client) |
 | `pilot.lib.protocol_utils` | `assemble_sse_data` |
+| `pilot.lib.rtcm_utils` | RTCM3 framer + CRC-24Q (base-station output) |
 
 `gps_register.py` adds the pilot package root to `sys.path` (handling both
 the in-repo tree and the `/opt/gps-register` deploy layout).
-`provision-gps.sh` copies these four files alongside the agent at deploy
-time.
+`provision-gps.sh` copies these files alongside the agent at deploy time.
 
 ## Tests
 

@@ -16,7 +16,7 @@ import JSZip from "jszip";
 import { isAdmin } from "@shared/officialsStore.js";
 import { useWhepStream } from "../composables/useWhepStream.js";
 
-const { error: notifyError, warning: notifyWarn } = useNotification();
+const { success: notifySuccess, error: notifyError, warning: notifyWarn } = useNotification();
 const stopping = inject("stopping", ref(false));
 const sseReconnecting = inject("sseReconnecting", ref(false));
 const appRoverConnected = inject("roverConnected", null);
@@ -62,7 +62,7 @@ function hideLiveMapLayers() {
   // roverMarker as "already on the map" and only setLatLng()s it, so leaving a
   // dangling reference here means restoreLiveMapLayers() can never re-add the
   // marker — the map pans on follow but the rover dot stays invisible.
-  if (roverMarker) { try { map.removeLayer(roverMarker); } catch {} roverMarker = null; }
+  if (roverMarker) { try { map.removeLayer(roverMarker); } catch {} roverMarker = null; roverMarkerSource = null; }
   if (pathLine) { try { map.removeLayer(pathLine); } catch {} }
   if (pathStartMarker) { try { map.removeLayer(pathStartMarker); } catch {} }
   if (pathEndMarker) { try { map.removeLayer(pathEndMarker); } catch {} }
@@ -71,8 +71,11 @@ function hideLiveMapLayers() {
 function restoreLiveMapLayers() {
   if (!map) return;
   rebuildAllMarkers();
-  const lp = roverStatus.value.last_position;
-  if (lp) updateRoverMarker(lp.lat, lp.lng);
+  const src = roverStatus.value.position_source;
+  const lp = src === "receiver"
+    ? roverStatus.value.receiver?.last_position
+    : roverStatus.value.last_position;
+  if (lp) updateRoverMarker(lp.lat, lp.lng, src);
   if (pathStart && pathWaypoints.value.length > 0) renderPath();
   renderSprayMarkers();
 }
@@ -134,6 +137,12 @@ const roverStatus = ref({
   obstacle: { active: false, at: 0, nearest_m: null },
   stereo_calibration: { status: "idle" },
   ground_calibration: { status: "idle" },
+  // GPS-receiver (fsk-rover-gps) sub-state — connected/mode/last_position/base.
+  // Populated from the server's rover:status broadcast.
+  receiver: null,
+  // "receiver" | "rover" | null — which device supplies the live cone-capture
+  // position right now. Drives the live marker icon + the source badge/FAB.
+  position_source: null,
 });
 
 function syncAppRoverStatus(data) {
@@ -145,6 +154,20 @@ function syncAppRoverStatus(data) {
     appNavState.value = data.nav_state;
   }
 }
+
+// Which device currently supplies the cone-capture position: the GPS receiver
+// (preferred), the rover (fallback), or nothing usable. Drives the 3-state
+// cone-add button icon and its disabled state.
+const positionSource = computed(() => roverStatus.value.position_source || null);
+const canCaptureCone = computed(() => positionSource.value != null);
+const coneCaptureIcon = computed(() =>
+  positionSource.value === "receiver" ? "🛰️"
+  : positionSource.value === "rover" ? "🚗"
+  : "⚪");
+const coneCaptureTitle = computed(() =>
+  positionSource.value === "receiver" ? "GPS 수신기 위치로 콘 추가 (수신기 우선 사용 중)"
+  : positionSource.value === "rover" ? "로버 GPS 위치로 콘 추가"
+  : "GPS 소스 없음 — 수신기 또는 로버 연결 필요");
 
 let manualFailCount = 0;
 
@@ -563,6 +586,7 @@ const remainingDistanceM = computed(() => {
 // the same split — /api/rover/* and /api/missions/* require admin.
 const INSPECTOR_TABS = [
   { key: "rover", label: "로버", icon: "🚗", adminOnly: true },
+  { key: "gps", label: "GPS", icon: "🛰️", adminOnly: true },
   { key: "courses", label: "코스", icon: "📋" },
   { key: "history", label: "기록", icon: "📊", adminOnly: true },
 ];
@@ -801,6 +825,119 @@ watch(activeTab, (next, prev) => {
 });
 watch(inspectorWidth, (v) => savePref("inspectorWidth", v));
 
+/* ── GPS 관리 (수신기 소스 선택 + base station 측량점) ─────────────────── */
+const gpsConfig = ref({ ntrip_source: "ngii", active_base_point_id: null });
+const surveyPoints = ref([]);
+const gpsLoading = ref(false);
+const gpsSaving = ref(false);
+const newSurveyName = ref("");
+const surveyDuration = ref(120);
+const selectedBasePointId = ref(null);
+
+// 수신기 상태 편의 접근자 (rover:status의 receiver 서브블록).
+const receiver = computed(() => roverStatus.value.receiver || null);
+const receiverConnected = computed(() => !!receiver.value?.connected);
+const baseState = computed(() => receiver.value?.base?.state || "idle");
+const surveyingPointId = computed(() =>
+  baseState.value === "surveying" ? (receiver.value?.base?.point_id ?? null) : null);
+// Only surveyed points (with recorded coordinates) can serve as a base station.
+const surveyedPoints = computed(() => surveyPoints.value.filter((p) => p.lat != null && p.lng != null));
+const hasSurveyedPoint = computed(() => surveyedPoints.value.length > 0);
+
+// Keep the base-point dropdown pinned to the configured active point, else the
+// first surveyed point, so switching to "base" always has a valid selection.
+watch([gpsConfig, surveyedPoints], () => {
+  if (gpsConfig.value.active_base_point_id != null) {
+    selectedBasePointId.value = gpsConfig.value.active_base_point_id;
+  } else if (selectedBasePointId.value == null && surveyedPoints.value.length) {
+    selectedBasePointId.value = surveyedPoints.value[0].id;
+  }
+}, { deep: true });
+
+async function loadGps() {
+  gpsLoading.value = true;
+  try {
+    const [cfgRes, spRes] = await Promise.all([
+      request("/api/gps/config"),
+      request("/api/gps/survey-points"),
+    ]);
+    gpsConfig.value = await cfgRes.json();
+    surveyPoints.value = (await spRes.json()).points || [];
+  } catch (err) {
+    notifyError(err.message || "GPS 설정을 불러오지 못했습니다.");
+  } finally {
+    gpsLoading.value = false;
+  }
+}
+
+async function setNtripSource(source, pointId = null) {
+  const body = { ntrip_source: source };
+  if (source === "base") {
+    const pid = pointId != null ? pointId : (selectedBasePointId.value ?? gpsConfig.value.active_base_point_id);
+    if (pid == null) { notifyError("먼저 측량점을 선택하세요."); return; }
+    body.active_base_point_id = pid;
+  }
+  gpsSaving.value = true;
+  try {
+    const res = await request("/api/gps/config", { method: "PUT", body: JSON.stringify(body) });
+    gpsConfig.value = await res.json();
+    notifySuccess(source === "base" ? "수신기를 기준국으로 설정했습니다." : "NGII 보정 소스로 전환했습니다.");
+  } catch (err) {
+    notifyError(err.message || "GPS 소스 변경에 실패했습니다.");
+  } finally {
+    gpsSaving.value = false;
+  }
+}
+
+async function addSurveyPoint() {
+  const name = newSurveyName.value.trim();
+  if (!name) return;
+  try {
+    await request("/api/gps/survey-points", { method: "POST", body: JSON.stringify({ name }) });
+    newSurveyName.value = "";
+    await loadGps();
+  } catch (err) {
+    notifyError(err.message || "측량점 추가에 실패했습니다.");
+  }
+}
+
+async function deleteSurveyPoint(p) {
+  if (!window.confirm(`측량점 "${p.name}"을(를) 삭제할까요?`)) return;
+  try {
+    await request(`/api/gps/survey-points/${p.id}`, { method: "DELETE" });
+    await loadGps();
+  } catch (err) {
+    notifyError(err.message || "측량점 삭제에 실패했습니다.");
+  }
+}
+
+async function startSurvey(p) {
+  try {
+    await request(`/api/gps/survey-points/${p.id}/survey`, {
+      method: "POST",
+      body: JSON.stringify({ duration_s: surveyDuration.value }),
+    });
+    notifySuccess(`"${p.name}" 측량을 시작했습니다.`);
+  } catch (err) {
+    notifyError(err.message || "측량 시작에 실패했습니다.");
+  }
+}
+
+async function cancelSurvey(p) {
+  try {
+    await request(`/api/gps/survey-points/${p.id}/survey/cancel`, { method: "POST" });
+  } catch (err) {
+    notifyError(err.message || "측량 취소에 실패했습니다.");
+  }
+}
+
+// 측량이 끝나면(surveying → idle/active) 목록을 새로고침해 새 좌표를 반영.
+watch(baseState, (now, prev) => {
+  if (prev === "surveying" && now !== "surveying") loadGps();
+});
+// GPS 탭 진입 시 최신 설정/측량점 로드.
+watch(activeTab, (v) => { if (v === "gps" && isAdmin.value) loadGps(); });
+
 // Tab-swap: hide live layers when entering the missions sub-view of the
 // history tab, tear down replay state and restore the live view when leaving.
 const isMissionsView = computed(
@@ -903,6 +1040,9 @@ function onSheetTouchEnd() {
 let map = null;
 let markers = {};
 let roverMarker = null;
+// Which source the live marker's icon currently reflects ("receiver" | "rover"),
+// so updateRoverMarker only re-skins it when the active source actually changes.
+let roverMarkerSource = null;
 let pathLine = null;
 let pathStartMarker = null;
 let pathEndMarker = null;
@@ -3301,23 +3441,43 @@ function scheduleFollow(lat, lng) {
   }, wait);
 }
 
-function updateRoverMarker(lat, lng) {
+// Live-marker colours/labels per position source. The GPS receiver (teal) is the
+// preferred cone-capture source; the rover (purple) is the fallback.
+const ROVER_MARKER_COLORS = { rover: "#a855f7", receiver: "#14b8a6" };
+const ROVER_MARKER_LABELS = { rover: "로버", receiver: "수신기" };
+
+function roverSourceIcon(source) {
+  const color = ROVER_MARKER_COLORS[source] || ROVER_MARKER_COLORS.rover;
+  return L.divIcon({
+    className: "",
+    html: `<div style="width:12px;height:12px;border-radius:50%;background:#fff;border:3px solid ${color};"></div>`,
+    iconSize: [12, 12], iconAnchor: [6, 6],
+  });
+}
+
+function updateRoverMarker(lat, lng, source) {
   // Live layers (incl. this marker) are torn down while the missions-history
   // view is open; don't resurrect the marker from a stray SSE frame there —
   // restoreLiveMapLayers() re-creates it when the operator returns to live.
   if (!map || isMissionsView.value || !isValidRoverPos(lat, lng)) return;
+  // Which device is this position from? Prefer the explicit source, else the
+  // server's current active source, else assume rover (legacy).
+  const src = source || roverStatus.value.position_source || "rover";
+  const label = ROVER_MARKER_LABELS[src] || ROVER_MARKER_LABELS.rover;
   if (roverMarker) {
     roverMarker.setLatLng([lat, lng]);
+    if (src !== roverMarkerSource) {
+      roverMarker.setIcon(roverSourceIcon(src));
+      roverMarker.setTooltipContent(label);
+      roverMarkerSource = src;
+    }
   } else {
     roverMarker = L.marker([lat, lng], {
-      icon: L.divIcon({
-        className: "",
-        html: `<div style="width:12px;height:12px;border-radius:50%;background:#fff;border:3px solid #a855f7;"></div>`,
-        iconSize: [12, 12], iconAnchor: [6, 6],
-      }),
+      icon: roverSourceIcon(src),
       zIndexOffset: 1000, interactive: false,
     }).addTo(map);
-    roverMarker.bindTooltip("로버", { direction: "top", offset: [0, -8], permanent: true, className: "rover-tooltip" });
+    roverMarker.bindTooltip(label, { direction: "top", offset: [0, -8], permanent: true, className: "rover-tooltip" });
+    roverMarkerSource = src;
   }
 }
 
@@ -4179,9 +4339,11 @@ function connectSSE() {
   eventSource.addEventListener("rover", (e) => {
     const data = parseSSE(e);
     if (!data || !isValidRoverPos(data.lat, data.lng)) return;
-    updateRoverMarker(data.lat, data.lng);
+    updateRoverMarker(data.lat, data.lng, data.source);
     if (followRover.value) scheduleFollow(data.lat, data.lng);
-    if (roverMode.value === "executing") updatePathProgress(data.lat, data.lng);
+    // Mission path progress is a rover-only concern; a receiver capture position
+    // must not be mistaken for mission movement.
+    if (roverMode.value === "executing" && data.source !== "receiver") updatePathProgress(data.lat, data.lng);
   });
 
   eventSource.addEventListener("rover:status", (e) => {
@@ -4189,11 +4351,12 @@ function connectSSE() {
     if (!data) return;
     roverStatus.value = { ...roverStatus.value, ...data };
     syncAppRoverStatus(data);
-    // Live-update the rover marker on the map whenever the server
-    // forwards a fresh position (rover→server SSE is the truth).
-    const lp = data.last_position;
+    // Track the ACTIVE source's position on the map: the receiver when it is the
+    // preferred source, otherwise the rover (rover→server SSE is the truth).
+    const src = data.position_source;
+    const lp = src === "receiver" ? data.receiver?.last_position : data.last_position;
     if (lp && typeof lp.lat === "number" && typeof lp.lng === "number") {
-      updateRoverMarker(lp.lat, lp.lng);
+      updateRoverMarker(lp.lat, lp.lng, src);
       if (followRover.value) scheduleFollow(lp.lat, lp.lng);
     }
     // If the rover disconnected mid-manual-control, release immediately.
@@ -4478,6 +4641,8 @@ onMounted(async () => {
   connectSSE();
   // /api/rover/status is admin-only; chief never opens the rover tab, so skip it.
   if (isAdmin.value) fetchRoverStatus();
+  // Prime the GPS-management tab if it's the persisted active tab on load.
+  if (isAdmin.value && activeTab.value === "gps") loadGps();
 });
 
 onUnmounted(() => {
@@ -5055,11 +5220,11 @@ onUnmounted(() => {
                 <button :class="['side-btn', { active: currentSide === 'right' }]" @click="currentSide = 'right'" style="--side-color: #06b6d4" title="오른쪽">R</button>
               </div>
               <button
-                class="fab-icon-btn fab-rover"
-                @click="addConeFromRover" :disabled="roverLoading"
-                aria-label="로버 위치로 콘 추가"
-                title="로버 GPS 위치로 콘 추가"
-              >{{ roverLoading ? '⏳' : '📍' }}</button>
+                :class="['fab-icon-btn', 'fab-rover', { 'src-receiver': positionSource === 'receiver', 'src-rover': positionSource === 'rover' }]"
+                @click="addConeFromRover" :disabled="roverLoading || !canCaptureCone"
+                :aria-label="coneCaptureTitle"
+                :title="coneCaptureTitle"
+              >{{ roverLoading ? '⏳' : coneCaptureIcon }}</button>
             </div>
 
             <!-- Measurement / selection tools (영역 · 자 · 각도기) — separate
@@ -5663,6 +5828,112 @@ onUnmounted(() => {
                 </template>
               </section>
 
+              <!-- GPS tab (receiver source + base-station survey points) -->
+              <section v-show="activeTab === 'gps'" class="tab-pane">
+                <header class="tab-header">
+                  <h3>GPS</h3>
+                  <button class="btn btn-ghost btn-sm" :disabled="gpsLoading" @click="loadGps">↻ 새로고침</button>
+                </header>
+
+                <!-- Receiver status -->
+                <div class="inspector-group">
+                  <div class="group-title">GPS 수신기 (fsk-rover-gps)</div>
+                  <div class="gps-status-row">
+                    <span :class="['gps-dot', receiverConnected ? 'on' : 'off']"></span>
+                    <span>{{ receiverConnected ? '연결됨' : '연결 안 됨' }}</span>
+                    <span v-if="receiverConnected && receiver?.fix_status" class="gps-sub">· {{ receiver.fix_status }}</span>
+                    <span v-if="receiverConnected" class="gps-sub">· {{ receiver.mode === 'base' ? '기준국 모드' : '캡처 모드' }}</span>
+                  </div>
+                  <div v-if="receiverConnected && receiver?.gps?.h_acc != null" class="gps-sub">
+                    수평정확도 {{ receiver.gps.h_acc.toFixed(3) }} m · 위성 {{ receiver.gps.num_sv ?? '—' }}개
+                  </div>
+                </div>
+
+                <!-- NTRIP source selection -->
+                <div class="inspector-group">
+                  <div class="group-title">로버 NTRIP 보정 소스</div>
+                  <div class="gps-source-choices">
+                    <label :class="['gps-source-opt', { active: gpsConfig.ntrip_source === 'ngii' }]">
+                      <input type="radio" :checked="gpsConfig.ntrip_source === 'ngii'"
+                             :disabled="gpsSaving" @change="setNtripSource('ngii')" />
+                      <div>
+                        <strong>NGII (국토지리정보원)</strong>
+                        <div class="gps-sub">인터넷 NTRIP 캐스터에서 가장 가까운 기준국 자동 선택</div>
+                      </div>
+                    </label>
+                    <label :class="['gps-source-opt', { active: gpsConfig.ntrip_source === 'base', disabled: !hasSurveyedPoint }]">
+                      <input type="radio" :checked="gpsConfig.ntrip_source === 'base'"
+                             :disabled="gpsSaving || !hasSurveyedPoint" @change="setNtripSource('base', selectedBasePointId)" />
+                      <div>
+                        <strong>수신기 base station</strong>
+                        <div class="gps-sub">측량점에 둔 수신기를 고정 기준국으로 사용 (인터넷 불필요)</div>
+                      </div>
+                    </label>
+                  </div>
+                  <div v-if="gpsConfig.ntrip_source === 'base'" class="gps-base-select">
+                    <label>기준점</label>
+                    <select v-model.number="selectedBasePointId" :disabled="gpsSaving"
+                            @change="setNtripSource('base', selectedBasePointId)">
+                      <option v-for="p in surveyedPoints" :key="p.id" :value="p.id">{{ p.name }}</option>
+                    </select>
+                  </div>
+                  <div v-if="!hasSurveyedPoint" class="gps-sub gps-hint">
+                    base station을 쓰려면 아래에서 측량점을 하나 이상 측량하세요.
+                  </div>
+                </div>
+
+                <!-- Survey points -->
+                <div class="inspector-group">
+                  <div class="group-title">측량점 (기준국 위치)</div>
+                  <div class="gps-add-row">
+                    <input v-model="newSurveyName" type="text" placeholder="측량점 이름 (예: 피트 코너)"
+                           maxlength="100" @keyup.enter="addSurveyPoint" />
+                    <button class="btn btn-primary btn-sm" :disabled="!newSurveyName.trim()" @click="addSurveyPoint">추가</button>
+                  </div>
+                  <div class="gps-survey-duration">
+                    <label>측량 시간</label>
+                    <select v-model.number="surveyDuration">
+                      <option :value="60">60초</option>
+                      <option :value="120">120초</option>
+                      <option :value="300">300초</option>
+                      <option :value="600">600초</option>
+                    </select>
+                  </div>
+                  <div v-if="surveyPoints.length === 0" class="empty-msg">측량점이 없습니다.</div>
+                  <div v-else class="gps-point-list">
+                    <div v-for="p in surveyPoints" :key="p.id" class="gps-point-card">
+                      <div class="gps-point-top">
+                        <strong>{{ p.name }}</strong>
+                        <span v-if="gpsConfig.ntrip_source === 'base' && gpsConfig.active_base_point_id === p.id" class="gps-badge">기준국</span>
+                      </div>
+                      <div v-if="p.lat != null" class="gps-sub">
+                        {{ p.lat.toFixed(7) }}, {{ p.lng.toFixed(7) }}
+                        <template v-if="p.alt != null">· {{ p.alt.toFixed(2) }} m</template>
+                        <template v-if="p.h_acc_m != null">· ±{{ (p.h_acc_m * 100).toFixed(1) }} cm</template>
+                      </div>
+                      <div v-else class="gps-sub gps-unsurveyed">미측량</div>
+                      <div v-if="p.surveyed_at" class="gps-sub">측량 {{ formatSnapshotTime(p.surveyed_at) }}</div>
+                      <div class="gps-point-actions">
+                        <template v-if="surveyingPointId === p.id">
+                          <span class="gps-surveying">측량 중…</span>
+                          <button class="btn btn-ghost btn-sm" @click="cancelSurvey(p)">취소</button>
+                        </template>
+                        <template v-else>
+                          <button class="btn btn-ghost btn-sm"
+                                  :disabled="!receiverConnected || baseState !== 'idle'"
+                                  @click="startSurvey(p)">
+                            {{ p.lat != null ? '재측량' : '측량' }}
+                          </button>
+                          <button class="btn btn-ghost btn-sm"
+                                  :disabled="gpsConfig.ntrip_source === 'base' && gpsConfig.active_base_point_id === p.id"
+                                  @click="deleteSurveyPoint(p)">삭제</button>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
             </div>
           </aside>
           <div v-if="!isMobile" class="edge-spacer"></div>
@@ -6203,6 +6474,16 @@ onUnmounted(() => {
   background: color-mix(in srgb, #f59e0b 22%, var(--bg-secondary));
 }
 .fab-rover { border-color: var(--accent-primary); }
+/* Cone-capture source: teal when the GPS receiver is active (preferred), purple
+   when falling back to the rover. Disabled (grey) when neither is available. */
+.fab-rover.src-receiver {
+  border-color: #14b8a6;
+  background: color-mix(in srgb, #14b8a6 22%, var(--bg-secondary));
+}
+.fab-rover.src-rover {
+  border-color: #a855f7;
+  background: color-mix(in srgb, #a855f7 22%, var(--bg-secondary));
+}
 .fab-tool.active {
   border-color: #38bdf8;
   background: color-mix(in srgb, #38bdf8 24%, var(--bg-secondary));
@@ -7004,6 +7285,34 @@ onUnmounted(() => {
 
 .empty-msg { text-align: center; padding: 1rem 0; color: var(--text-secondary); font-size: 0.85rem; }
 .empty-msg.large { padding: 2rem 0; font-size: 0.95rem; display: flex; flex-direction: column; align-items: center; gap: 0.75rem; }
+
+/* ── GPS 관리 탭 ─────────────────────────────────────────── */
+.gps-status-row { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; flex-wrap: wrap; }
+.gps-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.gps-dot.on { background: #22c55e; }
+.gps-dot.off { background: var(--border-color); }
+.gps-sub { color: var(--text-secondary); font-size: 0.82rem; }
+.gps-hint { margin-top: 0.4rem; }
+.gps-unsurveyed { color: #f59e0b; }
+.gps-source-choices { display: flex; flex-direction: column; gap: 0.5rem; }
+.gps-source-opt {
+  display: flex; align-items: flex-start; gap: 0.55rem;
+  padding: 0.6rem; border: 1px solid var(--border-color); border-radius: 8px; cursor: pointer;
+}
+.gps-source-opt.active { border-color: #14b8a6; background: color-mix(in srgb, #14b8a6 12%, var(--bg-secondary)); }
+.gps-source-opt.disabled { opacity: 0.55; cursor: not-allowed; }
+.gps-source-opt input { margin-top: 0.2rem; }
+.gps-base-select { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.6rem; }
+.gps-base-select select, .gps-survey-duration select { flex: 1; padding: 0.35rem; }
+.gps-add-row { display: flex; gap: 0.5rem; }
+.gps-add-row input { flex: 1; padding: 0.4rem; }
+.gps-survey-duration { display: flex; align-items: center; gap: 0.5rem; margin: 0.55rem 0; font-size: 0.85rem; }
+.gps-point-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.gps-point-card { padding: 0.6rem; border: 1px solid var(--border-color); border-radius: 8px; }
+.gps-point-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.gps-badge { font-size: 0.72rem; padding: 0.1rem 0.4rem; border-radius: 4px; background: color-mix(in srgb, #14b8a6 26%, var(--bg-secondary)); color: var(--text-primary); }
+.gps-point-actions { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
+.gps-surveying { color: #14b8a6; font-size: 0.82rem; }
 
 /* ── Mobile: rail → bottom tab bar, inspector → bottom drawer ────────── */
 @media (max-width: 768px) {
