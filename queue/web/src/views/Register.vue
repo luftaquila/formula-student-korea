@@ -1,10 +1,14 @@
 <script setup>
 import { ref, onMounted, computed, watch } from "vue";
+import { useRouter } from "vue-router";
+import QRCode from "qrcode";
 import { fetchEntries, registerToQueue } from "../api";
 import { useSSE } from "../composables/useSSE";
 import { useNotification } from "@shared/useNotification.js";
 import { useBoothTimers } from "../composables/useBoothTimers";
 import { formatPhone } from "@shared/format-phone.js";
+
+const router = useRouter();
 
 const { success, error, warning } = useNotification();
 
@@ -24,6 +28,10 @@ const phone = ref("010");
 const inspection = ref("");
 const agreed = ref(false);
 
+// 대기열 조회 페이지(QueueStatus, path "/") 절대 URL — 참가자가 휴대폰으로 순번 확인
+const statusUrl = new URL(router.resolve("/").href, window.location.origin).href;
+const qrDataUrl = ref("");
+
 const currentEntry = computed(() => {
   if (!entryNum.value || !entries.value[entryNum.value]) return null;
   return entries.value[entryNum.value];
@@ -36,6 +44,17 @@ onMounted(async () => {
     error("데이터를 가져올 수 없습니다.");
   }
   loading.value = false;
+
+  try {
+    qrDataUrl.value = await QRCode.toDataURL(statusUrl, {
+      margin: 1,
+      width: 240,
+      errorCorrectionLevel: "M",
+      color: { dark: "#000000", light: "#ffffff" },
+    });
+  } catch (e) {
+    qrDataUrl.value = "";
+  }
 });
 
 
@@ -256,6 +275,15 @@ function resetForm() {
         <div class="submit-group">
           <button class="reset-btn" @click="resetForm">초기화</button>
           <button class="submit-btn" @click="submit" :disabled="loading">등록하기</button>
+        </div>
+
+        <!-- Queue Status QR -->
+        <div v-if="qrDataUrl" class="qr-card">
+          <img class="qr-image" :src="qrDataUrl" alt="대기열 조회 QR 코드" />
+          <div class="qr-text">
+            <strong>내 순번 조회</strong>
+            <small>QR을 스캔하면 휴대폰에서 실시간 대기 현황을 볼 수 있습니다.</small>
+          </div>
         </div>
       </div>
     </div>
@@ -574,6 +602,53 @@ function resetForm() {
 .submit-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Queue Status QR */
+.qr-card {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  background: var(--bg-card);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: var(--shadow-card);
+}
+
+.qr-image {
+  width: 140px;
+  height: 140px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.5rem;
+}
+
+.qr-text {
+  flex: 1;
+}
+
+.qr-text strong {
+  display: block;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.qr-text small {
+  display: block;
+  font-size: 0.9375rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+@media (max-width: 600px) {
+  .qr-card {
+    flex-direction: column;
+    text-align: center;
+  }
 }
 
 /* Booth Status */
