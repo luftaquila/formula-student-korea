@@ -58,11 +58,12 @@ function onRailClick(key) {
 function hideLiveMapLayers() {
   if (!map) return;
   for (const m of Object.values(markers)) { try { map.removeLayer(m); } catch {} }
-  // Null the ref, not just detach: updateRoverMarker treats a non-null
-  // roverMarker as "already on the map" and only setLatLng()s it, so leaving a
-  // dangling reference here means restoreLiveMapLayers() can never re-add the
-  // marker — the map pans on follow but the rover dot stays invisible.
-  if (roverMarker) { try { map.removeLayer(roverMarker); } catch {} roverMarker = null; roverMarkerSource = null; }
+  // Null the refs, not just detach: setDeviceMarker treats a non-null marker as
+  // "already on the map" and only setLatLng()s it, so leaving a dangling
+  // reference means restoreLiveMapLayers() can never re-add it.
+  for (const k of ["rover", "receiver"]) {
+    if (deviceMarkers[k]) { try { map.removeLayer(deviceMarkers[k]); } catch {} deviceMarkers[k] = null; }
+  }
   if (pathLine) { try { map.removeLayer(pathLine); } catch {} }
   if (pathStartMarker) { try { map.removeLayer(pathStartMarker); } catch {} }
   if (pathEndMarker) { try { map.removeLayer(pathEndMarker); } catch {} }
@@ -71,11 +72,7 @@ function hideLiveMapLayers() {
 function restoreLiveMapLayers() {
   if (!map) return;
   rebuildAllMarkers();
-  const src = roverStatus.value.position_source;
-  const lp = src === "receiver"
-    ? roverStatus.value.receiver?.last_position
-    : roverStatus.value.last_position;
-  if (lp) updateRoverMarker(lp.lat, lp.lng, src);
+  syncDeviceMarkers(roverStatus.value);
   if (pathStart && pathWaypoints.value.length > 0) renderPath();
   renderSprayMarkers();
 }
@@ -1039,10 +1036,10 @@ function onSheetTouchEnd() {
 
 let map = null;
 let markers = {};
-let roverMarker = null;
-// Which source the live marker's icon currently reflects ("receiver" | "rover"),
-// so updateRoverMarker only re-skins it when the active source actually changes.
-let roverMarkerSource = null;
+// One live marker per device — the rover (purple) and the GPS receiver (teal) —
+// so BOTH show at once when both are connected. position_source still governs
+// cone-capture priority and which one follow tracks.
+let deviceMarkers = { rover: null, receiver: null };
 let pathLine = null;
 let pathStartMarker = null;
 let pathEndMarker = null;
@@ -3455,30 +3452,36 @@ function roverSourceIcon(source) {
   });
 }
 
-function updateRoverMarker(lat, lng, source) {
-  // Live layers (incl. this marker) are torn down while the missions-history
-  // view is open; don't resurrect the marker from a stray SSE frame there —
-  // restoreLiveMapLayers() re-creates it when the operator returns to live.
-  if (!map || isMissionsView.value || !isValidRoverPos(lat, lng)) return;
-  // Which device is this position from? Prefer the explicit source, else the
-  // server's current active source, else assume rover (legacy).
-  const src = source || roverStatus.value.position_source || "rover";
-  const label = ROVER_MARKER_LABELS[src] || ROVER_MARKER_LABELS.rover;
-  if (roverMarker) {
-    roverMarker.setLatLng([lat, lng]);
-    if (src !== roverMarkerSource) {
-      roverMarker.setIcon(roverSourceIcon(src));
-      roverMarker.setTooltipContent(label);
-      roverMarkerSource = src;
-    }
-  } else {
-    roverMarker = L.marker([lat, lng], {
-      icon: roverSourceIcon(src),
-      zIndexOffset: 1000, interactive: false,
-    }).addTo(map);
-    roverMarker.bindTooltip(label, { direction: "top", offset: [0, -8], permanent: true, className: "rover-tooltip" });
-    roverMarkerSource = src;
+// Create / move / remove one device's live marker. Pass a null/invalid position
+// to remove it (device disconnected, or not a live position source). Live layers
+// are torn down in the missions-history view; don't resurrect from a stray frame.
+function setDeviceMarker(kind, lat, lng) {
+  if (!map || isMissionsView.value) return;
+  const existing = deviceMarkers[kind];
+  if (!isValidRoverPos(lat, lng)) {
+    if (existing) { try { map.removeLayer(existing); } catch {} deviceMarkers[kind] = null; }
+    return;
   }
+  if (existing) { existing.setLatLng([lat, lng]); return; }
+  const m = L.marker([lat, lng], {
+    icon: roverSourceIcon(kind), zIndexOffset: 1000, interactive: false,
+  }).addTo(map);
+  m.bindTooltip(ROVER_MARKER_LABELS[kind] || ROVER_MARKER_LABELS.rover,
+    { direction: "top", offset: [0, -8], permanent: true, className: "rover-tooltip" });
+  deviceMarkers[kind] = m;
+}
+
+// Show/hide both device markers from a status snapshot: the rover whenever it is
+// connected with a position; the receiver whenever it is connected in CAPTURE
+// mode with a position (in base mode it is a stationary RTCM source, not a live
+// position source, so its marker is hidden). Both show at once when both apply.
+function syncDeviceMarkers(s) {
+  if (!s) return;
+  const rover = s.connected ? s.last_position : null;
+  setDeviceMarker("rover", rover?.lat, rover?.lng);
+  const rc = s.receiver;
+  const recv = rc && rc.connected && rc.mode === "capture" ? rc.last_position : null;
+  setDeviceMarker("receiver", recv?.lat, recv?.lng);
 }
 
 async function addConeFromRover() {
@@ -3487,7 +3490,7 @@ async function addConeFromRover() {
   try {
     const res = await request("/api/rover/request", { method: "POST" });
     const { lat, lng, alt } = await res.json();
-    updateRoverMarker(lat, lng);
+    setDeviceMarker(roverStatus.value.position_source === "receiver" ? "receiver" : "rover", lat, lng);
     await addCone(lat, lng, currentSide.value, alt);
   } catch (err) {
     notifyError(err.message || "로버 위치 수신에 실패했습니다.");
@@ -4339,8 +4342,13 @@ function connectSSE() {
   eventSource.addEventListener("rover", (e) => {
     const data = parseSSE(e);
     if (!data || !isValidRoverPos(data.lat, data.lng)) return;
-    updateRoverMarker(data.lat, data.lng, data.source);
-    if (followRover.value) scheduleFollow(data.lat, data.lng);
+    // Move only this device's own marker (leaving the other device's in place).
+    const evSrc = data.source === "receiver" ? "receiver" : "rover";
+    setDeviceMarker(evSrc, data.lat, data.lng);
+    // Follow tracks the ACTIVE source only.
+    if (followRover.value && evSrc === (roverStatus.value.position_source || "rover")) {
+      scheduleFollow(data.lat, data.lng);
+    }
     // Mission path progress is a rover-only concern; a receiver capture position
     // must not be mistaken for mission movement.
     if (roverMode.value === "executing" && data.source !== "receiver") updatePathProgress(data.lat, data.lng);
@@ -4351,12 +4359,12 @@ function connectSSE() {
     if (!data) return;
     roverStatus.value = { ...roverStatus.value, ...data };
     syncAppRoverStatus(data);
-    // Track the ACTIVE source's position on the map: the receiver when it is the
-    // preferred source, otherwise the rover (rover→server SSE is the truth).
+    // Draw BOTH device markers (rover + receiver) from the snapshot.
+    syncDeviceMarkers(roverStatus.value);
+    // Follow the ACTIVE source's position.
     const src = data.position_source;
     const lp = src === "receiver" ? data.receiver?.last_position : data.last_position;
     if (lp && typeof lp.lat === "number" && typeof lp.lng === "number") {
-      updateRoverMarker(lp.lat, lp.lng, src);
       if (followRover.value) scheduleFollow(lp.lat, lp.lng);
     }
     // If the rover disconnected mid-manual-control, release immediately.
@@ -4449,15 +4457,9 @@ async function fetchRoverStatus() {
     const data = await res.json();
     roverStatus.value = { ...roverStatus.value, ...data };
     syncAppRoverStatus(data);
-    // Sync the marker with the cached server-side position on first load —
-    // without this the map only shows it after the next live SSE update, which
-    // can be 1+ seconds away. Use the ACTIVE source (receiver when preferred)
-    // to match restoreLiveMapLayers + the rover:status SSE handler.
-    const src = data.position_source;
-    const lp = src === "receiver" ? data.receiver?.last_position : data.last_position;
-    if (lp && typeof lp.lat === "number" && typeof lp.lng === "number") {
-      updateRoverMarker(lp.lat, lp.lng, src);
-    }
+    // Draw both device markers from the cached server-side snapshot on first
+    // load — without this the map only shows them after the next live SSE frame.
+    syncDeviceMarkers(roverStatus.value);
     // Restore in-flight mission so a tab reload during a mission doesn't lose
     // the path overlay, waypoint counter, or spray markers.
     restoreMissionProgress(data.mission_progress);
