@@ -974,6 +974,9 @@ function goToInspection(num) {
   display: flex;
   align-items: center;
   gap: 0.375rem;
+  /* 대기 부스의 select 와 같은 높이(min-height 2rem, box-sizing: border-box)로
+     맞춰 입차/대기 부스 카드의 총 높이를 일치시킨다. */
+  min-height: 2rem;
 }
 
 .booth-team-num {
@@ -1004,6 +1007,7 @@ function goToInspection(num) {
 
 .booth-select {
   width: 100%;
+  min-height: 2rem;
   padding: 0.375rem 0.5rem;
   border: 1px solid var(--border-color);
   border-radius: 6px;
