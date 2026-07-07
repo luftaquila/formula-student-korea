@@ -55,6 +55,8 @@ _PARAMS = {
     'l1_cm_capture_m': 0.03,
     'l1_brake_zone_m': 1.00,
     'l1_min_speed_m_s': 0.07,
+    'l1_creep_dist_m': 0.12,
+    'l1_landing_bias_m': 0.0,
     'l1_kturn_enter_rad': 1.047,   # 60°
     'l1_kturn_exit_rad': 0.0873,   # 5°
     'l1_kturn_exit_dist_m': 0.50,
@@ -210,31 +212,51 @@ class TestBrakeZone:
         assert v == pytest.approx(_PARAMS['cruise_speed'], abs=1e-9)
 
     def test_brake_ramp_linear_in_zone(self):
-        """Inside brake_zone, v_des = min_speed + t·(cruise − min)
-        where t = dist/brake_zone. Verify at the midpoint."""
+        """Inside brake_zone (but outside the creep zone), v_des ramps
+        cruise (zone edge) → min_speed at creep_dist, i.e.
+        v_des = min_speed + t·(cruise − min) with t = (dist − creep)/(zone − creep)."""
         t = L1Tracker(_PARAMS)
         seg = _seg(target=(0.5, 0.0))
-        # Antenna 0.5 m from target, brake_zone 1.0 m → t = 0.5.
+        # Antenna 0.5 m from target.
         antenna = (0.0, 0.0)
         chassis = _chassis_for_antenna_at(*antenna, psi=0.0)
         v, _, _ = t.step(chassis, seg, t_now=0.0, antenna_world=antenna)
+        creep = _PARAMS['l1_creep_dist_m']
+        t_ramp = (0.5 - creep) / (_PARAMS['l1_brake_zone_m'] - creep)
         expected = (_PARAMS['l1_min_speed_m_s']
-                    + 0.5 * (_PARAMS['cruise_speed']
-                             - _PARAMS['l1_min_speed_m_s']))
+                    + t_ramp * (_PARAMS['cruise_speed']
+                                - _PARAMS['l1_min_speed_m_s']))
         # eta is 0 (aligned), so cos(eta)=1 — v_cmd == v_des.
         assert v == pytest.approx(expected, abs=1e-9)
 
-    def test_brake_floor_at_min_speed(self):
-        """Right at cm_capture+ε the ramp should hit min_speed."""
+    def test_creep_zone_holds_min_speed(self):
+        """Within creep_dist of the target the ramp is floored at min_speed
+        (flat), so the chassis arrives slow and doesn't coast past — the
+        landing-overshoot fix."""
         t = L1Tracker(_PARAMS)
         seg = _seg(target=(1.0, 0.0))
-        # Antenna 4 cm from target → reach gate doesn't fire, but
-        # very inside the brake zone.
+        # Antenna 4 cm from target → past cm_capture (3 cm), inside creep (12 cm).
         antenna = (0.96, 0.0)
         chassis = _chassis_for_antenna_at(*antenna, psi=0.0)
         v, _, _ = t.step(chassis, seg, t_now=0.0, antenna_world=antenna)
-        # t = 0.04, v_des = 0.07 + 0.04·0.93 ≈ 0.107.
-        assert 0.07 < v < 0.12
+        assert v == pytest.approx(_PARAMS['l1_min_speed_m_s'], abs=1e-9)
+
+    def test_landing_bias_shifts_capture_forward(self):
+        """A positive l1_landing_bias_m aims the capture point that far past
+        the true target along the corridor (psi_dock), so the chassis drives
+        further before 'reached' — cancelling a systematic undershoot."""
+        seg = _seg(target=(1.0, 0.0))  # end_pose psi_dock = 0 → corridor +x
+        # Antenna 2 cm short of the TRUE target.
+        antenna = (0.98, 0.0)
+        chassis = _chassis_for_antenna_at(*antenna, psi=0.0)
+        # No bias: 2 cm < cm_capture (3 cm) → 'reached'.
+        base = L1Tracker(_PARAMS)
+        _, _, s0 = base.step(chassis, seg, t_now=0.0, antenna_world=antenna)
+        assert s0 == 'reached'
+        # +2 cm bias: aim point at 1.02 → antenna is 4 cm from it → still tracking.
+        biased = L1Tracker(dict(_PARAMS, l1_landing_bias_m=0.02))
+        _, _, s1 = biased.step(chassis, seg, t_now=0.0, antenna_world=antenna)
+        assert s1 == 'tracking'
 
 
 class TestKturnEnter:

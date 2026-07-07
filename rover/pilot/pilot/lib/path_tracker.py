@@ -82,6 +82,22 @@ class L1Tracker:
         # zone. MCU PID deadband is 0.05 m/s; 0.07 keeps the chassis
         # moving under power until cm_capture trips.
         self._min_speed = float(params.get('l1_min_speed_m_s', 0.07))
+        # Creep zone: distance before the target at which the brake ramp has
+        # already reached min_speed, held flat through to capture. Without it
+        # the ramp only hits min_speed AT the target, so the actual chassis
+        # speed (lagging the commanded decel) is still ~0.2 m/s at cm_capture
+        # and coasts ~1-2 cm past. This runway lets the speed settle to
+        # min_speed before capture, cutting the coast to <0.5 cm.
+        self._creep_dist = float(params.get('l1_creep_dist_m', 0.12))
+        # Fixed landing bias (per-rig calibration). Shifts the capture aim
+        # point along the corridor to cancel the systematic over/undershoot
+        # that remains after the creep zone: + moves the landing FORWARD
+        # (compensates undershoot), − moves it BACK (compensates overshoot).
+        # Default 0.0 = no compensation. The success gate is unaffected
+        # (the navigator's settle reads segment.target_antenna directly), so
+        # this only moves where the tracker decides it has 'arrived'.
+        # Re-measurable via the landing diagnostic; lives in rover_params.yaml.
+        self._landing_bias = float(params.get('l1_landing_bias_m', 0.0))
 
         # K-turn hysteresis. eta = bearing(antenna→target) −
         # chassis_ψ. Enter K-turn when |eta| > kturn_enter (60°) at
@@ -145,6 +161,13 @@ class L1Tracker:
         _, _, psi = chassis_pose
         ax, ay = antenna_world
         tx, ty = segment.target_antenna
+        if self._landing_bias != 0.0:
+            # Shift the aim point along the corridor heading (psi_dock) by the
+            # calibrated landing bias so the systematic stopping-short/long is
+            # cancelled and the antenna lands on the true target.
+            psi_dock = segment.end_pose[2]
+            tx += cos(psi_dock) * self._landing_bias
+            ty += sin(psi_dock) * self._landing_bias
 
         target_dist = hypot(tx - ax, ty - ay)
         if target_dist <= self._cm_capture:
@@ -244,7 +267,14 @@ class L1Tracker:
         # throughout the forward leg.
         v_des = self._cruise_speed
         if target_dist < self._brake_zone_m:
-            t_ramp = target_dist / self._brake_zone_m
+            # Ramp cruise (at the zone edge) → min_speed at `creep_dist`, then
+            # hold min_speed through the last creep_dist to the target (t_ramp
+            # floored at 0). Gives the chassis runway to settle to min_speed
+            # before cm_capture so it doesn't coast past.
+            span = self._brake_zone_m - self._creep_dist
+            t_ramp = (target_dist - self._creep_dist) / span if span > 1e-3 else 0.0
+            if t_ramp < 0.0:
+                t_ramp = 0.0
             v_des = self._min_speed + t_ramp * (
                 self._cruise_speed - self._min_speed)
         speed_d = v_des * cos(eta)
