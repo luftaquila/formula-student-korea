@@ -2355,6 +2355,49 @@ describe('Ground calibration trigger', () => {
       else await sleep(50);
     }
     assert.ok(failed, 'a perception disconnect mid-ground-calibration flips status to failed');
+    // A close that aborted a running calibration is warn-level (it broke
+    // something the operator was waiting on), tagged with which calibration.
+    const rec = localDb.prepare(
+      "SELECT level, detail FROM logs WHERE action = 'rover.camera.control_closed' ORDER BY id DESC LIMIT 1"
+    ).get();
+    assert.equal(rec.level, 'warn', 'a calibration-aborting disconnect is warn-level');
+    assert.ok(JSON.parse(rec.detail).aborted_calibration.includes('ground'),
+      'the warn names the aborted calibration');
+  });
+
+  it('a bare perception disconnect (nothing running) logs control_closed at info', async () => {
+    // Fresh control channel, no calibrate-* issued: the close handler takes the
+    // benign branch. This is the reconnect-churn case that used to flood warn.
+    const ac = new AbortController();
+    const ctl = await fetch(`${url}/api/rover/camera/control`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ac.signal,
+    });
+    assert.equal(ctl.status, 200);
+    const reader = ctl.body.getReader();
+    const drained = (async () => {
+      try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
+    })();
+    await sleep(60);
+    const before = localDb.prepare(
+      "SELECT COUNT(*) n FROM logs WHERE action = 'rover.camera.control_closed'"
+    ).get().n;
+    ac.abort();
+    await drained.catch(() => {});
+    let rec = null;
+    for (let i = 0; i < 20 && !rec; i++) {
+      const cnt = localDb.prepare(
+        "SELECT COUNT(*) n FROM logs WHERE action = 'rover.camera.control_closed'"
+      ).get().n;
+      if (cnt > before) {
+        rec = localDb.prepare(
+          "SELECT level, detail FROM logs WHERE action = 'rover.camera.control_closed' ORDER BY id DESC LIMIT 1"
+        ).get();
+      } else await sleep(50);
+    }
+    assert.ok(rec, 'a bare disconnect logs control_closed');
+    assert.equal(rec.level, 'info', 'a benign close is info, not warn');
+    assert.equal(rec.detail, null, 'a benign close carries no aborted-calibration detail');
   });
 });
 
