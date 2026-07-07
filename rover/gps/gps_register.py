@@ -337,7 +337,17 @@ class GpsRegisterAgent:
         raise last_exc
 
     def _configure_receiver(self):
-        """Enable UBX NAV-PVT/HPPOSLLH/DOP on USB, disable NMEA, set fix rate."""
+        """Configure the F9P for capture (roving) mode: UBX NAV output on, NMEA
+        off, fix rate set, and — critically — TMODE + RTCM output DISABLED.
+
+        This runs unconditionally on every serial open, so it must be
+        authoritative: build_cfg_valset persists to RAM+BBR, so a base session
+        leaves CFG-TMODE-MODE=FIXED in battery-backed RAM. Without clearing it
+        here, a restart in capture mode (power loss / systemd restart / a
+        base-stop lost while offline) would leave the receiver in TMODE FIXED,
+        silently reporting the stale base coordinate for every cone. Clearing it
+        here makes capture always start clean; the base re-assert on open (see
+        _serial_loop) re-enables TMODE right after when we really are a base."""
         cfg = build_cfg_valset([
             (CFG_RATE_MEAS, self._meas_rate_ms, "H"),
             (CFG_MSGOUT_UBX_NAV_PVT_USB, 1, "B"),
@@ -349,9 +359,11 @@ class GpsRegisterAgent:
             (CFG_MSGOUT_NMEA_GSA_USB, 0, "B"),
             (CFG_MSGOUT_NMEA_GLL_USB, 0, "B"),
             (CFG_MSGOUT_NMEA_VTG_USB, 0, "B"),
-        ])
+            # Clear any persisted base-station config (TMODE FIXED + RTCM output).
+            (CFG_TMODE_MODE, 0, "B"),
+        ] + [(k, 0, "B") for k in _RTCM_MSGOUT_KEYS])
         self._serial.write(cfg)
-        log.info("ZED-F9P configured for UBX output @ %d ms", self._meas_rate_ms)
+        log.info("ZED-F9P configured for UBX output @ %d ms (capture mode)", self._meas_rate_ms)
 
     def _configure_base(self, lat, lon, alt, acc):
         """Put the F9P into TMODE FIXED (LLH) at the surveyed point and enable

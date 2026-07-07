@@ -218,6 +218,24 @@ class TestConfigureBase:
         for key in gr._RTCM_MSGOUT_KEYS:
             assert cfg[key] == 0
 
+    def test_capture_config_clears_persisted_base(self):
+        # Capture-mode config runs on every serial open and must clear any
+        # persisted TMODE FIXED + RTCM output (BBR survives restarts), so a
+        # restart after a base session can't silently report the base coordinate.
+        class _FakeSerial:
+            def __init__(self): self.written = b""
+            def write(self, data): self.written += bytes(data)
+
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._serial = _FakeSerial()
+        agent._meas_rate_ms = 1000
+        agent._configure_receiver()
+        cfg = self._decode_valset(agent._serial.written)
+        assert cfg[gr.CFG_TMODE_MODE] == 0                  # TMODE disabled
+        for key in gr._RTCM_MSGOUT_KEYS:
+            assert cfg[key] == 0                            # RTCM output off
+        assert cfg[gr.CFG_MSGOUT_UBX_NAV_PVT_USB] == 1      # NAV output still on
+
 
 class TestSurveySampleHeight:
     """Survey must record ELLIPSOIDAL height (feeds TMODE LLH), not MSL."""

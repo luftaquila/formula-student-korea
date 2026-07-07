@@ -3406,7 +3406,11 @@ function isValidRoverPos(lat, lng) {
 }
 
 function centerOnRover() {
-  const lp = roverStatus.value.last_position;
+  // Center on the ACTIVE source (receiver when preferred), matching the live
+  // follow handlers — otherwise enabling follow snaps to the rover even when the
+  // receiver is the tracked source.
+  const s = roverStatus.value;
+  const lp = s.position_source === "receiver" ? s.receiver?.last_position : s.last_position;
   if (!lp || !map || !isValidRoverPos(lp.lat, lp.lng)) return;
   panToVisibleCenter(lp.lat, lp.lng);
 }

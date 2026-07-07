@@ -206,19 +206,27 @@ class GpsNode(Node):
             return
         if source == self._ntrip_source:
             return
-        self._ntrip_source = source
-        self.get_logger().info(f'NTRIP correction source -> {source}')
-        if source == 'base':
-            # Stop pulling NGII; the receiver base now supplies RTCM via inject.
-            if self._ntrip is not None:
-                try:
-                    self._ntrip.stop()
-                except Exception:
-                    pass
+        # Set the source and detach any live NGII client UNDER _ntrip_setup_lock so
+        # this is ordered against _ntrip_setup_worker's lock-held critical section —
+        # otherwise a 'base' flip landing between the worker's source re-check and
+        # its `self._ntrip = client` assignment would leak a live NGII client into
+        # base mode (double-feeding the F9P). Stop the client OUTSIDE the lock so a
+        # multi-second thread join doesn't block the worker.
+        client_to_stop = None
+        with self._ntrip_setup_lock:
+            self._ntrip_source = source
+            if source == 'base':
+                client_to_stop = self._ntrip
                 self._ntrip = None
-        else:
-            # Back to NGII — allow immediate re-setup on the next 3D fix.
-            self._ntrip_last_attempt = 0.0
+            else:
+                # Back to NGII — allow immediate re-setup on the next 3D fix.
+                self._ntrip_last_attempt = 0.0
+        if client_to_stop is not None:
+            try:
+                client_to_stop.stop()
+            except Exception:
+                pass
+        self.get_logger().info(f'NTRIP correction source -> {source}')
 
     def _teardown_serial(self):
         """Close NTRIP and the serial port for a clean reopen.
