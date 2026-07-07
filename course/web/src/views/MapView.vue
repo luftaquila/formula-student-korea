@@ -4362,10 +4362,14 @@ function connectSSE() {
     syncAppRoverStatus(data);
     // Draw BOTH device markers (rover + receiver) from the snapshot.
     syncDeviceMarkers(roverStatus.value);
-    // Follow tracks the ROVER's position only (the receiver is not a chase target).
+    // Follow + mission path-progress track the ROVER's position. Doing path
+    // progress here (not only in the "rover" event) keeps the executing overlay
+    // advancing even when the receiver is the active source — the server then
+    // suppresses the rover's live "rover" event, but rover:status still fires.
     const rlp = data.last_position;
     if (rlp && typeof rlp.lat === "number" && typeof rlp.lng === "number") {
       if (followRover.value) scheduleFollow(rlp.lat, rlp.lng);
+      if (roverMode.value === "executing") updatePathProgress(rlp.lat, rlp.lng);
     }
     // If the rover disconnected mid-manual-control, release immediately.
     if (!data.connected && roverMode.value === "manual") {
@@ -4403,6 +4407,18 @@ function connectSSE() {
   eventSource.addEventListener("rover:obstacle", (e) => {
     const data = parseSSE(e);
     if (data) onObstacle(data);
+  });
+
+  // Base-station survey outcome — surface success/failure to the operator (a
+  // failed survey otherwise just silently reverts to "미측량").
+  eventSource.addEventListener("gps:survey_result", (e) => {
+    const data = parseSSE(e);
+    if (!data) return;
+    if (data.ok) {
+      notifySuccess(`측량 완료: ${data.name}${data.samples != null ? ` (${data.samples} 샘플)` : ""}`);
+    } else {
+      notifyError(`측량 실패: ${data.name || "측량점"} — RTK 고정 샘플이 없습니다.`);
+    }
   });
 }
 

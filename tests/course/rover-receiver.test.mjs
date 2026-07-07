@@ -385,6 +385,43 @@ describe('base receiver reconnect', () => {
   });
 });
 
+// ─── survey failure is surfaced (not silent) ─────────────────────────────────
+describe('survey failure reporting', () => {
+  it('an ok:false survey result resets surveying + broadcasts a failure event', async () => {
+    const create = await client.post('/api/gps/survey-points', {
+      cookie: adminCookie, body: { name: 'survey-fail' },
+    });
+    const point = await create.json();
+    const receiver = await openStream('gps');
+    // Start a survey → server marks it "surveying".
+    const started = await client.post(`/api/gps/survey-points/${point.id}/survey`, {
+      cookie: adminCookie, body: { duration_s: 10 },
+    });
+    assert.equal(started.status, 200);
+
+    const browser = await openBrowserEvents();
+    // Device reports failure (no RTK-fixed samples).
+    const res = await client.post('/api/rover/base/survey-result', {
+      headers: internalHeaders,
+      body: { point_id: point.id, ok: false, error: 'no_rtk_fixed_samples' },
+    });
+    assert.equal(res.status, 200);
+
+    const evt = await browser.waitFor('gps:survey_result', { match: (d) => d.point_id === point.id });
+    assert.equal(evt.data.ok, false);
+
+    // Surveying state cleared; the point stays unsurveyed (no coordinate).
+    const s = await status();
+    assert.equal(s.receiver.base.state, 'idle');
+    const pts = await (await client.get('/api/gps/survey-points', { cookie: adminCookie })).json();
+    assert.equal(pts.points.find((p) => p.id === point.id).lat, null);
+
+    browser.close();
+    receiver.close();
+    await new Promise((r) => setTimeout(r, 50));
+  });
+});
+
 // ─── gating ────────────────────────────────────────────────────────────────
 describe('access control', () => {
   it('GPS config requires admin', async () => {

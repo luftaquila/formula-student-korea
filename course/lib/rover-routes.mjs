@@ -393,6 +393,11 @@ app.get("/api/rover/stream", (req, res) => {
     receiverState.connected = true;
     receiverState.last_disconnect_reason = null;
     receiverState.last_disconnect_at = 0;
+    // A fresh connection can't be continuing a prior in-flight survey (the survey
+    // worker lived in the previous session) — abort a stale "surveying" state.
+    if (receiverState.base.state === "surveying") {
+      receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
+    }
     // Re-apply base config FIRST (it may flip mode to "base"), then broadcast once
     // so the UI doesn't show "capture" for a telemetry cycle after a base receiver
     // reconnects.
@@ -407,6 +412,11 @@ app.get("/api/rover/stream", (req, res) => {
       if (receiverClient === res) {
         receiverClient = null;
         markReceiverDisconnected("sse_closed");
+        // A survey can't continue without the device — abort it so the UI doesn't
+        // stay stuck on "surveying" (device telemetry no longer resets base.state).
+        if (receiverState.base.state === "surveying") {
+          receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
+        }
         broadcastRoverStatus();
       }
     });
@@ -528,8 +538,10 @@ app.post("/api/rover/telemetry", (req, res) => {
   const now = Date.now();
 
   // Receiver telemetry has no mission lifecycle — it only refreshes the receiver's
-  // fix/NTRIP/GPS snapshot and its base-session state for the UI. `mode` stays
-  // server-owned (driven by base-station config), never taken from the device.
+  // fix/NTRIP/GPS snapshot. `mode` AND `base.state` are server-owned (driven by the
+  // GPS-management config + survey/base commands + the survey-result callback),
+  // never taken from the device — so the device's telemetry `base` block is ignored
+  // here to avoid a transient mismatch with the server-set point_id/survey fields.
   if (device === "gps") {
     if (typeof fix_status === "string") receiverState.fix_status = fix_status;
     if (typeof ntrip_connected === "boolean") {
@@ -540,10 +552,6 @@ app.post("/api/rover/telemetry", (req, res) => {
     if (gpsMetrics) receiverState.gps = gpsMetrics;
     const ntripDetail = sanitizeNtripDetail(ntrip);
     if (ntripDetail) receiverState.ntrip = ntripDetail;
-    const base = req.body?.base;
-    if (base && typeof base === "object" && !Array.isArray(base) && typeof base.state === "string") {
-      receiverState.base.state = base.state.slice(0, 16);
-    }
     broadcastRoverStatus();
     return res.json({ ok: true });
   }
@@ -1089,17 +1097,35 @@ app.post("/api/gps/survey-points/:id/survey/cancel", (req, res) => {
 });
 
 // POST /api/rover/base/survey-result - 수신기가 측량 결과 보고 (internal)
+// 성공/실패 모두 보고된다: 성공이면 좌표 저장, 실패(ok:false, 예: rtk_fixed 샘플 0)면
+// 좌표는 그대로 두고 실패를 UI에 알린다. 어느 쪽이든 surveying 상태를 idle로 되돌린다.
 app.post("/api/rover/base/survey-result", (req, res) => {
-  const { point_id, lat, lng, alt, h_acc, samples } = req.body || {};
+  const { point_id, ok, lat, lng, alt, h_acc, samples, error } = req.body || {};
   const id = Number(point_id);
   if (!Number.isInteger(id)) return res.status(400).send("올바르지 않은 point_id입니다.");
-  const coordValidation = validateCoordinate(lat, lng);
-  if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
   const point = getSurveyPointStmt.get(id);
   if (!point) {
     logger.warn(req, "gps.survey.result", { error: "point_not_found", id }, "gps");
     return res.status(404).send("측량점을 찾을 수 없습니다.");
   }
+  // Clear the surveying state for this point regardless of outcome.
+  if (receiverState.base.state === "surveying" && receiverState.base.point_id === id) {
+    receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
+  }
+
+  // Failure (e.g. no RTK-fixed samples): leave the point's coordinate untouched
+  // and surface the failure to the operator UI.
+  if (ok === false) {
+    const reason = typeof error === "string" ? error.slice(0, 64) : "survey_failed";
+    logger.warn(req, "gps.survey.result", { id, ok: false, error: reason }, point.name);
+    broadcastEvent("gps:survey_result", { point_id: id, name: point.name, ok: false, error: reason });
+    broadcastRoverStatus();
+    return res.json({ ok: true });
+  }
+
+  // Success: record the surveyed coordinate.
+  const coordValidation = validateCoordinate(lat, lng);
+  if (!coordValidation.valid) return res.status(400).send(coordValidation.error);
   const altValue = typeof alt === "number" && Number.isFinite(alt) ? alt : null;
   const hAccValue = typeof h_acc === "number" && Number.isFinite(h_acc) ? h_acc : null;
   const sampleCount = Number.isInteger(samples) ? samples : null;
@@ -1109,11 +1135,9 @@ app.post("/api/rover/base/survey-result", (req, res) => {
     logger.warn(req, "gps.survey.result", { error: result.error, id }, point.name);
     return res.status(result.status).send(result.error);
   }
-  if (receiverState.base.state === "surveying" && receiverState.base.point_id === id) {
-    receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
-  }
   logger.log(req, "gps.survey.result",
     { id, lat, lng, alt: altValue, h_acc: hAccValue, samples: sampleCount }, point.name);
+  broadcastEvent("gps:survey_result", { point_id: id, name: point.name, ok: true, samples: sampleCount });
   broadcastRoverStatus();
   res.json({ ok: true });
 });

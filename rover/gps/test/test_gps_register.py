@@ -313,3 +313,39 @@ class TestNtripWorkerBaseGuard:
         agent._ntrip_setup_worker(37.5, 127.0, agent._serial)
         assert agent._ntrip is None
         assert called["fetch"] is False
+
+
+class TestSurveyWorkerReporting:
+    """_survey_worker must POST an explicit result on completion — success with
+    the averaged coordinate, or an ok:false failure when no RTK-fixed samples."""
+
+    @staticmethod
+    def _agent():
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._lock = threading.Lock()
+        agent._running = True
+        agent._mode = "base-survey"
+        agent._posts = []
+        agent._enqueue_post = lambda path, payload, label: agent._posts.append((path, payload, label))
+        return agent
+
+    def test_reports_failure_on_zero_samples(self):
+        agent = self._agent()
+        agent._survey = {"point_id": 7, "samples": []}
+        agent._survey_worker(7, 0)  # duration 0 → finalize immediately
+        assert len(agent._posts) == 1
+        path, payload, _ = agent._posts[0]
+        assert path == "/api/rover/base/survey-result"
+        assert payload["point_id"] == 7 and payload["ok"] is False
+        assert agent._mode == "capture"
+
+    def test_reports_success_with_average(self):
+        agent = self._agent()
+        agent._survey = {"point_id": 3, "samples": [
+            (37.0, 127.0, 30.0, 0.01), (37.2, 127.2, 32.0, 0.03),
+        ]}
+        agent._survey_worker(3, 0)
+        assert len(agent._posts) == 1
+        _, payload, _ = agent._posts[0]
+        assert payload["ok"] is True and payload["samples"] == 2
+        assert abs(payload["lat"] - 37.1) < 1e-9 and abs(payload["lng"] - 127.1) < 1e-9

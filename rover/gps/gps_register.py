@@ -132,8 +132,13 @@ _SERIAL_OPEN_BACKOFF_S = 2.0
 def split_hp(scaled_fine):
     """Split an integer in *fine* units (coarse/100) into (coarse_main, hp) for
     the u-blox HP config pair. Works for lat/lon (coarse 1e-7 deg, fine 1e-9 deg)
-    and height (coarse cm, fine 0.1 mm): value = main*coarse + hp*fine, hp in
-    0..99. Floor division keeps the identity exact for negative values too."""
+    and height (coarse cm, fine 0.1 mm): value = main*coarse + hp*fine.
+
+    Floor division makes hp always land in 0..99 — within u-blox's I1 HP range
+    [-99, 99] — so the reconstruction main*coarse + hp*fine is EXACT in every
+    hemisphere: the F9P sums the two fields linearly, with no same-sign
+    requirement between main and hp. (In practice only exercised on +lat/+lon
+    in Korea, but correct for negative coordinates too.)"""
     main = scaled_fine // 100
     hp = scaled_fine - main * 100
     return main, hp
@@ -761,11 +766,17 @@ class GpsRegisterAgent:
             samples = list(surv["samples"]) if surv and surv.get("point_id") == point_id else []
         result = average_survey_samples(samples)
         if result is None:
-            log.warning("base survey %s: no RTK-fixed samples — not reporting", point_id)
+            # Report the FAILURE (don't just log) so the server clears the
+            # "surveying" state and the operator UI shows an error instead of
+            # silently reverting to "미측량".
+            log.warning("base survey %s: no RTK-fixed samples — reporting failure", point_id)
+            self._enqueue_post("/api/rover/base/survey-result", {
+                "point_id": point_id, "ok": False, "error": "no_rtk_fixed_samples",
+            }, "survey-result")
             return
         lat, lon, alt, h_acc, n = result
         self._enqueue_post("/api/rover/base/survey-result", {
-            "point_id": point_id, "lat": lat, "lng": lon,
+            "point_id": point_id, "ok": True, "lat": lat, "lng": lon,
             "alt": alt, "h_acc": h_acc, "samples": n,
         }, "survey-result")
         log.info("base survey %s done: %d samples -> (%.7f, %.7f)", point_id, n, lat, lon)
