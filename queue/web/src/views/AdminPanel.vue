@@ -276,6 +276,13 @@ function goToStats() {
   router.push("/stats");
 }
 
+function goToInspection(num) {
+  // 큐는 항상 현재 연도의 엔트리를 다루므로(getEntries → entry 기본 연도),
+  // 인스펙션 시트 경로 /:year/:num 의 year 는 현재 연도로 이동한다.
+  const base = import.meta.env.PROD ? "/inspection" : "";
+  window.location.href = `${base}/${new Date().getFullYear()}/${num}`;
+}
+
 </script>
 
 <template>
@@ -369,9 +376,14 @@ function goToStats() {
                       <span class="booth-team-name">{{ entries[booth.occupied_by]?.univ }} {{ entries[booth.occupied_by]?.team }}</span>
                     </div>
                     <div class="booth-elapsed">{{ elapsedTimes[`${currentTab}-${booth.booth_num}`] || '00:00' }}</div>
-                    <button class="btn btn-danger btn-sm booth-action-btn" @click="exitBoothAction(booth.booth_num)">
-                      출차
-                    </button>
+                    <div class="booth-action-row">
+                      <button class="btn btn-primary btn-sm" @click="goToInspection(booth.occupied_by)">
+                        인스펙션
+                      </button>
+                      <button class="btn btn-danger btn-sm" @click="exitBoothAction(booth.booth_num)">
+                        출차
+                      </button>
+                    </div>
                   </div>
                   <div v-else-if="booth.active" class="booth-card-body">
                     <select
@@ -1002,6 +1014,15 @@ function goToStats() {
 
 .booth-action-btn {
   width: 100%;
+}
+
+.booth-action-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.booth-action-row .btn {
+  flex: 1;
 }
 
 @media (max-width: 1024px) {
