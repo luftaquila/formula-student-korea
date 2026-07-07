@@ -5680,7 +5680,9 @@ onUnmounted(() => {
 /* ── Top status strip ─────────────────────────────── */
 .status-strip {
   display: flex; align-items: center; gap: 0.75rem;
-  padding: 0.875rem 1.25rem;
+  /* Equal padding all round so the left edge and the fullscreen button's right
+     edge sit the same distance from the border as the top/bottom. */
+  padding: 0.875rem;
   border-bottom: 1px solid var(--border-color);
   background: var(--bg-primary); color: var(--text-primary);
   font-size: 0.85rem;
@@ -7004,7 +7006,7 @@ onUnmounted(() => {
 
   /* Chips scroll horizontally (up to the pinned fullscreen button); popovers go
      position: fixed (see toggleChipPopover) since overflow-x: auto clips them. */
-  .status-strip { padding: 0.75rem 1.25rem; }
+  .status-strip { padding: 0.75rem; }
   .status-strip-chips {
     flex-wrap: nowrap;
     overflow-x: auto;
