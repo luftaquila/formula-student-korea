@@ -94,6 +94,20 @@ navigator_node:
     # PID deadband is 0.05 m/s; 0.07 keeps the chassis moving under
     # power until cm_capture trips.
     l1_min_speed_m_s: 0.07
+    # Creep zone: the brake ramp reaches min_speed this far BEFORE the target
+    # (must be > l1_cm_capture_m to have any effect — otherwise capture fires
+    # before the creep floor is entered) and holds min_speed to capture. Gives
+    # the actual chassis speed runway to settle to min_speed so it doesn't
+    # coast past. 0.12 m arrives at min_speed (measured), tight ±0.5 cm landing.
+    l1_creep_dist_m: 0.12
+    # Fixed landing bias (per-rig calibration). Shifts the capture aim point
+    # along the corridor: + forward (compensates undershoot), − back
+    # (compensates overshoot). Measured on this rig (10-cone runs, 20 Hz
+    # estimator-vs-RTK diagnostic): creep 0.12 lands ~1.9 cm short; +0.019
+    # over-corrected to +0.9 cm long, so 0.015 is used to sit within ~RTK
+    # noise of centre. Re-measure/retune if cm_capture / accel_limit / GPS
+    # latency change.
+    l1_landing_bias_m: 0.015
     # Direct-mode K-turn hysteresis. eta = bearing(antenna→target)
     # − chassis_ψ. K-turn engages when |eta| crosses ABOVE kturn_enter
     # (60°) at ANY distance — a large heading error close to target is

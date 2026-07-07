@@ -140,6 +140,8 @@ class NavigatorNode(Node):
         self.declare_parameter('l1_cm_capture_m', 0.03)
         self.declare_parameter('l1_brake_zone_m', 1.00)
         self.declare_parameter('l1_min_speed_m_s', 0.07)
+        self.declare_parameter('l1_creep_dist_m', 0.12)
+        self.declare_parameter('l1_landing_bias_m', 0.0)
         self.declare_parameter('l1_kturn_enter_rad', 1.047)
         self.declare_parameter('l1_kturn_exit_rad', 0.0873)
         self.declare_parameter('l1_kturn_exit_dist_m', 0.50)
@@ -454,6 +456,8 @@ class NavigatorNode(Node):
             'l1_cm_capture_m': p('l1_cm_capture_m').value,
             'l1_brake_zone_m': p('l1_brake_zone_m').value,
             'l1_min_speed_m_s': p('l1_min_speed_m_s').value,
+            'l1_creep_dist_m': p('l1_creep_dist_m').value,
+            'l1_landing_bias_m': p('l1_landing_bias_m').value,
             'l1_kturn_enter_rad': p('l1_kturn_enter_rad').value,
             'l1_kturn_exit_rad': p('l1_kturn_exit_rad').value,
             'l1_kturn_exit_dist_m': p('l1_kturn_exit_dist_m').value,
