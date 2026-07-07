@@ -3406,11 +3406,9 @@ function isValidRoverPos(lat, lng) {
 }
 
 function centerOnRover() {
-  // Center on the ACTIVE source (receiver when preferred), matching the live
-  // follow handlers — otherwise enabling follow snaps to the rover even when the
-  // receiver is the tracked source.
-  const s = roverStatus.value;
-  const lp = s.position_source === "receiver" ? s.receiver?.last_position : s.last_position;
+  // Follow always tracks the ROVER (the receiver is a handheld, not a chase
+  // target), so recenter on the rover's position when follow is enabled.
+  const lp = roverStatus.value.last_position;
   if (!lp || !map || !isValidRoverPos(lp.lat, lp.lng)) return;
   panToVisibleCenter(lp.lat, lp.lng);
 }
@@ -4349,10 +4347,8 @@ function connectSSE() {
     // Move only this device's own marker (leaving the other device's in place).
     const evSrc = data.source === "receiver" ? "receiver" : "rover";
     setDeviceMarker(evSrc, data.lat, data.lng);
-    // Follow tracks the ACTIVE source only.
-    if (followRover.value && evSrc === (roverStatus.value.position_source || "rover")) {
-      scheduleFollow(data.lat, data.lng);
-    }
+    // Follow tracks the ROVER only — the receiver is a handheld, not a chase target.
+    if (followRover.value && evSrc === "rover") scheduleFollow(data.lat, data.lng);
     // Mission path progress is a rover-only concern; a receiver capture position
     // must not be mistaken for mission movement.
     if (roverMode.value === "executing" && data.source !== "receiver") updatePathProgress(data.lat, data.lng);
@@ -4365,11 +4361,10 @@ function connectSSE() {
     syncAppRoverStatus(data);
     // Draw BOTH device markers (rover + receiver) from the snapshot.
     syncDeviceMarkers(roverStatus.value);
-    // Follow the ACTIVE source's position.
-    const src = data.position_source;
-    const lp = src === "receiver" ? data.receiver?.last_position : data.last_position;
-    if (lp && typeof lp.lat === "number" && typeof lp.lng === "number") {
-      if (followRover.value) scheduleFollow(lp.lat, lp.lng);
+    // Follow tracks the ROVER's position only (the receiver is not a chase target).
+    const rlp = data.last_position;
+    if (rlp && typeof rlp.lat === "number" && typeof rlp.lng === "number") {
+      if (followRover.value) scheduleFollow(rlp.lat, rlp.lng);
     }
     // If the rover disconnected mid-manual-control, release immediately.
     if (!data.connected && roverMode.value === "manual") {
