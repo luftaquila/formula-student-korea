@@ -3975,8 +3975,9 @@ watch(webrtcConnected, (isConnected, was) => {
 const router = useRouter();
 function goVr() { router.push("/vr"); }
 // Single camera button cycles three modes so there's no separate 거리 오버레이
-// button: off → plain 2D → depth overlay → off. The label stays "카메라"; the
-// active highlight + the video itself (plain vs heatmap) show which mode is live.
+// button: off → plain 2D → depth overlay → off. Each mode is visually distinct:
+// off = ghost, 2D = blue (btn-primary), depth = violet + "깊이맵" label, so the
+// switch always gives feedback (the video plain-vs-heatmap corroborates it).
 function cycleCamera() {
   if (!cameraOn.value) { startCamera(); return; }        // off → plain 2D
   if (!cameraDepthOn.value) { toggleDepth(); return; }   // 2D → depth overlay
@@ -3988,13 +3989,17 @@ function cycleCamera() {
 // no stereo calibration loaded (it falls back to the plain stream).
 async function toggleDepth() {
   const next = !cameraDepthOn.value;
+  // Flip optimistically so the button colour changes the instant it's pressed
+  // (the request + rover re-render take a beat); revert if the server rejects.
+  // The next status poll reconciles with the rover's authoritative state.
+  cameraDepthOn.value = next;
   try {
     await request("/api/rover/camera/depth", {
       method: "POST",
       body: JSON.stringify({ on: next }),
     });
-    cameraDepthOn.value = next;
   } catch (e) {
+    cameraDepthOn.value = !next;
     notifyWarn(`깊이 뷰 전환 실패: ${e?.message || e}`);
   }
 }
@@ -5432,10 +5437,10 @@ onUnmounted(() => {
                        while the rover is offline, so it stays enabled). -->
                   <div class="rover-controls rover-controls-grid">
                     <button
-                      :class="['btn', 'btn-lg-touch', cameraOn ? 'btn-primary' : 'btn-ghost']"
+                      :class="['btn', 'btn-lg-touch', !cameraOn ? 'btn-ghost' : (cameraDepthOn ? 'camera-btn-depth' : 'btn-primary')]"
                       :disabled="!roverStatus.connected"
                       @click="cycleCamera"
-                    >카메라</button>
+                    >{{ cameraOn && cameraDepthOn ? '깊이맵' : '카메라' }}</button>
                     <button
                       class="btn btn-lg-touch btn-ghost"
                       @click="goVr"
@@ -6526,6 +6531,19 @@ onUnmounted(() => {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem;
 }
 .rover-controls-grid .btn { width: 100%; }
+
+/* Depth-map mode fill: a distinct violet so the camera button visibly changes
+   when cycling plain 2D (blue btn-primary) → depth overlay. */
+.camera-btn-depth {
+  background: #7c3aed;
+  color: #fff;
+  border-color: #7c3aed;
+}
+.camera-btn-depth:hover:not(:disabled) {
+  background: #8b5cf6;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(124, 58, 237, 0.4);
+}
 
 .course-toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
 .course-toolbar .btn { flex: 1; min-width: 120px; }
