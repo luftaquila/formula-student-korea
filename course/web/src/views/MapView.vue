@@ -140,6 +140,9 @@ const roverStatus = ref({
   // "receiver" | "rover" | null — which device supplies the live cone-capture
   // position right now. Drives the live marker icon + the source badge/FAB.
   position_source: null,
+  // "ngii" | "base" — the rover's configured correction source (server config).
+  // Used to warn when base is selected but the receiver isn't connected.
+  ntrip_source: "ngii",
 });
 
 function syncAppRoverStatus(data) {
@@ -840,6 +843,17 @@ const surveyingPointId = computed(() =>
 // Only surveyed points (with recorded coordinates) can serve as a base station.
 const surveyedPoints = computed(() => surveyPoints.value.filter((p) => p.lat != null && p.lng != null));
 const hasSurveyedPoint = computed(() => surveyedPoints.value.length > 0);
+
+// Base source selected but the receiver isn't connected → the rover suppresses
+// NGII yet no base RTCM flows, so it silently drops from RTK-fixed to standalone.
+// Surface it loudly: a persistent GPS-tab banner + a toast when it first happens.
+const baseNoReceiver = computed(() =>
+  roverStatus.value.ntrip_source === "base" && !(roverStatus.value.receiver?.connected));
+watch(baseNoReceiver, (now, prev) => {
+  if (now && !prev) {
+    notifyWarn("기준국(base) 소스인데 GPS 수신기가 연결되지 않았습니다 — 로버에 RTK 보정이 전달되지 않습니다.");
+  }
+});
 
 // Keep the base-point dropdown pinned to the configured active point, else the
 // first surveyed point, so switching to "base" always has a valid selection.
@@ -5872,6 +5886,10 @@ onUnmounted(() => {
                 <!-- NTRIP source selection -->
                 <div class="inspector-group">
                   <div class="group-title">로버 NTRIP 보정 소스</div>
+                  <div v-if="baseNoReceiver" class="gps-alert">
+                    ⚠️ 기준국(base) 소스인데 GPS 수신기가 연결되지 않았습니다. 로버에 RTK 보정이 전달되지 않아
+                    측위가 저하됩니다. 수신기를 연결하거나 NGII로 전환하세요.
+                  </div>
                   <div class="gps-source-choices">
                     <label :class="['gps-source-opt', { active: gpsConfig.ntrip_source === 'ngii' }]">
                       <input type="radio" :checked="gpsConfig.ntrip_source === 'ngii'"
@@ -7313,6 +7331,13 @@ onUnmounted(() => {
 .gps-dot.off { background: var(--border-color); }
 .gps-sub { color: var(--text-secondary); font-size: 0.82rem; }
 .gps-hint { margin-top: 0.4rem; }
+.gps-alert {
+  margin-bottom: 0.6rem; padding: 0.5rem 0.6rem; border-radius: 8px;
+  font-size: 0.82rem; line-height: 1.35;
+  border: 1px solid #ef4444;
+  background: color-mix(in srgb, #ef4444 14%, var(--bg-secondary));
+  color: var(--text-primary);
+}
 .gps-unsurveyed { color: #f59e0b; }
 .gps-source-choices { display: flex; flex-direction: column; gap: 0.5rem; }
 .gps-source-opt {

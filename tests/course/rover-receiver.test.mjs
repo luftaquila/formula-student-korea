@@ -422,6 +422,43 @@ describe('survey failure reporting', () => {
   });
 });
 
+// ─── base source with no receiver ────────────────────────────────────────────
+describe('base source without a connected receiver', () => {
+  it('status exposes ntrip_source and the selection is audited via logger.warn', async () => {
+    // Fresh server guarantees no receiver is connected.
+    const dbPath2 = tmpDbPath();
+    const app2 = createCourseApp({ dbPath: dbPath2 });
+    const started2 = await startServer(app2.app);
+    const srv2 = started2.server;
+    const cli2 = createClient(started2.baseUrl);
+    try {
+      const create = await cli2.post('/api/gps/survey-points', { cookie: adminCookie, body: { name: 'base-no-recv' } });
+      const point = await create.json();
+      await cli2.post('/api/rover/base/survey-result', {
+        headers: internalHeaders,
+        body: { point_id: point.id, lat: 37.4, lng: 127.4, alt: 20, h_acc: 0.01, samples: 30 },
+      });
+      const put = await cli2.put('/api/gps/config', {
+        cookie: adminCookie, body: { ntrip_source: 'base', active_base_point_id: point.id },
+      });
+      assert.equal(put.status, 200); // allowed even with no receiver (operator's choice)
+
+      const s = await (await cli2.get('/api/rover/status', { cookie: adminCookie })).json();
+      assert.equal(s.ntrip_source, 'base');
+
+      const warned = app2.db.prepare(
+        "SELECT COUNT(*) AS c FROM logs WHERE action='gps.config.update' AND level='warn' AND detail LIKE '%base_selected_no_receiver%'",
+      ).get().c;
+      assert.ok(warned >= 1, 'base-with-no-receiver is audited via logger.warn');
+    } finally {
+      srv2.closeAllConnections?.();
+      await stopServer(srv2);
+      app2.db.close();
+      cleanup(dbPath2);
+    }
+  });
+});
+
 // ─── gating ────────────────────────────────────────────────────────────────
 describe('access control', () => {
   it('GPS config requires admin', async () => {

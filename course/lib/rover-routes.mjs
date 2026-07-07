@@ -26,6 +26,10 @@ let roverClient = null;
 // the PREFERRED position source for cone capture (higher RTK-fixed reliability);
 // the rover is the fallback. See activePositionSource().
 let receiverClient = null;
+// In-memory mirror of gps_config.ntrip_source so broadcastRoverStatus (a hot
+// path) doesn't read SQLite on every frame. Loaded from the DB at boot (in the
+// GPS section) and updated on PUT /api/gps/config.
+let ntripSourceCache = "ngii";
 const roverPendingResolves = [];
 let lastRoverPosition = null; // { lat, lng, at: epoch ms }
 // When the operator last issued a resume. Telemetry's PAUSED→paused reconcile
@@ -317,6 +321,9 @@ function broadcastRoverStatus() {
     ...roverState,
     receiver: { ...receiverState },
     position_source: activePositionSource(),
+    // The rover's configured correction source — lets the UI warn when it's the
+    // receiver base station but the receiver isn't connected (rover gets no RTK).
+    ntrip_source: ntripSourceCache,
   });
 }
 
@@ -663,7 +670,10 @@ app.post("/api/rover/telemetry", (req, res) => {
 
 // GET /api/rover/status - 로버+수신기 상태 스냅샷 (admin)
 app.get("/api/rover/status", (req, res) => {
-  res.json({ ...roverState, receiver: { ...receiverState }, position_source: activePositionSource() });
+  res.json({
+    ...roverState, receiver: { ...receiverState },
+    position_source: activePositionSource(), ntrip_source: ntripSourceCache,
+  });
 });
 
 // POST /api/rover/waypoint_reached - 로버가 웨이포인트 도달 알림 (internal)
@@ -912,6 +922,8 @@ function getGpsConfig() {
     raw != null && raw !== "" && Number.isInteger(Number(raw)) ? Number(raw) : null;
   return { ntrip_source, active_base_point_id };
 }
+// Prime the hot-path cache from the persisted config at boot.
+ntripSourceCache = getGpsConfig().ntrip_source;
 
 const listSurveyPointsStmt = db.prepare("SELECT * FROM survey_point ORDER BY id");
 const getSurveyPointStmt = db.prepare("SELECT * FROM survey_point WHERE id = ?");
@@ -1001,10 +1013,18 @@ app.put("/api/gps/config", (req, res) => {
     logger.warn(req, "gps.config.update", { error: result.error }, "gps");
     return res.status(result.status).send(result.error);
   }
+  ntripSourceCache = ntrip_source;
   // 저장 후 즉시 기기에 반영.
   if (point) activateBase(point); else deactivateBase();
   logger.log(req, "gps.config.update",
     { ntrip_source, active_base_point_id: point ? point.id : null }, "gps");
+  // Selecting base with no receiver connected strands the rover: NGII is
+  // suppressed but no base RTCM will flow. Not an error (operator's choice), but
+  // audit it — the UI also shows a persistent warning.
+  if (ntrip_source === "base" && !receiverClient) {
+    logger.warn(req, "gps.config.update",
+      { warning: "base_selected_no_receiver", active_base_point_id: point ? point.id : null }, "gps");
+  }
   broadcastRoverStatus();
   res.json(getGpsConfig());
 });
