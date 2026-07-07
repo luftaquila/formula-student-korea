@@ -139,6 +139,11 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100dvh;
+  /* Override the shared .app-container `min-height: 100vh`. On mobile the app
+     never scrolls (overflow: hidden), so the browser address bar stays pinned;
+     a 100vh floor then exceeds the visible 100dvh and pushes the top content
+     (the status chip bar) behind the address bar. Cap the floor at 100dvh. */
+  min-height: 100dvh;
   overflow: hidden;
   position: relative;
 }
