@@ -290,3 +290,26 @@ class TestBaseReconfigHandoff:
         agent._activate_base({"lat": None, "lng": None})
         assert agent._mode == "capture"
         assert agent._pending_reconfig is None
+
+
+class TestNtripWorkerBaseGuard:
+    """The NGII setup worker must not start a client once we are a base station
+    (mirrors gps_node._ntrip_setup_worker) — else it leaks a live NGII client."""
+
+    def test_worker_aborts_in_base_output(self, monkeypatch):
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._lock = threading.Lock()
+        agent._mode = "base-output"
+        agent._ntrip = None
+        agent._serial = object()
+        agent._ntrip_username = "user"
+        called = {"fetch": False}
+
+        def _boom(*_a, **_kw):
+            called["fetch"] = True
+            raise AssertionError("must not fetch the source table in base mode")
+
+        monkeypatch.setattr(gr, "fetch_source_table", _boom)
+        agent._ntrip_setup_worker(37.5, 127.0, agent._serial)
+        assert agent._ntrip is None
+        assert called["fetch"] is False

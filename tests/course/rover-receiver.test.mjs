@@ -41,12 +41,12 @@ after(async () => {
 });
 
 // ─── SSE test client ─────────────────────────────────────────────────────
-// Opens a streaming fetch to /api/rover/stream and collects parsed events so a
-// test can assert what the server pushed and (via the paired POST) answer them.
-async function openStream(device) {
+// Opens a streaming fetch and collects parsed SSE events so a test can assert
+// what the server pushed and (via the paired POST) answer them.
+async function openSse(url, headers, readyEvent, base = baseUrl) {
   const controller = new AbortController();
-  const res = await fetch(`${baseUrl}/api/rover/stream?device=${device}`, {
-    headers: { ...internalHeaders, Accept: 'text/event-stream' },
+  const res = await fetch(`${base}${url}`, {
+    headers: { ...headers, Accept: 'text/event-stream' },
     signal: controller.signal,
   });
   assert.equal(res.status, 200);
@@ -88,10 +88,18 @@ async function openStream(device) {
       }
     },
   };
-  await handle.waitFor('connected');
+  await handle.waitFor(readyEvent);
   openStreams.push(handle);
   return handle;
 }
+
+// A device stream (rover / gps), internal-authed.
+const openStream = (device) =>
+  openSse(`/api/rover/stream?device=${device}`, internalHeaders, 'connected');
+
+// The browser event stream (/api/events), admin-authed.
+const openBrowserEvents = () =>
+  openSse('/api/events', { Cookie: adminCookie }, 'init');
 
 async function status() {
   const res = await client.get('/api/rover/status', { cookie: adminCookie });
@@ -298,6 +306,81 @@ describe('POST /api/rover/base/rtcm relay', () => {
     const evt = await rover.waitFor('rtcm');
     assert.equal(evt.data.data, payload);
     rover.close();
+    await new Promise((r) => setTimeout(r, 50));
+  });
+});
+
+// ─── request routing matches the active source ───────────────────────────────
+describe('POST /api/rover/request routing vs active source', () => {
+  it('falls back to the rover when the receiver is connected but has no fix', async () => {
+    // Fresh server so receiverState.last_position is genuinely empty — the shared
+    // server's in-memory state leaks a receiver position from earlier tests.
+    const dbPath2 = tmpDbPath();
+    const app2 = createCourseApp({ dbPath: dbPath2 });
+    const started2 = await startServer(app2.app);
+    const srv2 = started2.server;
+    const url2 = started2.baseUrl;
+    const cli2 = createClient(url2);
+    try {
+      const rover = await openSse('/api/rover/stream?device=rover', internalHeaders, 'connected', url2);
+      const receiver = await openSse('/api/rover/stream?device=gps', internalHeaders, 'connected', url2);
+      // Rover has a fix; the receiver is connected in capture mode but never posts.
+      await cli2.post('/api/rover/position?device=rover', {
+        headers: internalHeaders, body: { lat: 36.5, lng: 127.5, alt: 8 },
+      });
+      const s = await (await cli2.get('/api/rover/status', { cookie: adminCookie })).json();
+      assert.equal(s.position_source, 'rover'); // receiver has no last_position
+
+      // The request must route to the ROVER, not the fix-less receiver.
+      const reqPromise = cli2.post('/api/rover/request', { cookie: adminCookie });
+      const evt = await rover.waitFor('request-position');
+      assert.equal(
+        receiver.events.some((e) => e.event === 'request-position'), false,
+        'a fix-less receiver must not receive the request',
+      );
+      await cli2.post('/api/rover/position?device=rover', {
+        headers: internalHeaders, body: { lat: 36.6, lng: 127.6, alt: 9, request_id: evt.data.request_id },
+      });
+      const r = await reqPromise;
+      assert.equal(r.status, 200);
+      assert.equal((await r.json()).lat, 36.6);
+      rover.close();
+      receiver.close();
+    } finally {
+      srv2.closeAllConnections?.();
+      await stopServer(srv2);
+      app2.db.close();
+      cleanup(dbPath2);
+    }
+  });
+});
+
+// ─── base receiver reconnect broadcasts base mode immediately ─────────────────
+describe('base receiver reconnect', () => {
+  it('the connect broadcast already reflects base mode (not capture)', async () => {
+    const create = await client.post('/api/gps/survey-points', {
+      cookie: adminCookie, body: { name: 'base-reconnect' },
+    });
+    const point = await create.json();
+    await client.post('/api/rover/base/survey-result', {
+      headers: internalHeaders,
+      body: { point_id: point.id, lat: 37.22, lng: 127.22, alt: 30, h_acc: 0.01, samples: 60 },
+    });
+    await client.put('/api/gps/config', {
+      cookie: adminCookie, body: { ntrip_source: 'base', active_base_point_id: point.id },
+    });
+
+    // Browser subscribes BEFORE the receiver connects; the FIRST status with the
+    // receiver connected must already show mode "base" (reapply runs before the
+    // connect broadcast).
+    const browser = await openBrowserEvents();
+    const receiver = await openStream('gps');
+    const evt = await browser.waitFor('rover:status', { match: (d) => d.receiver && d.receiver.connected });
+    assert.equal(evt.data.receiver.mode, 'base');
+
+    await client.put('/api/gps/config', { cookie: adminCookie, body: { ntrip_source: 'ngii' } });
+    browser.close();
+    receiver.close();
     await new Promise((r) => setTimeout(r, 50));
   });
 });

@@ -459,6 +459,12 @@ class GpsRegisterAgent:
                          args=(lat, lon, self._serial), daemon=True).start()
 
     def _ntrip_setup_worker(self, lat, lon, serial_ref):
+        # We may have switched to base-output while this worker was queued or
+        # during the slow fetch below (e.g. the server sends base-activate right
+        # after the receiver reconnects). Bail early so we never pull NGII in base
+        # mode; re-checked under the lock too (mirrors gps_node._ntrip_setup_worker).
+        if self._mode == "base-output":
+            return
         try:
             table = fetch_source_table(NTRIP_HOST, NTRIP_PORT)
         except Exception as exc:
@@ -472,7 +478,8 @@ class GpsRegisterAgent:
                         lat, lon, NTRIP_SETUP_COOLDOWN_S)
             return
         with self._lock:
-            if self._ntrip is not None or self._serial is not serial_ref:
+            if (self._ntrip is not None or self._serial is not serial_ref
+                    or self._mode == "base-output"):
                 return
             log.info('NTRIP: auto-selected "%s" for (%.5f, %.5f)', mount, lat, lon)
             client = NTRIPClient(

@@ -393,8 +393,11 @@ app.get("/api/rover/stream", (req, res) => {
     receiverState.connected = true;
     receiverState.last_disconnect_reason = null;
     receiverState.last_disconnect_at = 0;
-    broadcastRoverStatus();
+    // Re-apply base config FIRST (it may flip mode to "base"), then broadcast once
+    // so the UI doesn't show "capture" for a telemetry cycle after a base receiver
+    // reconnects.
     reapplyReceiverBaseState();
+    broadcastRoverStatus();
 
     const heartbeat = setInterval(() => {
       try { res.write(": heartbeat\n\n"); } catch {}
@@ -805,11 +808,11 @@ app.post("/api/rover/spray_result", (req, res) => {
 });
 
 // POST /api/rover/request - 관리자가 콘 좌표 요청 (프론트엔드가 호출)
-// 수신기(캡처 모드)가 연결돼 있으면 수신기를 우선 사용하고, 없으면 로버로 폴백한다.
+// 대상은 activePositionSource()와 동일하게 고른다 — 즉 수신기는 캡처 모드 + 실제
+// 라이브 위치가 있을 때만 우선하고, 그 외에는 로버로 폴백한다. (라우팅이 아이콘/FAB이
+// 쓰는 정본과 어긋나면, fix 없는 수신기로 보내 로버를 두고 504로 타임아웃할 수 있다.)
 app.post("/api/rover/request", async (req, res) => {
-  const target =
-    (receiverClient && receiverState.mode === "capture") ? "receiver"
-    : (roverClient ? "rover" : null);
+  const target = activePositionSource();
   if (!target) {
     return rejectNoRover(req, res, "rover.request");
   }
