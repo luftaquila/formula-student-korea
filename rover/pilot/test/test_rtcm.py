@@ -80,6 +80,25 @@ class TestFramer:
         out = RTCM3Framer().feed(stream)
         assert real in out
 
+    def test_crc_failure_midstream_recovers_next_frame(self):
+        # A full-length frame whose PAYLOAD is corrupted (length still parses, CRC
+        # fails) must be dropped and the following valid frame still recovered.
+        good1 = build_frame(b"first-good-frame")
+        bad = bytearray(build_frame(b"corrupted-payload-here"))
+        bad[6] ^= 0xFF  # flip a payload byte → length intact, CRC now mismatches
+        good2 = build_frame(b"second-good-frame")
+        out = RTCM3Framer().feed(good1 + bytes(bad) + good2)
+        assert good1 in out and good2 in out
+        assert bytes(bad) not in out
+
+    def test_frame_with_preamble_bytes_in_payload(self):
+        # A payload full of 0xD3 (the preamble byte) must not desync the framer —
+        # it trusts the length field and consumes the whole payload as data.
+        frame = build_frame(bytes([RTCM3_PREAMBLE]) * 30)
+        other = build_frame(b"after")
+        out = RTCM3Framer().feed(frame + other)
+        assert out == [frame, other]
+
     def test_buffer_is_bounded_on_pure_garbage(self):
         framer = RTCM3Framer(max_buffer=1024)
         # A lone 0xD3 with a large length keeps the parser waiting; flood garbage.

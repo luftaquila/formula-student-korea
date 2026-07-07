@@ -205,6 +205,33 @@ class TestConfigureBase:
         for key in gr._RTCM_MSGOUT_KEYS:
             assert cfg[key] == 1                 # each RTCM message enabled @1Hz
 
+    def test_emits_scaled_tmode_llh_main_and_hp(self):
+        # The main+HP decomposition of lat/lon/height must be wired straight from
+        # split_hp — a regression in the scaling or the signed format would place
+        # the base ARP metres off and skew every rover fix.
+        class _FakeSerial:
+            def __init__(self): self.written = b""
+            def write(self, data): self.written += bytes(data)
+
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._serial = _FakeSerial()
+        lat, lon, alt, acc = 37.5000000123, 127.0000000456, 40.1234, 0.02
+        agent._configure_base(lat, lon, alt, acc)
+        cfg = self._decode_valset(agent._serial.written)
+
+        lat_main, lat_hp = gr.split_hp(int(round(lat * 1e9)))
+        lon_main, lon_hp = gr.split_hp(int(round(lon * 1e9)))
+        h_main, h_hp = gr.split_hp(int(round(alt * 1e4)))
+        assert cfg[gr.CFG_TMODE_LAT] == lat_main
+        assert cfg[gr.CFG_TMODE_LAT_HP] == lat_hp
+        assert cfg[gr.CFG_TMODE_LON] == lon_main
+        assert cfg[gr.CFG_TMODE_LON_HP] == lon_hp
+        assert cfg[gr.CFG_TMODE_HEIGHT] == h_main
+        assert cfg[gr.CFG_TMODE_HEIGHT_HP] == h_hp
+        assert cfg[gr.CFG_TMODE_FIXED_POS_ACC] == 200   # 0.02 m -> 200 * 0.1mm
+        # HP fields must be non-zero here (proves they aren't hard-zeroed).
+        assert lat_hp != 0 and lon_hp != 0
+
     def test_stop_disables_tmode_and_rtcm(self):
         class _FakeSerial:
             def __init__(self): self.written = b""
@@ -418,3 +445,47 @@ class TestSurveyWorkerReporting:
         assert payload["ok"] is True and payload["samples"] == 80
         assert abs(payload["lat"] - 37.1) < 1e-6 and abs(payload["lng"] - 127.1) < 1e-6
         assert payload["std_m"] < gr.SURVEY_MAX_STD_M
+
+    def test_superseded_survey_is_not_clobbered_or_reported(self):
+        # A finalizing worker whose survey was replaced by a NEWER one (different
+        # point_id) must not clear it, reset the mode, or post a stale result —
+        # otherwise the new survey is lost and the server stays "surveying".
+        agent = self._agent()
+        newer = {"point_id": 200, "samples": [(37.0, 127.0, 30.0, 0.01)]}
+        agent._survey = newer
+        agent._survey_worker(100, 0)  # old worker for point 100 finalizes
+        assert agent._posts == [], "no result posted for the superseded survey"
+        assert agent._survey is newer, "the newer survey is left intact"
+        assert agent._mode == "base-survey", "mode not reset out from under the new survey"
+
+
+class TestHandleEventRobustness:
+    """A single malformed/unexpected SSE event must never propagate out of
+    _handle_event (which would kill the SSE thread and leave the unit deaf)."""
+
+    @staticmethod
+    def _agent():
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._lock = threading.Lock()
+        agent._running = True
+        agent._mode = "capture"
+        agent._survey = None
+        agent._capture = None
+        return agent
+
+    def test_bad_json_is_swallowed(self):
+        agent = self._agent()
+        agent._handle_event("base-survey-start", "{not json")
+        assert agent._survey is None and agent._mode == "capture"
+
+    def test_non_integer_point_id_does_not_raise_or_corrupt_state(self):
+        agent = self._agent()
+        # int("abc") would raise inside _start_survey; the handler must contain it
+        # AND the state must be untouched (validated before any mutation).
+        agent._handle_event("base-survey-start", '{"point_id": "abc"}')
+        assert agent._survey is None and agent._mode == "capture"
+
+    def test_unknown_event_is_ignored(self):
+        agent = self._agent()
+        agent._handle_event("execute-path", '{"waypoints": []}')  # rover-only, no-op here
+        assert agent._survey is None and agent._mode == "capture"

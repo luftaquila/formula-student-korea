@@ -547,7 +547,11 @@ class GpsRegisterAgent:
                 serial_port=serial_ref, lat=lat, lon=lon, logger=log,
             )
             self._ntrip = client
-        client.start()
+            # start() only spawns a daemon thread (non-blocking), so keep it under
+            # the lock: releasing before start() lets a racing base-activate
+            # stop()+null our reference, after which we'd start an orphaned NGII
+            # client feeding the F9P while it is a TMODE-FIXED base.
+            client.start()
 
     def _on_nav_pvt(self, pvt):
         metrics = self._metrics_from(pvt)
@@ -778,21 +782,27 @@ class GpsRegisterAgent:
         except json.JSONDecodeError:
             log.warning("bad %s JSON: %s", event, data)
             return
-        if event == "request-position":
-            # Cone capture: don't answer with a single sample — collect a stable
-            # rtk_fixed window first (see _capture_worker). Falls through to a
-            # timeout on the server if we never get a stable RTK fix.
-            self._start_capture(payload.get("request_id"))
-        elif event == "base-survey-start":
-            self._start_survey(payload.get("point_id"), payload.get("duration_s", 120))
-        elif event == "base-survey-cancel":
-            self._cancel_survey()
-        elif event == "base-activate":
-            self._activate_base(payload)
-        elif event == "base-stop":
-            self._deactivate_base()
-        # All other rover commands (execute-path, manual-control, calibrate-*)
-        # are no-ops for a survey unit: it has no motors/MCU to drive.
+        try:
+            if event == "request-position":
+                # Cone capture: don't answer with a single sample — collect a stable
+                # rtk_fixed window first (see _capture_worker). Falls through to a
+                # timeout on the server if we never get a stable RTK fix.
+                self._start_capture(payload.get("request_id"))
+            elif event == "base-survey-start":
+                self._start_survey(payload.get("point_id"), payload.get("duration_s", 120))
+            elif event == "base-survey-cancel":
+                self._cancel_survey()
+            elif event == "base-activate":
+                self._activate_base(payload)
+            elif event == "base-stop":
+                self._deactivate_base()
+            # All other rover commands (execute-path, manual-control, calibrate-*)
+            # are no-ops for a survey unit: it has no motors/MCU to drive.
+        except Exception:
+            # A single malformed/unexpected event must never kill the SSE thread —
+            # that would leave the unit "online" (telemetry still posting) but deaf
+            # to every further command until a restart. Log and keep processing.
+            log.exception("error handling SSE event %r", event)
 
     # ---- cone capture --------------------------------------------------
 
@@ -860,13 +870,22 @@ class GpsRegisterAgent:
             log.warning("base-survey-start without point_id"); return
         if self._mode == "base-output":
             log.warning("cannot survey while base output is active"); return
-        duration = max(5, min(int(duration_s or 120), 1800))
+        # Validate BEFORE mutating _mode/_survey so a malformed payload can't leave
+        # the unit stuck in "base-survey" with no survey (and the SSE handler's
+        # backstop still catches anything unexpected).
+        try:
+            pid = int(point_id)
+            duration = max(5, min(int(duration_s or 120), 1800))
+        except (TypeError, ValueError):
+            log.warning("base-survey-start with bad params: point_id=%r duration_s=%r",
+                        point_id, duration_s)
+            return
         with self._lock:
             self._mode = "base-survey"
-            self._survey = {"point_id": int(point_id), "samples": []}
-        log.info("base survey started: point %s for %ds", point_id, duration)
+            self._survey = {"point_id": pid, "samples": []}
+        log.info("base survey started: point %s for %ds", pid, duration)
         threading.Thread(target=self._survey_worker,
-                         args=(int(point_id), duration), daemon=True).start()
+                         args=(pid, duration), daemon=True).start()
 
     def _survey_worker(self, point_id, duration):
         deadline = time.monotonic() + duration
@@ -878,10 +897,19 @@ class GpsRegisterAgent:
             time.sleep(0.5)
         with self._lock:
             surv = self._survey
-            self._survey = None
-            if self._mode == "base-survey":
-                self._mode = "capture"
-            samples = list(surv["samples"]) if surv and surv.get("point_id") == point_id else []
+            if surv is not None and surv.get("point_id") == point_id:
+                self._survey = None
+                if self._mode == "base-survey":
+                    self._mode = "capture"
+                samples = list(surv["samples"])
+            else:
+                # Superseded by a newer survey (or cancelled) while we were
+                # finalizing — that owner controls _survey/_mode now, so don't
+                # touch them and don't post a result for a survey we no longer own.
+                samples = None
+        if samples is None:
+            log.info("base survey %s superseded before finalize — no result posted", point_id)
+            return
         result = evaluate_survey(samples)
         if isinstance(result, str):
             # Report the FAILURE (don't just log) so the server clears the
