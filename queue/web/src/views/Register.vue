@@ -606,7 +606,6 @@ function resetForm() {
 
 /* Queue Status QR */
 .qr-card {
-  margin-top: auto;
   display: flex;
   align-items: center;
   gap: 1.5rem;
