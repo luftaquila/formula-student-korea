@@ -828,7 +828,6 @@ watch(inspectorWidth, (v) => savePref("inspectorWidth", v));
 /* ── GPS 관리 (수신기 소스 선택 + base station 측량점) ─────────────────── */
 const gpsConfig = ref({ ntrip_source: "ngii", active_base_point_id: null });
 const surveyPoints = ref([]);
-const gpsLoading = ref(false);
 const gpsSaving = ref(false);
 const newSurveyName = ref("");
 const surveyDuration = ref(120);
@@ -866,7 +865,6 @@ watch([gpsConfig, surveyedPoints], () => {
 }, { deep: true });
 
 async function loadGps() {
-  gpsLoading.value = true;
   try {
     const [cfgRes, spRes] = await Promise.all([
       request("/api/gps/config"),
@@ -876,8 +874,6 @@ async function loadGps() {
     surveyPoints.value = (await spRes.json()).points || [];
   } catch (err) {
     notifyError(err.message || "GPS 설정을 불러오지 못했습니다.");
-  } finally {
-    gpsLoading.value = false;
   }
 }
 
@@ -942,11 +938,14 @@ async function cancelSurvey(p) {
   }
 }
 
-// 측량이 끝나면(surveying → idle/active) 목록을 새로고침해 새 좌표를 반영.
+// Auto-refresh (no manual button): reload on survey completion, on receiver
+// (re)connect, and on GPS-tab entry — whenever state relevant to the tab changes.
 watch(baseState, (now, prev) => {
   if (prev === "surveying" && now !== "surveying") loadGps();
 });
-// GPS 탭 진입 시 최신 설정/측량점 로드.
+watch(receiverConnected, (now, prev) => {
+  if (now && !prev && activeTab.value === "gps" && isAdmin.value) loadGps();
+});
 watch(activeTab, (v) => { if (v === "gps" && isAdmin.value) loadGps(); });
 
 // Tab-swap: hide live layers when entering the missions sub-view of the
@@ -5864,14 +5863,9 @@ onUnmounted(() => {
 
               <!-- GPS tab (receiver source + base-station survey points) -->
               <section v-show="activeTab === 'gps'" class="tab-pane">
-                <header class="tab-header">
-                  <h3>GPS</h3>
-                  <button class="btn btn-ghost btn-sm" :disabled="gpsLoading" @click="loadGps">↻ 새로고침</button>
-                </header>
-
                 <!-- Receiver status -->
                 <div class="inspector-group">
-                  <div class="group-title">GPS 수신기 (fsk-rover-gps)</div>
+                  <div class="group-title">GPS 수신기</div>
                   <div class="gps-status-row">
                     <span :class="['gps-dot', receiverConnected ? 'on' : 'off']"></span>
                     <span>{{ receiverConnected ? '연결됨' : '연결 안 됨' }}</span>
@@ -5896,15 +5890,15 @@ onUnmounted(() => {
                              :disabled="gpsSaving" @change="setNtripSource('ngii')" />
                       <div>
                         <strong>NGII (국토지리정보원)</strong>
-                        <div class="gps-sub">인터넷 NTRIP 캐스터에서 가장 가까운 기준국 자동 선택</div>
+                        <div class="gps-sub">NTRIP 캐스터에서 최근접 기준국 자동 선택</div>
                       </div>
                     </label>
                     <label :class="['gps-source-opt', { active: gpsConfig.ntrip_source === 'base', disabled: !hasSurveyedPoint }]">
                       <input type="radio" :checked="gpsConfig.ntrip_source === 'base'"
                              :disabled="gpsSaving || !hasSurveyedPoint" @change="setNtripSource('base', selectedBasePointId)" />
                       <div>
-                        <strong>수신기 base station</strong>
-                        <div class="gps-sub">측량점에 둔 수신기를 고정 기준국으로 사용 (인터넷 불필요)</div>
+                        <strong>RTK 수신기</strong>
+                        <div class="gps-sub">측량점에 배치한 수신기를 고정 기준국으로 사용</div>
                       </div>
                     </label>
                   </div>
@@ -5915,16 +5909,13 @@ onUnmounted(() => {
                       <option v-for="p in surveyedPoints" :key="p.id" :value="p.id">{{ p.name }}</option>
                     </select>
                   </div>
-                  <div v-if="!hasSurveyedPoint" class="gps-sub gps-hint">
-                    base station을 쓰려면 아래에서 측량점을 하나 이상 측량하세요.
-                  </div>
                 </div>
 
                 <!-- Survey points -->
                 <div class="inspector-group">
                   <div class="group-title">측량점 (기준국 위치)</div>
                   <div class="gps-add-row">
-                    <input v-model="newSurveyName" type="text" placeholder="측량점 이름 (예: 피트 코너)"
+                    <input v-model="newSurveyName" type="text" placeholder="측량점 이름"
                            maxlength="100" @keyup.enter="addSurveyPoint" />
                     <button class="btn btn-primary btn-sm" :disabled="!newSurveyName.trim()" @click="addSurveyPoint">추가</button>
                   </div>
@@ -7348,10 +7339,20 @@ onUnmounted(() => {
 .gps-source-opt.disabled { opacity: 0.55; cursor: not-allowed; }
 .gps-source-opt input { margin-top: 0.2rem; }
 .gps-base-select { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.6rem; }
-.gps-base-select select, .gps-survey-duration select { flex: 1; padding: 0.35rem; }
 .gps-add-row { display: flex; gap: 0.5rem; }
-.gps-add-row input { flex: 1; padding: 0.4rem; }
 .gps-survey-duration { display: flex; align-items: center; gap: 0.5rem; margin: 0.55rem 0; font-size: 0.85rem; }
+/* Match the course-add input styling; min-width:0 lets flex items shrink so a
+   long placeholder doesn't push the row past the inspector panel edge. */
+.gps-add-row input,
+.gps-base-select select,
+.gps-survey-duration select {
+  flex: 1; min-width: 0; padding: 0.375rem 0.5rem;
+  border: 1px solid var(--border-color); border-radius: 4px;
+  background: var(--bg-secondary); color: var(--text-primary); font-size: 0.8rem;
+}
+.gps-add-row input:focus,
+.gps-base-select select:focus,
+.gps-survey-duration select:focus { outline: none; border-color: var(--accent-primary); }
 .gps-point-list { display: flex; flex-direction: column; gap: 0.5rem; }
 .gps-point-card { padding: 0.6rem; border: 1px solid var(--border-color); border-radius: 8px; }
 .gps-point-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
