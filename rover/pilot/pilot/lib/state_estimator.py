@@ -212,6 +212,16 @@ class ChassisPoseEstimator:
         # a wild ψ jump.
         arc = max(abs(self._last_v) * dt, 0.05)
         dpsi = lat_inn / arc
+        # The lateral-innovation → ψ mapping flips sign with the direction of
+        # travel: in reverse the dead-reckoned arc curves the opposite way, so
+        # a given lateral residual implies the OPPOSITE ψ error. `arc` uses
+        # |v|, so without this flip the correction is wrong-signed in reverse
+        # and AMPLIFIES heading error during a K-turn (sim: +20°→+49° in 3 s
+        # reverse vs +20°→+1° forward) — the root of the post-K-turn "forward
+        # veers off and can't recover" limit cycle: the estimator handed the
+        # controller a badly-drifted ψ after every reverse.
+        if self._last_v < 0.0:
+            dpsi = -dpsi
         if dpsi > self.yaw_innov_max_step:
             dpsi = self.yaw_innov_max_step
         elif dpsi < -self.yaw_innov_max_step:
