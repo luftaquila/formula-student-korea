@@ -418,6 +418,13 @@ class PerceptionNode(Node):
                 self._cloud.post_obstacle({"reason": "stereo", **info})
             else:
                 self.get_logger().info("obstacle cleared")
+        # TEMP driving diagnostic: throttled per-frame detector state to the journal,
+        # so a real mission's misses / false positives can be triaged frame-by-frame
+        # (`journalctl -u perception.service | grep 'detect diag'`). Remove once tuned.
+        now = time.monotonic()
+        if now - getattr(self, "_last_diag_log", 0.0) >= 0.5:
+            self._last_diag_log = now
+            self.get_logger().info(f"detect diag: obstacle={obstacle} {info}")
 
     def _stereo_eyes(self, left_frame, right_frame):
         """Return (left, right) eye frames for the detector, or None if unavailable.

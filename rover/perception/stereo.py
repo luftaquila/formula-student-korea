@@ -582,6 +582,7 @@ class StereoDepth:
         self._ground_path = ""
         self._f_calib = 0.0
         self._ground_rows_cache = {}
+        self._dbg_offset = 0.0
         if cv2 is None:
             return
         calib = load_calibration(cfg.calib_path)
@@ -834,6 +835,7 @@ class StereoDepth:
             g = np.isfinite(cur_inv) & np.isfinite(act_inv)
             if int(np.count_nonzero(g)) >= max(1, int(cfg.ground_offset_min_px)):
                 offset = float(np.median(act_inv[g] - cur_inv[g]))
+        self._dbg_offset = offset                        # exposed for field diagnostics
         with np.errstate(divide="ignore", invalid="ignore"):
             corr = cinv + offset                         # shift the whole curve in 1/z
             return np.where(np.isfinite(corr) & (corr > 1e-6), 1.0 / corr, np.nan)
@@ -873,7 +875,18 @@ class StereoDepth:
         roi[ya:yb, xa:xb] = True
         above &= roi
         info = {"enabled": True, "mode": "aboveground", "ground_src": ground_src,
-                "above_px": int(np.count_nonzero(above))}
+                "above_px": int(np.count_nonzero(above)),
+                "offset": round(float(self._dbg_offset), 4)}
+        # Cheap driving-triage fields: expected ground vs actual depth at the TOP and
+        # BOTTOM of the ROI. A corridor-filling obstacle collapses gnd_top toward
+        # act_top (offset dragged near → miss); a pitch/offset error on empty ground
+        # shows as gnd < act (reference farther than reality → false positive).
+        band = max(1, (yb - ya) // 6)
+        for tag, rs in (("top", slice(ya, ya + band)), ("bot", slice(yb - band, yb))):
+            e = exp[rs]
+            info["gnd_" + tag] = round(float(np.nanmedian(e)), 2) if np.any(np.isfinite(e)) else None
+            zc = depth_z[rs, xa:xb]; vc = valid[rs, xa:xb] & np.isfinite(zc)
+            info["act_" + tag] = round(float(np.median(zc[vc])), 2) if np.any(vc) else None
         if info["above_px"] < max(1, int(cfg.min_cluster_px)):
             return False, info
         mask = above.astype(np.uint8)
