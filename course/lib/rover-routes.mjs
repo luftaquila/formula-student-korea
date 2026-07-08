@@ -11,8 +11,19 @@ const ROVER_MAX_SEGMENT_DIST_M = Number(process.env.ROVER_MAX_SEGMENT_DIST_M) ||
 const ROVER_MIN_SEGMENT_DIST_M = 0.05;
 const ROVER_MAX_PENDING_REQUESTS = 32;
 const ROVER_POSITION_STALE_MS = 30 * 1000;
+// A connected device (rover pilot / GPS receiver) POSTs telemetry every 3s. If
+// none arrives for this long, treat its SSE peer as dead and flip connected →
+// false, even though req.on("close") hasn't fired. An abrupt power-off (or a
+// yanked battery / dead Wi-Fi) leaves the TCP connection half-open for minutes,
+// and nothing else here notices: the status broadcast writes to the browser
+// clients (not the device socket), sendRover/ReceiverEvent's write_failed only
+// fires on operator-initiated pushes (and a half-open write buffers, not throws),
+// and the device→server heartbeat write is swallowed. Without this the GPS tab
+// keeps showing "DEVICE ONLINE" long after the receiver is off. ~3 missed cycles.
+const DEFAULT_DEVICE_STALE_MS = 10 * 1000;
+const DEFAULT_DEVICE_WATCHDOG_TICK_MS = 5 * 1000;
 
-export function registerRoverRoutes(app, { express, db, dbRun, logger, broadcastEvent, getCourseById, takeCourseSnapshot, validateCoordinate, validateAltitude }) {
+export function registerRoverRoutes(app, { express, db, dbRun, logger, broadcastEvent, getCourseById, takeCourseSnapshot, validateCoordinate, validateAltitude, deviceStaleMs, deviceWatchdogTickMs }) {
 
 /* ============================================
    API 라우트: /api/rover
@@ -192,6 +203,7 @@ function recordTelemetrySample() {
   );
 }
 const roverState = {
+  last_seen: 0, // epoch ms of the last inbound signal (SSE connect / telemetry / position); drives the liveness watchdog
   connected: false,
   last_position: null,
   last_position_at: 0,
@@ -258,6 +270,7 @@ const roverState = {
 // surveying; "base" = stationary RTK base station emitting RTCM (not a position
 // source). The `base` sub-block mirrors survey progress + RTCM link health for the UI.
 const receiverState = {
+  last_seen: 0, // epoch ms of the last inbound signal (SSE connect / telemetry / position); drives the liveness watchdog
   connected: false,
   last_disconnect_reason: null,
   last_disconnect_at: 0,
@@ -356,6 +369,37 @@ function markReceiverDisconnected(reason) {
   receiverState.fix_status = null;
 }
 
+// Liveness watchdog — see DEFAULT_DEVICE_STALE_MS. A device whose telemetry has
+// gone silent is flipped offline here even while its half-open SSE socket lingers,
+// so the UI stops showing a powered-off device as connected. Each branch mirrors
+// the side effects of that device's req.on("close") path: the receiver aborts a
+// stranded survey, the rover flags its in-flight mission interrupted (resumable).
+const DEVICE_STALE_MS = Number(deviceStaleMs) > 0 ? Number(deviceStaleMs) : DEFAULT_DEVICE_STALE_MS;
+const DEVICE_WATCHDOG_TICK_MS = Number(deviceWatchdogTickMs) > 0 ? Number(deviceWatchdogTickMs) : DEFAULT_DEVICE_WATCHDOG_TICK_MS;
+const deviceLivenessWatchdog = setInterval(() => {
+  const now = Date.now();
+  if (roverState.connected && now - roverState.last_seen > DEVICE_STALE_MS) {
+    if (roverClient) { try { roverClient.end(); } catch {} roverClient = null; }
+    markRoverDisconnected("stale");
+    if (currentMissionId != null) {
+      interruptMission();
+      logger.warn(null, "mission.interrupted", { mission_id: currentMissionId, reason: "telemetry_stale" }, "rover");
+    }
+    logger.warn(null, "rover.stream.stale", { silent_ms: now - roverState.last_seen }, "rover");
+    broadcastRoverStatus();
+  }
+  if (receiverState.connected && now - receiverState.last_seen > DEVICE_STALE_MS) {
+    if (receiverClient) { try { receiverClient.end(); } catch {} receiverClient = null; }
+    markReceiverDisconnected("stale");
+    if (receiverState.base.state === "surveying") {
+      receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
+    }
+    logger.warn(null, "receiver.stream.stale", { silent_ms: now - receiverState.last_seen }, "receiver");
+    broadcastRoverStatus();
+  }
+}, DEVICE_WATCHDOG_TICK_MS);
+if (deviceLivenessWatchdog.unref) deviceLivenessWatchdog.unref();
+
 // Telemetry field sanitizers — shared by the rover and receiver telemetry paths so
 // both devices' GPS/NTRIP blocks are validated identically. Return null when the
 // block is absent/malformed (caller then leaves the cached value untouched).
@@ -411,6 +455,7 @@ app.get("/api/rover/stream", (req, res) => {
     }
     receiverClient = res;
     receiverState.connected = true;
+    receiverState.last_seen = Date.now();
     receiverState.last_disconnect_reason = null;
     receiverState.last_disconnect_at = 0;
     // A fresh connection can't be continuing a prior in-flight survey (the survey
@@ -460,6 +505,7 @@ app.get("/api/rover/stream", (req, res) => {
   }
   roverClient = res;
   roverState.connected = true;
+  roverState.last_seen = Date.now();
   roverState.last_disconnect_reason = null;
   roverState.last_disconnect_at = 0;
   // The rover boots the pump off; keep the UI toggle in sync on (re)connect.
@@ -537,9 +583,11 @@ app.post("/api/rover/position", (req, res) => {
   const now = Date.now();
 
   if (device === "gps") {
+    receiverState.last_seen = now;
     receiverState.last_position = { lat, lng, alt: altValue };
     receiverState.last_position_at = now;
   } else {
+    roverState.last_seen = now;
     lastRoverPosition = { lat, lng, alt: altValue, at: now };
     roverState.last_position = { lat, lng, alt: altValue };
     roverState.last_position_at = now;
@@ -585,6 +633,7 @@ app.post("/api/rover/telemetry", (req, res) => {
   // the device's telemetry `base.state`/`mode` are ignored here. The one exception
   // is the live survey sample count, which only the device knows.
   if (device === "gps") {
+    receiverState.last_seen = now;
     if (typeof fix_status === "string") receiverState.fix_status = fix_status;
     if (typeof ntrip_connected === "boolean") {
       receiverState.ntrip_connected = ntrip_connected;
@@ -605,6 +654,7 @@ app.post("/api/rover/telemetry", (req, res) => {
     return res.json({ ok: true });
   }
 
+  roverState.last_seen = now;
   const prevNav = roverState.nav_state;
   if (typeof nav_state === "string") roverState.nav_state = nav_state;
   if (typeof fix_status === "string") {

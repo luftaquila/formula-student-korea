@@ -1161,6 +1161,8 @@ registerRoverRoutes(app, {
   takeCourseSnapshot,
   validateCoordinate,
   validateAltitude,
+  deviceStaleMs: options.deviceStaleMs,
+  deviceWatchdogTickMs: options.deviceWatchdogTickMs,
 });
 
 /* ============================================
