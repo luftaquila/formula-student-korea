@@ -1055,6 +1055,14 @@ watch(isMissionsView, (next, prev) => {
   }
 });
 
+// Redraw the GPS-tab survey-point markers whenever their coordinates, the active
+// base, the list selection, the active tab, or the missions view change. Placed
+// after isMissionsView's declaration to avoid the TDZ noted at the top of file.
+watch(
+  [surveyedPoints, () => gpsConfig.value, selectedSurveyPointId, activeTab, isMissionsView],
+  () => renderSurveyPoints(),
+);
+
 // Inspector drag-to-resize. Works for mouse and touch via Pointer Events.
 let resizePointerId = null;
 let resizeStartX = 0;
@@ -1139,6 +1147,7 @@ let markers = {};
 // so BOTH show at once when both are connected. position_source still governs
 // cone-capture priority and which one follow tracks.
 let deviceMarkers = { rover: null, receiver: null };
+let surveyPointLayer = null;   // L.layerGroup of surveyed base-station point markers (GPS tab only)
 let pathLine = null;
 let pathStartMarker = null;
 let pathEndMarker = null;
@@ -2035,6 +2044,7 @@ async function initMap() {
   }
   setupSelectionBox();
   rebuildAllMarkers();
+  renderSurveyPoints();
 }
 
 
@@ -3637,6 +3647,50 @@ function syncDeviceMarkers(s) {
   const rc = s.receiver;
   const recv = rc && rc.mode === "capture" ? rc.last_position : null;
   setDeviceMarker("receiver", recv?.lat, recv?.lng);
+}
+
+// Fixed teal diamond marking a surveyed base-station point. The active base gets
+// an amber ring; the point selected in the list gets a sky-blue ring (selection
+// wins over the base ring when both apply). Distinct shape from the round
+// cone/device markers so a base point never reads as a cone.
+function surveyPointIcon(isBase, isSelected) {
+  const size = isBase ? 18 : 14;
+  const cls = ["survey-marker", isBase && "is-base", isSelected && "selected"]
+    .filter(Boolean).join(" ");
+  return L.divIcon({
+    className: "",
+    html: `<div class="${cls}"></div>`,
+    iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+  });
+}
+
+// Draw one label + diamond per surveyed point. Visible only on the GPS tab (a
+// base station is a GPS-management concept, not course-editing furniture) and
+// never in the missions-history view, where live layers are torn down. Cheap to
+// rebuild wholesale — there are only ever a handful of survey points.
+function renderSurveyPoints() {
+  if (!map) return;
+  if (surveyPointLayer) {
+    surveyPointLayer.clearLayers();
+    try { map.removeLayer(surveyPointLayer); } catch {}
+    surveyPointLayer = null;
+  }
+  if (activeTab.value !== "gps" || isMissionsView.value) return;
+  const layer = L.layerGroup();
+  for (const p of surveyedPoints.value) {
+    if (!isValidRoverPos(p.lat, p.lng)) continue;
+    const isBase = gpsConfig.value.ntrip_source === "base"
+      && gpsConfig.value.active_base_point_id === p.id;
+    const m = L.marker([p.lat, p.lng], {
+      icon: surveyPointIcon(isBase, selectedSurveyPointId.value === p.id),
+      zIndexOffset: 900, interactive: false,
+    });
+    m.bindTooltip(p.name, {
+      direction: "top", offset: [0, -12], permanent: true, className: "survey-tooltip",
+    });
+    layer.addLayer(m);
+  }
+  surveyPointLayer = layer.addTo(map);
 }
 
 async function addConeFromRover() {
@@ -7700,6 +7754,27 @@ onUnmounted(() => {
   border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
 }
 .rover-tooltip::before { border-top-color: #a855f7; }
+
+/* Surveyed base-station point markers (L.divIcon, outside scoped styles). Teal
+   diamond; amber ring = active base, sky-blue ring = selected in the list. */
+.survey-marker {
+  width: 14px; height: 14px; box-sizing: border-box;
+  background: #14b8a6; border: 2px solid #fff; transform: rotate(45deg);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+.survey-marker.is-base {
+  width: 18px; height: 18px;
+  box-shadow: 0 0 0 3px rgba(245,158,11,0.9), 0 1px 4px rgba(0,0,0,0.5);
+}
+.survey-marker.selected {
+  box-shadow: 0 0 0 3px #38bdf8, 0 1px 4px rgba(0,0,0,0.5);
+}
+.survey-tooltip {
+  background: #0f766e; color: #fff; border: none;
+  font-size: 11px; font-weight: 600; padding: 2px 6px;
+  border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+.survey-tooltip::before { border-top-color: #0f766e; }
 
 /* Rotation handle/pivot + measurement overlays are drawn into Leaflet's DOM via
    L.divIcon, so they live outside the component's scoped styles. */
