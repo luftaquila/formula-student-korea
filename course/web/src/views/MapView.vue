@@ -2608,11 +2608,18 @@ async function startGroundCalibration() {
 // Proximity (obstacle) detection master on/off — operator toggle in the ground
 // tab. Server-stored (roverState.obstacle_detection_enabled), so it rides the
 // rover:status broadcast; the ref below is synced from it and flipped
-// optimistically like toggleDepth, reverting if the server call fails.
-const obstacleDetectOn = ref(true);
+// optimistically like toggleDepth, reverting if the server call fails. Default
+// OFF (opt-in per mission) — reconciled to the server's truth on first status.
+const obstacleDetectOn = ref(false);
+// The operator's in-flight intent (true/false) while a toggle POST is pending,
+// else null. rover:status broadcasts arrive at GPS rate and also carry
+// obstacle_detection_enabled, so without this guard an in-flight status frame
+// (still carrying the pre-toggle value) would snap the checkbox back mid-toggle.
+let detectTogglePending = null;
 async function setObstacleDetection(on) {
   const prev = obstacleDetectOn.value;
-  obstacleDetectOn.value = on;
+  detectTogglePending = on;
+  obstacleDetectOn.value = on;               // optimistic
   try {
     await request("/api/rover/camera/detection", {
       method: "POST",
@@ -2620,8 +2627,24 @@ async function setObstacleDetection(on) {
     });
   } catch (err) {
     obstacleDetectOn.value = prev;
+    if (detectTogglePending === on) detectTogglePending = null;
     notifyError(`근접 감지 설정 실패: ${err.message}`);
   }
+}
+// Apply the server's detection state from a rover:status/status snapshot. While a
+// toggle is pending, ignore a stale frame that still carries the old value; clear
+// the guard once the server confirms the intended value (so a later real change
+// from another operator still syncs).
+function syncObstacleDetect(data) {
+  if (data.obstacle_detection_enabled === undefined) return;
+  const v = data.obstacle_detection_enabled !== false;
+  if (detectTogglePending === null) {
+    obstacleDetectOn.value = v;
+  } else if (v === detectTogglePending) {
+    obstacleDetectOn.value = v;
+    detectTogglePending = null;
+  }
+  // else: stale pre-toggle frame → ignore until the server catches up.
 }
 
 async function submitAntennaCal() {
@@ -4599,10 +4622,9 @@ function connectSSE() {
     if (!data) return;
     roverStatus.value = { ...roverStatus.value, ...data };
     // Keep the proximity-detection toggle in sync with the server's stored truth
-    // (covers another operator flipping it, or the initial snapshot).
-    if (data.obstacle_detection_enabled !== undefined) {
-      obstacleDetectOn.value = data.obstacle_detection_enabled !== false;
-    }
+    // (covers another operator flipping it, or the initial snapshot), guarded
+    // against a stale frame snapping the checkbox back mid-toggle.
+    syncObstacleDetect(data);
     syncAppRoverStatus(data);
     // Draw BOTH device markers (rover + receiver) from the snapshot.
     syncDeviceMarkers(roverStatus.value);
@@ -4722,9 +4744,7 @@ async function fetchRoverStatus() {
     const res = await request("/api/rover/status", { method: "GET" });
     const data = await res.json();
     roverStatus.value = { ...roverStatus.value, ...data };
-    if (data.obstacle_detection_enabled !== undefined) {
-      obstacleDetectOn.value = data.obstacle_detection_enabled !== false;
-    }
+    syncObstacleDetect(data);
     syncAppRoverStatus(data);
     // Draw both device markers from the cached server-side snapshot on first
     // load — without this the map only shows them after the next live SSE frame.

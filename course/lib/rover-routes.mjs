@@ -239,9 +239,10 @@ const roverState = {
   // Proximity (obstacle) detection master on/off — operator toggle in the
   // calibration modal's ground tab. Stored here so it broadcasts on rover:status
   // (UI reflects it at once) and is re-sent to the perception node on every
-  // camera-control (re)connect. Default ON (current always-detecting behaviour).
-  // The rover env OBSTACLE_DETECTION stays the hard kill-switch below this.
-  obstacle_detection_enabled: true,
+  // camera-control (re)connect. Default OFF — detection is opt-in per mission;
+  // the operator enables it from the ground tab. The rover env OBSTACLE_DETECTION
+  // stays the hard kill-switch below this (kept permissive so the toggle can arm).
+  obstacle_detection_enabled: false,
   // Session-scoped per-mission progress used for tab-close recovery — the
   // server acts as the source of truth so reloading the UI rebuilds the
   // executing/stopped view exactly.
@@ -1964,9 +1965,10 @@ app.get("/api/rover/camera/control", (req, res) => {
   // SSE was down.
   syncCameraCapture();
   sendCameraControl(cameraDepthWanted ? "depth-on" : "depth-off");
-  // Restore the operator's proximity-detection toggle too — the node keeps its
-  // last detect state across an SSE blip, but a fresh perception container
-  // starts detecting by default, so re-assert the server's stored truth.
+  // Re-assert the operator's proximity-detection toggle on every (re)connect. A
+  // fresh perception container boots with detection off, and the last state can
+  // otherwise be lost across a restart, so send the server's stored truth (only
+  // detect-on if the operator has enabled it).
   sendCameraControl(roverState.obstacle_detection_enabled ? "detect-on" : "detect-off");
   // 10s heartbeat (was 30s) to match /api/rover/stream — keeps the SSE alive
   // through proxy idle-close so it doesn't drop every few minutes.

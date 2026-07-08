@@ -11,10 +11,11 @@ def _link():
     return cloud_link.CloudLink("http://server.invalid", "secret", log=lambda *_: None)
 
 
-def test_detect_wanted_defaults_on():
-    # Default set: a rover on an older server that never signals still detects
-    # (the safe default — matches the OBSTACLE_DETECTION env default).
-    assert _link().detect_wanted.is_set() is True
+def test_detect_wanted_defaults_off():
+    # Default cleared: detection is opt-in per mission, so a rover whose server
+    # never signals stays off rather than auto-pausing unexpectedly. The server
+    # re-syncs the stored state on every control (re)connect.
+    assert _link().detect_wanted.is_set() is False
 
 
 def test_detect_off_then_on_toggles_the_event():

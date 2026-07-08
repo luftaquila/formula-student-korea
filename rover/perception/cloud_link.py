@@ -60,12 +60,12 @@ class CloudLink:
         # Set while proximity (obstacle) detection is wanted (server
         # detect-on..detect-off). A soft, operator-driven gate ON TOP OF the
         # OBSTACLE_DETECTION env kill-switch: the node also requires this before
-        # it runs the driving-corridor detector. Default set so a rover on an
-        # older server (that never signals) keeps detecting — the safe default.
-        # The server re-syncs it on every control (re)connect, so it survives an
-        # SSE blip like stream_wanted/depth_wanted do.
+        # it runs the driving-corridor detector. Default CLEARED (off) — detection
+        # is opt-in per mission, so a rover whose server never signals stays off
+        # rather than auto-pausing unexpectedly. The server re-syncs the stored
+        # state on every control (re)connect, and it survives an SSE blip like
+        # stream_wanted/depth_wanted do.
         self.detect_wanted = threading.Event()
-        self.detect_wanted.set()
         # Called with the square size (m) when the server requests a STEREO
         # calibration (operator pressed 교정). Set by the node; runs on the SSE thread.
         self.on_calibrate = None
