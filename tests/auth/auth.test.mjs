@@ -1221,6 +1221,71 @@ describe('OAuth callback applicant branch', () => {
   });
 });
 
+// ─── OAuth callback → TEST_SERVER flag parsing ─────────────────────────────
+describe('OAuth callback TEST_SERVER flag', () => {
+  // Same mocked login→callback flow, but with a distinct source IP so the
+  // per-IP OAuth rate limiter doesn't collide with the applicant-branch suite.
+  async function runCallback(email, name, redirect = undefined) {
+    const xff = { 'X-Forwarded-For': '203.0.113.77' };
+    const loginUrl = new URL(`${baseUrl}/api/login`);
+    if (redirect) loginUrl.searchParams.set('redirect', redirect);
+    const loginRes = await fetch(loginUrl, { redirect: 'manual', headers: xff });
+    const nonceCookie = loginRes.headers.get('set-cookie').split(';')[0];
+    const state = new URL(loginRes.headers.get('location')).searchParams.get('state');
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.includes('oauth2.googleapis.com/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (u.includes('/oauth2/v2/userinfo')) {
+        return new Response(JSON.stringify({ email, name }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return origFetch(url, opts);
+    };
+    try {
+      return await origFetch(`${baseUrl}/api/callback?code=testcode&state=${encodeURIComponent(state)}`, {
+        redirect: 'manual',
+        headers: { Cookie: nonceCookie, ...xff },
+      });
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  let savedTestServer;
+  before(() => { savedTestServer = process.env.TEST_SERVER; });
+  after(() => {
+    if (savedTestServer === undefined) delete process.env.TEST_SERVER;
+    else process.env.TEST_SERVER = savedTestServer;
+  });
+
+  it('TEST_SERVER="false" does NOT auto-register an unregistered user (the string-truthy footgun)', async () => {
+    process.env.TEST_SERVER = 'false';
+    await client.patch('/api/applications/config', { body: { open: false }, cookie: adminCookie });
+    const email = 'ts-false@example.com';
+    const res = await runCallback(email, 'TS False', '/');
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), '/?login_error=unregistered', 'must be rejected, not auto-registered');
+    assert.equal(db.prepare('SELECT 1 FROM users WHERE email = ?').get(email), undefined, 'no user row created');
+    const cookies = res.headers.getSetCookie();
+    assert.ok(!cookies.some((c) => /^fsk_session=[^;]/.test(c)), 'no session issued');
+  });
+
+  it('TEST_SERVER="true" auto-registers an unregistered user as admin', async () => {
+    process.env.TEST_SERVER = 'true';
+    const email = 'ts-true@example.com';
+    const res = await runCallback(email, 'TS True', '/');
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), '/', 'logged in and redirected');
+    const row = db.prepare('SELECT role, active FROM users WHERE email = ?').get(email);
+    assert.ok(row, 'user row created');
+    assert.equal(row.role, 'admin');
+    assert.equal(row.active, 1);
+  });
+});
+
 // ─── Account applications - edge cases ─────────────────────────────────────
 describe('Account applications - edge cases', () => {
   let applicantCookie;

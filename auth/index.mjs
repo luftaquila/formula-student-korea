@@ -2,7 +2,7 @@ import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, createJWT, verifyJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts, createSecretChecker } from "../shared/express-setup.mjs";
+import { createApp, setupProcessHandlers, createDbRun, createJWT, verifyJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts, createSecretChecker, isEnvEnabled } from "../shared/express-setup.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
 import { createLogger, buildLogFilter } from "../shared/logger.mjs";
 
@@ -121,7 +121,7 @@ if (ADMIN_EMAIL) {
   }
 }
 
-if (process.env.TEST_SERVER) {
+if (isEnvEnabled(process.env.TEST_SERVER)) {
   console.warn("[WARNING] TEST_SERVER mode enabled — all Google logins will be auto-registered as admin");
 }
 
@@ -411,7 +411,7 @@ app.get("/api/callback", async (req, res) => {
     let user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
 
     // TEST_SERVER 모드: 미등록 사용자 자동 admin 등록
-    if (!user && process.env.TEST_SERVER) {
+    if (!user && isEnvEnabled(process.env.TEST_SERVER)) {
       db.prepare("INSERT INTO users (email, name, role, active, created_at) VALUES (?, ?, 'admin', 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(email, name);
       user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
       logger.log(req, "user.auto_register", { name, role: "admin", test_server: true }, email, { email, name });
