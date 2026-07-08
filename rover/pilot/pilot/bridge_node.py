@@ -216,12 +216,28 @@ class BridgeNode(Node):
             self._report_position()
 
     def _on_nav_state(self, msg):
-        """Track navigation state for position reporting."""
+        """Track navigation state; push telemetry immediately on a change.
+
+        nav_state (pause/resume/error/estop/spraying/hold) changes rarely, so an
+        immediate push per transition can't flood — and it's exactly what the
+        operator UI must reflect without waiting up to 3s for the next telemetry
+        tick. Unchanged repeats fall through to the periodic loop only.
+        """
+        if msg.data == self._nav_state:
+            return
         self._nav_state = msg.data
+        self._post_async('/api/rover/telemetry', self._telemetry_payload(), 'telemetry')
 
     def _on_fix_status(self, msg):
-        """Track fix status for telemetry."""
+        """Track fix status; push telemetry immediately on a change.
+
+        RTK fix transitions (FIXED↔FLOAT, or fix loss) are the other
+        user-visible event that must not wait for the next 3s tick.
+        """
+        if msg.data == self._fix_status:
+            return
         self._fix_status = msg.data
+        self._post_async('/api/rover/telemetry', self._telemetry_payload(), 'telemetry')
 
     def _on_gps_metrics(self, msg):
         """Track GPS accuracy/speed/heading JSON for telemetry."""
@@ -233,25 +249,35 @@ class BridgeNode(Node):
             pass
 
     def _on_ntrip_status(self, msg):
-        """Track NTRIP client status payload (JSON) for telemetry."""
+        """Track NTRIP client status payload (JSON) for telemetry.
+
+        Push immediately only on the `connected` transition (the user-visible
+        event). The status topic can publish periodically, so the rest of the
+        detail rides the 3s telemetry loop rather than flooding the async POST
+        worker on every message.
+        """
         try:
             data = json.loads(msg.data)
-            self._ntrip_connected = bool(data.get('connected'))
-            # Cache full detail (caster, fail_count, last_error, last_correction_at)
-            # so the UI can tell "NTRIP off because DNS failed" from "connected,
-            # last correction 30s ago".
-            if isinstance(data, dict):
-                self._ntrip_detail = {
-                    'host': data.get('host'),
-                    'port': data.get('port'),
-                    'mountpoint': data.get('mountpoint'),
-                    'fail_count': data.get('fail_count'),
-                    'last_error': data.get('last_error'),
-                    'last_correction_at': data.get('last_correction_at'),
-                    'bytes_received': data.get('bytes_received'),
-                }
-        except (json.JSONDecodeError, AttributeError, TypeError):
-            pass
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(data, dict):
+            return
+        prev_connected = self._ntrip_connected
+        self._ntrip_connected = bool(data.get('connected'))
+        # Cache full detail (caster, fail_count, last_error, last_correction_at)
+        # so the UI can tell "NTRIP off because DNS failed" from "connected,
+        # last correction 30s ago".
+        self._ntrip_detail = {
+            'host': data.get('host'),
+            'port': data.get('port'),
+            'mountpoint': data.get('mountpoint'),
+            'fail_count': data.get('fail_count'),
+            'last_error': data.get('last_error'),
+            'last_correction_at': data.get('last_correction_at'),
+            'bytes_received': data.get('bytes_received'),
+        }
+        if self._ntrip_connected != prev_connected:
+            self._post_async('/api/rover/telemetry', self._telemetry_payload(), 'telemetry')
 
     def _post_async(self, path, payload, label):
         """Enqueue a POST for the single async worker.
@@ -372,28 +398,43 @@ class BridgeNode(Node):
         self._post_async('/api/rover/wheel_calibration_result', payload,
                          'wheel_calibration_result')
 
+    def _telemetry_payload(self):
+        """Build the telemetry POST body from the latest cached ROS state.
+
+        Shared by the periodic loop and the on-change immediate pushes so both
+        send an identical shape.
+        """
+        payload = {
+            'nav_state': self._nav_state,
+            'fix_status': self._fix_status,
+            'ntrip_connected': self._ntrip_connected,
+        }
+        if self._ntrip_detail is not None:
+            payload['ntrip'] = self._ntrip_detail
+        if self._battery is not None:
+            payload['battery'] = self._battery
+        if self._gps_metrics is not None:
+            payload['gps'] = self._gps_metrics
+        return payload
+
     def _telemetry_loop(self):
-        """Periodically POST telemetry to the course server."""
+        """Periodically POST telemetry to the course server.
+
+        A 3s heartbeat/reconcile: it carries the slow-changing fields (battery,
+        gps metrics) and re-affirms state. The discrete, user-visible changes
+        (nav_state, fix_status, ntrip connected) are pushed IMMEDIATELY from
+        their subscription callbacks via _post_async — this loop is the fallback,
+        not the primary path, so the operator UI never lags 3s behind the rover.
+        """
         while self._running:
             time.sleep(3.0)
             url = self.get_parameter('server_url').value
             if not url:
                 continue
-            payload = {
-                'nav_state': self._nav_state,
-                'fix_status': self._fix_status,
-                'ntrip_connected': self._ntrip_connected,
-            }
-            if self._ntrip_detail is not None:
-                payload['ntrip'] = self._ntrip_detail
-            if self._battery is not None:
-                payload['battery'] = self._battery
-            if self._gps_metrics is not None:
-                payload['gps'] = self._gps_metrics
             try:
                 requests.post(
                     f'{url}/api/rover/telemetry',
-                    json=payload,
+                    json=self._telemetry_payload(),
                     headers=self._get_headers(),
                     timeout=5.0,
                 )
