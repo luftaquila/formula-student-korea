@@ -98,6 +98,25 @@ async function approveSelected() {
   }
 }
 
+async function deleteSelected() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  if (!confirm(`선택한 ${ids.length}건의 신청을 삭제할까요?`)) return;
+  try {
+    const res = await fetch(`${BASE_URL}/api/applications`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    success(`${data.deleted}건을 삭제했습니다.`);
+    await fetchApplications();
+  } catch (e) {
+    error(e.message);
+  }
+}
+
 function fmtDate(s) {
   const d = parseDbTimestamp(s);
   return d ? d.toLocaleString("ko-KR") : "-";
@@ -164,6 +183,9 @@ onMounted(() => {
           </select>
           <button class="btn btn-sm btn-primary" :disabled="selectedIds.size === 0" @click="approveSelected">
             선택 계정 추가 ({{ selectedIds.size }})
+          </button>
+          <button class="btn btn-sm btn-danger" :disabled="selectedIds.size === 0" @click="deleteSelected">
+            선택 삭제 ({{ selectedIds.size }})
           </button>
         </div>
       </div>
