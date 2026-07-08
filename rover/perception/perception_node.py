@@ -380,8 +380,11 @@ class PerceptionNode(Node):
         self._nav_state = msg.data
 
     def _detection_wanted(self):
-        return (self._detect_master and self._detector.enabled
-                and self._nav_state == DRIVING_STATE)
+        # _detect_master (OBSTACLE_DETECTION env) is the hard kill-switch; the
+        # operator's live detect-on/off toggle (cloud.detect_wanted) is a soft
+        # gate on top of it — env-off can't be overridden from the UI.
+        return (self._detect_master and self._cloud.detect_wanted.is_set()
+                and self._detector.enabled and self._nav_state == DRIVING_STATE)
 
     def _publish_obstacle(self, present):
         msg = Bool()

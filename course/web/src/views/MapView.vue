@@ -2605,6 +2605,25 @@ async function startGroundCalibration() {
   }
 }
 
+// Proximity (obstacle) detection master on/off — operator toggle in the ground
+// tab. Server-stored (roverState.obstacle_detection_enabled), so it rides the
+// rover:status broadcast; the ref below is synced from it and flipped
+// optimistically like toggleDepth, reverting if the server call fails.
+const obstacleDetectOn = ref(true);
+async function setObstacleDetection(on) {
+  const prev = obstacleDetectOn.value;
+  obstacleDetectOn.value = on;
+  try {
+    await request("/api/rover/camera/detection", {
+      method: "POST",
+      body: JSON.stringify({ on }),
+    });
+  } catch (err) {
+    obstacleDetectOn.value = prev;
+    notifyError(`근접 감지 설정 실패: ${err.message}`);
+  }
+}
+
 async function submitAntennaCal() {
   if (!antennaCalCanStart.value) return;
   antennaCalSubmitting.value = true;
@@ -4579,6 +4598,11 @@ function connectSSE() {
     const data = parseSSE(e);
     if (!data) return;
     roverStatus.value = { ...roverStatus.value, ...data };
+    // Keep the proximity-detection toggle in sync with the server's stored truth
+    // (covers another operator flipping it, or the initial snapshot).
+    if (data.obstacle_detection_enabled !== undefined) {
+      obstacleDetectOn.value = data.obstacle_detection_enabled !== false;
+    }
     syncAppRoverStatus(data);
     // Draw BOTH device markers (rover + receiver) from the snapshot.
     syncDeviceMarkers(roverStatus.value);
@@ -4698,6 +4722,9 @@ async function fetchRoverStatus() {
     const res = await request("/api/rover/status", { method: "GET" });
     const data = await res.json();
     roverStatus.value = { ...roverStatus.value, ...data };
+    if (data.obstacle_detection_enabled !== undefined) {
+      obstacleDetectOn.value = data.obstacle_detection_enabled !== false;
+    }
     syncAppRoverStatus(data);
     // Draw both device markers from the cached server-side snapshot on first
     // load — without this the map only shows them after the next live SSE frame.
@@ -5136,6 +5163,15 @@ onUnmounted(() => {
 
           <section class="cal-section" v-show="calTab === 'ground'">
             <div class="cal-section-title">지면 교정 (장애물 감지 기준면)</div>
+            <label class="cal-toggle-field">
+              <span>근접 충돌 감지</span>
+              <input
+                type="checkbox"
+                :checked="obstacleDetectOn"
+                @change="setObstacleDetection($event.target.checked)"
+              />
+            </label>
+            <div class="cal-when">끄면 주행 중 스테레오 근접 장애물 감지와 자동 일시정지가 비활성화됩니다. (env <code>OBSTACLE_DETECTION=false</code>로 완전히 꺼둔 경우 여기서 켤 수 없습니다.)</div>
             <div class="cal-when">재실행 조건: 카메라 높이·각도 변경 후 · 스테레오 재교정 후 · 새 노면 첫 주행</div>
             <div class="cal-when">절차:</div>
             <ol class="cal-steps">
@@ -6510,6 +6546,19 @@ onUnmounted(() => {
   border: 1px solid var(--border-color);
   background: var(--bg-primary); color: var(--text-primary);
   width: 100%; box-sizing: border-box;
+}
+/* Proximity-detection on/off row: label left, checkbox right (horizontal,
+   unlike .cal-manual-field's stacked number inputs). */
+.cal-toggle-field {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0.1rem 0 0.4rem;
+  font-size: 0.9rem; font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.cal-toggle-field input {
+  width: 1.15rem; height: 1.15rem; flex: 0 0 auto; cursor: pointer;
 }
 .cal-section-title {
   font-size: 0.95rem; font-weight: 600;

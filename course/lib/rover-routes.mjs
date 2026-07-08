@@ -236,6 +236,12 @@ const roverState = {
   // ground-depth curve). { status, phase, captured, target, near_m, far_m, rows,
   // error, at }. Requires a stereo calibration first (metric depth).
   ground_calibration: { status: "idle", at: 0 },
+  // Proximity (obstacle) detection master on/off — operator toggle in the
+  // calibration modal's ground tab. Stored here so it broadcasts on rover:status
+  // (UI reflects it at once) and is re-sent to the perception node on every
+  // camera-control (re)connect. Default ON (current always-detecting behaviour).
+  // The rover env OBSTACLE_DETECTION stays the hard kill-switch below this.
+  obstacle_detection_enabled: true,
   // Session-scoped per-mission progress used for tab-close recovery — the
   // server acts as the source of truth so reloading the UI rebuilds the
   // executing/stopped view exactly.
@@ -1952,6 +1958,10 @@ app.get("/api/rover/camera/control", (req, res) => {
   // SSE was down.
   syncCameraCapture();
   sendCameraControl(cameraDepthWanted ? "depth-on" : "depth-off");
+  // Restore the operator's proximity-detection toggle too — the node keeps its
+  // last detect state across an SSE blip, but a fresh perception container
+  // starts detecting by default, so re-assert the server's stored truth.
+  sendCameraControl(roverState.obstacle_detection_enabled ? "detect-on" : "detect-off");
   // 10s heartbeat (was 30s) to match /api/rover/stream — keeps the SSE alive
   // through proxy idle-close so it doesn't drop every few minutes.
   const heartbeat = setInterval(() => {
@@ -2135,6 +2145,31 @@ app.post("/api/rover/camera/depth", (req, res) => {
     logger.log(req, "rover.camera.depth", detail, "rover");
   }
   res.json({ ok: true, depth: cameraDepthWanted, camera_connected: !!cameraControlClient });
+});
+
+// POST /api/rover/camera/detection - toggle proximity (obstacle) detection (admin).
+// Unlike depth (a live-view sub-mode gated on a viewer), detection is a mission
+// safety setting that applies whenever the rover is NAVIGATING — no viewer gate.
+// Stored in roverState (broadcast on rover:status → UI reflects it) and re-sent to
+// perception on every control (re)connect. The rover env OBSTACLE_DETECTION stays
+// the hard kill-switch; this is the operator's soft on/off on top of it.
+app.post("/api/rover/camera/detection", (req, res) => {
+  const on = !!(req.body && req.body.on);
+  roverState.obstacle_detection_enabled = on;
+  const wasConnected = !!cameraControlClient;
+  const delivered = sendCameraControl(on ? "detect-on" : "detect-off");
+  const detail = { on, delivered, camera_connected: wasConnected };
+  // The toggle is stored either way (re-synced to perception on its next control
+  // connect). Warn only when perception WAS connected but the write failed — a
+  // real inter-service delivery failure; a plain "perception offline" is benign
+  // because reconnect re-applies the stored state.
+  if (wasConnected && !delivered) {
+    logger.warn(req, "rover.detection", { ...detail, error: "camera_control_write_failed" }, "rover");
+  } else {
+    logger.log(req, "rover.detection", detail, "rover");
+  }
+  broadcastRoverStatus();
+  res.json({ ok: true, detection: on, camera_connected: !!cameraControlClient });
 });
 
 // GET /api/rover/map-tile - same-origin satellite tile proxy for the VR minimap

@@ -1020,6 +1020,48 @@ describe('POST /api/rover/camera/depth', () => {
   });
 });
 
+// ─── Rover proximity (obstacle) detection toggle ─────────────────────────
+describe('POST /api/rover/camera/detection', () => {
+  it('rejects unauthenticated requests', async () => {
+    const res = await client.post('/api/rover/camera/detection', { body: { on: false } });
+    assert.equal(res.status, 401);
+  });
+
+  it('stores the on/off flag and reflects it in rover status (default on)', async () => {
+    // Default is ON — the current always-detecting behaviour.
+    const before = await client.get('/api/rover/status', { cookie: adminCookie });
+    assert.notEqual((await before.json()).obstacle_detection_enabled, false);
+
+    const off = await client.post('/api/rover/camera/detection', {
+      body: { on: false }, cookie: adminCookie,
+    });
+    assert.equal(off.status, 200);
+    const offBody = await off.json();
+    assert.equal(offBody.ok, true);
+    assert.equal(offBody.detection, false);
+    // No perception control channel is attached here, so it can't be delivered —
+    // but the flag is stored regardless (re-synced on the next perception connect).
+    assert.equal(offBody.camera_connected, false);
+    assert.equal((await (await client.get('/api/rover/status', { cookie: adminCookie })).json())
+      .obstacle_detection_enabled, false);
+
+    const on = await client.post('/api/rover/camera/detection', {
+      body: { on: true }, cookie: adminCookie,
+    });
+    assert.equal((await on.json()).detection, true);
+    assert.equal((await (await client.get('/api/rover/status', { cookie: adminCookie })).json())
+      .obstacle_detection_enabled, true);
+  });
+
+  it('coerces a missing body to off (no crash)', async () => {
+    const res = await client.post('/api/rover/camera/detection', { body: {}, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).detection, false);
+    // Restore the safe default so later shared-state tests see detection ON.
+    await client.post('/api/rover/camera/detection', { body: { on: true }, cookie: adminCookie });
+  });
+});
+
 // ─── Rover minimap tile proxy ────────────────────────────────────────────
 describe('GET /api/rover/map-tile', () => {
   it('rejects unauthenticated requests', async () => {
@@ -2203,6 +2245,55 @@ describe('Camera relay', () => {
 
     stopCtl();
     ctlAc.abort();
+  });
+
+  it('relays the proximity-detection toggle and re-syncs it on (re)connect', async () => {
+    // First perception control channel. On connect the server re-syncs the
+    // stored detection state — default is ON.
+    const ctlAc = new AbortController();
+    const ctl = await fetch(`${url}/api/rover/camera/control`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ctlAc.signal,
+    });
+    assert.equal(ctl.status, 200);
+    const ctlSink = {};
+    const stopCtl = pump(ctl.body.getReader(), ctlSink);
+    assert.ok(await waitFor(() => ctlSink.text.includes('detect-on'), 1000),
+      'control connect re-syncs the stored detection state (default on)');
+
+    // Operator turns detection OFF → relayed as detect-off + stored server-side.
+    const off = await cli.post('/api/rover/camera/detection', { body: { on: false }, cookie: adminCookie });
+    assert.equal(off.status, 200);
+    assert.equal((await off.json()).detection, false);
+    assert.ok(await waitFor(() => ctlSink.text.includes('detect-off'), 1000),
+      'detection toggle relays detect-off to the perception control channel');
+    assert.equal((await (await cli.get('/api/rover/status', { cookie: adminCookie })).json())
+      .obstacle_detection_enabled, false);
+
+    // A fresh perception container reconnects → must be re-told the stored OFF
+    // (a new container boots detecting by default, so the server re-asserts truth).
+    stopCtl();
+    ctlAc.abort();
+    await sleep(60);
+    const ctl2Ac = new AbortController();
+    const ctl2 = await fetch(`${url}/api/rover/camera/control`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ctl2Ac.signal,
+    });
+    assert.equal(ctl2.status, 200);
+    const ctl2Sink = {};
+    const stopCtl2 = pump(ctl2.body.getReader(), ctl2Sink);
+    assert.ok(await waitFor(() => ctl2Sink.text.includes('detect-off'), 1000),
+      'reconnect re-syncs the stored OFF state to a fresh perception container');
+
+    // Restore the default ON so later tests in this suite see the safe default.
+    const on = await cli.post('/api/rover/camera/detection', { body: { on: true }, cookie: adminCookie });
+    assert.equal((await on.json()).detection, true);
+    assert.ok(await waitFor(() => ctl2Sink.text.includes('detect-on'), 1000),
+      'turning detection back on relays detect-on');
+
+    stopCtl2();
+    ctl2Ac.abort();
   });
 
   it('caps concurrent viewers (503 past the limit)', async () => {
