@@ -7,6 +7,7 @@ request) until the receiver recovers.
 """
 
 import json
+import time
 import types
 
 import pytest
@@ -99,6 +100,7 @@ def _make_telemetry_bridge():
     node = BridgeNode.__new__(BridgeNode)
     node._nav_state = "IDLE"
     node._fix_status = None
+    node._last_fix_push = 0.0
     node._ntrip_connected = False
     node._ntrip_detail = None
     node._battery = None
@@ -121,15 +123,25 @@ def test_nav_state_change_pushes_telemetry_immediately():
     assert len(node._post_calls) == 1
 
 
-def test_fix_status_change_pushes_telemetry_immediately():
+def test_fix_status_change_pushes_immediately_then_rate_limits():
     node = _make_telemetry_bridge()
+    # Cold (last push far in the past) → an isolated change pushes at once.
+    node._on_fix_status(_StrMsg("rtk_fixed"))
+    assert len(node._post_calls) == 1
+    assert node._post_calls[0][1]["fix_status"] == "rtk_fixed"
+    # A rapid flap within the interval is throttled — value cached for the 3s loop.
     node._on_fix_status(_StrMsg("rtk_float"))
     assert len(node._post_calls) == 1
-    assert node._post_calls[0][1]["fix_status"] == "rtk_float"
-    node._on_fix_status(_StrMsg("rtk_float"))       # unchanged → no push
+    assert node._fix_status == "rtk_float"
+    # An unchanged repeat never pushes, regardless of timing.
+    node._last_fix_push = 0.0
+    node._on_fix_status(_StrMsg("rtk_float"))
     assert len(node._post_calls) == 1
-    node._on_fix_status(_StrMsg("rtk_fixed"))       # changed → push
+    # After the interval elapses, the next change pushes again.
+    node._last_fix_push = time.monotonic() - (2 * 60)  # well past the interval
+    node._on_fix_status(_StrMsg("rtk_fixed"))
     assert len(node._post_calls) == 2
+    assert node._post_calls[1][1]["fix_status"] == "rtk_fixed"
 
 
 def test_ntrip_connected_transition_pushes_only_on_change():

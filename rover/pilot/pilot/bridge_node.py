@@ -56,6 +56,14 @@ LOG_LEVEL_LABEL = {10: "DEBUG", 20: "INFO", 30: "WARN", 40: "ERROR", 50: "FATAL"
 # satellite basemap has no tiles and the whole view renders blank grey.
 _POSITION_FIX_STATUSES = frozenset({'2d_fix', '3d_fix', 'rtk_float', 'rtk_fixed'})
 
+# Leading-edge rate limit (s) for the immediate fix_status telemetry push. RTK
+# can flap rtk_fixed<->rtk_float several times per second in poor conditions;
+# an unthrottled per-flap POST would crowd the shared bounded _post_queue and
+# can drop mission-critical waypoint_reached / spray_result POSTs. An isolated
+# transition still pushes at once; a burst pushes at most ~once per interval and
+# the 3s telemetry loop carries the settled value.
+_FIX_PUSH_MIN_INTERVAL_S = 1.0
+
 
 class BridgeNode(Node):
 
@@ -135,6 +143,9 @@ class BridgeNode(Node):
         self._nav_state = 'IDLE'
         self._sse_connected = False
         self._fix_status = None
+        # monotonic() of the last immediate fix_status telemetry push, for the
+        # leading-edge rate limit (see _FIX_PUSH_MIN_INTERVAL_S).
+        self._last_fix_push = 0.0
         # Default to False (not None) so the very first telemetry POST
         # explicitly tells the server "no NTRIP this session". The server
         # uses that signal to clear any stale ntrip detail it cached from
@@ -233,15 +244,23 @@ class BridgeNode(Node):
         self._post_async('/api/rover/telemetry', self._telemetry_payload(), 'telemetry')
 
     def _on_fix_status(self, msg):
-        """Track fix status; push telemetry immediately on a change.
+        """Track fix status; push telemetry on a change, leading-edge rate-limited.
 
-        RTK fix transitions (FIXED↔FLOAT, or fix loss) are the other
-        user-visible event that must not wait for the next 3s tick.
+        RTK fix transitions (FIXED↔FLOAT, or fix loss) must not wait for the next
+        3s tick, so an isolated change pushes immediately. But RTK can flap several
+        times per second in poor conditions; pushing every flap would crowd the
+        shared bounded _post_queue and risk dropping mission-critical
+        waypoint_reached / spray_result POSTs. So cap the immediate pushes to at
+        most one per _FIX_PUSH_MIN_INTERVAL_S — the value is still cached and the
+        3s loop carries whatever the flapping settles to.
         """
         if msg.data == self._fix_status:
             return
         self._fix_status = msg.data
-        self._post_async('/api/rover/telemetry', self._telemetry_payload(), 'telemetry')
+        now = time.monotonic()
+        if now - self._last_fix_push >= _FIX_PUSH_MIN_INTERVAL_S:
+            self._last_fix_push = now
+            self._post_async('/api/rover/telemetry', self._telemetry_payload(), 'telemetry')
 
     def _on_gps_metrics(self, msg):
         """Track GPS accuracy/speed/heading JSON for telemetry."""
