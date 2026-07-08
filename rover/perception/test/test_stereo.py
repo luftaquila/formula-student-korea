@@ -669,6 +669,22 @@ def test_aboveground_adapts_to_rover_pitch():
     assert info["ground_src"] == "hybrid" and info["above_px"] == 0
 
 
+def test_aboveground_farther_ground_does_not_false_trip():
+    # FIELD REGRESSION: ground uniformly FARTHER than the calibrated curve (near strip
+    # reads farther → the raw pitch offset would be NEGATIVE and push the reference
+    # beyond the real ground, flagging ordinary ground → the driving false positives).
+    # Clamping the offset to >= 0 keeps the (nearer) curve as reference, so farther
+    # ground is never "above" it.
+    pytest.importorskip("cv2")
+    H, W = 120, 120
+    profile, _flat = _curve_and_plane(H, W, z_far=8.0, z_near=1.0)
+    exp = stereo.ground_depth_for_rows(profile, H)
+    depth = np.tile((1.0 / (1.0 / exp - 0.1))[:, None], (1, W)).astype(np.float32)  # all farther
+    det = _aboveground_detector(100.0, W, H, profile=profile)
+    ob, info = det._decide_aboveground(depth, np.ones((H, W), bool), None)
+    assert ob is False and info["offset"] == 0.0   # negative offset clamped → curve → clean
+
+
 def test_aboveground_respects_max_range():
     pytest.importorskip("cv2")
     H, W = 120, 120

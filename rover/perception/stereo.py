@@ -835,6 +835,16 @@ class StereoDepth:
             g = np.isfinite(cur_inv) & np.isfinite(act_inv)
             if int(np.count_nonzero(g)) >= max(1, int(cfg.ground_offset_min_px)):
                 offset = float(np.median(act_inv[g] - cur_inv[g]))
+        # Clamp the offset to >= 0: only ever shift the reference NEARER (inverse
+        # depth up), never farther. A negative offset (near ground reading farther
+        # than the curve — pitch-up, or a curve calibrated nearer than this surface)
+        # pushed the reference BEYOND the real ground, so ordinary ground read as
+        # "above" it → false positives, and it drove the far rows' inverse depth
+        # negative → NaN, disabling person detection there. Shifting only nearer is
+        # the safe direction: real ground at or beyond the reference never trips,
+        # while an obstacle closer than it still does. (Confirmed on-rover: driving
+        # offsets ran -0.2..-0.67, over-correcting.)
+        offset = max(0.0, offset)
         self._dbg_offset = offset                        # exposed for field diagnostics
         with np.errstate(divide="ignore", invalid="ignore"):
             corr = cinv + offset                         # shift the whole curve in 1/z
