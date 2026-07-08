@@ -2019,7 +2019,10 @@ async function initMap() {
   });
   // User-initiated drag should disable follow so the operator isn't
   // fighting an auto-recentre. Programmatic panTo doesn't fire dragstart.
-  map.on("dragstart", () => { if (followRover.value) followRover.value = false; });
+  map.on("dragstart", () => {
+    if (followRover.value) followRover.value = false;
+    if (followReceiver.value) followReceiver.value = false;
+  });
   // 메모 스티커는 지리 좌표 고정 HTML 오버레이라 지도가 움직일 때마다 화면 위치·크기를
   // 다시 계산해야 한다. move/zoom은 애니메이션 중에도 반복 발생하므로 팬·줌 동안에도
   // 메모가 붙어 따라간다. rotate는 leaflet-rotate의 회전 이벤트.
@@ -3521,7 +3524,30 @@ function centerOnRover() {
 
 function toggleFollowRover() {
   followRover.value = !followRover.value;
-  if (followRover.value) centerOnRover();
+  if (followRover.value) { followReceiver.value = false; centerOnRover(); }
+}
+
+// GPS-tab-only "track receiver" toggle — mirrors 로버 추적 but centers on the
+// receiver's position, and only acts while the GPS tab is open. Mutually
+// exclusive with rover-follow so the map never chases two targets at once.
+const followReceiver = ref(loadPref("followReceiver", false, (v) => v === "true"));
+watch(followReceiver, (v) => savePref("followReceiver", v));
+
+const receiverCanTrack = computed(() => {
+  const r = receiver.value;
+  const lp = r?.last_position;
+  return !!(r?.mode === "capture" && lp && isValidRoverPos(lp.lat, lp.lng));
+});
+
+function centerOnReceiver() {
+  const lp = receiver.value?.last_position;
+  if (!lp || !map || !isValidRoverPos(lp.lat, lp.lng)) return;
+  panToVisibleCenter(lp.lat, lp.lng);
+}
+
+function toggleFollowReceiver() {
+  followReceiver.value = !followReceiver.value;
+  if (followReceiver.value) { followRover.value = false; centerOnReceiver(); }
 }
 
 // Follow-pan, throttled and non-animated. Each pan moves the map, which forces
@@ -3569,6 +3595,10 @@ function setDeviceMarker(kind, lat, lng) {
   if (!isValidRoverPos(lat, lng)) {
     if (existing) { try { map.removeLayer(existing); } catch {} deviceMarkers[kind] = null; }
     return;
+  }
+  // Track-receiver follows the receiver marker's moves, but ONLY on the GPS tab.
+  if (kind === "receiver" && followReceiver.value && activeTab.value === "gps") {
+    scheduleFollow(lat, lng);
   }
   if (existing) { existing.setLatLng([lat, lng]); return; }
   const m = L.marker([lat, lng], {
@@ -5976,6 +6006,12 @@ onUnmounted(() => {
                   <div class="gps-detail">
                     <span class="popover-row" v-for="r in receiverGpsRows" :key="r[0]"><span class="popover-key">{{ r[0] }}</span><span :class="['popover-val', r[2] && `popover-val-${r[2]}`]">{{ r[1] }}</span></span>
                   </div>
+                  <button
+                    class="btn btn-lg-touch gps-track-btn"
+                    :class="followReceiver ? 'btn-primary' : 'btn-ghost'"
+                    :disabled="!receiverCanTrack"
+                    @click="toggleFollowReceiver"
+                  >수신기 추적</button>
                 </div>
 
                 <!-- NTRIP source selection -->
@@ -7433,6 +7469,7 @@ onUnmounted(() => {
   column-gap: 0.85rem; row-gap: 0.18rem; align-items: baseline;
   margin-top: 0.5rem;
 }
+.gps-track-btn { width: 100%; margin-top: 0.6rem; }
 .gps-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .gps-dot.on { background: #22c55e; }
 .gps-dot.off { background: var(--border-color); }
