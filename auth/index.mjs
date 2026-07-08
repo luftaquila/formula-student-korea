@@ -1005,7 +1005,10 @@ app.get("/api/admin/logs", async (req, res) => {
       try {
         const { where, params } = buildLogFilter(filters);
         const total = db.prepare(`SELECT COUNT(*) as cnt FROM logs ${where}`).get(...params).cnt;
-        const logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY id DESC LIMIT 500`).all(...params);
+        // Honor the same offset+limit window as remote services (fetchLimit) so
+        // pagination past the first page works — a hardcoded LIMIT 500 here made
+        // pages beyond offset 500 come up empty even though `total` reported more.
+        const logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY id DESC LIMIT ?`).all(...params, fetchLimit);
         return { name, logs: logs.map(l => ({ ...l, _service: name })), total };
       } catch (e) {
         logger.warn(null, "logs.query_failed", { error: e.message }, "auth");

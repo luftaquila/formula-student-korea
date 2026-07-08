@@ -842,6 +842,28 @@ describe('GET /api/admin/logs', () => {
     const res = await client.get('/api/admin/logs');
     assert.equal(res.status, 401);
   });
+
+  it('paginates auth logs past offset 500 (regression: hardcoded LIMIT 500 emptied later pages)', async () => {
+    // Seed enough auth logs that page 6 (offset 500) must still return rows.
+    const insert = db.prepare(
+      "INSERT INTO logs (timestamp, level, actor_email, action, target) VALUES (?, 'info', 'seed@test.com', 'logs.pagination_seed', ?)",
+    );
+    const seed = db.transaction(() => {
+      for (let i = 0; i < 620; i++) {
+        // Descending, zero-padded timestamps keep a stable merge order.
+        insert.run(`2026-01-01T00:00:00.${String(1000 - (i % 1000)).padStart(4, '0')}Z`, `#${i}`);
+      }
+    });
+    seed();
+
+    const total = (await (await client.get('/api/admin/logs?service=auth&limit=100&offset=0', { cookie: adminCookie })).json()).total;
+    assert.ok(total > 500, `precondition: need >500 auth logs, got ${total}`);
+
+    const res = await client.get('/api/admin/logs?service=auth&limit=100&offset=500', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.ok(data.logs.length > 0, 'page 6 (offset 500) must not be empty when total > 500');
+  });
 });
 
 // ─── Session ────────────────────────────────────────────────────────────
