@@ -653,6 +653,31 @@ app.post("/api/applications/approve", (req, res) => {
   res.json({ added: added.length, skipped: skipped.length });
 });
 
+// DELETE /api/applications - 선택 신청을 계정 추가 없이 삭제(거절/정리)
+app.delete("/api/applications", (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) return res.status(400).send("삭제할 신청을 선택하세요.");
+
+  const numIds = ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (numIds.length === 0) return res.status(400).send("유효한 ID가 없습니다.");
+  if (numIds.length !== ids.length) return res.status(400).send("일부 ID가 올바르지 않습니다.");
+
+  const placeholders = numIds.map(() => "?").join(",");
+  const txResult = dbRun(() => db.transaction(() => {
+    const emails = db.prepare(`SELECT email FROM applications WHERE id IN (${placeholders})`).all(...numIds).map((r) => r.email);
+    const del = db.prepare(`DELETE FROM applications WHERE id IN (${placeholders})`).run(...numIds);
+    return { changes: del.changes, emails };
+  })());
+
+  if (!txResult.success) {
+    logger.warn(req, "applications.delete", { error: txResult.error, ids: numIds });
+    return res.status(txResult.status).send(txResult.error);
+  }
+
+  logger.log(req, "applications.delete", { emails: txResult.result.emails });
+  res.json({ deleted: txResult.result.changes });
+});
+
 // GET /api/users/exists/:email - 사용자 존재 + 활성 여부 (내부 서비스용)
 app.get("/api/users/exists/:email", (req, res) => {
   const user = db.prepare("SELECT 1 FROM users WHERE email = ? AND active = 1").get(req.params.email);

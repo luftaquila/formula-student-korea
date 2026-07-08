@@ -1353,4 +1353,25 @@ describe('Account applications - edge cases', () => {
     assert.equal(data.skipped, 1);
     assert.equal(db.prepare("SELECT 1 FROM applications WHERE email = 'admin@test.com'").get(), undefined);
   });
+
+  it('DELETE /api/applications requires admin (401 without cookie)', async () => {
+    const res = await client.delete('/api/applications', { body: { ids: [1] } });
+    assert.equal(res.status, 401);
+  });
+
+  it('DELETE /api/applications rejects empty ids (400)', async () => {
+    const res = await client.delete('/api/applications', { body: { ids: [] }, cookie: adminCookie });
+    assert.equal(res.status, 400);
+  });
+
+  it('DELETE /api/applications removes selected applications without creating a user', async () => {
+    db.prepare("INSERT OR IGNORE INTO applications (email, name, realname, phone, affiliation) VALUES ('del-app@example.com', 'Del', 'D', '010-0000-0000', 'Team')").run();
+    const app = db.prepare("SELECT id FROM applications WHERE email = 'del-app@example.com'").get();
+    const res = await client.delete('/api/applications', { body: { ids: [app.id] }, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.deleted, 1);
+    assert.equal(db.prepare("SELECT 1 FROM applications WHERE id = ?").get(app.id), undefined, 'application removed');
+    assert.equal(db.prepare("SELECT 1 FROM users WHERE email = 'del-app@example.com'").get(), undefined, 'no user created');
+  });
 });
