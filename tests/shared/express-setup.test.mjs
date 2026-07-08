@@ -24,7 +24,23 @@ import {
   isSecureConnection,
   formatCookieOpts,
   VALID_ROLES,
+  isEnvEnabled,
 } from '../../shared/express-setup.mjs';
+
+// ─── isEnvEnabled ─────────────────────────────────────────────────────────
+describe('isEnvEnabled', () => {
+  it('treats "1"/"true"/"yes"/"on" (any case) as enabled', () => {
+    for (const v of ['1', 'true', 'TRUE', 'True', 'yes', 'YES', 'on', 'ON', '  true  ']) {
+      assert.equal(isEnvEnabled(v), true, `"${v}" should be enabled`);
+    }
+  });
+
+  it('treats "false"/"0"/""/undefined/null as disabled', () => {
+    for (const v of ['false', 'FALSE', '0', 'no', 'off', '', ' ', undefined, null]) {
+      assert.equal(isEnvEnabled(v), false, `${JSON.stringify(v)} should be disabled`);
+    }
+  });
+});
 
 // ─── createJWT ──────────────────────────────────────────────────────────
 describe('createJWT', () => {
