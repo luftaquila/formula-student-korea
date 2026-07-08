@@ -117,6 +117,34 @@ if ! command -v tailscale >/dev/null 2>&1; then
     curl -fsSL https://tailscale.com/install.sh | sh
 fi
 
+echo "[gps] hardening cold-boot clock/tailscale ordering (RTC-less, no fake-hwclock)"
+# This Pi has no RTC and no fake-hwclock, so a cold boot starts with a wrong
+# clock. tailscaled control-TLS then fails ("cert not yet valid"), tailscale
+# stays down, and MagicDNS (the only entry in the tailscale-managed resolv.conf)
+# is down too -> all DNS fails -> timesyncd cannot resolve the debian.pool.ntp.org
+# hostnames -> the clock never syncs -> deadlock that only a reboot clears.
+# Fix (mirrors the fsk-rover chrony fix): pin DNS-free NTP IPs so timesyncd can
+# step the clock without DNS, gate tailscaled on time-sync.target, and enable
+# systemd-time-wait-sync so the target waits for an actual clock sync.
+sudo install -d -m 755 /etc/systemd/timesyncd.conf.d
+sudo tee /etc/systemd/timesyncd.conf.d/10-dns-free-ntp.conf >/dev/null <<'NTPCONF'
+[Time]
+# Cloudflare + Google anycast NTP, by IP so timesyncd can step the clock without
+# DNS on a cold boot (FallbackNTP still covers the DNS pool once time is sane).
+NTP=162.159.200.123 216.239.35.0
+NTPCONF
+sudo install -d -m 755 /etc/systemd/system/tailscaled.service.d
+sudo tee /etc/systemd/system/tailscaled.service.d/override.conf >/dev/null <<'TSCONF'
+[Unit]
+# Start tailscaled only after the clock is synchronised, so an RTC-less cold boot
+# never hands it a wrong clock (control-TLS "cert not yet valid" -> deadlock).
+After=time-sync.target
+Wants=time-sync.target
+TSCONF
+sudo systemctl enable systemd-time-wait-sync.service >/dev/null 2>&1 || true
+sudo systemctl daemon-reload
+sudo systemctl restart systemd-timesyncd
+
 echo "[gps] deploying agent to /opt/gps-register"
 TMP="$(mktemp -d)"
 tar -xzf /tmp/gps-deploy.tgz -C "$TMP"
