@@ -1762,9 +1762,15 @@ app.post("/api/rover/clear-emergency", (req, res) => {
 app.post("/api/rover/end-mission", (req, res) => {
   if (currentMissionId == null) return res.json({ ended: false });
   const endedId = currentMissionId;
+  // Tell the rover to abandon the mission and return to IDLE. Otherwise a
+  // navigator stranded in ERROR (RTK lost) or PAUSED keeps its halted amber
+  // LED latched — and could auto-resume the just-closed mission on RTK
+  // recovery. Best-effort: the DB record is closed regardless of whether the
+  // rover is currently connected (the navigator re-syncs on reconnect if not).
+  const notified = sendRoverEvent("end-mission", {});
   endMission("stopped");
   broadcastRoverStatus();
-  logger.log(req, "rover.end_mission", { mission_id: endedId }, "rover");
+  logger.log(req, "rover.end_mission", { mission_id: endedId, notified }, "rover");
   res.json({ ended: true, mission_id: endedId });
 });
 

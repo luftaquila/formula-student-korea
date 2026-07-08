@@ -267,6 +267,79 @@ def test_set_error_publishes_reason(nav):
     assert published == ['test reason']
 
 
+# ── Halted-state amber LED (nav_fault → MCU LED_GPS_LOST) ──────────────────
+# Amber blink must light for BOTH an RTK/GPS ERROR and a PAUSED mission
+# (operator or obstacle auto-pause), and clear on resume / discard / recovery.
+
+class _Bool:
+    def __init__(self, data):
+        self.data = data
+
+
+def test_pause_lights_amber(nav):
+    faults = []
+    nav._pub_nav_fault.publish = lambda msg: faults.append(msg.data)
+    nav._state = State.NAVIGATING
+    nav._on_pause(None)
+    assert nav._state == State.PAUSED
+    assert faults == [1]            # amber ON on entering PAUSED
+
+
+def test_obstacle_autopause_lights_amber(nav):
+    faults = []
+    nav._pub_nav_fault.publish = lambda msg: faults.append(msg.data)
+    nav._state = State.NAVIGATING
+    nav._obstacle_present = False
+    nav._on_obstacle(_Bool(True))   # rising edge while driving → auto-pause
+    assert nav._state == State.PAUSED
+    assert faults == [1]
+
+
+def test_resume_clears_amber(nav):
+    nav._state = State.NAVIGATING
+    nav._on_pause(None)             # → PAUSED, amber ON
+    nav._replan_from_current_chassis = lambda: None   # isolate the LED behaviour
+    faults = []
+    nav._pub_nav_fault.publish = lambda msg: faults.append(msg.data)
+    nav._on_resume(None)
+    assert nav._state == State.NAVIGATING
+    assert faults == [0]            # amber OFF on resume
+
+
+def test_end_mission_from_error_returns_to_idle_and_clears_amber(nav):
+    # The reported bug: discarding a mission while in RTK-float ERROR left the
+    # amber blink stuck because the navigator was never told. It now returns to
+    # IDLE, clears the amber, and drops the saved resume state.
+    nav._set_error('rtk float')     # → ERROR, amber ON
+    assert nav._state == State.ERROR
+    nav._pre_error_state = State.NAVIGATING
+    faults = []
+    nav._pub_nav_fault.publish = lambda msg: faults.append(msg.data)
+    nav._on_end_mission(None)
+    assert nav._state == State.IDLE
+    assert nav._pre_error_state is None     # no auto-resume on later RTK recovery
+    assert faults == [0]
+
+
+def test_end_mission_from_paused_returns_to_idle_and_clears_amber(nav):
+    nav._state = State.NAVIGATING
+    nav._on_pause(None)             # → PAUSED, amber ON
+    faults = []
+    nav._pub_nav_fault.publish = lambda msg: faults.append(msg.data)
+    nav._on_end_mission(None)
+    assert nav._state == State.IDLE
+    assert faults == [0]
+
+
+def test_end_mission_does_not_override_emergency_stop(nav):
+    nav._state = State.EMERGENCY_STOP
+    faults = []
+    nav._pub_nav_fault.publish = lambda msg: faults.append(msg.data)
+    nav._on_end_mission(None)
+    assert nav._state == State.EMERGENCY_STOP   # E-Stop latch untouched
+    assert faults == []                          # no LED change
+
+
 # ── Antenna offset auto-calibration ───────────────────────────────────────
 
 def test_calibrate_antenna_rejected_when_not_idle(nav):

@@ -96,6 +96,10 @@ class BridgeNode(Node):
         # manual control, then resumes from the current waypoint.
         self._pub_pause = self.create_publisher(Empty, '/rover/cmd/pause', reliable_qos)
         self._pub_resume = self.create_publisher(Empty, '/rover/cmd/resume', reliable_qos)
+        # Operator discarded the preserved mission on the server → return the
+        # navigator to a clean IDLE (clears the halted amber LED, stops any
+        # RTK-recovery auto-resume).
+        self._pub_end_mission = self.create_publisher(Empty, '/rover/cmd/end_mission', reliable_qos)
         self._pub_manual = self.create_publisher(Twist, '/rover/cmd/manual_control', 10)
         self._pub_request_pos = self.create_publisher(Empty, '/rover/cmd/request_position', reliable_qos)
         self._pub_calibrate_battery = self.create_publisher(Float32, '/rover/cmd/calibrate_battery', reliable_qos)
@@ -662,6 +666,10 @@ class BridgeNode(Node):
         elif event == 'resume-mission':
             self.get_logger().info('Mission resume received from server')
             self._pub_resume.publish(Empty())
+
+        elif event == 'end-mission':
+            self.get_logger().info('Mission discard received from server')
+            self._pub_end_mission.publish(Empty())
 
         elif event == 'manual-control':
             msg = Twist()

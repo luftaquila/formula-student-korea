@@ -2555,17 +2555,20 @@ describe('Ground calibration trigger', () => {
 describe('Mission telemetry historizes NTRIP link health', () => {
   const ac = new AbortController();
   let missionId;
+  let streamText = '';
 
   before(async () => {
     // Connect a fake rover over SSE so /api/rover/execute can start a mission.
-    // Drain the stream in the background (heartbeats) and swallow the abort
-    // error raised on teardown so it doesn't surface as an unhandled rejection.
+    // Accumulate the stream in the background (heartbeats + relayed commands)
+    // and swallow the abort error raised on teardown so it doesn't surface as
+    // an unhandled rejection.
     const streamRes = await fetch(`${baseUrl}/api/rover/stream`, {
       headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
       signal: ac.signal,
     });
     const reader = streamRes.body.getReader();
-    (async () => { try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ } })();
+    const dec = new TextDecoder();
+    (async () => { try { for (;;) { const { done, value } = await reader.read(); if (done) break; if (value) streamText += dec.decode(value, { stream: true }); } } catch { /* aborted */ } })();
     // Wait until the server registers the rover as connected.
     for (let i = 0; i < 100; i++) {
       const s = await client.get('/api/rover/status', { cookie: adminCookie });
@@ -2653,6 +2656,23 @@ describe('Mission telemetry historizes NTRIP link health', () => {
     const last = samples[samples.length - 1];
     assert.equal(last.altitude_m, 47.35); // MSL altitude historized for the route profile
     assert.equal(last.v_acc_m, 0.022);    // vertical accuracy historized alongside
+  });
+
+  it('relays end-mission to the connected rover and closes the record', async () => {
+    // Discarding a preserved mission must notify the rover (a new SSE command),
+    // otherwise a navigator stuck in ERROR/PAUSED keeps its halted amber LED
+    // latched and can auto-resume the just-closed mission on RTK recovery.
+    const res = await client.post('/api/rover/end-mission', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ended, true);
+    assert.equal(body.mission_id, missionId);
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline && !streamText.includes('event: end-mission')) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(streamText.includes('event: end-mission'),
+      'end-mission is relayed to the connected rover SSE stream');
   });
 });
 
