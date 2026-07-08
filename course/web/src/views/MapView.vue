@@ -6482,12 +6482,12 @@ onUnmounted(() => {
 }
 .calibration-modal > .modal-titlebar { flex: 0 0 auto; }
 .calibration-modal > .preflight-actions { flex: 0 0 auto; }
+/* Tabs are v-show (only one section visible at a time), so a per-section
+   top divider renders as a stray rule at the top of each tab. Drop it and
+   give every tab the same top padding for a consistent header gap. */
 .calibration-modal .cal-section {
-  padding: 0.75rem 0;
-  border-top: 1px solid var(--border-color);
+  padding: 0.5rem 0 0.75rem;
 }
-.calibration-modal .cal-section:first-of-type { border-top: none; padding-top: 0; }
-.calibration-modal > .cal-section:first-of-type { padding-top: 0.5rem; }
 /* Body sections scroll independently of the title bar / footer. */
 .calibration-modal > .cal-section { overflow-y: auto; }
 .cal-warn {
