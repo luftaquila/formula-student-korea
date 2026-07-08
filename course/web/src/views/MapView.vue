@@ -831,7 +831,7 @@ const gpsConfig = ref({ ntrip_source: "ngii", active_base_point_id: null });
 const surveyPoints = ref([]);
 const gpsSaving = ref(false);
 const newSurveyName = ref("");
-const surveyDuration = ref(120);
+const surveyDuration = ref(60); // fixed base-station survey window (no UI selector)
 const selectedBasePointId = ref(null);
 // Survey point whose card the operator tapped to center the map on it (list
 // highlight). Cleared when its point disappears from the list.
@@ -882,8 +882,8 @@ const receiverCorrectionAge = computed(() => {
 const receiverGpsRows = computed(() => {
   const r = receiver.value;
   const connected = !!r?.connected;
-  // Server (network) connection as the first row — same grid style as the GPS rows.
-  const rows = [["SERVER", connected ? "ONLINE" : "OFFLINE", connected ? "ok" : "bad"]];
+  // Device (network) connection as the first row — same grid style as the GPS rows.
+  const rows = [["DEVICE", connected ? "ONLINE" : "OFFLINE", connected ? "ok" : "bad"]];
   if (!connected || !r) return rows;
   const g = r.gps || {};
   const hasFix = !!r.fix_status;
@@ -933,7 +933,7 @@ watch(baseNoReceiver, (now, prev) => {
   // Admin-only feature: only the operator who can set/fix the base source should
   // get this toast (the persistent banner lives in the admin GPS tab anyway).
   if (now && !prev && isAdmin.value) {
-    notifyWarn("기준국(base) 소스인데 GPS 수신기가 연결되지 않았습니다 — 로버에 RTK 보정이 전달되지 않습니다.");
+    notifyWarn("GPS 수신기가 연결되지 않았습니다. 로버에 RTK 보정이 전달되지 않습니다.");
   }
 });
 
@@ -3649,10 +3649,21 @@ function syncDeviceMarkers(s) {
   setDeviceMarker("receiver", recv?.lat, recv?.lng);
 }
 
-// Fixed teal diamond marking a surveyed base-station point. The active base gets
-// an amber ring; the point selected in the list gets a sky-blue ring (selection
-// wins over the base ring when both apply). Distinct shape from the round
-// cone/device markers so a base point never reads as a cone.
+// Clicking a point's map marker selects it in the side list (and scrolls the
+// list to it) without moving the map — the marker is already in view.
+function selectSurveyPointFromMarker(p) {
+  selectedSurveyPointId.value = p.id;
+  nextTick(() => {
+    const el = document.querySelector(`.gps-point-card[data-survey-id="${p.id}"]`);
+    if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  });
+}
+
+// Fixed magenta diamond marking a surveyed base-station point. The active base
+// gets an amber ring; the point selected in the list gets a sky-blue ring
+// (selection wins over the base ring when both apply). Distinct shape AND colour
+// from the round cones (incl. the cyan right-side cone) and device markers so a
+// base point never reads as a cone.
 function surveyPointIcon(isBase, isSelected) {
   const size = isBase ? 18 : 14;
   const cls = ["survey-marker", isBase && "is-base", isSelected && "selected"]
@@ -3683,8 +3694,9 @@ function renderSurveyPoints() {
       && gpsConfig.value.active_base_point_id === p.id;
     const m = L.marker([p.lat, p.lng], {
       icon: surveyPointIcon(isBase, selectedSurveyPointId.value === p.id),
-      zIndexOffset: 900, interactive: false,
+      zIndexOffset: 900, interactive: true, keyboard: false,
     });
+    m.on("click", () => selectSurveyPointFromMarker(p));
     m.bindTooltip(p.name, {
       direction: "top", offset: [0, -12], permanent: true, className: "survey-tooltip",
     });
@@ -6070,7 +6082,7 @@ onUnmounted(() => {
 
               <!-- GPS tab (receiver source + base-station survey points) -->
               <section v-show="activeTab === 'gps'" class="tab-pane">
-                <!-- Receiver status — SERVER + GPS rows in one popover-style grid -->
+                <!-- Receiver status — DEVICE + GPS rows in one popover-style grid -->
                 <div class="inspector-group">
                   <div class="group-title">GPS 수신기</div>
                   <div class="gps-detail">
@@ -6088,8 +6100,7 @@ onUnmounted(() => {
                 <div class="inspector-group">
                   <div class="group-title">로버 NTRIP 보정 소스</div>
                   <div v-if="baseNoReceiver" class="gps-alert">
-                    ⚠️ 기준국(base) 소스인데 GPS 수신기가 연결되지 않았습니다. 로버에 RTK 보정이 전달되지 않아
-                    측위가 저하됩니다. 수신기를 연결하거나 NGII로 전환하세요.
+                    ⚠️ GPS 수신기가 연결되지 않았습니다. 수신기를 연결하거나 NGII로 전환하세요.
                   </div>
                   <div class="gps-source-choices">
                     <label :class="['gps-source-opt', { active: gpsConfig.ntrip_source === 'ngii' }]">
@@ -6126,18 +6137,10 @@ onUnmounted(() => {
                            maxlength="100" @keyup.enter="addSurveyPoint" />
                     <button class="btn btn-primary btn-sm" :disabled="!newSurveyName.trim()" @click="addSurveyPoint">추가</button>
                   </div>
-                  <div class="gps-survey-duration">
-                    <label>측량 시간</label>
-                    <select v-model.number="surveyDuration">
-                      <option :value="60">60초</option>
-                      <option :value="120">120초</option>
-                      <option :value="300">300초</option>
-                      <option :value="600">600초</option>
-                    </select>
-                  </div>
                   <div v-if="surveyPoints.length === 0" class="empty-msg">측량점이 없습니다.</div>
                   <div v-else class="gps-point-list">
                     <div v-for="p in surveyPoints" :key="p.id"
+                         :data-survey-id="p.id"
                          :class="['gps-point-card', {
                            'is-base': gpsConfig.ntrip_source === 'base' && gpsConfig.active_base_point_id === p.id,
                            clickable: p.lat != null && p.lng != null,
@@ -6149,12 +6152,12 @@ onUnmounted(() => {
                         <strong class="gps-point-name">{{ p.name }}</strong>
                         <span v-if="gpsConfig.ntrip_source === 'base' && gpsConfig.active_base_point_id === p.id" class="gps-tag gps-tag-base">기준국</span>
                         <span v-else-if="p.lat == null" class="gps-tag gps-tag-warn">미측량</span>
-                        <span v-else class="gps-tag gps-tag-ok">측량됨</span>
+                        <span v-else class="gps-tag gps-tag-ok">측량점</span>
                       </div>
                       <div v-if="p.lat != null && p.lng != null" class="gps-point-coord">
-                        <span class="gps-point-latlng">{{ p.lat.toFixed(7) }}, {{ p.lng.toFixed(7) }}</span>
-                        <span class="gps-sub">
-                          <template v-if="p.alt != null">{{ p.alt.toFixed(2) }} m</template><template v-if="p.h_acc_m != null"> · ±{{ (p.h_acc_m * 100).toFixed(1) }} cm</template><template v-if="p.surveyed_at"> · {{ formatSnapshotTime(p.surveyed_at) }}</template>
+                        <span class="gps-point-latlng">{{ p.lat.toFixed(7) }}, {{ p.lng.toFixed(7) }}<template v-if="p.alt != null"> · {{ p.alt.toFixed(2) }} m</template></span>
+                        <span class="gps-sub" v-if="p.h_acc_m != null || p.surveyed_at">
+                          <template v-if="p.h_acc_m != null">±{{ (p.h_acc_m * 100).toFixed(1) }} cm</template><template v-if="p.surveyed_at">{{ p.h_acc_m != null ? ' · ' : '' }}{{ formatSnapshotTime(p.surveyed_at) }}</template>
                         </span>
                       </div>
 
@@ -7568,19 +7571,16 @@ onUnmounted(() => {
 .gps-source-opt input { margin-top: 0.2rem; }
 .gps-base-select { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.6rem; }
 .gps-add-row { display: flex; gap: 0.5rem; }
-.gps-survey-duration { display: flex; align-items: center; gap: 0.5rem; margin: 0.55rem 0; font-size: 0.85rem; }
 /* Match the course-add input styling; min-width:0 lets flex items shrink so a
    long placeholder doesn't push the row past the inspector panel edge. */
 .gps-add-row input,
-.gps-base-select select,
-.gps-survey-duration select {
+.gps-base-select select {
   flex: 1; min-width: 0; padding: 0.375rem 0.5rem;
   border: 1px solid var(--border-color); border-radius: 4px;
   background: var(--bg-secondary); color: var(--text-primary); font-size: 0.8rem;
 }
 .gps-add-row input:focus,
-.gps-base-select select:focus,
-.gps-survey-duration select:focus { outline: none; border-color: var(--accent-primary); }
+.gps-base-select select:focus { outline: none; border-color: var(--accent-primary); }
 .gps-point-list { display: flex; flex-direction: column; gap: 0.5rem; }
 .gps-point-card {
   padding: 0.55rem 0.65rem; border: 1px solid var(--border-color); border-radius: 8px;
@@ -7755,11 +7755,12 @@ onUnmounted(() => {
 }
 .rover-tooltip::before { border-top-color: #a855f7; }
 
-/* Surveyed base-station point markers (L.divIcon, outside scoped styles). Teal
-   diamond; amber ring = active base, sky-blue ring = selected in the list. */
+/* Surveyed base-station point markers (L.divIcon, outside scoped styles). Magenta
+   diamond — deliberately unlike the cyan right-side cone the operator flagged as
+   too similar; amber ring = active base, sky-blue ring = selected in the list. */
 .survey-marker {
-  width: 14px; height: 14px; box-sizing: border-box;
-  background: #14b8a6; border: 2px solid #fff; transform: rotate(45deg);
+  width: 14px; height: 14px; box-sizing: border-box; cursor: pointer;
+  background: #ec4899; border: 2px solid #fff; transform: rotate(45deg);
   box-shadow: 0 1px 4px rgba(0,0,0,0.5);
 }
 .survey-marker.is-base {
@@ -7770,11 +7771,11 @@ onUnmounted(() => {
   box-shadow: 0 0 0 3px #38bdf8, 0 1px 4px rgba(0,0,0,0.5);
 }
 .survey-tooltip {
-  background: #0f766e; color: #fff; border: none;
+  background: #be185d; color: #fff; border: none;
   font-size: 11px; font-weight: 600; padding: 2px 6px;
   border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
 }
-.survey-tooltip::before { border-top-color: #0f766e; }
+.survey-tooltip::before { border-top-color: #be185d; }
 
 /* Rotation handle/pivot + measurement overlays are drawn into Leaflet's DOM via
    L.divIcon, so they live outside the component's scoped styles. */
