@@ -19,8 +19,14 @@ const ROVER_POSITION_STALE_MS = 30 * 1000;
 // clients (not the device socket), sendRover/ReceiverEvent's write_failed only
 // fires on operator-initiated pushes (and a half-open write buffers, not throws),
 // and the device→server heartbeat write is swallowed. Without this the GPS tab
-// keeps showing "DEVICE ONLINE" long after the receiver is off. ~3 missed cycles.
-const DEFAULT_DEVICE_STALE_MS = 10 * 1000;
+// keeps showing "DEVICE ONLINE" long after the receiver is off.
+//
+// 15s, not 10: a telemetry cycle is sleep(3s) + a POST with a 5s timeout, so a
+// single slow/hung POST can stretch one cycle to ~8s. 15s clears two such cycles
+// before tripping, so a transient stall on a live link doesn't force-close the
+// SSE (which would blip the rover's mission interrupted→running); "device off" is
+// still caught in ~15–20s vs the minutes a half-open socket would otherwise take.
+const DEFAULT_DEVICE_STALE_MS = 15 * 1000;
 const DEFAULT_DEVICE_WATCHDOG_TICK_MS = 5 * 1000;
 
 export function registerRoverRoutes(app, { express, db, dbRun, logger, broadcastEvent, getCourseById, takeCourseSnapshot, validateCoordinate, validateAltitude, deviceStaleMs, deviceWatchdogTickMs }) {
