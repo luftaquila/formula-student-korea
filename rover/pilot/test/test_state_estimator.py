@@ -315,3 +315,34 @@ class TestPositionInnovationYaw:
         assert abs(psi - true_psi) < degrees(1)/57.2958, (
             f'expected ψ within 1° of true after 10 fixes, got {degrees(psi):.2f}°'
         )
+
+    def test_bias_converges_in_reverse(self):
+        # SAME as the forward case but the chassis drives BACKWARD. The
+        # lateral-innovation → ψ correction must still CONVERGE the bias.
+        # Regression for the reverse sign bug: the correction used |v|, so in
+        # reverse it was wrong-signed and AMPLIFIED the bias (K-turn heading
+        # corruption). This test diverges on the old code and converges on the
+        # fixed one.
+        from math import degrees
+        true_psi = 0.0
+        biased_psi = 0.087  # +5°
+        est = self._est(yaw_innov_gain=0.30, yaw_innov_max_step_rad=0.087)
+        ant_lat, ant_lon = gps_from_enu(0.0, 0.0, REF_LAT, REF_LON)
+        est.set_initial(ant_lat, ant_lon, psi_math=biased_psi)
+        est.predict(v=-1.0, omega=0.0, t_now=100.0)
+        est.correct_position_with_yaw_innovation(ant_lat, ant_lon, t_now=100.0)
+        for k in range(1, 11):
+            t = 100.0 + k * 0.1
+            est.predict(v=-1.0, omega=0.0, t_now=t)
+            # True chassis reverses WEST along TRUE ψ=0 at 1 m/s.
+            true_chassis_x = -0.3 - 1.0 * k * 0.1
+            true_ax = true_chassis_x + cos(true_psi) * 0.3
+            true_ay = 0.0 + sin(true_psi) * 0.3
+            obs_lat, obs_lon = gps_from_enu(true_ax, true_ay, REF_LAT, REF_LON)
+            est.correct_position_with_yaw_innovation(obs_lat, obs_lon, t_now=t)
+            est.correct_position(obs_lat, obs_lon)
+        _, _, psi = est.chassis_pose()
+        assert abs(psi - true_psi) < degrees(1)/57.2958, (
+            f'reverse ψ must converge within 1° of true (amplifies on the '
+            f'old |v| code); got {degrees(psi):.2f}°'
+        )
