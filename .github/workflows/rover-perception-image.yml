@@ -47,7 +47,9 @@ jobs:
           # 4.9 wheel is built against it (see requirements.txt). Install OpenCV
           # too so the disabled-detector test exercises the real "missing
           # calibration" path, not the cv2-absent fallback.
-          python3 -m pip install pytest 'numpy<2' 'opencv-python-headless<4.10'
+          # requests: cloud_link.py imports it at module top, so the control
+          # dispatch tests (test_cloud_link.py) need it to even import.
+          python3 -m pip install pytest 'numpy<2' 'opencv-python-headless<4.10' 'requests>=2.31'
           cd rover/perception
           python3 -m pytest test/ -q
 

@@ -283,6 +283,7 @@ class NavigatorNode(Node):
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_emergency, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/pause', self._on_pause, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/resume', self._on_resume, reliable_qos)
+        self.create_subscription(Empty, '/rover/cmd/end_mission', self._on_end_mission, reliable_qos)
         # Obstacle detector (perception container) — a debounced Bool. A rising
         # edge while NAVIGATING auto-pauses the mission locally (no server round
         # trip), so the rover stops itself even during an uplink blip.
@@ -379,6 +380,11 @@ class NavigatorNode(Node):
         # Error recovery.
         self._pre_error_state = None
         self._last_error_reason = None
+        # Last value pushed to /rover/cmd/nav_fault (the MCU's LED_GPS_LOST
+        # orange-blink flag). Deduped so we don't spam the serial link every
+        # tick. Amber is ON while the chassis is halted for attention — an
+        # RTK/GPS ERROR or a PAUSED mission (operator or obstacle auto-pause).
+        self._nav_fault_on = False
 
         # Wheel scale auto-calibration state. CAL_WHEELS drives a
         # straight chord; we accumulate per-wheel ∫|v_raw| dt and chord
@@ -647,6 +653,29 @@ class NavigatorNode(Node):
         if self._state == State.EMERGENCY_STOP:
             self.get_logger().info('Emergency-stop cleared by operator')
             self._set_state(State.IDLE)
+
+    def _on_end_mission(self, _msg):
+        """Operator discarded the preserved mission — return to a clean IDLE.
+
+        Without this the navigator can be stranded in ERROR (RTK lost) or
+        PAUSED after the operator abandons the mission on the server: the amber
+        LED (LED_GPS_LOST) stays latched, and a later RTK recovery could even
+        auto-resume a mission the server already closed. Routing through IDLE
+        makes _set_state clear the amber; dropping _pre_error_state stops any
+        auto-resume. A live EMERGENCY_STOP is left latched (only
+        clear_emergency releases that).
+        """
+        if self._state == State.EMERGENCY_STOP:
+            return
+        if self._state == State.IDLE:
+            return
+        self._stop_motors()
+        self._l1_tracker = None
+        self._pre_error_state = None
+        self._last_error_reason = None
+        self._fix_recovered_at = None
+        self.get_logger().info(f'Mission discarded by operator (from {self._state.value}) → IDLE')
+        self._set_state(State.IDLE)
 
     # Mission states from which a soft pause is meaningful — the rover is driving
     # (or parked at a cone) under autonomy. CALIBRATING is excluded: it runs
@@ -966,9 +995,7 @@ class NavigatorNode(Node):
             # re-enter ERROR within 1-2 ticks of resuming.
             if self._fix_recovered_at is None:
                 self._fix_recovered_at = now
-                fault = Int32()
-                fault.data = 0
-                self._pub_nav_fault.publish(fault)
+                self._publish_nav_fault(False)
             hold = self.get_parameter('fix_recovery_hold_s').value
             if now - self._fix_recovered_at < hold:
                 return  # hold position, LED already cleared
@@ -1022,9 +1049,7 @@ class NavigatorNode(Node):
             # via _fix_recovered_at: only publish on the recovery →
             # degrade transition, not every tick.
             if self._fix_recovered_at is not None:
-                fault = Int32()
-                fault.data = 1
-                self._pub_nav_fault.publish(fault)
+                self._publish_nav_fault(True)
             self._fix_recovered_at = None
 
     # ── calibration ──────────────────────────────────────────────────────
@@ -2039,10 +2064,25 @@ class NavigatorNode(Node):
     def _stop_motors(self):
         self._publish_velocity(0.0, 0.0)
 
+    def _publish_nav_fault(self, on):
+        """Drive the MCU's LED_GPS_LOST (orange blink) indicator, deduped.
+
+        Reused for the two 'chassis halted, needs attention' conditions that
+        must look identical to the operator: an RTK/GPS-quality ERROR and a
+        PAUSED mission (operator or obstacle auto-pause). Edge-published so a
+        held state doesn't spam the serial link.
+        """
+        on = bool(on)
+        if on == self._nav_fault_on:
+            return
+        self._nav_fault_on = on
+        msg = Int32()
+        msg.data = 1 if on else 0
+        self._pub_nav_fault.publish(msg)
+
     def _set_state(self, new_state):
         if self._state != new_state:
             self.get_logger().info(f'State: {self._state.value} → {new_state.value}')
-            leaving_error = (self._state == State.ERROR and new_state != State.ERROR)
             if new_state == State.NAVIGATING:
                 # Entering a driving leg — re-arm the obstacle rising-edge so a
                 # stale-True can't suppress the next auto-pause. Covers resume,
@@ -2052,14 +2092,12 @@ class NavigatorNode(Node):
                 self._obstacle_present = False
             self._state = new_state
             self._publish_state()
-            if leaving_error:
-                # Clear the MCU's LED_GPS_LOST indicator now that we're
-                # back out of ERROR. _set_error publishes data=1 on
-                # entry; here we publish data=0 on exit so the flag is
-                # edge-triggered both directions.
-                fault = Int32()
-                fault.data = 0
-                self._pub_nav_fault.publish(fault)
+            # Amber (LED_GPS_LOST) tracks the halted-for-attention states, so any
+            # transition sets or clears it edge-wise: ON entering ERROR/PAUSED,
+            # OFF entering anything else (resume→NAVIGATING, discard/recovery→IDLE,
+            # →EMERGENCY_STOP, segment advances, …). Within ERROR, _handle_error
+            # additionally toggles it live on fix recovery/re-degrade.
+            self._publish_nav_fault(new_state in (State.ERROR, State.PAUSED))
 
     def _publish_state(self):
         if self._last_published_state == self._state:
@@ -2075,13 +2113,12 @@ class NavigatorNode(Node):
         msg = String()
         msg.data = reason
         self._pub_error_reason.publish(msg)
-        # Light the MCU's LED_GPS_LOST (orange blink) so the operator
-        # has a hardware indication that the chassis is halted for an
-        # RTK / GPS quality reason. _set_state below stops motors;
-        # this just labels the cause.
-        fault = Int32()
-        fault.data = 1
-        self._pub_nav_fault.publish(fault)
+        # Light the MCU's LED_GPS_LOST (orange blink) so the operator has a
+        # hardware indication the chassis is halted for an RTK/GPS reason.
+        # Deduped, and explicit here (not only via _set_state) so a re-error
+        # while ALREADY in ERROR — where _set_state is a no-op — still relights
+        # amber if a recovery hold had cleared it.
+        self._publish_nav_fault(True)
         self._set_state(State.ERROR)
 
 

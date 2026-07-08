@@ -1020,6 +1020,46 @@ describe('POST /api/rover/camera/depth', () => {
   });
 });
 
+// ─── Rover proximity (obstacle) detection toggle ─────────────────────────
+describe('POST /api/rover/camera/detection', () => {
+  it('rejects unauthenticated requests', async () => {
+    const res = await client.post('/api/rover/camera/detection', { body: { on: false } });
+    assert.equal(res.status, 401);
+  });
+
+  it('defaults to OFF and stores the on/off flag in rover status', async () => {
+    // Default is OFF — detection is opt-in per mission.
+    const before = await client.get('/api/rover/status', { cookie: adminCookie });
+    assert.equal((await before.json()).obstacle_detection_enabled, false);
+
+    const on = await client.post('/api/rover/camera/detection', {
+      body: { on: true }, cookie: adminCookie,
+    });
+    assert.equal(on.status, 200);
+    const onBody = await on.json();
+    assert.equal(onBody.ok, true);
+    assert.equal(onBody.detection, true);
+    // No perception control channel is attached here, so it can't be delivered —
+    // but the flag is stored regardless (re-synced on the next perception connect).
+    assert.equal(onBody.camera_connected, false);
+    assert.equal((await (await client.get('/api/rover/status', { cookie: adminCookie })).json())
+      .obstacle_detection_enabled, true);
+
+    const off = await client.post('/api/rover/camera/detection', {
+      body: { on: false }, cookie: adminCookie,
+    });
+    assert.equal((await off.json()).detection, false);
+    assert.equal((await (await client.get('/api/rover/status', { cookie: adminCookie })).json())
+      .obstacle_detection_enabled, false);
+  });
+
+  it('coerces a missing body to off (no crash)', async () => {
+    const res = await client.post('/api/rover/camera/detection', { body: {}, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).detection, false);
+  });
+});
+
 // ─── Rover minimap tile proxy ────────────────────────────────────────────
 describe('GET /api/rover/map-tile', () => {
   it('rejects unauthenticated requests', async () => {
@@ -2205,6 +2245,55 @@ describe('Camera relay', () => {
     ctlAc.abort();
   });
 
+  it('relays the proximity-detection toggle and re-syncs it on (re)connect', async () => {
+    // First perception control channel. On connect the server re-syncs the
+    // stored detection state — default is OFF.
+    const ctlAc = new AbortController();
+    const ctl = await fetch(`${url}/api/rover/camera/control`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ctlAc.signal,
+    });
+    assert.equal(ctl.status, 200);
+    const ctlSink = {};
+    const stopCtl = pump(ctl.body.getReader(), ctlSink);
+    assert.ok(await waitFor(() => ctlSink.text.includes('detect-off'), 1000),
+      'control connect re-syncs the stored detection state (default off)');
+
+    // Operator turns detection ON → relayed as detect-on + stored server-side.
+    const on = await cli.post('/api/rover/camera/detection', { body: { on: true }, cookie: adminCookie });
+    assert.equal(on.status, 200);
+    assert.equal((await on.json()).detection, true);
+    assert.ok(await waitFor(() => ctlSink.text.includes('detect-on'), 1000),
+      'detection toggle relays detect-on to the perception control channel');
+    assert.equal((await (await cli.get('/api/rover/status', { cookie: adminCookie })).json())
+      .obstacle_detection_enabled, true);
+
+    // A fresh perception container reconnects → must be re-told the stored ON
+    // (a new container boots with detection off, so the server re-asserts truth).
+    stopCtl();
+    ctlAc.abort();
+    await sleep(60);
+    const ctl2Ac = new AbortController();
+    const ctl2 = await fetch(`${url}/api/rover/camera/control`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ctl2Ac.signal,
+    });
+    assert.equal(ctl2.status, 200);
+    const ctl2Sink = {};
+    const stopCtl2 = pump(ctl2.body.getReader(), ctl2Sink);
+    assert.ok(await waitFor(() => ctl2Sink.text.includes('detect-on'), 1000),
+      'reconnect re-syncs the stored ON state to a fresh perception container');
+
+    // Turn detection back OFF → relayed as detect-off.
+    const off = await cli.post('/api/rover/camera/detection', { body: { on: false }, cookie: adminCookie });
+    assert.equal((await off.json()).detection, false);
+    assert.ok(await waitFor(() => ctl2Sink.text.includes('detect-off'), 1000),
+      'turning detection off relays detect-off');
+
+    stopCtl2();
+    ctl2Ac.abort();
+  });
+
   it('caps concurrent viewers (503 past the limit)', async () => {
     // The viewer cap is the only thing stopping a scripted/looping admin from
     // exhausting sockets/heap on the shared mission server, so guard it.
@@ -2464,17 +2553,20 @@ describe('Ground calibration trigger', () => {
 describe('Mission telemetry historizes NTRIP link health', () => {
   const ac = new AbortController();
   let missionId;
+  let streamText = '';
 
   before(async () => {
     // Connect a fake rover over SSE so /api/rover/execute can start a mission.
-    // Drain the stream in the background (heartbeats) and swallow the abort
-    // error raised on teardown so it doesn't surface as an unhandled rejection.
+    // Accumulate the stream in the background (heartbeats + relayed commands)
+    // and swallow the abort error raised on teardown so it doesn't surface as
+    // an unhandled rejection.
     const streamRes = await fetch(`${baseUrl}/api/rover/stream`, {
       headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
       signal: ac.signal,
     });
     const reader = streamRes.body.getReader();
-    (async () => { try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ } })();
+    const dec = new TextDecoder();
+    (async () => { try { for (;;) { const { done, value } = await reader.read(); if (done) break; if (value) streamText += dec.decode(value, { stream: true }); } } catch { /* aborted */ } })();
     // Wait until the server registers the rover as connected.
     for (let i = 0; i < 100; i++) {
       const s = await client.get('/api/rover/status', { cookie: adminCookie });
@@ -2562,6 +2654,23 @@ describe('Mission telemetry historizes NTRIP link health', () => {
     const last = samples[samples.length - 1];
     assert.equal(last.altitude_m, 47.35); // MSL altitude historized for the route profile
     assert.equal(last.v_acc_m, 0.022);    // vertical accuracy historized alongside
+  });
+
+  it('relays end-mission to the connected rover and closes the record', async () => {
+    // Discarding a preserved mission must notify the rover (a new SSE command),
+    // otherwise a navigator stuck in ERROR/PAUSED keeps its halted amber LED
+    // latched and can auto-resume the just-closed mission on RTK recovery.
+    const res = await client.post('/api/rover/end-mission', { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ended, true);
+    assert.equal(body.mission_id, missionId);
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline && !streamText.includes('event: end-mission')) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(streamText.includes('event: end-mission'),
+      'end-mission is relayed to the connected rover SSE stream');
   });
 });
 

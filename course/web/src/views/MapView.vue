@@ -2605,6 +2605,48 @@ async function startGroundCalibration() {
   }
 }
 
+// Proximity (obstacle) detection master on/off — operator toggle in the ground
+// tab. Server-stored (roverState.obstacle_detection_enabled), so it rides the
+// rover:status broadcast; the ref below is synced from it and flipped
+// optimistically like toggleDepth, reverting if the server call fails. Default
+// OFF (opt-in per mission) — reconciled to the server's truth on first status.
+const obstacleDetectOn = ref(false);
+// The operator's in-flight intent (true/false) while a toggle POST is pending,
+// else null. rover:status broadcasts arrive at GPS rate and also carry
+// obstacle_detection_enabled, so without this guard an in-flight status frame
+// (still carrying the pre-toggle value) would snap the checkbox back mid-toggle.
+let detectTogglePending = null;
+async function setObstacleDetection(on) {
+  const prev = obstacleDetectOn.value;
+  detectTogglePending = on;
+  obstacleDetectOn.value = on;               // optimistic
+  try {
+    await request("/api/rover/camera/detection", {
+      method: "POST",
+      body: JSON.stringify({ on }),
+    });
+  } catch (err) {
+    obstacleDetectOn.value = prev;
+    if (detectTogglePending === on) detectTogglePending = null;
+    notifyError(`근접 감지 설정 실패: ${err.message}`);
+  }
+}
+// Apply the server's detection state from a rover:status/status snapshot. While a
+// toggle is pending, ignore a stale frame that still carries the old value; clear
+// the guard once the server confirms the intended value (so a later real change
+// from another operator still syncs).
+function syncObstacleDetect(data) {
+  if (data.obstacle_detection_enabled === undefined) return;
+  const v = data.obstacle_detection_enabled !== false;
+  if (detectTogglePending === null) {
+    obstacleDetectOn.value = v;
+  } else if (v === detectTogglePending) {
+    obstacleDetectOn.value = v;
+    detectTogglePending = null;
+  }
+  // else: stale pre-toggle frame → ignore until the server catches up.
+}
+
 async function submitAntennaCal() {
   if (!antennaCalCanStart.value) return;
   antennaCalSubmitting.value = true;
@@ -4579,6 +4621,10 @@ function connectSSE() {
     const data = parseSSE(e);
     if (!data) return;
     roverStatus.value = { ...roverStatus.value, ...data };
+    // Keep the proximity-detection toggle in sync with the server's stored truth
+    // (covers another operator flipping it, or the initial snapshot), guarded
+    // against a stale frame snapping the checkbox back mid-toggle.
+    syncObstacleDetect(data);
     syncAppRoverStatus(data);
     // Draw BOTH device markers (rover + receiver) from the snapshot.
     syncDeviceMarkers(roverStatus.value);
@@ -4698,6 +4744,7 @@ async function fetchRoverStatus() {
     const res = await request("/api/rover/status", { method: "GET" });
     const data = await res.json();
     roverStatus.value = { ...roverStatus.value, ...data };
+    syncObstacleDetect(data);
     syncAppRoverStatus(data);
     // Draw both device markers from the cached server-side snapshot on first
     // load — without this the map only shows them after the next live SSE frame.
@@ -5136,6 +5183,15 @@ onUnmounted(() => {
 
           <section class="cal-section" v-show="calTab === 'ground'">
             <div class="cal-section-title">지면 교정 (장애물 감지 기준면)</div>
+            <label class="cal-toggle-field">
+              <span>근접 충돌 감지</span>
+              <input
+                type="checkbox"
+                :checked="obstacleDetectOn"
+                @change="setObstacleDetection($event.target.checked)"
+              />
+            </label>
+            <div class="cal-when">끄면 주행 중 스테레오 근접 장애물 감지와 자동 일시정지가 비활성화됩니다. (env <code>OBSTACLE_DETECTION=false</code>로 완전히 꺼둔 경우 여기서 켤 수 없습니다.)</div>
             <div class="cal-when">재실행 조건: 카메라 높이·각도 변경 후 · 스테레오 재교정 후 · 새 노면 첫 주행</div>
             <div class="cal-when">절차:</div>
             <ol class="cal-steps">
@@ -6446,12 +6502,12 @@ onUnmounted(() => {
 }
 .calibration-modal > .modal-titlebar { flex: 0 0 auto; }
 .calibration-modal > .preflight-actions { flex: 0 0 auto; }
+/* Tabs are v-show (only one section visible at a time), so a per-section
+   top divider renders as a stray rule at the top of each tab. Drop it and
+   give every tab the same top padding for a consistent header gap. */
 .calibration-modal .cal-section {
-  padding: 0.75rem 0;
-  border-top: 1px solid var(--border-color);
+  padding: 0.5rem 0 0.75rem;
 }
-.calibration-modal .cal-section:first-of-type { border-top: none; padding-top: 0; }
-.calibration-modal > .cal-section:first-of-type { padding-top: 0.5rem; }
 /* Body sections scroll independently of the title bar / footer. */
 .calibration-modal > .cal-section { overflow-y: auto; }
 .cal-warn {
@@ -6510,6 +6566,19 @@ onUnmounted(() => {
   border: 1px solid var(--border-color);
   background: var(--bg-primary); color: var(--text-primary);
   width: 100%; box-sizing: border-box;
+}
+/* Proximity-detection on/off row: label left, checkbox right (horizontal,
+   unlike .cal-manual-field's stacked number inputs). */
+.cal-toggle-field {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0.1rem 0 0.4rem;
+  font-size: 0.9rem; font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.cal-toggle-field input {
+  width: 1.15rem; height: 1.15rem; flex: 0 0 auto; cursor: pointer;
 }
 .cal-section-title {
   font-size: 0.95rem; font-weight: 600;

@@ -254,6 +254,13 @@ const roverState = {
   // ground-depth curve). { status, phase, captured, target, near_m, far_m, rows,
   // error, at }. Requires a stereo calibration first (metric depth).
   ground_calibration: { status: "idle", at: 0 },
+  // Proximity (obstacle) detection master on/off — operator toggle in the
+  // calibration modal's ground tab. Stored here so it broadcasts on rover:status
+  // (UI reflects it at once) and is re-sent to the perception node on every
+  // camera-control (re)connect. Default OFF — detection is opt-in per mission;
+  // the operator enables it from the ground tab. The rover env OBSTACLE_DETECTION
+  // stays the hard kill-switch below this (kept permissive so the toggle can arm).
+  obstacle_detection_enabled: false,
   // Session-scoped per-mission progress used for tab-close recovery — the
   // server acts as the source of truth so reloading the UI rebuilds the
   // executing/stopped view exactly.
@@ -1812,9 +1819,15 @@ app.post("/api/rover/clear-emergency", (req, res) => {
 app.post("/api/rover/end-mission", (req, res) => {
   if (currentMissionId == null) return res.json({ ended: false });
   const endedId = currentMissionId;
+  // Tell the rover to abandon the mission and return to IDLE. Otherwise a
+  // navigator stranded in ERROR (RTK lost) or PAUSED keeps its halted amber
+  // LED latched — and could auto-resume the just-closed mission on RTK
+  // recovery. Best-effort: the DB record is closed regardless of whether the
+  // rover is currently connected (the navigator re-syncs on reconnect if not).
+  const notified = sendRoverEvent("end-mission", {});
   endMission("stopped");
   broadcastRoverStatus();
-  logger.log(req, "rover.end_mission", { mission_id: endedId }, "rover");
+  logger.log(req, "rover.end_mission", { mission_id: endedId, notified }, "rover");
   res.json({ ended: true, mission_id: endedId });
 });
 
@@ -2008,6 +2021,11 @@ app.get("/api/rover/camera/control", (req, res) => {
   // SSE was down.
   syncCameraCapture();
   sendCameraControl(cameraDepthWanted ? "depth-on" : "depth-off");
+  // Re-assert the operator's proximity-detection toggle on every (re)connect. A
+  // fresh perception container boots with detection off, and the last state can
+  // otherwise be lost across a restart, so send the server's stored truth (only
+  // detect-on if the operator has enabled it).
+  sendCameraControl(roverState.obstacle_detection_enabled ? "detect-on" : "detect-off");
   // 10s heartbeat (was 30s) to match /api/rover/stream — keeps the SSE alive
   // through proxy idle-close so it doesn't drop every few minutes.
   const heartbeat = setInterval(() => {
@@ -2191,6 +2209,31 @@ app.post("/api/rover/camera/depth", (req, res) => {
     logger.log(req, "rover.camera.depth", detail, "rover");
   }
   res.json({ ok: true, depth: cameraDepthWanted, camera_connected: !!cameraControlClient });
+});
+
+// POST /api/rover/camera/detection - toggle proximity (obstacle) detection (admin).
+// Unlike depth (a live-view sub-mode gated on a viewer), detection is a mission
+// safety setting that applies whenever the rover is NAVIGATING — no viewer gate.
+// Stored in roverState (broadcast on rover:status → UI reflects it) and re-sent to
+// perception on every control (re)connect. The rover env OBSTACLE_DETECTION stays
+// the hard kill-switch; this is the operator's soft on/off on top of it.
+app.post("/api/rover/camera/detection", (req, res) => {
+  const on = !!(req.body && req.body.on);
+  roverState.obstacle_detection_enabled = on;
+  const wasConnected = !!cameraControlClient;
+  const delivered = sendCameraControl(on ? "detect-on" : "detect-off");
+  const detail = { on, delivered, camera_connected: wasConnected };
+  // The toggle is stored either way (re-synced to perception on its next control
+  // connect). Warn only when perception WAS connected but the write failed — a
+  // real inter-service delivery failure; a plain "perception offline" is benign
+  // because reconnect re-applies the stored state.
+  if (wasConnected && !delivered) {
+    logger.warn(req, "rover.detection", { ...detail, error: "camera_control_write_failed" }, "rover");
+  } else {
+    logger.log(req, "rover.detection", detail, "rover");
+  }
+  broadcastRoverStatus();
+  res.json({ ok: true, detection: on, camera_connected: !!cameraControlClient });
 });
 
 // GET /api/rover/map-tile - same-origin satellite tile proxy for the VR minimap

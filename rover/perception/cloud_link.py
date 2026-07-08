@@ -57,6 +57,15 @@ class CloudLink:
         # while that stream is actually being watched — no viewer, no cost.
         self.webrtc_2d_wanted = threading.Event()
         self.webrtc_vr_wanted = threading.Event()
+        # Set while proximity (obstacle) detection is wanted (server
+        # detect-on..detect-off). A soft, operator-driven gate ON TOP OF the
+        # OBSTACLE_DETECTION env kill-switch: the node also requires this before
+        # it runs the driving-corridor detector. Default CLEARED (off) — detection
+        # is opt-in per mission, so a rover whose server never signals stays off
+        # rather than auto-pausing unexpectedly. The server re-syncs the stored
+        # state on every control (re)connect, and it survives an SSE blip like
+        # stream_wanted/depth_wanted do.
+        self.detect_wanted = threading.Event()
         # Called with the square size (m) when the server requests a STEREO
         # calibration (operator pressed 교정). Set by the node; runs on the SSE thread.
         self.on_calibrate = None
@@ -196,6 +205,10 @@ class CloudLink:
             self.webrtc_vr_wanted.set()
         elif event == "webrtc-vr-off":
             self.webrtc_vr_wanted.clear()
+        elif event == "detect-on":
+            self.detect_wanted.set()
+        elif event == "detect-off":
+            self.detect_wanted.clear()
         elif event == "calibrate":
             square_m = 0.025
             try:

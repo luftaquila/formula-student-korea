@@ -6,6 +6,8 @@ positions below a 2D fix and hold the last good one (and any pending explicit
 request) until the receiver recovers.
 """
 
+import json
+import time
 import types
 
 import pytest
@@ -77,3 +79,89 @@ def test_position_fix_statuses_are_2d_and_better():
     assert _POSITION_FIX_STATUSES == frozenset(GOOD_STATUSES)
     assert "no_fix" not in _POSITION_FIX_STATUSES
     assert "time_only" not in _POSITION_FIX_STATUSES
+
+
+# ── Event-driven telemetry ───────────────────────────────────────────────────
+# nav_state / fix_status / ntrip-connected transitions must POST telemetry
+# IMMEDIATELY (not wait up to 3s for the periodic loop), so the operator UI
+# reflects RTK loss / pause / resume without the visible lag. Unchanged repeats
+# must NOT re-push — that's what keeps the immediate path from flooding.
+
+class _StrMsg:
+    """Minimal std_msgs/String stand-in."""
+
+    def __init__(self, data):
+        self.data = data
+
+
+def _make_telemetry_bridge():
+    # Bypass __init__ (no rclpy/network); set only telemetry state and record
+    # _post_async calls instead of enqueuing a real HTTP POST.
+    node = BridgeNode.__new__(BridgeNode)
+    node._nav_state = "IDLE"
+    node._fix_status = None
+    node._last_fix_push = 0.0
+    node._ntrip_connected = False
+    node._ntrip_detail = None
+    node._battery = None
+    node._gps_metrics = None
+    node._post_calls = []
+    node._post_async = lambda path, payload, label: node._post_calls.append((path, payload, label))
+    return node
+
+
+def test_nav_state_change_pushes_telemetry_immediately():
+    node = _make_telemetry_bridge()
+    node._on_nav_state(_StrMsg("PAUSED"))
+    assert len(node._post_calls) == 1
+    path, payload, label = node._post_calls[0]
+    assert path == "/api/rover/telemetry"
+    assert label == "telemetry"
+    assert payload["nav_state"] == "PAUSED"
+    # An unchanged repeat must NOT re-push (the 3s loop still carries it).
+    node._on_nav_state(_StrMsg("PAUSED"))
+    assert len(node._post_calls) == 1
+
+
+def test_fix_status_change_pushes_immediately_then_rate_limits():
+    node = _make_telemetry_bridge()
+    # Cold (last push far in the past) → an isolated change pushes at once.
+    node._on_fix_status(_StrMsg("rtk_fixed"))
+    assert len(node._post_calls) == 1
+    assert node._post_calls[0][1]["fix_status"] == "rtk_fixed"
+    # A rapid flap within the interval is throttled — value cached for the 3s loop.
+    node._on_fix_status(_StrMsg("rtk_float"))
+    assert len(node._post_calls) == 1
+    assert node._fix_status == "rtk_float"
+    # An unchanged repeat never pushes, regardless of timing.
+    node._last_fix_push = 0.0
+    node._on_fix_status(_StrMsg("rtk_float"))
+    assert len(node._post_calls) == 1
+    # After the interval elapses, the next change pushes again.
+    node._last_fix_push = time.monotonic() - (2 * 60)  # well past the interval
+    node._on_fix_status(_StrMsg("rtk_fixed"))
+    assert len(node._post_calls) == 2
+    assert node._post_calls[1][1]["fix_status"] == "rtk_fixed"
+
+
+def test_ntrip_connected_transition_pushes_only_on_change():
+    node = _make_telemetry_bridge()
+    node._on_ntrip_status(_StrMsg(json.dumps({"connected": True, "host": "x"})))
+    assert len(node._post_calls) == 1
+    assert node._post_calls[0][1]["ntrip_connected"] is True
+    # Same connected state (detail refresh only) → no push, detail still cached.
+    node._on_ntrip_status(_StrMsg(json.dumps({"connected": True, "fail_count": 2})))
+    assert len(node._post_calls) == 1
+    assert node._ntrip_detail["fail_count"] == 2
+    # Transition to disconnected → push.
+    node._on_ntrip_status(_StrMsg(json.dumps({"connected": False, "last_error": "dns"})))
+    assert len(node._post_calls) == 2
+    assert node._post_calls[1][1]["ntrip_connected"] is False
+
+
+def test_ntrip_status_ignores_malformed_payloads():
+    node = _make_telemetry_bridge()
+    node._on_ntrip_status(_StrMsg("not json"))       # invalid JSON
+    node._on_ntrip_status(_StrMsg("[1, 2, 3]"))      # valid JSON but not a dict
+    assert node._post_calls == []
+    assert node._ntrip_connected is False
