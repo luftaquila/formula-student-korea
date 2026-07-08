@@ -188,8 +188,14 @@ class GpsNode(Node):
         NGII NTRIP client would have done, minus the network."""
         if not msg.data or self._serial is None:
             return
+        # Only inject while the base station is the selected source. In ngii mode
+        # the NTRIP client thread writes the same serial fd; injecting here too
+        # would interleave two writers mid-frame (a stray/out-of-order rtcm event
+        # during the switch boundary). One writer at a time.
+        if self._ntrip_source != 'base':
+            return
         try:
-            raw = base64.b64decode(msg.data)
+            raw = base64.b64decode(msg.data, validate=True)
         except (ValueError, TypeError) as exc:
             self.get_logger().warn(f'bad RTCM inject payload: {exc}')
             return

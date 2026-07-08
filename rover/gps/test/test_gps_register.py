@@ -1,6 +1,6 @@
 """Unit tests for the pure logic of the GPS-registration agent."""
 
-import collections
+import base64
 import threading
 from types import SimpleNamespace
 
@@ -100,7 +100,6 @@ class TestReportPositionFixGate:
         agent._lock = threading.Lock()
         agent._fix_status = fix_status
         agent._last_position = last_position if last_position is not None else {"lat": 35.29, "lng": 126.57, "alt": 40.0}
-        agent._pending_request_ids = collections.deque(maxlen=32)
         agent._posts = []
         agent._enqueue_post = lambda path, payload, label: agent._posts.append((path, payload, label))
         return agent
@@ -117,19 +116,8 @@ class TestReportPositionFixGate:
             agent._report_position()
             assert len(agent._posts) == 1
             assert agent._posts[0][0] == "/api/rover/position?device=gps"
-
-    def test_pending_request_held_until_fix(self):
-        agent = self._agent("no_fix")
-        agent._pending_request_ids.append("req-1")
-        agent._report_position()
-        assert agent._posts == []
-        assert list(agent._pending_request_ids) == ["req-1"]  # not drained — retried on recovery
-
-        agent._fix_status = "rtk_fixed"
-        agent._report_position()
-        assert len(agent._posts) == 1
-        assert agent._posts[0][1]["request_id"] == "req-1"
-        assert list(agent._pending_request_ids) == []
+            # Periodic reports never carry a cone request id (capture answers those).
+            assert "request_id" not in agent._posts[0][1]
 
 
 class TestSplitHp:
@@ -290,6 +278,31 @@ class TestSurveySampleHeight:
         agent._last_position = None
         agent._on_hpposllh(SimpleNamespace(lat=37.5, lon=127.0, height=65.0, h_msl=40.0, h_acc=0.5))
         assert agent._survey["samples"] == []
+
+    @staticmethod
+    def _capture_agent(mode):
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._lock = threading.Lock()
+        agent._survey = None
+        agent._capture = {"request_ids": [], "samples": []}
+        agent._fix_status = "rtk_fixed"
+        agent._mode = mode
+        agent._last_hpposllh = None
+        agent._last_position = None
+        return agent
+
+    def test_capture_collects_msl_height_in_capture_mode(self):
+        agent = self._capture_agent("capture")
+        agent._on_hpposllh(SimpleNamespace(lat=37.5, lon=127.0, height=65.0, h_msl=40.0, h_acc=0.01))
+        # Cones carry MSL altitude (40.0), not ellipsoidal (65.0).
+        assert agent._capture["samples"] == [(37.5, 127.0, 40.0, 0.01)]
+
+    def test_capture_does_not_collect_in_base_output_mode(self):
+        # A capture left running when base output activates must not absorb the
+        # fixed base ARP (which the F9P emits as rtk_fixed) as a cone.
+        agent = self._capture_agent("base-output")
+        agent._on_hpposllh(SimpleNamespace(lat=37.5, lon=127.0, height=65.0, h_msl=40.0, h_acc=0.01))
+        assert agent._capture["samples"] == []
 
 
 class TestBaseReconfigHandoff:
@@ -489,3 +502,92 @@ class TestHandleEventRobustness:
         agent = self._agent()
         agent._handle_event("execute-path", '{"waypoints": []}')  # rover-only, no-op here
         assert agent._survey is None and agent._mode == "capture"
+
+
+class TestCaptureWorker:
+    """_capture_worker answers a cone request from a stable rtk_fixed window, or
+    reports an explicit failure — the main cone-capture path."""
+
+    @staticmethod
+    def _agent():
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._lock = threading.Lock()
+        agent._running = True
+        agent._posts = []
+        agent._enqueue_post = lambda path, payload, label: agent._posts.append((path, payload, label))
+        return agent
+
+    def test_posts_averaged_position_with_request_ids(self):
+        agent = self._agent()
+        agent._capture = {"request_ids": ["rid-1"], "samples": [
+            (37.5 + i * 1e-9, 127.0 + i * 1e-9, 30.0, 0.01) for i in range(15)
+        ]}
+        agent._capture_worker()  # 15 stable samples → resolves on the first poll
+        assert len(agent._posts) == 1
+        path, payload, _ = agent._posts[0]
+        assert path == "/api/rover/position?device=gps"
+        assert payload["request_id"] == "rid-1" and payload["request_ids"] == ["rid-1"]
+        assert abs(payload["lat"] - 37.5) < 1e-6 and "capture_failed" not in payload
+
+    def test_posts_failure_when_no_stable_fix(self):
+        agent = self._agent()
+        agent._running = False  # skip the poll loop → finalize immediately
+        agent._capture = {"request_ids": ["rid-2"], "samples": []}
+        agent._capture_worker()
+        assert len(agent._posts) == 1
+        _, payload, _ = agent._posts[0]
+        assert payload["capture_failed"] is True
+        assert payload["error"] == "no_stable_rtk_fix"
+        assert payload["request_id"] == "rid-2"
+
+    def test_joins_multiple_requests_into_one_capture(self):
+        agent = self._agent()
+        # A capture is already in flight → a second request joins it (no new worker).
+        agent._capture = {"request_ids": ["first"], "samples": []}
+        agent._start_capture("second")
+        assert agent._capture["request_ids"] == ["first", "second"]
+
+
+class TestMaybeFlushRtcm:
+    """_maybe_flush_rtcm relays buffered RTCM ~1×/epoch (or sooner if it piles up)."""
+
+    @staticmethod
+    def _agent():
+        agent = gr.GpsRegisterAgent.__new__(gr.GpsRegisterAgent)
+        agent._lock = threading.Lock()
+        agent._rtcm_out = bytearray()
+        agent._rtcm_last_flush = 0.0
+        agent._rtcm_bytes = 0
+        agent._posts = []
+        agent._enqueue_post = lambda path, payload, label: agent._posts.append((path, payload, label))
+        return agent
+
+    def test_noop_when_empty(self):
+        agent = self._agent()
+        agent._maybe_flush_rtcm(1000.0)
+        assert agent._posts == []
+
+    def test_holds_small_buffer_within_interval(self):
+        agent = self._agent()
+        agent._rtcm_last_flush = 100.0
+        agent._rtcm_out = bytearray(b"\xd3\x00\x04abc")
+        agent._maybe_flush_rtcm(100.1)  # 0.1 s < flush interval → held
+        assert agent._posts == [] and len(agent._rtcm_out) > 0
+
+    def test_flushes_over_size_threshold(self):
+        agent = self._agent()
+        payload = b"\xd3" * (gr._RTCM_FLUSH_MAX_BYTES + 1)
+        agent._rtcm_out = bytearray(payload)
+        agent._maybe_flush_rtcm(0.0)  # interval not elapsed, but size forces a flush
+        assert len(agent._posts) == 1
+        path, body, _ = agent._posts[0]
+        assert path == "/api/rover/base/rtcm"
+        assert base64.b64decode(body["data"]) == payload
+        assert agent._rtcm_out == bytearray()  # drained
+
+    def test_flushes_after_interval(self):
+        agent = self._agent()
+        agent._rtcm_last_flush = 100.0
+        agent._rtcm_out = bytearray(b"\xd3abc")
+        agent._maybe_flush_rtcm(100.0 + gr._RTCM_FLUSH_INTERVAL_S + 0.1)
+        assert len(agent._posts) == 1

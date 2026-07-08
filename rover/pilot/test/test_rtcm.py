@@ -100,9 +100,19 @@ class TestFramer:
         assert out == [frame, other]
 
     def test_buffer_is_bounded_on_pure_garbage(self):
-        framer = RTCM3Framer(max_buffer=1024)
+        framer = RTCM3Framer(max_buffer=4096)
         # A lone 0xD3 with a large length keeps the parser waiting; flood garbage.
         framer.feed(bytes([RTCM3_PREAMBLE, 0x03, 0xFF]))
         for _ in range(100):
             framer.feed(b"\x00" * 512)
-        assert len(framer._buf) <= 1024 + 512
+        assert len(framer._buf) <= framer._max_buffer + 512
+
+    def test_small_max_buffer_still_recovers_a_max_length_frame(self):
+        # Even if a caller passes a tiny max_buffer, the floor must keep the
+        # garbage-trim valve from truncating a legitimate max-length frame that
+        # simply arrives split across feeds.
+        frame = build_frame(bytes(range(256)) * 3 + bytes(range(255)))  # 1023-byte payload
+        assert len(frame) == 1029
+        framer = RTCM3Framer(max_buffer=512)  # below one frame → floored up
+        assert framer.feed(frame[:600]) == []
+        assert framer.feed(frame[600:]) == [frame]

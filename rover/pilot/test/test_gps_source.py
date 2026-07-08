@@ -68,23 +68,56 @@ def test_unknown_source_ignored():
     assert node._ntrip_source == "ngii"
 
 
-def test_rtcm_inject_writes_decoded_bytes_to_serial():
+def _base_node():
+    """A node with the base station selected (RTCM injection is only accepted
+    while base is the source; ngii mode is served by the NTRIP client)."""
     node = _node()
+    node._ntrip_source = "base"
+    return node
+
+
+def test_rtcm_inject_writes_decoded_bytes_to_serial():
+    node = _base_node()
     raw = bytes([0xD3, 0x00, 0x04, 0xDE, 0xAD, 0xBE, 0xEF, 0x11, 0x22])
     node._on_rtcm_inject(_msg(base64.b64encode(raw).decode("ascii")))
     assert node._serial.written == raw
 
 
-def test_rtcm_inject_bad_base64_is_ignored():
+def test_rtcm_inject_dropped_in_ngii_mode():
+    # Default source is ngii → the NTRIP client owns the serial fd; an inject
+    # must be dropped so two threads don't write it concurrently.
     node = _node()
+    assert node._ntrip_source == "ngii"
+    raw = bytes([0xD3, 0x00, 0x04, 0xDE, 0xAD, 0xBE, 0xEF, 0x11, 0x22])
+    node._on_rtcm_inject(_msg(base64.b64encode(raw).decode("ascii")))
+    assert node._serial.written == b""
+
+
+def test_rtcm_inject_bad_base64_is_ignored():
+    node = _base_node()
     node._on_rtcm_inject(_msg("!!!not base64!!!"))
     assert node._serial.written == b""
 
 
+def test_rtcm_inject_lenient_garbage_is_rejected():
+    # 'ab!!cd' reduces to 'abcd' under the lenient decoder but is rejected with
+    # validate=True, so stray bytes never reach the F9P.
+    node = _base_node()
+    node._on_rtcm_inject(_msg("ab!!cd"))
+    assert node._serial.written == b""
+
+
 def test_rtcm_inject_empty_is_noop():
-    node = _node()
+    node = _base_node()
     node._on_rtcm_inject(_msg(""))
     assert node._serial.written == b""
+
+
+def test_rtcm_inject_no_serial_is_noop():
+    node = _base_node()
+    node._serial = None
+    node._on_rtcm_inject(_msg("3q2+7w=="))  # valid base64, but no port to write to
+    # No exception; nothing to assert beyond "did not raise".
 
 
 def test_switch_to_base_stops_existing_ngii_client():

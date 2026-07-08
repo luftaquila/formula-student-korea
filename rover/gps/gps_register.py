@@ -40,7 +40,6 @@ Config (all via environment, see systemd/gps-register.service):
 """
 
 import base64
-import collections
 import json
 import logging
 import os
@@ -317,9 +316,6 @@ class GpsRegisterAgent:
         # "no NTRIP this session" so it clears any stale cached mountpoint.
         self._ntrip_connected = False
         self._ntrip_detail = None
-        # Bounded: with the 2D-fix gate, no-fix windows no longer drain requests
-        # immediately, so cap accumulation (mirrors bridge_node's deque).
-        self._pending_request_ids = collections.deque(maxlen=32)
 
         self._running = True
         self._last_report_time = 0.0
@@ -580,8 +576,11 @@ class GpsRegisterAgent:
                 self._survey["samples"].append((hp.lat, hp.lon, hp.height, hp.h_acc))
             # Cone-capture also averages only rtk_fixed samples, but stores MSL
             # height (h_msl) — cones carry MSL altitude, unlike a base's ellipsoidal
-            # ARP.
-            if self._capture is not None and self._fix_status == "rtk_fixed":
+            # ARP. Never collect while acting as a base (base-output): TMODE FIXED
+            # emits the stationary ARP as rtk_fixed, which would post the base
+            # coordinate as a cone.
+            if (self._capture is not None and self._fix_status == "rtk_fixed"
+                    and self._mode == "capture"):
                 self._capture["samples"].append((hp.lat, hp.lon, hp.h_msl, hp.h_acc))
 
     def _metrics_from(self, pvt):
@@ -612,9 +611,12 @@ class GpsRegisterAgent:
                     self._configure_receiver()
                     # Re-assert base output after a reopen (BBR usually survives a
                     # USB re-enumerate, but re-applying is cheap and authoritative).
-                    if self._mode == "base-output" and self._base_params:
-                        with self._lock:
-                            self._pending_reconfig = ("base", self._base_params)
+                    # Read mode+params atomically under the lock and snapshot the
+                    # dict, so a concurrent _deactivate_base can't leave us queuing
+                    # ("base", None) → _apply_base_output(None) → crash.
+                    with self._lock:
+                        if self._mode == "base-output" and self._base_params:
+                            self._pending_reconfig = ("base", dict(self._base_params))
                 except (serial.SerialException, OSError) as exc:
                     log.warning("GPS serial (re)open failed: %s", exc)
                     time.sleep(_SERIAL_OPEN_BACKOFF_S)
@@ -637,6 +639,10 @@ class GpsRegisterAgent:
                         self._apply_capture()
                 except (serial.SerialException, OSError) as exc:
                     log.warning("reconfigure(%s) failed: %s", kind, exc)
+                except Exception:
+                    # Never let an unexpected reconfig error kill the serial thread
+                    # (that would exit the whole process); log and keep running.
+                    log.exception("reconfigure(%s) crashed", kind)
 
             try:
                 data = self._serial.read(self._serial.in_waiting or 1)
@@ -685,24 +691,18 @@ class GpsRegisterAgent:
         self._enqueue_post("/api/rover/base/rtcm",
                            {"data": base64.b64encode(payload).decode("ascii")}, "rtcm")
 
-    def _report_position(self, request_ids=None):
+    def _report_position(self):
         with self._lock:
             if not self._last_position:
                 return
-            # Hold position (and any pending request) until at least a 2D fix:
-            # a no-fix / time-only solution reports (0, 0), which would jump the
-            # operator map to Null Island (blank grey — no basemap tiles).
+            # Hold position until at least a 2D fix: a no-fix / time-only solution
+            # reports (0, 0), which would jump the operator map to Null Island
+            # (blank grey — no basemap tiles). Cone requests are answered by the
+            # capture worker, so periodic reports never carry a request id.
             if self._fix_status not in _POSITION_FIX_STATUSES:
                 return
             payload = dict(self._last_position)
-            if request_ids is None and self._pending_request_ids:
-                request_ids = list(self._pending_request_ids)
-                self._pending_request_ids.clear()
-        if request_ids:
-            payload["request_id"] = request_ids[0]
-            payload["request_ids"] = request_ids
-        self._enqueue_post("/api/rover/position?device=gps", payload,
-                           "position(req)" if request_ids else "position")
+        self._enqueue_post("/api/rover/position?device=gps", payload, "position")
 
     # ---- server SSE/telemetry -----------------------------------------
 
@@ -940,22 +940,25 @@ class GpsRegisterAgent:
 
     def _activate_base(self, payload):
         """Latch base intent (so NGII stops auto-starting); the serial thread does
-        the actual TMODE/RTCM reconfiguration via _pending_reconfig."""
+        the actual TMODE/RTCM reconfiguration via _pending_reconfig. All of
+        _mode/_base_params/_pending_reconfig are set together under the lock so
+        the serial reopen path can never read a half-updated ('base', None)."""
         if payload.get("lat") is None or payload.get("lng") is None:
             log.warning("base-activate without coordinates"); return
-        self._base_params = {
+        params = {
             "lat": payload["lat"], "lng": payload["lng"],
             "alt": payload.get("alt"), "acc": payload.get("acc"),
         }
-        self._mode = "base-output"
         with self._lock:
-            self._pending_reconfig = ("base", self._base_params)
+            self._base_params = params
+            self._mode = "base-output"
+            self._pending_reconfig = ("base", params)
         log.info("base activation requested at (%.7f, %.7f)", payload["lat"], payload["lng"])
 
     def _deactivate_base(self):
-        self._base_params = None
-        self._mode = "capture"
         with self._lock:
+            self._base_params = None
+            self._mode = "capture"
             self._pending_reconfig = ("capture", None)
         log.info("base deactivation requested")
 

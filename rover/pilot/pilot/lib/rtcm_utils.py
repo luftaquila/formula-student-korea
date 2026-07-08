@@ -20,6 +20,7 @@ preamble.
 
 RTCM3_PREAMBLE = 0xD3
 _RTCM3_MAX_PAYLOAD = 1023  # 10-bit length field
+_RTCM3_MAX_FRAME = 3 + _RTCM3_MAX_PAYLOAD + 3  # preamble+len(3) + payload + CRC(3) = 1029
 
 # CRC-24Q (used by RTCM3 / GPS): polynomial 0x1864CFB, init 0, no final xor.
 _CRC24Q_POLY = 0x1864CFB
@@ -73,7 +74,10 @@ class RTCM3Framer:
 
     def __init__(self, max_buffer=16384):
         self._buf = bytearray()
-        self._max_buffer = max_buffer
+        # Floor the cap above one max-length frame (+ a partial next one) so the
+        # garbage-trim safety valve can never truncate a legitimate in-progress
+        # frame that simply hasn't fully arrived yet.
+        self._max_buffer = max(max_buffer, 2 * _RTCM3_MAX_FRAME)
 
     def feed(self, data):
         if data:
