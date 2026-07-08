@@ -164,6 +164,10 @@ class NTRIPClient:
         self._last_correction_at = 0  # unix seconds when RTCM last flowed in
         self._logger = logger or _default_logger
         self._gga_interval = 10.0  # seconds, override via attribute
+        # Stale-stream watchdog: healthy RTCM 3.2 flows ~1×/s, so if nothing
+        # arrives for this long the socket is dead (a Wi-Fi drop with no FIN just
+        # makes recv() time out forever) — force a reconnect. Override for tests.
+        self._stream_stale_s = 15.0
         # Wakeable sleep primitive used by the reconnect backoff. Plain
         # time.sleep would block stop() join for up to 5 minutes when the
         # backoff has reached its cap.
@@ -283,7 +287,9 @@ class NTRIPClient:
             self._bytes_received += len(remainder)
             self._last_correction_at = time.time()
 
-        self._sock.settimeout(30.0)
+        # Short recv timeout so the stale-stream watchdog in _run notices a dead
+        # socket within a few seconds instead of one long block at a time.
+        self._sock.settimeout(5.0)
         self._connected = True
         self._fail_count = 0
         self._last_error = None
@@ -307,13 +313,17 @@ class NTRIPClient:
         """Main loop: connect, receive RTCM3, reconnect on failure.
 
         Reconnect uses exponential backoff (see _reconnect_delay): 1s … 60s.
-        Successful handshake resets the counter.
+        Successful handshake resets the counter. A stale-stream watchdog forces
+        a reconnect when no RTCM arrives for _stream_stale_s — a Wi-Fi drop with
+        no clean FIN otherwise makes recv() time out forever (data is None, not
+        b""), so the old loop would spin on a dead socket and never recover.
         """
         while self._running:
             gga_interval = self._gga_interval
             try:
                 self._connect()
                 last_gga = time.monotonic()
+                last_rx = time.monotonic()
 
                 while self._running:
                     try:
@@ -324,13 +334,22 @@ class NTRIPClient:
                     if data == b"":
                         break  # connection closed
 
+                    now = time.monotonic()
                     if data:
                         self._serial.write(data)
                         self._bytes_received += len(data)
                         self._last_correction_at = time.time()
+                        last_rx = now
+                    elif now - last_rx > self._stream_stale_s:
+                        # No RTCM for too long → the socket is dead even though
+                        # recv only timed out. Drop it and reconnect.
+                        self._last_error = "stream_stale"
+                        self._log_warn(
+                            f"NTRIP stream stale ({self._stream_stale_s:.0f}s no RTCM) "
+                            "— forcing reconnect")
+                        break
 
                     # Send GGA position update at the configured cadence
-                    now = time.monotonic()
                     if now - last_gga > gga_interval:
                         try:
                             gga = _format_gga(self._lat, self._lon)
