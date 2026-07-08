@@ -927,7 +927,9 @@ const hasSurveyedPoint = computed(() => surveyedPoints.value.length > 0);
 const baseNoReceiver = computed(() =>
   roverStatus.value.ntrip_source === "base" && !(roverStatus.value.receiver?.connected));
 watch(baseNoReceiver, (now, prev) => {
-  if (now && !prev) {
+  // Admin-only feature: only the operator who can set/fix the base source should
+  // get this toast (the persistent banner lives in the admin GPS tab anyway).
+  if (now && !prev && isAdmin.value) {
     notifyWarn("기준국(base) 소스인데 GPS 수신기가 연결되지 않았습니다 — 로버에 RTK 보정이 전달되지 않습니다.");
   }
 });
@@ -1019,7 +1021,9 @@ async function cancelSurvey(p) {
 // Auto-refresh (no manual button): reload on survey completion, on receiver
 // (re)connect, and on GPS-tab entry — whenever state relevant to the tab changes.
 watch(baseState, (now, prev) => {
-  if (prev === "surveying" && now !== "surveying") loadGps();
+  // Admin-only: base.state rides rover:status to every operator, but loadGps()
+  // hits admin-only /api/gps/* (a non-admin would just get 403 + an error toast).
+  if (prev === "surveying" && now !== "surveying" && isAdmin.value) loadGps();
 });
 watch(receiverConnected, (now, prev) => {
   if (now && !prev && activeTab.value === "gps" && isAdmin.value) loadGps();
@@ -4518,6 +4522,8 @@ function connectSSE() {
   eventSource.addEventListener("gps:survey_result", (e) => {
     const data = parseSSE(e);
     if (!data) return;
+    // Survey is an admin-only workflow; don't toast its outcome to other operators.
+    if (!isAdmin.value) return;
     if (data.ok) {
       notifySuccess(`측량 완료: ${data.name}${data.samples != null ? ` (${data.samples} 샘플)` : ""}`);
     } else {

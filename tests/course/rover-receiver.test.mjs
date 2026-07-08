@@ -227,19 +227,23 @@ describe('POST /api/rover/request routing', () => {
   });
 
   it('falls back to the rover when no receiver is connected', async () => {
-    const rover = await openStream('rover');
-    const reqPromise = client.post('/api/rover/request', { cookie: adminCookie });
-    const evt = await rover.waitFor('request-position');
-    await client.post('/api/rover/position?device=rover', {
-      headers: internalHeaders,
-      body: { lat: 36.0, lng: 128.0, alt: 5, request_id: evt.data.request_id },
+    // Isolated server: this must not depend on a prior test's receiver SSE close
+    // being observed within a fixed sleep (a late close would leave a still-fresh
+    // receiver last_position and misroute the request).
+    await withFreshServer(async ({ url, cli }) => {
+      const rover = await openSse('/api/rover/stream?device=rover', internalHeaders, 'connected', url);
+      const reqPromise = cli.post('/api/rover/request', { cookie: adminCookie });
+      const evt = await rover.waitFor('request-position');
+      await cli.post('/api/rover/position?device=rover', {
+        headers: internalHeaders,
+        body: { lat: 36.0, lng: 128.0, alt: 5, request_id: evt.data.request_id },
+      });
+      const res = await reqPromise;
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.lat, 36.0);
+      rover.close();
     });
-    const res = await reqPromise;
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.lat, 36.0);
-    rover.close();
-    await new Promise((r) => setTimeout(r, 50));
   });
 });
 

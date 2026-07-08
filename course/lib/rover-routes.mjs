@@ -1049,7 +1049,10 @@ app.put("/api/gps/config", (req, res) => {
       return res.status(400).send("base 소스에는 측량점을 지정해야 합니다.");
     }
     point = getSurveyPointStmt.get(pid);
-    if (!point) return res.status(404).send("측량점을 찾을 수 없습니다.");
+    if (!point) {
+      logger.warn(req, "gps.config.update", { error: "point_not_found", point_id: pid }, "gps");
+      return res.status(404).send("측량점을 찾을 수 없습니다.");
+    }
     if (point.lat == null || point.lng == null) {
       logger.warn(req, "gps.config.update", { error: "point_not_surveyed", point_id: pid }, "gps");
       return res.status(400).send("아직 측량되지 않은 지점입니다. 먼저 위치를 측량하세요.");
@@ -1111,6 +1114,7 @@ app.delete("/api/gps/survey-points/:id", (req, res) => {
   if (!point) return res.status(404).send("측량점을 찾을 수 없습니다.");
   const cfg = getGpsConfig();
   if (cfg.ntrip_source === "base" && cfg.active_base_point_id === id) {
+    logger.warn(req, "gps.survey_point.delete", { error: "active_base", id }, point.name);
     return res.status(409).send("현재 기준국으로 사용 중인 측량점입니다. 먼저 NGII 소스로 전환하세요.");
   }
   const result = dbRun(() => deleteSurveyPointStmt.run(id));
@@ -1134,6 +1138,7 @@ app.post("/api/gps/survey-points/:id/survey", (req, res) => {
     return res.status(503).send("GPS 수신기가 연결되어 있지 않습니다.");
   }
   if (receiverState.mode === "base") {
+    logger.warn(req, "gps.survey.start", { error: "receiver_in_base_mode", id }, point.name);
     return res.status(409).send("수신기가 기준국으로 사용 중입니다. 먼저 NGII 소스로 전환하세요.");
   }
   if (receiverState.base.state === "surveying") {
@@ -1205,7 +1210,14 @@ app.post("/api/rover/base/survey-result", (req, res) => {
     logger.warn(req, "gps.survey.result", { error: coordValidation.error, id, ok: true }, point.name);
     return res.status(400).send(coordValidation.error);
   }
-  const altValue = typeof alt === "number" && Number.isFinite(alt) ? alt : null;
+  // Range-check altitude like /api/rover/position does (a buggy receiver could
+  // otherwise persist a wild alt that feeds the rover's TMODE base height).
+  const altValidation = validateAltitude(alt);
+  if (!altValidation.valid) {
+    logger.warn(req, "gps.survey.result", { error: altValidation.error, id, ok: true }, point.name);
+    return res.status(400).send(altValidation.error);
+  }
+  const altValue = altValidation.value;
   const hAccValue = typeof h_acc === "number" && Number.isFinite(h_acc) ? h_acc : null;
   const sampleCount = Number.isInteger(samples) ? samples : null;
   const result = dbRun(() =>
