@@ -109,9 +109,9 @@ async function status() {
 
 // Run a test against an ISOLATED server so in-memory receiver/rover state (which
 // leaks across the shared server's tests) is deterministic.
-async function withFreshServer(fn) {
+async function withFreshServer(fn, appOptions = {}) {
   const p = tmpDbPath();
-  const app2 = createCourseApp({ dbPath: p });
+  const app2 = createCourseApp({ dbPath: p, ...appOptions });
   const started2 = await startServer(app2.app);
   const cli2 = createClient(started2.baseUrl);
   try {
@@ -121,6 +121,22 @@ async function withFreshServer(fn) {
     await stopServer(started2.server);
     app2.db.close();
     cleanup(p);
+  }
+}
+
+const statusOf = async (cli) => {
+  const res = await cli.get('/api/rover/status', { cookie: adminCookie });
+  assert.equal(res.status, 200);
+  return res.json();
+};
+
+async function poll(fn, pred, { timeoutMs = 3000 } = {}) {
+  const start = Date.now();
+  for (;;) {
+    const v = await fn();
+    if (pred(v)) return v;
+    if (Date.now() - start > timeoutMs) throw new Error('poll timeout');
+    await new Promise((r) => setTimeout(r, 20));
   }
 }
 
@@ -148,6 +164,45 @@ describe('dual rover + receiver connection', () => {
     rover.close();
     receiver.close();
     await new Promise((r) => setTimeout(r, 50));
+  });
+});
+
+// ─── liveness watchdog (powered-off device stops showing ONLINE) ───────────
+// An abrupt power-off leaves the SSE socket half-open, so req.on("close") won't
+// fire for minutes. The watchdog must flip the device offline once its telemetry
+// (every 3s in prod) goes silent. Here we shrink the thresholds so it trips fast.
+describe('device liveness watchdog', () => {
+  it('marks the receiver offline when telemetry goes silent while the SSE stays open', async () => {
+    await withFreshServer(async ({ url, cli }) => {
+      // Keep the SSE stream OPEN the whole time — this is the half-open-socket
+      // case where only the watchdog (not req.on close) can notice the silence.
+      const receiver = await openSse('/api/rover/stream?device=gps', internalHeaders, 'connected', url);
+      try {
+        assert.equal((await statusOf(cli)).receiver.connected, true, 'online right after connect');
+        const s = await poll(() => statusOf(cli), (x) => x.receiver.connected === false);
+        assert.equal(s.receiver.connected, false, 'watchdog flipped it offline');
+        assert.equal(s.receiver.last_disconnect_reason, 'stale');
+      } finally {
+        receiver.close();
+      }
+    }, { deviceStaleMs: 150, deviceWatchdogTickMs: 30 });
+  });
+
+  it('keeps the receiver online while telemetry keeps arriving', async () => {
+    await withFreshServer(async ({ url, cli }) => {
+      const receiver = await openSse('/api/rover/stream?device=gps', internalHeaders, 'connected', url);
+      try {
+        // Post telemetry every 80ms (< the 150ms stale window) for longer than
+        // one stale window; last_seen keeps refreshing so it must NOT trip.
+        for (let i = 0; i < 5; i++) {
+          await cli.post('/api/rover/telemetry?device=gps', { headers: internalHeaders, body: { fix_status: 'rtk_fixed' } });
+          await new Promise((r) => setTimeout(r, 80));
+        }
+        assert.equal((await statusOf(cli)).receiver.connected, true, 'telemetry kept it online');
+      } finally {
+        receiver.close();
+      }
+    }, { deviceStaleMs: 150, deviceWatchdogTickMs: 30 });
   });
 });
 
