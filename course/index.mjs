@@ -244,6 +244,32 @@ runMigrationOnce(db, "course.utc_timestamp_normalization.v1", () => {
   }
 });
 
+// GPS 소스/기준국 설정. 로버가 쓸 NTRIP 소스(NGII vs 수신기 base station)를 서버에
+// 저장해 모든 클라이언트·로버 재연결 간에 공유한다. key-value 단순 저장:
+//   ntrip_source          "ngii" | "base" (기본 ngii)
+//   active_base_point_id  survey_point.id (base 소스일 때 사용할 기준점) | null
+db.exec(`CREATE TABLE IF NOT EXISTS gps_config (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);`);
+
+// 측량점: 수신기를 기준국으로 쓰기 위한 이름 붙은 지점. NGII RTK가 살아있을 때
+// 수신기 위치를 일정 시간 평균내어(lat/lng/alt) 기록해 두고, 같은 자리에 두면
+// 그 좌표로 수신기를 고정 기준국(F9P TMODE3 FIXED)으로 돌린다. lat/lng/alt는
+// 미측량 시 NULL, double 정밀도로 TMODE3 LLH 재구성에 충분하다.
+db.exec(`CREATE TABLE IF NOT EXISTS survey_point (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  lat REAL,
+  lng REAL,
+  alt REAL,
+  h_acc_m REAL,
+  samples INTEGER,
+  surveyed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);`);
+
 /* ============================================
    Express 앱 설정
    ============================================ */
@@ -283,6 +309,11 @@ const app = createApp({ express }, (req) => {
     // browser can't spoof an obstacle to pause a running mission + raise a false
     // operator alarm.
     p === "/api/rover/obstacle" ||
+    // Base-station RTCM relay + survey result come from the GPS receiver only.
+    // Internal-strict so a browser can't inject fake RTCM corrections into the
+    // rover or forge a surveyed base coordinate.
+    p === "/api/rover/base/rtcm" ||
+    p === "/api/rover/base/survey-result" ||
     // Calibration progress is reported by the perception node only.
     p === "/api/rover/calibration-progress"
   ) {
@@ -306,6 +337,9 @@ const app = createApp({ express }, (req) => {
   // non-admins; these gates are the enforcing backstop.
   if (p.startsWith("/api/rover")) return "admin";
   if (p.startsWith("/api/missions")) return "admin";
+  // GPS(수신기 소스 선택 + base station 측량점) — admin 전용. 프론트에서도
+  // GPS 탭을 admin에게만 노출하며, 이 게이트가 강제한다.
+  if (p.startsWith("/api/gps")) return "admin";
   if (p === "/api/logs") return "admin";
   // Snapshots overwrite the whole course on restore (destructive) and can be
   // deleted — admin-only, above plain cone management. Covers list/create/

@@ -14,13 +14,19 @@ needs for coordinate capture:
     live marker and RTK fix quality.
 
 It deliberately reuses the pilot's pure, ROS-free modules (UBX parser,
-NTRIP client, geo utils) rather than duplicating them — see the sys.path
-shim below. No ROS, no podman: just python3 + pyserial + requests under a
-systemd unit.
+NTRIP client, geo utils, RTCM framer) rather than duplicating them — see the
+sys.path shim below. No ROS, no podman: just python3 + pyserial + requests
+under a systemd unit.
 
-The course server keeps a SINGLE rover slot, so run EITHER the full rover
-OR this GPS unit against a given server at a time — both authenticate with
-the same INTERNAL_SECRET and would otherwise kick each other off.
+It connects with ?device=gps and holds its OWN slot on the course server, so
+the rover (?device=rover) and this unit can be connected at the same time —
+the receiver is the preferred cone-capture source, the rover the fallback.
+
+Beyond cone capture it can act as an RTK BASE STATION: on `base-survey-start`
+it averages NGII rtk_fixed positions into a survey point; on `base-activate`
+it switches the ZED-F9P to TMODE FIXED at that point, emits RTCM3, and relays
+it to the server (→ rover) via POST /api/rover/base/rtcm. Cone-capture and
+base-station roles are mutually exclusive (`_mode`).
 
 Config (all via environment, see systemd/gps-register.service):
     SERVER_URL              required, e.g. https://host/course
@@ -28,12 +34,12 @@ Config (all via environment, see systemd/gps-register.service):
     NTRIP_USERNAME          optional NGII login; absent ⇒ run without RTK
     GPS_SERIAL_PORT         default /dev/ttyGPS
     GPS_BAUD                default 115200
-    GPS_MEAS_RATE_MS        receiver fix period, default 1000 (1 Hz)
+    GPS_MEAS_RATE_MS        receiver fix period, default 100 (10 Hz)
     POSITION_REPORT_INTERVAL  seconds between periodic position POSTs (1.0)
     SERVER_URL_ALLOW_HTTP   "true" to permit http:// (trusted Tailscale only)
 """
 
-import collections
+import base64
 import json
 import logging
 import os
@@ -65,6 +71,8 @@ from pilot.lib.ntrip_client import (  # noqa: E402
     NTRIPClient, fetch_source_table, parse_source_table, select_nearest_mountpoint,
 )
 from pilot.lib.protocol_utils import assemble_sse_data  # noqa: E402
+from pilot.lib.rtcm_utils import RTCM3Framer  # noqa: E402
+from pilot.lib.geo_utils import haversine  # noqa: E402
 
 log = logging.getLogger("gps-register")
 
@@ -73,6 +81,31 @@ NTRIP_HOST = "www.gnssdata.or.kr"
 NTRIP_PORT = 2101
 NTRIP_PASSWORD = "gnss"
 NTRIP_SETUP_COOLDOWN_S = 30.0
+
+# Cone-capture sampling: a coordinate-request only resolves after the receiver
+# holds a STABLE rtk_fixed position for a short window — never on a single sample
+# or a non-RTK fix (that would place a cone metres off, or while drifting).
+CAPTURE_WINDOW_S = 3.0        # MAX time to reach a stable fix before giving up
+CAPTURE_MIN_SAMPLES = 10      # respond as soon as this many stable rtk_fixed samples (~1 s @10Hz)
+CAPTURE_MAX_DEV_M = 0.03      # reject if any sample is >3 cm from the mean (still moving)
+
+
+def evaluate_capture(samples, min_samples=CAPTURE_MIN_SAMPLES, max_dev_m=CAPTURE_MAX_DEV_M):
+    """Given [(lat, lng, alt, h_acc)] rtk_fixed samples, return the averaged
+    (lat, lng, alt) only if there are enough of them AND they are stable (max
+    horizontal deviation from the mean within max_dev_m). Otherwise None —
+    the caller then declines to answer, so the request fails visibly."""
+    n = len(samples)
+    if n < min_samples:
+        return None
+    lat = sum(s[0] for s in samples) / n
+    lng = sum(s[1] for s in samples) / n
+    max_dev = max(haversine(lat, lng, s[0], s[1]) for s in samples)
+    if max_dev > max_dev_m:
+        return None
+    alts = [s[2] for s in samples if s[2] is not None]
+    alt = sum(alts) / len(alts) if alts else None
+    return (lat, lng, alt)
 
 # UBX-CFG-VALSET key IDs (USB message-output toggles + measurement rate),
 # mirror gps_node.py so this unit and the rover configure the F9P identically.
@@ -87,8 +120,96 @@ CFG_MSGOUT_NMEA_GSA_USB = 0x209100C1
 CFG_MSGOUT_NMEA_GLL_USB = 0x209100CA
 CFG_MSGOUT_NMEA_VTG_USB = 0x209100B3
 
+# UBX-CFG keys for base-station (TMODE FIXED) + RTCM3 output on USB. Key IDs +
+# types verified against the u-blox F9 configuration database (pyubx2
+# ubxtypes_configdb). TMODE lets a receiver at a known point emit RTCM3
+# corrections; MSM7 (1077/1087/1097/1127) + 1005 (station ARP) + 1230 (GLONASS
+# code-phase biases) is the standard high-precision base message set.
+CFG_TMODE_MODE = 0x20030001            # E1: 0=disabled 1=survey-in 2=fixed
+CFG_TMODE_POS_TYPE = 0x20030002        # E1: 0=ECEF 1=LLH
+CFG_TMODE_LAT = 0x40030009             # I4, 1e-7 deg
+CFG_TMODE_LON = 0x4003000A             # I4, 1e-7 deg
+CFG_TMODE_HEIGHT = 0x4003000B          # I4, cm
+CFG_TMODE_LAT_HP = 0x2003000C          # I1, 1e-9 deg
+CFG_TMODE_LON_HP = 0x2003000D          # I1, 1e-9 deg
+CFG_TMODE_HEIGHT_HP = 0x2003000E       # I1, 0.1 mm
+CFG_TMODE_FIXED_POS_ACC = 0x4003000F   # U4, 0.1 mm
+CFG_MSGOUT_RTCM_1005_USB = 0x209102C0
+CFG_MSGOUT_RTCM_1077_USB = 0x209102CF
+CFG_MSGOUT_RTCM_1087_USB = 0x209102D4
+CFG_MSGOUT_RTCM_1097_USB = 0x2091031B
+CFG_MSGOUT_RTCM_1127_USB = 0x209102D9
+CFG_MSGOUT_RTCM_1230_USB = 0x20910306
+_RTCM_MSGOUT_KEYS = (
+    CFG_MSGOUT_RTCM_1005_USB, CFG_MSGOUT_RTCM_1077_USB, CFG_MSGOUT_RTCM_1087_USB,
+    CFG_MSGOUT_RTCM_1097_USB, CFG_MSGOUT_RTCM_1127_USB, CFG_MSGOUT_RTCM_1230_USB,
+)
+
+# Flush relayed RTCM to the server about once per RTCM epoch, or sooner if a lot
+# has piled up. Keeps each POST small (well under the 100 KB JSON limit).
+_RTCM_FLUSH_INTERVAL_S = 1.0
+_RTCM_FLUSH_MAX_BYTES = 2048
+
 _SERIAL_OPEN_RETRIES = 6
 _SERIAL_OPEN_BACKOFF_S = 2.0
+
+
+def split_hp(scaled_fine):
+    """Split an integer in *fine* units (coarse/100) into (coarse_main, hp) for
+    the u-blox HP config pair. Works for lat/lon (coarse 1e-7 deg, fine 1e-9 deg)
+    and height (coarse cm, fine 0.1 mm): value = main*coarse + hp*fine.
+
+    Floor division makes hp always land in 0..99 — within u-blox's I1 HP range
+    [-99, 99] — so the reconstruction main*coarse + hp*fine is EXACT in every
+    hemisphere: the F9P sums the two fields linearly, with no same-sign
+    requirement between main and hp. (In practice only exercised on +lat/+lon
+    in Korea, but correct for negative coordinates too.)"""
+    main = scaled_fine // 100
+    hp = scaled_fine - main * 100
+    return main, hp
+
+
+def average_survey_samples(samples):
+    """Mean of (lat, lng, alt, h_acc) survey samples. alt/h_acc are averaged over
+    only the subset that reported them. Returns (lat, lng, alt|None, h_acc|None, n)
+    or None when there are no samples."""
+    n = len(samples)
+    if n == 0:
+        return None
+    lat = sum(s[0] for s in samples) / n
+    lon = sum(s[1] for s in samples) / n
+    alts = [s[2] for s in samples if s[2] is not None]
+    haccs = [s[3] for s in samples if s[3] is not None]
+    alt = sum(alts) / len(alts) if alts else None
+    h_acc = sum(haccs) / len(haccs) if haccs else None
+    return lat, lon, alt, h_acc, n
+
+
+# Base-station survey quality gate. A surveyed coordinate anchors EVERY RTK fix
+# the rover later makes, so accept it only after enough rtk_fixed samples that
+# also cluster tightly. Unlike the short cone capture (max per-sample deviation
+# over ~1 s), a base survey runs for minutes: individual RTK noise averages out,
+# so the gate is the horizontal RMS spread about the mean (catches a bumped
+# tripod or heavy multipath) rather than a single-outlier max deviation.
+SURVEY_MIN_SAMPLES = 60       # reject if fewer rtk_fixed samples than this (~6 s @10Hz)
+SURVEY_MAX_STD_M = 0.10       # reject if horizontal RMS about the mean exceeds 10 cm
+
+
+def evaluate_survey(samples, min_samples=SURVEY_MIN_SAMPLES, max_std_m=SURVEY_MAX_STD_M):
+    """Average (lat, lng, alt, h_acc) rtk_fixed survey samples into a base
+    coordinate, but only when there are enough of them AND they cluster tightly.
+    Returns (lat, lng, alt|None, h_acc|None, n, std_m) on success, or a short
+    error string on failure — the caller reports the reason so the operator
+    knows whether to wait longer ("insufficient_samples") or re-site the
+    receiver ("unstable")."""
+    n = len(samples)
+    if n < min_samples:
+        return "insufficient_samples"
+    lat, lon, alt, h_acc, _ = average_survey_samples(samples)
+    std = (sum(haversine(lat, lon, s[0], s[1]) ** 2 for s in samples) / n) ** 0.5
+    if std > max_std_m:
+        return "unstable"
+    return (lat, lon, alt, h_acc, n, std)
 
 
 def fix_status_string(pvt):
@@ -115,19 +236,25 @@ def fix_status_string(pvt):
 _POSITION_FIX_STATUSES = frozenset({"2d_fix", "3d_fix", "rtk_float", "rtk_fixed"})
 
 
-def build_telemetry(fix_status, ntrip_connected, ntrip_detail, gps_metrics):
+def build_telemetry(fix_status, ntrip_connected, ntrip_detail, gps_metrics,
+                    mode="capture", base=None):
     """Assemble the /api/rover/telemetry payload. nav_state is always IDLE —
     this unit never drives, and IDLE keeps the server's mission lifecycle a
-    no-op. Omits keys the server treats as "not reported" (battery)."""
+    no-op. `mode` is "capture" | "base"; `base` mirrors the base-session state
+    (idle|surveying|active + relayed RTCM bytes) for the operator UI. Omits keys
+    the server treats as "not reported" (battery)."""
     payload = {
         "nav_state": "IDLE",
         "fix_status": fix_status,
         "ntrip_connected": bool(ntrip_connected),
+        "mode": mode,
     }
     if ntrip_detail is not None:
         payload["ntrip"] = ntrip_detail
     if gps_metrics is not None:
         payload["gps"] = gps_metrics
+    if base is not None:
+        payload["base"] = base
     return payload
 
 
@@ -163,7 +290,7 @@ class GpsRegisterAgent:
     """Owns the receiver, NTRIP client, and the server SSE/REST bridge."""
 
     def __init__(self, server_url, internal_secret, ntrip_username,
-                 serial_port="/dev/ttyGPS", baud=115200, meas_rate_ms=1000,
+                 serial_port="/dev/ttyGPS", baud=115200, meas_rate_ms=100,
                  report_interval=1.0):
         self._url = server_url.rstrip("/")
         self._secret = internal_secret
@@ -189,12 +316,23 @@ class GpsRegisterAgent:
         # "no NTRIP this session" so it clears any stale cached mountpoint.
         self._ntrip_connected = False
         self._ntrip_detail = None
-        # Bounded: with the 2D-fix gate, no-fix windows no longer drain requests
-        # immediately, so cap accumulation (mirrors bridge_node's deque).
-        self._pending_request_ids = collections.deque(maxlen=32)
 
         self._running = True
         self._last_report_time = 0.0
+        # Base-station state. _mode: "capture" (live position source) |
+        # "base-survey" (averaging NGII rtk_fixed position for a survey point) |
+        # "base-output" (TMODE FIXED, emitting RTCM). _pending_reconfig hands
+        # serial (re)configuration to the serial thread, which owns the port.
+        # _survey accumulates rtk_fixed HPPOSLLH samples during a survey.
+        self._mode = "capture"
+        self._pending_reconfig = None   # None | ("base", payload) | ("capture", None)
+        self._base_params = None        # {"lat","lng","alt","acc"} while acting as a base
+        self._survey = None             # None | {"point_id", "samples": [(lat,lng,alt,h_acc)]}
+        self._capture = None            # None | {"request_ids": [...], "samples": [...]} during a cone-capture
+        self._rtcm_framer = None
+        self._rtcm_out = bytearray()
+        self._rtcm_bytes = 0
+        self._rtcm_last_flush = 0.0
         self._post_queue = queue.Queue(maxsize=64)
         # Separate sessions per thread: the SSE reader holds one long-lived
         # streaming connection while the post worker fires short POSTs. Not
@@ -254,7 +392,17 @@ class GpsRegisterAgent:
         raise last_exc
 
     def _configure_receiver(self):
-        """Enable UBX NAV-PVT/HPPOSLLH/DOP on USB, disable NMEA, set fix rate."""
+        """Configure the F9P for capture (roving) mode: UBX NAV output on, NMEA
+        off, fix rate set, and — critically — TMODE + RTCM output DISABLED.
+
+        This runs unconditionally on every serial open, so it must be
+        authoritative: build_cfg_valset persists to RAM+BBR, so a base session
+        leaves CFG-TMODE-MODE=FIXED in battery-backed RAM. Without clearing it
+        here, a restart in capture mode (power loss / systemd restart / a
+        base-stop lost while offline) would leave the receiver in TMODE FIXED,
+        silently reporting the stale base coordinate for every cone. Clearing it
+        here makes capture always start clean; the base re-assert on open (see
+        _serial_loop) re-enables TMODE right after when we really are a base."""
         cfg = build_cfg_valset([
             (CFG_RATE_MEAS, self._meas_rate_ms, "H"),
             (CFG_MSGOUT_UBX_NAV_PVT_USB, 1, "B"),
@@ -266,9 +414,71 @@ class GpsRegisterAgent:
             (CFG_MSGOUT_NMEA_GSA_USB, 0, "B"),
             (CFG_MSGOUT_NMEA_GLL_USB, 0, "B"),
             (CFG_MSGOUT_NMEA_VTG_USB, 0, "B"),
-        ])
+            # Clear any persisted base-station config (TMODE FIXED + RTCM output).
+            (CFG_TMODE_MODE, 0, "B"),
+        ] + [(k, 0, "B") for k in _RTCM_MSGOUT_KEYS])
         self._serial.write(cfg)
-        log.info("ZED-F9P configured for UBX output @ %d ms", self._meas_rate_ms)
+        log.info("ZED-F9P configured for UBX output @ %d ms (capture mode)", self._meas_rate_ms)
+
+    def _configure_base(self, lat, lon, alt, acc):
+        """Put the F9P into TMODE FIXED (LLH) at the surveyed point and enable
+        RTCM3 (MSM7 + 1005 + 1230) on USB. From then the receiver generates its
+        own corrections from its known position — no NGII needed."""
+        lat_main, lat_hp = split_hp(int(round(lat * 1e9)))     # 1e-9 deg units
+        lon_main, lon_hp = split_hp(int(round(lon * 1e9)))
+        h = alt if alt is not None else 0.0
+        h_main, h_hp = split_hp(int(round(h * 1e4)))           # 0.1 mm units
+        acc_01mm = max(1, int(round((acc if acc else 0.1) * 1e4)))
+        cfg = build_cfg_valset([
+            (CFG_TMODE_MODE, 2, "B"),          # FIXED
+            (CFG_TMODE_POS_TYPE, 1, "B"),      # LLH
+            (CFG_TMODE_LAT, lat_main, "i"),
+            (CFG_TMODE_LAT_HP, lat_hp, "b"),
+            (CFG_TMODE_LON, lon_main, "i"),
+            (CFG_TMODE_LON_HP, lon_hp, "b"),
+            (CFG_TMODE_HEIGHT, h_main, "i"),
+            (CFG_TMODE_HEIGHT_HP, h_hp, "b"),
+            (CFG_TMODE_FIXED_POS_ACC, acc_01mm, "I"),
+        ] + [(k, 1, "B") for k in _RTCM_MSGOUT_KEYS])
+        self._serial.write(cfg)
+        log.info("ZED-F9P TMODE FIXED @ (%.7f, %.7f, %.2fm) — RTCM3 out enabled", lat, lon, h)
+
+    def _configure_base_stop(self):
+        """Disable TMODE + RTCM3 output — returns the F9P to a moving-rover role."""
+        cfg = build_cfg_valset(
+            [(CFG_TMODE_MODE, 0, "B")] + [(k, 0, "B") for k in _RTCM_MSGOUT_KEYS]
+        )
+        self._serial.write(cfg)
+        log.info("ZED-F9P TMODE disabled — RTCM3 out off")
+
+    def _apply_base_output(self, payload):
+        """Serial-thread: stop NGII and switch the F9P to base (RTCM) output."""
+        if self._ntrip is not None:
+            try:
+                self._ntrip.stop()
+            except Exception:
+                pass
+            self._ntrip = None
+        self._ntrip_last_attempt = time.monotonic()  # block NGII auto-restart
+        with self._lock:
+            self._mode = "base-output"
+            self._survey = None
+            self._rtcm_framer = RTCM3Framer()
+            self._rtcm_out = bytearray()
+            self._rtcm_bytes = 0
+            self._rtcm_last_flush = time.monotonic()
+        self._configure_base(payload["lat"], payload["lng"], payload.get("alt"), payload.get("acc"))
+
+    def _apply_capture(self):
+        """Serial-thread: leave base mode, restore NAV output, resume NGII."""
+        self._configure_base_stop()
+        self._configure_receiver()
+        with self._lock:
+            self._mode = "capture"
+            self._survey = None
+            self._rtcm_framer = None
+            self._rtcm_out = bytearray()
+        self._ntrip_last_attempt = 0.0  # allow NGII to re-init on next 3D fix
 
     def _teardown_serial(self):
         if self._ntrip is not None:
@@ -287,7 +497,11 @@ class GpsRegisterAgent:
 
     def _maybe_setup_ntrip(self, lat, lon, fix_type):
         """Start NTRIP once a 3D fix lets us pick the nearest base station.
-        No-op without an operator NGII login (runs without RTK then)."""
+        No-op without an operator NGII login (runs without RTK then). Also a
+        no-op while acting as a base — a TMODE-FIXED base makes its own
+        corrections and must not pull NGII (capture + base-survey still do)."""
+        if self._mode == "base-output":
+            return
         if self._ntrip is not None or not self._ntrip_username:
             return
         if fix_type < FixType.FIX_3D:
@@ -300,6 +514,12 @@ class GpsRegisterAgent:
                          args=(lat, lon, self._serial), daemon=True).start()
 
     def _ntrip_setup_worker(self, lat, lon, serial_ref):
+        # We may have switched to base-output while this worker was queued or
+        # during the slow fetch below (e.g. the server sends base-activate right
+        # after the receiver reconnects). Bail early so we never pull NGII in base
+        # mode; re-checked under the lock too (mirrors gps_node._ntrip_setup_worker).
+        if self._mode == "base-output":
+            return
         try:
             table = fetch_source_table(NTRIP_HOST, NTRIP_PORT)
         except Exception as exc:
@@ -313,7 +533,8 @@ class GpsRegisterAgent:
                         lat, lon, NTRIP_SETUP_COOLDOWN_S)
             return
         with self._lock:
-            if self._ntrip is not None or self._serial is not serial_ref:
+            if (self._ntrip is not None or self._serial is not serial_ref
+                    or self._mode == "base-output"):
                 return
             log.info('NTRIP: auto-selected "%s" for (%.5f, %.5f)', mount, lat, lon)
             client = NTRIPClient(
@@ -322,7 +543,11 @@ class GpsRegisterAgent:
                 serial_port=serial_ref, lat=lat, lon=lon, logger=log,
             )
             self._ntrip = client
-        client.start()
+            # start() only spawns a daemon thread (non-blocking), so keep it under
+            # the lock: releasing before start() lets a racing base-activate
+            # stop()+null our reference, after which we'd start an orphaned NGII
+            # client feeding the F9P while it is a TMODE-FIXED base.
+            client.start()
 
     def _on_nav_pvt(self, pvt):
         metrics = self._metrics_from(pvt)
@@ -341,6 +566,22 @@ class GpsRegisterAgent:
         with self._lock:
             self._last_hpposllh = hp
             self._last_position = {"lat": hp.lat, "lng": hp.lon, "alt": hp.h_msl}
+            # During a base survey, average only RTK-fixed samples — this is the
+            # whole point of surveying "while NTRIP is alive". Use ELLIPSOIDAL
+            # height (hp.height), not MSL: this coordinate feeds CFG-TMODE-HEIGHT
+            # with POS_TYPE=LLH, which u-blox defines as height above the WGS84
+            # ellipsoid. Using h_msl would bias the base ARP by the geoid
+            # separation (~24 m in Korea) and skew every rover absolute altitude.
+            if self._survey is not None and self._fix_status == "rtk_fixed":
+                self._survey["samples"].append((hp.lat, hp.lon, hp.height, hp.h_acc))
+            # Cone-capture also averages only rtk_fixed samples, but stores MSL
+            # height (h_msl) — cones carry MSL altitude, unlike a base's ellipsoidal
+            # ARP. Never collect while acting as a base (base-output): TMODE FIXED
+            # emits the stationary ARP as rtk_fixed, which would post the base
+            # coordinate as a cone.
+            if (self._capture is not None and self._fix_status == "rtk_fixed"
+                    and self._mode == "capture"):
+                self._capture["samples"].append((hp.lat, hp.lon, hp.h_msl, hp.h_acc))
 
     def _metrics_from(self, pvt):
         """Build the telemetry `gps` block, preferring HPPOSLLH/DOP detail."""
@@ -361,16 +602,48 @@ class GpsRegisterAgent:
         }
 
     def _serial_loop(self):
-        """Read + parse UBX; periodic position reporting. Reopens on drop."""
+        """Read + parse UBX; extract/relay RTCM in base mode; periodic reporting.
+        Reopens on drop. All serial (re)configuration happens on this thread."""
         while self._running:
             if self._serial is None:
                 try:
                     self._open_serial()
                     self._configure_receiver()
+                    # Re-assert base output after a reopen (BBR usually survives a
+                    # USB re-enumerate, but re-applying is cheap and authoritative).
+                    # Read mode+params atomically under the lock and snapshot the
+                    # dict, so a concurrent _deactivate_base can't leave us queuing
+                    # ("base", None) → _apply_base_output(None) → crash.
+                    with self._lock:
+                        if self._mode == "base-output" and self._base_params:
+                            self._pending_reconfig = ("base", dict(self._base_params))
                 except (serial.SerialException, OSError) as exc:
                     log.warning("GPS serial (re)open failed: %s", exc)
                     time.sleep(_SERIAL_OPEN_BACKOFF_S)
                     continue
+
+            # Apply any pending base/capture reconfiguration here so all serial +
+            # NTRIP lifecycle stays on the single serial-owning thread. Read+clear
+            # under the lock so a concurrent _activate_base/_deactivate_base write
+            # can't be lost between the read and the clear. Apply OUTSIDE the lock
+            # (_apply_* re-acquire it; the Lock is non-reentrant).
+            with self._lock:
+                pending = self._pending_reconfig
+                self._pending_reconfig = None
+            if pending is not None:
+                kind, payload = pending
+                try:
+                    if kind == "base":
+                        self._apply_base_output(payload)
+                    else:
+                        self._apply_capture()
+                except (serial.SerialException, OSError) as exc:
+                    log.warning("reconfigure(%s) failed: %s", kind, exc)
+                except Exception:
+                    # Never let an unexpected reconfig error kill the serial thread
+                    # (that would exit the whole process); log and keep running.
+                    log.exception("reconfigure(%s) crashed", kind)
+
             try:
                 data = self._serial.read(self._serial.in_waiting or 1)
             except (serial.SerialException, OSError) as exc:
@@ -378,6 +651,14 @@ class GpsRegisterAgent:
                 self._teardown_serial()
                 continue
             if data:
+                # In base mode the same stream carries RTCM3 (to relay) alongside
+                # NAV-PVT (kept for health). Feed both extractors the raw bytes.
+                if self._mode == "base-output" and self._rtcm_framer is not None:
+                    frames = self._rtcm_framer.feed(data)
+                    if frames:
+                        with self._lock:
+                            for f in frames:
+                                self._rtcm_out.extend(f)
                 for msg in self._parser.feed(data):
                     if isinstance(msg, NavPVT):
                         self._on_nav_pvt(msg)
@@ -386,29 +667,42 @@ class GpsRegisterAgent:
                     elif isinstance(msg, NavDOP):
                         with self._lock:
                             self._last_dop = msg
+
             now = time.monotonic()
-            if now - self._last_report_time >= self._report_interval:
+            if self._mode == "base-output":
+                self._maybe_flush_rtcm(now)
+            elif now - self._last_report_time >= self._report_interval:
                 self._report_position()
                 self._last_report_time = now
 
-    def _report_position(self, request_ids=None):
+    def _maybe_flush_rtcm(self, now):
+        """Relay buffered RTCM to the server ~1×/epoch (or sooner if it piles up),
+        keeping each POST small. No-op when there is nothing to send."""
+        with self._lock:
+            buf = self._rtcm_out
+            if not buf:
+                return
+            if len(buf) < _RTCM_FLUSH_MAX_BYTES and (now - self._rtcm_last_flush) < _RTCM_FLUSH_INTERVAL_S:
+                return
+            payload = bytes(buf)
+            self._rtcm_out = bytearray()
+            self._rtcm_last_flush = now
+            self._rtcm_bytes += len(payload)
+        self._enqueue_post("/api/rover/base/rtcm",
+                           {"data": base64.b64encode(payload).decode("ascii")}, "rtcm")
+
+    def _report_position(self):
         with self._lock:
             if not self._last_position:
                 return
-            # Hold position (and any pending request) until at least a 2D fix:
-            # a no-fix / time-only solution reports (0, 0), which would jump the
-            # operator map to Null Island (blank grey — no basemap tiles).
+            # Hold position until at least a 2D fix: a no-fix / time-only solution
+            # reports (0, 0), which would jump the operator map to Null Island
+            # (blank grey — no basemap tiles). Cone requests are answered by the
+            # capture worker, so periodic reports never carry a request id.
             if self._fix_status not in _POSITION_FIX_STATUSES:
                 return
             payload = dict(self._last_position)
-            if request_ids is None and self._pending_request_ids:
-                request_ids = list(self._pending_request_ids)
-                self._pending_request_ids.clear()
-        if request_ids:
-            payload["request_id"] = request_ids[0]
-            payload["request_ids"] = request_ids
-        self._enqueue_post("/api/rover/position", payload,
-                           "position(req)" if request_ids else "position")
+        self._enqueue_post("/api/rover/position?device=gps", payload, "position")
 
     # ---- server SSE/telemetry -----------------------------------------
 
@@ -418,10 +712,22 @@ class GpsRegisterAgent:
             with self._lock:
                 ntrip_connected = self._ntrip.connected if self._ntrip else False
                 ntrip_detail = self._ntrip_detail_locked()
+                mode = "base" if self._mode == "base-output" else "capture"
+                base = {
+                    "state": ("active" if self._mode == "base-output"
+                              else "surveying" if self._mode == "base-survey"
+                              else "idle"),
+                    "rtcm_bytes": self._rtcm_bytes,
+                }
+                # Report how many rtk_fixed samples the survey has averaged so far
+                # (survey-specific progress the server can't compute itself).
+                if self._survey is not None:
+                    base["survey_samples"] = len(self._survey["samples"])
                 payload = build_telemetry(
                     self._fix_status, ntrip_connected, ntrip_detail, self._gps_metrics,
+                    mode, base,
                 )
-            self._enqueue_post("/api/rover/telemetry", payload, "telemetry")
+            self._enqueue_post("/api/rover/telemetry?device=gps", payload, "telemetry")
 
     def _ntrip_detail_locked(self):
         if not self._ntrip:
@@ -452,7 +758,9 @@ class GpsRegisterAgent:
         headers["Accept"] = "text/event-stream"
         headers["Cache-Control"] = "no-cache"
         resp = self._sse_session.get(
-            f"{self._url}/api/rover/stream", headers=headers,
+            # ?device=gps takes the receiver's own slot on the course server so the
+            # rover and this unit no longer evict each other.
+            f"{self._url}/api/rover/stream?device=gps", headers=headers,
             # connect, read. Server heartbeat is 10s; 25s read timeout detects a
             # dead socket (Wi-Fi drop, no FIN/RST) in ~25s instead of ~90s.
             stream=True, timeout=(5.0, 25.0),
@@ -469,19 +777,190 @@ class GpsRegisterAgent:
         return True
 
     def _handle_event(self, event, data):
-        if event == "request-position":
-            try:
-                payload = json.loads(data) if data else {}
-            except json.JSONDecodeError:
-                log.warning("bad request-position JSON: %s", data)
+        try:
+            payload = json.loads(data) if data else {}
+        except json.JSONDecodeError:
+            log.warning("bad %s JSON: %s", event, data)
+            return
+        try:
+            if event == "request-position":
+                # Cone capture: don't answer with a single sample — collect a stable
+                # rtk_fixed window first (see _capture_worker). Falls through to a
+                # timeout on the server if we never get a stable RTK fix.
+                self._start_capture(payload.get("request_id"))
+            elif event == "base-survey-start":
+                self._start_survey(payload.get("point_id"), payload.get("duration_s", 120))
+            elif event == "base-survey-cancel":
+                self._cancel_survey()
+            elif event == "base-activate":
+                self._activate_base(payload)
+            elif event == "base-stop":
+                self._deactivate_base()
+            # All other rover commands (execute-path, manual-control, calibrate-*)
+            # are no-ops for a survey unit: it has no motors/MCU to drive.
+        except Exception:
+            # A single malformed/unexpected event must never kill the SSE thread —
+            # that would leave the unit "online" (telemetry still posting) but deaf
+            # to every further command until a restart. Log and keep processing.
+            log.exception("error handling SSE event %r", event)
+
+    # ---- cone capture --------------------------------------------------
+
+    def _start_capture(self, request_id):
+        """Begin (or join) a cone-capture sampling window for request_id."""
+        rid = request_id[:64] if isinstance(request_id, str) and request_id else None
+        with self._lock:
+            if self._capture is not None:
+                # A capture is already running — answer this request from it too.
+                if rid:
+                    self._capture["request_ids"].append(rid)
                 return
-            rid = payload.get("request_id")
-            if isinstance(rid, str) and rid:
-                with self._lock:
-                    self._pending_request_ids.append(rid[:64])
-            self._report_position()
-        # All other rover commands (execute-path, manual-control, calibrate-*)
-        # are no-ops for a survey unit: it has no motors/MCU to drive.
+            self._capture = {"request_ids": [rid] if rid else [], "samples": []}
+        threading.Thread(target=self._capture_worker, daemon=True).start()
+
+    def _capture_worker(self):
+        """Answer a cone-capture request as soon as we have a STABLE rtk_fixed
+        window (>= CAPTURE_MIN_SAMPLES within CAPTURE_MAX_DEV_M) — no need to wait
+        the full window. If CAPTURE_WINDOW_S elapses without stabilizing, send an
+        explicit failure so the request fails immediately (no server timeout wait,
+        and no bad cone)."""
+        deadline = time.monotonic() + CAPTURE_WINDOW_S
+        result = None
+        while time.monotonic() < deadline and self._running:
+            with self._lock:
+                samples = list(self._capture["samples"]) if self._capture else []
+            result = evaluate_capture(samples)
+            if result is not None:
+                break  # stable enough → respond now
+            time.sleep(0.1)
+        with self._lock:
+            cap = self._capture
+            self._capture = None
+        if not cap:
+            return
+        rids = cap["request_ids"]
+        n = len(cap["samples"])
+        if result is None:
+            result = evaluate_capture(cap["samples"])  # final check on the last samples
+        if result is None:
+            # Explicit failure — resolve the request as failed (no 5s timeout wait).
+            payload = {"capture_failed": True, "error": "no_stable_rtk_fix", "samples": n}
+            if rids:
+                payload["request_id"] = rids[0]
+                payload["request_ids"] = rids
+            self._enqueue_post("/api/rover/position?device=gps", payload, "capture-fail")
+            log.warning("cone capture failed: %d rtk_fixed samples (need stable %d)",
+                        n, CAPTURE_MIN_SAMPLES)
+            return
+        lat, lng, alt = result
+        payload = {"lat": lat, "lng": lng, "alt": alt}
+        if rids:
+            payload["request_id"] = rids[0]
+            payload["request_ids"] = rids
+        self._enqueue_post("/api/rover/position?device=gps", payload, "position(capture)")
+        log.info("cone capture: %d samples -> (%.7f, %.7f)", n, lat, lng)
+
+    # ---- base station ---------------------------------------------------
+
+    def _start_survey(self, point_id, duration_s):
+        """Average RTK-fixed HPPOSLLH for `duration_s` and report the mean as the
+        surveyed base coordinate. NGII is already running in capture mode, so this
+        needs no serial reconfig — it just gates sample collection on rtk_fixed."""
+        if point_id is None:
+            log.warning("base-survey-start without point_id"); return
+        if self._mode == "base-output":
+            log.warning("cannot survey while base output is active"); return
+        # Validate BEFORE mutating _mode/_survey so a malformed payload can't leave
+        # the unit stuck in "base-survey" with no survey (and the SSE handler's
+        # backstop still catches anything unexpected).
+        try:
+            pid = int(point_id)
+            duration = max(5, min(int(duration_s or 120), 1800))
+        except (TypeError, ValueError):
+            log.warning("base-survey-start with bad params: point_id=%r duration_s=%r",
+                        point_id, duration_s)
+            return
+        with self._lock:
+            self._mode = "base-survey"
+            self._survey = {"point_id": pid, "samples": []}
+        log.info("base survey started: point %s for %ds", pid, duration)
+        threading.Thread(target=self._survey_worker,
+                         args=(pid, duration), daemon=True).start()
+
+    def _survey_worker(self, point_id, duration):
+        deadline = time.monotonic() + duration
+        while time.monotonic() < deadline and self._running:
+            surv = self._survey
+            if surv is None or surv.get("point_id") != point_id:
+                log.info("base survey %s cancelled/superseded", point_id)
+                return
+            time.sleep(0.5)
+        with self._lock:
+            surv = self._survey
+            if surv is not None and surv.get("point_id") == point_id:
+                self._survey = None
+                if self._mode == "base-survey":
+                    self._mode = "capture"
+                samples = list(surv["samples"])
+            else:
+                # Superseded by a newer survey (or cancelled) while we were
+                # finalizing — that owner controls _survey/_mode now, so don't
+                # touch them and don't post a result for a survey we no longer own.
+                samples = None
+        if samples is None:
+            log.info("base survey %s superseded before finalize — no result posted", point_id)
+            return
+        result = evaluate_survey(samples)
+        if isinstance(result, str):
+            # Report the FAILURE (don't just log) so the server clears the
+            # "surveying" state and the operator UI shows an error instead of
+            # silently reverting to "미측량". `result` is the reason code
+            # ("insufficient_samples" | "unstable").
+            log.warning("base survey %s failed: %s (%d samples) — reporting failure",
+                        point_id, result, len(samples))
+            self._enqueue_post("/api/rover/base/survey-result", {
+                "point_id": point_id, "ok": False, "error": result,
+                "samples": len(samples),
+            }, "survey-result")
+            return
+        lat, lon, alt, h_acc, n, std = result
+        self._enqueue_post("/api/rover/base/survey-result", {
+            "point_id": point_id, "ok": True, "lat": lat, "lng": lon,
+            "alt": alt, "h_acc": h_acc, "samples": n, "std_m": std,
+        }, "survey-result")
+        log.info("base survey %s done: %d samples, std %.3fm -> (%.7f, %.7f)",
+                 point_id, n, std, lat, lon)
+
+    def _cancel_survey(self):
+        with self._lock:
+            self._survey = None
+            if self._mode == "base-survey":
+                self._mode = "capture"
+        log.info("base survey cancelled")
+
+    def _activate_base(self, payload):
+        """Latch base intent (so NGII stops auto-starting); the serial thread does
+        the actual TMODE/RTCM reconfiguration via _pending_reconfig. All of
+        _mode/_base_params/_pending_reconfig are set together under the lock so
+        the serial reopen path can never read a half-updated ('base', None)."""
+        if payload.get("lat") is None or payload.get("lng") is None:
+            log.warning("base-activate without coordinates"); return
+        params = {
+            "lat": payload["lat"], "lng": payload["lng"],
+            "alt": payload.get("alt"), "acc": payload.get("acc"),
+        }
+        with self._lock:
+            self._base_params = params
+            self._mode = "base-output"
+            self._pending_reconfig = ("base", params)
+        log.info("base activation requested at (%.7f, %.7f)", payload["lat"], payload["lng"])
+
+    def _deactivate_base(self):
+        with self._lock:
+            self._base_params = None
+            self._mode = "capture"
+            self._pending_reconfig = ("capture", None)
+        log.info("base deactivation requested")
 
     # ---- lifecycle -----------------------------------------------------
 
@@ -540,7 +1019,7 @@ def main():
         ntrip_username=ntrip_username,
         serial_port=os.environ.get("GPS_SERIAL_PORT", "/dev/ttyGPS"),
         baud=int(os.environ.get("GPS_BAUD", "115200")),
-        meas_rate_ms=int(os.environ.get("GPS_MEAS_RATE_MS", "1000")),
+        meas_rate_ms=int(os.environ.get("GPS_MEAS_RATE_MS", "100")),
         report_interval=float(os.environ.get("POSITION_REPORT_INTERVAL", "1.0")),
     )
     log.info("GPS-registration agent starting (server=%s, rtk=%s)",
