@@ -102,6 +102,50 @@ def test_stop_wakes_thread_blocked_in_backoff():
     assert elapsed < 1.0, f'stop took {elapsed:.2f}s; backoff likely still using time.sleep'
 
 
+def test_stale_stream_forces_reconnect():
+    """A dead socket that only ever times out (recv → timeout, never b"") must
+    trip the stale-stream watchdog and reconnect — the old loop spun forever on
+    such a socket (Wi-Fi drop with no FIN) and never recovered."""
+    import socket
+    import threading
+    import time
+
+    c = _make_client()
+    c._stream_stale_s = 0.1          # trip the watchdog quickly
+    c._reconnect_delay = lambda: 0.01  # don't wait the real 1s backoff
+    connects = []
+
+    class _DeadSock:
+        def recv(self, _n):
+            time.sleep(0.02)
+            raise socket.timeout()
+        def sendall(self, _d):
+            pass
+        def close(self):
+            pass
+
+    def _fake_connect():
+        connects.append(time.monotonic())
+        c._sock = _DeadSock()
+        c._connected = True
+    c._connect = _fake_connect
+
+    c._running = True
+    t = threading.Thread(target=c._run, daemon=True)
+    c._thread = t
+    t.start()
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(connects) < 2:
+            time.sleep(0.02)
+    finally:
+        c.stop()
+
+    assert not t.is_alive()
+    # Initial connect + at least one stale-driven reconnect.
+    assert len(connects) >= 2, f"stale stream did not force a reconnect (connects={len(connects)})"
+
+
 # Sample rows cover: RTCM 2.3 (filtered out), RTCM 3.2 far north, RTCM 3.2
 # close to the target position, malformed lat (skipped), and a non-STR line.
 _SAMPLE_TABLE = (
