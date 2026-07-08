@@ -833,6 +833,9 @@ const gpsSaving = ref(false);
 const newSurveyName = ref("");
 const surveyDuration = ref(120);
 const selectedBasePointId = ref(null);
+// Survey point whose card the operator tapped to center the map on it (list
+// highlight). Cleared when its point disappears from the list.
+const selectedSurveyPointId = ref(null);
 
 // 수신기 상태 편의 접근자 (rover:status의 receiver 서브블록).
 const receiver = computed(() => roverStatus.value.receiver || null);
@@ -992,6 +995,7 @@ async function deleteSurveyPoint(p) {
   if (!window.confirm(`측량점 "${p.name}"을(를) 삭제할까요?`)) return;
   try {
     await request(`/api/gps/survey-points/${p.id}`, { method: "DELETE" });
+    if (selectedSurveyPointId.value === p.id) selectedSurveyPointId.value = null;
     await loadGps();
   } catch (err) {
     notifyError(err.message || "측량점 삭제에 실패했습니다.");
@@ -3478,9 +3482,10 @@ function panToCone(cone) {
 function panToVisibleCenter(lat, lng, opts = {}) {
   if (!map) return;
   const animate = opts.animate ?? true;
+  const zoom = opts.zoom ?? map.getZoom();
   const visible = getVisibleMapCenter();
   if (!visible) {
-    map.setView([lat, lng], map.getZoom(), { animate });
+    map.setView([lat, lng], zoom, { animate });
     return;
   }
   // Place the target at the visible center by computing the new map center and
@@ -3497,7 +3502,7 @@ function panToVisibleCenter(lat, lng, opts = {}) {
   // inspector overlay shifts the visible center up.
   const targetPt = map.latLngToContainerPoint([lat, lng]);
   const centerPt = targetPt.add(map.getSize().divideBy(2)).subtract(visible);
-  map.setView(map.containerPointToLatLng(centerPt), map.getZoom(), { animate });
+  map.setView(map.containerPointToLatLng(centerPt), zoom, { animate });
 }
 
 /* ── Rover position ───────────────────────────────── */
@@ -3548,6 +3553,17 @@ function centerOnReceiver() {
 function toggleFollowReceiver() {
   followReceiver.value = !followReceiver.value;
   if (followReceiver.value) { followRover.value = false; centerOnReceiver(); }
+}
+
+// Tap a surveyed point's card to center the map on it. Only surveyed points
+// carry coordinates, so unsurveyed ones are inert. Turns off receiver tracking
+// first — otherwise the next streamed receiver fix would immediately yank the
+// map back to the receiver, undoing the recenter.
+function panToSurveyPoint(p) {
+  if (!map || p.lat == null || p.lng == null || !isValidRoverPos(p.lat, p.lng)) return;
+  if (followReceiver.value) followReceiver.value = false;
+  selectedSurveyPointId.value = p.id;
+  panToVisibleCenter(p.lat, p.lng, { zoom: Math.max(map.getZoom(), 17) });
 }
 
 // Follow-pan, throttled and non-animated. Each pan moves the map, which forces
@@ -6068,7 +6084,13 @@ onUnmounted(() => {
                   <div v-if="surveyPoints.length === 0" class="empty-msg">측량점이 없습니다.</div>
                   <div v-else class="gps-point-list">
                     <div v-for="p in surveyPoints" :key="p.id"
-                         :class="['gps-point-card', { 'is-base': gpsConfig.ntrip_source === 'base' && gpsConfig.active_base_point_id === p.id }]">
+                         :class="['gps-point-card', {
+                           'is-base': gpsConfig.ntrip_source === 'base' && gpsConfig.active_base_point_id === p.id,
+                           clickable: p.lat != null && p.lng != null,
+                           selected: selectedSurveyPointId === p.id,
+                         }]"
+                         :title="p.lat != null && p.lng != null ? '지도에서 이 측량점으로 이동' : ''"
+                         @click="panToSurveyPoint(p)">
                       <div class="gps-point-head">
                         <strong class="gps-point-name">{{ p.name }}</strong>
                         <span v-if="gpsConfig.ntrip_source === 'base' && gpsConfig.active_base_point_id === p.id" class="gps-tag gps-tag-base">기준국</span>
@@ -6092,17 +6114,17 @@ onUnmounted(() => {
                           <div class="gps-progress"><div class="gps-progress-bar" :style="{ width: (surveyProgress ? surveyProgress.pct : 0) + '%' }"></div></div>
                         </div>
                         <div class="gps-point-actions">
-                          <button class="btn btn-ghost btn-sm gps-btn-danger" @click="cancelSurvey(p)">측량 취소</button>
+                          <button class="btn btn-ghost btn-sm gps-btn-danger" @click.stop="cancelSurvey(p)">측량 취소</button>
                         </div>
                       </template>
                       <!-- Idle: survey / delete actions -->
                       <div v-else class="gps-point-actions">
                         <button class="btn btn-ghost btn-sm"
                                 :disabled="!receiverConnected || baseState !== 'idle'"
-                                @click="startSurvey(p)">{{ p.lat != null ? '재측량' : '측량' }}</button>
+                                @click.stop="startSurvey(p)">{{ p.lat != null ? '재측량' : '측량' }}</button>
                         <button class="btn btn-ghost btn-sm gps-btn-danger"
                                 :disabled="gpsConfig.ntrip_source === 'base' && gpsConfig.active_base_point_id === p.id"
-                                @click="deleteSurveyPoint(p)">삭제</button>
+                                @click.stop="deleteSurveyPoint(p)">삭제</button>
                       </div>
                     </div>
                   </div>
@@ -7511,6 +7533,11 @@ onUnmounted(() => {
   background: var(--bg-secondary); display: flex; flex-direction: column; gap: 0.4rem;
 }
 .gps-point-card.is-base { border-color: #14b8a6; background: color-mix(in srgb, #14b8a6 8%, var(--bg-secondary)); }
+/* surveyed cards center the map on tap; ring the tapped one (layered over the
+   base tint via box-shadow so a base+selected card shows both cues) */
+.gps-point-card.clickable { cursor: pointer; transition: border-color 0.1s, box-shadow 0.1s; }
+.gps-point-card.clickable:hover { border-color: var(--accent-primary); }
+.gps-point-card.selected { border-color: var(--accent-primary); box-shadow: 0 0 0 1px var(--accent-primary); }
 .gps-point-head { display: flex; align-items: center; gap: 0.4rem; }
 .gps-point-name { font-size: 0.9rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* status tag pushed to the right of the name */
