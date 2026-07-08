@@ -425,6 +425,37 @@ class PerceptionNode(Node):
         if now - getattr(self, "_last_diag_log", 0.0) >= 0.5:
             self._last_diag_log = now
             self.get_logger().info(f"detect diag: obstacle={obstacle} {info}")
+        self._maybe_dump_frame(depth_z, valid, conf, now)
+
+    def _maybe_dump_frame(self, depth_z, valid, conf, now):
+        # TEMP: record raw depth/valid/conf during NAVIGATING (throttled, capped) so a
+        # self-calibrating ground fit can be developed + validated OFFLINE against real
+        # driving data instead of blind deploys. FRAMEDUMP_MAX=0 disables. Remove with
+        # the rest of the diagnostic scaffolding once the detector is tuned.
+        cap = _env_int("FRAMEDUMP_MAX", 60)
+        if cap <= 0:
+            return
+        if now - getattr(self, "_last_dump", 0.0) < _env_float("FRAMEDUMP_INTERVAL_S", 1.0):
+            return
+        n = getattr(self, "_dump_count", 0)
+        if n >= cap:
+            return
+        self._last_dump = now
+        self._dump_count = n + 1
+        try:
+            d = "/var/lib/perception/framedump"
+            os.makedirs(d, exist_ok=True)
+            if n == 0:
+                for f in os.listdir(d):
+                    if f.startswith("f") and f.endswith(".npz"):
+                        os.remove(os.path.join(d, f))
+            np.savez_compressed(
+                os.path.join(d, f"f{n:03d}.npz"),
+                depth=depth_z.astype(np.float32),
+                valid=valid.astype(bool),
+                conf=(conf.astype(np.uint8) if conf is not None else np.zeros(0, np.uint8)))
+        except Exception as e:  # noqa: BLE001 - diagnostics must never kill detection
+            self.get_logger().warn(f"framedump error: {e}")
 
     def _stereo_eyes(self, left_frame, right_frame):
         """Return (left, right) eye frames for the detector, or None if unavailable.
