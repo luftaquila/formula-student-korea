@@ -29,7 +29,19 @@ const ROVER_POSITION_STALE_MS = 30 * 1000;
 const DEFAULT_DEVICE_STALE_MS = 15 * 1000;
 const DEFAULT_DEVICE_WATCHDOG_TICK_MS = 5 * 1000;
 
-export function registerRoverRoutes(app, { express, db, dbRun, logger, broadcastEvent, getCourseById, takeCourseSnapshot, validateCoordinate, validateAltitude, deviceStaleMs, deviceWatchdogTickMs }) {
+export function registerRoverRoutes(app, { express, db, dbRun, logger, broadcastEvent: _broadcastRaw, getCourseById, takeCourseSnapshot, validateCoordinate, validateAltitude, deviceStaleMs, deviceWatchdogTickMs }) {
+
+  // rover 텔레메트리(rover / rover:* / gps:*)는 admin 연결에만 전달한다. /api/events SSE는
+  // 콘·코스 편집을 위해 chief+에게 열려 있으나, 로버 위치·배터리·미션 waypoint·NTRIP 등은
+  // REST GET /api/rover/status와 동일하게 admin 전용이어야 한다(chief 텔레메트리 누수 차단).
+  // 나머지 이벤트(courses/cones/memos 등)는 그대로 chief+ 전체에 전송한다. 명시적 filterFn을
+  // 넘긴 호출은 그 필터를 존중한다.
+  const broadcastEvent = (event, data, filterFn) => {
+    if (!filterFn && (event === "rover" || event.startsWith("rover:") || event.startsWith("gps:"))) {
+      return _broadcastRaw(event, data, (meta) => meta?.role === "admin");
+    }
+    return _broadcastRaw(event, data, filterFn);
+  };
 
 /* ============================================
    API 라우트: /api/rover
@@ -104,18 +116,21 @@ if (orphanRecoveryResult.changes > 0) {
 }
 
 function startMission(waypoints, actor, courseId) {
-  // Close any still-open prior mission as stopped.
-  if (currentMissionId != null) {
-    logger.warn(null, "mission.end.superseded", { mission_id: currentMissionId }, "rover");
-    finishMission.run(Date.now(), "stopped", Date.now(), currentMissionId);
+  const SYS = { email: "system", name: "system", role: "admin" };
+  // 이전 미션 종료 + 새 미션 삽입을 한 트랜잭션으로 원자화한다. 삽입이 실패해도(디스크 풀,
+  // 존재하지 않는 course_id의 FK 위반 등) 이전 미션이 조용히 닫히거나 currentMissionId가
+  // 닫힌 미션을 가리키는 상태 오염을 막는다. 실패 시 로깅 후 false 반환(호출부가 500 처리).
+  const prior = currentMissionId;
+  const r = dbRun(() => db.transaction(() => {
+    if (prior != null) finishMission.run(Date.now(), "stopped", Date.now(), prior);
+    return insertMission.run(courseId || null, Date.now(), JSON.stringify(waypoints), actor || null);
+  })());
+  if (!r.success) {
+    logger.warn(null, "mission.start", { error: r.error, course_id: courseId }, "rover", SYS);
+    return false;
   }
-  const info = insertMission.run(
-    courseId || null,
-    Date.now(),
-    JSON.stringify(waypoints),
-    actor || null,
-  );
-  currentMissionId = Number(info.lastInsertRowid);
+  if (prior != null) logger.warn(null, "mission.end.superseded", { mission_id: prior }, "rover");
+  currentMissionId = Number(r.result.lastInsertRowid);
   // A fresh mission starts with a clean slate — never inherit a previous run's
   // obstacle alert, and scope the resume grace window to THIS mission so a
   // prior mission's resume can't suppress this one's pause reconcile.
@@ -128,11 +143,17 @@ function startMission(waypoints, actor, courseId) {
     spray_results: {},
     status: "running",
   };
+  return true;
 }
 
 function endMission(status) {
   if (currentMissionId == null) return;
-  finishMission.run(Date.now(), status, Date.now(), currentMissionId);
+  try {
+    finishMission.run(Date.now(), status, Date.now(), currentMissionId);
+  } catch (e) {
+    logger.warn(null, "mission.end", { error: e.message || String(e), status, mission_id: currentMissionId }, "rover",
+      { email: "system", name: "system", role: "admin" });
+  }
   currentMissionId = null;
   // The mission is over — any obstacle hold is moot; clear the operator alert.
   roverState.obstacle = { active: false, at: 0, nearest_m: null };
@@ -151,12 +172,31 @@ function endMission(status) {
 function persistProgress() {
   if (currentMissionId == null) return;
   const mp = roverState.mission_progress;
-  persistMissionProgress.run(
-    mp.current_waypoint_idx || 0,
-    JSON.stringify(mp.spray_results || {}),
-    Date.now(),
-    currentMissionId,
-  );
+  try {
+    persistMissionProgress.run(
+      mp.current_waypoint_idx || 0,
+      JSON.stringify(mp.spray_results || {}),
+      Date.now(),
+      currentMissionId,
+    );
+  } catch (e) {
+    // 포지션·텔레메트리 이벤트마다 로버가 호출하는 고빈도 경로다. DB 오류가 로버 POST를
+    // 500으로 터뜨리지 않도록 삼키고 구조화 로그만 남긴다(로깅 정책 준수).
+    logger.warn(null, "mission.persist", { error: e.message || String(e), mission_id: currentMissionId }, "rover",
+      { email: "system", name: "system", role: "admin" });
+  }
+}
+
+// setMissionStatus의 안전 래퍼 — 상태 갱신 실패를 삼키고 로깅한다(운영자 요청/이벤트가 로깅
+// 없는 500으로 끝나지 않도록). currentMissionId가 없으면 no-op.
+function updateMissionStatus(status, ts = Date.now()) {
+  if (currentMissionId == null) return;
+  try {
+    setMissionStatus.run(status, ts, currentMissionId);
+  } catch (e) {
+    logger.warn(null, "mission.status", { error: e.message || String(e), status, mission_id: currentMissionId }, "rover",
+      { email: "system", name: "system", role: "admin" });
+  }
 }
 
 // The rover SSE dropped (or the server is shutting down) mid-mission. The rover
@@ -173,7 +213,7 @@ function interruptMission() {
   if (currentMissionId == null) return;
   persistProgress();
   if (roverState.mission_progress.status === "running") {
-    setMissionStatus.run("interrupted", Date.now(), currentMissionId);
+    updateMissionStatus("interrupted");
     roverState.mission_progress.status = "interrupted";
   }
 }
@@ -193,20 +233,27 @@ function recordTelemetrySample() {
     ntrip && typeof ntrip.last_correction_at === "number" && ntrip.last_correction_at > 0
       ? Math.max(0, now - Math.round(ntrip.last_correction_at * 1000))
       : null;
-  insertTelemetry.run(
-    currentMissionId,
-    now,
-    pos ? pos.lat : null,
-    pos ? pos.lng : null,
-    roverState.fix_status,
-    roverState.nav_state,
-    typeof roverState.ntrip_connected === "boolean" ? (roverState.ntrip_connected ? 1 : 0) : null,
-    corrAgeMs,
-    ntrip && Number.isInteger(ntrip.fail_count) ? ntrip.fail_count : null,
-    roverState.gps && typeof roverState.gps.h_acc === "number" ? roverState.gps.h_acc : null,
-    roverState.gps && typeof roverState.gps.altitude === "number" ? roverState.gps.altitude : null,
-    roverState.gps && typeof roverState.gps.v_acc === "number" ? roverState.gps.v_acc : null,
-  );
+  // 인접 persistProgress/endMission과 동일하게 감싼다: 텔레메트리 INSERT 실패가 로버 POST를
+  // 500으로 떨구지 않게 하고, 정책상 모든 CUD 실패를 구조화 로그로 남긴다.
+  try {
+    insertTelemetry.run(
+      currentMissionId,
+      now,
+      pos ? pos.lat : null,
+      pos ? pos.lng : null,
+      roverState.fix_status,
+      roverState.nav_state,
+      typeof roverState.ntrip_connected === "boolean" ? (roverState.ntrip_connected ? 1 : 0) : null,
+      corrAgeMs,
+      ntrip && Number.isInteger(ntrip.fail_count) ? ntrip.fail_count : null,
+      roverState.gps && typeof roverState.gps.h_acc === "number" ? roverState.gps.h_acc : null,
+      roverState.gps && typeof roverState.gps.altitude === "number" ? roverState.gps.altitude : null,
+      roverState.gps && typeof roverState.gps.v_acc === "number" ? roverState.gps.v_acc : null,
+    );
+  } catch (e) {
+    logger.warn(null, "mission.telemetry_persist", { error: e.message || String(e), mission_id: currentMissionId }, "rover",
+      { email: "system", name: "system", role: "admin" });
+  }
 }
 const roverState = {
   last_seen: 0, // epoch ms of the last inbound signal (SSE connect / telemetry / position); drives the liveness watchdog
@@ -216,6 +263,11 @@ const roverState = {
   fix_status: null,
   fix_status_at: 0,
   nav_state: null,
+  // /stop 낙관적 E-Stop 래치. 텔레메트리의 blind nav_state 덮어쓰기가 못 건드리며, 로버가
+  // EMERGENCY_STOP→IDLE(운영자 물리 해제)을 보고할 때만 해제된다. execute 게이트가 이 플래그도
+  // OR로 확인해, stop 직전 in-flight 텔레메트리가 nav_state를 NAVIGATING으로 되돌려도 게이트가
+  // 열리지 않아 유령 미션을 못 만든다.
+  stop_requested: false,
   ntrip_connected: null,
   // Nav-light pattern: 0=off 1=steady 2=double-strobe 3=single-strobe 4=50% blink.
   // Operator-selected; persisted here and re-sent to the rover on (re)connect.
@@ -350,8 +402,20 @@ function broadcastRoverStatus() {
   const now = Date.now();
   roverState.updated_at = now;
   receiverState.updated_at = now;
+  // rover:status is high-frequency (GPS-rate). The mission waypoints array is static
+  // for the mission's lifetime, so re-broadcasting the whole array to every operator
+  // each tick is wasteful. Strip it from the broadcast — the full waypoints ride the
+  // GET /api/rover/status snapshot the client fetches on load/reconnect, which is the
+  // only consumer (restoreMissionProgress). mission_id / current_waypoint_idx / status
+  // stay, so the live reconcile and progress counter keep working.
+  let missionProgress = roverState.mission_progress;
+  if (missionProgress && Array.isArray(missionProgress.waypoints)) {
+    missionProgress = { ...missionProgress };
+    delete missionProgress.waypoints;
+  }
   broadcastEvent("rover:status", {
     ...roverState,
+    mission_progress: missionProgress,
     receiver: { ...receiverState },
     position_source: activePositionSource(),
     // The rover's configured correction source — lets the UI warn when it's the
@@ -409,6 +473,21 @@ const deviceLivenessWatchdog = setInterval(() => {
     }
     logger.warn(null, "receiver.stream.stale", { silent_ms: now - receiverState.last_seen }, "receiver");
     broadcastRoverStatus();
+  }
+  // Camera control is a one-way (server→perception) channel, so a dead peer is only
+  // detected on a failed write. If no camera events are flowing, a half-open socket
+  // would keep cameraControlClient set (camera_connected=true) indefinitely. Ping it
+  // each tick with an SSE comment — perception ignores ":"-prefixed lines (cloud_link)
+  // — so a broken socket eventually errors and the stale slot is torn down; the next
+  // /camera/status poll then reports camera_connected=false.
+  if (cameraControlClient) {
+    try {
+      cameraControlClient.write(": ping\n\n");
+    } catch {
+      try { cameraControlClient.end(); } catch {}
+      cameraControlClient = null;
+      logger.warn(null, "rover.camera.control_stale", null, "rover");
+    }
   }
 }, DEVICE_WATCHDOG_TICK_MS);
 if (deviceLivenessWatchdog.unref) deviceLivenessWatchdog.unref();
@@ -670,6 +749,10 @@ app.post("/api/rover/telemetry", (req, res) => {
   roverState.last_seen = now;
   const prevNav = roverState.nav_state;
   if (typeof nav_state === "string") roverState.nav_state = nav_state;
+  // E-Stop 낙관적 래치 해제: 로버가 EMERGENCY_STOP→IDLE(운영자 물리 해제)을 보고할 때만 내린다.
+  // stop 직전 in-flight 텔레메트리(NAVIGATING)는 IDLE이 아니라 래치를 못 풀어, execute 게이트가
+  // 명시적 해제 전까지 닫힘을 유지한다.
+  if (prevNav === "EMERGENCY_STOP" && nav_state === "IDLE") roverState.stop_requested = false;
   if (typeof fix_status === "string") {
     roverState.fix_status = fix_status;
     roverState.fix_status_at = now;
@@ -716,7 +799,7 @@ app.post("/api/rover/telemetry", (req, res) => {
   if (currentMissionId != null
       && roverState.mission_progress.status === "interrupted"
       && ACTIVE_NAV_STATES.has(nav_state)) {
-    setMissionStatus.run("running", Date.now(), currentMissionId);
+    updateMissionStatus("running");
     roverState.mission_progress.status = "running";
     logger.log(req, "mission.resumed", { mission_id: currentMissionId, nav_state }, "rover");
   }
@@ -732,7 +815,7 @@ app.post("/api/rover/telemetry", (req, res) => {
           || roverState.mission_progress.status === "interrupted")
       && nav_state === "PAUSED"
       && (now - roverLastResumeAt) > ROVER_PAUSE_RECONCILE_GRACE_MS) {
-    setMissionStatus.run("paused", now, currentMissionId);
+    updateMissionStatus("paused", now);
     roverState.mission_progress.status = "paused";
     // A rover reporting PAUSED that we didn't record as paused can only be an
     // obstacle auto-pause (an operator pause goes through /api/rover/pause, which
@@ -1185,6 +1268,11 @@ app.delete("/api/gps/survey-points/:id", (req, res) => {
     logger.warn(req, "gps.survey_point.delete", { error: result.error, id }, point.name);
     return res.status(result.status).send(result.error);
   }
+  // 측량 중이던 측량점을 지웠으면 base 상태를 즉시 idle로 되돌린다(수신기 survey-result를
+  // 기다리지 않고 UI 해제; 결과가 늦게 와도 survey-result 핸들러가 멱등 처리).
+  if (receiverState.base.state === "surveying" && receiverState.base.point_id === id) {
+    receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
+  }
   logger.log(req, "gps.survey_point.delete", { id }, point.name);
   broadcastRoverStatus();
   res.json({ ok: true });
@@ -1247,13 +1335,15 @@ app.post("/api/rover/base/survey-result", (req, res) => {
   const id = Number(point_id);
   if (!Number.isInteger(id)) return res.status(400).send("올바르지 않은 point_id입니다.");
   const point = getSurveyPointStmt.get(id);
-  if (!point) {
-    logger.warn(req, "gps.survey.result", { error: "point_not_found", id }, "gps");
-    return res.status(404).send("측량점을 찾을 수 없습니다.");
-  }
-  // Clear the surveying state for this point regardless of outcome.
+  // 측량 상태는 point 존재 여부와 무관하게 먼저 해제한다 — 측량 중 측량점이 삭제되면 아래
+  // 404 조기 반환 때문에 base가 'surveying'에 영구 고착되던 문제를 막는다.
   if (receiverState.base.state === "surveying" && receiverState.base.point_id === id) {
     receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
+  }
+  if (!point) {
+    logger.warn(req, "gps.survey.result", { error: "point_not_found", id }, "gps");
+    broadcastRoverStatus();
+    return res.status(404).send("측량점을 찾을 수 없습니다.");
   }
 
   // Failure (e.g. no RTK-fixed samples): leave the point's coordinate untouched
@@ -1369,14 +1459,9 @@ app.post("/api/rover/execute", (req, res) => {
   // 비상정지 래치가 걸린 상태에서는 새 경로 송신을 거부한다. 운영자가 먼저
   // "비상정지 해제"를 눌러 명시적으로 인지·해제한 뒤에만 다음 동작을 허용해
   // 이중 운영자 시나리오에서 우회 출발이 발생하지 않도록 한다.
-  if (roverState.nav_state === "EMERGENCY_STOP") {
+  if (roverState.nav_state === "EMERGENCY_STOP" || roverState.stop_requested) {
     logger.warn(req, "rover.execute", { error: "in_emergency_stop" }, "rover");
     return res.status(409).send("비상정지 상태입니다. 먼저 해제 후 실행하세요.");
-  }
-
-  if (!sendRoverEvent("execute-path", { waypoints: finalWaypoints })) {
-    logger.warn(req, "rover.execute", { error: "write_failed" }, "rover");
-    return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
 
   const actor = req.user ? `${req.user.name || ""} <${req.user.email || ""}>` : null;
@@ -1391,7 +1476,21 @@ app.post("/api/rover/execute", (req, res) => {
     }
     catch (err) { logger.warn(req, "course.snapshot.auto", { error: String(err) }, `course#${courseId}`); }
   }
-  startMission(finalWaypoints, actor, courseId);
+
+  // 로버에 경로를 보내기 전에 미션을 먼저 기록한다. 순서를 뒤집으면 기록 실패 시 로버는 이미
+  // 주행 중인데 서버엔 미션이 없어 telemetry/progress가 유실되고, 500 메시지도 실제 상황(실행 중)과
+  // 어긋난다(온보드 권위 모델). 존재하지 않는 course_id는 null로 강등(FK 위반 방지). 실패 시 500.
+  if (!startMission(finalWaypoints, actor, course ? courseId : null)) {
+    return res.status(500).send("미션 시작 기록에 실패했습니다.");
+  }
+  // 이제 로버에 전송. 전송 실패 시 방금 기록한 미션을 롤백해, 로버 없이 주행 중이라 오인될 유령
+  // 'running' 레코드를 남기지 않는다.
+  if (!sendRoverEvent("execute-path", { waypoints: finalWaypoints })) {
+    const failedMissionId = currentMissionId;
+    endMission("error");
+    logger.warn(req, "rover.execute", { error: "write_failed", mission_id: failedMissionId }, "rover");
+    return res.status(503).send("로버 연결이 끊어졌습니다.");
+  }
 
   logger.log(req, "rover.execute", {
     waypoint_count: finalWaypoints.length,
@@ -1410,6 +1509,13 @@ app.post("/api/rover/stop", (req, res) => {
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
 
+  // execute 게이트(nav_state==="EMERGENCY_STOP")가 텔레메트리 확인(최대 ~3초)을 기다리지 않고
+  // 즉시 막도록 낙관적으로 선반영한다 — 그 사이 execute가 게이트를 통과해 유령 미션을 만드는
+  // 레이스를 없앤다. E-Stop은 clear 전까지 래치되므로 보수적 선반영이 안전하고, 실제 상태는
+  // 다음 텔레메트리가 보정한다.
+  roverState.stop_requested = true;
+  roverState.nav_state = "EMERGENCY_STOP";
+  broadcastRoverStatus();
   logger.log(req, "rover.stop", null, "rover");
   res.json({ stopped: true });
 });
@@ -1429,7 +1535,7 @@ app.post("/api/rover/pause", (req, res) => {
     logger.warn(req, "rover.pause", { error: "write_failed" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
-  setMissionStatus.run("paused", Date.now(), currentMissionId);
+  updateMissionStatus("paused");
   roverState.mission_progress.status = "paused";
   broadcastRoverStatus();
   logger.log(req, "rover.pause", { mission_id: currentMissionId }, "rover");
@@ -1448,7 +1554,7 @@ app.post("/api/rover/resume", (req, res) => {
     logger.warn(req, "rover.resume", { error: "write_failed" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
-  setMissionStatus.run("running", Date.now(), currentMissionId);
+  updateMissionStatus("running");
   roverState.mission_progress.status = "running";
   // Clear any obstacle hold and open the reconcile grace window so a stale
   // PAUSED telemetry frame in flight can't immediately re-pause the mission.
@@ -1493,7 +1599,7 @@ app.post("/api/rover/obstacle", (req, res) => {
   if (currentMissionId != null
       && (roverState.mission_progress.status === "running"
           || roverState.mission_progress.status === "interrupted")) {
-    setMissionStatus.run("paused", at, currentMissionId);
+    updateMissionStatus("paused", at);
     roverState.mission_progress.status = "paused";
     reflected = true;
   }
