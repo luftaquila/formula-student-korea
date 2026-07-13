@@ -303,6 +303,17 @@ describe('createApp auth middleware', () => {
     assert.ok(setCookie.includes('Max-Age=0'), 'should clear cookie with Max-Age=0');
   });
 
+  // Transient auth outage (5xx/network) must deny the request (fail-close) but
+  // preserve the session cookie so recovery doesn't force everyone to re-OAuth.
+  it('validateUser transient failure returns 401 but does NOT clear the session cookie', async () => {
+    validateUserResult = { valid: false, role: null, transient: true };
+    const cookie = makeAuthCookie({ email: 'user@test.com', name: 'User', role: 'student' });
+    const res = await client.get('/api/student', { cookie });
+    assert.equal(res.status, 401);
+    const setCookie = res.headers.get('set-cookie');
+    assert.ok(!setCookie || !setCookie.includes('Max-Age=0'), 'transient failure must not clear cookies');
+  });
+
   // Auth: validateUser returning changed role
   it('validateUser returning changed role updates cookie', async () => {
     validateUserResult = { valid: true, role: 'chief' };
@@ -330,6 +341,37 @@ describe('createApp auth middleware', () => {
     const setCookie = res.headers.get('set-cookie');
     assert.ok(setCookie, 'should have Set-Cookie for sliding session');
     assert.ok(setCookie.includes('fsk_session='), 'should include refreshed session token');
+  });
+
+  // ─── Path canonicalization: gate must not be slipped by case / trailing slash ──
+  // Express routing is case-insensitive and trailing-slash-insensitive, so
+  // `/API/admin` and `/api/admin/` reach the `/api/admin` handler. The gate
+  // compares req.path, so without canonicalization those variants fall through
+  // to the weaker default role (here 'student') and bypass the admin gate.
+  it('uppercase path prefix cannot bypass the admin gate', async () => {
+    validateUserResult = { valid: true, role: null };
+    const cookie = makeAuthCookie({ email: 'u@test.com', name: 'U', role: 'student' });
+    const res = await client.get('/API/admin', { cookie });
+    assert.equal(res.status, 403);
+  });
+
+  it('mixed-case path prefix cannot bypass the admin gate', async () => {
+    validateUserResult = { valid: true, role: null };
+    const cookie = makeAuthCookie({ email: 'u@test.com', name: 'U', role: 'student' });
+    const res = await client.get('/Api/Admin', { cookie });
+    assert.equal(res.status, 403);
+  });
+
+  it('trailing slash cannot bypass the admin gate', async () => {
+    validateUserResult = { valid: true, role: null };
+    const cookie = makeAuthCookie({ email: 'u@test.com', name: 'U', role: 'student' });
+    const res = await client.get('/api/admin/', { cookie });
+    assert.equal(res.status, 403);
+  });
+
+  it('uppercase public path still resolves as public (canonicalization must not over-gate)', async () => {
+    const res = await client.get('/PUBLIC');
+    assert.equal(res.status, 200);
   });
 });
 

@@ -9,6 +9,7 @@
 // 복붙해 두고 있었다 — self-renumber 데이터 손실 가드/검증/로깅 계약을 양쪽에서
 // 따로 고쳐야 했으므로 한 곳으로 모은다.
 import { assertIdentifier } from "./db-setup.mjs";
+import { validateYear } from "./validation.mjs";
 
 // 목적지(newNum) 행을 먼저 지운 뒤 prevNum→newNum으로 갱신한다. prevNum 행이 없으면
 // no-op이라 outbox 재전달에도 멱등하다(목적지 행을 건드리지 않음).
@@ -25,15 +26,18 @@ export function registerTeamLifecycleRoutes(app, { db, dbRun, logger, requireInt
     if (!requireInternalRequest(req, res)) return;
 
     const num = Number(req.params.num);
-    const year = Number(req.query.year);
     if (!Number.isInteger(num) || num < 1) {
       logger.warn(req, "team.cascade_delete", { error: "invalid team num", num: req.params.num });
       return res.status(400).send("올바르지 않은 팀 번호입니다.");
     }
-    if (!Number.isInteger(year)) {
-      logger.warn(req, "team.cascade_delete", { error: "invalid year", year: req.query.year }, `#${num}`);
-      return res.status(400).send("연도를 지정해야 합니다.");
+    // 연도는 소비자 측 테이블 파티션 키다. 범위(2000-2099)를 벗어난 값이 오면 잘못된
+    // 파티션을 삭제할 수 있으니 producer와 동일한 validateYear로 막는다(드리프트 제거).
+    const yearCheck = validateYear(req.query.year);
+    if (!yearCheck.valid) {
+      logger.warn(req, "team.cascade_delete", { error: yearCheck.error, year: req.query.year }, `#${num}`);
+      return res.status(400).send(yearCheck.error);
     }
+    const year = yearCheck.value;
 
     const result = dbRun(() => {
       db.transaction(() => {
@@ -59,11 +63,12 @@ export function registerTeamLifecycleRoutes(app, { db, dbRun, logger, requireInt
 
     const prevNum = Number(req.body.prevNum);
     const newNum = Number(req.body.newNum);
-    const year = Number(req.body.year);
-    if (!Number.isInteger(prevNum) || prevNum < 1 || !Number.isInteger(newNum) || newNum < 1 || !Number.isInteger(year)) {
+    const yearCheck = validateYear(req.body.year);
+    if (!Number.isInteger(prevNum) || prevNum < 1 || !Number.isInteger(newNum) || newNum < 1 || !yearCheck.valid) {
       logger.warn(req, "team_num.update", { error: "invalid request", prevNum: req.body.prevNum, newNum: req.body.newNum, year: req.body.year });
       return res.status(400).send("올바르지 않은 요청입니다.");
     }
+    const year = yearCheck.value;
     // self-renumber는 helper가 목적지(=자기 번호) 행을 먼저 지운 뒤 갱신하므로 데이터 손실. 조기 반환.
     if (prevNum === newNum) return res.status(200).send();
 
