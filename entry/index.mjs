@@ -14,21 +14,25 @@ const db = createDatabase(Database, options.dbPath || "./data/entry.db");
 
 // 연도별 차량 유형 테이블 헬퍼
 function getVtTableName(year) {
-  const y = Number(year) || new Date().getFullYear();
-  if (!/^\d{4}$/.test(String(y)) || y < 2000 || y > 2099) {
+  // 잘못된 연도를 현재 연도로 대체하지 않는다(entry_ 테이블과 동일한 footgun 방지).
+  const y = Number(year);
+  if (!Number.isInteger(y) || y < 2000 || y > 2099) {
     throw new Error("올바르지 않은 연도입니다.");
   }
   return `vehicle_types_${y}`;
 }
 
+const _ensuredVtTables = new Set();
 function ensureVtTable(year) {
   const tableName = getVtTableName(year);
+  if (_ensuredVtTables.has(tableName)) return tableName;
   db.exec(`CREATE TABLE IF NOT EXISTS '${tableName}' (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     sort_order INTEGER NOT NULL DEFAULT 0,
     color TEXT NOT NULL DEFAULT 'blue'
   )`);
+  _ensuredVtTables.add(tableName);
   return tableName;
 }
 
@@ -63,20 +67,28 @@ if (legacy) {
 
 // 연도별 테이블 헬퍼
 function getTableName(year) {
-  const y = Number(year) || new Date().getFullYear();
-  if (!/^\d{4}$/.test(String(y)) || y < 2000 || y > 2099) {
+  // 잘못된 연도를 조용히 현재 연도로 대체하지 않는다 — DELETE /api/entries?year=<garbage>가
+  // 실수로 올해 엔트리 전체를 지우는 footgun을 막는다. 연도 미지정(absent)은 호출부
+  // (withYearTable)가 현재 연도로 기본 처리하고, 여기 도달하는 값은 반드시 유효해야 한다.
+  const y = Number(year);
+  if (!Number.isInteger(y) || y < 2000 || y > 2099) {
     throw new Error("올바르지 않은 연도입니다.");
   }
   return `entry_${y}`;
 }
 
+// 이미 보장한 연도 테이블을 프로세스 내에 캐시 — 공개 GET(상태 페이지·키오스크가 상시
+// 폴링)마다 CREATE TABLE/INDEX DDL을 재실행해 스키마 잠금·파싱 비용을 물지 않게 한다.
+const _ensuredYearTables = new Set();
 function ensureYearTable(year) {
   const tableName = getTableName(year);
-  const y = Number(year) || new Date().getFullYear();
+  if (_ensuredYearTables.has(tableName)) return tableName;
+  const y = Number(year);
   db.exec(`CREATE TABLE IF NOT EXISTS '${tableName}' (
     num INTEGER PRIMARY KEY, univ TEXT NOT NULL, team TEXT NOT NULL, type TEXT DEFAULT NULL
   )`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${y}_type ON '${tableName}'(type)`);
+  _ensuredYearTables.add(tableName);
   return tableName;
 }
 
@@ -421,24 +433,32 @@ async function processLifecycleOutboxBatch({ ids = null, limit = 50 } = {}) {
         LIMIT ?
       `).all(...blocked, now, now, limit - deliveredRows);
       if (rows.length === 0) break;
-      for (const row of rows) {
-        const delivered = await deliverLifecycleRow(row);
+      // 이 배치의 rows는 서비스별 oldest 1건씩(oldest CTE)이라 서비스 간 병렬 전달이 서비스 내
+      // 순서를 깨지 않는다. downstream 다수가 느릴 때 응답 지연을 (서비스 수)×timeout이 아니라
+      // max(timeout)으로 줄인다. 실패한 서비스는 blockedServices로 head-of-line을 유지.
+      const results = await Promise.all(rows.map((row) => deliverLifecycleRow(row).then((ok) => ({ svc: row.service, ok }))));
+      for (const { svc, ok } of results) {
         deliveredRows += 1;
-        if (!delivered) blockedServices.add(row.service);
+        if (!ok) blockedServices.add(svc);
       }
     }
     return;
   }
-  const blockedServices = new Set();
+  // 서비스별로 그룹화해 서비스 간에는 병렬로, 서비스 내에서는 id 오름차순 순서대로 전달한다.
+  // 한 서비스의 이벤트가 실패/락되면 그 서비스의 나머지는 순서 보존을 위해 중단한다(head-of-line).
+  // rows는 이미 id 오름차순 정렬돼 있어 그룹 내 순서가 보존된다.
+  const byService = new Map();
   for (const row of rows) {
-    if (blockedServices.has(row.service)) continue;
-    if (row.status === "processing" && row.locked_until > now && row.locked_by !== LIFECYCLE_WORKER_ID) {
-      blockedServices.add(row.service);
-      continue;
-    }
-    const delivered = await deliverLifecycleRow(row, { ignoreDelay: true });
-    if (!delivered) blockedServices.add(row.service);
+    if (!byService.has(row.service)) byService.set(row.service, []);
+    byService.get(row.service).push(row);
   }
+  await Promise.all([...byService.values()].map(async (svcRows) => {
+    for (const row of svcRows) {
+      if (row.status === "processing" && row.locked_until > now && row.locked_by !== LIFECYCLE_WORKER_ID) return;
+      const delivered = await deliverLifecycleRow(row, { ignoreDelay: true });
+      if (!delivered) return;
+    }
+  }));
 }
 
 function processLifecycleOutbox(options = {}) {
@@ -516,6 +536,28 @@ app.get("/api/admin/lifecycle-outbox", (req, res) => {
 app.post("/api/admin/lifecycle-outbox/:id/retry", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).send("올바르지 않은 ID입니다.");
+
+  // dead team.delete가 오래 방치된 사이 그 번호가 새 팀에게 재사용됐다면(assertNoPendingLifecycleRefs는
+  // dead를 보지 않으므로 재사용이 허용됨), 재시도 시 삭제가 새 팀의 downstream을 파괴한다.
+  // 대상 번호가 현재 entry 테이블에 존재하면(=재사용) 재시도를 거부한다 — 정상 삭제라면 그 번호는
+  // 이미 entry에서 제거돼 있어야 한다. 운영자는 재시도 대신 이 이벤트를 폐기하면 된다.
+  const row = db.prepare("SELECT event_type, path FROM lifecycle_outbox WHERE id = ?").get(id);
+  if (!row) return res.status(404).send("이벤트를 찾을 수 없습니다.");
+  if (row.event_type === "team.delete") {
+    const m = /\/api\/internal\/team\/(\d+)\?year=(\d+)/.exec(row.path || "");
+    if (m) {
+      const dnum = Number(m[1]);
+      const dyear = Number(m[2]);
+      let reused = false;
+      try { reused = !!db.prepare(`SELECT 1 FROM '${getTableName(dyear)}' WHERE num = ?`).get(dnum); }
+      catch { reused = false; }
+      if (reused) {
+        logger.warn(req, "entry.lifecycle_retry", { error: "num_reused", id, num: dnum, year: dyear });
+        return res.status(409).send(`#${dnum}번을 현재 다른 팀이 사용 중입니다. 이 삭제 이벤트를 재시도하면 그 팀의 데이터가 삭제됩니다. 재시도 대신 폐기하세요.`);
+      }
+    }
+  }
+
   const result = dbRun(() => db.prepare(`
     UPDATE lifecycle_outbox
     SET status = 'pending', attempts = 0, next_attempt_at = 0, last_error = '',
@@ -872,6 +914,17 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
     return db.transaction(() => {
       let events = [];
       if (numChanged) {
+        // 번호 변경과 팀 정체성(학교/팀명) 변경이 한 요청에 함께 오면 순수 renumber로 처리돼
+        // prevNum의 downstream(검차·대기열 등)이 newNum의 다른 팀에게 조용히 승계된다. same-num
+        // 경로와 동일하게, 정체성이 바뀌면 명시적 intent="retain"(명칭 정정 후 이동)일 때만
+        // 허용하고, 아니면 409로 거부한다(팀 교체는 삭제 후 재등록으로 처리).
+        const existingPrev = db.prepare(`SELECT univ, team FROM '${tableName}' WHERE num = ?`).get(prevNum);
+        if (!existingPrev) {
+          throw { status: 404, message: "존재하지 않는 엔트리 번호입니다." };
+        }
+        if (entryIdentity(existingPrev) !== entryIdentity(dataValidation) && intent !== "retain") {
+          throw { status: 409, message: "번호와 팀 정보를 동시에 변경할 수 없습니다. 팀 정보를 유지한 채 번호만 옮기거나, 팀 교체는 삭제 후 재등록하세요." };
+        }
         assertNoPendingLifecycleRefs([prevNum, newNum], year);
         const numResult = db.prepare(`UPDATE '${tableName}' SET num = ? WHERE num = ?`).run(newNum, prevNum);
         if (!numResult.changes) {
