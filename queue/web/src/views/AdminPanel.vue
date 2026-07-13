@@ -55,7 +55,9 @@ const currentBooths = computed(() => {
 
 // Watch for queue updates from SSE
 watch(lastQueueUpdate, async (update) => {
-  if (update && (update.type === currentTab.value || !currentTab.value)) {
+  // type == null은 전 탭에 영향을 주는 변경(팀 삭제·번호변경 등)이다. 특정 탭을 보는 중이면
+  // update.type(null)이 currentTab과 안 맞아 갱신을 놓쳤다 — null이면 항상 현재 탭을 새로고침.
+  if (update && (update.type == null || update.type === currentTab.value || !currentTab.value)) {
     await refreshQueue(currentTab.value || update.type);
   }
 });

@@ -50,7 +50,8 @@ const rateLimitTimer = setInterval(() => {
 rateLimitTimer.unref();
 
 function rateLimit(req, res, next) {
-  const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
+  // Caddy가 세팅한 신뢰 X-Real-IP 우선(위조 불가), 없으면 X-Forwarded-For 최좌측 → req.ip 폴백.
+  const ip = req.headers["x-real-ip"]?.trim() || req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
   const now = Date.now();
   const entry = rateLimitMap.get(ip) || { count: 0, resetAt: now + 60000 };
   if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + 60000; }
@@ -467,7 +468,10 @@ app.get("/api/events", sseHandler(() => {
     (allBooths[row.inspection] ||= []).push(row);
   }
   return { activeInspections, allBooths };
-}));
+// 공개 SSE라 비인증 단일 IP가 전역 상한(200)을 독점해 전광판·키오스크 갱신을 막는 DoS를
+// 완화하기 위한 per-IP 동시연결 상한. 대회장은 하나의 NAT 공인 IP를 공유할 수 있어(전광판+
+// 키오스크+스태프) 넉넉히 20으로 둔다 — 단일 IP가 전역의 10%까지만 점유. 필요 시 상향 튜닝.
+}, { maxPerIp: 20 }));
 
 // SSE 브로드캐스트 헬퍼 — 대기열/부스/활성검차 변경을 일관된 페이로드로 전파한다.
 function broadcastQueue(type) {
@@ -499,8 +503,9 @@ function validateInspection(type) {
 
 function validatePriority(priority) {
   const parsed = Number(priority);
-  if (priority === "" || priority === undefined || Number.isNaN(parsed) || parsed < 0 || !Number.isInteger(parsed)) {
-    return { valid: false, error: "우선순위는 0 이상의 정수여야 합니다." };
+  // 상한(999999)을 둬 비정상적으로 큰 정수가 정렬 키로 들어오는 것을 막는다(기본값 999).
+  if (priority === "" || priority === undefined || Number.isNaN(parsed) || parsed < 0 || parsed > 999999 || !Number.isInteger(parsed)) {
+    return { valid: false, error: "우선순위는 0 이상 999999 이하의 정수여야 합니다." };
   }
   return { valid: true, value: parsed };
 }
