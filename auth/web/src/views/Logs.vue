@@ -191,7 +191,9 @@ const levelDropdownOpen = ref(false);
 const serviceDropdownRef = ref(null);
 const levelDropdownRef = ref(null);
 
-const serviceList = ["auth", "entry", "queue", "inspection", "traffic", "score", "documents", "course"];
+// compose.yml의 LOG_SERVICES(entry,queue,inspection,traffic,score,documents,calendar,course,email)
+// + auth 자신. calendar·email이 빠져 있어 개별 필터가 불가능했다.
+const serviceList = ["auth", "entry", "queue", "inspection", "traffic", "score", "documents", "calendar", "course", "email"];
 const levelList = ["info", "warn", "error"];
 
 const filters = reactive({

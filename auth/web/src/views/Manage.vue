@@ -295,10 +295,18 @@ async function bulkDelete() {
   }
 }
 
+// CSV 셀: 수식 인젝션 방지 — =,+,-,@,tab,CR로 시작하는 값(신청자 제출 realname/affiliation 등)은
+// 앞에 텍스트 마커(')를 붙여 Excel/Sheets가 수식으로 실행하지 않게 한다.
+function csvCell(v) {
+  let s = String(v ?? "");
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
 // CSV export
 function exportCSV() {
   const header = "email,name,role,realname,phone,affiliation";
-  const rows = users.value.map((u) => [u.email, u.name || "", u.role, u.realname || "", u.phone || "", u.affiliation || ""].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
+  const rows = users.value.map((u) => [u.email, u.name || "", u.role, u.realname || "", u.phone || "", u.affiliation || ""].map(csvCell).join(","));
   const csv = "\uFEFF" + [header, ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);

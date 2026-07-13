@@ -264,7 +264,8 @@ setInterval(() => {
 }, 60000);
 
 function checkLoginRate(req, res) {
-  const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
+  // Caddy가 세팅한 신뢰 X-Real-IP 우선(위조 불가), 없으면 X-Forwarded-For 최좌측 → req.ip 폴백.
+  const ip = req.headers["x-real-ip"]?.trim() || req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
   const now = Date.now();
   const entry = loginLimiter.get(ip) || { count: 0, resetAt: now + 60000 };
   if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + 60000; }
@@ -293,8 +294,14 @@ function getRedirectUri(req) {
    ============================================ */
 function sanitizeRedirect(url) {
   if (!url || typeof url !== "string") return "/";
-  if (url.startsWith("/") && !url.startsWith("//")) return url;
-  return "/";
+  // same-origin 절대 경로만 허용한다. 브라우저는 Location 헤더의 백슬래시를 슬래시로
+  // 정규화하므로 "/\\evil.com"은 protocol-relative URL이 되어 외부 오픈 리다이렉트가
+  // 된다. 선두가 "/" 다음에 "/" 또는 "\\"가 오는 경우와, 개행·탭 등 제어문자(헤더 조작·
+  // 정규화 트릭)를 모두 거부한다.
+  if (url[0] !== "/") return "/";
+  if (url[1] === "/" || url[1] === "\\") return "/";
+  if (/[\u0000-\u001f]/.test(url)) return "/";
+  return url;
 }
 
 function isApplyRedirect(url) {
@@ -406,6 +413,15 @@ app.get("/api/callback", async (req, res) => {
     const userInfo = await userInfoRes.json();
     const email = userInfo.email;
     const name = userInfo.name || email;
+
+    // Google가 이메일 소유를 검증하지 못한 계정은 거부한다(이메일이 계정 primary key이므로
+    // 미검증 이메일 클레임 방어). verified_email이 명시적 false일 때만 차단해, 필드가 없는
+    // 정상 계정의 로그인은 막지 않는다.
+    if (userInfo.verified_email === false) {
+      logger.warn(req, "auth.email_unverified", {}, email, { email, name });
+      res.setHeader("Set-Cookie", clearNonceCookie);
+      return res.redirect("/?login_error=unverified");
+    }
 
     // Check if user is registered and active
     let user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
@@ -738,6 +754,9 @@ app.post("/api/users/bulk", (req, res) => {
     for (const row of rows) {
       const email = (row.email || "").trim().toLowerCase();
       if (!email) { errors.push({ row, reason: "이메일 없음" }); continue; }
+      // 단건 추가(POST /api/users)와 동일한 형식 검증 — 벌크만 우회해 잘못된 주소가
+      // 저장되면 이후 이메일 발송·로그인 매칭이 조용히 실패한다.
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { errors.push({ row, reason: "올바르지 않은 이메일 형식" }); continue; }
 
       const role = VALID_ROLES.includes(row.role) ? row.role : "student";
       if (!VALID_ROLES.includes(row.role)) {
@@ -783,6 +802,17 @@ app.patch("/api/users/bulk", (req, res) => {
     }
   }
 
+  // 마지막 활성 관리자 잠금 방지: 비활성화 대상이 현재 활성 admin 전부를 포함하면 거부.
+  // (삭제·강등엔 이미 가드가 있으나 비활성화 경로엔 없었다. active=0 admin은 로그인·검증이
+  // 불가하므로 활성 admin 기준으로 센다.)
+  if (!active) {
+    const activeAdminIds = db.prepare("SELECT id FROM users WHERE role = 'admin' AND active = 1").all().map(r => r.id);
+    if (activeAdminIds.length > 0 && activeAdminIds.every(aid => numIds.includes(aid))) {
+      logger.warn(req, "user.bulk_toggle", { reason: "last_admin_deactivate" });
+      return res.status(400).send("마지막 활성 관리자는 비활성화할 수 없습니다.");
+    }
+  }
+
   const placeholders = numIds.map(() => "?").join(",");
   const emails = db.prepare(`SELECT email FROM users WHERE id IN (${placeholders})`).all(...numIds).map(r => r.email);
   const stmt = db.prepare(`UPDATE users SET active = ? WHERE id IN (${placeholders})`);
@@ -820,10 +850,10 @@ app.delete("/api/users/bulk", (req, res) => {
 
   let denyReason = null;
   const txResult = dbRun(() => db.transaction(() => {
-    // 마지막 관리자 삭제 방지
-    const totalAdmins = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
-    const adminsToDelete = db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND id IN (${placeholders})`).get(...numIds).cnt;
-    if (totalAdmins - adminsToDelete < 1) {
+    // 마지막 활성 관리자 삭제 방지: 삭제 대상을 제외한 활성 admin이 0이 되면 거부한다
+    // (비활성 admin까지 세면 활성 0 잠금을 못 막는다 — 단건 삭제·강등·비활성화와 동일 기준).
+    const remainingActiveAdmins = db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND active = 1 AND id NOT IN (${placeholders})`).get(...numIds).cnt;
+    if (remainingActiveAdmins < 1) {
       denyReason = "last_admin";
       throw { status: 400, message: "마지막 관리자는 삭제할 수 없습니다." };
     }
@@ -869,10 +899,20 @@ app.patch("/api/users/:id", (req, res) => {
   const result = dbRun(() => {
     db.transaction(() => {
       if (role !== undefined && user.role === "admin" && role !== "admin") {
-        const adminCount = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
-        if (adminCount <= 1) {
+        // 대상을 제외한 활성 admin이 0이 되면 거부(삭제·비활성화와 동일 기준).
+        const remainingActiveAdmins = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND active = 1 AND id != ?").get(id).cnt;
+        if (remainingActiveAdmins < 1) {
           denyReason = "last_admin_demote";
           throw { status: 400, message: "마지막 관리자는 강등할 수 없습니다." };
+        }
+      }
+      // 마지막 활성 관리자 비활성화 잠금 방지(삭제·강등과 동일 정책). active=0 admin은
+      // 로그인·검증이 불가하므로 활성 admin 기준으로 센다.
+      if (active !== undefined && !active && user.role === "admin") {
+        const activeAdmins = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND active = 1").get().cnt;
+        if (activeAdmins <= 1) {
+          denyReason = "last_admin_deactivate";
+          throw { status: 400, message: "마지막 활성 관리자는 비활성화할 수 없습니다." };
         }
       }
       if (role !== undefined) db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id);
@@ -912,10 +952,11 @@ app.delete("/api/users/:id", (req, res) => {
     return res.status(400).send("기본 관리자는 삭제할 수 없습니다.");
   }
 
-  // 마지막 admin 삭제 방지
+  // 마지막 활성 admin 삭제 방지. 활성 admin만 로그인·검증 가능하므로, 대상을 제외한 활성
+  // admin이 0이 되면 거부한다(비활성 admin까지 세면 활성 0 잠금을 못 막는다 — deactivate와 동일 기준).
   if (user.role === "admin") {
-    const adminCount = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
-    if (adminCount <= 1) {
+    const remainingActiveAdmins = db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND active = 1 AND id != ?").get(id).cnt;
+    if (remainingActiveAdmins < 1) {
       logger.warn(req, "user.delete", { reason: "last_admin" }, user.email);
       return res.status(400).send("마지막 관리자는 삭제할 수 없습니다.");
     }
