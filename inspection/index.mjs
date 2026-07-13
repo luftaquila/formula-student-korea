@@ -187,10 +187,17 @@ app.get("/api/sheet/template", (req, res) => {
   res.json(result.result);
 });
 
+// sheet_template CHECK 제약과 동기화된 허용값 — 라우트에서 미리 걸러 CHECK 위반 500 대신
+// 사람이 읽을 수 있는 400을 반환한다(DDL 변경 시 이 목록도 함께 갱신).
+const TEMPLATE_LEVELS = ["category", "subcategory", "group", "item"];
+const TEMPLATE_ANSWER_TYPES = ["passfail", "number", "text", "checktable"];
+
 // POST /api/sheet/template - 노드 생성
 app.post("/api/sheet/template", (req, res) => {
   const { year, level, parent_id, name, sort_order, answer_type, remarks, unit, pdf_include } = req.body;
   if (!year || !level || !name) return res.status(400).send("필수 필드가 누락되었습니다.");
+  if (!TEMPLATE_LEVELS.includes(level)) return res.status(400).send("올바르지 않은 level 값입니다.");
+  if (answer_type && !TEMPLATE_ANSWER_TYPES.includes(answer_type)) return res.status(400).send("올바르지 않은 answer_type 값입니다.");
 
   const result = dbRun(() =>
     db.prepare(
@@ -211,6 +218,7 @@ app.put("/api/sheet/template/:id", (req, res) => {
   const id = Number(req.params.id);
   // 수정 가능 필드는 아래 구조 분해로 고정된다 — body의 다른 키는 도달 불가
   const { name, sort_order, answer_type, remarks, unit, pdf_include } = req.body;
+  if (answer_type && !TEMPLATE_ANSWER_TYPES.includes(answer_type)) return res.status(400).send("올바르지 않은 answer_type 값입니다.");
 
   const fields = [];
   const params = [];
@@ -275,7 +283,6 @@ app.post("/api/sheet/template/reorder", (req, res) => {
       return res.status(400).send("각 항목에 유효한 id와 sort_order가 필요합니다.");
     }
   }
-
   const result = dbRun(() => {
     const stmt = db.prepare("UPDATE sheet_template SET sort_order = ? WHERE id = ?");
     db.transaction(() => {
