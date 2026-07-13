@@ -64,22 +64,20 @@ def generate_launch_description():
         output='screen',
     )
 
-    # A core-node death must tear the whole launch down so the container
-    # exits and pilot.service's Restart=on-failure recreates the stack.
-    # Without this, e.g. gps_node re-raising after its _open_serial retries
-    # are exhausted just leaves that one process dead while the other nodes
-    # keep the container 'running' — the systemd Restart never fires and the
-    # rover sits with no GPS (or no MCU link) indefinitely. gps and mcu_bridge
-    # are the two nodes whose hardware link is load-bearing; if either dies the
-    # mission cannot run, so shut down and let the restart bring everything up
-    # clean. (spray/navigator/bridge are intentionally NOT gated — they can be
-    # restarted in place by ros2 without a full container bounce.)
-    gps_exit_shutdown = RegisterEventHandler(
-        OnProcessExit(
-            target_action=gps_node,
-            on_exit=[Shutdown(reason='gps_node exited')],
-        )
-    )
+    # The MCU link is load-bearing for ANY operation: without the RP2040 there
+    # is no motor PWM, steering, E-Stop or watchdog, so manual teleop can't run
+    # either. If mcu_bridge_node dies, tear the whole launch down so the
+    # container exits and pilot.service's Restart=on-failure recreates the stack
+    # clean. (spray/navigator/bridge are NOT gated — ros2 can restart them in
+    # place without a full container bounce.)
+    #
+    # gps_node is deliberately NOT gated: a missing or lost GPS (or camera) must
+    # never tear down the stack, because manual control needs neither. gps_node
+    # starts non-fatally when no receiver is present and its _read_serial timer
+    # keeps retrying the reopen (indefinite, backed-off recovery), so it
+    # self-heals when the F9P is plugged in — all while manual control stays
+    # live. Autonomous missions remain safe: navigator won't drive without a
+    # gps fix meeting required_fix_status (rtk_fixed) within gps_timeout.
     mcu_bridge_exit_shutdown = RegisterEventHandler(
         OnProcessExit(
             target_action=mcu_bridge_node,
@@ -95,6 +93,5 @@ def generate_launch_description():
         spray_node,
         navigator_node,
         bridge_node,
-        gps_exit_shutdown,
         mcu_bridge_exit_shutdown,
     ])
