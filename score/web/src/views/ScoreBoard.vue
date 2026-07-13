@@ -117,8 +117,10 @@ const entryList = computed(() => {
       const bRec = evt?.records[b.num];
       const aAdj = getAdjustedResult(eventType, aRec);
       const bAdj = getAdjustedResult(eventType, bRec);
-      aVal = aAdj == null ? Infinity : aAdj === -1 ? Infinity - 1 : Number(aAdj);
-      bVal = bAdj == null ? Infinity : bAdj === -1 ? Infinity - 1 : Number(bAdj);
+      // DNF(-1)는 완주 기록 뒤·미기록(null) 앞으로 정렬돼야 한다. Infinity-1은 IEEE754에서
+      // 그대로 Infinity라 DNF와 null이 동률이 됐다 — 유한 sentinel로 순서를 되살린다.
+      aVal = aAdj == null ? Infinity : aAdj === -1 ? Number.MAX_SAFE_INTEGER : Number(aAdj);
+      bVal = bAdj == null ? Infinity : bAdj === -1 ? Number.MAX_SAFE_INTEGER : Number(bAdj);
     } else {
       aVal = 0;
       bVal = 0;

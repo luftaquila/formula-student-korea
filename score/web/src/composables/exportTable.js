@@ -17,8 +17,15 @@ function downloadBlob(blob, filename) {
 // { sheetName, fileBase, headers:[], rows:[[]], format:"csv"|"xlsx" }
 export async function exportTable({ sheetName, fileBase, headers, rows, format }) {
   if (format === "csv") {
+    // 수식 인젝션 방지 — =,+,-,@,tab,CR로 시작하는 셀은 텍스트 마커(')를 접두.
+    // (XLSX 경로는 exceljs가 문자열로 저장해 수식 실행이 없으므로 별도 처리 불필요.)
+    const csvCell = (cell) => {
+      let s = String(cell ?? "");
+      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+      return `"${s.replace(/"/g, '""')}"`;
+    };
     const csv = [headers, ...rows]
-      .map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(","))
+      .map((row) => row.map(csvCell).join(","))
       .join("\n");
     downloadBlob(new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" }), `${fileBase}.csv`);
     return;

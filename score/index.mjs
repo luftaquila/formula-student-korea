@@ -240,7 +240,13 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix, allowedEvents =
       });
     });
 
-    req.setTimeout(60000, () => { req.destroy(); });
+    req.setTimeout(60000, () => {
+      // 유휴 타임아웃(keepalive 두절/half-open 소켓)에서 인자 없는 destroy()는 'error'를
+      // emit하지 않고, 스트리밍 중이던 res도 'end' 대신 'aborted'/'close'로 끝나므로 여기서
+      // 재연결을 직접 예약해야 한다. scheduleReconnect의 reconnecting 가드가 중복을 막는다.
+      req.destroy();
+      scheduleReconnect();
+    });
     req.on("error", () => {
       scheduleReconnect();
     });
@@ -266,7 +272,9 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix, allowedEvents =
 if (!options.skipSSESubscriptions) {
   // score 프론트(useSSE.js)가 실제 구독하는 이벤트만 재전파.
   const subscribeInspectionSSE = createSSESubscriber("Inspection", INSPECTION_SERVER, "/api/sheet/events", "inspection", new Set(["category-result", "answer"]));
-  const subscribeTrafficSSE = createSSESubscriber("Traffic", TRAFFIC_SERVER, "/api/events", "traffic", new Set(["records", "record-visibility"]));
+  // event-mode: 활성 종목이 바뀌면 computeScore의 집계 대상이 달라지므로 재전파해야 프론트가
+  // 스코어를 다시 계산한다(재전파 누락 시 새로고침 전까지 stale).
+  const subscribeTrafficSSE = createSSESubscriber("Traffic", TRAFFIC_SERVER, "/api/events", "traffic", new Set(["records", "record-visibility", "event-mode"]));
   subscribeInspectionSSE();
   subscribeTrafficSSE();
 }
