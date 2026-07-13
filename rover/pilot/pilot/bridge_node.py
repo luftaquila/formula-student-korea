@@ -23,6 +23,7 @@ Subscribed topics:
 
 import collections
 import json
+import math
 import os
 import queue
 import threading
@@ -80,6 +81,10 @@ class BridgeNode(Node):
         # INTERNAL_SECRET is read from env only — never from ros params, to keep
         # it off the `ros2 param get` surface for anyone on the same ROS domain.
         self._internal_secret = os.environ.get('INTERNAL_SECRET', '')
+        # Rover-scoped secret (preferred when set). The course rover routes accept
+        # X-Rover-Secret, so provisioning ROVER_SECRET lets this device drop the
+        # hub-wide INTERNAL_SECRET. Falls back to INTERNAL_SECRET when unset.
+        self._rover_secret = os.environ.get('ROVER_SECRET', '')
 
         url = self.get_parameter('server_url').value
         allow_http = self.get_parameter('server_url_allow_http').value
@@ -196,9 +201,12 @@ class BridgeNode(Node):
         self.get_logger().info('Bridge node started')
 
     def _get_headers(self):
-        """Build request headers with internal service auth."""
+        """Build request headers with rover/internal service auth."""
         headers = {'Content-Type': 'application/json'}
-        if self._internal_secret:
+        # Prefer the rover-scoped secret; fall back to the hub-wide one when unset.
+        if self._rover_secret:
+            headers['X-Rover-Secret'] = self._rover_secret
+        elif self._internal_secret:
             headers['X-Internal-Service'] = self._internal_secret
         return headers
 
@@ -517,7 +525,21 @@ class BridgeNode(Node):
             )
 
     def _report_position(self, explicit_request=False):
-        """POST current position to the course server."""
+        """Enqueue a position POST to the course server.
+
+        This runs on the single-threaded ROS executor (from the GPS position
+        callback), so it must NOT block on the network. The previous
+        synchronous requests.post(timeout=5) stalled EVERY other subscription
+        callback for up to 5 s whenever the server was unreachable — starving
+        E-Stop / telemetry / odom handling. Hand it to the shared async POST
+        worker (bounded queue + Session) like every other outbound POST.
+
+        _last_report_time is stamped on ENQUEUE, not on success: the periodic
+        gate in _on_gps_position paces enqueues by position_report_interval off
+        this timestamp, so stamping only on success (as before) would let a
+        server outage turn the 10 Hz GPS callback into a 10 Hz POST storm that
+        floods the bounded queue and drops mission-critical POSTs.
+        """
         if not self._last_position:
             return
 
@@ -534,18 +556,8 @@ class BridgeNode(Node):
             payload['request_id'] = request_ids[0]
             payload['request_ids'] = request_ids
 
-        try:
-            resp = requests.post(
-                f'{url}/api/rover/position',
-                json=payload,
-                headers=self._get_headers(),
-                timeout=5.0,
-            )
-            self._last_report_time = time.monotonic()
-            if resp.status_code != 200:
-                self.get_logger().warn(f'Position report failed: {resp.status_code}')
-        except requests.RequestException as e:
-            self.get_logger().warn(f'Position report error: {e}')
+        self._last_report_time = time.monotonic()
+        self._post_async('/api/rover/position', payload, 'position')
 
     def _sse_loop(self):
         """Main SSE connection loop with reconnection."""
@@ -646,13 +658,33 @@ class BridgeNode(Node):
         return connection_succeeded, event_count > 0
 
     def _handle_sse_event(self, event, data):
-        """Process a single SSE event."""
+        """Parse and dispatch a single SSE event, isolating handler failures.
+
+        The dispatch is wrapped so a single malformed payload can only drop
+        THAT event. An uncaught exception here would propagate up through
+        _connect_sse's iter_lines loop and tear down the whole SSE command
+        channel (including E-Stop / clear-emergency), forcing a full
+        reconnect and leaving the rover briefly uncommandable. Mirrors the
+        per-event isolation gps_register.py applies to its SSE handler.
+        """
         try:
             payload = json.loads(data) if data else {}
         except json.JSONDecodeError:
             self.get_logger().warn(f'Invalid SSE JSON: {data}')
             return
+        try:
+            self._dispatch_sse_event(event, payload)
+        except Exception as exc:  # noqa: BLE001 - never let one event kill the stream
+            self.get_logger().warn(
+                f'SSE event {event!r} handler raised, ignoring: {exc}'
+            )
 
+    def _dispatch_sse_event(self, event, payload):
+        """Route a parsed SSE event to its ROS publisher.
+
+        Kept separate from _handle_sse_event so the latter can wrap the whole
+        routine in one try/except (see there).
+        """
         if event == 'connected':
             self.get_logger().info('SSE handshake complete')
 
@@ -691,9 +723,26 @@ class BridgeNode(Node):
             self._pub_end_mission.publish(Empty())
 
         elif event == 'manual-control':
+            # Validate BEFORE building the Twist. A non-numeric throttle/
+            # steering (string, None, list from a malformed/hostile payload)
+            # would raise out of the bare float() calls this used to do, and a
+            # NaN/inf would flow straight through to the MCU as a Twist. Reject
+            # non-finite, then clamp to the joystick's ±100 % range so nothing
+            # out-of-band can be injected into the drive command.
+            try:
+                throttle = float(payload.get('throttle', 0))
+                steering = float(payload.get('steering', 0))
+            except (TypeError, ValueError):
+                self.get_logger().warn(f'manual-control: invalid payload {payload!r}')
+                return
+            if not (math.isfinite(throttle) and math.isfinite(steering)):
+                self.get_logger().warn(f'manual-control: non-finite payload {payload!r}')
+                return
+            throttle = max(-100.0, min(100.0, throttle))
+            steering = max(-100.0, min(100.0, steering))
             msg = Twist()
-            msg.linear.x = float(payload.get('throttle', 0))
-            msg.angular.z = float(payload.get('steering', 0))
+            msg.linear.x = throttle
+            msg.angular.z = steering
             self._pub_manual.publish(msg)
 
         elif event == 'pump-set':

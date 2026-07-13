@@ -31,9 +31,10 @@ POST_TIMEOUT_S = 2.0
 
 
 class CloudLink:
-    def __init__(self, server_url, secret, allow_http=False, log=print):
+    def __init__(self, server_url, secret, allow_http=False, log=print, secret_header="X-Internal-Service"):
         self.server_url = (server_url or "").rstrip("/")
         self._secret = secret or ""
+        self._secret_header = secret_header
         self._allow_http = allow_http
         self._log = log
         self._session = requests.Session()
@@ -84,7 +85,7 @@ class CloudLink:
         self._running = False
 
     def _headers(self):
-        return {"X-Internal-Service": self._secret} if self._secret else {}
+        return {self._secret_header: self._secret} if self._secret else {}
 
     def _warn_throttled(self, msg):
         # A persistent misconfig logs a steady ~1/10s breadcrumb, not a flood.

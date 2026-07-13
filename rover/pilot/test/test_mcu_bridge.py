@@ -52,6 +52,7 @@ def bridge():
         'max_speed': 1.5,
         'accel_limit': 0.8,
         'manual_priority_s': 1.0,
+        'drive_cmd_timeout_s': 0.5,
         'use_pid': False,
         'pid_kp': 0.6,
         'pid_ki': 1.5,
@@ -623,6 +624,79 @@ def test_calibrate_battery_without_raw_sample_is_ignored(bridge, monkeypatch, tm
 def test_heartbeat_sends_H(bridge):
     bridge._heartbeat()
     assert any(w.strip() == 'H' for w in _writes_text(bridge))
+
+
+def test_drive_watchdog_zeroes_stale_setpoint(bridge):
+    """If the commander (navigator 20 Hz / manual UI) goes silent while in an
+    active drive mode, the heartbeat watchdog must actively zero the MCU drive.
+    The MCU otherwise holds the last V/M setpoint (it only self-zeroes on
+    E-Stop or a heartbeat gap, and the heartbeat keeps flowing) so a crashed
+    navigator would leave the rover coasting at the last commanded speed."""
+    import time
+    bridge._params['use_pid'] = False
+    bridge._mode = 'autonomous'
+    bridge._last_cmd_t = time.monotonic() - 1.0   # stale (> 0.5 s timeout)
+    bridge._serial.writes.clear()
+    bridge._heartbeat()
+    stop = next(l for l in _writes_text(bridge) if l.startswith('M '))
+    parts = stop.strip().split()
+    assert float(parts[1]) == pytest.approx(0.0)
+    assert float(parts[2]) == pytest.approx(0.0)
+    assert int(parts[3]) == 1500                  # centred steering
+    assert bridge._mode == 'stopped'
+    # Next tick must no-op (already stopped) — no repeated drive frames.
+    bridge._serial.writes.clear()
+    bridge._heartbeat()
+    assert not any(l.startswith(('M ', 'V ')) for l in _writes_text(bridge))
+
+
+def test_drive_watchdog_noop_when_command_fresh(bridge):
+    """A fresh drive command inside the timeout must not trip the watchdog."""
+    import time
+    bridge._mode = 'autonomous'
+    bridge._last_cmd_t = time.monotonic()         # fresh
+    bridge._serial.writes.clear()
+    bridge._heartbeat()
+    assert not any(l.startswith(('M ', 'V ')) for l in _writes_text(bridge))
+    assert bridge._mode == 'autonomous'
+
+
+def test_drive_watchdog_skips_while_estopped(bridge):
+    """While e-stopped the drive is already zeroed by the E-Stop path; the
+    watchdog must not also emit drive frames (which would fight the MCU's
+    per-tick steering-centre and buzz the servo)."""
+    import time
+    bridge._mode = 'autonomous'
+    bridge._sw_latched = True
+    bridge._last_cmd_t = time.monotonic() - 5.0   # very stale
+    bridge._serial.writes.clear()
+    bridge._heartbeat()
+    assert not any(l.startswith(('M ', 'V ')) for l in _writes_text(bridge))
+
+
+def test_drive_watchdog_unlocks_manual_after_commander_loss(bridge):
+    """When the watchdog trips (commander confirmed gone) it must drop the
+    cached nav-state to IDLE. Otherwise a navigator that crashed mid-mission
+    leaves _nav_state latched at NAVIGATING and _on_manual keeps filtering the
+    operator's recovery joystick — the rover can never be driven to safety."""
+    import time
+    import types
+    bridge._params['use_pid'] = False
+    bridge._mode = 'autonomous'
+    bridge._nav_state = 'NAVIGATING'               # navigator crashed mid-mission
+    bridge._last_cmd_t = time.monotonic() - 1.0    # stale (> 0.5 s timeout)
+    bridge._heartbeat()                            # trips the watchdog
+    assert bridge._nav_state == 'IDLE'
+
+    # Manual joystick must now drive again (it was locked while NAVIGATING).
+    bridge._serial.writes.clear()
+    bridge._last_manual_t = 0.0
+    bridge._sw_latched = False
+    bridge._hw_pressed = False
+    msg = types.SimpleNamespace(linear=types.SimpleNamespace(x=20.0, y=0.0, z=0.0),
+                                angular=types.SimpleNamespace(x=0.0, y=0.0, z=15.0))
+    bridge._on_manual(msg)
+    assert any(l.startswith('M ') for l in _writes_text(bridge))
 
 
 def test_odom_integration_advances_when_dt_ok(bridge):

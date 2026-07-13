@@ -274,8 +274,12 @@ class GpsNode(Node):
                 )
                 if attempt < _SERIAL_OPEN_RETRIES:
                     time.sleep(_SERIAL_OPEN_BACKOFF_S)
-        # All retries exhausted — re-raise so pilot.service's Restart=on-failure
-        # kicks in with a clear trail of attempts in the log.
+        # All retries exhausted — re-raise. gps_node is a core node, so the
+        # launch file registers an OnProcessExit→Shutdown handler for it
+        # (launch/pilot.launch.py): this exception kills the node process,
+        # which shuts the whole launch down, exits the container, and lets
+        # pilot.service's Restart=on-failure recreate the stack — with a clear
+        # trail of open attempts left in the log.
         raise last_exc
 
     def _configure_receiver(self):

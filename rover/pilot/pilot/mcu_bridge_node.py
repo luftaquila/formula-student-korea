@@ -160,6 +160,16 @@ class McuBridgeNode(Node):
         self.declare_parameter('max_speed', 2.5)
         self.declare_parameter('accel_limit', 0.8)
         self.declare_parameter('manual_priority_s', 1.0)
+        # Drive-command watchdog. The MCU holds the last V/M setpoint until an
+        # E-Stop or a 500 ms Pi-link heartbeat gap, and the heartbeat keeps
+        # flowing from this node regardless of navigator/UI health. So if the
+        # source of drive frames — navigator (20 Hz) or the manual UI — goes
+        # silent while in an active drive mode, nothing zeroes the drive and the
+        # rover coasts at the last commanded speed. Zero the drive after this
+        # long without a frame. 0.5 s = 10 missed navigator ticks; well clear of
+        # normal executor jitter and shorter than manual_priority_s only matters
+        # when both commanders race, which the nav-state manual lock prevents.
+        self.declare_parameter('drive_cmd_timeout_s', 0.5)
 
         # PID closed loop. ON in production; raw duty mode is the
         # bench-test fallback.
@@ -738,6 +748,43 @@ class McuBridgeNode(Node):
         # `reconnect_delay_s`). _send is a no-op when the port is closed,
         # so the heartbeat tick stays cheap and silent during MCU outages.
         self._send('H')
+        self._drive_watchdog()
+
+    def _drive_watchdog(self):
+        # Fail-safe against a crashed/hung commander. The MCU keeps executing
+        # the last V/M setpoint indefinitely (it only zeroes on E-Stop or a
+        # 500 ms Pi-link heartbeat gap), and the heartbeat above keeps flowing
+        # from this timer regardless of navigator/UI health. So if the source
+        # of drive frames — navigator (20 Hz) or the manual UI — goes silent
+        # while we're in an active drive mode, nothing zeroes the drive and the
+        # rover coasts at the last commanded speed. Actively stop after
+        # drive_cmd_timeout_s of silence. E-Stop already stops via
+        # _zero_local_drive (mode == 'stopped'), so this only guards the
+        # un-stopped case.
+        if self._mode == 'stopped':
+            return
+        if self._sw_latched or self._hw_pressed:
+            return
+        if (time.monotonic() - self._last_cmd_t) <= self._p('drive_cmd_timeout_s'):
+            return
+        # Send an explicit zero drive (centred steering) so the held MCU
+        # setpoint is cleared, then reset local drive state so a queued frame
+        # can't leak back out. Next tick sees mode == 'stopped' and no-ops.
+        self.get_logger().warn(
+            f'drive watchdog: no drive command for >{self._p("drive_cmd_timeout_s")}s '
+            f'in mode={self._mode}; zeroing drive (commander crashed or link lost?)')
+        self._drive(0.0, 0.0, self._p('servo_center_us'))
+        self._zero_local_drive()
+        # Unlock manual joystick recovery. _nav_state is latched from the
+        # navigator's /rover/nav/state; if the navigator crashed while it was
+        # NAVIGATING (or any _AUTONOMOUS_ACTIVE_STATES value), _on_manual would
+        # keep filtering every manual command and the operator could never take
+        # over to drive the rover to safety. The watchdog tripping means the
+        # commander is confirmed gone, so dropping the lock to IDLE is safe: if
+        # the navigator comes back it re-publishes its own nav_state (the topic
+        # is latched TRANSIENT_LOCAL and it emits IDLE on boot), which
+        # _on_nav_state restores.
+        self._nav_state = 'IDLE'
 
     # ------------------------- reader
 

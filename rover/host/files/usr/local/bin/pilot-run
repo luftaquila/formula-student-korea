@@ -27,6 +27,14 @@ done
 # named container behind. Be idempotent.
 podman rm -f "$NAME" >/dev/null 2>&1 || true
 
+# rover-secret은 프로비저닝된 경우에만 마운트한다 — 미프로비저닝 로버에서 존재하지 않는 secret을
+# --secret로 요구하면 podman run이 실패한다. 있으면 ROVER_SECRET을 주입해 장비가 X-Rover-Secret으로
+# 인증하고(허브 전역 INTERNAL_SECRET 불필요), 없으면 기존대로 INTERNAL_SECRET을 쓴다.
+ROVER_SECRET_ARGS=()
+if podman secret inspect rover-secret >/dev/null 2>&1; then
+    ROVER_SECRET_ARGS=(--secret rover-secret,type=env,target=ROVER_SECRET)
+fi
+
 # Pin public DNS resolvers instead of inheriting the host's resolv.conf.
 # With --network=host, podman snapshots /etc/resolv.conf at container-create
 # time. On a cold boot pilot.service can beat NetworkManager/Tailscale to it
@@ -35,12 +43,20 @@ podman rm -f "$NAME" >/dev/null 2>&1 || true
 # `systemctl restart pilot.service` — i.e. "rover offline on site after a
 # power-cycle". Both targets are public domains, so hardcoded public resolvers
 # break the race and stay correct regardless of Tailscale/host DNS state.
+#
+# ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST confines the DDS graph to loopback.
+# With --network=host on the open field Wi-Fi, the default (SUBNET) would let
+# ANY device on the AP join as a DDS participant and publish /rover/cmd/* —
+# motor commands as an unauthenticated network API. pilot and perception both
+# run --network=host on THIS host, so loopback discovery still lets them talk
+# while off-host participants are shut out.
 exec podman run \
     --name "$NAME" \
     --rm \
     --network=host \
     --dns=1.1.1.1 \
     --dns=8.8.8.8 \
+    --env ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
     --label=io.containers.autoupdate=registry \
     --label=PODMAN_SYSTEMD_UNIT=pilot.service \
     "${DEVS[@]}" \
@@ -48,4 +64,5 @@ exec podman run \
     --env-file /etc/pilot/pilot.conf \
     --secret internal-secret,type=env,target=INTERNAL_SECRET \
     --secret ntrip-username,type=env,target=NTRIP_USERNAME \
+    "${ROVER_SECRET_ARGS[@]}" \
     "$IMAGE"

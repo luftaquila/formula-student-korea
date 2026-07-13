@@ -225,6 +225,12 @@ mcu_bridge_node:
     # steering servo applies κ instantly and only v ramps.
     accel_limit: 0.8
     manual_priority_s: 1.0
+    # Drive-command watchdog. The MCU holds the last V/M setpoint until an
+    # E-Stop or a 500 ms Pi-link heartbeat gap; the heartbeat keeps flowing
+    # regardless of navigator/UI health. If no drive frame arrives for this
+    # long while in an active drive mode (navigator crash, uplink loss), the
+    # bridge actively zeroes the MCU drive. 0.5 s = 10 missed navigator ticks.
+    drive_cmd_timeout_s: 0.5
     # PID closed loop on the MCU. ON.
     # Gains tuned on the bench (jacked-up, step responses across
     # 0.3-1.2 m/s targets). With kp=1.0, ki=3.0:

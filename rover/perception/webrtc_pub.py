@@ -58,11 +58,12 @@ class WebRTCPublisher:
     """Publishes push_frame() frames to a WHIP endpoint. start()/stop() are
     cheap and idempotent-ish; create a fresh instance per publish session."""
 
-    def __init__(self, whip_url, fps=15, log=print, internal_secret=""):
+    def __init__(self, whip_url, fps=15, log=print, internal_secret="", secret_header="X-Internal-Service"):
         self._whip_url = whip_url
         self._fps = fps
         self._log = log
-        self._secret = internal_secret  # X-Internal-Service on the WHIP POST (caddy gate)
+        self._secret = internal_secret  # secret sent on the WHIP POST (caddy gate)
+        self._secret_header = secret_header
         self._latest = None
         self._lock = threading.Lock()
         self._thread = None
@@ -145,7 +146,7 @@ class WebRTCPublisher:
         def _post():
             headers = {"Content-Type": "application/sdp"}
             if self._secret:                      # caddy gates WHIP on this (rover publish)
-                headers["X-Internal-Service"] = self._secret
+                headers[self._secret_header] = self._secret
             return requests.post(self._whip_url, data=self._pc.localDescription.sdp,
                                  headers=headers, timeout=10)
         resp = await self._loop.run_in_executor(None, _post)

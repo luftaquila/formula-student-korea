@@ -110,16 +110,16 @@ any driving state → ERROR  (GPS timeout / fix below quality > fix_hysteresis_s
                             or battery below battery_abort_pct mid-mission)
 ```
 
-- **Antenna-precise docking**: every waypoint becomes a *cruise* segment
-  followed by a *dock* segment — a straight corridor of length
-  `dock_approach_distance` ending at the chassis pose where the GPS
-  antenna sits exactly on the user's clicked target. The chassis dock
-  pose is `target − R(ψ_dock) · antenna_offset`, so non-zero antenna
-  offset is compensated at planning time. The dock corridor is straight
-  so ω ≈ 0 at arrival, which makes antenna position predictable from
-  chassis pose alone. `dock_approach_distance` is clamped per-segment
-  to ≤ ½ · inter-waypoint span (floor 0.3 m), so tightly-spaced cones
-  don't get an entry point projected behind the previous waypoint.
+- **Antenna-precise docking**: the planner emits ONE segment per waypoint
+  (`path_planner.py`), whose `end_pose` is the chassis dock pose
+  `target − R(ψ_dock) · antenna_offset` — the pose that lands the GPS
+  antenna (the only cm-precise quantity we observe) exactly on the user's
+  clicked target — and whose `target_antenna` is the waypoint itself.
+  ψ_dock is the bearing from the previous waypoint (or the live chassis
+  pose, for the first WP) to the current one, so consecutive cones are
+  joined by a smooth corridor, and non-zero antenna offset is compensated
+  at planning time. The planner is purely geometric (no controller state),
+  so it regenerates cheaply on skip / stuck / mid-mission replan.
 - **State estimator** fuses MCU encoder odometry (chassis v, ω) with GPS
   antenna position and GPS heading-of-motion (with antenna-offset
   inversion) into a chassis (x, y, ψ) at 20 Hz. ψ never depends on raw
@@ -130,26 +130,37 @@ any driving state → ERROR  (GPS timeout / fix below quality > fix_hysteresis_s
   `calibration_chord_min_m` AND residual RMS ≤ `calibration_residual_max`
   (production: 1.5 m / 5 cm → ~2° heading 1σ), otherwise extend once
   and ERROR if still bad. Hard cap at `calibration_max_distance`.
-- **NAVIGATING/cruise**: Pure Pursuit with D-term damping +
-  virtual-lookahead projection past the goal. `max_curvature` 1.2 1/m
-  matches `tan(25°)/wheelbase`; speed scales with `cos(α)` and tapers
-  linearly from `cruise_speed` toward `approach_speed` over the last
-  `pp_handoff_blend_distance` metres so the chassis enters the dock
-  corridor at the speed DockTracker's gains were tuned for.
-- **NAVIGATING/dock**: state-feedback line follower on antenna lateral
-  error: κ = −k_y · e_y_antenna − k_ψ · e_ψ − k_i · ∫e_y dt. The
-  integral term (with anti-windup at `dock_integral_limit`) cancels
-  steady κ-bias from antenna-offset residual / mast tilt / slope.
-  Reverses straight on along-track overshoot.
+- **NAVIGATING**: a single `L1Tracker` (antenna-as-unicycle transform,
+  Aicardi-Casalino-Bicchi-Balestrino 1995; `path_tracker.py`) drives the
+  antenna onto `target_antenna` for the whole approach — there is no
+  separate cruise/dock split. With `eta = bearing(antenna→target) −
+  chassis_ψ` it commands `v = v_des · cos(eta)` and
+  `κ = tan(eta) / antenna_offset_x`, κ clamped to `max_curvature`
+  (1.7 1/m ≈ tan(30.5°)/0.33); cos(eta) drops v to zero as eta → 90°
+  instead of fighting a saturated κ. Inside `l1_brake_zone_m` of the
+  target, v ramps linearly from `cruise_speed` down to `l1_min_speed_m_s`
+  and holds that floor through the last `l1_creep_dist_m` so the chassis
+  settles to min-speed before capture. For large attitude error
+  (|eta| > `l1_kturn_enter_rad`, 60°) the forward arc physically cannot
+  close (min radius ≈ 0.59 m), so a K-turn reverses with saturated κ
+  (rotation direction and alignment both latched against close-range
+  bearing noise), then straightens (κ=0) to build a `l1_kturn_exit_dist_m`
+  standoff for the next forward leg. 'reached' fires when antenna→target
+  drops below `l1_cm_capture_m` (3 cm).
 - **SETTLING → SPRAYING**: antenna within `settle_tolerance` for
   `settle_readings` consecutive samples → fire. Drift back outside
   `waypoint_tolerance` mid-settle hands control back to the dock tracker.
-- **CAL_ANTENNA**: drive a chord then a sinusoidal-κ S-curve and run
-  closed-form LSQ on the (chassis pose, antenna obs) samples. The
-  solver gates on a minimum ψ excitation (`SOLVE_PSI_SPREAD_MIN_RAD`)
-  so a SCURVE that didn't actually rotate the rover (encoder stall,
-  mid-drive E-Stop) can't silently persist a garbage offset. Result
-  written to `$PILOT_STATE_DIR/antenna_offset.json`.
+- **CAL_ANTENNA**: drive a straight chord (chord-fit ψ_init), then a
+  constant-curvature CIRCLE orbit (κ = ±1/`antenna_cal_radius_m` for
+  `antenna_cal_revolutions`), and run a closed-form circular solver
+  (`antenna_calibration.py`): while orbiting, both the chassis trace and
+  the antenna trace are circles about the same centre, so two circle fits
+  plus a phase mean recover (a_x, a_y) with no instantaneous heading
+  needed. Gates on a minimum orbit sweep (`SOLVE_CIRCLE_SWEEP_MIN_RAD`,
+  270°), per-circle fit RMS, and chassis-vs-antenna centre agreement, so
+  an orbit that didn't really happen (encoder stall, mid-drive E-Stop)
+  can't silently persist a garbage offset. Result written to
+  `$PILOT_STATE_DIR/antenna_offset.json`.
 - **CAL_WHEELS**: drive a straight 10 m chord at `wheel_cal_speed` and
   divide GPS chord distance by per-wheel encoder integration to recover
   per-wheel rolling-radius scale. Result written to
@@ -162,7 +173,17 @@ load-bearing knob is `antenna_offset_x` / `antenna_offset_y` — measure
 it once on the actual chassis with a tape (or run CAL_ANTENNA once);
 everything else self-corrects via GPS feedback.
 
-Fleet-wide identical: hardware, NTRIP endpoint, `rover_params.yaml`. Per-rover differs only in `SERVER_URL` / `INTERNAL_SECRET` / `NTRIP_USERNAME`.
+**Hub connectivity is not a safety interlock.** The mission state machine runs
+entirely onboard (`navigator_node`); the server SSE link only carries operator
+commands and telemetry. If the hub connection drops mid-mission, `bridge_node`
+reconnects with backoff (`sse_reconnect_delay`, capped at 30 s) but the rover
+keeps executing the current mission — a dropped link does **not** pause or stop
+it. To halt a running rover you must trigger EMERGENCY_STOP: the `/stop` command
+once the link is back, or the physical E-Stop (independent of the hub). The
+onboard drive watchdog is a separate mechanism — it stops the wheels if the MCU
+stops receiving drive commands (e.g. a `navigator_node` crash), not on hub loss.
+
+Fleet-wide identical: hardware, NTRIP endpoint, `rover_params.yaml`. Per-rover differs only in `SERVER_URL` / `INTERNAL_SECRET` (or the optional `ROVER_SECRET`) / `NTRIP_USERNAME`.
 
 ## Image structure
 
@@ -252,7 +273,7 @@ Antenna offset calibration (CAL_ANTENNA):
 
 - File: `/var/lib/pilot/antenna_offset.json` (host bind-mount).
 - Persisted `(a_x, a_y)` overrides the YAML default; absent / corrupt → fall back to YAML.
-- Bounds: `|a_x|, |a_y| ≤ 1 m`, RMS residual ≤ 5 cm, ψ excitation ≥ 8.6° (rejects SCURVEs that didn't actually rotate the rover).
+- Bounds: `a_x ∈ [0.05, 1] m`, `|a_y| ≤ 1 m`, RMS residual ≤ 10 cm, orbit sweep ≥ 270° (rejects orbits that didn't actually rotate the rover).
 
 Wheel scale calibration (CAL_WHEELS):
 

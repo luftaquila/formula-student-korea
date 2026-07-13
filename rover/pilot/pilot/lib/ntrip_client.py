@@ -14,13 +14,24 @@ from pilot.lib.geo_utils import haversine
 
 _default_logger = logging.getLogger(__name__)
 
+# Hard cap on how much of a caster's source table we will buffer. NGII's real
+# table is a few hundred KB; anything past this is a malfunctioning or hostile
+# caster streaming a body without end (or without ever sending Connection:
+# close), and we must not exhaust memory waiting for a close that never comes.
+_SOURCE_TABLE_MAX_BYTES = 4 * 1024 * 1024
 
-def fetch_source_table(host, port, timeout=10.0):
+
+def fetch_source_table(host, port, timeout=10.0,
+                       max_bytes=_SOURCE_TABLE_MAX_BYTES):
     """Fetch the NTRIP source table from a caster at GET /.
 
     Source tables are public and unauthenticated on every caster we care
     about (NGII in particular 200s here and 404s any real mountpoint without
     auth). HTTP body is returned as text with the header stripped.
+
+    Raises ValueError if the response exceeds `max_bytes` (the caller in
+    gps_node treats any exception here as a transient setup failure and
+    retries after a cooldown).
     """
     with socket.create_connection((host, port), timeout=timeout) as s:
         req = (
@@ -38,6 +49,11 @@ def fetch_source_table(host, port, timeout=10.0):
             if not chunk:
                 break
             data.extend(chunk)
+            if len(data) > max_bytes:
+                raise ValueError(
+                    f"source table from {host}:{port} exceeded "
+                    f"{max_bytes} bytes (caster streaming without end?)"
+                )
     text = bytes(data).decode('latin-1', errors='replace')
     # Some casters return a plain SOURCETABLE body; others wrap it in HTTP.
     # Strip the first blank-line-separated header block if present.

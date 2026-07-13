@@ -32,7 +32,7 @@ ArduPilot Rover's encoder-only EKF3 configuration on commercial RTK rover
 platforms.
 """
 
-from math import cos, sin, atan2, hypot
+from math import cos, sin, atan2
 
 from pilot.lib.geo_utils import (
     enu_from_gps, compass_to_math, normalize_angle,

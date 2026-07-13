@@ -236,8 +236,16 @@ class PerceptionNode(Node):
         self._running = True
 
         self._server_url = (_env("SERVER_URL") or "").rstrip("/")
-        secret = _env("INTERNAL_SECRET", "")
-        self._internal_secret = secret  # also sent as X-Internal-Service on WHIP publish
+        # 로버 전용 시크릿(ROVER_SECRET) 우선. course 로버 라우트와 Caddy WHIP 게이트가
+        # X-Rover-Secret을 수용하므로, 설정 시 이 장비는 허브 전역 INTERNAL_SECRET을 소지하지
+        # 않아도 된다(탈취 시 유출 반경 축소). 미설정 시 INTERNAL_SECRET으로 폴백(하위 호환).
+        rover_secret = _env("ROVER_SECRET", "")
+        internal_secret = _env("INTERNAL_SECRET", "")
+        if rover_secret:
+            secret, self._auth_secret_header = rover_secret, "X-Rover-Secret"
+        else:
+            secret, self._auth_secret_header = internal_secret, "X-Internal-Service"
+        self._internal_secret = secret  # effective auth secret (rover or internal); sent on WHIP publish
         allow_http = (_env("SERVER_URL_ALLOW_HTTP", "false") or "").lower() == "true"
 
         self._device = _env("CAMERA_DEVICE")  # left / SBS device; None → auto-probe
@@ -331,7 +339,7 @@ class PerceptionNode(Node):
                 f"{cfg.calib_path}. Run stereo_calibrate.py. Streaming still works.")
 
         self._cloud = CloudLink(self._server_url, secret, allow_http,
-                                log=self.get_logger().info)
+                                log=self.get_logger().info, secret_header=self._auth_secret_header)
         self._cloud.on_calibrate = self._request_calibration
         self._cloud.on_calibrate_ground = self._request_ground_calibration
         self._cloud.start()
@@ -877,7 +885,7 @@ class PerceptionNode(Node):
                             self._webrtc_next_2d = now + 5.0
                             self._webrtc_pub_2d = WebRTCPublisher(
                                 self._whip_url_2d, self._fps, self.get_logger().info,
-                                self._internal_secret)
+                                self._internal_secret, self._auth_secret_header)
                             self._webrtc_pub_2d.start()
                         if self._webrtc_pub_2d is not None:
                             self._webrtc_pub_2d.push_frame(out)
@@ -892,7 +900,7 @@ class PerceptionNode(Node):
                             self._webrtc_next_vr = now + 5.0
                             self._webrtc_pub_vr = WebRTCPublisher(
                                 self._whip_url_vr, self._fps, self.get_logger().info,
-                                self._internal_secret)
+                                self._internal_secret, self._auth_secret_header)
                             self._webrtc_pub_vr.start()
                         if self._webrtc_pub_vr is not None and right_frame is not None:
                             sbs = self._detector.rectify_sbs(frame, right_frame)
@@ -943,11 +951,11 @@ def main(args=None):
               "set SERVER_URL_ALLOW_HTTP=true to override on a trusted network",
               flush=True)
         sys.exit(1)
-    if not _env("INTERNAL_SECRET", ""):
+    if not _env("INTERNAL_SECRET", "") and not _env("ROVER_SECRET", ""):
         # Exit non-zero rather than retry forever: the server denies every
-        # request without the secret, so a silent loop would show the unit
+        # request without a secret, so a silent loop would show the unit
         # 'active' while nothing works. Restart=on-failure surfaces it.
-        print("[perception] FATAL: INTERNAL_SECRET not set", flush=True)
+        print("[perception] FATAL: neither ROVER_SECRET nor INTERNAL_SECRET set", flush=True)
         sys.exit(1)
 
     rclpy.init(args=args)
