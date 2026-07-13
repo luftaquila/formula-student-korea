@@ -1,3 +1,15 @@
+{
+	# Production terminates TLS at traefik, which forwards the real client IP in
+	# X-Forwarded-For. Trust that hop so per-IP rate limits (auth login, queue
+	# state) and audit logs see the real client instead of the traefik container
+	# IP — otherwise every external user shares one rate-limit bucket (a trivial
+	# unauthenticated login-lockout DoS). caddy is only reachable via traefik in
+	# production (no host port), so trusting private ranges = trusting traefik.
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
 :9000 {
 	encode zstd gzip {
 		match {
@@ -23,12 +35,17 @@
 		Strict-Transport-Security "max-age=63072000; includeSubDomains"
 	}
 
+	# 심층방어: trusted_proxies로 해석한 실제 클라이언트 IP를 X-Real-IP로 세팅하고 인바운드 값을
+	# 덮어쓴다(클라이언트가 직접 보낸 X-Real-IP는 무시). 백엔드는 이 단일 헤더를 rate-limit·감사로그의
+	# client IP로 읽어, 위조하기 쉬운 X-Forwarded-For 최좌측 대신 신뢰 IP를 쓴다(프로덕션 traefik→caddy
+	# 에선 실제 외부 클라이언트로, dev caddy-local에선 접속 IP로 해석).
+	request_header X-Real-IP {client_ip}
+
 	# Auth service
 	redir /auth /auth/
 	handle_path /auth/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		request_header -X-Forwarded-For
 		request_header -X-Forwarded-Host
 		reverse_proxy auth:9100 {
 			header_up X-Forwarded-Host {http.request.host}
@@ -40,7 +57,6 @@
 	handle_path /entry/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		request_header -X-Forwarded-For
 		reverse_proxy entry:9200
 	}
 
@@ -49,7 +65,6 @@
 	handle_path /queue/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		request_header -X-Forwarded-For
 		reverse_proxy queue:9300
 	}
 
@@ -58,7 +73,6 @@
 	handle_path /inspection/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		request_header -X-Forwarded-For
 		reverse_proxy inspection:9400
 	}
 
@@ -67,7 +81,6 @@
 	handle_path /traffic/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		request_header -X-Forwarded-For
 		reverse_proxy traffic:9500
 	}
 
@@ -100,14 +113,20 @@
 		@rtcwhip path /api/rtc/*/whip
 		handle @rtcwhip {
 			route {
-				# Rover publish: reject anything without the internal secret. The rover
-				# is on the open internet, so this header (not a network boundary) is
-				# the auth — same model as the /api/rover/* internal endpoints.
-				@noauth not header X-Internal-Service {env.INTERNAL_SECRET}
+				# Rover publish: reject anything without a VALID secret. The rover is on
+				# the open internet, so this header (not a network boundary) is the auth.
+				# Pass only when X-Internal-Service matches INTERNAL_SECRET, OR ROVER_SECRET
+				# is configured (non-empty) AND X-Rover-Secret matches it. The `!= ""` guard
+				# is essential: a plain `not header X-Rover-Secret {env.ROVER_SECRET}` matcher
+				# with ROVER_SECRET unset (empty) MATCHES an empty inbound `X-Rover-Secret:`
+				# header, letting an unauthenticated client publish (verified). Backward
+				# compatible: ROVER_SECRET unset → only INTERNAL_SECRET is accepted.
+				@noauth not expression `{http.request.header.X-Internal-Service} == {env.INTERNAL_SECRET} || ({env.ROVER_SECRET} != "" && {http.request.header.X-Rover-Secret} == {env.ROVER_SECRET})`
 				respond @noauth 403
 				request_header -Authuser
 				request_header -X-Forwarded-For
 				request_header -X-Internal-Service
+				request_header -X-Rover-Secret
 				uri strip_prefix /api/rtc
 				reverse_proxy mediamtx:8889
 			}
@@ -119,6 +138,7 @@
 				request_header -Authuser
 				request_header -X-Forwarded-For
 				request_header -X-Internal-Service
+				request_header -X-Rover-Secret
 				# Browser play: require an admin session (JWT cookie validated by auth).
 				forward_auth auth:9100 {
 					uri /api/forward-auth?role=admin
@@ -131,8 +151,8 @@
 
 		handle {
 			request_header -X-Internal-Service
+			request_header -X-Rover-Secret
 			request_header -Authuser
-			request_header -X-Forwarded-For
 			reverse_proxy course:10000
 		}
 	}
@@ -142,7 +162,6 @@
 	handle_path /score/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		request_header -X-Forwarded-For
 		reverse_proxy score:9600
 	}
 
@@ -151,7 +170,6 @@
 	handle_path /documents/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		request_header -X-Forwarded-For
 		reverse_proxy documents:9700
 	}
 
@@ -160,7 +178,6 @@
 	handle_path /calendar/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		request_header -X-Forwarded-For
 		reverse_proxy calendar:11000
 	}
 
@@ -170,7 +187,6 @@
 		header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self'"
 		request_header -X-Internal-Service
 		request_header -Authuser
-		request_header -X-Forwarded-For
 		# NOTE: X-Forwarded-User는 여기서 제거하지 않는다. handle 블록 안에서 Caddy는
 		# 지시어를 작성 순서가 아닌 고정 directive order로 실행해 request_header가
 		# forward_auth 뒤에 돌 수 있고, 그러면 copy_headers가 방금 설정한 헤더를 지워
@@ -197,7 +213,6 @@
 	handle_path /energymeter/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		request_header -X-Forwarded-For
 		reverse_proxy energymeter:9800
 	}
 
@@ -206,7 +221,6 @@
 	handle_path /email/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		request_header -X-Forwarded-For
 		reverse_proxy email:9900
 	}
 

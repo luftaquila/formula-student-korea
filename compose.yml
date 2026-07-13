@@ -60,6 +60,10 @@ services:
       VWORLD_KEY: ${VWORLD_KEY:-}
       ROVER_MAX_WAYPOINT_DIST_M: ${ROVER_MAX_WAYPOINT_DIST_M:-}
       ROVER_MAX_SEGMENT_DIST_M: ${ROVER_MAX_SEGMENT_DIST_M:-}
+      # 로버 전용 시크릿(선택). 설정 시 로버/perception/GPS 장비가 INTERNAL_SECRET 대신 이 값으로
+      # 인증할 수 있어(course 로버 라우트 한정) 필드 장비의 유출 반경이 좁혀진다. course와 caddy에만
+      # 주입한다(common-env에 넣으면 전 서비스로 퍼져 스코핑이 무의미).
+      ROVER_SECRET: ${ROVER_SECRET:-}
     volumes:
       - ./course/data:/home/node/fsk-course/data
     restart: unless-stopped
@@ -359,23 +363,35 @@ services:
       - "traefik.http.routers.fsk.tls.certresolver=le"
       - "traefik.http.services.fsk.loadbalancer.server.port=9000"
     depends_on: &caddy-depends
-      - entry
-      - course
-      - traffic
-      - energymeter
-      - queue
-      - inspection
-      - score
-      - documents
-      - calendar
-      - email
-      - filebrowser
-      - auth
+      # auth만 service_healthy로 기다린다 — 모든 서비스가 auth로 사용자 검증을 하므로 auth가
+      # 죽으면 어차피 전면 장애다. 나머지 백엔드는 service_started(기동까지만): 이렇게 하면 단일
+      # 백엔드의 헬스 크래시루프(불량 마이그레이션·OOM 등)가 caddy 재생성을 무한 대기시켜 정상
+      # 서비스까지 전면 outage로 번지는 것을 막는다. 개별 미준비 백엔드는 콜드스타트 502로만
+      # 잠깐 노출되고 곧 회복한다(restart: unless-stopped + 헬스체크). energymeter·filebrowser는
+      # 외부 이미지라 헬스체크 자체가 없어 원래도 service_started.
+      auth: { condition: service_healthy }
+      entry: { condition: service_started }
+      course: { condition: service_started }
+      traffic: { condition: service_started }
+      energymeter: { condition: service_started }
+      queue: { condition: service_started }
+      inspection: { condition: service_started }
+      score: { condition: service_started }
+      documents: { condition: service_started }
+      calendar: { condition: service_started }
+      email: { condition: service_started }
+      filebrowser: { condition: service_started }
     restart: unless-stopped
     environment:
       - DOMAIN_NAME=${DOMAIN_NAME}
       - INTERNAL_SECRET=${INTERNAL_SECRET}
+      - ROVER_SECRET=${ROVER_SECRET:-}
       - TEST_SERVER=${TEST_SERVER:-}
+    healthcheck:
+      # caddy:alpine 이미지의 BusyBox wget으로 랜딩 페이지(:9000/)를 확인. 다른 서비스가
+      # 이 caddy에 service_healthy로 의존할 수 있게 하고, 프록시가 살아있는지 검증한다.
+      <<: *common-healthcheck
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9000/"]
     deploy:
       resources:
         limits:
@@ -393,11 +409,15 @@ services:
       - local
     environment:
       - INTERNAL_SECRET=${INTERNAL_SECRET}
+      - ROVER_SECRET=${ROVER_SECRET:-}
       - TEST_SERVER=${TEST_SERVER:-}
     ports:
       - "0.0.0.0:9000:9000"
     depends_on: *caddy-depends
     restart: unless-stopped
+    healthcheck:
+      <<: *common-healthcheck
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9000/"]
     deploy:
       resources:
         limits:
