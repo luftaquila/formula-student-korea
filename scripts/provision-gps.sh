@@ -66,12 +66,18 @@ grep_env() {
 }
 
 INTERNAL_SECRET="$(grep_env INTERNAL_SECRET)"
+# 선택적 로버 전용 시크릿. 설정 시 GPS 유닛이 X-Rover-Secret으로 인증(허브 전역 INTERNAL_SECRET
+# 불필요). 비어 있으면 INTERNAL_SECRET으로 폴백.
+ROVER_SECRET="$(grep_env ROVER_SECRET)"
 PUBLIC_URL="$(grep_env PUBLIC_URL)"
 [ -n "$INTERNAL_SECRET" ] || { echo "INTERNAL_SECRET missing in $ENV_FILE" >&2; exit 1; }
 [ -n "$PUBLIC_URL" ]      || { echo "PUBLIC_URL missing in $ENV_FILE" >&2; exit 1; }
 
 SERVER_URL="$PUBLIC_URL/course"
-NTRIP_USER="${NTRIP_USER:-mail@luftaquila.io}"
+# --ntrip-username 미지정 시 .env의 NTRIP_USERNAME으로 폴백. 개인 NTRIP 계정을 스크립트에
+# 하드코딩하지 않는다(리포에 자격증명 상수를 남기지 않음).
+[ -n "$NTRIP_USER" ] || NTRIP_USER="$(grep_env NTRIP_USERNAME)"
+[ -n "$NTRIP_USER" ] || { echo "NTRIP username이 없습니다: --ntrip-username=<id> 또는 $ENV_FILE의 NTRIP_USERNAME을 설정하세요." >&2; exit 1; }
 SECRET_PREVIEW="$(printf '%s' "$INTERNAL_SECRET" | cut -c1-8)"
 
 printf 'provisioning fsk@%s (GPS unit)\n' "$HOST"
@@ -107,6 +113,7 @@ tar -cz -C "$STAGING" . | ssh $SSH_OPTS "fsk@$HOST" 'cat > /tmp/gps-deploy.tgz'
     printf '%s\n' "$SERVER_URL"
     printf '%s\n' "$NTRIP_USER"
     printf '%s\n' "$TS_AUTHKEY"
+    printf '%s\n' "$ROVER_SECRET"
     cat <<'REMOTE'
 set -eu
 
@@ -164,6 +171,7 @@ umask 077
 sudo tee /etc/gps-register/gps.conf >/dev/null <<EOF
 SERVER_URL=$SERVER_URL
 INTERNAL_SECRET=$INTERNAL_SECRET
+ROVER_SECRET=$ROVER_SECRET
 NTRIP_USERNAME=$NTRIP_USER
 EOF
 sudo chmod 600 /etc/gps-register/gps.conf
@@ -197,7 +205,8 @@ REMOTE
      IFS= read -r SERVER_URL
      IFS= read -r NTRIP_USER
      IFS= read -r TS_AUTHKEY
-     export INTERNAL_SECRET SERVER_URL NTRIP_USER TS_AUTHKEY
+     IFS= read -r ROVER_SECRET
+     export INTERNAL_SECRET SERVER_URL NTRIP_USER TS_AUTHKEY ROVER_SECRET
      sh -s'
 
 printf '\nprovisioning complete. Tail logs with:\n'
