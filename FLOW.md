@@ -38,8 +38,8 @@
 | 1.5 | 사용자 추가 | admin | `POST /api/users` | `{ email, role }` → 이메일 소문자 정규화, 중복 방지 |
 | 1.6 | 사용자 일괄 추가 | admin | `POST /api/users/bulk` | `{ users: [{ email, role?, realname?, phone? }] }` → 중복 스킵, 기본 역할 student |
 | 1.7 | 사용자 목록 조회 | admin | `GET /api/users` | ADMIN_EMAIL 보호 플래그 포함 |
-| 1.8 | 사용자 수정 | admin | `PATCH /api/users/:id` | 역할/실명/전화번호/활성 변경, ADMIN_EMAIL 강등·비활성화 방지, 마지막 admin 삭제 방지 |
-| 1.9 | 일괄 활성/비활성 | admin | `PATCH /api/users/bulk` | `{ ids, active }`, ADMIN_EMAIL 보호 |
+| 1.8 | 사용자 수정 | admin | `PATCH /api/users/:id` | 역할/실명/전화번호/활성 변경, ADMIN_EMAIL 강등·비활성화 방지, 마지막 활성 admin 강등·비활성화·삭제 방지 |
+| 1.9 | 일괄 활성/비활성 | admin | `PATCH /api/users/bulk` | `{ ids, active }`, ADMIN_EMAIL 보호, 마지막 활성 admin 일괄 비활성화 방지 |
 | 1.10 | 일괄 삭제 | admin | `DELETE /api/users/bulk` | `{ ids }`, ADMIN_EMAIL 보호 |
 | 1.11 | 사용자 삭제 | admin | `DELETE /api/users/:id` | ADMIN_EMAIL 보호, 마지막 admin 삭제 방지 |
 
@@ -64,6 +64,21 @@
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 1.18 | 로그 집계 조회 | admin | `GET /api/admin/logs` | 전체 서비스 로그 수집(LOG_SERVICES), 서비스/레벨/액션/기간 필터, 페이지네이션 |
+
+### 계정 신청
+
+미등록 Google 계정이 신청 페이지에서 로그인하면 콜백이 `/auth/apply`로 리다이렉트하고 role 없는 1시간짜리 `fsk_applicant` 쿠키를 발급한다. 관리자가 승인하면 신청이 users로 이동한 뒤 삭제된다.
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 1.19 | 신청 접수 여부 | public | `GET /api/apply/config` | `applications_open` 토글 상태 |
+| 1.20 | 내 세션/신청 상태 | public | `GET /api/apply/me` | 로그인됨 `{registered:true,...}` / 신청자 `{registered:false, application, applicationsOpen}` / 401 |
+| 1.21 | 계정 신청 | public | `POST /api/apply` | `fsk_applicant` 쿠키 검증, `{realname, phone, affiliation}` 필수, 접수 열림 필요 |
+| 1.22 | 신청 수정 | public | `PATCH /api/apply` | `fsk_applicant` 쿠키 검증, 접수 닫혀도 허용 |
+| 1.23 | 신청 목록 | admin | `GET /api/applications` | 접수된 신청 목록 |
+| 1.24 | 접수 on/off | admin | `PATCH /api/applications/config` | `applications_open` 토글 |
+| 1.25 | 신청 승인 | admin | `POST /api/applications/approve` | 신청 → users 등록 후 신청 삭제, 완료 메일 발송 |
+| 1.26 | 신청 삭제 | admin | `DELETE /api/applications` | 신청 반려/삭제 |
 
 ---
 
@@ -106,8 +121,8 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.4 | 대기 등록 | official | `POST /api/admin/register/:type` | 엔트리 검증(entry 서비스) → 활성 확인 → 페널티 확인 → 동시 등록 규칙(배터리+샤시 허용) → 삽입 → SSE → SMS |
-| 3.5 | 대기 취소 | official | `POST /api/admin/cancel/:type` | 삭제 → 페널티 부과 → SSE → SMS |
+| 3.4 | 대기 등록 | official | `POST /api/admin/register/:type` | 엔트리 검증(entry 서비스) → 활성 확인 → 페널티 확인 → 동시 등록 규칙(배터리+샤시 허용) → 삽입 → SSE (등록 시 SMS 미발송) |
+| 3.5 | 대기 취소 | official | `POST /api/admin/cancel/:type` | 삭제 → 페널티 부과 → SSE → SMS (알림 순번에 새로 진입한 대기자에게) |
 | 3.6 | 부스 입차 | official | `POST /api/admin/booths/:type/:boothNum/enter` | 큐에서 제거 → 부스 점유 → 로그 기록 → SSE → SMS |
 | 3.7 | 부스 출차 | official | `POST /api/admin/booths/:type/:boothNum/exit` | 점유 해제 → 검사 이력 기록(재검 감지용) |
 | 3.8 | 부스 활성 토글 | official | `PATCH /api/admin/booths/:type/:boothNum` | 점유 중 비활성화 방지 |
@@ -170,13 +185,13 @@
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 4.1 | 템플릿 조회 | official | `GET /api/sheet/template?year=` | 4단계 계층 트리: 카테고리 > 소분류 > 그룹 > 항목 |
-| 4.2 | 노드 추가 | admin | `POST /api/sheet/template` | level, parent_id, answer_type(passfail/number/text/checktable) |
-| 4.3 | 노드 수정 | admin | `PUT /api/sheet/template/:id` | 이전 연도 수정 방지 |
-| 4.4 | 노드 삭제 | admin | `DELETE /api/sheet/template/:id` | FK 캐스케이드로 하위 + 답변 삭제 |
-| 4.5 | 순서 변경 | admin | `POST /api/sheet/template/reorder` | 일괄 sort_order 갱신 |
-| 4.6 | 연도간 복사 | admin | `POST /api/sheet/template/copy` | 대상 연도 비어있어야 함, parent_id 리맵핑 |
-| 4.7 | JSON 가져오기 | admin | `POST /api/sheet/template/import` | 중첩 JSON → 기존 삭제 후 일괄 삽입 |
-| 4.8 | JSON 내보내기 | admin | SheetTemplate.vue | 전체 템플릿 계층 구조 JSON 파일로 다운로드 (클라이언트사이드) |
+| 4.2 | 노드 추가 | chief | `POST /api/sheet/template` | level, parent_id, answer_type(passfail/number/text/checktable), unit, pdf_include |
+| 4.3 | 노드 수정 | chief | `PUT /api/sheet/template/:id` | 이전 연도 수정 방지 |
+| 4.4 | 노드 삭제 | chief | `DELETE /api/sheet/template/:id` | FK 캐스케이드로 하위 + 답변 삭제 |
+| 4.5 | 순서 변경 | chief | `POST /api/sheet/template/reorder` | 일괄 sort_order 갱신 |
+| 4.6 | 연도간 복사 | chief | `POST /api/sheet/template/copy` | 대상 연도 비어있어야 함, parent_id 리맵핑 |
+| 4.7 | JSON 가져오기 | chief | `POST /api/sheet/template/import` | 중첩 JSON → 기존 삭제 후 일괄 삽입 |
+| 4.8 | JSON 내보내기 | official | SheetTemplate.vue | 전체 템플릿 계층 구조 JSON 파일로 다운로드 (클라이언트사이드) |
 
 ### 검차 시트 작성
 
@@ -208,8 +223,10 @@
 | 5.1 | 기록 테이블 목록 | admin | `GET /api/records` | |
 | 5.2 | 기록 조회 | admin | `GET /api/records/:name` | rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard |
 | 5.3 | 기록 추가 | admin | `POST /api/records` | 테이블명 자동 접두사 "FSK {year} ", 미존재 시 CREATE TABLE, SSE |
-| 5.4 | 기록 필드 수정 | admin | `PATCH /api/records/:name/:rowid` | invalidated/scoreboard/detail/cones/oc, 무효화↔전광판 연동, SSE |
+| 5.4 | 기록 필드 수정 | admin | `PATCH /api/records/:name/:rowid` | invalidated/scoreboard/detail/cones/oc/result(정수, -1=DNF), 무효화↔전광판 연동, SSE |
 | 5.5 | 기록 테이블 삭제 | admin | `DELETE /api/records/:name` | DROP TABLE, SSE |
+| 5.5a | 성적 반영 여부 조회/토글 | admin | `GET /api/records/visibility`, `PUT /api/records/:name/visibility` | 기록 파일별 성적 반영(visibility) 토글, `record-visibility` SSE |
+| 5.5b | 연도별 기록 일괄 조회 | admin | `GET /api/records/year/:year` | visibility 필터 적용, score 집계용 |
 | 5.6 | 전광판 조회 | admin | ScoreboardView.vue | scoreboard=true 레코드 필터링, SSE 실시간 갱신, 종목별 최신/최고/상위 5 기록 |
 
 ### 컨트롤러 데이터
@@ -224,8 +241,28 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 5.10 | 경기 모드 조회 | admin | `GET /api/event-modes` | 가속/스키드패드/오토크로스 |
+| 5.10 | 경기 모드 조회 | admin | `GET /api/event-modes` | 가속/스키드패드/오토크로스/내구 (`EVENT_TYPES`) |
 | 5.11 | 경기 모드 토글 | admin | `PUT /api/event-modes/:type` | 비활성 시 네비게이션/성적 테이블에서 숨김, SSE |
+
+### 무선(LoRa) 계측
+
+마스터 노드에 USB로 연결된 브리지 PC가 센서 raw 이벤트·진단·신호등 상태를 서버로 push하고, 서버가 권위 상태(경기별 세션: arm·팀/이벤트 선택·신호등·lease)를 보유해 모든 admin 클라이언트가 SSE로 동일하게 본다. 경기 기록은 **서버 기록 엔진**이 ingest 이벤트로 직접 계산·저장한다(가속·오토크로스=출발→도착, 스키드패드=lap2+lap4, 내구=랩 누적 총합 1건). 테이블: `wireless_event`(멱등 raw 이벤트), `wireless_mapping`(센서→경기·역할), `wireless_light`(신호등·debounce·owner_event), `wireless_session`(경기별 arm/선택/lease). 모든 엔드포인트 admin (단 `/api/time`은 public).
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 5.18 | 브리지 배치 ingest | admin | `POST /api/wireless/ingest` | events/telemetry 배치(각 ≤200). `(node_id, ev_seq, master_tick)` 멱등. 신규 이벤트는 기록 엔진 거쳐 armed 경기 기록 자동 저장(`records` 브로드캐스트). 보안 관측(`sec_drop`/`provisioned=0`) 시 `wireless.security` 로그. `wireless:event`/`wireless:telemetry`/`wireless:bridge` SSE |
+| 5.19 | 신호등 상태 보고 | admin | `POST /api/wireless/light` | 브리지가 물리 신호등 색 보고, `wireless:light` SSE |
+| 5.20 | 실제 신호등 경기 지정 | admin | `PUT /api/wireless/physical-event` | SSR 물리 신호등을 사용할 경기(owner_event) 지정, null=전부 가상 |
+| 5.21 | 디바운스 설정 | admin | `PUT /api/wireless/debounce` | 센서 디바운스 창(0~5000ms, 기본 300) 저장·공유 |
+| 5.22 | 센서 매핑 | admin | `GET/PUT/DELETE /api/wireless/mapping[/:node_id]` | 센서→경기·역할(start/finish/lane1~9) upsert, `wireless:mapping` SSE |
+| 5.23 | 경기 arm/disarm | admin | `POST /api/wireless/arm` | green=arm(기록 엔진 런 리셋)/red/off. lease 점유자 있으면 409. `wireless:session` SSE |
+| 5.24 | 팀·이벤트 선택 | admin | `POST /api/wireless/select` | 경기에 팀/이벤트명 귀속(검증), lease 점유자만, `wireless:session` SSE |
+| 5.25 | DNF 저장 | admin | `POST /api/wireless/dnf` | 진행 경기 DNF(result -1) 저장, lease 점유자만 |
+| 5.26 | 물리 신호등 원격 제어 | admin | `POST /api/wireless/command` | 서버→브리지(`wireless:command`)→시리얼 다운링크. 물리 지정 경기+브리지 online+lease 필요 |
+| 5.27 | 독점 제어 lease | admin | `POST/DELETE /api/wireless/lease/:event` | 경기별 독점 제어권 획득/갱신(heartbeat)/해제(admin 강제 회수), `wireless:session` SSE |
+| 5.28 | 종합 스냅샷/백필 | admin | `GET /api/wireless/state`, `GET /api/wireless/events?since=` | 신선 로드용 스냅샷, 늦게 합류한 클라의 raw 이벤트 백필 |
+| 5.29 | 서버 시각 동기화 | public | `GET /api/time` | 서버 epoch ms 반환, 클라 라이브 클럭 오프셋 추정(인증 면제) |
+| 5.30 | 브리지 오프라인 즉시 보고 | admin | `POST /api/wireless/bridge/offline` | 종료 직전 오프라인 보고(15초 무수신 감지 대기 없이) |
 
 ### 매뉴얼 모드 (프런트엔드)
 
@@ -239,7 +276,7 @@
 
 | # | 흐름 | 역할 | API/컴포넌트 | 설명 |
 |---|------|------|-------------|------|
-| 5.16 | SSE 실시간 업데이트 | admin | `GET /api/events` | 기록 추가/수정/삭제, 경기 모드 변경 실시간 스트림 |
+| 5.16 | SSE 실시간 업데이트 | admin | `GET /api/events` | 기록 추가/수정/삭제, 성적 반영 토글, 경기 모드 변경, 무선(`wireless:*`) 실시간 스트림. init: `{ recordFiles, eventModes, recordVisibility, wireless }` |
 | 5.17 | 기록 CSV/XLSX 내보내기 | admin | RecordView.vue | 클라이언트 사이드에서 선택된 기록 테이블을 CSV/XLSX로 다운로드 |
 
 ---
@@ -271,7 +308,7 @@
 
 | # | 흐름 | 역할 | API/컴포넌트 | 설명 |
 |---|------|------|-------------|------|
-| 6.7 | SSE 실시간 업데이트 | admin | `GET /api/score/events` | inspection:*/traffic:* 재전파 + manual-score/penalty/setting/endurance 로컬 이벤트 |
+| 6.7 | SSE 실시간 업데이트 | admin | `GET /api/score/events` | 화이트리스트 재전파(inspection: category-result/answer, traffic: records/record-visibility) + 재연결 시 refresh + manual-score/penalty/setting/endurance 로컬 이벤트 |
 | 6.8 | 성적 대시보드 내보내기 | admin | ScoreBoard.vue | 전체 성적표 CSV/XLSX 클라이언트 사이드 다운로드 |
 | 6.9 | 내구 데이터 내보내기 | admin | EnduranceInput.vue | 내구 데이터 CSV/XLSX 클라이언트 사이드 다운로드 |
 
@@ -286,7 +323,8 @@
 | 7.1 | 세션 목록 조회 | student | `GET /api/sessions` | student_team에서 팀 조회 → 해당 팀 세션 + 최근 제출 상태 |
 | 7.2 | 세션 상세 조회 | student | `GET /api/sessions/:id` | 팀 소속 확인, 제출 이력 + 파일 목록 |
 | 7.3 | 파일 제출 | student | `POST /api/sessions/:id/submit` | 멀티파트, 시간 검증(start~late_end), 확장자 검증, 용량 제한 검증(max_file_size), 이전 제출 교체, 최대 100파일 |
-| 7.4 | 제출 파일 다운로드 | student | `GET /api/submissions/:subId/files/:fileId` | 팀 소속 확인, 경로 순회 방지 |
+| 7.4 | 제출 파일 다운로드 | student | `GET /api/submissions/:subId/files/:fileId` | 팀 소속 확인, 경로 순회 방지 (PDF/텍스트/이미지/AV inline, 그 외 attachment) |
+| 7.4a | 제출물 zip 다운로드 | student | `GET /api/submissions/:subId/zip` | 자기 팀 제출물 전체 zip |
 
 ### 관리자 흐름
 
@@ -296,8 +334,12 @@
 | 7.6 | 세션 생성 | chief | `POST /api/admin/sessions` | 이름, 공지, 시작/마감/지각마감, 파일 제한, 확장자, 대상 팀 |
 | 7.7 | 세션 수정 | chief | `PUT /api/admin/sessions/:id` | 팀 변경 시 제거된 팀의 제출 + 파일 삭제 |
 | 7.8 | 세션 삭제 | chief | `DELETE /api/admin/sessions/:id` | FK 캐스케이드, 파일 디렉토리 정리 |
-| 7.9 | 제출 현황 조회 | chief | `GET /api/admin/sessions/:id/status` | 팀별 제출/미제출/지각 상태 |
+| 7.9 | 제출 현황 조회 | chief | `GET /api/admin/sessions/:id/status` | 팀별 제출/미제출/지각 상태 (`submissionCount` 누적 제출 횟수, 직전 1건 `prevSubmission`) |
 | 7.10 | 관리자 파일 다운로드 | chief | `GET /api/admin/submissions/:subId/files/:fileId` | 팀 소속 확인 없이 다운로드 |
+| 7.10a | 제출물 zip 다운로드 | chief | `GET /api/admin/submissions/:subId/zip` | 단일 제출물 zip (팀 라벨 포함 파일명) |
+| 7.10b | 세션 아카이브 | chief | `GET /api/admin/sessions/:id/archive` | 세션 전체 아카이브 zip (팀별 폴더, 팀별 최신 제출) |
+| 7.10c | 연도 아카이브 | chief | `GET /api/admin/years/:year/archive` | 연도 전체 아카이브 zip (세션/팀별 폴더) |
+| 7.10d | 연도 파일 삭제 | chief | `DELETE /api/admin/years/:year/files` | 연도별 파일 데이터 삭제(제출 기록은 유지), `{ sessions, files }` |
 
 ### 학생-팀 매핑
 
@@ -312,46 +354,82 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 7.15 | 엔트리 번호 동기화 | 내부 | `PATCH /api/internal/team-num` | entry 서비스에서 번호 변경 시 student_team, session_team, submission + 파일 디렉토리 일괄 갱신 |
+| 7.15 | 엔트리 번호 동기화 | 내부 | `PATCH /api/internal/team-num` | entry 서비스에서 번호 변경 시 student_team, session_team, submission + 파일 디렉토리 일괄 갱신. 파일 작업 실패 시 202 `pending_file_work` → 30초 주기 백그라운드 워커 재시도 |
 | 7.16 | 엔트리 삭제 연동 | 내부 | `DELETE /api/internal/team/:num?year=` | student_team, session_team, submission, 파일 삭제 |
 
 ---
 
 ## 8. Course 서비스
 
-### 코스 관리
+RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용. **코스/콘/메모 CRUD와 SSE(`/api/events`)는 chief**, **스냅샷·코스 삭제·로버 운용·GPS는 admin**, **로버/수신기 기기 인입 엔드포인트는 `X-Internal-Service`(INTERNAL_SECRET) 검증**(admin JWT로도 불가한 internal-strict, 또는 internal/admin 겸용).
+
+### 코스 관리 (chief)
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 8.1 | 코스 목록 조회 | admin | `GET /api/courses` | 전체 코스 목록 + 콘 개수 반환 |
-| 8.2 | 코스 생성 | admin | `POST /api/courses` | `{ name }` → UNIQUE 제약 |
-| 8.3 | 코스 이름 수정 | admin | `PATCH /api/courses/:id` | `{ name }` → 중복 이름 방지 |
-| 8.4 | 코스 삭제 | admin | `DELETE /api/courses/:id` | CASCADE로 콘도 함께 삭제 |
+| 8.1 | 코스 목록 조회 | chief | `GET /api/courses` | 전체 코스 목록 + 콘 개수 반환 |
+| 8.2 | 코스 생성 | chief | `POST /api/courses` | `{ name }` → UNIQUE 제약 |
+| 8.3 | 코스 이름 수정 | chief | `PATCH /api/courses/:id` | `{ name }` → 중복 이름 방지 |
+| 8.3a | 진행 방향/시작 콘 설정 | chief | `PATCH /api/courses/:id/direction` | `{ reverse?, start_cone_id? }` 저장, `courses`(type=direction) SSE |
+| 8.3b | 코스 내보내기/가져오기 | chief | `GET /api/courses/:id/export`, `POST /api/courses/import` | 코스+콘 JSON 다운로드 / JSON으로 일괄 생성(트랜잭션) |
+| 8.4 | 코스 삭제 | **admin** | `DELETE /api/courses/:id` | CASCADE로 콘·스냅샷 함께 삭제 (파괴적이라 admin) |
 
-### 콘 관리
+### 콘 관리 (chief)
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 8.5 | 콘 목록 조회 | admin | `GET /api/courses/:id/cones` | 특정 코스의 콘 목록 |
-| 8.6 | 콘 추가 | admin | `POST /api/courses/:id/cones` | `{ lat, lng, side }` side: "left"\|"center"\|"right" |
-| 8.7 | 콘 수정 | admin | `PATCH /api/cones/:id` | 위치(lat, lng) 또는 방향(side) 변경 |
-| 8.8 | 콘 삭제 | admin | `DELETE /api/cones/:id` | 단일 콘 삭제 |
+| 8.5 | 콘 목록 조회 | chief | `GET /api/courses/:id/cones` | 특정 코스의 콘 목록 |
+| 8.6 | 콘 추가 | chief | `POST /api/courses/:id/cones` | `{ lat, lng, alt?, side }` side: "left"\|"center"\|"right" |
+| 8.7 | 콘 수정 | chief | `PATCH /api/cones/:id` | 위치(lat, lng) 또는 방향(side) 변경 |
+| 8.8 | 콘 삭제 | chief | `DELETE /api/cones/:id` | 단일 콘 삭제 |
+| 8.8a | 콘 전체 삭제 | chief | `DELETE /api/courses/:id/cones` | 코스의 콘 일괄 삭제 |
+
+### 메모 스티커 (chief)
+
+지도 주석 메모. 중심 좌표(lat/lng) + 실측 크기(width/height, m) + 회전(rotation, deg)로 지리 좌표에 고정된다(줌/회전에도 코스 위 같은 자리). course 삭제 시 CASCADE.
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 8.8b | 메모 목록 조회 | chief | `GET /api/courses/:id/memos` | 코스의 메모 목록 |
+| 8.8c | 메모 추가 | chief | `POST /api/courses/:id/memos` | `{ lat, lng, width, height, rotation?, content? }` (width/height 0 초과 100000 m 이하, content ≤5000자), `memos` SSE |
+| 8.8d | 메모 수정 | chief | `PATCH /api/memos/:id` | 이동/크기/회전/내용 변경, `memos` SSE |
+| 8.8e | 메모 삭제 | chief | `DELETE /api/memos/:id` | 단일 메모 삭제, `memos` SSE |
+
+### 코스 스냅샷 (admin)
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 8.8f | 스냅샷 목록 | admin | `GET /api/courses/:id/snapshots` | 코스 스냅샷 목록(최신 100) |
+| 8.8g | 스냅샷 저장 | admin | `POST /api/courses/:id/snapshots` | 현재 콘 상태 스냅샷(콘 없으면 400) |
+| 8.8h | 스냅샷 복원 | admin | `POST /api/courses/:id/snapshots/:sid/restore` | 콘 상태 복원 — **복원 직전 자동 스냅샷**(안전망), 시작 콘 초기화 |
+| 8.8i | 스냅샷 삭제 | admin | `DELETE /api/courses/:id/snapshots/:sid` | 스냅샷 삭제 |
 
 ### Rover GPS 연동
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 8.9 | 로버 SSE 연결 | 내부 (INTERNAL_SECRET) | `GET /api/rover/stream` | 로버가 서버에 SSE 연결 유지, `request-position` 이벤트 수신 대기. X-Internal-Service 헤더 필수 (admin JWT 불가) |
-| 8.10 | 로버 위치 전송 | 내부/admin | `POST /api/rover/position` | 로버가 `request-position` 수신 시 현재 좌표 `{ lat, lng }` 전송 |
+| 8.9 | 기기 SSE 연결 | 내부 (INTERNAL_SECRET) | `GET /api/rover/stream?device=gps\|rover` | 로버·GPS 수신기가 서버에 SSE 연결 유지, 명령 이벤트 수신 대기. `device=gps`는 수신기 **별도 슬롯**(로버와 동시 연결, 서로 안 밀어냄). X-Internal-Service 필수(admin JWT 불가) |
+| 8.10 | 기기 위치 전송 | 내부/admin | `POST /api/rover/position?device=gps\|rover` | 기기가 현재 좌표 전송. `request_id` 있으면 좌표 요청 해소, 활성 소스일 때만 `rover` 라이브 이벤트 브로드캐스트 |
 | 8.11 | 로버 좌표 요청 | admin | `POST /api/rover/request` | 관리자 버튼 클릭 → 서버가 로버에 SSE 이벤트 전송 → 로버 응답 대기 (5초 타임아웃) |
-| 8.12 | 로버 좌표로 콘 등록 | admin | 8.11 → 8.6 | 로버 좌표 수신 후 현재 선택된 방향(L/R)으로 콘 등록 (프론트엔드 연동) |
+| 8.12 | 로버/수신기 좌표로 콘 등록 | admin | 8.11 → 8.6 | 좌표 수신(수신기 연결 시 우선, 없으면 로버) 후 현재 선택된 방향(L/R)으로 콘 등록 (프론트엔드 연동) |
+
+### GPS 수신기 — 소스 선택 + base station 측량점 (admin)
+
+콘 좌표 캡처는 GPS 수신기(연결 시) 우선, 없으면 로버 사용. 로버의 RTK 보정 소스는 NGII(공용 NTRIP)와 **수신기 base station**(측량점에 고정한 수신기가 RTCM3 생성 → 서버 릴레이 → 로버) 중 선택. 수신기의 "캡처 소스"·"base station" 역할은 상호배타.
+
+| # | 흐름 | 역할 | API | 설명 |
+|---|------|------|-----|------|
+| 8.12a | GPS 소스 설정 조회/변경 | admin | `GET/PUT /api/gps/config` | `ntrip_source`(ngii\|base)·`active_base_point_id`. base면 측량 완료된 점 필수, 수신기에 `base-activate`/`base-stop`·로버에 `ntrip-source` 즉시 전송 |
+| 8.12b | 측량점 관리 | admin | `GET/POST/DELETE /api/gps/survey-points[/:id]` | 측량점 추가(이름만)·목록·삭제. 활성 base 삭제 시 409 |
+| 8.12c | 측량 시작/취소 | admin | `POST /api/gps/survey-points/:id/survey[/cancel]` | 수신기 측량(NGII rtk_fixed 위치 평균, duration 10~1800s). 미연결 503, base 모드 409. 수신기가 `base/survey-result`로 결과 보고 → `gps:survey_result` 브로드캐스트 |
+| 8.12d | base RTCM 릴레이 | 내부 | `POST /api/rover/base/rtcm`, `POST /api/rover/base/survey-result` | 수신기(base)가 RTCM3 청크·측량 결과 전송 → 로버로 SSE `rtcm` 릴레이(로버 미연결이면 드롭) |
 
 ### 로버 제어
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 8.13 | 경로 계산 | admin | 프론트엔드 | 시작점 클릭 → Nearest Neighbor TSP + 2-opt 최적화 (회전 페널티 포함) → 지도에 polyline + S/E 마커 + 예상 거리 표시 |
-| 8.14 | 경로 실행 | admin | `POST /api/rover/execute` | 계산된 waypoint 배열을 로버에 SSE `execute-path` 이벤트로 전송. 현재 EMERGENCY_STOP 래치 상태면 409 거부 |
+| 8.14 | 경로 실행 | admin | `POST /api/rover/execute` | 계산된 waypoint 배열을 로버에 SSE `execute-path` 이벤트로 전송. body에 `course_id` 있으면 실행 직전 자동 스냅샷(best-effort). 현재 EMERGENCY_STOP 래치 상태면 409 거부 |
 | 8.15 | 비상정지 | admin | `POST /api/rover/stop` | 로버에 SSE `emergency-stop` 이벤트 즉시 전송. 미션 레코드는 보존 |
 | 8.15a | 비상정지 해제 | admin | `POST /api/rover/clear-emergency` | SSE `clear-emergency` 이벤트. 보존된 미션이 그대로 남아 "이어서 실행" 가능 |
 | 8.15b | 미션 종료 | admin | `POST /api/rover/end-mission` | 보존된 미션을 명시적으로 마감 (운영자가 path 폐기 시 자동 호출) |

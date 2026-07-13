@@ -48,9 +48,9 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/users` | admin | — | `[{ id, email, name, role, realname, phone, active, created_at, protected }]` | List all users |
+| GET | `/api/users` | admin | — | `[{ id, email, name, role, realname, phone, affiliation, active, created_at, protected }]` | List all users |
 | POST | `/api/users` | admin | `{ email, role }` | `{ id, email, role }` | Create user |
-| POST | `/api/users/bulk` | admin | `{ users: [{ email, role, realname, phone }] }` | `{ added, skipped, errors }` | Bulk create users (INSERT OR IGNORE) |
+| POST | `/api/users/bulk` | admin | `{ users: [{ email, role, realname, phone, affiliation }] }` | `{ added, skipped, errors }` | Bulk create users (INSERT OR IGNORE, 기본 역할 student) |
 | PATCH | `/api/users/bulk` | admin | `{ ids: [int], active: bool }` | `{ updated }` | Bulk activate/deactivate users |
 | DELETE | `/api/users/bulk` | admin | `{ ids: [int] }` | `{ deleted }` | Bulk delete users (protects last admin) |
 | PATCH | `/api/users/:id` | admin | `{ role?, realname?, phone?, active? }` | 200 | Update user role/realname/phone/active status |
@@ -76,9 +76,9 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/apply/config` | public | — | `{ open: bool }` | 신청 접수 가능 여부 |
-| GET | `/api/apply/me` | public | — | 신청 내역 or 401/404 | 내 신청 조회 (`fsk_applicant` 쿠키 검증) |
-| POST | `/api/apply` | public | `{ realname, phone, affiliation }` | 201 | 계정 신청 접수 (`fsk_applicant` 쿠키 검증) |
-| PATCH | `/api/apply` | public | `{ realname?, phone?, affiliation? }` | 200 | 신청 내용 수정 (`fsk_applicant` 쿠키 검증) |
+| GET | `/api/apply/me` | public | — | `{ registered: true, email, name }`(로그인됨) 또는 `{ registered: false, email, name, application, applicationsOpen }`(신청자) 또는 401 | 내 세션/신청 상태 (`fsk_applicant` 쿠키 또는 세션 검증) |
+| POST | `/api/apply` | public | `{ realname, phone, affiliation }` | 201 | 계정 신청 접수 (`fsk_applicant` 쿠키 검증, 세 필드 모두 필수, 접수 열림 필요) |
+| PATCH | `/api/apply` | public | `{ realname, phone, affiliation }` | 200 | 신청 내용 수정 (`fsk_applicant` 쿠키 검증, 세 필드 모두 필수, 접수 닫혀도 허용) |
 | GET | `/api/applications` | admin | — | `[{ id, email, name, realname, phone, affiliation, ... }]` | 신청 목록 |
 | PATCH | `/api/applications/config` | admin | `{ open: bool }` | 200 | 신청 접수 열기/닫기 |
 | POST | `/api/applications/approve` | admin | `{ ids: [int], role }` | 200 | 신청 승인 → users로 이동, 알림 발송 |
@@ -104,7 +104,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | PATCH | `/api/entries/:num` | admin | `{ num, univ, team, type?, intent? }?year=` | 200, 202, or 409 | Update entry. 번호 변경/팀 교체는 durable outbox로 5개 서비스에 팬아웃 — 일부 동기화 대기 시 `202 { status: "pending_lifecycle" }`. 번호 유지 + 팀명 변경이 모호하면 `409 { message, ambiguous }` → `intent: "retain"\|"replacement"`로 재요청 |
 | DELETE | `/api/entries/:num` | admin | `?year=` | 200 or 202 | Delete single entry (동기화 대기 시 202 pending_lifecycle) |
 | DELETE | `/api/entries` | admin | `?year=` | 200 or 202 | Delete all entries for year (동기화 대기 시 202) |
-| POST | `/api/entries/bulk` | admin | `{ data: { "num": { univ, team, type? } }, replacements?, retains? }?year=` | 200, 202, or 409 | Bulk upload (replaces all entries for year). 모호한 팀 교체는 409 ambiguous → replacements/retains로 재요청 |
+| POST | `/api/entries/bulk` | admin | `{ data: { "num": { univ, team, type? } }, renumbers?: { "from": to }, replacements?: [num], retains?: [num] }?year=` | 200, 202, or 409 | Bulk upload (replaces all entries for year). `renumbers`=명시적 번호 이동 매핑. 모호한 팀 교체는 409 ambiguous → replacements/retains로 재요청 |
 
 ### Lifecycle Outbox (admin)
 
@@ -247,6 +247,15 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | PUT | `/api/sheet/category-result` | official | `{ year, team_num, category_id, result }` | 200 | Upsert category PASS/FAIL (broadcasts SSE) |
 | PUT | `/api/sheet/inspector` | official | `{ year, team_num, category_id, inspector }` | 200 | Upsert inspector name (broadcasts SSE) |
 
+### Internal API
+
+엔트리 라이프사이클 소비자 라우트 (`shared/team-lifecycle.mjs`, 대상 테이블 `sheet_answer`/`sheet_category_result`/`sheet_inspector`).
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team sheet data on entry deletion |
+| PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service |
+
 ---
 
 ## Traffic Service (port 9500)
@@ -267,7 +276,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | GET | `/api/records/visibility` | admin | — | `{ name: bool }` | 기록 파일별 성적 반영 여부 |
 | PUT | `/api/records/:name/visibility` | admin | — | `{ name, visible }` | 기록 파일 성적 반영 토글 |
 | POST | `/api/records` | admin | `{ name, data: { time, type, entry: { num, univ, team }, result, detail? } }` | 201 | Add record (auto-creates table with `FSK {year}` prefix) |
-| PATCH | `/api/records/:name/:rowid` | admin | `{ field, value }` | `{ num, ... }` | Update record field (`invalidated`, `scoreboard`, `detail`, `cones`, `oc`) |
+| PATCH | `/api/records/:name/:rowid` | admin | `{ field, value }` | `{ num, ... }` | Update record field (`invalidated`, `scoreboard`, `detail`, `cones`, `oc`, `result`). `result`는 양의 정수(ms/누적 총합) 또는 -1(DNF)만 |
 | DELETE | `/api/records/:name` | admin | — | 200 | Drop record table |
 
 ### Controller Logs
@@ -287,7 +296,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 ### Wireless LoRa Timing (one master + ≤6 sensors, single channel)
 
-마스터 노드에 USB로 연결된 브리지 PC가 모든 센서의 raw 이벤트·진단·신호등 상태를 서버로 push한다. 서버가 권위 상태(경기별 세션: arm·선택·신호등·lease)를 보유하고 모든 클라이언트가 SSE로 동일하게 본다. `green = arm`(측정 t0는 출발 센서). 경기 기록은 **서버 기록 엔진**이 ingest 이벤트로 직접 계산·저장한다(가속/오토크로스 = 출발→도착, 스키드패드 = lap2+lap4) — 무선 클라는 표시만(이중저장 없음). 제어는 경기별 **독점 lease**(claim/heartbeat/release/takeover)로, lease 보유자면 비-브리지도 가상 경기를 제어하고 물리 신호등은 다운링크(`/command`)로 제어한다. 경기: 가속·스키드패드·오토크로스(짐카나 제거).
+마스터 노드에 USB로 연결된 브리지 PC가 모든 센서의 raw 이벤트·진단·신호등 상태를 서버로 push한다. 서버가 권위 상태(경기별 세션: arm·선택·신호등·lease)를 보유하고 모든 클라이언트가 SSE로 동일하게 본다. `green = arm`(측정 t0는 출발 센서). 경기 기록은 **서버 기록 엔진**이 ingest 이벤트로 직접 계산·저장한다(가속/오토크로스 = 출발→도착, 스키드패드 = lap2+lap4) — 무선 클라는 표시만(이중저장 없음). 제어는 경기별 **독점 lease**(claim/heartbeat/release/takeover)로, lease 보유자면 비-브리지도 가상 경기를 제어하고 물리 신호등은 다운링크(`/command`)로 제어한다. 경기: 가속·스키드패드·오토크로스·내구(`EVENT_TYPES`, 짐카나 제거).
 
 세션 객체: `{ event_type, armed, light_color, green_tick, armed_at, team, event_name, controller, lease_expires_at, updated_at }`.
 
@@ -298,10 +307,10 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | PUT | `/api/wireless/physical-event` | admin | `{ event_type: <type>\|null }` | `{ ...light }` | 실제 신호등(SSR)을 사용할 경기 지정(`owner_event`). null=없음(전부 가상). 기본은 모든 경기가 가상, 지정 경기만 실제 제어. `wireless:light` 브로드캐스트 |
 | PUT | `/api/wireless/debounce` | admin | `{ ms: 0~5000 정수 }` | `{ ...light }` | 센서 디바운스 창(ms). 한 통과의 다중 엣지(바운스)를 접는 간격. 기본 300, 0이면 끔. `wireless_light.debounce_ms`에 저장, `wireless:light` 브로드캐스트(모든 화면 공유) |
 | GET | `/api/wireless/mapping` | admin | — | `[{ node_id, event_type, role, label, enabled, updated_at }]` | 센서→경기·역할 매핑 |
-| PUT | `/api/wireless/mapping/:node_id` | admin | `{ event_type, role(start\|finish), label?, enabled? }` | `{ ...row }` | 매핑 upsert (`wireless:mapping` 브로드캐스트). 가속·오토크로스=start+finish, 스키드패드=start |
+| PUT | `/api/wireless/mapping/:node_id` | admin | `{ event_type, role(start\|finish\|lane1~lane9), label?, enabled? }` | `{ ...row }` | 매핑 upsert (`wireless:mapping` 브로드캐스트). 가속·오토크로스=start+finish, 스키드패드·내구=start(단일 센서 멀티랩). 기록 엔진은 finish만 센서2로 취급, 그 외(start·lane*)는 센서1 |
 | DELETE | `/api/wireless/mapping/:node_id` | admin | — | 200 | 매핑 삭제 |
 | GET | `/api/wireless/state` | admin | — | `{ light, mapping, telemetry, bridge, sessions, lastEventId }` | 신선 로드용 종합 스냅샷 |
-| GET | `/api/wireless/events` | admin | `?since=<id>&limit=<n≤1000>` | `[{ id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state, raw }]` | 늦게 합류한 클라이언트의 raw 이벤트 백필 |
+| GET | `/api/wireless/events` | admin | `?since=<id>&limit=<n≤1000>` | `[{ id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state }]` | 늦게 합류한 클라이언트의 raw 이벤트 백필 |
 | POST | `/api/wireless/arm` | admin | `{ event_type, action: green\|red\|off, green_tick?(str) }` | `{ ...session }` | 경기 arm/disarm(green=arm). 가상 경기를 전 클라에 공유. lease 점유자 있으면 그만(409). green은 기록 엔진 런 리셋. `wireless:session` 브로드캐스트 |
 | POST | `/api/wireless/select` | admin | `{ event_type, team?: { num, univ, team }\|null, event_name?: string\|null }` | `{ ...session }` | 경기 선택(팀·이벤트명) 공유 — 서버 기록 귀속. 팀/이름 검증(잘못되면 400), null=해제. lease 점유자만. `wireless:session` 브로드캐스트 |
 | POST | `/api/wireless/dnf` | admin | `{ event_type }` | `{ ok }` | 진행 경기 DNF(result -1) 저장(세션 선택으로 귀속). 미arm 400, 이미 기록된 런 409, 미선택 400. lease 점유자만 |
@@ -326,7 +335,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/score/events` | admin | — | SSE stream | Re-broadcasts `inspection:*` and `traffic:*` events + manual-score/penalty/setting/endurance |
+| GET | `/api/score/events` | admin | — | SSE stream | 화이트리스트만 재전파: inspection `category-result`/`answer` → `inspection:category-result`/`inspection:answer`, traffic `records`/`record-visibility` → `traffic:records`/`traffic:record-visibility`. 재연결 시 `refresh`. 로컬 이벤트: `manual-score`/`penalty`/`setting`/`endurance` |
 
 ### Score Aggregation
 
@@ -353,6 +362,15 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/score/endurance` | admin | `?year=` | `{ team_num: { status, driver1_time, ... } }` | Endurance records for year |
 | PUT | `/api/score/endurance` | admin | `{ year, team_num, field, value }` | 200 | Update single endurance field (status, driver times, cones, oc, penalties) |
+
+### Internal API
+
+엔트리 라이프사이클 소비자 라우트 (`shared/team-lifecycle.mjs`, 대상 테이블 `score_manual`/`score_endurance`).
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team data on entry deletion (score_manual, score_endurance) |
+| PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service |
 
 ---
 
@@ -382,7 +400,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | GET | `/api/admin/sessions/:id/archive` | chief | — | ZIP stream | 세션 전체 아카이브 (팀별 폴더 구조) |
 | GET | `/api/admin/years/:year/archive` | chief | — | ZIP stream | 연도 전체 아카이브 (세션/팀별 폴더 구조) |
 | DELETE | `/api/admin/years/:year/files` | chief | — | `{ sessions, files }` | 연도별 파일 데이터 삭제 (제출 기록은 유지) |
-| GET | `/api/admin/students` | chief | — | `[{ email, name }]` | Active student users (fetched from auth service) |
+| GET | `/api/admin/students` | chief | — | `[{ email, name, realname, phone }]` | Active student users (fetched from auth service) |
 | GET | `/api/admin/student-teams` | chief | `?year=` | `[{ email, team_num, year }]` | Student-team mappings |
 | POST | `/api/admin/student-teams` | chief | `{ email, team_num, year }` | `{ email, team_num, year }` | Add student-team mapping |
 | DELETE | `/api/admin/student-teams/:email/:year` | chief | — | 200 | Remove student-team mapping |
@@ -391,7 +409,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service (updates student_team, session_team, submission, renames upload dirs) |
+| PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 or 202 | Sync team number change from entry service (updates student_team, session_team, submission, renames upload dirs). 파일 디렉토리 작업 실패 시 `202 { status: "pending_file_work", failures }` — 30초 주기 백그라운드 워커가 재시도 (`team_renumber_file_work`) |
 | DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team data on entry deletion (student_team, session_team, submission, files) |
 
 ---
@@ -462,7 +480,8 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | GET | `/api/courses` | chief | — | `[{ id, name, cone_count, created_at, updated_at }]` | 코스 목록 조회 |
 | POST | `/api/courses` | chief | `{ name }` | 201 `{ id, name, created_at, updated_at }` | 코스 생성 |
 | PATCH | `/api/courses/:id` | chief | `{ name }` | `{ id, name, updated_at }` | 코스 이름 수정 |
-| DELETE | `/api/courses/:id` | admin | — | 200 | 코스 삭제 (콘 CASCADE 삭제) |
+| PATCH | `/api/courses/:id/direction` | chief | `{ reverse?, start_cone_id?: int\|null }` | `{ ...course }` | 코스 진행 방향(reverse)·시작 콘 저장 (요청에 담긴 것만 갱신, start_cone_id null=자동 시작 게이트). `courses` SSE(type=direction) 브로드캐스트 |
+| DELETE | `/api/courses/:id` | admin | — | 200 | 코스 삭제 (콘·스냅샷 CASCADE 삭제) |
 | GET | `/api/courses/:id/export` | chief | — | `{ name, cones: [{lat, lng, side}...] }` | 코스+콘 JSON 다운로드 |
 | POST | `/api/courses/import` | chief | `{ name, cones: [{lat, lng, side}...] }` | 201 `{ id, name, ... }` | JSON으로 코스+콘 일괄 생성 (트랜잭션) |
 
@@ -481,6 +500,7 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/courses/:id/cones` | chief | — | `[{ id, course_id, lat, lng, alt, side, created_at, updated_at }]` | 코스의 콘 목록 |
 | POST | `/api/courses/:id/cones` | chief | `{ lat, lng, alt?, side }` | 201 `{ id, course_id, lat, lng, side, ... }` | 콘 추가 (side: "left"\|"center"\|"right") |
+| DELETE | `/api/courses/:id/cones` | chief | — | 200 | 코스의 콘 전체 삭제 (bulk wipe) |
 | PATCH | `/api/cones/:id` | chief | `{ lat?, lng?, side? }` | `{ id, course_id, lat, lng, side, updated_at }` | 콘 수정 (위치/방향) |
 | DELETE | `/api/cones/:id` | chief | — | 200 | 콘 삭제 |
 
@@ -490,9 +510,9 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/courses/:id/memos` | chief | — | `[{ id, course_id, lat, lng, width, height, content, created_at, updated_at }]` | 코스의 메모 목록 |
-| POST | `/api/courses/:id/memos` | chief | `{ lat, lng, width, height, content? }` | 201 `{ id, course_id, lat, lng, width, height, content, ... }` | 메모 추가 (width/height 단위 m, 0 초과 100000 이하; content 최대 5000자) |
-| PATCH | `/api/memos/:id` | chief | `{ lat?, lng?, width?, height?, content? }` | `{ id, course_id, lat, lng, width, height, content, updated_at }` | 메모 수정 (이동/크기/내용) |
+| GET | `/api/courses/:id/memos` | chief | — | `[{ id, course_id, lat, lng, width, height, rotation, content, created_at, updated_at }]` | 코스의 메모 목록 |
+| POST | `/api/courses/:id/memos` | chief | `{ lat, lng, width, height, rotation?, content? }` | 201 `{ id, course_id, lat, lng, width, height, rotation, content, ... }` | 메모 추가 (width/height 단위 m, 0 초과 100000 이하; rotation deg, [0,360) 정규화; content 최대 5000자) |
+| PATCH | `/api/memos/:id` | chief | `{ lat?, lng?, width?, height?, rotation?, content? }` | `{ id, course_id, lat, lng, width, height, rotation, content, updated_at }` | 메모 수정 (이동/크기/회전/내용) |
 | DELETE | `/api/memos/:id` | chief | — | 200 | 메모 삭제 |
 
 ### Rover — 기기 인입 (로버 → 서버)
@@ -536,6 +556,7 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | POST | `/api/rover/led-brightness` | admin | `{ ... }` | 200 | LED 밝기 제어 |
 | POST | `/api/rover/calibrate-battery` | admin | `{ measured_v }` (15~32 V) | `{ ok, measured_v }` | 멀티미터 실측값으로 배터리 ADC 게인 1점 보정. 로버가 영구 저장 |
 | POST | `/api/rover/calibrate-stereo` | admin | — | 200 | 스테레오 카메라 캘리브레이션 시작 |
+| POST | `/api/rover/calibrate-ground` | admin | `{ frames? }` (10~120, 기본 30) | `{ ok }` | 지면 교정 시작(above-ground 검출기 행별 기대 지면 깊이 곡선). 스테레오 교정 선행 필요, perception 미연결 시 503 |
 | POST | `/api/rover/calibrate-antenna` | admin | — | 200 | GPS 안테나 오프셋 캘리브레이션 시작 |
 | POST | `/api/rover/set-antenna-offset` | admin | `{ ... }` | 200 | 안테나 오프셋 수동 설정 |
 | POST | `/api/rover/calibrate-wheels` | admin | — | 200 | 휠 캘리브레이션 시작 |
@@ -545,6 +566,7 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | GET | `/api/rover/camera/stream` | admin | — | MJPEG stream | 카메라 MJPEG 스트림 (최대 8 뷰어, ≤~25fps 릴레이). WebRTC(WHEP) 실패/드롭 시의 **폴백** — 뷰어가 붙으면 서버가 `mjpeg-on`을 로버에 전달 |
 | GET | `/api/rover/camera/hold` | admin | `?mode=2d\|vr` | SSE stream | WebRTC **게이팅 전용** 뷰어. MJPEG 프레임은 안 받고, 로버가 캡처 + 해당 WebRTC 스트림(`mode=2d`→`rover-2d`, `mode=vr`→`rover-vr`)을 publish하도록 유지. 2D 패널/VR 뷰가 세션 동안 열어둠 |
 | POST | `/api/rover/camera/depth` | admin | `{ on }` | `{ ok, depth, camera_connected }` | 양안 깊이 컴포지트(정류 좌안 + 깊이 히트맵 + 최근접 거리, 로버가 렌더) 토글. 2D 뷰어(MJPEG `cameraViewers` **또는** WebRTC `holdViewers2d`)가 있어야 적용 — 뷰어 없으면 무시. 마지막 2D 뷰어 이탈 시 자동 해제 |
+| POST | `/api/rover/camera/detection` | admin | `{ on }` | `{ ok, detection, camera_connected }` | 근접(장애물) 감지 토글. depth와 달리 뷰어 게이트 없이 NAVIGATING 중 항상 적용되는 미션 안전 설정. roverState에 저장(`rover:status` 반영)되고 perception 재연결마다 재전송. 로버 env `OBSTACLE_DETECTION`이 하드 킬스위치, 이건 운영자 소프트 on/off |
 | GET | `/api/rover/camera/status` | admin | — | `{ camera_connected, viewers, depth, last_frame_age_ms }` | 카메라 릴레이 상태. `camera_connected`=perception 제어 SSE 연결됨, `viewers`=MJPEG 뷰어 수, `depth`=컴포지트 모드, `last_frame_age_ms`=서버 계산 프레임 경과(뷰어 없으면 null) |
 | GET | `/api/rover/map-tile` | admin | `?z=&x=&y=` | image (jpeg/png) | VR 미니맵용 위성 타일 **동일 출처 프록시**. WebGL 캔버스가 교차 출처 타일로 오염되지 않도록 VWorld(서버측 `VWORLD_KEY`)·구글 타일을 서버가 대신 가져와 전달. z/x/y는 slippy-map(XYZ) 인덱스, 범위 밖이면 400 |
 
@@ -599,12 +621,15 @@ mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없�
 | Event | Data | Description |
 |-------|------|-------------|
 | `init` | `{ courses }` | 연결 시 코스 목록 |
-| `courses` | `{ type, course?, courseId?, courses }` | 코스 생성/수정/삭제 |
-| `cones` | `{ type, courseId, cone?, coneId?, cones }` | 콘 추가/수정/삭제 |
-| `memos` | `{ type, courseId, memo?, memoId?, memos }` | 메모 추가/수정/삭제 |
-| `rover` | `{ lat, lng }` | 로버 위치 수신 시 브로드캐스트 |
-| `rover:status` | `{ connected, nav_state, ... }` | 로버 상태 변화 |
-| `rover:waypoint` / `rover:skipped` / `rover:spray` / `rover:obstacle` | `{ index }` 등 | 미션 진행 이벤트 |
+| `courses` | `{ type, course?, courseId?, courses }` | 코스 변경 (type: create/rename/direction/delete/import/start_reset) |
+| `cones` | `{ type, courseId, cone?, coneId?, cones }` | 콘 변경 (type: add/update/delete/clear/restore) |
+| `memos` | `{ type, courseId, memo?, memoId?, memos }` | 메모 변경 (type: add/update/delete) |
+| `rover` | `{ lat, lng, alt, source }` | 활성 소스 위치 수신 시 브로드캐스트 (source: rover\|receiver) |
+| `rover:status` | roverState + `{ receiver, position_source, ntrip_source }` | 로버·수신기·GPS·카메라·캘리브레이션 종합 상태 |
+| `rover:waypoint` / `rover:skipped` / `rover:spray` / `rover:obstacle` | `{ index }` / `{ waypoint, outcome }` / `{ nearest_m, paused }` 등 | 미션 진행 이벤트 |
+| `rover:logs` | `{ count, uploaded_at }` | 로버 로그 업로드 완료 |
+| `rover:antenna_calibration` | 캘리브레이션 결과 객체 | 안테나 오프셋 캘리브레이션 결과 |
+| `gps:survey_result` | `{ point_id, name, ok, samples? }` | base station 측량 결과 |
 
 ---
 
@@ -630,5 +655,5 @@ mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없�
 
 - `calendarId`: `role` 필드와 동일한 값 (캘린더 식별자)
 - `allDay: true` → `start`/`end`는 `YYYY-MM-DD` 형식
-- `allDay: false` → `start`/`end`는 `YYYY-MM-DD HH:mm` 형식, 타임존 Asia/Seoul
+- `allDay: false` → `start`/`end`는 UTC ISO 8601 형식(`...Z`, 예 `2026-07-13T05:00:00.000Z`). 요청 body는 `YYYY-MM-DD HH:mm`(Asia/Seoul 해석) 또는 오프셋/Z 포함 ISO를 받아 UTC로 정규화해 저장·응답한다
 - iCal 서명: HMAC-SHA256 (`JWT_SECRET`), PRODID `-//Formula Student Korea//Calendar//KO`
