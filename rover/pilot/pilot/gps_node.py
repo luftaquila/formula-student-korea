@@ -142,9 +142,24 @@ class GpsNode(Node):
         self._serial_last_open_attempt = 0.0
         self._serial_reopen_backoff_s = 2.0
 
-        # Open serial port and configure ZED-F9P
-        self._open_serial()
-        self._configure_receiver()
+        # Open serial port and configure ZED-F9P. A missing/unplugged receiver
+        # at startup must NOT be fatal: gps_node is no longer a launch-gating
+        # node (pilot.launch.py registers no OnProcessExit→Shutdown for it), so
+        # crashing here would tear down the whole stack — including manual
+        # control, which needs only the MCU link, not GPS or the camera. If the
+        # open fails, start without it and let the _read_serial timer keep
+        # retrying the reopen (it backs off and recovers gracefully); the node
+        # stays up publishing no-fix until the receiver appears.
+        try:
+            self._open_serial()
+            self._configure_receiver()
+        except (serial.SerialException, OSError) as exc:
+            self.get_logger().warn(
+                f'GPS serial not available at startup ({exc}) — starting without '
+                'it; _read_serial will keep retrying to reopen. Other nodes '
+                '(manual control) run regardless.'
+            )
+            self._serial = None
         # NTRIP is started lazily from _read_serial once a 3D fix arrives —
         # the mountpoint is chosen by nearest distance to the caster's
         # published base stations, so we need a position first.
@@ -274,12 +289,12 @@ class GpsNode(Node):
                 )
                 if attempt < _SERIAL_OPEN_RETRIES:
                     time.sleep(_SERIAL_OPEN_BACKOFF_S)
-        # All retries exhausted — re-raise. gps_node is a core node, so the
-        # launch file registers an OnProcessExit→Shutdown handler for it
-        # (launch/pilot.launch.py): this exception kills the node process,
-        # which shuts the whole launch down, exits the container, and lets
-        # pilot.service's Restart=on-failure recreate the stack — with a clear
-        # trail of open attempts left in the log.
+        # All retries exhausted for this attempt — re-raise so the caller
+        # decides. Both callers catch it: __init__ starts non-fatally when no
+        # receiver is present at boot, and _read_serial() retries the reopen on
+        # a later tick (indefinite, backed-off recovery). gps_node is
+        # deliberately NOT launch-gating (see pilot.launch.py), so a missing or
+        # lost GPS never tears down manual control.
         raise last_exc
 
     def _configure_receiver(self):
