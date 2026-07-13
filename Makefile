@@ -11,8 +11,8 @@ build:
 deploy:
 	-podman image prune -f --filter "dangling=true" 2>/dev/null
 	podman compose --profile $(PROFILE) pull $(SVC)
-	podman compose --profile $(PROFILE) up -d --force-recreate
-	podman compose --profile $(PROFILE) restart $(CADDY_SVC)
+	podman compose --profile $(PROFILE) up -d --force-recreate $(SVC)
+	$(if $(filter $(CADDY_SVC),$(SVC)),,podman compose --profile $(PROFILE) restart $(CADDY_SVC))
 
 restart:
 	podman compose --profile $(PROFILE) up -d --force-recreate

@@ -19,8 +19,9 @@ on:
       - '.gitignore'
 
 permissions:
-  packages: write
-  checks: write
+  contents: read
+  packages: read   # ghcr 이미지 pull에는 read면 충분(어떤 잡도 이미지를 push하지 않음)
+  checks: write    # dorny/test-reporter가 체크 결과를 게시하는 데 필요
 
 jobs:
   unit:

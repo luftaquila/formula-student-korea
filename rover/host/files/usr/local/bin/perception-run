@@ -23,19 +23,33 @@ done
 # container behind. Be idempotent.
 podman rm -f "$NAME" >/dev/null 2>&1 || true
 
+# rover-secret은 프로비저닝된 경우에만 마운트한다(pilot-run과 동일). 있으면 ROVER_SECRET을 주입해
+# perception이 X-Rover-Secret으로 course/WHIP에 인증하고, 없으면 INTERNAL_SECRET으로 폴백한다.
+ROVER_SECRET_ARGS=()
+if podman secret inspect rover-secret >/dev/null 2>&1; then
+    ROVER_SECRET_ARGS=(--secret rover-secret,type=env,target=ROVER_SECRET)
+fi
+
 # Pin public DNS resolvers (same rationale as pilot-run): with --network=host,
 # podman snapshots /etc/resolv.conf at create time and can capture an empty one
 # on a cold boot before NetworkManager is up.
+#
+# ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST confines the DDS graph to loopback so
+# no off-host device on the open field Wi-Fi can join and publish /rover/cmd/*
+# (mirrors pilot-run; both run --network=host on this host and discover each
+# other over loopback).
 exec podman run \
     --name "$NAME" \
     --rm \
     --network=host \
     --dns=1.1.1.1 \
     --dns=8.8.8.8 \
+    --env ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
     --label=io.containers.autoupdate=registry \
     --label=PODMAN_SYSTEMD_UNIT=perception.service \
     "${DEVS[@]}" \
     --volume /var/lib/perception:/var/lib/perception:z \
     --env-file /etc/pilot/pilot.conf \
     --secret internal-secret,type=env,target=INTERNAL_SECRET \
+    "${ROVER_SECRET_ARGS[@]}" \
     "$IMAGE"

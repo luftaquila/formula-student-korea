@@ -649,6 +649,7 @@ function processRecordEngine(rows) {
       } else if (et === "내구") {
         // 단일 센서 멀티랩. 첫 통과=출발선(t0), 이후 통과마다 1랩을 기록 1건에 이어붙인다.
         if (sensor !== 1) continue;
+        if (run.saved) continue; // DNF 등으로 확정된 런은 랩을 더 이어붙이지 않는다.
         if (run.lastTick == null) { run.lastTick = tickMs; continue; } // 첫 크로싱=출발선
         const lap = tickMs - run.lastTick;
         run.lastTick = tickMs;
@@ -810,6 +811,11 @@ function validateRecordData(data) {
 
   if (typeof data.result !== "number" || !Number.isInteger(data.result)) {
     return { valid: false, error: "결과값이 올바르지 않습니다." };
+  }
+  // 유효 result는 양의 정수(ms 시간/누적 총합) 또는 -1(DNF)뿐. 0이 완주로 취급되면
+  // 점수 계산에서 해당 종목 전 팀 점수가 평탄화되어 붕괴하므로 0·(-1 외 음수)를 거부.
+  if (data.result !== -1 && data.result <= 0) {
+    return { valid: false, error: "결과값은 양의 정수(ms) 또는 -1(DNF)이어야 합니다." };
   }
   if (data.detail !== undefined && data.detail !== null && typeof data.detail !== "string") {
     return { valid: false, error: "상세 정보가 올바르지 않습니다." };
@@ -1021,9 +1027,9 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   if (!["invalidated", "scoreboard", "detail", "cones", "oc", "result"].includes(field)) {
     return res.status(400).send("올바르지 않은 필드입니다.");
   }
-  // result는 정수만(내구 등 누적 총합 갱신용). 음수(-1=DNF)도 허용.
-  if (field === "result" && !Number.isInteger(value)) {
-    return res.status(400).send("결과값이 올바르지 않습니다.");
+  // result는 양의 정수(ms/누적 총합) 또는 -1(DNF)만. 0·(-1 외 음수)는 점수 붕괴 유발 → 거부.
+  if (field === "result" && (!Number.isInteger(value) || (value !== -1 && value <= 0))) {
+    return res.status(400).send("결과값은 양의 정수(ms) 또는 -1(DNF)이어야 합니다.");
   }
 
   const result = dbRun(() => {
@@ -1046,6 +1052,13 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
       }
     } else if (field === "scoreboard") {
       const newStatus = row.scoreboard ? 0 : 1;
+      // 무효화된 기록은 전광판에서 자동으로 내려가는데(invalidated ON 시 scoreboard=0),
+      // scoreboard=0 상태를 토글하면 다시 1이 돼 무효 기록이 전광판에 재노출됐다. 차단.
+      if (newStatus === 1 && row.invalidated) {
+        const err = new Error("무효화된 기록은 전광판에 표시할 수 없습니다.");
+        err.status = 400;
+        throw err;
+      }
       db.prepare("UPDATE record SET scoreboard = ? WHERE name = ? AND legacy_rowid = ?").run(newStatus, name, rowid);
       return { num: row.num, invalidated: row.invalidated, scoreboard: newStatus };
     } else if (field === "detail") {
@@ -1224,7 +1237,11 @@ app.patch("/api/internal/team-num", (req, res) => {
 
 // GET /api/controllers - 모든 컨트롤러 로그 조회
 app.get("/api/controllers", (req, res) => {
-  const result = dbRun(() => db.prepare("SELECT * FROM controller ORDER BY timestamp DESC").all());
+  // 최근 N건만(기본·최대 5000). controller 테이블은 최대 10만 행까지 커질 수 있어 무제한
+  // 조회는 수십 MB 응답 + 동기 직렬화로 이벤트 루프를 블로킹한다. limit/offset로 페이지네이션.
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 5000, 1), 5000);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const result = dbRun(() => db.prepare("SELECT * FROM controller ORDER BY timestamp DESC LIMIT ? OFFSET ?").all(limit, offset));
 
   if (!result.success) {
     return res.status(result.status).send(result.error);
@@ -1249,7 +1266,8 @@ app.post("/api/controllers", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "controller.upload", { timestamp: validation.timestamp });
+  // 고빈도 텔레메트리 인제스트라 성공마다 감사 로그를 남기면 logs 테이블을 뒤덮는다.
+  // wireless.ingest와 동일 정책으로 성공은 로깅하지 않고 실패(위 warn)만 남긴다.
   res.status(201).send();
 });
 
@@ -1648,8 +1666,26 @@ app.post("/api/wireless/dnf", (req, res) => {
   if (run?.saved) {
     return res.status(409).send("이미 기록이 저장된 경기입니다.");
   }
-  // 귀속은 arm 스냅샷(run.bound) 우선, 없으면 live 세션.
-  const ok = engineSaveRecord(event_type, run?.bound || sess, -1, null);
+  // 내구는 이미 랩을 이어붙인 누적 행(run.recordRowid)이 있으면 그 행의 result를 -1로 UPDATE한다
+  // — 별도 DNF 행을 INSERT하면 누적 행과 공존해 이중 기록이 된다. 그 외 종목/누적 행 없으면 신규 -1.
+  let ok;
+  if (event_type === "내구" && run?.recordRowid != null && run?.recordName) {
+    const SYS = { email: "system", name: "system", role: "admin" };
+    const r = dbRun(() => {
+      db.prepare("UPDATE record SET result = ? WHERE name = ? AND legacy_rowid = ?").run(-1, run.recordName, run.recordRowid);
+      return getRecordRow(run.recordName, run.recordRowid);
+    });
+    ok = r.success;
+    if (ok) {
+      logger.log(null, "wireless.record", { type: event_type, result: -1, dnf: true, num: (run.bound || sess)?.team?.num }, run.recordName, SYS);
+      broadcastEvent("records", { type: "update", name: run.recordName, field: "result", recordFiles: getRecordFiles(), record: r.result });
+    } else {
+      logger.warn(null, "wireless.record", { error: r.error, event_type }, run.recordName, SYS);
+    }
+  } else {
+    // 귀속은 arm 스냅샷(run.bound) 우선, 없으면 live 세션.
+    ok = engineSaveRecord(event_type, run?.bound || sess, -1, null);
+  }
   if (!ok) return res.status(500).send("DNF 기록 저장에 실패했습니다.");
   // 늦게 도착하는 도착 센서가 이중 저장하지 않도록 런을 저장됨으로 표시.
   // 서버 재기동 등으로 런이 비어 있으면 생성 후 표시 — 안 하면 뒤이은 센서가 새 런을

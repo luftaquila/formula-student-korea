@@ -291,9 +291,10 @@ class GpsRegisterAgent:
 
     def __init__(self, server_url, internal_secret, ntrip_username,
                  serial_port="/dev/ttyGPS", baud=115200, meas_rate_ms=100,
-                 report_interval=1.0):
+                 report_interval=1.0, secret_header="X-Internal-Service"):
         self._url = server_url.rstrip("/")
         self._secret = internal_secret
+        self._secret_header = secret_header
         self._ntrip_username = ntrip_username or ""
         self._port = serial_port
         self._baud = baud
@@ -346,7 +347,7 @@ class GpsRegisterAgent:
     def _headers(self):
         h = {"Content-Type": "application/json"}
         if self._secret:
-            h["X-Internal-Service"] = self._secret
+            h[self._secret_header] = self._secret
         return h
 
     def _enqueue_post(self, path, payload, label):
@@ -998,13 +999,21 @@ def main():
     )
     server_url = os.environ.get("SERVER_URL", "").strip()
     internal_secret = os.environ.get("INTERNAL_SECRET", "").strip()
+    rover_secret = os.environ.get("ROVER_SECRET", "").strip()
     ntrip_username = os.environ.get("NTRIP_USERNAME", "").strip()
     allow_http = os.environ.get("SERVER_URL_ALLOW_HTTP", "").lower() == "true"
 
+    # 로버 전용 시크릿 우선(course의 로버/GPS internal 라우트가 X-Rover-Secret 수용). 미설정 시
+    # INTERNAL_SECRET으로 폴백(하위 호환).
+    if rover_secret:
+        auth_secret, auth_secret_header = rover_secret, "X-Rover-Secret"
+    else:
+        auth_secret, auth_secret_header = internal_secret, "X-Internal-Service"
+
     if not server_url:
         log.error("SERVER_URL is required"); raise SystemExit(2)
-    if not internal_secret:
-        log.error("INTERNAL_SECRET is required"); raise SystemExit(2)
+    if not auth_secret:
+        log.error("ROVER_SECRET or INTERNAL_SECRET is required"); raise SystemExit(2)
     if not server_url.startswith("https://") and not allow_http:
         log.error("SERVER_URL must be https:// (got %r); set "
                   "SERVER_URL_ALLOW_HTTP=true for trusted internal networks",
@@ -1015,7 +1024,8 @@ def main():
 
     agent = GpsRegisterAgent(
         server_url=server_url,
-        internal_secret=internal_secret,
+        internal_secret=auth_secret,
+        secret_header=auth_secret_header,
         ntrip_username=ntrip_username,
         serial_port=os.environ.get("GPS_SERIAL_PORT", "/dev/ttyGPS"),
         baud=int(os.environ.get("GPS_BAUD", "115200")),

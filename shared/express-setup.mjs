@@ -130,11 +130,15 @@ export function createApp(deps, authRoleFn) {
           return { valid: true, role: data.role };
         }
         if (res.status === 404) return { valid: false, role: null };
+        // 404(사용자 삭제/비활성)만 확정 무효다. 5xx/네트워크 오류는 auth 일시 장애이므로
+        // transient로 표시 — 이 요청은 fail-close로 거부(req.user=null)하되 세션 쿠키는
+        // 지우지 않아 복구 후 재-OAuth 없이 세션이 이어진다. 거부는 유지되므로 즉시 권한
+        // 반영(캐싱 없음) 원칙과 충돌하지 않는다.
         console.warn(`[auth] fail-close: auth returned ${res.status} for ${email}`);
-        return { valid: false, role: null };
+        return { valid: false, role: null, transient: true };
       } catch (e) {
         console.warn(`[auth] fail-close: auth unreachable for ${email}: ${e.message || e}`);
-        return { valid: false, role: null };
+        return { valid: false, role: null, transient: true };
       }
     };
   }
@@ -182,11 +186,15 @@ export function createApp(deps, authRoleFn) {
       const freshRole = typeof result === "object" ? result.role : null;
       if (!valid) {
         req.user = null;
-        const cookieOpts = formatCookieOpts(0, isSecureConnection(req));
-        res.setHeader("Set-Cookie", [
-          `fsk_session=; HttpOnly; ${cookieOpts}`,
-          `fsk_user=; ${cookieOpts}`,
-        ]);
+        // 확정 무효(404)에서만 쿠키를 지운다. transient(auth 5xx/네트워크 장애)면 이 요청은
+        // 거부하되 쿠키를 보존해 복구 후 재-OAuth 없이 세션이 이어지게 한다.
+        if (!(result && typeof result === "object" && result.transient)) {
+          const cookieOpts = formatCookieOpts(0, isSecureConnection(req));
+          res.setHeader("Set-Cookie", [
+            `fsk_session=; HttpOnly; ${cookieOpts}`,
+            `fsk_user=; ${cookieOpts}`,
+          ]);
+        }
       } else if (freshRole && freshRole !== req.user.role && process.env.JWT_SECRET) {
         req.user.role = freshRole;
         const { email, name } = req.user;
@@ -206,9 +214,23 @@ export function createApp(deps, authRoleFn) {
   // 4. Auth middleware (when authRoleFn is provided)
   if (authRoleFn) {
     app.use((req, res, next) => {
-      const role = authRoleFn(req);
+      // Express 라우팅은 대소문자 무시 + 후행 슬래시 병합이라 `/API/users`·`/api/x/`가
+      // 소문자·no-slash 핸들러에 매칭된다. 반면 authRoleFn 게이트는 req.path를 그대로
+      // 비교하므로, 정규화하지 않으면 경로 변형으로 게이트를 우회할 수 있다(예: `/API/users`가
+      // startsWith("/api/") 실패 → public으로 통과 후 핸들러 매칭). 라우터와 동일하게
+      // 정규화한 경로를 게이트에 넘겨 우회를 차단한다. req.url/req.path 원본은 건드리지
+      // 않으므로 라우팅·핸들러(대소문자 유지 파라미터 등)에는 영향이 없다.
+      const gatePath = (req.path || "/").toLowerCase().replace(/\/+$/, "") || "/";
+      const gateReq = gatePath === req.path ? req : new Proxy(req, {
+        get(target, prop) {
+          if (prop === "path") return gatePath;
+          const v = Reflect.get(target, prop);
+          return typeof v === "function" ? v.bind(target) : v;
+        },
+      });
+      const role = authRoleFn(gateReq);
       if (!role) return next(); // public
-      const isApi = req.path.startsWith("/api/");
+      const isApi = gatePath.startsWith("/api/");
       if (!req.user) {
         if (!isApi) return res.redirect("/");
         return res.status(401).send("인증이 필요합니다.");
@@ -222,7 +244,18 @@ export function createApp(deps, authRoleFn) {
   }
 
   // 5. Static files (after auth middleware)
-  app.use(express.static("./web/dist"));
+  // Vite가 낸 해시 자산(/assets/*)은 파일명이 콘텐츠에 종속되므로 1년 immutable 캐시로
+  // 매 페이지 로드의 재검증(304) 왕복을 없앤다. 그 외(index.html 등)는 no-cache라 재배포가
+  // 즉시 반영된다.
+  app.use(express.static("./web/dist", {
+    setHeaders: (res, filePath) => {
+      if (/[\\/]assets[\\/]/.test(filePath)) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      } else {
+        res.setHeader("Cache-Control", "no-cache");
+      }
+    },
+  }));
 
   return app;
 }

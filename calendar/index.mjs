@@ -246,8 +246,19 @@ app.put("/api/events/:id", (req, res) => {
   if (!valid) return;
   const { role, start, end, allDay } = valid;
 
-  const existing = db.prepare("SELECT id FROM events WHERE id = ?").get(id);
+  const existing = db.prepare("SELECT id, role FROM events WHERE id = ?").get(id);
   if (!existing) return res.status(404).send("일정을 찾을 수 없습니다.");
+  // 기존 이벤트의 공개 범위(role)가 요청자 레벨보다 높으면 수정 불가 — 목록에서 숨겨진
+  // 상위(admin) 일정을 하위(chief)가 role을 낮춰 열람·변조하는 것을 막는다(생성/입력 검사는
+  // 새 role만 본다).
+  {
+    const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
+    const existingLevel = ALLOWED_EVENT_ROLES.includes(existing.role) ? EVENT_ROLE_LEVELS[existing.role] : EVENT_ROLE_LEVELS.official;
+    if (existingLevel > userLevel) {
+      logger.warn(req, "event.update", { error: "insufficient_role", event_role: existing.role }, id);
+      return res.status(403).send("이 일정을 수정할 권한이 없습니다.");
+    }
+  }
 
   const description = req.body.description || "";
   const location = req.body.location || "";
@@ -271,8 +282,17 @@ app.put("/api/events/:id", (req, res) => {
 app.delete("/api/events/:id", (req, res) => {
   const { id } = req.params;
 
-  const existing = db.prepare("SELECT title FROM events WHERE id = ?").get(id);
+  const existing = db.prepare("SELECT title, role FROM events WHERE id = ?").get(id);
   if (!existing) return res.status(404).send("일정을 찾을 수 없습니다.");
+  // PUT과 동일: 요청자 레벨보다 높은 공개 범위의 일정은 삭제 불가.
+  {
+    const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
+    const existingLevel = ALLOWED_EVENT_ROLES.includes(existing.role) ? EVENT_ROLE_LEVELS[existing.role] : EVENT_ROLE_LEVELS.official;
+    if (existingLevel > userLevel) {
+      logger.warn(req, "event.delete", { error: "insufficient_role", event_role: existing.role }, id);
+      return res.status(403).send("이 일정을 삭제할 권한이 없습니다.");
+    }
+  }
 
   const result = dbRun(() => db.prepare("DELETE FROM events WHERE id = ?").run(id));
 
@@ -329,7 +349,9 @@ app.get("/api/events/ical", (req, res) => {
 });
 
 function escapeICalText(text) {
-  return text.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+  // 백슬래시 먼저 이스케이프한 뒤 특수문자를, 마지막으로 CR/LF를 이스케이프 개행(\n)으로
+  // 정규화한다. \r를 그대로 두면 lone CR이 피드에 새어 라인이 조기 종결될 수 있다.
+  return text.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r\n?/g, "\\n").replace(/\n/g, "\\n");
 }
 
 function formatICalDateTime(dateStr) {
@@ -371,10 +393,12 @@ function generateICal(events) {
 
     if (event.all_day) {
       lines.push(`DTSTART;VALUE=DATE:${event.start.slice(0, 10).replace(/-/g, "")}`);
-      // iCal DTEND for all-day events is exclusive (day after last day)
-      const endDate = new Date(event.end.slice(0, 10) + "T00:00:00");
-      endDate.setDate(endDate.getDate() + 1);
-      lines.push(`DTEND;VALUE=DATE:${endDate.toISOString().slice(0, 10).replace(/-/g, "")}`);
+      // iCal all-day DTEND is exclusive (day after the last day). Compute in UTC —
+      // parsing "YYYY-MM-DDT00:00:00" as local time made the result shift by a day
+      // when the server TZ isn't UTC. Date.UTC handles month/day rollover.
+      const [ey, em, ed] = event.end.slice(0, 10).split("-").map(Number);
+      const endExclusive = new Date(Date.UTC(ey, em - 1, ed + 1));
+      lines.push(`DTEND;VALUE=DATE:${endExclusive.toISOString().slice(0, 10).replace(/-/g, "")}`);
     } else {
       lines.push(`DTSTART;TZID=Asia/Seoul:${formatICalDateTime(event.start)}`);
       lines.push(`DTEND;TZID=Asia/Seoul:${formatICalDateTime(event.end)}`);

@@ -4,6 +4,7 @@ import { createDatabase, runMigrationOnce, normalizeTimestampColumn, setupRowCap
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, createSecretChecker } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
+import { ROLE_LEVELS } from "../shared/constants.js";
 import { registerRoverRoutes } from "./lib/rover-routes.mjs";
 
 const PORT = 10000;
@@ -277,9 +278,15 @@ const logger = createLogger(db, "course");
 
 // Timing-safe internal secret check (shared helper)
 const isInternalSecret = createSecretChecker(process.env.INTERNAL_SECRET);
+// 로버 전용 시크릿(선택적). 설정되면 로버 라우트에서 X-Rover-Secret 헤더로도 인증할 수 있다.
+// isInternalRequest는 로버 라우트 게이트에서만 사용되므로(course authRoleFn) 이 시크릿의 권한은
+// 로버 엔드포인트로 자동 한정된다 — 필드 장비(pilot/perception/GPS)가 전 서비스 admin인
+// INTERNAL_SECRET을 소지하지 않아도 되어, 물리 장비 탈취 시 유출 반경이 course 로버 경로로 좁혀진다.
+// 미설정 시 checker가 항상 false라 기존 INTERNAL_SECRET 동작과 동일(하위 호환).
+const isRoverSecret = createSecretChecker(process.env.ROVER_SECRET);
 
 function isInternalRequest(req) {
-  return isInternalSecret(req.headers["x-internal-service"]);
+  return isInternalSecret(req.headers["x-internal-service"]) || isRoverSecret(req.headers["x-rover-secret"]);
 }
 
 const app = createApp({ express }, (req) => {
@@ -380,7 +387,27 @@ function getMemos(courseId) {
   return db.prepare("SELECT * FROM memo WHERE course_id = ? ORDER BY id").all(courseId);
 }
 
-app.get("/api/events", sseHandler(() => ({ courses: getCourses() })));
+// 연결에 role을 태깅해 rover 텔레메트리를 admin 연결로만 좁힐 수 있게 한다(rover-routes의
+// broadcast 래퍼가 filterFn으로 사용). courses/cones/memos는 chief+ 전체에 전송된다.
+// meta.role은 연결 시점 스냅샷이므로, sse 매니저의 주기 재검증으로 강등을 반영한다(즉시-권한-반영):
+// 최신 role로 meta를 갱신(→ admin 필터가 재평가)하거나, chief 미만/삭제 시 연결을 종료한다.
+async function revalidateSseRole(meta) {
+  const email = meta.email;
+  if (!email || !process.env.AUTH_SERVER || !process.env.INTERNAL_SECRET) return meta; // 검증 불가 → 유지
+  const res = await fetch(`${process.env.AUTH_SERVER}/api/users/role/${encodeURIComponent(email)}`, {
+    headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
+    signal: AbortSignal.timeout(3000),
+  });
+  if (res.status === 404) return null;         // 삭제/비활성 → 연결 종료
+  if (!res.ok) throw new Error("transient");   // 5xx/네트워크 → 연결 유지(fail-open)
+  const { role } = await res.json();
+  if (!role || (ROLE_LEVELS[role] || 0) < ROLE_LEVELS.chief) return null; // chief 미만 → 종료
+  return { ...meta, role };                    // 최신 role 반영
+}
+app.get("/api/events", sseHandler(() => ({ courses: getCourses() }), {
+  meta: (req) => ({ role: req.user?.role, email: req.user?.email }),
+  revalidate: revalidateSseRole,
+}));
 
 /* ============================================
    Validation 헬퍼
@@ -696,8 +723,14 @@ app.post("/api/courses/:id/snapshots/:sid/restore", (req, res) => {
       takeCourseSnapshot(id, actor, safetyReason);
       db.prepare("DELETE FROM cone WHERE course_id = ?").run(id);
       const insert = db.prepare("INSERT INTO cone (course_id, lat, lng, alt, side, created_at, updated_at) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
-      // 이전 버전 스냅샷에는 alt가 없으므로 undefined → null로 보존.
-      for (const c of cones) insert.run(id, c.lat, c.lng, typeof c.alt === "number" ? c.alt : null, c.side);
+      // 방어심층: 스냅샷은 서버가 검증된 콘에서 생성하지만, 손상/조작된 행이 그대로 복원되지
+      // 않도록 좌표를 재검증하고 유효한 콘만 재삽입한다. 이전 버전 스냅샷엔 alt가 없어 null 보존.
+      let skippedCones = 0;
+      for (const c of cones) {
+        if (!validateCoordinate(c.lat, c.lng).valid) { skippedCones++; continue; }
+        insert.run(id, c.lat, c.lng, typeof c.alt === "number" ? c.alt : null, c.side);
+      }
+      if (skippedCones) logger.warn(req, "course.snapshot.restore", { skipped_invalid_cones: skippedCones, snapshot_id: sid }, course.name);
       // Cones were replaced with fresh ids, so the designated start cone no longer
       // exists — reset to the auto start gate (snapshots carry no cone identity).
       db.prepare("UPDATE course SET start_cone_id = NULL WHERE id = ?").run(id);

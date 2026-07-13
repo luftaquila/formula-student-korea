@@ -249,8 +249,14 @@ function downloadCSV() {
     ]);
   }
 
+  // CSV 셀: 수식 인젝션 방지 — =,+,-,@,tab,CR로 시작하면 텍스트 마커(')를 접두.
+  const csvCell = (cell) => {
+    let s = String(cell ?? "");
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return `"${s.replace(/"/g, '""')}"`;
+  };
   const csvContent = [headers, ...rows]
-    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    .map((row) => row.map(csvCell).join(","))
     .join("\n");
 
   const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });

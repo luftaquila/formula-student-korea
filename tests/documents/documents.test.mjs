@@ -598,6 +598,32 @@ describe('Student API - session detail', () => {
     const res = await client.get('/api/sessions/99999', { cookie: studentCookie });
     assert.equal(res.status, 404);
   });
+
+  it('GET/POST /api/sessions/:id reject a same-number team from a different year (cross-year IDOR)', async () => {
+    // student1 is team 1 / 2026. Team numbers are reused across years for
+    // different universities, so a 2025 session that also lists team 1 must NOT
+    // be readable or submittable by the 2026 team-1 student.
+    const createRes = await client.post('/api/admin/sessions', {
+      body: {
+        name: 'Prev-year Session',
+        start_at: '2020-01-01T00:00', end_at: '2030-12-31T23:59', late_end_at: '',
+        max_file_size: 10485760, year: 2025, teams: [1], allowed_extensions: 'pdf',
+      },
+      cookie: chiefCookie,
+    });
+    assert.equal(createRes.status, 201);
+    const otherYearId = (await createRes.json()).id;
+
+    const view = await client.get(`/api/sessions/${otherYearId}`, { cookie: studentCookie });
+    assert.equal(view.status, 403, 'must not read a different-year session with a matching team number');
+
+    const submit = await uploadFile(otherYearId, studentCookie, [
+      { name: 'x.pdf', type: 'application/pdf', content: Buffer.from('x') },
+    ]);
+    assert.equal(submit.status, 403, 'must not submit to a different-year session');
+
+    db.prepare('DELETE FROM session WHERE id = ?').run(otherYearId);
+  });
 });
 
 // -- File upload (submit) --

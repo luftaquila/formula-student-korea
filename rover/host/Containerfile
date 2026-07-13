@@ -59,8 +59,10 @@ RUN dnf install -y \
 # we bake the home tree there and let tmpfiles.d/fsk-home.conf seed
 # /var/home/fsk on first boot.
 #
-# fsk is NOT in `wheel`; sudoers.d/fsk whitelists only the commands
-# provision-rover.sh needs.
+# fsk is NOT in `wheel`; sudoers.d/fsk NOPASSWD-whitelists the specific
+# commands provision-rover.sh and operators use. NOTE this is an operational-
+# convenience curated list, NOT a privilege boundary — several entries are
+# trivially root-equivalent (see the grant below), so fsk is effectively root.
 RUN install -d -m 700 -o 1500 -g 1500 /usr/share/factory/var/home/fsk \
                                       /usr/share/factory/var/home/fsk/.ssh \
     && curl -fsSL https://github.com/luftaquila.keys \
@@ -68,10 +70,14 @@ RUN install -d -m 700 -o 1500 -g 1500 /usr/share/factory/var/home/fsk \
     && chmod 600 /usr/share/factory/var/home/fsk/.ssh/authorized_keys \
     && chown 1500:1500 /usr/share/factory/var/home/fsk/.ssh/authorized_keys
 
-# Narrow sudo grant — only the commands provision-rover.sh and operators
-# actually need. Avoids handing fsk full root. vcgencmd is included for
-# firmware/power diagnostics (get_throttled, get_config usb_max_current_enable):
-# it needs /dev/vcio, which is root-only.
+# Curated NOPASSWD sudo grant — the commands provision-rover.sh and operators
+# actually need. This documents WHAT the tooling invokes; it is NOT a security
+# boundary. podman (can run privileged/host-mounted containers), install and
+# tee (write arbitrary root-owned files), systemctl (start arbitrary units),
+# and bootc (swap the whole OS image) are each trivially root-equivalent, so in
+# practice fsk == root. Keep the list tight for auditability, not isolation.
+# vcgencmd is here for firmware/power diagnostics (get_throttled, get_config
+# usb_max_current_enable): it needs /dev/vcio, which is root-only.
 RUN install -d -m 750 /etc/sudoers.d \
     && printf 'Defaults secure_path="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin"\nfsk ALL=(ALL) NOPASSWD: /usr/bin/podman, /usr/bin/systemctl, /usr/bin/install, /usr/bin/tee, /usr/bin/nmcli, /usr/bin/tailscale, /usr/bin/bootc, /usr/bin/vcgencmd, /usr/local/bin/flash-mcu\n' \
          > /etc/sudoers.d/fsk \

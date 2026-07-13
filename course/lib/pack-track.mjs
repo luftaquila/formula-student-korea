@@ -162,7 +162,17 @@ function makePreview(Le, Re, w = 355, h = 200) {
 // Make a course name safe for file/folder paths: collapse whitespace runs to a
 // single '-'. The in-game display name (ui_track.json) keeps the original.
 export function safeTrackName(name) {
-  return String(name).replace(/\s+/g, "-");
+  // 이 값은 zip 엔트리 경로(content/tracks/<name>/...)에 그대로 들어가므로, 경로 구분자·상위
+  // 참조(..)·예약 문자를 제거해 zip-slip(트랙 폴더 밖으로 추출)을 막는다. 공백은 '-'로,
+  // 결과가 비면 'course'로 폴백. 게임 표시명(ui_track.json)은 원본을 유지한다.
+  const cleaned = String(name)
+    .replace(/[/\\]/g, "-")     // path separators
+    .replace(/\.\.+/g, ".")      // collapse parent-traversal dots
+    .replace(/[:*?"<>|]/g, "")   // filesystem-reserved chars
+    .replace(/^\.+/, "")         // leading dots (hidden / relative)
+    .replace(/\s+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "course";
 }
 
 /**

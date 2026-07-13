@@ -2182,14 +2182,21 @@ describe('Camera relay', () => {
     assert.equal(st.depth, true);
 
     // Last viewer leaves → camera-stop AND depth-off (so a reopen starts plain),
-    // and the server depth state resets.
+    // and the server depth state resets. A connect-time camera-stop/depth-off is
+    // already in ctlSink.text (the control channel re-syncs on attach), so wait for
+    // a FRESH one (count increases) rather than a substring that's satisfiable
+    // before the disconnect has been processed, then confirm the server state via
+    // the status endpoint — polling removes the async close-handler race.
+    const stopBefore = (ctlSink.text.match(/camera-stop/g) || []).length;
+    const offBefore = (ctlSink.text.match(/depth-off/g) || []).length;
     stopView();
     viewAc.abort();
-    assert.ok(await waitFor(() => ctlSink.text.includes('camera-stop'), 1500),
+    assert.ok(await waitFor(() => (ctlSink.text.match(/camera-stop/g) || []).length > stopBefore, 1500),
       'last viewer triggers camera-stop');
-    assert.ok(await waitFor(() => ctlSink.text.includes('depth-off'), 1500),
+    assert.ok(await waitFor(() => (ctlSink.text.match(/depth-off/g) || []).length > offBefore, 1500),
       'last viewer also clears the depth mode (depth-off)');
     st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
+    for (let i = 0; i < 75 && st.depth; i++) { await sleep(20); st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json(); }
     assert.equal(st.depth, false, 'depth mode resets when the last viewer leaves');
 
     stopCtl();
@@ -2234,12 +2241,18 @@ describe('Camera relay', () => {
     assert.equal((await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()).depth, true);
 
     // The last 2D viewer leaves → depth clears (depth-off) so a reopen starts plain.
+    // A connect-time depth-off already sits in ctlSink.text, so wait for a FRESH
+    // depth-off (count increases) rather than a substring that's satisfiable before
+    // the disconnect has been processed, then confirm the server state via the
+    // status endpoint — polling removes the async close-handler race.
+    const offBefore = (ctlSink.text.match(/depth-off/g) || []).length;
     stopHold();
     holdAc.abort();
-    assert.ok(await waitFor(() => ctlSink.text.includes('depth-off'), 1500),
+    assert.ok(await waitFor(() => (ctlSink.text.match(/depth-off/g) || []).length > offBefore, 1500),
       'the last 2D viewer leaving clears depth (depth-off)');
-    assert.equal((await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()).depth, false,
-      'depth resets when the last 2D viewer leaves');
+    let st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
+    for (let i = 0; i < 75 && st.depth; i++) { await sleep(20); st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json(); }
+    assert.equal(st.depth, false, 'depth resets when the last 2D viewer leaves');
 
     stopCtl();
     ctlAc.abort();

@@ -773,3 +773,53 @@ def test_spray_hold_allows_small_forward_correction(nav):
     calls = _arm_spraying(nav, (0.12, 0.3, 'tracking'))
     nav._handle_spraying()
     assert ('pub', 0.12, 0.3) in calls
+
+
+# ── Battery abort latch ────────────────────────────────────────────────────
+# A battery-critical abort must LATCH: stopping the motors lets the pack's
+# no-load voltage rebound above the abort threshold within seconds, so a
+# fix-only recovery gate would resume, re-load the pack, sag, and abort again
+# — a ~3 s flap. Hold ERROR until the operator ends/restarts the mission.
+
+def test_battery_abort_latches_and_holds_through_fix_recovery(nav, monkeypatch):
+    t = [time.monotonic()]
+    monkeypatch.setattr(time, 'monotonic', lambda: t[0])
+    nav._state = State.NAVIGATING
+    nav._last_gps_time = t[0]
+    nav._gps_fix_status = 'rtk_fixed'
+    nav._battery_pct = 5.0                 # below battery_abort_pct (10)
+
+    nav._control_loop()                    # active-state battery gate fires
+    assert nav._state == State.ERROR
+    assert nav._battery_latched is True
+    assert nav._pre_error_state == State.NAVIGATING
+
+    # No-load rebound + healthy fix. The latch must keep ERROR indefinitely,
+    # even well past fix_recovery_hold_s on every tick.
+    nav._battery_pct = 50.0
+    for _ in range(5):
+        t[0] += 3.5                        # > fix_recovery_hold_s each iter
+        nav._last_gps_time = t[0]
+        nav._control_loop()
+        assert nav._state == State.ERROR
+
+
+def test_end_mission_clears_battery_latch(nav):
+    nav._state = State.NAVIGATING
+    nav._battery_pct = 5.0
+    nav._control_loop()
+    assert nav._battery_latched is True
+    nav._on_end_mission(None)
+    assert nav._state == State.IDLE
+    assert nav._battery_latched is False
+
+
+def test_new_mission_clears_battery_latch(nav):
+    # A deliberate operator restart (with a healthy pack) releases the latch.
+    nav._battery_latched = True
+    nav._pre_error_state = State.NAVIGATING
+    nav._battery_pct = 80.0                # passes the warn-pct start gate
+    msg = type('M', (), {'data': json.dumps([{'lat': 35.0001, 'lng': 126.0001}])})()
+    nav._on_execute_path(msg)
+    assert nav._state == State.CALIBRATING
+    assert nav._battery_latched is False

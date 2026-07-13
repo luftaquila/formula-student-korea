@@ -20,7 +20,7 @@
  * pump, grip (middle finger) = emergency-stop TOGGLE (stop ↔ clear), A / B =
  * minimap zoom in / out.
  */
-import { onMounted, onUnmounted, ref } from "vue";
+import { inject, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import * as THREE from "three";
 import { VRButton } from "three/addons/webxr/VRButton.js";
@@ -73,6 +73,11 @@ let frame = 0;
 // are all here.
 const navState = ref(null);
 const roverConnected = ref(false);
+// App의 전역 e-stop 버튼은 provide된 navState/roverConnected를 읽는다. /vr에서는 MapView가
+// 마운트되지 않아 아무도 이 값을 갱신하지 않으므로, VrView가 rover:status 수신 시 함께 갱신해
+// App e-stop이 stale 상태로 오동작(해제 대신 재정지 등)하지 않게 한다.
+const appNavState = inject("navState", null);
+const appRoverConnected = inject("roverConnected", null);
 const battery = ref(null);      // { voltage, percent, source }
 const gps = ref(null);          // { speed, heading, h_acc, num_sv, ... }
 const fixStatus = ref(null);
@@ -190,8 +195,12 @@ function streamUrl() {
 function startStream() {
   if (imgEl) imgEl.src = streamUrl();
 }
+const BLANK_IMG = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 function stopStream() {
-  if (imgEl) imgEl.removeAttribute("src");
+  // Chrome은 multipart/x-mixed-replace <img> 스트림을 removeAttribute("src")로 중단하지 않는다 —
+  // blank data URI로 src를 교체해야 확실히 abort된다(MapView와 동일 기법). 안 그러면 WebRTC로
+  // 전환한 뒤에도 MJPEG 소켓이 살아남아 로버가 불필요한 JPEG 인코딩/업링크를 지속한다.
+  if (imgEl) imgEl.src = BLANK_IMG;
 }
 
 // Gating-only hold: keeps the rover capturing + WebRTC-publishing without being an
@@ -265,6 +274,9 @@ async function whepAttempt() {
       method: "POST",
       headers: { "Content-Type": "application/sdp" },
       body: pc.localDescription.sdp,
+      // Bound the request: without this a hung POST leaves `whepBusy` true forever,
+      // and the 3s retry no-ops for the rest of the session (no WebRTC reconnect).
+      signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) throw new Error(`WHEP ${res.status}`);
     await pc.setRemoteDescription({ type: "answer", sdp: await res.text() });
@@ -521,6 +533,8 @@ function connectStatus() {
       const d = JSON.parse(e.data);
       navState.value = d.nav_state ?? null;
       roverConnected.value = !!d.connected;
+      if (appNavState) appNavState.value = navState.value;
+      if (appRoverConnected) appRoverConnected.value = roverConnected.value;
       battery.value = d.battery ?? null;
       gps.value = d.gps ?? null;
       fixStatus.value = d.fix_status ?? null;

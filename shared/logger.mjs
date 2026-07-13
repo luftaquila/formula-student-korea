@@ -72,7 +72,8 @@ export function createLogger(db, serviceName, maxRows = 50000) {
   });
 
   function getIP(req) {
-    return req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
+    // Caddy가 세팅한 신뢰 X-Real-IP 우선, 없으면 X-Forwarded-For 최좌측 → req.ip 폴백.
+    return req.headers["x-real-ip"]?.trim() || req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
   }
 
   function write(level, req, action, detail, target, actorOverride) {

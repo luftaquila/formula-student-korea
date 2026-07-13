@@ -188,3 +188,29 @@ def test_select_nearest_mountpoint_none_when_no_match():
     entries = parse_source_table(_SAMPLE_TABLE)
     assert select_nearest_mountpoint(0.0, 0.0, entries, format_prefix="RTCM 4.0") is None
     assert select_nearest_mountpoint(0.0, 0.0, [], format_prefix="RTCM 3.2") is None
+
+
+def test_fetch_source_table_caps_runaway_stream(monkeypatch):
+    """A caster that streams a body without end (or never sends a close) must
+    not exhaust memory — fetch_source_table raises once past the byte cap."""
+    import pilot.lib.ntrip_client as nc
+
+    class _FloodSock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def sendall(self, _d):
+            pass
+
+        def recv(self, n):
+            return b"x" * n          # never returns b"" → endless stream
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(nc.socket, "create_connection", lambda *a, **k: _FloodSock())
+    with pytest.raises(ValueError):
+        nc.fetch_source_table("host.invalid", 2101, max_bytes=64 * 1024)

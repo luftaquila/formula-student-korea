@@ -80,6 +80,12 @@ if [ -d "$ROOT/filebrowser/data/files" ]; then
   cp -a "$ROOT/filebrowser/data/files" "$TMPDIR/filebrowser/files"
 fi
 
+# 규정집 (restore.sh가 $TMPDIR/rules → rules/data 로 복원한다)
+if [ -d "$ROOT/rules/data" ]; then
+  echo "  backup: rules/data"
+  cp -a "$ROOT/rules/data" "$TMPDIR/rules"
+fi
+
 # --- 3) ZIP 생성 ---
 mkdir -p "$DEST"
 ZIPFILE="$DEST/$BACKUP_NAME.zip"

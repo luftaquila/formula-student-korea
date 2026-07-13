@@ -380,6 +380,13 @@ class NavigatorNode(Node):
         # Error recovery.
         self._pre_error_state = None
         self._last_error_reason = None
+        # Latched when the ERROR was a battery-critical abort. A battery abort
+        # must NOT auto-recover on GPS fix: stopping the motors lets the pack's
+        # no-load voltage rebound above the abort threshold within seconds, so a
+        # fix-only recovery gate would resume, re-load the pack, sag, and abort
+        # again — a ~3 s flap. Held until the operator ends/restarts the mission
+        # (the only signal the pack was actually swapped/charged).
+        self._battery_latched = False
         # Last value pushed to /rover/cmd/nav_fault (the MCU's LED_GPS_LOST
         # orange-blink flag). Deduped so we don't spam the serial link every
         # tick. Amber is ON while the chassis is halted for attention — an
@@ -429,6 +436,10 @@ class NavigatorNode(Node):
 
         # Control loop @ 20 Hz.
         self._timer = self.create_timer(0.05, self._control_loop)
+        # nav_state 하트비트 @ 1 Hz: 상태 미변경이어도 강제 재발행. mcu_bridge 드라이브 워치독이
+        # 트립한 뒤 bridge가 자율 상태를 다시 동기화하도록 해, 일시 stall이 수동 잠금을 고착시키는
+        # 것을 막는다(재발행은 bridge에서 멱등 — 전이일 때만 잠금 복구, 아니면 상태만 재설정).
+        self._state_heartbeat = self.create_timer(1.0, lambda: self._publish_state(force=True))
 
         self._publish_state()
         self.get_logger().info('Navigator node started')
@@ -633,6 +644,10 @@ class NavigatorNode(Node):
         self._fix_degraded_since = None
         self._pre_error_state = None
         self._last_error_reason = None
+        # A new mission is a deliberate operator restart — release any battery
+        # abort latch. (The warn-pct gate above already refused to reach here
+        # while the pack is still low, so this only clears once it's healthy.)
+        self._battery_latched = False
 
         # Anchor ENU to the calibration start so all subsequent ENU math
         # is in a single linearised frame.
@@ -674,6 +689,10 @@ class NavigatorNode(Node):
         self._pre_error_state = None
         self._last_error_reason = None
         self._fix_recovered_at = None
+        # Ending the mission is the operator's acknowledgement that a battery
+        # abort was handled (pack charged/swapped) — release the latch so a
+        # later mission can start.
+        self._battery_latched = False
         self.get_logger().info(f'Mission discarded by operator (from {self._state.value}) → IDLE')
         self._set_state(State.IDLE)
 
@@ -896,10 +915,14 @@ class NavigatorNode(Node):
             if (self._battery_pct is not None
                     and self._battery_pct < abort_pct):
                 self._stop_motors()
+                # Latch the abort so _handle_error won't auto-resume on the
+                # resting-voltage rebound (see _battery_latched). The operator
+                # must charge/swap and restart the mission to clear it.
+                self._battery_latched = True
                 self._pre_error_state = self._state
                 self._set_error(
                     f'Battery critical ({self._battery_pct:.0f}% < {abort_pct}%) — '
-                    f'aborting mission'
+                    f'aborting mission (charge or swap, then restart)'
                 )
                 return
             now = time.monotonic()
@@ -978,6 +1001,13 @@ class NavigatorNode(Node):
         # on the last forward cmd while we sit in ERROR waiting for
         # RTK recovery.
         self._stop_motors()
+        # A battery-latched ERROR never auto-recovers. The resting-voltage
+        # rebound after the motors stop is not a real recovery (the pack sags
+        # straight back under load), so the GPS-fix recovery gate below is
+        # deliberately bypassed — hold ERROR until the operator ends or
+        # restarts the mission, which clears the latch.
+        if self._battery_latched:
+            return
         gps_timeout = self.get_parameter('gps_timeout').value
         now = time.monotonic()
         fix_ok = (
@@ -2099,8 +2129,12 @@ class NavigatorNode(Node):
             # additionally toggles it live on fix recovery/re-degrade.
             self._publish_nav_fault(new_state in (State.ERROR, State.PAUSED))
 
-    def _publish_state(self):
-        if self._last_published_state == self._state:
+    def _publish_state(self, force=False):
+        # force=True: 상태가 안 바뀌어도 재발행한다. mcu_bridge의 드라이브 워치독이 트립하면
+        # bridge의 _nav_state가 IDLE로 떨어지는데, navigator가 일시 stall(크래시 아님)에서
+        # 회복해도 상태 전이가 없으면 재발행하지 않아 bridge가 IDLE에 고착(수동 잠금 오작동)한다.
+        # 아래 1Hz 하트비트가 현재 상태를 주기적으로 재발행해 bridge가 자율 잠금을 재동기화하게 한다.
+        if not force and self._last_published_state == self._state:
             return
         msg = String()
         msg.data = self._state.value

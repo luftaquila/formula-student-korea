@@ -6,6 +6,7 @@ positions below a 2D fix and hold the last good one (and any pending explicit
 request) until the receiver recovers.
 """
 
+import collections
 import json
 import time
 import types
@@ -165,3 +166,115 @@ def test_ntrip_status_ignores_malformed_payloads():
     node._on_ntrip_status(_StrMsg("[1, 2, 3]"))      # valid JSON but not a dict
     assert node._post_calls == []
     assert node._ntrip_connected is False
+
+
+# ── SSE event dispatch: manual-control validation + handler isolation ────────
+# The manual-control branch used to call bare float() on the payload; a
+# non-numeric throttle/steering raised out of the SSE reader loop and tore down
+# the whole command channel (E-Stop included). And a NaN/inf flowed straight
+# into the drive Twist. Validation + a blanket per-event try/except fix both.
+
+class _RecordingPub:
+    def __init__(self):
+        self.published = []
+
+    def publish(self, msg):
+        self.published.append(msg)
+
+
+def _make_sse_bridge():
+    node = BridgeNode.__new__(BridgeNode)
+
+    class _Logger:
+        def info(self, *_a, **_kw): pass
+        def warn(self, *_a, **_kw): pass
+
+    node.get_logger = lambda: _Logger()
+    node._pub_manual = _RecordingPub()
+    return node
+
+
+def test_manual_control_clamps_and_publishes():
+    node = _make_sse_bridge()
+    node._handle_sse_event(
+        "manual-control", json.dumps({"throttle": 150.0, "steering": -250.0}))
+    assert len(node._pub_manual.published) == 1
+    twist = node._pub_manual.published[0]
+    assert twist.linear.x == 100.0       # clamped to +100 %
+    assert twist.angular.z == -100.0     # clamped to -100 %
+
+
+def test_manual_control_rejects_non_numeric_without_publishing():
+    node = _make_sse_bridge()
+    # String / null / list / object throttle used to raise out of the bare
+    # float() and kill the SSE command channel. Each must now just be dropped.
+    for bad in ("fast", None, [1, 2], {"x": 1}):
+        node._handle_sse_event(
+            "manual-control", json.dumps({"throttle": bad, "steering": 0}))
+    assert node._pub_manual.published == []
+
+
+def test_manual_control_rejects_non_finite():
+    node = _make_sse_bridge()
+    # NaN / inf are valid floats but must never reach the drive Twist.
+    node._handle_sse_event(
+        "manual-control", json.dumps({"throttle": float("nan"), "steering": 0}))
+    node._handle_sse_event(
+        "manual-control", json.dumps({"throttle": float("inf"), "steering": 0}))
+    assert node._pub_manual.published == []
+
+
+def test_sse_handler_isolates_publisher_exception():
+    # A raising handler must be swallowed inside _handle_sse_event so it can't
+    # propagate up through _connect_sse's iter_lines loop and tear down the
+    # command channel (E-Stop / clear-emergency) with it.
+    node = _make_sse_bridge()
+
+    def _boom(_msg):
+        raise RuntimeError("publisher blew up")
+
+    node._pub_manual.publish = _boom
+    # Must NOT raise.
+    node._handle_sse_event(
+        "manual-control", json.dumps({"throttle": 10.0, "steering": 0.0}))
+
+
+# ── Position reporting is async (no blocking POST on the ROS executor) ───────
+# _report_position runs on the single-threaded executor (GPS callback), so a
+# synchronous requests.post stalled every other subscription for up to 5 s when
+# the server was down. It must enqueue via _post_async and stamp
+# _last_report_time on ENQUEUE (not success) to pace the 10 Hz GPS callback.
+
+def _make_position_bridge():
+    node = BridgeNode.__new__(BridgeNode)
+    node._last_position = {"lat": 35.0, "lng": 126.0, "alt": 5.0}
+    node._pending_position_request_ids = collections.deque(maxlen=32)
+    node._last_report_time = 0.0
+    node.get_parameter = lambda _n: types.SimpleNamespace(value="https://s.example")
+    node._async_calls = []
+    node._post_async = lambda path, payload, label: node._async_calls.append(
+        (path, payload, label))
+    return node
+
+
+def test_report_position_enqueues_async_and_stamps_time():
+    node = _make_position_bridge()
+    node._report_position()
+    assert len(node._async_calls) == 1
+    path, payload, label = node._async_calls[0]
+    assert path == "/api/rover/position"
+    assert label == "position"
+    assert payload == {"lat": 35.0, "lng": 126.0, "alt": 5.0}
+    # Stamped on enqueue so the periodic gate paces even while the server is down.
+    assert node._last_report_time > 0.0
+
+
+def test_report_position_explicit_request_drains_ids():
+    node = _make_position_bridge()
+    node._pending_position_request_ids.extend(["rid-1", "rid-2"])
+    node._report_position(explicit_request=True)
+    assert len(node._async_calls) == 1
+    _, payload, _ = node._async_calls[0]
+    assert payload["request_id"] == "rid-1"
+    assert payload["request_ids"] == ["rid-1", "rid-2"]
+    assert len(node._pending_position_request_ids) == 0   # drained on send

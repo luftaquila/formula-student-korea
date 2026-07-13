@@ -710,6 +710,29 @@ describe('OAuth endpoints', () => {
     assert.equal(state.redirect, '/', 'protocol-relative URLs should be sanitized to /');
   });
 
+  it('GET /api/login sanitizes backslash protocol-relative redirect', async () => {
+    // Browsers normalize a backslash after the leading slash into a slash, so
+    // "/\evil.com" resolves to "//evil.com" → https://evil.com (open redirect).
+    const rawRes = await fetch(`${baseUrl}/api/login?redirect=${encodeURIComponent('/\\evil.com')}`, { redirect: 'manual' });
+    const url = new URL(rawRes.headers.get('location'));
+    const state = JSON.parse(url.searchParams.get('state'));
+    assert.equal(state.redirect, '/', 'backslash protocol-relative URLs should be sanitized to /');
+  });
+
+  it('GET /api/login sanitizes redirect with control characters', async () => {
+    const rawRes = await fetch(`${baseUrl}/api/login?redirect=${encodeURIComponent('/\tevil')}`, { redirect: 'manual' });
+    const url = new URL(rawRes.headers.get('location'));
+    const state = JSON.parse(url.searchParams.get('state'));
+    assert.equal(state.redirect, '/', 'control characters should be sanitized to /');
+  });
+
+  it('GET /api/login preserves a legitimate absolute path redirect', async () => {
+    const rawRes = await fetch(`${baseUrl}/api/login?redirect=${encodeURIComponent('/documents')}`, { redirect: 'manual' });
+    const url = new URL(rawRes.headers.get('location'));
+    const state = JSON.parse(url.searchParams.get('state'));
+    assert.equal(state.redirect, '/documents', 'same-origin path should be preserved');
+  });
+
   it('GET /api/callback redirects to landing on CSRF failure (no nonce cookie)', async () => {
     const state = JSON.stringify({ redirect: '/', nonce: 'fake-nonce' });
     const rawRes = await fetch(`${baseUrl}/api/callback?code=testcode&state=${encodeURIComponent(state)}`, {

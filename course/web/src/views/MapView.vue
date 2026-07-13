@@ -6,15 +6,21 @@ import { request } from "../api.js";
 import { useNotification } from "@shared/useNotification.js";
 import { haversine } from "@lib/geo.mjs";
 import { computeCenterline } from "@lib/centerline.mjs";
-import { buildRoadEdges } from "@lib/road-edges.mjs";
-import { buildTrackModel } from "@lib/track-build.mjs";
-import { packTrackEntries, safeTrackName } from "@lib/pack-track.mjs";
-import { buildEnrichedJSON } from "@lib/course-export.mjs";
 import { buildSideRanks } from "@lib/cone-index.mjs";
-import { renderTwoPanelPNG } from "../export/panel-canvas.js";
-import JSZip from "jszip";
 import { isAdmin } from "@shared/officialsStore.js";
 import { useWhepStream } from "../composables/useWhepStream.js";
+import { useMeasureTools } from "../composables/useMeasureTools.js";
+import { useCourseImportExport } from "../composables/useCourseImportExport.js";
+import { useCourseSnapshots } from "../composables/useCourseSnapshots.js";
+import {
+  SPRAY_OUTCOME_SYMBOL, SPRAY_OUTCOME_COLOR, DISCONNECT_REASON_LABEL,
+  BATTERY_WARN_PERCENT, BATTERY_CRIT_PERCENT, ACTIVE_NAV_STATES,
+  FIX_STATUS_META, formatDurationSec, roverFaultRows,
+} from "../lib/rover-ui.mjs";
+import {
+  SIDE_COLORS, coneIcon, highlightIcon, multiSelectIcon,
+  coneDiameterForZoom, LabeledConeCanvas,
+} from "../lib/cone-render.mjs";
 
 const { success: notifySuccess, error: notifyError, warning: notifyWarn } = useNotification();
 const stopping = inject("stopping", ref(false));
@@ -32,7 +38,11 @@ const visibility = ref(loadPref("visibility", {}, (v) => JSON.parse(v))); // per
 const activeCourseId = ref(null);
 const loading = ref(true);
 const newCourseName = ref("");
-const importInput = ref(null);
+// Course ZIP export / JSON import lives in a composable; destructured so the
+// template keeps using importInput/exportingId/exportCourse/triggerImport/importCourse by name.
+const { importInput, exportingId, exportCourse, triggerImport, importCourse } = useCourseImportExport({
+  courses, conesMap, memosMap, activeCourseId, visibility, newCourseName, courseDirOpts, notifyError,
+});
 const currentSide = ref("left");
 const roverLoading = ref(false);
 const editLocked = ref(loadPref("editLocked", true, (v) => v === "true")); // default locked; screen tap/drag can't add/move/rotate/delete cones; persisted
@@ -90,9 +100,21 @@ const rotateInput = ref(""); // exact-angle text entry (deg, clockwise positive)
 const rotateAngleAbs = computed(() => Math.abs(rotateAngle.value).toFixed(1));
 const rotateDirIcon = computed(() => (rotateAngle.value < 0 ? "↺" : "↻"));
 // Measurement tools — read-only, usable even when edit is locked.
-const toolMode = ref("none");   // none | ruler | protractor
-const measureHint = ref("");    // next-step instruction for the active tool
-const measureResult = ref("");  // distance total / measured angle for the overlay
+// Ruler/protractor measurement overlays live in a composable; destructured here so
+// the template + map click handlers keep referencing toolMode/measureHint/etc. by name.
+const { toolMode, measureHint, measureResult, enterToolMode, exitToolMode, resetMeasure, handleMeasureClick } = useMeasureTools({
+  getMap: () => map,
+  rebuildMarkers: () => rebuildAllMarkers(),
+  isCoursesTab: () => activeTab.value === "courses",
+  clearOtherModes,
+});
+// Drop rotate/select/multiselect so an active measurement tool is the exclusive mode.
+function clearOtherModes() {
+  if (rotateMode.value) exitRotateMode();
+  selectMode.value = false;
+  if (multiSelectedIds.value.size > 0) { multiSelectedIds.value = new Set(); updateMultiSelectIcons(); }
+  selectedConeId.value = null;
+}
 // Box-select mode — drag-to-select that also works on touch (no Shift key needed).
 const selectMode = ref(false);
 // Undo stack of {label, undo} entries; each `undo` reverses one edit via the API.
@@ -100,6 +122,10 @@ const undoStack = ref([]);
 const editLat = ref("");
 const editLng = ref("");
 const editSide = ref("left");
+// 선택 시점의 좌표 원본. updateCone은 이 값과 다를 때(=조작자가 위치를 실제로 편집)만
+// lat/lng를 PATCH해, 선택 후 타 조작자가 SSE로 콘을 옮긴 걸 stale 폼 값으로 되돌리지 않는다.
+const editLatOrig = ref("");
+const editLngOrig = ref("");
 const editingCourseId = ref(null);
 const editCourseName = ref("");
 
@@ -180,18 +206,6 @@ const showPreflight = ref(false);
 const preflightForce = ref(false);
 const preflightMode = ref("execute"); // "execute" | "resume"
 
-const SPRAY_OUTCOME_SYMBOL = { success: "✓", cancelled: "⚠", timeout: "✕" };
-const SPRAY_OUTCOME_COLOR = { success: "#22c55e", cancelled: "#f59e0b", timeout: "#ef4444" };
-
-const DISCONNECT_REASON_LABEL = {
-  sse_closed: "SSE LOST",
-  write_failed: "SSE PUSH FAILED",
-  replaced: "SESSION REPLACED",
-};
-
-const BATTERY_WARN_PERCENT = 30;
-const BATTERY_CRIT_PERCENT = 20;
-
 // Tick ref — bumps every second so time-ago computeds recalc even when no
 // new SSE event arrives (otherwise "pos 0s" stays stale when the rover stops).
 const uiTick = ref(0);
@@ -208,14 +222,6 @@ const currentTargetDistance = computed(() => {
   return haversine(lp, pathWaypoints.value[idx]);
 });
 
-function formatDurationSec(secs) {
-  if (!isFinite(secs) || secs < 1) return null;
-  if (secs < 60) return `~${Math.round(secs)}s`;
-  const m = Math.floor(secs / 60);
-  const s = Math.round(secs % 60);
-  return s === 0 ? `~${m}m` : `~${m}m ${s}s`;
-}
-
 const missionETA = computed(() => {
   if (roverMode.value !== "executing") return null;
   if (pathTotalDist <= 0) return null;
@@ -228,18 +234,6 @@ const missionETA = computed(() => {
 // Per-chip computeds. Each chip owns its own tone (ok/warn/bad/neutral) so
 // the strip's overall color band is decided separately (primary class).
 // `detail` is the multi-line text shown in the hover/click popover.
-// Fix-status tone. RTK is ok/warn, plain 3D is warn (no corrections),
-// 2D / time-only / no-fix are all bad. Dead-reckoning variants are folded
-// into no_fix at the rover, so they don't appear here.
-const FIX_STATUS_META = {
-  rtk_fixed: { tone: "ok" },
-  rtk_float: { tone: "warn" },
-  "3d_fix": { tone: "warn" },
-  "2d_fix": { tone: "bad" },
-  time_only: { tone: "bad" },
-  no_fix: { tone: "bad" },
-};
-
 const fixChip = computed(() => {
   const s = roverStatus.value;
   if (!s.connected) return null;
@@ -309,64 +303,6 @@ const fixChip = computed(() => {
   }
   return { label, tone, rows };
 });
-
-// MCU status-flag bits (rover/mcu T-frame `flags`, see rover README).
-// The MCU status LED encodes these by colour (red=e-stop, magenta=undervolt,
-// yellow=heartbeat/batt-warn, orange=nav-GPS-lost); the chip only said
-// "ERROR", so we decode them into a plain-English cause list.
-const MCU_FLAG = {
-  ESTOP: 0x01,        // combined sw+hw E-stop latch
-  HEARTBEAT: 0x02,    // Pi↔MCU heartbeat timeout (motors gated)
-  UNDERVOLT: 0x04,    // battery ≤20 V (motors gated)
-  BATT_WARN: 0x08,    // battery ≤22 V
-  NAV_GPS_LOST: 0x40, // Pi-reported navigation GPS loss
-  ESTOP_LINE: 0x80,   // raw physical E-stop button line
-};
-
-// Short, bullet-style English explanations for why the rover is in ERROR /
-// EMERGENCY_STOP, decoded from MCU flags + GPS/NTRIP/battery state. Each row is
-// [key, phrase, tone]; keys are unique so they survive the popover v-for :key.
-function roverFaultRows(s) {
-  const rows = [];
-  const flags = Number.isInteger(s.battery?.flags) ? s.battery.flags : 0;
-  const estop = s.nav_state === "EMERGENCY_STOP";
-
-  // E-stop (LED: red blink).
-  if (estop || (flags & MCU_FLAG.ESTOP)) {
-    rows.push((flags & MCU_FLAG.ESTOP_LINE)
-      ? ["E-STOP", "Hardware E-stop button pressed", "bad"]
-      : ["E-STOP", "Software E-stop (operator or server)", "bad"]);
-  }
-  // Pi↔MCU link (LED: yellow).
-  if (flags & MCU_FLAG.HEARTBEAT) {
-    rows.push(["LINK", "Pi↔MCU heartbeat timeout — motors gated", "bad"]);
-  }
-  // Battery (LED: magenta = undervolt, yellow = warn).
-  if (flags & MCU_FLAG.UNDERVOLT) {
-    rows.push(["BATTERY", "Undervolt cutoff (≤20 V) — motors gated", "bad"]);
-  } else if (flags & MCU_FLAG.BATT_WARN) {
-    rows.push(["BATTERY", "Low-battery warning (≤22 V)", "warn"]);
-  } else if (s.battery?.percent != null && s.battery.percent <= BATTERY_CRIT_PERCENT) {
-    rows.push(["BATTERY", `Battery critically low (${s.battery.percent}%)`, "bad"]);
-  }
-  // Navigation GPS loss (LED: orange blink). Infer from fix status too, since
-  // the navigator can raise ERROR Pi-side before the MCU bit propagates.
-  const fixBad = s.fix_status && s.fix_status !== "rtk_fixed";
-  if ((flags & MCU_FLAG.NAV_GPS_LOST) || (s.nav_state === "ERROR" && fixBad)) {
-    const fixLabel = s.fix_status ? s.fix_status.replace(/_/g, " ").toUpperCase() : "UNKNOWN";
-    rows.push(["GPS", `RTK fix lost (now ${fixLabel}); holds until rtk_fixed`, "bad"]);
-  }
-  // NTRIP corrections offline — the usual root cause of an RTK-fix drop.
-  if (s.ntrip_connected === false) {
-    const err = s.ntrip?.last_error ? `: ${s.ntrip.last_error}` : "";
-    rows.push(["NTRIP", `RTK corrections offline${err}`, "bad"]);
-  }
-  // Never leave a fault popover empty.
-  if (rows.length === 0 && (s.nav_state === "ERROR" || estop)) {
-    rows.push(["CAUSE", "Cause unclear — check rover logs", "warn"]);
-  }
-  return rows;
-}
 
 const navChip = computed(() => {
   const s = roverStatus.value;
@@ -1180,9 +1116,6 @@ let rotateStartPositions = null; // Map<id, {lat,lng}> for rollback on save fail
 let rotateStartBearing = 0;      // pivot→handle bearing (rad) at drag start
 const ROTATE_RADIUS_PX = 72;     // resting screen distance of the handle from the pivot
 
-// Measurement tools (ruler / protractor) overlays.
-let measureLayer = null;         // L.layerGroup holding the active tool's overlays
-let measurePoints = [];          // [L.latLng] taps collected for the active tool
 
 // Visible-area center of the map: container center on desktop (sibling
 // layout), but on mobile the inspector overlays the bottom of the
@@ -1224,8 +1157,6 @@ watch([inspectorWidth, sheetHeight, isMobile], () => {
     if (dx !== 0 || dy !== 0) map.panBy([dx, dy], { animate: false });
   });
 }, { flush: "pre" });
-
-const SIDE_COLORS = { left: "#f59e0b", right: "#06b6d4", center: "#ef4444" };
 
 /* ── Computed ──────────────────────────────────────── */
 const activeCourse = computed(() => courses.value.find((c) => c.id === activeCourseId.value));
@@ -1527,97 +1458,6 @@ const isReversed = computed(() => !!activeCourse.value?.reverse);
 // for a non-active course builds its own map with buildSideRanks(cones).
 const activeConeSideRanks = computed(() => buildSideRanks(activeCones.value));
 
-// No box-shadow/text-shadow on cone icons — they cause mobile pan jank with
-// dozens of markers (each becomes its own GPU compositing layer).
-// The dot sizes off the --cone-px CSS variable (set on the map container per
-// zoom level, see applyConeScale), so cones shrink when zoomed out instead of
-// staying a fixed pixel size that blankets the map. A fixed 26px wrapper keeps
-// the dot centred on the cone's latlng regardless of the inner size.
-function coneDot(side, num, borderColor, borderRatio, opacity) {
-  // content-box + a border that scales with --cone-px, so a fixed-thickness
-  // outline never eats the number when the dot is small (zoomed out).
-  const border = `max(1px, calc(var(--cone-px,18px) * ${borderRatio}))`;
-  return `<div style="opacity:${opacity};width:100%;height:100%;display:flex;align-items:center;justify-content:center;"><div style="box-sizing:content-box;width:var(--cone-px,18px);height:var(--cone-px,18px);border-radius:50%;background:${SIDE_COLORS[side]};border:${border} solid ${borderColor};display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-size:calc(var(--cone-px,18px)*0.5);font-weight:700;line-height:1;">${num}</span></div></div>`;
-}
-function coneIcon(side, num, active) {
-  return L.divIcon({ className: "", html: coneDot(side, num, "#fff", 0.1, active ? 1 : 0.45), iconSize: [26, 26], iconAnchor: [13, 13] });
-}
-
-function highlightIcon(side, num) {
-  return L.divIcon({ className: "", html: coneDot(side, num, "#fbbf24", 0.16, 1), iconSize: [26, 26], iconAnchor: [13, 13] });
-}
-
-function multiSelectIcon(side, num) {
-  return L.divIcon({ className: "", html: coneDot(side, num, "#38bdf8", 0.16, 1), iconSize: [26, 26], iconAnchor: [13, 13] });
-}
-
-// Canvas renderer that also paints each circleMarker's `label` (the cone's
-// side index) in the centre — so non-editing tabs keep the numbers while still
-// drawing hundreds of cones in a single canvas pass instead of hundreds of DOM
-// nodes. Overrides L.Canvas._updateCircle (Leaflet 1.9), drawing the number
-// right after the base circle while the layer's canvas point is current.
-const CONE_MIN_R = 2.5, CONE_MAX_R = 9; // dot radius (px), scaled by zoom
-// A Leaflet circleMarker is a fixed pixel size, so when you zoom out the dots
-// stay 9px and pack into a solid blanket that hides the map. Scale the radius
-// with zoom (≈halving per zoom level out) so dots stay roughly proportional to
-// cone spacing, and clamp to a sane range.
-function coneRadiusForZoom(zoom) {
-  return Math.max(CONE_MIN_R, Math.min(CONE_MAX_R, CONE_MAX_R * Math.pow(2, zoom - 20)));
-}
-// DOM cone-icon diameter (courses tab) — same zoom curve as the canvas dots.
-function coneDiameterForZoom(zoom) {
-  return 2 * coneRadiusForZoom(zoom);
-}
-// Draw each cone pixel-identical to the courses-tab DOM marker (coneDot): a
-// coloured disc of radius r, a white ring of thickness max(1px, diameter*0.1)
-// sitting OUTSIDE it (the DOM uses a content-box border), and a centred number
-// at font = 0.5*diameter in the app font. All on one shared canvas so the
-// non-editing tabs stay smooth with hundreds of cones.
-// The courses-tab DOM cone number inherits Leaflet's `.leaflet-container` font,
-// not the app body font — so the canvas labels must use the SAME stack to look
-// identical. (Verified at runtime: the DOM cone computes to this family, and the
-// canvas cannot render the app's Noto Sans KR web font, so reusing that would
-// diverge.) Match Leaflet's default exactly.
-const CONE_FONT = `"Helvetica Neue", Arial, Helvetica, sans-serif`;
-const LabeledConeCanvas = L.Canvas.extend({
-  _updateCircle(layer) {
-    const r = coneRadiusForZoom(this._map.getZoom());
-    layer._radius = r;
-    // No centred stroke — the base call paints only the coloured fill (radius r);
-    // we add the white ring OUTSIDE it below to mirror the DOM's content-box border.
-    layer.options.weight = 0;
-    L.Canvas.prototype._updateCircle.call(this, layer);
-    if (!this._drawing || layer._empty()) return;
-    const p = layer._point, ctx = this._ctx;
-    // Ring thickness/colour mirror the DOM cone: white at ratio 0.1 by default,
-    // but a selected/multi-selected cone on the locked courses tab gets the same
-    // amber/sky highlight ring the DOM markers use (set via coneCircle options).
-    const ratio = layer.options.ringRatio ?? 0.1;
-    const border = Math.max(1, 2 * r * ratio); // = DOM border: max(1px, --cone-px*ratio)
-    ctx.save();
-    ctx.globalAlpha = layer.options.opacity ?? 1;
-    // Border ring, just outside the coloured fill (so the fill stays a full
-    // radius r, exactly like the DOM circle whose border is added outside it).
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r + border / 2, 0, Math.PI * 2);
-    ctx.lineWidth = border;
-    ctx.strokeStyle = layer.options.ringColor || "#fff";
-    ctx.stroke();
-    // Centred number at the DOM font size/family. Counter-rotate by the current
-    // bearing so it stays upright while the canvas pane is rotated.
-    if (layer.options.label != null) {
-      ctx.fillStyle = "#fff";
-      ctx.font = `700 ${r.toFixed(1)}px ${CONE_FONT}`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.translate(p.x, p.y);
-      ctx.rotate(-(this._map._bearing || 0));
-      ctx.fillText(String(layer.options.label), 0, 0);
-    }
-    ctx.restore();
-  },
-});
-
 // Canvas-rendered cone for read-only contexts: the rover/history tabs and the
 // LOCKED courses tab. A coloured dot with its side-index number, matching the
 // editable DOM marker but drawn to the shared canvas (no per-cone DOM node to
@@ -1647,9 +1487,18 @@ function coneCircle(cone, num, isActive) {
 }
 
 /* ── Map markers ──────────────────────────────────── */
-function rebuildAllMarkers() {
-  Object.values(markers).forEach((m) => map.removeLayer(m));
-  markers = {};
+function rebuildAllMarkers(onlyCourseId = null) {
+  // Targeted rebuild: when a single course changed (e.g. a `cones` SSE update for
+  // one course), remove and re-add only that course's markers instead of tearing
+  // down and rebuilding every course's markers on the map each time.
+  if (onlyCourseId != null) {
+    for (const key of Object.keys(markers)) {
+      if (key.startsWith(`${onlyCourseId}-`)) { map.removeLayer(markers[key]); delete markers[key]; }
+    }
+  } else {
+    Object.values(markers).forEach((m) => map.removeLayer(m));
+    markers = {};
+  }
 
   // DOM markers (one node per cone — expensive) exist only for editing:
   // draggable, clickable, re-iconnable. We only pay that on the UNLOCKED courses
@@ -1661,6 +1510,7 @@ function rebuildAllMarkers() {
   const editing = activeTab.value === "courses" && !editLocked.value;
 
   for (const course of courses.value) {
+    if (onlyCourseId != null && course.id !== onlyCourseId) continue;
     if (!visibility.value[course.id]) continue;
     const cones = conesMap.value[course.id] || [];
     const isActive = course.id === activeCourseId.value;
@@ -1912,12 +1762,33 @@ watch(selectedConeId, (id) => {
     if (cone) {
       editLat.value = cone.lat.toString();
       editLng.value = cone.lng.toString();
+      editLatOrig.value = editLat.value;
+      editLngOrig.value = editLng.value;
       editSide.value = cone.side;
     }
   }
 });
 
-watch(activeCourseId, (v) => {
+// 미션 취소로 코스 전환을 되돌릴 때 재할당이 이 watcher 를 다시 트리거하므로,
+// 그 1회는 플래그로 무시한다 (되돌림에 clearPath/미션 폐기가 돌면 안 된다).
+let revertingCourseSwitch = false;
+watch(activeCourseId, async (v, prev) => {
+  if (revertingCourseSwitch) { revertingCourseSwitch = false; return; }
+  // 미션 진행(executing)·중단(stopped) 중의 코스 전환은 아래 clearPath() 가 서버
+  // 미션까지 폐기하는 파괴적 작업 — abandonMission 과 동일하게 반드시 확인을 받고,
+  // 취소하거나 서버 종료가 실패하면 전환 자체를 이전 코스로 되돌린다.
+  let missionEnded = false;
+  if (roverMode.value === "executing" || roverMode.value === "stopped") {
+    const revert = () => { revertingCourseSwitch = true; activeCourseId.value = prev; };
+    if (!window.confirm("코스를 전환하면 진행 중인 미션을 종료하고 폐기합니다.\n'이어서 실행'할 수 없게 됩니다. 계속하시겠습니까?")) { revert(); return; }
+    // abandonMission 과 동일하게 서버 종료를 먼저 await 한다 — 응답 전에 로컬
+    // 정리를 하면 다음 status tick 의 reconcileRoverMode 가 "stopped" 로 되튕긴다.
+    if (roverStatus.value.mission_progress?.mission_id) {
+      try { await request("/api/rover/end-mission", { method: "POST" }); }
+      catch (err) { notifyWarn(`미션 종료 실패: ${err.message}`); revert(); return; }
+    }
+    missionEnded = true;
+  }
   if (rotateMode.value) exitRotateMode();
   if (toolMode.value !== "none") exitToolMode();
   selectMode.value = false;
@@ -1926,7 +1797,7 @@ watch(activeCourseId, (v) => {
   multiSelectedIds.value = new Set();
   coneFilter.value = "all";
   coneListScrolled.value = false;
-  clearPath();
+  clearPath({ endMissionOnServer: !missionEnded });
   if (map) rebuildAllMarkers();
   if (v != null) {
     savePref("activeCourseId", v);
@@ -1946,17 +1817,18 @@ async function fetchAll() {
   try {
     const res = await request("/api/courses");
     courses.value = await res.json();
-    for (const c of courses.value) {
+    // Load every course's cones + memos concurrently. The old loop blocked each
+    // course on the previous one (1 + 2N serial round-trips); fan them out so
+    // first paint waits only on the slowest single course, not their sum.
+    await Promise.all(courses.value.map(async (c) => {
       if (visibility.value[c.id] === undefined) visibility.value[c.id] = true;
-      try {
-        const r = await request(`/api/courses/${c.id}/cones`);
-        conesMap.value[c.id] = await r.json();
-      } catch { conesMap.value[c.id] = []; }
-      try {
-        const rm = await request(`/api/courses/${c.id}/memos`);
-        memosMap.value[c.id] = await rm.json();
-      } catch { memosMap.value[c.id] = []; }
-    }
+      const [cones, memos] = await Promise.all([
+        request(`/api/courses/${c.id}/cones`).then((r) => r.json()).catch(() => []),
+        request(`/api/courses/${c.id}/memos`).then((r) => r.json()).catch(() => []),
+      ]);
+      conesMap.value[c.id] = cones;
+      memosMap.value[c.id] = memos;
+    }));
     if (!activeCourseId.value && courses.value.length) {
       // Restore the last-used course so a refresh doesn't silently drop
       // the operator back to courses[0] (which then requires re-clicking
@@ -2252,107 +2124,6 @@ async function saveCourseName(id) {
     await request(`/api/courses/${id}`, { method: "PATCH", body: JSON.stringify({ name }) });
     editingCourseId.value = null;
   } catch (err) { notifyError(err.message); }
-}
-
-// Fixed per-file timestamp so a re-export of the same course is reproducible
-// (JSZip otherwise stamps the current time into every entry).
-const EXPORT_DATE = new Date("2020-01-01T00:00:00Z");
-const exportingId = ref(null);
-
-// Export a course as a ZIP holding three items:
-//   <name>.json        enriched, re-importable course record (every numeric artifact)
-//   <name>_width.png   2-panel preview (centerline | road width)
-//   <name>_track.zip   installable Assetto Corsa track (extracts into AC content/)
-// The whole pipeline runs client-side (native JS in shared/), no server compute.
-async function exportCourse(id) {
-  if (exportingId.value) return;
-  const course = courses.value.find((c) => c.id === id);
-  const name = course?.name || "course";       // in-game display name (kept as-is)
-  const safeName = safeTrackName(name);         // path-safe base for file/folder names
-  exportingId.value = id;
-  try {
-    // cones: prefer the already-loaded map, else fetch (allows a non-active course)
-    let cones = conesMap.value[id];
-    if (!cones || !cones.length) {
-      const res = await request(`/api/courses/${id}/cones`);
-      cones = await res.json();
-    }
-
-    // memos ride along in the JSON so a course round-trips with its labels.
-    let memos = memosMap.value[id];
-    if (!memos) {
-      try { memos = await (await request(`/api/courses/${id}/memos`)).json(); } catch { memos = []; }
-    }
-
-    // same start/direction as the on-map centerline so the export matches
-    const cl = computeCenterline(cones, { step: 1.0, metric: true, ...courseDirOpts(id, cones) });
-    if (!cl.ok) { notifyError(`중심선 생성 실패: ${cl.reason}`); return; }
-
-    const edges = buildRoadEdges(cl);   // AC track road: widened +1 m/side (except slalom)
-    const track = buildTrackModel(cl, edges, { name: safeName });
-
-    // inner Assetto Corsa track zip (content/tracks/<safeName>/...); the in-game
-    // UI name (ui_track.json) keeps the original, spaces and all.
-    const entries = packTrackEntries(cl, edges, track, { name: safeName, uiName: name });
-    const trackZip = new JSZip();
-    for (const [path, content] of Object.entries(entries)) {
-      trackZip.file(path, content, { date: EXPORT_DATE });
-    }
-    const trackZipBlob = await trackZip.generateAsync({ type: "blob", compression: "DEFLATE" });
-
-    const enriched = buildEnrichedJSON({ name, cones, memos, cl, edges, track });
-    // Preview PNG shows the cone-true road width (survey), unaffected by the AC
-    // drivability widening above.
-    const pngEdges = buildRoadEdges(cl, { extraWidthPerSide: 0 });
-    const png = await renderTwoPanelPNG(cl, pngEdges, { name });
-
-    // outer zip with the three deliverables (path-safe file names)
-    const outer = new JSZip();
-    outer.file(`${safeName}.json`, JSON.stringify(enriched), { date: EXPORT_DATE });
-    outer.file(`${safeName}.png`, png, { date: EXPORT_DATE });
-    outer.file(`${safeName}-track.zip`, trackZipBlob, { date: EXPORT_DATE });
-    const blob = await outer.generateAsync({ type: "blob", compression: "DEFLATE" });
-
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${safeName}.zip`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  } catch (err) {
-    notifyError(err?.message || String(err));
-  } finally {
-    exportingId.value = null;
-  }
-}
-
-function triggerImport() {
-  if (!newCourseName.value.trim()) return;
-  importInput.value?.click();
-}
-
-async function importCourse(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  e.target.value = "";
-  // The imported course takes the name typed in the new-course input, not the
-  // name baked into the file — so the operator names it on the spot and avoids
-  // UNIQUE collisions with an existing course of the same exported name.
-  const name = newCourseName.value.trim();
-  if (!name) return;
-  try {
-    const text = await file.text();
-    const data = JSON.parse(text);
-    const res = await request("/api/courses/import", {
-      method: "POST",
-      body: JSON.stringify({ name, cones: data.cones }),
-    });
-    const created = await res.json();
-    newCourseName.value = "";
-    activeCourseId.value = created.id;
-    visibility.value[created.id] = true;
-  } catch (err) {
-    notifyError(err.message);
-  }
 }
 
 async function deleteCourse(id) {
@@ -2818,57 +2589,12 @@ function downloadLogs() {
 }
 
 /* ── Snapshots ────────────────────────────────────── */
-const showSnapshots = ref(false);
-const snapshotList = ref([]);
-const snapshotReason = ref("");
+// Snapshot create/list/restore/delete + modal state live in a composable;
+// destructured so the template keeps referencing them by name.
+const { showSnapshots, snapshotList, snapshotReason, openSnapshots, createSnapshot, restoreSnapshot, deleteSnapshot } =
+  useCourseSnapshots({ activeCourseId, notifyError });
 
-async function openSnapshots() {
-  if (!activeCourseId.value) return;
-  snapshotReason.value = "";
-  showSnapshots.value = true;
-  await loadSnapshots();
-}
-
-async function loadSnapshots() {
-  if (!activeCourseId.value) return;
-  try {
-    const res = await request(`/api/courses/${activeCourseId.value}/snapshots`);
-    const data = await res.json();
-    snapshotList.value = data.snapshots || [];
-  } catch (err) { notifyError(err.message); }
-}
-
-async function createSnapshot() {
-  if (!activeCourseId.value) return;
-  try {
-    await request(`/api/courses/${activeCourseId.value}/snapshots`, {
-      method: "POST",
-      body: JSON.stringify({ reason: snapshotReason.value || null }),
-    });
-    snapshotReason.value = "";
-    await loadSnapshots();
-  } catch (err) { notifyError(err.message); }
-}
-
-async function restoreSnapshot(sid) {
-  if (!activeCourseId.value) return;
-  if (!confirm("현재 콘을 모두 지우고 이 스냅샷 상태로 되돌립니다. 계속하시겠습니까?\n(되돌리기 직전 상태가 자동으로 스냅샷됩니다.)")) return;
-  try {
-    await request(`/api/courses/${activeCourseId.value}/snapshots/${sid}/restore`, { method: "POST" });
-    await loadSnapshots();
-    showSnapshots.value = false;
-  } catch (err) { notifyError(err.message); }
-}
-
-async function deleteSnapshot(sid) {
-  if (!activeCourseId.value) return;
-  if (!confirm("이 스냅샷을 삭제합니다. 계속하시겠습니까?")) return;
-  try {
-    await request(`/api/courses/${activeCourseId.value}/snapshots/${sid}`, { method: "DELETE" });
-    await loadSnapshots();
-  } catch (err) { notifyError(err.message); }
-}
-
+// Shared time formatter (also used for the log-upload timestamp), so it stays here.
 function formatSnapshotTime(ms) {
   if (!ms) return "—";
   return new Date(ms).toLocaleString("ko-KR", { hour12: false });
@@ -2910,14 +2636,22 @@ async function addCone(lat, lng, side, alt) {
 
 async function updateCone() {
   if (!selectedConeId.value) return;
-  const lat = parseFloat(editLat.value);
-  const lng = parseFloat(editLng.value);
-  if (isNaN(lat) || isNaN(lng)) return;
   const id = selectedConeId.value;
   const before = (conesMap.value[activeCourseId.value] || []).find((c) => c.id === id);
+  // 위치를 실제로 편집한 경우에만 lat/lng를 보낸다. side만 바꿨는데 stale 폼 좌표를 함께
+  // 보내면, 선택 후 타 조작자가 SSE로 옮긴 콘 위치를 되돌린다(동시 편집 데이터 손실).
+  const positionEdited = editLat.value !== editLatOrig.value || editLng.value !== editLngOrig.value;
+  const body = { side: editSide.value };
+  if (positionEdited) {
+    const lat = parseFloat(editLat.value);
+    const lng = parseFloat(editLng.value);
+    if (isNaN(lat) || isNaN(lng)) return;
+    body.lat = lat;
+    body.lng = lng;
+  }
   try {
     await request(`/api/cones/${id}`, {
-      method: "PATCH", body: JSON.stringify({ lat, lng, side: editSide.value }),
+      method: "PATCH", body: JSON.stringify(body),
     });
     if (before) pushUndo("콘 수정", () => request(`/api/cones/${id}`, {
       method: "PATCH", body: JSON.stringify({ lat: before.lat, lng: before.lng, side: before.side }),
@@ -3369,71 +3103,6 @@ function applyRotateInput() {
   rotateInput.value = "";
 }
 
-/* ── Measurement tools (ruler / protractor) ───────── */
-// Local metric scale at a latitude — longitude degrees shrink by cos(lat), so a
-// raw lat/lng angle/length would be skewed. Used for the protractor's true angle.
-const M_PER_DEG_LAT = 111320;
-function mPerDegLng(lat) { return M_PER_DEG_LAT * Math.cos(lat * Math.PI / 180); }
-
-// Angle (deg, 0–180) at `vertex` between the rays to `a` and `c`.
-function angleAtVertex(vertex, a, c) {
-  const mLng = mPerDegLng(vertex.lat);
-  const v1 = { x: (a.lng - vertex.lng) * mLng, y: (a.lat - vertex.lat) * M_PER_DEG_LAT };
-  const v2 = { x: (c.lng - vertex.lng) * mLng, y: (c.lat - vertex.lat) * M_PER_DEG_LAT };
-  const m1 = Math.hypot(v1.x, v1.y), m2 = Math.hypot(v2.x, v2.y);
-  if (m1 < 1e-9 || m2 < 1e-9) return 0;
-  const cos = Math.max(-1, Math.min(1, (v1.x * v2.x + v1.y * v2.y) / (m1 * m2)));
-  return Math.acos(cos) * 180 / Math.PI;
-}
-
-function fmtDist(m) {
-  return m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${m.toFixed(2)} m`;
-}
-
-function enterToolMode(mode) {
-  if (toolMode.value === mode) { exitToolMode(); return; }
-  if (rotateMode.value) exitRotateMode();
-  selectMode.value = false;
-  // Measuring is its own mode — drop any selection so its icons/handles don't distract.
-  if (multiSelectedIds.value.size > 0) { multiSelectedIds.value = new Set(); updateMultiSelectIcons(); }
-  selectedConeId.value = null;
-  toolMode.value = mode;
-  if (!measureLayer) measureLayer = L.layerGroup();
-  measureLayer.addTo(map);
-  resetMeasure();
-  rebuildAllMarkers(); // suspend per-cone drag while a tool is active
-}
-
-function exitToolMode() {
-  if (toolMode.value === "none") return;
-  toolMode.value = "none";
-  measurePoints = [];
-  if (measureLayer) { measureLayer.clearLayers(); try { map.removeLayer(measureLayer); } catch {} }
-  measureResult.value = "";
-  measureHint.value = "";
-  if (map && activeTab.value === "courses") rebuildAllMarkers();
-}
-
-function resetMeasure() {
-  measurePoints = [];
-  if (measureLayer) measureLayer.clearLayers();
-  measureResult.value = "";
-  updateMeasureHint();
-}
-
-function updateMeasureHint() {
-  if (toolMode.value === "ruler") {
-    measureHint.value = measurePoints.length === 0
-      ? "콘을 차례로 탭해 거리를 잽니다."
-      : "다음 콘을 탭하면 구간이 이어집니다.";
-  } else if (toolMode.value === "protractor") {
-    const steps = ["첫 번째 콘을 탭하세요.", "꼭짓점(가운데) 콘을 탭하세요.", "세 번째 콘을 탭하세요.", "측정 완료 — 탭하면 새로 시작합니다."];
-    measureHint.value = steps[Math.min(measurePoints.length, 3)];
-  } else {
-    measureHint.value = "";
-  }
-}
-
 // Snap a tap to the nearest active-course cone within `maxPx` screen pixels.
 function nearestCone(latlng, maxPx = 24) {
   const cones = conesMap.value[activeCourseId.value] || [];
@@ -3445,80 +3114,6 @@ function nearestCone(latlng, maxPx = 24) {
     if (d <= bestD) { bestD = d; best = c; }
   }
   return best;
-}
-
-function measureDot(latlng) {
-  return L.marker(latlng, {
-    icon: L.divIcon({ className: "", html: `<div class="measure-dot"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }),
-    interactive: false, zIndexOffset: 1200,
-  });
-}
-
-function measureLabel(latlng, text, cls) {
-  return L.marker(latlng, {
-    icon: L.divIcon({ className: "", html: `<div class="measure-label${cls ? " " + cls : ""}">${text}</div>`, iconSize: [0, 0] }),
-    interactive: false, zIndexOffset: 1250,
-  });
-}
-
-function handleMeasureClick(latlng) {
-  if (toolMode.value === "ruler") handleRulerClick(latlng);
-  else if (toolMode.value === "protractor") handleProtractorClick(latlng);
-}
-
-function handleRulerClick(latlng) {
-  measurePoints.push(latlng);
-  measureDot(latlng).addTo(measureLayer);
-  const n = measurePoints.length;
-  if (n >= 2) {
-    const a = measurePoints[n - 2], b = measurePoints[n - 1];
-    L.polyline([a, b], { color: "#22d3ee", weight: 3 }).addTo(measureLayer);
-    const seg = haversine(a, b);
-    measureLabel(L.latLng((a.lat + b.lat) / 2, (a.lng + b.lng) / 2), fmtDist(seg)).addTo(measureLayer);
-    let total = 0;
-    for (let i = 1; i < measurePoints.length; i++) total += haversine(measurePoints[i - 1], measurePoints[i]);
-    measureResult.value = n > 2 ? `구간 ${fmtDist(seg)} · 합계 ${fmtDist(total)}` : fmtDist(seg);
-  }
-  updateMeasureHint();
-}
-
-function handleProtractorClick(latlng) {
-  if (measurePoints.length >= 3) resetMeasure(); // 4th tap starts a fresh measurement
-  measurePoints.push(latlng);
-  measureDot(latlng).addTo(measureLayer);
-  if (measurePoints.length === 2) {
-    L.polyline([measurePoints[0], measurePoints[1]], { color: "#f59e0b", weight: 3 }).addTo(measureLayer);
-  } else if (measurePoints.length === 3) {
-    const [a, b, c] = measurePoints; // b is the vertex
-    L.polyline([b, c], { color: "#f59e0b", weight: 3 }).addTo(measureLayer);
-    const ang = angleAtVertex(b, a, c);
-    const { arc, labelAt } = angleArc(b, a, c);
-    L.polyline(arc, { color: "#fbbf24", weight: 2 }).addTo(measureLayer);
-    measureLabel(labelAt, `${ang.toFixed(1)}°`, "angle").addTo(measureLayer);
-    measureResult.value = `∠ ${ang.toFixed(1)}°`;
-  }
-  updateMeasureHint();
-}
-
-// Arc swept from ray b→a to ray b→c (the short way, ≤180°) plus a label anchor
-// just outside it on the bisector, all in pixel space so it tracks the screen.
-function angleArc(vertex, a, c, radiusPx = 36) {
-  const vp = map.latLngToContainerPoint(vertex);
-  const ap = map.latLngToContainerPoint(a);
-  const cp = map.latLngToContainerPoint(c);
-  const a1 = Math.atan2(ap.y - vp.y, ap.x - vp.x);
-  const a2 = Math.atan2(cp.y - vp.y, cp.x - vp.x);
-  let diff = a2 - a1;
-  while (diff <= -Math.PI) diff += 2 * Math.PI;
-  while (diff > Math.PI) diff -= 2 * Math.PI;
-  const steps = 28, arc = [];
-  for (let i = 0; i <= steps; i++) {
-    const ang = a1 + diff * (i / steps);
-    arc.push(map.containerPointToLatLng(L.point(vp.x + radiusPx * Math.cos(ang), vp.y + radiusPx * Math.sin(ang))));
-  }
-  const bis = a1 + diff / 2;
-  const labelAt = map.containerPointToLatLng(L.point(vp.x + (radiusPx + 22) * Math.cos(bis), vp.y + (radiusPx + 22) * Math.sin(bis)));
-  return { arc, labelAt };
 }
 
 function panToCone(cone) {
@@ -3739,7 +3334,11 @@ function renderSurveyPoints() {
       zIndexOffset: 900, interactive: true, keyboard: false,
     });
     m.on("click", () => selectSurveyPointFromMarker(p));
-    m.bindTooltip(p.name, {
+    // 측량점 이름은 사용자 입력이다. Leaflet 툴팁은 문자열 content를 innerHTML로 삽입하므로
+    // 텍스트 노드로 감싸 저장 XSS를 막는다.
+    const tipEl = document.createElement("span");
+    tipEl.textContent = p.name;
+    m.bindTooltip(tipEl, {
       direction: "top", offset: [0, -12], permanent: true, className: "survey-tooltip",
     });
     layer.addLayer(m);
@@ -4558,6 +4157,8 @@ function connectSSE() {
       sseHadError = false;
       sseReconnecting.value = false;
       fetchRoverStatus();
+      // 단절 중 놓친 코스/콘/메모 편집을 다시 동기화한다(SSE는 끊긴 동안의 이벤트를 유실).
+      fetchAll().then(() => { if (map && !isMissionsView.value) rebuildAllMarkers(); });
     }
   });
 
@@ -4592,7 +4193,9 @@ function connectSSE() {
     // `cones` (not `courses`), so without this the count would go stale.
     const course = courses.value.find((c) => c.id === data.courseId);
     if (course) course.cone_count = data.cones.length;
-    if (map && !suppressRebuild) rebuildAllMarkers();
+    // 리플레이(기록) 뷰에서는 라이브 콘 마커를 다시 그리지 않는다(라이브 복귀 시 재구축).
+    // 변경된 코스만 타겟 재구축 — 다른 코스의 마커는 건드리지 않는다.
+    if (map && !suppressRebuild && !isMissionsView.value) rebuildAllMarkers(data.courseId);
   });
 
   eventSource.addEventListener("memos", (e) => {
@@ -4788,8 +4391,6 @@ function restoreMissionProgress(mp) {
 // post-reconnect refetch) routes through this so the button label can never
 // diverge from reality. User-driven modes (path-pick, manual) are orthogonal
 // to server state and preserved.
-const ACTIVE_NAV_STATES = new Set(["CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING", "CAL_ANTENNA", "CAL_WHEELS"]);
-
 function reconcileRoverMode(s) {
   if (roverMode.value === "path-pick" || roverMode.value === "manual") return;
 
@@ -4971,7 +4572,6 @@ onUnmounted(() => {
   if (eventSource) eventSource.close();
   if (map) {
     teardownRotateHandle();
-    if (measureLayer) { try { map.removeLayer(measureLayer); } catch {} }
     map.getContainer().removeEventListener("pointerdown", onSelectionStart);
     map.remove();
   }

@@ -155,6 +155,12 @@ db.exec(`CREATE TABLE IF NOT EXISTS scheduled_notification (
 )`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_sn_pending ON scheduled_notification(sent, scheduled_at)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_sn_session_sent ON scheduled_notification(session_id, sent)");
+// 부분 발송 재시도용: 성공적으로 보낸 수신자 이메일(JSON 배열). 다음 tick에서 이 목록을
+// 스킵해 실패 수신자만 재시도하고 이미 보낸 수신자에겐 중복 발송하지 않는다.
+addColumn(db, "scheduled_notification", "sent_recipients TEXT DEFAULT '[]'");
+// 부분 발송 재시도 횟수. 영구 실패(무효/바운스 주소 등)로 remaining이 계속 남으면 상한 도달 후
+// sent=1로 종료해 매 tick 무한 재시도 + partial_send warn firehose를 막는다.
+addColumn(db, "scheduled_notification", "attempts INTEGER NOT NULL DEFAULT 0");
 
 db.exec(`CREATE TABLE IF NOT EXISTS team_renumber_file_work (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -471,12 +477,13 @@ app.get("/api/sessions", (req, res) => {
 
 // GET /api/sessions/:id - 세션 상세
 app.get("/api/sessions/:id", (req, res) => {
-  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
-  if (!team) { logger.warn(req, "session.view", { error: "no_team" }); return res.status(403).send("팀이 등록되지 않았습니다."); }
-
   const session = db.prepare("SELECT * FROM session WHERE id = ?").get(Number(req.params.id));
   if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
 
+  // cross-year IDOR 방지: 세션 연도의 팀 매핑으로 해석한다(팀 번호는 연도별 재할당되므로
+  // 같은 번호를 쓰는 타 연도=다른 대학 팀의 세션을 순회 접근할 수 없다).
+  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? AND year = ?").get(req.user.email, session.year);
+  if (!team) { logger.warn(req, "session.view", { error: "no_team_for_year", session_id: session.id, year: session.year }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
   const isTarget = db.prepare("SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?").get(session.id, team.team_num);
   if (!isTarget) { logger.warn(req, "session.view", { error: "not_target", session_id: session.id }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
 
@@ -497,12 +504,14 @@ app.get("/api/sessions/:id", (req, res) => {
 
 // POST /api/sessions/:id/submit - 파일 업로드
 app.post("/api/sessions/:id/submit", (req, res) => {
-  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
-  if (!team) { logger.warn(req, "submission.create", { error: "no_team" }); return res.status(403).send("팀이 등록되지 않았습니다."); }
-
   const session = db.prepare("SELECT * FROM session WHERE id = ?").get(Number(req.params.id));
   if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
 
+  // cross-year IDOR 방지: 팀 번호는 연도별로 재할당되므로 세션 연도의 팀 매핑으로 해석한다.
+  // 세션 연도에 매핑이 없으면(다른 연도 매핑만 있어도) 이 세션 대상이 아니다 — 이렇게 하면
+  // 학생이 최신 연도 매핑을 가져도 과거 세션에 정상 제출할 수 있고, 타 연도 팀의 세션 접근은 막힌다.
+  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? AND year = ?").get(req.user.email, session.year);
+  if (!team) { logger.warn(req, "submission.create", { error: "no_team_for_year", session_id: session.id, year: session.year }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
   const isTarget = db.prepare("SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?").get(session.id, team.team_num);
   if (!isTarget) { logger.warn(req, "submission.create", { error: "not_target", session_id: session.id }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
 
@@ -761,7 +770,7 @@ app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
   if (!file) return res.status(404).send("파일을 찾을 수 없습니다.");
 
   const filePath = path.join(UPLOADS_DIR, String(sub.session_id), String(sub.team_num), String(sub.id), file.stored_name);
-  if (!path.resolve(filePath).startsWith(path.resolve(UPLOADS_DIR))) return res.status(400).send("잘못된 파일 경로입니다.");
+  if (!path.resolve(filePath).startsWith(path.resolve(UPLOADS_DIR) + path.sep)) return res.status(400).send("잘못된 파일 경로입니다.");
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
@@ -843,7 +852,7 @@ app.post("/api/admin/sessions", (req, res) => {
   if (!Array.isArray(teams) || teams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
 
   const maxSize = max_file_size ? Number(max_file_size) : 52428800;
-  if (!Number.isFinite(maxSize) || maxSize <= 0) return res.status(400).send("올바르지 않은 파일 크기 제한입니다.");
+  if (!Number.isFinite(maxSize) || maxSize <= 0 || maxSize > 524288000) return res.status(400).send("올바르지 않은 파일 크기 제한입니다 (최대 500MB).");
   const exts = allowed_extensions || "";
 
   for (const t of teams) {
@@ -895,7 +904,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   if (!Array.isArray(teams) || teams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
 
   const maxSize = max_file_size ? Number(max_file_size) : 52428800;
-  if (!Number.isFinite(maxSize) || maxSize <= 0) return res.status(400).send("올바르지 않은 파일 크기 제한입니다.");
+  if (!Number.isFinite(maxSize) || maxSize <= 0 || maxSize > 524288000) return res.status(400).send("올바르지 않은 파일 크기 제한입니다 (최대 500MB).");
   const exts = allowed_extensions || "";
 
   for (const t of teams) {
@@ -1096,7 +1105,7 @@ app.get("/api/admin/submissions/:subId/files/:fileId", (req, res) => {
   if (!file) return res.status(404).send("파일을 찾을 수 없습니다.");
 
   const filePath = path.join(UPLOADS_DIR, String(sub.session_id), String(sub.team_num), String(sub.id), file.stored_name);
-  if (!path.resolve(filePath).startsWith(path.resolve(UPLOADS_DIR))) return res.status(400).send("잘못된 파일 경로입니다.");
+  if (!path.resolve(filePath).startsWith(path.resolve(UPLOADS_DIR) + path.sep)) return res.status(400).send("잘못된 파일 경로입니다.");
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
@@ -1577,7 +1586,13 @@ function teamHeaderHtml(teamNum, entries) {
 }
 
 /** 예약 알림 처리 — 1분마다 실행 */
+let _schedulerRunning = false;
 async function processScheduledNotifications() {
+  // 재진입 가드: 발송(수신자별 순차 await, 건당 최대 15초)이 60초 인터벌을 넘기면 다음
+  // tick이 겹쳐 실행돼 같은 sent=0 행을 다시 읽고 중복 발송한다. 한 번에 하나만 돈다.
+  if (_schedulerRunning) return;
+  _schedulerRunning = true;
+  try {
   const currentTime = now();
   const pending = db.prepare(
     "SELECT sn.*, s.name, s.notice, s.start_at, s.end_at, s.late_end_at, s.year FROM scheduled_notification sn JOIN session s ON sn.session_id = s.id WHERE sn.sent = 0 AND sn.scheduled_at <= ?",
@@ -1624,9 +1639,10 @@ async function processScheduledNotifications() {
       else if (n.type === "deadline_3h") subject = `[FSK] 서류 제출 마감 3시간 전: ${n.name}`;
       else if (n.type === "deadline_1h") subject = `[FSK] 서류 미제출 알림: ${n.name}`;
 
-      // 수신자별 개별 발송
-      let sentCount = 0;
-      for (const { email, team_num } of recipientRows) {
+      // 수신자별 개별 발송 — 이미 성공한 수신자는 스킵(부분 실패 재시도 시 중복 방지).
+      const alreadySent = new Set(JSON.parse(n.sent_recipients || "[]"));
+      const todo = recipientRows.filter((r) => !alreadySent.has(r.email));
+      for (const { email, team_num } of todo) {
         const teamHeader = teamHeaderHtml(team_num, entries);
         let htmlContent;
 
@@ -1657,18 +1673,39 @@ async function processScheduledNotifications() {
         }
 
         const result = await sendNotificationEmail(subject, htmlContent, email);
-        if (result.ok) sentCount++;
+        if (result.ok) alreadySent.add(email);
       }
 
-      if (sentCount > 0) {
-        db.prepare("UPDATE scheduled_notification SET sent = 1 WHERE id = ?").run(n.id);
-        logger.log(null, `schedule.${n.type}`, { recipientCount: sentCount }, n.name);
+      // 현재 대상 중 아직 못 보낸 수신자가 남으면 sent=0을 유지해 다음 tick이 실패분만
+      // 재시도한다(성공분은 sent_recipients로 스킵 → 중복 발송 없음). 진행 상황은 항상 저장.
+      const remaining = recipientRows.filter((r) => !alreadySent.has(r.email));
+      const sentList = JSON.stringify([...alreadySent]);
+      if (remaining.length === 0) {
+        db.prepare("UPDATE scheduled_notification SET sent = 1, sent_recipients = ? WHERE id = ?").run(sentList, n.id);
+        logger.log(null, `schedule.${n.type}`, { recipientCount: alreadySent.size }, n.name);
       } else {
-        logger.warn(null, `schedule.${n.type}`, { error: "all_sends_failed", recipientCount: recipientRows.length }, n.name);
+        // 영구 실패(무효/바운스 주소)로 remaining이 계속 남으면 매 60s tick 무한 재시도 + warn
+        // firehose가 된다. 재시도 상한(5회 ≈ 5분)을 두고, 초과하면 sent=1로 종료해 최종 실패만 남긴다.
+        const attempts = (n.attempts || 0) + 1;
+        const MAX_SEND_ATTEMPTS = 5;
+        if (attempts >= MAX_SEND_ATTEMPTS) {
+          db.prepare("UPDATE scheduled_notification SET sent = 1, sent_recipients = ?, attempts = ? WHERE id = ?").run(sentList, attempts, n.id);
+          logger.warn(null, `schedule.${n.type}`, { error: "gave_up_after_max_attempts", sent: alreadySent.size, remaining: remaining.length, attempts }, n.name);
+        } else {
+          db.prepare("UPDATE scheduled_notification SET sent_recipients = ?, attempts = ? WHERE id = ?").run(sentList, attempts, n.id);
+          logger.warn(null, `schedule.${n.type}`, { error: "partial_send", sent: alreadySent.size, remaining: remaining.length, attempts }, n.name);
+        }
       }
     } catch (e) {
       logger.warn(null, `schedule.${n.type}`, { error: e.message }, n.name);
     }
+  }
+  } catch (e) {
+    // pending 쿼리 등 루프 밖에서 throw하면 setInterval 콜백의 미처리 프라미스 거부가 된다.
+    // 구조화 로그로 남기고 스케줄러는 다음 tick에 계속 돈다(가드는 finally에서 해제).
+    logger.warn(null, "schedule.run", { error: e.message || String(e) });
+  } finally {
+    _schedulerRunning = false;
   }
 }
 
