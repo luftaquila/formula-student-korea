@@ -30,11 +30,6 @@ let lifecycleRefreshTimer = null;
 
 const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
 
-const hiddenCategories = ["코너웨이트"];
-const visibleCategories = computed(() =>
-  summary.value.categories.filter(cat => !hiddenCategories.includes(cat.name))
-);
-
 const filteredEntries = computed(() => {
   const list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
   if (!searchQuery.value) return list.sort((a, b) => a.num - b.num);
@@ -104,6 +99,13 @@ function getResult(num, catId) {
 
 function getInspector(num, catId) {
   return summary.value.teams[num]?.inspectors?.[catId] || "";
+}
+
+// 카테고리 열은 여러 유형이 섞인 목록에서 공유되므로 열 자체는 남기고,
+// 해당 유형에 표시하지 않는 카테고리는 그 팀의 칸만 완전히 비운다.
+function appliesToTeam(cat, type) {
+  if (!type) return true;
+  return !(cat.excluded_types || []).includes(type);
 }
 
 // SSE로 카테고리 결과 실시간 반영
@@ -191,7 +193,7 @@ watch(lastInspectorUpdate, (update) => {
                 <th class="col-num">번호</th>
                 <th class="col-team">학교 / 팀</th>
                 <th class="col-type">유형</th>
-                <template v-for="cat in visibleCategories" :key="'r'+cat.id">
+                <template v-for="cat in summary.categories" :key="'r'+cat.id">
                   <th class="col-result">{{ cat.name }}</th>
                 </template>
               </tr>
@@ -208,20 +210,22 @@ watch(lastInspectorUpdate, (update) => {
                 <td class="col-type">
                   <span v-if="entry.type" class="badge" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span>
                 </td>
-                <template v-for="cat in visibleCategories" :key="'r'+cat.id+'-'+entry.num">
+                <template v-for="cat in summary.categories" :key="'r'+cat.id+'-'+entry.num">
                   <td class="col-result">
-                    <span
-                      v-if="getResult(entry.num, cat.id)"
-                      class="badge"
-                      :class="getResult(entry.num, cat.id) === 'PASS' ? 'badge-success' : 'badge-danger'"
-                    >{{ getResult(entry.num, cat.id) }}</span>
-                    <span v-else class="badge badge-empty">-</span>
-                    <span v-if="getInspector(entry.num, cat.id)" class="inspector-name">({{ getInspector(entry.num, cat.id) }})</span>
+                    <template v-if="appliesToTeam(cat, entry.type)">
+                      <span
+                        v-if="getResult(entry.num, cat.id)"
+                        class="badge"
+                        :class="getResult(entry.num, cat.id) === 'PASS' ? 'badge-success' : 'badge-danger'"
+                      >{{ getResult(entry.num, cat.id) }}</span>
+                      <span v-else class="badge badge-empty">-</span>
+                      <span v-if="getInspector(entry.num, cat.id)" class="inspector-name">({{ getInspector(entry.num, cat.id) }})</span>
+                    </template>
                   </td>
                 </template>
               </tr>
               <tr v-if="filteredEntries.length === 0">
-                <td :colspan="3 + visibleCategories.length" class="empty-state">
+                <td :colspan="3 + summary.categories.length" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>

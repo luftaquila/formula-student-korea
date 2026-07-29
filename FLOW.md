@@ -185,8 +185,9 @@
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 4.1 | 템플릿 조회 | official | `GET /api/sheet/template?year=` | 4단계 계층 트리: 카테고리 > 소분류 > 그룹 > 항목 |
-| 4.2 | 노드 추가 | chief | `POST /api/sheet/template` | level, parent_id, answer_type(passfail/number/text/checktable), unit, pdf_include |
+| 4.2 | 노드 추가 | chief | `POST /api/sheet/template` | level, parent_id, answer_type(passfail/number/text/checktable), unit, pdf_include, excluded_types |
 | 4.3 | 노드 수정 | chief | `PUT /api/sheet/template/:id` | 이전 연도 수정 방지 |
+| 4.3a | 카테고리 표시 유형 설정 | chief | `PUT /api/sheet/template/:id` (`excluded_types`) | 카테고리별로 차량 유형 체크박스. 체크 해제한 유형 **이름**을 제외 목록에 저장하므로 기본은 전체 표시이고, 유형을 새로 추가하면 기존 카테고리에 자동 표시된다 |
 | 4.4 | 노드 삭제 | chief | `DELETE /api/sheet/template/:id` | FK 캐스케이드로 하위 + 답변 삭제 |
 | 4.5 | 순서 변경 | chief | `POST /api/sheet/template/reorder` | 일괄 sort_order 갱신 |
 | 4.6 | 연도간 복사 | chief | `POST /api/sheet/template/copy` | 대상 연도 비어있어야 함, parent_id 리맵핑 |
@@ -197,7 +198,8 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 4.9 | 요약 대시보드 | official | `GET /api/sheet/summary?year=` | 전체 팀 × 카테고리 PASS/FAIL 매트릭스 |
+| 4.9 | 요약 대시보드 | official | `GET /api/sheet/summary?year=` | 전체 팀 × 카테고리 PASS/FAIL 매트릭스. 카테고리 열은 유형이 섞인 목록에서 공유하므로 유지하고, 해당 유형에 표시하지 않는 카테고리는 그 팀의 칸만 비운다(성적표도 동일) |
+| 4.9a | 팀 시트 카테고리 필터 | official | SheetDetail.vue | 팀의 `entry.type`이 카테고리 `excluded_types`에 있으면 탭을 완전히 숨긴다. 유형 미지정 팀은 전체 표시. 탭 번호는 템플릿 원본 순서를 유지해 인쇄된 시트와 어긋나지 않는다 |
 | 4.10 | 답변 일괄 조회 | official | `GET /api/sheet/bulk-answers?year=&item_ids=` | 특정 항목들의 전체 팀 답변 |
 | 4.11 | 팀 시트 조회 | official | `GET /api/sheet/data/:year/:num` | 답변, 카테고리 결과, 검사자 |
 | 4.12 | 답변 입력 | official | `PUT /api/sheet/answer` | UPSERT, SSE 브로드캐스트 |

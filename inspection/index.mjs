@@ -71,6 +71,12 @@ db.transaction(() => {
   if (!cols.find(c => c.name === "pdf_include")) {
     db.exec(`ALTER TABLE sheet_template ADD COLUMN pdf_include INTEGER DEFAULT 1`);
   }
+  // 카테고리를 숨길 차량 유형 이름의 JSON 배열. 빈 값 = 모든 유형에 표시(기본).
+  // 포함이 아니라 제외를 저장하므로 유형을 새로 추가하면 자동으로 표시되고,
+  // entry 서비스에서 유형 이름이 바뀌어 매핑이 끊기면 숨김이 아니라 표시로 열린다.
+  if (!cols.find(c => c.name === "excluded_types")) {
+    db.exec(`ALTER TABLE sheet_template ADD COLUMN excluded_types TEXT DEFAULT ''`);
+  }
 
   // 검차 시트 답변 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS sheet_answer (
@@ -144,6 +150,27 @@ app.get("/api/sheet/events", sseHandler());
    API 라우트: 검차 시트
    ============================================ */
 
+// excluded_types는 DB에 JSON 문자열로 저장하고 API에서는 항상 배열로 주고받는다.
+const MAX_EXCLUDED_TYPES = 50;
+
+function parseExcludedTypes(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(t => typeof t === "string") : [];
+  } catch {
+    return []; // 손상된 값은 "제외 없음"으로 취급 — 카테고리가 조용히 사라지지 않게 한다.
+  }
+}
+
+// 유효한 배열이면 저장용 JSON 문자열, 아니면 null(= 400 처리 대상)을 반환한다.
+function normalizeExcludedTypes(value) {
+  if (!Array.isArray(value)) return null;
+  const names = [...new Set(value.filter(t => typeof t === "string").map(t => t.trim()).filter(Boolean))];
+  if (names.length > MAX_EXCLUDED_TYPES) return null;
+  return JSON.stringify(names);
+}
+
 // GET /api/sheet/template - 연도별 템플릿 트리 반환
 app.get("/api/sheet/template", (req, res) => {
   const year = Number(req.query.year);
@@ -151,6 +178,9 @@ app.get("/api/sheet/template", (req, res) => {
 
   const result = dbRun(() => {
     const rows = db.prepare("SELECT * FROM sheet_template WHERE year = ? ORDER BY sort_order").all(year);
+    // 저장 형식(JSON 문자열)이 응답에 새지 않도록 모든 레벨에서 배열로 정규화한다.
+    // 카테고리 외의 레벨은 항상 빈 배열이다.
+    for (const r of rows) r.excluded_types = parseExcludedTypes(r.excluded_types);
     const nodeMap = {};
     const tree = [];
 
@@ -194,15 +224,17 @@ const TEMPLATE_ANSWER_TYPES = ["passfail", "number", "text", "checktable"];
 
 // POST /api/sheet/template - 노드 생성
 app.post("/api/sheet/template", (req, res) => {
-  const { year, level, parent_id, name, sort_order, answer_type, remarks, unit, pdf_include } = req.body;
+  const { year, level, parent_id, name, sort_order, answer_type, remarks, unit, pdf_include, excluded_types } = req.body;
   if (!year || !level || !name) return res.status(400).send("필수 필드가 누락되었습니다.");
   if (!TEMPLATE_LEVELS.includes(level)) return res.status(400).send("올바르지 않은 level 값입니다.");
   if (answer_type && !TEMPLATE_ANSWER_TYPES.includes(answer_type)) return res.status(400).send("올바르지 않은 answer_type 값입니다.");
+  const excluded = excluded_types === undefined ? "" : normalizeExcludedTypes(excluded_types);
+  if (excluded === null) return res.status(400).send("올바르지 않은 excluded_types 값입니다.");
 
   const result = dbRun(() =>
     db.prepare(
-      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(year, level, parent_id || null, sort_order || 0, name, answer_type || null, remarks || "", unit || "", pdf_include ?? 1)
+      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(year, level, parent_id || null, sort_order || 0, name, answer_type || null, remarks || "", unit || "", pdf_include ?? 1, excluded)
   );
 
   if (!result.success) {
@@ -217,7 +249,7 @@ app.post("/api/sheet/template", (req, res) => {
 app.put("/api/sheet/template/:id", (req, res) => {
   const id = Number(req.params.id);
   // 수정 가능 필드는 아래 구조 분해로 고정된다 — body의 다른 키는 도달 불가
-  const { name, sort_order, answer_type, remarks, unit, pdf_include } = req.body;
+  const { name, sort_order, answer_type, remarks, unit, pdf_include, excluded_types } = req.body;
   if (answer_type && !TEMPLATE_ANSWER_TYPES.includes(answer_type)) return res.status(400).send("올바르지 않은 answer_type 값입니다.");
 
   const fields = [];
@@ -228,6 +260,12 @@ app.put("/api/sheet/template/:id", (req, res) => {
   if (remarks !== undefined) { fields.push("remarks = ?"); params.push(remarks); }
   if (unit !== undefined) { fields.push("unit = ?"); params.push(unit); }
   if (pdf_include !== undefined) { fields.push("pdf_include = ?"); params.push(pdf_include ? 1 : 0); }
+  if (excluded_types !== undefined) {
+    const excluded = normalizeExcludedTypes(excluded_types);
+    if (excluded === null) return res.status(400).send("올바르지 않은 excluded_types 값입니다.");
+    fields.push("excluded_types = ?");
+    params.push(excluded);
+  }
 
   if (!fields.length) return res.status(400).send("수정할 필드가 없습니다.");
   params.push(id);
@@ -316,11 +354,12 @@ app.post("/api/sheet/template/copy", (req, res) => {
     db.transaction(() => {
       const idMap = {};
       const stmt = db.prepare(
-        "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       );
       for (const r of rows) {
         const newParent = r.parent_id ? idMap[r.parent_id] : null;
-        const info = stmt.run(to_year, r.level, newParent, r.sort_order, r.name, r.answer_type, r.remarks, r.unit || "", r.pdf_include ?? 1);
+        // 유형 제외 설정은 이름 기준이므로 연도가 달라도 그대로 옮겨진다.
+        const info = stmt.run(to_year, r.level, newParent, r.sort_order, r.name, r.answer_type, r.remarks, r.unit || "", r.pdf_include ?? 1, r.excluded_types || "");
         idMap[r.id] = info.lastInsertRowid;
       }
     })();
@@ -341,32 +380,34 @@ app.post("/api/sheet/template/import", (req, res) => {
 
   const result = dbRun(() => {
     const stmt = db.prepare(
-      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
 
     db.transaction(() => {
       db.prepare("DELETE FROM sheet_template WHERE year = ? AND level = 'category'").run(year);
       for (let ci = 0; ci < template.length; ci++) {
         const cat = template[ci];
-        const catInfo = stmt.run(year, "category", null, ci, cat.name, null, cat.remarks || "", "", cat.pdf_include ?? 1);
+        // 다른 필드와 마찬가지로 잘못된 값은 기본값으로 흘려보낸다 — 가져오기 전체를 실패시키지 않는다.
+        const excluded = normalizeExcludedTypes(cat.excluded_types) ?? "";
+        const catInfo = stmt.run(year, "category", null, ci, cat.name, null, cat.remarks || "", "", cat.pdf_include ?? 1, excluded);
         const catId = catInfo.lastInsertRowid;
 
         if (!Array.isArray(cat.subcategories)) continue;
         for (let si = 0; si < cat.subcategories.length; si++) {
           const sub = cat.subcategories[si];
-          const subInfo = stmt.run(year, "subcategory", catId, si, sub.name, null, sub.remarks || "", "", 1);
+          const subInfo = stmt.run(year, "subcategory", catId, si, sub.name, null, sub.remarks || "", "", 1, "");
           const subId = subInfo.lastInsertRowid;
 
           if (!Array.isArray(sub.groups)) continue;
           for (let gi = 0; gi < sub.groups.length; gi++) {
             const grp = sub.groups[gi];
-            const grpInfo = stmt.run(year, "group", subId, gi, grp.name, null, grp.remarks || "", "", 1);
+            const grpInfo = stmt.run(year, "group", subId, gi, grp.name, null, grp.remarks || "", "", 1, "");
             const grpId = grpInfo.lastInsertRowid;
 
             if (!Array.isArray(grp.items)) continue;
             for (let ii = 0; ii < grp.items.length; ii++) {
               const item = grp.items[ii];
-              stmt.run(year, "item", grpId, ii, item.name, item.answer_type || "passfail", item.remarks || "", item.unit || "", 1);
+              stmt.run(year, "item", grpId, ii, item.name, item.answer_type || "passfail", item.remarks || "", item.unit || "", 1, "");
             }
           }
         }
@@ -388,9 +429,10 @@ app.get("/api/sheet/summary", (req, res) => {
   if (!year) return res.status(400).send("연도를 지정해야 합니다.");
 
   const result = dbRun(() => {
+    // excluded_types를 함께 내려 목록·성적표가 팀 유형에 해당하지 않는 칸을 비울 수 있게 한다.
     const categories = db.prepare(
-      "SELECT id, name FROM sheet_template WHERE year = ? AND level = 'category' ORDER BY sort_order"
-    ).all(year);
+      "SELECT id, name, excluded_types FROM sheet_template WHERE year = ? AND level = 'category' ORDER BY sort_order"
+    ).all(year).map(c => ({ ...c, excluded_types: parseExcludedTypes(c.excluded_types) }));
 
     const inspectors = db.prepare(
       "SELECT team_num, category_id, inspector FROM sheet_inspector WHERE year = ?"

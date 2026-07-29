@@ -5,6 +5,7 @@ import { useRouter } from "vue-router";
 import {
   fetchEntryYears,
   fetchSheetTemplate,
+  fetchVehicleTypes,
   createSheetNode,
   updateSheetNode,
   deleteSheetNode,
@@ -20,6 +21,7 @@ const router = useRouter();
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
 const template = ref([]);
+const vehicleTypes = ref([]);
 const loading = ref(true);
 const copyFromYear = ref("");
 const activeTab = ref(Number(sessionStorage.getItem("inspectionActiveTab")) || 0);
@@ -81,9 +83,15 @@ onBeforeUnmount(() => {
 
 async function loadTemplate() {
   try {
-    template.value = await fetchSheetTemplate(selectedYear.value);
+    const [tmpl, vtList] = await Promise.all([
+      fetchSheetTemplate(selectedYear.value),
+      fetchVehicleTypes(selectedYear.value).catch(() => []),
+    ]);
+    template.value = tmpl;
+    vehicleTypes.value = vtList;
   } catch (e) {
     template.value = [];
+    vehicleTypes.value = [];
   }
   if (activeTab.value >= template.value.length) {
     activeTab.value = Math.max(0, template.value.length - 1);
@@ -129,7 +137,7 @@ async function addCategory() {
     template.value.push({
       id, name: "새 카테고리", level: "category",
       year: selectedYear.value, sort_order: maxOrder + 1,
-      pdf_include: 1, subcategories: [],
+      pdf_include: 1, excluded_types: [], subcategories: [],
     });
     activeTab.value = template.value.length - 1;
   } catch (e) {
@@ -269,6 +277,24 @@ async function onPdfIncludeChange(cat) {
   }
 }
 
+// 카테고리 표시 유형: 제외 목록으로 저장하므로 목록에 없으면 표시된다.
+// 유형을 새로 추가하면 기존 카테고리에 자동으로 체크된 상태가 된다.
+function isTypeVisible(cat, typeName) {
+  return !(cat.excluded_types || []).includes(typeName);
+}
+
+async function onTypeVisibleChange(cat, typeName, visible) {
+  const prev = cat.excluded_types || [];
+  const next = visible ? prev.filter(t => t !== typeName) : [...prev, typeName];
+  cat.excluded_types = next;
+  try {
+    await updateSheetNode(cat.id, { excluded_types: next });
+  } catch (e) {
+    cat.excluded_types = prev; // 저장 실패 시 체크박스를 원래 상태로 되돌린다.
+    error("표시 유형 변경에 실패했습니다.");
+  }
+}
+
 function onUnitChange(item) {
   debounceSave(`unit-${item.id}`, async () => {
     try {
@@ -323,6 +349,7 @@ function stripIds(tree) {
     name: cat.name,
     remarks: cat.remarks || "",
     pdf_include: cat.pdf_include ?? 1,
+    excluded_types: cat.excluded_types || [],
     subcategories: (cat.subcategories || []).map(sub => ({
       name: sub.name,
       remarks: sub.remarks || "",
@@ -463,6 +490,23 @@ function goBack() {
             <div class="node-actions" v-if="!isReadOnly">
               <button class="btn btn-danger btn-sm" @click="removeNode(template, activeTab)">삭제</button>
             </div>
+          </div>
+          <div v-if="vehicleTypes.length" class="type-visibility-row">
+            <span class="type-visibility-label">표시 유형</span>
+            <label
+              v-for="vt in vehicleTypes"
+              :key="vt.id"
+              class="type-toggle"
+              :class="{ 'type-hidden': !isTypeVisible(currentCategory, vt.name) }"
+            >
+              <input
+                type="checkbox"
+                :checked="isTypeVisible(currentCategory, vt.name)"
+                :disabled="isReadOnly"
+                @change="onTypeVisibleChange(currentCategory, vt.name, $event.target.checked)"
+              />
+              <span class="badge" :class="'badge-type-' + vt.color">{{ vt.name }}</span>
+            </label>
           </div>
         </div>
         <div class="card-body category-body">
@@ -935,6 +979,45 @@ function goBack() {
   font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-tertiary);
+}
+
+.type-visibility-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.type-visibility-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+
+.type-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.3125rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.type-toggle input {
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.type-toggle input:disabled {
+  cursor: default;
+}
+
+/* 체크 해제된 유형은 배지를 흐리게 — 어떤 유형에 숨겨졌는지 한눈에 보이게 한다. */
+.type-toggle.type-hidden .badge {
+  opacity: 0.35;
 }
 
 .unit-input {

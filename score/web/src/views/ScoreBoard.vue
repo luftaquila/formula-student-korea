@@ -194,6 +194,13 @@ function getInspectionResult(num, catId) {
   return inspection.value.teams[num]?.results?.[catId] || "";
 }
 
+// 검차 카테고리는 차량 유형별로 표시 여부가 정해진다(inspection 템플릿의 excluded_types).
+// 열은 여러 유형이 섞인 표에서 공유하므로 해당하지 않는 팀의 칸만 비운다.
+function categoryAppliesTo(cat, type) {
+  if (!type) return true;
+  return !(cat.excluded_types || []).includes(type);
+}
+
 // 경기 기록
 function getTeamEvent(evt, num) {
   return evt.records[num] || null;
@@ -683,6 +690,7 @@ function exportData(format) {
     const row = [entry.num, entry.univ || "", entry.team || "", entry.type || ""];
     if (showInspection.value) {
       for (const cat of inspection.value.categories) {
+        if (!categoryAppliesTo(cat, entry.type)) { row.push(""); continue; }
         row.push(isOverriddenCategory(cat.id) ? (getCurbWeight(entry.num) ?? "") : (getInspectionResult(entry.num, cat.id) || ""));
       }
     }
@@ -797,9 +805,15 @@ function exportData(format) {
                   <td class="col-team">{{ entry.univ }} {{ entry.team }}</td>
                   <td class="col-type"><span class="badge" :class="'badge-type-' + getTypeColor(entry.type)" v-if="entry.type">{{ entry.type }}</span></td>
                   <template v-for="cat in inspection.categories" :key="'insp-'+cat.id+'-'+entry.num">
+                    <!-- 이 차량 유형에 표시하지 않는 카테고리 → 빈 칸 -->
+                    <td
+                      v-if="!categoryAppliesTo(cat, entry.type)"
+                      v-show="showInspection"
+                      class="col-inspection"
+                    ></td>
                     <!-- 코너웨이트 카테고리 → 공차중량 값 + 드롭다운 -->
                     <td
-                      v-if="inspection.cornerWeight?.categoryId === cat.id"
+                      v-else-if="inspection.cornerWeight?.categoryId === cat.id"
                       v-show="showInspection"
                       class="col-inspection col-corner-weight"
                       @click="toggleCornerWeight(entry.num)"

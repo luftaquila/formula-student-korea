@@ -45,7 +45,20 @@ function scrollActiveTabIntoView() {
 
 const isReadOnly = computed(() => year < new Date().getFullYear());
 
-const currentCategory = computed(() => template.value[activeTab.value] || null);
+// 이 팀의 차량 유형에 해당하는 카테고리만 남긴다. 유형이 없는 팀은 제외 대상이 없으므로 전체를 본다.
+const visibleCategories = computed(() => {
+  const type = entry.value?.type;
+  if (!type) return template.value;
+  return template.value.filter(cat => !(cat.excluded_types || []).includes(type));
+});
+
+// 탭 번호는 템플릿 원본 순서를 따른다 — 유형별로 숨겨진 카테고리가 있어도
+// 인쇄된 시트의 번호와 어긋나지 않게 한다.
+const catNumById = computed(() =>
+  Object.fromEntries(template.value.map((cat, idx) => [cat.id, catNum(idx)]))
+);
+
+const currentCategory = computed(() => visibleCategories.value[activeTab.value] || null);
 
 onMounted(async () => {
   try {
@@ -389,8 +402,8 @@ watch(activeTab, () => {
   window.scrollTo(0, 0);
 });
 
-watch(template, (t) => {
-  if (t && t.length > 0 && activeTab.value >= t.length) activeTab.value = 0;
+watch(visibleCategories, (cats) => {
+  if (cats && cats.length > 0 && activeTab.value >= cats.length) activeTab.value = 0;
 }, { immediate: true });
 
 // SSE로 카테고리 결과 실시간 반영 (같은 팀의 변경사항)
@@ -517,15 +530,15 @@ watch(reconnected, async () => {
       </div>
 
       <!-- Category Tabs -->
-      <div class="tabs" ref="tabsRef" v-if="template.length > 0">
+      <div class="tabs" ref="tabsRef" v-if="visibleCategories.length > 0">
         <button
-          v-for="(cat, idx) in template"
+          v-for="(cat, idx) in visibleCategories"
           :key="cat.id"
           class="tab"
           :class="{ active: activeTab === idx }"
           @click="activeTab = idx"
         >
-          {{ catNum(idx) }}. {{ cat.name }}
+          {{ catNumById[cat.id] }}. {{ cat.name }}
           <span
             v-if="getCategoryResult(cat.id)"
             class="tab-badge"
@@ -744,6 +757,11 @@ watch(reconnected, async () => {
             </div>
           </div>
         </div>
+      </div>
+
+      <div v-else-if="template.length > 0" class="empty-state-box">
+        <p>{{ entry?.type }} 유형에 표시할 검차 카테고리가 없습니다.</p>
+        <button class="btn btn-ghost" @click="router.push('/template')">템플릿 관리</button>
       </div>
 
       <div v-else class="empty-state-box">
