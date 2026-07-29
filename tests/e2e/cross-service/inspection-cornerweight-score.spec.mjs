@@ -155,4 +155,33 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
     await expect(cwCell).toContainText(`${NEW_CURB} kg`, { timeout: 10000 });
     await expect(cwCell).not.toContainText(`${SEED_CURB} kg`);
   });
+
+  test("inspection team list renders 코너웨이트 as a regular category column", async ({ page }) => {
+    // The list used to filter 코너웨이트 out of its category columns (hiddenCategories).
+    // It now renders every category from /api/sheet/summary, so the column must appear
+    // in the header AND as a result cell on each team row.
+    await page.goto("/inspection");
+    await waitForPageReady(page);
+
+    const table = page.locator(".sheet-table");
+    await expect(table).toBeVisible({ timeout: 10000 });
+
+    // Header column for our temporary category. Category order is sort_order-driven and
+    // other categories may exist, so locate it by index rather than assuming it is last.
+    const resultHeaders = table.locator("thead th.col-result");
+    await expect(resultHeaders.filter({ hasText: "코너웨이트" })).toHaveCount(1);
+    const headerTexts = await resultHeaders.allInnerTexts();
+    const cwIndex = headerTexts.findIndex(t => t.trim() === "코너웨이트");
+    expect(cwIndex).toBeGreaterThanOrEqual(0);
+
+    // The body loop must render the same column, otherwise the row's cells shift and
+    // every category badge lands under the wrong header.
+    const teamRow = table.locator("tbody tr.clickable-row").filter({ hasText: UNIV });
+    await expect(teamRow).toBeVisible({ timeout: 10000 });
+    const resultCells = teamRow.locator("td.col-result");
+    await expect(resultCells).toHaveCount(headerTexts.length);
+
+    // No PASS/FAIL was recorded for this category, so it shows the empty placeholder.
+    await expect(resultCells.nth(cwIndex).locator(".badge-empty")).toHaveText("-");
+  });
 });
