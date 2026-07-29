@@ -411,6 +411,140 @@ describe('Template Import', () => {
   });
 });
 
+// ─── Per-vehicle-type category visibility ────────────────────────────────
+// excluded_types는 카테고리를 숨길 차량 유형 이름 목록이다(제외 저장 → 기본은 전체 표시).
+describe('Category excluded_types', () => {
+  const VT_YEAR = CURRENT_YEAR + 400;
+
+  after(async () => {
+    db.prepare("DELETE FROM sheet_template WHERE year IN (?, ?)").run(VT_YEAR, VT_YEAR + 1);
+  });
+
+  async function createCategory(name, body = {}) {
+    const res = await client.post('/api/sheet/template', {
+      body: { year: VT_YEAR, level: 'category', name, ...body },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    return Number((await res.json()).id);
+  }
+
+  async function getTree(year = VT_YEAR) {
+    return (await client.get(`/api/sheet/template?year=${year}`, { cookie: officialCookie })).json();
+  }
+
+  it('defaults to an empty array so a new category shows for every type', async () => {
+    const id = await createCategory('DefaultVisible');
+    const cat = (await getTree()).find(c => c.id === id);
+    assert.deepEqual(cat.excluded_types, []);
+  });
+
+  it('POST accepts excluded_types and GET returns it as an array', async () => {
+    const id = await createCategory('EFormulaOnly', { excluded_types: ['C-Formula'] });
+    const cat = (await getTree()).find(c => c.id === id);
+    assert.deepEqual(cat.excluded_types, ['C-Formula']);
+  });
+
+  it('POST rejects a non-array excluded_types (400)', async () => {
+    const res = await client.post('/api/sheet/template', {
+      body: { year: VT_YEAR, level: 'category', name: 'BadTypes', excluded_types: 'C-Formula' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('PUT replaces excluded_types, trimming and de-duplicating names', async () => {
+    const id = await createCategory('Updatable');
+    const res = await client.put(`/api/sheet/template/${id}`, {
+      body: { excluded_types: [' C-Formula ', 'C-Formula', 'E-Formula', ''] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const cat = (await getTree()).find(c => c.id === id);
+    assert.deepEqual(cat.excluded_types, ['C-Formula', 'E-Formula']);
+  });
+
+  it('PUT with an empty array clears the exclusions', async () => {
+    const id = await createCategory('Clearable', { excluded_types: ['C-Formula'] });
+    const res = await client.put(`/api/sheet/template/${id}`, {
+      body: { excluded_types: [] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const cat = (await getTree()).find(c => c.id === id);
+    assert.deepEqual(cat.excluded_types, []);
+  });
+
+  it('PUT rejects a non-array excluded_types (400)', async () => {
+    const id = await createCategory('RejectUpdate');
+    const res = await client.put(`/api/sheet/template/${id}`, {
+      body: { excluded_types: { 'C-Formula': true } },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('PUT rejects more than 50 excluded types (400)', async () => {
+    const id = await createCategory('TooManyTypes');
+    const res = await client.put(`/api/sheet/template/${id}`, {
+      body: { excluded_types: Array.from({ length: 51 }, (_, i) => `Type${i}`) },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('non-category levels report an empty array rather than the raw stored value', async () => {
+    const catId = await createCategory('WithChildren');
+    const subRes = await client.post('/api/sheet/template', {
+      body: { year: VT_YEAR, level: 'subcategory', parent_id: catId, name: 'ChildSub' },
+      cookie: adminCookie,
+    });
+    assert.equal(subRes.status, 200);
+    const cat = (await getTree()).find(c => c.id === catId);
+    assert.deepEqual(cat.subcategories[0].excluded_types, []);
+  });
+
+  it('a corrupted stored value degrades to "shown for every type"', async () => {
+    const id = await createCategory('CorruptedValue');
+    db.prepare("UPDATE sheet_template SET excluded_types = ? WHERE id = ?").run('not json', id);
+    const cat = (await getTree()).find(c => c.id === id);
+    assert.deepEqual(cat.excluded_types, []);
+  });
+
+  it('GET /api/sheet/summary exposes excluded_types per category', async () => {
+    const id = await createCategory('SummaryCat', { excluded_types: ['C-Formula'] });
+    const res = await client.get(`/api/sheet/summary?year=${VT_YEAR}`, { cookie: officialCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    const cat = data.categories.find(c => c.id === id);
+    assert.deepEqual(cat.excluded_types, ['C-Formula']);
+  });
+
+  it('cross-year copy carries excluded_types over (names, not ids)', async () => {
+    const res = await client.post('/api/sheet/template/copy', {
+      body: { from_year: VT_YEAR, to_year: VT_YEAR + 1 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    const copied = (await getTree(VT_YEAR + 1)).find(c => c.name === 'EFormulaOnly');
+    assert.deepEqual(copied.excluded_types, ['C-Formula']);
+  });
+
+  it('JSON import restores excluded_types', async () => {
+    const res = await client.post('/api/sheet/template/import', {
+      body: {
+        year: VT_YEAR,
+        template: [{ name: 'ImportedTyped', excluded_types: ['E-Formula'], subcategories: [] }],
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    const tree = await getTree();
+    assert.equal(tree.length, 1);
+    assert.deepEqual(tree[0].excluded_types, ['E-Formula']);
+  });
+});
+
 // ─── Answer CRUD ────────────────────────────────────────────────────────
 describe('Answer CRUD', () => {
   let answerItemId, answerCategoryId;

@@ -101,6 +101,13 @@ function getInspector(num, catId) {
   return summary.value.teams[num]?.inspectors?.[catId] || "";
 }
 
+// 카테고리 열은 여러 유형이 섞인 목록에서 공유되므로 열 자체는 남기고,
+// 해당 유형에 표시하지 않는 카테고리는 그 팀의 칸만 완전히 비운다.
+function appliesToTeam(cat, type) {
+  if (!type) return true;
+  return !(cat.excluded_types || []).includes(type);
+}
+
 // SSE로 카테고리 결과 실시간 반영
 watch(lastUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
@@ -205,13 +212,15 @@ watch(lastInspectorUpdate, (update) => {
                 </td>
                 <template v-for="cat in summary.categories" :key="'r'+cat.id+'-'+entry.num">
                   <td class="col-result">
-                    <span
-                      v-if="getResult(entry.num, cat.id)"
-                      class="badge"
-                      :class="getResult(entry.num, cat.id) === 'PASS' ? 'badge-success' : 'badge-danger'"
-                    >{{ getResult(entry.num, cat.id) }}</span>
-                    <span v-else class="badge badge-empty">-</span>
-                    <span v-if="getInspector(entry.num, cat.id)" class="inspector-name">({{ getInspector(entry.num, cat.id) }})</span>
+                    <template v-if="appliesToTeam(cat, entry.type)">
+                      <span
+                        v-if="getResult(entry.num, cat.id)"
+                        class="badge"
+                        :class="getResult(entry.num, cat.id) === 'PASS' ? 'badge-success' : 'badge-danger'"
+                      >{{ getResult(entry.num, cat.id) }}</span>
+                      <span v-else class="badge badge-empty">-</span>
+                      <span v-if="getInspector(entry.num, cat.id)" class="inspector-name">({{ getInspector(entry.num, cat.id) }})</span>
+                    </template>
                   </td>
                 </template>
               </tr>

@@ -227,19 +227,21 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/sheet/template` | official | `?year=` | Tree: `[{ id, name, subcategories: [{ groups: [{ items }] }] }]` | Template tree for year |
-| POST | `/api/sheet/template` | chief | `{ year, level, parent_id?, name, sort_order?, answer_type?, remarks?, unit?, pdf_include? }` | `{ id }` | Create template node |
-| PUT | `/api/sheet/template/:id` | chief | `{ name?, sort_order?, answer_type?, remarks?, unit?, pdf_include? }` | 200 | Update template node |
+| GET | `/api/sheet/template` | official | `?year=` | Tree: `[{ id, name, excluded_types, subcategories: [{ groups: [{ items }] }] }]` | Template tree for year |
+| POST | `/api/sheet/template` | chief | `{ year, level, parent_id?, name, sort_order?, answer_type?, remarks?, unit?, pdf_include?, excluded_types? }` | `{ id }` | Create template node |
+| PUT | `/api/sheet/template/:id` | chief | `{ name?, sort_order?, answer_type?, remarks?, unit?, pdf_include?, excluded_types? }` | 200 | Update template node |
 | DELETE | `/api/sheet/template/:id` | chief | — | 200 | Delete template node (CASCADE, blocks past years) |
 | POST | `/api/sheet/template/reorder` | chief | `{ items: [{ id, sort_order }] }` | 200 | Reorder sibling nodes |
 | POST | `/api/sheet/template/copy` | chief | `{ from_year, to_year }` | 201 | Copy template across years |
 | POST | `/api/sheet/template/import` | chief | `{ year, template: [...] }` | 201 | Import template from JSON |
 
+`excluded_types` is a category-level array of vehicle type **names** (from entry's `vehicle_types_<year>`) that must NOT see the category. Exclusions rather than inclusions are stored, so `[]` (the default) means every type sees it and a newly added vehicle type is visible without touching existing categories. Max 50 names; a non-array is rejected with 400. It survives `copy` and JSON export/import, and only categories carry it (other levels always report `[]`).
+
 ### Sheet Data
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/sheet/summary` | official | `?year=` | `{ categories, teams }` | All teams' category-level results and inspectors |
+| GET | `/api/sheet/summary` | official | `?year=` | `{ categories: [{ id, name, excluded_types }], teams }` | All teams' category-level results and inspectors |
 | GET | `/api/sheet/bulk-answers` | official | `?year=&item_ids=1,2,3` | `{ team_num: { item_id: value } }` | Bulk answer values for specific items |
 | GET | `/api/sheet/data/:year/:num` | official | — | `{ answers, results, inspectors }` | Full sheet data for a team |
 | PUT | `/api/sheet/answer` | official | `{ year, team_num, item_id, value }` | 200 | Upsert answer (broadcasts SSE) |

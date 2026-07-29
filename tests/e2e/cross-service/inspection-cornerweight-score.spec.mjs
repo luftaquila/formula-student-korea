@@ -166,22 +166,21 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
     const table = page.locator(".sheet-table");
     await expect(table).toBeVisible({ timeout: 10000 });
 
-    // Header column for our temporary category. Category order is sort_order-driven and
-    // other categories may exist, so locate it by index rather than assuming it is last.
     const resultHeaders = table.locator("thead th.col-result");
-    await expect(resultHeaders.filter({ hasText: "코너웨이트" })).toHaveCount(1);
-    const headerTexts = await resultHeaders.allInnerTexts();
-    const cwIndex = headerTexts.findIndex(t => t.trim() === "코너웨이트");
-    expect(cwIndex).toBeGreaterThanOrEqual(0);
-
-    // The body loop must render the same column, otherwise the row's cells shift and
-    // every category badge lands under the wrong header.
     const teamRow = table.locator("tbody tr.clickable-row").filter({ hasText: UNIV });
     await expect(teamRow).toBeVisible({ timeout: 10000 });
-    const resultCells = teamRow.locator("td.col-result");
-    await expect(resultCells).toHaveCount(headerTexts.length);
 
-    // No PASS/FAIL was recorded for this category, so it shows the empty placeholder.
-    await expect(resultCells.nth(cwIndex).locator(".badge-empty")).toHaveText("-");
+    // Category order is sort_order-driven and parallel specs add and drop columns, so the
+    // header index, the body/header alignment, and the cell text are all read in ONE poll
+    // attempt rather than captured across separate awaits. Misalignment means the body
+    // loop skipped a category and every badge sits under the wrong header.
+    await expect.poll(async () => {
+      const headerTexts = await resultHeaders.allInnerTexts();
+      const cwIndex = headerTexts.findIndex(t => t.trim() === "코너웨이트");
+      if (cwIndex === -1) return "column-missing";
+      const cells = teamRow.locator("td.col-result");
+      if (await cells.count() !== headerTexts.length) return "header-body-misaligned";
+      return (await cells.nth(cwIndex).innerText()).trim();
+    }, { timeout: 10000 }).toBe("-"); // No PASS/FAIL recorded → empty placeholder.
   });
 });
