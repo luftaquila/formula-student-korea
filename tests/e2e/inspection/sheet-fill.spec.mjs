@@ -39,6 +39,38 @@ test.describe("Inspection sheet filling", () => {
     await expect(panel).toContainText("고정 상태");
   });
 
+  test("shows the vehicle type chip between the team name and the year", async ({ page }) => {
+    const chip = page.locator(".team-header .team-type");
+    await expect(chip).toHaveText("EV"); // seeded: team 1 is EV
+    await expect(chip).toHaveClass(/badge-type-/); // colored like the team list badge
+
+    // Adjacency + order: the meta group holds exactly the chip then the year.
+    await expect(page.locator(".team-header .team-meta")).toHaveText(/^EV\s*\d{4}년$/);
+
+    // And the chip sits after the team name, not before it.
+    const nameBox = await page.locator(".team-header .team-name").boundingBox();
+    const chipBox = await chip.boundingBox();
+    expect(chipBox.x).toBeGreaterThan(nameBox.x);
+  });
+
+  test("keeps the type chip on the year's line at mobile width", async ({ page }) => {
+    // The header is a wrapping flex row, so at narrow widths the long team name pushes
+    // the trailing items onto their own line. The chip must travel WITH the year and
+    // stay to its left instead of being stranded on the team name's line.
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    const chip = page.locator(".team-header .team-type");
+    const year = page.locator(".team-header .team-year");
+    await expect(chip).toBeVisible();
+
+    const chipBox = await chip.boundingBox();
+    const yearBox = await year.boundingBox();
+    const chipMid = chipBox.y + chipBox.height / 2;
+    const yearMid = yearBox.y + yearBox.height / 2;
+    expect(Math.abs(chipMid - yearMid)).toBeLessThan(4); // same line
+    expect(chipBox.x + chipBox.width).toBeLessThanOrEqual(yearBox.x); // chip on the left
+  });
+
   test("clicks PASS on a passfail item", async ({ page }) => {
     // Find the "전압 확인" item row (passfail type)
     const itemRow = page.locator(".item-row").filter({ hasText: "전압 확인" });
