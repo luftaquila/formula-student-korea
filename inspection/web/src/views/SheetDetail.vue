@@ -3,6 +3,7 @@ import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from "vue"
 import { useRouter, useRoute } from "vue-router";
 import {
   fetchEntries,
+  fetchVehicleTypes,
   fetchSheetTemplate,
   fetchSheetData,
   updateSheetAnswer,
@@ -24,6 +25,7 @@ const year = Number(route.params.year);
 const num = Number(route.params.num);
 
 const entry = ref(null);
+const typeColorMap = ref({});
 const template = ref([]);
 const sheetData = ref({ answers: {}, results: {}, inspectors: {} });
 const loading = ref(true);
@@ -62,14 +64,16 @@ const currentCategory = computed(() => visibleCategories.value[activeTab.value] 
 
 onMounted(async () => {
   try {
-    const [entries, tmpl, data] = await Promise.all([
+    const [entries, tmpl, data, vtList] = await Promise.all([
       fetchEntries(year),
       fetchSheetTemplate(year),
       fetchSheetData(year, num),
+      fetchVehicleTypes(year).catch(() => []),
     ]);
     entry.value = entries[num] || { univ: "?", team: "?" };
     template.value = tmpl;
     sheetData.value = data;
+    typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
   } catch (e) {
     error("데이터를 가져올 수 없습니다.");
   }
@@ -79,6 +83,12 @@ onMounted(async () => {
   scrollActiveTabIntoView();
   requestAnimationFrame(() => window.scrollTo(0, savedY));
 });
+
+// 팀 목록과 동일한 유형 배지 색상 규칙 (등록되지 않은 유형은 blue로 폴백)
+function getTypeColor(type) {
+  if (!type) return "blue";
+  return typeColorMap.value[type] || "blue";
+}
 
 function getAnswer(itemId) {
   return sheetData.value.answers[itemId]?.value ?? "";
@@ -525,7 +535,16 @@ watch(reconnected, async () => {
         <div class="card-body team-info">
           <span class="team-num">#{{ num }}</span>
           <span class="team-name">{{ entry?.univ }} {{ entry?.team }}</span>
-          <span class="team-year">{{ year }}년</span>
+          <!-- 유형 칩과 연도는 한 덩어리로 묶는다 — 팀명이 길어 줄이 넘어가도
+               칩이 연도에서 떨어져 앞 줄에 남지 않게 한다. -->
+          <span class="team-meta">
+            <span
+              v-if="entry?.type"
+              class="badge team-type"
+              :class="'badge-type-' + getTypeColor(entry.type)"
+            >{{ entry.type }}</span>
+            <span class="team-year">{{ year }}년</span>
+          </span>
         </div>
       </div>
 
@@ -834,9 +853,22 @@ watch(reconnected, async () => {
   font-weight: 600;
 }
 
+.team-meta {
+  display: flex;
+  align-items: center;
+  gap: 1rem; /* .team-info의 gap과 맞춰 묶음 여부가 보이지 않게 한다 */
+  flex-wrap: nowrap;
+}
+
+.team-type {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .team-year {
   font-size: 0.875rem;
   color: var(--text-tertiary);
+  white-space: nowrap;
 }
 
 /* Tabs */
