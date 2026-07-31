@@ -26,6 +26,7 @@ import * as THREE from "three";
 import { VRButton } from "three/addons/webxr/VRButton.js";
 import { request } from "../api.js";
 import { shapeStick } from "@lib/stick.mjs";
+import { formatCoord, ALT_DECIMALS } from "@lib/geo.mjs";
 import { useRoverControl } from "../composables/useRoverControl.js";
 import { useNotification } from "@shared/useNotification.js";
 
@@ -177,8 +178,8 @@ function drawMinimap() {
   ctx.font = "600 22px monospace";
   ctx.textBaseline = "bottom";
   ctx.textAlign = "left";                       // 16px inset all round (matches bottom margin)
-  ctx.fillText("LAT " + (live ? live.lat.toFixed(6) : "--"), 16, S - 44);
-  ctx.fillText("LON " + (live ? live.lng.toFixed(6) : "--"), 16, S - 16);
+  ctx.fillText("LAT " + (live ? formatCoord(live.lat) : "--"), 16, S - 44);
+  ctx.fillText("LON " + (live ? formatCoord(live.lng) : "--"), 16, S - 16);
   const ha = typeof gps.value?.h_acc === "number" ? gps.value.h_acc : null;
   ctx.textAlign = "right";
   ctx.fillText("±" + (ha != null ? ha.toFixed(2) : "--") + " m", S - 16, S - 16);
@@ -444,7 +445,7 @@ function drawHud() {
   ctx.strokeRect(ax, cy - 26, 150, 52);
   ctx.beginPath(); ctx.moveTo(ax, cy - 11); ctx.lineTo(ax - 16, cy); ctx.lineTo(ax, cy + 11); ctx.stroke();
   ctx.textAlign = "left"; ctx.font = "600 20px monospace"; ctx.fillText("ALT", ax + 4, cy - 42);
-  ctx.font = "600 30px monospace"; ctx.fillText(num(g.altitude, 1), ax + 10, cy + 1);
+  ctx.font = "600 30px monospace"; ctx.fillText(num(g.altitude, ALT_DECIMALS), ax + 10, cy + 1);
   ctx.textAlign = "right"; ctx.font = "600 18px monospace"; ctx.fillText("m", ax + 140, cy + 1);
 
   // Throttle bar (left, vertical, fill from centre) + steering bar (bottom, bar only).

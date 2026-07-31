@@ -4,7 +4,7 @@ import { useRouter } from "vue-router";
 import L from "leaflet";
 import { request } from "../api.js";
 import { useNotification } from "@shared/useNotification.js";
-import { haversine } from "@lib/geo.mjs";
+import { haversine, formatCoord, formatLatLng, formatAlt } from "@lib/geo.mjs";
 import { computeCenterline } from "@lib/centerline.mjs";
 import { buildSideRanks } from "@lib/cone-index.mjs";
 import { isAdmin } from "@shared/officialsStore.js";
@@ -258,10 +258,10 @@ const fixChip = computed(() => {
   const rows = [["MODE", label, tone]];
   if (!hasFix) rows.push(["GPS", "NO SIGNAL", "bad"]);
   if (s.last_position?.lat != null && s.last_position?.lng != null) {
-    rows.push(["LAT", s.last_position.lat.toFixed(6)]);
-    rows.push(["LON", s.last_position.lng.toFixed(6)]);
+    rows.push(["LAT", formatCoord(s.last_position.lat)]);
+    rows.push(["LON", formatCoord(s.last_position.lng)]);
   }
-  if (s.gps?.altitude != null) rows.push(["ALT", `${s.gps.altitude.toFixed(2)} m`]);
+  if (s.gps?.altitude != null) rows.push(["ALT", `${formatAlt(s.gps.altitude)} m`]);
   if (lastPositionAge.value != null) {
     const age = lastPositionAge.value;
     const ageT = age <= 2 ? "ok" : age <= 10 ? "warn" : "bad";
@@ -827,10 +827,10 @@ const receiverGpsRows = computed(() => {
     hasFix ? (FIX_STATUS_META[r.fix_status]?.tone || "bad") : "bad"]);
   if (!hasFix) rows.push(["GPS", "NO SIGNAL", "bad"]);
   if (r.last_position?.lat != null && r.last_position?.lng != null) {
-    rows.push(["LAT", r.last_position.lat.toFixed(6)]);
-    rows.push(["LON", r.last_position.lng.toFixed(6)]);
+    rows.push(["LAT", formatCoord(r.last_position.lat)]);
+    rows.push(["LON", formatCoord(r.last_position.lng)]);
   }
-  if (g.altitude != null) rows.push(["ALT", `${g.altitude.toFixed(2)} m`]);
+  if (g.altitude != null) rows.push(["ALT", `${formatAlt(g.altitude)} m`]);
   if (receiverPositionAge.value != null) {
     const a = receiverPositionAge.value;
     rows.push(["UPDATE", `${a}s`, a <= 2 ? "ok" : a <= 10 ? "warn" : "bad"]);
@@ -1999,11 +1999,9 @@ function onMapClick(e) {
 
 function showCoordPopover(latlng) {
   if (!map) return;
-  const lat = latlng.lat.toFixed(6);
-  const lng = latlng.lng.toFixed(6);
   L.popup({ closeOnClick: true, autoClose: true, className: "coord-popup" })
     .setLatLng(latlng)
-    .setContent(`<div class="coord-popover-body">${lat}, ${lng}</div>`)
+    .setContent(`<div class="coord-popover-body">${formatLatLng(latlng.lat, latlng.lng)}</div>`)
     .openOn(map);
 }
 
@@ -5372,7 +5370,7 @@ onUnmounted(() => {
                       </select>
                     </div>
                     <div v-if="selectedCone && selectedCone.alt != null" class="cone-alt-readout" title="고도 (MSL) — RTK 측정값, 편집 불가">
-                      고도 {{ selectedCone.alt.toFixed(2) }} m
+                      고도 {{ formatAlt(selectedCone.alt) }} m
                     </div>
                     <div class="edit-buttons">
                       <button class="btn btn-primary btn-lg-touch" @click="updateCone">저장</button>
@@ -5409,8 +5407,8 @@ onUnmounted(() => {
                         @click="panToCone(cone)"
                       >
                         <span class="cone-num" :style="{ color: SIDE_COLORS[cone.side] }">#{{ activeConeSideRanks.get(cone.id) || 0 }}</span>
-                        <span class="cone-coords">{{ cone.lat.toFixed(6) }}, {{ cone.lng.toFixed(6) }}</span>
-                        <span v-if="cone.alt != null" class="cone-alt" title="고도 (MSL)">{{ cone.alt.toFixed(1) }} m</span>
+                        <span class="cone-coords">{{ formatLatLng(cone.lat, cone.lng) }}</span>
+                        <span v-if="cone.alt != null" class="cone-alt" title="고도 (MSL)">{{ formatAlt(cone.alt) }} m</span>
                         <button class="del-btn" @click.stop="deleteCone(cone.id)" title="삭제">×</button>
                       </div>
                       <div v-if="filteredCones.length === 0" class="empty-msg">콘이 없습니다.</div>
@@ -5463,7 +5461,7 @@ onUnmounted(() => {
                     </div>
                     <div class="gps-cell">
                       <span class="gps-label">ALT</span>
-                      <span class="gps-val">{{ roverStatus.gps?.altitude != null ? roverStatus.gps.altitude.toFixed(1) + ' m' : '—' }}</span>
+                      <span class="gps-val">{{ roverStatus.gps?.altitude != null ? formatAlt(roverStatus.gps.altitude) + ' m' : '—' }}</span>
                     </div>
                     <div class="gps-cell">
                       <span class="gps-label">PDOP</span>
@@ -5589,7 +5587,7 @@ onUnmounted(() => {
                       class="waypoint-item"
                     >
                       <span class="waypoint-num">#{{ idx + 1 }}</span>
-                      <span class="waypoint-coord">{{ wp.lat.toFixed(5) }}, {{ wp.lng.toFixed(5) }}</span>
+                      <span class="waypoint-coord">{{ formatLatLng(wp.lat, wp.lng) }}</span>
                       <div class="waypoint-arrows">
                         <button class="arrow-btn" :disabled="idx === 0" @click="moveWaypoint(idx, -1)" title="위로">↑</button>
                         <button class="arrow-btn" :disabled="idx === pathWaypoints.length - 1" @click="moveWaypoint(idx, 1)" title="아래로">↓</button>
@@ -5811,7 +5809,7 @@ onUnmounted(() => {
                         <span v-else class="gps-tag gps-tag-ok">측량점</span>
                       </div>
                       <div v-if="p.lat != null && p.lng != null" class="gps-point-coord">
-                        <span class="gps-point-latlng">{{ p.lat.toFixed(7) }}, {{ p.lng.toFixed(7) }}<template v-if="p.alt != null"> · {{ p.alt.toFixed(2) }} m</template></span>
+                        <span class="gps-point-latlng">{{ formatLatLng(p.lat, p.lng) }}<template v-if="p.alt != null"> · {{ formatAlt(p.alt) }} m</template></span>
                         <span class="gps-sub" v-if="p.h_acc_m != null || p.surveyed_at">
                           <template v-if="p.h_acc_m != null">±{{ (p.h_acc_m * 100).toFixed(1) }} cm</template><template v-if="p.surveyed_at">{{ p.h_acc_m != null ? ' · ' : '' }}{{ formatSnapshotTime(p.surveyed_at) }}</template>
                         </span>
