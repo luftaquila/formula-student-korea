@@ -1,10 +1,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute } from "vue-router";
-import { fetchPublicScore } from "../api";
+import { fetchPublicScore, fetchVehicleTypes } from "../api";
 import { createSSEConnection, parseSSEData } from "@shared/useSSE.js";
-import { useStickyColumns } from "@shared/useStickyColumns.js";
-import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 
 const route = useRoute();
 const year = Number(route.params.year);
@@ -15,28 +13,24 @@ const unavailable = ref(false);
 const loadFailed = ref(false);
 const entries = ref({});
 const events = ref([]);
+const typeColorMap = ref({});
 const sortKey = ref(null);
 const sortOrder = ref("asc");
-const tableRef = ref(null);
 
-const { stickyCols, lineX, startDrag } = useStickyColumns({
-  storageKey: "score-public-sticky-cols",
-  tableRef,
-  columnSelectors: [".col-num", ".col-team", ".col-type"],
-});
-
-const { on, useSSE, connected } = createSSEConnection(`${base}/api/score/public/${year}/events`);
+const { on, useSSE } = createSSEConnection(`${base}/api/score/public/${year}/events`);
 
 let requestSeq = 0;
 let refreshTimer = null;
+const vehicleTypesRequest = fetchVehicleTypes(year).catch(() => []);
 
 async function loadData() {
   const seq = ++requestSeq;
   try {
-    const data = await fetchPublicScore(year);
+    const [data, vehicleTypes] = await Promise.all([fetchPublicScore(year), vehicleTypesRequest]);
     if (seq !== requestSeq) return;
     entries.value = data.entries || {};
     events.value = (data.events || []).filter((event) => event.type !== "내구");
+    typeColorMap.value = Object.fromEntries(vehicleTypes.map((type) => [type.name, type.color]));
     unavailable.value = false;
     loadFailed.value = false;
   } catch (error) {
@@ -72,6 +66,10 @@ onUnmounted(() => clearTimeout(refreshTimer));
 
 function resultFor(event, teamNum) {
   return event?.records?.[teamNum]?.result ?? null;
+}
+
+function getTypeColor(type) {
+  return typeColorMap.value[type] || "blue";
 }
 
 function formatResult(result) {
@@ -150,19 +148,12 @@ function sortIcon(key) {
           <h3>{{ year }}년 성적표</h3>
           <span class="count-badge">{{ entryList.length }}개 팀</span>
         </div>
-        <div class="status-group" aria-live="polite">
-          <span class="readonly-badge">읽기 전용</span>
-          <span class="live-status" :class="{ connected }">
-            <span class="live-dot"></span>
-            {{ connected ? "실시간 연결" : "연결 중" }}
-          </span>
-        </div>
+        <span class="readonly-badge">읽기 전용</span>
       </div>
       <div class="card-body table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
-        <div v-else class="sticky-host">
-          <div class="table-container">
-            <table ref="tableRef" class="data-table score-table" :data-sticky-cols="stickyCols">
+        <div v-else class="table-container">
+          <table class="data-table score-table">
               <thead>
                 <tr>
                   <th class="col-num sortable" @click="handleSort('num')">번호 <span class="sort-icon">{{ sortIcon('num') }}</span></th>
@@ -180,7 +171,7 @@ function sortIcon(key) {
                 <tr v-for="entry in entryList" :key="entry.num">
                   <td class="col-num"><span class="entry-num">{{ entry.num }}</span></td>
                   <td class="col-team">{{ entry.univ }} {{ entry.team }}</td>
-                  <td class="col-type"><span v-if="entry.type" class="badge badge-primary">{{ entry.type }}</span></td>
+                  <td class="col-type"><span v-if="entry.type" class="badge" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span></td>
                   <td v-for="event in events" :key="event.type" class="col-event">
                     <span
                       class="record-value"
@@ -192,9 +183,7 @@ function sortIcon(key) {
                   <td :colspan="3 + events.length" class="empty-state">팀 데이터가 없습니다.</td>
                 </tr>
               </tbody>
-            </table>
-          </div>
-          <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
+          </table>
         </div>
       </div>
     </div>
@@ -207,20 +196,18 @@ function sortIcon(key) {
 }
 
 .public-card-header,
-.header-left,
-.status-group,
-.live-status {
+.header-left {
   display: flex;
   align-items: center;
 }
 
 .public-card-header {
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 1rem;
 }
 
-.header-left,
-.status-group {
+.header-left {
   gap: 0.75rem;
 }
 
@@ -238,35 +225,14 @@ function sortIcon(key) {
 }
 
 .readonly-badge {
+  margin-left: auto;
   color: var(--text-secondary);
   background: var(--bg-hover);
-}
-
-.live-status {
-  gap: 0.375rem;
-  color: var(--text-tertiary);
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-
-.live-status.connected {
-  color: var(--accent-success);
-}
-
-.live-dot {
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  background: currentColor;
 }
 
 .table-body {
   padding: 0 !important;
   overflow: auto;
-}
-
-.sticky-host {
-  position: relative;
 }
 
 .score-table {
@@ -319,27 +285,6 @@ function sortIcon(key) {
   z-index: 3;
 }
 
-.score-table[data-sticky-cols="2"] .col-team,
-.score-table[data-sticky-cols="3"] .col-team {
-  position: sticky;
-  left: var(--sticky-l1, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.score-table[data-sticky-cols="3"] .col-type {
-  position: sticky;
-  left: var(--sticky-l2, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.score-table[data-sticky-cols="2"] thead .col-team,
-.score-table[data-sticky-cols="3"] thead .col-team,
-.score-table[data-sticky-cols="3"] thead .col-type {
-  z-index: 3;
-}
-
 .col-team {
   font-size: 0.875rem;
 }
@@ -387,15 +332,4 @@ function sortIcon(key) {
   color: var(--text-secondary);
 }
 
-@media (max-width: 640px) {
-  .public-card-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .status-group {
-    width: 100%;
-    justify-content: space-between;
-  }
-}
 </style>

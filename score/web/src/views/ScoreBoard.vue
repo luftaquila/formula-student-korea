@@ -821,11 +821,12 @@ function exportData(format) {
           <a
             v-if="publicEnabled"
             :href="publicPageUrl"
-            class="action-link public-link"
+            class="btn btn-ghost btn-sm public-link"
             target="_blank"
             rel="noopener noreferrer"
-          >공개 페이지 <span aria-hidden="true">↗</span></a>
-          <span v-else class="action-link public-link disabled" aria-disabled="true">공개 페이지 <span aria-hidden="true">↗</span></span>
+            title="공개 페이지 열기"
+          >공개</a>
+          <button v-else type="button" class="btn btn-ghost btn-sm public-link" disabled>공개</button>
         </div>
       </div>
       <div class="card-body table-body">
@@ -1217,6 +1218,7 @@ function exportData(format) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 1rem;
 }
 
@@ -1293,26 +1295,14 @@ function exportData(format) {
 }
 
 .public-link {
-  height: 2rem;
-  gap: 0.25rem;
-}
-
-.public-link.disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-  pointer-events: none;
+  min-width: 3.25rem;
 }
 
 @media (max-width: 640px) {
-  .score-card-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .publication-actions {
     width: 100%;
-    justify-content: space-between;
-    margin-left: 0;
+    justify-content: flex-end;
+    margin-left: auto;
   }
 }
 
