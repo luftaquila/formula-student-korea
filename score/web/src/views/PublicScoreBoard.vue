@@ -21,7 +21,6 @@ const { on, useSSE, reconnect } = createSSEConnection(`${base}/api/score/public/
 
 let requestSeq = 0;
 let refreshTimer = null;
-let initCount = 0;
 const vehicleTypesRequest = fetchVehicleTypes(year).catch(() => []);
 
 async function loadData() {
@@ -48,10 +47,8 @@ function scheduleRefresh() {
   refreshTimer = setTimeout(loadData, 250);
 }
 
-on("init", () => {
-  // onMounted의 최초 조회와 중복되지 않도록 최초 init은 연결 확인으로만 사용한다.
-  if (++initCount > 1) scheduleRefresh();
-});
+// 최초 연결이 지연되거나 재연결된 동안 놓친 변경까지 최신 스냅샷으로 동기화한다.
+on("init", scheduleRefresh);
 on("refresh", scheduleRefresh);
 on("publication", (event) => {
   const data = parseSSEData(event);
