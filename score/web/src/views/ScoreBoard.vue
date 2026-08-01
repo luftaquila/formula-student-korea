@@ -1306,24 +1306,51 @@ function exportData(format) {
 
 @media (max-width: 640px) {
   .score-card-header {
-    gap: 0.5rem;
-    padding: 0.75rem;
+    gap: 0.375rem;
+    padding: 0.625rem 0.5rem;
   }
 
   .score-card-header .header-left {
     flex: 0 1 auto;
     min-width: 0;
+    gap: 0.375rem;
   }
 
   .score-card-header .count-badge {
-    display: none;
+    padding: 0.125rem 0.375rem;
+    font-size: 0.6875rem;
   }
 
   .publication-actions {
     width: auto;
-    gap: 0.5rem;
+    gap: 0.375rem;
     justify-content: flex-end;
     margin-left: auto;
+  }
+
+  .publication-toggle {
+    gap: 0.375rem;
+    font-size: 0.75rem;
+  }
+
+  .toggle-switch {
+    width: 36px;
+    height: 20px;
+  }
+
+  .toggle-slider::before {
+    width: 14px;
+    height: 14px;
+  }
+
+  .toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(16px);
+  }
+
+  .public-link {
+    min-width: auto;
+    padding: 0.25rem 0.375rem;
+    font-size: 0.75rem;
   }
 }
 
