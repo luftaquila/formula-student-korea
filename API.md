@@ -161,6 +161,13 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | POST | `/api/admin/register/:type` | official | `{ num, phone }` | 201 | Register team in queue (validates entry, penalty, concurrent rules) |
 | POST | `/api/admin/cancel/:type` | official | `{ num }` | 200 | Cancel registration (applies time penalty) |
 
+### Active Cancel Penalties
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/admin/penalties` | official | — | `[{ num, inspection, inspection_name, until }]` | List active cancel penalties for the current year |
+| DELETE | `/api/admin/penalties/:type/:num` | official | — | 200 | Clear an active cancel penalty |
+
 ### Priority Management
 
 | Method | Path | Role | Request | Response | Description |

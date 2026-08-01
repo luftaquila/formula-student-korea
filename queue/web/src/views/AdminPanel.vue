@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, watch } from "vue";
+import { ref, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
 import { useRouter } from "vue-router";
 import {
   fetchEntries,
@@ -8,6 +8,8 @@ import {
   toggleInspectionActive,
   toggleInspectionVisibility,
   cancelFromQueue,
+  fetchActivePenalties,
+  clearActivePenalty,
   enterBooth,
   exitBooth,
   updateBoothConfig,
@@ -39,6 +41,14 @@ const smsRank = ref(3);
 const cancelPenalty = ref(10);
 const loading = ref(true);
 const boothSelectedTeam = ref({});
+const penalties = ref([]);
+const penaltyModalOpen = ref(false);
+const penaltiesLoading = ref(false);
+const clearingPenaltyKey = ref("");
+const penaltyClock = ref(Date.now());
+const penaltyButton = ref(null);
+const penaltyCloseButton = ref(null);
+let penaltyClockTimer;
 const { elapsedTimes, syncTimers, clearAllTimers } = useBoothTimers();
 
 const activeInspectionTypes = computed(() => activeInspections.value.map((i) => i.type));
@@ -52,6 +62,8 @@ const currentBooths = computed(() => {
   if (!currentTab.value || !allBooths.value[currentTab.value]) return [];
   return allBooths.value[currentTab.value];
 });
+
+const activePenalties = computed(() => penalties.value.filter((penalty) => penalty.until > penaltyClock.value));
 
 // Watch for queue updates from SSE
 watch(lastQueueUpdate, async (update) => {
@@ -95,6 +107,10 @@ watch(
 );
 
 onMounted(async () => {
+  penaltyClockTimer = window.setInterval(() => {
+    penaltyClock.value = Date.now();
+  }, 1000);
+
   try {
     entries.value = await fetchEntries();
     inspections.value = await fetchAllInspections();
@@ -121,6 +137,11 @@ onMounted(async () => {
     error("초기 데이터를 가져올 수 없습니다.");
   }
   loading.value = false;
+});
+
+onUnmounted(() => {
+  window.clearInterval(penaltyClockTimer);
+  clearAllTimers();
 });
 
 async function refreshQueue(type) {
@@ -280,6 +301,64 @@ function goToStats() {
   router.push("/stats");
 }
 
+async function openPenaltyModal() {
+  penaltyModalOpen.value = true;
+  penaltiesLoading.value = true;
+  penalties.value = [];
+  await nextTick();
+  penaltyCloseButton.value?.focus();
+
+  try {
+    penalties.value = await fetchActivePenalties();
+    penaltyClock.value = Date.now();
+  } catch (e) {
+    error(e.message || "페널티 목록을 가져올 수 없습니다.");
+  } finally {
+    penaltiesLoading.value = false;
+  }
+}
+
+async function closePenaltyModal() {
+  if (!penaltyModalOpen.value) return;
+  penaltyModalOpen.value = false;
+  await nextTick();
+  penaltyButton.value?.focus();
+}
+
+async function clearPenalty(penalty) {
+  const entry = entries.value[penalty.num];
+  const teamName = entry ? ` ${entry.univ} ${entry.team}` : "";
+  if (!confirm(`#${penalty.num}${teamName}\n${penalty.inspection_name} 페널티를 취소하시겠습니까?`)) return;
+
+  const key = `${penalty.inspection}-${penalty.num}`;
+  clearingPenaltyKey.value = key;
+  try {
+    await clearActivePenalty(penalty.inspection, penalty.num);
+    penalties.value = penalties.value.filter((item) =>
+      item.num !== penalty.num || item.inspection !== penalty.inspection,
+    );
+    success(`엔트리 ${penalty.num}번 ${penalty.inspection_name} 페널티를 취소했습니다.`);
+  } catch (e) {
+    error(e.message || "페널티를 취소할 수 없습니다.");
+  } finally {
+    clearingPenaltyKey.value = "";
+  }
+}
+
+function formatPenaltyUntil(timestamp) {
+  return new Date(timestamp).toLocaleTimeString("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatPenaltyRemaining(timestamp) {
+  const remainingSeconds = Math.max(0, Math.ceil((timestamp - penaltyClock.value) / 1000));
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+  return minutes > 0 ? `${minutes}분 ${seconds}초 남음` : `${seconds}초 남음`;
+}
+
 function goToInspection(num) {
   // 큐는 항상 현재 연도의 엔트리를 다루므로(getEntries → entry 기본 연도),
   // 인스펙션 시트 경로 /:year/:num 의 year 는 현재 연도로 이동한다.
@@ -314,6 +393,21 @@ function goToInspection(num) {
           <path d="M6 20v-6" />
         </svg>
         통계
+      </button>
+      <button
+        ref="penaltyButton"
+        class="btn btn-ghost"
+        type="button"
+        aria-haspopup="dialog"
+        aria-controls="penalty-modal"
+        @click="openPenaltyModal"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v6" />
+          <path d="M12 17h.01" />
+        </svg>
+        페널티
       </button>
     </div>
 
@@ -545,6 +639,82 @@ function goToInspection(num) {
         </div>
       </div>
     </div>
+
+    <Teleport to="body">
+      <Transition name="penalty-modal">
+        <div
+          v-if="penaltyModalOpen"
+          class="penalty-modal-overlay"
+          @click.self="closePenaltyModal"
+          @keydown.escape.window="closePenaltyModal"
+        >
+          <section
+            id="penalty-modal"
+            class="penalty-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="penalty-modal-title"
+          >
+            <header class="penalty-modal-header">
+              <div>
+                <h2 id="penalty-modal-title">현재 적용 중인 페널티</h2>
+                <span v-if="!penaltiesLoading" class="penalty-count">{{ activePenalties.length }}건</span>
+              </div>
+              <button
+                ref="penaltyCloseButton"
+                class="penalty-modal-close"
+                type="button"
+                aria-label="페널티 목록 닫기"
+                @click="closePenaltyModal"
+              >
+                ✕
+              </button>
+            </header>
+
+            <div class="penalty-modal-body">
+              <div v-if="penaltiesLoading" class="penalty-loading">
+                <div class="loading-spinner"></div>
+                <span>페널티를 불러오는 중...</span>
+              </div>
+
+              <div v-else-if="activePenalties.length === 0" class="penalty-empty">
+                현재 적용 중인 페널티가 없습니다.
+              </div>
+
+              <ul v-else class="penalty-list">
+                <li
+                  v-for="penalty in activePenalties"
+                  :key="`${penalty.inspection}-${penalty.num}`"
+                  class="penalty-item"
+                >
+                  <div class="penalty-item-info">
+                    <div class="penalty-team-row">
+                      <span class="penalty-team-num">#{{ penalty.num }}</span>
+                      <span class="penalty-team-name">
+                        {{ entries[penalty.num]?.univ }} {{ entries[penalty.num]?.team }}
+                      </span>
+                    </div>
+                    <div class="penalty-meta">
+                      <span class="badge badge-warning">{{ penalty.inspection_name }}</span>
+                      <span>{{ formatPenaltyRemaining(penalty.until) }}</span>
+                      <span class="penalty-until">{{ formatPenaltyUntil(penalty.until) }} 해제</span>
+                    </div>
+                  </div>
+                  <button
+                    class="btn btn-danger btn-sm penalty-clear-button"
+                    type="button"
+                    :disabled="clearingPenaltyKey === `${penalty.inspection}-${penalty.num}`"
+                    @click="clearPenalty(penalty)"
+                  >
+                    {{ clearingPenaltyKey === `${penalty.inspection}-${penalty.num}` ? "취소 중..." : "페널티 취소" }}
+                  </button>
+                </li>
+              </ul>
+            </div>
+          </section>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -559,6 +729,179 @@ function goToInspection(num) {
   display: flex;
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+.penalty-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+}
+
+.penalty-modal {
+  width: min(100%, 620px);
+  max-height: min(80vh, 680px);
+  overflow: hidden;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: var(--shadow-hover);
+}
+
+.penalty-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.penalty-modal-header > div {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.penalty-modal-header h2 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.penalty-count {
+  padding: 0.125rem 0.5rem;
+  color: var(--accent-danger);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent-danger) 12%, transparent);
+  border-radius: 999px;
+}
+
+.penalty-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.penalty-modal-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.penalty-modal-body {
+  max-height: calc(min(80vh, 680px) - 65px);
+  padding: 0.5rem 1.25rem 1.25rem;
+  overflow-y: auto;
+}
+
+.penalty-loading,
+.penalty-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 180px;
+  color: var(--text-tertiary);
+  font-size: 0.875rem;
+}
+
+.penalty-loading {
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.penalty-list {
+  list-style: none;
+}
+
+.penalty-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.penalty-item:last-child {
+  border-bottom: 0;
+}
+
+.penalty-item-info {
+  min-width: 0;
+}
+
+.penalty-team-row,
+.penalty-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.penalty-team-row {
+  margin-bottom: 0.375rem;
+}
+
+.penalty-team-num {
+  flex-shrink: 0;
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 700;
+}
+
+.penalty-team-name {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.penalty-meta {
+  flex-wrap: wrap;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.penalty-until {
+  color: var(--text-tertiary);
+}
+
+.penalty-clear-button {
+  flex-shrink: 0;
+}
+
+.penalty-modal-enter-active,
+.penalty-modal-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.penalty-modal-enter-active .penalty-modal,
+.penalty-modal-leave-active .penalty-modal {
+  transition: transform 0.15s ease;
+}
+
+.penalty-modal-enter-from,
+.penalty-modal-leave-to {
+  opacity: 0;
+}
+
+.penalty-modal-enter-from .penalty-modal,
+.penalty-modal-leave-to .penalty-modal {
+  transform: translateY(8px) scale(0.98);
 }
 
 .admin-grid {
@@ -1045,6 +1388,37 @@ function goToInspection(num) {
 }
 
 @media (max-width: 640px) {
+  .top-actions .btn {
+    flex: 1 1 auto;
+  }
+
+  .penalty-modal-overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .penalty-modal {
+    width: 100%;
+    max-height: 85vh;
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 12px 12px 0 0;
+  }
+
+  .penalty-modal-body {
+    max-height: calc(85vh - 65px);
+  }
+
+  .penalty-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .penalty-clear-button {
+    width: 100%;
+  }
+
   .booth-cards {
     flex-direction: column;
   }

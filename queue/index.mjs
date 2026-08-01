@@ -985,6 +985,67 @@ app.post("/api/admin/cancel/:type", (req, res) => {
   sendSmsNotification(type, prev);
 });
 
+// GET /api/admin/penalties - 현재 연도에 적용 중인 취소 페널티 조회
+app.get("/api/admin/penalties", (req, res) => {
+  const year = currentYear();
+  const now = Date.now();
+  const result = dbRun(() =>
+    db.prepare(`
+      SELECT
+        cp.num,
+        cp.inspection,
+        i.name AS inspection_name,
+        cp.until
+      FROM cancel_penalty cp
+      JOIN inspection i ON i.type = cp.inspection
+      WHERE cp.year = ? AND cp.until > ?
+      ORDER BY cp.until ASC, cp.num ASC, cp.inspection ASC
+    `).all(year, now),
+  );
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  res.json(result.result);
+});
+
+// DELETE /api/admin/penalties/:type/:num - 적용 중인 취소 페널티 해제
+app.delete("/api/admin/penalties/:type/:num", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+
+  const numValidation = validateEntryNum(req.params.num);
+  if (!numValidation.valid) {
+    return res.status(400).send(numValidation.error);
+  }
+
+  const type = typeValidation.value;
+  const num = numValidation.value;
+  const year = currentYear();
+  const result = dbRun(() =>
+    db.prepare(`
+      DELETE FROM cancel_penalty
+      WHERE num = ? AND inspection = ? AND year = ? AND until > ?
+    `).run(num, type, year, Date.now()),
+  );
+
+  if (!result.success) {
+    logger.warn(req, "penalty.clear", { error: result.error, inspection: type, year }, `#${num}`);
+    return res.status(result.status).send(result.error);
+  }
+
+  if (!result.result.changes) {
+    logger.warn(req, "penalty.clear", { error: "적용 중인 페널티 없음", inspection: type, year }, `#${num}`);
+    return res.status(404).send("적용 중인 페널티가 없습니다.");
+  }
+
+  logger.log(req, "penalty.clear", { inspection: type, year }, `#${num}`);
+  res.status(200).send();
+});
+
 /* ============================================
    API 라우트: Admin - 팀 우선순위 관리
    ============================================ */

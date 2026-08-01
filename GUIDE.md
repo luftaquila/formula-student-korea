@@ -111,7 +111,7 @@
 
 #### 1. 권한
 
-official 권한으로는 검차 우선순위, 취소 페널티, SMS 알림, 검차 활성화 설정 변경이 불가능합니다. 필요하면 가까운 chief 권한 소지자에게 문의하세요.
+official 권한으로는 검차 우선순위, 취소 페널티 시간, SMS 알림, 검차 활성화 설정 변경이 불가능합니다. 필요하면 가까운 chief 권한 소지자에게 문의하세요.
 
 #### 2. 대기대기줄
 
@@ -457,6 +457,7 @@ chief 이상 권한으로 일정을 추가/수정/삭제할 수 있습니다.
 | `inspection.ignore` | info | 우선순위/초검재검 무시 토글 |
 | `queue.register` | info | 대기열 등록 |
 | `queue.cancel` | info | 대기열 취소 |
+| `penalty.clear` | info | 적용 중인 취소 페널티 해제 |
 | `history.clear` | info | 대기열 이력 초기화 |
 | `priority.set` | info | 우선순위 설정 |
 | `priority.delete` | info | 우선순위 삭제 |

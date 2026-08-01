@@ -468,6 +468,62 @@ describe('POST /api/admin/cancel/:type', () => {
   });
 });
 
+// ─── Active cancel penalties ───────────────────────────────────────────
+describe('Active cancel penalty management', () => {
+  it('requires official permission', async () => {
+    const unauthenticated = await client.get('/api/admin/penalties');
+    assert.equal(unauthenticated.status, 401);
+
+    const student = await client.get('/api/admin/penalties', { cookie: studentCookie });
+    assert.equal(student.status, 403);
+  });
+
+  it('GET /api/admin/penalties returns only active penalties for the current year', async () => {
+    const year = new Date().getFullYear();
+    const now = Date.now();
+    db.prepare('DELETE FROM cancel_penalty').run();
+    db.prepare('INSERT INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)').run(2, 'battery', year, now + 600000);
+    db.prepare('INSERT INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)').run(3, 'electric', year, now - 1000);
+    db.prepare('INSERT INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)').run(1, 'report', year - 1, now + 600000);
+
+    const res = await client.get('/api/admin/penalties', { cookie: officialCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.deepEqual(data, [{
+      num: 2,
+      inspection: 'battery',
+      inspection_name: '배터리',
+      until: now + 600000,
+    }]);
+  });
+
+  it('DELETE /api/admin/penalties/:type/:num clears an active penalty', async () => {
+    const res = await client.delete('/api/admin/penalties/battery/2', { cookie: officialCookie });
+    assert.equal(res.status, 200);
+
+    const penalty = db.prepare("SELECT 1 FROM cancel_penalty WHERE num = 2 AND inspection = 'battery'").get();
+    assert.equal(penalty, undefined);
+    const audit = db.prepare("SELECT * FROM logs WHERE action = 'penalty.clear' AND target = '#2' ORDER BY id DESC").get();
+    assert.ok(audit);
+    assert.equal(audit.actor_role, 'official');
+  });
+
+  it('rejects invalid penalty targets', async () => {
+    const invalidType = await client.delete('/api/admin/penalties/unknown/2', { cookie: officialCookie });
+    assert.equal(invalidType.status, 400);
+
+    const invalidNum = await client.delete('/api/admin/penalties/battery/not-a-number', { cookie: officialCookie });
+    assert.equal(invalidNum.status, 400);
+  });
+
+  it('returns 404 when no active penalty exists', async () => {
+    const res = await client.delete('/api/admin/penalties/battery/2', { cookie: officialCookie });
+    assert.equal(res.status, 404);
+    assert.equal(await res.text(), '적용 중인 페널티가 없습니다.');
+    db.prepare('DELETE FROM cancel_penalty').run();
+  });
+});
+
 // ─── Priority management ────────────────────────────────────────────────
 describe('Priority management', () => {
   it('GET /api/admin/priority/:type returns empty initially', async () => {

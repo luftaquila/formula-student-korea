@@ -27,6 +27,7 @@ const chiefOnly = [
 // official-gated endpoint; proves the tier exists and that unauth is 401 there too.
 const officialOnly = [
   { method: "get", path: "/queue/api/admin/all", body: undefined },
+  { method: "get", path: "/queue/api/admin/penalties", body: undefined },
 ];
 
 test.describe("queue RBAC", () => {
