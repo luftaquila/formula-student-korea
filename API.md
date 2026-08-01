@@ -133,7 +133,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/events` | public | — | SSE stream | Real-time queue/booth updates; initial data: `{ activeInspections, allBooths }` |
+| GET | `/api/events` | public | — | SSE stream | Real-time queue/booth/penalty invalidation updates; initial data: `{ activeInspections, allBooths }`. The `penalties` event contains no protected penalty details. |
 
 ### Public Endpoints
 

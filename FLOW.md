@@ -171,7 +171,7 @@
 | 3.31 | 부스 목록 조회 | official | `GET /api/admin/booths/:type` | 검차별 부스 설정 및 점유 현황 |
 | 3.32 | SMS 설정 조회 | official | `GET /api/admin/settings/sms` | SMS 활성화 상태 반환 |
 | 3.33 | 취소 페널티 조회 | official | `GET /api/admin/settings/cancel-penalty` | 현재 페널티 시간(분) 반환 |
-| 3.34 | SSE 실시간 업데이트 | public | `GET /api/events` | 검차 활성 상태, 대기열, 부스 변경 실시간 스트림 |
+| 3.34 | SSE 실시간 업데이트 | public | `GET /api/events` | 검차 활성 상태, 대기열, 부스, 페널티 목록 변경 실시간 스트림. 공개 스트림의 `penalties` 이벤트는 상세 정보 없이 재조회 신호만 전달 |
 
 ### 내부 서비스 연동
 

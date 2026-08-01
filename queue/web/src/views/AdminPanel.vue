@@ -31,7 +31,7 @@ import { isChief } from "@shared/officialsStore.js";
 const { success, error, warning } = useNotification();
 const router = useRouter();
 
-const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate } = useSSE();
+const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate, lastPenaltyUpdate, reconnected } = useSSE();
 
 const entries = ref({});
 const inspections = ref([]);
@@ -51,6 +51,7 @@ const penaltyClock = ref(Date.now());
 const penaltyButton = ref(null);
 const penaltyCloseButton = ref(null);
 let penaltyClockTimer;
+let penaltyFetchSequence = 0;
 const { elapsedTimes, syncTimers, clearAllTimers } = useBoothTimers();
 
 const activeInspectionTypes = computed(() => activeInspections.value.map((i) => i.type));
@@ -81,6 +82,14 @@ watch(lastBoothUpdate, (update) => {
   if (update && update.type === currentTab.value) {
     syncElapsedTimers();
   }
+});
+
+watch(lastPenaltyUpdate, () => {
+  if (penaltyModalOpen.value) refreshPenaltyList();
+});
+
+watch(reconnected, () => {
+  if (penaltyModalOpen.value) refreshPenaltyList();
 });
 
 // Re-sync timers when tab changes
@@ -303,21 +312,28 @@ function goToStats() {
   router.push("/stats");
 }
 
+async function refreshPenaltyList(showLoading = false) {
+  const sequence = ++penaltyFetchSequence;
+  if (showLoading) penaltiesLoading.value = true;
+  try {
+    const nextPenalties = await fetchActivePenalties();
+    if (sequence !== penaltyFetchSequence) return;
+    penalties.value = nextPenalties;
+    penaltyClock.value = Date.now();
+  } catch (e) {
+    if (sequence !== penaltyFetchSequence) return;
+    error(e.message || "페널티 목록을 가져올 수 없습니다.");
+  } finally {
+    if (sequence === penaltyFetchSequence) penaltiesLoading.value = false;
+  }
+}
+
 async function openPenaltyModal() {
   penaltyModalOpen.value = true;
-  penaltiesLoading.value = true;
   penalties.value = [];
   await nextTick();
   penaltyCloseButton.value?.focus();
-
-  try {
-    penalties.value = await fetchActivePenalties();
-    penaltyClock.value = Date.now();
-  } catch (e) {
-    error(e.message || "페널티 목록을 가져올 수 없습니다.");
-  } finally {
-    penaltiesLoading.value = false;
-  }
+  await refreshPenaltyList(true);
 }
 
 async function closePenaltyModal() {

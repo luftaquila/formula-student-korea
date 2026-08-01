@@ -1294,6 +1294,38 @@ describe('GET /api/events', () => {
     assert.ok(res.headers.get('content-type')?.includes('text/event-stream'));
     controller.abort();
   });
+
+  it('broadcasts penalty invalidation without protected penalty data', async () => {
+    const year = new Date().getFullYear();
+    db.prepare(`
+      INSERT OR REPLACE INTO cancel_penalty (num, inspection, year, until, phone, queue_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(3, 'electric', year, Date.now() + 600000, '01033334444', Date.now());
+
+    const controller = new AbortController();
+    const res = await fetch(`${baseUrl}/api/events`, { signal: controller.signal });
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    try {
+      const init = await reader.read();
+      assert.match(decoder.decode(init.value), /event: init/);
+
+      const clear = await client.delete('/api/admin/penalties/electric/3', { cookie: officialCookie });
+      assert.equal(clear.status, 200);
+
+      const event = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('penalty SSE timeout')), 2000)),
+      ]);
+      const payload = decoder.decode(event.value);
+      assert.match(payload, /event: penalties/);
+      assert.match(payload, /data: \{\}/);
+      assert.doesNotMatch(payload, /01033334444|queue_timestamp|electric/);
+    } finally {
+      controller.abort();
+    }
+  });
 });
 
 // ─── Additional edge cases ──────────────────────────────────────────────

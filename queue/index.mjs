@@ -527,6 +527,11 @@ function broadcastBooth(type) {
 function broadcastInspections() {
   broadcastEvent("inspections", { activeInspections: getActiveInspections() });
 }
+function broadcastPenalties() {
+  // SSE endpoint is public, so only broadcast an invalidation signal. Authorized
+  // clients fetch the protected penalty list separately.
+  broadcastEvent("penalties", {});
+}
 
 /* ============================================
    Validation 헬퍼
@@ -998,6 +1003,7 @@ app.post("/api/admin/cancel/:type", (req, res) => {
 
   // SSE 브로드캐스트: 대기열 변경
   broadcastQueue(type);
+  broadcastPenalties();
 
   res.status(200).send();
 
@@ -1085,6 +1091,7 @@ app.post("/api/admin/penalties/:type/:num/restore", (req, res) => {
     queueTimestamp: result.result.queueTimestamp,
   }, `#${num}`);
   broadcastQueue(type);
+  broadcastPenalties();
   res.status(200).send();
 });
 
@@ -1121,6 +1128,7 @@ app.delete("/api/admin/penalties/:type/:num", (req, res) => {
   }
 
   logger.log(req, "penalty.clear", { inspection: type, year }, `#${num}`);
+  broadcastPenalties();
   res.status(200).send();
 });
 
@@ -2163,6 +2171,7 @@ app.delete("/api/internal/team/:num", (req, res) => {
 
   // SSE 브로드캐스트
   broadcastQueue(null);
+  if (year === currentYear()) broadcastPenalties();
 
   res.status(200).send();
 });
@@ -2233,6 +2242,7 @@ app.patch("/api/internal/team-num", (req, res) => {
   logger.log(req, "team_num.update", { year, prevNum, newNum });
 
   broadcastQueue(null);
+  if (year === currentYear()) broadcastPenalties();
   for (const type of Object.keys(inspections)) {
     broadcastBooth(type);
   }

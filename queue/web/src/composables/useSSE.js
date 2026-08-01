@@ -8,6 +8,7 @@ const activeInspections = ref([]);
 const lastQueueUpdate = ref(null);
 const allBooths = ref({});
 const lastBoothUpdate = ref(null);
+const lastPenaltyUpdate = ref(null);
 
 on("init", (e) => {
   const data = parseSSEData(e);
@@ -38,6 +39,12 @@ on("booth", (e) => {
   lastBoothUpdate.value = { type: data.type, timestamp: Date.now() };
 });
 
+on("penalties", (e) => {
+  const data = parseSSEData(e);
+  if (!data) return;
+  lastPenaltyUpdate.value = { timestamp: Date.now() };
+});
+
 export function useSSE() {
   useConnection();
 
@@ -46,6 +53,7 @@ export function useSSE() {
     lastQueueUpdate,
     allBooths,
     lastBoothUpdate,
+    lastPenaltyUpdate,
     reconnected,
   };
 }
