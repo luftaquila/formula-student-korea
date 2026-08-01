@@ -1,9 +1,17 @@
 <script setup>
+import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 
 const route = useRoute();
+const isPublicPage = computed(() => route.name === "public-score");
+
+watch(
+  () => route.fullPath,
+  () => { document.title = isPublicPage.value ? `FSK ${route.params.year}년 성적 공개` : "FSK 성적 관리"; },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -13,9 +21,9 @@ const route = useRoute();
       <div class="header-content">
         <a href="/" class="logo">
           <span class="logo-icon">📊</span>
-          <h1>FSK 성적 관리</h1>
+          <h1>{{ isPublicPage ? "FSK 성적 공개" : "FSK 성적 관리" }}</h1>
         </a>
-        <div class="header-actions">
+        <div v-if="!isPublicPage" class="header-actions">
           <NavMenu :currentPath="'/score' + route.path" />
         </div>
       </div>
@@ -32,4 +40,3 @@ const route = useRoute();
   --layout-max-width: none;
 }
 </style>
-

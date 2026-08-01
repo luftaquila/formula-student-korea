@@ -754,6 +754,109 @@ describe('Auth', () => {
     const res = await client.get('/api/health');
     assert.equal(res.status, 200);
   });
+
+  it('keeps the full score aggregation private', async () => {
+    const res = await client.get('/api/score?year=2026');
+    assert.equal(res.status, 401);
+  });
+});
+
+// ─── Public score publication ───────────────────────────────────────────
+
+describe('Public score publication', () => {
+  it('defaults to private and protects publication settings', async () => {
+    const unauthenticated = await client.get('/api/score/publication?year=2026');
+    assert.equal(unauthenticated.status, 401);
+
+    const state = await client.get('/api/score/publication?year=2026', { cookie: adminCookie });
+    assert.equal(state.status, 200);
+    assert.deepEqual(await state.json(), { year: 2026, enabled: false });
+
+    const publicData = await client.get('/api/score/public/2026');
+    assert.equal(publicData.status, 404);
+
+    const publicPage = await client.get('/public/2026');
+    assert.equal(publicPage.status, 404);
+  });
+
+  it('validates publication updates', async () => {
+    const badYear = await client.put('/api/score/publication', {
+      cookie: adminCookie,
+      body: { year: 1999, enabled: true },
+    });
+    assert.equal(badYear.status, 400);
+
+    const badEnabled = await client.put('/api/score/publication', {
+      cookie: adminCookie,
+      body: { year: 2026, enabled: 1 },
+    });
+    assert.equal(badEnabled.status, 400);
+  });
+
+  it('serves only the public table fields while enabled', async () => {
+    const enabled = await client.put('/api/score/publication', {
+      cookie: adminCookie,
+      body: { year: 2026, enabled: true },
+    });
+    assert.equal(enabled.status, 200);
+    assert.deepEqual(await enabled.json(), { year: 2026, enabled: true });
+
+    const res = await client.get('/api/score/public/2026');
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.year, 2026);
+    assert.deepEqual(Object.keys(data).sort(), ['entries', 'events', 'year']);
+    assert.deepEqual(data.entries['1'], { univ: '서울대', team: '팀A', type: 'EV' });
+    assert.equal(data.events.some((event) => event.type === '내구'), false);
+    assert.ok(data.events.some((event) => event.type === '가속'));
+    assert.deepEqual(Object.keys(data.events.find((event) => event.type === '가속').records['1']), ['result']);
+  });
+
+  it('publishes refresh notifications over the public SSE stream', async () => {
+    const controller = new AbortController();
+    const stream = await fetch(`${baseUrl}/api/score/public/2026/events`, { signal: controller.signal });
+    assert.equal(stream.status, 200);
+    assert.ok(stream.headers.get('content-type')?.includes('text/event-stream'));
+
+    const reader = stream.body.getReader();
+    const decoder = new TextDecoder();
+    const initial = decoder.decode((await reader.read()).value);
+    assert.match(initial, /event: init/);
+
+    const update = await client.put('/api/score/penalty', {
+      cookie: adminCookie,
+      body: { year: 2026, event_type: '가속', cone_penalty: 3, oc_penalty: 10, start_delay: 0 },
+    });
+    assert.equal(update.status, 200);
+
+    let message = '';
+    await Promise.race([
+      (async () => {
+        while (!message.includes('event: refresh')) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          message += decoder.decode(chunk.value, { stream: true });
+        }
+      })(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('public SSE refresh timeout')), 2000)),
+    ]);
+    assert.match(message, /event: refresh/);
+    await reader.cancel();
+    controller.abort();
+  });
+
+  it('blocks public data again immediately after publication is disabled', async () => {
+    const disabled = await client.put('/api/score/publication', {
+      cookie: adminCookie,
+      body: { year: 2026, enabled: false },
+    });
+    assert.equal(disabled.status, 200);
+
+    const publicData = await client.get('/api/score/public/2026');
+    assert.equal(publicData.status, 404);
+    const publicEvents = await client.get('/api/score/public/2026/events');
+    assert.equal(publicEvents.status, 404);
+  });
 });
 
 // ─── Score aggregation business logic ────────────────────────────────────
