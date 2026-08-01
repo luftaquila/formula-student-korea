@@ -19,15 +19,19 @@ import { createScoreApp } from '../../score/index.mjs';
 // ─── Mock Servers ───────────────────────────────────────────────────────
 
 let mockEntryRequestCount = 0;
+let mockEntryResponseDelayMs = 0;
+let mockEntryTeamName = '팀A';
 
 function createMockEntryServer() {
   const app = express();
   app.get('/api/entries', (req, res) => {
     mockEntryRequestCount++;
-    res.json({
-      1: { univ: '서울대', team: '팀A', type: 'EV' },
+    const payload = {
+      1: { univ: '서울대', team: mockEntryTeamName, type: 'EV' },
       2: { univ: '카이스트', team: '팀B', type: 'EV' },
-    });
+    };
+    if (mockEntryResponseDelayMs > 0) setTimeout(() => res.json(payload), mockEntryResponseDelayMs);
+    else res.json(payload);
   });
   return app;
 }
@@ -855,6 +859,45 @@ describe('Public score publication', () => {
     assert.equal(mockEntryRequestCount, 2, 'score updates should invalidate the public snapshot');
     await reader.cancel();
     controller.abort();
+  });
+
+  it('does not restore a stale snapshot when invalidated during aggregation', async () => {
+    const initialUpdate = await client.put('/api/score/penalty', {
+      cookie: adminCookie,
+      body: { year: 2026, event_type: '가속', cone_penalty: 4, oc_penalty: 10, start_delay: 0 },
+    });
+    assert.equal(initialUpdate.status, 200);
+
+    const requestCountBefore = mockEntryRequestCount;
+    mockEntryTeamName = '기존 팀';
+    mockEntryResponseDelayMs = 100;
+    const requestBeforeInvalidation = client.get('/api/score/public/2026');
+    while (mockEntryRequestCount === requestCountBefore) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    mockEntryTeamName = '최신 팀';
+    const invalidatingUpdate = await client.put('/api/score/penalty', {
+      cookie: adminCookie,
+      body: { year: 2026, event_type: '가속', cone_penalty: 5, oc_penalty: 10, start_delay: 0 },
+    });
+    assert.equal(invalidatingUpdate.status, 200);
+    const requestAfterInvalidation = client.get('/api/score/public/2026');
+
+    try {
+      const [beforeResponse, afterResponse] = await Promise.all([
+        requestBeforeInvalidation,
+        requestAfterInvalidation,
+      ]);
+      assert.equal(beforeResponse.status, 200);
+      assert.equal(afterResponse.status, 200);
+      assert.equal((await beforeResponse.json()).entries['1'].team, '최신 팀');
+      assert.equal((await afterResponse.json()).entries['1'].team, '최신 팀');
+      assert.equal(mockEntryRequestCount, requestCountBefore + 2);
+    } finally {
+      mockEntryResponseDelayMs = 0;
+      mockEntryTeamName = '팀A';
+    }
   });
 
   it('blocks public data again immediately after publication is disabled', async () => {

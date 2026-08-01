@@ -17,7 +17,7 @@ const typeColorMap = ref({});
 const sortKey = ref(null);
 const sortOrder = ref("asc");
 
-const { on, useSSE, disconnect } = createSSEConnection(`${base}/api/score/public/${year}/events`);
+const { on, useSSE, reconnect } = createSSEConnection(`${base}/api/score/public/${year}/events`);
 
 let requestSeq = 0;
 let refreshTimer = null;
@@ -61,7 +61,8 @@ on("publication", (event) => {
     // 이미 진행 중인 HTTP 응답이 비공개 전환 후 테이블을 되살리지 못하게 무효화한다.
     requestSeq++;
     clearTimeout(refreshTimer);
-    disconnect();
+    // 현재 슬롯은 즉시 반납하되 비공개 상태에서도 재시도하여 재공개를 자동 감지한다.
+    reconnect();
     unavailable.value = true;
     loadFailed.value = false;
     loading.value = false;

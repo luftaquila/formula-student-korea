@@ -125,12 +125,32 @@ function parseScoreYear(value) {
 
 // 공개 요청이 순차적으로 들어와도 매번 전체 업스트림 집계를 반복하지 않도록 짧게 캐시한다.
 // SSE 변경 이벤트가 도착하면 TTL과 관계없이 즉시 무효화되어 공개 화면의 실시간성은 유지된다.
-const PUBLIC_SCORE_CACHE_TTL_MS = 1000;
+const PUBLIC_SCORE_CACHE_TTL_MS = 3000;
 const publicScoreCache = new Map();
+const publicScoreGenerations = new Map();
+let publicScoreGlobalGeneration = 0;
+
+function getPublicScoreGeneration(year) {
+  return {
+    global: publicScoreGlobalGeneration,
+    year: publicScoreGenerations.get(year) || 0,
+  };
+}
+
+function isPublicScoreGenerationCurrent(year, generation) {
+  return generation.global === publicScoreGlobalGeneration
+    && generation.year === (publicScoreGenerations.get(year) || 0);
+}
 
 function invalidatePublicScoreCache(year = null) {
-  if (year == null) publicScoreCache.clear();
-  else publicScoreCache.delete(Number(year));
+  if (year == null) {
+    publicScoreCache.clear();
+    publicScoreGlobalGeneration++;
+  } else {
+    const numYear = Number(year);
+    publicScoreCache.delete(numYear);
+    publicScoreGenerations.set(numYear, (publicScoreGenerations.get(numYear) || 0) + 1);
+  }
 }
 
 const app = createApp({ express }, (req) => {
@@ -375,16 +395,26 @@ function findItemsInCategory(tree, categoryName, itemNames) {
    API 라우트
    ============================================ */
 
-// year -> Promise. 같은 연도 동시 집계 요청을 하나로 합쳐 업스트림 호출 증폭을 막는다.
+// year -> { promise, generation }. 같은 연도 동시 집계 요청을 하나로 합쳐 업스트림 호출 증폭을 막는다.
 const inflightScore = new Map();
 
-function getComputedScore(year) {
-  let pending = inflightScore.get(year);
-  if (!pending) {
-    pending = computeScore(year).finally(() => inflightScore.delete(year));
-    inflightScore.set(year, pending);
+function getComputedScoreRequest(year) {
+  let request = inflightScore.get(year);
+  if (!request) {
+    request = {
+      generation: getPublicScoreGeneration(year),
+      promise: null,
+    };
+    request.promise = computeScore(year).finally(() => {
+      if (inflightScore.get(year) === request) inflightScore.delete(year);
+    });
+    inflightScore.set(year, request);
   }
-  return pending;
+  return request;
+}
+
+function getComputedScore(year) {
+  return getComputedScoreRequest(year).promise;
 }
 
 function createPublicScorePayload(year, score) {
@@ -417,18 +447,23 @@ function createPublicScorePayload(year, score) {
 }
 
 async function getPublicScorePayload(year) {
-  const cached = publicScoreCache.get(year);
-  if (cached && cached.expiresAt > Date.now()) return cached.payload;
+  while (true) {
+    const cached = publicScoreCache.get(year);
+    if (cached && cached.expiresAt > Date.now()) return cached.payload;
 
-  const score = await getComputedScore(year);
-  const payload = createPublicScorePayload(year, score);
-  if (isScorePublished(year)) {
+    const request = getComputedScoreRequest(year);
+    const score = await request.promise;
+    if (!isScorePublished(year)) return null;
+    // 집계 중 변경 이벤트가 발생했다면 무효화 이전 스냅샷을 반환하거나 캐시하지 않는다.
+    if (!isPublicScoreGenerationCurrent(year, request.generation)) continue;
+
+    const payload = createPublicScorePayload(year, score);
     publicScoreCache.set(year, {
       payload,
       expiresAt: Date.now() + PUBLIC_SCORE_CACHE_TTL_MS,
     });
+    return payload;
   }
-  return payload;
 }
 
 // GET /api/score/publication?year=YYYY — 관리자용 공개 상태 조회
