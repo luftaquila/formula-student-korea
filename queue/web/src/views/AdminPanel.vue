@@ -1470,14 +1470,6 @@ function goToInspection(num) {
     flex-direction: column;
   }
 
-  .penalty-actions {
-    flex-direction: column;
-  }
-
-  .penalty-actions .btn {
-    width: 100%;
-  }
-
   .booth-cards {
     flex-direction: column;
   }

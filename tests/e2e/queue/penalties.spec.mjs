@@ -109,6 +109,33 @@ test.describe("Queue active penalties modal", () => {
     await expect(modal.getByRole("button", { name: "해제 후 순번 복구" })).toBeDisabled();
   });
 
+  test("keeps clear and restore actions side by side on mobile", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/queue/api/admin/penalties", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{
+        num: 1,
+        inspection: "battery",
+        inspection_name: "배터리",
+        until: Date.now() + 10 * 60 * 1000,
+        can_restore: 1,
+      }]),
+    }));
+
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+    await page.getByRole("button", { name: "페널티", exact: true }).click();
+
+    const modal = page.getByRole("dialog", { name: "현재 적용 중인 페널티" });
+    const clearBox = await modal.getByRole("button", { name: "페널티만 해제" }).boundingBox();
+    const restoreBox = await modal.getByRole("button", { name: "해제 후 순번 복구" }).boundingBox();
+    expect(clearBox).not.toBeNull();
+    expect(restoreBox).not.toBeNull();
+    expect(Math.abs(clearBox.y - restoreBox.y)).toBeLessThan(1);
+    expect(restoreBox.x).toBeGreaterThan(clearBox.x + clearBox.width);
+  });
+
   test("shows an empty state and closes with Escape", async ({ page }) => {
     await page.route("**/queue/api/admin/penalties", (route) => route.fulfill({
       status: 200,
