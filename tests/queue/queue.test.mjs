@@ -591,6 +591,29 @@ describe('Active cancel penalty management', () => {
     db.prepare("DELETE FROM cancel_penalty WHERE inspection = 'noise' AND num = 3 AND year = ?").run(year);
   });
 
+  it('keeps the penalty when its inspection is inactive', async () => {
+    const year = new Date().getFullYear();
+    db.prepare(`
+      INSERT INTO cancel_penalty (num, inspection, year, until, phone, queue_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(3, 'rain', year, Date.now() + 600000, '01033334444', Date.now() - 60000);
+    db.prepare("UPDATE inspection SET active = 0 WHERE type = 'rain'").run();
+
+    try {
+      const restore = await client.post('/api/admin/penalties/rain/3/restore', { cookie: officialCookie });
+      assert.equal(restore.status, 400);
+      assert.equal(await restore.text(), '대기열이 비활성화 상태입니다.');
+      assert.ok(db.prepare("SELECT 1 FROM cancel_penalty WHERE inspection = 'rain' AND num = 3 AND year = ?").get(year));
+      assert.equal(db.prepare("SELECT 1 FROM inspection_queue WHERE inspection = 'rain' AND num = 3 AND year = ?").get(year), undefined);
+      assert.equal(db.prepare("SELECT 1 FROM current_inspection WHERE inspection = 'rain' AND num = 3 AND year = ?").get(year), undefined);
+    } finally {
+      db.prepare("UPDATE inspection SET active = 1 WHERE type = 'rain'").run();
+      db.prepare("DELETE FROM cancel_penalty WHERE inspection = 'rain' AND num = 3 AND year = ?").run(year);
+      db.prepare("DELETE FROM inspection_queue WHERE inspection = 'rain' AND num = 3 AND year = ?").run(year);
+      db.prepare("DELETE FROM current_inspection WHERE inspection = 'rain' AND num = 3 AND year = ?").run(year);
+    }
+  });
+
   it('keeps the penalty when restoring would violate concurrent registration rules', async () => {
     const year = new Date().getFullYear();
     db.prepare("INSERT INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)")

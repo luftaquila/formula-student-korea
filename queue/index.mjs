@@ -1054,6 +1054,10 @@ app.post("/api/admin/penalties/:type/:num/restore", (req, res) => {
   const year = currentYear();
   const result = dbRun(() =>
     db.transaction(() => {
+      if (!db.prepare("SELECT active FROM inspection WHERE type = ?").get(type).active) {
+        throw { status: 400, message: "대기열이 비활성화 상태입니다." };
+      }
+
       const penalty = db.prepare(`
         SELECT phone, queue_timestamp
         FROM cancel_penalty
