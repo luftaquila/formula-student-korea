@@ -18,9 +18,12 @@ import { createScoreApp } from '../../score/index.mjs';
 
 // ─── Mock Servers ───────────────────────────────────────────────────────
 
+let mockEntryRequestCount = 0;
+
 function createMockEntryServer() {
   const app = express();
   app.get('/api/entries', (req, res) => {
+    mockEntryRequestCount++;
     res.json({
       1: { univ: '서울대', team: '팀A', type: 'EV' },
       2: { univ: '카이스트', team: '팀B', type: 'EV' },
@@ -801,6 +804,7 @@ describe('Public score publication', () => {
     assert.equal(enabled.status, 200);
     assert.deepEqual(await enabled.json(), { year: 2026, enabled: true });
 
+    mockEntryRequestCount = 0;
     const res = await client.get('/api/score/public/2026');
     assert.equal(res.status, 200);
     const data = await res.json();
@@ -810,6 +814,10 @@ describe('Public score publication', () => {
     assert.equal(data.events.some((event) => event.type === '내구'), false);
     assert.ok(data.events.some((event) => event.type === '가속'));
     assert.deepEqual(Object.keys(data.events.find((event) => event.type === '가속').records['1']), ['result']);
+
+    const cached = await client.get('/api/score/public/2026');
+    assert.equal(cached.status, 200);
+    assert.equal(mockEntryRequestCount, 1, 'sequential public requests should reuse the short-lived snapshot');
   });
 
   it('publishes refresh notifications over the public SSE stream', async () => {
@@ -841,6 +849,10 @@ describe('Public score publication', () => {
       new Promise((_, reject) => setTimeout(() => reject(new Error('public SSE refresh timeout')), 2000)),
     ]);
     assert.match(message, /event: refresh/);
+
+    const refreshed = await client.get('/api/score/public/2026');
+    assert.equal(refreshed.status, 200);
+    assert.equal(mockEntryRequestCount, 2, 'score updates should invalidate the public snapshot');
     await reader.cancel();
     controller.abort();
   });

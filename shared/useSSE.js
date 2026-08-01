@@ -76,7 +76,7 @@ export function createSSEConnection(endpointUrl) {
     return { connected };
   }
 
-  return { on, useSSE, connected };
+  return { on, useSSE, connected, disconnect };
 }
 
 // 서비스 앱 공용 SSE 진입점. base path 계산(api-base.js와 동일하게 PROD 키 사용),

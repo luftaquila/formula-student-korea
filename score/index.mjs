@@ -123,6 +123,16 @@ function parseScoreYear(value) {
   return Number.isInteger(year) && year >= 2000 && year <= 2099 ? year : null;
 }
 
+// 공개 요청이 순차적으로 들어와도 매번 전체 업스트림 집계를 반복하지 않도록 짧게 캐시한다.
+// SSE 변경 이벤트가 도착하면 TTL과 관계없이 즉시 무효화되어 공개 화면의 실시간성은 유지된다.
+const PUBLIC_SCORE_CACHE_TTL_MS = 1000;
+const publicScoreCache = new Map();
+
+function invalidatePublicScoreCache(year = null) {
+  if (year == null) publicScoreCache.clear();
+  else publicScoreCache.delete(Number(year));
+}
+
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
   if (/^\/api\/score\/public\/\d{4}(?:\/events)?$/.test(req.path)) return null;
@@ -196,6 +206,7 @@ const { broadcast: broadcastPublicEvent, handler: publicSseHandler } = createSSE
 function broadcastEvent(event, data) {
   broadcastAdminEvent(event, data);
   const eventYear = parseScoreYear(data?.year);
+  invalidatePublicScoreCache(eventYear);
   broadcastPublicEvent("refresh", {}, (meta) => {
     if (!isScorePublished(meta.year)) return false;
     return eventYear == null || meta.year === eventYear;
@@ -209,6 +220,7 @@ const handlePublicSSE = publicSseHandler(
   (req) => ({ year: Number(req.params.year) }),
   {
     meta: (req) => ({ year: Number(req.params.year) }),
+    revalidate: (meta) => isScorePublished(meta.year) ? meta : null,
     // 공개 스트림이므로 단일 IP가 전체 연결 슬롯을 점유하지 못하게 제한한다.
     maxPerIp: 10,
   },
@@ -404,6 +416,21 @@ function createPublicScorePayload(year, score) {
   return { year, entries, events };
 }
 
+async function getPublicScorePayload(year) {
+  const cached = publicScoreCache.get(year);
+  if (cached && cached.expiresAt > Date.now()) return cached.payload;
+
+  const score = await getComputedScore(year);
+  const payload = createPublicScorePayload(year, score);
+  if (isScorePublished(year)) {
+    publicScoreCache.set(year, {
+      payload,
+      expiresAt: Date.now() + PUBLIC_SCORE_CACHE_TTL_MS,
+    });
+  }
+  return payload;
+}
+
 // GET /api/score/publication?year=YYYY — 관리자용 공개 상태 조회
 app.get("/api/score/publication", (req, res) => {
   const year = parseScoreYear(req.query.year);
@@ -430,6 +457,7 @@ app.put("/api/score/publication", (req, res) => {
 
   if (enabled) publishedYears.add(year);
   else publishedYears.delete(year);
+  invalidatePublicScoreCache(year);
 
   const payload = { year, enabled };
   logger.log(req, "score_publication.update", payload, String(year));
@@ -445,10 +473,10 @@ app.get("/api/score/public/:year", async (req, res) => {
   if (year == null) return res.status(400).send("올바르지 않은 연도입니다.");
   if (!isScorePublished(year)) return res.status(404).send("공개 중인 성적표가 아닙니다.");
   try {
-    const score = await getComputedScore(year);
+    const payload = await getPublicScorePayload(year);
     // 집계 도중 공개가 꺼졌다면 응답 직전에 다시 차단한다.
     if (!isScorePublished(year)) return res.status(404).send("공개 중인 성적표가 아닙니다.");
-    res.json(createPublicScorePayload(year, score));
+    res.json(payload);
   } catch (e) {
     logger.warn(req, "score.public_aggregate", { error: e.message, year }, String(year));
     res.status(500).send("데이터 집계 오류가 발생했습니다.");
