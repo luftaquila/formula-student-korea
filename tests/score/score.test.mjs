@@ -18,13 +18,20 @@ import { createScoreApp } from '../../score/index.mjs';
 
 // ─── Mock Servers ───────────────────────────────────────────────────────
 
+let mockEntryRequestCount = 0;
+let mockEntryResponseDelayMs = 0;
+let mockEntryTeamName = '팀A';
+
 function createMockEntryServer() {
   const app = express();
   app.get('/api/entries', (req, res) => {
-    res.json({
-      1: { univ: '서울대', team: '팀A', type: 'EV' },
+    mockEntryRequestCount++;
+    const payload = {
+      1: { univ: '서울대', team: mockEntryTeamName, type: 'EV' },
       2: { univ: '카이스트', team: '팀B', type: 'EV' },
-    });
+    };
+    if (mockEntryResponseDelayMs > 0) setTimeout(() => res.json(payload), mockEntryResponseDelayMs);
+    else res.json(payload);
   });
   return app;
 }
@@ -753,6 +760,157 @@ describe('Auth', () => {
   it('GET /api/health without auth returns 200', async () => {
     const res = await client.get('/api/health');
     assert.equal(res.status, 200);
+  });
+
+  it('keeps the full score aggregation private', async () => {
+    const res = await client.get('/api/score?year=2026');
+    assert.equal(res.status, 401);
+  });
+});
+
+// ─── Public score publication ───────────────────────────────────────────
+
+describe('Public score publication', () => {
+  it('defaults to private and protects publication settings', async () => {
+    const unauthenticated = await client.get('/api/score/publication?year=2026');
+    assert.equal(unauthenticated.status, 401);
+
+    const state = await client.get('/api/score/publication?year=2026', { cookie: adminCookie });
+    assert.equal(state.status, 200);
+    assert.deepEqual(await state.json(), { year: 2026, enabled: false });
+
+    const publicData = await client.get('/api/score/public/2026');
+    assert.equal(publicData.status, 404);
+
+    const publicPage = await client.get('/public/2026');
+    assert.equal(publicPage.status, 404);
+  });
+
+  it('validates publication updates', async () => {
+    const badYear = await client.put('/api/score/publication', {
+      cookie: adminCookie,
+      body: { year: 1999, enabled: true },
+    });
+    assert.equal(badYear.status, 400);
+
+    const badEnabled = await client.put('/api/score/publication', {
+      cookie: adminCookie,
+      body: { year: 2026, enabled: 1 },
+    });
+    assert.equal(badEnabled.status, 400);
+  });
+
+  it('serves only the public table fields while enabled', async () => {
+    const enabled = await client.put('/api/score/publication', {
+      cookie: adminCookie,
+      body: { year: 2026, enabled: true },
+    });
+    assert.equal(enabled.status, 200);
+    assert.deepEqual(await enabled.json(), { year: 2026, enabled: true });
+
+    mockEntryRequestCount = 0;
+    const res = await client.get('/api/score/public/2026');
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.year, 2026);
+    assert.deepEqual(Object.keys(data).sort(), ['entries', 'events', 'year']);
+    assert.deepEqual(data.entries['1'], { univ: '서울대', team: '팀A', type: 'EV' });
+    assert.equal(data.events.some((event) => event.type === '내구'), false);
+    assert.ok(data.events.some((event) => event.type === '가속'));
+    assert.deepEqual(Object.keys(data.events.find((event) => event.type === '가속').records['1']), ['result']);
+
+    const cached = await client.get('/api/score/public/2026');
+    assert.equal(cached.status, 200);
+    assert.equal(mockEntryRequestCount, 1, 'sequential public requests should reuse the short-lived snapshot');
+  });
+
+  it('publishes refresh notifications over the public SSE stream', async () => {
+    const controller = new AbortController();
+    const stream = await fetch(`${baseUrl}/api/score/public/2026/events`, { signal: controller.signal });
+    assert.equal(stream.status, 200);
+    assert.ok(stream.headers.get('content-type')?.includes('text/event-stream'));
+
+    const reader = stream.body.getReader();
+    const decoder = new TextDecoder();
+    const initial = decoder.decode((await reader.read()).value);
+    assert.match(initial, /event: init/);
+
+    const update = await client.put('/api/score/penalty', {
+      cookie: adminCookie,
+      body: { year: 2026, event_type: '가속', cone_penalty: 3, oc_penalty: 10, start_delay: 0 },
+    });
+    assert.equal(update.status, 200);
+
+    let message = '';
+    await Promise.race([
+      (async () => {
+        while (!message.includes('event: refresh')) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          message += decoder.decode(chunk.value, { stream: true });
+        }
+      })(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('public SSE refresh timeout')), 2000)),
+    ]);
+    assert.match(message, /event: refresh/);
+
+    const refreshed = await client.get('/api/score/public/2026');
+    assert.equal(refreshed.status, 200);
+    assert.equal(mockEntryRequestCount, 2, 'score updates should invalidate the public snapshot');
+    await reader.cancel();
+    controller.abort();
+  });
+
+  it('does not restore a stale snapshot when invalidated during aggregation', async () => {
+    const initialUpdate = await client.put('/api/score/penalty', {
+      cookie: adminCookie,
+      body: { year: 2026, event_type: '가속', cone_penalty: 4, oc_penalty: 10, start_delay: 0 },
+    });
+    assert.equal(initialUpdate.status, 200);
+
+    const requestCountBefore = mockEntryRequestCount;
+    mockEntryTeamName = '기존 팀';
+    mockEntryResponseDelayMs = 100;
+    const requestBeforeInvalidation = client.get('/api/score/public/2026');
+    while (mockEntryRequestCount === requestCountBefore) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    mockEntryTeamName = '최신 팀';
+    const invalidatingUpdate = await client.put('/api/score/penalty', {
+      cookie: adminCookie,
+      body: { year: 2026, event_type: '가속', cone_penalty: 5, oc_penalty: 10, start_delay: 0 },
+    });
+    assert.equal(invalidatingUpdate.status, 200);
+    const requestAfterInvalidation = client.get('/api/score/public/2026');
+
+    try {
+      const [beforeResponse, afterResponse] = await Promise.all([
+        requestBeforeInvalidation,
+        requestAfterInvalidation,
+      ]);
+      assert.equal(beforeResponse.status, 200);
+      assert.equal(afterResponse.status, 200);
+      assert.equal((await beforeResponse.json()).entries['1'].team, '최신 팀');
+      assert.equal((await afterResponse.json()).entries['1'].team, '최신 팀');
+      assert.equal(mockEntryRequestCount, requestCountBefore + 2);
+    } finally {
+      mockEntryResponseDelayMs = 0;
+      mockEntryTeamName = '팀A';
+    }
+  });
+
+  it('blocks public data again immediately after publication is disabled', async () => {
+    const disabled = await client.put('/api/score/publication', {
+      cookie: adminCookie,
+      body: { year: 2026, enabled: false },
+    });
+    assert.equal(disabled.status, 200);
+
+    const publicData = await client.get('/api/score/public/2026');
+    assert.equal(publicData.status, 404);
+    const publicEvents = await client.get('/api/score/public/2026/events');
+    assert.equal(publicEvents.status, 404);
   });
 });
 

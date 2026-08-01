@@ -53,6 +53,12 @@ db.transaction(() => {
     PRIMARY KEY (year, event_type, setting_key)
   )`);
 
+  // 연도별 공개 성적표 활성화 여부
+  db.exec(`CREATE TABLE IF NOT EXISTS score_publication (
+    year INTEGER PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0, 1))
+  )`);
+
   // 내구 기록 입력
   db.exec(`CREATE TABLE IF NOT EXISTS score_endurance (
     year INTEGER NOT NULL,
@@ -104,8 +110,55 @@ function warnThrottled(action, detail, windowMs = 60000) {
   logger.warn(null, action, detail);
 }
 
+const publishedYears = new Set(
+  db.prepare("SELECT year FROM score_publication WHERE enabled = 1").all().map((row) => row.year),
+);
+
+function isScorePublished(year) {
+  return publishedYears.has(Number(year));
+}
+
+function parseScoreYear(value) {
+  const year = Number(value);
+  return Number.isInteger(year) && year >= 2000 && year <= 2099 ? year : null;
+}
+
+// 공개 요청이 순차적으로 들어와도 매번 전체 업스트림 집계를 반복하지 않도록 짧게 캐시한다.
+// SSE 변경 이벤트가 도착하면 TTL과 관계없이 즉시 무효화되어 공개 화면의 실시간성은 유지된다.
+const PUBLIC_SCORE_CACHE_TTL_MS = 3000;
+const publicScoreCache = new Map();
+const publicScoreGenerations = new Map();
+let publicScoreGlobalGeneration = 0;
+
+function getPublicScoreGeneration(year) {
+  return {
+    global: publicScoreGlobalGeneration,
+    year: publicScoreGenerations.get(year) || 0,
+  };
+}
+
+function isPublicScoreGenerationCurrent(year, generation) {
+  return generation.global === publicScoreGlobalGeneration
+    && generation.year === (publicScoreGenerations.get(year) || 0);
+}
+
+function invalidatePublicScoreCache(year = null) {
+  if (year == null) {
+    publicScoreCache.clear();
+    publicScoreGlobalGeneration++;
+  } else {
+    const numYear = Number(year);
+    publicScoreCache.delete(numYear);
+    publicScoreGenerations.set(numYear, (publicScoreGenerations.get(numYear) || 0) + 1);
+  }
+}
+
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
+  if (/^\/api\/score\/public\/\d{4}(?:\/events)?$/.test(req.path)) return null;
+  if (/^\/public\/\d{4}$/.test(req.path)) return null;
+  // 공개 페이지가 인증 없이 부트스트랩될 수 있도록 Vite 정적 자산도 공개한다.
+  if (req.path.startsWith("/assets/") || req.path === "/env-config.js") return null;
   return "admin";
 });
 
@@ -165,10 +218,40 @@ async function fetchYearRecords(year) {
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
+const { broadcast: broadcastAdminEvent, handler: sseHandler } = createSSEManager();
+const { broadcast: broadcastPublicEvent, handler: publicSseHandler } = createSSEManager(500);
+
+// 관리자에게는 원본 이벤트를, 공개 페이지에는 데이터가 없는 refresh 신호만 보낸다.
+// 공개 클라이언트가 관리자용 SSE 페이로드를 통해 숨긴 열의 값을 받지 않도록 스트림을 분리한다.
+function broadcastEvent(event, data) {
+  broadcastAdminEvent(event, data);
+  const eventYear = parseScoreYear(data?.year);
+  invalidatePublicScoreCache(eventYear);
+  broadcastPublicEvent("refresh", {}, (meta) => {
+    if (!isScorePublished(meta.year)) return false;
+    return eventYear == null || meta.year === eventYear;
+  });
+}
 
 // SSE 엔드포인트
 app.get("/api/score/events", sseHandler());
+
+const handlePublicSSE = publicSseHandler(
+  (req) => ({ year: Number(req.params.year) }),
+  {
+    meta: (req) => ({ year: Number(req.params.year) }),
+    revalidate: (meta) => isScorePublished(meta.year) ? meta : null,
+    // 공개 스트림이므로 단일 IP가 전체 연결 슬롯을 점유하지 못하게 제한한다.
+    maxPerIp: 10,
+  },
+);
+
+app.get("/api/score/public/:year/events", (req, res) => {
+  const year = parseScoreYear(req.params.year);
+  if (year == null) return res.status(400).send("올바르지 않은 연도입니다.");
+  if (!isScorePublished(year)) return res.status(404).send("공개 중인 성적표가 아닙니다.");
+  handlePublicSSE(req, res);
+});
 
 // SSE 메시지 파싱용 정규식 (모듈 스코프에 캐싱)
 const EVENT_RE = /^event:\s*(.+)$/m;
@@ -312,21 +395,135 @@ function findItemsInCategory(tree, categoryName, itemNames) {
    API 라우트
    ============================================ */
 
-// year -> Promise. 같은 연도 동시 집계 요청을 하나로 합쳐 업스트림 호출 증폭을 막는다.
+// year -> { promise, generation }. 같은 연도 동시 집계 요청을 하나로 합쳐 업스트림 호출 증폭을 막는다.
 const inflightScore = new Map();
+
+function getComputedScoreRequest(year) {
+  let request = inflightScore.get(year);
+  if (!request) {
+    request = {
+      generation: getPublicScoreGeneration(year),
+      promise: null,
+    };
+    request.promise = computeScore(year).finally(() => {
+      if (inflightScore.get(year) === request) inflightScore.delete(year);
+    });
+    inflightScore.set(year, request);
+  }
+  return request;
+}
+
+function getComputedScore(year) {
+  return getComputedScoreRequest(year).promise;
+}
+
+function createPublicScorePayload(year, score) {
+  const entries = {};
+  for (const [num, entry] of Object.entries(score.entries || {})) {
+    entries[num] = {
+      univ: entry.univ || "",
+      team: entry.team || "",
+      type: entry.type || "",
+    };
+  }
+
+  const events = (score.events || [])
+    .filter((event) => event.type !== "내구")
+    .map((event) => {
+      const penalty = score.penalties?.[event.type] || {};
+      const records = {};
+      for (const [num, record] of Object.entries(event.records || {})) {
+        let result = record?.result ?? null;
+        if (result != null && result !== -1) {
+          result += (record.cones || 0) * (penalty.cone_penalty || 0) * 1000;
+          result += (record.oc || 0) * (penalty.oc_penalty || 0) * 1000;
+        }
+        records[num] = { result };
+      }
+      return { type: event.type, records };
+    });
+
+  return { year, entries, events };
+}
+
+async function getPublicScorePayload(year) {
+  while (true) {
+    const cached = publicScoreCache.get(year);
+    if (cached && cached.expiresAt > Date.now()) return cached.payload;
+
+    const request = getComputedScoreRequest(year);
+    const score = await request.promise;
+    if (!isScorePublished(year)) return null;
+    // 집계 중 변경 이벤트가 발생했다면 무효화 이전 스냅샷을 반환하거나 캐시하지 않는다.
+    if (!isPublicScoreGenerationCurrent(year, request.generation)) continue;
+
+    const payload = createPublicScorePayload(year, score);
+    publicScoreCache.set(year, {
+      payload,
+      expiresAt: Date.now() + PUBLIC_SCORE_CACHE_TTL_MS,
+    });
+    return payload;
+  }
+}
+
+// GET /api/score/publication?year=YYYY — 관리자용 공개 상태 조회
+app.get("/api/score/publication", (req, res) => {
+  const year = parseScoreYear(req.query.year);
+  if (year == null) return res.status(400).send("올바르지 않은 연도입니다.");
+  res.json({ year, enabled: isScorePublished(year) });
+});
+
+// PUT /api/score/publication — 관리자용 연도별 공개 상태 변경
+app.put("/api/score/publication", (req, res) => {
+  const year = parseScoreYear(req.body.year);
+  const { enabled } = req.body;
+  if (year == null) return res.status(400).send("올바르지 않은 연도입니다.");
+  if (typeof enabled !== "boolean") return res.status(400).send("enabled는 boolean이어야 합니다.");
+
+  const result = dbRun(() => db.prepare(`
+    INSERT INTO score_publication (year, enabled) VALUES (?, ?)
+    ON CONFLICT(year) DO UPDATE SET enabled = excluded.enabled
+  `).run(year, enabled ? 1 : 0));
+
+  if (!result.success) {
+    logger.warn(req, "score_publication.update", { error: result.error, year, enabled }, String(year));
+    return res.status(result.status).send(result.error);
+  }
+
+  if (enabled) publishedYears.add(year);
+  else publishedYears.delete(year);
+  invalidatePublicScoreCache(year);
+
+  const payload = { year, enabled };
+  logger.log(req, "score_publication.update", payload, String(year));
+  broadcastAdminEvent("publication", payload);
+  // 비공개 전환도 이미 접속한 공개 페이지에 전달해야 하므로 공개 여부 필터를 적용하지 않는다.
+  broadcastPublicEvent("publication", payload, (meta) => meta.year === year);
+  res.json(payload);
+});
+
+// GET /api/score/public/:year — 공개용 최소 데이터. 공개 중인 연도만 인증 없이 조회 가능하다.
+app.get("/api/score/public/:year", async (req, res) => {
+  const year = parseScoreYear(req.params.year);
+  if (year == null) return res.status(400).send("올바르지 않은 연도입니다.");
+  if (!isScorePublished(year)) return res.status(404).send("공개 중인 성적표가 아닙니다.");
+  try {
+    const payload = await getPublicScorePayload(year);
+    // 집계 도중 공개가 꺼졌다면 응답 직전에 다시 차단한다.
+    if (!isScorePublished(year)) return res.status(404).send("공개 중인 성적표가 아닙니다.");
+    res.json(payload);
+  } catch (e) {
+    logger.warn(req, "score.public_aggregate", { error: e.message, year }, String(year));
+    res.status(500).send("데이터 집계 오류가 발생했습니다.");
+  }
+});
 
 // GET /api/score?year=YYYY — 메인 집계 엔드포인트
 app.get("/api/score", async (req, res) => {
   const year = Number(req.query.year);
   if (!year) return res.status(400).send("연도를 지정해야 합니다.");
-  // in-flight 합치기: 기록 추가 시 다수 score 클라가 동시에 refetch해도 1회만 집계.
-  let p = inflightScore.get(year);
-  if (!p) {
-    p = computeScore(year).finally(() => inflightScore.delete(year));
-    inflightScore.set(year, p);
-  }
   try {
-    res.json(await p);
+    res.json(await getComputedScore(year));
   } catch (e) {
     logger.warn(req, "score.aggregate", { error: e.message, year }, String(year));
     res.status(500).send("데이터 집계 오류가 발생했습니다.");
@@ -730,6 +927,14 @@ registerTeamLifecycleRoutes(app, {
 /* ============================================
    SPA Fallback - Vue Router 지원
    ============================================ */
+app.get("/public/:year", (req, res) => {
+  const year = parseScoreYear(req.params.year);
+  if (year == null || !isScorePublished(year)) {
+    return res.status(404).send("공개 중인 성적표가 아닙니다.");
+  }
+  res.sendFile("index.html", { root: "./web/dist" });
+});
+
 app.get("/{*splat}", (req, res) => {
   res.sendFile("index.html", { root: "./web/dist" });
 });

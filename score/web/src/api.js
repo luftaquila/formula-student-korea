@@ -12,6 +12,30 @@ export async function fetchScore(year) {
   return res.json();
 }
 
+export async function fetchScorePublication(year) {
+  const res = await request(`/api/score/publication?year=${year}`);
+  return res.json();
+}
+
+export async function updateScorePublication(year, enabled) {
+  const res = await request("/api/score/publication", {
+    method: "PUT",
+    body: JSON.stringify({ year, enabled }),
+  });
+  return res.json();
+}
+
+export async function fetchPublicScore(year) {
+  const base = import.meta.env.PROD ? "/score" : "";
+  const res = await fetch(`${base}/api/score/public/${year}`);
+  if (!res.ok) {
+    const requestError = new Error(await res.text() || `요청 실패 (${res.status})`);
+    requestError.status = res.status;
+    throw requestError;
+  }
+  return res.json();
+}
+
 export async function updateManualScore(year, team_num, score_type, value) {
   await request("/api/score/manual", {
     method: "PUT",

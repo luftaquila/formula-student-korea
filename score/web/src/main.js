@@ -8,10 +8,12 @@ import { initTestBanner } from "@shared/test-banner.js";
 
 import ScoreBoard from "./views/ScoreBoard.vue";
 import EnduranceInput from "./views/EnduranceInput.vue";
+import PublicScoreBoard from "./views/PublicScoreBoard.vue";
 
 const routes = [
   { path: "/", component: ScoreBoard },
   { path: "/endurance", component: EnduranceInput },
+  { path: "/public/:year(\\d{4})", name: "public-score", component: PublicScoreBoard },
 ];
 
 const router = createRouter({

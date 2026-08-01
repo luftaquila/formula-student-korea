@@ -337,13 +337,22 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/score/events` | admin | — | SSE stream | 화이트리스트만 재전파: inspection `category-result`/`answer` → `inspection:category-result`/`inspection:answer`, traffic `records`/`record-visibility` → `traffic:records`/`traffic:record-visibility`. 재연결 시 `refresh`. 로컬 이벤트: `manual-score`/`penalty`/`setting`/`endurance` |
+| GET | `/api/score/events` | admin | — | SSE stream | 화이트리스트만 재전파: inspection `category-result`/`answer`, traffic `records`/`record-visibility`/`event-mode`. 재연결 시 `refresh`. 로컬 이벤트: `manual-score`/`penalty`/`setting`/`endurance`/`publication` |
+| GET | `/api/score/public/:year/events` | public (공개 활성 시) | — | SSE stream | 공개 성적표 갱신용 `refresh`, 공개 전환용 `publication`. 관리자 이벤트 페이로드는 노출하지 않음. 전체 500개·IP당 10개 연결 제한 |
 
 ### Score Aggregation
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/score` | admin | `?year=` | `{ entries, inspection, events, manualScores, penalties, settings }` | Main aggregation (fetches from entry, inspection, traffic services) |
+
+### Public Scoreboard
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/score/publication` | admin | `?year=` | `{ year, enabled }` | 연도별 공개 상태 조회 |
+| PUT | `/api/score/publication` | admin | `{ year, enabled }` | `{ year, enabled }` | 연도별 공개 상태 변경 |
+| GET | `/api/score/public/:year` | public (공개 활성 시) | — | `{ year, entries, events }` | 번호/학교·팀/유형과 내구 제외 경기 모드의 최종 기록만 반환 |
 
 ### Manual Scores
 

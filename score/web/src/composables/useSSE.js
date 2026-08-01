@@ -11,6 +11,7 @@ const lastManualScoreUpdate = ref(null);
 const lastPenaltyUpdate = ref(null);
 const lastSettingUpdate = ref(null);
 const lastEnduranceUpdate = ref(null);
+const lastPublicationUpdate = ref(null);
 
 function parseSSE(e, target) {
   const data = parseSSEData(e);
@@ -27,6 +28,7 @@ on("manual-score", (e) => parseSSE(e, lastManualScoreUpdate));
 on("penalty", (e) => parseSSE(e, lastPenaltyUpdate));
 on("setting", (e) => parseSSE(e, lastSettingUpdate));
 on("endurance", (e) => parseSSE(e, lastEnduranceUpdate));
+on("publication", (e) => parseSSE(e, lastPublicationUpdate));
 on("refresh", () => { reconnected.value = Date.now(); });
 
 export function useSSE() {
@@ -40,6 +42,7 @@ export function useSSE() {
     lastPenaltyUpdate,
     lastSettingUpdate,
     lastEnduranceUpdate,
+    lastPublicationUpdate,
     reconnected,
   };
 }

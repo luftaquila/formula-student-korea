@@ -1,19 +1,21 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { exportTable } from "../composables/exportTable";
-import { fetchEntryYears, fetchScore, fetchVehicleTypes, updateManualScore, updatePenalty, updateSetting } from "../api";
+import { fetchEntryYears, fetchScore, fetchScorePublication, fetchVehicleTypes, updateManualScore, updatePenalty, updateScorePublication, updateSetting } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import { createKeyedDebouncer } from "@shared/debounce.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
 
-const { error } = useNotification();
-const { lastInspectionUpdate, lastAnswerUpdate, lastTrafficRecordUpdate, lastManualScoreUpdate, lastPenaltyUpdate, lastSettingUpdate, lastEnduranceUpdate, reconnected } = useSSE();
+const { error, success } = useNotification();
+const { lastInspectionUpdate, lastAnswerUpdate, lastTrafficRecordUpdate, lastManualScoreUpdate, lastPenaltyUpdate, lastSettingUpdate, lastEnduranceUpdate, lastPublicationUpdate, reconnected } = useSSE();
 
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
 const loading = ref(true);
+const publicationLoading = ref(false);
+const publicEnabled = ref(false);
 const searchQuery = ref("");
 const showInspection = ref(localStorage.getItem("score-show-inspection") !== "false");
 watch(showInspection, (v) => localStorage.setItem("score-show-inspection", v));
@@ -66,6 +68,7 @@ watch(vehicleTypes, (types) => {
 const editingSettingCell = ref(null); // "penalty:cone_penalty:가속" or "setting:total:내구"
 
 const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
+const publicPageUrl = computed(() => `${import.meta.env.BASE_URL}public/${selectedYear.value}`);
 
 const entryList = computed(() => {
   let list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
@@ -134,12 +137,12 @@ const entryList = computed(() => {
 
 onMounted(async () => {
   try {
-    const [years] = await Promise.all([fetchEntryYears(), loadTypeColors()]);
+    const years = await fetchEntryYears();
     availableYears.value = years;
     if (availableYears.value.length && !availableYears.value.includes(selectedYear.value)) {
       selectedYear.value = availableYears.value[0];
     }
-    await loadData();
+    await Promise.all([loadData(), loadTypeColors(), loadPublication()]);
   } catch (e) {
     error("데이터를 가져올 수 없습니다.");
   }
@@ -185,8 +188,38 @@ async function loadData() {
 async function onYearChange() {
   loading.value = true;
   detailExpandedTeam.value = null;
-  await Promise.all([loadData(), loadTypeColors()]);
+  await Promise.all([loadData(), loadTypeColors(), loadPublication()]);
   loading.value = false;
+}
+
+let publicationSeq = 0;
+async function loadPublication() {
+  const year = selectedYear.value;
+  const seq = ++publicationSeq;
+  publicationLoading.value = true;
+  try {
+    const state = await fetchScorePublication(year);
+    if (seq === publicationSeq && selectedYear.value === year) publicEnabled.value = !!state.enabled;
+  } catch {
+    if (seq === publicationSeq) publicEnabled.value = false;
+    if (seq === publicationSeq) error("공개 상태를 가져올 수 없습니다.");
+  } finally {
+    if (seq === publicationSeq) publicationLoading.value = false;
+  }
+}
+
+async function handlePublicationToggle(enabled) {
+  const year = selectedYear.value;
+  publicationLoading.value = true;
+  try {
+    const state = await updateScorePublication(year, enabled);
+    if (selectedYear.value === year) publicEnabled.value = !!state.enabled;
+    success(enabled ? `${year}년 성적표를 공개했습니다.` : `${year}년 성적표 공개를 중지했습니다.`);
+  } catch {
+    error("공개 상태를 변경할 수 없습니다.");
+  } finally {
+    publicationLoading.value = false;
+  }
 }
 
 // 검차 결과
@@ -561,6 +594,11 @@ watch(lastEnduranceUpdate, () => {
   debouncedRefresh();
 });
 
+watch(lastPublicationUpdate, (update) => {
+  if (!update || update.year !== selectedYear.value) return;
+  publicEnabled.value = !!update.enabled;
+});
+
 // SSE 재연결 시 전체 데이터 동기화
 watch(reconnected, () => { if (reconnected.value) loadData(); });
 
@@ -760,10 +798,35 @@ function exportData(format) {
 
     <!-- 메인 테이블 -->
     <div class="card">
-      <div class="card-header">
+      <div class="card-header score-card-header">
         <div class="header-left">
           <h3>성적표</h3>
           <span class="count-badge">{{ entryList.length }}개 팀</span>
+        </div>
+        <div class="publication-actions">
+          <label class="publication-toggle">
+            <span>공개</span>
+            <span class="toggle-switch">
+              <input
+                type="checkbox"
+                :checked="publicEnabled"
+                :disabled="publicationLoading"
+                role="switch"
+                :aria-checked="publicEnabled"
+                @change="handlePublicationToggle($event.target.checked)"
+              />
+              <span class="toggle-slider"></span>
+            </span>
+          </label>
+          <a
+            v-if="publicEnabled"
+            :href="publicPageUrl"
+            class="btn btn-ghost btn-sm public-link"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="공개 페이지 열기"
+          >공개</a>
+          <button v-else type="button" class="btn btn-ghost btn-sm public-link" disabled>공개</button>
         </div>
       </div>
       <div class="card-body table-body">
@@ -1149,6 +1212,96 @@ function exportData(format) {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+}
+
+.score-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 1rem;
+}
+
+.score-card-header .header-left h3 {
+  white-space: nowrap;
+}
+
+.publication-actions,
+.publication-toggle {
+  display: flex;
+  align-items: center;
+}
+
+.publication-actions {
+  flex: 0 0 auto;
+  gap: 0.75rem;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.publication-toggle {
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  user-select: none;
+}
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--border-color);
+  border-radius: 999px;
+  transition: background-color 0.2s;
+}
+
+.toggle-slider::before {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 3px;
+  bottom: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--accent-success);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(18px);
+}
+
+.toggle-switch input:focus-visible + .toggle-slider {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.toggle-switch input:disabled + .toggle-slider {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.public-link {
+  min-width: 3.25rem;
 }
 
 .count-badge {
