@@ -1218,8 +1218,12 @@ function exportData(format) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 1rem;
+}
+
+.score-card-header .header-left h3 {
+  white-space: nowrap;
 }
 
 .publication-actions,
@@ -1229,8 +1233,10 @@ function exportData(format) {
 }
 
 .publication-actions {
+  flex: 0 0 auto;
   gap: 0.75rem;
   margin-left: auto;
+  white-space: nowrap;
 }
 
 .publication-toggle {
@@ -1299,8 +1305,23 @@ function exportData(format) {
 }
 
 @media (max-width: 640px) {
+  .score-card-header {
+    gap: 0.5rem;
+    padding: 0.75rem;
+  }
+
+  .score-card-header .header-left {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .score-card-header .count-badge {
+    display: none;
+  }
+
   .publication-actions {
-    width: 100%;
+    width: auto;
+    gap: 0.5rem;
     justify-content: flex-end;
     margin-left: auto;
   }
