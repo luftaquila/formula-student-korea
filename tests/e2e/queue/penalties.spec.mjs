@@ -1,12 +1,13 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications } from "../helpers/utils.mjs";
 
 test.describe("Queue active penalties modal", () => {
   test.use({ storageState: storageStatePath("official") });
 
-  test("lists and clears an active penalty", async ({ page }) => {
+  test("offers separate clear-only and clear-with-restore actions", async ({ page }) => {
     const until = Date.now() + 10 * 60 * 1000;
     let cleared = false;
+    let restored = false;
 
     await page.route("**/queue/api/admin/penalties**", async (route) => {
       const request = route.request();
@@ -16,18 +17,34 @@ test.describe("Queue active penalties modal", () => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify([{
-            num: 1,
-            inspection: "battery",
-            inspection_name: "배터리",
-            until,
-          }]),
+          body: JSON.stringify([
+            {
+              num: 1,
+              inspection: "battery",
+              inspection_name: "배터리",
+              until,
+              can_restore: 1,
+            },
+            {
+              num: 2,
+              inspection: "electric",
+              inspection_name: "전기",
+              until: until + 60000,
+              can_restore: 1,
+            },
+          ]),
         });
         return;
       }
 
       if (request.method() === "DELETE" && url.pathname.endsWith("/api/admin/penalties/battery/1")) {
         cleared = true;
+        await route.fulfill({ status: 200, body: "" });
+        return;
+      }
+
+      if (request.method() === "POST" && url.pathname.endsWith("/api/admin/penalties/electric/2/restore")) {
+        restored = true;
         await route.fulfill({ status: 200, body: "" });
         return;
       }
@@ -49,14 +66,47 @@ test.describe("Queue active penalties modal", () => {
     await expect(modal).toContainText("#1");
     await expect(modal).toContainText("서울대학교 SNU Racing");
     await expect(modal).toContainText("배터리");
-    await expect(modal).toContainText("1건");
+    await expect(modal).toContainText("2건");
+    await expect(modal.getByRole("button", { name: "페널티만 해제" })).toHaveCount(2);
+    await expect(modal.getByRole("button", { name: "해제 후 순번 복구" })).toHaveCount(2);
 
     page.once("dialog", (dialog) => dialog.accept());
-    await modal.getByRole("button", { name: "페널티 취소" }).click();
+    await modal.locator(".penalty-item", { hasText: "#1" }).getByRole("button", { name: "페널티만 해제" }).click();
 
-    await expectNotification(page, "success", "페널티를 취소했습니다");
-    await expect(modal).toContainText("현재 적용 중인 페널티가 없습니다.");
+    await expectNotification(page, "success", "페널티를 해제했습니다");
+    await expect(modal).toContainText("1건");
     expect(cleared).toBe(true);
+    await dismissNotifications(page);
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await modal.locator(".penalty-item", { hasText: "#2" }).getByRole("button", { name: "해제 후 순번 복구" }).click();
+
+    await expectNotification(page, "success", "페널티를 해제하고 순번을 복구했습니다");
+    await expect(modal).toContainText("현재 적용 중인 페널티가 없습니다.");
+    expect(restored).toBe(true);
+  });
+
+  test("disables queue restore when legacy penalty data is unavailable", async ({ page }) => {
+    await page.route("**/queue/api/admin/penalties", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{
+        num: 1,
+        inspection: "battery",
+        inspection_name: "배터리",
+        until: Date.now() + 10 * 60 * 1000,
+        can_restore: 0,
+      }]),
+    }));
+
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+    await page.getByRole("button", { name: "페널티", exact: true }).click();
+
+    const modal = page.getByRole("dialog", { name: "현재 적용 중인 페널티" });
+    await expect(modal).toContainText("순번 복구 정보 없음");
+    await expect(modal.getByRole("button", { name: "페널티만 해제" })).toBeEnabled();
+    await expect(modal.getByRole("button", { name: "해제 후 순번 복구" })).toBeDisabled();
   });
 
   test("shows an empty state and closes with Escape", async ({ page }) => {

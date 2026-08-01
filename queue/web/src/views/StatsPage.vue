@@ -227,6 +227,7 @@ const eventLabels = {
   enter: "입차",
   exit: "출차",
   cancel: "취소",
+  restore: "순번 복구",
 };
 
 function eventLabel(event) {
@@ -684,6 +685,11 @@ function goBack() {
 .event-cancel {
   background: rgba(239, 68, 68, 0.15);
   color: var(--accent-danger);
+}
+
+.event-restore {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent-primary);
 }
 
 /* Responsive */

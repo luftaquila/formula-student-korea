@@ -10,6 +10,7 @@ import {
   cancelFromQueue,
   fetchActivePenalties,
   clearActivePenalty,
+  restoreActivePenalty,
   enterBooth,
   exitBooth,
   updateBoothConfig,
@@ -44,7 +45,8 @@ const boothSelectedTeam = ref({});
 const penalties = ref([]);
 const penaltyModalOpen = ref(false);
 const penaltiesLoading = ref(false);
-const clearingPenaltyKey = ref("");
+const pendingPenaltyKey = ref("");
+const pendingPenaltyAction = ref("");
 const penaltyClock = ref(Date.now());
 const penaltyButton = ref(null);
 const penaltyCloseButton = ref(null);
@@ -328,20 +330,49 @@ async function closePenaltyModal() {
 async function clearPenalty(penalty) {
   const entry = entries.value[penalty.num];
   const teamName = entry ? ` ${entry.univ} ${entry.team}` : "";
-  if (!confirm(`#${penalty.num}${teamName}\n${penalty.inspection_name} 페널티를 취소하시겠습니까?`)) return;
+  if (!confirm(`#${penalty.num}${teamName}\n${penalty.inspection_name} 페널티만 해제하시겠습니까?`)) return;
 
   const key = `${penalty.inspection}-${penalty.num}`;
-  clearingPenaltyKey.value = key;
+  pendingPenaltyKey.value = key;
+  pendingPenaltyAction.value = "clear";
   try {
     await clearActivePenalty(penalty.inspection, penalty.num);
     penalties.value = penalties.value.filter((item) =>
       item.num !== penalty.num || item.inspection !== penalty.inspection,
     );
-    success(`엔트리 ${penalty.num}번 ${penalty.inspection_name} 페널티를 취소했습니다.`);
+    success(`엔트리 ${penalty.num}번 ${penalty.inspection_name} 페널티를 해제했습니다.`);
   } catch (e) {
-    error(e.message || "페널티를 취소할 수 없습니다.");
+    error(e.message || "페널티를 해제할 수 없습니다.");
   } finally {
-    clearingPenaltyKey.value = "";
+    pendingPenaltyKey.value = "";
+    pendingPenaltyAction.value = "";
+  }
+}
+
+async function restorePenalty(penalty) {
+  const entry = entries.value[penalty.num];
+  const teamName = entry ? ` ${entry.univ} ${entry.team}` : "";
+  if (!confirm(
+    `#${penalty.num}${teamName}\n${penalty.inspection_name} 페널티를 해제하고 취소 전 순번으로 복구하시겠습니까?`,
+  )) return;
+
+  const key = `${penalty.inspection}-${penalty.num}`;
+  pendingPenaltyKey.value = key;
+  pendingPenaltyAction.value = "restore";
+  try {
+    await restoreActivePenalty(penalty.inspection, penalty.num);
+    penalties.value = penalties.value.filter((item) =>
+      item.num !== penalty.num || item.inspection !== penalty.inspection,
+    );
+    success(`엔트리 ${penalty.num}번 ${penalty.inspection_name} 페널티를 해제하고 순번을 복구했습니다.`);
+    if (penalty.inspection === currentTab.value) {
+      await refreshQueue(currentTab.value);
+    }
+  } catch (e) {
+    error(e.message || "페널티 해제 후 순번을 복구할 수 없습니다.");
+  } finally {
+    pendingPenaltyKey.value = "";
+    pendingPenaltyAction.value = "";
   }
 }
 
@@ -698,16 +729,28 @@ function goToInspection(num) {
                       <span class="badge badge-warning">{{ penalty.inspection_name }}</span>
                       <span>{{ formatPenaltyRemaining(penalty.until) }}</span>
                       <span class="penalty-until">{{ formatPenaltyUntil(penalty.until) }} 해제</span>
+                      <span v-if="!penalty.can_restore" class="penalty-restore-unavailable">순번 복구 정보 없음</span>
                     </div>
                   </div>
-                  <button
-                    class="btn btn-danger btn-sm penalty-clear-button"
-                    type="button"
-                    :disabled="clearingPenaltyKey === `${penalty.inspection}-${penalty.num}`"
-                    @click="clearPenalty(penalty)"
-                  >
-                    {{ clearingPenaltyKey === `${penalty.inspection}-${penalty.num}` ? "취소 중..." : "페널티 취소" }}
-                  </button>
+                  <div class="penalty-actions">
+                    <button
+                      class="btn btn-danger btn-sm"
+                      type="button"
+                      :disabled="pendingPenaltyKey === `${penalty.inspection}-${penalty.num}`"
+                      @click="clearPenalty(penalty)"
+                    >
+                      {{ pendingPenaltyKey === `${penalty.inspection}-${penalty.num}` && pendingPenaltyAction === "clear" ? "해제 중..." : "페널티만 해제" }}
+                    </button>
+                    <button
+                      class="btn btn-primary btn-sm"
+                      type="button"
+                      :disabled="!penalty.can_restore || pendingPenaltyKey === `${penalty.inspection}-${penalty.num}`"
+                      :title="penalty.can_restore ? '페널티를 해제하고 취소 전 순번으로 복구' : '취소 당시 대기열 정보가 없어 순번을 복구할 수 없습니다.'"
+                      @click="restorePenalty(penalty)"
+                    >
+                      {{ pendingPenaltyKey === `${penalty.inspection}-${penalty.num}` && pendingPenaltyAction === "restore" ? "복구 중..." : "해제 후 순번 복구" }}
+                    </button>
+                  </div>
                 </li>
               </ul>
             </div>
@@ -880,7 +923,13 @@ function goToInspection(num) {
   color: var(--text-tertiary);
 }
 
-.penalty-clear-button {
+.penalty-restore-unavailable {
+  color: var(--accent-danger);
+}
+
+.penalty-actions {
+  display: flex;
+  gap: 0.5rem;
   flex-shrink: 0;
 }
 
@@ -1415,7 +1464,11 @@ function goToInspection(num) {
     flex-direction: column;
   }
 
-  .penalty-clear-button {
+  .penalty-actions {
+    flex-direction: column;
+  }
+
+  .penalty-actions .btn {
     width: 100%;
   }
 

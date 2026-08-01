@@ -28,6 +28,7 @@ const chiefOnly = [
 const officialOnly = [
   { method: "get", path: "/queue/api/admin/all", body: undefined },
   { method: "get", path: "/queue/api/admin/penalties", body: undefined },
+  { method: "post", path: "/queue/api/admin/penalties/battery/999999/restore", body: undefined },
 ];
 
 test.describe("queue RBAC", () => {

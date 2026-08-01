@@ -447,6 +447,9 @@ describe('POST /api/admin/cancel/:type', () => {
     const penalty = db.prepare("SELECT * FROM cancel_penalty WHERE num = 1 AND inspection = 'report'").get();
     assert.ok(penalty);
     assert.ok(penalty.until > Date.now());
+    assert.equal(penalty.phone, '01012345678');
+    const originalRegister = db.prepare("SELECT timestamp FROM queue_log WHERE num = 1 AND inspection = 'report' AND event = 'register' ORDER BY id DESC").get();
+    assert.equal(penalty.queue_timestamp, originalRegister.timestamp);
     // Clean up
     db.prepare("DELETE FROM cancel_penalty WHERE num = 1 AND inspection = 'report'").run();
   });
@@ -482,7 +485,10 @@ describe('Active cancel penalty management', () => {
     const year = new Date().getFullYear();
     const now = Date.now();
     db.prepare('DELETE FROM cancel_penalty').run();
-    db.prepare('INSERT INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)').run(2, 'battery', year, now + 600000);
+    db.prepare(`
+      INSERT INTO cancel_penalty (num, inspection, year, until, phone, queue_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(2, 'battery', year, now + 600000, '01098765432', now - 60000);
     db.prepare('INSERT INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)').run(3, 'electric', year, now - 1000);
     db.prepare('INSERT INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)').run(1, 'report', year - 1, now + 600000);
 
@@ -494,6 +500,7 @@ describe('Active cancel penalty management', () => {
       inspection: 'battery',
       inspection_name: '배터리',
       until: now + 600000,
+      can_restore: 1,
     }]);
   });
 
@@ -521,6 +528,78 @@ describe('Active cancel penalty management', () => {
     assert.equal(res.status, 404);
     assert.equal(await res.text(), '적용 중인 페널티가 없습니다.');
     db.prepare('DELETE FROM cancel_penalty').run();
+  });
+
+  it('POST /api/admin/penalties/:type/:num/restore restores the original queue timestamp and clears the penalty', async () => {
+    const register = await client.post('/api/admin/register/noise', {
+      body: { num: 3, phone: '01033334444' },
+      cookie: officialCookie,
+    });
+    assert.equal(register.status, 201);
+    const year = new Date().getFullYear();
+    const original = db.prepare("SELECT phone, timestamp FROM inspection_queue WHERE inspection = 'noise' AND num = 3 AND year = ?").get(year);
+
+    const cancel = await client.post('/api/admin/cancel/noise', {
+      body: { num: 3 },
+      cookie: officialCookie,
+    });
+    assert.equal(cancel.status, 200);
+
+    // 취소 후 등록된 팀보다 앞선 원래 타임스탬프로 돌아가는지 확인한다.
+    db.prepare("INSERT INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES (?, ?, ?, ?, ?)")
+      .run('noise', 2, '01022223333', original.timestamp + 60000, year);
+    db.prepare("INSERT INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)")
+      .run(2, 'noise', '01022223333', year);
+
+    const restore = await client.post('/api/admin/penalties/noise/3/restore', { cookie: officialCookie });
+    assert.equal(restore.status, 200);
+
+    const restored = db.prepare("SELECT phone, timestamp FROM inspection_queue WHERE inspection = 'noise' AND num = 3 AND year = ?").get(year);
+    assert.deepEqual(restored, original);
+    assert.equal(db.prepare("SELECT 1 FROM cancel_penalty WHERE inspection = 'noise' AND num = 3 AND year = ?").get(year), undefined);
+    assert.ok(db.prepare("SELECT 1 FROM current_inspection WHERE inspection = 'noise' AND num = 3 AND year = ?").get(year));
+    assert.ok(db.prepare("SELECT 1 FROM queue_log WHERE event = 'restore' AND inspection = 'noise' AND num = 3 AND year = ?").get(year));
+    const queue = await client.get('/api/admin/inspection/noise', { cookie: officialCookie });
+    assert.deepEqual((await queue.json()).map((entry) => entry.num), [3, 2]);
+    const stats = await client.get('/api/admin/stats/3', { cookie: officialCookie });
+    assert.ok((await stats.json()).timeline.some((event) => event.event === 'restore'));
+    const audit = db.prepare("SELECT * FROM logs WHERE action = 'penalty.restore' AND target = '#3' ORDER BY id DESC").get();
+    assert.equal(audit.actor_role, 'official');
+
+    db.prepare("DELETE FROM inspection_queue WHERE inspection = 'noise' AND num IN (2, 3) AND year = ?").run(year);
+    db.prepare("DELETE FROM current_inspection WHERE inspection = 'noise' AND num IN (2, 3) AND year = ?").run(year);
+    db.prepare("DELETE FROM queue_log WHERE inspection = 'noise' AND num = 3 AND year = ?").run(year);
+  });
+
+  it('does not restore a legacy penalty without original queue data', async () => {
+    const year = new Date().getFullYear();
+    db.prepare('INSERT INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)')
+      .run(3, 'noise', year, Date.now() + 600000);
+
+    const restore = await client.post('/api/admin/penalties/noise/3/restore', { cookie: officialCookie });
+    assert.equal(restore.status, 409);
+    assert.equal(await restore.text(), '취소 당시 대기열 정보가 없어 원래 순번으로 복구할 수 없습니다.');
+    assert.ok(db.prepare("SELECT 1 FROM cancel_penalty WHERE inspection = 'noise' AND num = 3 AND year = ?").get(year));
+    db.prepare("DELETE FROM cancel_penalty WHERE inspection = 'noise' AND num = 3 AND year = ?").run(year);
+  });
+
+  it('keeps the penalty when restoring would violate concurrent registration rules', async () => {
+    const year = new Date().getFullYear();
+    db.prepare("INSERT INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)")
+      .run(3, 'electric', '01033334444', year);
+    db.prepare(`
+      INSERT INTO cancel_penalty (num, inspection, year, until, phone, queue_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(3, 'battery', year, Date.now() + 600000, '01033334444', Date.now() - 60000);
+
+    const restore = await client.post('/api/admin/penalties/battery/3/restore', { cookie: officialCookie });
+    assert.equal(restore.status, 400);
+    assert.match(await restore.text(), /이미 전기 검차에 등록된 엔트리/);
+    assert.ok(db.prepare("SELECT 1 FROM cancel_penalty WHERE inspection = 'battery' AND num = 3 AND year = ?").get(year));
+    assert.equal(db.prepare("SELECT 1 FROM inspection_queue WHERE inspection = 'battery' AND num = 3 AND year = ?").get(year), undefined);
+
+    db.prepare("DELETE FROM current_inspection WHERE num = 3 AND year = ?").run(year);
+    db.prepare("DELETE FROM cancel_penalty WHERE num = 3 AND year = ?").run(year);
   });
 });
 
@@ -1531,6 +1610,16 @@ describe('Queue legacy → normalized migration', () => {
     // legacy inspection_history with a NON-year-scoped PK
     seed.exec(`CREATE TABLE inspection_history (num INTEGER NOT NULL, inspection TEXT NOT NULL, timestamp INTEGER NOT NULL, PRIMARY KEY (num, inspection))`);
     seed.prepare("INSERT INTO inspection_history (num, inspection, timestamp) VALUES (?, ?, ?)").run(5, 'braking', 1234);
+    // 현재 운영 스키마에는 year가 있지만 순번 복구용 컬럼은 없는 상태
+    seed.exec(`CREATE TABLE cancel_penalty (
+      num INTEGER NOT NULL,
+      inspection TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      until INTEGER NOT NULL,
+      PRIMARY KEY (num, inspection, year)
+    )`);
+    seed.prepare("INSERT INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)")
+      .run(5, 'braking', yr, Date.now() + 60000);
     seed.close();
   });
 
@@ -1558,6 +1647,13 @@ describe('Queue legacy → normalized migration', () => {
     const pk = migDb.prepare("PRAGMA table_info(inspection_history)").all().filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
     assert.deepEqual(pk, ['num', 'inspection', 'year', 'timestamp']);
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = 5 AND year = ?").get(yr).c, 1);
+
+    // 기존 페널티 행은 유지하고 복구용 nullable 컬럼을 추가한다.
+    const penaltyCols = migDb.prepare("PRAGMA table_info(cancel_penalty)").all().map((c) => c.name);
+    assert.ok(penaltyCols.includes('phone'));
+    assert.ok(penaltyCols.includes('queue_timestamp'));
+    const legacyPenalty = migDb.prepare("SELECT phone, queue_timestamp FROM cancel_penalty WHERE num = 5 AND year = ?").get(yr);
+    assert.deepEqual(legacyPenalty, { phone: null, queue_timestamp: null });
 
     // legacy tables consumed
     const has = (t) => !!migDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(t);

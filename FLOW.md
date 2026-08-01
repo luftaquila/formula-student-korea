@@ -128,55 +128,56 @@
 | 3.8 | 부스 활성 토글 | official | `PATCH /api/admin/booths/:type/:boothNum` | 점유 중 비활성화 방지 |
 | 3.9 | 활성 페널티 조회 | official | `GET /api/admin/penalties` | 현재 연도에 적용 중인 취소 페널티 목록 |
 | 3.10 | 페널티 취소 | official | `DELETE /api/admin/penalties/:type/:num` | 선택한 팀·검차의 적용 중인 취소 페널티 해제 |
+| 3.11 | 페널티 취소 및 순번 복구 | official | `POST /api/admin/penalties/:type/:num/restore` | 페널티 해제 → 취소 당시 전화번호·접수시각으로 원래 정렬 위치 복구 → SSE |
 
 ### 설정 (chief)
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.11 | 우선순위 목록 조회 | chief | `GET /api/admin/priority/:type` | 검차별 팀 우선순위 정렬 목록 |
-| 3.12 | 우선순위 설정 | chief | `POST /api/admin/priority/:type` | `{ num, priority }` |
-| 3.13 | 우선순위 삭제 | chief | `DELETE /api/admin/priority/:type` | 개별 삭제 |
-| 3.14 | 우선순위 전체 삭제 | chief | `DELETE /api/admin/priority/:type/all` | |
-| 3.15 | 검사 이력 초기화 | chief | `DELETE /api/admin/history/:type` | 초검/재검 구분 초기화 |
-| 3.16 | 정렬 규칙 토글 | chief | `PUT /api/admin/inspection/:type/ignore` | 우선순위/초검재검 무시 플래그 |
-| 3.17 | 부스 수 설정 | chief | `PATCH /api/admin/booths/:type/config` | 점유 중 부스 축소 방지 |
-| 3.18 | 검차 활성 토글 | chief | `PATCH /api/admin/inspection/:type` | SSE 브로드캐스트 |
-| 3.19 | 검차 표시 토글 | chief | `PATCH /api/admin/inspection/:type/visibility` | 등록 페이지 노출 제어 |
-| 3.20 | 취소 페널티 설정 | chief | `PATCH /api/admin/settings/cancel-penalty` | 0~60분 |
+| 3.12 | 우선순위 목록 조회 | chief | `GET /api/admin/priority/:type` | 검차별 팀 우선순위 정렬 목록 |
+| 3.13 | 우선순위 설정 | chief | `POST /api/admin/priority/:type` | `{ num, priority }` |
+| 3.14 | 우선순위 삭제 | chief | `DELETE /api/admin/priority/:type` | 개별 삭제 |
+| 3.15 | 우선순위 전체 삭제 | chief | `DELETE /api/admin/priority/:type/all` | |
+| 3.16 | 검사 이력 초기화 | chief | `DELETE /api/admin/history/:type` | 초검/재검 구분 초기화 |
+| 3.17 | 정렬 규칙 토글 | chief | `PUT /api/admin/inspection/:type/ignore` | 우선순위/초검재검 무시 플래그 |
+| 3.18 | 부스 수 설정 | chief | `PATCH /api/admin/booths/:type/config` | 점유 중 부스 축소 방지 |
+| 3.19 | 검차 활성 토글 | chief | `PATCH /api/admin/inspection/:type` | SSE 브로드캐스트 |
+| 3.20 | 검차 표시 토글 | chief | `PATCH /api/admin/inspection/:type/visibility` | 등록 페이지 노출 제어 |
+| 3.21 | 취소 페널티 설정 | chief | `PATCH /api/admin/settings/cancel-penalty` | 0~60분 |
 
 ### SMS 설정
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.21 | SMS 토글 | chief | `PATCH /api/admin/settings/sms` | 환경변수 필요 |
-| 3.22 | SMS 알림 순번 조회 | official | `GET /api/admin/settings/sms-rank` | |
-| 3.23 | SMS 알림 순번 설정 | chief | `PATCH /api/admin/settings/sms-rank` | 1~10 |
+| 3.22 | SMS 토글 | chief | `PATCH /api/admin/settings/sms` | 환경변수 필요 |
+| 3.23 | SMS 알림 순번 조회 | official | `GET /api/admin/settings/sms-rank` | |
+| 3.24 | SMS 알림 순번 설정 | chief | `PATCH /api/admin/settings/sms-rank` | 1~10 |
 
 ### 통계
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.24 | 기간 조회 | official | `GET /api/admin/stats/timerange` | |
-| 3.25 | 전체 팀 통계 | official | `GET /api/admin/stats` | 등록/취소/입차 횟수, 총 점유 시간 |
-| 3.26 | 팀별 타임라인 | official | `GET /api/admin/stats/:num` | 이벤트 타임라인 + 요약 |
+| 3.25 | 기간 조회 | official | `GET /api/admin/stats/timerange` | |
+| 3.26 | 전체 팀 통계 | official | `GET /api/admin/stats` | 등록/취소/입차 횟수, 총 점유 시간 |
+| 3.27 | 팀별 타임라인 | official | `GET /api/admin/stats/:num` | 이벤트 타임라인 + 요약 |
 
 ### 추가 조회 및 실시간
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.27 | 전체 부스 현황 조회 | public | `GET /api/booths/all` | 모든 검차 유형의 부스 상태 일괄 조회 |
-| 3.28 | 전체 검차 목록 조회 | official | `GET /api/admin/all` | 비활성 포함 전체 검차 유형 목록 |
-| 3.29 | 대기열 조회 | official | `GET /api/admin/inspection/:type` | 정렬된 대기열 목록 (우선순위/초검·재검/시간순) |
-| 3.30 | 부스 목록 조회 | official | `GET /api/admin/booths/:type` | 검차별 부스 설정 및 점유 현황 |
-| 3.31 | SMS 설정 조회 | official | `GET /api/admin/settings/sms` | SMS 활성화 상태 반환 |
-| 3.32 | 취소 페널티 조회 | official | `GET /api/admin/settings/cancel-penalty` | 현재 페널티 시간(분) 반환 |
-| 3.33 | SSE 실시간 업데이트 | public | `GET /api/events` | 검차 활성 상태, 대기열, 부스 변경 실시간 스트림 |
+| 3.28 | 전체 부스 현황 조회 | public | `GET /api/booths/all` | 모든 검차 유형의 부스 상태 일괄 조회 |
+| 3.29 | 전체 검차 목록 조회 | official | `GET /api/admin/all` | 비활성 포함 전체 검차 유형 목록 |
+| 3.30 | 대기열 조회 | official | `GET /api/admin/inspection/:type` | 정렬된 대기열 목록 (우선순위/초검·재검/시간순) |
+| 3.31 | 부스 목록 조회 | official | `GET /api/admin/booths/:type` | 검차별 부스 설정 및 점유 현황 |
+| 3.32 | SMS 설정 조회 | official | `GET /api/admin/settings/sms` | SMS 활성화 상태 반환 |
+| 3.33 | 취소 페널티 조회 | official | `GET /api/admin/settings/cancel-penalty` | 현재 페널티 시간(분) 반환 |
+| 3.34 | SSE 실시간 업데이트 | public | `GET /api/events` | 검차 활성 상태, 대기열, 부스 변경 실시간 스트림 |
 
 ### 내부 서비스 연동
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.34 | 엔트리 삭제 연동 | 내부 | `DELETE /api/internal/team/:num?year=` | 대기열, current, 우선순위, 페널티, 이력, 부스 점유 해제 |
+| 3.35 | 엔트리 삭제 연동 | 내부 | `DELETE /api/internal/team/:num?year=` | 대기열, current, 우선순위, 페널티, 이력, 부스 점유 해제 |
 
 ---
 

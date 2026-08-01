@@ -165,8 +165,9 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/admin/penalties` | official | — | `[{ num, inspection, inspection_name, until }]` | List active cancel penalties for the current year |
+| GET | `/api/admin/penalties` | official | — | `[{ num, inspection, inspection_name, until, can_restore }]` | List active cancel penalties for the current year |
 | DELETE | `/api/admin/penalties/:type/:num` | official | — | 200 | Clear an active cancel penalty |
+| POST | `/api/admin/penalties/:type/:num/restore` | official | — | 200 | Clear a penalty and restore the canceled queue entry at its original timestamp |
 
 ### Priority Management
 

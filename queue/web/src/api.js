@@ -67,6 +67,12 @@ export async function clearActivePenalty(type, num) {
   });
 }
 
+export async function restoreActivePenalty(type, num) {
+  await request(`/api/admin/penalties/${type}/${num}/restore`, {
+    method: "POST",
+  });
+}
+
 /* ============================================
    Admin API - 부스 관리
    ============================================ */
