@@ -5,7 +5,7 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 async function apiRegister(type, num, phone = "01000000000") {
   return fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ num, phone }),
   });
 }

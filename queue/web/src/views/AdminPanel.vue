@@ -1438,13 +1438,22 @@ function goToInspection(num) {
 
 @media (max-width: 640px) {
   .top-actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    flex-wrap: nowrap;
+    gap: 0.375rem;
   }
 
   .top-actions .btn {
-    width: 100%;
     min-width: 0;
+    padding: 0.5rem;
+    gap: 0.25rem;
+    font-size: 0.8125rem;
+    white-space: nowrap;
+  }
+
+  .top-actions .btn svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
   }
 
   .penalty-modal-overlay {

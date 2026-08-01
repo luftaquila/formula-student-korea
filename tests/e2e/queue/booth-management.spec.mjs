@@ -7,7 +7,7 @@ const INSPECTION_TYPE = "battery";
 async function apiRegister(num, type = INSPECTION_TYPE) {
   const res = await fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ num, phone: "01000000000" }),
   });
   return res;

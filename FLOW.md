@@ -121,7 +121,7 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.4 | 대기 등록 | official | `POST /api/admin/register/:type` | 엔트리 검증(entry 서비스) → 활성 확인 → 페널티 확인 → 동시 등록 규칙(배터리+샤시 허용) → 삽입 → SSE (등록 시 SMS 미발송) |
+| 3.4 | 대기 등록 | chief | `POST /api/admin/register/:type` | 엔트리 검증(entry 서비스) → 활성 확인 → 페널티 확인 → 동시 등록 규칙(배터리+샤시 허용) → 삽입 → SSE (등록 시 SMS 미발송) |
 | 3.5 | 대기 취소 | official | `POST /api/admin/cancel/:type` | 삭제 → 페널티 부과 → SSE → SMS (알림 순번에 새로 진입한 대기자에게) |
 | 3.6 | 부스 입차 | official | `POST /api/admin/booths/:type/:boothNum/enter` | 큐에서 제거 → 부스 점유 → 로그 기록 → SSE → SMS |
 | 3.7 | 부스 출차 | official | `POST /api/admin/booths/:type/:boothNum/exit` | 점유 해제 → 검사 이력 기록(재검 감지용) |

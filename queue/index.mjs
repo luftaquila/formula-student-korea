@@ -473,14 +473,15 @@ const logger = createLogger(db, "queue");
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path.startsWith("/api/internal/")) return "admin";
-  // Chief-only: 우선순위, 이력 초기화, 설정 변경, 검차 활성화/표시/무시, 부스 수 설정
+  // Chief-only: 대기 등록, 우선순위, 이력 초기화, 설정 변경, 검차 활성화/표시/무시, 부스 수 설정
+  if (/^\/api\/admin\/register\/[^/]+$/.test(req.path)) return "chief";
   if (req.path.startsWith("/api/admin/priority")) return "chief";
   if (req.path.startsWith("/api/admin/history")) return "chief";
   if (req.path.startsWith("/api/admin/settings") && req.method !== "GET") return "chief";
   if (/^\/api\/admin\/inspection\/[^/]+\/(visibility|ignore)/.test(req.path)) return "chief";
   if (req.method === "PATCH" && /^\/api\/admin\/inspection\/[^/]+$/.test(req.path)) return "chief";
   if (/^\/api\/admin\/booths\/[^/]+\/config$/.test(req.path)) return "chief";
-  // Official: 나머지 admin (대기열 조회, 등록, 취소, 개별 부스 토글, 입/출차 등)
+  // Official: 나머지 admin (대기열 조회, 취소, 개별 부스 토글, 입/출차 등)
   if (req.path.startsWith("/api/admin")) return "official";
   // SPA routes
   if (/^\/(priority|register)(\/|$)/.test(req.path)) return "chief";

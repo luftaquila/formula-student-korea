@@ -7,7 +7,7 @@ const ENTRY_NUM = 10; // KAIST RUN
 const TYPE = "tilting";
 
 test.describe("Queue public status query success flow", () => {
-  test.use({ storageState: storageStatePath("official") });
+  test.use({ storageState: storageStatePath("chief") });
 
   test("successful status query shows queue name and rank", async ({ page }) => {
     const regRes = await page.request.post(`/queue/api/admin/register/${TYPE}`, {

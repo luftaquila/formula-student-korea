@@ -2,16 +2,17 @@ import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
 // Queue gate (queue/index.mjs authRoleFn ~lines 228-249):
-//   chief-only: /api/admin/priority/*, /api/admin/history/*, /api/admin/settings (non-GET),
+//   chief-only: /api/admin/register/*, /api/admin/priority/*, /api/admin/history/*, /api/admin/settings (non-GET),
 //               /api/admin/inspection/:type (PATCH), .../visibility, .../ignore,
 //               /api/admin/booths/:type/config
-//   official:   everything else under /api/admin (register/cancel/booth toggle/enter/exit/stats)
+//   official:   everything else under /api/admin (cancel/booth toggle/enter/exit/stats)
 //   public:     /api/events, /api/active, /api/booths/*, /api/state/*
 // official sits one level below chief -> expect 403 on chief endpoints.
 // Unauthenticated -> 401 on any /api/admin/* (gate returns chief/official, never null).
 
 // Chief-gated endpoints; official must be rejected (403).
 const chiefOnly = [
+  { method: "post", path: "/queue/api/admin/register/battery", body: { num: 1, phone: "01000000000" } },
   { method: "get", path: "/queue/api/admin/priority/battery", body: undefined },
   { method: "post", path: "/queue/api/admin/priority/battery", body: { num: 999999, priority: 0 } },
   { method: "delete", path: "/queue/api/admin/priority/battery/all", body: {} },

@@ -151,7 +151,7 @@ describe('POST /api/state/:num', () => {
     // Register entry 1 to battery first so phone check triggers
     await client.post('/api/admin/register/battery', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     const res = await client.post('/api/state/1', {
       body: { phone: '010-invalid' },
@@ -193,6 +193,14 @@ describe('Auth enforcement', () => {
     const res = await client.post('/api/admin/register/battery', {
       body: { num: 1, phone: '01012345678' },
       cookie: studentCookie,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('official is rejected from chief-level registration endpoint (403)', async () => {
+    const res = await client.post('/api/admin/register/battery', {
+      body: { num: 1, phone: '01012345678' },
+      cookie: officialCookie,
     });
     assert.equal(res.status, 403);
   });
@@ -336,7 +344,7 @@ describe('POST /api/admin/register/:type', () => {
   it('registers entry to queue', async () => {
     const res = await client.post('/api/admin/register/battery', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 201);
     // Verify queue
@@ -349,7 +357,7 @@ describe('POST /api/admin/register/:type', () => {
   it('rejects duplicate registration', async () => {
     const res = await client.post('/api/admin/register/battery', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -357,7 +365,7 @@ describe('POST /api/admin/register/:type', () => {
   it('allows report + other inspection simultaneously', async () => {
     const res = await client.post('/api/admin/register/report', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 201);
   });
@@ -365,7 +373,7 @@ describe('POST /api/admin/register/:type', () => {
   it('allows battery + chassis simultaneously', async () => {
     const res = await client.post('/api/admin/register/chassis', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 201);
   });
@@ -374,7 +382,7 @@ describe('POST /api/admin/register/:type', () => {
     // Entry 1 has battery + report + chassis, try to add electric
     const res = await client.post('/api/admin/register/electric', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -387,7 +395,7 @@ describe('POST /api/admin/register/:type', () => {
     });
     const res = await client.post('/api/admin/register/rain', {
       body: { num: 2, phone: '01098765432' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
     // Re-activate
@@ -400,7 +408,7 @@ describe('POST /api/admin/register/:type', () => {
   it('rejects non-existent entry', async () => {
     const res = await client.post('/api/admin/register/battery', {
       body: { num: 999, phone: '01099999999' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -409,7 +417,7 @@ describe('POST /api/admin/register/:type', () => {
     // Register entry 2 to electric
     await client.post('/api/admin/register/electric', {
       body: { num: 2, phone: '01098765432' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     // Cancel it (applies penalty)
     await client.post('/api/admin/cancel/electric', {
@@ -419,7 +427,7 @@ describe('POST /api/admin/register/:type', () => {
     // Try to re-register immediately - should be 403 (penalty)
     const res = await client.post('/api/admin/register/electric', {
       body: { num: 2, phone: '01098765432' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 403);
     // Clean up penalty for future tests
@@ -533,7 +541,7 @@ describe('Active cancel penalty management', () => {
   it('POST /api/admin/penalties/:type/:num/restore restores the original queue timestamp and clears the penalty', async () => {
     const register = await client.post('/api/admin/register/noise', {
       body: { num: 3, phone: '01033334444' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(register.status, 201);
     const year = new Date().getFullYear();
@@ -769,7 +777,7 @@ describe('Booth management', () => {
     // Register entry 2 to battery first
     await client.post('/api/admin/register/battery', {
       body: { num: 2, phone: '01098765432' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     // Try to enter booth 1 which is occupied by entry 1
     const res = await client.post('/api/admin/booths/battery/1/enter', {
@@ -935,7 +943,7 @@ describe('Statistics', () => {
     // used to hide open sessions until 출차.
     await client.post('/api/admin/register/electric', {
       body: { num: 3, phone: '01055551234' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     const enterRes = await client.post('/api/admin/booths/electric/1/enter', {
       body: { num: 3 },
@@ -1079,7 +1087,7 @@ describe('Queue sorting', () => {
     // Register entry 2 first (reinspection because of history)
     await client.post('/api/admin/register/battery', {
       body: { num: 2, phone: '01098765432' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
 
     // Small delay to ensure different timestamps
@@ -1088,7 +1096,7 @@ describe('Queue sorting', () => {
     // Register entry 3 (first inspection)
     await client.post('/api/admin/register/battery', {
       body: { num: 3, phone: '01011112222' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
 
     await new Promise(r => setTimeout(r, 10));
@@ -1096,7 +1104,7 @@ describe('Queue sorting', () => {
     // Register entry 1 (first inspection, registered after entry 3)
     await client.post('/api/admin/register/battery', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
 
     // Set priority: entry 1 = priority 2, entry 3 = priority 1
@@ -1166,7 +1174,7 @@ describe('Queue sorting with ignore flags', () => {
   it('ignore_priority makes priority not affect order', async () => {
     // Register entry 1 (no priority = default 999)
     await client.post(`/api/admin/register/${testType}`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 1, phone: '01011111111' },
     });
 
@@ -1178,7 +1186,7 @@ describe('Queue sorting with ignore flags', () => {
       body: { num: 2, priority: 1 },
     });
     await client.post(`/api/admin/register/${testType}`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 2, phone: '01022222222' },
     });
 
@@ -1213,7 +1221,7 @@ describe('Queue sorting with ignore flags', () => {
     // Create reinspection history for entry 1
     // First do a full cycle: register -> enter booth -> exit booth (records history)
     await client.post(`/api/admin/register/${testType}`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 1, phone: '01011111111' },
     });
     await client.post(`/api/admin/booths/${testType}/1/enter`, {
@@ -1226,14 +1234,14 @@ describe('Queue sorting with ignore flags', () => {
 
     // Now register both: entry 1 is reinspection, entry 2 is first
     await client.post(`/api/admin/register/${testType}`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 1, phone: '01011111111' },
     });
 
     await new Promise(r => setTimeout(r, 10));
 
     await client.post(`/api/admin/register/${testType}`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 2, phone: '01022222222' },
     });
 
@@ -1293,7 +1301,7 @@ describe('Validation edge cases', () => {
   it('rejects invalid entry number in register', async () => {
     const res = await client.post('/api/admin/register/battery', {
       body: { num: -1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -1301,7 +1309,7 @@ describe('Validation edge cases', () => {
   it('rejects missing phone in register', async () => {
     const res = await client.post('/api/admin/register/battery', {
       body: { num: 1 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -1309,7 +1317,7 @@ describe('Validation edge cases', () => {
   it('rejects invalid inspection type', async () => {
     const res = await client.post('/api/admin/register/nonexistent', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -1348,7 +1356,7 @@ describe('POST /api/state/:num (with registered entry)', () => {
       }
       await client.post('/api/admin/register/battery', {
         body: { num: 1, phone: '01012345678' },
-        cookie: officialCookie,
+        cookie: chiefCookie,
       });
     }
   });
@@ -1377,11 +1385,11 @@ describe('POST /api/state/:num (with registered entry)', () => {
 
     // Register entry 3 in both battery and report (report is always compatible)
     await client.post('/api/admin/register/battery', {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 3, phone: '01033333333' },
     });
     await client.post('/api/admin/register/report', {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 3, phone: '01033333333' },
     });
 
@@ -1406,7 +1414,7 @@ describe('DELETE /api/internal/team/:num', () => {
     });
     await client.post('/api/admin/register/noise', {
       body: { num: 2, phone: '01022222222' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     // Set priority for entry 2 in noise
     await client.post('/api/admin/priority/noise', {
@@ -1536,7 +1544,7 @@ describe('Year isolation', () => {
     // Register entry 2 — should use current year automatically
     await client.post('/api/admin/register/tilting', {
       body: { num: 2, phone: '01022222222' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     const queue = await client.get('/api/admin/inspection/tilting', { cookie: officialCookie });
     const data = await queue.json();

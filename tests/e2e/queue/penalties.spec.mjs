@@ -126,17 +126,27 @@ test.describe("Queue active penalties modal", () => {
     await expect(modal).not.toBeVisible();
   });
 
-  test("keeps stats and penalty buttons aligned on mobile", async ({ page }) => {
+  test("keeps all chief actions on one mobile row with penalty immediately after stats", async ({ browser }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("chief") });
+    const page = await context.newPage();
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
+    const registerBox = await page.getByRole("button", { name: "검차 등록" }).boundingBox();
+    const priorityBox = await page.getByRole("button", { name: "우선순위" }).boundingBox();
     const statsBox = await page.getByRole("button", { name: "통계" }).boundingBox();
     const penaltyBox = await page.getByRole("button", { name: "페널티", exact: true }).boundingBox();
+    expect(registerBox).not.toBeNull();
+    expect(priorityBox).not.toBeNull();
     expect(statsBox).not.toBeNull();
     expect(penaltyBox).not.toBeNull();
+    expect(Math.abs(registerBox.y - penaltyBox.y)).toBeLessThan(1);
+    expect(Math.abs(priorityBox.y - penaltyBox.y)).toBeLessThan(1);
     expect(Math.abs(statsBox.y - penaltyBox.y)).toBeLessThan(1);
-    expect(Math.abs(statsBox.width - penaltyBox.width)).toBeLessThan(1);
     expect(Math.abs(statsBox.height - penaltyBox.height)).toBeLessThan(1);
+    expect(penaltyBox.x).toBeGreaterThan(statsBox.x + statsBox.width);
+    expect(penaltyBox.x + penaltyBox.width).toBeLessThanOrEqual(390);
+    await context.close();
   });
 });

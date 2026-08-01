@@ -77,7 +77,7 @@ async function setBoothCount(type, count) {
 async function register(num, type = TYPE) {
   return fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
     method: "POST",
-    headers: officialHeaders(),
+    headers: chiefHeaders(),
     body: JSON.stringify({ num, phone: "01000000000" }),
   });
 }
