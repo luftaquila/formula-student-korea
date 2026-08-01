@@ -483,8 +483,8 @@ const app = createApp({ express }, (req) => {
   // Official: 나머지 admin (대기열 조회, 등록, 취소, 개별 부스 토글, 입/출차 등)
   if (req.path.startsWith("/api/admin")) return "official";
   // SPA routes
-  if (/^\/priority(\/|$)/.test(req.path)) return "chief";
-  if (/^\/(admin|register|stats)/.test(req.path)) return "official";
+  if (/^\/(priority|register)(\/|$)/.test(req.path)) return "chief";
+  if (/^\/(admin|stats)/.test(req.path)) return "official";
   if (req.path === "/api/logs") return "admin";
   if (req.path === "/api/events") return null;
   if (req.path === "/api/active") return null;

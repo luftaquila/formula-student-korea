@@ -57,4 +57,12 @@ test.describe("queue RBAC", () => {
     const res = await request.get("/queue/api/active");
     expect(res.status()).toBe(200);
   });
+
+  test("official is redirected away from the chief-only registration page", async ({ browser }) => {
+    const ctx = await browser.newContext({ storageState: storageStatePath("official") });
+    const page = await ctx.newPage();
+    await page.goto("/queue/register");
+    await expect(page).not.toHaveURL(/\/queue\/register/);
+    await ctx.close();
+  });
 });

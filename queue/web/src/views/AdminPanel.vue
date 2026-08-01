@@ -403,7 +403,7 @@ function goToInspection(num) {
   <div class="admin-panel">
     <!-- Top Actions -->
     <div class="top-actions">
-      <button class="btn btn-primary" @click="goToRegister">
+      <button v-if="isChief" class="btn btn-primary" @click="goToRegister">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
           <path d="M12 5v14M5 12h14" />
         </svg>
@@ -1437,8 +1437,14 @@ function goToInspection(num) {
 }
 
 @media (max-width: 640px) {
+  .top-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .top-actions .btn {
-    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
   }
 
   .penalty-modal-overlay {

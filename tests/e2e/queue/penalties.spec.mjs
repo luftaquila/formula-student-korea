@@ -125,4 +125,18 @@ test.describe("Queue active penalties modal", () => {
     await page.keyboard.press("Escape");
     await expect(modal).not.toBeVisible();
   });
+
+  test("keeps stats and penalty buttons aligned on mobile", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+
+    const statsBox = await page.getByRole("button", { name: "통계" }).boundingBox();
+    const penaltyBox = await page.getByRole("button", { name: "페널티", exact: true }).boundingBox();
+    expect(statsBox).not.toBeNull();
+    expect(penaltyBox).not.toBeNull();
+    expect(Math.abs(statsBox.y - penaltyBox.y)).toBeLessThan(1);
+    expect(Math.abs(statsBox.width - penaltyBox.width)).toBeLessThan(1);
+    expect(Math.abs(statsBox.height - penaltyBox.height)).toBeLessThan(1);
+  });
 });
