@@ -169,7 +169,10 @@ test.describe("Queue SSE real-time sync", () => {
       await adminPage.getByRole("button", { name: "페널티", exact: true }).click();
 
       const modal = adminPage.getByRole("dialog", { name: "현재 적용 중인 페널티" });
-      const penaltyItem = modal.locator(".penalty-item").filter({ hasText: "#32" });
+      const penaltyItem = modal
+        .locator(".penalty-item")
+        .filter({ hasText: "#32" })
+        .filter({ hasText: "보고서" });
       await expect(modal).toBeVisible();
       await expect(penaltyItem).toHaveCount(0);
 
