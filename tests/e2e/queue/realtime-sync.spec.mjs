@@ -5,7 +5,7 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 async function apiRegister(type, num, phone = "01000000000") {
   return fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ num, phone }),
   });
 }
@@ -143,5 +143,62 @@ test.describe("Queue SSE real-time sync", () => {
     await expect(queueSection).toBeVisible({ timeout: 10000 });
 
     await publicContext.close();
+  });
+
+  test("active penalty modal reflects penalty changes from another client", async ({ browser }) => {
+    const penaltyUrl = `${BASE_URL}/queue/api/admin/penalties/report/32`;
+    await fetch(penaltyUrl, {
+      method: "DELETE",
+      headers: { Cookie: getAuthCookie("official") },
+    });
+    await apiClearQueue("report");
+    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      body: JSON.stringify({ value: 10 }),
+    });
+
+    const adminContext = await browser.newContext({ storageState: storageStatePath("official") });
+    const adminPage = await adminContext.newPage();
+
+    try {
+      const ssePromise = adminPage.waitForResponse((res) => res.url().includes("/api/events"));
+      await adminPage.goto("/queue/admin");
+      await waitForPageReady(adminPage);
+      await ssePromise;
+      await adminPage.getByRole("button", { name: "페널티", exact: true }).click();
+
+      const modal = adminPage.getByRole("dialog", { name: "현재 적용 중인 페널티" });
+      const penaltyItem = modal
+        .locator(".penalty-item")
+        .filter({ hasText: "#32" })
+        .filter({ hasText: "보고서" });
+      await expect(modal).toBeVisible();
+      await expect(penaltyItem).toHaveCount(0);
+
+      const registerRes = await apiRegister("report", 32);
+      expect(registerRes.status).toBe(201);
+      const cancelRes = await apiCancel("report", 32);
+      expect(cancelRes.status).toBe(200);
+      await expect(penaltyItem).toBeVisible({ timeout: 10000 });
+
+      const clearRes = await fetch(penaltyUrl, {
+        method: "DELETE",
+        headers: { Cookie: getAuthCookie("official") },
+      });
+      expect(clearRes.status).toBe(200);
+      await expect(penaltyItem).toHaveCount(0, { timeout: 10000 });
+    } finally {
+      await adminContext.close();
+      await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+        body: JSON.stringify({ value: 0 }),
+      });
+      await fetch(penaltyUrl, {
+        method: "DELETE",
+        headers: { Cookie: getAuthCookie("official") },
+      });
+    }
   });
 });

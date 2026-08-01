@@ -146,6 +146,8 @@ db.transaction(() => {
     num INTEGER NOT NULL,
     inspection TEXT NOT NULL,
     until INTEGER NOT NULL,
+    phone TEXT,
+    queue_timestamp INTEGER,
     PRIMARY KEY (num, inspection)
   );`);
 
@@ -228,6 +230,11 @@ db.transaction(() => {
     })();
   }
 
+  // 취소 전 순번 복구에 필요한 원본 전화번호·접수시각을 보존한다. 기존 페널티는
+  // 두 값이 NULL이므로 해제는 가능하지만 원래 순번 복구는 제공하지 않는다.
+  addColumn(db, "cancel_penalty", "phone TEXT");
+  addColumn(db, "cancel_penalty", "queue_timestamp INTEGER");
+
   // cancel_penalty: year를 PK에 추가
   const cpInfo = db.prepare("PRAGMA table_info(cancel_penalty)").all();
   if (!cpInfo.some(c => c.name === "year")) {
@@ -237,9 +244,12 @@ db.transaction(() => {
         inspection TEXT NOT NULL,
         year INTEGER NOT NULL,
         until INTEGER NOT NULL,
+        phone TEXT,
+        queue_timestamp INTEGER,
         PRIMARY KEY (num, inspection, year)
       )`);
-      db.exec(`INSERT INTO cancel_penalty_new SELECT num, inspection, ${yr}, until FROM cancel_penalty`);
+      db.exec(`INSERT INTO cancel_penalty_new (num, inspection, year, until, phone, queue_timestamp)
+        SELECT num, inspection, ${yr}, until, phone, queue_timestamp FROM cancel_penalty`);
       db.exec(`DROP TABLE cancel_penalty`);
       db.exec(`ALTER TABLE cancel_penalty_new RENAME TO cancel_penalty`);
       db.exec(`CREATE INDEX idx_cp_num_insp ON cancel_penalty(year, num, inspection)`);
@@ -378,6 +388,39 @@ function setCurrentInspections(num, phone, types, year) {
   for (const type of uniqueTypes) insert.run(num, type, phone, year);
 }
 
+function addCurrentInspection(num, phone, type, year) {
+  const current = getCurrentEntry(num, year);
+  if (!current) {
+    setCurrentInspections(num, phone, [type], year);
+    return;
+  }
+
+  const currentTypes = current.inspections;
+  if (currentTypes.includes(type)) {
+    throw { status: 400, message: `이미 ${inspections[type]} 검차에 등록된 엔트리입니다.` };
+  }
+
+  // 보고서는 다른 검차와 항상 동시 등록 가능
+  if (type === "report") {
+    setCurrentInspections(num, phone, [...currentTypes, type], year);
+    return;
+  }
+
+  const nonReportTypes = currentTypes.filter((inspection) => inspection !== "report");
+  if (
+    nonReportTypes.length === 0 ||
+    (nonReportTypes.length === 1 && nonReportTypes[0] === "battery" && type === "chassis") ||
+    (nonReportTypes.length === 1 && nonReportTypes[0] === "chassis" && type === "battery")
+  ) {
+    // 보고서만 등록 또는 배터리+섀시 동시 등록 허용
+    setCurrentInspections(num, phone, [...currentTypes, type], year);
+    return;
+  }
+
+  const name = currentTypes.map((inspection) => inspections[inspection]).join(", ");
+  throw { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
+}
+
 function renumberCurrentRows(prevNum, newNum, year) {
   const current = getCurrentEntry(prevNum, year);
   if (!current) return 0;
@@ -430,18 +473,19 @@ const logger = createLogger(db, "queue");
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path.startsWith("/api/internal/")) return "admin";
-  // Chief-only: 우선순위, 이력 초기화, 설정 변경, 검차 활성화/표시/무시, 부스 수 설정
+  // Chief-only: 대기 등록, 우선순위, 이력 초기화, 설정 변경, 검차 활성화/표시/무시, 부스 수 설정
+  if (/^\/api\/admin\/register\/[^/]+$/.test(req.path)) return "chief";
   if (req.path.startsWith("/api/admin/priority")) return "chief";
   if (req.path.startsWith("/api/admin/history")) return "chief";
   if (req.path.startsWith("/api/admin/settings") && req.method !== "GET") return "chief";
   if (/^\/api\/admin\/inspection\/[^/]+\/(visibility|ignore)/.test(req.path)) return "chief";
   if (req.method === "PATCH" && /^\/api\/admin\/inspection\/[^/]+$/.test(req.path)) return "chief";
   if (/^\/api\/admin\/booths\/[^/]+\/config$/.test(req.path)) return "chief";
-  // Official: 나머지 admin (대기열 조회, 등록, 취소, 개별 부스 토글, 입/출차 등)
+  // Official: 나머지 admin (대기열 조회, 취소, 개별 부스 토글, 입/출차 등)
   if (req.path.startsWith("/api/admin")) return "official";
   // SPA routes
-  if (/^\/priority(\/|$)/.test(req.path)) return "chief";
-  if (/^\/(admin|register|stats)/.test(req.path)) return "official";
+  if (/^\/(priority|register)(\/|$)/.test(req.path)) return "chief";
+  if (/^\/(admin|stats)/.test(req.path)) return "official";
   if (req.path === "/api/logs") return "admin";
   if (req.path === "/api/events") return null;
   if (req.path === "/api/active") return null;
@@ -482,6 +526,11 @@ function broadcastBooth(type) {
 }
 function broadcastInspections() {
   broadcastEvent("inspections", { activeInspections: getActiveInspections() });
+}
+function broadcastPenalties() {
+  // SSE endpoint is public, so only broadcast an invalidation signal. Authorized
+  // clients fetch the protected penalty list separately.
+  broadcastEvent("penalties", {});
 }
 
 /* ============================================
@@ -858,37 +907,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
         db.prepare("DELETE FROM cancel_penalty WHERE num = ? AND inspection = ? AND year = ?").run(num, type, year);
       }
 
-      const current = getCurrentEntry(num, year);
-
-      if (current) {
-        const currentTypes = current.inspections;
-
-        if (currentTypes.includes(type)) {
-          const name = inspections[type];
-          throw { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
-        }
-
-        // 보고서는 다른 검차와 항상 동시 등록 가능
-        if (type === "report") {
-          setCurrentInspections(num, phone, [...currentTypes, type], year);
-        } else {
-          const nonReportTypes = currentTypes.filter((t) => t !== "report");
-
-          if (
-            nonReportTypes.length === 0 ||
-            (nonReportTypes.length === 1 && nonReportTypes[0] === "battery" && type === "chassis") ||
-            (nonReportTypes.length === 1 && nonReportTypes[0] === "chassis" && type === "battery")
-          ) {
-            // 보고서만 등록 또는 배터리+섀시 동시 등록 허용
-            setCurrentInspections(num, phone, [...currentTypes, type], year);
-          } else {
-            const name = currentTypes.map((i) => inspections[i]).join(", ");
-            throw { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
-          }
-        }
-      } else {
-        setCurrentInspections(num, phone, [type], year);
-      }
+      addCurrentInspection(num, phone, type, year);
 
       const now = Date.now();
       insertQueueRow(type, num, phone, now, year);
@@ -934,11 +953,11 @@ app.post("/api/admin/cancel/:type", (req, res) => {
 
   const result = dbRun(() => {
     db.transaction(() => {
-      const ret = deleteQueueRow(type, num, year);
-
-      if (!ret.changes) {
+      const queueEntry = getQueueRow(type, num, year);
+      if (!queueEntry) {
         throw { status: 400, message: "존재하지 않는 엔트리입니다." };
       }
+      deleteQueueRow(type, num, year);
 
       // 페널티 적용
       const penaltyMinutes = parseInt(
@@ -947,11 +966,17 @@ app.post("/api/admin/cancel/:type", (req, res) => {
       );
       if (penaltyMinutes > 0) {
         const until = Date.now() + penaltyMinutes * 60 * 1000;
-        db.prepare("INSERT OR REPLACE INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)").run(
+        db.prepare(`
+          INSERT OR REPLACE INTO cancel_penalty
+            (num, inspection, year, until, phone, queue_timestamp)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
           num,
           type,
           year,
           until,
+          queueEntry.phone,
+          queueEntry.timestamp,
         );
       }
 
@@ -978,11 +1003,137 @@ app.post("/api/admin/cancel/:type", (req, res) => {
 
   // SSE 브로드캐스트: 대기열 변경
   broadcastQueue(type);
+  broadcastPenalties();
 
   res.status(200).send();
 
   // SMS 발송 (N번째 대기자에게)
   sendSmsNotification(type, prev);
+});
+
+// GET /api/admin/penalties - 현재 연도에 적용 중인 취소 페널티 조회
+app.get("/api/admin/penalties", (req, res) => {
+  const year = currentYear();
+  const now = Date.now();
+  const result = dbRun(() =>
+    db.prepare(`
+      SELECT
+        cp.num,
+        cp.inspection,
+        i.name AS inspection_name,
+        cp.until,
+        CASE WHEN cp.phone IS NOT NULL AND cp.queue_timestamp IS NOT NULL THEN 1 ELSE 0 END AS can_restore
+      FROM cancel_penalty cp
+      JOIN inspection i ON i.type = cp.inspection
+      WHERE cp.year = ? AND cp.until > ?
+      ORDER BY cp.until ASC, cp.num ASC, cp.inspection ASC
+    `).all(year, now),
+  );
+
+  if (!result.success) {
+    return res.status(result.status).send(result.error);
+  }
+
+  res.json(result.result);
+});
+
+// POST /api/admin/penalties/:type/:num/restore - 페널티 해제 후 취소 전 순번 복구
+app.post("/api/admin/penalties/:type/:num/restore", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+
+  const numValidation = validateEntryNum(req.params.num);
+  if (!numValidation.valid) {
+    return res.status(400).send(numValidation.error);
+  }
+
+  const type = typeValidation.value;
+  const num = numValidation.value;
+  const year = currentYear();
+  const result = dbRun(() =>
+    db.transaction(() => {
+      if (!db.prepare("SELECT active FROM inspection WHERE type = ?").get(type).active) {
+        throw { status: 400, message: "대기열이 비활성화 상태입니다." };
+      }
+
+      const penalty = db.prepare(`
+        SELECT phone, queue_timestamp
+        FROM cancel_penalty
+        WHERE num = ? AND inspection = ? AND year = ? AND until > ?
+      `).get(num, type, year, Date.now());
+
+      if (!penalty) {
+        throw { status: 404, message: "적용 중인 페널티가 없습니다." };
+      }
+      if (!penalty.phone || penalty.queue_timestamp == null) {
+        throw { status: 409, message: "취소 당시 대기열 정보가 없어 원래 순번으로 복구할 수 없습니다." };
+      }
+      if (getQueueRow(type, num, year)) {
+        throw { status: 409, message: "이미 대기열에 등록된 엔트리입니다." };
+      }
+
+      addCurrentInspection(num, penalty.phone, type, year);
+      insertQueueRow(type, num, penalty.phone, penalty.queue_timestamp, year);
+      db.prepare("DELETE FROM cancel_penalty WHERE num = ? AND inspection = ? AND year = ?").run(num, type, year);
+      db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)")
+        .run("restore", num, type, Date.now(), year);
+
+      return { queueTimestamp: penalty.queue_timestamp };
+    })(),
+  );
+
+  if (!result.success) {
+    logger.warn(req, "penalty.restore", { error: result.error, inspection: type, year }, `#${num}`);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "penalty.restore", {
+    inspection: type,
+    year,
+    queueTimestamp: result.result.queueTimestamp,
+  }, `#${num}`);
+  broadcastQueue(type);
+  broadcastPenalties();
+  res.status(200).send();
+});
+
+// DELETE /api/admin/penalties/:type/:num - 적용 중인 취소 페널티 해제
+app.delete("/api/admin/penalties/:type/:num", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+
+  const numValidation = validateEntryNum(req.params.num);
+  if (!numValidation.valid) {
+    return res.status(400).send(numValidation.error);
+  }
+
+  const type = typeValidation.value;
+  const num = numValidation.value;
+  const year = currentYear();
+  const result = dbRun(() =>
+    db.prepare(`
+      DELETE FROM cancel_penalty
+      WHERE num = ? AND inspection = ? AND year = ? AND until > ?
+    `).run(num, type, year, Date.now()),
+  );
+
+  if (!result.success) {
+    logger.warn(req, "penalty.clear", { error: result.error, inspection: type, year }, `#${num}`);
+    return res.status(result.status).send(result.error);
+  }
+
+  if (!result.result.changes) {
+    logger.warn(req, "penalty.clear", { error: "적용 중인 페널티 없음", inspection: type, year }, `#${num}`);
+    return res.status(404).send("적용 중인 페널티가 없습니다.");
+  }
+
+  logger.log(req, "penalty.clear", { inspection: type, year }, `#${num}`);
+  broadcastPenalties();
+  res.status(200).send();
 });
 
 /* ============================================
@@ -1667,11 +1818,11 @@ app.get("/api/admin/stats/:num", (req, res) => {
       ${boothLogOccupyWhere}
     `).get(...boothLogOccupyParams);
 
-    // Register and cancel events from queue_log
-    const regCancelEvents = db.prepare(`
+    // Register, cancel, and restore events from queue_log
+    const queueEvents = db.prepare(`
       SELECT event, inspection, timestamp
       FROM queue_log
-      ${queueLogWhere} AND event IN ('register', 'cancel')
+      ${queueLogWhere} AND event IN ('register', 'cancel', 'restore')
       ORDER BY timestamp ASC
     `).all(...queueLogParams).map((row) => ({
       event: row.event,
@@ -1714,7 +1865,7 @@ app.get("/api/admin/stats/:num", (req, res) => {
       }
     }
 
-    const timeline = [...regCancelEvents, ...boothEvents].sort((a, b) => a.timestamp - b.timestamp);
+    const timeline = [...queueEvents, ...boothEvents].sort((a, b) => a.timestamp - b.timestamp);
 
     return {
       summary: {
@@ -2024,6 +2175,7 @@ app.delete("/api/internal/team/:num", (req, res) => {
 
   // SSE 브로드캐스트
   broadcastQueue(null);
+  if (year === currentYear()) broadcastPenalties();
 
   res.status(200).send();
 });
@@ -2094,6 +2246,7 @@ app.patch("/api/internal/team-num", (req, res) => {
   logger.log(req, "team_num.update", { year, prevNum, newNum });
 
   broadcastQueue(null);
+  if (year === currentYear()) broadcastPenalties();
   for (const type of Object.keys(inspections)) {
     broadcastBooth(type);
   }

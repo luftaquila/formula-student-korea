@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
 
 test.describe("Queue registration", () => {
-  test.use({ storageState: storageStatePath("official") });
+  test.use({ storageState: storageStatePath("chief") });
 
   test("loads /queue/register page with inspection type buttons", async ({ page }) => {
     await page.goto("/queue/register");

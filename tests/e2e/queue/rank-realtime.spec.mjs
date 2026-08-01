@@ -7,7 +7,7 @@ const INSPECTION_TYPE = "electric";
 async function apiRegister(num) {
   return fetch(`${BASE_URL}/queue/api/admin/register/${INSPECTION_TYPE}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ num, phone: "01000000000" }),
   });
 }

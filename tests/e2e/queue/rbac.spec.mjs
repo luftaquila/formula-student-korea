@@ -2,16 +2,17 @@ import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
 // Queue gate (queue/index.mjs authRoleFn ~lines 228-249):
-//   chief-only: /api/admin/priority/*, /api/admin/history/*, /api/admin/settings (non-GET),
+//   chief-only: /api/admin/register/*, /api/admin/priority/*, /api/admin/history/*, /api/admin/settings (non-GET),
 //               /api/admin/inspection/:type (PATCH), .../visibility, .../ignore,
 //               /api/admin/booths/:type/config
-//   official:   everything else under /api/admin (register/cancel/booth toggle/enter/exit/stats)
+//   official:   everything else under /api/admin (cancel/booth toggle/enter/exit/stats)
 //   public:     /api/events, /api/active, /api/booths/*, /api/state/*
 // official sits one level below chief -> expect 403 on chief endpoints.
 // Unauthenticated -> 401 on any /api/admin/* (gate returns chief/official, never null).
 
 // Chief-gated endpoints; official must be rejected (403).
 const chiefOnly = [
+  { method: "post", path: "/queue/api/admin/register/battery", body: { num: 1, phone: "01000000000" } },
   { method: "get", path: "/queue/api/admin/priority/battery", body: undefined },
   { method: "post", path: "/queue/api/admin/priority/battery", body: { num: 999999, priority: 0 } },
   { method: "delete", path: "/queue/api/admin/priority/battery/all", body: {} },
@@ -27,6 +28,8 @@ const chiefOnly = [
 // official-gated endpoint; proves the tier exists and that unauth is 401 there too.
 const officialOnly = [
   { method: "get", path: "/queue/api/admin/all", body: undefined },
+  { method: "get", path: "/queue/api/admin/penalties", body: undefined },
+  { method: "post", path: "/queue/api/admin/penalties/battery/999999/restore", body: undefined },
 ];
 
 test.describe("queue RBAC", () => {
@@ -54,5 +57,13 @@ test.describe("queue RBAC", () => {
   test("unauthenticated read succeeds (200) on GET /queue/api/active (public)", async ({ request }) => {
     const res = await request.get("/queue/api/active");
     expect(res.status()).toBe(200);
+  });
+
+  test("official is redirected away from the chief-only registration page", async ({ browser }) => {
+    const ctx = await browser.newContext({ storageState: storageStatePath("official") });
+    const page = await ctx.newPage();
+    await page.goto("/queue/register");
+    await expect(page).not.toHaveURL(/\/queue\/register/);
+    await ctx.close();
   });
 });

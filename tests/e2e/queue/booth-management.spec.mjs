@@ -7,7 +7,7 @@ const INSPECTION_TYPE = "battery";
 async function apiRegister(num, type = INSPECTION_TYPE) {
   const res = await fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ num, phone: "01000000000" }),
   });
   return res;
@@ -227,16 +227,26 @@ test.describe("Queue booth management", () => {
     await expect(page.locator("[data-sonner-toast]").first()).toBeVisible({ timeout: 5000 });
   });
 
-  test("admin page navigation buttons work", async ({ page }) => {
+  test("official sees operational buttons without registration", async ({ page }) => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    // Should have register, priority (if chief), and stats buttons
-    await expect(page.getByRole("button", { name: "검차 등록" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "검차 등록" })).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "우선순위" })).not.toBeVisible();
     await expect(page.getByRole("button", { name: "통계" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "페널티", exact: true })).toBeVisible();
+  });
 
-    // Click register button and verify navigation
+  test("chief can open the registration page from admin", async ({ browser }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("chief") });
+    const page = await context.newPage();
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+
+    await expect(page.getByRole("button", { name: "검차 등록" })).toBeVisible();
     await page.getByRole("button", { name: "검차 등록" }).click();
     await expect(page).toHaveURL(/\/queue\/register/);
+    await expect(page.getByText("검차 종류 선택")).toBeVisible();
+    await context.close();
   });
 });

@@ -56,6 +56,23 @@ export async function cancelFromQueue(type, num) {
   });
 }
 
+export async function fetchActivePenalties() {
+  const res = await request("/api/admin/penalties");
+  return res.json();
+}
+
+export async function clearActivePenalty(type, num) {
+  await request(`/api/admin/penalties/${type}/${num}`, {
+    method: "DELETE",
+  });
+}
+
+export async function restoreActivePenalty(type, num) {
+  await request(`/api/admin/penalties/${type}/${num}/restore`, {
+    method: "POST",
+  });
+}
+
 /* ============================================
    Admin API - 부스 관리
    ============================================ */

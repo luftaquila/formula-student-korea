@@ -52,7 +52,7 @@ test.describe("Entry deletion cascade to queue and documents", () => {
 
     const regRes = await fetch(`${BASE_URL}/queue/api/admin/register/배터리`, {
       method: "POST",
-      headers: { ...adminHeaders, Cookie: getAuthCookie("official") },
+      headers: chiefHeaders,
       body: JSON.stringify({ num: 90, phone: "010-0000-0000" }),
     });
     // Registration may succeed or fail if queue is not active - check both cases

@@ -151,7 +151,7 @@ describe('POST /api/state/:num', () => {
     // Register entry 1 to battery first so phone check triggers
     await client.post('/api/admin/register/battery', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     const res = await client.post('/api/state/1', {
       body: { phone: '010-invalid' },
@@ -193,6 +193,14 @@ describe('Auth enforcement', () => {
     const res = await client.post('/api/admin/register/battery', {
       body: { num: 1, phone: '01012345678' },
       cookie: studentCookie,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('official is rejected from chief-level registration endpoint (403)', async () => {
+    const res = await client.post('/api/admin/register/battery', {
+      body: { num: 1, phone: '01012345678' },
+      cookie: officialCookie,
     });
     assert.equal(res.status, 403);
   });
@@ -336,7 +344,7 @@ describe('POST /api/admin/register/:type', () => {
   it('registers entry to queue', async () => {
     const res = await client.post('/api/admin/register/battery', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 201);
     // Verify queue
@@ -349,7 +357,7 @@ describe('POST /api/admin/register/:type', () => {
   it('rejects duplicate registration', async () => {
     const res = await client.post('/api/admin/register/battery', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -357,7 +365,7 @@ describe('POST /api/admin/register/:type', () => {
   it('allows report + other inspection simultaneously', async () => {
     const res = await client.post('/api/admin/register/report', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 201);
   });
@@ -365,7 +373,7 @@ describe('POST /api/admin/register/:type', () => {
   it('allows battery + chassis simultaneously', async () => {
     const res = await client.post('/api/admin/register/chassis', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 201);
   });
@@ -374,7 +382,7 @@ describe('POST /api/admin/register/:type', () => {
     // Entry 1 has battery + report + chassis, try to add electric
     const res = await client.post('/api/admin/register/electric', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -387,7 +395,7 @@ describe('POST /api/admin/register/:type', () => {
     });
     const res = await client.post('/api/admin/register/rain', {
       body: { num: 2, phone: '01098765432' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
     // Re-activate
@@ -400,7 +408,7 @@ describe('POST /api/admin/register/:type', () => {
   it('rejects non-existent entry', async () => {
     const res = await client.post('/api/admin/register/battery', {
       body: { num: 999, phone: '01099999999' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -409,7 +417,7 @@ describe('POST /api/admin/register/:type', () => {
     // Register entry 2 to electric
     await client.post('/api/admin/register/electric', {
       body: { num: 2, phone: '01098765432' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     // Cancel it (applies penalty)
     await client.post('/api/admin/cancel/electric', {
@@ -419,7 +427,7 @@ describe('POST /api/admin/register/:type', () => {
     // Try to re-register immediately - should be 403 (penalty)
     const res = await client.post('/api/admin/register/electric', {
       body: { num: 2, phone: '01098765432' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 403);
     // Clean up penalty for future tests
@@ -447,6 +455,9 @@ describe('POST /api/admin/cancel/:type', () => {
     const penalty = db.prepare("SELECT * FROM cancel_penalty WHERE num = 1 AND inspection = 'report'").get();
     assert.ok(penalty);
     assert.ok(penalty.until > Date.now());
+    assert.equal(penalty.phone, '01012345678');
+    const originalRegister = db.prepare("SELECT timestamp FROM queue_log WHERE num = 1 AND inspection = 'report' AND event = 'register' ORDER BY id DESC").get();
+    assert.equal(penalty.queue_timestamp, originalRegister.timestamp);
     // Clean up
     db.prepare("DELETE FROM cancel_penalty WHERE num = 1 AND inspection = 'report'").run();
   });
@@ -465,6 +476,161 @@ describe('POST /api/admin/cancel/:type', () => {
       cookie: officialCookie,
     });
     assert.equal(res.status, 400);
+  });
+});
+
+// ─── Active cancel penalties ───────────────────────────────────────────
+describe('Active cancel penalty management', () => {
+  it('requires official permission', async () => {
+    const unauthenticated = await client.get('/api/admin/penalties');
+    assert.equal(unauthenticated.status, 401);
+
+    const student = await client.get('/api/admin/penalties', { cookie: studentCookie });
+    assert.equal(student.status, 403);
+  });
+
+  it('GET /api/admin/penalties returns only active penalties for the current year', async () => {
+    const year = new Date().getFullYear();
+    const now = Date.now();
+    db.prepare('DELETE FROM cancel_penalty').run();
+    db.prepare(`
+      INSERT INTO cancel_penalty (num, inspection, year, until, phone, queue_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(2, 'battery', year, now + 600000, '01098765432', now - 60000);
+    db.prepare('INSERT INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)').run(3, 'electric', year, now - 1000);
+    db.prepare('INSERT INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)').run(1, 'report', year - 1, now + 600000);
+
+    const res = await client.get('/api/admin/penalties', { cookie: officialCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.deepEqual(data, [{
+      num: 2,
+      inspection: 'battery',
+      inspection_name: '배터리',
+      until: now + 600000,
+      can_restore: 1,
+    }]);
+  });
+
+  it('DELETE /api/admin/penalties/:type/:num clears an active penalty', async () => {
+    const res = await client.delete('/api/admin/penalties/battery/2', { cookie: officialCookie });
+    assert.equal(res.status, 200);
+
+    const penalty = db.prepare("SELECT 1 FROM cancel_penalty WHERE num = 2 AND inspection = 'battery'").get();
+    assert.equal(penalty, undefined);
+    const audit = db.prepare("SELECT * FROM logs WHERE action = 'penalty.clear' AND target = '#2' ORDER BY id DESC").get();
+    assert.ok(audit);
+    assert.equal(audit.actor_role, 'official');
+  });
+
+  it('rejects invalid penalty targets', async () => {
+    const invalidType = await client.delete('/api/admin/penalties/unknown/2', { cookie: officialCookie });
+    assert.equal(invalidType.status, 400);
+
+    const invalidNum = await client.delete('/api/admin/penalties/battery/not-a-number', { cookie: officialCookie });
+    assert.equal(invalidNum.status, 400);
+  });
+
+  it('returns 404 when no active penalty exists', async () => {
+    const res = await client.delete('/api/admin/penalties/battery/2', { cookie: officialCookie });
+    assert.equal(res.status, 404);
+    assert.equal(await res.text(), '적용 중인 페널티가 없습니다.');
+    db.prepare('DELETE FROM cancel_penalty').run();
+  });
+
+  it('POST /api/admin/penalties/:type/:num/restore restores the original queue timestamp and clears the penalty', async () => {
+    const register = await client.post('/api/admin/register/noise', {
+      body: { num: 3, phone: '01033334444' },
+      cookie: chiefCookie,
+    });
+    assert.equal(register.status, 201);
+    const year = new Date().getFullYear();
+    const original = db.prepare("SELECT phone, timestamp FROM inspection_queue WHERE inspection = 'noise' AND num = 3 AND year = ?").get(year);
+
+    const cancel = await client.post('/api/admin/cancel/noise', {
+      body: { num: 3 },
+      cookie: officialCookie,
+    });
+    assert.equal(cancel.status, 200);
+
+    // 취소 후 등록된 팀보다 앞선 원래 타임스탬프로 돌아가는지 확인한다.
+    db.prepare("INSERT INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES (?, ?, ?, ?, ?)")
+      .run('noise', 2, '01022223333', original.timestamp + 60000, year);
+    db.prepare("INSERT INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)")
+      .run(2, 'noise', '01022223333', year);
+
+    const restore = await client.post('/api/admin/penalties/noise/3/restore', { cookie: officialCookie });
+    assert.equal(restore.status, 200);
+
+    const restored = db.prepare("SELECT phone, timestamp FROM inspection_queue WHERE inspection = 'noise' AND num = 3 AND year = ?").get(year);
+    assert.deepEqual(restored, original);
+    assert.equal(db.prepare("SELECT 1 FROM cancel_penalty WHERE inspection = 'noise' AND num = 3 AND year = ?").get(year), undefined);
+    assert.ok(db.prepare("SELECT 1 FROM current_inspection WHERE inspection = 'noise' AND num = 3 AND year = ?").get(year));
+    assert.ok(db.prepare("SELECT 1 FROM queue_log WHERE event = 'restore' AND inspection = 'noise' AND num = 3 AND year = ?").get(year));
+    const queue = await client.get('/api/admin/inspection/noise', { cookie: officialCookie });
+    assert.deepEqual((await queue.json()).map((entry) => entry.num), [3, 2]);
+    const stats = await client.get('/api/admin/stats/3', { cookie: officialCookie });
+    assert.ok((await stats.json()).timeline.some((event) => event.event === 'restore'));
+    const audit = db.prepare("SELECT * FROM logs WHERE action = 'penalty.restore' AND target = '#3' ORDER BY id DESC").get();
+    assert.equal(audit.actor_role, 'official');
+
+    db.prepare("DELETE FROM inspection_queue WHERE inspection = 'noise' AND num IN (2, 3) AND year = ?").run(year);
+    db.prepare("DELETE FROM current_inspection WHERE inspection = 'noise' AND num IN (2, 3) AND year = ?").run(year);
+    db.prepare("DELETE FROM queue_log WHERE inspection = 'noise' AND num = 3 AND year = ?").run(year);
+  });
+
+  it('does not restore a legacy penalty without original queue data', async () => {
+    const year = new Date().getFullYear();
+    db.prepare('INSERT INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)')
+      .run(3, 'noise', year, Date.now() + 600000);
+
+    const restore = await client.post('/api/admin/penalties/noise/3/restore', { cookie: officialCookie });
+    assert.equal(restore.status, 409);
+    assert.equal(await restore.text(), '취소 당시 대기열 정보가 없어 원래 순번으로 복구할 수 없습니다.');
+    assert.ok(db.prepare("SELECT 1 FROM cancel_penalty WHERE inspection = 'noise' AND num = 3 AND year = ?").get(year));
+    db.prepare("DELETE FROM cancel_penalty WHERE inspection = 'noise' AND num = 3 AND year = ?").run(year);
+  });
+
+  it('keeps the penalty when its inspection is inactive', async () => {
+    const year = new Date().getFullYear();
+    db.prepare(`
+      INSERT INTO cancel_penalty (num, inspection, year, until, phone, queue_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(3, 'rain', year, Date.now() + 600000, '01033334444', Date.now() - 60000);
+    db.prepare("UPDATE inspection SET active = 0 WHERE type = 'rain'").run();
+
+    try {
+      const restore = await client.post('/api/admin/penalties/rain/3/restore', { cookie: officialCookie });
+      assert.equal(restore.status, 400);
+      assert.equal(await restore.text(), '대기열이 비활성화 상태입니다.');
+      assert.ok(db.prepare("SELECT 1 FROM cancel_penalty WHERE inspection = 'rain' AND num = 3 AND year = ?").get(year));
+      assert.equal(db.prepare("SELECT 1 FROM inspection_queue WHERE inspection = 'rain' AND num = 3 AND year = ?").get(year), undefined);
+      assert.equal(db.prepare("SELECT 1 FROM current_inspection WHERE inspection = 'rain' AND num = 3 AND year = ?").get(year), undefined);
+    } finally {
+      db.prepare("UPDATE inspection SET active = 1 WHERE type = 'rain'").run();
+      db.prepare("DELETE FROM cancel_penalty WHERE inspection = 'rain' AND num = 3 AND year = ?").run(year);
+      db.prepare("DELETE FROM inspection_queue WHERE inspection = 'rain' AND num = 3 AND year = ?").run(year);
+      db.prepare("DELETE FROM current_inspection WHERE inspection = 'rain' AND num = 3 AND year = ?").run(year);
+    }
+  });
+
+  it('keeps the penalty when restoring would violate concurrent registration rules', async () => {
+    const year = new Date().getFullYear();
+    db.prepare("INSERT INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)")
+      .run(3, 'electric', '01033334444', year);
+    db.prepare(`
+      INSERT INTO cancel_penalty (num, inspection, year, until, phone, queue_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(3, 'battery', year, Date.now() + 600000, '01033334444', Date.now() - 60000);
+
+    const restore = await client.post('/api/admin/penalties/battery/3/restore', { cookie: officialCookie });
+    assert.equal(restore.status, 400);
+    assert.match(await restore.text(), /이미 전기 검차에 등록된 엔트리/);
+    assert.ok(db.prepare("SELECT 1 FROM cancel_penalty WHERE inspection = 'battery' AND num = 3 AND year = ?").get(year));
+    assert.equal(db.prepare("SELECT 1 FROM inspection_queue WHERE inspection = 'battery' AND num = 3 AND year = ?").get(year), undefined);
+
+    db.prepare("DELETE FROM current_inspection WHERE num = 3 AND year = ?").run(year);
+    db.prepare("DELETE FROM cancel_penalty WHERE num = 3 AND year = ?").run(year);
   });
 });
 
@@ -634,7 +800,7 @@ describe('Booth management', () => {
     // Register entry 2 to battery first
     await client.post('/api/admin/register/battery', {
       body: { num: 2, phone: '01098765432' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     // Try to enter booth 1 which is occupied by entry 1
     const res = await client.post('/api/admin/booths/battery/1/enter', {
@@ -800,7 +966,7 @@ describe('Statistics', () => {
     // used to hide open sessions until 출차.
     await client.post('/api/admin/register/electric', {
       body: { num: 3, phone: '01055551234' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     const enterRes = await client.post('/api/admin/booths/electric/1/enter', {
       body: { num: 3 },
@@ -944,7 +1110,7 @@ describe('Queue sorting', () => {
     // Register entry 2 first (reinspection because of history)
     await client.post('/api/admin/register/battery', {
       body: { num: 2, phone: '01098765432' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
 
     // Small delay to ensure different timestamps
@@ -953,7 +1119,7 @@ describe('Queue sorting', () => {
     // Register entry 3 (first inspection)
     await client.post('/api/admin/register/battery', {
       body: { num: 3, phone: '01011112222' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
 
     await new Promise(r => setTimeout(r, 10));
@@ -961,7 +1127,7 @@ describe('Queue sorting', () => {
     // Register entry 1 (first inspection, registered after entry 3)
     await client.post('/api/admin/register/battery', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
 
     // Set priority: entry 1 = priority 2, entry 3 = priority 1
@@ -1031,7 +1197,7 @@ describe('Queue sorting with ignore flags', () => {
   it('ignore_priority makes priority not affect order', async () => {
     // Register entry 1 (no priority = default 999)
     await client.post(`/api/admin/register/${testType}`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 1, phone: '01011111111' },
     });
 
@@ -1043,7 +1209,7 @@ describe('Queue sorting with ignore flags', () => {
       body: { num: 2, priority: 1 },
     });
     await client.post(`/api/admin/register/${testType}`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 2, phone: '01022222222' },
     });
 
@@ -1078,7 +1244,7 @@ describe('Queue sorting with ignore flags', () => {
     // Create reinspection history for entry 1
     // First do a full cycle: register -> enter booth -> exit booth (records history)
     await client.post(`/api/admin/register/${testType}`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 1, phone: '01011111111' },
     });
     await client.post(`/api/admin/booths/${testType}/1/enter`, {
@@ -1091,14 +1257,14 @@ describe('Queue sorting with ignore flags', () => {
 
     // Now register both: entry 1 is reinspection, entry 2 is first
     await client.post(`/api/admin/register/${testType}`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 1, phone: '01011111111' },
     });
 
     await new Promise(r => setTimeout(r, 10));
 
     await client.post(`/api/admin/register/${testType}`, {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 2, phone: '01022222222' },
     });
 
@@ -1151,6 +1317,38 @@ describe('GET /api/events', () => {
     assert.ok(res.headers.get('content-type')?.includes('text/event-stream'));
     controller.abort();
   });
+
+  it('broadcasts penalty invalidation without protected penalty data', async () => {
+    const year = new Date().getFullYear();
+    db.prepare(`
+      INSERT OR REPLACE INTO cancel_penalty (num, inspection, year, until, phone, queue_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(3, 'electric', year, Date.now() + 600000, '01033334444', Date.now());
+
+    const controller = new AbortController();
+    const res = await fetch(`${baseUrl}/api/events`, { signal: controller.signal });
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    try {
+      const init = await reader.read();
+      assert.match(decoder.decode(init.value), /event: init/);
+
+      const clear = await client.delete('/api/admin/penalties/electric/3', { cookie: officialCookie });
+      assert.equal(clear.status, 200);
+
+      const event = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('penalty SSE timeout')), 2000)),
+      ]);
+      const payload = decoder.decode(event.value);
+      assert.match(payload, /event: penalties/);
+      assert.match(payload, /data: \{\}/);
+      assert.doesNotMatch(payload, /01033334444|queue_timestamp|electric/);
+    } finally {
+      controller.abort();
+    }
+  });
 });
 
 // ─── Additional edge cases ──────────────────────────────────────────────
@@ -1158,7 +1356,7 @@ describe('Validation edge cases', () => {
   it('rejects invalid entry number in register', async () => {
     const res = await client.post('/api/admin/register/battery', {
       body: { num: -1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -1166,7 +1364,7 @@ describe('Validation edge cases', () => {
   it('rejects missing phone in register', async () => {
     const res = await client.post('/api/admin/register/battery', {
       body: { num: 1 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -1174,7 +1372,7 @@ describe('Validation edge cases', () => {
   it('rejects invalid inspection type', async () => {
     const res = await client.post('/api/admin/register/nonexistent', {
       body: { num: 1, phone: '01012345678' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
@@ -1213,7 +1411,7 @@ describe('POST /api/state/:num (with registered entry)', () => {
       }
       await client.post('/api/admin/register/battery', {
         body: { num: 1, phone: '01012345678' },
-        cookie: officialCookie,
+        cookie: chiefCookie,
       });
     }
   });
@@ -1242,11 +1440,11 @@ describe('POST /api/state/:num (with registered entry)', () => {
 
     // Register entry 3 in both battery and report (report is always compatible)
     await client.post('/api/admin/register/battery', {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 3, phone: '01033333333' },
     });
     await client.post('/api/admin/register/report', {
-      cookie: officialCookie,
+      cookie: chiefCookie,
       body: { num: 3, phone: '01033333333' },
     });
 
@@ -1271,7 +1469,7 @@ describe('DELETE /api/internal/team/:num', () => {
     });
     await client.post('/api/admin/register/noise', {
       body: { num: 2, phone: '01022222222' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     // Set priority for entry 2 in noise
     await client.post('/api/admin/priority/noise', {
@@ -1401,7 +1599,7 @@ describe('Year isolation', () => {
     // Register entry 2 — should use current year automatically
     await client.post('/api/admin/register/tilting', {
       body: { num: 2, phone: '01022222222' },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     const queue = await client.get('/api/admin/inspection/tilting', { cookie: officialCookie });
     const data = await queue.json();
@@ -1475,6 +1673,16 @@ describe('Queue legacy → normalized migration', () => {
     // legacy inspection_history with a NON-year-scoped PK
     seed.exec(`CREATE TABLE inspection_history (num INTEGER NOT NULL, inspection TEXT NOT NULL, timestamp INTEGER NOT NULL, PRIMARY KEY (num, inspection))`);
     seed.prepare("INSERT INTO inspection_history (num, inspection, timestamp) VALUES (?, ?, ?)").run(5, 'braking', 1234);
+    // 현재 운영 스키마에는 year가 있지만 순번 복구용 컬럼은 없는 상태
+    seed.exec(`CREATE TABLE cancel_penalty (
+      num INTEGER NOT NULL,
+      inspection TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      until INTEGER NOT NULL,
+      PRIMARY KEY (num, inspection, year)
+    )`);
+    seed.prepare("INSERT INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)")
+      .run(5, 'braking', yr, Date.now() + 60000);
     seed.close();
   });
 
@@ -1502,6 +1710,13 @@ describe('Queue legacy → normalized migration', () => {
     const pk = migDb.prepare("PRAGMA table_info(inspection_history)").all().filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
     assert.deepEqual(pk, ['num', 'inspection', 'year', 'timestamp']);
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = 5 AND year = ?").get(yr).c, 1);
+
+    // 기존 페널티 행은 유지하고 복구용 nullable 컬럼을 추가한다.
+    const penaltyCols = migDb.prepare("PRAGMA table_info(cancel_penalty)").all().map((c) => c.name);
+    assert.ok(penaltyCols.includes('phone'));
+    assert.ok(penaltyCols.includes('queue_timestamp'));
+    const legacyPenalty = migDb.prepare("SELECT phone, queue_timestamp FROM cancel_penalty WHERE num = 5 AND year = ?").get(yr);
+    assert.deepEqual(legacyPenalty, { phone: null, queue_timestamp: null });
 
     // legacy tables consumed
     const has = (t) => !!migDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(t);

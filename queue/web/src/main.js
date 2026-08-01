@@ -5,6 +5,7 @@ import "./styles/main.css";
 import "vue-sonner/style.css";
 import { initTheme } from "@shared/theme-init.js";
 import { initTestBanner } from "@shared/test-banner.js";
+import { isChief } from "@shared/officialsStore.js";
 
 // Routes
 import QueueStatus from "./views/QueueStatus.vue";
@@ -15,7 +16,7 @@ import StatsPage from "./views/StatsPage.vue";
 const routes = [
   { path: "/", component: QueueStatus },
   { path: "/admin", component: AdminPanel },
-  { path: "/register", component: Register },
+  { path: "/register", component: Register, meta: { requiresChief: true } },
   { path: "/priority", component: Priority },
   { path: "/stats", component: StatsPage },
 ];
@@ -23,6 +24,10 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(import.meta.env.PROD ? "/queue" : ""),
   routes,
+});
+
+router.beforeEach((to) => {
+  if (to.meta.requiresChief && !isChief.value) return "/admin";
 });
 
 initTheme();
