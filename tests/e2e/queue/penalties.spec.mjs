@@ -146,7 +146,23 @@ test.describe("Queue active penalties modal", () => {
     expect(Math.abs(statsBox.y - penaltyBox.y)).toBeLessThan(1);
     expect(Math.abs(statsBox.height - penaltyBox.height)).toBeLessThan(1);
     expect(penaltyBox.x).toBeGreaterThan(statsBox.x + statsBox.width);
-    expect(penaltyBox.x + penaltyBox.width).toBeLessThanOrEqual(390);
+
+    const mobileStyles = await page.getByRole("button", { name: "검차 등록" }).evaluate((button) => {
+      const buttonStyle = getComputedStyle(button);
+      const iconStyle = getComputedStyle(button.querySelector("svg"));
+      return {
+        fontSize: buttonStyle.fontSize,
+        gap: buttonStyle.gap,
+        paddingInline: buttonStyle.paddingInline,
+        iconWidth: iconStyle.width,
+      };
+    });
+    expect(mobileStyles).toEqual({
+      fontSize: "14px",
+      gap: "8px",
+      paddingInline: "20px",
+      iconWidth: "18px",
+    });
     await context.close();
   });
 });

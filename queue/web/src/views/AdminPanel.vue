@@ -1439,21 +1439,12 @@ function goToInspection(num) {
 @media (max-width: 640px) {
   .top-actions {
     flex-wrap: nowrap;
-    gap: 0.375rem;
+    overflow-x: auto;
   }
 
   .top-actions .btn {
-    min-width: 0;
-    padding: 0.5rem;
-    gap: 0.25rem;
-    font-size: 0.8125rem;
+    flex: 0 0 auto;
     white-space: nowrap;
-  }
-
-  .top-actions .btn svg {
-    width: 16px;
-    height: 16px;
-    flex-shrink: 0;
   }
 
   .penalty-modal-overlay {
