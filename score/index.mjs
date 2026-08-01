@@ -189,7 +189,7 @@ async function fetchYearRecords(year) {
    SSE (Server-Sent Events) 설정
    ============================================ */
 const { broadcast: broadcastAdminEvent, handler: sseHandler } = createSSEManager();
-const { broadcast: broadcastPublicEvent, handler: publicSseHandler } = createSSEManager();
+const { broadcast: broadcastPublicEvent, handler: publicSseHandler } = createSSEManager(500);
 
 // 관리자에게는 원본 이벤트를, 공개 페이지에는 데이터가 없는 refresh 신호만 보낸다.
 // 공개 클라이언트가 관리자용 SSE 페이로드를 통해 숨긴 열의 값을 받지 않도록 스트림을 분리한다.
@@ -210,7 +210,7 @@ const handlePublicSSE = publicSseHandler(
   {
     meta: (req) => ({ year: Number(req.params.year) }),
     // 공개 스트림이므로 단일 IP가 전체 연결 슬롯을 점유하지 못하게 제한한다.
-    maxPerIp: 20,
+    maxPerIp: 10,
   },
 );
 
