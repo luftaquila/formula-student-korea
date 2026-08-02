@@ -279,12 +279,12 @@ describe('PUT /api/score/manual', () => {
     assert.equal(res.status, 400);
   });
 
-  it('allows null value (clears score)', async () => {
+  it('rejects legacy manual energy scores', async () => {
     const res = await client.put('/api/score/manual', {
       body: { year: 2026, team_num: 2, score_type: 'energy', value: null },
       cookie: adminCookie,
     });
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 400);
   });
 
   it('rejects non-finite value (NaN)', async () => {
@@ -442,6 +442,46 @@ describe('PUT /api/score/endurance', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
+  });
+
+  it('accepts energy fields and permits negative net electric energy only', async () => {
+    const type = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'energy_type', value: 'E' },
+      cookie: adminCookie,
+    });
+    assert.equal(type.status, 200);
+
+    const net = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'electric_net_energy', value: -0.5 },
+      cookie: adminCookie,
+    });
+    assert.equal(net.status, 200);
+
+    const fuel = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'fuel_consumed', value: -0.5 },
+      cookie: adminCookie,
+    });
+    assert.equal(fuel.status, 400);
+  });
+
+  it('validates energy type, DSQ flag and reason length', async () => {
+    const badType = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'energy_type', value: 'EV' },
+      cookie: adminCookie,
+    });
+    assert.equal(badType.status, 400);
+
+    const badDsq = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'energy_dsq', value: 2 },
+      cookie: adminCookie,
+    });
+    assert.equal(badDsq.status, 400);
+
+    const longReason = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'energy_dsq_reason', value: '가'.repeat(201) },
+      cookie: adminCookie,
+    });
+    assert.equal(longReason.status, 400);
   });
 
   it('rejects non-allowed field', async () => {
@@ -744,6 +784,51 @@ describe('Endurance calculation in aggregation', () => {
     const endurance = data.events.find(e => e.type === '내구');
     // Team 2 should be skipped because driver2_time is null
     assert.equal(endurance.records[2], undefined, 'incomplete endurance record should be skipped');
+  });
+});
+
+describe('Energy score integration', () => {
+  const year = 2088;
+
+  before(() => {
+    const insertSetting = db.prepare("INSERT OR REPLACE INTO score_setting (year, event_type, setting_key, value) VALUES (?, '에너지', ?, ?)");
+    insertSetting.run(year, 'total', 35);
+    insertSetting.run(year, 'distance_km', 20);
+    insertSetting.run(year, 'lap_count', 10);
+    insertSetting.run(year, 'fuel_factor', 2.31);
+    db.prepare("INSERT OR REPLACE INTO score_setting (year, event_type, setting_key, value) VALUES (?, '보고서', 'total', ?)").run(year, 50);
+
+    const insert = db.prepare(`
+      INSERT OR REPLACE INTO score_endurance
+        (year, team_num, driver1_time, driver_change_time, driver2_time, energy_type, fuel_consumed, electric_net_energy)
+      VALUES (?, ?, ?, 0, ?, ?, ?, ?)
+    `);
+    insert.run(year, 1, 50_000, 50_000, 'C', 1, null);
+    insert.run(year, 2, 55_000, 55_000, 'E', null, 2);
+  });
+
+  it('returns server-calculated energy scores using the configured total', async () => {
+    const res = await client.get(`/api/score?year=${year}`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.energy.config.total, 35);
+    assert.equal(data.energy.teams['1'].status, 'SCORED');
+    assert.equal(data.energy.teams['1'].score, 35);
+    assert.equal(data.energy.teams['2'].score, 0);
+  });
+
+  it('enforces the configured report maximum', async () => {
+    const over = await client.put('/api/score/manual', {
+      cookie: adminCookie,
+      body: { year, team_num: 1, score_type: 'report', value: 51 },
+    });
+    assert.equal(over.status, 400);
+
+    const exact = await client.put('/api/score/manual', {
+      cookie: adminCookie,
+      body: { year, team_num: 1, score_type: 'report', value: 50 },
+    });
+    assert.equal(exact.status, 200);
   });
 });
 

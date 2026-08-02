@@ -152,6 +152,8 @@ test.describe("Score penalty and score settings", () => {
     await expect(scoreTable.locator("td").filter({ hasText: "총점" }).first()).toBeVisible();
     await expect(scoreTable.locator("td").filter({ hasText: "완주점수" }).first()).toBeVisible();
     await expect(scoreTable.locator("td").filter({ hasText: "컷오프 (%)" }).first()).toBeVisible();
+    await expect(scoreTable.locator("th").filter({ hasText: "보고서" })).toBeVisible();
+    await expect(scoreTable.locator("th").filter({ hasText: "에너지" })).toBeVisible();
 
     // Set total points for endurance (last column in total row)
     const totalRow = scoreTable.locator("tr").filter({ hasText: "총점" });

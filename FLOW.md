@@ -292,22 +292,22 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 6.1 | 성적 대시보드 조회 | admin | `GET /api/score?year=` | entry + inspection + traffic + endurance + 수동점수 + 페널티/점수 설정 집계 |
-| 6.2 | 수동 점수 입력 | admin | `PUT /api/score/manual` | 보고서/에너지/가점/감점, SSE |
+| 6.1 | 성적 대시보드 조회 | admin | `GET /api/score?year=` | entry + inspection + traffic + endurance/에너지 자동점수 + 수동점수 + 페널티/점수 설정 집계 |
+| 6.2 | 수동 점수 입력 | admin | `PUT /api/score/manual` | 보고서/가점/감점, SSE. 에너지는 수동 입력 불가 |
 
 ### 페널티·점수 설정
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 6.3 | 페널티 설정 | admin | `PUT /api/score/penalty` | 종목별 콘터치/코스이탈/출발지연 (초) |
-| 6.4 | 점수 설정 | admin | `PUT /api/score/setting` | 종목별 총점/완주점수/컷오프% |
+| 6.4 | 점수 설정 | admin | `PUT /api/score/setting` | 종목별 총점/완주점수/컷오프%, 보고서·에너지 총점, 에너지 거리/랩/연료 환산 기준 |
 
 ### 내구
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 6.5 | 내구 기록 조회 | admin | `GET /api/score/endurance?year=` | 팀별 드라이버1·2 시간, 페널티, 상태 |
-| 6.6 | 내구 필드 수정 | admin | `PUT /api/score/endurance` | status(DNS/DNF/DSQ), 시간, 콘, 코스이탈 등, SSE |
+| 6.5 | 내구 기록 조회 | admin | `GET /api/score/endurance?year=` | 팀별 드라이버1·2 시간, 페널티, 상태, C/E 에너지 계측값·오피셜 판정 |
+| 6.6 | 내구 필드 수정 | admin | `PUT /api/score/endurance` | 내구 필드와 연료 소비/추가 주유/순사용 전력/에너지 DSQ 수정, SSE 후 전체 상대점수 재계산 |
 
 ### 실시간 및 내보내기
 
@@ -315,7 +315,7 @@
 |---|------|------|-------------|------|
 | 6.7 | SSE 실시간 업데이트 | admin | `GET /api/score/events` | 화이트리스트 재전파(inspection: category-result/answer, traffic: records/record-visibility) + 재연결 시 refresh + manual-score/penalty/setting/endurance 로컬 이벤트 |
 | 6.8 | 성적 대시보드 내보내기 | admin | ScoreBoard.vue | 전체 성적표 CSV/XLSX 클라이언트 사이드 다운로드 |
-| 6.9 | 내구 데이터 내보내기 | admin | EnduranceInput.vue | 내구 데이터 CSV/XLSX 클라이언트 사이드 다운로드 |
+| 6.9 | 내구 데이터 내보내기 | admin | EnduranceInput.vue | 내구 및 에너지 계측·판정 데이터 CSV/XLSX 클라이언트 사이드 다운로드 |
 
 ---
 

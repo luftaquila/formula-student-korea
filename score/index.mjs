@@ -6,6 +6,7 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInt
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
+import { calculateEnergyScores } from "./energy-score.mjs";
 
 const PORT = 9600;
 
@@ -22,7 +23,7 @@ db.transaction(() => {
     db.exec(`DROP TABLE IF EXISTS score_record`);
   }
 
-  // 수동 입력 점수 (보고서, 에너지 등)
+  // 수동 입력 점수 (보고서, 가점, 감점). 기존 energy 행은 호환성을 위해 보존만 한다.
   db.exec(`CREATE TABLE IF NOT EXISTS score_manual (
     year INTEGER NOT NULL,
     team_num INTEGER NOT NULL,
@@ -75,8 +76,20 @@ db.transaction(() => {
     driver2_cones INTEGER DEFAULT 0,
     driver2_oc INTEGER DEFAULT 0,
     driver2_penalty REAL DEFAULT 0,
+    energy_type TEXT,
+    fuel_consumed REAL,
+    fuel_extra REAL DEFAULT 0,
+    electric_net_energy REAL,
+    energy_dsq INTEGER NOT NULL DEFAULT 0,
+    energy_dsq_reason TEXT,
     PRIMARY KEY (year, team_num)
   )`);
+  addColumn(db, "score_endurance", "energy_type TEXT");
+  addColumn(db, "score_endurance", "fuel_consumed REAL");
+  addColumn(db, "score_endurance", "fuel_extra REAL DEFAULT 0");
+  addColumn(db, "score_endurance", "electric_net_energy REAL");
+  addColumn(db, "score_endurance", "energy_dsq INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "score_endurance", "energy_dsq_reason TEXT");
 })();
 
 const ENDURANCE_SQL = {
@@ -92,6 +105,12 @@ const ENDURANCE_SQL = {
   driver2_cones: "UPDATE score_endurance SET driver2_cones = ? WHERE year = ? AND team_num = ?",
   driver2_oc: "UPDATE score_endurance SET driver2_oc = ? WHERE year = ? AND team_num = ?",
   driver2_penalty: "UPDATE score_endurance SET driver2_penalty = ? WHERE year = ? AND team_num = ?",
+  energy_type: "UPDATE score_endurance SET energy_type = ? WHERE year = ? AND team_num = ?",
+  fuel_consumed: "UPDATE score_endurance SET fuel_consumed = ? WHERE year = ? AND team_num = ?",
+  fuel_extra: "UPDATE score_endurance SET fuel_extra = ? WHERE year = ? AND team_num = ?",
+  electric_net_energy: "UPDATE score_endurance SET electric_net_energy = ? WHERE year = ? AND team_num = ?",
+  energy_dsq: "UPDATE score_endurance SET energy_dsq = ? WHERE year = ? AND team_num = ?",
+  energy_dsq_reason: "UPDATE score_endurance SET energy_dsq_reason = ? WHERE year = ? AND team_num = ?",
 };
 
 /* ============================================
@@ -714,10 +733,11 @@ async function computeScore(year) {
     }
     events.push({ type: "내구", records: enduranceRecords });
 
-    // 7. 수동 입력 점수 (보고서, 에너지) 조회
+    // 7. 수동 입력 점수 조회. 레거시 energy 행은 보존하되 자동계산 결과와 섞지 않는다.
     const manualRows = db.prepare("SELECT team_num, score_type, value FROM score_manual WHERE year = ?").all(year);
     const manualScores = {};
     for (const row of manualRows) {
+      if (row.score_type === "energy") continue;
       if (!manualScores[row.team_num]) manualScores[row.team_num] = {};
       manualScores[row.team_num][row.score_type] = row.value;
     }
@@ -730,10 +750,17 @@ async function computeScore(year) {
       settings[row.event_type][row.setting_key] = row.value;
     }
 
-    return { entries, inspection, events, manualScores, penalties, settings };
+    const energy = calculateEnergyScores({
+      rows: enduranceRows,
+      enduranceRecords,
+      endurancePenalty: endurancePen,
+      settings: settings["에너지"] || {},
+    });
+
+    return { entries, inspection, events, manualScores, penalties, settings, energy };
 }
 
-// PUT /api/score/manual — 수동 입력 점수 저장 (보고서, 에너지)
+// PUT /api/score/manual — 수동 입력 점수 저장 (보고서, 가점, 감점)
 app.put("/api/score/manual", (req, res) => {
   const { year, team_num, score_type, value } = req.body;
   if (!year || team_num == null || !score_type) {
@@ -746,9 +773,17 @@ app.put("/api/score/manual", (req, res) => {
 
   const keyErr = validateKey(score_type, "score_type");
   if (keyErr) return res.status(400).send(keyErr);
+  if (score_type === "energy") return res.status(400).send("에너지 점수는 내구 계측값으로 자동 계산됩니다.");
 
   const numValue = value === null || value === "" ? null : Number(value);
   if (numValue !== null && !Number.isFinite(numValue)) return res.status(400).send("유효하지 않은 값입니다.");
+  if (score_type === "report" && numValue !== null) {
+    if (numValue < 0) return res.status(400).send("보고서 점수는 음수일 수 없습니다.");
+    const reportTotal = db.prepare("SELECT value FROM score_setting WHERE year = ? AND event_type = '보고서' AND setting_key = 'total'").get(numYear)?.value;
+    if (Number.isFinite(reportTotal) && numValue > reportTotal) {
+      return res.status(400).send(`보고서 점수는 총점 ${reportTotal}점을 초과할 수 없습니다.`);
+    }
+  }
 
   const result = dbRun(() =>
     db
@@ -880,19 +915,30 @@ app.put("/api/score/endurance", (req, res) => {
   const allowedFields = [
     "status", "driver1_time", "driver1_start_delay", "driver1_cones", "driver1_oc", "driver1_penalty",
     "driver_change_time", "driver2_time", "driver2_start_delay", "driver2_cones", "driver2_oc", "driver2_penalty",
+    "energy_type", "fuel_consumed", "fuel_extra", "electric_net_energy", "energy_dsq", "energy_dsq_reason",
   ];
   if (!allowedFields.includes(field)) {
     return res.status(400).send("허용되지 않는 필드입니다.");
   }
 
-  const dbValue = value === null || value === "" ? null : (field === "status" ? value : Number(value));
+  const textFields = new Set(["status", "energy_type", "energy_dsq_reason"]);
+  const dbValue = value === null || value === "" ? null : (textFields.has(field) ? String(value).trim() : Number(value));
   if (field === "status" && dbValue !== null && !["DNS", "DNF", "DSQ"].includes(dbValue)) {
     return res.status(400).send("올바르지 않은 상태값입니다. (DNS, DNF, DSQ 또는 비움)");
   }
-  if (field !== "status" && dbValue !== null && !Number.isFinite(dbValue)) {
+  if (field === "energy_type" && dbValue !== null && !["C", "E"].includes(dbValue)) {
+    return res.status(400).send("에너지 구분은 C 또는 E여야 합니다.");
+  }
+  if (field === "energy_dsq_reason" && dbValue !== null && dbValue.length > 200) {
+    return res.status(400).send("실격 사유가 너무 깁니다.");
+  }
+  if (!textFields.has(field) && dbValue !== null && !Number.isFinite(dbValue)) {
     return res.status(400).send("유효하지 않은 값입니다.");
   }
-  if (field !== "status" && dbValue !== null && dbValue < 0) {
+  if (field === "energy_dsq" && dbValue !== null && ![0, 1].includes(dbValue)) {
+    return res.status(400).send("에너지 실격 값은 0 또는 1이어야 합니다.");
+  }
+  if (!textFields.has(field) && field !== "electric_net_energy" && dbValue !== null && dbValue < 0) {
     return res.status(400).send("값은 음수일 수 없습니다.");
   }
 

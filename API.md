@@ -352,7 +352,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/score` | admin | `?year=` | `{ entries, inspection, events, manualScores, penalties, settings }` | Main aggregation (fetches from entry, inspection, traffic services) |
+| GET | `/api/score` | admin | `?year=` | `{ entries, inspection, events, manualScores, penalties, settings, energy }` | Main aggregation. `energy` contains configuration, reference values, and per-team `PENDING`/`DSQ`/`SCORED` results |
 
 ### Public Scoreboard
 
@@ -366,21 +366,21 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| PUT | `/api/score/manual` | admin | `{ year, team_num, score_type, value }` | 200 | Upsert manual score (report, energy, etc.) |
+| PUT | `/api/score/manual` | admin | `{ year, team_num, score_type, value }` | 200 | Upsert manual report/bonus/deduction score. `energy` is rejected because it is calculated from endurance measurements; report values cannot exceed `보고서.total` when configured |
 
 ### Penalty & Score Settings
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | PUT | `/api/score/penalty` | admin | `{ year, event_type, cone_penalty, oc_penalty, start_delay }` | 200 | Set per-event penalty values |
-| PUT | `/api/score/setting` | admin | `{ year, event_type, setting_key, value }` | 200 | Set per-event score settings (total_points, completion_points, cutoff) |
+| PUT | `/api/score/setting` | admin | `{ year, event_type, setting_key, value }` | 200 | Set score settings. Events use `total`/`finish`/`cutoff`; report uses `보고서.total`; energy uses `에너지.total` plus `distance_km`/`lap_count`/`fuel_factor` (2.31 L or 2.95 kg) |
 
 ### Endurance
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/score/endurance` | admin | `?year=` | `{ team_num: { status, driver1_time, ... } }` | Endurance records for year |
-| PUT | `/api/score/endurance` | admin | `{ year, team_num, field, value }` | 200 | Update single endurance field (status, driver times, cones, oc, penalties) |
+| GET | `/api/score/endurance` | admin | `?year=` | `{ team_num: { status, driver1_time, energy_type, ... } }` | Endurance and energy measurement records for year |
+| PUT | `/api/score/endurance` | admin | `{ year, team_num, field, value }` | 200 | Update endurance fields or energy fields (`energy_type`, C fuel/extra fuel, E net energy, official energy DSQ/reason). Negative values are accepted only for E net energy |
 
 ### Internal API
 

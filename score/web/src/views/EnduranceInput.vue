@@ -1,6 +1,6 @@
 <script setup>
-import { ref, onMounted, computed, watch } from "vue";
-import { fetchEntryYears, fetchEntries, fetchEndurance, fetchScore, updateEndurance } from "../api";
+import { ref, onMounted, onUnmounted, computed, watch } from "vue";
+import { fetchEntryYears, fetchEntries, fetchEndurance, fetchScore, updateEndurance, updateSetting } from "../api";
 import { exportTable } from "../composables/exportTable";
 import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
@@ -8,7 +8,7 @@ import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();
-const { lastEnduranceUpdate, lastPenaltyUpdate, reconnected } = useSSE();
+const { lastEnduranceUpdate, lastPenaltyUpdate, lastSettingUpdate, reconnected } = useSSE();
 
 const tableRef = ref(null);
 const { stickyCols, lineX, startDrag } = useStickyColumns({
@@ -25,6 +25,8 @@ const searchQuery = ref("");
 const entries = ref({});
 const endurance = ref({});
 const penalties = ref({});
+const settings = ref({});
+const energy = ref({ teams: {}, config: {}, references: {} });
 const focusedCell = ref(null); // { num, field }
 const deferredEnduranceUpdate = ref(null);
 let cellEdited = false;
@@ -66,6 +68,8 @@ async function loadData() {
     entries.value = entryData;
     endurance.value = enduranceData;
     penalties.value = scoreData.penalties || {};
+    settings.value = scoreData.settings || {};
+    energy.value = scoreData.energy || { teams: {}, config: {}, references: {} };
   } catch {
     if (seq === fetchSeq) error("데이터를 가져올 수 없습니다.");
   }
@@ -111,6 +115,7 @@ watch(lastEnduranceUpdate, (update) => {
   }
   if (!endurance.value[team_num]) endurance.value[team_num] = {};
   endurance.value[team_num][field] = value;
+  scheduleScoreRefresh();
 });
 
 watch(lastPenaltyUpdate, (update) => {
@@ -120,7 +125,38 @@ watch(lastPenaltyUpdate, (update) => {
   penalties.value[event_type].cone_penalty = cone_penalty;
   penalties.value[event_type].oc_penalty = oc_penalty;
   penalties.value[event_type].start_delay = start_delay;
+  scheduleScoreRefresh();
 });
+
+watch(lastSettingUpdate, (update) => {
+  if (!update || update.year !== selectedYear.value) return;
+  const { event_type, setting_key, value } = update;
+  if (!settings.value[event_type]) settings.value[event_type] = {};
+  settings.value[event_type][setting_key] = value;
+  scheduleScoreRefresh();
+});
+
+let scoreRefreshTimer = null;
+let scoreRefreshSeq = 0;
+function scheduleScoreRefresh() {
+  clearTimeout(scoreRefreshTimer);
+  scoreRefreshTimer = setTimeout(refreshScoreData, 250);
+}
+
+async function refreshScoreData() {
+  const seq = ++scoreRefreshSeq;
+  try {
+    const data = await fetchScore(selectedYear.value);
+    if (seq !== scoreRefreshSeq) return;
+    penalties.value = data.penalties || {};
+    settings.value = data.settings || {};
+    energy.value = data.energy || { teams: {}, config: {}, references: {} };
+  } catch {
+    if (seq === scoreRefreshSeq) error("에너지 점수를 다시 계산할 수 없습니다.");
+  }
+}
+
+onUnmounted(() => clearTimeout(scoreRefreshTimer));
 
 // Deferred SSE recovery
 function applyDeferredCell(prevCell) {
@@ -197,6 +233,49 @@ function getStatus(num) {
   return endurance.value[num]?.status || null;
 }
 
+function getEnergyResult(num) {
+  return energy.value.teams?.[num] || null;
+}
+
+function getEnergySetting(key) {
+  return settings.value["에너지"]?.[key] ?? null;
+}
+
+function getFuelUnit() {
+  const factor = Number(getEnergySetting("fuel_factor"));
+  if (factor === 2.95) return "kg";
+  if (factor === 2.31) return "L";
+  return "L/kg";
+}
+
+function energyResultLabel(num) {
+  const result = getEnergyResult(num);
+  if (!result) return "대기";
+  if (result.status === "DSQ") return "DSQ";
+  if (result.status === "SCORED") return "정상";
+  return "대기";
+}
+
+async function saveEnergySetting(key, rawValue) {
+  if (isReadOnly.value) return;
+  const value = rawValue === "" ? null : Number(rawValue);
+  if (value !== null && (!Number.isFinite(value) || value <= 0 || (key === "lap_count" && !Number.isInteger(value)))) {
+    error(key === "lap_count" ? "랩 수는 양의 정수여야 합니다." : "설정 값은 0보다 커야 합니다.");
+    return;
+  }
+  const oldValue = getEnergySetting(key);
+  if (oldValue === value) return;
+  if (!settings.value["에너지"]) settings.value["에너지"] = {};
+  settings.value["에너지"][key] = value;
+  try {
+    await updateSetting(selectedYear.value, "에너지", key, value);
+    scheduleScoreRefresh();
+  } catch {
+    settings.value["에너지"][key] = oldValue;
+    error("에너지 설정 저장에 실패했습니다.");
+  }
+}
+
 function isDisabled(num) {
   return isReadOnly.value || getStatus(num) === "DNS" || getStatus(num) === "DNF" || getStatus(num) === "DSQ";
 }
@@ -252,6 +331,7 @@ async function toggleStatus(num, status) {
 
   try {
     await updateEndurance(selectedYear.value, num, "status", newValue);
+    scheduleScoreRefresh();
   } catch {
     endurance.value[num].status = current;
     error("저장에 실패했습니다.");
@@ -277,6 +357,7 @@ async function saveTimeField(num, field, e) {
 
   try {
     await updateEndurance(selectedYear.value, num, field, parsed);
+    scheduleScoreRefresh();
   } catch {
     endurance.value[num][field] = oldValue;
     error("저장에 실패했습니다.");
@@ -284,10 +365,10 @@ async function saveTimeField(num, field, e) {
 }
 
 // 숫자 필드 저장
-async function saveNumField(num, field, e, isInteger = false) {
+async function saveNumField(num, field, e, isInteger = false, allowNegative = false) {
   const rawValue = e.target.value.trim();
   let newValue = rawValue === "" ? null : Number(rawValue);
-  if (newValue !== null && (isNaN(newValue) || (isInteger && (!Number.isInteger(newValue) || newValue < 0)))) {
+  if (newValue !== null && (isNaN(newValue) || (!allowNegative && newValue < 0) || (isInteger && !Number.isInteger(newValue)))) {
     e.target.value = getField(num, field) ?? "";
     return;
   }
@@ -301,16 +382,46 @@ async function saveNumField(num, field, e, isInteger = false) {
 
   try {
     await updateEndurance(selectedYear.value, num, field, newValue);
+    scheduleScoreRefresh();
   } catch {
     endurance.value[num][field] = oldValue;
     error("저장에 실패했습니다.");
   }
 }
 
+async function saveDirectField(num, field, value) {
+  const normalized = value === "" ? null : value;
+  const oldValue = getField(num, field);
+  if (normalized === oldValue) return;
+  if (!endurance.value[num]) endurance.value[num] = {};
+  endurance.value[num][field] = normalized;
+  try {
+    await updateEndurance(selectedYear.value, num, field, normalized);
+    scheduleScoreRefresh();
+  } catch {
+    endurance.value[num][field] = oldValue;
+    error("저장에 실패했습니다.");
+  }
+}
+
+async function toggleEnergyDsq(num) {
+  if (isReadOnly.value) return;
+  await saveDirectField(num, "energy_dsq", getField(num, "energy_dsq") ? 0 : 1);
+}
+
+async function saveEnergyReason(num, event) {
+  await saveDirectField(num, "energy_dsq_reason", event.target.value.trim());
+}
+
 // 키보드 네비게이션 (Enter, 화살표)
 function handleKeyNav(e) {
   const target = e.target;
   if (target.tagName !== "INPUT" || target.disabled) return;
+
+  if (target.classList.contains("energy-reason-input")) {
+    if (e.key === "Enter") target.blur();
+    return;
+  }
 
   if (e.key === "Enter") {
     e.preventDefault();
@@ -364,7 +475,7 @@ function getInputGrid(el) {
 }
 
 function exportData(format) {
-  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태"];
+  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", "에너지 구분", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO2/100km", "에너지 판정", "에너지 사유", "에너지 점수"];
   const rows = entryList.value.map((entry) => {
     const num = entry.num;
     const ft = getFinalTime(num);
@@ -387,6 +498,14 @@ function exportData(format) {
       getField(num, "driver2_oc") ?? "",
       getField(num, "driver2_penalty") ?? "",
       getStatus(num) || "",
+      getField(num, "energy_type") || "",
+      getField(num, "fuel_consumed") ?? "",
+      getField(num, "fuel_extra") ?? "",
+      getField(num, "electric_net_energy") ?? "",
+      getEnergyResult(num)?.co2Per100Km ?? "",
+      energyResultLabel(num),
+      getEnergyResult(num)?.reason || getField(num, "energy_dsq_reason") || "",
+      getEnergyResult(num)?.score ?? "",
     ];
   });
   exportTable({ sheetName: "내구 기록", fileBase: `내구기록_${selectedYear.value}`, headers, rows, format });
@@ -401,6 +520,22 @@ function exportData(format) {
           <label class="filter-label">엔트리</label>
           <select class="filter-input" v-model.number="selectedYear" @change="onYearChange">
             <option v-for="y in availableYears" :key="y" :value="y">{{ y }}년</option>
+          </select>
+        </div>
+        <div class="filter-group energy-config-group">
+          <label class="filter-label">내구 거리 (km)</label>
+          <input class="filter-input config-input" type="number" min="0" step="any" :value="getEnergySetting('distance_km') ?? ''" :disabled="isReadOnly" placeholder="예: 20" @blur="saveEnergySetting('distance_km', $event.target.value)" />
+        </div>
+        <div class="filter-group energy-config-group">
+          <label class="filter-label">랩 수</label>
+          <input class="filter-input config-input" type="number" min="1" step="1" :value="getEnergySetting('lap_count') ?? ''" :disabled="isReadOnly" placeholder="예: 20" @blur="saveEnergySetting('lap_count', $event.target.value)" />
+        </div>
+        <div class="filter-group energy-config-group">
+          <label class="filter-label">휘발유 기준</label>
+          <select class="filter-input" :value="getEnergySetting('fuel_factor') ?? ''" :disabled="isReadOnly" @change="saveEnergySetting('fuel_factor', $event.target.value)">
+            <option value="" disabled>선택</option>
+            <option :value="2.31">부피 (L)</option>
+            <option :value="2.95">질량 (kg)</option>
           </select>
         </div>
         <div class="filter-group">
@@ -443,6 +578,7 @@ function exportData(format) {
                 <th class="col-change" rowspan="2">교체<br>초과시간</th>
                 <th class="col-driver-group" colspan="5">드라이버 2</th>
                 <th class="col-status" rowspan="2">상태</th>
+                <th class="col-energy-group" colspan="8">에너지 효율</th>
               </tr>
               <tr>
                 <th class="col-field">기록</th>
@@ -455,6 +591,14 @@ function exportData(format) {
                 <th class="col-field">콘터치</th>
                 <th class="col-field">코스이탈</th>
                 <th class="col-field">페널티(초)</th>
+                <th class="col-energy">구분</th>
+                <th class="col-energy">연료 소비<br>({{ getFuelUnit() }})</th>
+                <th class="col-energy">추가 주유<br>({{ getFuelUnit() }})</th>
+                <th class="col-energy">순사용 전력<br>(kWh)</th>
+                <th class="col-energy">보정 CO₂<br>/100km</th>
+                <th class="col-energy-official">오피셜</th>
+                <th class="col-energy">판정</th>
+                <th class="col-energy">점수</th>
               </tr>
             </thead>
             <tbody>
@@ -500,9 +644,26 @@ function exportData(format) {
                     >{{ s }}</button>
                   </div>
                 </td>
+                <td class="col-energy">
+                  <select class="energy-type-select" :value="getField(entry.num, 'energy_type') ?? ''" :disabled="isReadOnly" @change="saveDirectField(entry.num, 'energy_type', $event.target.value)">
+                    <option value="">-</option>
+                    <option value="C">C</option>
+                    <option value="E">E</option>
+                  </select>
+                </td>
+                <td class="col-energy"><input class="cell-input energy-input" type="number" min="0" step="any" :value="getField(entry.num, 'fuel_consumed') ?? ''" :disabled="isReadOnly || getField(entry.num, 'energy_type') !== 'C'" placeholder="-" @focus="handleCellFocus(entry.num, 'fuel_consumed', $event)" @blur="saveNumField(entry.num, 'fuel_consumed', $event); handleCellBlur()" /></td>
+                <td class="col-energy"><input class="cell-input energy-input" type="number" min="0" step="any" :value="getField(entry.num, 'fuel_extra') ?? ''" :disabled="isReadOnly || getField(entry.num, 'energy_type') !== 'C'" placeholder="-" @focus="handleCellFocus(entry.num, 'fuel_extra', $event)" @blur="saveNumField(entry.num, 'fuel_extra', $event); handleCellBlur()" /></td>
+                <td class="col-energy"><input class="cell-input energy-input" type="number" step="any" :value="getField(entry.num, 'electric_net_energy') ?? ''" :disabled="isReadOnly || getField(entry.num, 'energy_type') !== 'E'" placeholder="-" @focus="handleCellFocus(entry.num, 'electric_net_energy', $event)" @blur="saveNumField(entry.num, 'electric_net_energy', $event, false, true); handleCellBlur()" /></td>
+                <td class="col-energy"><span class="energy-metric">{{ getEnergyResult(entry.num)?.co2Per100Km ?? '-' }}</span></td>
+                <td class="col-energy-official">
+                  <button class="energy-dsq-btn" :class="{ active: !!getField(entry.num, 'energy_dsq') }" :disabled="isReadOnly" @click="toggleEnergyDsq(entry.num)">DSQ</button>
+                  <input v-if="getField(entry.num, 'energy_dsq')" class="energy-reason-input" :value="getField(entry.num, 'energy_dsq_reason') ?? ''" :disabled="isReadOnly" maxlength="200" placeholder="실격 사유" @blur="saveEnergyReason(entry.num, $event)" />
+                </td>
+                <td class="col-energy"><span class="energy-status" :class="'energy-status-' + (getEnergyResult(entry.num)?.status || 'PENDING').toLowerCase()" :title="getEnergyResult(entry.num)?.reason || ''">{{ energyResultLabel(entry.num) }}</span></td>
+                <td class="col-energy"><span class="energy-score" :title="getEnergyResult(entry.num)?.reason || ''">{{ getEnergyResult(entry.num)?.score ?? '-' }}</span></td>
               </tr>
               <tr v-if="entryList.length === 0">
-                <td colspan="16" class="empty-state">
+                <td colspan="25" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>
@@ -650,7 +811,7 @@ function exportData(format) {
 }
 
 .endurance-table {
-  min-width: 1200px;
+  min-width: 1900px;
 }
 
 .endurance-table th {
@@ -669,6 +830,95 @@ function exportData(format) {
 .col-field {
   width: 1%;
   white-space: nowrap;
+}
+
+.col-energy,
+.col-energy-official {
+  width: 1%;
+  white-space: nowrap;
+  text-align: center !important;
+}
+
+.col-energy-group {
+  text-align: center !important;
+  border-bottom: 2px solid var(--border-color);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.col-energy {
+  background: rgba(16, 185, 129, 0.035);
+}
+
+.energy-type-select,
+.energy-reason-input {
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  padding: 0.25rem;
+}
+
+.energy-input {
+  width: 4.5rem;
+}
+
+.energy-dsq-btn {
+  padding: 0.25rem 0.45rem;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text-tertiary);
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.energy-dsq-btn.active {
+  background: #7c3aed;
+  border-color: #7c3aed;
+  color: white;
+}
+
+.energy-reason-input {
+  width: 7rem;
+  margin-left: 0.25rem;
+}
+
+.energy-metric,
+.energy-score {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8rem;
+}
+
+.energy-score {
+  font-weight: 700;
+  color: var(--accent-success);
+}
+
+.energy-status {
+  display: inline-block;
+  padding: 0.15rem 0.4rem;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: help;
+}
+
+.energy-status-scored {
+  background: rgba(16, 185, 129, 0.14);
+  color: var(--accent-success);
+}
+
+.energy-status-dsq {
+  background: rgba(239, 68, 68, 0.14);
+  color: var(--accent-danger);
+}
+
+.config-input {
+  width: 7rem;
 }
 
 .col-num {

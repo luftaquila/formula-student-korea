@@ -49,25 +49,14 @@ test.describe("Score manual score entry", () => {
     await fillAndSave(page, reportInput, "");
   });
 
-  test("enter energy score for a team", async ({ page }) => {
+  test("energy score is read-only and automatically calculated", async ({ page }) => {
     const table = page.locator("table.score-table");
     const row = table.locator("tbody tr.team-row").filter({ hasText: "한양대학교" });
     await expect(row).toBeVisible();
 
-    // Energy input is the second manual-input
-    const energyInput = row.locator("input.manual-input").nth(1);
-    await expect(energyInput).toBeVisible();
-
-    // Enter an energy score
-    await fillAndSave(page, energyInput, "42");
-
-    // Verify the total score includes the energy value
-    const totalCell = row.locator(".col-total .total-value");
-    const totalText = await totalCell.textContent();
-    expect(Number(totalText)).toBeGreaterThanOrEqual(42);
-
-    // Clean up
-    await fillAndSave(page, energyInput, "");
+    const energyCell = row.locator("td.col-manual").nth(1);
+    await expect(energyCell).toBeVisible();
+    await expect(energyCell.locator("input")).toHaveCount(0);
   });
 
   test("enter bonus and deduction for a team", async ({ page }) => {
@@ -78,15 +67,14 @@ test.describe("Score manual score entry", () => {
     const totalCell = row.locator(".col-total .total-value");
     const initialTotal = Number(await totalCell.textContent());
 
-    // Bonus input is the third manual-input
-    const bonusInput = row.locator("input.manual-input").nth(2);
+    // Energy is read-only, so bonus is the second manual input.
+    const bonusInput = row.locator("input.manual-input").nth(1);
     await fillAndSave(page, bonusInput, "10");
 
     // Verify total increased by bonus
     await expect(totalCell).toContainText(String(initialTotal + 10));
 
-    // Deduction input is the fourth manual-input
-    const deductionInput = row.locator("input.manual-input").nth(3);
+    const deductionInput = row.locator("input.manual-input").nth(2);
     await fillAndSave(page, deductionInput, "5");
 
     // Verify total = initial + bonus - deduction
@@ -104,15 +92,12 @@ test.describe("Score manual score entry", () => {
 
     const firstRow = rows.nth(0);
     const report = firstRow.locator("input.manual-input").nth(0);
-    const energy = firstRow.locator("input.manual-input").nth(1);
-    const bonus = firstRow.locator("input.manual-input").nth(2);
-    const deduction = firstRow.locator("input.manual-input").nth(3);
+    const bonus = firstRow.locator("input.manual-input").nth(1);
+    const deduction = firstRow.locator("input.manual-input").nth(2);
 
-    // ArrowRight walks report -> energy -> bonus -> deduction
+    // ArrowRight walks report -> bonus -> deduction (energy is read-only).
     await report.focus();
     await report.press("ArrowRight");
-    await expect(energy).toBeFocused();
-    await energy.press("ArrowRight");
     await expect(bonus).toBeFocused();
     await bonus.press("ArrowRight");
     await expect(deduction).toBeFocused();
@@ -135,27 +120,25 @@ test.describe("Score manual score entry", () => {
 
     const totalCell = row.locator(".col-total .total-value");
 
-    // Set report = 100, energy = 50, bonus = 20, deduction = 10
-    // Expected total contribution from manual = 100 + 50 + 20 - 10 = 160
+    // Set report = 100, bonus = 20, deduction = 10.
+    // Energy remains an independently calculated, read-only contribution.
     const reportInput = row.locator("input.manual-input").nth(0);
-    const energyInput = row.locator("input.manual-input").nth(1);
-    const bonusInput = row.locator("input.manual-input").nth(2);
-    const deductionInput = row.locator("input.manual-input").nth(3);
+    const bonusInput = row.locator("input.manual-input").nth(1);
+    const deductionInput = row.locator("input.manual-input").nth(2);
 
     await fillAndSave(page, reportInput, "100");
-    await fillAndSave(page, energyInput, "50");
     await fillAndSave(page, bonusInput, "20");
     await fillAndSave(page, deductionInput, "10");
 
-    // Verify total is at least 160 (may include event scores)
+    // Verify total is at least 110 (may include event and energy scores)
     // Use expect.poll to retry — fillAndSave uses Promise.race with 1s timeout, so saves may still be in-flight
     await expect.poll(
       async () => Number(await totalCell.textContent()),
       { timeout: 5000 },
-    ).toBeGreaterThanOrEqual(160);
+    ).toBeGreaterThanOrEqual(110);
 
     // Clean up all manual scores
-    for (const input of [reportInput, energyInput, bonusInput, deductionInput]) {
+    for (const input of [reportInput, bonusInput, deductionInput]) {
       await fillAndSave(page, input, "");
     }
   });

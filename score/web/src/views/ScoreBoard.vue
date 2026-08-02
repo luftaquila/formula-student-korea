@@ -41,9 +41,10 @@ const sortOrder = ref("asc");
 const entries = ref({});
 const inspection = ref({ categories: [], teams: {} });
 const events = ref([]); // [{ type, tables, records }]
-const manualScores = ref({}); // { team_num: { report: value, energy: value } }
+const manualScores = ref({}); // { team_num: { report, bonus, deduction } }
 const penalties = ref({}); // { event_type: { cone_penalty, oc_penalty } }
 const settings = ref({}); // { event_type: { total, finish, cutoff } }
+const energy = ref({ teams: {}, config: {}, references: {} });
 
 const dynamicEvents = computed(() => events.value.filter((e) => e.type !== "내구"));
 const enduranceEvent = computed(() => events.value.find((e) => e.type === "내구") || { type: "내구", records: {} });
@@ -105,8 +106,8 @@ const entryList = computed(() => {
       bVal = getTotalScore(b.num);
       return sortOrder.value === "asc" ? bVal - aVal : aVal - bVal;
     } else if (["report", "energy", "bonus", "deduction"].includes(sortKey.value)) {
-      aVal = manualScores.value[a.num]?.[sortKey.value] ?? Infinity;
-      bVal = manualScores.value[b.num]?.[sortKey.value] ?? Infinity;
+      aVal = sortKey.value === "energy" ? (getEnergyScore(a.num) ?? Infinity) : (manualScores.value[a.num]?.[sortKey.value] ?? Infinity);
+      bVal = sortKey.value === "energy" ? (getEnergyScore(b.num) ?? Infinity) : (manualScores.value[b.num]?.[sortKey.value] ?? Infinity);
     } else if (sortKey.value.startsWith("event:")) {
       const eventType = sortKey.value.slice(6);
       const evt = events.value.find(e => e.type === eventType);
@@ -178,6 +179,7 @@ async function loadData() {
     manualScores.value = data.manualScores || {};
     penalties.value = data.penalties || {};
     settings.value = data.settings || {};
+    energy.value = data.energy || { teams: {}, config: {}, references: {} };
     sortKey.value = null;
     sortOrder.value = "asc";
   } catch (e) {
@@ -292,7 +294,7 @@ const scoreCache = computed(() => {
       if (s != null) t += s;
     }
     t += manualScores.value[num]?.report ?? 0;
-    t += manualScores.value[num]?.energy ?? 0;
+    t += getEnergyScore(num) ?? 0;
     t += manualScores.value[num]?.bonus ?? 0;
     t -= manualScores.value[num]?.deduction ?? 0;
     totalScoreMap[num] = parseFloat(t.toFixed(2));
@@ -314,6 +316,25 @@ function getEventScore(eventType, num) {
 // 총점 계산 (캐시에서 O(1) 조회)
 function getTotalScore(num) {
   return scoreCache.value.totalScoreMap[num] ?? 0;
+}
+
+function getEnergyResult(num) {
+  return energy.value.teams?.[num] || null;
+}
+
+function getEnergyScore(num) {
+  const result = getEnergyResult(num);
+  return result?.status === "SCORED" ? result.score : result?.status === "DSQ" ? 0 : null;
+}
+
+function getEnergyTitle(num) {
+  const result = getEnergyResult(num);
+  if (!result) return "에너지 계측값을 입력하세요.";
+  if (result.reason) return result.reason;
+  const details = [];
+  if (result.co2Per100Km != null) details.push(`${result.co2Per100Km} kg CO₂/100km`);
+  if (result.ef != null) details.push(`EF ${result.ef}`);
+  return details.join(" · ") || "에너지 효율 점수";
 }
 
 const typeColorMap = ref({});
@@ -357,6 +378,12 @@ async function handleManualSave(teamNum, scoreType, value) {
 
 function getManualScore(teamNum, scoreType) {
   return manualScores.value[teamNum]?.[scoreType] ?? null;
+}
+
+function isReportOverMax(teamNum) {
+  const value = getManualScore(teamNum, "report");
+  const maximum = getSetting("보고서", "total");
+  return value != null && maximum != null && value > maximum;
 }
 
 // 페널티 설정 저장
@@ -554,6 +581,7 @@ async function refreshEventData() {
     entries.value = data.entries;
     inspection.value = data.inspection;
     events.value = data.events;
+    energy.value = data.energy || { teams: {}, config: {}, references: {} };
   } catch (e) {
     if (seq === refreshSeq) error("데이터를 가져올 수 없습니다.");
   }
@@ -652,7 +680,7 @@ const totalColumns = computed(() => {
   cols += 1; // total
   cols += dynamicEvents.value.length; // dynamic events
   cols += 1; // endurance
-  cols += 4; // manual scores (report, energy, bonus, deduction)
+  cols += 4; // report, calculated energy, bonus, deduction
   return cols;
 });
 
@@ -738,7 +766,13 @@ function exportData(format) {
     }
     const endRec = getTeamEvent(enduranceEvent.value, entry.num);
     row.push(displayMode.value === "score" ? (getEventScore("내구", entry.num) ?? "") : formatResult(getAdjustedResult("내구", endRec)));
-    row.push(getManualScore(entry.num, "report") ?? "", getManualScore(entry.num, "energy") ?? "", getManualScore(entry.num, "bonus") ?? "", getManualScore(entry.num, "deduction") ?? "");
+    const energyResult = getEnergyResult(entry.num);
+    row.push(
+      getManualScore(entry.num, "report") ?? "",
+      energyResult?.status === "DSQ" ? `DSQ: ${energyResult.reason}` : (getEnergyScore(entry.num) ?? ""),
+      getManualScore(entry.num, "bonus") ?? "",
+      getManualScore(entry.num, "deduction") ?? "",
+    );
     return row;
   });
 
@@ -953,10 +987,11 @@ function exportData(format) {
                       <span v-else class="record-value dns">-</span>
                     </template>
                   </td>
-                  <td class="col-manual">
+                  <td class="col-manual" :class="{ 'manual-over-max': isReportOverMax(entry.num) }" :title="isReportOverMax(entry.num) ? '보고서 총점을 초과한 기존 점수입니다.' : ''">
                     <input
                       class="manual-input"
                       type="number"
+                      :max="getSetting('보고서', 'total') ?? undefined"
                       :value="getManualScore(entry.num, 'report')"
                       :disabled="isReadOnly"
                       @blur="handleManualSave(entry.num, 'report', $event.target.value)"
@@ -965,15 +1000,17 @@ function exportData(format) {
                     />
                   </td>
                   <td class="col-manual">
-                    <input
-                      class="manual-input"
-                      type="number"
-                      :value="getManualScore(entry.num, 'energy')"
-                      :disabled="isReadOnly"
-                      @blur="handleManualSave(entry.num, 'energy', $event.target.value)"
-                      @keyup.enter="$event.target.blur()"
-                      placeholder="-"
-                    />
+                    <span
+                      v-if="getEnergyResult(entry.num)?.status === 'DSQ'"
+                      class="badge badge-danger energy-result"
+                      :title="getEnergyTitle(entry.num)"
+                    >DSQ</span>
+                    <span
+                      v-else-if="getEnergyScore(entry.num) != null"
+                      class="score-value energy-result"
+                      :title="getEnergyTitle(entry.num)"
+                    >{{ getEnergyScore(entry.num) }}</span>
+                    <span v-else class="record-value dns energy-result" :title="getEnergyTitle(entry.num)">-</span>
                   </td>
                   <td class="col-manual">
                     <input
@@ -1106,15 +1143,18 @@ function exportData(format) {
               <thead>
                 <tr>
                   <th class="col-setting-label">점수</th>
-                  <th v-for="evt in dynamicEvents" :key="'score-h-'+evt.type" class="col-setting-value">{{ evt.type }}</th>
-                  <th class="col-setting-value">내구</th>
+                  <th v-for="evtType in [...dynamicEvents.map(e => e.type), '내구', '보고서', '에너지']" :key="'score-h-'+evtType" class="col-setting-value">{{ evtType }}</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="{ key, label } in [{ key: 'total', label: '총점' }, { key: 'finish', label: '완주점수' }, { key: 'cutoff', label: '컷오프 (%)' }]" :key="key">
                   <td class="col-setting-label">{{ label }}</td>
-                  <template v-for="evtType in [...dynamicEvents.map(e => e.type), '내구']" :key="'s-'+key+'-'+evtType">
-                    <td class="col-setting-value setting-cell" @click="startSettingEdit('s:'+key+':'+evtType)">
+                  <template v-for="evtType in [...dynamicEvents.map(e => e.type), '내구', '보고서', '에너지']" :key="'s-'+key+'-'+evtType">
+                    <td
+                      v-if="key === 'total' || !['보고서', '에너지'].includes(evtType)"
+                      class="col-setting-value setting-cell"
+                      @click="startSettingEdit('s:'+key+':'+evtType)"
+                    >
                       <input
                         v-if="editingSettingCell === 's:'+key+':'+evtType"
                         :ref="settingInputRef"
@@ -1128,6 +1168,7 @@ function exportData(format) {
                       />
                       <span v-else class="setting-text">{{ getSetting(evtType, key) ?? '-' }}</span>
                     </td>
+                    <td v-else class="col-setting-value setting-na">-</td>
                   </template>
                 </tr>
               </tbody>
@@ -1647,6 +1688,15 @@ function exportData(format) {
   color: var(--text-tertiary);
 }
 
+.manual-over-max {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.manual-over-max .manual-input {
+  color: var(--accent-danger);
+  font-weight: 700;
+}
+
 .manual-input::-webkit-outer-spin-button,
 .manual-input::-webkit-inner-spin-button {
   -webkit-appearance: none;
@@ -1661,13 +1711,23 @@ function exportData(format) {
 }
 
 .bottom-row > .setting-card {
-  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.bottom-row > .setting-card:first-child {
+  flex: 0 1 40%;
+}
+
+.bottom-row > .setting-card:last-child {
+  flex: 1 1 60%;
   min-width: 0;
   overflow: hidden;
 }
 
 .setting-table {
-  min-width: 0;
+  min-width: max-content;
+  width: 100%;
 }
 
 .col-setting-label {
@@ -1695,7 +1755,7 @@ function exportData(format) {
 .col-setting-value {
   text-align: center !important;
   white-space: nowrap;
-  width: 1%;
+  min-width: 5.25rem;
 }
 
 .setting-input {
@@ -1740,6 +1800,27 @@ function exportData(format) {
   font-size: 0.875rem;
   font-weight: 500;
   color: var(--text-primary);
+}
+
+.setting-na {
+  color: var(--text-tertiary);
+  background: var(--bg-secondary);
+}
+
+.energy-result {
+  cursor: help;
+}
+
+@media (max-width: 1100px) {
+  .bottom-row {
+    flex-direction: column;
+  }
+
+  .bottom-row > .setting-card:first-child,
+  .bottom-row > .setting-card:last-child {
+    width: 100%;
+    flex-basis: auto;
+  }
 }
 
 
