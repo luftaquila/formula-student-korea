@@ -104,14 +104,59 @@ test.describe("Entry changes reflected in score", () => {
     await expect(row.locator('input[data-field="fuel_consumed"]')).toBeEnabled();
     await expect(row.locator('input[data-field="electric_net_energy"]')).toBeDisabled();
 
-    const patchRes = await fetch(`${BASE_URL}/entry/api/entries/${NUM}?year=${YEAR}`, {
-      method: "PATCH",
-      headers: adminHeaders,
-      body: JSON.stringify({ num: NUM, univ: `유형반영대-${NUM}`, team, type: "E-Formula" }),
+    // Hold an older score-only refresh after it has captured the C snapshot. The
+    // later entry event starts a full load with the E snapshot; releasing this
+    // response afterward must not roll the inputs back to C.
+    let holdNextScoreRequest = true;
+    let releaseHeldRequest;
+    let markHeldRequestStarted;
+    let markHeldRequestFinished;
+    const heldRequestStarted = new Promise((resolve) => { markHeldRequestStarted = resolve; });
+    const heldRequestRelease = new Promise((resolve) => { releaseHeldRequest = resolve; });
+    const heldRequestFinished = new Promise((resolve) => { markHeldRequestFinished = resolve; });
+    const scorePattern = `**/score/api/score?year=${YEAR}`;
+    await page.route(scorePattern, async (route) => {
+      if (!holdNextScoreRequest) return route.continue();
+      holdNextScoreRequest = false;
+      const response = await route.fetch();
+      markHeldRequestStarted();
+      await heldRequestRelease;
+      await route.fulfill({ response });
+      markHeldRequestFinished();
     });
-    expect(patchRes.status).toBe(200);
 
-    await expect(row.locator('input[data-field="fuel_consumed"]')).toBeDisabled({ timeout: 10000 });
-    await expect(row.locator('input[data-field="electric_net_energy"]')).toBeEnabled({ timeout: 10000 });
+    try {
+      const measurementRes = await fetch(`${BASE_URL}/score/api/score/endurance`, {
+        method: "PUT",
+        headers: adminHeaders,
+        body: JSON.stringify({ year: YEAR, team_num: NUM, field: "fuel_consumed", value: 1 }),
+      });
+      expect(measurementRes.status).toBe(200);
+      await Promise.race([
+        heldRequestStarted,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("stale score refresh did not start")), 10000)),
+      ]);
+
+      const patchRes = await fetch(`${BASE_URL}/entry/api/entries/${NUM}?year=${YEAR}`, {
+        method: "PATCH",
+        headers: adminHeaders,
+        body: JSON.stringify({ num: NUM, univ: `유형반영대-${NUM}`, team, type: "E-Formula" }),
+      });
+      expect(patchRes.status).toBe(200);
+
+      await expect(row.locator('input[data-field="fuel_consumed"]')).toBeDisabled({ timeout: 10000 });
+      await expect(row.locator('input[data-field="electric_net_energy"]')).toBeEnabled({ timeout: 10000 });
+
+      releaseHeldRequest();
+      await Promise.race([
+        heldRequestFinished,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("stale score refresh did not finish")), 10000)),
+      ]);
+      await expect(row.locator('input[data-field="fuel_consumed"]')).toBeDisabled();
+      await expect(row.locator('input[data-field="electric_net_energy"]')).toBeEnabled();
+    } finally {
+      releaseHeldRequest();
+      await page.unroute(scorePattern);
+    }
   });
 });

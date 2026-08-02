@@ -30,7 +30,10 @@ const energy = ref({ teams: {}, config: {}, references: {} });
 const focusedCell = ref(null); // { num, field }
 const deferredEnduranceUpdate = ref(null);
 let cellEdited = false;
-let fetchSeq = 0;
+// score 스냅샷과 내구 입력 조회는 적용 세대를 따로 관리한다.
+// 부분 score 재조회가 더 최신이어도 진행 중이던 전체 조회의 내구 입력은 안전하게 적용한다.
+let scoreSnapshotSeq = 0;
+let enduranceFetchSeq = 0;
 
 const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
 
@@ -57,28 +60,33 @@ onMounted(async () => {
 });
 
 async function loadData() {
-  const seq = ++fetchSeq;
+  const year = selectedYear.value;
+  const scoreSeq = ++scoreSnapshotSeq;
+  const enduranceSeq = ++enduranceFetchSeq;
   try {
     const [entryData, enduranceData, scoreData] = await Promise.all([
-      fetchEntries(selectedYear.value),
-      fetchEndurance(selectedYear.value),
-      fetchScore(selectedYear.value),
+      fetchEntries(year),
+      fetchEndurance(year),
+      fetchScore(year),
     ]);
-    if (seq !== fetchSeq) return;
-    // 입력 적용 유형과 에너지 계산 결과를 동일한 score 스냅샷에서 가져온다.
-    entries.value = scoreData.entries || entryData;
-    endurance.value = enduranceData;
-    penalties.value = scoreData.penalties || {};
-    settings.value = scoreData.settings || {};
-    energy.value = scoreData.energy || { teams: {}, config: {}, references: {} };
+    if (selectedYear.value !== year) return;
+    if (enduranceSeq === enduranceFetchSeq) endurance.value = enduranceData;
+    if (scoreSeq === scoreSnapshotSeq) {
+      // 입력 적용 유형과 에너지 계산 결과를 동일한 score 스냅샷에서 가져온다.
+      entries.value = scoreData.entries || entryData;
+      penalties.value = scoreData.penalties || {};
+      settings.value = scoreData.settings || {};
+      energy.value = scoreData.energy || { teams: {}, config: {}, references: {} };
+    }
   } catch {
-    if (seq === fetchSeq) error("데이터를 가져올 수 없습니다.");
+    if (selectedYear.value === year && (scoreSeq === scoreSnapshotSeq || enduranceSeq === enduranceFetchSeq)) {
+      error("데이터를 가져올 수 없습니다.");
+    }
   }
 }
 
 async function onYearChange() {
   clearTimeout(scoreRefreshTimer);
-  scoreRefreshSeq++;
   loading.value = true;
   await loadData();
   loading.value = false;
@@ -112,6 +120,8 @@ watch(lastEnduranceUpdate, (update) => {
     return;
   }
   const { team_num, field, value } = update;
+  // 이 이벤트보다 먼저 시작한 전체 조회의 내구 스냅샷은 적용하지 않는다.
+  enduranceFetchSeq++;
   if (focusedCell.value && focusedCell.value.num === team_num && focusedCell.value.field === field) {
     deferredEnduranceUpdate.value = update;
     return;
@@ -140,7 +150,6 @@ watch(lastSettingUpdate, (update) => {
 });
 
 let scoreRefreshTimer = null;
-let scoreRefreshSeq = 0;
 function scheduleScoreRefresh() {
   clearTimeout(scoreRefreshTimer);
   scoreRefreshTimer = setTimeout(refreshScoreData, 250);
@@ -148,16 +157,16 @@ function scheduleScoreRefresh() {
 
 async function refreshScoreData() {
   const year = selectedYear.value;
-  const seq = ++scoreRefreshSeq;
+  const seq = ++scoreSnapshotSeq;
   try {
     const data = await fetchScore(year);
-    if (seq !== scoreRefreshSeq || selectedYear.value !== year) return;
+    if (seq !== scoreSnapshotSeq || selectedYear.value !== year) return;
     entries.value = data.entries || {};
     penalties.value = data.penalties || {};
     settings.value = data.settings || {};
     energy.value = data.energy || { teams: {}, config: {}, references: {} };
   } catch {
-    if (seq === scoreRefreshSeq) error("에너지 점수를 다시 계산할 수 없습니다.");
+    if (seq === scoreSnapshotSeq && selectedYear.value === year) error("에너지 점수를 다시 계산할 수 없습니다.");
   }
 }
 

@@ -154,7 +154,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener("click", handleOutsideClick);
-  clearTimeout(refreshTimer);
+  cancelRefresh("refresh");
 });
 
 function handleOutsideClick(e) {
@@ -173,8 +173,9 @@ async function loadTypeColors() {
 }
 
 let scoreDataSeq = 0;
-let refreshSeq = 0;
+const { debounce: debounceRefresh, cancel: cancelRefresh } = createKeyedDebouncer(300);
 async function loadData() {
+  cancelRefresh("refresh");
   const year = selectedYear.value;
   const seq = ++scoreDataSeq;
   try {
@@ -195,8 +196,6 @@ async function loadData() {
 }
 
 async function onYearChange() {
-  // 이전 연도의 SSE 재조회가 나중에 완료되어 새 연도 스냅샷을 덮지 않게 한다.
-  refreshSeq++;
   loading.value = true;
   detailExpandedTeam.value = null;
   await Promise.all([loadData(), loadTypeColors(), loadPublication()]);
@@ -580,23 +579,26 @@ watch(lastManualScoreUpdate, (update) => {
   manualScores.value[team_num][score_type] = value;
 });
 
-// SSE 이벤트 데이터만 갱신 (manualScores/penalties/settings는 전용 SSE watcher가 처리)
+// SSE 이벤트 후 score 스냅샷 갱신. loadData와 같은 세대를 써서
+// 나중에 완료된 이전 요청이 entries/events/energy를 되돌리지 못하게 한다.
 async function refreshEventData() {
   const year = selectedYear.value;
-  const seq = ++refreshSeq;
+  const seq = ++scoreDataSeq;
   try {
     const data = await fetchScore(year);
-    if (seq !== refreshSeq || selectedYear.value !== year) return;
+    if (seq !== scoreDataSeq || selectedYear.value !== year) return;
     entries.value = data.entries;
     inspection.value = data.inspection;
     events.value = data.events;
+    manualScores.value = data.manualScores || {};
+    penalties.value = data.penalties || {};
+    settings.value = data.settings || {};
     energy.value = data.energy || { teams: {}, config: {}, references: {} };
   } catch (e) {
-    if (seq === refreshSeq && selectedYear.value === year) error("데이터를 가져올 수 없습니다.");
+    if (seq === scoreDataSeq && selectedYear.value === year) error("데이터를 가져올 수 없습니다.");
   }
 }
 
-const { debounce: debounceRefresh } = createKeyedDebouncer(300);
 function debouncedRefresh() {
   debounceRefresh("refresh", refreshEventData);
 }
