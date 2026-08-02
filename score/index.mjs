@@ -76,7 +76,6 @@ db.transaction(() => {
     driver2_cones INTEGER DEFAULT 0,
     driver2_oc INTEGER DEFAULT 0,
     driver2_penalty REAL DEFAULT 0,
-    energy_type TEXT,
     fuel_consumed REAL,
     fuel_extra REAL DEFAULT 0,
     electric_net_energy REAL,
@@ -84,7 +83,6 @@ db.transaction(() => {
     energy_dsq_reason TEXT,
     PRIMARY KEY (year, team_num)
   )`);
-  addColumn(db, "score_endurance", "energy_type TEXT");
   addColumn(db, "score_endurance", "fuel_consumed REAL");
   addColumn(db, "score_endurance", "fuel_extra REAL DEFAULT 0");
   addColumn(db, "score_endurance", "electric_net_energy REAL");
@@ -105,7 +103,6 @@ const ENDURANCE_SQL = {
   driver2_cones: "UPDATE score_endurance SET driver2_cones = ? WHERE year = ? AND team_num = ?",
   driver2_oc: "UPDATE score_endurance SET driver2_oc = ? WHERE year = ? AND team_num = ?",
   driver2_penalty: "UPDATE score_endurance SET driver2_penalty = ? WHERE year = ? AND team_num = ?",
-  energy_type: "UPDATE score_endurance SET energy_type = ? WHERE year = ? AND team_num = ?",
   fuel_consumed: "UPDATE score_endurance SET fuel_consumed = ? WHERE year = ? AND team_num = ?",
   fuel_extra: "UPDATE score_endurance SET fuel_extra = ? WHERE year = ? AND team_num = ?",
   electric_net_energy: "UPDATE score_endurance SET electric_net_energy = ? WHERE year = ? AND team_num = ?",
@@ -752,6 +749,7 @@ async function computeScore(year) {
 
     const energy = calculateEnergyScores({
       rows: enduranceRows,
+      entries,
       enduranceRecords,
       endurancePenalty: endurancePen,
       settings: settings["에너지"] || {},
@@ -895,7 +893,7 @@ app.get("/api/score/endurance", (req, res) => {
   const rows = db.prepare("SELECT * FROM score_endurance WHERE year = ?").all(year);
   const result = {};
   for (const row of rows) {
-    const { year: _, team_num, ...data } = row;
+    const { year: _year, team_num, energy_type: _legacyEnergyType, ...data } = row;
     result[team_num] = data;
   }
   res.json(result);
@@ -915,19 +913,16 @@ app.put("/api/score/endurance", (req, res) => {
   const allowedFields = [
     "status", "driver1_time", "driver1_start_delay", "driver1_cones", "driver1_oc", "driver1_penalty",
     "driver_change_time", "driver2_time", "driver2_start_delay", "driver2_cones", "driver2_oc", "driver2_penalty",
-    "energy_type", "fuel_consumed", "fuel_extra", "electric_net_energy", "energy_dsq", "energy_dsq_reason",
+    "fuel_consumed", "fuel_extra", "electric_net_energy", "energy_dsq", "energy_dsq_reason",
   ];
   if (!allowedFields.includes(field)) {
     return res.status(400).send("허용되지 않는 필드입니다.");
   }
 
-  const textFields = new Set(["status", "energy_type", "energy_dsq_reason"]);
+  const textFields = new Set(["status", "energy_dsq_reason"]);
   const dbValue = value === null || value === "" ? null : (textFields.has(field) ? String(value).trim() : Number(value));
   if (field === "status" && dbValue !== null && !["DNS", "DNF", "DSQ"].includes(dbValue)) {
     return res.status(400).send("올바르지 않은 상태값입니다. (DNS, DNF, DSQ 또는 비움)");
-  }
-  if (field === "energy_type" && dbValue !== null && !["C", "E"].includes(dbValue)) {
-    return res.status(400).send("에너지 구분은 C 또는 E여야 합니다.");
   }
   if (field === "energy_dsq_reason" && dbValue !== null && dbValue.length > 200) {
     return res.status(400).send("실격 사유가 너무 깁니다.");

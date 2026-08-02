@@ -306,8 +306,8 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 6.5 | 내구 기록 조회 | admin | `GET /api/score/endurance?year=` | 팀별 드라이버1·2 시간, 페널티, 상태, C/E 에너지 계측값·오피셜 판정 |
-| 6.6 | 내구 필드 수정 | admin | `PUT /api/score/endurance` | 내구 필드와 연료 소비/추가 주유/순사용 전력/에너지 DSQ 수정, SSE 후 전체 상대점수 재계산 |
+| 6.5 | 내구 기록 조회 | admin | `GET /api/score/endurance?year=` | 팀별 드라이버1·2 시간, 페널티, 상태, 에너지 계측값·오피셜 판정. C/E 구분은 엔트리 차량 유형에서 자동 판별 |
+| 6.6 | 내구 필드 수정 | admin | `PUT /api/score/endurance` | 내구 필드와 연료 소비/추가 주유/순사용 전력/에너지 DSQ 수정, SSE 후 엔트리의 `C-Formula`/`E-Formula` 유형에 따라 전체 상대점수 재계산 |
 
 ### 실시간 및 내보내기
 

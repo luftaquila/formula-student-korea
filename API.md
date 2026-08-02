@@ -379,8 +379,8 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/score/endurance` | admin | `?year=` | `{ team_num: { status, driver1_time, energy_type, ... } }` | Endurance and energy measurement records for year |
-| PUT | `/api/score/endurance` | admin | `{ year, team_num, field, value }` | 200 | Update endurance fields or energy fields (`energy_type`, C fuel/extra fuel, E net energy, official energy DSQ/reason). Negative values are accepted only for E net energy |
+| GET | `/api/score/endurance` | admin | `?year=` | `{ team_num: { status, driver1_time, fuel_consumed, ... } }` | Endurance and energy measurement records for year. Energy class is derived from the entry vehicle type (`C-Formula` or `E-Formula`) |
+| PUT | `/api/score/endurance` | admin | `{ year, team_num, field, value }` | 200 | Update endurance fields or energy fields (C fuel/extra fuel, E net energy, official energy DSQ/reason). Energy class cannot be written manually; negative values are accepted only for E net energy |
 
 ### Internal API
 

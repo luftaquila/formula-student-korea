@@ -26,9 +26,10 @@ function createMockEntryServer() {
   const app = express();
   app.get('/api/entries', (req, res) => {
     mockEntryRequestCount++;
+    const energyIntegration = Number(req.query.year) === 2088;
     const payload = {
-      1: { univ: '서울대', team: mockEntryTeamName, type: 'EV' },
-      2: { univ: '카이스트', team: '팀B', type: 'EV' },
+      1: { univ: '서울대', team: mockEntryTeamName, type: energyIntegration ? 'C-Formula' : 'EV' },
+      2: { univ: '카이스트', team: '팀B', type: energyIntegration ? 'E-Formula' : 'EV' },
     };
     if (mockEntryResponseDelayMs > 0) setTimeout(() => res.json(payload), mockEntryResponseDelayMs);
     else res.json(payload);
@@ -445,12 +446,6 @@ describe('PUT /api/score/endurance', () => {
   });
 
   it('accepts energy fields and permits negative net electric energy only', async () => {
-    const type = await client.put('/api/score/endurance', {
-      body: { year: 2026, team_num: 1, field: 'energy_type', value: 'E' },
-      cookie: adminCookie,
-    });
-    assert.equal(type.status, 200);
-
     const net = await client.put('/api/score/endurance', {
       body: { year: 2026, team_num: 1, field: 'electric_net_energy', value: -0.5 },
       cookie: adminCookie,
@@ -464,9 +459,9 @@ describe('PUT /api/score/endurance', () => {
     assert.equal(fuel.status, 400);
   });
 
-  it('validates energy type, DSQ flag and reason length', async () => {
+  it('rejects manual energy type and validates DSQ flag and reason length', async () => {
     const badType = await client.put('/api/score/endurance', {
-      body: { year: 2026, team_num: 1, field: 'energy_type', value: 'EV' },
+      body: { year: 2026, team_num: 1, field: 'energy_type', value: 'E' },
       cookie: adminCookie,
     });
     assert.equal(badType.status, 400);
@@ -800,11 +795,11 @@ describe('Energy score integration', () => {
 
     const insert = db.prepare(`
       INSERT OR REPLACE INTO score_endurance
-        (year, team_num, driver1_time, driver_change_time, driver2_time, energy_type, fuel_consumed, electric_net_energy)
-      VALUES (?, ?, ?, 0, ?, ?, ?, ?)
+        (year, team_num, driver1_time, driver_change_time, driver2_time, fuel_consumed, electric_net_energy)
+      VALUES (?, ?, ?, 0, ?, ?, ?)
     `);
-    insert.run(year, 1, 50_000, 50_000, 'C', 1, null);
-    insert.run(year, 2, 55_000, 55_000, 'E', null, 2);
+    insert.run(year, 1, 50_000, 50_000, 1, null);
+    insert.run(year, 2, 55_000, 55_000, null, 2);
   });
 
   it('returns server-calculated energy scores using the configured total', async () => {
@@ -813,7 +808,9 @@ describe('Energy score integration', () => {
     const data = await res.json();
     assert.equal(data.energy.config.total, 35);
     assert.equal(data.energy.teams['1'].status, 'SCORED');
+    assert.equal(data.energy.teams['1'].energyType, 'C');
     assert.equal(data.energy.teams['1'].score, 35);
+    assert.equal(data.energy.teams['2'].energyType, 'E');
     assert.equal(data.energy.teams['2'].score, 0);
   });
 

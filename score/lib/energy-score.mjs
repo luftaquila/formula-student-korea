@@ -20,7 +20,7 @@ function disqualified(reason) {
  * enduranceRecords의 result에는 출발지연/수동 페널티가, cones/oc에는 아직 시간으로
  * 환산되지 않은 횟수가 들어온다는 score 집계 계약을 따른다.
  */
-export function calculateEnergyScores({ rows, enduranceRecords, endurancePenalty, settings }) {
+export function calculateEnergyScores({ rows, entries, enduranceRecords, endurancePenalty, settings }) {
   const total = Number(settings?.total);
   const distanceKm = Number(settings?.distance_km);
   const lapCount = Number(settings?.lap_count);
@@ -44,6 +44,8 @@ export function calculateEnergyScores({ rows, enduranceRecords, endurancePenalty
 
   for (const row of rows || []) {
     const num = String(row.team_num);
+    const vehicleType = entries?.[num]?.type;
+    const energyType = vehicleType === "C-Formula" ? "C" : vehicleType === "E-Formula" ? "E" : null;
     const enduranceStatus = row.status;
     if (["DNS", "DNF", "DSQ"].includes(enduranceStatus)) {
       teams[num] = disqualified(`내구 ${enduranceStatus}`);
@@ -73,7 +75,7 @@ export function calculateEnergyScores({ rows, enduranceRecords, endurancePenalty
     }
 
     let correctedCo2;
-    if (row.energy_type === "C") {
+    if (energyType === "C") {
       if (![2.31, 2.95].includes(fuelFactor)) {
         teams[num] = pending("휘발유 계산 기준 설정 필요");
         continue;
@@ -89,7 +91,7 @@ export function calculateEnergyScores({ rows, enduranceRecords, endurancePenalty
         continue;
       }
       correctedCo2 = (fuelConsumed + fuelExtra * 2) * fuelFactor;
-    } else if (row.energy_type === "E") {
+    } else if (energyType === "E") {
       if (row.electric_net_energy == null) {
         teams[num] = pending("순사용 전력량 입력 필요");
         continue;
@@ -105,12 +107,13 @@ export function calculateEnergyScores({ rows, enduranceRecords, endurancePenalty
       }
       correctedCo2 = netEnergy * ELECTRIC_CO2_FACTOR;
     } else {
-      teams[num] = pending("C/E 구분 선택 필요");
+      teams[num] = pending("차량 유형을 C-Formula 또는 E-Formula로 설정 필요");
       continue;
     }
 
     const co2Per100Km = correctedCo2 / distanceKm * 100;
     const common = {
+      energyType,
       averageLapTime: round(averageLapTime, 3),
       correctedCo2: round(correctedCo2, 6),
       co2PerLap: round(correctedCo2 / lapCount, 6),
