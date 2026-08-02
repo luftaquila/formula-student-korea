@@ -843,6 +843,30 @@ describe('Energy score integration', () => {
     assert.equal(data.energy.teams['1'].co2Per100Km, 11.55);
     assert.equal(data.energy.teams['1'].score, null);
   });
+
+  it('calculates a numeric score after the energy total is entered in the score table', async () => {
+    const scoringYear = 2087;
+    for (const field of ['driver1_time', 'driver2_time']) {
+      const timeUpdate = await client.put('/api/score/endurance', {
+        cookie: adminCookie,
+        body: { year: scoringYear, team_num: 1, field, value: 50_000 },
+      });
+      assert.equal(timeUpdate.status, 200);
+    }
+
+    const update = await client.put('/api/score/setting', {
+      cookie: adminCookie,
+      body: { year: scoringYear, event_type: '에너지', setting_key: 'total', value: 50 },
+    });
+    assert.equal(update.status, 200);
+
+    const res = await client.get(`/api/score?year=${scoringYear}`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.settings['에너지'].total, 50);
+    assert.equal(data.energy.teams['1'].status, 'SCORED');
+    assert.equal(data.energy.teams['1'].score, 50);
+  });
 });
 
 // ─── Auth ───────────────────────────────────────────────────────────────

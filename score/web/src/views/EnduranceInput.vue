@@ -259,7 +259,7 @@ function energyResultLabel(num) {
   if (!result) return "대기";
   if (result.status === "DSQ") return "DSQ";
   if (result.status === "SCORED") return "정상";
-  return "대기";
+  return result.reason || "대기";
 }
 
 async function saveEnergySetting(key, rawValue) {
@@ -472,7 +472,7 @@ function getInputGrid(el) {
 }
 
 function exportData(format) {
-  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO2/100km", "에너지 판정", "에너지 점수"];
+  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO2/100km", "실격", "에너지 판정", "에너지 점수"];
   const rows = entryList.value.map((entry) => {
     const num = entry.num;
     const ft = getFinalTime(num);
@@ -499,6 +499,7 @@ function exportData(format) {
       getEnergyType(entry) === "C" ? (getField(num, "fuel_extra") ?? "") : "",
       getEnergyType(entry) === "E" ? (getField(num, "electric_net_energy") ?? "") : "",
       getEnergyResult(num)?.co2Per100Km ?? "",
+      getField(num, "energy_dsq") ? "실격" : "",
       energyResultLabel(num),
       getEnergyResult(num)?.score ?? "",
     ];
@@ -586,7 +587,7 @@ function exportData(format) {
                 <th class="col-energy">추가 주유<br>({{ getFuelUnit() }})</th>
                 <th class="col-energy">순사용 전력<br>(kWh)</th>
                 <th class="col-energy">보정 CO₂<br>/100km</th>
-                <th class="col-energy-official">오피셜</th>
+                <th class="col-energy-official">실격</th>
                 <th class="col-energy">판정</th>
                 <th class="col-energy">점수</th>
               </tr>
@@ -642,7 +643,7 @@ function exportData(format) {
                   <button class="energy-dsq-btn" :class="{ active: !!getField(entry.num, 'energy_dsq') }" :disabled="isReadOnly" @click="toggleEnergyDsq(entry.num)">DSQ</button>
                 </td>
                 <td class="col-energy"><span class="energy-status" :class="'energy-status-' + (getEnergyResult(entry.num)?.status || 'PENDING').toLowerCase()" :title="getEnergyResult(entry.num)?.reason || ''">{{ energyResultLabel(entry.num) }}</span></td>
-                <td class="col-energy"><span class="energy-score" :title="getEnergyResult(entry.num)?.reason || ''">{{ getEnergyResult(entry.num)?.score ?? '-' }}</span></td>
+                <td class="col-energy"><span class="energy-score" :title="getEnergyResult(entry.num)?.reason || ''">{{ getEnergyResult(entry.num)?.score ?? (getEnergyResult(entry.num)?.status === 'PENDING' ? '대기' : '-') }}</span></td>
               </tr>
               <tr v-if="entryList.length === 0">
                 <td colspan="24" class="empty-state">

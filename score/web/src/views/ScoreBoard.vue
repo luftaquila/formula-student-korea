@@ -1010,7 +1010,7 @@ function exportData(format) {
                       class="score-value energy-result"
                       :title="getEnergyTitle(entry.num)"
                     >{{ getEnergyScore(entry.num) }}</span>
-                    <span v-else class="record-value dns energy-result" :title="getEnergyTitle(entry.num)">-</span>
+                    <span v-else class="record-value dns energy-result" :title="getEnergyTitle(entry.num)">{{ getEnergyResult(entry.num)?.status === 'PENDING' ? '대기' : '-' }}</span>
                   </td>
                   <td class="col-manual">
                     <input
