@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { calculateEnergyScores } from "../../score/energy-score.mjs";
+import { calculateEnergyScores } from "../../score/lib/energy-score.mjs";
 
 const settings = { total: 40, distance_km: 20, lap_count: 10, fuel_factor: 2.31 };
 const endurancePenalty = { cone_penalty: 2, oc_penalty: 10 };
@@ -128,4 +128,3 @@ describe("energy efficiency score calculation", () => {
     assert.equal(missingMeasurement.teams[1].status, "PENDING");
   });
 });
-
