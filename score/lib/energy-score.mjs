@@ -41,6 +41,7 @@ export function calculateEnergyScores({ rows, entries, enduranceRecords, enduran
 
   const teams = {};
   const candidates = [];
+  const negativeConsumerTimes = [];
 
   for (const row of rows || []) {
     const num = String(row.team_num);
@@ -127,20 +128,19 @@ export function calculateEnergyScores({ rows, entries, enduranceRecords, enduran
     }
     if (correctedCo2 < 0) {
       teams[num] = { status: "SCORED", reason: "회생 충전량이 사용량 초과", score: round(total), ...common };
+      negativeConsumerTimes.push(time);
       continue;
     }
 
-    const candidate = { num, time, correctedCo2, ...common };
+    // common.correctedCo2는 응답 표시용 반올림 값이다. EF 계산에는 계측 원값을 유지한다.
+    const candidate = { ...common, num, time, correctedCo2 };
     candidates.push(candidate);
     teams[num] = { status: "PENDING", reason: "상대점수 계산 중", score: null, ...common };
   }
 
   const eligibleTimes = [
     ...candidates.map((candidate) => candidate.time),
-    ...Object.entries(teams)
-      .filter(([, result]) => result.status === "SCORED" && result.correctedCo2 < 0)
-      .map(([num]) => adjustedTimes[num])
-      .filter((value) => Number.isFinite(value) && value > 0),
+    ...negativeConsumerTimes,
   ];
   const tMin = eligibleTimes.length ? Math.min(...eligibleTimes) : null;
   const co2Min = candidates.length ? Math.min(...candidates.map((candidate) => candidate.correctedCo2)) : null;

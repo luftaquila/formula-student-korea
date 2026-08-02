@@ -164,15 +164,21 @@ function handleOutsideClick(e) {
 }
 
 async function loadTypeColors() {
+  const year = selectedYear.value;
   try {
-    const vtList = await fetchVehicleTypes(selectedYear.value);
+    const vtList = await fetchVehicleTypes(year);
+    if (selectedYear.value !== year) return;
     typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
   } catch { /* 색상 로드 실패 시 기본값 사용 */ }
 }
 
+let scoreDataSeq = 0;
 async function loadData() {
+  const year = selectedYear.value;
+  const seq = ++scoreDataSeq;
   try {
-    const data = await fetchScore(selectedYear.value);
+    const data = await fetchScore(year);
+    if (seq !== scoreDataSeq || selectedYear.value !== year) return;
     entries.value = data.entries;
     inspection.value = data.inspection;
     events.value = data.events;
@@ -183,7 +189,7 @@ async function loadData() {
     sortKey.value = null;
     sortOrder.value = "asc";
   } catch (e) {
-    error("데이터를 가져올 수 없습니다.");
+    if (seq === scoreDataSeq && selectedYear.value === year) error("데이터를 가져올 수 없습니다.");
   }
 }
 
@@ -628,7 +634,9 @@ watch(lastPublicationUpdate, (update) => {
 });
 
 // SSE 재연결 시 전체 데이터 동기화
-watch(reconnected, () => { if (reconnected.value) loadData(); });
+watch(reconnected, () => {
+  if (reconnected.value) Promise.all([loadData(), loadTypeColors()]);
+});
 
 // 카테고리 오버라이드 판별
 function isOverriddenCategory(catId) {

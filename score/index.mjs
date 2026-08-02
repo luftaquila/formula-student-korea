@@ -367,10 +367,12 @@ function createSSESubscriber(name, serverUrl, eventPath, prefix, allowedEvents =
 
 if (!options.skipSSESubscriptions) {
   // score 프론트(useSSE.js)가 실제 구독하는 이벤트만 재전파.
+  const subscribeEntrySSE = createSSESubscriber("Entry", ENTRY_SERVER, "/api/events", "entry", new Set(["entries"]));
   const subscribeInspectionSSE = createSSESubscriber("Inspection", INSPECTION_SERVER, "/api/sheet/events", "inspection", new Set(["category-result", "answer"]));
   // event-mode: 활성 종목이 바뀌면 computeScore의 집계 대상이 달라지므로 재전파해야 프론트가
   // 스코어를 다시 계산한다(재전파 누락 시 새로고침 전까지 stale).
   const subscribeTrafficSSE = createSSESubscriber("Traffic", TRAFFIC_SERVER, "/api/events", "traffic", new Set(["records", "record-visibility", "event-mode"]));
+  subscribeEntrySSE();
   subscribeInspectionSSE();
   subscribeTrafficSSE();
 }

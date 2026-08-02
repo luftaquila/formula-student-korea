@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { createDatabase } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
+import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum } from "../shared/validation.mjs";
 import { VEHICLE_COLORS } from "../shared/constants.js";
 
@@ -143,10 +144,16 @@ const app = createApp({ express }, (req) => {
   if (req.path === "/api/vehicle-types" && req.method === "GET") return null;
   return "admin";
 });
+const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
+
+function broadcastEntries(year, change, detail = {}) {
+  broadcastEvent("entries", { year: Number(year), change, ...detail });
+}
 
 app.get("/api/logs", logger.queryHandler);
 
 app.get("/api/health", (req, res) => res.send("ok"));
+app.get("/api/events", sseHandler());
 
 /* ============================================
    Validation 헬퍼
@@ -879,6 +886,7 @@ app.post("/api/entries", withYearTable, (req, res) => {
   }
 
   logger.log(req, "entry.create", { year, univ: dataValidation.univ, team: dataValidation.team, type: dataValidation.type }, `#${numValidation.value}`);
+  broadcastEntries(year, "create", { num: numValidation.value });
   res.status(201).send();
 });
 
@@ -992,6 +1000,8 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
     warnUnconfiguredLifecycleServices(req, { op: numChanged ? "renumber" : "replacement", year, prevNum, newNum });
   }
 
+  broadcastEntries(year, "update", { num: newNum, prevNum });
+
   const eventIds = result.result.eventIds;
   if (eventIds.length > 0) {
     await processLifecycleOutbox({ ids: eventIds });
@@ -1037,6 +1047,7 @@ app.delete("/api/entries/:num", withYearTable, async (req, res) => {
 
   const { entry, eventIds } = result.result;
   logger.log(req, "entry.delete", { year, univ: entry?.univ, team: entry?.team }, `#${numValidation.value}`);
+  broadcastEntries(year, "delete", { num: numValidation.value });
 
   warnUnconfiguredLifecycleServices(req, { op: "delete", year, nums: [numValidation.value] });
   await processLifecycleOutbox({ ids: eventIds });
@@ -1067,6 +1078,7 @@ app.delete("/api/entries", withYearTable, async (req, res) => {
   logger.log(req, "entry.clear", { year });
 
   const { existingNums, eventIds } = result.result;
+  if (existingNums.length > 0) broadcastEntries(year, "clear");
   if (existingNums.length > 0) {
     warnUnconfiguredLifecycleServices(req, { op: "clear", year, count: existingNums.length });
     await processLifecycleOutbox({ ids: eventIds });
@@ -1154,6 +1166,7 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   }
 
   logger.log(req, "entry.bulk_upload", { year, count: Object.keys(validation.data).length });
+  broadcastEntries(year, "bulk");
 
   const { deletedNums, renumberCount, eventIds } = result.result;
   if (deletedNums.length > 0 || renumberCount > 0) {
@@ -1191,7 +1204,7 @@ app.get("/api/vehicle-types", withYearVtTable, (req, res) => {
 
 // POST /api/vehicle-types - 차량 유형 추가
 app.post("/api/vehicle-types", withYearVtTable, (req, res) => {
-  const { vtTableName } = req;
+  const { vtTableName, vtYear } = req;
   const { name, color } = req.body;
   if (!name || !name.trim()) {
     return res.status(400).send("유형 이름을 입력하세요.");
@@ -1212,6 +1225,7 @@ app.post("/api/vehicle-types", withYearVtTable, (req, res) => {
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "vehicle_type.create", { color: safeColor }, name.trim());
+  broadcastEntries(vtYear, "vehicle-type");
   res.status(201).json({ id: result.result.lastInsertRowid, name: name.trim(), sort_order: nextOrder, color: safeColor });
 });
 
@@ -1271,6 +1285,7 @@ app.patch("/api/vehicle-types/:id", withYearVtTable, (req, res) => {
   if (color !== undefined) detail.color = color;
   if (name?.trim() && name.trim() !== type.name) detail.name = { from: type.name, to: name.trim() };
   logger.log(req, "vehicle_type.update", detail, type.name);
+  broadcastEntries(vtYear, "vehicle-type");
   res.status(200).send();
 });
 
@@ -1296,6 +1311,7 @@ app.delete("/api/vehicle-types/:id", withYearVtTable, (req, res) => {
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "vehicle_type.delete", null, type.name);
+  broadcastEntries(vtYear, "vehicle-type");
   res.status(200).send();
 });
 

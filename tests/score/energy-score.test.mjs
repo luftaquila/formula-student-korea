@@ -83,6 +83,18 @@ describe("energy efficiency score calculation", () => {
     assert.equal(result.teams[1].co2Per100Km, 0);
   });
 
+  it("keeps sub-micro corrected consumption positive for scoring", () => {
+    const result = calculate([
+      { team_num: 1, electric_net_energy: 0.00000001 },
+    ], {
+      1: { result: 100_000, cones: 0, oc: 0 },
+    }, {}, { 1: "E-Formula" });
+
+    assert.equal(result.teams[1].correctedCo2, 0, "response remains display-rounded");
+    assert.equal(result.teams[1].status, "SCORED");
+    assert.equal(result.teams[1].score, 40);
+  });
+
   it("disqualifies endurance non-finishers and official energy DSQ", () => {
     const result = calculate([
       { team_num: 1, status: "DNF", fuel_consumed: 1 },

@@ -65,7 +65,8 @@ async function loadData() {
       fetchScore(selectedYear.value),
     ]);
     if (seq !== fetchSeq) return;
-    entries.value = entryData;
+    // 입력 적용 유형과 에너지 계산 결과를 동일한 score 스냅샷에서 가져온다.
+    entries.value = scoreData.entries || entryData;
     endurance.value = enduranceData;
     penalties.value = scoreData.penalties || {};
     settings.value = scoreData.settings || {};
@@ -76,6 +77,8 @@ async function loadData() {
 }
 
 async function onYearChange() {
+  clearTimeout(scoreRefreshTimer);
+  scoreRefreshSeq++;
   loading.value = true;
   await loadData();
   loading.value = false;
@@ -144,10 +147,12 @@ function scheduleScoreRefresh() {
 }
 
 async function refreshScoreData() {
+  const year = selectedYear.value;
   const seq = ++scoreRefreshSeq;
   try {
-    const data = await fetchScore(selectedYear.value);
-    if (seq !== scoreRefreshSeq) return;
+    const data = await fetchScore(year);
+    if (seq !== scoreRefreshSeq || selectedYear.value !== year) return;
+    entries.value = data.entries || {};
     penalties.value = data.penalties || {};
     settings.value = data.settings || {};
     energy.value = data.energy || { teams: {}, config: {}, references: {} };
@@ -635,9 +640,9 @@ function exportData(format) {
                     >{{ s }}</button>
                   </div>
                 </td>
-                <td class="col-energy"><input class="cell-input energy-input" type="number" min="0" step="any" :value="getEnergyType(entry) === 'C' ? (getField(entry.num, 'fuel_consumed') ?? '') : ''" :disabled="isDisabled(entry.num) || getEnergyType(entry) !== 'C'" :placeholder="getEnergyType(entry) === 'C' ? '-' : ''" @focus="handleCellFocus(entry.num, 'fuel_consumed', $event)" @blur="saveNumField(entry.num, 'fuel_consumed', $event); handleCellBlur()" /></td>
-                <td class="col-energy"><input class="cell-input energy-input" type="number" min="0" step="any" :value="getEnergyType(entry) === 'C' ? (getField(entry.num, 'fuel_extra') ?? '') : ''" :disabled="isDisabled(entry.num) || getEnergyType(entry) !== 'C'" :placeholder="getEnergyType(entry) === 'C' ? '-' : ''" @focus="handleCellFocus(entry.num, 'fuel_extra', $event)" @blur="saveNumField(entry.num, 'fuel_extra', $event); handleCellBlur()" /></td>
-                <td class="col-energy"><input class="cell-input energy-input" type="number" step="any" :value="getEnergyType(entry) === 'E' ? (getField(entry.num, 'electric_net_energy') ?? '') : ''" :disabled="isDisabled(entry.num) || getEnergyType(entry) !== 'E'" :placeholder="getEnergyType(entry) === 'E' ? '-' : ''" @focus="handleCellFocus(entry.num, 'electric_net_energy', $event)" @blur="saveNumField(entry.num, 'electric_net_energy', $event, false, true); handleCellBlur()" /></td>
+                <td class="col-energy"><input class="cell-input energy-input" data-field="fuel_consumed" type="number" min="0" step="any" :value="getEnergyType(entry) === 'C' ? (getField(entry.num, 'fuel_consumed') ?? '') : ''" :disabled="isDisabled(entry.num) || getEnergyType(entry) !== 'C'" :placeholder="getEnergyType(entry) === 'C' ? '-' : ''" @focus="handleCellFocus(entry.num, 'fuel_consumed', $event)" @blur="saveNumField(entry.num, 'fuel_consumed', $event); handleCellBlur()" /></td>
+                <td class="col-energy"><input class="cell-input energy-input" data-field="fuel_extra" type="number" min="0" step="any" :value="getEnergyType(entry) === 'C' ? (getField(entry.num, 'fuel_extra') ?? '') : ''" :disabled="isDisabled(entry.num) || getEnergyType(entry) !== 'C'" :placeholder="getEnergyType(entry) === 'C' ? '-' : ''" @focus="handleCellFocus(entry.num, 'fuel_extra', $event)" @blur="saveNumField(entry.num, 'fuel_extra', $event); handleCellBlur()" /></td>
+                <td class="col-energy"><input class="cell-input energy-input" data-field="electric_net_energy" type="number" step="any" :value="getEnergyType(entry) === 'E' ? (getField(entry.num, 'electric_net_energy') ?? '') : ''" :disabled="isDisabled(entry.num) || getEnergyType(entry) !== 'E'" :placeholder="getEnergyType(entry) === 'E' ? '-' : ''" @focus="handleCellFocus(entry.num, 'electric_net_energy', $event)" @blur="saveNumField(entry.num, 'electric_net_energy', $event, false, true); handleCellBlur()" /></td>
                 <td class="col-energy"><span class="energy-metric">{{ getEnergyResult(entry.num)?.co2Per100Km ?? '-' }}</span></td>
                 <td class="col-energy-official">
                   <button class="energy-dsq-btn" :class="{ active: !!getField(entry.num, 'energy_dsq') }" :disabled="isReadOnly" @click="toggleEnergyDsq(entry.num)">DSQ</button>

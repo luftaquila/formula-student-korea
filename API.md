@@ -125,6 +125,12 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | PATCH | `/api/vehicle-types/:id` | admin | `{ name?, color? }?year=` | 200 | Update vehicle type name/color (name change cascades to entries) |
 | DELETE | `/api/vehicle-types/:id` | admin | `?year=` | 200 | Delete vehicle type (NULLs entries for that year) |
 
+### SSE
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/api/events` | admin | — | SSE stream | Entry and vehicle-type invalidation events. Emits `entries` after mutations so dependent services can refresh their entry snapshot |
+
 ---
 
 ## Queue Service (port 9300)
@@ -345,7 +351,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/score/events` | admin | — | SSE stream | 화이트리스트만 재전파: inspection `category-result`/`answer`, traffic `records`/`record-visibility`/`event-mode`. 재연결 시 `refresh`. 로컬 이벤트: `manual-score`/`penalty`/`setting`/`endurance`/`publication` |
+| GET | `/api/score/events` | admin | — | SSE stream | 화이트리스트만 재전파: entry `entries`, inspection `category-result`/`answer`, traffic `records`/`record-visibility`/`event-mode`. 재연결 시 `refresh`. 로컬 이벤트: `manual-score`/`penalty`/`setting`/`endurance`/`publication` |
 | GET | `/api/score/public/:year/events` | public (공개 활성 시) | — | SSE stream | 공개 성적표 갱신용 `refresh`, 공개 전환용 `publication`. 관리자 이벤트 페이로드는 노출하지 않음. 전체 500개·IP당 10개 연결 제한 |
 
 ### Score Aggregation
@@ -373,14 +379,14 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | PUT | `/api/score/penalty` | admin | `{ year, event_type, cone_penalty, oc_penalty, start_delay }` | 200 | Set per-event penalty values |
-| PUT | `/api/score/setting` | admin | `{ year, event_type, setting_key, value }` | 200 | Set score settings. Events use `total`/`finish`/`cutoff`; report uses `보고서.total`; energy uses `에너지.total` plus `distance_km`/`lap_count`/`fuel_factor` (2.31 L or 2.95 kg) |
+| PUT | `/api/score/setting` | admin | `{ year, event_type, setting_key, value }` | 200 | Set score settings. Events use `total`/`finish`/`cutoff`; report uses `보고서.total`; energy uses `에너지.total` plus `distance_km`/`fuel_factor` (2.31 L or 2.95 kg) |
 
 ### Endurance
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/score/endurance` | admin | `?year=` | `{ team_num: { status, driver1_time, fuel_consumed, ... } }` | Endurance and energy measurement records for year. Energy class is derived from the entry vehicle type (`C-Formula` or `E-Formula`) |
-| PUT | `/api/score/endurance` | admin | `{ year, team_num, field, value }` | 200 | Update endurance fields or energy fields (C fuel/extra fuel, E net energy, official energy DSQ/reason). Energy class cannot be written manually; negative values are accepted only for E net energy |
+| PUT | `/api/score/endurance` | admin | `{ year, team_num, field, value }` | 200 | Update endurance fields or energy fields (C fuel/extra fuel, E net energy, official energy DSQ flag). Energy class cannot be written manually; negative values are accepted only for E net energy |
 
 ### Internal API
 
