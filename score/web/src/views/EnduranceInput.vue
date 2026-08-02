@@ -265,8 +265,8 @@ function energyResultLabel(num) {
 async function saveEnergySetting(key, rawValue) {
   if (isReadOnly.value) return;
   const value = rawValue === "" ? null : Number(rawValue);
-  if (value !== null && (!Number.isFinite(value) || value <= 0 || (key === "lap_count" && !Number.isInteger(value)))) {
-    error(key === "lap_count" ? "랩 수는 양의 정수여야 합니다." : "설정 값은 0보다 커야 합니다.");
+  if (value !== null && (!Number.isFinite(value) || value <= 0)) {
+    error("설정 값은 0보다 커야 합니다.");
     return;
   }
   const oldValue = getEnergySetting(key);
@@ -520,10 +520,6 @@ function exportData(format) {
         <div class="filter-group energy-config-group">
           <label class="filter-label">내구 거리 (km)</label>
           <input class="filter-input config-input" type="number" min="0" step="any" :value="getEnergySetting('distance_km') ?? ''" :disabled="isReadOnly" placeholder="예: 20" @blur="saveEnergySetting('distance_km', $event.target.value)" />
-        </div>
-        <div class="filter-group energy-config-group">
-          <label class="filter-label">랩 수</label>
-          <input class="filter-input config-input" type="number" min="1" step="1" :value="getEnergySetting('lap_count') ?? ''" :disabled="isReadOnly" placeholder="예: 20" @blur="saveEnergySetting('lap_count', $event.target.value)" />
         </div>
         <div class="filter-group energy-config-group">
           <label class="filter-label">휘발유 기준</label>

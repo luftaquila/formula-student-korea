@@ -791,7 +791,6 @@ describe('Energy score integration', () => {
     const insertSetting = db.prepare("INSERT OR REPLACE INTO score_setting (year, event_type, setting_key, value) VALUES (?, '에너지', ?, ?)");
     insertSetting.run(year, 'total', 35);
     insertSetting.run(year, 'distance_km', 20);
-    insertSetting.run(year, 'lap_count', 10);
     insertSetting.run(year, 'fuel_factor', 2.31);
     db.prepare("INSERT OR REPLACE INTO score_setting (year, event_type, setting_key, value) VALUES (?, '보고서', 'total', ?)").run(year, 50);
 

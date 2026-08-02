@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { calculateEnergyScores } from "../../score/lib/energy-score.mjs";
 
-const settings = { total: 40, distance_km: 20, lap_count: 10, fuel_factor: 2.31 };
+const settings = { total: 40, distance_km: 20, fuel_factor: 2.31 };
 const endurancePenalty = { cone_penalty: 2, oc_penalty: 10 };
 
 function calculate(rows, records, overrides = {}, entryTypes = {}) {
@@ -101,6 +101,24 @@ describe("energy efficiency score calculation", () => {
     assert.equal(result.teams[2].co2Per100Km, 11.55);
   });
 
+  it("selects Tmin and CO2min only from non-disqualified efficiency teams", () => {
+    const result = calculate([
+      { team_num: 1, energy_dsq: 1, fuel_consumed: 0.5 },
+      { team_num: 2, fuel_consumed: 1 },
+      { team_num: 3, fuel_consumed: 1.2 },
+    ], {
+      1: { result: 80_000, cones: 0, oc: 0 },
+      2: { result: 100_000, cones: 0, oc: 0 },
+      3: { result: 110_000, cones: 0, oc: 0 },
+    });
+
+    assert.equal(result.teams[1].status, "DSQ");
+    assert.equal(result.teams[2].status, "SCORED");
+    assert.equal(result.teams[2].ef, 1);
+    assert.equal(result.teams[3].status, "SCORED");
+    assert.equal(result.teams[3].ef, 0.75757576);
+  });
+
   it("applies the strict 145% lap-time disqualification after penalties", () => {
     const result = calculate([
       { team_num: 1, fuel_consumed: 1 },
@@ -144,14 +162,12 @@ describe("energy efficiency score calculation", () => {
   it("exposes corrected consumption before score prerequisites are complete", () => {
     const missingConfig = calculate([
       { team_num: 1, fuel_consumed: 1 },
-    ], {}, { total: null, lap_count: null });
+    ], {}, { total: null });
     assert.equal(missingConfig.teams[1].status, "PENDING");
     assert.equal(missingConfig.teams[1].correctedCo2, 2.31);
     assert.equal(missingConfig.teams[1].co2Per100Km, 11.55);
-    assert.equal(missingConfig.teams[1].co2PerLap, undefined);
     assert.equal(missingConfig.config.distanceKm, 20);
     assert.equal(missingConfig.config.total, null);
-    assert.equal(missingConfig.config.lapCount, null);
 
     const missingDistance = calculate([
       { team_num: 1, fuel_consumed: 1 },

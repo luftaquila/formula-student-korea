@@ -23,13 +23,13 @@ function disqualified(reason) {
 export function calculateEnergyScores({ rows, entries, enduranceRecords, endurancePenalty, settings }) {
   const total = Number(settings?.total);
   const distanceKm = Number(settings?.distance_km);
-  const lapCount = Number(settings?.lap_count);
   const fuelFactor = Number(settings?.fuel_factor);
   const totalValid = Number.isFinite(total) && total > 0;
   const distanceValid = Number.isFinite(distanceKm) && distanceKm > 0;
-  const lapCountValid = Number.isInteger(lapCount) && lapCount > 0;
 
   const adjustedTimes = {};
+  // 내구 완주팀은 동일한 공식 랩 수를 주행하므로 평균 랩타임의 비율은
+  // 페널티 반영 최종 기록의 비율과 같다: (Tmin / N) / (Tyours / N).
   for (const [num, record] of Object.entries(enduranceRecords || {})) {
     if (record?.result == null || record.result < 0) continue;
     adjustedTimes[num] = record.result
@@ -85,7 +85,6 @@ export function calculateEnergyScores({ rows, entries, enduranceRecords, enduran
     let co2Per100Km = null;
     if (correctedCo2 != null) {
       common.correctedCo2 = round(correctedCo2, 6);
-      if (lapCountValid) common.co2PerLap = round(correctedCo2 / lapCount, 6);
       if (distanceValid) {
         co2Per100Km = correctedCo2 / distanceKm * 100;
         common.co2Per100Km = round(co2Per100Km, 6);
@@ -113,18 +112,11 @@ export function calculateEnergyScores({ rows, entries, enduranceRecords, enduran
       teams[num] = { ...disqualified("보정 소비량 60.06 kg CO₂/100km 초과"), ...common };
       continue;
     }
-    if (!lapCountValid) {
-      teams[num] = { ...pending("랩 수 설정 필요"), ...common };
-      continue;
-    }
-
     const time = adjustedTimes[num];
     if (!Number.isFinite(time) || time <= 0 || fastestFinishedTime == null) {
       teams[num] = { ...pending("내구 완주 기록 필요"), ...common };
       continue;
     }
-    const averageLapTime = time / lapCount;
-    common.averageLapTime = round(averageLapTime, 3);
     if (time > fastestFinishedTime * MAX_LAP_TIME_RATIO) {
       teams[num] = { ...disqualified("평균 랩타임 145% 초과"), ...common };
       continue;
@@ -189,14 +181,9 @@ export function calculateEnergyScores({ rows, entries, enduranceRecords, enduran
     config: {
       total: totalValid ? total : null,
       distanceKm: distanceValid ? distanceKm : null,
-      lapCount: lapCountValid ? lapCount : null,
       fuelFactor: [2.31, 2.95].includes(fuelFactor) ? fuelFactor : null,
     },
     references: {
-      fastestAverageLapTime: fastestFinishedTime == null || !lapCountValid
-        ? null : round(fastestFinishedTime / lapCount, 3),
-      tMin: tMin == null ? null : round(tMin / lapCount, 3),
-      co2Min: co2Min == null ? null : round(co2Min / lapCount, 6),
       efMin: efMin == null ? null : round(efMin, 8),
       efMax: efMax == null ? null : round(efMax, 8),
     },
