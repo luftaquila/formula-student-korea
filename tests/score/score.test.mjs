@@ -26,7 +26,7 @@ function createMockEntryServer() {
   const app = express();
   app.get('/api/entries', (req, res) => {
     mockEntryRequestCount++;
-    const energyIntegration = Number(req.query.year) === 2088;
+    const energyIntegration = [2087, 2088].includes(Number(req.query.year));
     const payload = {
       1: { univ: '서울대', team: mockEntryTeamName, type: energyIntegration ? 'C-Formula' : 'EV' },
       2: { univ: '카이스트', team: '팀B', type: energyIntegration ? 'E-Formula' : 'EV' },
@@ -514,6 +514,7 @@ describe('GET /api/score/endurance (after writes)', () => {
     assert.equal(data['1'].driver1_time, 120000);
     // Team 2 should exist (status was set then cleared)
     assert.ok(data['2']);
+    assert.equal(data['1'].fuel_extra, null);
   });
 });
 
@@ -826,6 +827,21 @@ describe('Energy score integration', () => {
       body: { year, team_num: 1, score_type: 'report', value: 50 },
     });
     assert.equal(exact.status, 200);
+  });
+
+  it('returns corrected CO2/100km before endurance time and score settings are complete', async () => {
+    const incompleteYear = 2087;
+    db.prepare("INSERT OR REPLACE INTO score_setting (year, event_type, setting_key, value) VALUES (?, '에너지', 'distance_km', ?)").run(incompleteYear, 20);
+    db.prepare("INSERT OR REPLACE INTO score_setting (year, event_type, setting_key, value) VALUES (?, '에너지', 'fuel_factor', ?)").run(incompleteYear, 2.31);
+    db.prepare("INSERT OR REPLACE INTO score_endurance (year, team_num, fuel_consumed) VALUES (?, ?, ?)").run(incompleteYear, 1, 1);
+
+    const res = await client.get(`/api/score?year=${incompleteYear}`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.energy.teams['1'].status, 'PENDING');
+    assert.equal(data.energy.teams['1'].correctedCo2, 2.31);
+    assert.equal(data.energy.teams['1'].co2Per100Km, 11.55);
+    assert.equal(data.energy.teams['1'].score, null);
   });
 });
 

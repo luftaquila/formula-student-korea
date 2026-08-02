@@ -47,6 +47,17 @@ describe("energy efficiency score calculation", () => {
     assert.equal(result.teams[1].score, 40);
   });
 
+  it("accepts additional fuel as the measured amount when the initial amount is zero", () => {
+    const result = calculate([
+      { team_num: 1, fuel_consumed: 0, fuel_extra: 0.5 },
+    ], {
+      1: { result: 100_000, cones: 0, oc: 0 },
+    });
+
+    assert.equal(result.teams[1].status, "SCORED");
+    assert.equal(result.teams[1].correctedCo2, 2.31);
+  });
+
   it("awards configured maximum for a negative net electric measurement", () => {
     const result = calculate([
       { team_num: 1, electric_net_energy: -0.25 },
@@ -68,6 +79,8 @@ describe("energy efficiency score calculation", () => {
 
     assert.equal(result.teams[1].status, "PENDING");
     assert.match(result.teams[1].reason, /오피셜 판정/);
+    assert.equal(result.teams[1].correctedCo2, 0);
+    assert.equal(result.teams[1].co2Per100Km, 0);
   });
 
   it("disqualifies endurance non-finishers and official energy DSQ", () => {
@@ -78,8 +91,14 @@ describe("energy efficiency score calculation", () => {
       2: { result: 100_000, cones: 0, oc: 0 },
     });
 
-    assert.deepEqual(result.teams[1], { status: "DSQ", reason: "내구 DNF", score: 0 });
-    assert.deepEqual(result.teams[2], { status: "DSQ", reason: "봉인 훼손", score: 0 });
+    assert.equal(result.teams[1].status, "DSQ");
+    assert.equal(result.teams[1].reason, "내구 DNF");
+    assert.equal(result.teams[1].score, 0);
+    assert.equal(result.teams[1].co2Per100Km, 11.55);
+    assert.equal(result.teams[2].status, "DSQ");
+    assert.equal(result.teams[2].reason, "봉인 훼손");
+    assert.equal(result.teams[2].score, 0);
+    assert.equal(result.teams[2].co2Per100Km, 11.55);
   });
 
   it("applies the strict 145% lap-time disqualification after penalties", () => {
@@ -111,7 +130,7 @@ describe("energy efficiency score calculation", () => {
     const exactFuel = 60.06 * 20 / 100 / 2.31;
     const result = calculate([
       { team_num: 1, fuel_consumed: exactFuel },
-      { team_num: 2, fuel_consumed: exactFuel + 0.0001 },
+      { team_num: 2, fuel_consumed: exactFuel + 0.00000001 },
     ], {
       1: { result: 100_000, cones: 0, oc: 0 },
       2: { result: 100_000, cones: 0, oc: 0 },
@@ -122,12 +141,26 @@ describe("energy efficiency score calculation", () => {
     assert.match(result.teams[2].reason, /60.06/);
   });
 
-  it("keeps incomplete configuration and measurements pending, not disqualified", () => {
+  it("exposes corrected consumption before score prerequisites are complete", () => {
     const missingConfig = calculate([
       { team_num: 1, fuel_consumed: 1 },
-    ], { 1: { result: 100_000, cones: 0, oc: 0 } }, { total: null });
+    ], {}, { total: null, lap_count: null });
     assert.equal(missingConfig.teams[1].status, "PENDING");
+    assert.equal(missingConfig.teams[1].correctedCo2, 2.31);
+    assert.equal(missingConfig.teams[1].co2Per100Km, 11.55);
+    assert.equal(missingConfig.teams[1].co2PerLap, undefined);
+    assert.equal(missingConfig.config.distanceKm, 20);
+    assert.equal(missingConfig.config.total, null);
+    assert.equal(missingConfig.config.lapCount, null);
 
+    const missingDistance = calculate([
+      { team_num: 1, fuel_consumed: 1 },
+    ], {}, { distance_km: null });
+    assert.equal(missingDistance.teams[1].correctedCo2, 2.31);
+    assert.equal(missingDistance.teams[1].co2Per100Km, undefined);
+  });
+
+  it("keeps incomplete measurements pending, not disqualified", () => {
     const missingMeasurement = calculate([
       { team_num: 1, electric_net_energy: null },
     ], { 1: { result: 100_000, cones: 0, oc: 0 } }, {}, { 1: "E-Formula" });

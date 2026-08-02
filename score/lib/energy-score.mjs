@@ -25,9 +25,9 @@ export function calculateEnergyScores({ rows, entries, enduranceRecords, enduran
   const distanceKm = Number(settings?.distance_km);
   const lapCount = Number(settings?.lap_count);
   const fuelFactor = Number(settings?.fuel_factor);
-  const configValid = Number.isFinite(total) && total > 0
-    && Number.isFinite(distanceKm) && distanceKm > 0
-    && Number.isInteger(lapCount) && lapCount > 0;
+  const totalValid = Number.isFinite(total) && total > 0;
+  const distanceValid = Number.isFinite(distanceKm) && distanceKm > 0;
+  const lapCountValid = Number.isInteger(lapCount) && lapCount > 0;
 
   const adjustedTimes = {};
   for (const [num, record] of Object.entries(enduranceRecords || {})) {
@@ -46,81 +46,91 @@ export function calculateEnergyScores({ rows, entries, enduranceRecords, enduran
     const num = String(row.team_num);
     const vehicleType = entries?.[num]?.type;
     const energyType = vehicleType === "C-Formula" ? "C" : vehicleType === "E-Formula" ? "E" : null;
+    const common = energyType ? { energyType } : {};
+
+    let correctedCo2 = null;
+    let measurementIssue = null;
+    if (energyType === "C") {
+      if (![2.31, 2.95].includes(fuelFactor)) {
+        measurementIssue = "휘발유 계산 기준 설정 필요";
+      } else if (row.fuel_consumed == null) {
+        measurementIssue = "연료 소비량 입력 필요";
+      } else {
+        const fuelConsumed = Number(row.fuel_consumed);
+        const fuelExtra = row.fuel_extra == null ? 0 : Number(row.fuel_extra);
+        if (!Number.isFinite(fuelConsumed) || fuelConsumed < 0 || !Number.isFinite(fuelExtra) || fuelExtra < 0) {
+          measurementIssue = "올바른 연료 소비량 입력 필요";
+        } else {
+          const correctedFuel = fuelConsumed + fuelExtra * 2;
+          correctedCo2 = correctedFuel * fuelFactor;
+          if (correctedFuel === 0) measurementIssue = "연료 소비량 0: 오피셜 판정 필요";
+        }
+      }
+    } else if (energyType === "E") {
+      if (row.electric_net_energy == null) {
+        measurementIssue = "순사용 전력량 입력 필요";
+      } else {
+        const netEnergy = Number(row.electric_net_energy);
+        if (!Number.isFinite(netEnergy)) {
+          measurementIssue = "올바른 순사용 전력량 입력 필요";
+        } else {
+          correctedCo2 = netEnergy * ELECTRIC_CO2_FACTOR;
+          if (netEnergy === 0) measurementIssue = "순사용 전력량 0: 오피셜 판정 필요";
+        }
+      }
+    } else {
+      measurementIssue = "차량 유형을 C-Formula 또는 E-Formula로 설정 필요";
+    }
+
+    let co2Per100Km = null;
+    if (correctedCo2 != null) {
+      common.correctedCo2 = round(correctedCo2, 6);
+      if (lapCountValid) common.co2PerLap = round(correctedCo2 / lapCount, 6);
+      if (distanceValid) {
+        co2Per100Km = correctedCo2 / distanceKm * 100;
+        common.co2Per100Km = round(co2Per100Km, 6);
+      }
+    }
+
     const enduranceStatus = row.status;
     if (["DNS", "DNF", "DSQ"].includes(enduranceStatus)) {
-      teams[num] = disqualified(`내구 ${enduranceStatus}`);
+      teams[num] = { ...disqualified(`내구 ${enduranceStatus}`), ...common };
       continue;
     }
     if (row.energy_dsq) {
-      teams[num] = disqualified(row.energy_dsq_reason?.trim() || "오피셜 실격");
+      teams[num] = { ...disqualified(row.energy_dsq_reason?.trim() || "오피셜 실격"), ...common };
       continue;
     }
-    if (!configValid) {
-      teams[num] = pending("에너지 총점·거리·랩 수 설정 필요");
+    if (measurementIssue) {
+      teams[num] = { ...pending(measurementIssue), ...common };
+      continue;
+    }
+    if (!distanceValid) {
+      teams[num] = { ...pending("내구 거리 설정 필요"), ...common };
+      continue;
+    }
+    if (co2Per100Km > MAX_CO2_PER_100KM) {
+      teams[num] = { ...disqualified("보정 소비량 60.06 kg CO₂/100km 초과"), ...common };
+      continue;
+    }
+    if (!lapCountValid) {
+      teams[num] = { ...pending("랩 수 설정 필요"), ...common };
       continue;
     }
 
     const time = adjustedTimes[num];
     if (!Number.isFinite(time) || time <= 0 || fastestFinishedTime == null) {
-      teams[num] = pending("내구 완주 기록 필요");
+      teams[num] = { ...pending("내구 완주 기록 필요"), ...common };
       continue;
     }
     const averageLapTime = time / lapCount;
+    common.averageLapTime = round(averageLapTime, 3);
     if (time > fastestFinishedTime * MAX_LAP_TIME_RATIO) {
-      teams[num] = {
-        ...disqualified("평균 랩타임 145% 초과"),
-        averageLapTime: round(averageLapTime, 3),
-      };
+      teams[num] = { ...disqualified("평균 랩타임 145% 초과"), ...common };
       continue;
     }
-
-    let correctedCo2;
-    if (energyType === "C") {
-      if (![2.31, 2.95].includes(fuelFactor)) {
-        teams[num] = pending("휘발유 계산 기준 설정 필요");
-        continue;
-      }
-      if (row.fuel_consumed == null) {
-        teams[num] = pending("연료 소비량 입력 필요");
-        continue;
-      }
-      const fuelConsumed = Number(row.fuel_consumed);
-      const fuelExtra = Number(row.fuel_extra || 0);
-      if (!Number.isFinite(fuelConsumed) || fuelConsumed <= 0 || !Number.isFinite(fuelExtra) || fuelExtra < 0) {
-        teams[num] = pending("올바른 연료 소비량 입력 필요");
-        continue;
-      }
-      correctedCo2 = (fuelConsumed + fuelExtra * 2) * fuelFactor;
-    } else if (energyType === "E") {
-      if (row.electric_net_energy == null) {
-        teams[num] = pending("순사용 전력량 입력 필요");
-        continue;
-      }
-      const netEnergy = Number(row.electric_net_energy);
-      if (!Number.isFinite(netEnergy)) {
-        teams[num] = pending("올바른 순사용 전력량 입력 필요");
-        continue;
-      }
-      if (netEnergy === 0) {
-        teams[num] = pending("순사용 전력량 0: 오피셜 판정 필요");
-        continue;
-      }
-      correctedCo2 = netEnergy * ELECTRIC_CO2_FACTOR;
-    } else {
-      teams[num] = pending("차량 유형을 C-Formula 또는 E-Formula로 설정 필요");
-      continue;
-    }
-
-    const co2Per100Km = correctedCo2 / distanceKm * 100;
-    const common = {
-      energyType,
-      averageLapTime: round(averageLapTime, 3),
-      correctedCo2: round(correctedCo2, 6),
-      co2PerLap: round(correctedCo2 / lapCount, 6),
-      co2Per100Km: round(co2Per100Km, 6),
-    };
-    if (co2Per100Km > MAX_CO2_PER_100KM) {
-      teams[num] = { ...disqualified("보정 소비량 60.06 kg CO₂/100km 초과"), ...common };
+    if (!totalValid) {
+      teams[num] = { ...pending("에너지 총점 설정 필요"), ...common };
       continue;
     }
     if (correctedCo2 < 0) {
@@ -176,9 +186,14 @@ export function calculateEnergyScores({ rows, entries, enduranceRecords, enduran
   }
 
   return {
-    config: { total: configValid ? total : null, distanceKm, lapCount, fuelFactor },
+    config: {
+      total: totalValid ? total : null,
+      distanceKm: distanceValid ? distanceKm : null,
+      lapCount: lapCountValid ? lapCount : null,
+      fuelFactor: [2.31, 2.95].includes(fuelFactor) ? fuelFactor : null,
+    },
     references: {
-      fastestAverageLapTime: fastestFinishedTime == null || !Number.isInteger(lapCount) || lapCount <= 0
+      fastestAverageLapTime: fastestFinishedTime == null || !lapCountValid
         ? null : round(fastestFinishedTime / lapCount, 3),
       tMin: tMin == null ? null : round(tMin / lapCount, 3),
       co2Min: co2Min == null ? null : round(co2Min / lapCount, 6),

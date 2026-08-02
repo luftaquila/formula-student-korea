@@ -77,14 +77,14 @@ db.transaction(() => {
     driver2_oc INTEGER DEFAULT 0,
     driver2_penalty REAL DEFAULT 0,
     fuel_consumed REAL,
-    fuel_extra REAL DEFAULT 0,
+    fuel_extra REAL,
     electric_net_energy REAL,
     energy_dsq INTEGER NOT NULL DEFAULT 0,
     energy_dsq_reason TEXT,
     PRIMARY KEY (year, team_num)
   )`);
   addColumn(db, "score_endurance", "fuel_consumed REAL");
-  addColumn(db, "score_endurance", "fuel_extra REAL DEFAULT 0");
+  addColumn(db, "score_endurance", "fuel_extra REAL");
   addColumn(db, "score_endurance", "electric_net_energy REAL");
   addColumn(db, "score_endurance", "energy_dsq INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "score_endurance", "energy_dsq_reason TEXT");
