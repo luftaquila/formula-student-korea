@@ -80,14 +80,12 @@ db.transaction(() => {
     fuel_extra REAL,
     electric_net_energy REAL,
     energy_dsq INTEGER NOT NULL DEFAULT 0,
-    energy_dsq_reason TEXT,
     PRIMARY KEY (year, team_num)
   )`);
   addColumn(db, "score_endurance", "fuel_consumed REAL");
   addColumn(db, "score_endurance", "fuel_extra REAL");
   addColumn(db, "score_endurance", "electric_net_energy REAL");
   addColumn(db, "score_endurance", "energy_dsq INTEGER NOT NULL DEFAULT 0");
-  addColumn(db, "score_endurance", "energy_dsq_reason TEXT");
 })();
 
 const ENDURANCE_SQL = {
@@ -107,7 +105,6 @@ const ENDURANCE_SQL = {
   fuel_extra: "UPDATE score_endurance SET fuel_extra = ? WHERE year = ? AND team_num = ?",
   electric_net_energy: "UPDATE score_endurance SET electric_net_energy = ? WHERE year = ? AND team_num = ?",
   energy_dsq: "UPDATE score_endurance SET energy_dsq = ? WHERE year = ? AND team_num = ?",
-  energy_dsq_reason: "UPDATE score_endurance SET energy_dsq_reason = ? WHERE year = ? AND team_num = ?",
 };
 
 /* ============================================
@@ -717,11 +714,11 @@ async function computeScore(year) {
         enduranceRecords[row.team_num] = { result: -1, cones: 0, oc: 0, allRuns: [] };
         continue;
       }
-      // 정상: 세 시간 필드 모두 입력된 경우만
-      if (row.driver1_time != null && row.driver2_time != null && row.driver_change_time != null) {
+      // 두 드라이버 기록이 있으면 완주 기록으로 본다. 교체 초과시간 빈칸은 0초다.
+      if (row.driver1_time != null && row.driver2_time != null) {
         const startDelayMs = ((row.driver1_start_delay || 0) + (row.driver2_start_delay || 0)) * (endurancePen.start_delay || 0) * 1000;
         const manualPenaltyMs = ((row.driver1_penalty || 0) + (row.driver2_penalty || 0)) * 1000;
-        const result = row.driver1_time + row.driver2_time + row.driver_change_time + startDelayMs + manualPenaltyMs;
+        const result = row.driver1_time + row.driver2_time + (row.driver_change_time || 0) + startDelayMs + manualPenaltyMs;
         const cones = (row.driver1_cones || 0) + (row.driver2_cones || 0);
         const oc = (row.driver1_oc || 0) + (row.driver2_oc || 0);
         enduranceRecords[row.team_num] = { result, cones, oc, allRuns: [] };
@@ -893,7 +890,13 @@ app.get("/api/score/endurance", (req, res) => {
   const rows = db.prepare("SELECT * FROM score_endurance WHERE year = ?").all(year);
   const result = {};
   for (const row of rows) {
-    const { year: _year, team_num, energy_type: _legacyEnergyType, ...data } = row;
+    const {
+      year: _year,
+      team_num,
+      energy_type: _legacyEnergyType,
+      energy_dsq_reason: _legacyEnergyDsqReason,
+      ...data
+    } = row;
     result[team_num] = data;
   }
   res.json(result);
@@ -913,19 +916,16 @@ app.put("/api/score/endurance", (req, res) => {
   const allowedFields = [
     "status", "driver1_time", "driver1_start_delay", "driver1_cones", "driver1_oc", "driver1_penalty",
     "driver_change_time", "driver2_time", "driver2_start_delay", "driver2_cones", "driver2_oc", "driver2_penalty",
-    "fuel_consumed", "fuel_extra", "electric_net_energy", "energy_dsq", "energy_dsq_reason",
+    "fuel_consumed", "fuel_extra", "electric_net_energy", "energy_dsq",
   ];
   if (!allowedFields.includes(field)) {
     return res.status(400).send("허용되지 않는 필드입니다.");
   }
 
-  const textFields = new Set(["status", "energy_dsq_reason"]);
+  const textFields = new Set(["status"]);
   const dbValue = value === null || value === "" ? null : (textFields.has(field) ? String(value).trim() : Number(value));
   if (field === "status" && dbValue !== null && !["DNS", "DNF", "DSQ"].includes(dbValue)) {
     return res.status(400).send("올바르지 않은 상태값입니다. (DNS, DNF, DSQ 또는 비움)");
-  }
-  if (field === "energy_dsq_reason" && dbValue !== null && dbValue.length > 200) {
-    return res.status(400).send("실격 사유가 너무 깁니다.");
   }
   if (!textFields.has(field) && dbValue !== null && !Number.isFinite(dbValue)) {
     return res.status(400).send("유효하지 않은 값입니다.");

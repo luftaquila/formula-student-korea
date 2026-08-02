@@ -197,8 +197,8 @@ watch(reconnected, () => {
 // 계산 헬퍼
 function getDrivingTime(num) {
   const d = endurance.value[num];
-  if (!d || d.driver1_time == null || d.driver2_time == null || d.driver_change_time == null) return null;
-  return d.driver1_time + d.driver2_time + d.driver_change_time;
+  if (!d || d.driver1_time == null || d.driver2_time == null) return null;
+  return d.driver1_time + d.driver2_time + (d.driver_change_time || 0);
 }
 
 function getPenaltyTime(num) {
@@ -415,19 +415,10 @@ async function toggleEnergyDsq(num) {
   await saveDirectField(num, "energy_dsq", getField(num, "energy_dsq") ? 0 : 1);
 }
 
-async function saveEnergyReason(num, event) {
-  await saveDirectField(num, "energy_dsq_reason", event.target.value.trim());
-}
-
 // 키보드 네비게이션 (Enter, 화살표)
 function handleKeyNav(e) {
   const target = e.target;
   if (target.tagName !== "INPUT" || target.disabled) return;
-
-  if (target.classList.contains("energy-reason-input")) {
-    if (e.key === "Enter") target.blur();
-    return;
-  }
 
   if (e.key === "Enter") {
     e.preventDefault();
@@ -481,7 +472,7 @@ function getInputGrid(el) {
 }
 
 function exportData(format) {
-  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO2/100km", "에너지 판정", "에너지 사유", "에너지 점수"];
+  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO2/100km", "에너지 판정", "에너지 점수"];
   const rows = entryList.value.map((entry) => {
     const num = entry.num;
     const ft = getFinalTime(num);
@@ -509,7 +500,6 @@ function exportData(format) {
       getEnergyType(entry) === "E" ? (getField(num, "electric_net_energy") ?? "") : "",
       getEnergyResult(num)?.co2Per100Km ?? "",
       energyResultLabel(num),
-      getEnergyResult(num)?.reason || getField(num, "energy_dsq_reason") || "",
       getEnergyResult(num)?.score ?? "",
     ];
   });
@@ -654,7 +644,6 @@ function exportData(format) {
                 <td class="col-energy"><span class="energy-metric">{{ getEnergyResult(entry.num)?.co2Per100Km ?? '-' }}</span></td>
                 <td class="col-energy-official">
                   <button class="energy-dsq-btn" :class="{ active: !!getField(entry.num, 'energy_dsq') }" :disabled="isReadOnly" @click="toggleEnergyDsq(entry.num)">DSQ</button>
-                  <input v-if="getField(entry.num, 'energy_dsq')" class="energy-reason-input" :value="getField(entry.num, 'energy_dsq_reason') ?? ''" :disabled="isReadOnly" maxlength="200" placeholder="실격 사유" @blur="saveEnergyReason(entry.num, $event)" />
                 </td>
                 <td class="col-energy"><span class="energy-status" :class="'energy-status-' + (getEnergyResult(entry.num)?.status || 'PENDING').toLowerCase()" :title="getEnergyResult(entry.num)?.reason || ''">{{ energyResultLabel(entry.num) }}</span></td>
                 <td class="col-energy"><span class="energy-score" :title="getEnergyResult(entry.num)?.reason || ''">{{ getEnergyResult(entry.num)?.score ?? '-' }}</span></td>
@@ -846,15 +835,6 @@ function exportData(format) {
   background: rgba(16, 185, 129, 0.035);
 }
 
-.energy-reason-input {
-  border: 1px solid var(--border-color);
-  border-radius: 5px;
-  background: var(--bg-input);
-  color: var(--text-primary);
-  font-size: 0.75rem;
-  padding: 0.25rem;
-}
-
 .energy-input {
   width: 4.5rem;
 }
@@ -874,11 +854,6 @@ function exportData(format) {
   background: #7c3aed;
   border-color: #7c3aed;
   color: white;
-}
-
-.energy-reason-input {
-  width: 7rem;
-  margin-left: 0.25rem;
 }
 
 .energy-metric,

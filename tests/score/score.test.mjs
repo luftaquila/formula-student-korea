@@ -459,7 +459,7 @@ describe('PUT /api/score/endurance', () => {
     assert.equal(fuel.status, 400);
   });
 
-  it('rejects manual energy type and validates DSQ flag and reason length', async () => {
+  it('rejects manual energy type and DSQ reason, and validates the DSQ flag', async () => {
     const badType = await client.put('/api/score/endurance', {
       body: { year: 2026, team_num: 1, field: 'energy_type', value: 'E' },
       cookie: adminCookie,
@@ -472,11 +472,11 @@ describe('PUT /api/score/endurance', () => {
     });
     assert.equal(badDsq.status, 400);
 
-    const longReason = await client.put('/api/score/endurance', {
-      body: { year: 2026, team_num: 1, field: 'energy_dsq_reason', value: '가'.repeat(201) },
+    const reason = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'energy_dsq_reason', value: '봉인 훼손' },
       cookie: adminCookie,
     });
-    assert.equal(longReason.status, 400);
+    assert.equal(reason.status, 400);
   });
 
   it('rejects non-allowed field', async () => {
@@ -515,6 +515,7 @@ describe('GET /api/score/endurance (after writes)', () => {
     // Team 2 should exist (status was set then cleared)
     assert.ok(data['2']);
     assert.equal(data['1'].fuel_extra, null);
+    assert.equal('energy_dsq_reason' in data['1'], false);
   });
 });
 
@@ -797,13 +798,13 @@ describe('Energy score integration', () => {
     const insert = db.prepare(`
       INSERT OR REPLACE INTO score_endurance
         (year, team_num, driver1_time, driver_change_time, driver2_time, fuel_consumed, electric_net_energy)
-      VALUES (?, ?, ?, 0, ?, ?, ?)
+      VALUES (?, ?, ?, NULL, ?, ?, ?)
     `);
     insert.run(year, 1, 50_000, 50_000, 1, null);
     insert.run(year, 2, 55_000, 55_000, null, 2);
   });
 
-  it('returns server-calculated energy scores using the configured total', async () => {
+  it('returns energy scores with a blank driver-change overrun treated as zero', async () => {
     const res = await client.get(`/api/score?year=${year}`, { cookie: adminCookie });
     assert.equal(res.status, 200);
     const data = await res.json();

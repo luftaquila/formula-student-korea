@@ -86,7 +86,7 @@ describe("energy efficiency score calculation", () => {
   it("disqualifies endurance non-finishers and official energy DSQ", () => {
     const result = calculate([
       { team_num: 1, status: "DNF", fuel_consumed: 1 },
-      { team_num: 2, energy_dsq: 1, energy_dsq_reason: "봉인 훼손", fuel_consumed: 1 },
+      { team_num: 2, energy_dsq: 1, fuel_consumed: 1 },
     ], {
       2: { result: 100_000, cones: 0, oc: 0 },
     });
@@ -96,7 +96,7 @@ describe("energy efficiency score calculation", () => {
     assert.equal(result.teams[1].score, 0);
     assert.equal(result.teams[1].co2Per100Km, 11.55);
     assert.equal(result.teams[2].status, "DSQ");
-    assert.equal(result.teams[2].reason, "봉인 훼손");
+    assert.equal(result.teams[2].reason, "오피셜 실격");
     assert.equal(result.teams[2].score, 0);
     assert.equal(result.teams[2].co2Per100Km, 11.55);
   });

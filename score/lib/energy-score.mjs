@@ -98,7 +98,7 @@ export function calculateEnergyScores({ rows, entries, enduranceRecords, enduran
       continue;
     }
     if (row.energy_dsq) {
-      teams[num] = { ...disqualified(row.energy_dsq_reason?.trim() || "오피셜 실격"), ...common };
+      teams[num] = { ...disqualified("오피셜 실격"), ...common };
       continue;
     }
     if (measurementIssue) {
