@@ -15,6 +15,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { user } from "@shared/officialsStore.js";
 import { createKeyedDebouncer } from "@shared/debounce.js";
 import { useSSE } from "../composables/useSSE";
+import { createVersionedSaveQueue } from "../utils/versioned-save-queue";
 
 const { error } = useNotification();
 const router = useRouter();
@@ -32,6 +33,42 @@ const loading = ref(true);
 const storedTab = Number(sessionStorage.getItem("inspectionActiveTab")) || 0;
 const activeTab = ref(storedTab);
 const tabsRef = ref(null);
+const draftStorageKey = `inspection-sheet-drafts-${year}-${num}`;
+let localDrafts = { answers: {}, memos: {} };
+
+try {
+  const storedDrafts = JSON.parse(localStorage.getItem(draftStorageKey) || "null");
+  if (storedDrafts && typeof storedDrafts === "object") {
+    localDrafts = {
+      answers: storedDrafts.answers || {},
+      memos: storedDrafts.memos || {},
+    };
+  }
+} catch {
+  try { localStorage.removeItem(draftStorageKey); } catch {}
+}
+
+function persistDrafts() {
+  try {
+    if (!Object.keys(localDrafts.answers).length && !Object.keys(localDrafts.memos).length) {
+      localStorage.removeItem(draftStorageKey);
+      return;
+    }
+    localStorage.setItem(draftStorageKey, JSON.stringify(localDrafts));
+  } catch {
+    // 자동 저장 자체는 계속 동작한다. 저장소 용량/보안 설정으로 초안 보관만 실패할 수 있다.
+  }
+}
+
+function setDraft(kind, itemId, value, baseVersion) {
+  localDrafts[kind][itemId] = { value, baseVersion };
+  persistDrafts();
+}
+
+function clearDraft(kind, itemId) {
+  delete localDrafts[kind][itemId];
+  persistDrafts();
+}
 
 watch(activeTab, (val) => {
   sessionStorage.setItem("inspectionActiveTab", val);
@@ -74,6 +111,7 @@ onMounted(async () => {
     template.value = tmpl;
     sheetData.value = data;
     typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
+    restoreLocalDrafts();
   } catch (e) {
     error("데이터를 가져올 수 없습니다.");
   }
@@ -98,6 +136,30 @@ function getMemo(itemId) {
   return sheetData.value.answers[itemId]?.memo ?? "";
 }
 
+function getMemoUpdatedAt(itemId) {
+  return sheetData.value.answers[itemId]?.memo_updated_at ?? null;
+}
+
+function getMemoUpdatedBy(itemId) {
+  return sheetData.value.answers[itemId]?.memo_updated_by ?? "";
+}
+
+function ensureAnswerRecord(itemId) {
+  if (!sheetData.value.answers[itemId]) {
+    sheetData.value.answers[itemId] = {
+      value: "",
+      memo: "",
+      answer_version: 0,
+      answer_updated_at: null,
+      answer_updated_by: "",
+      memo_version: 0,
+      memo_updated_at: null,
+      memo_updated_by: "",
+    };
+  }
+  return sheetData.value.answers[itemId];
+}
+
 function getCategoryResult(catId) {
   return sheetData.value.results[catId] ?? "";
 }
@@ -106,55 +168,163 @@ function getInspector(catId) {
   return sheetData.value.inspectors[catId] ?? "";
 }
 
-// 키 단위 디바운스 (언마운트 시 flush로 대기 중 저장 유실 방지)
+// 검차관 이름은 기존 키 단위 디바운스를 유지한다.
 const { debounce, cancel: cancelDebounce, flush: flushDebounce } = createKeyedDebouncer(300);
-// 마지막으로 전송한 값 추적 (SSE self-echo 방지)
-const lastSentValues = {};
 
-async function onAnswerChange(itemId, value) {
-  if (!sheetData.value.answers[itemId]) {
-    sheetData.value.answers[itemId] = { value: "", memo: "" };
+const answerSaveStates = ref({});
+const memoSaveStates = ref({});
+const answerConflicts = ref({});
+const memoConflicts = ref({});
+const deferredAnswerUpdates = new Map();
+const deferredMemoUpdates = new Map();
+const saveStateTimers = new Map();
+
+function setSaveState(target, itemId, state, detail) {
+  const timerKey = `${target === answerSaveStates ? "answer" : "memo"}-${itemId}`;
+  clearTimeout(saveStateTimers.get(timerKey));
+  target.value = { ...target.value, [itemId]: { state, detail } };
+  if (state === "saved") {
+    saveStateTimers.set(timerKey, setTimeout(() => {
+      if (target.value[itemId]?.state === "saved") {
+        target.value = { ...target.value, [itemId]: { state: "idle", detail: null } };
+      }
+      saveStateTimers.delete(timerKey);
+    }, 1500));
   }
-  sheetData.value.answers[itemId].value = value;
-  editedDuringFocus.add(itemId);
+}
 
-  debounce(`answer-${itemId}`, async () => {
-    try {
-      lastSentValues[`answer-${itemId}`] = value;
-      await updateSheetAnswer({ year, team_num: num, item_id: itemId, value });
-    } catch (e) {
-      error("저장에 실패했습니다.");
-    }
-  });
+function clearConflict(target, itemId) {
+  if (!target.value[itemId]) return;
+  const next = { ...target.value };
+  delete next[itemId];
+  target.value = next;
+}
+
+function updateAnswerMetadata(itemId, data) {
+  const record = ensureAnswerRecord(itemId);
+  if (data.version !== undefined && data.version !== null) record.answer_version = Number(data.version) || 0;
+  record.answer_updated_at = data.updated_at ?? null;
+  record.answer_updated_by = data.updated_by ?? "";
+}
+
+function updateMemoMetadata(itemId, data) {
+  const record = ensureAnswerRecord(itemId);
+  if (data.version !== undefined && data.version !== null) record.memo_version = Number(data.version) || 0;
+  record.memo_updated_at = data.updated_at ?? null;
+  record.memo_updated_by = data.updated_by ?? "";
+}
+
+const answerQueue = createVersionedSaveQueue({
+  getVersion: itemId => ensureAnswerRecord(itemId).answer_version,
+  save: (itemId, request) => updateSheetAnswer({
+    year,
+    team_num: num,
+    item_id: itemId,
+    value: request.value,
+    base_version: request.baseVersion,
+    mutation_id: request.mutationId,
+  }),
+  onState: (itemId, state, detail) => setSaveState(answerSaveStates, itemId, state, detail),
+  onSaved: (itemId, response) => {
+    updateAnswerMetadata(itemId, response);
+    if (getAnswer(itemId) === response.value) clearDraft("answers", itemId);
+    clearConflict(answerConflicts, itemId);
+    queueMicrotask(() => applyDeferredAnswer(itemId));
+  },
+  onConflict: (itemId, current, localValue) => {
+    answerConflicts.value = { ...answerConflicts.value, [itemId]: { current, localValue } };
+  },
+  onError: () => error("응답 저장에 실패했습니다."),
+});
+
+const memoQueue = createVersionedSaveQueue({
+  getVersion: itemId => ensureAnswerRecord(itemId).memo_version,
+  save: (itemId, request) => updateSheetMemo({
+    year,
+    team_num: num,
+    item_id: itemId,
+    memo: request.value,
+    base_version: request.baseVersion,
+    mutation_id: request.mutationId,
+  }),
+  onState: (itemId, state, detail) => setSaveState(memoSaveStates, itemId, state, detail),
+  onSaved: (itemId, response) => {
+    updateMemoMetadata(itemId, response);
+    if (getMemo(itemId) === response.memo) clearDraft("memos", itemId);
+    clearConflict(memoConflicts, itemId);
+    queueMicrotask(() => applyDeferredMemo(itemId));
+  },
+  onConflict: (itemId, current, localValue) => {
+    memoConflicts.value = { ...memoConflicts.value, [itemId]: { current, localValue } };
+  },
+  onError: () => error("메모 저장에 실패했습니다."),
+});
+
+function onAnswerChange(itemId, value) {
+  ensureAnswerRecord(itemId).value = value;
+  editedDuringFocus.add(itemId);
+  clearConflict(answerConflicts, itemId);
+  setDraft("answers", itemId, value, answerQueue.currentVersion(itemId));
+  answerQueue.enqueue(itemId, value);
 }
 
 function onPassFailToggle(itemId, val) {
   const current = getAnswer(itemId);
   const newVal = current === val ? "" : val;
-  if (!sheetData.value.answers[itemId]) {
-    sheetData.value.answers[itemId] = { value: "", memo: "" };
-  }
-  sheetData.value.answers[itemId].value = newVal;
-  // passfail is immediate, no debounce
-  lastSentValues[`answer-${itemId}`] = newVal;
-  updateSheetAnswer({ year, team_num: num, item_id: itemId, value: newVal }).catch(() => error("저장에 실패했습니다."));
+  ensureAnswerRecord(itemId).value = newVal;
+  clearConflict(answerConflicts, itemId);
+  setDraft("answers", itemId, newVal, answerQueue.currentVersion(itemId));
+  answerQueue.enqueue(itemId, newVal, { immediate: true });
 }
 
-async function onMemoChange(itemId, memo) {
-  if (!sheetData.value.answers[itemId]) {
-    sheetData.value.answers[itemId] = { value: "", memo: "" };
-  }
-  sheetData.value.answers[itemId].memo = memo;
+function onMemoChange(itemId, memo) {
+  ensureAnswerRecord(itemId).memo = memo;
   editedMemos.add(itemId);
+  clearConflict(memoConflicts, itemId);
+  setDraft("memos", itemId, memo, memoQueue.currentVersion(itemId));
+  memoQueue.enqueue(itemId, memo);
+}
 
-  debounce(`memo-${itemId}`, async () => {
-    try {
-      lastSentValues[`memo-${itemId}`] = memo;
-      await updateSheetMemo({ year, team_num: num, item_id: itemId, memo });
-    } catch (e) {
-      error("저장에 실패했습니다.");
+function restoreLocalDrafts() {
+  if (isReadOnly.value) return;
+  for (const [rawItemId, draft] of Object.entries(localDrafts.answers)) {
+    const itemId = Number(rawItemId);
+    const record = ensureAnswerRecord(itemId);
+    const serverValue = record.value;
+    if (record.value === draft.value) {
+      clearDraft("answers", itemId);
+      continue;
     }
-  });
+    record.value = draft.value;
+    answerQueue.enqueue(itemId, draft.value);
+    if ((draft.baseVersion ?? 0) !== (record.answer_version ?? 0)) {
+      answerQueue.markConflict(itemId, {
+        value: serverValue,
+        version: record.answer_version ?? 0,
+        updated_at: record.answer_updated_at,
+        updated_by: record.answer_updated_by,
+      });
+    }
+  }
+  for (const [rawItemId, draft] of Object.entries(localDrafts.memos)) {
+    const itemId = Number(rawItemId);
+    const record = ensureAnswerRecord(itemId);
+    const serverMemo = record.memo;
+    if (record.memo === draft.value) {
+      clearDraft("memos", itemId);
+      continue;
+    }
+    record.memo = draft.value;
+    memoQueue.enqueue(itemId, draft.value);
+    if ((draft.baseVersion ?? 0) !== (record.memo_version ?? 0)) {
+      memoQueue.markConflict(itemId, {
+        memo: serverMemo,
+        version: record.memo_version ?? 0,
+        updated_at: record.memo_updated_at,
+        updated_by: record.memo_updated_by,
+      });
+    }
+  }
 }
 
 async function onCategoryResultToggle(catId, val) {
@@ -215,48 +385,108 @@ function fillMyName(catId) {
 const editingMemo = ref(null);
 const focusedItemId = ref(null);
 
-// Deferred SSE update state
-const deferredAnswerUpdate = ref(null);
 const editedDuringFocus = new Set();
-const deferredMemoUpdate = ref(null);
 const editedMemos = new Set();
 
+function applyRemoteAnswer(update) {
+  const record = ensureAnswerRecord(update.item_id);
+  record.value = update.value;
+  updateAnswerMetadata(update.item_id, update);
+  answerQueue.acceptVersion(update.item_id, update.version);
+}
+
 function applyDeferredAnswer(itemId) {
-  const deferred = deferredAnswerUpdate.value;
-  if (deferred && deferred.item_id === itemId && !editedDuringFocus.has(itemId)) {
-    if (!sheetData.value.answers[deferred.item_id])
-      sheetData.value.answers[deferred.item_id] = { value: "", memo: "" };
-    sheetData.value.answers[deferred.item_id].value = deferred.value;
-  }
-  deferredAnswerUpdate.value = null;
-  editedDuringFocus.delete(itemId);
+  const deferred = deferredAnswerUpdates.get(itemId);
+  if (!deferred || focusedItemId.value === itemId || editedDuringFocus.has(itemId) || answerQueue.isDirty(itemId)) return;
+  deferredAnswerUpdates.delete(itemId);
+  if (Number(deferred.version) <= answerQueue.currentVersion(itemId)) return;
+  applyRemoteAnswer(deferred);
+}
+
+function applyRemoteMemo(update) {
+  const record = ensureAnswerRecord(update.item_id);
+  record.memo = update.memo;
+  updateMemoMetadata(update.item_id, update);
+  memoQueue.acceptVersion(update.item_id, update.version);
 }
 
 function applyDeferredMemo(itemId) {
-  const deferred = deferredMemoUpdate.value;
-  if (deferred && deferred.item_id === itemId && !editedMemos.has(itemId)) {
-    if (!sheetData.value.answers[deferred.item_id])
-      sheetData.value.answers[deferred.item_id] = { value: "", memo: "" };
-    sheetData.value.answers[deferred.item_id].memo = deferred.memo;
-  }
-  deferredMemoUpdate.value = null;
-  editedMemos.delete(itemId);
+  const deferred = deferredMemoUpdates.get(itemId);
+  if (!deferred || editingMemo.value === itemId || editedMemos.has(itemId) || memoQueue.isDirty(itemId)) return;
+  deferredMemoUpdates.delete(itemId);
+  if (Number(deferred.version) <= memoQueue.currentVersion(itemId)) return;
+  applyRemoteMemo(deferred);
 }
 
 function handleAnswerBlur() {
   const prev = focusedItemId.value;
-  if (prev !== null) applyDeferredAnswer(prev);
   focusedItemId.value = null;
+  if (prev !== null) {
+    editedDuringFocus.delete(prev);
+    answerQueue.flush(prev);
+    queueMicrotask(() => applyDeferredAnswer(prev));
+  }
 }
 
 function startEditMemo(itemId) {
   if (isReadOnly.value) return;
   editingMemo.value = itemId;
+  nextTick(() => {
+    const textarea = document.querySelector(`[data-memo-item="${itemId}"]`);
+    if (textarea) {
+      resizeMemoTextarea(textarea);
+      textarea.focus();
+    }
+  });
+}
+
+function resizeMemoTextarea(textarea) {
+  textarea.style.height = "auto";
+  textarea.style.height = `${textarea.scrollHeight}px`;
+}
+
+function onMemoInput(itemId, event) {
+  resizeMemoTextarea(event.target);
+  onMemoChange(itemId, event.target.value);
 }
 
 function finishEditMemo(itemId) {
-  applyDeferredMemo(itemId);
   editingMemo.value = null;
+  editedMemos.delete(itemId);
+  memoQueue.flush(itemId);
+  queueMicrotask(() => applyDeferredMemo(itemId));
+}
+
+function retryAnswer(itemId) {
+  clearConflict(answerConflicts, itemId);
+  answerQueue.retry(itemId);
+}
+
+function retryMemo(itemId) {
+  clearConflict(memoConflicts, itemId);
+  memoQueue.retry(itemId);
+}
+
+function useServerAnswer(itemId) {
+  const current = answerConflicts.value[itemId]?.current;
+  if (!current) return;
+  ensureAnswerRecord(itemId).value = current.value;
+  updateAnswerMetadata(itemId, current);
+  answerQueue.resolveWithRemote(itemId, current.version);
+  clearDraft("answers", itemId);
+  deferredAnswerUpdates.delete(itemId);
+  clearConflict(answerConflicts, itemId);
+}
+
+function useServerMemo(itemId) {
+  const current = memoConflicts.value[itemId]?.current;
+  if (!current) return;
+  ensureAnswerRecord(itemId).memo = current.memo;
+  updateMemoMetadata(itemId, current);
+  memoQueue.resolveWithRemote(itemId, current.version);
+  clearDraft("memos", itemId);
+  deferredMemoUpdates.delete(itemId);
+  clearConflict(memoConflicts, itemId);
 }
 
 // ---- Numbering ----
@@ -338,6 +568,43 @@ const failedItems = computed(() => {
   return items;
 });
 
+const memoOpen = ref(false);
+const memoItems = computed(() => {
+  const items = [];
+  for (const [ci, cat] of visibleCategories.value.entries()) {
+    for (const [si, sub] of (cat.subcategories || []).entries()) {
+      for (const [gi, grp] of (sub.groups || []).entries()) {
+        for (const [ii, item] of (grp.items || []).entries()) {
+          const memo = getMemo(item.id);
+          if (!memo.trim()) continue;
+          items.push({
+            id: item.id,
+            categoryIndex: ci,
+            path: `${catNumById.value[cat.id]}. ${cat.name} › ${subNum(si)}-${grpNum(gi)} ${itemNum(ii)}`,
+            name: item.name,
+            memo,
+          });
+        }
+      }
+    }
+  }
+  return items;
+});
+
+async function scrollToMemoItem(item) {
+  memoOpen.value = false;
+  activeTab.value = item.categoryIndex;
+  await nextTick();
+  scrollToItem(item.id);
+}
+
+function formatUpdatedAt(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 function scrollToItem(itemId) {
   missingOpen.value = false;
   failedOpen.value = false;
@@ -363,12 +630,10 @@ function onChecktableToggle(itemId, rowIdx, colIdx) {
     val[key] = "1";
   }
   const jsonStr = JSON.stringify(val);
-  if (!sheetData.value.answers[itemId]) {
-    sheetData.value.answers[itemId] = { value: "", memo: "" };
-  }
-  sheetData.value.answers[itemId].value = jsonStr;
-  lastSentValues[`answer-${itemId}`] = jsonStr;
-  updateSheetAnswer({ year, team_num: num, item_id: itemId, value: jsonStr }).catch(() => error("저장에 실패했습니다."));
+  ensureAnswerRecord(itemId).value = jsonStr;
+  clearConflict(answerConflicts, itemId);
+  setDraft("answers", itemId, jsonStr, answerQueue.currentVersion(itemId));
+  answerQueue.enqueue(itemId, jsonStr, { immediate: true });
 }
 
 // ---- Subcategory quick nav ----
@@ -404,7 +669,11 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("scroll", onScroll);
-  flushDebounce(); // 대기 중인 저장을 즉시 실행 — 이탈로 인한 입력 유실 방지
+  for (const timer of saveStateTimers.values()) clearTimeout(timer);
+  saveStateTimers.clear();
+  flushDebounce();
+  answerQueue.flushAll();
+  memoQueue.flushAll();
 });
 
 watch(activeTab, () => {
@@ -438,7 +707,7 @@ watch(lastInspectorUpdate, (update) => {
   sheetData.value.inspectors[update.category_id] = update.inspector;
 });
 
-// SSE로 개별 항목 답변 실시간 반영 (self-echo 필터 + 편집 가드 + deferred)
+// SSE로 개별 항목 답변 실시간 반영 (version + mutation id + 편집 가드)
 watch(lastAnswerUpdate, (update) => {
   if (!update || update.year !== year) return;
   if (update.renumbered && update.prevNum === num) {
@@ -450,63 +719,112 @@ watch(lastAnswerUpdate, (update) => {
     router.replace("/");
     return;
   }
-  const sentKey = `answer-${update.item_id}`;
-  if (lastSentValues[sentKey] === update.value) {
-    delete lastSentValues[sentKey];
+  if (Number(update.version) <= answerQueue.currentVersion(update.item_id)) return;
+  if (answerQueue.isOwnMutation(update.item_id, update.mutation_id)) {
+    answerQueue.acceptVersion(update.item_id, update.version);
+    updateAnswerMetadata(update.item_id, update);
     return;
   }
-  if (focusedItemId.value === update.item_id) {
-    deferredAnswerUpdate.value = update;
+  if (focusedItemId.value === update.item_id || answerQueue.isDirty(update.item_id)) {
+    deferredAnswerUpdates.set(update.item_id, update);
+    if (answerQueue.isDirty(update.item_id)) {
+      answerQueue.markConflict(update.item_id, {
+        value: update.value,
+        version: update.version,
+        updated_at: update.updated_at,
+        updated_by: update.updated_by,
+      });
+    }
     return;
   }
-  if (!sheetData.value.answers[update.item_id]) {
-    sheetData.value.answers[update.item_id] = { value: "", memo: "" };
-  }
-  sheetData.value.answers[update.item_id].value = update.value;
+  applyRemoteAnswer(update);
 });
 
-// SSE로 메모 실시간 반영 (self-echo 필터 + 편집 가드 + deferred)
+// SSE로 메모 실시간 반영 (version + mutation id + 편집 가드)
 watch(lastMemoUpdate, (update) => {
   if (!update || update.year !== year || update.team_num !== num) return;
   if (update.deleted) {
     router.replace("/");
     return;
   }
-  const sentKey = `memo-${update.item_id}`;
-  if (lastSentValues[sentKey] === update.memo) {
-    delete lastSentValues[sentKey];
+  if (Number(update.version) <= memoQueue.currentVersion(update.item_id)) return;
+  if (memoQueue.isOwnMutation(update.item_id, update.mutation_id)) {
+    memoQueue.acceptVersion(update.item_id, update.version);
+    updateMemoMetadata(update.item_id, update);
     return;
   }
-  if (editingMemo.value === update.item_id) {
-    deferredMemoUpdate.value = update;
+  if (editingMemo.value === update.item_id || memoQueue.isDirty(update.item_id)) {
+    deferredMemoUpdates.set(update.item_id, update);
+    if (memoQueue.isDirty(update.item_id)) {
+      memoQueue.markConflict(update.item_id, {
+        memo: update.memo,
+        version: update.version,
+        updated_at: update.updated_at,
+        updated_by: update.updated_by,
+      });
+    }
     return;
   }
-  if (!sheetData.value.answers[update.item_id]) {
-    sheetData.value.answers[update.item_id] = { value: "", memo: "" };
-  }
-  sheetData.value.answers[update.item_id].memo = update.memo;
+  applyRemoteMemo(update);
 });
 
 // Safety net watchers for deferred recovery
 watch(focusedItemId, (newVal, oldVal) => {
   if (newVal !== null || oldVal === null) return;
+  editedDuringFocus.delete(oldVal);
   applyDeferredAnswer(oldVal);
 });
 
 watch(editingMemo, (newVal, oldVal) => {
   if (newVal !== null || oldVal === null) return;
+  editedMemos.delete(oldVal);
   applyDeferredMemo(oldVal);
 });
 
-// SSE 재연결 시 전체 데이터 동기화
+// SSE 재연결 시 미저장 로컬 값을 보존하며 서버 데이터와 병합한다.
 watch(reconnected, async () => {
   if (!reconnected.value) return;
-  deferredAnswerUpdate.value = null;
-  deferredMemoUpdate.value = null;
-  editedDuringFocus.clear();
-  editedMemos.clear();
   try {
     const data = await fetchSheetData(year, num);
+    const localAnswers = sheetData.value.answers;
+    for (const [rawItemId, serverRecord] of Object.entries(data.answers)) {
+      const itemId = Number(rawItemId);
+      const localRecord = localAnswers[itemId];
+      const serverAnswer = {
+        value: serverRecord.value,
+        version: serverRecord.answer_version,
+        updated_at: serverRecord.answer_updated_at,
+        updated_by: serverRecord.answer_updated_by,
+      };
+      const serverMemo = {
+        memo: serverRecord.memo,
+        version: serverRecord.memo_version,
+        updated_at: serverRecord.memo_updated_at,
+        updated_by: serverRecord.memo_updated_by,
+      };
+      if (answerQueue.isDirty(itemId) && localRecord) {
+        serverRecord.value = localRecord.value;
+        if ((serverRecord.answer_version ?? 0) > (localRecord.answer_version ?? 0)) {
+          answerQueue.markConflict(itemId, serverAnswer);
+        }
+      } else {
+        answerQueue.acceptVersion(itemId, serverRecord.answer_version);
+      }
+      if (memoQueue.isDirty(itemId) && localRecord) {
+        serverRecord.memo = localRecord.memo;
+        if ((serverRecord.memo_version ?? 0) > (localRecord.memo_version ?? 0)) {
+          memoQueue.markConflict(itemId, serverMemo);
+        }
+      } else {
+        memoQueue.acceptVersion(itemId, serverRecord.memo_version);
+      }
+    }
+    for (const [rawItemId, localRecord] of Object.entries(localAnswers)) {
+      const itemId = Number(rawItemId);
+      if (!data.answers[itemId] && (answerQueue.isDirty(itemId) || memoQueue.isDirty(itemId))) {
+        data.answers[itemId] = localRecord;
+      }
+    }
     sheetData.value = data;
   } catch {
     error("데이터 동기화에 실패했습니다.");
@@ -564,6 +882,25 @@ watch(reconnected, async () => {
             :class="getCategoryResult(cat.id) === 'PASS' ? 'badge-success' : 'badge-danger'"
           >{{ getCategoryResult(cat.id) }}</span>
         </button>
+      </div>
+
+      <!-- Memos in this team sheet -->
+      <div v-if="memoItems.length" class="memo-summary">
+        <button class="memo-summary-toggle" @click="memoOpen = !memoOpen">
+          메모 있는 항목 {{ memoItems.length }}개
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" :class="{ 'chevron-open': memoOpen }">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+        <Transition name="memo-summary-list">
+          <div v-if="memoOpen" class="memo-summary-list">
+            <button v-for="item in memoItems" :key="item.id" class="memo-summary-item" @click="scrollToMemoItem(item)">
+              <span class="memo-summary-path">{{ item.path }}</span>
+              <span class="memo-summary-name">{{ item.name }}</span>
+              <span class="memo-summary-preview">{{ item.memo }}</span>
+            </button>
+          </div>
+        </Transition>
       </div>
 
       <!-- Unanswered warning -->
@@ -734,42 +1071,82 @@ watch(reconnected, async () => {
                       </table>
                     </div>
                     <!-- Memo (checktable: 테이블 아래, 스크롤 영역 밖) -->
-                    <input
+                    <textarea
                       v-if="editingMemo === item.id"
                       class="form-input memo-input"
                       :value="getMemo(item.id)"
-                      @input="onMemoChange(item.id, $event.target.value)"
+                      :data-memo-item="item.id"
+                      rows="1"
+                      @input="onMemoInput(item.id, $event)"
                       @blur="finishEditMemo(item.id)"
-                      @keydown.enter="finishEditMemo(item.id)"
                       placeholder="메모 입력"
-                      autofocus
-                    />
-                    <span
+                    ></textarea>
+                    <button
                       v-else
+                      type="button"
                       class="memo-text"
-                      :class="{ 'memo-empty': !getMemo(item.id) }"
+                      :class="{ 'memo-empty': !getMemo(item.id), 'memo-readonly': isReadOnly }"
+                      :disabled="isReadOnly"
                       @click="startEditMemo(item.id)"
-                    >{{ getMemo(item.id) || "메모" }}</span>
+                    >{{ getMemo(item.id) || "메모 추가" }}</button>
                   </div>
                   <!-- Memo (기본: controls 행 내) -->
                   <template v-if="item.answer_type !== 'checktable'">
-                  <input
+                  <textarea
                     v-if="editingMemo === item.id"
                     class="form-input memo-input"
                     :value="getMemo(item.id)"
-                    @input="onMemoChange(item.id, $event.target.value)"
+                    :data-memo-item="item.id"
+                    rows="1"
+                    @input="onMemoInput(item.id, $event)"
                     @blur="finishEditMemo(item.id)"
-                    @keydown.enter="finishEditMemo(item.id)"
                     placeholder="메모 입력"
-                    autofocus
-                  />
-                  <span
+                  ></textarea>
+                  <button
                     v-else
+                    type="button"
                     class="memo-text"
-                    :class="{ 'memo-empty': !getMemo(item.id) }"
+                    :class="{ 'memo-empty': !getMemo(item.id), 'memo-readonly': isReadOnly }"
+                    :disabled="isReadOnly"
                     @click="startEditMemo(item.id)"
-                  >{{ getMemo(item.id) || "메모" }}</span>
+                  >{{ getMemo(item.id) || "메모 추가" }}</button>
                   </template>
+                  </div>
+
+                  <div v-if="answerSaveStates[item.id]?.state && !['idle', 'conflict'].includes(answerSaveStates[item.id].state)" class="save-feedback" :class="`save-${answerSaveStates[item.id].state}`">
+                    <span v-if="answerSaveStates[item.id].state === 'pending' || answerSaveStates[item.id].state === 'saving'">응답 저장 중…</span>
+                    <span v-else-if="answerSaveStates[item.id].state === 'saved'">응답 저장됨</span>
+                    <template v-else-if="answerSaveStates[item.id].state === 'error'">
+                      <span>응답 저장 실패</span>
+                      <button type="button" @click="retryAnswer(item.id)">재시도</button>
+                    </template>
+                  </div>
+                  <div v-if="answerConflicts[item.id]" class="save-conflict">
+                    <span>다른 검차관이 이 응답을 변경했습니다.</span>
+                    <div class="conflict-actions">
+                      <button type="button" @click="useServerAnswer(item.id)">서버 값 사용</button>
+                      <button type="button" @click="retryAnswer(item.id)">내 값 다시 저장</button>
+                    </div>
+                  </div>
+
+                  <div v-if="memoSaveStates[item.id]?.state && !['idle', 'conflict'].includes(memoSaveStates[item.id].state)" class="save-feedback" :class="`save-${memoSaveStates[item.id].state}`">
+                    <span v-if="memoSaveStates[item.id].state === 'pending' || memoSaveStates[item.id].state === 'saving'">메모 저장 중…</span>
+                    <span v-else-if="memoSaveStates[item.id].state === 'saved'">메모 저장됨</span>
+                    <template v-else-if="memoSaveStates[item.id].state === 'error'">
+                      <span>메모 저장 실패</span>
+                      <button type="button" @click="retryMemo(item.id)">재시도</button>
+                    </template>
+                  </div>
+                  <div v-if="memoConflicts[item.id]" class="save-conflict">
+                    <span>다른 검차관이 이 메모를 변경했습니다.</span>
+                    <div class="conflict-actions">
+                      <button type="button" @click="useServerMemo(item.id)">서버 메모 사용</button>
+                      <button type="button" @click="retryMemo(item.id)">내 메모 다시 저장</button>
+                    </div>
+                  </div>
+                  <div v-if="getMemo(item.id) && getMemoUpdatedAt(item.id)" class="memo-meta">
+                    <span v-if="getMemoUpdatedBy(item.id)">{{ getMemoUpdatedBy(item.id) }}</span>
+                    <span>{{ formatUpdatedAt(getMemoUpdatedAt(item.id)) }}</span>
                   </div>
                 </div>
               </div>
@@ -1071,6 +1448,7 @@ watch(reconnected, async () => {
 
 .item-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
   width: 100%;
@@ -1161,12 +1539,22 @@ watch(reconnected, async () => {
 
 /* Memo inline */
 .memo-text {
+  flex: 1;
+  min-width: 0;
   font-size: 0.75rem;
   color: var(--text-secondary);
   cursor: pointer;
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
-  white-space: nowrap;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
 }
 
 .memo-text:hover {
@@ -1178,11 +1566,166 @@ watch(reconnected, async () => {
   font-style: italic;
 }
 
+.memo-readonly {
+  cursor: default;
+  -webkit-line-clamp: unset;
+}
+
 .memo-input {
   flex: 1;
-  width: auto;
+  width: 100%;
+  min-height: 2.25rem;
+  max-height: 12rem;
+  resize: none;
+  overflow-y: auto;
   font-size: 0.75rem;
-  padding: 0.25rem 0.5rem;
+  line-height: 1.45;
+  padding: 0.5rem 0.625rem;
+}
+
+.item-controls > .memo-input {
+  flex: 1 0 100%;
+}
+
+.memo-meta {
+  display: flex;
+  gap: 0.375rem;
+  color: var(--text-tertiary);
+  font-size: 0.6875rem;
+}
+
+.save-feedback {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1rem;
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+}
+
+.save-feedback button,
+.conflict-actions button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.save-error {
+  color: var(--accent-danger);
+}
+
+.save-saved {
+  color: var(--accent-success);
+}
+
+.save-conflict {
+  width: 100%;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--accent-warning);
+  font-size: 0.75rem;
+}
+
+.conflict-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.375rem;
+}
+
+/* Team sheet memo index */
+.memo-summary {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.memo-summary-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.625rem 1rem;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.memo-summary-toggle svg {
+  transition: transform 0.2s;
+}
+
+.memo-summary-toggle .chevron-open {
+  transform: rotate(180deg);
+}
+
+.memo-summary-list {
+  max-height: 320px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-color);
+}
+
+.memo-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.625rem 1rem;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.memo-summary-item + .memo-summary-item {
+  border-top: 1px solid var(--border-color);
+}
+
+.memo-summary-item:hover {
+  background: var(--bg-hover);
+}
+
+.memo-summary-path {
+  color: var(--text-tertiary);
+  font-size: 0.6875rem;
+}
+
+.memo-summary-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.memo-summary-preview {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memo-summary-list-enter-active,
+.memo-summary-list-leave-active {
+  transition: max-height 0.2s ease, opacity 0.2s ease;
+  overflow: hidden;
+}
+
+.memo-summary-list-enter-from,
+.memo-summary-list-leave-to {
+  max-height: 0;
+  opacity: 0;
 }
 
 .empty-state-box {
