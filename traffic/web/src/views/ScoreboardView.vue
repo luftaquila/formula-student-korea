@@ -24,6 +24,73 @@ const EVENT_CONFIG = {
   오토크로스: { label: "AUTOCROSS", color: "#ff6b6b" },
 };
 
+const SCOREBOARD_THEME_KEY = "traffic-scoreboard-theme";
+const SCOREBOARD_COLORS_KEY = "traffic-scoreboard-colors";
+const SCOREBOARD_VISIBILITY_KEY = "traffic-scoreboard-visibility";
+
+function loadScoreboardTheme() {
+  const saved = localStorage.getItem(SCOREBOARD_THEME_KEY);
+  return saved === "light" || saved === "dark" ? saved : "dark";
+}
+
+function loadEventColors() {
+  const colors = Object.fromEntries(
+    Object.entries(EVENT_CONFIG).map(([type, config]) => [type, config.color]),
+  );
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(SCOREBOARD_COLORS_KEY));
+    for (const type of Object.keys(EVENT_CONFIG)) {
+      if (typeof saved?.[type] === "string" && /^#[0-9a-f]{6}$/i.test(saved[type])) {
+        colors[type] = saved[type];
+      }
+    }
+  } catch {
+    // Ignore malformed local settings and keep the built-in colors.
+  }
+
+  return colors;
+}
+
+function loadEventVisibility() {
+  const visibility = Object.fromEntries(
+    Object.keys(EVENT_CONFIG).map((type) => [type, true]),
+  );
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(SCOREBOARD_VISIBILITY_KEY));
+    for (const type of Object.keys(EVENT_CONFIG)) {
+      if (typeof saved?.[type] === "boolean") {
+        visibility[type] = saved[type];
+      }
+    }
+  } catch {
+    // Ignore malformed local settings and show every event by default.
+  }
+
+  return visibility;
+}
+
+const scoreboardTheme = ref(loadScoreboardTheme());
+const eventColors = ref(loadEventColors());
+const eventVisibility = ref(loadEventVisibility());
+
+function toggleScoreboardTheme() {
+  scoreboardTheme.value = scoreboardTheme.value === "dark" ? "light" : "dark";
+}
+
+watch(scoreboardTheme, (theme) => {
+  localStorage.setItem(SCOREBOARD_THEME_KEY, theme);
+});
+
+watch(eventColors, (colors) => {
+  localStorage.setItem(SCOREBOARD_COLORS_KEY, JSON.stringify(colors));
+}, { deep: true });
+
+watch(eventVisibility, (visibility) => {
+  localStorage.setItem(SCOREBOARD_VISIBILITY_KEY, JSON.stringify(visibility));
+}, { deep: true });
+
 let fetchSeq = 0;
 
 async function loadRecords() {
@@ -68,7 +135,7 @@ const validRecords = computed(() => {
 
 const availableTypes = computed(() => {
   const types = new Set(validRecords.value.map((r) => r.type));
-  return Object.keys(EVENT_CONFIG).filter((t) => types.has(t));
+  return Object.keys(EVENT_CONFIG).filter((t) => types.has(t) && eventVisibility.value[t]);
 });
 
 const recordsByType = computed(() => {
@@ -177,7 +244,7 @@ onDeactivated(() => {
       <!-- Controls -->
       <div v-show="!isFullscreen" class="controls">
         <div class="control-group">
-          <select v-model="selectedFile" class="form-select">
+          <select v-model="selectedFile" class="form-select" aria-label="기록 파일">
             <option :value="null" disabled>파일 선택</option>
             <option v-for="file in recordFiles" :key="file" :value="file">
               {{ file }}
@@ -189,7 +256,60 @@ onDeactivated(() => {
             class="form-input temp-input"
             type="text"
             placeholder="Track Temp"
+            aria-label="트랙 온도"
           />
+
+          <button
+            type="button"
+            class="btn btn-secondary scoreboard-theme-toggle"
+            :data-theme="scoreboardTheme"
+            :title="scoreboardTheme === 'dark' ? '화이트 전광판 테마' : '다크 전광판 테마'"
+            :aria-label="scoreboardTheme === 'dark' ? '화이트 전광판 테마로 전환' : '다크 전광판 테마로 전환'"
+            data-testid="scoreboard-theme"
+            @click="toggleScoreboardTheme"
+          >
+            <svg v-if="scoreboardTheme === 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="5" />
+              <line x1="12" y1="1" x2="12" y2="3" />
+              <line x1="12" y1="21" x2="12" y2="23" />
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+              <line x1="1" y1="12" x2="3" y2="12" />
+              <line x1="21" y1="12" x2="23" y2="12" />
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+            </svg>
+          </button>
+
+          <div class="accent-controls" role="group" aria-label="이벤트 표시 및 악센트 컬러">
+            <div v-for="(config, type) in EVENT_CONFIG" :key="type" class="event-control">
+              <label class="visibility-control">
+                <input
+                  v-model="eventVisibility[type]"
+                  type="checkbox"
+                  :data-testid="`scoreboard-visible-${type}`"
+                />
+                <span>{{ config.label }}</span>
+              </label>
+              <label
+                class="color-control"
+                :style="{ '--picker-color': eventColors[type] }"
+              >
+                <input
+                  v-model="eventColors[type]"
+                  type="color"
+                  :aria-label="`${config.label} 악센트 컬러`"
+                  :data-testid="`scoreboard-color-${type}`"
+                />
+                <output :data-testid="`scoreboard-color-value-${type}`">
+                  {{ eventColors[type].toUpperCase() }}
+                </output>
+              </label>
+            </div>
+          </div>
 
           <button class="btn btn-secondary" @click="toggleFullscreen" title="전체화면">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -201,7 +321,7 @@ onDeactivated(() => {
 
       <!-- Display Area 3:4 ratio -->
       <div class="display-wrapper">
-        <div ref="displayArea" class="display-area">
+        <div ref="displayArea" class="display-area" :data-scoreboard-theme="scoreboardTheme">
           <div v-if="!selectedFile" class="empty-state"></div>
           <div v-else-if="records.length === 0 && !loading" class="empty-state">
             <p>기록이 없습니다</p>
@@ -228,7 +348,7 @@ onDeactivated(() => {
                 v-for="type in availableTypes"
                 :key="type"
                 class="panel"
-                :style="{ '--panel-color': EVENT_CONFIG[type].color }"
+                :style="{ '--panel-color': eventColors[type] }"
               >
                 <!-- Panel Title -->
                 <div class="panel-title">{{ EVENT_CONFIG[type].label }}</div>
@@ -330,13 +450,28 @@ onDeactivated(() => {
 
 /* 4:3 aspect ratio (landscape) */
 .display-area {
+  --scoreboard-bg: #000;
+  --scoreboard-text: #fff;
+  --scoreboard-muted: #666;
+  --scoreboard-best: #ff4444;
+  --scoreboard-live: #ef4444;
+  --scoreboard-temp: #ff6b6b;
   width: 100%;
   aspect-ratio: 4 / 3;
-  background: #000;
+  background: var(--scoreboard-bg);
   border-radius: 12px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.display-area[data-scoreboard-theme="light"] {
+  --scoreboard-bg: #fff;
+  --scoreboard-text: #17191f;
+  --scoreboard-muted: #6b7280;
+  --scoreboard-best: #c81e1e;
+  --scoreboard-live: #dc2626;
+  --scoreboard-temp: #c81e1e;
 }
 
 :global(.scoreboard-fullscreen) .display-area {
@@ -356,9 +491,9 @@ onDeactivated(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #666;
+  color: var(--scoreboard-muted);
   font-size: 2rem;
-  background: #000;
+  background: var(--scoreboard-bg);
 }
 
 /* Scoreboard */
@@ -367,8 +502,8 @@ onDeactivated(() => {
   display: flex;
   flex-direction: column;
   padding: 2rem 2.5rem;
-  background: #000;
-  color: #fff;
+  background: var(--scoreboard-bg);
+  color: var(--scoreboard-text);
   overflow: hidden;
 }
 
@@ -376,18 +511,21 @@ onDeactivated(() => {
   padding: 3rem 5rem;
 }
 
-/* Header */
-.header {
+/* Header — override the app shell's globally dark .header surface. */
+.scoreboard > .header {
   display: flex;
   align-items: center;
   gap: 2rem;
   margin-bottom: 1.5rem;
+  padding: 0;
+  background: transparent;
+  border: 0;
 }
 
 .title {
   font-size: 2.5rem;
   font-weight: 700;
-  color: #fff;
+  color: var(--scoreboard-text);
   margin: 0;
 }
 
@@ -411,7 +549,7 @@ onDeactivated(() => {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #666;
+  background: var(--scoreboard-muted);
 }
 
 :global(.scoreboard-fullscreen) .live-dot {
@@ -420,7 +558,7 @@ onDeactivated(() => {
 }
 
 .live-dot.connected {
-  background: #ef4444;
+  background: var(--scoreboard-live);
 }
 
 .temp {
@@ -433,7 +571,7 @@ onDeactivated(() => {
 }
 
 .temp-val {
-  color: #ff6b6b;
+  color: var(--scoreboard-temp);
   font-weight: 700;
 }
 
@@ -462,16 +600,21 @@ onDeactivated(() => {
 }
 
 .panel {
+  --panel-fg: var(--panel-color);
   display: flex;
   flex-direction: column;
   gap: 0.8rem;
+}
+
+.display-area[data-scoreboard-theme="light"] .panel {
+  --panel-fg: color-mix(in srgb, var(--panel-color) 68%, #000);
 }
 
 /* Panel Title */
 .panel-title {
   font-size: 1.4rem;
   font-weight: 700;
-  color: var(--panel-color);
+  color: var(--panel-fg);
   letter-spacing: 0.08em;
 }
 
@@ -534,7 +677,7 @@ onDeactivated(() => {
 .no-label {
   font-size: 1.8rem;
   font-weight: 700;
-  color: var(--panel-color);
+  color: var(--panel-fg);
   font-style: italic;
 }
 
@@ -545,7 +688,7 @@ onDeactivated(() => {
 .no-value {
   font-size: 2.8rem;
   font-weight: 800;
-  color: #fff;
+  color: var(--scoreboard-text);
   font-style: italic;
 }
 
@@ -555,7 +698,7 @@ onDeactivated(() => {
 
 .vehicle-team {
   font-size: 2.2rem;
-  color: #fff;
+  color: var(--scoreboard-text);
   font-weight: 600;
   line-height: 1.6;
   height: 3.2em;
@@ -594,9 +737,9 @@ onDeactivated(() => {
   top: -2px;
   left: 1rem;
   font-size: 1.3rem;
-  color: #fff;
+  color: var(--scoreboard-text);
   font-weight: 500;
-  background: #000;
+  background: var(--scoreboard-bg);
   padding: 0 0.5rem;
   transform: translateY(-50%);
 }
@@ -610,7 +753,7 @@ onDeactivated(() => {
 .current-time {
   font-size: 2.8rem;
   font-weight: 800;
-  color: var(--panel-color);
+  color: var(--panel-fg);
   font-style: italic;
 }
 
@@ -630,7 +773,7 @@ onDeactivated(() => {
 
 .best-label {
   font-size: 1.5rem;
-  color: #ff4444;
+  color: var(--scoreboard-best);
   font-style: italic;
   font-weight: 600;
   margin-bottom: 0.3rem;
@@ -665,7 +808,7 @@ onDeactivated(() => {
 .best-team-inner {
   display: flex;
   align-items: flex-start;
-  color: #fff;
+  color: var(--scoreboard-text);
   font-weight: 500;
 }
 
@@ -675,7 +818,7 @@ onDeactivated(() => {
 }
 
 .best-num {
-  color: #ff4444;
+  color: var(--scoreboard-best);
   font-weight: 700;
   margin-right: 0.6rem;
 }
@@ -684,7 +827,7 @@ onDeactivated(() => {
   font-size: 2.5rem;
   font-weight: 800;
   line-height: 1.5;
-  color: #ff4444;
+  color: var(--scoreboard-best);
 }
 
 :global(.scoreboard-fullscreen) .best-time {
@@ -724,10 +867,10 @@ onDeactivated(() => {
   top: -1.5px;
   left: 1rem;
   font-size: 1.3rem;
-  color: #fff;
+  color: var(--scoreboard-text);
   font-style: italic;
   font-weight: 500;
-  background: #000;
+  background: var(--scoreboard-bg);
   padding: 0 0.5rem;
   transform: translateY(-50%);
 }
@@ -768,19 +911,19 @@ onDeactivated(() => {
 }
 
 .record-num {
-  color: var(--panel-color);
+  color: var(--panel-fg);
   font-weight: 700;
 }
 
 .record-team {
-  color: #fff;
+  color: var(--scoreboard-text);
   font-weight: 500;
 }
 
 .record-time {
   font-size: 1.5rem;
   font-weight: 700;
-  color: var(--panel-color);
+  color: var(--panel-fg);
   font-style: italic;
 }
 
@@ -802,6 +945,89 @@ onDeactivated(() => {
   align-items: center;
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+.accent-controls,
+.event-control,
+.visibility-control,
+.color-control {
+  display: flex;
+  align-items: center;
+}
+
+.btn.scoreboard-theme-toggle {
+  width: 40px;
+  height: 38px;
+  min-width: 40px;
+  padding: 0;
+  flex: 0 0 40px;
+}
+
+.btn.scoreboard-theme-toggle svg {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+}
+
+.accent-controls {
+  gap: 0.75rem;
+  padding-left: 0.75rem;
+  border-left: 1px solid var(--border-color);
+  flex-wrap: wrap;
+}
+
+.event-control,
+.visibility-control {
+  gap: 0.35rem;
+}
+
+.color-control {
+  position: relative;
+  min-width: 78px;
+  height: 30px;
+  justify-content: center;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--picker-color) 12%, var(--bg-input));
+  border: 1px solid color-mix(in srgb, var(--picker-color) 65%, var(--border-color));
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.event-control {
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.visibility-control {
+  cursor: pointer;
+}
+
+.visibility-control input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.color-control input[type="color"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  opacity: 0;
+  border: 0;
+  cursor: pointer;
+}
+
+.color-control output {
+  color: var(--picker-color);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
 }
 
 .form-select {
@@ -836,7 +1062,7 @@ onDeactivated(() => {
 }
 
 .temp-input {
-  width: 150px;
+  width: 110px;
 }
 
 .btn {
@@ -862,6 +1088,14 @@ onDeactivated(() => {
 }
 
 @media (max-width: 768px) {
+  .accent-controls {
+    width: 100%;
+    padding-top: 0.75rem;
+    padding-left: 0;
+    border-top: 1px solid var(--border-color);
+    border-left: 0;
+  }
+
   .panels.cols-4,
   .panels.cols-3,
   .panels.cols-2 {
