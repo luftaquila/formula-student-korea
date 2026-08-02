@@ -481,7 +481,7 @@ function getInputGrid(el) {
 }
 
 function exportData(format) {
-  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", "에너지 구분", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO2/100km", "에너지 판정", "에너지 사유", "에너지 점수"];
+  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO2/100km", "에너지 판정", "에너지 사유", "에너지 점수"];
   const rows = entryList.value.map((entry) => {
     const num = entry.num;
     const ft = getFinalTime(num);
@@ -504,10 +504,9 @@ function exportData(format) {
       getField(num, "driver2_oc") ?? "",
       getField(num, "driver2_penalty") ?? "",
       getStatus(num) || "",
-      getEnergyType(entry) || "",
-      getField(num, "fuel_consumed") ?? "",
-      getField(num, "fuel_extra") ?? "",
-      getField(num, "electric_net_energy") ?? "",
+      getEnergyType(entry) === "C" ? (getField(num, "fuel_consumed") ?? "") : "",
+      getEnergyType(entry) === "C" ? (getField(num, "fuel_extra") ?? "") : "",
+      getEnergyType(entry) === "E" ? (getField(num, "electric_net_energy") ?? "") : "",
       getEnergyResult(num)?.co2Per100Km ?? "",
       energyResultLabel(num),
       getEnergyResult(num)?.reason || getField(num, "energy_dsq_reason") || "",
@@ -584,7 +583,7 @@ function exportData(format) {
                 <th class="col-change" rowspan="2">교체<br>초과시간</th>
                 <th class="col-driver-group" colspan="5">드라이버 2</th>
                 <th class="col-status" rowspan="2">상태</th>
-                <th class="col-energy-group" colspan="8">에너지 효율</th>
+                <th class="col-energy-group" colspan="7">에너지 효율</th>
               </tr>
               <tr>
                 <th class="col-field">기록</th>
@@ -597,7 +596,6 @@ function exportData(format) {
                 <th class="col-field">콘터치</th>
                 <th class="col-field">코스이탈</th>
                 <th class="col-field">페널티(초)</th>
-                <th class="col-energy">구분<br>(자동)</th>
                 <th class="col-energy">연료 소비<br>({{ getFuelUnit() }})</th>
                 <th class="col-energy">추가 주유<br>({{ getFuelUnit() }})</th>
                 <th class="col-energy">순사용 전력<br>(kWh)</th>
@@ -650,10 +648,9 @@ function exportData(format) {
                     >{{ s }}</button>
                   </div>
                 </td>
-                <td class="col-energy"><span class="energy-type-badge" :title="entry.type || ''">{{ getEnergyType(entry) || '-' }}</span></td>
-                <td class="col-energy"><input class="cell-input energy-input" type="number" min="0" step="any" :value="getField(entry.num, 'fuel_consumed') ?? ''" :disabled="isReadOnly || getEnergyType(entry) !== 'C'" placeholder="-" @focus="handleCellFocus(entry.num, 'fuel_consumed', $event)" @blur="saveNumField(entry.num, 'fuel_consumed', $event); handleCellBlur()" /></td>
-                <td class="col-energy"><input class="cell-input energy-input" type="number" min="0" step="any" :value="getField(entry.num, 'fuel_extra') ?? ''" :disabled="isReadOnly || getEnergyType(entry) !== 'C'" placeholder="-" @focus="handleCellFocus(entry.num, 'fuel_extra', $event)" @blur="saveNumField(entry.num, 'fuel_extra', $event); handleCellBlur()" /></td>
-                <td class="col-energy"><input class="cell-input energy-input" type="number" step="any" :value="getField(entry.num, 'electric_net_energy') ?? ''" :disabled="isReadOnly || getEnergyType(entry) !== 'E'" placeholder="-" @focus="handleCellFocus(entry.num, 'electric_net_energy', $event)" @blur="saveNumField(entry.num, 'electric_net_energy', $event, false, true); handleCellBlur()" /></td>
+                <td class="col-energy"><input class="cell-input energy-input" type="number" min="0" step="any" :value="getEnergyType(entry) === 'C' ? (getField(entry.num, 'fuel_consumed') ?? '') : ''" :disabled="isReadOnly || getEnergyType(entry) !== 'C'" @focus="handleCellFocus(entry.num, 'fuel_consumed', $event)" @blur="saveNumField(entry.num, 'fuel_consumed', $event); handleCellBlur()" /></td>
+                <td class="col-energy"><input class="cell-input energy-input" type="number" min="0" step="any" :value="getEnergyType(entry) === 'C' ? (getField(entry.num, 'fuel_extra') ?? '') : ''" :disabled="isReadOnly || getEnergyType(entry) !== 'C'" @focus="handleCellFocus(entry.num, 'fuel_extra', $event)" @blur="saveNumField(entry.num, 'fuel_extra', $event); handleCellBlur()" /></td>
+                <td class="col-energy"><input class="cell-input energy-input" type="number" step="any" :value="getEnergyType(entry) === 'E' ? (getField(entry.num, 'electric_net_energy') ?? '') : ''" :disabled="isReadOnly || getEnergyType(entry) !== 'E'" @focus="handleCellFocus(entry.num, 'electric_net_energy', $event)" @blur="saveNumField(entry.num, 'electric_net_energy', $event, false, true); handleCellBlur()" /></td>
                 <td class="col-energy"><span class="energy-metric">{{ getEnergyResult(entry.num)?.co2Per100Km ?? '-' }}</span></td>
                 <td class="col-energy-official">
                   <button class="energy-dsq-btn" :class="{ active: !!getField(entry.num, 'energy_dsq') }" :disabled="isReadOnly" @click="toggleEnergyDsq(entry.num)">DSQ</button>
@@ -663,7 +660,7 @@ function exportData(format) {
                 <td class="col-energy"><span class="energy-score" :title="getEnergyResult(entry.num)?.reason || ''">{{ getEnergyResult(entry.num)?.score ?? '-' }}</span></td>
               </tr>
               <tr v-if="entryList.length === 0">
-                <td colspan="25" class="empty-state">
+                <td colspan="24" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>
@@ -856,11 +853,6 @@ function exportData(format) {
   color: var(--text-primary);
   font-size: 0.75rem;
   padding: 0.25rem;
-}
-
-.energy-type-badge {
-  font-weight: 700;
-  color: var(--text-primary);
 }
 
 .energy-input {
