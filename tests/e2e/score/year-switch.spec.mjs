@@ -35,7 +35,7 @@ test.describe("Score year switch and read-only mode", () => {
     await expect(page.locator(".readonly-banner")).not.toBeVisible();
 
     // Year dropdown should be visible
-    const yearSelect = page.locator(".filter-bar select.filter-input");
+    const yearSelect = page.locator(".filter-bar select.filter-input").first();
     await expect(yearSelect).toBeVisible();
 
     // Switch to previous year
@@ -74,7 +74,7 @@ test.describe("Score year switch and read-only mode", () => {
     await expect(page.locator(".readonly-banner")).not.toBeVisible();
 
     // Switch to previous year
-    const yearSelect = page.locator(".filter-bar select.filter-input");
+    const yearSelect = page.locator(".filter-bar select.filter-input").first();
     await yearSelect.selectOption(String(PREV_YEAR));
     await waitForPageReady(page);
 
