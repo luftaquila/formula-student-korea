@@ -173,6 +173,7 @@ async function loadTypeColors() {
 }
 
 let scoreDataSeq = 0;
+let refreshSeq = 0;
 async function loadData() {
   const year = selectedYear.value;
   const seq = ++scoreDataSeq;
@@ -194,6 +195,8 @@ async function loadData() {
 }
 
 async function onYearChange() {
+  // 이전 연도의 SSE 재조회가 나중에 완료되어 새 연도 스냅샷을 덮지 않게 한다.
+  refreshSeq++;
   loading.value = true;
   detailExpandedTeam.value = null;
   await Promise.all([loadData(), loadTypeColors(), loadPublication()]);
@@ -578,18 +581,18 @@ watch(lastManualScoreUpdate, (update) => {
 });
 
 // SSE 이벤트 데이터만 갱신 (manualScores/penalties/settings는 전용 SSE watcher가 처리)
-let refreshSeq = 0;
 async function refreshEventData() {
+  const year = selectedYear.value;
   const seq = ++refreshSeq;
   try {
-    const data = await fetchScore(selectedYear.value);
-    if (seq !== refreshSeq) return;
+    const data = await fetchScore(year);
+    if (seq !== refreshSeq || selectedYear.value !== year) return;
     entries.value = data.entries;
     inspection.value = data.inspection;
     events.value = data.events;
     energy.value = data.energy || { teams: {}, config: {}, references: {} };
   } catch (e) {
-    if (seq === refreshSeq) error("데이터를 가져올 수 없습니다.");
+    if (seq === refreshSeq && selectedYear.value === year) error("데이터를 가져올 수 없습니다.");
   }
 }
 

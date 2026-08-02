@@ -240,6 +240,9 @@ function broadcastEvent(event, data) {
   broadcastAdminEvent(event, data);
   const eventYear = parseScoreYear(data?.year);
   invalidatePublicScoreCache(eventYear);
+  // 변경 전 스냅샷으로 시작한 집계를 이벤트 직후의 관리자 재조회가
+  // 재사용하지 않게 한다. 기존 요청은 완료하되, 다음 요청은 새 집계를 시작한다.
+  invalidateInflightScore(eventYear);
   broadcastPublicEvent("refresh", {}, (meta) => {
     if (!isScorePublished(meta.year)) return false;
     return eventYear == null || meta.year === eventYear;
@@ -412,6 +415,11 @@ function findItemsInCategory(tree, categoryName, itemNames) {
 
 // year -> { promise, generation }. 같은 연도 동시 집계 요청을 하나로 합쳐 업스트림 호출 증폭을 막는다.
 const inflightScore = new Map();
+
+function invalidateInflightScore(year = null) {
+  if (year == null) inflightScore.clear();
+  else inflightScore.delete(Number(year));
+}
 
 function getComputedScoreRequest(year) {
   let request = inflightScore.get(year);

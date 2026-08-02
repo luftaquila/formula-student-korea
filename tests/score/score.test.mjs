@@ -1022,6 +1022,39 @@ describe('Public score publication', () => {
     }
   });
 
+  it('does not reuse an invalidated in-flight aggregate for authenticated requests', async () => {
+    const requestCountBefore = mockEntryRequestCount;
+    mockEntryTeamName = '변경 전 팀';
+    mockEntryResponseDelayMs = 100;
+    const requestBeforeInvalidation = client.get('/api/score?year=2026', { cookie: adminCookie });
+    while (mockEntryRequestCount === requestCountBefore) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    mockEntryTeamName = '변경 후 팀';
+    const invalidatingUpdate = await client.put('/api/score/penalty', {
+      cookie: adminCookie,
+      body: { year: 2026, event_type: '가속', cone_penalty: 6, oc_penalty: 10, start_delay: 0 },
+    });
+    assert.equal(invalidatingUpdate.status, 200);
+    const requestAfterInvalidation = client.get('/api/score?year=2026', { cookie: adminCookie });
+
+    try {
+      const [beforeResponse, afterResponse] = await Promise.all([
+        requestBeforeInvalidation,
+        requestAfterInvalidation,
+      ]);
+      assert.equal(beforeResponse.status, 200);
+      assert.equal(afterResponse.status, 200);
+      assert.equal((await beforeResponse.json()).entries['1'].team, '변경 전 팀');
+      assert.equal((await afterResponse.json()).entries['1'].team, '변경 후 팀');
+      assert.equal(mockEntryRequestCount, requestCountBefore + 2);
+    } finally {
+      mockEntryResponseDelayMs = 0;
+      mockEntryTeamName = '팀A';
+    }
+  });
+
   it('blocks public data again immediately after publication is disabled', async () => {
     const disabled = await client.put('/api/score/publication', {
       cookie: adminCookie,
