@@ -85,9 +85,29 @@ db.transaction(() => {
     item_id INTEGER NOT NULL,
     value TEXT DEFAULT '',
     memo TEXT DEFAULT '',
+    answer_version INTEGER NOT NULL DEFAULT 0,
+    answer_updated_at TEXT,
+    answer_updated_by TEXT,
+    memo_version INTEGER NOT NULL DEFAULT 0,
+    memo_updated_at TEXT,
+    memo_updated_by TEXT,
     PRIMARY KEY (year, team_num, item_id),
     FOREIGN KEY (item_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
+  const answerCols = db.prepare("PRAGMA table_info(sheet_answer)").all();
+  const answerMigrations = [
+    ["answer_version", "INTEGER NOT NULL DEFAULT 0"],
+    ["answer_updated_at", "TEXT"],
+    ["answer_updated_by", "TEXT"],
+    ["memo_version", "INTEGER NOT NULL DEFAULT 0"],
+    ["memo_updated_at", "TEXT"],
+    ["memo_updated_by", "TEXT"],
+  ];
+  for (const [name, type] of answerMigrations) {
+    if (!answerCols.find(c => c.name === name)) {
+      db.exec(`ALTER TABLE sheet_answer ADD COLUMN ${name} ${type}`);
+    }
+  }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_sa_item ON sheet_answer(item_id);`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_sa_year_item_team_value
     ON sheet_answer(year, item_id, team_num, value);`);
@@ -493,9 +513,13 @@ app.get("/api/sheet/data/:year/:num", (req, res) => {
   const num = Number(req.params.num);
 
   const result = dbRun(() => {
-    const answers = db.prepare(
-      "SELECT item_id, value, memo FROM sheet_answer WHERE year = ? AND team_num = ?"
-    ).all(year, num);
+    const answers = db.prepare(`
+      SELECT item_id, value, memo,
+             answer_version, answer_updated_at, answer_updated_by,
+             memo_version, memo_updated_at, memo_updated_by
+      FROM sheet_answer
+      WHERE year = ? AND team_num = ?
+    `).all(year, num);
 
     const categoryResults = db.prepare(
       "SELECT category_id, result FROM sheet_category_result WHERE year = ? AND team_num = ?"
@@ -506,7 +530,18 @@ app.get("/api/sheet/data/:year/:num", (req, res) => {
     ).all(year, num);
 
     const answersMap = {};
-    for (const a of answers) answersMap[a.item_id] = { value: a.value, memo: a.memo };
+    for (const a of answers) {
+      answersMap[a.item_id] = {
+        value: a.value,
+        memo: a.memo,
+        answer_version: a.answer_version,
+        answer_updated_at: a.answer_updated_at,
+        answer_updated_by: a.answer_updated_by,
+        memo_version: a.memo_version,
+        memo_updated_at: a.memo_updated_at,
+        memo_updated_by: a.memo_updated_by,
+      };
+    }
 
     const resultsMap = {};
     for (const r of categoryResults) resultsMap[r.category_id] = r.result;
@@ -523,7 +558,7 @@ app.get("/api/sheet/data/:year/:num", (req, res) => {
 
 // PUT /api/sheet/answer - 답변 upsert
 app.put("/api/sheet/answer", (req, res) => {
-  const { year, team_num, item_id, value } = req.body;
+  const { year, team_num, item_id, value, base_version, mutation_id } = req.body;
   if (!year || team_num == null || !item_id) return res.status(400).send("필수 필드가 누락되었습니다.");
   if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(item_id)) {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
@@ -536,17 +571,50 @@ app.put("/api/sheet/answer", (req, res) => {
   if (templateItem.answer_type === "passfail" && !["", "PASS", "FAIL"].includes(newValue)) {
     return res.status(400).send("PASS 또는 FAIL만 입력할 수 있습니다.");
   }
+  if (base_version !== undefined && (!Number.isInteger(base_version) || base_version < 0)) {
+    return res.status(400).send("올바르지 않은 답변 버전입니다.");
+  }
+
+  const updatedAt = new Date().toISOString();
+  const updatedBy = req.user?.name || req.user?.email || "";
 
   const result = dbRun(() => {
     const prev = db.prepare(
-      "SELECT value FROM sheet_answer WHERE year = ? AND team_num = ? AND item_id = ?"
+      `SELECT value, answer_version, answer_updated_at, answer_updated_by
+       FROM sheet_answer WHERE year = ? AND team_num = ? AND item_id = ?`
     ).get(year, team_num, item_id);
+    const current = {
+      value: prev?.value ?? "",
+      version: prev?.answer_version ?? 0,
+      updated_at: prev?.answer_updated_at ?? null,
+      updated_by: prev?.answer_updated_by ?? "",
+    };
+
+    if (base_version !== undefined && base_version !== current.version) {
+      return { conflict: true, current };
+    }
+
+    if (current.value === newValue) {
+      return { changed: false, current };
+    }
+
+    const nextVersion = current.version + 1;
 
     db.prepare(
-      "INSERT INTO sheet_answer (year, team_num, item_id, value) VALUES (?, ?, ?, ?) ON CONFLICT(year, team_num, item_id) DO UPDATE SET value = excluded.value"
-    ).run(year, team_num, item_id, newValue);
+      `INSERT INTO sheet_answer
+         (year, team_num, item_id, value, answer_version, answer_updated_at, answer_updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(year, team_num, item_id) DO UPDATE SET
+         value = excluded.value,
+         answer_version = excluded.answer_version,
+         answer_updated_at = excluded.answer_updated_at,
+         answer_updated_by = excluded.answer_updated_by`
+    ).run(year, team_num, item_id, newValue, nextVersion, updatedAt, updatedBy);
 
-    return { changed: !prev || prev.value !== newValue };
+    return {
+      changed: true,
+      current: { value: newValue, version: nextVersion, updated_at: updatedAt, updated_by: updatedBy },
+    };
   });
 
   if (!result.success) {
@@ -554,17 +622,36 @@ app.put("/api/sheet/answer", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  if (result.result.changed) {
-    logger.log(req, "answer.update", { year, item_id, item_name: templateItem.name, value: newValue }, `#${team_num}`);
-    broadcastEvent("answer", { year, team_num, item_id, value: newValue });
+  if (result.result.conflict) {
+    return res.status(409).json({
+      error: "다른 사용자가 이 답변을 먼저 수정했습니다.",
+      current: result.result.current,
+    });
   }
 
-  res.status(200).send();
+  if (result.result.changed) {
+    logger.log(req, "answer.update", { year, item_id, item_name: templateItem.name, value: newValue }, `#${team_num}`);
+    broadcastEvent("answer", {
+      year,
+      team_num,
+      item_id,
+      value: newValue,
+      version: result.result.current.version,
+      updated_at: result.result.current.updated_at,
+      updated_by: result.result.current.updated_by,
+      mutation_id: typeof mutation_id === "string" ? mutation_id : undefined,
+    });
+  }
+
+  res.status(200).json({
+    ...result.result.current,
+    mutation_id: typeof mutation_id === "string" ? mutation_id : undefined,
+  });
 });
 
 // PUT /api/sheet/memo - 메모 upsert
 app.put("/api/sheet/memo", (req, res) => {
-  const { year, team_num, item_id, memo } = req.body;
+  const { year, team_num, item_id, memo, base_version, mutation_id } = req.body;
   if (!year || team_num == null || !item_id) return res.status(400).send("필수 필드가 누락되었습니다.");
   if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(item_id)) {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
@@ -573,22 +660,81 @@ app.put("/api/sheet/memo", (req, res) => {
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
   const templateItem = db.prepare("SELECT id, name FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
   if (!templateItem) return res.status(400).send("해당 연도에 존재하지 않는 항목입니다.");
+  if (base_version !== undefined && (!Number.isInteger(base_version) || base_version < 0)) {
+    return res.status(400).send("올바르지 않은 메모 버전입니다.");
+  }
 
-  const result = dbRun(() =>
+  const newMemo = memo ?? "";
+  const updatedAt = new Date().toISOString();
+  const updatedBy = req.user?.name || req.user?.email || "";
+  const result = dbRun(() => {
+    const prev = db.prepare(
+      `SELECT memo, memo_version, memo_updated_at, memo_updated_by
+       FROM sheet_answer WHERE year = ? AND team_num = ? AND item_id = ?`
+    ).get(year, team_num, item_id);
+    const current = {
+      memo: prev?.memo ?? "",
+      version: prev?.memo_version ?? 0,
+      updated_at: prev?.memo_updated_at ?? null,
+      updated_by: prev?.memo_updated_by ?? "",
+    };
+
+    if (base_version !== undefined && base_version !== current.version) {
+      return { conflict: true, current };
+    }
+
+    if (current.memo === newMemo) {
+      return { changed: false, current };
+    }
+
+    const nextVersion = current.version + 1;
     db.prepare(
-      "INSERT INTO sheet_answer (year, team_num, item_id, memo) VALUES (?, ?, ?, ?) ON CONFLICT(year, team_num, item_id) DO UPDATE SET memo = excluded.memo"
-    ).run(year, team_num, item_id, memo ?? "")
-  );
+      `INSERT INTO sheet_answer
+         (year, team_num, item_id, memo, memo_version, memo_updated_at, memo_updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(year, team_num, item_id) DO UPDATE SET
+         memo = excluded.memo,
+         memo_version = excluded.memo_version,
+         memo_updated_at = excluded.memo_updated_at,
+         memo_updated_by = excluded.memo_updated_by`
+    ).run(year, team_num, item_id, newMemo, nextVersion, updatedAt, updatedBy);
+
+    return {
+      changed: true,
+      current: { memo: newMemo, version: nextVersion, updated_at: updatedAt, updated_by: updatedBy },
+    };
+  });
 
   if (!result.success) {
     logger.warn(req, "memo.update", { error: result.error, year, item_id }, `#${team_num}`);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "memo.update", { year, item_id, item_name: templateItem.name, memo: memo ?? "" }, `#${team_num}`);
-  broadcastEvent("memo", { year, team_num, item_id, memo: memo ?? "" });
+  if (result.result.conflict) {
+    return res.status(409).json({
+      error: "다른 사용자가 이 메모를 먼저 수정했습니다.",
+      current: result.result.current,
+    });
+  }
 
-  res.status(200).send();
+  if (result.result.changed) {
+    logger.log(req, "memo.update", { year, item_id, item_name: templateItem.name, memo: newMemo }, `#${team_num}`);
+    broadcastEvent("memo", {
+      year,
+      team_num,
+      item_id,
+      memo: newMemo,
+      version: result.result.current.version,
+      updated_at: result.result.current.updated_at,
+      updated_by: result.result.current.updated_by,
+      mutation_id: typeof mutation_id === "string" ? mutation_id : undefined,
+    });
+  }
+
+  res.status(200).json({
+    ...result.result.current,
+    mutation_id: typeof mutation_id === "string" ? mutation_id : undefined,
+  });
 });
 
 // PUT /api/sheet/category-result - 카테고리 결과 upsert

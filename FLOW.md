@@ -205,8 +205,8 @@
 | 4.9a | 팀 시트 카테고리 필터 | official | SheetDetail.vue | 팀의 `entry.type`이 카테고리 `excluded_types`에 있으면 탭을 완전히 숨긴다. 유형 미지정 팀은 전체 표시. 탭 번호는 템플릿 원본 순서를 유지해 인쇄된 시트와 어긋나지 않는다 |
 | 4.10 | 답변 일괄 조회 | official | `GET /api/sheet/bulk-answers?year=&item_ids=` | 특정 항목들의 전체 팀 답변 |
 | 4.11 | 팀 시트 조회 | official | `GET /api/sheet/data/:year/:num` | 답변, 카테고리 결과, 검사자 |
-| 4.12 | 답변 입력 | official | `PUT /api/sheet/answer` | UPSERT, SSE 브로드캐스트 |
-| 4.13 | 메모 입력 | official | `PUT /api/sheet/memo` | UPSERT, SSE 브로드캐스트 |
+| 4.12 | 답변 입력 | official | `PUT /api/sheet/answer` | 문항별 version UPSERT, stale base_version은 409, versioned SSE 브로드캐스트 |
+| 4.13 | 메모 입력 | official | `PUT /api/sheet/memo` | 답변과 독립된 memo version UPSERT, stale base_version은 409, versioned SSE 브로드캐스트 |
 | 4.14 | 카테고리 결과 설정 | official | `PUT /api/sheet/category-result` | PASS/FAIL/"", SSE 브로드캐스트 |
 | 4.15 | 검사자 지정 | official | `PUT /api/sheet/inspector` | UPSERT, SSE 브로드캐스트 |
 
