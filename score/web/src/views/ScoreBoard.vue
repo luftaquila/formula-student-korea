@@ -503,9 +503,9 @@ function getSortIcon(key) {
 // SSE로 검차 결과 실시간 반영
 watch(lastInspectionUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
+  invalidateAndRefreshScoreData();
   if (update.deleted) {
     delete inspection.value.teams[update.team_num];
-    debouncedRefresh();
     return;
   }
   if (update.renumbered) {
@@ -513,7 +513,6 @@ watch(lastInspectionUpdate, (update) => {
       inspection.value.teams[update.team_num] = inspection.value.teams[update.prevNum];
       delete inspection.value.teams[update.prevNum];
     }
-    debouncedRefresh();
     return;
   }
   const { team_num, category_id, result } = update;
@@ -526,10 +525,10 @@ watch(lastInspectionUpdate, (update) => {
 // SSE로 검차 답변(코너웨이트) 실시간 반영
 watch(lastAnswerUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
+  invalidateAndRefreshScoreData();
   if (update.deleted) {
     delete inspection.value.teams[update.team_num];
     if (inspection.value.cornerWeight?.teams) delete inspection.value.cornerWeight.teams[update.team_num];
-    debouncedRefresh();
     return;
   }
   if (update.renumbered) {
@@ -542,7 +541,6 @@ watch(lastAnswerUpdate, (update) => {
       cwTeams[update.team_num] = cwTeams[update.prevNum];
       delete cwTeams[update.prevNum];
     }
-    debouncedRefresh();
     return;
   }
   const { team_num, item_id, value } = update;
@@ -563,6 +561,7 @@ watch(lastAnswerUpdate, (update) => {
 // SSE로 수동 점수 실시간 반영
 watch(lastManualScoreUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
+  invalidateAndRefreshScoreData();
   if (update.deleted) {
     delete manualScores.value[update.team_num];
     return;
@@ -599,7 +598,10 @@ async function refreshEventData() {
   }
 }
 
-function debouncedRefresh() {
+function invalidateAndRefreshScoreData() {
+  // 직접 반영한 SSE 값을 변경 전에 시작한 스냅샷이 되돌리지 못하게
+  // 진행 중인 요청을 즉시 무효화하고, 디바운스된 전체 스냅샷으로 확정한다.
+  scoreDataSeq++;
   debounceRefresh("refresh", refreshEventData);
 }
 
@@ -611,7 +613,7 @@ watch(lastPenaltyUpdate, (update) => {
   penalties.value[event_type].cone_penalty = cone_penalty;
   penalties.value[event_type].oc_penalty = oc_penalty;
   penalties.value[event_type].start_delay = start_delay;
-  debouncedRefresh(); // 내구 result는 백엔드에서 start_delay 포함 계산되므로 재로드 필요
+  invalidateAndRefreshScoreData(); // 내구 result는 백엔드에서 start_delay 포함 계산되므로 재로드 필요
 });
 
 // SSE로 점수 설정 실시간 반영
@@ -620,17 +622,17 @@ watch(lastSettingUpdate, (update) => {
   const { event_type, setting_key, value } = update;
   if (!settings.value[event_type]) settings.value[event_type] = {};
   settings.value[event_type][setting_key] = value;
-  debouncedRefresh();
+  invalidateAndRefreshScoreData();
 });
 
 // SSE로 경기 기록 변경 시 이벤트 데이터 갱신
 watch(lastTrafficRecordUpdate, () => {
-  debouncedRefresh();
+  invalidateAndRefreshScoreData();
 });
 
 // SSE로 내구 기록 변경 시 이벤트 데이터 갱신
 watch(lastEnduranceUpdate, () => {
-  debouncedRefresh();
+  invalidateAndRefreshScoreData();
 });
 
 watch(lastPublicationUpdate, (update) => {

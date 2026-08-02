@@ -151,6 +151,8 @@ watch(lastSettingUpdate, (update) => {
 
 let scoreRefreshTimer = null;
 function scheduleScoreRefresh() {
+  // 직접 반영한 내구·설정 SSE보다 먼저 시작한 score 스냅샷을 즉시 무효화한다.
+  scoreSnapshotSeq++;
   clearTimeout(scoreRefreshTimer);
   scoreRefreshTimer = setTimeout(refreshScoreData, 250);
 }
