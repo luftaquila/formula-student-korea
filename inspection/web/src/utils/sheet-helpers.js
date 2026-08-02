@@ -9,8 +9,18 @@ export function itemNum(i) { return CIRCLED[i] || `(${i + 1})`; }
 export function getChecktableConfig(item) {
   try {
     const config = JSON.parse(item.remarks);
-    return { columns: config.columns || [], rows: config.rows || [] };
+    return {
+      columns: Array.isArray(config.columns) ? config.columns : [],
+      rows: Array.isArray(config.rows) ? config.rows : [],
+    };
   } catch {
     return { columns: [], rows: [] };
   }
+}
+
+export function hasCheckedChecktableCell(item, value) {
+  const { columns, rows } = getChecktableConfig(item);
+  return rows.some((_, rowIndex) =>
+    columns.some((_, columnIndex) => Boolean(value?.[`${rowIndex}_${columnIndex}`])),
+  );
 }

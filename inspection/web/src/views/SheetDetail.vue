@@ -433,20 +433,12 @@ function startEditMemo(itemId) {
   editingMemo.value = itemId;
   nextTick(() => {
     const textarea = document.querySelector(`[data-memo-item="${itemId}"]`);
-    if (textarea) {
-      resizeMemoTextarea(textarea);
-      textarea.focus();
-    }
+    if (!textarea) return;
+    textarea.focus();
   });
 }
 
-function resizeMemoTextarea(textarea) {
-  textarea.style.height = "auto";
-  textarea.style.height = `${textarea.scrollHeight}px`;
-}
-
 function onMemoInput(itemId, event) {
-  resizeMemoTextarea(event.target);
   onMemoChange(itemId, event.target.value);
 }
 
@@ -490,7 +482,14 @@ function useServerMemo(itemId) {
 }
 
 // ---- Numbering ----
-import { catNum, subNum, grpNum, itemNum, getChecktableConfig } from "../utils/sheet-helpers";
+import {
+  catNum,
+  subNum,
+  grpNum,
+  itemNum,
+  getChecktableConfig,
+  hasCheckedChecktableCell,
+} from "../utils/sheet-helpers";
 
 // ---- Simple markdown rendering ----
 function renderMd(text) {
@@ -531,14 +530,9 @@ const unansweredItems = computed(() => {
       for (const [ii, item] of (grp.items || []).entries()) {
         const itemNumber = `${subNum(si)}-${grpNum(gi)} ${itemNum(ii)}`;
         if (item.answer_type === "checktable") {
-          const config = getChecktableConfig(item);
           const val = getChecktableValue(item.id);
-          for (let ri = 0; ri < config.rows.length; ri++) {
-            for (let ci = 0; ci < config.columns.length; ci++) {
-              if (!val[`${ri}_${ci}`]) {
-                items.push({ id: item.id, num: itemNumber, name: `${config.rows[ri]} - ${config.columns[ci]}`, sub: sub.name, grp: grp.name });
-              }
-            }
+          if (!hasCheckedChecktableCell(item, val)) {
+            items.push({ id: item.id, num: itemNumber, name: item.name, sub: sub.name, grp: grp.name });
           }
         } else if (!getAnswer(item.id)) {
           items.push({ id: item.id, num: itemNumber, name: item.name, sub: sub.name, grp: grp.name });
@@ -566,6 +560,33 @@ const failedItems = computed(() => {
     }
   }
   return items;
+});
+
+const inspectionProgress = computed(() => {
+  const cat = currentCategory.value;
+  let completed = 0;
+  let total = 0;
+  if (cat) {
+    for (const sub of cat.subcategories || []) {
+      for (const grp of sub.groups || []) {
+        for (const item of grp.items || []) {
+          if (item.answer_type === "checktable") {
+            const value = getChecktableValue(item.id);
+            total += 1;
+            if (hasCheckedChecktableCell(item, value)) completed += 1;
+          } else {
+            total += 1;
+            if (getAnswer(item.id)) completed += 1;
+          }
+        }
+      }
+    }
+  }
+  return {
+    completed,
+    total,
+    percent: total ? Math.round((completed / total) * 100) : 0,
+  };
 });
 
 const memoOpen = ref(false);
@@ -884,20 +905,42 @@ watch(reconnected, async () => {
         </button>
       </div>
 
-      <!-- Memos in this team sheet -->
-      <div v-if="memoItems.length" class="memo-summary">
-        <button class="memo-summary-toggle" @click="memoOpen = !memoOpen">
-          메모 있는 항목 {{ memoItems.length }}개
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" :class="{ 'chevron-open': memoOpen }">
+      <!-- Current category progress -->
+      <div
+        v-if="inspectionProgress.total"
+        class="inspection-progress"
+        role="progressbar"
+        :aria-valuenow="inspectionProgress.completed"
+        aria-valuemin="0"
+        :aria-valuemax="inspectionProgress.total"
+      >
+        <div class="inspection-progress-label">
+          <span>진행률</span>
+          <span>{{ inspectionProgress.completed }}/{{ inspectionProgress.total }} · {{ inspectionProgress.percent }}%</span>
+        </div>
+        <div class="inspection-progress-track">
+          <div class="inspection-progress-fill" :style="{ width: `${inspectionProgress.percent}%` }"></div>
+        </div>
+      </div>
+
+      <!-- Failed items warning -->
+      <div v-if="failedItems.length" class="failed-banner">
+        <button class="failed-toggle" @click="failedOpen = !failedOpen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="15" y1="9" x2="9" y2="15" />
+            <line x1="9" y1="9" x2="15" y2="15" />
+          </svg>
+          FAIL 항목 {{ failedItems.length }}개
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" :class="{ 'chevron-open': failedOpen }">
             <path d="m6 9 6 6 6-6" />
           </svg>
         </button>
-        <Transition name="memo-summary-list">
-          <div v-if="memoOpen" class="memo-summary-list">
-            <button v-for="item in memoItems" :key="item.id" class="memo-summary-item" @click="scrollToMemoItem(item)">
-              <span class="memo-summary-path">{{ item.path }}</span>
-              <span class="memo-summary-name">{{ item.name }}</span>
-              <span class="memo-summary-preview">{{ item.memo }}</span>
+        <Transition name="failed-list">
+          <div v-if="failedOpen" class="failed-list">
+            <button v-for="item in failedItems" :key="item.id" class="failed-item" @click="scrollToItem(item.id)">
+              <span class="failed-item-path">{{ item.sub }} &rsaquo; {{ item.grp }}</span>
+              <span class="failed-item-name"><span class="item-list-num">{{ item.num }}</span> {{ item.name }}</span>
             </button>
           </div>
         </Transition>
@@ -926,24 +969,20 @@ watch(reconnected, async () => {
         </Transition>
       </div>
 
-      <!-- Failed items warning -->
-      <div v-if="failedItems.length" class="failed-banner">
-        <button class="failed-toggle" @click="failedOpen = !failedOpen">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-            <circle cx="12" cy="12" r="10" />
-            <line x1="15" y1="9" x2="9" y2="15" />
-            <line x1="9" y1="9" x2="15" y2="15" />
-          </svg>
-          FAIL 항목 {{ failedItems.length }}개
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" :class="{ 'chevron-open': failedOpen }">
+      <!-- Memos in this team sheet -->
+      <div v-if="memoItems.length" class="memo-summary">
+        <button class="memo-summary-toggle" @click="memoOpen = !memoOpen">
+          메모 {{ memoItems.length }}개
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" :class="{ 'chevron-open': memoOpen }">
             <path d="m6 9 6 6 6-6" />
           </svg>
         </button>
-        <Transition name="failed-list">
-          <div v-if="failedOpen" class="failed-list">
-            <button v-for="item in failedItems" :key="item.id" class="failed-item" @click="scrollToItem(item.id)">
-              <span class="failed-item-path">{{ item.sub }} &rsaquo; {{ item.grp }}</span>
-              <span class="failed-item-name"><span class="item-list-num">{{ item.num }}</span> {{ item.name }}</span>
+        <Transition name="memo-summary-list">
+          <div v-if="memoOpen" class="memo-summary-list">
+            <button v-for="item in memoItems" :key="item.id" class="memo-summary-item" @click="scrollToMemoItem(item)">
+              <span class="memo-summary-path">{{ item.path }}</span>
+              <span class="memo-summary-name">{{ item.name }}</span>
+              <span class="memo-summary-preview">{{ item.memo }}</span>
             </button>
           </div>
         </Transition>
@@ -997,11 +1036,13 @@ watch(reconnected, async () => {
               <div v-for="(item, ii) in grp.items" :key="item.id" :id="`item-${item.id}`" class="item-row">
                 <span class="item-num-label">{{ itemNum(ii) }}</span>
                 <div class="item-content">
-                  <div class="item-info">
-                    <div class="item-name"><span v-html="renderMd(item.name)"></span></div>
-                    <span v-if="item.remarks && item.answer_type !== 'checktable'" class="item-remarks">{{ item.remarks }}</span>
+                  <div class="item-heading">
+                    <div class="item-info">
+                      <div class="item-name"><span v-html="renderMd(item.name)"></span></div>
+                      <span v-if="item.remarks && item.answer_type !== 'checktable'" class="item-remarks">{{ item.remarks }}</span>
+                    </div>
                   </div>
-                  <div class="item-controls">
+                  <div class="item-controls" :class="{ 'has-checktable': item.answer_type === 'checktable' }">
                   <!-- PASS/FAIL toggle -->
                   <div v-if="item.answer_type === 'passfail'" class="pf-toggle">
                     <button
@@ -1070,7 +1111,66 @@ watch(reconnected, async () => {
                         </tbody>
                       </table>
                     </div>
-                    <!-- Memo (checktable: 테이블 아래, 스크롤 영역 밖) -->
+                  </div>
+                  <div class="item-status-slot" aria-live="polite">
+                    <div v-if="answerConflicts[item.id]" class="save-feedback save-conflict-inline">
+                      <span>응답 충돌</span>
+                      <div class="conflict-actions">
+                        <button type="button" title="서버 값 사용" @click="useServerAnswer(item.id)">서버</button>
+                        <button type="button" title="내 값 다시 저장" @click="retryAnswer(item.id)">내 값</button>
+                      </div>
+                    </div>
+                    <div
+                      v-else-if="answerSaveStates[item.id]?.state && answerSaveStates[item.id].state !== 'idle'"
+                      class="save-feedback"
+                      :class="`save-${answerSaveStates[item.id].state}`"
+                    >
+                      <span v-if="answerSaveStates[item.id].state === 'pending' || answerSaveStates[item.id].state === 'saving'">응답 저장 중…</span>
+                      <span v-else-if="answerSaveStates[item.id].state === 'saved'">응답 저장됨</span>
+                      <template v-else-if="answerSaveStates[item.id].state === 'error'">
+                        <span>응답 저장 실패</span>
+                        <button type="button" @click="retryAnswer(item.id)">재시도</button>
+                      </template>
+                    </div>
+
+                    <div v-if="memoConflicts[item.id]" class="save-feedback save-conflict-inline">
+                      <span>메모 충돌</span>
+                      <div class="conflict-actions">
+                        <button type="button" title="서버 메모 사용" @click="useServerMemo(item.id)">서버</button>
+                        <button type="button" title="내 메모 다시 저장" @click="retryMemo(item.id)">내 메모</button>
+                      </div>
+                    </div>
+                    <div
+                      v-else-if="memoSaveStates[item.id]?.state && memoSaveStates[item.id].state !== 'idle'"
+                      class="save-feedback"
+                      :class="`save-${memoSaveStates[item.id].state}`"
+                    >
+                      <span v-if="memoSaveStates[item.id].state === 'pending' || memoSaveStates[item.id].state === 'saving'">메모 저장 중…</span>
+                      <span v-else-if="memoSaveStates[item.id].state === 'saved'">메모 저장됨</span>
+                      <template v-else-if="memoSaveStates[item.id].state === 'error'">
+                        <span>메모 저장 실패</span>
+                        <button type="button" @click="retryMemo(item.id)">재시도</button>
+                      </template>
+                    </div>
+                  </div>
+                  </div>
+
+                  <!-- Memo: full content is visible below every answer control. -->
+                  <div class="memo-area">
+                    <button
+                      type="button"
+                      class="memo-text"
+                      :class="{
+                        'memo-empty': !getMemo(item.id),
+                        'memo-readonly': isReadOnly,
+                        'memo-editing': editingMemo === item.id,
+                      }"
+                      :disabled="isReadOnly"
+                      :title="getMemo(item.id) && getMemoUpdatedAt(item.id) ? `${getMemoUpdatedBy(item.id)} ${formatUpdatedAt(getMemoUpdatedAt(item.id))}`.trim() : ''"
+                      @click="startEditMemo(item.id)"
+                    >
+                      <span class="memo-preview">{{ getMemo(item.id) || "+ 메모 추가" }}</span>
+                    </button>
                     <textarea
                       v-if="editingMemo === item.id"
                       class="form-input memo-input"
@@ -1081,72 +1181,6 @@ watch(reconnected, async () => {
                       @blur="finishEditMemo(item.id)"
                       placeholder="메모 입력"
                     ></textarea>
-                    <button
-                      v-else
-                      type="button"
-                      class="memo-text"
-                      :class="{ 'memo-empty': !getMemo(item.id), 'memo-readonly': isReadOnly }"
-                      :disabled="isReadOnly"
-                      @click="startEditMemo(item.id)"
-                    >{{ getMemo(item.id) || "메모 추가" }}</button>
-                  </div>
-                  <!-- Memo (기본: controls 행 내) -->
-                  <template v-if="item.answer_type !== 'checktable'">
-                  <textarea
-                    v-if="editingMemo === item.id"
-                    class="form-input memo-input"
-                    :value="getMemo(item.id)"
-                    :data-memo-item="item.id"
-                    rows="1"
-                    @input="onMemoInput(item.id, $event)"
-                    @blur="finishEditMemo(item.id)"
-                    placeholder="메모 입력"
-                  ></textarea>
-                  <button
-                    v-else
-                    type="button"
-                    class="memo-text"
-                    :class="{ 'memo-empty': !getMemo(item.id), 'memo-readonly': isReadOnly }"
-                    :disabled="isReadOnly"
-                    @click="startEditMemo(item.id)"
-                  >{{ getMemo(item.id) || "메모 추가" }}</button>
-                  </template>
-                  </div>
-
-                  <div v-if="answerSaveStates[item.id]?.state && !['idle', 'conflict'].includes(answerSaveStates[item.id].state)" class="save-feedback" :class="`save-${answerSaveStates[item.id].state}`">
-                    <span v-if="answerSaveStates[item.id].state === 'pending' || answerSaveStates[item.id].state === 'saving'">응답 저장 중…</span>
-                    <span v-else-if="answerSaveStates[item.id].state === 'saved'">응답 저장됨</span>
-                    <template v-else-if="answerSaveStates[item.id].state === 'error'">
-                      <span>응답 저장 실패</span>
-                      <button type="button" @click="retryAnswer(item.id)">재시도</button>
-                    </template>
-                  </div>
-                  <div v-if="answerConflicts[item.id]" class="save-conflict">
-                    <span>다른 검차관이 이 응답을 변경했습니다.</span>
-                    <div class="conflict-actions">
-                      <button type="button" @click="useServerAnswer(item.id)">서버 값 사용</button>
-                      <button type="button" @click="retryAnswer(item.id)">내 값 다시 저장</button>
-                    </div>
-                  </div>
-
-                  <div v-if="memoSaveStates[item.id]?.state && !['idle', 'conflict'].includes(memoSaveStates[item.id].state)" class="save-feedback" :class="`save-${memoSaveStates[item.id].state}`">
-                    <span v-if="memoSaveStates[item.id].state === 'pending' || memoSaveStates[item.id].state === 'saving'">메모 저장 중…</span>
-                    <span v-else-if="memoSaveStates[item.id].state === 'saved'">메모 저장됨</span>
-                    <template v-else-if="memoSaveStates[item.id].state === 'error'">
-                      <span>메모 저장 실패</span>
-                      <button type="button" @click="retryMemo(item.id)">재시도</button>
-                    </template>
-                  </div>
-                  <div v-if="memoConflicts[item.id]" class="save-conflict">
-                    <span>다른 검차관이 이 메모를 변경했습니다.</span>
-                    <div class="conflict-actions">
-                      <button type="button" @click="useServerMemo(item.id)">서버 메모 사용</button>
-                      <button type="button" @click="retryMemo(item.id)">내 메모 다시 저장</button>
-                    </div>
-                  </div>
-                  <div v-if="getMemo(item.id) && getMemoUpdatedAt(item.id)" class="memo-meta">
-                    <span v-if="getMemoUpdatedBy(item.id)">{{ getMemoUpdatedBy(item.id) }}</span>
-                    <span>{{ formatUpdatedAt(getMemoUpdatedAt(item.id)) }}</span>
                   </div>
                 </div>
               </div>
@@ -1414,7 +1448,13 @@ watch(reconnected, async () => {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.5rem;
+  gap: 0.25rem;
+}
+
+.item-heading {
+  display: block;
+  width: 100%;
+  min-height: 1.5rem;
 }
 
 .item-info {
@@ -1447,11 +1487,35 @@ watch(reconnected, async () => {
 }
 
 .item-controls {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.5rem;
   width: 100%;
+}
+
+.item-status-slot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.375rem;
+  min-width: 0;
+  height: 2rem;
+  overflow: hidden;
+}
+
+.item-controls.has-checktable {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.25rem;
+}
+
+.item-controls.has-checktable .checktable-block,
+.item-controls.has-checktable .item-status-slot {
+  grid-column: 1;
+}
+
+.item-controls.has-checktable .item-status-slot {
+  height: 1.25rem;
 }
 
 .pf-toggle {
@@ -1496,6 +1560,7 @@ watch(reconnected, async () => {
 }
 
 .checktable-wrapper {
+  width: 100%;
   overflow-x: auto;
 }
 
@@ -1537,24 +1602,32 @@ watch(reconnected, async () => {
   cursor: default;
 }
 
-/* Memo inline */
+/* Memo: full-width display and editor share the same content-driven height. */
+.memo-area {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  min-height: 2.25rem;
+}
+
 .memo-text {
-  flex: 1;
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 2.25rem;
   min-width: 0;
   font-size: 0.75rem;
+  line-height: 1.45;
   color: var(--text-secondary);
   cursor: pointer;
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  border: 0;
-  background: transparent;
+  padding: 0.375rem 0.625rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
   text-align: left;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  overflow: hidden;
 }
 
 .memo-text:hover {
@@ -1564,43 +1637,51 @@ watch(reconnected, async () => {
 .memo-empty {
   color: var(--text-tertiary);
   font-style: italic;
+  border-style: dashed;
+  background: transparent;
 }
 
 .memo-readonly {
   cursor: default;
-  -webkit-line-clamp: unset;
+}
+
+.memo-editing {
+  visibility: hidden;
 }
 
 .memo-input {
-  flex: 1;
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
   width: 100%;
-  min-height: 2.25rem;
-  max-height: 12rem;
+  height: 100%;
+  min-height: 100%;
   resize: none;
-  overflow-y: auto;
+  overflow-y: hidden;
   font-size: 0.75rem;
   line-height: 1.45;
-  padding: 0.5rem 0.625rem;
+  padding: 0.375rem 0.625rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-.item-controls > .memo-input {
-  flex: 1 0 100%;
-}
-
-.memo-meta {
-  display: flex;
-  gap: 0.375rem;
-  color: var(--text-tertiary);
-  font-size: 0.6875rem;
+.memo-preview {
+  display: block;
+  width: 100%;
+  white-space: inherit;
 }
 
 .save-feedback {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  min-height: 1rem;
+  gap: 0.375rem;
+  width: auto;
+  height: 1.25rem;
+  min-height: 0;
   font-size: 0.6875rem;
   color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: visible;
 }
 
 .save-feedback button,
@@ -1611,6 +1692,7 @@ watch(reconnected, async () => {
   color: var(--accent-primary);
   font: inherit;
   font-weight: 600;
+  line-height: 1;
   cursor: pointer;
 }
 
@@ -1622,20 +1704,50 @@ watch(reconnected, async () => {
   color: var(--accent-success);
 }
 
-.save-conflict {
-  width: 100%;
-  padding: 0.5rem 0.625rem;
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  border-radius: 6px;
-  background: rgba(245, 158, 11, 0.1);
+.save-conflict-inline {
   color: var(--accent-warning);
-  font-size: 0.75rem;
 }
 
 .conflict-actions {
   display: flex;
-  gap: 0.75rem;
-  margin-top: 0.375rem;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0;
+}
+
+.inspection-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.5rem 0.125rem;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg-primary);
+}
+
+.inspection-progress-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.inspection-progress-track {
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-hover);
+}
+
+.inspection-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-success);
+  transition: width 0.2s ease;
 }
 
 /* Team sheet memo index */
