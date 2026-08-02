@@ -36,7 +36,7 @@ test.describe("Traffic scoreboard", () => {
     await expect(scoreboardPage).toBeVisible();
 
     // Verify file selector exists
-    const fileSelect = page.locator(".form-select");
+    const fileSelect = page.getByLabel("기록 파일");
     await expect(fileSelect).toBeVisible();
   });
 
@@ -57,6 +57,62 @@ test.describe("Traffic scoreboard", () => {
 
     // Verify LIVE indicator is present
     await expect(scoreboard).toContainText("LIVE");
+  });
+
+  test("customizes and persists the scoreboard theme, event colors, and visibility", async ({ page }) => {
+    await page.addInitScript(() => {
+      if (!sessionStorage.getItem("scoreboard-settings-cleared")) {
+        localStorage.removeItem("traffic-scoreboard-theme");
+        localStorage.removeItem("traffic-scoreboard-colors");
+        localStorage.removeItem("traffic-scoreboard-visibility");
+        sessionStorage.setItem("scoreboard-settings-cleared", "true");
+      }
+    });
+    await page.goto("/traffic/scoreboard");
+    await waitForPageReady(page);
+
+    await page.locator(".form-select").first().selectOption(`FSK ${YEAR} E2E-Scoreboard`);
+
+    const displayArea = page.locator(".display-area");
+    const themeButton = page.getByTestId("scoreboard-theme");
+    const accelerationColor = page.getByTestId("scoreboard-color-가속");
+    const accelerationVisibility = page.getByTestId("scoreboard-visible-가속");
+
+    await expect(themeButton).toHaveAttribute("data-theme", "dark");
+    await expect(accelerationColor).toHaveValue("#ffd000");
+    await expect(page.getByTestId("scoreboard-color-스키드패드")).toHaveValue("#00e5ff");
+    await expect(page.getByTestId("scoreboard-color-오토크로스")).toHaveValue("#ff6b6b");
+    await expect(accelerationVisibility).toBeChecked();
+    await expect(page.getByTestId("scoreboard-visible-스키드패드")).toBeChecked();
+    await expect(page.getByTestId("scoreboard-visible-오토크로스")).toBeChecked();
+
+    await themeButton.click();
+    await expect(themeButton).toHaveAttribute("data-theme", "light");
+    await expect(displayArea).toHaveAttribute("data-scoreboard-theme", "light");
+    await expect(displayArea).toHaveCSS("background-color", "rgb(255, 255, 255)");
+    await expect(page.locator(".scoreboard > .header")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+
+    await accelerationColor.evaluate((input) => {
+      input.value = "#345678";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await expect.poll(() => page.locator(".panel").first().evaluate((panel) => (
+      getComputedStyle(panel).getPropertyValue("--panel-color").trim()
+    ))).toBe("#345678");
+
+    await accelerationVisibility.uncheck();
+    await expect(page.locator(".panel")).toHaveCount(0);
+
+    await page.reload();
+    await waitForPageReady(page);
+
+    await expect(page.getByTestId("scoreboard-theme")).toHaveAttribute("data-theme", "light");
+    await expect(page.getByTestId("scoreboard-color-가속")).toHaveValue("#345678");
+    await expect(page.getByTestId("scoreboard-visible-가속")).not.toBeChecked();
+    await expect(page.locator(".display-area")).toHaveAttribute("data-scoreboard-theme", "light");
+
+    await page.getByTestId("scoreboard-visible-가속").check();
+    await expect(page.locator(".panel")).toBeVisible({ timeout: 5000 });
   });
 
   test("shows empty state when no records", async ({ page }) => {
