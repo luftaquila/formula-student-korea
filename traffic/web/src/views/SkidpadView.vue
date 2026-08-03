@@ -110,7 +110,7 @@ watch(session, (s, previous) => {
     eventName.value = s.event_name || "";
     selectedTeam.value = s.team?.num ?? null;
   }
-  if (s.run_id && s.run_id !== previous?.run_id) clearMeasurement();
+  if (s.run_id !== previous?.run_id) clearMeasurement();
   if (resetPending.value && s.light_color === "off") {
     clearMeasurement();
     endRun();

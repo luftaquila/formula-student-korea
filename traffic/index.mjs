@@ -196,6 +196,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_session (
   run_id            TEXT,
   saved_record_name TEXT,
   saved_record_rowid INTEGER,
+  reset_pending     INTEGER NOT NULL DEFAULT 0,
   team_json         TEXT,
   event_name        TEXT,
   controller        TEXT,
@@ -207,6 +208,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_session (
   if (!columns.has("run_id")) db.exec("ALTER TABLE wireless_session ADD COLUMN run_id TEXT");
   if (!columns.has("saved_record_name")) db.exec("ALTER TABLE wireless_session ADD COLUMN saved_record_name TEXT");
   if (!columns.has("saved_record_rowid")) db.exec("ALTER TABLE wireless_session ADD COLUMN saved_record_rowid INTEGER");
+  if (!columns.has("reset_pending")) db.exec("ALTER TABLE wireless_session ADD COLUMN reset_pending INTEGER NOT NULL DEFAULT 0");
   const insert = db.prepare("INSERT OR IGNORE INTO wireless_session (event_type) VALUES (?)");
   for (const type of EVENT_TYPES) insert.run(type);
   // 폐지 경기 세션행 정리 — idempotent.
@@ -493,13 +495,16 @@ function updateWirelessBindingsForDelete(num, year) {
       db.prepare(`
         UPDATE wireless_session
         SET armed = 0, light_color = 'off', team_json = NULL, event_name = NULL,
+            run_id = NULL, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0,
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE event_type = ?
       `).run(row.event_type);
     } else {
       db.prepare(`
         UPDATE wireless_session
-        SET armed = 0, light_color = 'off', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        SET armed = 0, light_color = 'off', run_id = NULL, saved_record_name = NULL,
+            saved_record_rowid = NULL, reset_pending = 0,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE event_type = ?
       `).run(row.event_type);
     }
@@ -1492,31 +1497,39 @@ app.post("/api/wireless/light", (req, res) => {
     const light = getLightState();
     // 물리 지정 경기의 arm 상태를 세션에도 반영(green=arm). 전 클라가 wireless:session으로 공유.
     let session = null;
+    let resetFinalized = false;
     if (light.owner_event) {
+      const cur = db.prepare("SELECT armed, light_color, green_tick, reset_pending FROM wireless_session WHERE event_type = ?").get(light.owner_event);
       if (color === "green") {
         // 중복 L green 방어: 이미 같은 green(또는 tick 미동봉 재보고)으로 armed면 런을 리셋하지 않는다.
         // (마스터의 재전송/바운스가 진행 중 측정 런을 날리는 것을 막음.)
-        const cur = db.prepare("SELECT armed, light_color, green_tick FROM wireless_session WHERE event_type = ?").get(light.owner_event);
         const dup = cur && cur.armed && cur.light_color === "green" && (gtParam == null || cur.green_tick === gtParam);
         if (!dup) {
           const runId = crypto.randomUUID();
           resetEngineRun(light.owner_event, null, runId); // 물리 경기 새 런 — 기록 엔진 리셋
-          db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = COALESCE(?, green_tick), armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+          db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = COALESCE(?, green_tick), armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
             .run(gtParam, new Date().toISOString(), runId, light.owner_event);
         }
+      } else if (color === "off" && cur?.reset_pending) {
+        // 물리 초기화는 마스터가 실제 OFF를 보고한 시점에만 확정한다. 이 세션 갱신이
+        // 모든 관찰자와 재접속 클라이언트에서 이전 편집 카드를 폐기하는 권위 신호다.
+        db.prepare("UPDATE wireless_session SET armed = 0, light_color = 'off', run_id = NULL, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+          .run(light.owner_event);
+        resetFinalized = true;
       } else {
         db.prepare("UPDATE wireless_session SET armed = 0, light_color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
           .run(color === "red" ? "red" : "off", light.owner_event);
       }
       session = getSession(light.owner_event);
     }
-    return { light, session };
+    return { light, session, resetFinalized };
   });
   if (!result.success) {
     logger.warn(req, "wireless.light", { error: result.error, color }, "light");
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "wireless.light", { color, green_tick: gtParam }, "light");
+  if (result.result.resetFinalized && result.result.session) engineRun.delete(result.result.session.event_type);
   broadcastEvent("wireless:light", result.result.light);
   if (result.result.session) broadcastEvent("wireless:session", result.result.session);
   res.json(result.result.light);
@@ -1585,13 +1598,13 @@ app.put("/api/wireless/debounce", (req, res) => {
 
 // POST /api/wireless/arm - 경기 arm/disarm(green=arm). 가상 경기는 이걸로 전 클라 공유.
 // (물리 지정 경기는 실제 SSR이 마스터 L 보고로 /api/wireless/light를 통해 세션에 반영된다.)
-// body: { event_type, action: "green"|"red"|"off", green_tick?, team?, event_name? }
+// body: { event_type, action: "green"|"red"|"off"|"reset", green_tick?, team?, event_name? }
 app.post("/api/wireless/arm", (req, res) => {
   const { event_type, action } = req.body || {};
   if (typeof event_type !== "string" || !EVENT_TYPES.includes(event_type)) {
     return res.status(400).send("올바르지 않은 종목입니다.");
   }
-  if (!["green", "red", "off"].includes(action)) {
+  if (!["green", "red", "off", "reset"].includes(action)) {
     return res.status(400).send("올바르지 않은 동작입니다.");
   }
   // A안: 해당 경기를 점유한 controller만 제어. 점유자 없으면 허용(첫 제어).
@@ -1624,12 +1637,17 @@ app.post("/api/wireless/arm", (req, res) => {
   const result = dbRun(() => {
     if (action === "green") {
       if (hasSel) {
-        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, team_json = ?, event_name = ?, armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, team_json = ?, event_name = ?, armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
           .run(green_tick, bound.team ? JSON.stringify(bound.team) : null, bound.event_name, new Date().toISOString(), runId, event_type);
       } else {
-        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
           .run(green_tick, new Date().toISOString(), runId, event_type);
       }
+    } else if (action === "reset") {
+      // 가상 경기 초기화는 한 번의 권위 세션 전환으로 OFF + 런 식별자 폐기를 확정한다.
+      // 일반 OFF는 사용자가 계속 편집할 수 있도록 식별자를 보존한다.
+      db.prepare("UPDATE wireless_session SET armed = 0, light_color = 'off', run_id = NULL, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+        .run(event_type);
     } else {
       // red = 정지(표시는 적색), off = 소등(grey). 둘 다 disarm.
       db.prepare("UPDATE wireless_session SET armed = 0, light_color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
@@ -1643,6 +1661,7 @@ app.post("/api/wireless/arm", (req, res) => {
   }
   // 세션 변경이 확정된 뒤에만 새 런을 연다. DB 실패 시 기존 엔진/편집 대상도 유지된다.
   if (action === "green") resetEngineRun(event_type, bound, runId);
+  else if (action === "reset") engineRun.delete(event_type);
   logger.log(req, "wireless.arm", { action, green_tick }, event_type);
   broadcastEvent("wireless:session", result.result);
   res.json(result.result);
@@ -1739,7 +1758,7 @@ app.post("/api/wireless/command", (req, res) => {
   if (typeof event_type !== "string" || !EVENT_TYPES.includes(event_type)) {
     return res.status(400).send("올바르지 않은 종목입니다.");
   }
-  if (!["green", "red", "off"].includes(action)) {
+  if (!["green", "red", "off", "reset"].includes(action)) {
     return res.status(400).send("올바르지 않은 동작입니다.");
   }
   const sess = getSession(event_type);
@@ -1753,6 +1772,10 @@ app.post("/api/wireless/command", (req, res) => {
   }
   if (!bridgeOnline) {
     return res.status(409).send("마스터에 연결된 브리지가 없습니다.");
+  }
+  if (action === "reset") {
+    const pending = dbRun(() => db.prepare("UPDATE wireless_session SET reset_pending = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?").run(event_type));
+    if (!pending.success) return res.status(pending.status).send(pending.error);
   }
   logger.log(req, "wireless.command", { action }, event_type);
   // 브리지가 SSE로 받아 시리얼로 전달(실행 직전 isPhysical 재검사 — TOCTOU 방어).

@@ -242,6 +242,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     if (cmd.action === "green") transmitLine("G");
     else if (cmd.action === "red") transmitLine("R");
     else if (cmd.action === "off") transmitLine("O");
+    else if (cmd.action === "reset") transmitLine("O");
   });
 
   /* ── 브리지(시리얼) ───────────────────────────────────────────────── */
@@ -516,6 +517,9 @@ export const useWirelessStore = defineStore("wireless", () => {
     }
   }
   async function physicalControl(mode, action, serialCmd) {
+    // 초기화는 브리지 자신이 제어하더라도 서버를 경유해 pending 상태를 남긴다. 이후
+    // 마스터의 실제 OFF 보고에서 런 식별자가 폐기되어 모든 클라이언트가 함께 초기화된다.
+    if (action === "reset") return commandPhysical(mode, action);
     if (bridgeIsSelf.value) {
       // 브리지: 직접 시리얼. 분리된 포트면 transmitLine이 조용히 무시되던 것을 막고
       // 경고 + 상태 정리(끊김을 read 루프/disconnect가 아직 못 잡은 경우도 여기서 드러난다).
@@ -567,7 +571,9 @@ export const useWirelessStore = defineStore("wireless", () => {
   async function resetFor(mode) {
     if (!holdsLease(mode)) return false;
     pendingResets.add(mode);
-    const accepted = await offFor(mode);
+    const accepted = isPhysical(mode)
+      ? await physicalControl(mode, "reset", "O")
+      : await armAction(mode, "reset");
     if (!accepted) pendingResets.delete(mode);
     return accepted;
   }

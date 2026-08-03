@@ -128,9 +128,17 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await page.getByRole("button", { name: "초기화", exact: true }).click();
     await expect(page.locator(".traffic-light.grey")).toBeVisible({ timeout: 5000 });
     await expect(quickEdit).not.toBeVisible();
+    const resetState = await (await page.request.get("/traffic/api/wireless/state")).json();
+    const resetSession = resetState.sessions.find((session) => session.event_type === "가속");
+    expect(resetSession.run_id).toBeNull();
+    expect(resetSession.saved_record_name).toBeNull();
+    expect(resetSession.saved_record_rowid).toBeNull();
     await page.getByRole("button", { name: "적색등", exact: true }).click();
     await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
     await expect(quickEdit).not.toBeVisible();
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(page.getByTestId("record-quick-edit")).not.toBeVisible();
     await page.getByRole("button", { name: "제어 해제", exact: true }).click();
   });
 });
