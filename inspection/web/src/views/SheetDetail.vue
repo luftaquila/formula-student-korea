@@ -479,6 +479,9 @@ function onMemoInput(itemId, event) {
 }
 
 function finishEditMemo(itemId) {
+  const memo = getMemo(itemId);
+  const normalizedMemo = normalizeMemo(memo);
+  if (normalizedMemo !== memo) onMemoChange(itemId, normalizedMemo);
   editingMemo.value = null;
   editedMemos.delete(itemId);
   memoQueue.flush(itemId);
@@ -527,6 +530,7 @@ import {
   hasCheckedChecktableCell,
   nextCounterValue,
   normalizeCounterInput,
+  normalizeMemo,
   formatStopwatchElapsed,
   isResponseItem,
   normalizeRestorableAnswerDraft,
@@ -693,8 +697,8 @@ const memoItems = computed(() => {
     for (const [si, sub] of (cat.subcategories || []).entries()) {
       for (const [gi, grp] of (sub.groups || []).entries()) {
         for (const [ii, item] of (grp.items || []).entries()) {
-          const memo = getMemo(item.id);
-          if (!memo.trim()) continue;
+          const memo = normalizeMemo(getMemo(item.id));
+          if (!memo) continue;
           items.push({
             id: item.id,
             categoryIndex: ci,
@@ -709,11 +713,31 @@ const memoItems = computed(() => {
   return items;
 });
 
+const SUMMARY_COLLAPSE_MS = 220;
+const SCROLL_TARGET_GAP = 8;
+
+function waitForSummaryCollapse(shouldWait) {
+  return shouldWait
+    ? new Promise((resolve) => window.setTimeout(resolve, SUMMARY_COLLAPSE_MS))
+    : Promise.resolve();
+}
+
+function scrollBelowProgress(element) {
+  const progressHeight = document.querySelector(".inspection-progress")?.getBoundingClientRect().height || 0;
+  const elementTop = window.scrollY + element.getBoundingClientRect().top;
+  window.scrollTo({
+    top: Math.max(0, elementTop - progressHeight - SCROLL_TARGET_GAP),
+    behavior: "smooth",
+  });
+}
+
 async function scrollToMemoItem(item) {
+  const shouldWait = memoOpen.value;
   memoOpen.value = false;
   activeTab.value = item.categoryIndex;
   await nextTick();
-  scrollToItem(item.id);
+  await waitForSummaryCollapse(shouldWait);
+  await scrollToItem(item.id);
 }
 
 function formatUpdatedAt(value) {
@@ -723,11 +747,14 @@ function formatUpdatedAt(value) {
   return date.toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function scrollToItem(itemId) {
+async function scrollToItem(itemId) {
+  const shouldWait = missingOpen.value || failedOpen.value;
   missingOpen.value = false;
   failedOpen.value = false;
+  await nextTick();
+  await waitForSummaryCollapse(shouldWait);
   const el = document.getElementById(`item-${itemId}`);
-  if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (el) scrollBelowProgress(el);
 }
 
 // ---- Checktable helpers ----
@@ -754,13 +781,44 @@ function onChecktableToggle(itemId, rowIdx, colIdx) {
   answerQueue.enqueue(itemId, jsonStr, { immediate: true });
 }
 
-// ---- Subcategory quick nav ----
+// ---- Quick navigation ----
 const navOpen = ref(false);
+const storedNavLevel = sessionStorage.getItem("inspectionQuickNavLevel");
+const navLevel = ref(storedNavLevel === "subcategory" ? "subcategory" : "group");
+const fabContainerRef = ref(null);
+
+watch(navLevel, (value) => {
+  sessionStorage.setItem("inspectionQuickNavLevel", value);
+});
+
+const quickNavGroups = computed(() => (
+  (currentCategory.value?.subcategories || []).flatMap((sub, si) =>
+    (sub.groups || []).map((group, gi) => ({
+      id: group.id,
+      label: `${subNum(si)}-${grpNum(gi)} ${group.name}`,
+    })),
+  )
+));
+
+function toggleNavLevel() {
+  navLevel.value = navLevel.value === "subcategory" ? "group" : "subcategory";
+}
 
 function scrollToSub(subId) {
   navOpen.value = false;
   const el = document.getElementById(`sub-${subId}`);
-  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (el) scrollBelowProgress(el);
+}
+
+function scrollToGroup(groupId) {
+  navOpen.value = false;
+  const el = document.getElementById(`group-${groupId}`);
+  if (el) scrollBelowProgress(el);
+}
+
+function closeNavOnOutsidePointer(event) {
+  const container = fabContainerRef.value;
+  if (navOpen.value && container && !container.contains(event.target)) navOpen.value = false;
 }
 
 function scrollToTop() {
@@ -783,10 +841,12 @@ function onScroll() {
 
 onMounted(() => {
   window.addEventListener("scroll", onScroll);
+  document.addEventListener("pointerdown", closeNavOnOutsidePointer);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("scroll", onScroll);
+  document.removeEventListener("pointerdown", closeNavOnOutsidePointer);
   if (stopwatchInterval !== null) window.clearInterval(stopwatchInterval);
   for (const timer of saveStateTimers.values()) clearTimeout(timer);
   saveStateTimers.clear();
@@ -1128,7 +1188,7 @@ watch(reconnected, async () => {
           <div v-for="(sub, si) in currentCategory.subcategories" :key="sub.id" :id="`sub-${sub.id}`" class="subcategory-section">
             <h4 class="subcategory-title">{{ subNum(si) }} - {{ sub.name }}<span v-if="sub.remarks" class="subcategory-remarks"> — {{ sub.remarks }}</span></h4>
 
-            <div v-for="(grp, gi) in sub.groups" :key="grp.id" class="group-section">
+            <div v-for="(grp, gi) in sub.groups" :key="grp.id" :id="`group-${grp.id}`" class="group-section">
               <h5 class="group-title">{{ grpNum(gi) }}. {{ grp.name }}<span v-if="grp.remarks" class="group-remarks"> — {{ grp.remarks }}</span></h5>
 
               <div v-for="(item, ii) in grp.items" :key="item.id" :id="`item-${item.id}`" class="item-row">
@@ -1307,15 +1367,15 @@ watch(reconnected, async () => {
                       type="button"
                       class="memo-text"
                       :class="{
-                        'memo-empty': !getMemo(item.id),
+                        'memo-empty': !normalizeMemo(getMemo(item.id)),
                         'memo-readonly': isReadOnly,
                         'memo-editing': editingMemo === item.id,
                       }"
                       :disabled="isReadOnly"
-                      :title="getMemo(item.id) && getMemoUpdatedAt(item.id) ? `${getMemoUpdatedBy(item.id)} ${formatUpdatedAt(getMemoUpdatedAt(item.id))}`.trim() : ''"
+                      :title="normalizeMemo(getMemo(item.id)) && getMemoUpdatedAt(item.id) ? `${getMemoUpdatedBy(item.id)} ${formatUpdatedAt(getMemoUpdatedAt(item.id))}`.trim() : ''"
                       @click="startEditMemo(item.id)"
                     >
-                      <span class="memo-preview">{{ getMemo(item.id) || "+ 메모 추가" }}</span>
+                      <span class="memo-preview">{{ normalizeMemo(getMemo(item.id)) || "+ 메모 추가" }}</span>
                     </button>
                     <textarea
                       v-if="editingMemo === item.id"
@@ -1347,19 +1407,40 @@ watch(reconnected, async () => {
     </template>
 
     <!-- Quick nav FAB -->
-    <div v-if="currentCategory?.subcategories?.length" class="fab-container">
+    <div v-if="currentCategory?.subcategories?.length" ref="fabContainerRef" class="fab-container">
       <Transition name="nav-menu">
         <div v-if="navOpen" class="nav-menu">
-          <button class="nav-menu-item nav-menu-top" @click="scrollToTop">맨 위로</button>
-          <button
-            v-for="(sub, si) in currentCategory.subcategories"
-            :key="sub.id"
-            class="nav-menu-item"
-            @click="scrollToSub(sub.id)"
-          >{{ subNum(si) }} - {{ sub.name }}</button>
+          <div class="nav-menu-actions">
+            <button class="nav-menu-item nav-menu-level-toggle" @click="toggleNavLevel">
+              {{ navLevel === "subcategory" ? "소분류 보기" : "그룹 보기" }}
+            </button>
+            <button class="nav-menu-item nav-menu-top" @click="scrollToTop">맨 위로</button>
+          </div>
+          <template v-if="navLevel === 'subcategory'">
+            <button
+              v-for="(sub, si) in currentCategory.subcategories"
+              :key="sub.id"
+              class="nav-menu-item"
+              @click="scrollToSub(sub.id)"
+            >{{ subNum(si) }} - {{ sub.name }}</button>
+          </template>
+          <template v-else>
+            <button
+              v-for="group in quickNavGroups"
+              :key="group.id"
+              class="nav-menu-item"
+              @click="scrollToGroup(group.id)"
+            >{{ group.label }}</button>
+          </template>
         </div>
       </Transition>
-      <button class="fab" @click="navOpen = !navOpen" :class="{ active: navOpen }">
+      <button
+        class="fab"
+        :class="{ active: navOpen }"
+        :aria-expanded="navOpen"
+        aria-label="빠른 이동 메뉴"
+        @click="navOpen = !navOpen"
+      >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
           <path d="M4 6h16M4 12h16M4 18h16" />
         </svg>
@@ -1438,6 +1519,7 @@ watch(reconnected, async () => {
 }
 
 .tab {
+  min-height: 44px;
   padding: 0.5rem 1rem;
   border-radius: 8px;
   font-size: 0.875rem;
@@ -1521,6 +1603,7 @@ watch(reconnected, async () => {
 
 .result-toggle button {
   flex: 1;
+  min-height: 44px;
 }
 
 .panel-body {
@@ -1594,7 +1677,7 @@ watch(reconnected, async () => {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.25rem;
+  gap: 0.5rem;
 }
 
 .item-heading {
@@ -1666,13 +1749,19 @@ watch(reconnected, async () => {
 
 .pf-toggle {
   display: flex;
-  gap: 0.25rem;
+  gap: 0.5rem;
+}
+
+.pf-toggle button {
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .inline-input {
   width: auto;
+  min-height: 44px;
   padding: 0.375rem 0.625rem;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
 }
 
 .number-input {
@@ -1696,9 +1785,9 @@ watch(reconnected, async () => {
 }
 
 .counter-button {
-  width: 2rem;
-  min-width: 2rem;
-  height: 2rem;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
   padding-inline: 0;
   font-size: 1rem;
   line-height: 1;
@@ -1706,7 +1795,7 @@ watch(reconnected, async () => {
 
 .counter-value {
   width: 64px;
-  height: 2rem;
+  height: 44px;
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
@@ -1718,8 +1807,16 @@ watch(reconnected, async () => {
   gap: 0.375rem;
 }
 
+.stopwatch-control button {
+  min-height: 44px;
+}
+
 .stopwatch-display {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 9rem;
+  min-height: 44px;
   padding: 0.375rem 0.625rem;
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -1795,7 +1892,7 @@ watch(reconnected, async () => {
   position: relative;
   width: 100%;
   min-width: 0;
-  min-height: 2.25rem;
+  min-height: 44px;
 }
 
 .memo-text {
@@ -1803,9 +1900,9 @@ watch(reconnected, async () => {
   display: block;
   width: 100%;
   height: auto;
-  min-height: 2.25rem;
+  min-height: 44px;
   min-width: 0;
-  font-size: 0.75rem;
+  font-size: 0.875rem;
   line-height: 1.45;
   color: var(--text-secondary);
   cursor: pointer;
@@ -1846,7 +1943,7 @@ watch(reconnected, async () => {
   min-height: 100%;
   resize: none;
   overflow-y: hidden;
-  font-size: 0.75rem;
+  font-size: 0.875rem;
   line-height: 1.45;
   padding: 0.375rem 0.625rem;
   white-space: pre-wrap;
@@ -2051,6 +2148,7 @@ watch(reconnected, async () => {
   align-items: center;
   gap: 0.5rem;
   width: 100%;
+  min-height: 44px;
   padding: 0.625rem 1rem;
   border: none;
   background: none;
@@ -2140,6 +2238,7 @@ watch(reconnected, async () => {
   align-items: center;
   gap: 0.5rem;
   width: 100%;
+  min-height: 44px;
   padding: 0.625rem 1rem;
   border: none;
   background: none;
@@ -2271,6 +2370,7 @@ watch(reconnected, async () => {
 .nav-menu-item {
   display: block;
   width: 100%;
+  min-height: 44px;
   padding: 0.625rem 1rem;
   border: none;
   background: none;
@@ -2287,9 +2387,21 @@ watch(reconnected, async () => {
   background: var(--bg-hover);
 }
 
-.nav-menu-top {
+.nav-menu-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.nav-menu-actions .nav-menu-item {
   color: var(--accent-primary);
   font-weight: 600;
+  text-align: center;
+}
+
+.nav-menu-actions .nav-menu-item + .nav-menu-item {
+  border-top: 0;
+  border-left: 1px solid var(--border-color);
 }
 
 .nav-menu-item + .nav-menu-item {
