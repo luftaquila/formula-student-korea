@@ -22,6 +22,13 @@ export async function selectOption(page, selector, value) {
   await page.locator(selector).selectOption(value);
 }
 
+export async function setCustomEventName(page, name) {
+  await page.getByTestId("event-name-option").selectOption("custom");
+  const input = page.getByTestId("event-name-custom");
+  await expect(input).toBeEnabled();
+  await input.fill(name);
+}
+
 export function storageStatePath(role) {
   return `tests/e2e/.auth/${role}.json`;
 }

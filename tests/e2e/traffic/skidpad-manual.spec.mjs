@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, expectNotification, setCustomEventName } from "../helpers/utils.mjs";
 
 test.describe("Skidpad manual mode measurement", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -16,10 +16,10 @@ test.describe("Skidpad manual mode measurement", () => {
     await expect(manualToggle).toContainText("매뉴얼 모드 ON");
 
     // Set event name
-    await page.locator('.form-input[type="text"]').fill("E2E-Skidpad");
+    await setCustomEventName(page, "E2E-Skidpad");
 
     // Select team 1
-    await page.locator("select.form-input").selectOption("1");
+    await page.getByTestId("event-team").selectOption("1");
 
     // Click green light
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();
@@ -66,7 +66,7 @@ test.describe("Skidpad manual mode measurement", () => {
     await page.getByTestId("manual-mode-toggle").click();
 
     // Set event name (no team selected -- test mode)
-    await page.locator('.form-input[type="text"]').fill("E2E-Skidpad-NoTeam");
+    await setCustomEventName(page, "E2E-Skidpad-NoTeam");
 
     // Click green light
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();

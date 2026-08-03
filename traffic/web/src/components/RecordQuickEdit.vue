@@ -6,7 +6,7 @@ import { updateRecord } from "../composables/useApi";
 const props = defineProps({
   record: { type: Object, required: true },
 });
-const emit = defineEmits(["update"]);
+const emit = defineEmits(["update", "save-state"]);
 const { notyf } = useNotification();
 
 const state = reactive({
@@ -38,13 +38,17 @@ function syncRecord(record) {
 
 watch(() => props.record, syncRecord, { immediate: true, deep: true });
 
-const isSaving = computed(() => Object.values(pending).some(Boolean));
 const isStatusSaving = computed(() => pending.invalidated || pending.scoreboard);
+
+function setSaveState(state) {
+  saveState.value = state;
+  emit("save-state", state);
+}
 
 function markSaved() {
   clearTimeout(savedTimer);
-  saveState.value = "saved";
-  savedTimer = setTimeout(() => { saveState.value = "ready"; }, 1600);
+  setSaveState("saved");
+  savedTimer = setTimeout(() => setSaveState("ready"), 1600);
 }
 
 function mergeResult(result) {
@@ -61,13 +65,13 @@ async function toggle(field) {
   // 서로 다른 버튼이라도 동시에 보내지 않는다.
   if (isStatusSaving.value) return;
   pending[field] = true;
-  saveState.value = "saving";
+  setSaveState("saving");
   try {
     const result = await updateRecord(props.record.name, props.record.rowid, field);
     mergeResult(result);
     markSaved();
   } catch (e) {
-    saveState.value = "ready";
+    setSaveState("ready");
     notyf.error(`기록 수정 실패: ${e.message}`);
   } finally {
     pending[field] = false;
@@ -82,7 +86,7 @@ async function saveCount(field, value, input = null) {
   if (next === previous) return;
 
   pending[field] = true;
-  saveState.value = "saving";
+  setSaveState("saving");
   state[field] = next;
   try {
     const result = await updateRecord(props.record.name, props.record.rowid, field, next);
@@ -91,7 +95,7 @@ async function saveCount(field, value, input = null) {
   } catch (e) {
     state[field] = previous;
     if (input) input.value = String(previous);
-    saveState.value = "ready";
+    setSaveState("ready");
     notyf.error(`기록 수정 실패: ${e.message}`);
   } finally {
     pending[field] = false;
@@ -102,7 +106,10 @@ function onCountChange(field, event) {
   saveCount(field, event.currentTarget.value, event.currentTarget);
 }
 
-onUnmounted(() => clearTimeout(savedTimer));
+onUnmounted(() => {
+  clearTimeout(savedTimer);
+  emit("save-state", "ready");
+});
 </script>
 
 <template>
@@ -112,20 +119,8 @@ onUnmounted(() => clearTimeout(savedTimer));
     data-testid="record-quick-edit"
     aria-label="기록 빠른 편집"
   >
-    <div
-      v-if="$slots.summary || (saveState === 'saved' && !isSaving)"
-      class="quick-edit-summary"
-    >
+    <div v-if="$slots.summary" class="quick-edit-summary">
       <slot name="summary"></slot>
-      <div
-        v-if="saveState === 'saved' && !isSaving"
-        class="save-status"
-        data-testid="quick-save-status"
-        aria-live="polite"
-      >
-        <span class="status-dot"></span>
-        저장됨
-      </div>
     </div>
 
     <div class="quick-edit-body">
@@ -362,23 +357,6 @@ onUnmounted(() => clearTimeout(savedTimer));
 .stepper input::-webkit-inner-spin-button,
 .stepper input::-webkit-outer-spin-button { margin: 0; appearance: none; }
 .stepper input:focus { outline: 2px solid var(--border-focus); outline-offset: -2px; }
-
-.save-status {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 1.2rem;
-  margin-left: auto;
-  color: var(--text-tertiary);
-  font-size: 0.75rem;
-}
-
-.status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent-success);
-}
 
 @media (max-width: 720px) {
   .toggle-grid,

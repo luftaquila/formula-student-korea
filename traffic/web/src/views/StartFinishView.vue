@@ -7,8 +7,8 @@ import { useEntryStore } from "../stores/entry";
 import { useSerialStore, msToClockStr } from "../stores/serial";
 import { useNotification } from "@shared/useNotification.js";
 import { addRecord } from "../composables/useApi";
-import { useSSE } from "../composables/useSSE";
 import { useAutoSavedRecord } from "../composables/useAutoSavedRecord";
+import EventNameField from "../components/EventNameField.vue";
 import RecordQuickEdit from "../components/RecordQuickEdit.vue";
 
 const { notyf } = useNotification();
@@ -20,23 +20,12 @@ const props = defineProps({
 });
 const serial = props.source ?? useSerialStore();
 
-// 이벤트 이름 자동완성: 기존 기록 파일명(FSK <year> <이름>)에서 이름만 뽑아 datalist로 제시.
-const { recordFiles } = useSSE();
-const datalistId = computed(() => `event-names-${props.config.mode}`);
-const eventNameSuggestions = computed(() => [
-  ...new Set(
-    recordFiles.value
-      .filter((f) => f && f !== "controller")
-      .map((f) => f.replace(/^FSK \d{4} /, ""))
-      .filter(Boolean),
-  ),
-]);
-
-const eventName = ref("");
+const eventName = ref("다이나믹");
 const selectedTeam = ref(null);
 const startRecord = ref(null);
 const savedRecord = ref(null);
 const displayRecord = ref(null);
+const quickEditSaveState = ref("ready");
 
 async function onSensor({ sensor, tick }) {
   // 모든 센서에 쿨다운 적용
@@ -102,16 +91,28 @@ const lightReady = computed(() => (props.wireless ? isController.value : serial.
 const canStopLight = computed(() => (props.wireless ? isController.value : serial.connected));
 // 무선 경기 세션(서버 권위 선택·arm). 관찰자 뷰가 컨트롤러의 팀·이벤트명을 미러.
 const session = computed(() => serial.session);
-watch(session, (s) => {
-  if (!props.wireless || isController.value || !s) return;
-  eventName.value = s.event_name || "";
-  selectedTeam.value = s.team?.num ?? null;
+const resetPending = ref(false);
+function clearMeasurement() {
+  startRecord.value = null;
+  savedRecord.value = null;
+  displayRecord.value = null;
+}
+watch(session, (s, previous) => {
+  if (!props.wireless || !s) return;
+  if (!isController.value) {
+    eventName.value = s.event_name || "";
+    selectedTeam.value = s.team?.num ?? null;
+  }
+  if (s.run_id && s.run_id !== previous?.run_id) clearMeasurement();
+  if (resetPending.value && s.light_color === "off") {
+    clearMeasurement();
+    resetPending.value = false;
+  }
 }, { immediate: true });
 const startRecords = computed(() => serial.records.filter((r) => r.sensor === 1));
 const endRecords = computed(() => serial.records.filter((r) => r.sensor === 2));
 const entries = computed(() => entryStore.entries);
 const canAutoSave = computed(() => eventName.value.trim() && selectedTeam.value);
-const expectedRecordName = computed(() => `FSK ${currentYear.value} ${eventName.value.trim()}`);
 const {
   recentRecord,
   captureRecord,
@@ -121,12 +122,7 @@ const {
   getRunToken,
 } = useAutoSavedRecord({
   wireless: () => props.wireless,
-  active: () => serial.green.active,
-  startedAt: () => serial.session?.armed_at,
-  expectedName: () => expectedRecordName.value,
-  eventType: () => props.config.type,
-  teamNum: () => selectedTeam.value,
-  matchesRun: (record) => displayRecord.value?.result === record.result,
+  session: () => serial.session,
 });
 
 function handleConnect() {
@@ -136,10 +132,10 @@ function handleGreen() {
   if (!canAutoSave.value) {
     notyf.open({ type: "warning", message: "테스트 모드" });
   }
-  startRecord.value = null;
-  savedRecord.value = null;
-  displayRecord.value = null;
-  beginRun();
+  if (!props.wireless) {
+    clearMeasurement();
+    beginRun();
+  }
   // 무선: arm 직전 현재 선택을 서버 세션에 flush(물리 경기 귀속 + 관찰자 미러). 가상 경기는
   // 추가로 sendGreen에 선택을 실어 arm 본문으로 bind-at-arm(레이스 무관 귀속 고정).
   if (props.wireless) serial.selectEvent?.(selectedEntry.value, eventName.value.trim() || null);
@@ -149,15 +145,18 @@ function handleRed() {
   serial.sendRed();
 }
 function handleOff() {
-  endRun();
+  if (!props.wireless) endRun();
   serial.sendOff();
 }
-function handleReset() {
-  startRecord.value = null;
-  savedRecord.value = null;
-  displayRecord.value = null;
-  endRun();
-  serial.reset();
+async function handleReset() {
+  if (!props.wireless) {
+    clearMeasurement();
+    endRun();
+    serial.reset();
+    return;
+  }
+  resetPending.value = true;
+  if (await serial.reset() === false) resetPending.value = false;
 }
 
 async function handleDNF() {
@@ -202,23 +201,6 @@ watch([eventName, selectedTeam], () => {
 onDeactivated(() => clearTimeout(selectTimer));
 onUnmounted(() => clearTimeout(selectTimer));
 
-// 새 arm(green.active false→true) 시 view-local 표시 상태 클리어. 컨트롤러는 handleGreen이
-// 이미 클리어하지만, 관찰자는 그 경로가 없으므로 여기서 모든 클라가 새 런마다 깨끗해진다.
-watch(() => serial.green.active, (active, prev) => {
-  if (active && !prev && !isController.value) {
-    startRecord.value = null;
-    savedRecord.value = null;
-    displayRecord.value = null;
-    // 컨트롤러는 handleGreen에서 이미 정리했다. 관찰자만 공유 arm으로 새 런을 연다.
-    beginRun();
-  }
-});
-
-// OFF는 측정 결과 자체를 지우지 않더라도 방금 저장한 행의 후처리 카드는 닫는다.
-// 무선 관찰자처럼 handleOff를 직접 누르지 않은 화면도 공유 신호등 상태로 함께 정리된다.
-watch(() => serial.lightColor, (color) => {
-  if (color === "grey") endRun();
-});
 </script>
 
 <template>
@@ -316,14 +298,11 @@ watch(() => serial.lightColor, (color) => {
         <div class="card-body">
           <div class="form-group">
             <label class="form-label">이벤트 이름</label>
-            <input v-model="eventName" type="text" class="form-input" :list="datalistId" :disabled="isLocked || !isController" />
-            <datalist :id="datalistId">
-              <option v-for="name in eventNameSuggestions" :key="name" :value="name" />
-            </datalist>
+            <EventNameField v-model="eventName" :disabled="isLocked || !isController" />
           </div>
           <div class="form-group">
             <label class="form-label">참가팀</label>
-            <select v-model="selectedTeam" class="form-input" :disabled="isLocked || !isController">
+            <select v-model="selectedTeam" class="form-input" data-testid="event-team" :disabled="isLocked || !isController">
               <option :value="null">팀 선택</option>
               <option v-for="entry in entries" :key="entry.num" :value="entry.num">
                 {{ entry.num }} {{ entry.univ }} {{ entry.team }}
@@ -402,12 +381,19 @@ watch(() => serial.lightColor, (color) => {
       </div>
 
       <div v-if="displayRecord" class="saved-section card">
-        <div class="card-header"><h3>🏁 측정 기록</h3></div>
+        <div class="card-header record-header">
+          <h3>🏁 측정 기록</h3>
+          <div v-if="recentRecord && quickEditSaveState === 'saved'" class="save-status" data-testid="quick-save-status" aria-live="polite">
+            <span class="status-dot"></span>
+            저장됨
+          </div>
+        </div>
         <div class="card-body">
           <RecordQuickEdit
             v-if="recentRecord"
             :record="recentRecord"
             @update="mergeRecord"
+            @save-state="quickEditSaveState = $event"
           >
             <template #summary>
               <div class="saved-item is-saved">

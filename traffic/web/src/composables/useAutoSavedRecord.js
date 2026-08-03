@@ -3,22 +3,17 @@ import { useSSE } from "./useSSE";
 import { fetchRecord } from "./useApi";
 
 // 계측 화면에서 방금 자동 저장된 행만 추적한다.
-// 유선은 POST 응답을 captureRecord로 직접 넘기고, 무선은 서버 기록 엔진의 records SSE를
-// 현재 런(이벤트명·팀·종목·결과)과 대조해 같은 행을 찾는다.
+// 유선은 POST 응답을 직접 받고, 무선은 서버가 세션에 기록한 run_id + 행 식별자로 연결한다.
+// 표시값 조합으로 추측하지 않으므로 같은 팀·결과의 수동 기록이 편집 대상을 가로챌 수 없다.
 export function useAutoSavedRecord({
   wireless,
-  active = () => true,
-  startedAt = () => null,
-  expectedName,
-  eventType,
-  teamNum,
-  matchesRun,
-  matchesRecovery = matchesRun,
+  session = () => null,
 }) {
   const { lastUpdate } = useSSE();
   const recentRecord = ref(null);
-  let acceptingRecord = !!active();
+  let acceptingRecord = !wireless();
   let runToken = 0;
+  let trackedRunId = null;
 
   function captureRecord(payload, token = runToken) {
     if (token !== runToken || !acceptingRecord || !payload?.name || !payload?.record) return;
@@ -50,38 +45,30 @@ export function useAutoSavedRecord({
     return runToken;
   }
 
-  // 무선 내구처럼 한 행을 계속 UPDATE하는 경기는 첫 INSERT 이후 화면을 열면 add SSE를
-  // 볼 수 없다. 현재 arm 시각 이후의 같은 팀·종목 행을 조회해 카드를 복구한다.
+  // records SSE가 끊긴 사이 저장됐거나 저장 후 화면을 연 경우에도 세션에 보관된 정확한
+  // name/rowid를 조회해 같은 런의 편집 카드를 복구한다.
   async function recoverRecord() {
-    if (recentRecord.value || !wireless() || !active() || !acceptingRecord) return;
+    if (recentRecord.value || !wireless() || !acceptingRecord) return;
 
     const token = runToken;
-    const name = expectedName();
-    const type = eventType();
-    const num = Number(teamNum());
-    const runStartedAt = Date.parse(startedAt());
-    if (!name || !Number.isFinite(num) || !Number.isFinite(runStartedAt)) return;
+    const currentSession = session();
+    const runId = currentSession?.run_id;
+    const name = currentSession?.saved_record_name;
+    const rowid = Number(currentSession?.saved_record_rowid);
+    if (!runId || !name || !Number.isInteger(rowid)) return;
 
     let rows;
     try {
       rows = await fetchRecord(name);
     } catch {
-      // 아직 첫 랩이 저장되지 않았거나 이벤트명이 유효하지 않은 경우. 이후 add SSE가 연다.
+      // 기록이 삭제됐거나 아직 조회할 수 없는 경우. 이후 세션/records 갱신에서 재시도한다.
       return;
     }
 
-    // 조회 중 OFF/초기화/새 런으로 넘어갔다면 이전 행을 다시 노출하지 않는다. 적색등은
-    // endRun이 아니므로 조회가 끝날 때 active=false여도 이번 기록 카드는 복구한다.
-    if (token !== runToken || !acceptingRecord || recentRecord.value) return;
+    // 조회 중 OFF/초기화/새 런으로 넘어갔다면 이전 행을 다시 노출하지 않는다.
+    if (token !== runToken || !acceptingRecord || recentRecord.value || session()?.run_id !== runId) return;
 
-    const record = [...rows].reverse().find((row) => {
-      const recordTime = Date.parse(row.time);
-      return row.type === type &&
-        Number(row.num) === num &&
-        Number.isFinite(recordTime) &&
-        recordTime >= runStartedAt &&
-        matchesRecovery(row);
-    });
+    const record = rows.find((row) => Number(row.rowid) === rowid);
     if (record) captureRecord({ name, record }, token);
   }
 
@@ -98,21 +85,38 @@ export function useAutoSavedRecord({
       return;
     }
 
-    // 새 카드는 자동 INSERT에만 열어 둔다. UPDATE나 카드가 닫힌 뒤 늦게 도착한 수정 SSE가
-    // 이전 카드를 되살리지 않게 한다.
-    // 적색등은 기록 확인 단계이므로 active=false가 되어도 add를 받아야 한다. OFF/초기화는
-    // endRun이 acceptingRecord를 닫고, 다음 런의 오래된 add는 armed_at 비교가 차단한다.
+    // 새 카드는 서버 기록 엔진이 현재 세션 run_id로 발행한 INSERT만 연다. 수동 추가에는
+    // run_id가 없고 과거 런의 지연 이벤트는 id가 다르므로 잘못된 행을 잡지 않는다.
     if (!acceptingRecord || !wireless() || update.type !== "add") return;
-    if (update.name !== expectedName()) return;
-    if (update.record.type !== eventType()) return;
-    if (Number(update.record.num) !== Number(teamNum())) return;
-    const runStartedAt = Date.parse(startedAt());
-    const recordTime = Date.parse(update.record.time);
-    if (Number.isFinite(runStartedAt) && Number.isFinite(recordTime) && recordTime < runStartedAt) return;
-    if (!matchesRun(update.record)) return;
+    if (!update.run_id || update.run_id !== session()?.run_id) return;
 
     captureRecord(update);
   });
+
+  // 무선 카드 수명주기는 낙관적 로컬 신호등이 아니라 서버 세션을 따른다. 새 run_id가
+  // 확정되면 열고, red에서는 유지하며, off가 확정된 뒤에만 닫는다.
+  watch(() => session(), (currentSession) => {
+    if (!wireless()) return;
+    const runId = currentSession?.run_id ?? null;
+    const open = !!runId && currentSession?.light_color !== "off";
+
+    if (runId !== trackedRunId) {
+      trackedRunId = runId;
+      if (open) beginRun();
+    }
+
+    if (!open) {
+      if (acceptingRecord) endRun();
+      return;
+    }
+
+    if (!acceptingRecord) {
+      runToken += 1;
+      acceptingRecord = true;
+      clearRecord();
+    }
+    recoverRecord();
+  }, { immediate: true, deep: true });
 
   return {
     recentRecord,

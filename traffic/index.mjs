@@ -1,5 +1,6 @@
 import express from "express";
 import Database from "better-sqlite3";
+import crypto from "node:crypto";
 import { createDatabase, runMigrationOnce, normalizeUtcTextTimestamp, normalizeTimestampColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
@@ -192,6 +193,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_session (
   light_color       TEXT NOT NULL DEFAULT 'off',
   green_tick        TEXT,
   armed_at          TEXT,
+  run_id            TEXT,
+  saved_record_name TEXT,
+  saved_record_rowid INTEGER,
   team_json         TEXT,
   event_name        TEXT,
   controller        TEXT,
@@ -199,6 +203,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_session (
   updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );`);
 {
+  const columns = new Set(db.prepare("PRAGMA table_info(wireless_session)").all().map((column) => column.name));
+  if (!columns.has("run_id")) db.exec("ALTER TABLE wireless_session ADD COLUMN run_id TEXT");
+  if (!columns.has("saved_record_name")) db.exec("ALTER TABLE wireless_session ADD COLUMN saved_record_name TEXT");
+  if (!columns.has("saved_record_rowid")) db.exec("ALTER TABLE wireless_session ADD COLUMN saved_record_rowid INTEGER");
   const insert = db.prepare("INSERT OR IGNORE INTO wireless_session (event_type) VALUES (?)");
   for (const type of EVENT_TYPES) insert.run(type);
   // 폐지 경기 세션행 정리 — idempotent.
@@ -394,7 +402,7 @@ const LEASE_TTL_MS = 30000; // heartbeat로 갱신. 제어 탭이 죽으면 이 
 function getSessions() {
   const now = Date.now();
   return db
-    .prepare("SELECT event_type, armed, light_color, green_tick, armed_at, team_json, event_name, controller, lease_expires_at, updated_at FROM wireless_session ORDER BY event_type")
+    .prepare("SELECT event_type, armed, light_color, green_tick, armed_at, run_id, saved_record_name, saved_record_rowid, team_json, event_name, controller, lease_expires_at, updated_at FROM wireless_session ORDER BY event_type")
     .all()
     .map((r) => {
       const expired = r.lease_expires_at && Date.parse(r.lease_expires_at) <= now;
@@ -406,6 +414,9 @@ function getSessions() {
         light_color: r.light_color,
         green_tick: r.green_tick,
         armed_at: r.armed_at,
+        run_id: r.run_id,
+        saved_record_name: r.saved_record_name,
+        saved_record_rowid: r.saved_record_rowid,
         team,
         event_name: r.event_name,
         controller: expired ? null : r.controller,
@@ -453,9 +464,9 @@ const engineRun = new Map(); // event_type -> { debounce:{}, startTick, saved, l
 // bound = arm 시점에 고정된 귀속 스냅샷 {team, event_name}|null. 가상 경기는 arm 본문으로
 // atomic 바인딩되어 arm 후 세션 선택이 바뀌어도 기록은 arm 시점 팀에 귀속된다(bind-at-arm).
 // null(물리 경기·서버 재기동 후 lazy 리셋)이면 저장 시 live 세션으로 폴백.
-function resetEngineRun(eventType, bound = null) {
+function resetEngineRun(eventType, bound = null, runId = null) {
   // laps/recordName/recordRowid: 내구는 랩을 기록 1건에 이어붙이므로 누적 랩과 그 기록 행을 추적.
-  engineRun.set(eventType, { debounce: {}, startTick: null, saved: false, lastTick: null, lapCount: 0, lap2: null, bound, laps: [], recordName: null, recordRowid: null });
+  engineRun.set(eventType, { runId, debounce: {}, startTick: null, saved: false, lastTick: null, lapCount: 0, lap2: null, bound, laps: [], recordName: null, recordRowid: null });
 }
 function currentRecordYear() {
   return new Date().getFullYear();
@@ -555,13 +566,25 @@ function engineSaveRecord(eventType, binding, result, detail) {
     return false;
   }
   const name = `FSK ${new Date().getFullYear()} ${nv.value}`;
-  const r = dbRun(() => db.transaction(() => insertRecordRow(name, data))());
+  const run = engineRun.get(eventType);
+  const r = dbRun(() => db.transaction(() => {
+    const record = insertRecordRow(name, data);
+    if (run?.runId) {
+      db.prepare(`
+        UPDATE wireless_session
+        SET saved_record_name = ?, saved_record_rowid = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE event_type = ? AND run_id = ?
+      `).run(name, record.rowid, eventType, run.runId);
+    }
+    return record;
+  })());
   if (!r.success) {
     logger.warn(null, "wireless.record", { error: r.error, event_type: eventType }, name, SYS);
     return false;
   }
   logger.log(null, "wireless.record", { type: eventType, result, num: t.num }, name, SYS);
-  broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: r.result });
+  if (run?.runId) broadcastEvent("wireless:session", getSession(eventType));
+  broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: r.result, event_type: eventType, run_id: run?.runId ?? null });
   return true;
 }
 // 내구: 랩을 기록 1건에 이어붙인다. run.laps 전체로 result(총합)·detail(랩 목록)을 매 랩 갱신 —
@@ -587,7 +610,17 @@ function enduranceUpsertRecord(eventType, binding, run) {
       logger.warn(null, "wireless.record", { error: dv.error, event_type: eventType }, nv.value, SYS);
       return;
     }
-    const r = dbRun(() => db.transaction(() => insertRecordRow(name, data))());
+    const r = dbRun(() => db.transaction(() => {
+      const record = insertRecordRow(name, data);
+      if (run.runId) {
+        db.prepare(`
+          UPDATE wireless_session
+          SET saved_record_name = ?, saved_record_rowid = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE event_type = ? AND run_id = ?
+        `).run(name, record.rowid, eventType, run.runId);
+      }
+      return record;
+    })());
     if (!r.success) {
       logger.warn(null, "wireless.record", { error: r.error, event_type: eventType }, name, SYS);
       return;
@@ -595,7 +628,8 @@ function enduranceUpsertRecord(eventType, binding, run) {
     run.recordName = name;
     run.recordRowid = r.result.rowid;
     logger.log(null, "wireless.record", { type: eventType, result: total, num: t.num, laps: run.laps.length }, name, SYS);
-    broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: r.result });
+    if (run.runId) broadcastEvent("wireless:session", getSession(eventType));
+    broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: r.result, event_type: eventType, run_id: run.runId ?? null });
   } else {
     // 이후 랩: 같은 행 UPDATE(총합·랩 목록).
     const r = dbRun(() => {
@@ -606,7 +640,7 @@ function enduranceUpsertRecord(eventType, binding, run) {
       logger.warn(null, "wireless.record", { error: r.error, event_type: eventType }, run.recordName, SYS);
       return;
     }
-    broadcastEvent("records", { type: "update", name: run.recordName, field: "result", recordFiles: getRecordFiles(), record: r.result });
+    broadcastEvent("records", { type: "update", name: run.recordName, field: "result", recordFiles: getRecordFiles(), record: r.result, event_type: eventType, run_id: run.runId ?? null });
   }
 }
 // 새로 삽입된 이벤트들을 라우팅해 기록 계산. (dedupe된 재전송은 inserted에 없으므로 재처리 안 됨.)
@@ -625,7 +659,7 @@ function processRecordEngine(rows) {
       const sess = sessByType.get(et);
       if (!sess || !sess.armed) continue;
       const sensor = m.role === "finish" ? 2 : 1;
-      if (!engineRun.has(et)) resetEngineRun(et);
+      if (!engineRun.has(et)) resetEngineRun(et, null, sess.run_id);
       const run = engineRun.get(et);
       // 디바운스(tick 기준, 클라 acceptSensorTick과 동일): 한 통과의 다중 엣지 접기.
       const lastAcc = run.debounce[sensor];
@@ -1465,9 +1499,10 @@ app.post("/api/wireless/light", (req, res) => {
         const cur = db.prepare("SELECT armed, light_color, green_tick FROM wireless_session WHERE event_type = ?").get(light.owner_event);
         const dup = cur && cur.armed && cur.light_color === "green" && (gtParam == null || cur.green_tick === gtParam);
         if (!dup) {
-          resetEngineRun(light.owner_event); // 물리 경기 새 런 — 기록 엔진 리셋
-          db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = COALESCE(?, green_tick), armed_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
-            .run(gtParam, new Date().toISOString(), light.owner_event);
+          const runId = crypto.randomUUID();
+          resetEngineRun(light.owner_event, null, runId); // 물리 경기 새 런 — 기록 엔진 리셋
+          db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = COALESCE(?, green_tick), armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+            .run(gtParam, new Date().toISOString(), runId, light.owner_event);
         }
       } else {
         db.prepare("UPDATE wireless_session SET armed = 0, light_color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
@@ -1585,16 +1620,15 @@ app.post("/api/wireless/arm", (req, res) => {
     }
     bound = { team: v.team, event_name: v.event_name };
   }
-  // green=새 런 → 기록 엔진 상태 리셋(arm 시점 귀속 스냅샷 고정).
-  if (action === "green") resetEngineRun(event_type, bound);
+  const runId = action === "green" ? crypto.randomUUID() : null;
   const result = dbRun(() => {
     if (action === "green") {
       if (hasSel) {
-        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, team_json = ?, event_name = ?, armed_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
-          .run(green_tick, bound.team ? JSON.stringify(bound.team) : null, bound.event_name, new Date().toISOString(), event_type);
+        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, team_json = ?, event_name = ?, armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+          .run(green_tick, bound.team ? JSON.stringify(bound.team) : null, bound.event_name, new Date().toISOString(), runId, event_type);
       } else {
-        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, armed_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
-          .run(green_tick, new Date().toISOString(), event_type);
+        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+          .run(green_tick, new Date().toISOString(), runId, event_type);
       }
     } else {
       // red = 정지(표시는 적색), off = 소등(grey). 둘 다 disarm.
@@ -1607,6 +1641,8 @@ app.post("/api/wireless/arm", (req, res) => {
     logger.warn(req, "wireless.arm", { error: result.error, event_type, action }, event_type);
     return res.status(result.status).send(result.error);
   }
+  // 세션 변경이 확정된 뒤에만 새 런을 연다. DB 실패 시 기존 엔진/편집 대상도 유지된다.
+  if (action === "green") resetEngineRun(event_type, bound, runId);
   logger.log(req, "wireless.arm", { action, green_tick }, event_type);
   broadcastEvent("wireless:session", result.result);
   res.json(result.result);
@@ -1678,7 +1714,7 @@ app.post("/api/wireless/dnf", (req, res) => {
     ok = r.success;
     if (ok) {
       logger.log(null, "wireless.record", { type: event_type, result: -1, dnf: true, num: (run.bound || sess)?.team?.num }, run.recordName, SYS);
-      broadcastEvent("records", { type: "update", name: run.recordName, field: "result", recordFiles: getRecordFiles(), record: r.result });
+      broadcastEvent("records", { type: "update", name: run.recordName, field: "result", recordFiles: getRecordFiles(), record: r.result, event_type, run_id: run.runId ?? null });
     } else {
       logger.warn(null, "wireless.record", { error: r.error, event_type }, run.recordName, SYS);
     }
@@ -1690,7 +1726,7 @@ app.post("/api/wireless/dnf", (req, res) => {
   // 늦게 도착하는 도착 센서가 이중 저장하지 않도록 런을 저장됨으로 표시.
   // 서버 재기동 등으로 런이 비어 있으면 생성 후 표시 — 안 하면 뒤이은 센서가 새 런을
   // 만들어 실기록을 추가 저장(DNF + 실기록 이중 저장)할 수 있다.
-  if (!run) { resetEngineRun(event_type); run = engineRun.get(event_type); }
+  if (!run) { resetEngineRun(event_type, null, sess.run_id); run = engineRun.get(event_type); }
   run.saved = true;
   res.json({ ok: true });
 });

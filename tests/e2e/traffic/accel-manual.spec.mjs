@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications, setCustomEventName } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 
@@ -27,12 +27,13 @@ test.describe("Acceleration manual mode measurement", () => {
     await manualToggle.click();
     await expect(manualToggle).toContainText("매뉴얼 모드 ON");
 
-    // Set event name
-    const eventNameInput = page.locator('.form-input[type="text"]');
-    await eventNameInput.fill("E2E-Test");
+    // Preset names do not expose a text field; custom names do.
+    await expect(page.getByTestId("event-name-option")).toHaveValue("dynamic");
+    await expect(page.getByTestId("event-name-custom")).not.toBeVisible();
+    await setCustomEventName(page, "E2E-Test");
 
     // Select team 1
-    const teamSelect = page.locator("select.form-input");
+    const teamSelect = page.getByTestId("event-team");
     await teamSelect.selectOption("1");
 
     // Click green light
@@ -69,7 +70,7 @@ test.describe("Acceleration manual mode measurement", () => {
 
     await page.getByTestId("quick-cones-plus").click();
     await expect(page.getByTestId("quick-cones")).toHaveValue("1");
-    await expect(quickEdit.locator(".quick-edit-summary").getByTestId("quick-save-status")).toHaveText("저장됨");
+    await expect(savedSection.locator(".record-header").getByTestId("quick-save-status")).toHaveText("저장됨");
 
     await page.getByTestId("quick-oc").fill("2");
     await page.getByTestId("quick-oc").blur();
@@ -113,8 +114,8 @@ test.describe("Acceleration manual mode measurement", () => {
     await page.getByTestId("manual-mode-toggle").click();
 
     // Set event name and select team
-    await page.locator('.form-input[type="text"]').fill("E2E-DNF");
-    await page.locator("select.form-input").selectOption("2");
+    await setCustomEventName(page, "E2E-DNF");
+    await page.getByTestId("event-team").selectOption("2");
 
     // Click green light to enable DNF button
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();
@@ -133,8 +134,8 @@ test.describe("Acceleration manual mode measurement", () => {
     await page.getByTestId("manual-mode-toggle").click();
 
     // Set event name and select team
-    await page.locator('.form-input[type="text"]').fill("E2E-Reset");
-    await page.locator("select.form-input").selectOption("3");
+    await setCustomEventName(page, "E2E-Reset");
+    await page.getByTestId("event-team").selectOption("3");
 
     // First measurement
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();
@@ -173,8 +174,8 @@ test.describe("Acceleration manual mode measurement", () => {
 
   test("hides post-processing on OFF and shows it for the next record", async ({ page }) => {
     await page.getByTestId("manual-mode-toggle").click();
-    await page.locator('.form-input[type="text"]').fill("E2E-Reset");
-    await page.locator("select.form-input").selectOption("3");
+    await setCustomEventName(page, "E2E-Reset");
+    await page.getByTestId("event-team").selectOption("3");
 
     const green = page.locator("button.btn-success", { hasText: "녹색등" });
     const off = page.locator("button.btn-ghost", { hasText: "OFF" });

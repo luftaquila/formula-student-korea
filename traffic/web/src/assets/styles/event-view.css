@@ -29,6 +29,29 @@
   background: var(--bg-secondary);
 }
 
+.card-header.record-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.record-header .save-status {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+}
+
+.record-header .status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-success);
+}
+
 .card-header h3 {
   margin: 0;
   font-size: 1rem;

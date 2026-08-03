@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, setCustomEventName } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 const EVENT = "E2E-Endurance-Quick-Edit";
@@ -19,8 +19,8 @@ test.describe("Endurance manual mode post-processing", () => {
     await waitForPageReady(page);
 
     await page.getByTestId("manual-mode-toggle").click();
-    await page.locator('.form-input[type="text"]').fill(EVENT);
-    await page.locator("select.form-input").selectOption("1");
+    await setCustomEventName(page, EVENT);
+    await page.getByTestId("event-team").selectOption("1");
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();
 
     const sensor = page.getByTestId("manual-sensor-1");
