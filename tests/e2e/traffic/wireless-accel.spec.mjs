@@ -40,6 +40,10 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
 
     await page.goto("/traffic/wireless/accel");
     await waitForPageReady(page);
+    const observerContext = await browser.newContext({ storageState: storageStatePath("admin") });
+    const observerPage = await observerContext.newPage();
+    await observerPage.goto("/traffic/wireless/accel");
+    await waitForPageReady(observerPage);
 
     // 무선 입력칸(이벤트명·팀)은 lease 보유 컨트롤러만 편집 가능(disabled). 이 페이지는 관찰자라
     // UI로 채우지 않고, 귀속(팀·이벤트명)은 세션 select API로 공유한다(브리지/컨트롤러 시뮬레이션).
@@ -61,12 +65,9 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
 
     // SSE가 끊긴 동안 별도 클라이언트에서 도착과 저장이 완료되는 상황을 재현한다.
     await page.context().setOffline(true);
-    const ingestContext = await browser.newContext({ storageState: storageStatePath("admin") });
-    const ingestPage = await ingestContext.newPage();
-    await ingestPage.request.post("/traffic/api/wireless/ingest", {
+    await observerPage.request.post("/traffic/api/wireless/ingest", {
       data: { events: [{ node_id: NODE_F, master_tick: finishTick.toString(), ev_seq: eventSequence, rssi: -61, snr: 9 }] },
     });
-    await ingestContext.close();
     await page.context().setOffline(false);
 
     // 재연결 시 timing event는 backfill되고, records 이벤트는 세션의 정확한 name/rowid로 복구된다.
@@ -76,6 +77,9 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
     const quickEdit = page.locator(".saved-section").getByTestId("record-quick-edit");
     await expect(quickEdit).toBeVisible({ timeout: 5000 });
+    const observerQuickEdit = observerPage.locator(".saved-section").getByTestId("record-quick-edit");
+    await expect(observerQuickEdit).toBeVisible({ timeout: 5000 });
+    await expect(observerPage.locator(".records-section .record-item")).toHaveCount(2);
 
     // 도착 후 적색등으로 전환되어도 현재 런의 편집 카드는 유지된다.
     await page.request.post("/traffic/api/wireless/light", { data: { color: "red" } });
@@ -140,6 +144,9 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await page.getByRole("button", { name: "초기화", exact: true }).click();
     await expect(page.locator(".traffic-light.grey")).toBeVisible({ timeout: 5000 });
     await expect(quickEdit).not.toBeVisible();
+    await expect(observerQuickEdit).not.toBeVisible();
+    await expect(observerPage.locator(".records-section .record-item")).toHaveCount(0);
+    await expect(observerPage.locator(".clock")).toHaveText("00:00.000");
     const resetState = await (await page.request.get("/traffic/api/wireless/state")).json();
     const resetSession = resetState.sessions.find((session) => session.event_type === "가속");
     expect(resetSession.run_id).toBeNull();
@@ -148,6 +155,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await page.getByRole("button", { name: "적색등", exact: true }).click();
     await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
     await expect(quickEdit).not.toBeVisible();
+    await observerContext.close();
     await page.request.delete(`/traffic/api/wireless/lease/${encodeURIComponent("가속")}`);
     await page.reload();
     await waitForPageReady(page);

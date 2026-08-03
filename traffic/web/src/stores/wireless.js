@@ -56,7 +56,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   // 경기별 타이밍 상태(유선 serial store의 flat 상태를 경기별로 namespace)
   const timing = reactive({});
   for (const k of WIRELESS_EVENTS) timing[k] = makeSlot();
-  const pendingResets = new Set();
+  const appliedRunIds = new Map();
   const callbacks = {}; // mode -> 뷰의 onSensor (유선 뷰와 동일 로직)
 
   // SSE 실시간 상태
@@ -170,16 +170,17 @@ export const useWirelessStore = defineStore("wireless", () => {
     const mode = TYPE_TO_KEY[s.event_type];
     if (!mode || !timing[mode]) return;
     const slot = timing[mode];
+    const previousRunId = appliedRunIds.get(mode);
+    const runId = s.run_id ?? null;
+    const resetCompleted = previousRunId != null && runId == null;
+    appliedRunIds.set(mode, runId);
     slot.light = s.light_color === "off" ? "grey" : s.light_color || "grey";
     if (s.armed) {
       const gt = tickToMs(s.green_tick);
       if (!slot.green.active || slot.green.tick !== gt) activateGreen(mode, gt);
     } else {
       deactivateGreen(mode);
-      if (s.light_color === "off" && pendingResets.has(mode)) {
-        clearTiming(mode);
-        pendingResets.delete(mode);
-      }
+      if (resetCompleted) clearTiming(mode);
     }
   }
   function applyAllSessions() {
@@ -570,12 +571,9 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
   async function resetFor(mode) {
     if (!holdsLease(mode)) return false;
-    pendingResets.add(mode);
-    const accepted = isPhysical(mode)
+    return isPhysical(mode)
       ? await physicalControl(mode, "reset", "O")
       : await armAction(mode, "reset");
-    if (!accepted) pendingResets.delete(mode);
-    return accepted;
   }
 
   // 무선 설정: 물리 신호등 사용 경기 지정
