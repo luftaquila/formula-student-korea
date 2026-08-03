@@ -60,13 +60,15 @@ test.describe("Acceleration manual mode measurement", () => {
     // Verify saved notification
     await expectNotification(page, "success", "기록 저장");
 
-    // 방금 저장된 행을 화면 이동 없이 후처리할 수 있다.
+    // 방금 저장된 행을 화면 이동 없이 편집할 수 있다.
     const quickEdit = page.getByTestId("record-quick-edit");
     await expect(quickEdit).toBeVisible();
-    await expect(quickEdit).toContainText("방금 자동 저장됨");
+    await expect(quickEdit).not.toContainText("변경 즉시 저장");
+    await expect(page.getByTestId("quick-save-status")).not.toBeVisible();
 
     await page.getByTestId("quick-cones-plus").click();
     await expect(page.getByTestId("quick-cones")).toHaveValue("1");
+    await expect(page.getByTestId("quick-save-status")).toHaveText("저장됨");
 
     await page.getByTestId("quick-oc").fill("2");
     await page.getByTestId("quick-oc").blur();

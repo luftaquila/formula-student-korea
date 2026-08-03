@@ -110,12 +110,8 @@ onUnmounted(() => clearTimeout(savedTimer));
 </script>
 
 <template>
-  <section class="quick-edit card" data-testid="record-quick-edit" aria-label="방금 저장된 기록 후처리">
+  <section class="quick-edit card" data-testid="record-quick-edit" aria-label="기록 빠른 편집">
     <div class="quick-edit-header">
-      <div>
-        <div class="eyebrow">방금 자동 저장됨</div>
-        <h3>기록 후처리</h3>
-      </div>
       <div class="record-summary">
         <span class="team-number">#{{ record.num }}</span>
         <strong>{{ formattedResult }}</strong>
@@ -216,11 +212,14 @@ onUnmounted(() => clearTimeout(savedTimer));
         </div>
       </div>
 
-      <div class="save-status" aria-live="polite">
-        <span v-if="isSaving || saveState === 'saving'" class="status-dot is-saving"></span>
-        <span v-else class="status-dot"></span>
-        {{ isSaving || saveState === "saving" ? "저장 중..." : saveState === "saved" ? "저장됨" : "변경 즉시 저장" }}
-        <span class="status-note">무효화하면 전광판에서도 자동으로 숨겨집니다.</span>
+      <div
+        v-if="saveState === 'saved' && !isSaving"
+        class="save-status"
+        data-testid="quick-save-status"
+        aria-live="polite"
+      >
+        <span class="status-dot"></span>
+        저장됨
       </div>
     </div>
   </section>
@@ -235,23 +234,11 @@ onUnmounted(() => clearTimeout(savedTimer));
 .quick-edit-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 1rem;
   padding: 1rem 1.25rem;
   border-bottom: 1px solid var(--border-color);
   background: linear-gradient(135deg, rgba(16, 185, 129, 0.14), rgba(16, 185, 129, 0.03));
-}
-
-.quick-edit-header h3 {
-  margin: 0.15rem 0 0;
-  font-size: 1.15rem;
-}
-
-.eyebrow {
-  color: var(--accent-success);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
 }
 
 .record-summary {
@@ -401,21 +388,10 @@ onUnmounted(() => clearTimeout(savedTimer));
   background: var(--accent-success);
 }
 
-.status-dot.is-saving {
-  background: var(--accent-warning);
-  animation: pulse 0.8s ease-in-out infinite alternate;
-}
-
-.status-note { margin-left: auto; }
-
-@keyframes pulse { to { opacity: 0.35; } }
-
 @media (max-width: 720px) {
   .toggle-grid,
   .penalty-grid { grid-template-columns: 1fr; }
   .penalty-control { flex-wrap: wrap; }
   .stepper { margin-left: auto; }
-  .save-status { align-items: flex-start; flex-wrap: wrap; }
-  .status-note { width: 100%; margin-left: 0; }
 }
 </style>
