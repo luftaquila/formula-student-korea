@@ -91,6 +91,18 @@ const visibleCategories = computed(() => {
   return template.value.filter(cat => !(cat.excluded_types || []).includes(type));
 });
 
+const templateItemsById = computed(() => {
+  const items = new Map();
+  for (const cat of template.value) {
+    for (const sub of cat.subcategories || []) {
+      for (const group of sub.groups || []) {
+        for (const item of group.items || []) items.set(Number(item.id), item);
+      }
+    }
+  }
+  return items;
+});
+
 // 탭 번호는 템플릿 원본 순서를 따른다 — 유형별로 숨겨진 카테고리가 있어도
 // 인쇄된 시트의 번호와 어긋나지 않게 한다.
 const catNumById = computed(() =>
@@ -277,6 +289,25 @@ function onPassFailToggle(itemId, val) {
   answerQueue.enqueue(itemId, newVal, { immediate: true });
 }
 
+function onCounterChange(itemId, delta) {
+  if (isReadOnly.value) return;
+  const newVal = nextCounterValue(getAnswer(itemId), delta);
+  ensureAnswerRecord(itemId).value = newVal;
+  clearConflict(answerConflicts, itemId);
+  setDraft("answers", itemId, newVal, answerQueue.currentVersion(itemId));
+  answerQueue.enqueue(itemId, newVal, { immediate: true });
+}
+
+function onCounterInput(itemId, event) {
+  const newVal = normalizeCounterInput(event.target.value);
+  if (newVal === null) {
+    event.target.value = getAnswer(itemId);
+    return;
+  }
+  event.target.value = newVal;
+  onAnswerChange(itemId, newVal);
+}
+
 function onMemoChange(itemId, memo) {
   ensureAnswerRecord(itemId).memo = memo;
   editedMemos.add(itemId);
@@ -289,14 +320,19 @@ function restoreLocalDrafts() {
   if (isReadOnly.value) return;
   for (const [rawItemId, draft] of Object.entries(localDrafts.answers)) {
     const itemId = Number(rawItemId);
-    const record = ensureAnswerRecord(itemId);
-    const serverValue = record.value;
-    if (record.value === draft.value) {
+    const draftValue = normalizeRestorableAnswerDraft(templateItemsById.value.get(itemId), draft.value);
+    if (draftValue === null) {
       clearDraft("answers", itemId);
       continue;
     }
-    record.value = draft.value;
-    answerQueue.enqueue(itemId, draft.value);
+    const record = ensureAnswerRecord(itemId);
+    const serverValue = record.value;
+    if (record.value === draftValue) {
+      clearDraft("answers", itemId);
+      continue;
+    }
+    record.value = draftValue;
+    answerQueue.enqueue(itemId, draftValue);
     if ((draft.baseVersion ?? 0) !== (record.answer_version ?? 0)) {
       answerQueue.markConflict(itemId, {
         value: serverValue,
@@ -489,7 +525,66 @@ import {
   itemNum,
   getChecktableConfig,
   hasCheckedChecktableCell,
+  nextCounterValue,
+  normalizeCounterInput,
+  formatStopwatchElapsed,
+  isResponseItem,
+  normalizeRestorableAnswerDraft,
 } from "../utils/sheet-helpers";
+
+// 스톱워치는 검차 편의를 위한 로컬 도구이며 답변으로 저장하지 않는다.
+const stopwatchStates = ref({});
+const stopwatchNow = ref(Date.now());
+let stopwatchInterval = null;
+
+function getStopwatchState(itemId) {
+  return stopwatchStates.value[itemId] || { elapsedMs: 0, startedAt: null };
+}
+
+function getStopwatchElapsed(itemId) {
+  const state = getStopwatchState(itemId);
+  return state.elapsedMs + (state.startedAt ? Math.max(0, stopwatchNow.value - state.startedAt) : 0);
+}
+
+function isStopwatchRunning(itemId) {
+  return getStopwatchState(itemId).startedAt !== null;
+}
+
+function syncStopwatchInterval() {
+  const hasRunningStopwatch = Object.values(stopwatchStates.value).some(state => state.startedAt !== null);
+  if (hasRunningStopwatch && stopwatchInterval === null) {
+    stopwatchInterval = window.setInterval(() => {
+      stopwatchNow.value = Date.now();
+    }, 10);
+  } else if (!hasRunningStopwatch && stopwatchInterval !== null) {
+    window.clearInterval(stopwatchInterval);
+    stopwatchInterval = null;
+  }
+}
+
+function toggleStopwatch(itemId) {
+  if (isReadOnly.value) return;
+  const now = Date.now();
+  const state = getStopwatchState(itemId);
+  stopwatchNow.value = now;
+  stopwatchStates.value = {
+    ...stopwatchStates.value,
+    [itemId]: state.startedAt === null
+      ? { elapsedMs: state.elapsedMs, startedAt: now }
+      : { elapsedMs: state.elapsedMs + Math.max(0, now - state.startedAt), startedAt: null },
+  };
+  syncStopwatchInterval();
+}
+
+function resetStopwatch(itemId) {
+  if (isReadOnly.value) return;
+  stopwatchNow.value = Date.now();
+  stopwatchStates.value = {
+    ...stopwatchStates.value,
+    [itemId]: { elapsedMs: 0, startedAt: null },
+  };
+  syncStopwatchInterval();
+}
 
 // ---- Simple markdown rendering ----
 function renderMd(text) {
@@ -528,6 +623,7 @@ const unansweredItems = computed(() => {
   for (const [si, sub] of (cat.subcategories || []).entries()) {
     for (const [gi, grp] of (sub.groups || []).entries()) {
       for (const [ii, item] of (grp.items || []).entries()) {
+        if (!isResponseItem(item)) continue;
         const itemNumber = `${subNum(si)}-${grpNum(gi)} ${itemNum(ii)}`;
         if (item.answer_type === "checktable") {
           const val = getChecktableValue(item.id);
@@ -570,6 +666,7 @@ const inspectionProgress = computed(() => {
     for (const sub of cat.subcategories || []) {
       for (const grp of sub.groups || []) {
         for (const item of grp.items || []) {
+          if (!isResponseItem(item)) continue;
           if (item.answer_type === "checktable") {
             const value = getChecktableValue(item.id);
             total += 1;
@@ -690,6 +787,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("scroll", onScroll);
+  if (stopwatchInterval !== null) window.clearInterval(stopwatchInterval);
   for (const timer of saveStateTimers.values()) clearTimeout(timer);
   saveStateTimers.clear();
   flushDebounce();
@@ -1072,6 +1170,37 @@ watch(reconnected, async () => {
                     />
                     <span v-if="item.unit" class="unit-label">{{ item.unit }}</span>
                   </div>
+                  <!-- Counter input -->
+                  <div v-else-if="item.answer_type === 'counter'" class="input-with-unit counter-control">
+                    <button
+                      type="button"
+                      class="btn btn-danger btn-sm counter-button"
+                      :disabled="isReadOnly || Number(getAnswer(item.id) || 0) <= 0"
+                      :aria-label="`${item.name} 감소`"
+                      @click="onCounterChange(item.id, -1)"
+                    >−</button>
+                    <input
+                      type="text"
+                      inputmode="numeric"
+                      pattern="[0-9]*"
+                      class="form-input inline-input number-input counter-value"
+                      :value="getAnswer(item.id)"
+                      @focus="focusedItemId = item.id"
+                      @blur="handleAnswerBlur()"
+                      @input="onCounterInput(item.id, $event)"
+                      :disabled="isReadOnly"
+                      placeholder="0"
+                      :aria-label="`${item.name} 현재 값`"
+                    />
+                    <button
+                      type="button"
+                      class="btn btn-success btn-sm counter-button"
+                      :disabled="isReadOnly"
+                      :aria-label="`${item.name} 증가`"
+                      @click="onCounterChange(item.id, 1)"
+                    >+</button>
+                    <span v-if="item.unit" class="unit-label">{{ item.unit }}</span>
+                  </div>
                   <!-- Text input -->
                   <div v-else-if="item.answer_type === 'text'" class="input-with-unit">
                     <input
@@ -1111,6 +1240,23 @@ watch(reconnected, async () => {
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                  <!-- Stopwatch: local convenience tool, no answer is saved. -->
+                  <div v-else-if="item.answer_type === 'stopwatch'" class="stopwatch-control">
+                    <span class="stopwatch-display">{{ formatStopwatchElapsed(getStopwatchElapsed(item.id)) }}</span>
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      :class="isStopwatchRunning(item.id) ? 'btn-danger' : 'btn-success'"
+                      :disabled="isReadOnly"
+                      @click="toggleStopwatch(item.id)"
+                    >{{ isStopwatchRunning(item.id) ? "정지" : "시작" }}</button>
+                    <button
+                      type="button"
+                      class="btn btn-ghost btn-sm"
+                      :disabled="isReadOnly || getStopwatchElapsed(item.id) === 0"
+                      @click="resetStopwatch(item.id)"
+                    >초기화</button>
                   </div>
                   <div class="item-status-slot" aria-live="polite">
                     <div v-if="answerConflicts[item.id]" class="save-feedback save-conflict-inline">
@@ -1543,6 +1689,48 @@ watch(reconnected, async () => {
   display: flex;
   align-items: center;
   gap: 0.25rem;
+}
+
+.counter-control {
+  flex-wrap: wrap;
+}
+
+.counter-button {
+  width: 2rem;
+  min-width: 2rem;
+  height: 2rem;
+  padding-inline: 0;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.counter-value {
+  width: 64px;
+  height: 2rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.stopwatch-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.stopwatch-display {
+  min-width: 9rem;
+  padding: 0.375rem 0.625rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
 }
 
 .unit-label {

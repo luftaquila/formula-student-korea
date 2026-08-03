@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 import {
   getChecktableConfig,
   hasCheckedChecktableCell,
+  nextCounterValue,
+  normalizeCounterInput,
+  formatStopwatchElapsed,
+  isResponseItem,
+  isPdfItem,
+  normalizeRestorableAnswerDraft,
 } from '../../inspection/web/src/utils/sheet-helpers.js';
 
 const item = {
@@ -47,5 +53,72 @@ describe('Check-table configuration', () => {
 
   it('returns an empty configuration for malformed JSON', () => {
     assert.deepEqual(getChecktableConfig({ remarks: '{' }), { rows: [], columns: [] });
+  });
+});
+
+describe('Counter values', () => {
+  it('increments an empty value from zero', () => {
+    assert.equal(nextCounterValue('', 1), '1');
+  });
+
+  it('does not decrement below zero', () => {
+    assert.equal(nextCounterValue('0', -1), '0');
+  });
+
+  it('normalizes malformed and fractional values', () => {
+    assert.equal(nextCounterValue('invalid', 1), '1');
+    assert.equal(nextCounterValue('2.9', 1), '3');
+  });
+
+  it('accepts direct non-negative integer input and removes leading zeros', () => {
+    assert.equal(normalizeCounterInput('12'), '12');
+    assert.equal(normalizeCounterInput('0012'), '12');
+    assert.equal(normalizeCounterInput(''), '');
+  });
+
+  it('rejects negative, fractional, and non-numeric direct input', () => {
+    assert.equal(normalizeCounterInput('-1'), null);
+    assert.equal(normalizeCounterInput('1.5'), null);
+    assert.equal(normalizeCounterInput('one'), null);
+  });
+});
+
+describe('Stopwatch display', () => {
+  it('formats all milliseconds without an hour for short durations', () => {
+    assert.equal(formatStopwatchElapsed(62_349), '01:02.349');
+  });
+
+  it('includes hours for long durations', () => {
+    assert.equal(formatStopwatchElapsed(3_661_999), '01:01:01.999');
+  });
+
+  it('normalizes invalid or negative durations to zero', () => {
+    assert.equal(formatStopwatchElapsed(-100), '00:00.000');
+    assert.equal(formatStopwatchElapsed('invalid'), '00:00.000');
+  });
+});
+
+describe('Non-response field rules', () => {
+  const stopwatch = { answer_type: 'stopwatch' };
+
+  it('excludes stopwatches from response completion', () => {
+    assert.equal(isResponseItem(stopwatch), false);
+    assert.equal(isResponseItem({ answer_type: 'counter' }), true);
+  });
+
+  it('excludes stopwatches but keeps counters in PDF output', () => {
+    assert.equal(isPdfItem(stopwatch), false);
+    assert.equal(isPdfItem({ answer_type: 'counter' }), true);
+  });
+
+  it('drops stopwatch, missing-item, and invalid counter answer drafts', () => {
+    assert.equal(normalizeRestorableAnswerDraft(stopwatch, 'old value'), null);
+    assert.equal(normalizeRestorableAnswerDraft(undefined, 'old value'), null);
+    assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'counter' }, 'old value'), null);
+  });
+
+  it('normalizes compatible counter drafts and keeps regular answer drafts', () => {
+    assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'counter' }, '0012'), '12');
+    assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'text' }, 'old value'), 'old value');
   });
 });

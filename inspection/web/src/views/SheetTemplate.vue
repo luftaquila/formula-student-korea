@@ -606,11 +606,13 @@ function goBack() {
                   >
                     <option value="passfail">PASS/FAIL</option>
                     <option value="number">숫자</option>
+                    <option value="counter">증감 숫자</option>
                     <option value="text">텍스트</option>
                     <option value="checktable">체크 테이블</option>
+                    <option value="stopwatch">스톱워치</option>
                   </select>
                   <input
-                    v-if="item.answer_type === 'number' || item.answer_type === 'text'"
+                    v-if="item.answer_type === 'number' || item.answer_type === 'counter' || item.answer_type === 'text'"
                     class="node-name-input unit-input"
                     v-model="item.unit"
                     @input="onUnitChange(item)"

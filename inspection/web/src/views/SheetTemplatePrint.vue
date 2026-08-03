@@ -34,7 +34,7 @@ function print() {
   window.print();
 }
 
-import { subNum, grpNum, itemNum, getChecktableConfig } from "../utils/sheet-helpers";
+import { subNum, grpNum, itemNum, getChecktableConfig, isPdfItem } from "../utils/sheet-helpers";
 </script>
 
 <template>
@@ -88,42 +88,44 @@ import { subNum, grpNum, itemNum, getChecktableConfig } from "../utils/sheet-hel
                 </td>
               </tr>
 
-              <tr v-for="(item, ii) in grp.items" :key="item.id" class="item-row">
-                <template v-if="item.answer_type === 'checktable'">
-                  <td :colspan="4" class="td-item-name td-checktable">
-                    <span class="item-num">{{ itemNum(ii) }}</span> {{ item.name }}
-                    <table class="checktable-print" v-if="getChecktableConfig(item).columns.length">
-                      <thead>
-                        <tr>
-                          <th></th>
-                          <th v-for="col in getChecktableConfig(item).columns" :key="col">{{ col }}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr v-for="row in getChecktableConfig(item).rows" :key="row">
-                          <td class="ct-row-header">{{ row }}</td>
-                          <td v-for="col in getChecktableConfig(item).columns" :key="col" class="ct-cell">☐</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </td>
-                </template>
-                <template v-else>
-                  <td class="td-item-name">
-                    <span class="item-num">{{ itemNum(ii) }}</span> {{ item.name }}
-                  </td>
-                  <template v-if="item.answer_type === 'passfail'">
-                    <td class="td-pf"></td>
-                    <td class="td-pf"></td>
-                  </template>
-                  <template v-else>
-                    <td class="td-value" colspan="2">
-                      <span v-if="item.unit" class="unit-label">{{ item.unit }}</span>
+              <template v-for="(item, ii) in grp.items" :key="item.id">
+                <tr v-if="isPdfItem(item)" class="item-row">
+                  <template v-if="item.answer_type === 'checktable'">
+                    <td :colspan="4" class="td-item-name td-checktable">
+                      <span class="item-num">{{ itemNum(ii) }}</span> {{ item.name }}
+                      <table class="checktable-print" v-if="getChecktableConfig(item).columns.length">
+                        <thead>
+                          <tr>
+                            <th></th>
+                            <th v-for="col in getChecktableConfig(item).columns" :key="col">{{ col }}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="row in getChecktableConfig(item).rows" :key="row">
+                            <td class="ct-row-header">{{ row }}</td>
+                            <td v-for="col in getChecktableConfig(item).columns" :key="col" class="ct-cell">☐</td>
+                          </tr>
+                        </tbody>
+                      </table>
                     </td>
                   </template>
-                  <td class="td-remarks">{{ item.remarks }}</td>
-                </template>
-              </tr>
+                  <template v-else>
+                    <td class="td-item-name">
+                      <span class="item-num">{{ itemNum(ii) }}</span> {{ item.name }}
+                    </td>
+                    <template v-if="item.answer_type === 'passfail'">
+                      <td class="td-pf"></td>
+                      <td class="td-pf"></td>
+                    </template>
+                    <template v-else>
+                      <td class="td-value" colspan="2">
+                        <span v-if="item.unit" class="unit-label">{{ item.unit }}</span>
+                      </td>
+                    </template>
+                    <td class="td-remarks">{{ item.remarks }}</td>
+                  </template>
+                </tr>
+              </template>
             </tbody>
           </template>
         </table>

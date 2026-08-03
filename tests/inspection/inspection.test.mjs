@@ -1012,6 +1012,183 @@ describe('Number and Text answer types', () => {
   });
 });
 
+// ─── Counter/Stopwatch answer_type ───────────────────────────────────────
+describe('Counter and Stopwatch field types', () => {
+  let counterItemId, stopwatchItemId;
+
+  before(async () => {
+    const catRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'category', name: 'UtilityFieldCat' },
+      cookie: adminCookie,
+    });
+    const catId = Number((await catRes.json()).id);
+    const subRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'subcategory', parent_id: catId, name: 'UtilityFieldSub' },
+      cookie: adminCookie,
+    });
+    const subId = Number((await subRes.json()).id);
+    const grpRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'group', parent_id: subId, name: 'UtilityFieldGrp' },
+      cookie: adminCookie,
+    });
+    const grpId = Number((await grpRes.json()).id);
+    const counterRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'item', parent_id: grpId, name: 'Brake attempts', answer_type: 'counter' },
+      cookie: adminCookie,
+    });
+    assert.equal(counterRes.status, 200);
+    counterItemId = Number((await counterRes.json()).id);
+    const stopwatchRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'item', parent_id: grpId, name: 'Rain test timer', answer_type: 'stopwatch' },
+      cookie: adminCookie,
+    });
+    assert.equal(stopwatchRes.status, 200);
+    stopwatchItemId = Number((await stopwatchRes.json()).id);
+  });
+
+  it('returns both new field types in the template tree', async () => {
+    const res = await client.get(`/api/sheet/template?year=${CURRENT_YEAR}`, { cookie: officialCookie });
+    assert.equal(res.status, 200);
+    const tree = await res.json();
+    const category = tree.find(cat => cat.name === 'UtilityFieldCat');
+    const items = category.subcategories[0].groups[0].items;
+    assert.deepEqual(items.map(item => item.answer_type), ['counter', 'stopwatch']);
+  });
+
+  it('stores non-negative integer counter values', async () => {
+    const res = await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 1, item_id: counterItemId, value: '3' },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 200);
+
+    const dataRes = await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie });
+    const data = await dataRes.json();
+    assert.equal(data.answers[counterItemId].value, '3');
+  });
+
+  it('rejects negative, fractional, and non-numeric counter values', async () => {
+    for (const value of ['-1', '1.5', 'one']) {
+      const res = await client.put('/api/sheet/answer', {
+        body: { year: CURRENT_YEAR, team_num: 1, item_id: counterItemId, value },
+        cookie: officialCookie,
+      });
+      assert.equal(res.status, 400);
+    }
+  });
+
+  it('does not accept an answer for a stopwatch field', async () => {
+    const res = await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 1, item_id: stopwatchItemId, value: '12.3' },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 400);
+    assert.match(await res.text(), /응답을 저장하지 않습니다/);
+  });
+});
+
+describe('Answer cleanup when utility field types change', () => {
+  let counterTransitionItemId, stopwatchTransitionItemId;
+
+  before(async () => {
+    const catRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'category', name: 'UtilityTransitionCat' },
+      cookie: adminCookie,
+    });
+    const catId = Number((await catRes.json()).id);
+    const subRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'subcategory', parent_id: catId, name: 'UtilityTransitionSub' },
+      cookie: adminCookie,
+    });
+    const subId = Number((await subRes.json()).id);
+    const grpRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'group', parent_id: subId, name: 'UtilityTransitionGrp' },
+      cookie: adminCookie,
+    });
+    const grpId = Number((await grpRes.json()).id);
+    const counterRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'item', parent_id: grpId, name: 'Counter transition', answer_type: 'text' },
+      cookie: adminCookie,
+    });
+    counterTransitionItemId = Number((await counterRes.json()).id);
+    const stopwatchRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'item', parent_id: grpId, name: 'Stopwatch transition', answer_type: 'text' },
+      cookie: adminCookie,
+    });
+    stopwatchTransitionItemId = Number((await stopwatchRes.json()).id);
+  });
+
+  it('normalizes compatible counter values and clears incompatible values without deleting memos', async () => {
+    for (const [teamNum, value, memo] of [
+      [501, '0007', 'leading-zero memo'],
+      [502, 'not-a-number', 'invalid-value memo'],
+    ]) {
+      const answerRes = await client.put('/api/sheet/answer', {
+        body: { year: CURRENT_YEAR, team_num: teamNum, item_id: counterTransitionItemId, value },
+        cookie: officialCookie,
+      });
+      assert.equal(answerRes.status, 200);
+      const memoRes = await client.put('/api/sheet/memo', {
+        body: { year: CURRENT_YEAR, team_num: teamNum, item_id: counterTransitionItemId, memo },
+        cookie: officialCookie,
+      });
+      assert.equal(memoRes.status, 200);
+    }
+
+    const updateRes = await client.put(`/api/sheet/template/${counterTransitionItemId}`, {
+      body: { answer_type: 'counter' },
+      cookie: adminCookie,
+    });
+    assert.equal(updateRes.status, 200);
+
+    const normalized = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/501`, { cookie: officialCookie })).json();
+    assert.equal(normalized.answers[counterTransitionItemId].value, '7');
+    assert.equal(normalized.answers[counterTransitionItemId].memo, 'leading-zero memo');
+    assert.equal(normalized.answers[counterTransitionItemId].answer_version, 2);
+    assert.equal(normalized.answers[counterTransitionItemId].memo_version, 1);
+
+    const cleared = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/502`, { cookie: officialCookie })).json();
+    assert.equal(cleared.answers[counterTransitionItemId].value, '');
+    assert.equal(cleared.answers[counterTransitionItemId].memo, 'invalid-value memo');
+    assert.equal(cleared.answers[counterTransitionItemId].answer_version, 2);
+    assert.equal(cleared.answers[counterTransitionItemId].memo_version, 1);
+  });
+
+  it('clears stopwatch answers permanently while preserving memos', async () => {
+    const answerRes = await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 503, item_id: stopwatchTransitionItemId, value: 'old response' },
+      cookie: officialCookie,
+    });
+    assert.equal(answerRes.status, 200);
+    const memoRes = await client.put('/api/sheet/memo', {
+      body: { year: CURRENT_YEAR, team_num: 503, item_id: stopwatchTransitionItemId, memo: 'keep this memo' },
+      cookie: officialCookie,
+    });
+    assert.equal(memoRes.status, 200);
+
+    const stopwatchRes = await client.put(`/api/sheet/template/${stopwatchTransitionItemId}`, {
+      body: { answer_type: 'stopwatch' },
+      cookie: adminCookie,
+    });
+    assert.equal(stopwatchRes.status, 200);
+
+    let data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/503`, { cookie: officialCookie })).json();
+    assert.equal(data.answers[stopwatchTransitionItemId].value, '');
+    assert.equal(data.answers[stopwatchTransitionItemId].memo, 'keep this memo');
+    assert.equal(data.answers[stopwatchTransitionItemId].answer_version, 2);
+    assert.equal(data.answers[stopwatchTransitionItemId].memo_version, 1);
+
+    const textRes = await client.put(`/api/sheet/template/${stopwatchTransitionItemId}`, {
+      body: { answer_type: 'text' },
+      cookie: adminCookie,
+    });
+    assert.equal(textRes.status, 200);
+    data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/503`, { cookie: officialCookie })).json();
+    assert.equal(data.answers[stopwatchTransitionItemId].value, '');
+    assert.equal(data.answers[stopwatchTransitionItemId].memo, 'keep this memo');
+  });
+});
+
 // ─── Bulk answers filtering ──────────────────────────────────────────────
 describe('Bulk answers filtering', () => {
   let filterItem1, filterItem2, filterItem3;
