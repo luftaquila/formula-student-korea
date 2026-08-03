@@ -1731,7 +1731,7 @@ watch(reconnected, async () => {
   width: auto;
   min-height: 44px;
   padding: 0.375rem 0.625rem;
-  font-size: 0.8125rem;
+  font-size: 1rem;
 }
 
 .number-input {
@@ -1782,7 +1782,11 @@ watch(reconnected, async () => {
 }
 
 .stopwatch-display {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 9rem;
+  min-height: 44px;
   padding: 0.375rem 0.625rem;
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -1868,7 +1872,7 @@ watch(reconnected, async () => {
   height: auto;
   min-height: 44px;
   min-width: 0;
-  font-size: 0.75rem;
+  font-size: 0.875rem;
   line-height: 1.45;
   color: var(--text-secondary);
   cursor: pointer;
@@ -1909,7 +1913,7 @@ watch(reconnected, async () => {
   min-height: 100%;
   resize: none;
   overflow-y: hidden;
-  font-size: 0.75rem;
+  font-size: 0.875rem;
   line-height: 1.45;
   padding: 0.375rem 0.625rem;
   white-space: pre-wrap;

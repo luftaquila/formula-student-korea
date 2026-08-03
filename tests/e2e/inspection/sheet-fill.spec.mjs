@@ -39,7 +39,7 @@ test.describe("Inspection sheet filling", () => {
     await expect(panel).toContainText("고정 상태");
   });
 
-  test("keeps answer input fields at least 44 pixels tall", async ({ page }) => {
+  test("keeps answer input fields large enough to read and tap", async ({ page }) => {
     const inputs = [
       page.locator(".item-row").filter({ hasText: "절연 저항 측정" }).locator(".number-input"),
       page.locator(".item-row").filter({ hasText: "시리얼 넘버" }).locator(".text-input"),
@@ -49,6 +49,8 @@ test.describe("Inspection sheet filling", () => {
       await expect(input).toBeVisible();
       const box = await input.boundingBox();
       expect(box.height).toBeGreaterThanOrEqual(44);
+      const fontSize = await input.evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
+      expect(fontSize).toBeGreaterThanOrEqual(16);
     }
   });
 
