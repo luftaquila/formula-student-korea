@@ -254,6 +254,12 @@ app.get("/api/sheet/template", (req, res) => {
 const TEMPLATE_LEVELS = ["category", "subcategory", "group", "item"];
 const TEMPLATE_ANSWER_TYPES = ["passfail", "number", "text", "checktable", "counter", "stopwatch"];
 
+function normalizeStoredCounterAnswer(value) {
+  const match = String(value ?? "").match(/^(\d+)(?:\.0+)?$/);
+  if (!match) return "";
+  return match[1].replace(/^0+(?=\d)/, "");
+}
+
 // POST /api/sheet/template - 노드 생성
 app.post("/api/sheet/template", (req, res) => {
   const { year, level, parent_id, name, sort_order, answer_type, remarks, unit, pdf_include, excluded_types } = req.body;
@@ -302,12 +308,45 @@ app.put("/api/sheet/template/:id", (req, res) => {
   if (!fields.length) return res.status(400).send("수정할 필드가 없습니다.");
   params.push(id);
 
-  const node = db.prepare("SELECT name FROM sheet_template WHERE id = ?").get(id);
+  const node = db.prepare("SELECT name, level FROM sheet_template WHERE id = ?").get(id);
   if (!node) return res.status(404).send("항목을 찾을 수 없습니다.");
 
-  const result = dbRun(() =>
-    db.prepare(`UPDATE sheet_template SET ${fields.join(", ")} WHERE id = ?`).run(...params)
-  );
+  const result = dbRun(() => db.transaction(() => {
+    const update = db.prepare(`UPDATE sheet_template SET ${fields.join(", ")} WHERE id = ?`).run(...params);
+    let normalizedAnswers = 0;
+    const nextAnswerType = answer_type || null;
+
+    if (answer_type !== undefined && node.level === "item" && ["counter", "stopwatch"].includes(nextAnswerType)) {
+      const rows = db.prepare(
+        "SELECT year, team_num, value FROM sheet_answer WHERE item_id = ?"
+      ).all(id);
+      const normalizeAnswer = db.prepare(`
+        UPDATE sheet_answer
+        SET value = ?,
+            answer_version = answer_version + 1,
+            answer_updated_at = ?,
+            answer_updated_by = ?
+        WHERE year = ? AND team_num = ? AND item_id = ?
+      `);
+      const updatedAt = new Date().toISOString();
+      const updatedBy = req.user?.name || req.user?.email || "";
+
+      for (const row of rows) {
+        const normalized = nextAnswerType === "stopwatch" ? "" : normalizeStoredCounterAnswer(row.value);
+        if (row.value === normalized) continue;
+        normalizedAnswers += normalizeAnswer.run(
+          normalized,
+          updatedAt,
+          updatedBy,
+          row.year,
+          row.team_num,
+          id,
+        ).changes;
+      }
+    }
+
+    return { changes: update.changes, normalizedAnswers };
+  })());
 
   if (!result.success) {
     logger.warn(req, "template.update", { error: result.error }, node.name);
@@ -317,7 +356,10 @@ app.put("/api/sheet/template/:id", (req, res) => {
     logger.warn(req, "template.update", { changes: 0 }, node.name);
     return res.status(404).send("항목을 찾을 수 없습니다.");
   }
-  logger.log(req, "template.update", { fields: Object.fromEntries(fields.map((f, i) => [f.split(" = ")[0], params[i]])) }, node.name);
+  logger.log(req, "template.update", {
+    fields: Object.fromEntries(fields.map((f, i) => [f.split(" = ")[0], params[i]])),
+    normalized_answers: result.result.normalizedAnswers,
+  }, node.name);
   res.status(200).send();
 });
 

@@ -91,6 +91,18 @@ const visibleCategories = computed(() => {
   return template.value.filter(cat => !(cat.excluded_types || []).includes(type));
 });
 
+const templateItemsById = computed(() => {
+  const items = new Map();
+  for (const cat of template.value) {
+    for (const sub of cat.subcategories || []) {
+      for (const group of sub.groups || []) {
+        for (const item of group.items || []) items.set(Number(item.id), item);
+      }
+    }
+  }
+  return items;
+});
+
 // 탭 번호는 템플릿 원본 순서를 따른다 — 유형별로 숨겨진 카테고리가 있어도
 // 인쇄된 시트의 번호와 어긋나지 않게 한다.
 const catNumById = computed(() =>
@@ -308,14 +320,19 @@ function restoreLocalDrafts() {
   if (isReadOnly.value) return;
   for (const [rawItemId, draft] of Object.entries(localDrafts.answers)) {
     const itemId = Number(rawItemId);
-    const record = ensureAnswerRecord(itemId);
-    const serverValue = record.value;
-    if (record.value === draft.value) {
+    const draftValue = normalizeRestorableAnswerDraft(templateItemsById.value.get(itemId), draft.value);
+    if (draftValue === null) {
       clearDraft("answers", itemId);
       continue;
     }
-    record.value = draft.value;
-    answerQueue.enqueue(itemId, draft.value);
+    const record = ensureAnswerRecord(itemId);
+    const serverValue = record.value;
+    if (record.value === draftValue) {
+      clearDraft("answers", itemId);
+      continue;
+    }
+    record.value = draftValue;
+    answerQueue.enqueue(itemId, draftValue);
     if ((draft.baseVersion ?? 0) !== (record.answer_version ?? 0)) {
       answerQueue.markConflict(itemId, {
         value: serverValue,
@@ -512,6 +529,7 @@ import {
   normalizeCounterInput,
   formatStopwatchElapsed,
   isResponseItem,
+  normalizeRestorableAnswerDraft,
 } from "../utils/sheet-helpers";
 
 // 스톱워치는 검차 편의를 위한 로컬 도구이며 답변으로 저장하지 않는다.

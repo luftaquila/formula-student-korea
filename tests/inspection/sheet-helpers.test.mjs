@@ -8,6 +8,7 @@ import {
   formatStopwatchElapsed,
   isResponseItem,
   isPdfItem,
+  normalizeRestorableAnswerDraft,
 } from '../../inspection/web/src/utils/sheet-helpers.js';
 
 const item = {
@@ -108,5 +109,16 @@ describe('Non-response field rules', () => {
   it('excludes stopwatches but keeps counters in PDF output', () => {
     assert.equal(isPdfItem(stopwatch), false);
     assert.equal(isPdfItem({ answer_type: 'counter' }), true);
+  });
+
+  it('drops stopwatch, missing-item, and invalid counter answer drafts', () => {
+    assert.equal(normalizeRestorableAnswerDraft(stopwatch, 'old value'), null);
+    assert.equal(normalizeRestorableAnswerDraft(undefined, 'old value'), null);
+    assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'counter' }, 'old value'), null);
+  });
+
+  it('normalizes compatible counter drafts and keeps regular answer drafts', () => {
+    assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'counter' }, '0012'), '12');
+    assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'text' }, 'old value'), 'old value');
   });
 });

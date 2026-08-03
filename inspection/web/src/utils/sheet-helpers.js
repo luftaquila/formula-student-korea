@@ -54,6 +54,12 @@ export function isResponseItem(item) {
   return item?.answer_type !== "stopwatch";
 }
 
+export function normalizeRestorableAnswerDraft(item, value) {
+  if (!item || !isResponseItem(item)) return null;
+  if (item.answer_type === "counter") return normalizeCounterInput(value);
+  return value;
+}
+
 export function isPdfItem(item) {
   return item?.answer_type !== "stopwatch";
 }
