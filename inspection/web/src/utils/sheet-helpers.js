@@ -39,14 +39,14 @@ export function normalizeCounterInput(value) {
 }
 
 export function formatStopwatchElapsed(elapsedMs) {
-  const totalTenths = Math.floor(Math.max(0, Number(elapsedMs) || 0) / 100);
-  const tenths = totalTenths % 10;
-  const totalSeconds = Math.floor(totalTenths / 10);
+  const totalMilliseconds = Math.floor(Math.max(0, Number(elapsedMs) || 0));
+  const milliseconds = totalMilliseconds % 1000;
+  const totalSeconds = Math.floor(totalMilliseconds / 1000);
   const seconds = totalSeconds % 60;
   const totalMinutes = Math.floor(totalSeconds / 60);
   const minutes = totalMinutes % 60;
   const hours = Math.floor(totalMinutes / 60);
-  const clock = `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${tenths}`;
+  const clock = `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
   return hours ? `${String(hours).padStart(2, "0")}:${clock}` : clock;
 }
 

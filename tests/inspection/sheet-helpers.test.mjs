@@ -83,17 +83,17 @@ describe('Counter values', () => {
 });
 
 describe('Stopwatch display', () => {
-  it('formats tenths of a second without an hour for short durations', () => {
-    assert.equal(formatStopwatchElapsed(62_349), '01:02.3');
+  it('formats all milliseconds without an hour for short durations', () => {
+    assert.equal(formatStopwatchElapsed(62_349), '01:02.349');
   });
 
   it('includes hours for long durations', () => {
-    assert.equal(formatStopwatchElapsed(3_661_999), '01:01:01.9');
+    assert.equal(formatStopwatchElapsed(3_661_999), '01:01:01.999');
   });
 
   it('normalizes invalid or negative durations to zero', () => {
-    assert.equal(formatStopwatchElapsed(-100), '00:00.0');
-    assert.equal(formatStopwatchElapsed('invalid'), '00:00.0');
+    assert.equal(formatStopwatchElapsed(-100), '00:00.000');
+    assert.equal(formatStopwatchElapsed('invalid'), '00:00.000');
   });
 });
 

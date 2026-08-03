@@ -537,7 +537,7 @@ function syncStopwatchInterval() {
   if (hasRunningStopwatch && stopwatchInterval === null) {
     stopwatchInterval = window.setInterval(() => {
       stopwatchNow.value = Date.now();
-    }, 100);
+    }, 10);
   } else if (!hasRunningStopwatch && stopwatchInterval !== null) {
     window.clearInterval(stopwatchInterval);
     stopwatchInterval = null;
@@ -1701,7 +1701,7 @@ watch(reconnected, async () => {
 }
 
 .stopwatch-display {
-  min-width: 7.5rem;
+  min-width: 9rem;
   padding: 0.375rem 0.625rem;
   border: 1px solid var(--border-color);
   border-radius: 8px;
