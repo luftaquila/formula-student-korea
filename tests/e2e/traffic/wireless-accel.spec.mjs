@@ -117,6 +117,20 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await page.unrouteAll({ behavior: "wait" });
     await page.getByRole("button", { name: "OFF", exact: true }).click();
     await expect(page.locator(".traffic-light.grey")).toBeVisible({ timeout: 5000 });
+    await expect(quickEdit).toBeVisible();
+
+    // 같은 종료 런에서 색만 다시 red로 바뀌어도 카드는 유지되지만 런 수신은 다시 열리지 않는다.
+    await page.getByRole("button", { name: "적색등", exact: true }).click();
+    await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
+    await expect(quickEdit).toBeVisible();
+
+    // 명시적 초기화가 확정되면 카드를 제거하고, 같은 종료 run_id의 red로 되살아나지 않는다.
+    await page.getByRole("button", { name: "초기화", exact: true }).click();
+    await expect(page.locator(".traffic-light.grey")).toBeVisible({ timeout: 5000 });
+    await expect(quickEdit).not.toBeVisible();
+    await page.getByRole("button", { name: "적색등", exact: true }).click();
+    await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
+    await expect(quickEdit).not.toBeVisible();
     await page.getByRole("button", { name: "제어 해제", exact: true }).click();
   });
 });

@@ -118,6 +118,7 @@ watch(session, (s, previous) => {
   }
   if (s.run_id && s.run_id !== previous?.run_id) clearRun();
   if (resetPending.value && s.light_color === "off") {
+    endRun();
     clearRun();
     resetPending.value = false;
   }
@@ -173,7 +174,6 @@ function handleRed() {
   serial.sendRed();
 }
 function handleOff() {
-  if (!props.wireless) endRun();
   serial.sendOff();
 }
 async function handleReset() {

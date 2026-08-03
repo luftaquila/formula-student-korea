@@ -23,6 +23,9 @@ const pending = reactive({
 });
 const saveState = ref("ready");
 let savedTimer = null;
+let pendingMutations = 0;
+let batchFailed = false;
+let disposed = false;
 
 function normalizeCount(value) {
   const parsed = Number.parseInt(value, 10);
@@ -41,6 +44,7 @@ watch(() => props.record, syncRecord, { immediate: true, deep: true });
 const isStatusSaving = computed(() => pending.invalidated || pending.scoreboard);
 
 function setSaveState(state) {
+  if (disposed) return;
   saveState.value = state;
   emit("save-state", state);
 }
@@ -49,6 +53,21 @@ function markSaved() {
   clearTimeout(savedTimer);
   setSaveState("saved");
   savedTimer = setTimeout(() => setSaveState("ready"), 1600);
+}
+
+function beginMutation() {
+  clearTimeout(savedTimer);
+  if (pendingMutations === 0) batchFailed = false;
+  pendingMutations += 1;
+  setSaveState("saving");
+}
+
+function finishMutation(succeeded) {
+  if (!succeeded) batchFailed = true;
+  pendingMutations = Math.max(0, pendingMutations - 1);
+  if (pendingMutations > 0 || disposed) return;
+  if (batchFailed) setSaveState("ready");
+  else markSaved();
 }
 
 function mergeResult(result) {
@@ -65,16 +84,17 @@ async function toggle(field) {
   // 서로 다른 버튼이라도 동시에 보내지 않는다.
   if (isStatusSaving.value) return;
   pending[field] = true;
-  setSaveState("saving");
+  beginMutation();
+  let succeeded = false;
   try {
     const result = await updateRecord(props.record.name, props.record.rowid, field);
     mergeResult(result);
-    markSaved();
+    succeeded = true;
   } catch (e) {
-    setSaveState("ready");
     notyf.error(`기록 수정 실패: ${e.message}`);
   } finally {
     pending[field] = false;
+    finishMutation(succeeded);
   }
 }
 
@@ -86,19 +106,20 @@ async function saveCount(field, value, input = null) {
   if (next === previous) return;
 
   pending[field] = true;
-  setSaveState("saving");
+  beginMutation();
   state[field] = next;
+  let succeeded = false;
   try {
     const result = await updateRecord(props.record.name, props.record.rowid, field, next);
     mergeResult(result);
-    markSaved();
+    succeeded = true;
   } catch (e) {
     state[field] = previous;
     if (input) input.value = String(previous);
-    setSaveState("ready");
     notyf.error(`기록 수정 실패: ${e.message}`);
   } finally {
     pending[field] = false;
+    finishMutation(succeeded);
   }
 }
 
@@ -107,6 +128,7 @@ function onCountChange(field, event) {
 }
 
 onUnmounted(() => {
+  disposed = true;
   clearTimeout(savedTimer);
   emit("save-state", "ready");
 });

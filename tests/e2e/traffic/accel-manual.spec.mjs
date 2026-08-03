@@ -68,13 +68,38 @@ test.describe("Acceleration manual mode measurement", () => {
     await expect(quickEdit).not.toContainText("변경 즉시 저장");
     await expect(page.getByTestId("quick-save-status")).not.toBeVisible();
 
+    // 서로 다른 필드 저장이 겹치면 모든 요청이 끝나기 전에는 저장 완료를 표시하지 않는다.
+    let releaseCones;
+    const conesHeld = new Promise((resolve) => { releaseCones = resolve; });
+    const failDelayedCones = async (route) => {
+      const data = route.request().postDataJSON();
+      if (route.request().method() === "PATCH" && data?.field === "cones") {
+        await conesHeld;
+        await route.fulfill({ status: 503, body: "delayed cone save failed" });
+        return;
+      }
+      await route.continue();
+    };
+    await page.route("**/traffic/api/records/**", failDelayedCones);
+    await page.getByTestId("quick-cones-plus").click();
+    await page.getByTestId("quick-oc").fill("2");
+    const ocSaved = page.waitForResponse((response) => {
+      if (response.request().method() !== "PATCH") return false;
+      try { return response.request().postDataJSON()?.field === "oc"; }
+      catch { return false; }
+    });
+    await page.getByTestId("quick-oc").blur();
+    await ocSaved;
+    await expect(page.getByTestId("quick-oc")).toHaveValue("2");
+    await expect(page.getByTestId("quick-save-status")).not.toBeVisible();
+    releaseCones();
+    await expect(page.getByTestId("quick-cones")).toHaveValue("0");
+    await expect(page.getByTestId("quick-save-status")).not.toBeVisible();
+    await page.unroute("**/traffic/api/records/**", failDelayedCones);
+
     await page.getByTestId("quick-cones-plus").click();
     await expect(page.getByTestId("quick-cones")).toHaveValue("1");
     await expect(savedSection.locator(".record-header").getByTestId("quick-save-status")).toHaveText("저장됨");
-
-    await page.getByTestId("quick-oc").fill("2");
-    await page.getByTestId("quick-oc").blur();
-    await expect(page.getByTestId("quick-oc")).toHaveValue("2");
 
     const scoreboard = page.getByTestId("quick-scoreboard");
     await scoreboard.click();
@@ -172,7 +197,7 @@ test.describe("Acceleration manual mode measurement", () => {
     await expectNotification(page, "success", "기록 저장");
   });
 
-  test("hides post-processing on OFF and shows it for the next record", async ({ page }) => {
+  test("keeps post-processing on OFF and replaces it for the next record", async ({ page }) => {
     await page.getByTestId("manual-mode-toggle").click();
     await setCustomEventName(page, "E2E-Reset");
     await page.getByTestId("event-team").selectOption("3");
@@ -189,9 +214,10 @@ test.describe("Acceleration manual mode measurement", () => {
     await expect(page.getByTestId("record-quick-edit")).toBeVisible({ timeout: 5000 });
 
     await off.click();
-    await expect(page.getByTestId("record-quick-edit")).not.toBeVisible();
+    await expect(page.getByTestId("record-quick-edit")).toBeVisible();
 
     await green.click();
+    await expect(page.getByTestId("record-quick-edit")).not.toBeVisible();
     await sensor1.click();
     await page.waitForTimeout(400);
     await sensor2.click();

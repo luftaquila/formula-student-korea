@@ -14,10 +14,16 @@ export function useAutoSavedRecord({
   let acceptingRecord = !wireless();
   let runToken = 0;
   let trackedRunId = null;
+  let dismissedRunId = null;
+
+  function assignRecord(payload) {
+    if (!payload?.name || !payload?.record) return;
+    recentRecord.value = { name: payload.name, ...payload.record };
+  }
 
   function captureRecord(payload, token = runToken) {
     if (token !== runToken || !acceptingRecord || !payload?.name || !payload?.record) return;
-    recentRecord.value = { name: payload.name, ...payload.record };
+    assignRecord(payload);
   }
 
   function mergeRecord(patch) {
@@ -32,12 +38,16 @@ export function useAutoSavedRecord({
   function beginRun() {
     runToken += 1;
     acceptingRecord = true;
+    dismissedRunId = null;
     clearRecord();
   }
 
+  // 명시적인 초기화는 현재 기록을 폐기한다. 일반 OFF/red는 아래 세션 watcher에서
+  // 수신만 닫고 카드는 유지하므로 다음 측정 전까지 계속 편집할 수 있다.
   function endRun() {
     runToken += 1;
     acceptingRecord = false;
+    if (wireless()) dismissedRunId = trackedRunId;
     clearRecord();
   }
 
@@ -48,14 +58,14 @@ export function useAutoSavedRecord({
   // records SSE가 끊긴 사이 저장됐거나 저장 후 화면을 연 경우에도 세션에 보관된 정확한
   // name/rowid를 조회해 같은 런의 편집 카드를 복구한다.
   async function recoverRecord() {
-    if (recentRecord.value || !wireless() || !acceptingRecord) return;
+    if (recentRecord.value || !wireless()) return;
 
     const token = runToken;
     const currentSession = session();
     const runId = currentSession?.run_id;
     const name = currentSession?.saved_record_name;
     const rowid = Number(currentSession?.saved_record_rowid);
-    if (!runId || !name || !Number.isInteger(rowid)) return;
+    if (!runId || dismissedRunId === runId || !name || !Number.isInteger(rowid)) return;
 
     let rows;
     try {
@@ -65,11 +75,17 @@ export function useAutoSavedRecord({
       return;
     }
 
-    // 조회 중 OFF/초기화/새 런으로 넘어갔다면 이전 행을 다시 노출하지 않는다.
-    if (token !== runToken || !acceptingRecord || recentRecord.value || session()?.run_id !== runId) return;
+    // 조회 중 초기화/새 런으로 넘어갔다면 이전 행을 다시 노출하지 않는다. 일반 OFF/red는
+    // 편집 카드를 유지해야 하므로 복구를 허용하되 새 records 이벤트 수신은 닫힌 상태다.
+    if (
+      token !== runToken ||
+      recentRecord.value ||
+      session()?.run_id !== runId ||
+      dismissedRunId === runId
+    ) return;
 
     const record = rows.find((row) => Number(row.rowid) === rowid);
-    if (record) captureRecord({ name, record }, token);
+    if (record) assignRecord({ name, record });
   }
 
   watch(lastUpdate, (update) => {
@@ -93,28 +109,26 @@ export function useAutoSavedRecord({
     captureRecord(update);
   });
 
-  // 무선 카드 수명주기는 낙관적 로컬 신호등이 아니라 서버 세션을 따른다. 새 run_id가
-  // 확정되면 열고, red에서는 유지하며, off가 확정된 뒤에만 닫는다.
+  // 새 run_id에서만 수신을 연다. 같은 런의 red/off가 확정되면 수신은 단방향으로 닫되
+  // 편집 카드는 유지한다. 이후 같은 run_id로 색만 바뀌어도 다시 열지 않으며, 다음 green은
+  // 새 run_id를 발급하므로 그때 이전 카드를 지운다.
   watch(() => session(), (currentSession) => {
     if (!wireless()) return;
     const runId = currentSession?.run_id ?? null;
-    const open = !!runId && currentSession?.light_color !== "off";
+    const active = !!runId && !!currentSession?.armed && currentSession?.light_color === "green";
 
     if (runId !== trackedRunId) {
       trackedRunId = runId;
-      if (open) beginRun();
-    }
-
-    if (!open) {
-      if (acceptingRecord) endRun();
-      return;
-    }
-
-    if (!acceptingRecord) {
       runToken += 1;
-      acceptingRecord = true;
+      acceptingRecord = active;
+      dismissedRunId = null;
       clearRecord();
+    } else if (!active && acceptingRecord) {
+      // OFF/red 이후의 지연 이벤트를 받지 않도록 토큰을 닫는다. 카드는 명시적 초기화 전까지 유지한다.
+      runToken += 1;
+      acceptingRecord = false;
     }
+
     recoverRecord();
   }, { immediate: true, deep: true });
 
