@@ -501,6 +501,8 @@ watch(() => serial.lightColor, (color) => {
 }
 
 .saved-item {
+  width: 100%;
+  box-sizing: border-box;
   padding: 0.75rem 1rem;
   background: var(--bg-secondary);
   border-radius: 8px;
