@@ -189,7 +189,7 @@
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 4.1 | 템플릿 조회 | official | `GET /api/sheet/template?year=` | 4단계 계층 트리: 카테고리 > 소분류 > 그룹 > 항목 |
-| 4.2 | 노드 추가 | chief | `POST /api/sheet/template` | level, parent_id, answer_type(passfail/number/text/checktable), unit, pdf_include, excluded_types |
+| 4.2 | 노드 추가 | chief | `POST /api/sheet/template` | level, parent_id, answer_type(passfail/number/counter/text/checktable/stopwatch), unit, pdf_include, excluded_types |
 | 4.3 | 노드 수정 | chief | `PUT /api/sheet/template/:id` | 이전 연도 수정 방지 |
 | 4.3a | 카테고리 표시 유형 설정 | chief | `PUT /api/sheet/template/:id` (`excluded_types`) | 카테고리별로 차량 유형 체크박스. 체크 해제한 유형 **이름**을 제외 목록에 저장하므로 기본은 전체 표시이고, 유형을 새로 추가하면 기존 카테고리에 자동 표시된다 |
 | 4.4 | 노드 삭제 | chief | `DELETE /api/sheet/template/:id` | FK 캐스케이드로 하위 + 답변 삭제 |

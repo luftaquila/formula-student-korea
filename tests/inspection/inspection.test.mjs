@@ -1012,6 +1012,81 @@ describe('Number and Text answer types', () => {
   });
 });
 
+// ─── Counter/Stopwatch answer_type ───────────────────────────────────────
+describe('Counter and Stopwatch field types', () => {
+  let counterItemId, stopwatchItemId;
+
+  before(async () => {
+    const catRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'category', name: 'UtilityFieldCat' },
+      cookie: adminCookie,
+    });
+    const catId = Number((await catRes.json()).id);
+    const subRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'subcategory', parent_id: catId, name: 'UtilityFieldSub' },
+      cookie: adminCookie,
+    });
+    const subId = Number((await subRes.json()).id);
+    const grpRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'group', parent_id: subId, name: 'UtilityFieldGrp' },
+      cookie: adminCookie,
+    });
+    const grpId = Number((await grpRes.json()).id);
+    const counterRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'item', parent_id: grpId, name: 'Brake attempts', answer_type: 'counter' },
+      cookie: adminCookie,
+    });
+    assert.equal(counterRes.status, 200);
+    counterItemId = Number((await counterRes.json()).id);
+    const stopwatchRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'item', parent_id: grpId, name: 'Rain test timer', answer_type: 'stopwatch' },
+      cookie: adminCookie,
+    });
+    assert.equal(stopwatchRes.status, 200);
+    stopwatchItemId = Number((await stopwatchRes.json()).id);
+  });
+
+  it('returns both new field types in the template tree', async () => {
+    const res = await client.get(`/api/sheet/template?year=${CURRENT_YEAR}`, { cookie: officialCookie });
+    assert.equal(res.status, 200);
+    const tree = await res.json();
+    const category = tree.find(cat => cat.name === 'UtilityFieldCat');
+    const items = category.subcategories[0].groups[0].items;
+    assert.deepEqual(items.map(item => item.answer_type), ['counter', 'stopwatch']);
+  });
+
+  it('stores non-negative integer counter values', async () => {
+    const res = await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 1, item_id: counterItemId, value: '3' },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 200);
+
+    const dataRes = await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie });
+    const data = await dataRes.json();
+    assert.equal(data.answers[counterItemId].value, '3');
+  });
+
+  it('rejects negative, fractional, and non-numeric counter values', async () => {
+    for (const value of ['-1', '1.5', 'one']) {
+      const res = await client.put('/api/sheet/answer', {
+        body: { year: CURRENT_YEAR, team_num: 1, item_id: counterItemId, value },
+        cookie: officialCookie,
+      });
+      assert.equal(res.status, 400);
+    }
+  });
+
+  it('does not accept an answer for a stopwatch field', async () => {
+    const res = await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 1, item_id: stopwatchItemId, value: '12.3' },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 400);
+    assert.match(await res.text(), /응답을 저장하지 않습니다/);
+  });
+});
+
 // ─── Bulk answers filtering ──────────────────────────────────────────────
 describe('Bulk answers filtering', () => {
   let filterItem1, filterItem2, filterItem3;

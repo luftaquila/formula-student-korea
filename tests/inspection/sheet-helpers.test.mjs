@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import {
   getChecktableConfig,
   hasCheckedChecktableCell,
+  nextCounterValue,
+  formatStopwatchElapsed,
+  isResponseItem,
+  isPdfItem,
 } from '../../inspection/web/src/utils/sheet-helpers.js';
 
 const item = {
@@ -47,5 +51,49 @@ describe('Check-table configuration', () => {
 
   it('returns an empty configuration for malformed JSON', () => {
     assert.deepEqual(getChecktableConfig({ remarks: '{' }), { rows: [], columns: [] });
+  });
+});
+
+describe('Counter values', () => {
+  it('increments an empty value from zero', () => {
+    assert.equal(nextCounterValue('', 1), '1');
+  });
+
+  it('does not decrement below zero', () => {
+    assert.equal(nextCounterValue('0', -1), '0');
+  });
+
+  it('normalizes malformed and fractional values', () => {
+    assert.equal(nextCounterValue('invalid', 1), '1');
+    assert.equal(nextCounterValue('2.9', 1), '3');
+  });
+});
+
+describe('Stopwatch display', () => {
+  it('formats tenths of a second without an hour for short durations', () => {
+    assert.equal(formatStopwatchElapsed(62_349), '01:02.3');
+  });
+
+  it('includes hours for long durations', () => {
+    assert.equal(formatStopwatchElapsed(3_661_999), '01:01:01.9');
+  });
+
+  it('normalizes invalid or negative durations to zero', () => {
+    assert.equal(formatStopwatchElapsed(-100), '00:00.0');
+    assert.equal(formatStopwatchElapsed('invalid'), '00:00.0');
+  });
+});
+
+describe('Non-response field rules', () => {
+  const stopwatch = { answer_type: 'stopwatch' };
+
+  it('excludes stopwatches from response completion', () => {
+    assert.equal(isResponseItem(stopwatch), false);
+    assert.equal(isResponseItem({ answer_type: 'counter' }), true);
+  });
+
+  it('excludes stopwatches but keeps counters in PDF output', () => {
+    assert.equal(isPdfItem(stopwatch), false);
+    assert.equal(isPdfItem({ answer_type: 'counter' }), true);
   });
 });

@@ -12,11 +12,15 @@ export function createInspectionApp(options = {}) {
 
 const db = createDatabase(Database, options.dbPath || "./data/sheet.db");
 
-// answer_type CHECK 제약조건에 'checktable' 추가 마이그레이션
+// answer_type CHECK 제약조건에 새 입력 유형을 추가하는 마이그레이션
 // FK CASCADE 문제를 피하기 위해 트랜잭션 밖에서 foreign_keys OFF 상태로 실행
 {
   const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='sheet_template'").get();
-  if (schema && !schema.sql.includes("checktable")) {
+  if (schema && (!schema.sql.includes("'counter'") || !schema.sql.includes("'stopwatch'"))) {
+    const existingColumns = new Set(db.prepare("PRAGMA table_info(sheet_template)").all().map(c => c.name));
+    const unitExpr = existingColumns.has("unit") ? "unit" : "''";
+    const pdfIncludeExpr = existingColumns.has("pdf_include") ? "pdf_include" : "1";
+    const excludedTypesExpr = existingColumns.has("excluded_types") ? "excluded_types" : "''";
     db.pragma("foreign_keys = OFF");
     try {
       db.transaction(() => {
@@ -27,13 +31,18 @@ const db = createDatabase(Database, options.dbPath || "./data/sheet.db");
           parent_id INTEGER,
           sort_order INTEGER NOT NULL DEFAULT 0,
           name TEXT NOT NULL,
-          answer_type TEXT CHECK(answer_type IN ('passfail', 'number', 'text', 'checktable') OR answer_type IS NULL),
+          answer_type TEXT CHECK(answer_type IN ('passfail', 'number', 'text', 'checktable', 'counter', 'stopwatch') OR answer_type IS NULL),
           remarks TEXT DEFAULT '',
           unit TEXT DEFAULT '',
           pdf_include INTEGER DEFAULT 1,
+          excluded_types TEXT DEFAULT '',
           FOREIGN KEY (parent_id) REFERENCES sheet_template(id) ON DELETE CASCADE
         )`);
-        db.exec("INSERT INTO sheet_template_new SELECT id, year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include FROM sheet_template");
+        db.exec(`INSERT INTO sheet_template_new
+          (id, year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types)
+          SELECT id, year, level, parent_id, sort_order, name, answer_type, remarks,
+                 ${unitExpr}, ${pdfIncludeExpr}, ${excludedTypesExpr}
+          FROM sheet_template`);
         db.exec("DROP TABLE sheet_template");
         db.exec("ALTER TABLE sheet_template_new RENAME TO sheet_template");
         db.exec("CREATE INDEX IF NOT EXISTS idx_st_year ON sheet_template(year)");
@@ -56,8 +65,11 @@ db.transaction(() => {
     parent_id INTEGER,
     sort_order INTEGER NOT NULL DEFAULT 0,
     name TEXT NOT NULL,
-    answer_type TEXT CHECK(answer_type IN ('passfail', 'number', 'text', 'checktable') OR answer_type IS NULL),
+    answer_type TEXT CHECK(answer_type IN ('passfail', 'number', 'text', 'checktable', 'counter', 'stopwatch') OR answer_type IS NULL),
     remarks TEXT DEFAULT '',
+    unit TEXT DEFAULT '',
+    pdf_include INTEGER DEFAULT 1,
+    excluded_types TEXT DEFAULT '',
     FOREIGN KEY (parent_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_st_year ON sheet_template(year);`);
@@ -240,7 +252,7 @@ app.get("/api/sheet/template", (req, res) => {
 // sheet_template CHECK 제약과 동기화된 허용값 — 라우트에서 미리 걸러 CHECK 위반 500 대신
 // 사람이 읽을 수 있는 400을 반환한다(DDL 변경 시 이 목록도 함께 갱신).
 const TEMPLATE_LEVELS = ["category", "subcategory", "group", "item"];
-const TEMPLATE_ANSWER_TYPES = ["passfail", "number", "text", "checktable"];
+const TEMPLATE_ANSWER_TYPES = ["passfail", "number", "text", "checktable", "counter", "stopwatch"];
 
 // POST /api/sheet/template - 노드 생성
 app.post("/api/sheet/template", (req, res) => {
@@ -570,6 +582,12 @@ app.put("/api/sheet/answer", (req, res) => {
   const newValue = value ?? "";
   if (templateItem.answer_type === "passfail" && !["", "PASS", "FAIL"].includes(newValue)) {
     return res.status(400).send("PASS 또는 FAIL만 입력할 수 있습니다.");
+  }
+  if (templateItem.answer_type === "counter" && newValue !== "" && !/^(0|[1-9]\d*)$/.test(String(newValue))) {
+    return res.status(400).send("증감 숫자는 0 이상의 정수만 입력할 수 있습니다.");
+  }
+  if (templateItem.answer_type === "stopwatch") {
+    return res.status(400).send("스톱워치 항목은 응답을 저장하지 않습니다.");
   }
   if (base_version !== undefined && (!Number.isInteger(base_version) || base_version < 0)) {
     return res.status(400).send("올바르지 않은 답변 버전입니다.");
