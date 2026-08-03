@@ -251,11 +251,13 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/sheet/summary` | official | `?year=` | `{ categories: [{ id, name, excluded_types }], teams }` | All teams' category-level results and inspectors |
 | GET | `/api/sheet/bulk-answers` | official | `?year=&item_ids=1,2,3` | `{ team_num: { item_id: value } }` | Bulk answer values for specific items |
-| GET | `/api/sheet/data/:year/:num` | official | — | `{ answers, results, inspectors }` | Full sheet data for a team |
-| PUT | `/api/sheet/answer` | official | `{ year, team_num, item_id, value }` | 200 | Upsert answer (broadcasts SSE) |
-| PUT | `/api/sheet/memo` | official | `{ year, team_num, item_id, memo }` | 200 | Upsert memo (broadcasts SSE) |
+| GET | `/api/sheet/data/:year/:num` | official | — | `{ answers, results, inspectors }` | Full sheet data for a team. Each answer includes independent answer/memo version and update metadata |
+| PUT | `/api/sheet/answer` | official | `{ year, team_num, item_id, value, base_version?, mutation_id? }` | `{ value, version, updated_at, updated_by, mutation_id? }` | Upsert answer (broadcasts versioned SSE) |
+| PUT | `/api/sheet/memo` | official | `{ year, team_num, item_id, memo, base_version?, mutation_id? }` | `{ memo, version, updated_at, updated_by, mutation_id? }` | Upsert memo (broadcasts versioned SSE) |
 | PUT | `/api/sheet/category-result` | official | `{ year, team_num, category_id, result }` | 200 | Upsert category PASS/FAIL (broadcasts SSE) |
 | PUT | `/api/sheet/inspector` | official | `{ year, team_num, category_id, inspector }` | 200 | Upsert inspector name (broadcasts SSE) |
+
+Answer and memo versions are independent. When `base_version` is provided and no longer matches the stored version, the write returns `409 { error, current }` without overwriting the newer value. Requests without `base_version` remain supported for backward compatibility. Answer/memo SSE payloads include `version`, `updated_at`, `updated_by`, and the caller's optional `mutation_id`.
 
 ### Internal API
 

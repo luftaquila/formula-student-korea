@@ -3,7 +3,7 @@ import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 
-// 검차 시트 API의 입력 검증 + answer no-op/메모 재브로드캐스트 대비.
+// 검차 시트 API의 입력 검증 + answer no-op/변경 메모 브로드캐스트 대비.
 // 쓰기(answer/memo/category/inspector)는 official+, 템플릿 쓰기는 chief+ (inspection/index.mjs authRoleFn).
 // admin storageState로 둘 다 충족.
 test.describe("Inspection validation and SSE no-op semantics", () => {
@@ -89,7 +89,7 @@ test.describe("Inspection validation and SSE no-op semantics", () => {
     // 정리는 불가(과거 연도 삭제 가드). 노드명이 유니크(Date.now)라 다른 테스트와 충돌하지 않음.
   });
 
-  test("re-saving the identical answer is an API no-op while memo always re-broadcasts", async ({ page }) => {
+  test("re-saving the identical answer is an API no-op while a changed memo broadcasts", async ({ page }) => {
     const { item } = await findItem(page, "전기 검차", "절연 저항 측정"); // number 타입
     expect(item, "seeded number item must exist").toBeTruthy();
     const team = 7; // 다른 답변 테스트와 격리된 팀 번호
@@ -102,7 +102,7 @@ test.describe("Inspection validation and SSE no-op semantics", () => {
     expect(first.status()).toBe(200);
 
     // 브라우저 페이지에서 SSE 수신을 직접 관찰: 페이지의 answer 입력칸이 동일 저장에는 반응하지 않고,
-    // 메모 저장에는 항상 반응(재브로드캐스트)하는지 확인.
+    // 변경된 메모 저장에는 반응하는지 확인.
     const sse = page.waitForResponse((res) => res.url().includes("/api/sheet/events"));
     await page.goto(`/inspection/${YEAR}/${team}`);
     await waitForPageReady(page);
@@ -112,16 +112,16 @@ test.describe("Inspection validation and SSE no-op semantics", () => {
     await expect(numInput).toHaveValue(seedVal, { timeout: 10000 });
 
     // (1) 동일 값 재저장 → API는 200이지만 changed=false → answer SSE 미발행.
-    //     결정적 검증: 직후 메모 저장은 항상 재브로드캐스트되어 memo SSE가 도착한다.
+    //     결정적 검증: 직후 변경된 메모 저장은 memo SSE가 도착한다.
     //     answer 이벤트가 (잘못) 발행됐다면 그 핸들러가 입력칸을 건드리지만, 값은 동일하므로
-    //     상태 변화로는 관찰 불가 → no-op은 메모 재브로드캐스트가 정상 동작함으로 간접 보장하고,
+    //     상태 변화로는 관찰 불가 → no-op은 변경 메모 브로드캐스트가 정상 동작함으로 간접 보장하고,
     //     API 레벨에서 changed 의미를 추가로 단언한다(아래).
     const sameAgain = await page.request.put("/inspection/api/sheet/answer", {
       data: { year: YEAR, team_num: team, item_id: item.id, value: seedVal },
     });
     expect(sameAgain.status()).toBe(200);
 
-    // (2) 메모는 항상 재브로드캐스트: 동일 값이어도 broadcast → 페이지에 반영.
+    // (2) 변경된 메모는 broadcast → 페이지에 반영.
     const memoVal = `E2E-MEMO-${Date.now()}`;
     const memoPut = await page.request.put("/inspection/api/sheet/memo", {
       data: { year: YEAR, team_num: team, item_id: item.id, memo: memoVal },

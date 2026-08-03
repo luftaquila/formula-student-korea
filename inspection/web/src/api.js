@@ -65,17 +65,19 @@ export async function fetchSheetData(year, num) {
 }
 
 export async function updateSheetAnswer(data) {
-  await request("/api/sheet/answer", {
+  const res = await request("/api/sheet/answer", {
     method: "PUT",
     body: JSON.stringify(data),
   });
+  return res.json();
 }
 
 export async function updateSheetMemo(data) {
-  await request("/api/sheet/memo", {
+  const res = await request("/api/sheet/memo", {
     method: "PUT",
     body: JSON.stringify(data),
   });
+  return res.json();
 }
 
 export async function updateSheetCategoryResult(data) {

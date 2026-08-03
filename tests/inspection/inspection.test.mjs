@@ -632,6 +632,47 @@ describe('Answer CRUD', () => {
     // We can't directly verify no broadcast without SSE client,
     // but we can verify the endpoint handles duplicate gracefully
   });
+
+  it('PUT /api/sheet/answer increments versions and rejects a stale base_version', async () => {
+    const first = await client.put('/api/sheet/answer', {
+      body: {
+        year: CURRENT_YEAR,
+        team_num: 77,
+        item_id: answerItemId,
+        value: 'PASS',
+        base_version: 0,
+        mutation_id: 'answer-v1',
+      },
+      cookie: officialCookie,
+    });
+    assert.equal(first.status, 200);
+    const firstData = await first.json();
+    assert.equal(firstData.version, 1);
+    assert.equal(firstData.updated_by, 'Official');
+    assert.equal(firstData.mutation_id, 'answer-v1');
+
+    const stale = await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 77, item_id: answerItemId, value: 'FAIL', base_version: 0 },
+      cookie: officialCookie,
+    });
+    assert.equal(stale.status, 409);
+    const staleData = await stale.json();
+    assert.equal(staleData.current.value, 'PASS');
+    assert.equal(staleData.current.version, 1);
+
+    const next = await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 77, item_id: answerItemId, value: 'FAIL', base_version: 1 },
+      cookie: officialCookie,
+    });
+    assert.equal(next.status, 200);
+    assert.equal((await next.json()).version, 2);
+
+    const dataRes = await client.get(`/api/sheet/data/${CURRENT_YEAR}/77`, { cookie: officialCookie });
+    const data = await dataRes.json();
+    assert.equal(data.answers[answerItemId].value, 'FAIL');
+    assert.equal(data.answers[answerItemId].answer_version, 2);
+    assert.equal(data.answers[answerItemId].answer_updated_by, 'Official');
+  });
 });
 
 // ─── Memo ───────────────────────────────────────────────────────────────
@@ -687,6 +728,52 @@ describe('Memo', () => {
       cookie: officialCookie,
     });
     assert.equal(res.status, 400);
+  });
+
+  it('PUT /api/sheet/memo versions memo independently from the answer', async () => {
+    const answerRes = await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 78, item_id: memoItemId, value: 'answer', base_version: 0 },
+      cookie: officialCookie,
+    });
+    assert.equal(answerRes.status, 200);
+
+    const first = await client.put('/api/sheet/memo', {
+      body: {
+        year: CURRENT_YEAR,
+        team_num: 78,
+        item_id: memoItemId,
+        memo: '첫 메모',
+        base_version: 0,
+        mutation_id: 'memo-v1',
+      },
+      cookie: officialCookie,
+    });
+    assert.equal(first.status, 200);
+    const firstData = await first.json();
+    assert.equal(firstData.version, 1);
+    assert.equal(firstData.updated_by, 'Official');
+
+    const unchanged = await client.put('/api/sheet/memo', {
+      body: { year: CURRENT_YEAR, team_num: 78, item_id: memoItemId, memo: '첫 메모', base_version: 1 },
+      cookie: officialCookie,
+    });
+    assert.equal(unchanged.status, 200);
+    assert.equal((await unchanged.json()).version, 1);
+
+    const stale = await client.put('/api/sheet/memo', {
+      body: { year: CURRENT_YEAR, team_num: 78, item_id: memoItemId, memo: '오래된 수정', base_version: 0 },
+      cookie: officialCookie,
+    });
+    assert.equal(stale.status, 409);
+    const staleData = await stale.json();
+    assert.equal(staleData.current.memo, '첫 메모');
+    assert.equal(staleData.current.version, 1);
+
+    const dataRes = await client.get(`/api/sheet/data/${CURRENT_YEAR}/78`, { cookie: officialCookie });
+    const data = await dataRes.json();
+    assert.equal(data.answers[memoItemId].answer_version, 1);
+    assert.equal(data.answers[memoItemId].memo_version, 1);
+    assert.equal(data.answers[memoItemId].memo_updated_by, 'Official');
   });
 });
 
@@ -1075,6 +1162,7 @@ describe('SSE broadcast on data changes', () => {
       const text = new TextDecoder().decode(value);
       assert.ok(text.includes('event: answer'), 'should receive answer broadcast event');
       assert.ok(text.includes('"team_num":50'), 'broadcast should include team_num');
+      assert.ok(text.includes('"version":1'), 'broadcast should include answer version');
     } finally {
       controller.abort();
       reader.releaseLock();
