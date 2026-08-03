@@ -286,6 +286,16 @@ function onCounterChange(itemId, delta) {
   answerQueue.enqueue(itemId, newVal, { immediate: true });
 }
 
+function onCounterInput(itemId, event) {
+  const newVal = normalizeCounterInput(event.target.value);
+  if (newVal === null) {
+    event.target.value = getAnswer(itemId);
+    return;
+  }
+  event.target.value = newVal;
+  onAnswerChange(itemId, newVal);
+}
+
 function onMemoChange(itemId, memo) {
   ensureAnswerRecord(itemId).memo = memo;
   editedMemos.add(itemId);
@@ -499,6 +509,7 @@ import {
   getChecktableConfig,
   hasCheckedChecktableCell,
   nextCounterValue,
+  normalizeCounterInput,
   formatStopwatchElapsed,
   isResponseItem,
 } from "../utils/sheet-helpers";
@@ -1145,23 +1156,27 @@ watch(reconnected, async () => {
                   <div v-else-if="item.answer_type === 'counter'" class="input-with-unit counter-control">
                     <button
                       type="button"
-                      class="btn btn-ghost btn-sm counter-button"
+                      class="btn btn-danger btn-sm counter-button"
                       :disabled="isReadOnly || Number(getAnswer(item.id) || 0) <= 0"
                       :aria-label="`${item.name} 감소`"
                       @click="onCounterChange(item.id, -1)"
                     >−</button>
                     <input
                       type="text"
-                      inputmode="none"
+                      inputmode="numeric"
+                      pattern="[0-9]*"
                       class="form-input inline-input number-input counter-value"
-                      :value="getAnswer(item.id) || '0'"
-                      readonly
-                      tabindex="-1"
+                      :value="getAnswer(item.id)"
+                      @focus="focusedItemId = item.id"
+                      @blur="handleAnswerBlur()"
+                      @input="onCounterInput(item.id, $event)"
+                      :disabled="isReadOnly"
+                      placeholder="0"
                       :aria-label="`${item.name} 현재 값`"
                     />
                     <button
                       type="button"
-                      class="btn btn-primary btn-sm counter-button"
+                      class="btn btn-success btn-sm counter-button"
                       :disabled="isReadOnly"
                       :aria-label="`${item.name} 증가`"
                       @click="onCounterChange(item.id, 1)"
@@ -1214,7 +1229,7 @@ watch(reconnected, async () => {
                     <button
                       type="button"
                       class="btn btn-sm"
-                      :class="isStopwatchRunning(item.id) ? 'btn-danger' : 'btn-primary'"
+                      :class="isStopwatchRunning(item.id) ? 'btn-danger' : 'btn-success'"
                       :disabled="isReadOnly"
                       @click="toggleStopwatch(item.id)"
                     >{{ isStopwatchRunning(item.id) ? "정지" : "시작" }}</button>
@@ -1665,14 +1680,15 @@ watch(reconnected, async () => {
 .counter-button {
   width: 2rem;
   min-width: 2rem;
+  height: 2rem;
   padding-inline: 0;
   font-size: 1rem;
+  line-height: 1;
 }
 
 .counter-value {
   width: 64px;
-  background: var(--bg-secondary);
-  cursor: default;
+  height: 2rem;
   font-variant-numeric: tabular-nums;
   text-align: center;
 }

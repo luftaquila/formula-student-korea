@@ -31,6 +31,13 @@ export function nextCounterValue(value, delta) {
   return String(Math.max(0, current + delta));
 }
 
+export function normalizeCounterInput(value) {
+  const text = String(value ?? "");
+  if (text === "") return "";
+  if (!/^\d+$/.test(text)) return null;
+  return text.replace(/^0+(?=\d)/, "");
+}
+
 export function formatStopwatchElapsed(elapsedMs) {
   const totalTenths = Math.floor(Math.max(0, Number(elapsedMs) || 0) / 100);
   const tenths = totalTenths % 10;

@@ -4,6 +4,7 @@ import {
   getChecktableConfig,
   hasCheckedChecktableCell,
   nextCounterValue,
+  normalizeCounterInput,
   formatStopwatchElapsed,
   isResponseItem,
   isPdfItem,
@@ -66,6 +67,18 @@ describe('Counter values', () => {
   it('normalizes malformed and fractional values', () => {
     assert.equal(nextCounterValue('invalid', 1), '1');
     assert.equal(nextCounterValue('2.9', 1), '3');
+  });
+
+  it('accepts direct non-negative integer input and removes leading zeros', () => {
+    assert.equal(normalizeCounterInput('12'), '12');
+    assert.equal(normalizeCounterInput('0012'), '12');
+    assert.equal(normalizeCounterInput(''), '');
+  });
+
+  it('rejects negative, fractional, and non-numeric direct input', () => {
+    assert.equal(normalizeCounterInput('-1'), null);
+    assert.equal(normalizeCounterInput('1.5'), null);
+    assert.equal(normalizeCounterInput('one'), null);
   });
 });
 
