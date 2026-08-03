@@ -49,6 +49,10 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
       data: { events: [{ node_id: NODE_F, master_tick: "1600160000", ev_seq: 1, rssi: -61, snr: 9 }] },
     });
 
+    // 도착 직후 적색등으로 전환돼 active=false가 먼저 반영되어도 저장 행을 놓치지 않는다.
+    await page.request.post("/traffic/api/wireless/light", { data: { color: "red" } });
+    await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
+
     // 클라이언트는 표시만(서버가 저장) — 측정 기록 섹션 노출
     await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
     const quickEdit = page.getByTestId("record-quick-edit");

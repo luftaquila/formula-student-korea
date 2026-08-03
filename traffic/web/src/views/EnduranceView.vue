@@ -141,6 +141,7 @@ const {
   beginRun,
   endRun,
   getRunToken,
+  recoverRecord,
 } = useAutoSavedRecord({
   wireless: () => props.wireless,
   active: () => serial.green.active,
@@ -149,6 +150,7 @@ const {
   eventType: () => "내구",
   teamNum: () => selectedTeam.value,
   matchesRun: (record) => lapTimes.value.length > 0 && record.result === totalMs.value,
+  matchesRecovery: () => true,
 });
 const bestLapMs = computed(() => (lapMsList.value.length ? Math.min(...lapMsList.value) : null));
 const lastLapMs = computed(() => (lapMsList.value.length ? lapMsList.value[lapMsList.value.length - 1] : null));
@@ -211,6 +213,11 @@ watch(() => serial.green.active, (active, prev) => {
 watch(() => serial.lightColor, (color) => {
   if (color === "grey") endRun();
 });
+
+// 첫 랩 INSERT 이후 접속·새로고침한 무선 화면은 add SSE를 놓쳤으므로 현재 런의 행을 복구한다.
+watch([session, () => serial.green.active], ([currentSession, active]) => {
+  if (props.wireless && active && currentSession?.armed) recoverRecord();
+}, { immediate: true, deep: true, flush: "post" });
 </script>
 
 <template>

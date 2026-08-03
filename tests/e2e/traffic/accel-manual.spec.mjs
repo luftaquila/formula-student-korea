@@ -77,7 +77,21 @@ test.describe("Acceleration manual mode measurement", () => {
     await expect(scoreboard).toContainText("숨김");
 
     const invalidated = page.getByTestId("quick-invalidated");
+    let releaseInvalidation;
+    const invalidationHeld = new Promise((resolve) => { releaseInvalidation = resolve; });
+    const holdInvalidation = async (route) => {
+      const data = route.request().postDataJSON();
+      if (route.request().method() === "PATCH" && data?.field === "invalidated") {
+        await invalidationHeld;
+      }
+      await route.continue();
+    };
+    await page.route("**/traffic/api/records/**", holdInvalidation);
     await invalidated.click();
+    await expect(invalidated).toBeDisabled();
+    await expect(scoreboard).toBeDisabled();
+    releaseInvalidation();
+    await page.unroute("**/traffic/api/records/**", holdInvalidation);
     await expect(invalidated).toContainText("무효");
     await expect(scoreboard).toBeDisabled();
 

@@ -40,6 +40,7 @@ function syncRecord(record) {
 watch(() => props.record, syncRecord, { immediate: true, deep: true });
 
 const isSaving = computed(() => Object.values(pending).some(Boolean));
+const isStatusSaving = computed(() => pending.invalidated || pending.scoreboard);
 const formattedResult = computed(() => (
   Number(props.record.result) < 0 ? "DNF" : msToClockStr(Number(props.record.result) || 0)
 ));
@@ -60,7 +61,9 @@ function mergeResult(result) {
 }
 
 async function toggle(field) {
-  if (pending[field]) return;
+  // 두 필드는 서버에서 현재 값을 기준으로 토글되고 무효화↔전광판 연동도 있으므로
+  // 서로 다른 버튼이라도 동시에 보내지 않는다.
+  if (isStatusSaving.value) return;
   pending[field] = true;
   saveState.value = "saving";
   try {
@@ -126,7 +129,7 @@ onUnmounted(() => clearTimeout(savedTimer));
           class="state-button"
           :class="state.invalidated ? 'is-danger' : 'is-success'"
           :aria-pressed="!!state.invalidated"
-          :disabled="pending.invalidated"
+          :disabled="isStatusSaving"
           data-testid="quick-invalidated"
           @click="toggle('invalidated')"
         >
@@ -139,7 +142,7 @@ onUnmounted(() => clearTimeout(savedTimer));
           class="state-button"
           :class="state.scoreboard ? 'is-success' : 'is-muted'"
           :aria-pressed="!!state.scoreboard"
-          :disabled="pending.scoreboard || !!state.invalidated"
+          :disabled="isStatusSaving || !!state.invalidated"
           data-testid="quick-scoreboard"
           @click="toggle('scoreboard')"
         >
