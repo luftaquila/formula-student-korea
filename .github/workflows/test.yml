@@ -21,6 +21,7 @@ on:
 permissions:
   contents: read
   packages: read   # ghcr 이미지 pull에는 read면 충분(어떤 잡도 이미지를 push하지 않음)
+  actions: read    # PR base 커밋의 이미지 게시 workflow 완료 여부 조회
   checks: write    # dorny/test-reporter가 체크 결과를 게시하는 데 필요
 
 jobs:
@@ -145,8 +146,61 @@ jobs:
           echo "pull_caddy=$pull_caddy" >> "$GITHUB_OUTPUT"
           echo "Plan: build=[$bake]  pull_std=[$pull_std]  pull_caddy=$pull_caddy"
 
-  e2e:
+  # A PR can be rebased immediately after another PR merges while main's image
+  # publishing workflow is still running. In that window, pulling :latest for
+  # unchanged services serves the previous main revision even though the PR's
+  # source and tests already include the new base. Wait once, before all E2E
+  # shards start, so pulled images match the PR base.
+  base-images:
     needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for base images to be published
+        if: github.event_name == 'pull_request' && (needs.changes.outputs.pull_std != '' || needs.changes.outputs.pull_caddy == 'true')
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const baseSha = context.payload.pull_request.base.sha;
+            const discoveryDeadline = Date.now() + 60_000;
+            const completionDeadline = Date.now() + 20 * 60_000;
+            let run = null;
+
+            while (!run && Date.now() < discoveryDeadline) {
+              const response = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: 'build.yml',
+                head_sha: baseSha,
+                event: 'push',
+                per_page: 10,
+              });
+              run = response.data.workflow_runs[0] || null;
+              if (!run) await new Promise(resolve => setTimeout(resolve, 10_000));
+            }
+
+            if (!run) {
+              core.info(`No image build run exists for base ${baseSha}; continuing with current images.`);
+              return;
+            }
+
+            core.info(`Waiting for base image run ${run.id}: ${run.html_url}`);
+            while (run.status !== 'completed' && Date.now() < completionDeadline) {
+              await new Promise(resolve => setTimeout(resolve, 15_000));
+              const response = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: run.id });
+              run = response.data;
+            }
+
+            if (run.status !== 'completed') {
+              core.setFailed(`Timed out waiting for base image run ${run.id}.`);
+            } else if (run.conclusion !== 'success') {
+              core.setFailed(`Base image run ${run.id} completed with ${run.conclusion}.`);
+            } else {
+              core.info(`Base images for ${baseSha} are available.`);
+            }
+
+  e2e:
+    needs: [changes, base-images]
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
