@@ -163,11 +163,13 @@ function handleOutsideClick(e) {
   }
 }
 
+let typeColorSeq = 0;
 async function loadTypeColors() {
   const year = selectedYear.value;
+  const seq = ++typeColorSeq;
   try {
     const vtList = await fetchVehicleTypes(year);
-    if (selectedYear.value !== year) return;
+    if (seq !== typeColorSeq || selectedYear.value !== year) return;
     typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
   } catch { /* 색상 로드 실패 시 기본값 사용 */ }
 }
