@@ -1600,7 +1600,7 @@ watch(reconnected, async () => {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.25rem;
+  gap: 0.5rem;
 }
 
 .item-heading {
@@ -1672,7 +1672,7 @@ watch(reconnected, async () => {
 
 .pf-toggle {
   display: flex;
-  gap: 0.25rem;
+  gap: 0.5rem;
 }
 
 .pf-toggle button {
@@ -1682,6 +1682,7 @@ watch(reconnected, async () => {
 
 .inline-input {
   width: auto;
+  min-height: 44px;
   padding: 0.375rem 0.625rem;
   font-size: 0.8125rem;
 }
@@ -1717,7 +1718,7 @@ watch(reconnected, async () => {
 
 .counter-value {
   width: 64px;
-  height: 2rem;
+  height: 44px;
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
