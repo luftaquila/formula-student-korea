@@ -5,6 +5,7 @@ import {
   hasCheckedChecktableCell,
   nextCounterValue,
   normalizeCounterInput,
+  normalizeMemo,
   formatStopwatchElapsed,
   isResponseItem,
   isPdfItem,
@@ -80,6 +81,18 @@ describe('Counter values', () => {
     assert.equal(normalizeCounterInput('-1'), null);
     assert.equal(normalizeCounterInput('1.5'), null);
     assert.equal(normalizeCounterInput('one'), null);
+  });
+});
+
+describe('Memo normalization', () => {
+  it('treats empty and whitespace-only memos as empty', () => {
+    assert.equal(normalizeMemo(''), '');
+    assert.equal(normalizeMemo(' \n\t '), '');
+    assert.equal(normalizeMemo(null), '');
+  });
+
+  it('preserves whitespace in memos that contain visible content', () => {
+    assert.equal(normalizeMemo('  inspection note\n'), '  inspection note\n');
   });
 });
 

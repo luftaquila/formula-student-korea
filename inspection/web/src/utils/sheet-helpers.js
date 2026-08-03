@@ -38,6 +38,11 @@ export function normalizeCounterInput(value) {
   return text.replace(/^0+(?=\d)/, "");
 }
 
+export function normalizeMemo(value) {
+  const memo = String(value ?? "");
+  return memo.trim() ? memo : "";
+}
+
 export function formatStopwatchElapsed(elapsedMs) {
   const totalMilliseconds = Math.floor(Math.max(0, Number(elapsedMs) || 0));
   const milliseconds = totalMilliseconds % 1000;

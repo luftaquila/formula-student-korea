@@ -479,6 +479,9 @@ function onMemoInput(itemId, event) {
 }
 
 function finishEditMemo(itemId) {
+  const memo = getMemo(itemId);
+  const normalizedMemo = normalizeMemo(memo);
+  if (normalizedMemo !== memo) onMemoChange(itemId, normalizedMemo);
   editingMemo.value = null;
   editedMemos.delete(itemId);
   memoQueue.flush(itemId);
@@ -527,6 +530,7 @@ import {
   hasCheckedChecktableCell,
   nextCounterValue,
   normalizeCounterInput,
+  normalizeMemo,
   formatStopwatchElapsed,
   isResponseItem,
   normalizeRestorableAnswerDraft,
@@ -693,8 +697,8 @@ const memoItems = computed(() => {
     for (const [si, sub] of (cat.subcategories || []).entries()) {
       for (const [gi, grp] of (sub.groups || []).entries()) {
         for (const [ii, item] of (grp.items || []).entries()) {
-          const memo = getMemo(item.id);
-          if (!memo.trim()) continue;
+          const memo = normalizeMemo(getMemo(item.id));
+          if (!memo) continue;
           items.push({
             id: item.id,
             categoryIndex: ci,
@@ -1307,15 +1311,15 @@ watch(reconnected, async () => {
                       type="button"
                       class="memo-text"
                       :class="{
-                        'memo-empty': !getMemo(item.id),
+                        'memo-empty': !normalizeMemo(getMemo(item.id)),
                         'memo-readonly': isReadOnly,
                         'memo-editing': editingMemo === item.id,
                       }"
                       :disabled="isReadOnly"
-                      :title="getMemo(item.id) && getMemoUpdatedAt(item.id) ? `${getMemoUpdatedBy(item.id)} ${formatUpdatedAt(getMemoUpdatedAt(item.id))}`.trim() : ''"
+                      :title="normalizeMemo(getMemo(item.id)) && getMemoUpdatedAt(item.id) ? `${getMemoUpdatedBy(item.id)} ${formatUpdatedAt(getMemoUpdatedAt(item.id))}`.trim() : ''"
                       @click="startEditMemo(item.id)"
                     >
-                      <span class="memo-preview">{{ getMemo(item.id) || "+ 메모 추가" }}</span>
+                      <span class="memo-preview">{{ normalizeMemo(getMemo(item.id)) || "+ 메모 추가" }}</span>
                     </button>
                     <textarea
                       v-if="editingMemo === item.id"
@@ -1438,6 +1442,7 @@ watch(reconnected, async () => {
 }
 
 .tab {
+  min-height: 44px;
   padding: 0.5rem 1rem;
   border-radius: 8px;
   font-size: 0.875rem;
@@ -1521,6 +1526,7 @@ watch(reconnected, async () => {
 
 .result-toggle button {
   flex: 1;
+  min-height: 44px;
 }
 
 .panel-body {
@@ -1669,6 +1675,11 @@ watch(reconnected, async () => {
   gap: 0.25rem;
 }
 
+.pf-toggle button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
 .inline-input {
   width: auto;
   padding: 0.375rem 0.625rem;
@@ -1696,9 +1707,9 @@ watch(reconnected, async () => {
 }
 
 .counter-button {
-  width: 2rem;
-  min-width: 2rem;
-  height: 2rem;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
   padding-inline: 0;
   font-size: 1rem;
   line-height: 1;
@@ -1716,6 +1727,10 @@ watch(reconnected, async () => {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.375rem;
+}
+
+.stopwatch-control button {
+  min-height: 44px;
 }
 
 .stopwatch-display {
@@ -1795,7 +1810,7 @@ watch(reconnected, async () => {
   position: relative;
   width: 100%;
   min-width: 0;
-  min-height: 2.25rem;
+  min-height: 44px;
 }
 
 .memo-text {
@@ -1803,7 +1818,7 @@ watch(reconnected, async () => {
   display: block;
   width: 100%;
   height: auto;
-  min-height: 2.25rem;
+  min-height: 44px;
   min-width: 0;
   font-size: 0.75rem;
   line-height: 1.45;
@@ -2051,6 +2066,7 @@ watch(reconnected, async () => {
   align-items: center;
   gap: 0.5rem;
   width: 100%;
+  min-height: 44px;
   padding: 0.625rem 1rem;
   border: none;
   background: none;
@@ -2140,6 +2156,7 @@ watch(reconnected, async () => {
   align-items: center;
   gap: 0.5rem;
   width: 100%;
+  min-height: 44px;
   padding: 0.625rem 1rem;
   border: none;
   background: none;
@@ -2271,6 +2288,7 @@ watch(reconnected, async () => {
 .nav-menu-item {
   display: block;
   width: 100%;
+  min-height: 44px;
   padding: 0.625rem 1rem;
   border: none;
   background: none;

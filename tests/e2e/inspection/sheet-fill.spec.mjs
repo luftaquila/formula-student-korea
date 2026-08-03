@@ -303,6 +303,36 @@ test.describe("Inspection sheet filling", () => {
     });
   });
 
+  test("shows and saves whitespace-only memo as empty", async ({ page }) => {
+    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const template = await templateRes.json();
+    const firstItemId = template[0].subcategories[0].groups[0].items[0].id;
+
+    await page.request.put("/inspection/api/sheet/memo", {
+      data: { year: YEAR, team_num: 1, item_id: firstItemId, memo: " \n\t " },
+    });
+    await page.reload();
+    await waitForPageReady(page);
+
+    const itemRow = page.locator(".item-row").first();
+    const memoText = itemRow.locator(".memo-text");
+    await expect(memoText).toHaveText("+ 메모 추가");
+    await expect(memoText).toHaveClass(/memo-empty/);
+
+    await memoText.click();
+    const savePromise = page.waitForResponse(
+      (res) => res.url().includes("/api/sheet/memo") && res.status() === 200,
+    );
+    await itemRow.locator(".memo-input").blur();
+    await savePromise;
+
+    await expect.poll(async () => {
+      const response = await page.request.get(`/inspection/api/sheet/data/${YEAR}/1`);
+      const data = await response.json();
+      return data.answers[firstItemId]?.memo;
+    }).toBe("");
+  });
+
   test("requires inspector name before setting category result", async ({ page }) => {
     // Ensure inspector name is empty
     await saveInspector(page, page.locator(".inspector-input"), "");
