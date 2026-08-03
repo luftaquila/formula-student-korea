@@ -58,6 +58,7 @@ test.describe("Skidpad manual mode measurement", () => {
 
     // Verify saved notification (after lap 4)
     await expectNotification(page, "success", "스키드패드 저장");
+    await expect(page.getByTestId("record-quick-edit")).toBeVisible();
   });
 
   test("displays sensor records during measurement", async ({ page }) => {

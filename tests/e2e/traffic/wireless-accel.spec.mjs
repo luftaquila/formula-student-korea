@@ -51,13 +51,19 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
 
     // 클라이언트는 표시만(서버가 저장) — 측정 기록 섹션 노출
     await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
+    const quickEdit = page.getByTestId("record-quick-edit");
+    await expect(quickEdit).toBeVisible({ timeout: 5000 });
+
+    // 서버 엔진이 저장한 행도 같은 즉시 편집 UI에 연결된다.
+    await page.getByTestId("quick-cones-plus").click();
+    await expect(page.getByTestId("quick-cones")).toHaveValue("1");
 
     // 서버 기록 확인(엔진은 ingest 내 동기 저장; 폴링으로 안전 대기)
     await expect.poll(async () => {
       const res = await page.request.get(`/traffic/api/records/FSK ${YEAR} ${EVENT}`);
       if (res.status() !== 200) return 0;
       const rows = await res.json();
-      return rows.filter((r) => r.type === "가속" && r.result === 10).length;
+      return rows.filter((r) => r.type === "가속" && r.result === 10 && r.cones === 1).length;
     }, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
   });
 });

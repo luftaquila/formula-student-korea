@@ -8,6 +8,8 @@ import { useSerialStore, msToClockStr } from "../stores/serial";
 import { useNotification } from "@shared/useNotification.js";
 import { addRecord } from "../composables/useApi";
 import { useSSE } from "../composables/useSSE";
+import { useAutoSavedRecord } from "../composables/useAutoSavedRecord";
+import RecordQuickEdit from "../components/RecordQuickEdit.vue";
 
 const { notyf } = useNotification();
 const entryStore = useEntryStore();
@@ -66,9 +68,12 @@ async function onSensor({ sensor, tick }) {
       entry: { num: entry.num, univ: entry.univ, team: entry.team },
       result,
     };
+    const runToken = getRunToken();
 
     try {
-      await addRecord(eventName.value.trim(), recordData);
+      const created = await addRecord(eventName.value.trim(), recordData);
+      if (runToken !== getRunToken()) return;
+      captureRecord(created, runToken);
       savedRecord.value = { result, time: msToClockStr(result) };
       notyf.success(`기록 저장: ${msToClockStr(result)}`);
     } catch (e) {
@@ -106,6 +111,23 @@ const startRecords = computed(() => serial.records.filter((r) => r.sensor === 1)
 const endRecords = computed(() => serial.records.filter((r) => r.sensor === 2));
 const entries = computed(() => entryStore.entries);
 const canAutoSave = computed(() => eventName.value.trim() && selectedTeam.value);
+const expectedRecordName = computed(() => `FSK ${currentYear.value} ${eventName.value.trim()}`);
+const {
+  recentRecord,
+  captureRecord,
+  mergeRecord,
+  beginRun,
+  endRun,
+  getRunToken,
+} = useAutoSavedRecord({
+  wireless: () => props.wireless,
+  active: () => serial.green.active,
+  startedAt: () => serial.session?.armed_at,
+  expectedName: () => expectedRecordName.value,
+  eventType: () => props.config.type,
+  teamNum: () => selectedTeam.value,
+  matchesRun: (record) => displayRecord.value?.result === record.result,
+});
 
 function handleConnect() {
   serial.connect();
@@ -117,6 +139,7 @@ function handleGreen() {
   startRecord.value = null;
   savedRecord.value = null;
   displayRecord.value = null;
+  beginRun();
   // 무선: arm 직전 현재 선택을 서버 세션에 flush(물리 경기 귀속 + 관찰자 미러). 가상 경기는
   // 추가로 sendGreen에 선택을 실어 arm 본문으로 bind-at-arm(레이스 무관 귀속 고정).
   if (props.wireless) serial.selectEvent?.(selectedEntry.value, eventName.value.trim() || null);
@@ -126,12 +149,14 @@ function handleRed() {
   serial.sendRed();
 }
 function handleOff() {
+  endRun();
   serial.sendOff();
 }
 function handleReset() {
   startRecord.value = null;
   savedRecord.value = null;
   displayRecord.value = null;
+  endRun();
   serial.reset();
 }
 
@@ -180,11 +205,19 @@ onUnmounted(() => clearTimeout(selectTimer));
 // 새 arm(green.active false→true) 시 view-local 표시 상태 클리어. 컨트롤러는 handleGreen이
 // 이미 클리어하지만, 관찰자는 그 경로가 없으므로 여기서 모든 클라가 새 런마다 깨끗해진다.
 watch(() => serial.green.active, (active, prev) => {
-  if (active && !prev) {
+  if (active && !prev && !isController.value) {
     startRecord.value = null;
     savedRecord.value = null;
     displayRecord.value = null;
+    // 컨트롤러는 handleGreen에서 이미 정리했다. 관찰자만 공유 arm으로 새 런을 연다.
+    beginRun();
   }
+});
+
+// OFF는 측정 결과 자체를 지우지 않더라도 방금 저장한 행의 후처리 카드는 닫는다.
+// 무선 관찰자처럼 handleOff를 직접 누르지 않은 화면도 공유 신호등 상태로 함께 정리된다.
+watch(() => serial.lightColor, (color) => {
+  if (color === "grey") endRun();
 });
 </script>
 
@@ -377,6 +410,12 @@ watch(() => serial.green.active, (active, prev) => {
           </div>
         </div>
       </div>
+
+      <RecordQuickEdit
+        v-if="recentRecord"
+        :record="recentRecord"
+        @update="mergeRecord"
+      />
     </section>
   </div>
 </template>

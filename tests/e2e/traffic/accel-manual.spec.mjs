@@ -59,6 +59,32 @@ test.describe("Acceleration manual mode measurement", () => {
 
     // Verify saved notification
     await expectNotification(page, "success", "기록 저장");
+
+    // 방금 저장된 행을 화면 이동 없이 후처리할 수 있다.
+    const quickEdit = page.getByTestId("record-quick-edit");
+    await expect(quickEdit).toBeVisible();
+    await expect(quickEdit).toContainText("방금 자동 저장됨");
+
+    await page.getByTestId("quick-cones-plus").click();
+    await expect(page.getByTestId("quick-cones")).toHaveValue("1");
+
+    await page.getByTestId("quick-oc").fill("2");
+    await page.getByTestId("quick-oc").blur();
+    await expect(page.getByTestId("quick-oc")).toHaveValue("2");
+
+    const scoreboard = page.getByTestId("quick-scoreboard");
+    await scoreboard.click();
+    await expect(scoreboard).toContainText("숨김");
+
+    const invalidated = page.getByTestId("quick-invalidated");
+    await invalidated.click();
+    await expect(invalidated).toContainText("무효");
+    await expect(scoreboard).toBeDisabled();
+
+    // 유효화 시 기존 서버 규칙대로 전광판 표시도 함께 복구된다.
+    await invalidated.click();
+    await expect(invalidated).toContainText("유효");
+    await expect(scoreboard).toContainText("표시");
   });
 
   test("records DNF when DNF button is clicked", async ({ page }) => {
@@ -99,6 +125,7 @@ test.describe("Acceleration manual mode measurement", () => {
 
     // Wait for record to appear
     await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId("record-quick-edit")).toBeVisible();
     await dismissNotifications(page);
 
     // Click reset button
@@ -107,6 +134,7 @@ test.describe("Acceleration manual mode measurement", () => {
 
     // Saved section should disappear
     await expect(page.locator(".saved-section")).not.toBeVisible();
+    await expect(page.getByTestId("record-quick-edit")).not.toBeVisible();
 
     // Re-measure: click green light again
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();
@@ -118,6 +146,33 @@ test.describe("Acceleration manual mode measurement", () => {
 
     // Verify new record appears
     await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId("record-quick-edit")).toBeVisible();
     await expectNotification(page, "success", "기록 저장");
+  });
+
+  test("hides post-processing on OFF and shows it for the next record", async ({ page }) => {
+    await page.getByTestId("manual-mode-toggle").click();
+    await page.locator('.form-input[type="text"]').fill("E2E-Reset");
+    await page.locator("select.form-input").selectOption("3");
+
+    const green = page.locator("button.btn-success", { hasText: "녹색등" });
+    const off = page.locator("button.btn-ghost", { hasText: "OFF" });
+    const sensor1 = page.getByTestId("manual-sensor-1");
+    const sensor2 = page.getByTestId("manual-sensor-2");
+
+    await green.click();
+    await sensor1.click();
+    await page.waitForTimeout(400);
+    await sensor2.click();
+    await expect(page.getByTestId("record-quick-edit")).toBeVisible({ timeout: 5000 });
+
+    await off.click();
+    await expect(page.getByTestId("record-quick-edit")).not.toBeVisible();
+
+    await green.click();
+    await sensor1.click();
+    await page.waitForTimeout(400);
+    await sensor2.click();
+    await expect(page.getByTestId("record-quick-edit")).toBeVisible({ timeout: 5000 });
   });
 });

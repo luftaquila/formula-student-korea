@@ -6,6 +6,8 @@ import { useNotification } from "@shared/useNotification.js";
 import { formatEnduranceDetail, enduranceTotal } from "@lib/event-timing.mjs";
 import { addRecord, updateRecord } from "../composables/useApi";
 import { useSSE } from "../composables/useSSE";
+import { useAutoSavedRecord } from "../composables/useAutoSavedRecord";
+import RecordQuickEdit from "../components/RecordQuickEdit.vue";
 
 const { notyf } = useNotification();
 const entryStore = useEntryStore();
@@ -40,11 +42,13 @@ function clearRun() {
   lastTick.value = null;
   recordName.value = null;
   recordRowid.value = null;
+  clearRecord();
   persistChain = Promise.resolve();
 }
 
 // 유선 저장: 현재까지의 전체 랩으로 result(총합)·detail(랩 목록)을 갱신. 첫 호출 INSERT, 이후 UPDATE.
-async function persistLap(entry) {
+async function persistLap(entry, runToken) {
+  if (runToken !== getRunToken()) return;
   const lapsMs = lapTimes.value.map((l) => l.time);
   const total = enduranceTotal(lapsMs);
   const detail = formatEnduranceDetail(lapsMs);
@@ -57,8 +61,10 @@ async function persistLap(entry) {
         result: total,
         detail,
       });
+      if (runToken !== getRunToken()) return;
       recordName.value = name;
       recordRowid.value = record.rowid;
+      captureRecord({ name, record }, runToken);
     } else {
       await updateRecord(recordName.value, recordRowid.value, "result", total);
       await updateRecord(recordName.value, recordRowid.value, "detail", detail);
@@ -91,7 +97,8 @@ function onSensor({ sensor, tick, startTick }) {
   // 유선: 이벤트명+팀이 선택된 경우에만 저장. 미선택이면 표시만(테스트 모드).
   const entry = selectedEntry.value;
   if (!eventName.value.trim() || !entry) return;
-  persistChain = persistChain.then(() => persistLap(entry));
+  const runToken = getRunToken();
+  persistChain = persistChain.then(() => persistLap(entry, runToken));
 }
 
 onMounted(() => {
@@ -125,6 +132,24 @@ const lapMsList = computed(() => lapTimes.value.map((l) => l.time));
 const lapCount = computed(() => lapMsList.value.length);
 const totalMs = computed(() => enduranceTotal(lapMsList.value));
 const totalDisplay = computed(() => msToClockStr(totalMs.value));
+const expectedRecordName = computed(() => `FSK ${currentYear.value} ${eventName.value.trim()}`);
+const {
+  recentRecord,
+  captureRecord,
+  mergeRecord,
+  clearRecord,
+  beginRun,
+  endRun,
+  getRunToken,
+} = useAutoSavedRecord({
+  wireless: () => props.wireless,
+  active: () => serial.green.active,
+  startedAt: () => serial.session?.armed_at,
+  expectedName: () => expectedRecordName.value,
+  eventType: () => "내구",
+  teamNum: () => selectedTeam.value,
+  matchesRun: (record) => lapTimes.value.length > 0 && record.result === totalMs.value,
+});
 const bestLapMs = computed(() => (lapMsList.value.length ? Math.min(...lapMsList.value) : null));
 const lastLapMs = computed(() => (lapMsList.value.length ? lapMsList.value[lapMsList.value.length - 1] : null));
 const avgLapMs = computed(() => (lapMsList.value.length ? Math.round(totalMs.value / lapMsList.value.length) : null));
@@ -144,6 +169,7 @@ function handleGreen() {
   if (!canSave.value) {
     notyf.open({ type: "warning", message: "테스트 모드 — 기록이 저장되지 않습니다" });
   }
+  beginRun();
   clearRun();
   // 무선: arm 직전 현재 선택을 서버 세션에 flush(귀속 + 관찰자 미러). 가상 경기는 sendGreen 본문으로도 바인딩.
   if (props.wireless) serial.selectEvent?.(selectedEntry.value, eventName.value.trim() || null);
@@ -153,9 +179,11 @@ function handleRed() {
   serial.sendRed();
 }
 function handleOff() {
+  endRun();
   serial.sendOff();
 }
 function handleReset() {
+  endRun();
   clearRun();
   serial.reset();
 }
@@ -174,7 +202,14 @@ onUnmounted(() => clearTimeout(selectTimer));
 
 // 새 arm(green.active false→true) 시 view-local 클리어. 관찰자도 새 런마다 깨끗해진다.
 watch(() => serial.green.active, (active, prev) => {
-  if (active && !prev) clearRun();
+  if (active && !prev && !isController.value) {
+    beginRun();
+    clearRun();
+  }
+});
+
+watch(() => serial.lightColor, (color) => {
+  if (color === "grey") endRun();
 });
 </script>
 
@@ -351,6 +386,12 @@ watch(() => serial.green.active, (active, prev) => {
           <span class="stat-value">{{ totalDisplay }}</span>
         </div>
       </div>
+
+      <RecordQuickEdit
+        v-if="recentRecord"
+        :record="recentRecord"
+        @update="mergeRecord"
+      />
 
       <!-- 조밀 표(전체 랩) -->
       <div class="lap-section card">
