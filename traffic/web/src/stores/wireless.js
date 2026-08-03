@@ -56,6 +56,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   // 경기별 타이밍 상태(유선 serial store의 flat 상태를 경기별로 namespace)
   const timing = reactive({});
   for (const k of WIRELESS_EVENTS) timing[k] = makeSlot();
+  const appliedRunIds = new Map();
   const callbacks = {}; // mode -> 뷰의 onSensor (유선 뷰와 동일 로직)
 
   // SSE 실시간 상태
@@ -153,6 +154,15 @@ export const useWirelessStore = defineStore("wireless", () => {
     stopClock(slot);
   }
 
+  function clearTiming(mode) {
+    const slot = timing[mode];
+    stopClock(slot);
+    slot.clockDisplay = "00:00.000";
+    slot.records = [];
+    slot.start = { tick: null, timestamp: null, serverMs: null };
+    slot.lastSensorTrigger = {};
+  }
+
   // 경기별 세션(SSE, 서버 권위)을 그 경기 슬롯에 반영 — 가상·물리 공통. green=arm.
   // 가상 경기도 서버 세션으로 공유되므로 브리지가 아닌 모든 클라가 동일하게 본다.
   function applySession(s) {
@@ -160,12 +170,17 @@ export const useWirelessStore = defineStore("wireless", () => {
     const mode = TYPE_TO_KEY[s.event_type];
     if (!mode || !timing[mode]) return;
     const slot = timing[mode];
+    const previousRunId = appliedRunIds.get(mode);
+    const runId = s.run_id ?? null;
+    const resetCompleted = previousRunId != null && runId == null;
+    appliedRunIds.set(mode, runId);
     slot.light = s.light_color === "off" ? "grey" : s.light_color || "grey";
     if (s.armed) {
       const gt = tickToMs(s.green_tick);
       if (!slot.green.active || slot.green.tick !== gt) activateGreen(mode, gt);
     } else {
       deactivateGreen(mode);
+      if (resetCompleted) clearTiming(mode);
     }
   }
   function applyAllSessions() {
@@ -228,6 +243,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     if (cmd.action === "green") transmitLine("G");
     else if (cmd.action === "red") transmitLine("R");
     else if (cmd.action === "off") transmitLine("O");
+    else if (cmd.action === "reset") transmitLine("O");
   });
 
   /* ── 브리지(시리얼) ───────────────────────────────────────────────── */
@@ -306,10 +322,13 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
 
   async function transmitLine(s) {
-    if (!serialPort?.writable) return;
+    if (!serialPort?.writable) return false;
     const writer = serialPort.writable.getWriter();
-    try { await writer.write(new TextEncoder().encode(s + "\n")); }
-    catch (e) { notyf.error(`전송 실패: ${e}`); }
+    try {
+      await writer.write(new TextEncoder().encode(s + "\n"));
+      return true;
+    }
+    catch (e) { notyf.error(`전송 실패: ${e}`); return false; }
     finally { writer.releaseLock(); }
   }
 
@@ -463,8 +482,14 @@ export const useWirelessStore = defineStore("wireless", () => {
     } catch (e) { notyf.error(e.message); }
   }
   // 물리 신호등 원격 제어(비-브리지 컨트롤러 → 서버 → 브리지 시리얼 다운링크).
-  function commandPhysical(mode, action) {
-    commandWirelessPhysical(EVENT_TYPE[mode], action).catch((e) => notyf.error(e.message));
+  async function commandPhysical(mode, action) {
+    try {
+      await commandWirelessPhysical(EVENT_TYPE[mode], action);
+      return true;
+    } catch (e) {
+      notyf.error(e.message);
+      return false;
+    }
   }
 
   // 경기별 필요 역할(센서). 미할당 역할이 있으면 그 구간은 기록되지 않는다.
@@ -478,36 +503,44 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
 
   // green/red/off(=arm/disarm): 가상 → 서버 arm(전 클라 공유). 물리 → 브리지면 시리얼, 아니면 다운링크.
-  function armAction(mode, action, greenTickRaw) {
+  async function armAction(mode, action, greenTickRaw) {
     // 낙관적(4d): 신호등 색만 즉시 반영. arm·기록·클럭은 applySession이 권위 reconcile. 실패 시 롤백.
     const slot = timing[mode];
     const prevLight = slot.light;
     slot.light = action === "green" ? "green" : action === "red" ? "red" : "grey";
-    armWirelessEvent({ event_type: EVENT_TYPE[mode], action, green_tick: greenTickRaw })
-      .catch((e) => { slot.light = prevLight; notyf.error(e.message); });
+    try {
+      await armWirelessEvent({ event_type: EVENT_TYPE[mode], action, green_tick: greenTickRaw });
+      return true;
+    } catch (e) {
+      slot.light = prevLight;
+      notyf.error(e.message);
+      return false;
+    }
   }
-  function physicalControl(mode, action, serialCmd) {
+  async function physicalControl(mode, action, serialCmd) {
+    // 초기화는 브리지 자신이 제어하더라도 서버를 경유해 pending 상태를 남긴다. 이후
+    // 마스터의 실제 OFF 보고에서 런 식별자가 폐기되어 모든 클라이언트가 함께 초기화된다.
+    if (action === "reset") return commandPhysical(mode, action);
     if (bridgeIsSelf.value) {
       // 브리지: 직접 시리얼. 분리된 포트면 transmitLine이 조용히 무시되던 것을 막고
       // 경고 + 상태 정리(끊김을 read 루프/disconnect가 아직 못 잡은 경우도 여기서 드러난다).
       if (!serialConnected.value || !serialPort?.writable) {
         notyf.error("마스터에 연결되어 있지 않습니다.");
         closeSerial();
-        return;
+        return false;
       }
-      transmitLine(serialCmd);
-    } else {
-      commandPhysical(mode, action); // 비-브리지: 서버→브리지 다운링크(브리지 없으면 서버가 409 경고)
+      return transmitLine(serialCmd);
     }
+    return commandPhysical(mode, action); // 비-브리지: 서버→브리지 다운링크(브리지 없으면 서버가 409 경고)
   }
-  function greenFor(mode, team = null, eventName = null) {
-    if (!requireControl(mode)) return;
+  async function greenFor(mode, team = null, eventName = null) {
+    if (!requireControl(mode)) return false;
     warnIfMasterOffline();
     const missing = missingRoles(mode);
     if (missing.length) {
       notyf.open({ type: "warning", message: `센서 미할당: ${missing.map((r) => ROLE_LABEL[r] || r).join(", ")}` });
     }
-    if (isPhysical(mode)) { physicalControl(mode, "green", "G"); return; }
+    if (isPhysical(mode)) return physicalControl(mode, "green", "G");
     // 가상: 클릭 즉시 arm을 낙관 반영(green.active=true → 녹색등 버튼 즉시 잠금, 전처럼).
     // applySession이 같은 green_tick으로 reconcile(재활성 안 함). POST 실패 시 롤백.
     // team·event_name을 arm 본문에 실어 bind-at-arm: /select POST와의 도착 순서 레이스와
@@ -516,28 +549,31 @@ export const useWirelessStore = defineStore("wireless", () => {
     const slot = timing[mode];
     slot.light = "green";
     activateGreen(mode, tickToMs(gtRaw));
-    armWirelessEvent({ event_type: EVENT_TYPE[mode], action: "green", green_tick: gtRaw, team: team || null, event_name: eventName || null })
-      .catch((e) => { deactivateGreen(mode); slot.light = "grey"; notyf.error(e.message); });
+    try {
+      await armWirelessEvent({ event_type: EVENT_TYPE[mode], action: "green", green_tick: gtRaw, team: team || null, event_name: eventName || null });
+      return true;
+    } catch (e) {
+      deactivateGreen(mode);
+      slot.light = "grey";
+      notyf.error(e.message);
+      return false;
+    }
   }
   function redFor(mode) {
-    if (!requireControl(mode)) return;
-    if (isPhysical(mode)) physicalControl(mode, "red", "R");
-    else armAction(mode, "red");
+    if (!requireControl(mode)) return false;
+    if (isPhysical(mode)) return physicalControl(mode, "red", "R");
+    return armAction(mode, "red");
   }
   function offFor(mode) {
-    if (!requireControl(mode)) return;
-    if (isPhysical(mode)) physicalControl(mode, "off", "O");
-    else armAction(mode, "off");
+    if (!requireControl(mode)) return false;
+    if (isPhysical(mode)) return physicalControl(mode, "off", "O");
+    return armAction(mode, "off");
   }
-  function resetFor(mode) {
-    const slot = timing[mode];
-    stopClock(slot);
-    slot.clockDisplay = "00:00.000"; slot.records = []; slot.start = { tick: null, timestamp: null, serverMs: null };
-    slot.lastSensorTrigger = {}; slot.green.active = false; slot.light = "grey";
-    if (!holdsLease(mode)) return;
-    // 진행 중 경기를 정지(disarm)해 전 클라가 함께 풀리도록 서버에도 반영.
-    if (isPhysical(mode)) physicalControl(mode, "off", "O");
-    else armAction(mode, "off");
+  async function resetFor(mode) {
+    if (!holdsLease(mode)) return false;
+    return isPhysical(mode)
+      ? await physicalControl(mode, "reset", "O")
+      : await armAction(mode, "reset");
   }
 
   // 무선 설정: 물리 신호등 사용 경기 지정

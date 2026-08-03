@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, expectNotification, setCustomEventName } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 
@@ -38,12 +38,12 @@ test.describe("Simultaneous event measurement", () => {
     await expect(page2.getByTestId("manual-mode-toggle")).toContainText("매뉴얼 모드 ON");
 
     // Set event names
-    await page1.locator('.form-input[type="text"]').fill("E2E-MultiAccel");
-    await page2.locator('.form-input[type="text"]').fill("E2E-MultiAutocross");
+    await setCustomEventName(page1, "E2E-MultiAccel");
+    await setCustomEventName(page2, "E2E-MultiAutocross");
 
     // Select different teams
-    await page1.locator("select.form-input").selectOption("1");
-    await page2.locator("select.form-input").selectOption("2");
+    await page1.getByTestId("event-team").selectOption("1");
+    await page2.getByTestId("event-team").selectOption("2");
 
     // Both click green light
     await page1.locator("button.btn-success", { hasText: "녹색등" }).click();

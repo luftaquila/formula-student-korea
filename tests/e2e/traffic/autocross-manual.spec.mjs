@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications, setCustomEventName } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 
@@ -27,8 +27,8 @@ test.describe("Autocross manual mode measurement", () => {
     await manualToggle.click();
     await expect(manualToggle).toContainText("매뉴얼 모드 ON");
 
-    await page.locator('.form-input[type="text"]').fill("E2E-Autocross");
-    await page.locator("select.form-input").selectOption("1");
+    await setCustomEventName(page, "E2E-Autocross");
+    await page.getByTestId("event-team").selectOption("1");
 
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();
 
@@ -51,8 +51,8 @@ test.describe("Autocross manual mode measurement", () => {
 
   test("records DNF when DNF button is clicked", async ({ page }) => {
     await page.getByTestId("manual-mode-toggle").click();
-    await page.locator('.form-input[type="text"]').fill("E2E-Autocross-DNF");
-    await page.locator("select.form-input").selectOption("2");
+    await setCustomEventName(page, "E2E-Autocross-DNF");
+    await page.getByTestId("event-team").selectOption("2");
 
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();
 
@@ -65,8 +65,8 @@ test.describe("Autocross manual mode measurement", () => {
 
   test("resets and re-measures after reset", async ({ page }) => {
     await page.getByTestId("manual-mode-toggle").click();
-    await page.locator('.form-input[type="text"]').fill("E2E-Autocross-Reset");
-    await page.locator("select.form-input").selectOption("3");
+    await setCustomEventName(page, "E2E-Autocross-Reset");
+    await page.getByTestId("event-team").selectOption("3");
 
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();
     const sensor1 = page.getByTestId("manual-sensor-1");

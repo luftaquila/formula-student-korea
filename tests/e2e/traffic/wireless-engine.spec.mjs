@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 // 서버 권위 기록 엔진(traffic/index.mjs)의 무선 ingest 계약 검증. 하드웨어 없이 ingest로 직접 구동
 // (wireless-accel.spec.mjs와 동일 계약: events:[{ node_id, master_tick, ev_seq, rssi, snr }]).
@@ -59,6 +59,11 @@ test.describe("Wireless record engine (ingest contract)", () => {
       const row1 = afterLap1.find((row) => row.type === "내구");
       expect(row1.result).toBe(5000);                 // 총합 = 5000ms
       expect(row1.detail).toBe("00:05.000");           // 랩 1개(formatLapMs: MM:SS.mmm)
+
+      // 첫 INSERT가 끝난 뒤 화면을 열어도 현재 arm 이후의 행을 조회해 후처리 카드를 복구한다.
+      await page.goto("/traffic/wireless/endurance");
+      await waitForPageReady(page);
+      await expect(page.getByTestId("record-quick-edit")).toBeVisible({ timeout: 8000 });
 
       r = await ingest(3, 12000);      // lap2 = 7000ms → 같은 행 UPDATE
       expect(r.status()).toBe(200);

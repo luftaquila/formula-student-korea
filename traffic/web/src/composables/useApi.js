@@ -146,7 +146,7 @@ export async function fetchWirelessEvents(since = 0, limit = 200) {
   return res.json();
 }
 
-// 경기 arm/disarm(green=arm). 가상 경기를 전 클라에 공유. body: {event_type, action, green_tick?, team?, event_name?}
+// 경기 arm/disarm/reset(green=arm). 가상 경기를 전 클라에 공유. body: {event_type, action, green_tick?, team?, event_name?}
 export async function armWirelessEvent(body) {
   const res = await ctrlRequest("/api/wireless/arm", {
     method: "POST",

@@ -5,29 +5,21 @@ import { useSerialStore, msToClockStr } from "../stores/serial";
 import { useNotification } from "@shared/useNotification.js";
 import { formatEnduranceDetail, enduranceTotal } from "@lib/event-timing.mjs";
 import { addRecord, updateRecord } from "../composables/useApi";
-import { useSSE } from "../composables/useSSE";
+import { useAutoSavedRecord } from "../composables/useAutoSavedRecord";
+import EventNameField from "../components/EventNameField.vue";
+import RecordQuickEdit from "../components/RecordQuickEdit.vue";
 
 const { notyf } = useNotification();
 const entryStore = useEntryStore();
 const props = defineProps({ source: { type: Object, default: null }, wireless: { type: Boolean, default: false } });
 const serial = props.source ?? useSerialStore();
 
-// 이벤트 이름 자동완성: 기존 기록 파일명(FSK <year> <이름>)에서 이름만 뽑아 datalist로 제시.
-const { recordFiles } = useSSE();
-const eventNameSuggestions = computed(() => [
-  ...new Set(
-    recordFiles.value
-      .filter((f) => f && f !== "controller")
-      .map((f) => f.replace(/^FSK \d{4} /, ""))
-      .filter(Boolean),
-  ),
-]);
-
-const eventName = ref("");
+const eventName = ref("다이나믹");
 const selectedTeam = ref(null);
 const targetLaps = ref(null); // 미리 정해진 목표 랩 수(표시용, 클라 로컬). 0/빈값=미설정.
 const lapTimes = ref([]);
 const lastTick = ref(null);
+const quickEditSaveState = ref("ready");
 
 // 유선: 랩을 기록 1건에 이어붙인다. 첫 랩 INSERT 시 받은 테이블명/rowid를 보관해 이후 랩마다 UPDATE.
 const recordName = ref(null);
@@ -40,11 +32,13 @@ function clearRun() {
   lastTick.value = null;
   recordName.value = null;
   recordRowid.value = null;
+  clearRecord();
   persistChain = Promise.resolve();
 }
 
 // 유선 저장: 현재까지의 전체 랩으로 result(총합)·detail(랩 목록)을 갱신. 첫 호출 INSERT, 이후 UPDATE.
-async function persistLap(entry) {
+async function persistLap(entry, runToken) {
+  if (runToken !== getRunToken()) return;
   const lapsMs = lapTimes.value.map((l) => l.time);
   const total = enduranceTotal(lapsMs);
   const detail = formatEnduranceDetail(lapsMs);
@@ -57,8 +51,10 @@ async function persistLap(entry) {
         result: total,
         detail,
       });
+      if (runToken !== getRunToken()) return;
       recordName.value = name;
       recordRowid.value = record.rowid;
+      captureRecord({ name, record }, runToken);
     } else {
       await updateRecord(recordName.value, recordRowid.value, "result", total);
       await updateRecord(recordName.value, recordRowid.value, "detail", detail);
@@ -91,7 +87,8 @@ function onSensor({ sensor, tick, startTick }) {
   // 유선: 이벤트명+팀이 선택된 경우에만 저장. 미선택이면 표시만(테스트 모드).
   const entry = selectedEntry.value;
   if (!eventName.value.trim() || !entry) return;
-  persistChain = persistChain.then(() => persistLap(entry));
+  const runToken = getRunToken();
+  persistChain = persistChain.then(() => persistLap(entry, runToken));
 }
 
 onMounted(() => {
@@ -112,10 +109,19 @@ const isController = computed(() => (props.wireless ? serial.isController : true
 const lightReady = computed(() => (props.wireless ? isController.value : serial.connected));
 const canStopLight = computed(() => (props.wireless ? isController.value : serial.connected));
 const session = computed(() => serial.session);
-watch(session, (s) => {
-  if (!props.wireless || isController.value || !s) return;
-  eventName.value = s.event_name || "";
-  selectedTeam.value = s.team?.num ?? null;
+const resetPending = ref(false);
+watch(session, (s, previous) => {
+  if (!props.wireless || !s) return;
+  if (!isController.value) {
+    eventName.value = s.event_name || "";
+    selectedTeam.value = s.team?.num ?? null;
+  }
+  if (s.run_id !== previous?.run_id) clearRun();
+  if (resetPending.value && s.light_color === "off") {
+    endRun();
+    clearRun();
+    resetPending.value = false;
+  }
 }, { immediate: true });
 const entries = computed(() => entryStore.entries);
 const canSave = computed(() => eventName.value.trim() && selectedTeam.value);
@@ -125,6 +131,18 @@ const lapMsList = computed(() => lapTimes.value.map((l) => l.time));
 const lapCount = computed(() => lapMsList.value.length);
 const totalMs = computed(() => enduranceTotal(lapMsList.value));
 const totalDisplay = computed(() => msToClockStr(totalMs.value));
+const {
+  recentRecord,
+  captureRecord,
+  mergeRecord,
+  clearRecord,
+  beginRun,
+  endRun,
+  getRunToken,
+} = useAutoSavedRecord({
+  wireless: () => props.wireless,
+  session: () => serial.session,
+});
 const bestLapMs = computed(() => (lapMsList.value.length ? Math.min(...lapMsList.value) : null));
 const lastLapMs = computed(() => (lapMsList.value.length ? lapMsList.value[lapMsList.value.length - 1] : null));
 const avgLapMs = computed(() => (lapMsList.value.length ? Math.round(totalMs.value / lapMsList.value.length) : null));
@@ -144,7 +162,10 @@ function handleGreen() {
   if (!canSave.value) {
     notyf.open({ type: "warning", message: "테스트 모드 — 기록이 저장되지 않습니다" });
   }
-  clearRun();
+  if (!props.wireless) {
+    beginRun();
+    clearRun();
+  }
   // 무선: arm 직전 현재 선택을 서버 세션에 flush(귀속 + 관찰자 미러). 가상 경기는 sendGreen 본문으로도 바인딩.
   if (props.wireless) serial.selectEvent?.(selectedEntry.value, eventName.value.trim() || null);
   serial.sendGreen(selectedEntry.value, eventName.value.trim() || null);
@@ -155,9 +176,15 @@ function handleRed() {
 function handleOff() {
   serial.sendOff();
 }
-function handleReset() {
-  clearRun();
-  serial.reset();
+async function handleReset() {
+  if (!props.wireless) {
+    endRun();
+    clearRun();
+    serial.reset();
+    return;
+  }
+  resetPending.value = true;
+  if (await serial.reset() === false) resetPending.value = false;
 }
 
 // 무선: 선택(팀·이벤트명)을 세션에 공유(컨트롤러만). 디바운스.
@@ -172,10 +199,6 @@ watch([eventName, selectedTeam], () => {
 onDeactivated(() => clearTimeout(selectTimer));
 onUnmounted(() => clearTimeout(selectTimer));
 
-// 새 arm(green.active false→true) 시 view-local 클리어. 관찰자도 새 런마다 깨끗해진다.
-watch(() => serial.green.active, (active, prev) => {
-  if (active && !prev) clearRun();
-});
 </script>
 
 <template>
@@ -271,14 +294,11 @@ watch(() => serial.green.active, (active, prev) => {
         <div class="card-body">
           <div class="form-group">
             <label class="form-label">이벤트 이름</label>
-            <input v-model="eventName" type="text" class="form-input" list="event-names-endurance" :disabled="isLocked || !isController" />
-            <datalist id="event-names-endurance">
-              <option v-for="name in eventNameSuggestions" :key="name" :value="name" />
-            </datalist>
+            <EventNameField v-model="eventName" :disabled="isLocked || !isController" />
           </div>
           <div class="form-group">
             <label class="form-label">참가팀</label>
-            <select v-model="selectedTeam" class="form-input" :disabled="isLocked || !isController">
+            <select v-model="selectedTeam" class="form-input" data-testid="event-team" :disabled="isLocked || !isController">
               <option :value="null">팀 선택</option>
               <option v-for="entry in entries" :key="entry.num" :value="entry.num">
                 {{ entry.num }} {{ entry.univ }} {{ entry.team }}
@@ -354,7 +374,13 @@ watch(() => serial.green.active, (active, prev) => {
 
       <!-- 조밀 표(전체 랩) -->
       <div class="lap-section card">
-        <div class="card-header"><h3>🏁 랩 기록</h3></div>
+        <div class="card-header record-header">
+          <h3>🏁 랩 기록</h3>
+          <div v-if="recentRecord && quickEditSaveState === 'saved'" class="save-status" data-testid="quick-save-status" aria-live="polite">
+            <span class="status-dot"></span>
+            저장됨
+          </div>
+        </div>
         <div class="card-body">
           <div v-if="lapTimes.length === 0" class="empty-state">센서 통과 대기 중...</div>
           <div v-else class="lap-table-wrap">
@@ -385,6 +411,12 @@ watch(() => serial.green.active, (active, prev) => {
               </tfoot>
             </table>
           </div>
+          <RecordQuickEdit
+            v-if="recentRecord"
+            :record="recentRecord"
+            @update="mergeRecord"
+            @save-state="quickEditSaveState = $event"
+          />
         </div>
       </div>
     </section>
