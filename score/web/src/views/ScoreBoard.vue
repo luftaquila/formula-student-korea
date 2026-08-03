@@ -342,7 +342,7 @@ function getEnergyTitle(num) {
   if (!result) return "에너지 계측값을 입력하세요.";
   if (result.reason) return result.reason;
   const details = [];
-  if (result.co2Per100Km != null) details.push(`${result.co2Per100Km} kg CO₂/100km`);
+  if (result.co2Per100Km != null) details.push(`${result.co2Per100Km} kg CO₂/100 km`);
   if (result.ef != null) details.push(`EF ${result.ef}`);
   return details.join(" · ") || "에너지 효율 점수";
 }

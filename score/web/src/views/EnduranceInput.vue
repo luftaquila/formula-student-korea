@@ -488,7 +488,7 @@ function getInputGrid(el) {
 }
 
 function exportData(format) {
-  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO2/100km", "실격", "에너지 판정", "에너지 점수"];
+  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO₂/100 km", "실격", "에너지 판정", "에너지 점수"];
   const rows = entryList.value.map((entry) => {
     const num = entry.num;
     const ft = getFinalTime(num);
@@ -535,7 +535,7 @@ function exportData(format) {
           </select>
         </div>
         <div class="filter-group energy-config-group">
-          <label class="filter-label">내구 거리 (km)</label>
+          <label class="filter-label">내구 거리 (<span class="unit-symbol">km</span>)</label>
           <input class="filter-input config-input" type="number" min="0" step="any" :value="getEnergySetting('distance_km') ?? ''" :disabled="isReadOnly" placeholder="예: 20" @blur="saveEnergySetting('distance_km', $event.target.value)" />
         </div>
         <div class="filter-group energy-config-group">
@@ -599,10 +599,10 @@ function exportData(format) {
                 <th class="col-field">콘터치</th>
                 <th class="col-field">코스이탈</th>
                 <th class="col-field">페널티(초)</th>
-                <th class="col-energy">연료 소비<br>({{ getFuelUnit() }})</th>
-                <th class="col-energy">추가 주유<br>({{ getFuelUnit() }})</th>
-                <th class="col-energy">순사용 전력<br>(kWh)</th>
-                <th class="col-energy">보정 CO₂<br>/100km</th>
+                <th class="col-energy">연료 소비<br>(<span class="unit-symbol">{{ getFuelUnit() }}</span>)</th>
+                <th class="col-energy">추가 주유<br>(<span class="unit-symbol">{{ getFuelUnit() }}</span>)</th>
+                <th class="col-energy">순사용 전력<br>(<span class="unit-symbol">kWh</span>)</th>
+                <th class="col-energy">보정 CO₂<br>/100 <span class="unit-symbol">km</span></th>
                 <th class="col-energy-official">실격</th>
                 <th class="col-energy">판정</th>
                 <th class="col-energy">점수</th>
@@ -719,6 +719,10 @@ function exportData(format) {
   color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.unit-symbol {
+  text-transform: none;
 }
 
 .filter-input {
