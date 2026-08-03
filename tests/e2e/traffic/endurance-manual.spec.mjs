@@ -28,7 +28,7 @@ test.describe("Endurance manual mode post-processing", () => {
     await page.waitForTimeout(400);
     await sensor.click(); // 첫 랩 저장
 
-    await expect(page.getByTestId("record-quick-edit")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator(".lap-section").getByTestId("record-quick-edit")).toBeVisible({ timeout: 5000 });
     await page.getByTestId("quick-oc-plus").click();
     await expect(page.getByTestId("quick-oc")).toHaveValue("1");
 

@@ -404,18 +404,24 @@ watch(() => serial.lightColor, (color) => {
       <div v-if="displayRecord" class="saved-section card">
         <div class="card-header"><h3>🏁 측정 기록</h3></div>
         <div class="card-body">
-          <div class="saved-item" :class="{ 'is-saved': savedRecord }">
+          <RecordQuickEdit
+            v-if="recentRecord"
+            :record="recentRecord"
+            @update="mergeRecord"
+          >
+            <template #summary>
+              <div class="saved-item is-saved">
+                {{ displayRecord.time }}
+                <span class="save-badge">💾</span>
+              </div>
+            </template>
+          </RecordQuickEdit>
+          <div v-else class="saved-item" :class="{ 'is-saved': savedRecord }">
             {{ displayRecord.time }}
             <span v-if="savedRecord" class="save-badge">💾</span>
           </div>
         </div>
       </div>
-
-      <RecordQuickEdit
-        v-if="recentRecord"
-        :record="recentRecord"
-        @update="mergeRecord"
-      />
     </section>
   </div>
 </template>

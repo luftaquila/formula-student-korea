@@ -2,7 +2,6 @@
 import { computed, onUnmounted, reactive, ref, watch } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { updateRecord } from "../composables/useApi";
-import { msToClockStr } from "../stores/serial";
 
 const props = defineProps({
   record: { type: Object, required: true },
@@ -41,9 +40,6 @@ watch(() => props.record, syncRecord, { immediate: true, deep: true });
 
 const isSaving = computed(() => Object.values(pending).some(Boolean));
 const isStatusSaving = computed(() => pending.invalidated || pending.scoreboard);
-const formattedResult = computed(() => (
-  Number(props.record.result) < 0 ? "DNF" : msToClockStr(Number(props.record.result) || 0)
-));
 
 function markSaved() {
   clearTimeout(savedTimer);
@@ -110,12 +106,17 @@ onUnmounted(() => clearTimeout(savedTimer));
 </script>
 
 <template>
-  <section class="quick-edit card" data-testid="record-quick-edit" aria-label="기록 빠른 편집">
-    <div class="quick-edit-header">
-      <div class="record-summary">
-        <span class="team-number">#{{ record.num }}</span>
-        <strong>{{ formattedResult }}</strong>
-      </div>
+  <section
+    class="quick-edit"
+    :class="{ 'has-summary': !!$slots.summary }"
+    data-testid="record-quick-edit"
+    aria-label="기록 빠른 편집"
+  >
+    <div
+      v-if="$slots.summary || (saveState === 'saved' && !isSaving)"
+      class="quick-edit-summary"
+    >
+      <slot name="summary"></slot>
       <div
         v-if="saveState === 'saved' && !isSaving"
         class="save-status"
@@ -227,39 +228,30 @@ onUnmounted(() => clearTimeout(savedTimer));
 
 <style scoped>
 .quick-edit {
-  border: 1px solid rgba(16, 185, 129, 0.42);
-  box-shadow: 0 12px 30px rgba(16, 185, 129, 0.1), var(--shadow-card);
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
 }
 
-.quick-edit-header {
+.quick-edit.has-summary {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.quick-edit-summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid var(--border-color);
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.14), rgba(16, 185, 129, 0.03));
-}
-
-.record-summary {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 1.1rem;
-}
-
-.team-number {
-  padding: 0.25rem 0.5rem;
-  border-radius: 999px;
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  font-size: 0.85rem;
 }
 
 .quick-edit-body {
-  padding: 1.25rem;
+  margin-top: 0;
 }
+
+.quick-edit.has-summary .quick-edit-body,
+.quick-edit-summary + .quick-edit-body { margin-top: 1rem; }
 
 .toggle-grid,
 .penalty-grid {

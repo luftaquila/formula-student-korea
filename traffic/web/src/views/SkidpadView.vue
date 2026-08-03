@@ -402,14 +402,13 @@ watch(() => serial.lightColor, (color) => {
               <span class="total-value">{{ totalTime }}</span>
             </div>
           </div>
+          <RecordQuickEdit
+            v-if="recentRecord"
+            :record="recentRecord"
+            @update="mergeRecord"
+          />
         </div>
       </div>
-
-      <RecordQuickEdit
-        v-if="recentRecord"
-        :record="recentRecord"
-        @update="mergeRecord"
-      />
 
       <div v-if="serial.records.length" class="sensor-section card">
         <div class="card-header"><h3>📡 센서 기록</h3></div>

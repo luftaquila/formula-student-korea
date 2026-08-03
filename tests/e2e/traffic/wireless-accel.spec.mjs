@@ -55,7 +55,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
 
     // 클라이언트는 표시만(서버가 저장) — 측정 기록 섹션 노출
     await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
-    const quickEdit = page.getByTestId("record-quick-edit");
+    const quickEdit = page.locator(".saved-section").getByTestId("record-quick-edit");
     await expect(quickEdit).toBeVisible({ timeout: 5000 });
 
     // 서버 엔진이 저장한 행도 같은 즉시 편집 UI에 연결된다.

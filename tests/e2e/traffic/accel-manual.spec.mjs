@@ -63,12 +63,13 @@ test.describe("Acceleration manual mode measurement", () => {
     // 방금 저장된 행을 화면 이동 없이 편집할 수 있다.
     const quickEdit = page.getByTestId("record-quick-edit");
     await expect(quickEdit).toBeVisible();
+    await expect(savedSection.getByTestId("record-quick-edit")).toBeVisible();
     await expect(quickEdit).not.toContainText("변경 즉시 저장");
     await expect(page.getByTestId("quick-save-status")).not.toBeVisible();
 
     await page.getByTestId("quick-cones-plus").click();
     await expect(page.getByTestId("quick-cones")).toHaveValue("1");
-    await expect(quickEdit.locator(".quick-edit-header").getByTestId("quick-save-status")).toHaveText("저장됨");
+    await expect(quickEdit.locator(".quick-edit-summary").getByTestId("quick-save-status")).toHaveText("저장됨");
 
     await page.getByTestId("quick-oc").fill("2");
     await page.getByTestId("quick-oc").blur();
@@ -80,19 +81,23 @@ test.describe("Acceleration manual mode measurement", () => {
 
     const invalidated = page.getByTestId("quick-invalidated");
     let releaseInvalidation;
+    let confirmInvalidationContinued;
     const invalidationHeld = new Promise((resolve) => { releaseInvalidation = resolve; });
+    const invalidationContinued = new Promise((resolve) => { confirmInvalidationContinued = resolve; });
     const holdInvalidation = async (route) => {
       const data = route.request().postDataJSON();
       if (route.request().method() === "PATCH" && data?.field === "invalidated") {
         await invalidationHeld;
       }
       await route.continue();
+      if (data?.field === "invalidated") confirmInvalidationContinued();
     };
     await page.route("**/traffic/api/records/**", holdInvalidation);
     await invalidated.click();
     await expect(invalidated).toBeDisabled();
     await expect(scoreboard).toBeDisabled();
     releaseInvalidation();
+    await invalidationContinued;
     await page.unroute("**/traffic/api/records/**", holdInvalidation);
     await expect(invalidated).toContainText("무효");
     await expect(scoreboard).toBeDisabled();

@@ -394,12 +394,6 @@ watch([session, () => serial.green.active], ([currentSession, active]) => {
         </div>
       </div>
 
-      <RecordQuickEdit
-        v-if="recentRecord"
-        :record="recentRecord"
-        @update="mergeRecord"
-      />
-
       <!-- 조밀 표(전체 랩) -->
       <div class="lap-section card">
         <div class="card-header"><h3>🏁 랩 기록</h3></div>
@@ -433,6 +427,11 @@ watch([session, () => serial.green.active], ([currentSession, active]) => {
               </tfoot>
             </table>
           </div>
+          <RecordQuickEdit
+            v-if="recentRecord"
+            :record="recentRecord"
+            @update="mergeRecord"
+          />
         </div>
       </div>
     </section>
