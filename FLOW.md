@@ -104,6 +104,7 @@
 | 2.9 | 차량 유형 추가 | admin | `POST /api/vehicle-types?year=` | `{ name, color? }`, UNIQUE 제약, color: blue/green/orange/purple/red/teal (기본 blue) |
 | 2.10 | 차량 유형 수정 | admin | `PATCH /api/vehicle-types/:id?year=` | `{ name?, color? }`, 이름 변경 시 해당 연도 엔트리의 type도 갱신 |
 | 2.11 | 차량 유형 삭제 | admin | `DELETE /api/vehicle-types/:id?year=` | 삭제 시 해당 연도 엔트리의 type=NULL로 갱신 |
+| 2.12 | 엔트리 변경 실시간 알림 | admin | `GET /api/events` | 엔트리·차량 유형 변경 후 `entries` SSE로 의존 서비스의 스냅샷 무효화 |
 
 ---
 
@@ -292,30 +293,30 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 6.1 | 성적 대시보드 조회 | admin | `GET /api/score?year=` | entry + inspection + traffic + endurance + 수동점수 + 페널티/점수 설정 집계 |
-| 6.2 | 수동 점수 입력 | admin | `PUT /api/score/manual` | 보고서/에너지/가점/감점, SSE |
+| 6.1 | 성적 대시보드 조회 | admin | `GET /api/score?year=` | entry + inspection + traffic + endurance/에너지 자동점수 + 수동점수 + 페널티/점수 설정 집계 |
+| 6.2 | 수동 점수 입력 | admin | `PUT /api/score/manual` | 보고서/가점/감점, SSE. 에너지는 수동 입력 불가 |
 
 ### 페널티·점수 설정
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 6.3 | 페널티 설정 | admin | `PUT /api/score/penalty` | 종목별 콘터치/코스이탈/출발지연 (초) |
-| 6.4 | 점수 설정 | admin | `PUT /api/score/setting` | 종목별 총점/완주점수/컷오프% |
+| 6.4 | 점수 설정 | admin | `PUT /api/score/setting` | 종목별 총점/완주점수/컷오프%, 보고서·에너지 총점, 에너지 거리/연료 환산 기준 |
 
 ### 내구
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 6.5 | 내구 기록 조회 | admin | `GET /api/score/endurance?year=` | 팀별 드라이버1·2 시간, 페널티, 상태 |
-| 6.6 | 내구 필드 수정 | admin | `PUT /api/score/endurance` | status(DNS/DNF/DSQ), 시간, 콘, 코스이탈 등, SSE |
+| 6.5 | 내구 기록 조회 | admin | `GET /api/score/endurance?year=` | 팀별 드라이버1·2 시간, 페널티, 상태, 에너지 계측값·오피셜 판정. C/E 구분은 엔트리 차량 유형에서 자동 판별 |
+| 6.6 | 내구 필드 수정 | admin | `PUT /api/score/endurance` | 내구 필드와 연료 소비/추가 주유/순사용 전력/에너지 DSQ 수정, SSE 후 엔트리의 `C-Formula`/`E-Formula` 유형에 따라 전체 상대점수 재계산 |
 
 ### 실시간 및 내보내기
 
 | # | 흐름 | 역할 | API/컴포넌트 | 설명 |
 |---|------|------|-------------|------|
-| 6.7 | SSE 실시간 업데이트 | admin | `GET /api/score/events` | 화이트리스트 재전파(inspection: category-result/answer, traffic: records/record-visibility) + 재연결 시 refresh + manual-score/penalty/setting/endurance 로컬 이벤트 |
+| 6.7 | SSE 실시간 업데이트 | admin | `GET /api/score/events` | 화이트리스트 재전파(entry: entries, inspection: category-result/answer, traffic: records/record-visibility/event-mode) + 재연결 시 refresh + manual-score/penalty/setting/endurance 로컬 이벤트 |
 | 6.8 | 성적 대시보드 내보내기 | admin | ScoreBoard.vue | 전체 성적표 CSV/XLSX 클라이언트 사이드 다운로드 |
-| 6.9 | 내구 데이터 내보내기 | admin | EnduranceInput.vue | 내구 데이터 CSV/XLSX 클라이언트 사이드 다운로드 |
+| 6.9 | 내구 데이터 내보내기 | admin | EnduranceInput.vue | 내구 및 에너지 계측·판정 데이터 CSV/XLSX 클라이언트 사이드 다운로드 |
 
 ---
 
@@ -536,7 +537,7 @@ Score → Traffic: 기록 + 경기 모드 조회
 Score → Score DB: 내구, 수동 점수, 페널티/점수 설정
 ```
 
-Score 서비스는 inspection과 traffic의 SSE 엔드포인트를 구독하여 변경사항을 실시간으로 재전파합니다 (`inspection:*`, `traffic:*` 접두사).
+Score 서비스는 entry, inspection, traffic의 SSE 엔드포인트를 구독하여 변경사항을 실시간으로 재전파합니다 (`entry:*`, `inspection:*`, `traffic:*` 접두사).
 
 ### Queue 엔트리 검증
 

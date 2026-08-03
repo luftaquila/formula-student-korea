@@ -41,9 +41,10 @@ const sortOrder = ref("asc");
 const entries = ref({});
 const inspection = ref({ categories: [], teams: {} });
 const events = ref([]); // [{ type, tables, records }]
-const manualScores = ref({}); // { team_num: { report: value, energy: value } }
+const manualScores = ref({}); // { team_num: { report, bonus, deduction } }
 const penalties = ref({}); // { event_type: { cone_penalty, oc_penalty } }
 const settings = ref({}); // { event_type: { total, finish, cutoff } }
+const energy = ref({ teams: {}, config: {}, references: {} });
 
 const dynamicEvents = computed(() => events.value.filter((e) => e.type !== "내구"));
 const enduranceEvent = computed(() => events.value.find((e) => e.type === "내구") || { type: "내구", records: {} });
@@ -105,8 +106,8 @@ const entryList = computed(() => {
       bVal = getTotalScore(b.num);
       return sortOrder.value === "asc" ? bVal - aVal : aVal - bVal;
     } else if (["report", "energy", "bonus", "deduction"].includes(sortKey.value)) {
-      aVal = manualScores.value[a.num]?.[sortKey.value] ?? Infinity;
-      bVal = manualScores.value[b.num]?.[sortKey.value] ?? Infinity;
+      aVal = sortKey.value === "energy" ? (getEnergyScore(a.num) ?? Infinity) : (manualScores.value[a.num]?.[sortKey.value] ?? Infinity);
+      bVal = sortKey.value === "energy" ? (getEnergyScore(b.num) ?? Infinity) : (manualScores.value[b.num]?.[sortKey.value] ?? Infinity);
     } else if (sortKey.value.startsWith("event:")) {
       const eventType = sortKey.value.slice(6);
       const evt = events.value.find(e => e.type === eventType);
@@ -153,7 +154,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener("click", handleOutsideClick);
-  clearTimeout(refreshTimer);
+  cancelRefresh("refresh");
 });
 
 function handleOutsideClick(e) {
@@ -162,26 +163,37 @@ function handleOutsideClick(e) {
   }
 }
 
+let typeColorSeq = 0;
 async function loadTypeColors() {
+  const year = selectedYear.value;
+  const seq = ++typeColorSeq;
   try {
-    const vtList = await fetchVehicleTypes(selectedYear.value);
+    const vtList = await fetchVehicleTypes(year);
+    if (seq !== typeColorSeq || selectedYear.value !== year) return;
     typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
   } catch { /* 색상 로드 실패 시 기본값 사용 */ }
 }
 
+let scoreDataSeq = 0;
+const { debounce: debounceRefresh, cancel: cancelRefresh } = createKeyedDebouncer(300);
 async function loadData() {
+  cancelRefresh("refresh");
+  const year = selectedYear.value;
+  const seq = ++scoreDataSeq;
   try {
-    const data = await fetchScore(selectedYear.value);
+    const data = await fetchScore(year);
+    if (seq !== scoreDataSeq || selectedYear.value !== year) return;
     entries.value = data.entries;
     inspection.value = data.inspection;
     events.value = data.events;
     manualScores.value = data.manualScores || {};
     penalties.value = data.penalties || {};
     settings.value = data.settings || {};
+    energy.value = data.energy || { teams: {}, config: {}, references: {} };
     sortKey.value = null;
     sortOrder.value = "asc";
   } catch (e) {
-    error("데이터를 가져올 수 없습니다.");
+    if (seq === scoreDataSeq && selectedYear.value === year) error("데이터를 가져올 수 없습니다.");
   }
 }
 
@@ -292,7 +304,7 @@ const scoreCache = computed(() => {
       if (s != null) t += s;
     }
     t += manualScores.value[num]?.report ?? 0;
-    t += manualScores.value[num]?.energy ?? 0;
+    t += getEnergyScore(num) ?? 0;
     t += manualScores.value[num]?.bonus ?? 0;
     t -= manualScores.value[num]?.deduction ?? 0;
     totalScoreMap[num] = parseFloat(t.toFixed(2));
@@ -314,6 +326,25 @@ function getEventScore(eventType, num) {
 // 총점 계산 (캐시에서 O(1) 조회)
 function getTotalScore(num) {
   return scoreCache.value.totalScoreMap[num] ?? 0;
+}
+
+function getEnergyResult(num) {
+  return energy.value.teams?.[num] || null;
+}
+
+function getEnergyScore(num) {
+  const result = getEnergyResult(num);
+  return result?.status === "SCORED" ? result.score : result?.status === "DSQ" ? 0 : null;
+}
+
+function getEnergyTitle(num) {
+  const result = getEnergyResult(num);
+  if (!result) return "에너지 계측값을 입력하세요.";
+  if (result.reason) return result.reason;
+  const details = [];
+  if (result.co2Per100Km != null) details.push(`${result.co2Per100Km} kg CO₂/100 km`);
+  if (result.ef != null) details.push(`EF ${result.ef}`);
+  return details.join(" · ") || "에너지 효율 점수";
 }
 
 const typeColorMap = ref({});
@@ -357,6 +388,12 @@ async function handleManualSave(teamNum, scoreType, value) {
 
 function getManualScore(teamNum, scoreType) {
   return manualScores.value[teamNum]?.[scoreType] ?? null;
+}
+
+function isReportOverMax(teamNum) {
+  const value = getManualScore(teamNum, "report");
+  const maximum = getSetting("보고서", "total");
+  return value != null && maximum != null && value > maximum;
 }
 
 // 페널티 설정 저장
@@ -468,9 +505,9 @@ function getSortIcon(key) {
 // SSE로 검차 결과 실시간 반영
 watch(lastInspectionUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
+  invalidateAndRefreshScoreData();
   if (update.deleted) {
     delete inspection.value.teams[update.team_num];
-    debouncedRefresh();
     return;
   }
   if (update.renumbered) {
@@ -478,7 +515,6 @@ watch(lastInspectionUpdate, (update) => {
       inspection.value.teams[update.team_num] = inspection.value.teams[update.prevNum];
       delete inspection.value.teams[update.prevNum];
     }
-    debouncedRefresh();
     return;
   }
   const { team_num, category_id, result } = update;
@@ -491,10 +527,10 @@ watch(lastInspectionUpdate, (update) => {
 // SSE로 검차 답변(코너웨이트) 실시간 반영
 watch(lastAnswerUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
+  invalidateAndRefreshScoreData();
   if (update.deleted) {
     delete inspection.value.teams[update.team_num];
     if (inspection.value.cornerWeight?.teams) delete inspection.value.cornerWeight.teams[update.team_num];
-    debouncedRefresh();
     return;
   }
   if (update.renumbered) {
@@ -507,7 +543,6 @@ watch(lastAnswerUpdate, (update) => {
       cwTeams[update.team_num] = cwTeams[update.prevNum];
       delete cwTeams[update.prevNum];
     }
-    debouncedRefresh();
     return;
   }
   const { team_num, item_id, value } = update;
@@ -528,6 +563,7 @@ watch(lastAnswerUpdate, (update) => {
 // SSE로 수동 점수 실시간 반영
 watch(lastManualScoreUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
+  invalidateAndRefreshScoreData();
   if (update.deleted) {
     delete manualScores.value[update.team_num];
     return;
@@ -544,23 +580,30 @@ watch(lastManualScoreUpdate, (update) => {
   manualScores.value[team_num][score_type] = value;
 });
 
-// SSE 이벤트 데이터만 갱신 (manualScores/penalties/settings는 전용 SSE watcher가 처리)
-let refreshSeq = 0;
+// SSE 이벤트 후 score 스냅샷 갱신. loadData와 같은 세대를 써서
+// 나중에 완료된 이전 요청이 entries/events/energy를 되돌리지 못하게 한다.
 async function refreshEventData() {
-  const seq = ++refreshSeq;
+  const year = selectedYear.value;
+  const seq = ++scoreDataSeq;
   try {
-    const data = await fetchScore(selectedYear.value);
-    if (seq !== refreshSeq) return;
+    const data = await fetchScore(year);
+    if (seq !== scoreDataSeq || selectedYear.value !== year) return;
     entries.value = data.entries;
     inspection.value = data.inspection;
     events.value = data.events;
+    manualScores.value = data.manualScores || {};
+    penalties.value = data.penalties || {};
+    settings.value = data.settings || {};
+    energy.value = data.energy || { teams: {}, config: {}, references: {} };
   } catch (e) {
-    if (seq === refreshSeq) error("데이터를 가져올 수 없습니다.");
+    if (seq === scoreDataSeq && selectedYear.value === year) error("데이터를 가져올 수 없습니다.");
   }
 }
 
-const { debounce: debounceRefresh } = createKeyedDebouncer(300);
-function debouncedRefresh() {
+function invalidateAndRefreshScoreData() {
+  // 직접 반영한 SSE 값을 변경 전에 시작한 스냅샷이 되돌리지 못하게
+  // 진행 중인 요청을 즉시 무효화하고, 디바운스된 전체 스냅샷으로 확정한다.
+  scoreDataSeq++;
   debounceRefresh("refresh", refreshEventData);
 }
 
@@ -572,7 +615,7 @@ watch(lastPenaltyUpdate, (update) => {
   penalties.value[event_type].cone_penalty = cone_penalty;
   penalties.value[event_type].oc_penalty = oc_penalty;
   penalties.value[event_type].start_delay = start_delay;
-  debouncedRefresh(); // 내구 result는 백엔드에서 start_delay 포함 계산되므로 재로드 필요
+  invalidateAndRefreshScoreData(); // 내구 result는 백엔드에서 start_delay 포함 계산되므로 재로드 필요
 });
 
 // SSE로 점수 설정 실시간 반영
@@ -581,17 +624,17 @@ watch(lastSettingUpdate, (update) => {
   const { event_type, setting_key, value } = update;
   if (!settings.value[event_type]) settings.value[event_type] = {};
   settings.value[event_type][setting_key] = value;
-  debouncedRefresh();
+  invalidateAndRefreshScoreData();
 });
 
 // SSE로 경기 기록 변경 시 이벤트 데이터 갱신
 watch(lastTrafficRecordUpdate, () => {
-  debouncedRefresh();
+  invalidateAndRefreshScoreData();
 });
 
 // SSE로 내구 기록 변경 시 이벤트 데이터 갱신
 watch(lastEnduranceUpdate, () => {
-  debouncedRefresh();
+  invalidateAndRefreshScoreData();
 });
 
 watch(lastPublicationUpdate, (update) => {
@@ -600,7 +643,9 @@ watch(lastPublicationUpdate, (update) => {
 });
 
 // SSE 재연결 시 전체 데이터 동기화
-watch(reconnected, () => { if (reconnected.value) loadData(); });
+watch(reconnected, () => {
+  if (reconnected.value) Promise.all([loadData(), loadTypeColors()]);
+});
 
 // 카테고리 오버라이드 판별
 function isOverriddenCategory(catId) {
@@ -652,7 +697,7 @@ const totalColumns = computed(() => {
   cols += 1; // total
   cols += dynamicEvents.value.length; // dynamic events
   cols += 1; // endurance
-  cols += 4; // manual scores (report, energy, bonus, deduction)
+  cols += 4; // report, calculated energy, bonus, deduction
   return cols;
 });
 
@@ -738,7 +783,13 @@ function exportData(format) {
     }
     const endRec = getTeamEvent(enduranceEvent.value, entry.num);
     row.push(displayMode.value === "score" ? (getEventScore("내구", entry.num) ?? "") : formatResult(getAdjustedResult("내구", endRec)));
-    row.push(getManualScore(entry.num, "report") ?? "", getManualScore(entry.num, "energy") ?? "", getManualScore(entry.num, "bonus") ?? "", getManualScore(entry.num, "deduction") ?? "");
+    const energyResult = getEnergyResult(entry.num);
+    row.push(
+      getManualScore(entry.num, "report") ?? "",
+      energyResult?.status === "DSQ" ? `DSQ: ${energyResult.reason}` : (getEnergyScore(entry.num) ?? ""),
+      getManualScore(entry.num, "bonus") ?? "",
+      getManualScore(entry.num, "deduction") ?? "",
+    );
     return row;
   });
 
@@ -953,10 +1004,11 @@ function exportData(format) {
                       <span v-else class="record-value dns">-</span>
                     </template>
                   </td>
-                  <td class="col-manual">
+                  <td class="col-manual" :class="{ 'manual-over-max': isReportOverMax(entry.num) }" :title="isReportOverMax(entry.num) ? '보고서 총점을 초과한 기존 점수입니다.' : ''">
                     <input
                       class="manual-input"
                       type="number"
+                      :max="getSetting('보고서', 'total') ?? undefined"
                       :value="getManualScore(entry.num, 'report')"
                       :disabled="isReadOnly"
                       @blur="handleManualSave(entry.num, 'report', $event.target.value)"
@@ -965,15 +1017,17 @@ function exportData(format) {
                     />
                   </td>
                   <td class="col-manual">
-                    <input
-                      class="manual-input"
-                      type="number"
-                      :value="getManualScore(entry.num, 'energy')"
-                      :disabled="isReadOnly"
-                      @blur="handleManualSave(entry.num, 'energy', $event.target.value)"
-                      @keyup.enter="$event.target.blur()"
-                      placeholder="-"
-                    />
+                    <span
+                      v-if="getEnergyResult(entry.num)?.status === 'DSQ'"
+                      class="badge badge-danger energy-result"
+                      :title="getEnergyTitle(entry.num)"
+                    >DSQ</span>
+                    <span
+                      v-else-if="getEnergyScore(entry.num) != null"
+                      class="score-value energy-result"
+                      :title="getEnergyTitle(entry.num)"
+                    >{{ getEnergyScore(entry.num) }}</span>
+                    <span v-else class="record-value dns energy-result" :title="getEnergyTitle(entry.num)">{{ getEnergyResult(entry.num)?.status === 'PENDING' ? '대기' : '-' }}</span>
                   </td>
                   <td class="col-manual">
                     <input
@@ -1106,15 +1160,18 @@ function exportData(format) {
               <thead>
                 <tr>
                   <th class="col-setting-label">점수</th>
-                  <th v-for="evt in dynamicEvents" :key="'score-h-'+evt.type" class="col-setting-value">{{ evt.type }}</th>
-                  <th class="col-setting-value">내구</th>
+                  <th v-for="evtType in [...dynamicEvents.map(e => e.type), '내구', '보고서', '에너지']" :key="'score-h-'+evtType" class="col-setting-value">{{ evtType }}</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="{ key, label } in [{ key: 'total', label: '총점' }, { key: 'finish', label: '완주점수' }, { key: 'cutoff', label: '컷오프 (%)' }]" :key="key">
                   <td class="col-setting-label">{{ label }}</td>
-                  <template v-for="evtType in [...dynamicEvents.map(e => e.type), '내구']" :key="'s-'+key+'-'+evtType">
-                    <td class="col-setting-value setting-cell" @click="startSettingEdit('s:'+key+':'+evtType)">
+                  <template v-for="evtType in [...dynamicEvents.map(e => e.type), '내구', '보고서', '에너지']" :key="'s-'+key+'-'+evtType">
+                    <td
+                      v-if="key === 'total' || !['보고서', '에너지'].includes(evtType)"
+                      class="col-setting-value setting-cell"
+                      @click="startSettingEdit('s:'+key+':'+evtType)"
+                    >
                       <input
                         v-if="editingSettingCell === 's:'+key+':'+evtType"
                         :ref="settingInputRef"
@@ -1128,6 +1185,7 @@ function exportData(format) {
                       />
                       <span v-else class="setting-text">{{ getSetting(evtType, key) ?? '-' }}</span>
                     </td>
+                    <td v-else class="col-setting-value setting-na">-</td>
                   </template>
                 </tr>
               </tbody>
@@ -1647,6 +1705,15 @@ function exportData(format) {
   color: var(--text-tertiary);
 }
 
+.manual-over-max {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.manual-over-max .manual-input {
+  color: var(--accent-danger);
+  font-weight: 700;
+}
+
 .manual-input::-webkit-outer-spin-button,
 .manual-input::-webkit-inner-spin-button {
   -webkit-appearance: none;
@@ -1661,13 +1728,23 @@ function exportData(format) {
 }
 
 .bottom-row > .setting-card {
-  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.bottom-row > .setting-card:first-child {
+  flex: 0 1 40%;
+}
+
+.bottom-row > .setting-card:last-child {
+  flex: 1 1 60%;
   min-width: 0;
   overflow: hidden;
 }
 
 .setting-table {
-  min-width: 0;
+  min-width: max-content;
+  width: 100%;
 }
 
 .col-setting-label {
@@ -1695,7 +1772,7 @@ function exportData(format) {
 .col-setting-value {
   text-align: center !important;
   white-space: nowrap;
-  width: 1%;
+  min-width: 5.25rem;
 }
 
 .setting-input {
@@ -1740,6 +1817,27 @@ function exportData(format) {
   font-size: 0.875rem;
   font-weight: 500;
   color: var(--text-primary);
+}
+
+.setting-na {
+  color: var(--text-tertiary);
+  background: var(--bg-secondary);
+}
+
+.energy-result {
+  cursor: help;
+}
+
+@media (max-width: 1100px) {
+  .bottom-row {
+    flex-direction: column;
+  }
+
+  .bottom-row > .setting-card:first-child,
+  .bottom-row > .setting-card:last-child {
+    width: 100%;
+    flex-basis: auto;
+  }
 }
 
 

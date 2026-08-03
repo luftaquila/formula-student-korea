@@ -647,6 +647,46 @@ describe('Auth enforcement', () => {
   });
 });
 
+// ─── SSE ───────────────────────────────────────────────────────────────────────────
+describe('GET /api/events', () => {
+  it('requires admin authentication', async () => {
+    const res = await client.get('/api/events');
+    assert.equal(res.status, 401);
+  });
+
+  it('broadcasts entry snapshot invalidation after a vehicle-type mutation', async () => {
+    const controller = new AbortController();
+    const res = await fetch(`${baseUrl}/api/events`, {
+      headers: { Cookie: adminCookie, Accept: 'text/event-stream' },
+      signal: controller.signal,
+    });
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    try {
+      const init = await reader.read();
+      assert.match(decoder.decode(init.value), /event: init/);
+
+      const create = await client.post('/api/vehicle-types', {
+        body: { name: `SSE-${Date.now()}` },
+        cookie: adminCookie,
+      });
+      assert.equal(create.status, 201);
+
+      const event = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('entry SSE timeout')), 2000)),
+      ]);
+      const payload = decoder.decode(event.value);
+      assert.match(payload, /event: entries/);
+      assert.match(payload, /"change":"vehicle-type"/);
+      assert.match(payload, new RegExp(`"year":${new Date().getFullYear()}`));
+    } finally {
+      controller.abort();
+    }
+  });
+});
+
 // ─── Lifecycle Sync on Number Change ────────────────────────────────────
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);

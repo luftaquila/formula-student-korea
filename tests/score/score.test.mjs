@@ -26,9 +26,10 @@ function createMockEntryServer() {
   const app = express();
   app.get('/api/entries', (req, res) => {
     mockEntryRequestCount++;
+    const energyIntegration = [2087, 2088].includes(Number(req.query.year));
     const payload = {
-      1: { univ: '서울대', team: mockEntryTeamName, type: 'EV' },
-      2: { univ: '카이스트', team: '팀B', type: 'EV' },
+      1: { univ: '서울대', team: mockEntryTeamName, type: energyIntegration ? 'C-Formula' : 'EV' },
+      2: { univ: '카이스트', team: '팀B', type: energyIntegration ? 'E-Formula' : 'EV' },
     };
     if (mockEntryResponseDelayMs > 0) setTimeout(() => res.json(payload), mockEntryResponseDelayMs);
     else res.json(payload);
@@ -279,12 +280,12 @@ describe('PUT /api/score/manual', () => {
     assert.equal(res.status, 400);
   });
 
-  it('allows null value (clears score)', async () => {
+  it('rejects legacy manual energy scores', async () => {
     const res = await client.put('/api/score/manual', {
       body: { year: 2026, team_num: 2, score_type: 'energy', value: null },
       cookie: adminCookie,
     });
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 400);
   });
 
   it('rejects non-finite value (NaN)', async () => {
@@ -444,6 +445,40 @@ describe('PUT /api/score/endurance', () => {
     assert.equal(res.status, 400);
   });
 
+  it('accepts energy fields and permits negative net electric energy only', async () => {
+    const net = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'electric_net_energy', value: -0.5 },
+      cookie: adminCookie,
+    });
+    assert.equal(net.status, 200);
+
+    const fuel = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'fuel_consumed', value: -0.5 },
+      cookie: adminCookie,
+    });
+    assert.equal(fuel.status, 400);
+  });
+
+  it('rejects manual energy type and DSQ reason, and validates the DSQ flag', async () => {
+    const badType = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'energy_type', value: 'E' },
+      cookie: adminCookie,
+    });
+    assert.equal(badType.status, 400);
+
+    const badDsq = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'energy_dsq', value: 2 },
+      cookie: adminCookie,
+    });
+    assert.equal(badDsq.status, 400);
+
+    const reason = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'energy_dsq_reason', value: '봉인 훼손' },
+      cookie: adminCookie,
+    });
+    assert.equal(reason.status, 400);
+  });
+
   it('rejects non-allowed field', async () => {
     const res = await client.put('/api/score/endurance', {
       body: { year: 2026, team_num: 1, field: 'hackerfield', value: 999 },
@@ -479,6 +514,8 @@ describe('GET /api/score/endurance (after writes)', () => {
     assert.equal(data['1'].driver1_time, 120000);
     // Team 2 should exist (status was set then cleared)
     assert.ok(data['2']);
+    assert.equal(data['1'].fuel_extra, null);
+    assert.equal('energy_dsq_reason' in data['1'], false);
   });
 });
 
@@ -747,6 +784,91 @@ describe('Endurance calculation in aggregation', () => {
   });
 });
 
+describe('Energy score integration', () => {
+  const year = 2088;
+
+  before(() => {
+    const insertSetting = db.prepare("INSERT OR REPLACE INTO score_setting (year, event_type, setting_key, value) VALUES (?, '에너지', ?, ?)");
+    insertSetting.run(year, 'total', 35);
+    insertSetting.run(year, 'distance_km', 20);
+    insertSetting.run(year, 'fuel_factor', 2.31);
+    db.prepare("INSERT OR REPLACE INTO score_setting (year, event_type, setting_key, value) VALUES (?, '보고서', 'total', ?)").run(year, 50);
+
+    const insert = db.prepare(`
+      INSERT OR REPLACE INTO score_endurance
+        (year, team_num, driver1_time, driver_change_time, driver2_time, fuel_consumed, electric_net_energy)
+      VALUES (?, ?, ?, NULL, ?, ?, ?)
+    `);
+    insert.run(year, 1, 50_000, 50_000, 1, null);
+    insert.run(year, 2, 55_000, 55_000, null, 2);
+  });
+
+  it('returns energy scores with a blank driver-change overrun treated as zero', async () => {
+    const res = await client.get(`/api/score?year=${year}`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.energy.config.total, 35);
+    assert.equal(data.energy.teams['1'].status, 'SCORED');
+    assert.equal(data.energy.teams['1'].energyType, 'C');
+    assert.equal(data.energy.teams['1'].score, 35);
+    assert.equal(data.energy.teams['2'].energyType, 'E');
+    assert.equal(data.energy.teams['2'].score, 0);
+  });
+
+  it('enforces the configured report maximum', async () => {
+    const over = await client.put('/api/score/manual', {
+      cookie: adminCookie,
+      body: { year, team_num: 1, score_type: 'report', value: 51 },
+    });
+    assert.equal(over.status, 400);
+
+    const exact = await client.put('/api/score/manual', {
+      cookie: adminCookie,
+      body: { year, team_num: 1, score_type: 'report', value: 50 },
+    });
+    assert.equal(exact.status, 200);
+  });
+
+  it('returns corrected CO2/100km before endurance time and score settings are complete', async () => {
+    const incompleteYear = 2087;
+    db.prepare("INSERT OR REPLACE INTO score_setting (year, event_type, setting_key, value) VALUES (?, '에너지', 'distance_km', ?)").run(incompleteYear, 20);
+    db.prepare("INSERT OR REPLACE INTO score_setting (year, event_type, setting_key, value) VALUES (?, '에너지', 'fuel_factor', ?)").run(incompleteYear, 2.31);
+    db.prepare("INSERT OR REPLACE INTO score_endurance (year, team_num, fuel_consumed) VALUES (?, ?, ?)").run(incompleteYear, 1, 1);
+
+    const res = await client.get(`/api/score?year=${incompleteYear}`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.energy.teams['1'].status, 'PENDING');
+    assert.equal(data.energy.teams['1'].correctedCo2, 2.31);
+    assert.equal(data.energy.teams['1'].co2Per100Km, 11.55);
+    assert.equal(data.energy.teams['1'].score, null);
+  });
+
+  it('calculates a numeric score after the energy total is entered in the score table', async () => {
+    const scoringYear = 2087;
+    for (const field of ['driver1_time', 'driver2_time']) {
+      const timeUpdate = await client.put('/api/score/endurance', {
+        cookie: adminCookie,
+        body: { year: scoringYear, team_num: 1, field, value: 50_000 },
+      });
+      assert.equal(timeUpdate.status, 200);
+    }
+
+    const update = await client.put('/api/score/setting', {
+      cookie: adminCookie,
+      body: { year: scoringYear, event_type: '에너지', setting_key: 'total', value: 50 },
+    });
+    assert.equal(update.status, 200);
+
+    const res = await client.get(`/api/score?year=${scoringYear}`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.settings['에너지'].total, 50);
+    assert.equal(data.energy.teams['1'].status, 'SCORED');
+    assert.equal(data.energy.teams['1'].score, 50);
+  });
+});
+
 // ─── Auth ───────────────────────────────────────────────────────────────
 
 describe('Auth', () => {
@@ -893,6 +1015,39 @@ describe('Public score publication', () => {
       assert.equal(afterResponse.status, 200);
       assert.equal((await beforeResponse.json()).entries['1'].team, '최신 팀');
       assert.equal((await afterResponse.json()).entries['1'].team, '최신 팀');
+      assert.equal(mockEntryRequestCount, requestCountBefore + 2);
+    } finally {
+      mockEntryResponseDelayMs = 0;
+      mockEntryTeamName = '팀A';
+    }
+  });
+
+  it('does not reuse an invalidated in-flight aggregate for authenticated requests', async () => {
+    const requestCountBefore = mockEntryRequestCount;
+    mockEntryTeamName = '변경 전 팀';
+    mockEntryResponseDelayMs = 100;
+    const requestBeforeInvalidation = client.get('/api/score?year=2026', { cookie: adminCookie });
+    while (mockEntryRequestCount === requestCountBefore) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    mockEntryTeamName = '변경 후 팀';
+    const invalidatingUpdate = await client.put('/api/score/penalty', {
+      cookie: adminCookie,
+      body: { year: 2026, event_type: '가속', cone_penalty: 6, oc_penalty: 10, start_delay: 0 },
+    });
+    assert.equal(invalidatingUpdate.status, 200);
+    const requestAfterInvalidation = client.get('/api/score?year=2026', { cookie: adminCookie });
+
+    try {
+      const [beforeResponse, afterResponse] = await Promise.all([
+        requestBeforeInvalidation,
+        requestAfterInvalidation,
+      ]);
+      assert.equal(beforeResponse.status, 200);
+      assert.equal(afterResponse.status, 200);
+      assert.equal((await beforeResponse.json()).entries['1'].team, '변경 전 팀');
+      assert.equal((await afterResponse.json()).entries['1'].team, '변경 후 팀');
       assert.equal(mockEntryRequestCount, requestCountBefore + 2);
     } finally {
       mockEntryResponseDelayMs = 0;

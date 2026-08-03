@@ -27,14 +27,14 @@ test.describe("Score dashboard", () => {
     await expect(table.locator("tbody")).toContainText("고려대학교");
 
     // Verify key column headers are present
-    await expect(page.locator("th").filter({ hasText: "번호" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "학교 / 팀" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "총점" })).toBeVisible();
-    await expect(page.locator("th.col-event").filter({ hasText: "내구" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "보고서" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "에너지" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "가점" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "감점" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "번호" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "학교 / 팀" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "총점" })).toBeVisible();
+    await expect(table.locator("th.col-event").filter({ hasText: "내구" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "보고서" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "에너지" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "가점" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "감점" })).toBeVisible();
   });
 
   test("year selection loads data for selected year", async ({ page }) => {

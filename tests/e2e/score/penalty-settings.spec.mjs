@@ -152,19 +152,23 @@ test.describe("Score penalty and score settings", () => {
     await expect(scoreTable.locator("td").filter({ hasText: "총점" }).first()).toBeVisible();
     await expect(scoreTable.locator("td").filter({ hasText: "완주점수" }).first()).toBeVisible();
     await expect(scoreTable.locator("td").filter({ hasText: "컷오프 (%)" }).first()).toBeVisible();
+    await expect(scoreTable.locator("th").filter({ hasText: "보고서" })).toBeVisible();
+    await expect(scoreTable.locator("th").filter({ hasText: "에너지" })).toBeVisible();
 
-    // Set total points for endurance (last column in total row)
+    // Set total points for endurance by matching the header instead of relying on column order.
     const totalRow = scoreTable.locator("tr").filter({ hasText: "총점" });
-    const totalCells = totalRow.locator("td.setting-cell");
-    const lastTotalCell = totalCells.last();
+    const enduranceColumnIndex = await scoreTable
+      .getByRole("columnheader", { name: "내구", exact: true })
+      .evaluate((cell) => cell.cellIndex);
+    const enduranceTotalCell = totalRow.locator("td").nth(enduranceColumnIndex);
 
     // Read current value to pick a different one (avoids no-op save if previous cleanup failed)
-    const currentText = await lastTotalCell.locator(".setting-text").textContent();
+    const currentText = await enduranceTotalCell.locator(".setting-text").textContent();
     const currentValue = Number(currentText) || 0;
     const newValue = currentValue === 300 ? 500 : 300;
 
-    await lastTotalCell.click();
-    const input = lastTotalCell.locator("input.setting-input");
+    await enduranceTotalCell.click();
+    const input = enduranceTotalCell.locator("input.setting-input");
     await expect(input).toBeVisible({ timeout: 3000 });
     await expect(input).toBeFocused();
 
@@ -178,7 +182,7 @@ test.describe("Score penalty and score settings", () => {
     await savePromise;
 
     // Verify the value is saved
-    await expect(lastTotalCell.locator(".setting-text")).toHaveText(String(newValue));
+    await expect(enduranceTotalCell.locator(".setting-text")).toHaveText(String(newValue));
 
     // Verify via API
     const response = await page.request.get(`/score/api/score?year=${YEAR}`);
@@ -186,8 +190,8 @@ test.describe("Score penalty and score settings", () => {
     expect(data.settings["내구"]?.total).toBe(newValue);
 
     // Clean up
-    await lastTotalCell.click();
-    const resetInput = lastTotalCell.locator("input.setting-input");
+    await enduranceTotalCell.click();
+    const resetInput = enduranceTotalCell.locator("input.setting-input");
     const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
     await resetInput.fill("");
     await resetInput.blur();
