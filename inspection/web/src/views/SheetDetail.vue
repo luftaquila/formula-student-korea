@@ -783,8 +783,13 @@ function onChecktableToggle(itemId, rowIdx, colIdx) {
 
 // ---- Quick navigation ----
 const navOpen = ref(false);
-const navLevel = ref("group");
+const storedNavLevel = sessionStorage.getItem("inspectionQuickNavLevel");
+const navLevel = ref(storedNavLevel === "subcategory" ? "subcategory" : "group");
 const fabContainerRef = ref(null);
+
+watch(navLevel, (value) => {
+  sessionStorage.setItem("inspectionQuickNavLevel", value);
+});
 
 const quickNavGroups = computed(() => (
   (currentCategory.value?.subcategories || []).flatMap((sub, si) =>

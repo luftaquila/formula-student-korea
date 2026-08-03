@@ -88,6 +88,12 @@ test.describe("Inspection sheet filling", () => {
     await expect(menu.locator(".nav-menu-item").filter({ hasText: "1 - 배터리" })).toBeVisible();
     await page.locator(".group-title").first().click();
     await expect(menu).toBeHidden();
+
+    await page.reload();
+    await waitForPageReady(page);
+    await page.locator(".fab").click();
+    await expect(page.locator(".nav-menu-level-toggle")).toHaveText("소분류 보기");
+    await expect(page.locator(".fab-container .nav-menu-item").filter({ hasText: "1 - 배터리" })).toBeVisible();
   });
 
   test("shows the vehicle type chip between the team name and the year", async ({ page }) => {
