@@ -713,11 +713,31 @@ const memoItems = computed(() => {
   return items;
 });
 
+const SUMMARY_COLLAPSE_MS = 220;
+const SCROLL_TARGET_GAP = 8;
+
+function waitForSummaryCollapse(shouldWait) {
+  return shouldWait
+    ? new Promise((resolve) => window.setTimeout(resolve, SUMMARY_COLLAPSE_MS))
+    : Promise.resolve();
+}
+
+function scrollBelowProgress(element) {
+  const progressHeight = document.querySelector(".inspection-progress")?.getBoundingClientRect().height || 0;
+  const elementTop = window.scrollY + element.getBoundingClientRect().top;
+  window.scrollTo({
+    top: Math.max(0, elementTop - progressHeight - SCROLL_TARGET_GAP),
+    behavior: "smooth",
+  });
+}
+
 async function scrollToMemoItem(item) {
+  const shouldWait = memoOpen.value;
   memoOpen.value = false;
   activeTab.value = item.categoryIndex;
   await nextTick();
-  scrollToItem(item.id);
+  await waitForSummaryCollapse(shouldWait);
+  await scrollToItem(item.id);
 }
 
 function formatUpdatedAt(value) {
@@ -727,11 +747,14 @@ function formatUpdatedAt(value) {
   return date.toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function scrollToItem(itemId) {
+async function scrollToItem(itemId) {
+  const shouldWait = missingOpen.value || failedOpen.value;
   missingOpen.value = false;
   failedOpen.value = false;
+  await nextTick();
+  await waitForSummaryCollapse(shouldWait);
   const el = document.getElementById(`item-${itemId}`);
-  if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (el) scrollBelowProgress(el);
 }
 
 // ---- Checktable helpers ----
@@ -779,13 +802,13 @@ function toggleNavLevel() {
 function scrollToSub(subId) {
   navOpen.value = false;
   const el = document.getElementById(`sub-${subId}`);
-  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (el) scrollBelowProgress(el);
 }
 
 function scrollToGroup(groupId) {
   navOpen.value = false;
   const el = document.getElementById(`group-${groupId}`);
-  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (el) scrollBelowProgress(el);
 }
 
 function closeNavOnOutsidePointer(event) {
@@ -1382,10 +1405,12 @@ watch(reconnected, async () => {
     <div v-if="currentCategory?.subcategories?.length" ref="fabContainerRef" class="fab-container">
       <Transition name="nav-menu">
         <div v-if="navOpen" class="nav-menu">
-          <button class="nav-menu-item nav-menu-top" @click="scrollToTop">맨 위로</button>
-          <button class="nav-menu-item nav-menu-level-toggle" @click="toggleNavLevel">
-            {{ navLevel === "subcategory" ? "그룹 보기" : "소분류 보기" }}
-          </button>
+          <div class="nav-menu-actions">
+            <button class="nav-menu-item nav-menu-level-toggle" @click="toggleNavLevel">
+              {{ navLevel === "subcategory" ? "소분류 보기" : "그룹 보기" }}
+            </button>
+            <button class="nav-menu-item nav-menu-top" @click="scrollToTop">맨 위로</button>
+          </div>
           <template v-if="navLevel === 'subcategory'">
             <button
               v-for="(sub, si) in currentCategory.subcategories"
@@ -2357,14 +2382,21 @@ watch(reconnected, async () => {
   background: var(--bg-hover);
 }
 
-.nav-menu-top {
-  color: var(--accent-primary);
-  font-weight: 600;
+.nav-menu-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid var(--border-color);
 }
 
-.nav-menu-level-toggle {
-  color: var(--text-secondary);
+.nav-menu-actions .nav-menu-item {
+  color: var(--accent-primary);
   font-weight: 600;
+  text-align: center;
+}
+
+.nav-menu-actions .nav-menu-item + .nav-menu-item {
+  border-top: 0;
+  border-left: 1px solid var(--border-color);
 }
 
 .nav-menu-item + .nav-menu-item {

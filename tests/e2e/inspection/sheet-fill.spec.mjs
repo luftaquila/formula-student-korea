@@ -58,17 +58,36 @@ test.describe("Inspection sheet filling", () => {
     const fab = page.locator(".fab");
     const menu = page.locator(".fab-container .nav-menu");
     const levelToggle = page.locator(".nav-menu-level-toggle");
+    const topButton = page.locator(".nav-menu-top");
 
     await fab.click();
     await expect(menu).toBeVisible();
-    await expect(levelToggle).toHaveText("그룹 보기");
+    await expect(levelToggle).toHaveText("소분류 보기");
+    await expect(topButton).toHaveText("맨 위로");
+    const levelBox = await levelToggle.boundingBox();
+    const topBox = await topButton.boundingBox();
+    expect(topBox.x).toBeGreaterThan(levelBox.x);
+    const actionColors = await menu.locator(".nav-menu-actions button").evaluateAll(
+      (buttons) => buttons.map((button) => getComputedStyle(button).color),
+    );
+    expect(new Set(actionColors).size).toBe(1);
     await expect(menu.locator(".nav-menu-item").filter({ hasText: "1 - 배터리" })).toBeVisible();
 
     await levelToggle.click();
-    await expect(levelToggle).toHaveText("소분류 보기");
-    await expect(menu.locator(".nav-menu-item").filter({ hasText: "1-1 배터리 팩" })).toBeVisible();
+    await expect(levelToggle).toHaveText("그룹 보기");
+    const groupNavItem = menu.locator(".nav-menu-item").filter({ hasText: "1-1 배터리 팩" });
+    await expect(groupNavItem).toBeVisible();
+    await groupNavItem.click();
+    await expect(menu).toBeHidden();
+    await expect.poll(async () => page.evaluate(() => {
+      const progress = document.querySelector(".inspection-progress").getBoundingClientRect();
+      const group = document.querySelector(".group-section").getBoundingClientRect();
+      return Math.abs(group.top - progress.bottom - 8);
+    })).toBeLessThanOrEqual(2);
 
-    await page.locator(".team-header").click();
+    await fab.click();
+    await expect(menu).toBeVisible();
+    await page.locator(".group-title").first().click();
     await expect(menu).toBeHidden();
   });
 
