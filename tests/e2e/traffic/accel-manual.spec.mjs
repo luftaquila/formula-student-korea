@@ -68,7 +68,7 @@ test.describe("Acceleration manual mode measurement", () => {
 
     await page.getByTestId("quick-cones-plus").click();
     await expect(page.getByTestId("quick-cones")).toHaveValue("1");
-    await expect(page.getByTestId("quick-save-status")).toHaveText("저장됨");
+    await expect(quickEdit.locator(".quick-edit-header").getByTestId("quick-save-status")).toHaveText("저장됨");
 
     await page.getByTestId("quick-oc").fill("2");
     await page.getByTestId("quick-oc").blur();

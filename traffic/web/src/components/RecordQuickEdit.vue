@@ -116,6 +116,15 @@ onUnmounted(() => clearTimeout(savedTimer));
         <span class="team-number">#{{ record.num }}</span>
         <strong>{{ formattedResult }}</strong>
       </div>
+      <div
+        v-if="saveState === 'saved' && !isSaving"
+        class="save-status"
+        data-testid="quick-save-status"
+        aria-live="polite"
+      >
+        <span class="status-dot"></span>
+        저장됨
+      </div>
     </div>
 
     <div class="quick-edit-body">
@@ -212,15 +221,6 @@ onUnmounted(() => clearTimeout(savedTimer));
         </div>
       </div>
 
-      <div
-        v-if="saveState === 'saved' && !isSaving"
-        class="save-status"
-        data-testid="quick-save-status"
-        aria-live="polite"
-      >
-        <span class="status-dot"></span>
-        저장됨
-      </div>
     </div>
   </section>
 </template>
@@ -234,7 +234,7 @@ onUnmounted(() => clearTimeout(savedTimer));
 .quick-edit-header {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 1rem;
   padding: 1rem 1.25rem;
   border-bottom: 1px solid var(--border-color);
@@ -376,7 +376,7 @@ onUnmounted(() => clearTimeout(savedTimer));
   align-items: center;
   gap: 0.4rem;
   min-height: 1.2rem;
-  margin-top: 0.8rem;
+  margin-left: auto;
   color: var(--text-tertiary);
   font-size: 0.75rem;
 }
