@@ -609,7 +609,7 @@ function goBack() {
                     <option value="counter">증감 숫자</option>
                     <option value="text">텍스트</option>
                     <option value="checktable">체크 테이블</option>
-                    <option value="stopwatch">스톱워치 (PDF 제외)</option>
+                    <option value="stopwatch">스톱워치</option>
                   </select>
                   <input
                     v-if="item.answer_type === 'number' || item.answer_type === 'counter' || item.answer_type === 'text'"
