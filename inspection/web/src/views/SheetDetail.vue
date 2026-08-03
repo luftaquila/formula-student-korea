@@ -758,13 +758,39 @@ function onChecktableToggle(itemId, rowIdx, colIdx) {
   answerQueue.enqueue(itemId, jsonStr, { immediate: true });
 }
 
-// ---- Subcategory quick nav ----
+// ---- Quick navigation ----
 const navOpen = ref(false);
+const navLevel = ref("subcategory");
+const fabContainerRef = ref(null);
+
+const quickNavGroups = computed(() => (
+  (currentCategory.value?.subcategories || []).flatMap((sub, si) =>
+    (sub.groups || []).map((group, gi) => ({
+      id: group.id,
+      label: `${subNum(si)}-${grpNum(gi)} ${group.name}`,
+    })),
+  )
+));
+
+function toggleNavLevel() {
+  navLevel.value = navLevel.value === "subcategory" ? "group" : "subcategory";
+}
 
 function scrollToSub(subId) {
   navOpen.value = false;
   const el = document.getElementById(`sub-${subId}`);
   if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function scrollToGroup(groupId) {
+  navOpen.value = false;
+  const el = document.getElementById(`group-${groupId}`);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function closeNavOnOutsidePointer(event) {
+  const container = fabContainerRef.value;
+  if (navOpen.value && container && !container.contains(event.target)) navOpen.value = false;
 }
 
 function scrollToTop() {
@@ -787,10 +813,12 @@ function onScroll() {
 
 onMounted(() => {
   window.addEventListener("scroll", onScroll);
+  document.addEventListener("pointerdown", closeNavOnOutsidePointer);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("scroll", onScroll);
+  document.removeEventListener("pointerdown", closeNavOnOutsidePointer);
   if (stopwatchInterval !== null) window.clearInterval(stopwatchInterval);
   for (const timer of saveStateTimers.values()) clearTimeout(timer);
   saveStateTimers.clear();
@@ -1132,7 +1160,7 @@ watch(reconnected, async () => {
           <div v-for="(sub, si) in currentCategory.subcategories" :key="sub.id" :id="`sub-${sub.id}`" class="subcategory-section">
             <h4 class="subcategory-title">{{ subNum(si) }} - {{ sub.name }}<span v-if="sub.remarks" class="subcategory-remarks"> — {{ sub.remarks }}</span></h4>
 
-            <div v-for="(grp, gi) in sub.groups" :key="grp.id" class="group-section">
+            <div v-for="(grp, gi) in sub.groups" :key="grp.id" :id="`group-${grp.id}`" class="group-section">
               <h5 class="group-title">{{ grpNum(gi) }}. {{ grp.name }}<span v-if="grp.remarks" class="group-remarks"> — {{ grp.remarks }}</span></h5>
 
               <div v-for="(item, ii) in grp.items" :key="item.id" :id="`item-${item.id}`" class="item-row">
@@ -1351,19 +1379,38 @@ watch(reconnected, async () => {
     </template>
 
     <!-- Quick nav FAB -->
-    <div v-if="currentCategory?.subcategories?.length" class="fab-container">
+    <div v-if="currentCategory?.subcategories?.length" ref="fabContainerRef" class="fab-container">
       <Transition name="nav-menu">
         <div v-if="navOpen" class="nav-menu">
           <button class="nav-menu-item nav-menu-top" @click="scrollToTop">맨 위로</button>
-          <button
-            v-for="(sub, si) in currentCategory.subcategories"
-            :key="sub.id"
-            class="nav-menu-item"
-            @click="scrollToSub(sub.id)"
-          >{{ subNum(si) }} - {{ sub.name }}</button>
+          <button class="nav-menu-item nav-menu-level-toggle" @click="toggleNavLevel">
+            {{ navLevel === "subcategory" ? "그룹 보기" : "소분류 보기" }}
+          </button>
+          <template v-if="navLevel === 'subcategory'">
+            <button
+              v-for="(sub, si) in currentCategory.subcategories"
+              :key="sub.id"
+              class="nav-menu-item"
+              @click="scrollToSub(sub.id)"
+            >{{ subNum(si) }} - {{ sub.name }}</button>
+          </template>
+          <template v-else>
+            <button
+              v-for="group in quickNavGroups"
+              :key="group.id"
+              class="nav-menu-item"
+              @click="scrollToGroup(group.id)"
+            >{{ group.label }}</button>
+          </template>
         </div>
       </Transition>
-      <button class="fab" @click="navOpen = !navOpen" :class="{ active: navOpen }">
+      <button
+        class="fab"
+        :class="{ active: navOpen }"
+        :aria-expanded="navOpen"
+        aria-label="빠른 이동 메뉴"
+        @click="navOpen = !navOpen"
+      >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
           <path d="M4 6h16M4 12h16M4 18h16" />
         </svg>
@@ -2308,6 +2355,11 @@ watch(reconnected, async () => {
 
 .nav-menu-top {
   color: var(--accent-primary);
+  font-weight: 600;
+}
+
+.nav-menu-level-toggle {
+  color: var(--text-secondary);
   font-weight: 600;
 }
 

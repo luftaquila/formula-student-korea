@@ -52,6 +52,24 @@ test.describe("Inspection sheet filling", () => {
     }
   });
 
+  test("switches quick navigation depth and closes on outside click", async ({ page }) => {
+    const fab = page.locator(".fab");
+    const menu = page.locator(".fab-container .nav-menu");
+    const levelToggle = page.locator(".nav-menu-level-toggle");
+
+    await fab.click();
+    await expect(menu).toBeVisible();
+    await expect(levelToggle).toHaveText("그룹 보기");
+    await expect(menu.locator(".nav-menu-item").filter({ hasText: "1 - 배터리" })).toBeVisible();
+
+    await levelToggle.click();
+    await expect(levelToggle).toHaveText("소분류 보기");
+    await expect(menu.locator(".nav-menu-item").filter({ hasText: "1-1 배터리 팩" })).toBeVisible();
+
+    await page.locator(".team-header").click();
+    await expect(menu).toBeHidden();
+  });
+
   test("shows the vehicle type chip between the team name and the year", async ({ page }) => {
     const chip = page.locator(".team-header .team-type");
     await expect(chip).toHaveText("EV"); // seeded: team 1 is EV
