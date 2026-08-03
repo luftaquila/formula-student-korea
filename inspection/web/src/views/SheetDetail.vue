@@ -783,7 +783,7 @@ function onChecktableToggle(itemId, rowIdx, colIdx) {
 
 // ---- Quick navigation ----
 const navOpen = ref(false);
-const navLevel = ref("subcategory");
+const navLevel = ref("group");
 const fabContainerRef = ref(null);
 
 const quickNavGroups = computed(() => (
@@ -1756,7 +1756,7 @@ watch(reconnected, async () => {
   width: auto;
   min-height: 44px;
   padding: 0.375rem 0.625rem;
-  font-size: 1rem;
+  font-size: 0.875rem;
 }
 
 .number-input {

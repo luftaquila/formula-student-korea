@@ -50,7 +50,7 @@ test.describe("Inspection sheet filling", () => {
       const box = await input.boundingBox();
       expect(box.height).toBeGreaterThanOrEqual(44);
       const fontSize = await input.evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
-      expect(fontSize).toBeGreaterThanOrEqual(16);
+      expect(fontSize).toBeGreaterThanOrEqual(14);
     }
   });
 
@@ -62,7 +62,7 @@ test.describe("Inspection sheet filling", () => {
 
     await fab.click();
     await expect(menu).toBeVisible();
-    await expect(levelToggle).toHaveText("소분류 보기");
+    await expect(levelToggle).toHaveText("그룹 보기");
     await expect(topButton).toHaveText("맨 위로");
     const levelBox = await levelToggle.boundingBox();
     const topBox = await topButton.boundingBox();
@@ -71,10 +71,6 @@ test.describe("Inspection sheet filling", () => {
       (buttons) => buttons.map((button) => getComputedStyle(button).color),
     );
     expect(new Set(actionColors).size).toBe(1);
-    await expect(menu.locator(".nav-menu-item").filter({ hasText: "1 - 배터리" })).toBeVisible();
-
-    await levelToggle.click();
-    await expect(levelToggle).toHaveText("그룹 보기");
     const groupNavItem = menu.locator(".nav-menu-item").filter({ hasText: "1-1 배터리 팩" });
     await expect(groupNavItem).toBeVisible();
     await groupNavItem.click();
@@ -87,6 +83,9 @@ test.describe("Inspection sheet filling", () => {
 
     await fab.click();
     await expect(menu).toBeVisible();
+    await levelToggle.click();
+    await expect(levelToggle).toHaveText("소분류 보기");
+    await expect(menu.locator(".nav-menu-item").filter({ hasText: "1 - 배터리" })).toBeVisible();
     await page.locator(".group-title").first().click();
     await expect(menu).toBeHidden();
   });
