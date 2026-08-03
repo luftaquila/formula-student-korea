@@ -302,6 +302,10 @@ jobs:
         env:
           DOCKER_BUILD_SUMMARY: false
         with:
+          # Build from the checked-out workspace. The action otherwise fetches
+          # github.sha again as a remote Git context, which can fail every shard
+          # independently on a transient GitHub 5xx response.
+          source: .
           files: compose.yml
           targets: ${{ needs.changes.outputs.bake_targets }}
           # The 5 e2e shards build concurrently. A shared cache scope races on
