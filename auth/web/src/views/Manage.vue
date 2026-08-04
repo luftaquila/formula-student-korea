@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { formatPhone } from "@shared/format-phone.js";
 import { ROLE_LEVELS } from "@shared/constants.js";
@@ -30,6 +30,7 @@ const opsDisplayIds = ref(new Set());
 const opsDescriptions = ref(new Map());
 const opsDisplayOrder = ref([]);
 const opsOrderSaving = ref(false);
+const opsDragUserId = ref(null);
 const editingOpsDescriptionId = ref(null);
 const opsDropdownOpen = ref(false);
 const opsDropdownSearch = ref("");
@@ -466,17 +467,101 @@ const opsDisplayUsers = computed(() =>
     .map((u) => ({ ...u, opsDescription: opsDescriptions.value.get(u.id) || "" })),
 );
 
-async function moveOpsDisplay(userId, offset) {
-  if (opsOrderSaving.value) return;
-  const fromIndex = opsDisplayOrder.value.indexOf(userId);
-  const toIndex = fromIndex + offset;
-  if (fromIndex < 0 || toIndex < 0 || toIndex >= opsDisplayOrder.value.length) return;
+let opsDragPointerId = null;
+let opsDragStartOrder = [];
+let opsDragPointerX = 0;
+let opsDragPointerY = 0;
+let opsDragScrollFrame = null;
+let opsDragHandle = null;
 
-  const previousOrder = [...opsDisplayOrder.value];
-  const nextOrder = [...previousOrder];
+function ordersMatch(a, b) {
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
+function reorderOpsDisplayAtPoint(clientX, clientY) {
+  const targetRow = document.elementFromPoint(clientX, clientY)?.closest("tr[data-ops-contact-id]");
+  if (!targetRow || !opsDragUserId.value) return;
+
+  const targetId = Number(targetRow.dataset.opsContactId);
+  const fromIndex = opsDisplayOrder.value.indexOf(opsDragUserId.value);
+  const toIndex = opsDisplayOrder.value.indexOf(targetId);
+  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+
+  const nextOrder = [...opsDisplayOrder.value];
   const [movedId] = nextOrder.splice(fromIndex, 1);
   nextOrder.splice(toIndex, 0, movedId);
   opsDisplayOrder.value = nextOrder;
+}
+
+function stopOpsDragAutoScroll() {
+  if (opsDragScrollFrame !== null) cancelAnimationFrame(opsDragScrollFrame);
+  opsDragScrollFrame = null;
+}
+
+function scheduleOpsDragAutoScroll() {
+  if (opsDragScrollFrame !== null || !opsDragUserId.value) return;
+  opsDragScrollFrame = requestAnimationFrame(() => {
+    opsDragScrollFrame = null;
+    if (!opsDragUserId.value) return;
+
+    const edgeSize = Math.min(80, window.innerHeight * 0.15);
+    let scrollAmount = 0;
+    if (opsDragPointerY < edgeSize) {
+      scrollAmount = -Math.ceil(((edgeSize - opsDragPointerY) / edgeSize) * 14);
+    } else if (opsDragPointerY > window.innerHeight - edgeSize) {
+      scrollAmount = Math.ceil(((opsDragPointerY - (window.innerHeight - edgeSize)) / edgeSize) * 14);
+    }
+
+    if (scrollAmount !== 0) {
+      window.scrollBy(0, scrollAmount);
+      reorderOpsDisplayAtPoint(opsDragPointerX, opsDragPointerY);
+      scheduleOpsDragAutoScroll();
+    }
+  });
+}
+
+function removeOpsDragListeners() {
+  window.removeEventListener("pointermove", handleOpsDrag);
+  window.removeEventListener("pointerup", finishOpsDrag);
+  window.removeEventListener("pointercancel", cancelOpsDrag);
+}
+
+function startOpsDrag(event, userId) {
+  if (opsOrderSaving.value || opsDragUserId.value || (event.pointerType === "mouse" && event.button !== 0)) return;
+  event.preventDefault();
+  closeOpsDropdown();
+  opsDragUserId.value = userId;
+  opsDragPointerId = event.pointerId;
+  opsDragStartOrder = [...opsDisplayOrder.value];
+  opsDragPointerX = event.clientX;
+  opsDragPointerY = event.clientY;
+  opsDragHandle = event.currentTarget;
+  opsDragHandle.setPointerCapture(event.pointerId);
+  window.addEventListener("pointermove", handleOpsDrag, { passive: false });
+  window.addEventListener("pointerup", finishOpsDrag);
+  window.addEventListener("pointercancel", cancelOpsDrag);
+}
+
+function handleOpsDrag(event) {
+  if (event.pointerId !== opsDragPointerId || !opsDragUserId.value) return;
+  event.preventDefault();
+  opsDragPointerX = event.clientX;
+  opsDragPointerY = event.clientY;
+  reorderOpsDisplayAtPoint(event.clientX, event.clientY);
+  scheduleOpsDragAutoScroll();
+}
+
+function resetOpsDrag() {
+  stopOpsDragAutoScroll();
+  removeOpsDragListeners();
+  opsDragUserId.value = null;
+  opsDragPointerId = null;
+  opsDragStartOrder = [];
+  opsDragHandle = null;
+}
+
+async function persistOpsDisplayOrder(previousOrder) {
+  const nextOrder = [...opsDisplayOrder.value];
   opsOrderSaving.value = true;
 
   try {
@@ -493,6 +578,21 @@ async function moveOpsDisplay(userId, offset) {
   } finally {
     opsOrderSaving.value = false;
   }
+}
+
+async function finishOpsDrag(event) {
+  if (event.pointerId !== opsDragPointerId || !opsDragUserId.value) return;
+  if (opsDragHandle?.hasPointerCapture(event.pointerId)) opsDragHandle.releasePointerCapture(event.pointerId);
+  const previousOrder = opsDragStartOrder;
+  const changed = !ordersMatch(previousOrder, opsDisplayOrder.value);
+  resetOpsDrag();
+  if (changed) await persistOpsDisplayOrder(previousOrder);
+}
+
+function cancelOpsDrag(event) {
+  if (event.pointerId !== opsDragPointerId || !opsDragUserId.value) return;
+  opsDisplayOrder.value = opsDragStartOrder;
+  resetOpsDrag();
 }
 
 function startOpsDescriptionEdit(userId) {
@@ -578,6 +678,11 @@ async function removeOpsDisplay(user) {
 onMounted(() => {
   fetchUsers(true);
   fetchOpsDisplay();
+});
+
+onUnmounted(() => {
+  stopOpsDragAutoScroll();
+  removeOpsDragListeners();
 });
 </script>
 
@@ -796,24 +901,33 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(u, index) in opsDisplayUsers" :key="u.id">
+              <tr
+                v-for="u in opsDisplayUsers"
+                :key="u.id"
+                class="ops-contact-row"
+                :class="{ 'ops-contact-row-dragging': opsDragUserId === u.id }"
+                :data-ops-contact-id="u.id"
+              >
                 <td class="col-order">
-                  <div class="ops-order-buttons">
-                    <button
-                      class="btn btn-sm btn-ghost ops-order-btn"
-                      :disabled="index === 0 || opsOrderSaving"
-                      :aria-label="`${u.realname || u.name || u.email} 위로 이동`"
-                      title="위로 이동"
-                      @click="moveOpsDisplay(u.id, -1)"
-                    >↑</button>
-                    <button
-                      class="btn btn-sm btn-ghost ops-order-btn"
-                      :disabled="index === opsDisplayUsers.length - 1 || opsOrderSaving"
-                      :aria-label="`${u.realname || u.name || u.email} 아래로 이동`"
-                      title="아래로 이동"
-                      @click="moveOpsDisplay(u.id, 1)"
-                    >↓</button>
-                  </div>
+                  <button
+                    type="button"
+                    class="ops-drag-handle"
+                    :class="{ 'ops-drag-handle-active': opsDragUserId === u.id }"
+                    :disabled="opsOrderSaving"
+                    :aria-label="`${u.realname || u.name || u.email} 드래그하여 순서 변경`"
+                    :aria-pressed="opsDragUserId === u.id"
+                    title="드래그하여 순서 변경"
+                    @pointerdown="startOpsDrag($event, u.id)"
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <circle cx="5" cy="3" r="1.25" />
+                      <circle cx="11" cy="3" r="1.25" />
+                      <circle cx="5" cy="8" r="1.25" />
+                      <circle cx="11" cy="8" r="1.25" />
+                      <circle cx="5" cy="13" r="1.25" />
+                      <circle cx="11" cy="13" r="1.25" />
+                    </svg>
+                  </button>
                 </td>
                 <td class="col-email">{{ u.email }}</td>
                 <td class="col-name">{{ u.name || '-' }}</td>
@@ -1126,17 +1240,58 @@ onMounted(() => {
 }
 
 .ops-table .col-order {
-  width: 5rem;
+  width: 3.5rem;
 }
 
-.ops-order-buttons {
-  display: flex;
-  gap: 0.25rem;
+.ops-drag-handle {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
-.ops-order-btn {
-  min-width: 1.75rem;
-  padding-inline: 0.375rem;
+.ops-drag-handle:hover,
+.ops-drag-handle:focus-visible {
+  color: var(--accent-primary);
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.ops-drag-handle:focus-visible {
+  box-shadow: 0 0 0 2px var(--border-focus);
+}
+
+.ops-drag-handle:disabled {
+  cursor: wait;
+  opacity: 0.45;
+}
+
+.ops-drag-handle-active {
+  cursor: grabbing;
+  color: var(--accent-primary);
+  background: var(--bg-hover);
+}
+
+.ops-drag-handle svg {
+  width: 1rem;
+  height: 1rem;
+  fill: currentColor;
+}
+
+.ops-contact-row-dragging {
+  background: var(--bg-hover);
+  box-shadow: inset 3px 0 var(--accent-primary);
+  opacity: 0.75;
 }
 
 .ops-description-text {

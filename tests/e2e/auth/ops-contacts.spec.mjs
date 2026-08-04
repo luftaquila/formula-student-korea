@@ -3,6 +3,45 @@ import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 test.use({ storageState: storageStatePath("admin") });
 
+async function dragWithMouse(page, source, target) {
+  await source.scrollIntoViewIfNeeded();
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 8 });
+  await page.mouse.up();
+}
+
+async function dragWithTouch(page, source, target) {
+  await source.scrollIntoViewIfNeeded();
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+
+  const x = sourceBox.x + sourceBox.width / 2;
+  const startY = sourceBox.y + sourceBox.height / 2;
+  const endY = targetBox.y + targetBox.height / 2;
+  const client = await page.context().newCDPSession(page);
+  try {
+    await client.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: startY }] });
+    for (let step = 1; step <= 8; step++) {
+      await client.send("Input.dispatchTouchEvent", {
+        type: "touchMove",
+        touchPoints: [{ x, y: startY + ((endY - startY) * step) / 8 }],
+      });
+    }
+    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } finally {
+    await client.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    await client.detach();
+  }
+}
+
 test.describe("Ops contacts management", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/auth");
@@ -60,10 +99,22 @@ test.describe("Ops contacts management", () => {
     const secondRealname = (await secondRow.locator(".col-realname").textContent()).trim();
     const secondName = (await secondRow.locator(".col-name").textContent()).trim();
     const expectedSecondName = secondRealname !== "-" ? secondRealname : secondName !== "-" ? secondName : secondOptionEmail;
-    const reorderResp = page.waitForResponse((res) => res.url().includes("/api/ops-contacts/reorder") && res.request().method() === "POST");
-    await secondRow.getByRole("button", { name: `${expectedSecondName} 위로 이동` }).click();
-    await reorderResp;
+    // Dragging a regular cell does nothing; only the handle starts a reorder.
+    await dragWithMouse(page, secondRow.locator(".col-email"), row);
+    await expect.poll(async () => (await opsTable.locator("tbody tr td.col-email").allTextContents()).slice(-2)).toEqual([optionEmail, secondOptionEmail]);
+
+    // Desktop mouse drag.
+    const mouseReorderResp = page.waitForResponse((res) => res.url().includes("/api/ops-contacts/reorder") && res.request().method() === "POST");
+    await dragWithMouse(page, secondRow.getByRole("button", { name: `${expectedSecondName} 드래그하여 순서 변경` }), row);
+    await mouseReorderResp;
     await expect.poll(async () => (await opsTable.locator("tbody tr td.col-email").allTextContents()).slice(-2)).toEqual([secondOptionEmail, optionEmail]);
+
+    // Mobile-sized viewport and emulated touch drag.
+    await page.setViewportSize({ width: 390, height: 844 });
+    const touchReorderResp = page.waitForResponse((res) => res.url().includes("/api/ops-contacts/reorder") && res.request().method() === "POST");
+    await dragWithTouch(page, row.getByRole("button", { name: `${expectedName} 드래그하여 순서 변경` }), secondRow);
+    await touchReorderResp;
+    await expect.poll(async () => (await opsTable.locator("tbody tr td.col-email").allTextContents()).slice(-2)).toEqual([optionEmail, secondOptionEmail]);
 
     // Warm the sidebar cache before editing to verify that reopening refreshes it
     await page.locator(".menu-btn").click();
@@ -89,7 +140,7 @@ test.describe("Ops contacts management", () => {
     await expect(sidebarIdentity.locator(".ops-contact-description")).toHaveText(description);
     await expect(sidebarIdentity.locator(":scope > span")).toHaveText([expectedName, description]);
     const sidebarNames = page.locator(".ops-contact-name");
-    await expect.poll(async () => (await sidebarNames.allTextContents()).slice(-2)).toEqual([expectedSecondName, expectedName]);
+    await expect.poll(async () => (await sidebarNames.allTextContents()).slice(-2)).toEqual([expectedName, expectedSecondName]);
     const drawerHasNoHorizontalOverflow = await page.locator(".drawer").evaluate((drawer) => drawer.scrollWidth <= drawer.clientWidth);
     expect(drawerHasNoHorizontalOverflow).toBe(true);
     await page.locator(".close-btn").click();
