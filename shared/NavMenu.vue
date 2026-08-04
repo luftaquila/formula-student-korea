@@ -413,7 +413,7 @@ async function logout() {
   align-items: baseline;
   flex: 1 1 auto;
   flex-wrap: wrap;
-  gap: 0.375rem;
+  gap: 0.125rem;
   min-width: 0;
   max-width: 100%;
 }
@@ -427,7 +427,8 @@ async function logout() {
 }
 
 .ops-contact-description {
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
+  font-weight: 600;
   color: var(--text-secondary);
   min-width: 0;
   overflow-wrap: anywhere;
