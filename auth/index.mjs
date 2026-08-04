@@ -270,7 +270,7 @@ setInterval(() => {
   for (const [ip, entry] of loginLimiter) {
     if (now > entry.resetAt) loginLimiter.delete(ip);
   }
-}, 60000);
+}, 60000).unref();
 
 function checkLoginRate(req, res) {
   // Caddy가 세팅한 신뢰 X-Real-IP 우선(위조 불가), 없으면 X-Forwarded-For 최좌측 → req.ip 폴백.

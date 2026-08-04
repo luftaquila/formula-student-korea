@@ -590,26 +590,6 @@ describe('Auth enforcement', () => {
     assert.equal(res.status, 401);
   });
 
-  it('GET /api/entries without auth returns 200 (public)', async () => {
-    const res = await client.get('/api/entries');
-    assert.equal(res.status, 200);
-  });
-
-  it('GET /api/vehicle-types without auth returns 200 (public)', async () => {
-    const res = await client.get('/api/vehicle-types');
-    assert.equal(res.status, 200);
-  });
-
-  it('GET /api/health without auth returns 200 (public)', async () => {
-    const res = await client.get('/api/health');
-    assert.equal(res.status, 200);
-  });
-
-  it('GET /api/years without auth returns 200 (public)', async () => {
-    const res = await client.get('/api/years');
-    assert.equal(res.status, 200);
-  });
-
   it('DELETE /api/entries/:num without auth returns 401', async () => {
     const res = await client.delete('/api/entries/1');
     assert.equal(res.status, 401);

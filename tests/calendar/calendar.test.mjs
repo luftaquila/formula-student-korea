@@ -84,27 +84,6 @@ describe('Calendar API', () => {
   });
 
   describe('Auth - role enforcement', () => {
-    it('allows unauthenticated access with public-only filtering', async () => {
-      const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31');
-      assert.equal(res.status, 200);
-      const events = await res.json();
-      for (const e of events) assert.equal(e.role, 'public');
-    });
-
-    it('allows student access with public-only filtering', async () => {
-      const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: studentCookie });
-      assert.equal(res.status, 200);
-      const events = await res.json();
-      for (const e of events) {
-        assert.ok(['public', 'student'].includes(e.role));
-      }
-    });
-
-    it('allows official access to events', async () => {
-      const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: officialCookie });
-      assert.equal(res.status, 200);
-    });
-
     it('denies official from creating events', async () => {
       const res = await client.post('/api/events', {
         cookie: officialCookie,
@@ -113,13 +92,6 @@ describe('Calendar API', () => {
       assert.equal(res.status, 403);
     });
 
-    it('allows chief to create events', async () => {
-      const res = await client.post('/api/events', {
-        cookie: chiefCookie,
-        body: { title: 'Chief Event', start: '2026-06-01', end: '2026-06-01', allDay: true },
-      });
-      assert.equal(res.status, 201);
-    });
   });
 
   describe('Role validation on write endpoints', () => {
@@ -172,31 +144,55 @@ describe('Calendar API', () => {
   });
 
   describe('Role-based event filtering', () => {
+    const visibilityPrefix = 'Visibility fixture: ';
+    const roles = ['public', 'student', 'official', 'chief', 'admin'];
+
+    before(async () => {
+      for (const role of roles) {
+        const res = await client.post('/api/events', {
+          cookie: adminCookie,
+          body: {
+            title: `${visibilityPrefix}${role}`,
+            start: '2026-10-01',
+            end: '2026-10-01',
+            allDay: true,
+            role,
+          },
+        });
+        assert.equal(res.status, 201, `failed to create ${role} visibility fixture`);
+      }
+    });
+
+    const fixtureRoles = (events) => events
+      .filter((event) => event.title.startsWith(visibilityPrefix))
+      .map((event) => event.calendarId)
+      .sort();
+
     it('unauthenticated users see only public events', async () => {
       const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31');
       assert.equal(res.status, 200);
       const events = await res.json();
-      for (const e of events) {
-        assert.equal(e.calendarId, 'public', `unexpected role: ${e.calendarId} for "${e.title}"`);
-      }
+      assert.deepEqual(fixtureRoles(events), ['public']);
     });
 
     it('student sees only public and student events', async () => {
       const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: studentCookie });
       assert.equal(res.status, 200);
       const events = await res.json();
-      const allowed = ['public', 'student'];
-      for (const e of events) {
-        assert.ok(allowed.includes(e.calendarId), `student should not see role: ${e.calendarId}`);
-      }
+      assert.deepEqual(fixtureRoles(events), ['public', 'student']);
+    });
+
+    it('official sees public, student, and official events', async () => {
+      const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: officialCookie });
+      assert.equal(res.status, 200);
+      assert.deepEqual(fixtureRoles(await res.json()), ['official', 'public', 'student']);
     });
 
     it('admin sees all events including admin-role events', async () => {
       const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: adminCookie });
       assert.equal(res.status, 200);
       const events = await res.json();
-      const roles = new Set(events.map(e => e.calendarId));
-      assert.ok(roles.has('admin'), 'admin should see admin-role events');
+      assert.deepEqual(fixtureRoles(events), ['admin', 'chief', 'official', 'public', 'student']);
     });
   });
 
@@ -204,14 +200,6 @@ describe('Calendar API', () => {
     it('requires timeMin and timeMax', async () => {
       const res = await client.get('/api/events', { cookie: officialCookie });
       assert.equal(res.status, 400);
-    });
-
-    it('returns events list', async () => {
-      const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: officialCookie });
-      assert.equal(res.status, 200);
-      const events = await res.json();
-      assert.ok(Array.isArray(events));
-      assert.ok(events.length >= 1);
     });
 
     it('includes all-day events when range bounds are ISO timestamps', async () => {
@@ -310,11 +298,8 @@ describe('Calendar API', () => {
     it('DELETE /api/events/:id - deletes an event', async () => {
       const res = await client.delete(`/api/events/${createdId}`, { cookie: chiefCookie });
       assert.equal(res.status, 204);
-    });
-
-    it('DELETE /api/events/:id - returns 404 for non-existent event', async () => {
-      const res = await client.delete('/api/events/99999', { cookie: chiefCookie });
-      assert.equal(res.status, 404);
+      const again = await client.delete(`/api/events/${createdId}`, { cookie: chiefCookie });
+      assert.equal(again.status, 404);
     });
   });
 });

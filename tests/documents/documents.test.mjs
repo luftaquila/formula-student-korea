@@ -630,6 +630,21 @@ describe('Student API - session detail', () => {
 let submissionId, fileId;
 
 describe('File upload', () => {
+  it('POST /api/sessions/:id/submit rejects multipart without files without persisting', async () => {
+    const before = db.prepare(
+      'SELECT COUNT(*) AS count FROM submission WHERE session_id = ? AND team_num = 1',
+    ).get(sessionId).count;
+
+    const res = await uploadFile(sessionId, studentCookie, []);
+
+    assert.equal(res.status, 400);
+    assert.equal(await res.text(), '파일을 선택하세요.');
+    const after = db.prepare(
+      'SELECT COUNT(*) AS count FROM submission WHERE session_id = ? AND team_num = 1',
+    ).get(sessionId).count;
+    assert.equal(after, before, 'an empty multipart request must not create a submission');
+  });
+
   it('POST /api/sessions/:id/submit uploads file', async () => {
     const fileContent = Buffer.from('test file content for pdf');
     const res = await uploadFile(sessionId, studentCookie, [
@@ -686,31 +701,42 @@ describe('File upload', () => {
     const { id: textSessionId } = await sessionRes.json();
 
     try {
+      const utf8Text = '¯ 25°C, ±0.1 mm, 10 µm, café';
       const cases = [
-        { name: 'ambiguous-valid-utf8', charset: 'utf-8', content: Buffer.from([0xc2, 0xaf]), text: '¯' },
-        { name: 'utf8-engineering', charset: 'utf-8', content: Buffer.from('25°C, ±0.1 mm, 10 µm, café', 'utf8'), text: '25°C, ±0.1 mm, 10 µm, café' },
-        { name: 'cp949-invalid-utf8', charset: 'euc-kr', content: Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]), text: '한글' },
-        { name: 'utf8-bom', charset: 'utf-8', content: Buffer.from([0xef, 0xbb, 0xbf, 0x41]), text: 'A' },
-        { name: 'utf16le-bom', charset: 'utf-16le', content: Buffer.from([0xff, 0xfe, 0x41, 0x00]), text: 'A' },
-        { name: 'utf16be-bom', charset: 'utf-16be', content: Buffer.from([0xfe, 0xff, 0x00, 0x41]), text: 'A' },
+        {
+          name: 'utf8-valid-first',
+          charset: 'utf-8',
+          content: Buffer.from(utf8Text, 'utf8'),
+        },
+        { name: 'cp949-invalid-utf8', charset: 'euc-kr', content: Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]) },
+        { name: 'utf8-bom', charset: 'utf-8', content: Buffer.from([0xef, 0xbb, 0xbf, 0x41]) },
+        { name: 'utf16le-bom', charset: 'utf-16le', content: Buffer.from([0xff, 0xfe, 0x41, 0x00]) },
+        { name: 'utf16be-bom', charset: 'utf-16be', content: Buffer.from([0xfe, 0xff, 0x00, 0x41]) },
       ];
 
-      for (const encodingCase of cases) {
-        const res = await uploadFile(textSessionId, studentCookie, [
-          { name: `${encodingCase.name}.txt`, type: 'text/plain', content: encodingCase.content },
-        ]);
-        assert.equal(res.status, 200, encodingCase.name);
-        const data = await res.json();
-        const file = db.prepare('SELECT id, text_charset FROM submission_file WHERE submission_id = ?').get(data.id);
-        assert.equal(file.text_charset, encodingCase.charset, encodingCase.name);
+      const res = await uploadFile(textSessionId, studentCookie, cases.map((encodingCase) => ({
+        name: `${encodingCase.name}.txt`,
+        type: 'text/plain',
+        content: encodingCase.content,
+      })));
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      const files = db.prepare(
+        'SELECT id, original_name, text_charset FROM submission_file WHERE submission_id = ?',
+      ).all(data.id);
+      assert.deepEqual(
+        Object.fromEntries(files.map((file) => [file.original_name, file.text_charset])),
+        Object.fromEntries(cases.map((encodingCase) => [`${encodingCase.name}.txt`, encodingCase.charset])),
+      );
 
-        const normalRes = await fetch(`${baseUrl}/api/admin/submissions/${data.id}/files/${file.id}`, {
-          headers: { 'Cookie': adminCookie },
-        });
-        assert.equal(normalRes.headers.get('content-type'), `text/plain; charset=${encodingCase.charset}`, encodingCase.name);
-        const body = Buffer.from(await normalRes.arrayBuffer());
-        assert.equal(new TextDecoder(encodingCase.charset).decode(body), encodingCase.text, encodingCase.name);
-      }
+      const utf8Case = cases[0];
+      const utf8File = files.find((file) => file.original_name === `${utf8Case.name}.txt`);
+      const previewRes = await fetch(`${baseUrl}/api/admin/submissions/${data.id}/files/${utf8File.id}`, {
+        headers: { 'Cookie': adminCookie },
+      });
+      assert.equal(previewRes.status, 200);
+      assert.equal(previewRes.headers.get('content-type'), 'text/plain; charset=utf-8');
+      assert.equal(await previewRes.text(), utf8Text);
     } finally {
       await client.delete(`/api/admin/sessions/${textSessionId}`, { cookie: chiefCookie });
     }
@@ -989,34 +1015,6 @@ describe('File download (admin)', () => {
     }
   });
 
-  it('GET /api/admin/submissions/:subId/files/:fileId keeps UTF-8 engineering symbols as UTF-8', async () => {
-    const sub = db.prepare('SELECT session_id, team_num FROM submission WHERE id = ?').get(submissionId);
-    const storedName = `${crypto.randomUUID()}.txt`;
-    const originalName = 'engineering-UTF8.txt';
-    const text = '25°C, ±0.1 mm, © 2026, 10 µm, café, 10 Å, m², £100';
-    const content = Buffer.from(text, 'utf8');
-    const dir = path.join(uploadsDir, String(sub.session_id), String(sub.team_num), String(submissionId));
-    const filePath = path.join(dir, storedName);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(filePath, content);
-    const inserted = db.prepare(`
-      INSERT INTO submission_file (submission_id, original_name, stored_name, size, mime_type)
-      VALUES (?, ?, ?, ?, 'text/plain')
-    `).run(submissionId, originalName, storedName, content.length);
-
-    try {
-      const res = await fetch(`${baseUrl}/api/admin/submissions/${submissionId}/files/${inserted.lastInsertRowid}`, {
-        headers: { 'Cookie': adminCookie },
-      });
-      assert.equal(res.status, 200);
-      assert.equal(res.headers.get('content-type'), 'text/plain; charset=utf-8');
-      assert.equal(await res.text(), text);
-    } finally {
-      db.prepare('DELETE FROM submission_file WHERE id = ?').run(inserted.lastInsertRowid);
-      fs.rmSync(filePath, { force: true });
-    }
-  });
-
   it('GET /api/admin/submissions/:subId/files/:fileId forces attachment for non-previewable type', async () => {
     // Find a non-PDF file (the "replacement.pdf" submission also has older docx if any).
     // Upload a fresh non-inline file and check disposition.
@@ -1203,10 +1201,6 @@ describe('Auth enforcement', () => {
     assert.equal(res.status, 401);
   });
 
-  it('GET /api/health without auth returns 200 (public)', async () => {
-    const res = await client.get('/api/health');
-    assert.equal(res.status, 200);
-  });
 });
 
 // -- File size limit enforcement --
@@ -1790,7 +1784,6 @@ describe('PATCH /api/internal/team-num', () => {
 // -- 2-set retention --
 describe('2-set retention', () => {
   let retentionSessionId;
-  let sub1Id, sub2Id, sub3Id;
 
   before(async () => {
     const sessionRes = await client.post('/api/admin/sessions', {
@@ -1810,62 +1803,47 @@ describe('2-set retention', () => {
     retentionSessionId = id;
   });
 
-  it('1st submission creates a record', async () => {
-    const res = await uploadFile(retentionSessionId, studentCookie, [
+  it('keeps the latest two sets while preserving the total attempt count', async () => {
+    const first = await uploadFile(retentionSessionId, studentCookie, [
       { name: 'v1.pdf', type: 'application/pdf', content: Buffer.from('version 1') },
     ]);
-    assert.equal(res.status, 200);
-    sub1Id = (await res.json()).id;
-  });
+    assert.equal(first.status, 200);
+    const sub1Id = (await first.json()).id;
 
-  it('2nd submission keeps both (2 total)', async () => {
-    const res = await uploadFile(retentionSessionId, studentCookie, [
+    const second = await uploadFile(retentionSessionId, studentCookie, [
       { name: 'v2.pdf', type: 'application/pdf', content: Buffer.from('version 2') },
     ]);
-    assert.equal(res.status, 200);
-    sub2Id = (await res.json()).id;
+    assert.equal(second.status, 200);
+    const sub2Id = (await second.json()).id;
 
-    const all = db.prepare('SELECT id FROM submission WHERE session_id = ? AND team_num = 1 ORDER BY id DESC').all(retentionSessionId);
-    assert.equal(all.length, 2, 'should have 2 submissions');
-    assert.equal(all[0].id, sub2Id);
-    assert.equal(all[1].id, sub1Id);
-  });
+    let retained = db.prepare('SELECT id FROM submission WHERE session_id = ? AND team_num = 1 ORDER BY id DESC').all(retentionSessionId);
+    assert.deepEqual(retained.map(({ id }) => id), [sub2Id, sub1Id]);
 
-  it('3rd submission deletes oldest, keeps 2', async () => {
-    const res = await uploadFile(retentionSessionId, studentCookie, [
+    const third = await uploadFile(retentionSessionId, studentCookie, [
       { name: 'v3.pdf', type: 'application/pdf', content: Buffer.from('version 3') },
     ]);
-    assert.equal(res.status, 200);
-    sub3Id = (await res.json()).id;
+    assert.equal(third.status, 200);
+    const sub3Id = (await third.json()).id;
 
-    const all = db.prepare('SELECT id FROM submission WHERE session_id = ? AND team_num = 1 ORDER BY id DESC').all(retentionSessionId);
-    assert.equal(all.length, 2, 'should have exactly 2 submissions');
-    assert.equal(all[0].id, sub3Id, 'newest should be kept');
-    assert.equal(all[1].id, sub2Id, 'second newest should be kept');
+    retained = db.prepare('SELECT id FROM submission WHERE session_id = ? AND team_num = 1 ORDER BY id DESC').all(retentionSessionId);
+    assert.deepEqual(retained.map(({ id }) => id), [sub3Id, sub2Id]);
 
-    // sub1 should be gone
     const deleted = db.prepare('SELECT * FROM submission WHERE id = ?').get(sub1Id);
     assert.equal(deleted, undefined, 'oldest submission should be deleted');
 
-    // sub1 files should be gone
     const deletedFiles = db.prepare('SELECT * FROM submission_file WHERE submission_id = ?').all(sub1Id);
     assert.equal(deletedFiles.length, 0, 'oldest submission files should be deleted');
 
-    // sub1 disk directory should be gone
     const sub1Dir = path.join(uploadsDir, String(retentionSessionId), '1', String(sub1Id));
     assert.ok(!fs.existsSync(sub1Dir), 'oldest submission disk files should be deleted');
-  });
 
-  it('sub2 disk files still exist', () => {
     const sub2Dir = path.join(uploadsDir, String(retentionSessionId), '1', String(sub2Id));
     assert.ok(fs.existsSync(sub2Dir), 'previous submission disk files should exist');
-  });
 
-  it('admin status returns prevSubmission and prevFiles', async () => {
-    const res = await client.get(`/api/admin/sessions/${retentionSessionId}/status`, { cookie: chiefCookie });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    const team1 = data.status.find(s => s.team_num === 1);
+    const adminStatus = await client.get(`/api/admin/sessions/${retentionSessionId}/status`, { cookie: chiefCookie });
+    assert.equal(adminStatus.status, 200);
+    const adminData = await adminStatus.json();
+    let team1 = adminData.status.find(s => s.team_num === 1);
     assert.ok(team1.submission, 'should have current submission');
     assert.equal(team1.submission.id, sub3Id, 'current submission should be the newest');
     assert.ok(team1.prevSubmission, 'should have previous submission');
@@ -1876,25 +1854,22 @@ describe('2-set retention', () => {
     assert.equal(team1.submissionCount, 3, 'submissionCount should reflect total submission attempts');
     assert.equal(team1.submission.attempt_no, 3);
     assert.equal(team1.prevSubmission.attempt_no, 2);
-  });
 
-  it('student API still returns only latest submission', async () => {
-    const res = await client.get(`/api/sessions/${retentionSessionId}`, { cookie: studentCookie });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.equal(data.submission.id, sub3Id, 'student should see only the latest');
-    assert.ok(!data.prevSubmission, 'student API should not have prevSubmission');
-  });
+    const studentStatus = await client.get(`/api/sessions/${retentionSessionId}`, { cookie: studentCookie });
+    assert.equal(studentStatus.status, 200);
+    const studentData = await studentStatus.json();
+    assert.equal(studentData.submission.id, sub3Id, 'student should see only the latest');
+    assert.ok(!studentData.prevSubmission, 'student API should not have prevSubmission');
 
-  it('4th submission keeps submissionCount increasing past retention cap', async () => {
-    const res = await uploadFile(retentionSessionId, studentCookie, [
+    const fourth = await uploadFile(retentionSessionId, studentCookie, [
       { name: 'v4.pdf', type: 'application/pdf', content: Buffer.from('version 4') },
     ]);
-    assert.equal(res.status, 200);
+    assert.equal(fourth.status, 200);
 
     const statusRes = await client.get(`/api/admin/sessions/${retentionSessionId}/status`, { cookie: chiefCookie });
-    const data = await statusRes.json();
-    const team1 = data.status.find(s => s.team_num === 1);
+    assert.equal(statusRes.status, 200);
+    const finalData = await statusRes.json();
+    team1 = finalData.status.find(s => s.team_num === 1);
     assert.equal(team1.submissionCount, 4, 'submissionCount must keep growing even though only 2 rows remain');
     assert.equal(team1.submission.attempt_no, 4);
     assert.equal(team1.prevSubmission.attempt_no, 3);

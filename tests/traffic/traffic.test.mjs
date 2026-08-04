@@ -667,10 +667,6 @@ describe('Auth enforcement', () => {
     assert.equal(res.status, 401);
   });
 
-  it('GET /api/health without auth returns 200 (public)', async () => {
-    const res = await client.get('/api/health');
-    assert.equal(res.status, 200);
-  });
 });
 
 // ─── SSE Broadcast Payloads ─────────────────────────────────────────────

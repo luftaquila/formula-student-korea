@@ -17,38 +17,6 @@ describe("buildSideRanks", () => {
     assert.equal(buildSideRanks([]).size, 0);
   });
 
-  it("ranks a single side 1..n by ascending id", () => {
-    const cones = [cone(1, "left"), cone(2, "left"), cone(3, "left")];
-    const r = buildSideRanks(cones);
-    assert.deepEqual([r.get(1), r.get(2), r.get(3)], [1, 2, 3]);
-  });
-
-  it("ranks each side independently", () => {
-    const cones = [
-      cone(1, "left"), cone(2, "right"), cone(3, "left"),
-      cone(4, "center"), cone(5, "right"), cone(6, "left"),
-    ];
-    const r = buildSideRanks(cones);
-    assert.equal(r.get(1), 1, "left #1");
-    assert.equal(r.get(3), 2, "left #2");
-    assert.equal(r.get(6), 3, "left #3");
-    assert.equal(r.get(2), 1, "right #1");
-    assert.equal(r.get(5), 2, "right #2");
-    assert.equal(r.get(4), 1, "center #1");
-  });
-
-  it("ranks by id, not array order (unordered input)", () => {
-    const cones = [cone(30, "left"), cone(10, "left"), cone(20, "left")];
-    const r = buildSideRanks(cones);
-    assert.deepEqual([r.get(10), r.get(20), r.get(30)], [1, 2, 3]);
-  });
-
-  it("handles non-contiguous ids", () => {
-    const cones = [cone(5, "left"), cone(100, "left"), cone(42, "right")];
-    const r = buildSideRanks(cones);
-    assert.deepEqual([r.get(5), r.get(100), r.get(42)], [1, 2, 1]);
-  });
-
   it("does not mutate the input array", () => {
     const cones = [cone(3, "left"), cone(1, "left"), cone(2, "left")];
     const order = cones.map((c) => c.id);

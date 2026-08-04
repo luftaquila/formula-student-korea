@@ -1,4 +1,4 @@
-import { describe, it, after } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { tmpDbPath, cleanup } from '../helpers/test-utils.mjs';
@@ -10,14 +10,17 @@ import { createDatabase, addColumn } from '../../shared/db-setup.mjs';
 let dbPath, db;
 
 describe('createDatabase', () => {
+  before(() => {
+    dbPath = tmpDbPath();
+    db = createDatabase(Database, dbPath);
+  });
+
   after(() => {
     if (db) db.close();
     if (dbPath) cleanup(dbPath);
   });
 
   it('returns a working database instance', () => {
-    dbPath = tmpDbPath();
-    db = createDatabase(Database, dbPath);
     assert.ok(db);
     db.exec('CREATE TABLE test (id INTEGER PRIMARY KEY)');
     db.prepare('INSERT INTO test (id) VALUES (1)').run();
@@ -40,16 +43,18 @@ describe('createDatabase', () => {
 describe('addColumn', () => {
   let colDb, colDbPath;
 
+  before(() => {
+    colDbPath = tmpDbPath();
+    colDb = createDatabase(Database, colDbPath);
+    colDb.exec('CREATE TABLE items (id INTEGER PRIMARY KEY)');
+  });
+
   after(() => {
     if (colDb) colDb.close();
     if (colDbPath) cleanup(colDbPath);
   });
 
   it('adds a new column to an existing table', () => {
-    colDbPath = tmpDbPath();
-    colDb = createDatabase(Database, colDbPath);
-    colDb.exec('CREATE TABLE items (id INTEGER PRIMARY KEY)');
-
     addColumn(colDb, 'items', "name TEXT DEFAULT ''");
 
     // Verify column exists by inserting and querying
@@ -59,8 +64,7 @@ describe('addColumn', () => {
   });
 
   it('silently ignores duplicate column additions', () => {
-    // Should not throw
-    addColumn(colDb, 'items', "name TEXT DEFAULT ''");
+    assert.doesNotThrow(() => addColumn(colDb, 'items', "name TEXT DEFAULT ''"));
   });
 
   it('rethrows non-duplicate-column errors', () => {

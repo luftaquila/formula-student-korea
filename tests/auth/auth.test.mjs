@@ -50,10 +50,6 @@ describe('GET /api/health', () => {
     assert.equal(text, 'ok');
   });
 
-  it('is accessible without authentication', async () => {
-    const res = await client.get('/api/health');
-    assert.equal(res.status, 200);
-  });
 });
 
 // ─── User CRUD ───────────────────────────────────────────────────────────
@@ -649,11 +645,6 @@ describe('Ops contacts', () => {
     assert.equal(res.status, 401);
   });
 
-  it('GET /api/ops-contacts accessible by official role', async () => {
-    const res = await client.get('/api/ops-contacts', { cookie: officialCookie });
-    assert.equal(res.status, 200);
-  });
-
   it('GET /api/ops-contacts rejected for student role (403)', async () => {
     db.prepare("INSERT OR IGNORE INTO users (email, role, active) VALUES ('student@test.com', 'student', 1)").run();
     const res = await client.get('/api/ops-contacts', { cookie: studentCookie });
@@ -1032,16 +1023,15 @@ describe('GET /api/admin/logs', () => {
     const res = await client.get('/api/admin/logs?limit=2&offset=0', { cookie: adminCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
-    assert.ok(data.logs.length <= 2);
+    assert.equal(data.logs.length, 2);
   });
 
   it('each log entry has _service field', async () => {
     const res = await client.get('/api/admin/logs?service=auth', { cookie: adminCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
-    if (data.logs.length > 0) {
-      assert.equal(data.logs[0]._service, 'auth');
-    }
+    assert.ok(data.logs.length > 0);
+    assert.ok(data.logs.every((log) => log._service === 'auth'));
   });
 
   it('requires admin auth (401 without cookie)', async () => {
