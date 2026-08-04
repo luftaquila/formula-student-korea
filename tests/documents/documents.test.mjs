@@ -687,8 +687,8 @@ describe('File upload', () => {
 
     try {
       const res = await uploadFile(textSessionId, studentCookie, [
-        // CP949 "짱징책", but also valid UTF-8 "¯¡å".
-        { name: 'ambiguous.txt', type: 'text/plain', content: Buffer.from([0xc2, 0xaf, 0xc2, 0xa1, 0xc3, 0xa5]) },
+        // CP949 "책 1\n째 1\n짱징책", but also valid UTF-8 "å 1\n° 1\n¯¡å".
+        { name: 'ambiguous.txt', type: 'text/plain', content: Buffer.from([0xc3, 0xa5, 0x20, 0x31, 0x0a, 0xc2, 0xb0, 0x20, 0x31, 0x0a, 0xc2, 0xaf, 0xc2, 0xa1, 0xc3, 0xa5]) },
       ]);
       assert.equal(res.status, 200);
       const data = await res.json();
@@ -700,7 +700,7 @@ describe('File upload', () => {
       });
       assert.equal(normalRes.headers.get('content-type'), 'text/plain; charset=euc-kr');
       const body = Buffer.from(await normalRes.arrayBuffer());
-      assert.equal(new TextDecoder('euc-kr').decode(body), '짱징책');
+      assert.equal(new TextDecoder('euc-kr').decode(body), '책 1\n째 1\n짱징책');
     } finally {
       await client.delete(`/api/admin/sessions/${textSessionId}`, { cookie: chiefCookie });
     }
@@ -983,7 +983,7 @@ describe('File download (admin)', () => {
     const sub = db.prepare('SELECT session_id, team_num FROM submission WHERE id = ?').get(submissionId);
     const storedName = `${crypto.randomUUID()}.txt`;
     const originalName = 'engineering-UTF8.txt';
-    const text = '25°C, ±0.1 mm, © 2026, 10 µm, café, 10 Å';
+    const text = '25°C, ±0.1 mm, © 2026, 10 µm, café, 10 Å, m², £100';
     const content = Buffer.from(text, 'utf8');
     const dir = path.join(uploadsDir, String(sub.session_id), String(sub.team_num), String(submissionId));
     const filePath = path.join(dir, storedName);

@@ -423,29 +423,45 @@ function inlineDisposition(originalName, mimeType) {
   return null;
 }
 
-const COMMON_UTF8_ENGINEERING_SYMBOLS = new Set([..."°±©®™µμΩÅå×÷≤≥≈≠→←↔·–—…‰√∑∆Δ"]);
+const UTF8_CONTEXT_PATTERNS = [
+  /\d[ \t]*°[ \t]*[CFK]?/u,
+  /°[ \t]*[CFK]\b/u,
+  /±[ \t]*\d/u,
+  /\d[ \t]*(?:µ|μ|Ω|Å|å)[ \t]*[A-Za-z]?/u,
+  /©[ \t]*(?:19|20)\d{2}/u,
+  /(?:£|€|¥|₩)[ \t]*\d/u,
+  /[A-Za-z0-9][⁰¹²³⁴⁵⁶⁷⁸⁹]+/u,
+  /\d[ \t]*(?:×|÷|≤|≥|≈|≠|‰)/u,
+  /(?:×|÷|≤|≥|≈|≠)[ \t]*\d/u,
+  /[A-Za-z][\u00c0-\u024f]|[\u00c0-\u024f][A-Za-z]/u,
+];
+const KOREAN_TOKEN_PATTERN = /(?:^|[^A-Za-z0-9가-힣])[가-힣]+(?=[^A-Za-z0-9가-힣])/u;
+const KOREAN_TOKEN_AT_END_PATTERN = /(?:^|[^A-Za-z0-9가-힣])[가-힣]+(?=$|[^A-Za-z0-9가-힣])/u;
 
-function addEncodingSignals(candidate, text) {
+function addEncodingSignals(candidate, text, final = false) {
   for (const char of text) {
     const cp = char.codePointAt(0);
     const isHangul = (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0x1100 && cp <= 0x11ff) || (cp >= 0x3130 && cp <= 0x318f);
-    if (isHangul) candidate.hangul += 1;
-    if (candidate.charset !== "utf-8") continue;
-    if (COMMON_UTF8_ENGINEERING_SYMBOLS.has(char)) candidate.engineeringSymbols += 1;
-    if ((cp >= 0x30 && cp <= 0x39) || (cp >= 0x41 && cp <= 0x5a) || (cp >= 0x61 && cp <= 0x7a)) candidate.asciiContext += 1;
-    if ((cp >= 0x41 && cp <= 0x5a) || (cp >= 0x61 && cp <= 0x7a)) candidate.asciiLetters += 1;
-    if ((cp >= 0x00c0 && cp <= 0x024f) && !COMMON_UTF8_ENGINEERING_SYMBOLS.has(char)) candidate.extendedLatin += 1;
+    if (isHangul && candidate.charset === "utf-8") candidate.hangul += 1;
   }
+  const context = candidate.contextTail + text;
+  if (candidate.charset === "utf-8") {
+    if (UTF8_CONTEXT_PATTERNS.some((pattern) => pattern.test(context))) candidate.hasUtf8Context = true;
+  } else {
+    const tokenPattern = final ? KOREAN_TOKEN_AT_END_PATTERN : KOREAN_TOKEN_PATTERN;
+    if (tokenPattern.test(context)) candidate.hasKoreanToken = true;
+  }
+  candidate.contextTail = context.slice(-16);
 }
 
 // CP949와 UTF-8은 일부 바이트열이 겹치므로 양쪽을 엄격히 디코딩한 뒤
 // 문서 문맥을 비교한다. UTF-8로 복원된 한글, 숫자·단위와 함께 쓴 공학 기호,
-// 라틴 단어를 UTF-8 신호로 보고, 그런 신호 없이 CP949에서만 한글이 복원되면
+// 라틴 단어를 UTF-8 신호로 보고, 그런 신호 없이 CP949에서 독립된 한글 단어가 복원되면
 // CP949를 선택한다. 예: CP949 "짱"(c2 af) ↔ UTF-8 "¯".
 function createTextCharsetDetector() {
   const candidates = [
-    { charset: "utf-8", decoder: new TextDecoder("utf-8", { fatal: true }), valid: true, hangul: 0, engineeringSymbols: 0, asciiContext: 0, asciiLetters: 0, extendedLatin: 0 },
-    { charset: "euc-kr", decoder: new TextDecoder("euc-kr", { fatal: true }), valid: true, hangul: 0 },
+    { charset: "utf-8", decoder: new TextDecoder("utf-8", { fatal: true }), valid: true, hangul: 0, hasUtf8Context: false, contextTail: "" },
+    { charset: "euc-kr", decoder: new TextDecoder("euc-kr", { fatal: true }), valid: true, hasKoreanToken: false, contextTail: "" },
   ];
   let prefix = Buffer.alloc(0);
   let started = false;
@@ -483,7 +499,7 @@ function createTextCharsetDetector() {
       if (bomCharset) return bomCharset;
       for (const candidate of candidates) {
         if (!candidate.valid) continue;
-        try { addEncodingSignals(candidate, candidate.decoder.decode()); }
+        try { addEncodingSignals(candidate, candidate.decoder.decode(), true); }
         catch { candidate.valid = false; }
       }
 
@@ -491,9 +507,8 @@ function createTextCharsetDetector() {
       const eucKr = candidates[1];
       if (!utf8.valid) return "euc-kr";
       if (!eucKr.valid || utf8.hangul > 0) return "utf-8";
-      if (utf8.engineeringSymbols > 0 && utf8.asciiContext > 0) return "utf-8";
-      if (utf8.extendedLatin > 0 && utf8.asciiLetters > 0) return "utf-8";
-      if (eucKr.hangul > 0) return "euc-kr";
+      if (utf8.hasUtf8Context) return "utf-8";
+      if (eucKr.hasKoreanToken) return "euc-kr";
       return "utf-8";
     },
   };
