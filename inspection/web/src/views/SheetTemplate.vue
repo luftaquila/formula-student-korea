@@ -771,7 +771,6 @@ function goBack() {
                       <option value="computed">자동 계산 (읽기 전용)</option>
                       <option value="suggestion">권장값 표시 + 실측 입력</option>
                     </select>
-                    <span class="calculation-help">문항 ID가 아닌 내부 키로 연결되어 연도 복사·JSON 가져오기에도 유지됩니다.</span>
                   </div>
                   <template v-if="item.calculation">
                     <div class="calculation-fields">
@@ -1280,11 +1279,6 @@ function goBack() {
 
 .calculation-mode {
   min-width: 190px;
-}
-
-.calculation-help {
-  font-size: 0.6875rem;
-  color: var(--text-tertiary);
 }
 
 .calculation-field {
