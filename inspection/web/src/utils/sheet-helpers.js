@@ -56,7 +56,7 @@ export function formatStopwatchElapsed(elapsedMs) {
 }
 
 export function isResponseItem(item) {
-  return item?.answer_type !== "stopwatch";
+  return item?.answer_type !== "stopwatch" && item?.calculation?.mode !== "computed";
 }
 
 export function normalizeRestorableAnswerDraft(item, value) {

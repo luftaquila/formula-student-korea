@@ -116,6 +116,8 @@ describe('Non-response field rules', () => {
 
   it('excludes stopwatches from response completion', () => {
     assert.equal(isResponseItem(stopwatch), false);
+    assert.equal(isResponseItem({ answer_type: 'number', calculation: { mode: 'computed' } }), false);
+    assert.equal(isResponseItem({ answer_type: 'number', calculation: { mode: 'suggestion' } }), true);
     assert.equal(isResponseItem({ answer_type: 'counter' }), true);
   });
 
@@ -126,6 +128,7 @@ describe('Non-response field rules', () => {
 
   it('drops stopwatch, missing-item, and invalid counter answer drafts', () => {
     assert.equal(normalizeRestorableAnswerDraft(stopwatch, 'old value'), null);
+    assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'number', calculation: { mode: 'computed' } }, 'old value'), null);
     assert.equal(normalizeRestorableAnswerDraft(undefined, 'old value'), null);
     assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'counter' }, 'old value'), null);
   });

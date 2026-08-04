@@ -16,6 +16,7 @@ import { user } from "@shared/officialsStore.js";
 import { createKeyedDebouncer } from "@shared/debounce.js";
 import { useSSE } from "../composables/useSSE";
 import { createVersionedSaveQueue } from "../utils/versioned-save-queue";
+import { createCalculationEvaluator, formatCalculationValue } from "../../../lib/calculations.mjs";
 
 const { error } = useNotification();
 const router = useRouter();
@@ -102,6 +103,32 @@ const templateItemsById = computed(() => {
   }
   return items;
 });
+
+const calculationResults = computed(() => {
+  const items = Array.from(templateItemsById.value.values());
+  const evaluator = createCalculationEvaluator(items, (itemId) => sheetData.value.answers[itemId]?.value ?? "");
+  const results = new Map();
+  for (const item of items) {
+    if (item.calculation) results.set(item.id, evaluator.evaluate(item));
+  }
+  return results;
+});
+
+function getCalculationResult(item) {
+  return calculationResults.value.get(item.id) || { status: "missing" };
+}
+
+function getCalculationText(item) {
+  return formatCalculationValue(getCalculationResult(item));
+}
+
+function getCalculationHint(item) {
+  const status = getCalculationResult(item).status;
+  if (status === "missing" || status === "missing_source") return "원본 값 입력 후 계산됩니다.";
+  if (status === "out_of_range") return "설정된 구간을 벗어났습니다.";
+  if (status === "cycle") return "계산 설정에 순환 참조가 있습니다.";
+  return status === "invalid" ? "원본 값이 올바른 숫자가 아닙니다." : "";
+}
 
 // 탭 번호는 템플릿 원본 순서를 따른다 — 유형별로 숨겨진 카테고리가 있어도
 // 인쇄된 시트의 번호와 어긋나지 않게 한다.
@@ -1217,6 +1244,33 @@ watch(reconnected, async () => {
                     >F</button>
                   </div>
                   <!-- Number input -->
+                  <div v-else-if="item.answer_type === 'number' && item.calculation?.mode === 'computed'" class="calculated-control">
+                    <span class="calculated-label">자동 계산값</span>
+                    <span v-if="getCalculationText(item)" class="calculated-value">{{ getCalculationText(item) }}</span>
+                    <span v-else class="calculated-hint">{{ getCalculationHint(item) }}</span>
+                    <span v-if="getCalculationText(item) && item.unit" class="unit-label">{{ item.unit }}</span>
+                  </div>
+                  <div v-else-if="item.answer_type === 'number' && item.calculation?.mode === 'suggestion'" class="suggestion-control">
+                    <div class="suggested-value">
+                      <span class="suggested-label">규정 권장값</span>
+                      <strong v-if="getCalculationText(item)">{{ getCalculationText(item) }}<span v-if="item.unit"> {{ item.unit }}</span></strong>
+                      <span v-else class="calculated-hint">{{ getCalculationHint(item) }}</span>
+                    </div>
+                    <label class="input-with-unit measured-value">
+                      <span class="measured-label">실측값</span>
+                      <input
+                        type="number"
+                        class="form-input inline-input number-input"
+                        :value="getAnswer(item.id)"
+                        @focus="focusedItemId = item.id"
+                        @blur="handleAnswerBlur()"
+                        @input="onAnswerChange(item.id, $event.target.value)"
+                        :disabled="isReadOnly"
+                        placeholder="값"
+                      />
+                      <span v-if="item.unit" class="unit-label">{{ item.unit }}</span>
+                    </label>
+                  </div>
                   <div v-else-if="item.answer_type === 'number'" class="input-with-unit">
                     <input
                       type="number"
@@ -1778,6 +1832,53 @@ watch(reconnected, async () => {
   display: flex;
   align-items: center;
   gap: 0.25rem;
+}
+
+.calculated-control,
+.suggestion-control,
+.suggested-value,
+.measured-value {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.calculated-control,
+.suggestion-control {
+  min-height: 44px;
+}
+
+.calculated-label,
+.suggested-label,
+.measured-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.calculated-value,
+.suggested-value strong {
+  font-family: "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.calculated-hint {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+.suggested-value {
+  padding: 0.375rem 0.625rem;
+  min-height: 36px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.measured-value {
+  margin-left: 0.25rem;
 }
 
 .counter-control {

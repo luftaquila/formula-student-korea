@@ -1182,7 +1182,8 @@
                 "name": "TS Voltage (max)",
                 "answer_type": "number",
                 "remarks": "",
-                "unit": "V"
+                "unit": "V",
+                "field_key": "accumulator.ts-voltage-max"
               },
               {
                 "name": "TS Power (max)",
@@ -1209,16 +1210,43 @@
             "remarks": "",
             "items": [
               {
+                "name": "현재 TS 전압",
+                "answer_type": "number",
+                "remarks": "IMD 테스트 시점의 측정 전압",
+                "unit": "V",
+                "field_key": "accumulator.ts-voltage-current"
+              },
+              {
                 "name": "IMD 테스트 값",
                 "answer_type": "number",
-                "remarks": "(250 * 최대 전압)",
-                "unit": "Ω"
+                "remarks": "(250 Ω/V × 현재 TS 전압)",
+                "unit": "Ω",
+                "field_key": "accumulator.imd-test-resistance",
+                "calculation": {
+                  "mode": "computed",
+                  "operation": "multiply",
+                  "sources": ["accumulator.ts-voltage-current"],
+                  "factor": 250,
+                  "precision": 2
+                }
               },
               {
                 "name": "TSMP 전류제한 저항값",
                 "answer_type": "number",
                 "remarks": "(0~200V: 5kΩ, 200~400V: 10kΩ, 400~600V: 15kΩ)",
-                "unit": "kΩ"
+                "unit": "kΩ",
+                "field_key": "accumulator.tsmp-measured-resistance",
+                "calculation": {
+                  "mode": "suggestion",
+                  "operation": "range_lookup",
+                  "sources": ["accumulator.ts-voltage-max"],
+                  "precision": 0,
+                  "ranges": [
+                    { "max": 200, "value": 5 },
+                    { "max": 400, "value": 10 },
+                    { "max": 600, "value": 15 }
+                  ]
+                }
               }
             ]
           },
