@@ -668,7 +668,7 @@ describe('File upload', () => {
     submissionId = data.id; // update to latest submission
   });
 
-  it('POST /api/sessions/:id/submit independently detects colliding CP949 and UTF-8 contexts', async () => {
+  it('POST /api/sessions/:id/submit applies the BOM, UTF-8-first, and CP949 fallback policy', async () => {
     const sessionRes = await client.post('/api/admin/sessions', {
       body: {
         name: 'Text Encoding Session',
@@ -687,22 +687,12 @@ describe('File upload', () => {
 
     try {
       const cases = [
-        { name: 'cp949-book-before-digit', charset: 'euc-kr', content: Buffer.from([0xc3, 0xa5, 0x31]), text: '책1' },
-        { name: 'cp949-book-after-digit', charset: 'euc-kr', content: Buffer.from([0x31, 0xc3, 0xa5]), text: '1책' },
-        { name: 'cp949-conflicting-lines', charset: 'euc-kr', content: Buffer.from([0xc3, 0xa5, 0x20, 0x31, 0x0a, 0x31, 0xc3, 0xa5]), text: '책 1\n1책' },
-        { name: 'cp949-jjae-before-digit', charset: 'euc-kr', content: Buffer.from([0xc2, 0xb0, 0x31]), text: '째1' },
-        { name: 'cp949-ambiguous-korean', charset: 'euc-kr', content: Buffer.from([0xc2, 0xaf, 0xc2, 0xa1, 0xc3, 0xa5]), text: '짱징책' },
-        ...[
-          '25°C',
-          '±0.1 mm',
-          '© 2026',
-          '10 µm',
-          'café',
-          '10 Å',
-          'm²',
-          '£100',
-          '징',
-        ].map((text, index) => ({ name: `utf8-context-${index}`, charset: 'utf-8', content: Buffer.from(text, 'utf8'), text })),
+        { name: 'ambiguous-valid-utf8', charset: 'utf-8', content: Buffer.from([0xc2, 0xaf]), text: '¯' },
+        { name: 'utf8-engineering', charset: 'utf-8', content: Buffer.from('25°C, ±0.1 mm, 10 µm, café', 'utf8'), text: '25°C, ±0.1 mm, 10 µm, café' },
+        { name: 'cp949-invalid-utf8', charset: 'euc-kr', content: Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]), text: '한글' },
+        { name: 'utf8-bom', charset: 'utf-8', content: Buffer.from([0xef, 0xbb, 0xbf, 0x41]), text: 'A' },
+        { name: 'utf16le-bom', charset: 'utf-16le', content: Buffer.from([0xff, 0xfe, 0x41, 0x00]), text: 'A' },
+        { name: 'utf16be-bom', charset: 'utf-16be', content: Buffer.from([0xfe, 0xff, 0x00, 0x41]), text: 'A' },
       ];
 
       for (const encodingCase of cases) {

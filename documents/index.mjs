@@ -423,87 +423,34 @@ function inlineDisposition(originalName, mimeType) {
   return null;
 }
 
-const UTF8_CONTEXT_PATTERNS = [
-  /\d[ \t]*°[ \t]*[CFK]?/gu,
-  /°[ \t]*[CFK]\b/gu,
-  /±[ \t]*\d/gu,
-  /\d[ \t]*(?:µ|μ|Ω|Å)[ \t]*[A-Za-z]?/gu,
-  /©[ \t]*(?:19|20)\d{2}/gu,
-  /(?:£|€|¥|₩)[ \t]*\d/gu,
-  /[A-Za-z0-9][⁰¹²³⁴⁵⁶⁷⁸⁹]+/gu,
-  /\d[ \t]*(?:×|÷|≤|≥|≈|≠|‰)/gu,
-  /(?:×|÷|≤|≥|≈|≠)[ \t]*\d/gu,
-  /[A-Za-z][\u00c0-\u024f]|[\u00c0-\u024f][A-Za-z]/gu,
-];
-const KOREAN_TOKEN_PATTERN = /(?:^|[^A-Za-z가-힣])[가-힣]+(?=[^A-Za-z가-힣])/gu;
-const KOREAN_TOKEN_AT_END_PATTERN = /(?:^|[^A-Za-z가-힣])[가-힣]+(?=$|[^A-Za-z가-힣])/gu;
-
-function addContextEvidence(candidate, patterns, context, contextStart) {
-  for (let i = 0; i < patterns.length; i += 1) {
-    const pattern = patterns[i];
-    pattern.lastIndex = 0;
-    for (const match of context.matchAll(pattern)) {
-      const absoluteEnd = contextStart + match.index + match[0].length;
-      if (absoluteEnd <= candidate.lastEvidenceEnds[i]) continue;
-      candidate.lastEvidenceEnds[i] = absoluteEnd;
-      candidate.evidence += 1;
-    }
-  }
-}
-
-function addEncodingSignals(candidate, text, final = false) {
-  for (const char of text) {
-    const cp = char.codePointAt(0);
-    const isHangul = (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0x1100 && cp <= 0x11ff) || (cp >= 0x3130 && cp <= 0x318f);
-    if (isHangul && candidate.charset === "utf-8") candidate.hangul += 1;
-  }
-  const previousLength = candidate.decodedLength;
-  const context = candidate.contextTail + text;
-  const contextStart = previousLength - candidate.contextTail.length;
-  if (candidate.charset === "utf-8") {
-    addContextEvidence(candidate, UTF8_CONTEXT_PATTERNS, context, contextStart);
-  } else {
-    const tokenPattern = final ? KOREAN_TOKEN_AT_END_PATTERN : KOREAN_TOKEN_PATTERN;
-    addContextEvidence(candidate, [tokenPattern], context, contextStart);
-  }
-  candidate.decodedLength += text.length;
-  candidate.contextTail = context.slice(-32);
-}
-
-// CP949와 UTF-8은 일부 바이트열이 겹치므로 양쪽을 엄격히 디코딩한 뒤
-// 문서 문맥을 비교한다. UTF-8로 복원된 한글, 숫자·단위와 함께 쓴 공학 기호,
-// 라틴 단어를 UTF-8 신호로 보고, 그런 신호 없이 CP949에서 독립된 한글 단어가 복원되면
-// CP949를 선택한다. 예: CP949 "짱"(c2 af) ↔ UTF-8 "¯".
+// BOM이 있으면 해당 인코딩을 따르고, BOM이 없으면 UTF-8을 엄격하게 검증한다.
+// UTF-8과 CP949로 모두 해석 가능한 바이트열은 구분할 수 없으므로 UTF-8을 우선한다.
 function createTextCharsetDetector() {
-  const candidates = [
-    { charset: "utf-8", decoder: new TextDecoder("utf-8", { fatal: true }), valid: true, hangul: 0, evidence: 0, lastEvidenceEnds: Array(UTF8_CONTEXT_PATTERNS.length).fill(-1), decodedLength: 0, contextTail: "" },
-    { charset: "euc-kr", decoder: new TextDecoder("euc-kr", { fatal: true }), valid: true, evidence: 0, lastEvidenceEnds: [-1], decodedLength: 0, contextTail: "" },
-  ];
+  const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+  let utf8Valid = true;
   let prefix = Buffer.alloc(0);
   let started = false;
   let bomCharset = "";
 
-  function decode(bytes) {
-    for (const candidate of candidates) {
-      if (!candidate.valid) continue;
-      try { addEncodingSignals(candidate, candidate.decoder.decode(bytes, { stream: true })); }
-      catch { candidate.valid = false; }
-    }
+  function decodeUtf8(bytes) {
+    if (!utf8Valid) return;
+    try { utf8Decoder.decode(bytes, { stream: true }); }
+    catch { utf8Valid = false; }
   }
 
   function start(bytes) {
     started = true;
     if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) bomCharset = "utf-16le";
     else if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) bomCharset = "utf-16be";
-    if (!bomCharset) decode(bytes);
+    if (!bomCharset) decodeUtf8(bytes);
   }
 
   return {
     write(chunk) {
-      if (bomCharset) return;
-      if (started) return decode(chunk);
+      if (bomCharset || !utf8Valid) return;
+      if (started) return decodeUtf8(chunk);
       const bytes = prefix.length > 0 ? Buffer.concat([prefix, chunk]) : chunk;
-      if (bytes.length < 3) {
+      if (bytes.length < 2) {
         prefix = Buffer.from(bytes);
         return;
       }
@@ -513,19 +460,11 @@ function createTextCharsetDetector() {
     finish() {
       if (!started) start(prefix);
       if (bomCharset) return bomCharset;
-      for (const candidate of candidates) {
-        if (!candidate.valid) continue;
-        try { addEncodingSignals(candidate, candidate.decoder.decode(), true); }
-        catch { candidate.valid = false; }
+      if (utf8Valid) {
+        try { utf8Decoder.decode(); }
+        catch { utf8Valid = false; }
       }
-
-      const utf8 = candidates[0];
-      const eucKr = candidates[1];
-      if (!utf8.valid) return "euc-kr";
-      if (!eucKr.valid || utf8.hangul > 0) return "utf-8";
-      if (utf8.evidence >= eucKr.evidence && utf8.evidence > 0) return "utf-8";
-      if (eucKr.evidence > utf8.evidence) return "euc-kr";
-      return "utf-8";
+      return utf8Valid ? "utf-8" : "euc-kr";
     },
   };
 }
