@@ -52,10 +52,11 @@ describe("2026 IMD/TSMP calculation preset migration", () => {
       assert.equal(maxRow.field_key, "accumulator.ts-voltage-max");
       assert.equal(current.field_key, "accumulator.ts-voltage-current");
       assert.equal(imdRow.field_key, "accumulator.imd-test-resistance");
+      assert.equal(appDb.prepare("SELECT unit FROM sheet_template WHERE id = ?").get(imd).unit, "kΩ");
       assert.equal(tsmpRow.field_key, "accumulator.tsmp-measured-resistance");
       assert.match(imdRow.remarks, /현재 TS 전압/);
       assert.deepEqual(JSON.parse(imdRow.calculation), {
-        mode: "computed", operation: "multiply", sources: ["accumulator.ts-voltage-current"], precision: 2, factor: 250,
+        mode: "computed", operation: "multiply", sources: ["accumulator.ts-voltage-current"], precision: 2, factor: 0.25,
       });
       assert.deepEqual(JSON.parse(tsmpRow.calculation), {
         mode: "suggestion", operation: "range_lookup", sources: ["accumulator.ts-voltage-max"], precision: 0,

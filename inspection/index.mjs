@@ -241,16 +241,42 @@ runMigrationOnce(db, "inspection_2026_imd_tsmp_calculations_v1", () => {
   }
 
   const imdCalculation = serializeCalculationConfig({
-    mode: "computed", operation: "multiply", sources: [keys.currentVoltage], factor: 250, precision: 2,
+    mode: "computed", operation: "multiply", sources: [keys.currentVoltage], factor: 0.25, precision: 2,
   });
   const tsmpCalculation = serializeCalculationConfig({
     mode: "suggestion", operation: "range_lookup", sources: [keys.maxVoltage], precision: 0,
     ranges: [{ max: 200, value: 5 }, { max: 400, value: 10 }, { max: 600, value: 15 }],
   });
-  db.prepare("UPDATE sheet_template SET field_key = ?, calculation = ?, remarks = '(250 Ω/V × 현재 TS 전압)' WHERE id = ?")
+  db.prepare("UPDATE sheet_template SET field_key = ?, calculation = ?, remarks = '(현재 TS 전압 × 0.25 kΩ/V)', unit = 'kΩ' WHERE id = ?")
     .run(keys.imd, imdCalculation, imd.id);
   db.prepare("UPDATE sheet_template SET field_key = ?, calculation = ? WHERE id = ?")
     .run(keys.tsmp, tsmpCalculation, tsmp.id);
+  validateStoredCalculationGraph(2026);
+});
+
+// v1이 이미 적용된 환경의 IMD 표시 단위를 Ω에서 kΩ으로 환산한다.
+runMigrationOnce(db, "inspection_2026_imd_kohm_v2", () => {
+  const imd = db.prepare(`
+    SELECT id, field_key FROM sheet_template
+    WHERE year = 2026 AND level = 'item' AND name = 'IMD 테스트 값'
+    ORDER BY CASE WHEN field_key = 'accumulator.imd-test-resistance' THEN 0 ELSE 1 END, id
+    LIMIT 1
+  `).get();
+  if (!imd) return;
+  const sourceKey = "accumulator.ts-voltage-current";
+  const source = db.prepare(
+    "SELECT 1 FROM sheet_template WHERE year = 2026 AND level = 'item' AND field_key = ?"
+  ).get(sourceKey);
+  if (!source) return;
+  const calculation = serializeCalculationConfig({
+    mode: "computed", operation: "multiply", sources: [sourceKey], factor: 0.25, precision: 2,
+  });
+  db.prepare(`
+    UPDATE sheet_template
+    SET field_key = 'accumulator.imd-test-resistance',
+        calculation = ?, remarks = '(현재 TS 전압 × 0.25 kΩ/V)', unit = 'kΩ'
+    WHERE id = ?
+  `).run(calculation, imd.id);
   validateStoredCalculationGraph(2026);
 });
 

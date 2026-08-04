@@ -1252,7 +1252,7 @@ watch(reconnected, async () => {
                   </div>
                   <div v-else-if="item.answer_type === 'number' && item.calculation?.mode === 'suggestion'" class="suggestion-control">
                     <div class="suggested-value">
-                      <span class="suggested-label">규정 권장값</span>
+                      <span class="suggested-label">규정</span>
                       <strong v-if="getCalculationText(item)">{{ getCalculationText(item) }}<span v-if="item.unit"> {{ item.unit }}</span></strong>
                       <span v-else class="calculated-hint">{{ getCalculationHint(item) }}</span>
                     </div>

@@ -1219,14 +1219,14 @@
               {
                 "name": "IMD 테스트 값",
                 "answer_type": "number",
-                "remarks": "(250 Ω/V × 현재 TS 전압)",
-                "unit": "Ω",
+                "remarks": "(현재 TS 전압 × 0.25 kΩ/V)",
+                "unit": "kΩ",
                 "field_key": "accumulator.imd-test-resistance",
                 "calculation": {
                   "mode": "computed",
                   "operation": "multiply",
                   "sources": ["accumulator.ts-voltage-current"],
-                  "factor": 250,
+                  "factor": 0.25,
                   "precision": 2
                 }
               },
