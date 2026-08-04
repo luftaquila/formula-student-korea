@@ -133,8 +133,15 @@ function formatExts(exts) {
   return exts.split(",").map((e) => e.trim().toUpperCase()).join(", ");
 }
 
-function downloadFile(subId, fileId) {
-  window.open(`${BASE_URL}/api/admin/submissions/${subId}/files/${fileId}`, "_blank");
+function downloadFile(subId, fileId, charset = "") {
+  const query = charset ? `?charset=${encodeURIComponent(charset)}` : "";
+  window.open(`${BASE_URL}/api/admin/submissions/${subId}/files/${fileId}${query}`, "_blank");
+}
+
+function isTextFile(file) {
+  const mime = (file.mime_type || "").split(";")[0].trim().toLowerCase();
+  const ext = file.original_name?.toLowerCase().match(/\.[^.]+$/)?.[0] || "";
+  return ["text/plain", "text/csv", "text/markdown"].includes(mime) || [".txt", ".csv", ".md"].includes(ext);
 }
 
 function downloadZip(subId) {
@@ -265,12 +272,15 @@ onMounted(loadStatus);
                     <td class="col-files">
                       <div v-if="t.files.length > 0" class="file-list">
                         <span v-if="t.files.length > 1" class="file-link file-zip" @click="downloadZip(t.submission.id)">전체 다운로드 ({{ formatSize(t.submission.total_size) }})</span>
-                        <span
-                          v-for="f in t.files"
-                          :key="f.id"
-                          class="file-link"
-                          @click="downloadFile(t.submission.id, f.id)"
-                        >{{ f.original_name }} ({{ formatSize(f.size) }})</span>
+                        <div v-for="f in t.files" :key="f.id" class="file-entry">
+                          <span class="file-link" @click="downloadFile(t.submission.id, f.id)">{{ f.original_name }} ({{ formatSize(f.size) }})</span>
+                          <span
+                            v-if="isTextFile(f)"
+                            class="file-encoding-link"
+                            title="자동 판별이 잘못된 경우 CP949로 다시 엽니다."
+                            @click="downloadFile(t.submission.id, f.id, 'euc-kr')"
+                          >CP949로 열기</span>
+                        </div>
                       </div>
                       <span v-else>-</span>
                     </td>
@@ -292,12 +302,15 @@ onMounted(loadStatus);
                     <td class="col-files">
                       <div v-if="t.prevFiles.length > 0" class="file-list">
                         <span v-if="t.prevFiles.length > 1" class="file-link file-zip" @click="downloadZip(t.prevSubmission.id)">전체 다운로드 ({{ formatSize(t.prevSubmission.total_size) }})</span>
-                        <span
-                          v-for="f in t.prevFiles"
-                          :key="f.id"
-                          class="file-link"
-                          @click="downloadFile(t.prevSubmission.id, f.id)"
-                        >{{ f.original_name }} ({{ formatSize(f.size) }})</span>
+                        <div v-for="f in t.prevFiles" :key="f.id" class="file-entry">
+                          <span class="file-link" @click="downloadFile(t.prevSubmission.id, f.id)">{{ f.original_name }} ({{ formatSize(f.size) }})</span>
+                          <span
+                            v-if="isTextFile(f)"
+                            class="file-encoding-link"
+                            title="자동 판별이 잘못된 경우 CP949로 다시 엽니다."
+                            @click="downloadFile(t.prevSubmission.id, f.id, 'euc-kr')"
+                          >CP949로 열기</span>
+                        </div>
                       </div>
                       <span v-else>-</span>
                     </td>
@@ -476,6 +489,21 @@ onMounted(loadStatus);
 
 .file-link:hover {
   text-decoration: underline;
+}
+
+.file-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.file-encoding-link {
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 0.6875rem;
+  text-decoration: underline;
+  white-space: nowrap;
 }
 
 .file-zip {

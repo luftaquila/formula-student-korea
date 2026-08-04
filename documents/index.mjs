@@ -423,39 +423,21 @@ function inlineDisposition(originalName, mimeType) {
   return null;
 }
 
-function addTextQuality(stats, text) {
-  for (const char of text) {
-    const cp = char.codePointAt(0);
-    if ((cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0x1100 && cp <= 0x11ff) || (cp >= 0x3130 && cp <= 0x318f)) {
-      stats.hangul += 1;
-    }
-    if ((cp < 0x20 && cp !== 0x09 && cp !== 0x0a && cp !== 0x0d) || (cp >= 0x7f && cp <= 0x9f) || cp === 0xfffd) {
-      stats.suspicious += 1;
-    }
-  }
-}
-
-// CP949와 UTF-8은 일부 바이트열이 겹친다. 예를 들어 CP949의 "짱"(c2 af)은
-// UTF-8에서도 유효한 "¯"다. 두 디코딩이 모두 유효하면 한글 문자를 더 많이 복원하고
-// 제어 문자를 덜 만드는 쪽을 선택한다. 동률이면 표준 기본값인 UTF-8을 선택한다.
+// CP949와 UTF-8은 일부 바이트열이 겹쳐 내용만으로는 완전히 구분할 수 없다.
+// 예를 들어 CP949의 "짱"(c2 af)은 UTF-8의 "¯"이기도 하다. 따라서 BOM이 없으면
+// 유효한 UTF-8을 우선하고, UTF-8이 아닐 때만 CP949로 판정한다. 중첩되는 CP949
+// 파일은 관리자 화면의 명시적인 `?charset=euc-kr` 대체 경로로 열 수 있다.
 function createTextCharsetDetector() {
-  const candidates = [
-    { charset: "utf-8", decoder: new TextDecoder("utf-8", { fatal: true }), valid: true, stats: { hangul: 0, suspicious: 0 } },
-    { charset: "euc-kr", decoder: new TextDecoder("euc-kr", { fatal: true }), valid: true, stats: { hangul: 0, suspicious: 0 } },
-  ];
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let validUtf8 = true;
   let prefix = Buffer.alloc(0);
   let started = false;
   let bomCharset = "";
 
   function decode(bytes) {
-    for (const candidate of candidates) {
-      if (!candidate.valid) continue;
-      try {
-        addTextQuality(candidate.stats, candidate.decoder.decode(bytes, { stream: true }));
-      } catch {
-        candidate.valid = false;
-      }
-    }
+    if (!validUtf8) return;
+    try { decoder.decode(bytes, { stream: true }); }
+    catch { validUtf8 = false; }
   }
 
   function start(bytes) {
@@ -480,25 +462,11 @@ function createTextCharsetDetector() {
     finish() {
       if (!started) start(prefix);
       if (bomCharset) return bomCharset;
-
-      for (const candidate of candidates) {
-        if (!candidate.valid) continue;
-        try {
-          addTextQuality(candidate.stats, candidate.decoder.decode());
-        } catch {
-          candidate.valid = false;
-        }
+      if (validUtf8) {
+        try { decoder.decode(); }
+        catch { validUtf8 = false; }
       }
-
-      const utf8 = candidates[0];
-      const eucKr = candidates[1];
-      if (utf8.valid && !eucKr.valid) return utf8.charset;
-      if (!utf8.valid && eucKr.valid) return eucKr.charset;
-      if (!utf8.valid && !eucKr.valid) return "euc-kr";
-      if (eucKr.stats.hangul > utf8.stats.hangul && eucKr.stats.suspicious <= utf8.stats.suspicious) return eucKr.charset;
-      if (utf8.stats.hangul > eucKr.stats.hangul && utf8.stats.suspicious <= eucKr.stats.suspicious) return utf8.charset;
-      if (eucKr.stats.suspicious < utf8.stats.suspicious) return eucKr.charset;
-      return utf8.charset;
+      return validUtf8 ? "utf-8" : "euc-kr";
     },
   };
 }
@@ -526,18 +494,24 @@ async function getTextCharset(file, filePath) {
       })
       .catch(() => "utf-8");
     textCharsetPromises.set(file.id, pending);
+    pending.finally(() => {
+      if (textCharsetPromises.get(file.id) === pending) textCharsetPromises.delete(file.id);
+    });
   }
   return textCharsetPromises.get(file.id);
 }
 
-async function setFileResponseHeaders(res, file, filePath) {
+async function setFileResponseHeaders(res, file, filePath, charsetOverride = "") {
   const inlineType = inlineDisposition(file.original_name, file.mime_type);
   const encoded = encodeURIComponent(file.original_name);
   // Caddy가 전역으로 nosniff를 붙이지만, 프록시 없이 직접 접속하는 경로(dev 등)도 방어
   res.setHeader("X-Content-Type-Options", "nosniff");
   if (inlineType) {
+    const requestedCharset = ["utf-8", "euc-kr", "utf-16le", "utf-16be"].includes(charsetOverride)
+      ? charsetOverride
+      : "";
     const contentType = inlineType.startsWith("text/")
-      ? `${inlineType}; charset=${await getTextCharset(file, filePath)}`
+      ? `${inlineType}; charset=${requestedCharset || await getTextCharset(file, filePath)}`
       : inlineType;
     res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encoded}`);
@@ -890,7 +864,7 @@ app.get("/api/submissions/:subId/files/:fileId", async (req, res) => {
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
   if (isInitialDownload(req)) logger.log(req, "file.download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
-  await setFileResponseHeaders(res, file, filePath);
+  await setFileResponseHeaders(res, file, filePath, String(req.query.charset || "").toLowerCase());
   res.sendFile(filePath);
 });
 
@@ -1225,7 +1199,7 @@ app.get("/api/admin/submissions/:subId/files/:fileId", async (req, res) => {
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
   if (isInitialDownload(req)) logger.log(req, "file.admin_download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
-  await setFileResponseHeaders(res, file, filePath);
+  await setFileResponseHeaders(res, file, filePath, String(req.query.charset || "").toLowerCase());
   res.sendFile(filePath);
 });
 
