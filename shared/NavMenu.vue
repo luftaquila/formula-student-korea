@@ -413,7 +413,7 @@ async function logout() {
   align-items: baseline;
   flex: 1 1 auto;
   flex-wrap: wrap;
-  gap: 0.125rem;
+  gap: 0.75rem;
   min-width: 0;
   max-width: 100%;
 }
