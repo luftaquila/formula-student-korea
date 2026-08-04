@@ -427,51 +427,53 @@ function inlineDisposition(originalName, mimeType) {
 // UTF-8과 CP949로 모두 해석 가능한 바이트열은 구분할 수 없으므로 UTF-8을 우선한다.
 function createTextCharsetDetector() {
   const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
-  let utf8Valid = true;
   let prefix = Buffer.alloc(0);
   let started = false;
-  let bomCharset = "";
+  let settledCharset = "";
 
   function decodeUtf8(bytes) {
-    if (!utf8Valid) return;
+    if (settledCharset) return settledCharset;
     try { utf8Decoder.decode(bytes, { stream: true }); }
-    catch { utf8Valid = false; }
+    catch { settledCharset = "euc-kr"; }
+    return settledCharset;
   }
 
   function start(bytes) {
     started = true;
-    if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) bomCharset = "utf-16le";
-    else if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) bomCharset = "utf-16be";
-    if (!bomCharset) decodeUtf8(bytes);
+    if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) settledCharset = "utf-16le";
+    else if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) settledCharset = "utf-16be";
+    else decodeUtf8(bytes);
+    return settledCharset;
   }
 
   return {
     write(chunk) {
-      if (bomCharset || !utf8Valid) return;
+      if (settledCharset) return settledCharset;
       if (started) return decodeUtf8(chunk);
       const bytes = prefix.length > 0 ? Buffer.concat([prefix, chunk]) : chunk;
       if (bytes.length < 2) {
         prefix = Buffer.from(bytes);
-        return;
+        return "";
       }
       prefix = Buffer.alloc(0);
-      start(bytes);
+      return start(bytes);
     },
     finish() {
       if (!started) start(prefix);
-      if (bomCharset) return bomCharset;
-      if (utf8Valid) {
-        try { utf8Decoder.decode(); }
-        catch { utf8Valid = false; }
-      }
-      return utf8Valid ? "utf-8" : "euc-kr";
+      if (settledCharset) return settledCharset;
+      try { utf8Decoder.decode(); }
+      catch { return "euc-kr"; }
+      return "utf-8";
     },
   };
 }
 
 async function detectTextCharset(filePath) {
   const detector = createTextCharsetDetector();
-  for await (const chunk of fs.createReadStream(filePath)) detector.write(chunk);
+  for await (const chunk of fs.createReadStream(filePath)) {
+    const charset = detector.write(chunk);
+    if (charset) return charset;
+  }
   return detector.finish();
 }
 
