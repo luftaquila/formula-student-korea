@@ -1,7 +1,7 @@
 import express from "express";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { createDatabase, runMigrationOnce } from "../shared/db-setup.mjs";
+import { createDatabase } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
@@ -186,99 +186,8 @@ function validateStoredCalculationGraph(year) {
   }
 }
 
-// 2026 축전지 검사지에 규정 기반 계산을 최초 한 번 연결한다. 라이브 DB를 별도
-// 스크립트로 직접 편집하지 않고 애플리케이션 스키마 마이그레이션으로 멱등 적용한다.
-runMigrationOnce(db, "inspection_2026_imd_tsmp_calculations_v1", () => {
-  const group = db.prepare(`
-    SELECT g.id
-    FROM sheet_template g
-    JOIN sheet_template s ON s.id = g.parent_id
-    JOIN sheet_template c ON c.id = s.parent_id
-    WHERE g.year = 2026 AND g.level = 'group' AND g.name = '기본정보'
-      AND REPLACE(s.name, ' ', '') LIKE '축전지검사%'
-      AND c.name = '축전지'
-    ORDER BY g.id LIMIT 1
-  `).get();
-  if (!group) return;
-
-  const imd = db.prepare("SELECT * FROM sheet_template WHERE parent_id = ? AND level = 'item' AND name = 'IMD 테스트 값'").get(group.id);
-  const tsmp = db.prepare("SELECT * FROM sheet_template WHERE parent_id = ? AND level = 'item' AND name = 'TSMP 전류제한 저항값'").get(group.id);
-  const maxVoltage = db.prepare(`
-    SELECT i.*
-    FROM sheet_template i
-    JOIN sheet_template g ON g.id = i.parent_id
-    JOIN sheet_template s ON s.id = g.parent_id
-    JOIN sheet_template c ON c.id = s.parent_id
-    WHERE i.year = 2026 AND i.level = 'item' AND i.name = 'TS Voltage (max)'
-      AND g.name = '차량 제원' AND s.name = '기본사항' AND c.name = '축전지'
-    ORDER BY i.id LIMIT 1
-  `).get();
-  if (!imd || !tsmp || !maxVoltage) return;
-
-  const keys = {
-    maxVoltage: "accumulator.ts-voltage-max",
-    currentVoltage: "accumulator.ts-voltage-current",
-    imd: "accumulator.imd-test-resistance",
-    tsmp: "accumulator.tsmp-measured-resistance",
-  };
-  db.prepare("UPDATE sheet_template SET field_key = ? WHERE id = ?").run(keys.maxVoltage, maxVoltage.id);
-
-  let currentVoltage = db.prepare(
-    "SELECT * FROM sheet_template WHERE parent_id = ? AND level = 'item' AND name = '현재 TS 전압'"
-  ).get(group.id);
-  if (!currentVoltage) {
-    db.prepare("UPDATE sheet_template SET sort_order = sort_order + 1 WHERE parent_id = ? AND sort_order >= ?")
-      .run(group.id, imd.sort_order);
-    const info = db.prepare(`
-      INSERT INTO sheet_template
-        (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation)
-      VALUES (2026, 'item', ?, ?, '현재 TS 전압', 'number', 'IMD 테스트 시점의 측정 전압', 'V', 1, '', ?, '')
-    `).run(group.id, imd.sort_order, keys.currentVoltage);
-    currentVoltage = { id: Number(info.lastInsertRowid) };
-  } else {
-    db.prepare("UPDATE sheet_template SET field_key = ?, answer_type = 'number', unit = 'V' WHERE id = ?")
-      .run(keys.currentVoltage, currentVoltage.id);
-  }
-
-  const imdCalculation = serializeCalculationConfig({
-    mode: "computed", operation: "multiply", sources: [keys.currentVoltage], factor: 0.25, precision: 2,
-  });
-  const tsmpCalculation = serializeCalculationConfig({
-    mode: "suggestion", operation: "range_lookup", sources: [keys.maxVoltage], precision: 0,
-    ranges: [{ max: 200, value: 5 }, { max: 400, value: 10 }, { max: 600, value: 15 }],
-  });
-  db.prepare("UPDATE sheet_template SET field_key = ?, calculation = ?, remarks = '(현재 TS 전압 × 0.25 kΩ/V)', unit = 'kΩ' WHERE id = ?")
-    .run(keys.imd, imdCalculation, imd.id);
-  db.prepare("UPDATE sheet_template SET field_key = ?, calculation = ? WHERE id = ?")
-    .run(keys.tsmp, tsmpCalculation, tsmp.id);
-  validateStoredCalculationGraph(2026);
-});
-
-// v1이 이미 적용된 환경의 IMD 표시 단위를 Ω에서 kΩ으로 환산한다.
-runMigrationOnce(db, "inspection_2026_imd_kohm_v2", () => {
-  const imd = db.prepare(`
-    SELECT id, field_key FROM sheet_template
-    WHERE year = 2026 AND level = 'item' AND name = 'IMD 테스트 값'
-    ORDER BY CASE WHEN field_key = 'accumulator.imd-test-resistance' THEN 0 ELSE 1 END, id
-    LIMIT 1
-  `).get();
-  if (!imd) return;
-  const sourceKey = "accumulator.ts-voltage-current";
-  const source = db.prepare(
-    "SELECT 1 FROM sheet_template WHERE year = 2026 AND level = 'item' AND field_key = ?"
-  ).get(sourceKey);
-  if (!source) return;
-  const calculation = serializeCalculationConfig({
-    mode: "computed", operation: "multiply", sources: [sourceKey], factor: 0.25, precision: 2,
-  });
-  db.prepare(`
-    UPDATE sheet_template
-    SET field_key = 'accumulator.imd-test-resistance',
-        calculation = ?, remarks = '(현재 TS 전압 × 0.25 kΩ/V)', unit = 'kΩ'
-    WHERE id = ?
-  `).run(calculation, imd.id);
-  validateStoredCalculationGraph(2026);
-});
+// 특정 연도나 문항을 기준으로 템플릿 내용을 시작 시 삽입·수정하지 않는다.
+// 업무 템플릿은 관리 API 또는 명시적인 JSON 가져오기를 통해서만 변경한다.
 
 /* ============================================
    Express 앱 설정

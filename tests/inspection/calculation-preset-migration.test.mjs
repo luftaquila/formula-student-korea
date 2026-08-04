@@ -10,8 +10,8 @@ import { createInspectionApp } from "../../inspection/index.mjs";
 const requireFromInspection = createRequire(new URL("../../inspection/package.json", import.meta.url));
 const Database = requireFromInspection("better-sqlite3");
 
-describe("2026 IMD/TSMP calculation preset migration", () => {
-  it("adds the current voltage field and applies the two calculation modes exactly once", () => {
+describe("inspection startup", () => {
+  it("does not insert or rewrite 2026 IMD/TSMP template content", () => {
     const dbPath = tmpDbPath();
     const seed = new Database(dbPath);
     seed.exec(`CREATE TABLE sheet_template (
@@ -42,32 +42,27 @@ describe("2026 IMD/TSMP calculation preset migration", () => {
     try {
       appDb = createInspectionApp({ dbPath }).db;
       const current = appDb.prepare("SELECT * FROM sheet_template WHERE parent_id = ? AND name = '현재 TS 전압'").get(info);
-      assert.ok(current);
-      assert.equal(current.answer_type, "number");
-      assert.equal(current.unit, "V");
+      assert.equal(current, undefined);
 
-      const maxRow = appDb.prepare("SELECT field_key FROM sheet_template WHERE id = ?").get(maxVoltage);
-      const imdRow = appDb.prepare("SELECT field_key, calculation, remarks FROM sheet_template WHERE id = ?").get(imd);
-      const tsmpRow = appDb.prepare("SELECT field_key, calculation FROM sheet_template WHERE id = ?").get(tsmp);
-      assert.equal(maxRow.field_key, "accumulator.ts-voltage-max");
-      assert.equal(current.field_key, "accumulator.ts-voltage-current");
-      assert.equal(imdRow.field_key, "accumulator.imd-test-resistance");
-      assert.equal(appDb.prepare("SELECT unit FROM sheet_template WHERE id = ?").get(imd).unit, "kΩ");
-      assert.equal(tsmpRow.field_key, "accumulator.tsmp-measured-resistance");
-      assert.match(imdRow.remarks, /현재 TS 전압/);
-      assert.deepEqual(JSON.parse(imdRow.calculation), {
-        mode: "computed", operation: "multiply", sources: ["accumulator.ts-voltage-current"], precision: 2, factor: 0.25,
+      const maxRow = appDb.prepare("SELECT field_key, calculation FROM sheet_template WHERE id = ?").get(maxVoltage);
+      const imdRow = appDb.prepare("SELECT sort_order, field_key, calculation, remarks, unit FROM sheet_template WHERE id = ?").get(imd);
+      const tsmpRow = appDb.prepare("SELECT sort_order, field_key, calculation, remarks, unit FROM sheet_template WHERE id = ?").get(tsmp);
+      assert.equal(maxRow.field_key, `item-2026-${maxVoltage}`);
+      assert.equal(maxRow.calculation, "");
+      assert.deepEqual(imdRow, {
+        sort_order: 0,
+        field_key: `item-2026-${imd}`,
+        calculation: "",
+        remarks: "(250 * 현재 전압)",
+        unit: "Ω",
       });
-      assert.deepEqual(JSON.parse(tsmpRow.calculation), {
-        mode: "suggestion", operation: "range_lookup", sources: ["accumulator.ts-voltage-max"], precision: 0,
-        ranges: [{ max: 200, value: 5 }, { max: 400, value: 10 }, { max: 600, value: 15 }],
+      assert.deepEqual(tsmpRow, {
+        sort_order: 1,
+        field_key: `item-2026-${tsmp}`,
+        calculation: "",
+        remarks: "ranges",
+        unit: "kΩ",
       });
-      appDb.close();
-      appDb = createInspectionApp({ dbPath }).db;
-      assert.equal(
-        appDb.prepare("SELECT COUNT(*) AS count FROM sheet_template WHERE parent_id = ? AND name = '현재 TS 전압'").get(info).count,
-        1,
-      );
     } finally {
       try { appDb?.close(); } catch {}
       cleanup(dbPath);
