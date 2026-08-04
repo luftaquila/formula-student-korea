@@ -97,6 +97,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS submission_file (
 )`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_sf_submission
   ON submission_file(submission_id)`);
+addColumn(db, "submission_file", "text_charset TEXT DEFAULT ''");
 
 // 마이그레이션: allowed_extensions 컬럼 추가
 addColumn(db, "session", "allowed_extensions TEXT DEFAULT ''");
@@ -422,45 +423,121 @@ function inlineDisposition(originalName, mimeType) {
   return null;
 }
 
-// Windows에서 작성한 한글 텍스트는 CP949인 경우가 많다. 브라우저가 모든 텍스트를
-// UTF-8로 해석하지 않도록 파일 전체를 UTF-8로 검증하고, 실패하면 WHATWG의
-// CP949 호환 디코더 라벨인 euc-kr을 사용한다. 청크 단위 검증으로 큰 파일도
-// 메모리에 한꺼번에 올리지 않는다.
-function detectTextCharset(filePath) {
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  const chunk = Buffer.allocUnsafe(64 * 1024);
-  let fd;
-  let firstChunk = true;
-
-  try {
-    fd = fs.openSync(filePath, "r");
-    let bytesRead;
-    while ((bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) {
-      const bytes = chunk.subarray(0, bytesRead);
-      if (firstChunk) {
-        firstChunk = false;
-        if (bytesRead >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return "utf-16le";
-        if (bytesRead >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return "utf-16be";
-      }
-      decoder.decode(bytes, { stream: true });
+function addTextQuality(stats, text) {
+  for (const char of text) {
+    const cp = char.codePointAt(0);
+    if ((cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0x1100 && cp <= 0x11ff) || (cp >= 0x3130 && cp <= 0x318f)) {
+      stats.hangul += 1;
     }
-    decoder.decode();
-    return "utf-8";
-  } catch {
-    return "euc-kr";
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd);
+    if ((cp < 0x20 && cp !== 0x09 && cp !== 0x0a && cp !== 0x0d) || (cp >= 0x7f && cp <= 0x9f) || cp === 0xfffd) {
+      stats.suspicious += 1;
+    }
   }
 }
 
-function setFileResponseHeaders(res, file, filePath) {
+// CP949와 UTF-8은 일부 바이트열이 겹친다. 예를 들어 CP949의 "짱"(c2 af)은
+// UTF-8에서도 유효한 "¯"다. 두 디코딩이 모두 유효하면 한글 문자를 더 많이 복원하고
+// 제어 문자를 덜 만드는 쪽을 선택한다. 동률이면 표준 기본값인 UTF-8을 선택한다.
+function createTextCharsetDetector() {
+  const candidates = [
+    { charset: "utf-8", decoder: new TextDecoder("utf-8", { fatal: true }), valid: true, stats: { hangul: 0, suspicious: 0 } },
+    { charset: "euc-kr", decoder: new TextDecoder("euc-kr", { fatal: true }), valid: true, stats: { hangul: 0, suspicious: 0 } },
+  ];
+  let prefix = Buffer.alloc(0);
+  let started = false;
+  let bomCharset = "";
+
+  function decode(bytes) {
+    for (const candidate of candidates) {
+      if (!candidate.valid) continue;
+      try {
+        addTextQuality(candidate.stats, candidate.decoder.decode(bytes, { stream: true }));
+      } catch {
+        candidate.valid = false;
+      }
+    }
+  }
+
+  function start(bytes) {
+    started = true;
+    if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) bomCharset = "utf-16le";
+    else if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) bomCharset = "utf-16be";
+    if (!bomCharset) decode(bytes);
+  }
+
+  return {
+    write(chunk) {
+      if (bomCharset) return;
+      if (started) return decode(chunk);
+      const bytes = prefix.length > 0 ? Buffer.concat([prefix, chunk]) : chunk;
+      if (bytes.length < 3) {
+        prefix = Buffer.from(bytes);
+        return;
+      }
+      prefix = Buffer.alloc(0);
+      start(bytes);
+    },
+    finish() {
+      if (!started) start(prefix);
+      if (bomCharset) return bomCharset;
+
+      for (const candidate of candidates) {
+        if (!candidate.valid) continue;
+        try {
+          addTextQuality(candidate.stats, candidate.decoder.decode());
+        } catch {
+          candidate.valid = false;
+        }
+      }
+
+      const utf8 = candidates[0];
+      const eucKr = candidates[1];
+      if (utf8.valid && !eucKr.valid) return utf8.charset;
+      if (!utf8.valid && eucKr.valid) return eucKr.charset;
+      if (!utf8.valid && !eucKr.valid) return "euc-kr";
+      if (eucKr.stats.hangul > utf8.stats.hangul && eucKr.stats.suspicious <= utf8.stats.suspicious) return eucKr.charset;
+      if (utf8.stats.hangul > eucKr.stats.hangul && utf8.stats.suspicious <= eucKr.stats.suspicious) return utf8.charset;
+      if (eucKr.stats.suspicious < utf8.stats.suspicious) return eucKr.charset;
+      return utf8.charset;
+    },
+  };
+}
+
+async function detectTextCharset(filePath) {
+  const detector = createTextCharsetDetector();
+  for await (const chunk of fs.createReadStream(filePath)) detector.write(chunk);
+  return detector.finish();
+}
+
+// 신규 업로드는 판별 결과를 DB에 저장한다. 기존 파일은 최초 열람 때 비동기로 한 번만
+// 판별하고 저장하며, 동시에 들어온 Range 요청은 같은 Promise를 공유한다.
+const textCharsetPromises = new Map();
+async function getTextCharset(file, filePath) {
+  if (["utf-8", "euc-kr", "utf-16le", "utf-16be"].includes(file.text_charset)) return file.text_charset;
+  if (!textCharsetPromises.has(file.id)) {
+    const pending = detectTextCharset(filePath)
+      .then((charset) => {
+        try {
+          db.prepare("UPDATE submission_file SET text_charset = ? WHERE id = ?").run(charset, file.id);
+        } catch (e) {
+          logger.warn(null, "file.charset_cache", { error: e.message, file_id: file.id });
+        }
+        return charset;
+      })
+      .catch(() => "utf-8");
+    textCharsetPromises.set(file.id, pending);
+  }
+  return textCharsetPromises.get(file.id);
+}
+
+async function setFileResponseHeaders(res, file, filePath) {
   const inlineType = inlineDisposition(file.original_name, file.mime_type);
   const encoded = encodeURIComponent(file.original_name);
   // Caddy가 전역으로 nosniff를 붙이지만, 프록시 없이 직접 접속하는 경로(dev 등)도 방어
   res.setHeader("X-Content-Type-Options", "nosniff");
   if (inlineType) {
     const contentType = inlineType.startsWith("text/")
-      ? `${inlineType}; charset=${detectTextCharset(filePath)}`
+      ? `${inlineType}; charset=${await getTextCharset(file, filePath)}`
       : inlineType;
     res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encoded}`);
@@ -612,6 +689,8 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     const storedName = crypto.randomUUID() + safeExt(info.filename);
     const filePath = path.join(tmpDir, storedName);
     const ws = fs.createWriteStream(filePath);
+    const inlineType = inlineDisposition(info.filename, info.mimeType);
+    const charsetDetector = inlineType?.startsWith("text/") ? createTextCharsetDetector() : null;
     let fileSize = 0;
 
     const done = new Promise((resolve, reject) => {
@@ -622,6 +701,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
             stored_name: storedName,
             size: fileSize,
             mime_type: info.mimeType || "",
+            text_charset: charsetDetector?.finish() || "",
           });
         }
         resolve();
@@ -631,6 +711,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     filePromises.push(done);
 
     fileStream.on("data", (chunk) => {
+      charsetDetector?.write(chunk);
       fileSize += chunk.length;
       totalSize += chunk.length;
       if (totalSize > session.max_file_size) {
@@ -718,9 +799,9 @@ app.post("/api/sessions/:id/submit", (req, res) => {
         const newSubId = subResult.lastInsertRowid;
 
         // 파일 메타데이터 INSERT
-        const fileStmt = db.prepare("INSERT INTO submission_file (submission_id, original_name, stored_name, size, mime_type) VALUES (?, ?, ?, ?, ?)");
+        const fileStmt = db.prepare("INSERT INTO submission_file (submission_id, original_name, stored_name, size, mime_type, text_charset) VALUES (?, ?, ?, ?, ?, ?)");
         for (const f of filesInfo) {
-          fileStmt.run(newSubId, f.original_name, f.stored_name, f.size, f.mime_type);
+          fileStmt.run(newSubId, f.original_name, f.stored_name, f.size, f.mime_type, f.text_charset);
         }
 
         // 최신 2개를 제외한 오래된 제출 조회
@@ -788,7 +869,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 });
 
 // GET /api/submissions/:subId/files/:fileId - 파일 다운로드
-app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
+app.get("/api/submissions/:subId/files/:fileId", async (req, res) => {
   const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
   if (!team) { logger.warn(req, "file.download", { error: "no_team", sub_id: Number(req.params.subId) }); return res.status(403).send("팀이 등록되지 않았습니다."); }
 
@@ -809,7 +890,7 @@ app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
   if (isInitialDownload(req)) logger.log(req, "file.download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
-  setFileResponseHeaders(res, file, filePath);
+  await setFileResponseHeaders(res, file, filePath);
   res.sendFile(filePath);
 });
 
@@ -1131,7 +1212,7 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
 });
 
 // GET /api/admin/submissions/:subId/files/:fileId - 관리자 파일 다운로드
-app.get("/api/admin/submissions/:subId/files/:fileId", (req, res) => {
+app.get("/api/admin/submissions/:subId/files/:fileId", async (req, res) => {
   const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
   if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
 
@@ -1144,7 +1225,7 @@ app.get("/api/admin/submissions/:subId/files/:fileId", (req, res) => {
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
   if (isInitialDownload(req)) logger.log(req, "file.admin_download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
-  setFileResponseHeaders(res, file, filePath);
+  await setFileResponseHeaders(res, file, filePath);
   res.sendFile(filePath);
 });
 

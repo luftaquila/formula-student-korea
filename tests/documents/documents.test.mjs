@@ -668,6 +668,36 @@ describe('File upload', () => {
     submissionId = data.id; // update to latest submission
   });
 
+  it('POST /api/sessions/:id/submit stores the charset for ambiguous CP949 Korean text', async () => {
+    const sessionRes = await client.post('/api/admin/sessions', {
+      body: {
+        name: 'Text Encoding Session',
+        start_at: '2020-01-01T00:00',
+        end_at: '2030-12-31T23:59',
+        late_end_at: '',
+        max_file_size: 10485760,
+        year: 2026,
+        teams: [1],
+        allowed_extensions: 'txt',
+      },
+      cookie: chiefCookie,
+    });
+    assert.equal(sessionRes.status, 201);
+    const { id: textSessionId } = await sessionRes.json();
+
+    try {
+      const res = await uploadFile(textSessionId, studentCookie, [
+        { name: 'ambiguous.txt', type: 'text/plain', content: Buffer.from([0xc2, 0xaf]) }, // CP949 "짱", UTF-8 "¯"
+      ]);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      const file = db.prepare('SELECT text_charset FROM submission_file WHERE submission_id = ?').get(data.id);
+      assert.equal(file.text_charset, 'euc-kr');
+    } finally {
+      await client.delete(`/api/admin/sessions/${textSessionId}`, { cookie: chiefCookie });
+    }
+  });
+
   it('POST /api/sessions/:id/submit 403 if not target team', async () => {
     const fileContent = Buffer.from('unauthorized content');
     const res = await uploadFile(sessionId, student2Cookie, [
@@ -904,11 +934,11 @@ describe('File download (admin)', () => {
     assert.equal(res.headers.get('content-type'), 'application/pdf');
   });
 
-  it('GET /api/admin/submissions/:subId/files/:fileId declares CP949 Korean text as EUC-KR', async () => {
+  it('GET /api/admin/submissions/:subId/files/:fileId detects and persists ambiguous CP949 Korean text', async () => {
     const sub = db.prepare('SELECT session_id, team_num FROM submission WHERE id = ?').get(submissionId);
     const storedName = `${crypto.randomUUID()}.txt`;
-    const originalName = '한글-CP949.txt';
-    const content = Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]); // "한글" in CP949
+    const originalName = '짱-CP949.txt';
+    const content = Buffer.from([0xc2, 0xaf]); // CP949 "짱", but also valid UTF-8 "¯"
     const dir = path.join(uploadsDir, String(sub.session_id), String(sub.team_num), String(submissionId));
     const filePath = path.join(dir, storedName);
     fs.mkdirSync(dir, { recursive: true });
@@ -926,7 +956,15 @@ describe('File download (admin)', () => {
       assert.match(res.headers.get('content-disposition'), /inline/);
       assert.equal(res.headers.get('content-type'), 'text/plain; charset=euc-kr');
       const body = Buffer.from(await res.arrayBuffer());
-      assert.equal(new TextDecoder('euc-kr').decode(body), '한글');
+      assert.equal(new TextDecoder('euc-kr').decode(body), '짱');
+      const stored = db.prepare('SELECT text_charset FROM submission_file WHERE id = ?').get(inserted.lastInsertRowid);
+      assert.equal(stored.text_charset, 'euc-kr', 'legacy file detection should be persisted');
+
+      const rangeRes = await fetch(`${baseUrl}/api/admin/submissions/${submissionId}/files/${inserted.lastInsertRowid}`, {
+        headers: { 'Cookie': adminCookie, 'Range': 'bytes=0-0' },
+      });
+      assert.equal(rangeRes.status, 206);
+      assert.equal(rangeRes.headers.get('content-type'), 'text/plain; charset=euc-kr');
     } finally {
       db.prepare('DELETE FROM submission_file WHERE id = ?').run(inserted.lastInsertRowid);
       fs.rmSync(filePath, { force: true });
@@ -936,8 +974,8 @@ describe('File download (admin)', () => {
   it('GET /api/admin/submissions/:subId/files/:fileId keeps UTF-8 Korean text as UTF-8', async () => {
     const sub = db.prepare('SELECT session_id, team_num FROM submission WHERE id = ?').get(submissionId);
     const storedName = `${crypto.randomUUID()}.txt`;
-    const originalName = '한글-UTF8.txt';
-    const content = Buffer.from('한글', 'utf8');
+    const originalName = '징-UTF8.txt';
+    const content = Buffer.from('징', 'utf8'); // Also decodable as EUC-KR, but with a control character.
     const dir = path.join(uploadsDir, String(sub.session_id), String(sub.team_num), String(submissionId));
     const filePath = path.join(dir, storedName);
     fs.mkdirSync(dir, { recursive: true });
@@ -953,7 +991,7 @@ describe('File download (admin)', () => {
       });
       assert.equal(res.status, 200);
       assert.equal(res.headers.get('content-type'), 'text/plain; charset=utf-8');
-      assert.equal(await res.text(), '한글');
+      assert.equal(await res.text(), '징');
     } finally {
       db.prepare('DELETE FROM submission_file WHERE id = ?').run(inserted.lastInsertRowid);
       fs.rmSync(filePath, { force: true });
