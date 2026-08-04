@@ -28,6 +28,8 @@ const newRole = ref("official");
 // 운영 오피셜 연락처 (사이드바 표시)
 const opsDisplayIds = ref(new Set());
 const opsDescriptions = ref(new Map());
+const opsDisplayOrder = ref([]);
+const opsOrderSaving = ref(false);
 const editingOpsDescriptionId = ref(null);
 const opsDropdownOpen = ref(false);
 const opsDropdownSearch = ref("");
@@ -441,6 +443,7 @@ async function fetchOpsDisplay() {
       const data = await res.json();
       opsDisplayIds.value = new Set(data.map((d) => d.id));
       opsDescriptions.value = new Map(data.map((d) => [d.id, d.description || ""]));
+      opsDisplayOrder.value = data.map((d) => d.id);
     }
   } catch {}
 }
@@ -457,10 +460,40 @@ const opsFilteredUsers = computed(() => {
 
 // 현재 표시 중인 사용자 상세 목록
 const opsDisplayUsers = computed(() =>
-  officialUsers.value
-    .filter((u) => opsDisplayIds.value.has(u.id))
+  opsDisplayOrder.value
+    .map((id) => users.value.find((u) => u.id === id))
+    .filter(Boolean)
     .map((u) => ({ ...u, opsDescription: opsDescriptions.value.get(u.id) || "" })),
 );
+
+async function moveOpsDisplay(userId, offset) {
+  if (opsOrderSaving.value) return;
+  const fromIndex = opsDisplayOrder.value.indexOf(userId);
+  const toIndex = fromIndex + offset;
+  if (fromIndex < 0 || toIndex < 0 || toIndex >= opsDisplayOrder.value.length) return;
+
+  const previousOrder = [...opsDisplayOrder.value];
+  const nextOrder = [...previousOrder];
+  const [movedId] = nextOrder.splice(fromIndex, 1);
+  nextOrder.splice(toIndex, 0, movedId);
+  opsDisplayOrder.value = nextOrder;
+  opsOrderSaving.value = true;
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/ops-contacts/reorder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_ids: nextOrder }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+  } catch (e) {
+    opsDisplayOrder.value = previousOrder;
+    notyf.error(e.message);
+    await fetchOpsDisplay();
+  } finally {
+    opsOrderSaving.value = false;
+  }
+}
 
 function startOpsDescriptionEdit(userId) {
   editingOpsDescriptionId.value = userId;
@@ -517,6 +550,7 @@ async function addOpsDisplay(user) {
     const s = new Set(opsDisplayIds.value);
     s.add(user.id);
     opsDisplayIds.value = s;
+    if (!opsDisplayOrder.value.includes(user.id)) opsDisplayOrder.value = [...opsDisplayOrder.value, user.id];
     const descriptions = new Map(opsDescriptions.value);
     descriptions.set(user.id, "");
     opsDescriptions.value = descriptions;
@@ -532,6 +566,7 @@ async function removeOpsDisplay(user) {
     const s = new Set(opsDisplayIds.value);
     s.delete(user.id);
     opsDisplayIds.value = s;
+    opsDisplayOrder.value = opsDisplayOrder.value.filter((id) => id !== user.id);
     const descriptions = new Map(opsDescriptions.value);
     descriptions.delete(user.id);
     opsDescriptions.value = descriptions;
@@ -750,6 +785,7 @@ onMounted(() => {
           <table class="data-table ops-table">
             <thead>
               <tr>
+                <th class="col-order">순서</th>
                 <th class="col-email">이메일</th>
                 <th class="col-name">이름</th>
                 <th class="col-role">역할</th>
@@ -760,7 +796,25 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="u in opsDisplayUsers" :key="u.id">
+              <tr v-for="(u, index) in opsDisplayUsers" :key="u.id">
+                <td class="col-order">
+                  <div class="ops-order-buttons">
+                    <button
+                      class="btn btn-sm btn-ghost ops-order-btn"
+                      :disabled="index === 0 || opsOrderSaving"
+                      :aria-label="`${u.realname || u.name || u.email} 위로 이동`"
+                      title="위로 이동"
+                      @click="moveOpsDisplay(u.id, -1)"
+                    >↑</button>
+                    <button
+                      class="btn btn-sm btn-ghost ops-order-btn"
+                      :disabled="index === opsDisplayUsers.length - 1 || opsOrderSaving"
+                      :aria-label="`${u.realname || u.name || u.email} 아래로 이동`"
+                      title="아래로 이동"
+                      @click="moveOpsDisplay(u.id, 1)"
+                    >↓</button>
+                  </div>
+                </td>
                 <td class="col-email">{{ u.email }}</td>
                 <td class="col-name">{{ u.name || '-' }}</td>
                 <td class="col-role"><span class="badge" :class="roleBadgeClass(u.role)">{{ u.role }}</span></td>
@@ -783,7 +837,7 @@ onMounted(() => {
                 <td class="col-action"><div class="action-btns"><button class="btn btn-sm btn-danger" @click="removeOpsDisplay(u)">제거</button></div></td>
               </tr>
               <tr v-if="opsDisplayUsers.length === 0">
-                <td colspan="7" class="empty-state">표시할 사용자가 없습니다.</td>
+                <td colspan="8" class="empty-state">표시할 사용자가 없습니다.</td>
               </tr>
             </tbody>
           </table>
@@ -1069,6 +1123,20 @@ onMounted(() => {
 
 .ops-table .col-description {
   min-width: 8rem;
+}
+
+.ops-table .col-order {
+  width: 5rem;
+}
+
+.ops-order-buttons {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.ops-order-btn {
+  min-width: 1.75rem;
+  padding-inline: 0.375rem;
 }
 
 .ops-description-text {

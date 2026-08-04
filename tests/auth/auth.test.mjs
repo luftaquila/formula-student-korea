@@ -587,15 +587,53 @@ describe('Ops contacts description migration', () => {
   });
 });
 
+describe('Ops contacts ordering migration', () => {
+  it('adds sort_order and preserves the previous user ID order', () => {
+    const legacyPath = tmpDbPath();
+    let legacyDb;
+    let migratedDb;
+
+    try {
+      legacyDb = createAuthApp({ dbPath: legacyPath }).db;
+      const firstId = legacyDb.prepare("INSERT INTO users (email, role, active) VALUES ('legacy-order-1@test.com', 'official', 1)").run().lastInsertRowid;
+      const secondId = legacyDb.prepare("INSERT INTO users (email, role, active) VALUES ('legacy-order-2@test.com', 'official', 1)").run().lastInsertRowid;
+      legacyDb.prepare("INSERT INTO ops_display (user_id) VALUES (?)").run(secondId);
+      legacyDb.prepare("INSERT INTO ops_display (user_id) VALUES (?)").run(firstId);
+      legacyDb.exec("ALTER TABLE ops_display DROP COLUMN sort_order");
+      legacyDb.prepare("DELETE FROM schema_migrations WHERE name = 'auth.ops_contact_sort_order.v1'").run();
+      legacyDb.close();
+      legacyDb = null;
+
+      migratedDb = createAuthApp({ dbPath: legacyPath }).db;
+      const columns = migratedDb.prepare("PRAGMA table_info(ops_display)").all().map((column) => column.name);
+      assert.ok(columns.includes('sort_order'));
+      assert.deepEqual(
+        migratedDb.prepare("SELECT user_id, sort_order FROM ops_display ORDER BY sort_order").all(),
+        [
+          { user_id: firstId, sort_order: 0 },
+          { user_id: secondId, sort_order: 1 },
+        ],
+      );
+    } finally {
+      legacyDb?.close();
+      migratedDb?.close();
+      cleanup(legacyPath);
+    }
+  });
+});
+
 // ─── Ops Contacts (sidebar display) ─────────────────────────────────────
 describe('Ops contacts', () => {
-  let officialUserId;
+  let officialUserId, secondOfficialUserId;
 
   before(() => {
     // Ensure an official user exists for testing
     const user = db.prepare("SELECT id FROM users WHERE email = 'new@example.com'").get();
     db.prepare("UPDATE users SET role = 'official', active = 1 WHERE id = ?").run(user.id);
     officialUserId = user.id;
+    secondOfficialUserId = db.prepare(
+      "INSERT INTO users (email, role, active) VALUES ('ops-order@test.com', 'official', 1)",
+    ).run().lastInsertRowid;
   });
 
   it('GET /api/ops-contacts returns empty array initially', async () => {
@@ -712,16 +750,93 @@ describe('Ops contacts', () => {
     assert.ok(contact);
     assert.ok(contact.email);
     assert.equal(contact.description, '검차 총괄');
+    assert.equal(contact.sort_order, 0);
+  });
+
+  it('POST /api/ops-contacts appends new contacts to the display order', async () => {
+    const add = await client.post('/api/ops-contacts', {
+      body: { user_id: secondOfficialUserId },
+      cookie: adminCookie,
+    });
+    assert.equal(add.status, 201);
+
+    const res = await client.get('/api/ops-contacts', { cookie: adminCookie });
+    const data = await res.json();
+    assert.deepEqual(data.map((contact) => contact.id), [officialUserId, secondOfficialUserId]);
+    assert.deepEqual(data.map((contact) => contact.sort_order), [0, 1]);
+  });
+
+  it('POST /api/ops-contacts/reorder updates the sidebar order', async () => {
+    const res = await client.post('/api/ops-contacts/reorder', {
+      body: { user_ids: [secondOfficialUserId, officialUserId] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+
+    const check = await client.get('/api/ops-contacts', { cookie: officialCookie });
+    const data = await check.json();
+    assert.deepEqual(data.map((contact) => contact.id), [secondOfficialUserId, officialUserId]);
+    assert.deepEqual(data.map((contact) => contact.sort_order), [0, 1]);
+  });
+
+  it('POST /api/ops-contacts/reorder keeps inactive contacts out of the active order', async () => {
+    const deactivate = await client.patch(`/api/users/${secondOfficialUserId}`, {
+      body: { active: false },
+      cookie: adminCookie,
+    });
+    assert.equal(deactivate.status, 200);
+
+    const reorder = await client.post('/api/ops-contacts/reorder', {
+      body: { user_ids: [officialUserId] },
+      cookie: adminCookie,
+    });
+    assert.equal(reorder.status, 200);
+
+    const reactivate = await client.patch(`/api/users/${secondOfficialUserId}`, {
+      body: { active: true },
+      cookie: adminCookie,
+    });
+    assert.equal(reactivate.status, 200);
+
+    const check = await client.get('/api/ops-contacts', { cookie: adminCookie });
+    const data = await check.json();
+    assert.deepEqual(data.map((contact) => contact.id), [officialUserId, secondOfficialUserId]);
+  });
+
+  it('POST /api/ops-contacts/reorder requires every displayed contact exactly once', async () => {
+    const missing = await client.post('/api/ops-contacts/reorder', {
+      body: { user_ids: [officialUserId] },
+      cookie: adminCookie,
+    });
+    assert.equal(missing.status, 400);
+
+    const duplicate = await client.post('/api/ops-contacts/reorder', {
+      body: { user_ids: [officialUserId, officialUserId] },
+      cookie: adminCookie,
+    });
+    assert.equal(duplicate.status, 400);
+  });
+
+  it('POST /api/ops-contacts/reorder requires admin role', async () => {
+    const res = await client.post('/api/ops-contacts/reorder', {
+      body: { user_ids: [secondOfficialUserId, officialUserId] },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 403);
   });
 
   it('DELETE /api/ops-contacts/:userId removes from display list', async () => {
     const res = await client.delete(`/api/ops-contacts/${officialUserId}`, { cookie: adminCookie });
     assert.equal(res.status, 200);
 
+    const removeSecond = await client.delete(`/api/ops-contacts/${secondOfficialUserId}`, { cookie: adminCookie });
+    assert.equal(removeSecond.status, 200);
+
     // Verify removal
     const check = await client.get('/api/ops-contacts', { cookie: adminCookie });
     const data = await check.json();
     assert.ok(!data.find(c => c.id === officialUserId));
+    assert.ok(!data.find(c => c.id === secondOfficialUserId));
   });
 
   it('DELETE /api/ops-contacts/:userId returns 404 for non-displayed user', async () => {

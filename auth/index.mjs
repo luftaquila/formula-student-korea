@@ -98,9 +98,16 @@ db.exec(`CREATE TABLE IF NOT EXISTS applications (
 
 db.exec(`CREATE TABLE IF NOT EXISTS ops_display (
   user_id INTEGER PRIMARY KEY REFERENCES users(id),
-  description TEXT NOT NULL DEFAULT ''
+  description TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0
 )`);
 addColumn(db, "ops_display", "description TEXT NOT NULL DEFAULT ''");
+addColumn(db, "ops_display", "sort_order INTEGER NOT NULL DEFAULT 0");
+runMigrationOnce(db, "auth.ops_contact_sort_order.v1", () => {
+  const rows = db.prepare("SELECT user_id FROM ops_display ORDER BY user_id").all();
+  const update = db.prepare("UPDATE ops_display SET sort_order = ? WHERE user_id = ?");
+  for (const [index, row] of rows.entries()) update.run(index, row.user_id);
+});
 db.exec("DELETE FROM ops_display WHERE user_id NOT IN (SELECT id FROM users)");
 db.pragma("foreign_keys = ON");
 
@@ -983,10 +990,10 @@ app.delete("/api/users/:id", (req, res) => {
 // GET /api/ops-contacts - 사이드바에 표시할 사용자 목록
 app.get("/api/ops-contacts", (req, res) => {
   const result = dbRun(() => db.prepare(`
-    SELECT u.id, u.email, u.name, u.realname, u.phone, d.description
+    SELECT u.id, u.email, u.name, u.realname, u.phone, d.description, d.sort_order
     FROM ops_display d JOIN users u ON d.user_id = u.id
     WHERE u.active = 1
-    ORDER BY u.id
+    ORDER BY d.sort_order, u.id
   `).all());
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result);
@@ -1004,13 +1011,51 @@ app.post("/api/ops-contacts", (req, res) => {
     return res.status(400).send("official 이상 권한 사용자만 추가할 수 있습니다.");
   }
 
-  const result = dbRun(() => db.prepare("INSERT OR IGNORE INTO ops_display (user_id) VALUES (?)").run(user_id));
+  const result = dbRun(() => db.transaction(() => {
+    const nextOrder = db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS value FROM ops_display").get().value;
+    return db.prepare("INSERT OR IGNORE INTO ops_display (user_id, sort_order) VALUES (?, ?)").run(user_id, nextOrder);
+  })());
   if (!result.success) {
     logger.warn(req, "ops_contact.create", { error: result.error }, user.email);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "ops_contact.create", { name: user.name, role: user.role }, user.email);
   res.status(201).send();
+});
+
+// POST /api/ops-contacts/reorder - 사이드바 표시 순서 변경
+app.post("/api/ops-contacts/reorder", (req, res) => {
+  const { user_ids: userIds } = req.body ?? {};
+  if (!Array.isArray(userIds)) return res.status(400).send("user_ids 배열이 필요합니다.");
+  if (userIds.length > 1000) return res.status(400).send("연락처가 너무 많습니다.");
+  const requestedIds = new Set(userIds);
+  if (userIds.some((id) => !Number.isInteger(id) || id <= 0) || requestedIds.size !== userIds.length) {
+    return res.status(400).send("user_ids에는 중복되지 않은 유효한 사용자 ID가 필요합니다.");
+  }
+
+  const rows = db.prepare(`
+    SELECT d.user_id, u.active
+    FROM ops_display d JOIN users u ON d.user_id = u.id
+    ORDER BY d.sort_order, d.user_id
+  `).all();
+  const visibleIds = rows.filter((row) => row.active === 1).map((row) => row.user_id);
+  if (visibleIds.length !== userIds.length || visibleIds.some((id) => !requestedIds.has(id))) {
+    return res.status(400).send("현재 표시 중인 연락처를 모두 포함해야 합니다.");
+  }
+
+  const hiddenIds = rows.filter((row) => row.active !== 1).map((row) => row.user_id);
+  const result = dbRun(() => {
+    const update = db.prepare("UPDATE ops_display SET sort_order = ? WHERE user_id = ?");
+    db.transaction(() => {
+      [...userIds, ...hiddenIds].forEach((id, index) => update.run(index, id));
+    })();
+  });
+  if (!result.success) {
+    logger.warn(req, "ops_contact.reorder", { error: result.error, count: userIds.length });
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "ops_contact.reorder", { count: userIds.length });
+  res.status(200).send();
 });
 
 // PATCH /api/ops-contacts/:userId - 사이드바에 이름 뒤에 표시할 짧은 설명 수정
