@@ -668,6 +668,54 @@ describe('File upload', () => {
     submissionId = data.id; // update to latest submission
   });
 
+  it('POST /api/sessions/:id/submit applies the BOM, UTF-8-first, and CP949 fallback policy', async () => {
+    const sessionRes = await client.post('/api/admin/sessions', {
+      body: {
+        name: 'Text Encoding Session',
+        start_at: '2020-01-01T00:00',
+        end_at: '2030-12-31T23:59',
+        late_end_at: '',
+        max_file_size: 10485760,
+        year: 2026,
+        teams: [1],
+        allowed_extensions: 'txt',
+      },
+      cookie: chiefCookie,
+    });
+    assert.equal(sessionRes.status, 201);
+    const { id: textSessionId } = await sessionRes.json();
+
+    try {
+      const cases = [
+        { name: 'ambiguous-valid-utf8', charset: 'utf-8', content: Buffer.from([0xc2, 0xaf]), text: '¯' },
+        { name: 'utf8-engineering', charset: 'utf-8', content: Buffer.from('25°C, ±0.1 mm, 10 µm, café', 'utf8'), text: '25°C, ±0.1 mm, 10 µm, café' },
+        { name: 'cp949-invalid-utf8', charset: 'euc-kr', content: Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]), text: '한글' },
+        { name: 'utf8-bom', charset: 'utf-8', content: Buffer.from([0xef, 0xbb, 0xbf, 0x41]), text: 'A' },
+        { name: 'utf16le-bom', charset: 'utf-16le', content: Buffer.from([0xff, 0xfe, 0x41, 0x00]), text: 'A' },
+        { name: 'utf16be-bom', charset: 'utf-16be', content: Buffer.from([0xfe, 0xff, 0x00, 0x41]), text: 'A' },
+      ];
+
+      for (const encodingCase of cases) {
+        const res = await uploadFile(textSessionId, studentCookie, [
+          { name: `${encodingCase.name}.txt`, type: 'text/plain', content: encodingCase.content },
+        ]);
+        assert.equal(res.status, 200, encodingCase.name);
+        const data = await res.json();
+        const file = db.prepare('SELECT id, text_charset FROM submission_file WHERE submission_id = ?').get(data.id);
+        assert.equal(file.text_charset, encodingCase.charset, encodingCase.name);
+
+        const normalRes = await fetch(`${baseUrl}/api/admin/submissions/${data.id}/files/${file.id}`, {
+          headers: { 'Cookie': adminCookie },
+        });
+        assert.equal(normalRes.headers.get('content-type'), `text/plain; charset=${encodingCase.charset}`, encodingCase.name);
+        const body = Buffer.from(await normalRes.arrayBuffer());
+        assert.equal(new TextDecoder(encodingCase.charset).decode(body), encodingCase.text, encodingCase.name);
+      }
+    } finally {
+      await client.delete(`/api/admin/sessions/${textSessionId}`, { cookie: chiefCookie });
+    }
+  });
+
   it('POST /api/sessions/:id/submit 403 if not target team', async () => {
     const fileContent = Buffer.from('unauthorized content');
     const res = await uploadFile(sessionId, student2Cookie, [
@@ -902,6 +950,71 @@ describe('File download (admin)', () => {
     assert.ok(disposition);
     assert.ok(disposition.includes('inline'), 'PDF should be inline');
     assert.equal(res.headers.get('content-type'), 'application/pdf');
+  });
+
+  it('GET /api/admin/submissions/:subId/files/:fileId detects and persists CP949 Korean text', async () => {
+    const sub = db.prepare('SELECT session_id, team_num FROM submission WHERE id = ?').get(submissionId);
+    const storedName = `${crypto.randomUUID()}.txt`;
+    const originalName = '한글-CP949.txt';
+    const content = Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]); // "한글" in CP949
+    const dir = path.join(uploadsDir, String(sub.session_id), String(sub.team_num), String(submissionId));
+    const filePath = path.join(dir, storedName);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, content);
+    const inserted = db.prepare(`
+      INSERT INTO submission_file (submission_id, original_name, stored_name, size, mime_type)
+      VALUES (?, ?, ?, ?, 'text/plain')
+    `).run(submissionId, originalName, storedName, content.length);
+
+    try {
+      const res = await fetch(`${baseUrl}/api/admin/submissions/${submissionId}/files/${inserted.lastInsertRowid}`, {
+        headers: { 'Cookie': adminCookie },
+      });
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get('content-disposition'), /inline/);
+      assert.equal(res.headers.get('content-type'), 'text/plain; charset=euc-kr');
+      const body = Buffer.from(await res.arrayBuffer());
+      assert.equal(new TextDecoder('euc-kr').decode(body), '한글');
+      const stored = db.prepare('SELECT text_charset FROM submission_file WHERE id = ?').get(inserted.lastInsertRowid);
+      assert.equal(stored.text_charset, 'euc-kr', 'legacy file detection should be persisted');
+
+      const rangeRes = await fetch(`${baseUrl}/api/admin/submissions/${submissionId}/files/${inserted.lastInsertRowid}`, {
+        headers: { 'Cookie': adminCookie, 'Range': 'bytes=0-0' },
+      });
+      assert.equal(rangeRes.status, 206);
+      assert.equal(rangeRes.headers.get('content-type'), 'text/plain; charset=euc-kr');
+    } finally {
+      db.prepare('DELETE FROM submission_file WHERE id = ?').run(inserted.lastInsertRowid);
+      fs.rmSync(filePath, { force: true });
+    }
+  });
+
+  it('GET /api/admin/submissions/:subId/files/:fileId keeps UTF-8 engineering symbols as UTF-8', async () => {
+    const sub = db.prepare('SELECT session_id, team_num FROM submission WHERE id = ?').get(submissionId);
+    const storedName = `${crypto.randomUUID()}.txt`;
+    const originalName = 'engineering-UTF8.txt';
+    const text = '25°C, ±0.1 mm, © 2026, 10 µm, café, 10 Å, m², £100';
+    const content = Buffer.from(text, 'utf8');
+    const dir = path.join(uploadsDir, String(sub.session_id), String(sub.team_num), String(submissionId));
+    const filePath = path.join(dir, storedName);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, content);
+    const inserted = db.prepare(`
+      INSERT INTO submission_file (submission_id, original_name, stored_name, size, mime_type)
+      VALUES (?, ?, ?, ?, 'text/plain')
+    `).run(submissionId, originalName, storedName, content.length);
+
+    try {
+      const res = await fetch(`${baseUrl}/api/admin/submissions/${submissionId}/files/${inserted.lastInsertRowid}`, {
+        headers: { 'Cookie': adminCookie },
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('content-type'), 'text/plain; charset=utf-8');
+      assert.equal(await res.text(), text);
+    } finally {
+      db.prepare('DELETE FROM submission_file WHERE id = ?').run(inserted.lastInsertRowid);
+      fs.rmSync(filePath, { force: true });
+    }
   });
 
   it('GET /api/admin/submissions/:subId/files/:fileId forces attachment for non-previewable type', async () => {
