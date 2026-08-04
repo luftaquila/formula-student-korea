@@ -1016,7 +1016,7 @@ app.post("/api/ops-contacts", (req, res) => {
 // PATCH /api/ops-contacts/:userId - 사이드바에 이름 앞에 표시할 짧은 설명 수정
 app.patch("/api/ops-contacts/:userId", (req, res) => {
   const userId = Number(req.params.userId);
-  const { description } = req.body;
+  const { description } = req.body ?? {};
   if (typeof description !== "string") return res.status(400).send("설명이 필요합니다.");
 
   const normalizedDescription = description.trim();

@@ -672,6 +672,13 @@ describe('Ops contacts', () => {
     assert.deepEqual(await res.json(), { description: '검차 총괄' });
   });
 
+  it('PATCH /api/ops-contacts/:userId rejects a missing request body', async () => {
+    const res = await client.patch(`/api/ops-contacts/${officialUserId}`, {
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
   it('PATCH /api/ops-contacts/:userId rejects descriptions longer than 30 characters', async () => {
     const res = await client.patch(`/api/ops-contacts/${officialUserId}`, {
       body: { description: 'a'.repeat(31) },

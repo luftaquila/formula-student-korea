@@ -25,13 +25,13 @@ async function fetchOpsContacts() {
     const res = await fetch("/auth/api/ops-contacts");
     if (res.ok) {
       const data = await res.json();
-      if (data.length) opsContacts.value = data;
+      opsContacts.value = data.length ? data : null;
     }
   } catch {}
 }
 
 watch(isOpen, (open) => {
-  if (open && showOfficials.value && !opsContacts.value) fetchOpsContacts();
+  if (open && showOfficials.value) fetchOpsContacts();
 });
 
 function isActive(href) {
@@ -411,19 +411,26 @@ async function logout() {
 .ops-contact-identity {
   display: inline-flex;
   align-items: baseline;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
   gap: 0.375rem;
   min-width: 0;
+  max-width: 100%;
 }
 
 .ops-contact-name {
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--text-primary);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .ops-contact-description {
   font-size: 0.8125rem;
   color: var(--text-secondary);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .ops-contact-phone {
