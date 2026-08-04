@@ -47,9 +47,9 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 1.12 | 연락처 조회 | official | `GET /api/ops-contacts` | official+ 사이드바에 표시, 사용자 realname/phone과 이름 앞 짧은 설명 반환 |
+| 1.12 | 연락처 조회 | official | `GET /api/ops-contacts` | official+ 사이드바에 표시, 사용자 realname/phone과 이름 뒤 짧은 설명 반환 |
 | 1.13 | 연락처 추가 | admin | `POST /api/ops-contacts` | `{ user_id }` → official 이상 사용자만 추가 가능 |
-| 1.14 | 연락처 설명 수정 | admin | `PATCH /api/ops-contacts/:userId` | `{ description }` → 이름 앞에 표시할 30자 이내 설명 저장 |
+| 1.14 | 연락처 설명 수정 | admin | `PATCH /api/ops-contacts/:userId` | `{ description }` → 이름 뒤에 표시할 30자 이내 설명 저장 |
 | 1.15 | 연락처 삭제 | admin | `DELETE /api/ops-contacts/:userId` | 사이드바 표시 목록에서 제거 |
 
 ### 내부 서비스 연동

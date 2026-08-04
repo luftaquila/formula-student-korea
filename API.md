@@ -69,7 +69,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/ops-contacts` | official | — | `[{ id, email, name, realname, phone, description }]` | List users displayed in sidebar |
 | POST | `/api/ops-contacts` | admin | `{ user_id }` | 201 | Add user to sidebar display (official+ only) |
-| PATCH | `/api/ops-contacts/:userId` | admin | `{ description }` | `{ description }` | Update the short description shown before the contact name (max 30 characters) |
+| PATCH | `/api/ops-contacts/:userId` | admin | `{ description }` | `{ description }` | Update the short description shown after the contact name (max 30 characters) |
 | DELETE | `/api/ops-contacts/:userId` | admin | — | 200 | Remove user from sidebar display |
 
 ### Account Applications (계정 신청)
