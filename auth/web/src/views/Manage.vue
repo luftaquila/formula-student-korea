@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { formatPhone } from "@shared/format-phone.js";
 import { ROLE_LEVELS } from "@shared/constants.js";
@@ -28,6 +28,9 @@ const newRole = ref("official");
 // 운영 오피셜 연락처 (사이드바 표시)
 const opsDisplayIds = ref(new Set());
 const opsDescriptions = ref(new Map());
+const opsDisplayOrder = ref([]);
+const opsOrderSaving = ref(false);
+const opsDragUserId = ref(null);
 const editingOpsDescriptionId = ref(null);
 const opsDropdownOpen = ref(false);
 const opsDropdownSearch = ref("");
@@ -64,6 +67,7 @@ async function fetchUsers(showLoading = false) {
     if (!res.ok) throw new Error(await res.text());
     users.value = await res.json();
     selectedIds.value = new Set();
+    await fetchOpsDisplay();
   } catch (e) {
     notyf.error(e.message);
   } finally {
@@ -441,6 +445,7 @@ async function fetchOpsDisplay() {
       const data = await res.json();
       opsDisplayIds.value = new Set(data.map((d) => d.id));
       opsDescriptions.value = new Map(data.map((d) => [d.id, d.description || ""]));
+      opsDisplayOrder.value = data.map((d) => d.id);
     }
   } catch {}
 }
@@ -457,10 +462,139 @@ const opsFilteredUsers = computed(() => {
 
 // 현재 표시 중인 사용자 상세 목록
 const opsDisplayUsers = computed(() =>
-  officialUsers.value
-    .filter((u) => opsDisplayIds.value.has(u.id))
+  opsDisplayOrder.value
+    .map((id) => users.value.find((u) => u.id === id))
+    .filter(Boolean)
     .map((u) => ({ ...u, opsDescription: opsDescriptions.value.get(u.id) || "" })),
 );
+
+let opsDragPointerId = null;
+let opsDragStartOrder = [];
+let opsDragPointerX = 0;
+let opsDragPointerY = 0;
+let opsDragScrollFrame = null;
+let opsDragHandle = null;
+
+function ordersMatch(a, b) {
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
+function reorderOpsDisplayAtPoint(clientX, clientY) {
+  const targetRow = document.elementFromPoint(clientX, clientY)?.closest("tr[data-ops-contact-id]");
+  if (!targetRow || !opsDragUserId.value) return;
+
+  const targetId = Number(targetRow.dataset.opsContactId);
+  const fromIndex = opsDisplayOrder.value.indexOf(opsDragUserId.value);
+  const toIndex = opsDisplayOrder.value.indexOf(targetId);
+  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+
+  const nextOrder = [...opsDisplayOrder.value];
+  const [movedId] = nextOrder.splice(fromIndex, 1);
+  nextOrder.splice(toIndex, 0, movedId);
+  opsDisplayOrder.value = nextOrder;
+}
+
+function stopOpsDragAutoScroll() {
+  if (opsDragScrollFrame !== null) cancelAnimationFrame(opsDragScrollFrame);
+  opsDragScrollFrame = null;
+}
+
+function scheduleOpsDragAutoScroll() {
+  if (opsDragScrollFrame !== null || !opsDragUserId.value) return;
+  opsDragScrollFrame = requestAnimationFrame(() => {
+    opsDragScrollFrame = null;
+    if (!opsDragUserId.value) return;
+
+    const edgeSize = Math.min(80, window.innerHeight * 0.15);
+    let scrollAmount = 0;
+    if (opsDragPointerY < edgeSize) {
+      scrollAmount = -Math.ceil(((edgeSize - opsDragPointerY) / edgeSize) * 14);
+    } else if (opsDragPointerY > window.innerHeight - edgeSize) {
+      scrollAmount = Math.ceil(((opsDragPointerY - (window.innerHeight - edgeSize)) / edgeSize) * 14);
+    }
+
+    if (scrollAmount !== 0) {
+      window.scrollBy(0, scrollAmount);
+      reorderOpsDisplayAtPoint(opsDragPointerX, opsDragPointerY);
+      scheduleOpsDragAutoScroll();
+    }
+  });
+}
+
+function removeOpsDragListeners() {
+  window.removeEventListener("pointermove", handleOpsDrag);
+  window.removeEventListener("pointerup", finishOpsDrag);
+  window.removeEventListener("pointercancel", cancelOpsDrag);
+}
+
+function startOpsDrag(event, userId) {
+  if (opsOrderSaving.value || opsDragUserId.value || (event.pointerType === "mouse" && event.button !== 0)) return;
+  event.preventDefault();
+  closeOpsDropdown();
+  opsDragUserId.value = userId;
+  opsDragPointerId = event.pointerId;
+  opsDragStartOrder = [...opsDisplayOrder.value];
+  opsDragPointerX = event.clientX;
+  opsDragPointerY = event.clientY;
+  opsDragHandle = event.currentTarget;
+  opsDragHandle.setPointerCapture(event.pointerId);
+  window.addEventListener("pointermove", handleOpsDrag, { passive: false });
+  window.addEventListener("pointerup", finishOpsDrag);
+  window.addEventListener("pointercancel", cancelOpsDrag);
+}
+
+function handleOpsDrag(event) {
+  if (event.pointerId !== opsDragPointerId || !opsDragUserId.value) return;
+  event.preventDefault();
+  opsDragPointerX = event.clientX;
+  opsDragPointerY = event.clientY;
+  reorderOpsDisplayAtPoint(event.clientX, event.clientY);
+  scheduleOpsDragAutoScroll();
+}
+
+function resetOpsDrag() {
+  stopOpsDragAutoScroll();
+  removeOpsDragListeners();
+  opsDragUserId.value = null;
+  opsDragPointerId = null;
+  opsDragStartOrder = [];
+  opsDragHandle = null;
+}
+
+async function persistOpsDisplayOrder(previousOrder) {
+  const nextOrder = [...opsDisplayOrder.value];
+  opsOrderSaving.value = true;
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/ops-contacts/reorder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_ids: nextOrder }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+  } catch (e) {
+    opsDisplayOrder.value = previousOrder;
+    notyf.error(e.message);
+    await fetchOpsDisplay();
+  } finally {
+    opsOrderSaving.value = false;
+  }
+}
+
+async function finishOpsDrag(event) {
+  if (event.pointerId !== opsDragPointerId || !opsDragUserId.value) return;
+  if (opsDragHandle?.hasPointerCapture(event.pointerId)) opsDragHandle.releasePointerCapture(event.pointerId);
+  const previousOrder = opsDragStartOrder;
+  const changed = !ordersMatch(previousOrder, opsDisplayOrder.value);
+  resetOpsDrag();
+  if (changed) await persistOpsDisplayOrder(previousOrder);
+}
+
+function cancelOpsDrag(event) {
+  if (event.pointerId !== opsDragPointerId || !opsDragUserId.value) return;
+  opsDisplayOrder.value = opsDragStartOrder;
+  resetOpsDrag();
+}
 
 function startOpsDescriptionEdit(userId) {
   editingOpsDescriptionId.value = userId;
@@ -517,6 +651,7 @@ async function addOpsDisplay(user) {
     const s = new Set(opsDisplayIds.value);
     s.add(user.id);
     opsDisplayIds.value = s;
+    if (!opsDisplayOrder.value.includes(user.id)) opsDisplayOrder.value = [...opsDisplayOrder.value, user.id];
     const descriptions = new Map(opsDescriptions.value);
     descriptions.set(user.id, "");
     opsDescriptions.value = descriptions;
@@ -532,6 +667,7 @@ async function removeOpsDisplay(user) {
     const s = new Set(opsDisplayIds.value);
     s.delete(user.id);
     opsDisplayIds.value = s;
+    opsDisplayOrder.value = opsDisplayOrder.value.filter((id) => id !== user.id);
     const descriptions = new Map(opsDescriptions.value);
     descriptions.delete(user.id);
     opsDescriptions.value = descriptions;
@@ -542,7 +678,11 @@ async function removeOpsDisplay(user) {
 
 onMounted(() => {
   fetchUsers(true);
-  fetchOpsDisplay();
+});
+
+onUnmounted(() => {
+  stopOpsDragAutoScroll();
+  removeOpsDragListeners();
 });
 </script>
 
@@ -750,6 +890,7 @@ onMounted(() => {
           <table class="data-table ops-table">
             <thead>
               <tr>
+                <th class="col-order">순서</th>
                 <th class="col-email">이메일</th>
                 <th class="col-name">이름</th>
                 <th class="col-role">역할</th>
@@ -760,7 +901,34 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="u in opsDisplayUsers" :key="u.id">
+              <tr
+                v-for="u in opsDisplayUsers"
+                :key="u.id"
+                class="ops-contact-row"
+                :class="{ 'ops-contact-row-dragging': opsDragUserId === u.id }"
+                :data-ops-contact-id="u.id"
+              >
+                <td class="col-order">
+                  <button
+                    type="button"
+                    class="ops-drag-handle"
+                    :class="{ 'ops-drag-handle-active': opsDragUserId === u.id }"
+                    :disabled="opsOrderSaving"
+                    :aria-label="`${u.realname || u.name || u.email} 드래그하여 순서 변경`"
+                    :aria-pressed="opsDragUserId === u.id"
+                    title="드래그하여 순서 변경"
+                    @pointerdown="startOpsDrag($event, u.id)"
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <circle cx="5" cy="3" r="1.25" />
+                      <circle cx="11" cy="3" r="1.25" />
+                      <circle cx="5" cy="8" r="1.25" />
+                      <circle cx="11" cy="8" r="1.25" />
+                      <circle cx="5" cy="13" r="1.25" />
+                      <circle cx="11" cy="13" r="1.25" />
+                    </svg>
+                  </button>
+                </td>
                 <td class="col-email">{{ u.email }}</td>
                 <td class="col-name">{{ u.name || '-' }}</td>
                 <td class="col-role"><span class="badge" :class="roleBadgeClass(u.role)">{{ u.role }}</span></td>
@@ -783,7 +951,7 @@ onMounted(() => {
                 <td class="col-action"><div class="action-btns"><button class="btn btn-sm btn-danger" @click="removeOpsDisplay(u)">제거</button></div></td>
               </tr>
               <tr v-if="opsDisplayUsers.length === 0">
-                <td colspan="7" class="empty-state">표시할 사용자가 없습니다.</td>
+                <td colspan="8" class="empty-state">표시할 사용자가 없습니다.</td>
               </tr>
             </tbody>
           </table>
@@ -1069,6 +1237,61 @@ onMounted(() => {
 
 .ops-table .col-description {
   min-width: 8rem;
+}
+
+.ops-table .col-order {
+  width: 3.5rem;
+}
+
+.ops-drag-handle {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.ops-drag-handle:hover,
+.ops-drag-handle:focus-visible {
+  color: var(--accent-primary);
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.ops-drag-handle:focus-visible {
+  box-shadow: 0 0 0 2px var(--border-focus);
+}
+
+.ops-drag-handle:disabled {
+  cursor: wait;
+  opacity: 0.45;
+}
+
+.ops-drag-handle-active {
+  cursor: grabbing;
+  color: var(--accent-primary);
+  background: var(--bg-hover);
+}
+
+.ops-drag-handle svg {
+  width: 1rem;
+  height: 1rem;
+  fill: currentColor;
+}
+
+.ops-contact-row-dragging {
+  background: var(--bg-hover);
+  box-shadow: inset 3px 0 var(--accent-primary);
+  opacity: 0.75;
 }
 
 .ops-description-text {

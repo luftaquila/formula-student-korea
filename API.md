@@ -67,8 +67,9 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/ops-contacts` | official | — | `[{ id, email, name, realname, phone, description }]` | List users displayed in sidebar |
+| GET | `/api/ops-contacts` | official | — | `[{ id, email, name, realname, phone, description, sort_order }]` | List users displayed in sidebar, ordered by `sort_order` |
 | POST | `/api/ops-contacts` | admin | `{ user_id }` | 201 | Add user to sidebar display (official+ only) |
+| POST | `/api/ops-contacts/reorder` | admin | `{ user_ids: [...] }` | 200 | Replace the display order; every active displayed contact must be included exactly once |
 | PATCH | `/api/ops-contacts/:userId` | admin | `{ description }` | `{ description }` | Update the short description shown after the contact name (max 30 characters) |
 | DELETE | `/api/ops-contacts/:userId` | admin | — | 200 | Remove user from sidebar display |
 
