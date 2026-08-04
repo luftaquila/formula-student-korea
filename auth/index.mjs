@@ -97,8 +97,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS applications (
 }
 
 db.exec(`CREATE TABLE IF NOT EXISTS ops_display (
-  user_id INTEGER PRIMARY KEY REFERENCES users(id)
+  user_id INTEGER PRIMARY KEY REFERENCES users(id),
+  description TEXT NOT NULL DEFAULT ''
 )`);
+addColumn(db, "ops_display", "description TEXT NOT NULL DEFAULT ''");
 db.exec("DELETE FROM ops_display WHERE user_id NOT IN (SELECT id FROM users)");
 db.pragma("foreign_keys = ON");
 
@@ -981,7 +983,7 @@ app.delete("/api/users/:id", (req, res) => {
 // GET /api/ops-contacts - 사이드바에 표시할 사용자 목록
 app.get("/api/ops-contacts", (req, res) => {
   const result = dbRun(() => db.prepare(`
-    SELECT u.id, u.email, u.name, u.realname, u.phone
+    SELECT u.id, u.email, u.name, u.realname, u.phone, d.description
     FROM ops_display d JOIN users u ON d.user_id = u.id
     WHERE u.active = 1
     ORDER BY u.id
@@ -1009,6 +1011,27 @@ app.post("/api/ops-contacts", (req, res) => {
   }
   logger.log(req, "ops_contact.create", { name: user.name, role: user.role }, user.email);
   res.status(201).send();
+});
+
+// PATCH /api/ops-contacts/:userId - 사이드바에 이름 앞에 표시할 짧은 설명 수정
+app.patch("/api/ops-contacts/:userId", (req, res) => {
+  const userId = Number(req.params.userId);
+  const { description } = req.body ?? {};
+  if (typeof description !== "string") return res.status(400).send("설명이 필요합니다.");
+
+  const normalizedDescription = description.trim();
+  if (normalizedDescription.length > 30) return res.status(400).send("설명은 30자 이내로 입력하세요.");
+
+  const row = db.prepare("SELECT d.user_id, u.email, u.name FROM ops_display d JOIN users u ON d.user_id = u.id WHERE d.user_id = ?").get(userId);
+  if (!row) return res.status(404).send("표시 목록에 없는 사용자입니다.");
+
+  const result = dbRun(() => db.prepare("UPDATE ops_display SET description = ? WHERE user_id = ?").run(normalizedDescription, userId));
+  if (!result.success) {
+    logger.warn(req, "ops_contact.update", { error: result.error }, row.email);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "ops_contact.update", { name: row.name, description: normalizedDescription }, row.email);
+  res.json({ description: normalizedDescription });
 });
 
 // DELETE /api/ops-contacts/:userId - 사이드바 표시 목록에서 제거
