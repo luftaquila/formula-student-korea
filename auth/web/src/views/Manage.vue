@@ -67,6 +67,7 @@ async function fetchUsers(showLoading = false) {
     if (!res.ok) throw new Error(await res.text());
     users.value = await res.json();
     selectedIds.value = new Set();
+    await fetchOpsDisplay();
   } catch (e) {
     notyf.error(e.message);
   } finally {
@@ -677,7 +678,6 @@ async function removeOpsDisplay(user) {
 
 onMounted(() => {
   fetchUsers(true);
-  fetchOpsDisplay();
 });
 
 onUnmounted(() => {

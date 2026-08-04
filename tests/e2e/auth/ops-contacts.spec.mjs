@@ -188,4 +188,57 @@ test.describe("Ops contacts management", () => {
       await expect(page.locator(".ops-contact-name")).toHaveText([firstLabel, secondLabel]);
     });
   });
+
+  test("refreshes contact order after a displayed user is deactivated", async ({ page }) => {
+    const usersResponse = await page.request.get("/auth/api/users");
+    expect(usersResponse.ok()).toBe(true);
+    const contacts = (await usersResponse.json())
+      .filter((user) => user.active && ["official", "chief", "admin"].includes(user.role))
+      .slice(0, 3);
+    expect(contacts).toHaveLength(3);
+
+    const deactivatedContact = contacts.find((contact) => contact.role !== "admin");
+    expect(deactivatedContact).toBeTruthy();
+    const [firstActiveContact, lastActiveContact] = contacts.filter((contact) => contact.id !== deactivatedContact.id);
+    try {
+      for (const contact of contacts) {
+        const addResponse = await page.request.post("/auth/api/ops-contacts", { data: { user_id: contact.id } });
+        expect(addResponse.ok()).toBe(true);
+      }
+      await page.reload();
+      await waitForPageReady(page);
+
+      const usersTable = page.locator("table.users-table");
+      const opsTable = page.locator("table.ops-table");
+      const userRow = usersTable.locator("tbody tr").filter({ hasText: deactivatedContact.email });
+      const firstOpsRow = opsTable.locator("tbody tr").filter({ hasText: firstActiveContact.email });
+      const deactivatedOpsRow = opsTable.locator("tbody tr").filter({ hasText: deactivatedContact.email });
+      const lastOpsRow = opsTable.locator("tbody tr").filter({ hasText: lastActiveContact.email });
+      const lastLabel = lastActiveContact.realname || lastActiveContact.name || lastActiveContact.email;
+      const visibleEmails = async () => opsTable.locator("tbody tr td.col-email").allTextContents();
+
+      page.once("dialog", (dialog) => dialog.accept());
+      const deactivateResponse = page.waitForResponse((response) => response.url().includes(`/api/users/${deactivatedContact.id}`) && response.request().method() === "PATCH");
+      await userRow.getByRole("button", { name: "비활성화" }).click();
+      await deactivateResponse;
+      await expect(deactivatedOpsRow).not.toBeVisible();
+
+      const reorderResponsePromise = page.waitForResponse((response) => response.url().includes("/api/ops-contacts/reorder") && response.request().method() === "POST");
+      await dragWithMouse(page, lastOpsRow.getByRole("button", { name: `${lastLabel} 드래그하여 순서 변경` }), firstOpsRow);
+      const reorderResponse = await reorderResponsePromise;
+      expect(reorderResponse.ok()).toBe(true);
+      await expect.poll(visibleEmails).toEqual([lastActiveContact.email, firstActiveContact.email]);
+
+      page.once("dialog", (dialog) => dialog.accept());
+      const reactivateResponse = page.waitForResponse((response) => response.url().includes(`/api/users/${deactivatedContact.id}`) && response.request().method() === "PATCH");
+      await userRow.getByRole("button", { name: "활성화" }).click();
+      await reactivateResponse;
+      await expect.poll(visibleEmails).toEqual([lastActiveContact.email, firstActiveContact.email, deactivatedContact.email]);
+    } finally {
+      await page.request.patch(`/auth/api/users/${deactivatedContact.id}`, { data: { active: true } });
+      for (const contact of contacts) {
+        await page.request.delete(`/auth/api/ops-contacts/${contact.id}`);
+      }
+    }
+  });
 });
