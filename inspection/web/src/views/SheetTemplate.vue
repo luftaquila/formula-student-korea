@@ -339,23 +339,25 @@ function defaultCalculation(item, mode, operation = "multiply") {
 }
 
 async function setCalculationMode(item, mode) {
-  if (mode === "manual") {
-    item.calculation = null;
-  } else {
-    item.calculation = defaultCalculation(item, mode);
-    if (!item.calculation) {
-      error("먼저 원본으로 사용할 숫자 문항을 추가하세요.");
-      return;
-    }
+  const fallback = defaultCalculation(item, mode);
+  const next = calculationForMode(item.calculation, mode, fallback);
+  if (mode !== "manual" && !next) {
+    error("먼저 원본으로 사용할 숫자 문항을 추가하세요.");
+    return;
   }
+  item.calculation = next;
   await saveCalculation(item);
 }
 
 async function setCalculationOperation(item, operation) {
   const next = defaultCalculation(item, item.calculation.mode, operation);
   if (!next) return;
-  const existingSources = (item.calculation.sources || []).filter(key => sourceOptionsFor(item).some(option => option.key === key));
-  if (existingSources.length) next.sources = [existingSources[0]];
+  const existingSources = calculationSourcesForOperation(
+    item.calculation.sources,
+    operation,
+    sourceOptionsFor(item).map(option => option.key),
+  );
+  if (existingSources.length) next.sources = existingSources;
   item.calculation = next;
   await saveCalculation(item);
 }
@@ -370,12 +372,6 @@ async function saveCalculation(item) {
 
 function onCalculationChange(item) {
   debounceSave(`calculation-${item.id}`, () => saveCalculation(item));
-}
-
-function onCalculationSourcesChange(item, event) {
-  const selected = Array.from(event.target.selectedOptions).map(option => option.value);
-  item.calculation.sources = ["sum", "product"].includes(item.calculation.operation) ? selected : selected.slice(0, 1);
-  saveCalculation(item);
 }
 
 function addCalculationRange(item) {
@@ -420,7 +416,16 @@ function onChecktableRowsChange(item, value) {
 }
 
 // ---- Numbering ----
-import { catNum, subNum, grpNum, itemNum, getChecktableConfig } from "../utils/sheet-helpers";
+import {
+  catNum,
+  subNum,
+  grpNum,
+  itemNum,
+  getChecktableConfig,
+  isMultiSourceCalculation,
+  calculationForMode,
+  calculationSourcesForOperation,
+} from "../utils/sheet-helpers";
 
 // ---- Print ----
 function openPrintPage() {
@@ -791,12 +796,22 @@ function goBack() {
                       <label class="calculation-field calculation-source-field">
                         <span>원본 문항</span>
                         <select
+                          v-if="isMultiSourceCalculation(item.calculation.operation)"
                           class="filter-input"
-                          :multiple="['sum', 'product'].includes(item.calculation.operation)"
-                          :size="['sum', 'product'].includes(item.calculation.operation) ? Math.min(4, sourceOptionsFor(item).length) : 1"
-                          :value="['sum', 'product'].includes(item.calculation.operation) ? item.calculation.sources : item.calculation.sources[0]"
+                          multiple
+                          :size="Math.min(4, sourceOptionsFor(item).length)"
+                          v-model="item.calculation.sources"
                           :disabled="isReadOnly"
-                          @change="onCalculationSourcesChange(item, $event)"
+                          @change="saveCalculation(item)"
+                        >
+                          <option v-for="option in sourceOptionsFor(item)" :key="option.key" :value="option.key">{{ option.label }}</option>
+                        </select>
+                        <select
+                          v-else
+                          class="filter-input"
+                          v-model="item.calculation.sources[0]"
+                          :disabled="isReadOnly"
+                          @change="saveCalculation(item)"
                         >
                           <option v-for="option in sourceOptionsFor(item)" :key="option.key" :value="option.key">{{ option.label }}</option>
                         </select>

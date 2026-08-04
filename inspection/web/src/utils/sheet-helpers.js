@@ -68,3 +68,19 @@ export function normalizeRestorableAnswerDraft(item, value) {
 export function isPdfItem(item) {
   return item?.answer_type !== "stopwatch";
 }
+
+export function isMultiSourceCalculation(operation) {
+  return operation === "sum" || operation === "product";
+}
+
+export function calculationForMode(current, mode, fallback) {
+  if (mode === "manual") return null;
+  if (current) return { ...current, mode };
+  return fallback;
+}
+
+export function calculationSourcesForOperation(sources, operation, availableKeys) {
+  const available = new Set(availableKeys || []);
+  const valid = (sources || []).filter(key => available.has(key));
+  return isMultiSourceCalculation(operation) ? valid : valid.slice(0, 1);
+}
