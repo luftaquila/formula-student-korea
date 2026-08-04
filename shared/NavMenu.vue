@@ -122,7 +122,10 @@ async function logout() {
             <div v-if="showOfficials && opsContacts" class="nav-section ops-contacts-section">
               <span class="nav-section-title">Contacts</span>
               <div v-for="c in opsContacts" :key="c.id" class="ops-contact">
-                <span class="ops-contact-name">{{ c.realname || c.name || c.email }}</span>
+                <span class="ops-contact-identity">
+                  <span v-if="c.description" class="ops-contact-description">{{ c.description }}</span>
+                  <span class="ops-contact-name">{{ c.realname || c.name || c.email }}</span>
+                </span>
                 <a v-if="c.phone" :href="'tel:' + c.phone" class="ops-contact-phone">{{ c.phone }}</a>
               </div>
             </div>
@@ -400,14 +403,27 @@ async function logout() {
 .ops-contacts-section .ops-contact {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0.375rem 1.5rem;
+}
+
+.ops-contact-identity {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  min-width: 0;
 }
 
 .ops-contact-name {
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.ops-contact-description {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
 }
 
 .ops-contact-phone {

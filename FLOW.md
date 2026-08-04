@@ -47,23 +47,24 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 1.12 | 연락처 조회 | official | `GET /api/ops-contacts` | official+ 사이드바에 표시, 사용자 realname/phone 반환 |
+| 1.12 | 연락처 조회 | official | `GET /api/ops-contacts` | official+ 사이드바에 표시, 사용자 realname/phone과 이름 앞 짧은 설명 반환 |
 | 1.13 | 연락처 추가 | admin | `POST /api/ops-contacts` | `{ user_id }` → official 이상 사용자만 추가 가능 |
-| 1.14 | 연락처 삭제 | admin | `DELETE /api/ops-contacts/:userId` | 사이드바 표시 목록에서 제거 |
+| 1.14 | 연락처 설명 수정 | admin | `PATCH /api/ops-contacts/:userId` | `{ description }` → 이름 앞에 표시할 30자 이내 설명 저장 |
+| 1.15 | 연락처 삭제 | admin | `DELETE /api/ops-contacts/:userId` | 사이드바 표시 목록에서 제거 |
 
 ### 내부 서비스 연동
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 1.15 | 사용자 존재 확인 | 내부 | `GET /api/users/exists/:email` | X-Internal-Service 헤더 필요, 200 또는 404 |
-| 1.16 | 사용자 역할 조회 | 내부 | `GET /api/users/role/:email` | 역할 동기화용 |
-| 1.17 | Forward Auth | 내부 | `GET /api/forward-auth` | Caddy → FileBrowser 프록시 인증, X-Forward-Auth-Key 헤더 |
+| 1.16 | 사용자 존재 확인 | 내부 | `GET /api/users/exists/:email` | X-Internal-Service 헤더 필요, 200 또는 404 |
+| 1.17 | 사용자 역할 조회 | 내부 | `GET /api/users/role/:email` | 역할 동기화용 |
+| 1.18 | Forward Auth | 내부 | `GET /api/forward-auth` | Caddy → FileBrowser 프록시 인증, X-Forward-Auth-Key 헤더 |
 
 ### 로그
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 1.18 | 로그 집계 조회 | admin | `GET /api/admin/logs` | 전체 서비스 로그 수집(LOG_SERVICES), 서비스/레벨/액션/기간 필터, 페이지네이션 |
+| 1.19 | 로그 집계 조회 | admin | `GET /api/admin/logs` | 전체 서비스 로그 수집(LOG_SERVICES), 서비스/레벨/액션/기간 필터, 페이지네이션 |
 
 ### 계정 신청
 
@@ -71,14 +72,14 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 1.19 | 신청 접수 여부 | public | `GET /api/apply/config` | `applications_open` 토글 상태 |
-| 1.20 | 내 세션/신청 상태 | public | `GET /api/apply/me` | 로그인됨 `{registered:true,...}` / 신청자 `{registered:false, application, applicationsOpen}` / 401 |
-| 1.21 | 계정 신청 | public | `POST /api/apply` | `fsk_applicant` 쿠키 검증, `{realname, phone, affiliation}` 필수, 접수 열림 필요 |
-| 1.22 | 신청 수정 | public | `PATCH /api/apply` | `fsk_applicant` 쿠키 검증, 접수 닫혀도 허용 |
-| 1.23 | 신청 목록 | admin | `GET /api/applications` | 접수된 신청 목록 |
-| 1.24 | 접수 on/off | admin | `PATCH /api/applications/config` | `applications_open` 토글 |
-| 1.25 | 신청 승인 | admin | `POST /api/applications/approve` | 신청 → users 등록 후 신청 삭제, 완료 메일 발송 |
-| 1.26 | 신청 삭제 | admin | `DELETE /api/applications` | 신청 반려/삭제 |
+| 1.20 | 신청 접수 여부 | public | `GET /api/apply/config` | `applications_open` 토글 상태 |
+| 1.21 | 내 세션/신청 상태 | public | `GET /api/apply/me` | 로그인됨 `{registered:true,...}` / 신청자 `{registered:false, application, applicationsOpen}` / 401 |
+| 1.22 | 계정 신청 | public | `POST /api/apply` | `fsk_applicant` 쿠키 검증, `{realname, phone, affiliation}` 필수, 접수 열림 필요 |
+| 1.23 | 신청 수정 | public | `PATCH /api/apply` | `fsk_applicant` 쿠키 검증, 접수 닫혀도 허용 |
+| 1.24 | 신청 목록 | admin | `GET /api/applications` | 접수된 신청 목록 |
+| 1.25 | 접수 on/off | admin | `PATCH /api/applications/config` | `applications_open` 토글 |
+| 1.26 | 신청 승인 | admin | `POST /api/applications/approve` | 신청 → users 등록 후 신청 삭제, 완료 메일 발송 |
+| 1.27 | 신청 삭제 | admin | `DELETE /api/applications` | 신청 반려/삭제 |
 
 ---
 

@@ -558,6 +558,35 @@ describe('GET /api/users/role/:email', () => {
   });
 });
 
+describe('Ops contacts description migration', () => {
+  it('adds the description column to an existing ops_display table without losing rows', () => {
+    const legacyPath = tmpDbPath();
+    let legacyDb;
+    let migratedDb;
+
+    try {
+      legacyDb = createAuthApp({ dbPath: legacyPath }).db;
+      const userId = legacyDb.prepare("INSERT INTO users (email, role, active) VALUES ('legacy-official@test.com', 'official', 1)").run().lastInsertRowid;
+      legacyDb.prepare("INSERT INTO ops_display (user_id) VALUES (?)").run(userId);
+      legacyDb.exec("ALTER TABLE ops_display DROP COLUMN description");
+      legacyDb.close();
+      legacyDb = null;
+
+      migratedDb = createAuthApp({ dbPath: legacyPath }).db;
+      const columns = migratedDb.prepare("PRAGMA table_info(ops_display)").all().map((column) => column.name);
+      assert.ok(columns.includes('description'));
+      assert.deepEqual(
+        migratedDb.prepare("SELECT user_id, description FROM ops_display WHERE user_id = ?").get(userId),
+        { user_id: userId, description: '' },
+      );
+    } finally {
+      legacyDb?.close();
+      migratedDb?.close();
+      cleanup(legacyPath);
+    }
+  });
+});
+
 // ─── Ops Contacts (sidebar display) ─────────────────────────────────────
 describe('Ops contacts', () => {
   let officialUserId;
@@ -634,6 +663,39 @@ describe('Ops contacts', () => {
     assert.equal(res.status, 403);
   });
 
+  it('PATCH /api/ops-contacts/:userId updates and trims the description', async () => {
+    const res = await client.patch(`/api/ops-contacts/${officialUserId}`, {
+      body: { description: '  검차 총괄  ' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { description: '검차 총괄' });
+  });
+
+  it('PATCH /api/ops-contacts/:userId rejects descriptions longer than 30 characters', async () => {
+    const res = await client.patch(`/api/ops-contacts/${officialUserId}`, {
+      body: { description: 'a'.repeat(31) },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('PATCH /api/ops-contacts/:userId requires admin role', async () => {
+    const res = await client.patch(`/api/ops-contacts/${officialUserId}`, {
+      body: { description: '검차 총괄' },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('PATCH /api/ops-contacts/:userId returns 404 for a non-displayed user', async () => {
+    const res = await client.patch('/api/ops-contacts/99999', {
+      body: { description: '검차 총괄' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 404);
+  });
+
   it('GET /api/ops-contacts returns displayed users', async () => {
     const res = await client.get('/api/ops-contacts', { cookie: adminCookie });
     assert.equal(res.status, 200);
@@ -642,6 +704,7 @@ describe('Ops contacts', () => {
     const contact = data.find(c => c.id === officialUserId);
     assert.ok(contact);
     assert.ok(contact.email);
+    assert.equal(contact.description, '검차 총괄');
   });
 
   it('DELETE /api/ops-contacts/:userId removes from display list', async () => {

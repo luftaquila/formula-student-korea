@@ -41,6 +41,26 @@ test.describe("Ops contacts management", () => {
     const row = opsTable.locator("tr").filter({ hasText: optionEmail });
     await expect(row).toBeVisible();
 
+    // Edit the short description shown before the name in the sidebar
+    const descriptionCell = row.locator(".col-description");
+    await descriptionCell.click();
+    const descriptionInput = descriptionCell.getByRole("textbox", { name: "운영 연락처 설명" });
+    await descriptionInput.fill("검차 총괄");
+    const patchResp = page.waitForResponse((res) => res.url().includes("/api/ops-contacts/") && res.request().method() === "PATCH");
+    await descriptionInput.press("Enter");
+    await patchResp;
+    await expect(descriptionCell).toContainText("검차 총괄");
+
+    // The sidebar renders the description immediately before the contact name
+    const realname = (await row.locator(".col-realname").textContent()).trim();
+    const name = (await row.locator(".col-name").textContent()).trim();
+    const expectedName = realname !== "-" ? realname : name !== "-" ? name : optionEmail;
+    await page.locator(".menu-btn").click();
+    const sidebarContact = page.locator(".ops-contact").filter({ hasText: "검차 총괄" });
+    await expect(sidebarContact.locator(".ops-contact-description")).toHaveText("검차 총괄");
+    await expect(sidebarContact.locator(".ops-contact-name")).toHaveText(expectedName);
+    await page.locator(".close-btn").click();
+
     // Remove the user via the 제거 button
     const delResp = page.waitForResponse((res) => res.url().includes("/api/ops-contacts") && res.request().method() === "DELETE");
     await row.getByRole("button", { name: "제거" }).click();

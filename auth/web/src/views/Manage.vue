@@ -27,6 +27,8 @@ const newRole = ref("official");
 
 // 운영 오피셜 연락처 (사이드바 표시)
 const opsDisplayIds = ref(new Set());
+const opsDescriptions = ref(new Map());
+const editingOpsDescriptionId = ref(null);
 const opsDropdownOpen = ref(false);
 const opsDropdownSearch = ref("");
 const opsDropdownStyle = ref({});
@@ -438,6 +440,7 @@ async function fetchOpsDisplay() {
     if (res.ok) {
       const data = await res.json();
       opsDisplayIds.value = new Set(data.map((d) => d.id));
+      opsDescriptions.value = new Map(data.map((d) => [d.id, d.description || ""]));
     }
   } catch {}
 }
@@ -454,8 +457,35 @@ const opsFilteredUsers = computed(() => {
 
 // 현재 표시 중인 사용자 상세 목록
 const opsDisplayUsers = computed(() =>
-  officialUsers.value.filter((u) => opsDisplayIds.value.has(u.id)),
+  officialUsers.value
+    .filter((u) => opsDisplayIds.value.has(u.id))
+    .map((u) => ({ ...u, opsDescription: opsDescriptions.value.get(u.id) || "" })),
 );
+
+function startOpsDescriptionEdit(userId) {
+  editingOpsDescriptionId.value = userId;
+}
+
+async function handleOpsDescriptionChange(user, value) {
+  editingOpsDescriptionId.value = null;
+  const description = value.trim();
+  if (description === user.opsDescription) return;
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/ops-contacts/${user.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const descriptions = new Map(opsDescriptions.value);
+    descriptions.set(user.id, data.description);
+    opsDescriptions.value = descriptions;
+  } catch (e) {
+    notyf.error(e.message);
+  }
+}
 
 function openOpsDropdown(event) {
   opsDropdownOpen.value = true;
@@ -487,6 +517,9 @@ async function addOpsDisplay(user) {
     const s = new Set(opsDisplayIds.value);
     s.add(user.id);
     opsDisplayIds.value = s;
+    const descriptions = new Map(opsDescriptions.value);
+    descriptions.set(user.id, "");
+    opsDescriptions.value = descriptions;
   } catch (e) {
     notyf.error(e.message);
   }
@@ -499,6 +532,9 @@ async function removeOpsDisplay(user) {
     const s = new Set(opsDisplayIds.value);
     s.delete(user.id);
     opsDisplayIds.value = s;
+    const descriptions = new Map(opsDescriptions.value);
+    descriptions.delete(user.id);
+    opsDescriptions.value = descriptions;
   } catch (e) {
     notyf.error(e.message);
   }
@@ -719,6 +755,7 @@ onMounted(() => {
                 <th class="col-role">역할</th>
                 <th class="col-realname">실명</th>
                 <th class="col-phone">전화번호</th>
+                <th class="col-description">설명</th>
                 <th class="col-action">액션</th>
               </tr>
             </thead>
@@ -729,10 +766,24 @@ onMounted(() => {
                 <td class="col-role"><span class="badge" :class="roleBadgeClass(u.role)">{{ u.role }}</span></td>
                 <td class="col-realname">{{ u.realname || '-' }}</td>
                 <td class="col-phone">{{ u.phone || '-' }}</td>
+                <td class="col-description inline-edit-cell" @click="startOpsDescriptionEdit(u.id)">
+                  <input
+                    v-if="editingOpsDescriptionId === u.id"
+                    :ref="inlineInputRef"
+                    class="inline-edit-input"
+                    type="text"
+                    :value="u.opsDescription"
+                    maxlength="30"
+                    aria-label="운영 연락처 설명"
+                    @blur="handleOpsDescriptionChange(u, $event.target.value)"
+                    @keyup.enter="$event.target.blur()"
+                  />
+                  <span v-else class="inline-edit-text ops-description-text">{{ u.opsDescription || '설명 입력' }}</span>
+                </td>
                 <td class="col-action"><div class="action-btns"><button class="btn btn-sm btn-danger" @click="removeOpsDisplay(u)">제거</button></div></td>
               </tr>
               <tr v-if="opsDisplayUsers.length === 0">
-                <td colspan="6" class="empty-state">표시할 사용자가 없습니다.</td>
+                <td colspan="7" class="empty-state">표시할 사용자가 없습니다.</td>
               </tr>
             </tbody>
           </table>
@@ -1014,6 +1065,14 @@ onMounted(() => {
 
 .ops-table {
   width: 100%;
+}
+
+.ops-table .col-description {
+  min-width: 8rem;
+}
+
+.ops-description-text {
+  color: var(--text-secondary);
 }
 
 @media (max-width: 768px) {
