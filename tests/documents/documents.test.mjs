@@ -668,7 +668,7 @@ describe('File upload', () => {
     submissionId = data.id; // update to latest submission
   });
 
-  it('POST /api/sessions/:id/submit prefers UTF-8 for ambiguous bytes and supports an explicit CP949 override', async () => {
+  it('POST /api/sessions/:id/submit automatically detects ambiguous CP949 Korean text', async () => {
     const sessionRes = await client.post('/api/admin/sessions', {
       body: {
         name: 'Text Encoding Session',
@@ -687,25 +687,20 @@ describe('File upload', () => {
 
     try {
       const res = await uploadFile(textSessionId, studentCookie, [
-        { name: 'ambiguous.txt', type: 'text/plain', content: Buffer.from([0xc2, 0xaf]) }, // CP949 "짱", UTF-8 "¯"
+        // CP949 "짱징책", but also valid UTF-8 "¯¡å".
+        { name: 'ambiguous.txt', type: 'text/plain', content: Buffer.from([0xc2, 0xaf, 0xc2, 0xa1, 0xc3, 0xa5]) },
       ]);
       assert.equal(res.status, 200);
       const data = await res.json();
       const file = db.prepare('SELECT id, text_charset FROM submission_file WHERE submission_id = ?').get(data.id);
-      assert.equal(file.text_charset, 'utf-8', 'ambiguous bytes must follow the UTF-8-first policy');
+      assert.equal(file.text_charset, 'euc-kr');
 
       const normalRes = await fetch(`${baseUrl}/api/admin/submissions/${data.id}/files/${file.id}`, {
         headers: { 'Cookie': adminCookie },
       });
-      assert.equal(normalRes.headers.get('content-type'), 'text/plain; charset=utf-8');
-      assert.equal(await normalRes.text(), '¯');
-
-      const cp949Res = await fetch(`${baseUrl}/api/admin/submissions/${data.id}/files/${file.id}?charset=euc-kr`, {
-        headers: { 'Cookie': adminCookie },
-      });
-      assert.equal(cp949Res.headers.get('content-type'), 'text/plain; charset=euc-kr');
-      const cp949Body = Buffer.from(await cp949Res.arrayBuffer());
-      assert.equal(new TextDecoder('euc-kr').decode(cp949Body), '짱');
+      assert.equal(normalRes.headers.get('content-type'), 'text/plain; charset=euc-kr');
+      const body = Buffer.from(await normalRes.arrayBuffer());
+      assert.equal(new TextDecoder('euc-kr').decode(body), '짱징책');
     } finally {
       await client.delete(`/api/admin/sessions/${textSessionId}`, { cookie: chiefCookie });
     }
@@ -988,7 +983,7 @@ describe('File download (admin)', () => {
     const sub = db.prepare('SELECT session_id, team_num FROM submission WHERE id = ?').get(submissionId);
     const storedName = `${crypto.randomUUID()}.txt`;
     const originalName = 'engineering-UTF8.txt';
-    const text = '25°C, ±0.1 mm, © 2026, 10 µm';
+    const text = '25°C, ±0.1 mm, © 2026, 10 µm, café, 10 Å';
     const content = Buffer.from(text, 'utf8');
     const dir = path.join(uploadsDir, String(sub.session_id), String(sub.team_num), String(submissionId));
     const filePath = path.join(dir, storedName);
