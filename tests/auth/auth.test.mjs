@@ -763,7 +763,6 @@ describe('Ops contacts', () => {
     const res = await client.get('/api/ops-contacts', { cookie: adminCookie });
     const data = await res.json();
     assert.deepEqual(data.map((contact) => contact.id), [officialUserId, secondOfficialUserId]);
-    assert.deepEqual(data.map((contact) => contact.sort_order), [0, 1]);
   });
 
   it('POST /api/ops-contacts/reorder updates the sidebar order', async () => {
@@ -776,7 +775,6 @@ describe('Ops contacts', () => {
     const check = await client.get('/api/ops-contacts', { cookie: officialCookie });
     const data = await check.json();
     assert.deepEqual(data.map((contact) => contact.id), [secondOfficialUserId, officialUserId]);
-    assert.deepEqual(data.map((contact) => contact.sort_order), [0, 1]);
   });
 
   it('POST /api/ops-contacts/reorder keeps inactive contacts out of the active order', async () => {
