@@ -1013,7 +1013,7 @@ app.post("/api/ops-contacts", (req, res) => {
   res.status(201).send();
 });
 
-// PATCH /api/ops-contacts/:userId - 사이드바에 이름 앞에 표시할 짧은 설명 수정
+// PATCH /api/ops-contacts/:userId - 사이드바에 이름 뒤에 표시할 짧은 설명 수정
 app.patch("/api/ops-contacts/:userId", (req, res) => {
   const userId = Number(req.params.userId);
   const { description } = req.body ?? {};

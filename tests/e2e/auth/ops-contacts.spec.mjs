@@ -50,7 +50,7 @@ test.describe("Ops contacts management", () => {
     await expect(page.locator(".ops-contact").filter({ hasText: expectedName })).toBeVisible();
     await page.locator(".close-btn").click();
 
-    // Edit the short description shown before the name in the sidebar
+    // Edit the short description shown after the name in the sidebar
     const description = "가".repeat(30);
     const descriptionCell = row.locator(".col-description");
     await descriptionCell.click();
@@ -61,11 +61,13 @@ test.describe("Ops contacts management", () => {
     await patchResp;
     await expect(descriptionCell).toContainText(description);
 
-    // The sidebar renders the description immediately before the contact name
+    // The sidebar renders the contact name before its description
     await page.locator(".menu-btn").click();
     const sidebarContact = page.locator(".ops-contact").filter({ hasText: description });
-    await expect(sidebarContact.locator(".ops-contact-description")).toHaveText(description);
-    await expect(sidebarContact.locator(".ops-contact-name")).toHaveText(expectedName);
+    const sidebarIdentity = sidebarContact.locator(".ops-contact-identity");
+    await expect(sidebarIdentity.locator(".ops-contact-name")).toHaveText(expectedName);
+    await expect(sidebarIdentity.locator(".ops-contact-description")).toHaveText(description);
+    await expect(sidebarIdentity.locator(":scope > span")).toHaveText([expectedName, description]);
     const drawerHasNoHorizontalOverflow = await page.locator(".drawer").evaluate((drawer) => drawer.scrollWidth <= drawer.clientWidth);
     expect(drawerHasNoHorizontalOverflow).toBe(true);
     await page.locator(".close-btn").click();
