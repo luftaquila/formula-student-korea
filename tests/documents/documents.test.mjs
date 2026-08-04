@@ -904,6 +904,62 @@ describe('File download (admin)', () => {
     assert.equal(res.headers.get('content-type'), 'application/pdf');
   });
 
+  it('GET /api/admin/submissions/:subId/files/:fileId declares CP949 Korean text as EUC-KR', async () => {
+    const sub = db.prepare('SELECT session_id, team_num FROM submission WHERE id = ?').get(submissionId);
+    const storedName = `${crypto.randomUUID()}.txt`;
+    const originalName = '한글-CP949.txt';
+    const content = Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]); // "한글" in CP949
+    const dir = path.join(uploadsDir, String(sub.session_id), String(sub.team_num), String(submissionId));
+    const filePath = path.join(dir, storedName);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, content);
+    const inserted = db.prepare(`
+      INSERT INTO submission_file (submission_id, original_name, stored_name, size, mime_type)
+      VALUES (?, ?, ?, ?, 'text/plain')
+    `).run(submissionId, originalName, storedName, content.length);
+
+    try {
+      const res = await fetch(`${baseUrl}/api/admin/submissions/${submissionId}/files/${inserted.lastInsertRowid}`, {
+        headers: { 'Cookie': adminCookie },
+      });
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get('content-disposition'), /inline/);
+      assert.equal(res.headers.get('content-type'), 'text/plain; charset=euc-kr');
+      const body = Buffer.from(await res.arrayBuffer());
+      assert.equal(new TextDecoder('euc-kr').decode(body), '한글');
+    } finally {
+      db.prepare('DELETE FROM submission_file WHERE id = ?').run(inserted.lastInsertRowid);
+      fs.rmSync(filePath, { force: true });
+    }
+  });
+
+  it('GET /api/admin/submissions/:subId/files/:fileId keeps UTF-8 Korean text as UTF-8', async () => {
+    const sub = db.prepare('SELECT session_id, team_num FROM submission WHERE id = ?').get(submissionId);
+    const storedName = `${crypto.randomUUID()}.txt`;
+    const originalName = '한글-UTF8.txt';
+    const content = Buffer.from('한글', 'utf8');
+    const dir = path.join(uploadsDir, String(sub.session_id), String(sub.team_num), String(submissionId));
+    const filePath = path.join(dir, storedName);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, content);
+    const inserted = db.prepare(`
+      INSERT INTO submission_file (submission_id, original_name, stored_name, size, mime_type)
+      VALUES (?, ?, ?, ?, 'text/plain')
+    `).run(submissionId, originalName, storedName, content.length);
+
+    try {
+      const res = await fetch(`${baseUrl}/api/admin/submissions/${submissionId}/files/${inserted.lastInsertRowid}`, {
+        headers: { 'Cookie': adminCookie },
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('content-type'), 'text/plain; charset=utf-8');
+      assert.equal(await res.text(), '한글');
+    } finally {
+      db.prepare('DELETE FROM submission_file WHERE id = ?').run(inserted.lastInsertRowid);
+      fs.rmSync(filePath, { force: true });
+    }
+  });
+
   it('GET /api/admin/submissions/:subId/files/:fileId forces attachment for non-previewable type', async () => {
     // Find a non-PDF file (the "replacement.pdf" submission also has older docx if any).
     // Upload a fresh non-inline file and check disposition.

@@ -399,9 +399,9 @@ const INLINE_MIME = new Set([
 ]);
 const INLINE_EXT_MIME = {
   ".pdf": "application/pdf",
-  ".txt": "text/plain; charset=utf-8",
-  ".csv": "text/csv; charset=utf-8",
-  ".md": "text/markdown; charset=utf-8",
+  ".txt": "text/plain",
+  ".csv": "text/csv",
+  ".md": "text/markdown",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -422,13 +422,47 @@ function inlineDisposition(originalName, mimeType) {
   return null;
 }
 
-function setFileResponseHeaders(res, file) {
+// Windows에서 작성한 한글 텍스트는 CP949인 경우가 많다. 브라우저가 모든 텍스트를
+// UTF-8로 해석하지 않도록 파일 전체를 UTF-8로 검증하고, 실패하면 WHATWG의
+// CP949 호환 디코더 라벨인 euc-kr을 사용한다. 청크 단위 검증으로 큰 파일도
+// 메모리에 한꺼번에 올리지 않는다.
+function detectTextCharset(filePath) {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  let fd;
+  let firstChunk = true;
+
+  try {
+    fd = fs.openSync(filePath, "r");
+    let bytesRead;
+    while ((bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+      const bytes = chunk.subarray(0, bytesRead);
+      if (firstChunk) {
+        firstChunk = false;
+        if (bytesRead >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return "utf-16le";
+        if (bytesRead >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return "utf-16be";
+      }
+      decoder.decode(bytes, { stream: true });
+    }
+    decoder.decode();
+    return "utf-8";
+  } catch {
+    return "euc-kr";
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function setFileResponseHeaders(res, file, filePath) {
   const inlineType = inlineDisposition(file.original_name, file.mime_type);
   const encoded = encodeURIComponent(file.original_name);
   // Caddy가 전역으로 nosniff를 붙이지만, 프록시 없이 직접 접속하는 경로(dev 등)도 방어
   res.setHeader("X-Content-Type-Options", "nosniff");
   if (inlineType) {
-    res.setHeader("Content-Type", inlineType);
+    const contentType = inlineType.startsWith("text/")
+      ? `${inlineType}; charset=${detectTextCharset(filePath)}`
+      : inlineType;
+    res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encoded}`);
   } else {
     res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encoded}`);
@@ -775,7 +809,7 @@ app.get("/api/submissions/:subId/files/:fileId", (req, res) => {
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
   if (isInitialDownload(req)) logger.log(req, "file.download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
-  setFileResponseHeaders(res, file);
+  setFileResponseHeaders(res, file, filePath);
   res.sendFile(filePath);
 });
 
@@ -1110,7 +1144,7 @@ app.get("/api/admin/submissions/:subId/files/:fileId", (req, res) => {
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
   if (isInitialDownload(req)) logger.log(req, "file.admin_download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
-  setFileResponseHeaders(res, file);
+  setFileResponseHeaders(res, file, filePath);
   res.sendFile(filePath);
 });
 
