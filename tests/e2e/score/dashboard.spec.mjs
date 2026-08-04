@@ -61,6 +61,7 @@ test.describe("Score dashboard", () => {
     // Verify inspection columns are hidden (col-inspection cells should not be visible)
     const inspectionCells = page.locator("th.col-inspection");
     const count = await inspectionCells.count();
+    expect(count).toBeGreaterThan(0);
     for (let i = 0; i < count; i++) {
       await expect(inspectionCells.nth(i)).toBeHidden();
     }
@@ -68,10 +69,7 @@ test.describe("Score dashboard", () => {
     // Re-check to show inspection columns
     await inspectionCheckbox.check();
 
-    // Verify inspection columns are now visible (if there are any)
-    if (count > 0) {
-      await expect(inspectionCells.first()).toBeVisible();
-    }
+    await expect(inspectionCells.first()).toBeVisible();
   });
 
   test("record/score mode toggle switches display", async ({ page }) => {
@@ -121,12 +119,8 @@ test.describe("Score dashboard", () => {
     // Find type filter checkboxes (EV and CV)
     const typeFilterGroup = page.locator(".type-filter-group");
 
-    // If type filters are present (requires more than 1 type)
-    const filterCount = await typeFilterGroup.count();
-    if (filterCount === 0) {
-      // Only one vehicle type exists, filter group won't show
-      return;
-    }
+    // Global setup creates EV and CV, so a missing filter is a regression.
+    await expect(typeFilterGroup).toBeVisible();
 
     // Find EV and CV filter checkboxes
     const evCheckbox = typeFilterGroup.locator("label.filter-checkbox").filter({ hasText: "EV" }).locator("input[type='checkbox']");

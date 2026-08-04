@@ -44,10 +44,10 @@ async function dragWithTouch(page, source, target) {
 
 async function clearOpsContacts(page) {
   const listResponse = await page.request.get("/auth/api/ops-contacts");
-  expect(listResponse.ok()).toBe(true);
+  expect(listResponse.status()).toBe(200);
   for (const contact of await listResponse.json()) {
     const deleteResponse = await page.request.delete(`/auth/api/ops-contacts/${contact.id}`);
-    expect(deleteResponse.ok()).toBe(true);
+    expect(deleteResponse.status()).toBe(200);
   }
 }
 
@@ -62,15 +62,11 @@ test.describe("Ops contacts management", () => {
     await clearOpsContacts(page);
   });
 
-  test("ops contacts section is visible with description", async ({ page }) => {
+  test("adds, edits, and removes a contact", async ({ page }) => {
     const section = page.locator(".ops-card");
     await expect(section).toBeVisible();
     await expect(section.locator("h3")).toHaveText("운영 오피셜 연락처");
     await expect(section.locator(".ops-desc")).toContainText("사이드바에 표시");
-  });
-
-  test("adds, edits, and removes a contact", async ({ page }) => {
-    const section = page.locator(".ops-card");
 
     // Open dropdown
     await section.locator(".select-display").click();
@@ -87,7 +83,7 @@ test.describe("Ops contacts management", () => {
 
     const addResp = page.waitForResponse((res) => res.url().includes("/api/ops-contacts") && res.request().method() === "POST");
     await firstOption.click();
-    await addResp;
+    expect((await addResp).status()).toBe(201);
 
     // Verify user appears in the ops table
     const opsTable = section.locator("table.ops-table");
@@ -111,7 +107,7 @@ test.describe("Ops contacts management", () => {
     await descriptionInput.fill(description);
     const patchResp = page.waitForResponse((res) => res.url().includes("/api/ops-contacts/") && res.request().method() === "PATCH");
     await descriptionInput.press("Enter");
-    await patchResp;
+    expect((await patchResp).status()).toBe(200);
     await expect(descriptionCell).toContainText(description);
 
     // The sidebar renders the contact name before its description
@@ -128,7 +124,7 @@ test.describe("Ops contacts management", () => {
     // Remove the user via the 제거 button
     const delResp = page.waitForResponse((res) => res.url().includes("/api/ops-contacts") && res.request().method() === "DELETE");
     await row.getByRole("button", { name: "제거" }).click();
-    await delResp;
+    expect((await delResp).status()).toBe(200);
 
     // Verify user is removed from the table
     await expect(row).not.toBeVisible();
@@ -136,7 +132,7 @@ test.describe("Ops contacts management", () => {
 
   test("reorders contacts only from the handle with mouse and touch", async ({ page }) => {
     const usersResponse = await page.request.get("/auth/api/users");
-    expect(usersResponse.ok()).toBe(true);
+    expect(usersResponse.status()).toBe(200);
     const contacts = (await usersResponse.json())
       .filter((user) => user.active && ["official", "chief", "admin"].includes(user.role))
       .slice(0, 2);
@@ -144,7 +140,7 @@ test.describe("Ops contacts management", () => {
 
     for (const contact of contacts) {
       const addResponse = await page.request.post("/auth/api/ops-contacts", { data: { user_id: contact.id } });
-      expect(addResponse.ok()).toBe(true);
+      expect(addResponse.status()).toBe(201);
     }
     await page.reload();
     await waitForPageReady(page);
@@ -171,7 +167,7 @@ test.describe("Ops contacts management", () => {
     await test.step("the handle reorders with a desktop mouse", async () => {
       const reorderResponse = page.waitForResponse((response) => response.url().includes("/api/ops-contacts/reorder") && response.request().method() === "POST");
       await dragWithMouse(page, secondRow.getByRole("button", { name: `${secondLabel} 드래그하여 순서 변경` }), firstRow);
-      await reorderResponse;
+      expect((await reorderResponse).status()).toBe(200);
       await expect.poll(visibleEmails).toEqual([secondContact.email, firstContact.email]);
     });
 
@@ -179,7 +175,7 @@ test.describe("Ops contacts management", () => {
       await page.setViewportSize({ width: 390, height: 844 });
       const reorderResponse = page.waitForResponse((response) => response.url().includes("/api/ops-contacts/reorder") && response.request().method() === "POST");
       await dragWithTouch(page, firstRow.getByRole("button", { name: `${firstLabel} 드래그하여 순서 변경` }), secondRow);
-      await reorderResponse;
+      expect((await reorderResponse).status()).toBe(200);
       await expect.poll(visibleEmails).toEqual([firstContact.email, secondContact.email]);
     });
 
@@ -190,20 +186,39 @@ test.describe("Ops contacts management", () => {
   });
 
   test("refreshes contact order after a displayed user is deactivated", async ({ page }) => {
-    const usersResponse = await page.request.get("/auth/api/users");
-    expect(usersResponse.ok()).toBe(true);
-    const contacts = (await usersResponse.json())
-      .filter((user) => user.active && ["official", "chief", "admin"].includes(user.role))
-      .slice(0, 3);
-    expect(contacts).toHaveLength(3);
-
-    const deactivatedContact = contacts.find((contact) => contact.role !== "admin");
-    expect(deactivatedContact).toBeTruthy();
-    const [firstActiveContact, lastActiveContact] = contacts.filter((contact) => contact.id !== deactivatedContact.id);
+    const ownedUsers = [
+      { email: "e2e-ops-order-first@test.com", role: "official" },
+      { email: "e2e-ops-order-deactivated@test.com", role: "chief" },
+      { email: "e2e-ops-order-last@test.com", role: "official" },
+    ];
+    let contacts = [];
+    let deactivatedContact;
     try {
+      // Remove leftovers from an interrupted prior run, then create accounts
+      // that no session or other spec relies on.
+      const existingResponse = await page.request.get("/auth/api/users");
+      expect(existingResponse.status()).toBe(200);
+      for (const user of await existingResponse.json()) {
+        if (!ownedUsers.some(({ email }) => email === user.email)) continue;
+        const deleteResponse = await page.request.delete(`/auth/api/users/${user.id}`);
+        expect(deleteResponse.status()).toBe(200);
+      }
+      for (const user of ownedUsers) {
+        const createResponse = await page.request.post("/auth/api/users", { data: user });
+        expect(createResponse.status()).toBe(201);
+      }
+
+      const usersResponse = await page.request.get("/auth/api/users");
+      expect(usersResponse.status()).toBe(200);
+      const users = await usersResponse.json();
+      contacts = ownedUsers.map(({ email }) => users.find((user) => user.email === email));
+      expect(contacts.every(Boolean)).toBe(true);
+
+      const [firstActiveContact, contactToDeactivate, lastActiveContact] = contacts;
+      deactivatedContact = contactToDeactivate;
       for (const contact of contacts) {
         const addResponse = await page.request.post("/auth/api/ops-contacts", { data: { user_id: contact.id } });
-        expect(addResponse.ok()).toBe(true);
+        expect(addResponse.status()).toBe(201);
       }
       await page.reload();
       await waitForPageReady(page);
@@ -220,24 +235,32 @@ test.describe("Ops contacts management", () => {
       page.once("dialog", (dialog) => dialog.accept());
       const deactivateResponse = page.waitForResponse((response) => response.url().includes(`/api/users/${deactivatedContact.id}`) && response.request().method() === "PATCH");
       await userRow.getByRole("button", { name: "비활성화" }).click();
-      await deactivateResponse;
+      expect((await deactivateResponse).status()).toBe(200);
       await expect(deactivatedOpsRow).not.toBeVisible();
 
       const reorderResponsePromise = page.waitForResponse((response) => response.url().includes("/api/ops-contacts/reorder") && response.request().method() === "POST");
       await dragWithMouse(page, lastOpsRow.getByRole("button", { name: `${lastLabel} 드래그하여 순서 변경` }), firstOpsRow);
       const reorderResponse = await reorderResponsePromise;
-      expect(reorderResponse.ok()).toBe(true);
+      expect(reorderResponse.status()).toBe(200);
       await expect.poll(visibleEmails).toEqual([lastActiveContact.email, firstActiveContact.email]);
 
       page.once("dialog", (dialog) => dialog.accept());
       const reactivateResponse = page.waitForResponse((response) => response.url().includes(`/api/users/${deactivatedContact.id}`) && response.request().method() === "PATCH");
       await userRow.getByRole("button", { name: "활성화" }).click();
-      await reactivateResponse;
+      expect((await reactivateResponse).status()).toBe(200);
       await expect.poll(visibleEmails).toEqual([lastActiveContact.email, firstActiveContact.email, deactivatedContact.email]);
     } finally {
-      await page.request.patch(`/auth/api/users/${deactivatedContact.id}`, { data: { active: true } });
-      for (const contact of contacts) {
-        await page.request.delete(`/auth/api/ops-contacts/${contact.id}`);
+      if (deactivatedContact) {
+        const restoreResponse = await page.request.patch(`/auth/api/users/${deactivatedContact.id}`, { data: { active: true } });
+        expect([200, 404]).toContain(restoreResponse.status());
+      }
+      await clearOpsContacts(page);
+      const usersResponse = await page.request.get("/auth/api/users");
+      expect(usersResponse.status()).toBe(200);
+      for (const user of await usersResponse.json()) {
+        if (!ownedUsers.some(({ email }) => email === user.email)) continue;
+        const deleteResponse = await page.request.delete(`/auth/api/users/${user.id}`);
+        expect(deleteResponse.status()).toBe(200);
       }
     }
   });

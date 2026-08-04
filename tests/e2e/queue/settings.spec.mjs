@@ -17,6 +17,23 @@ async function apiSetCancelPenalty(value) {
   });
 }
 
+async function apiGetSmsRank() {
+  const res = await fetch(`${BASE_URL}/queue/api/admin/settings/sms-rank`, {
+    headers: { Cookie: getAuthCookie("chief") },
+  });
+  if (!res.ok) throw new Error(`get SMS rank: ${res.status}`);
+  return (await res.json()).value;
+}
+
+async function apiSetSmsRank(value) {
+  const res = await fetch(`${BASE_URL}/queue/api/admin/settings/sms-rank`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+    body: JSON.stringify({ value }),
+  });
+  if (res.status !== 200) throw new Error(`set SMS rank: ${res.status} ${await res.text()}`);
+}
+
 async function apiGetInspections() {
   const res = await fetch(`${BASE_URL}/queue/api/admin/all`, {
     headers: { Cookie: getAuthCookie("chief") },
@@ -36,16 +53,21 @@ test.describe("Queue settings management", () => {
   test.use({ storageState: storageStatePath("chief") });
 
   let originalPenalty;
+  let originalSmsRank;
 
   test.beforeAll(async () => {
     const data = await apiGetCancelPenalty();
     originalPenalty = data.value;
+    originalSmsRank = await apiGetSmsRank();
   });
 
   test.afterAll(async () => {
     // Restore original penalty
     if (originalPenalty !== undefined) {
       await apiSetCancelPenalty(originalPenalty);
+    }
+    if (originalSmsRank !== undefined) {
+      await apiSetSmsRank(originalSmsRank);
     }
     // Ensure all inspections are active
     const inspections = await apiGetInspections();
@@ -256,24 +278,27 @@ test.describe("Queue settings management", () => {
 
     // Change the rank value
     const newValue = originalValue === "5" ? "3" : "5";
-    await rankInput.fill(newValue);
-    await rankInput.dispatchEvent("change");
+    try {
+      const updateResponse = page.waitForResponse(
+        (res) => res.url().includes("/api/admin/settings/sms-rank") &&
+          res.request().method() === "PATCH" && res.status() === 200,
+      );
+      await rankInput.fill(newValue);
+      await rankInput.dispatchEvent("change");
+      await updateResponse;
 
-    // Verify success notification
-    await expectNotification(page, "success", "SMS");
+      await expectNotification(page, "success", `SMS 알림 순번을 ${newValue}번으로 변경했습니다.`);
+      await expect.poll(apiGetSmsRank).toBe(Number(newValue));
 
-    // Reload and verify persistence
-    await page.reload();
-    await waitForPageReady(page);
-    await expect(page.getByText("SMS 알림 순번")).toBeVisible({ timeout: 10000 });
-    const reloadedInput = page.locator(".setting-item", { hasText: "SMS 알림 순번" }).locator("input[type='number']");
-    await expect(reloadedInput).toHaveValue(newValue);
-
-    // Restore original value
-    const smsRestorePromise = page.waitForResponse((res) => res.url().includes("/api/admin/settings/") && res.status() === 200);
-    await reloadedInput.fill(originalValue);
-    await reloadedInput.dispatchEvent("change");
-    await smsRestorePromise;
+      // Reload and verify persistence
+      await page.reload();
+      await waitForPageReady(page);
+      await expect(page.getByText("SMS 알림 순번")).toBeVisible({ timeout: 10000 });
+      const reloadedInput = page.locator(".setting-item", { hasText: "SMS 알림 순번" }).locator("input[type='number']");
+      await expect(reloadedInput).toHaveValue(newValue);
+    } finally {
+      await apiSetSmsRank(Number(originalValue));
+    }
   });
 
   test("booth count setting is shown in settings panel", async ({ page }) => {

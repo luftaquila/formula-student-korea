@@ -1,14 +1,27 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
+const DROPDOWN_EMAIL = "e2e-student2@test.com";
+
+async function removeDropdownMapping(request) {
+  const response = await request.delete(
+    `/documents/api/admin/student-teams/${encodeURIComponent(DROPDOWN_EMAIL)}/${YEAR}`,
+  );
+  expect([200, 404]).toContain(response.status());
+}
 
 test.describe("Documents admin dashboard", () => {
   test.use({ storageState: storageStatePath("chief") });
 
   test.beforeEach(async ({ page }) => {
+    await removeDropdownMapping(page.request);
     await page.goto("/documents/admin");
     await waitForPageReady(page);
+  });
+
+  test.afterEach(async ({ page }) => {
+    await removeDropdownMapping(page.request);
   });
 
   test("renders dashboard with session data and team list", async ({ page }) => {
@@ -64,7 +77,7 @@ test.describe("Documents admin dashboard", () => {
     await dropdown.locator(".select-search").fill("student2");
 
     // Select the student user from dropdown
-    const option = dropdown.locator(".select-option").filter({ hasText: "e2e-student2@test.com" });
+    const option = dropdown.locator(".select-option").filter({ hasText: DROPDOWN_EMAIL });
     await option.click();
 
     // Wait for data to reload
@@ -72,7 +85,7 @@ test.describe("Documents admin dashboard", () => {
 
     // Verify mapping was created
     const updatedRow = table.locator("tbody tr").filter({ hasText: "한양대학교" });
-    await expect(updatedRow.locator(".selected-email")).toContainText("e2e-student2@test.com");
+    await expect(updatedRow.locator(".selected-email")).toContainText(DROPDOWN_EMAIL);
 
     // Clean up: remove the mapping using the clear button
     await updatedRow.locator(".clear-btn").click();

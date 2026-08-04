@@ -1,77 +1,51 @@
 import { test, expect } from "@playwright/test";
-import { waitForPageReady } from "../helpers/utils.mjs";
+import {
+  dismissNotifications,
+  expectNotification,
+  waitForPageReady,
+} from "../helpers/utils.mjs";
 
 test.describe("Queue public status page", () => {
-  test("entering valid entry number shows team name", async ({ page }) => {
+  test.beforeEach(async ({ page }) => {
     await page.goto("/queue");
     await waitForPageReady(page);
+  });
+
+  test("renders its empty state and gives immediate entry feedback", async ({ page }) => {
+    await expect(page.getByRole("heading", { name: /실시간 대기 순번/ })).toBeVisible();
+    await expect(page.locator(".result-display")).toContainText("-");
 
     const entryInput = page.getByPlaceholder("번호");
     await entryInput.fill("1");
-    await entryInput.dispatchEvent("input");
-
-    // Entry 1 is "서울대학교 SNU Racing"
     await expect(page.locator(".team-badge").first()).toContainText("서울대학교");
-  });
 
-  test("entering invalid entry number shows error badge", async ({ page }) => {
-    await page.goto("/queue");
-    await waitForPageReady(page);
-
-    const entryInput = page.getByPlaceholder("번호");
     await entryInput.fill("999");
-    await entryInput.dispatchEvent("input");
-
     await expect(page.locator(".team-badge.error")).toContainText("존재하지 않는 엔트리");
   });
 
-  test("querying with invalid entry shows error notification", async ({ page }) => {
-    await page.goto("/queue");
-    await waitForPageReady(page);
-
-    const entryInput = page.getByPlaceholder("번호");
-    await entryInput.fill("999");
-
-    const phoneInput = page.getByPlaceholder("010-0000-0000");
-    await phoneInput.fill("01012345678");
-
+  test("reports exact validation errors for an empty or unknown entry", async ({ page }) => {
     await page.getByRole("button", { name: "조회" }).click();
+    await expectNotification(page, "error", "엔트리 번호를 입력하세요");
+    await dismissNotifications(page);
 
-    // Should show error notification
-    await expect(page.locator("[data-sonner-toast][data-type='error']").first()).toBeVisible({ timeout: 5000 });
+    await page.getByPlaceholder("번호").fill("999");
+    await page.getByPlaceholder("010-0000-0000").fill("01012345678");
+    await page.getByRole("button", { name: "조회" }).click();
+    await expectNotification(page, "error", "존재하지 않는 엔트리 번호입니다");
   });
 
-  test("querying without entry number shows error", async ({ page }) => {
-    await page.goto("/queue");
-    await waitForPageReady(page);
+  test("shows the exact no-queue result for a valid unregistered team", async ({ page }) => {
+    await page.getByPlaceholder("번호").fill("2");
+    await expect(page.locator(".team-badge").first()).toContainText("한양대학교");
+    await page.getByPlaceholder("010-0000-0000").fill("01012345678");
 
+    const stateResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes("/queue/api/state/2") && response.request().method() === "POST",
+    );
     await page.getByRole("button", { name: "조회" }).click();
-
-    await expect(page.locator("[data-sonner-toast][data-type='error']").first()).toContainText("엔트리 번호를 입력하세요", { timeout: 5000 });
-  });
-
-  test("querying with valid entry but no queue shows no-queue message", async ({ page }) => {
-    await page.goto("/queue");
-    await waitForPageReady(page);
-
-    const entryInput = page.getByPlaceholder("번호");
-    await entryInput.fill("1");
-
-    const phoneInput = page.getByPlaceholder("010-0000-0000");
-    await phoneInput.fill("01012345678");
-
-    await page.getByRole("button", { name: "조회" }).click();
-
-    // Should show error that phone doesn't match or no queue
-    await expect(page.locator("[data-sonner-toast]").first()).toBeVisible({ timeout: 5000 });
-  });
-
-  test("result section shows placeholder when no query made", async ({ page }) => {
-    await page.goto("/queue");
-    await waitForPageReady(page);
-
-    await expect(page.getByRole("heading", { name: /실시간 대기 순번/ })).toBeVisible();
-    // Default result display shows "-"
+    expect((await stateResponse).status()).toBe(200);
+    await expectNotification(page, "error", "대기중인 검차가 없습니다");
     await expect(page.locator(".result-display")).toContainText("-");
   });
 });

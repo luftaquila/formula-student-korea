@@ -114,7 +114,7 @@ test.describe("Three concurrent inspection editors", () => {
     const memoSave = page3.waitForResponse((res) => res.url().includes("/api/sheet/memo") && res.status() === 200);
     await memoInput3.fill("3명 동시 편집 테스트");
     await memoInput3.blur();
-    await Promise.race([memoSave, page3.waitForTimeout(1000)]);
+    await memoSave;
 
     // Context 1 and 2 should see the memo
     await expect(page1.locator(".item-row").filter({ hasText: "전압 확인" }).locator(".memo-text")).toContainText("3명 동시 편집 테스트", { timeout: 5000 });

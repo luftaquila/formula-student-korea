@@ -7,7 +7,7 @@ async function saveInspector(page, input, value) {
   const p = page.waitForResponse((res) => res.url().includes("/api/sheet/inspector") && res.status() === 200);
   await input.fill(value);
   await input.blur();
-  await Promise.race([p, page.waitForTimeout(1000)]);
+  await p;
 }
 
 test.describe("Inspection sheet filling", () => {
@@ -475,6 +475,6 @@ test.describe("Inspection sheet filling", () => {
     // Clean up: uncheck
     const uncheckPromise = page.waitForResponse((res) => res.url().includes("/api/sheet/answer") && res.status() === 200);
     await reloadedCheckbox.uncheck();
-    await Promise.race([uncheckPromise, page.waitForTimeout(1000)]);
+    await uncheckPromise;
   });
 });

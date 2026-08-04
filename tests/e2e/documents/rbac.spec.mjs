@@ -20,31 +20,41 @@ const adminGated = [
 ];
 
 test.describe("documents RBAC", () => {
-  for (const { method, path, body } of adminGated) {
-    test(`student is rejected (403) on ${method.toUpperCase()} ${path}`, async ({ browser }) => {
-      const ctx = await browser.newContext({ storageState: storageStatePath("student") });
-      const res = await ctx.request[method](path, body === undefined ? {} : { data: body });
-      expect(res.status()).toBe(403);
+  test("student is rejected on every representative admin endpoint", async ({ browser }) => {
+    const ctx = await browser.newContext({ storageState: storageStatePath("student") });
+    try {
+      for (const { method, path, body } of adminGated) {
+        await test.step(`${method.toUpperCase()} ${path}`, async () => {
+          const res = await ctx.request[method](path, body === undefined ? {} : { data: body });
+          expect(res.status()).toBe(403);
+        });
+      }
+    } finally {
       await ctx.close();
-    });
+    }
+  });
 
-    test(`unauthenticated is rejected (401) on ${method.toUpperCase()} ${path}`, async ({ request }) => {
-      const res = await request[method](path, body === undefined ? {} : { data: body });
-      expect(res.status()).toBe(401);
-    });
-  }
+  test("unauthenticated callers are rejected on every representative admin endpoint", async ({ request }) => {
+    for (const { method, path, body } of adminGated) {
+      await test.step(`${method.toUpperCase()} ${path}`, async () => {
+        const res = await request[method](path, body === undefined ? {} : { data: body });
+        expect(res.status()).toBe(401);
+      });
+    }
+  });
 
   // Internal API without the X-Internal-Service header (Caddy strips it externally).
   // Falls through to the "admin" gate: unauthenticated -> 401, authenticated student -> 403.
-  test("unauthenticated is rejected (401) on internal DELETE /documents/api/internal/team/999999", async ({ request }) => {
+  test("external callers cannot use the internal team endpoint", async ({ request, browser }) => {
     const res = await request.delete("/documents/api/internal/team/999999");
     expect(res.status()).toBe(401);
-  });
 
-  test("student is rejected (403) on internal DELETE /documents/api/internal/team/999999 (no secret)", async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("student") });
-    const res = await ctx.request.delete("/documents/api/internal/team/999999");
-    expect(res.status()).toBe(403);
-    await ctx.close();
+    try {
+      const studentRes = await ctx.request.delete("/documents/api/internal/team/999999");
+      expect(studentRes.status()).toBe(403);
+    } finally {
+      await ctx.close();
+    }
   });
 });

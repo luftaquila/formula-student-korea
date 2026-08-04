@@ -8,6 +8,22 @@ test.describe("Queue active penalties modal", () => {
     const until = Date.now() + 10 * 60 * 1000;
     let cleared = false;
     let restored = false;
+    let penalties = [
+      {
+        num: 1,
+        inspection: "battery",
+        inspection_name: "배터리",
+        until,
+        can_restore: 1,
+      },
+      {
+        num: 2,
+        inspection: "electric",
+        inspection_name: "전기",
+        until: until + 60000,
+        can_restore: 1,
+      },
+    ];
 
     await page.route("**/queue/api/admin/penalties**", async (route) => {
       const request = route.request();
@@ -17,34 +33,21 @@ test.describe("Queue active penalties modal", () => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify([
-            {
-              num: 1,
-              inspection: "battery",
-              inspection_name: "배터리",
-              until,
-              can_restore: 1,
-            },
-            {
-              num: 2,
-              inspection: "electric",
-              inspection_name: "전기",
-              until: until + 60000,
-              can_restore: 1,
-            },
-          ]),
+          body: JSON.stringify(penalties),
         });
         return;
       }
 
       if (request.method() === "DELETE" && url.pathname.endsWith("/api/admin/penalties/battery/1")) {
         cleared = true;
+        penalties = penalties.filter((penalty) => penalty.num !== 1 || penalty.inspection !== "battery");
         await route.fulfill({ status: 200, body: "" });
         return;
       }
 
       if (request.method() === "POST" && url.pathname.endsWith("/api/admin/penalties/electric/2/restore")) {
         restored = true;
+        penalties = penalties.filter((penalty) => penalty.num !== 2 || penalty.inspection !== "electric");
         await route.fulfill({ status: 200, body: "" });
         return;
       }
@@ -128,12 +131,24 @@ test.describe("Queue active penalties modal", () => {
     await page.getByRole("button", { name: "페널티", exact: true }).click();
 
     const modal = page.getByRole("dialog", { name: "현재 적용 중인 페널티" });
-    const clearBox = await modal.getByRole("button", { name: "페널티만 해제" }).boundingBox();
-    const restoreBox = await modal.getByRole("button", { name: "해제 후 순번 복구" }).boundingBox();
-    expect(clearBox).not.toBeNull();
-    expect(restoreBox).not.toBeNull();
-    expect(Math.abs(clearBox.y - restoreBox.y)).toBeLessThan(1);
-    expect(restoreBox.x).toBeGreaterThan(clearBox.x + clearBox.width);
+    await expect(modal).toBeVisible();
+    const layout = await modal.locator(".penalty-actions").evaluate((actions) => {
+      const [clearButton, restoreButton] = actions.querySelectorAll("button");
+      const clear = clearButton.getBoundingClientRect();
+      const restore = restoreButton.getBoundingClientRect();
+      const style = getComputedStyle(actions);
+      return {
+        display: style.display,
+        flexWrap: style.flexWrap,
+        clear: { left: clear.left, right: clear.right, top: clear.top, bottom: clear.bottom },
+        restore: { left: restore.left, right: restore.right, top: restore.top, bottom: restore.bottom },
+      };
+    });
+    expect(layout.display).toBe("flex");
+    expect(layout.flexWrap).toBe("nowrap");
+    expect(layout.restore.left).toBeGreaterThan(layout.clear.right);
+    expect(Math.max(layout.clear.top, layout.restore.top))
+      .toBeLessThan(Math.min(layout.clear.bottom, layout.restore.bottom));
   });
 
   test("shows an empty state and closes with Escape", async ({ page }) => {

@@ -1,18 +1,27 @@
 import { writeStorageStates, BASE_URL } from "./helpers/auth.mjs";
-import { seedAll } from "./helpers/seed.mjs";
+import { seedSelected } from "./helpers/seed.mjs";
+
+const ALL_SERVICES = [
+  "auth",
+  "entry",
+  "queue",
+  "inspection",
+  "traffic",
+  "score",
+  "documents",
+  "email",
+  "course",
+  "calendar",
+];
+const ALL_SEEDS = ["users", "vehicle-types", "entries", "inspection", "documents"];
+
+function selectedNames(envName, defaults) {
+  const value = process.env[envName]?.trim();
+  return value ? value.split(/\s+/) : defaults;
+}
 
 async function waitForServices(maxRetries = 30, intervalMs = 2000) {
-  const services = [
-    "/auth/api/health",
-    "/entry/api/health",
-    "/queue/api/health",
-    "/inspection/api/health",
-    "/traffic/api/health",
-    "/score/api/health",
-    "/documents/api/health",
-    "/course/api/health",
-    "/calendar/api/health",
-  ];
+  const services = selectedNames("E2E_SERVICES", ALL_SERVICES).map((service) => `/${service}/api/health`);
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -45,7 +54,7 @@ export default async function globalSetup() {
   writeStorageStates();
 
   console.log("[setup] Seeding test data...");
-  await seedAll();
+  await seedSelected(selectedNames("E2E_SEEDS", ALL_SEEDS));
 
   console.log("[setup] Global setup complete.");
 }

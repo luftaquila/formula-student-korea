@@ -1,9 +1,8 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
+import { PDF_CONTENT, createDocumentSession, deleteDocumentSession } from "../helpers/documents.mjs";
 
-const pdfContent = Buffer.from(
-  "%PDF-1.0\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n190\n%%EOF",
-);
+const SESSION_NAME = "E2E ZIP 다운로드 격리 세션";
 
 test.describe("Documents admin zip download", () => {
   test.describe.configure({ mode: "serial" });
@@ -11,6 +10,24 @@ test.describe("Documents admin zip download", () => {
 
   let sessionId;
   let submissionId;
+
+  test.beforeAll(async ({ browser }) => {
+    const chiefCtx = await browser.newContext({ storageState: storageStatePath("chief") });
+    try {
+      sessionId = await createDocumentSession(chiefCtx.request, SESSION_NAME);
+    } finally {
+      await chiefCtx.close();
+    }
+  });
+
+  test.afterAll(async ({ browser }) => {
+    const chiefCtx = await browser.newContext({ storageState: storageStatePath("chief") });
+    try {
+      await deleteDocumentSession(chiefCtx.request, sessionId);
+    } finally {
+      await chiefCtx.close();
+    }
+  });
 
   test("submit multiple files and verify zip download link", async ({ page, browser }) => {
     // Submit 2 files as student
@@ -22,7 +39,7 @@ test.describe("Documents admin zip download", () => {
     await studentPage.goto("/documents");
     await waitForPageReady(studentPage);
 
-    const sessionCard = studentPage.locator(".session-card").filter({ hasText: "E2E 테스트 세션" });
+    const sessionCard = studentPage.locator(".session-card").filter({ hasText: SESSION_NAME });
     await sessionCard.click();
     await waitForPageReady(studentPage);
 
@@ -32,8 +49,8 @@ test.describe("Documents admin zip download", () => {
     // Upload two files at once
     const fileInput = studentPage.locator("input[type='file']");
     await fileInput.setInputFiles([
-      { name: "zip-test-1.pdf", mimeType: "application/pdf", buffer: pdfContent },
-      { name: "zip-test-2.pdf", mimeType: "application/pdf", buffer: pdfContent },
+      { name: "zip-test-1.pdf", mimeType: "application/pdf", buffer: PDF_CONTENT },
+      { name: "zip-test-2.pdf", mimeType: "application/pdf", buffer: PDF_CONTENT },
     ]);
 
     await expect(studentPage.locator(".selected-file")).toHaveCount(2);
@@ -41,12 +58,7 @@ test.describe("Documents admin zip download", () => {
     await expectNotification(studentPage, "success", "제출 완료");
     await waitForPageReady(studentPage);
 
-    // Get submission ID via API
-    const sessionsRes = await studentPage.request.get("/documents/api/sessions");
-    const sessionsData = await sessionsRes.json();
-    const session = sessionsData.sessions.find((s) => s.name === "E2E 테스트 세션");
-    sessionId = session.id;
-
+    // Get the submission ID for the isolated session.
     const detailRes = await studentPage.request.get(`/documents/api/sessions/${sessionId}`);
     const detail = await detailRes.json();
     submissionId = detail.submission.id;
@@ -58,7 +70,7 @@ test.describe("Documents admin zip download", () => {
     // (no gap for parallel tests to overwrite the 2-file submission)
     await page.goto("/documents/admin", { waitUntil: "networkidle" });
 
-    const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
+    const sessionLink = page.locator(".session-link").filter({ hasText: SESSION_NAME });
     const statusResp = page.waitForResponse((res) => res.url().includes("/api/admin/sessions/") && res.url().includes("/status") && res.status() === 200);
     await sessionLink.click();
     await statusResp;
@@ -95,7 +107,7 @@ test.describe("Documents admin zip download", () => {
 
     await studentPage.goto("/documents", { waitUntil: "networkidle" });
 
-    const sessionCard = studentPage.locator(".session-card").filter({ hasText: "E2E 테스트 세션" });
+    const sessionCard = studentPage.locator(".session-card").filter({ hasText: SESSION_NAME });
     await sessionCard.click();
     await waitForPageReady(studentPage);
 
@@ -105,7 +117,7 @@ test.describe("Documents admin zip download", () => {
     await fileInput.setInputFiles({
       name: "zip-test-single.pdf",
       mimeType: "application/pdf",
-      buffer: pdfContent,
+      buffer: PDF_CONTENT,
     });
 
     await studentPage.getByRole("button", { name: "제출" }).click();
@@ -121,7 +133,7 @@ test.describe("Documents admin zip download", () => {
     const chiefPage = await chiefCtx.newPage();
     await chiefPage.goto("/documents/admin", { waitUntil: "networkidle" });
 
-    const sessionLink = chiefPage.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
+    const sessionLink = chiefPage.locator(".session-link").filter({ hasText: SESSION_NAME });
     const statusResp = chiefPage.waitForResponse((res) => res.url().includes("/api/admin/sessions/") && res.url().includes("/status") && res.status() === 200);
     await sessionLink.click();
     await statusResp;
@@ -133,34 +145,5 @@ test.describe("Documents admin zip download", () => {
 
     await chiefPage.close();
     await chiefCtx.close();
-  });
-
-  test("restore single file submission for other tests", async ({ browser }) => {
-    const studentCtx = await browser.newContext({
-      storageState: storageStatePath("student"),
-    });
-    const studentPage = await studentCtx.newPage();
-
-    await studentPage.goto("/documents");
-    await waitForPageReady(studentPage);
-
-    const sessionCard = studentPage.locator(".session-card").filter({ hasText: "E2E 테스트 세션" });
-    await sessionCard.click();
-    await waitForPageReady(studentPage);
-
-    studentPage.on("dialog", (dialog) => dialog.accept());
-
-    const fileInput = studentPage.locator("input[type='file']");
-    await fileInput.setInputFiles({
-      name: "e2e-test-document.pdf",
-      mimeType: "application/pdf",
-      buffer: pdfContent,
-    });
-
-    await studentPage.getByRole("button", { name: "제출" }).click();
-    await expectNotification(studentPage, "success", "제출 완료");
-
-    await studentPage.close();
-    await studentCtx.close();
   });
 });

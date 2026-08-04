@@ -5,10 +5,14 @@ const headers = (role = "admin") => ({
   Cookie: getAuthCookie(role),
 });
 
-async function api(method, path, body, role = "admin") {
+async function api(method, path, body, role = "admin", expectedStatus = 200) {
   const opts = { method, headers: headers(role) };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(`${BASE_URL}${path}`, opts);
+  if (res.status !== expectedStatus) {
+    const detail = await res.text();
+    throw new Error(`[seed] ${method} ${path}: expected ${expectedStatus}, got ${res.status}: ${detail}`);
+  }
   return res;
 }
 
@@ -17,15 +21,15 @@ export async function seedUsers() {
   // Create the remaining 3 test users.
   for (const [role, user] of Object.entries(TEST_USERS)) {
     if (role === "admin") continue;
-    await api("POST", "/auth/api/users", { email: user.email, role: user.role });
+    await api("POST", "/auth/api/users", { email: user.email, role: user.role }, "admin", 201);
   }
   // Extra student for documents admin dropdown test (student-team mapping)
-  await api("POST", "/auth/api/users", { email: "e2e-student2@test.com", role: "student" });
+  await api("POST", "/auth/api/users", { email: "e2e-student2@test.com", role: "student" }, "admin", 201);
 }
 
 export async function seedVehicleTypes() {
-  await api("POST", "/entry/api/vehicle-types", { name: "EV" });
-  await api("POST", "/entry/api/vehicle-types", { name: "CV" });
+  await api("POST", "/entry/api/vehicle-types", { name: "EV" }, "admin", 201);
+  await api("POST", "/entry/api/vehicle-types", { name: "CV" }, "admin", 201);
 }
 
 export async function seedEntries() {
@@ -41,7 +45,7 @@ export async function seedEntries() {
     { num: 32, univ: "중앙대학교", team: "CAU Speed", type: "EV" },
   ];
   for (const entry of entries) {
-    await api("POST", `/entry/api/entries?year=${year}`, entry);
+    await api("POST", `/entry/api/entries?year=${year}`, entry, "admin", 201);
   }
 }
 
@@ -94,7 +98,7 @@ export async function seedInspectionTemplate() {
       ],
     },
   ];
-  await api("POST", "/inspection/api/sheet/template/import", { year, template });
+  await api("POST", "/inspection/api/sheet/template/import", { year, template }, "admin", 201);
 }
 
 export async function seedDocuments() {
@@ -104,7 +108,7 @@ export async function seedDocuments() {
     email: TEST_USERS.student.email,
     team_num: 1,
     year,
-  }, "chief");
+  }, "chief", 201);
 
   // Create a submission session
   const now = new Date();
@@ -124,19 +128,28 @@ export async function seedDocuments() {
     allowed_extensions: "pdf,docx,xlsx",
     year,
     teams: [1, 2, 3],
-  }, "chief");
+  }, "chief", 201);
 }
 
 export async function seedAll() {
-  console.log("[seed] Seeding users...");
-  await seedUsers();
-  console.log("[seed] Seeding vehicle types...");
-  await seedVehicleTypes();
-  console.log("[seed] Seeding entries...");
-  await seedEntries();
-  console.log("[seed] Seeding inspection template...");
-  await seedInspectionTemplate();
-  console.log("[seed] Seeding documents...");
-  await seedDocuments();
+  await seedSelected(["users", "vehicle-types", "entries", "inspection", "documents"]);
+}
+
+const seeders = {
+  users: ["users", seedUsers],
+  "vehicle-types": ["vehicle types", seedVehicleTypes],
+  entries: ["entries", seedEntries],
+  inspection: ["inspection template", seedInspectionTemplate],
+  documents: ["documents", seedDocuments],
+};
+
+export async function seedSelected(names) {
+  for (const name of names) {
+    const seeder = seeders[name];
+    if (!seeder) throw new Error(`[seed] Unknown seed group: ${name}`);
+    const [label, run] = seeder;
+    console.log(`[seed] Seeding ${label}...`);
+    await run();
+  }
   console.log("[seed] Seeding complete.");
 }

@@ -16,13 +16,13 @@ test.describe("Score dashboard real-time sync via SSE", () => {
       await page.request.put(`/score/api/score/manual`, {
         data: { year: YEAR, team_num: 30, score_type: "report", value: null },
       });
-      // Reset penalty for endurance
+      // Reset the dedicated skidpad penalty used by the SSE test.
       await page.request.put(`/score/api/score/penalty`, {
-        data: { year: YEAR, event_type: "내구", cone_penalty: 0, oc_penalty: 0, start_delay: 0 },
+        data: { year: YEAR, event_type: "스키드패드", cone_penalty: 0, oc_penalty: 0, start_delay: 0 },
       });
-      // Reset setting for endurance
+      // Reset the dedicated energy setting used by the SSE test.
       await page.request.put(`/score/api/score/setting`, {
-        data: { year: YEAR, event_type: "내구", setting_key: "total", value: null },
+        data: { year: YEAR, event_type: "에너지", setting_key: "total", value: null },
       });
     } catch { /* ignore */ }
     await context.close();
@@ -81,7 +81,7 @@ test.describe("Score dashboard real-time sync via SSE", () => {
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.blur();
     });
-    await Promise.race([cleanupPromise, page1.waitForTimeout(2000)]);
+    await cleanupPromise;
 
     await context1.close();
     await context2.close();
@@ -109,19 +109,22 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     const bottomRow1 = page1.locator(".bottom-row");
     await expect(bottomRow1).toBeVisible({ timeout: 5000 });
 
-    // In context 1: change endurance cone_penalty to a new value
+    // Use skidpad so this test does not race the endurance penalty settings
+    // exercised by penalty-settings.spec.mjs in another worker.
     const penaltyTable1 = page1.locator(".setting-card").first().locator("table.setting-table");
     const coneRow1 = penaltyTable1.locator("tr").filter({ hasText: "콘터치" });
-    const coneCells1 = coneRow1.locator("td.setting-cell");
-    const lastConeCell1 = coneCells1.last();
+    const skidpadColumnIndex = await penaltyTable1
+      .getByRole("columnheader", { name: "스키드패드", exact: true })
+      .evaluate((cell) => cell.cellIndex);
+    const skidpadConeCell1 = coneRow1.locator("td").nth(skidpadColumnIndex);
 
     // Read current value before editing to pick a different one (avoids no-op save if previous cleanup failed)
-    const currentText = await lastConeCell1.locator(".setting-text").textContent();
+    const currentText = await skidpadConeCell1.locator(".setting-text").textContent();
     const currentValue = Number(currentText) || 0;
     const newValue = currentValue === 3 ? 5 : 3;
 
-    await lastConeCell1.click();
-    const input1 = lastConeCell1.locator("input.setting-input");
+    await skidpadConeCell1.click();
+    const input1 = skidpadConeCell1.locator("input.setting-input");
     await expect(input1).toBeVisible({ timeout: 3000 });
 
     const penaltySavePromise = page1.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
@@ -138,17 +141,17 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     await expect(bottomRow2).toBeVisible({ timeout: 5000 });
     const penaltyTable2 = page2.locator(".setting-card").first().locator("table.setting-table");
     const coneRow2 = penaltyTable2.locator("tr").filter({ hasText: "콘터치" });
-    const lastConeCell2 = coneRow2.locator("td.setting-cell").last();
-    await expect(lastConeCell2.locator(".setting-text")).toHaveText(String(newValue), { timeout: 10000 });
+    const skidpadConeCell2 = coneRow2.locator("td").nth(skidpadColumnIndex);
+    await expect(skidpadConeCell2.locator(".setting-text")).toHaveText(String(newValue), { timeout: 10000 });
 
     // Cleanup: reset to 0
-    await lastConeCell1.click();
-    const resetInput = lastConeCell1.locator("input.setting-input");
+    await skidpadConeCell1.click();
+    const resetInput = skidpadConeCell1.locator("input.setting-input");
     await expect(resetInput).toBeVisible({ timeout: 3000 });
     const cleanupPenalty = page1.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
     await resetInput.fill("0");
     await resetInput.blur();
-    await Promise.race([cleanupPenalty, page1.waitForTimeout(2000)]);
+    await cleanupPenalty;
 
     await context1.close();
     await context2.close();
@@ -176,18 +179,22 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     const bottomRow1 = page1.locator(".bottom-row");
     await expect(bottomRow1).toBeVisible({ timeout: 5000 });
 
-    // In context 1: change endurance total setting
+    // Use the energy total setting so this test does not race the endurance
+    // settings exercised by penalty-settings.spec.mjs in another worker.
     const scoreTable1 = page1.locator(".setting-card").nth(1).locator("table.setting-table");
     const totalRow1 = scoreTable1.locator("tr").filter({ hasText: "총점" });
-    const lastTotalCell1 = totalRow1.locator("td.setting-cell").last();
+    const energyColumnIndex = await scoreTable1
+      .getByRole("columnheader", { name: "에너지", exact: true })
+      .evaluate((cell) => cell.cellIndex);
+    const energyTotalCell1 = totalRow1.locator("td").nth(energyColumnIndex);
 
     // Read current value before editing to pick a different one (avoids no-op save if previous cleanup failed)
-    const currentText = await lastTotalCell1.locator(".setting-text").textContent();
+    const currentText = await energyTotalCell1.locator(".setting-text").textContent();
     const currentValue = Number(currentText) || 0;
     const newValue = currentValue === 300 ? 500 : 300;
 
-    await lastTotalCell1.click();
-    const input1 = lastTotalCell1.locator("input.setting-input");
+    await energyTotalCell1.click();
+    const input1 = energyTotalCell1.locator("input.setting-input");
     await expect(input1).toBeVisible({ timeout: 3000 });
 
     const settingSavePromise = page1.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
@@ -203,17 +210,17 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     await expect(bottomRow2).toBeVisible({ timeout: 5000 });
     const scoreTable2 = page2.locator(".setting-card").nth(1).locator("table.setting-table");
     const totalRow2 = scoreTable2.locator("tr").filter({ hasText: "총점" });
-    const lastTotalCell2 = totalRow2.locator("td.setting-cell").last();
-    await expect(lastTotalCell2.locator(".setting-text")).toHaveText(String(newValue), { timeout: 10000 });
+    const energyTotalCell2 = totalRow2.locator("td").nth(energyColumnIndex);
+    await expect(energyTotalCell2.locator(".setting-text")).toHaveText(String(newValue), { timeout: 10000 });
 
     // Cleanup: reset to empty
-    await lastTotalCell1.click();
-    const resetInput = lastTotalCell1.locator("input.setting-input");
+    await energyTotalCell1.click();
+    const resetInput = energyTotalCell1.locator("input.setting-input");
     await expect(resetInput).toBeVisible({ timeout: 3000 });
     const cleanupSetting = page1.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
     await resetInput.fill("");
     await resetInput.blur();
-    await Promise.race([cleanupSetting, page1.waitForTimeout(2000)]);
+    await cleanupSetting;
 
     await context1.close();
     await context2.close();

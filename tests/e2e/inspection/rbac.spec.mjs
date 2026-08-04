@@ -5,8 +5,7 @@ import { storageStatePath } from "../helpers/utils.mjs";
 //   /api/sheet/template* with method != GET  -> "chief"
 //   everything else under /api/ (and SPA)    -> "official"
 // official sits one level below chief -> expect 403 on template writes.
-// official is NOT gated out of /api/sheet/answer (it requires "official"), so any
-// non-403 status proves the answer route is reachable for official.
+// /api/sheet/answer requires official and a valid seeded item.
 // Unauthenticated -> 401 on any gated /api/ path.
 
 // chief-gated template writes
@@ -18,36 +17,48 @@ const chiefTemplateWrites = [
 ];
 
 test.describe("inspection RBAC", () => {
-  for (const { method, path, body } of chiefTemplateWrites) {
-    test(`official is rejected (403) on ${method.toUpperCase()} ${path}`, async ({ browser }) => {
-      const ctx = await browser.newContext({ storageState: storageStatePath("official") });
-      const res = await ctx.request[method](path, { data: body });
-      expect(res.status()).toBe(403);
-      await ctx.close();
-    });
-
-    test(`unauthenticated is rejected (401) on ${method.toUpperCase()} ${path}`, async ({ request }) => {
-      const res = await request[method](path, { data: body });
-      expect(res.status()).toBe(401);
-    });
-  }
-
-  test("official is NOT gated out of PUT /inspection/api/sheet/answer (not 403)", async ({ browser }) => {
+  test("official is rejected on every representative template write", async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("official") });
-    // Benign payload; the answer route is "official"-gated, so the only thing this
-    // asserts is that RBAC does not reject it. The body may be rejected on validation,
-    // which is fine — any non-403 status proves official is permitted past the gate.
-    const res = await ctx.request.put("/inspection/api/sheet/answer", {
-      data: { year: new Date().getFullYear(), num: 999999, item_id: 999999, value: "rbac" },
-    });
-    expect(res.status()).not.toBe(403);
-    await ctx.close();
+    try {
+      for (const { method, path, body } of chiefTemplateWrites) {
+        await test.step(`${method.toUpperCase()} ${path}`, async () => {
+          const res = await ctx.request[method](path, { data: body });
+          expect(res.status()).toBe(403);
+        });
+      }
+    } finally {
+      await ctx.close();
+    }
   });
 
-  test("unauthenticated is rejected (401) on PUT /inspection/api/sheet/answer", async ({ request }) => {
-    const res = await request.put("/inspection/api/sheet/answer", {
-      data: { year: new Date().getFullYear(), num: 999999, item_id: 999999, value: "rbac" },
+  test("unauthenticated callers are rejected on template and answer writes", async ({ request }) => {
+    for (const { method, path, body } of chiefTemplateWrites) {
+      await test.step(`${method.toUpperCase()} ${path}`, async () => {
+        const res = await request[method](path, { data: body });
+        expect(res.status()).toBe(401);
+      });
+    }
+    const answer = await request.put("/inspection/api/sheet/answer", {
+      data: { year: new Date().getFullYear(), team_num: 98, item_id: 999999, value: "" },
     });
-    expect(res.status()).toBe(401);
+    expect(answer.status()).toBe(401);
+  });
+
+  test("official can save an answer through the deployed route", async ({ browser }) => {
+    const ctx = await browser.newContext({ storageState: storageStatePath("official") });
+    try {
+      const year = new Date().getFullYear();
+      const templateRes = await ctx.request.get(`/inspection/api/sheet/template?year=${year}`);
+      expect(templateRes.status()).toBe(200);
+      const template = await templateRes.json();
+      const item = template[0]?.subcategories?.[0]?.groups?.[0]?.items?.[0];
+      expect(item?.id).toBeTruthy();
+      const res = await ctx.request.put("/inspection/api/sheet/answer", {
+        data: { year, team_num: 98, item_id: item.id, value: "" },
+      });
+      expect(res.status()).toBe(200);
+    } finally {
+      await ctx.close();
+    }
   });
 });

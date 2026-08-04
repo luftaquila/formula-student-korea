@@ -12,21 +12,21 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 //   - POST  /api/state/:num                           -> public (null), rateLimit (>30/min -> 429)
 //   - GET   /api/admin/settings/{sms,sms-rank,cancel-penalty} -> official (GET allowed)
 //
-// Isolation: "tilting" is owned by queue-status-success.spec.mjs, but that file
-// only ever touches entry num 10 (enter/exit booth 1) and never changes the
-// booth COUNT. We therefore confine ourselves to entry nums 30/31 (seeded, not
-// 10) and always restore the original booth count, so the two files can run on
-// separate workers without corrupting each other. Booth-count mutation by any
-// other queue spec is limited to "braking"/"battery", which we never touch.
+// This file owns two entries on the tilting queue. The only sibling spec using
+// that queue scopes its cleanup to entry 95, so it cannot register or drain the
+// entries below. Setup failures are therefore real failures rather than reasons
+// to skip the assertion under test.
 const TYPE = "tilting";
-
-// Seeded entries we exclusively claim in this file (queue-status-success uses 10).
-const STATE_NUM = 31; // Yonsei
-const BOOTH_NUM = 30; // PNU
+const YEAR = new Date().getFullYear();
+const STATE_NUM = 96;
+const BOOTH_NUM = 97;
 const MY_NUMS = [STATE_NUM, BOOTH_NUM];
 
 function chiefHeaders() {
   return { "Content-Type": "application/json", Cookie: getAuthCookie("chief") };
+}
+function adminHeaders() {
+  return { "Content-Type": "application/json", Cookie: getAuthCookie("admin") };
 }
 function officialHeaders() {
   return { "Content-Type": "application/json", Cookie: getAuthCookie("official") };
@@ -69,7 +69,7 @@ async function exitBooth(type, boothNum) {
 async function setBoothCount(type, count) {
   return fetch(`${BASE_URL}/queue/api/admin/booths/${type}/config`, {
     method: "PATCH",
-    headers: chiefHeaders(),
+    headers: adminHeaders(),
     body: JSON.stringify({ count }),
   });
 }
@@ -77,9 +77,26 @@ async function setBoothCount(type, count) {
 async function register(num, type = TYPE) {
   return fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
     method: "POST",
-    headers: chiefHeaders(),
+    headers: adminHeaders(),
     body: JSON.stringify({ num, phone: "01000000000" }),
   });
+}
+
+async function createEntry(num) {
+  const res = await fetch(`${BASE_URL}/entry/api/entries?year=${YEAR}`, {
+    method: "POST",
+    headers: adminHeaders(),
+    body: JSON.stringify({ num, univ: `E2E Queue ${num}`, team: `Queue ${num}`, type: "EV" }),
+  });
+  if (res.status !== 201) throw new Error(`create entry ${num}: ${res.status} ${await res.text()}`);
+}
+
+async function deleteEntry(num) {
+  const res = await fetch(`${BASE_URL}/entry/api/entries/${num}?year=${YEAR}`, {
+    method: "DELETE",
+    headers: adminHeaders(),
+  });
+  if (![200, 404].includes(res.status)) throw new Error(`delete entry ${num}: ${res.status} ${await res.text()}`);
 }
 
 // Remove only the entry nums this file owns: free any booth they occupy, then
@@ -107,6 +124,8 @@ test.describe("Queue booth occupancy + public scoping", () => {
   let originalPenalty;
 
   test.beforeAll(async () => {
+    for (const num of MY_NUMS) await createEntry(num);
+
     // Drop cancel penalty to 0 so register/enter churn never trips a penalty.
     // (Several queue specs do the same; they all converge on 0 during the run.)
     const res = await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
@@ -121,6 +140,7 @@ test.describe("Queue booth occupancy + public scoping", () => {
   });
 
   test.afterAll(async () => {
+    await releaseMyNums();
     if (originalPenalty !== undefined) {
       await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
         method: "PATCH",
@@ -128,6 +148,7 @@ test.describe("Queue booth occupancy + public scoping", () => {
         body: JSON.stringify({ value: originalPenalty }),
       });
     }
+    for (const num of MY_NUMS) await deleteEntry(num);
   });
 
   test.beforeEach(async () => {
@@ -139,29 +160,28 @@ test.describe("Queue booth occupancy + public scoping", () => {
   });
 
   test("shrinking booth count is blocked while a booth is occupied", async () => {
-    // Work relative to whatever the current count is, and restore it exactly,
-    // so a concurrent reader of "tilting" booths is never left with a surprise.
+    // Work relative to the current count and restore it exactly.
     const startCount = await getBoothCount();
     const grownCount = startCount + 1;
 
     // Grow by one booth (chief).
     const grow = await setBoothCount(TYPE, grownCount);
-    test.skip(grow.status !== 200, `grow returned ${grow.status} (contended)`);
+    expect(grow.status).toBe(200);
 
     try {
       // Register our entry and occupy the NEW highest booth — the one a shrink
       // back to startCount would try to remove first.
       const reg = await register(BOOTH_NUM);
-      test.skip(reg.status !== 201, `register returned ${reg.status} (contended)`);
+      expect(reg.status).toBe(201);
 
       const enter = await enterBooth(TYPE, grownCount, BOOTH_NUM);
-      test.skip(enter.status !== 200, `enter returned ${enter.status} (contended)`);
+      expect(enter.status).toBe(200);
 
       // Confirm occupancy immediately before the guarded action, so the 400 we
       // assert can only come from the occupancy guard.
       let booths = await getBooths();
       const top = booths.find((b) => b.booth_num === grownCount);
-      test.skip(!top || top.occupied_by !== BOOTH_NUM, "booth freed by a concurrent op");
+      expect(top?.occupied_by).toBe(BOOTH_NUM);
 
       // Shrinking below the occupied booth must be rejected with 400.
       const shrink = await setBoothCount(TYPE, startCount);
@@ -203,23 +223,17 @@ test.describe("Queue booth occupancy + public scoping", () => {
   });
 
   test("state lookup rejects a non-string phone with 400", async ({ request }) => {
-    // The phone check only fires once the entry is actually queued, so register
-    // our entry first. Skip if a concurrent op kept us out of the queue.
+    // The phone check only fires once the entry is actually queued.
     const reg = await register(STATE_NUM);
-    test.skip(reg.status !== 201, `register returned ${reg.status} (contended)`);
+    expect(reg.status).toBe(201);
 
-    // A non-string phone is rejected. The rate limiter is keyed on req.ip (Caddy
-    // strips X-Forwarded-For, so all calls share one proxy IP) and only resets
-    // after 60s, so on a retry the bucket may already be tripped by the 429 test
-    // below — accept 429 as "limiter answered first" to stay deterministic.
-    // A 200 means a sibling op drained our entry between register and query.
+    // This spec stays well below the 30/minute limiter and owns the queued entry,
+    // so the validation contract must be observed exactly.
     const res = await request.post(`/queue/api/state/${STATE_NUM}`, {
       data: { phone: 1234567890 },
     });
-    expect([400, 429, 200]).toContain(res.status());
-    if (res.status() === 400) {
-      expect(await res.text()).toBe("전화번호 형식이 올바르지 않습니다.");
-    }
+    expect(res.status()).toBe(400);
+    expect(await res.text()).toBe("전화번호 형식이 올바르지 않습니다.");
   });
 
   // NOTE: the /api/state/:num rate-limit (429) path is intentionally NOT tested

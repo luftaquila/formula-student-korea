@@ -27,28 +27,37 @@ const publicReads = [
 ];
 
 test.describe("entry RBAC", () => {
-  for (const role of ["official", "chief"]) {
-    for (const { method, path, body } of protectedWrites) {
-      test(`${role} is rejected (403) on ${method.toUpperCase()} ${path.split("?")[0]}`, async ({ browser }) => {
-        const ctx = await browser.newContext({ storageState: storageStatePath(role) });
-        const res = await ctx.request[method](path, { data: body });
-        expect(res.status()).toBe(403);
+  test("official and chief are rejected on every representative write", async ({ browser }) => {
+    for (const role of ["official", "chief"]) {
+      const ctx = await browser.newContext({ storageState: storageStatePath(role) });
+      try {
+        for (const { method, path, body } of protectedWrites) {
+          await test.step(`${role}: ${method.toUpperCase()} ${path.split("?")[0]}`, async () => {
+            const res = await ctx.request[method](path, { data: body });
+            expect(res.status()).toBe(403);
+          });
+        }
+      } finally {
         await ctx.close();
+      }
+    }
+  });
+
+  test("unauthenticated callers are rejected on every representative write", async ({ request }) => {
+    for (const { method, path, body } of protectedWrites) {
+      await test.step(`${method.toUpperCase()} ${path.split("?")[0]}`, async () => {
+        const res = await request[method](path, { data: body });
+        expect(res.status()).toBe(401);
       });
     }
-  }
+  });
 
-  for (const { method, path, body } of protectedWrites) {
-    test(`unauthenticated is rejected (401) on ${method.toUpperCase()} ${path.split("?")[0]}`, async ({ request }) => {
-      const res = await request[method](path, { data: body });
-      expect(res.status()).toBe(401);
-    });
-  }
-
-  for (const path of publicReads) {
-    test(`unauthenticated read succeeds (200) on GET ${path.split("?")[0]}`, async ({ request }) => {
-      const res = await request.get(path);
-      expect(res.status()).toBe(200);
-    });
-  }
+  test("unauthenticated callers can read every public endpoint", async ({ request }) => {
+    for (const path of publicReads) {
+      await test.step(`GET ${path.split("?")[0]}`, async () => {
+        const res = await request.get(path);
+        expect(res.status()).toBe(200);
+      });
+    }
+  });
 });

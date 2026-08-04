@@ -3,6 +3,8 @@ import { storageStatePath, waitForPageReady, expectNotification } from "../helpe
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 const BULK_EMAILS = ["e2e-bulk-op1@test.com", "e2e-bulk-op2@test.com", "e2e-bulk-op3@test.com"];
+const usersTable = (page) => page.locator("table.users-table");
+const userRow = (page, email) => usersTable(page).locator("tbody tr").filter({ hasText: email });
 
 test.describe("Auth bulk operations", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -43,7 +45,7 @@ test.describe("Auth bulk operations", () => {
 
     // Select the bulk test users via checkboxes
     for (const email of BULK_EMAILS) {
-      const row = page.locator("tr").filter({ hasText: email });
+      const row = userRow(page, email);
       await expect(row).toBeVisible();
       await row.locator('input[type="checkbox"]').check();
     }
@@ -58,7 +60,7 @@ test.describe("Auth bulk operations", () => {
 
     // Verify rows are now inactive
     for (const email of BULK_EMAILS) {
-      const row = page.locator("tr").filter({ hasText: email });
+      const row = userRow(page, email);
       await expect(row).toHaveClass(/row-inactive/);
     }
   });
@@ -71,7 +73,7 @@ test.describe("Auth bulk operations", () => {
 
     // Select the deactivated bulk test users
     for (const email of BULK_EMAILS) {
-      const row = page.locator("tr").filter({ hasText: email });
+      const row = userRow(page, email);
       await expect(row).toBeVisible();
       await row.locator('input[type="checkbox"]').check();
     }
@@ -81,20 +83,20 @@ test.describe("Auth bulk operations", () => {
     // The button text changes based on selection state. Let's just use individual activate buttons
     // Actually, looking at the UI code: there's only "선택 비활성화" and "선택 삭제" buttons.
     // For bulk activate, we use the individual activate buttons. Let's verify via individual buttons.
-    const firstRow = page.locator("tr").filter({ hasText: BULK_EMAILS[0] });
+    const firstRow = userRow(page, BULK_EMAILS[0]);
     await firstRow.getByRole("button", { name: "활성화" }).click();
     await expectNotification(page, "success", "활성화");
 
     // Activate the rest
     for (const email of BULK_EMAILS.slice(1)) {
-      const row = page.locator("tr").filter({ hasText: email });
+      const row = userRow(page, email);
       await row.getByRole("button", { name: "활성화" }).click();
       await expectNotification(page, "success", "활성화");
     }
 
     // Verify rows are no longer inactive
     for (const email of BULK_EMAILS) {
-      const row = page.locator("tr").filter({ hasText: email });
+      const row = userRow(page, email);
       await expect(row).not.toHaveClass(/row-inactive/);
     }
   });
@@ -107,7 +109,7 @@ test.describe("Auth bulk operations", () => {
 
     // Select the bulk test users
     for (const email of BULK_EMAILS) {
-      const row = page.locator("tr").filter({ hasText: email });
+      const row = userRow(page, email);
       await expect(row).toBeVisible();
       await row.locator('input[type="checkbox"]').check();
     }
@@ -122,7 +124,7 @@ test.describe("Auth bulk operations", () => {
 
     // Verify users are removed from the table
     for (const email of BULK_EMAILS) {
-      await expect(page.locator("td").filter({ hasText: email })).not.toBeVisible();
+      await expect(usersTable(page).getByRole("cell", { name: email, exact: true })).not.toBeVisible();
     }
   });
 
@@ -150,7 +152,7 @@ test.describe("Auth bulk operations", () => {
     await waitForPageReady(page);
 
     for (const email of bulkAddEmails) {
-      await expect(page.locator("td").filter({ hasText: email })).toBeVisible();
+      await expect(usersTable(page).getByRole("cell", { name: email, exact: true })).toBeVisible();
     }
 
     // Cleanup: delete the bulk-added users
@@ -173,7 +175,7 @@ test.describe("Auth bulk operations", () => {
     await waitForPageReady(page);
 
     // The admin user row should have protected indicator
-    const adminRow = page.locator("tr").filter({ hasText: "e2e-admin@test.com" });
+    const adminRow = userRow(page, "e2e-admin@test.com");
     await expect(adminRow).toBeVisible();
 
     // Admin row buttons should be disabled (protected admin)

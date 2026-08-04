@@ -4,11 +4,22 @@ import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 const YEAR = new Date().getFullYear();
 
 async function fillAndSave(page, input, value) {
-  const p = page.waitForResponse((res) => res.url().includes("/api/score/endurance") && res.status() === 200);
+  const saved = page.waitForResponse(
+    (res) => res.url().includes("/api/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
+  );
   await input.click();
   await input.fill(value);
   await input.blur();
-  await Promise.race([p, page.waitForTimeout(1000)]);
+  await saved;
+}
+
+async function clearFields(page, teamNum, fields) {
+  for (const field of fields) {
+    const response = await page.request.put("/score/api/score/endurance", {
+      data: { year: YEAR, team_num: teamNum, field, value: null },
+    });
+    expect(response.ok()).toBeTruthy();
+  }
 }
 
 test.describe("Score endurance input", () => {
@@ -42,7 +53,7 @@ test.describe("Score endurance input", () => {
     await expect(page.locator("th").filter({ hasText: "상태" })).toBeVisible();
   });
 
-  test("set DNS status for a team and verify inputs are disabled", async ({ page }) => {
+  test("set DNS status, disable inputs, and exclude the team from scores", async ({ page }) => {
     const table = page.locator("table.endurance-table");
 
     // Find the row for team #1 (서울대학교)
@@ -68,6 +79,14 @@ test.describe("Score endurance input", () => {
     const data = await response.json();
     expect(data[1]?.status).toBe("DNS");
 
+    // The scoring contract is part of the same DNS lifecycle. Keeping this
+    // assertion here avoids a second spec mutating the same endurance row.
+    const scoreResponse = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const scoreData = await scoreResponse.json();
+    const enduranceEvent = scoreData.events.find((event) => event.type === "내구");
+    expect(enduranceEvent).toBeTruthy();
+    expect(enduranceEvent.records["1"]).toBeUndefined();
+
     // Toggle DNS off (click again to remove status)
     await dnsBtn.click();
     await expect(dnsBtn).not.toHaveClass(/active/);
@@ -77,7 +96,7 @@ test.describe("Score endurance input", () => {
     await expect(firstInput).not.toBeDisabled();
   });
 
-  test("set DNF status for a team", async ({ page }) => {
+  test("set DNF status and expose a DNF score", async ({ page }) => {
     const table = page.locator("table.endurance-table");
     const row = table.locator("tbody tr").filter({ hasText: "한양대학교" });
     await expect(row).toBeVisible();
@@ -94,6 +113,12 @@ test.describe("Score endurance input", () => {
     const response = await page.request.get(`/score/api/score/endurance?year=${YEAR}`);
     const data = await response.json();
     expect(data[2]?.status).toBe("DNF");
+
+    const scoreResponse = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const scoreData = await scoreResponse.json();
+    const enduranceEvent = scoreData.events.find((event) => event.type === "내구");
+    expect(enduranceEvent).toBeTruthy();
+    expect(enduranceEvent.records["2"]?.result).toBe(-1);
 
     // Clean up: toggle off
     await dnfBtn.click();
@@ -133,10 +158,7 @@ test.describe("Score endurance input", () => {
     expect(data[3]?.driver_change_time).toBe(5000); // 0:05.000 in ms
     expect(data[3]?.driver2_time).toBe(345200); // 5:45.200 in ms
 
-    // Clean up: clear the times
-    await fillAndSave(page, driver1TimeInput, "");
-    await fillAndSave(page, changeTimeInput, "");
-    await fillAndSave(page, driver2TimeInput, "");
+    await clearFields(page, 3, ["driver1_time", "driver_change_time", "driver2_time"]);
   });
 
   test("enter cone and off-course penalties and verify final time", async ({ page }) => {
@@ -185,12 +207,13 @@ test.describe("Score endurance input", () => {
     expect(data[10]?.driver1_cones).toBe(Number(newCones));
     expect(data[10]?.driver2_oc).toBe(Number(newOc));
 
-    // Clean up
-    for (const input of [driver1TimeInput, changeTimeInput, driver2TimeInput]) {
-      await fillAndSave(page, input, "");
-    }
-    await fillAndSave(page, driver1ConesInput, "");
-    await fillAndSave(page, driver2OcInput, "");
+    await clearFields(page, 10, [
+      "driver1_time",
+      "driver_change_time",
+      "driver2_time",
+      "driver1_cones",
+      "driver2_oc",
+    ]);
   });
 
   test("set DSQ status for a team and verify inputs are disabled", async ({ page }) => {
@@ -258,9 +281,7 @@ test.describe("Score endurance input", () => {
     expect(data[31]?.driver1_start_delay).toBe(Number(newDelay));
     expect(data[31]?.driver2_penalty).toBe(Number(newPenalty));
 
-    // Cleanup: clear both fields
-    await fillAndSave(page, d1StartDelay, "");
-    await fillAndSave(page, d2Penalty, "");
+    await clearFields(page, 31, ["driver1_start_delay", "driver2_penalty"]);
   });
 
   test("navigation link returns to score dashboard", async ({ page }) => {

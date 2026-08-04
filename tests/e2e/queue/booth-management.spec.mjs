@@ -116,11 +116,10 @@ test.describe("Queue booth management", () => {
 
     // Click second tab if available
     const count = await tabs.count();
-    if (count >= 2) {
-      const secondTab = tabs.nth(1);
-      await secondTab.click();
-      await expect(secondTab).toHaveClass(/active/);
-    }
+    expect(count).toBeGreaterThanOrEqual(2);
+    const secondTab = tabs.nth(1);
+    await secondTab.click();
+    await expect(secondTab).toHaveClass(/active/);
   });
 
   test("register team via API then verify it appears in admin queue", async ({ page }) => {
