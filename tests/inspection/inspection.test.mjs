@@ -411,6 +411,148 @@ describe('Template Import', () => {
   });
 });
 
+// ─── Configurable calculated fields ────────────────────────────────────
+describe('Configurable calculated fields', () => {
+  const CALC_YEAR = CURRENT_YEAR + 600;
+  const COPY_YEAR = CALC_YEAR + 1;
+  const IMPORT_YEAR = CALC_YEAR + 2;
+  let groupId, sourceId, sourceKey, computedId, computedKey, suggestionId;
+
+  before(async () => {
+    const cat = await client.post('/api/sheet/template', {
+      body: { year: CALC_YEAR, level: 'category', name: 'Calculated fields' }, cookie: adminCookie,
+    });
+    const categoryId = Number((await cat.json()).id);
+    const sub = await client.post('/api/sheet/template', {
+      body: { year: CALC_YEAR, level: 'subcategory', parent_id: categoryId, name: 'Electrical' }, cookie: adminCookie,
+    });
+    const subcategoryId = Number((await sub.json()).id);
+    const group = await client.post('/api/sheet/template', {
+      body: { year: CALC_YEAR, level: 'group', parent_id: subcategoryId, name: 'IMD' }, cookie: adminCookie,
+    });
+    groupId = Number((await group.json()).id);
+
+    const source = await client.post('/api/sheet/template', {
+      body: { year: CALC_YEAR, level: 'item', parent_id: groupId, name: 'Current voltage', answer_type: 'number' },
+      cookie: adminCookie,
+    });
+    const sourceBody = await source.json();
+    sourceId = Number(sourceBody.id);
+    sourceKey = sourceBody.field_key;
+  });
+
+  after(() => {
+    db.prepare('DELETE FROM sheet_template WHERE year IN (?, ?, ?)').run(CALC_YEAR, COPY_YEAR, IMPORT_YEAR);
+  });
+
+  it('creates and returns a computed field configuration', async () => {
+    const response = await client.post('/api/sheet/template', {
+      body: {
+        year: CALC_YEAR,
+        level: 'item',
+        parent_id: groupId,
+        name: 'IMD test resistance',
+        answer_type: 'number',
+        calculation: { mode: 'computed', operation: 'multiply', sources: [sourceKey], factor: 250, precision: 2 },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    computedId = Number(body.id);
+    computedKey = body.field_key;
+
+    const tree = await (await client.get(`/api/sheet/template?year=${CALC_YEAR}`, { cookie: officialCookie })).json();
+    const target = tree[0].subcategories[0].groups[0].items.find(item => item.id === computedId);
+    assert.deepEqual(target.calculation, {
+      mode: 'computed', operation: 'multiply', sources: [sourceKey], precision: 2, factor: 250,
+    });
+  });
+
+  it('rejects direct answers for computed fields but accepts source answers', async () => {
+    const sourceResponse = await client.put('/api/sheet/answer', {
+      body: { year: CALC_YEAR, team_num: 1, item_id: sourceId, value: '421.5' }, cookie: officialCookie,
+    });
+    assert.equal(sourceResponse.status, 200);
+
+    const targetResponse = await client.put('/api/sheet/answer', {
+      body: { year: CALC_YEAR, team_num: 1, item_id: computedId, value: '105375' }, cookie: officialCookie,
+    });
+    assert.equal(targetResponse.status, 400);
+    assert.match(await targetResponse.text(), /자동 계산 문항/);
+  });
+
+  it('shows a suggestion while preserving a manually measured answer', async () => {
+    const response = await client.post('/api/sheet/template', {
+      body: {
+        year: CALC_YEAR,
+        level: 'item',
+        parent_id: groupId,
+        name: 'TSMP resistance',
+        answer_type: 'number',
+        calculation: {
+          mode: 'suggestion', operation: 'range_lookup', sources: [sourceKey], precision: 0,
+          ranges: [{ max: 200, value: 5 }, { max: 400, value: 10 }, { max: 600, value: 15 }],
+        },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(response.status, 200);
+    suggestionId = Number((await response.json()).id);
+
+    const answer = await client.put('/api/sheet/answer', {
+      body: { year: CALC_YEAR, team_num: 1, item_id: suggestionId, value: '10.4' }, cookie: officialCookie,
+    });
+    assert.equal(answer.status, 200);
+    const data = await (await client.get(`/api/sheet/data/${CALC_YEAR}/1`, { cookie: officialCookie })).json();
+    assert.equal(data.answers[suggestionId].value, '10.4');
+  });
+
+  it('rejects cyclic links and deleting a referenced source', async () => {
+    const cycle = await client.put(`/api/sheet/template/${sourceId}`, {
+      body: { calculation: { mode: 'computed', operation: 'sum', sources: [computedKey], precision: 2 } },
+      cookie: adminCookie,
+    });
+    assert.equal(cycle.status, 400);
+    assert.match(await cycle.text(), /순환 참조/);
+
+    const remove = await client.delete(`/api/sheet/template/${sourceId}`, { cookie: adminCookie });
+    assert.equal(remove.status, 400);
+    assert.match(await remove.text(), /원본 문항/);
+  });
+
+  it('preserves field keys and calculation metadata when copying a year', async () => {
+    const copy = await client.post('/api/sheet/template/copy', {
+      body: { from_year: CALC_YEAR, to_year: COPY_YEAR }, cookie: adminCookie,
+    });
+    assert.equal(copy.status, 201);
+    const tree = await (await client.get(`/api/sheet/template?year=${COPY_YEAR}`, { cookie: officialCookie })).json();
+    const items = tree[0].subcategories[0].groups[0].items;
+    assert.ok(items.some(item => item.field_key === sourceKey));
+    assert.equal(items.find(item => item.field_key === computedKey).calculation.sources[0], sourceKey);
+  });
+
+  it('round-trips calculation metadata through JSON import', async () => {
+    const importTemplate = [{
+      name: 'Import', subcategories: [{ name: 'Sub', groups: [{ name: 'Group', items: [
+        { name: 'Source', answer_type: 'number', field_key: 'import-source' },
+        {
+          name: 'Recommendation', answer_type: 'number', field_key: 'import-target',
+          calculation: { mode: 'suggestion', operation: 'multiply', sources: ['import-source'], factor: 2, precision: 1 },
+        },
+      ] }] }],
+    }];
+    const response = await client.post('/api/sheet/template/import', {
+      body: { year: IMPORT_YEAR, template: importTemplate }, cookie: adminCookie,
+    });
+    assert.equal(response.status, 201);
+    const tree = await (await client.get(`/api/sheet/template?year=${IMPORT_YEAR}`, { cookie: officialCookie })).json();
+    const target = tree[0].subcategories[0].groups[0].items[1];
+    assert.equal(target.field_key, 'import-target');
+    assert.deepEqual(target.calculation.sources, ['import-source']);
+  });
+});
+
 // ─── Per-vehicle-type category visibility ────────────────────────────────
 // excluded_types는 카테고리를 숨길 차량 유형 이름 목록이다(제외 저장 → 기본은 전체 표시).
 describe('Category excluded_types', () => {

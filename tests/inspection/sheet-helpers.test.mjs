@@ -10,6 +10,9 @@ import {
   isResponseItem,
   isPdfItem,
   normalizeRestorableAnswerDraft,
+  isMultiSourceCalculation,
+  calculationForMode,
+  calculationSourcesForOperation,
 } from '../../inspection/web/src/utils/sheet-helpers.js';
 
 const item = {
@@ -116,6 +119,8 @@ describe('Non-response field rules', () => {
 
   it('excludes stopwatches from response completion', () => {
     assert.equal(isResponseItem(stopwatch), false);
+    assert.equal(isResponseItem({ answer_type: 'number', calculation: { mode: 'computed' } }), false);
+    assert.equal(isResponseItem({ answer_type: 'number', calculation: { mode: 'suggestion' } }), true);
     assert.equal(isResponseItem({ answer_type: 'counter' }), true);
   });
 
@@ -126,6 +131,7 @@ describe('Non-response field rules', () => {
 
   it('drops stopwatch, missing-item, and invalid counter answer drafts', () => {
     assert.equal(normalizeRestorableAnswerDraft(stopwatch, 'old value'), null);
+    assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'number', calculation: { mode: 'computed' } }, 'old value'), null);
     assert.equal(normalizeRestorableAnswerDraft(undefined, 'old value'), null);
     assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'counter' }, 'old value'), null);
   });
@@ -133,5 +139,41 @@ describe('Non-response field rules', () => {
   it('normalizes compatible counter drafts and keeps regular answer drafts', () => {
     assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'counter' }, '0012'), '12');
     assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'text' }, 'old value'), 'old value');
+  });
+});
+
+describe('Calculation editor transitions', () => {
+  const rangeCalculation = {
+    mode: 'suggestion',
+    operation: 'range_lookup',
+    sources: ['voltage'],
+    precision: 0,
+    ranges: [{ max: 200, value: 5 }],
+  };
+
+  it('changes only the mode of an existing calculation', () => {
+    assert.deepEqual(calculationForMode(rangeCalculation, 'computed', { operation: 'multiply' }), {
+      ...rangeCalculation,
+      mode: 'computed',
+    });
+    assert.equal(calculationForMode(rangeCalculation, 'manual', {}), null);
+  });
+
+  it('uses the fallback only when enabling a manual field', () => {
+    const fallback = { mode: 'computed', operation: 'multiply', sources: ['source'], factor: 1, precision: 2 };
+    assert.deepEqual(calculationForMode(null, 'computed', fallback), fallback);
+  });
+
+  it('preserves all valid sources for sum and product transitions', () => {
+    const sources = ['a', 'b', 'removed'];
+    assert.equal(isMultiSourceCalculation('sum'), true);
+    assert.equal(isMultiSourceCalculation('product'), true);
+    assert.deepEqual(calculationSourcesForOperation(sources, 'product', ['a', 'b']), ['a', 'b']);
+  });
+
+  it('keeps only the first valid source for single-source operations', () => {
+    assert.equal(isMultiSourceCalculation('multiply'), false);
+    assert.deepEqual(calculationSourcesForOperation(['a', 'b'], 'multiply', ['a', 'b']), ['a']);
+    assert.deepEqual(calculationSourcesForOperation(['removed', 'b'], 'range_lookup', ['b']), ['b']);
   });
 });

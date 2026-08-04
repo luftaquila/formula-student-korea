@@ -1,10 +1,16 @@
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase } from "../shared/db-setup.mjs";
+import { randomUUID } from "node:crypto";
+import { createDatabase, runMigrationOnce } from "../shared/db-setup.mjs";
 import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
+import {
+  parseCalculationConfig,
+  serializeCalculationConfig,
+  validateCalculationGraph,
+} from "./lib/calculations.mjs";
 
 const PORT = 9400;
 
@@ -21,6 +27,8 @@ const db = createDatabase(Database, options.dbPath || "./data/sheet.db");
     const unitExpr = existingColumns.has("unit") ? "unit" : "''";
     const pdfIncludeExpr = existingColumns.has("pdf_include") ? "pdf_include" : "1";
     const excludedTypesExpr = existingColumns.has("excluded_types") ? "excluded_types" : "''";
+    const fieldKeyExpr = existingColumns.has("field_key") ? "field_key" : "''";
+    const calculationExpr = existingColumns.has("calculation") ? "calculation" : "''";
     db.pragma("foreign_keys = OFF");
     try {
       db.transaction(() => {
@@ -36,12 +44,14 @@ const db = createDatabase(Database, options.dbPath || "./data/sheet.db");
           unit TEXT DEFAULT '',
           pdf_include INTEGER DEFAULT 1,
           excluded_types TEXT DEFAULT '',
+          field_key TEXT DEFAULT '',
+          calculation TEXT DEFAULT '',
           FOREIGN KEY (parent_id) REFERENCES sheet_template(id) ON DELETE CASCADE
         )`);
         db.exec(`INSERT INTO sheet_template_new
-          (id, year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types)
+          (id, year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation)
           SELECT id, year, level, parent_id, sort_order, name, answer_type, remarks,
-                 ${unitExpr}, ${pdfIncludeExpr}, ${excludedTypesExpr}
+                 ${unitExpr}, ${pdfIncludeExpr}, ${excludedTypesExpr}, ${fieldKeyExpr}, ${calculationExpr}
           FROM sheet_template`);
         db.exec("DROP TABLE sheet_template");
         db.exec("ALTER TABLE sheet_template_new RENAME TO sheet_template");
@@ -70,6 +80,8 @@ db.transaction(() => {
     unit TEXT DEFAULT '',
     pdf_include INTEGER DEFAULT 1,
     excluded_types TEXT DEFAULT '',
+    field_key TEXT DEFAULT '',
+    calculation TEXT DEFAULT '',
     FOREIGN KEY (parent_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_st_year ON sheet_template(year);`);
@@ -89,6 +101,18 @@ db.transaction(() => {
   if (!cols.find(c => c.name === "excluded_types")) {
     db.exec(`ALTER TABLE sheet_template ADD COLUMN excluded_types TEXT DEFAULT ''`);
   }
+  if (!cols.find(c => c.name === "field_key")) {
+    db.exec(`ALTER TABLE sheet_template ADD COLUMN field_key TEXT DEFAULT ''`);
+  }
+  if (!cols.find(c => c.name === "calculation")) {
+    db.exec(`ALTER TABLE sheet_template ADD COLUMN calculation TEXT DEFAULT ''`);
+  }
+  // 기존 문항도 복사·내보내기 후 참조가 유지되는 안정적인 내부 키를 갖게 한다.
+  db.exec(`UPDATE sheet_template
+    SET field_key = 'item-' || year || '-' || id
+    WHERE level = 'item' AND COALESCE(field_key, '') = ''`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_st_year_field_key
+    ON sheet_template(year, field_key) WHERE field_key != ''`);
 
   // 검차 시트 답변 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS sheet_answer (
@@ -146,6 +170,115 @@ db.transaction(() => {
   );`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_si_category ON sheet_inspector(category_id);`);
 })();
+
+function templateItemsForYear(year) {
+  return db.prepare(`
+    SELECT id, answer_type, field_key, calculation
+    FROM sheet_template WHERE year = ? AND level = 'item'
+  `).all(year);
+}
+
+function validateStoredCalculationGraph(year) {
+  try {
+    validateCalculationGraph(templateItemsForYear(year));
+  } catch (e) {
+    throw { status: 400, message: e.message };
+  }
+}
+
+// 2026 축전지 검사지에 규정 기반 계산을 최초 한 번 연결한다. 라이브 DB를 별도
+// 스크립트로 직접 편집하지 않고 애플리케이션 스키마 마이그레이션으로 멱등 적용한다.
+runMigrationOnce(db, "inspection_2026_imd_tsmp_calculations_v1", () => {
+  const group = db.prepare(`
+    SELECT g.id
+    FROM sheet_template g
+    JOIN sheet_template s ON s.id = g.parent_id
+    JOIN sheet_template c ON c.id = s.parent_id
+    WHERE g.year = 2026 AND g.level = 'group' AND g.name = '기본정보'
+      AND REPLACE(s.name, ' ', '') LIKE '축전지검사%'
+      AND c.name = '축전지'
+    ORDER BY g.id LIMIT 1
+  `).get();
+  if (!group) return;
+
+  const imd = db.prepare("SELECT * FROM sheet_template WHERE parent_id = ? AND level = 'item' AND name = 'IMD 테스트 값'").get(group.id);
+  const tsmp = db.prepare("SELECT * FROM sheet_template WHERE parent_id = ? AND level = 'item' AND name = 'TSMP 전류제한 저항값'").get(group.id);
+  const maxVoltage = db.prepare(`
+    SELECT i.*
+    FROM sheet_template i
+    JOIN sheet_template g ON g.id = i.parent_id
+    JOIN sheet_template s ON s.id = g.parent_id
+    JOIN sheet_template c ON c.id = s.parent_id
+    WHERE i.year = 2026 AND i.level = 'item' AND i.name = 'TS Voltage (max)'
+      AND g.name = '차량 제원' AND s.name = '기본사항' AND c.name = '축전지'
+    ORDER BY i.id LIMIT 1
+  `).get();
+  if (!imd || !tsmp || !maxVoltage) return;
+
+  const keys = {
+    maxVoltage: "accumulator.ts-voltage-max",
+    currentVoltage: "accumulator.ts-voltage-current",
+    imd: "accumulator.imd-test-resistance",
+    tsmp: "accumulator.tsmp-measured-resistance",
+  };
+  db.prepare("UPDATE sheet_template SET field_key = ? WHERE id = ?").run(keys.maxVoltage, maxVoltage.id);
+
+  let currentVoltage = db.prepare(
+    "SELECT * FROM sheet_template WHERE parent_id = ? AND level = 'item' AND name = '현재 TS 전압'"
+  ).get(group.id);
+  if (!currentVoltage) {
+    db.prepare("UPDATE sheet_template SET sort_order = sort_order + 1 WHERE parent_id = ? AND sort_order >= ?")
+      .run(group.id, imd.sort_order);
+    const info = db.prepare(`
+      INSERT INTO sheet_template
+        (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation)
+      VALUES (2026, 'item', ?, ?, '현재 TS 전압', 'number', 'IMD 테스트 시점의 측정 전압', 'V', 1, '', ?, '')
+    `).run(group.id, imd.sort_order, keys.currentVoltage);
+    currentVoltage = { id: Number(info.lastInsertRowid) };
+  } else {
+    db.prepare("UPDATE sheet_template SET field_key = ?, answer_type = 'number', unit = 'V' WHERE id = ?")
+      .run(keys.currentVoltage, currentVoltage.id);
+  }
+
+  const imdCalculation = serializeCalculationConfig({
+    mode: "computed", operation: "multiply", sources: [keys.currentVoltage], factor: 0.25, precision: 2,
+  });
+  const tsmpCalculation = serializeCalculationConfig({
+    mode: "suggestion", operation: "range_lookup", sources: [keys.maxVoltage], precision: 0,
+    ranges: [{ max: 200, value: 5 }, { max: 400, value: 10 }, { max: 600, value: 15 }],
+  });
+  db.prepare("UPDATE sheet_template SET field_key = ?, calculation = ?, remarks = '(현재 TS 전압 × 0.25 kΩ/V)', unit = 'kΩ' WHERE id = ?")
+    .run(keys.imd, imdCalculation, imd.id);
+  db.prepare("UPDATE sheet_template SET field_key = ?, calculation = ? WHERE id = ?")
+    .run(keys.tsmp, tsmpCalculation, tsmp.id);
+  validateStoredCalculationGraph(2026);
+});
+
+// v1이 이미 적용된 환경의 IMD 표시 단위를 Ω에서 kΩ으로 환산한다.
+runMigrationOnce(db, "inspection_2026_imd_kohm_v2", () => {
+  const imd = db.prepare(`
+    SELECT id, field_key FROM sheet_template
+    WHERE year = 2026 AND level = 'item' AND name = 'IMD 테스트 값'
+    ORDER BY CASE WHEN field_key = 'accumulator.imd-test-resistance' THEN 0 ELSE 1 END, id
+    LIMIT 1
+  `).get();
+  if (!imd) return;
+  const sourceKey = "accumulator.ts-voltage-current";
+  const source = db.prepare(
+    "SELECT 1 FROM sheet_template WHERE year = 2026 AND level = 'item' AND field_key = ?"
+  ).get(sourceKey);
+  if (!source) return;
+  const calculation = serializeCalculationConfig({
+    mode: "computed", operation: "multiply", sources: [sourceKey], factor: 0.25, precision: 2,
+  });
+  db.prepare(`
+    UPDATE sheet_template
+    SET field_key = 'accumulator.imd-test-resistance',
+        calculation = ?, remarks = '(현재 TS 전압 × 0.25 kΩ/V)', unit = 'kΩ'
+    WHERE id = ?
+  `).run(calculation, imd.id);
+  validateStoredCalculationGraph(2026);
+});
 
 /* ============================================
    Express 앱 설정
@@ -212,7 +345,10 @@ app.get("/api/sheet/template", (req, res) => {
     const rows = db.prepare("SELECT * FROM sheet_template WHERE year = ? ORDER BY sort_order").all(year);
     // 저장 형식(JSON 문자열)이 응답에 새지 않도록 모든 레벨에서 배열로 정규화한다.
     // 카테고리 외의 레벨은 항상 빈 배열이다.
-    for (const r of rows) r.excluded_types = parseExcludedTypes(r.excluded_types);
+    for (const r of rows) {
+      r.excluded_types = parseExcludedTypes(r.excluded_types);
+      r.calculation = parseCalculationConfig(r.calculation);
+    }
     const nodeMap = {};
     const tree = [];
 
@@ -262,32 +398,44 @@ function normalizeStoredCounterAnswer(value) {
 
 // POST /api/sheet/template - 노드 생성
 app.post("/api/sheet/template", (req, res) => {
-  const { year, level, parent_id, name, sort_order, answer_type, remarks, unit, pdf_include, excluded_types } = req.body;
+  const { year, level, parent_id, name, sort_order, answer_type, remarks, unit, pdf_include, excluded_types, calculation } = req.body;
   if (!year || !level || !name) return res.status(400).send("필수 필드가 누락되었습니다.");
   if (!TEMPLATE_LEVELS.includes(level)) return res.status(400).send("올바르지 않은 level 값입니다.");
   if (answer_type && !TEMPLATE_ANSWER_TYPES.includes(answer_type)) return res.status(400).send("올바르지 않은 answer_type 값입니다.");
   const excluded = excluded_types === undefined ? "" : normalizeExcludedTypes(excluded_types);
   if (excluded === null) return res.status(400).send("올바르지 않은 excluded_types 값입니다.");
+  if (calculation && (level !== "item" || answer_type !== "number")) {
+    return res.status(400).send("숫자 문항에만 계산을 설정할 수 있습니다.");
+  }
+  let storedCalculation = "";
+  try {
+    storedCalculation = serializeCalculationConfig(calculation);
+  } catch (e) {
+    return res.status(400).send(e.message);
+  }
+  const fieldKey = level === "item" ? `item-${randomUUID()}` : "";
 
-  const result = dbRun(() =>
-    db.prepare(
-      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(year, level, parent_id || null, sort_order || 0, name, answer_type || null, remarks || "", unit || "", pdf_include ?? 1, excluded)
-  );
+  const result = dbRun(() => db.transaction(() => {
+    const info = db.prepare(
+      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(year, level, parent_id || null, sort_order || 0, name, answer_type || null, remarks || "", unit || "", pdf_include ?? 1, excluded, fieldKey, storedCalculation);
+    validateStoredCalculationGraph(year);
+    return info;
+  })());
 
   if (!result.success) {
     logger.warn(req, "template.create", { error: result.error, year }, name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "template.create", { year, level }, name);
-  res.json({ id: result.result.lastInsertRowid });
+  res.json({ id: result.result.lastInsertRowid, field_key: fieldKey });
 });
 
 // PUT /api/sheet/template/:id - 노드 수정
 app.put("/api/sheet/template/:id", (req, res) => {
   const id = Number(req.params.id);
   // 수정 가능 필드는 아래 구조 분해로 고정된다 — body의 다른 키는 도달 불가
-  const { name, sort_order, answer_type, remarks, unit, pdf_include, excluded_types } = req.body;
+  const { name, sort_order, answer_type, remarks, unit, pdf_include, excluded_types, calculation } = req.body;
   if (answer_type && !TEMPLATE_ANSWER_TYPES.includes(answer_type)) return res.status(400).send("올바르지 않은 answer_type 값입니다.");
 
   const fields = [];
@@ -304,15 +452,34 @@ app.put("/api/sheet/template/:id", (req, res) => {
     fields.push("excluded_types = ?");
     params.push(excluded);
   }
+  if (calculation !== undefined) {
+    let storedCalculation;
+    try {
+      storedCalculation = serializeCalculationConfig(calculation);
+    } catch (e) {
+      return res.status(400).send(e.message);
+    }
+    fields.push("calculation = ?");
+    params.push(storedCalculation);
+  }
 
   if (!fields.length) return res.status(400).send("수정할 필드가 없습니다.");
-  params.push(id);
 
-  const node = db.prepare("SELECT name, level FROM sheet_template WHERE id = ?").get(id);
+  const node = db.prepare("SELECT name, level, year, answer_type, calculation FROM sheet_template WHERE id = ?").get(id);
   if (!node) return res.status(404).send("항목을 찾을 수 없습니다.");
+  const resultingAnswerType = answer_type === undefined ? node.answer_type : (answer_type || null);
+  if (calculation && (node.level !== "item" || resultingAnswerType !== "number")) {
+    return res.status(400).send("숫자 문항에만 계산을 설정할 수 있습니다.");
+  }
+  if (answer_type !== undefined && resultingAnswerType !== "number" && calculation === undefined && node.calculation) {
+    fields.push("calculation = ?");
+    params.push("");
+  }
+  params.push(id);
 
   const result = dbRun(() => db.transaction(() => {
     const update = db.prepare(`UPDATE sheet_template SET ${fields.join(", ")} WHERE id = ?`).run(...params);
+    validateStoredCalculationGraph(node.year);
     let normalizedAnswers = 0;
     const nextAnswerType = answer_type || null;
 
@@ -373,9 +540,11 @@ app.delete("/api/sheet/template/:id", (req, res) => {
     return res.status(400).send("이전 연도 템플릿은 수정할 수 없습니다.");
   }
 
-  const result = dbRun(() => {
-    return db.prepare("DELETE FROM sheet_template WHERE id = ?").run(id);
-  });
+  const result = dbRun(() => db.transaction(() => {
+    const info = db.prepare("DELETE FROM sheet_template WHERE id = ?").run(id);
+    validateStoredCalculationGraph(node.year);
+    return info;
+  })());
 
   if (!result.success) {
     logger.warn(req, "template.delete", { error: result.error }, node.name);
@@ -428,14 +597,15 @@ app.post("/api/sheet/template/copy", (req, res) => {
     db.transaction(() => {
       const idMap = {};
       const stmt = db.prepare(
-        "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       );
       for (const r of rows) {
         const newParent = r.parent_id ? idMap[r.parent_id] : null;
         // 유형 제외 설정은 이름 기준이므로 연도가 달라도 그대로 옮겨진다.
-        const info = stmt.run(to_year, r.level, newParent, r.sort_order, r.name, r.answer_type, r.remarks, r.unit || "", r.pdf_include ?? 1, r.excluded_types || "");
+        const info = stmt.run(to_year, r.level, newParent, r.sort_order, r.name, r.answer_type, r.remarks, r.unit || "", r.pdf_include ?? 1, r.excluded_types || "", r.field_key || "", r.calculation || "");
         idMap[r.id] = info.lastInsertRowid;
       }
+      validateStoredCalculationGraph(to_year);
     })();
   });
 
@@ -454,7 +624,7 @@ app.post("/api/sheet/template/import", (req, res) => {
 
   const result = dbRun(() => {
     const stmt = db.prepare(
-      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
 
     db.transaction(() => {
@@ -463,28 +633,40 @@ app.post("/api/sheet/template/import", (req, res) => {
         const cat = template[ci];
         // 다른 필드와 마찬가지로 잘못된 값은 기본값으로 흘려보낸다 — 가져오기 전체를 실패시키지 않는다.
         const excluded = normalizeExcludedTypes(cat.excluded_types) ?? "";
-        const catInfo = stmt.run(year, "category", null, ci, cat.name, null, cat.remarks || "", "", cat.pdf_include ?? 1, excluded);
+        const catInfo = stmt.run(year, "category", null, ci, cat.name, null, cat.remarks || "", "", cat.pdf_include ?? 1, excluded, "", "");
         const catId = catInfo.lastInsertRowid;
 
         if (!Array.isArray(cat.subcategories)) continue;
         for (let si = 0; si < cat.subcategories.length; si++) {
           const sub = cat.subcategories[si];
-          const subInfo = stmt.run(year, "subcategory", catId, si, sub.name, null, sub.remarks || "", "", 1, "");
+          const subInfo = stmt.run(year, "subcategory", catId, si, sub.name, null, sub.remarks || "", "", 1, "", "", "");
           const subId = subInfo.lastInsertRowid;
 
           if (!Array.isArray(sub.groups)) continue;
           for (let gi = 0; gi < sub.groups.length; gi++) {
             const grp = sub.groups[gi];
-            const grpInfo = stmt.run(year, "group", subId, gi, grp.name, null, grp.remarks || "", "", 1, "");
+            const grpInfo = stmt.run(year, "group", subId, gi, grp.name, null, grp.remarks || "", "", 1, "", "", "");
             const grpId = grpInfo.lastInsertRowid;
 
             if (!Array.isArray(grp.items)) continue;
             for (let ii = 0; ii < grp.items.length; ii++) {
               const item = grp.items[ii];
-              stmt.run(year, "item", grpId, ii, item.name, item.answer_type || "passfail", item.remarks || "", item.unit || "", 1, "");
+              let storedCalculation = "";
+              try {
+                storedCalculation = serializeCalculationConfig(item.calculation);
+              } catch (e) {
+                throw { status: 400, message: `${item.name || "이름 없는 문항"}: ${e.message}` };
+              }
+              const fieldKey = item.field_key || `item-${randomUUID()}`;
+              stmt.run(year, "item", grpId, ii, item.name, item.answer_type || "passfail", item.remarks || "", item.unit || "", 1, "", fieldKey, storedCalculation);
             }
           }
         }
+      }
+      try {
+        validateStoredCalculationGraph(year);
+      } catch (e) {
+        throw { status: 400, message: e.message };
       }
     })();
   });
@@ -619,7 +801,7 @@ app.put("/api/sheet/answer", (req, res) => {
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
-  const templateItem = db.prepare("SELECT id, name, answer_type FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
+  const templateItem = db.prepare("SELECT id, name, answer_type, calculation FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
   if (!templateItem) return res.status(400).send("해당 연도에 존재하지 않는 항목입니다.");
   const newValue = value ?? "";
   if (templateItem.answer_type === "passfail" && !["", "PASS", "FAIL"].includes(newValue)) {
@@ -630,6 +812,9 @@ app.put("/api/sheet/answer", (req, res) => {
   }
   if (templateItem.answer_type === "stopwatch") {
     return res.status(400).send("스톱워치 항목은 응답을 저장하지 않습니다.");
+  }
+  if (parseCalculationConfig(templateItem.calculation)?.mode === "computed") {
+    return res.status(400).send("자동 계산 문항에는 값을 직접 저장할 수 없습니다.");
   }
   if (base_version !== undefined && (!Number.isInteger(base_version) || base_version < 0)) {
     return res.status(400).send("올바르지 않은 답변 버전입니다.");

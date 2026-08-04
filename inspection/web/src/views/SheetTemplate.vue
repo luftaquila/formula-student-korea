@@ -28,6 +28,25 @@ const activeTab = ref(Number(sessionStorage.getItem("inspectionActiveTab")) || 0
 
 const currentCategory = computed(() => template.value[activeTab.value] || null);
 
+const calculationSourceOptions = computed(() => {
+  const options = [];
+  for (const [ci, cat] of template.value.entries()) {
+    for (const [si, sub] of (cat.subcategories || []).entries()) {
+      for (const [gi, grp] of (sub.groups || []).entries()) {
+        for (const [ii, item] of (grp.items || []).entries()) {
+          if (!["number", "counter"].includes(item.answer_type) || !item.field_key) continue;
+          options.push({
+            item,
+            key: item.field_key,
+            label: `${catNum(ci)}. ${cat.name} › ${subNum(si)}-${grpNum(gi)} ${itemNum(ii)} ${item.name}`,
+          });
+        }
+      }
+    }
+  }
+  return options;
+});
+
 watch(activeTab, async (val) => {
   sessionStorage.setItem("inspectionActiveTab", val);
   sessionStorage.setItem("inspectionScrollY", 0);
@@ -158,11 +177,11 @@ async function addChild(parent, level, childKey) {
       sort_order: maxOrder + 1,
     };
     if (level === "item") data.answer_type = "passfail";
-    const { id } = await createSheetNode(data);
-    const newNode = { id, name: defaultName, level, sort_order: maxOrder + 1, year: selectedYear.value, parent_id: parent.id };
+    const { id, field_key } = await createSheetNode(data);
+    const newNode = { id, field_key, name: defaultName, level, sort_order: maxOrder + 1, year: selectedYear.value, parent_id: parent.id };
     if (level === "subcategory") { newNode.groups = []; newNode.remarks = ""; }
     else if (level === "group") newNode.items = [];
-    else if (level === "item") { newNode.answer_type = "passfail"; newNode.remarks = ""; newNode.unit = ""; }
+    else if (level === "item") { newNode.answer_type = "passfail"; newNode.remarks = ""; newNode.unit = ""; newNode.calculation = null; }
     children.push(newNode);
   } catch (e) {
     error("추가에 실패했습니다.");
@@ -248,11 +267,12 @@ function onNameChange(node) {
 
 async function onAnswerTypeChange(item) {
   try {
+    if (item.answer_type !== "number") item.calculation = null;
     if (item.answer_type === "checktable" && !item.remarks.startsWith("{")) {
       item.remarks = JSON.stringify({ columns: [], rows: [] });
-      await updateSheetNode(item.id, { answer_type: item.answer_type, remarks: item.remarks });
+      await updateSheetNode(item.id, { answer_type: item.answer_type, remarks: item.remarks, calculation: null });
     } else {
-      await updateSheetNode(item.id, { answer_type: item.answer_type });
+      await updateSheetNode(item.id, { answer_type: item.answer_type, calculation: item.calculation });
     }
   } catch (e) {
     error("유형 변경에 실패했습니다.");
@@ -305,6 +325,67 @@ function onUnitChange(item) {
   });
 }
 
+function sourceOptionsFor(item) {
+  return calculationSourceOptions.value.filter(option => option.item.id !== item.id);
+}
+
+function defaultCalculation(item, mode, operation = "multiply") {
+  const source = sourceOptionsFor(item)[0]?.key;
+  if (!source) return null;
+  const config = { mode, operation, sources: [source], precision: operation === "range_lookup" ? 0 : 2 };
+  if (operation === "multiply") config.factor = 1;
+  if (operation === "range_lookup") config.ranges = [{ max: 100, value: 0 }];
+  return config;
+}
+
+async function setCalculationMode(item, mode) {
+  const fallback = defaultCalculation(item, mode);
+  const next = calculationForMode(item.calculation, mode, fallback);
+  if (mode !== "manual" && !next) {
+    error("먼저 원본으로 사용할 숫자 문항을 추가하세요.");
+    return;
+  }
+  item.calculation = next;
+  await saveCalculation(item);
+}
+
+async function setCalculationOperation(item, operation) {
+  const next = defaultCalculation(item, item.calculation.mode, operation);
+  if (!next) return;
+  const existingSources = calculationSourcesForOperation(
+    item.calculation.sources,
+    operation,
+    sourceOptionsFor(item).map(option => option.key),
+  );
+  if (existingSources.length) next.sources = existingSources;
+  item.calculation = next;
+  await saveCalculation(item);
+}
+
+async function saveCalculation(item) {
+  try {
+    await updateSheetNode(item.id, { calculation: item.calculation });
+  } catch (e) {
+    error(e.message || "계산 설정 저장에 실패했습니다.");
+  }
+}
+
+function onCalculationChange(item) {
+  debounceSave(`calculation-${item.id}`, () => saveCalculation(item));
+}
+
+function addCalculationRange(item) {
+  const lastMax = Number(item.calculation.ranges.at(-1)?.max) || 0;
+  item.calculation.ranges.push({ max: lastMax + 100, value: 0 });
+  onCalculationChange(item);
+}
+
+function removeCalculationRange(item, index) {
+  if (item.calculation.ranges.length <= 1) return;
+  item.calculation.ranges.splice(index, 1);
+  onCalculationChange(item);
+}
+
 function onItemNameInput(evt, node) {
   const el = evt.target;
   el.style.height = "auto";
@@ -335,7 +416,16 @@ function onChecktableRowsChange(item, value) {
 }
 
 // ---- Numbering ----
-import { catNum, subNum, grpNum, itemNum, getChecktableConfig } from "../utils/sheet-helpers";
+import {
+  catNum,
+  subNum,
+  grpNum,
+  itemNum,
+  getChecktableConfig,
+  isMultiSourceCalculation,
+  calculationForMode,
+  calculationSourcesForOperation,
+} from "../utils/sheet-helpers";
 
 // ---- Print ----
 function openPrintPage() {
@@ -361,6 +451,8 @@ function stripIds(tree) {
           answer_type: item.answer_type || "passfail",
           remarks: item.remarks || "",
           unit: item.unit || "",
+          field_key: item.field_key,
+          calculation: item.calculation || null,
         })),
       })),
     })),
@@ -669,6 +761,81 @@ function goBack() {
                       </tbody>
                     </table>
                   </div>
+                </div>
+                <!-- Number calculation config: users select safe operations and source fields; arbitrary code is never stored. -->
+                <div v-if="item.answer_type === 'number'" class="calculation-config">
+                  <div class="calculation-header">
+                    <label class="calculation-label">값 연동</label>
+                    <select
+                      class="filter-input calculation-mode"
+                      :value="item.calculation?.mode || 'manual'"
+                      :disabled="isReadOnly"
+                      @change="setCalculationMode(item, $event.target.value)"
+                    >
+                      <option value="manual">직접 입력</option>
+                      <option value="computed">자동 계산 (읽기 전용)</option>
+                      <option value="suggestion">권장값 표시 + 실측 입력</option>
+                    </select>
+                  </div>
+                  <template v-if="item.calculation">
+                    <div class="calculation-fields">
+                      <label class="calculation-field">
+                        <span>계산 방식</span>
+                        <select
+                          class="filter-input"
+                          :value="item.calculation.operation"
+                          :disabled="isReadOnly"
+                          @change="setCalculationOperation(item, $event.target.value)"
+                        >
+                          <option value="multiply">원본 × 고정값</option>
+                          <option value="sum">원본들의 합</option>
+                          <option value="product">원본들의 곱</option>
+                          <option value="range_lookup">구간별 값</option>
+                        </select>
+                      </label>
+                      <label class="calculation-field calculation-source-field">
+                        <span>원본 문항</span>
+                        <select
+                          v-if="isMultiSourceCalculation(item.calculation.operation)"
+                          class="filter-input"
+                          multiple
+                          :size="Math.min(4, sourceOptionsFor(item).length)"
+                          v-model="item.calculation.sources"
+                          :disabled="isReadOnly"
+                          @change="saveCalculation(item)"
+                        >
+                          <option v-for="option in sourceOptionsFor(item)" :key="option.key" :value="option.key">{{ option.label }}</option>
+                        </select>
+                        <select
+                          v-else
+                          class="filter-input"
+                          v-model="item.calculation.sources[0]"
+                          :disabled="isReadOnly"
+                          @change="saveCalculation(item)"
+                        >
+                          <option v-for="option in sourceOptionsFor(item)" :key="option.key" :value="option.key">{{ option.label }}</option>
+                        </select>
+                      </label>
+                      <label v-if="item.calculation.operation === 'multiply'" class="calculation-field compact">
+                        <span>곱할 값</span>
+                        <input class="node-name-input" type="number" step="any" v-model.number="item.calculation.factor" :disabled="isReadOnly" @input="onCalculationChange(item)" />
+                      </label>
+                      <label class="calculation-field compact">
+                        <span>소수 자릿수</span>
+                        <input class="node-name-input" type="number" min="0" max="6" step="1" v-model.number="item.calculation.precision" :disabled="isReadOnly" @input="onCalculationChange(item)" />
+                      </label>
+                    </div>
+                    <div v-if="item.calculation.operation === 'range_lookup'" class="calculation-ranges">
+                      <div class="range-heading"><span>원본 상한 (이하)</span><span>결과값</span></div>
+                      <div v-for="(range, ri) in item.calculation.ranges" :key="ri" class="range-row">
+                        <input class="node-name-input" type="number" step="any" v-model.number="range.max" :disabled="isReadOnly" @input="onCalculationChange(item)" />
+                        <span>→</span>
+                        <input class="node-name-input" type="number" step="any" v-model.number="range.value" :disabled="isReadOnly" @input="onCalculationChange(item)" />
+                        <button v-if="!isReadOnly" type="button" class="btn btn-danger btn-sm" :disabled="item.calculation.ranges.length <= 1" @click="removeCalculationRange(item, ri)">삭제</button>
+                      </div>
+                      <button v-if="!isReadOnly" type="button" class="btn btn-ghost btn-sm" @click="addCalculationRange(item)">+ 구간</button>
+                    </div>
+                  </template>
                 </div>
               </div>
 
@@ -1096,6 +1263,80 @@ function goBack() {
   accent-color: var(--accent-primary);
 }
 
+.calculation-config {
+  margin: 0.5rem 0 0 2rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.calculation-header,
+.calculation-fields,
+.range-row,
+.range-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.calculation-label,
+.calculation-field > span,
+.range-heading {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.calculation-mode {
+  min-width: 190px;
+}
+
+.calculation-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 160px;
+}
+
+.calculation-source-field {
+  flex: 1;
+  min-width: 280px;
+}
+
+.calculation-source-field select[multiple] {
+  min-height: 5rem;
+}
+
+.calculation-field.compact {
+  min-width: 90px;
+  max-width: 120px;
+}
+
+.calculation-ranges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.375rem;
+}
+
+.range-heading {
+  padding-left: 0.125rem;
+}
+
+.range-heading span {
+  width: 120px;
+}
+
+.range-row .node-name-input {
+  width: 120px;
+  flex: 0 0 120px;
+}
+
 @media (max-width: 640px) {
   .top-actions {
     flex-wrap: wrap;
@@ -1114,6 +1355,14 @@ function goBack() {
 
   .node-row {
     flex-wrap: wrap;
+  }
+
+  .calculation-config {
+    margin-left: 0.75rem;
+  }
+
+  .calculation-source-field {
+    min-width: 100%;
   }
 
   .item-textarea {
