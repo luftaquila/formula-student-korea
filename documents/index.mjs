@@ -424,19 +424,32 @@ function inlineDisposition(originalName, mimeType) {
 }
 
 const UTF8_CONTEXT_PATTERNS = [
-  /\d[ \t]*°[ \t]*[CFK]?/u,
-  /°[ \t]*[CFK]\b/u,
-  /±[ \t]*\d/u,
-  /\d[ \t]*(?:µ|μ|Ω|Å|å)[ \t]*[A-Za-z]?/u,
-  /©[ \t]*(?:19|20)\d{2}/u,
-  /(?:£|€|¥|₩)[ \t]*\d/u,
-  /[A-Za-z0-9][⁰¹²³⁴⁵⁶⁷⁸⁹]+/u,
-  /\d[ \t]*(?:×|÷|≤|≥|≈|≠|‰)/u,
-  /(?:×|÷|≤|≥|≈|≠)[ \t]*\d/u,
-  /[A-Za-z][\u00c0-\u024f]|[\u00c0-\u024f][A-Za-z]/u,
+  /\d[ \t]*°[ \t]*[CFK]?/gu,
+  /°[ \t]*[CFK]\b/gu,
+  /±[ \t]*\d/gu,
+  /\d[ \t]*(?:µ|μ|Ω|Å)[ \t]*[A-Za-z]?/gu,
+  /©[ \t]*(?:19|20)\d{2}/gu,
+  /(?:£|€|¥|₩)[ \t]*\d/gu,
+  /[A-Za-z0-9][⁰¹²³⁴⁵⁶⁷⁸⁹]+/gu,
+  /\d[ \t]*(?:×|÷|≤|≥|≈|≠|‰)/gu,
+  /(?:×|÷|≤|≥|≈|≠)[ \t]*\d/gu,
+  /[A-Za-z][\u00c0-\u024f]|[\u00c0-\u024f][A-Za-z]/gu,
 ];
-const KOREAN_TOKEN_PATTERN = /(?:^|[^A-Za-z0-9가-힣])[가-힣]+(?=[^A-Za-z0-9가-힣])/u;
-const KOREAN_TOKEN_AT_END_PATTERN = /(?:^|[^A-Za-z0-9가-힣])[가-힣]+(?=$|[^A-Za-z0-9가-힣])/u;
+const KOREAN_TOKEN_PATTERN = /(?:^|[^A-Za-z가-힣])[가-힣]+(?=[^A-Za-z가-힣])/gu;
+const KOREAN_TOKEN_AT_END_PATTERN = /(?:^|[^A-Za-z가-힣])[가-힣]+(?=$|[^A-Za-z가-힣])/gu;
+
+function addContextEvidence(candidate, patterns, context, contextStart) {
+  for (let i = 0; i < patterns.length; i += 1) {
+    const pattern = patterns[i];
+    pattern.lastIndex = 0;
+    for (const match of context.matchAll(pattern)) {
+      const absoluteEnd = contextStart + match.index + match[0].length;
+      if (absoluteEnd <= candidate.lastEvidenceEnds[i]) continue;
+      candidate.lastEvidenceEnds[i] = absoluteEnd;
+      candidate.evidence += 1;
+    }
+  }
+}
 
 function addEncodingSignals(candidate, text, final = false) {
   for (const char of text) {
@@ -444,14 +457,17 @@ function addEncodingSignals(candidate, text, final = false) {
     const isHangul = (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0x1100 && cp <= 0x11ff) || (cp >= 0x3130 && cp <= 0x318f);
     if (isHangul && candidate.charset === "utf-8") candidate.hangul += 1;
   }
+  const previousLength = candidate.decodedLength;
   const context = candidate.contextTail + text;
+  const contextStart = previousLength - candidate.contextTail.length;
   if (candidate.charset === "utf-8") {
-    if (UTF8_CONTEXT_PATTERNS.some((pattern) => pattern.test(context))) candidate.hasUtf8Context = true;
+    addContextEvidence(candidate, UTF8_CONTEXT_PATTERNS, context, contextStart);
   } else {
     const tokenPattern = final ? KOREAN_TOKEN_AT_END_PATTERN : KOREAN_TOKEN_PATTERN;
-    if (tokenPattern.test(context)) candidate.hasKoreanToken = true;
+    addContextEvidence(candidate, [tokenPattern], context, contextStart);
   }
-  candidate.contextTail = context.slice(-16);
+  candidate.decodedLength += text.length;
+  candidate.contextTail = context.slice(-32);
 }
 
 // CP949와 UTF-8은 일부 바이트열이 겹치므로 양쪽을 엄격히 디코딩한 뒤
@@ -460,8 +476,8 @@ function addEncodingSignals(candidate, text, final = false) {
 // CP949를 선택한다. 예: CP949 "짱"(c2 af) ↔ UTF-8 "¯".
 function createTextCharsetDetector() {
   const candidates = [
-    { charset: "utf-8", decoder: new TextDecoder("utf-8", { fatal: true }), valid: true, hangul: 0, hasUtf8Context: false, contextTail: "" },
-    { charset: "euc-kr", decoder: new TextDecoder("euc-kr", { fatal: true }), valid: true, hasKoreanToken: false, contextTail: "" },
+    { charset: "utf-8", decoder: new TextDecoder("utf-8", { fatal: true }), valid: true, hangul: 0, evidence: 0, lastEvidenceEnds: Array(UTF8_CONTEXT_PATTERNS.length).fill(-1), decodedLength: 0, contextTail: "" },
+    { charset: "euc-kr", decoder: new TextDecoder("euc-kr", { fatal: true }), valid: true, evidence: 0, lastEvidenceEnds: [-1], decodedLength: 0, contextTail: "" },
   ];
   let prefix = Buffer.alloc(0);
   let started = false;
@@ -507,8 +523,8 @@ function createTextCharsetDetector() {
       const eucKr = candidates[1];
       if (!utf8.valid) return "euc-kr";
       if (!eucKr.valid || utf8.hangul > 0) return "utf-8";
-      if (utf8.hasUtf8Context) return "utf-8";
-      if (eucKr.hasKoreanToken) return "euc-kr";
+      if (utf8.evidence >= eucKr.evidence && utf8.evidence > 0) return "utf-8";
+      if (eucKr.evidence > utf8.evidence) return "euc-kr";
       return "utf-8";
     },
   };

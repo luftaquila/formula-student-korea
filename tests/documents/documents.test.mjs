@@ -668,7 +668,7 @@ describe('File upload', () => {
     submissionId = data.id; // update to latest submission
   });
 
-  it('POST /api/sessions/:id/submit automatically detects ambiguous CP949 Korean text', async () => {
+  it('POST /api/sessions/:id/submit independently detects colliding CP949 and UTF-8 contexts', async () => {
     const sessionRes = await client.post('/api/admin/sessions', {
       body: {
         name: 'Text Encoding Session',
@@ -686,21 +686,41 @@ describe('File upload', () => {
     const { id: textSessionId } = await sessionRes.json();
 
     try {
-      const res = await uploadFile(textSessionId, studentCookie, [
-        // CP949 "책 1\n째 1\n짱징책", but also valid UTF-8 "å 1\n° 1\n¯¡å".
-        { name: 'ambiguous.txt', type: 'text/plain', content: Buffer.from([0xc3, 0xa5, 0x20, 0x31, 0x0a, 0xc2, 0xb0, 0x20, 0x31, 0x0a, 0xc2, 0xaf, 0xc2, 0xa1, 0xc3, 0xa5]) },
-      ]);
-      assert.equal(res.status, 200);
-      const data = await res.json();
-      const file = db.prepare('SELECT id, text_charset FROM submission_file WHERE submission_id = ?').get(data.id);
-      assert.equal(file.text_charset, 'euc-kr');
+      const cases = [
+        { name: 'cp949-book-before-digit', charset: 'euc-kr', content: Buffer.from([0xc3, 0xa5, 0x31]), text: '책1' },
+        { name: 'cp949-book-after-digit', charset: 'euc-kr', content: Buffer.from([0x31, 0xc3, 0xa5]), text: '1책' },
+        { name: 'cp949-conflicting-lines', charset: 'euc-kr', content: Buffer.from([0xc3, 0xa5, 0x20, 0x31, 0x0a, 0x31, 0xc3, 0xa5]), text: '책 1\n1책' },
+        { name: 'cp949-jjae-before-digit', charset: 'euc-kr', content: Buffer.from([0xc2, 0xb0, 0x31]), text: '째1' },
+        { name: 'cp949-ambiguous-korean', charset: 'euc-kr', content: Buffer.from([0xc2, 0xaf, 0xc2, 0xa1, 0xc3, 0xa5]), text: '짱징책' },
+        ...[
+          '25°C',
+          '±0.1 mm',
+          '© 2026',
+          '10 µm',
+          'café',
+          '10 Å',
+          'm²',
+          '£100',
+          '징',
+        ].map((text, index) => ({ name: `utf8-context-${index}`, charset: 'utf-8', content: Buffer.from(text, 'utf8'), text })),
+      ];
 
-      const normalRes = await fetch(`${baseUrl}/api/admin/submissions/${data.id}/files/${file.id}`, {
-        headers: { 'Cookie': adminCookie },
-      });
-      assert.equal(normalRes.headers.get('content-type'), 'text/plain; charset=euc-kr');
-      const body = Buffer.from(await normalRes.arrayBuffer());
-      assert.equal(new TextDecoder('euc-kr').decode(body), '책 1\n째 1\n짱징책');
+      for (const encodingCase of cases) {
+        const res = await uploadFile(textSessionId, studentCookie, [
+          { name: `${encodingCase.name}.txt`, type: 'text/plain', content: encodingCase.content },
+        ]);
+        assert.equal(res.status, 200, encodingCase.name);
+        const data = await res.json();
+        const file = db.prepare('SELECT id, text_charset FROM submission_file WHERE submission_id = ?').get(data.id);
+        assert.equal(file.text_charset, encodingCase.charset, encodingCase.name);
+
+        const normalRes = await fetch(`${baseUrl}/api/admin/submissions/${data.id}/files/${file.id}`, {
+          headers: { 'Cookie': adminCookie },
+        });
+        assert.equal(normalRes.headers.get('content-type'), `text/plain; charset=${encodingCase.charset}`, encodingCase.name);
+        const body = Buffer.from(await normalRes.arrayBuffer());
+        assert.equal(new TextDecoder(encodingCase.charset).decode(body), encodingCase.text, encodingCase.name);
+      }
     } finally {
       await client.delete(`/api/admin/sessions/${textSessionId}`, { cookie: chiefCookie });
     }
