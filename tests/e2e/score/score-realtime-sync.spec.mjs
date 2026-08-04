@@ -91,70 +91,77 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     const context1 = await browser.newContext({ storageState: storageStatePath("admin") });
     const context2 = await browser.newContext({ storageState: storageStatePath("admin") });
 
-    const page1 = await context1.newPage();
-    const page2 = await context2.newPage();
+    try {
+      const page1 = await context1.newPage();
+      const page2 = await context2.newPage();
 
-    const sse1 = page1.waitForResponse((res) => res.url().includes("/api/score/events"));
-    const sse2 = page2.waitForResponse((res) => res.url().includes("/api/score/events"));
+      const sse1 = page1.waitForResponse((res) => res.url().includes("/api/score/events"));
+      const sse2 = page2.waitForResponse((res) => res.url().includes("/api/score/events"));
 
-    await page1.goto("/score");
-    await page2.goto("/score");
+      await page1.goto("/score");
+      await page2.goto("/score");
 
-    await waitForPageReady(page1);
-    await waitForPageReady(page2);
-    await sse1;
-    await sse2;
+      await waitForPageReady(page1);
+      await waitForPageReady(page2);
+      await sse1;
+      await sse2;
 
-    // Wait for bottom-row to be visible (events loaded)
-    const bottomRow1 = page1.locator(".bottom-row");
-    await expect(bottomRow1).toBeVisible({ timeout: 5000 });
+      // Wait for bottom-row to be visible (events loaded)
+      const bottomRow1 = page1.locator(".bottom-row");
+      await expect(bottomRow1).toBeVisible({ timeout: 5000 });
 
-    // Use skidpad so this test does not race the endurance penalty settings
-    // exercised by penalty-settings.spec.mjs in another worker.
-    const penaltyTable1 = page1.locator(".setting-card").first().locator("table.setting-table");
-    const coneRow1 = penaltyTable1.locator("tr").filter({ hasText: "콘터치" });
-    const skidpadColumnIndex = await penaltyTable1
-      .getByRole("columnheader", { name: "스키드패드", exact: true })
-      .evaluate((cell) => cell.cellIndex);
-    const skidpadConeCell1 = coneRow1.locator("td").nth(skidpadColumnIndex);
+      // Use skidpad so this test does not race the endurance penalty settings
+      // exercised by penalty-settings.spec.mjs in another worker.
+      const penaltyTable1 = page1.locator(".setting-card").first().locator("table.setting-table");
+      const coneRow1 = penaltyTable1.locator("tr").filter({ hasText: "콘터치" });
+      const skidpadColumnIndex = await penaltyTable1
+        .getByRole("columnheader", { name: "스키드패드", exact: true })
+        .evaluate((cell) => cell.cellIndex);
+      const skidpadConeCell1 = coneRow1.locator("td").nth(skidpadColumnIndex);
 
-    // Read current value before editing to pick a different one (avoids no-op save if previous cleanup failed)
-    const currentText = await skidpadConeCell1.locator(".setting-text").textContent();
-    const currentValue = Number(currentText) || 0;
-    const newValue = currentValue === 3 ? 5 : 3;
+      // Read current value before editing to pick a different one (avoids no-op save if previous cleanup failed)
+      const currentText = await skidpadConeCell1.locator(".setting-text").textContent();
+      const currentValue = Number(currentText) || 0;
+      const newValue = currentValue === 3 ? 5 : 3;
 
-    await skidpadConeCell1.click();
-    const input1 = skidpadConeCell1.locator("input.setting-input");
-    await expect(input1).toBeVisible({ timeout: 3000 });
+      await skidpadConeCell1.click();
+      const input1 = skidpadConeCell1.locator("input.setting-input");
+      await expect(input1).toBeVisible({ timeout: 3000 });
 
-    const penaltySavePromise = page1.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
-    // Atomically set value and blur to prevent Vue re-render/SSE from closing edit mode
-    await input1.evaluate((el, v) => {
-      el.value = v;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.blur();
-    }, String(newValue));
-    await penaltySavePromise;
+      const penaltySavePromise = page1.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
+      // Atomically set value and blur to prevent Vue re-render/SSE from closing edit mode
+      await input1.evaluate((el, v) => {
+        el.value = v;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.blur();
+      }, String(newValue));
+      await penaltySavePromise;
 
-    // Verify context 2 receives the penalty update via SSE
-    const bottomRow2 = page2.locator(".bottom-row");
-    await expect(bottomRow2).toBeVisible({ timeout: 5000 });
-    const penaltyTable2 = page2.locator(".setting-card").first().locator("table.setting-table");
-    const coneRow2 = penaltyTable2.locator("tr").filter({ hasText: "콘터치" });
-    const skidpadConeCell2 = coneRow2.locator("td").nth(skidpadColumnIndex);
-    await expect(skidpadConeCell2.locator(".setting-text")).toHaveText(String(newValue), { timeout: 10000 });
-
-    // Cleanup: reset to 0
-    await skidpadConeCell1.click();
-    const resetInput = skidpadConeCell1.locator("input.setting-input");
-    await expect(resetInput).toBeVisible({ timeout: 3000 });
-    const cleanupPenalty = page1.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
-    await resetInput.fill("0");
-    await resetInput.blur();
-    await cleanupPenalty;
-
-    await context1.close();
-    await context2.close();
+      // Verify context 2 receives the penalty update via SSE
+      const bottomRow2 = page2.locator(".bottom-row");
+      await expect(bottomRow2).toBeVisible({ timeout: 5000 });
+      const penaltyTable2 = page2.locator(".setting-card").first().locator("table.setting-table");
+      const coneRow2 = penaltyTable2.locator("tr").filter({ hasText: "콘터치" });
+      const skidpadConeCell2 = coneRow2.locator("td").nth(skidpadColumnIndex);
+      await expect(skidpadConeCell2.locator(".setting-text")).toHaveText(String(newValue), { timeout: 10000 });
+    } finally {
+      try {
+        // Cleanup is not part of the UI behavior under test. Restore through
+        // the authenticated API so an SSE re-render cannot suppress the save.
+        const reset = await context1.request.put("/score/api/score/penalty", {
+          data: {
+            year: YEAR,
+            event_type: "스키드패드",
+            cone_penalty: 0,
+            oc_penalty: 0,
+            start_delay: 0,
+          },
+        });
+        expect(reset.ok()).toBeTruthy();
+      } finally {
+        await Promise.all([context1.close(), context2.close()]);
+      }
+    }
   });
 
   test("score setting change propagates via SSE", async ({ browser }) => {

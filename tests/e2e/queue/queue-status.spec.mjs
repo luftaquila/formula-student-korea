@@ -5,6 +5,11 @@ import {
   waitForPageReady,
 } from "../helpers/utils.mjs";
 
+// rank-realtime.spec.mjs owns entries 1-3 on the electric queue in this shard.
+// Entry 30 is seeded but never registered by a sibling spec, so its no-queue
+// response cannot race another worker's registration or cleanup.
+const NO_QUEUE_ENTRY = 30;
+
 test.describe("Queue public status page", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/queue");
@@ -35,13 +40,14 @@ test.describe("Queue public status page", () => {
   });
 
   test("shows the exact no-queue result for a valid unregistered team", async ({ page }) => {
-    await page.getByPlaceholder("번호").fill("2");
-    await expect(page.locator(".team-badge").first()).toContainText("한양대학교");
+    await page.getByPlaceholder("번호").fill(String(NO_QUEUE_ENTRY));
+    await expect(page.locator(".team-badge").first()).toContainText("부산대학교");
     await page.getByPlaceholder("010-0000-0000").fill("01012345678");
 
     const stateResponse = page.waitForResponse(
       (response) =>
-        response.url().includes("/queue/api/state/2") && response.request().method() === "POST",
+        response.url().includes(`/queue/api/state/${NO_QUEUE_ENTRY}`) &&
+        response.request().method() === "POST",
     );
     await page.getByRole("button", { name: "조회" }).click();
     expect((await stateResponse).status()).toBe(200);
