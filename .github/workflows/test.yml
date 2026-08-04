@@ -24,6 +24,10 @@ permissions:
   actions: read    # PR base 커밋의 이미지 게시 workflow 완료 여부 조회
   checks: write    # dorny/test-reporter가 체크 결과를 게시하는 데 필요
 
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   unit:
     runs-on: ubuntu-latest
@@ -34,6 +38,18 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            auth/package-lock.json
+            entry/package-lock.json
+            queue/package-lock.json
+            inspection/package-lock.json
+            traffic/package-lock.json
+            score/package-lock.json
+            documents/package-lock.json
+            course/package-lock.json
+            calendar/package-lock.json
+            email/package-lock.json
 
       - name: Install dependencies
         run: |
@@ -43,7 +59,7 @@ jobs:
 
       - name: Run tests
         run: |
-          node --test --test-force-exit \
+          node --test \
             --test-reporter=spec --test-reporter-destination=stdout \
             --test-reporter=junit --test-reporter-destination=test-results.xml \
             tests/**/*.test.mjs
@@ -54,7 +70,8 @@ jobs:
         with:
           name: Unit Tests
           path: test-results.xml
-          reporter: java-junit
+          # Node emits nested JUnit suites; this parser preserves their test cases.
+          reporter: phpunit-junit
 
   # Decide which service images each e2e shard must build vs pull. main's CI
   # (build.yml) publishes ghcr.io/<repo>/<svc>:latest for every service, so a
@@ -96,6 +113,8 @@ jobs:
               - 'score/**'
             documents:
               - 'documents/**'
+            email:
+              - 'email/**'
             course:
               - 'course/**'
             calendar:
@@ -114,15 +133,16 @@ jobs:
           F_TRAFFIC: ${{ steps.filter.outputs.traffic }}
           F_SCORE: ${{ steps.filter.outputs.score }}
           F_DOCUMENTS: ${{ steps.filter.outputs.documents }}
+          F_EMAIL: ${{ steps.filter.outputs.email }}
           F_COURSE: ${{ steps.filter.outputs.course }}
           F_CALENDAR: ${{ steps.filter.outputs.calendar }}
         run: |
           declare -A F=(
             [auth]="$F_AUTH" [entry]="$F_ENTRY" [queue]="$F_QUEUE"
             [inspection]="$F_INSPECTION" [traffic]="$F_TRAFFIC" [score]="$F_SCORE"
-            [documents]="$F_DOCUMENTS" [course]="$F_COURSE" [calendar]="$F_CALENDAR"
+            [documents]="$F_DOCUMENTS" [email]="$F_EMAIL" [course]="$F_COURSE" [calendar]="$F_CALENDAR"
           )
-          STD=(auth entry queue inspection traffic score documents course calendar)
+          STD=(auth entry queue inspection traffic score documents email course calendar)
           rebuild_all=false
           if [ "$SHARED" = "true" ] || [ "$DOCKERFILE_SVC" = "true" ]; then rebuild_all=true; fi
           build=(); pull=()
@@ -146,17 +166,11 @@ jobs:
           echo "pull_caddy=$pull_caddy" >> "$GITHUB_OUTPUT"
           echo "Plan: build=[$bake]  pull_std=[$pull_std]  pull_caddy=$pull_caddy"
 
-  # A PR can be rebased immediately after another PR merges while main's image
-  # publishing workflow is still running. In that window, pulling :latest for
-  # unchanged services serves the previous main revision even though the PR's
-  # source and tests already include the new base. Wait once, before all E2E
-  # shards start, so pulled images match the PR base.
-  base-images:
-    needs: changes
-    runs-on: ubuntu-latest
-    steps:
+      # A PR can be rebased immediately after another PR merges while main's
+      # image publishing workflow is still running. Wait in this already-running
+      # job so E2E does not pay for another runner allocation and scheduling hop.
       - name: Wait for base images to be published
-        if: github.event_name == 'pull_request' && (needs.changes.outputs.pull_std != '' || needs.changes.outputs.pull_caddy == 'true')
+        if: github.event_name == 'pull_request' && (steps.plan.outputs.pull_std != '' || steps.plan.outputs.pull_caddy == 'true')
         uses: actions/github-script@v8
         with:
           script: |
@@ -200,7 +214,7 @@ jobs:
             }
 
   e2e:
-    needs: [changes, base-images]
+    needs: changes
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -209,30 +223,165 @@ jobs:
       matrix:
         # Shard the e2e run across parallel jobs, each on its own docker stack.
         # --no-deps skips dependency projects (data comes from global-setup, not
-        # upstream tests), so auth/entry aren't re-run per shard. Co-located only
-        # where safe: queue+traffic and inspection+documents already run
-        # concurrently today (entry-deps siblings); score+entry touch disjoint
-        # services (score is kept away from traffic/inspection, whose data it
-        # aggregates). auth and cross-service run isolated: cross-service's
-        # multi-service load broke auth's log-aggregation page when co-located.
+        # upstream tests), so auth/entry aren't re-run per shard. The large auth,
+        # queue, and score projects are split by file ownership as well: this both
+        # balances the wall clock and prevents unrelated specs from sharing global
+        # users, queues, endurance rows, and penalty settings. Shards that mutate
+        # entries still run every lifecycle target
+        # (queue/documents/inspection/score/traffic): entry deliberately waits
+        # for that production fan-out, so omitting one changes successful writes
+        # into 202/pending responses. auth and cross-service run isolated:
+        # cross-service's multi-service load broke auth's log-aggregation page
+        # when co-located.
         include:
-          - shard: auth
-            projects: --project=auth
+          - shard: auth-core
+            projects: >-
+              --project=auth
+              tests/e2e/auth/account-applications.spec.mjs
+              tests/e2e/auth/bulk-operations.spec.mjs
+              tests/e2e/auth/csv-upload.spec.mjs
+              tests/e2e/auth/forward-auth.spec.mjs
+              tests/e2e/auth/ops-contacts.spec.mjs
+              tests/e2e/auth/rbac.spec.mjs
+              tests/e2e/auth/role-propagation.spec.mjs
+              tests/e2e/auth/session.spec.mjs
+              tests/e2e/auth/user-management.spec.mjs
+            workers: 2
+            services: auth entry queue inspection traffic score documents email
+            seeds: users vehicle-types entries
+          - shard: auth-logs
+            projects: >-
+              --project=auth
+              tests/e2e/auth/log-aggregation.spec.mjs
+              tests/e2e/auth/logs-filters.spec.mjs
+              tests/e2e/auth/logs.spec.mjs
+            workers: 2
+            # The aggregation endpoint always queries every configured service.
+            # Starting all of them avoids a guaranteed 5s timeout on every logs
+            # page load for otherwise-absent calendar and course containers.
+            services: auth entry queue inspection traffic score documents email course calendar
+            seeds: users vehicle-types entries
           - shard: cross-service
             projects: --project=cross-service
-          - shard: queue-traffic
-            projects: --project=queue --project=traffic
-          - shard: inspection-documents
-            projects: --project=inspection --project=documents
-          - shard: score-entry-course
-            projects: --project=score --project=entry --project=course
+            workers: 2
+            services: auth entry queue inspection traffic score documents
+            seeds: users vehicle-types entries inspection documents
+          - shard: queue-operations
+            projects: >-
+              --project=queue
+              tests/e2e/queue/booth-advanced.spec.mjs
+              tests/e2e/queue/booth-and-scoping.spec.mjs
+              tests/e2e/queue/booth-management.spec.mjs
+              tests/e2e/queue/concurrent-officials.spec.mjs
+              tests/e2e/queue/priority.spec.mjs
+              tests/e2e/queue/queue-status-success.spec.mjs
+              tests/e2e/queue/realtime-sync.spec.mjs
+            workers: 2
+            services: auth entry queue inspection traffic score documents email
+            seeds: users vehicle-types entries
+          - shard: queue-public-settings
+            projects: >-
+              --project=queue
+              tests/e2e/queue/penalties.spec.mjs
+              tests/e2e/queue/queue-status.spec.mjs
+              tests/e2e/queue/rank-realtime.spec.mjs
+              tests/e2e/queue/rbac.spec.mjs
+              tests/e2e/queue/registration.spec.mjs
+              tests/e2e/queue/settings.spec.mjs
+              tests/e2e/queue/stats.spec.mjs
+            workers: 2
+            services: auth entry queue inspection traffic score documents email
+            seeds: users vehicle-types entries
+          - shard: traffic
+            projects: --project=traffic
+            workers: 3
+            services: auth entry traffic
+            seeds: users vehicle-types entries
+          - shard: inspection
+            projects: --project=inspection
+            workers: 3
+            services: auth entry queue inspection traffic score documents
+            seeds: users vehicle-types entries inspection
+          - shard: documents
+            projects: --project=documents
+            workers: 3
+            services: auth entry documents email
+            seeds: users vehicle-types entries documents
+          - shard: score-endurance
+            projects: >-
+              --project=score
+              tests/e2e/score/endurance-dsq-flow.spec.mjs
+              tests/e2e/score/endurance-realtime.spec.mjs
+              tests/e2e/score/endurance.spec.mjs
+            workers: 3
+            services: auth entry queue inspection traffic score documents
+            seeds: users vehicle-types entries inspection
+          - shard: score-settings
+            projects: >-
+              --project=score
+              tests/e2e/score/calculation.spec.mjs
+              tests/e2e/score/penalty-recalculation.spec.mjs
+              tests/e2e/score/penalty-settings.spec.mjs
+              tests/e2e/score/score-realtime-sync.spec.mjs
+            # These files intentionally exercise the same global score and
+            # penalty settings; serial execution makes that ownership explicit.
+            workers: 1
+            services: auth entry queue inspection traffic score documents
+            seeds: users vehicle-types entries inspection
+          - shard: score-ui
+            projects: >-
+              --project=score
+              tests/e2e/score/dashboard.spec.mjs
+              tests/e2e/score/detail-sort.spec.mjs
+              tests/e2e/score/export.spec.mjs
+              tests/e2e/score/manual-scores.spec.mjs
+              tests/e2e/score/rbac.spec.mjs
+              tests/e2e/score/year-switch.spec.mjs
+            workers: 3
+            services: auth entry queue inspection traffic score documents
+            seeds: users vehicle-types entries inspection
+          - shard: entry-course
+            projects: --project=entry --project=course
+            workers: 2
+            services: auth entry queue inspection traffic score documents course
+            seeds: users vehicle-types entries
           - shard: calendar-security
             projects: --project=calendar --project=security
+            workers: 2
+            services: auth entry course calendar
+            seeds: users
 
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: false
+
+      # Intersect the services needed by this shard with the global change plan.
+      # Unrelated changed services are neither pulled nor rebuilt in this job.
+      - name: Plan shard images
+        id: shard-plan
+        env:
+          REQUIRED_SERVICES: ${{ matrix.services }}
+          GLOBAL_BAKE_TARGETS: ${{ needs.changes.outputs.bake_targets }}
+          PULL_CADDY: ${{ needs.changes.outputs.pull_caddy }}
+        run: |
+          build=(); pull=()
+          for svc in $REQUIRED_SERVICES; do
+            if [[ ",$GLOBAL_BAKE_TARGETS," == *",$svc,"* ]]; then
+              build+=("$svc")
+            else
+              pull+=("$svc")
+            fi
+          done
+          if [[ ",$GLOBAL_BAKE_TARGETS," == *",caddy-local,"* ]]; then
+            build+=("caddy-local")
+          fi
+          bake=$(IFS=,; echo "${build[*]}")
+          pull_std=$(IFS=' '; echo "${pull[*]}")
+          echo "bake_targets=$bake" >> "$GITHUB_OUTPUT"
+          echo "pull_std=$pull_std" >> "$GITHUB_OUTPUT"
+          echo "pull_caddy=$PULL_CADDY" >> "$GITHUB_OUTPUT"
+          echo "Shard plan: build=[$bake] pull_std=[$pull_std] pull_caddy=$PULL_CADDY"
 
       - name: Create .env
         run: |
@@ -258,7 +407,7 @@ jobs:
       # reuses the local image instead of hitting Docker Hub again. Gated on the
       # same condition as the buildx setup — skipped when nothing needs building.
       - name: Pre-pull BuildKit image (retry; Docker Hub pulls flake)
-        if: needs.changes.outputs.bake_targets != ''
+        if: steps.shard-plan.outputs.bake_targets != ''
         run: |
           for i in 1 2 3 4 5; do
             docker pull moby/buildkit:buildx-stable-1 && exit 0
@@ -268,15 +417,15 @@ jobs:
           exit 1
 
       - name: Set up Docker Buildx
-        if: needs.changes.outputs.bake_targets != ''
+        if: steps.shard-plan.outputs.bake_targets != ''
         uses: docker/setup-buildx-action@v4
         with:
           driver-opts: |
             network=host
             image=moby/buildkit:buildx-stable-1
           # Route Docker Hub (docker.io) base-image pulls through Google's
-          # pull-through mirror. A shared/ change rebuilds all 9 images on every
-          # shard (~45 builds/run), and anonymous Docker Hub pulls rate-limit /
+          # pull-through mirror. A shared/ change rebuilds all 10 images on every
+          # shard (~60 builds/run), and anonymous Docker Hub pulls rate-limit /
           # 5xx (auth.docker.io 520, manifest 504) at that volume — there are no
           # Docker Hub creds in this repo. The mirror serves the same official
           # base images without the anonymous per-IP limit.
@@ -289,15 +438,25 @@ jobs:
       # image and builds nothing.
       - name: Pull prebuilt images for unchanged services
         run: |
-          if [ -n "${{ needs.changes.outputs.pull_std }}" ]; then
-            docker compose pull ${{ needs.changes.outputs.pull_std }}
+          retry_pull() {
+            for attempt in 1 2 3; do
+              if "$@"; then return 0; fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "::warning::Image pull attempt $attempt failed; retrying in 5s"
+                sleep 5
+              fi
+            done
+            return 1
+          }
+          if [ -n "${{ steps.shard-plan.outputs.pull_std }}" ]; then
+            retry_pull docker compose pull ${{ steps.shard-plan.outputs.pull_std }}
           fi
-          if [ "${{ needs.changes.outputs.pull_caddy }}" = "true" ]; then
-            docker compose --profile local pull caddy-local
+          if [ "${{ steps.shard-plan.outputs.pull_caddy }}" = "true" ]; then
+            retry_pull docker compose --profile local pull caddy-local
           fi
 
       - name: Build changed images
-        if: needs.changes.outputs.bake_targets != ''
+        if: steps.shard-plan.outputs.bake_targets != ''
         uses: docker/bake-action@v7
         env:
           DOCKER_BUILD_SUMMARY: false
@@ -307,8 +466,8 @@ jobs:
           # independently on a transient GitHub 5xx response.
           source: .
           files: compose.yml
-          targets: ${{ needs.changes.outputs.bake_targets }}
-          # The 5 e2e shards build concurrently. A shared cache scope races on
+          targets: ${{ steps.shard-plan.outputs.bake_targets }}
+          # The 6 e2e shards build concurrently. A shared cache scope races on
           # the gha manifest ("blob not found"), so each shard owns its scope.
           # The gha cache backend also intermittently 504s on export under load;
           # ignore-error keeps a failed cache export from failing the build —
@@ -323,6 +482,7 @@ jobs:
             traffic.tags=ghcr.io/${{ github.repository }}/traffic:latest
             score.tags=ghcr.io/${{ github.repository }}/score:latest
             documents.tags=ghcr.io/${{ github.repository }}/documents:latest
+            email.tags=ghcr.io/${{ github.repository }}/email:latest
             course.tags=ghcr.io/${{ github.repository }}/course:latest
             caddy-local.tags=ghcr.io/${{ github.repository }}/caddy:latest
           load: true
@@ -333,7 +493,7 @@ jobs:
       # services are actually up within a few seconds.
       - name: Start services
         run: |
-          docker compose up -d --no-build auth entry queue inspection traffic score documents course calendar
+          docker compose up -d --no-deps --no-build ${{ matrix.services }}
           docker compose --profile local up -d --no-deps --no-build caddy-local
 
       - uses: actions/setup-node@v6
@@ -354,12 +514,11 @@ jobs:
         run: npx playwright install --with-deps chromium
         if: steps.playwright-cache.outputs.cache-hit != 'true'
 
-      - name: Install Playwright system deps only
-        run: npx playwright install-deps chromium
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-
       - name: Run E2E tests
-        run: npx playwright test --no-deps ${{ matrix.projects }}
+        env:
+          E2E_SERVICES: ${{ matrix.services }}
+          E2E_SEEDS: ${{ matrix.seeds }}
+        run: npx playwright test --no-deps --workers=${{ matrix.workers }} ${{ matrix.projects }}
 
       - name: Save Playwright cache
         uses: actions/cache/save@v5
