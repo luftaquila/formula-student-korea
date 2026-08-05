@@ -795,6 +795,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
   }
 
   const deletedNums = [];
+  const replacedNums = new Set();
   const moves = [];
   const retainedOldRowsByNewNum = new Map();
   const matchedOldNums = new Set();
@@ -868,6 +869,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
     }
     if (replacements.has(oldRow.num)) {
       deletedNums.push(oldRow.num); // 팀 교체 확정 → 기존 downstream 데이터 삭제
+      replacedNums.add(oldRow.num);
     } else if (retains.has(oldRow.num)) {
       retainedOldRowsByNewNum.set(oldRow.num, oldRow);
       continue; // 명칭 정정 확정 → 기존 데이터 유지(이벤트 없음)
@@ -880,7 +882,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
     }
   }
   if (ambiguous.length > 0) {
-    return { events: [], deletedNums: [], renumberCount: 0, ambiguous, retainedOldRowsByNewNum };
+    return { events: [], deletedNums: [], replacedNums, renumberCount: 0, ambiguous, retainedOldRowsByNewNum };
   }
 
   const events = [
@@ -893,7 +895,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
   for (const move of buildRenumberPlan(moves, reservedNums)) {
     events.push(...buildEntryRenumberedEvents(move.prevNum, move.newNum, year, move.entry));
   }
-  return { events, deletedNums, renumberCount: moves.length, ambiguous, retainedOldRowsByNewNum };
+  return { events, deletedNums, replacedNums, renumberCount: moves.length, ambiguous, retainedOldRowsByNewNum };
 }
 
 /* ============================================
@@ -1301,7 +1303,7 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
         ...oldRows.map((row) => row.num),
         ...newRowsByNum.keys(),
       ], year);
-      const { events, deletedNums, renumberCount, ambiguous, retainedOldRowsByNewNum } = buildBulkLifecycleEvents(
+      const { events, deletedNums, replacedNums, renumberCount, ambiguous, retainedOldRowsByNewNum } = buildBulkLifecycleEvents(
         oldRows, newRowsByNum, year, renumberValidation.renumbers, replacementsValidation.nums, retainsValidation.nums,
       );
       // 동일 번호의 팀 변경이 미선언 상태면 아무것도 쓰지 않고(읽기 전용 트랜잭션)
@@ -1332,9 +1334,10 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
         // 과거 삭제 때문에 목적지 번호에 다른 팀의 stale snapshot이 남아 있을 수 있다.
         // renumber 뒤의 새 revision 이벤트가 그 목적지를 현재 Entry 상태로 수렴시킨다.
         if (oldRow && oldRow.num === row.num && !!oldRow.active === row.active) return [];
-        // 신규/교체 엔트리의 활성 기본값은 true다. 기존 팀은 번호가 바뀌었더라도
-        // 항상 현재 상태를 fan-out하고, 신규/교체 비활성 팀도 명시적으로 전파한다.
-        if (!oldRow && row.active) return [];
+        // 완전 신규 엔트리의 활성 기본값은 true이므로 snapshot이 필요 없지만, 같은 번호의
+        // 팀 교체는 선행 delete가 한 서비스에서 실패해 예전 상태가 남을 수 있다. 단건 교체와
+        // 동일하게 delete 뒤 authoritative snapshot을 보내 새 팀 상태로 수렴시킨다.
+        if (!oldRow && row.active && !replacedNums.has(row.num)) return [];
         return buildEntryActiveEvents(row.num, year, row.active, row.active_revision);
       });
       const eventIds = insertLifecycleEvents([...events, ...activeEvents]);

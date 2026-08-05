@@ -1252,7 +1252,7 @@ describe('Entry delete → service notifications', () => {
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
-  it('POST /api/entries/bulk deletes downstream data when a same-number change is declared a replacement', async () => {
+  it('POST /api/entries/bulk deletes old data and emits the current snapshot for a same-number replacement', async () => {
     for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await client.post('/api/entries/bulk', {
@@ -1260,19 +1260,31 @@ describe('Entry delete → service notifications', () => {
       cookie: adminCookie,
     });
 
-    const calls = [];
-    const mockApp = expressForMock();
-    mockApp.use(expressForMock.json());
-    mockApp.patch('/api/internal/team-num', (req, res) => {
-      calls.push({ method: 'PATCH', body: req.body });
+    const documentCalls = [];
+    const documentsApp = expressForMock();
+    documentsApp.use(expressForMock.json());
+    documentsApp.delete('/api/internal/team/:num', (req, res) => {
+      documentCalls.push({ method: 'DELETE', num: Number(req.params.num) });
       res.status(200).send();
     });
-    mockApp.delete('/api/internal/team/:num', (req, res) => {
-      calls.push({ method: 'DELETE', num: Number(req.params.num) });
+    const documentsStarted = await startServer(documentsApp);
+    process.env.DOCUMENTS_SERVER = documentsStarted.baseUrl;
+
+    const inspectionCalls = [];
+    const inspectionApp = expressForMock();
+    inspectionApp.use(expressForMock.json());
+    inspectionApp.delete('/api/internal/team/:num', (req, res) => {
+      inspectionCalls.push({ method: 'DELETE', num: Number(req.params.num) });
       res.status(200).send();
     });
-    const started = await startServer(mockApp);
-    process.env.DOCUMENTS_SERVER = started.baseUrl;
+    inspectionApp.patch('/api/internal/team-active', (req, res) => {
+      inspectionCalls.push({ method: 'ACTIVE', body: req.body });
+      res.status(200).send();
+    });
+    const inspectionStarted = await startServer(inspectionApp);
+    process.env.INSPECTION_SERVER = inspectionStarted.baseUrl;
+
+    const before = db.prepare(`SELECT active_revision FROM 'entry_${new Date().getFullYear()}' WHERE num = 307`).get();
 
     const res = await client.post('/api/entries/bulk', {
       body: { data: { 307: { univ: 'BulkReplaceUnivB', team: 'BulkReplaceTeamB' } }, replacements: [307] },
@@ -1280,13 +1292,21 @@ describe('Entry delete → service notifications', () => {
     });
     assert.equal(res.status, 200);
     await new Promise(r => setTimeout(r, 150));
-    assert.deepEqual(calls, [{ method: 'DELETE', num: 307 }], 'a declared replacement drops the old team\'s downstream data');
+    assert.deepEqual(documentCalls, [{ method: 'DELETE', num: 307 }], 'Documents receives only the replacement delete');
+    assert.equal(inspectionCalls.length, 2);
+    assert.deepEqual(inspectionCalls[0], { method: 'DELETE', num: 307 });
+    assert.equal(inspectionCalls[1].method, 'ACTIVE', 'the current snapshot follows the delete for the same service');
+    assert.equal(inspectionCalls[1].body.num, 307);
+    assert.equal(inspectionCalls[1].body.active, true);
+    assert.ok(inspectionCalls[1].body.revision > before.active_revision, 'the replacement snapshot has a fresh revision');
 
     const after = await (await client.get('/api/entries', { cookie: adminCookie })).json();
     assert.equal(after['307'].team, 'BulkReplaceTeamB', 'entry table holds the new team');
 
-    await stopServer(started.server);
+    await stopServer(documentsStarted.server);
+    await stopServer(inspectionStarted.server);
     delete process.env.DOCUMENTS_SERVER;
+    delete process.env.INSPECTION_SERVER;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
