@@ -2077,73 +2077,71 @@ describe('DELETE /api/internal/team/:num', () => {
   });
 });
 
-describe('Entry active-state synchronization', () => {
+describe('Inactive entries remain fully available in Documents', () => {
   const year = 2090;
-  const num = 990;
-  let sessionId;
+  const num = 991;
 
-  before(() => {
-    db.prepare("INSERT OR REPLACE INTO student_team (email, team_num, year) VALUES (?, ?, ?)")
-      .run('student1@test.com', num, year);
-    sessionId = Number(db.prepare(`
-      INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year)
-      VALUES ('Inactive Session', '', '2020-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', '', 1000, 'admin@test.com', ?)
-    `).run(year).lastInsertRowid);
-    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, num);
-    db.prepare(`
-      INSERT INTO submission (session_id, team_num, submitted_by, submitted_at, total_size, is_late, attempt_no)
-      VALUES (?, ?, 'student1@test.com', '2026-01-01T00:00:00.000Z', 0, 0, 1)
-    `).run(sessionId, num);
-  });
+  it('lists, assigns, targets, and accepts submissions for an inactive entry', async () => {
+    const entryRequests = [];
+    const entryApp = express();
+    entryApp.get('/api/entries', (req, res) => {
+      entryRequests.push(req.query);
+      res.json({ [num]: { univ: 'Inactive Univ', team: 'Inactive Team', type: null, active: false } });
+    });
+    const entryServer = await startServer(entryApp);
+    process.env.ENTRY_SERVER = entryServer.baseUrl;
 
-  it('hides mappings, sessions, and submissions without deleting them', async () => {
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: false, revision: 50 },
-    });
-    assert.equal(deactivate.status, 200);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM submission WHERE session_id = ? AND team_num = ?").get(sessionId, num).c, 1);
-    const mappings = await (await client.get(`/api/admin/student-teams?year=${year}`, { cookie: chiefCookie })).json();
-    assert.ok(!mappings.some((row) => row.team_num === num));
-    const studentView = await (await client.get('/api/sessions', { cookie: studentCookie })).json();
-    assert.notEqual(studentView.team?.team_num, num);
-    assert.ok(!studentView.sessions.some((session) => session.id === sessionId));
-    const status = await (await client.get(`/api/admin/sessions/${sessionId}/status`, { cookie: chiefCookie })).json();
-    assert.deepEqual(status.status, []);
-    assert.deepEqual(status.targets, [{ team_num: num, active: false }]);
+    try {
+      const legacyEvent = await client.patch('/api/internal/team-active', {
+        headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+        body: { num, year, active: false, revision: 1 },
+      });
+      assert.equal(legacyEvent.status, 200, 'legacy active-state events are accepted as no-ops');
 
-    const edit = await client.put(`/api/admin/sessions/${sessionId}`, {
-      cookie: chiefCookie,
-      body: {
-        name: 'Inactive Session Renamed',
-        notice: '',
-        start_at: status.session.start_at,
-        end_at: status.session.end_at,
-        late_end_at: '',
-        max_file_size: status.session.max_file_size,
-        allowed_extensions: '',
-        // 구버전 편집 화면은 숨겨진 비활성 대상을 payload에서 누락했다.
-        teams: [],
-      },
-    });
-    assert.equal(edit.status, 200, 'metadata edit must preserve an omitted inactive target');
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM session_team WHERE session_id = ? AND team_num = ?").get(sessionId, num).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM submission WHERE session_id = ? AND team_num = ?").get(sessionId, num).c, 1);
-    assert.equal((await client.post('/api/admin/student-teams', {
-      body: { email: 'hidden@test.com', team_num: num, year }, cookie: chiefCookie,
-    })).status, 409);
+      const entriesRes = await client.get(`/api/entries?year=${year}`, { cookie: student2Cookie });
+      assert.equal(entriesRes.status, 200);
+      const entries = await entriesRes.json();
+      assert.equal(entries[num].active, false);
+      assert.equal(entryRequests[0].includeInactive, 'true');
 
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: true, revision: 49 },
-    });
-    assert.deepEqual((await (await client.get(`/api/admin/sessions/${sessionId}/status`, { cookie: chiefCookie })).json()).status, []);
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: true, revision: 51 },
-    });
-    const restored = await (await client.get(`/api/admin/sessions/${sessionId}/status`, { cookie: chiefCookie })).json();
-    assert.equal(restored.status[0].team_num, num);
-    assert.ok(restored.status[0].submission);
+      const mapping = await client.post('/api/admin/student-teams', {
+        body: { email: 'student2@test.com', team_num: num, year }, cookie: chiefCookie,
+      });
+      assert.equal(mapping.status, 201, 'inactive entries can be assigned to student accounts');
+
+      const session = await client.post('/api/admin/sessions', {
+        cookie: chiefCookie,
+        body: {
+          name: 'Inactive Entry Submission',
+          notice: '',
+          start_at: '2020-01-01T00:00:00.000Z',
+          end_at: '2099-01-01T00:00:00.000Z',
+          late_end_at: '',
+          max_file_size: 1000,
+          allowed_extensions: '',
+          year,
+          teams: [num],
+        },
+      });
+      assert.equal(session.status, 201, 'inactive entries can be selected as session targets');
+      const sessionId = (await session.json()).id;
+
+      const studentView = await (await client.get('/api/sessions', { cookie: student2Cookie })).json();
+      assert.equal(studentView.team.team_num, num);
+      assert.ok(studentView.sessions.some((item) => item.id === sessionId));
+
+      const upload = await uploadFile(sessionId, student2Cookie, [
+        { name: 'inactive.txt', type: 'text/plain', content: Buffer.from('allowed') },
+      ]);
+      assert.equal(upload.status, 200, 'inactive entries can submit documents');
+
+      const status = await (await client.get(`/api/admin/sessions/${sessionId}/status`, { cookie: chiefCookie })).json();
+      assert.equal(status.status[0].team_num, num);
+      assert.ok(status.status[0].submission);
+      assert.equal(status.status[0].files[0].original_name, 'inactive.txt');
+    } finally {
+      delete process.env.ENTRY_SERVER;
+      await stopServer(entryServer.server);
+    }
   });
 });

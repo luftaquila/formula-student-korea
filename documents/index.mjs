@@ -10,7 +10,6 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInt
 import { createLogger } from "../shared/logger.mjs";
 import { validateYear } from "../shared/validation.mjs";
 import { parseDbTimestamp } from "../shared/parse-timestamp.js";
-import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
 
 const PORT = 9700;
 
@@ -18,7 +17,6 @@ export function createDocumentsApp(options = {}) {
 
 const db = createDatabase(Database, options.dbPath || "./data/documents.db");
 db.pragma("foreign_keys = ON");
-ensureTeamStatusTable(db);
 
 db.exec(`CREATE TABLE IF NOT EXISTS student_team (
   email TEXT PRIMARY KEY,
@@ -216,6 +214,15 @@ const app = createApp({ express }, (req) => {
 app.get("/api/logs", logger.queryHandler);
 
 app.get("/api/health", (req, res) => res.send("ok"));
+
+// Documents에서는 엔트리 활성 상태와 무관하게 계정 할당과 제출을 허용한다.
+// 브라우저가 entry의 관리자 전용 includeInactive API를 직접 호출하지 않도록
+// 인증된 Documents API가 내부 서비스 자격으로 전체 목록을 중계한다.
+app.get("/api/entries", async (req, res) => {
+  const yearCheck = validateYear(req.query.year || new Date().getFullYear());
+  if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
+  res.json(await fetchEntries(yearCheck.value, req, "entry.list"));
+});
 
 const dbRun = createDbRun();
 
@@ -534,14 +541,8 @@ function isInitialDownload(req) {
 
 // GET /api/sessions - 내 팀에 열린 세션 목록
 app.get("/api/sessions", (req, res) => {
-  const team = db.prepare(`
-    SELECT st.team_num, st.year FROM student_team st
-    WHERE st.email = ? AND NOT EXISTS (
-      SELECT 1 FROM team_status s
-      WHERE s.year = st.year AND s.team_num = st.team_num AND s.active = 0
-    )
-    ORDER BY st.year DESC LIMIT 1
-  `).get(req.user.email);
+  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1")
+    .get(req.user.email);
   if (!team) return res.json({ team: null, sessions: [] });
 
   const rows = db.prepare(`
@@ -575,7 +576,6 @@ app.get("/api/sessions/:id", (req, res) => {
   // 같은 번호를 쓰는 타 연도=다른 대학 팀의 세션을 순회 접근할 수 없다).
   const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? AND year = ?").get(req.user.email, session.year);
   if (!team) { logger.warn(req, "session.view", { error: "no_team_for_year", session_id: session.id, year: session.year }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
-  if (!isTeamActive(db, session.year, team.team_num)) return res.status(404).send("세션을 찾을 수 없습니다.");
   const isTarget = db.prepare("SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?").get(session.id, team.team_num);
   if (!isTarget) { logger.warn(req, "session.view", { error: "not_target", session_id: session.id }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
 
@@ -604,7 +604,6 @@ app.post("/api/sessions/:id/submit", (req, res) => {
   // 학생이 최신 연도 매핑을 가져도 과거 세션에 정상 제출할 수 있고, 타 연도 팀의 세션 접근은 막힌다.
   const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? AND year = ?").get(req.user.email, session.year);
   if (!team) { logger.warn(req, "submission.create", { error: "no_team_for_year", session_id: session.id, year: session.year }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
-  if (!isTeamActive(db, session.year, team.team_num)) return res.status(404).send("세션을 찾을 수 없습니다.");
   const isTarget = db.prepare("SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?").get(session.id, team.team_num);
   if (!isTarget) { logger.warn(req, "submission.create", { error: "not_target", session_id: session.id }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
 
@@ -768,9 +767,6 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 
     const txResult = dbRun(() => {
       const tx = db.transaction(() => {
-        if (!isTeamActive(db, session.year, team.team_num)) {
-          throw { status: 409, message: "비활성화된 엔트리는 서류를 제출할 수 없습니다." };
-        }
         // attempt_no는 같은 (session, team)의 누적 최대치 + 1. retention으로 삭제되어도 최신 row가 살아남으므로 단조 증가.
         const prevAttempt = db.prepare(
           "SELECT MAX(attempt_no) AS m FROM submission WHERE session_id = ? AND team_num = ?",
@@ -857,7 +853,6 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 app.get("/api/submissions/:subId/files/:fileId", async (req, res) => {
   const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
   if (!team) { logger.warn(req, "file.download", { error: "no_team", sub_id: Number(req.params.subId) }); return res.status(403).send("팀이 등록되지 않았습니다."); }
-  if (!isTeamActive(db, team.year, team.team_num)) return res.status(404).send("파일을 찾을 수 없습니다.");
 
   const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
   if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
@@ -884,7 +879,6 @@ app.get("/api/submissions/:subId/files/:fileId", async (req, res) => {
 app.get("/api/submissions/:subId/zip", async (req, res) => {
   const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
   if (!team) { logger.warn(req, "file.zip", { error: "no_team", sub_id: Number(req.params.subId) }); return res.status(403).send("팀이 등록되지 않았습니다."); }
-  if (!isTeamActive(db, team.year, team.team_num)) return res.status(404).send("제출을 찾을 수 없습니다.");
 
   const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
   if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
@@ -959,7 +953,6 @@ app.post("/api/admin/sessions", (req, res) => {
 
   for (const t of teams) {
     if (!Number.isInteger(t) || t < 1) return res.status(400).send("올바르지 않은 팀 번호가 포함되어 있습니다.");
-    if (!isTeamActive(db, numYear, t)) return res.status(409).send(`비활성화된 엔트리 #${t}은 대상 팀으로 지정할 수 없습니다.`);
   }
 
   const txResult = dbRun(() => {
@@ -1004,25 +997,16 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   if (rawLateEnd && !nLateEnd) return res.status(400).send("지연 제출 마감 날짜 형식이 올바르지 않습니다.");
   if (nEnd <= nStart) return res.status(400).send("제출 마감은 시작 이후여야 합니다.");
   if (nLateEnd && nLateEnd < nEnd) return res.status(400).send("지각 마감은 제출 마감 이후여야 합니다.");
-  if (!Array.isArray(teams)) return res.status(400).send("대상 팀을 선택하세요.");
+  if (!Array.isArray(teams) || teams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
 
   const maxSize = max_file_size ? Number(max_file_size) : 52428800;
   if (!Number.isFinite(maxSize) || maxSize <= 0 || maxSize > 524288000) return res.status(400).send("올바르지 않은 파일 크기 제한입니다 (최대 500MB).");
   const exts = allowed_extensions || "";
 
   const oldTeams = db.prepare("SELECT team_num FROM session_team WHERE session_id = ?").all(id).map(r => r.team_num);
-  const oldTeamSet = new Set(oldTeams);
   for (const t of teams) {
     if (!Number.isInteger(t) || t < 1) return res.status(400).send("올바르지 않은 팀 번호가 포함되어 있습니다.");
-    if (!isTeamActive(db, session.year, t) && !oldTeamSet.has(t)) {
-      return res.status(409).send(`비활성화된 엔트리 #${t}은 대상 팀으로 지정할 수 없습니다.`);
-    }
   }
-  // 상태 조회에서 숨겨진 기존 비활성 대상이 오래된 편집 화면의 PUT에서 빠지더라도
-  // 이를 명시적 제거로 해석하지 않는다. 재활성화될 때까지 대상/제출물을 그대로 보존한다.
-  const inactiveOldTeams = oldTeams.filter((teamNum) => !isTeamActive(db, session.year, teamNum));
-  const effectiveTeams = [...new Set([...teams, ...inactiveOldTeams])];
-  if (effectiveTeams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
 
   const removedTeamNums = [];
   const txResult = dbRun(() => {
@@ -1031,7 +1015,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
         "UPDATE session SET name = ?, notice = ?, start_at = ?, end_at = ?, late_end_at = ?, max_file_size = ?, allowed_extensions = ? WHERE id = ?",
       ).run(name.trim(), notice || "", nStart, nEnd, nLateEnd, maxSize, exts, id);
 
-      const newTeamsSet = new Set(effectiveTeams);
+      const newTeamsSet = new Set(teams);
 
       // 제거되는 팀의 제출물 정리
       for (const oldTeam of oldTeams) {
@@ -1046,7 +1030,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
 
       db.prepare("DELETE FROM session_team WHERE session_id = ?").run(id);
       const teamStmt = db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)");
-      for (const t of effectiveTeams) teamStmt.run(id, t);
+      for (const t of teams) teamStmt.run(id, t);
     });
     return tx();
   });
@@ -1059,7 +1043,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
       rmDir(path.join(UPLOADS_DIR, String(id), String(team), String(subId)));
     }
   }
-  logger.log(req, "session.update", { year: session.year, teams: effectiveTeams.length }, name.trim());
+  logger.log(req, "session.update", { year: session.year, teams: teams.length }, name.trim());
   res.status(200).send();
 
   // 예약 알림 재등록 (날짜 변경 반영)
@@ -1093,14 +1077,7 @@ app.get("/api/admin/sessions/:id/status", (req, res) => {
   const session = db.prepare("SELECT * FROM session WHERE id = ?").get(id);
   if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
 
-  const targets = db.prepare(`
-    SELECT st.team_num, CASE WHEN s.active = 0 THEN 0 ELSE 1 END AS active
-    FROM session_team st
-    LEFT JOIN team_status s ON s.year = ? AND s.team_num = st.team_num
-    WHERE st.session_id = ?
-    ORDER BY st.team_num
-  `).all(session.year, id).map((target) => ({ ...target, active: target.active !== 0 }));
-  const teams = targets.filter((target) => target.active);
+  const teams = db.prepare("SELECT team_num FROM session_team WHERE session_id = ? ORDER BY team_num").all(id);
 
   const submissions = db.prepare(`
     SELECT id, team_num, submitted_at, total_size, is_late, submitted_by, attempt_no, rn
@@ -1108,14 +1085,11 @@ app.get("/api/admin/sessions/:id/status", (req, res) => {
       SELECT s.id, s.team_num, s.submitted_at, s.total_size, s.is_late, s.submitted_by, s.attempt_no,
              ROW_NUMBER() OVER (PARTITION BY s.team_num ORDER BY s.id DESC) AS rn
       FROM submission s
-      WHERE s.session_id = ? AND NOT EXISTS (
-        SELECT 1 FROM team_status ts
-        WHERE ts.year = ? AND ts.team_num = s.team_num AND ts.active = 0
-      )
+      WHERE s.session_id = ?
     )
     WHERE rn <= 2
     ORDER BY team_num, rn
-  `).all(id, session.year);
+  `).all(id);
   const submissionsByTeam = new Map();
   for (const sub of submissions) {
     const list = submissionsByTeam.get(sub.team_num) || [];
@@ -1155,7 +1129,7 @@ app.get("/api/admin/sessions/:id/status", (req, res) => {
     return { team_num: t.team_num, submission: sub, files, prevSubmission: prevSub, prevFiles, submissionCount };
   });
 
-  res.json({ session, status, targets });
+  res.json({ session, status });
 });
 
 // GET /api/admin/sessions/:id/archive - 세션별 전체 압축 다운로드
@@ -1172,13 +1146,10 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
     INNER JOIN (
       SELECT session_id, team_num, MAX(id) AS max_id
       FROM submission
-      WHERE session_id = ? AND NOT EXISTS (
-        SELECT 1 FROM team_status ts
-        WHERE ts.year = ? AND ts.team_num = submission.team_num AND ts.active = 0
-      )
+      WHERE session_id = ?
       GROUP BY session_id, team_num
     ) latest ON sub.id = latest.max_id
-  `).all(id, session.year);
+  `).all(id);
 
   const sessionName = sanitize(session.name);
   const archiveFiles = [];
@@ -1227,7 +1198,7 @@ app.get("/api/admin/submissions/:subId/files/:fileId", async (req, res) => {
   const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
   if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
   const session = db.prepare("SELECT name, year FROM session WHERE id = ?").get(sub.session_id);
-  if (!session || !isTeamActive(db, session.year, sub.team_num)) return res.status(404).send("제출을 찾을 수 없습니다.");
+  if (!session) return res.status(404).send("제출을 찾을 수 없습니다.");
 
   const file = db.prepare("SELECT * FROM submission_file WHERE id = ? AND submission_id = ?").get(Number(req.params.fileId), sub.id);
   if (!file) return res.status(404).send("파일을 찾을 수 없습니다.");
@@ -1247,7 +1218,7 @@ app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
   if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
 
   const session = db.prepare("SELECT name, year FROM session WHERE id = ?").get(sub.session_id);
-  if (!session || !isTeamActive(db, session.year, sub.team_num)) return res.status(404).send("제출을 찾을 수 없습니다.");
+  if (!session) return res.status(404).send("제출을 찾을 수 없습니다.");
 
   const files = db.prepare("SELECT * FROM submission_file WHERE submission_id = ?").all(sub.id);
   if (files.length === 0) return res.status(404).send("다운로드할 파일이 없습니다.");
@@ -1307,12 +1278,8 @@ app.get("/api/admin/students", async (req, res) => {
 app.get("/api/admin/student-teams", (req, res) => {
   const year = req.query.year ? Number(req.query.year) : null;
   const rows = year
-    ? db.prepare(`SELECT st.* FROM student_team st WHERE st.year = ? AND NOT EXISTS (
-        SELECT 1 FROM team_status s WHERE s.year = st.year AND s.team_num = st.team_num AND s.active = 0
-      ) ORDER BY st.team_num`).all(year)
-    : db.prepare(`SELECT st.* FROM student_team st WHERE NOT EXISTS (
-        SELECT 1 FROM team_status s WHERE s.year = st.year AND s.team_num = st.team_num AND s.active = 0
-      ) ORDER BY st.year DESC, st.team_num`).all();
+    ? db.prepare("SELECT * FROM student_team WHERE year = ? ORDER BY team_num").all(year)
+    : db.prepare("SELECT * FROM student_team ORDER BY year DESC, team_num").all();
   res.json(rows);
 });
 
@@ -1325,7 +1292,6 @@ app.post("/api/admin/student-teams", (req, res) => {
   const yearCheck = validateYear(year);
   if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
   const numYear = yearCheck.value;
-  if (!isTeamActive(db, numYear, numTeam)) return res.status(409).send("비활성화된 엔트리에는 학생을 연결할 수 없습니다.");
 
   const result = dbRun(() =>
     db.prepare("INSERT INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run(email.trim().toLowerCase(), numTeam, numYear),
@@ -1425,10 +1391,7 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
                ROW_NUMBER() OVER (PARTITION BY sub.session_id, sub.team_num ORDER BY sub.id DESC) AS rn
         FROM submission sub
         JOIN session s ON s.id = sub.session_id
-        WHERE s.year = ? AND NOT EXISTS (
-          SELECT 1 FROM team_status ts
-          WHERE ts.year = s.year AND ts.team_num = sub.team_num AND ts.active = 0
-        )
+        WHERE s.year = ?
       )
       WHERE rn = 1
     )
@@ -1477,9 +1440,11 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
    Internal API (서비스 간 통신)
    ============================================ */
 
-registerTeamStatusRoute(app, {
-  db, dbRun, logger, requireInternalRequest,
-  broadcastEvent: () => {},
+// 이전 배포에서 이미 생성된 team.active outbox 이벤트를 안전하게 소진한다.
+// Documents는 활성 상태를 저장하거나 제출 기능에 반영하지 않는다.
+app.patch("/api/internal/team-active", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+  res.status(200).send();
 });
 
 // PATCH /api/internal/team-num - 엔트리 번호 변경 시 team_num 일괄 갱신
@@ -1508,8 +1473,7 @@ app.patch("/api/internal/team-num", (req, res) => {
          SELECT 1 FROM submission
          WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)
        )
-       OR EXISTS (SELECT 1 FROM team_status WHERE team_num = ? AND year = ?)
-  `).get(prevNum, year, prevNum, year, prevNum, year, prevNum, year);
+  `).get(prevNum, year, prevNum, year, prevNum, year);
 
   const pendingFileWork = pendingRenumberFileWorkCount(prevNum, newNum, year);
   if (!prevExists && pendingFileWork === 0) {
@@ -1574,17 +1538,6 @@ app.patch("/api/internal/team-num", (req, res) => {
           .run(newNum, prevNum, year);
         db.prepare("UPDATE submission SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
           .run(newNum, prevNum, year);
-
-        const previousStatus = db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, prevNum);
-        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num IN (?, ?)").run(year, prevNum, newNum);
-        const entry = req.body.entry && typeof req.body.entry === "object" ? req.body.entry : {};
-        const entryStatus = typeof entry.active === "boolean"
-          ? { active: entry.active ? 1 : 0, revision: Number(entry.active_revision) || 0 }
-          : previousStatus;
-        if (entryStatus) {
-          db.prepare("INSERT INTO team_status (year, team_num, active, revision) VALUES (?, ?, ?, ?)")
-            .run(year, newNum, entryStatus.active, entryStatus.revision);
-        }
       }
     })();
   });
@@ -1631,7 +1584,6 @@ app.delete("/api/internal/team/:num", (req, res) => {
   const txResult = dbRun(() => {
     db.transaction(() => {
       db.prepare("DELETE FROM student_team WHERE team_num = ? AND year = ?").run(num, year);
-      db.prepare("DELETE FROM team_status WHERE team_num = ? AND year = ?").run(num, year);
 
       const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
       for (const s of sessions) {
@@ -1721,7 +1673,7 @@ async function fetchEntries(year, req = null, action = "entry.fetch") {
   const entryServer = process.env.ENTRY_SERVER;
   if (!entryServer) return {};
   try {
-    const res = await fetch(`${entryServer}/api/entries?year=${year}`, {
+    const res = await fetch(`${entryServer}/api/entries?year=${year}&includeInactive=true`, {
       headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
       signal: AbortSignal.timeout(5000),
     });
@@ -1768,23 +1720,15 @@ async function processScheduledNotifications() {
           `SELECT st2.email, st.team_num FROM session_team st
            JOIN student_team st2 ON st.team_num = st2.team_num AND st2.year = ?
            WHERE st.session_id = ?
-             AND st.team_num NOT IN (SELECT team_num FROM submission WHERE session_id = ?)
-             AND NOT EXISTS (
-               SELECT 1 FROM team_status ts
-               WHERE ts.year = ? AND ts.team_num = st.team_num AND ts.active = 0
-             )`,
-        ).all(n.year, n.session_id, n.session_id, n.year);
+             AND st.team_num NOT IN (SELECT team_num FROM submission WHERE session_id = ?)`,
+        ).all(n.year, n.session_id, n.session_id);
       } else {
         // 전체 대상 팀 학생
         recipientRows = db.prepare(
           `SELECT st2.email, st.team_num FROM session_team st
            JOIN student_team st2 ON st.team_num = st2.team_num AND st2.year = ?
-           WHERE st.session_id = ?
-             AND NOT EXISTS (
-               SELECT 1 FROM team_status ts
-               WHERE ts.year = ? AND ts.team_num = st.team_num AND ts.active = 0
-             )`,
-        ).all(n.year, n.session_id, n.year);
+           WHERE st.session_id = ?`,
+        ).all(n.year, n.session_id);
       }
 
       if (recipientRows.length === 0) {

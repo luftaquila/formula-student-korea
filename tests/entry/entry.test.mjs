@@ -1502,14 +1502,25 @@ describe('Entry active state', () => {
     for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
     db.prepare("DELETE FROM lifecycle_outbox").run();
     const calls = [];
+    const renumbers = [];
+    const events = [];
     const mockApp = expressForMock();
     mockApp.use(expressForMock.json());
     mockApp.patch('/api/internal/team-active', (req, res) => {
       calls.push(req.body);
+      events.push({ type: 'active', body: req.body });
+      res.status(200).send();
+    });
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      renumbers.push(req.body);
+      events.push({ type: 'renumber', body: req.body });
       res.status(200).send();
     });
     const started = await startServer(mockApp);
-    statusServer = { ...started, calls };
+    statusServer = { ...started, calls, renumbers, events };
+    process.env.INSPECTION_SERVER = started.baseUrl;
+    // Documents is configured for delete/renumber lifecycle events, but active-state
+    // events must be scoped to operational services only.
     process.env.DOCUMENTS_SERVER = started.baseUrl;
     await client.post('/api/entries', {
       body: { num: 990, univ: 'Inactive Univ', team: 'Inactive Team' },
@@ -1518,6 +1529,7 @@ describe('Entry active state', () => {
   });
 
   after(async () => {
+    delete process.env.INSPECTION_SERVER;
     delete process.env.DOCUMENTS_SERVER;
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await stopServer(statusServer.server);
@@ -1532,6 +1544,11 @@ describe('Entry active state', () => {
     assert.equal(statusServer.calls.length, 1);
     assert.equal(statusServer.calls[0].num, 990);
     assert.equal(statusServer.calls[0].active, false);
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS c FROM lifecycle_outbox WHERE event_type = 'team.active' AND service = 'documents'").get().c,
+      0,
+      'Documents must not receive active-state events',
+    );
     assert.ok(Number.isInteger(statusServer.calls[0].revision));
 
     const publicEntries = await (await client.get('/api/entries')).json();
@@ -1603,5 +1620,36 @@ describe('Entry active state', () => {
     const rows = await (await client.get(`/api/entries?year=${year}`, { cookie: adminCookie })).json();
     assert.equal(rows['991'].active, true);
     assert.equal(rows['992'].active, true);
+  });
+
+  it('orders deactivation after a retained team is renumbered in the same bulk upload', async () => {
+    const year = 2089;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    statusServer.calls.length = 0;
+    statusServer.renumbers.length = 0;
+    statusServer.events.length = 0;
+
+    const seeded = await client.post(`/api/entries/bulk?year=${year}`, {
+      body: { data: { 994: { univ: 'Move Inactive Univ', team: 'Move Inactive Team' } } },
+      cookie: adminCookie,
+    });
+    assert.equal(seeded.status, 200);
+
+    const uploaded = await client.post(`/api/entries/bulk?year=${year}`, {
+      body: { data: { 995: { univ: 'Move Inactive Univ', team: 'Move Inactive Team', active: false } } },
+      cookie: adminCookie,
+    });
+    assert.equal(uploaded.status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    assert.equal(statusServer.renumbers.length, 2, 'renumber is sent to Documents and Inspection');
+    assert.deepEqual(statusServer.calls.map(({ num, active }) => ({ num, active })), [{ num: 995, active: false }]);
+    const inspectionRenumberIndex = statusServer.events.findIndex(
+      (event) => event.type === 'renumber' && event.body.prevNum === 994 && event.body.newNum === 995,
+    );
+    const deactivateIndex = statusServer.events.findIndex(
+      (event) => event.type === 'active' && event.body.num === 995 && event.body.active === false,
+    );
+    assert.ok(inspectionRenumberIndex >= 0 && deactivateIndex > inspectionRenumberIndex);
   });
 });

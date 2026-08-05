@@ -1611,6 +1611,49 @@ describe('PATCH /api/internal/team-num', () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM current_inspection WHERE inspection = ? AND num = ? AND year = ?").get('braking', 905, year).c, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_priority WHERE num = ? AND year = ?").get(905, year).c, 1);
   });
+
+  it('applies deactivation cleanup after renumbering in the same bulk lifecycle sequence', async () => {
+    const year = new Date().getFullYear();
+    const prevNum = 906;
+    const newNum = 907;
+    db.prepare("INSERT OR REPLACE INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES (?, ?, ?, ?, ?)")
+      .run('braking', prevNum, '01077777777', Date.now(), year);
+    db.prepare("INSERT OR REPLACE INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)")
+      .run(prevNum, 'braking', '01077777777', year);
+    db.prepare("INSERT OR REPLACE INTO team_priority (num, inspection, year, priority) VALUES (?, ?, ?, ?)")
+      .run(prevNum, 'braking', year, 1);
+    db.prepare("INSERT OR REPLACE INTO team_status (year, team_num, active, revision) VALUES (?, ?, 1, 60)")
+      .run(year, prevNum);
+
+    const renumber = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: {
+        prevNum,
+        newNum,
+        year,
+        entry: { univ: 'U', team: 'T', active: false, active_revision: 61 },
+      },
+    });
+    assert.equal(renumber.status, 200);
+    assert.deepEqual(
+      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, newNum),
+      { active: 1, revision: 60 },
+      'renumber must preserve the previous status so the following event is not deduplicated',
+    );
+
+    const deactivate = await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num: newNum, year, active: false, revision: 61 },
+    });
+    assert.equal(deactivate.status, 200);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE num = ? AND year = ?").get(newNum, year).c, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM current_inspection WHERE num = ? AND year = ?").get(newNum, year).c, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_priority WHERE num = ? AND year = ?").get(newNum, year).c, 0);
+    assert.deepEqual(
+      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, newNum),
+      { active: 0, revision: 61 },
+    );
+  });
 });
 
 // ─── Year isolation ──────────────────────────────────────────────────────

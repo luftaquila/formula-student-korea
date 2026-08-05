@@ -1582,4 +1582,36 @@ describe('Entry active-state synchronization', () => {
     const restored = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/${num}`, { cookie: officialCookie })).json();
     assert.equal(restored.answers[itemId].value, 'kept');
   });
+
+  it('preserves the old revision on renumber so a following deactivation is applied', async () => {
+    const prevNum = 991;
+    const newNum = 992;
+    db.prepare("INSERT OR REPLACE INTO team_status (year, team_num, active, revision) VALUES (?, ?, 1, 30)")
+      .run(CURRENT_YEAR, prevNum);
+
+    const renumber = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: {
+        prevNum,
+        newNum,
+        year: CURRENT_YEAR,
+        entry: { univ: 'U', team: 'T', active: false, active_revision: 31 },
+      },
+    });
+    assert.equal(renumber.status, 200);
+    assert.deepEqual(
+      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, newNum),
+      { active: 1, revision: 30 },
+    );
+
+    const deactivate = await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num: newNum, year: CURRENT_YEAR, active: false, revision: 31 },
+    });
+    assert.equal(deactivate.status, 200);
+    assert.deepEqual(
+      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, newNum),
+      { active: 0, revision: 31 },
+    );
+  });
 });

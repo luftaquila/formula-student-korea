@@ -2362,13 +2362,13 @@ app.patch("/api/internal/team-num", (req, res) => {
       changed += renumberNumYearRows("cancel_penalty", prevNum, newNum, year);
       changed += renumberNumYearRows("inspection_history", prevNum, newNum, year);
       const previousStatus = db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, prevNum);
-      db.prepare("DELETE FROM team_status WHERE year = ? AND team_num IN (?, ?)").run(year, prevNum, newNum);
-      const entryStatus = req.body.entry && typeof req.body.entry.active === "boolean"
-        ? { active: req.body.entry.active ? 1 : 0, revision: Number(req.body.entry.active_revision) || 0 }
-        : previousStatus;
-      if (entryStatus) {
+      // 새 활성 상태/revision은 뒤따르는 team.active 이벤트가 적용해야 비활성화
+      // 정리 작업이 생략되지 않는다. 재전달 때 source가 없으면 destination도 보존한다.
+      if (previousStatus) {
+        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, newNum);
+        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, prevNum);
         db.prepare("INSERT INTO team_status (year, team_num, active, revision) VALUES (?, ?, ?, ?)")
-          .run(year, newNum, entryStatus.active, entryStatus.revision);
+          .run(year, newNum, previousStatus.active, previousStatus.revision);
         changed += 1;
       }
       changed += db.prepare(`

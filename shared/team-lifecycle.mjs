@@ -83,15 +83,10 @@ export function registerTeamLifecycleRoutes(app, {
         for (const table of tables) renumberTeamRows(db, table, prevNum, newNum, year);
         if (statusTable) {
           assertIdentifier(statusTable);
+          // 번호 변경은 기존 snapshot과 revision만 새 번호로 이동한다. bulk upload가
+          // 활성 상태도 바꾼 경우 뒤따르는 team.active 이벤트가 새 revision을 적용하며
+          // 비활성화 정리와 전용 SSE를 실행해야 한다.
           renumberTeamRows(db, statusTable, prevNum, newNum, year);
-          if (req.body.entry && typeof req.body.entry.active === "boolean") {
-            const revision = Number(req.body.entry.active_revision) || 0;
-            db.prepare(`
-              INSERT INTO ${statusTable} (year, team_num, active, revision) VALUES (?, ?, ?, ?)
-              ON CONFLICT(year, team_num) DO UPDATE
-              SET active = excluded.active, revision = excluded.revision
-            `).run(year, newNum, req.body.entry.active ? 1 : 0, revision);
-          }
         }
       })();
     });

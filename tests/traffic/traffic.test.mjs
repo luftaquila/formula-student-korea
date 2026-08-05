@@ -1764,4 +1764,54 @@ describe('Entry active-state synchronization', () => {
     const restored = await (await client.get(`/api/records/${encodeURIComponent(NAME)}`, { cookie: adminCookie })).json();
     assert.equal(restored[0].result, 41000);
   });
+
+  it('clears a renumbered wireless selection when the following bulk event deactivates it', async () => {
+    const prevNum = 991;
+    const newNum = 992;
+    db.prepare("INSERT OR REPLACE INTO team_status (year, team_num, active, revision) VALUES (?, ?, 1, 70)")
+      .run(YEAR, prevNum);
+    const selected = await client.post('/api/wireless/select', {
+      body: {
+        event_type: '스키드패드',
+        team: { num: prevNum, univ: 'Old Univ', team: 'Old Team' },
+        event_name: 'Renumber Then Deactivate',
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(selected.status, 200);
+
+    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
+    await sse.ready;
+    const renumber = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: {
+        year: YEAR,
+        prevNum,
+        newNum,
+        entry: { univ: 'New Univ', team: 'New Team', active: false, active_revision: 71 },
+      },
+    });
+    assert.equal(renumber.status, 200);
+    assert.deepEqual(
+      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(YEAR, newNum),
+      { active: 1, revision: 70 },
+    );
+    let state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    assert.equal(state.sessions.find((item) => item.event_type === '스키드패드').team.num, newNum);
+
+    const deactivate = await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num: newNum, year: YEAR, active: false, revision: 71 },
+    });
+    assert.equal(deactivate.status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    sse.close();
+
+    state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    assert.equal(state.sessions.find((item) => item.event_type === '스키드패드').team, null);
+    assert.deepEqual(
+      sse.events.find((event) => event.event === 'team-active')?.data,
+      { year: YEAR, team_num: newNum, active: false, revision: 71 },
+    );
+  });
 });

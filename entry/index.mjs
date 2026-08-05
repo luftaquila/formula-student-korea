@@ -289,11 +289,12 @@ function nextActiveRevision() {
    서비스 간 알림 헬퍼
    ============================================ */
 const LIFECYCLE_SERVICES = [
-  { name: "queue", env: "QUEUE_SERVER" },
-  { name: "documents", env: "DOCUMENTS_SERVER" },
-  { name: "inspection", env: "INSPECTION_SERVER" },
-  { name: "score", env: "SCORE_SERVER" },
-  { name: "traffic", env: "TRAFFIC_SERVER" },
+  { name: "queue", env: "QUEUE_SERVER", syncsActive: true },
+  // Documents는 삭제/번호 변경만 동기화한다. 비활성 팀도 계정 할당과 제출이 가능하다.
+  { name: "documents", env: "DOCUMENTS_SERVER", syncsActive: false },
+  { name: "inspection", env: "INSPECTION_SERVER", syncsActive: true },
+  { name: "score", env: "SCORE_SERVER", syncsActive: true },
+  { name: "traffic", env: "TRAFFIC_SERVER", syncsActive: true },
 ];
 
 let lifecycleOutboxTail = Promise.resolve();
@@ -305,15 +306,17 @@ const LIFECYCLE_MAX_ATTEMPTS = 24;
 const LIFECYCLE_WORKER_ID = `${process.pid}-${Math.random().toString(36).slice(2)}`;
 const LIFECYCLE_TEMP_NUM_START = 1_000_000_000;
 
-function configuredLifecycleServices() {
-  return LIFECYCLE_SERVICES.filter((svc) => process.env[svc.env]);
+function configuredLifecycleServices({ activeOnly = false } = {}) {
+  return LIFECYCLE_SERVICES.filter((svc) => (!activeOnly || svc.syncsActive) && process.env[svc.env]);
 }
 
 // 라이프사이클 동기화 대상이지만 *_SERVER env가 빠진 서비스는 outbox row 자체가
 // 생성되지 않아 재시도·dead-letter·admin recovery 대상에서 사라진다. 최소한 감사
 // 추적이 가능하도록, 동기화가 필요한 작업이 발생했을 때 누락된 서비스를 경고로 남긴다.
-function warnUnconfiguredLifecycleServices(req, context) {
-  const missing = LIFECYCLE_SERVICES.filter((svc) => !process.env[svc.env]).map((svc) => svc.name);
+function warnUnconfiguredLifecycleServices(req, context, { activeOnly = false } = {}) {
+  const missing = LIFECYCLE_SERVICES
+    .filter((svc) => (!activeOnly || svc.syncsActive) && !process.env[svc.env])
+    .map((svc) => svc.name);
   if (missing.length > 0) {
     logger.warn(req, "entry.lifecycle_unconfigured", { ...context, missing });
   }
@@ -538,7 +541,7 @@ function buildEntryRenumberedEvents(prevNum, newNum, year, entry) {
 }
 
 function buildEntryActiveEvents(num, year, active, revision) {
-  return configuredLifecycleServices().map((svc) => ({
+  return configuredLifecycleServices({ activeOnly: true }).map((svc) => ({
     eventType: "team.active",
     service: svc.name,
     method: "PATCH",
@@ -1113,7 +1116,11 @@ app.patch("/api/entries/:num/active", withYearTable, async (req, res) => {
 
   logger.log(req, active ? "entry.activate" : "entry.deactivate", { year, revision: result.result.revision }, `#${num}`);
   broadcastEntries(year, "active", { num, active, revision: result.result.revision });
-  warnUnconfiguredLifecycleServices(req, { op: active ? "activate" : "deactivate", year, nums: [num] });
+  warnUnconfiguredLifecycleServices(
+    req,
+    { op: active ? "activate" : "deactivate", year, nums: [num] },
+    { activeOnly: true },
+  );
 
   await processLifecycleOutbox({ ids: result.result.eventIds });
   if (sendLifecyclePending(

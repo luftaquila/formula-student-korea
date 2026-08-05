@@ -1300,13 +1300,13 @@ app.patch("/api/internal/team-num", (req, res) => {
       }
       const wirelessSessions = updateWirelessBindingsForRenumber(prevNum, newNum, year, entry);
       const previousStatus = db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, prevNum);
-      db.prepare("DELETE FROM team_status WHERE year = ? AND team_num IN (?, ?)").run(year, prevNum, newNum);
-      const entryStatus = typeof entry.active === "boolean"
-        ? { active: entry.active ? 1 : 0, revision: Number(entry.active_revision) || 0 }
-        : previousStatus;
-      if (entryStatus) {
+      // renumber는 기존 snapshot/revision만 이동한다. 새 활성 상태는 후속
+      // team.active가 적용해 wireless 정리와 team-active SSE를 실행한다.
+      if (previousStatus) {
+        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, newNum);
+        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, prevNum);
         db.prepare("INSERT INTO team_status (year, team_num, active, revision) VALUES (?, ?, ?, ?)")
-          .run(year, newNum, entryStatus.active, entryStatus.revision);
+          .run(year, newNum, previousStatus.active, previousStatus.revision);
       }
       return { changed, wirelessSessions };
     })();

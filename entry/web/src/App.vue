@@ -157,7 +157,7 @@ async function handleUpdate(entry) {
 async function handleActive(entry) {
   if (!entry.active) {
     const confirmed = confirm(
-      `${entry.num}번 엔트리를 비활성화하시겠습니까?\n\n다른 서비스에서 숨겨지며 현재 대기열·부스·우선순위·활성 페널티는 정리됩니다.`,
+      `${entry.num}번 엔트리를 비활성화하시겠습니까?\n\n인스펙션·검차 대기·계측·성적 관리에서 숨겨지며 현재 대기열·부스·우선순위·활성 페널티는 정리됩니다. 서류 제출에는 영향을 주지 않습니다.`,
     );
     if (!confirmed) return;
   }
