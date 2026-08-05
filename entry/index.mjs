@@ -763,6 +763,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
 
   const deletedNums = [];
   const moves = [];
+  const retainedOldRowsByNewNum = new Map();
   const matchedOldNums = new Set();
   const movedTargetNums = new Set();
   const explicitTargets = new Set(explicitRenumbers.values());
@@ -773,6 +774,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
       throw { status: 400, message: "번호 변경 매핑이 기존/신규 엔트리와 일치하지 않습니다." };
     }
     matchedOldNums.add(prevNum);
+    retainedOldRowsByNewNum.set(newNum, oldRow);
     if (prevNum !== newNum) {
       movedTargetNums.add(newNum);
       moves.push({
@@ -795,6 +797,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
     const matchedNew = oldIdentityCounts.get(identity) === 1 ? uniqueNewByIdentity.get(identity) : null;
     if (matchedNew && !explicitTargets.has(matchedNew.num)) {
       matchedOldNums.add(oldRow.num);
+      retainedOldRowsByNewNum.set(matchedNew.num, oldRow);
       if (oldRow.num !== matchedNew.num) {
         movedTargetNums.add(matchedNew.num);
         moves.push({
@@ -824,10 +827,16 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
       continue;
     }
     const newRow = newRowsByNum.get(oldRow.num);
-    if (entryIdentity(newRow) === entryIdentity(oldRow)) continue; // 동일 팀 유지 → 이벤트 없음
+    if (entryIdentity(newRow) === entryIdentity(oldRow)) {
+      // 동일 display identity가 여러 팀에 중복되어 unique identity 매칭에서 제외됐어도
+      // 같은 번호를 유지했다면 이 old row가 정확한 상태 비교 대상이다.
+      retainedOldRowsByNewNum.set(oldRow.num, oldRow);
+      continue; // 동일 팀 유지 → 이벤트 없음
+    }
     if (replacements.has(oldRow.num)) {
       deletedNums.push(oldRow.num); // 팀 교체 확정 → 기존 downstream 데이터 삭제
     } else if (retains.has(oldRow.num)) {
+      retainedOldRowsByNewNum.set(oldRow.num, oldRow);
       continue; // 명칭 정정 확정 → 기존 데이터 유지(이벤트 없음)
     } else {
       ambiguous.push({
@@ -838,7 +847,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
     }
   }
   if (ambiguous.length > 0) {
-    return { events: [], deletedNums: [], renumberCount: 0, ambiguous };
+    return { events: [], deletedNums: [], renumberCount: 0, ambiguous, retainedOldRowsByNewNum };
   }
 
   const events = [
@@ -851,7 +860,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
   for (const move of buildRenumberPlan(moves, reservedNums)) {
     events.push(...buildEntryRenumberedEvents(move.prevNum, move.newNum, year, move.entry));
   }
-  return { events, deletedNums, renumberCount: moves.length, ambiguous };
+  return { events, deletedNums, renumberCount: moves.length, ambiguous, retainedOldRowsByNewNum };
 }
 
 /* ============================================
@@ -1236,7 +1245,7 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
         ...oldRows.map((row) => row.num),
         ...newRowsByNum.keys(),
       ], year);
-      const { events, deletedNums, renumberCount, ambiguous } = buildBulkLifecycleEvents(
+      const { events, deletedNums, renumberCount, ambiguous, retainedOldRowsByNewNum } = buildBulkLifecycleEvents(
         oldRows, newRowsByNum, year, renumberValidation.renumbers, replacementsValidation.nums, retainsValidation.nums,
       );
       // 동일 번호의 팀 변경이 미선언 상태면 아무것도 쓰지 않고(읽기 전용 트랜잭션)
@@ -1249,16 +1258,8 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
       for (const row of newRowsByNum.values()) {
         query.run(row.num, row.univ, row.team, row.type, row.active ? 1 : 0, row.active_revision);
       }
-      const oldRowsByIdentity = new Map();
-      for (const oldRow of oldRows) {
-        const identity = entryIdentity(oldRow);
-        const matches = oldRowsByIdentity.get(identity) || [];
-        matches.push(oldRow);
-        oldRowsByIdentity.set(identity, matches);
-      }
       const activeEvents = [...newRowsByNum.values()].flatMap((row) => {
-        const identityMatches = oldRowsByIdentity.get(entryIdentity(row)) || [];
-        const oldRow = identityMatches.length === 1 ? identityMatches[0] : null;
+        const oldRow = retainedOldRowsByNewNum.get(row.num) || null;
         if (oldRow && !!oldRow.active === row.active) return [];
         // 신규/교체 엔트리의 활성 기본값은 true다. 기존 팀은 번호가 바뀌었더라도
         // 실제 상태 변경만 fan-out하고, 신규/교체 비활성 팀은 명시적으로 전파한다.

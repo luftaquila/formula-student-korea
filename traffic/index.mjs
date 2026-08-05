@@ -1211,7 +1211,6 @@ app.delete("/api/records/:name", (req, res) => {
 
 registerTeamStatusRoute(app, {
   db, dbRun, logger, requireInternalRequest, broadcastEvent,
-  channels: ["records"],
   onDeactivate: ({ year, num }) => updateWirelessBindingsForDelete(num, year),
   onApplied: ({ deactivation }) => {
     for (const eventType of deactivation || []) {

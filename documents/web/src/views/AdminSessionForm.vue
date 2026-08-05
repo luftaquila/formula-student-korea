@@ -30,6 +30,8 @@ const form = ref({
 
 // 수정 모드에서 제출물 보유 팀 추적 (제거 시 확인 다이얼로그용)
 const originalTeamsWithSubmissions = ref(new Set());
+// 비활성화 전에 지정되어 있던 대상은 데이터 보존을 위해 선택 해제할 수 없다.
+const inactiveOriginalTeams = ref(new Set());
 
 // 차량 유형 필터
 const typeFilters = ref({});
@@ -57,11 +59,15 @@ async function loadEntries() {
 
 watch(selectedYear, () => { loadEntries(); loadTypeColors(); });
 
-const entryList = computed(() =>
-  Object.entries(entries.value)
+const entryList = computed(() => {
+  const activeEntries = Object.entries(entries.value)
     .map(([num, e]) => ({ num: Number(num), ...e }))
-    .sort((a, b) => a.num - b.num),
-);
+  const activeNums = new Set(activeEntries.map((entry) => entry.num));
+  const preservedInactive = [...inactiveOriginalTeams.value]
+    .filter((num) => !activeNums.has(num))
+    .map((num) => ({ num, univ: "", team: "비활성 엔트리 (보존됨)", type: null, active: false }));
+  return [...activeEntries, ...preservedInactive].sort((a, b) => a.num - b.num);
+});
 
 const filteredEntryList = computed(() =>
   entryList.value.filter((e) => !e.type || typeFilters.value[e.type] !== false),
@@ -77,13 +83,16 @@ function getTypeColor(type) {
 }
 
 function toggleTeam(num) {
+  if (inactiveOriginalTeams.value.has(num)) return;
   const idx = form.value.teams.indexOf(num);
   if (idx >= 0) form.value.teams.splice(idx, 1);
   else form.value.teams.push(num);
 }
 
 function toggleAll() {
-  const visibleNums = filteredEntryList.value.map((e) => e.num);
+  const visibleNums = filteredEntryList.value
+    .filter((e) => !inactiveOriginalTeams.value.has(e.num))
+    .map((e) => e.num);
   const allSelected = visibleNums.every((n) => form.value.teams.includes(n));
   if (allSelected) {
     form.value.teams = form.value.teams.filter((n) => !visibleNums.includes(n));
@@ -95,7 +104,9 @@ function toggleAll() {
 }
 
 const allFilteredSelected = computed(() => {
-  const visibleNums = filteredEntryList.value.map((e) => e.num);
+  const visibleNums = filteredEntryList.value
+    .filter((e) => !inactiveOriginalTeams.value.has(e.num))
+    .map((e) => e.num);
   return visibleNums.length > 0 && visibleNums.every((n) => form.value.teams.includes(n));
 });
 
@@ -119,6 +130,9 @@ async function loadSession() {
     const res = await request(`/api/admin/sessions/${route.params.id}/status`);
     const data = await res.json();
     const s = data.session;
+    const targets = Array.isArray(data.targets)
+      ? data.targets
+      : data.status.map((target) => ({ team_num: target.team_num, active: true }));
     selectedYear.value = s.year;
     form.value = {
       name: s.name,
@@ -128,8 +142,11 @@ async function loadSession() {
       late_end: utcToLocal(s.late_end_at),
       max_file_size_mb: Math.round(s.max_file_size / 1024 / 1024),
       allowed_extensions: s.allowed_extensions || "",
-      teams: data.status.map((t) => t.team_num),
+      teams: targets.map((t) => t.team_num),
     };
+    inactiveOriginalTeams.value = new Set(
+      targets.filter((target) => target.active === false).map((target) => target.team_num),
+    );
     originalTeamsWithSubmissions.value = new Set(
       data.status.filter((t) => t.submission).map((t) => t.team_num),
     );
@@ -288,8 +305,8 @@ onMounted(async () => {
                 </button>
               </div>
               <div class="team-grid">
-                <label v-for="e in filteredEntryList" :key="e.num" class="team-checkbox" :class="{ checked: form.teams.includes(e.num) }">
-                  <input type="checkbox" :checked="form.teams.includes(e.num)" @change="toggleTeam(e.num)" />
+                <label v-for="e in filteredEntryList" :key="e.num" class="team-checkbox" :class="{ checked: form.teams.includes(e.num), inactive: inactiveOriginalTeams.has(e.num) }">
+                  <input type="checkbox" :checked="form.teams.includes(e.num)" :disabled="inactiveOriginalTeams.has(e.num)" @change="toggleTeam(e.num)" />
                   <span class="team-num">{{ e.num }}</span>
                   <span class="team-info">{{ e.univ }} {{ e.team }}</span>
                   <span class="badge" :class="'badge-type-' + getTypeColor(e.type)">{{ e.type }}</span>
@@ -441,6 +458,11 @@ onMounted(async () => {
 .team-checkbox.checked {
   background: rgba(94, 106, 210, 0.08);
   border-color: var(--accent-primary);
+}
+
+.team-checkbox.inactive {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .team-checkbox input {

@@ -2110,6 +2110,25 @@ describe('Entry active-state synchronization', () => {
     assert.ok(!studentView.sessions.some((session) => session.id === sessionId));
     const status = await (await client.get(`/api/admin/sessions/${sessionId}/status`, { cookie: chiefCookie })).json();
     assert.deepEqual(status.status, []);
+    assert.deepEqual(status.targets, [{ team_num: num, active: false }]);
+
+    const edit = await client.put(`/api/admin/sessions/${sessionId}`, {
+      cookie: chiefCookie,
+      body: {
+        name: 'Inactive Session Renamed',
+        notice: '',
+        start_at: status.session.start_at,
+        end_at: status.session.end_at,
+        late_end_at: '',
+        max_file_size: status.session.max_file_size,
+        allowed_extensions: '',
+        // 구버전 편집 화면은 숨겨진 비활성 대상을 payload에서 누락했다.
+        teams: [],
+      },
+    });
+    assert.equal(edit.status, 200, 'metadata edit must preserve an omitted inactive target');
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM session_team WHERE session_id = ? AND team_num = ?").get(sessionId, num).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM submission WHERE session_id = ? AND team_num = ?").get(sessionId, num).c, 1);
     assert.equal((await client.post('/api/admin/student-teams', {
       body: { email: 'hidden@test.com', team_num: num, year }, cookie: chiefCookie,
     })).status, 409);

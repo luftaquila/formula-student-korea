@@ -1004,16 +1004,25 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   if (rawLateEnd && !nLateEnd) return res.status(400).send("지연 제출 마감 날짜 형식이 올바르지 않습니다.");
   if (nEnd <= nStart) return res.status(400).send("제출 마감은 시작 이후여야 합니다.");
   if (nLateEnd && nLateEnd < nEnd) return res.status(400).send("지각 마감은 제출 마감 이후여야 합니다.");
-  if (!Array.isArray(teams) || teams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
+  if (!Array.isArray(teams)) return res.status(400).send("대상 팀을 선택하세요.");
 
   const maxSize = max_file_size ? Number(max_file_size) : 52428800;
   if (!Number.isFinite(maxSize) || maxSize <= 0 || maxSize > 524288000) return res.status(400).send("올바르지 않은 파일 크기 제한입니다 (최대 500MB).");
   const exts = allowed_extensions || "";
 
+  const oldTeams = db.prepare("SELECT team_num FROM session_team WHERE session_id = ?").all(id).map(r => r.team_num);
+  const oldTeamSet = new Set(oldTeams);
   for (const t of teams) {
     if (!Number.isInteger(t) || t < 1) return res.status(400).send("올바르지 않은 팀 번호가 포함되어 있습니다.");
-    if (!isTeamActive(db, session.year, t)) return res.status(409).send(`비활성화된 엔트리 #${t}은 대상 팀으로 지정할 수 없습니다.`);
+    if (!isTeamActive(db, session.year, t) && !oldTeamSet.has(t)) {
+      return res.status(409).send(`비활성화된 엔트리 #${t}은 대상 팀으로 지정할 수 없습니다.`);
+    }
   }
+  // 상태 조회에서 숨겨진 기존 비활성 대상이 오래된 편집 화면의 PUT에서 빠지더라도
+  // 이를 명시적 제거로 해석하지 않는다. 재활성화될 때까지 대상/제출물을 그대로 보존한다.
+  const inactiveOldTeams = oldTeams.filter((teamNum) => !isTeamActive(db, session.year, teamNum));
+  const effectiveTeams = [...new Set([...teams, ...inactiveOldTeams])];
+  if (effectiveTeams.length === 0) return res.status(400).send("대상 팀을 선택하세요.");
 
   const removedTeamNums = [];
   const txResult = dbRun(() => {
@@ -1022,9 +1031,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
         "UPDATE session SET name = ?, notice = ?, start_at = ?, end_at = ?, late_end_at = ?, max_file_size = ?, allowed_extensions = ? WHERE id = ?",
       ).run(name.trim(), notice || "", nStart, nEnd, nLateEnd, maxSize, exts, id);
 
-      // 기존 팀 목록 조회
-      const oldTeams = db.prepare("SELECT team_num FROM session_team WHERE session_id = ?").all(id).map(r => r.team_num);
-      const newTeamsSet = new Set(teams);
+      const newTeamsSet = new Set(effectiveTeams);
 
       // 제거되는 팀의 제출물 정리
       for (const oldTeam of oldTeams) {
@@ -1039,7 +1046,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
 
       db.prepare("DELETE FROM session_team WHERE session_id = ?").run(id);
       const teamStmt = db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)");
-      for (const t of teams) teamStmt.run(id, t);
+      for (const t of effectiveTeams) teamStmt.run(id, t);
     });
     return tx();
   });
@@ -1052,7 +1059,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
       rmDir(path.join(UPLOADS_DIR, String(id), String(team), String(subId)));
     }
   }
-  logger.log(req, "session.update", { year: session.year, teams: teams.length }, name.trim());
+  logger.log(req, "session.update", { year: session.year, teams: effectiveTeams.length }, name.trim());
   res.status(200).send();
 
   // 예약 알림 재등록 (날짜 변경 반영)
@@ -1086,14 +1093,14 @@ app.get("/api/admin/sessions/:id/status", (req, res) => {
   const session = db.prepare("SELECT * FROM session WHERE id = ?").get(id);
   if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
 
-  const teams = db.prepare(`
-    SELECT st.team_num FROM session_team st
-    WHERE st.session_id = ? AND NOT EXISTS (
-      SELECT 1 FROM team_status s
-      WHERE s.year = ? AND s.team_num = st.team_num AND s.active = 0
-    )
+  const targets = db.prepare(`
+    SELECT st.team_num, CASE WHEN s.active = 0 THEN 0 ELSE 1 END AS active
+    FROM session_team st
+    LEFT JOIN team_status s ON s.year = ? AND s.team_num = st.team_num
+    WHERE st.session_id = ?
     ORDER BY st.team_num
-  `).all(id, session.year);
+  `).all(session.year, id).map((target) => ({ ...target, active: target.active !== 0 }));
+  const teams = targets.filter((target) => target.active);
 
   const submissions = db.prepare(`
     SELECT id, team_num, submitted_at, total_size, is_late, submitted_by, attempt_no, rn
@@ -1148,7 +1155,7 @@ app.get("/api/admin/sessions/:id/status", (req, res) => {
     return { team_num: t.team_num, submission: sub, files, prevSubmission: prevSub, prevFiles, submissionCount };
   });
 
-  res.json({ session, status });
+  res.json({ session, status, targets });
 });
 
 // GET /api/admin/sessions/:id/archive - 세션별 전체 압축 다운로드

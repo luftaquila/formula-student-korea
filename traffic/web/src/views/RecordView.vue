@@ -26,7 +26,7 @@ const measureToggle = computed(() =>
     ? { to: "/record", label: "🔌 유선 계측" }
     : { to: "/wireless/record", label: "📡 무선 계측" },
 );
-const { recordFiles, selectedFile, lastUpdate, eventModes, recordVisibility } = useSSE();
+const { recordFiles, selectedFile, lastUpdate, lastTeamActiveUpdate, eventModes, recordVisibility } = useSSE();
 const entryStore = useEntryStore();
 
 const records = ref([]);
@@ -170,6 +170,15 @@ watch(lastUpdate, (update) => {
   } else {
     refreshRecords();
   }
+});
+
+watch(lastTeamActiveUpdate, (update) => {
+  if (!update || !selectedFile.value) return;
+  if (!isActive.value) {
+    missedUpdate.value = true;
+    return;
+  }
+  refreshRecords();
 });
 
 // 데이터만 갱신 (정렬 상태 유지, fetch 순서 역전 방지)

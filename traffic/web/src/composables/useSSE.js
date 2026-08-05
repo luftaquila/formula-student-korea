@@ -8,6 +8,7 @@ const { on, useSSE: useConnection } = createServiceSSE("/traffic");
 const recordFiles = ref([]);
 const selectedFile = ref(localStorage.getItem("traffic-last-file") || null);
 const lastUpdate = ref(null);
+const lastTeamActiveUpdate = ref(null);
 const eventModes = ref({});
 const recordVisibility = ref({});
 
@@ -180,6 +181,12 @@ on("records", (e) => {
   };
 });
 
+on("team-active", (e) => {
+  const data = parseSSEData(e);
+  if (!data) return;
+  lastTeamActiveUpdate.value = { ...data, timestamp: Date.now() };
+});
+
 on("record-visibility", (e) => {
   const data = parseSSEData(e);
   if (!data) return;
@@ -199,6 +206,7 @@ export function useSSE() {
     recordFiles,
     selectedFile,
     lastUpdate,
+    lastTeamActiveUpdate,
     eventModes,
     recordVisibility,
     connected,

@@ -981,7 +981,6 @@ app.put("/api/sheet/inspector", (req, res) => {
 
 registerTeamStatusRoute(app, {
   db, dbRun, logger, requireInternalRequest, broadcastEvent,
-  channels: ["answer", "category-result", "inspector"],
 });
 
 registerTeamLifecycleRoutes(app, {

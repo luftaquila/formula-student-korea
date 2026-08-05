@@ -21,7 +21,7 @@ import { createCalculationEvaluator, formatCalculationValue } from "../../../lib
 const { error } = useNotification();
 const router = useRouter();
 const route = useRoute();
-const { lastUpdate, lastInspectorUpdate, lastAnswerUpdate, lastMemoUpdate, reconnected } = useSSE();
+const { lastUpdate, lastInspectorUpdate, lastAnswerUpdate, lastMemoUpdate, lastTeamActiveUpdate, reconnected } = useSSE();
 
 const year = Number(route.params.year);
 const num = Number(route.params.num);
@@ -972,6 +972,12 @@ watch(lastMemoUpdate, (update) => {
     return;
   }
   applyRemoteMemo(update);
+});
+
+watch(lastTeamActiveUpdate, (update) => {
+  if (update?.year === year && update.team_num === num && update.active === false) {
+    router.replace("/");
+  }
 });
 
 // Safety net watchers for deferred recovery

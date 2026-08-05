@@ -1553,4 +1553,55 @@ describe('Entry active state', () => {
     const restored = await (await client.get('/api/entries')).json();
     assert.equal(restored['990'].active, true);
   });
+
+  it('bulk upload fans out reactivation for retained and duplicate-identity teams', async () => {
+    const year = 2088;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    statusServer.calls.length = 0;
+
+    const seeded = await client.post(`/api/entries/bulk?year=${year}`, {
+      body: {
+        data: {
+          991: { univ: 'Retained Univ', team: 'Retained Team' },
+          992: { univ: 'Duplicate Univ', team: 'Duplicate Team' },
+          993: { univ: 'Duplicate Univ', team: 'Duplicate Team' },
+        },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(seeded.status, 200);
+    assert.equal((await client.patch(`/api/entries/991/active?year=${year}`, {
+      body: { active: false }, cookie: adminCookie,
+    })).status, 200);
+    assert.equal((await client.patch(`/api/entries/992/active?year=${year}`, {
+      body: { active: false }, cookie: adminCookie,
+    })).status, 200);
+    statusServer.calls.length = 0;
+
+    const uploaded = await client.post(`/api/entries/bulk?year=${year}`, {
+      body: {
+        data: {
+          991: { univ: 'Retained Univ Renamed', team: 'Retained Team Renamed' },
+          992: { univ: 'Duplicate Univ', team: 'Duplicate Team' },
+          993: { univ: 'Duplicate Univ', team: 'Duplicate Team' },
+        },
+        retains: [991],
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(uploaded.status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    assert.deepEqual(
+      statusServer.calls.map(({ num, year: eventYear, active }) => ({ num, year: eventYear, active }))
+        .sort((a, b) => a.num - b.num),
+      [
+        { num: 991, year, active: true },
+        { num: 992, year, active: true },
+      ],
+    );
+    const rows = await (await client.get(`/api/entries?year=${year}`, { cookie: adminCookie })).json();
+    assert.equal(rows['991'].active, true);
+    assert.equal(rows['992'].active, true);
+  });
 });

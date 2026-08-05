@@ -23,7 +23,6 @@ export function registerTeamStatusRoute(app, {
   logger,
   requireInternalRequest,
   broadcastEvent,
-  channels = [],
   onDeactivate,
   onApplied,
 }) {
@@ -62,9 +61,9 @@ export function registerTeamStatusRoute(app, {
     if (result.result.applied) {
       if (onApplied) onApplied({ year, num, active, revision, deactivation: result.result.deactivation });
       logger.log(req, "team.active", { year, active, revision }, `#${num}`);
-      for (const channel of channels) {
-        broadcastEvent(channel, { year, team_num: num, active, revision });
-      }
+      // 기존 행 mutation 채널(records/answer/manual-score 등)은 각기 다른 필수
+      // payload 계약을 가진다. 상태 snapshot은 전용 이벤트로만 전달한다.
+      broadcastEvent("team-active", { year, team_num: num, active, revision });
     }
     res.status(200).send();
   });

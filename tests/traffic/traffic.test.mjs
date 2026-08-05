@@ -1721,11 +1721,22 @@ describe('Entry active-state synchronization', () => {
       cookie: adminCookie,
     });
 
+    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
+    await sse.ready;
     const deactivate = await client.patch('/api/internal/team-active', {
       headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
       body: { num: NUM, year: YEAR, active: false, revision: 30 },
     });
     assert.equal(deactivate.status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    sse.close();
+    const statusEvent = sse.events.find((event) => event.event === 'team-active');
+    assert.deepEqual(statusEvent?.data, { year: YEAR, team_num: NUM, active: false, revision: 30 });
+    assert.equal(
+      sse.events.some((event) => event.event === 'records' && 'active' in event.data),
+      false,
+      'status snapshots must not be published as records mutation payloads',
+    );
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ? AND num = ?").get(NAME, NUM).c, 1);
     assert.deepEqual(await (await client.get(`/api/records/${encodeURIComponent(NAME)}`, { cookie: adminCookie })).json(), []);
     const yearGroups = await (await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie })).json();

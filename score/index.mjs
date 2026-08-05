@@ -999,7 +999,6 @@ app.put("/api/score/endurance", (req, res) => {
 
 registerTeamStatusRoute(app, {
   db, dbRun, logger, requireInternalRequest, broadcastEvent,
-  channels: ["manual-score", "endurance"],
   onApplied: ({ year }) => {
     invalidatePublicScoreCache(year);
     invalidateInflightScore(year);
