@@ -6,7 +6,7 @@ import FileManager from "./components/FileManager.vue";
 import VehicleTypeManager from "./components/VehicleTypeManager.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
-import { fetchYears, fetchEntries, addEntry, updateEntry, deleteEntry, deleteAllEntries, uploadEntries, fetchVehicleTypes, addVehicleType, updateVehicleType, deleteVehicleType } from "./api";
+import { fetchYears, fetchEntries, addEntry, updateEntry, setEntryActive, deleteEntry, deleteAllEntries, uploadEntries, fetchVehicleTypes, addVehicleType, updateVehicleType, deleteVehicleType } from "./api";
 import { useNotification } from "@shared/useNotification.js";
 
 const { success, error } = useNotification();
@@ -18,6 +18,7 @@ const searchQuery = ref("");
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
 const vehicleTypes = ref([]);
+const activeUpdating = ref(new Set());
 
 const entriesArray = computed(() => {
   return Object.entries(entries.value)
@@ -38,10 +39,12 @@ const filteredEntries = computed(() => {
 });
 
 const totalCount = computed(() => entriesArray.value.length);
+const activeCount = computed(() => entriesArray.value.filter((entry) => entry.active !== false).length);
+const inactiveCount = computed(() => totalCount.value - activeCount.value);
 
 const typeCounts = computed(() => {
   const counts = {};
-  for (const e of entriesArray.value) {
+  for (const e of entriesArray.value.filter((entry) => entry.active !== false)) {
     const t = e.type || null;
     if (t) counts[t] = (counts[t] || 0) + 1;
   }
@@ -75,8 +78,10 @@ async function loadEntries() {
 async function handleAdd(entry) {
   addingEntry.value = true;
   try {
-    await addEntry(entry, selectedYear.value);
-    success(`${entry.num}번 엔트리를 추가했습니다.`);
+    const result = await addEntry(entry, selectedYear.value);
+    success(result.pending
+      ? `${entry.num}번 엔트리를 추가했습니다. (서비스 동기화 진행 중)`
+      : `${entry.num}번 엔트리를 추가했습니다.`);
     await loadEntries();
   } catch (e) {
     error(e.message);
@@ -148,6 +153,35 @@ async function handleUpdate(entry) {
       return handleUpdate({ ...entry, intent });
     }
     error(e.message);
+  }
+}
+
+async function handleActive(entry) {
+  if (!entry.active) {
+    const confirmed = confirm(
+      `${entry.num}번 엔트리를 비활성화하시겠습니까?\n\n인스펙션·검차 대기·계측·성적 관리에서 숨겨지며 현재 대기열·부스·우선순위·활성 페널티는 정리됩니다. 서류 제출에는 영향을 주지 않습니다.`,
+    );
+    if (!confirmed) return;
+  }
+  activeUpdating.value = new Set(activeUpdating.value).add(entry.num);
+  try {
+    const result = await setEntryActive(entry.num, entry.active, selectedYear.value);
+    success(result?.pending
+      ? `${entry.num}번 엔트리 상태를 변경했습니다. (서비스 동기화 진행 중)`
+      : `${entry.num}번 엔트리를 ${entry.active ? "활성화" : "비활성화"}했습니다.`);
+    const current = entries.value[entry.num];
+    if (current) {
+      entries.value = {
+        ...entries.value,
+        [entry.num]: { ...current, active: entry.active },
+      };
+    }
+  } catch (e) {
+    error(e.message);
+  } finally {
+    const next = new Set(activeUpdating.value);
+    next.delete(entry.num);
+    activeUpdating.value = next;
   }
 }
 
@@ -269,7 +303,8 @@ onMounted(async () => {
               <select v-model.number="selectedYear" class="year-select">
                 <option v-for="y in availableYears" :key="y" :value="y">{{ y }}년</option>
               </select>
-              <span class="entry-count">{{ totalCount }}대</span>
+              <span class="entry-count" title="활성 엔트리">{{ activeCount }}대</span>
+              <span v-if="inactiveCount" class="inactive-count">비활성 {{ inactiveCount }}대</span>
               <span v-for="tc in typeCounts" :key="tc.name" class="type-count desktop-only" :class="'badge-type-' + tc.color">{{ tc.name }} {{ tc.count }}대</span>
             </div>
             <div v-if="typeCounts.length" class="type-counts-row mobile-only">
@@ -290,7 +325,7 @@ onMounted(async () => {
           <p>데이터를 불러오는 중...</p>
         </div>
 
-        <EntryTable v-else :entries="filteredEntries" :vehicle-types="vehicleTypes" @update="handleUpdate" @delete="handleDelete" />
+        <EntryTable v-else :entries="filteredEntries" :vehicle-types="vehicleTypes" :active-updating="activeUpdating" @update="handleUpdate" @active="handleActive" @delete="handleDelete" />
       </section>
     </main>
 
@@ -394,6 +429,17 @@ onMounted(async () => {
 .entry-count {
   background: var(--accent-primary);
   color: white;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.625rem;
+  border-radius: 12px;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.inactive-count {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
   font-size: 0.75rem;
   font-weight: 600;
   padding: 0.25rem 0.625rem;

@@ -6,6 +6,7 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInt
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
+import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
 import {
   parseCalculationConfig,
   serializeCalculationConfig,
@@ -170,6 +171,7 @@ db.transaction(() => {
   );`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_si_category ON sheet_inspector(category_id);`);
 })();
+ensureTeamStatusTable(db);
 
 function templateItemsForYear(year) {
   return db.prepare(`
@@ -600,11 +602,19 @@ app.get("/api/sheet/summary", (req, res) => {
     ).all(year).map(c => ({ ...c, excluded_types: parseExcludedTypes(c.excluded_types) }));
 
     const inspectors = db.prepare(
-      "SELECT team_num, category_id, inspector FROM sheet_inspector WHERE year = ?"
+      `SELECT i.team_num, i.category_id, i.inspector FROM sheet_inspector i
+       WHERE i.year = ? AND NOT EXISTS (
+         SELECT 1 FROM team_status s
+         WHERE s.year = i.year AND s.team_num = i.team_num AND s.active = 0
+       )`
     ).all(year);
 
     const results = db.prepare(
-      "SELECT team_num, category_id, result FROM sheet_category_result WHERE year = ?"
+      `SELECT r.team_num, r.category_id, r.result FROM sheet_category_result r
+       WHERE r.year = ? AND NOT EXISTS (
+         SELECT 1 FROM team_status s
+         WHERE s.year = r.year AND s.team_num = r.team_num AND s.active = 0
+       )`
     ).all(year);
 
     const teams = {};
@@ -637,7 +647,12 @@ app.get("/api/sheet/bulk-answers", (req, res) => {
   const result = dbRun(() => {
     const placeholders = itemIds.map(() => "?").join(",");
     const rows = db.prepare(
-      `SELECT team_num, item_id, value FROM sheet_answer WHERE year = ? AND item_id IN (${placeholders}) AND value != ''`
+      `SELECT a.team_num, a.item_id, a.value FROM sheet_answer a
+       WHERE a.year = ? AND a.item_id IN (${placeholders}) AND a.value != ''
+         AND NOT EXISTS (
+           SELECT 1 FROM team_status s
+           WHERE s.year = a.year AND s.team_num = a.team_num AND s.active = 0
+         )`
     ).all(year, ...itemIds);
 
     const teams = {};
@@ -656,6 +671,10 @@ app.get("/api/sheet/bulk-answers", (req, res) => {
 app.get("/api/sheet/data/:year/:num", (req, res) => {
   const year = Number(req.params.year);
   const num = Number(req.params.num);
+  if (!Number.isInteger(year) || !Number.isInteger(num) || num < 1) {
+    return res.status(400).send("올바르지 않은 연도 또는 팀 번호입니다.");
+  }
+  if (!isTeamActive(db, year, num)) return res.status(404).send("엔트리를 찾을 수 없습니다.");
 
   const result = dbRun(() => {
     const answers = db.prepare(`
@@ -709,6 +728,7 @@ app.put("/api/sheet/answer", (req, res) => {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  if (!isTeamActive(db, year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
   const templateItem = db.prepare("SELECT id, name, answer_type, calculation FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
   if (!templateItem) return res.status(400).send("해당 연도에 존재하지 않는 항목입니다.");
@@ -811,6 +831,7 @@ app.put("/api/sheet/memo", (req, res) => {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  if (!isTeamActive(db, year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
   const templateItem = db.prepare("SELECT id, name FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
   if (!templateItem) return res.status(400).send("해당 연도에 존재하지 않는 항목입니다.");
@@ -899,6 +920,7 @@ app.put("/api/sheet/category-result", (req, res) => {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  if (!isTeamActive(db, year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
   if (catResult !== undefined && catResult !== null && catResult !== "" && !["PASS", "FAIL"].includes(catResult)) {
     return res.status(400).send("결과는 PASS, FAIL 또는 비움이어야 합니다.");
   }
@@ -931,6 +953,7 @@ app.put("/api/sheet/inspector", (req, res) => {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  if (!isTeamActive(db, year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
   const templateCat = db.prepare("SELECT id, name FROM sheet_template WHERE id = ? AND year = ? AND level = 'category'").get(category_id, year);
   if (!templateCat) return res.status(400).send("해당 연도에 존재하지 않는 카테고리입니다.");
@@ -956,10 +979,15 @@ app.put("/api/sheet/inspector", (req, res) => {
    Internal API: 엔트리 라이프사이클 연동
    ============================================ */
 
+registerTeamStatusRoute(app, {
+  db, dbRun, logger, requireInternalRequest, broadcastEvent,
+});
+
 registerTeamLifecycleRoutes(app, {
   db, dbRun, logger, requireInternalRequest, broadcastEvent,
   tables: ["sheet_answer", "sheet_category_result", "sheet_inspector"],
   channels: ["answer", "category-result", "inspector"],
+  statusTable: "team_status",
 });
 
 /* ============================================

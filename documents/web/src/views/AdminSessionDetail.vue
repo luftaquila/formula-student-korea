@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useNotification } from "@shared/useNotification.js";
-import { request, fetchEntries, fetchVehicleTypes } from "../api.js";
+import { request, fetchAdminEntries, fetchVehicleTypes } from "../api.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { formatDate, formatSize } from "@shared/format-date.js";
@@ -112,7 +112,7 @@ async function loadStatus() {
     session.value = data.session;
     status.value = data.status;
     const [entryData, studRes] = await Promise.all([
-      fetchEntries(session.value.year),
+      fetchAdminEntries(session.value.year),
       request("/api/admin/students"),
     ]);
     entries.value = entryData;

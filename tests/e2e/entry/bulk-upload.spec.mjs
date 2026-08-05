@@ -66,8 +66,8 @@ test.describe("Entry bulk upload and download", () => {
 
     // Verify the downloaded JSON contains all 5 seeded entries
     expect(Object.keys(content)).toHaveLength(5);
-    expect(content["1"]).toEqual({ univ: "서울대학교", team: "SNU Racing", type: "EV" });
-    expect(content["2"]).toEqual({ univ: "한양대학교", team: "ACES", type: "EV" });
+    expect(content["1"]).toEqual({ univ: "서울대학교", team: "SNU Racing", type: "EV", active: true });
+    expect(content["2"]).toEqual({ univ: "한양대학교", team: "ACES", type: "EV", active: true });
 
     // Clean up temp file
     fs.unlinkSync(tmpPath);

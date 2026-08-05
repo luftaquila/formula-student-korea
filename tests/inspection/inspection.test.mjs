@@ -1539,3 +1539,79 @@ describe('Internal entry lifecycle sync', () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_inspector WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 0);
   });
 });
+
+describe('Entry active-state synchronization', () => {
+  it('preserves sheet data while hiding and blocking an inactive team', async () => {
+    const num = 990;
+    const categoryId = db.prepare(
+      "INSERT INTO sheet_template (year, level, sort_order, name) VALUES (?, 'category', 0, ?)"
+    ).run(CURRENT_YEAR, 'InactiveCat').lastInsertRowid;
+    const itemId = db.prepare(
+      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type) VALUES (?, 'item', ?, 0, ?, 'text')"
+    ).run(CURRENT_YEAR, categoryId, 'InactiveItem').lastInsertRowid;
+    db.prepare("INSERT INTO sheet_answer (year, team_num, item_id, value, memo) VALUES (?, ?, ?, 'kept', 'memo')")
+      .run(CURRENT_YEAR, num, itemId);
+    db.prepare("INSERT INTO sheet_category_result (year, team_num, category_id, result) VALUES (?, ?, ?, 'PASS')")
+      .run(CURRENT_YEAR, num, categoryId);
+
+    const deactivate = await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year: CURRENT_YEAR, active: false, revision: 20 },
+    });
+    assert.equal(deactivate.status, 200);
+    assert.equal(db.prepare("SELECT value FROM sheet_answer WHERE year = ? AND team_num = ? AND item_id = ?").get(CURRENT_YEAR, num, itemId).value, 'kept');
+    assert.equal((await client.get(`/api/sheet/data/${CURRENT_YEAR}/${num}`, { cookie: officialCookie })).status, 404);
+    const summary = await (await client.get(`/api/sheet/summary?year=${CURRENT_YEAR}`, { cookie: officialCookie })).json();
+    assert.equal(summary.teams[num], undefined);
+    const bulk = await (await client.get(`/api/sheet/bulk-answers?year=${CURRENT_YEAR}&item_ids=${itemId}`, { cookie: officialCookie })).json();
+    assert.equal(bulk[num], undefined);
+    assert.equal((await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: num, item_id: Number(itemId), value: 'blocked' },
+      cookie: officialCookie,
+    })).status, 409);
+
+    await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year: CURRENT_YEAR, active: true, revision: 19 },
+    });
+    assert.equal((await client.get(`/api/sheet/data/${CURRENT_YEAR}/${num}`, { cookie: officialCookie })).status, 404, 'stale activation ignored');
+    await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year: CURRENT_YEAR, active: true, revision: 21 },
+    });
+    const restored = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/${num}`, { cookie: officialCookie })).json();
+    assert.equal(restored.answers[itemId].value, 'kept');
+  });
+
+  it('preserves the old revision on renumber so a following deactivation is applied', async () => {
+    const prevNum = 991;
+    const newNum = 992;
+    db.prepare("INSERT OR REPLACE INTO team_status (year, team_num, active, revision) VALUES (?, ?, 1, 30)")
+      .run(CURRENT_YEAR, prevNum);
+
+    const renumber = await client.patch('/api/internal/team-num', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: {
+        prevNum,
+        newNum,
+        year: CURRENT_YEAR,
+        entry: { univ: 'U', team: 'T', active: false, active_revision: 31 },
+      },
+    });
+    assert.equal(renumber.status, 200);
+    assert.deepEqual(
+      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, newNum),
+      { active: 1, revision: 30 },
+    );
+
+    const deactivate = await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num: newNum, year: CURRENT_YEAR, active: false, revision: 31 },
+    });
+    assert.equal(deactivate.status, 200);
+    assert.deepEqual(
+      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, newNum),
+      { active: 0, revision: 31 },
+    );
+  });
+});

@@ -2076,3 +2076,94 @@ describe('DELETE /api/internal/team/:num', () => {
     assert.ok(statusData.status.some(s => s.team_num === 1), 'team 1 should remain in session');
   });
 });
+
+describe('Inactive entries remain fully available in Documents', () => {
+  const year = 2090;
+  const num = 991;
+
+  it('lists, assigns, targets, and accepts submissions for an inactive entry', async () => {
+    const entryRequests = [];
+    const entryApp = express();
+    entryApp.get('/api/entries', (req, res) => {
+      entryRequests.push(req.query);
+      res.json({
+        [num]: { univ: 'Inactive Univ', team: 'Inactive Team', type: null, active: false },
+        [num + 1]: { univ: 'Other Inactive Univ', team: 'Other Inactive Team', type: null, active: false },
+      });
+    });
+    const entryServer = await startServer(entryApp);
+    process.env.ENTRY_SERVER = entryServer.baseUrl;
+
+    try {
+      const legacyEvent = await client.patch('/api/internal/team-active', {
+        headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+        body: { num, year, active: false, revision: 1 },
+      });
+      assert.equal(legacyEvent.status, 200, 'legacy active-state events are accepted as no-ops');
+
+      const unmappedEntriesRes = await client.get(`/api/entries?year=${year}`, { cookie: student2Cookie });
+      assert.equal(unmappedEntriesRes.status, 200);
+      assert.deepEqual(await unmappedEntriesRes.json(), {}, 'an unmapped student cannot enumerate inactive entries');
+      assert.equal(entryRequests.length, 0, 'an unmapped lookup does not need an internal Entry request');
+
+      assert.equal(
+        (await client.get(`/api/admin/entries?year=${year}`, { cookie: student2Cookie })).status,
+        403,
+        'the full inactive list requires chief access',
+      );
+
+      const adminEntriesRes = await client.get(`/api/admin/entries?year=${year}`, { cookie: chiefCookie });
+      assert.equal(adminEntriesRes.status, 200);
+      const adminEntries = await adminEntriesRes.json();
+      assert.equal(adminEntries[num].active, false);
+      assert.equal(adminEntries[num + 1].active, false);
+      assert.equal(entryRequests[0].includeInactive, 'true');
+
+      const mapping = await client.post('/api/admin/student-teams', {
+        body: { email: 'student2@test.com', team_num: num, year }, cookie: chiefCookie,
+      });
+      assert.equal(mapping.status, 201, 'inactive entries can be assigned to student accounts');
+
+      const entriesRes = await client.get(`/api/entries?year=${year}`, { cookie: student2Cookie });
+      assert.equal(entriesRes.status, 200);
+      const entries = await entriesRes.json();
+      assert.equal(entries[num].active, false);
+      assert.equal(entries[num + 1], undefined, 'a student sees only the mapped inactive entry');
+      assert.equal(entryRequests[1].includeInactive, 'true');
+
+      const session = await client.post('/api/admin/sessions', {
+        cookie: chiefCookie,
+        body: {
+          name: 'Inactive Entry Submission',
+          notice: '',
+          start_at: '2020-01-01T00:00:00.000Z',
+          end_at: '2099-01-01T00:00:00.000Z',
+          late_end_at: '',
+          max_file_size: 1000,
+          allowed_extensions: '',
+          year,
+          teams: [num],
+        },
+      });
+      assert.equal(session.status, 201, 'inactive entries can be selected as session targets');
+      const sessionId = (await session.json()).id;
+
+      const studentView = await (await client.get('/api/sessions', { cookie: student2Cookie })).json();
+      assert.equal(studentView.team.team_num, num);
+      assert.ok(studentView.sessions.some((item) => item.id === sessionId));
+
+      const upload = await uploadFile(sessionId, student2Cookie, [
+        { name: 'inactive.txt', type: 'text/plain', content: Buffer.from('allowed') },
+      ]);
+      assert.equal(upload.status, 200, 'inactive entries can submit documents');
+
+      const status = await (await client.get(`/api/admin/sessions/${sessionId}/status`, { cookie: chiefCookie })).json();
+      assert.equal(status.status[0].team_num, num);
+      assert.ok(status.status[0].submission);
+      assert.equal(status.status[0].files[0].original_name, 'inactive.txt');
+    } finally {
+      delete process.env.ENTRY_SERVER;
+      await stopServer(entryServer.server);
+    }
+  });
+});

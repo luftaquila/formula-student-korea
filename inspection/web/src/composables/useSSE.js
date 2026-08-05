@@ -8,6 +8,7 @@ const lastUpdate = ref(null);
 const lastInspectorUpdate = ref(null);
 const lastAnswerUpdate = ref(null);
 const lastMemoUpdate = ref(null);
+const lastTeamActiveUpdate = ref(null);
 
 on("category-result", (e) => {
   const data = parseSSEData(e);
@@ -33,6 +34,12 @@ on("memo", (e) => {
   lastMemoUpdate.value = { ...data, timestamp: Date.now() };
 });
 
+on("team-active", (e) => {
+  const data = parseSSEData(e);
+  if (!data) return;
+  lastTeamActiveUpdate.value = { ...data, timestamp: Date.now() };
+});
+
 export function useSSE() {
   useConnection();
 
@@ -41,6 +48,7 @@ export function useSSE() {
     lastInspectorUpdate,
     lastAnswerUpdate,
     lastMemoUpdate,
+    lastTeamActiveUpdate,
     reconnected,
   };
 }

@@ -215,6 +215,28 @@ app.get("/api/logs", logger.queryHandler);
 
 app.get("/api/health", (req, res) => res.send("ok"));
 
+// Documents에서는 엔트리 활성 상태와 무관하게 계정 할당과 제출을 허용한다.
+// 학생에게는 자신의 매핑 팀만, chief에게는 관리에 필요한 전체 목록만 반환한다.
+// 두 경로 모두 브라우저가 Entry의 관리자 전용 includeInactive API를 직접 호출하지
+// 않도록 Documents가 내부 서비스 자격으로 조회한다.
+app.get("/api/entries", async (req, res) => {
+  const yearCheck = validateYear(req.query.year || new Date().getFullYear());
+  if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
+  const mapping = db.prepare("SELECT team_num FROM student_team WHERE email = ? AND year = ?")
+    .get(req.user.email, yearCheck.value);
+  if (!mapping) return res.json({});
+
+  const entries = await fetchEntries(yearCheck.value, req, "entry.student_lookup");
+  const entry = entries[mapping.team_num];
+  res.json(entry ? { [mapping.team_num]: entry } : {});
+});
+
+app.get("/api/admin/entries", async (req, res) => {
+  const yearCheck = validateYear(req.query.year || new Date().getFullYear());
+  if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
+  res.json(await fetchEntries(yearCheck.value, req, "entry.admin_list"));
+});
+
 const dbRun = createDbRun();
 
 /* ============================================
@@ -532,7 +554,8 @@ function isInitialDownload(req) {
 
 // GET /api/sessions - 내 팀에 열린 세션 목록
 app.get("/api/sessions", (req, res) => {
-  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
+  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1")
+    .get(req.user.email);
   if (!team) return res.json({ team: null, sessions: [] });
 
   const rows = db.prepare(`
@@ -993,6 +1016,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   if (!Number.isFinite(maxSize) || maxSize <= 0 || maxSize > 524288000) return res.status(400).send("올바르지 않은 파일 크기 제한입니다 (최대 500MB).");
   const exts = allowed_extensions || "";
 
+  const oldTeams = db.prepare("SELECT team_num FROM session_team WHERE session_id = ?").all(id).map(r => r.team_num);
   for (const t of teams) {
     if (!Number.isInteger(t) || t < 1) return res.status(400).send("올바르지 않은 팀 번호가 포함되어 있습니다.");
   }
@@ -1004,8 +1028,6 @@ app.put("/api/admin/sessions/:id", (req, res) => {
         "UPDATE session SET name = ?, notice = ?, start_at = ?, end_at = ?, late_end_at = ?, max_file_size = ?, allowed_extensions = ? WHERE id = ?",
       ).run(name.trim(), notice || "", nStart, nEnd, nLateEnd, maxSize, exts, id);
 
-      // 기존 팀 목록 조회
-      const oldTeams = db.prepare("SELECT team_num FROM session_team WHERE session_id = ?").all(id).map(r => r.team_num);
       const newTeamsSet = new Set(teams);
 
       // 제거되는 팀의 제출물 정리
@@ -1136,7 +1158,9 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
     SELECT sub.id, sub.team_num FROM submission sub
     INNER JOIN (
       SELECT session_id, team_num, MAX(id) AS max_id
-      FROM submission WHERE session_id = ? GROUP BY session_id, team_num
+      FROM submission
+      WHERE session_id = ?
+      GROUP BY session_id, team_num
     ) latest ON sub.id = latest.max_id
   `).all(id);
 
@@ -1186,6 +1210,8 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
 app.get("/api/admin/submissions/:subId/files/:fileId", async (req, res) => {
   const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
   if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
+  const session = db.prepare("SELECT name, year FROM session WHERE id = ?").get(sub.session_id);
+  if (!session) return res.status(404).send("제출을 찾을 수 없습니다.");
 
   const file = db.prepare("SELECT * FROM submission_file WHERE id = ? AND submission_id = ?").get(Number(req.params.fileId), sub.id);
   if (!file) return res.status(404).send("파일을 찾을 수 없습니다.");
@@ -1194,7 +1220,6 @@ app.get("/api/admin/submissions/:subId/files/:fileId", async (req, res) => {
   if (!path.resolve(filePath).startsWith(path.resolve(UPLOADS_DIR) + path.sep)) return res.status(400).send("잘못된 파일 경로입니다.");
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
-  const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
   if (isInitialDownload(req)) logger.log(req, "file.admin_download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
   await setFileResponseHeaders(res, file, filePath);
   res.sendFile(filePath);
@@ -1205,10 +1230,12 @@ app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
   const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
   if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
 
+  const session = db.prepare("SELECT name, year FROM session WHERE id = ?").get(sub.session_id);
+  if (!session) return res.status(404).send("제출을 찾을 수 없습니다.");
+
   const files = db.prepare("SELECT * FROM submission_file WHERE submission_id = ?").all(sub.id);
   if (files.length === 0) return res.status(404).send("다운로드할 파일이 없습니다.");
 
-  const session = db.prepare("SELECT name, year FROM session WHERE id = ?").get(sub.session_id);
   const sessionName = sanitize(session?.name || String(sub.session_id));
 
   // entry 서비스에서 팀 정보 조회
@@ -1425,6 +1452,13 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
 /* ============================================
    Internal API (서비스 간 통신)
    ============================================ */
+
+// 이전 배포에서 이미 생성된 team.active outbox 이벤트를 안전하게 소진한다.
+// Documents는 활성 상태를 저장하거나 제출 기능에 반영하지 않는다.
+app.patch("/api/internal/team-active", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+  res.status(200).send();
+});
 
 // PATCH /api/internal/team-num - 엔트리 번호 변경 시 team_num 일괄 갱신
 app.patch("/api/internal/team-num", (req, res) => {
@@ -1652,7 +1686,7 @@ async function fetchEntries(year, req = null, action = "entry.fetch") {
   const entryServer = process.env.ENTRY_SERVER;
   if (!entryServer) return {};
   try {
-    const res = await fetch(`${entryServer}/api/entries?year=${year}`, {
+    const res = await fetch(`${entryServer}/api/entries?year=${year}&includeInactive=true`, {
       headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
       signal: AbortSignal.timeout(5000),
     });

@@ -6,6 +6,7 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInt
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
+import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
 import { calculateEnergyScores } from "./lib/energy-score.mjs";
 
 const PORT = 9600;
@@ -87,6 +88,7 @@ db.transaction(() => {
   addColumn(db, "score_endurance", "electric_net_energy REAL");
   addColumn(db, "score_endurance", "energy_dsq INTEGER NOT NULL DEFAULT 0");
 })();
+ensureTeamStatusTable(db);
 
 const ENDURANCE_SQL = {
   status: "UPDATE score_endurance SET status = ? WHERE year = ? AND team_num = ?",
@@ -565,6 +567,11 @@ async function computeScore(year) {
       throw new Error("엔트리 정보를 가져올 수 없습니다.");
     }
     const entries = await entryRes.json();
+    // The local lifecycle snapshot is an additional fail-closed guard for a rolling deploy or
+    // an upstream cache that briefly still contains a just-deactivated entry.
+    for (const num of Object.keys(entries)) {
+      if (!isTeamActive(db, year, Number(num))) delete entries[num];
+    }
 
     // 2. Inspection 서비스에서 카테고리별 PASS/FAIL 요약 fetch
     const [inspectionRes, templateRes] = await Promise.all([
@@ -656,6 +663,7 @@ async function computeScore(year) {
 
     for (const { tableName, records } of allTableRecords) {
       for (const rec of records) {
+        if (!entries[rec.num]) continue;
         const eventType = rec.type; // 경기 종목: 가속, 스키드패드, 오토크로스 등
         if (!eventType) continue;
 
@@ -716,7 +724,13 @@ async function computeScore(year) {
 
     // 6b. 내구 기록: score_endurance 테이블에서 조회
     const enduranceRecords = {};
-    const enduranceRows = db.prepare("SELECT * FROM score_endurance WHERE year = ?").all(year);
+    const enduranceRows = db.prepare(`
+      SELECT e.* FROM score_endurance e
+      WHERE e.year = ? AND NOT EXISTS (
+        SELECT 1 FROM team_status s
+        WHERE s.year = e.year AND s.team_num = e.team_num AND s.active = 0
+      )
+    `).all(year).filter((row) => entries[row.team_num]);
     const endurancePen = penalties["내구"] || { cone_penalty: 0, oc_penalty: 0, start_delay: 0 };
     for (const row of enduranceRows) {
       if (row.status === "DNS") continue; // DNS → 기록 없음
@@ -738,7 +752,13 @@ async function computeScore(year) {
     events.push({ type: "내구", records: enduranceRecords });
 
     // 7. 수동 입력 점수 조회. 레거시 energy 행은 보존하되 자동계산 결과와 섞지 않는다.
-    const manualRows = db.prepare("SELECT team_num, score_type, value FROM score_manual WHERE year = ?").all(year);
+    const manualRows = db.prepare(`
+      SELECT m.team_num, m.score_type, m.value FROM score_manual m
+      WHERE m.year = ? AND NOT EXISTS (
+        SELECT 1 FROM team_status s
+        WHERE s.year = m.year AND s.team_num = m.team_num AND s.active = 0
+      )
+    `).all(year).filter((row) => entries[row.team_num]);
     const manualScores = {};
     for (const row of manualRows) {
       if (row.score_type === "energy") continue;
@@ -775,6 +795,7 @@ app.put("/api/score/manual", (req, res) => {
   const numTeamNum = Number(team_num);
   if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
   if (!Number.isInteger(numTeamNum) || numTeamNum < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  if (!isTeamActive(db, numYear, numTeamNum)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
 
   const keyErr = validateKey(score_type, "score_type");
   if (keyErr) return res.status(400).send(keyErr);
@@ -897,7 +918,13 @@ app.get("/api/score/endurance", (req, res) => {
   const year = Number(req.query.year);
   if (!year) return res.status(400).send("연도를 지정해야 합니다.");
 
-  const rows = db.prepare("SELECT * FROM score_endurance WHERE year = ?").all(year);
+  const rows = db.prepare(`
+    SELECT e.* FROM score_endurance e
+    WHERE e.year = ? AND NOT EXISTS (
+      SELECT 1 FROM team_status s
+      WHERE s.year = e.year AND s.team_num = e.team_num AND s.active = 0
+    )
+  `).all(year);
   const result = {};
   for (const row of rows) {
     const {
@@ -922,6 +949,7 @@ app.put("/api/score/endurance", (req, res) => {
   const numTeamNum = Number(team_num);
   if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
   if (!Number.isInteger(numTeamNum) || numTeamNum < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
+  if (!isTeamActive(db, numYear, numTeamNum)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
 
   const allowedFields = [
     "status", "driver1_time", "driver1_start_delay", "driver1_cones", "driver1_oc", "driver1_penalty",
@@ -969,10 +997,19 @@ app.put("/api/score/endurance", (req, res) => {
    Internal API: 엔트리 라이프사이클 연동
    ============================================ */
 
+registerTeamStatusRoute(app, {
+  db, dbRun, logger, requireInternalRequest, broadcastEvent,
+  onApplied: ({ year }) => {
+    invalidatePublicScoreCache(year);
+    invalidateInflightScore(year);
+  },
+});
+
 registerTeamLifecycleRoutes(app, {
   db, dbRun, logger, requireInternalRequest, broadcastEvent,
   tables: ["score_manual", "score_endurance"],
   channels: ["manual-score", "endurance"],
+  statusTable: "team_status",
 });
 
 /* ============================================

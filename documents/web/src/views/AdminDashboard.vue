@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { useNotification } from "@shared/useNotification.js";
-import { request, fetchEntryYears, fetchEntries, fetchVehicleTypes } from "../api.js";
+import { request, fetchEntryYears, fetchAdminEntries, fetchVehicleTypes } from "../api.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
@@ -72,7 +72,7 @@ async function loadData() {
   try {
     const [sessRes, entryData, teamRes, studRes] = await Promise.all([
       request(`/api/admin/sessions?year=${selectedYear.value}`),
-      fetchEntries(selectedYear.value),
+      fetchAdminEntries(selectedYear.value),
       request(`/api/admin/student-teams?year=${selectedYear.value}`),
       request("/api/admin/students"),
     ]);

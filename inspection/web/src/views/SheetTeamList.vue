@@ -17,7 +17,7 @@ const { stickyCols, lineX, startDrag } = useStickyColumns({
 
 const { error } = useNotification();
 const router = useRouter();
-const { lastUpdate, lastInspectorUpdate } = useSSE();
+const { lastUpdate, lastInspectorUpdate, lastTeamActiveUpdate } = useSSE();
 
 const entries = ref({});
 const summary = ref({ categories: [], teams: {} });
@@ -27,6 +27,7 @@ const typeColorMap = ref({});
 const loading = ref(true);
 const searchQuery = ref("");
 let lifecycleRefreshTimer = null;
+let dataLoadSeq = 0;
 
 const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
 
@@ -58,16 +59,19 @@ function getTypeColor(type) {
 }
 
 async function loadData() {
+  const seq = ++dataLoadSeq;
   try {
     const [e, s, vtList] = await Promise.all([
       fetchEntries(selectedYear.value),
       fetchSheetSummary(selectedYear.value),
       fetchVehicleTypes(selectedYear.value).catch(() => []),
     ]);
+    if (seq !== dataLoadSeq) return;
     entries.value = e;
     summary.value = s;
     typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
   } catch (e) {
+    if (seq !== dataLoadSeq) return;
     error("데이터를 가져올 수 없습니다.");
   }
 }
@@ -152,6 +156,10 @@ watch(lastInspectorUpdate, (update) => {
     summary.value.teams[team_num] = { inspectors: {}, results: {} };
   }
   summary.value.teams[team_num].inspectors[category_id] = inspector;
+});
+
+watch(lastTeamActiveUpdate, (update) => {
+  if (update?.year === selectedYear.value) scheduleLifecycleRefresh();
 });
 </script>
 

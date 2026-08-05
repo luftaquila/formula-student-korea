@@ -91,12 +91,13 @@
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 2.1 | 연도 목록 조회 | public | `GET /api/years` | entry_YYYY 테이블 스캔, 내림차순 |
-| 2.2 | 엔트리 목록 조회 | public | `GET /api/entries?year=` | JSON 다운로드 (`?download` 파라미터) |
+| 2.2 | 엔트리 목록 조회 | public/admin | `GET /api/entries?year=` | 기본은 활성 엔트리만 반환. 관리 화면은 `includeInactive=true`(admin)로 전체 조회, JSON 다운로드 지원 |
 | 2.3 | 엔트리 추가 | admin | `POST /api/entries?year=` | `{ num, univ, team, type? }`, type은 해당 연도 vehicle_types에 존재해야 함 |
 | 2.4 | 엔트리 수정 | admin | `PATCH /api/entries/:num?year=` | 번호 변경 시 리넘버링. durable lifecycle_outbox로 5개 서비스(queue/documents/inspection/score/traffic)에 재시도 팬아웃 — 동기화 대기분 있으면 202 `pending_lifecycle`. 번호 유지 + 팀명 변경이 모호하면 409 `{ ambiguous }` → `intent: retain|replacement`로 재요청 |
 | 2.5 | 엔트리 삭제 | admin | `DELETE /api/entries/:num?year=` | 삭제 이벤트를 durable outbox로 5개 서비스에 재시도 팬아웃 (대기분 있으면 202) |
 | 2.6 | 엔트리 전체 삭제 | admin | `DELETE /api/entries?year=` | 연도별 전체 초기화, 삭제 이벤트를 outbox로 5개 서비스에 팬아웃 |
 | 2.7 | 엔트리 일괄 업로드 | admin | `POST /api/entries/bulk?year=` | JSON으로 전체 교체(트랜잭션), 삭제/리넘버 이벤트 outbox 팬아웃. 모호한 팀 교체는 409 → replacements/retains 재요청 |
+| 2.7a | 엔트리 활성 상태 변경 | admin | `PATCH /api/entries/:num/active?year=` | 탈락 팀 비활성화/복구. revision 이벤트를 queue/inspection/score/traffic 4개 서비스로 fan-out, 동기화 대기 시 202. Documents는 영향받지 않음 |
 
 ### 차량 유형
 
@@ -181,6 +182,7 @@
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
 | 3.35 | 엔트리 삭제 연동 | 내부 | `DELETE /api/internal/team/:num?year=` | 대기열, current, 우선순위, 페널티, 이력, 부스 점유 해제 |
+| 3.36 | 엔트리 비활성 연동 | 내부 | `PATCH /api/internal/team-active` | 현재 대기열/current/우선순위/페널티/진행 중 부스를 즉시 정리. 완료 이력은 보존하되 숨김, 재활성화해도 transient 상태는 복원하지 않음 |
 
 ---
 
@@ -219,6 +221,7 @@
 |---|------|------|-------------|------|
 | 4.16 | SSE 실시간 업데이트 | official | `GET /api/sheet/events` | 답변, 메모, 카테고리 결과, 검사자 변경 실시간 스트림 |
 | 4.17 | 검차 시트 인쇄 | official | SheetTemplatePrint.vue | `/template/print?year=` 라우트, 브라우저 인쇄 기능으로 PDF 출력 |
+| 4.18 | 엔트리 비활성 연동 | 내부 | `PATCH /api/internal/team-active` | 검차 데이터는 보존하고 비활성 기간 동안 목록·시트 조회·수정·인쇄 입력에서 제외 |
 
 ---
 
@@ -286,6 +289,7 @@
 |---|------|------|-------------|------|
 | 5.16 | SSE 실시간 업데이트 | admin | `GET /api/events` | 기록 추가/수정/삭제, 성적 반영 토글, 경기 모드 변경, 무선(`wireless:*`) 실시간 스트림. init: `{ recordFiles, eventModes, recordVisibility, wireless }` |
 | 5.17 | 기록 CSV/XLSX 내보내기 | admin | RecordView.vue | 클라이언트 사이드에서 선택된 기록 테이블을 CSV/XLSX로 다운로드 |
+| 5.18 | 엔트리 비활성 연동 | 내부 | `PATCH /api/internal/team-active` | 기록은 보존하고 조회·집계·수정을 차단. 진행 중인 무선 선택/런은 해제 |
 
 ---
 
@@ -319,6 +323,7 @@
 | 6.7 | SSE 실시간 업데이트 | admin | `GET /api/score/events` | 화이트리스트 재전파(entry: entries, inspection: category-result/answer, traffic: records/record-visibility/event-mode) + 재연결 시 refresh + manual-score/penalty/setting/endurance 로컬 이벤트 |
 | 6.8 | 성적 대시보드 내보내기 | admin | ScoreBoard.vue | 전체 성적표 CSV/XLSX 클라이언트 사이드 다운로드 |
 | 6.9 | 내구 데이터 내보내기 | admin | EnduranceInput.vue | 내구 및 에너지 계측·판정 데이터 CSV/XLSX 클라이언트 사이드 다운로드 |
+| 6.10 | 엔트리 비활성 연동 | 내부 | `PATCH /api/internal/team-active` | 수동점수/내구 데이터를 보존하고 관리자·공개 집계 및 수정에서 제외 |
 
 ---
 
@@ -328,6 +333,7 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
+| 7.0 | 내 엔트리 조회 | student | `GET /api/entries?year=` | 해당 연도 student_team에 매핑된 자기 팀만 반환. 비활성 팀도 포함 |
 | 7.1 | 세션 목록 조회 | student | `GET /api/sessions` | student_team에서 팀 조회 → 해당 팀 세션 + 최근 제출 상태 |
 | 7.2 | 세션 상세 조회 | student | `GET /api/sessions/:id` | 팀 소속 확인, 제출 이력 + 파일 목록 |
 | 7.3 | 파일 제출 | student | `POST /api/sessions/:id/submit` | 멀티파트, 시간 검증(start~late_end), 확장자 검증, 용량 제한 검증(max_file_size), 이전 제출 교체, 최대 100파일 |
@@ -338,6 +344,7 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
+| 7.4b | 전체 엔트리 조회 | chief | `GET /api/admin/entries?year=` | 계정 할당·세션 대상 선택용 전체 목록. 비활성 팀도 포함 |
 | 7.5 | 전체 세션 목록 | chief | `GET /api/admin/sessions?year=` | 연도 필터 |
 | 7.6 | 세션 생성 | chief | `POST /api/admin/sessions` | 이름, 공지, 시작/마감/지각마감, 파일 제한, 확장자, 대상 팀 |
 | 7.7 | 세션 수정 | chief | `PUT /api/admin/sessions/:id` | 팀 변경 시 제거된 팀의 제출 + 파일 삭제 |
@@ -364,6 +371,7 @@
 |---|------|------|-----|------|
 | 7.15 | 엔트리 번호 동기화 | 내부 | `PATCH /api/internal/team-num` | entry 서비스에서 번호 변경 시 student_team, session_team, submission + 파일 디렉토리 일괄 갱신. 파일 작업 실패 시 202 `pending_file_work` → 30초 주기 백그라운드 워커 재시도 |
 | 7.16 | 엔트리 삭제 연동 | 내부 | `DELETE /api/internal/team/:num?year=` | student_team, session_team, submission, 파일 삭제 |
+| 7.17 | 레거시 활성 이벤트 호환 | 내부 | `PATCH /api/internal/team-active` | 이전 outbox에 남은 이벤트를 200으로 소진하는 no-op. 매핑·제출·다운로드·아카이브·알림은 활성 상태의 영향을 받지 않음 |
 
 ---
 
@@ -586,4 +594,14 @@ Entry → 5개 서비스: 번호 변경을 durable lifecycle_outbox에 기록 �
 ```
 Entry → 5개 서비스: 삭제 이벤트를 durable outbox에 기록 후 queue/documents/inspection/score/traffic의 DELETE /api/internal/team/:num으로 재시도 전달
 Documents는 student_team/session_team/submission/파일까지 정리
+```
+
+### Entry 비활성화 → 대회 운영 서비스 소프트 제외
+
+```
+Entry → Queue/Inspection/Traffic/Score: PATCH /api/internal/team-active { num, year, active, revision }
+Queue: 현재 운영 상태만 정리(재활성화 시 복원하지 않음), 완료 이력은 보존
+Inspection/Traffic/Score: 영구 데이터를 삭제하지 않고 숨김·수정 차단, 재활성화 시 다시 노출
+각 소비자는 revision 이하의 오래된 이벤트를 무시
+Documents: 활성 상태와 무관하게 계정 할당·제출·다운로드·아카이브·알림을 계속 허용
 ```

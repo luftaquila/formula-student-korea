@@ -30,6 +30,7 @@ on("manual-score", (e) => parseSSE(e, lastManualScoreUpdate));
 on("penalty", (e) => parseSSE(e, lastPenaltyUpdate));
 on("setting", (e) => parseSSE(e, lastSettingUpdate));
 on("endurance", (e) => parseSSE(e, lastEnduranceUpdate));
+on("team-active", () => { reconnected.value = Date.now(); });
 on("publication", (e) => parseSSE(e, lastPublicationUpdate));
 on("refresh", () => { reconnected.value = Date.now(); });
 

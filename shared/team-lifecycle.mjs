@@ -21,7 +21,9 @@ function renumberTeamRows(db, table, prevNum, newNum, year) {
   return db.prepare(`UPDATE ${table} SET team_num = ? WHERE year = ? AND team_num = ?`).run(newNum, year, prevNum).changes;
 }
 
-export function registerTeamLifecycleRoutes(app, { db, dbRun, logger, requireInternalRequest, broadcastEvent, tables, channels }) {
+export function registerTeamLifecycleRoutes(app, {
+  db, dbRun, logger, requireInternalRequest, broadcastEvent, tables, channels, statusTable,
+}) {
   app.delete("/api/internal/team/:num", (req, res) => {
     if (!requireInternalRequest(req, res)) return;
 
@@ -44,6 +46,10 @@ export function registerTeamLifecycleRoutes(app, { db, dbRun, logger, requireInt
         for (const table of tables) {
           assertIdentifier(table);
           db.prepare(`DELETE FROM ${table} WHERE year = ? AND team_num = ?`).run(year, num);
+        }
+        if (statusTable) {
+          assertIdentifier(statusTable);
+          db.prepare(`DELETE FROM ${statusTable} WHERE year = ? AND team_num = ?`).run(year, num);
         }
       })();
     });
@@ -75,6 +81,13 @@ export function registerTeamLifecycleRoutes(app, { db, dbRun, logger, requireInt
     const result = dbRun(() => {
       db.transaction(() => {
         for (const table of tables) renumberTeamRows(db, table, prevNum, newNum, year);
+        if (statusTable) {
+          assertIdentifier(statusTable);
+          // 번호 변경은 기존 snapshot과 revision만 새 번호로 이동한다. bulk upload가
+          // 활성 상태도 바꾼 경우 뒤따르는 team.active 이벤트가 새 revision을 적용하며
+          // 비활성화 정리와 전용 SSE를 실행해야 한다.
+          renumberTeamRows(db, statusTable, prevNum, newNum, year);
+        }
       })();
     });
 

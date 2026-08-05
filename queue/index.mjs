@@ -187,6 +187,16 @@ db.transaction(() => {
     timestamp INTEGER
   );`);
 
+  // Entry 서비스가 전파한 최신 활성 상태. 행이 없으면 하위 호환을 위해 활성으로 본다.
+  db.exec(`CREATE TABLE IF NOT EXISTS team_status (
+    year INTEGER NOT NULL,
+    team_num INTEGER NOT NULL,
+    active INTEGER NOT NULL CHECK(active IN (0, 1)),
+    revision INTEGER NOT NULL,
+    PRIMARY KEY (year, team_num)
+  );`);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_team_status_inactive ON team_status(year, active, team_num)");
+
   // 검차 종류 메타 및 부스 기본 데이터 생성
   for (const [k, v] of Object.entries(inspections)) {
     db.prepare(`INSERT OR IGNORE INTO inspection (type, name) VALUES (?, ?)`).run(k, v);
@@ -336,6 +346,11 @@ db.transaction(() => {
    ============================================ */
 function currentYear() {
   return new Date().getFullYear();
+}
+
+function isTeamActive(num, year = currentYear()) {
+  const row = db.prepare("SELECT active FROM team_status WHERE year = ? AND team_num = ?").get(year, num);
+  return !row || !!row.active;
 }
 
 function parseYearQuery(value) {
@@ -596,6 +611,10 @@ function buildQueueQuery({ ignoreReinspection, ignorePriority }) {
     FROM inspection_queue AS t
     LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ? AND p.year = ?
     WHERE t.inspection = ? AND t.year = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM team_status s
+        WHERE s.year = t.year AND s.team_num = t.num AND s.active = 0
+      )
     ORDER BY ${orderClauses.join(", ")}
   `;
 }
@@ -641,6 +660,10 @@ function getQueueRank(inspection, num, year) {
       FROM inspection_queue AS t
       LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ? AND p.year = ?
       WHERE t.inspection = ? AND t.year = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM team_status s
+          WHERE s.year = t.year AND s.team_num = t.num AND s.active = 0
+        )
     ) AS sub WHERE sub.num = ?
   `);
     queueRankStmtCache.set(key, stmt);
@@ -893,6 +916,10 @@ app.post("/api/admin/register/:type", async (req, res) => {
 
       const year = currentYear();
 
+      if (!isTeamActive(num, year)) {
+        throw { status: 409, message: "비활성화된 엔트리는 대기열에 등록할 수 없습니다." };
+      }
+
       // 페널티 확인
       const penalty = db.prepare("SELECT * FROM cancel_penalty WHERE num = ? AND inspection = ? AND year = ?").get(num, type, year);
       if (penalty && penalty.until > Date.now()) {
@@ -1026,6 +1053,10 @@ app.get("/api/admin/penalties", (req, res) => {
       FROM cancel_penalty cp
       JOIN inspection i ON i.type = cp.inspection
       WHERE cp.year = ? AND cp.until > ?
+        AND NOT EXISTS (
+          SELECT 1 FROM team_status s
+          WHERE s.year = cp.year AND s.team_num = cp.num AND s.active = 0
+        )
       ORDER BY cp.until ASC, cp.num ASC, cp.inspection ASC
     `).all(year, now),
   );
@@ -1054,6 +1085,9 @@ app.post("/api/admin/penalties/:type/:num/restore", (req, res) => {
   const year = currentYear();
   const result = dbRun(() =>
     db.transaction(() => {
+      if (!isTeamActive(num, year)) {
+        throw { status: 409, message: "비활성화된 엔트리의 대기열 상태는 복구할 수 없습니다." };
+      }
       if (!db.prepare("SELECT active FROM inspection WHERE type = ?").get(type).active) {
         throw { status: 400, message: "대기열이 비활성화 상태입니다." };
       }
@@ -1148,7 +1182,15 @@ app.get("/api/admin/priority/:type", (req, res) => {
   }
 
   const result = dbRun(() =>
-    db.prepare("SELECT * FROM team_priority WHERE inspection = ? AND year = ? ORDER BY priority ASC, num ASC").all(req.params.type, currentYear()),
+    db.prepare(`
+      SELECT p.* FROM team_priority p
+      WHERE p.inspection = ? AND p.year = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM team_status s
+          WHERE s.year = p.year AND s.team_num = p.num AND s.active = 0
+        )
+      ORDER BY p.priority ASC, p.num ASC
+    `).all(req.params.type, currentYear()),
   );
 
   if (!result.success) {
@@ -1173,6 +1215,10 @@ app.post("/api/admin/priority/:type", (req, res) => {
   const priorityValidation = validatePriority(req.body.priority);
   if (!priorityValidation.valid) {
     return res.status(400).send(priorityValidation.error);
+  }
+
+  if (!isTeamActive(numValidation.value)) {
+    return res.status(409).send("비활성화된 엔트리에는 우선순위를 설정할 수 없습니다.");
   }
 
   const result = dbRun(() =>
@@ -1255,7 +1301,15 @@ app.delete("/api/admin/priority/:type/all", (req, res) => {
 // GET /api/admin/history/status - 재검 현황 조회
 app.get("/api/admin/history/status", (req, res) => {
   const year = currentYear();
-  const rows = db.prepare("SELECT DISTINCT num, inspection FROM inspection_history WHERE year = ?").all(year);
+  const rows = db.prepare(`
+    SELECT DISTINCT h.num, h.inspection
+    FROM inspection_history h
+    WHERE h.year = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM team_status s
+        WHERE s.year = h.year AND s.team_num = h.num AND s.active = 0
+      )
+  `).all(year);
 
   const result = {};
   for (const row of rows) {
@@ -1483,6 +1537,10 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
 
   const year = currentYear();
 
+  if (!isTeamActive(num, year)) {
+    return res.status(409).send("비활성화된 엔트리는 부스에 입장시킬 수 없습니다.");
+  }
+
   // SMS 발송용: 삭제 전 N번째 대기자 조회
   const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
   const prev = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
@@ -1626,10 +1684,20 @@ app.get("/api/admin/stats/timerange", (req, res) => {
 
   const result = dbRun(() => {
     const q = db.prepare(
-      "SELECT MIN(timestamp) as minTs, MAX(timestamp) as maxTs FROM queue_log WHERE year = ? AND timestamp >= ? AND timestamp <= ?"
+      `SELECT MIN(timestamp) as minTs, MAX(timestamp) as maxTs FROM queue_log
+       WHERE year = ? AND timestamp >= ? AND timestamp <= ?
+         AND NOT EXISTS (
+           SELECT 1 FROM team_status s
+           WHERE s.year = queue_log.year AND s.team_num = queue_log.num AND s.active = 0
+         )`
     ).get(year, yearStart, yearEnd);
     const b = db.prepare(
-      "SELECT MIN(entered_at) as minTs, MAX(COALESCE(exited_at, entered_at)) as maxTs FROM booth_log WHERE year = ? AND entered_at >= ? AND entered_at <= ?"
+      `SELECT MIN(entered_at) as minTs, MAX(COALESCE(exited_at, entered_at)) as maxTs FROM booth_log
+       WHERE year = ? AND entered_at >= ? AND entered_at <= ?
+         AND NOT EXISTS (
+           SELECT 1 FROM team_status s
+           WHERE s.year = booth_log.year AND s.team_num = booth_log.num AND s.active = 0
+         )`
     ).get(year, yearStart, yearEnd);
 
     const mins = [q?.minTs, b?.minTs].filter(Boolean);
@@ -1661,9 +1729,15 @@ app.get("/api/admin/stats", (req, res) => {
     }
   }
 
-  const queueLogConditions = ["year = ?"];
+  const queueLogConditions = ["year = ?", `NOT EXISTS (
+    SELECT 1 FROM team_status s
+    WHERE s.year = queue_log.year AND s.team_num = queue_log.num AND s.active = 0
+  )`];
   const queueLogParams = [year];
-  const boothLogConditions = ["year = ?", "exited_at IS NOT NULL"];
+  const boothLogConditions = ["year = ?", "exited_at IS NOT NULL", `NOT EXISTS (
+    SELECT 1 FROM team_status s
+    WHERE s.year = booth_log.year AND s.team_num = booth_log.num AND s.active = 0
+  )`];
   const boothLogParams = [year];
 
   if (from) {
@@ -1751,6 +1825,7 @@ app.get("/api/admin/stats/:num", (req, res) => {
   const { from, to, inspection } = req.query;
   const year = parseYearQuery(req.query.year);
   if (year == null) return res.status(400).send("올바르지 않은 연도입니다.");
+  if (!isTeamActive(num, year)) return res.status(404).send("엔트리를 찾을 수 없습니다.");
 
   if (inspection) {
     const typeValidation = validateInspection(inspection);
@@ -2106,8 +2181,76 @@ function sendSmsNotification(type, prev) {
 }
 
 /* ============================================
-   Internal API: 엔트리 삭제 연동
+   Internal API: 엔트리 상태/삭제 연동
    ============================================ */
+
+// PATCH /api/internal/team-active - 엔트리 활성 상태 동기화
+app.patch("/api/internal/team-active", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
+  const numValidation = validateEntryNum(req.body.num);
+  const yearCheck = validateYear(req.body.year);
+  const revision = Number(req.body.revision);
+  if (!numValidation.valid || !yearCheck.valid || typeof req.body.active !== "boolean" ||
+      !Number.isInteger(revision) || revision < 0) {
+    return res.status(400).send("올바르지 않은 엔트리 상태 요청입니다.");
+  }
+  const num = numValidation.value;
+  const year = yearCheck.value;
+  const active = req.body.active;
+
+  const result = dbRun(() => db.transaction(() => {
+    const current = db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, num);
+    if (current && current.revision >= revision) return { applied: false, freedTypes: [] };
+
+    db.prepare(`
+      INSERT INTO team_status (year, team_num, active, revision) VALUES (?, ?, ?, ?)
+      ON CONFLICT(year, team_num) DO UPDATE SET active = excluded.active, revision = excluded.revision
+    `).run(year, num, active ? 1 : 0, revision);
+
+    const freedTypes = [];
+    if (!active) {
+      for (const type of Object.keys(inspections)) deleteQueueRow(type, num, year);
+      db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(num, year);
+      db.prepare("DELETE FROM team_priority WHERE num = ? AND year = ?").run(num, year);
+      db.prepare("DELETE FROM cancel_penalty WHERE num = ? AND year = ?").run(num, year);
+
+      // booth에는 연도 컬럼이 없으므로 현재 연도 이벤트는 점유 자체를 기준으로
+      // 정리한다. 과거 연도 이벤트는 같은 번호의 현재 팀 부스를 건드리지 않도록
+      // 해당 연도의 미종료 로그가 연결된 부스만 해제한다.
+      const occupied = year === currentYear()
+        ? db.prepare("SELECT inspection, booth_num FROM booth WHERE occupied_by = ?").all(num)
+        : db.prepare(`
+            SELECT inspection, booth_num FROM booth
+            WHERE occupied_by = ? AND EXISTS (
+              SELECT 1 FROM booth_log l
+              WHERE l.num = ? AND l.year = ? AND l.inspection = booth.inspection
+                AND l.booth_num = booth.booth_num AND l.exited_at IS NULL
+            )
+          `).all(num, num, year);
+      for (const booth of occupied) {
+        db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ? AND booth_num = ?")
+          .run(booth.inspection, booth.booth_num);
+        freedTypes.push(booth.inspection);
+      }
+      // 완료되지 않은 부스 세션은 현재 운영 상태이므로 제거한다. 완료 이력은 그대로 보존한다.
+      db.prepare("DELETE FROM booth_log WHERE num = ? AND year = ? AND exited_at IS NULL").run(num, year);
+    }
+    return { applied: true, freedTypes: [...new Set(freedTypes)] };
+  })());
+
+  if (!result.success) {
+    logger.warn(req, "team.active", { error: result.error, year, active, revision }, `#${num}`);
+    return res.status(result.status).send(result.error);
+  }
+  if (result.result.applied) {
+    logger.log(req, "team.active", { year, active, revision }, `#${num}`);
+    broadcastQueue(null);
+    if (year === currentYear()) broadcastPenalties();
+    for (const type of result.result.freedTypes) broadcastBooth(type);
+  }
+  res.status(200).send();
+});
 
 // DELETE /api/internal/team/:num - 엔트리 삭제 시 관련 데이터 정리
 app.delete("/api/internal/team/:num", (req, res) => {
@@ -2145,6 +2288,9 @@ app.delete("/api/internal/team/:num", (req, res) => {
 
       // 검차 이력 제거
       db.prepare("DELETE FROM inspection_history WHERE num = ? AND year = ?").run(num, year);
+
+      // 활성 상태 스냅샷 제거
+      db.prepare("DELETE FROM team_status WHERE team_num = ? AND year = ?").run(num, year);
 
       // 부스 점유 해제
       const booths = db.prepare(`
@@ -2215,6 +2361,16 @@ app.patch("/api/internal/team-num", (req, res) => {
       changed += renumberNumYearRows("team_priority", prevNum, newNum, year);
       changed += renumberNumYearRows("cancel_penalty", prevNum, newNum, year);
       changed += renumberNumYearRows("inspection_history", prevNum, newNum, year);
+      const previousStatus = db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, prevNum);
+      // 새 활성 상태/revision은 뒤따르는 team.active 이벤트가 적용해야 비활성화
+      // 정리 작업이 생략되지 않는다. 재전달 때 source가 없으면 destination도 보존한다.
+      if (previousStatus) {
+        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, newNum);
+        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, prevNum);
+        db.prepare("INSERT INTO team_status (year, team_num, active, revision) VALUES (?, ?, ?, ?)")
+          .run(year, newNum, previousStatus.active, previousStatus.revision);
+        changed += 1;
+      }
       changed += db.prepare(`
         UPDATE booth
         SET occupied_by = ?

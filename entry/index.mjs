@@ -86,9 +86,23 @@ function ensureYearTable(year) {
   if (_ensuredYearTables.has(tableName)) return tableName;
   const y = Number(year);
   db.exec(`CREATE TABLE IF NOT EXISTS '${tableName}' (
-    num INTEGER PRIMARY KEY, univ TEXT NOT NULL, team TEXT NOT NULL, type TEXT DEFAULT NULL
+    num INTEGER PRIMARY KEY,
+    univ TEXT NOT NULL,
+    team TEXT NOT NULL,
+    type TEXT DEFAULT NULL,
+    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+    active_revision INTEGER NOT NULL DEFAULT 0
   )`);
+  // CREATE TABLE IF NOT EXISTS는 기존 테이블의 스키마를 보강하지 않는다. 인덱스를
+  // 만들기 전에 컬럼을 추가해야 운영 DB의 레거시 연도 테이블에서도 시작할 수 있다.
+  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN type TEXT DEFAULT NULL`); }
+  catch { /* column already exists */ }
+  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN active INTEGER NOT NULL DEFAULT 1`); }
+  catch { /* column already exists */ }
+  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN active_revision INTEGER NOT NULL DEFAULT 0`); }
+  catch { /* column already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${y}_type ON '${tableName}'(type)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${y}_active ON '${tableName}'(active)`);
   _ensuredYearTables.add(tableName);
   return tableName;
 }
@@ -118,18 +132,20 @@ db.exec(`CREATE TABLE IF NOT EXISTS lifecycle_outbox (
   created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
   updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
 )`);
+db.exec(`CREATE TABLE IF NOT EXISTS entry_active_revision (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  value INTEGER NOT NULL DEFAULT 0
+)`);
+db.prepare("INSERT OR IGNORE INTO entry_active_revision (id, value) VALUES (1, 0)").run();
 try { db.exec("ALTER TABLE lifecycle_outbox ADD COLUMN locked_until INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
 try { db.exec("ALTER TABLE lifecycle_outbox ADD COLUMN locked_by TEXT NOT NULL DEFAULT ''"); } catch { /* already exists */ }
 db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_ready ON lifecycle_outbox(status, next_attempt_at, id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_service_id ON lifecycle_outbox(service, id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_service_status_id ON lifecycle_outbox(service, status, id)");
 
-// 기존 테이블에 type 컬럼 마이그레이션
+// 현재 연도 이외의 기존 테이블도 같은 순서로 마이그레이션한다.
 for (const year of getAvailableYears()) {
-  const tableName = getTableName(year);
-  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN type TEXT DEFAULT NULL`); }
-  catch (e) { /* column already exists */ }
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${Number(year)}_type ON '${tableName}'(type)`);
+  ensureYearTable(year);
 }
 
 /* ============================================
@@ -140,7 +156,7 @@ const logger = createLogger(db, "entry");
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/years") return null;
-  if (req.path === "/api/entries" && req.method === "GET") return null;
+  if (req.path === "/api/entries" && req.method === "GET" && req.query.includeInactive !== "true") return null;
   if (req.path === "/api/vehicle-types" && req.method === "GET") return null;
   return "admin";
 });
@@ -210,6 +226,9 @@ function validateBulkData(data) {
     if (typeof value.team !== "string" || !value.team.trim()) {
       return { valid: false, error: `엔트리 ${key}: 올바르지 않은 팀명입니다.` };
     }
+    if (value.active !== undefined && typeof value.active !== "boolean") {
+      return { valid: false, error: `엔트리 ${key}: active는 boolean이어야 합니다.` };
+    }
   }
 
   return { valid: true, data: parsed };
@@ -261,15 +280,21 @@ function validateBulkIntentList(data, label) {
    ============================================ */
 const dbRun = createDbRun();
 
+function nextActiveRevision() {
+  db.prepare("UPDATE entry_active_revision SET value = value + 1 WHERE id = 1").run();
+  return db.prepare("SELECT value FROM entry_active_revision WHERE id = 1").get().value;
+}
+
 /* ============================================
    서비스 간 알림 헬퍼
    ============================================ */
 const LIFECYCLE_SERVICES = [
-  { name: "queue", env: "QUEUE_SERVER" },
-  { name: "documents", env: "DOCUMENTS_SERVER" },
-  { name: "inspection", env: "INSPECTION_SERVER" },
-  { name: "score", env: "SCORE_SERVER" },
-  { name: "traffic", env: "TRAFFIC_SERVER" },
+  { name: "queue", env: "QUEUE_SERVER", syncsActive: true },
+  // Documents는 삭제/번호 변경만 동기화한다. 비활성 팀도 계정 할당과 제출이 가능하다.
+  { name: "documents", env: "DOCUMENTS_SERVER", syncsActive: false },
+  { name: "inspection", env: "INSPECTION_SERVER", syncsActive: true },
+  { name: "score", env: "SCORE_SERVER", syncsActive: true },
+  { name: "traffic", env: "TRAFFIC_SERVER", syncsActive: true },
 ];
 
 let lifecycleOutboxTail = Promise.resolve();
@@ -281,15 +306,17 @@ const LIFECYCLE_MAX_ATTEMPTS = 24;
 const LIFECYCLE_WORKER_ID = `${process.pid}-${Math.random().toString(36).slice(2)}`;
 const LIFECYCLE_TEMP_NUM_START = 1_000_000_000;
 
-function configuredLifecycleServices() {
-  return LIFECYCLE_SERVICES.filter((svc) => process.env[svc.env]);
+function configuredLifecycleServices({ activeOnly = false } = {}) {
+  return LIFECYCLE_SERVICES.filter((svc) => (!activeOnly || svc.syncsActive) && process.env[svc.env]);
 }
 
 // 라이프사이클 동기화 대상이지만 *_SERVER env가 빠진 서비스는 outbox row 자체가
 // 생성되지 않아 재시도·dead-letter·admin recovery 대상에서 사라진다. 최소한 감사
 // 추적이 가능하도록, 동기화가 필요한 작업이 발생했을 때 누락된 서비스를 경고로 남긴다.
-function warnUnconfiguredLifecycleServices(req, context) {
-  const missing = LIFECYCLE_SERVICES.filter((svc) => !process.env[svc.env]).map((svc) => svc.name);
+function warnUnconfiguredLifecycleServices(req, context, { activeOnly = false } = {}) {
+  const missing = LIFECYCLE_SERVICES
+    .filter((svc) => (!activeOnly || svc.syncsActive) && !process.env[svc.env])
+    .map((svc) => svc.name);
   if (missing.length > 0) {
     logger.warn(req, "entry.lifecycle_unconfigured", { ...context, missing });
   }
@@ -513,6 +540,16 @@ function buildEntryRenumberedEvents(prevNum, newNum, year, entry) {
   }));
 }
 
+function buildEntryActiveEvents(num, year, active, revision) {
+  return configuredLifecycleServices({ activeOnly: true }).map((svc) => ({
+    eventType: "team.active",
+    service: svc.name,
+    method: "PATCH",
+    path: "/api/internal/team-active",
+    body: { num: Number(num), year: Number(year), active: active === true, revision: Number(revision) },
+  }));
+}
+
 const lifecycleRetryTimer = startLifecycleOutboxRetry();
 
 /* ============================================
@@ -548,7 +585,7 @@ app.post("/api/admin/lifecycle-outbox/:id/retry", async (req, res) => {
   // dead를 보지 않으므로 재사용이 허용됨), 재시도 시 삭제가 새 팀의 downstream을 파괴한다.
   // 대상 번호가 현재 entry 테이블에 존재하면(=재사용) 재시도를 거부한다 — 정상 삭제라면 그 번호는
   // 이미 entry에서 제거돼 있어야 한다. 운영자는 재시도 대신 이 이벤트를 폐기하면 된다.
-  const row = db.prepare("SELECT event_type, path FROM lifecycle_outbox WHERE id = ?").get(id);
+  const row = db.prepare("SELECT event_type, path, body FROM lifecycle_outbox WHERE id = ?").get(id);
   if (!row) return res.status(404).send("이벤트를 찾을 수 없습니다.");
   if (row.event_type === "team.delete") {
     const m = /\/api\/internal\/team\/(\d+)\?year=(\d+)/.exec(row.path || "");
@@ -562,6 +599,82 @@ app.post("/api/admin/lifecycle-outbox/:id/retry", async (req, res) => {
         logger.warn(req, "entry.lifecycle_retry", { error: "num_reused", id, num: dnum, year: dyear });
         return res.status(409).send(`#${dnum}번을 현재 다른 팀이 사용 중입니다. 이 삭제 이벤트를 재시도하면 그 팀의 데이터가 삭제됩니다. 재시도 대신 폐기하세요.`);
       }
+    }
+  }
+  if (row.event_type === "team.renumber") {
+    let event;
+    try { event = JSON.parse(row.body || ""); }
+    catch { event = null; }
+    const prevNum = Number(event?.prevNum);
+    const newNum = Number(event?.newNum);
+    const year = Number(event?.year);
+    const revision = Number(event?.entry?.active_revision);
+    const valid = Number.isInteger(prevNum) && prevNum > 0
+      && Number.isInteger(newNum) && newNum > 0 && prevNum !== newNum
+      && Number.isInteger(year) && year >= 2000 && year <= 2099
+      && typeof event?.entry?.univ === "string" && typeof event?.entry?.team === "string"
+      && typeof event?.entry?.active === "boolean"
+      && Number.isInteger(revision) && revision >= 0;
+    let sourceExists = false;
+    let current = null;
+    if (valid) {
+      try {
+        const tableName = getTableName(year);
+        sourceExists = !!db.prepare(`SELECT 1 FROM '${tableName}' WHERE num = ?`).get(prevNum);
+        current = db.prepare(`SELECT univ, team, type, active, active_revision FROM '${tableName}' WHERE num = ?`).get(newNum) || null;
+      } catch {
+        sourceExists = false;
+        current = null;
+      }
+    }
+    // dead 이후 Entry가 다시 이동했거나 source/target 번호가 재사용됐다면 과거
+    // renumber는 현재 팀 데이터를 덮어쓸 수 있다. 현재 target snapshot이 이벤트와
+    // 정확히 같고 source가 비어 있는 단순 이동만 안전하게 재시도한다. swap의 임시
+    // 번호처럼 현재 상태로 증명할 수 없는 단계는 폐기 후 수동 복구가 필요하다.
+    const matchesCurrent = current
+      && entryIdentity(current) === entryIdentity(event.entry)
+      && (current.type || null) === (event.entry.type || null)
+      && !!current.active === event.entry.active
+      && current.active_revision === revision;
+    if (!valid || sourceExists || !matchesCurrent) {
+      logger.warn(req, "entry.lifecycle_retry", {
+        error: "renumber_event_obsolete", id, prev_num: prevNum, new_num: newNum, year,
+        event_revision: event?.entry?.active_revision,
+        source_exists: sourceExists,
+        current_num: current ? newNum : null,
+        current_revision: current?.active_revision ?? null,
+      });
+      return res.status(409).send("현재 엔트리 배치와 일치하지 않는 오래된 번호 변경 이벤트입니다. 재시도 대신 폐기하세요.");
+    }
+  }
+  if (row.event_type === "team.active") {
+    let event;
+    try { event = JSON.parse(row.body || ""); }
+    catch { event = null; }
+    const num = Number(event?.num);
+    const year = Number(event?.year);
+    const revision = Number(event?.revision);
+    const valid = Number.isInteger(num) && num > 0
+      && Number.isInteger(year) && year >= 2000 && year <= 2099
+      && typeof event?.active === "boolean"
+      && Number.isInteger(revision) && revision >= 0;
+    let current = null;
+    if (valid) {
+      try {
+        current = db.prepare(`SELECT active, active_revision FROM '${getTableName(year)}' WHERE num = ?`).get(num) || null;
+      } catch { current = null; }
+    }
+    // dead 이벤트가 차단 목록에서 빠진 뒤 번호가 재사용될 수 있으므로, 현재 Entry
+    // snapshot과 revision이 정확히 같은 이벤트만 재시도한다. 불일치는 새 팀 또는
+    // 더 최신 상태를 과거 이벤트로 덮어쓸 수 있으므로 운영자가 폐기해야 한다.
+    if (!valid || !current || !!current.active !== event.active || current.active_revision !== revision) {
+      logger.warn(req, "entry.lifecycle_retry", {
+        error: "active_event_obsolete", id, num, year,
+        event_active: event?.active, event_revision: event?.revision,
+        current_active: current ? !!current.active : null,
+        current_revision: current?.active_revision ?? null,
+      });
+      return res.status(409).send("현재 엔트리의 활성 상태와 일치하지 않는 오래된 이벤트입니다. 재시도 대신 폐기하세요.");
     }
   }
 
@@ -639,6 +752,8 @@ function buildRenumberPlan(moves, reservedNums = []) {
         univ: cycleMove.oldEntry.univ,
         team: cycleMove.oldEntry.team,
         type: cycleMove.oldEntry.type || null,
+        active: !!cycleMove.oldEntry.active,
+        active_revision: cycleMove.oldEntry.active_revision || 0,
       },
     });
     remaining.delete(cyclePrev);
@@ -665,6 +780,14 @@ function lifecycleRowRefsNumber(row, num, year) {
       const body = JSON.parse(row.body);
       return Number(body.year) === targetYear
         && (Number(body.prevNum) === targetNum || Number(body.newNum) === targetNum);
+    } catch {
+      return false;
+    }
+  }
+  if (row.event_type === "team.active" && row.body) {
+    try {
+      const body = JSON.parse(row.body);
+      return Number(body.year) === targetYear && Number(body.num) === targetNum;
     } catch {
       return false;
     }
@@ -719,6 +842,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
 
   const deletedNums = [];
   const moves = [];
+  const retainedOldRowsByNewNum = new Map();
   const matchedOldNums = new Set();
   const movedTargetNums = new Set();
   const explicitTargets = new Set(explicitRenumbers.values());
@@ -729,6 +853,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
       throw { status: 400, message: "번호 변경 매핑이 기존/신규 엔트리와 일치하지 않습니다." };
     }
     matchedOldNums.add(prevNum);
+    retainedOldRowsByNewNum.set(newNum, oldRow);
     if (prevNum !== newNum) {
       movedTargetNums.add(newNum);
       moves.push({
@@ -738,6 +863,8 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
           univ: newRow.univ,
           team: newRow.team,
           type: newRow.type || null,
+          active: newRow.active,
+          active_revision: newRow.active_revision,
         },
         oldEntry: oldRow,
       });
@@ -749,6 +876,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
     const matchedNew = oldIdentityCounts.get(identity) === 1 ? uniqueNewByIdentity.get(identity) : null;
     if (matchedNew && !explicitTargets.has(matchedNew.num)) {
       matchedOldNums.add(oldRow.num);
+      retainedOldRowsByNewNum.set(matchedNew.num, oldRow);
       if (oldRow.num !== matchedNew.num) {
         movedTargetNums.add(matchedNew.num);
         moves.push({
@@ -758,6 +886,8 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
             univ: matchedNew.univ,
             team: matchedNew.team,
             type: matchedNew.type || null,
+            active: matchedNew.active,
+            active_revision: matchedNew.active_revision,
           },
           oldEntry: oldRow,
         });
@@ -776,10 +906,16 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
       continue;
     }
     const newRow = newRowsByNum.get(oldRow.num);
-    if (entryIdentity(newRow) === entryIdentity(oldRow)) continue; // 동일 팀 유지 → 이벤트 없음
+    if (entryIdentity(newRow) === entryIdentity(oldRow)) {
+      // 동일 display identity가 여러 팀에 중복되어 unique identity 매칭에서 제외됐어도
+      // 같은 번호를 유지했다면 이 old row가 정확한 상태 비교 대상이다.
+      retainedOldRowsByNewNum.set(oldRow.num, oldRow);
+      continue; // 동일 팀 유지 → 이벤트 없음
+    }
     if (replacements.has(oldRow.num)) {
       deletedNums.push(oldRow.num); // 팀 교체 확정 → 기존 downstream 데이터 삭제
     } else if (retains.has(oldRow.num)) {
+      retainedOldRowsByNewNum.set(oldRow.num, oldRow);
       continue; // 명칭 정정 확정 → 기존 데이터 유지(이벤트 없음)
     } else {
       ambiguous.push({
@@ -790,7 +926,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
     }
   }
   if (ambiguous.length > 0) {
-    return { events: [], deletedNums: [], renumberCount: 0, ambiguous };
+    return { events: [], deletedNums: [], renumberCount: 0, ambiguous, retainedOldRowsByNewNum };
   }
 
   const events = [
@@ -803,7 +939,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
   for (const move of buildRenumberPlan(moves, reservedNums)) {
     events.push(...buildEntryRenumberedEvents(move.prevNum, move.newNum, year, move.entry));
   }
-  return { events, deletedNums, renumberCount: moves.length, ambiguous };
+  return { events, deletedNums, renumberCount: moves.length, ambiguous, retainedOldRowsByNewNum };
 }
 
 /* ============================================
@@ -832,11 +968,17 @@ app.get("/api/years", (req, res) => {
 // GET /api/entries - 모든 엔트리 조회
 app.get("/api/entries", withYearTable, (req, res) => {
   const { tableName, year } = req;
+  const includeInactive = req.query.includeInactive === "true";
 
   const result = dbRun(() => {
     const data = {};
-    for (const row of db.prepare(`SELECT * FROM '${tableName}'`).all()) {
-      data[row.num] = { univ: row.univ, team: row.team, type: row.type };
+    const rows = db.prepare(`
+      SELECT num, univ, team, type, active
+      FROM '${tableName}'
+      ${includeInactive ? "" : "WHERE active = 1"}
+    `).all();
+    for (const row of rows) {
+      data[row.num] = { univ: row.univ, team: row.team, type: row.type, active: !!row.active };
     }
     return data;
   });
@@ -855,7 +997,7 @@ app.get("/api/entries", withYearTable, (req, res) => {
 });
 
 // POST /api/entries - 새 엔트리 추가
-app.post("/api/entries", withYearTable, (req, res) => {
+app.post("/api/entries", withYearTable, async (req, res) => {
   const { tableName, year } = req;
 
   const numValidation = validateEntryNum(req.body.num);
@@ -874,9 +1016,12 @@ app.post("/api/entries", withYearTable, (req, res) => {
   const result = dbRun(() =>
     db.transaction(() => {
       assertNoPendingLifecycleRefs([numValidation.value], year);
-      return db
-        .prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`)
-        .run(numValidation.value, dataValidation.univ, dataValidation.team, dataValidation.type);
+      const revision = nextActiveRevision();
+      const insertResult = db
+        .prepare(`INSERT INTO '${tableName}' (num, univ, team, type, active, active_revision) VALUES (?, ?, ?, ?, 1, ?)`)
+        .run(numValidation.value, dataValidation.univ, dataValidation.team, dataValidation.type, revision);
+      const eventIds = insertLifecycleEvents(buildEntryActiveEvents(numValidation.value, year, true, revision));
+      return { insertResult, revision, eventIds };
     })(),
   );
 
@@ -887,6 +1032,9 @@ app.post("/api/entries", withYearTable, (req, res) => {
 
   logger.log(req, "entry.create", { year, univ: dataValidation.univ, team: dataValidation.team, type: dataValidation.type }, `#${numValidation.value}`);
   broadcastEntries(year, "create", { num: numValidation.value });
+  warnUnconfiguredLifecycleServices(req, { op: "create", year, nums: [numValidation.value] }, { activeOnly: true });
+  await processLifecycleOutbox({ ids: result.result.eventIds });
+  if (sendLifecyclePending(res, result.result.eventIds, "엔트리 추가는 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다.")) return;
   res.status(201).send();
 });
 
@@ -921,12 +1069,13 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
   const result = dbRun(() => {
     return db.transaction(() => {
       let events = [];
+      let replaced = false;
       if (numChanged) {
         // 번호 변경과 팀 정체성(학교/팀명) 변경이 한 요청에 함께 오면 순수 renumber로 처리돼
         // prevNum의 downstream(검차·대기열 등)이 newNum의 다른 팀에게 조용히 승계된다. same-num
         // 경로와 동일하게, 정체성이 바뀌면 명시적 intent="retain"(명칭 정정 후 이동)일 때만
         // 허용하고, 아니면 409로 거부한다(팀 교체는 삭제 후 재등록으로 처리).
-        const existingPrev = db.prepare(`SELECT univ, team FROM '${tableName}' WHERE num = ?`).get(prevNum);
+        const existingPrev = db.prepare(`SELECT univ, team, active, active_revision FROM '${tableName}' WHERE num = ?`).get(prevNum);
         if (!existingPrev) {
           throw { status: 404, message: "존재하지 않는 엔트리 번호입니다." };
         }
@@ -950,6 +1099,7 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
           if (intent === "replacement") {
             assertNoPendingLifecycleRefs([newNum], year);
             events = buildEntryDeletedEvents([newNum], year); // 팀 교체 확정 → 기존 downstream 삭제
+            replaced = true;
           } else if (intent !== "retain") {
             return {
               ambiguous: [{
@@ -971,11 +1121,31 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
       }
 
       if (numChanged) {
-        events = buildEntryRenumberedEvents(prevNum, newNum, year, {
+        // 번호 재사용 목적지에 dead-letter된 과거 팀의 status snapshot이 남아 있을 수
+        // 있으므로, 단순 renumber에도 새 revision을 발급해 현재 활성 상태를 뒤이어
+        // fan-out한다. renumber가 먼저 적용된 뒤 snapshot이 목적지를 수렴시킨다.
+        const revision = nextActiveRevision();
+        db.prepare(`UPDATE '${tableName}' SET active_revision = ? WHERE num = ?`).run(revision, newNum);
+        const status = db.prepare(`SELECT active FROM '${tableName}' WHERE num = ?`).get(newNum);
+        const entry = {
           univ: dataValidation.univ,
           team: dataValidation.team,
           type: dataValidation.type,
-        });
+          active: !!status.active,
+          active_revision: revision,
+        };
+        events = [
+          ...buildEntryRenumberedEvents(prevNum, newNum, year, entry),
+          ...buildEntryActiveEvents(newNum, year, entry.active, revision),
+        ];
+      } else if (replaced) {
+        // 같은 번호의 팀 교체도 번호 재사용과 같다. 새 revision을 부여하지 않으면
+        // 이전 팀의 dead team.active 이벤트가 새 팀의 현재 snapshot과 우연히 일치해
+        // 재시도 검증을 통과할 수 있다. delete 뒤에 현재 상태를 다시 fan-out한다.
+        const revision = nextActiveRevision();
+        db.prepare(`UPDATE '${tableName}' SET active_revision = ? WHERE num = ?`).run(revision, newNum);
+        const status = db.prepare(`SELECT active FROM '${tableName}' WHERE num = ?`).get(newNum);
+        events.push(...buildEntryActiveEvents(newNum, year, !!status.active, revision));
       }
 
       return { eventIds: insertLifecycleEvents(events) };
@@ -1013,6 +1183,53 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
   }
 
   logger.log(req, "entry.update", { year, univ: dataValidation.univ, team: dataValidation.team, type: dataValidation.type }, `#${newNum}`);
+  res.status(200).send();
+});
+
+// PATCH /api/entries/:num/active - 엔트리 활성/비활성 상태 변경
+app.patch("/api/entries/:num/active", withYearTable, async (req, res) => {
+  const { tableName, year } = req;
+  const numValidation = validateEntryNum(req.params.num);
+  if (!numValidation.valid) return res.status(400).send(numValidation.error);
+  if (typeof req.body.active !== "boolean") return res.status(400).send("active는 boolean이어야 합니다.");
+
+  const num = numValidation.value;
+  const active = req.body.active;
+  const result = dbRun(() => db.transaction(() => {
+    const existing = db.prepare(`SELECT active, active_revision FROM '${tableName}' WHERE num = ?`).get(num);
+    if (!existing) throw { status: 404, message: "존재하지 않는 엔트리 번호입니다." };
+    if (!!existing.active === active) return { changed: false, revision: existing.active_revision, eventIds: [] };
+
+    assertNoPendingLifecycleRefs([num], year);
+    const revision = nextActiveRevision();
+    db.prepare(`UPDATE '${tableName}' SET active = ?, active_revision = ? WHERE num = ?`)
+      .run(active ? 1 : 0, revision, num);
+    const eventIds = insertLifecycleEvents(buildEntryActiveEvents(num, year, active, revision));
+    return { changed: true, revision, eventIds };
+  })());
+
+  if (!result.success) {
+    logger.warn(req, "entry.active", { error: result.error, year, active }, `#${num}`);
+    return res.status(result.status).send(result.error);
+  }
+  if (!result.result.changed) return res.status(200).send();
+
+  logger.log(req, active ? "entry.activate" : "entry.deactivate", { year, revision: result.result.revision }, `#${num}`);
+  broadcastEntries(year, "active", { num, active, revision: result.result.revision });
+  warnUnconfiguredLifecycleServices(
+    req,
+    { op: active ? "activate" : "deactivate", year, nums: [num] },
+    { activeOnly: true },
+  );
+
+  await processLifecycleOutbox({ ids: result.result.eventIds });
+  if (sendLifecyclePending(
+    res,
+    result.result.eventIds,
+    active
+      ? "엔트리 재활성화는 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다."
+      : "엔트리 비활성화는 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다.",
+  )) return;
   res.status(200).send();
 });
 
@@ -1111,11 +1328,11 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
 
   const result = dbRun(() => {
     return db.transaction(() => {
-      const oldRows = db.prepare(`SELECT num, univ, team, type FROM '${tableName}'`).all();
+      const oldRows = db.prepare(`SELECT num, univ, team, type, active, active_revision FROM '${tableName}'`).all();
       const vtTable = ensureVtTable(year);
       const validTypes = new Set(db.prepare(`SELECT name FROM '${vtTable}'`).all().map(t => t.name));
       const newRowsByNum = new Map();
-      const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`);
+      const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team, type, active, active_revision) VALUES (?, ?, ?, ?, ?, ?)`);
       for (const [k, v] of Object.entries(validation.data)) {
         const validatedType = v.type || null;
         if (validatedType && !validTypes.has(validatedType)) {
@@ -1126,6 +1343,8 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
           univ: v.univ.trim(),
           team: v.team.trim(),
           type: validatedType,
+          active: v.active !== false,
+          active_revision: nextActiveRevision(),
         });
       }
 
@@ -1133,7 +1352,7 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
         ...oldRows.map((row) => row.num),
         ...newRowsByNum.keys(),
       ], year);
-      const { events, deletedNums, renumberCount, ambiguous } = buildBulkLifecycleEvents(
+      const { events, deletedNums, renumberCount, ambiguous, retainedOldRowsByNewNum } = buildBulkLifecycleEvents(
         oldRows, newRowsByNum, year, renumberValidation.renumbers, replacementsValidation.nums, retainsValidation.nums,
       );
       // 동일 번호의 팀 변경이 미선언 상태면 아무것도 쓰지 않고(읽기 전용 트랜잭션)
@@ -1142,12 +1361,36 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
         return { ambiguous };
       }
 
+      // 같은 번호의 같은 팀이 활성 상태도 그대로라면 revision을 유지한다. 단순 bulk
+      // 재업로드만으로 revision이 바뀌면, 아직 유효한 dead team.active 이벤트조차
+      // 현재 snapshot 불일치로 재시도할 수 없게 된다. 번호 변경·팀 교체·상태 변경은
+      // 위에서 발급한 새 revision을 그대로 사용한다.
+      for (const row of newRowsByNum.values()) {
+        const oldRow = retainedOldRowsByNewNum.get(row.num) || null;
+        if (oldRow && oldRow.num === row.num && !!oldRow.active === row.active) {
+          row.active_revision = oldRow.active_revision;
+        }
+      }
+
       db.prepare(`DELETE FROM '${tableName}'`).run();
       for (const row of newRowsByNum.values()) {
-        query.run(row.num, row.univ, row.team, row.type);
+        query.run(row.num, row.univ, row.team, row.type, row.active ? 1 : 0, row.active_revision);
       }
-      const eventIds = insertLifecycleEvents(events);
-      return { deletedNums, renumberCount, eventIds };
+      const activeSnapshotRows = [...newRowsByNum.values()].filter((row) => {
+        const oldRow = retainedOldRowsByNewNum.get(row.num) || null;
+        // 번호가 바뀐 retained 팀에는 활성 상태가 같아도 snapshot 이벤트를 보낸다.
+        // 기본 활성 팀은 소비자에 team_status 행이 없을 수 있고, dead-letter 처리된
+        // 과거 삭제 때문에 목적지 번호에 다른 팀의 stale snapshot이 남아 있을 수 있다.
+        // renumber 뒤의 새 revision 이벤트가 그 목적지를 현재 Entry 상태로 수렴시킨다.
+        return !(oldRow && oldRow.num === row.num && !!oldRow.active === row.active);
+      });
+      // 신규 번호도 과거 dead delete/renumber 뒤에 재사용된 키일 수 있다. 신규·교체·번호
+      // 변경·상태 변경 행은 모두 authoritative snapshot을 보내고, 같은 번호에서 상태가
+      // 그대로인 retained 행만 생략한다.
+      const activeEvents = activeSnapshotRows.flatMap((row) =>
+        buildEntryActiveEvents(row.num, year, row.active, row.active_revision));
+      const eventIds = insertLifecycleEvents([...events, ...activeEvents]);
+      return { deletedNums, renumberCount, activeSnapshotCount: activeSnapshotRows.length, eventIds };
     })();
   });
 
@@ -1168,9 +1411,11 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   logger.log(req, "entry.bulk_upload", { year, count: Object.keys(validation.data).length });
   broadcastEntries(year, "bulk");
 
-  const { deletedNums, renumberCount, eventIds } = result.result;
+  const { deletedNums, renumberCount, activeSnapshotCount, eventIds } = result.result;
   if (deletedNums.length > 0 || renumberCount > 0) {
     warnUnconfiguredLifecycleServices(req, { op: "bulk", year, deleted: deletedNums.length, renumbered: renumberCount });
+  } else if (activeSnapshotCount > 0) {
+    warnUnconfiguredLifecycleServices(req, { op: "bulk", year, snapshots: activeSnapshotCount }, { activeOnly: true });
   }
   if (eventIds.length > 0) {
     await processLifecycleOutbox({ ids: eventIds });
