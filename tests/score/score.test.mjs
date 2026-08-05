@@ -1279,3 +1279,43 @@ describe('Score internal entry lifecycle sync', () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_num = ?").get(year, 905).c, 1);
   });
 });
+
+describe('Entry active-state synchronization', () => {
+  it('preserves score rows, blocks writes, and restores them after reactivation', async () => {
+    const year = new Date().getFullYear();
+    const num = 1;
+    db.prepare("INSERT OR REPLACE INTO score_manual (year, team_num, score_type, value) VALUES (?, ?, 'inactive-test', 7.5)")
+      .run(year, num);
+    db.prepare("INSERT OR REPLACE INTO score_endurance (year, team_num, status, driver1_time, driver2_time) VALUES (?, ?, NULL, 1000, 2000)")
+      .run(year, num);
+
+    const deactivate = await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year, active: false, revision: 40 },
+    });
+    assert.equal(deactivate.status, 200);
+    assert.equal(db.prepare("SELECT value FROM score_manual WHERE year = ? AND team_num = ? AND score_type = 'inactive-test'").get(year, num).value, 7.5);
+    const endurance = await (await client.get(`/api/score/endurance?year=${year}`, { cookie: adminCookie })).json();
+    assert.equal(endurance[num], undefined);
+    assert.equal((await client.put('/api/score/manual', {
+      body: { year, team_num: num, score_type: 'inactive-test', value: 8 }, cookie: adminCookie,
+    })).status, 409);
+    const hiddenAggregate = await (await client.get(`/api/score?year=${year}`, { cookie: adminCookie })).json();
+    assert.equal(hiddenAggregate.entries[num], undefined);
+    assert.equal(hiddenAggregate.manualScores[num], undefined);
+
+    await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year, active: true, revision: 39 },
+    });
+    assert.equal((await (await client.get(`/api/score/endurance?year=${year}`, { cookie: adminCookie })).json())[num], undefined);
+    await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year, active: true, revision: 41 },
+    });
+    const restored = await (await client.get(`/api/score/endurance?year=${year}`, { cookie: adminCookie })).json();
+    assert.equal(restored[num].driver1_time, 1000);
+    const restoredAggregate = await (await client.get(`/api/score?year=${year}`, { cookie: adminCookie })).json();
+    assert.equal(restoredAggregate.manualScores[num]['inactive-test'], 7.5);
+  });
+});

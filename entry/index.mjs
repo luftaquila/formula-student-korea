@@ -86,9 +86,15 @@ function ensureYearTable(year) {
   if (_ensuredYearTables.has(tableName)) return tableName;
   const y = Number(year);
   db.exec(`CREATE TABLE IF NOT EXISTS '${tableName}' (
-    num INTEGER PRIMARY KEY, univ TEXT NOT NULL, team TEXT NOT NULL, type TEXT DEFAULT NULL
+    num INTEGER PRIMARY KEY,
+    univ TEXT NOT NULL,
+    team TEXT NOT NULL,
+    type TEXT DEFAULT NULL,
+    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+    active_revision INTEGER NOT NULL DEFAULT 0
   )`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${y}_type ON '${tableName}'(type)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${y}_active ON '${tableName}'(active)`);
   _ensuredYearTables.add(tableName);
   return tableName;
 }
@@ -118,18 +124,28 @@ db.exec(`CREATE TABLE IF NOT EXISTS lifecycle_outbox (
   created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
   updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
 )`);
+db.exec(`CREATE TABLE IF NOT EXISTS entry_active_revision (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  value INTEGER NOT NULL DEFAULT 0
+)`);
+db.prepare("INSERT OR IGNORE INTO entry_active_revision (id, value) VALUES (1, 0)").run();
 try { db.exec("ALTER TABLE lifecycle_outbox ADD COLUMN locked_until INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
 try { db.exec("ALTER TABLE lifecycle_outbox ADD COLUMN locked_by TEXT NOT NULL DEFAULT ''"); } catch { /* already exists */ }
 db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_ready ON lifecycle_outbox(status, next_attempt_at, id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_service_id ON lifecycle_outbox(service, id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_service_status_id ON lifecycle_outbox(service, status, id)");
 
-// 기존 테이블에 type 컬럼 마이그레이션
+// 기존 테이블에 엔트리 메타데이터 컬럼 마이그레이션
 for (const year of getAvailableYears()) {
   const tableName = getTableName(year);
   try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN type TEXT DEFAULT NULL`); }
   catch (e) { /* column already exists */ }
+  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN active INTEGER NOT NULL DEFAULT 1`); }
+  catch (e) { /* column already exists */ }
+  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN active_revision INTEGER NOT NULL DEFAULT 0`); }
+  catch (e) { /* column already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${Number(year)}_type ON '${tableName}'(type)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${Number(year)}_active ON '${tableName}'(active)`);
 }
 
 /* ============================================
@@ -140,7 +156,7 @@ const logger = createLogger(db, "entry");
 const app = createApp({ express }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/years") return null;
-  if (req.path === "/api/entries" && req.method === "GET") return null;
+  if (req.path === "/api/entries" && req.method === "GET" && req.query.includeInactive !== "true") return null;
   if (req.path === "/api/vehicle-types" && req.method === "GET") return null;
   return "admin";
 });
@@ -210,6 +226,9 @@ function validateBulkData(data) {
     if (typeof value.team !== "string" || !value.team.trim()) {
       return { valid: false, error: `엔트리 ${key}: 올바르지 않은 팀명입니다.` };
     }
+    if (value.active !== undefined && typeof value.active !== "boolean") {
+      return { valid: false, error: `엔트리 ${key}: active는 boolean이어야 합니다.` };
+    }
   }
 
   return { valid: true, data: parsed };
@@ -260,6 +279,11 @@ function validateBulkIntentList(data, label) {
    DB 헬퍼
    ============================================ */
 const dbRun = createDbRun();
+
+function nextActiveRevision() {
+  db.prepare("UPDATE entry_active_revision SET value = value + 1 WHERE id = 1").run();
+  return db.prepare("SELECT value FROM entry_active_revision WHERE id = 1").get().value;
+}
 
 /* ============================================
    서비스 간 알림 헬퍼
@@ -513,6 +537,16 @@ function buildEntryRenumberedEvents(prevNum, newNum, year, entry) {
   }));
 }
 
+function buildEntryActiveEvents(num, year, active, revision) {
+  return configuredLifecycleServices().map((svc) => ({
+    eventType: "team.active",
+    service: svc.name,
+    method: "PATCH",
+    path: "/api/internal/team-active",
+    body: { num: Number(num), year: Number(year), active: active === true, revision: Number(revision) },
+  }));
+}
+
 const lifecycleRetryTimer = startLifecycleOutboxRetry();
 
 /* ============================================
@@ -639,6 +673,8 @@ function buildRenumberPlan(moves, reservedNums = []) {
         univ: cycleMove.oldEntry.univ,
         team: cycleMove.oldEntry.team,
         type: cycleMove.oldEntry.type || null,
+        active: !!cycleMove.oldEntry.active,
+        active_revision: cycleMove.oldEntry.active_revision || 0,
       },
     });
     remaining.delete(cyclePrev);
@@ -665,6 +701,14 @@ function lifecycleRowRefsNumber(row, num, year) {
       const body = JSON.parse(row.body);
       return Number(body.year) === targetYear
         && (Number(body.prevNum) === targetNum || Number(body.newNum) === targetNum);
+    } catch {
+      return false;
+    }
+  }
+  if (row.event_type === "team.active" && row.body) {
+    try {
+      const body = JSON.parse(row.body);
+      return Number(body.year) === targetYear && Number(body.num) === targetNum;
     } catch {
       return false;
     }
@@ -738,6 +782,8 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
           univ: newRow.univ,
           team: newRow.team,
           type: newRow.type || null,
+          active: newRow.active,
+          active_revision: newRow.active_revision,
         },
         oldEntry: oldRow,
       });
@@ -758,6 +804,8 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
             univ: matchedNew.univ,
             team: matchedNew.team,
             type: matchedNew.type || null,
+            active: matchedNew.active,
+            active_revision: matchedNew.active_revision,
           },
           oldEntry: oldRow,
         });
@@ -832,11 +880,17 @@ app.get("/api/years", (req, res) => {
 // GET /api/entries - 모든 엔트리 조회
 app.get("/api/entries", withYearTable, (req, res) => {
   const { tableName, year } = req;
+  const includeInactive = req.query.includeInactive === "true";
 
   const result = dbRun(() => {
     const data = {};
-    for (const row of db.prepare(`SELECT * FROM '${tableName}'`).all()) {
-      data[row.num] = { univ: row.univ, team: row.team, type: row.type };
+    const rows = db.prepare(`
+      SELECT num, univ, team, type, active
+      FROM '${tableName}'
+      ${includeInactive ? "" : "WHERE active = 1"}
+    `).all();
+    for (const row of rows) {
+      data[row.num] = { univ: row.univ, team: row.team, type: row.type, active: !!row.active };
     }
     return data;
   });
@@ -874,9 +928,10 @@ app.post("/api/entries", withYearTable, (req, res) => {
   const result = dbRun(() =>
     db.transaction(() => {
       assertNoPendingLifecycleRefs([numValidation.value], year);
+      const revision = nextActiveRevision();
       return db
-        .prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`)
-        .run(numValidation.value, dataValidation.univ, dataValidation.team, dataValidation.type);
+        .prepare(`INSERT INTO '${tableName}' (num, univ, team, type, active, active_revision) VALUES (?, ?, ?, ?, 1, ?)`)
+        .run(numValidation.value, dataValidation.univ, dataValidation.team, dataValidation.type, revision);
     })(),
   );
 
@@ -926,7 +981,7 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
         // prevNum의 downstream(검차·대기열 등)이 newNum의 다른 팀에게 조용히 승계된다. same-num
         // 경로와 동일하게, 정체성이 바뀌면 명시적 intent="retain"(명칭 정정 후 이동)일 때만
         // 허용하고, 아니면 409로 거부한다(팀 교체는 삭제 후 재등록으로 처리).
-        const existingPrev = db.prepare(`SELECT univ, team FROM '${tableName}' WHERE num = ?`).get(prevNum);
+        const existingPrev = db.prepare(`SELECT univ, team, active, active_revision FROM '${tableName}' WHERE num = ?`).get(prevNum);
         if (!existingPrev) {
           throw { status: 404, message: "존재하지 않는 엔트리 번호입니다." };
         }
@@ -971,10 +1026,13 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
       }
 
       if (numChanged) {
+        const status = db.prepare(`SELECT active, active_revision FROM '${tableName}' WHERE num = ?`).get(newNum);
         events = buildEntryRenumberedEvents(prevNum, newNum, year, {
           univ: dataValidation.univ,
           team: dataValidation.team,
           type: dataValidation.type,
+          active: !!status.active,
+          active_revision: status.active_revision,
         });
       }
 
@@ -1013,6 +1071,49 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
   }
 
   logger.log(req, "entry.update", { year, univ: dataValidation.univ, team: dataValidation.team, type: dataValidation.type }, `#${newNum}`);
+  res.status(200).send();
+});
+
+// PATCH /api/entries/:num/active - 엔트리 활성/비활성 상태 변경
+app.patch("/api/entries/:num/active", withYearTable, async (req, res) => {
+  const { tableName, year } = req;
+  const numValidation = validateEntryNum(req.params.num);
+  if (!numValidation.valid) return res.status(400).send(numValidation.error);
+  if (typeof req.body.active !== "boolean") return res.status(400).send("active는 boolean이어야 합니다.");
+
+  const num = numValidation.value;
+  const active = req.body.active;
+  const result = dbRun(() => db.transaction(() => {
+    const existing = db.prepare(`SELECT active, active_revision FROM '${tableName}' WHERE num = ?`).get(num);
+    if (!existing) throw { status: 404, message: "존재하지 않는 엔트리 번호입니다." };
+    if (!!existing.active === active) return { changed: false, revision: existing.active_revision, eventIds: [] };
+
+    assertNoPendingLifecycleRefs([num], year);
+    const revision = nextActiveRevision();
+    db.prepare(`UPDATE '${tableName}' SET active = ?, active_revision = ? WHERE num = ?`)
+      .run(active ? 1 : 0, revision, num);
+    const eventIds = insertLifecycleEvents(buildEntryActiveEvents(num, year, active, revision));
+    return { changed: true, revision, eventIds };
+  })());
+
+  if (!result.success) {
+    logger.warn(req, "entry.active", { error: result.error, year, active }, `#${num}`);
+    return res.status(result.status).send(result.error);
+  }
+  if (!result.result.changed) return res.status(200).send();
+
+  logger.log(req, active ? "entry.activate" : "entry.deactivate", { year, revision: result.result.revision }, `#${num}`);
+  broadcastEntries(year, "active", { num, active, revision: result.result.revision });
+  warnUnconfiguredLifecycleServices(req, { op: active ? "activate" : "deactivate", year, nums: [num] });
+
+  await processLifecycleOutbox({ ids: result.result.eventIds });
+  if (sendLifecyclePending(
+    res,
+    result.result.eventIds,
+    active
+      ? "엔트리 재활성화는 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다."
+      : "엔트리 비활성화는 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다.",
+  )) return;
   res.status(200).send();
 });
 
@@ -1111,11 +1212,11 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
 
   const result = dbRun(() => {
     return db.transaction(() => {
-      const oldRows = db.prepare(`SELECT num, univ, team, type FROM '${tableName}'`).all();
+      const oldRows = db.prepare(`SELECT num, univ, team, type, active, active_revision FROM '${tableName}'`).all();
       const vtTable = ensureVtTable(year);
       const validTypes = new Set(db.prepare(`SELECT name FROM '${vtTable}'`).all().map(t => t.name));
       const newRowsByNum = new Map();
-      const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team, type) VALUES (?, ?, ?, ?)`);
+      const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team, type, active, active_revision) VALUES (?, ?, ?, ?, ?, ?)`);
       for (const [k, v] of Object.entries(validation.data)) {
         const validatedType = v.type || null;
         if (validatedType && !validTypes.has(validatedType)) {
@@ -1126,6 +1227,8 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
           univ: v.univ.trim(),
           team: v.team.trim(),
           type: validatedType,
+          active: v.active !== false,
+          active_revision: nextActiveRevision(),
         });
       }
 
@@ -1144,9 +1247,25 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
 
       db.prepare(`DELETE FROM '${tableName}'`).run();
       for (const row of newRowsByNum.values()) {
-        query.run(row.num, row.univ, row.team, row.type);
+        query.run(row.num, row.univ, row.team, row.type, row.active ? 1 : 0, row.active_revision);
       }
-      const eventIds = insertLifecycleEvents(events);
+      const oldRowsByIdentity = new Map();
+      for (const oldRow of oldRows) {
+        const identity = entryIdentity(oldRow);
+        const matches = oldRowsByIdentity.get(identity) || [];
+        matches.push(oldRow);
+        oldRowsByIdentity.set(identity, matches);
+      }
+      const activeEvents = [...newRowsByNum.values()].flatMap((row) => {
+        const identityMatches = oldRowsByIdentity.get(entryIdentity(row)) || [];
+        const oldRow = identityMatches.length === 1 ? identityMatches[0] : null;
+        if (oldRow && !!oldRow.active === row.active) return [];
+        // 신규/교체 엔트리의 활성 기본값은 true다. 기존 팀은 번호가 바뀌었더라도
+        // 실제 상태 변경만 fan-out하고, 신규/교체 비활성 팀은 명시적으로 전파한다.
+        if (!oldRow && row.active) return [];
+        return buildEntryActiveEvents(row.num, year, row.active, row.active_revision);
+      });
+      const eventIds = insertLifecycleEvents([...events, ...activeEvents]);
       return { deletedNums, renumberCount, eventIds };
     })();
   });

@@ -1700,3 +1700,57 @@ describe('Traffic legacy record consolidation migration', () => {
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name = 'random_notes'").get().c, 1);
   });
 });
+
+describe('Entry active-state synchronization', () => {
+  const YEAR = new Date().getFullYear();
+  const NUM = 990;
+  const NAME = `FSK ${YEAR} Inactive Run`;
+
+  it('preserves records while hiding and blocking an inactive team', async () => {
+    const created = await client.post('/api/records', {
+      body: {
+        name: 'Inactive Run',
+        data: { time: new Date().toISOString(), type: '가속', entry: { num: NUM, univ: 'U', team: 'T' }, result: 41000 },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(created.status, 201);
+    const rowid = (await created.json()).record.rowid;
+    await client.post('/api/wireless/select', {
+      body: { event_type: '가속', team: { num: NUM, univ: 'U', team: 'T' }, event_name: 'Inactive Run' },
+      cookie: adminCookie,
+    });
+
+    const deactivate = await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num: NUM, year: YEAR, active: false, revision: 30 },
+    });
+    assert.equal(deactivate.status, 200);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ? AND num = ?").get(NAME, NUM).c, 1);
+    assert.deepEqual(await (await client.get(`/api/records/${encodeURIComponent(NAME)}`, { cookie: adminCookie })).json(), []);
+    const yearGroups = await (await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie })).json();
+    assert.ok(!yearGroups.some((group) => group.records.some((row) => row.num === NUM)));
+    assert.equal((await client.patch(`/api/records/${encodeURIComponent(NAME)}/${rowid}`, {
+      body: { field: 'cones', value: 1 }, cookie: adminCookie,
+    })).status, 409);
+    assert.equal((await client.post('/api/records', {
+      body: { name: 'Blocked Run', data: { time: new Date().toISOString(), type: '가속', entry: { num: NUM, univ: 'U', team: 'T' }, result: 42000 } },
+      cookie: adminCookie,
+    })).status, 409);
+    const session = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const accel = session.sessions.find((item) => item.event_type === '가속');
+    assert.equal(accel.team, null, 'in-progress team selection is cleared');
+
+    await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num: NUM, year: YEAR, active: true, revision: 29 },
+    });
+    assert.deepEqual(await (await client.get(`/api/records/${encodeURIComponent(NAME)}`, { cookie: adminCookie })).json(), []);
+    await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num: NUM, year: YEAR, active: true, revision: 31 },
+    });
+    const restored = await (await client.get(`/api/records/${encodeURIComponent(NAME)}`, { cookie: adminCookie })).json();
+    assert.equal(restored[0].result, 41000);
+  });
+});

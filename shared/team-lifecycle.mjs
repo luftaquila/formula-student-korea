@@ -21,7 +21,9 @@ function renumberTeamRows(db, table, prevNum, newNum, year) {
   return db.prepare(`UPDATE ${table} SET team_num = ? WHERE year = ? AND team_num = ?`).run(newNum, year, prevNum).changes;
 }
 
-export function registerTeamLifecycleRoutes(app, { db, dbRun, logger, requireInternalRequest, broadcastEvent, tables, channels }) {
+export function registerTeamLifecycleRoutes(app, {
+  db, dbRun, logger, requireInternalRequest, broadcastEvent, tables, channels, statusTable,
+}) {
   app.delete("/api/internal/team/:num", (req, res) => {
     if (!requireInternalRequest(req, res)) return;
 
@@ -44,6 +46,10 @@ export function registerTeamLifecycleRoutes(app, { db, dbRun, logger, requireInt
         for (const table of tables) {
           assertIdentifier(table);
           db.prepare(`DELETE FROM ${table} WHERE year = ? AND team_num = ?`).run(year, num);
+        }
+        if (statusTable) {
+          assertIdentifier(statusTable);
+          db.prepare(`DELETE FROM ${statusTable} WHERE year = ? AND team_num = ?`).run(year, num);
         }
       })();
     });
@@ -75,6 +81,18 @@ export function registerTeamLifecycleRoutes(app, { db, dbRun, logger, requireInt
     const result = dbRun(() => {
       db.transaction(() => {
         for (const table of tables) renumberTeamRows(db, table, prevNum, newNum, year);
+        if (statusTable) {
+          assertIdentifier(statusTable);
+          renumberTeamRows(db, statusTable, prevNum, newNum, year);
+          if (req.body.entry && typeof req.body.entry.active === "boolean") {
+            const revision = Number(req.body.entry.active_revision) || 0;
+            db.prepare(`
+              INSERT INTO ${statusTable} (year, team_num, active, revision) VALUES (?, ?, ?, ?)
+              ON CONFLICT(year, team_num) DO UPDATE
+              SET active = excluded.active, revision = excluded.revision
+            `).run(year, newNum, req.body.entry.active ? 1 : 0, revision);
+          }
+        }
       })();
     });
 

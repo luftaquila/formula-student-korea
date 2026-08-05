@@ -1452,3 +1452,63 @@ describe('lifecycle outbox — dead-letter + admin recovery', () => {
     assert.equal(missing.status, 404, 'discarding a missing row is 404');
   });
 });
+
+describe('Entry active state', () => {
+  let statusServer;
+
+  before(async () => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    const calls = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.patch('/api/internal/team-active', (req, res) => {
+      calls.push(req.body);
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    statusServer = { ...started, calls };
+    process.env.DOCUMENTS_SERVER = started.baseUrl;
+    await client.post('/api/entries', {
+      body: { num: 990, univ: 'Inactive Univ', team: 'Inactive Team' },
+      cookie: adminCookie,
+    });
+  });
+
+  after(async () => {
+    delete process.env.DOCUMENTS_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await stopServer(statusServer.server);
+  });
+
+  it('hides inactive entries by default and exposes them only to an admin query', async () => {
+    const deactivate = await client.patch('/api/entries/990/active', {
+      body: { active: false },
+      cookie: adminCookie,
+    });
+    assert.equal(deactivate.status, 200);
+    assert.equal(statusServer.calls.length, 1);
+    assert.equal(statusServer.calls[0].num, 990);
+    assert.equal(statusServer.calls[0].active, false);
+    assert.ok(Number.isInteger(statusServer.calls[0].revision));
+
+    const publicEntries = await (await client.get('/api/entries')).json();
+    assert.equal(publicEntries['990'], undefined);
+
+    const unauthorized = await client.get('/api/entries?includeInactive=true');
+    assert.equal(unauthorized.status, 401);
+
+    const allEntries = await (await client.get('/api/entries?includeInactive=true', { cookie: adminCookie })).json();
+    assert.equal(allEntries['990'].active, false);
+
+    const activate = await client.patch('/api/entries/990/active', {
+      body: { active: true },
+      cookie: adminCookie,
+    });
+    assert.equal(activate.status, 200);
+    assert.equal(statusServer.calls.at(-1).active, true);
+    assert.ok(statusServer.calls.at(-1).revision > statusServer.calls[0].revision);
+    const restored = await (await client.get('/api/entries')).json();
+    assert.equal(restored['990'].active, true);
+  });
+});

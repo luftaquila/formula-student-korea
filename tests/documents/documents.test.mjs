@@ -2076,3 +2076,55 @@ describe('DELETE /api/internal/team/:num', () => {
     assert.ok(statusData.status.some(s => s.team_num === 1), 'team 1 should remain in session');
   });
 });
+
+describe('Entry active-state synchronization', () => {
+  const year = 2090;
+  const num = 990;
+  let sessionId;
+
+  before(() => {
+    db.prepare("INSERT OR REPLACE INTO student_team (email, team_num, year) VALUES (?, ?, ?)")
+      .run('student1@test.com', num, year);
+    sessionId = Number(db.prepare(`
+      INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year)
+      VALUES ('Inactive Session', '', '2020-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', '', 1000, 'admin@test.com', ?)
+    `).run(year).lastInsertRowid);
+    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, num);
+    db.prepare(`
+      INSERT INTO submission (session_id, team_num, submitted_by, submitted_at, total_size, is_late, attempt_no)
+      VALUES (?, ?, 'student1@test.com', '2026-01-01T00:00:00.000Z', 0, 0, 1)
+    `).run(sessionId, num);
+  });
+
+  it('hides mappings, sessions, and submissions without deleting them', async () => {
+    const deactivate = await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year, active: false, revision: 50 },
+    });
+    assert.equal(deactivate.status, 200);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM submission WHERE session_id = ? AND team_num = ?").get(sessionId, num).c, 1);
+    const mappings = await (await client.get(`/api/admin/student-teams?year=${year}`, { cookie: chiefCookie })).json();
+    assert.ok(!mappings.some((row) => row.team_num === num));
+    const studentView = await (await client.get('/api/sessions', { cookie: studentCookie })).json();
+    assert.notEqual(studentView.team?.team_num, num);
+    assert.ok(!studentView.sessions.some((session) => session.id === sessionId));
+    const status = await (await client.get(`/api/admin/sessions/${sessionId}/status`, { cookie: chiefCookie })).json();
+    assert.deepEqual(status.status, []);
+    assert.equal((await client.post('/api/admin/student-teams', {
+      body: { email: 'hidden@test.com', team_num: num, year }, cookie: chiefCookie,
+    })).status, 409);
+
+    await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year, active: true, revision: 49 },
+    });
+    assert.deepEqual((await (await client.get(`/api/admin/sessions/${sessionId}/status`, { cookie: chiefCookie })).json()).status, []);
+    await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year, active: true, revision: 51 },
+    });
+    const restored = await (await client.get(`/api/admin/sessions/${sessionId}/status`, { cookie: chiefCookie })).json();
+    assert.equal(restored.status[0].team_num, num);
+    assert.ok(restored.status[0].submission);
+  });
+});

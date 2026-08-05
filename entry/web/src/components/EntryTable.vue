@@ -12,6 +12,10 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  activeUpdating: {
+    type: Set,
+    default: () => new Set(),
+  },
 });
 
 const tableRef = ref(null);
@@ -21,7 +25,7 @@ const { stickyCols, lineX, startDrag } = useStickyColumns({
   columnSelectors: [".col-num", ".col-univ", ".col-team", ".col-type"],
 });
 
-const emit = defineEmits(["update", "delete"]);
+const emit = defineEmits(["update", "active", "delete"]);
 
 const sortKey = ref(null);
 const sortOrder = ref("asc");
@@ -113,6 +117,11 @@ function handleDelete(num) {
     emit("delete", num);
   }
 }
+
+function toggleActive(entry) {
+  if (props.activeUpdating.has(entry.num)) return;
+  emit("active", { ...entry, active: entry.active === false });
+}
 </script>
 
 <template>
@@ -133,12 +142,13 @@ function handleDelete(num) {
           <th class="col-type sortable" @click="handleSort('type')">
             유형 <span class="sort-icon">{{ getSortIcon("type") }}</span>
           </th>
+          <th class="col-active">상태</th>
           <th class="col-actions">삭제</th>
         </tr>
       </thead>
       <tbody>
         <tr v-if="sortedEntries.length === 0">
-          <td colspan="5" class="empty-state">
+          <td colspan="6" class="empty-state">
             <div class="empty-content">
               <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <path
@@ -149,7 +159,7 @@ function handleDelete(num) {
             </div>
           </td>
         </tr>
-        <tr v-for="entry in sortedEntries" :key="entry.num">
+        <tr v-for="entry in sortedEntries" :key="entry.num" :class="{ 'entry-inactive': entry.active === false }">
           <!-- 번호 -->
           <td class="col-num" @click="startEdit(entry.num, 'num')">
             <input
@@ -207,6 +217,22 @@ function handleDelete(num) {
             </select>
             <span v-else-if="entry.type" class="badge" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span>
             <span v-else class="cell-text">-</span>
+          </td>
+          <!-- 활성 상태 -->
+          <td class="col-active">
+            <button
+              type="button"
+              class="status-toggle"
+              :class="{ active: entry.active !== false }"
+              role="switch"
+              :aria-checked="entry.active !== false"
+              :aria-label="`${entry.num}번 엔트리 ${entry.active !== false ? '비활성화' : '활성화'}`"
+              :disabled="activeUpdating.has(entry.num)"
+              @click="toggleActive(entry)"
+            >
+              <span class="status-toggle-track"><span class="status-toggle-thumb"></span></span>
+              <span>{{ activeUpdating.has(entry.num) ? "처리 중" : (entry.active !== false ? "활성" : "비활성") }}</span>
+            </button>
           </td>
           <!-- 삭제 -->
           <td class="col-actions">
@@ -283,9 +309,72 @@ function handleDelete(num) {
 .col-univ,
 .col-team,
 .col-type,
+.col-active,
 .col-actions {
   width: 1%;
   white-space: nowrap;
+}
+
+.entry-inactive td {
+  color: var(--text-tertiary);
+  background-color: var(--bg-secondary);
+}
+
+.entry-inactive .col-num,
+.entry-inactive .col-univ,
+.entry-inactive .col-team,
+.entry-inactive .col-type {
+  background-color: var(--bg-secondary) !important;
+}
+
+.status-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.status-toggle:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.status-toggle-track {
+  position: relative;
+  width: 2rem;
+  height: 1.1rem;
+  border-radius: 999px;
+  background: var(--text-tertiary);
+  transition: background-color 0.15s ease;
+}
+
+.status-toggle-thumb {
+  position: absolute;
+  top: 0.15rem;
+  left: 0.15rem;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  background: white;
+  transition: transform 0.15s ease;
+}
+
+.status-toggle.active {
+  color: var(--accent-success);
+}
+
+.status-toggle.active .status-toggle-track {
+  background: var(--accent-success);
+}
+
+.status-toggle.active .status-toggle-thumb {
+  transform: translateX(0.9rem);
 }
 
 .col-num {

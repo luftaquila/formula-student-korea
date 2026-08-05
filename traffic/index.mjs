@@ -6,6 +6,7 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInt
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { EVENT_TYPES } from "../shared/constants.js";
+import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
 import { formatEnduranceDetail, enduranceTotal } from "./lib/event-timing.mjs";
 
 const PORT = 9500;
@@ -21,7 +22,7 @@ const db = createDatabase(Database, options.dbPath || "./data/traffic.db");
 // 쿼리에서 제외해야 한다(아래 reservedSql).
 const RESERVED_TABLES = [
   "controller", "event_mode", "record_visibility", "record", "logs",
-  "wireless_event", "wireless_mapping", "wireless_telemetry", "wireless_light", "wireless_session",
+  "wireless_event", "wireless_mapping", "wireless_telemetry", "wireless_light", "wireless_session", "team_status",
 ];
 const reservedSql = RESERVED_TABLES.map((n) => `'${n}'`).join(", ");
 
@@ -77,6 +78,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS record (
 db.exec("DROP INDEX IF EXISTS idx_record_name_id");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_record_name_legacy_rowid ON record(name, legacy_rowid)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_record_name_num ON record(name, num)");
+ensureTeamStatusTable(db);
 
 /* ============================================
    무선(LoRa) 계측 서브시스템 테이블
@@ -308,12 +310,17 @@ function getYearRecordFiles(year) {
 }
 
 function getRecordRows(name) {
+  const year = recordYearFromName(name);
   return db.prepare(`
     SELECT legacy_rowid AS rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard
     FROM record
     WHERE name = ?
+      AND (? IS NULL OR NOT EXISTS (
+        SELECT 1 FROM team_status s
+        WHERE s.year = ? AND s.team_num = record.num AND s.active = 0
+      ))
     ORDER BY legacy_rowid
-  `).all(name);
+  `).all(name, year, year);
 }
 
 function getYearRecordGroups(year) {
@@ -325,8 +332,12 @@ function getYearRecordGroups(year) {
     FROM record r
     LEFT JOIN record_visibility v ON v.name = r.name
     WHERE r.name >= ? AND r.name < ? AND COALESCE(v.visible, 1) != 0
+      AND NOT EXISTS (
+        SELECT 1 FROM team_status s
+        WHERE s.year = ? AND s.team_num = r.num AND s.active = 0
+      )
     ORDER BY r.name, r.legacy_rowid
-  `).all(startName, endName);
+  `).all(startName, endName, Number(year));
   const groups = [];
   let current = null;
   for (const row of rows) {
@@ -353,6 +364,10 @@ function recordFileExists(name) {
 }
 
 function insertRecordRow(name, data) {
+  const year = recordYearFromName(name) ?? currentRecordYear();
+  if (!isTeamActive(db, year, data.entry.num)) {
+    throw { status: 409, message: "비활성화된 엔트리에는 기록을 저장할 수 없습니다." };
+  }
   db.prepare("INSERT OR IGNORE INTO record_visibility (name, visible) VALUES (?, 1)").run(name);
   const nextRowid = db.prepare("SELECT COALESCE(MAX(legacy_rowid), 0) + 1 AS value FROM record WHERE name = ?").get(name).value;
   db.prepare(`
@@ -828,6 +843,13 @@ function validateRecordName(name) {
   return { valid: true, value: sanitized };
 }
 
+function recordYearFromName(name) {
+  const match = String(name || "").match(/^FSK (\d{4}) /);
+  if (!match) return null;
+  const year = Number(match[1]);
+  return year >= 2000 && year <= 2099 ? year : null;
+}
+
 function tableExists(name) {
   return recordFileExists(name);
 }
@@ -881,6 +903,9 @@ function validateSelection(body) {
         typeof teamRaw.univ !== "string" || !teamRaw.univ ||
         typeof teamRaw.team !== "string" || !teamRaw.team) {
       return { valid: false, error: "올바르지 않은 팀 정보입니다." };
+    }
+    if (!isTeamActive(db, currentRecordYear(), teamRaw.num)) {
+      return { valid: false, error: "비활성화된 엔트리는 선택할 수 없습니다." };
     }
   }
   let event_name = typeof body?.event_name === "string" ? body.event_name.trim() : null;
@@ -1020,6 +1045,9 @@ app.post("/api/records", (req, res) => {
 
   const name = `FSK ${new Date().getFullYear()} ${nameValidation.value}`;
   const data = req.body.data;
+  if (!isTeamActive(db, currentRecordYear(), data.entry.num)) {
+    return res.status(409).send("비활성화된 엔트리에는 기록을 저장할 수 없습니다.");
+  }
 
   const result = dbRun(() => {
     return db.transaction(() => insertRecordRow(name, data))();
@@ -1060,6 +1088,13 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
 
   if (isNaN(rowid)) {
     return res.status(400).send("올바르지 않은 rowid입니다.");
+  }
+
+  const target = db.prepare("SELECT num FROM record WHERE name = ? AND legacy_rowid = ?").get(name, rowid);
+  if (!target) return res.status(404).send("기록을 찾을 수 없습니다.");
+  const recordYear = recordYearFromName(name);
+  if (recordYear && !isTeamActive(db, recordYear, target.num)) {
+    return res.status(409).send("비활성화된 엔트리의 기록은 수정할 수 없습니다.");
   }
 
   const { field, value } = req.body;
@@ -1174,6 +1209,17 @@ app.delete("/api/records/:name", (req, res) => {
    Internal API: 엔트리 라이프사이클 연동
    ============================================ */
 
+registerTeamStatusRoute(app, {
+  db, dbRun, logger, requireInternalRequest, broadcastEvent,
+  channels: ["records"],
+  onDeactivate: ({ year, num }) => updateWirelessBindingsForDelete(num, year),
+  onApplied: ({ deactivation }) => {
+    for (const eventType of deactivation || []) {
+      broadcastEvent("wireless:session", getSession(eventType));
+    }
+  },
+});
+
 app.delete("/api/internal/team/:num", (req, res) => {
   if (!requireInternalRequest(req, res)) return;
 
@@ -1198,6 +1244,7 @@ app.delete("/api/internal/team/:num", (req, res) => {
         WHERE name >= ? AND name < ? AND num = ?
       `).run(startName, endName, num).changes;
       const wirelessSessions = updateWirelessBindingsForDelete(num, year);
+      db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, num);
       return { invalidated, wirelessSessions };
     })();
   });
@@ -1253,6 +1300,15 @@ app.patch("/api/internal/team-num", (req, res) => {
         changed += db.prepare(`UPDATE record SET ${updates.join(", ")} WHERE name = ? AND num = ?`).run(...params, name, prevNum).changes;
       }
       const wirelessSessions = updateWirelessBindingsForRenumber(prevNum, newNum, year, entry);
+      const previousStatus = db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, prevNum);
+      db.prepare("DELETE FROM team_status WHERE year = ? AND team_num IN (?, ?)").run(year, prevNum, newNum);
+      const entryStatus = typeof entry.active === "boolean"
+        ? { active: entry.active ? 1 : 0, revision: Number(entry.active_revision) || 0 }
+        : previousStatus;
+      if (entryStatus) {
+        db.prepare("INSERT INTO team_status (year, team_num, active, revision) VALUES (?, ?, ?, ?)")
+          .run(year, newNum, entryStatus.active, entryStatus.revision);
+      }
       return { changed, wirelessSessions };
     })();
   });

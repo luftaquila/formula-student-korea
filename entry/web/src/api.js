@@ -49,8 +49,19 @@ export async function fetchYears() {
  * 모든 엔트리 목록 조회
  */
 export async function fetchEntries(year) {
-  const res = await request(`/api/entries${yearParam(year)}`);
+  const res = await request(`/api/entries?includeInactive=true${yearParam(year, "&")}`);
   return res.json();
+}
+
+/**
+ * 엔트리 활성 상태 변경
+ */
+export async function setEntryActive(num, active, year) {
+  const res = await request(`/api/entries/${num}/active${yearParam(year)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ active }),
+  });
+  return { pending: res.status === 202 };
 }
 
 /**
@@ -128,7 +139,7 @@ export async function uploadEntries(data, year, { replacements = [], retains = [
  * 엔트리 JSON 다운로드 URL
  */
 export function getDownloadUrl(year) {
-  return `${BASE_URL}/api/entries?download${year != null ? `&year=${year}` : ""}`;
+  return `${BASE_URL}/api/entries?download&includeInactive=true${year != null ? `&year=${year}` : ""}`;
 }
 
 /**

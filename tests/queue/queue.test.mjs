@@ -1757,3 +1757,55 @@ describe('Queue legacy → normalized migration', () => {
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = 5").get().c, 1);
   });
 });
+
+describe('Entry active-state synchronization', () => {
+  const year = new Date().getFullYear();
+  const num = 990;
+
+  it('clears only transient state, hides history, and ignores stale revisions', async () => {
+    const now = Date.now();
+    db.prepare("INSERT OR REPLACE INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES ('battery', ?, '01099999999', ?, ?)").run(num, now, year);
+    db.prepare("INSERT OR REPLACE INTO current_inspection (num, inspection, phone, year) VALUES (?, 'battery', '01099999999', ?)").run(num, year);
+    db.prepare("INSERT OR REPLACE INTO team_priority (num, inspection, year, priority) VALUES (?, 'battery', ?, 1)").run(num, year);
+    db.prepare("INSERT OR REPLACE INTO cancel_penalty (num, inspection, year, until, phone, queue_timestamp) VALUES (?, 'battery', ?, ?, '01099999999', ?)").run(num, year, now + 60000, now);
+    db.prepare("INSERT INTO inspection_history (num, inspection, timestamp, year) VALUES (?, 'battery', ?, ?)").run(num, now, year);
+    db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, exited_at, created_at, year) VALUES (?, 'battery', 1, ?, ?, ?, ?)").run(num, now - 2000, now - 1000, now - 2000, year);
+    db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, created_at, year) VALUES (?, 'battery', 1, ?, ?, ?)").run(num, now, now, year);
+    db.prepare("UPDATE booth SET occupied_by = ?, entered_at = ? WHERE inspection = 'battery' AND booth_num = 1").run(num, now);
+    db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES ('register', ?, 'battery', ?, ?)").run(num, now, year);
+
+    const deactivate = await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year, active: false, revision: 10 },
+    });
+    assert.equal(deactivate.status, 200);
+    for (const table of ['inspection_queue', 'current_inspection', 'team_priority', 'cancel_penalty']) {
+      assert.equal(db.prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE num = ? AND year = ?`).get(num, year).c, 0, `${table} cleared`);
+    }
+    assert.equal(db.prepare("SELECT occupied_by FROM booth WHERE inspection = 'battery' AND booth_num = 1").get().occupied_by, null);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM booth_log WHERE num = ? AND year = ? AND exited_at IS NULL").get(num, year).c, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM booth_log WHERE num = ? AND year = ? AND exited_at IS NOT NULL").get(num, year).c, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = ? AND year = ?").get(num, year).c, 1);
+
+    const history = await (await client.get('/api/admin/history/status', { cookie: chiefCookie })).json();
+    assert.ok(!(history.battery || []).includes(num));
+    const stats = await (await client.get(`/api/admin/stats?year=${year}`, { cookie: officialCookie })).json();
+    assert.ok(!stats.some((row) => row.num === num));
+    assert.equal((await client.get(`/api/admin/stats/${num}?year=${year}`, { cookie: officialCookie })).status, 404);
+
+    await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year, active: true, revision: 9 },
+    });
+    assert.equal(db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, num).active, 0);
+
+    await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year, active: true, revision: 11 },
+    });
+    assert.equal(db.prepare("SELECT active FROM team_status WHERE year = ? AND team_num = ?").get(year, num).active, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE num = ? AND year = ?").get(num, year).c, 0, 'transient queue is not restored');
+    const restoredHistory = await (await client.get('/api/admin/history/status', { cookie: chiefCookie })).json();
+    assert.ok((restoredHistory.battery || []).includes(num), 'preserved history is visible again');
+  });
+});
