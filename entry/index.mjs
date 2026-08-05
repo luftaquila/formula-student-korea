@@ -795,7 +795,6 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
   }
 
   const deletedNums = [];
-  const replacedNums = new Set();
   const moves = [];
   const retainedOldRowsByNewNum = new Map();
   const matchedOldNums = new Set();
@@ -869,7 +868,6 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
     }
     if (replacements.has(oldRow.num)) {
       deletedNums.push(oldRow.num); // 팀 교체 확정 → 기존 downstream 데이터 삭제
-      replacedNums.add(oldRow.num);
     } else if (retains.has(oldRow.num)) {
       retainedOldRowsByNewNum.set(oldRow.num, oldRow);
       continue; // 명칭 정정 확정 → 기존 데이터 유지(이벤트 없음)
@@ -882,7 +880,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
     }
   }
   if (ambiguous.length > 0) {
-    return { events: [], deletedNums: [], replacedNums, renumberCount: 0, ambiguous, retainedOldRowsByNewNum };
+    return { events: [], deletedNums: [], renumberCount: 0, ambiguous, retainedOldRowsByNewNum };
   }
 
   const events = [
@@ -895,7 +893,7 @@ function buildBulkLifecycleEvents(oldRows, newRowsByNum, year, explicitRenumbers
   for (const move of buildRenumberPlan(moves, reservedNums)) {
     events.push(...buildEntryRenumberedEvents(move.prevNum, move.newNum, year, move.entry));
   }
-  return { events, deletedNums, replacedNums, renumberCount: moves.length, ambiguous, retainedOldRowsByNewNum };
+  return { events, deletedNums, renumberCount: moves.length, ambiguous, retainedOldRowsByNewNum };
 }
 
 /* ============================================
@@ -953,7 +951,7 @@ app.get("/api/entries", withYearTable, (req, res) => {
 });
 
 // POST /api/entries - 새 엔트리 추가
-app.post("/api/entries", withYearTable, (req, res) => {
+app.post("/api/entries", withYearTable, async (req, res) => {
   const { tableName, year } = req;
 
   const numValidation = validateEntryNum(req.body.num);
@@ -973,9 +971,11 @@ app.post("/api/entries", withYearTable, (req, res) => {
     db.transaction(() => {
       assertNoPendingLifecycleRefs([numValidation.value], year);
       const revision = nextActiveRevision();
-      return db
+      const insertResult = db
         .prepare(`INSERT INTO '${tableName}' (num, univ, team, type, active, active_revision) VALUES (?, ?, ?, ?, 1, ?)`)
         .run(numValidation.value, dataValidation.univ, dataValidation.team, dataValidation.type, revision);
+      const eventIds = insertLifecycleEvents(buildEntryActiveEvents(numValidation.value, year, true, revision));
+      return { insertResult, revision, eventIds };
     })(),
   );
 
@@ -986,6 +986,9 @@ app.post("/api/entries", withYearTable, (req, res) => {
 
   logger.log(req, "entry.create", { year, univ: dataValidation.univ, team: dataValidation.team, type: dataValidation.type }, `#${numValidation.value}`);
   broadcastEntries(year, "create", { num: numValidation.value });
+  warnUnconfiguredLifecycleServices(req, { op: "create", year, nums: [numValidation.value] }, { activeOnly: true });
+  await processLifecycleOutbox({ ids: result.result.eventIds });
+  if (sendLifecyclePending(res, result.result.eventIds, "엔트리 추가는 반영되었고 일부 서비스 동기화는 재시도 대기 중입니다.")) return;
   res.status(201).send();
 });
 
@@ -1303,7 +1306,7 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
         ...oldRows.map((row) => row.num),
         ...newRowsByNum.keys(),
       ], year);
-      const { events, deletedNums, replacedNums, renumberCount, ambiguous, retainedOldRowsByNewNum } = buildBulkLifecycleEvents(
+      const { events, deletedNums, renumberCount, ambiguous, retainedOldRowsByNewNum } = buildBulkLifecycleEvents(
         oldRows, newRowsByNum, year, renumberValidation.renumbers, replacementsValidation.nums, retainsValidation.nums,
       );
       // 동일 번호의 팀 변경이 미선언 상태면 아무것도 쓰지 않고(읽기 전용 트랜잭션)
@@ -1327,21 +1330,21 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
       for (const row of newRowsByNum.values()) {
         query.run(row.num, row.univ, row.team, row.type, row.active ? 1 : 0, row.active_revision);
       }
-      const activeEvents = [...newRowsByNum.values()].flatMap((row) => {
+      const activeSnapshotRows = [...newRowsByNum.values()].filter((row) => {
         const oldRow = retainedOldRowsByNewNum.get(row.num) || null;
         // 번호가 바뀐 retained 팀에는 활성 상태가 같아도 snapshot 이벤트를 보낸다.
         // 기본 활성 팀은 소비자에 team_status 행이 없을 수 있고, dead-letter 처리된
         // 과거 삭제 때문에 목적지 번호에 다른 팀의 stale snapshot이 남아 있을 수 있다.
         // renumber 뒤의 새 revision 이벤트가 그 목적지를 현재 Entry 상태로 수렴시킨다.
-        if (oldRow && oldRow.num === row.num && !!oldRow.active === row.active) return [];
-        // 완전 신규 엔트리의 활성 기본값은 true이므로 snapshot이 필요 없지만, 같은 번호의
-        // 팀 교체는 선행 delete가 한 서비스에서 실패해 예전 상태가 남을 수 있다. 단건 교체와
-        // 동일하게 delete 뒤 authoritative snapshot을 보내 새 팀 상태로 수렴시킨다.
-        if (!oldRow && row.active && !replacedNums.has(row.num)) return [];
-        return buildEntryActiveEvents(row.num, year, row.active, row.active_revision);
+        return !(oldRow && oldRow.num === row.num && !!oldRow.active === row.active);
       });
+      // 신규 번호도 과거 dead delete/renumber 뒤에 재사용된 키일 수 있다. 신규·교체·번호
+      // 변경·상태 변경 행은 모두 authoritative snapshot을 보내고, 같은 번호에서 상태가
+      // 그대로인 retained 행만 생략한다.
+      const activeEvents = activeSnapshotRows.flatMap((row) =>
+        buildEntryActiveEvents(row.num, year, row.active, row.active_revision));
       const eventIds = insertLifecycleEvents([...events, ...activeEvents]);
-      return { deletedNums, renumberCount, eventIds };
+      return { deletedNums, renumberCount, activeSnapshotCount: activeSnapshotRows.length, eventIds };
     })();
   });
 
@@ -1362,9 +1365,11 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
   logger.log(req, "entry.bulk_upload", { year, count: Object.keys(validation.data).length });
   broadcastEntries(year, "bulk");
 
-  const { deletedNums, renumberCount, eventIds } = result.result;
+  const { deletedNums, renumberCount, activeSnapshotCount, eventIds } = result.result;
   if (deletedNums.length > 0 || renumberCount > 0) {
     warnUnconfiguredLifecycleServices(req, { op: "bulk", year, deleted: deletedNums.length, renumbered: renumberCount });
+  } else if (activeSnapshotCount > 0) {
+    warnUnconfiguredLifecycleServices(req, { op: "bulk", year, snapshots: activeSnapshotCount }, { activeOnly: true });
   }
   if (eventIds.length > 0) {
     await processLifecycleOutbox({ ids: eventIds });

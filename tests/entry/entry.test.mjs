@@ -948,10 +948,12 @@ describe('Entry delete → service notifications', () => {
   before(async () => {
     deletedNums = [];
     const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
     mockApp.delete('/api/internal/team/:num', (req, res) => {
       deletedNums.push({ num: Number(req.params.num), year: Number(req.query.year) });
       res.status(200).send();
     });
+    mockApp.patch('/api/internal/team-active', (_req, res) => res.status(200).send());
     const started = await startServer(mockApp);
     mockServer = started.server;
     mockUrl = started.baseUrl;
@@ -1310,6 +1312,59 @@ describe('Entry delete → service notifications', () => {
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
+  it('POST /api/entries/bulk snapshots an active team that reuses a dead renumber source', async () => {
+    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    await client.post('/api/entries/bulk', {
+      body: { data: { 401: { univ: 'MovedUniv', team: 'MovedTeam', active: false } } },
+      cookie: adminCookie,
+    });
+
+    const renumberCalls = [];
+    const activeCalls = [];
+    const mockApp = expressForMock();
+    mockApp.use(expressForMock.json());
+    mockApp.patch('/api/internal/team-num', (req, res) => {
+      renumberCalls.push(req.body);
+      res.status(500).send('down');
+    });
+    mockApp.patch('/api/internal/team-active', (req, res) => {
+      activeCalls.push(req.body);
+      res.status(200).send();
+    });
+    const started = await startServer(mockApp);
+    process.env.INSPECTION_SERVER = started.baseUrl;
+
+    const res = await client.post('/api/entries/bulk', {
+      body: {
+        data: {
+          401: { univ: 'ReusedUniv', team: 'ReusedTeam' },
+          402: { univ: 'MovedUniv', team: 'MovedTeam', active: false },
+        },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 202, 'the failed renumber remains queued without rolling back Entry');
+    assert.equal(renumberCalls.length, 1);
+    assert.deepEqual(activeCalls, [], 'same-service snapshots wait behind the failed renumber');
+
+    const rows = db.prepare("SELECT id, event_type, body FROM lifecycle_outbox WHERE service = 'inspection' ORDER BY id").all();
+    const renumberRow = rows.find((row) => row.event_type === 'team.renumber');
+    const reusedSnapshot = rows.find((row) => row.event_type === 'team.active' && JSON.parse(row.body).num === 401);
+    assert.ok(renumberRow);
+    assert.ok(reusedSnapshot, 'the newly active team at the vacated source gets an authoritative snapshot');
+
+    db.prepare("UPDATE lifecycle_outbox SET status = 'dead', attempts = 24, next_attempt_at = 0, locked_until = 0, locked_by = '' WHERE id = ?")
+      .run(renumberRow.id);
+    const retry = await client.post(`/api/admin/lifecycle-outbox/${reusedSnapshot.id}/retry`, { cookie: adminCookie });
+    assert.equal(retry.status, 200);
+    assert.ok(activeCalls.some((body) => body.num === 401 && body.active === true), 'the snapshot converges the reused source after the renumber dies');
+
+    await stopServer(started.server);
+    delete process.env.INSPECTION_SERVER;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+  });
+
   it('POST /api/entries/bulk uses a temporary renumber for number swaps', async () => {
     for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
     db.prepare("DELETE FROM lifecycle_outbox").run();
@@ -1608,6 +1663,58 @@ describe('lifecycle outbox — dead-letter + admin recovery', () => {
       db.prepare("DELETE FROM lifecycle_outbox").run();
     }
   });
+
+  it('fans out the initial active snapshot when create reuses a number with a dead delete', async () => {
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    const year = 2093;
+    const num = 881;
+    const documentsServer = process.env.DOCUMENTS_SERVER;
+    delete process.env.DOCUMENTS_SERVER;
+
+    let activeServer;
+    try {
+      assert.equal((await client.post(`/api/entries?year=${year}`, {
+        body: { num, univ: 'Old Create Univ', team: 'Old Create Team' }, cookie: adminCookie,
+      })).status, 201);
+      assert.equal((await client.patch(`/api/entries/${num}/active?year=${year}`, {
+        body: { active: false }, cookie: adminCookie,
+      })).status, 200);
+      const oldStatus = db.prepare(`SELECT active_revision FROM 'entry_${year}' WHERE num = ?`).get(num);
+      assert.equal((await client.delete(`/api/entries/${num}?year=${year}`, { cookie: adminCookie })).status, 200);
+
+      const deadDelete = db.prepare(`
+        INSERT INTO lifecycle_outbox
+          (event_type, service, method, path, body, attempts, status, next_attempt_at)
+        VALUES ('team.delete', 'inspection', 'DELETE', ?, NULL, 24, 'dead', 0)
+      `).run(`/api/internal/team/${num}?year=${year}`);
+
+      const calls = [];
+      const mockApp = expressForMock();
+      mockApp.use(expressForMock.json());
+      mockApp.patch('/api/internal/team-active', (req, res) => {
+        calls.push(req.body);
+        res.status(200).send();
+      });
+      const started = await startServer(mockApp);
+      activeServer = started.server;
+      process.env.INSPECTION_SERVER = started.baseUrl;
+
+      const recreate = await client.post(`/api/entries?year=${year}`, {
+        body: { num, univ: 'New Create Univ', team: 'New Create Team' }, cookie: adminCookie,
+      });
+      assert.equal(recreate.status, 201);
+      const current = db.prepare(`SELECT active, active_revision FROM 'entry_${year}' WHERE num = ?`).get(num);
+      assert.equal(!!current.active, true);
+      assert.ok(current.active_revision > oldStatus.active_revision);
+      assert.deepEqual(calls, [{ num, year, active: true, revision: current.active_revision }]);
+      assert.equal(db.prepare("SELECT status FROM lifecycle_outbox WHERE id = ?").get(deadDelete.lastInsertRowid).status, 'dead');
+    } finally {
+      if (activeServer) await stopServer(activeServer);
+      delete process.env.INSPECTION_SERVER;
+      if (documentsServer) process.env.DOCUMENTS_SERVER = documentsServer;
+      db.prepare("DELETE FROM lifecycle_outbox").run();
+    }
+  });
 });
 
 describe('Entry active state', () => {
@@ -1641,6 +1748,8 @@ describe('Entry active state', () => {
       body: { num: 990, univ: 'Inactive Univ', team: 'Inactive Team' },
       cookie: adminCookie,
     });
+    calls.length = 0;
+    events.length = 0;
   });
 
   after(async () => {
@@ -1749,6 +1858,9 @@ describe('Entry active state', () => {
       cookie: adminCookie,
     });
     assert.equal(seeded.status, 200);
+    statusServer.calls.length = 0;
+    statusServer.renumbers.length = 0;
+    statusServer.events.length = 0;
 
     const uploaded = await client.post(`/api/entries/bulk?year=${year}`, {
       body: { data: { 995: { univ: 'Move Inactive Univ', team: 'Move Inactive Team', active: false } } },
@@ -1780,6 +1892,9 @@ describe('Entry active state', () => {
       cookie: adminCookie,
     });
     assert.equal(seeded.status, 200);
+    statusServer.calls.length = 0;
+    statusServer.renumbers.length = 0;
+    statusServer.events.length = 0;
 
     const uploaded = await client.post(`/api/entries/bulk?year=${year}`, {
       body: { data: { 997: { univ: 'Reuse Univ', team: 'Reuse Team' } } },

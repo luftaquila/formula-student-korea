@@ -102,7 +102,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/years` | public | — | `[2025, 2024, ...]` | Available year list |
 | GET | `/api/entries` | public / admin | `?year=&download&includeInactive=true` | `{ num: { univ, team, type, active } }` | 기본 응답은 활성 엔트리만 포함. admin의 `includeInactive=true`는 비활성 엔트리도 포함하며 `download`는 JSON 파일 다운로드 |
-| POST | `/api/entries` | admin | `{ num, univ, team, type? }?year=` | 201 | Create entry |
+| POST | `/api/entries` | admin | `{ num, univ, team, type? }?year=` | 201 or 202 | Create entry and fan out its initial active snapshot to the four competition services (동기화 대기 시 202 pending_lifecycle) |
 | PATCH | `/api/entries/:num` | admin | `{ num, univ, team, type?, intent? }?year=` | 200, 202, or 409 | Update entry. 번호 변경/팀 교체는 durable outbox로 5개 서비스에 팬아웃 — 일부 동기화 대기 시 `202 { status: "pending_lifecycle" }`. 번호 유지 + 팀명 변경이 모호하면 `409 { message, ambiguous }` → `intent: "retain"\|"replacement"`로 재요청 |
 | PATCH | `/api/entries/:num/active` | admin | `{ active: boolean }?year=` | 200 or 202 | 엔트리 활성/비활성 전환. revision이 붙은 이벤트를 queue/inspection/score/traffic 4개 서비스에 fan-out하며 일부 동기화 대기 시 202. Documents는 영향받지 않음 |
 | DELETE | `/api/entries/:num` | admin | `?year=` | 200 or 202 | Delete single entry (동기화 대기 시 202 pending_lifecycle) |
