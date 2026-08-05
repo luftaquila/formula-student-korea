@@ -1664,6 +1664,83 @@ describe('lifecycle outbox — dead-letter + admin recovery', () => {
     }
   });
 
+  it('rejects an obsolete renumber retry after another move and target reuse', async () => {
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    const year = 2094;
+    const documentsServer = process.env.DOCUMENTS_SERVER;
+    delete process.env.DOCUMENTS_SERVER;
+
+    let renumberServer;
+    try {
+      assert.equal((await client.post(`/api/entries?year=${year}`, {
+        body: { num: 882, univ: 'Renumber Univ A', team: 'Renumber Team A' }, cookie: adminCookie,
+      })).status, 201);
+      assert.equal((await client.patch(`/api/entries/882?year=${year}`, {
+        body: { num: 883, univ: 'Renumber Univ A', team: 'Renumber Team A' }, cookie: adminCookie,
+      })).status, 200);
+      const staleTarget = db.prepare(`SELECT univ, team, type, active, active_revision FROM 'entry_${year}' WHERE num = 883`).get();
+      const staleBody = {
+        prevNum: 882,
+        newNum: 883,
+        year,
+        entry: { ...staleTarget, active: !!staleTarget.active },
+      };
+
+      assert.equal((await client.patch(`/api/entries/883?year=${year}`, {
+        body: { num: 884, univ: 'Renumber Univ A', team: 'Renumber Team A' }, cookie: adminCookie,
+      })).status, 200);
+      assert.equal((await client.post(`/api/entries?year=${year}`, {
+        body: { num: 883, univ: 'Renumber Univ B', team: 'Renumber Team B' }, cookie: adminCookie,
+      })).status, 201);
+
+      const staleInsert = db.prepare(`
+        INSERT INTO lifecycle_outbox
+          (event_type, service, method, path, body, attempts, status, next_attempt_at)
+        VALUES ('team.renumber', 'inspection', 'PATCH', '/api/internal/team-num', ?, 24, 'dead', 0)
+      `).run(JSON.stringify(staleBody));
+      const staleId = Number(staleInsert.lastInsertRowid);
+
+      const calls = [];
+      const mockApp = expressForMock();
+      mockApp.use(expressForMock.json());
+      mockApp.patch('/api/internal/team-num', (req, res) => {
+        calls.push(req.body);
+        res.status(200).send();
+      });
+      const started = await startServer(mockApp);
+      renumberServer = started.server;
+      process.env.INSPECTION_SERVER = started.baseUrl;
+
+      const staleRetry = await client.post(`/api/admin/lifecycle-outbox/${staleId}/retry`, { cookie: adminCookie });
+      assert.equal(staleRetry.status, 409);
+      assert.match(await staleRetry.text(), /오래된 번호 변경 이벤트/);
+      assert.deepEqual(calls, [], 'the obsolete move is never delivered over the team now at its old target');
+      assert.equal(db.prepare("SELECT status FROM lifecycle_outbox WHERE id = ?").get(staleId).status, 'dead');
+
+      const current = db.prepare(`SELECT univ, team, type, active, active_revision FROM 'entry_${year}' WHERE num = 884`).get();
+      const currentBody = {
+        prevNum: 882,
+        newNum: 884,
+        year,
+        entry: { ...current, active: !!current.active },
+      };
+      const currentInsert = db.prepare(`
+        INSERT INTO lifecycle_outbox
+          (event_type, service, method, path, body, attempts, status, next_attempt_at)
+        VALUES ('team.renumber', 'inspection', 'PATCH', '/api/internal/team-num', ?, 24, 'dead', 0)
+      `).run(JSON.stringify(currentBody));
+      const currentId = Number(currentInsert.lastInsertRowid);
+      const currentRetry = await client.post(`/api/admin/lifecycle-outbox/${currentId}/retry`, { cookie: adminCookie });
+      assert.equal(currentRetry.status, 200);
+      assert.deepEqual(calls, [currentBody], 'an exact current move remains recoverable');
+    } finally {
+      if (renumberServer) await stopServer(renumberServer);
+      delete process.env.INSPECTION_SERVER;
+      if (documentsServer) process.env.DOCUMENTS_SERVER = documentsServer;
+      db.prepare("DELETE FROM lifecycle_outbox").run();
+    }
+  });
+
   it('fans out the initial active snapshot when create reuses a number with a dead delete', async () => {
     db.prepare("DELETE FROM lifecycle_outbox").run();
     const year = 2093;

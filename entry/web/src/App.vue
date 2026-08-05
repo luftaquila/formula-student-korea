@@ -78,8 +78,10 @@ async function loadEntries() {
 async function handleAdd(entry) {
   addingEntry.value = true;
   try {
-    await addEntry(entry, selectedYear.value);
-    success(`${entry.num}번 엔트리를 추가했습니다.`);
+    const result = await addEntry(entry, selectedYear.value);
+    success(result.pending
+      ? `${entry.num}번 엔트리를 추가했습니다. (서비스 동기화 진행 중)`
+      : `${entry.num}번 엔트리를 추가했습니다.`);
     await loadEntries();
   } catch (e) {
     error(e.message);

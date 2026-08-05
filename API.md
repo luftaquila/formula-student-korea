@@ -116,7 +116,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/admin/lifecycle-outbox` | admin | — | `[{ id, service, event, status, attempts, ... }]` | 미전달/실패 이벤트 목록 |
-| POST | `/api/admin/lifecycle-outbox/:id/retry` | admin | — | 200 or 409 | 실패 이벤트 즉시 재전달 시도. 번호가 재사용된 삭제 이벤트와 현재 Entry의 활성 상태/revision에 맞지 않는 오래된 활성 이벤트는 409로 거부 |
+| POST | `/api/admin/lifecycle-outbox/:id/retry` | admin | — | 200 or 409 | 실패 이벤트 즉시 재전달 시도. 번호가 재사용된 삭제 이벤트와 현재 Entry의 번호 배치·팀 snapshot·활성 상태/revision에 맞지 않는 오래된 번호 변경/활성 이벤트는 409로 거부 |
 | DELETE | `/api/admin/lifecycle-outbox/:id` | admin | — | 200 | 실패 이벤트 폐기 |
 
 ### Vehicle Types

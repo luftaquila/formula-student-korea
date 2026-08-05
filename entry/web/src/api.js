@@ -68,10 +68,11 @@ export async function setEntryActive(num, active, year) {
  * 엔트리 추가
  */
 export async function addEntry({ num, univ, team, type }, year) {
-  await request(`/api/entries${yearParam(year)}`, {
+  const res = await request(`/api/entries${yearParam(year)}`, {
     method: "POST",
     body: JSON.stringify({ num, univ, team, type }),
   });
+  return { pending: res.status === 202 };
 }
 
 /**

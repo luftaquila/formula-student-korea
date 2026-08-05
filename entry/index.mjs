@@ -601,6 +601,52 @@ app.post("/api/admin/lifecycle-outbox/:id/retry", async (req, res) => {
       }
     }
   }
+  if (row.event_type === "team.renumber") {
+    let event;
+    try { event = JSON.parse(row.body || ""); }
+    catch { event = null; }
+    const prevNum = Number(event?.prevNum);
+    const newNum = Number(event?.newNum);
+    const year = Number(event?.year);
+    const revision = Number(event?.entry?.active_revision);
+    const valid = Number.isInteger(prevNum) && prevNum > 0
+      && Number.isInteger(newNum) && newNum > 0 && prevNum !== newNum
+      && Number.isInteger(year) && year >= 2000 && year <= 2099
+      && typeof event?.entry?.univ === "string" && typeof event?.entry?.team === "string"
+      && typeof event?.entry?.active === "boolean"
+      && Number.isInteger(revision) && revision >= 0;
+    let sourceExists = false;
+    let current = null;
+    if (valid) {
+      try {
+        const tableName = getTableName(year);
+        sourceExists = !!db.prepare(`SELECT 1 FROM '${tableName}' WHERE num = ?`).get(prevNum);
+        current = db.prepare(`SELECT univ, team, type, active, active_revision FROM '${tableName}' WHERE num = ?`).get(newNum) || null;
+      } catch {
+        sourceExists = false;
+        current = null;
+      }
+    }
+    // dead 이후 Entry가 다시 이동했거나 source/target 번호가 재사용됐다면 과거
+    // renumber는 현재 팀 데이터를 덮어쓸 수 있다. 현재 target snapshot이 이벤트와
+    // 정확히 같고 source가 비어 있는 단순 이동만 안전하게 재시도한다. swap의 임시
+    // 번호처럼 현재 상태로 증명할 수 없는 단계는 폐기 후 수동 복구가 필요하다.
+    const matchesCurrent = current
+      && entryIdentity(current) === entryIdentity(event.entry)
+      && (current.type || null) === (event.entry.type || null)
+      && !!current.active === event.entry.active
+      && current.active_revision === revision;
+    if (!valid || sourceExists || !matchesCurrent) {
+      logger.warn(req, "entry.lifecycle_retry", {
+        error: "renumber_event_obsolete", id, prev_num: prevNum, new_num: newNum, year,
+        event_revision: event?.entry?.active_revision,
+        source_exists: sourceExists,
+        current_num: current ? newNum : null,
+        current_revision: current?.active_revision ?? null,
+      });
+      return res.status(409).send("현재 엔트리 배치와 일치하지 않는 오래된 번호 변경 이벤트입니다. 재시도 대신 폐기하세요.");
+    }
+  }
   if (row.event_type === "team.active") {
     let event;
     try { event = JSON.parse(row.body || ""); }
