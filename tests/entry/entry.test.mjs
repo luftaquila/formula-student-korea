@@ -1405,8 +1405,12 @@ describe('PATCH /api/entries/:num — same-number identity intent', () => {
     mockApp.use(expressForMock.json());
     mockApp.delete('/api/internal/team/:num', (req, res) => { calls.push({ method: 'DELETE', num: Number(req.params.num) }); res.status(200).send(); });
     mockApp.patch('/api/internal/team-num', (req, res) => { calls.push({ method: 'PATCH', body: req.body }); res.status(200).send(); });
+    mockApp.patch('/api/internal/team-active', (req, res) => { calls.push({ method: 'ACTIVE', body: req.body }); res.status(200).send(); });
     const started = await startServer(mockApp);
     process.env.DOCUMENTS_SERVER = started.baseUrl;
+    process.env.INSPECTION_SERVER = started.baseUrl;
+
+    const before = db.prepare(`SELECT active_revision FROM 'entry_${new Date().getFullYear()}' WHERE num = 600`).get();
 
     const res = await client.patch('/api/entries/600', {
       body: { num: 600, univ: 'IdUnivC', team: 'IdTeamC', intent: 'replacement' },
@@ -1414,13 +1418,22 @@ describe('PATCH /api/entries/:num — same-number identity intent', () => {
     });
     assert.equal(res.status, 200);
     await new Promise(r => setTimeout(r, 150));
-    assert.deepEqual(calls, [{ method: 'DELETE', num: 600 }], 'replacement drops the old team\'s downstream data via a delete event');
+    assert.deepEqual(
+      calls.filter((call) => call.method === 'DELETE'),
+      [{ method: 'DELETE', num: 600 }, { method: 'DELETE', num: 600 }],
+      'replacement drops the old team downstream data in both configured services',
+    );
+    const activeCall = calls.find((call) => call.method === 'ACTIVE');
+    assert.equal(activeCall.body.num, 600);
+    assert.equal(activeCall.body.active, true);
+    assert.ok(activeCall.body.revision > before.active_revision, 'replacement allocates a new team revision');
 
     const data = await (await client.get('/api/entries')).json();
     assert.equal(data['600'].team, 'IdTeamC', 'entry table holds the new team');
 
     await stopServer(started.server);
     delete process.env.DOCUMENTS_SERVER;
+    delete process.env.INSPECTION_SERVER;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 });
@@ -1500,6 +1513,80 @@ describe('lifecycle outbox — dead-letter + admin recovery', () => {
 
     const missing = await client.delete(`/api/admin/lifecycle-outbox/${id}`, { cookie: adminCookie });
     assert.equal(missing.status, 404, 'discarding a missing row is 404');
+  });
+
+  it('rejects an obsolete active-event retry after number reuse but allows the current snapshot', async () => {
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    const year = 2092;
+    const num = 880;
+    const documentsServer = process.env.DOCUMENTS_SERVER;
+    delete process.env.DOCUMENTS_SERVER;
+
+    let activeServer;
+    try {
+      assert.equal((await client.post(`/api/entries?year=${year}`, {
+        body: { num, univ: 'Old Active Univ', team: 'Old Active Team' }, cookie: adminCookie,
+      })).status, 201);
+      assert.equal((await client.patch(`/api/entries/${num}/active?year=${year}`, {
+        body: { active: false }, cookie: adminCookie,
+      })).status, 200);
+      const oldStatus = db.prepare(`SELECT active, active_revision FROM 'entry_${year}' WHERE num = ?`).get(num);
+
+      const staleInsert = db.prepare(`
+        INSERT INTO lifecycle_outbox
+          (event_type, service, method, path, body, attempts, status, next_attempt_at)
+        VALUES ('team.active', 'inspection', 'PATCH', '/api/internal/team-active', ?, 24, 'dead', 0)
+      `).run(JSON.stringify({ num, year, active: false, revision: oldStatus.active_revision }));
+      const staleId = Number(staleInsert.lastInsertRowid);
+
+      assert.equal((await client.delete(`/api/entries/${num}?year=${year}`, { cookie: adminCookie })).status, 200);
+      assert.equal((await client.post(`/api/entries?year=${year}`, {
+        body: { num, univ: 'New Active Univ', team: 'New Active Team' }, cookie: adminCookie,
+      })).status, 201);
+      const current = db.prepare(`SELECT active, active_revision FROM 'entry_${year}' WHERE num = ?`).get(num);
+      assert.equal(!!current.active, true);
+      assert.ok(current.active_revision > oldStatus.active_revision);
+
+      assert.equal((await client.post(`/api/entries/bulk?year=${year}`, {
+        body: { data: { [num]: { univ: 'New Active Univ', team: 'New Active Team' } } },
+        cookie: adminCookie,
+      })).status, 200);
+      const afterNoopBulk = db.prepare(`SELECT active, active_revision FROM 'entry_${year}' WHERE num = ?`).get(num);
+      assert.deepEqual(afterNoopBulk, current, 'an unchanged retained team keeps its active revision');
+
+      const calls = [];
+      const mockApp = expressForMock();
+      mockApp.use(expressForMock.json());
+      mockApp.patch('/api/internal/team-active', (req, res) => {
+        calls.push(req.body);
+        res.status(200).send();
+      });
+      const started = await startServer(mockApp);
+      activeServer = started.server;
+      process.env.INSPECTION_SERVER = started.baseUrl;
+
+      const staleRetry = await client.post(`/api/admin/lifecycle-outbox/${staleId}/retry`, { cookie: adminCookie });
+      assert.equal(staleRetry.status, 409);
+      assert.match(await staleRetry.text(), /오래된 이벤트/);
+      assert.deepEqual(calls, [], 'the obsolete event is never delivered to the reused team');
+      assert.equal(db.prepare("SELECT status FROM lifecycle_outbox WHERE id = ?").get(staleId).status, 'dead');
+
+      const currentInsert = db.prepare(`
+        INSERT INTO lifecycle_outbox
+          (event_type, service, method, path, body, attempts, status, next_attempt_at)
+        VALUES ('team.active', 'inspection', 'PATCH', '/api/internal/team-active', ?, 24, 'dead', 0)
+      `).run(JSON.stringify({ num, year, active: true, revision: current.active_revision }));
+      const currentId = Number(currentInsert.lastInsertRowid);
+      const currentRetry = await client.post(`/api/admin/lifecycle-outbox/${currentId}/retry`, { cookie: adminCookie });
+      assert.equal(currentRetry.status, 200);
+      assert.deepEqual(calls, [{ num, year, active: true, revision: current.active_revision }]);
+      assert.equal(db.prepare("SELECT 1 FROM lifecycle_outbox WHERE id = ?").get(currentId), undefined);
+    } finally {
+      if (activeServer) await stopServer(activeServer);
+      delete process.env.INSPECTION_SERVER;
+      if (documentsServer) process.env.DOCUMENTS_SERVER = documentsServer;
+      db.prepare("DELETE FROM lifecycle_outbox").run();
+    }
   });
 });
 

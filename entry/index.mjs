@@ -585,7 +585,7 @@ app.post("/api/admin/lifecycle-outbox/:id/retry", async (req, res) => {
   // dead를 보지 않으므로 재사용이 허용됨), 재시도 시 삭제가 새 팀의 downstream을 파괴한다.
   // 대상 번호가 현재 entry 테이블에 존재하면(=재사용) 재시도를 거부한다 — 정상 삭제라면 그 번호는
   // 이미 entry에서 제거돼 있어야 한다. 운영자는 재시도 대신 이 이벤트를 폐기하면 된다.
-  const row = db.prepare("SELECT event_type, path FROM lifecycle_outbox WHERE id = ?").get(id);
+  const row = db.prepare("SELECT event_type, path, body FROM lifecycle_outbox WHERE id = ?").get(id);
   if (!row) return res.status(404).send("이벤트를 찾을 수 없습니다.");
   if (row.event_type === "team.delete") {
     const m = /\/api\/internal\/team\/(\d+)\?year=(\d+)/.exec(row.path || "");
@@ -599,6 +599,36 @@ app.post("/api/admin/lifecycle-outbox/:id/retry", async (req, res) => {
         logger.warn(req, "entry.lifecycle_retry", { error: "num_reused", id, num: dnum, year: dyear });
         return res.status(409).send(`#${dnum}번을 현재 다른 팀이 사용 중입니다. 이 삭제 이벤트를 재시도하면 그 팀의 데이터가 삭제됩니다. 재시도 대신 폐기하세요.`);
       }
+    }
+  }
+  if (row.event_type === "team.active") {
+    let event;
+    try { event = JSON.parse(row.body || ""); }
+    catch { event = null; }
+    const num = Number(event?.num);
+    const year = Number(event?.year);
+    const revision = Number(event?.revision);
+    const valid = Number.isInteger(num) && num > 0
+      && Number.isInteger(year) && year >= 2000 && year <= 2099
+      && typeof event?.active === "boolean"
+      && Number.isInteger(revision) && revision >= 0;
+    let current = null;
+    if (valid) {
+      try {
+        current = db.prepare(`SELECT active, active_revision FROM '${getTableName(year)}' WHERE num = ?`).get(num) || null;
+      } catch { current = null; }
+    }
+    // dead 이벤트가 차단 목록에서 빠진 뒤 번호가 재사용될 수 있으므로, 현재 Entry
+    // snapshot과 revision이 정확히 같은 이벤트만 재시도한다. 불일치는 새 팀 또는
+    // 더 최신 상태를 과거 이벤트로 덮어쓸 수 있으므로 운영자가 폐기해야 한다.
+    if (!valid || !current || !!current.active !== event.active || current.active_revision !== revision) {
+      logger.warn(req, "entry.lifecycle_retry", {
+        error: "active_event_obsolete", id, num, year,
+        event_active: event?.active, event_revision: event?.revision,
+        current_active: current ? !!current.active : null,
+        current_revision: current?.active_revision ?? null,
+      });
+      return res.status(409).send("현재 엔트리의 활성 상태와 일치하지 않는 오래된 이벤트입니다. 재시도 대신 폐기하세요.");
     }
   }
 
@@ -988,6 +1018,7 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
   const result = dbRun(() => {
     return db.transaction(() => {
       let events = [];
+      let replaced = false;
       if (numChanged) {
         // 번호 변경과 팀 정체성(학교/팀명) 변경이 한 요청에 함께 오면 순수 renumber로 처리돼
         // prevNum의 downstream(검차·대기열 등)이 newNum의 다른 팀에게 조용히 승계된다. same-num
@@ -1017,6 +1048,7 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
           if (intent === "replacement") {
             assertNoPendingLifecycleRefs([newNum], year);
             events = buildEntryDeletedEvents([newNum], year); // 팀 교체 확정 → 기존 downstream 삭제
+            replaced = true;
           } else if (intent !== "retain") {
             return {
               ambiguous: [{
@@ -1055,6 +1087,14 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
           ...buildEntryRenumberedEvents(prevNum, newNum, year, entry),
           ...buildEntryActiveEvents(newNum, year, entry.active, revision),
         ];
+      } else if (replaced) {
+        // 같은 번호의 팀 교체도 번호 재사용과 같다. 새 revision을 부여하지 않으면
+        // 이전 팀의 dead team.active 이벤트가 새 팀의 현재 snapshot과 우연히 일치해
+        // 재시도 검증을 통과할 수 있다. delete 뒤에 현재 상태를 다시 fan-out한다.
+        const revision = nextActiveRevision();
+        db.prepare(`UPDATE '${tableName}' SET active_revision = ? WHERE num = ?`).run(revision, newNum);
+        const status = db.prepare(`SELECT active FROM '${tableName}' WHERE num = ?`).get(newNum);
+        events.push(...buildEntryActiveEvents(newNum, year, !!status.active, revision));
       }
 
       return { eventIds: insertLifecycleEvents(events) };
@@ -1268,6 +1308,17 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
       // 운영자에게 의도 확인을 요청한다.
       if (ambiguous.length > 0) {
         return { ambiguous };
+      }
+
+      // 같은 번호의 같은 팀이 활성 상태도 그대로라면 revision을 유지한다. 단순 bulk
+      // 재업로드만으로 revision이 바뀌면, 아직 유효한 dead team.active 이벤트조차
+      // 현재 snapshot 불일치로 재시도할 수 없게 된다. 번호 변경·팀 교체·상태 변경은
+      // 위에서 발급한 새 revision을 그대로 사용한다.
+      for (const row of newRowsByNum.values()) {
+        const oldRow = retainedOldRowsByNewNum.get(row.num) || null;
+        if (oldRow && oldRow.num === row.num && !!oldRow.active === row.active) {
+          row.active_revision = oldRow.active_revision;
+        }
       }
 
       db.prepare(`DELETE FROM '${tableName}'`).run();
