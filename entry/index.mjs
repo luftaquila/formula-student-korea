@@ -1038,14 +1038,23 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
       }
 
       if (numChanged) {
-        const status = db.prepare(`SELECT active, active_revision FROM '${tableName}' WHERE num = ?`).get(newNum);
-        events = buildEntryRenumberedEvents(prevNum, newNum, year, {
+        // 번호 재사용 목적지에 dead-letter된 과거 팀의 status snapshot이 남아 있을 수
+        // 있으므로, 단순 renumber에도 새 revision을 발급해 현재 활성 상태를 뒤이어
+        // fan-out한다. renumber가 먼저 적용된 뒤 snapshot이 목적지를 수렴시킨다.
+        const revision = nextActiveRevision();
+        db.prepare(`UPDATE '${tableName}' SET active_revision = ? WHERE num = ?`).run(revision, newNum);
+        const status = db.prepare(`SELECT active FROM '${tableName}' WHERE num = ?`).get(newNum);
+        const entry = {
           univ: dataValidation.univ,
           team: dataValidation.team,
           type: dataValidation.type,
           active: !!status.active,
-          active_revision: status.active_revision,
-        });
+          active_revision: revision,
+        };
+        events = [
+          ...buildEntryRenumberedEvents(prevNum, newNum, year, entry),
+          ...buildEntryActiveEvents(newNum, year, entry.active, revision),
+        ];
       }
 
       return { eventIds: insertLifecycleEvents(events) };
@@ -1267,9 +1276,13 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
       }
       const activeEvents = [...newRowsByNum.values()].flatMap((row) => {
         const oldRow = retainedOldRowsByNewNum.get(row.num) || null;
-        if (oldRow && !!oldRow.active === row.active) return [];
+        // 번호가 바뀐 retained 팀에는 활성 상태가 같아도 snapshot 이벤트를 보낸다.
+        // 기본 활성 팀은 소비자에 team_status 행이 없을 수 있고, dead-letter 처리된
+        // 과거 삭제 때문에 목적지 번호에 다른 팀의 stale snapshot이 남아 있을 수 있다.
+        // renumber 뒤의 새 revision 이벤트가 그 목적지를 현재 Entry 상태로 수렴시킨다.
+        if (oldRow && oldRow.num === row.num && !!oldRow.active === row.active) return [];
         // 신규/교체 엔트리의 활성 기본값은 true다. 기존 팀은 번호가 바뀌었더라도
-        // 실제 상태 변경만 fan-out하고, 신규/교체 비활성 팀은 명시적으로 전파한다.
+        // 항상 현재 상태를 fan-out하고, 신규/교체 비활성 팀도 명시적으로 전파한다.
         if (!oldRow && row.active) return [];
         return buildEntryActiveEvents(row.num, year, row.active, row.active_revision);
       });

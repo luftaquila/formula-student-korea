@@ -97,7 +97,7 @@
 | 2.5 | 엔트리 삭제 | admin | `DELETE /api/entries/:num?year=` | 삭제 이벤트를 durable outbox로 5개 서비스에 재시도 팬아웃 (대기분 있으면 202) |
 | 2.6 | 엔트리 전체 삭제 | admin | `DELETE /api/entries?year=` | 연도별 전체 초기화, 삭제 이벤트를 outbox로 5개 서비스에 팬아웃 |
 | 2.7 | 엔트리 일괄 업로드 | admin | `POST /api/entries/bulk?year=` | JSON으로 전체 교체(트랜잭션), 삭제/리넘버 이벤트 outbox 팬아웃. 모호한 팀 교체는 409 → replacements/retains 재요청 |
-| 2.7a | 엔트리 활성 상태 변경 | admin | `PATCH /api/entries/:num/active?year=` | 탈락 팀 비활성화/복구. revision 이벤트를 5개 서비스로 fan-out, 동기화 대기 시 202 |
+| 2.7a | 엔트리 활성 상태 변경 | admin | `PATCH /api/entries/:num/active?year=` | 탈락 팀 비활성화/복구. revision 이벤트를 queue/inspection/score/traffic 4개 서비스로 fan-out, 동기화 대기 시 202. Documents는 영향받지 않음 |
 
 ### 차량 유형
 
@@ -333,6 +333,7 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
+| 7.0 | 내 엔트리 조회 | student | `GET /api/entries?year=` | 해당 연도 student_team에 매핑된 자기 팀만 반환. 비활성 팀도 포함 |
 | 7.1 | 세션 목록 조회 | student | `GET /api/sessions` | student_team에서 팀 조회 → 해당 팀 세션 + 최근 제출 상태 |
 | 7.2 | 세션 상세 조회 | student | `GET /api/sessions/:id` | 팀 소속 확인, 제출 이력 + 파일 목록 |
 | 7.3 | 파일 제출 | student | `POST /api/sessions/:id/submit` | 멀티파트, 시간 검증(start~late_end), 확장자 검증, 용량 제한 검증(max_file_size), 이전 제출 교체, 최대 100파일 |
@@ -343,6 +344,7 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
+| 7.4b | 전체 엔트리 조회 | chief | `GET /api/admin/entries?year=` | 계정 할당·세션 대상 선택용 전체 목록. 비활성 팀도 포함 |
 | 7.5 | 전체 세션 목록 | chief | `GET /api/admin/sessions?year=` | 연도 필터 |
 | 7.6 | 세션 생성 | chief | `POST /api/admin/sessions` | 이름, 공지, 시작/마감/지각마감, 파일 제한, 확장자, 대상 팀 |
 | 7.7 | 세션 수정 | chief | `PUT /api/admin/sessions/:id` | 팀 변경 시 제거된 팀의 제출 + 파일 삭제 |
@@ -369,7 +371,7 @@
 |---|------|------|-----|------|
 | 7.15 | 엔트리 번호 동기화 | 내부 | `PATCH /api/internal/team-num` | entry 서비스에서 번호 변경 시 student_team, session_team, submission + 파일 디렉토리 일괄 갱신. 파일 작업 실패 시 202 `pending_file_work` → 30초 주기 백그라운드 워커 재시도 |
 | 7.16 | 엔트리 삭제 연동 | 내부 | `DELETE /api/internal/team/:num?year=` | student_team, session_team, submission, 파일 삭제 |
-| 7.17 | 엔트리 비활성 연동 | 내부 | `PATCH /api/internal/team-active` | 매핑·제출·파일을 보존하고 학생/관리자 목록, 다운로드, 아카이브, 예약 알림에서 제외 |
+| 7.17 | 레거시 활성 이벤트 호환 | 내부 | `PATCH /api/internal/team-active` | 이전 outbox에 남은 이벤트를 200으로 소진하는 no-op. 매핑·제출·다운로드·아카이브·알림은 활성 상태의 영향을 받지 않음 |
 
 ---
 
@@ -594,11 +596,12 @@ Entry → 5개 서비스: 삭제 이벤트를 durable outbox에 기록 후 queue
 Documents는 student_team/session_team/submission/파일까지 정리
 ```
 
-### Entry 비활성화 → 전체 서비스 소프트 제외
+### Entry 비활성화 → 대회 운영 서비스 소프트 제외
 
 ```
-Entry → 5개 서비스: PATCH /api/internal/team-active { num, year, active, revision }
+Entry → Queue/Inspection/Traffic/Score: PATCH /api/internal/team-active { num, year, active, revision }
 Queue: 현재 운영 상태만 정리(재활성화 시 복원하지 않음), 완료 이력은 보존
-Inspection/Traffic/Score/Documents: 영구 데이터를 삭제하지 않고 숨김·수정 차단, 재활성화 시 다시 노출
+Inspection/Traffic/Score: 영구 데이터를 삭제하지 않고 숨김·수정 차단, 재활성화 시 다시 노출
 각 소비자는 revision 이하의 오래된 이벤트를 무시
+Documents: 활성 상태와 무관하게 계정 할당·제출·다운로드·아카이브·알림을 계속 허용
 ```

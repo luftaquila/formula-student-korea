@@ -11,3 +11,9 @@ export async function fetchEntries(year) {
   const res = await request(`/api/entries${qs}`);
   return res.json();
 }
+
+export async function fetchAdminEntries(year) {
+  const qs = year != null ? `?year=${year}` : "";
+  const res = await request(`/api/admin/entries${qs}`);
+  return res.json();
+}

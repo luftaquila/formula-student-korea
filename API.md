@@ -104,14 +104,14 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | GET | `/api/entries` | public / admin | `?year=&download&includeInactive=true` | `{ num: { univ, team, type, active } }` | 기본 응답은 활성 엔트리만 포함. admin의 `includeInactive=true`는 비활성 엔트리도 포함하며 `download`는 JSON 파일 다운로드 |
 | POST | `/api/entries` | admin | `{ num, univ, team, type? }?year=` | 201 | Create entry |
 | PATCH | `/api/entries/:num` | admin | `{ num, univ, team, type?, intent? }?year=` | 200, 202, or 409 | Update entry. 번호 변경/팀 교체는 durable outbox로 5개 서비스에 팬아웃 — 일부 동기화 대기 시 `202 { status: "pending_lifecycle" }`. 번호 유지 + 팀명 변경이 모호하면 `409 { message, ambiguous }` → `intent: "retain"\|"replacement"`로 재요청 |
-| PATCH | `/api/entries/:num/active` | admin | `{ active: boolean }?year=` | 200 or 202 | 엔트리 활성/비활성 전환. revision이 붙은 이벤트를 5개 서비스에 fan-out하며 일부 동기화 대기 시 202 |
+| PATCH | `/api/entries/:num/active` | admin | `{ active: boolean }?year=` | 200 or 202 | 엔트리 활성/비활성 전환. revision이 붙은 이벤트를 queue/inspection/score/traffic 4개 서비스에 fan-out하며 일부 동기화 대기 시 202. Documents는 영향받지 않음 |
 | DELETE | `/api/entries/:num` | admin | `?year=` | 200 or 202 | Delete single entry (동기화 대기 시 202 pending_lifecycle) |
 | DELETE | `/api/entries` | admin | `?year=` | 200 or 202 | Delete all entries for year (동기화 대기 시 202) |
 | POST | `/api/entries/bulk` | admin | `{ data: { "num": { univ, team, type?, active? } }, renumbers?: { "from": to }, replacements?: [num], retains?: [num] }?year=` | 200, 202, or 409 | Bulk upload (replaces all entries for year). `active` 기본값은 `true`. `renumbers`=명시적 번호 이동 매핑. 모호한 팀 교체는 409 ambiguous → replacements/retains로 재요청 |
 
 ### Lifecycle Outbox (admin)
 
-엔트리 삭제/번호변경/활성상태 이벤트는 durable outbox에 저장 후 queue/documents/inspection/score/traffic 5개 서비스로 재시도 전달된다. 활성상태 소비자는 revision으로 오래된 재시도를 무시한다. 전달 실패분(dead-letter)은 아래 API로 복구한다.
+엔트리 삭제/번호변경 이벤트는 durable outbox에 저장 후 queue/documents/inspection/score/traffic 5개 서비스로 재시도 전달된다. 활성상태 이벤트는 Documents를 제외한 queue/inspection/score/traffic 4개 서비스에만 전달되며, 각 소비자는 revision으로 오래된 재시도를 무시한다. 전달 실패분(dead-letter)은 아래 API로 복구한다.
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
@@ -414,6 +414,7 @@ Answer and memo versions are independent. When `base_version` is provided and no
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
+| GET | `/api/entries` | student | `?year=` | `{ num: { univ, team, type, active } }` | 로그인 학생에게 해당 연도의 자기 매핑 팀만 반환. 비활성 팀도 포함 |
 | GET | `/api/sessions` | student | — | `{ team, sessions }` | My team's open sessions with latest submission |
 | GET | `/api/sessions/:id` | student | — | `{ session, team_num, submission, files }` | Session detail with files |
 | POST | `/api/sessions/:id/submit` | student | `multipart/form-data` | `{ id, submitted_at, is_late, total_size }` | Upload files (validates time window, extensions, size) |
@@ -424,6 +425,7 @@ Answer and memo versions are independent. When `base_version` is provided and no
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
+| GET | `/api/admin/entries` | chief | `?year=` | `{ num: { univ, team, type, active } }` | 계정 할당·제출 대상 선택을 위한 전체 엔트리 목록. 비활성 팀도 포함 |
 | GET | `/api/admin/sessions` | chief | `?year=` | `[{ id, name, notice, start_at, end_at, ... }]` | All sessions |
 | POST | `/api/admin/sessions` | chief | `{ name, notice?, start_at, end_at, late_end_at?, max_file_size?, allowed_extensions?, year, teams: [int] }` | `{ id }` | Create session |
 | PUT | `/api/admin/sessions/:id` | chief | `{ name, notice?, start_at, end_at, late_end_at?, max_file_size?, allowed_extensions?, teams: [int] }` | 200 | Update session (cleans up removed teams' submissions) |
@@ -445,7 +447,7 @@ Answer and memo versions are independent. When `base_version` is provided and no
 |--------|------|------|---------|----------|-------------|
 | PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 or 202 | Sync team number change from entry service (updates student_team, session_team, submission, renames upload dirs). 파일 디렉토리 작업 실패 시 `202 { status: "pending_file_work", failures }` — 30초 주기 백그라운드 워커가 재시도 (`team_renumber_file_work`) |
 | DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team data on entry deletion (student_team, session_team, submission, files) |
-| PATCH | `/api/internal/team-active` | admin | `{ num, year, active, revision }` | 200 | 학생 매핑·대상 세션·제출·파일을 보존하면서 목록/제출/다운로드/알림에서 제외 |
+| PATCH | `/api/internal/team-active` | admin | `{ num, year, active, revision }` | 200 | 이전 outbox에 남은 이벤트를 안전하게 소진하기 위한 호환 no-op. Documents 기능에는 활성 상태를 적용하지 않음 |
 
 ---
 

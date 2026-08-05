@@ -731,10 +731,15 @@ describe('PATCH /api/entries/:num — lifecycle sync', () => {
 
   it('calls configured lifecycle internal APIs when number changes', async () => {
     receivedRequests = [];
+    const receivedActiveRequests = [];
     const mockApp = expressForMock();
     mockApp.use(expressForMock.json());
     mockApp.patch('/api/internal/team-num', (req, res) => {
       receivedRequests.push({ body: req.body, service: req.headers['x-internal-service'] });
+      res.status(200).send();
+    });
+    mockApp.patch('/api/internal/team-active', (req, res) => {
+      receivedActiveRequests.push(req.body);
       res.status(200).send();
     });
     const started = await startServer(mockApp);
@@ -757,6 +762,9 @@ describe('PATCH /api/entries/:num — lifecycle sync', () => {
     assert.ok(receivedRequests.every(r => r.body.newNum === 71));
     assert.ok(receivedRequests.every(r => r.body.year === new Date().getFullYear()));
     assert.ok(receivedRequests.every(r => r.body.entry.univ === 'SyncUniv'));
+    assert.equal(receivedActiveRequests.length, 4, 'active snapshot is sent only to competition services');
+    assert.ok(receivedActiveRequests.every(r => r.num === 71 && r.active === true));
+    assert.ok(receivedActiveRequests.every(r => Number.isInteger(r.revision) && r.revision > 0));
 
     await stopServer(mockDocServer);
     for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
@@ -1651,5 +1659,39 @@ describe('Entry active state', () => {
       (event) => event.type === 'active' && event.body.num === 995 && event.body.active === false,
     );
     assert.ok(inspectionRenumberIndex >= 0 && deactivateIndex > inspectionRenumberIndex);
+  });
+
+  it('fans out the current active snapshot after an unchanged-active renumber', async () => {
+    const year = 2091;
+    db.prepare("DELETE FROM lifecycle_outbox").run();
+    statusServer.calls.length = 0;
+    statusServer.renumbers.length = 0;
+    statusServer.events.length = 0;
+
+    const seeded = await client.post(`/api/entries/bulk?year=${year}`, {
+      body: { data: { 996: { univ: 'Reuse Univ', team: 'Reuse Team' } } },
+      cookie: adminCookie,
+    });
+    assert.equal(seeded.status, 200);
+
+    const uploaded = await client.post(`/api/entries/bulk?year=${year}`, {
+      body: { data: { 997: { univ: 'Reuse Univ', team: 'Reuse Team' } } },
+      cookie: adminCookie,
+    });
+    assert.equal(uploaded.status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    assert.deepEqual(
+      statusServer.calls.map(({ num, active }) => ({ num, active })),
+      [{ num: 997, active: true }],
+      'the post-renumber snapshot overwrites any stale destination status',
+    );
+    const inspectionRenumberIndex = statusServer.events.findIndex(
+      (event) => event.type === 'renumber' && event.body.prevNum === 996 && event.body.newNum === 997,
+    );
+    const snapshotIndex = statusServer.events.findIndex(
+      (event) => event.type === 'active' && event.body.num === 997 && event.body.active === true,
+    );
+    assert.ok(inspectionRenumberIndex >= 0 && snapshotIndex > inspectionRenumberIndex);
   });
 });

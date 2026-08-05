@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useNotification } from "@shared/useNotification.js";
-import { request, fetchEntryYears, fetchEntries, fetchVehicleTypes } from "../api.js";
+import { request, fetchEntryYears, fetchAdminEntries, fetchVehicleTypes } from "../api.js";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const route = useRoute();
@@ -46,7 +46,7 @@ async function loadYears() {
 async function loadEntries() {
   if (!selectedYear.value) return;
   try {
-    entries.value = await fetchEntries(selectedYear.value);
+    entries.value = await fetchAdminEntries(selectedYear.value);
     // 유형 필터 초기화 (전체 활성)
     const types = [...new Set(Object.values(entries.value).map((e) => e.type).filter(Boolean))];
     typeFilters.value = Object.fromEntries(types.map((t) => [t, true]));
