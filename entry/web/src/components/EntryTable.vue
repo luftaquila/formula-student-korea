@@ -227,11 +227,12 @@ function toggleActive(entry) {
               role="switch"
               :aria-checked="entry.active !== false"
               :aria-label="`${entry.num}번 엔트리 ${entry.active !== false ? '비활성화' : '활성화'}`"
+              :aria-busy="activeUpdating.has(entry.num)"
+              :title="entry.active !== false ? '비활성화' : '활성화'"
               :disabled="activeUpdating.has(entry.num)"
               @click="toggleActive(entry)"
             >
               <span class="status-toggle-track"><span class="status-toggle-thumb"></span></span>
-              <span>{{ activeUpdating.has(entry.num) ? "처리 중" : (entry.active !== false ? "활성" : "비활성") }}</span>
             </button>
           </td>
           <!-- 삭제 -->
@@ -330,13 +331,9 @@ function toggleActive(entry) {
 .status-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
+  padding: 0;
   border: 0;
   background: transparent;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: 0.75rem;
-  font-weight: 600;
   cursor: pointer;
 }
 
@@ -363,10 +360,6 @@ function toggleActive(entry) {
   border-radius: 50%;
   background: white;
   transition: transform 0.15s ease;
-}
-
-.status-toggle.active {
-  color: var(--accent-success);
 }
 
 .status-toggle.active .status-toggle-track {

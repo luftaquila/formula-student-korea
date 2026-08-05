@@ -167,7 +167,13 @@ async function handleActive(entry) {
     success(result?.pending
       ? `${entry.num}번 엔트리 상태를 변경했습니다. (서비스 동기화 진행 중)`
       : `${entry.num}번 엔트리를 ${entry.active ? "활성화" : "비활성화"}했습니다.`);
-    await loadEntries();
+    const current = entries.value[entry.num];
+    if (current) {
+      entries.value = {
+        ...entries.value,
+        [entry.num]: { ...current, active: entry.active },
+      };
+    }
   } catch (e) {
     error(e.message);
   } finally {
