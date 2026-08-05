@@ -295,7 +295,7 @@ jobs:
           - shard: traffic
             projects: --project=traffic
             workers: 3
-            services: auth entry traffic
+            services: auth entry queue inspection traffic score documents
             seeds: users vehicle-types entries
           - shard: inspection
             projects: --project=inspection
@@ -305,7 +305,7 @@ jobs:
           - shard: documents
             projects: --project=documents
             workers: 3
-            services: auth entry documents email
+            services: auth entry queue inspection traffic score documents email
             seeds: users vehicle-types entries documents
           - shard: score-endurance
             projects: >-
