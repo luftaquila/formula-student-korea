@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -15,6 +16,9 @@ import {
 setupTestEnv();
 
 import { createEntryApp } from '../../entry/index.mjs';
+
+const requireFromEntry = createRequire(new URL('../../entry/package.json', import.meta.url));
+const Database = requireFromEntry('better-sqlite3');
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 
@@ -36,6 +40,45 @@ after(async () => {
   await stopServer(server);
   db.close();
   cleanup(dbPath);
+});
+
+describe('Entry annual-table migration', () => {
+  it('adds active-state columns before creating indexes on a legacy table', () => {
+    const legacyPath = tmpDbPath();
+    const year = new Date().getFullYear();
+    const legacyDb = new Database(legacyPath);
+    legacyDb.exec(`
+      CREATE TABLE entry_${year} (
+        num INTEGER PRIMARY KEY,
+        univ TEXT NOT NULL,
+        team TEXT NOT NULL,
+        type TEXT DEFAULT NULL
+      );
+      INSERT INTO entry_${year} (num, univ, team, type)
+      VALUES (1, 'Legacy University', 'Legacy Team', NULL);
+    `);
+    legacyDb.close();
+
+    let migratedDb;
+    let stopRetry;
+    try {
+      const result = createEntryApp({ dbPath: legacyPath });
+      migratedDb = result.db;
+      stopRetry = result.stopLifecycleOutboxRetry;
+
+      const columns = migratedDb.prepare(`PRAGMA table_info('entry_${year}')`).all().map((column) => column.name);
+      assert.ok(columns.includes('active'));
+      assert.ok(columns.includes('active_revision'));
+      assert.equal(migratedDb.prepare(`SELECT active FROM entry_${year} WHERE num = 1`).get().active, 1);
+
+      const indexes = migratedDb.prepare(`PRAGMA index_list('entry_${year}')`).all().map((index) => index.name);
+      assert.ok(indexes.includes(`idx_entry_${year}_active`));
+    } finally {
+      stopRetry?.();
+      migratedDb?.close();
+      cleanup(legacyPath);
+    }
+  });
 });
 
 // ─── Health & Years ──────────────────────────────────────────────────────
@@ -668,7 +711,6 @@ describe('GET /api/events', () => {
 });
 
 // ─── Lifecycle Sync on Number Change ────────────────────────────────────
-import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const expressForMock = require('../../entry/node_modules/express/index.js');
 

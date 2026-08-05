@@ -93,6 +93,14 @@ function ensureYearTable(year) {
     active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
     active_revision INTEGER NOT NULL DEFAULT 0
   )`);
+  // CREATE TABLE IF NOT EXISTS는 기존 테이블의 스키마를 보강하지 않는다. 인덱스를
+  // 만들기 전에 컬럼을 추가해야 운영 DB의 레거시 연도 테이블에서도 시작할 수 있다.
+  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN type TEXT DEFAULT NULL`); }
+  catch { /* column already exists */ }
+  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN active INTEGER NOT NULL DEFAULT 1`); }
+  catch { /* column already exists */ }
+  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN active_revision INTEGER NOT NULL DEFAULT 0`); }
+  catch { /* column already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${y}_type ON '${tableName}'(type)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${y}_active ON '${tableName}'(active)`);
   _ensuredYearTables.add(tableName);
@@ -135,17 +143,9 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_ready ON lifecycle_outb
 db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_service_id ON lifecycle_outbox(service, id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_lifecycle_outbox_service_status_id ON lifecycle_outbox(service, status, id)");
 
-// 기존 테이블에 엔트리 메타데이터 컬럼 마이그레이션
+// 현재 연도 이외의 기존 테이블도 같은 순서로 마이그레이션한다.
 for (const year of getAvailableYears()) {
-  const tableName = getTableName(year);
-  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN type TEXT DEFAULT NULL`); }
-  catch (e) { /* column already exists */ }
-  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN active INTEGER NOT NULL DEFAULT 1`); }
-  catch (e) { /* column already exists */ }
-  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN active_revision INTEGER NOT NULL DEFAULT 0`); }
-  catch (e) { /* column already exists */ }
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${Number(year)}_type ON '${tableName}'(type)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${Number(year)}_active ON '${tableName}'(active)`);
+  ensureYearTable(year);
 }
 
 /* ============================================
