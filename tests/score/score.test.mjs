@@ -223,20 +223,22 @@ describe('GET /api/health', () => {
 // ─── Manual Scores ──────────────────────────────────────────────────────
 
 describe('PUT /api/score/manual', () => {
-  it('upserts a manual score', async () => {
-    const res = await client.put('/api/score/manual', {
+  it('creates and updates a manual score', async () => {
+    let res = await client.put('/api/score/manual', {
       body: { year: 2026, team_num: 1, score_type: 'report', value: 85 },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
-  });
 
-  it('upserts again (update existing)', async () => {
-    const res = await client.put('/api/score/manual', {
+    res = await client.put('/api/score/manual', {
       body: { year: 2026, team_num: 1, score_type: 'report', value: 90 },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
+    const row = db.prepare(
+      "SELECT value FROM score_manual WHERE year = 2026 AND team_num = 1 AND score_type = 'report'"
+    ).get();
+    assert.equal(row.value, 90);
   });
 
   it('rejects missing fields', async () => {
@@ -306,6 +308,10 @@ describe('PUT /api/score/penalty', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
+    assert.deepEqual(
+      db.prepare("SELECT cone_penalty, oc_penalty, start_delay FROM score_penalty WHERE year = 2026 AND event_type = '가속'").get(),
+      { cone_penalty: 2, oc_penalty: 10, start_delay: 5 }
+    );
   });
 
   it('rejects missing fields', async () => {
@@ -330,6 +336,10 @@ describe('PUT /api/score/penalty', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
+    assert.deepEqual(
+      db.prepare("SELECT cone_penalty, oc_penalty, start_delay FROM score_penalty WHERE year = 2026 AND event_type = '스키드패드'").get(),
+      { cone_penalty: 0, oc_penalty: 0, start_delay: 0 }
+    );
   });
 });
 
@@ -342,6 +352,10 @@ describe('PUT /api/score/setting', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
+    assert.equal(
+      db.prepare("SELECT value FROM score_setting WHERE year = 2026 AND event_type = '가속' AND setting_key = 'total_score'").get().value,
+      75
+    );
   });
 
   it('validates event_type key (empty)', async () => {
@@ -374,6 +388,10 @@ describe('PUT /api/score/setting', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
+    assert.equal(
+      db.prepare("SELECT value FROM score_setting WHERE year = 2026 AND event_type = '스키드패드' AND setting_key = 'cutoff'").get().value,
+      null
+    );
   });
 });
 
@@ -397,36 +415,18 @@ describe('PUT /api/score/endurance', () => {
     assert.equal(res.status, 200);
   });
 
-  it('updates status field to DNF', async () => {
-    const res = await client.put('/api/score/endurance', {
-      body: { year: 2026, team_num: 2, field: 'status', value: 'DNF' },
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 200);
-  });
-
-  it('validates status value DNS', async () => {
-    const res = await client.put('/api/score/endurance', {
-      body: { year: 2026, team_num: 2, field: 'status', value: 'DNS' },
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 200);
-  });
-
-  it('validates status value DSQ', async () => {
-    const res = await client.put('/api/score/endurance', {
-      body: { year: 2026, team_num: 2, field: 'status', value: 'DSQ' },
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 200);
-  });
-
-  it('allows null status (clear)', async () => {
-    const res = await client.put('/api/score/endurance', {
-      body: { year: 2026, team_num: 2, field: 'status', value: null },
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 200);
+  it('accepts every supported status and allows clearing it', async () => {
+    for (const status of ['DNF', 'DNS', 'DSQ', null]) {
+      const res = await client.put('/api/score/endurance', {
+        body: { year: 2026, team_num: 2, field: 'status', value: status },
+        cookie: adminCookie,
+      });
+      assert.equal(res.status, 200);
+      assert.equal(
+        db.prepare('SELECT status FROM score_endurance WHERE year = 2026 AND team_num = 2').get().status,
+        status
+      );
+    }
   });
 
   it('rejects invalid status', async () => {
@@ -535,63 +535,40 @@ describe('GET /api/score', () => {
     assert.equal(res.status, 400);
   });
 
-  it('returns aggregated data with entries, inspection, events, manualScores, penalties, settings', async () => {
-    const year = new Date().getFullYear();
-    const res = await client.get(`/api/score?year=${year}`, { cookie: adminCookie });
+  it('aggregates entries, inspection, event records, manual scores, penalties, and settings', async () => {
+    const res = await client.get('/api/score?year=2026', { cookie: adminCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
+
     assert.ok(data.entries);
     assert.ok(data.inspection);
     assert.ok(Array.isArray(data.events));
     assert.ok(data.manualScores);
     assert.ok(data.penalties);
     assert.ok(data.settings);
-  });
-
-  it('entries come from mock entry server', async () => {
-    const year = new Date().getFullYear();
-    const res = await client.get(`/api/score?year=${year}`, { cookie: adminCookie });
-    const data = await res.json();
     assert.equal(data.entries['1'].univ, '서울대');
     assert.equal(data.entries['2'].univ, '카이스트');
-  });
 
-  it('events include records from mock traffic server', async () => {
-    const year = new Date().getFullYear();
-    const res = await client.get(`/api/score?year=${year}`, { cookie: adminCookie });
-    const data = await res.json();
     const accelEvent = data.events.find(e => e.type === '가속');
     assert.ok(accelEvent, 'should have 가속 event');
     assert.ok(accelEvent.records, 'should have records');
-    // Team 1 should have records (two runs)
     assert.ok(accelEvent.records['1'], 'team 1 should have records');
-    // Team 2 should have records (one run)
     assert.ok(accelEvent.records['2'], 'team 2 should have records');
-  });
 
-  it('manualScores include previously set manual scores', async () => {
-    const res = await client.get('/api/score?year=2026', { cookie: adminCookie });
-    const data = await res.json();
-    // Team 1 report was overwritten to 90
     assert.equal(data.manualScores['1'].report, 90);
-    // Team 2 energy was set to null
     assert.equal(data.manualScores['2'].report, 70);
-  });
 
-  it('penalties include previously set penalty config', async () => {
-    const res = await client.get('/api/score?year=2026', { cookie: adminCookie });
-    const data = await res.json();
     assert.ok(data.penalties['가속']);
     assert.equal(data.penalties['가속'].cone_penalty, 2);
     assert.equal(data.penalties['가속'].oc_penalty, 10);
     assert.equal(data.penalties['가속'].start_delay, 5);
-  });
 
-  it('settings include previously set score settings', async () => {
-    const res = await client.get('/api/score?year=2026', { cookie: adminCookie });
-    const data = await res.json();
     assert.ok(data.settings['가속']);
     assert.equal(data.settings['가속'].total_score, 75);
+
+    const enduranceEvent = data.events.find(e => e.type === '내구');
+    assert.ok(enduranceEvent, 'should have 내구 event');
+    assert.ok(enduranceEvent.records, 'should have endurance records');
   });
 
   it('penalty calculation: best run selected with penalty-adjusted time', async () => {
@@ -622,13 +599,6 @@ describe('GET /api/score', () => {
     assert.equal(accelEvent.records['2'].oc, 1);
   });
 
-  it('endurance data included in events', async () => {
-    const res = await client.get('/api/score?year=2026', { cookie: adminCookie });
-    const data = await res.json();
-    const enduranceEvent = data.events.find(e => e.type === '내구');
-    assert.ok(enduranceEvent, 'should have 내구 event');
-    assert.ok(enduranceEvent.records, 'should have records');
-  });
 });
 
 // ─── Endurance calculation in aggregation ────────────────────────────────
@@ -877,11 +847,6 @@ describe('Auth', () => {
       body: { year: 2026, team_num: 1, score_type: 'report', value: 50 },
     });
     assert.equal(res.status, 401);
-  });
-
-  it('GET /api/health without auth returns 200', async () => {
-    const res = await client.get('/api/health');
-    assert.equal(res.status, 200);
   });
 
   it('keeps the full score aggregation private', async () => {

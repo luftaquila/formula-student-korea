@@ -46,13 +46,10 @@ test.describe("System logs page", () => {
 
     // All visible service badges should be "auth"
     const serviceBadges = page.locator("table.data-table tbody .badge-primary");
-    const count = await serviceBadges.count();
-
-    if (count > 0) {
-      for (let i = 0; i < count; i++) {
-        await expect(serviceBadges.nth(i)).toHaveText("auth");
-      }
-    }
+    await expect.poll(async () => {
+      const texts = await serviceBadges.allTextContents();
+      return texts.length > 0 && texts.every((service) => service === "auth");
+    }).toBe(true);
   });
 
   test("level filter dropdown works", async ({ page }) => {
@@ -71,13 +68,10 @@ test.describe("System logs page", () => {
 
     // All visible level badges should be "info" (badge-success class)
     const levelBadges = page.locator("table.data-table tbody .badge-success");
-    const count = await levelBadges.count();
-
-    if (count > 0) {
-      for (let i = 0; i < count; i++) {
-        await expect(levelBadges.nth(i)).toHaveText("info");
-      }
-    }
+    await expect.poll(async () => {
+      const texts = await levelBadges.allTextContents();
+      return texts.length > 0 && texts.every((level) => level === "info");
+    }).toBe(true);
   });
 
   test("pagination controls are visible when logs exist", async ({ page }) => {

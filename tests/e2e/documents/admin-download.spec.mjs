@@ -1,129 +1,90 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { createDocumentSession, deleteDocumentSession, submitDocument } from "../helpers/documents.mjs";
 
-const YEAR = new Date().getFullYear();
+const SESSION_NAME = "E2E 관리자 다운로드 격리 세션";
+const CP949_FILENAME = "한글-CP949.txt";
+const CP949_CONTENT = Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]);
 
 test.describe("Documents admin submission and download", () => {
   test.use({ storageState: storageStatePath("chief") });
 
-  test("views submission status for seeded session", async ({ page }) => {
-    await page.goto("/documents/admin");
-    await waitForPageReady(page);
+  let sessionId;
 
-    // Click the seeded session link to go to detail page
-    const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
+  test.beforeAll(async ({ browser }) => {
+    const chief = await browser.newContext({ storageState: storageStatePath("chief") });
+    const student = await browser.newContext({ storageState: storageStatePath("student") });
+    try {
+      sessionId = await createDocumentSession(chief.request, SESSION_NAME, {
+        allowedExtensions: "txt",
+        teams: [1, 2, 3],
+      });
+      await submitDocument(student.request, sessionId, CP949_FILENAME, {
+        mimeType: "text/plain",
+        buffer: CP949_CONTENT,
+      });
+    } finally {
+      await student.close();
+      await chief.close();
+    }
+  });
+
+  test.afterAll(async ({ browser }) => {
+    const chief = await browser.newContext({ storageState: storageStatePath("chief") });
+    try {
+      await deleteDocumentSession(chief.request, sessionId);
+    } finally {
+      await chief.close();
+    }
+  });
+
+  test("shows exact submission status and previews CP949 Korean text", async ({ page }) => {
+    await page.goto("/documents/admin");
+    const sessionLink = page.locator(".session-link").filter({ hasText: SESSION_NAME });
     await expect(sessionLink).toBeVisible();
     await sessionLink.click();
     await waitForPageReady(page);
 
-    // Verify session detail page
-    await expect(page.locator("h3").first()).toContainText("E2E 테스트 세션");
-
-    // Verify submission status table
+    await expect(page.locator("h3").first()).toContainText(SESSION_NAME);
     const table = page.locator(".detail-table");
     await expect(table).toBeVisible();
-
-    // Verify table headers
-    await expect(page.locator("th").filter({ hasText: "번호" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "상태" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "제출 시간" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "파일" })).toBeVisible();
-
-    // Verify that teams 1, 2, 3 are listed (session targets)
     await expect(table.locator("tbody tr")).toHaveCount(3);
+    for (const heading of ["번호", "상태", "제출 시간", "파일"]) {
+      await expect(table.locator("th").filter({ hasText: heading })).toBeVisible();
+    }
 
-    // Team 1 (서울대학교) should show "제출" status from student-flow test
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" });
-    await expect(team1Row).toBeVisible();
     await expect(team1Row.locator(".badge-success")).toContainText("제출");
+    const fileLink = team1Row.locator(".file-link");
+    await expect(fileLink).toContainText(CP949_FILENAME);
 
-    // Team 2 (한양대학교) should show "미제출"
     const team2Row = table.locator("tbody tr").filter({ hasText: "한양대학교" });
-    await expect(team2Row).toBeVisible();
     await expect(team2Row.locator(".col-status .badge-default")).toContainText("미제출");
-  });
-
-  test("submission count chips show correct counts", async ({ page }) => {
-    await page.goto("/documents/admin");
-    await waitForPageReady(page);
-
-    const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
-    await sessionLink.click();
-    await waitForPageReady(page);
-
-    // Header chips: 제출 1 / 미제출 2 / 전체 3 (지각 0이라 숨김)
     const chips = page.locator(".count-chips");
     await expect(chips.locator(".badge-success")).toContainText("제출 1");
     await expect(chips.locator(".badge-default")).toContainText("미제출 2");
     await expect(chips.locator(".badge-primary")).toContainText("전체 3");
-  });
 
-  test("submitted file name is visible for team 1", async ({ page }) => {
-    await page.goto("/documents/admin");
-    await waitForPageReady(page);
+    for (const label of ["시작", "제출 마감", "용량 제한", "허용 확장자"]) {
+      await expect(page.locator(".info-label").filter({ hasText: label })).toBeVisible();
+    }
+    await expect(page.locator(".session-notice")).toContainText("격리된 E2E 제출 세션");
 
-    const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
-    await sessionLink.click();
-    await waitForPageReady(page);
-
-    // Team 1's row should show an uploaded file (name may vary due to parallel test resubmissions)
-    const table = page.locator(".detail-table");
-    const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" });
-    await expect(team1Row.locator(".file-link")).toContainText(/.+\.pdf/);
-  });
-
-  test("admin can download submitted file", async ({ page }) => {
-    await page.goto("/documents/admin");
-    await waitForPageReady(page);
-
-    const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
-    await sessionLink.click();
-    await waitForPageReady(page);
-
-    // Find the file link for team 1's submission and verify it exists
-    const table = page.locator(".detail-table");
-    const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" });
-    const fileLink = team1Row.locator(".file-link");
-    await expect(fileLink).toBeVisible();
-    await expect(fileLink).toContainText(/.+\.pdf/);
-  });
-
-  test("session info is displayed correctly", async ({ page }) => {
-    await page.goto("/documents/admin");
-    await waitForPageReady(page);
-
-    const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
-    await sessionLink.click();
-    await waitForPageReady(page);
-
-    // Verify session details are shown
-    await expect(page.locator(".info-label").filter({ hasText: "시작" })).toBeVisible();
-    await expect(page.locator(".info-label").filter({ hasText: "제출 마감" })).toBeVisible();
-    await expect(page.locator(".info-label").filter({ hasText: "용량 제한" })).toBeVisible();
-    await expect(page.locator(".info-label").filter({ hasText: "허용 확장자" })).toBeVisible();
-    await expect(page.locator(".info-value").filter({ hasText: "PDF" })).toBeVisible();
-
-    // Verify notice is displayed
-    await expect(page.locator(".session-notice")).toContainText("테스트용 제출 세션입니다.");
-
-    // Verify edit and delete buttons exist
-    await expect(page.locator("a").filter({ hasText: "수정" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "삭제" })).toBeVisible();
-  });
-
-  test("back button navigates to admin dashboard", async ({ page }) => {
-    await page.goto("/documents/admin");
-    await waitForPageReady(page);
-
-    const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
-    await sessionLink.click();
-    await waitForPageReady(page);
-
-    // Click back button
+    const responsePromise = page.context().waitForEvent("response", {
+      predicate: (response) => response.url().includes("/documents/api/admin/submissions/")
+        && response.url().includes("/files/"),
+    });
+    const previewPromise = page.waitForEvent("popup");
+    await fileLink.click();
+    const [response, preview] = await Promise.all([responsePromise, previewPromise]);
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toBe("text/plain; charset=euc-kr");
+    const disposition = decodeURIComponent(response.headers()["content-disposition"]);
+    expect(disposition).toContain("inline");
+    expect(disposition).toContain(CP949_FILENAME);
+    await expect(preview.locator("body")).toHaveText("한글");
+    await preview.close();
     await page.locator(".back-btn").click();
-    await waitForPageReady(page);
-
-    // Verify we're back on admin dashboard
     await expect(page.locator("h3").filter({ hasText: "팀 목록" })).toBeVisible();
   });
 });

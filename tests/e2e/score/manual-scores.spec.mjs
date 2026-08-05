@@ -12,7 +12,7 @@ async function fillAndSave(page, input, value) {
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.blur();
   }, value);
-  await Promise.race([savePromise, page.waitForTimeout(2000)]);
+  await savePromise;
 }
 
 test.describe("Score manual score entry", () => {
@@ -130,8 +130,7 @@ test.describe("Score manual score entry", () => {
     await fillAndSave(page, bonusInput, "20");
     await fillAndSave(page, deductionInput, "10");
 
-    // Verify total is at least 110 (may include event and energy scores)
-    // Use expect.poll to retry — fillAndSave uses Promise.race with 1s timeout, so saves may still be in-flight
+    // Verify total is at least 110 (may include event and energy scores).
     await expect.poll(
       async () => Number(await totalCell.textContent()),
       { timeout: 5000 },

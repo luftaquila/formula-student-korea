@@ -33,28 +33,30 @@ const officialOnly = [
 ];
 
 test.describe("queue RBAC", () => {
-  for (const { method, path, body } of chiefOnly) {
-    test(`official is rejected (403) on ${method.toUpperCase()} ${path}`, async ({ browser }) => {
-      const ctx = await browser.newContext({ storageState: storageStatePath("official") });
-      const res = await ctx.request[method](path, body === undefined ? {} : { data: body });
-      expect(res.status()).toBe(403);
+  test("official is rejected on every chief-only endpoint", async ({ browser }) => {
+    const ctx = await browser.newContext({ storageState: storageStatePath("official") });
+    try {
+      for (const { method, path, body } of chiefOnly) {
+        await test.step(`${method.toUpperCase()} ${path}`, async () => {
+          const res = await ctx.request[method](path, body === undefined ? {} : { data: body });
+          expect(res.status()).toBe(403);
+        });
+      }
+    } finally {
       await ctx.close();
-    });
+    }
+  });
 
-    test(`unauthenticated is rejected (401) on ${method.toUpperCase()} ${path}`, async ({ request }) => {
-      const res = await request[method](path, body === undefined ? {} : { data: body });
-      expect(res.status()).toBe(401);
-    });
-  }
+  test("unauthenticated callers are rejected on every admin endpoint", async ({ request }) => {
+    for (const { method, path, body } of [...chiefOnly, ...officialOnly]) {
+      await test.step(`${method.toUpperCase()} ${path}`, async () => {
+        const res = await request[method](path, body === undefined ? {} : { data: body });
+        expect(res.status()).toBe(401);
+      });
+    }
+  });
 
-  for (const { method, path } of officialOnly) {
-    test(`unauthenticated is rejected (401) on official endpoint ${method.toUpperCase()} ${path}`, async ({ request }) => {
-      const res = await request[method](path);
-      expect(res.status()).toBe(401);
-    });
-  }
-
-  test("unauthenticated read succeeds (200) on GET /queue/api/active (public)", async ({ request }) => {
+  test("the active queue endpoint remains public", async ({ request }) => {
     const res = await request.get("/queue/api/active");
     expect(res.status()).toBe(200);
   });

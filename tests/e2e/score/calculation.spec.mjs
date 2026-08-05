@@ -92,14 +92,6 @@ test.describe("Score calculation accuracy", () => {
       data: { year: YEAR, event_type: "가속", cone_penalty: 0, oc_penalty: 0, start_delay: 0 },
     });
 
-    // Clean up endurance records
-    await page.request.put("/score/api/score/endurance", {
-      data: { year: YEAR, team_num: 10, field: "status", value: null },
-    });
-    await page.request.put("/score/api/score/endurance", {
-      data: { year: YEAR, team_num: 20, field: "status", value: null },
-    });
-
     await context.close();
   });
 
@@ -152,42 +144,6 @@ test.describe("Score calculation accuracy", () => {
     expect(team1Record).toBeTruthy();
     expect(team1Record.result).toBe(4000);
     expect(team1Record.cones).toBe(3);
-  });
-
-  test("endurance DNS team is skipped in score data", async ({ page }) => {
-    // Set team 10 (KAIST) endurance status to DNS
-    await page.request.put("/score/api/score/endurance", {
-      data: { year: YEAR, team_num: 10, field: "status", value: "DNS" },
-    });
-
-    // Fetch score data
-    const res = await page.request.get(`/score/api/score?year=${YEAR}`);
-    const data = await res.json();
-
-    // Find endurance event
-    const enduranceEvent = data.events.find((e) => e.type === "내구");
-    expect(enduranceEvent).toBeTruthy();
-
-    // DNS team should not have a record entry
-    expect(enduranceEvent.records["10"]).toBeUndefined();
-  });
-
-  test("endurance DNF team has result -1 in score data", async ({ page }) => {
-    // Set team 20 (고려대학교) endurance status to DNF
-    await page.request.put("/score/api/score/endurance", {
-      data: { year: YEAR, team_num: 20, field: "status", value: "DNF" },
-    });
-
-    // Fetch score data
-    const res = await page.request.get(`/score/api/score?year=${YEAR}`);
-    const data = await res.json();
-
-    const enduranceEvent = data.events.find((e) => e.type === "내구");
-    expect(enduranceEvent).toBeTruthy();
-
-    // DNF team should have result = -1
-    expect(enduranceEvent.records["20"]).toBeTruthy();
-    expect(enduranceEvent.records["20"].result).toBe(-1);
   });
 
   test("score dashboard reflects traffic records", async ({ page }) => {

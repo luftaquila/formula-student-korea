@@ -103,7 +103,7 @@ describe('createLogger', () => {
     }
   });
 
-  it('queryHandler filters by action, actor, from, to, search', () => {
+  it('queryHandler filters by action and actor', () => {
     const req = mockReq({ action: 'test_action', actor: 'admin' }, { role: 'admin' });
     const res = mockRes();
     logger.queryHandler(req, res);
@@ -123,12 +123,11 @@ describe('createLogger', () => {
     assert.ok(res.body.total >= 2);
   });
 
-  it('auto-cleanup removes oldest rows when maxRows exceeded', () => {
-    // Create a fresh logger with maxRows=5
+  it('auto-cleanup removes oldest rows when maxRows is exceeded', (t) => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
     const cleanDb = new Database(':memory:');
     const cleanLogger = createLogger(cleanDb, 'clean-test', 5);
 
-    // Insert 10 records
     for (let i = 0; i < 10; i++) {
       cleanLogger.log(null, `action_${i}`, `detail_${i}`);
     }
@@ -136,17 +135,11 @@ describe('createLogger', () => {
     const countBefore = cleanDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
     assert.equal(countBefore, 10);
 
-    // Trigger cleanup manually by calling the cleanup logic:
-    // The cleanup runs on interval, but we can simulate it
-    const count = cleanDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
-    if (count > 5) {
-      cleanDb.prepare('DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY id ASC LIMIT ?)').run(count - 5);
-    }
+    t.mock.timers.tick(3_600_000);
 
     const countAfter = cleanDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
     assert.equal(countAfter, 5);
 
-    // Verify we kept the newest ones (highest IDs)
     const remaining = cleanDb.prepare('SELECT action FROM logs ORDER BY id ASC').all();
     assert.equal(remaining[0].action, 'action_5');
     assert.equal(remaining[4].action, 'action_9');

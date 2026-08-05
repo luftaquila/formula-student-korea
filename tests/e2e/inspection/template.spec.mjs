@@ -102,120 +102,37 @@ test.describe("Inspection template management", () => {
   });
 
   test("edits a node name inline", async ({ page }) => {
-    const panel = page.locator(".category-panel");
-
-    // Edit the subcategory name (배터리 → 배터리2)
-    const subNameInput = panel.locator(".sub-name").first();
-    await expect(subNameInput).toHaveValue("배터리");
-    const savePromise = page.waitForResponse((res) => res.url().includes("/api/sheet/template/") && res.status() === 200);
-    await subNameInput.fill("배터리2");
-    await subNameInput.blur();
-    await savePromise;
-
-    // Verify the value persists after reload
-    await page.reload();
-    await waitForPageReady(page);
-    const reloadedInput = page.locator(".category-panel .sub-name").first();
-    await expect(reloadedInput).toHaveValue("배터리2");
-
-    // Revert: change back to original
-    const restorePromise = page.waitForResponse((res) => res.url().includes("/api/sheet/template/") && res.status() === 200);
-    await reloadedInput.fill("배터리");
-    await reloadedInput.blur();
-    await restorePromise;
-  });
-
-  test("copies template between years via API", async ({ page }) => {
-    // Copy current year's template to (current year + 1) via API
-    const targetYear = YEAR + 1;
-    const response = await page.request.post("/inspection/api/sheet/template/copy", {
-      data: { from_year: YEAR, to_year: targetYear },
+    const suffix = `${Date.now()}`;
+    const originalName = `E2E edit ${suffix}`;
+    const updatedName = `E2E edited ${suffix}`;
+    const create = await page.request.post("/inspection/api/sheet/template", {
+      data: { year: YEAR, level: "category", name: originalName, sort_order: 999 },
     });
-    expect(response.status()).toBe(201);
+    expect(create.status()).toBe(200);
+    const { id } = await create.json();
 
-    // Verify copied template via API (dropdown won't show year without entry data)
-    const verifyRes = await page.request.get(`/inspection/api/sheet/template?year=${targetYear}`);
-    const copied = await verifyRes.json();
-    expect(copied.length).toBe(2);
-    expect(copied[0].name).toBe("전기 검차");
-    expect(copied[1].name).toBe("샤시 검차");
+    try {
+      await page.reload();
+      await waitForPageReady(page);
+      await page.locator(".tabs .tab").filter({ hasText: originalName }).click();
 
-    // Clean up: delete the target year's template by importing empty
-    await page.request.post("/inspection/api/sheet/template/import", {
-      data: { year: targetYear, template: [] },
-    });
-  });
+      const nameInput = page.locator(".category-header .cat-name");
+      await expect(nameInput).toHaveValue(originalName);
+      const savePromise = page.waitForResponse(
+        (response) => response.url().endsWith(`/api/sheet/template/${id}`) && response.request().method() === "PUT",
+      );
+      await nameInput.fill(updatedName);
+      await nameInput.blur();
+      expect((await savePromise).status()).toBe(200);
 
-  test("reorders template items via API", async ({ page }) => {
-    // Get current template to find item IDs
-    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
-    const template = await templateRes.json();
-
-    // Find items in the first group of first subcategory
-    const firstGroup = template[0]?.subcategories?.[0]?.groups?.[0];
-    expect(firstGroup).toBeTruthy();
-    expect(firstGroup.items.length).toBeGreaterThanOrEqual(2);
-
-    // Build items array with reversed sort_order
-    const items = firstGroup.items.map((item) => ({ id: item.id, sort_order: item.sort_order }));
-    const reversedItems = items.map((item, i) => ({ id: item.id, sort_order: items[items.length - 1 - i].sort_order }));
-
-    // Call reorder API
-    const reorderRes = await page.request.post("/inspection/api/sheet/template/reorder", {
-      data: { items: reversedItems },
-    });
-    expect(reorderRes.status()).toBe(200);
-
-    // Verify new order via API
-    const updatedRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
-    const updated = await updatedRes.json();
-    const updatedItems = updated[0].subcategories[0].groups[0].items;
-    const reversedIds = [...items].reverse().map((i) => i.id);
-    expect(updatedItems.map((i) => i.id)).toEqual(reversedIds);
-
-    // Restore original order
-    const restoreItems = items.map((item) => ({ id: item.id, sort_order: item.sort_order }));
-    await page.request.post("/inspection/api/sheet/template/reorder", {
-      data: { items: restoreItems },
-    });
-  });
-
-  test("imports template from JSON via API", async ({ page }) => {
-    const importYear = YEAR + 2;
-    const importTemplate = [
-      {
-        name: "E2E Import 카테고리",
-        subcategories: [
-          {
-            name: "E2E 소분류",
-            groups: [
-              {
-                name: "E2E 그룹",
-                items: [{ name: "E2E 항목", answer_type: "passfail" }],
-              },
-            ],
-          },
-        ],
-      },
-    ];
-
-    // Import template
-    const importRes = await page.request.post("/inspection/api/sheet/template/import", {
-      data: { year: importYear, template: importTemplate },
-    });
-    expect(importRes.status()).toBe(201);
-
-    // Verify imported template via API (dropdown won't show year without entry data)
-    const verifyRes = await page.request.get(`/inspection/api/sheet/template?year=${importYear}`);
-    const imported = await verifyRes.json();
-    expect(imported.length).toBe(1);
-    expect(imported[0].name).toBe("E2E Import 카테고리");
-    expect(imported[0].subcategories[0].name).toBe("E2E 소분류");
-
-    // Cleanup: delete the imported year's template
-    await page.request.post("/inspection/api/sheet/template/import", {
-      data: { year: importYear, template: [] },
-    });
+      await page.reload();
+      await waitForPageReady(page);
+      await page.locator(".tabs .tab").filter({ hasText: updatedName }).click();
+      await expect(page.locator(".category-header .cat-name")).toHaveValue(updatedName);
+    } finally {
+      const cleanup = await page.request.delete(`/inspection/api/sheet/template/${id}`);
+      expect(cleanup.status()).toBe(200);
+    }
   });
 
   test("opens print page with template data", async ({ page }) => {
@@ -262,57 +179,4 @@ test.describe("Inspection template management", () => {
     expect(parsed[0].subcategories[0].groups[0].items).toHaveLength(4);
   });
 
-  test("adds an item with text answer type via API", async ({ page }) => {
-    // Get current template to find the group ID
-    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
-    const template = await templateRes.json();
-    const groupId = template[0].subcategories[0].groups[0].id;
-
-    // Add a text-type item
-    const createRes = await page.request.post("/inspection/api/sheet/template", {
-      data: { year: YEAR, level: "item", parent_id: groupId, name: "E2E 텍스트 항목", answer_type: "text" },
-    });
-    expect(createRes.status()).toBe(200);
-    const { id: itemId } = await createRes.json();
-
-    // Verify the item was created with correct answer_type
-    const verifyRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
-    const updated = await verifyRes.json();
-    const items = updated[0].subcategories[0].groups[0].items;
-    const newItem = items.find((i) => i.id === itemId);
-    expect(newItem).toBeTruthy();
-    expect(newItem.answer_type).toBe("text");
-
-    // Clean up: delete the item
-    const deleteRes = await page.request.delete(`/inspection/api/sheet/template/${itemId}`);
-    expect(deleteRes.status()).toBe(200);
-  });
-
-  test("adds an item with checktable answer type via API", async ({ page }) => {
-    // Get current template to find the group ID in second category
-    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
-    const template = await templateRes.json();
-    const groupId = template[1].subcategories[0].groups[0].id;
-
-    // Add a checktable-type item with remarks JSON
-    const remarks = JSON.stringify({ columns: ["항목A", "항목B"], rows: ["행1", "행2"] });
-    const createRes = await page.request.post("/inspection/api/sheet/template", {
-      data: { year: YEAR, level: "item", parent_id: groupId, name: "E2E 체크테이블", answer_type: "checktable", remarks },
-    });
-    expect(createRes.status()).toBe(200);
-    const { id: itemId } = await createRes.json();
-
-    // Verify the item was created with correct answer_type and remarks
-    const verifyRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
-    const updated = await verifyRes.json();
-    const items = updated[1].subcategories[0].groups[0].items;
-    const newItem = items.find((i) => i.id === itemId);
-    expect(newItem).toBeTruthy();
-    expect(newItem.answer_type).toBe("checktable");
-    expect(JSON.parse(newItem.remarks)).toEqual({ columns: ["항목A", "항목B"], rows: ["행1", "행2"] });
-
-    // Clean up: delete the item
-    const deleteRes = await page.request.delete(`/inspection/api/sheet/template/${itemId}`);
-    expect(deleteRes.status()).toBe(200);
-  });
 });

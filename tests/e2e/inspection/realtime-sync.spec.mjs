@@ -101,7 +101,7 @@ test.describe("Inspection real-time sync via SSE", () => {
     const cleanupPromise = page1.waitForResponse((res) => res.url().includes("/api/sheet/inspector") && res.status() === 200);
     await inspector1.fill("");
     await inspector1.blur();
-    await Promise.race([cleanupPromise, page1.waitForTimeout(1000)]);
+    await cleanupPromise;
 
     await context1.close();
     await context2.close();
@@ -286,7 +286,7 @@ test.describe("Inspection real-time sync via SSE", () => {
     // Cleanup: clear value
     const cleanupPromise = page1.waitForResponse((res) => res.url().includes("/api/sheet/answer") && res.status() === 200);
     await numInput1.fill("");
-    await Promise.race([cleanupPromise, page1.waitForTimeout(1000)]);
+    await cleanupPromise;
 
     await context1.close();
     await context2.close();

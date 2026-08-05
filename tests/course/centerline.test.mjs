@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -80,8 +80,12 @@ function selfIntersections(points) {
 describe("computeCenterline — reference courses", () => {
   for (const ref of REFERENCE) {
     describe(ref.fixture, () => {
-      const cones = loadFixture(ref.fixture).cones;
-      const result = computeCenterline(cones, { step: 1.0 });
+      let cones, result;
+
+      before(() => {
+        cones = loadFixture(ref.fixture).cones;
+        result = computeCenterline(cones, { step: 1.0 });
+      });
 
       it("computes an ok, closed loop", () => {
         assert.equal(result.ok, true);
@@ -119,11 +123,11 @@ describe("computeCenterline — reference courses", () => {
         assert.ok(minClearance > 0.3, `min wall clearance ${minClearance.toFixed(2)}m`);
       });
 
-      it("is deterministic", () => {
-        const again = computeCenterline(cones, { step: 1.0 });
-        assert.equal(again.length.toFixed(3), result.length.toFixed(3));
-        assert.equal(again.points.length, result.points.length);
-      });
+      if (ref.fixture === "autonomous") {
+        it("is deterministic for identical input", () => {
+          assert.deepEqual(computeCenterline(cones, { step: 1.0 }), result);
+        });
+      }
 
       // Smoothness gate — the reason the slalom pass uses a Reinsch smoothing
       // spline instead of an interpolating Catmull-Rom: guarantees no small
@@ -153,8 +157,12 @@ describe("computeCenterline — reference courses", () => {
 // The assertions below guard the full loop, its smoothness, and that it neither
 // self-crosses nor cuts a wall.
 describe("computeCenterline — FSK 2026 Endurance regression", () => {
-  const cones = loadFixture("endurance_2026").cones;
-  const result = computeCenterline(cones, { step: 1.0 });
+  let cones, result;
+
+  before(() => {
+    cones = loadFixture("endurance_2026").cones;
+    result = computeCenterline(cones, { step: 1.0 });
+  });
 
   it("computes an ok, closed loop that covers the whole track", () => {
     assert.equal(result.ok, true);
@@ -215,56 +223,60 @@ describe("computeCenterline — FSK 2026 Endurance regression", () => {
     assert.ok(worst < 8, `a wall cone is ${worst.toFixed(1)}m from the line — cut across?`);
   });
 
-  it("is deterministic", () => {
-    const again = computeCenterline(cones, { step: 1.0 });
-    assert.equal(again.length.toFixed(3), result.length.toFixed(3));
-    assert.equal(again.points.length, result.points.length);
-  });
 });
 
 describe("computeCenterline — start + reverse", () => {
-  const cones = loadFixture("endurance").cones;
-  const base = computeCenterline(cones, { step: 1.0 });
+  let cones, base, far, reversed, started, startedReversed;
+
+  before(() => {
+    cones = loadFixture("endurance").cones;
+    base = computeCenterline(cones, { step: 1.0 });
+    far = cones
+      .filter((cone) => cone.side !== "center")
+      .reduce((farthest, cone) =>
+        haversine(base.points[0], cone) > haversine(base.points[0], farthest) ? cone : farthest
+      );
+    reversed = computeCenterline(cones, { step: 1.0, reverse: true });
+    started = computeCenterline(cones, { step: 1.0, start: { lat: far.lat, lng: far.lng } });
+    startedReversed = computeCenterline(cones, {
+      step: 1.0,
+      start: { lat: far.lat, lng: far.lng },
+      reverse: true,
+    });
+  });
 
   it("reverse flips direction but keeps the start point and length", () => {
-    const rev = computeCenterline(cones, { step: 1.0, reverse: true });
-    assert.ok(haversine(rev.points[0], base.points[0]) < 0.5, "start moved");
-    assert.ok(Math.abs(rev.length - base.length) < 1.0, "length changed");
+    assert.ok(haversine(reversed.points[0], base.points[0]) < 0.5, "start moved");
+    assert.ok(Math.abs(reversed.length - base.length) < 1.0, "length changed");
     // reverse's 2nd point == forward's last distinct point (the opposite neighbour)
     const fwdPrev = base.points[base.points.length - 2];
-    assert.ok(haversine(rev.points[1], fwdPrev) < 1.5, "direction not reversed");
+    assert.ok(haversine(reversed.points[1], fwdPrev) < 1.5, "direction not reversed");
   });
 
   it("start rotates the loop to the station nearest a chosen cone", () => {
-    // farthest wall cone from the default start -> guaranteed to move the start
-    let far = cones[0], fd = -1;
-    for (const c of cones.filter((c) => c.side !== "center")) {
-      const d = haversine(base.points[0], c);
-      if (d > fd) { fd = d; far = c; }
-    }
-    const r = computeCenterline(cones, { step: 1.0, start: { lat: far.lat, lng: far.lng } });
     // points[0] is the closest station to the chosen cone
     let minI = 0, minD = Infinity;
-    for (let i = 0; i < r.points.length - 1; i++) {
-      const d = haversine(r.points[i], far);
+    for (let i = 0; i < started.points.length - 1; i++) {
+      const d = haversine(started.points[i], far);
       if (d < minD) { minD = d; minI = i; }
     }
     assert.equal(minI, 0, "start is not the nearest station to the chosen cone");
-    assert.ok(haversine(r.points[0], base.points[0]) > 10, "start did not move");
-    assert.ok(Math.abs(r.length - base.length) < 1.0, "length changed");
+    assert.ok(haversine(started.points[0], base.points[0]) > 10, "start did not move");
+    assert.ok(Math.abs(started.length - base.length) < 1.0, "length changed");
   });
 
   it("start + reverse compose (nearest station start, flipped direction)", () => {
-    const cone = cones.find((c) => c.side === "right");
-    const s = computeCenterline(cones, { step: 1.0, start: { lat: cone.lat, lng: cone.lng } });
-    const sr = computeCenterline(cones, { step: 1.0, start: { lat: cone.lat, lng: cone.lng }, reverse: true });
-    assert.ok(haversine(sr.points[0], s.points[0]) < 0.5, "reverse moved the chosen start");
-    assert.ok(haversine(sr.points[1], s.points[s.points.length - 2]) < 1.5, "not reversed");
+    assert.ok(haversine(startedReversed.points[0], started.points[0]) < 0.5, "reverse moved the chosen start");
+    assert.ok(haversine(startedReversed.points[1], started.points[started.points.length - 2]) < 1.5, "not reversed");
   });
 });
 
 describe("computeCenterline — metric frame", () => {
-  const result = computeCenterline(loadFixture("endurance").cones, { step: 1.0, metric: true });
+  let result;
+
+  before(() => {
+    result = computeCenterline(loadFixture("endurance").cones, { step: 1.0, metric: true });
+  });
 
   it("attaches a single shared projection frame", () => {
     assert.ok(result.metric);
@@ -296,7 +308,11 @@ describe("computeCenterline — metric frame", () => {
 });
 
 describe("exporters", () => {
-  const result = computeCenterline(loadFixture("autonomous").cones, { step: 1.0 });
+  let result;
+
+  before(() => {
+    result = computeCenterline(loadFixture("autonomous").cones, { step: 1.0 });
+  });
 
   it("centerlineToGeoJSON produces a LineString Feature", () => {
     const gj = centerlineToGeoJSON(result, { name: "자율주행" });

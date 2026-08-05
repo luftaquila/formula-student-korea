@@ -62,22 +62,27 @@ test.describe("Log date range and text search filters", () => {
 
     // Search for a term that should exist in seeding logs (user creation)
     await searchInput.fill("user.create");
+    const filtered = page.waitForResponse(
+      (response) => response.url().includes("/api/admin/logs") && response.status() === 200,
+    );
     await page.getByRole("button", { name: "검색" }).click();
-    await waitForPageReady(page);
+    await filtered;
 
     const rows = page.locator("table.data-table tbody tr.row-clickable");
-    const count = await rows.count();
-
-    if (count > 0) {
-      // All visible rows should contain the search term in action column
-      const firstAction = rows.first().locator("td.col-action");
-      await expect(firstAction).toContainText("user");
-    }
+    await expect(rows.first()).toBeVisible({ timeout: 10000 });
+    const actions = rows.locator("td.col-action");
+    await expect.poll(async () => {
+      const texts = await actions.allTextContents();
+      return texts.length > 0 && texts.every((action) => action.includes("user"));
+    }).toBe(true);
 
     // Search for a nonexistent term
     await searchInput.fill("nonexistent_action_xyz_12345");
+    const empty = page.waitForResponse(
+      (response) => response.url().includes("/api/admin/logs") && response.status() === 200,
+    );
     await page.getByRole("button", { name: "검색" }).click();
-    await waitForPageReady(page);
+    await empty;
 
     // Nonexistent term should return no results
     const emptyRow = page.locator("table.data-table tbody td.empty-text");
@@ -90,16 +95,18 @@ test.describe("Log date range and text search filters", () => {
 
     // Type action prefix and press Enter to trigger search
     await actionInput.fill("user");
+    const filtered = page.waitForResponse(
+      (response) => response.url().includes("/api/admin/logs") && response.status() === 200,
+    );
     await actionInput.press("Enter");
-    await waitForPageReady(page);
+    await filtered;
 
     const rows = page.locator("table.data-table tbody tr.row-clickable");
-    const count = await rows.count();
-
-    // If results exist, verify action column contains the prefix
-    if (count > 0) {
-      const firstAction = rows.first().locator("td.col-action");
-      await expect(firstAction).toContainText("user");
-    }
+    await expect(rows.first()).toBeVisible({ timeout: 10000 });
+    const actions = rows.locator("td.col-action");
+    await expect.poll(async () => {
+      const texts = await actions.allTextContents();
+      return texts.length > 0 && texts.every((action) => action.includes("user"));
+    }).toBe(true);
   });
 });

@@ -15,14 +15,8 @@ test.describe("Score penalty and score settings", () => {
     // The penalty settings table is in the bottom-row section
     const settingCards = page.locator(".setting-card");
 
-    // There should be two setting cards: penalty and score settings
-    // They may not exist if no events are loaded, so check for the bottom-row first
     const bottomRow = page.locator(".bottom-row");
-    const bottomRowVisible = await bottomRow.isVisible().catch(() => false);
-    if (!bottomRowVisible) {
-      // No events loaded, settings tables won't show
-      return;
-    }
+    await expect(bottomRow).toBeVisible();
 
     // First setting card: penalty settings
     const penaltyTable = settingCards.first().locator("table.setting-table");
@@ -40,8 +34,7 @@ test.describe("Score penalty and score settings", () => {
 
   test("set cone touch penalty for endurance event", async ({ page }) => {
     const bottomRow = page.locator(".bottom-row");
-    const bottomRowVisible = await bottomRow.isVisible().catch(() => false);
-    if (!bottomRowVisible) return;
+    await expect(bottomRow).toBeVisible();
 
     const penaltyTable = page.locator(".setting-card").first().locator("table.setting-table");
 
@@ -84,13 +77,12 @@ test.describe("Score penalty and score settings", () => {
     const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
     await resetInput.fill("0");
     await resetInput.blur();
-    await Promise.race([cleanupPromise, page.waitForTimeout(2000)]);
+    await cleanupPromise;
   });
 
   test("set off-course penalty for endurance event", async ({ page }) => {
     const bottomRow = page.locator(".bottom-row");
-    const bottomRowVisible = await bottomRow.isVisible().catch(() => false);
-    if (!bottomRowVisible) return;
+    await expect(bottomRow).toBeVisible();
 
     const penaltyTable = page.locator(".setting-card").first().locator("table.setting-table");
 
@@ -133,13 +125,12 @@ test.describe("Score penalty and score settings", () => {
     const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
     await resetInput.fill("0");
     await resetInput.blur();
-    await Promise.race([cleanupPromise, page.waitForTimeout(2000)]);
+    await cleanupPromise;
   });
 
   test("score settings table renders and set total points for endurance", async ({ page }) => {
     const bottomRow = page.locator(".bottom-row");
-    const bottomRowVisible = await bottomRow.isVisible().catch(() => false);
-    if (!bottomRowVisible) return;
+    await expect(bottomRow).toBeVisible();
 
     // Second setting card: score settings
     const scoreTable = page.locator(".setting-card").nth(1).locator("table.setting-table");
@@ -172,13 +163,14 @@ test.describe("Score penalty and score settings", () => {
     await expect(input).toBeVisible({ timeout: 3000 });
     await expect(input).toBeFocused();
 
-    // Set value first, then blur separately to let Vue process the input event before save triggers
+    // Keep the DOM update and blur in one browser task so an SSE refresh cannot
+    // replace the input between the two operations.
+    const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
     await input.evaluate((el, v) => {
       el.value = v;
       el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.blur();
     }, String(newValue));
-    const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
-    await input.evaluate((el) => el.blur());
     await savePromise;
 
     // Verify the value is saved
@@ -195,13 +187,12 @@ test.describe("Score penalty and score settings", () => {
     const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
     await resetInput.fill("");
     await resetInput.blur();
-    await Promise.race([cleanupPromise, page.waitForTimeout(2000)]);
+    await cleanupPromise;
   });
 
   test("set completion points and cutoff for endurance", async ({ page }) => {
     const bottomRow = page.locator(".bottom-row");
-    const bottomRowVisible = await bottomRow.isVisible().catch(() => false);
-    if (!bottomRowVisible) return;
+    await expect(bottomRow).toBeVisible();
 
     const scoreTable = page.locator(".setting-card").nth(1).locator("table.setting-table");
 
@@ -246,19 +237,18 @@ test.describe("Score penalty and score settings", () => {
     const cleanupFinish = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
     await lastFinishCell.locator("input.setting-input").fill("");
     await lastFinishCell.locator("input.setting-input").blur();
-    await Promise.race([cleanupFinish, page.waitForTimeout(2000)]);
+    await cleanupFinish;
 
     await lastCutoffCell.click();
     const cleanupCutoff = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
     await lastCutoffCell.locator("input.setting-input").fill("");
     await lastCutoffCell.locator("input.setting-input").blur();
-    await Promise.race([cleanupCutoff, page.waitForTimeout(2000)]);
+    await cleanupCutoff;
   });
 
   test("set start delay penalty for endurance event", async ({ page }) => {
     const bottomRow = page.locator(".bottom-row");
-    const bottomRowVisible = await bottomRow.isVisible().catch(() => false);
-    if (!bottomRowVisible) return;
+    await expect(bottomRow).toBeVisible();
 
     const penaltyTable = page.locator(".setting-card").first().locator("table.setting-table");
 
@@ -299,6 +289,6 @@ test.describe("Score penalty and score settings", () => {
     const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
     await resetInput.fill("0");
     await resetInput.blur();
-    await Promise.race([cleanupPromise, page.waitForTimeout(2000)]);
+    await cleanupPromise;
   });
 });

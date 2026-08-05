@@ -2035,7 +2035,7 @@ async function loadSmsConfig({ retries = 0, delayMs = 3000 } = {}) {
 }
 
 // Refresh SMS config every 5 minutes to pick up admin changes
-setInterval(loadSmsConfig, 5 * 60 * 1000);
+setInterval(loadSmsConfig, 5 * 60 * 1000).unref();
 
 function sendSmsNotification(type, prev) {
   let target;

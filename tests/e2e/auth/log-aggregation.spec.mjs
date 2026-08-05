@@ -15,6 +15,7 @@ test.describe("Multi-service log aggregation", () => {
     // The response includes a services array listing all queried services
     expect(Array.isArray(data.services)).toBe(true);
     expect(data.services).toContain("auth");
+    expect(data.services).toContain("entry");
 
     // Auth logs should exist (seeding creates users)
     // Each log from the aggregation endpoint is tagged with _service
@@ -22,49 +23,32 @@ test.describe("Multi-service log aggregation", () => {
     expect(authLogs.length).toBeGreaterThan(0);
   });
 
-  test("filtering logs by service returns only that service", async ({ page }) => {
-    // Filter by auth service
-    const res = await page.request.get("/auth/api/admin/logs?service=auth");
+  test("filtering logs reaches a downstream service and returns only its records", async ({ page }) => {
+    // Generate a deterministic downstream log without changing state. The
+    // duplicate insert is rejected, but entry records the attempted action
+    // before returning its documented duplicate-key response.
+    const year = new Date().getFullYear();
+    const duplicate = await page.request.post(`/entry/api/entries?year=${year}`, {
+      data: { num: 1, univ: "서울대학교", team: "SNU Racing", type: "EV" },
+    });
+    expect(duplicate.status()).toBe(400);
+
+    const query = new URLSearchParams({
+      service: "entry",
+      action: "entry.create",
+    });
+    const res = await page.request.get(`/auth/api/admin/logs?${query}`);
     expect(res.status()).toBe(200);
-    const data = await res.json();
+    const aggregated = await res.json();
 
-    // The services array should only contain auth
-    expect(data.services).toEqual(["auth"]);
-
-    if (data.logs.length > 0) {
-      for (const log of data.logs) {
-        expect(log._service).toBe("auth");
-      }
-    }
-  });
-
-  test("log page UI shows service badges from multiple services", async ({ page }) => {
-    // The page fetches a cross-service log aggregation on mount and renders the
-    // table only after it resolves (which can be slow). Wait for that response
-    // before asserting so the gated table is in the DOM.
-    const logsResp = page.waitForResponse(
-      (r) => r.url().includes("/api/admin/logs") && r.status() === 200,
-    );
-    await page.goto("/auth/logs");
-    await logsResp;
-
-    // Wait for log table to load
-    const table = page.locator("table.data-table");
-    await expect(table).toBeVisible({ timeout: 10000 });
-
-    const rows = table.locator("tbody tr");
-    await expect(rows.first()).toBeVisible({ timeout: 10000 });
-
-    // Collect service badges from visible rows
-    const serviceBadges = table.locator("tbody .badge-primary");
-    const badgeCount = await serviceBadges.count();
-    expect(badgeCount).toBeGreaterThan(0);
-
-    const badgeTexts = await serviceBadges.allTextContents();
-    const uniqueServices = new Set(badgeTexts);
-
-    // Should have logs from at least 2 services (auth + entry from seeding)
-    expect(uniqueServices.size).toBeGreaterThanOrEqual(1);
-    expect(uniqueServices.has("auth")).toBe(true);
+    expect(aggregated.services).toEqual(["entry"]);
+    expect(aggregated.logs.length).toBeGreaterThan(0);
+    expect(aggregated.logs.every(
+      (log) => log._service === "entry"
+        && log.action === "entry.create",
+    )).toBe(true);
+    expect(aggregated.logs.some(
+      (log) => log.target === "#1" && log.level === "warn",
+    )).toBe(true);
   });
 });

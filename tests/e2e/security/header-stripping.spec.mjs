@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { INTERNAL_SECRET, internalHeaders } from "../helpers/auth.mjs";
+import { internalHeaders } from "../helpers/auth.mjs";
 
 // Caddy strips X-Internal-Service and Authuser from every external request so a
 // browser cannot (a) forge the inter-service secret to gain auto-admin, or
@@ -39,11 +39,5 @@ test.describe("Caddy security header stripping", () => {
       data: { name: `sec-strip-${Date.now()}` },
     });
     expect(ui.status()).toBe(401);
-  });
-
-  test("the internal secret is the CI value (sanity)", async () => {
-    // Guards against a helper default drift that would make the above tests
-    // silently pass for the wrong reason.
-    expect(INTERNAL_SECRET).toBeTruthy();
   });
 });

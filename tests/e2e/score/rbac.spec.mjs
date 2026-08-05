@@ -17,17 +17,26 @@ const adminGated = [
 ];
 
 test.describe("score RBAC", () => {
-  for (const { method, path, body } of adminGated) {
-    test(`chief is rejected (403) on ${method.toUpperCase()} ${path}`, async ({ browser }) => {
-      const ctx = await browser.newContext({ storageState: storageStatePath("chief") });
-      const res = await ctx.request[method](path, body === undefined ? {} : { data: body });
-      expect(res.status()).toBe(403);
+  test("chief is rejected on every representative score endpoint", async ({ browser }) => {
+    const ctx = await browser.newContext({ storageState: storageStatePath("chief") });
+    try {
+      for (const { method, path, body } of adminGated) {
+        await test.step(`${method.toUpperCase()} ${path}`, async () => {
+          const res = await ctx.request[method](path, body === undefined ? {} : { data: body });
+          expect(res.status()).toBe(403);
+        });
+      }
+    } finally {
       await ctx.close();
-    });
+    }
+  });
 
-    test(`unauthenticated is rejected (401) on ${method.toUpperCase()} ${path}`, async ({ request }) => {
-      const res = await request[method](path, body === undefined ? {} : { data: body });
-      expect(res.status()).toBe(401);
-    });
-  }
+  test("unauthenticated callers are rejected on every representative score endpoint", async ({ request }) => {
+    for (const { method, path, body } of adminGated) {
+      await test.step(`${method.toUpperCase()} ${path}`, async () => {
+        const res = await request[method](path, body === undefined ? {} : { data: body });
+        expect(res.status()).toBe(401);
+      });
+    }
+  });
 });

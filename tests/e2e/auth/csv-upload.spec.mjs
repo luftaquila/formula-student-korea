@@ -3,6 +3,7 @@ import { storageStatePath, waitForPageReady, expectNotification } from "../helpe
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 const CSV_EMAILS = ["e2e-csv1@test.com", "e2e-csv2@test.com", "e2e-csv3@test.com"];
+const usersTable = (page) => page.locator("table.users-table");
 
 test.describe("Auth CSV user bulk upload via UI", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -53,11 +54,11 @@ test.describe("Auth CSV user bulk upload via UI", () => {
 
     // Verify the new users appear in the table
     for (const email of CSV_EMAILS) {
-      await expect(page.locator("td").filter({ hasText: email })).toBeVisible();
+      await expect(usersTable(page).getByRole("cell", { name: email, exact: true })).toBeVisible();
     }
 
     // Affiliation column from the CSV is applied
-    await expect(page.locator("td").filter({ hasText: "CSV대 FSAE" })).toBeVisible();
+    await expect(usersTable(page).getByRole("cell", { name: "CSV대 FSAE", exact: true })).toBeVisible();
   });
 
   test("CSV with quoted fields and commas parses correctly", async ({ page }) => {

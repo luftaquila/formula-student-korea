@@ -736,13 +736,15 @@ describe('Email API', () => {
       const res = await client.get('/api/emails?limit=2&offset=0', { cookie: adminCookie });
       assert.equal(res.status, 200);
       const data = await res.json();
-      assert.ok(data.rows.length <= 2);
+      assert.equal(data.rows.length, 2);
       assert.ok(data.total >= 1);
     });
 
     it('supports status filter', async () => {
       const res = await client.get('/api/emails?status=sent', { cookie: adminCookie });
+      assert.equal(res.status, 200);
       const data = await res.json();
+      assert.ok(data.rows.length > 0);
       assert.ok(data.rows.every(r => r.status === 'sent'));
     });
   });
@@ -786,6 +788,10 @@ describe('Email API', () => {
     it('returns system logs for admin', async () => {
       const res = await client.get('/api/logs', { cookie: adminCookie });
       assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.service, 'email');
+      assert.ok(Array.isArray(data.logs));
+      assert.equal(typeof data.total, 'number');
     });
   });
 });

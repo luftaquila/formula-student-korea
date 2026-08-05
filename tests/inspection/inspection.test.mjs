@@ -66,7 +66,7 @@ describe('Template CRUD', () => {
   it('POST /api/sheet/template creates category (requires chief)', async () => {
     const res = await client.post('/api/sheet/template', {
       body: { year: CURRENT_YEAR, level: 'category', name: 'Mechanical' },
-      cookie: adminCookie,
+      cookie: chiefCookie,
     });
     assert.equal(res.status, 200);
     const data = await res.json();
@@ -139,57 +139,37 @@ describe('Template CRUD', () => {
     assert.equal(res.status, 400);
   });
 
-  it('PUT /api/sheet/template/:id updates name', async () => {
+  it('PUT /api/sheet/template/:id updates category fields together', async () => {
     const res = await client.put(`/api/sheet/template/${categoryId}`, {
-      body: { name: 'Mechanical Inspection' },
+      body: { name: 'Mechanical Inspection', sort_order: 5 },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
 
-    // Verify
     const getRes = await client.get(`/api/sheet/template?year=${CURRENT_YEAR}`, { cookie: officialCookie });
     const tree = await getRes.json();
-    assert.equal(tree[0].name, 'Mechanical Inspection');
+    const category = tree.find(node => Number(node.id) === categoryId);
+    assert.equal(category.name, 'Mechanical Inspection');
+    assert.equal(category.sort_order, 5);
   });
 
-  it('PUT /api/sheet/template/:id updates sort_order', async () => {
-    const res = await client.put(`/api/sheet/template/${categoryId}`, {
-      body: { sort_order: 5 },
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 200);
-  });
-
-  it('PUT /api/sheet/template/:id updates answer_type', async () => {
+  it('PUT /api/sheet/template/:id updates item fields together', async () => {
     const res = await client.put(`/api/sheet/template/${itemId}`, {
-      body: { answer_type: 'number' },
+      body: { answer_type: 'number', remarks: 'Check carefully', unit: 'mm', pdf_include: 0 },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
-  });
 
-  it('PUT /api/sheet/template/:id updates remarks', async () => {
-    const res = await client.put(`/api/sheet/template/${itemId}`, {
-      body: { remarks: 'Check carefully' },
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 200);
-  });
-
-  it('PUT /api/sheet/template/:id updates unit', async () => {
-    const res = await client.put(`/api/sheet/template/${itemId}`, {
-      body: { unit: 'mm' },
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 200);
-  });
-
-  it('PUT /api/sheet/template/:id updates pdf_include', async () => {
-    const res = await client.put(`/api/sheet/template/${itemId}`, {
-      body: { pdf_include: 0 },
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 200);
+    const tree = await (await client.get(`/api/sheet/template?year=${CURRENT_YEAR}`, { cookie: officialCookie })).json();
+    const item = tree
+      .flatMap(category => category.subcategories)
+      .flatMap(subcategory => subcategory.groups)
+      .flatMap(group => group.items)
+      .find(node => Number(node.id) === itemId);
+    assert.equal(item.answer_type, 'number');
+    assert.equal(item.remarks, 'Check carefully');
+    assert.equal(item.unit, 'mm');
+    assert.equal(item.pdf_include, 0);
   });
 
   it('PUT /api/sheet/template/:id rejects no fields (400)', async () => {
@@ -280,6 +260,12 @@ describe('Template Reorder', () => {
     });
     assert.equal(res.status, 200);
 
+    const tree = await (await client.get(`/api/sheet/template?year=${CURRENT_YEAR}`, { cookie: officialCookie })).json();
+    assert.deepEqual(
+      tree.filter(node => ['ReorderA', 'ReorderB'].includes(node.name)).map(node => node.name),
+      ['ReorderB', 'ReorderA']
+    );
+
     // Clean up
     await client.delete(`/api/sheet/template/${id1}`, { cookie: adminCookie });
     await client.delete(`/api/sheet/template/${id2}`, { cookie: adminCookie });
@@ -319,7 +305,7 @@ describe('Template Copy', () => {
   before(async () => {
     // Seed source year with a category
     await client.post('/api/sheet/template', {
-      body: { year: SOURCE_YEAR, level: 'category', name: 'CopyCat' },
+      body: { year: SOURCE_YEAR, level: 'category', name: 'CopyCat', pdf_include: 0 },
       cookie: adminCookie,
     });
   });
@@ -340,6 +326,7 @@ describe('Template Copy', () => {
     const tree = await (await client.get(`/api/sheet/template?year=${TARGET_YEAR}`, { cookie: officialCookie })).json();
     assert.equal(tree.length, 1);
     assert.equal(tree[0].name, 'CopyCat');
+    assert.equal(tree[0].pdf_include, 0);
   });
 
   it('POST /api/sheet/template/copy rejects if target year already has data (400)', async () => {
@@ -724,6 +711,11 @@ describe('Answer CRUD', () => {
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
+    const saved = await res.json();
+    assert.equal(saved.value, 'PASS');
+    assert.equal(saved.version, 1);
+    const data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie })).json();
+    assert.equal(data.answers[answerItemId].value, 'PASS');
   });
 
   it('PUT /api/sheet/answer validates passfail type (only PASS/FAIL/"")', async () => {
@@ -758,21 +750,21 @@ describe('Answer CRUD', () => {
     assert.equal(res.status, 400);
   });
 
-  it('PUT /api/sheet/answer does not broadcast when value unchanged', async () => {
-    // Set value to PASS first
-    await client.put('/api/sheet/answer', {
+  it('PUT /api/sheet/answer keeps version metadata stable when value is unchanged', async () => {
+    const first = await client.put('/api/sheet/answer', {
       body: { year: CURRENT_YEAR, team_num: 99, item_id: answerItemId, value: 'PASS' },
       cookie: officialCookie,
     });
+    assert.equal(first.status, 200);
+    const firstData = await first.json();
 
-    // Set same value again - should return 200 but not broadcast
     const res = await client.put('/api/sheet/answer', {
       body: { year: CURRENT_YEAR, team_num: 99, item_id: answerItemId, value: 'PASS' },
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
-    // We can't directly verify no broadcast without SSE client,
-    // but we can verify the endpoint handles duplicate gracefully
+    const unchanged = await res.json();
+    assert.deepEqual(unchanged, firstData);
   });
 
   it('PUT /api/sheet/answer increments versions and rejects a stale base_version', async () => {
@@ -854,6 +846,11 @@ describe('Memo', () => {
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
+    const saved = await res.json();
+    assert.equal(saved.memo, 'Test memo text');
+    assert.equal(saved.version, 1);
+    const data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie })).json();
+    assert.equal(data.answers[memoItemId].memo, 'Test memo text');
   });
 
   it('PUT /api/sheet/memo rejects missing fields (400)', async () => {
@@ -945,6 +942,8 @@ describe('Category Result', () => {
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
+    const data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie })).json();
+    assert.equal(data.results[resultCategoryId], 'PASS');
   });
 
   it('PUT /api/sheet/category-result validates result values (PASS/FAIL/"")', async () => {
@@ -982,6 +981,8 @@ describe('Inspector', () => {
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
+    const data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie })).json();
+    assert.equal(data.inspectors[inspectorCategoryId], 'John');
   });
 
   it('PUT /api/sheet/inspector rejects previous year (400)', async () => {
@@ -1112,45 +1113,34 @@ describe('Number and Text answer types', () => {
     textItemId = Number((await txtRes.json()).id);
   });
 
-  it('accepts numeric value for number answer_type', async () => {
-    const res = await client.put('/api/sheet/answer', {
+  it('stores numeric, cleared, and text values through their full transitions', async () => {
+    let res = await client.put('/api/sheet/answer', {
       body: { year: CURRENT_YEAR, team_num: 1, item_id: numberItemId, value: '42.5' },
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
-  });
+    assert.equal((await res.json()).value, '42.5');
 
-  it('accepts empty value for number answer_type', async () => {
-    const res = await client.put('/api/sheet/answer', {
+    let data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie })).json();
+    assert.equal(data.answers[numberItemId].value, '42.5');
+
+    res = await client.put('/api/sheet/answer', {
       body: { year: CURRENT_YEAR, team_num: 1, item_id: numberItemId, value: '' },
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
-  });
+    assert.equal((await res.json()).value, '');
 
-  it('accepts text value for text answer_type', async () => {
-    const res = await client.put('/api/sheet/answer', {
+    res = await client.put('/api/sheet/answer', {
       body: { year: CURRENT_YEAR, team_num: 1, item_id: textItemId, value: 'Some text answer' },
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
-  });
+    assert.equal((await res.json()).value, 'Some text answer');
 
-  it('verifies stored values via data endpoint', async () => {
-    // Set a number value first
-    await client.put('/api/sheet/answer', {
-      body: { year: CURRENT_YEAR, team_num: 1, item_id: numberItemId, value: '99' },
-      cookie: officialCookie,
-    });
-    await client.put('/api/sheet/answer', {
-      body: { year: CURRENT_YEAR, team_num: 1, item_id: textItemId, value: 'Final text' },
-      cookie: officialCookie,
-    });
-
-    const res = await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie });
-    const data = await res.json();
-    assert.equal(data.answers[numberItemId].value, '99');
-    assert.equal(data.answers[textItemId].value, 'Final text');
+    data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie })).json();
+    assert.equal(data.answers[numberItemId].value, '');
+    assert.equal(data.answers[textItemId].value, 'Some text answer');
   });
 });
 
@@ -1435,20 +1425,20 @@ describe('SSE broadcast on data changes', () => {
 
   it('SSE endpoint returns event stream with init event', async () => {
     const controller = new AbortController();
-    const res = await fetch(`${baseUrl}/api/sheet/events`, {
-      headers: { Cookie: officialCookie },
-      signal: controller.signal,
-    }).catch(() => null);
-
-    if (res) {
+    try {
+      const res = await fetch(`${baseUrl}/api/sheet/events`, {
+        headers: { Cookie: officialCookie },
+        signal: controller.signal,
+      });
+      assert.equal(res.status, 200);
       assert.equal(res.headers.get('content-type'), 'text/event-stream');
-      // Read a small chunk to verify init event
       const reader = res.body.getReader();
       const { value } = await reader.read();
       const text = new TextDecoder().decode(value);
       assert.ok(text.includes('event: init'), 'should receive init event');
-      controller.abort();
       reader.releaseLock();
+    } finally {
+      controller.abort();
     }
   });
 
@@ -1503,47 +1493,6 @@ describe('Auth enforcement', () => {
       body: { year: CURRENT_YEAR, team_num: 1, item_id: 1, value: 'PASS' },
     });
     assert.equal(res.status, 401);
-  });
-
-  it('PUT /api/sheet/answer with official cookie returns 200 (official access)', async () => {
-    // Need a valid item_id; create one with admin first
-    const catRes = await client.post('/api/sheet/template', {
-      body: { year: CURRENT_YEAR, level: 'category', name: 'AuthTestCat' },
-      cookie: adminCookie,
-    });
-    const catId = Number((await catRes.json()).id);
-
-    const subRes = await client.post('/api/sheet/template', {
-      body: { year: CURRENT_YEAR, level: 'subcategory', parent_id: catId, name: 'AuthTestSub' },
-      cookie: adminCookie,
-    });
-    const subId = Number((await subRes.json()).id);
-
-    const grpRes = await client.post('/api/sheet/template', {
-      body: { year: CURRENT_YEAR, level: 'group', parent_id: subId, name: 'AuthTestGrp' },
-      cookie: adminCookie,
-    });
-    const grpId = Number((await grpRes.json()).id);
-
-    const itemRes = await client.post('/api/sheet/template', {
-      body: { year: CURRENT_YEAR, level: 'item', parent_id: grpId, name: 'AuthTestItem', answer_type: 'passfail' },
-      cookie: adminCookie,
-    });
-    const itemId = Number((await itemRes.json()).id);
-
-    const res = await client.put('/api/sheet/answer', {
-      body: { year: CURRENT_YEAR, team_num: 1, item_id: itemId, value: 'PASS' },
-      cookie: officialCookie,
-    });
-    assert.equal(res.status, 200);
-  });
-
-  it('POST /api/sheet/template with chief cookie returns 200 (chief access)', async () => {
-    const res = await client.post('/api/sheet/template', {
-      body: { year: CURRENT_YEAR, level: 'category', name: 'ChiefTry' },
-      cookie: chiefCookie,
-    });
-    assert.equal(res.status, 200);
   });
 
   it('POST /api/sheet/template with official cookie returns 403 (chief required)', async () => {

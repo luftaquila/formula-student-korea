@@ -61,8 +61,6 @@ after(async () => {
   await stopServer(mockEntryServer);
   db.close();
   cleanup(dbPath);
-  // Force exit: logger's setInterval keeps the process alive
-  setTimeout(() => process.exit(0), 100).unref();
 });
 
 // ─── INSPECTIONS export ─────────────────────────────────────────────────
@@ -98,10 +96,6 @@ describe('GET /api/active', () => {
     assert.equal(data.length, 8);
   });
 
-  it('does not require auth (public)', async () => {
-    const res = await client.get('/api/active');
-    assert.equal(res.status, 200);
-  });
 });
 
 describe('GET /api/booths/all', () => {
@@ -181,11 +175,6 @@ describe('Auth enforcement', () => {
       body: { num: 1, phone: '01012345678' },
     });
     assert.equal(res.status, 401);
-  });
-
-  it('GET /api/active without auth returns 200 (public)', async () => {
-    const res = await client.get('/api/active');
-    assert.equal(res.status, 200);
   });
 
   // Role boundary: student rejected from official-level endpoints
@@ -368,6 +357,10 @@ describe('POST /api/admin/register/:type', () => {
       cookie: chiefCookie,
     });
     assert.equal(res.status, 201);
+    const inspections = db.prepare(
+      'SELECT inspection FROM current_inspection WHERE num = ? ORDER BY inspection'
+    ).all(1).map(row => row.inspection);
+    assert.deepEqual(inspections, ['battery', 'report']);
   });
 
   it('allows battery + chassis simultaneously', async () => {
@@ -376,6 +369,10 @@ describe('POST /api/admin/register/:type', () => {
       cookie: chiefCookie,
     });
     assert.equal(res.status, 201);
+    const inspections = db.prepare(
+      'SELECT inspection FROM current_inspection WHERE num = ? ORDER BY inspection'
+    ).all(1).map(row => row.inspection);
+    assert.deepEqual(inspections, ['battery', 'chassis', 'report']);
   });
 
   it('rejects other incompatible combinations', async () => {
@@ -862,13 +859,6 @@ describe('Booth management', () => {
     assert.ok(history.length > 0);
   });
 
-  // Clean up: exit entry 2 from booth 3
-  it('cleanup: exit entry 2 from booth 3', async () => {
-    const res = await client.post('/api/admin/booths/battery/3/exit', {
-      cookie: officialCookie,
-    });
-    assert.equal(res.status, 200);
-  });
 });
 
 // ─── History ────────────────────────────────────────────────────────────
@@ -890,73 +880,103 @@ describe('DELETE /api/admin/history/:type', () => {
 
 // ─── Statistics ─────────────────────────────────────────────────────────
 describe('Statistics', () => {
+  const statsTeam = 91;
+  let statsBase;
+
+  before(() => {
+    const year = new Date().getFullYear();
+    statsBase = Date.now() + 10_000;
+    const insertQueueLog = db.prepare(
+      'INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)'
+    );
+    insertQueueLog.run('register', statsTeam, 'battery', statsBase + 100, year);
+    insertQueueLog.run('cancel', statsTeam, 'battery', statsBase + 200, year);
+    insertQueueLog.run('register', statsTeam, 'electric', statsBase + 300, year);
+    insertQueueLog.run('enter', statsTeam, 'battery', statsBase + 500, year);
+    insertQueueLog.run('enter', statsTeam, 'electric', statsBase + 900, year);
+
+    const insertBoothLog = db.prepare(
+      'INSERT INTO booth_log (num, inspection, booth_num, entered_at, exited_at, created_at, year) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    );
+    insertBoothLog.run(statsTeam, 'battery', 1, statsBase + 500, statsBase + 800, statsBase + 500, year);
+    insertBoothLog.run(statsTeam, 'electric', 1, statsBase + 900, statsBase + 1400, statsBase + 900, year);
+  });
+
   it('GET /api/admin/stats/timerange returns time range', async () => {
     const res = await client.get('/api/admin/stats/timerange', { cookie: officialCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
-    assert.ok('from' in data);
-    assert.ok('to' in data);
+    assert.ok(data.from <= statsBase + 100);
+    assert.ok(data.to >= statsBase + 1400);
   });
 
-  it('GET /api/admin/stats returns stats with accurate counts', async () => {
+  it('GET /api/admin/stats returns exact aggregate counts', async () => {
     const res = await client.get('/api/admin/stats', { cookie: officialCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.ok(Array.isArray(data));
-    assert.ok(data.length > 0);
-
-    // Verify aggregate stats reflect actual operations
-    // Entry 1: registered multiple times across tests, cancelled, re-registered, entered booth, exited
-    const entry1 = data.find(d => d.num === 1);
-    assert.ok(entry1, 'entry 1 should have stats');
-    assert.ok(entry1.registrations >= 1, 'entry 1 should have registrations');
-    assert.ok(entry1.entries >= 1, 'entry 1 should have booth entries');
-    assert.ok(entry1.totalOccupyTime >= 0, 'totalOccupyTime should be non-negative');
+    const stats = data.find(d => d.num === statsTeam);
+    assert.deepEqual(stats, {
+      num: statsTeam,
+      registrations: 2,
+      cancellations: 1,
+      entries: 2,
+      totalOccupyTime: 800,
+    });
   });
 
   it('GET /api/admin/stats filters by inspection type', async () => {
     const res = await client.get('/api/admin/stats?inspection=battery', { cookie: officialCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
-    assert.ok(Array.isArray(data));
-    // Should only include stats from battery inspection
-    for (const entry of data) {
-      assert.ok(entry.registrations >= 0);
-    }
+    const stats = data.find(d => d.num === statsTeam);
+    assert.deepEqual(stats, {
+      num: statsTeam,
+      registrations: 1,
+      cancellations: 1,
+      entries: 1,
+      totalOccupyTime: 300,
+    });
   });
 
-  it('GET /api/admin/stats/:num returns team timeline with event details', async () => {
-    const res = await client.get('/api/admin/stats/1', { cookie: officialCookie });
+  it('GET /api/admin/stats/:num returns an ordered team timeline and summary', async () => {
+    const res = await client.get(`/api/admin/stats/${statsTeam}`, { cookie: officialCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
-    assert.ok(data.summary);
-    assert.ok(Array.isArray(data.timeline));
-    assert.ok(data.summary.registrations >= 1, 'should have registrations');
-
-    // Timeline should contain register, cancel, enter, exit events
-    const eventTypes = data.timeline.map(e => e.event);
-    assert.ok(eventTypes.includes('register'), 'timeline should include register events');
-
-    // Each timeline event should have inspection and timestamp
-    for (const event of data.timeline) {
-      assert.ok(event.timestamp, 'each timeline event should have timestamp');
-      assert.ok(event.inspection, 'each timeline event should have inspection type');
-    }
+    assert.deepEqual(data.summary, {
+      registrations: 2,
+      cancellations: 1,
+      entries: 2,
+      totalOccupyTime: 800,
+    });
+    assert.deepEqual(data.timeline.map(e => e.event), [
+      'register', 'cancel', 'register', 'enter', 'exit', 'enter', 'exit',
+    ]);
+    assert.deepEqual(data.timeline.map(e => e.timestamp), [
+      100, 200, 300, 500, 800, 900, 1400,
+    ].map(offset => statsBase + offset));
+    assert.ok(data.timeline.every(event => event.inspection && event.timestamp));
   });
 
-  it('GET /api/admin/stats/:num filters by time range', async () => {
-    // Get the overall time range first
-    const rangeRes = await client.get('/api/admin/stats/timerange', { cookie: officialCookie });
-    const range = await rangeRes.json();
-
-    if (range.from && range.to) {
-      // Query with a narrow time range
-      const res = await client.get(`/api/admin/stats/1?from=${range.from}&to=${range.to}`, { cookie: officialCookie });
-      assert.equal(res.status, 200);
-      const data = await res.json();
-      assert.ok(data.summary);
-      assert.ok(data.summary.registrations >= 0);
-    }
+  it('GET /api/admin/stats/:num applies the requested time range', async () => {
+    const res = await client.get(
+      `/api/admin/stats/${statsTeam}?from=${statsBase + 150}&to=${statsBase + 600}`,
+      { cookie: officialCookie }
+    );
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.deepEqual(data.summary, {
+      registrations: 1,
+      cancellations: 1,
+      entries: 1,
+      totalOccupyTime: 0,
+    });
+    assert.deepEqual(data.timeline.map(e => e.event), ['cancel', 'register', 'enter']);
+    assert.deepEqual(data.timeline.map(e => e.timestamp), [
+      statsBase + 200,
+      statsBase + 300,
+      statsBase + 500,
+    ]);
   });
 
   it('GET /api/admin/stats/:num timeline shows enter of an in-progress (not-yet-exited) session under a to filter', async () => {

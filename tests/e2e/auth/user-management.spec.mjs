@@ -4,6 +4,8 @@ import { storageStatePath, expectNotification, waitForPageReady } from "../helpe
 test.use({ storageState: storageStatePath("admin") });
 
 const TEST_EMAIL = "e2e-test-user@example.com";
+const usersTable = (page) => page.locator("table.users-table");
+const userRow = (page, email) => usersTable(page).locator("tbody tr").filter({ hasText: email });
 
 test.describe("User management", () => {
   test.beforeEach(async ({ page }) => {
@@ -12,7 +14,7 @@ test.describe("User management", () => {
   });
 
   test("user list table renders with seeded users", async ({ page }) => {
-    const table = page.locator("table.users-table");
+    const table = usersTable(page);
     await expect(table).toBeVisible();
 
     // Verify table headers
@@ -22,10 +24,10 @@ test.describe("User management", () => {
     await expect(table.locator("th").filter({ hasText: "학교/팀" })).toBeVisible();
 
     // Verify seeded users appear in the table
-    await expect(page.locator("td").filter({ hasText: "e2e-admin@test.com" })).toBeVisible();
-    await expect(page.locator("td").filter({ hasText: "e2e-chief@test.com" })).toBeVisible();
-    await expect(page.locator("td").filter({ hasText: "e2e-official@test.com" })).toBeVisible();
-    await expect(page.locator("td").filter({ hasText: "e2e-student@test.com" })).toBeVisible();
+    await expect(table.getByRole("cell", { name: "e2e-admin@test.com", exact: true })).toBeVisible();
+    await expect(table.getByRole("cell", { name: "e2e-chief@test.com", exact: true })).toBeVisible();
+    await expect(table.getByRole("cell", { name: "e2e-official@test.com", exact: true })).toBeVisible();
+    await expect(table.getByRole("cell", { name: "e2e-student@test.com", exact: true })).toBeVisible();
   });
 
   test("applicant URL is shown next to the 계정 신청 관리 button", async ({ page }) => {
@@ -48,12 +50,12 @@ test.describe("User management", () => {
     await expectNotification(page, "success", "사용자를 추가했습니다");
 
     // Verify the new user appears in the table
-    await expect(page.locator("td").filter({ hasText: TEST_EMAIL })).toBeVisible();
+    await expect(usersTable(page).getByRole("cell", { name: TEST_EMAIL, exact: true })).toBeVisible();
   });
 
   test("change a user role", async ({ page }) => {
     // Find the row with the test user
-    const row = page.locator("tr").filter({ hasText: TEST_EMAIL });
+    const row = userRow(page, TEST_EMAIL);
     await expect(row).toBeVisible();
 
     // Accept the confirm dialog
@@ -70,7 +72,7 @@ test.describe("User management", () => {
   });
 
   test("edit realname inline", async ({ page }) => {
-    const row = page.locator("tr").filter({ hasText: TEST_EMAIL });
+    const row = userRow(page, TEST_EMAIL);
     await expect(row).toBeVisible();
 
     // Click the realname cell to start editing
@@ -89,7 +91,7 @@ test.describe("User management", () => {
   });
 
   test("edit affiliation inline", async ({ page }) => {
-    const row = page.locator("tr").filter({ hasText: TEST_EMAIL });
+    const row = userRow(page, TEST_EMAIL);
     await expect(row).toBeVisible();
 
     // Click the affiliation cell to start editing
@@ -106,7 +108,7 @@ test.describe("User management", () => {
   });
 
   test("deactivate and activate user", async ({ page }) => {
-    const row = page.locator("tr").filter({ hasText: TEST_EMAIL });
+    const row = userRow(page, TEST_EMAIL);
     await expect(row).toBeVisible();
 
     // Accept all confirm dialogs
@@ -117,7 +119,7 @@ test.describe("User management", () => {
     await expectNotification(page, "success", "비활성화했습니다");
 
     // Row should now have inactive styling
-    const inactiveRow = page.locator("tr.row-inactive").filter({ hasText: TEST_EMAIL });
+    const inactiveRow = usersTable(page).locator("tbody tr.row-inactive").filter({ hasText: TEST_EMAIL });
     await expect(inactiveRow).toBeVisible();
 
     // Click activate button
@@ -125,13 +127,13 @@ test.describe("User management", () => {
     await expectNotification(page, "success", "활성화했습니다");
 
     // Row should no longer be inactive
-    const activeRow = page.locator("tr").filter({ hasText: TEST_EMAIL });
+    const activeRow = userRow(page, TEST_EMAIL);
     await expect(activeRow).toBeVisible();
     await expect(activeRow).not.toHaveClass(/row-inactive/);
   });
 
   test("delete a user", async ({ page }) => {
-    const row = page.locator("tr").filter({ hasText: TEST_EMAIL });
+    const row = userRow(page, TEST_EMAIL);
     await expect(row).toBeVisible();
 
     // Accept the confirm dialog
@@ -144,6 +146,6 @@ test.describe("User management", () => {
     await expectNotification(page, "success", "사용자를 삭제했습니다");
 
     // Verify user is removed from the table
-    await expect(page.locator("td").filter({ hasText: TEST_EMAIL })).not.toBeVisible();
+    await expect(usersTable(page).getByRole("cell", { name: TEST_EMAIL, exact: true })).not.toBeVisible();
   });
 });

@@ -2,19 +2,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test --test-force-exit tests/**/*.test.mjs",
+    "test": "node --test tests/**/*.test.mjs",
     "test:e2e": "npx playwright test",
-    "test:shared": "node --test --test-force-exit tests/shared/*.test.mjs",
-    "test:auth": "node --test --test-force-exit tests/auth/*.test.mjs",
-    "test:entry": "node --test --test-force-exit tests/entry/*.test.mjs",
-    "test:queue": "node --test --test-force-exit tests/queue/*.test.mjs",
-    "test:inspection": "node --test --test-force-exit tests/inspection/*.test.mjs",
-    "test:traffic": "node --test --test-force-exit tests/traffic/*.test.mjs",
-    "test:score": "node --test --test-force-exit tests/score/*.test.mjs",
-    "test:documents": "node --test --test-force-exit tests/documents/*.test.mjs",
-    "test:course": "node --test --test-force-exit tests/course/*.test.mjs",
-    "test:calendar": "node --test --test-force-exit tests/calendar/*.test.mjs",
-    "test:email": "node --test --test-force-exit tests/email/*.test.mjs"
+    "test:shared": "node --test tests/shared/*.test.mjs",
+    "test:auth": "node --test tests/auth/*.test.mjs",
+    "test:entry": "node --test tests/entry/*.test.mjs",
+    "test:queue": "node --test tests/queue/*.test.mjs",
+    "test:inspection": "node --test tests/inspection/*.test.mjs",
+    "test:traffic": "node --test tests/traffic/*.test.mjs",
+    "test:score": "node --test tests/score/*.test.mjs",
+    "test:documents": "node --test tests/documents/*.test.mjs",
+    "test:course": "node --test tests/course/*.test.mjs",
+    "test:calendar": "node --test tests/calendar/*.test.mjs",
+    "test:email": "node --test tests/email/*.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2"

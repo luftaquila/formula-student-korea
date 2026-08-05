@@ -4,11 +4,13 @@ import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 const YEAR = new Date().getFullYear();
 
 async function fillAndSave(page, input, value) {
-  const p = page.waitForResponse((res) => res.url().includes("/api/score/endurance") && res.status() === 200);
+  const saved = page.waitForResponse(
+    (res) => res.url().includes("/api/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
+  );
   await input.click();
   await input.fill(value);
   await input.blur();
-  await Promise.race([p, page.waitForTimeout(1000)]);
+  await saved;
 }
 
 test.describe("Score endurance real-time sync via SSE", () => {
@@ -68,8 +70,12 @@ test.describe("Score endurance real-time sync via SSE", () => {
     const driver1Time2 = row2.locator("input.time-input").nth(0);
     await expect(driver1Time2).toHaveValue(expectedTime, { timeout: 15000 });
 
-    // Cleanup: clear value
-    await fillAndSave(page1, driver1Time1, "");
+    // Cleanup is not a second UI-save assertion. Use the API so client-side
+    // SSE reconciliation cannot turn it into a no-op with no response.
+    const cleanup = await page1.request.put("/score/api/score/endurance", {
+      data: { year: YEAR, team_num: 32, field: "driver1_time", value: null },
+    });
+    expect(cleanup.ok()).toBeTruthy();
 
     await context1.close();
     await context2.close();

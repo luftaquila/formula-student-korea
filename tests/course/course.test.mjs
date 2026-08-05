@@ -128,6 +128,7 @@ describe('POST /api/courses', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 201);
+    assert.equal((await res.json()).name, '스키드패드 B');
   });
 });
 
@@ -138,6 +139,7 @@ describe('GET /api/courses (after create)', () => {
     const data = await res.json();
     assert.equal(data.length, 2);
     assert.equal(data[0].name, '오토크로스 A');
+    assert.equal(data[1].name, '스키드패드 B');
     assert.equal(data[0].cone_count, 0);
   });
 });
@@ -368,6 +370,8 @@ describe('DELETE /api/cones/:id', () => {
   it('deletes a cone', async () => {
     const res = await client.delete('/api/cones/2', { cookie: adminCookie });
     assert.equal(res.status, 200);
+    const cones = await (await client.get('/api/courses/1/cones', { cookie: adminCookie })).json();
+    assert.equal(cones.length, 2);
   });
 
   it('returns 404 for already deleted cone', async () => {
@@ -375,11 +379,6 @@ describe('DELETE /api/cones/:id', () => {
     assert.equal(res.status, 404);
   });
 
-  it('verifies cone count decreased', async () => {
-    const res = await client.get('/api/courses/1/cones', { cookie: adminCookie });
-    const data = await res.json();
-    assert.equal(data.length, 2);
-  });
 });
 
 // ─── Cascade Delete ─────────────────────────────────────────────────────
@@ -409,12 +408,8 @@ describe('DELETE /api/courses/:id (remaining)', () => {
   it('deletes remaining course', async () => {
     const res = await client.delete('/api/courses/1', { cookie: adminCookie });
     assert.equal(res.status, 200);
-  });
-
-  it('courses list is empty again', async () => {
-    const res = await client.get('/api/courses', { cookie: adminCookie });
-    const data = await res.json();
-    assert.equal(data.length, 0);
+    const courses = await (await client.get('/api/courses', { cookie: adminCookie })).json();
+    assert.deepEqual(courses, []);
   });
 });
 
@@ -559,7 +554,7 @@ describe('POST /api/courses/import', () => {
 describe('PATCH /api/courses/:id/direction', () => {
   let courseId, coneId, otherCourseId, otherConeId;
 
-  it('sets up two courses each with a cone', async () => {
+  before(async () => {
     const cRes = await client.post('/api/courses', {
       body: { name: '방향테스트 코스' }, cookie: adminCookie,
     });
@@ -1327,84 +1322,6 @@ describe('Rover disconnect reason exposure', () => {
     const data = await res.json();
     assert.ok('last_disconnect_reason' in data);
     assert.ok('last_disconnect_at' in data);
-  });
-});
-
-describe('Course snapshots', () => {
-  let courseId;
-  let firstCount;
-
-  before(async () => {
-    const createRes = await client.post('/api/courses', {
-      body: { name: 'snapshot-course' },
-      cookie: adminCookie,
-    });
-    courseId = (await createRes.json()).id;
-    for (let i = 0; i < 3; i++) {
-      await client.post(`/api/courses/${courseId}/cones`, {
-        body: { lat: 35 + i * 0.0001, lng: 126 + i * 0.0001, side: 'left' },
-        cookie: adminCookie,
-      });
-    }
-    firstCount = 3;
-  });
-
-  it('rejects snapshot of empty course', async () => {
-    const emptyRes = await client.post('/api/courses', { body: { name: 'snap-empty' }, cookie: adminCookie });
-    const emptyId = (await emptyRes.json()).id;
-    const res = await client.post(`/api/courses/${emptyId}/snapshots`, { cookie: adminCookie });
-    assert.equal(res.status, 400);
-  });
-
-  it('creates a manual snapshot', async () => {
-    const res = await client.post(`/api/courses/${courseId}/snapshots`, {
-      body: { reason: 'before-edit' },
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 201);
-    const body = await res.json();
-    assert.ok(Number.isInteger(body.id));
-  });
-
-  it('lists snapshots for a course', async () => {
-    const res = await client.get(`/api/courses/${courseId}/snapshots`, { cookie: adminCookie });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.ok(Array.isArray(data.snapshots));
-    assert.ok(data.snapshots.length >= 1);
-    assert.equal(data.snapshots[0].cone_count, firstCount);
-  });
-
-  it('restores a snapshot, wiping current cones', async () => {
-    // Add an extra cone and snapshot; then delete all and restore older one.
-    const snapRes = await client.post(`/api/courses/${courseId}/snapshots`, {
-      body: { reason: 'to-restore' }, cookie: adminCookie,
-    });
-    const snapId = (await snapRes.json()).id;
-
-    // Add a 4th cone, change state
-    await client.post(`/api/courses/${courseId}/cones`, {
-      body: { lat: 35.5, lng: 126.5, side: 'right' },
-      cookie: adminCookie,
-    });
-
-    const listRes = await client.get(`/api/courses/${courseId}/cones`, { cookie: adminCookie });
-    const list = await listRes.json();
-    assert.equal(list.length, 4);
-
-    const restoreRes = await client.post(`/api/courses/${courseId}/snapshots/${snapId}/restore`, {
-      cookie: adminCookie,
-    });
-    assert.equal(restoreRes.status, 200);
-
-    const afterRes = await client.get(`/api/courses/${courseId}/cones`, { cookie: adminCookie });
-    const after = await afterRes.json();
-    assert.equal(after.length, firstCount);
-  });
-
-  it('returns 404 for missing snapshot on restore', async () => {
-    const res = await client.post(`/api/courses/${courseId}/snapshots/999999/restore`, { cookie: adminCookie });
-    assert.equal(res.status, 404);
   });
 });
 
@@ -2691,7 +2608,6 @@ describe('Mission telemetry historizes NTRIP link health', () => {
 describe('Course snapshots', () => {
   const chiefCookie = makeAuthCookie({ email: 'chief-snap@test.com', name: 'Chief', role: 'chief' });
   let courseId;
-  let snapshotId;
 
   before(async () => {
     const c = await client.post('/api/courses', { body: { name: '스냅샷 테스트 코스' }, cookie: adminCookie });
@@ -2707,17 +2623,38 @@ describe('Course snapshots', () => {
     assert.equal((await client.delete(`/api/courses/${courseId}/snapshots/1`, { cookie: chiefCookie })).status, 403);
   });
 
-  it('lets admin create and list a snapshot', async () => {
+  it('lets admin create, list, restore, and delete a snapshot', async () => {
     const res = await client.post(`/api/courses/${courseId}/snapshots`, { body: { reason: 'first' }, cookie: adminCookie });
     assert.equal(res.status, 201);
-    snapshotId = (await res.json()).id;
+    const snapshotId = (await res.json()).id;
     assert.ok(snapshotId);
+
     const list = await client.get(`/api/courses/${courseId}/snapshots`, { cookie: adminCookie });
     assert.equal(list.status, 200);
-    const { snapshots } = await list.json();
+    let { snapshots } = await list.json();
     assert.equal(snapshots.length, 1);
     assert.equal(snapshots[0].cone_count, 2);
     assert.equal(snapshots[0].reason, 'first');
+
+    const add = await client.post(`/api/courses/${courseId}/cones`, {
+      body: { lat: 35.3, lng: 126.3, side: 'left' },
+      cookie: adminCookie,
+    });
+    assert.equal(add.status, 201);
+
+    const restore = await client.post(`/api/courses/${courseId}/snapshots/${snapshotId}/restore`, { cookie: adminCookie });
+    assert.equal(restore.status, 200);
+    const { cones } = await restore.json();
+    assert.equal(cones.length, 2);
+
+    ({ snapshots } = await (await client.get(`/api/courses/${courseId}/snapshots`, { cookie: adminCookie })).json());
+    assert.equal(snapshots.length, 2);
+
+    const del = await client.delete(`/api/courses/${courseId}/snapshots/${snapshotId}`, { cookie: adminCookie });
+    assert.equal(del.status, 204);
+    ({ snapshots } = await (await client.get(`/api/courses/${courseId}/snapshots`, { cookie: adminCookie })).json());
+    assert.equal(snapshots.length, 1);
+    assert.ok(!snapshots.some((s) => s.id === snapshotId));
   });
 
   it('rejects snapshotting a course with no cones', async () => {
@@ -2727,22 +2664,9 @@ describe('Course snapshots', () => {
     assert.equal(res.status, 400);
   });
 
-  it('lets admin restore a snapshot (auto-snapshots current state first)', async () => {
-    const res = await client.post(`/api/courses/${courseId}/snapshots/${snapshotId}/restore`, { cookie: adminCookie });
-    assert.equal(res.status, 200);
-    const { cones } = await res.json();
-    assert.equal(cones.length, 2);
-    // Restore takes a pre-restore safety snapshot → two snapshots now exist.
-    const { snapshots } = await (await client.get(`/api/courses/${courseId}/snapshots`, { cookie: adminCookie })).json();
-    assert.equal(snapshots.length, 2);
-  });
-
-  it('lets admin delete a snapshot', async () => {
-    const del = await client.delete(`/api/courses/${courseId}/snapshots/${snapshotId}`, { cookie: adminCookie });
-    assert.equal(del.status, 204);
-    const { snapshots } = await (await client.get(`/api/courses/${courseId}/snapshots`, { cookie: adminCookie })).json();
-    assert.equal(snapshots.length, 1);
-    assert.ok(!snapshots.some((s) => s.id === snapshotId));
+  it('returns 404 restoring a non-existent snapshot', async () => {
+    const res = await client.post(`/api/courses/${courseId}/snapshots/999999/restore`, { cookie: adminCookie });
+    assert.equal(res.status, 404);
   });
 
   it('returns 404 deleting a non-existent snapshot', async () => {
@@ -2751,11 +2675,15 @@ describe('Course snapshots', () => {
   });
 
   it('returns 404 deleting a snapshot that belongs to another course', async () => {
+    const created = await client.post(`/api/courses/${courseId}/snapshots`, {
+      body: { reason: 'ownership-check' },
+      cookie: adminCookie,
+    });
+    assert.equal(created.status, 201);
+    const snapshotId = (await created.json()).id;
     const other = await client.post('/api/courses', { body: { name: '다른 스냅샷 코스' }, cookie: adminCookie });
     const otherId = (await other.json()).id;
-    const { snapshots } = await (await client.get(`/api/courses/${courseId}/snapshots`, { cookie: adminCookie })).json();
-    const existingId = snapshots[0].id;
-    const res = await client.delete(`/api/courses/${otherId}/snapshots/${existingId}`, { cookie: adminCookie });
+    const res = await client.delete(`/api/courses/${otherId}/snapshots/${snapshotId}`, { cookie: adminCookie });
     assert.equal(res.status, 404);
   });
 });

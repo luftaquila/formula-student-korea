@@ -1,9 +1,8 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { createDocumentSession, deleteDocumentSession, submitDocument } from "../helpers/documents.mjs";
 
-const pdfContent = Buffer.from(
-  "%PDF-1.0\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n190\n%%EOF",
-);
+const SESSION_NAME = "E2E 이전 제출 격리 세션";
 
 test.describe("Documents admin previous submission display", () => {
   test.describe.configure({ mode: "serial" });
@@ -11,42 +10,35 @@ test.describe("Documents admin previous submission display", () => {
 
   let sessionId;
 
-  test("ensure two submissions exist via student API", async ({ browser }) => {
-    // Create a student-authenticated browser context to submit files
+  test.beforeAll(async ({ browser }) => {
+    const chiefCtx = await browser.newContext({ storageState: storageStatePath("chief") });
     const studentCtx = await browser.newContext({
       storageState: storageStatePath("student"),
     });
-    const studentPage = await studentCtx.newPage();
+    try {
+      sessionId = await createDocumentSession(chiefCtx.request, SESSION_NAME, { teams: [1, 2] });
+      await submitDocument(studentCtx.request, sessionId, "prev-test-1.pdf");
+      await submitDocument(studentCtx.request, sessionId, "prev-test-2.pdf");
+    } finally {
+      await studentCtx.close();
+      await chiefCtx.close();
+    }
+  });
 
-    // Get the session ID for the seeded E2E test session
-    const sessionsRes = await studentPage.request.get("/documents/api/sessions");
-    expect(sessionsRes.ok()).toBeTruthy();
-    const sessionsData = await sessionsRes.json();
-    const session = sessionsData.sessions.find((s) => s.name === "E2E 테스트 세션");
-    expect(session).toBeTruthy();
-    sessionId = session.id;
-
-    // Submit first file (may already exist from 00-student-flow, but ensures at least 1)
-    const res1 = await studentPage.request.post(`/documents/api/sessions/${sessionId}/submit`, {
-      multipart: { files: { name: "prev-test-1.pdf", mimeType: "application/pdf", buffer: pdfContent } },
-    });
-    expect(res1.ok()).toBeTruthy();
-
-    // Submit second file to create a previous submission
-    const res2 = await studentPage.request.post(`/documents/api/sessions/${sessionId}/submit`, {
-      multipart: { files: { name: "prev-test-2.pdf", mimeType: "application/pdf", buffer: pdfContent } },
-    });
-    expect(res2.ok()).toBeTruthy();
-
-    await studentPage.close();
-    await studentCtx.close();
+  test.afterAll(async ({ browser }) => {
+    const chiefCtx = await browser.newContext({ storageState: storageStatePath("chief") });
+    try {
+      await deleteDocumentSession(chiefCtx.request, sessionId);
+    } finally {
+      await chiefCtx.close();
+    }
   });
 
   test("shows clickable count cell for team with previous submission", async ({ page }) => {
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
-    const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
+    const sessionLink = page.locator(".session-link").filter({ hasText: SESSION_NAME });
     await sessionLink.click();
     await waitForPageReady(page);
 
@@ -60,7 +52,7 @@ test.describe("Documents admin previous submission display", () => {
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
-    const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
+    const sessionLink = page.locator(".session-link").filter({ hasText: SESSION_NAME });
     await sessionLink.click();
     await waitForPageReady(page);
 
@@ -79,7 +71,7 @@ test.describe("Documents admin previous submission display", () => {
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
-    const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
+    const sessionLink = page.locator(".session-link").filter({ hasText: SESSION_NAME });
     await sessionLink.click();
     await waitForPageReady(page);
 
@@ -98,7 +90,7 @@ test.describe("Documents admin previous submission display", () => {
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
-    const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
+    const sessionLink = page.locator(".session-link").filter({ hasText: SESSION_NAME });
     await sessionLink.click();
     await waitForPageReady(page);
 
@@ -106,24 +98,5 @@ test.describe("Documents admin previous submission display", () => {
     const table = page.locator(".detail-table");
     const team2Row = table.locator("tbody tr").filter({ hasText: "한양대학교" });
     await expect(team2Row.locator(".col-count-expand")).not.toBeVisible();
-  });
-
-  test("restore original submission for other tests", async ({ browser }) => {
-    const studentCtx = await browser.newContext({
-      storageState: storageStatePath("student"),
-    });
-    const studentPage = await studentCtx.newPage();
-
-    const sessionsRes = await studentPage.request.get("/documents/api/sessions");
-    const sessionsData = await sessionsRes.json();
-    const session = sessionsData.sessions.find((s) => s.name === "E2E 테스트 세션");
-
-    const res = await studentPage.request.post(`/documents/api/sessions/${session.id}/submit`, {
-      multipart: { files: { name: "e2e-test-document.pdf", mimeType: "application/pdf", buffer: pdfContent } },
-    });
-    expect(res.ok()).toBeTruthy();
-
-    await studentPage.close();
-    await studentCtx.close();
   });
 });
