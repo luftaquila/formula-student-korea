@@ -295,7 +295,7 @@ onMounted(async () => {
               <select v-model.number="selectedYear" class="year-select">
                 <option v-for="y in availableYears" :key="y" :value="y">{{ y }}년</option>
               </select>
-              <span class="entry-count">활성 {{ activeCount }}대</span>
+              <span class="entry-count" title="활성 엔트리">{{ activeCount }}대</span>
               <span v-if="inactiveCount" class="inactive-count">비활성 {{ inactiveCount }}대</span>
               <span v-for="tc in typeCounts" :key="tc.name" class="type-count desktop-only" :class="'badge-type-' + tc.color">{{ tc.name }} {{ tc.count }}대</span>
             </div>
