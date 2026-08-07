@@ -250,6 +250,16 @@ test.describe("Score dashboard", () => {
 
     const after = await frozen();
     expect(Math.abs(after.realTeam - after.copyTeam)).toBeLessThanOrEqual(1);
+
+    // 경계선은 표가 아니라 스크롤 영역 왼쪽 기준으로 그려진다. 표 기준으로 좌표를 재면
+    // 스크롤한 만큼 어긋나, 제자리에서 잡기만 해도 엉뚱한 열 수로 튄다.
+    const held = await page.locator(".sticky-freeze-line").boundingBox();
+    await page.mouse.move(held.x + held.width / 2, grabY);
+    await page.mouse.down();
+    await page.mouse.move(held.x + held.width / 2 + 1, grabY, { steps: 2 });
+    await page.mouse.up();
+
+    expect((await frozen()).realCols).toBe("2");
   });
 
   test("search filter narrows displayed teams", async ({ page }) => {

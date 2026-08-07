@@ -312,6 +312,28 @@ test.describe("Score endurance input", () => {
     expect(state.maxDrift).toBeLessThanOrEqual(1);
   });
 
+  test("focusing a cell to the left does not park it behind the frozen columns", async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 600 });
+    await expect(enduranceTable(page)).toBeVisible();
+
+    // 표를 오른쪽 끝까지 민 뒤 왼쪽 끝 입력 칸으로 포커스를 옮기면 브라우저가 그 칸을
+    // 스크롤 영역 왼쪽에 붙이는데, 그 자리는 고정열이 덮고 있다.
+    await page.evaluate(() => {
+      const scroller = document.querySelector(".sticky-host .table-container");
+      scroller.scrollLeft = scroller.scrollWidth;
+      document.querySelector(".sticky-host .table-container tbody input:not([disabled])").focus();
+    });
+
+    const placed = await page.evaluate(() => {
+      const input = document.activeElement;
+      const frozen = input.closest("tr").querySelector("td.col-num").getBoundingClientRect();
+      return { inputLeft: input.getBoundingClientRect().left, frozenRight: frozen.right, tag: input.tagName };
+    });
+
+    expect(placed.tag).toBe("INPUT");
+    expect(placed.inputLeft).toBeGreaterThanOrEqual(placed.frozenRight - 1);
+  });
+
   test("navigation link returns to score dashboard", async ({ page }) => {
     // Find and click the "성적표" navigation link
     const navLink = page.locator("a.nav-link").filter({ hasText: "성적표" });

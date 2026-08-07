@@ -20,9 +20,11 @@ const { success, error } = useNotification();
 const router = useRouter();
 
 const tableRef = ref(null);
+const scrollerRef = ref(null);
 const { stickyCols, lineX, startDrag } = useStickyColumns({
   storageKey: "queue-priority-sticky-cols",
   tableRef,
+  scrollerRef,
   columnSelectors: [".col-num", ".col-team"],
 });
 
@@ -316,7 +318,7 @@ function goBack() {
           <div class="loading-spinner"></div>
         </div>
         <div v-else class="sticky-host">
-          <div class="table-container">
+          <div ref="scrollerRef" class="table-container">
           <table ref="tableRef" class="priority-table" :data-sticky-cols="stickyCols" @keydown="handleKeyNav">
             <thead>
               <tr>

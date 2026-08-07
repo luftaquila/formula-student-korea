@@ -16,6 +16,7 @@ const headScrollerRef = ref(null);
 const { stickyCols, lineX, startDrag } = useStickyColumns({
   storageKey: "score-endurance-sticky-cols",
   tableRef,
+  scrollerRef: headScrollerRef,
   columnSelectors: [".col-num", ".col-team"],
 });
 
