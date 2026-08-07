@@ -1,6 +1,8 @@
 import { ref, computed, watch, onBeforeUnmount, nextTick } from "vue";
 
-export function useStickyColumns({ storageKey, tableRef, columnSelectors, defaultCols = 1 }) {
+// scrollerRef(가로 스크롤 래퍼)는 선택이다. 넘기면 방향키 이동 시 대상 셀이 고정열 뒤로
+// 들어가지 않도록 스크롤 여백을 잡아준다. 넘기지 않으면 고정/드래그 동작만 그대로 쓴다.
+export function useStickyColumns({ storageKey, tableRef, scrollerRef, columnSelectors, defaultCols = 1 }) {
   const maxCols = columnSelectors.length;
 
   const initial = (() => {
@@ -67,17 +69,25 @@ export function useStickyColumns({ storageKey, tableRef, columnSelectors, defaul
     observedEls = [];
   }
 
+  // 경계선과 고정열은 표가 아니라 스크롤 영역 왼쪽을 기준으로 그려진다. 표 기준으로 재면
+  // 가로로 스크롤한 만큼 어긋나므로, 항상 고정인 첫 열의 위치를 기준점으로 삼는다.
+  // (스크롤 중이면 스크롤 영역 왼쪽, 아니면 표 왼쪽 — 둘 다 우리가 원하는 값이다.)
+  function originLeft() {
+    const table = tableRef.value;
+    if (!table) return 0;
+    const first = table.querySelector(`thead ${columnSelectors[0]}`) || table.querySelector(columnSelectors[0]);
+    return (first || table).getBoundingClientRect().left;
+  }
+
   let dragStart = null;
 
   function startDrag(event) {
     event.preventDefault();
     const table = tableRef.value;
     if (!table) return;
-    const tableRect = table.getBoundingClientRect();
     dragStart = {
       pointerId: event.pointerId,
       original: stickyCols.value,
-      tableLeft: tableRect.left,
     };
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
@@ -89,10 +99,8 @@ export function useStickyColumns({ storageKey, tableRef, columnSelectors, defaul
 
   function onDragMove(event) {
     if (!dragStart) return;
-    const table = tableRef.value;
-    if (!table) return;
-    const tableLeft = table.getBoundingClientRect().left;
-    const x = event.clientX - tableLeft;
+    if (!tableRef.value) return;
+    const x = event.clientX - originLeft();
     let nearest = 1;
     let best = Infinity;
     for (let i = 1; i <= maxCols; i++) {
@@ -124,6 +132,17 @@ export function useStickyColumns({ storageKey, tableRef, columnSelectors, defaul
     window.removeEventListener("pointerup", onDragEnd);
     window.removeEventListener("pointercancel", onDragEnd);
     window.removeEventListener("keydown", onDragKey);
+  }
+
+  // 고정 폭이 바뀌면(열 너비 변화·경계선 드래그) 스크롤 여백도 같이 따라가야 한다.
+  if (scrollerRef) {
+    watch(
+      [lineX, scrollerRef],
+      ([x, el]) => {
+        if (el) el.style.scrollPaddingLeft = `${x}px`;
+      },
+      { immediate: true, flush: "post" },
+    );
   }
 
   watch(

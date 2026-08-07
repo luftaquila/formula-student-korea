@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, scoreTable, SCORE_TABLE } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 
@@ -13,7 +13,7 @@ test.describe("Score dashboard", () => {
 
   test("renders dashboard table with team data", async ({ page }) => {
     // Verify the main score table is visible
-    const table = page.locator("table.score-table");
+    const table = scoreTable(page);
     await expect(table).toBeVisible();
 
     // Verify the header shows the team count badge
@@ -59,7 +59,7 @@ test.describe("Score dashboard", () => {
     }
 
     // Verify inspection columns are hidden (col-inspection cells should not be visible)
-    const inspectionCells = page.locator("th.col-inspection");
+    const inspectionCells = scoreTable(page).locator("th.col-inspection");
     const count = await inspectionCells.count();
     expect(count).toBeGreaterThan(0);
     for (let i = 0; i < count; i++) {
@@ -135,7 +135,7 @@ test.describe("Score dashboard", () => {
     await expect(page.locator(".count-badge")).toContainText("5");
 
     // Verify EV teams are visible and CV teams are hidden
-    const table = page.locator("table.score-table");
+    const table = scoreTable(page);
     await expect(table.locator("tbody")).toContainText("서울대학교");
     await expect(table.locator("tbody")).not.toContainText("성균관대학교");
     await expect(table.locator("tbody")).not.toContainText("고려대학교");
@@ -145,9 +145,126 @@ test.describe("Score dashboard", () => {
     await expect(page.locator(".count-badge")).toContainText("8");
   });
 
+  test("table header stays at the top of the screen while the page scrolls", async ({ page }) => {
+    // 표가 화면보다 길어지도록 뷰포트를 줄인다
+    await page.setViewportSize({ width: 1280, height: 360 });
+
+    const table = scoreTable(page);
+    const band = page.locator(".head-band");
+    await expect(table).toBeVisible();
+    await expect(band.locator("th.col-num")).toBeVisible();
+
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await expect
+      .poll(() => page.evaluate((sel) => document.querySelector(sel).getBoundingClientRect().top, SCORE_TABLE))
+      .toBeLessThan(0);
+
+    const rects = await page.evaluate((sel) => {
+      const t = document.querySelector(sel).getBoundingClientRect();
+      const b = document.querySelector(".head-band").getBoundingClientRect();
+      return { bandTop: b.top, bandBottom: b.bottom, tableTop: t.top, tableBottom: t.bottom };
+    }, SCORE_TABLE);
+    // 표 상단은 화면 위로 지나갔지만 헤더는 화면 상단에, 그리고 표 안에 남아 있어야 한다
+    expect(rects.tableTop).toBeLessThan(0);
+    expect(Math.abs(rects.bandTop)).toBeLessThanOrEqual(2);
+    expect(rects.bandBottom).toBeLessThanOrEqual(rects.tableBottom + 1);
+
+    // 되돌리면 원래 자리로
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect
+      .poll(() => page.evaluate((sel) => {
+        const t = document.querySelector(sel).getBoundingClientRect();
+        return document.querySelector(".head-band").getBoundingClientRect().top - t.top;
+      }, SCORE_TABLE))
+      .toBeLessThanOrEqual(1);
+  });
+
+  test("the pinned header tracks the table's own horizontal scroll", async ({ page }) => {
+    // 가로 스크롤은 페이지가 아니라 표 안에서 일어나야 한다
+    await page.setViewportSize({ width: 700, height: 500 });
+    await expect(scoreTable(page)).toBeVisible();
+
+    const state = () => page.evaluate(() => {
+      const scroller = document.querySelector(".sticky-host .table-container");
+      const lastReal = scroller.querySelector("thead tr").lastElementChild.getBoundingClientRect();
+      const lastBand = document.querySelector(".head-band thead tr").lastElementChild.getBoundingClientRect();
+      const numBand = document.querySelector(".head-band th.col-num").getBoundingClientRect();
+      return {
+        pageScrollsX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        tableScrollsX: scroller.scrollWidth > scroller.clientWidth,
+        lastReal: lastReal.left, lastBand: lastBand.left, numBand: numBand.left,
+      };
+    });
+
+    const before = await state();
+    expect(before.tableScrollsX).toBe(true);
+    expect(before.pageScrollsX).toBe(false);
+    expect(Math.abs(before.lastReal - before.lastBand)).toBeLessThanOrEqual(1);
+
+    await page.evaluate(() => { document.querySelector(".sticky-host .table-container").scrollLeft = 250; });
+    await expect
+      .poll(() => page.evaluate(() => document.querySelector(".head-band").scrollLeft))
+      .toBeGreaterThan(0);
+
+    // 고정 헤더는 표와 같은 만큼 밀리고, 고정열은 제자리에 남는다
+    const after = await state();
+    expect(after.lastReal).toBeLessThan(before.lastReal);
+    expect(Math.abs(after.lastReal - after.lastBand)).toBeLessThanOrEqual(1);
+    expect(Math.abs(after.numBand - before.numBand)).toBeLessThanOrEqual(1);
+  });
+
+  test("dragging the freeze line keeps the pinned header's frozen columns in step", async ({ page }) => {
+    await page.setViewportSize({ width: 700, height: 500 });
+    await expect(scoreTable(page)).toBeVisible();
+
+    const frozen = () => page.evaluate((tableSel) => {
+      const real = document.querySelector(tableSel);
+      const copy = document.querySelector(".head-band table");
+      const left = (root, sel) => root.querySelector(sel)?.getBoundingClientRect().left ?? null;
+      return {
+        realCols: real.getAttribute("data-sticky-cols"),
+        copyCols: copy.getAttribute("data-sticky-cols"),
+        realTeam: left(real, "tbody td.col-team"),
+        copyTeam: left(copy, "thead th.col-team"),
+      };
+    }, SCORE_TABLE);
+
+    // 고정 경계선을 학교/팀 열 오른쪽으로 끌어 고정열을 2개로 늘린다.
+    // 경계선은 표 높이 전체를 덮지만 시작 위치는 필터 바가 몇 줄로 접히느냐에 달렸으므로,
+    // 잡는 지점을 화면 안으로 눌러 담고 그래도 표 위가 아니면 조용히 헛도는 대신 실패시킨다.
+    const line = await page.locator(".sticky-freeze-line").boundingBox();
+    const teamHead = await page.locator(".sticky-host .table-container thead th.col-team").boundingBox();
+    const grabY = Math.min(line.y + 40, page.viewportSize().height - 10);
+    expect(grabY).toBeGreaterThan(line.y);
+
+    await page.mouse.move(line.x + line.width / 2, grabY);
+    await page.mouse.down();
+    await page.mouse.move(teamHead.x + teamHead.width, grabY, { steps: 8 });
+    await page.mouse.up();
+
+    await expect.poll(async () => (await frozen()).realCols).toBe("2");
+
+    // 고정열 상태는 헤더 마크업이 아니라 table 속성이라 사본에 따로 옮겨져야 한다
+    await page.evaluate(() => { document.querySelector(".sticky-host .table-container").scrollLeft = 300; });
+    await expect.poll(async () => (await frozen()).copyCols).toBe("2");
+
+    const after = await frozen();
+    expect(Math.abs(after.realTeam - after.copyTeam)).toBeLessThanOrEqual(1);
+
+    // 경계선은 표가 아니라 스크롤 영역 왼쪽 기준으로 그려진다. 표 기준으로 좌표를 재면
+    // 스크롤한 만큼 어긋나, 제자리에서 잡기만 해도 엉뚱한 열 수로 튄다.
+    const held = await page.locator(".sticky-freeze-line").boundingBox();
+    await page.mouse.move(held.x + held.width / 2, grabY);
+    await page.mouse.down();
+    await page.mouse.move(held.x + held.width / 2 + 1, grabY, { steps: 2 });
+    await page.mouse.up();
+
+    expect((await frozen()).realCols).toBe("2");
+  });
+
   test("search filter narrows displayed teams", async ({ page }) => {
     const searchInput = page.locator(".filter-bar input.filter-input[placeholder]");
-    const table = page.locator("table.score-table");
+    const table = scoreTable(page);
 
     // Search by university name
     await searchInput.fill("서울");

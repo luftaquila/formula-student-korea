@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, enduranceTable } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 
@@ -51,7 +51,7 @@ test.describe("Score endurance real-time sync via SSE", () => {
     await sse2;
 
     // Find the row for team #32 (중앙대학교) in context 1
-    const table1 = page1.locator("table.endurance-table");
+    const table1 = enduranceTable(page1);
     const row1 = table1.locator("tbody tr").filter({ hasText: "중앙대학교" });
     await expect(row1).toBeVisible();
 
@@ -65,7 +65,7 @@ test.describe("Score endurance real-time sync via SSE", () => {
     await fillAndSave(page1, driver1Time1, newTime);
 
     // Verify the value appears in context 2 via SSE
-    const table2 = page2.locator("table.endurance-table");
+    const table2 = enduranceTable(page2);
     const row2 = table2.locator("tbody tr").filter({ hasText: "중앙대학교" });
     const driver1Time2 = row2.locator("input.time-input").nth(0);
     await expect(driver1Time2).toHaveValue(expectedTime, { timeout: 15000 });
@@ -106,7 +106,7 @@ test.describe("Score endurance real-time sync via SSE", () => {
     });
 
     // Wait for SSE to propagate to both contexts
-    const table2 = page2.locator("table.endurance-table");
+    const table2 = enduranceTable(page2);
     const row2 = table2.locator("tbody tr").filter({ hasText: "중앙대학교" });
     const conesInput2 = row2.locator("input.num-input").nth(1); // driver1_cones
     await expect(conesInput2).toHaveValue("3", { timeout: 10000 });

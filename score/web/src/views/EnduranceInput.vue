@@ -5,17 +5,23 @@ import { exportTable } from "../composables/exportTable";
 import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
+import { useTableHeadBand } from "../composables/useTableHeadBand";
 import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();
 const { lastEnduranceUpdate, lastPenaltyUpdate, lastSettingUpdate, reconnected } = useSSE();
 
 const tableRef = ref(null);
+const headScrollerRef = ref(null);
 const { stickyCols, lineX, startDrag } = useStickyColumns({
   storageKey: "score-endurance-sticky-cols",
   tableRef,
+  scrollerRef: headScrollerRef,
   columnSelectors: [".col-num", ".col-team"],
 });
+
+const headBandRef = ref(null);
+useTableHeadBand({ tableRef, scrollerRef: headScrollerRef, bandRef: headBandRef });
 
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([]);
@@ -563,7 +569,7 @@ function exportData(format) {
 
     <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드 (과거 연도)</div>
 
-    <div class="card">
+    <div class="card table-card">
       <div class="card-header">
         <div class="header-left">
           <h3>내구 기록 입력</h3>
@@ -573,7 +579,8 @@ function exportData(format) {
       <div class="card-body table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
         <div v-else class="sticky-host">
-          <div class="table-container">
+          <div ref="headBandRef" class="head-band"></div>
+          <div ref="headScrollerRef" class="table-container">
           <table ref="tableRef" class="data-table endurance-table" :data-sticky-cols="stickyCols" @keydown="handleKeyNav">
             <thead>
               <tr>
@@ -813,16 +820,41 @@ function exportData(format) {
   overflow: auto;
 }
 
+/* .table-card / .head-band 는 세 표가 공유하므로 main.css 에 있다. */
+
 .endurance-table {
   min-width: 1900px;
 }
 
 .endurance-table th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
   white-space: nowrap;
   font-size: 0.875rem;
+  /* border-collapse 테두리는 떠 있는 헤더에 안 남는다. 그림자로 대신 그린다 */
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--border-color);
+}
+
+/* 헤더가 행 위에 떠 있어 반투명하면 행이 비친다. 틴트가 걸린 열만 불투명 배경 위에
+   다시 얹는다. 나머지 헤더 셀은 .data-table th 가 이미 불투명하게 칠한다. */
+.endurance-table thead .col-summary {
+  background-color: var(--bg-secondary);
+  background-image: linear-gradient(rgba(94, 106, 210, 0.04), rgba(94, 106, 210, 0.04));
+}
+
+.endurance-table thead .col-energy {
+  background-color: var(--bg-secondary);
+  background-image: linear-gradient(rgba(16, 185, 129, 0.035), rgba(16, 185, 129, 0.035));
+}
+
+/* 그룹 헤더는 아랫줄과의 2px 구분선도 border 가 아니라 그림자로 그린다 */
+.endurance-table thead .col-driver-group {
+  box-shadow: inset 0 -2px 0 var(--border-color);
+}
+
+.endurance-table thead .col-energy-group {
+  background-color: var(--bg-secondary);
+  background-image: linear-gradient(rgba(16, 185, 129, 0.08), rgba(16, 185, 129, 0.08));
+  box-shadow: inset 0 -2px 0 var(--border-color);
 }
 
 .col-num,

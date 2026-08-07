@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 
@@ -24,7 +24,7 @@ test.describe("Score manual score entry", () => {
   });
 
   test("enter report score for a team and verify total updates", async ({ page }) => {
-    const table = page.locator("table.score-table");
+    const table = scoreTable(page);
 
     // Find the row for team #1 (서울대학교)
     const row = table.locator("tbody tr.team-row").filter({ hasText: "서울대학교" });
@@ -50,7 +50,7 @@ test.describe("Score manual score entry", () => {
   });
 
   test("energy score is read-only and automatically calculated", async ({ page }) => {
-    const table = page.locator("table.score-table");
+    const table = scoreTable(page);
     const row = table.locator("tbody tr.team-row").filter({ hasText: "한양대학교" });
     await expect(row).toBeVisible();
 
@@ -60,7 +60,7 @@ test.describe("Score manual score entry", () => {
   });
 
   test("enter bonus and deduction for a team", async ({ page }) => {
-    const table = page.locator("table.score-table");
+    const table = scoreTable(page);
     const row = table.locator("tbody tr.team-row").filter({ hasText: "성균관대학교" });
     await expect(row).toBeVisible();
 
@@ -86,7 +86,7 @@ test.describe("Score manual score entry", () => {
   });
 
   test("arrow keys move focus between manual score cells", async ({ page }) => {
-    const table = page.locator("table.score-table");
+    const table = scoreTable(page);
     const rows = table.locator("tbody tr.team-row");
     await expect(rows.first()).toBeVisible();
 
@@ -114,7 +114,7 @@ test.describe("Score manual score entry", () => {
   });
 
   test("total recalculates when multiple manual scores are set", async ({ page }) => {
-    const table = page.locator("table.score-table");
+    const table = scoreTable(page);
     const row = table.locator("tbody tr.team-row").filter({ hasText: "KAIST" });
     await expect(row).toBeVisible();
 

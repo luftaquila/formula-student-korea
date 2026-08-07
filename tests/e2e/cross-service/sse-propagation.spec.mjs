@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 const YEAR = new Date().getFullYear();
@@ -13,7 +13,7 @@ test.describe("Cross-service SSE propagation", () => {
     await waitForPageReady(page);
 
     // Wait for the score table to load
-    const table = page.locator(".score-table");
+    const table = scoreTable(page);
     await expect(table).toBeVisible({ timeout: 10000 });
 
     // Use team 10 (KAIST) which has no prior 가속 records from other tests
@@ -77,7 +77,7 @@ test.describe("Cross-service SSE propagation", () => {
     await waitForPageReady(page);
 
     // Wait for the score table to load
-    const table = page.locator(".score-table");
+    const table = scoreTable(page);
     await expect(table).toBeVisible({ timeout: 10000 });
 
     // Enable inspection columns if they are hidden
@@ -87,7 +87,7 @@ test.describe("Cross-service SSE propagation", () => {
     }
 
     // Verify the inspection category column is visible
-    const inspectionHeader = page.locator("th.col-inspection").filter({ hasText: "전기 검차" });
+    const inspectionHeader = scoreTable(page).locator("th.col-inspection").filter({ hasText: "전기 검차" });
     await expect(inspectionHeader).toBeVisible();
 
     // Get team 1's initial inspection result
@@ -156,7 +156,7 @@ test.describe("Cross-service SSE propagation", () => {
     await page.goto("/score");
     await waitForPageReady(page);
 
-    const table = page.locator(".score-table");
+    const table = scoreTable(page);
     await expect(table).toBeVisible({ timeout: 10000 });
 
     // Add a traffic record for a different team (team 2)
