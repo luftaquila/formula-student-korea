@@ -57,9 +57,9 @@ test.describe("Score penalty and score settings", () => {
     await expect(input).toBeVisible({ timeout: 3000 });
     await expect(input).toBeFocused();
 
-    // Set cone penalty — atomic evaluate prevents Vue re-render/SSE from closing edit mode
     const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
-    await input.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.blur(); }, String(newValue));
+    await input.fill(String(newValue));
+    await input.blur();
     await savePromise;
 
     // Verify the value is saved and displayed
@@ -105,9 +105,9 @@ test.describe("Score penalty and score settings", () => {
     await expect(input).toBeVisible({ timeout: 3000 });
     await expect(input).toBeFocused();
 
-    // Set off-course penalty — atomic evaluate prevents Vue re-render/SSE from closing edit mode
     const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
-    await input.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.blur(); }, String(newOcValue));
+    await input.fill(String(newOcValue));
+    await input.blur();
     await savePromise;
 
     // Verify the value is saved
@@ -166,11 +166,8 @@ test.describe("Score penalty and score settings", () => {
     // Keep the DOM update and blur in one browser task so an SSE refresh cannot
     // replace the input between the two operations.
     const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
-    await input.evaluate((el, v) => {
-      el.value = v;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.blur();
-    }, String(newValue));
+    await input.fill(String(newValue));
+    await input.blur();
     await savePromise;
 
     // Verify the value is saved
@@ -207,7 +204,8 @@ test.describe("Score penalty and score settings", () => {
     await lastFinishCell.click();
     const finishInput = lastFinishCell.locator("input.setting-input");
     const finishSave = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
-    await finishInput.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.blur(); }, String(newFinish));
+    await finishInput.fill(String(newFinish));
+    await finishInput.blur();
     await finishSave;
     await expect(lastFinishCell.locator(".setting-text")).toHaveText(String(newFinish));
 
@@ -222,7 +220,8 @@ test.describe("Score penalty and score settings", () => {
     await lastCutoffCell.click();
     const cutoffInput = lastCutoffCell.locator("input.setting-input");
     const cutoffSave = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
-    await cutoffInput.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.blur(); }, String(newCutoff));
+    await cutoffInput.fill(String(newCutoff));
+    await cutoffInput.blur();
     await cutoffSave;
     await expect(lastCutoffCell.locator(".setting-text")).toHaveText(String(newCutoff));
 
@@ -270,9 +269,9 @@ test.describe("Score penalty and score settings", () => {
     await expect(input).toBeVisible({ timeout: 3000 });
     await expect(input).toBeFocused();
 
-    // Set start delay penalty — atomic evaluate prevents Vue re-render/SSE from closing edit mode
     const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
-    await input.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.blur(); }, String(newDelay));
+    await input.fill(String(newDelay));
+    await input.blur();
     await savePromise;
 
     // Verify the value is saved

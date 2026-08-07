@@ -58,13 +58,9 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     const newValue = Number(currentVal) === 75 ? "80" : "75";
 
     const savePromise = page1.waitForResponse((res) => res.url().includes("/api/score/manual") && res.status() === 200);
-    // Atomically set value and blur to prevent Vue re-render from overwriting between fill() and blur()
-    await reportInput1.evaluate((el, v) => {
-      el.focus();
-      el.value = v;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.blur();
-    }, newValue);
+    await reportInput1.click();
+    await reportInput1.fill(newValue);
+    await reportInput1.blur();
     await savePromise;
 
     // Verify context 2 receives the update via SSE
@@ -75,12 +71,8 @@ test.describe("Score dashboard real-time sync via SSE", () => {
 
     // Cleanup: reset to empty
     const cleanupPromise = page1.waitForResponse((res) => res.url().includes("/api/score/manual") && res.status() === 200);
-    await reportInput1.evaluate((el) => {
-      el.focus();
-      el.value = "";
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.blur();
-    });
+    await reportInput1.fill("");
+    await reportInput1.blur();
     await cleanupPromise;
 
     await context1.close();
@@ -129,12 +121,8 @@ test.describe("Score dashboard real-time sync via SSE", () => {
       await expect(input1).toBeVisible({ timeout: 3000 });
 
       const penaltySavePromise = page1.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
-      // Atomically set value and blur to prevent Vue re-render/SSE from closing edit mode
-      await input1.evaluate((el, v) => {
-        el.value = v;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.blur();
-      }, String(newValue));
+      await input1.fill(String(newValue));
+      await input1.blur();
       await penaltySavePromise;
 
       // Verify context 2 receives the penalty update via SSE
@@ -205,11 +193,8 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     await expect(input1).toBeVisible({ timeout: 3000 });
 
     const settingSavePromise = page1.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
-    await input1.evaluate((el, v) => {
-      el.value = v;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.blur();
-    }, String(newValue));
+    await input1.fill(String(newValue));
+    await input1.blur();
     await settingSavePromise;
 
     // Verify context 2 receives the setting update via SSE

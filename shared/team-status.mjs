@@ -17,6 +17,29 @@ export function isTeamActive(db, year, teamNum) {
   return row?.active !== 0;
 }
 
+// entry가 정합성 점검에서 읽는 스냅샷. 미러가 push로만 채워지므로, 전달 경로에 구멍이
+// 나면(또는 이 서비스 DB가 백업에서 되돌아가면) 아무도 모르게 어긋난 채로 남는다.
+// entry가 자기 진실과 대조할 수 있게 현재 상태를 그대로 노출한다.
+export function registerTeamStatusSnapshotRoute(app, { db, dbRun, requireInternalRequest }) {
+  app.get("/api/internal/team-status", (req, res) => {
+    if (!requireInternalRequest(req, res)) return;
+
+    const yearCheck = validateYear(req.query.year);
+    if (!yearCheck.valid) return res.status(400).send("올바르지 않은 연도입니다.");
+
+    const result = dbRun(() => db.prepare(
+      "SELECT team_num, active, revision FROM team_status WHERE year = ?"
+    ).all(yearCheck.value));
+    if (!result.success) return res.status(result.status).send(result.error);
+
+    const snapshot = {};
+    for (const row of result.result) {
+      snapshot[row.team_num] = { active: !!row.active, revision: row.revision };
+    }
+    res.json(snapshot);
+  });
+}
+
 export function registerTeamStatusRoute(app, {
   db,
   dbRun,
@@ -26,6 +49,8 @@ export function registerTeamStatusRoute(app, {
   onDeactivate,
   onApplied,
 }) {
+  registerTeamStatusSnapshotRoute(app, { db, dbRun, requireInternalRequest });
+
   app.patch("/api/internal/team-active", (req, res) => {
     if (!requireInternalRequest(req, res)) return;
 

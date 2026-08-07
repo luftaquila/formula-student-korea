@@ -544,7 +544,230 @@ function buildEntryActiveEvents(num, year, active, revision) {
   }));
 }
 
+/* ============================================
+   정합성 점검
+   outbox는 *전달*을 보장하지만 *정확성*은 검증하지 않는다. 전달 경로에 구멍이 나거나
+   (행이 생성되지 않는 종류의 버그) 다운스트림 DB가 백업에서 되돌아가면, 미러는 아무도
+   모르게 어긋난 채로 영구히 남는다 — 실제로 그렇게 6주간 지속된 사고가 있었다.
+   entry가 진실이므로 entry가 대조하고, 어긋나면 현재 상태를 다시 팬아웃한다.
+
+   주기 타이머는 두지 않는다. drift는 이산 사건(배포·복원·수동 조작)에서만 생기므로
+   부팅 1회 + 관리자 수동 실행으로 충분하다. 배포가 곧 재시작이라 부팅 훅이 자동으로 걸린다.
+   ============================================ */
+async function fetchTeamStatusSnapshot(service, year) {
+  const server = lifecycleServer(service);
+  if (!server) return { ok: false, error: `unknown lifecycle service: ${service}` };
+  try {
+    const res = await fetch(`${server}/api/internal/team-status?year=${Number(year)}`, {
+      headers: lifecycleHeaders(),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return { ok: false, error: `status_${res.status}` };
+    return { ok: true, snapshot: await res.json() };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+}
+
+// 미러에 행이 없으면 active로 간주된다(isTeamActive의 하위호환 규칙). 그래서 "행 없음"은
+// entry도 active일 때 정상이고, entry가 inactive일 때만 drift다. 리비전이 뒤처졌더라도
+// 실효 상태가 같으면 손대지 않는다 — 다음 이벤트가 어차피 수렴시키고, 불필요한 재전송은
+// 로그만 늘린다.
+function diffTeamStatus(truth, snapshot) {
+  const drifted = [];
+  const unknown = [];
+  for (const [num, entry] of truth) {
+    const row = snapshot[num];
+    const mirrored = row ? row.active !== false : true;
+    // 미러 리비전이 entry보다 높으면 그대로 재전송해도 downstream 가드
+    // (`current.revision >= revision`)가 200으로 무시한다. 그러면 outbox 행은 지워지고
+    // 미러는 그대로여서, 매번 "고쳤다"고 보고하면서 영원히 안 고쳐진다. entry DB만 복원하면
+    // 전역 리비전 카운터가 뒤로 감기므로 정확히 이 상태가 된다. 새 리비전을 받아야 한다.
+    // 미러 값은 아래에서 entry의 전역 리비전 카운터를 산술 UPDATE 하는 데 쓰인다. 손상되거나
+    // 손으로 건드린 DB에서 정수가 아닌 값이 오면 카운터가 1로 붕괴하고, 그때부터 모든
+    // team.active가 미러보다 낮은 리비전을 달고 나가 전부 조용히 거부된다 — 이 도구가 막으려던
+    // 바로 그 사고다. 신뢰할 수 없는 값은 0으로 떨어뜨린다.
+    const mirrorRevision = Number.isInteger(row?.revision) && row.revision >= 0 ? row.revision : 0;
+    if (mirrored !== entry.active) drifted.push({ num, mirrorRevision });
+  }
+  for (const key of Object.keys(snapshot)) {
+    if (!truth.has(Number(key))) unknown.push(Number(key));
+  }
+  return { drifted, unknown };
+}
+
+// 미러가 앞서 있으면 그보다 위의 리비전을 새로 발급해 entry 행에 확정한다. 이렇게 해야
+// 재전송이 실제로 적용되고, 이후의 정상적인 활성/비활성 이벤트도 거부되지 않는다.
+//
+// truth는 스냅샷 fetch 전에 한 번 읽으므로, 그 사이 관리자가 상태를 바꿨다면 이 패스는 낡은
+// 값을 들고 있다. 그런데 발급하는 리비전은 그 변경을 이기고도 남는 값이라, 낡은 읽기가
+// 권위 있는 쓰기로 승격되어 관리자의 변경이 다운스트림에서 조용히 되돌아간다. 그래서 트랜잭션
+// 안에서 현재 행을 다시 읽고, 진단 시점과 달라졌으면 건드리지 않는다 — 방금 진짜 이벤트가
+// 나갔다는 뜻이고, 그게 알아서 수렴시킨다.
+function raiseActiveRevision(year, num, floor, expectedActive) {
+  return dbRun(() => db.transaction(() => {
+    const current = db.prepare(`SELECT active, active_revision FROM '${getTableName(year)}' WHERE num = ?`).get(num);
+    if (!current || !!current.active !== expectedActive) return { stale: true, previous: current?.active_revision };
+    db.prepare("UPDATE entry_active_revision SET value = MAX(value, ?) + 1 WHERE id = 1").run(floor);
+    const revision = db.prepare("SELECT value FROM entry_active_revision WHERE id = 1").get().value;
+    db.prepare(`UPDATE '${getTableName(year)}' SET active_revision = ? WHERE num = ?`).run(revision, num);
+    return { stale: false, revision, previous: current.active_revision };
+  })());
+}
+
+async function reconcileTeamStatus(req = null) {
+  const summary = { checked: 0, repaired: 0, unreachable: [], unknown: [] };
+  const unreachable = new Set();
+  for (const year of getAvailableYears()) {
+    const rows = dbRun(() => db.prepare(
+      `SELECT num, active, active_revision FROM '${getTableName(year)}'`
+    ).all());
+    if (!rows.success) {
+      logger.warn(req, "entry.reconcile_failed", { error: rows.error, year });
+      continue;
+    }
+    const truth = new Map(rows.result.map((r) => [r.num, { active: !!r.active, revision: r.active_revision }]));
+
+    const targets = lifecycleServices({ activeOnly: true });
+    summary.checked += targets.length;
+    // 서비스끼리 독립이므로 병렬로 읽는다. 순차로 돌면 전부 죽어 있을 때 관리자 요청이
+    // 서비스 수 × 연도 수 × 5초만큼 잡혀 있는다.
+    const snapshots = await Promise.all(targets.map((svc) => fetchTeamStatusSnapshot(svc.name, year)));
+
+    for (let i = 0; i < targets.length; i++) {
+      const svc = targets[i];
+      const result = snapshots[i];
+      if (!result.ok) {
+        unreachable.add(svc.name);
+        logger.warn(req, "entry.reconcile_unreachable", { service: svc.name, year, error: result.error });
+        continue;
+      }
+      const { drifted, unknown } = diffTeamStatus(truth, result.snapshot);
+      // entry가 모르는 번호는 자동 삭제하지 않는다. 사고 상황에서 되돌릴 수 없는 손실이 된다.
+      // 사람이 판단해야 하는 유일한 항목이므로 요약에도 실어 관리자가 로그를 뒤지지 않게 한다.
+      if (unknown.length > 0) {
+        summary.unknown.push({ service: svc.name, year, nums: unknown });
+        logger.warn(req, "entry.reconcile_drift", { service: svc.name, year, kind: "unknown_team", nums: unknown });
+      }
+      if (drifted.length === 0) continue;
+
+      // 아직 배달되지 않은 이벤트가 있는 번호는 drift가 아니라 진행 중이다. 부팅 훅은
+      // 30초 재시도 타이머보다 먼저 돌므로 이걸 거르지 않으면 매 재시작마다 가짜 drift를
+      // 보고하고 중복 이벤트를 넣는다 — 스스로 시끄러운 점검은 아무도 안 읽게 된다.
+      // 이 서비스로 가는 행만 본다. 전체를 보면 queue 하나가 막혀 있을 때 같은 팀의
+      // inspection/score/traffic 복구까지 그 행이 dead 될 때까지(최대 24회 재시도) 막힌다.
+      const pendingNums = new Set(
+        pendingLifecycleRefsForNums(drifted.map((d) => d.num), year)
+          .filter((row) => row.service === svc.name)
+          .flatMap((row) => drifted.map((d) => d.num).filter((n) => lifecycleRowRefsNumber(row, n, year))),
+      );
+      const actionable = drifted.filter((d) => !pendingNums.has(d.num));
+      if (actionable.length === 0) continue;
+
+      const events = [];
+      const repairedNums = [];
+      const raised = [];
+      for (const { num, mirrorRevision } of actionable) {
+        let revision = truth.get(num).revision;
+        if (mirrorRevision >= revision) {
+          const result = raiseActiveRevision(year, num, mirrorRevision, truth.get(num).active);
+          if (!result.success) {
+            logger.warn(req, "entry.reconcile_failed", { error: result.error, service: svc.name, year, nums: [num] });
+            continue;
+          }
+          // 진단 이후 상태가 바뀐 팀은 건너뛴다. 낡은 값을 이기는 리비전으로 덮어쓰지 않는다.
+          if (result.result.stale) continue;
+          revision = result.result.revision;
+          raised.push({ num, from: result.result.previous, to: revision });
+          truth.get(num).revision = revision;
+        }
+        repairedNums.push(num);
+        events.push({
+          eventType: "team.active",
+          service: svc.name,
+          method: "PATCH",
+          path: "/api/internal/team-active",
+          body: { num: Number(num), year: Number(year), active: truth.get(num).active, revision: Number(revision) },
+        });
+      }
+      if (events.length === 0) continue;
+
+      const inserted = dbRun(() => insertLifecycleEvents(events));
+      if (!inserted.success) {
+        logger.warn(req, "entry.reconcile_failed", { error: inserted.error, service: svc.name, year, nums: repairedNums });
+        continue;
+      }
+      summary.repaired += repairedNums.length;
+      logger.warn(req, "entry.reconcile_drift", {
+        service: svc.name, year, kind: "state_mismatch", nums: repairedNums,
+        // 리비전을 올리면 그 팀의 dead outbox 행은 재시도 가드(active_revision 일치)에 걸려
+        // 409가 된다. 나중에 그걸 만난 운영자가 원인을 추적할 수 있게 변경 내역을 남긴다.
+        ...(raised.length > 0 ? { raised } : {}),
+      });
+      await processLifecycleOutbox({ ids: inserted.result });
+    }
+  }
+  summary.unreachable = [...unreachable];
+  // 정상일 때는 아무것도 남기지 않는다. drift만 신호다.
+  return summary;
+}
+
+// POST /api/admin/reconcile - 백업 복원·수동 조작 뒤 즉시 점검
+// 동시에 돌면 패스마다 각자의 stale-read 창이 열리므로 한 번에 하나만 돈다.
+let reconcileInFlight = false;
+app.post("/api/admin/reconcile", async (req, res) => {
+  if (reconcileInFlight) return res.status(409).send("정합성 점검이 이미 실행 중입니다.");
+  reconcileInFlight = true;
+  let summary;
+  try {
+    summary = await reconcileTeamStatus(req);
+  } catch (e) {
+    logger.warn(req, "entry.reconcile_failed", { error: e.message || String(e) });
+    return res.status(500).send("정합성 점검에 실패했습니다.");
+  } finally {
+    reconcileInFlight = false;
+  }
+  logger.log(req, "entry.reconcile", summary);
+  res.json(summary);
+});
+
 const lifecycleRetryTimer = startLifecycleOutboxRetry();
+
+// 부팅 훅. 스택 전체가 같이 올라오는 상황(노드 재부팅, make restore 후 재기동, 클러스터
+// 전체 적용)에서는 대상 서비스들이 아직 뜨는 중이라 첫 시도가 전부 unreachable로 끝난다.
+// 그런데 그게 바로 drift 가능성이 가장 높은 순간이다 — 한 번 시도하고 마는 건 정작 필요할 때
+// 동작하지 않는다는 뜻이라, 닿지 못한 서비스가 남아 있는 동안만 몇 번 더 시도한다.
+const RECONCILE_BOOT_RETRIES = 5;
+const RECONCILE_BOOT_DELAY_MS = 15_000;
+let reconcileBootTimer = null;
+
+async function reconcileOnBoot(attempt = 0) {
+  let summary;
+  try {
+    summary = await reconcileTeamStatus();
+  } catch (e) {
+    logger.warn(null, "entry.reconcile_failed", { error: e.message || String(e), attempt });
+    return;
+  }
+  if (summary.unreachable.length === 0 || attempt >= RECONCILE_BOOT_RETRIES) {
+    if (summary.unreachable.length > 0) {
+      for (const service of summary.unreachable) {
+        // 같은 action의 다른 레코드와 detail 형태를 맞춘다(service: 문자열). 배열로 남기면
+        // 로그 뷰어에서 service로 거를 때 이 레코드만 빠진다.
+        logger.warn(null, "entry.reconcile_unreachable", { service, attempt, giving_up: true });
+      }
+    }
+    return;
+  }
+  reconcileBootTimer = setTimeout(() => reconcileOnBoot(attempt + 1), RECONCILE_BOOT_DELAY_MS);
+  reconcileBootTimer.unref?.();
+}
+
+if (!options.skipReconcileOnBoot) {
+  // 실패해도 서비스 기동을 막지 않는다.
+  reconcileOnBoot().catch((e) =>
+    logger.warn(null, "entry.reconcile_failed", { error: e.message || String(e) }));
+}
 
 /* ============================================
    Admin: lifecycle outbox 운영 (조회/재시도/폐기)
@@ -792,7 +1015,7 @@ function lifecycleRowRefsNumber(row, num, year) {
 function pendingLifecycleRefsForNums(nums, year) {
   const targetNums = new Set([...nums].map(Number).filter((n) => Number.isInteger(n) && n > 0));
   if (targetNums.size === 0) return [];
-  const pending = db.prepare("SELECT id, event_type, path, body FROM lifecycle_outbox WHERE status IN ('pending', 'processing') ORDER BY id").all();
+  const pending = db.prepare("SELECT id, event_type, service, path, body FROM lifecycle_outbox WHERE status IN ('pending', 'processing') ORDER BY id").all();
   return pending.filter((row) => [...targetNums].some((num) => lifecycleRowRefsNumber(row, num, year)));
 }
 
@@ -1536,7 +1759,11 @@ app.delete("/api/vehicle-types/:id", withYearVtTable, (req, res) => {
   res.status(200).send();
 });
 
-return { app, db, stopLifecycleOutboxRetry: () => clearInterval(lifecycleRetryTimer) };
+return {
+  app, db,
+  stopLifecycleOutboxRetry: () => { clearInterval(lifecycleRetryTimer); clearTimeout(reconcileBootTimer); },
+  reconcileTeamStatus,
+};
 }
 
 const isDirectRun = import.meta.filename === process.argv[1];
