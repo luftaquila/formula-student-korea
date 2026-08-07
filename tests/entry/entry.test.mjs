@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { createRequire } from 'node:module';
 import {
   tmpDbPath,
@@ -24,9 +25,43 @@ const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', rol
 
 let server, baseUrl, client, db, dbPath, stopLifecycleOutboxRetry;
 
+// 팬아웃 대상은 이제 항상 존재한다(shared/services.mjs 레지스트리 — env 누락으로 대상이
+// 사라지지 않는다). 그래서 env를 지우면 "이벤트 없음"이 아니라 컨테이너 DNS 이름
+// (http://queue:9300 등)으로 실제 요청이 나가 mutation마다 5건씩 실패한다. 전역 sink로
+// 향하게 해 200을 받고 outbox에서 즉시 지워지게 한다 — 관측 결과는 예전의 "이벤트 없음"과
+// 같으면서(200 응답·빈 outbox) 닿을 수 없는 호스트로 나가는 요청도 없앤다.
+// 개별 테스트는 자기 mock으로 덮어쓴 뒤 restoreLifecycleSink()로 되돌린다.
+//
+// sink는 받은 요청을 기록한다. 예전에는 env가 없는 서비스로는 이벤트가 *생성될 수* 없어서
+// documents mock 하나만 보면 그게 곧 전역 부정("아무 이벤트도 안 나갔다")이었다. 이제는
+// 생성될 수 있고 sink가 200으로 받아 outbox 행이 즉시 지워지므로, 사후에 outbox를 세도
+// 복구되지 않는다. "모든 대상이 항상 행을 받는다"가 이 PR의 핵심 주장이고 그 짝이 되는
+// 위험은 받지 말아야 할 대상에 행이 가는 것이므로, 그걸 반증할 관측점을 남겨 둔다.
+let lifecycleSink, lifecycleSinkUrl;
+let sinkRequests = [];
+
+function restoreLifecycleSink() {
+  for (const key of LIFECYCLE_SERVER_ENVS) process.env[key] = lifecycleSinkUrl;
+}
+
+// 개별 mock으로 덮어쓴 서비스 외의 나머지가 조용한지 확인할 때 쓴다.
+function resetSinkRequests() {
+  sinkRequests = [];
+}
+
 before(async () => {
+  lifecycleSink = http.createServer((req, res) => {
+    sinkRequests.push({ method: req.method, url: req.url });
+    req.resume();
+    res.statusCode = 200;
+    res.end();
+  });
+  await new Promise((resolve) => lifecycleSink.listen(0, '127.0.0.1', resolve));
+  lifecycleSinkUrl = `http://127.0.0.1:${lifecycleSink.address().port}`;
+  restoreLifecycleSink();
+
   dbPath = tmpDbPath();
-  const result = createEntryApp({ dbPath });
+  const result = createEntryApp({ dbPath});
   db = result.db;
   stopLifecycleOutboxRetry = result.stopLifecycleOutboxRetry;
   const started = await startServer(result.app);
@@ -38,6 +73,7 @@ before(async () => {
 after(async () => {
   stopLifecycleOutboxRetry?.();
   await stopServer(server);
+  await new Promise((resolve) => lifecycleSink.close(resolve));
   db.close();
   cleanup(dbPath);
 });
@@ -62,7 +98,7 @@ describe('Entry annual-table migration', () => {
     let migratedDb;
     let stopRetry;
     try {
-      const result = createEntryApp({ dbPath: legacyPath });
+      const result = createEntryApp({ dbPath: legacyPath});
       migratedDb = result.db;
       stopRetry = result.stopLifecycleOutboxRetry;
 
@@ -767,7 +803,7 @@ describe('PATCH /api/entries/:num — lifecycle sync', () => {
     assert.ok(receivedActiveRequests.every(r => Number.isInteger(r.revision) && r.revision > 0));
 
     await stopServer(mockDocServer);
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
   });
 
   it('does not call lifecycle services when number does not change', async () => {
@@ -797,7 +833,7 @@ describe('PATCH /api/entries/:num — lifecycle sync', () => {
     assert.equal(receivedRequests.length, 0, 'should not call lifecycle services when number unchanged');
 
     await stopServer(mockDocServer);
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
   });
 
   it('entry update succeeds and leaves outbox rows when lifecycle sync fails', async () => {
@@ -836,7 +872,7 @@ describe('PATCH /api/entries/:num — lifecycle sync', () => {
     assert.match(pending[0].last_error, /status 500/);
 
     await stopServer(mockDocServer);
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
   });
 
   it('blocks number reuse while an older lifecycle event for that number is pending', async () => {
@@ -883,7 +919,7 @@ describe('PATCH /api/entries/:num — lifecycle sync', () => {
     assert.equal(pendingRenumber, 0, 'blocked renumber should not create another outbox row');
 
     await stopServer(mockDocServer);
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
@@ -936,7 +972,7 @@ describe('PATCH /api/entries/:num — lifecycle sync', () => {
     assert.equal(pending, 0);
 
     await stopServer(mockDocServer);
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
   });
 });
 
@@ -968,7 +1004,7 @@ describe('Entry delete → service notifications', () => {
 
   after(async () => {
     await stopServer(mockServer);
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
   });
 
   it('DELETE /api/entries/:num notifies configured lifecycle services', async () => {
@@ -1000,7 +1036,7 @@ describe('Entry delete → service notifications', () => {
   });
 
   it('POST /api/entries/bulk emits renumber events for moved teams', async () => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await client.post('/api/entries/bulk', {
       body: {
@@ -1044,12 +1080,12 @@ describe('Entry delete → service notifications', () => {
     assert.equal(deletes.includes(300), false, 'moved team should not be treated as a delete');
 
     await stopServer(started.server);
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
   it('POST /api/entries/bulk deletes a displaced target team before renumbering into its number', async () => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await client.post('/api/entries/bulk', {
       body: {
@@ -1092,12 +1128,12 @@ describe('Entry delete → service notifications', () => {
     ]);
 
     await stopServer(started.server);
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
   it('POST /api/entries/bulk accepts explicit renumber mapping when display names also change', async () => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await client.post('/api/entries/bulk', {
       body: { data: { 330: { univ: 'BulkMapUnivOld', team: 'BulkMapTeamOld' } } },
@@ -1135,12 +1171,12 @@ describe('Entry delete → service notifications', () => {
     assert.equal(calls[0].body.entry.univ, 'BulkMapUnivNew');
 
     await stopServer(started.server);
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
   it('POST /api/entries/bulk rejects a self-map renumber so it cannot bypass the same-number ambiguity guard', async () => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await client.post('/api/entries/bulk', {
       body: { data: { 340: { univ: 'SelfMapUnivA', team: 'SelfMapTeamA' } } },
@@ -1148,6 +1184,7 @@ describe('Entry delete → service notifications', () => {
     });
 
     const calls = [];
+    resetSinkRequests(); // setup 팬아웃은 제외하고, 아래 동작이 다른 대상을 건드리는지만 본다
     const mockApp = expressForMock();
     mockApp.use(expressForMock.json());
     mockApp.delete('/api/internal/team/:num', (req, res) => { calls.push({ method: 'DELETE', num: Number(req.params.num) }); res.status(200).send(); });
@@ -1164,17 +1201,18 @@ describe('Entry delete → service notifications', () => {
     assert.equal(res.status, 400, 'self-map renumber must be rejected');
     await new Promise(r => setTimeout(r, 100));
     assert.deepEqual(calls, [], 'no lifecycle events are dispatched for a rejected self-map');
+    assert.deepEqual(sinkRequests, [], 'nor to any other lifecycle target');
 
     const after = await (await client.get('/api/entries', { cookie: adminCookie })).json();
     assert.equal(after['340'].team, 'SelfMapTeamA', 'entry table is unchanged on a rejected self-map');
 
     await stopServer(started.server);
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
   it('POST /api/entries/bulk treats a same-number change declared as a name correction (retains) as a retained entry', async () => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await client.post('/api/entries/bulk', {
       body: { data: { 305: { univ: 'BulkCorrectUniv', team: 'BulkCorrectTeam' } } },
@@ -1182,6 +1220,7 @@ describe('Entry delete → service notifications', () => {
     });
 
     const calls = [];
+    resetSinkRequests(); // setup 팬아웃은 제외하고, 아래 동작이 다른 대상을 건드리는지만 본다
     const mockApp = expressForMock();
     mockApp.use(expressForMock.json());
     mockApp.patch('/api/internal/team-num', (req, res) => {
@@ -1202,14 +1241,15 @@ describe('Entry delete → service notifications', () => {
     assert.equal(res.status, 200);
     await new Promise(r => setTimeout(r, 150));
     assert.deepEqual(calls, [], 'a same number explicitly declared a name correction should not trigger lifecycle delete/renumber');
+    assert.deepEqual(sinkRequests, [], 'nor to any other lifecycle target');
 
     await stopServer(started.server);
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
   it('POST /api/entries/bulk rejects an undeclared same-number team change with 409', async () => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await client.post('/api/entries/bulk', {
       body: { data: { 306: { univ: 'BulkAmbigUnivA', team: 'BulkAmbigTeamA' } } },
@@ -1217,6 +1257,7 @@ describe('Entry delete → service notifications', () => {
     });
 
     const calls = [];
+    resetSinkRequests(); // setup 팬아웃은 제외하고, 아래 동작이 다른 대상을 건드리는지만 본다
     const mockApp = expressForMock();
     mockApp.use(expressForMock.json());
     mockApp.patch('/api/internal/team-num', (req, res) => {
@@ -1244,18 +1285,19 @@ describe('Entry delete → service notifications', () => {
 
     await new Promise(r => setTimeout(r, 150));
     assert.deepEqual(calls, [], 'no lifecycle events are dispatched while the change is unresolved');
+    assert.deepEqual(sinkRequests, [], 'nor to any other lifecycle target');
 
     // The upload was rolled back: 306 still holds the original team.
     const after = await (await client.get('/api/entries', { cookie: adminCookie })).json();
     assert.equal(after['306'].team, 'BulkAmbigTeamA', 'entry table is unchanged on a 409');
 
     await stopServer(started.server);
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
   it('POST /api/entries/bulk deletes old data and emits the current snapshot for a same-number replacement', async () => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await client.post('/api/entries/bulk', {
       body: { data: { 307: { univ: 'BulkReplaceUnivA', team: 'BulkReplaceTeamA' } } },
@@ -1307,13 +1349,13 @@ describe('Entry delete → service notifications', () => {
 
     await stopServer(documentsStarted.server);
     await stopServer(inspectionStarted.server);
-    delete process.env.DOCUMENTS_SERVER;
-    delete process.env.INSPECTION_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
+    process.env.INSPECTION_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
   it('POST /api/entries/bulk snapshots an active team that reuses a dead renumber source', async () => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await client.post('/api/entries/bulk', {
       body: { data: { 401: { univ: 'MovedUniv', team: 'MovedTeam', active: false } } },
@@ -1361,12 +1403,12 @@ describe('Entry delete → service notifications', () => {
     assert.ok(activeCalls.some((body) => body.num === 401 && body.active === true), 'the snapshot converges the reused source after the renumber dies');
 
     await stopServer(started.server);
-    delete process.env.INSPECTION_SERVER;
+    process.env.INSPECTION_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
   it('POST /api/entries/bulk uses a temporary renumber for number swaps', async () => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await client.post('/api/entries/bulk', {
       body: {
@@ -1407,7 +1449,7 @@ describe('Entry delete → service notifications', () => {
     assert.deepEqual(renumbers.map(r => [r.prevNum, r.newNum]), [[310, temp], [311, 310], [temp, 311]]);
 
     await stopServer(started.server);
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 });
@@ -1415,13 +1457,13 @@ describe('Entry delete → service notifications', () => {
 // ─── Single-PATCH same-number identity intent ────────────────────────────
 describe('PATCH /api/entries/:num — same-number identity intent', () => {
   before(async () => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await client.post('/api/entries', { body: { num: 600, univ: 'IdUnivA', team: 'IdTeamA' }, cookie: adminCookie });
   });
 
   after(() => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
@@ -1470,7 +1512,7 @@ describe('PATCH /api/entries/:num — same-number identity intent', () => {
     assert.equal(data['600'].team, 'IdTeamB', 'entry identity is updated');
 
     await stopServer(started.server);
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
@@ -1507,8 +1549,8 @@ describe('PATCH /api/entries/:num — same-number identity intent', () => {
     assert.equal(data['600'].team, 'IdTeamC', 'entry table holds the new team');
 
     await stopServer(started.server);
-    delete process.env.DOCUMENTS_SERVER;
-    delete process.env.INSPECTION_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
+    process.env.INSPECTION_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 });
@@ -1518,7 +1560,7 @@ describe('lifecycle outbox — dead-letter + admin recovery', () => {
   let failServer;
 
   before(async () => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
     const mockApp = expressForMock();
     mockApp.use(expressForMock.json());
@@ -1531,7 +1573,7 @@ describe('lifecycle outbox — dead-letter + admin recovery', () => {
 
   after(async () => {
     await stopServer(failServer);
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
   });
 
@@ -1595,7 +1637,7 @@ describe('lifecycle outbox — dead-letter + admin recovery', () => {
     const year = 2092;
     const num = 880;
     const documentsServer = process.env.DOCUMENTS_SERVER;
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
 
     let activeServer;
     try {
@@ -1658,7 +1700,7 @@ describe('lifecycle outbox — dead-letter + admin recovery', () => {
       assert.equal(db.prepare("SELECT 1 FROM lifecycle_outbox WHERE id = ?").get(currentId), undefined);
     } finally {
       if (activeServer) await stopServer(activeServer);
-      delete process.env.INSPECTION_SERVER;
+      process.env.INSPECTION_SERVER = lifecycleSinkUrl;
       if (documentsServer) process.env.DOCUMENTS_SERVER = documentsServer;
       db.prepare("DELETE FROM lifecycle_outbox").run();
     }
@@ -1668,7 +1710,7 @@ describe('lifecycle outbox — dead-letter + admin recovery', () => {
     db.prepare("DELETE FROM lifecycle_outbox").run();
     const year = 2094;
     const documentsServer = process.env.DOCUMENTS_SERVER;
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
 
     let renumberServer;
     try {
@@ -1735,7 +1777,7 @@ describe('lifecycle outbox — dead-letter + admin recovery', () => {
       assert.deepEqual(calls, [currentBody], 'an exact current move remains recoverable');
     } finally {
       if (renumberServer) await stopServer(renumberServer);
-      delete process.env.INSPECTION_SERVER;
+      process.env.INSPECTION_SERVER = lifecycleSinkUrl;
       if (documentsServer) process.env.DOCUMENTS_SERVER = documentsServer;
       db.prepare("DELETE FROM lifecycle_outbox").run();
     }
@@ -1746,7 +1788,7 @@ describe('lifecycle outbox — dead-letter + admin recovery', () => {
     const year = 2093;
     const num = 881;
     const documentsServer = process.env.DOCUMENTS_SERVER;
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
 
     let activeServer;
     try {
@@ -1787,7 +1829,7 @@ describe('lifecycle outbox — dead-letter + admin recovery', () => {
       assert.equal(db.prepare("SELECT status FROM lifecycle_outbox WHERE id = ?").get(deadDelete.lastInsertRowid).status, 'dead');
     } finally {
       if (activeServer) await stopServer(activeServer);
-      delete process.env.INSPECTION_SERVER;
+      process.env.INSPECTION_SERVER = lifecycleSinkUrl;
       if (documentsServer) process.env.DOCUMENTS_SERVER = documentsServer;
       db.prepare("DELETE FROM lifecycle_outbox").run();
     }
@@ -1798,7 +1840,7 @@ describe('Entry active state', () => {
   let statusServer;
 
   before(async () => {
-    for (const key of LIFECYCLE_SERVER_ENVS) delete process.env[key];
+    restoreLifecycleSink();
     db.prepare("DELETE FROM lifecycle_outbox").run();
     const calls = [];
     const renumbers = [];
@@ -1830,8 +1872,8 @@ describe('Entry active state', () => {
   });
 
   after(async () => {
-    delete process.env.INSPECTION_SERVER;
-    delete process.env.DOCUMENTS_SERVER;
+    process.env.INSPECTION_SERVER = lifecycleSinkUrl;
+    process.env.DOCUMENTS_SERVER = lifecycleSinkUrl;
     db.prepare("DELETE FROM lifecycle_outbox").run();
     await stopServer(statusServer.server);
   });

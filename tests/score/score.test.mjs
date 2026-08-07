@@ -190,7 +190,7 @@ before(async () => {
   process.env.TRAFFIC_SERVER = t.baseUrl;
 
   dbPath = tmpDbPath();
-  const result = createScoreApp({ dbPath, skipSSESubscriptions: true });
+  const result = createScoreApp({ dbPath, skipSSESubscriptions: true});
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;
@@ -1067,7 +1067,7 @@ describe('Score aggregation business logic', () => {
     process.env.TRAFFIC_SERVER = t.baseUrl;
 
     dp = tmpDbPath();
-    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true });
+    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true});
     database = result.db;
     const started = await startServer(result.app);
     srv = started.server;
@@ -1208,7 +1208,7 @@ describe('Score aggregation over the pre-filtered traffic year response', () => 
     process.env.TRAFFIC_SERVER = t.baseUrl;
 
     dp = tmpDbPath();
-    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true });
+    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true});
     database = result.db;
     const started = await startServer(result.app);
     srv = started.server; url = started.baseUrl;

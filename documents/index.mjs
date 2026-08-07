@@ -10,6 +10,7 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInt
 import { createLogger } from "../shared/logger.mjs";
 import { validateYear } from "../shared/validation.mjs";
 import { parseDbTimestamp } from "../shared/parse-timestamp.js";
+import { serviceUrl } from "../shared/services.mjs";
 
 const PORT = 9700;
 
@@ -1273,7 +1274,7 @@ app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
 // GET /api/admin/students - auth 서비스에서 student 역할 사용자 목록 조회
 app.get("/api/admin/students", async (req, res) => {
   try {
-    const authRes = await fetch(`${process.env.AUTH_SERVER}/api/users`, {
+    const authRes = await fetch(`${serviceUrl("auth")}/api/users`, {
       headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
       signal: AbortSignal.timeout(5000),
     });
@@ -1661,8 +1662,8 @@ function scheduleSessionNotifications(sessionId, start_at, end_at) {
 
 /** 이메일 전송 공통 */
 async function sendNotificationEmail(subject, htmlContent, recipient) {
-  const emailServer = process.env.EMAIL_SERVER;
-  if (!emailServer || !process.env.INTERNAL_SECRET) return { ok: false, error: "EMAIL_SERVER not configured" };
+  const emailServer = serviceUrl("email");
+  if (!process.env.INTERNAL_SECRET) return { ok: false, error: "INTERNAL_SECRET not configured" };
 
   // 이메일 발송은 Brevo 왕복이 포함돼 내부 표준(5초)보다 길게 잡는다
   const EMAIL_SEND_TIMEOUT_MS = 15000;
@@ -1683,8 +1684,7 @@ function escapeHtml(str) {
 
 /** 엔트리 정보 조회 (실패 시 빈 객체 — graceful degradation) */
 async function fetchEntries(year, req = null, action = "entry.fetch") {
-  const entryServer = process.env.ENTRY_SERVER;
-  if (!entryServer) return {};
+  const entryServer = serviceUrl("entry");
   try {
     const res = await fetch(`${entryServer}/api/entries?year=${year}&includeInactive=true`, {
       headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
@@ -1846,8 +1846,8 @@ const _renumberFileWorkStartupTimer = setTimeout(() => {
 
 /** 계정 할당 시 현재 열린 세션 알림 */
 async function notifyOpenSessions(req, email, teamNum, year) {
-  const emailServer = process.env.EMAIL_SERVER;
-  if (!emailServer || !process.env.INTERNAL_SECRET) return;
+  const emailServer = serviceUrl("email");
+  if (!process.env.INTERNAL_SECRET) return;
 
   try {
     const currentTime = now();

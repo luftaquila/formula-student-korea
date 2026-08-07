@@ -21,7 +21,7 @@ let server, baseUrl, client, db, dbPath;
 
 before(async () => {
   dbPath = tmpDbPath();
-  const result = createCourseApp({ dbPath });
+  const result = createCourseApp({ dbPath});
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;
@@ -1338,7 +1338,7 @@ describe('Mission orphan recovery + boot re-adopt (on startup)', () => {
     const orphanId = db.prepare("SELECT id FROM mission WHERE started_at = ?").get(started_at).id;
 
     const { createCourseApp } = await import('../../course/index.mjs?v=orphan');
-    const result = createCourseApp({ dbPath });
+    const result = createCourseApp({ dbPath});
     const started = await startServer(result.app);
     const localClient = createClient(started.baseUrl);
     try {
@@ -1504,7 +1504,7 @@ describe('Mission interruption survival + resume', () => {
 
   before(async () => {
     localDbPath = tmpDbPath();
-    const result = createCourseApp({ dbPath: localDbPath });
+    const result = createCourseApp({ dbPath: localDbPath});
     localDb = result.db;
     const started = await startServer(result.app);
     srv = started.server;
@@ -1612,7 +1612,7 @@ describe('Mission soft pause / resume', () => {
 
   before(async () => {
     localDbPath = tmpDbPath();
-    const result = createCourseApp({ dbPath: localDbPath });
+    const result = createCourseApp({ dbPath: localDbPath});
     localDb = result.db;
     const started = await startServer(result.app);
     srv = started.server;
@@ -1723,7 +1723,7 @@ describe('Mission obstacle auto-pause (perception)', () => {
 
   before(async () => {
     localDbPath = tmpDbPath();
-    const result = createCourseApp({ dbPath: localDbPath });
+    const result = createCourseApp({ dbPath: localDbPath});
     localDb = result.db;
     const started = await startServer(result.app);
     srv = started.server;
@@ -1885,7 +1885,7 @@ describe('Mission schema migration', () => {
     raw.close();
 
     const { createCourseApp } = await import('../../course/index.mjs?v=migrate');
-    const result = createCourseApp({ dbPath: p });
+    const result = createCourseApp({ dbPath: p});
     const started = await startServer(result.app);
     const localClient = createClient(started.baseUrl);
     try {
@@ -1949,7 +1949,7 @@ describe('Cone schema migration (center + alt ordering)', () => {
     // Opening the app runs the migrations — this is the step that crashed.
     const { createCourseApp } = await import('../../course/index.mjs?v=conemigrate');
     let result;
-    assert.doesNotThrow(() => { result = createCourseApp({ dbPath: p }); }, 'app must boot on a pre-center, pre-alt cone DB');
+    assert.doesNotThrow(() => { result = createCourseApp({ dbPath: p}); }, 'app must boot on a pre-center, pre-alt cone DB');
     try {
       // Legacy cone row preserved through the rebuild; alt defaulted to null.
       const row = result.db.prepare("SELECT * FROM cone WHERE id = 1").get();
@@ -1974,7 +1974,7 @@ describe('Camera relay', () => {
 
   before(async () => {
     localDbPath = tmpDbPath();
-    const result = createCourseApp({ dbPath: localDbPath });
+    const result = createCourseApp({ dbPath: localDbPath});
     localDb = result.db;
     const started = await startServer(result.app);
     srv = started.server;
@@ -2277,7 +2277,7 @@ describe('Stereo calibration trigger', () => {
 
   before(async () => {
     localDbPath = tmpDbPath();
-    const result = createCourseApp({ dbPath: localDbPath });
+    const result = createCourseApp({ dbPath: localDbPath});
     localDb = result.db;
     const started = await startServer(result.app);
     srv = started.server; url = started.baseUrl; cli = createClient(url);
@@ -2370,7 +2370,7 @@ describe('Ground calibration trigger', () => {
 
   before(async () => {
     localDbPath = tmpDbPath();
-    const result = createCourseApp({ dbPath: localDbPath });
+    const result = createCourseApp({ dbPath: localDbPath});
     localDb = result.db;
     const started = await startServer(result.app);
     srv = started.server; url = started.baseUrl; cli = createClient(url);

@@ -57,7 +57,7 @@ describe('Inspection answer-type migration', () => {
 
     let migratedDb;
     try {
-      migratedDb = createInspectionApp({ dbPath }).db;
+      migratedDb = createInspectionApp({ dbPath}).db;
       const schema = migratedDb.prepare(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sheet_template'"
       ).get().sql;

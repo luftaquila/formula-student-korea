@@ -65,7 +65,7 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 1.19 | 로그 집계 조회 | admin | `GET /api/admin/logs` | 전체 서비스 로그 수집(LOG_SERVICES), 서비스/레벨/액션/기간 필터, 페이지네이션 |
+| 1.19 | 로그 집계 조회 | admin | `GET /api/admin/logs` | 전체 서비스 로그 수집(shared/services.mjs 레지스트리), 서비스/레벨/액션/기간 필터, 페이지네이션 |
 
 ### 계정 신청
 
@@ -558,7 +558,7 @@ Queue → Entry: POST /api/admin/register 시 엔트리 존재 확인
 ### Auth 사용자 검증
 
 ```
-모든 비-auth 서비스 → Auth: JWT 검증 시 AUTH_SERVER로 역할 동기화
+모든 비-auth 서비스 → Auth: JWT 검증 시 auth 서비스로 역할 동기화(재검증은 기본 동작)
 ```
 
 Fail-close 방식: auth 서비스 무응답 또는 에러 시 세션 무효화.

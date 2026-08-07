@@ -27,7 +27,7 @@ let server, baseUrl, client, db, dbPath;
 
 before(async () => {
   dbPath = tmpDbPath();
-  const result = createInspectionApp({ dbPath });
+  const result = createInspectionApp({ dbPath});
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;

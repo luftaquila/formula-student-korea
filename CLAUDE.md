@@ -26,13 +26,16 @@ All 10 backend services share `Dockerfile.service` (root) with `ARG SERVICE` + `
 
 **mediamtx** (WebRTC relay for the rover camera) is a 14th component but is **k3s-only** (deployed via the GitOps repo, not in `compose.yml`). caddy proxies `/course/api/rtc/*` → `mediamtx:8889` for WHIP/WHEP signaling; the rover (aiortc) publishes `rover-2d`/`rover-vr` and the course frontend plays via WHEP. In a local compose stack this route has no backend, so WebRTC is unavailable there (MJPEG fallback only).
 
-**Service dependencies** (env vars in `compose.yml`):
-- entry, inspection, traffic, documents, course, email, calendar → auth (`AUTH_SERVER`)
-- queue → entry (`ENTRY_SERVER`), auth (`AUTH_SERVER`), email (`EMAIL_SERVER`)
-- auth, documents → email (`EMAIL_SERVER`)
-- entry → queue, documents, inspection, score, traffic (`QUEUE_SERVER`, `DOCUMENTS_SERVER`, `INSPECTION_SERVER`, `SCORE_SERVER`, `TRAFFIC_SERVER` — lifecycle outbox 팬아웃 대상)
-- documents → entry (`ENTRY_SERVER`), email (`EMAIL_SERVER`)
+**Service dependencies** — URL은 전부 `shared/services.mjs` 레지스트리 상수에서 온다. 배포 설정(`compose.yml`·k3s 매니페스트)에 inter-service URL을 넣지 않는다:
+- entry, inspection, traffic, documents, course, email, calendar → auth
+- queue → entry, auth, email
+- auth, documents → email
+- entry → queue, documents, inspection, score, traffic (lifecycle outbox 팬아웃 대상)
+- documents → entry, email
 - score → entry, inspection, traffic, auth
+- auth → 전 서비스 (로그 집계, `logAggregationTargets()`)
+
+`<NAME>_SERVER` env는 **override 전용**이며 테스트·컨테이너 밖 로컬 실행에서만 쓴다. 예전에는 env가 있을 때만 대상이 활성화되는 구조라, 배포 설정에서 URL이 빠지면 해당 연동이 조용히 사라졌다(k3s entry 매니페스트에서 inspection/score/traffic이 누락돼 팀 비활성화가 전달되지 않은 사고). 이제 기본값이 코드에 있어 **inter-service URL에 한해서는** 설정 누락이 불가능하다. 코드로 옮길 수 없는 값(`PUBLIC_URL`·`VWORLD_KEY`·시크릿)에는 "설정 없음 ⇒ 조용히 아무것도 안 함"이 그대로 남아 있으므로, 그쪽은 부팅 시 fail-fast로 막는다.
 
 All non-auth services validate via `AUTH_SERVER` (fail-close: only 200 confirms user).
 
@@ -48,6 +51,10 @@ cd {service}/web && npm run dev|build
 
 # Backend dev — each index.mjs exports create*App(options) factory
 cd {service} && node index.mjs
+# inter-service URL 기본값은 컨테이너 DNS 이름(http://entry:9200 등)이다. 컨테이너 밖에서
+# 단독 실행하면서 다른 서비스를 부르려면 해당 서비스만 override 한다. 예:
+#   cd score && ENTRY_SERVER=http://localhost:9200 INSPECTION_SERVER=http://localhost:9400 \
+#               TRAFFIC_SERVER=http://localhost:9500 node index.mjs
 
 # Docker (Makefile wraps podman compose, auto-prunes)
 make deploy                    # Pull images + restart (production)
@@ -72,7 +79,7 @@ Prerequisites: podman machine, `.env` from `.env.example` (min: `JWT_SECRET`, `I
 
 **Roles**: `public < student < official < chief < admin`. `authRoleFn(req)` returns role or null. Non-API routes redirect to `/` on 401/403.
 
-Caddy strips `X-Internal-Service` and `Authuser` from external requests. Inter-service calls use `X-Internal-Service` header (= `INTERNAL_SECRET`), auto-admin. Score subscribes to inspection/traffic SSE, re-broadcasts with `inspection:*`/`traffic:*` prefixes. Auth aggregates logs via `LOG_SERVICES`.
+Caddy strips `X-Internal-Service` and `Authuser` from external requests. Inter-service calls use `X-Internal-Service` header (= `INTERNAL_SECRET`), auto-admin. Score subscribes to inspection/traffic SSE, re-broadcasts with `inspection:*`/`traffic:*` prefixes. Auth aggregates logs from every other service via `logAggregationTargets()` (`shared/services.mjs`).
 
 **FileBrowser** (`/files/`, chief+): uses separate `X-Forward-Auth-Key` header. DB reset requires container recreate: `podman rm -f fsk-filebrowser && podman compose --profile production up -d filebrowser`.
 
