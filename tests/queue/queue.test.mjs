@@ -1853,3 +1853,45 @@ describe('Entry active-state synchronization', () => {
     assert.ok((restoredHistory.battery || []).includes(num), 'preserved history is visible again');
   });
 });
+
+// entry의 정합성 점검이 읽는 라우트. 앞선 리뷰에서 placeholder 테스트를 지웠고, 네 서비스에
+// 등록되는 실제 핸들러는 커버리지가 0이 됐다 — 가드·검증·응답 형태를 여기서 고정한다.
+describe('GET /api/internal/team-status', () => {
+  const YEAR = new Date().getFullYear();
+
+  it('rejects a request without the internal secret', async () => {
+    const res = await client.get(`/api/internal/team-status?year=${YEAR}`);
+    assert.notEqual(res.status, 200);
+  });
+
+  it('rejects an invalid year', async () => {
+    const res = await client.get('/api/internal/team-status?year=nope', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('renders stored rows as { num: { active, revision } }', async () => {
+    const applied = await client.patch('/api/internal/team-active', {
+      body: { num: 4242, year: YEAR, active: false, revision: 7 },
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(applied.status, 200);
+
+    const res = await client.get(`/api/internal/team-status?year=${YEAR}`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+    const snapshot = await res.json();
+    assert.deepEqual(snapshot['4242'], { active: false, revision: 7 },
+      'active must be a boolean, not the stored 0/1');
+  });
+
+  it('scopes the snapshot to the requested year', async () => {
+    const res = await client.get(`/api/internal/team-status?year=${YEAR - 1}`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json())['4242'], undefined);
+  });
+});

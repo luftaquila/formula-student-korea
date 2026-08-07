@@ -583,7 +583,12 @@ function diffTeamStatus(truth, snapshot) {
     // (`current.revision >= revision`)가 200으로 무시한다. 그러면 outbox 행은 지워지고
     // 미러는 그대로여서, 매번 "고쳤다"고 보고하면서 영원히 안 고쳐진다. entry DB만 복원하면
     // 전역 리비전 카운터가 뒤로 감기므로 정확히 이 상태가 된다. 새 리비전을 받아야 한다.
-    if (mirrored !== entry.active) drifted.push({ num, mirrorRevision: row?.revision ?? 0 });
+    // 미러 값은 아래에서 entry의 전역 리비전 카운터를 산술 UPDATE 하는 데 쓰인다. 손상되거나
+    // 손으로 건드린 DB에서 정수가 아닌 값이 오면 카운터가 1로 붕괴하고, 그때부터 모든
+    // team.active가 미러보다 낮은 리비전을 달고 나가 전부 조용히 거부된다 — 이 도구가 막으려던
+    // 바로 그 사고다. 신뢰할 수 없는 값은 0으로 떨어뜨린다.
+    const mirrorRevision = Number.isInteger(row?.revision) && row.revision >= 0 ? row.revision : 0;
+    if (mirrored !== entry.active) drifted.push({ num, mirrorRevision });
   }
   for (const key of Object.keys(snapshot)) {
     if (!truth.has(Number(key))) unknown.push(Number(key));
@@ -593,12 +598,20 @@ function diffTeamStatus(truth, snapshot) {
 
 // 미러가 앞서 있으면 그보다 위의 리비전을 새로 발급해 entry 행에 확정한다. 이렇게 해야
 // 재전송이 실제로 적용되고, 이후의 정상적인 활성/비활성 이벤트도 거부되지 않는다.
-function raiseActiveRevision(year, num, floor) {
+//
+// truth는 스냅샷 fetch 전에 한 번 읽으므로, 그 사이 관리자가 상태를 바꿨다면 이 패스는 낡은
+// 값을 들고 있다. 그런데 발급하는 리비전은 그 변경을 이기고도 남는 값이라, 낡은 읽기가
+// 권위 있는 쓰기로 승격되어 관리자의 변경이 다운스트림에서 조용히 되돌아간다. 그래서 트랜잭션
+// 안에서 현재 행을 다시 읽고, 진단 시점과 달라졌으면 건드리지 않는다 — 방금 진짜 이벤트가
+// 나갔다는 뜻이고, 그게 알아서 수렴시킨다.
+function raiseActiveRevision(year, num, floor, expectedActive) {
   return dbRun(() => db.transaction(() => {
+    const current = db.prepare(`SELECT active, active_revision FROM '${getTableName(year)}' WHERE num = ?`).get(num);
+    if (!current || !!current.active !== expectedActive) return { stale: true, previous: current?.active_revision };
     db.prepare("UPDATE entry_active_revision SET value = MAX(value, ?) + 1 WHERE id = 1").run(floor);
     const revision = db.prepare("SELECT value FROM entry_active_revision WHERE id = 1").get().value;
     db.prepare(`UPDATE '${getTableName(year)}' SET active_revision = ? WHERE num = ?`).run(revision, num);
-    return revision;
+    return { stale: false, revision, previous: current.active_revision };
   })());
 }
 
@@ -641,8 +654,11 @@ async function reconcileTeamStatus(req = null) {
       // 아직 배달되지 않은 이벤트가 있는 번호는 drift가 아니라 진행 중이다. 부팅 훅은
       // 30초 재시도 타이머보다 먼저 돌므로 이걸 거르지 않으면 매 재시작마다 가짜 drift를
       // 보고하고 중복 이벤트를 넣는다 — 스스로 시끄러운 점검은 아무도 안 읽게 된다.
+      // 이 서비스로 가는 행만 본다. 전체를 보면 queue 하나가 막혀 있을 때 같은 팀의
+      // inspection/score/traffic 복구까지 그 행이 dead 될 때까지(최대 24회 재시도) 막힌다.
       const pendingNums = new Set(
         pendingLifecycleRefsForNums(drifted.map((d) => d.num), year)
+          .filter((row) => row.service === svc.name)
           .flatMap((row) => drifted.map((d) => d.num).filter((n) => lifecycleRowRefsNumber(row, n, year))),
       );
       const actionable = drifted.filter((d) => !pendingNums.has(d.num));
@@ -650,15 +666,19 @@ async function reconcileTeamStatus(req = null) {
 
       const events = [];
       const repairedNums = [];
+      const raised = [];
       for (const { num, mirrorRevision } of actionable) {
         let revision = truth.get(num).revision;
         if (mirrorRevision >= revision) {
-          const raised = raiseActiveRevision(year, num, mirrorRevision);
-          if (!raised.success) {
-            logger.warn(req, "entry.reconcile_failed", { error: raised.error, service: svc.name, year, nums: [num] });
+          const result = raiseActiveRevision(year, num, mirrorRevision, truth.get(num).active);
+          if (!result.success) {
+            logger.warn(req, "entry.reconcile_failed", { error: result.error, service: svc.name, year, nums: [num] });
             continue;
           }
-          revision = raised.result;
+          // 진단 이후 상태가 바뀐 팀은 건너뛴다. 낡은 값을 이기는 리비전으로 덮어쓰지 않는다.
+          if (result.result.stale) continue;
+          revision = result.result.revision;
+          raised.push({ num, from: result.result.previous, to: revision });
           truth.get(num).revision = revision;
         }
         repairedNums.push(num);
@@ -678,7 +698,12 @@ async function reconcileTeamStatus(req = null) {
         continue;
       }
       summary.repaired += repairedNums.length;
-      logger.warn(req, "entry.reconcile_drift", { service: svc.name, year, kind: "state_mismatch", nums: repairedNums });
+      logger.warn(req, "entry.reconcile_drift", {
+        service: svc.name, year, kind: "state_mismatch", nums: repairedNums,
+        // 리비전을 올리면 그 팀의 dead outbox 행은 재시도 가드(active_revision 일치)에 걸려
+        // 409가 된다. 나중에 그걸 만난 운영자가 원인을 추적할 수 있게 변경 내역을 남긴다.
+        ...(raised.length > 0 ? { raised } : {}),
+      });
       await processLifecycleOutbox({ ids: inserted.result });
     }
   }
@@ -688,8 +713,20 @@ async function reconcileTeamStatus(req = null) {
 }
 
 // POST /api/admin/reconcile - 백업 복원·수동 조작 뒤 즉시 점검
+// 동시에 돌면 패스마다 각자의 stale-read 창이 열리므로 한 번에 하나만 돈다.
+let reconcileInFlight = false;
 app.post("/api/admin/reconcile", async (req, res) => {
-  const summary = await reconcileTeamStatus(req);
+  if (reconcileInFlight) return res.status(409).send("정합성 점검이 이미 실행 중입니다.");
+  reconcileInFlight = true;
+  let summary;
+  try {
+    summary = await reconcileTeamStatus(req);
+  } catch (e) {
+    logger.warn(req, "entry.reconcile_failed", { error: e.message || String(e) });
+    return res.status(500).send("정합성 점검에 실패했습니다.");
+  } finally {
+    reconcileInFlight = false;
+  }
   logger.log(req, "entry.reconcile", summary);
   res.json(summary);
 });
@@ -714,9 +751,11 @@ async function reconcileOnBoot(attempt = 0) {
   }
   if (summary.unreachable.length === 0 || attempt >= RECONCILE_BOOT_RETRIES) {
     if (summary.unreachable.length > 0) {
-      logger.warn(null, "entry.reconcile_unreachable", {
-        services: summary.unreachable, attempt, giving_up: true,
-      });
+      for (const service of summary.unreachable) {
+        // 같은 action의 다른 레코드와 detail 형태를 맞춘다(service: 문자열). 배열로 남기면
+        // 로그 뷰어에서 service로 거를 때 이 레코드만 빠진다.
+        logger.warn(null, "entry.reconcile_unreachable", { service, attempt, giving_up: true });
+      }
     }
     return;
   }
@@ -976,7 +1015,7 @@ function lifecycleRowRefsNumber(row, num, year) {
 function pendingLifecycleRefsForNums(nums, year) {
   const targetNums = new Set([...nums].map(Number).filter((n) => Number.isInteger(n) && n > 0));
   if (targetNums.size === 0) return [];
-  const pending = db.prepare("SELECT id, event_type, path, body FROM lifecycle_outbox WHERE status IN ('pending', 'processing') ORDER BY id").all();
+  const pending = db.prepare("SELECT id, event_type, service, path, body FROM lifecycle_outbox WHERE status IN ('pending', 'processing') ORDER BY id").all();
   return pending.filter((row) => [...targetNums].some((num) => lifecycleRowRefsNumber(row, num, year)));
 }
 
