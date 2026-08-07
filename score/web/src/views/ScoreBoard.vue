@@ -4,6 +4,7 @@ import { exportTable } from "../composables/exportTable";
 import { fetchEntryYears, fetchScore, fetchScorePublication, fetchVehicleTypes, updateManualScore, updatePenalty, updateScorePublication, updateSetting } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
+import { useTableHeadBand } from "../composables/useTableHeadBand";
 import { createKeyedDebouncer } from "@shared/debounce.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
@@ -27,11 +28,15 @@ const displayMode = ref(localStorage.getItem("score-display-mode") || "record");
 watch(displayMode, (v) => localStorage.setItem("score-display-mode", v));
 
 const tableRef = ref(null);
+const headScrollerRef = ref(null);
 const { stickyCols, lineX, startDrag } = useStickyColumns({
   storageKey: "score-board-sticky-cols",
   tableRef,
   columnSelectors: [".col-num", ".col-team", ".col-type"],
 });
+
+const headBandRef = ref(null);
+useTableHeadBand({ tableRef, scrollerRef: headScrollerRef, bandRef: headBandRef });
 
 // 정렬 상태
 const sortKey = ref(null);
@@ -848,7 +853,7 @@ function exportData(format) {
     <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드 (과거 연도)</div>
 
     <!-- 메인 테이블 -->
-    <div class="card">
+    <div class="card table-card">
       <div class="card-header score-card-header">
         <div class="header-left">
           <h3>성적표</h3>
@@ -883,7 +888,8 @@ function exportData(format) {
       <div class="card-body table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
         <div v-else class="sticky-host">
-          <div class="table-container">
+          <div ref="headBandRef" class="head-band"></div>
+          <div ref="headScrollerRef" class="table-container">
           <table ref="tableRef" class="data-table score-table" :data-sticky-cols="stickyCols" @keydown="handleKeyNav">
             <thead>
               <tr>
@@ -1376,16 +1382,18 @@ function exportData(format) {
   overflow: auto;
 }
 
+/* .table-card / .head-band 는 세 표가 공유하므로 main.css 에 있다. */
+
 .score-table {
   min-width: 700px;
 }
 
 .score-table th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
   white-space: nowrap;
   font-size: 0.875rem;
+  /* border-collapse 테두리는 떠 있는 헤더에 안 남는다. 그림자로 대신 그린다 */
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--border-color);
 }
 
 .score-table th.sortable {
@@ -1477,8 +1485,12 @@ function exportData(format) {
   background: rgba(94, 106, 210, 0.04);
 }
 
+/* 헤더가 행 위에 떠 있어 반투명하면 행이 비친다. 불투명 배경 위에 틴트를 얹는다.
+   다른 헤더 셀은 .data-table th 가 이미 불투명하게 칠한다. */
 .score-table thead .col-total {
   font-weight: 700;
+  background-color: var(--bg-secondary);
+  background-image: linear-gradient(rgba(94, 106, 210, 0.04), rgba(94, 106, 210, 0.04));
 }
 
 .total-value {

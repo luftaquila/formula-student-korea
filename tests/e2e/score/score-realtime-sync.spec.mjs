@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 
@@ -48,7 +48,7 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     await sse2;
 
     // In context 1: enter report score for team #30 (부산대학교)
-    const table1 = page1.locator("table.score-table");
+    const table1 = scoreTable(page1);
     const row1 = table1.locator("tbody tr.team-row").filter({ hasText: "부산대학교" });
     await expect(row1).toBeVisible();
 
@@ -68,7 +68,7 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     await savePromise;
 
     // Verify context 2 receives the update via SSE
-    const table2 = page2.locator("table.score-table");
+    const table2 = scoreTable(page2);
     const row2 = table2.locator("tbody tr.team-row").filter({ hasText: "부산대학교" });
     const reportInput2 = row2.locator("input.manual-input").nth(0);
     await expect(reportInput2).toHaveValue(newValue, { timeout: 10000 });

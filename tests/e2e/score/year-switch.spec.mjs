@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, scoreTable, enduranceTable } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 const PREV_YEAR = YEAR - 1;
@@ -47,7 +47,7 @@ test.describe("Score year switch and read-only mode", () => {
     await expect(page.locator(".readonly-banner")).toContainText("읽기 전용");
 
     // Should show the 1 entry for previous year
-    const table = page.locator("table.score-table");
+    const table = scoreTable(page);
     await expect(table.locator("tbody")).toContainText("과거성적대학교");
 
     // Manual score input fields should be disabled
@@ -83,7 +83,7 @@ test.describe("Score year switch and read-only mode", () => {
     await expect(page.locator(".readonly-banner")).toContainText("읽기 전용");
 
     // Should show previous year's entry
-    const table = page.locator("table.endurance-table");
+    const table = enduranceTable(page);
     await expect(table.locator("tbody")).toContainText("과거성적대학교");
 
     // Time inputs should be disabled

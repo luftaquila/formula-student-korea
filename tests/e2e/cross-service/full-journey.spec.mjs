@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 const YEAR = new Date().getFullYear();
@@ -121,7 +121,7 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
     await page.goto("/score");
     await waitForPageReady(page);
 
-    const table = page.locator("table.score-table");
+    const table = scoreTable(page);
     await expect(table).toBeVisible({ timeout: 10000 });
 
     // Enable inspection columns if hidden

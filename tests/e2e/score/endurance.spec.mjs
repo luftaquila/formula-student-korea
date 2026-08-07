@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, scoreTable, enduranceTable, ENDURANCE_TABLE } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 
@@ -38,7 +38,7 @@ test.describe("Score endurance input", () => {
     await expect(page.locator(".count-badge")).toContainText("8");
 
     // Verify the endurance table is visible
-    const table = page.locator("table.endurance-table");
+    const table = enduranceTable(page);
     await expect(table).toBeVisible();
 
     // Verify seeded teams appear
@@ -46,15 +46,15 @@ test.describe("Score endurance input", () => {
     await expect(table.locator("tbody")).toContainText("KAIST");
 
     // Verify key column headers
-    await expect(page.locator("th").filter({ hasText: "번호" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "최종 기록" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "드라이버 1" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "드라이버 2" })).toBeVisible();
-    await expect(page.locator("th").filter({ hasText: "상태" })).toBeVisible();
+    await expect(enduranceTable(page).locator("th").filter({ hasText: "번호" })).toBeVisible();
+    await expect(enduranceTable(page).locator("th").filter({ hasText: "최종 기록" })).toBeVisible();
+    await expect(enduranceTable(page).locator("th").filter({ hasText: "드라이버 1" })).toBeVisible();
+    await expect(enduranceTable(page).locator("th").filter({ hasText: "드라이버 2" })).toBeVisible();
+    await expect(enduranceTable(page).locator("th").filter({ hasText: "상태" })).toBeVisible();
   });
 
   test("set DNS status, disable inputs, and exclude the team from scores", async ({ page }) => {
-    const table = page.locator("table.endurance-table");
+    const table = enduranceTable(page);
 
     // Find the row for team #1 (서울대학교)
     const row = table.locator("tbody tr").filter({ hasText: "서울대학교" });
@@ -97,7 +97,7 @@ test.describe("Score endurance input", () => {
   });
 
   test("set DNF status and expose a DNF score", async ({ page }) => {
-    const table = page.locator("table.endurance-table");
+    const table = enduranceTable(page);
     const row = table.locator("tbody tr").filter({ hasText: "한양대학교" });
     await expect(row).toBeVisible();
 
@@ -126,7 +126,7 @@ test.describe("Score endurance input", () => {
   });
 
   test("enter driver 1 and driver 2 times", async ({ page }) => {
-    const table = page.locator("table.endurance-table");
+    const table = enduranceTable(page);
     const row = table.locator("tbody tr").filter({ hasText: "성균관대학교" });
     await expect(row).toBeVisible();
 
@@ -162,7 +162,7 @@ test.describe("Score endurance input", () => {
   });
 
   test("enter cone and off-course penalties and verify final time", async ({ page }) => {
-    const table = page.locator("table.endurance-table");
+    const table = enduranceTable(page);
     const row = table.locator("tbody tr").filter({ hasText: "KAIST" });
     await expect(row).toBeVisible();
 
@@ -217,7 +217,7 @@ test.describe("Score endurance input", () => {
   });
 
   test("set DSQ status for a team and verify inputs are disabled", async ({ page }) => {
-    const table = page.locator("table.endurance-table");
+    const table = enduranceTable(page);
 
     // Find the row for team #30 (부산대학교)
     const row = table.locator("tbody tr").filter({ hasText: "부산대학교" });
@@ -255,7 +255,7 @@ test.describe("Score endurance input", () => {
   });
 
   test("enter start delay and manual penalty fields", async ({ page }) => {
-    const table = page.locator("table.endurance-table");
+    const table = enduranceTable(page);
 
     // Find the row for team #31 (연세대학교)
     const row = table.locator("tbody tr").filter({ hasText: "연세대학교" });
@@ -284,6 +284,34 @@ test.describe("Score endurance input", () => {
     await clearFields(page, 31, ["driver1_start_delay", "driver2_penalty"]);
   });
 
+  test("two-row header stays at the top of the screen and keeps its columns aligned", async ({ page }) => {
+    // 표가 화면보다 길어지도록 뷰포트를 줄인다
+    await page.setViewportSize({ width: 900, height: 400 });
+
+    const band = page.locator(".head-band");
+    await expect(band.locator("th").first()).toBeVisible();
+
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await expect
+      .poll(() => page.evaluate((sel) => document.querySelector(sel).getBoundingClientRect().top, ENDURANCE_TABLE))
+      .toBeLessThan(0);
+
+    // 헤더는 화면 상단에 붙고, 병합된 2행 헤더의 열도 원본과 어긋나지 않아야 한다
+    const state = await page.evaluate(() => {
+      const cellsOf = (root) => [...root.querySelectorAll("thead tr:last-child th")].map((c) => c.getBoundingClientRect().left);
+      const real = cellsOf(document.querySelector(".sticky-host .table-container"));
+      const copy = cellsOf(document.querySelector(".head-band"));
+      return {
+        bandTop: document.querySelector(".head-band").getBoundingClientRect().top,
+        columns: real.length,
+        maxDrift: Math.max(...real.map((x, i) => Math.abs(x - (copy[i] ?? Infinity)))),
+      };
+    });
+    expect(state.columns).toBeGreaterThan(0);
+    expect(Math.abs(state.bandTop)).toBeLessThanOrEqual(2);
+    expect(state.maxDrift).toBeLessThanOrEqual(1);
+  });
+
   test("navigation link returns to score dashboard", async ({ page }) => {
     // Find and click the "성적표" navigation link
     const navLink = page.locator("a.nav-link").filter({ hasText: "성적표" });
@@ -292,6 +320,6 @@ test.describe("Score endurance input", () => {
 
     // Should navigate to the score dashboard
     await waitForPageReady(page);
-    await expect(page.locator("table.score-table")).toBeVisible();
+    await expect(scoreTable(page)).toBeVisible();
   });
 });

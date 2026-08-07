@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, SCORE_TABLE, scoreTable } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 // Per-vehicle-type category visibility, end to end across inspection + entry + score:
@@ -165,7 +165,7 @@ test.describe("Per-vehicle-type inspection category visibility", () => {
   test("the score dashboard blanks the excluded team's inspection cell", async ({ page }) => {
     await page.goto("/score");
     await waitForPageReady(page);
-    await expect(page.locator("table.score-table")).toBeVisible({ timeout: 10000 });
+    await expect(scoreTable(page)).toBeVisible({ timeout: 10000 });
 
     // Inspection columns are on by default, but be explicit — they are v-show'd, and a
     // hidden th reports empty innerText, which would break the column lookup.
@@ -177,12 +177,12 @@ test.describe("Per-vehicle-type inspection category visibility", () => {
     }
 
     await expect.poll(
-      readCategoryCell(page, "table.score-table", "tr.team-row", CV_TEAM.univ),
+      readCategoryCell(page, SCORE_TABLE, "tr.team-row", CV_TEAM.univ),
       { timeout: 15000 },
     ).toBe("");
 
     await expect.poll(
-      readCategoryCell(page, "table.score-table", "tr.team-row", EV_TEAM.univ),
+      readCategoryCell(page, SCORE_TABLE, "tr.team-row", EV_TEAM.univ),
       { timeout: 15000 },
     ).toBe("-");
   });

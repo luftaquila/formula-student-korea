@@ -32,3 +32,17 @@ export async function setCustomEventName(page, name) {
 export function storageStatePath(role) {
   return `tests/e2e/.auth/${role}.json`;
 }
+
+// score 화면들은 고정 헤더용 사본 테이블을 하나 더 렌더한다(useTableHeadBand).
+// 실제 표나 그 안의 th 를 집으려면 범위를 좁혀야 한다. 선택자는 여기에만 둔다 —
+// locator 는 아래 헬퍼를 쓰고, 문자열이 필요한 곳(page.evaluate 인자 등)은 상수를 넘긴다.
+export const SCORE_TABLE = ".table-container table.score-table";
+export const ENDURANCE_TABLE = ".table-container table.endurance-table";
+
+export function scoreTable(page) {
+  return page.locator(SCORE_TABLE);
+}
+
+export function enduranceTable(page) {
+  return page.locator(ENDURANCE_TABLE);
+}

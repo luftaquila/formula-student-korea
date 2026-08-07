@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 
 const YEAR = new Date().getFullYear();
 const TABLE_NAME = `FSK ${YEAR} E2E-Score-Calc`;
@@ -156,7 +156,7 @@ test.describe("Score calculation accuracy", () => {
     await waitForPageReady(page);
 
     // The score table should show teams
-    const table = page.locator("table.score-table");
+    const table = scoreTable(page);
     await expect(table).toBeVisible();
 
     // Expand team 1's detail row to verify runs
@@ -176,7 +176,7 @@ test.describe("Score calculation accuracy", () => {
     await page.goto("/score");
     await waitForPageReady(page);
 
-    const table = page.locator("table.score-table");
+    const table = scoreTable(page);
     await expect(table).toBeVisible();
 
     // Add a new traffic record for team 10 (KAIST)

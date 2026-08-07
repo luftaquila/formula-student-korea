@@ -322,9 +322,10 @@ jobs:
               tests/e2e/score/calculation.spec.mjs
               tests/e2e/score/penalty-recalculation.spec.mjs
               tests/e2e/score/penalty-settings.spec.mjs
+              tests/e2e/score/public-board.spec.mjs
               tests/e2e/score/score-realtime-sync.spec.mjs
-            # These files intentionally exercise the same global score and
-            # penalty settings; serial execution makes that ownership explicit.
+            # These files intentionally exercise the same global score, penalty
+            # and publication settings; serial execution makes that ownership explicit.
             workers: 1
             services: auth entry queue inspection traffic score documents
             seeds: users vehicle-types entries inspection

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { fetchPublicScore, fetchVehicleTypes } from "../api";
 import { createSSEConnection, parseSSEData } from "@shared/useSSE.js";
+import { useTableHeadBand } from "../composables/useTableHeadBand";
 
 const route = useRoute();
 const year = Number(route.params.year);
@@ -16,6 +17,11 @@ const events = ref([]);
 const typeColorMap = ref({});
 const sortKey = ref(null);
 const sortOrder = ref("asc");
+
+const tableRef = ref(null);
+const headScrollerRef = ref(null);
+const headBandRef = ref(null);
+useTableHeadBand({ tableRef, scrollerRef: headScrollerRef, bandRef: headBandRef });
 
 const { on, useSSE, reconnect } = createSSEConnection(`${base}/api/score/public/${year}/events`);
 
@@ -150,7 +156,7 @@ function sortIcon(key) {
       <button class="btn btn-primary" @click="loadData">다시 시도</button>
     </div>
 
-    <div v-else class="card">
+    <div v-else class="card table-card">
       <div class="card-header public-card-header">
         <div class="header-left">
           <h3>{{ year }}년 성적표</h3>
@@ -160,8 +166,10 @@ function sortIcon(key) {
       </div>
       <div class="card-body table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
-        <div v-else class="table-container">
-          <table class="data-table score-table">
+        <div v-else class="sticky-host">
+          <div ref="headBandRef" class="head-band"></div>
+          <div ref="headScrollerRef" class="table-container">
+          <table ref="tableRef" class="data-table score-table">
               <thead>
                 <tr>
                   <th class="col-num sortable" @click="handleSort('num')">번호 <span class="sort-icon">{{ sortIcon('num') }}</span></th>
@@ -192,6 +200,7 @@ function sortIcon(key) {
                 </tr>
               </tbody>
           </table>
+          </div>
         </div>
       </div>
     </div>
@@ -243,16 +252,22 @@ function sortIcon(key) {
   overflow: auto;
 }
 
+.sticky-host {
+  position: relative;
+}
+
+/* .table-card / .head-band 는 세 표가 공유하므로 main.css 에 있다. */
+
 .score-table {
   min-width: 700px;
 }
 
 .score-table th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
   white-space: nowrap;
   font-size: 0.875rem;
+  /* border-collapse 테두리는 떠 있는 헤더에 안 남는다. 그림자로 대신 그린다 */
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--border-color);
 }
 
 .score-table th.sortable {
