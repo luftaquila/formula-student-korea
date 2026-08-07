@@ -35,6 +35,8 @@ All 10 backend services share `Dockerfile.service` (root) with `ARG SERVICE` + `
 - score → entry, inspection, traffic, auth
 - auth → 전 서비스 (로그 집계, `logAggregationTargets()`)
 
+**정합성 점검** — outbox는 *전달*만 보장하고 *정확성*은 검증하지 않는다. 그래서 다운스트림 DB가 백업에서 되돌아가거나 전달 경로에 구멍이 나면 미러가 조용히 어긋난 채 남는다. entry가 부팅 시 1회, 그리고 `POST /api/admin/reconcile`로 각 서비스의 `GET /api/internal/team-status` 스냅샷을 자기 진실과 대조해 어긋난 팀만 재전송한다. 주기 타이머는 없다 — drift는 배포·복원·수동 조작 같은 이산 사건에서만 생긴다. 정상이면 로그를 남기지 않고, `entry.reconcile_drift`(warn)만 신호다. entry가 모르는 팀이 미러에 있으면 **로그만 남기고 자동 삭제하지 않는다**.
+
 `<NAME>_SERVER` env는 **override 전용**이며 테스트·컨테이너 밖 로컬 실행에서만 쓴다. 예전에는 env가 있을 때만 대상이 활성화되는 구조라, 배포 설정에서 URL이 빠지면 해당 연동이 조용히 사라졌다(k3s entry 매니페스트에서 inspection/score/traffic이 누락돼 팀 비활성화가 전달되지 않은 사고). 이제 기본값이 코드에 있어 **inter-service URL에 한해서는** 설정 누락이 불가능하다. 코드로 옮길 수 없는 값(`PUBLIC_URL`·`VWORLD_KEY`·시크릿)에는 "설정 없음 ⇒ 조용히 아무것도 안 함"이 그대로 남아 있으므로, 그쪽은 부팅 시 fail-fast로 막는다.
 
 All non-auth services validate via the auth service (fail-close: only 200 confirms user). 이 재검증은 **항상 켜져 있고 끄는 런타임 스위치가 없다** — 우회하려면 `create*App({ validateUser })`로 검증기를 직접 주입해야 하며, auth는 자기 DB 함수를, 테스트는 `TRUST_JWT` stub을 넘긴다. 설정 하나로 삭제·강등 전파가 멈추는 경로를 만들지 않기 위한 것이다.

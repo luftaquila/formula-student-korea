@@ -118,6 +118,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | GET | `/api/admin/lifecycle-outbox` | admin | — | `[{ id, service, event, status, attempts, ... }]` | 미전달/실패 이벤트 목록 |
 | POST | `/api/admin/lifecycle-outbox/:id/retry` | admin | — | 200 or 409 | 실패 이벤트 즉시 재전달 시도. 번호가 재사용된 삭제 이벤트와 현재 Entry의 번호 배치·팀 snapshot·활성 상태/revision에 맞지 않는 오래된 번호 변경/활성 이벤트는 409로 거부 |
 | DELETE | `/api/admin/lifecycle-outbox/:id` | admin | — | 200 | 실패 이벤트 폐기 |
+| POST | `/api/admin/reconcile` | admin | — | `{ checked, repaired, unreachable }` | 다운스트림 `team_status` 미러를 Entry 진실과 대조하고 어긋난 팀만 재전송. 백업 복원·수동 DB 조작 뒤에 실행. Entry 부팅 시에도 자동 1회 |
 
 ### Vehicle Types
 
@@ -230,6 +231,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team data on entry deletion (queue, priority, penalty, history, booth occupancy) |
 | PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service (queue/priority/history/booth rows) |
 | PATCH | `/api/internal/team-active` | admin | `{ num, year, active, revision }` | 200 | 비활성화 시 현재 대기열/current/우선순위/취소 페널티/진행 중 부스 세션을 정리. 완료 이력은 보존하되 비활성 중 조회에서 제외 |
+| GET | `/api/internal/team-status` | admin | `?year=` | `{ [num]: { active, revision } }` | Entry의 정합성 점검이 읽는 미러 스냅샷 |
 
 ---
 
@@ -278,6 +280,7 @@ Answer and memo versions are independent. When `base_version` is provided and no
 | DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team sheet data on entry deletion |
 | PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service |
 | PATCH | `/api/internal/team-active` | admin | `{ num, year, active, revision }` | 200 | 답변/결과/검차관 데이터를 보존하면서 비활성 팀의 조회·수정을 차단 |
+| GET | `/api/internal/team-status` | admin | `?year=` | `{ [num]: { active, revision } }` | Entry의 정합성 점검이 읽는 미러 스냅샷 |
 
 ---
 
@@ -350,6 +353,7 @@ Answer and memo versions are independent. When `base_version` is provided and no
 | DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team records on entry deletion |
 | PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service |
 | PATCH | `/api/internal/team-active` | admin | `{ num, year, active, revision }` | 200 | 경기기록을 보존하면서 조회·집계·수정을 차단하고 진행 중 무선 팀 선택/런을 해제 |
+| GET | `/api/internal/team-status` | admin | `?year=` | `{ [num]: { active, revision } }` | Entry의 정합성 점검이 읽는 미러 스냅샷 |
 
 ---
 
@@ -405,6 +409,7 @@ Answer and memo versions are independent. When `base_version` is provided and no
 | DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team data on entry deletion (score_manual, score_endurance) |
 | PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service |
 | PATCH | `/api/internal/team-active` | admin | `{ num, year, active, revision }` | 200 | 수동점수·내구 데이터를 보존하면서 집계·조회·수정을 차단 |
+| GET | `/api/internal/team-status` | admin | `?year=` | `{ [num]: { active, revision } }` | Entry의 정합성 점검이 읽는 미러 스냅샷 |
 
 ---
 

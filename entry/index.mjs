@@ -544,7 +544,115 @@ function buildEntryActiveEvents(num, year, active, revision) {
   }));
 }
 
+/* ============================================
+   정합성 점검
+   outbox는 *전달*을 보장하지만 *정확성*은 검증하지 않는다. 전달 경로에 구멍이 나거나
+   (행이 생성되지 않는 종류의 버그) 다운스트림 DB가 백업에서 되돌아가면, 미러는 아무도
+   모르게 어긋난 채로 영구히 남는다 — 실제로 그렇게 6주간 지속된 사고가 있었다.
+   entry가 진실이므로 entry가 대조하고, 어긋나면 현재 상태를 다시 팬아웃한다.
+
+   주기 타이머는 두지 않는다. drift는 이산 사건(배포·복원·수동 조작)에서만 생기므로
+   부팅 1회 + 관리자 수동 실행으로 충분하다. 배포가 곧 재시작이라 부팅 훅이 자동으로 걸린다.
+   ============================================ */
+async function fetchTeamStatusSnapshot(service, year) {
+  const server = lifecycleServer(service);
+  if (!server) return { ok: false, error: `unknown lifecycle service: ${service}` };
+  try {
+    const res = await fetch(`${server}/api/internal/team-status?year=${Number(year)}`, {
+      headers: lifecycleHeaders(),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return { ok: false, error: `status_${res.status}` };
+    return { ok: true, snapshot: await res.json() };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+}
+
+// 미러에 행이 없으면 active로 간주된다(isTeamActive의 하위호환 규칙). 그래서 "행 없음"은
+// entry도 active일 때 정상이고, entry가 inactive일 때만 drift다. 리비전이 뒤처졌더라도
+// 실효 상태가 같으면 손대지 않는다 — 다음 이벤트가 어차피 수렴시키고, 불필요한 재전송은
+// 로그만 늘린다.
+function diffTeamStatus(truth, snapshot) {
+  const drifted = [];
+  const unknown = [];
+  for (const [num, entry] of truth) {
+    const row = snapshot[num];
+    const mirrored = row ? row.active !== false : true;
+    if (mirrored !== entry.active) drifted.push(num);
+  }
+  for (const key of Object.keys(snapshot)) {
+    if (!truth.has(Number(key))) unknown.push(Number(key));
+  }
+  return { drifted, unknown };
+}
+
+async function reconcileTeamStatus(req = null) {
+  const summary = { checked: 0, repaired: 0, unreachable: [] };
+  for (const year of getAvailableYears()) {
+    const rows = dbRun(() => db.prepare(
+      `SELECT num, active, active_revision FROM '${getTableName(year)}'`
+    ).all());
+    if (!rows.success) {
+      logger.warn(req, "entry.reconcile_failed", { error: rows.error, year });
+      continue;
+    }
+    const truth = new Map(rows.result.map((r) => [r.num, { active: !!r.active, revision: r.active_revision }]));
+    if (truth.size === 0) continue;
+
+    for (const svc of lifecycleServices({ activeOnly: true })) {
+      summary.checked++;
+      const result = await fetchTeamStatusSnapshot(svc.name, year);
+      if (!result.ok) {
+        summary.unreachable.push(svc.name);
+        logger.warn(req, "entry.reconcile_unreachable", { service: svc.name, year, error: result.error });
+        continue;
+      }
+      const { drifted, unknown } = diffTeamStatus(truth, result.snapshot);
+      // entry가 모르는 번호는 자동 삭제하지 않는다. 사고 상황에서 되돌릴 수 없는 손실이 된다.
+      if (unknown.length > 0) {
+        logger.warn(req, "entry.reconcile_drift", { service: svc.name, year, kind: "unknown_team", nums: unknown });
+      }
+      if (drifted.length === 0) continue;
+
+      const events = drifted.map((num) => ({
+        eventType: "team.active",
+        service: svc.name,
+        method: "PATCH",
+        path: "/api/internal/team-active",
+        body: {
+          num: Number(num), year: Number(year),
+          active: truth.get(num).active, revision: Number(truth.get(num).revision),
+        },
+      }));
+      const inserted = dbRun(() => insertLifecycleEvents(events));
+      if (!inserted.success) {
+        logger.warn(req, "entry.reconcile_failed", { error: inserted.error, service: svc.name, year, nums: drifted });
+        continue;
+      }
+      summary.repaired += drifted.length;
+      logger.warn(req, "entry.reconcile_drift", { service: svc.name, year, kind: "state_mismatch", nums: drifted });
+      await processLifecycleOutbox({ ids: inserted.result });
+    }
+  }
+  // 정상일 때는 아무것도 남기지 않는다. drift만 신호다.
+  return summary;
+}
+
+// POST /api/admin/reconcile - 백업 복원·수동 조작 뒤 즉시 점검
+app.post("/api/admin/reconcile", async (req, res) => {
+  const summary = await reconcileTeamStatus(req);
+  logger.log(req, "entry.reconcile", summary);
+  res.json(summary);
+});
+
 const lifecycleRetryTimer = startLifecycleOutboxRetry();
+
+if (!options.skipReconcileOnBoot) {
+  // 부팅 훅. 실패해도 서비스 기동을 막지 않는다.
+  reconcileTeamStatus().catch((e) =>
+    logger.warn(null, "entry.reconcile_failed", { error: e.message || String(e) }));
+}
 
 /* ============================================
    Admin: lifecycle outbox 운영 (조회/재시도/폐기)
@@ -1536,7 +1644,11 @@ app.delete("/api/vehicle-types/:id", withYearVtTable, (req, res) => {
   res.status(200).send();
 });
 
-return { app, db, stopLifecycleOutboxRetry: () => clearInterval(lifecycleRetryTimer) };
+return {
+  app, db,
+  stopLifecycleOutboxRetry: () => clearInterval(lifecycleRetryTimer),
+  reconcileTeamStatus,
+};
 }
 
 const isDirectRun = import.meta.filename === process.argv[1];

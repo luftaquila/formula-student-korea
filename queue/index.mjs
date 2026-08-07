@@ -8,6 +8,7 @@ import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum, validateYear } from "../shared/validation.mjs";
 import { serviceUrl } from "../shared/services.mjs";
+import { registerTeamStatusSnapshotRoute } from "../shared/team-status.mjs";
 
 const PORT = 9300;
 
@@ -2189,6 +2190,10 @@ function sendSmsNotification(type, prev) {
 /* ============================================
    Internal API: 엔트리 상태/삭제 연동
    ============================================ */
+
+// queue는 team_status를 자체 스키마로 관리하지만(부스·우선순위 정리 같은 부수효과가
+// 딸려서), entry의 정합성 점검 대상인 건 같다. 스냅샷 라우트만 공유 모듈에서 가져온다.
+registerTeamStatusSnapshotRoute(app, { db, dbRun, requireInternalRequest });
 
 // PATCH /api/internal/team-active - 엔트리 활성 상태 동기화
 app.patch("/api/internal/team-active", (req, res) => {
